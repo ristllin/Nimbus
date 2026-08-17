@@ -14,9 +14,13 @@ Everything required to go from parts to a working Nimbus. Budget roughly
    browser flasher), or Python 3 + [PlatformIO](https://platformio.org/) for
    the command-line path.
 4. **A 2.4 GHz Wi-Fi network** - the radio does not see 5 GHz-only networks.
-5. **One AI provider API key** for Orchestrator mode - Mistral, OpenAI, or
-   Anthropic. One verified key is required by the setup wizard; you can add
-   others later. (Skip this if you only want the Notifier status light.)
+5. **One AI provider API key** for Orchestrator mode. **Start with
+   [Mistral](https://console.mistral.ai/)** - it has a free tier that is enough to
+   set Nimbus up and try it, and it is the default for voice. OpenAI and Anthropic
+   work too and can be added later (a couple of extras, like image generation and
+   spoken replies on the device speaker, are OpenAI-only). One verified key is
+   required by the setup wizard. (Skip this if you only want the Notifier status
+   light.)
 6. **Optional, recommended:** a microSD card (formatted FAT32 - see the
    [build guide](../hardware/build-eink.md#known-traps)) for long-term memory
    and media, and a Telegram account to chat with the assistant.

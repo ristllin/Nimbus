@@ -63,7 +63,7 @@ The wizard asks for two required things and lets you skip the rest:
 | Step | Required? | Notes |
 |---|---|---|
 | **Connect to Wi-Fi** | Yes | Scan, pick your home network, type its password. 2.4 GHz only; SSIDs are case-sensitive. |
-| **Provider key** | Yes - one verified key | Paste a Mistral, OpenAI, or Anthropic API key and click **Verify**. Keys are write-only: shown as "set", never displayed again. |
+| **Provider key** | Yes - one verified key | Paste an API key and click **Verify**. **Mistral is the recommended starting point** - free tier, and the voice default; OpenAI and Anthropic work too. Keys are write-only: shown as "set", never displayed again. |
 | Operating mode | Skippable | Defaults to what the installer chose; changeable later (a change restarts the device). |
 | Telegram | Skippable | Add a bot token later under Capabilities → Connectors → Telegram. |
 | Voice | Skippable | Dictation and spoken replies default to Mistral. |

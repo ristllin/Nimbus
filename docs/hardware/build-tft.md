@@ -262,8 +262,10 @@ run `BATTCAL` (console) so 100 % reads as 100 %. See
 
 ## Enclosure and CAD
 
-**No enclosure files are published yet.** There is no published case, front
-panel, or 3D-printable CAD for this configuration. The
-[`hardware/fab/`](https://github.com/ristllin/Nimbus/tree/main/hardware/fab) folder holds PCB manufacturing outputs (Gerbers, ODB++, CAM)
-for archival reference only - it is not an enclosure. _(add enclosure files
-when available)_
+A 3D-printable enclosure for this build is published:
+**[`hardware/fab/case_touch_screen.stl`](https://github.com/ristllin/Nimbus/blob/main/hardware/fab/case_touch_screen.stl)**
+(GitHub renders it in a 3D viewer). Print in PLA or PETG; the main body needs no
+supports on most printers. The
+[`hardware/fab/`](https://github.com/ristllin/Nimbus/tree/main/hardware/fab) folder
+also holds the PCB manufacturing outputs (Gerbers, ODB++) and
+[how to order the board](https://github.com/ristllin/Nimbus/tree/main/hardware/fab#ordering-the-pcb).

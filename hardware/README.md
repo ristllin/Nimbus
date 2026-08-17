@@ -19,7 +19,7 @@ the board manufacturing files.
 
 | Path | Contents |
 |---|---|
-| [`fab/`](fab/) | PCB manufacturing outputs (Gerbers, drill, ODB++) for the Solide S3 carrier board - what a board house needs. Not required to build from off-the-shelf modules. |
+| [`fab/`](fab/) | PCB manufacturing outputs (Gerbers, drill, ODB++) for the Solide S3 carrier board, [how to order it (e.g. JLCPCB)](fab/README.md#ordering-the-pcb), and the [3D-printable enclosure STLs](fab/README.md#3d-printing-the-enclosure). Not required if you build from off-the-shelf modules. |
 
 ## Assembly notes, BOM extras, and CAD
 
