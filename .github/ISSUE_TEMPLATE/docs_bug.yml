@@ -1,0 +1,18 @@
+name: Docs bug
+description: The documentation is wrong, unclear, or missing a step
+labels: [documentation]
+body:
+  - type: input
+    id: page
+    attributes:
+      label: Page / section
+      placeholder: URL or path, e.g. guides/hardware-build-eink
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What's wrong or missing?
+      description: If you were following a walkthrough and had to improvise, tell us exactly where - every improvisation is a docs bug we want to fix.
+    validations:
+      required: true

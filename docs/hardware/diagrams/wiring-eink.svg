@@ -1,0 +1,115 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 830" font-family="ui-sans-serif,system-ui,Arial" font-size="13">
+  <style>
+    .title{font-weight:700;font-size:14px}
+    .pin{font-family:ui-monospace,Menlo,monospace;font-size:12px}
+    .rail{font-size:11px;fill:#555}
+    .lead{stroke:#9aa;stroke-width:1.5;fill:none}
+    .note{font-size:11px;fill:#444}
+    .p5{stroke:#dc2626;stroke-width:2.5;fill:none}
+    .p33{stroke:#16a34a;stroke-width:2.5;fill:none}
+  </style>
+
+  <rect width="1180" height="830" fill="#fbfbfd"/>
+  <text x="590" y="30" text-anchor="middle" class="title" font-size="20">Nimbus wiring blocks - e-paper + knob build</text>
+  <text x="590" y="50" text-anchor="middle" class="note">block-level view: every peripheral, its bus + pin group, and which rail feeds it · exact pin tables: build-eink.md · pinout: pinout-eink.svg</text>
+  <rect x="470" y="270" width="240" height="190" rx="10" fill="#eef2ff" stroke="#4f46e5" stroke-width="2"/>
+  <text x="482" y="292" class="title" fill="#3730a3">ESP32-S3 DevKit</text>
+  <text x="482" y="312" class="note">N16R8 · 16 MB flash · 8 MB PSRAM</text>
+  <text x="482" y="330" class="note">runs from the 5 V bus (VIN)</text>
+  <text x="482" y="348" class="note">or USB-C during development</text>
+  <text x="482" y="366" class="pin">on-board LDO → 3.3 V rail</text>
+  <text x="482" y="384" class="rail">3.3 V feeds every logic-level</text>
+  <text x="482" y="402" class="rail">peripheral below</text>
+  <rect x="612" y="279" width="88" height="18" rx="9" fill="#16a34a"/>
+  <text x="656" y="292" text-anchor="middle" font-size="11" font-weight="700" fill="#ffffff">3V3 source</text>
+  <rect x="70" y="80" width="330" height="108" rx="10" fill="#e0f2fe" stroke="#0284c7" stroke-width="2"/>
+  <text x="82" y="102" class="title" fill="#075985">E-paper 2.9″ SSD1680</text>
+  <text x="82" y="122" class="pin">SPI3 · MOSI 39 · SCK 38 · CS 40</text>
+  <text x="82" y="140" class="pin">D/C 41 · RES 42 · BUSY 47</text>
+  <text x="82" y="158" class="note">module silk says SDA/SCL - it is SPI</text>
+  <rect x="361" y="89" width="29" height="18" rx="9" fill="#16a34a"/>
+  <text x="375.5" y="102" text-anchor="middle" font-size="11" font-weight="700" fill="#ffffff">3V3</text>
+  <rect x="70" y="212" width="330" height="106" rx="10" fill="#fef9c3" stroke="#ca8a04" stroke-width="2"/>
+  <text x="82" y="234" class="title" fill="#854d0e">EC11 rotary knob</text>
+  <text x="82" y="254" class="pin">A → 1 · B → 2 · SW → 48</text>
+  <text x="82" y="272" class="pin">common + other SW pin → GND</text>
+  <text x="82" y="290" class="note">firmware pull-ups - no resistors</text>
+  <rect x="361" y="221" width="29" height="18" rx="9" fill="#64748b"/>
+  <text x="375.5" y="234" text-anchor="middle" font-size="11" font-weight="700" fill="#ffffff">GND</text>
+  <line class="lead" x1="400" y1="130" x2="470" y2="300"/>
+  <line class="lead" x1="400" y1="262" x2="470" y2="340"/>
+  <rect x="70" y="344" width="330" height="88" rx="10" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/>
+  <text x="82" y="366" class="title" fill="#166534">microSD (SPI2 - its own bus)</text>
+  <text x="82" y="386" class="pin">CS 10 · MOSI 11 · SCK 12 · MISO 13</text>
+  <text x="82" y="404" class="note">FAT32 card · shares only 3V3 + GND</text>
+  <rect x="361" y="353" width="29" height="18" rx="9" fill="#16a34a"/>
+  <text x="375.5" y="366" text-anchor="middle" font-size="11" font-weight="700" fill="#ffffff">3V3</text>
+  <line class="lead" x1="400" y1="388" x2="470" y2="390"/>
+  <rect x="70" y="458" width="330" height="106" rx="10" fill="#ffe4e6" stroke="#e11d48" stroke-width="2"/>
+  <text x="82" y="480" class="title" fill="#9f1239">Battery sense (optional)</text>
+  <text x="82" y="500" class="pin">pack BAT+ → 220 k → node → 100 k → GND</text>
+  <text x="82" y="518" class="pin">node → GPIO 4 (ADC1)</text>
+  <text x="82" y="536" class="note">taps the PACK, before the DC-DC</text>
+  <line class="lead" x1="400" y1="505" x2="470" y2="430"/>
+  <rect x="800" y="80" width="310" height="92" rx="10" fill="#f3e8ff" stroke="#9333ea" stroke-width="2"/>
+  <text x="812" y="102" class="title" fill="#6b21a8">LED ring WS2812B ×45</text>
+  <text x="812" y="122" class="pin">DIN → 21 (330 Ω in series is wise)</text>
+  <text x="812" y="140" class="note">5 V power · 3.3 V logic</text>
+  <rect x="1078" y="89" width="22" height="18" rx="9" fill="#dc2626"/>
+  <text x="1089.0" y="102" text-anchor="middle" font-size="11" font-weight="700" fill="#ffffff">5V</text>
+  <line class="lead" x1="800" y1="122" x2="710" y2="310"/>
+  <rect x="800" y="196" width="310" height="106" rx="10" fill="#ffedd5" stroke="#ea580c" stroke-width="2"/>
+  <text x="812" y="218" class="title" fill="#9a3412">Amp MAX98357A + speaker</text>
+  <text x="812" y="238" class="pin">I²S · BCLK 7 · LRCLK 8 · DIN 17</text>
+  <text x="812" y="256" class="pin">speaker: 4 Ω · 3 W</text>
+  <text x="812" y="274" class="note">VCC 3V3 (or 5 V bus for louder)</text>
+  <rect x="1071" y="205" width="29" height="18" rx="9" fill="#16a34a"/>
+  <text x="1085.5" y="218" text-anchor="middle" font-size="11" font-weight="700" fill="#ffffff">3V3</text>
+  <line class="lead" x1="800" y1="245" x2="710" y2="350"/>
+  <rect x="800" y="326" width="310" height="106" rx="10" fill="#cffafe" stroke="#0891b2" stroke-width="2"/>
+  <text x="812" y="348" class="title" fill="#155e75">I²S MEMS mic</text>
+  <text x="812" y="368" class="pin">BCLK 15 · WS 18 · SD 16</text>
+  <text x="812" y="386" class="pin">L/R → GND (left slot)</text>
+  <text x="812" y="404" class="note">⚠ VDD 3.3 V ONLY - 5 V damages the S3</text>
+  <rect x="1036" y="335" width="64" height="18" rx="9" fill="#16a34a"/>
+  <text x="1068.0" y="348" text-anchor="middle" font-size="11" font-weight="700" fill="#ffffff">3V3 ONLY</text>
+  <line class="lead" x1="800" y1="375" x2="710" y2="400"/>
+  <rect x="70" y="640" width="150" height="64" rx="10" fill="#f1f5f9" stroke="#475569" stroke-width="2"/>
+  <text x="145" y="666" text-anchor="middle" class="title" fill="#334155">USB-C</text>
+  <text x="145" y="686" text-anchor="middle" class="rail">charge input</text>
+  <rect x="250" y="640" width="150" height="64" rx="10" fill="#f1f5f9" stroke="#475569" stroke-width="2"/>
+  <text x="325" y="666" text-anchor="middle" class="title" fill="#334155">2S BMS</text>
+  <text x="325" y="686" text-anchor="middle" class="rail">charge + protect + balance</text>
+  <rect x="430" y="640" width="150" height="64" rx="10" fill="#f1f5f9" stroke="#475569" stroke-width="2"/>
+  <text x="505" y="666" text-anchor="middle" class="title" fill="#334155">2×18650 pack</text>
+  <text x="505" y="686" text-anchor="middle" class="rail">6.0–8.4 V</text>
+  <rect x="610" y="640" width="150" height="64" rx="10" fill="#f1f5f9" stroke="#475569" stroke-width="2"/>
+  <text x="685" y="666" text-anchor="middle" class="title" fill="#334155">DC-DC → 5 V</text>
+  <text x="685" y="686" text-anchor="middle" class="rail">≥2 A buck</text>
+  <rect x="790" y="640" width="150" height="64" rx="10" fill="#fee2e2" stroke="#dc2626" stroke-width="2"/>
+  <text x="865" y="666" text-anchor="middle" class="title" fill="#334155">5 V bus</text>
+  <text x="865" y="686" text-anchor="middle" class="rail">ring +5V · ESP32 VIN</text>
+  <line class="lead" x1="220" y1="672" x2="250" y2="672"/>
+  <path d="M 244 667 L 250 672 L 244 677" fill="none" stroke="#9aa" stroke-width="1.5"/>
+  <line class="lead" x1="400" y1="672" x2="430" y2="672"/>
+  <path d="M 424 667 L 430 672 L 424 677" fill="none" stroke="#9aa" stroke-width="1.5"/>
+  <line class="lead" x1="580" y1="672" x2="610" y2="672"/>
+  <path d="M 604 667 L 610 672 L 604 677" fill="none" stroke="#9aa" stroke-width="1.5"/>
+  <line class="p5" x1="760" y1="672" x2="790" y2="672"/>
+  <path d="M 784 667 L 790 672 L 784 677" fill="none" stroke="#dc2626" stroke-width="1.5"/>
+  <line class="p5" x1="865" y1="640" x2="865" y2="470"/>
+  <line class="p5" x1="865" y1="470" x2="710" y2="455"/>
+  <line class="p5" x1="940" y1="672" x2="1140" y2="672"/>
+  <line class="p5" x1="1140" y1="672" x2="1140" y2="126"/>
+  <line class="p5" x1="1140" y1="126" x2="1110" y2="126"/>
+  <text x="875" y="500" class="rail" fill="#dc2626">5 V → VIN</text>
+  <text x="1148" y="230" class="rail" fill="#dc2626">5 V</text>
+  <line class="lead" x1="505" y1="640" x2="505" y2="610"/>
+  <line class="lead" x1="505" y1="610" x2="240" y2="610" stroke-dasharray="4 3"/>
+  <line class="lead" x1="240" y1="610" x2="240" y2="564" stroke-dasharray="4 3"/>
+  <text x="512" y="606" class="rail">pack tap → battery-sense divider</text>
+  <rect x="70" y="730" width="1040" height="78" rx="10" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="86" y="754" class="note"><tspan font-weight="700" fill="#16a34a">3V3</tspan> = the DevKit’s on-board regulator · <tspan font-weight="700" fill="#dc2626">5V</tspan> = the battery/DC-DC bus, present only once the power section is built.</text>
+  <text x="86" y="772" class="note">On USB alone everything runs EXCEPT the LED ring (and the speaker stays quiet). Gray lines = signal buses.</text>
+  <text x="86" y="790" class="note">Every ground is common - tie all GNDs together: cells, BMS, DC-DC, ESP32, and every module.</text>
+</svg>

@@ -1,0 +1,321 @@
+[
+  {
+    "name": "empty_ring",
+    "packet_hex": "aa044e00008079",
+    "seq": 0,
+    "brightness": 128,
+    "segments": []
+  },
+  {
+    "name": "single_running",
+    "packet_hex": "aa084e01013c01aa030019",
+    "seq": 1,
+    "brightness": 60,
+    "segments": [
+      {
+        "state": 1,
+        "hue": 170,
+        "anim": 3,
+        "span": 0
+      }
+    ]
+  },
+  {
+    "name": "default_styles_all_states",
+    "packet_hex": "aa204e2a07ff00ff020001aa030002d502000320040004550500050001000600000075",
+    "seq": 42,
+    "brightness": 255,
+    "segments": [
+      {
+        "state": 0,
+        "hue": 255,
+        "anim": 2,
+        "span": 0
+      },
+      {
+        "state": 1,
+        "hue": 170,
+        "anim": 3,
+        "span": 0
+      },
+      {
+        "state": 2,
+        "hue": 213,
+        "anim": 2,
+        "span": 0
+      },
+      {
+        "state": 3,
+        "hue": 32,
+        "anim": 4,
+        "span": 0
+      },
+      {
+        "state": 4,
+        "hue": 85,
+        "anim": 5,
+        "span": 0
+      },
+      {
+        "state": 5,
+        "hue": 0,
+        "anim": 1,
+        "span": 0
+      },
+      {
+        "state": 6,
+        "hue": 0,
+        "anim": 0,
+        "span": 0
+      }
+    ]
+  },
+  {
+    "name": "mixed_spans_and_white",
+    "packet_hex": "aa104efe03c802d5020500ff020c0455050019",
+    "seq": 254,
+    "brightness": 200,
+    "segments": [
+      {
+        "state": 2,
+        "hue": 213,
+        "anim": 2,
+        "span": 5
+      },
+      {
+        "state": 0,
+        "hue": 255,
+        "anim": 2,
+        "span": 12
+      },
+      {
+        "state": 4,
+        "hue": 85,
+        "anim": 5,
+        "span": 0
+      }
+    ]
+  },
+  {
+    "name": "seq_wrap",
+    "packet_hex": "aa084eff01010500012d97",
+    "seq": 255,
+    "brightness": 1,
+    "segments": [
+      {
+        "state": 5,
+        "hue": 0,
+        "anim": 1,
+        "span": 45
+      }
+    ]
+  },
+  {
+    "name": "max_segments_16",
+    "packet_hex": "aa444e07105a0100030201100302012003020130030201400302015003020160030201700302018003020190030201a0030201b0030201c0030201d0030201e0030201f0030299",
+    "seq": 7,
+    "brightness": 90,
+    "segments": [
+      {
+        "state": 1,
+        "hue": 0,
+        "anim": 3,
+        "span": 2
+      },
+      {
+        "state": 1,
+        "hue": 16,
+        "anim": 3,
+        "span": 2
+      },
+      {
+        "state": 1,
+        "hue": 32,
+        "anim": 3,
+        "span": 2
+      },
+      {
+        "state": 1,
+        "hue": 48,
+        "anim": 3,
+        "span": 2
+      },
+      {
+        "state": 1,
+        "hue": 64,
+        "anim": 3,
+        "span": 2
+      },
+      {
+        "state": 1,
+        "hue": 80,
+        "anim": 3,
+        "span": 2
+      },
+      {
+        "state": 1,
+        "hue": 96,
+        "anim": 3,
+        "span": 2
+      },
+      {
+        "state": 1,
+        "hue": 112,
+        "anim": 3,
+        "span": 2
+      },
+      {
+        "state": 1,
+        "hue": 128,
+        "anim": 3,
+        "span": 2
+      },
+      {
+        "state": 1,
+        "hue": 144,
+        "anim": 3,
+        "span": 2
+      },
+      {
+        "state": 1,
+        "hue": 160,
+        "anim": 3,
+        "span": 2
+      },
+      {
+        "state": 1,
+        "hue": 176,
+        "anim": 3,
+        "span": 2
+      },
+      {
+        "state": 1,
+        "hue": 192,
+        "anim": 3,
+        "span": 2
+      },
+      {
+        "state": 1,
+        "hue": 208,
+        "anim": 3,
+        "span": 2
+      },
+      {
+        "state": 1,
+        "hue": 224,
+        "anim": 3,
+        "span": 2
+      },
+      {
+        "state": 1,
+        "hue": 240,
+        "anim": 3,
+        "span": 2
+      }
+    ]
+  },
+  {
+    "name": "overflow_truncated_to_16",
+    "packet_hex": "aa444e091021000a0101000b0101000c0101000d0101000e0101000f010100100101001101010012010100130101001401010015010100160101001701010018010100190101c7",
+    "seq": 9,
+    "brightness": 33,
+    "segments": [
+      {
+        "state": 0,
+        "hue": 10,
+        "anim": 1,
+        "span": 1
+      },
+      {
+        "state": 0,
+        "hue": 11,
+        "anim": 1,
+        "span": 1
+      },
+      {
+        "state": 0,
+        "hue": 12,
+        "anim": 1,
+        "span": 1
+      },
+      {
+        "state": 0,
+        "hue": 13,
+        "anim": 1,
+        "span": 1
+      },
+      {
+        "state": 0,
+        "hue": 14,
+        "anim": 1,
+        "span": 1
+      },
+      {
+        "state": 0,
+        "hue": 15,
+        "anim": 1,
+        "span": 1
+      },
+      {
+        "state": 0,
+        "hue": 16,
+        "anim": 1,
+        "span": 1
+      },
+      {
+        "state": 0,
+        "hue": 17,
+        "anim": 1,
+        "span": 1
+      },
+      {
+        "state": 0,
+        "hue": 18,
+        "anim": 1,
+        "span": 1
+      },
+      {
+        "state": 0,
+        "hue": 19,
+        "anim": 1,
+        "span": 1
+      },
+      {
+        "state": 0,
+        "hue": 20,
+        "anim": 1,
+        "span": 1
+      },
+      {
+        "state": 0,
+        "hue": 21,
+        "anim": 1,
+        "span": 1
+      },
+      {
+        "state": 0,
+        "hue": 22,
+        "anim": 1,
+        "span": 1
+      },
+      {
+        "state": 0,
+        "hue": 23,
+        "anim": 1,
+        "span": 1
+      },
+      {
+        "state": 0,
+        "hue": 24,
+        "anim": 1,
+        "span": 1
+      },
+      {
+        "state": 0,
+        "hue": 25,
+        "anim": 1,
+        "span": 1
+      }
+    ]
+  }
+]

@@ -1,0 +1,23 @@
+
+[PROVIDERS & CONNECTORS]
+You are currently running on mistral. Connectors on mistral are callable on YOUR OWN turns; connectors on the other providers are reachable only by spawning a sub-agent on that provider.
+For a HEAVY connector action - creating or updating a document/page/issue, or fetching a large file - prefer to SPAWN a sub-agent on the connector's provider (session_ops spawn: provider = that provider, skill = the connector name) rather than doing it on your own turn. The sub-agent runs the connector on the provider's compute and returns a short result; use your own turn for light reads.
+- openai: available, VERIFIED. connectors/MCP run server-side on your own turns AND on sub-agents; hosted web_search on sub-agents. Enabled connectors: code_interpreter
+- anthropic: available, VERIFIED. sub-agents run in a cloud sandbox with bash, file read/write, web search/fetch; connectors (BYO MCP by URL) attach to SUB-AGENTS only, not your own turns
+- mistral (YOU are here): available, VERIFIED. connectors + built-ins attach to a single-shot turn AND to sub-agents you spawn on mistral, but NOT to your tool-loop turns (the loop forces tool_choice, which the provider rejects with built-ins) - so on your own loop turns you have only the registry tools; spawn a mistral sub for connector work. Enabled connectors: web_search, code_interpreter, image_generation, github, gmail, gcal, gdrive, notion, slack, linear
+Connector capabilities/limits (use only tools that exist; verify writes by reading them back; if an action has no tool, say so):
+  - code_interpreter: Mistral: images/text output only - its sandbox ERRORS on PDF/CSV files. OpenAI: full file output INCLUDING PDF. For a PDF, spawn the sub-agent on openai with a project.
+  - code_interpreter: Mistral: images/text output only - its sandbox ERRORS on PDF/CSV files. OpenAI: full file output INCLUDING PDF. For a PDF, spawn the sub-agent on openai with a project.
+  - github: read + write issues/PRs/code search via the GitHub API; only repos the token/app can access (private repos return 'not accessible'). It cannot CLONE, BUILD, or RUN code - for that, spawn an anthropic sandbox sub.
+  - gmail: Mistral (Studio): draft/read/search/label ONLY - NO send tool. OpenAI (first-party connector_gmail): READ-ONLY - read/search/profile, NO send, NO draft. You cannot SEND email on any provider - draft it and ask the owner to send; never claim an email was sent.
+  - gdrive: Mistral (Studio): create + read + copy - NO share (can't grant access to an email) and NO edit of an existing doc. OpenAI (first-party connector_googledrive): READ-ONLY - search/read/fetch, NO create/edit/share.
+  - notion: create/read/update/delete pages - verified. Pages must be shared with the integration first.
+
+[SUB-AGENT CAPABILITIES]
+A sub-agent returns TEXT ONLY to you and has NO DEVICE tools: it cannot send Telegram, write the device file store, or touch memory - so YOU (the head) do every OWNER-delivery step after it returns (artifact.save, files.send). It CAN run its provider's connectors server-side, so to DRAFT an email or CREATE a Notion/Drive page, spawn a sub on a provider that has that connector and it performs the action in its own run and reports back. Decompose a big ask this way: sub-agents GATHER/RESEARCH (and run connectors); the HEAD assembles the results and delivers to the owner. Give each sub a project so its full reply auto-saves as a doc you can then deliver.
+- spawn on openai: web_search + hosted tools; connectors: code_interpreter
+- spawn on anthropic: cloud sandbox (bash, file read/write, web search/fetch)
+- spawn on mistral: web_search + hosted tools; connectors: web_search, code_interpreter, image_generation, github, gmail, gcal, gdrive, notion, slack, linear
+For CODING tasks: an anthropic sub has a real sandbox (writes AND runs code, bash + files); openai/mistral subs run Python via code_interpreter when it is enabled. No sub can push to a repository - the github connector works the GitHub API (issues/PRs/code search), it cannot clone, build, or run a repo.
+HOW LONG A SUB MAY RUN: a mistral sub is capped at ~60 SECONDS - its API is synchronous, so the device cannot wait past that and the sub's work is LOST, not delayed. Keep mistral subs to ONE focused lookup. For anything longer - a multi-source sweep, reading several pages, producing a document - spawn on openai or anthropic, which run asynchronously and may take minutes.
+TO DELIVER A PDF (or other generated document): POSSIBLE on this device. Do NOT say you cannot produce a PDF and do not downgrade to markdown - read the deliver-pdf skill (skill.get) and follow it.

@@ -1,0 +1,47 @@
+.pio/
+__pycache__/
+*.pyc
+.DS_Store
+.vscode/
+test/golden/out/
+
+# Generated tone pack (tools/sounds) - published to the public nimbus-sounds
+# repo; the firmware repo only carries the generated embed header.
+tools/sounds/dist/
+last-turn-raw.txt
+
+# Local secrets - connector credentials for bench testing. NEVER committed.
+.env
+.env.*
+!.env.example
+
+# Working plans, session scratch, and deep-research notes. These are local
+# scratch, NOT repo documentation - durable architecture belongs in docs/.
+plans/
+research/
+
+# Bench-fleet operational data: per-board web tokens, MACs, LAN IPs, bench
+# WiFi. Device-identifying secrets - kept local, never committed.
+ops/
+
+# Pre-OTA QA run corpora: per-turn transcripts of LIVE connector runs (content
+# read from the owner's real Gmail/Drive/Notion/GitHub). Same privacy quarantine
+# as ops/ - recorded locally by tests/hil/qa_recorder.py, never committed.
+tests/hil/qa_runs/
+
+# harness-lab compiled outputs (host runner build dir)
+tools/harness-lab/build/
+
+# Local agent/session state + private run artifacts (public-release hygiene)
+.claude/
+evals/runs/
+*.env.local
+
+# Generated Docusaurus mirror - website/scripts/migrate-docs.mjs regenerates
+# these from docs/** on every deploy (.github/workflows/docs.yml runs it before
+# build), so the committed copies are redundant. Hand-written pages
+# website/docs/intro.md and website/docs/getting-started/ stay tracked.
+website/docs/quick-start/
+website/docs/guides/
+website/docs/reference/
+website/docs/contributing/

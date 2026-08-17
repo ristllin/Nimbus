@@ -1,0 +1,82 @@
+# Nimbus pre-commit gates (public-prep W1.5).
+#
+# Deliberately NO clang-format hook: repo-wide reformatting is banned (it would
+# churn every diff against the private history and fight the byte-exact golden
+# fixtures). Formatting stays a human/code-review concern for C++.
+#
+# Generated / byte-exact artifacts are excluded globally: fixers touching them
+# would either break byte-exact golden comparisons (test/golden*, *.bin,
+# tools/webui_page.snapshot) or drift a generated file from its generator
+# (docs_pack_data.h, sfx_basic_data.h, ui_logo.h, assets/logo*, website/docs/,
+# docs/sfx-map.md, docs/hardware/fab CAM outputs).
+exclude: |
+  (?x)^(
+    test/golden[^/]*/.*|
+    tools/webui_page\.snapshot|
+    website/docs/.*|
+    hardware/fab/.*|
+    docs/sfx-map\.md|
+    src/sfx/sfx_basic_data\.h|
+    lib/core/include/nimbus/docs_pack_data\.h|
+    include/web/ui_logo\.h|
+    assets/.*
+  )$|.*\.bin$
+
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks   # uses the repo's .gitleaks.toml (allowlist for audited fake fixtures)
+
+  - repo: local
+    hooks:
+      - id: nimbus-known-patterns
+        name: nimbus known-leak patterns (private ops list)
+        entry: tools/release/check_known_patterns.sh
+        language: script
+        # Scans staged content of every file; warns-and-passes when the
+        # private ops/leak_patterns.txt is absent (public contributors).
+
+      - id: no-em-dash
+        name: no em dashes (project style rule, see AGENTS.md)
+        # The pattern is built with printf from UTF-8 byte escapes so this
+        # config never contains the banned character, and plain grep works on
+        # both BSD (macOS) and GNU (grep -P does not exist on BSD).
+        entry: bash -c 'pat=$(printf "\xe2\x80\x94"); hits=$(grep -nHF "$pat" "$@" /dev/null 2>/dev/null); if [ -n "$hits" ]; then echo "$hits"; echo "em dash (U+2014) is banned - use a hyphen, comma, or colon (AGENTS.md, Punctuation)"; exit 1; fi' --
+        language: system
+        types: [text]
+        exclude: '^test/support/fixtures/|^website/static/vendor/'
+
+      - id: lizard-complexity
+        name: lizard complexity (CCN<=15, len<=120, args<=6)
+        entry: lizard -C 15 -L 120 -a 6 -w -W tools/release/lizard_whitelist.txt
+        language: python
+        additional_dependencies: [lizard]
+        files: '.*\.(cpp|h|py)$'
+        # include/web/ui_*.h are HTML/JS fragments inside C string literals -
+        # lizard "parses" the embedded JS as C++ and the numbers are meaningless.
+        exclude: '^include/web/'
+        # tools/release/lizard_whitelist.txt baselines today's offenders so the
+        # gate passes now but holds NEW code to the thresholds.
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
+      - id: end-of-file-fixer
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        # 600 KB clears the legitimate big assets (Gerber/CAM boards, social
+        # card). The one tracked giant - src/sfx/sfx_basic_data.h (~1.7 MB
+        # embedded SFX rodata) - is already tracked; the cap gates NEW large
+        # files.
+        args: [--maxkb=600]
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.2
+    hooks:
+      - id: ruff-check
+        files: '^(tools|tests|evals)/.*\.py$'
+      - id: ruff-format
+        files: '^(tools|tests|evals)/.*\.py$'

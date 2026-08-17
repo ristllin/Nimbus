@@ -1,0 +1,43 @@
+name: Bug report
+description: Something on the device or in the firmware misbehaves
+labels: [bug]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Firmware version
+      description: From the web dashboard header, `/api/state` (`fw`), or the device's Settings title.
+      placeholder: v4.2.0
+    validations:
+      required: true
+  - type: dropdown
+    id: config
+    attributes:
+      label: Hardware configuration
+      options:
+        - E-ink + knob
+        - Touch TFT
+        - Not device-related
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Operating mode
+      options:
+        - Orchestrator
+        - Notifier
+        - Both / not sure
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+      description: Include the exact steps. If the web UI is involved, note the page; if it's the ring/screen, describe (or photograph) what it showed.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / output
+      description: "`/api/state` JSON, serial output (test builds), or web console errors - whatever you have. Remove your access token from anything you paste."
+      render: text

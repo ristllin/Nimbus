@@ -1,0 +1,29 @@
+name: Build help
+description: Stuck assembling the hardware or getting firmware onto the board
+labels: [build-help]
+body:
+  - type: dropdown
+    id: stage
+    attributes:
+      label: Where are you stuck?
+      options:
+        - Sourcing parts / BOM question
+        - Wiring / soldering
+        - First flash (browser installer or setup_device.py)
+        - Setup network / onboarding wizard
+        - Provider key / first conversation
+        - Notifier mode / broker connection
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: What have you tried, and what happened?
+      description: Include your OS, the port name you used (UART vs USB matters on this board - see the flashing guide), and exact error text.
+    validations:
+      required: true
+  - type: input
+    id: docs
+    attributes:
+      label: Which docs page were you following?
+      placeholder: e.g. Quick Start → Flash

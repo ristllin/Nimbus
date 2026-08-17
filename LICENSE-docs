@@ -1,0 +1,20 @@
+Documentation, hardware design files, and images - license
+
+Everything in this repository that is documentation or hardware design rather
+than software is licensed under the Creative Commons
+Attribution-NonCommercial-ShareAlike 4.0 International license (CC BY-NC-SA 4.0):
+
+  - docs/ (including the hardware guides and the fab/ Gerber + ODB++ outputs)
+  - website/docs/ and the site's prose content
+  - assets/ (logo and artwork)
+  - wiring diagrams, pinout drawings, photos, and screenshots wherever they live
+
+Full legal text: https://creativecommons.org/licenses/by-nc-sa/4.0/legalcode
+Human-readable summary: https://creativecommons.org/licenses/by-nc-sa/4.0/
+
+In short: you may share and adapt this material for noncommercial purposes,
+with attribution, and derivatives must carry the same license.
+
+Everything else in the repository (source code, firmware, scripts, tests) is
+covered by the PolyForm Noncommercial License 1.0.0 - see LICENSE. Third-party
+attributions are listed in NOTICE.

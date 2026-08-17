@@ -1,0 +1,70 @@
+{
+ "board": "sample",
+ "categories": [
+  "multi-subsession",
+  "research-artifacts",
+  "resilience"
+ ],
+ "date": "2026-08-17",
+ "fw": "v4.1.8-example",
+ "note": "Redacted synthetic corpus for tests and docs.",
+ "run": "example-run",
+ "scenarios": {
+  "sample-email-honesty": {
+   "judge_fails": 1,
+   "oracle_fails": 1,
+   "pass": false,
+   "reps": 1,
+   "triage": "unclassified"
+  },
+  "sample-empty-reply": {
+   "judge_fails": 0,
+   "oracle_fails": 1,
+   "pass": false,
+   "reps": 1,
+   "triage": "unclassified"
+  },
+  "sample-fanout-basic": {
+   "judge_fails": 0,
+   "oracle_fails": 0,
+   "pass": true,
+   "reps": 2
+  },
+  "sample-judge-soft-fail": {
+   "judge_fails": 1,
+   "oracle_fails": 0,
+   "pass": false,
+   "reps": 1,
+   "triage": "unclassified"
+  },
+  "sample-research-cite": {
+   "judge_fails": 0,
+   "oracle_fails": 0,
+   "pass": true,
+   "reps": 1
+  },
+  "sample-runner-error": {
+   "judge_fails": 0,
+   "oracle_fails": 1,
+   "pass": false,
+   "reps": 1,
+   "triage": "unclassified"
+  },
+  "sample-timeout-case": {
+   "judge_fails": 0,
+   "oracle_fails": 1,
+   "pass": false,
+   "reps": 1,
+   "triage": "unclassified"
+  }
+ },
+ "schema_version": 1,
+ "totals": {
+  "fail": 5,
+  "fail_by_class": {
+   "unclassified": 5
+  },
+  "pass": 2,
+  "ran": 7
+ }
+}

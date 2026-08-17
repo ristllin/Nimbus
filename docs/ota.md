@@ -1,0 +1,134 @@
+# OTA firmware updates
+
+> **Operators:** for the runbook - how to cut a release, and which tokens
+> expire where + how to renew them - see [`ota-operations.md`](ota-operations.md).
+> This page is the design/reference.
+
+Nimbus updates itself over Wi-Fi from GitHub Releases. The flash layout was
+already A/B (stock `default_16MB.csv`: `otadata` + two 6.5 MB app slots), so OTA
+needed no partition change: the running slot downloads the new image into the
+**inactive** slot, verifies it, flips the boot flag, restarts - and **rolls back
+by itself** if the new firmware can't boot.
+
+⚠ **Delivery is from the dedicated releases repo [`ristllin/nimbus-fw-releases`](https://github.com/ristllin/nimbus-fw-releases), NOT the source repo.** The device
+downloads over unauthenticated HTTPS (no repo credentials baked into firmware),
+so release assets must live somewhere any device can fetch them - a dedicated,
+assets-only public repo (the same pattern as the SFX assets). The signed
+binaries carry no secrets, and the ECDSA signature is what devices trust.
+Forking the project and shipping to your own devices? See
+[`self-hosted-ota.md`](self-hosted-ota.md).
+
+```mermaid
+flowchart TD
+  TAG["tag vX.Y.Z on Nimbus<br/>(source repo)"] --> CI["release.yml<br/>build esp32s3 + test<br/>sign manifest (ECDSA)<br/>publish bins + manifest"]
+  CI --> REL["Release on nimbus-fw-releases<br/>(PUBLIC delivery repo)"]
+  REL -->|"GET /releases/latest/download/manifest.json<br/>302 → objects.githubusercontent.com (followed)"| GET
+  subgraph DEV["device (daily / button)"]
+    GET["fetch manifest"] --> CMP["compare versions → notify / 1-click install"]
+    CMP --> DL["stream .bin → INACTIVE slot (+SHA-256)"]
+    DL --> VER["verify SHA + signature<br/>(anchors: include/ota_pubkey.h)"]
+    VER --> FLIP["arm NVS guard → flip otadata → restart"]
+    FLIP --> OK["healthy 120 s → mark valid ('ok vX')"]
+    FLIP --> RB["3 failed boots → flip back ('rollback vX')"]
+  end
+```
+
+## Trust model
+
+- **Signature** (the real gate): CI signs, per variant, the canonical message
+  `nimbus-ota-v1\n<version>\n<variant>\n<sha256-hex>\n` with ECDSA P-256
+  (secret `OTA_SIGNING_KEY`). The device rebuilds that message from what it
+  actually downloaded and verifies against the public keys baked into
+  [`include/ota_pubkey.h`](../include/ota_pubkey.h) **before** the boot flag
+  flips. Binding version+variant kills mix-and-match and cross-version replay.
+- **TLS**: downloads ride `tlsSetup()` (CA-bundle validation, `tlsVerify`
+  default ON), so the transport is also authenticated on default settings.
+- **Residual**: a MITM against a `tlsVerify=0` device can only replay an old
+  *genuinely signed* release; auto-install moves strictly forward in version,
+  so the worst case is pinning a device at its current version. Manual
+  downgrade needs the authenticated web UI + `force`.
+- The `test` variant additionally trusts a COMMITTED test key
+  (`test/ota_test_key.pem`, `#ifdef NIMBUS_TEST` only) so the HIL suite can
+  sign fixtures. Never flash `env:test` on a production unit.
+
+## CI secrets (two)
+
+- **`OTA_SIGNING_KEY`** - the ECDSA private key (PEM) CI signs manifests with.
+  Backed up in the owner's password manager; **if lost, fielded devices can never
+  update again**. Rotation: append the new PEM to `kOtaPubKeys`, ship a release
+  signed with the OLD key (fielded devices learn the new anchor), then re-key the
+  secret; drop the old entry a release later.
+- **`RELEASE_PAT`** - a fine-grained PAT the release workflow uses to (a) check
+  out the [`solide-drivers`](https://github.com/ristllin/solide-drivers) sibling
+  (`Contents: read`) and (b) publish the release to the `nimbus-fw-releases`
+  repo (`Contents: read/write`). The default `GITHUB_TOKEN` is scoped to the
+  source repo only, so it cannot publish to a second repository. Create it at
+  github.com/settings/personal-access-tokens with those two repos + permissions,
+  then `gh secret set RELEASE_PAT -R ristllin/Nimbus`.
+
+## Release checklist
+
+1. Bump `NIMBUS_FW_VERSION` in `include/version.h`; commit.
+2. `git tag vX.Y.Z && git push origin main vX.Y.Z`.
+3. Watch the `release` workflow: it gates tag==version.h, builds
+   `esp32s3`+`test`, signs, and publishes `firmware-esp32s3.bin`,
+   `firmware-test.bin`, `manifest.json`. `-rcN` tags publish as pre-releases -
+   note `releases/latest` (what devices poll) only tracks FULL releases, so rc
+   testing uses `OTAURL`/a draft URL, not the daily check.
+4. Devices see it on their daily check (or the **Check for Updates** button,
+   Settings → Software update on the web page); Orchestrator-mode devices
+   Telegram the owner once per version - the notice ends "Reply /update to
+   install it now, or open Settings → Software update on the device's web
+   page." (an already-current device answers `/update` with "Nimbus is up to
+   date (vX).").
+
+## Device behavior
+
+- **Check**: ~2 min after boot, then daily; on demand from Settings → Software
+  update on the web page, the device's Settings > Software update menu
+  (Orchestrator mode only - "Check for updates" renders "(unavailable)" in
+  Notifier mode), or `POST /api/ota/check`. State surfaces in `/api/state`
+  (`ota`, `otaLatest`, `otaNotes`, `otaPct`, `lastOta`, `autoUpd`) and `STATUS`
+  (`ota=`, `lastOta=`).
+- **Install**: the web page's **Install Update** button, the device menu's
+  Settings > Software update > "Install vX" row (confirm: Cancel / Install and
+  restart), Telegram `/update` (owner only), or `POST /api/ota/apply` (`dry=1`
+  downloads + verifies without flipping, `force=1` allows same/older). During install the
+  ring is a theme-color progress bar, the e-ink says "do not power off", and
+  voice capture is refused. The download runs alongside the live Telegram poller
+  (heap stays steady; an earlier "stop the poller to free heap" hook is gone - it
+  deleted a live queue and crash-rebooted the device).
+- **Auto-install** (`autoUpd`, default OFF): hourly idle-window evaluation -
+  no turn/voice in flight, battery ≥50 % or external power, heap headroom
+  (`nimbus::ota::autoInstallAllowed`, host-tested).
+
+## ⚠ Notifier mode: OTA is heap-gated (Orchestrator-mode only, for now)
+
+OTA check/install **refuse with 409 in Notifier mode** and never run there. In
+Notifier mode NimBLE owns most of the ~266 KB internal SRAM, leaving ~23 KB free -
+below the OTA task-spawn floor (24 KB free internal + 16 KB largest block). The
+gate deliberately refuses rather than risk an OOM during the TLS download + flash
+write. Consequence: a Notifier-mode device can't self-update over the air; update
+it by **USB reflash** or by switching to **Orchestrator mode** (which rests at
+~63 KB internal, well above the floor). OTA is fully verified in Orchestrator mode
+(Boards 1 & 2). The eventual fix (deferred, owner decision 2026-07-18) is to have
+OTA temporarily release BLE during the download in Notifier mode (frees ~40-70 KB
+internal), then the post-install restart restores it.
+- **Rollback**: before the flip the device arms `otaPend/otaBoots/otaPrev` in
+  NVS; `otaupd::bootGuard()` (the FIRST line of `setup()`, raw-NVS so it beats
+  every driver) counts boot attempts and flips back to the untouched previous
+  slot after 3 failures. Healthy for 120 s (600 s if Wi-Fi never came up) →
+  marked valid. Power loss mid-download touches only the inactive slot;
+  between guard-arm and flip → disarmed as `aborted-preflip`.
+
+## Testing
+
+- Host: `pio test -e native -f test_ota_logic` (version/manifest/policy core +
+  the signed-message golden, cross-checked against `tools/make_manifest.py
+  --print-message`).
+- HIL: `python3 -m pytest tests/hil/test_ota.py -m net --allow-hardware` -
+  local self-signed TLS server (flips `tlsVerify` off/on), test-key-signed
+  manifest, real dry-run E2E, sha-fail + sig-fail negatives, 302 redirect hop.
+- Rollback drill (console, `env:test`, both slots flashed): `OTASIM arm app0`
+  (label from `OTA?` `slot=`) + `OTASIM crash` + `REBOOT` → three synthetic
+  crash-boots → device returns on the previous slot with `lastOta=rollback`.

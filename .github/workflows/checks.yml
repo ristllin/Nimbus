@@ -1,0 +1,106 @@
+name: checks
+
+# Fast, dependency-free static gates that run on every push/PR (no PlatformIO,
+# no hardware). Born from the 2026-07 UX audit: a knob could ship fully wired to
+# the menu/web/NVS and read by NOTHING with CI green. These gates make the classes
+# of "declaration without wiring" fail the build.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  # Same gates as the local pre-commit hooks (.pre-commit-config.yaml):
+  # gitleaks, hygiene fixers, ruff, lizard complexity. The private
+  # nimbus-known-patterns hook warns-and-passes here (ops/ is gitignored).
+  pre-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run pre-commit on all files
+        run: |
+          pip install pre-commit
+          pre-commit run --all-files --show-diff-on-failure
+
+  static-gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Param -> consumer gate (no lying knobs)
+        run: python3 tools/check_param_consumers.py
+      - name: Status-language doc <-> code gate (no lying docs)
+        run: python3 tools/check_status_doc.py
+      - name: Web UI concatenation check
+        run: python3 tools/webui_concat_check.py
+
+  # The full host-side test pyramid (Unity, platform=native). Runs the portable
+  # core + harness suites - the same `pio test -e native` the repo's verification
+  # bar mandates locally. Keep it at 100%.
+  #
+  # Requires the sibling repo ../solide-drivers (public; its portable headers ride
+  # [env:native]'s -I../solide-drivers/include). Checked out pinned below - a
+  # missing checkout FAILS the job loudly (no silent skip)
+  # to activate; without it the job emits a LOUD warning and skips - never a
+  # silent green over an unrun suite.
+  native-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: Nimbus
+      - name: Checkout solide-drivers (public sibling - native tests need its headers)
+        uses: actions/checkout@v4
+        with:
+          repository: ristllin/solide-drivers
+          ref: 080bf82a41f5c044ae5a1fb81aa4f7c4ea86f84a   # solide-drivers v0.4.0 (pin the SHA - a tag is mutable)
+          path: solide-drivers
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            ~/.cache/pip
+          key: pio-native-${{ runner.os }}-${{ hashFiles('Nimbus/platformio.ini') }}
+      - name: Install PlatformIO
+        run: pip install platformio
+      - name: Run native test suite
+        working-directory: Nimbus
+        run: pio test -e native
+
+  # HIL suite must stay importable/collectable on a device-less box (the repo's
+  # own contract: `pytest tests/hil --collect-only` clean with no hardware).
+  hil-collect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install pytest
+        run: pip install pytest
+      - name: HIL collection stays clean (no hardware)
+        # Exit 5 is pytest's "no tests collected" - which is EXACTLY the state
+        # this gate exists to confirm: every HIL test is marker-deselected
+        # without --allow-hardware, so a clean run collects nothing. Only a real
+        # collection ERROR (import failure, syntax error) must fail the job.
+        # This gate had never passed since it was added; it was reading its own
+        # success as a failure.
+        run: |
+          set +e
+          python3 -m pytest tests/hil --collect-only -q
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ] && [ "$rc" -ne 5 ]; then
+            echo "HIL collection FAILED (exit $rc) - an import or syntax error in tests/hil"
+            exit "$rc"
+          fi
+          echo "HIL collection clean (exit $rc)"

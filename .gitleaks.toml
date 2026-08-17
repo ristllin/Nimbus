@@ -1,0 +1,29 @@
+# gitleaks config - used by the pre-commit hook, CI, and tools/release/seed_public_root.sh.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Intentional committed material that pattern-matches a secret"
+paths = [
+  # TEST-ONLY OTA signing keypair, committed on purpose: its public half is the
+  # second trust anchor compiled ONLY into `NIMBUS_TEST` builds (include/
+  # ota_pubkey.h), so the HIL suite can sign its own drill manifests. It signs
+  # nothing a production build accepts, and test builds do not poll for OTA on
+  # their own (src/sys/ota_update.cpp tick() guard). See docs/ota.md.
+  '''test/ota_test_key\.pem''',
+  '''test/ota_test_key\.pub\.pem''',
+  # Golden fixtures embed fake tokens by design (e.g. a1b2c3d4e5f6a7b8).
+  '''test/golden.*''',
+  '''test/golden_tft/.*''',
+]
+regexes = [
+  # The documented, intentional fleet-wide setup-AP password (docs/security.md).
+  '''nimbus1234''',
+  # Sequential-pattern fake tokens used by golden/render fixtures ("obviously
+  # fake" by construction - a1b2c3d4… and 0123456789abcdef…).
+  '''a1b2c3d4e5f6a7b8''',
+  '''0123456789abcdef01234567''',
+  # gitleaks generic-api-key false positive on a prose comment in
+  # memory_subsystem.cpp ("task access, losing/duplicating demote edges").
+  '''losing/duplicating''',
+]

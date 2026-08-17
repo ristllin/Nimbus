@@ -1,0 +1,15 @@
+{
+  "name": "nimbus-core",
+  "version": "0.1.0",
+  "description": "Portable Nimbus core: protocol codec, profiles/postures, attention routing, e-ink scheduling, power policy, and the Head-Orchestrator-v2 turn contract (turn parser, two-part memory, journal, device-action classifier). No Arduino dependencies \u2014 host-tested via pio test -e native. ArduinoJson is header-only and host-safe (used only by the agent/ contract modules).",
+  "dependencies": {
+    "bblanchon/ArduinoJson": "^7"
+  },
+  "build": {
+    "flags": [
+      "-std=gnu++17",
+      "-I../../include"
+    ]
+  },
+  "license": "PolyForm-Noncommercial-1.0.0"
+}

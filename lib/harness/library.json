@@ -1,0 +1,15 @@
+{
+  "name": "nimbus-harness",
+  "version": "0.1.0",
+  "description": "The Nimbus agentic harness: the policy/orchestration layer of the on-device Orchestrator, lifted out of src/agent into a standalone, host-testable library. Composes the nimbus-core mechanisms (turn contract, head loop, tool registry, memory engines) behind explicit injected contracts \u2014 Platform, HarnessConfig, HttpTransport, Channel, DeviceExec, Hooks \u2014 so the full turn pipeline runs on the host with fakes (test/test_harness_*) and on the device behind thin glue. Depends on nimbus-core; no Arduino dependencies.",
+  "dependencies": {
+    "bblanchon/ArduinoJson": "^7"
+  },
+  "build": {
+    "flags": [
+      "-std=gnu++17",
+      "-I../../include"
+    ]
+  },
+  "license": "PolyForm-Noncommercial-1.0.0"
+}

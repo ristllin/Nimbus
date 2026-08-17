@@ -1,0 +1,28 @@
+# Ruff config for the repo's Python (tools/ + tests/ - the pre-commit hook
+# scopes it there). Deliberately modest: E/F/W only, isort off, no opinionated
+# rewrites - these are working bench/HIL scripts, not a Python product.
+line-length = 120
+target-version = "py310"
+
+exclude = [
+  "website",
+]
+
+[lint]
+select = ["E", "F", "W"]
+ignore = [
+  "E501",  # long lines are endemic in bench scripts; not worth the churn
+  "E402",  # imports after sys.path/env setup - a deliberate pattern in HIL/tools
+  "E722",  # bare except in fault-tolerant bench loops - deliberate
+  "E741",  # single-letter names in math/pixel code
+  "E701",  # one-line `if x: y` compacts are idiomatic in these scripts
+  "E702",  # same, semicolon-joined bench one-liners
+]
+
+[lint.per-file-ignores]
+# PlatformIO extra_script: `env` is injected by SCons (Import("env") magic).
+"tools/git_version.py" = ["F821"]
+
+[format]
+# Keep formatting close to what's already there.
+quote-style = "preserve"

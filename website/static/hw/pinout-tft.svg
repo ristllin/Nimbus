@@ -1,0 +1,109 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 780" font-family="ui-sans-serif,system-ui,Arial" font-size="13">
+  <style>
+    .box{rx:10;ry:10;stroke-width:2}
+    .title{font-weight:700;font-size:14px}
+    .pin{font-family:ui-monospace,Menlo,monospace;font-size:12px}
+    .rail{font-size:11px;fill:#555}
+    .lead{stroke:#9aa;stroke-width:1.5;fill:none}
+    .bridge{stroke:#15803d;stroke-width:2.5;fill:none}
+    .note{font-size:11px;fill:#444}
+  </style>
+  <rect width="1120" height="780" fill="#fbfbfd"/>
+  <text x="560" y="30" text-anchor="middle" class="title" font-size="20">Nimbus - Solide S3 pinout (TOUCH TFT variant)</text>
+  <text x="560" y="50" text-anchor="middle" class="note">ESP32-S3-DevKitC-1 N16R8 · screenModel=tft · the TFT REPLACES the e-paper AND the knob · source of truth: board_solide_s3.h</text>
+
+  <!-- MCU -->
+  <rect x="455" y="300" width="210" height="180" rx="12" fill="#eef2ff" stroke="#4f46e5" stroke-width="2.5"/>
+  <text x="560" y="345" text-anchor="middle" class="title" fill="#3730a3">ESP32-S3</text>
+  <text x="560" y="366" text-anchor="middle" class="note" fill="#4338ca">DevKitC-1 N16R8</text>
+  <text x="560" y="404" text-anchor="middle" class="note">240 MHz dual LX7</text>
+  <text x="560" y="422" text-anchor="middle" class="note">16 MB flash · 8 MB PSRAM</text>
+  <text x="560" y="452" text-anchor="middle" class="rail">Wi-Fi/BLE 2.4 GHz</text>
+
+  <!-- helper leads -->
+  <line class="lead" x1="430" y1="150" x2="455" y2="320"/>
+  <line class="lead" x1="330" y1="283" x2="455" y2="350"/>
+  <line class="lead" x1="400" y1="413" x2="455" y2="400"/>
+  <line class="lead" x1="330" y1="570" x2="455" y2="450"/>
+  <line class="lead" x1="790" y1="120" x2="665" y2="320"/>
+  <line class="lead" x1="790" y1="270" x2="665" y2="360"/>
+  <line class="lead" x1="790" y1="410" x2="665" y2="415"/>
+  <line class="lead" x1="790" y1="560" x2="665" y2="455"/>
+
+  <!-- LEFT peripherals -->
+  <!-- Colour TFT + touch - REPLACES the e-paper on the same SPI3 pads. Display
+       and touch share SCK/MOSI/MISO (bridged on the module) and are separated by
+       their own chip selects. T_IRQ is left unconnected: touch is polled. -->
+  <rect x="70" y="80" width="360" height="154" rx="10" fill="#e0f2fe" stroke="#0284c7"/>
+  <text x="82" y="102" class="title" fill="#075985">2.8" TFT ILI9341 + touch (SPI3)</text>
+  <text x="82" y="122" class="pin">Display: SCK 42 · SDI 41 · SDO 1 · CS 38</text>
+  <text x="82" y="140" class="pin">DC 40 · RESET 39 · LED 2 · Touch T_CS 48</text>
+  <text x="82" y="158" class="title" fill="#166534">SOLDER 3 ON-MODULE JUMPERS</text>
+  <text x="335" y="158" class="note">IRQ open</text>
+  <text x="82" y="178" class="pin">T_CLK</text><line class="bridge" x1="126" y1="174" x2="220" y2="174"/><text x="230" y="178" class="pin">SCK  (GPIO 42)</text>
+  <text x="82" y="196" class="pin">T_DIN</text><line class="bridge" x1="126" y1="192" x2="220" y2="192"/><text x="230" y="196" class="pin">SDI  (GPIO 41)</text>
+  <text x="82" y="214" class="pin">T_DO</text><line class="bridge" x1="126" y1="210" x2="220" y2="210"/><text x="230" y="214" class="pin">SDO  (GPIO 1)</text>
+  <text x="82" y="228" class="rail">Display + touch share SPI; their CS pins stay separate.</text>
+
+  <!-- SD -->
+  <rect x="70" y="248" width="300" height="70" rx="10" fill="#dcfce7" stroke="#16a34a"/>
+  <text x="82" y="270" class="title" fill="#166534">microSD FAT32 (SPI2)</text>
+  <text x="82" y="290" class="pin">CS 10 · MOSI 11 · SCK 12 · MISO 13</text>
+  <text x="82" y="308" class="rail">3.3 V · orch /mem store · needs shared GND</text>
+
+  <!-- The encoder is GONE on this variant: its three GPIOs are the panel's. -->
+  <rect x="70" y="328" width="330" height="170" rx="10" fill="#f8fafc" stroke="#94a3b8" stroke-dasharray="6 4"/>
+  <text x="82" y="350" class="title" fill="#475569">EC11 rotary encoder - NOT FITTED</text>
+  <text x="82" y="374" class="note">The TFT consumes all three encoder pins:</text>
+  <text x="82" y="396" class="pin">GPIO 1  was enc A     → touch MISO</text>
+  <text x="82" y="416" class="pin">GPIO 2  was enc B     → backlight (PWM)</text>
+  <text x="82" y="436" class="pin">GPIO 48 was enc SW    → touch CS</text>
+  <text x="82" y="462" class="note">Only the J3 header is reachable on the carrier, and</text>
+  <text x="82" y="478" class="note">GPIO 35/36/37 (OCTAL PSRAM) split it - so those seven</text>
+  <text x="82" y="494" class="rail" fill="#b91c1c">signals are the one contiguous run. No knob is possible.</text>
+
+  <!-- Battery sense (NEW) -->
+  <rect x="70" y="520" width="300" height="100" rx="10" fill="#ffe4e6" stroke="#e11d48"/>
+  <text x="82" y="542" class="title" fill="#9f1239">Battery sense - ADC1  ◀ NEW</text>
+  <text x="82" y="562" class="pin">GPIO 4  (analogReadMilliVolts × 3.2)</text>
+  <text x="82" y="580" class="note">2S pack BAT+ → 220k → node → 100k → GND</text>
+  <text x="82" y="596" class="note">node → GPIO4 · ÷3.2</text>
+  <text x="82" y="612" class="rail">tap BEFORE the DC-DC · ADC1 only (Wi-Fi owns ADC2)</text>
+
+  <!-- RIGHT peripherals -->
+  <!-- LED ring -->
+  <rect x="790" y="80" width="290" height="86" rx="10" fill="#f3e8ff" stroke="#9333ea"/>
+  <text x="802" y="102" class="title" fill="#6b21a8">LED ring WS2812B ×45 (RMT)</text>
+  <text x="802" y="122" class="pin">DIN 21</text>
+  <text x="802" y="140" class="rail">5 V power / 3.3 V logic</text>
+  <text x="802" y="158" class="rail">~372 mA worst case @ bright 30</text>
+
+  <!-- Speaker -->
+  <rect x="790" y="230" width="290" height="70" rx="10" fill="#ffedd5" stroke="#ea580c"/>
+  <text x="802" y="252" class="title" fill="#9a3412">Speaker MAX98357A I²S amp</text>
+  <text x="802" y="272" class="pin">BCLK 7 · LRCLK 8 · DIN 17</text>
+  <text x="802" y="290" class="rail">3.3 V logic · amp on 5 V · loopback-verified</text>
+
+  <!-- Mic -->
+  <rect x="790" y="375" width="290" height="70" rx="10" fill="#cffafe" stroke="#0891b2"/>
+  <text x="802" y="397" class="title" fill="#155e75">I²S MEMS mic (I²S0)</text>
+  <text x="802" y="417" class="pin">BCLK 15 · WS 18 · SD 16</text>
+  <text x="802" y="435" class="rail">3.3 V ONLY ⚠ (5 V damages S3) · L/R→GND</text>
+
+  <!-- Power -->
+  <rect x="790" y="510" width="290" height="100" rx="10" fill="#f1f5f9" stroke="#475569"/>
+  <text x="802" y="532" class="title" fill="#334155">Power rails</text>
+  <text x="802" y="552" class="note">USB-C · 2S BMS → 2×18650 → DC-DC → 5 V</text>
+  <text x="802" y="570" class="pin">3.3 V:</text><text x="852" y="570" class="rail">MCU · TFT + touch · SD · audio · mic</text>
+  <text x="802" y="588" class="pin">5 V:</text><text x="842" y="588" class="rail">LED ring · amp volume (switchable)</text>
+  <text x="802" y="604" class="rail">⚠ the TFT backlight is a continuous draw (blank it to save)</text>
+
+  <!-- Legend: reserved + free -->
+  <rect x="70" y="650" width="980" height="100" rx="10" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="86" y="674" class="title">GPIO map</text>
+  <text x="86" y="696" class="pin" fill="#b91c1c">RESERVED - never assign:</text>
+  <text x="300" y="696" class="pin">0·45·46 strapping · 19·20 USB · 43·44 UART0 · 26–32 flash · 33–37 OCTAL PSRAM</text>
+  <text x="86" y="718" class="pin" fill="#15803d">FREE spares:</text>
+  <text x="300" y="718" class="pin">3 · 5 · 6 · 9 · 14 - but ALL on the J1 header, which the carrier does not break out</text>
+  <text x="86" y="740" class="rail">GPIO 47 (was e-paper BUSY) is the only genuinely free reachable pin on this variant. Selected by screenModel in NVS; restart to apply.</text>
+</svg>
