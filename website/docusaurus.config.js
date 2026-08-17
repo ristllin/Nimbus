@@ -92,12 +92,6 @@ const config = {
         },
         items: [
           {
-            type: 'docSidebar',
-            sidebarId: 'docsSidebar',
-            position: 'left',
-            label: 'Docs',
-          },
-          {
             to: '/quick-start/what-you-need',
             label: 'Get started',
             position: 'left',
