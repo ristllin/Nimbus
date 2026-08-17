@@ -6,6 +6,8 @@ Solide S3 board (ESP32-S3-DevKitC-1 N16R8). The TFT **replaces both** the
 e-paper panel and the knob - it shares the e-paper's SPI pads and consumes the
 encoder's GPIOs, so a board is only ever one configuration or the other.
 
+![Assembled touch-TFT Nimbus](photos/tft-assembled.webp)
+
 This page is the assembly walk-through. The companion pages:
 
 - [Touch TFT reference](touch-tft.md) - the pinout drawing, touch
@@ -170,6 +172,9 @@ See the [e-paper guide's battery-sense section](build-eink.md#battery-sense-opti
 and [Battery voltage sampling](../hardware.md#battery-voltage-sampling-how-to-add-it).
 
 ## Assembly order
+
+Photos of every stage, in order: **[Build photos](build-photos.md)**.
+
 
 1. **Solder the three touch-to-display bridges on the module** and
    continuity-check them (section above). Doing this before any board wiring

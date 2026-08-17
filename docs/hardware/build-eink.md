@@ -5,6 +5,8 @@ e-paper panel with an EC11 rotary knob on the Solide S3 board
 (ESP32-S3-DevKitC-1 N16R8). This is the shipped build - a fresh or erased
 device boots as `screenModel = eink`.
 
+![Assembled e-paper Nimbus](photos/eink-front.webp)
+
 This page is the assembly walk-through. The companion pages:
 
 - [E-paper + knob reference](eink-knob.md) - the pinout drawing and
@@ -166,6 +168,8 @@ top-band caveat, and the single-cell variant:
 [Battery voltage sampling](../hardware.md#battery-voltage-sampling-how-to-add-it).
 
 ## Assembly order
+
+Photos of every stage, in order: **[Build photos](build-photos.md)**.
 
 1. **Bench-check the bare DevKit first.** Flash it over the **UART** USB-C
    port - on a factory-fresh board the native USB port has no path into
