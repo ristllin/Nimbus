@@ -1,7 +1,7 @@
 # `docs/` - the canonical documentation tree
 
 This directory is the **canonical source** for all Nimbus documentation. The
-published site (https://ristllin.github.io/Nimbus/) is a generated *view* of it:
+published site (https://docs.cumulo-nimbus.ai/) is a generated *view* of it:
 `website/scripts/migrate-docs.mjs` copies every page listed in its `PAGES` table
 into `website/docs/**` with front matter and link fixes. Edit here, re-run the
 migrate script, commit. Two site pages are hand-written and live only under

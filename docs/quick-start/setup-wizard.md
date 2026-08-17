@@ -108,7 +108,7 @@ battery, memory, and sessions at a glance, with tabs for **Capabilities**
 screen gets any new browser in.
 
 Full tab-by-tab detail: the
-[web UI reference](https://ristllin.github.io/Nimbus/getting-started/webui-reference).
+[web UI reference](https://docs.cumulo-nimbus.ai/getting-started/webui-reference).
 
 Next: **[Your first conversation](first-conversation.md)**.
 

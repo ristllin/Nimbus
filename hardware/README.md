@@ -9,7 +9,7 @@ the board manufacturing files.
 > - [Build guide - Touch TFT](../docs/hardware/build-tft.md)
 > - [Hardware reference](../docs/hardware.md) - pinout, wiring, power
 >
-> Those pages are also on the [documentation site](https://ristllin.github.io/Nimbus/).
+> Those pages are also on the [documentation site](https://docs.cumulo-nimbus.ai/).
 
 > **Safety and liability:** you build at your own risk. This is a DIY
 > prototype involving lithium-ion batteries, not a certified product; no

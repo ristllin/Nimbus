@@ -17,7 +17,7 @@ installed:
 
 1. Connect the board's **UART** port to your computer with a **data-capable
    USB cable** (many cables are charge-only and never show a serial port).
-2. Open the **[Nimbus web flasher](https://ristllin.github.io/Nimbus/flash)**
+2. Open the **[Nimbus web flasher](https://docs.cumulo-nimbus.ai/flash)**
    and click **Install Nimbus**.
 3. Pick the serial port when prompted (a CP210x / `usbserial` entry). On a new
    board, choosing "Erase device" is fine; on a board already running Nimbus

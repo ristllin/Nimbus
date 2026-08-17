@@ -8,7 +8,7 @@
 <p align="center">
   <a href="https://polyformproject.org/licenses/noncommercial/1.0.0/"><img alt="License: PolyForm Noncommercial 1.0.0" src="https://img.shields.io/badge/license-PolyForm%20Noncommercial-blue"></a>
   <a href="https://github.com/ristllin/nimbus-fw-releases/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/ristllin/nimbus-fw-releases?label=firmware"></a>
-  <a href="https://ristllin.github.io/Nimbus/"><img alt="Documentation" src="https://img.shields.io/badge/docs-ristllin.github.io%2FNimbus-teal"></a>
+  <a href="https://docs.cumulo-nimbus.ai/"><img alt="Documentation" src="https://img.shields.io/badge/docs-docs.cumulo--nimbus.ai-teal"></a>
 </p>
 
 A DIY desk device that keeps you informed without stealing your screen.
@@ -19,7 +19,7 @@ A 45-LED ring plus a 2.9" e-ink panel + knob - or a 2.8" color touchscreen -
 on an ESP32-S3. Bring your own API key (Mistral, OpenAI, or Anthropic);
 about **$60–75 in commodity parts** to build.
 
-**Documentation: https://ristllin.github.io/Nimbus/**
+**Documentation: https://docs.cumulo-nimbus.ai/**
 
 ## What you need
 
@@ -37,14 +37,14 @@ about **$60–75 in commodity parts** to build.
 The step-by-step path - parts → flash → setup wizard → first conversation -
 lives on the docs site:
 
-1. **[What you need](https://ristllin.github.io/Nimbus/quick-start/what-you-need)**
-2. **[Flash the firmware](https://ristllin.github.io/Nimbus/quick-start/flash)**
+1. **[What you need](https://docs.cumulo-nimbus.ai/quick-start/what-you-need)**
+2. **[Flash the firmware](https://docs.cumulo-nimbus.ai/quick-start/flash)**
    - browser flasher, or `python3 tools/setup_device.py` over the DevKit's
    **UART** port (a factory-fresh board flashes only through that port)
-3. **[Set up the device](https://ristllin.github.io/Nimbus/quick-start/setup-wizard)**
+3. **[Set up the device](https://docs.cumulo-nimbus.ai/quick-start/setup-wizard)**
    - join the `Nimbus-setup` network, walk the wizard
-4. **[Your first conversation](https://ristllin.github.io/Nimbus/quick-start/first-conversation)**
-   - or the **[Notifier quick start](https://ristllin.github.io/Nimbus/quick-start/notifier-quick-start)**
+4. **[Your first conversation](https://docs.cumulo-nimbus.ai/quick-start/first-conversation)**
+   - or the **[Notifier quick start](https://docs.cumulo-nimbus.ai/quick-start/notifier-quick-start)**
    for the status light
 
 ## Safety

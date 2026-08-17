@@ -335,4 +335,4 @@ Licensing, the Developer Certificate of Origin, and first-contribution ideas are
 - **[docs/orchestrator-world.md](docs/orchestrator-world.md)** - the agent's memory
   and control surface.
 - **[docs/security.md](docs/security.md)** - the auth model and open items.
-- The full published set lives at **https://ristllin.github.io/Nimbus/**.
+- The full published set lives at **https://docs.cumulo-nimbus.ai/**.

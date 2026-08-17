@@ -9,9 +9,12 @@ const {themes} = require('prism-react-renderer');
 const lightCodeTheme = themes.github;
 const darkCodeTheme = themes.dracula;
 
-// GitHub Pages placeholders - adjust organizationName/projectName if the repo
-// moves. With projectName 'Nimbus' the published URL is
-// https://ristllin.github.io/Nimbus/ , hence baseUrl '/Nimbus/'.
+// organizationName/projectName drive the GitHub deploy target and the
+// "edit this page" links (github.com/<org>/<repo>). The site is served from
+// the custom domain docs.cumulo-nimbus.ai (a grey-cloud CNAME to GitHub
+// Pages, set in website/static/CNAME), so url is that domain and baseUrl is
+// '/' (not '/Nimbus/'). GitHub 301-redirects the old ristllin.github.io/Nimbus
+// path to the custom domain.
 const organizationName = 'ristllin';
 const projectName = 'Nimbus';
 
@@ -21,10 +24,10 @@ const config = {
   tagline: 'Firmware for a battery-capable ESP32-S3 desk device - Notifier + Orchestrator',
   favicon: 'img/favicon.svg',
 
-  // Set the production url of your site here.
-  url: `https://${organizationName}.github.io`,
-  // For GitHub Pages deployment under /<projectName>/.
-  baseUrl: `/${projectName}/`,
+  // Served from the custom domain (see website/static/CNAME).
+  url: 'https://docs.cumulo-nimbus.ai',
+  // Root of the custom domain, not a project subpath.
+  baseUrl: '/',
 
   organizationName, // GitHub org/user.
   projectName, // GitHub repo name.
