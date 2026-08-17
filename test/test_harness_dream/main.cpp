@@ -322,18 +322,23 @@ struct Rig {
   std::unique_ptr<TurnEngine> eng;
 
   Rig() {
-    JobEngine::Deps jd;
-    jd.platform = plat.contract();
-    jd.deliver = [this](const std::string& c, const std::string& t) {
+    // One deliver fn assigned to BOTH deps BEFORE jd is moved: copying
+    // jd.deliver after std::move(jd) read a moved-from std::function, which
+    // libc++ (macOS) happened to leave intact but libstdc++ (Linux) empties -
+    // delivery silently no-opped on CI while passing locally.
+    auto deliverFn = [this](const std::string& c, const std::string& t) {
       delivered.push_back({c, t});
     };
+    JobEngine::Deps jd;
+    jd.platform = plat.contract();
+    jd.deliver = deliverFn;
     jobs.reset(new JobEngine(std::move(jd)));
 
     TurnEngine::Deps d;
     d.cfg = cfg.contract();
     d.platform = plat.contract();
     d.jobs = jobs.get();
-    d.deliver = jd.deliver;
+    d.deliver = deliverFn;
     d.fire = [this](const char* c) { cues.push_back(c); };
     d.recall = [](const std::string&, const nimbus::orch::Principal&) { return std::vector<std::string>{}; };
     d.composeInputs = [](const std::string&) {
