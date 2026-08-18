@@ -98,6 +98,9 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
              res.rounds, res.capReason.c_str(), (int)res.ok,
              hostList[hostIdx].c_str(), switches,
              (unsigned)(pd.freeHeap ? pd.freeHeap() : 0));
+  // Glass Box P3: hand the canonical transcript to the engine BEFORE the
+  // failure return - a failed turn's middle is exactly what needs debugging.
+  if (ht.onBrief) ht.onBrief(tr.renderBrief(kHeadBriefMax));
   if (!res.ok) { err = res.error.empty() ? std::string("loop failed") : res.error; return false; }
   outJson = res.finalTurn;
   return true;

@@ -26,6 +26,21 @@ String setupApPass();        // per-device setup-AP passphrase (gen-on-first-use
                              // device's setup screen; the softAP + Wi-Fi QR use it.
 String deviceTz();           // POSIX TZ for Local Loops wall-clock schedules (default UTC0)
 void   setDeviceTz(const String& tz);
+
+// Cloud relay (cumulo-nimbus) pairing state. Orchestrator-only; ships dark
+// (cloudOptIn default false). The credential is cloud-minted at pairing (unlike
+// webAuthToken it HAS a setter) and wiped on unpair / a "bye:unpaired" from the relay.
+bool   cloudOptIn();
+void   setCloudOptIn(bool on);
+String cloudDeviceId();
+String cloudCred();
+String cloudHost();          // relay host (default "app.cumulo-nimbus.ai")
+String cloudName();          // paired device display name ("" = none)
+bool   cloudPaired();        // has both a device id and a credential
+void   setCloudPairing(const String& deviceId, const String& cred, const String& host,
+                       const String& name);
+void   clearCloudPairing();  // wipe id + credential + name (keeps the opt-in flag)
+
 String dreamScratchHash();   // fnv64-hex of the scratchpad after the last dream ("" = none)
 void   setDreamScratchHash(const String& hex);
 

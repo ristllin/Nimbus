@@ -564,6 +564,20 @@ void drawTokenDetail(Fb& fb, const ScreenCtx& ctx) {
 // for what's shown here). Big + centered so it's legible across the room; the
 // common header (mode/profile) is kept by the renderScreen wrapper.
 void drawPairing(Fb& fb, const ScreenCtx& ctx) {
+  // Cloud (cumulo-nimbus) pairing variant: the claim code big on the left, a scannable
+  // QR of the claim URL on the right, and where to enter it. Only when claimUrl is set;
+  // the BLE passkey layout below is untouched.
+  if (!ctx.claimUrl.empty()) {
+    // Left column: title, big code, and where to enter it. Right column: the QR.
+    // Left-aligned + below the status header so nothing overlaps the header or QR.
+    fb.text(8, 24, "Pair with Cumulo", 2);
+    drawScannableQr(fb, ctx.claimUrl, 40);
+    const std::string code = ctx.pairingCode.empty() ? "--------" : ctx.pairingCode;
+    fb.text(8, 54, code, 3);
+    fb.text(8, 92, "Enter this code at");
+    fb.text(8, 104, "app.cumulo-nimbus.ai");
+    return;
+  }
   const std::string title = "Pair Nimbus";
   fb.text((kW - Fb::textWidth(title, 2)) / 2, 28, title, 2);
   // The passkey, big + centered. Empty guard keeps the layout stable if a render

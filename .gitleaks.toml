@@ -15,6 +15,11 @@ paths = [
   # Golden fixtures embed fake tokens by design (e.g. a1b2c3d4e5f6a7b8).
   '''test/golden.*''',
   '''test/golden_tft/.*''',
+  # Cloud-relay protocol tests use RFC 6455 / known-answer vectors (e.g. the
+  # published WebSocket handshake key "dGhlIHNhbXBsZSBub25jZQ==" and its accept
+  # value) as fixtures. Public spec constants, not secrets.
+  '''test/test_relay_ws/.*''',
+  '''test/test_relay_codec/.*''',
 ]
 regexes = [
   # The documented, intentional fleet-wide setup-AP password (docs/security.md).
@@ -26,4 +31,8 @@ regexes = [
   # gitleaks generic-api-key false positive on a prose comment in
   # memory_subsystem.cpp ("task access, losing/duplicating demote edges").
   '''losing/duplicating''',
+  # RFC 6455 canonical WebSocket handshake example (Sec-WebSocket-Accept for the
+  # published nonce "dGhlIHNhbXBsZSBub25jZQ=="), used as the known-answer vector
+  # in test/test_relay_ws. A public spec constant, not a secret.
+  '''s3pPLMBiTxaQ9kYGzzhZRbK\+xOo=''',
 ]

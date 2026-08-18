@@ -123,29 +123,26 @@ static bool fetchMistral(String& out) {
   return true;
 }
 
-static void fetchTask(void*) {
-  for (;;) {
-    if (g_want && !g_have) {
-      String live;
-      if (fetchMistral(live)) { g_mistralLive = live; g_have = true; alog("voices: mistral catalog cached"); }
-      g_want = false;   // one attempt per request; re-request re-tries
-    }
-    vTaskDelay(pdMS_TO_TICKS(500));
-  }
+// One-shot, self-deleting fetch task (pverify donor pattern). Spawned on demand from
+// voicesJson so the 6 KB stack exists ONLY during the rare catalog fetch, not resident
+// for the device's whole life (SRAM reclaim: the voices catalog is fetched at most once).
+static void fetchOnce(void*) {
+  String live;
+  if (fetchMistral(live)) { g_mistralLive = live; g_have = true; alog("voices: mistral catalog cached"); }
+  g_want = false;   // one attempt per request; re-request re-tries
+  vTaskDelete(nullptr);
 }
 
-void begin() {
-  static bool started = false;
-  if (started) return;
-  started = true;
-  xTaskCreate(fetchTask, "voices", 6144, nullptr, 1, nullptr);
-}
+void begin() {}  // no resident task: the fetch is spawned on demand (voicesJson)
 
 String voicesJson(const String& provider) {
   if (provider == "openai") return String(kOpenaiStatic);
-  // mistral (default): live once cached, else fallback + request a fetch.
+  // mistral (default): live once cached, else fallback + spawn a one-shot fetch.
   if (g_have) return g_mistralLive;
-  g_want = true;
+  if (!g_want) {          // not already fetching (single-consumer flag; low concurrency)
+    g_want = true;
+    xTaskCreate(fetchOnce, "voices", 6144, nullptr, 1, nullptr);
+  }
   return String(kMistralFallback);
 }
 

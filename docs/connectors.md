@@ -1,3 +1,4 @@
+<!-- audience: user -->
 # Connectors - external tools, per provider
 
 Connectors let the Orchestrator (and the sub-agents it spawns) reach the
@@ -23,7 +24,9 @@ with the provider (Mistral Studio) or is pasted once into Nimbus's web UI.
 ## Setting up a connector
 
 Every connector is a **paste-a-credential card** under **Capabilities →
-Connectors** in the web UI:
+Connectors** in the web UI. Connector credentials are pasted once into that
+card and stored write-only on the device - setup never involves the firmware
+repository or any script:
 
 1. Create the credential once in a browser: a GitHub personal access token, a
    Notion integration token, a Slack bot token, an OAuth refresh token, or a
@@ -41,9 +44,9 @@ in firmware ([Security](#security)).
 
 | | On the Orchestrator's **own turns** | On **sub-agents** it spawns |
 |---|---|---|
-| **OpenAI** | yes - remote MCP (`server_url` + token) and first-party connectors (Gmail, Calendar, Drive…) | yes - same |
-| **Anthropic** | - (the head turn is a single forced tool; MCP can't run mid-turn) | yes - BYO remote MCP by URL (`mcp_servers`) |
-| **Mistral** | yes - Studio built-ins + Studio-named connectors - **single-shot turns** | yes - sub-agents run over the Conversations API; built-ins *and* Studio connectors attach to the spawn dispatch (server-side) |
+| **OpenAI** | ✅ remote MCP (`server_url` + token) and first-party connectors (Gmail, Calendar, Drive…) | ✅ same |
+| **Anthropic** | - (the head turn is a single forced tool; MCP can't run mid-turn) | ✅ BYO remote MCP by URL (`mcp_servers`) |
+| **Mistral** | ✅ Studio built-ins + Studio-named connectors - **single-shot turns** | ✅ sub-agents run over the Conversations API; built-ins *and* Studio connectors attach to the spawn dispatch (server-side) |
 
 Two consequences:
 
@@ -110,7 +113,15 @@ key presence)**. That block is built in `catalogText`
 - **MCP URL (OpenAI/Anthropic):** `https://api.githubcopilot.com/mcp/`
 - **Mistral:** connect GitHub in Studio, then enable it by name here (no token
   on device).
-- **Unlocks:** issues, PRs and reviews, Actions, code search, Gists, releases.
+- **Unlocks:** issues, PRs and reviews, code and commit search, **creating
+  repositories**, and pushing file contents through the GitHub API (releases are
+  read-only; there are no Actions or Gists tools). Verified against the
+  OpenAI/Anthropic MCP endpoint; the Mistral Studio connector's toolset may
+  differ. For repo creation and file pushes the token needs the `repo` scope
+  (or a fine-grained token with Administration and Contents read/write).
+- **Try it:** once the card is saved, ask the assistant to *"create a private
+  repo named test-repo and add a README"* - it should come back with the new
+  repo's URL.
 
 ## Gmail {#gmail}
 

@@ -13,6 +13,10 @@
 // the default path is byte-for-byte unchanged.
 namespace agent {
 
+// Byte cap for the per-turn transcript brief handed to HeadTools::onBrief.
+// Bounded because it rides a PSRAM dossier that is itself capped.
+static constexpr size_t kHeadBriefMax = 8192;
+
 struct HeadTools {
   // Provider-neutral tool advertisements (ToolRegistry::toolSpecs()). Each adapter
   // wraps these into its provider's function-tool shape alongside the terminal
@@ -34,6 +38,14 @@ struct HeadTools {
   // HeadLoopHooks.spill - a clamped tool result's FULL text lands in the
   // results ring and the truncation marker carries the results.get handle.
   std::function<std::string(const nimbus::orch::HeadToolResult& full)> spill;
+
+  // Optional canonical-transcript observer (Glass Box P3). Every loop builds a
+  // Transcript (the richest per-turn artifact: user seed, per-round prose, tool
+  // calls WITH args, results, provider attribution) and destroys it at loop
+  // exit - renderBrief() had no caller anywhere. Each loop now hands the brief
+  // here on the way out, so the engine can put the tool-loop's actual middle
+  // into the turn dossier instead of only its entry and exit.
+  std::function<void(const std::string& brief)> onBrief;
 };
 
 }  // namespace agent

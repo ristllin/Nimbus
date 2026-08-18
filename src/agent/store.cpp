@@ -85,6 +85,27 @@ String setupApPass() {
   return cached;
 }
 
+// --- Cloud relay (cumulo-nimbus) pairing state -----------------------------
+bool cloudOptIn() { return solide::memory::getInt(AKEY_CLOUD_OPTIN, 0) != 0; }
+void setCloudOptIn(bool on) { solide::memory::setInt(AKEY_CLOUD_OPTIN, on ? 1 : 0); }
+String cloudDeviceId() { return solide::memory::getString(AKEY_CLOUD_DEVID, ""); }
+String cloudCred() { return solide::memory::getString(AKEY_CLOUD_CRED, ""); }
+String cloudHost() { return solide::memory::getString(AKEY_CLOUD_HOST, "app.cumulo-nimbus.ai"); }
+String cloudName() { return solide::memory::getString(AKEY_CLOUD_NAME, ""); }
+bool cloudPaired() { return cloudDeviceId().length() > 0 && cloudCred().length() > 0; }
+void setCloudPairing(const String& deviceId, const String& cred, const String& host,
+                     const String& name) {
+  solide::memory::setString(AKEY_CLOUD_DEVID, deviceId);
+  solide::memory::setString(AKEY_CLOUD_CRED, cred);
+  if (host.length()) solide::memory::setString(AKEY_CLOUD_HOST, host);
+  solide::memory::setString(AKEY_CLOUD_NAME, name);
+}
+void clearCloudPairing() {
+  solide::memory::setString(AKEY_CLOUD_DEVID, "");
+  solide::memory::setString(AKEY_CLOUD_CRED, "");
+  solide::memory::setString(AKEY_CLOUD_NAME, "");
+}
+
 String customBase()  { return solide::memory::getString(AKEY_CUSTOM_BASE, ""); }
 String customKey()   { return solide::memory::getString(AKEY_CUSTOM_KEY, ""); }
 String customConv()  { return solide::memory::getString(AKEY_CUSTOM_CONV, "openai"); }

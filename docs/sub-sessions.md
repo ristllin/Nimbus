@@ -1,3 +1,4 @@
+<!-- audience: dev -->
 # Sub-sessions - the orchestrator's background agents, end to end
 
 What actually happens when the head model spawns a sub-agent: the exact brief it
@@ -233,7 +234,7 @@ battery-lab's host-side tool, not firmware.)
 history doesn't); vector memory caps 5000 → 400 with a flash-floor guard; the
 glass-box **trace rows stop entirely** while the SD is absent or demoted
 (`traceActive()` requires a live SD) - device-event timeline rows keep writing.
-A mid-run SD loss demotes cleanly (debounced 2-fail/2-pass) and promotes back
+A mid-run SD loss demotes seamlessly (debounced 2-fail/2-pass) and promotes back
 on recovery; the current conversation's working set stays in the PSRAM ring
 throughout.
 

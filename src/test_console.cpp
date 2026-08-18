@@ -7,6 +7,7 @@
 // only in every mode, orthogonality to NIMBUS_NOTIFIER_DEBUG).
 #include "test_console.h"
 #include "sys/config_nvs.h"    // STATUS nvsdeg= - NVS running on defaults?
+#include "net/relay_client.h"  // CLOUD? / CLOUDPAIR / CLOUDOFF / CLOUDLOOP
 #include "net/wifi_portal.h"   // WIFIKNOWN? - saved-network list
 #include "net/wifi_store.h"    // WIFIRENAME - re-key a network, keeping its password
 #include "hw/tft_out.h"        // TFTHEALTH? - panel watchdog counter
@@ -274,12 +275,35 @@ void dispatch(String line) {
     Serial.printf("WEBTOK %s\n", agent::store::webAuthToken().c_str());
     return;
   }
-  if (line == "APINFO?") {
-    // Setup-network credentials (TEST build only): the per-device stored passphrase
-    // plus the live SSID, so HIL can assert the AP no longer uses the fleet default.
-    // On a real device the owner reads both off the setup screen.
-    Serial.printf("APINFO ssid=%s pass=%s\n", nimbus::net::apSsid().c_str(),
-                  nimbus::net::apPass().c_str());
+  if (line == "CLOUD?") {
+    String j;
+    nimbus::relay::statusJson(j);
+    Serial.printf("CLOUD %s\n", j.c_str());
+    return;
+  }
+  if (line == "CLOUDPAIR") {
+    // Ensure opted in, then start pairing. The code + claim URL print via CLOUD? and
+    // show on the e-ink screen; the owner claims it at app.cumulo-nimbus.ai.
+    nimbus::relay::requestOptIn(true);
+    nimbus::relay::requestPair();
+    Serial.println("CLOUDPAIR started (poll CLOUD? for the code)");
+    return;
+  }
+  if (line == "CLOUDOFF") {
+    nimbus::relay::requestUnpair();
+    nimbus::relay::requestOptIn(false);
+    Serial.println("CLOUDOFF (unpaired + disabled)");
+    return;
+  }
+  if (line.startsWith("CLOUDLOOP")) {
+    // Prove the loopback replay path with no cloud dependency: GET a local route
+    // through the same code the tunnel uses. Default /api/state.
+    String path = line.length() > 10 ? line.substring(10) : "/api/state";
+    path.trim();
+    if (path.isEmpty()) path = "/api/state";
+    String body;
+    int st = nimbus::relay::loopbackSelfTest(path, body);
+    Serial.printf("CLOUDLOOP %s -> %d\n%s\n", path.c_str(), st, body.c_str());
     return;
   }
   if (line == "WIFIAP" || line == "WIFIAP on") {

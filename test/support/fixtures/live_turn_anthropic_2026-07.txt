@@ -1,11 +1,11 @@
-===== NIMBUS TURN ANATOMY — the last completed turn =====
+===== NIMBUS TURN ANATOMY - the last completed turn =====
 host: anthropic
-provider conversation: CONTINUED — the provider held history from prior turns
+provider conversation: CONTINUED - the provider held history from prior turns
 result: ok
 note: tool-loop ROUNDS (mid-turn tool calls + results) live server-side and
 are not captured here; this is the turn's entry and exit.
 
-===== 1. INSTRUCTIONS — the system prompt sent this turn =====
+===== 1. INSTRUCTIONS - the system prompt sent this turn =====
 (role + HOW YOU RUN + capability manifest + owner directive + [RUNNING
 MEMORY] + [RELEVANT MEMORIES] associative recall)
 
@@ -13,22 +13,22 @@ You are Nimbus, the always-on head orchestrator of a personal-assistant device. 
 - reply: Text to send the owner now; empty string if none.
 - ask: A question for the owner when you need their input; empty string if none.
 - memory: Your SHORT-LIVED working notes for the next turn only (active threads, in-progress state). NOT long-term storage: any durable fact - a preference, a name, anything the owner asks you to remember - goes in mem_write[] instead, where it is embedded and recalled in future conversations. Keep this brief and current; return it when it changed, else empty.
-- device: Local device actions, each discriminated by its type field: led paints a ring pattern (mode solid|spinner|pulse|flash|rainbow, r/g/b 0-255 — rainbow is a self-animating hue wheel and ignores r/g/b; brightness 0-255 or null); lights turns the ring off or back to full (off is overridden by any new needs-you event, a click, or lights full); tts voices the text to your owner as a Telegram audio message (the desk speaker is not connected); reboot restarts the device; config tunes owner-friendly knobs - ledBrightness 0-255, priority (comma-separated sub-agent provider preference), posture (ring level dark|calm|full), profile (power profile battery_saver|balanced|desk), theme (LED colour theme slug: teal, ocean, ember, forest, openai, anthropic, mistral, rainbow), attnHoldMs (how long a needs-you cue holds, 30000-1800000 ms), ttsVoice (your speaking voice: a provider-specific voice id/slug, empty string resets to default), ttsProv (which provider voices you, mistral|openai), ttsOn (voice replies master switch - set true/false ONLY when the owner explicitly asks for spoken replies on or off), sttProv (voice transcription provider, mistral|openai), sfxLvlN + sfxLvlO (sound-effect intensity 0-3 for Notifier / Orchestrator mode, 0 silent), sfxVol (speaker volume 0-100), sfxTheme (sound theme terran|protoss|zerg) and devName (the device's name on the network + screen; takes effect after a reboot). Set only the knobs you mean to change; null leaves a knob untouched. orch_model switches YOUR OWN provider host + model at runtime (provider openai|anthropic|mistral, model an id from that provider's AVAILABLE MODELS) - use it when asked to change your model, e.g. 'switch to opus'. Secrets, API keys, and provider PRIORITY stay BLOCKED - only the owner can change those, from the device web page.
-- spawn: Background sub-agents to start. Use only providers/models from AVAILABLE. category is code|research|ops; skill is an optional provider hint; name is a SHORT display name YOU pick for this sub-agent (e.g. css-fixer, docs-scan) - the owner sees it everywhere instead of a job id; note is a one-line owner acknowledgement. Spawn ONLY for minutes-long autonomous work. Sub-agents are fire-and-forget — you cannot talk to a running one. As each finishes its result is sent to the owner, and once they have ALL finished you are AUTOMATICALLY given one more turn (a [FRESH RESULTS] block, no new owner message) to synthesize them: never tell the owner to wait for you to 'check back'.
+- device: Local device actions, each discriminated by its type field: led paints a ring pattern (mode solid|spinner|pulse|flash|rainbow, r/g/b 0-255 - rainbow is a self-animating hue wheel and ignores r/g/b; brightness 0-255 or null); lights turns the ring off or back to full (off is overridden by any new needs-you event, a click, or lights full); tts voices the text to your owner as a Telegram audio message (the desk speaker is not connected); reboot restarts the device; config tunes owner-friendly knobs - ledBrightness 0-255, priority (comma-separated sub-agent provider preference), posture (ring level dark|calm|full), profile (power profile battery_saver|balanced|desk), theme (LED colour theme slug: teal, ocean, ember, forest, openai, anthropic, mistral, rainbow), attnHoldMs (how long a needs-you cue holds, 30000-1800000 ms), ttsVoice (your speaking voice: a provider-specific voice id/slug, empty string resets to default), ttsProv (which provider voices you, mistral|openai), ttsOn (voice replies master switch - set true/false ONLY when the owner explicitly asks for spoken replies on or off), sttProv (voice transcription provider, mistral|openai), sfxLvlN + sfxLvlO (sound-effect intensity 0-3 for Notifier / Orchestrator mode, 0 silent), sfxVol (speaker volume 0-100), sfxTheme (sound theme terran|protoss|zerg) and devName (the device's name on the network + screen; takes effect after a reboot). Set only the knobs you mean to change; null leaves a knob untouched. orch_model switches YOUR OWN provider host + model at runtime (provider openai|anthropic|mistral, model an id from that provider's AVAILABLE MODELS) - use it when asked to change your model, e.g. 'switch to opus'. Secrets, API keys, and provider PRIORITY stay BLOCKED - only the owner can change those, from the device web page.
+- spawn: Background sub-agents to start. Use only providers/models from AVAILABLE. category is code|research|ops; skill is an optional provider hint; name is a SHORT display name YOU pick for this sub-agent (e.g. css-fixer, docs-scan) - the owner sees it everywhere instead of a job id; note is a one-line owner acknowledgement. Spawn ONLY for minutes-long autonomous work. Sub-agents are fire-and-forget - you cannot talk to a running one. As each finishes its result is sent to the owner, and once they have ALL finished you are AUTOMATICALLY given one more turn (a [FRESH RESULTS] block, no new owner message) to synthesize them: never tell the owner to wait for you to 'check back'.
 - await: Tags of active sessions to check this turn.
 - mem_write: Durable facts to store in long-term memory (embedded + saved) so you can recall them in future conversations. importance 0-1; permanent pins it.
 - mem_query: Search strings for facts NOT already shown in RELEVANT MEMORIES; results arrive next turn as MEMORY RESULTS.
 - session_ops: Manage sub-agents: op spawn starts one (task/provider/model), op terminate stops the session named by id. There is no live back-and-forth with a running sub-agent - spawn, then read FRESH RESULTS.
-When [FRESH RESULTS] appears, those are outputs from sub-agents you spawned that just finished: store anything worth keeping long-term via mem_write, then synthesize them for the owner in reply (combine across agents — don't just echo). If nothing is worth adding, reply "".
-[ACTIVE SESSIONS] is AUTHORITATIVE: if it lists none, nothing is running right now regardless of earlier conversation — so spawn when asked. Prefer reply; use [ACTIVE SESSIONS] to report on / steer running work.
+When [FRESH RESULTS] appears, those are outputs from sub-agents you spawned that just finished: store anything worth keeping long-term via mem_write, then synthesize them for the owner in reply (combine across agents - don't just echo). If nothing is worth adding, reply "".
+[ACTIVE SESSIONS] is AUTHORITATIVE: if it lists none, nothing is running right now regardless of earlier conversation - so spawn when asked. Prefer reply; use [ACTIVE SESSIONS] to report on / steer running work.
 You are Nimbus, an always-on personal assistant (a Nimbus device), running in Orchestrator mode on a Solide S3 (ESP32-S3-DevKitC-1) desk device.
 Your brain right now: anthropic / claude-sonnet-4-6.
 
 [HOW YOU RUN]
-- You exist as TURNS. A turn starts when the owner messages you (Telegram text or voice), the web console injects one, a SUB-AGENT FINISHES (an automatic synthesis turn with a [FRESH RESULTS] block and no owner message — you decide what, if anything, to tell the owner), or a SCHEDULED LOOP fires (a [SCHEDULED LOOP] block, no owner message — one of your recurring tasks; create/list/cancel them with the loop.* tools).
-- Within a turn, if the tool loop is on you may call tools over several rounds (bounded ~12), then MUST finish with one orch_turn — your final answer. Without the loop, one orch_turn is the whole turn.
-- Your memory has FOUR tiers: [RUNNING MEMORY] (the `memory` field you return — short-lived working notes for the next turn, keep it current), the scratchpad (goal tiers, memory.scratchpad), LONG-TERM vector memory (mem_write/mem_query or memory.write — where every DURABLE fact belongs: preferences, names, anything the owner asks you to remember; if a write fails, retry it NEXT turn rather than parking the fact in running memory), and the episodic log (memory.episodic — past conversation history, auto-captured).
-- Sub-agents (spawn) are fire-and-forget background workers; name each one well — the owner sees your names.
+- You exist as TURNS. A turn starts when the owner messages you (Telegram text or voice), the web console injects one, a SUB-AGENT FINISHES (an automatic synthesis turn with a [FRESH RESULTS] block and no owner message - you decide what, if anything, to tell the owner), or a SCHEDULED LOOP fires (a [SCHEDULED LOOP] block, no owner message - one of your recurring tasks; create/list/cancel them with the loop.* tools).
+- Within a turn, if the tool loop is on you may call tools over several rounds (bounded ~12), then MUST finish with one orch_turn - your final answer. Without the loop, one orch_turn is the whole turn.
+- Your memory has FOUR tiers: [RUNNING MEMORY] (the `memory` field you return - short-lived working notes for the next turn, keep it current), the scratchpad (goal tiers, memory.scratchpad), LONG-TERM vector memory (mem_write/mem_query or memory.write - where every DURABLE fact belongs: preferences, names, anything the owner asks you to remember; if a write fails, retry it NEXT turn rather than parking the fact in running memory), and the episodic log (memory.episodic - past conversation history, auto-captured).
+- Sub-agents (spawn) are fire-and-forget background workers; name each one well - the owner sees your names.
 
 ## DIRECTIVE
 [RUNNING MEMORY]
@@ -37,11 +37,11 @@ Owner requested TTS/voice replies to be enabled. Device is not silent. Speaker s
 ## CAPABILITIES
 You are running on the Nimbus desk device (ESP32-S3). Hardware present: 45-LED ring, 2.9" e-ink panel, rotary encoder, microphone, speaker, SD card.
 Connectivity: WiFi, Telegram.
-- The LED ring is a STATUS ring (colour + motion), NOT a display — it cannot show text or images. Drive it with a `led` action (mode solid/spinner/pulse/flash + an RGB colour, or mode rainbow for a self-animating hue wheel), turn it off or back to full with `lights`, or recolour it with `config.theme`. Those are the only ring effects that exist.
+- The LED ring is a STATUS ring (colour + motion), NOT a display - it cannot show text or images. Drive it with a `led` action (mode solid/spinner/pulse/flash + an RGB colour, or mode rainbow for a self-animating hue wheel), turn it off or back to full with `lights`, or recolour it with `config.theme`. Those are the only ring effects that exist.
 - The e-ink panel is a slow (~2 s refresh) status screen the firmware owns; you do not render arbitrary content to it.
 - A durable PRIVATE artifact store lives on the SD card (/mem/files/<project>/<name>). Save reports/documents there with artifact.save; browse with files.list; deliver one to the owner with files.send. Files persist across reboots and are never auto-deleted.
 - YOU choose the reply channel per situation (owner rule): short status or a heads-up while the owner is nearby -> speak it (tts / reply.speak); longer content, lists, code -> Telegram text; a question you need answered -> ask. tts is delivered as a Telegram voice message (and may also play on the desk speaker). Never send the SAME content as both text and audio. There is no live phone call.
-- Sub-agents you spawn run in the BACKGROUND and are fire-and-forget — you cannot talk to a running one. As each finishes its result is sent to the owner, and once they have ALL finished you are AUTOMATICALLY given one more turn (a [FRESH RESULTS] block, with no new owner message) to synthesize them and update memory. You never need the owner to poke you to follow up on a sub-agent.
+- Sub-agents you spawn run in the BACKGROUND and are fire-and-forget - you cannot talk to a running one. As each finishes its result is sent to the owner, and once they have ALL finished you are AUTOMATICALLY given one more turn (a [FRESH RESULTS] block, with no new owner message) to synthesize them and update memory. You never need the owner to poke you to follow up on a sub-agent.
 Tools you can call:
 - memory_write: Store a fact in long-term associative memory so you can recall it later.
 - memory_search: Search your long-term memory for facts relevant to a query.
@@ -58,17 +58,17 @@ Tools you can call:
 - reply_speak: Read text aloud on the device's built-in speaker (text-to-speech). Use when a spoken response is helpful. Returns whether playback succeeded.
 - reply_telegram: Send a Telegram message. Omit chat_id to reply to the current conversation; set voice:true to deliver it as spoken audio instead of text.
 - skill_list: List the on-device knowledge capsules you can read (id + title): how you're wired, your hardware, how to use your tools.
-- skill_get: Read a knowledge capsule by id (from skill.list) — the long-form detail about yourself, so it needn't bloat every prompt.
+- skill_get: Read a knowledge capsule by id (from skill.list) - the long-form detail about yourself, so it needn't bloat every prompt.
 - system_health: Report the device's live hardware + subsystem health (LED ring, e-ink, mic, speaker, SD card, memory, PSRAM, Wi-Fi, Telegram). Use it to answer questions about what hardware you have or whether a component is working.
 - files_list: List the device's durable artifact store (SD /mem/files): projects and files the owner or you saved. Optional 'project' filters to one folder.
 - files_stat: Metadata for one stored file: size, kind, created time, provider file id.
 - artifact_save: Persist a TEXT artifact (report, summary, document) into the durable store: SD /mem/files/<project>/<name>. Survives reboots; never auto-deleted. Use a descriptive name with an extension (.md, .txt, .csv, .json). Max ~24 KB per call; overwrites the same project+name.
 - files_send: Send a stored file to the owner on Telegram (as a document). Omit chat_id to use the current conversation or the first allowed chat.
-- device_status: Read live device state: free heap/PSRAM, SD present + free space, battery (mV / % / battTrend = the VOLTAGE TREND ONLY — the device has no charge-detect hardware, so it can NEVER know whether it is plugged in or charging; never claim either), WiFi rssi, BLE bonds, fault mask, sound tier, and cfg{} = the CURRENT value of every knob you can set with a config device action (ttsOn, sfxVol = SPEAKER volume 0-100, sfxLvlN/O, sfxTheme, sttProv, ttsProv, ttsVoice, theme, ledBrightness = ring LED brightness — a different knob from sfxVol). Call this BEFORE answering questions about current settings. Silent — never makes a sound.
+- device_status: Read live device state: free heap/PSRAM, SD present + free space, battery (mV / % / battTrend = the VOLTAGE TREND ONLY - the device has no charge-detect hardware, so it can NEVER know whether it is plugged in or charging; never claim either), WiFi rssi, BLE bonds, fault mask, sound tier, and cfg{} = the CURRENT value of every knob you can set with a config device action (ttsOn, sfxVol = SPEAKER volume 0-100, sfxLvlN/O, sfxTheme, sttProv, ttsProv, ttsVoice, theme, ledBrightness = ring LED brightness - a different knob from sfxVol). Call this BEFORE answering questions about current settings. Silent - never makes a sound.
 - device_selftest: Run a hardware self-test and return per-item PASS/FAIL/SKIP results. Set audible=true to also run the speaker+mic acoustic loopback and mic level; audible tests are refused when the device is on silent or the owner disabled hardware tests (the silent items always run).
 
-Limits: you cannot set provider API keys, tokens, or your own routing (which provider hosts you, or the provider priority order) — only your owner can, from the device's web page. If asked to change those, say so and point them there.
-You may call these tools MID-TURN — several rounds if needed — and you see each result before deciding your next step. When you have everything, call orch_turn: it is your FINAL answer and ends the turn. Prefer calling memory_search live over the deferred mem_query field.
+Limits: you cannot set provider API keys, tokens, or your own routing (which provider hosts you, or the provider priority order) - only your owner can, from the device's web page. If asked to change those, say so and point them there.
+You may call these tools MID-TURN - several rounds if needed - and you see each result before deciding your next step. When you have everything, call orch_turn: it is your FINAL answer and ends the turn. Prefer calling memory_search live over the deferred mem_query field.
 
 ## RELEVANT MEMORIES
 - [95%] Owner prefers TTS spoken via Telegram voice message (device speaker unavailable). Voice replies are enabled.
@@ -82,9 +82,9 @@ You may call these tools MID-TURN — several rounds if needed — and you see e
 - The `memory` field is only a small running-state seed (survives provider failover); it is NOT your long-term store.
 
 
-===== 2. INPUT — the per-turn message block =====
+===== 2. INPUT - the per-turn message block =====
 (optional [MEMORY RESULTS] / [FRESH RESULTS] + live session digest +
-[CHANNEL] + [USER] — the ONLY user-message content the model sees
+[CHANNEL] + [USER] - the ONLY user-message content the model sees
 unless the provider conversation above is CONTINUED)
 
 [ACTIVE SESSIONS]
@@ -98,11 +98,11 @@ No active jobs.[AVAILABLE PROVIDERS] sub-session priority: openai,anthropic,mist
 - mistral: available. Studio-authenticated connectors; built-ins attach to your own turns
 (no connectors configured; the owner adds them on the device web page)
 
-[CHANNEL] This message arrived via the web UI. Your orch_turn `reply` field is ALREADY delivered to this same channel — that is the one and only answer; never send the same answer twice. reply.speak additionally speaks a line on the device speaker; reply.telegram is ONLY for messaging a DIFFERENT allowlisted Telegram chat, never for answering this one.
+[CHANNEL] This message arrived via the web UI. Your orch_turn `reply` field is ALREADY delivered to this same channel - that is the one and only answer; never send the same answer twice. reply.speak additionally speaks a line on the device speaker; reply.telegram is ONLY for messaging a DIFFERENT allowlisted Telegram chat, never for answering this one.
 
 [USER]
 What is the speaker volume right now? And is TTS on?
 
-===== 3. MODEL RAW OUTPUT — the orch_turn JSON =====
+===== 3. MODEL RAW OUTPUT - the orch_turn JSON =====
 
-{"reply":"Here's the current audio status:\n\n- **Speaker volume (sfxVol):** 0 — the speaker is effectively muted.\n- **TTS (voice replies):** ✅ **On** — using the **Mistral** provider with the voice `gb_jane_sarcasm`.","memory":"","ask":"","device":[],"spawn":[],"await":[],"mem_write":[],"mem_query":[],"session_ops":[]}
+{"reply":"Here's the current audio status:\n\n- **Speaker volume (sfxVol):** 0 - the speaker is effectively muted.\n- **TTS (voice replies):** ✅ **On** - using the **Mistral** provider with the voice `gb_jane_sarcasm`.","memory":"","ask":"","device":[],"spawn":[],"await":[],"mem_write":[],"mem_query":[],"session_ops":[]}

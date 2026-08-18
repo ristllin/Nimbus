@@ -135,6 +135,11 @@
 #define AKEY_WEB_TOKEN      "webTok"        // per-device web/MCP auth token (gen on first use, shown via Config QR)
 #define AKEY_AP_PASS        "apPass"        // per-device setup-AP passphrase (gen on first use, shown on the setup screen)
 #define AKEY_DEVICE_TZ      "devTz"         // POSIX TZ for Local Loops wall-clock schedules (default UTC0)
+#define AKEY_CLOUD_OPTIN    "cloudOptIn"    // u8: 1 = cloud relay enabled (Orchestrator-only; default 0, ships dark)
+#define AKEY_CLOUD_DEVID    "cloudDevId"    // cloud device id assigned at pairing
+#define AKEY_CLOUD_CRED     "cloudCred"     // cloud device credential (bearer, cloud-minted; wiped on unpair)
+#define AKEY_CLOUD_HOST     "cloudHost"     // relay host (default app.cumulo-nimbus.ai)
+#define AKEY_CLOUD_NAME     "cloudName"     // paired device display name (for the web status line)
 #define AKEY_DREAM_SCRATCH  "dreamScrHash"   // fnv64 of the scratchpad after the last dream (hex)
 #define AKEY_CUSTOM_BASE    "custBase"
 #define AKEY_CUSTOM_KEY     "custKey"
@@ -179,6 +184,20 @@
 #define ORCH_TRACE_ARGS_MAX   256
 #define ORCH_TRACE_OUT_MAX    1024
 #define ORCH_TRACE_THINK_MAX  1024
+// Per-turn metadata row (Glass Box P2): one compact JSON row per completed turn
+// (host/model/tools/tokens). Bounded so the turn summary can never rival the
+// content rows it describes; the error text inside it is clipped to fit.
+#define ORCH_TRACE_END_MAX     256
+#define ORCH_TRACE_ENDERR_MAX   96
+// Per-turn dossier file (/mem/trace/<turnId>.txt): the full turn anatomy. Capped
+// per file; the directory itself is ring-bounded (kTraceFilesMax/kTraceBytesMax).
+#define ORCH_TRACE_FILE_MAX  (48 * 1024)
+// Full (unclipped) tool args + result parked as a blob sidecar when the row's
+// text had to be clipped, so the owner can open what the model actually saw.
+// ARGS_FULL is what's kept in the in-flight RAM map (>=128 B strings are PSRAM).
+#define ORCH_TRACE_ARGS_FULL   4096
+#define ORCH_TRACE_BLOB_MAX  (64 * 1024)
+#define ORCH_TRACE_BLOBS_PER_TURN  8
 #define AKEY_ONBOARDED      "onbrded"        // first-run onboarding completed (plain NVS bool, NOT the SD override blob - survives reboot with no SD)
 #define AKEY_BATT_MODEL     "battModel"     // battery analytics learned state (CSV blob)
 #define AKEY_TLS_SLOTS      "tlsSlots"       // concurrent work-TLS sessions 1..2 (default 1 - the measured-stable value; latched at boot)

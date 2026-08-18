@@ -1,3 +1,4 @@
+<!-- audience: user -->
 # Notifier status language
 
 The Notifier ring speaks a **status language**: every AI-coding-session status maps

@@ -66,6 +66,10 @@ struct TurnDebugEv {
   const std::string* instructions;   // borrowed, valid only during the hook call
   const std::string* inputs;
   const std::string* rawOut;
+  // The tool loop's canonical transcript brief (Glass Box P3) - per-round prose,
+  // tool calls WITH args, results. Borrowed like the others; may be null, and is
+  // empty for a single-shot turn that never entered a loop.
+  const std::string* transcriptBrief = nullptr;
   bool ok = false;
 };
 

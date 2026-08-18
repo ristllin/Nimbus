@@ -28,6 +28,7 @@ static const char UI_MEMORY[] PROGMEM = R"=====(<div class=pane id=pane-fleet st
 <button id=chatSend type=button>Send</button>
 </div>
 <p class=hint id=chatMsg>Replies also go to your Telegram, if connected.</p>
+<p class="hint tip" id=chatTrace style="display:none"></p>
 </div>
 </div>
 

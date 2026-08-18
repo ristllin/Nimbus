@@ -9,11 +9,18 @@ namespace orch {
 // Compact Tier-1 set (+ Mistral built-ins). Descriptions stay one-line; the rich
 // per-connector setup recipe lives in docs/connectors.md (docsSlug anchors it).
 static const KnownConnector kKnown[] = {
+    // caps verified LIVE against api.githubcopilot.com/mcp/ tools/list
+    // (2026-08-13, 44 tools): create_repository + push_files/create_or_update_file
+    // ARE exposed; Actions and Gists are NOT; releases are read-only.
     {"github", "GitHub", "openai,anthropic,mistral", "mcp", "",
      "GitHub PAT (ghp_…)",
-     "Issues, PRs, code search, Actions, releases, Gists.", "github",
-     "read + write issues/PRs/code search via the GitHub API; only repos the "
-     "token/app can access (private repos return 'not accessible'). It cannot "
+     "Issues, PRs, code search, CREATE repos, push files.", "github",
+     "MCP (OpenAI/Anthropic, toolset verified live): read + write issues/PRs/"
+     "code+commit search, CREATE repositories, and push file contents via the "
+     "GitHub API (the PAT needs repo scope; only repos the token/app can access "
+     "- private repos otherwise return 'not accessible'); no Actions or Gists "
+     "tools; releases are read-only. Mistral (Studio github_app): toolset "
+     "unverified - confirm a write tool exists before promising it. It cannot "
      "CLONE, BUILD, or RUN code - for that, spawn an anthropic sandbox sub."},
     {"gmail", "Gmail", "openai,mistral", "connector", "connector_gmail",
      "OAuth refresh token (minted off-device)",
@@ -263,6 +270,67 @@ std::string catalogText(const std::vector<ConnectorInfo>& cs, const ProviderStat
     out += "Connector capabilities/limits (use only tools that exist; verify writes "
            "by reading them back; if an action has no tool, say so):\n" + capsBlock;
 
+  // Discoverability (live bad answer: "can you create git repos?" - GitHub was
+  // unconfigured, so the caps block said NOTHING about it and the model was left
+  // to guess). Two bounded lines name the available-but-unconfigured catalog
+  // entries and the configured-but-DISABLED ones, so the model can answer
+  // "could you do X?" honestly: yes, once the owner sets it up / re-enables it.
+  // Placed before [SUB-AGENT CAPABILITIES]; the section clips from the tail, so
+  // early lines are safe. Rules (prism-folded):
+  //  - matching is case-insensitive and alias-aware (a Mistral-namespace
+  //    "github_app" row IS the github entry - the attach remap in reverse);
+  //  - an id whose providers intersect NO keyed provider is skipped (advertising
+  //    "owner can add slack" with no Mistral key would be a false promise);
+  //  - document_library is skipped until its library-id plumbing exists.
+  {
+    auto lower = [](std::string s) {
+      for (char& ch : s) if (ch >= 'A' && ch <= 'Z') ch = char(ch - 'A' + 'a');
+      return s;
+    };
+    auto canonical = [&](const std::string& raw) {
+      std::string t = lower(raw);
+      if (t == "github_app") return std::string("github");
+      if (t == "google_calendar") return std::string("gcal");
+      if (t == "google_drive_mcp") return std::string("gdrive");
+      if (t.rfind("connector_", 0) == 0) t = t.substr(10);   // connector_gmail -> gmail
+      if (t == "googlecalendar") return std::string("gcal");
+      if (t == "googledrive") return std::string("gdrive");
+      return t;
+    };
+    auto keyedFor = [&](const char* providers) {
+      const std::string p(providers);
+      return (ps.openaiKeyed && p.find("openai") != std::string::npos) ||
+             (ps.anthropicKeyed && p.find("anthropic") != std::string::npos) ||
+             (ps.mistralKeyed && p.find("mistral") != std::string::npos);
+    };
+    std::string notCfg, disabled;
+    for (int i = 0; i < kn; i++) {
+      const std::string id = kk[i].id;
+      if (id == "document_library") continue;   // needs library-id plumbing
+      if (!keyedFor(kk[i].providers)) continue; // no keyed provider can run it
+      bool have = false, en = false;
+      for (const ConnectorInfo& c : cs)
+        if (canonical(c.type.empty() ? c.name : c.type) == id ||
+            canonical(c.name) == id) {
+          have = true;
+          en = en || c.enabled;
+        }
+      if (!have) {
+        if (!notCfg.empty()) notCfg += ", ";
+        notCfg += id;
+      } else if (!en) {
+        if (!disabled.empty()) disabled += ", ";
+        disabled += id;
+      }
+    }
+    if (!notCfg.empty())
+      out += "Not configured (owner can add on the web page, Capabilities > "
+             "Connectors): " + notCfg + "\n";
+    if (!disabled.empty())
+      out += "Configured but turned OFF (owner can re-enable on the web page): " +
+             disabled + "\n";
+  }
+
   // [SUB-AGENT CAPABILITIES] - generated per KEYED provider from the live enabled
   // set, so the model plans spawns against what actually exists (owner: dynamic,
   // not hardcoded). The universal truth first: a sub-agent is text-only.
@@ -298,11 +366,14 @@ std::string catalogText(const std::vector<ConnectorInfo>& cs, const ProviderStat
   spawnTargets("mistral", ps.mistralKeyed);
   // W12 (owner ask): what each sandbox is FOR - "can a sub be used for coding?"
   // had no honest answer in the prompt.
+  // Verified live against the hosted GitHub MCP (tools/list): create_repository
+  // and push_files/create_or_update_file ARE exposed - the old "no sub can push"
+  // line was false in the API-write sense. The true limit is clone/build/run.
   out += "For CODING tasks: an anthropic sub has a real sandbox (writes AND runs "
          "code, bash + files); openai/mistral subs run Python via code_interpreter "
-         "when it is enabled. No sub can push to a repository - the github "
-         "connector works the GitHub API (issues/PRs/code search), it cannot "
-         "clone, build, or run a repo.\n";
+         "when it is enabled. The github connector works the GitHub API - issues/"
+         "PRs/code search, and with a repo-scoped PAT it can CREATE repositories "
+         "and push file contents - but it cannot clone, build, or run a repo.\n";
 
   // ⚠ HOW LONG A SUB MAY RUN - this was disclosed NOWHERE, and the model had no
   // way to know it. Live (2026-08-09, Nimbus-4): asked for an AI-news digest, the

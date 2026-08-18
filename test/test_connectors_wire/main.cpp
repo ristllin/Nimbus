@@ -256,6 +256,48 @@ static void test_catalog_surfaces_connector_caps() {
   TEST_ASSERT_TRUE(t.find("NO send tool") != std::string::npos);
 }
 
+// GitHub caps honesty - verified LIVE against api.githubcopilot.com/mcp/
+// tools/list (44 tools): repo creation + file pushes EXIST; Actions/Gists do
+// not. The old string was silent on creation and claimed Actions/Gists - the
+// model either refused something that works or promised something absent
+// (the eval-baseline confabulated-422 class).
+static void test_github_caps_state_repo_creation() {
+  std::vector<ConnectorInfo> cs = {mk("github", "openai", "mcp", "https://x")};
+  ProviderState ps;
+  ps.openaiKeyed = true;
+  ps.currentHost = "openai";
+  std::string t = catalogText(cs, ps);
+  TEST_ASSERT_TRUE(t.find("CREATE repositories") != std::string::npos);
+  TEST_ASSERT_TRUE(t.find("repo scope") != std::string::npos);
+  // The clone/build/run limit is still stated; the false blanket "cannot push"
+  // is gone (the API pushes file contents; it does not git-push a clone).
+  TEST_ASSERT_TRUE(t.find("cannot CLONE, BUILD, or RUN") != std::string::npos);
+  TEST_ASSERT_TRUE(t.find("No sub can push") == std::string::npos);
+}
+
+// Discoverability: available-but-unconfigured catalog entries are named in ONE
+// line so "could you do X?" is answerable when nothing is set up - and a
+// configured id must NOT appear in that line.
+static void test_catalog_names_unconfigured_connectors() {
+  ProviderState ps;
+  ps.openaiKeyed = true;
+  ps.currentHost = "openai";
+  // Nothing configured: the line lists the catalog (github among it).
+  std::string t0 = catalogText({}, ps);
+  size_t at = t0.find("Not configured (owner can add");
+  TEST_ASSERT_TRUE(at != std::string::npos);
+  std::string line0 = t0.substr(at, t0.find('\n', at) - at);
+  TEST_ASSERT_TRUE(line0.find("github") != std::string::npos);
+  // github configured: it leaves the line; others (e.g. notion) stay.
+  std::vector<ConnectorInfo> cs = {mk("github", "openai", "mcp", "https://x")};
+  std::string t1 = catalogText(cs, ps);
+  at = t1.find("Not configured (owner can add");
+  TEST_ASSERT_TRUE(at != std::string::npos);
+  std::string line1 = t1.substr(at, t1.find('\n', at) - at);
+  TEST_ASSERT_TRUE(line1.find("github") == std::string::npos);
+  TEST_ASSERT_TRUE(line1.find("notion") != std::string::npos);
+}
+
 // GRID-BORN (2026-08-07): a first-party connector with NO auth token must be
 // SKIPPED, not attached - OpenAI rejects connector_id without authorization,
 // which poisons the whole turn (the nimbus-5 field-failure class).
@@ -517,6 +559,8 @@ int main() {
   RUN_TEST(test_catalog_no_connectors);
   RUN_TEST(test_known_catalog_json_shape);
   RUN_TEST(test_catalog_surfaces_connector_caps);
+  RUN_TEST(test_github_caps_state_repo_creation);
+  RUN_TEST(test_catalog_names_unconfigured_connectors);
   RUN_TEST(test_catalog_marks_verified_state);
   RUN_TEST(test_catalog_validation_off_makes_no_claim);
   RUN_TEST(test_openai_code_interpreter_builtin_attaches);

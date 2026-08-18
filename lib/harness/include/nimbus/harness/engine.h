@@ -316,6 +316,10 @@ class TurnEngine {
 
   // The most recent composed World system prompt (for PROMPT? / diagnostics).
   std::string lastInstructions_;
+  // The most recent tool-loop transcript brief (Glass Box P3) - filled by
+  // HeadTools::onBrief, consumed by the TurnDebugEv snapshot. Empty for a
+  // single-shot turn that never entered a loop.
+  std::string lastBrief_;
   // mem_query[] results from the previous turn, parked for the next turn's
   // inputs (deferred-result pattern).
   std::string pendingMemResults_;

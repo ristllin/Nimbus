@@ -1,3 +1,4 @@
+<!-- audience: dev -->
 # Nimbus Hardware Reference
 
 Project-level pinout + wiring for the **Solide S3** board (ESP32-S3-DevKitC-1 N16R8).

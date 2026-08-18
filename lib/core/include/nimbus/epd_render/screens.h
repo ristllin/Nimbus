@@ -95,6 +95,11 @@ struct ScreenCtx {
   // actually be completed.
   std::string pairingCode;
 
+  // Cloud (cumulo-nimbus) pairing. When non-empty, the Pairing screen renders the
+  // cloud claim variant instead of the BLE passkey: the 8-char pairingCode plus a
+  // scannable QR of this claim URL. Empty leaves the BLE passkey layout unchanged.
+  std::string claimUrl;
+
   // menu
   std::vector<std::string> menuItems;
   int menuSelected = 0;

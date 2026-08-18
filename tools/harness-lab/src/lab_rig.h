@@ -15,6 +15,7 @@
 #include "nimbus/harness/log.h"
 #include "nimbus/harness/providers.h"
 #include "nimbus/harness/websearch.h"
+#include "nimbus/docs_pack.h"
 #include "nimbus/orch/embedding.h"
 #include "nimbus/orch/episodic.h"
 #include "nimbus/orch/mem_config.h"
@@ -239,6 +240,58 @@ class LabRig {
                R"({"type":"object","properties":{"query":{"type":"string"},)"
                R"("max_results":{"type":"integer"}},"required":["query"]})");
     }
+
+    // The REAL on-device docs pack (docs.search / docs.read) through the real
+    // portable retrieval - so the github-setup scenario exercises the actual
+    // failure mechanism (a maker section outranking the user answer), not just
+    // the prompt rail. Mirrors the device registrations (memory_subsystem.cpp),
+    // minus docs.list (the scenarios need retrieval, not browsing).
+    reg_.add("docs.search",
+             "Search your own device documentation (ranked keyword match) - use it "
+             "BEFORE saying what you can or cannot do. Results marked audience:maker "
+             "are firmware-development docs - answer an owner's how-do-I question "
+             "from the unmarked (user) sections.",
+             [](ArduinoJson::JsonObjectConst a, const orch::Principal&) -> orch::ToolResult {
+               std::string q = a["query"].is<const char*>()
+                                   ? std::string(a["query"].as<const char*>()) : std::string();
+               if (q.empty()) return orch::ToolResult::fail("missing 'query'");
+               const nimbus::docs::DocSection* hits[8];
+               size_t n = nimbus::docs::search(q, hits, 8);
+               if (n == 0)
+                 return orch::ToolResult::ok("no sections match - try fewer keywords");
+               JsonDocument d;
+               auto arr = d.to<JsonArray>();
+               for (size_t i = 0; i < n; i++) {
+                 auto o = arr.add<JsonObject>();
+                 o["id"] = hits[i]->id;
+                 o["title"] = hits[i]->title;
+                 o["snippet"] = nimbus::docs::snippet(*hits[i], q);
+                 if (hits[i]->dev) o["audience"] = "maker";
+               }
+               std::string s; serializeJson(d, s);
+               return orch::ToolResult::ok(s);
+             },
+             R"({"type":"object","properties":{"query":{"type":"string"}},"required":["query"]})");
+    reg_.add("docs.read",
+             "Read ONE section of your own device documentation by id (from docs.search).",
+             [](ArduinoJson::JsonObjectConst a, const orch::Principal&) -> orch::ToolResult {
+               std::string id = a["id"].is<const char*>()
+                                    ? std::string(a["id"].as<const char*>()) : std::string();
+               if (id.empty()) return orch::ToolResult::fail("missing 'id'");
+               const nimbus::docs::DocSection* s = nimbus::docs::find(id);
+               if (!s) return orch::ToolResult::fail("unknown doc id '" + id + "'");
+               std::string out;
+               if (s->dev)
+                 out += "(maker docs - firmware development and bench workflows, not "
+                        "everyday device use; owners configure everything from the "
+                        "device's web page)\n\n";
+               out += "## ";
+               out += s->title;
+               out += "\n\n";
+               out += s->body;
+               return orch::ToolResult::ok(out);
+             },
+             R"({"type":"object","properties":{"id":{"type":"string"}},"required":["id"]})");
 
     // A stand-in for the device-status tool, so prompts that ask "what are you
     // running on" have something honest to call.

@@ -1,3 +1,4 @@
+<!-- audience: dev -->
 # On-device tool catalog
 
 The Nimbus Orchestrator exposes a single, authoritative set of tools through an

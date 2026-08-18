@@ -273,6 +273,31 @@ void scProviderParity(LabRig& rig, Ctx& c) {
   c.note("(driven per-provider by runScenarios; see the parity section)");
 }
 
+// 12. The live ".env" regression (2026-08-13, Nimbus-4): asked how to set up
+//     GitHub so the assistant could create repos, the model walked a device
+//     OWNER through the firmware repo's .env + connectors_setup.py - a
+//     maker workflow. The fix is layered (audience-tagged docs pack, ranked
+//     user-first retrieval, a prompt rail); this pins the visible surface:
+//     the answer routes to the device web page and NEVER into the repository.
+void scGithubSetupAudience(LabRig& rig, Ctx& c) {
+  auto t = rig.say("lab",
+                   "Can you create GitHub repos? Walk me through how to set "
+                   "that up for you.");
+  showTurn(t);
+  c.check(!t.reply.empty(), "got a reply");
+  c.check(!has(t.reply, ".env"), "never mentions .env");
+  c.check(!has(t.reply, "connectors_setup"), "never mentions connectors_setup.py");
+  // "git clone" as an INSTRUCTION artifact only - a correct answer may say
+  // "I cannot clone repositories" (the rail teaches that exact limit), so a
+  // bare 'clone' negative would false-fail honest answers.
+  c.check(!has(t.reply, "git clone"), "never instructs a git clone");
+  // Positive check: an actual route to the device page. Bare "web" was nearly
+  // vacuous (matched "web search" / "website").
+  c.check(has(t.reply, "web page") || has(t.reply, "web ui") ||
+              has(t.reply, "capabilities") || has(t.reply, "connectors"),
+          "routes setup to the device web page (Capabilities > Connectors)");
+}
+
 struct Scenario {
   const char* name;
   const char* what;
@@ -295,6 +320,7 @@ const Scenario kScenarios[] = {
     {"scheduled",     "an unattended routine turn (the news-briefing path)",       scScheduledTurn, true},
     {"dream",         "a quiet consolidation turn may say nothing",                scQuietTurn, false},
     {"degraded",      "a memory-degraded turn admits it, and promises nothing",   scDegradedHonesty, false, true},
+    {"github-setup",  "an owner GitHub-setup answer routes to the web page, not the repo", scGithubSetupAudience, false},
     {"parity",        "every keyed provider handles plain + tool turns",           scProviderParity, false},
 };
 

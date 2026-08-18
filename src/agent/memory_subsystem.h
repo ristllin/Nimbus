@@ -124,6 +124,13 @@ void captureSession(const char* sessionId, const char* provider, const String& t
 String captureMessage(const char* sessionId, const char* role, nimbus::orch::MsgKind kind,
                       const String& text, const String& blobPath = "", const String& tags = "");
 
+// Glass Box: reserve a row id WITHOUT writing a row ("m%08x", same counter as
+// captureMessage). Used to mint a boot-stable turn id for turns that have no
+// user row to key on (scheduled loops, synthesis/dream). Safe against the boot
+// recovery path - any row written later in the turn takes a HIGHER id, so
+// nextIdHint() still resumes past all persisted history.
+String mintRowId();
+
 // Device-event timeline row (Glass Box A3): a kind=Log row in the reserved
 // "system" session, tagged "ev:<ev>" - boots, mode switches, OTA lifecycle, SD
 // demote/promote, dream outcomes. Queryable by the model via memory.episodic
@@ -137,6 +144,25 @@ void flushPendingEvents();
 // Glass-box trace gate (A4): true when trace rows may write (SD append-log live
 // + owner `otrace` knob ON). The hook wiring checks this per fire.
 bool traceActive();
+
+// ---- Glass Box P3: per-turn "dossier" files (/mem/trace/<turnId>.txt) --------
+// The full turn anatomy (system prompt + per-turn input + raw model output +
+// tool-loop transcript). Too big for a JSONL row, so it lives as a file keyed by
+// the turn id and referenced from the ev:turnend row's blobPath.
+// writeTraceFile keeps a bounded RING (oldest evicted) so trace can never grow
+// without limit; both are no-ops unless traceActive(). Called on tg_poll only.
+bool  writeTraceFile(const String& turnId, const char* buf, size_t len);
+// Read one dossier into a PSRAM buffer (caller frees). Returns nullptr if absent.
+char* readTraceFilePs(const String& turnId, size_t& outLen);
+// Ring bounds - a dossier is capped by the caller; these bound the directory.
+static const int    kTraceFilesMax = 16;
+static const size_t kTraceBytesMax = 768 * 1024;
+
+// Glass Box P4: park the FULL text of a clipped trace row in the existing
+// content-addressed blob store (/mem/blobs), returning the path for the row's
+// blobPath. Dedup + the 6 h retention sweep come free with that store. Returns
+// "" with no SD (the row keeps its clip - degraded, never broken).
+String persistTraceBlob(const String& text);
 
 // True once SNTP has produced a real epoch (~2020+). Pre-sync, decay/prune/
 // boost-on-use are guarded off (Release C3) - boot-relative hours vs stored

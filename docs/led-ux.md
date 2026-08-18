@@ -1,3 +1,4 @@
+<!-- audience: user -->
 # The LED ring - motion & color language
 
 The ring is not a status readout, it is an **ambient companion on your desk**.
@@ -18,11 +19,6 @@ Three design principles behind everything below:
 2. **Motion means work; stillness means rest.** Anything moving is *happening
    now*.
 3. **Color is meaning, brightness is urgency, motion is life.**
-
-The four states you will actually glance at, plus how several sessions share
-the ring (teal theme shown - every hue follows the active theme):
-
-![The ring status language: Running is a sweeping comet in the theme hue, Waiting for input breathes purple, Awaiting approval breathes amber, Error breathes the theme's alert hue, and several sessions pack the ring as arcs with dim separators](hardware/diagrams/ring-status-language.svg)
 
 ## Reading the colors
 

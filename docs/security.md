@@ -78,6 +78,22 @@ ERROR, not a security hole). ⚠ **Known limitation:** the flag is GLOBAL, not p
 providers. Per-provider granularity is the follow-up if a self-hosted + cloud mix ever
 needs both at once.
 
+### DONE(security): cloud relay socket always validates (never setInsecure)
+
+The cloud relay client (`src/net/relay_client.cpp`, see [cloud-relay.md](cloud-relay.md))
+does NOT go through `tlsSetup()`, so the `tlsVerify=0` escape hatch above can never weaken
+it: `relayTlsSetup()` always calls `setCACertBundle()`. The relay is the remote-access
+security boundary, so its connection is validated unconditionally. Tunneled requests are
+already authenticated by the service (owner + subscription + ownership) before they reach
+the device; the device injects its own LAN access token onto the loopback replay and that
+token never leaves the device.
+
+**Follow-up (hardening):** the endpoint is Cloudflare-fronted, so the relay currently
+trusts any CA-bundle-valid certificate for `app.cumulo-nimbus.ai`. Pinning the issuing
+CA / SPKI (in addition to the bundle check) would narrow trust to Cloudflare's issuer;
+deferred because leaf certificates rotate on a ~90-day cycle and a bad pin bricks remote
+access until an OTA. Bundle-root validation is the MVP posture.
+
 ⚠ **On-device verification is the gate, not the build.** A green link only proves the
 bundle symbol resolved. Each provider must be confirmed to still CONNECT with validation
 on (trigger `provider_verify` per provider → `result=1 verified`, plus one real turn) -

@@ -62,6 +62,7 @@
 #include "../agent/adapters/tts_voices.h"
 #include "../agent/provider_verify.h"
 #include "../agent/store.h"
+#include "relay_client.h"                // cloud tunnel status + control
 #include "../agent/connectors.h"           // /api/connectors - known catalog + host
 #include "web_memory.h"
 #include "web_files.h"                   // E1: /api/files* artifact-store routes
@@ -281,6 +282,13 @@ static void buildState(String& out) {
   // its own high-water is the relevant number). Confirms the halved 8 KB has room.
   if (TaskHandle_t at = xTaskGetHandle("async_tcp"))
     mem["asyncStackMin"] = (uint32_t)uxTaskGetStackHighWaterMark(at);  // bytes (uint8_t StackType_t)
+  {
+    int rsm = nimbus::relay::stackMinFree();
+    if (rsm >= 0) mem["relayStackMin"] = rsm;  // cloud relay task (Orchestrator only)
+  }
+  // Cloud tunnel (cumulo-nimbus) status. Present in both modes; reports disabled in
+  // Notifier (the relay task only spawns in Orchestrator).
+  nimbus::relay::statusInto(d["cloud"].to<JsonObject>());
   // Data store for orchestrator vectors/episodic: the SD card (16 GB+) when mounted,
   // else internal LittleFS flash. Reported as doubles (bytes) - a 16 GB card overflows
   // uint32 - with a label so the UI shows the right device + adaptive units.
@@ -1010,6 +1018,37 @@ void beginWeb(const WebConfig& wc) {
   // Deliberately UNGATED like "/": it is the page favicon and the identify
   // gate's logo, both needed before a token exists; a logo is not sensitive.
   // Cacheable - it only changes with a firmware flash.
+  // --- Cloud tunnel (cumulo-nimbus) --------------------------------------------
+  // GET returns the status object; POST performs an action (optin/optout/pair/unpair).
+  // Token-gated like every other state-changing endpoint.
+  s_server.on("/api/cloud", HTTP_GET, [](AsyncWebServerRequest* r) {
+    if (authBlocked(r)) return;
+    JsonDocument d;
+    nimbus::relay::statusInto(d.to<JsonObject>());
+    String out;
+    serializeJson(d, out);
+    r->send(200, "application/json", out);
+  });
+  s_server.on("/api/cloud", HTTP_POST, [](AsyncWebServerRequest* r) {
+    if (authBlocked(r)) return;
+    String action = r->hasParam("action", true) ? r->getParam("action", true)->value() : "";
+    if (action == "optin") {
+      nimbus::relay::requestOptIn(true);
+    } else if (action == "optout") {
+      nimbus::relay::requestUnpair();
+      nimbus::relay::requestOptIn(false);
+    } else if (action == "pair") {
+      nimbus::relay::requestOptIn(true);
+      nimbus::relay::requestPair();
+    } else if (action == "unpair") {
+      nimbus::relay::requestUnpair();
+    } else {
+      r->send(400, "application/json", "{\"error\":\"bad_action\"}");
+      return;
+    }
+    r->send(200, "application/json", "{\"ok\":true}");
+  });
+
   s_server.on("/logo.svg", HTTP_GET, [](AsyncWebServerRequest* r) {
     AsyncWebServerResponse* res =
         r->beginResponse_P(200, "image/svg+xml", (const uint8_t*)UI_LOGO_SVG,
@@ -1288,6 +1327,43 @@ void beginWeb(const WebConfig& wc) {
           return take;
         });
     res->addHeader("Cache-Control", "no-store");
+    res->addHeader("X-Content-Type-Options", "nosniff");   // untrusted model/tool text, match /api/mem/blob
+    r->send(res);
+  });
+  // Glass Box P3: one PAST turn's full anatomy (/api/lastturn is a single RAM
+  // slot the next turn overwrites). The path is built server-side from a
+  // validated turn id - never from client text. The 404 body names WHY, so the
+  // chat can be honest instead of showing a blank panel.
+  s_server.on("/api/trace", HTTP_GET, [](AsyncWebServerRequest* r) {
+    if (authBlocked(r)) return;
+    if (!r->hasParam("turn")) { r->send(400, "text/plain", "turn required"); return; }
+    const String turn = r->getParam("turn")->value();
+    size_t len = 0;
+    char* raw = agent::memory::readTraceFilePs(turn, len);
+    if (!raw) {
+      if (!agent::store::orchTrace())
+        r->send(404, "text/plain",
+                "off: activity recording is off, so this turn wasn't captured");
+      else if (!agent::memory::traceActive())
+        r->send(404, "text/plain",
+                "nosd: no SD card, so turn details can't be stored");
+      else
+        r->send(404, "text/plain",
+                "evicted: this turn's details were removed to save space");
+      return;
+    }
+    std::shared_ptr<char> body(raw, free);
+    AsyncWebServerResponse* res = r->beginChunkedResponse(
+        "text/plain; charset=utf-8",
+        [body, len](uint8_t* buf, size_t maxLen, size_t index) -> size_t {
+          if (index >= len) return 0;
+          size_t take = len - index;
+          if (take > maxLen) take = maxLen;
+          memcpy(buf, body.get() + index, take);
+          return take;
+        });
+    res->addHeader("Cache-Control", "no-store");
+    res->addHeader("X-Content-Type-Options", "nosniff");   // untrusted model/tool text, match /api/mem/blob
     r->send(res);
   });
   s_server.on("/api/usage/history", HTTP_GET, [](AsyncWebServerRequest* r) {

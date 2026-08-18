@@ -251,6 +251,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // paths, since the dtor always runs).
   curChat_ = chatId;   // reply.speak / reply.telegram default target for this turn
   toolReplied_ = false;
+  lastBrief_.clear();  // per-turn: a single-shot turn must not inherit the last loop's brief
   // Lifecycle hook: turn start (observer-only; source set by the entry wrapper).
   if (d_.hooks.onTurnStart) {
     TurnStartEv ev;
@@ -431,6 +432,10 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       ev.round = round;
       d_.hooks.onThinking(ev);
     };
+    // Canonical-transcript observer (Glass Box P3): each loop hands its brief
+    // over on the way out (success OR failure) so the turn dossier can carry the
+    // tool loop's actual middle, not just the turn's entry and exit.
+    headTools.onBrief = [this](const std::string& brief) { lastBrief_ = brief; };
     headTools.dispatch = [this, nameMap, loopDispatched, mcp, loopWho](const orch::HeadToolCall& call)
         -> orch::HeadToolResult {
       if (d_.hooks.onToolCall) d_.hooks.onToolCall(call);   // observer-only
@@ -638,6 +643,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     ev.instructions = &instructions;
     ev.inputs = &inputs;
     ev.rawOut = &outJson;
+    ev.transcriptBrief = &lastBrief_;
     ev.ok = ok && !outJson.empty();
     d_.hooks.onTurnDebug(ev);
   }

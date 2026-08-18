@@ -26,6 +26,11 @@ static std::string antToolUseBody() {
          "\"input\":{\"q\":\"tea\"}}],\"stop_reason\":\"tool_use\","
          "\"usage\":{\"input_tokens\":50,\"output_tokens\":10}}";
 }
+static std::string antFinalBody() {
+  return "{\"content\":[{\"type\":\"tool_use\",\"id\":\"tu_2\",\"name\":\"orch_turn\","
+         "\"input\":{\"reply\":\"done\"}}],\"stop_reason\":\"tool_use\","
+         "\"usage\":{\"input_tokens\":10,\"output_tokens\":5}}";
+}
 static std::string oaiFinalBody() {
   return "{\"id\":\"resp_f\",\"output\":[{\"type\":\"function_call\",\"call_id\":\"call_f\","
          "\"name\":\"orch_turn\",\"arguments\":\"{\\\"reply\\\":\\\"done\\\"}\"}],"
@@ -72,6 +77,55 @@ static void test_midturn_failover_carries_results_no_redispatch() {
   TEST_ASSERT_EQUAL(25, (int)u.completionTokens);
 }
 
+// Glass Box P3: the loop hands its canonical transcript to HeadTools::onBrief on
+// the way out, so the turn dossier can show the tool loop's MIDDLE (the richest
+// per-turn artifact used to be destroyed at loop exit - renderBrief() had no
+// caller at all). The brief must carry the user seed, the call WITH its args,
+// and the result - and must arrive even when the turn FAILED, since a failed
+// turn's middle is exactly what needs debugging.
+static void test_brief_reaches_onbrief_with_calls_and_results() {
+  FakeProviderDeps d;
+  // One host, two rounds: a tool call, then the terminal orch_turn.
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, antToolUseBody()});
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, antFinalBody()});
+  auto pd = d.contract();
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  std::string brief;
+  int briefCalls = 0;
+  rig.ht.onBrief = [&](const std::string& b) { brief = b; briefCalls++; };
+  std::string out, err;
+  orch::TokenUsage u;
+  bool ok = providers::runFabricLoop(pd, {"anthropic"}, "SYS", "USER", out, err,
+                                     rig.ht, &u, nullptr);
+  TEST_ASSERT_TRUE_MESSAGE(ok, err.c_str());
+  TEST_ASSERT_EQUAL(1, briefCalls);              // exactly once per turn
+  TEST_ASSERT_TRUE(brief.find("[user] USER") != std::string::npos);
+  TEST_ASSERT_TRUE(brief.find("[tool] memory_search") != std::string::npos);
+  TEST_ASSERT_TRUE(brief.find("tea") != std::string::npos);       // the ARGS
+  TEST_ASSERT_TRUE(brief.find("[result]") != std::string::npos);
+  TEST_ASSERT_TRUE(brief.find("tool-ok") != std::string::npos);   // the RESULT
+}
+
+static void test_brief_delivered_even_when_the_turn_fails() {
+  FakeProviderDeps d;
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 200, antToolUseBody()});
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 0, ""});
+  d.http.script.push_back({"api.anthropic.com", "/v1/messages", 0, ""});
+  auto pd = d.contract();
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  std::string brief;
+  rig.ht.onBrief = [&](const std::string& b) { brief = b; };
+  std::string out, err;
+  orch::TokenUsage u;
+  bool ok = providers::runFabricLoop(pd, {"anthropic"}, "SYS", "USER", out, err,
+                                     rig.ht, &u, nullptr);
+  TEST_ASSERT_FALSE(ok);
+  // The work that DID happen before the failure is still recoverable.
+  TEST_ASSERT_TRUE(brief.find("[tool] memory_search") != std::string::npos);
+}
+
 static void test_all_hosts_down_fails_soft_with_error() {
   FakeProviderDeps d;
   for (int i = 0; i < 4; i++)              // A initial+retry, B initial+retry
@@ -110,6 +164,8 @@ static void test_single_host_list_never_switches() {
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_midturn_failover_carries_results_no_redispatch);
+  RUN_TEST(test_brief_reaches_onbrief_with_calls_and_results);
+  RUN_TEST(test_brief_delivered_even_when_the_turn_fails);
   RUN_TEST(test_all_hosts_down_fails_soft_with_error);
   RUN_TEST(test_single_host_list_never_switches);
   return UNITY_END();

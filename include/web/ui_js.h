@@ -36,10 +36,19 @@ function setTok(t){_memTok=t;try{localStorage.setItem('nimbusTok',t);return loca
     const q=new URLSearchParams(location.search);q.delete('t');
     history.replaceState(null,'',location.pathname+(q.toString()?'?'+q.toString():''));
   }
+  // Base path of the served app. On the LAN this is "" (page at "/"); through the
+  // cloud tunnel the page is served under "/d/<deviceId>/", so absolute API paths
+  // ("/api/state") must be prefixed to stay inside the tunnel subtree. Computed once
+  // from the current location: the directory of the current path, minus a trailing
+  // slash. "/" -> "", "/d/<id>/" -> "/d/<id>".
+  const _base=location.pathname.replace(/\/[^/]*$/,'');
   const _f=window.fetch;
   window.fetch=function(url,opt){
     opt=opt||{};
     opt.headers=Object.assign({},opt.headers||{},{'X-Nimbus-Token':nimbusTok()});
+    // Rewrite same-origin absolute paths under the app base (no-op on LAN). Leave
+    // protocol-relative ("//host") and full URLs untouched.
+    if(_base&&typeof url==='string'&&url.charAt(0)==='/'&&url.charAt(1)!=='/')url=_base+url;
     return _f(url,opt).then(r=>{if(r.status===401)showAuth();return r;});
   };
 })();
@@ -291,7 +300,37 @@ function renderDevTiles(d){
 // Last LAN address seen, so a changed one can refresh the sign-in links (below).
 // null = nothing seen yet, which must NOT count as a change.
 let _lastStaIp=null;
+// Glass-box availability, cached off the polls the UI already runs (no extra
+// requests). Turn details are SD-gated AND gated on the Activity recording knob,
+// so the chat says which one is missing instead of just showing nothing.
+let GB={trace:true,sd:true};
+function _chatTraceHint(){
+  const el=$('chatTrace'); if(!el)return;
+  let m='';
+  if(!GB.trace)m='Activity recording is off, so turn details aren’t captured. Turn it on in Capabilities → Models → Tool use.';
+  else if(!GB.sd)m='No SD card, so turn details can’t be stored.';
+  el.textContent=m; el.style.display=m?'':'none';
+}
 function applyState(d){
+  if(d.storeSD!==undefined){GB.sd=!!d.storeSD&&!d.sdLost;_chatTraceHint();}
+  // ---- Cloud access (cumulo-nimbus tunnel) ----
+  if(d.cloud&&$('cloudLine')){
+    var c=d.cloud;
+    $('cloudLine').textContent=c.line||'';
+    var cc=$('cloudCode');
+    if(c.state==='pairing'&&c.code){cc.style.display='block';
+      cc.innerHTML='Enter this code at <b>app.cumulo-nimbus.ai</b> while signed in: <b></b>';
+      cc.lastChild.textContent=c.code;}   // code is from the untrusted pairing server: textContent, never innerHTML
+    else{cc.style.display='none';}
+    $('cloudPair').style.display=(c.paired||c.state==='pairing')?'none':'inline-block';
+    $('cloudUnpair').style.display=c.paired?'inline-block':'none';
+    $('cloudOff').style.display=(c.optIn&&!c.paired&&c.state!=='pairing')?'inline-block':'none';
+    var cpost=function(a,msg){var f=new FormData();f.append('action',a);
+      fetch('/api/cloud',{method:'POST',body:f}).then(jok).then(()=>{toast(msg);setTimeout(loadState,1500);}).catch(failToast);};
+    $('cloudPair').onclick=()=>cpost('pair','Starting pairing…');
+    $('cloudUnpair').onclick=()=>cpost('unpair','Unpaired');
+    $('cloudOff').onclick=()=>cpost('optout','Cloud access off');
+  }
   // ---- Firmware update (OTA) ----
   if(d.ota!==undefined&&$('fwState')){
     $('fwCur').textContent=(d.fw||'')+' ('+(d.build||'')+')';
@@ -643,6 +682,16 @@ document.addEventListener('DOMContentLoaded',initLoopForm);
 // used to toast a false "Saved" while the auth bar appeared. Throw the status so
 // the catch can say what actually happened.
 function jok(r){if(!r.ok)throw r.status;return r.json();}
+// Fetch plain text, surfacing the SERVER's reason on failure. The glass-box
+// endpoints answer 404 with a human sentence ("off: …", "nosd: …", "evicted: …")
+// precisely so the chat can say why instead of showing an empty panel.
+function _tfetch(url){
+  return fetch(url).then(r=>r.text().then(t=>{
+    if(r.ok)return t;
+    const i=t.indexOf(': ');
+    throw new Error((i>0?t.slice(i+2):t)||('Error '+r.status));
+  }));
+}
 function failToast(e){toast(e===401?'Sign in required':'Couldn\'t save - try again');}
 // Live ring preview: POSTs the currently-selected profile radio; the device
 // drives the ring for ~4s and auto-reverts. Nothing persists.
@@ -943,7 +992,8 @@ function applyOrch(d){
     r.style.color=parts.some(p=>p[0]==='✗')?'#e77':(parts.some(p=>p[0]==='⚠')?'#e0b870':'#7fd1c8');}}
   $('orchLoop').checked=!!d.orchLoop;
   if($('midFail'))$('midFail').checked=!!d.midFail;
-  if(d.orchTrace!==undefined)$('orchTrace').checked=!!d.orchTrace;
+  if(d.orchTrace!==undefined){$('orchTrace').checked=!!d.orchTrace;
+    GB.trace=!!d.orchTrace;_chatTraceHint();}   // glass-box honesty (no extra poll)
   // "Voice replies" toggle (P2.5): applies immediately (like the SFX controls).
   if(d.ttsOn!==undefined){const tv=$('ttsOn');
     if(tv){tv.checked=!!d.ttsOn; tv.onchange=()=>orchApply({ttsOn:tv.checked?1:0});}}
@@ -2090,14 +2140,48 @@ function _chatBubble(who,text,meta){const log=$('chatLog');const d=document.crea
 // prefer the CURRENT display name from the allowlist sidecar (renames re-label
 // history retroactively). TGNAMES fills in loadTelegram().
 let TGNAMES={};
+// Row tags are a COMMA LIST ("from:roy", "via:telegram,turn:m0000a3f2",
+// "turn:m…,tool:memory.search,err"). Always read a value through this - the old
+// indexOf('from:')===0 + slice(5) broke the moment a second tag was appended.
+function _tagVal(tags,key){
+  const parts=String(tags||'').split(',');
+  for(let i=0;i<parts.length;i++){const p=parts[i].trim();
+    if(p.indexOf(key)===0)return p.slice(key.length);}
+  return '';
+}
+// A turn id is a row id ("m" + hex). Pre-v4.2.0 rows carry the OLD boot-relative
+// tag ("turn:t2"), which is NOT addressable - no dossier, no stable identity - so
+// it must fall back to the legacy adjacency path rather than render a "Turn
+// anatomy" button that can only ever answer "removed to save space".
+function _turnId(m){
+  const t=_tagVal(m&&m.tags,'turn:');
+  return /^m[0-9a-f]+$/.test(t)?t:'';
+}
 function _chatMeta(m){
-  const sender=(m.tags||'').indexOf('from:')===0?m.tags.slice(5):'';
+  const sender=_tagVal(m.tags,'from:');
   if(m.channel==='telegram'){const n=TGNAMES[m.session]||sender||m.session;return 'telegram · '+n;}
   return m.channel;   // web / voice / serial - the channel IS the sender
 }
 // Glass-box disclosure (A4): tool calls + thinking captured between two chat
 // messages group into one collapsed <details> block under the turn. Chronological
 // grouping - no tag join needed; rows already arrive in insertion order.
+// Compact token count for the turn chip: 1234 -> "1.2k".
+function _tok(n){n=+n||0;return n>=1000?(n/1000).toFixed(1)+'k':String(n);}
+// Per-turn summary chip under the reply (Glass Box P2), from the ev:turnend row.
+// `tools` is the EXECUTED TOOL-CALL count, not provider rounds - labeled as such.
+function _turnChip(bubble,row){
+  let d={};try{d=JSON.parse(row.text)||{};}catch(e){return;}
+  const bits=[];
+  if(d.host)bits.push(d.host+(d.model?' · '+d.model:''));
+  if(d.tools)bits.push(d.tools+' tool call'+(d.tools>1?'s':''));
+  if(d.in||d.out)bits.push(_tok(d.in)+' in / '+_tok(d.out)+' out');
+  if(d.ok===false)bits.push('failed'+(d.err?': '+d.err:''));
+  if(!bits.length)return;
+  const c=document.createElement('div');
+  c.style.cssText='font-size:9.5px;color:var(--ink3);margin-top:4px;opacity:.8';
+  c.textContent=bits.join(' · ');   // textContent - model/error text is untrusted
+  bubble.appendChild(c);
+}
 function _traceGroup(log,rows){
   if(!rows.length)return;
   const nTools=rows.filter(x=>x.kind==='tool_output').length;
@@ -2116,7 +2200,30 @@ function _traceGroup(log,rows){
   rows.forEach(x=>{const pre=document.createElement('pre');
     pre.style.cssText='white-space:pre-wrap;word-break:break-word;background:var(--raise2);border:1px solid var(--line);border-radius:8px;padding:7px 9px;margin:5px 0;font-size:10.5px';
     pre.textContent=(x.kind==='llm_response'?'💭 ':'')+x.text;   // textContent - tool output is untrusted
-    det.appendChild(pre);});
+    det.appendChild(pre);
+    // The row text is clipped; the full call + result is parked as a blob (P4).
+    if(x.blob){const a=document.createElement('button');
+      a.type='button';a.className='qh';a.style.cssText='font-size:10px;margin:0 0 6px';
+      a.textContent='Show full result';
+      a.onclick=()=>{a.disabled=true;a.textContent='Loading…';
+        _tfetch('/api/mem/blob?path='+encodeURIComponent(x.blob))
+          .then(t=>{pre.textContent=t;a.remove();})
+          .catch(e=>{a.disabled=false;a.textContent=String(e&&e.message||e)||'Not available';});};
+      det.appendChild(a);}
+  });
+  // Turn anatomy (P3): the exact system prompt, per-turn input, raw model output
+  // and the tool-loop transcript for THIS turn - fetched on demand, never inline.
+  const tid=rows.length?_turnId(rows[0]):'';
+  if(tid){const b=document.createElement('button');
+    b.type='button';b.className='qh';b.style.cssText='font-size:10px;margin:0 0 6px';
+    b.textContent='Turn anatomy';
+    b.onclick=()=>{b.disabled=true;b.textContent='Loading…';
+      _tfetch('/api/trace?turn='+encodeURIComponent(tid))
+        .then(t=>{const p=document.createElement('pre');
+          p.style.cssText='white-space:pre-wrap;word-break:break-word;background:var(--raise2);border:1px solid var(--line);border-radius:8px;padding:7px 9px;margin:5px 0;font-size:10.5px;max-height:340px;overflow:auto';
+          p.textContent=t;det.appendChild(p);b.remove();})
+        .catch(e=>{b.disabled=false;b.textContent=String(e&&e.message||e)||'Not available';});};
+    det.appendChild(b);}
   log.appendChild(det);
 }
 function loadChatHistory(){
@@ -2127,16 +2234,43 @@ function loadChatHistory(){
   fetch('/api/mem/episodic?limit=200').then(jok).then(d=>{
     const ms=(d.messages||[]).slice().reverse();   // store returns newest-first
     log.innerHTML='';
+    // Group by TURN ID, not adjacency: every trace row carries "turn:<user row
+    // id>" and the turn's reply row carries the same tag, so an interleaved
+    // Telegram/voice turn can no longer dump its tool calls under a web bubble.
+    // Rows with no turn: tag are pre-v4.2 history - they keep the old
+    // chronological accumulator so old conversations still render.
+    const byTurn={},endByTurn={};
+    ms.forEach(m=>{
+      if(m.session==='system')return;
+      if(m.kind==='tool_output'||m.kind==='llm_response'||m.kind==='log'){
+        const t=_turnId(m);
+        if(!t)return;   // legacy/untagged -> adjacency path below
+        // The turn-summary row is a chip under the reply, not a trace <pre> -
+        // and must not be counted as a sub-agent event in the disclosure.
+        if(_tagVal(m.tags,'ev:')==='turnend'){endByTurn[t]=m;return;}
+        (byTurn[t]=byTurn[t]||[]).push(m);
+      }
+    });
     let trace=[];let any=false;
     ms.forEach(m=>{
       if(m.session==='system')return;
-      if(m.kind==='tool_output'||m.kind==='llm_response'||m.kind==='log'){trace.push(m);return;}
+      if(m.kind==='tool_output'||m.kind==='llm_response'||m.kind==='log'){
+        if(!_turnId(m))trace.push(m);   // legacy: adjacency path
+        return;                                       // tagged rows: bucketed above
+      }
       if(m.kind!=='message')return;   // audio/file/etc. keep their own surfaces
-      _traceGroup(log,trace);trace=[];
-      _chatBubble(m.role==='user'?'u':'a',m.text,m.role==='user'?_chatMeta(m):undefined);
+      if(trace.length){_traceGroup(log,trace);trace=[];}
+      // A user row's OWN id is its turn id; the reply row carries turn:<that id>.
+      // Trace renders just above the reply it produced.
+      const tid=m.role==='user'?m.id:_turnId(m);
+      if(m.role!=='user'&&tid&&byTurn[tid]){_traceGroup(log,byTurn[tid]);delete byTurn[tid];}
+      const bub=_chatBubble(m.role==='user'?'u':'a',m.text,m.role==='user'?_chatMeta(m):undefined);
+      if(m.role!=='user'&&tid&&endByTurn[tid]){_turnChip(bub,endByTurn[tid]);delete endByTurn[tid];}
       any=true;
     });
-    _traceGroup(log,trace);
+    if(trace.length)_traceGroup(log,trace);
+    // Orphans: a turn still in flight, or whose reply row fell outside this page.
+    Object.keys(byTurn).forEach(k=>_traceGroup(log,byTurn[k]));
     if(!any)log.innerHTML='<p class=hint>No conversation yet - say something below, message the bot on Telegram, or hold the knob to talk.</p>';
     log.scrollTop=log.scrollHeight;
   }).catch(()=>{});

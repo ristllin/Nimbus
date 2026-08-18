@@ -474,6 +474,15 @@ static void test_pairing() {
   golden("pairing", ScreenId::Pairing, c);
 }
 
+static void test_pairing_cloud() {
+  // Cloud (cumulo-nimbus) pairing variant: the 8-char claim code + a scannable QR
+  // of the claim URL. Triggered by a non-empty claimUrl.
+  ScreenCtx c = baseCtx();
+  c.pairingCode = "F46D2JRY";
+  c.claimUrl = "https://app.cumulo-nimbus.ai/pair?code=F46D2JRY";
+  golden("pairing_cloud", ScreenId::Pairing, c);
+}
+
 static void test_header_radios() {
   // Header radio glyphs: WiFi up (wi+) + BT advertising (bt*) + battery, all in
   // the right cluster. Exercises the non-default states drawHeader renders.
@@ -544,6 +553,7 @@ int main() {
   RUN_TEST(test_session_detail_none);
   RUN_TEST(test_session_detail_root);
   RUN_TEST(test_pairing);
+  RUN_TEST(test_pairing_cloud);
   RUN_TEST(test_header_radios);
   RUN_TEST(test_mode_switch_transition);
   return UNITY_END();

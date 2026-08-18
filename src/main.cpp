@@ -83,6 +83,7 @@
 #include "nimbus_config.h"
 #include "version.h"
 #include "net/ble_notifier.h"
+#include "net/relay_client.h"  // cloud tunnel (cumulo-nimbus)
 #include "net/webui.h"
 #include "net/wifi_portal.h"
 #include "net/wifi_store.h"   // the Wi-Fi menu reads saved networks by name
@@ -831,6 +832,12 @@ static epd::ScreenCtx buildCtx(int cursorJob) {
     char pk[8];
     std::snprintf(pk, sizeof pk, "%06u", unsigned(net::ble::pairingPasskey()));
     c.pairingCode = pk;
+  }
+  // Cloud (cumulo-nimbus) pairing: the claim code + a scannable claim URL. claimUrl
+  // non-empty switches the Pairing screen to the cloud variant (see epd_screens).
+  if (nimbus::relay::pairingActive()) {
+    c.pairingCode = nimbus::relay::claimCode().c_str();
+    c.claimUrl = nimbus::relay::claimUrl().c_str();
   }
 
   // Badge text: low battery wins, else the top attention job's state.
@@ -1920,6 +1927,10 @@ static void orchestratorBegin() {
                          agent::store::telegramAllowlist(), orchOnMessage);
   agent::telegram::setTick(orchTick);
   agent::telegram::setSttSink(agent::stt::transcribe);  // Telegram voice notes -> STT -> turn
+  // Cloud relay (cumulo-nimbus): its own resident TLS, gated on cloudOptIn + a heap
+  // floor. Orchestrator-only by construction (this function only runs in that mode);
+  // the task no-ops until the owner opts in, so it is free to always spawn here.
+  nimbus::relay::begin();
   ORCH_MARK("orch: done");
 }
 
@@ -4340,6 +4351,24 @@ void loop() {
         renderScreen(attn::ScreenId::StatusIdle, -1);
       }
       s_wasPairing = pairing;
+    }
+
+    // Cloud (cumulo-nimbus) pairing screen (Orchestrator mode). Same edge discipline
+    // as BLE pairing above: show the claim code + QR on the rising edge (and if the
+    // code changes for a retry), restore StatusIdle when pairing ends. Inactive in
+    // Notifier (relay never runs there), so this is a no-op false branch then.
+    {
+      static bool        s_wasCloudPair = false;
+      static std::string s_shownCode;
+      const bool   cpair = nimbus::relay::pairingActive();
+      const String code  = cpair ? nimbus::relay::claimCode() : String();
+      if (cpair && (!s_wasCloudPair || code.c_str() != s_shownCode)) {
+        renderScreen(attn::ScreenId::Pairing, -1);
+        s_shownCode = code.c_str();
+      } else if (!cpair && s_wasCloudPair && !g_menu.isOpen()) {
+        renderScreen(attn::ScreenId::StatusIdle, -1);
+      }
+      s_wasCloudPair = cpair;
     }
 
     // Link-timeout only (no I/O): clears a stale ring if BLE goes quiet

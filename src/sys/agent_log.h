@@ -1,5 +1,6 @@
 #pragma once
 #include <Arduino.h>
+#include <esp_heap_caps.h>
 #include <stdarg.h>
 
 // agent_log - the device-side logging seam for the Orchestrator subsystem.
@@ -44,7 +45,11 @@ inline void put(const char* s) {
 // provider keys. /api/log is token-gated, which bounds the exposure to a caller who
 // already holds the token - redact at the source before any wider exposure.
 inline String agentLogTail() {
-  static char snap[logring::kCap + 1];
+  // PSRAM scratch, allocated OUTSIDE the spinlock (the no-heap-under-lock rule), so
+  // the ~1.3 KB snapshot buffer is not a permanent internal-SRAM static (SRAM reclaim).
+  char* snap = (char*)heap_caps_malloc(logring::kCap + 1, MALLOC_CAP_SPIRAM);
+  if (!snap) snap = (char*)heap_caps_malloc(logring::kCap + 1, MALLOC_CAP_8BIT);
+  if (!snap) return String();
   size_t n;
   portENTER_CRITICAL(&logring::g_mux);
   const size_t total = logring::g_total;
@@ -53,7 +58,9 @@ inline String agentLogTail() {
   for (size_t i = 0; i < n; ++i) snap[i] = logring::g_buf[(start + i) % logring::kCap];
   portEXIT_CRITICAL(&logring::g_mux);
   snap[n] = 0;
-  return String(snap);
+  String out(snap);
+  heap_caps_free(snap);
+  return out;
 }
 
 inline void alog(const char* msg) {

@@ -1124,6 +1124,14 @@ static String persistBlobSidecar(const std::string& bytes, const char* ext) {
   return String(path.c_str());
 }
 
+// Glass Box P4: the full text behind a clipped trace row. Rides the SAME
+// content-addressed store as media sidecars - dedup (a repeated tool result
+// stores once) and retention pruning are already implemented there.
+String persistTraceBlob(const String& text) {
+  if (!traceActive() || !text.length()) return String();
+  return persistBlobSidecar(std::string(text.c_str()), "txt");
+}
+
 void captureSession(const char* sessionId, const char* provider, const String& title) {
   if (!g_begun || !sessionId) return;
   Lock g;   // shared with the web/MCP task
@@ -1164,6 +1172,96 @@ String captureMessage(const char* sessionId, const char* role, nimbus::orch::Msg
   if (watch) noteSdIoResult(g_epiLog->unpersistedCount() == unpBefore);
   persistEpisodic();   // no-op for the SD append-log (addMessage already durable)
   return String(m.id.c_str());
+}
+
+// ---- Glass Box P3: per-turn dossier files ----------------------------------
+// One file per turn under /mem/trace, named by the turn id. A bounded RING (both
+// file count AND total bytes) so the richest-but-biggest artifact can never run
+// away with the card; the 6 h retention sweep drops stragglers by age too.
+static const char* kTraceDir = "/mem/trace";
+
+// Only ever build a path from a validated id - never from caller/query text.
+static bool validTurnId(const String& id) {
+  if (id.length() < 2 || id.length() > 12 || id[0] != 'm') return false;
+  for (size_t i = 1; i < id.length(); i++)
+    if (!isxdigit((unsigned char)id[i])) return false;
+  return true;
+}
+
+static String traceFilePath(const String& turnId) {
+  return String(kTraceDir) + "/" + turnId + ".txt";
+}
+
+// Evict oldest-by-name until the ring fits. Ids are monotonic, so lexicographic
+// order IS chronological order - no stat() per file needed.
+static void traceRingPrune() {
+  fs::FS& fsd = dataFs();
+  std::vector<String> names;
+  size_t total = 0;
+  File dir = fsd.open(kTraceDir);
+  if (!dir || !dir.isDirectory()) { if (dir) dir.close(); return; }
+  for (File f = dir.openNextFile(); f; f = dir.openNextFile()) {
+    String n = f.name();
+    size_t sz = f.size();
+    f.close();
+    if (!n.endsWith(".txt")) continue;
+    int slash = n.lastIndexOf('/');
+    if (slash >= 0) n = n.substring(slash + 1);
+    names.push_back(n);
+    total += sz;
+  }
+  dir.close();
+  std::sort(names.begin(), names.end(),
+            [](const String& a, const String& b) { return strcmp(a.c_str(), b.c_str()) < 0; });
+  size_t i = 0;
+  while (i < names.size() &&
+         ((int)(names.size() - i) > kTraceFilesMax || total > kTraceBytesMax)) {
+    String p = String(kTraceDir) + "/" + names[i];
+    File f = fsd.open(p, FILE_READ);
+    size_t sz = f ? f.size() : 0;
+    if (f) f.close();
+    if (fsd.remove(p)) total -= sz;
+    i++;
+  }
+}
+
+bool writeTraceFile(const String& turnId, const char* buf, size_t len) {
+  if (!traceActive() || !buf || !len || !validTurnId(turnId)) return false;
+  fs::FS& fsd = dataFs();
+  fsd.mkdir(kTraceDir);
+  File f = fsd.open(traceFilePath(turnId), FILE_WRITE);
+  if (!f) return false;
+  const size_t wrote = f.write((const uint8_t*)buf, len);
+  f.close();
+  if (wrote != len) { fsd.remove(traceFilePath(turnId)); return false; }
+  traceRingPrune();
+  return true;
+}
+
+char* readTraceFilePs(const String& turnId, size_t& outLen) {
+  outLen = 0;
+  if (!validTurnId(turnId)) return nullptr;
+  File f = dataFs().open(traceFilePath(turnId), FILE_READ);
+  if (!f) return nullptr;
+  const size_t n = f.size();
+  if (!n) { f.close(); return nullptr; }
+  char* b = (char*)heap_caps_malloc(n, MALLOC_CAP_SPIRAM);
+  if (!b) { f.close(); return nullptr; }
+  const size_t got = f.read((uint8_t*)b, n);
+  f.close();
+  if (got != n) { free(b); return nullptr; }
+  outLen = n;
+  return b;
+}
+
+// Reserve an id without writing a row (Glass Box turn identity). Same counter
+// and format as captureMessage, so a minted turn id sorts with the rows it tags.
+String mintRowId() {
+  if (!g_begun) return String();
+  Lock g;
+  char id[16];
+  snprintf(id, sizeof(id), "m%08x", (unsigned)(++g_epiSeq));
+  return String(id);
 }
 
 // Glass-box trace gate (A4): rows write only when the SD append-log is live
@@ -1307,6 +1405,12 @@ int pruneRetention(int retentionDays) {
     }
     if (dir) dir.close();
   }
+  // Glass Box P3 turn dossiers: the ring bounds SIZE on every write; this bounds
+  // AGE, so a quiet device doesn't keep month-old turn anatomy after its episodic
+  // rows are gone. Ids are opaque here, so age comes from the ring, not the name:
+  // simply re-run the ring prune, then drop anything left if the whole directory
+  // predates the window (cheap - the ring keeps this to <=16 files).
+  traceRingPrune();
   alogf("memory: retention pruned %d day-files + %d blobs (kept %d msgs)",
         (int)rep.removedDayFiles.size(), (int)rep.removedBlobs.size(), rep.keptMessages);
   return before - rep.keptMessages;

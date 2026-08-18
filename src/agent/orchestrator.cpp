@@ -95,6 +95,23 @@ static LittleFsMemoryStore   g_memStore;
 static LittleFsFoldStoreIO      g_foldIO;
 static nimbus::orch::FoldStore  g_folds;
 static char g_lastTurnChat[32]  = {};   // the chat compactTick() watches
+// Glass Box turn identity: "turn:<user row id>" - stamped on every trace row and
+// on the turn's assistant reply rows, so the chat UI groups a bubble with its
+// trace by ID instead of chronological adjacency (adjacency mis-bucketed rows
+// whenever a Telegram/voice turn interleaved with a web one). File scope because
+// the reply sinks (speak/telegram, below) capture from outside buildTurnDeps().
+// Empty outside a turn (cleared in onTurnEnd) so an async sub-agent delivery can
+// never inherit a stale turn's id. tg_poll-only - no lock needed.
+static char g_turnTag[24] = {};
+// True once this turn's dossier file landed (Glass Box P3) - the turn-summary
+// row then carries its path, so the chat knows a dossier exists without probing.
+static bool g_turnDossier = false;
+// Append the live turn tag to a row's tags, if we're inside a turn.
+static String withTurnTag(const char* base) {
+  String t(base);
+  if (g_turnTag[0]) { if (t.length()) t += ","; t += g_turnTag; }
+  return t;
+}
 // v3.7.0 RBAC: the tenant table (roles + quotas). Unlike the rest of the
 // orchestrator state this genuinely has TWO writers - the web surface
 // (/api/tenant, AsyncTCP) and the assistant's tenant.* tools (tg_poll, or
@@ -324,8 +341,10 @@ static size_t     g_dbgLen = 0;
 
 static void captureTurnDebug(const std::string& host, bool convContinued,
                              const std::string& instructions, const std::string& inputs,
-                             const std::string& outJson, bool ok) {
-  const size_t need = instructions.size() + inputs.size() + outJson.size() + 1024;
+                             const std::string& outJson, bool ok,
+                             const std::string& brief) {
+  const size_t need =
+      instructions.size() + inputs.size() + outJson.size() + brief.size() + 1024;
   char* b = (char*)heap_caps_malloc(need, MALLOC_CAP_SPIRAM);
   if (!b) return;   // no PSRAM -> skip capture, never the turn
   size_t off = (size_t)snprintf(b, need,
@@ -333,8 +352,8 @@ static void captureTurnDebug(const std::string& host, bool convContinued,
       "host: %s\n"
       "provider conversation: %s\n"
       "result: %s\n"
-      "note: tool-loop ROUNDS (mid-turn tool calls + results) live server-side and\n"
-      "are not captured here; this is the turn's entry and exit.\n"
+      "sections: 1 system prompt · 2 per-turn input · 3 raw model output ·\n"
+      "4 tool-loop transcript (the mid-turn rounds, when the turn used tools).\n"
       "\n===== 1. INSTRUCTIONS - the system prompt sent this turn =====\n"
       "(role + HOW YOU RUN + capability manifest + owner directive + [RUNNING\n"
       "MEMORY] + [RELEVANT MEMORIES] associative recall)\n\n",
@@ -358,6 +377,11 @@ static void captureTurnDebug(const std::string& host, bool convContinued,
   appLit("\n\n===== 3. MODEL RAW OUTPUT - the orch_turn JSON =====\n\n");
   if (outJson.size()) appStr(outJson);
   else appLit("(none - the turn failed before an output)");
+  appLit("\n\n===== 4. TOOL-LOOP TRANSCRIPT - the mid-turn rounds =====\n"
+         "([user] seed, [assistant] per-round prose, [tool] calls with their\n"
+         "arguments, [result] outputs - each line folded to 200 chars)\n\n");
+  if (brief.size()) appStr(brief);
+  else appLit("(single-shot turn - the model answered without calling a tool)");
   appLit("\n");
   b[off] = 0;
   std::lock_guard<std::mutex> lk(g_dbgMx);
@@ -610,7 +634,7 @@ static agent::ApplyDeps buildApplyDeps() {
   d.emitAsk = [] { emitAsk(); };
   d.captureAssistant = [](const std::string& chatId, const std::string& text) {
     memory::captureMessage(chatId.c_str(), "assistant", orch::MsgKind::Message,
-                           String(text.c_str()));
+                           String(text.c_str()), "", withTurnTag(""));
     if (chatId != "system") g_folds.noteMessage(chatId, text.size());   // fold trigger
   };
   d.fire = [](const char* cue) {
@@ -765,6 +789,11 @@ static TurnEngine::Deps buildTurnDeps() {
                                        String(text.c_str()), "", String(fromTag.c_str()));
     strncpy(g_curUserRowId, id.c_str(), sizeof(g_curUserRowId) - 1);
     g_curUserRowId[sizeof(g_curUserRowId) - 1] = 0;
+    // The user row IS this turn's identity - re-key the turn tag off it (the
+    // onTurnStart fallback minted a placeholder). The row does NOT carry a
+    // turn: tag itself: its own `id` is the key, and appending one would
+    // corrupt the "from:<sender>" label the chat view slices out of tags.
+    if (id.length()) snprintf(g_turnTag, sizeof(g_turnTag), "turn:%s", id.c_str());
     if (chatId != "system") g_folds.noteMessage(chatId, text.size());   // fold trigger
   };
   d.firstAllowedChat = [] { return std::string(firstAllowedChat().c_str()); };
@@ -782,17 +811,34 @@ static TurnEngine::Deps buildTurnDeps() {
   // need no lock. Rows are UTF-8-safe-clipped BEFORE building the String, so the
   // internal-heap transient per row stays ~2 KB; memory::traceActive() gates on
   // the SD append-log + the owner `otrace` knob.
-  static std::map<std::string, std::string> s_traceArgs;   // call id -> clipped args
-  static uint32_t s_turnSeq = 0;
-  static char     s_turnTag[24] = "turn:t0";
+  static std::map<std::string, std::string> s_traceArgs;   // call id -> args (full cap)
+  static int s_traceBlobs = 0;   // sidecars written this turn (P4 budget)
   d.hooks.onTurnStart = [](const TurnStartEv& ev) {
-    snprintf(s_turnTag, sizeof(s_turnTag), "turn:t%lu", (unsigned long)++s_turnSeq);
+    // Turn identity = the turn's USER row id (boot-stable, resumed past history
+    // via nextIdHint) - so the chat UI joins a bubble to its trace rows by ID
+    // instead of chronological adjacency (which mis-bucketed an interleaved
+    // Telegram/voice turn's rows into the wrong web bubble). Seedless turns
+    // (scheduled loops, synthesis/dream) have no user row, so they mint one from
+    // the same counter here; episodicCaptureUser overwrites this with the real
+    // row id when a user row does get captured, whichever order the hooks fire.
+    s_traceBlobs = 0;
+    // The user row is captured BEFORE this hook fires (durable-first), so prefer
+    // the id it already stashed - minting here would consume a fresh id and
+    // clobber the real one, leaving the turn tagged with an id no row owns
+    // (caught on hardware: user row m…85 vs tag turn:m…86). Only a SEEDLESS turn
+    // (scheduled loop, synthesis/dream) has no user row and needs a minted id;
+    // episodicCaptureUser still overwrites this if it lands after us.
+    String id = g_curUserRowId[0] ? String(g_curUserRowId) : memory::mintRowId();
+    snprintf(g_turnTag, sizeof(g_turnTag), "turn:%s", id.length() ? id.c_str() : "t0");
     s_traceArgs.clear();
   };
   d.hooks.onToolCall = [](const orch::HeadToolCall& call) {
     if (!memory::traceActive()) return;
+    // Keep the args at the FULL cap here (P4): the row text still shows the
+    // short clip, but the sidecar needs what the model actually sent. >=128 B
+    // strings spill to PSRAM, and the map is bounded at 24 entries.
     int keep = nimbus::utf8CapLen(call.argsJson.c_str(), (int)call.argsJson.size(),
-                                  ORCH_TRACE_ARGS_MAX);
+                                  ORCH_TRACE_ARGS_FULL);
     std::string a = keep < (int)call.argsJson.size()
                         ? call.argsJson.substr(0, (size_t)keep) + "\xE2\x80\xA6"
                         : call.argsJson;
@@ -805,17 +851,33 @@ static TurnEngine::Deps buildTurnDeps() {
     if (it != s_traceArgs.end()) { args = it->second; s_traceArgs.erase(it); }
     int keep = nimbus::utf8CapLen(r.output.c_str(), (int)r.output.size(),
                                   ORCH_TRACE_OUT_MAX);
-    std::string out = keep < (int)r.output.size()
+    const bool outClipped  = keep < (int)r.output.size();
+    std::string out = outClipped
                           ? r.output.substr(0, (size_t)keep) + "\xE2\x80\xA6[truncated]"
                           : r.output;
+    // The row keeps the SHORT args clip; the sidecar keeps what was really sent.
+    int akeep = nimbus::utf8CapLen(args.c_str(), (int)args.size(), ORCH_TRACE_ARGS_MAX);
+    const bool argsClipped = akeep < (int)args.size();
+    std::string argsRow = argsClipped ? args.substr(0, (size_t)akeep) + "\xE2\x80\xA6" : args;
     // ONE merged row per call: name(args) -> output. Halves row count and keeps
     // args + result together for the chat disclosure.
-    String text = String(r.name.c_str()) + "(" + args.c_str() + ")\n\xE2\x86\x92 " +
+    String text = String(r.name.c_str()) + "(" + argsRow.c_str() + ")\n\xE2\x86\x92 " +
                   out.c_str();
-    String tags = String(s_turnTag) + ",tool:" + r.name.c_str() +
+    String tags = String(g_turnTag) + ",tool:" + r.name.c_str() +
                   (r.isError ? ",err" : "");
+    // P4: when anything was clipped, park the FULL call+result as a blob so the
+    // owner can open what the model actually saw (the model has results.get; the
+    // web had nothing). Bounded per turn so a tool-heavy turn can't churn the SD.
+    String blob;
+    if ((outClipped || argsClipped) && s_traceBlobs < ORCH_TRACE_BLOBS_PER_TURN) {
+      std::string full = r.name + "(" + args + ")\n\xE2\x86\x92 " + r.output;
+      int fkeep = nimbus::utf8CapLen(full.c_str(), (int)full.size(), ORCH_TRACE_BLOB_MAX);
+      if (fkeep < (int)full.size()) full = full.substr(0, (size_t)fkeep);
+      blob = memory::persistTraceBlob(String(full.c_str()));
+      if (blob.length()) s_traceBlobs++;
+    }
     std::string chat(currentChat().c_str());
-    memory::captureMessage(chat.c_str(), "tool", orch::MsgKind::ToolOutput, text, "", tags);
+    memory::captureMessage(chat.c_str(), "tool", orch::MsgKind::ToolOutput, text, blob, tags);
   };
   d.hooks.onThinking = [](const ThinkingEv& ev) {
     if (!memory::traceActive()) return;
@@ -825,7 +887,7 @@ static TurnEngine::Deps buildTurnDeps() {
                         ? ev.text.substr(0, (size_t)keep) + "\xE2\x80\xA6"
                         : ev.text;
     char tags[40];
-    snprintf(tags, sizeof(tags), "%s,round:%d", s_turnTag, ev.round);
+    snprintf(tags, sizeof(tags), "%s,round:%d", g_turnTag, ev.round);
     memory::captureMessage(ev.chatId.c_str(), "assistant", orch::MsgKind::LlmResponse,
                            String(t.c_str()), "", tags);
   };
@@ -837,8 +899,12 @@ static TurnEngine::Deps buildTurnDeps() {
     if (!memory::traceActive() || ev.chatId.empty()) return;
     String text = String("spawned ") + ev.tag.c_str() + " (" + ev.backend.c_str() +
                   "/" + ev.model.c_str() + "): " + ev.task.c_str();
+    // Turn tag when the spawn happened INSIDE a turn (the usual case) so the
+    // delegation groups with the reply that ordered it; bare when it didn't.
+    String tags = String("ev:spawn,sub:") + ev.tag.c_str();
+    if (g_turnTag[0]) tags += String(",") + g_turnTag;
     memory::captureMessage(ev.chatId.c_str(), "system", orch::MsgKind::Log, text, "",
-                           String("ev:spawn,sub:") + ev.tag.c_str());
+                           tags);
   };
   d.hooks.onResult = [](const ResultEv& ev) {
     if (!ev.terminal || !memory::traceActive() || ev.chatId.empty()) return;
@@ -855,8 +921,23 @@ static TurnEngine::Deps buildTurnDeps() {
                            String("ev:subresult,sub:") + ev.tag.c_str());
   };
   d.hooks.onTurnDebug = [](const TurnDebugEv& ev) {
+    static const std::string kNoBrief;
     captureTurnDebug(ev.host, ev.convContinued, *ev.instructions, *ev.inputs,
-                     *ev.rawOut, ev.ok);
+                     *ev.rawOut, ev.ok,
+                     ev.transcriptBrief ? *ev.transcriptBrief : kNoBrief);
+    // Glass Box P3: persist the same anatomy per TURN, so the chat can open any
+    // past turn - /api/lastturn is one RAM slot, overwritten by the next turn.
+    // Bounded copy + a file ring; skipped entirely when trace is off / no SD.
+    if (memory::traceActive() && g_turnTag[0]) {
+      size_t n = 0;
+      char* blob = lastTurnDebugPs(n);
+      if (blob) {
+        if (n > ORCH_TRACE_FILE_MAX)
+          n = (size_t)nimbus::utf8CapLen(blob, (int)n, ORCH_TRACE_FILE_MAX);
+        g_turnDossier = memory::writeTraceFile(String(g_turnTag + 5), blob, n);  // skip "turn:"
+        free(blob);
+      }
+    }
   };
   // Lifecycle breadcrumb (observer-only): one log line per completed turn with
   // real billed tokens + tool-call count. onSpawn/onResult stay UNWIRED here on
@@ -867,6 +948,40 @@ static TurnEngine::Deps buildTurnDeps() {
     // owner's real last message from the RECENT CONVERSATION window (exactly the
     // request a spawn-synthesis turn is answering).
     g_curUserRowId[0] = 0;
+    // Glass Box P2: one compact per-turn summary row BEFORE the tag is cleared -
+    // the only PERSISTED per-turn token record (the usage ledger aggregates by
+    // provider+tag and can't answer "what did THIS reply cost?"). Written as JSON
+    // in the text field so the UI parses it without a schema change.
+    // NB `ev.rounds` counts EXECUTED TOOL CALLS, not provider rounds (see
+    // TurnEndEv) - it ships as "tools" so no surface can misreport it as rounds.
+    if (memory::traceActive() && g_turnTag[0] && !ev.chatId.empty()) {
+      std::string err = ev.error;
+      if (err.size()) {
+        int keep = nimbus::utf8CapLen(err.c_str(), (int)err.size(), ORCH_TRACE_ENDERR_MAX);
+        if (keep < (int)err.size()) err = err.substr(0, (size_t)keep);
+      }
+      JsonDocument doc;
+      doc["host"]  = ev.host;
+      doc["model"] = std::string(agent::store::orchModel(String(ev.host.c_str())).c_str());
+      doc["tools"] = ev.rounds;
+      doc["ok"]    = ev.ok;
+      doc["in"]    = (unsigned)ev.usage.promptTokens;
+      doc["out"]   = (unsigned)ev.usage.completionTokens;
+      doc["reply"] = (unsigned)ev.replyBytes;
+      if (err.size()) doc["err"] = err;
+      String js;
+      serializeJson(doc, js);
+      // blobPath -> this turn's dossier, so the chat can offer "turn anatomy"
+      // without probing for a file that may have been evicted by the ring.
+      String dossier = g_turnDossier
+                           ? String("/mem/trace/") + (g_turnTag + 5) + ".txt"
+                           : String();
+      if (js.length() <= ORCH_TRACE_END_MAX)
+        memory::captureMessage(ev.chatId.c_str(), "system", orch::MsgKind::Log, js, dossier,
+                               String("ev:turnend,") + g_turnTag);
+    }
+    g_turnTag[0] = 0;   // same reason: no async row may inherit this turn's id
+    g_turnDossier = false;
     alogf("turn end: %s host=%s tokens in=%u out=%u tools=%d reply=%uB",
           ev.ok ? "ok" : "FAIL", ev.host.c_str(), (unsigned)ev.usage.promptTokens,
           (unsigned)ev.usage.completionTokens, ev.rounds, (unsigned)ev.replyBytes);
@@ -1221,7 +1336,8 @@ bool speakOnDevice(const String& text) {
   // Capture spoken output so a voice-only reply is still in history ("what did you
   // just say?" works on stateless hosts once device history reads these rows).
   if (played) memory::captureMessage(currentChat().c_str(), "assistant",
-                                     orch::MsgKind::Message, text, "", "via:speaker");
+                                     orch::MsgKind::Message, text, "",
+                                     withTurnTag("via:speaker"));
   return played;
 }
 
@@ -1252,7 +1368,8 @@ bool sendToChat(const String& chatId, const String& text, bool asVoice) {
   if (asVoice && g_sinks.speak) {
     g_sinks.speak(text);
     // Capture spoken-via-Telegram output to the TARGET chat's history.
-    memory::captureMessage(cid.c_str(), "assistant", orch::MsgKind::Message, text, "", "via:telegram");
+    memory::captureMessage(cid.c_str(), "assistant", orch::MsgKind::Message, text, "",
+                           withTurnTag("via:telegram"));
     if (cid == cur && g_engine) g_engine->noteToolReplied();
     return true;
   }
@@ -1262,7 +1379,8 @@ bool sendToChat(const String& chatId, const String& text, bool asVoice) {
   if (sent) {
     // reply.telegram output was invisible to history - capture it (to the TARGET
     // chat, so a cross-chat send lands in the right conversation).
-    memory::captureMessage(cid.c_str(), "assistant", orch::MsgKind::Message, text, "", "via:telegram");
+    memory::captureMessage(cid.c_str(), "assistant", orch::MsgKind::Message, text, "",
+                           withTurnTag("via:telegram"));
     if (cid == cur && g_engine) g_engine->noteToolReplied();
   }
   return sent;

@@ -550,14 +550,12 @@ int doGetUpdates(int32_t offset, int longPollS) {
   }
 
   char* body = ensurePollBody();
-  if (!body) {   // PSRAM exhausted (should never happen) - fall back to the small static
-    static char fallback[MAX_RESP];
-    body = fallback;
-    if (contentLen >= 0) {
-      if (readBodyN(g_pollSc, body, sizeof(fallback), contentLen, deadline) < 0) { closePollSocket(); return -1; }
-    } else { readBody(g_pollSc, body, sizeof(fallback), deadline); serverClose = true; }
+  if (!body) {   // PSRAM exhausted (should never happen) - drop this poll cycle and
+    // retry. No static fallback: the 4 KB internal-SRAM buffer this replaced cost
+    // memory permanently for a path that never runs (SRAM reclaim).
+    alog("telegram: poll body alloc failed; skipping cycle");
     closePollSocket();
-    return processUpdatesBody(body, strlen(body), offset);
+    return -1;
   }
   // A batch larger than the arena: re-poll narrow (limit=1) at the SAME offset so a
   // single update always fits - Telegram re-serves the whole batch. Nothing lost.

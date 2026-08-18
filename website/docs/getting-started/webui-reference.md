@@ -3,6 +3,7 @@ title: "Web UI reference"
 sidebar_label: "Web UI reference"
 description: "Every tab of the Nimbus web UI: Dashboard, Sessions, Chat, Memory & Files, Capabilities, Usage, Routines, and Settings."
 ---
+<!-- audience: user -->
 
 # Web UI Reference
 
@@ -128,6 +129,13 @@ turns and on the sessions it starts. Each connector is a card: create the
 credential once, paste it in, enable it - secrets are write-only. An
 **Advanced** section edits the raw JSON directly. Setup details per service:
 **[Connectors](../guides/connectors.md)**.
+
+Worked example - GitHub: create a Personal Access Token (GitHub → Settings →
+Developer settings → Personal access tokens, with the `repo` scope), open the
+GitHub card, pick your provider, paste the token, enable, **Save**. Then ask
+the assistant to *"create a private repo named test-repo and add a README"* -
+it comes back with the new repo's URL. The same connector covers issues, pull
+requests, and code search.
 
 The **Telegram** group also lives here: the bot token (from @BotFather), who
 can message this device (new senders appear for one-tap approval; access is

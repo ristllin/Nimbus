@@ -375,6 +375,9 @@ static bool runMistralLoop(const ProviderDeps& pd, std::string& convId,
   hlog::logf("orchTurn(mistral-loop): rounds=%d cap=%s ok=%d heap=%u",
              res.rounds, res.capReason.c_str(), (int)res.ok,
              (unsigned)(pd.freeHeap ? pd.freeHeap() : 0));
+  // Glass Box P3: hand the canonical transcript to the engine BEFORE the
+  // failure return - a failed turn's middle is exactly what needs debugging.
+  if (ht.onBrief) ht.onBrief(tr.renderBrief(kHeadBriefMax));
   if (!res.ok) { err = res.error.empty() ? std::string("loop failed") : res.error; return false; }
   outJson = res.finalTurn;
   convId  = "chat";   // stateless marker - the device owns the turn's state

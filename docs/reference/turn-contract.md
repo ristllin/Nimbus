@@ -1,3 +1,4 @@
+<!-- audience: dev -->
 # Orchestrator Turn Contract
 
 The **turn contract** is the JSON shape every provider-hosted LLM must return

@@ -235,6 +235,19 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 </div>
 </details>
 
+<details class=setgroup><summary>Cloud access<span class=chev>&rsaquo;</span></summary>
+<div class=setbody>
+<p class="hint tip">Reach this device from anywhere through CumuloNimbus. Available in Orchestrator mode. Pairing shows a code to enter at app.cumulo-nimbus.ai while signed in.</p>
+<div id=cloudLine class=hint>Cloud access is off.</div>
+<div id=cloudCode class=hint style="display:none;margin-top:6px"></div>
+<div class=row style="margin-top:6px">
+<button id=cloudPair type=button>Pair with the cloud</button>
+<button id=cloudUnpair type=button style="display:none">Unpair</button>
+<button id=cloudOff type=button style="display:none">Turn off</button>
+</div>
+</div>
+</details>
+
 <details class=setgroup><summary style="color:var(--crit)">Danger zone<span class=chev>&rsaquo;</span></summary>
 <div class=setbody>
 <b style="display:block;margin-top:6px;color:var(--crit)">Erase storage</b>

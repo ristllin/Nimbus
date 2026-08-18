@@ -465,6 +465,46 @@ void registerMemoryRoutes(AsyncWebServer& server) {
   server.on("/api/mem/embedcfg",   HTTP_POST, handleEmbedCfgPost);
   server.on("/api/mem/embedverify",HTTP_POST, handleEmbedVerify);
 
+  // GET /api/mem/blob?path=/mem/blobs/<hash>.txt - the FULL text behind a
+  // clipped trace row (Glass Box P4). The model has results.get for this; the
+  // owner's web UI had nothing, so a >1 KB tool result was unreadable.
+  // WARNING: The path comes from the client, so it is hard-validated: it must sit
+  // directly under /mem/blobs, carry no traversal, and match the flat
+  // <name>.<ext> shape the blob store writes. Served as text/plain with nosniff
+  // so a stored .txt can never be interpreted as markup on this origin.
+  server.on("/api/mem/blob", HTTP_GET, [](AsyncWebServerRequest* r) {
+    if (authBlocked(r)) return;
+    if (!r->hasParam("path")) { r->send(400, "text/plain", "path required"); return; }
+    const String p = r->getParam("path")->value();
+    const char* kPrefix = "/mem/blobs/";
+    if (!p.startsWith(kPrefix) || p.indexOf("..") >= 0 ||
+        p.indexOf('/', (int)strlen(kPrefix)) >= 0) {
+      r->send(400, "text/plain", "bad path");
+      return;
+    }
+    File f = agent::memory::dataFs().open(p, FILE_READ);
+    if (!f) { r->send(404, "text/plain", "This item was removed to save space."); return; }
+    const size_t n = f.size();
+    char* raw = (n && n < 512 * 1024) ? (char*)heap_caps_malloc(n, MALLOC_CAP_SPIRAM) : nullptr;
+    if (!raw) { f.close(); r->send(507, "text/plain", "too large to display"); return; }
+    const size_t got = f.read((uint8_t*)raw, n);
+    f.close();
+    if (got != n) { free(raw); r->send(500, "text/plain", "read failed"); return; }
+    std::shared_ptr<char> body(raw, free);
+    AsyncWebServerResponse* res = r->beginChunkedResponse(
+        "text/plain; charset=utf-8",
+        [body, n](uint8_t* buf, size_t maxLen, size_t index) -> size_t {
+          if (index >= n) return 0;
+          size_t take = n - index;
+          if (take > maxLen) take = maxLen;
+          memcpy(buf, body.get() + index, take);
+          return take;
+        });
+    res->addHeader("Cache-Control", "no-store");
+    res->addHeader("X-Content-Type-Options", "nosniff");
+    r->send(res);
+  });
+
   // GET /api/log - the agent RAM log ring (last ~2.5 KB), plain text. Lets a
   // network-dependent failure (STT "didn't catch that", turn errors) be diagnosed
   // over HTTP without opening serial (which would drop the WiFi being diagnosed).

@@ -40,6 +40,7 @@ SRCS      := $(wildcard $(CURDIR)/src/*.cpp) \
              $(wildcard $(REPO)/lib/core/src/orch_*.cpp) \
              $(REPO)/lib/core/src/attention.cpp \
              $(REPO)/lib/core/src/status_style.cpp \
+             $(REPO)/lib/core/src/docs_pack.cpp \
              $(wildcard $(REPO)/../solide-drivers/src/portable/ring.cpp)
 
 OBJS      := $(patsubst %,$(BUILD)/%.o,$(notdir $(basename $(SRCS))))
