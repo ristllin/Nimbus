@@ -339,10 +339,15 @@ static std::mutex g_dbgMx;
 static char*      g_dbgBuf = nullptr;   // PSRAM
 static size_t     g_dbgLen = 0;
 
-static void captureTurnDebug(const std::string& host, bool convContinued,
-                             const std::string& instructions, const std::string& inputs,
-                             const std::string& outJson, bool ok,
-                             const std::string& brief) {
+// Takes the borrowed-pointer TurnDebugEv straight from the onTurnDebug hook (one param,
+// instead of unpacking its seven fields at the call site). The pointers are valid only
+// during the hook call, which is where this runs.
+static void captureTurnDebug(const TurnDebugEv& ev) {
+  static const std::string kNoBrief;
+  const std::string& instructions = *ev.instructions;
+  const std::string& inputs = *ev.inputs;
+  const std::string& outJson = *ev.rawOut;
+  const std::string& brief = ev.transcriptBrief ? *ev.transcriptBrief : kNoBrief;
   const size_t need =
       instructions.size() + inputs.size() + outJson.size() + brief.size() + 1024;
   char* b = (char*)heap_caps_malloc(need, MALLOC_CAP_SPIRAM);
@@ -357,10 +362,10 @@ static void captureTurnDebug(const std::string& host, bool convContinued,
       "\n===== 1. INSTRUCTIONS - the system prompt sent this turn =====\n"
       "(role + HOW YOU RUN + capability manifest + owner directive + [RUNNING\n"
       "MEMORY] + [RELEVANT MEMORIES] associative recall)\n\n",
-      host.c_str(),
-      convContinued ? "CONTINUED - the provider held history from prior turns"
-                    : "FRESH - no prior history visible to the model",
-      ok ? "ok" : "FAILED");
+      ev.host.c_str(),
+      ev.convContinued ? "CONTINUED - the provider held history from prior turns"
+                       : "FRESH - no prior history visible to the model",
+      ev.ok ? "ok" : "FAILED");
   auto app = [&](const char* s, size_t n) {
     if (off + n >= need - 1) n = need - 1 - off;
     memcpy(b + off, s, n);
@@ -921,10 +926,7 @@ static TurnEngine::Deps buildTurnDeps() {
                            String("ev:subresult,sub:") + ev.tag.c_str());
   };
   d.hooks.onTurnDebug = [](const TurnDebugEv& ev) {
-    static const std::string kNoBrief;
-    captureTurnDebug(ev.host, ev.convContinued, *ev.instructions, *ev.inputs,
-                     *ev.rawOut, ev.ok,
-                     ev.transcriptBrief ? *ev.transcriptBrief : kNoBrief);
+    captureTurnDebug(ev);
     // Glass Box P3: persist the same anatomy per TURN, so the chat can open any
     // past turn - /api/lastturn is one RAM slot, overwritten by the next turn.
     // Bounded copy + a file ring; skipped entirely when trace is off / no SD.

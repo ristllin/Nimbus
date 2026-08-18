@@ -85,6 +85,11 @@ class Parser {
   size_t maxMessageBytes_;
   std::vector<Message> ready_;       // completed messages awaiting next()
   void parse_();
+  // parse_ helpers: decode one frame's header at `off`, then route one full frame.
+  // Splitting keeps each piece well inside the complexity gate.
+  enum class Scan { NeedMore, Error, Ok };
+  Scan scanHeader_(size_t off, size_t& hdr, uint64_t& plen, Opcode& op, bool& fin) const;
+  bool emitFrame_(Opcode op, bool fin, const uint8_t* pl, uint64_t plen);
 };
 
 }  // namespace ws

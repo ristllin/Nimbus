@@ -90,6 +90,11 @@ class ResponseParser {
   enum class State { Head, BodyLength, BodyChunked, BodyUntilClose, Done, Error };
   void parseHead_();
   void parseChunked_();
+  // parseHead_/feed helpers, split out to stay inside the complexity gate.
+  bool parseStatusLine_(const std::string& statusLine);
+  void scanHeaderFields_(const std::string& head, size_t pos, bool& chunked, bool& haveLen);
+  void feedBodyLength_();
+  void feedBodyUntilClose_();
 
   std::vector<uint8_t> buf_;   // unparsed bytes (bounded by framing; small)
   BodyBuf body_;               // decoded body (PSRAM on device)

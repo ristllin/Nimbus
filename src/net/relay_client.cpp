@@ -201,58 +201,42 @@ static bool isTunnelDeniedPath(const char* path) {
   return false;
 }
 
-// Answer a tunneled request: replay into the local server, frame the response back.
-void handleReq(const ReqFrame& req) {
-  const bool denied = isTunnelDeniedPath(req.path);
+// Collect the tunneled request's headers + decoded body, then replay it into the local
+// server. Returns doLoopback's success. Body decode is bounded first so a hostile
+// bodyB64 can't blow the scarce internal-SRAM decode.
+bool replayReq(const ReqFrame& req, http_replay::ResponseParser& rp) {
   http_replay::Headers hdrs;
   std::vector<uint8_t> body;
-  http_replay::ResponseParser rp(kMaxRespBody);
-  bool ok = false;
-  if (!denied) {
-    // Collect headers into the portable vector.
-    if (!req.headers.isNull()) {
-      for (JsonPairConst kv : req.headers) {
-        if (kv.value().is<const char*>())
-          hdrs.emplace_back(std::string(kv.key().c_str()),
-                            std::string(kv.value().as<const char*>()));
-      }
+  // Collect headers into the portable vector.
+  if (!req.headers.isNull()) {
+    for (JsonPairConst kv : req.headers) {
+      if (kv.value().is<const char*>())
+        hdrs.emplace_back(std::string(kv.key().c_str()),
+                          std::string(kv.value().as<const char*>()));
     }
-    // Decode request body (small; POST /api/config and friends). Bound the encoded
-    // length first so a hostile bodyB64 can't blow the internal-SRAM decode.
-    if (req.bodyB64 && req.bodyB64[0] && strlen(req.bodyB64) <= kMaxReqBody * 4 / 3 + 4) {
-      if (!b64Decode(req.bodyB64, strlen(req.bodyB64), body) || body.size() > kMaxReqBody) {
-        body.clear();
-      }
-    }
-    ok = doLoopback(req.method, req.path, hdrs, body.data(), body.size(), rp);
   }
+  // Decode request body (small; POST /api/config and friends). Bound the encoded
+  // length first so a hostile bodyB64 can't blow the internal-SRAM decode.
+  if (req.bodyB64 && req.bodyB64[0] && strlen(req.bodyB64) <= kMaxReqBody * 4 / 3 + 4) {
+    if (!b64Decode(req.bodyB64, strlen(req.bodyB64), body) || body.size() > kMaxReqBody) {
+      body.clear();
+    }
+  }
+  return doLoopback(req.method, req.path, hdrs, body.data(), body.size(), rp);
+}
 
-  int status = denied ? 403 : (ok ? rp.status() : 504);
-  if (ok && rp.overflow()) status = 502;
-
-  // Build the SMALL head (t/id/status/headers) with ArduinoJson so keys/values are
-  // correctly escaped; then splice the base64 body directly into the PSRAM frame
-  // buffer. This avoids handing ArduinoJson a 300 KB linked string (which it did not
-  // reliably retain) and keeps the whole res in ONE PSRAM buffer / one write().
+// Frame a `res` back over the WS: a SMALL head {t,id,status,headers} built with
+// ArduinoJson (correct escaping), then the base64 body spliced directly into ONE PSRAM
+// frame buffer. This avoids handing ArduinoJson a 300 KB linked string (which it did not
+// reliably retain) and keeps the whole res in one PSRAM buffer / one write().
+void emitResFrame(const char* id, int status, const http_replay::Headers& headers,
+                  const uint8_t* obody, size_t obodyLen) {
   JsonDocument head;  // small: a couple of headers
   head["t"] = "res";
-  head["id"] = req.id;
+  head["id"] = id;
   head["status"] = status;
   JsonObject h = head["headers"].to<JsonObject>();
-  const uint8_t* obody = nullptr;
-  size_t obodyLen = 0;
-  std::string errStr;
-  if (ok && status < 500) {
-    for (const auto& kv : rp.headers()) h[kv.first.c_str()] = kv.second.c_str();
-    if (!rp.body().empty()) { obody = rp.body().data(); obodyLen = rp.body().size(); }
-  } else {
-    h["content-type"] = "text/plain";
-    errStr = denied ? "Not available over the cloud; use this device on its network."
-             : (status == 502) ? "response too large"
-                               : "device timeout";
-    obody = reinterpret_cast<const uint8_t*>(errStr.data());
-    obodyLen = errStr.size();
-  }
+  for (const auto& kv : headers) h[kv.first.c_str()] = kv.second.c_str();
   std::string headJson;
   serializeJson(head, headJson);        // {"t":"res","id":"..","status":200,"headers":{..}}
   if (!headJson.empty() && headJson.back() == '}') headJson.pop_back();  // reopen for bodyB64
@@ -295,6 +279,35 @@ void handleReq(const ReqFrame& req) {
                   .c_str());
 }
 
+// Answer a tunneled request: replay into the local server, frame the response back.
+void handleReq(const ReqFrame& req) {
+  const bool denied = isTunnelDeniedPath(req.path);
+  http_replay::ResponseParser rp(kMaxRespBody);
+  bool ok = denied ? false : replayReq(req, rp);
+
+  int status = denied ? 403 : (ok ? rp.status() : 504);
+  if (ok && rp.overflow()) status = 502;
+
+  // Choose the response body: the real loopback body for a clean <500 result, otherwise
+  // a small plain-text explanation (the same policy the inline version used).
+  http_replay::Headers outHdrs;
+  const uint8_t* obody = nullptr;
+  size_t obodyLen = 0;
+  std::string errStr;
+  if (ok && status < 500) {
+    outHdrs = rp.headers();
+    if (!rp.body().empty()) { obody = rp.body().data(); obodyLen = rp.body().size(); }
+  } else {
+    outHdrs.emplace_back("content-type", "text/plain");
+    errStr = denied ? "Not available over the cloud; use this device on its network."
+             : (status == 502) ? "response too large"
+                               : "device timeout";
+    obody = reinterpret_cast<const uint8_t*>(errStr.data());
+    obodyLen = errStr.size();
+  }
+  emitResFrame(req.id, status, outHdrs, obody, obodyLen);
+}
+
 // --- pairing -----------------------------------------------------------------
 // One-shot HTTPS POST of a JSON body to the relay host; returns status, body in out.
 int httpsPostJson(const String& host, const char* path, const String& reqBody, String& out) {
@@ -329,6 +342,27 @@ int httpsPostJson(const String& host, const char* path, const String& reqBody, S
   tlsClose(c);
   agent::arbiter::releaseWork();
   return status;
+}
+
+// A "claimed" poll response: parse the relay host out of relayUrl, persist the pairing
+// credential, and return true. A missing credential is a terminal failure (returns
+// false); either way the caller stops polling.
+bool persistClaimed(JsonDocument& pd, const String& host, const String& deviceId) {
+  String cred = pd["credential"] | "";
+  String name = pd["deviceName"] | "";
+  String relayUrl = pd["relayUrl"] | "";
+  String rHost = host;
+  // relayUrl like wss://<host>/device -> keep the host.
+  int hs = relayUrl.indexOf("://");
+  if (hs > 0) {
+    int he = relayUrl.indexOf('/', hs + 3);
+    rHost = relayUrl.substring(hs + 3, he > 0 ? he : relayUrl.length());
+  }
+  if (cred.isEmpty()) { setErr("Pairing service error."); setPairing("", ""); return false; }
+  agent::store::setCloudPairing(deviceId, cred, rHost, name);
+  setPairing("", "");
+  agent::alog("relay: paired");
+  return true;
 }
 
 // Run the full pairing exchange: /pair/init then poll /pair/poll. On success, persist
@@ -384,23 +418,7 @@ bool runPairing() {
     JsonDocument pd;
     if (deserializeJson(pd, pr)) continue;
     const char* status = pd["status"] | "";
-    if (strcmp(status, "claimed") == 0) {
-      String cred = pd["credential"] | "";
-      String name = pd["deviceName"] | "";
-      String relayUrl = pd["relayUrl"] | "";
-      String rHost = host;
-      // relayUrl like wss://<host>/device -> keep the host.
-      int hs = relayUrl.indexOf("://");
-      if (hs > 0) {
-        int he = relayUrl.indexOf('/', hs + 3);
-        rHost = relayUrl.substring(hs + 3, he > 0 ? he : relayUrl.length());
-      }
-      if (cred.isEmpty()) { setErr("Pairing service error."); setPairing("", ""); return false; }
-      agent::store::setCloudPairing(deviceId, cred, rHost, name);
-      setPairing("", "");
-      agent::alog("relay: paired");
-      return true;
-    }
+    if (strcmp(status, "claimed") == 0) return persistClaimed(pd, host, deviceId);
     if (strcmp(status, "expired") == 0) {
       setErr("Code expired. Start pairing again when ready.");
       setPairing("", "");
@@ -413,6 +431,147 @@ bool runPairing() {
 }
 
 // --- connect + online pump ---------------------------------------------------
+
+// Map a `bye` reason to a WS close code so close-code policy applies even when the TCP
+// drops without a following WS Close frame.
+uint16_t byeToCloseCode(const char* reason) {
+  if (strcmp(reason, "unpaired") == 0) return (uint16_t)CloseCode::Unpaired;
+  if (strcmp(reason, "revoked") == 0) return (uint16_t)CloseCode::EntitlementRevoked;
+  if (strcmp(reason, "superseded") == 0) return (uint16_t)CloseCode::Superseded;
+  return 4000;
+}
+
+// Handle one parsed WS message. Returns false to end the session (closeOut set).
+bool handleFrame(const ws::Message& m, bool& welcomed, uint16_t& closeOut) {
+  if (m.op == ws::Opcode::Text) {
+    JsonDocument doc(&agent::PsramJsonAllocator::instance());
+    if (deserializeJson(doc, m.payload.data(), m.payload.size())) return true;
+    RelayFrame f;
+    if (!parseRelayFrame(doc, f)) return true;
+    if (f.type == FrameType::Welcome) {
+      welcomed = true;
+      // Clamp the relay-supplied heartbeat to a sane band: a huge value would push the
+      // next ping to the far future and overflow the silence watchdog, leaving the
+      // device stuck "online" on a dead/half-open socket.
+      g_heartbeatMs = f.heartbeatMs < kHeartbeatMinMs   ? kHeartbeatMinMs
+                      : f.heartbeatMs > kHeartbeatMaxMs ? kHeartbeatMaxMs
+                                                        : f.heartbeatMs;
+      setOnline(true);
+      setErr("");
+      agent::alog("relay: online");
+    } else if (f.type == FrameType::Req) {
+      handleReq(f.req);
+    } else if (f.type == FrameType::Bye) {
+      agent::alog((String("relay: bye ") + f.byeReason).c_str());
+      closeOut = byeToCloseCode(f.byeReason);
+      return false;
+    }
+  } else if (m.op == ws::Opcode::Ping) {
+    wsSendSmall(ws::Opcode::Pong, m.payload.data(), m.payload.size());
+  } else if (m.op == ws::Opcode::Close) {
+    closeOut = m.closeCode ? m.closeCode : 4000;
+    return false;
+  }
+  return true;
+}
+
+// Drain all ready inbound messages. Returns false once a message ends the session.
+bool pumpInbound(ws::Parser& parser, bool& welcomed, uint16_t& closeOut) {
+  ws::Message m;
+  while (parser.next(m)) {
+    if (!handleFrame(m, welcomed, closeOut)) return false;
+  }
+  return true;
+}
+
+// Send a heartbeat ping carrying the current millis.
+void sendPing(uint32_t now) {
+  JsonDocument pd;
+  buildPing(pd, (int64_t)now);
+  std::string s;
+  serializeJson(pd, s);
+  wsSendSmall(ws::Opcode::Text, (const uint8_t*)s.data(), s.size());
+}
+
+// Send the WS Upgrade handshake and validate the 101 response; seed `parser` with any
+// bytes that arrived after the header. Returns false on handshake failure. g_ws must be
+// connected. The response head is capped so a hostile relay can't grow it unbounded.
+bool wsUpgrade(const String& host, ws::Parser& parser) {
+  uint8_t keyBytes[16];
+  for (int i = 0; i < 16; i++) keyBytes[i] = (uint8_t)esp_random();
+  std::string keyB64;
+  b64Encode(keyBytes, 16, keyB64);
+  std::string upgrade = ws::buildUpgradeRequest(host.c_str(), kWsPath, keyB64);
+  g_ws->write(reinterpret_cast<const uint8_t*>(upgrade.data()), upgrade.size());
+
+  std::string head;
+  uint32_t deadline = millis() + kConnectTimeoutMs;
+  uint8_t buf[512];
+  while (millis() < deadline && head.find("\r\n\r\n") == std::string::npos &&
+         head.size() < kMaxHandshakeHead) {
+    int n = readSome(*g_ws, buf, sizeof(buf), 200);
+    if (n > 0) head.append((const char*)buf, n);
+    else if (n < 0) break;
+  }
+  size_t hend = head.find("\r\n\r\n");
+  if (hend == std::string::npos ||
+      !ws::validateUpgradeResponse(head.substr(0, hend + 4), keyB64)) {
+    return false;
+  }
+  // Any bytes past the handshake are the first WS frames.
+  if (head.size() > hend + 4)
+    parser.feed(reinterpret_cast<const uint8_t*>(head.data() + hend + 4), head.size() - hend - 4);
+  return true;
+}
+
+// Send the `hello` frame (deviceId + credential). Returns false if the write failed.
+bool sendHello(const String& deviceId, const String& cred) {
+  JsonDocument doc;
+  buildHello(doc, deviceId.c_str(), cred.c_str(), NIMBUS_FW_VERSION);
+  std::string s;
+  serializeJson(doc, s);
+  return wsSendSmall(ws::Opcode::Text, (const uint8_t*)s.data(), s.size());
+}
+
+// A locally-initiated stop: opt-out/unpair staged, WiFi gone, or the socket dropped. Any
+// of these ends the session cleanly (close code 0).
+bool sessionShouldStop() {
+  return g_reqOptIn == 0 || g_reqUnpair || !wifiReady() || !g_ws->connected();
+}
+
+// The online read/pump/heartbeat loop, after the handshake + hello. Returns the WS close
+// code (0 = clean/local drop).
+uint16_t runOnlineLoop(ws::Parser& parser) {
+  uint32_t welcomeBy = millis() + kWelcomeDeadlineMs;
+  bool welcomed = false;
+  g_heartbeatMs = kDefaultHeartbeatMs;
+  uint16_t closeCode = 0;
+  uint32_t nextPing = millis() + (g_heartbeatMs * 4 / 5);
+  uint32_t lastInbound = millis();
+  uint8_t buf[512];
+  while (true) {
+    if (sessionShouldStop()) { closeCode = 0; break; }
+    int n = readSome(*g_ws, buf, sizeof(buf), 100);
+    if (n > 0) {
+      parser.feed(buf, (size_t)n);
+      lastInbound = millis();
+    } else if (n < 0) {
+      closeCode = 0;
+      break;
+    }
+    if (parser.protocolError()) { closeCode = (uint16_t)CloseCode::ProtocolError; break; }
+    if (!pumpInbound(parser, welcomed, closeCode)) break;
+    if (!welcomed && millis() > welcomeBy) { setErr("Cloud handshake timed out."); break; }
+    uint32_t now = millis();
+    if (welcomed && now >= nextPing) {
+      sendPing(now);
+      nextPing = now + (g_heartbeatMs * 4 / 5);
+    }
+    if (welcomed && now - lastInbound > g_heartbeatMs * 2) { closeCode = 0; break; }  // silence
+  }
+  return closeCode;
+}
+
 // Returns a WS close code (0 = clean/local drop) after the session ends.
 uint16_t runSession() {
   String host = agent::store::cloudHost();
@@ -428,126 +587,81 @@ uint16_t runSession() {
     return 0;
   }
 
-  // WS upgrade handshake.
-  uint8_t keyBytes[16];
-  for (int i = 0; i < 16; i++) keyBytes[i] = (uint8_t)esp_random();
-  std::string keyB64;
-  b64Encode(keyBytes, 16, keyB64);
-  std::string upgrade = ws::buildUpgradeRequest(host.c_str(), kWsPath, keyB64);
-  g_ws->write(reinterpret_cast<const uint8_t*>(upgrade.data()), upgrade.size());
-
-  std::string head;
-  uint32_t deadline = millis() + kConnectTimeoutMs;
-  uint8_t buf[512];
-  while (millis() < deadline && head.find("\r\n\r\n") == std::string::npos &&
-         head.size() < kMaxHandshakeHead) {  // cap: a hostile relay can't grow it unbounded
-    int n = readSome(*g_ws, buf, sizeof(buf), 200);
-    if (n > 0) head.append((const char*)buf, n);
-    else if (n < 0) break;
-  }
-  size_t hend = head.find("\r\n\r\n");
-  if (hend == std::string::npos ||
-      !ws::validateUpgradeResponse(head.substr(0, hend + 4), keyB64)) {
+  // Inbound frames (relay -> device `req`) are small browser requests; cap the parser
+  // buffers low so a malicious oversized frame can't OOM the scarce internal SRAM.
+  ws::Parser parser(kMaxInboundFrame);
+  if (!wsUpgrade(host, parser)) {
     setErr("Cloud handshake failed.");
     tlsClose(*g_ws);
     return 0;
   }
-
-  // Inbound frames (relay -> device `req`) are small browser requests; cap the parser
-  // buffers low so a malicious oversized frame can't OOM the scarce internal SRAM.
-  ws::Parser parser(kMaxInboundFrame);
-  // Any bytes past the handshake are the first WS frames.
-  if (head.size() > hend + 4)
-    parser.feed(reinterpret_cast<const uint8_t*>(head.data() + hend + 4), head.size() - hend - 4);
-
-  // Send hello.
-  {
-    JsonDocument doc;
-    buildHello(doc, deviceId.c_str(), cred.c_str(), NIMBUS_FW_VERSION);
-    std::string s;
-    serializeJson(doc, s);
-    if (!wsSendSmall(ws::Opcode::Text, (const uint8_t*)s.data(), s.size())) {
-      tlsClose(*g_ws);
-      return 0;
-    }
+  if (!sendHello(deviceId, cred)) {
+    tlsClose(*g_ws);
+    return 0;
   }
 
-  // Await welcome.
-  uint32_t welcomeBy = millis() + kWelcomeDeadlineMs;
-  bool welcomed = false;
-  g_heartbeatMs = kDefaultHeartbeatMs;
-  auto pumpMessages = [&](uint16_t& closeOut) -> bool {
-    ws::Message m;
-    while (parser.next(m)) {
-      if (m.op == ws::Opcode::Text) {
-        JsonDocument doc(&agent::PsramJsonAllocator::instance());
-        if (deserializeJson(doc, m.payload.data(), m.payload.size())) continue;
-        RelayFrame f;
-        if (!parseRelayFrame(doc, f)) continue;
-        if (f.type == FrameType::Welcome) {
-          welcomed = true;
-          // Clamp the relay-supplied heartbeat to a sane band: a huge value would push
-          // the next ping to the far future and overflow the silence watchdog, leaving
-          // the device stuck "online" on a dead/half-open socket.
-          g_heartbeatMs = f.heartbeatMs < kHeartbeatMinMs   ? kHeartbeatMinMs
-                          : f.heartbeatMs > kHeartbeatMaxMs ? kHeartbeatMaxMs
-                                                            : f.heartbeatMs;
-          setOnline(true);
-          setErr("");
-          agent::alog("relay: online");
-        } else if (f.type == FrameType::Req) {
-          handleReq(f.req);
-        } else if (f.type == FrameType::Bye) {
-          agent::alog((String("relay: bye ") + f.byeReason).c_str());
-          // Map the app-level reason to a close code so policy applies even if the
-          // TCP drops without a following WS Close frame.
-          if (strcmp(f.byeReason, "unpaired") == 0) closeOut = (uint16_t)CloseCode::Unpaired;
-          else if (strcmp(f.byeReason, "revoked") == 0) closeOut = (uint16_t)CloseCode::EntitlementRevoked;
-          else if (strcmp(f.byeReason, "superseded") == 0) closeOut = (uint16_t)CloseCode::Superseded;
-          else closeOut = 4000;
-          return false;
-        }
-      } else if (m.op == ws::Opcode::Ping) {
-        wsSendSmall(ws::Opcode::Pong, m.payload.data(), m.payload.size());
-      } else if (m.op == ws::Opcode::Close) {
-        closeOut = m.closeCode ? m.closeCode : 4000;
-        return false;
-      }
-    }
-    return true;
-  };
-
-  uint16_t closeCode = 0;
-  uint32_t nextPing = millis() + (g_heartbeatMs * 4 / 5);
-  uint32_t lastInbound = millis();
-  while (true) {
-    if (g_reqOptIn == 0 || g_reqUnpair) { closeCode = 0; break; }
-    if (!wifiReady() || !g_ws->connected()) { closeCode = 0; break; }
-    int n = readSome(*g_ws, buf, sizeof(buf), 100);
-    if (n > 0) {
-      parser.feed(buf, (size_t)n);
-      lastInbound = millis();
-    } else if (n < 0) {
-      closeCode = 0;
-      break;
-    }
-    if (parser.protocolError()) { closeCode = (uint16_t)CloseCode::ProtocolError; break; }
-    if (!pumpMessages(closeCode)) break;
-    if (!welcomed && millis() > welcomeBy) { setErr("Cloud handshake timed out."); break; }
-    uint32_t now = millis();
-    if (welcomed && now >= nextPing) {
-      JsonDocument pd;
-      buildPing(pd, (int64_t)now);
-      std::string s;
-      serializeJson(pd, s);
-      wsSendSmall(ws::Opcode::Text, (const uint8_t*)s.data(), s.size());
-      nextPing = now + (g_heartbeatMs * 4 / 5);
-    }
-    if (welcomed && now - lastInbound > g_heartbeatMs * 2) { closeCode = 0; break; }  // silence
-  }
+  uint16_t closeCode = runOnlineLoop(parser);
   tlsClose(*g_ws);
   setOnline(false);
   return closeCode;
+}
+
+// Drain staged opt-in/pair/unpair control at the top of the task loop. Unpair runs
+// BEFORE the opt-out park: an "optout" stages BOTH unpair and optIn=false, so draining
+// unpair first wipes the cloud credential (per store.h's "wiped on unpair" contract)
+// before we park - and leaves no stale unpair to fire a surprise drop on the next
+// re-enable.
+void drainStagedControl() {
+  if (g_reqUnpair) {
+    agent::store::clearCloudPairing();
+    g_reqUnpair = false;
+    setState(State::Idle);
+    setErr("Unpaired. Pair again when ready.");
+    agent::alog("relay: unpaired");
+  }
+  if (g_reqOptIn == 0) {
+    agent::store::setCloudOptIn(false);
+    g_reqOptIn = -1;
+    setState(State::Disabled);
+    agent::alog("relay: disabled");
+    // Park until re-enabled.
+    while (g_reqOptIn != 1 && !agent::store::cloudOptIn()) vTaskDelay(pdMS_TO_TICKS(1000));
+  }
+  if (g_reqOptIn == 1) { agent::store::setCloudOptIn(true); g_reqOptIn = -1; }
+}
+
+// Apply the close-code policy after a session ends: state, user message, and the sleep
+// each close code dictates. `backoff`/`badToken` carry across reconnects.
+void applyCloseCodePolicy(uint16_t code, uint32_t& backoff, uint32_t& badToken) {
+  if (code == (uint16_t)CloseCode::Unpaired) {
+    agent::store::clearCloudPairing();
+    setState(State::Idle);
+    setErr("This device was unpaired. Pair again when ready.");
+    backoff = 500;
+    return;
+  }
+  if (code == (uint16_t)CloseCode::BadToken) {
+    if (++badToken >= 3) { setState(State::Disabled); setErr("Sign-in expired. Pair again when ready."); vTaskDelay(pdMS_TO_TICKS(300000)); return; }
+    vTaskDelay(pdMS_TO_TICKS(300000));
+    return;
+  }
+  badToken = 0;
+  if (code == (uint16_t)CloseCode::EntitlementRevoked) {
+    setState(State::Backoff);
+    setErr("Cloud subscription inactive. The device still works on your network.");
+    vTaskDelay(pdMS_TO_TICKS(1800000));
+    return;
+  }
+  if (code == (uint16_t)CloseCode::Superseded) {
+    setState(State::Backoff);
+    vTaskDelay(pdMS_TO_TICKS(60000 + (esp_random() % 60000)));
+    return;
+  }
+
+  // Ordinary drop: exponential backoff.
+  setState(State::Backoff);
+  vTaskDelay(pdMS_TO_TICKS(backoff));
+  backoff = backoff < 15000 ? backoff * 2 : 15000;
 }
 
 // --- the task ---------------------------------------------------------------
@@ -560,26 +674,7 @@ void relayTask(void*) {
   uint32_t badToken = 0;
 
   for (;;) {
-    // Drain staged control. Unpair runs BEFORE the opt-out park: an "optout" stages
-    // BOTH unpair and optIn=false, so draining unpair first wipes the cloud credential
-    // (per store.h's "wiped on unpair" contract) before we park - and leaves no stale
-    // unpair to fire a surprise drop on the next re-enable.
-    if (g_reqUnpair) {
-      agent::store::clearCloudPairing();
-      g_reqUnpair = false;
-      setState(State::Idle);
-      setErr("Unpaired. Pair again when ready.");
-      agent::alog("relay: unpaired");
-    }
-    if (g_reqOptIn == 0) {
-      agent::store::setCloudOptIn(false);
-      g_reqOptIn = -1;
-      setState(State::Disabled);
-      agent::alog("relay: disabled");
-      // Park until re-enabled.
-      while (g_reqOptIn != 1 && !agent::store::cloudOptIn()) vTaskDelay(pdMS_TO_TICKS(1000));
-    }
-    if (g_reqOptIn == 1) { agent::store::setCloudOptIn(true); g_reqOptIn = -1; }
+    drainStagedControl();
 
     if (!agent::store::cloudOptIn()) { setState(State::Disabled); vTaskDelay(pdMS_TO_TICKS(1000)); continue; }
     if (!wifiReady()) { vTaskDelay(pdMS_TO_TICKS(2000)); continue; }
@@ -594,37 +689,7 @@ void relayTask(void*) {
     if (!agent::store::cloudPaired()) { setState(State::Idle); vTaskDelay(pdMS_TO_TICKS(1000)); continue; }
 
     uint16_t code = runSession();
-
-    // Close-code policy.
-    if (code == (uint16_t)CloseCode::Unpaired) {
-      agent::store::clearCloudPairing();
-      setState(State::Idle);
-      setErr("This device was unpaired. Pair again when ready.");
-      backoff = 500;
-      continue;
-    }
-    if (code == (uint16_t)CloseCode::BadToken) {
-      if (++badToken >= 3) { setState(State::Disabled); setErr("Sign-in expired. Pair again when ready."); vTaskDelay(pdMS_TO_TICKS(300000)); continue; }
-      vTaskDelay(pdMS_TO_TICKS(300000));
-      continue;
-    }
-    badToken = 0;
-    if (code == (uint16_t)CloseCode::EntitlementRevoked) {
-      setState(State::Backoff);
-      setErr("Cloud subscription inactive. The device still works on your network.");
-      vTaskDelay(pdMS_TO_TICKS(1800000));
-      continue;
-    }
-    if (code == (uint16_t)CloseCode::Superseded) {
-      setState(State::Backoff);
-      vTaskDelay(pdMS_TO_TICKS(60000 + (esp_random() % 60000)));
-      continue;
-    }
-
-    // Ordinary drop: exponential backoff.
-    setState(State::Backoff);
-    vTaskDelay(pdMS_TO_TICKS(backoff));
-    backoff = backoff < 15000 ? backoff * 2 : 15000;
+    applyCloseCodePolicy(code, backoff, badToken);
   }
 }
 

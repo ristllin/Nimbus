@@ -3,44 +3,58 @@
 namespace nimbus {
 namespace cloud {
 
+namespace {
+
+// Each frame type gets its own small parser; parseRelayFrame just dispatches on "t".
+// Splitting keeps every parser well inside the complexity gate and easy to audit.
+bool parseWelcomeFrame(const JsonDocument& doc, RelayFrame& out) {
+  out.type = FrameType::Welcome;
+  out.heartbeatMs = doc["heartbeatMs"].is<uint32_t>() ? doc["heartbeatMs"].as<uint32_t>()
+                                                      : kDefaultHeartbeatMs;
+  if (out.heartbeatMs == 0) out.heartbeatMs = kDefaultHeartbeatMs;
+  return true;
+}
+
+bool parseReqFrame(const JsonDocument& doc, RelayFrame& out) {
+  // id/method/path are required; a malformed req is rejected so the caller never
+  // replays garbage into the local server.
+  if (!doc["id"].is<const char*>() || !doc["method"].is<const char*>() ||
+      !doc["path"].is<const char*>()) {
+    return false;
+  }
+  out.type = FrameType::Req;
+  out.req.id = doc["id"].as<const char*>();
+  out.req.method = doc["method"].as<const char*>();
+  out.req.path = doc["path"].as<const char*>();
+  if (doc["headers"].is<JsonObjectConst>()) out.req.headers = doc["headers"].as<JsonObjectConst>();
+  out.req.bodyB64 = doc["bodyB64"].is<const char*>() ? doc["bodyB64"].as<const char*>() : nullptr;
+  return true;
+}
+
+bool parsePongFrame(const JsonDocument& doc, RelayFrame& out) {
+  out.type = FrameType::Pong;
+  out.pongTs = doc["ts"].is<int64_t>() ? doc["ts"].as<int64_t>() : 0;
+  return true;
+}
+
+bool parseByeFrame(const JsonDocument& doc, RelayFrame& out) {
+  out.type = FrameType::Bye;
+  out.byeReason = doc["reason"].is<const char*>() ? doc["reason"].as<const char*>() : "";
+  return true;
+}
+
+}  // namespace
+
 bool parseRelayFrame(const JsonDocument& doc, RelayFrame& out) {
   out = RelayFrame{};
   if (!doc.is<JsonObjectConst>()) return false;
   const char* t = doc["t"].is<const char*>() ? doc["t"].as<const char*>() : nullptr;
   if (!t) return false;
 
-  if (std::string(t) == "welcome") {
-    out.type = FrameType::Welcome;
-    out.heartbeatMs = doc["heartbeatMs"].is<uint32_t>() ? doc["heartbeatMs"].as<uint32_t>()
-                                                        : kDefaultHeartbeatMs;
-    if (out.heartbeatMs == 0) out.heartbeatMs = kDefaultHeartbeatMs;
-    return true;
-  }
-  if (std::string(t) == "req") {
-    // id/method/path are required; a malformed req is rejected so the caller never
-    // replays garbage into the local server.
-    if (!doc["id"].is<const char*>() || !doc["method"].is<const char*>() ||
-        !doc["path"].is<const char*>()) {
-      return false;
-    }
-    out.type = FrameType::Req;
-    out.req.id = doc["id"].as<const char*>();
-    out.req.method = doc["method"].as<const char*>();
-    out.req.path = doc["path"].as<const char*>();
-    if (doc["headers"].is<JsonObjectConst>()) out.req.headers = doc["headers"].as<JsonObjectConst>();
-    out.req.bodyB64 = doc["bodyB64"].is<const char*>() ? doc["bodyB64"].as<const char*>() : nullptr;
-    return true;
-  }
-  if (std::string(t) == "pong") {
-    out.type = FrameType::Pong;
-    out.pongTs = doc["ts"].is<int64_t>() ? doc["ts"].as<int64_t>() : 0;
-    return true;
-  }
-  if (std::string(t) == "bye") {
-    out.type = FrameType::Bye;
-    out.byeReason = doc["reason"].is<const char*>() ? doc["reason"].as<const char*>() : "";
-    return true;
-  }
+  if (std::string(t) == "welcome") return parseWelcomeFrame(doc, out);
+  if (std::string(t) == "req")     return parseReqFrame(doc, out);
+  if (std::string(t) == "pong")    return parsePongFrame(doc, out);
+  if (std::string(t) == "bye")     return parseByeFrame(doc, out);
   return false;
 }
 

@@ -95,59 +95,53 @@ void ResponseParser::feed(const uint8_t* data, size_t len) {
       if (state_ == State::Head || state_ == State::Error) break;  // need more, or failed
       continue;
     }
-    if (state_ == State::BodyLength) {
-      size_t avail = buf_.size();
-      size_t need = contentLength_ - bodyRead_;
-      size_t take = avail < need ? avail : need;
-      if (body_.size() + take > maxBodyBytes_) {
-        take = maxBodyBytes_ > body_.size() ? maxBodyBytes_ - body_.size() : 0;
-        overflow_ = true;
-      }
-      body_.insert(body_.end(), buf_.begin(), buf_.begin() + take);
-      buf_.erase(buf_.begin(), buf_.begin() + take);
-      bodyRead_ += take;
-      if (overflow_ || bodyRead_ >= contentLength_) state_ = State::Done;
-      break;
-    }
-    if (state_ == State::BodyChunked) {
-      parseChunked_();
-      break;
-    }
-    if (state_ == State::BodyUntilClose) {
-      if (body_.size() + buf_.size() > maxBodyBytes_) {
-        size_t take = maxBodyBytes_ > body_.size() ? maxBodyBytes_ - body_.size() : 0;
-        body_.insert(body_.end(), buf_.begin(), buf_.begin() + take);
-        overflow_ = true;
-        state_ = State::Done;
-      } else {
-        body_.insert(body_.end(), buf_.begin(), buf_.end());
-      }
-      buf_.clear();
-      break;
-    }
+    if (state_ == State::BodyLength) { feedBodyLength_(); break; }
+    if (state_ == State::BodyChunked) { parseChunked_(); break; }
+    if (state_ == State::BodyUntilClose) { feedBodyUntilClose_(); break; }
     break;
   }
 }
 
-void ResponseParser::parseHead_() {
-  // Find the end of the header block.
-  std::string s(buf_.begin(), buf_.end());
-  size_t end = s.find("\r\n\r\n");
-  if (end == std::string::npos) return;  // need more bytes
-  std::string head = s.substr(0, end);
-  buf_.erase(buf_.begin(), buf_.begin() + end + 4);
+// Content-Length body: drain up to the declared length, capping at maxBodyBytes_.
+void ResponseParser::feedBodyLength_() {
+  size_t avail = buf_.size();
+  size_t need = contentLength_ - bodyRead_;
+  size_t take = avail < need ? avail : need;
+  if (body_.size() + take > maxBodyBytes_) {
+    take = maxBodyBytes_ > body_.size() ? maxBodyBytes_ - body_.size() : 0;
+    overflow_ = true;
+  }
+  body_.insert(body_.end(), buf_.begin(), buf_.begin() + take);
+  buf_.erase(buf_.begin(), buf_.begin() + take);
+  bodyRead_ += take;
+  if (overflow_ || bodyRead_ >= contentLength_) state_ = State::Done;
+}
 
-  size_t eol = head.find("\r\n");
-  std::string statusLine = eol == std::string::npos ? head : head.substr(0, eol);
-  // "HTTP/1.1 200 OK"
+// No length + no chunking: read until the socket closes (endOfStream), capped.
+void ResponseParser::feedBodyUntilClose_() {
+  if (body_.size() + buf_.size() > maxBodyBytes_) {
+    size_t take = maxBodyBytes_ > body_.size() ? maxBodyBytes_ - body_.size() : 0;
+    body_.insert(body_.end(), buf_.begin(), buf_.begin() + take);
+    overflow_ = true;
+    state_ = State::Done;
+  } else {
+    body_.insert(body_.end(), buf_.begin(), buf_.end());
+  }
+  buf_.clear();
+}
+
+// Parse "HTTP/1.1 <code> <reason>"; returns false on a missing/out-of-range code.
+bool ResponseParser::parseStatusLine_(const std::string& statusLine) {
   size_t sp = statusLine.find(' ');
-  if (sp == std::string::npos) { state_ = State::Error; return; }
+  if (sp == std::string::npos) return false;
   status_ = atoi(statusLine.c_str() + sp + 1);
-  if (status_ < 100 || status_ > 599) { state_ = State::Error; return; }
+  return status_ >= 100 && status_ <= 599;
+}
 
-  bool chunked = false;
-  bool haveLen = false;
-  size_t pos = (eol == std::string::npos) ? head.size() : eol + 2;
+// Walk the header lines from `pos`: note chunked / content-length, keep the allowlisted
+// response headers for the `res` frame.
+void ResponseParser::scanHeaderFields_(const std::string& head, size_t pos, bool& chunked,
+                                       bool& haveLen) {
   while (pos < head.size()) {
     size_t next = head.find("\r\n", pos);
     if (next == std::string::npos) next = head.size();
@@ -165,6 +159,24 @@ void ResponseParser::parseHead_() {
     }
     if (isKeptResponseHeader(name)) outHeaders_.emplace_back(line.substr(0, colon), val);
   }
+}
+
+void ResponseParser::parseHead_() {
+  // Find the end of the header block.
+  std::string s(buf_.begin(), buf_.end());
+  size_t end = s.find("\r\n\r\n");
+  if (end == std::string::npos) return;  // need more bytes
+  std::string head = s.substr(0, end);
+  buf_.erase(buf_.begin(), buf_.begin() + end + 4);
+
+  size_t eol = head.find("\r\n");
+  std::string statusLine = eol == std::string::npos ? head : head.substr(0, eol);
+  if (!parseStatusLine_(statusLine)) { state_ = State::Error; return; }
+
+  bool chunked = false;
+  bool haveLen = false;
+  size_t pos = (eol == std::string::npos) ? head.size() : eol + 2;
+  scanHeaderFields_(head, pos, chunked, haveLen);
 
   if (chunked) {
     state_ = State::BodyChunked;

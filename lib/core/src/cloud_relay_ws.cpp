@@ -178,69 +178,90 @@ void Parser::feed(const uint8_t* data, size_t len) {
   parse_();
 }
 
-void Parser::parse_() {
-  size_t off = 0;
-  while (!error_) {
-    if (buf_.size() - off < 2) break;
-    uint8_t b0 = buf_[off];
-    uint8_t b1 = buf_[off + 1];
-    bool fin = b0 & 0x80;
-    if (b0 & 0x70) { error_ = true; break; }  // reserved bits must be 0
-    Opcode op = (Opcode)(b0 & 0x0F);
-    bool masked = b1 & 0x80;  // server frames MUST be unmasked
-    if (masked) { error_ = true; break; }
-    uint64_t plen = b1 & 0x7F;
-    size_t hdr = 2;
-    if (plen == 126) {
-      if (buf_.size() - off < 4) break;
-      plen = (uint64_t(buf_[off + 2]) << 8) | buf_[off + 3];
-      hdr = 4;
-    } else if (plen == 127) {
-      if (buf_.size() - off < 10) break;
-      plen = 0;
-      for (int i = 0; i < 8; i++) plen = (plen << 8) | buf_[off + 2 + i];
-      hdr = 10;
-    }
-    if (plen > maxMessageBytes_) { error_ = true; break; }
-    if (buf_.size() - off < hdr + plen) break;  // wait for the full payload
-    const uint8_t* pl = buf_.data() + off + hdr;
+// Decode the frame header at `off`: FIN, opcode, and payload length (incl. the 126/127
+// extended-length forms). Enforces "reserved bits zero", "server frames unmasked", and
+// the message cap. Returns NeedMore when more bytes are required, Error on a violation.
+Parser::Scan Parser::scanHeader_(size_t off, size_t& hdr, uint64_t& plen, Opcode& op,
+                                 bool& fin) const {
+  if (buf_.size() - off < 2) return Scan::NeedMore;
+  uint8_t b0 = buf_[off];
+  uint8_t b1 = buf_[off + 1];
+  fin = b0 & 0x80;
+  if (b0 & 0x70) return Scan::Error;  // reserved bits must be 0
+  op = (Opcode)(b0 & 0x0F);
+  if (b1 & 0x80) return Scan::Error;  // server frames MUST be unmasked
+  plen = b1 & 0x7F;
+  hdr = 2;
+  if (plen == 126) {
+    if (buf_.size() - off < 4) return Scan::NeedMore;
+    plen = (uint64_t(buf_[off + 2]) << 8) | buf_[off + 3];
+    hdr = 4;
+  } else if (plen == 127) {
+    if (buf_.size() - off < 10) return Scan::NeedMore;
+    plen = 0;
+    for (int i = 0; i < 8; i++) plen = (plen << 8) | buf_[off + 2 + i];
+    hdr = 10;
+  }
+  if (plen > maxMessageBytes_) return Scan::Error;
+  return Scan::Ok;
+}
 
-    const bool control = (uint8_t)op & 0x08;
-    if (control) {
-      if (!fin || plen > 125) { error_ = true; break; }  // control frames: FIN, <=125
+// Route one fully-buffered frame: queue control + complete data messages, or accumulate
+// a fragmented data message. Returns false on a protocol violation.
+bool Parser::emitFrame_(Opcode op, bool fin, const uint8_t* pl, uint64_t plen) {
+  const bool control = (uint8_t)op & 0x08;
+  if (control) {
+    if (!fin || plen > 125) return false;  // control frames: FIN, <=125
+    Message m;
+    m.op = op;
+    m.payload.assign(pl, pl + plen);
+    if (op == Opcode::Close && plen >= 2) m.closeCode = (uint16_t(pl[0]) << 8) | pl[1];
+    ready_.push_back(std::move(m));
+    return true;
+  }
+  if (op == Opcode::Text || op == Opcode::Binary) {
+    if (inFragment_) return false;  // new data message before finishing one
+    if (fin) {
       Message m;
       m.op = op;
       m.payload.assign(pl, pl + plen);
-      if (op == Opcode::Close && plen >= 2) m.closeCode = (uint16_t(pl[0]) << 8) | pl[1];
       ready_.push_back(std::move(m));
-    } else if (op == Opcode::Text || op == Opcode::Binary) {
-      if (inFragment_) { error_ = true; break; }  // new data message before finishing one
-      if (fin) {
-        Message m;
-        m.op = op;
-        m.payload.assign(pl, pl + plen);
-        ready_.push_back(std::move(m));
-      } else {
-        inFragment_ = true;
-        fragOp_ = op;
-        frag_.assign(pl, pl + plen);
-      }
-    } else if (op == Opcode::Continuation) {
-      if (!inFragment_) { error_ = true; break; }
-      if (frag_.size() + plen > maxMessageBytes_) { error_ = true; break; }
-      frag_.insert(frag_.end(), pl, pl + plen);
-      if (fin) {
-        Message m;
-        m.op = fragOp_;
-        m.payload = std::move(frag_);
-        frag_.clear();
-        inFragment_ = false;
-        ready_.push_back(std::move(m));
-      }
     } else {
-      error_ = true;
-      break;
+      inFragment_ = true;
+      fragOp_ = op;
+      frag_.assign(pl, pl + plen);
     }
+    return true;
+  }
+  if (op == Opcode::Continuation) {
+    if (!inFragment_) return false;
+    if (frag_.size() + plen > maxMessageBytes_) return false;
+    frag_.insert(frag_.end(), pl, pl + plen);
+    if (fin) {
+      Message m;
+      m.op = fragOp_;
+      m.payload = std::move(frag_);
+      frag_.clear();
+      inFragment_ = false;
+      ready_.push_back(std::move(m));
+    }
+    return true;
+  }
+  return false;  // unknown opcode
+}
+
+void Parser::parse_() {
+  size_t off = 0;
+  while (!error_) {
+    size_t hdr = 0;
+    uint64_t plen = 0;
+    Opcode op = Opcode::Text;
+    bool fin = false;
+    Scan s = scanHeader_(off, hdr, plen, op, fin);
+    if (s == Scan::NeedMore) break;
+    if (s == Scan::Error) { error_ = true; break; }
+    if (buf_.size() - off < hdr + plen) break;  // wait for the full payload
+    if (!emitFrame_(op, fin, buf_.data() + off + hdr, plen)) { error_ = true; break; }
     off += hdr + plen;
   }
   if (off) buf_.erase(buf_.begin(), buf_.begin() + off);

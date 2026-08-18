@@ -219,33 +219,45 @@ class LabRig {
     mc.embed = [this](const std::string& text) { return embed(text); };
     orch::registerMemoryTools(reg_, mc);
 
-    // web.search - the real thing, through the real portable path. A key is
-    // optional: without one the tool is simply not advertised, exactly as on a
-    // device with no Tavily key.
-    tavilyKey_ = env_.get("TAVILY_API_KEY");
-    if (!tavilyKey_.empty()) {
-      reg_.add("web.search",
-               "Search the live web for up-to-date information. Returns an answer plus "
-               "top results (title, url, snippet).",
-               [this](ArduinoJson::JsonObjectConst a,
-                      const orch::Principal&) -> orch::ToolResult {
-                 std::string q = a["query"].is<const char*>()
-                                     ? std::string(a["query"].as<const char*>()) : std::string();
-                 if (q.empty()) return orch::ToolResult::fail("missing 'query'");
-                 int k = a["max_results"].is<int>() ? a["max_results"].as<int>() : 5;
-                 auto r = agent::websearch::search(http_, tavilyKey_, q, k);
-                 if (!r.ok) return orch::ToolResult::fail("web search failed: " + r.err);
-                 return orch::ToolResult::ok(r.digest);
-               },
-               R"({"type":"object","properties":{"query":{"type":"string"},)"
-               R"("max_results":{"type":"integer"}},"required":["query"]})");
-    }
+    // Split by tool group so each registration (and its lambda) stays inside the
+    // complexity gate. Registration order is preserved (it drives toolNames_).
+    registerWebSearchTool();
+    registerDocsTools();
+    registerDeviceStatusTool();
+    files_.registerTools(reg_);
 
-    // The REAL on-device docs pack (docs.search / docs.read) through the real
-    // portable retrieval - so the github-setup scenario exercises the actual
-    // failure mechanism (a maker section outranking the user answer), not just
-    // the prompt rail. Mirrors the device registrations (memory_subsystem.cpp),
-    // minus docs.list (the scenarios need retrieval, not browsing).
+    for (const auto& s : reg_.toolSpecs()) toolNames_.push_back(s.name);
+  }
+
+  // web.search - the real thing, through the real portable path. A key is optional:
+  // without one the tool is simply not advertised, exactly as on a device with no
+  // Tavily key.
+  void registerWebSearchTool() {
+    tavilyKey_ = env_.get("TAVILY_API_KEY");
+    if (tavilyKey_.empty()) return;
+    reg_.add("web.search",
+             "Search the live web for up-to-date information. Returns an answer plus "
+             "top results (title, url, snippet).",
+             [this](ArduinoJson::JsonObjectConst a,
+                    const orch::Principal&) -> orch::ToolResult {
+               std::string q = a["query"].is<const char*>()
+                                   ? std::string(a["query"].as<const char*>()) : std::string();
+               if (q.empty()) return orch::ToolResult::fail("missing 'query'");
+               int k = a["max_results"].is<int>() ? a["max_results"].as<int>() : 5;
+               auto r = agent::websearch::search(http_, tavilyKey_, q, k);
+               if (!r.ok) return orch::ToolResult::fail("web search failed: " + r.err);
+               return orch::ToolResult::ok(r.digest);
+             },
+             R"({"type":"object","properties":{"query":{"type":"string"},)"
+             R"("max_results":{"type":"integer"}},"required":["query"]})");
+  }
+
+  // The REAL on-device docs pack (docs.search / docs.read) through the real portable
+  // retrieval - so the github-setup scenario exercises the actual failure mechanism (a
+  // maker section outranking the user answer), not just the prompt rail. Mirrors the
+  // device registrations (memory_subsystem.cpp), minus docs.list (the scenarios need
+  // retrieval, not browsing).
+  void registerDocsTools() {
     reg_.add("docs.search",
              "Search your own device documentation (ranked keyword match) - use it "
              "BEFORE saying what you can or cannot do. Results marked audience:maker "
@@ -292,9 +304,11 @@ class LabRig {
                return orch::ToolResult::ok(out);
              },
              R"({"type":"object","properties":{"id":{"type":"string"}},"required":["id"]})");
+  }
 
-    // A stand-in for the device-status tool, so prompts that ask "what are you
-    // running on" have something honest to call.
+  // A stand-in for the device-status tool, so prompts that ask "what are you running
+  // on" have something honest to call.
+  void registerDeviceStatusTool() {
     reg_.add("device.status", "Report the device's current state.",
              [this](ArduinoJson::JsonObjectConst, const orch::Principal&) {
                return orch::ToolResult::ok(
@@ -303,10 +317,6 @@ class LabRig {
                    std::to_string(vec_.size()) + "}");
              },
              R"({"type":"object","properties":{}})");
-
-    files_.registerTools(reg_);
-
-    for (const auto& s : reg_.toolSpecs()) toolNames_.push_back(s.name);
   }
 
   // Real embeddings through the same portable request/response codec the device
