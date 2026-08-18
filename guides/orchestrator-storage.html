@@ -1,0 +1,416 @@
+<!doctype html>
+<html lang="en" dir="ltr" class="docs-wrapper plugin-docs plugin-id-default docs-version-current docs-doc-page docs-doc-id-guides/orchestrator-storage" data-has-hydrated="false">
+<head>
+<meta charset="UTF-8">
+<meta name="generator" content="Docusaurus v3.10.2">
+<title data-rh="true">Orchestrator storage tiering | Nimbus</title><meta data-rh="true" name="viewport" content="width=device-width,initial-scale=1"><meta data-rh="true" name="twitter:card" content="summary_large_image"><meta data-rh="true" property="og:image" content="https://docs.cumulo-nimbus.ai/img/social-card.png"><meta data-rh="true" name="twitter:image" content="https://docs.cumulo-nimbus.ai/img/social-card.png"><meta data-rh="true" property="og:url" content="https://docs.cumulo-nimbus.ai/guides/orchestrator-storage"><meta data-rh="true" property="og:locale" content="en"><meta data-rh="true" name="docusaurus_locale" content="en"><meta data-rh="true" name="docsearch:language" content="en"><meta data-rh="true" name="docusaurus_version" content="current"><meta data-rh="true" name="docusaurus_tag" content="docs-default-current"><meta data-rh="true" name="docsearch:version" content="current"><meta data-rh="true" name="docsearch:docusaurus_tag" content="docs-default-current"><meta data-rh="true" property="og:title" content="Orchestrator storage tiering | Nimbus"><meta data-rh="true" name="description" content="Migrated from docs/orchestrator-storage.md - the canonical source lives in the repo."><meta data-rh="true" property="og:description" content="Migrated from docs/orchestrator-storage.md - the canonical source lives in the repo."><link data-rh="true" rel="icon" href="/img/favicon.svg"><link data-rh="true" rel="canonical" href="https://docs.cumulo-nimbus.ai/guides/orchestrator-storage"><link data-rh="true" rel="alternate" href="https://docs.cumulo-nimbus.ai/guides/orchestrator-storage" hreflang="en"><link data-rh="true" rel="alternate" href="https://docs.cumulo-nimbus.ai/guides/orchestrator-storage" hreflang="x-default"><script data-rh="true" type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Storage tiering","item":"https://docs.cumulo-nimbus.ai/guides/orchestrator-storage"}]}</script><link rel="stylesheet" href="/assets/css/styles.5ae419b2.css">
+<script src="/assets/js/runtime~main.e74ebefa.js" defer="defer"></script>
+<script src="/assets/js/main.92f144b6.js" defer="defer"></script>
+</head>
+<body>
+<svg style="display: none;"><defs>
+<symbol id="theme-svg-external-link" viewBox="0 0 24 24"><path fill="currentColor" d="M21 13v10h-21v-19h12v2h-10v15h17v-8h2zm3-12h-10.988l4.035 4-6.977 7.07 2.828 2.828 6.977-7.07 4.125 4.172v-11z"/></symbol>
+</defs></svg>
+<script>!function(){var t=function(){try{return new URLSearchParams(window.location.search).get("docusaurus-theme")}catch(t){}}()||function(){try{return window.localStorage.getItem("theme")}catch(t){}}();document.documentElement.setAttribute("data-theme",t||(window.matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light")),document.documentElement.setAttribute("data-theme-choice",t||"system")}(),function(){try{const c=new URLSearchParams(window.location.search).entries();for(var[t,e]of c)if(t.startsWith("docusaurus-data-")){var a=t.replace("docusaurus-data-","data-");document.documentElement.setAttribute(a,e)}}catch(t){}}()</script><div id="__docusaurus"><div role="region" aria-label="Skip to main content"><a class="skipToContent_fXgn" href="#__docusaurus_skipToContent_fallback">Skip to main content</a></div><nav aria-label="Main" class="theme-layout-navbar navbar navbar--fixed-top"><div class="navbar__inner"><div class="theme-layout-navbar-left navbar__items"><button aria-label="Toggle navigation bar" aria-expanded="false" class="navbar__toggle clean-btn" type="button"><svg width="30" height="30" viewBox="0 0 30 30" aria-hidden="true"><path stroke="currentColor" stroke-linecap="round" stroke-miterlimit="10" stroke-width="2" d="M4 7h22M4 15h22M4 23h22"></path></svg></button><a class="navbar__brand" href="/"><div class="navbar__logo"><img src="/img/logo.svg" alt="Nimbus" class="themedComponent_mlkZ themedComponent--light_NVdE"><img src="/img/logo.svg" alt="Nimbus" class="themedComponent_mlkZ themedComponent--dark_xIcU"></div><b class="navbar__title text--truncate">Nimbus</b></a><a class="navbar__item navbar__link" href="/quick-start/what-you-need">Get started</a><a class="navbar__item navbar__link" href="/flash">Flash</a></div><div class="theme-layout-navbar-right navbar__items navbar__items--right"><a href="https://github.com/ristllin/Nimbus" target="_blank" rel="noopener noreferrer" class="navbar__item navbar__link">GitHub<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a><div class="toggle_vylO colorModeToggle_DEke"><button class="clean-btn toggleButton_gllP toggleButtonDisabled_aARS" type="button" disabled="" title="system mode" aria-label="Switch between dark and light mode (currently system mode)"><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP lightToggleIcon_pyhR"><path fill="currentColor" d="M12,9c1.65,0,3,1.35,3,3s-1.35,3-3,3s-3-1.35-3-3S10.35,9,12,9 M12,7c-2.76,0-5,2.24-5,5s2.24,5,5,5s5-2.24,5-5 S14.76,7,12,7L12,7z M2,13l2,0c0.55,0,1-0.45,1-1s-0.45-1-1-1l-2,0c-0.55,0-1,0.45-1,1S1.45,13,2,13z M20,13l2,0c0.55,0,1-0.45,1-1 s-0.45-1-1-1l-2,0c-0.55,0-1,0.45-1,1S19.45,13,20,13z M11,2v2c0,0.55,0.45,1,1,1s1-0.45,1-1V2c0-0.55-0.45-1-1-1S11,1.45,11,2z M11,20v2c0,0.55,0.45,1,1,1s1-0.45,1-1v-2c0-0.55-0.45-1-1-1C11.45,19,11,19.45,11,20z M5.99,4.58c-0.39-0.39-1.03-0.39-1.41,0 c-0.39,0.39-0.39,1.03,0,1.41l1.06,1.06c0.39,0.39,1.03,0.39,1.41,0s0.39-1.03,0-1.41L5.99,4.58z M18.36,16.95 c-0.39-0.39-1.03-0.39-1.41,0c-0.39,0.39-0.39,1.03,0,1.41l1.06,1.06c0.39,0.39,1.03,0.39,1.41,0c0.39-0.39,0.39-1.03,0-1.41 L18.36,16.95z M19.42,5.99c0.39-0.39,0.39-1.03,0-1.41c-0.39-0.39-1.03-0.39-1.41,0l-1.06,1.06c-0.39,0.39-0.39,1.03,0,1.41 s1.03,0.39,1.41,0L19.42,5.99z M7.05,18.36c0.39-0.39,0.39-1.03,0-1.41c-0.39-0.39-1.03-0.39-1.41,0l-1.06,1.06 c-0.39,0.39-0.39,1.03,0,1.41s1.03,0.39,1.41,0L7.05,18.36z"></path></svg><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP darkToggleIcon_wfgR"><path fill="currentColor" d="M9.37,5.51C9.19,6.15,9.1,6.82,9.1,7.5c0,4.08,3.32,7.4,7.4,7.4c0.68,0,1.35-0.09,1.99-0.27C17.45,17.19,14.93,19,12,19 c-3.86,0-7-3.14-7-7C5,9.07,6.81,6.55,9.37,5.51z M12,3c-4.97,0-9,4.03-9,9s4.03,9,9,9s9-4.03,9-9c0-0.46-0.04-0.92-0.1-1.36 c-0.98,1.37-2.58,2.26-4.4,2.26c-2.98,0-5.4-2.42-5.4-5.4c0-1.81,0.89-3.42,2.26-4.4C12.92,3.04,12.46,3,12,3L12,3z"></path></svg><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP systemToggleIcon_QzmC"><path fill="currentColor" d="m12 21c4.971 0 9-4.029 9-9s-4.029-9-9-9-9 4.029-9 9 4.029 9 9 9zm4.95-13.95c1.313 1.313 2.05 3.093 2.05 4.95s-0.738 3.637-2.05 4.95c-1.313 1.313-3.093 2.05-4.95 2.05v-14c1.857 0 3.637 0.737 4.95 2.05z"></path></svg></button></div><div class="navbarSearchContainer_Bca1"></div></div></div><div role="presentation" class="navbar-sidebar__backdrop"></div></nav><div id="__docusaurus_skipToContent_fallback" class="theme-layout-main main-wrapper mainWrapper_z2l0"><div class="docsWrapper_hBAB"><button aria-label="Scroll back to top" class="clean-btn theme-back-to-top-button backToTopButton_sjWU" type="button"></button><div class="docRoot_UBD9"><aside class="theme-doc-sidebar-container docSidebarContainer_YfHR"><div class="sidebarViewport_aRkj"><div class="sidebar_njMd"><nav aria-label="Docs sidebar" class="menu thin-scrollbar menu_SIkG"><ul class="theme-doc-sidebar-menu menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/"><span class="linkLabel_WmDU">Overview</span></a></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="true" href="/quick-start/what-you-need"><span class="categoryLinkLabel_W154">Quick Start</span></a></div><ul class="menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/what-you-need"><span class="linkLabel_WmDU">What you need</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/flash"><span class="linkLabel_WmDU">Flash the firmware</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/setup-wizard"><span class="linkLabel_WmDU">Set up the device</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/first-conversation"><span class="linkLabel_WmDU">First conversation</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/notifier-quick-start"><span class="linkLabel_WmDU">Notifier quick start</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/getting-started/first-time-setup"><span class="linkLabel_WmDU">First-time setup</span></a></li></ul></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/guides/hardware"><span class="categoryLinkLabel_W154">Hardware Build</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/getting-started/webui-reference"><span class="categoryLinkLabel_W154">Using Nimbus</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret menu__link--active" role="button" aria-expanded="true" href="/guides/architecture"><span class="categoryLinkLabel_W154">How It Works</span></a></div><ul class="menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/architecture"><span class="linkLabel_WmDU">Architecture</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/turn-anatomy"><span class="linkLabel_WmDU">Turn anatomy</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/orchestrator-live-turn"><span class="linkLabel_WmDU">Live turn</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/orchestrator-world"><span class="linkLabel_WmDU">Orchestrator World</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/memory"><span class="linkLabel_WmDU">Memory</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link menu__link--active" aria-current="page" tabindex="0" href="/guides/orchestrator-storage"><span class="linkLabel_WmDU">Storage tiering</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/sub-sessions"><span class="linkLabel_WmDU">Sub-sessions</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/harness"><span class="linkLabel_WmDU">Harness</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/provider-wire"><span class="linkLabel_WmDU">Provider wire</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/security"><span class="linkLabel_WmDU">Security</span></a></li></ul></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/reference/config-and-nvs"><span class="categoryLinkLabel_W154">Reference</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/contributing/development"><span class="categoryLinkLabel_W154">Forking &amp; Contributing</span></a></div></li></ul></nav></div></div></aside><main class="docMainContainer_TBSr"><div class="container padding-top--md padding-bottom--lg"><div class="row"><div class="col docItemCol_VOVn"><div class="docItemContainer_Djhp"><article><nav class="theme-doc-breadcrumbs breadcrumbsContainer_Z_bl" aria-label="Breadcrumbs"><ul class="breadcrumbs"><li class="breadcrumbs__item"><a aria-label="Home page" class="breadcrumbs__link" href="/"><svg viewBox="0 0 24 24" class="breadcrumbHomeIcon_YNFT"><path d="M10 19v-5h4v5c0 .55.45 1 1 1h3c.55 0 1-.45 1-1v-7h1.7c.46 0 .68-.57.33-.87L12.67 3.6c-.38-.34-.96-.34-1.34 0l-8.36 7.53c-.34.3-.13.87.33.87H5v7c0 .55.45 1 1 1h3c.55 0 1-.45 1-1z" fill="currentColor"></path></svg></a></li><li class="breadcrumbs__item"><span class="breadcrumbs__link">How It Works</span></li><li class="breadcrumbs__item breadcrumbs__item--active"><span class="breadcrumbs__link">Storage tiering</span></li></ul></nav><div class="tocCollapsible_ETCw theme-doc-toc-mobile tocMobile_ITEo"><button type="button" class="clean-btn tocCollapsibleButton_TO0P">On this page</button></div><div class="theme-doc-markdown markdown"><blockquote>
+<p>Sourced from <code>docs/orchestrator-storage.md</code> in the firmware repo.</p>
+</blockquote>
+<header><h1>Nimbus Tiered Storage Architecture (SD-primary)</h1></header>
+<p>Canonical record of <strong>what data lives where</strong> in the Orchestrator &quot;World&quot; memory
+system, and why. Companion to <a class="" href="/guides/orchestrator-world"><code>orchestrator-world.md</code></a>
+(the cognitive tiers) and the
+<a class="" href="/guides/orchestrator-live-turn">orchestrator live turn</a> (the live turn). Read this before touching <code>memory_subsystem</code>, <code>vector_memory</code>,
+<code>episodic</code>, or the SD mount.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="0-the-directive-and-the-reframe">0. The directive and the reframe<a href="#0-the-directive-and-the-reframe" class="hash-link" aria-label="Direct link to 0. The directive and the reframe" title="Direct link to 0. The directive and the reframe" translate="no">​</a></h2>
+<p>Owner&#x27;s directive: <strong>store all bulk - VDB, episodic history, blobs/media, logs -
+on the SD card; flash/RAM hold only tiny critical config + a degraded cache.</strong>
+Plus the constraint the hardware forces: <strong>working sets belong in the 8 MB PSRAM,
+not the ~300 KB internal SRAM</strong>, and the device must <strong>degrade gracefully with no
+SD</strong> (the bench board reads <code>cardType=0</code> today - the card is not detected on the
+SPI bus at all, which is a seating/hardware issue, <em>not</em> a format issue; see the
+F10 known-issue note).</p>
+<!-- -->
+<p>The pre-redesign code violated the directive in three locatable ways:</p>
+<ol>
+<li class=""><strong>VDB working set in internal SRAM.</strong> <code>g_vec</code> holds <code>std::vector&lt;VecEntry&gt;</code> on
+the default heap. At <code>maxVectors=2000</code> (256-dim int8) that is ~1.14 MB -
+guaranteed OOM on a device with tens of KB free internal heap.</li>
+<li class=""><strong>Episodic is a 500-message RAM ring</strong> whose <em>whole</em> blob is rewritten on every
+<code>captureMessage</code> - O(history) write amplification and a hard 500-message
+ceiling, the opposite of &quot;all history on SD.&quot;</li>
+<li class=""><strong>Persistence defaults to LittleFS</strong> and only routes to SD if <code>setDataFs(SD)</code>
+runs. With no card, vectors grow <strong>unbounded on the ~few-MB LittleFS partition
+with no overflow guard</strong> - the one genuinely dangerous path (flash exhaustion).</li>
+</ol>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="1-the-four-tiers">1. The four tiers<a href="#1-the-four-tiers" class="hash-link" aria-label="Direct link to 1. The four tiers" title="Direct link to 1. The four tiers" translate="no">​</a></h2>
+<p>Rule of thumb:</p>
+<ul>
+<li class=""><strong>NVS</strong> - tiny critical config that must survive a firmware wipe and is
+human-set (model-read-only). Card-independent.</li>
+<li class=""><strong>LittleFS (internal flash)</strong> - firmware + ephemeral per-turn scratch + a
+<em>bounded</em> degraded fallback cache when there is no SD.</li>
+<li class=""><strong>PSRAM-working (8 MB)</strong> - in-RAM working sets and indices (volatile,
+rebuildable from SD/flash): the VDB search set, the episodic recent window.</li>
+<li class=""><strong>SD (durable)</strong> - the system-of-record for everything bulk.</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Data type</th><th>Tier</th><th>Format / path</th><th>No-SD fallback</th></tr></thead><tbody><tr><td>VDB vectors - working set</td><td><strong>PSRAM</strong></td><td><code>entries_</code> in PSRAM heap</td><td>reduced-cap set still in PSRAM (or internal if no PSRAM)</td></tr><tr><td>VDB vectors - durable</td><td><strong>SD</strong></td><td><code>/mem/vectors.bin</code> (existing <code>serialize</code> blob)</td><td><code>/data/orchvec.bin</code> on LittleFS, <strong>hard-capped</strong> (≈400 vecs) + eviction</td></tr><tr><td>Episodic - full history</td><td><strong>SD</strong></td><td><code>/mem/episodic/YYYY-MM-DD.jsonl</code> append-log + <code>index.bin</code></td><td>in-RAM 500-ring + <code>/data/episodic.bin</code> whole-blob (as before)</td></tr><tr><td>Episodic - recent window</td><td><strong>PSRAM</strong></td><td>recent-N ring, hydrated from SD at boot</td><td>the ring <em>is</em> the whole history</td></tr><tr><td>Media / voice / artifacts</td><td><strong>SD</strong></td><td><code>/mem/blobs/&lt;hash&gt;.&lt;ext&gt;</code> content-addressed</td><td>ephemeral only (<code>/voice.pcm</code>, <code>/reply.mp3</code>, <code>/audio/tgvoice.ogg</code>), deleted per-turn - <strong>no durable media</strong></td></tr><tr><td>Scratchpad (goal tiers)</td><td><strong>NVS</strong></td><td><code>orchmem</code>/<code>scratch</code> (~4 KB)</td><td>unchanged</td></tr><tr><td>Journal</td><td>NVS (6 slots <code>agjournal/j0..j5</code>) - the SD day-stream was PLANNED, never built</td><td>-</td><td>same NVS</td></tr><tr><td>Provider keys / routing / config</td><td><strong>NVS</strong></td><td><code>solide::memory</code> keys</td><td>unchanged</td></tr><tr><td>Verify cache</td><td><strong>NVS</strong></td><td><code>vfy_*</code></td><td>unchanged</td></tr><tr><td>Logs / diagnostics</td><td>RAM ring (1280 B, <code>GET /api/log</code>) + serial - the SD log stream was PLANNED, never built. Device EVENTS are durable via the episodic <code>system</code> timeline (kind=log)</td><td>-</td><td>same ring</td></tr></tbody></table>
+<p>Two things <strong>do not move</strong>: NVS config/keys/scratchpad/verify are already at the
+right tier and are card-independent - the &quot;critical info&quot; the directive keeps off
+SD. Everything bulk targets SD with a <strong>bounded</strong> LittleFS/RAM degraded mode.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="2-vdb---working-set-in-psram-durable-on-sd">2. VDB - working set in PSRAM, durable on SD<a href="#2-vdb---working-set-in-psram-durable-on-sd" class="hash-link" aria-label="Direct link to 2. VDB - working set in PSRAM, durable on SD" title="Direct link to 2. VDB - working set in PSRAM, durable on SD" translate="no">​</a></h2>
+<p><code>VectorMemory</code> is portable/Arduino-free and allocator-agnostic, so its allocations
+are routed <strong>from the device seam</strong>, not by editing the portable class.</p>
+<ul>
+<li class=""><strong>Working set → PSRAM.</strong> Place the engine and its hot storage in PSRAM via
+<code>heap_caps_malloc(MALLOC_CAP_SPIRAM)</code> (the pattern the PSRAM-mbedTLS allocator
+already proves - see the <code>nimbus-psram-tls</code> note). Gate on
+<code>esp_psram_is_initialized()</code> at boot; if PSRAM is absent, fall back to the
+reduced-cap internal path (§4). Capacity: 256-dim int8 ≈ 570 B/vector in RAM ⇒
+<strong>~6000 vectors fit</strong> in the PSRAM budget after TLS/JSON headroom (device cap
+set well below <code>kMaxVectorsMax</code>). Dims stay locked by the set-once embed gate.</li>
+<li class=""><strong>Durable → SD.</strong> Keep the byte-clean <code>serialize</code>/<code>deserialize</code> blob; change
+only the path (<code>/mem/vectors.bin</code>) and the <strong>write discipline</strong>: a <strong>dirty flag</strong>
+set by mutating ops only (not read-only recalls), debounced, written
+<code>.tmp</code>→rename for crash-atomicity. This kills the &quot;rewrite the whole blob after
+every tools/call&quot; amplification.</li>
+<li class=""><strong>Migration</strong> is already half-built: <code>loadBlob</code> reads SD-first, LittleFS-
+fallback, so the first SD-backed persist carries existing LittleFS memories onto
+the card.</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="3-episodic---sd-append-log--index-psram-recent-window">3. Episodic - SD append-log + index, PSRAM recent window<a href="#3-episodic---sd-append-log--index-psram-recent-window" class="hash-link" aria-label="Direct link to 3. Episodic - SD append-log + index, PSRAM recent window" title="Direct link to 3. Episodic - SD append-log + index, PSRAM recent window" translate="no">​</a></h2>
+<p><strong>Decision: append-only JSONL day-streams + a compact binary offset index - not a
+SQLite dependency.</strong> Append is O(1) (seek-end, write one line); the index makes
+date/session/kind queries cheap; a truncated last line is tolerable (same
+philosophy as the tolerant vector deserialize); and it matches the documented
+design intent (an append-only JSONL day-stream). SQLite stays deferrable behind
+the same <code>EpisodicStore</code> interface. This
+resolves the long-standing <strong>F10 &quot;SQLite-on-SD unbuilt&quot;</strong> item without the lib.</p>
+<div class="language-text codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#F8F8F2;--prism-background-color:#282A36"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-text codeBlock_bY9V thin-scrollbar" style="color:#F8F8F2;background-color:#282A36"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#F8F8F2"><span class="token plain">/mem/episodic/</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">  2026-07-04.jsonl   # append-only, one EpisodicMessage per line</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">  index.bin          # (tsHours, sessionId-hash, kind, day, byteOffset) fixed-width</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">  sessions.jsonl     # append-only EpisodicSession rows</span><br></div></code></pre></div></div>
+<ul>
+<li class=""><strong>Append path:</strong> <code>captureMessage</code> writes one JSON line to today&#x27;s file + one
+fixed-width index record. No whole-file rewrite → the 500-cap that protected the
+rewrite is lifted.</li>
+<li class=""><strong>Recent window (PSRAM):</strong> an <code>InMemoryEpisodicStore</code> recent-N ring, hydrated at
+boot by tailing the newest day-streams; serves context assembly + <code>memory.*</code>
+reads without SD I/O. It stops being the system-of-record and becomes a cache.</li>
+<li class=""><strong>Query path:</strong> the existing <code>MsgQuery</code> (session/kind/time-window/textContains/
+limit) is served index-first (skip day-files outside the window; reject on
+session/kind before opening the JSONL; textContains streams the survivors up to
+<code>limit</code>). A window fully inside the recent ring answers from RAM with zero SD I/O.
+Same semantics the in-memory store is host-tested against ⇒ tests transfer.</li>
+</ul>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="3a-deep-history---reaching-below-the-boot-index-v400">3a. Deep history - reaching below the boot index (v4.0.0)<a href="#3a-deep-history---reaching-below-the-boot-index-v400" class="hash-link" aria-label="Direct link to 3a. Deep history - reaching below the boot index (v4.0.0)" title="Direct link to 3a. Deep history - reaching below the boot index (v4.0.0)" translate="no">​</a></h3>
+<p>The boot scan is deliberately <strong>budget-bounded</strong> (<code>kHydrateMaxRows</code> 4000 /
+<code>kHydrateMaxBytes</code> 256 KB): an unbounded scan of a busy month&#x27;s history took long
+enough to trip the boot watchdog, leaving a device that could no longer start. The
+cost of that bound is that after a restart the older rows are <strong>on the card but not
+in the index</strong> - a plain query cannot see them, and for a while nothing said so.</p>
+<p>Deep history closes that gap without moving the cliff (raising the budget just
+delays it and costs RAM + boot time):</p>
+<ul>
+<li class=""><strong><code>epiTextMatch</code></strong> - the text filter is case-insensitive and matches every
+whitespace-separated term in any order, so &quot;bilge pump&quot; finds &quot;the Bilge Pump
+serial&quot;. The old case-sensitive substring missed both.</li>
+<li class=""><strong>Cold query</strong> (<code>MsgQuery::coldScan</code>, opt-in) - when the indexed range comes up
+short, walk the day-streams <em>below each file&#x27;s own index floor</em>, newest record
+first, reading backward in bounded windows. The unindexed region is <strong>per file</strong>:
+the boot scan reads each day-stream&#x27;s tail, so the newest file can hold thousands
+of rows above the global floor day. Two budgets keep a single call safe on the
+querying task - at most a few files and ~128 KB per call - and the pass <strong>pages</strong>:
+it reports the exact cursor to resume from.</li>
+<li class=""><strong>Cursor</strong> (<code>MsgQuery::before</code>) - a row id for the indexed range, a
+<code>&quot;&lt;day&gt;:&lt;offset&gt;&quot;</code> byte cursor for the cold range. The store emits the next token;
+no caller (and no model) computes one. The indexed range is itself read-budgeted
+(each row is a real card read), so even a query that never leaves the index pages.</li>
+<li class=""><strong>Honest floor</strong> (<code>EpiQueryInfo</code>) - every answer carries how far back it looked,
+whether older history remains, and the resume token. &quot;No results&quot; from a bounded
+read is reported as exactly that, never as &quot;it never happened&quot;.</li>
+</ul>
+<p>Surfaces: <code>memory.episodic</code> cold-scans by default and takes <code>before</code>; its result
+ends with a &quot;searched back to <code>&lt;date&gt;</code>; older history exists … <code>before=&lt;token&gt;</code>&quot;
+line when there is more. <code>GET /api/mem/episodic</code> gains <code>cold</code> / <code>before</code> params and
+returns <code>searchedTo</code> / <code>olderExists</code> / <code>nextBefore</code>; <code>GET /api/mem/stats</code> exposes
+<code>epiTruncated</code> + <code>epiFloor</code>. The <code>[HOW YOU RUN]</code> prompt tells the model the log
+reaches months back and to search it before claiming not to remember. Hot per-turn
+windows never set <code>coldScan</code>, so they stay zero-read.</p>
+<p>⚠ <strong>The window is a heap allocation on the querying task.</strong> The web task holds
+~8 KB of stack next to ~60 KB of free internal SRAM, so the window size is a
+crash boundary, not a performance knob - an early 128 KB window took the device
+off the LAN mid-query. Kept small (8 KB, escalating only for an over-long record);
+the budget is what bounds the work, not a big buffer.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="4-media--blobs---sd-memblobs-referenced-by-episodic-blobpath">4. Media / blobs - SD <code>/mem/blobs</code>, referenced by episodic <code>blobPath</code><a href="#4-media--blobs---sd-memblobs-referenced-by-episodic-blobpath" class="hash-link" aria-label="Direct link to 4-media--blobs---sd-memblobs-referenced-by-episodic-blobpath" title="Direct link to 4-media--blobs---sd-memblobs-referenced-by-episodic-blobpath" translate="no">​</a></h2>
+<p>Content-addressed sidecars: on capture (Telegram voice note, TTS synth, mic
+record, image/doc), hash the bytes → <code>/mem/blobs/&lt;hash&gt;.&lt;ext&gt;</code>, then
+<code>captureMessage(kind=Audio/Image/File, blobPath=…)</code>. The episodic row is the index;
+the file is the payload; identical bytes dedup for free. Ephemeral in-flight files
+(<code>/voice.pcm</code>, <code>/reply.mp3</code>, <code>/audio/tgvoice.ogg</code>) stay transient LittleFS scratch
+(privacy-deleted per turn); the <strong>durable copy</strong> is the SD sidecar (wipe the card
+to purge). Retention: a maintenance pass archives/prunes day-streams + unreferenced
+blobs older than 30 days (reference-count scan).</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="5-migration--no-sd-degraded-mode-the-graceful-the-directive-demands">5. Migration + no-SD degraded mode (the &quot;graceful&quot; the directive demands)<a href="#5-migration--no-sd-degraded-mode-the-graceful-the-directive-demands" class="hash-link" aria-label="Direct link to 5. Migration + no-SD degraded mode (the &quot;graceful&quot; the directive demands)" title="Direct link to 5. Migration + no-SD degraded mode (the &quot;graceful&quot; the directive demands)" translate="no">​</a></h2>
+<p><strong>Boot/mount:</strong> <code>solide::storage::begin()</code> → on success <code>setDataFs(SD)</code>,
+<code>g_haveSd=true</code>. LittleFS always mounts (config + migration source + degraded
+store). <code>esp_psram_is_initialized()</code> decides PSRAM vs reduced-cap internal.</p>
+<p><strong>Migration</strong> (one-time, on first successful SD mount): vectors migrate via the
+existing SD-first/LittleFS-fallback <code>loadBlob</code>; episodic replays the old
+<code>/data/episodic.bin</code> blob into day-stream appends, then drops a <code>.migrated</code> marker
+(no double-migrate).</p>
+<p><strong>Degraded mode</strong> (<code>g_haveSd==false</code>) - the system still works, <strong>bounded</strong>:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Subsystem</th><th>Degraded behavior</th></tr></thead><tbody><tr><td>VDB</td><td>working set in PSRAM (or internal); durable to LittleFS <strong>hard-capped ≈400 vecs</strong> + score eviction. Closes the unbounded-flash bug.</td></tr><tr><td>Episodic</td><td>no-card-AT-BOOT: in-RAM 500-ring + LittleFS whole-blob. ⚠ a MID-RUN demote keeps the append-log (256-ring, nothing persists until promote) (as before).</td></tr><tr><td>Media</td><td><strong>refused</strong>, not degraded (v3.7.0, owner&#x27;s call): an inbound photo or document is declined with a message suggesting the sender describe it in words. Media on internal flash would compete with the firmware&#x27;s own OTA slots for a 3.5 MB partition, and one phone photo can be a sixth of it. Voice notes still transcribe (the audio is transient); only the durable copy is skipped.</td></tr><tr><td>Files (artifact store)</td><td><strong>unavailable</strong>: <code>artifact.save</code> fails with a legible reason and the listing reports <code>present:false</code>.</td></tr><tr><td>Tenants (roles + quotas)</td><td>fully functional - the table lives on <strong>internal flash</strong>, not the card, so losing a card never drops everyone&#x27;s role.</td></tr><tr><td>Privacy boundaries</td><td>fully enforced - namespace and session filters live in the portable query layer, not the SD path, so degraded mode cannot open up what full mode keeps apart (asserted by <code>tests/hil/test_l20_degradation.py</code>).</td></tr><tr><td>Journal / logs</td><td>last-N RAM ring + small rotating LittleFS file.</td></tr><tr><td>Config / keys / scratchpad / verify</td><td>fully functional (NVS).</td></tr></tbody></table>
+<p><strong>Verification signal (per AGENTS.md&#x27;s bar):</strong> a no-card boot emits a serial line</p>
+<ul>
+<li class="">dashboard banner (<code>memory: no SD - degraded (vectors capped, no durable media)</code>),
+a <code>STATUS</code>/<code>/api/state</code> field <code>sd=absent</code>, and a <code>RENDER?</code>-assertable indicator so
+HIL can <em>prove</em> the degraded path. SD is re-probed live (<code>/api/sdprobe</code> / timer /
+menu) so inserting a card upgrades the tier + runs migration without a reboot.</li>
+</ul>
+<p>⚠ <strong>The boot scan is BOUNDED, and must stay that way (F31).</strong> <code>hydrate()</code> runs
+inside <code>setup()</code>, before the device can serve anything, on a path the watchdog
+watches. It used to read every day-stream whole and parse every row; a device
+that had merely accumulated ~15 K rows could no longer start, and no amount of
+power-cycling helped - retention prune runs <em>after</em> boot, so it could not
+recover the device either. The scan now walks the newest day first and stops at
+a row budget, a total-byte budget, and a per-FILE window read as the file&#x27;s tail
+(a single oversized file defeats a per-scan-only budget). Older rows stay on the
+card and remain reachable by a dated query; they are simply not indexed at boot,
+which <code>hydrateTruncated()</code> reports. <strong>Any future work here keeps that property:
+a device must be able to start regardless of how much it has written.</strong></p>
+<p><strong>LittleFS overflow guard:</strong> the degraded VDB persist checks free space
+(<code>totalBytes-usedBytes</code>) before write; below a floor it stops accepting new vectors
+and logs <code>vectors: flash full, embedding paused</code>. (The safety net the audit found
+missing.)</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="5b-implementation-status-2026-07-04">5b. Implementation status (2026-07-04)<a href="#5b-implementation-status-2026-07-04" class="hash-link" aria-label="Direct link to 5b. Implementation status (2026-07-04)" title="Direct link to 5b. Implementation status (2026-07-04)" translate="no">​</a></h2>
+<p><strong>Landed + verified</strong> (native 343/343; on-device confirmed via <code>/api/log</code> + <code>/api/mem/stats</code>):</p>
+<ul>
+<li class="">PSRAM working set (§2): <code>psram_alloc</code> seam + device hook install; on-device
+<code>[psram] VDB working set -&gt; PSRAM</code>, internal heap <strong>148 KB free</strong> (was ~45 KB).</li>
+<li class="">SD-primary paths (<code>/mem/*</code>) + LittleFS <code>/data</code> degraded fallback + SD-first/LittleFS
+migration read; atomic <code>.tmp</code>→rename writes.</li>
+<li class="">Degraded cap (400) + LittleFS overflow guard; dirty-flag persist (mutating tools only).</li>
+<li class="">Tier status: <code>memory::haveSd()/flashFull()</code>, <code>/api/mem/stats</code> fields + dashboard
+degraded banner, <code>STATUS sd=/psram=/minheap=/vec=</code>, live <code>/api/sdprobe</code> re-mount.</li>
+<li class="">Blob content-addressing utility (§4); a width-invariant bug was found, fixed, and
+regression-tested.</li>
+</ul>
+<p><strong>Landed + ON-DEVICE VERIFIED 2026-07-04</strong> (host-tested AND flashed to hardware while
+the SD card was mounted - see the verification note at the end of this block; the card
+is <strong>intermittent</strong> on this bench board, a cold-joint on the SD-slot GND, so it reads
+<code>cardType=0</code> when the joint is open and <code>cardType=3</code> when it&#x27;s making contact):</p>
+<ul>
+<li class="">Episodic <strong>append-log day-streams + offset index</strong> (§3): <code>AppendLogEpisodicStore</code>
+(<code>lib/core/.../episodic_log.h</code> + <code>orch_episodic_log.cpp</code>) behind the <code>EpisodicStore</code>
+interface - JSONL day-streams (<code>/mem/episodic/YYYY-MM-DD.jsonl</code>), an in-RAM offset
+index rebuilt at boot from the streams (one system-of-record; no separate index.bin
+to desync under power loss), a PSRAM recent-window fast path, and <strong>uncapped history</strong>
+(the 500-ring cap is lifted on SD). O(1) appends, index-first queries that never open
+an out-of-window day file, tolerant torn-line decode. Host-tested (<code>test_orch_episodic_log</code>,
+12 cases: O(1)-append proof via a write-counting fake FS, ring+index query parity vs the
+in-memory store, out-of-window skip, zero-read fast path, &gt;500 history, hydrate/migration,
+torn-line tolerance, id-counter resume, retention prune, civil-date). Native <strong>355/355</strong>.</li>
+<li class=""><strong>30-day retention prune</strong> (§4): <code>AppendLogEpisodicStore::prune</code> drops old day-streams
+<ul>
+<li class="">reference-count-scans away unreferenced blob sidecars; wired to <code>memory::pruneRetention()</code>.</li>
+</ul>
+</li>
+<li class=""><strong>Durable media sidecars, WIRED + ON-DEVICE VERIFIED</strong> (§4): <code>memory::captureMediaFile</code>
+STREAMS a LittleFS file → content-addressed <code>/mem/blobs/&lt;hash&gt;.&lt;ext&gt;</code> in a 512 B buffer
+(a streaming <code>BlobHasher</code>, so the ~480 KB mic PCM never loads whole into RAM), dedup +
+<code>.part</code>→rename atomic, then an episodic <code>Audio</code> row referencing it. Wired at all three
+capture sites: <strong>TTS reply</strong> (<code>/reply.mp3</code>), <strong>inbound Telegram voice note</strong>
+(<code>/audio/tgvoice.ogg</code>, persisted <em>before</em> the LittleFS privacy-delete), and the
+<strong>on-device mic turn</strong> (<code>/voice.wav</code>). SD-gated no-op with no card. Host-tested
+(streaming hash == whole) and <strong>verified on the real card</strong> via the <code>MEDIATEST</code> console
+self-test: <code>[mediatest] captured=1 episodic 37→38</code>, and <code>/api/mem/episodic</code> shows the new
+<code>{&quot;kind&quot;:&quot;audio&quot;,&quot;blob&quot;:&quot;/mem/blobs/d3eb956d….bin&quot;}</code> row. Adversarial review: 0 findings.
+⚠ Privacy: this now retains raw inbound voice-note audio on the card (a change from the
+prior transcript-only delete) - durable-media by design; could be gated behind a setting.</li>
+<li class=""><strong>Retention tick</strong>: <code>main.cpp</code> loop calls <code>pruneRetention(30)</code> every ~6 h (no-op without
+an SD append-log or before the clock advances past the window).</li>
+<li class=""><strong>Device seam</strong>: <code>ArduinoEpiFs</code> (fs::FS backing for the portable <code>EpiFs</code>);
+<code>memory_subsystem::begin()</code> routes episodic through the append-log when <code>g_haveSd</code>,
+with one-time whole-blob→day-stream migration; the card-less path is byte-identical to
+before (append-log constructed only on SD). <code>esp32s3</code> + <code>test</code> builds link.</li>
+</ul>
+<p><strong>On-device verification (2026-07-04, firmware <code>[env:test]</code> flashed, card mounted):</strong></p>
+<ul>
+<li class="">Boot with the new firmware: <code>[sd] mounted: 14911 MB</code>, <code>store=SD /mem, cap=2000</code>.</li>
+<li class=""><strong>Migration proven:</strong> boot log <code>memory: migrated 37 episodic rows -&gt; SD append-log</code>
+(the legacy whole-blob&#x27;s 37 rows replayed into the SD day-streams).</li>
+<li class=""><strong>Query proven:</strong> <code>GET /api/mem/episodic</code> returns all 37 rows, newest-first, content-
+identical - the append-log serves reads via <code>readRange</code> over the real card.</li>
+<li class=""><strong>Persistence across reboot proven (F10 crux):</strong> after a <code>REBOOT</code>, the second boot
+shows <code>[sd] mounted</code> + <code>memory: ready</code> with <strong>NO &quot;migrated&quot; line</strong> and <code>episodicMsgs=37</code>
+<ul>
+<li class=""><code>hydrate()</code> read the day-streams back (hydrate()&gt;0 → migration skipped, no double-
+migrate), and a post-reboot query still returns all 37 rows. Durability confirmed.</li>
+</ul>
+</li>
+</ul>
+<p><strong>Remaining SD-gated steps</strong> (final wiring; deferrable):</p>
+<ul>
+<li class="">A live <em>new</em> capture (post-boot incremental append) - the 37-row migration exercises
+the same <code>addMessage→append</code> path, so append-to-SD is proven, but a fresh turn-driven
+append wasn&#x27;t triggered autonomously. Verify with one live Telegram/voice turn.</li>
+<li class="">Call the durable-media mechanism from the two media sites (TTS <code>/reply.mp3</code>, inbound
+Telegram voice <code>/audio/tgvoice.ogg</code>) - needs a streaming file-hash to avoid pulling
+media into the tight turn-path heap; not editing flashed turn code blind.</li>
+<li class="">Journal/logs → SD day-streams; periodic <code>pruneRetention()</code> scheduler tick + its
+on-device run (the delete path is real code; the logic is host-tested).</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="6-implementation-phases-value--testability">6. Implementation phases (value × testability)<a href="#6-implementation-phases-value--testability" class="hash-link" aria-label="Direct link to 6. Implementation phases (value × testability)" title="Direct link to 6. Implementation phases (value × testability)" translate="no">​</a></h2>
+<p><strong>Phase A - host-testable now, no hardware.</strong> Append-log episodic store behind the
+<code>EpisodicStore</code> interface (in-memory FS shim for tests; query parity with the
+in-memory store); degraded VDB cap + LittleFS overflow guard; blob content-address</p>
+<ul>
+<li class="">reference-count prune; dirty-flag/debounced persist. <em>All at 100% on <code>native</code>.</em></li>
+</ul>
+<p><strong>Phase B - device seams, no card required.</strong> PSRAM routing for <code>g_vec</code> + episodic
+recent window (boot PSRAM assert; <code>STATUS</code> reports <code>psram=ok</code>); <code>sd=absent</code> status
+field + degraded banner + live SD re-probe. <em>Verifiable on the current cardless
+board via <code>STATUS</code>/<code>RENDER?</code>.</em></p>
+<p><strong>Phase C - SD-dependent (gated on the card being detected).</strong> <code>/mem/*</code> paths wired
+through <code>setDataFs</code>; LittleFS→SD migration converter; durable media sidecars;
+retention/archival maintenance.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="7-e2e-test-plan">7. E2E test plan<a href="#7-e2e-test-plan" class="hash-link" aria-label="Direct link to 7. E2E test plan" title="Direct link to 7. E2E test plan" translate="no">​</a></h2>
+<p><strong>Host (<code>pio test -e native</code>, kept at 100%)</strong> - all portable logic:</p>
+<ul>
+<li class="">VDB: <code>serialize</code>↔<code>deserialize</code> bit-exact; truncated-blob tolerance; lowest-score
+eviction (permanent/creator exempt); top-k + threshold recall + access-boost;
+degraded cap when no SD; flash-overflow refusal.</li>
+<li class="">Episodic: append-log makes <strong>O(1) appends</strong> (write-counting fake FS, no whole-file
+rewrite); query parity with the in-memory store; index skips out-of-window days;
+recent-window fast path (zero FS reads); uncapped history (&gt;500 queryable); id
+counter resumes past loaded history.</li>
+<li class="">Blobs: content-address dedup; reference-count prune.</li>
+<li class="">Migration: LittleFS blob → day-streams (+<code>.migrated</code>, no double-migrate);
+vectors SD-first/LittleFS-fallback.</li>
+<li class="">Tiering/config: scratchpad NVS round-trip; mem-config clamps.</li>
+</ul>
+<p><strong>On-device HIL (<code>tests/hil</code>, <code>--allow-hardware</code>, gated markers)</strong> - device
+behavior; SD rows stay skipped until <code>cardType != 0</code>:</p>
+<ul>
+<li class=""><em>No card today (Phase B):</em> PSRAM backs the VDB (<code>heapMin</code> stays off the OOM
+floor as vectors grow); no-SD degraded banner + <code>sd=absent</code> + clamped cap;
+LittleFS-overflow pause; persist-across-reboot in degraded mode.</li>
+<li class=""><em>Gated on the card (Phase C):</em> SD mount + <code>/mem/*</code> created; migration on first
+mount; episodic full history on SD (cap lifted); durable media sidecar (voice
+note persists + episodic <code>Audio</code> row references it); recall into the live turn
+(must run off the main loop, not the watchdog-killed console <code>TURN</code>);
+persist-across-reboot from SD; SD hot-plug upgrade.</li>
+</ul>
+<p>Collection stays clean with no device; state-mutating rows restore in <code>finally</code>;
+manual media/hotplug rows fail LOUD if unconfirmed. A HIL row counts only when
+green on hardware.</p></div><footer class="theme-doc-footer docusaurus-mt-lg"><div class="row margin-top--sm theme-doc-footer-edit-meta-row"><div class="col noPrint_WFHX"><a href="https://github.com/ristllin/Nimbus/blob/main/docs/orchestrator-storage.md" target="_blank" rel="noopener noreferrer" class="theme-edit-this-page"><svg fill="currentColor" height="20" width="20" viewBox="0 0 40 40" class="iconEdit_Z9Sw" aria-hidden="true"><g><path d="m34.5 11.7l-3 3.1-6.3-6.3 3.1-3q0.5-0.5 1.2-0.5t1.1 0.5l3.9 3.9q0.5 0.4 0.5 1.1t-0.5 1.2z m-29.5 17.1l18.4-18.5 6.3 6.3-18.4 18.4h-6.3v-6.2z"></path></g></svg>Edit this page</a></div><div class="col lastUpdated_JAkA"></div></div></footer></article><nav class="docusaurus-mt-lg pagination-nav" aria-label="Docs pages"><a class="pagination-nav__link pagination-nav__link--prev" href="/guides/memory"><div class="pagination-nav__sublabel">Previous</div><div class="pagination-nav__label">Memory</div></a><a class="pagination-nav__link pagination-nav__link--next" href="/guides/sub-sessions"><div class="pagination-nav__sublabel">Next</div><div class="pagination-nav__label">Sub-sessions</div></a></nav></div></div><div class="col col--3"><div class="tableOfContents_bqdL thin-scrollbar theme-doc-toc-desktop"><ul class="table-of-contents table-of-contents__left-border"><li><a href="#0-the-directive-and-the-reframe" class="table-of-contents__link toc-highlight">0. The directive and the reframe</a></li><li><a href="#1-the-four-tiers" class="table-of-contents__link toc-highlight">1. The four tiers</a></li><li><a href="#2-vdb---working-set-in-psram-durable-on-sd" class="table-of-contents__link toc-highlight">2. VDB - working set in PSRAM, durable on SD</a></li><li><a href="#3-episodic---sd-append-log--index-psram-recent-window" class="table-of-contents__link toc-highlight">3. Episodic - SD append-log + index, PSRAM recent window</a><ul><li><a href="#3a-deep-history---reaching-below-the-boot-index-v400" class="table-of-contents__link toc-highlight">3a. Deep history - reaching below the boot index (v4.0.0)</a></li></ul></li><li><a href="#4-media--blobs---sd-memblobs-referenced-by-episodic-blobpath" class="table-of-contents__link toc-highlight">4. Media / blobs - SD <code>/mem/blobs</code>, referenced by episodic <code>blobPath</code></a></li><li><a href="#5-migration--no-sd-degraded-mode-the-graceful-the-directive-demands" class="table-of-contents__link toc-highlight">5. Migration + no-SD degraded mode (the &quot;graceful&quot; the directive demands)</a></li><li><a href="#5b-implementation-status-2026-07-04" class="table-of-contents__link toc-highlight">5b. Implementation status (2026-07-04)</a></li><li><a href="#6-implementation-phases-value--testability" class="table-of-contents__link toc-highlight">6. Implementation phases (value × testability)</a></li><li><a href="#7-e2e-test-plan" class="table-of-contents__link toc-highlight">7. E2E test plan</a></li></ul></div></div></div></div></main></div></div></div><footer class="theme-layout-footer footer footer--dark"><div class="container container-fluid"><div class="row footer__links"><div class="theme-layout-footer-column col footer__col"><div class="footer__title">Docs</div><ul class="footer__items clean-list"><li class="footer__item"><a class="footer__link-item" href="/quick-start/what-you-need">Quick Start</a></li><li class="footer__item"><a class="footer__link-item" href="/guides/hardware-bom">Bill of materials</a></li><li class="footer__item"><a class="footer__link-item" href="/getting-started/webui-reference">Web UI reference</a></li></ul></div><div class="theme-layout-footer-column col footer__col"><div class="footer__title">Reference</div><ul class="footer__items clean-list"><li class="footer__item"><a class="footer__link-item" href="/reference/config-and-nvs">Config &amp; NVS</a></li><li class="footer__item"><a class="footer__link-item" href="/reference/tool-catalog">Tool catalog</a></li><li class="footer__item"><a class="footer__link-item" href="/reference/turn-contract">Turn contract</a></li><li class="footer__item"><a class="footer__link-item" href="/reference/changelog">Changelog</a></li></ul></div><div class="theme-layout-footer-column col footer__col"><div class="footer__title">More</div><ul class="footer__items clean-list"><li class="footer__item"><a href="https://github.com/ristllin/Nimbus" target="_blank" rel="noopener noreferrer" class="footer__link-item">GitHub<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li></ul></div></div><div class="footer__bottom text--center"><div class="footer__copyright">Nimbus - source-available, free for noncommercial use (PolyForm-NC / CC BY-NC-SA). Built with Docusaurus.</div></div></div></footer></div>
+</body>
+</html>

@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="en" dir="ltr" class="docs-wrapper plugin-docs plugin-id-default docs-version-current docs-doc-page docs-doc-id-guides/ota-operations" data-has-hydrated="false">
+<head>
+<meta charset="UTF-8">
+<meta name="generator" content="Docusaurus v3.10.2">
+<title data-rh="true">OTA Operations &amp; Maintenance | Nimbus</title><meta data-rh="true" name="viewport" content="width=device-width,initial-scale=1"><meta data-rh="true" name="twitter:card" content="summary_large_image"><meta data-rh="true" property="og:image" content="https://docs.cumulo-nimbus.ai/img/social-card.png"><meta data-rh="true" name="twitter:image" content="https://docs.cumulo-nimbus.ai/img/social-card.png"><meta data-rh="true" property="og:url" content="https://docs.cumulo-nimbus.ai/guides/ota-operations"><meta data-rh="true" property="og:locale" content="en"><meta data-rh="true" name="docusaurus_locale" content="en"><meta data-rh="true" name="docsearch:language" content="en"><meta data-rh="true" name="docusaurus_version" content="current"><meta data-rh="true" name="docusaurus_tag" content="docs-default-current"><meta data-rh="true" name="docsearch:version" content="current"><meta data-rh="true" name="docsearch:docusaurus_tag" content="docs-default-current"><meta data-rh="true" property="og:title" content="OTA Operations &amp; Maintenance | Nimbus"><meta data-rh="true" name="description" content="Migrated from docs/ota-operations.md - the canonical source lives in the repo."><meta data-rh="true" property="og:description" content="Migrated from docs/ota-operations.md - the canonical source lives in the repo."><link data-rh="true" rel="icon" href="/img/favicon.svg"><link data-rh="true" rel="canonical" href="https://docs.cumulo-nimbus.ai/guides/ota-operations"><link data-rh="true" rel="alternate" href="https://docs.cumulo-nimbus.ai/guides/ota-operations" hreflang="en"><link data-rh="true" rel="alternate" href="https://docs.cumulo-nimbus.ai/guides/ota-operations" hreflang="x-default"><script data-rh="true" type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"OTA operations","item":"https://docs.cumulo-nimbus.ai/guides/ota-operations"}]}</script><link rel="stylesheet" href="/assets/css/styles.5ae419b2.css">
+<script src="/assets/js/runtime~main.e74ebefa.js" defer="defer"></script>
+<script src="/assets/js/main.92f144b6.js" defer="defer"></script>
+</head>
+<body>
+<svg style="display: none;"><defs>
+<symbol id="theme-svg-external-link" viewBox="0 0 24 24"><path fill="currentColor" d="M21 13v10h-21v-19h12v2h-10v15h17v-8h2zm3-12h-10.988l4.035 4-6.977 7.07 2.828 2.828 6.977-7.07 4.125 4.172v-11z"/></symbol>
+</defs></svg>
+<script>!function(){var t=function(){try{return new URLSearchParams(window.location.search).get("docusaurus-theme")}catch(t){}}()||function(){try{return window.localStorage.getItem("theme")}catch(t){}}();document.documentElement.setAttribute("data-theme",t||(window.matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light")),document.documentElement.setAttribute("data-theme-choice",t||"system")}(),function(){try{const c=new URLSearchParams(window.location.search).entries();for(var[t,e]of c)if(t.startsWith("docusaurus-data-")){var a=t.replace("docusaurus-data-","data-");document.documentElement.setAttribute(a,e)}}catch(t){}}()</script><div id="__docusaurus"><div role="region" aria-label="Skip to main content"><a class="skipToContent_fXgn" href="#__docusaurus_skipToContent_fallback">Skip to main content</a></div><nav aria-label="Main" class="theme-layout-navbar navbar navbar--fixed-top"><div class="navbar__inner"><div class="theme-layout-navbar-left navbar__items"><button aria-label="Toggle navigation bar" aria-expanded="false" class="navbar__toggle clean-btn" type="button"><svg width="30" height="30" viewBox="0 0 30 30" aria-hidden="true"><path stroke="currentColor" stroke-linecap="round" stroke-miterlimit="10" stroke-width="2" d="M4 7h22M4 15h22M4 23h22"></path></svg></button><a class="navbar__brand" href="/"><div class="navbar__logo"><img src="/img/logo.svg" alt="Nimbus" class="themedComponent_mlkZ themedComponent--light_NVdE"><img src="/img/logo.svg" alt="Nimbus" class="themedComponent_mlkZ themedComponent--dark_xIcU"></div><b class="navbar__title text--truncate">Nimbus</b></a><a class="navbar__item navbar__link" href="/quick-start/what-you-need">Get started</a><a class="navbar__item navbar__link" href="/flash">Flash</a></div><div class="theme-layout-navbar-right navbar__items navbar__items--right"><a href="https://github.com/ristllin/Nimbus" target="_blank" rel="noopener noreferrer" class="navbar__item navbar__link">GitHub<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a><div class="toggle_vylO colorModeToggle_DEke"><button class="clean-btn toggleButton_gllP toggleButtonDisabled_aARS" type="button" disabled="" title="system mode" aria-label="Switch between dark and light mode (currently system mode)"><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP lightToggleIcon_pyhR"><path fill="currentColor" d="M12,9c1.65,0,3,1.35,3,3s-1.35,3-3,3s-3-1.35-3-3S10.35,9,12,9 M12,7c-2.76,0-5,2.24-5,5s2.24,5,5,5s5-2.24,5-5 S14.76,7,12,7L12,7z M2,13l2,0c0.55,0,1-0.45,1-1s-0.45-1-1-1l-2,0c-0.55,0-1,0.45-1,1S1.45,13,2,13z M20,13l2,0c0.55,0,1-0.45,1-1 s-0.45-1-1-1l-2,0c-0.55,0-1,0.45-1,1S19.45,13,20,13z M11,2v2c0,0.55,0.45,1,1,1s1-0.45,1-1V2c0-0.55-0.45-1-1-1S11,1.45,11,2z M11,20v2c0,0.55,0.45,1,1,1s1-0.45,1-1v-2c0-0.55-0.45-1-1-1C11.45,19,11,19.45,11,20z M5.99,4.58c-0.39-0.39-1.03-0.39-1.41,0 c-0.39,0.39-0.39,1.03,0,1.41l1.06,1.06c0.39,0.39,1.03,0.39,1.41,0s0.39-1.03,0-1.41L5.99,4.58z M18.36,16.95 c-0.39-0.39-1.03-0.39-1.41,0c-0.39,0.39-0.39,1.03,0,1.41l1.06,1.06c0.39,0.39,1.03,0.39,1.41,0c0.39-0.39,0.39-1.03,0-1.41 L18.36,16.95z M19.42,5.99c0.39-0.39,0.39-1.03,0-1.41c-0.39-0.39-1.03-0.39-1.41,0l-1.06,1.06c-0.39,0.39-0.39,1.03,0,1.41 s1.03,0.39,1.41,0L19.42,5.99z M7.05,18.36c0.39-0.39,0.39-1.03,0-1.41c-0.39-0.39-1.03-0.39-1.41,0l-1.06,1.06 c-0.39,0.39-0.39,1.03,0,1.41s1.03,0.39,1.41,0L7.05,18.36z"></path></svg><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP darkToggleIcon_wfgR"><path fill="currentColor" d="M9.37,5.51C9.19,6.15,9.1,6.82,9.1,7.5c0,4.08,3.32,7.4,7.4,7.4c0.68,0,1.35-0.09,1.99-0.27C17.45,17.19,14.93,19,12,19 c-3.86,0-7-3.14-7-7C5,9.07,6.81,6.55,9.37,5.51z M12,3c-4.97,0-9,4.03-9,9s4.03,9,9,9s9-4.03,9-9c0-0.46-0.04-0.92-0.1-1.36 c-0.98,1.37-2.58,2.26-4.4,2.26c-2.98,0-5.4-2.42-5.4-5.4c0-1.81,0.89-3.42,2.26-4.4C12.92,3.04,12.46,3,12,3L12,3z"></path></svg><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP systemToggleIcon_QzmC"><path fill="currentColor" d="m12 21c4.971 0 9-4.029 9-9s-4.029-9-9-9-9 4.029-9 9 4.029 9 9 9zm4.95-13.95c1.313 1.313 2.05 3.093 2.05 4.95s-0.738 3.637-2.05 4.95c-1.313 1.313-3.093 2.05-4.95 2.05v-14c1.857 0 3.637 0.737 4.95 2.05z"></path></svg></button></div><div class="navbarSearchContainer_Bca1"></div></div></div><div role="presentation" class="navbar-sidebar__backdrop"></div></nav><div id="__docusaurus_skipToContent_fallback" class="theme-layout-main main-wrapper mainWrapper_z2l0"><div class="docsWrapper_hBAB"><button aria-label="Scroll back to top" class="clean-btn theme-back-to-top-button backToTopButton_sjWU" type="button"></button><div class="docRoot_UBD9"><aside class="theme-doc-sidebar-container docSidebarContainer_YfHR"><div class="sidebarViewport_aRkj"><div class="sidebar_njMd"><nav aria-label="Docs sidebar" class="menu thin-scrollbar menu_SIkG"><ul class="theme-doc-sidebar-menu menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/"><span class="linkLabel_WmDU">Overview</span></a></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="true" href="/quick-start/what-you-need"><span class="categoryLinkLabel_W154">Quick Start</span></a></div><ul class="menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/what-you-need"><span class="linkLabel_WmDU">What you need</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/flash"><span class="linkLabel_WmDU">Flash the firmware</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/setup-wizard"><span class="linkLabel_WmDU">Set up the device</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/first-conversation"><span class="linkLabel_WmDU">First conversation</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/notifier-quick-start"><span class="linkLabel_WmDU">Notifier quick start</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/getting-started/first-time-setup"><span class="linkLabel_WmDU">First-time setup</span></a></li></ul></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/guides/hardware"><span class="categoryLinkLabel_W154">Hardware Build</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/getting-started/webui-reference"><span class="categoryLinkLabel_W154">Using Nimbus</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/guides/architecture"><span class="categoryLinkLabel_W154">How It Works</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/reference/config-and-nvs"><span class="categoryLinkLabel_W154">Reference</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret menu__link--active" role="button" aria-expanded="true" href="/contributing/development"><span class="categoryLinkLabel_W154">Forking &amp; Contributing</span></a></div><ul class="menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/contributing/development"><span class="linkLabel_WmDU">Development</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/contributing/self-hosted-ota"><span class="linkLabel_WmDU">Self-hosted OTA</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/ota"><span class="linkLabel_WmDU">OTA updates</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link menu__link--active" aria-current="page" tabindex="0" href="/guides/ota-operations"><span class="linkLabel_WmDU">OTA operations</span></a></li></ul></li></ul></nav></div></div></aside><main class="docMainContainer_TBSr"><div class="container padding-top--md padding-bottom--lg"><div class="row"><div class="col docItemCol_VOVn"><div class="docItemContainer_Djhp"><article><nav class="theme-doc-breadcrumbs breadcrumbsContainer_Z_bl" aria-label="Breadcrumbs"><ul class="breadcrumbs"><li class="breadcrumbs__item"><a aria-label="Home page" class="breadcrumbs__link" href="/"><svg viewBox="0 0 24 24" class="breadcrumbHomeIcon_YNFT"><path d="M10 19v-5h4v5c0 .55.45 1 1 1h3c.55 0 1-.45 1-1v-7h1.7c.46 0 .68-.57.33-.87L12.67 3.6c-.38-.34-.96-.34-1.34 0l-8.36 7.53c-.34.3-.13.87.33.87H5v7c0 .55.45 1 1 1h3c.55 0 1-.45 1-1z" fill="currentColor"></path></svg></a></li><li class="breadcrumbs__item"><span class="breadcrumbs__link">Forking &amp; Contributing</span></li><li class="breadcrumbs__item breadcrumbs__item--active"><span class="breadcrumbs__link">OTA operations</span></li></ul></nav><div class="tocCollapsible_ETCw theme-doc-toc-mobile tocMobile_ITEo"><button type="button" class="clean-btn tocCollapsibleButton_TO0P">On this page</button></div><div class="theme-doc-markdown markdown"><blockquote>
+<p>Sourced from <code>docs/ota-operations.md</code> in the firmware repo.</p>
+</blockquote>
+<header><h1>Nimbus OTA - Operations &amp; Maintenance Manual</h1></header>
+<p>Everything a developer/operator needs to run over-the-air firmware updates:
+how it works end to end, how to cut a release for the fleet, and what to
+maintain (tokens, keys) so it keeps working. For the <em>design</em> rationale and the
+portable-core internals, see <a class="" href="/guides/ota"><code>ota.md</code></a>; this doc is the runbook.</p>
+<hr>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="1-the-big-picture">1. The big picture<a href="#1-the-big-picture" class="hash-link" aria-label="Direct link to 1. The big picture" title="Direct link to 1. The big picture" translate="no">​</a></h2>
+<p>Two GitHub repos, one keypair, A/B flash slots:</p>
+<!-- -->
+<p><strong>Why two repos.</strong> The device downloads over plain unauthenticated HTTPS (you do
+NOT bake repo credentials into firmware), so the signed firmware is published to
+a dedicated, assets-only <strong>public</strong> repo that any device can fetch from - and the
+delivery channel stays clean of source history. The signed binaries contain no
+secrets. Same pattern as the SFX assets. A fork runs its own delivery repo - see
+<a class="" href="/contributing/self-hosted-ota"><code>self-hosted-ota.md</code></a>.</p>
+<hr>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="2-trust--auth---whats-secret-whats-public-why">2. Trust &amp; auth - what&#x27;s secret, what&#x27;s public, why<a href="#2-trust--auth---whats-secret-whats-public-why" class="hash-link" aria-label="Direct link to 2. Trust &amp; auth - what&#x27;s secret, what&#x27;s public, why" title="Direct link to 2. Trust &amp; auth - what&#x27;s secret, what&#x27;s public, why" translate="no">​</a></h2>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Thing</th><th>Secret?</th><th>Where it lives</th><th>Purpose</th></tr></thead><tbody><tr><td><strong>Signing private key</strong> (ECDSA P-256)</td><td>SECRET</td><td>maintainer key storage (offline backup) · GitHub secret <code>OTA_SIGNING_KEY</code></td><td>CI signs each release with it</td></tr><tr><td><strong>Signing public key</strong></td><td>public</td><td><code>include/ota_pubkey.h</code> (compiled into firmware) · <code>nimbus_ota_pub.pem</code></td><td>devices verify releases against it</td></tr><tr><td><strong><code>RELEASE_PAT</code></strong> (fine-grained PAT)</td><td>SECRET</td><td>GitHub secret on <code>ristllin/Nimbus</code></td><td>CI writes to the public releases repo</td></tr><tr><td><strong><code>OTA_SIGNING_KEY</code></strong></td><td>SECRET</td><td>GitHub secret on <code>ristllin/Nimbus</code></td><td>the private key, for CI signing</td></tr><tr><td><strong>TLS CA bundle</strong></td><td>public</td><td>embedded in firmware (IDF cert bundle)</td><td>validates GitHub&#x27;s TLS cert (when <code>tlsVerify</code> on, the default)</td></tr></tbody></table>
+<p><strong>The signature is the real trust anchor.</strong> Even though delivery is over TLS
+(and even if TLS validation were off), a device installs firmware only if the
+release&#x27;s ECDSA signature verifies against a public key baked into the <em>currently
+running</em> firmware. The signed payload binds version + variant + binary hash:
+<code>nimbus-ota-v1\n&lt;version&gt;\n&lt;variant&gt;\n&lt;sha256hex&gt;\n</code>. So an attacker can&#x27;t swap
+variants, replay an old signature on a new binary, or serve unsigned firmware.</p>
+<hr>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="3-on-device-mechanism-what-the-firmware-does">3. On-device mechanism (what the firmware does)<a href="#3-on-device-mechanism-what-the-firmware-does" class="hash-link" aria-label="Direct link to 3. On-device mechanism (what the firmware does)" title="Direct link to 3. On-device mechanism (what the firmware does)" translate="no">​</a></h2>
+<ul>
+<li class=""><strong>A/B slots.</strong> Flash has two 6.5 MB app slots. The running slot downloads the
+new image into the <strong>inactive</strong> slot - the running firmware is never touched,
+so a failed/interrupted download is harmless.</li>
+<li class=""><strong>Check</strong> - ~2 min after boot, then daily, or on demand (web <strong>Check for Updates</strong> / <code>POST /api/ota/check</code>). Fetches <code>manifest.json</code> from the public repo,
+compares <code>version</code> to the running <code>NIMBUS_FW_VERSION</code>. A newer signed version →
+<code>available</code> (+ a one-time Telegram notice in Orchestrator mode). A 404 (no
+release yet) reads as <code>up-to-date</code>, not an error.</li>
+<li class=""><strong>Install</strong> - web button / <code>POST /api/ota/apply</code>. Streams the <code>.bin</code> into the
+inactive slot while computing SHA-256; checks the hash matches the manifest,
+then verifies the ECDSA signature; only then arms the NVS rollback guard and
+flips the boot slot; restarts. (<code>dry=1</code> verifies without flipping; <code>force=1</code>
+allows an explicit same/older install from the authenticated UI.)</li>
+<li class=""><strong>Rollback (self-healing).</strong> Before the flip it records <code>otaPending/otaPrev/ otaBoots</code> in NVS. <code>bootGuard()</code> runs as the FIRST line of <code>setup()</code> (before any
+driver) and counts boot attempts; after <strong>3</strong> failed boots it flips back to the
+previous, untouched slot. A healthy boot (Wi-Fi up + ~120 s crash-free) clears
+the guard and marks the image <strong>valid</strong> (<code>lastOta=&quot;ok vX.Y.Z&quot;</code>).
+<blockquote>
+<p>⚠ Mark-valid takes ~120 s after the restart - <code>lastOta</code> sitting at
+<code>&quot;installing vX&quot;</code> for a couple minutes post-update is normal, not a hang.</p>
+</blockquote>
+</li>
+<li class=""><strong>Surfaces.</strong> Web <strong>Settings → Software update</strong> · <code>/api/state</code> fields
+(<code>ota</code>, <code>otaLatest</code>, <code>lastOta</code>, <code>otaSlot</code>, <code>autoUpd</code>) · console <code>OTA?</code>
+<code>OTACHECK</code> <code>OTAAPPLY</code> · Telegram notify.</li>
+<li class=""><strong>Scope.</strong> <strong>Orchestrator mode only.</strong> In Notifier mode NimBLE owns the
+internal SRAM (~23 KB free, below the 24 KB OTA task floor), so <code>/api/ota/*</code>
+refuse with 409 - Notifier devices update by USB. <code>autoUpd</code> (NVS, default OFF)
+enables unattended install in an idle window.</li>
+</ul>
+<hr>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="4-cut-a-release-for-the-whole-fleet-developer-runbook">4. Cut a release for the whole fleet (developer runbook)<a href="#4-cut-a-release-for-the-whole-fleet-developer-runbook" class="hash-link" aria-label="Direct link to 4. Cut a release for the whole fleet (developer runbook)" title="Direct link to 4. Cut a release for the whole fleet (developer runbook)" translate="no">​</a></h2>
+<p>Everything after the tag is automatic.</p>
+<div class="language-bash codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#F8F8F2;--prism-background-color:#282A36"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-bash codeBlock_bY9V thin-scrollbar" style="color:#F8F8F2;background-color:#282A36"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#F8F8F2"><span class="token comment" style="color:rgb(98, 114, 164)"># 1. bump the version (single source of truth; the CI tag-guard enforces tag == this)</span><span class="token plain"></span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain"></span><span class="token comment" style="color:rgb(98, 114, 164)">#    edit include/version.h:  #define NIMBUS_FW_VERSION &quot;v2.11.4&quot;</span><span class="token plain"></span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain"></span><span class="token function" style="color:rgb(80, 250, 123)">git</span><span class="token plain"> commit </span><span class="token parameter variable" style="color:rgb(189, 147, 249);font-style:italic">-am</span><span class="token plain"> </span><span class="token string" style="color:rgb(255, 121, 198)">&quot;release: v2.11.4 - &lt;what changed&gt;&quot;</span><span class="token plain"></span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain"></span><span class="token function" style="color:rgb(80, 250, 123)">git</span><span class="token plain"> push origin main</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain" style="display:inline-block"></span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain"></span><span class="token comment" style="color:rgb(98, 114, 164)"># 2. tag it - this is the ONLY action that ships an update</span><span class="token plain"></span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain"></span><span class="token function" style="color:rgb(80, 250, 123)">git</span><span class="token plain"> tag v2.11.4</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain"></span><span class="token function" style="color:rgb(80, 250, 123)">git</span><span class="token plain"> push origin v2.11.4</span><br></div></code></pre></div></div>
+<p>CI (<code>.github/workflows/release.yml</code>) then, with no further input:</p>
+<ol>
+<li class="">checks out <code>Nimbus</code> + <code>solide-drivers</code> (via <code>RELEASE_PAT</code>),</li>
+<li class="">gates <code>tag == NIMBUS_FW_VERSION</code>,</li>
+<li class="">builds both variants (<code>esp32s3</code> + <code>test</code>),</li>
+<li class="">signs the manifest with <code>OTA_SIGNING_KEY</code>,</li>
+<li class="">publishes <code>firmware-esp32s3.bin</code>, <code>firmware-test.bin</code>, <code>manifest.json</code> to
+<strong>nimbus-fw-releases</strong> (<code>RELEASE_PAT</code> write).</li>
+</ol>
+<p>Watch it: <code>gh run watch -R ristllin/Nimbus $(gh run list -R ristllin/Nimbus -w release.yml -L1 --json databaseId -q &#x27;.[0].databaseId&#x27;)</code></p>
+<p><strong>How the fleet gets it.</strong> Every device already running OTA-capable firmware
+(<strong>v2.11.2+, Orchestrator mode</strong>) sees the new tag on its next daily check and
+installs it - or the owner hits <strong>Check for Updates</strong>. One tag → the whole
+(OTA-capable) fleet converges. <code>-rcN</code> tags publish as pre-releases and do NOT
+move <code>releases/latest</code>, so they don&#x27;t reach devices via the daily check (test rc
+builds with the <code>OTAURL</code> console override).</p>
+<p><strong>Bootstrapping a device onto the OTA train</strong> (one-time, per device): a device
+running older/other firmware can&#x27;t receive OTA tags until it&#x27;s on v2.11.2+. Flash
+it once over USB - <code>pio run -e test -t upload --upload-port &lt;port&gt;</code> (or <code>esp32s3</code>
+for production) - after which every future tag reaches it with no cable. Confirm
+the board first by MAC/WEBTOK, never the port suffix.</p>
+<hr>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="5-maintenance---what-expires-where-and-how-to-renew">5. Maintenance - what expires, where, and how to renew<a href="#5-maintenance---what-expires-where-and-how-to-renew" class="hash-link" aria-label="Direct link to 5. Maintenance - what expires, where, and how to renew" title="Direct link to 5. Maintenance - what expires, where, and how to renew" translate="no">​</a></h2>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Item</th><th>Expires?</th><th>Symptom when stale</th><th>Where / how to fix</th></tr></thead><tbody><tr><td><strong><code>RELEASE_PAT</code></strong></td><td>Yes (you chose the date; fine-grained PATs ≤ 1 yr)</td><td>release CI goes <strong>red</strong> at the <em>solide-drivers checkout</em> or <em>publish</em> step (403 / &quot;could not read repository&quot;)</td><td>Regenerate/create a fine-grained PAT (owner <code>ristllin</code>; repos <code>solide-drivers</code>=Contents:Read, <code>nimbus-fw-releases</code>=Contents:Read+Write) at github.com/settings/personal-access-tokens → <code>gh secret set RELEASE_PAT -R ristllin/Nimbus</code></td></tr><tr><td><strong><code>OTA_SIGNING_KEY</code></strong></td><td>No (it&#x27;s a key)</td><td>-</td><td>Doesn&#x27;t expire. But <strong>back it up</strong> (offline, e.g. a password manager). If LOST, no future release can be signed → the whole fleet is orphaned (USB-only forever).</td></tr><tr><td><strong>TLS CA bundle</strong></td><td>rarely (GitHub CA rotation)</td><td>device <code>ota=error</code> on check with a TLS error in the log</td><td>Rare. Workaround: set <code>tlsVerify</code> off (encrypted-but-unvalidated; the signature still gates install). Real fix: ship a firmware release with an updated IDF cert bundle.</td></tr><tr><td><strong>GitHub Actions node deprecation</strong></td><td>n/a (cosmetic)</td><td>yellow &quot;Node 20 deprecated&quot; warning; run still green</td><td>Bump <code>actions/*</code> and <code>softprops/action-gh-release</code> versions in <code>release.yml</code> when convenient.</td></tr></tbody></table>
+<p><strong>Set a calendar reminder ~1 week before <code>RELEASE_PAT</code> expires.</strong> Check the
+current expiry at github.com/settings/personal-access-tokens (or
+<code>gh api /user 2&gt;/dev/null</code> won&#x27;t show it - use the web UI). A <code>git tag</code> release
+with an expired PAT fails loudly in CI and ships nothing, so it can&#x27;t silently
+push a bad update - but it does block <em>all</em> releases until renewed.</p>
+<p><strong>Key rotation (only if the private key is compromised):</strong> append the new public
+key to <code>kOtaPubKeys[]</code> in <code>include/ota_pubkey.h</code>; ship a release signed with the
+<strong>OLD</strong> key so fielded devices learn the new anchor; then update <code>OTA_SIGNING_KEY</code>
+to the new private key; drop the old public key one release later. Because the
+firmware trusts a <em>list</em> of keys, rotation never orphans a device that&#x27;s on a
+build carrying both anchors.</p>
+<hr>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="6-troubleshooting-symptom--cause">6. Troubleshooting (symptom → cause)<a href="#6-troubleshooting-symptom--cause" class="hash-link" aria-label="Direct link to 6. Troubleshooting (symptom → cause)" title="Direct link to 6. Troubleshooting (symptom → cause)" translate="no">​</a></h2>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Symptom</th><th>Likely cause</th></tr></thead><tbody><tr><td>Release CI red at <em>checkout solide-drivers</em> or <em>publish</em></td><td><code>RELEASE_PAT</code> expired or wrong scopes/repos</td></tr><tr><td>Release CI red at <em>sign</em></td><td><code>OTA_SIGNING_KEY</code> missing/malformed</td></tr><tr><td>Release CI red at <em>tag guard</em></td><td>tag ≠ <code>NIMBUS_FW_VERSION</code> in <code>include/version.h</code></td></tr><tr><td>Device <code>ota=up-to-date</code> but you published</td><td>device&#x27;s baked <code>OTA_MANIFEST_URL</code> ≠ the public repo (old firmware), or the release isn&#x27;t <code>latest</code> (it&#x27;s a <code>-rc</code> prerelease)</td></tr><tr><td>Device <code>ota=error</code>, <code>otaErr=fetch</code></td><td>can&#x27;t reach GitHub (Wi-Fi/DNS), or a real 5xx</td></tr><tr><td>Device <code>lastOta=sig-fail</code></td><td>release signed with a key <strong>not</strong> in the device&#x27;s <code>kOtaPubKeys</code> (rotation gap / wrong key)</td></tr><tr><td>Device <code>lastOta=sha-fail</code></td><td>corrupted/truncated download (retries next cycle)</td></tr><tr><td>Device <code>lastOta=rollback vX</code></td><td>the new image crash-looped 3× → auto-reverted; investigate that build</td></tr><tr><td><code>POST /api/ota/*</code> → 409 on a device</td><td>Notifier mode (heap-gated) - update it by USB, or it&#x27;s already busy</td></tr><tr><td><code>lastOta</code> stuck at <code>installing vX</code> for ~2 min</td><td>normal - the 120 s health window before mark-valid</td></tr></tbody></table>
+<hr>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="7-quick-reference">7. Quick reference<a href="#7-quick-reference" class="hash-link" aria-label="Direct link to 7. Quick reference" title="Direct link to 7. Quick reference" translate="no">​</a></h2>
+<p><strong>Repos</strong> - source <code>github.com/ristllin/Nimbus</code> · delivery
+<code>github.com/ristllin/nimbus-fw-releases</code> (public, assets-only).
+<strong>Device manifest URL</strong> - <code>https://github.com/ristllin/nimbus-fw-releases/releases/latest/download/manifest.json</code>.</p>
+<p><strong>Key files</strong> - <code>include/version.h</code> (version) · <code>include/ota_pubkey.h</code> (trust
+anchors) · <code>tools/make_manifest.py</code> (sign+manifest; byte-locked to
+<code>nimbus::ota::buildSigMessage</code>) · <code>.github/workflows/release.yml</code> (CI) ·
+<code>src/sys/ota_update.cpp</code> (device glue) · <code>lib/core/src/ota_logic.cpp</code> (portable
+core, host-tested).</p>
+<p><strong>Common commands</strong></p>
+<div class="language-bash codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#F8F8F2;--prism-background-color:#282A36"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-bash codeBlock_bY9V thin-scrollbar" style="color:#F8F8F2;background-color:#282A36"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#F8F8F2"><span class="token comment" style="color:rgb(98, 114, 164)"># cut a release</span><span class="token plain"></span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain"></span><span class="token function" style="color:rgb(80, 250, 123)">git</span><span class="token plain"> commit </span><span class="token parameter variable" style="color:rgb(189, 147, 249);font-style:italic">-am</span><span class="token plain"> </span><span class="token string" style="color:rgb(255, 121, 198)">&quot;release: vX.Y.Z&quot;</span><span class="token plain"> </span><span class="token operator">&amp;&amp;</span><span class="token plain"> </span><span class="token function" style="color:rgb(80, 250, 123)">git</span><span class="token plain"> push origin main </span><span class="token operator">&amp;&amp;</span><span class="token plain"> </span><span class="token function" style="color:rgb(80, 250, 123)">git</span><span class="token plain"> tag vX.Y.Z </span><span class="token operator">&amp;&amp;</span><span class="token plain"> </span><span class="token function" style="color:rgb(80, 250, 123)">git</span><span class="token plain"> push origin vX.Y.Z</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain" style="display:inline-block"></span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain"></span><span class="token comment" style="color:rgb(98, 114, 164)"># set / rotate secrets</span><span class="token plain"></span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">gh secret </span><span class="token builtin class-name" style="color:rgb(189, 147, 249)">set</span><span class="token plain"> RELEASE_PAT     </span><span class="token parameter variable" style="color:rgb(189, 147, 249);font-style:italic">-R</span><span class="token plain"> ristllin/Nimbus            </span><span class="token comment" style="color:rgb(98, 114, 164)"># paste the PAT</span><span class="token plain"></span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">gh secret </span><span class="token builtin class-name" style="color:rgb(189, 147, 249)">set</span><span class="token plain"> OTA_SIGNING_KEY </span><span class="token parameter variable" style="color:rgb(189, 147, 249);font-style:italic">-R</span><span class="token plain"> ristllin/Nimbus </span><span class="token operator">&lt;</span><span class="token plain"> /path/to/your/ota_priv.pem</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">gh secret list </span><span class="token parameter variable" style="color:rgb(189, 147, 249);font-style:italic">-R</span><span class="token plain"> ristllin/Nimbus</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain" style="display:inline-block"></span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain"></span><span class="token comment" style="color:rgb(98, 114, 164)"># check a device (HTTP, token-gated)</span><span class="token plain"></span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain"></span><span class="token function" style="color:rgb(80, 250, 123)">curl</span><span class="token plain"> </span><span class="token parameter variable" style="color:rgb(189, 147, 249);font-style:italic">-sk</span><span class="token plain"> </span><span class="token string" style="color:rgb(255, 121, 198)">&quot;http://&lt;ip&gt;/api/state?t=&lt;webtok&gt;&quot;</span><span class="token plain"> </span><span class="token operator">|</span><span class="token plain"> python3 </span><span class="token parameter variable" style="color:rgb(189, 147, 249);font-style:italic">-m</span><span class="token plain"> json.tool   </span><span class="token comment" style="color:rgb(98, 114, 164)"># ota / lastOta / otaSlot</span><span class="token plain"></span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain"></span><span class="token function" style="color:rgb(80, 250, 123)">curl</span><span class="token plain"> </span><span class="token parameter variable" style="color:rgb(189, 147, 249);font-style:italic">-sk</span><span class="token plain"> </span><span class="token string" style="color:rgb(255, 121, 198)">&quot;http://&lt;ip&gt;/api/ota/check&quot;</span><span class="token plain"> </span><span class="token parameter variable" style="color:rgb(189, 147, 249);font-style:italic">-X</span><span class="token plain"> POST </span><span class="token parameter variable" style="color:rgb(189, 147, 249);font-style:italic">-d</span><span class="token plain"> </span><span class="token string" style="color:rgb(255, 121, 198)">&quot;t=&lt;webtok&gt;&quot;</span><span class="token plain">          </span><span class="token comment" style="color:rgb(98, 114, 164)"># force a check</span><span class="token plain"></span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain" style="display:inline-block"></span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain"></span><span class="token comment" style="color:rgb(98, 114, 164)"># manual/local release (if CI is down) - signs with the on-disk key</span><span class="token plain"></span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">python3 tools/make_manifest.py </span><span class="token parameter variable" style="color:rgb(189, 147, 249);font-style:italic">--version</span><span class="token plain"> vX.Y.Z </span><span class="token parameter variable" style="color:rgb(189, 147, 249);font-style:italic">--key</span><span class="token plain"> /path/to/your/ota_priv.pem </span><span class="token punctuation" style="color:rgb(248, 248, 242)">\</span><span class="token plain"></span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">  --url-base https://github.com/ristllin/nimbus-fw-releases/releases/download/vX.Y.Z </span><span class="token parameter variable" style="color:rgb(189, 147, 249);font-style:italic">--out</span><span class="token plain"> manifest.json </span><span class="token punctuation" style="color:rgb(248, 248, 242)">\</span><span class="token plain"></span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">  </span><span class="token assign-left variable" style="color:rgb(189, 147, 249);font-style:italic">esp32s3</span><span class="token operator">=</span><span class="token plain">firmware-esp32s3.bin </span><span class="token assign-left variable" style="color:rgb(189, 147, 249);font-style:italic">test</span><span class="token operator">=</span><span class="token plain">firmware-test.bin</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">gh release create vX.Y.Z </span><span class="token parameter variable" style="color:rgb(189, 147, 249);font-style:italic">-R</span><span class="token plain"> ristllin/nimbus-fw-releases firmware-esp32s3.bin firmware-test.bin manifest.json</span><br></div></code></pre></div></div></div><footer class="theme-doc-footer docusaurus-mt-lg"><div class="row margin-top--sm theme-doc-footer-edit-meta-row"><div class="col noPrint_WFHX"><a href="https://github.com/ristllin/Nimbus/blob/main/docs/ota-operations.md" target="_blank" rel="noopener noreferrer" class="theme-edit-this-page"><svg fill="currentColor" height="20" width="20" viewBox="0 0 40 40" class="iconEdit_Z9Sw" aria-hidden="true"><g><path d="m34.5 11.7l-3 3.1-6.3-6.3 3.1-3q0.5-0.5 1.2-0.5t1.1 0.5l3.9 3.9q0.5 0.4 0.5 1.1t-0.5 1.2z m-29.5 17.1l18.4-18.5 6.3 6.3-18.4 18.4h-6.3v-6.2z"></path></g></svg>Edit this page</a></div><div class="col lastUpdated_JAkA"></div></div></footer></article><nav class="docusaurus-mt-lg pagination-nav" aria-label="Docs pages"><a class="pagination-nav__link pagination-nav__link--prev" href="/guides/ota"><div class="pagination-nav__sublabel">Previous</div><div class="pagination-nav__label">OTA updates</div></a></nav></div></div><div class="col col--3"><div class="tableOfContents_bqdL thin-scrollbar theme-doc-toc-desktop"><ul class="table-of-contents table-of-contents__left-border"><li><a href="#1-the-big-picture" class="table-of-contents__link toc-highlight">1. The big picture</a></li><li><a href="#2-trust--auth---whats-secret-whats-public-why" class="table-of-contents__link toc-highlight">2. Trust &amp; auth - what&#39;s secret, what&#39;s public, why</a></li><li><a href="#3-on-device-mechanism-what-the-firmware-does" class="table-of-contents__link toc-highlight">3. On-device mechanism (what the firmware does)</a></li><li><a href="#4-cut-a-release-for-the-whole-fleet-developer-runbook" class="table-of-contents__link toc-highlight">4. Cut a release for the whole fleet (developer runbook)</a></li><li><a href="#5-maintenance---what-expires-where-and-how-to-renew" class="table-of-contents__link toc-highlight">5. Maintenance - what expires, where, and how to renew</a></li><li><a href="#6-troubleshooting-symptom--cause" class="table-of-contents__link toc-highlight">6. Troubleshooting (symptom → cause)</a></li><li><a href="#7-quick-reference" class="table-of-contents__link toc-highlight">7. Quick reference</a></li></ul></div></div></div></div></main></div></div></div><footer class="theme-layout-footer footer footer--dark"><div class="container container-fluid"><div class="row footer__links"><div class="theme-layout-footer-column col footer__col"><div class="footer__title">Docs</div><ul class="footer__items clean-list"><li class="footer__item"><a class="footer__link-item" href="/quick-start/what-you-need">Quick Start</a></li><li class="footer__item"><a class="footer__link-item" href="/guides/hardware-bom">Bill of materials</a></li><li class="footer__item"><a class="footer__link-item" href="/getting-started/webui-reference">Web UI reference</a></li></ul></div><div class="theme-layout-footer-column col footer__col"><div class="footer__title">Reference</div><ul class="footer__items clean-list"><li class="footer__item"><a class="footer__link-item" href="/reference/config-and-nvs">Config &amp; NVS</a></li><li class="footer__item"><a class="footer__link-item" href="/reference/tool-catalog">Tool catalog</a></li><li class="footer__item"><a class="footer__link-item" href="/reference/turn-contract">Turn contract</a></li><li class="footer__item"><a class="footer__link-item" href="/reference/changelog">Changelog</a></li></ul></div><div class="theme-layout-footer-column col footer__col"><div class="footer__title">More</div><ul class="footer__items clean-list"><li class="footer__item"><a href="https://github.com/ristllin/Nimbus" target="_blank" rel="noopener noreferrer" class="footer__link-item">GitHub<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li></ul></div></div><div class="footer__bottom text--center"><div class="footer__copyright">Nimbus - source-available, free for noncommercial use (PolyForm-NC / CC BY-NC-SA). Built with Docusaurus.</div></div></div></footer></div>
+</body>
+</html>

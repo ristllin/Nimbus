@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="en" dir="ltr" class="docs-wrapper plugin-docs plugin-id-default docs-version-current docs-doc-page docs-doc-id-guides/harness" data-has-hydrated="false">
+<head>
+<meta charset="UTF-8">
+<meta name="generator" content="Docusaurus v3.10.2">
+<title data-rh="true">The agentic harness | Nimbus</title><meta data-rh="true" name="viewport" content="width=device-width,initial-scale=1"><meta data-rh="true" name="twitter:card" content="summary_large_image"><meta data-rh="true" property="og:image" content="https://docs.cumulo-nimbus.ai/img/social-card.png"><meta data-rh="true" name="twitter:image" content="https://docs.cumulo-nimbus.ai/img/social-card.png"><meta data-rh="true" property="og:url" content="https://docs.cumulo-nimbus.ai/guides/harness"><meta data-rh="true" property="og:locale" content="en"><meta data-rh="true" name="docusaurus_locale" content="en"><meta data-rh="true" name="docsearch:language" content="en"><meta data-rh="true" name="docusaurus_version" content="current"><meta data-rh="true" name="docusaurus_tag" content="docs-default-current"><meta data-rh="true" name="docsearch:version" content="current"><meta data-rh="true" name="docsearch:docusaurus_tag" content="docs-default-current"><meta data-rh="true" property="og:title" content="The agentic harness | Nimbus"><meta data-rh="true" name="description" content="Migrated from docs/harness.md - the canonical source lives in the repo."><meta data-rh="true" property="og:description" content="Migrated from docs/harness.md - the canonical source lives in the repo."><link data-rh="true" rel="icon" href="/img/favicon.svg"><link data-rh="true" rel="canonical" href="https://docs.cumulo-nimbus.ai/guides/harness"><link data-rh="true" rel="alternate" href="https://docs.cumulo-nimbus.ai/guides/harness" hreflang="en"><link data-rh="true" rel="alternate" href="https://docs.cumulo-nimbus.ai/guides/harness" hreflang="x-default"><script data-rh="true" type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Harness","item":"https://docs.cumulo-nimbus.ai/guides/harness"}]}</script><link rel="stylesheet" href="/assets/css/styles.5ae419b2.css">
+<script src="/assets/js/runtime~main.e74ebefa.js" defer="defer"></script>
+<script src="/assets/js/main.92f144b6.js" defer="defer"></script>
+</head>
+<body>
+<svg style="display: none;"><defs>
+<symbol id="theme-svg-external-link" viewBox="0 0 24 24"><path fill="currentColor" d="M21 13v10h-21v-19h12v2h-10v15h17v-8h2zm3-12h-10.988l4.035 4-6.977 7.07 2.828 2.828 6.977-7.07 4.125 4.172v-11z"/></symbol>
+</defs></svg>
+<script>!function(){var t=function(){try{return new URLSearchParams(window.location.search).get("docusaurus-theme")}catch(t){}}()||function(){try{return window.localStorage.getItem("theme")}catch(t){}}();document.documentElement.setAttribute("data-theme",t||(window.matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light")),document.documentElement.setAttribute("data-theme-choice",t||"system")}(),function(){try{const c=new URLSearchParams(window.location.search).entries();for(var[t,e]of c)if(t.startsWith("docusaurus-data-")){var a=t.replace("docusaurus-data-","data-");document.documentElement.setAttribute(a,e)}}catch(t){}}()</script><div id="__docusaurus"><div role="region" aria-label="Skip to main content"><a class="skipToContent_fXgn" href="#__docusaurus_skipToContent_fallback">Skip to main content</a></div><nav aria-label="Main" class="theme-layout-navbar navbar navbar--fixed-top"><div class="navbar__inner"><div class="theme-layout-navbar-left navbar__items"><button aria-label="Toggle navigation bar" aria-expanded="false" class="navbar__toggle clean-btn" type="button"><svg width="30" height="30" viewBox="0 0 30 30" aria-hidden="true"><path stroke="currentColor" stroke-linecap="round" stroke-miterlimit="10" stroke-width="2" d="M4 7h22M4 15h22M4 23h22"></path></svg></button><a class="navbar__brand" href="/"><div class="navbar__logo"><img src="/img/logo.svg" alt="Nimbus" class="themedComponent_mlkZ themedComponent--light_NVdE"><img src="/img/logo.svg" alt="Nimbus" class="themedComponent_mlkZ themedComponent--dark_xIcU"></div><b class="navbar__title text--truncate">Nimbus</b></a><a class="navbar__item navbar__link" href="/quick-start/what-you-need">Get started</a><a class="navbar__item navbar__link" href="/flash">Flash</a></div><div class="theme-layout-navbar-right navbar__items navbar__items--right"><a href="https://github.com/ristllin/Nimbus" target="_blank" rel="noopener noreferrer" class="navbar__item navbar__link">GitHub<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a><div class="toggle_vylO colorModeToggle_DEke"><button class="clean-btn toggleButton_gllP toggleButtonDisabled_aARS" type="button" disabled="" title="system mode" aria-label="Switch between dark and light mode (currently system mode)"><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP lightToggleIcon_pyhR"><path fill="currentColor" d="M12,9c1.65,0,3,1.35,3,3s-1.35,3-3,3s-3-1.35-3-3S10.35,9,12,9 M12,7c-2.76,0-5,2.24-5,5s2.24,5,5,5s5-2.24,5-5 S14.76,7,12,7L12,7z M2,13l2,0c0.55,0,1-0.45,1-1s-0.45-1-1-1l-2,0c-0.55,0-1,0.45-1,1S1.45,13,2,13z M20,13l2,0c0.55,0,1-0.45,1-1 s-0.45-1-1-1l-2,0c-0.55,0-1,0.45-1,1S19.45,13,20,13z M11,2v2c0,0.55,0.45,1,1,1s1-0.45,1-1V2c0-0.55-0.45-1-1-1S11,1.45,11,2z M11,20v2c0,0.55,0.45,1,1,1s1-0.45,1-1v-2c0-0.55-0.45-1-1-1C11.45,19,11,19.45,11,20z M5.99,4.58c-0.39-0.39-1.03-0.39-1.41,0 c-0.39,0.39-0.39,1.03,0,1.41l1.06,1.06c0.39,0.39,1.03,0.39,1.41,0s0.39-1.03,0-1.41L5.99,4.58z M18.36,16.95 c-0.39-0.39-1.03-0.39-1.41,0c-0.39,0.39-0.39,1.03,0,1.41l1.06,1.06c0.39,0.39,1.03,0.39,1.41,0c0.39-0.39,0.39-1.03,0-1.41 L18.36,16.95z M19.42,5.99c0.39-0.39,0.39-1.03,0-1.41c-0.39-0.39-1.03-0.39-1.41,0l-1.06,1.06c-0.39,0.39-0.39,1.03,0,1.41 s1.03,0.39,1.41,0L19.42,5.99z M7.05,18.36c0.39-0.39,0.39-1.03,0-1.41c-0.39-0.39-1.03-0.39-1.41,0l-1.06,1.06 c-0.39,0.39-0.39,1.03,0,1.41s1.03,0.39,1.41,0L7.05,18.36z"></path></svg><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP darkToggleIcon_wfgR"><path fill="currentColor" d="M9.37,5.51C9.19,6.15,9.1,6.82,9.1,7.5c0,4.08,3.32,7.4,7.4,7.4c0.68,0,1.35-0.09,1.99-0.27C17.45,17.19,14.93,19,12,19 c-3.86,0-7-3.14-7-7C5,9.07,6.81,6.55,9.37,5.51z M12,3c-4.97,0-9,4.03-9,9s4.03,9,9,9s9-4.03,9-9c0-0.46-0.04-0.92-0.1-1.36 c-0.98,1.37-2.58,2.26-4.4,2.26c-2.98,0-5.4-2.42-5.4-5.4c0-1.81,0.89-3.42,2.26-4.4C12.92,3.04,12.46,3,12,3L12,3z"></path></svg><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP systemToggleIcon_QzmC"><path fill="currentColor" d="m12 21c4.971 0 9-4.029 9-9s-4.029-9-9-9-9 4.029-9 9 4.029 9 9 9zm4.95-13.95c1.313 1.313 2.05 3.093 2.05 4.95s-0.738 3.637-2.05 4.95c-1.313 1.313-3.093 2.05-4.95 2.05v-14c1.857 0 3.637 0.737 4.95 2.05z"></path></svg></button></div><div class="navbarSearchContainer_Bca1"></div></div></div><div role="presentation" class="navbar-sidebar__backdrop"></div></nav><div id="__docusaurus_skipToContent_fallback" class="theme-layout-main main-wrapper mainWrapper_z2l0"><div class="docsWrapper_hBAB"><button aria-label="Scroll back to top" class="clean-btn theme-back-to-top-button backToTopButton_sjWU" type="button"></button><div class="docRoot_UBD9"><aside class="theme-doc-sidebar-container docSidebarContainer_YfHR"><div class="sidebarViewport_aRkj"><div class="sidebar_njMd"><nav aria-label="Docs sidebar" class="menu thin-scrollbar menu_SIkG"><ul class="theme-doc-sidebar-menu menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/"><span class="linkLabel_WmDU">Overview</span></a></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="true" href="/quick-start/what-you-need"><span class="categoryLinkLabel_W154">Quick Start</span></a></div><ul class="menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/what-you-need"><span class="linkLabel_WmDU">What you need</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/flash"><span class="linkLabel_WmDU">Flash the firmware</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/setup-wizard"><span class="linkLabel_WmDU">Set up the device</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/first-conversation"><span class="linkLabel_WmDU">First conversation</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/notifier-quick-start"><span class="linkLabel_WmDU">Notifier quick start</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/getting-started/first-time-setup"><span class="linkLabel_WmDU">First-time setup</span></a></li></ul></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/guides/hardware"><span class="categoryLinkLabel_W154">Hardware Build</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/getting-started/webui-reference"><span class="categoryLinkLabel_W154">Using Nimbus</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret menu__link--active" role="button" aria-expanded="true" href="/guides/architecture"><span class="categoryLinkLabel_W154">How It Works</span></a></div><ul class="menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/architecture"><span class="linkLabel_WmDU">Architecture</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/turn-anatomy"><span class="linkLabel_WmDU">Turn anatomy</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/orchestrator-live-turn"><span class="linkLabel_WmDU">Live turn</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/orchestrator-world"><span class="linkLabel_WmDU">Orchestrator World</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/memory"><span class="linkLabel_WmDU">Memory</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/orchestrator-storage"><span class="linkLabel_WmDU">Storage tiering</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/sub-sessions"><span class="linkLabel_WmDU">Sub-sessions</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link menu__link--active" aria-current="page" tabindex="0" href="/guides/harness"><span class="linkLabel_WmDU">Harness</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/provider-wire"><span class="linkLabel_WmDU">Provider wire</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/security"><span class="linkLabel_WmDU">Security</span></a></li></ul></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/reference/config-and-nvs"><span class="categoryLinkLabel_W154">Reference</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/contributing/development"><span class="categoryLinkLabel_W154">Forking &amp; Contributing</span></a></div></li></ul></nav></div></div></aside><main class="docMainContainer_TBSr"><div class="container padding-top--md padding-bottom--lg"><div class="row"><div class="col docItemCol_VOVn"><div class="docItemContainer_Djhp"><article><nav class="theme-doc-breadcrumbs breadcrumbsContainer_Z_bl" aria-label="Breadcrumbs"><ul class="breadcrumbs"><li class="breadcrumbs__item"><a aria-label="Home page" class="breadcrumbs__link" href="/"><svg viewBox="0 0 24 24" class="breadcrumbHomeIcon_YNFT"><path d="M10 19v-5h4v5c0 .55.45 1 1 1h3c.55 0 1-.45 1-1v-7h1.7c.46 0 .68-.57.33-.87L12.67 3.6c-.38-.34-.96-.34-1.34 0l-8.36 7.53c-.34.3-.13.87.33.87H5v7c0 .55.45 1 1 1h3c.55 0 1-.45 1-1z" fill="currentColor"></path></svg></a></li><li class="breadcrumbs__item"><span class="breadcrumbs__link">How It Works</span></li><li class="breadcrumbs__item breadcrumbs__item--active"><span class="breadcrumbs__link">Harness</span></li></ul></nav><div class="tocCollapsible_ETCw theme-doc-toc-mobile tocMobile_ITEo"><button type="button" class="clean-btn tocCollapsibleButton_TO0P">On this page</button></div><div class="theme-doc-markdown markdown"><blockquote>
+<p>Sourced from <code>docs/harness.md</code> in the firmware repo.</p>
+</blockquote>
+<header><h1>The Agentic Harness (<code>lib/harness</code>)</h1></header>
+<p>The Orchestrator&#x27;s policy/orchestration layer as a standalone, host-testable
+PlatformIO library. This is the machine entry point for working on the agent
+loop - read it before touching <code>lib/harness/</code> or <code>src/agent/</code>.</p>
+<p>Companion deep-dives: <a class="" href="/guides/turn-anatomy">turn-anatomy.md</a> (the exact prompt the
+head model sees + how to dump it raw), <a class="" href="/guides/sub-sessions">sub-sessions.md</a> (the
+sub-agent protocol, brief template, and persistence),
+<a class="" href="/guides/provider-wire">provider-wire.md</a> (structured-output enforcement, tool-loop
+wire rules, and failure handling per provider), and
+<a class="" href="/guides/orchestrator-storage">orchestrator-storage.md</a> (storage tiers + no-SD
+degradation). The lifecycle sections below are the high-level map that ties them
+together.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="lifecycle-1---what-loads-when-orchestrator-boot">Lifecycle 1 - what loads when (Orchestrator boot)<a href="#lifecycle-1---what-loads-when-orchestrator-boot" class="hash-link" aria-label="Direct link to Lifecycle 1 - what loads when (Orchestrator boot)" title="Direct link to Lifecycle 1 - what loads when (Orchestrator boot)" translate="no">​</a></h2>
+<p>Order matters; each step is in <code>src/main.cpp::setup()</code> or
+<code>orchestratorBegin()</code>:</p>
+<ol>
+<li class=""><strong><code>otaupd::bootGuard()</code></strong> - FIRST line: burns one A/B boot attempt, self-
+reverts a bad OTA image after 3 boots (before any driver can crash it).</li>
+<li class="">Board bring-up (<code>solide::begin</code>: SD, NVS, e-ink/LED/encoder tasks, battery),
+then two memory reroutes that everything downstream depends on: <strong>mbedTLS →
+PSRAM</strong> (TLS handshakes don&#x27;t fit internal SRAM) and <strong>malloc ≥128 B →
+PSRAM</strong> (String/JSON churn).</li>
+<li class="">Task watchdog configured (8 s, panic) but the main loop subscribes only at
+the END of setup - a slow SD/Wi-Fi boot must not watchdog-loop the device.</li>
+<li class="">Config + mode from NVS (mode is boot-resolved; switching = reboot). In
+Orchestrator mode the BT controller RAM is released and BLE never starts.</li>
+<li class="">Orchestrator starts Wi-Fi (STA + setup AP; a TFT drops the AP while STA is
+connected). Notifier instead keeps Wi-Fi off and starts BLE. Then
+<strong><code>memory::begin()</code></strong> (inside <code>beginWeb</code>) loads the vector DB from SD/LittleFS
+into PSRAM, scratchpad +
+retrieval config from NVS, and the episodic <strong>hydrate</strong> - day-stream JSONL
+files on SD are indexed and the last 512 messages rebuilt into the PSRAM hot
+ring, so per-chat context survives reboot with zero flash reads at runtime.
+A boot timeline row (<code>ev:boot</code> with reset reason + OTA result) is captured.</li>
+<li class=""><strong><code>orchestratorBegin()</code></strong>: provider fabric + adapters, sinks, the job
+<strong>journal restore from NVS</strong> (active sub-agents re-attach and resume
+polling), running-memory load (LittleFS), Local Loops load
+(<code>/data/loops.json</code>, every <code>nextRun</code> recomputed from now), the dream loop
+ensured (insert-if-missing; an owner pause survives), and finally
+<code>telegram::begin</code> spawns <strong><code>tg_poll</code></strong> - the task every turn runs on. The
+task spawns even with no Telegram token, because web/serial/voice turns are
+injected through the same queue.</li>
+<li class="">SNTP arms on the GOT_IP event (tz from NVS). Until first sync: the prompt
+says the time is UNKNOWN, wall-clock loops can&#x27;t fire, dream maintenance is
+skipped, and pre-sync episodic rows are held and restamped at first sync.</li>
+</ol>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="lifecycle-2---who-runs-what-task-topology">Lifecycle 2 - who runs what (task topology)<a href="#lifecycle-2---who-runs-what-task-topology" class="hash-link" aria-label="Direct link to Lifecycle 2 - who runs what (task topology)" title="Direct link to Lifecycle 2 - who runs what (task topology)" translate="no">​</a></h2>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>task</th><th>watchdog</th><th>runs</th></tr></thead><tbody><tr><td>main loop (core 1)</td><td><strong>8 s panic WDT</strong></td><td>rendering, ring, encoder, battery/thermal/OTA ticks, staged device actions, <code>reapStuckTurn</code>, retention prune (6 h)</td></tr><tr><td><strong><code>tg_poll</code></strong> (core 0)</td><td><strong>none - deliberate</strong> (its long-poll blocks ~25 s)</td><td>EVERYTHING agentic, single-writer: Telegram long-poll, every LLM turn (owner, synthesis, scheduled, post-OTA), the loops tick (20 s gate), the dream firing, the sub-agent dispatch/poll pump (~15 s), staged-mutation drains</td></tr><tr><td>AsyncTCP</td><td>none</td><td>all <code>/api/*</code> + <code>/mcp</code> handlers - they <strong>stage</strong> mutations and read snapshots, never touch agentic state directly</td></tr><tr><td>epd / leds / enc / sfx</td><td>none</td><td>rendering + input + audio</td></tr></tbody></table>
+<p>The single-writer rule is the concurrency model: anything that wants to mutate
+orchestrator state from another task goes through a staged mailbox (spinlock&#x27;d
+slot or PSRAM queue) drained on <code>tg_poll</code>, and anything that wants to read it
+gets a snapshot rebuilt on <code>tg_poll</code>. Cross-task device actions (LED, config)
+stage the other way - <code>tg_poll</code> → main loop. Because turns run synchronously on
+<code>tg_poll</code>, a wedged turn freezes Telegram/loops/<code>/update</code> - which is why the
+head-loop caps + per-round socket-budget clamp (F25) ARE the safety, plus a
+main-loop reaper that collapses the ring arc after <code>deadline+120 s</code>.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="lifecycle-3---one-turn-summary-full-detail-in-turn-anatomymd">Lifecycle 3 - one turn (summary; full detail in turn-anatomy.md)<a href="#lifecycle-3---one-turn-summary-full-detail-in-turn-anatomymd" class="hash-link" aria-label="Direct link to Lifecycle 3 - one turn (summary; full detail in turn-anatomy.md)" title="Direct link to Lifecycle 3 - one turn (summary; full detail in turn-anatomy.md)" translate="no">​</a></h2>
+<div class="language-text codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#F8F8F2;--prism-background-color:#282A36"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-text codeBlock_bY9V thin-scrollbar" style="color:#F8F8F2;background-color:#282A36"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#F8F8F2"><span class="token plain">entry (owner msg | sub-agents finished | loop fired | post-OTA)   [tg_poll]</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">  → heap gate (28-30 K floors) → episodic user row (durable-first)</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">  → vector recall (embed + composite score + MMR)</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">  → composeInstructions: role/contract → identity+time → directive+running-memory</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">    → capabilities (live manifest + tool list) → running sessions</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">    → RECENT CONVERSATION (per-chat, ≤12 msgs/3000 B) → scratchpad → recall → memory-howto</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">  → input: [MEMORY RESULTS] + [FRESH RESULTS] + [ACTIVE SESSIONS] + providers/models</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">    /connectors digest + [CHANNEL]/[USER] (or [SYSTEM]/[SCHEDULED LOOP])</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">  → host pick (orchHost || first of providerPriority) + per-chat conv chain</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">  → budget gate → head tool loop (≤12 rounds / 600 s wall clock / heap re-gate</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">    / byte budgets; each round&#x27;s socket timeout clamped to the REMAINING budget)</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">      round: model → tool calls → registry dispatch (memory.*, web.search,</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">      device.control, files.*, loop.*, session terminate…) → results fed back;</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">      thinking + merged tool rows captured to episodic (glass box)</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">  → terminal orch_turn → parse (lenient) → applyTurn:</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">      memory (per-chat) → device[] (validated; protected keys refused;</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">      scheduled-turn rails) → mem_write/mem_query → session_ops spawn/terminate</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">      → reply/ask delivery → episodic assistant rows</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">  → retry/failover ladder ONLY if zero tools executed (side-effect replay ban)</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">  → usage summed across rounds+failovers → ledger (attribution: turn/synthesis/loop:&lt;id&gt;)</span><br></div></code></pre></div></div>
+<p>Model routing: the head host comes from <code>orchHost</code> (or the first
+<code>providerPriority</code> entry); the model can switch its OWN host/model via the
+<code>orch_model</code> action (validated against the choice list, key required), but
+keys, priority order, and routing stay owner-only - structurally (no setter
+exists in the config contract) and by protected-key refusal. Failover walks up
+to 2 keyed alternates with an owner notice; a fresh provider thread each time.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="lifecycle-4---the-self-driving-layers">Lifecycle 4 - the self-driving layers<a href="#lifecycle-4---the-self-driving-layers" class="hash-link" aria-label="Direct link to Lifecycle 4 - the self-driving layers" title="Direct link to Lifecycle 4 - the self-driving layers" translate="no">​</a></h2>
+<ul>
+<li class=""><strong>Compaction (the fold)</strong> (see <a class="" href="/guides/memory">memory.md</a>): per-chat
+byte/message counters trigger a background summarization on the tg_poll pump
+(~48 KB default, <code>/compact</code> on demand) - anchored summary → provider-thread
+reset → the <code>## CONVERSATION SUMMARY</code> prompt section; deferrals never burn
+the breaker; state is rollback-safe on LittleFS.</li>
+<li class=""><strong>Sub-agents</strong> (see <a class="" href="/guides/sub-sessions">sub-sessions.md</a>): fire-and-forget
+background workers on provider fabrics; ≤6 tracked / 4 in-flight; polled
+~15 s; results coalesce 3 s into one unattended synthesis turn (60 s raw-
+delivery fallback so results are never lost).</li>
+<li class=""><strong>Local Loops (routines)</strong>: owner- or agent-created <code>{schedule, prompt}</code>
+records fire scheduled turns. The fire decision is a pure, hard-coded gate
+table (enabled → approved → breaker → clock → due → chat-allowed → per-loop
+fires/tokens → device window/tokens) - never LLM-judged. At-most-once:
+<code>nextRun</code> advances and persists BEFORE the fire; no backfill after downtime.
+Auto-pause (with one owner alert) on repeated failures, daily token cap,
+chat de-allowlisting, or 5 identical results. Agent-created loops start
+UNAPPROVED and cannot fire until the owner approves - with one deliberate
+exception: a <strong>one-time wakeup</strong> (<code>wakeup.set</code>, schedule kind <code>once</code>,
+2 min–7 days out) is auto-approved, because it is a bounded single fire
+under the same daily fire/token governor, visible in <code>/loops</code> and the web
+Routines tab, and cancellable like any routine. It retires after firing
+(one 5-min retry if the turn itself failed, then an owner alert); at most
+4 armed at once; only an admin&#x27;s conversation can arm one.</li>
+<li class=""><strong>Dreaming</strong>: a reserved, undeletable (pause-only) daily loop at 03:30 local
+(the device timezone - Settings → Mode &amp; identity). Stage 1 (no LLM): vector
+decay + expiry prune + windowed dedup - skipped entirely if the clock never
+synced. Stage 2: one unattended reflection turn over yesterday&#x27;s episodic
+digest - distill up to 7 durable facts (0 is correct on a quiet day), groom
+the scratchpad, stay silent unless something needs the owner. On a provably
+quiet night (empty 24 h digest AND the scratchpad unchanged since the last
+dream, fnv64 baseline in NVS <code>dreamScrHash</code>) the PAID stage-2 turn is
+skipped - stage 1 still runs. Gated on 10 min quiet + no jobs + heap; defers
+15 min otherwise. <code>DREAM</code> console forces it, including through the skip.</li>
+<li class=""><strong>Scheduled-turn rails</strong> (loops, dream, synthesis, post-OTA alike): refuse
+reboot, ttsOn, devName, sleepOvr/brightOvr, and loop.create - enforced at
+the apply layer AND the tool-dispatch seam, because sub-agent results and
+loop prompts are untrusted-content injection surfaces.</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="lifecycle-5---interrupts-what-device-life-does-to-the-harness">Lifecycle 5 - interrupts (what device life does to the harness)<a href="#lifecycle-5---interrupts-what-device-life-does-to-the-harness" class="hash-link" aria-label="Direct link to Lifecycle 5 - interrupts (what device life does to the harness)" title="Direct link to Lifecycle 5 - interrupts (what device life does to the harness)" translate="no">​</a></h2>
+<ul>
+<li class=""><strong>Mode switch / reboot</strong>: hard restart, no teardown. Loops can&#x27;t double-fire
+(persist-before-fire) and daily cost counters can&#x27;t be wiped (rollover is
+clock-gated) - which is exactly why scheduled turns may not reboot.</li>
+<li class=""><strong>OTA install</strong>: runs ALONGSIDE the live poller (stopping it once crashed the
+device mid-install); the ring becomes the progress bar; voice is refused;
+every phase writes a timeline row; after the post-update boot validates, a
+staged system turn tells the model what changed (release notes persisted
+across the reboot in NVS).</li>
+<li class=""><strong>Voice hold-to-talk</strong>: blocks the MAIN loop (WDT suspended around record +
+STT) - <code>tg_poll</code> keeps running; the transcript is injected as a normal turn.</li>
+<li class=""><strong>Low-battery deep sleep</strong>: full stop; config persisted; wake by knob. All
+loop state re-derives at the next boot (no backfill), and the first 10 min
+post-wake never dream.</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="layering">Layering<a href="#layering" class="hash-link" aria-label="Direct link to Layering" title="Direct link to Layering" translate="no">​</a></h2>
+<div class="language-text codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#F8F8F2;--prism-background-color:#282A36"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-text codeBlock_bY9V thin-scrollbar" style="color:#F8F8F2;background-color:#282A36"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#F8F8F2"><span class="token plain">src/agent (device glue: NVS, TLS, FreeRTOS, sinks)      ~thin</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">   ↓ injected contracts</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">lib/harness (agent::) - POLICY + ORCHESTRATION           host-tested</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">   ↓ composes</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">lib/core (nimbus::orch::) - MECHANISMS                   host-tested</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">   (turn contract, head loop, tool registry, memory engines, journal, loops)</span><br></div></code></pre></div></div>
+<p>Rules: <code>lib/harness</code> never includes Arduino, <code>src/</code>, or device headers; every
+device dependency arrives through a contract at construction. <code>lib/core</code> never
+includes <code>lib/harness</code>. Model-visible strings live in the harness (or below)
+and are golden-pinned - never device-side.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="the-contract-set">The contract set<a href="#the-contract-set" class="hash-link" aria-label="Direct link to The contract set" title="Direct link to The contract set" translate="no">​</a></h2>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Contract</th><th>Header</th><th>Device impl</th><th>Test fake</th></tr></thead><tbody><tr><td>Platform (clock/heap/delay/PSRAM alloc)</td><td><code>nimbus/harness/platform.h</code></td><td>closures over <code>millis</code>/<code>ESP</code> (orchestrator.cpp)</td><td><code>test/support/fake_platform.h</code></td></tr><tr><td>HarnessConfig (provider/loop/budget/tts)</td><td><code>nimbus/harness/config.h</code></td><td><code>src/agent/store_config.cpp</code> over NVS <code>store::</code></td><td><code>test/support/fake_config.h</code></td></tr><tr><td>HttpTransport (whole-body request/response)</td><td><code>nimbus/harness/http.h</code></td><td><code>src/agent/transport_tls.cpp</code> (TLS, arbiter, CA policy)</td><td><code>test/support/fake_http.h</code> (scripted exchanges)</td></tr><tr><td>Channel (send/speak/allowlist)</td><td><code>nimbus/harness/channel.h</code></td><td>Telegram + TTS sinks</td><td><code>test/support/fake_channel.h</code></td></tr><tr><td>Fabric (sub-agent backends)</td><td><code>nimbus/harness/fabric.h</code></td><td>provider adapters via <code>adapter_factory</code></td><td><code>test/support/fake_fabric.h</code></td></tr><tr><td>Tools</td><td><code>nimbus/orch/tool_registry.h</code> + one MCP-dispatch closure</td><td><code>memory::handleMcp</code> (Lock + persist)</td><td>inline recorders</td></tr><tr><td>Hooks (lifecycle observers)</td><td><code>nimbus/harness/hooks.h</code></td><td>SFX / lastturn capture / log breadcrumbs</td><td>recorders</td></tr><tr><td>hlog (log seam)</td><td><code>nimbus/harness/log.h</code></td><td><code>alog</code> ring (<code>GET /api/log</code>)</td><td><code>LogCapture</code></td></tr></tbody></table>
+<p><strong>Security rails are structural</strong>: <code>HarnessConfig</code> has NO setter for provider
+keys, <code>providerPriority</code>, or <code>orchHost</code> (human-only surfaces). Scheduled-turn
+refusals (reboot/ttsOn/devName/sleepOvr/brightOvr) and risk-note composition
+are portable policy in <code>apply.cpp</code>, pinned by <code>test_harness_apply</code> - the
+injected execution closures contain no policy branches.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="threading-invariant">Threading invariant<a href="#threading-invariant" class="hash-link" aria-label="Direct link to Threading invariant" title="Direct link to Threading invariant" translate="no">​</a></h2>
+<p>The harness is <strong>single-task by construction</strong>: every entry point
+(handleMessage, pump/pollJobs, injectScheduledTurn) must be called from ONE
+context - on the device that is the <code>tg_poll</code> task. Cross-task writes ride the
+staged-mailbox pattern; cross-task reads use fixed-buffer echoes. The memory
+<code>Lock</code> (recursive FreeRTOS mutex) stays in <code>src/agent/memory_subsystem.cpp</code>;
+the harness reaches tools only through the injected dispatch closure, which the
+device wraps in the Lock (<code>withMemoryLock</code>).</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="test-pyramid">Test pyramid<a href="#test-pyramid" class="hash-link" aria-label="Direct link to Test pyramid" title="Direct link to Test pyramid" translate="no">​</a></h2>
+<ul>
+<li class=""><strong>Unit/contract (host)</strong> - <code>test/test_harness_*</code> (Unity, <code>pio test -e native</code>):
+fabric routing, config boundary, compose + PROMPT GOLDENS
+(<code>test/golden/orch_prompt_*.txt</code>), apply security rails, jobs state machine,
+schema/field-docs goldens (<code>orch_schema.json</code>). Golden workflow:
+<code>GOLDEN_UPDATE=1 pio test -e native -f &lt;suite&gt;</code> re-blesses; a missing golden
+is a FAILURE; drift dumps to <code>test/golden/out/</code> for a plain <code>diff</code>.</li>
+<li class=""><strong>Integration (host)</strong> - full-turn Rig suites (compose → provider →
+parse → apply against scripted fakes) and the day-in-the-life timeline.</li>
+<li class=""><strong>E2E (hardware)</strong> - HIL L5/L8/L10 (live providers, real keys) and
+<strong>L12 mock-LLM</strong> (<code>tests/hil/mock_llm.py</code> + <code>test_l12_mock_llm.py</code>): the
+device&#x27;s keyless custom adapter pointed at a LAN mock OpenAI server -
+deterministic on-device turns through the real lwIP/TLS-arbiter stack, no
+provider cost.</li>
+</ul>
+<p>Shared fakes are header-only in <code>test/support/</code> (PlatformIO compiles each test
+dir separately - include them relatively).</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="extension-points">Extension points<a href="#extension-points" class="hash-link" aria-label="Direct link to Extension points" title="Direct link to Extension points" translate="no">​</a></h2>
+<ul>
+<li class=""><strong>New provider backend</strong>: subclass <code>ManagedAgentAdapter</code> + one
+<code>adapter_factory</code> line + config entry. The head-turn side registers a
+<code>ProviderTurnFn</code>.</li>
+<li class=""><strong>New tool</strong>: <code>memory::registry().add(...)</code> - it surfaces automatically to
+the model (tool loop), the LAN MCP server (<code>POST /mcp</code>), and <code>/api/tools</code>.</li>
+<li class=""><strong>Hooks</strong>: fill a slot in the <code>Hooks</code> struct at <code>begin()</code> - observers only;
+they must never block or mutate the turn.</li>
+<li class=""><strong>Skills</strong>: <code>skill.list</code>/<code>skill.get</code> capsules; SD-stored dynamic skills under
+<code>/mem/skills/&lt;id&gt;/SKILL.md</code> inject at spawn via <code>Directive.skill</code>. Since
+v4.0.0 the model can also WRITE them (<code>skill.save</code>/<code>skill.delete</code>): the device
+stamps origin and approval itself, an agent-written capsule stays inert until
+the owner approves it (web or Telegram <code>/skill approve &lt;id&gt;</code>), and built-in
+ids cannot be shadowed. Approval is asynchronous by design - a skill saved
+during a run is an investment in future runs, never a step in the current one.
+Since v4.1 every capsule may carry a one-line <code>desc:</code> in its front matter, and
+the assistant sees an ambient <code>[SKILLS]</code> index (id + description) in every
+turn - it reads the matching playbook with <code>skill.get</code> before starting a task
+the index covers, so recipes live in editable skills instead of prompt text.
+Built-ins ship a default description; an SD capsule with the same id
+overrides it (recipe fixes never need a firmware update).</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="invariants-that-must-never-regress">Invariants that must never regress<a href="#invariants-that-must-never-regress" class="hash-link" aria-label="Direct link to Invariants that must never regress" title="Direct link to Invariants that must never regress" translate="no">​</a></h2>
+<ol>
+<li class="">Turn contract (<code>orch_schema.h</code>) and <code>/api/*</code> are additive-only (Rule 5) -
+the schema golden + api-surface gate enforce this.</li>
+<li class="">No retry/failover after any tool executed in a turn (side-effect replay).</li>
+<li class="">Recall, synthesis, and the tool loop are fail-open - a memory/provider
+failure degrades the turn, never crashes or reboots the device.</li>
+<li class=""><code>takeFreshResults</code> is the single reset point of the synthesis clock.</li>
+<li class="">Steady-state internal-SRAM footprint does not grow (Rule 4): big buffers go
+through <code>Platform::allocLarge</code> (PSRAM) or stay on the device side.</li>
+</ol></div><footer class="theme-doc-footer docusaurus-mt-lg"><div class="row margin-top--sm theme-doc-footer-edit-meta-row"><div class="col noPrint_WFHX"><a href="https://github.com/ristllin/Nimbus/blob/main/docs/harness.md" target="_blank" rel="noopener noreferrer" class="theme-edit-this-page"><svg fill="currentColor" height="20" width="20" viewBox="0 0 40 40" class="iconEdit_Z9Sw" aria-hidden="true"><g><path d="m34.5 11.7l-3 3.1-6.3-6.3 3.1-3q0.5-0.5 1.2-0.5t1.1 0.5l3.9 3.9q0.5 0.4 0.5 1.1t-0.5 1.2z m-29.5 17.1l18.4-18.5 6.3 6.3-18.4 18.4h-6.3v-6.2z"></path></g></svg>Edit this page</a></div><div class="col lastUpdated_JAkA"></div></div></footer></article><nav class="docusaurus-mt-lg pagination-nav" aria-label="Docs pages"><a class="pagination-nav__link pagination-nav__link--prev" href="/guides/sub-sessions"><div class="pagination-nav__sublabel">Previous</div><div class="pagination-nav__label">Sub-sessions</div></a><a class="pagination-nav__link pagination-nav__link--next" href="/guides/provider-wire"><div class="pagination-nav__sublabel">Next</div><div class="pagination-nav__label">Provider wire</div></a></nav></div></div><div class="col col--3"><div class="tableOfContents_bqdL thin-scrollbar theme-doc-toc-desktop"><ul class="table-of-contents table-of-contents__left-border"><li><a href="#lifecycle-1---what-loads-when-orchestrator-boot" class="table-of-contents__link toc-highlight">Lifecycle 1 - what loads when (Orchestrator boot)</a></li><li><a href="#lifecycle-2---who-runs-what-task-topology" class="table-of-contents__link toc-highlight">Lifecycle 2 - who runs what (task topology)</a></li><li><a href="#lifecycle-3---one-turn-summary-full-detail-in-turn-anatomymd" class="table-of-contents__link toc-highlight">Lifecycle 3 - one turn (summary; full detail in turn-anatomy.md)</a></li><li><a href="#lifecycle-4---the-self-driving-layers" class="table-of-contents__link toc-highlight">Lifecycle 4 - the self-driving layers</a></li><li><a href="#lifecycle-5---interrupts-what-device-life-does-to-the-harness" class="table-of-contents__link toc-highlight">Lifecycle 5 - interrupts (what device life does to the harness)</a></li><li><a href="#layering" class="table-of-contents__link toc-highlight">Layering</a></li><li><a href="#the-contract-set" class="table-of-contents__link toc-highlight">The contract set</a></li><li><a href="#threading-invariant" class="table-of-contents__link toc-highlight">Threading invariant</a></li><li><a href="#test-pyramid" class="table-of-contents__link toc-highlight">Test pyramid</a></li><li><a href="#extension-points" class="table-of-contents__link toc-highlight">Extension points</a></li><li><a href="#invariants-that-must-never-regress" class="table-of-contents__link toc-highlight">Invariants that must never regress</a></li></ul></div></div></div></div></main></div></div></div><footer class="theme-layout-footer footer footer--dark"><div class="container container-fluid"><div class="row footer__links"><div class="theme-layout-footer-column col footer__col"><div class="footer__title">Docs</div><ul class="footer__items clean-list"><li class="footer__item"><a class="footer__link-item" href="/quick-start/what-you-need">Quick Start</a></li><li class="footer__item"><a class="footer__link-item" href="/guides/hardware-bom">Bill of materials</a></li><li class="footer__item"><a class="footer__link-item" href="/getting-started/webui-reference">Web UI reference</a></li></ul></div><div class="theme-layout-footer-column col footer__col"><div class="footer__title">Reference</div><ul class="footer__items clean-list"><li class="footer__item"><a class="footer__link-item" href="/reference/config-and-nvs">Config &amp; NVS</a></li><li class="footer__item"><a class="footer__link-item" href="/reference/tool-catalog">Tool catalog</a></li><li class="footer__item"><a class="footer__link-item" href="/reference/turn-contract">Turn contract</a></li><li class="footer__item"><a class="footer__link-item" href="/reference/changelog">Changelog</a></li></ul></div><div class="theme-layout-footer-column col footer__col"><div class="footer__title">More</div><ul class="footer__items clean-list"><li class="footer__item"><a href="https://github.com/ristllin/Nimbus" target="_blank" rel="noopener noreferrer" class="footer__link-item">GitHub<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li></ul></div></div><div class="footer__bottom text--center"><div class="footer__copyright">Nimbus - source-available, free for noncommercial use (PolyForm-NC / CC BY-NC-SA). Built with Docusaurus.</div></div></div></footer></div>
+</body>
+</html>

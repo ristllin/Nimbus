@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="en" dir="ltr" class="docs-wrapper plugin-docs plugin-id-default docs-version-current docs-doc-page docs-doc-id-getting-started/webui-reference" data-has-hydrated="false">
+<head>
+<meta charset="UTF-8">
+<meta name="generator" content="Docusaurus v3.10.2">
+<title data-rh="true">Web UI reference | Nimbus</title><meta data-rh="true" name="viewport" content="width=device-width,initial-scale=1"><meta data-rh="true" name="twitter:card" content="summary_large_image"><meta data-rh="true" property="og:image" content="https://docs.cumulo-nimbus.ai/img/social-card.png"><meta data-rh="true" name="twitter:image" content="https://docs.cumulo-nimbus.ai/img/social-card.png"><meta data-rh="true" property="og:url" content="https://docs.cumulo-nimbus.ai/getting-started/webui-reference"><meta data-rh="true" property="og:locale" content="en"><meta data-rh="true" name="docusaurus_locale" content="en"><meta data-rh="true" name="docsearch:language" content="en"><meta data-rh="true" name="docusaurus_version" content="current"><meta data-rh="true" name="docusaurus_tag" content="docs-default-current"><meta data-rh="true" name="docsearch:version" content="current"><meta data-rh="true" name="docsearch:docusaurus_tag" content="docs-default-current"><meta data-rh="true" property="og:title" content="Web UI reference | Nimbus"><meta data-rh="true" name="description" content="Every tab of the Nimbus web UI: Dashboard, Sessions, Chat, Memory &amp; Files, Capabilities, Usage, Routines, and Settings."><meta data-rh="true" property="og:description" content="Every tab of the Nimbus web UI: Dashboard, Sessions, Chat, Memory &amp; Files, Capabilities, Usage, Routines, and Settings."><link data-rh="true" rel="icon" href="/img/favicon.svg"><link data-rh="true" rel="canonical" href="https://docs.cumulo-nimbus.ai/getting-started/webui-reference"><link data-rh="true" rel="alternate" href="https://docs.cumulo-nimbus.ai/getting-started/webui-reference" hreflang="en"><link data-rh="true" rel="alternate" href="https://docs.cumulo-nimbus.ai/getting-started/webui-reference" hreflang="x-default"><script data-rh="true" type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Web UI reference","item":"https://docs.cumulo-nimbus.ai/getting-started/webui-reference"}]}</script><link rel="stylesheet" href="/assets/css/styles.5ae419b2.css">
+<script src="/assets/js/runtime~main.e74ebefa.js" defer="defer"></script>
+<script src="/assets/js/main.92f144b6.js" defer="defer"></script>
+</head>
+<body>
+<svg style="display: none;"><defs>
+<symbol id="theme-svg-external-link" viewBox="0 0 24 24"><path fill="currentColor" d="M21 13v10h-21v-19h12v2h-10v15h17v-8h2zm3-12h-10.988l4.035 4-6.977 7.07 2.828 2.828 6.977-7.07 4.125 4.172v-11z"/></symbol>
+</defs></svg>
+<script>!function(){var t=function(){try{return new URLSearchParams(window.location.search).get("docusaurus-theme")}catch(t){}}()||function(){try{return window.localStorage.getItem("theme")}catch(t){}}();document.documentElement.setAttribute("data-theme",t||(window.matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light")),document.documentElement.setAttribute("data-theme-choice",t||"system")}(),function(){try{const c=new URLSearchParams(window.location.search).entries();for(var[t,e]of c)if(t.startsWith("docusaurus-data-")){var a=t.replace("docusaurus-data-","data-");document.documentElement.setAttribute(a,e)}}catch(t){}}()</script><div id="__docusaurus"><div role="region" aria-label="Skip to main content"><a class="skipToContent_fXgn" href="#__docusaurus_skipToContent_fallback">Skip to main content</a></div><nav aria-label="Main" class="theme-layout-navbar navbar navbar--fixed-top"><div class="navbar__inner"><div class="theme-layout-navbar-left navbar__items"><button aria-label="Toggle navigation bar" aria-expanded="false" class="navbar__toggle clean-btn" type="button"><svg width="30" height="30" viewBox="0 0 30 30" aria-hidden="true"><path stroke="currentColor" stroke-linecap="round" stroke-miterlimit="10" stroke-width="2" d="M4 7h22M4 15h22M4 23h22"></path></svg></button><a class="navbar__brand" href="/"><div class="navbar__logo"><img src="/img/logo.svg" alt="Nimbus" class="themedComponent_mlkZ themedComponent--light_NVdE"><img src="/img/logo.svg" alt="Nimbus" class="themedComponent_mlkZ themedComponent--dark_xIcU"></div><b class="navbar__title text--truncate">Nimbus</b></a><a class="navbar__item navbar__link" href="/quick-start/what-you-need">Get started</a><a class="navbar__item navbar__link" href="/flash">Flash</a></div><div class="theme-layout-navbar-right navbar__items navbar__items--right"><a href="https://github.com/ristllin/Nimbus" target="_blank" rel="noopener noreferrer" class="navbar__item navbar__link">GitHub<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a><div class="toggle_vylO colorModeToggle_DEke"><button class="clean-btn toggleButton_gllP toggleButtonDisabled_aARS" type="button" disabled="" title="system mode" aria-label="Switch between dark and light mode (currently system mode)"><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP lightToggleIcon_pyhR"><path fill="currentColor" d="M12,9c1.65,0,3,1.35,3,3s-1.35,3-3,3s-3-1.35-3-3S10.35,9,12,9 M12,7c-2.76,0-5,2.24-5,5s2.24,5,5,5s5-2.24,5-5 S14.76,7,12,7L12,7z M2,13l2,0c0.55,0,1-0.45,1-1s-0.45-1-1-1l-2,0c-0.55,0-1,0.45-1,1S1.45,13,2,13z M20,13l2,0c0.55,0,1-0.45,1-1 s-0.45-1-1-1l-2,0c-0.55,0-1,0.45-1,1S19.45,13,20,13z M11,2v2c0,0.55,0.45,1,1,1s1-0.45,1-1V2c0-0.55-0.45-1-1-1S11,1.45,11,2z M11,20v2c0,0.55,0.45,1,1,1s1-0.45,1-1v-2c0-0.55-0.45-1-1-1C11.45,19,11,19.45,11,20z M5.99,4.58c-0.39-0.39-1.03-0.39-1.41,0 c-0.39,0.39-0.39,1.03,0,1.41l1.06,1.06c0.39,0.39,1.03,0.39,1.41,0s0.39-1.03,0-1.41L5.99,4.58z M18.36,16.95 c-0.39-0.39-1.03-0.39-1.41,0c-0.39,0.39-0.39,1.03,0,1.41l1.06,1.06c0.39,0.39,1.03,0.39,1.41,0c0.39-0.39,0.39-1.03,0-1.41 L18.36,16.95z M19.42,5.99c0.39-0.39,0.39-1.03,0-1.41c-0.39-0.39-1.03-0.39-1.41,0l-1.06,1.06c-0.39,0.39-0.39,1.03,0,1.41 s1.03,0.39,1.41,0L19.42,5.99z M7.05,18.36c0.39-0.39,0.39-1.03,0-1.41c-0.39-0.39-1.03-0.39-1.41,0l-1.06,1.06 c-0.39,0.39-0.39,1.03,0,1.41s1.03,0.39,1.41,0L7.05,18.36z"></path></svg><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP darkToggleIcon_wfgR"><path fill="currentColor" d="M9.37,5.51C9.19,6.15,9.1,6.82,9.1,7.5c0,4.08,3.32,7.4,7.4,7.4c0.68,0,1.35-0.09,1.99-0.27C17.45,17.19,14.93,19,12,19 c-3.86,0-7-3.14-7-7C5,9.07,6.81,6.55,9.37,5.51z M12,3c-4.97,0-9,4.03-9,9s4.03,9,9,9s9-4.03,9-9c0-0.46-0.04-0.92-0.1-1.36 c-0.98,1.37-2.58,2.26-4.4,2.26c-2.98,0-5.4-2.42-5.4-5.4c0-1.81,0.89-3.42,2.26-4.4C12.92,3.04,12.46,3,12,3L12,3z"></path></svg><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP systemToggleIcon_QzmC"><path fill="currentColor" d="m12 21c4.971 0 9-4.029 9-9s-4.029-9-9-9-9 4.029-9 9 4.029 9 9 9zm4.95-13.95c1.313 1.313 2.05 3.093 2.05 4.95s-0.738 3.637-2.05 4.95c-1.313 1.313-3.093 2.05-4.95 2.05v-14c1.857 0 3.637 0.737 4.95 2.05z"></path></svg></button></div><div class="navbarSearchContainer_Bca1"></div></div></div><div role="presentation" class="navbar-sidebar__backdrop"></div></nav><div id="__docusaurus_skipToContent_fallback" class="theme-layout-main main-wrapper mainWrapper_z2l0"><div class="docsWrapper_hBAB"><button aria-label="Scroll back to top" class="clean-btn theme-back-to-top-button backToTopButton_sjWU" type="button"></button><div class="docRoot_UBD9"><aside class="theme-doc-sidebar-container docSidebarContainer_YfHR"><div class="sidebarViewport_aRkj"><div class="sidebar_njMd"><nav aria-label="Docs sidebar" class="menu thin-scrollbar menu_SIkG"><ul class="theme-doc-sidebar-menu menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/"><span class="linkLabel_WmDU">Overview</span></a></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="true" href="/quick-start/what-you-need"><span class="categoryLinkLabel_W154">Quick Start</span></a></div><ul class="menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/what-you-need"><span class="linkLabel_WmDU">What you need</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/flash"><span class="linkLabel_WmDU">Flash the firmware</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/setup-wizard"><span class="linkLabel_WmDU">Set up the device</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/first-conversation"><span class="linkLabel_WmDU">First conversation</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/notifier-quick-start"><span class="linkLabel_WmDU">Notifier quick start</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/getting-started/first-time-setup"><span class="linkLabel_WmDU">First-time setup</span></a></li></ul></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/guides/hardware"><span class="categoryLinkLabel_W154">Hardware Build</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret menu__link--active" role="button" aria-expanded="true" href="/getting-started/webui-reference"><span class="categoryLinkLabel_W154">Using Nimbus</span></a></div><ul class="menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link menu__link--active" aria-current="page" tabindex="0" href="/getting-started/webui-reference"><span class="linkLabel_WmDU">Web UI reference</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/modes-and-signals"><span class="linkLabel_WmDU">Modes &amp; signals</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/led-ux"><span class="linkLabel_WmDU">LED experience</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/sfx-map"><span class="linkLabel_WmDU">SFX map</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/connectors"><span class="linkLabel_WmDU">Connectors</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/people-and-privacy"><span class="linkLabel_WmDU">People &amp; privacy</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/notifier-status-language"><span class="linkLabel_WmDU">Status language</span></a></li></ul></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/guides/architecture"><span class="categoryLinkLabel_W154">How It Works</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/reference/config-and-nvs"><span class="categoryLinkLabel_W154">Reference</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/contributing/development"><span class="categoryLinkLabel_W154">Forking &amp; Contributing</span></a></div></li></ul></nav></div></div></aside><main class="docMainContainer_TBSr"><div class="container padding-top--md padding-bottom--lg"><div class="row"><div class="col docItemCol_VOVn"><div class="docItemContainer_Djhp"><article><nav class="theme-doc-breadcrumbs breadcrumbsContainer_Z_bl" aria-label="Breadcrumbs"><ul class="breadcrumbs"><li class="breadcrumbs__item"><a aria-label="Home page" class="breadcrumbs__link" href="/"><svg viewBox="0 0 24 24" class="breadcrumbHomeIcon_YNFT"><path d="M10 19v-5h4v5c0 .55.45 1 1 1h3c.55 0 1-.45 1-1v-7h1.7c.46 0 .68-.57.33-.87L12.67 3.6c-.38-.34-.96-.34-1.34 0l-8.36 7.53c-.34.3-.13.87.33.87H5v7c0 .55.45 1 1 1h3c.55 0 1-.45 1-1z" fill="currentColor"></path></svg></a></li><li class="breadcrumbs__item"><span class="breadcrumbs__link">Using Nimbus</span></li><li class="breadcrumbs__item breadcrumbs__item--active"><span class="breadcrumbs__link">Web UI reference</span></li></ul></nav><div class="tocCollapsible_ETCw theme-doc-toc-mobile tocMobile_ITEo"><button type="button" class="clean-btn tocCollapsibleButton_TO0P">On this page</button></div><div class="theme-doc-markdown markdown"><header><h1>Web UI Reference</h1></header>
+<p>The device serves its own web app, reachable at <code>http://nimbus.local</code> (or the
+device&#x27;s LAN IP) from any browser - nothing to install. On a desktop the tabs
+sit in a left sidebar below the brand and the mode switch; on a phone the same
+tabs dock as a bottom bar.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Tab</th><th>What it&#x27;s for</th></tr></thead><tbody><tr><td><a href="#dashboard" class="">Dashboard</a></td><td>Health, live figures, hardware probes</td></tr><tr><td><a href="#sessions" class="">Sessions</a></td><td>What the assistant is running right now</td></tr><tr><td><a href="#chat" class="">Chat</a></td><td>Message the assistant from the browser</td></tr><tr><td><a href="#memory--files" class="">Memory &amp; Files</a></td><td>What it knows and the files it has made</td></tr><tr><td><a href="#capabilities" class="">Capabilities</a></td><td>Providers, tools, connectors, skills</td></tr><tr><td><a href="#usage" class="">Usage</a></td><td>Token spend, rates, budgets</td></tr><tr><td><a href="#routines" class="">Routines</a></td><td>Tasks that run on a schedule</td></tr><tr><td><a href="#settings" class="">Settings</a></td><td>Mode, light, sound, power, connectivity</td></tr></tbody></table>
+<p>Two controls sit outside the tabs:</p>
+<ul>
+<li class=""><strong>Mode switch</strong> - <strong>Notifier</strong> / <strong>Orchestrator</strong>, at the top of the sidebar.
+Switching modes restarts the device.</li>
+<li class=""><strong>? buttons</strong> - many fields carry a small <strong>?</strong> next to their label. Click it
+to expand a short explanation inline; click again to hide it.</li>
+</ul>
+<p>On a fresh or factory-reset device started in <strong>Orchestrator</strong>, a <strong>First-time
+setup</strong> wizard opens over the setup network and walks through Wi-Fi, one
+provider key, and a few optional steps. Notifier intentionally keeps Wi-Fi and
+this web UI off. See <strong><a class="" href="/getting-started/first-time-setup">First-time setup</a></strong>.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="signing-in">Signing in<a href="#signing-in" class="hash-link" aria-label="Direct link to Signing in" title="Direct link to Signing in" translate="no">​</a></h2>
+<p>The page shows nothing until the browser is signed in. Normally you just scan
+the device&#x27;s sign-in QR (<strong>Settings &gt; Connectivity &gt; Sign-in QR</strong> on the
+device): the QR carries the credential, so there is no token to copy or type.
+You do this once per browser - the credential is stored locally and attached to
+every request from then on.</p>
+<p>If a QR cannot be scanned, the full-screen <strong>Sign in to Nimbus</strong> gate also
+accepts the recovery access token. Select <strong>Settings &gt; Connectivity &gt; Sign-in
+code</strong> on the device to show the complete code on its own screen; it is not
+truncated into the compact menu row.</p>
+<p>Generating a new token (<strong>Settings → Connectivity</strong>) signs out every browser
+except the one that requested it. The model behind all this is in
+<strong><a class="" href="/guides/security">Security posture</a></strong>.</p>
+<hr>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="dashboard">Dashboard<a href="#dashboard" class="hash-link" aria-label="Direct link to Dashboard" title="Direct link to Dashboard" translate="no">​</a></h2>
+<p>Health, activity, and anything that needs your attention. The panel refreshes
+every few seconds.</p>
+<ul>
+<li class=""><strong>Tiles</strong> - live figures with their scale and thresholds: free RAM, PSRAM,
+battery (corrected voltage and time-left estimate), and the current mode with
+its active-session count.</li>
+<li class=""><strong>Active sessions</strong> - what the assistant is running right now, at a glance.</li>
+<li class=""><strong>Health</strong> - a component roster from <code>/api/health</code>, each row colored by state
+(<strong>ok / degraded / absent / unknown</strong>) with a one-line detail. Four probe
+buttons exercise hardware on demand: <strong>Mic test</strong>, <strong>Speaker test</strong>,
+<strong>Loopback</strong> (plays a tone and checks the mic hears it), and <strong>Probe SD</strong>
+(re-checks the card and upgrades the storage tier live).</li>
+</ul>
+<hr>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="sessions">Sessions<a href="#sessions" class="hash-link" aria-label="Direct link to Sessions" title="Direct link to Sessions" translate="no">​</a></h2>
+<p>Everything the assistant is working on right now - the live table of running
+sessions, each with its provider, model, category, and state. Background
+sessions end to end: <strong><a class="" href="/guides/sub-sessions">Sub-sessions</a></strong>.</p>
+<hr>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="chat">Chat<a href="#chat" class="hash-link" aria-label="Direct link to Chat" title="Direct link to Chat" translate="no">​</a></h2>
+<p>Message the assistant from the browser and see its replies. Replies also go to
+your Telegram, if connected. Conversation history is re-synced from the
+device&#x27;s canonical store.</p>
+<hr>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="memory--files">Memory &amp; Files<a href="#memory--files" class="hash-link" aria-label="Direct link to Memory &amp; Files" title="Direct link to Memory &amp; Files" translate="no">​</a></h2>
+<p>What the device knows and the files it has made - stored on its SD card, not
+in a cloud. Three groups:</p>
+<ul>
+<li class=""><strong>Memory</strong> - the <strong>Directive</strong> (your standing instructions to the assistant,
+up to 600 characters; only you can change it) and <strong>Assistant memory</strong> (notes
+the assistant keeps for itself between conversations; viewable and
+clearable).</li>
+<li class=""><strong>Long-term memory</strong> - the associative store the assistant searches by
+meaning: <strong>Recall</strong> (search, <strong>Deduplicate</strong>, <strong>Delete Temporary</strong>), the
+<strong>Scratchpad</strong> (the assistant&#x27;s working notes), <strong>Recall tuning</strong> (memories
+per turn, relevance threshold, storage limit - at the limit, the least
+valuable memory is dropped), and the <strong>Embedding model</strong>, which is verified
+with a real embedding call on save and locks once vectors are stored -
+changing it erases and re-embeds the store, and the UI warns first.</li>
+<li class=""><strong>Files</strong> - files persist across restarts and are never deleted
+automatically. The assistant saves reports here with <code>artifact.save</code>; you
+can filter by project, download, delete, or upload your own.</li>
+</ul>
+<p>The conversation history the assistant can search reaches back months - well
+past the recent messages loaded at startup - so it can recall something you told
+it long ago instead of saying it doesn&#x27;t remember.</p>
+<p>Internals: <strong><a class="" href="/guides/orchestrator-world">Orchestrator World</a></strong> and
+<strong><a class="" href="/guides/orchestrator-storage">Storage tiering</a></strong>.</p>
+<hr>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="capabilities">Capabilities<a href="#capabilities" class="hash-link" aria-label="Direct link to Capabilities" title="Direct link to Capabilities" translate="no">​</a></h2>
+<p>Everything the device can reach and run - providers, tools, connectors, and
+skills. Keys are set by you, never by the model. Four sub-tabs: <strong>Connectors ·
+Tools · Models · Skills</strong>.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="connectors">Connectors<a href="#connectors" class="hash-link" aria-label="Direct link to Connectors" title="Direct link to Connectors" translate="no">​</a></h3>
+<p>External tools that run in your AI provider&#x27;s cloud, on the assistant&#x27;s own
+turns and on the sessions it starts. Each connector is a card: create the
+credential once, paste it in, enable it - secrets are write-only. An
+<strong>Advanced</strong> section edits the raw JSON directly. Setup details per service:
+<strong><a class="" href="/guides/connectors">Connectors</a></strong>.</p>
+<p>Worked example - GitHub: create a Personal Access Token (GitHub → Settings →
+Developer settings → Personal access tokens, with the <code>repo</code> scope), open the
+GitHub card, pick your provider, paste the token, enable, <strong>Save</strong>. Then ask
+the assistant to <em>&quot;create a private repo named test-repo and add a README&quot;</em> -
+it comes back with the new repo&#x27;s URL. The same connector covers issues, pull
+requests, and code search.</p>
+<p>The <strong>Telegram</strong> group also lives here: the bot token (from @BotFather), who
+can message this device (new senders appear for one-tap approval; access is
+enforced by chat ID), the <strong>Open access</strong> switch (anyone who finds the bot can
+use it - and your API credits), and <strong>Voice replies</strong> (when on, the assistant
+may answer with a spoken voice note when that fits).</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="tools">Tools<a href="#tools" class="hash-link" aria-label="Direct link to Tools" title="Direct link to Tools" translate="no">​</a></h3>
+<p>The live on-device tool surface - what the assistant can do right now, each
+tool with a status badge. External MCP clients can call the same surface over
+<code>POST /mcp</code>. A <strong>Web search</strong> section takes a Tavily API key so the assistant
+can search the web live.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="models">Models<a href="#models" class="hash-link" aria-label="Direct link to Models" title="Direct link to Models" translate="no">​</a></h3>
+<ul>
+<li class=""><strong>Providers &amp; keys</strong> - OpenAI, Anthropic, Mistral. Keys are write-only (a
+saved key shows as &quot;set&quot; and is never displayed again); model choices unlock
+after the key verifies.</li>
+<li class=""><strong>Custom endpoint</strong> - point the assistant at any OpenAI-, Anthropic-, or
+Mistral-compatible server: base URL, wire convention, and model ID. An
+<code>http://</code> base uses plain HTTP for a LAN server (for example a local
+Ollama).</li>
+<li class=""><strong>Routing</strong> - the <strong>Primary provider</strong> (or Automatic, the first verified
+provider in your fallback order), the <strong>Fallback order</strong>, and a separate
+<strong>Session fallback order</strong> for the sessions the assistant spawns.</li>
+<li class=""><strong>Voice</strong> - the <strong>Dictation</strong> provider (microphone and Telegram voice
+notes), the <strong>Spoken replies</strong> provider, and the voice itself. Works as soon
+as the provider&#x27;s key is set, independent of chat verification.</li>
+<li class=""><strong>Tool use</strong> - when enabled, the assistant uses its tools mid-turn and
+iterates before answering; off means a single step. Caps: <strong>Tool rounds</strong>
+(1–32) and a <strong>Time limit</strong> in seconds (30–3600). <strong>Switch providers mid-turn</strong>
+lets a turn that loses its provider partway through continue on the next
+verified provider, carrying the work so far. <strong>Concurrent connections</strong> and
+<strong>Validate provider TLS certificates</strong> live here too - leave validation on
+unless you run a self-hosted server with a self-signed certificate. See the
+<strong><a class="" href="/reference/turn-contract">Turn contract</a></strong>.</li>
+</ul>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="skills">Skills<a href="#skills" class="hash-link" aria-label="Direct link to Skills" title="Direct link to Skills" translate="no">​</a></h3>
+<p>Saved instruction sets the assistant applies when it starts a matching session.
+Skills live on the SD card at <code>/mem/skills/&lt;id&gt;/SKILL.md</code>. Two things can write
+them:</p>
+<ul>
+<li class=""><strong>You</strong>, from this tab - created, edited, and deleted here at any time.</li>
+<li class=""><strong>The assistant</strong>, which can draft a skill it wants to reuse later. An
+assistant-written skill arrives <strong>pending your approval</strong> and does nothing
+until you approve it - from the card here, or by replying <code>/skill approve &lt;id&gt;</code>
+in Telegram. Approval is deliberately after the fact: a skill saved during one
+session is an investment in future sessions, never something that changes the
+session that wrote it. You can delete a skill of either origin; the assistant
+can only delete its own. Built-in skills (such as the deep-research routine)
+can&#x27;t be overwritten.</li>
+</ul>
+<p>Click a skill card to open it in the editor.</p>
+<hr>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="usage">Usage<a href="#usage" class="hash-link" aria-label="Direct link to Usage" title="Direct link to Usage" translate="no">​</a></h2>
+<p>Token usage reported by your providers, tracked since the device last
+restarted. Token counts are actual billed usage; dollar figures are estimates.</p>
+<ul>
+<li class=""><strong>Spend over time</strong> - a 7/30/60-day chart, in tokens or estimated dollars.</li>
+<li class=""><strong>Rates</strong> - what each provider charges, used only for the estimates.</li>
+<li class=""><strong>Budgets</strong> - a monthly cap per provider (0 = unlimited). At the cap, that
+provider&#x27;s turns and searches are refused until the reset day; the assistant
+fails over to another in-budget provider when it can.</li>
+</ul>
+<hr>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="routines">Routines<a href="#routines" class="hash-link" aria-label="Direct link to Routines" title="Direct link to Routines" translate="no">​</a></h2>
+<p>Tasks that run on a schedule - a morning digest, a reminder, nightly upkeep.
+Create one with a name, a prompt, and a schedule (<strong>On an interval</strong>,
+<strong>Daily</strong>, or <strong>Weekly</strong>). Routines the assistant creates for itself wait for
+your approval before they can run, and spending limits pause anything that
+misbehaves. From Telegram, the owner manages them with the <code>/loops</code> and
+<code>/loop</code> commands.</p>
+<hr>
+<p>Until the device clock syncs (it sets itself from the internet), daily and
+weekly routines wait - the tab says so and offers <strong>Sync now</strong>. Once synced,
+each routine row shows when it next fires (&quot;in 6h&quot;).</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="settings">Settings<a href="#settings" class="hash-link" aria-label="Direct link to Settings" title="Direct link to Settings" translate="no">​</a></h2>
+<p>Mode, light, sound, power, and connectivity - all in one place, as collapsible
+groups:</p>
+<ul>
+<li class=""><strong>Mode &amp; identity</strong> - the operating mode (<strong>Notifier - status light</strong> or
+<strong>Orchestrator - AI assistant</strong>; switching restarts the device), the
+<strong>Device name</strong> (one name drives the setup Wi-Fi network, the network
+address, Bluetooth, and what the assistant calls itself; applies after
+restart), the <strong>Timezone</strong> (sets when daily and weekly routines - including
+nightly memory upkeep - fire; POSIX format with a picker of common zones,
+blank = UTC, applies immediately), the <strong>Device clock</strong> (set automatically
+from the internet once Wi-Fi connects - there is no manual clock; a badge
+shows <strong>synced</strong> or <strong>waiting for internet time</strong>, with a <strong>Sync now</strong>
+retry), and the <strong>Recovery access token</strong> (only needed when a QR cannot be
+scanned; tap to copy).</li>
+<li class=""><strong>Battery mode</strong> - <strong>Dark / Balanced / Full</strong>; the battery mode sets the
+light. Dark keeps the lights off except a red error breathe, Balanced shows
+a single soft cue, Full gives every job a color arc. The <strong>Theme</strong> picks the
+color family, and <strong>Preview</strong> shows any status pattern in the ring simulator
+<ul>
+<li class=""><strong>Demo on Device</strong> plays it on the physical ring for a few seconds. Full
+color and motion language: <strong><a class="" href="/guides/led-ux">LED experience</a></strong>.</li>
+</ul>
+</li>
+<li class=""><strong>Customize this mode</strong> - every parameter starts at the mode&#x27;s default; set
+a value to override it, or <strong>Revert to Defaults</strong> to clear all overrides.</li>
+<li class=""><strong>Sound</strong> - audio checks (<strong>Mic Meter</strong>, <strong>Speaker Tone</strong>, <strong>Loopback
+Test</strong>) and the <strong>Sound effects</strong> engine (<strong><a class="" href="/guides/sfx-map">SFX map</a></strong>):
+a per-mode level (<strong>Off / Low / Medium / High</strong>), a <strong>sound theme</strong>, a
+<strong>Volume</strong> slider, and a <strong>Play</strong> button to audition any
+clip.</li>
+<li class=""><strong>Battery</strong> - appears once battery telemetry is present: voltage, estimated
+time left, discharge rate, health, and power source, plus <strong>Calibrate Full
+Charge</strong> (anchors 100% to a fully charged pack). The protection thresholds
+and the two override checkboxes carry visible warnings - both overrides
+reset at restart.</li>
+<li class=""><strong>Software update</strong> - installed and latest versions, <strong>Check for Updates</strong>,
+<strong>Install Update</strong>, and <strong>Automatic updates</strong>. Updates are cryptographically
+signed and the device reverts on its own if a new version fails to start.</li>
+<li class=""><strong>Connectivity</strong> - everything needed to reach the device: its home-network
+address; the separate, temporary setup hotspot and password; the recovery
+access token and <strong>Generate New Token</strong>; <strong>Bluetooth</strong> status, paired
+devices, and <strong>Forget Paired Devices</strong>; and <strong>Wi-Fi</strong> (scan, pick a network,
+<strong>Join</strong> - 2.4 GHz networks only). Joining Wi-Fi is the one action allowed
+before signing in.</li>
+<li class=""><strong>Danger zone</strong> - <strong>Factory Reset…</strong> erases everything (Wi-Fi, API keys, the
+Telegram list, Bluetooth pairings, themes, sound settings, memory, and the
+access token) and restarts into first-time setup.</li>
+</ul></div><footer class="theme-doc-footer docusaurus-mt-lg"><div class="row margin-top--sm theme-doc-footer-edit-meta-row"><div class="col noPrint_WFHX"><a href="https://github.com/ristllin/Nimbus/tree/main/website/docs/getting-started/webui-reference.md" target="_blank" rel="noopener noreferrer" class="theme-edit-this-page"><svg fill="currentColor" height="20" width="20" viewBox="0 0 40 40" class="iconEdit_Z9Sw" aria-hidden="true"><g><path d="m34.5 11.7l-3 3.1-6.3-6.3 3.1-3q0.5-0.5 1.2-0.5t1.1 0.5l3.9 3.9q0.5 0.4 0.5 1.1t-0.5 1.2z m-29.5 17.1l18.4-18.5 6.3 6.3-18.4 18.4h-6.3v-6.2z"></path></g></svg>Edit this page</a></div><div class="col lastUpdated_JAkA"></div></div></footer></article><nav class="docusaurus-mt-lg pagination-nav" aria-label="Docs pages"><a class="pagination-nav__link pagination-nav__link--prev" href="/guides/hardware-touch-tft"><div class="pagination-nav__sublabel">Previous</div><div class="pagination-nav__label">HW: Touch TFT</div></a><a class="pagination-nav__link pagination-nav__link--next" href="/guides/modes-and-signals"><div class="pagination-nav__sublabel">Next</div><div class="pagination-nav__label">Modes &amp; signals</div></a></nav></div></div><div class="col col--3"><div class="tableOfContents_bqdL thin-scrollbar theme-doc-toc-desktop"><ul class="table-of-contents table-of-contents__left-border"><li><a href="#signing-in" class="table-of-contents__link toc-highlight">Signing in</a></li><li><a href="#dashboard" class="table-of-contents__link toc-highlight">Dashboard</a></li><li><a href="#sessions" class="table-of-contents__link toc-highlight">Sessions</a></li><li><a href="#chat" class="table-of-contents__link toc-highlight">Chat</a></li><li><a href="#memory--files" class="table-of-contents__link toc-highlight">Memory &amp; Files</a></li><li><a href="#capabilities" class="table-of-contents__link toc-highlight">Capabilities</a><ul><li><a href="#connectors" class="table-of-contents__link toc-highlight">Connectors</a></li><li><a href="#tools" class="table-of-contents__link toc-highlight">Tools</a></li><li><a href="#models" class="table-of-contents__link toc-highlight">Models</a></li><li><a href="#skills" class="table-of-contents__link toc-highlight">Skills</a></li></ul></li><li><a href="#usage" class="table-of-contents__link toc-highlight">Usage</a></li><li><a href="#routines" class="table-of-contents__link toc-highlight">Routines</a></li><li><a href="#settings" class="table-of-contents__link toc-highlight">Settings</a></li></ul></div></div></div></div></main></div></div></div><footer class="theme-layout-footer footer footer--dark"><div class="container container-fluid"><div class="row footer__links"><div class="theme-layout-footer-column col footer__col"><div class="footer__title">Docs</div><ul class="footer__items clean-list"><li class="footer__item"><a class="footer__link-item" href="/quick-start/what-you-need">Quick Start</a></li><li class="footer__item"><a class="footer__link-item" href="/guides/hardware-bom">Bill of materials</a></li><li class="footer__item"><a class="footer__link-item" href="/getting-started/webui-reference">Web UI reference</a></li></ul></div><div class="theme-layout-footer-column col footer__col"><div class="footer__title">Reference</div><ul class="footer__items clean-list"><li class="footer__item"><a class="footer__link-item" href="/reference/config-and-nvs">Config &amp; NVS</a></li><li class="footer__item"><a class="footer__link-item" href="/reference/tool-catalog">Tool catalog</a></li><li class="footer__item"><a class="footer__link-item" href="/reference/turn-contract">Turn contract</a></li><li class="footer__item"><a class="footer__link-item" href="/reference/changelog">Changelog</a></li></ul></div><div class="theme-layout-footer-column col footer__col"><div class="footer__title">More</div><ul class="footer__items clean-list"><li class="footer__item"><a href="https://github.com/ristllin/Nimbus" target="_blank" rel="noopener noreferrer" class="footer__link-item">GitHub<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li></ul></div></div><div class="footer__bottom text--center"><div class="footer__copyright">Nimbus - source-available, free for noncommercial use (PolyForm-NC / CC BY-NC-SA). Built with Docusaurus.</div></div></div></footer></div>
+</body>
+</html>

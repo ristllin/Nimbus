@@ -1,0 +1,521 @@
+<!doctype html>
+<html lang="en" dir="ltr" class="docs-wrapper plugin-docs plugin-id-default docs-version-current docs-doc-page docs-doc-id-reference/turn-contract" data-has-hydrated="false">
+<head>
+<meta charset="UTF-8">
+<meta name="generator" content="Docusaurus v3.10.2">
+<title data-rh="true">Turn contract | Nimbus</title><meta data-rh="true" name="viewport" content="width=device-width,initial-scale=1"><meta data-rh="true" name="twitter:card" content="summary_large_image"><meta data-rh="true" property="og:image" content="https://docs.cumulo-nimbus.ai/img/social-card.png"><meta data-rh="true" name="twitter:image" content="https://docs.cumulo-nimbus.ai/img/social-card.png"><meta data-rh="true" property="og:url" content="https://docs.cumulo-nimbus.ai/reference/turn-contract"><meta data-rh="true" property="og:locale" content="en"><meta data-rh="true" name="docusaurus_locale" content="en"><meta data-rh="true" name="docsearch:language" content="en"><meta data-rh="true" name="docusaurus_version" content="current"><meta data-rh="true" name="docusaurus_tag" content="docs-default-current"><meta data-rh="true" name="docsearch:version" content="current"><meta data-rh="true" name="docsearch:docusaurus_tag" content="docs-default-current"><meta data-rh="true" property="og:title" content="Turn contract | Nimbus"><meta data-rh="true" name="description" content="Migrated from docs/reference/turn-contract.md - the canonical source lives in the repo."><meta data-rh="true" property="og:description" content="Migrated from docs/reference/turn-contract.md - the canonical source lives in the repo."><link data-rh="true" rel="icon" href="/img/favicon.svg"><link data-rh="true" rel="canonical" href="https://docs.cumulo-nimbus.ai/reference/turn-contract"><link data-rh="true" rel="alternate" href="https://docs.cumulo-nimbus.ai/reference/turn-contract" hreflang="en"><link data-rh="true" rel="alternate" href="https://docs.cumulo-nimbus.ai/reference/turn-contract" hreflang="x-default"><script data-rh="true" type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Turn contract","item":"https://docs.cumulo-nimbus.ai/reference/turn-contract"}]}</script><link rel="stylesheet" href="/assets/css/styles.5ae419b2.css">
+<script src="/assets/js/runtime~main.e74ebefa.js" defer="defer"></script>
+<script src="/assets/js/main.92f144b6.js" defer="defer"></script>
+</head>
+<body>
+<svg style="display: none;"><defs>
+<symbol id="theme-svg-external-link" viewBox="0 0 24 24"><path fill="currentColor" d="M21 13v10h-21v-19h12v2h-10v15h17v-8h2zm3-12h-10.988l4.035 4-6.977 7.07 2.828 2.828 6.977-7.07 4.125 4.172v-11z"/></symbol>
+</defs></svg>
+<script>!function(){var t=function(){try{return new URLSearchParams(window.location.search).get("docusaurus-theme")}catch(t){}}()||function(){try{return window.localStorage.getItem("theme")}catch(t){}}();document.documentElement.setAttribute("data-theme",t||(window.matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light")),document.documentElement.setAttribute("data-theme-choice",t||"system")}(),function(){try{const c=new URLSearchParams(window.location.search).entries();for(var[t,e]of c)if(t.startsWith("docusaurus-data-")){var a=t.replace("docusaurus-data-","data-");document.documentElement.setAttribute(a,e)}}catch(t){}}()</script><div id="__docusaurus"><div role="region" aria-label="Skip to main content"><a class="skipToContent_fXgn" href="#__docusaurus_skipToContent_fallback">Skip to main content</a></div><nav aria-label="Main" class="theme-layout-navbar navbar navbar--fixed-top"><div class="navbar__inner"><div class="theme-layout-navbar-left navbar__items"><button aria-label="Toggle navigation bar" aria-expanded="false" class="navbar__toggle clean-btn" type="button"><svg width="30" height="30" viewBox="0 0 30 30" aria-hidden="true"><path stroke="currentColor" stroke-linecap="round" stroke-miterlimit="10" stroke-width="2" d="M4 7h22M4 15h22M4 23h22"></path></svg></button><a class="navbar__brand" href="/"><div class="navbar__logo"><img src="/img/logo.svg" alt="Nimbus" class="themedComponent_mlkZ themedComponent--light_NVdE"><img src="/img/logo.svg" alt="Nimbus" class="themedComponent_mlkZ themedComponent--dark_xIcU"></div><b class="navbar__title text--truncate">Nimbus</b></a><a class="navbar__item navbar__link" href="/quick-start/what-you-need">Get started</a><a class="navbar__item navbar__link" href="/flash">Flash</a></div><div class="theme-layout-navbar-right navbar__items navbar__items--right"><a href="https://github.com/ristllin/Nimbus" target="_blank" rel="noopener noreferrer" class="navbar__item navbar__link">GitHub<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a><div class="toggle_vylO colorModeToggle_DEke"><button class="clean-btn toggleButton_gllP toggleButtonDisabled_aARS" type="button" disabled="" title="system mode" aria-label="Switch between dark and light mode (currently system mode)"><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP lightToggleIcon_pyhR"><path fill="currentColor" d="M12,9c1.65,0,3,1.35,3,3s-1.35,3-3,3s-3-1.35-3-3S10.35,9,12,9 M12,7c-2.76,0-5,2.24-5,5s2.24,5,5,5s5-2.24,5-5 S14.76,7,12,7L12,7z M2,13l2,0c0.55,0,1-0.45,1-1s-0.45-1-1-1l-2,0c-0.55,0-1,0.45-1,1S1.45,13,2,13z M20,13l2,0c0.55,0,1-0.45,1-1 s-0.45-1-1-1l-2,0c-0.55,0-1,0.45-1,1S19.45,13,20,13z M11,2v2c0,0.55,0.45,1,1,1s1-0.45,1-1V2c0-0.55-0.45-1-1-1S11,1.45,11,2z M11,20v2c0,0.55,0.45,1,1,1s1-0.45,1-1v-2c0-0.55-0.45-1-1-1C11.45,19,11,19.45,11,20z M5.99,4.58c-0.39-0.39-1.03-0.39-1.41,0 c-0.39,0.39-0.39,1.03,0,1.41l1.06,1.06c0.39,0.39,1.03,0.39,1.41,0s0.39-1.03,0-1.41L5.99,4.58z M18.36,16.95 c-0.39-0.39-1.03-0.39-1.41,0c-0.39,0.39-0.39,1.03,0,1.41l1.06,1.06c0.39,0.39,1.03,0.39,1.41,0c0.39-0.39,0.39-1.03,0-1.41 L18.36,16.95z M19.42,5.99c0.39-0.39,0.39-1.03,0-1.41c-0.39-0.39-1.03-0.39-1.41,0l-1.06,1.06c-0.39,0.39-0.39,1.03,0,1.41 s1.03,0.39,1.41,0L19.42,5.99z M7.05,18.36c0.39-0.39,0.39-1.03,0-1.41c-0.39-0.39-1.03-0.39-1.41,0l-1.06,1.06 c-0.39,0.39-0.39,1.03,0,1.41s1.03,0.39,1.41,0L7.05,18.36z"></path></svg><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP darkToggleIcon_wfgR"><path fill="currentColor" d="M9.37,5.51C9.19,6.15,9.1,6.82,9.1,7.5c0,4.08,3.32,7.4,7.4,7.4c0.68,0,1.35-0.09,1.99-0.27C17.45,17.19,14.93,19,12,19 c-3.86,0-7-3.14-7-7C5,9.07,6.81,6.55,9.37,5.51z M12,3c-4.97,0-9,4.03-9,9s4.03,9,9,9s9-4.03,9-9c0-0.46-0.04-0.92-0.1-1.36 c-0.98,1.37-2.58,2.26-4.4,2.26c-2.98,0-5.4-2.42-5.4-5.4c0-1.81,0.89-3.42,2.26-4.4C12.92,3.04,12.46,3,12,3L12,3z"></path></svg><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP systemToggleIcon_QzmC"><path fill="currentColor" d="m12 21c4.971 0 9-4.029 9-9s-4.029-9-9-9-9 4.029-9 9 4.029 9 9 9zm4.95-13.95c1.313 1.313 2.05 3.093 2.05 4.95s-0.738 3.637-2.05 4.95c-1.313 1.313-3.093 2.05-4.95 2.05v-14c1.857 0 3.637 0.737 4.95 2.05z"></path></svg></button></div><div class="navbarSearchContainer_Bca1"></div></div></div><div role="presentation" class="navbar-sidebar__backdrop"></div></nav><div id="__docusaurus_skipToContent_fallback" class="theme-layout-main main-wrapper mainWrapper_z2l0"><div class="docsWrapper_hBAB"><button aria-label="Scroll back to top" class="clean-btn theme-back-to-top-button backToTopButton_sjWU" type="button"></button><div class="docRoot_UBD9"><aside class="theme-doc-sidebar-container docSidebarContainer_YfHR"><div class="sidebarViewport_aRkj"><div class="sidebar_njMd"><nav aria-label="Docs sidebar" class="menu thin-scrollbar menu_SIkG"><ul class="theme-doc-sidebar-menu menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/"><span class="linkLabel_WmDU">Overview</span></a></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="true" href="/quick-start/what-you-need"><span class="categoryLinkLabel_W154">Quick Start</span></a></div><ul class="menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/what-you-need"><span class="linkLabel_WmDU">What you need</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/flash"><span class="linkLabel_WmDU">Flash the firmware</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/setup-wizard"><span class="linkLabel_WmDU">Set up the device</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/first-conversation"><span class="linkLabel_WmDU">First conversation</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/notifier-quick-start"><span class="linkLabel_WmDU">Notifier quick start</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/getting-started/first-time-setup"><span class="linkLabel_WmDU">First-time setup</span></a></li></ul></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/guides/hardware"><span class="categoryLinkLabel_W154">Hardware Build</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/getting-started/webui-reference"><span class="categoryLinkLabel_W154">Using Nimbus</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/guides/architecture"><span class="categoryLinkLabel_W154">How It Works</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret menu__link--active" role="button" aria-expanded="true" href="/reference/config-and-nvs"><span class="categoryLinkLabel_W154">Reference</span></a></div><ul class="menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/reference/config-and-nvs"><span class="linkLabel_WmDU">Config &amp; NVS</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/reference/tool-catalog"><span class="linkLabel_WmDU">Tool catalog</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link menu__link--active" aria-current="page" tabindex="0" href="/reference/turn-contract"><span class="linkLabel_WmDU">Turn contract</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/reference/tools-and-commands"><span class="linkLabel_WmDU">Tools &amp; commands</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/reference/changelog"><span class="linkLabel_WmDU">Changelog</span></a></li></ul></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/contributing/development"><span class="categoryLinkLabel_W154">Forking &amp; Contributing</span></a></div></li></ul></nav></div></div></aside><main class="docMainContainer_TBSr"><div class="container padding-top--md padding-bottom--lg"><div class="row"><div class="col docItemCol_VOVn"><div class="docItemContainer_Djhp"><article><nav class="theme-doc-breadcrumbs breadcrumbsContainer_Z_bl" aria-label="Breadcrumbs"><ul class="breadcrumbs"><li class="breadcrumbs__item"><a aria-label="Home page" class="breadcrumbs__link" href="/"><svg viewBox="0 0 24 24" class="breadcrumbHomeIcon_YNFT"><path d="M10 19v-5h4v5c0 .55.45 1 1 1h3c.55 0 1-.45 1-1v-7h1.7c.46 0 .68-.57.33-.87L12.67 3.6c-.38-.34-.96-.34-1.34 0l-8.36 7.53c-.34.3-.13.87.33.87H5v7c0 .55.45 1 1 1h3c.55 0 1-.45 1-1z" fill="currentColor"></path></svg></a></li><li class="breadcrumbs__item"><span class="breadcrumbs__link">Reference</span></li><li class="breadcrumbs__item breadcrumbs__item--active"><span class="breadcrumbs__link">Turn contract</span></li></ul></nav><div class="tocCollapsible_ETCw theme-doc-toc-mobile tocMobile_ITEo"><button type="button" class="clean-btn tocCollapsibleButton_TO0P">On this page</button></div><div class="theme-doc-markdown markdown"><blockquote>
+<p>Sourced from <code>docs/reference/turn-contract.md</code> in the firmware repo.</p>
+</blockquote>
+<header><h1>Orchestrator Turn Contract</h1></header>
+<p>The <strong>turn contract</strong> is the JSON shape every provider-hosted LLM must return
+for one Orchestrator turn. A provider&#x27;s raw response string is parsed and
+validated by the portable, Arduino-free <code>parseTurn()</code> into a typed <code>Turn</code> so the
+device turn-loop never pokes a raw <code>JsonDocument</code>.</p>
+<ul>
+<li class="">Authoritative doc-comment: <code>lib/core/include/nimbus/orch/turn.h</code></li>
+<li class="">Wire schema advertised to providers: <code>lib/core/include/nimbus/orch/orch_schema.h</code> (<code>ORCH_SCHEMA_BODY</code>)</li>
+<li class="">Parser: <code>lib/core/src/orch_turn.cpp</code> (<code>parseTurn</code>)</li>
+<li class="">Behavior pinned by tests: <code>test/test_orch_turn/main.cpp</code></li>
+<li class="">Byte/concurrency caps: <code>lib/core/include/nimbus/orch/caps.h</code>, <code>lib/core/include/nimbus/mem_cap.h</code></li>
+</ul>
+<p>Related: the tools these fields drive - <a class="" href="/reference/tool-catalog">tool-catalog.md</a> -
+and how a turn flows through the live turn loop -
+<a class="" href="/guides/orchestrator-live-turn">../architecture/orchestrator-live-turn.md</a>.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="the-two-layer-design-strict-at-the-wire-defensive-at-the-parser">The two-layer design: strict at the wire, defensive at the parser<a href="#the-two-layer-design-strict-at-the-wire-defensive-at-the-parser" class="hash-link" aria-label="Direct link to The two-layer design: strict at the wire, defensive at the parser" title="Direct link to The two-layer design: strict at the wire, defensive at the parser" translate="no">​</a></h2>
+<p><code>ORCH_SCHEMA_BODY</code> marks every field it advertises <code>required</code> at the API layer
+(each provider wraps this bare schema in its own envelope: Mistral
+<code>completion_args.response_format.json_schema.schema</code>, OpenAI <code>text.format.schema</code>,
+Anthropic <code>tool_use</code>). But <code>parseTurn()</code> is defensive: on Anthropic the wire
+schema is advisory (its strict-grammar budget rejects a contract this size), so
+the parser is the real enforcement layer, and it never throws away a good reply
+over one slightly-off item. Keep the schema string and the parser in lockstep -
+do <strong>not</strong> diverge them.</p>
+<p>The split that matters at the parser is between the required strings and the
+arrays:</p>
+<ul>
+<li class=""><strong>Required strings</strong> (<code>reply</code>, <code>memory</code>, <code>ask</code>) are <strong>strict</strong>: absent ⇒
+<code>MissingField</code>, present-but-not-a-string ⇒ <code>WrongType</code>. Without them there is
+no usable turn.</li>
+<li class=""><strong>Every array</strong> (<code>device</code>, <code>spawn</code>, <code>await</code>, <code>mem_write</code>, <code>mem_query</code>,
+<code>session_ops</code>) is <strong>tolerant</strong>: a present-but-not-array value reads as
+<strong>empty</strong>, and a malformed <em>item</em> is <strong>dropped silently</strong>, never a whole-turn
+error. One slightly-off item can&#x27;t cost you a good reply.</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="contract-shape">Contract shape<a href="#contract-shape" class="hash-link" aria-label="Direct link to Contract shape" title="Direct link to Contract shape" translate="no">​</a></h2>
+<div class="language-json codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#F8F8F2;--prism-background-color:#282A36"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-json codeBlock_bY9V thin-scrollbar" style="color:#F8F8F2;background-color:#282A36"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#F8F8F2"><span class="token punctuation" style="color:rgb(248, 248, 242)">{</span><span class="token plain"></span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">  </span><span class="token property">&quot;reply&quot;</span><span class="token operator">:</span><span class="token plain">   </span><span class="token string" style="color:rgb(255, 121, 198)">&quot;string (required)&quot;</span><span class="token punctuation" style="color:rgb(248, 248, 242)">,</span><span class="token plain"></span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">  </span><span class="token property">&quot;memory&quot;</span><span class="token operator">:</span><span class="token plain">  </span><span class="token string" style="color:rgb(255, 121, 198)">&quot;string (required)&quot;</span><span class="token punctuation" style="color:rgb(248, 248, 242)">,</span><span class="token plain"></span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">  </span><span class="token property">&quot;ask&quot;</span><span class="token operator">:</span><span class="token plain">     </span><span class="token string" style="color:rgb(255, 121, 198)">&quot;string (required)&quot;</span><span class="token punctuation" style="color:rgb(248, 248, 242)">,</span><span class="token plain"></span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain" style="display:inline-block"></span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">  </span><span class="token property">&quot;device&quot;</span><span class="token operator">:</span><span class="token plain">  </span><span class="token punctuation" style="color:rgb(248, 248, 242)">[</span><span class="token plain"> </span><span class="token comment" style="color:rgb(98, 114, 164)">/* discriminated-union objects, validated + executed device-side */</span><span class="token plain"> </span><span class="token punctuation" style="color:rgb(248, 248, 242)">]</span><span class="token punctuation" style="color:rgb(248, 248, 242)">,</span><span class="token plain"></span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">  </span><span class="token property">&quot;mem_write&quot;</span><span class="token operator">:</span><span class="token plain">   </span><span class="token punctuation" style="color:rgb(248, 248, 242)">[</span><span class="token plain"> </span><span class="token punctuation" style="color:rgb(248, 248, 242)">{</span><span class="token plain"> </span><span class="token string" style="color:rgb(255, 121, 198)">&quot;content&quot;</span><span class="token punctuation" style="color:rgb(248, 248, 242)">,</span><span class="token string" style="color:rgb(255, 121, 198)">&quot;importance&quot;</span><span class="token punctuation" style="color:rgb(248, 248, 242)">,</span><span class="token string" style="color:rgb(255, 121, 198)">&quot;permanent&quot;</span><span class="token punctuation" style="color:rgb(248, 248, 242)">,</span><span class="token string" style="color:rgb(255, 121, 198)">&quot;ttl&quot;</span><span class="token plain"> </span><span class="token punctuation" style="color:rgb(248, 248, 242)">}</span><span class="token plain"> </span><span class="token punctuation" style="color:rgb(248, 248, 242)">]</span><span class="token punctuation" style="color:rgb(248, 248, 242)">,</span><span class="token plain"></span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">  </span><span class="token property">&quot;mem_query&quot;</span><span class="token operator">:</span><span class="token plain">   </span><span class="token punctuation" style="color:rgb(248, 248, 242)">[</span><span class="token plain"> </span><span class="token string" style="color:rgb(255, 121, 198)">&quot;search string&quot;</span><span class="token punctuation" style="color:rgb(248, 248, 242)">,</span><span class="token plain"> ... </span><span class="token punctuation" style="color:rgb(248, 248, 242)">]</span><span class="token punctuation" style="color:rgb(248, 248, 242)">,</span><span class="token plain"></span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">  </span><span class="token property">&quot;session_ops&quot;</span><span class="token operator">:</span><span class="token plain"> </span><span class="token punctuation" style="color:rgb(248, 248, 242)">[</span><span class="token plain"> </span><span class="token punctuation" style="color:rgb(248, 248, 242)">{</span><span class="token plain"> </span><span class="token string" style="color:rgb(255, 121, 198)">&quot;op&quot;</span><span class="token punctuation" style="color:rgb(248, 248, 242)">,</span><span class="token string" style="color:rgb(255, 121, 198)">&quot;id&quot;</span><span class="token punctuation" style="color:rgb(248, 248, 242)">,</span><span class="token string" style="color:rgb(255, 121, 198)">&quot;task&quot;</span><span class="token punctuation" style="color:rgb(248, 248, 242)">,</span><span class="token string" style="color:rgb(255, 121, 198)">&quot;provider&quot;</span><span class="token punctuation" style="color:rgb(248, 248, 242)">,</span><span class="token string" style="color:rgb(255, 121, 198)">&quot;model&quot;</span><span class="token punctuation" style="color:rgb(248, 248, 242)">,</span><span class="token string" style="color:rgb(255, 121, 198)">&quot;skill&quot;</span><span class="token punctuation" style="color:rgb(248, 248, 242)">,</span><span class="token string" style="color:rgb(255, 121, 198)">&quot;name&quot;</span><span class="token punctuation" style="color:rgb(248, 248, 242)">,</span><span class="token string" style="color:rgb(255, 121, 198)">&quot;project&quot;</span><span class="token punctuation" style="color:rgb(248, 248, 242)">,</span><span class="token string" style="color:rgb(255, 121, 198)">&quot;attach&quot;</span><span class="token plain"> </span><span class="token punctuation" style="color:rgb(248, 248, 242)">}</span><span class="token plain"> </span><span class="token punctuation" style="color:rgb(248, 248, 242)">]</span><span class="token punctuation" style="color:rgb(248, 248, 242)">,</span><span class="token plain"></span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">  </span><span class="token property">&quot;scratchpad&quot;</span><span class="token operator">:</span><span class="token plain">  </span><span class="token punctuation" style="color:rgb(248, 248, 242)">{</span><span class="token plain"> </span><span class="token string" style="color:rgb(255, 121, 198)">&quot;active&quot;</span><span class="token punctuation" style="color:rgb(248, 248, 242)">,</span><span class="token property">&quot;short&quot;</span><span class="token operator">:</span><span class="token punctuation" style="color:rgb(248, 248, 242)">[</span><span class="token plain">...</span><span class="token punctuation" style="color:rgb(248, 248, 242)">]</span><span class="token punctuation" style="color:rgb(248, 248, 242)">,</span><span class="token property">&quot;mid&quot;</span><span class="token operator">:</span><span class="token punctuation" style="color:rgb(248, 248, 242)">[</span><span class="token plain">...</span><span class="token punctuation" style="color:rgb(248, 248, 242)">]</span><span class="token punctuation" style="color:rgb(248, 248, 242)">,</span><span class="token property">&quot;long&quot;</span><span class="token operator">:</span><span class="token punctuation" style="color:rgb(248, 248, 242)">[</span><span class="token plain">...</span><span class="token punctuation" style="color:rgb(248, 248, 242)">]</span><span class="token plain"> </span><span class="token punctuation" style="color:rgb(248, 248, 242)">}</span><span class="token plain"> </span><span class="token comment" style="color:rgb(98, 114, 164)">/* nullable object; replace-per-tier; persists across turns + reboots */</span><span class="token punctuation" style="color:rgb(248, 248, 242)">,</span><span class="token plain"></span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain" style="display:inline-block"></span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">  </span><span class="token property">&quot;spawn&quot;</span><span class="token operator">:</span><span class="token plain">   </span><span class="token punctuation" style="color:rgb(248, 248, 242)">[</span><span class="token plain"> </span><span class="token punctuation" style="color:rgb(248, 248, 242)">{</span><span class="token plain"> </span><span class="token string" style="color:rgb(255, 121, 198)">&quot;provider&quot;</span><span class="token punctuation" style="color:rgb(248, 248, 242)">,</span><span class="token string" style="color:rgb(255, 121, 198)">&quot;model&quot;</span><span class="token punctuation" style="color:rgb(248, 248, 242)">,</span><span class="token string" style="color:rgb(255, 121, 198)">&quot;skill&quot;</span><span class="token punctuation" style="color:rgb(248, 248, 242)">,</span><span class="token string" style="color:rgb(255, 121, 198)">&quot;task&quot;</span><span class="token punctuation" style="color:rgb(248, 248, 242)">,</span><span class="token string" style="color:rgb(255, 121, 198)">&quot;category&quot;</span><span class="token punctuation" style="color:rgb(248, 248, 242)">,</span><span class="token string" style="color:rgb(255, 121, 198)">&quot;note&quot;</span><span class="token punctuation" style="color:rgb(248, 248, 242)">,</span><span class="token string" style="color:rgb(255, 121, 198)">&quot;name&quot;</span><span class="token plain"> </span><span class="token punctuation" style="color:rgb(248, 248, 242)">}</span><span class="token plain"> </span><span class="token punctuation" style="color:rgb(248, 248, 242)">]</span><span class="token punctuation" style="color:rgb(248, 248, 242)">,</span><span class="token plain"></span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">  </span><span class="token property">&quot;await&quot;</span><span class="token operator">:</span><span class="token plain">   </span><span class="token punctuation" style="color:rgb(248, 248, 242)">[</span><span class="token plain"> </span><span class="token string" style="color:rgb(255, 121, 198)">&quot;job-tag string&quot;</span><span class="token punctuation" style="color:rgb(248, 248, 242)">,</span><span class="token plain"> ... </span><span class="token punctuation" style="color:rgb(248, 248, 242)">]</span><span class="token plain"></span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain"></span><span class="token punctuation" style="color:rgb(248, 248, 242)">}</span><br></div></code></pre></div></div>
+<p>Every sub-field the wire schema lists is <code>required</code> there but <strong>nullable</strong>
+(strict json_schema has no optional keys - an omitted value rides as <code>null</code>); the
+parser then defaults each one, so at the parser they are all optional. <code>spawn[]</code>
+and <code>await[]</code> are <strong>retired from the wire</strong> (<code>session_ops</code> is the one spawn
+surface), but the parser still accepts them so an old client keeps working.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="required-string-fields">Required string fields<a href="#required-string-fields" class="hash-link" aria-label="Direct link to Required string fields" title="Direct link to Required string fields" translate="no">​</a></h2>
+<p><code>reply</code>, <code>memory</code>, and <code>ask</code> are the three REQUIRED strings. A missing one
+rejects with <code>MissingField</code>; a mistyped one (e.g. an array where a string is
+required) rejects with <code>WrongType</code>.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Field</th><th>Meaning</th><th>Cap on parse</th></tr></thead><tbody><tr><td><code>reply</code></td><td>User-facing text (<code>&quot;&quot;</code> if none)</td><td><strong>uncapped</strong> - user-facing; the device budgets it elsewhere</td></tr><tr><td><code>memory</code></td><td>Updated model running memory (<code>&quot;&quot;</code> if unchanged)</td><td><code>kMemModelMax</code> = <strong>1200</strong> bytes, UTF-8-safe</td></tr><tr><td><code>ask</code></td><td>Question to the user (<code>&quot;&quot;</code> if none)</td><td><strong>uncapped</strong> - user-facing; the device budgets it elsewhere</td></tr></tbody></table>
+<p><code>reply</code> names an action as done only when a tool RESULT confirms it. Delivery is
+itself a tool result: writing &quot;sent to your Telegram&quot; or &quot;reading it aloud now&quot;
+does not send or speak anything - the matching tool (file send, voice readout)
+does, and only its success result lets the reply claim it happened.</p>
+<p><code>memory</code> is clamped to <code>kMemModelMax</code> (1200) UTF-8-safe on parse so the parsed
+<code>Turn</code> is self-consistent with the memory module&#x27;s cap even before
+<code>OrchMemory::setModel</code> runs; the definitive cap + truncation flag live there.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="optional-arrays---all-absent--empty">Optional arrays - all absent ⇒ empty<a href="#optional-arrays---all-absent--empty" class="hash-link" aria-label="Direct link to Optional arrays - all absent ⇒ empty" title="Direct link to Optional arrays - all absent ⇒ empty" translate="no">​</a></h2>
+<p>Every array key is OPTIONAL and TOLERANT: <strong>absent ⇒ empty vector</strong>, and
+<strong>present-but-not-an-array ⇒ also empty</strong> (<code>as&lt;JsonArrayConst&gt;()</code> on a non-array
+iterates zero times - it is not an error). This is what makes a bare
+<code>{&quot;reply&quot;:&quot;hi&quot;,&quot;memory&quot;:&quot;&quot;,&quot;ask&quot;:&quot;&quot;}</code> a fully valid turn (all arrays empty), and
+lets a new turn omit <code>spawn</code>/<code>await</code>/<code>device</code> and drive the run through the
+live-integration arrays instead.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="device-tolerant-per-item"><code>device[]</code> (tolerant per-item)<a href="#device-tolerant-per-item" class="hash-link" aria-label="Direct link to device-tolerant-per-item" title="Direct link to device-tolerant-per-item" translate="no">​</a></h3>
+<p>A non-object element is <strong>dropped</strong> (never a whole-turn error). Each accepted
+element is carried as the <strong>raw serialized JSON slice</strong> of the element (compact, no spaces) into
+<code>DeviceAction.json</code>; the portable device-action validator
+(<code>nimbus/orch/device_actions.*</code>, a sibling module) turns it into a typed+clamped
+action, and the executor lives on the device. Keeping the raw slice here
+decouples the turn parser from that module.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="spawn-tolerant-per-item-retired-from-the-wire"><code>spawn[]</code> (tolerant per-item, RETIRED from the wire)<a href="#spawn-tolerant-per-item-retired-from-the-wire" class="hash-link" aria-label="Direct link to spawn-tolerant-per-item-retired-from-the-wire" title="Direct link to spawn-tolerant-per-item-retired-from-the-wire" translate="no">​</a></h3>
+<p>Retired from the wire schema (spawning moved to <code>session_ops</code>) but kept fully
+parseable, so an old client still works. Per item:</p>
+<ul>
+<li class="">A <strong>non-object</strong> element, or one whose <code>task</code> is <strong>missing / non-string /
+empty</strong>, is <strong>dropped</strong> silently - <code>task</code> is the only semantically-required
+field (matches the device <code>enqueueSpawn</code> <code>if (!task[0]) return;</code>). Every other
+field falls back to a default on copy, so a provider that omits <code>note</code> or
+sends a numeric <code>model</code> loses that item at worst, never the whole turn.</li>
+<li class="">Defaults, provider-lowercasing, and per-field UTF-8-safe byte caps are applied
+on copy:</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Field</th><th>Rule on copy</th><th>Byte cap (usable = buffer−1)</th></tr></thead><tbody><tr><td><code>provider</code></td><td><strong>lowercased</strong>; <code>&quot;&quot;</code> ⇒ device resolves by priority</td><td><code>kSpawnProviderMax</code>−1 = <strong>15</strong></td></tr><tr><td><code>model</code></td><td>may be empty/invalid; device coerces</td><td><code>kSpawnModelMax</code>−1 = <strong>39</strong></td></tr><tr><td><code>skill</code></td><td>provider-native hint</td><td><code>kSpawnSkillMax</code>−1 = <strong>23</strong></td></tr><tr><td><code>task</code></td><td>the only <strong>semantically-required</strong> field</td><td><code>kSpawnTaskMax</code>−1 = <strong>4095</strong></td></tr><tr><td><code>name</code></td><td>short display name (<code>&quot;&quot;</code> ⇒ unnamed)</td><td><code>kSpawnNameMax</code>−1 = <strong>23</strong></td></tr><tr><td><code>category</code></td><td><code>&quot;&quot;</code> ⇒ <strong><code>&quot;research&quot;</code></strong></td><td><code>kSpawnCategoryMax</code>−1 = <strong>15</strong></td></tr><tr><td><code>note</code></td><td><code>&quot;&quot;</code> ⇒ <strong><code>&quot;On it.&quot;</code></strong></td><td><code>kSpawnNoteMax</code>−1 = <strong>79</strong></td></tr></tbody></table>
+<ul>
+<li class="">The accepted <code>spawn</code> vector is <strong>truncated to <code>kAgentMaxJobs</code> = 6</strong> items;
+extras are dropped (the journal ceiling refuses them device-side).</li>
+</ul>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="await-tolerant-per-item-retired-from-the-wire"><code>await[]</code> (tolerant per-item, RETIRED from the wire)<a href="#await-tolerant-per-item-retired-from-the-wire" class="hash-link" aria-label="Direct link to await-tolerant-per-item-retired-from-the-wire" title="Direct link to await-tolerant-per-item-retired-from-the-wire" translate="no">​</a></h3>
+<p>Retired from the wire (<code>session.poll</code> superseded it) but still parsed. A
+<strong>non-string</strong> entry is <strong>dropped</strong>; entries are <strong>trimmed</strong> of surrounding
+whitespace and blank / whitespace-only entries are <strong>skipped</strong> (a
+whitespace-only tag can never match a real job tag, so keeping it would seed a
+dead poll). Non-blank entries are kept in order.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="live-integration-arrays">Live-integration arrays<a href="#live-integration-arrays" class="hash-link" aria-label="Direct link to Live-integration arrays" title="Direct link to Live-integration arrays" translate="no">​</a></h2>
+<p><code>mem_write</code>, <code>mem_query</code>, and <code>session_ops</code> are the advertised path for a modern
+turn. Like every other array they are <strong>tolerant</strong> per item (a malformed item is
+dropped, never a whole-turn error), and each vector is capped to <code>kAgentMaxJobs</code>
+= <strong>6</strong>.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="mem_write--memorywrite"><code>mem_write[]</code> → <code>memory.write</code><a href="#mem_write--memorywrite" class="hash-link" aria-label="Direct link to mem_write--memorywrite" title="Direct link to mem_write--memorywrite" translate="no">​</a></h3>
+<p>Store facts in the associative VDB this turn (explicit, LLM-directed - never
+auto-mirrored).</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Sub-field</th><th>Type</th><th>Rule</th><th>Default</th></tr></thead><tbody><tr><td><code>content</code></td><td>string, <strong>required non-empty</strong></td><td>capped to <code>kMemModelMax</code> = <strong>1200</strong> UTF-8-safe; empty/missing ⇒ item dropped</td><td>-</td></tr><tr><td><code>importance</code></td><td>number</td><td>accepts <strong>int- or float-encoded</strong>; <strong>clamped to <code>[0,1]</code></strong></td><td><strong>0.5</strong></td></tr><tr><td><code>permanent</code></td><td>bool</td><td>pins the fact so it never decays or prunes</td><td><strong>false</strong></td></tr><tr><td><code>ttl</code></td><td>enum string</td><td>one of <code>session</code> / <code>days</code> / <code>weeks</code> / <code>months</code> / <code>permanent</code>; <strong>accepted only when it names a known class</strong>, otherwise ignored and the store&#x27;s default class applies</td><td>store default (<code>weeks</code>)</td></tr></tbody></table>
+<p>A non-object item, an item with a non-string / missing <code>content</code>, or an
+empty-after-cap <code>content</code> is <strong>dropped</strong> - the turn stays valid.</p>
+<p>A <code>mem_write</code> applies <strong>after this turn&#x27;s reply is sent</strong>, so a reply that says
+&quot;I saved that&quot; is a prediction, not a confirmed fact - phrase it as intent, or
+confirm it on a later turn.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="mem_query--searches-echoed-into-the-next-turn"><code>mem_query[]</code> → searches echoed into the NEXT turn<a href="#mem_query--searches-echoed-into-the-next-turn" class="hash-link" aria-label="Direct link to mem_query--searches-echoed-into-the-next-turn" title="Direct link to mem_query--searches-echoed-into-the-next-turn" translate="no">​</a></h3>
+<p>Search strings. Each entry is <strong>trimmed</strong>; blank ⇒ dropped; a non-string entry
+is dropped (tolerantly, not an error). Kept entries are capped to
+<code>kSpawnTaskMax − 1</code> = <strong>4095</strong> UTF-8-safe. Results are echoed into the <em>next</em>
+turn&#x27;s context.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="session_ops--spawn--terminate-sub-sessions"><code>session_ops[]</code> → spawn / terminate sub-sessions<a href="#session_ops--spawn--terminate-sub-sessions" class="hash-link" aria-label="Direct link to session_ops--spawn--terminate-sub-sessions" title="Direct link to session_ops--spawn--terminate-sub-sessions" translate="no">​</a></h3>
+<p>The advertised way to start and stop sub-agents (superseding the retired
+<code>spawn[]</code>/<code>await[]</code>).</p>
+<ul>
+<li class=""><code>op</code> (<strong>required</strong>) - the wire schema advertises <strong><code>spawn</code> and <code>terminate</code>
+only</strong>. The fabric is fire-and-forget: there is no live back-and-forth with a
+running sub-agent, so <code>tell</code>, <code>poll</code>, and <code>list</code> were retired from the wire.
+The parser&#x27;s known set still accepts those three names for old clients, but
+they are <strong>no-ops</strong> on this fabric. A non-object item, a non-string <code>op</code>, or an
+<strong>unknown <code>op</code> is dropped</strong> (turn stays valid).</li>
+<li class="">Every other field is used per-op, defaulted-empty, and byte-capped. All nine
+keys (<code>op</code>, <code>id</code>, <code>task</code>, <code>provider</code>, <code>model</code>, <code>skill</code>, <code>name</code>, <code>project</code>,
+<code>attach</code>) are <code>required</code> in the strict wire schema as <strong>nullable</strong> types; the
+parser defaults each:</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Sub-field</th><th>Used by op</th><th>Rule / cap (usable = buffer−1)</th></tr></thead><tbody><tr><td><code>id</code></td><td><code>terminate</code></td><td>target session tag; cap <code>kSpawnCategoryMax</code>−1 = <strong>15</strong></td></tr><tr><td><code>task</code></td><td><code>spawn</code></td><td>the NL instruction; cap <code>kSpawnTaskMax</code>−1 = <strong>4095</strong></td></tr><tr><td><code>provider</code></td><td><code>spawn</code> (optional)</td><td><strong>lowercased</strong>; <code>&quot;&quot;</code> ⇒ device resolves by priority; cap <code>kSpawnProviderMax</code>−1 = <strong>15</strong></td></tr><tr><td><code>model</code></td><td><code>spawn</code> (optional)</td><td>cap <code>kSpawnModelMax</code>−1 = <strong>39</strong></td></tr><tr><td><code>skill</code></td><td><code>spawn</code> (optional)</td><td>approved capsule id injected into the sub-agent&#x27;s brief; cap <code>kSpawnSkillMax</code>−1 = <strong>23</strong></td></tr><tr><td><code>name</code></td><td><code>spawn</code> (optional)</td><td>display name, also the saved-document name; cap <code>kSpawnNameMax</code>−1 = <strong>23</strong></td></tr><tr><td><code>project</code></td><td><code>spawn</code> (optional)</td><td>run tag; the sub-agent&#x27;s full result auto-saves to the file store as <code>&lt;project&gt;/&lt;name&gt;-&lt;tag&gt;.md</code>; cap <code>kSpawnProjectMax</code>−1 = <strong>24</strong></td></tr><tr><td><code>attach</code></td><td><code>spawn</code> (optional)</td><td>array of up to <code>kSpawnAttachMax</code> = <strong>4</strong> <code>&lt;project&gt;/&lt;name&gt;</code> docs whose full content the device splices into the instruction; each ref capped to <strong>73</strong> bytes, non-string entries dropped</td></tr></tbody></table>
+<p>The retired <code>tell</code> op&#x27;s <code>message</code> field (cap <code>kSpawnTaskMax</code>−1 = <strong>4095</strong>) is
+still read by the parser but has no effect.</p>
+<p>Each turn&#x27;s <code>[ACTIVE SESSIONS]</code> context carries a <code>[SPAWN CAPACITY]</code> line
+(<code>buildDynamicContext()</code>, <code>lib/harness/src/engine.cpp</code>) - <code>&lt;live&gt; running, &lt;queued&gt; queued. You can start up to &lt;N&gt; sub-agents this turn</code>, where <code>N = min(kAgentMaxJobs, kMaxPendingSpawns − queued)</code>. Spawns run <strong>sequentially</strong> (the
+device does one network call at a time, up to <code>kMaxActiveInflight</code> = <strong>4</strong> in
+flight), draining as each finishes. This is <strong>not</strong> a hard total limit: a big
+fan-out runs over successive waves - start a wave now, and when they finish an
+automatic turn lets you spawn the next, so a run can work through dozens. So a
+turn emits one spawn op per unit of work <strong>up to what <code>[SPAWN CAPACITY]</code> allows</strong>,
+and carries a larger fan-out across waves rather than silently dropping work.
+(The old <code>[SPAWN SLOTS] N of 6 free</code> line read as a hard ceiling and made the
+head under-spawn; <code>[SPAWN CAPACITY]</code> states the honest throughput model.)</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="persistent-scratchpad-response-object">Persistent scratchpad (response object)<a href="#persistent-scratchpad-response-object" class="hash-link" aria-label="Direct link to Persistent scratchpad (response object)" title="Direct link to Persistent scratchpad (response object)" translate="no">​</a></h2>
+<p><code>scratchpad</code> is a top-level, <strong>nullable object</strong> response field - the model&#x27;s own
+working memory, rewritten as it works. Unlike <code>memory</code> (which lives for the
+<strong>next turn only</strong>), the scratchpad <strong>persists across turns and across reboots</strong>
+(<code>memory::scratchpad()</code>, serialized to the <code>orchmem</code> NVS namespace via
+<code>persistScratchpad()</code>). It is a <strong>free write</strong> - returning it costs no tool round.</p>
+<p>New in v4.1.0: the scratchpad used to be reachable only through the admin-only
+<code>memory.scratchpad</code> tool; now the model&#x27;s normal write path is this response
+field. That tool remains as an admin read/edit path - see
+<a class="" href="/reference/tool-catalog">tool-catalog.md</a>.</p>
+<p>Shape (every key <code>required</code>-but-nullable in the strict wire schema):</p>
+<div class="language-json codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#F8F8F2;--prism-background-color:#282A36"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-json codeBlock_bY9V thin-scrollbar" style="color:#F8F8F2;background-color:#282A36"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#F8F8F2"><span class="token property">&quot;scratchpad&quot;</span><span class="token operator">:</span><span class="token plain"> </span><span class="token punctuation" style="color:rgb(248, 248, 242)">{</span><span class="token plain"></span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">  </span><span class="token property">&quot;active&quot;</span><span class="token operator">:</span><span class="token plain"> </span><span class="token string" style="color:rgb(255, 121, 198)">&quot;the one thing being done right now (string | null)&quot;</span><span class="token punctuation" style="color:rgb(248, 248, 242)">,</span><span class="token plain"></span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">  </span><span class="token property">&quot;short&quot;</span><span class="token operator">:</span><span class="token plain">  </span><span class="token punctuation" style="color:rgb(248, 248, 242)">[</span><span class="token plain"> </span><span class="token string" style="color:rgb(255, 121, 198)">&quot;this task&#x27;s steps / a checklist&quot;</span><span class="token punctuation" style="color:rgb(248, 248, 242)">,</span><span class="token plain"> ... </span><span class="token punctuation" style="color:rgb(248, 248, 242)">]</span><span class="token plain"> | </span><span class="token null keyword" style="color:rgb(189, 147, 249);font-style:italic">null</span><span class="token punctuation" style="color:rgb(248, 248, 242)">,</span><span class="token plain"></span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">  </span><span class="token property">&quot;mid&quot;</span><span class="token operator">:</span><span class="token plain">    </span><span class="token punctuation" style="color:rgb(248, 248, 242)">[</span><span class="token plain"> </span><span class="token string" style="color:rgb(255, 121, 198)">&quot;threads to return to over days&quot;</span><span class="token punctuation" style="color:rgb(248, 248, 242)">,</span><span class="token plain"> ... </span><span class="token punctuation" style="color:rgb(248, 248, 242)">]</span><span class="token plain">   | </span><span class="token null keyword" style="color:rgb(189, 147, 249);font-style:italic">null</span><span class="token punctuation" style="color:rgb(248, 248, 242)">,</span><span class="token plain"></span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">  </span><span class="token property">&quot;long&quot;</span><span class="token operator">:</span><span class="token plain">   </span><span class="token punctuation" style="color:rgb(248, 248, 242)">[</span><span class="token plain"> </span><span class="token string" style="color:rgb(255, 121, 198)">&quot;standing goals&quot;</span><span class="token punctuation" style="color:rgb(248, 248, 242)">,</span><span class="token plain"> ... </span><span class="token punctuation" style="color:rgb(248, 248, 242)">]</span><span class="token plain">                   | </span><span class="token null keyword" style="color:rgb(189, 147, 249);font-style:italic">null</span><span class="token plain"></span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain"></span><span class="token punctuation" style="color:rgb(248, 248, 242)">}</span><br></div></code></pre></div></div>
+<p>Update semantics (parser step 10, <code>orch_turn.cpp</code>):</p>
+<ul>
+<li class="">The <strong>whole field null</strong> - or absent, or not an object - leaves the scratchpad
+<strong>unchanged</strong>.</li>
+<li class="">A <strong>non-null <code>active</code></strong> string sets the active line, capped to
+<code>kScratchActiveMax</code> = <strong>240</strong> bytes, UTF-8-safe.</li>
+<li class="">A <strong>non-null tier array</strong> (<code>short</code> / <code>mid</code> / <code>long</code>) <strong>REPLACES</strong> that tier; a
+<strong>null</strong> tier leaves it unchanged. Each tier keeps at most <code>kScratchTierItems</code>
+= <strong>8</strong> items, each capped to <code>kScratchItemMax</code> = <strong>160</strong> bytes UTF-8-safe;
+blank / whitespace-only items are dropped.</li>
+</ul>
+<p>Because a non-null tier is a full replace (not an append), the model rewrites the
+whole tier each time: write the plan when a multi-step task or fan-out starts,
+then tick items off on later turns so the thread survives across turns.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="parseerror-codes">ParseError codes<a href="#parseerror-codes" class="hash-link" aria-label="Direct link to ParseError codes" title="Direct link to ParseError codes" translate="no">​</a></h2>
+<p><code>parseTurn</code> returns <code>true</code> iff the turn is contract-valid (<code>err.code == Ok</code>). On
+failure <code>out</code> is left <strong>cleared</strong> (no half-parsed state leaks) and <code>err</code> carries
+the reason; <code>err.detail</code> names the offending field/reason for logs + tests.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th><code>ParseError::Code</code></th><th>When</th></tr></thead><tbody><tr><td><code>Ok</code></td><td>valid turn</td></tr><tr><td><code>JsonError</code></td><td>did not deserialize (garbage / truncated / empty / not JSON) - <code>detail</code> is the ArduinoJson error string</td></tr><tr><td><code>NotObject</code></td><td>valid JSON but the top-level value is not an object (e.g. <code>[1,2,3]</code>, <code>42</code>)</td></tr><tr><td><code>MissingField</code></td><td>a required top-level string (<code>reply</code>/<code>memory</code>/<code>ask</code>) is absent; <code>detail</code> is the key (e.g. <code>&quot;reply&quot;</code>)</td></tr><tr><td><code>WrongType</code></td><td>one of <code>reply</code>/<code>memory</code>/<code>ask</code> is present but not a JSON string</td></tr></tbody></table>
+<p><code>MissingField</code>/<code>WrongType</code> fire <strong>only</strong> for the three required strings. No
+array - <code>device</code>, <code>spawn</code>, <code>await</code>, <code>mem_write</code>, <code>mem_query</code>, or <code>session_ops</code> -
+can produce a parse error: a present-but-not-array value reads as empty, and a
+malformed item is dropped. The <code>scratchpad</code> object is equally tolerant: a
+present-but-non-object value reads as <strong>no change</strong>, never an error.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="backward-compatibility-guarantee">Backward-compatibility guarantee<a href="#backward-compatibility-guarantee" class="hash-link" aria-label="Direct link to Backward-compatibility guarantee" title="Direct link to Backward-compatibility guarantee" translate="no">​</a></h2>
+<p>An <strong>old six-field turn</strong> (<code>reply</code>/<code>memory</code>/<code>ask</code> + <code>device</code>/<code>spawn</code>/<code>await</code>,
+no live-integration arrays) still validates and applies exactly as before -
+<code>spawn[]</code> still parses, and the new <code>mem_write</code>/<code>mem_query</code>/<code>session_ops</code>
+vectors simply stay empty. Symmetrically, a new turn may carry only the required
+strings plus the live-integration arrays and omit the legacy arrays. In all
+cases, an absent - or present-but-mistyped - array parses to an <strong>empty vector</strong>.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="validation-order-as-implemented">Validation order (as implemented)<a href="#validation-order-as-implemented" class="hash-link" aria-label="Direct link to Validation order (as implemented)" title="Direct link to Validation order (as implemented)" translate="no">​</a></h2>
+<ol>
+<li class="">Deserialize → <code>JsonError</code>; not an object → <code>NotObject</code>.</li>
+<li class=""><code>reply</code>/<code>memory</code>/<code>ask</code> required strings (<code>MissingField</code> / <code>WrongType</code>); every
+array key optional and tolerant (absent OR present-but-not-array ⇒ empty).</li>
+<li class="">Copy string fields: <code>reply</code>/<code>ask</code> uncapped; <code>memory</code> capped to <code>kMemModelMax</code>.</li>
+<li class=""><code>spawn[]</code> tolerant per-item: non-object / missing-or-empty-<code>task</code> items
+dropped; other fields defaulted + provider lowercased + per-field byte caps;
+vector truncated to <code>kAgentMaxJobs</code> (6).</li>
+<li class=""><code>await[]</code> tolerant: non-string items dropped; blank/whitespace-only trimmed
+away.</li>
+<li class=""><code>device[]</code> tolerant: non-object items dropped; each kept item carried raw.</li>
+<li class=""><code>mem_write[]</code> tolerant; <code>importance</code> int-or-float clamped <code>[0,1]</code>; <code>ttl</code>
+accepted only when it names a known class; capped to <code>kAgentMaxJobs</code>.</li>
+<li class=""><code>mem_query[]</code> tolerant; trimmed; capped to <code>kAgentMaxJobs</code>.</li>
+<li class=""><code>session_ops[]</code> tolerant; <code>op</code> in the known set; spawn fields
+(<code>skill</code>/<code>name</code>/<code>project</code>/<code>attach</code>) defaulted + capped; capped to
+<code>kAgentMaxJobs</code>.</li>
+<li class=""><code>scratchpad</code> tolerant: whole field null / absent / non-object ⇒ no change;
+non-null <code>active</code> capped to <code>kScratchActiveMax</code>; each non-null tier
+(<code>short</code>/<code>mid</code>/<code>long</code>) REPLACES it - blank items dropped, ≤ <code>kScratchTierItems</code>
+items, each ≤ <code>kScratchItemMax</code>.</li>
+</ol>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="constant-reference">Constant reference<a href="#constant-reference" class="hash-link" aria-label="Direct link to Constant reference" title="Direct link to Constant reference" translate="no">​</a></h2>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Constant</th><th>Value</th><th>Source</th><th>Applies to</th></tr></thead><tbody><tr><td><code>kMemModelMax</code></td><td>1200</td><td><code>caps.h</code></td><td><code>memory</code>, <code>mem_write.content</code></td></tr><tr><td><code>kSpawnTaskMax</code></td><td>4096 (−1 = 4095)</td><td><code>caps.h</code></td><td><code>spawn.task</code>, <code>mem_query</code>, <code>session_ops.task</code>/<code>message</code></td></tr><tr><td><code>kSpawnProviderMax</code></td><td>16 (−1 = 15)</td><td><code>caps.h</code></td><td><code>spawn.provider</code>, <code>session_ops.provider</code></td></tr><tr><td><code>kSpawnModelMax</code></td><td>40 (−1 = 39)</td><td><code>caps.h</code></td><td><code>spawn.model</code>, <code>session_ops.model</code></td></tr><tr><td><code>kSpawnSkillMax</code></td><td>24 (−1 = 23)</td><td><code>caps.h</code></td><td><code>spawn.skill</code>, <code>session_ops.skill</code></td></tr><tr><td><code>kSpawnNameMax</code></td><td>24 (−1 = 23)</td><td><code>caps.h</code></td><td><code>spawn.name</code>, <code>session_ops.name</code></td></tr><tr><td><code>kSpawnProjectMax</code></td><td>25 (−1 = 24)</td><td><code>caps.h</code></td><td><code>session_ops.project</code></td></tr><tr><td><code>kSpawnAttachMax</code></td><td>4</td><td><code>caps.h</code></td><td><code>session_ops.attach</code> (max docs; each ref ≤ 73 bytes)</td></tr><tr><td><code>kSpawnCategoryMax</code></td><td>16 (−1 = 15)</td><td><code>caps.h</code></td><td><code>spawn.category</code>, <code>session_ops.id</code></td></tr><tr><td><code>kSpawnNoteMax</code></td><td>80 (−1 = 79)</td><td><code>caps.h</code></td><td><code>spawn.note</code></td></tr><tr><td><code>kAgentMaxJobs</code></td><td>6</td><td><code>caps.h</code></td><td>vector caps for <code>spawn</code>, <code>mem_write</code>, <code>mem_query</code>, <code>session_ops</code>; <code>[SPAWN CAPACITY]</code> per-turn ceiling</td></tr><tr><td><code>kMaxPendingSpawns</code></td><td>12</td><td><code>caps.h</code></td><td>pending-spawn queue depth; <code>[SPAWN CAPACITY]</code> queue room</td></tr><tr><td><code>kMaxActiveInflight</code></td><td>4</td><td><code>caps.h</code></td><td>max sub-agents in flight (device concurrency window)</td></tr><tr><td><code>kScratchActiveMax</code></td><td>240</td><td><code>caps.h</code></td><td><code>scratchpad.active</code></td></tr><tr><td><code>kScratchItemMax</code></td><td>160</td><td><code>caps.h</code></td><td>each <code>scratchpad</code> tier item</td></tr><tr><td><code>kScratchTierItems</code></td><td>8</td><td><code>caps.h</code></td><td>items per <code>scratchpad</code> tier (<code>short</code>/<code>mid</code>/<code>long</code>)</td></tr><tr><td><code>utf8CapLen</code></td><td>-</td><td><code>mem_cap.h</code></td><td>UTF-8-safe byte cap (drops a straddling multi-byte char whole)</td></tr></tbody></table></div><footer class="theme-doc-footer docusaurus-mt-lg"><div class="row margin-top--sm theme-doc-footer-edit-meta-row"><div class="col noPrint_WFHX"><a href="https://github.com/ristllin/Nimbus/blob/main/docs/reference/turn-contract.md" target="_blank" rel="noopener noreferrer" class="theme-edit-this-page"><svg fill="currentColor" height="20" width="20" viewBox="0 0 40 40" class="iconEdit_Z9Sw" aria-hidden="true"><g><path d="m34.5 11.7l-3 3.1-6.3-6.3 3.1-3q0.5-0.5 1.2-0.5t1.1 0.5l3.9 3.9q0.5 0.4 0.5 1.1t-0.5 1.2z m-29.5 17.1l18.4-18.5 6.3 6.3-18.4 18.4h-6.3v-6.2z"></path></g></svg>Edit this page</a></div><div class="col lastUpdated_JAkA"></div></div></footer></article><nav class="docusaurus-mt-lg pagination-nav" aria-label="Docs pages"><a class="pagination-nav__link pagination-nav__link--prev" href="/reference/tool-catalog"><div class="pagination-nav__sublabel">Previous</div><div class="pagination-nav__label">Tool catalog</div></a><a class="pagination-nav__link pagination-nav__link--next" href="/reference/tools-and-commands"><div class="pagination-nav__sublabel">Next</div><div class="pagination-nav__label">Tools &amp; commands</div></a></nav></div></div><div class="col col--3"><div class="tableOfContents_bqdL thin-scrollbar theme-doc-toc-desktop"><ul class="table-of-contents table-of-contents__left-border"><li><a href="#the-two-layer-design-strict-at-the-wire-defensive-at-the-parser" class="table-of-contents__link toc-highlight">The two-layer design: strict at the wire, defensive at the parser</a></li><li><a href="#contract-shape" class="table-of-contents__link toc-highlight">Contract shape</a></li><li><a href="#required-string-fields" class="table-of-contents__link toc-highlight">Required string fields</a></li><li><a href="#optional-arrays---all-absent--empty" class="table-of-contents__link toc-highlight">Optional arrays - all absent ⇒ empty</a><ul><li><a href="#device-tolerant-per-item" class="table-of-contents__link toc-highlight"><code>device[]</code> (tolerant per-item)</a></li><li><a href="#spawn-tolerant-per-item-retired-from-the-wire" class="table-of-contents__link toc-highlight"><code>spawn[]</code> (tolerant per-item, RETIRED from the wire)</a></li><li><a href="#await-tolerant-per-item-retired-from-the-wire" class="table-of-contents__link toc-highlight"><code>await[]</code> (tolerant per-item, RETIRED from the wire)</a></li></ul></li><li><a href="#live-integration-arrays" class="table-of-contents__link toc-highlight">Live-integration arrays</a><ul><li><a href="#mem_write--memorywrite" class="table-of-contents__link toc-highlight"><code>mem_write[]</code> → <code>memory.write</code></a></li><li><a href="#mem_query--searches-echoed-into-the-next-turn" class="table-of-contents__link toc-highlight"><code>mem_query[]</code> → searches echoed into the NEXT turn</a></li><li><a href="#session_ops--spawn--terminate-sub-sessions" class="table-of-contents__link toc-highlight"><code>session_ops[]</code> → spawn / terminate sub-sessions</a></li></ul></li><li><a href="#persistent-scratchpad-response-object" class="table-of-contents__link toc-highlight">Persistent scratchpad (response object)</a></li><li><a href="#parseerror-codes" class="table-of-contents__link toc-highlight">ParseError codes</a></li><li><a href="#backward-compatibility-guarantee" class="table-of-contents__link toc-highlight">Backward-compatibility guarantee</a></li><li><a href="#validation-order-as-implemented" class="table-of-contents__link toc-highlight">Validation order (as implemented)</a></li><li><a href="#constant-reference" class="table-of-contents__link toc-highlight">Constant reference</a></li></ul></div></div></div></div></main></div></div></div><footer class="theme-layout-footer footer footer--dark"><div class="container container-fluid"><div class="row footer__links"><div class="theme-layout-footer-column col footer__col"><div class="footer__title">Docs</div><ul class="footer__items clean-list"><li class="footer__item"><a class="footer__link-item" href="/quick-start/what-you-need">Quick Start</a></li><li class="footer__item"><a class="footer__link-item" href="/guides/hardware-bom">Bill of materials</a></li><li class="footer__item"><a class="footer__link-item" href="/getting-started/webui-reference">Web UI reference</a></li></ul></div><div class="theme-layout-footer-column col footer__col"><div class="footer__title">Reference</div><ul class="footer__items clean-list"><li class="footer__item"><a class="footer__link-item" href="/reference/config-and-nvs">Config &amp; NVS</a></li><li class="footer__item"><a class="footer__link-item" href="/reference/tool-catalog">Tool catalog</a></li><li class="footer__item"><a class="footer__link-item" href="/reference/turn-contract">Turn contract</a></li><li class="footer__item"><a class="footer__link-item" href="/reference/changelog">Changelog</a></li></ul></div><div class="theme-layout-footer-column col footer__col"><div class="footer__title">More</div><ul class="footer__items clean-list"><li class="footer__item"><a href="https://github.com/ristllin/Nimbus" target="_blank" rel="noopener noreferrer" class="footer__link-item">GitHub<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li></ul></div></div><div class="footer__bottom text--center"><div class="footer__copyright">Nimbus - source-available, free for noncommercial use (PolyForm-NC / CC BY-NC-SA). Built with Docusaurus.</div></div></div></footer></div>
+</body>
+</html>

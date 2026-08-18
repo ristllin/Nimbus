@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="en" dir="ltr" class="docs-wrapper plugin-docs plugin-id-default docs-version-current docs-doc-page docs-doc-id-guides/sub-sessions" data-has-hydrated="false">
+<head>
+<meta charset="UTF-8">
+<meta name="generator" content="Docusaurus v3.10.2">
+<title data-rh="true">Sub-sessions - background agents end to end | Nimbus</title><meta data-rh="true" name="viewport" content="width=device-width,initial-scale=1"><meta data-rh="true" name="twitter:card" content="summary_large_image"><meta data-rh="true" property="og:image" content="https://docs.cumulo-nimbus.ai/img/social-card.png"><meta data-rh="true" name="twitter:image" content="https://docs.cumulo-nimbus.ai/img/social-card.png"><meta data-rh="true" property="og:url" content="https://docs.cumulo-nimbus.ai/guides/sub-sessions"><meta data-rh="true" property="og:locale" content="en"><meta data-rh="true" name="docusaurus_locale" content="en"><meta data-rh="true" name="docsearch:language" content="en"><meta data-rh="true" name="docusaurus_version" content="current"><meta data-rh="true" name="docusaurus_tag" content="docs-default-current"><meta data-rh="true" name="docsearch:version" content="current"><meta data-rh="true" name="docsearch:docusaurus_tag" content="docs-default-current"><meta data-rh="true" property="og:title" content="Sub-sessions - background agents end to end | Nimbus"><meta data-rh="true" name="description" content="Migrated from docs/sub-sessions.md - the canonical source lives in the repo."><meta data-rh="true" property="og:description" content="Migrated from docs/sub-sessions.md - the canonical source lives in the repo."><link data-rh="true" rel="icon" href="/img/favicon.svg"><link data-rh="true" rel="canonical" href="https://docs.cumulo-nimbus.ai/guides/sub-sessions"><link data-rh="true" rel="alternate" href="https://docs.cumulo-nimbus.ai/guides/sub-sessions" hreflang="en"><link data-rh="true" rel="alternate" href="https://docs.cumulo-nimbus.ai/guides/sub-sessions" hreflang="x-default"><script data-rh="true" type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Sub-sessions","item":"https://docs.cumulo-nimbus.ai/guides/sub-sessions"}]}</script><link rel="stylesheet" href="/assets/css/styles.5ae419b2.css">
+<script src="/assets/js/runtime~main.e74ebefa.js" defer="defer"></script>
+<script src="/assets/js/main.92f144b6.js" defer="defer"></script>
+</head>
+<body>
+<svg style="display: none;"><defs>
+<symbol id="theme-svg-external-link" viewBox="0 0 24 24"><path fill="currentColor" d="M21 13v10h-21v-19h12v2h-10v15h17v-8h2zm3-12h-10.988l4.035 4-6.977 7.07 2.828 2.828 6.977-7.07 4.125 4.172v-11z"/></symbol>
+</defs></svg>
+<script>!function(){var t=function(){try{return new URLSearchParams(window.location.search).get("docusaurus-theme")}catch(t){}}()||function(){try{return window.localStorage.getItem("theme")}catch(t){}}();document.documentElement.setAttribute("data-theme",t||(window.matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light")),document.documentElement.setAttribute("data-theme-choice",t||"system")}(),function(){try{const c=new URLSearchParams(window.location.search).entries();for(var[t,e]of c)if(t.startsWith("docusaurus-data-")){var a=t.replace("docusaurus-data-","data-");document.documentElement.setAttribute(a,e)}}catch(t){}}()</script><div id="__docusaurus"><div role="region" aria-label="Skip to main content"><a class="skipToContent_fXgn" href="#__docusaurus_skipToContent_fallback">Skip to main content</a></div><nav aria-label="Main" class="theme-layout-navbar navbar navbar--fixed-top"><div class="navbar__inner"><div class="theme-layout-navbar-left navbar__items"><button aria-label="Toggle navigation bar" aria-expanded="false" class="navbar__toggle clean-btn" type="button"><svg width="30" height="30" viewBox="0 0 30 30" aria-hidden="true"><path stroke="currentColor" stroke-linecap="round" stroke-miterlimit="10" stroke-width="2" d="M4 7h22M4 15h22M4 23h22"></path></svg></button><a class="navbar__brand" href="/"><div class="navbar__logo"><img src="/img/logo.svg" alt="Nimbus" class="themedComponent_mlkZ themedComponent--light_NVdE"><img src="/img/logo.svg" alt="Nimbus" class="themedComponent_mlkZ themedComponent--dark_xIcU"></div><b class="navbar__title text--truncate">Nimbus</b></a><a class="navbar__item navbar__link" href="/quick-start/what-you-need">Get started</a><a class="navbar__item navbar__link" href="/flash">Flash</a></div><div class="theme-layout-navbar-right navbar__items navbar__items--right"><a href="https://github.com/ristllin/Nimbus" target="_blank" rel="noopener noreferrer" class="navbar__item navbar__link">GitHub<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a><div class="toggle_vylO colorModeToggle_DEke"><button class="clean-btn toggleButton_gllP toggleButtonDisabled_aARS" type="button" disabled="" title="system mode" aria-label="Switch between dark and light mode (currently system mode)"><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP lightToggleIcon_pyhR"><path fill="currentColor" d="M12,9c1.65,0,3,1.35,3,3s-1.35,3-3,3s-3-1.35-3-3S10.35,9,12,9 M12,7c-2.76,0-5,2.24-5,5s2.24,5,5,5s5-2.24,5-5 S14.76,7,12,7L12,7z M2,13l2,0c0.55,0,1-0.45,1-1s-0.45-1-1-1l-2,0c-0.55,0-1,0.45-1,1S1.45,13,2,13z M20,13l2,0c0.55,0,1-0.45,1-1 s-0.45-1-1-1l-2,0c-0.55,0-1,0.45-1,1S19.45,13,20,13z M11,2v2c0,0.55,0.45,1,1,1s1-0.45,1-1V2c0-0.55-0.45-1-1-1S11,1.45,11,2z M11,20v2c0,0.55,0.45,1,1,1s1-0.45,1-1v-2c0-0.55-0.45-1-1-1C11.45,19,11,19.45,11,20z M5.99,4.58c-0.39-0.39-1.03-0.39-1.41,0 c-0.39,0.39-0.39,1.03,0,1.41l1.06,1.06c0.39,0.39,1.03,0.39,1.41,0s0.39-1.03,0-1.41L5.99,4.58z M18.36,16.95 c-0.39-0.39-1.03-0.39-1.41,0c-0.39,0.39-0.39,1.03,0,1.41l1.06,1.06c0.39,0.39,1.03,0.39,1.41,0c0.39-0.39,0.39-1.03,0-1.41 L18.36,16.95z M19.42,5.99c0.39-0.39,0.39-1.03,0-1.41c-0.39-0.39-1.03-0.39-1.41,0l-1.06,1.06c-0.39,0.39-0.39,1.03,0,1.41 s1.03,0.39,1.41,0L19.42,5.99z M7.05,18.36c0.39-0.39,0.39-1.03,0-1.41c-0.39-0.39-1.03-0.39-1.41,0l-1.06,1.06 c-0.39,0.39-0.39,1.03,0,1.41s1.03,0.39,1.41,0L7.05,18.36z"></path></svg><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP darkToggleIcon_wfgR"><path fill="currentColor" d="M9.37,5.51C9.19,6.15,9.1,6.82,9.1,7.5c0,4.08,3.32,7.4,7.4,7.4c0.68,0,1.35-0.09,1.99-0.27C17.45,17.19,14.93,19,12,19 c-3.86,0-7-3.14-7-7C5,9.07,6.81,6.55,9.37,5.51z M12,3c-4.97,0-9,4.03-9,9s4.03,9,9,9s9-4.03,9-9c0-0.46-0.04-0.92-0.1-1.36 c-0.98,1.37-2.58,2.26-4.4,2.26c-2.98,0-5.4-2.42-5.4-5.4c0-1.81,0.89-3.42,2.26-4.4C12.92,3.04,12.46,3,12,3L12,3z"></path></svg><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP systemToggleIcon_QzmC"><path fill="currentColor" d="m12 21c4.971 0 9-4.029 9-9s-4.029-9-9-9-9 4.029-9 9 4.029 9 9 9zm4.95-13.95c1.313 1.313 2.05 3.093 2.05 4.95s-0.738 3.637-2.05 4.95c-1.313 1.313-3.093 2.05-4.95 2.05v-14c1.857 0 3.637 0.737 4.95 2.05z"></path></svg></button></div><div class="navbarSearchContainer_Bca1"></div></div></div><div role="presentation" class="navbar-sidebar__backdrop"></div></nav><div id="__docusaurus_skipToContent_fallback" class="theme-layout-main main-wrapper mainWrapper_z2l0"><div class="docsWrapper_hBAB"><button aria-label="Scroll back to top" class="clean-btn theme-back-to-top-button backToTopButton_sjWU" type="button"></button><div class="docRoot_UBD9"><aside class="theme-doc-sidebar-container docSidebarContainer_YfHR"><div class="sidebarViewport_aRkj"><div class="sidebar_njMd"><nav aria-label="Docs sidebar" class="menu thin-scrollbar menu_SIkG"><ul class="theme-doc-sidebar-menu menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/"><span class="linkLabel_WmDU">Overview</span></a></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="true" href="/quick-start/what-you-need"><span class="categoryLinkLabel_W154">Quick Start</span></a></div><ul class="menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/what-you-need"><span class="linkLabel_WmDU">What you need</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/flash"><span class="linkLabel_WmDU">Flash the firmware</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/setup-wizard"><span class="linkLabel_WmDU">Set up the device</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/first-conversation"><span class="linkLabel_WmDU">First conversation</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/notifier-quick-start"><span class="linkLabel_WmDU">Notifier quick start</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/getting-started/first-time-setup"><span class="linkLabel_WmDU">First-time setup</span></a></li></ul></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/guides/hardware"><span class="categoryLinkLabel_W154">Hardware Build</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/getting-started/webui-reference"><span class="categoryLinkLabel_W154">Using Nimbus</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret menu__link--active" role="button" aria-expanded="true" href="/guides/architecture"><span class="categoryLinkLabel_W154">How It Works</span></a></div><ul class="menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/architecture"><span class="linkLabel_WmDU">Architecture</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/turn-anatomy"><span class="linkLabel_WmDU">Turn anatomy</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/orchestrator-live-turn"><span class="linkLabel_WmDU">Live turn</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/orchestrator-world"><span class="linkLabel_WmDU">Orchestrator World</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/memory"><span class="linkLabel_WmDU">Memory</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/orchestrator-storage"><span class="linkLabel_WmDU">Storage tiering</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link menu__link--active" aria-current="page" tabindex="0" href="/guides/sub-sessions"><span class="linkLabel_WmDU">Sub-sessions</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/harness"><span class="linkLabel_WmDU">Harness</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/provider-wire"><span class="linkLabel_WmDU">Provider wire</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/security"><span class="linkLabel_WmDU">Security</span></a></li></ul></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/reference/config-and-nvs"><span class="categoryLinkLabel_W154">Reference</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/contributing/development"><span class="categoryLinkLabel_W154">Forking &amp; Contributing</span></a></div></li></ul></nav></div></div></aside><main class="docMainContainer_TBSr"><div class="container padding-top--md padding-bottom--lg"><div class="row"><div class="col docItemCol_VOVn"><div class="docItemContainer_Djhp"><article><nav class="theme-doc-breadcrumbs breadcrumbsContainer_Z_bl" aria-label="Breadcrumbs"><ul class="breadcrumbs"><li class="breadcrumbs__item"><a aria-label="Home page" class="breadcrumbs__link" href="/"><svg viewBox="0 0 24 24" class="breadcrumbHomeIcon_YNFT"><path d="M10 19v-5h4v5c0 .55.45 1 1 1h3c.55 0 1-.45 1-1v-7h1.7c.46 0 .68-.57.33-.87L12.67 3.6c-.38-.34-.96-.34-1.34 0l-8.36 7.53c-.34.3-.13.87.33.87H5v7c0 .55.45 1 1 1h3c.55 0 1-.45 1-1z" fill="currentColor"></path></svg></a></li><li class="breadcrumbs__item"><span class="breadcrumbs__link">How It Works</span></li><li class="breadcrumbs__item breadcrumbs__item--active"><span class="breadcrumbs__link">Sub-sessions</span></li></ul></nav><div class="tocCollapsible_ETCw theme-doc-toc-mobile tocMobile_ITEo"><button type="button" class="clean-btn tocCollapsibleButton_TO0P">On this page</button></div><div class="theme-doc-markdown markdown"><blockquote>
+<p>Sourced from <code>docs/sub-sessions.md</code> in the firmware repo.</p>
+</blockquote>
+<header><h1>Sub-sessions - the orchestrator&#x27;s background agents, end to end</h1></header>
+<p>What actually happens when the head model spawns a sub-agent: the exact brief it
+receives, the wire protocol per provider, what the head can and cannot do with a
+running or finished session, and what is persisted where. Line references are
+v3.5.0. Sibling docs: <a class="" href="/guides/turn-anatomy">turn-anatomy.md</a> (the head&#x27;s own prompt),
+<a class="" href="/guides/harness">harness.md</a> (the lifecycle around turns), and
+<a class="" href="/guides/orchestrator-storage">orchestrator-storage.md</a> (the storage tiers).</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="the-models-surface">The model&#x27;s surface<a href="#the-models-surface" class="hash-link" aria-label="Direct link to The model&#x27;s surface" title="Direct link to The model&#x27;s surface" translate="no">​</a></h2>
+<p>The turn contract advertises exactly two ops (<code>session_ops[]</code>):</p>
+<ul>
+<li class=""><code>spawn</code> - <code>task</code> (required), optional <code>provider</code>, <code>model</code>. Fire-and-forget.</li>
+<li class=""><code>terminate</code> - stop the running session named by <code>id</code>.</li>
+</ul>
+<p><code>tell</code> / <code>poll</code> / <code>list</code> are <strong>deliberately not offered</strong> (they used to be
+advertised and hard-failed at runtime; &quot;advertised == real&quot; is a standing rule).
+If the model emits one anyway it gets a plain-text refusal in its next turn&#x27;s
+input. <code>[ACTIVE SESSIONS]</code> (in every turn&#x27;s input) is the authoritative digest of
+what is running; <code>[FRESH RESULTS]</code> is how output comes back.</p>
+<p>Caps: 6 journal slots (<code>kAgentMaxJobs</code>), 4 in-flight (<code>kMaxActiveInflight</code>),
+a 12-deep pending-spawn queue (<code>kMaxPendingSpawns</code>, v4.1.0 - the depth ONE turn
+may enqueue, deliberately decoupled from concurrency), task ≤ 4095 bytes
+(<code>kSpawnTaskMax</code>, truncation logged), one dispatch per ~1.5 s pump cycle,
+dispatch deferred below 28 KB free internal heap. The model never sees raw slot
+counts - every turn it reads a <code>[SPAWN CAPACITY]</code> line (see &quot;Throughput&quot; below).</p>
+<p>⛔ <strong>Sub-agents run serially on-device, by design - this is a hard stability
+constraint, not a limitation to &quot;fix&quot;.</strong> Everything (head turns, dispatch,
+polling, synthesis) runs on the single <code>tg_poll</code> task with one TLS slot
+(<code>tlsSlots</code> default 1). Mistral sub-dispatch is fully synchronous - it blocks the
+<code>tg_poll</code> task inside <code>POST /v1/conversations</code> for up to 60 s, because Mistral has
+no background/job-id API. OpenAI (<code>background:true</code>) and Anthropic (async
+sessions) parallelize on the PROVIDER&#x27;s compute, but the device still polls them
+one at a time. Adding a worker task or a second concurrent TLS is hardware-proven
+to collapse the head&#x27;s contiguous internal heap and fail turns (the <code>tlsSlots</code>
+2→1 A/B, commit 78dab2c), and to starve the watchdog into a reset. Deep fan-out
+scales by SEQUENTIAL waves (queue depth), never by concurrency. Do not add
+on-device parallelism.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="throughput---the-honest-capacity-model">Throughput - the honest capacity model<a href="#throughput---the-honest-capacity-model" class="hash-link" aria-label="Direct link to Throughput - the honest capacity model" title="Direct link to Throughput - the honest capacity model" translate="no">​</a></h2>
+<p>The device does one network call at a time, so &quot;how many sub-agents can I run?&quot;
+is not a fixed slot count. Every turn the model reads a <code>[SPAWN CAPACITY]</code> line,
+assembled in <code>TurnEngine::buildDynamicContext</code> (<code>lib/harness/src/engine.cpp</code>).
+This replaced the old blunt <code>[SPAWN SLOTS] N of 6 free … over the cap is refused</code>
+(v4.1.0): the old wording read as a hard ceiling and made the head under-spawn a
+big run (&quot;only 6 slots&quot;). The line now states the real picture - how many are
+running, how many are queued, how many it can start THIS turn
+(<code>min(kAgentMaxJobs, queue room)</code>), that they run SEQUENTIALLY (up to
+<code>kMaxActiveInflight</code> = 4 in flight, draining as each finishes), and - crucially -
+that this is <strong>NOT a hard total limit</strong>. A big fan-out runs over successive
+<strong>waves</strong>: start a wave now, and when it finishes an automatic synthesis turn
+lets the head spawn the next, so it can work through dozens over a run. Mistral
+sub-agents run strictly one-at-a-time; OpenAI/Anthropic ones run in parallel on
+the provider while the device collects them one by one.</p>
+<p><strong>The pending queue is decoupled from concurrency</strong> (v4.1.0). <code>kMaxPendingSpawns</code>
+(12, <code>caps.h</code>) is the depth ONE turn may enqueue; <code>kAgentMaxJobs</code> (6) is the
+journal/concurrency ceiling - two DISTINCT numbers. <code>JobEngine::enqueueSpawn</code>
+(<code>lib/harness/src/jobs.cpp</code>) refuses only when the inbox itself is full, with
+<em>&quot;My spawn queue is full right now - I&#x27;ll start these, then queue the rest as
+they finish.&quot;</em> The pump then drains one queued spawn per cycle into the ≤4
+in-flight window, so a deep wave is a bigger inbox for the same single-file
+worker - NOT extra parallelism. The queue&#x27;s internal-SRAM backing is released
+once it drains (a <code>std::vector().swap</code> back to the baseline reserve), so a deep
+fan-out costs that memory only transiently.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="the-brief---the-exact-prompt-a-sub-agent-receives">The brief - the exact prompt a sub-agent receives<a href="#the-brief---the-exact-prompt-a-sub-agent-receives" class="hash-link" aria-label="Direct link to The brief - the exact prompt a sub-agent receives" title="Direct link to The brief - the exact prompt a sub-agent receives" translate="no">​</a></h2>
+<p>Assembled inline in <code>JobEngine::dispatchSpawn</code> (<code>lib/harness/src/jobs.cpp</code>), in
+this order:</p>
+<div class="language-text codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#F8F8F2;--prism-background-color:#282A36"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-text codeBlock_bY9V thin-scrollbar" style="color:#F8F8F2;background-color:#282A36"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#F8F8F2"><span class="token plain">[Current date-time: 2026-07-27 Sun 14:05 IDT - trust this over any internal sense of the date.]</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">[SKILL: &lt;id&gt;]</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">&lt;skill capsule, ≤4096 bytes, from SD /mem/skills/&lt;id&gt;/SKILL.md&gt;</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain" style="display:inline-block"></span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">---</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">&lt;the task text, ≤4095 bytes - always the lead instruction&gt;</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain" style="display:inline-block"></span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">[CONTEXT] (the conversation this task came from, oldest first)</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">- user: &lt;message, ≤300 chars/line&gt;</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">- assistant: &lt;message&gt;</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">…</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain" style="display:inline-block"></span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">[ATTACHED: &lt;project&gt;/&lt;name&gt;]</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">&lt;the document&#x27;s full text - device-supplied, ≤24 KB across all attachments&gt;</span><br></div></code></pre></div></div>
+<ul>
+<li class=""><strong>Now-header</strong>: providers give spawned agents no clock, so the brief anchors
+&quot;now&quot; explicitly. Omitted entirely while the device clock is unsynced.</li>
+<li class=""><strong>Skill capsule</strong> (<code>composeSkillInjection</code>, <code>lib/harness/src/skill_md.cpp</code>):
+prepended only when the spawn names a skill whose SD capsule has front-matter
+<code>inject: spawn|both</code>, and only when that capsule is approved - an
+agent-written capsule stays inert until the owner approves it
+(<a class="" href="/guides/harness">harness.md</a>). Built-in skill ids (<code>web</code>, <code>deep_research</code>, …)
+have no capsule - they act as provider/model routing hints only.</li>
+<li class=""><strong>[CONTEXT]</strong> (v3.3.0): the last ≤6 chat messages of the spawning conversation,
+digest-rendered under a 1200-byte budget (oldest lines clipped first,
+<code>(earlier messages omitted - byte budget)</code> marker when clipped). This is what
+makes &quot;book the place we talked about&quot; actionable. Appended AFTER the task so
+the task stays the lead instruction (pinned by <code>test_harness_jobs</code>).</li>
+<li class=""><strong>[ATTACHED]</strong> (v4.0.0): the full text of each document named in the spawn&#x27;s
+<code>attach</code> array, read from the file store at dispatch and spliced in by the
+firmware. The model references documents by name - cheap output tokens - and
+the device supplies the bytes, so a sub-agent can read files it has no tools
+to open. Up to 4 documents, 24 KB total, UTF-8-safe clip; a document that is
+missing or unreadable becomes an explicit <code>not found or unreadable</code> note
+rather than a silent omission. Naming a document only in the task text
+attaches nothing.</li>
+</ul>
+<p>Each backend adds its own system prompt around the brief - e.g. OpenAI:
+<em>&quot;You are an autonomous research agent. Complete the task fully and reply with
+the final result only.&quot;</em>; Anthropic managed agents get a sandbox system prompt
+with bash/web/files tools; Mistral: <em>&quot;You are an autonomous assistant agent.
+Complete the user&#x27;s task fully and reply with the final result only - no
+preamble.&quot;</em></p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="what-a-spawn-can-carry">What a spawn can carry<a href="#what-a-spawn-can-carry" class="hash-link" aria-label="Direct link to What a spawn can carry" title="Direct link to What a spawn can carry" translate="no">​</a></h2>
+<p><code>session_ops</code> spawn fields, beyond <code>task</code>/<code>provider</code>/<code>model</code>:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>field</th><th>effect</th></tr></thead><tbody><tr><td><code>skill</code></td><td>an approved capsule id, injected into the brief (above)</td></tr><tr><td><code>name</code></td><td>short display name - also the sub-agent&#x27;s saved-document name</td></tr><tr><td><code>project</code></td><td>run tag: the full result auto-saves as <code>&lt;project&gt;/&lt;name&gt;-&lt;tag&gt;.md</code></td></tr><tr><td><code>attach</code></td><td>up to 4 <code>&lt;project&gt;/&lt;name&gt;</code> documents spliced into the brief</td></tr></tbody></table>
+<p><code>project</code> is what makes multi-stage fan-out work: every sub-agent in a run
+writes into one project, and the outcome (<code>[saved: …]</code> or <code>[persist FAILED: …]</code>)
+is appended to the result the head reads, so the head plans the next stage from
+what actually landed rather than from an assumption.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="what-a-sub-agent-can-and-cannot-do---the-decomposition-rule">What a sub-agent can and cannot do - the decomposition rule<a href="#what-a-sub-agent-can-and-cannot-do---the-decomposition-rule" class="hash-link" aria-label="Direct link to What a sub-agent can and cannot do - the decomposition rule" title="Direct link to What a sub-agent can and cannot do - the decomposition rule" translate="no">​</a></h2>
+<p>A sub-agent returns <strong>text only</strong> to the head and has <strong>no device tools</strong> - it
+cannot send Telegram, write the device file store, or touch memory. So the HEAD
+does every owner-delivery step after a sub returns (<code>artifact.save</code>,
+<code>files.send</code>). A sub CAN, however, run its provider&#x27;s connectors server-side: a
+sub spawned on a provider that hosts Gmail drafts an email in its own run, a
+Notion/Drive sub creates a page, and it reports the outcome back as text.</p>
+<p>Decompose a big ask accordingly: <strong>sub-agents gather/research (and run
+connectors); the head assembles the results and delivers them to the owner.</strong>
+Give each sub a <code>project</code> so its full reply auto-saves as a document the head can
+then deliver. This is exactly what the model is told each turn - the
+<code>[SUB-AGENT CAPABILITIES]</code> block, generated per keyed provider in <code>catalogText</code>
+(<code>lib/core/src/orch_connectors_wire.cpp</code>). See <a class="" href="/guides/connectors">connectors.md</a> for
+which provider hosts which connector.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="providermodel-resolution">Provider/model resolution<a href="#providermodel-resolution" class="hash-link" aria-label="Direct link to Provider/model resolution" title="Direct link to Provider/model resolution" translate="no">​</a></h2>
+<ol>
+<li class="">Explicit <code>provider</code> in the spawn, if keyed.</li>
+<li class="">Else, if the spawn names a skill matching an enabled <strong>connector</strong>, that
+connector&#x27;s provider (keyed only).</li>
+<li class="">Else the first keyed provider in the sub-session priority order
+(<code>providerPriority</code>, web-settable, never model-settable).</li>
+</ol>
+<p>The model id is coerced against the provider&#x27;s choice list (live-harvested, else
+compile-time); an invalid model logs <code>spawn model coerced</code> and uses the
+per-provider sub-model default. <code>deep_research</code> on OpenAI upgrades the default
+to the deep-research model.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="the-wire-per-backend">The wire, per backend<a href="#the-wire-per-backend" class="hash-link" aria-label="Direct link to The wire, per backend" title="Direct link to The wire, per backend" translate="no">​</a></h2>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>backend</th><th>create</th><th>poll</th><th>cancel</th><th>survives reboot?</th></tr></thead><tbody><tr><td><strong>anthropic</strong></td><td><code>POST /v1/environments</code> + <code>/v1/agents</code> (both NVS-cached) → <code>POST /v1/sessions</code> → brief as a <code>user.message</code> event</td><td><code>GET /v1/sessions/&lt;sid&gt;/events?types[]=agent.message&amp;types[]=session.status_idle&amp;types[]=session.error</code></td><td><code>user.interrupt</code> event</td><td><strong>yes</strong> (session id in the journal)</td></tr><tr><td><strong>openai</strong></td><td><code>POST /v1/responses</code> with <code>background:true, store:true</code> + always-on <code>web_search</code> tool</td><td><code>GET /v1/responses/&lt;id&gt;</code> (status + output text + <strong>usage</strong>)</td><td><code>POST /v1/responses/&lt;id&gt;/cancel</code></td><td><strong>yes</strong> (response id)</td></tr><tr><td><strong>mistral</strong></td><td><code>POST /v1/conversations</code> - actually <strong>synchronous</strong>: the reply streams back at dispatch and is cached on-device</td><td>poll serves the cached reply once as Done</td><td>cache-local</td><td><strong>no</strong> - a reboot loses the cache → &quot;expired&quot;</td></tr><tr><td><strong>custom</strong></td><td><code>POST /v1/chat/completions</code> (or <code>/v1/messages</code>) - synchronous, single cache slot</td><td>cache, once</td><td>cache-local</td><td>no</td></tr></tbody></table>
+<p>The device polls round-robin every ~15 s on the <code>tg_poll</code> task. The result
+envelope carries up to <strong>16 KB</strong> of reply (PSRAM-backed, v4.0.0 -
+large enough for a sub-agent to return a whole document); token usage is filled only by
+OpenAI (the Anthropic events poll returns no usage object - honest zeros).</p>
+<p>⚠ <strong>A Mistral sub that outruns the 60 s blocking read is now reported honestly</strong>
+(v4.1.0). Because the sub runs INSIDE that synchronous <code>POST /v1/conversations</code>,
+a slow one outlasts the device&#x27;s 60 s read deadline. <code>mistralDispatch</code>
+(<code>lib/harness/src/providers/mistral.cpp</code>) classifies that case as
+<code>FabricErr::Timeout</code> (elapsed ≈ the whole deadline) rather than a connection
+failure, and <code>JobEngine::dispatchSpawn</code> (<code>lib/harness/src/jobs.cpp</code>) tells the
+owner <em>&quot;Started an agent on mistral, but it ran longer than I can wait (60s) and
+I couldn&#x27;t get its result. Try a smaller task or split it into steps.&quot;</em> - where
+it used to say &quot;Couldn&#x27;t start that agent&quot;, which was a lie (the agent HAD
+started).</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="results---how-output-reaches-you">Results - how output reaches you<a href="#results---how-output-reaches-you" class="hash-link" aria-label="Direct link to Results - how output reaches you" title="Direct link to Results - how output reaches you" translate="no">​</a></h2>
+<ol>
+<li class="">Terminal poll → the result is parked as a <strong>fresh result</strong> (UTF-8-capped at
+3500 chars) and the per-job completion is delivered to the chat.</li>
+<li class="">After a 3 s coalesce window (batching near-simultaneous completions), an
+automatic <strong>synthesis turn</strong> runs with a <code>[FRESH RESULTS]</code> block and a
+<code>[SYSTEM]</code> preamble - no user message. It runs under the same unattended
+rails as scheduled loops (sub-agent output is untrusted web content: no
+reboot, no ttsOn, no loop.create, etc.).</li>
+<li class="">If a synthesis turn can&#x27;t run for 60 s, the raw results are delivered
+directly - results are never lost to a wedged head.</li>
+<li class="">Errors skip the fresh store: <code>Job [&lt;name&gt;] failed: &lt;error&gt;</code> is delivered
+immediately.</li>
+</ol>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="what-the-head-can-and-cannot-do">What the head can and cannot do<a href="#what-the-head-can-and-cannot-do" class="hash-link" aria-label="Direct link to What the head can and cannot do" title="Direct link to What the head can and cannot do" translate="no">​</a></h2>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>ask</th><th>answer</th></tr></thead><tbody><tr><td>talk to a RUNNING sub-session</td><td><strong>No.</strong> The fabric is fire-and-forget; <code>tell</code>/<code>poll</code> are refused everywhere (schema, tool registry, prompt self-model). The one adjacent seam - Anthropic&#x27;s <code>answer()</code> for NeedsInput resume - exists in the adapter but has no caller.</td></tr><tr><td>kill a running session</td><td><strong>Yes</strong> - <code>session_ops terminate</code> from a turn (synchronous), or <code>session.terminate</code> over LAN MCP / web (staged to <code>tg_poll</code>). Note: a terminated job produces no <code>[FRESH RESULTS]</code> entry and no <code>ev:subresult</code> row.</td></tr><tr><td>resume / re-address a PAST (completed) session</td><td><strong>No.</strong> Once its result is consumed the journal slot is reclaimed; there is no session handle to call back. Past work survives only as episodic rows, whatever the synthesis turn <code>mem_write</code>-ed, and any artifact the sub-agent&#x27;s result led the head to save.</td></tr><tr><td>see what a sub-agent did internally</td><td><strong>Not on-device.</strong> Only the final reply text crosses the wire. The full internal transcript (tool calls, thinking) exists provider-side - Anthropic&#x27;s events API could stream it, but the device deliberately requests only three event types. Capturing it is a documented follow-up.</td></tr></tbody></table>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="what-is-persisted-where">What is persisted, where<a href="#what-is-persisted-where" class="hash-link" aria-label="Direct link to What is persisted, where" title="Direct link to What is persisted, where" translate="no">​</a></h2>
+<p><strong>There is no SQL database.</strong> (SQLite was evaluated and retired; the append-log
+episodic store is the system of record. The one <code>sqlite3</code> in the repo is the
+battery-lab&#x27;s host-side tool, not firmware.)</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>data</th><th>store</th><th>survives reboot</th></tr></thead><tbody><tr><td>active job records (tag, provider jobId, model, chat, state)</td><td><strong>NVS</strong> namespace <code>agjournal</code>, 6 slots, ~200 B each</td><td>yes - the device re-attaches and resumes polling (anthropic/openai only; mistral/custom caches are RAM)</td></tr><tr><td>spawn + result trace rows (<code>ev:spawn</code> / <code>ev:subresult</code>, the glass-box disclosure)</td><td>episodic store, the <strong>spawning chat&#x27;s</strong> session, kind=log</td><td>yes (SD day-streams)</td></tr><tr><td>the sub-agent&#x27;s final reply</td><td>16 KB envelope → 3500 char fresh result → the synthesis turn&#x27;s reply + anything it <code>mem_write</code>s; 512-char excerpt in the <code>ev:subresult</code> row</td><td>via episodic / vector memory</td></tr><tr><td>the sub-agent&#x27;s internal transcript</td><td><strong>not stored</strong> - provider-side only</td><td>-</td></tr><tr><td>pending spawn queue, fresh results awaiting synthesis</td><td>RAM</td><td>no - lost on reboot (results already delivered per-job survive as chat messages)</td></tr></tbody></table>
+<p><strong>No-SD degradation</strong> (same tiering as everything else,
+<a class="" href="/guides/orchestrator-storage">orchestrator-storage.md</a>): episodic falls back to a
+500-message RAM ring + a LittleFS whole-blob (so recent context survives, deep
+history doesn&#x27;t); vector memory caps 5000 → 400 with a flash-floor guard; the
+glass-box <strong>trace rows stop entirely</strong> while the SD is absent or demoted
+(<code>traceActive()</code> requires a live SD) - device-event timeline rows keep writing.
+A mid-run SD loss demotes seamlessly (debounced 2-fail/2-pass) and promotes back
+on recovery; the current conversation&#x27;s working set stays in the PSRAM ring
+throughout.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="inspecting-it-live">Inspecting it live<a href="#inspecting-it-live" class="hash-link" aria-label="Direct link to Inspecting it live" title="Direct link to Inspecting it live" translate="no">​</a></h2>
+<ul>
+<li class="">Web chat → the &quot;⚙ … sub-agent events&quot; disclosure under an assistant bubble -
+the spawn brief (task) and terminal result rows.</li>
+<li class=""><code>memory.episodic</code> tool or <code>GET /api/mem/episodic?kind=log</code> - the same rows,
+filterable by <code>since_hours</code>/<code>before_hours</code>.</li>
+<li class=""><code>[ACTIVE SESSIONS]</code> in any turn (or the web Sessions tab) - live state.</li>
+<li class=""><code>/api/lastturn</code> - whether the last head turn spawned anything (section 3, the
+raw <code>orch_turn</code> JSON&#x27;s <code>session_ops</code>).</li>
+</ul></div><footer class="theme-doc-footer docusaurus-mt-lg"><div class="row margin-top--sm theme-doc-footer-edit-meta-row"><div class="col noPrint_WFHX"><a href="https://github.com/ristllin/Nimbus/blob/main/docs/sub-sessions.md" target="_blank" rel="noopener noreferrer" class="theme-edit-this-page"><svg fill="currentColor" height="20" width="20" viewBox="0 0 40 40" class="iconEdit_Z9Sw" aria-hidden="true"><g><path d="m34.5 11.7l-3 3.1-6.3-6.3 3.1-3q0.5-0.5 1.2-0.5t1.1 0.5l3.9 3.9q0.5 0.4 0.5 1.1t-0.5 1.2z m-29.5 17.1l18.4-18.5 6.3 6.3-18.4 18.4h-6.3v-6.2z"></path></g></svg>Edit this page</a></div><div class="col lastUpdated_JAkA"></div></div></footer></article><nav class="docusaurus-mt-lg pagination-nav" aria-label="Docs pages"><a class="pagination-nav__link pagination-nav__link--prev" href="/guides/orchestrator-storage"><div class="pagination-nav__sublabel">Previous</div><div class="pagination-nav__label">Storage tiering</div></a><a class="pagination-nav__link pagination-nav__link--next" href="/guides/harness"><div class="pagination-nav__sublabel">Next</div><div class="pagination-nav__label">Harness</div></a></nav></div></div><div class="col col--3"><div class="tableOfContents_bqdL thin-scrollbar theme-doc-toc-desktop"><ul class="table-of-contents table-of-contents__left-border"><li><a href="#the-models-surface" class="table-of-contents__link toc-highlight">The model&#39;s surface</a></li><li><a href="#throughput---the-honest-capacity-model" class="table-of-contents__link toc-highlight">Throughput - the honest capacity model</a></li><li><a href="#the-brief---the-exact-prompt-a-sub-agent-receives" class="table-of-contents__link toc-highlight">The brief - the exact prompt a sub-agent receives</a></li><li><a href="#what-a-spawn-can-carry" class="table-of-contents__link toc-highlight">What a spawn can carry</a></li><li><a href="#what-a-sub-agent-can-and-cannot-do---the-decomposition-rule" class="table-of-contents__link toc-highlight">What a sub-agent can and cannot do - the decomposition rule</a></li><li><a href="#providermodel-resolution" class="table-of-contents__link toc-highlight">Provider/model resolution</a></li><li><a href="#the-wire-per-backend" class="table-of-contents__link toc-highlight">The wire, per backend</a></li><li><a href="#results---how-output-reaches-you" class="table-of-contents__link toc-highlight">Results - how output reaches you</a></li><li><a href="#what-the-head-can-and-cannot-do" class="table-of-contents__link toc-highlight">What the head can and cannot do</a></li><li><a href="#what-is-persisted-where" class="table-of-contents__link toc-highlight">What is persisted, where</a></li><li><a href="#inspecting-it-live" class="table-of-contents__link toc-highlight">Inspecting it live</a></li></ul></div></div></div></div></main></div></div></div><footer class="theme-layout-footer footer footer--dark"><div class="container container-fluid"><div class="row footer__links"><div class="theme-layout-footer-column col footer__col"><div class="footer__title">Docs</div><ul class="footer__items clean-list"><li class="footer__item"><a class="footer__link-item" href="/quick-start/what-you-need">Quick Start</a></li><li class="footer__item"><a class="footer__link-item" href="/guides/hardware-bom">Bill of materials</a></li><li class="footer__item"><a class="footer__link-item" href="/getting-started/webui-reference">Web UI reference</a></li></ul></div><div class="theme-layout-footer-column col footer__col"><div class="footer__title">Reference</div><ul class="footer__items clean-list"><li class="footer__item"><a class="footer__link-item" href="/reference/config-and-nvs">Config &amp; NVS</a></li><li class="footer__item"><a class="footer__link-item" href="/reference/tool-catalog">Tool catalog</a></li><li class="footer__item"><a class="footer__link-item" href="/reference/turn-contract">Turn contract</a></li><li class="footer__item"><a class="footer__link-item" href="/reference/changelog">Changelog</a></li></ul></div><div class="theme-layout-footer-column col footer__col"><div class="footer__title">More</div><ul class="footer__items clean-list"><li class="footer__item"><a href="https://github.com/ristllin/Nimbus" target="_blank" rel="noopener noreferrer" class="footer__link-item">GitHub<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li></ul></div></div><div class="footer__bottom text--center"><div class="footer__copyright">Nimbus - source-available, free for noncommercial use (PolyForm-NC / CC BY-NC-SA). Built with Docusaurus.</div></div></div></footer></div>
+</body>
+</html>

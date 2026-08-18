@@ -1,0 +1,709 @@
+<!doctype html>
+<html lang="en" dir="ltr" class="docs-wrapper plugin-docs plugin-id-default docs-version-current docs-doc-page docs-doc-id-reference/tools-and-commands" data-has-hydrated="false">
+<head>
+<meta charset="UTF-8">
+<meta name="generator" content="Docusaurus v3.10.2">
+<title data-rh="true">Tools &amp; Commands | Nimbus</title><meta data-rh="true" name="viewport" content="width=device-width,initial-scale=1"><meta data-rh="true" name="twitter:card" content="summary_large_image"><meta data-rh="true" property="og:image" content="https://docs.cumulo-nimbus.ai/img/social-card.png"><meta data-rh="true" name="twitter:image" content="https://docs.cumulo-nimbus.ai/img/social-card.png"><meta data-rh="true" property="og:url" content="https://docs.cumulo-nimbus.ai/reference/tools-and-commands"><meta data-rh="true" property="og:locale" content="en"><meta data-rh="true" name="docusaurus_locale" content="en"><meta data-rh="true" name="docsearch:language" content="en"><meta data-rh="true" name="docusaurus_version" content="current"><meta data-rh="true" name="docusaurus_tag" content="docs-default-current"><meta data-rh="true" name="docsearch:version" content="current"><meta data-rh="true" name="docsearch:docusaurus_tag" content="docs-default-current"><meta data-rh="true" property="og:title" content="Tools &amp; Commands | Nimbus"><meta data-rh="true" name="description" content="Migrated from docs/tools-and-commands.md - the canonical source lives in the repo."><meta data-rh="true" property="og:description" content="Migrated from docs/tools-and-commands.md - the canonical source lives in the repo."><link data-rh="true" rel="icon" href="/img/favicon.svg"><link data-rh="true" rel="canonical" href="https://docs.cumulo-nimbus.ai/reference/tools-and-commands"><link data-rh="true" rel="alternate" href="https://docs.cumulo-nimbus.ai/reference/tools-and-commands" hreflang="en"><link data-rh="true" rel="alternate" href="https://docs.cumulo-nimbus.ai/reference/tools-and-commands" hreflang="x-default"><script data-rh="true" type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Tools & commands","item":"https://docs.cumulo-nimbus.ai/reference/tools-and-commands"}]}</script><link rel="stylesheet" href="/assets/css/styles.5ae419b2.css">
+<script src="/assets/js/runtime~main.e74ebefa.js" defer="defer"></script>
+<script src="/assets/js/main.92f144b6.js" defer="defer"></script>
+</head>
+<body>
+<svg style="display: none;"><defs>
+<symbol id="theme-svg-external-link" viewBox="0 0 24 24"><path fill="currentColor" d="M21 13v10h-21v-19h12v2h-10v15h17v-8h2zm3-12h-10.988l4.035 4-6.977 7.07 2.828 2.828 6.977-7.07 4.125 4.172v-11z"/></symbol>
+</defs></svg>
+<script>!function(){var t=function(){try{return new URLSearchParams(window.location.search).get("docusaurus-theme")}catch(t){}}()||function(){try{return window.localStorage.getItem("theme")}catch(t){}}();document.documentElement.setAttribute("data-theme",t||(window.matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light")),document.documentElement.setAttribute("data-theme-choice",t||"system")}(),function(){try{const c=new URLSearchParams(window.location.search).entries();for(var[t,e]of c)if(t.startsWith("docusaurus-data-")){var a=t.replace("docusaurus-data-","data-");document.documentElement.setAttribute(a,e)}}catch(t){}}()</script><div id="__docusaurus"><div role="region" aria-label="Skip to main content"><a class="skipToContent_fXgn" href="#__docusaurus_skipToContent_fallback">Skip to main content</a></div><nav aria-label="Main" class="theme-layout-navbar navbar navbar--fixed-top"><div class="navbar__inner"><div class="theme-layout-navbar-left navbar__items"><button aria-label="Toggle navigation bar" aria-expanded="false" class="navbar__toggle clean-btn" type="button"><svg width="30" height="30" viewBox="0 0 30 30" aria-hidden="true"><path stroke="currentColor" stroke-linecap="round" stroke-miterlimit="10" stroke-width="2" d="M4 7h22M4 15h22M4 23h22"></path></svg></button><a class="navbar__brand" href="/"><div class="navbar__logo"><img src="/img/logo.svg" alt="Nimbus" class="themedComponent_mlkZ themedComponent--light_NVdE"><img src="/img/logo.svg" alt="Nimbus" class="themedComponent_mlkZ themedComponent--dark_xIcU"></div><b class="navbar__title text--truncate">Nimbus</b></a><a class="navbar__item navbar__link" href="/quick-start/what-you-need">Get started</a><a class="navbar__item navbar__link" href="/flash">Flash</a></div><div class="theme-layout-navbar-right navbar__items navbar__items--right"><a href="https://github.com/ristllin/Nimbus" target="_blank" rel="noopener noreferrer" class="navbar__item navbar__link">GitHub<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a><div class="toggle_vylO colorModeToggle_DEke"><button class="clean-btn toggleButton_gllP toggleButtonDisabled_aARS" type="button" disabled="" title="system mode" aria-label="Switch between dark and light mode (currently system mode)"><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP lightToggleIcon_pyhR"><path fill="currentColor" d="M12,9c1.65,0,3,1.35,3,3s-1.35,3-3,3s-3-1.35-3-3S10.35,9,12,9 M12,7c-2.76,0-5,2.24-5,5s2.24,5,5,5s5-2.24,5-5 S14.76,7,12,7L12,7z M2,13l2,0c0.55,0,1-0.45,1-1s-0.45-1-1-1l-2,0c-0.55,0-1,0.45-1,1S1.45,13,2,13z M20,13l2,0c0.55,0,1-0.45,1-1 s-0.45-1-1-1l-2,0c-0.55,0-1,0.45-1,1S19.45,13,20,13z M11,2v2c0,0.55,0.45,1,1,1s1-0.45,1-1V2c0-0.55-0.45-1-1-1S11,1.45,11,2z M11,20v2c0,0.55,0.45,1,1,1s1-0.45,1-1v-2c0-0.55-0.45-1-1-1C11.45,19,11,19.45,11,20z M5.99,4.58c-0.39-0.39-1.03-0.39-1.41,0 c-0.39,0.39-0.39,1.03,0,1.41l1.06,1.06c0.39,0.39,1.03,0.39,1.41,0s0.39-1.03,0-1.41L5.99,4.58z M18.36,16.95 c-0.39-0.39-1.03-0.39-1.41,0c-0.39,0.39-0.39,1.03,0,1.41l1.06,1.06c0.39,0.39,1.03,0.39,1.41,0c0.39-0.39,0.39-1.03,0-1.41 L18.36,16.95z M19.42,5.99c0.39-0.39,0.39-1.03,0-1.41c-0.39-0.39-1.03-0.39-1.41,0l-1.06,1.06c-0.39,0.39-0.39,1.03,0,1.41 s1.03,0.39,1.41,0L19.42,5.99z M7.05,18.36c0.39-0.39,0.39-1.03,0-1.41c-0.39-0.39-1.03-0.39-1.41,0l-1.06,1.06 c-0.39,0.39-0.39,1.03,0,1.41s1.03,0.39,1.41,0L7.05,18.36z"></path></svg><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP darkToggleIcon_wfgR"><path fill="currentColor" d="M9.37,5.51C9.19,6.15,9.1,6.82,9.1,7.5c0,4.08,3.32,7.4,7.4,7.4c0.68,0,1.35-0.09,1.99-0.27C17.45,17.19,14.93,19,12,19 c-3.86,0-7-3.14-7-7C5,9.07,6.81,6.55,9.37,5.51z M12,3c-4.97,0-9,4.03-9,9s4.03,9,9,9s9-4.03,9-9c0-0.46-0.04-0.92-0.1-1.36 c-0.98,1.37-2.58,2.26-4.4,2.26c-2.98,0-5.4-2.42-5.4-5.4c0-1.81,0.89-3.42,2.26-4.4C12.92,3.04,12.46,3,12,3L12,3z"></path></svg><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP systemToggleIcon_QzmC"><path fill="currentColor" d="m12 21c4.971 0 9-4.029 9-9s-4.029-9-9-9-9 4.029-9 9 4.029 9 9 9zm4.95-13.95c1.313 1.313 2.05 3.093 2.05 4.95s-0.738 3.637-2.05 4.95c-1.313 1.313-3.093 2.05-4.95 2.05v-14c1.857 0 3.637 0.737 4.95 2.05z"></path></svg></button></div><div class="navbarSearchContainer_Bca1"></div></div></div><div role="presentation" class="navbar-sidebar__backdrop"></div></nav><div id="__docusaurus_skipToContent_fallback" class="theme-layout-main main-wrapper mainWrapper_z2l0"><div class="docsWrapper_hBAB"><button aria-label="Scroll back to top" class="clean-btn theme-back-to-top-button backToTopButton_sjWU" type="button"></button><div class="docRoot_UBD9"><aside class="theme-doc-sidebar-container docSidebarContainer_YfHR"><div class="sidebarViewport_aRkj"><div class="sidebar_njMd"><nav aria-label="Docs sidebar" class="menu thin-scrollbar menu_SIkG"><ul class="theme-doc-sidebar-menu menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/"><span class="linkLabel_WmDU">Overview</span></a></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="true" href="/quick-start/what-you-need"><span class="categoryLinkLabel_W154">Quick Start</span></a></div><ul class="menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/what-you-need"><span class="linkLabel_WmDU">What you need</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/flash"><span class="linkLabel_WmDU">Flash the firmware</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/setup-wizard"><span class="linkLabel_WmDU">Set up the device</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/first-conversation"><span class="linkLabel_WmDU">First conversation</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/notifier-quick-start"><span class="linkLabel_WmDU">Notifier quick start</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/getting-started/first-time-setup"><span class="linkLabel_WmDU">First-time setup</span></a></li></ul></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/guides/hardware"><span class="categoryLinkLabel_W154">Hardware Build</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/getting-started/webui-reference"><span class="categoryLinkLabel_W154">Using Nimbus</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/guides/architecture"><span class="categoryLinkLabel_W154">How It Works</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret menu__link--active" role="button" aria-expanded="true" href="/reference/config-and-nvs"><span class="categoryLinkLabel_W154">Reference</span></a></div><ul class="menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/reference/config-and-nvs"><span class="linkLabel_WmDU">Config &amp; NVS</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/reference/tool-catalog"><span class="linkLabel_WmDU">Tool catalog</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/reference/turn-contract"><span class="linkLabel_WmDU">Turn contract</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link menu__link--active" aria-current="page" tabindex="0" href="/reference/tools-and-commands"><span class="linkLabel_WmDU">Tools &amp; commands</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/reference/changelog"><span class="linkLabel_WmDU">Changelog</span></a></li></ul></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/contributing/development"><span class="categoryLinkLabel_W154">Forking &amp; Contributing</span></a></div></li></ul></nav></div></div></aside><main class="docMainContainer_TBSr"><div class="container padding-top--md padding-bottom--lg"><div class="row"><div class="col docItemCol_VOVn"><div class="docItemContainer_Djhp"><article><nav class="theme-doc-breadcrumbs breadcrumbsContainer_Z_bl" aria-label="Breadcrumbs"><ul class="breadcrumbs"><li class="breadcrumbs__item"><a aria-label="Home page" class="breadcrumbs__link" href="/"><svg viewBox="0 0 24 24" class="breadcrumbHomeIcon_YNFT"><path d="M10 19v-5h4v5c0 .55.45 1 1 1h3c.55 0 1-.45 1-1v-7h1.7c.46 0 .68-.57.33-.87L12.67 3.6c-.38-.34-.96-.34-1.34 0l-8.36 7.53c-.34.3-.13.87.33.87H5v7c0 .55.45 1 1 1h3c.55 0 1-.45 1-1z" fill="currentColor"></path></svg></a></li><li class="breadcrumbs__item"><span class="breadcrumbs__link">Reference</span></li><li class="breadcrumbs__item breadcrumbs__item--active"><span class="breadcrumbs__link">Tools &amp; commands</span></li></ul></nav><div class="tocCollapsible_ETCw theme-doc-toc-mobile tocMobile_ITEo"><button type="button" class="clean-btn tocCollapsibleButton_TO0P">On this page</button></div><div class="theme-doc-markdown markdown"><blockquote>
+<p>Sourced from <code>docs/tools-and-commands.md</code> in the firmware repo.</p>
+</blockquote>
+<header><h1>Tools &amp; Commands</h1></header>
+<p>The catalog of every script, build environment, console command, and remote
+owner command in the repository - what each one does and when you reach for it.</p>
+<p>Two audiences, one page:</p>
+<ul>
+<li class=""><strong>User tools</strong> - what you need to install, recover, and manage a device you
+own. Setting one up needs only these.</li>
+<li class=""><strong>Contributor tools</strong> - everything for working on the firmware itself:
+golden-image review, vector generators, CI gates, build environments, and
+the serial test console.</li>
+</ul>
+<p>All host scripts live in <code>tools/</code> and run with <code>python3</code> from the repository
+root unless noted. Most need only the standard library. For a one-line-per-tool
+quick index grouped by audience - and which scripts are load-bearing for CI or
+the build - see <code>tools/README.md</code>.</p>
+<p>These are workshop tools for people building or servicing boards - a device
+owner configures connectors, credentials, and everything else from the device&#x27;s
+web page (Capabilities → Connectors), never from this repository.</p>
+<p>All scripts live in <code>tools/</code> and run with <code>python3</code> from the repository root
+unless noted. Most need only the standard library.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="device-setup--recovery">Device setup &amp; recovery<a href="#device-setup--recovery" class="hash-link" aria-label="Direct link to Device setup &amp; recovery" title="Direct link to Device setup &amp; recovery" translate="no">​</a></h3>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Tool</th><th>What it does</th><th>When you need it</th></tr></thead><tbody><tr><td><code>setup_device.py</code></td><td>Guarded firmware installer over the UART port. Reads the board&#x27;s NVS, reports the immutable factory MAC, and requires that MAC to be typed back before writing anything. On a new board it also asks for the fitted display and operating mode, seeds those two settings, then installs production firmware. Never erases NVS or factory-resets a configured device.</td><td>Installing firmware on any board - especially a factory-fresh one, which can only be flashed through the UART port.</td></tr><tr><td><code>usb_reset.py</code></td><td>Programmatic unbrick for a wedged ESP32-S3 USB-serial port: a libusb bus-level reset, protocol-equivalent to unplugging and replugging the cable. Supports <code>--skip</code>, <code>--serial</code>, and <code>--all</code> to pick the right board when more than one is attached. Needs <code>pyusb</code> + Homebrew <code>libusb</code>.</td><td>Serial has gone silent and esptool cannot connect. Run this instead of physically replugging.</td></tr><tr><td><code>tcal_wizard.py</code></td><td>Touch calibration wizard for the TFT variant: prompts you to press each of four corners, samples the raw ADC, derives the axis-swap and orientation flags, applies the result over the <code>TCAL</code> console command, and verifies it. Needs an <code>[env:test]</code>-family build.</td><td>A touch panel where taps land away from where you aimed - which is otherwise indistinguishable from broken touch.</td></tr><tr><td><code>connectors_setup.py</code></td><td>Pushes connector credentials from the repository-root <code>.env</code> (gitignored) to a board via the token-gated <code>POST /api/connectors</code> upsert. Idempotent; never prints a secret. <code>--list</code> shows the board&#x27;s current connector state.</td><td>Configuring or re-configuring a board&#x27;s external connectors after a flash or NVS change.</td></tr></tbody></table>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="telegram-owner-commands">Telegram owner commands<a href="#telegram-owner-commands" class="hash-link" aria-label="Direct link to Telegram owner commands" title="Direct link to Telegram owner commands" translate="no">​</a></h3>
+<p>In Orchestrator mode the device answers a few fixed commands over Telegram
+before the model sees the message, so the owner can manage a deployed board
+without waiting on (or paying for) a turn. Every command below except <code>/help</code>
+is owner-only - an allow-listed member can converse but cannot run them - and
+each reply names the device and firmware so two boards sharing one bot are never
+confused.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Command</th><th>What it does</th></tr></thead><tbody><tr><td><code>/help</code> (or <code>/start</code>)</td><td>Greet and list the owner commands. Available to anyone who can chat with the bot.</td></tr><tr><td><code>/update</code></td><td>Install a pending firmware update.</td></tr><tr><td><code>/remind &lt;when&gt; &lt;what&gt;</code></td><td>Set a one-time reminder - e.g. <code>/remind 30m take the cake out</code>. <code>&lt;when&gt;</code> is a span (<code>45s</code>, <code>30m</code>, <code>2h</code>, <code>1d</code>; a bare number is minutes), 2 minutes to 7 days. At that time the assistant delivers the reminder in this chat. Cancel with <code>/loop deny &lt;id&gt;</code>.</td></tr><tr><td><code>/loops</code></td><td>List the device&#x27;s routines (and any reminders you&#x27;ve set).</td></tr><tr><td><code>/loop approve|deny|off|on &lt;id&gt;</code></td><td>Approve, remove, pause, or resume one routine.</td></tr><tr><td><code>/compact</code></td><td>Summarize this conversation into memory. Runs in the background.</td></tr><tr><td><code>/skill approve|deny &lt;id&gt;</code></td><td>Approve a saved skill so it can be used, or remove it.</td></tr></tbody></table>
+<p>A routine or skill the assistant creates on its own stays inactive until the
+owner approves it here (or from the web UI). The one exception is a one-time
+wakeup the assistant sets for itself (a single follow-up turn, minutes to days
+out): it fires once without approval, shows up in /loops like any routine, and
+can be cancelled the same way. Managing people, keys, and other settings stays
+web-only - see the web control surface, not the bot.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="contributor-tools">Contributor tools<a href="#contributor-tools" class="hash-link" aria-label="Direct link to Contributor tools" title="Direct link to Contributor tools" translate="no">​</a></h2>
+<p>Everything below is for working on the firmware or driving a bench board -
+everyday use of a device needs none of it.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="rendering--golden-image-review">Rendering &amp; golden-image review<a href="#rendering--golden-image-review" class="hash-link" aria-label="Direct link to Rendering &amp; golden-image review" title="Direct link to Rendering &amp; golden-image review" translate="no">​</a></h3>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Tool</th><th>What it does</th><th>When you need it</th></tr></thead><tbody><tr><td><code>golden.py</code></td><td>Converts the e-ink golden test buffers (296×128 1-bit framebuffers in <code>test/golden/*.bin</code>) to PNGs for human review, and pixel-diffs two buffers (differences in red, exit 1 on mismatch). Standard library only.</td><td>Reviewing or debugging a red e-ink golden test - <code>render</code> to look at a screen, <code>diff</code> to see exactly what changed.</td></tr><tr><td><code>tftpreview.py</code></td><td>The color counterpart of <code>golden.py</code> for the TFT golden suite (240×320 RGB565 buffers in <code>test/golden_tft/*.bin</code>). Adds <code>contact</code> (tile every blessed screen into one labelled sheet) and <code>regions</code> (overlay tap targets and fail on targets under the 44 px minimum or on overlaps).</td><td>Reviewing TFT screens after a layout change - <code>contact</code> shows the whole UI at a glance; <code>regions</code> catches the two bugs a pixel diff cannot see.</td></tr><tr><td><code>logo/gen_logo.py</code></td><td>Generates the Nimbus logo (the dotted teal ring) and every artifact derived from it: <code>assets/logo*.svg</code>, the website logo, favicon, social card, and the PROGMEM mark served at <code>GET /logo.svg</code>.</td><td>Any logo change. Edit the generator and re-run it - never hand-edit its outputs.</td></tr></tbody></table>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="test-vector--artifact-generators">Test-vector &amp; artifact generators<a href="#test-vector--artifact-generators" class="hash-link" aria-label="Direct link to Test-vector &amp; artifact generators" title="Direct link to Test-vector &amp; artifact generators" translate="no">​</a></h3>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Tool</th><th>What it does</th><th>When you need it</th></tr></thead><tbody><tr><td><code>gen_nsn_vectors.py</code></td><td>Regenerates the nsn wire-protocol test vectors from the reference encoder in the sibling <code>nsnotify</code> repository, writing <code>tools/nsn_vectors.json</code> and the embedded header for the native test suite.</td><td>Whenever the reference encoder in <code>nsnotify</code> changes - the device codec is byte-locked to it through these vectors.</td></tr><tr><td><code>gen_qr_vectors.py</code></td><td>Regenerates the QR known-answer vectors from Project Nayuki&#x27;s reference <code>qrcodegen</code> (the algorithm <code>lib/core/src/qr.cpp</code> reimplements), pinning the exact configuration the device uses. Needs <code>pip install qrcodegen</code>.</td><td>Whenever the QR vector list changes.</td></tr><tr><td><code>make_manifest.py</code></td><td>Builds and signs the OTA release manifest (ECDSA P-256 over a canonical message that must stay byte-identical to <code>nimbus::ota::buildSigMessage()</code> - the pairing is golden-tested). Also prints the unsigned message for cross-checks.</td><td>Used by the release workflow with the real signing key, and by <code>tests/hil/test_ota.py</code> with the committed test key. Run by hand only when debugging a signature mismatch.</td></tr><tr><td><code>git_version.py</code></td><td>PlatformIO extra script - injects <code>git describe</code> as the <code>NIMBUS_FW_BUILD</code> build id so <code>/api/state</code> pins the exact commit a running unit was flashed from.</td><td>Runs automatically on every build; nothing to invoke.</td></tr><tr><td><code>gen_docs_pack.py</code></td><td>Regenerates the embedded docs pack (<code>lib/core/include/nimbus/docs_pack_data.h</code>) from the curated docs the Orchestrator model can read via <code>docs.list</code> / <code>docs.search</code> / <code>docs.read</code>. The pack ships inside the firmware image, so OTA updates it.</td><td>After editing any curated file under <code>docs/</code> - the header is committed, so CI builds without python.</td></tr></tbody></table>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="ci-gates--consistency-checks">CI gates &amp; consistency checks<a href="#ci-gates--consistency-checks" class="hash-link" aria-label="Direct link to CI gates &amp; consistency checks" title="Direct link to CI gates &amp; consistency checks" translate="no">​</a></h3>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Tool</th><th>What it does</th><th>When you need it</th></tr></thead><tbody><tr><td><code>check_param_consumers.py</code></td><td>Fails the build if any editable settings parameter has no functional consumer in the code - a knob that appears in the menu and web UI but changes nothing.</td><td>Runs in CI. Run locally after adding or removing a parameter.</td></tr><tr><td><code>check_status_doc.py</code></td><td>Fails the build when the status→animation table in <code>docs/notifier-status-language.md</code> drifts from the code single-source (<code>lib/core/src/status_style.cpp</code>).</td><td>Runs in CI. Run locally after touching either side; edit the code first, then fix the doc.</td></tr><tr><td><code>webui_concat_check.py</code></td><td>Asserts the web UI fragment set (<code>include/web/ui_*.h</code>) re-concatenates into a well-formed page, and optionally byte-compares against a blessed snapshot (<code>--bless</code> after an intentional page change).</td><td>After any web UI fragment edit.</td></tr></tbody></table>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="hardware-validation--qa">Hardware validation &amp; QA<a href="#hardware-validation--qa" class="hash-link" aria-label="Direct link to Hardware validation &amp; QA" title="Direct link to Hardware validation &amp; QA" translate="no">​</a></h3>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Tool</th><th>What it does</th><th>When you need it</th></tr></thead><tbody><tr><td><code>nsn_send.py</code></td><td>End-to-end hardware validation: encodes nsn frames with the real broker encoder from <code>nsnotify</code> and sends them to a device over Bluetooth, optionally reading back the device&#x27;s debug status echo over serial. Needs <code>bleak</code> with a working macOS Bluetooth entitlement.</td><td>Proving the full broker→Bluetooth→device pipeline against real hardware.</td></tr><tr><td><code>ring_check.py</code></td><td>Quick LED-ring smoke test over serial: drives <code>LEDTEST</code> through the console and reports whether the ring data path acknowledges. Errors are console/port problems, not ring verdicts. Needs an <code>[env:test]</code>-family build.</td><td>A fast eyes-on check that the ring is being driven at all.</td></tr><tr><td><code>backup_device.py</code></td><td>Pulls a board&#x27;s user data - artifact-store files, the full vector DB, scratchpad, and state/usage snapshots - over the token-gated web API into a dated folder. Read-only (GETs only); provider keys and tokens are deliberately never exported.</td><td>Backing up a device whose SD card is a single point of failure, before a reflash or as routine insurance.</td></tr><tr><td><code>build_all.sh</code></td><td>Compiles every build environment and flag path in one command - a compile-only gate that proves each target still links. Never uploads or opens a serial port.</td><td>Before a release, or after touching flag-gated code that only some environments compile.</td></tr></tbody></table>
+<p>Board-specific bench scripts (a live connector-QA harness, the quality
+benchmark, panic-capture, and the connector-shape grid) live in the private
+<code>ops/</code> tree, not the public repo - they name bench boards and burn real provider
+credits, so they are maintainer-only.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="tool-subprojects">Tool subprojects<a href="#tool-subprojects" class="hash-link" aria-label="Direct link to Tool subprojects" title="Direct link to Tool subprojects" translate="no">​</a></h3>
+<p>Each of these is a self-contained project with its own README:</p>
+<ul>
+<li class=""><strong><code>tools/sounds/</code></strong> - the sound-pack pipeline: synthesizes the wordless tone
+set (<code>gen_tones.py</code>, seeded + reproducible), curates pools (<code>palette.py</code>),
+builds <code>dist/</code> + the manifest (<code>build_assets.py</code>), regenerates the embedded
+tier (<code>embed_basic.py</code> → <code>src/sfx/sfx_basic_data.h</code>) and the action→audio map
+(<code>gen_sfx_map.py</code> → <code>docs/sfx-map.md</code>). Edit the generators, re-run, never
+hand-edit outputs.</li>
+<li class=""><strong><code>tools/harness-lab/</code></strong> - runs the real agent harness on the Mac instead of
+the device, for fast iteration on agent behavior. See its <code>README.md</code> for the
+build and usage.</li>
+</ul>
+<p>The <strong>Battery Lab</strong> - the local dashboard (FastAPI + React) for running
+recorded, graphed, comparable battery drain experiments, with thermal protection
+and a device simulator - is its own project at
+<a href="https://github.com/ristllin/nimbus-battery-lab" target="_blank" rel="noopener noreferrer" class="">ristllin/nimbus-battery-lab</a>.
+It drives the firmware&#x27;s <code>DRAIN</code>/<code>STORAGE</code> console commands and the token-gated
+drain endpoints, which remain in this firmware.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="build-environments">Build environments<a href="#build-environments" class="hash-link" aria-label="Direct link to Build environments" title="Direct link to Build environments" translate="no">​</a></h3>
+<p>Firmware variants are PlatformIO environments in <code>platformio.ini</code>. Build with
+<code>pio run -e &lt;env&gt;</code>, install with <code>pio run -e &lt;env&gt; -t upload</code>. The comments in
+<code>platformio.ini</code> are the authoritative source; this table summarizes them.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Environment</th><th>What it is</th></tr></thead><tbody><tr><td><code>native</code></td><td>Host-side unit tests (Unity + golden images), no hardware needed: <code>pio test -e native</code>. Keep it at 100%.</td></tr><tr><td><code>esp32s3</code></td><td>Production firmware. Serial stays silent (power and flashing only); no test or debug code.</td></tr><tr><td><code>notifierdbg</code></td><td>Production firmware plus a device→host status echo over serial, for end-to-end Notifier validation.</td></tr><tr><td><code>test</code></td><td>Production firmware plus the serial test console (<code>NIMBUS_TEST</code>) - what the HIL harness drives. Never the flash target for a production unit.</td></tr><tr><td><code>testuart</code></td><td>Same as <code>test</code>, but the console lives on the UART USB-C port instead of the native USB port (which drops bytes on the V0.1 board).</td></tr><tr><td><code>bttest</code></td><td>Same as <code>test</code>, but advertises over Bluetooth as &quot;Nimbus-BT&quot; so a bench board is unambiguous next to a production &quot;Nimbus&quot;.</td></tr><tr><td><code>p2bringup</code></td><td>Standalone hardware bring-up sketch (no <code>main.cpp</code>).</td></tr><tr><td><code>beep</code></td><td>Minimal speaker diagnostic - isolates the amp and speaker from the full firmware.</td></tr><tr><td><code>mictest</code></td><td>Minimal I²S microphone bring-up - verifies the mic read path and concurrent speaker+mic loopback.</td></tr><tr><td><code>tftmin</code> / <code>tftmin-uart</code></td><td>The smallest program that puts anything on the TFT panel: init, one solid fill, nothing else. Exists to take every variable out of a blank-screen fault.</td></tr><tr><td><code>tfttouch</code> / <code>tfttouch-uart</code></td><td>Five on-screen buttons that prove display, touch, and calibration together - a swapped or mirrored axis is obvious with five buttons and invisible with one.</td></tr><tr><td><code>tftbringup</code> / <code>tftbringup-uart</code></td><td>Full TFT + touch bring-up: panel init, color order, backlight PWM, and raw touch coordinates, decoupled from the full firmware.</td></tr><tr><td><code>provision</code></td><td>Standalone serial network diagnostic (not first-time setup - it has no setup network or web UI).</td></tr><tr><td><code>provision-uart</code></td><td>UART-console variant used internally by <code>setup_device.py</code> to seed a new board&#x27;s display and operating mode.</td></tr></tbody></table>
+<p>The <code>-uart</code> variants exist because the DevKit has two USB-C ports: the native
+USB port and the UART port. A factory-fresh board can only be flashed through
+the UART port, and on some boards the native USB console drops bytes - the
+<code>-uart</code> environments put the console on the UART port so one cable can both
+flash and report.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="console-commands">Console commands<a href="#console-commands" class="hash-link" aria-label="Direct link to Console commands" title="Direct link to Console commands" translate="no">​</a></h3>
+<p>Builds in the <code>[env:test]</code> family compile in a serial command console
+(<code>src/test_console.cpp</code>). It exists so the HIL harness - and you, at a bench -
+can drive and observe the device without a camera or a finger. Production
+builds do not include it.</p>
+<p>Open the port carefully: opening a serial session resets the board, so hold one
+session open rather than reconnecting per command (see <code>tests/hil/device.py</code>).</p>
+<p>Commands grouped by purpose, one line each. Arguments in angle brackets.</p>
+<h4 class="anchor anchorTargetStickyNavbar_Vzrq" id="status--diagnostics">Status &amp; diagnostics<a href="#status--diagnostics" class="hash-link" aria-label="Direct link to Status &amp; diagnostics" title="Direct link to Status &amp; diagnostics" translate="no">​</a></h4>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Command</th><th>What it does</th></tr></thead><tbody><tr><td><code>PING</code></td><td>Liveness check.</td></tr><tr><td><code>STATUS</code></td><td>One-line device summary (firmware, mode, network, battery, faults, SFX tier).</td></tr><tr><td><code>RENDER?</code></td><td>What the screen, posture, and ring are composed to show - the harness&#x27;s camera substitute.</td></tr><tr><td><code>MENU?</code></td><td>The current settings-menu view.</td></tr><tr><td><code>LEDSTATE</code></td><td>What the LED driver is physically driving (raw frame layer vs a fallback pattern) - the physical counterpart of <code>RENDER?</code>.</td></tr><tr><td><code>LEDTEST</code></td><td>Eyes-on LED data-path test: cycles red, green, blue through the real driver.</td></tr><tr><td><code>RAWFRAME?</code></td><td>Whether the animator currently owns the ring via the raw frame path.</td></tr><tr><td><code>INPUTLOG on|off</code></td><td>Echo knob/button/touch events to serial.</td></tr><tr><td><code>SELFTEST [FULL]</code></td><td>Run the aggregated self-test (FULL adds the audible items).</td></tr><tr><td><code>FAULT &lt;cap&gt; &lt;on|off&gt;</code> / <code>FAULT?</code></td><td>Inject or clear a capability fault (sd, memory, mic, speaker, led, screen) to prove graceful degradation; query the mask.</td></tr><tr><td><code>SDCHECK</code></td><td>Probe SD card health and report the current storage tier.</td></tr><tr><td><code>TEST &lt;name&gt;</code></td><td>Pass a test name through to the board-support self-test.</td></tr><tr><td><code>REBOOT</code></td><td>Software restart - the only sanctioned way to restart from the host.</td></tr><tr><td><code>HANG</code></td><td>Deliberately hang the main loop to prove the watchdog recovers (~8 s).</td></tr><tr><td><code>MEMFILL &lt;epi|vec&gt; &lt;n&gt; [bytes]</code></td><td>Fill episodic or vector memory with test rows to exercise caps and pruning.</td></tr><tr><td><code>WEBTOK?</code></td><td>Print the device&#x27;s web access token (for the HIL harness).</td></tr></tbody></table>
+<h4 class="anchor anchorTargetStickyNavbar_Vzrq" id="orchestrator--memory">Orchestrator &amp; memory<a href="#orchestrator--memory" class="hash-link" aria-label="Direct link to Orchestrator &amp; memory" title="Direct link to Orchestrator &amp; memory" translate="no">​</a></h4>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Command</th><th>What it does</th></tr></thead><tbody><tr><td><code>TURN &lt;text&gt;</code></td><td>Run one live Orchestrator turn; the reply echoes to serial.</td></tr><tr><td><code>VOICE &lt;text&gt;</code></td><td>Inject a simulated voice transcript so the reply renders on-screen exactly like hold-to-talk - no microphone needed.</td></tr><tr><td><code>PROMPT?</code></td><td>Dump the last composed system prompt.</td></tr><tr><td><code>CTX? [chat]</code> / <code>COMPACT &lt;chat&gt;</code></td><td>Inspect a conversation&#x27;s context size; force compaction now.</td></tr><tr><td><code>EPIQ [@&lt;cursor&gt;] &lt;text&gt;</code></td><td>Run a cold episodic-memory query over deep history and time it; page further back by passing <code>@&lt;cursor&gt;</code> from the previous result.</td></tr><tr><td><code>DREAM</code></td><td>Fire the reserved maintenance-and-reflection loop immediately.</td></tr><tr><td><code>MODE &lt;0|1&gt;</code></td><td>Switch operating mode (0 = Notifier, 1 = Orchestrator); persists and restarts.</td></tr></tbody></table>
+<h4 class="anchor anchorTargetStickyNavbar_Vzrq" id="display--screen">Display &amp; screen<a href="#display--screen" class="hash-link" aria-label="Direct link to Display &amp; screen" title="Direct link to Display &amp; screen" translate="no">​</a></h4>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Command</th><th>What it does</th></tr></thead><tbody><tr><td><code>SCREEN &lt;eink|tft&gt;</code> / <code>SCREEN?</code></td><td>Set the display preference; report both the stored preference and the driver that actually bound.</td></tr><tr><td><code>SAVER [min]</code></td><td>Force the e-ink screensaver now, or set and persist its idle threshold (0 = off).</td></tr><tr><td><code>DEGHOST</code></td><td>Force the next e-ink refresh down the full de-ghost path (exercises the stuck-red-plane fix on demand).</td></tr><tr><td><code>TFTHEALTH?</code></td><td>TFT panel configuration check, heal count, and live backlight state.</td></tr><tr><td><code>TFTHZ [hz]</code></td><td>Sweep or set the panel SPI clock, measuring pixel-path errors at each step.</td></tr><tr><td><code>TFTFILL?</code></td><td>Push whole frames through the real blit path and read back the far corners - proves the pixel path with nobody looking at the glass.</td></tr><tr><td><code>TFTID?</code></td><td>Panel register readback over the shared MISO line.</td></tr><tr><td><code>TFTPWR?</code></td><td>Read the panel&#x27;s power/display-on register to tell &quot;powered and displaying&quot; from &quot;merely storing pixels&quot;.</td></tr><tr><td><code>TFTFLIP &lt;0|1&gt;</code></td><td>Which end of the landscape panel is up - decided by the mounting, so it is dialable live.</td></tr><tr><td><code>TFTBREAK</code></td><td>Drill: reset the panel behind the driver to reproduce the white screen on demand and prove the watchdog heals it.</td></tr><tr><td><code>PANELPROBE &lt;0|1&gt;</code></td><td>Enable or disable the panel health probe.</td></tr></tbody></table>
+<h4 class="anchor anchorTargetStickyNavbar_Vzrq" id="input---knob--touch">Input - knob &amp; touch<a href="#input---knob--touch" class="hash-link" aria-label="Direct link to Input - knob &amp; touch" title="Direct link to Input - knob &amp; touch" translate="no">​</a></h4>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Command</th><th>What it does</th></tr></thead><tbody><tr><td><code>ENC &lt;code&gt;</code></td><td>Inject a synthetic encoder event so the menu is driveable with no physical knob.</td></tr><tr><td><code>SW?</code></td><td>Raw debounced button level - isolates a physical-button fault from a decode fault.</td></tr><tr><td><code>TAP &lt;x&gt; &lt;y&gt; [HOLD]</code> / <code>TAPUP</code></td><td>Inject a synthetic tap (or press-and-hold, released by <code>TAPUP</code>) - the touch counterpart of <code>ENC</code>.</td></tr><tr><td><code>TOUCH?</code></td><td>Raw touch-controller state, for calibration.</td></tr><tr><td><code>TCAL [minX,maxX,minY,maxY[,flags]]</code></td><td>Read or set the touch calibration (<code>tcal_wizard.py</code> derives it for you).</td></tr><tr><td><code>TOUCHISO?</code></td><td>Read touch with the panel held in reset - isolates the two devices sharing the MISO line.</td></tr></tbody></table>
+<h4 class="anchor anchorTargetStickyNavbar_Vzrq" id="battery--power">Battery &amp; power<a href="#battery--power" class="hash-link" aria-label="Direct link to Battery &amp; power" title="Direct link to Battery &amp; power" translate="no">​</a></h4>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Command</th><th>What it does</th></tr></thead><tbody><tr><td><code>PROFILE &lt;0|1|2&gt;</code></td><td>Set the battery mode (Dark/Balanced/Full) through the same path the menu and web use.</td></tr><tr><td><code>BATTCAL</code></td><td>Anchor 100% to the current reading - the owner asserts the pack is full right now.</td></tr><tr><td><code>BATTRESET</code></td><td>Discard everything the battery model learned by observation (keeps the <code>BATTCAL</code> anchor). Needed after a drain campaign.</td></tr><tr><td><code>SLEEPMV [mv]</code></td><td>Read or set the low-battery deep-sleep threshold (0 = off). A safety knob: 0 disarms the protection persistently - restore the default the moment a pack is connected.</td></tr><tr><td><code>SLEEP</code></td><td>Enter low-battery deep sleep immediately to test the wake mechanics (knob rotation or the 5-minute timer wakes it; the USB console dies with it).</td></tr><tr><td><code>DRAIN on|off [deep]</code></td><td>Battery drain campaign load: pin the ring to a heavy solid-white draw; <code>deep</code> runs past the clean shutdown to the real cutoff.</td></tr><tr><td><code>STORAGE &lt;pct|off&gt;</code></td><td>Discharge to a storage charge level (~70%) and hold.</td></tr></tbody></table>
+<h4 class="anchor anchorTargetStickyNavbar_Vzrq" id="audio--media">Audio &amp; media<a href="#audio--media" class="hash-link" aria-label="Direct link to Audio &amp; media" title="Direct link to Audio &amp; media" translate="no">​</a></h4>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Command</th><th>What it does</th></tr></thead><tbody><tr><td><code>MICREC</code></td><td>Record 4 seconds, transcribe it, print the transcript.</td></tr><tr><td><code>SPKSAY &lt;text&gt;</code></td><td>Synthesize the text and play it on the speaker.</td></tr><tr><td><code>TTSTG &lt;text&gt;</code></td><td>Synthesize the text and send it to the owner as a Telegram audio message - audible even with a dead bench speaker.</td></tr><tr><td><code>TGSEND</code></td><td>Telegram document-send smoke test.</td></tr><tr><td><code>SFX &lt;slug&gt;</code> / <code>SFXVOL &lt;0-100&gt;</code></td><td>Play a sound effect by slug; set the master volume.</td></tr><tr><td><code>MEDIATEST</code></td><td>End-to-end test of the durable media path on the real SD card (write, capture, verify over HTTP).</td></tr></tbody></table>
+<h4 class="anchor anchorTargetStickyNavbar_Vzrq" id="network--bluetooth">Network &amp; Bluetooth<a href="#network--bluetooth" class="hash-link" aria-label="Direct link to Network &amp; Bluetooth" title="Direct link to Network &amp; Bluetooth" translate="no">​</a></h4>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Command</th><th>What it does</th></tr></thead><tbody><tr><td><code>WIFI &lt;ssid&gt;|&lt;pass&gt;</code></td><td>Store Wi-Fi credentials and join.</td></tr><tr><td><code>WIFISCAN</code></td><td>Scan and print what the radio can actually see.</td></tr><tr><td><code>WIFIKNOWN?</code></td><td>The saved-network list - names only, never a password.</td></tr><tr><td><code>WIFIRENAME &lt;old&gt;|&lt;new&gt;</code></td><td>Correct a mistyped network name while keeping its password.</td></tr><tr><td><code>WIFIAP [on|off]</code></td><td>Force the setup network reachable now (stops the station), or resume joining.</td></tr><tr><td><code>BLE?</code> / <code>BLEMAC?</code></td><td>Bluetooth advertising/connection state; the factory Bluetooth address (the ground truth for telling two boards apart).</td></tr><tr><td><code>BONDS?</code> / <code>FORGETBONDS</code></td><td>Bonded-central count and pairing state; erase all bonds.</td></tr><tr><td><code>NSNFEED &lt;hex&gt;</code></td><td>Feed a synthetic nsn frame through the same decoder path a real Bluetooth frame takes - drives the Notifier UI with no broker and no Bluetooth.</td></tr></tbody></table>
+<h4 class="anchor anchorTargetStickyNavbar_Vzrq" id="ota-updates">OTA updates<a href="#ota-updates" class="hash-link" aria-label="Direct link to OTA updates" title="Direct link to OTA updates" translate="no">​</a></h4>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Command</th><th>What it does</th></tr></thead><tbody><tr><td><code>OTA?</code></td><td>Current OTA state and pending update, if any.</td></tr><tr><td><code>OTACHECK</code></td><td>Poll the release feed now.</td></tr><tr><td><code>OTAAPPLY [dry] [force]</code></td><td>Apply the pending update (<code>dry</code> verifies without installing).</td></tr><tr><td><code>OTAURL &lt;url&gt;</code></td><td>Point the updater at a different manifest URL.</td></tr><tr><td><code>OTASIM arm &lt;ver&gt;</code></td><td>Drill: simulate an available update to exercise the whole approval-and-install flow.</td></tr></tbody></table>
+<p>For the full OTA story, see <a class="" href="/guides/ota">ota.md</a> and the operations runbook
+<a class="" href="/guides/ota-operations">ota-operations.md</a>.</p>
+<p>The device also answers a few fixed owner commands over Telegram - see
+<a href="#telegram-owner-commands" class="">Telegram owner commands</a> under User tools above.</p></div><footer class="theme-doc-footer docusaurus-mt-lg"><div class="row margin-top--sm theme-doc-footer-edit-meta-row"><div class="col noPrint_WFHX"><a href="https://github.com/ristllin/Nimbus/blob/main/docs/tools-and-commands.md" target="_blank" rel="noopener noreferrer" class="theme-edit-this-page"><svg fill="currentColor" height="20" width="20" viewBox="0 0 40 40" class="iconEdit_Z9Sw" aria-hidden="true"><g><path d="m34.5 11.7l-3 3.1-6.3-6.3 3.1-3q0.5-0.5 1.2-0.5t1.1 0.5l3.9 3.9q0.5 0.4 0.5 1.1t-0.5 1.2z m-29.5 17.1l18.4-18.5 6.3 6.3-18.4 18.4h-6.3v-6.2z"></path></g></svg>Edit this page</a></div><div class="col lastUpdated_JAkA"></div></div></footer></article><nav class="docusaurus-mt-lg pagination-nav" aria-label="Docs pages"><a class="pagination-nav__link pagination-nav__link--prev" href="/reference/turn-contract"><div class="pagination-nav__sublabel">Previous</div><div class="pagination-nav__label">Turn contract</div></a><a class="pagination-nav__link pagination-nav__link--next" href="/reference/changelog"><div class="pagination-nav__sublabel">Next</div><div class="pagination-nav__label">Changelog</div></a></nav></div></div><div class="col col--3"><div class="tableOfContents_bqdL thin-scrollbar theme-doc-toc-desktop"><ul class="table-of-contents table-of-contents__left-border"><li><a href="#device-setup--recovery" class="table-of-contents__link toc-highlight">Device setup &amp; recovery</a></li><li><a href="#telegram-owner-commands" class="table-of-contents__link toc-highlight">Telegram owner commands</a></li><li><a href="#contributor-tools" class="table-of-contents__link toc-highlight">Contributor tools</a><ul><li><a href="#rendering--golden-image-review" class="table-of-contents__link toc-highlight">Rendering &amp; golden-image review</a></li><li><a href="#test-vector--artifact-generators" class="table-of-contents__link toc-highlight">Test-vector &amp; artifact generators</a></li><li><a href="#ci-gates--consistency-checks" class="table-of-contents__link toc-highlight">CI gates &amp; consistency checks</a></li><li><a href="#hardware-validation--qa" class="table-of-contents__link toc-highlight">Hardware validation &amp; QA</a></li><li><a href="#tool-subprojects" class="table-of-contents__link toc-highlight">Tool subprojects</a></li><li><a href="#build-environments" class="table-of-contents__link toc-highlight">Build environments</a></li><li><a href="#console-commands" class="table-of-contents__link toc-highlight">Console commands</a></li></ul></li></ul></div></div></div></div></main></div></div></div><footer class="theme-layout-footer footer footer--dark"><div class="container container-fluid"><div class="row footer__links"><div class="theme-layout-footer-column col footer__col"><div class="footer__title">Docs</div><ul class="footer__items clean-list"><li class="footer__item"><a class="footer__link-item" href="/quick-start/what-you-need">Quick Start</a></li><li class="footer__item"><a class="footer__link-item" href="/guides/hardware-bom">Bill of materials</a></li><li class="footer__item"><a class="footer__link-item" href="/getting-started/webui-reference">Web UI reference</a></li></ul></div><div class="theme-layout-footer-column col footer__col"><div class="footer__title">Reference</div><ul class="footer__items clean-list"><li class="footer__item"><a class="footer__link-item" href="/reference/config-and-nvs">Config &amp; NVS</a></li><li class="footer__item"><a class="footer__link-item" href="/reference/tool-catalog">Tool catalog</a></li><li class="footer__item"><a class="footer__link-item" href="/reference/turn-contract">Turn contract</a></li><li class="footer__item"><a class="footer__link-item" href="/reference/changelog">Changelog</a></li></ul></div><div class="theme-layout-footer-column col footer__col"><div class="footer__title">More</div><ul class="footer__items clean-list"><li class="footer__item"><a href="https://github.com/ristllin/Nimbus" target="_blank" rel="noopener noreferrer" class="footer__link-item">GitHub<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li></ul></div></div><div class="footer__bottom text--center"><div class="footer__copyright">Nimbus - source-available, free for noncommercial use (PolyForm-NC / CC BY-NC-SA). Built with Docusaurus.</div></div></div></footer></div>
+</body>
+</html>

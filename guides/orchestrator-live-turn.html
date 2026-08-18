@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="en" dir="ltr" class="docs-wrapper plugin-docs plugin-id-default docs-version-current docs-doc-page docs-doc-id-guides/orchestrator-live-turn" data-has-hydrated="false">
+<head>
+<meta charset="UTF-8">
+<meta name="generator" content="Docusaurus v3.10.2">
+<title data-rh="true">Orchestrator live turn | Nimbus</title><meta data-rh="true" name="viewport" content="width=device-width,initial-scale=1"><meta data-rh="true" name="twitter:card" content="summary_large_image"><meta data-rh="true" property="og:image" content="https://docs.cumulo-nimbus.ai/img/social-card.png"><meta data-rh="true" name="twitter:image" content="https://docs.cumulo-nimbus.ai/img/social-card.png"><meta data-rh="true" property="og:url" content="https://docs.cumulo-nimbus.ai/guides/orchestrator-live-turn"><meta data-rh="true" property="og:locale" content="en"><meta data-rh="true" name="docusaurus_locale" content="en"><meta data-rh="true" name="docsearch:language" content="en"><meta data-rh="true" name="docusaurus_version" content="current"><meta data-rh="true" name="docusaurus_tag" content="docs-default-current"><meta data-rh="true" name="docsearch:version" content="current"><meta data-rh="true" name="docsearch:docusaurus_tag" content="docs-default-current"><meta data-rh="true" property="og:title" content="Orchestrator live turn | Nimbus"><meta data-rh="true" name="description" content="Migrated from docs/architecture/orchestrator-live-turn.md - the canonical source lives in the repo."><meta data-rh="true" property="og:description" content="Migrated from docs/architecture/orchestrator-live-turn.md - the canonical source lives in the repo."><link data-rh="true" rel="icon" href="/img/favicon.svg"><link data-rh="true" rel="canonical" href="https://docs.cumulo-nimbus.ai/guides/orchestrator-live-turn"><link data-rh="true" rel="alternate" href="https://docs.cumulo-nimbus.ai/guides/orchestrator-live-turn" hreflang="en"><link data-rh="true" rel="alternate" href="https://docs.cumulo-nimbus.ai/guides/orchestrator-live-turn" hreflang="x-default"><script data-rh="true" type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Live turn","item":"https://docs.cumulo-nimbus.ai/guides/orchestrator-live-turn"}]}</script><link rel="stylesheet" href="/assets/css/styles.5ae419b2.css">
+<script src="/assets/js/runtime~main.e74ebefa.js" defer="defer"></script>
+<script src="/assets/js/main.92f144b6.js" defer="defer"></script>
+</head>
+<body>
+<svg style="display: none;"><defs>
+<symbol id="theme-svg-external-link" viewBox="0 0 24 24"><path fill="currentColor" d="M21 13v10h-21v-19h12v2h-10v15h17v-8h2zm3-12h-10.988l4.035 4-6.977 7.07 2.828 2.828 6.977-7.07 4.125 4.172v-11z"/></symbol>
+</defs></svg>
+<script>!function(){var t=function(){try{return new URLSearchParams(window.location.search).get("docusaurus-theme")}catch(t){}}()||function(){try{return window.localStorage.getItem("theme")}catch(t){}}();document.documentElement.setAttribute("data-theme",t||(window.matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light")),document.documentElement.setAttribute("data-theme-choice",t||"system")}(),function(){try{const c=new URLSearchParams(window.location.search).entries();for(var[t,e]of c)if(t.startsWith("docusaurus-data-")){var a=t.replace("docusaurus-data-","data-");document.documentElement.setAttribute(a,e)}}catch(t){}}()</script><div id="__docusaurus"><div role="region" aria-label="Skip to main content"><a class="skipToContent_fXgn" href="#__docusaurus_skipToContent_fallback">Skip to main content</a></div><nav aria-label="Main" class="theme-layout-navbar navbar navbar--fixed-top"><div class="navbar__inner"><div class="theme-layout-navbar-left navbar__items"><button aria-label="Toggle navigation bar" aria-expanded="false" class="navbar__toggle clean-btn" type="button"><svg width="30" height="30" viewBox="0 0 30 30" aria-hidden="true"><path stroke="currentColor" stroke-linecap="round" stroke-miterlimit="10" stroke-width="2" d="M4 7h22M4 15h22M4 23h22"></path></svg></button><a class="navbar__brand" href="/"><div class="navbar__logo"><img src="/img/logo.svg" alt="Nimbus" class="themedComponent_mlkZ themedComponent--light_NVdE"><img src="/img/logo.svg" alt="Nimbus" class="themedComponent_mlkZ themedComponent--dark_xIcU"></div><b class="navbar__title text--truncate">Nimbus</b></a><a class="navbar__item navbar__link" href="/quick-start/what-you-need">Get started</a><a class="navbar__item navbar__link" href="/flash">Flash</a></div><div class="theme-layout-navbar-right navbar__items navbar__items--right"><a href="https://github.com/ristllin/Nimbus" target="_blank" rel="noopener noreferrer" class="navbar__item navbar__link">GitHub<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a><div class="toggle_vylO colorModeToggle_DEke"><button class="clean-btn toggleButton_gllP toggleButtonDisabled_aARS" type="button" disabled="" title="system mode" aria-label="Switch between dark and light mode (currently system mode)"><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP lightToggleIcon_pyhR"><path fill="currentColor" d="M12,9c1.65,0,3,1.35,3,3s-1.35,3-3,3s-3-1.35-3-3S10.35,9,12,9 M12,7c-2.76,0-5,2.24-5,5s2.24,5,5,5s5-2.24,5-5 S14.76,7,12,7L12,7z M2,13l2,0c0.55,0,1-0.45,1-1s-0.45-1-1-1l-2,0c-0.55,0-1,0.45-1,1S1.45,13,2,13z M20,13l2,0c0.55,0,1-0.45,1-1 s-0.45-1-1-1l-2,0c-0.55,0-1,0.45-1,1S19.45,13,20,13z M11,2v2c0,0.55,0.45,1,1,1s1-0.45,1-1V2c0-0.55-0.45-1-1-1S11,1.45,11,2z M11,20v2c0,0.55,0.45,1,1,1s1-0.45,1-1v-2c0-0.55-0.45-1-1-1C11.45,19,11,19.45,11,20z M5.99,4.58c-0.39-0.39-1.03-0.39-1.41,0 c-0.39,0.39-0.39,1.03,0,1.41l1.06,1.06c0.39,0.39,1.03,0.39,1.41,0s0.39-1.03,0-1.41L5.99,4.58z M18.36,16.95 c-0.39-0.39-1.03-0.39-1.41,0c-0.39,0.39-0.39,1.03,0,1.41l1.06,1.06c0.39,0.39,1.03,0.39,1.41,0c0.39-0.39,0.39-1.03,0-1.41 L18.36,16.95z M19.42,5.99c0.39-0.39,0.39-1.03,0-1.41c-0.39-0.39-1.03-0.39-1.41,0l-1.06,1.06c-0.39,0.39-0.39,1.03,0,1.41 s1.03,0.39,1.41,0L19.42,5.99z M7.05,18.36c0.39-0.39,0.39-1.03,0-1.41c-0.39-0.39-1.03-0.39-1.41,0l-1.06,1.06 c-0.39,0.39-0.39,1.03,0,1.41s1.03,0.39,1.41,0L7.05,18.36z"></path></svg><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP darkToggleIcon_wfgR"><path fill="currentColor" d="M9.37,5.51C9.19,6.15,9.1,6.82,9.1,7.5c0,4.08,3.32,7.4,7.4,7.4c0.68,0,1.35-0.09,1.99-0.27C17.45,17.19,14.93,19,12,19 c-3.86,0-7-3.14-7-7C5,9.07,6.81,6.55,9.37,5.51z M12,3c-4.97,0-9,4.03-9,9s4.03,9,9,9s9-4.03,9-9c0-0.46-0.04-0.92-0.1-1.36 c-0.98,1.37-2.58,2.26-4.4,2.26c-2.98,0-5.4-2.42-5.4-5.4c0-1.81,0.89-3.42,2.26-4.4C12.92,3.04,12.46,3,12,3L12,3z"></path></svg><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP systemToggleIcon_QzmC"><path fill="currentColor" d="m12 21c4.971 0 9-4.029 9-9s-4.029-9-9-9-9 4.029-9 9 4.029 9 9 9zm4.95-13.95c1.313 1.313 2.05 3.093 2.05 4.95s-0.738 3.637-2.05 4.95c-1.313 1.313-3.093 2.05-4.95 2.05v-14c1.857 0 3.637 0.737 4.95 2.05z"></path></svg></button></div><div class="navbarSearchContainer_Bca1"></div></div></div><div role="presentation" class="navbar-sidebar__backdrop"></div></nav><div id="__docusaurus_skipToContent_fallback" class="theme-layout-main main-wrapper mainWrapper_z2l0"><div class="docsWrapper_hBAB"><button aria-label="Scroll back to top" class="clean-btn theme-back-to-top-button backToTopButton_sjWU" type="button"></button><div class="docRoot_UBD9"><aside class="theme-doc-sidebar-container docSidebarContainer_YfHR"><div class="sidebarViewport_aRkj"><div class="sidebar_njMd"><nav aria-label="Docs sidebar" class="menu thin-scrollbar menu_SIkG"><ul class="theme-doc-sidebar-menu menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/"><span class="linkLabel_WmDU">Overview</span></a></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="true" href="/quick-start/what-you-need"><span class="categoryLinkLabel_W154">Quick Start</span></a></div><ul class="menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/what-you-need"><span class="linkLabel_WmDU">What you need</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/flash"><span class="linkLabel_WmDU">Flash the firmware</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/setup-wizard"><span class="linkLabel_WmDU">Set up the device</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/first-conversation"><span class="linkLabel_WmDU">First conversation</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/notifier-quick-start"><span class="linkLabel_WmDU">Notifier quick start</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/getting-started/first-time-setup"><span class="linkLabel_WmDU">First-time setup</span></a></li></ul></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/guides/hardware"><span class="categoryLinkLabel_W154">Hardware Build</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/getting-started/webui-reference"><span class="categoryLinkLabel_W154">Using Nimbus</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret menu__link--active" role="button" aria-expanded="true" href="/guides/architecture"><span class="categoryLinkLabel_W154">How It Works</span></a></div><ul class="menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/architecture"><span class="linkLabel_WmDU">Architecture</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/turn-anatomy"><span class="linkLabel_WmDU">Turn anatomy</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link menu__link--active" aria-current="page" tabindex="0" href="/guides/orchestrator-live-turn"><span class="linkLabel_WmDU">Live turn</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/orchestrator-world"><span class="linkLabel_WmDU">Orchestrator World</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/memory"><span class="linkLabel_WmDU">Memory</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/orchestrator-storage"><span class="linkLabel_WmDU">Storage tiering</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/sub-sessions"><span class="linkLabel_WmDU">Sub-sessions</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/harness"><span class="linkLabel_WmDU">Harness</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/provider-wire"><span class="linkLabel_WmDU">Provider wire</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/security"><span class="linkLabel_WmDU">Security</span></a></li></ul></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/reference/config-and-nvs"><span class="categoryLinkLabel_W154">Reference</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/contributing/development"><span class="categoryLinkLabel_W154">Forking &amp; Contributing</span></a></div></li></ul></nav></div></div></aside><main class="docMainContainer_TBSr"><div class="container padding-top--md padding-bottom--lg"><div class="row"><div class="col docItemCol_VOVn"><div class="docItemContainer_Djhp"><article><nav class="theme-doc-breadcrumbs breadcrumbsContainer_Z_bl" aria-label="Breadcrumbs"><ul class="breadcrumbs"><li class="breadcrumbs__item"><a aria-label="Home page" class="breadcrumbs__link" href="/"><svg viewBox="0 0 24 24" class="breadcrumbHomeIcon_YNFT"><path d="M10 19v-5h4v5c0 .55.45 1 1 1h3c.55 0 1-.45 1-1v-7h1.7c.46 0 .68-.57.33-.87L12.67 3.6c-.38-.34-.96-.34-1.34 0l-8.36 7.53c-.34.3-.13.87.33.87H5v7c0 .55.45 1 1 1h3c.55 0 1-.45 1-1z" fill="currentColor"></path></svg></a></li><li class="breadcrumbs__item"><span class="breadcrumbs__link">How It Works</span></li><li class="breadcrumbs__item breadcrumbs__item--active"><span class="breadcrumbs__link">Live turn</span></li></ul></nav><div class="tocCollapsible_ETCw theme-doc-toc-mobile tocMobile_ITEo"><button type="button" class="clean-btn tocCollapsibleButton_TO0P">On this page</button></div><div class="theme-doc-markdown markdown"><blockquote>
+<p>Sourced from <code>docs/architecture/orchestrator-live-turn.md</code> in the firmware repo.</p>
+</blockquote>
+<header><h1>Orchestrator Live-Turn Integration</h1></header>
+<p>How the Part B &quot;World&quot; memory - the vector store, scratchpad, episodic history,
+and the <code>memory.*</code>/<code>session.*</code> tools - is wired into the <strong>live LLM turn</strong>, so the
+orchestrator sees a composed World prompt, recalls and writes memories, and drives
+sub-sessions within a single conversational turn.</p>
+<p>This is the runtime that binds the portable engines to a real provider round-trip.
+For the engines and the context assembler themselves see
+<a class="" href="/guides/orchestrator-world">orchestrator-world.md</a>; for the field-by-field wire
+contract see <a class="" href="/reference/turn-contract">../reference/turn-contract.md</a>; for
+the tool surface see <a class="" href="/reference/tool-catalog">../reference/tool-catalog.md</a>.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="the-design-a-hybrid-turn-contract-not-a-function-calling-loop">The design: a hybrid turn contract, not a function-calling loop<a href="#the-design-a-hybrid-turn-contract-not-a-function-calling-loop" class="hash-link" aria-label="Direct link to The design: a hybrid turn contract, not a function-calling loop" title="Direct link to The design: a hybrid turn contract, not a function-calling loop" translate="no">​</a></h2>
+<p>A turn is still externally <strong>&quot;one message = one turn&quot;</strong> - the LLM is called once
+and returns one <code>orch_turn</code> JSON object. Memory is folded into that single call on
+two sides:</p>
+<ul>
+<li class=""><strong>Read side (automatic injection).</strong> Before the provider call, <code>runTurn</code>
+pre-composes the World system prompt via the host-tested <code>assembleContext()</code>:
+the immutable rules, directive, capability manifest, running-sessions digest,
+scratchpad, and top-K associative recall from <strong>one</strong> embed of the user text.
+No LLM round-trip is spent to obtain this context.</li>
+<li class=""><strong>Write side (optional turn arrays).</strong> The turn contract carries optional
+<code>mem_write[]</code> / <code>mem_query[]</code> / <code>session_ops[]</code> arrays. After the response is
+parsed, <code>applyTurn</code> dispatches them <strong>in-process</strong> through the existing
+<code>ToolRegistry</code> - again with no extra LLM round-trip. <code>mem_query</code> results are not
+returned inline; they are parked and echoed into the <em>next</em> turn&#x27;s inputs.</li>
+</ul>
+<p>Both sides run on the <code>tg_poll</code> turn task, which is off the main-loop watchdog, so
+a multi-second turn does not reboot the board.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="read-side---recall-then-assemble">Read side - recall then assemble<a href="#read-side---recall-then-assemble" class="hash-link" aria-label="Direct link to Read side - recall then assemble" title="Direct link to Read side - recall then assemble" translate="no">​</a></h2>
+<p><code>runTurn(inputs, chatId, userText)</code> composes context before choosing a host:</p>
+<ol>
+<li class="">
+<p><strong>Associative recall (one embed, fail-open).</strong> When <code>userText</code> is non-empty and
+free heap is at or above <code>ORCH_RECALL_MIN_HEAP</code> (52000 bytes, equal to the turn
+hard floor - the recall embed is a <em>second</em> TLS handshake that must fit ahead of
+the LLM call), <code>memory::recall(userText)</code> embeds the message once and runs a
+top-K cosine <code>search</code> over the VDB under the retrieval config. Synthesis turns
+(empty <code>userText</code>) skip recall. Any embed failure returns empty content and the
+turn proceeds - recall never blocks a reply.</p>
+</li>
+<li class="">
+<p><strong>Prompt assembly.</strong> <code>composeInstructions(recalled)</code> builds a <code>ContextInputs</code>
+and calls <code>assembleContext(ci, kContextBudgetMax)</code> (<code>kContextBudgetMax = 32768</code>).
+The composed prompt, in the assembler&#x27;s priority order, is:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Section</th><th>Source</th></tr></thead><tbody><tr><td>Immutable rules + output contract</td><td><code>ORCH_ROLE</code> (the <code>orch_turn</code> field spec)</td></tr><tr><td>Directive (+ <code>[RUNNING MEMORY]</code>)</td><td><code>g_mem.directive()</code> + <code>g_mem.model()</code></td></tr><tr><td><code>## CAPABILITIES</code></td><td><code>renderCapabilities(hw, memory::registry().manifest())</code></td></tr><tr><td><code>## RUNNING SESSIONS</code></td><td><code>renderSessions(sessionInfos())</code></td></tr><tr><td>Scratchpad</td><td><code>memory::scratchpad()</code></td></tr><tr><td><code>## RELEVANT MEMORIES</code></td><td>the recalled top-K bullets</td></tr><tr><td><code>## HOW YOUR MEMORY WORKS</code></td><td>the static <code>MEMORY_EXPLAINER</code></td></tr></tbody></table>
+<p>The capability manifest lists tools <strong>live from the MCP registry manifest</strong>, so
+it never drifts from what actually dispatches. The <code>hw</code> descriptor is mostly
+static (ring/e-ink/encoder/mic/speaker present; no battery/SD/BLE) with the
+Telegram capability read live from <code>telegram::enabled()</code>. The composed prompt is
+also stashed in <code>g_lastInstructions</code> so the <code>PROMPT?</code> console command can dump it
+without a provider round-trip.</p>
+</li>
+</ol>
+<p>The user/conversation text lives in <code>inputs</code> (separate from the system-prompt
+budget), so message length is preserved independently of the budget.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="write-side---the-optional-turn-arrays">Write side - the optional turn arrays<a href="#write-side---the-optional-turn-arrays" class="hash-link" aria-label="Direct link to Write side - the optional turn arrays" title="Direct link to Write side - the optional turn arrays" translate="no">​</a></h2>
+<p><code>parseTurn</code> accepts a turn whose only required fields are the three strings
+(<code>reply</code>/<code>memory</code>/<code>ask</code>). Every array is optional, and the live-integration arrays
+are parsed <strong>tolerantly</strong> - a malformed item is dropped, never a whole-turn error,
+so one slightly-off item can&#x27;t lose a good reply. Each array is capped to
+<code>kAgentMaxJobs</code> (6). <code>applyTurn</code> dispatches them after the model-memory update:</p>
+<ul>
+<li class=""><strong><code>mem_write[]</code></strong> - <code>{content, importance (clamped [0,1], default 0.5), permanent (default false)}</code>. Dispatched to <code>memory.write</code> (embed + store).
+<code>content</code> is byte-capped to <code>kMemModelMax</code> (1200). This is the <strong>only</strong> path that
+creates a durable associative memory - the model must ask for it explicitly.</li>
+<li class=""><strong><code>mem_query[]</code></strong> - search strings. Dispatched to <code>memory.search</code>; the hits are
+accumulated into <code>g_pendingMemResults</code> and injected into the next turn&#x27;s inputs
+as a <code>[MEMORY RESULTS]</code> block. This is the deferred-result pattern the sub-agent
+<code>[FRESH RESULTS]</code> channel already uses (<code>takeFreshResults</code>): the model asks in
+turn N and sees the answer in turn N+1, with no mid-turn network hop.</li>
+<li class=""><strong><code>session_ops[]</code></strong> - <code>{op, id, task, provider, model}</code> with <code>op</code> in
+<code>spawn|tell|poll|terminate|list</code>. <code>spawn</code> enqueues a sub-agent (the same enqueue
+path as the deprecated <code>spawn[]</code> array); <code>terminate</code> cancels the job named by
+<code>id</code>; <code>list</code> is a no-op because the running-sessions digest is already injected
+every turn. <code>tell</code>/<code>poll</code> are not supported on this fire-and-forget fabric - the
+adapter&#x27;s <code>answer()</code> only resumes a <code>NeedsInput</code> job, it cannot inject a
+follow-up user message into a live sub-agent conversation. Rather than fail
+silently, <code>applyTurn</code> feeds that boundary back through the <code>[MEMORY RESULTS]</code>
+channel so the model learns to use <code>spawn</code> + <code>[FRESH RESULTS]</code> instead.</li>
+</ul>
+<p>If any <code>mem_write</code> ran, vectors and the scratchpad are persisted once at the end of
+the dispatch. Writes run <strong>before</strong> <code>reply</code> is delivered, so a &quot;remember X, ok?&quot;
+turn stores the fact and then confirms it.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="why-not-a-provider-function-calling-loop">Why not a provider function-calling loop<a href="#why-not-a-provider-function-calling-loop" class="hash-link" aria-label="Direct link to Why not a provider function-calling loop" title="Direct link to Why not a provider function-calling loop" translate="no">​</a></h2>
+<p>The hybrid is a deliberate alternative to native tool-calling:</p>
+<ul>
+<li class=""><strong>Single-shot adapters.</strong> <code>openai_responses::orchTurn</code> and <code>orchTurnAnthropic</code>
+are both <code>(convId, instructions, inputs) -&gt; outJson</code>; neither sends a <code>tools[]</code>
+array nor handles <code>tool_calls</code>. A tool loop would be a large stateful rewrite of
+the one proven turn path, duplicated across two providers.</li>
+<li class=""><strong>Blocking-TLS embed cost.</strong> <code>embeddings::embed()</code> is a blocking TLS round-trip
+(1–3 s typical, up to ~20 s worst case). A mid-turn tool loop would add N
+sequential network hops per turn and stall the Telegram <code>getUpdates</code> long-poll
+the whole time. The hybrid does the one embed we control, up front,
+deterministically.</li>
+<li class=""><strong>Backward compatibility.</strong> Adding optional arrays is transparent - an old
+six-field turn still validates. Native tool-calling would change the request
+envelope on both providers.</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="episodic-auto-capture">Episodic auto-capture<a href="#episodic-auto-capture" class="hash-link" aria-label="Direct link to Episodic auto-capture" title="Direct link to Episodic auto-capture" translate="no">​</a></h2>
+<p>Memory has two capture paths with different triggers:</p>
+<ul>
+<li class=""><strong>Episodic history is automatic.</strong> Before a turn runs, the owner&#x27;s message is
+captured (<code>captureSession</code> + <code>captureMessage(&quot;user&quot;, …)</code>) so the history is
+durable and queryable even if the turn later fails; after the turn, the
+assistant&#x27;s <code>reply</code> and <code>ask</code> are captured. The store is an
+<code>InMemoryEpisodicStore</code> bounded to 500 messages and persisted whole-blob to
+LittleFS, queryable via <code>memory.episodic</code>.</li>
+<li class=""><strong>Associative (VDB) memory is explicit.</strong> The vector store is written <strong>only</strong> by
+an <code>mem_write[]</code> tool call - conversation is never auto-mirrored into the VDB.</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="concurrency---a-single-writer-on-the-turn-task">Concurrency - a single writer on the turn task<a href="#concurrency---a-single-writer-on-the-turn-task" class="hash-link" aria-label="Direct link to Concurrency - a single writer on the turn task" title="Direct link to Concurrency - a single writer on the turn task" translate="no">​</a></h2>
+<p>All memory state is mutated from exactly one task: the <code>tg_poll</code> turn task. The web
+and MCP surfaces never mutate <code>g_mem</code> directly. Instead they <strong>stage</strong> their intent
+via flags (<code>g_memClearReq</code>, <code>g_cfgReloadReq</code>), which the turn task drains through
+<code>drainStaged()</code> at the top of <code>handleMessage</code> and <code>pollJobs</code> - i.e. before the next
+turn uses them. So directive edits and memory clears take effect at the next turn
+boundary, on the writer task.</p>
+<p>Cross-task <strong>reads</strong> are made safe without a second lock: the model-memory string
+is mirrored into a fixed <code>g_memEcho</code> buffer (<code>strlcpy</code>, always NUL-terminated) that
+the AsyncTCP web task reads, so the worst case is torn <em>text</em>, never a dangling
+pointer across a realloc. Shared <code>Config</code> reads on the web/router side are
+serialized by the <code>ConfigLockGuard</code> spinlock (<code>portMUX_TYPE s_cfgMux</code>). The lock
+order, where both are held, is <strong>config → memory</strong>, matching the <code>ConfigLockGuard</code>
+precedent.</p>
+<p>Total concurrent TLS is bounded by the <code>tls_arbiter</code> work slot: Telegram holds its
+own persistent session and every other TLS user (turn, dispatch, poll, STT, TTS,
+media upload) must <code>acquireWork</code> before opening a <code>WiFiClientSecure</code> and release it
+immediately after close - so the single mbedTLS arena never holds more than two
+resident sessions.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="psram-backed-mbedtls---the-unblock-for-every-live-turn">PSRAM-backed mbedTLS - the unblock for every live turn<a href="#psram-backed-mbedtls---the-unblock-for-every-live-turn" class="hash-link" aria-label="Direct link to PSRAM-backed mbedTLS - the unblock for every live turn" title="Direct link to PSRAM-backed mbedTLS - the unblock for every live turn" translate="no">​</a></h2>
+<p><code>ESP.getFreeHeap()</code> reports <strong>internal</strong> RAM only: ~218 KB at boot but ~63 KB by
+turn time in Orchestrator mode once Wi-Fi, the web server, the World-memory
+subsystem, and the always-on turn task are up. A single mbedTLS handshake wants
+~40 KB contiguous and was failing with <code>-0x7F00</code> (<code>MBEDTLS_ERR_..._ALLOC_FAILED</code>)
+at ~50 KB.</p>
+<p>The S3&#x27;s 8 MB PSRAM is not in the default malloc pool, so at startup - guarded by
+<code>ESP.getPsramSize() &gt; 0</code> - the firmware installs a PSRAM-backed mbedTLS allocator:</p>
+<div class="language-c codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#F8F8F2;--prism-background-color:#282A36"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-c codeBlock_bY9V thin-scrollbar" style="color:#F8F8F2;background-color:#282A36"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#F8F8F2"><span class="token function" style="color:rgb(80, 250, 123)">mbedtls_platform_set_calloc_free</span><span class="token punctuation" style="color:rgb(248, 248, 242)">(</span><span class="token plain"></span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">    </span><span class="token punctuation" style="color:rgb(248, 248, 242)">[</span><span class="token punctuation" style="color:rgb(248, 248, 242)">]</span><span class="token punctuation" style="color:rgb(248, 248, 242)">(</span><span class="token class-name">size_t</span><span class="token plain"> n</span><span class="token punctuation" style="color:rgb(248, 248, 242)">,</span><span class="token plain"> </span><span class="token class-name">size_t</span><span class="token plain"> sz</span><span class="token punctuation" style="color:rgb(248, 248, 242)">)</span><span class="token plain"> </span><span class="token operator">-&gt;</span><span class="token plain"> </span><span class="token keyword" style="color:rgb(189, 147, 249);font-style:italic">void</span><span class="token operator">*</span><span class="token plain"> </span><span class="token punctuation" style="color:rgb(248, 248, 242)">{</span><span class="token plain"> </span><span class="token keyword" style="color:rgb(189, 147, 249);font-style:italic">return</span><span class="token plain"> </span><span class="token function" style="color:rgb(80, 250, 123)">heap_caps_calloc</span><span class="token punctuation" style="color:rgb(248, 248, 242)">(</span><span class="token plain">n</span><span class="token punctuation" style="color:rgb(248, 248, 242)">,</span><span class="token plain"> sz</span><span class="token punctuation" style="color:rgb(248, 248, 242)">,</span><span class="token plain"> MALLOC_CAP_SPIRAM</span><span class="token punctuation" style="color:rgb(248, 248, 242)">)</span><span class="token punctuation" style="color:rgb(248, 248, 242)">;</span><span class="token plain"> </span><span class="token punctuation" style="color:rgb(248, 248, 242)">}</span><span class="token punctuation" style="color:rgb(248, 248, 242)">,</span><span class="token plain"></span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">    free</span><span class="token punctuation" style="color:rgb(248, 248, 242)">)</span><span class="token punctuation" style="color:rgb(248, 248, 242)">;</span><br></div></code></pre></div></div>
+<p>TLS record/session buffers are CPU-processed, never DMA, so external RAM is correct
+here; every driver DMA buffer keeps using the default internal allocator, untouched.
+This lifts the whole handshake off the scarce internal heap and unblocks every live
+turn - and recall&#x27;s second TLS handshake within a turn.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="voice-and-telegram-media-adapters">Voice and Telegram-media adapters<a href="#voice-and-telegram-media-adapters" class="hash-link" aria-label="Direct link to Voice and Telegram-media adapters" title="Direct link to Voice and Telegram-media adapters" translate="no">​</a></h2>
+<p>Speech and media share one uploader and a provider-configurable STT/TTS pair.</p>
+<p><strong>Shared multipart uploader (<code>http_multipart</code>).</strong> A tiny RFC-2388
+<code>multipart/form-data</code> POST over <code>WiFiClientSecure</code> that streams <strong>one</strong> file
+straight from LittleFS so a multi-KB audio/image upload never sits in internal heap.
+It is HTTP/1.0 <code>Connection: close</code> with the <code>Content-Length</code> computed up front from
+the field framing plus the on-disk file size. Its TLS buffers come from the PSRAM
+allocator above. It backs both the STT upload and Telegram <code>sendVoice</code>/<code>sendPhoto</code>/
+<code>sendDocument</code>.</p>
+<p><strong>STT (<code>stt::transcribe</code>).</strong> The provider is <code>store::sttProvider</code>, defaulting to
+<strong>Mistral Voxtral</strong> (<code>api.mistral.ai</code>, <code>voxtral-mini-latest</code>), with OpenAI
+selectable (<code>api.openai.com</code>, <code>gpt-4o-mini-transcribe</code>). Both expose
+<code>POST /v1/audio/transcriptions</code> as multipart and return <code>{&quot;text&quot;: …}</code>. Because
+<code>solide::audio::recordToFile</code> emits <strong>headerless</strong> 16-bit mono PCM, <code>stt::transcribePcm</code>
+wraps it in a canonical 44-byte-header WAV before upload. Transcription is
+fail-open: any failure returns <code>&quot;&quot;</code> and the caller nudges the owner to send text.</p>
+<p><strong>TTS (<code>tts::synthesizeToFile</code>).</strong> The provider is <code>store::ttsProvider</code>, defaulting
+to <strong>Mistral</strong> (<code>voxtral-mini-tts-latest</code>), with OpenAI selectable
+(<code>gpt-4o-mini-tts</code>); both use <code>POST /v1/audio/speech</code>, and the audio is streamed
+straight to a LittleFS file so a clip never sits in internal heap. The response
+shapes differ: OpenAI honors <code>response_format</code> (<code>wav</code>/<code>mp3</code>) and returns raw binary;
+Mistral ignores it and always returns MP3 as base64 inside <code>{&quot;audio_data&quot;: …}</code>,
+which is stream-decoded to the file. Since the device speaker plays WAV/PCM only,
+MP3 output is the <strong>Telegram-audio</strong> path, not an on-device readout.</p>
+<p><strong>Outbound media on the poll task (<code>sendMedia</code>).</strong> A send publishes a single
+pending-media slot under the <code>g_mediaMux</code> spinlock; the <code>tg_poll</code> task drains it via
+<code>drainMedia()</code> <strong>after</strong> closing the poll socket, so only one TLS session is ever
+resident (the single-TLS invariant). Kinds <code>document</code>/<code>photo</code>/<code>voice</code>/<code>audio</code> map to
+the Bot API <code>sendDocument</code>/<code>sendPhoto</code>/<code>sendVoice</code>/<code>sendAudio</code> methods.</p>
+<p><strong>Spoken reply path.</strong> In <code>applyTurn</code>, when a reply exists, <code>store::ttsEnabled()</code> is
+on, <code>tts::available()</code>, and the <code>chatId</code> is a real numeric Telegram chat (synthetic
+<code>&quot;serial&quot;</code>/<code>&quot;web&quot;</code> ids are skipped), the reply is synthesized to <code>/reply.mp3</code> and
+handed to <code>sendMedia(chatId, &quot;audio&quot;, …)</code> - Telegram audio is the audible path
+because the bench speaker is disconnected.</p></div><footer class="theme-doc-footer docusaurus-mt-lg"><div class="row margin-top--sm theme-doc-footer-edit-meta-row"><div class="col noPrint_WFHX"><a href="https://github.com/ristllin/Nimbus/blob/main/docs/architecture/orchestrator-live-turn.md" target="_blank" rel="noopener noreferrer" class="theme-edit-this-page"><svg fill="currentColor" height="20" width="20" viewBox="0 0 40 40" class="iconEdit_Z9Sw" aria-hidden="true"><g><path d="m34.5 11.7l-3 3.1-6.3-6.3 3.1-3q0.5-0.5 1.2-0.5t1.1 0.5l3.9 3.9q0.5 0.4 0.5 1.1t-0.5 1.2z m-29.5 17.1l18.4-18.5 6.3 6.3-18.4 18.4h-6.3v-6.2z"></path></g></svg>Edit this page</a></div><div class="col lastUpdated_JAkA"></div></div></footer></article><nav class="docusaurus-mt-lg pagination-nav" aria-label="Docs pages"><a class="pagination-nav__link pagination-nav__link--prev" href="/guides/turn-anatomy"><div class="pagination-nav__sublabel">Previous</div><div class="pagination-nav__label">Turn anatomy</div></a><a class="pagination-nav__link pagination-nav__link--next" href="/guides/orchestrator-world"><div class="pagination-nav__sublabel">Next</div><div class="pagination-nav__label">Orchestrator World</div></a></nav></div></div><div class="col col--3"><div class="tableOfContents_bqdL thin-scrollbar theme-doc-toc-desktop"><ul class="table-of-contents table-of-contents__left-border"><li><a href="#the-design-a-hybrid-turn-contract-not-a-function-calling-loop" class="table-of-contents__link toc-highlight">The design: a hybrid turn contract, not a function-calling loop</a></li><li><a href="#read-side---recall-then-assemble" class="table-of-contents__link toc-highlight">Read side - recall then assemble</a></li><li><a href="#write-side---the-optional-turn-arrays" class="table-of-contents__link toc-highlight">Write side - the optional turn arrays</a></li><li><a href="#why-not-a-provider-function-calling-loop" class="table-of-contents__link toc-highlight">Why not a provider function-calling loop</a></li><li><a href="#episodic-auto-capture" class="table-of-contents__link toc-highlight">Episodic auto-capture</a></li><li><a href="#concurrency---a-single-writer-on-the-turn-task" class="table-of-contents__link toc-highlight">Concurrency - a single writer on the turn task</a></li><li><a href="#psram-backed-mbedtls---the-unblock-for-every-live-turn" class="table-of-contents__link toc-highlight">PSRAM-backed mbedTLS - the unblock for every live turn</a></li><li><a href="#voice-and-telegram-media-adapters" class="table-of-contents__link toc-highlight">Voice and Telegram-media adapters</a></li></ul></div></div></div></div></main></div></div></div><footer class="theme-layout-footer footer footer--dark"><div class="container container-fluid"><div class="row footer__links"><div class="theme-layout-footer-column col footer__col"><div class="footer__title">Docs</div><ul class="footer__items clean-list"><li class="footer__item"><a class="footer__link-item" href="/quick-start/what-you-need">Quick Start</a></li><li class="footer__item"><a class="footer__link-item" href="/guides/hardware-bom">Bill of materials</a></li><li class="footer__item"><a class="footer__link-item" href="/getting-started/webui-reference">Web UI reference</a></li></ul></div><div class="theme-layout-footer-column col footer__col"><div class="footer__title">Reference</div><ul class="footer__items clean-list"><li class="footer__item"><a class="footer__link-item" href="/reference/config-and-nvs">Config &amp; NVS</a></li><li class="footer__item"><a class="footer__link-item" href="/reference/tool-catalog">Tool catalog</a></li><li class="footer__item"><a class="footer__link-item" href="/reference/turn-contract">Turn contract</a></li><li class="footer__item"><a class="footer__link-item" href="/reference/changelog">Changelog</a></li></ul></div><div class="theme-layout-footer-column col footer__col"><div class="footer__title">More</div><ul class="footer__items clean-list"><li class="footer__item"><a href="https://github.com/ristllin/Nimbus" target="_blank" rel="noopener noreferrer" class="footer__link-item">GitHub<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li></ul></div></div><div class="footer__bottom text--center"><div class="footer__copyright">Nimbus - source-available, free for noncommercial use (PolyForm-NC / CC BY-NC-SA). Built with Docusaurus.</div></div></div></footer></div>
+</body>
+</html>

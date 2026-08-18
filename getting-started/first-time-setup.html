@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="en" dir="ltr" class="docs-wrapper plugin-docs plugin-id-default docs-version-current docs-doc-page docs-doc-id-getting-started/first-time-setup" data-has-hydrated="false">
+<head>
+<meta charset="UTF-8">
+<meta name="generator" content="Docusaurus v3.10.2">
+<title data-rh="true">First-time setup | Nimbus</title><meta data-rh="true" name="viewport" content="width=device-width,initial-scale=1"><meta data-rh="true" name="twitter:card" content="summary_large_image"><meta data-rh="true" property="og:image" content="https://docs.cumulo-nimbus.ai/img/social-card.png"><meta data-rh="true" name="twitter:image" content="https://docs.cumulo-nimbus.ai/img/social-card.png"><meta data-rh="true" property="og:url" content="https://docs.cumulo-nimbus.ai/getting-started/first-time-setup"><meta data-rh="true" property="og:locale" content="en"><meta data-rh="true" name="docusaurus_locale" content="en"><meta data-rh="true" name="docsearch:language" content="en"><meta data-rh="true" name="docusaurus_version" content="current"><meta data-rh="true" name="docusaurus_tag" content="docs-default-current"><meta data-rh="true" name="docsearch:version" content="current"><meta data-rh="true" name="docsearch:docusaurus_tag" content="docs-default-current"><meta data-rh="true" property="og:title" content="First-time setup | Nimbus"><meta data-rh="true" name="description" content="Out-of-box setup for a Nimbus device: select its display and mode safely, then configure Bluetooth or Wi-Fi."><meta data-rh="true" property="og:description" content="Out-of-box setup for a Nimbus device: select its display and mode safely, then configure Bluetooth or Wi-Fi."><link data-rh="true" rel="icon" href="/img/favicon.svg"><link data-rh="true" rel="canonical" href="https://docs.cumulo-nimbus.ai/getting-started/first-time-setup"><link data-rh="true" rel="alternate" href="https://docs.cumulo-nimbus.ai/getting-started/first-time-setup" hreflang="en"><link data-rh="true" rel="alternate" href="https://docs.cumulo-nimbus.ai/getting-started/first-time-setup" hreflang="x-default"><script data-rh="true" type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"First-time setup","item":"https://docs.cumulo-nimbus.ai/getting-started/first-time-setup"}]}</script><link rel="stylesheet" href="/assets/css/styles.5ae419b2.css">
+<script src="/assets/js/runtime~main.e74ebefa.js" defer="defer"></script>
+<script src="/assets/js/main.92f144b6.js" defer="defer"></script>
+</head>
+<body>
+<svg style="display: none;"><defs>
+<symbol id="theme-svg-external-link" viewBox="0 0 24 24"><path fill="currentColor" d="M21 13v10h-21v-19h12v2h-10v15h17v-8h2zm3-12h-10.988l4.035 4-6.977 7.07 2.828 2.828 6.977-7.07 4.125 4.172v-11z"/></symbol>
+</defs></svg>
+<script>!function(){var t=function(){try{return new URLSearchParams(window.location.search).get("docusaurus-theme")}catch(t){}}()||function(){try{return window.localStorage.getItem("theme")}catch(t){}}();document.documentElement.setAttribute("data-theme",t||(window.matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light")),document.documentElement.setAttribute("data-theme-choice",t||"system")}(),function(){try{const c=new URLSearchParams(window.location.search).entries();for(var[t,e]of c)if(t.startsWith("docusaurus-data-")){var a=t.replace("docusaurus-data-","data-");document.documentElement.setAttribute(a,e)}}catch(t){}}()</script><div id="__docusaurus"><div role="region" aria-label="Skip to main content"><a class="skipToContent_fXgn" href="#__docusaurus_skipToContent_fallback">Skip to main content</a></div><nav aria-label="Main" class="theme-layout-navbar navbar navbar--fixed-top"><div class="navbar__inner"><div class="theme-layout-navbar-left navbar__items"><button aria-label="Toggle navigation bar" aria-expanded="false" class="navbar__toggle clean-btn" type="button"><svg width="30" height="30" viewBox="0 0 30 30" aria-hidden="true"><path stroke="currentColor" stroke-linecap="round" stroke-miterlimit="10" stroke-width="2" d="M4 7h22M4 15h22M4 23h22"></path></svg></button><a class="navbar__brand" href="/"><div class="navbar__logo"><img src="/img/logo.svg" alt="Nimbus" class="themedComponent_mlkZ themedComponent--light_NVdE"><img src="/img/logo.svg" alt="Nimbus" class="themedComponent_mlkZ themedComponent--dark_xIcU"></div><b class="navbar__title text--truncate">Nimbus</b></a><a class="navbar__item navbar__link" href="/quick-start/what-you-need">Get started</a><a class="navbar__item navbar__link" href="/flash">Flash</a></div><div class="theme-layout-navbar-right navbar__items navbar__items--right"><a href="https://github.com/ristllin/Nimbus" target="_blank" rel="noopener noreferrer" class="navbar__item navbar__link">GitHub<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a><div class="toggle_vylO colorModeToggle_DEke"><button class="clean-btn toggleButton_gllP toggleButtonDisabled_aARS" type="button" disabled="" title="system mode" aria-label="Switch between dark and light mode (currently system mode)"><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP lightToggleIcon_pyhR"><path fill="currentColor" d="M12,9c1.65,0,3,1.35,3,3s-1.35,3-3,3s-3-1.35-3-3S10.35,9,12,9 M12,7c-2.76,0-5,2.24-5,5s2.24,5,5,5s5-2.24,5-5 S14.76,7,12,7L12,7z M2,13l2,0c0.55,0,1-0.45,1-1s-0.45-1-1-1l-2,0c-0.55,0-1,0.45-1,1S1.45,13,2,13z M20,13l2,0c0.55,0,1-0.45,1-1 s-0.45-1-1-1l-2,0c-0.55,0-1,0.45-1,1S19.45,13,20,13z M11,2v2c0,0.55,0.45,1,1,1s1-0.45,1-1V2c0-0.55-0.45-1-1-1S11,1.45,11,2z M11,20v2c0,0.55,0.45,1,1,1s1-0.45,1-1v-2c0-0.55-0.45-1-1-1C11.45,19,11,19.45,11,20z M5.99,4.58c-0.39-0.39-1.03-0.39-1.41,0 c-0.39,0.39-0.39,1.03,0,1.41l1.06,1.06c0.39,0.39,1.03,0.39,1.41,0s0.39-1.03,0-1.41L5.99,4.58z M18.36,16.95 c-0.39-0.39-1.03-0.39-1.41,0c-0.39,0.39-0.39,1.03,0,1.41l1.06,1.06c0.39,0.39,1.03,0.39,1.41,0c0.39-0.39,0.39-1.03,0-1.41 L18.36,16.95z M19.42,5.99c0.39-0.39,0.39-1.03,0-1.41c-0.39-0.39-1.03-0.39-1.41,0l-1.06,1.06c-0.39,0.39-0.39,1.03,0,1.41 s1.03,0.39,1.41,0L19.42,5.99z M7.05,18.36c0.39-0.39,0.39-1.03,0-1.41c-0.39-0.39-1.03-0.39-1.41,0l-1.06,1.06 c-0.39,0.39-0.39,1.03,0,1.41s1.03,0.39,1.41,0L7.05,18.36z"></path></svg><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP darkToggleIcon_wfgR"><path fill="currentColor" d="M9.37,5.51C9.19,6.15,9.1,6.82,9.1,7.5c0,4.08,3.32,7.4,7.4,7.4c0.68,0,1.35-0.09,1.99-0.27C17.45,17.19,14.93,19,12,19 c-3.86,0-7-3.14-7-7C5,9.07,6.81,6.55,9.37,5.51z M12,3c-4.97,0-9,4.03-9,9s4.03,9,9,9s9-4.03,9-9c0-0.46-0.04-0.92-0.1-1.36 c-0.98,1.37-2.58,2.26-4.4,2.26c-2.98,0-5.4-2.42-5.4-5.4c0-1.81,0.89-3.42,2.26-4.4C12.92,3.04,12.46,3,12,3L12,3z"></path></svg><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP systemToggleIcon_QzmC"><path fill="currentColor" d="m12 21c4.971 0 9-4.029 9-9s-4.029-9-9-9-9 4.029-9 9 4.029 9 9 9zm4.95-13.95c1.313 1.313 2.05 3.093 2.05 4.95s-0.738 3.637-2.05 4.95c-1.313 1.313-3.093 2.05-4.95 2.05v-14c1.857 0 3.637 0.737 4.95 2.05z"></path></svg></button></div><div class="navbarSearchContainer_Bca1"></div></div></div><div role="presentation" class="navbar-sidebar__backdrop"></div></nav><div id="__docusaurus_skipToContent_fallback" class="theme-layout-main main-wrapper mainWrapper_z2l0"><div class="docsWrapper_hBAB"><button aria-label="Scroll back to top" class="clean-btn theme-back-to-top-button backToTopButton_sjWU" type="button"></button><div class="docRoot_UBD9"><aside class="theme-doc-sidebar-container docSidebarContainer_YfHR"><div class="sidebarViewport_aRkj"><div class="sidebar_njMd"><nav aria-label="Docs sidebar" class="menu thin-scrollbar menu_SIkG"><ul class="theme-doc-sidebar-menu menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/"><span class="linkLabel_WmDU">Overview</span></a></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret menu__link--active" role="button" aria-expanded="true" href="/quick-start/what-you-need"><span class="categoryLinkLabel_W154">Quick Start</span></a></div><ul class="menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/what-you-need"><span class="linkLabel_WmDU">What you need</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/flash"><span class="linkLabel_WmDU">Flash the firmware</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/setup-wizard"><span class="linkLabel_WmDU">Set up the device</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/first-conversation"><span class="linkLabel_WmDU">First conversation</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/notifier-quick-start"><span class="linkLabel_WmDU">Notifier quick start</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link menu__link--active" aria-current="page" tabindex="0" href="/getting-started/first-time-setup"><span class="linkLabel_WmDU">First-time setup</span></a></li></ul></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/guides/hardware"><span class="categoryLinkLabel_W154">Hardware Build</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/getting-started/webui-reference"><span class="categoryLinkLabel_W154">Using Nimbus</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/guides/architecture"><span class="categoryLinkLabel_W154">How It Works</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/reference/config-and-nvs"><span class="categoryLinkLabel_W154">Reference</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/contributing/development"><span class="categoryLinkLabel_W154">Forking &amp; Contributing</span></a></div></li></ul></nav></div></div></aside><main class="docMainContainer_TBSr"><div class="container padding-top--md padding-bottom--lg"><div class="row"><div class="col docItemCol_VOVn"><div class="docItemContainer_Djhp"><article><nav class="theme-doc-breadcrumbs breadcrumbsContainer_Z_bl" aria-label="Breadcrumbs"><ul class="breadcrumbs"><li class="breadcrumbs__item"><a aria-label="Home page" class="breadcrumbs__link" href="/"><svg viewBox="0 0 24 24" class="breadcrumbHomeIcon_YNFT"><path d="M10 19v-5h4v5c0 .55.45 1 1 1h3c.55 0 1-.45 1-1v-7h1.7c.46 0 .68-.57.33-.87L12.67 3.6c-.38-.34-.96-.34-1.34 0l-8.36 7.53c-.34.3-.13.87.33.87H5v7c0 .55.45 1 1 1h3c.55 0 1-.45 1-1z" fill="currentColor"></path></svg></a></li><li class="breadcrumbs__item"><span class="breadcrumbs__link">Quick Start</span></li><li class="breadcrumbs__item breadcrumbs__item--active"><span class="breadcrumbs__link">First-time setup</span></li></ul></nav><div class="tocCollapsible_ETCw theme-doc-toc-mobile tocMobile_ITEo"><button type="button" class="clean-btn tocCollapsibleButton_TO0P">On this page</button></div><div class="theme-doc-markdown markdown"><header><h1>First-time setup</h1></header>
+<p>This is the out-of-box path: from a new board to a working device you can talk
+to. After the one-time firmware install, it takes about ten minutes and needs no
+serial console.</p>
+<p>The stages, in order:</p>
+<ol>
+<li class=""><strong>Install the firmware</strong> over the UART port, choosing the fitted display
+and the operating mode.</li>
+<li class=""><strong>Power on.</strong> A Notifier pairs over Bluetooth and is nearly done; an
+Orchestrator broadcasts its own setup Wi-Fi network.</li>
+<li class=""><strong>Orchestrator:</strong> join the setup network and move the device onto <em>your</em>
+Wi-Fi.</li>
+<li class="">Optionally add an SD card, an AI provider key, and Telegram.</li>
+</ol>
+<hr>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="1-install-the-firmware">1. Install the firmware<a href="#1-install-the-firmware" class="hash-link" aria-label="Direct link to 1. Install the firmware" title="Direct link to 1. Install the firmware" translate="no">​</a></h2>
+<p>If this is an existing, correctly configured Nimbus, skip to the next section.</p>
+<p>For a factory board - or one left in the wrong display/mode by an older setup
+flow - connect the USB-C cable to the DevKit port labeled <strong>UART</strong>, not the
+port labeled USB. From the firmware repository run:</p>
+<div class="language-bash codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#F8F8F2;--prism-background-color:#282A36"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-bash codeBlock_bY9V thin-scrollbar" style="color:#F8F8F2;background-color:#282A36"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#F8F8F2"><span class="token plain">python3 tools/setup_device.py</span><br></div></code></pre></div></div>
+<p>The installer lists every UART device and asks which one to use. On a new board
+it asks two independent questions:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Choice</th><th>Options</th><th>Effect</th></tr></thead><tbody><tr><td><strong>Display hardware</strong></td><td>E-ink + knob / TFT color touchscreen</td><td>Selects both the display and input drivers at boot</td></tr><tr><td><strong>Operating mode</strong></td><td>Notifier / Orchestrator</td><td>Notifier uses Bluetooth with Wi-Fi off; Orchestrator starts Wi-Fi and the web UI</td></tr></tbody></table>
+<p>It then shows the selected board&#x27;s immutable factory MAC and whether persistent
+Nimbus settings already exist. Nothing is written until you type that MAC back -
+this guard matters when more than one board is connected, because a bare
+PlatformIO upload can pick the wrong serial port, and a changing USB port suffix
+never identifies a board on its own. The selected port is passed to PlatformIO
+explicitly, and stored settings are not erased.</p>
+<p>For a new board, a temporary UART diagnostic stores and verifies the display,
+its known Nimbus mounting orientation (TFT only), and the operating-mode choice;
+production Nimbus firmware is always installed last.</p>
+<div class="theme-admonition theme-admonition-caution admonition_xJq3 alert alert--warning"><div class="admonitionHeading_Gvgb"><span class="admonitionIcon_Rf37"><svg viewBox="0 0 16 16"><path fill-rule="evenodd" d="M8.893 1.5c-.183-.31-.52-.5-.887-.5s-.703.19-.886.5L.138 13.499a.98.98 0 0 0 0 1.001c.193.31.53.501.886.501h13.964c.367 0 .704-.19.877-.5a1.03 1.03 0 0 0 .01-1.002L8.893 1.5zm.133 11.497H6.987v-2.003h2.039v2.003zm0-3.004H6.987V5.987h2.039v4.006z"></path></svg></span>TFT must be selected here</div><div class="admonitionContent_BuS1"><p>A TFT board has no knob - the touchscreen replaces its pins. The raw firmware
+defaults are e-ink and Notifier, so a TFT board cannot correct either choice
+from its own controls, and Notifier will not broadcast Wi-Fi. Select <strong>TFT
+color touchscreen</strong> in the installer.</p></div></div>
+<details class="details_lb9f alert alert--info details_b_Ee" data-collapsed="true"><summary>I flashed <code>[env:provision]</code> - is that setup?</summary><div><div class="collapsibleContent_i85q">
+<!-- -->
+<p>No. <code>[env:provision]</code> installs a standalone serial network diagnostic. It has
+no Nimbus display UI, setup Wi-Fi, or web settings. Run the installer command
+above to install the real production firmware.</p>
+</div></div></details>
+<p>For details about the board&#x27;s two USB-C ports, see the
+<a class="" href="/guides/hardware#first-flash-of-a-fresh-board--use-the-uart-port">hardware reference</a>.</p>
+<hr>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="2-power-on">2. Power on<a href="#2-power-on" class="hash-link" aria-label="Direct link to 2. Power on" title="Direct link to 2. Power on" translate="no">​</a></h2>
+<p>Power the board over USB-C. The selected display now has the correct driver,
+and what you see depends on the mode you chose:</p>
+<ul>
+<li class=""><strong>Notifier</strong> shows Bluetooth connection guidance. It intentionally keeps
+Wi-Fi and the web UI off to leave enough memory for Bluetooth.</li>
+<li class=""><strong>Orchestrator</strong> shows the device&#x27;s <strong>Wi-Fi network name</strong> and a sign-in QR.</li>
+</ul>
+<p>If you want web settings or Wi-Fi onboarding, choose Orchestrator in the
+installer. You can change mode later, but a mode change restarts the device.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="an-orchestrator-device-names-itself">An Orchestrator device names itself<a href="#an-orchestrator-device-names-itself" class="hash-link" aria-label="Direct link to An Orchestrator device names itself" title="Direct link to An Orchestrator device names itself" translate="no">​</a></h3>
+<p>A brand-new device picks its name automatically by looking for sibling Nimbus
+devices already broadcasting nearby, then numbering itself:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Device</th><th>Setup Wi-Fi network (SSID)</th><th>LAN address</th></tr></thead><tbody><tr><td>first / only one</td><td><strong><code>Nimbus-setup</code></strong></td><td><code>nimbus.local</code></td></tr><tr><td>a second nearby</td><td><strong><code>Nimbus-2-setup</code></strong></td><td><code>nimbus-2.local</code></td></tr><tr><td>a third</td><td><strong><code>Nimbus-3-setup</code></strong></td><td><code>nimbus-3.local</code></td></tr></tbody></table>
+<p>The setup network name is always <code>&lt;device-name&gt;-setup</code>. You can <strong>rename the
+device later</strong> (Settings → Mode &amp; identity); one name then drives the setup
+Wi-Fi SSID, the LAN/mDNS address, the Bluetooth name, and what the assistant
+calls itself. A rename <strong>applies on the next restart</strong>.</p>
+<hr>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="3-orchestrator-join-the-setup-wi-fi">3. Orchestrator: join the setup Wi-Fi<a href="#3-orchestrator-join-the-setup-wi-fi" class="hash-link" aria-label="Direct link to 3. Orchestrator: join the setup Wi-Fi" title="Direct link to 3. Orchestrator: join the setup Wi-Fi" translate="no">​</a></h2>
+<p>Skip this section in Notifier mode; there is no Nimbus Wi-Fi network in that
+mode.</p>
+<p>On your phone or laptop, join the Wi-Fi network shown on the panel:</p>
+<ul>
+<li class=""><strong>Network:</strong> <code>Nimbus-setup</code> (or the name your panel shows)</li>
+<li class=""><strong>Password:</strong> shown on the device screen (unique to your device) - or scan
+the on-screen QR to join automatically</li>
+</ul>
+<p>Once you join, a <strong>captive page opens automatically</strong> (if it doesn&#x27;t, browse to
+the setup AP address <strong><code>http://192.168.4.1</code></strong>). Do not use <code>nimbus.local</code> for
+this first hop: it is a LAN name, and with multiple devices it may resolve to a
+different Nimbus.</p>
+<p>The captive page opens setup <strong>already signed in</strong>. There is no access token or
+sign-in code to copy during first-time setup.</p>
+<p>On that page, in the setup wizard&#x27;s <strong>Connect to Wi-Fi</strong> step (or, on an
+already-configured device, under <strong>Settings → Connectivity → Wi-Fi</strong>):</p>
+<ol>
+<li class="">Click <strong>Scan</strong> and pick your home network from the list.</li>
+<li class="">Type your Wi-Fi password and click <strong>Connect</strong>.</li>
+</ol>
+<p>The page reports progress and, once the device joins, records the <strong>exact LAN
+IP address and signed-in continuation URL before changing networks</strong>.</p>
+<p>On a <strong>TFT</strong> board, keep that page open. The wizard displays &quot;Switching to your
+Wi-Fi,&quot; waits while <code>Nimbus-setup</code> closes and your phone or computer rejoins its
+normal Wi-Fi, then automatically continues at the provider step using the exact
+IP. A manual continuation link remains visible if the operating system does not
+switch promptly. This avoids both the lost-token problem (LAN storage is a
+different browser origin) and an ambiguous <code>nimbus.local</code> when several Nimbus
+devices are present.</p>
+<div class="theme-admonition theme-admonition-note admonition_xJq3 alert alert--secondary"><div class="admonitionHeading_Gvgb"><span class="admonitionIcon_Rf37"><svg viewBox="0 0 14 16"><path fill-rule="evenodd" d="M6.3 5.69a.942.942 0 0 1-.28-.7c0-.28.09-.52.28-.7.19-.18.42-.28.7-.28.28 0 .52.09.7.28.18.19.28.42.28.7 0 .28-.09.52-.28.7a1 1 0 0 1-.7.3c-.28 0-.52-.11-.7-.3zM8 7.99c-.02-.25-.11-.48-.31-.69-.2-.19-.42-.3-.69-.31H6c-.27.02-.48.13-.69.31-.2.2-.3.44-.31.69h1v3c.02.27.11.5.31.69.2.2.42.31.69.31h1c.27 0 .48-.11.69-.31.2-.19.3-.42.31-.69H8V7.98v.01zM7 2.3c-3.14 0-5.7 2.54-5.7 5.68 0 3.14 2.56 5.7 5.7 5.7s5.7-2.55 5.7-5.7c0-3.15-2.56-5.69-5.7-5.69v.01zM7 .98c3.86 0 7 3.14 7 7s-3.14 7-7 7-7-3.12-7-7 3.14-7 7-7z"></path></svg></span>Wi-Fi requirements</div><div class="admonitionContent_BuS1"><ul>
+<li class="">The radio is <strong>2.4 GHz only</strong> - a 5 GHz-only SSID won&#x27;t appear in the scan.</li>
+<li class="">SSIDs are <strong>case-sensitive</strong>.</li>
+<li class="">On a TFT board the setup AP turns off after a short, bounded handoff (to
+protect the panel from the beacon train). The wizard carries authentication
+to the exact reported LAN IP first; the setup AP returns if the LAN link is
+lost.</li>
+<li class="">On an e-ink Orchestrator the setup AP remains available. In Notifier mode
+Wi-Fi stays off entirely.</li>
+</ul></div></div>
+<div class="theme-admonition theme-admonition-info admonition_xJq3 alert alert--info"><div class="admonitionHeading_Gvgb"><span class="admonitionIcon_Rf37"><svg viewBox="0 0 14 16"><path fill-rule="evenodd" d="M7 2.3c3.14 0 5.7 2.56 5.7 5.7s-2.56 5.7-5.7 5.7A5.71 5.71 0 0 1 1.3 8c0-3.14 2.56-5.7 5.7-5.7zM7 1C3.14 1 0 4.14 0 8s3.14 7 7 7 7-3.14 7-7-3.14-7-7-7zm1 3H6v5h2V4zm0 6H6v2h2v-2z"></path></svg></span>Home Wi-Fi and the setup hotspot are different</div><div class="admonitionContent_BuS1"><p>&quot;Home Wi-Fi connected&quot; means Nimbus joined your router. &quot;Setup hotspot&quot; means
+the temporary <code>Nimbus-setup</code> recovery network broadcast by Nimbus itself. A TFT
+normally shows <strong>home Wi-Fi connected + setup hotspot off</strong> after handoff; that
+is healthy, not a Wi-Fi failure.</p></div></div>
+<hr>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="4-signing-in-from-another-browser">4. Signing in from another browser<a href="#4-signing-in-from-another-browser" class="hash-link" aria-label="Direct link to 4. Signing in from another browser" title="Direct link to 4. Signing in from another browser" translate="no">​</a></h2>
+<p>The settings page is protected by a <strong>per-device access token</strong>, but during
+first-time setup you never handle it - the wizard transfers it to the exact LAN
+address automatically. The token rides inside the <strong>sign-in QR</strong> on the device
+screen: scanning it opens the settings page at <code>http://&lt;device-ip&gt;/?t=&lt;token&gt;</code>,
+and the browser keeps the token and attaches it to every request from then on.</p>
+<p>For a later browser, or a device that was configured by older firmware:</p>
+<ol>
+<li class=""><strong>Scan the sign-in QR</strong> on the panel with your phone. It opens the settings
+page on the device&#x27;s LAN address, already signed in.</li>
+<li class="">If you instead browse in without the signed-in link, a full-screen <strong>Sign in
+to Nimbus</strong> gate appears. Scan the QR (on the device: <strong>Settings &gt;
+Connectivity &gt; Sign-in QR</strong>). Typing the recovery access token is only the
+fallback when a QR cannot be scanned; on the device, select <strong>Settings &gt;
+Connectivity &gt; Sign-in code</strong> to open a full-screen view of the complete
+code (the compact menu row deliberately does not try to fit the secret).
+After a few rejected attempts the device also shows the sign-in QR on its
+own screen unprompted, so it&#x27;s always at hand.</li>
+</ol>
+<div class="theme-admonition theme-admonition-tip admonition_xJq3 alert alert--success"><div class="admonitionHeading_Gvgb"><span class="admonitionIcon_Rf37"><svg viewBox="0 0 12 16"><path fill-rule="evenodd" d="M6.5 0C3.48 0 1 2.19 1 5c0 .92.55 2.25 1 3 1.34 2.25 1.78 2.78 2 4v1h5v-1c.22-1.22.66-1.75 2-4 .45-.75 1-2.08 1-3 0-2.81-2.48-5-5.5-5zm3.64 7.48c-.25.44-.47.8-.67 1.11-.86 1.41-1.25 2.06-1.45 3.23-.02.05-.02.11-.02.17H5c0-.06 0-.13-.02-.17-.2-1.17-.59-1.83-1.45-3.23-.2-.31-.42-.67-.67-1.11C2.44 6.78 2 5.65 2 5c0-2.2 2.02-4 4.5-4 1.22 0 2.36.42 3.22 1.19C10.55 2.94 11 3.94 11 5c0 .66-.44 1.78-.86 2.48zM4 14h5c-.23 1.14-1.3 2-2.5 2s-2.27-.86-2.5-2z"></path></svg></span>tip</div><div class="admonitionContent_BuS1"><p>You identify once per browser - the token is remembered, so you won&#x27;t be asked
+again on that phone or computer.</p></div></div>
+<details class="details_lb9f alert alert--info details_b_Ee" data-collapsed="true"><summary>The display is unavailable and I can&#x27;t scan or read the token</summary><div><div class="collapsibleContent_i85q">
+<!-- -->
+<p>Connect the board&#x27;s <strong>UART</strong> port and run:</p>
+<div class="language-bash codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#F8F8F2;--prism-background-color:#282A36"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-bash codeBlock_bY9V thin-scrollbar" style="color:#F8F8F2;background-color:#282A36"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#F8F8F2"><span class="token plain">python3 tools/setup_device.py --show-token</span><br></div></code></pre></div></div>
+<p>The guarded tool identifies the board by factory MAC, temporarily installs the
+UART diagnostic, prints only the existing web token, and restores production
+firmware in a <code>finally</code> path. It does not erase stored settings. Open
+<code>http://&lt;reported-lan-ip&gt;/?t=&lt;token&gt;</code> (or <code>http://nimbus.local/?t=&lt;token&gt;</code> only
+when that name is known to be unique).</p>
+</div></div></details>
+<hr>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="5-change-mode-later">5. Change mode later<a href="#5-change-mode-later" class="hash-link" aria-label="Direct link to 5. Change mode later" title="Direct link to 5. Change mode later" translate="no">​</a></h2>
+<p>The installer chose the initial mode. To change it later, open <strong>Settings →
+Mode &amp; identity</strong> and choose a <strong>Mode</strong>:</p>
+<ul>
+<li class=""><strong>Notifier - status light</strong> - a Bluetooth status light for your coding
+sessions. If this is all you want, you&#x27;re nearly done: pair the
+<a href="https://pypi.org/project/nimbus-notify/" target="_blank" rel="noopener noreferrer" class="">nimbus-notify broker</a> and the ring
+starts reporting. (Notifier&#x27;s ring level - Dark / Calm / Full - is set from
+the Settings menu on the device, not the web page.)</li>
+<li class=""><strong>Orchestrator - AI assistant</strong> - Telegram, voice, and memory. Continue
+below.</li>
+</ul>
+<p>Switching modes <strong>restarts</strong> the device. Orchestrator rejoins a saved Wi-Fi
+network (this can take a few seconds); Notifier deliberately turns Wi-Fi and
+the web UI off and uses Bluetooth instead.</p>
+<hr>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="6-prepare-the-sd-card-format-it-as-fat32">6. Prepare the SD card (format it as FAT32)<a href="#6-prepare-the-sd-card-format-it-as-fat32" class="hash-link" aria-label="Direct link to 6. Prepare the SD card (format it as FAT32)" title="Direct link to 6. Prepare the SD card (format it as FAT32)" translate="no">​</a></h2>
+<p>The microSD card holds the agent&#x27;s long-term memory, media, and logs. Two
+requirements:</p>
+<ol>
+<li class=""><strong>Format the card as FAT32</strong> (&quot;MS-DOS (FAT)&quot; in macOS Disk Utility). Cards
+over 32 GB ship as <strong>exFAT from the factory and will not mount</strong> - the
+device sees the card (<code>cardType: 3</code>) but the filesystem fails. Reformat
+first.</li>
+<li class=""><strong>Insert the card fully.</strong> The SD card row in the Settings menu shows the
+card&#x27;s state: <code>…GB free</code> when mounted, <code>none - click to retry</code> when the
+card isn&#x27;t seen. After inserting or reformatting, <strong>click that row</strong> - it
+re-probes the card in place, no restart needed.</li>
+</ol>
+<p>Without a card everything still works, just capped (memory falls back to
+on-chip storage with lower limits).</p>
+<hr>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="7-add-a-provider-key-orchestrator">7. Add a provider key (Orchestrator)<a href="#7-add-a-provider-key-orchestrator" class="hash-link" aria-label="Direct link to 7. Add a provider key (Orchestrator)" title="Direct link to 7. Add a provider key (Orchestrator)" translate="no">​</a></h2>
+<p>In <strong>Capabilities → Models</strong>, under <em>Providers &amp; keys</em>, paste a key for at
+least one provider (OpenAI, Anthropic, or Mistral) and click its <strong>Verify</strong>
+button.</p>
+<ul>
+<li class="">Keys are <strong>write-only</strong>: a saved key shows as &quot;set&quot; and is never displayed
+again.</li>
+<li class=""><strong>Model dropdowns unlock only after the key verifies</strong> against the provider.</li>
+<li class="">Verify from <strong>Orchestrator mode</strong> - verification needs a large contiguous
+memory block for the TLS handshake, which Notifier mode (with Bluetooth up)
+doesn&#x27;t have; the UI hints this if you try it there.</li>
+</ul>
+<p>Routing - the <strong>Primary provider</strong>, the <strong>Fallback order</strong>, and per-provider
+models - lives in the <em>Routing</em> group just below. The defaults are sensible;
+you only need to touch routing if you want a specific provider to lead.</p>
+<details class="details_lb9f alert alert--info details_b_Ee" data-collapsed="true"><summary>Optional: a local model via Ollama</summary><div><div class="collapsibleContent_i85q">
+<!-- -->
+<p>Under <strong>Custom endpoint</strong> you can point the assistant at a model running on
+your own machine - for example a local <strong>Ollama</strong>:</p>
+<ul>
+<li class=""><strong>Base URL:</strong> <code>http://&lt;your-computer-ip&gt;:11434/v1</code> (a plain <code>http://</code> base
+uses LAN HTTP, no TLS)</li>
+<li class=""><strong>Wire:</strong> <code>openai</code></li>
+<li class=""><strong>Model:</strong> e.g. <code>qwen2.5</code></li>
+<li class=""><strong>API key:</strong> leave <strong>blank</strong> (keyless LAN endpoint)</li>
+</ul>
+<p>Then set the <strong>Primary provider</strong> (or the fallback order) to <strong>Custom</strong> if you
+want it to lead.</p>
+</div></div></details>
+<hr>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="8-let-yourself-message-the-bot-orchestrator">8. Let yourself message the bot (Orchestrator)<a href="#8-let-yourself-message-the-bot-orchestrator" class="hash-link" aria-label="Direct link to 8. Let yourself message the bot (Orchestrator)" title="Direct link to 8. Let yourself message the bot (Orchestrator)" translate="no">​</a></h2>
+<p>To reach the device from Telegram:</p>
+<ol>
+<li class="">Create a bot with <a href="https://t.me/BotFather" target="_blank" rel="noopener noreferrer" class="">@BotFather</a> and paste its <strong>bot
+token</strong> into <strong>Capabilities → Connectors → Telegram</strong>.</li>
+<li class=""><strong>Message your bot once</strong> from your own Telegram account.</li>
+<li class="">Your message appears in the Telegram section as a <strong>pending approval card</strong>
+<ul>
+<li class="">click <strong>Approve</strong>. No chat-ID hunting.</li>
+</ul>
+</li>
+</ol>
+<p>Token and allowlist changes take effect <strong>after a restart</strong> (the poll task
+reads them at boot).</p>
+<div class="theme-admonition theme-admonition-caution admonition_xJq3 alert alert--warning"><div class="admonitionHeading_Gvgb"><span class="admonitionIcon_Rf37"><svg viewBox="0 0 16 16"><path fill-rule="evenodd" d="M8.893 1.5c-.183-.31-.52-.5-.887-.5s-.703.19-.886.5L.138 13.499a.98.98 0 0 0 0 1.001c.193.31.53.501.886.501h13.964c.367 0 .704-.19.877-.5a1.03 1.03 0 0 0 .01-1.002L8.893 1.5zm.133 11.497H6.987v-2.003h2.039v2.003zm0-3.004H6.987V5.987h2.039v4.006z"></path></svg></span>Open access</div><div class="admonitionContent_BuS1"><p>The <strong>Open access</strong> checkbox lets <em>anyone</em> who finds your bot use it - and
+your API credits. It sits behind a confirmation dialog; leave it off unless
+you mean to run a public bot.</p></div></div>
+<p>The <strong>Voice replies</strong> toggle in the same group lets the assistant answer with a
+spoken voice note when that fits; when off, it always replies in text. Set the
+dictation and spoken-reply providers and the voice itself under <strong>Capabilities
+→ Models → Voice</strong>.</p>
+<hr>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="9-your-first-turn">9. Your first turn<a href="#9-your-first-turn" class="hash-link" aria-label="Direct link to 9. Your first turn" title="Direct link to 9. Your first turn" translate="no">​</a></h2>
+<ul>
+<li class=""><strong>Telegram:</strong> send the bot a message. It runs a turn and replies (text, and
+sometimes voice if it chooses to speak).</li>
+<li class=""><strong>On the device</strong> (e-paper + knob build): <strong>long-press</strong> the knob to
+hold-to-talk. The ring goes red-breathe while listening, then a blue spinner
+while it transcribes; release to send the turn.</li>
+</ul>
+<p>That&#x27;s it - the device is live. From here, the
+<strong><a class="" href="/getting-started/webui-reference">Web UI reference</a></strong> walks every tab in detail, and the
+<strong><a class="" href="/guides/orchestrator-world">Orchestrator World</a></strong> guide explains
+memory, sessions, and the tool loop.</p></div><footer class="theme-doc-footer docusaurus-mt-lg"><div class="row margin-top--sm theme-doc-footer-edit-meta-row"><div class="col noPrint_WFHX"><a href="https://github.com/ristllin/Nimbus/tree/main/website/docs/getting-started/first-time-setup.md" target="_blank" rel="noopener noreferrer" class="theme-edit-this-page"><svg fill="currentColor" height="20" width="20" viewBox="0 0 40 40" class="iconEdit_Z9Sw" aria-hidden="true"><g><path d="m34.5 11.7l-3 3.1-6.3-6.3 3.1-3q0.5-0.5 1.2-0.5t1.1 0.5l3.9 3.9q0.5 0.4 0.5 1.1t-0.5 1.2z m-29.5 17.1l18.4-18.5 6.3 6.3-18.4 18.4h-6.3v-6.2z"></path></g></svg>Edit this page</a></div><div class="col lastUpdated_JAkA"></div></div></footer></article><nav class="docusaurus-mt-lg pagination-nav" aria-label="Docs pages"><a class="pagination-nav__link pagination-nav__link--prev" href="/quick-start/notifier-quick-start"><div class="pagination-nav__sublabel">Previous</div><div class="pagination-nav__label">Notifier quick start</div></a><a class="pagination-nav__link pagination-nav__link--next" href="/guides/hardware"><div class="pagination-nav__sublabel">Next</div><div class="pagination-nav__label">Hardware overview</div></a></nav></div></div><div class="col col--3"><div class="tableOfContents_bqdL thin-scrollbar theme-doc-toc-desktop"><ul class="table-of-contents table-of-contents__left-border"><li><a href="#1-install-the-firmware" class="table-of-contents__link toc-highlight">1. Install the firmware</a></li><li><a href="#2-power-on" class="table-of-contents__link toc-highlight">2. Power on</a><ul><li><a href="#an-orchestrator-device-names-itself" class="table-of-contents__link toc-highlight">An Orchestrator device names itself</a></li></ul></li><li><a href="#3-orchestrator-join-the-setup-wi-fi" class="table-of-contents__link toc-highlight">3. Orchestrator: join the setup Wi-Fi</a></li><li><a href="#4-signing-in-from-another-browser" class="table-of-contents__link toc-highlight">4. Signing in from another browser</a></li><li><a href="#5-change-mode-later" class="table-of-contents__link toc-highlight">5. Change mode later</a></li><li><a href="#6-prepare-the-sd-card-format-it-as-fat32" class="table-of-contents__link toc-highlight">6. Prepare the SD card (format it as FAT32)</a></li><li><a href="#7-add-a-provider-key-orchestrator" class="table-of-contents__link toc-highlight">7. Add a provider key (Orchestrator)</a></li><li><a href="#8-let-yourself-message-the-bot-orchestrator" class="table-of-contents__link toc-highlight">8. Let yourself message the bot (Orchestrator)</a></li><li><a href="#9-your-first-turn" class="table-of-contents__link toc-highlight">9. Your first turn</a></li></ul></div></div></div></div></main></div></div></div><footer class="theme-layout-footer footer footer--dark"><div class="container container-fluid"><div class="row footer__links"><div class="theme-layout-footer-column col footer__col"><div class="footer__title">Docs</div><ul class="footer__items clean-list"><li class="footer__item"><a class="footer__link-item" href="/quick-start/what-you-need">Quick Start</a></li><li class="footer__item"><a class="footer__link-item" href="/guides/hardware-bom">Bill of materials</a></li><li class="footer__item"><a class="footer__link-item" href="/getting-started/webui-reference">Web UI reference</a></li></ul></div><div class="theme-layout-footer-column col footer__col"><div class="footer__title">Reference</div><ul class="footer__items clean-list"><li class="footer__item"><a class="footer__link-item" href="/reference/config-and-nvs">Config &amp; NVS</a></li><li class="footer__item"><a class="footer__link-item" href="/reference/tool-catalog">Tool catalog</a></li><li class="footer__item"><a class="footer__link-item" href="/reference/turn-contract">Turn contract</a></li><li class="footer__item"><a class="footer__link-item" href="/reference/changelog">Changelog</a></li></ul></div><div class="theme-layout-footer-column col footer__col"><div class="footer__title">More</div><ul class="footer__items clean-list"><li class="footer__item"><a href="https://github.com/ristllin/Nimbus" target="_blank" rel="noopener noreferrer" class="footer__link-item">GitHub<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li></ul></div></div><div class="footer__bottom text--center"><div class="footer__copyright">Nimbus - source-available, free for noncommercial use (PolyForm-NC / CC BY-NC-SA). Built with Docusaurus.</div></div></div></footer></div>
+</body>
+</html>

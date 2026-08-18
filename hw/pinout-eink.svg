@@ -1,0 +1,118 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 780" font-family="ui-sans-serif,system-ui,Arial" font-size="13">
+  <style>
+    .box{rx:10;ry:10;stroke-width:2}
+    .title{font-weight:700;font-size:14px}
+    .pin{font-family:ui-monospace,Menlo,monospace;font-size:12px}
+    .rail{font-size:11px;fill:#555}
+    .lead{stroke:#9aa;stroke-width:1.5;fill:none}
+    .note{font-size:11px;fill:#444}
+  </style>
+  <rect width="1120" height="780" fill="#fbfbfd"/>
+  <text x="560" y="30" text-anchor="middle" class="title" font-size="20">Nimbus - Solide S3 pinout &amp; peripherals</text>
+  <text x="560" y="50" text-anchor="middle" class="note">ESP32-S3-DevKitC-1 N16R8 · 16 MB flash · 8 MB OCTAL PSRAM · source of truth: board_solide_s3.h</text>
+
+  <!-- MCU -->
+  <rect x="455" y="300" width="210" height="180" rx="12" fill="#eef2ff" stroke="#4f46e5" stroke-width="2.5"/>
+  <text x="560" y="345" text-anchor="middle" class="title" fill="#3730a3">ESP32-S3</text>
+  <text x="560" y="366" text-anchor="middle" class="note" fill="#4338ca">DevKitC-1 N16R8</text>
+  <text x="560" y="404" text-anchor="middle" class="note">240 MHz dual LX7</text>
+  <text x="560" y="422" text-anchor="middle" class="note">16 MB flash · 8 MB PSRAM</text>
+  <text x="560" y="452" text-anchor="middle" class="rail">Wi-Fi/BLE 2.4 GHz</text>
+
+  <!-- helper leads -->
+  <line class="lead" x1="330" y1="139" x2="455" y2="320"/>
+  <line class="lead" x1="330" y1="263" x2="455" y2="350"/>
+  <line class="lead" x1="400" y1="413" x2="455" y2="400"/>
+  <line class="lead" x1="330" y1="570" x2="455" y2="450"/>
+  <line class="lead" x1="790" y1="120" x2="665" y2="320"/>
+  <line class="lead" x1="790" y1="270" x2="665" y2="360"/>
+  <line class="lead" x1="790" y1="410" x2="665" y2="415"/>
+  <line class="lead" x1="790" y1="560" x2="665" y2="455"/>
+
+  <!-- LEFT peripherals -->
+  <!-- E-paper - labels as PRINTED ON THE MODULE header (BUSY…VCC); SCL/SDA are
+       the module's names for the SPI clock/data lines, not I²C. -->
+  <rect x="70" y="80" width="300" height="118" rx="10" fill="#e0f2fe" stroke="#0284c7"/>
+  <text x="82" y="102" class="title" fill="#075985">E-paper 2.9" SSD1680 (SPI3)</text>
+  <text x="82" y="122" class="pin">BUSY 47 · RES 42 · D/C 41 · CS 40</text>
+  <text x="82" y="140" class="pin">SCL 38 · SDA 39 · GND · VCC 3.3 V</text>
+  <text x="82" y="158" class="note">SCL=SPI SCK · SDA=SPI MOSI (module names)</text>
+  <text x="82" y="174" class="note">firmware: RST=RES · DC=D/C (same pins)</text>
+  <text x="82" y="190" class="rail">3.3 V · fast B/W ~2.2 s</text>
+
+  <!-- SD -->
+  <rect x="70" y="228" width="300" height="70" rx="10" fill="#dcfce7" stroke="#16a34a"/>
+  <text x="82" y="250" class="title" fill="#166534">microSD FAT32 (SPI2)</text>
+  <text x="82" y="270" class="pin">CS 10 · MOSI 11 · SCK 12 · MISO 13</text>
+  <text x="82" y="288" class="rail">3.3 V · orch /mem store · needs shared GND</text>
+
+  <!-- Encoder: 5 UNMARKED pins - drawn as the two physical sides. Viewed with the
+       shaft toward you, 3-pin side down: left=A, MIDDLE=common, right=B. The 2-pin
+       side is the switch (pins interchangeable). All inputs use firmware pull-ups,
+       so common + one switch pin just go to GND - no external resistors. -->
+  <rect x="70" y="328" width="330" height="170" rx="10" fill="#fef9c3" stroke="#ca8a04"/>
+  <text x="82" y="350" class="title" fill="#854d0e">EC11 rotary encoder - 5 unmarked pins</text>
+  <!-- body + shaft -->
+  <rect x="196" y="364" width="60" height="88" rx="6" fill="#fff7d6" stroke="#a16207" stroke-width="1.5"/>
+  <circle cx="226" cy="408" r="13" fill="none" stroke="#a16207" stroke-width="1.5" stroke-dasharray="3 2"/>
+  <text x="226" y="412" text-anchor="middle" class="rail" fill="#a16207">shaft</text>
+  <!-- 3-pin (signal) side: stubs left -->
+  <line x1="196" y1="376" x2="178" y2="376" stroke="#a16207" stroke-width="2"/>
+  <line x1="196" y1="408" x2="178" y2="408" stroke="#a16207" stroke-width="2"/>
+  <line x1="196" y1="440" x2="178" y2="440" stroke="#a16207" stroke-width="2"/>
+  <text x="174" y="380" text-anchor="end" class="pin">A → GPIO 1</text>
+  <text x="174" y="412" text-anchor="end" class="pin">C mid → GND</text>
+  <text x="174" y="444" text-anchor="end" class="pin">B → GPIO 2</text>
+  <!-- 2-pin (switch) side: stubs right -->
+  <line x1="256" y1="388" x2="274" y2="388" stroke="#a16207" stroke-width="2"/>
+  <line x1="256" y1="428" x2="274" y2="428" stroke="#a16207" stroke-width="2"/>
+  <text x="278" y="392" class="pin">SW → GPIO 48</text>
+  <text x="278" y="432" class="pin">SW → GND</text>
+  <text x="82" y="470" class="rail" fill="#854d0e">3-pin = signal, MIDDLE = common · 2-pin = switch (either order)</text>
+  <text x="82" y="486" class="rail">firmware pull-ups - no external resistors needed</text>
+
+  <!-- Battery sense (NEW) -->
+  <rect x="70" y="520" width="300" height="100" rx="10" fill="#ffe4e6" stroke="#e11d48"/>
+  <text x="82" y="542" class="title" fill="#9f1239">Battery sense - ADC1  ◀ NEW</text>
+  <text x="82" y="562" class="pin">GPIO 4  (analogReadMilliVolts × 3.2)</text>
+  <text x="82" y="580" class="note">2S pack BAT+ → 220k → node → 100k → GND</text>
+  <text x="82" y="596" class="note">node → GPIO4 · ÷3.2</text>
+  <text x="82" y="612" class="rail">tap BEFORE the DC-DC · ADC1 only (Wi-Fi owns ADC2)</text>
+
+  <!-- RIGHT peripherals -->
+  <!-- LED ring -->
+  <rect x="790" y="80" width="290" height="86" rx="10" fill="#f3e8ff" stroke="#9333ea"/>
+  <text x="802" y="102" class="title" fill="#6b21a8">LED ring WS2812B ×45 (RMT)</text>
+  <text x="802" y="122" class="pin">DIN 21</text>
+  <text x="802" y="140" class="rail">5 V power / 3.3 V logic</text>
+  <text x="802" y="158" class="rail">~372 mA worst case @ bright 30</text>
+
+  <!-- Speaker -->
+  <rect x="790" y="230" width="290" height="70" rx="10" fill="#ffedd5" stroke="#ea580c"/>
+  <text x="802" y="252" class="title" fill="#9a3412">Speaker MAX98357A I²S amp</text>
+  <text x="802" y="272" class="pin">BCLK 7 · LRCLK 8 · DIN 17</text>
+  <text x="802" y="290" class="rail">3.3 V logic · amp on 5 V · loopback-verified</text>
+
+  <!-- Mic -->
+  <rect x="790" y="375" width="290" height="70" rx="10" fill="#cffafe" stroke="#0891b2"/>
+  <text x="802" y="397" class="title" fill="#155e75">I²S MEMS mic (I²S0)</text>
+  <text x="802" y="417" class="pin">BCLK 15 · WS 18 · SD 16</text>
+  <text x="802" y="435" class="rail">3.3 V ONLY ⚠ (5 V damages S3) · L/R→GND</text>
+
+  <!-- Power -->
+  <rect x="790" y="510" width="290" height="100" rx="10" fill="#f1f5f9" stroke="#475569"/>
+  <text x="802" y="532" class="title" fill="#334155">Power rails</text>
+  <text x="802" y="552" class="note">USB-C · 2S BMS → 2×18650 → DC-DC → 5 V</text>
+  <text x="802" y="570" class="pin">3.3 V:</text><text x="852" y="570" class="rail">MCU · e-paper · SD · audio · mic</text>
+  <text x="802" y="588" class="pin">5 V:</text><text x="842" y="588" class="rail">LED ring · amp volume (switchable)</text>
+  <text x="802" y="604" class="rail">battery sense reads the PACK, not the 5 V rail</text>
+
+  <!-- Legend: reserved + free -->
+  <rect x="70" y="650" width="980" height="100" rx="10" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="86" y="674" class="title">GPIO map</text>
+  <text x="86" y="696" class="pin" fill="#b91c1c">RESERVED - never assign:</text>
+  <text x="300" y="696" class="pin">0·45·46 strapping · 19·20 USB · 43·44 UART0 · 26–32 flash · 33–37 OCTAL PSRAM · 48 RGB(→enc SW)</text>
+  <text x="86" y="718" class="pin" fill="#15803d">FREE spares:</text>
+  <text x="300" y="718" class="pin">3 · <tspan fill="#e11d48" font-weight="700">4 (now battery sense)</tspan> · 5 · 6 · 9  (18 = I²S mic WS)</text>
+  <text x="86" y="740" class="rail">ADC1 = GPIO 1–10 (Wi-Fi-safe) · ADC2 = GPIO 11–20 (unusable while Wi-Fi is up) - so battery sense must be an ADC1 pin.</text>
+</svg>

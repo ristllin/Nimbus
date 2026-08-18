@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en" dir="ltr" class="docs-wrapper plugin-docs plugin-id-default docs-version-current docs-doc-page docs-doc-id-guides/security" data-has-hydrated="false">
+<head>
+<meta charset="UTF-8">
+<meta name="generator" content="Docusaurus v3.10.2">
+<title data-rh="true">Security posture &amp; open TODOs | Nimbus</title><meta data-rh="true" name="viewport" content="width=device-width,initial-scale=1"><meta data-rh="true" name="twitter:card" content="summary_large_image"><meta data-rh="true" property="og:image" content="https://docs.cumulo-nimbus.ai/img/social-card.png"><meta data-rh="true" name="twitter:image" content="https://docs.cumulo-nimbus.ai/img/social-card.png"><meta data-rh="true" property="og:url" content="https://docs.cumulo-nimbus.ai/guides/security"><meta data-rh="true" property="og:locale" content="en"><meta data-rh="true" name="docusaurus_locale" content="en"><meta data-rh="true" name="docsearch:language" content="en"><meta data-rh="true" name="docusaurus_version" content="current"><meta data-rh="true" name="docusaurus_tag" content="docs-default-current"><meta data-rh="true" name="docsearch:version" content="current"><meta data-rh="true" name="docsearch:docusaurus_tag" content="docs-default-current"><meta data-rh="true" property="og:title" content="Security posture &amp; open TODOs | Nimbus"><meta data-rh="true" name="description" content="Migrated from docs/security.md - the canonical source lives in the repo."><meta data-rh="true" property="og:description" content="Migrated from docs/security.md - the canonical source lives in the repo."><link data-rh="true" rel="icon" href="/img/favicon.svg"><link data-rh="true" rel="canonical" href="https://docs.cumulo-nimbus.ai/guides/security"><link data-rh="true" rel="alternate" href="https://docs.cumulo-nimbus.ai/guides/security" hreflang="en"><link data-rh="true" rel="alternate" href="https://docs.cumulo-nimbus.ai/guides/security" hreflang="x-default"><script data-rh="true" type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Security","item":"https://docs.cumulo-nimbus.ai/guides/security"}]}</script><link rel="stylesheet" href="/assets/css/styles.5ae419b2.css">
+<script src="/assets/js/runtime~main.e74ebefa.js" defer="defer"></script>
+<script src="/assets/js/main.92f144b6.js" defer="defer"></script>
+</head>
+<body>
+<svg style="display: none;"><defs>
+<symbol id="theme-svg-external-link" viewBox="0 0 24 24"><path fill="currentColor" d="M21 13v10h-21v-19h12v2h-10v15h17v-8h2zm3-12h-10.988l4.035 4-6.977 7.07 2.828 2.828 6.977-7.07 4.125 4.172v-11z"/></symbol>
+</defs></svg>
+<script>!function(){var t=function(){try{return new URLSearchParams(window.location.search).get("docusaurus-theme")}catch(t){}}()||function(){try{return window.localStorage.getItem("theme")}catch(t){}}();document.documentElement.setAttribute("data-theme",t||(window.matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light")),document.documentElement.setAttribute("data-theme-choice",t||"system")}(),function(){try{const c=new URLSearchParams(window.location.search).entries();for(var[t,e]of c)if(t.startsWith("docusaurus-data-")){var a=t.replace("docusaurus-data-","data-");document.documentElement.setAttribute(a,e)}}catch(t){}}()</script><div id="__docusaurus"><div role="region" aria-label="Skip to main content"><a class="skipToContent_fXgn" href="#__docusaurus_skipToContent_fallback">Skip to main content</a></div><nav aria-label="Main" class="theme-layout-navbar navbar navbar--fixed-top"><div class="navbar__inner"><div class="theme-layout-navbar-left navbar__items"><button aria-label="Toggle navigation bar" aria-expanded="false" class="navbar__toggle clean-btn" type="button"><svg width="30" height="30" viewBox="0 0 30 30" aria-hidden="true"><path stroke="currentColor" stroke-linecap="round" stroke-miterlimit="10" stroke-width="2" d="M4 7h22M4 15h22M4 23h22"></path></svg></button><a class="navbar__brand" href="/"><div class="navbar__logo"><img src="/img/logo.svg" alt="Nimbus" class="themedComponent_mlkZ themedComponent--light_NVdE"><img src="/img/logo.svg" alt="Nimbus" class="themedComponent_mlkZ themedComponent--dark_xIcU"></div><b class="navbar__title text--truncate">Nimbus</b></a><a class="navbar__item navbar__link" href="/quick-start/what-you-need">Get started</a><a class="navbar__item navbar__link" href="/flash">Flash</a></div><div class="theme-layout-navbar-right navbar__items navbar__items--right"><a href="https://github.com/ristllin/Nimbus" target="_blank" rel="noopener noreferrer" class="navbar__item navbar__link">GitHub<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a><div class="toggle_vylO colorModeToggle_DEke"><button class="clean-btn toggleButton_gllP toggleButtonDisabled_aARS" type="button" disabled="" title="system mode" aria-label="Switch between dark and light mode (currently system mode)"><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP lightToggleIcon_pyhR"><path fill="currentColor" d="M12,9c1.65,0,3,1.35,3,3s-1.35,3-3,3s-3-1.35-3-3S10.35,9,12,9 M12,7c-2.76,0-5,2.24-5,5s2.24,5,5,5s5-2.24,5-5 S14.76,7,12,7L12,7z M2,13l2,0c0.55,0,1-0.45,1-1s-0.45-1-1-1l-2,0c-0.55,0-1,0.45-1,1S1.45,13,2,13z M20,13l2,0c0.55,0,1-0.45,1-1 s-0.45-1-1-1l-2,0c-0.55,0-1,0.45-1,1S19.45,13,20,13z M11,2v2c0,0.55,0.45,1,1,1s1-0.45,1-1V2c0-0.55-0.45-1-1-1S11,1.45,11,2z M11,20v2c0,0.55,0.45,1,1,1s1-0.45,1-1v-2c0-0.55-0.45-1-1-1C11.45,19,11,19.45,11,20z M5.99,4.58c-0.39-0.39-1.03-0.39-1.41,0 c-0.39,0.39-0.39,1.03,0,1.41l1.06,1.06c0.39,0.39,1.03,0.39,1.41,0s0.39-1.03,0-1.41L5.99,4.58z M18.36,16.95 c-0.39-0.39-1.03-0.39-1.41,0c-0.39,0.39-0.39,1.03,0,1.41l1.06,1.06c0.39,0.39,1.03,0.39,1.41,0c0.39-0.39,0.39-1.03,0-1.41 L18.36,16.95z M19.42,5.99c0.39-0.39,0.39-1.03,0-1.41c-0.39-0.39-1.03-0.39-1.41,0l-1.06,1.06c-0.39,0.39-0.39,1.03,0,1.41 s1.03,0.39,1.41,0L19.42,5.99z M7.05,18.36c0.39-0.39,0.39-1.03,0-1.41c-0.39-0.39-1.03-0.39-1.41,0l-1.06,1.06 c-0.39,0.39-0.39,1.03,0,1.41s1.03,0.39,1.41,0L7.05,18.36z"></path></svg><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP darkToggleIcon_wfgR"><path fill="currentColor" d="M9.37,5.51C9.19,6.15,9.1,6.82,9.1,7.5c0,4.08,3.32,7.4,7.4,7.4c0.68,0,1.35-0.09,1.99-0.27C17.45,17.19,14.93,19,12,19 c-3.86,0-7-3.14-7-7C5,9.07,6.81,6.55,9.37,5.51z M12,3c-4.97,0-9,4.03-9,9s4.03,9,9,9s9-4.03,9-9c0-0.46-0.04-0.92-0.1-1.36 c-0.98,1.37-2.58,2.26-4.4,2.26c-2.98,0-5.4-2.42-5.4-5.4c0-1.81,0.89-3.42,2.26-4.4C12.92,3.04,12.46,3,12,3L12,3z"></path></svg><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP systemToggleIcon_QzmC"><path fill="currentColor" d="m12 21c4.971 0 9-4.029 9-9s-4.029-9-9-9-9 4.029-9 9 4.029 9 9 9zm4.95-13.95c1.313 1.313 2.05 3.093 2.05 4.95s-0.738 3.637-2.05 4.95c-1.313 1.313-3.093 2.05-4.95 2.05v-14c1.857 0 3.637 0.737 4.95 2.05z"></path></svg></button></div><div class="navbarSearchContainer_Bca1"></div></div></div><div role="presentation" class="navbar-sidebar__backdrop"></div></nav><div id="__docusaurus_skipToContent_fallback" class="theme-layout-main main-wrapper mainWrapper_z2l0"><div class="docsWrapper_hBAB"><button aria-label="Scroll back to top" class="clean-btn theme-back-to-top-button backToTopButton_sjWU" type="button"></button><div class="docRoot_UBD9"><aside class="theme-doc-sidebar-container docSidebarContainer_YfHR"><div class="sidebarViewport_aRkj"><div class="sidebar_njMd"><nav aria-label="Docs sidebar" class="menu thin-scrollbar menu_SIkG"><ul class="theme-doc-sidebar-menu menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/"><span class="linkLabel_WmDU">Overview</span></a></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="true" href="/quick-start/what-you-need"><span class="categoryLinkLabel_W154">Quick Start</span></a></div><ul class="menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/what-you-need"><span class="linkLabel_WmDU">What you need</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/flash"><span class="linkLabel_WmDU">Flash the firmware</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/setup-wizard"><span class="linkLabel_WmDU">Set up the device</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/first-conversation"><span class="linkLabel_WmDU">First conversation</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/notifier-quick-start"><span class="linkLabel_WmDU">Notifier quick start</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/getting-started/first-time-setup"><span class="linkLabel_WmDU">First-time setup</span></a></li></ul></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/guides/hardware"><span class="categoryLinkLabel_W154">Hardware Build</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/getting-started/webui-reference"><span class="categoryLinkLabel_W154">Using Nimbus</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret menu__link--active" role="button" aria-expanded="true" href="/guides/architecture"><span class="categoryLinkLabel_W154">How It Works</span></a></div><ul class="menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/architecture"><span class="linkLabel_WmDU">Architecture</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/turn-anatomy"><span class="linkLabel_WmDU">Turn anatomy</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/orchestrator-live-turn"><span class="linkLabel_WmDU">Live turn</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/orchestrator-world"><span class="linkLabel_WmDU">Orchestrator World</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/memory"><span class="linkLabel_WmDU">Memory</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/orchestrator-storage"><span class="linkLabel_WmDU">Storage tiering</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/sub-sessions"><span class="linkLabel_WmDU">Sub-sessions</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/harness"><span class="linkLabel_WmDU">Harness</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/provider-wire"><span class="linkLabel_WmDU">Provider wire</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link menu__link--active" aria-current="page" tabindex="0" href="/guides/security"><span class="linkLabel_WmDU">Security</span></a></li></ul></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/reference/config-and-nvs"><span class="categoryLinkLabel_W154">Reference</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/contributing/development"><span class="categoryLinkLabel_W154">Forking &amp; Contributing</span></a></div></li></ul></nav></div></div></aside><main class="docMainContainer_TBSr"><div class="container padding-top--md padding-bottom--lg"><div class="row"><div class="col docItemCol_VOVn"><div class="docItemContainer_Djhp"><article><nav class="theme-doc-breadcrumbs breadcrumbsContainer_Z_bl" aria-label="Breadcrumbs"><ul class="breadcrumbs"><li class="breadcrumbs__item"><a aria-label="Home page" class="breadcrumbs__link" href="/"><svg viewBox="0 0 24 24" class="breadcrumbHomeIcon_YNFT"><path d="M10 19v-5h4v5c0 .55.45 1 1 1h3c.55 0 1-.45 1-1v-7h1.7c.46 0 .68-.57.33-.87L12.67 3.6c-.38-.34-.96-.34-1.34 0l-8.36 7.53c-.34.3-.13.87.33.87H5v7c0 .55.45 1 1 1h3c.55 0 1-.45 1-1z" fill="currentColor"></path></svg></a></li><li class="breadcrumbs__item"><span class="breadcrumbs__link">How It Works</span></li><li class="breadcrumbs__item breadcrumbs__item--active"><span class="breadcrumbs__link">Security</span></li></ul></nav><div class="tocCollapsible_ETCw theme-doc-toc-mobile tocMobile_ITEo"><button type="button" class="clean-btn tocCollapsibleButton_TO0P">On this page</button></div><div class="theme-doc-markdown markdown"><blockquote>
+<p>Sourced from <code>docs/security.md</code> in the firmware repo.</p>
+</blockquote>
+<header><h1>Nimbus Security Posture + TODOs</h1></header>
+<p>Security model for the device&#x27;s network surfaces, and the open items deferred by the
+owner. This page is the reference for the auth model and open items.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="threat-model">Threat model<a href="#threat-model" class="hash-link" aria-label="Direct link to Threat model" title="Direct link to Threat model" translate="no">​</a></h2>
+<p>A personal desk device on the owner&#x27;s home LAN. Primary adversaries: another host on
+the same LAN, anyone in RF range of an active Orchestrator setup AP
+(<code>Nimbus-setup</code>) or the Notifier BLE radio, and an attacker on the internet path to
+the providers (evil-twin AP, rogue router, DNS/ARP spoof). Not an internet-exposed
+server - findings are weighted by real reachability.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="in-place-implemented--on-device-verified">In place (implemented + on-device verified)<a href="#in-place-implemented--on-device-verified" class="hash-link" aria-label="Direct link to In place (implemented + on-device verified)" title="Direct link to In place (implemented + on-device verified)" translate="no">​</a></h2>
+<ul>
+<li class=""><strong>Per-device web/MCP auth token.</strong> <code>store::webAuthToken()</code> (96-bit hardware-random,
+NVS, no setter). <code>net::webAuthOk()</code> checks <code>X-Nimbus-Token</code> (or <code>?t=</code>) constant-time
+and fails closed. Gates <strong>every</strong> route, reads included - <code>GET /api/state</code>,
+<code>/api/log</code>, <code>/api/connect</code>, <code>/api/sdprobe</code> and the LAN <code>POST /mcp</code> among them. The
+only two ungated responses are the ones the gate itself needs: <code>GET /</code> (the static
+shell, which carries no device data - every value is a placeholder filled in later by
+a gated fetch) and <code>GET /logo.svg</code> (the gate&#x27;s own artwork). Two deliberate bootstrap
+exceptions exist, both <strong>unprovisioned-only</strong>: <code>/savewifi</code> (first provision), and the
+AP-interface token handout on <code>GET /</code> + the captive-portal catch-all, which <code>302</code>s to
+<code>/?t=&lt;token&gt;</code> for a peer on the setup AP while no <code>staSsid</code> is saved (detailed under
+<em>Setup AP + shipped password</em> below). Once Wi-Fi is configured, neither fires.
+Delivered automatically via the <strong>Sign-in QR</strong> (<code>configUrl()</code> embeds <code>?t=</code>); the
+token is not a separate onboarding step. Requiring it also defeats CSRF. Verified:
+no/wrong token → 401, valid → 200.
+⚠ <strong>No auth decision is made from the request&#x27;s <code>Host</code>, <code>Origin</code>, <code>Referer</code>, or client
+IP.</strong> Reaching the device by raw IP is therefore not a way around the gate. It can
+<em>look</em> like one: the browser stores the token per ORIGIN, so a browser that identified
+at <code>http://&lt;ip&gt;</code> is silently authenticated there while <code>http://&lt;name&gt;.local</code> - a
+different origin - still shows the gate. Same device, same gate, two storage buckets.</li>
+<li class=""><strong>Secret redaction in logs.</strong> The Telegram token (embedded in the <code>/bot&lt;token&gt;/…</code>
+send path) is redacted before it can reach <code>GET /api/log</code>. That endpoint is itself
+token-gated, so the redaction is defence-in-depth rather than the only barrier.</li>
+<li class=""><strong>Telegram allowlist fails CLOSED.</strong> An empty allowlist rejects all chats (was
+fail-open = allow-all); the poll task warns loudly if a token is set with no allowlist.</li>
+<li class=""><strong>Shared-engine mutex.</strong> <code>memory::Lock</code> (recursive) serializes VectorMemory /
+Scratchpad / episodic access across the AsyncTCP web/MCP task + the Telegram turn
+task (fixes an iterator-invalidation / heap-corruption race). Never held across a
+blocking TLS embed.</li>
+<li class=""><strong>Notifier BLE link is bonded + encrypted.</strong> In Notifier mode the ring/e-ink are
+driven only over BLE. The GATT server requires a <strong>bonded, encrypted</strong> link (LE
+Secure Connections, Just Works) to write frames (<code>WRITE_ENC</code> on FRAME) or read/write
+CONFIG - so an unbonded central in RF range can connect and read the ungated STATUS
+telemetry (protocol/fw version + a seq counter) but <strong>cannot paint the ring or
+read/write config</strong>. This closed the v1 open-radio hole (anyone in range could paint
+the ring). Just Works (not MITM/passkey - macOS won&#x27;t surface a passkey dialog for a
+background-CLI-paired custom peripheral) drops only active-MITM
+protection during the one-time bond; the link stays ECDH-encrypted (passive-sniff
+safe). Bonds persist in NVS. Verified on hardware: unbonded write rejected; bonded
+frame applies; bond survives reboot.</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="open-todos-owner-deferred-2026-07-04">Open TODOs (owner-deferred 2026-07-04)<a href="#open-todos-owner-deferred-2026-07-04" class="hash-link" aria-label="Direct link to Open TODOs (owner-deferred 2026-07-04)" title="Direct link to Open TODOs (owner-deferred 2026-07-04)" translate="no">​</a></h2>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="donesecurity-outbound-tls-certificate-validation---ca-bundle">DONE(security): outbound TLS certificate validation - CA bundle<a href="#donesecurity-outbound-tls-certificate-validation---ca-bundle" class="hash-link" aria-label="Direct link to DONE(security): outbound TLS certificate validation - CA bundle" title="Direct link to DONE(security): outbound TLS certificate validation - CA bundle" translate="no">​</a></h3>
+<p><strong>Status: IMPLEMENTED (default ON).</strong> Every outbound HTTPS client now goes through the
+single <code>tlsSetup()</code> seam (<code>src/agent/net_util.h</code>) instead of calling
+<code>WiFiClientSecure::setInsecure()</code> directly. When <code>store::tlsVerify()</code> is true (NVS
+<code>tlsVerify</code>, <strong>default true</strong>), <code>tlsSetup()</code> calls <code>setCACertBundle()</code> with the IDF&#x27;s
+embedded ~200-root bundle (<code>CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL</code>, referenced
+via the <code>_binary_x509_crt_bundle_{start,end}</code> linker symbols) - so the <strong>server
+certificate is validated</strong>. An attacker on the network path (evil-twin AP the device
+auto-joins, rogue router, DNS/ARP spoof) can no longer MITM a provider connection to
+harvest the <code>Authorization: Bearer &lt;provider-key&gt;</code> headers or the Telegram bot token.
+All 13 clients converted: <code>telegram.cpp</code>, <code>openai_adapter</code>, <code>anthropic_adapter</code>,
+<code>mistral_adapter</code>, <code>custom_adapter</code>, <code>embeddings</code>, <code>tavily</code>, <code>tts_voices</code>, <code>audio_tts</code>,
+<code>http_multipart</code>, <code>provider_verify</code>, <code>connectors</code>, <code>sfx_sync</code>.</p>
+<p><strong>Escape hatch:</strong> <code>store::setTlsVerify(false)</code> (the web UI checkbox (Capabilities → Models) → <code>POST /api/orch</code>
+<code>tlsVerify=0</code>, surfaced in <code>/api/state</code>) falls back to <code>setInsecure()</code> - for a
+self-signed custom <code>orchHost</code> or a provider whose root isn&#x27;t in the bundle (a connection
+ERROR, not a security hole). ⚠ <strong>Known limitation:</strong> the flag is GLOBAL, not per-provider</p>
+<ul>
+<li class="">turning it off to accommodate a self-signed host also drops validation for the cloud
+providers. Per-provider granularity is the follow-up if a self-hosted + cloud mix ever
+needs both at once.</li>
+</ul>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="donesecurity-cloud-relay-socket-always-validates-never-setinsecure">DONE(security): cloud relay socket always validates (never setInsecure)<a href="#donesecurity-cloud-relay-socket-always-validates-never-setinsecure" class="hash-link" aria-label="Direct link to DONE(security): cloud relay socket always validates (never setInsecure)" title="Direct link to DONE(security): cloud relay socket always validates (never setInsecure)" translate="no">​</a></h3>
+<p>The cloud relay client (<code>src/net/relay_client.cpp</code>, see cloud-relay.md)
+does NOT go through <code>tlsSetup()</code>, so the <code>tlsVerify=0</code> escape hatch above can never weaken
+it: <code>relayTlsSetup()</code> always calls <code>setCACertBundle()</code>. The relay is the remote-access
+security boundary, so its connection is validated unconditionally. Tunneled requests are
+already authenticated by the service (owner + subscription + ownership) before they reach
+the device; the device injects its own LAN access token onto the loopback replay and that
+token never leaves the device.</p>
+<p><strong>Follow-up (hardening):</strong> the endpoint is Cloudflare-fronted, so the relay currently
+trusts any CA-bundle-valid certificate for <code>app.cumulo-nimbus.ai</code>. Pinning the issuing
+CA / SPKI (in addition to the bundle check) would narrow trust to Cloudflare&#x27;s issuer;
+deferred because leaf certificates rotate on a ~90-day cycle and a bad pin bricks remote
+access until an OTA. Bundle-root validation is the MVP posture.</p>
+<p>⚠ <strong>On-device verification is the gate, not the build.</strong> A green link only proves the
+bundle symbol resolved. Each provider must be confirmed to still CONNECT with validation
+on (trigger <code>provider_verify</code> per provider → <code>result=1 verified</code>, plus one real turn) -
+a provider whose root isn&#x27;t bundled fails as a connect error until the flag is flipped.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="todosecurity-get-the-access-token-out-of-urls">TODO(security): get the access token out of URLs<a href="#todosecurity-get-the-access-token-out-of-urls" class="hash-link" aria-label="Direct link to TODO(security): get the access token out of URLs" title="Direct link to TODO(security): get the access token out of URLs" translate="no">​</a></h3>
+<p><strong>Status: OPEN - design note, not yet implemented.</strong> The token is delivered as a query
+parameter (<code>?t=&lt;token&gt;</code>) and that is currently the <em>only</em> delivery mechanism:
+<code>configUrl()</code>/<code>setupUrl()</code> build the Config-QR link, the unprovisioned-AP redirect uses
+it, <code>/api/connect</code> returns <code>url</code>/<code>mdnsUrl</code>, and <code>/api/files/dl</code> puts it in every
+download link. The page strips it from the address bar
+(<code>history.replaceState</code>, <code>ui_js.h</code>) as soon as it is durably stored.</p>
+<p><strong>Why the strip is not enough.</strong> The navigation is committed to the browser&#x27;s history
+database <em>before</em> any script runs, so <code>replaceState</code> cannot unwrite it - it only edits
+the current session-history entry. That leaves a <code>http://&lt;ip&gt;/?t=&lt;token&gt;</code> record in
+history, and Chrome/Edge/Firefox <strong>sync history and bookmarks across machines while
+localStorage is never synced</strong>. A second computer signed into the same browser profile
+can therefore omnibox-autocomplete a token-bearing URL and silently authenticate - which
+is exactly what &quot;the IP let me straight in on a machine I&#x27;d never used&quot; turns out to be.
+Two related leaks: <code>/api/files/dl?…&amp;t=&lt;token&gt;</code> opens in a new tab (<code>target=_blank</code>), so
+it lands in history <em>and</em> download history and is never stripped (no script runs on a
+binary response); and the Connectivity panel&#x27;s copy-token control puts the token on the
+system clipboard, which macOS Universal Clipboard and Windows Cloud Clipboard sync
+across devices.</p>
+<p><strong>Blast radius (why this is a TODO, not an incident).</strong> Everything above stays inside
+surfaces the owner already controls - their own synced browser profile and their own
+clipboard. It is not remotely reachable and grants nothing an owner does not have. What
+it does defeat is the <em>revocation</em> story: rotating the token cannot claw back copies
+sitting in synced history on machines you have forgotten about.</p>
+<p><strong>Options when picked up</strong> (rough order of value/effort):</p>
+<ol>
+<li class=""><strong>One-time exchange code.</strong> The QR carries a short-lived, single-use code; the page
+POSTs it and receives the real token in the response body. Nothing durable ever
+appears in a URL. Needs a small server-side code table with a TTL.</li>
+<li class=""><strong>Header-only downloads.</strong> Replace the <code>?t=</code>-bearing <code>/api/files/dl</code> anchors with a
+<code>fetch</code> + <code>Blob</code> + <code>URL.createObjectURL</code> download so the token rides the
+<code>X-Nimbus-Token</code> header like every other request. Self-contained, no protocol change.</li>
+<li class=""><strong>Scope the QR token.</strong> Issue a separate, rotatable &quot;enrollment&quot; secret for the QR so
+the long-lived control token is never the thing printed on the panel.</li>
+<li class=""><strong>Belt-and-braces:</strong> keep <code>replaceState</code>, and additionally accept <code>?t=</code> only on <code>GET /</code>
+(never on API routes) so a leaked deep link is inert.</li>
+</ol>
+<p>Until then, <code>POST /api/token/regen</code> (Settings → Connectivity) is the mitigation: it
+invalidates every previously-issued URL, including any sitting in synced history.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="setup-ap-password---per-device-random-fixed-2026-08-10">Setup AP password - per-device random (fixed 2026-08-10)<a href="#setup-ap-password---per-device-random-fixed-2026-08-10" class="hash-link" aria-label="Direct link to Setup AP password - per-device random (fixed 2026-08-10)" title="Direct link to Setup AP password - per-device random (fixed 2026-08-10)" translate="no">​</a></h3>
+<p>The setup network password is now <strong>generated per device</strong>: on the first boot with
+no stored value the device mints a 10-character random passphrase (hardware RNG,
+lowercase + digits with the ambiguous <code>0/o/1/l</code> removed) and persists it in NVS
+(<code>agent::store::setupApPass</code>). The fleet-wide shipped <code>nimbus1234</code> is gone from the
+air - <code>NIMBUS_AP_PASS</code> survives in the source only as the fallback for a device
+whose NVS is unusable. The passphrase appears <strong>only on the device&#x27;s setup screen</strong>
+(printed, and embedded in the setup screen&#x27;s Wi-Fi join QR so a phone camera joins
+directly); it is never advertised over mDNS or any API. It regenerates only on
+factory reset (<code>nvs_flash_erase</code> wipes the whole namespace). HIL can read it with
+the TEST-console <code>APINFO?</code> command.</p>
+<p><strong>Migration:</strong> a device updated over OTA has no stored passphrase, so it generates
+one on the first boot after the update. Its setup network only matters after a
+factory reset or when Wi-Fi is lost - from this update on, the setup network
+password is <strong>the one shown on the device&#x27;s screen</strong>, not <code>nimbus1234</code>.</p>
+<p>The setup AP exists only in <strong>Orchestrator</strong> mode; Notifier keeps Wi-Fi off. On an
+e-ink Orchestrator it stays reachable, while a TFT Orchestrator drops it after STA
+gets an IP (to protect the panel from the beacon train) and restores it whenever
+STA is down. A new or disconnected Orchestrator therefore still exposes the setup
+AP - now gated on the per-device passphrase.</p>
+<p><strong>TFT first-run handoff is bounded and authenticated.</strong> <code>/savewifi</code> arms a maximum
+20-second AP+STA overlap instead of allowing <code>GOT_IP</code> to cut off the response. The
+wizard obtains the exact DHCP address, constructs a token-bearing continuation URL,
+then acknowledges it with token-gated <code>POST /api/wifi/handoff</code>; the main task waits
+four more seconds for that response to flush before stopping the AP. The browser
+probes the exact IP and resumes at the provider step after the host rejoins its LAN.
+It does not rely on potentially ambiguous mDNS. If the acknowledgement never arrives,
+the 20-second fallback still protects the RF-sensitive TFT.</p>
+<p>The station link and setup AP are reported as separate facts. In particular,
+<code>STA connected + AP off</code> is the expected TFT steady state and must never be presented
+as “Wi-Fi setup is down.” ConfigQr uses the reachable station URL in that state;
+SetupInfo alone owns the AP-first onboarding instructions.</p>
+<p><strong>Token handout is unprovisioned-only.</strong> The AP interface auto-supplies the device
+token (<code>GET /?t=&lt;token&gt;</code> redirect, and the captive-portal catch-all) so first-run
+setup is one tap - but ONLY while the device is unprovisioned (no <code>staSsid</code> saved),
+mirroring the <code>/savewifi</code> bootstrap exception. Once Wi-Fi is configured, an AP peer that
+knows the AP password lands on the token-less identify gate like any LAN peer, so
+RF range alone no longer grants full control. (Before this, the AP handed the
+full-control token to anyone who joined with the then-shipped <code>nimbus1234</code>.)</p>
+<p><strong>Remaining (deferred):</strong> consider applying the TFT&#x27;s post-join AP teardown to
+e-ink devices.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="reporting-only-not-acted-on">Reporting-only (not acted on)<a href="#reporting-only-not-acted-on" class="hash-link" aria-label="Direct link to Reporting-only (not acted on)" title="Direct link to Reporting-only (not acted on)" translate="no">​</a></h2>
+<p>Low-severity + deliberate-tradeoff items (multipart <code>Content-Length</code> ceiling, the
+MCP-abort buffer leak, a few <code>snprintf</code>/<code>toCharArray</code> bounds nits, large-function
+simplify candidates in <code>main.cpp</code>/<code>orchestrator.cpp</code>). Not fixed: refactoring working,
+heavily-tested device code carries more regression risk than value.</p></div><footer class="theme-doc-footer docusaurus-mt-lg"><div class="row margin-top--sm theme-doc-footer-edit-meta-row"><div class="col noPrint_WFHX"><a href="https://github.com/ristllin/Nimbus/blob/main/docs/security.md" target="_blank" rel="noopener noreferrer" class="theme-edit-this-page"><svg fill="currentColor" height="20" width="20" viewBox="0 0 40 40" class="iconEdit_Z9Sw" aria-hidden="true"><g><path d="m34.5 11.7l-3 3.1-6.3-6.3 3.1-3q0.5-0.5 1.2-0.5t1.1 0.5l3.9 3.9q0.5 0.4 0.5 1.1t-0.5 1.2z m-29.5 17.1l18.4-18.5 6.3 6.3-18.4 18.4h-6.3v-6.2z"></path></g></svg>Edit this page</a></div><div class="col lastUpdated_JAkA"></div></div></footer></article><nav class="docusaurus-mt-lg pagination-nav" aria-label="Docs pages"><a class="pagination-nav__link pagination-nav__link--prev" href="/guides/provider-wire"><div class="pagination-nav__sublabel">Previous</div><div class="pagination-nav__label">Provider wire</div></a><a class="pagination-nav__link pagination-nav__link--next" href="/reference/config-and-nvs"><div class="pagination-nav__sublabel">Next</div><div class="pagination-nav__label">Config &amp; NVS</div></a></nav></div></div><div class="col col--3"><div class="tableOfContents_bqdL thin-scrollbar theme-doc-toc-desktop"><ul class="table-of-contents table-of-contents__left-border"><li><a href="#threat-model" class="table-of-contents__link toc-highlight">Threat model</a></li><li><a href="#in-place-implemented--on-device-verified" class="table-of-contents__link toc-highlight">In place (implemented + on-device verified)</a></li><li><a href="#open-todos-owner-deferred-2026-07-04" class="table-of-contents__link toc-highlight">Open TODOs (owner-deferred 2026-07-04)</a><ul><li><a href="#donesecurity-outbound-tls-certificate-validation---ca-bundle" class="table-of-contents__link toc-highlight">DONE(security): outbound TLS certificate validation - CA bundle</a></li><li><a href="#donesecurity-cloud-relay-socket-always-validates-never-setinsecure" class="table-of-contents__link toc-highlight">DONE(security): cloud relay socket always validates (never setInsecure)</a></li><li><a href="#todosecurity-get-the-access-token-out-of-urls" class="table-of-contents__link toc-highlight">TODO(security): get the access token out of URLs</a></li><li><a href="#setup-ap-password---per-device-random-fixed-2026-08-10" class="table-of-contents__link toc-highlight">Setup AP password - per-device random (fixed 2026-08-10)</a></li></ul></li><li><a href="#reporting-only-not-acted-on" class="table-of-contents__link toc-highlight">Reporting-only (not acted on)</a></li></ul></div></div></div></div></main></div></div></div><footer class="theme-layout-footer footer footer--dark"><div class="container container-fluid"><div class="row footer__links"><div class="theme-layout-footer-column col footer__col"><div class="footer__title">Docs</div><ul class="footer__items clean-list"><li class="footer__item"><a class="footer__link-item" href="/quick-start/what-you-need">Quick Start</a></li><li class="footer__item"><a class="footer__link-item" href="/guides/hardware-bom">Bill of materials</a></li><li class="footer__item"><a class="footer__link-item" href="/getting-started/webui-reference">Web UI reference</a></li></ul></div><div class="theme-layout-footer-column col footer__col"><div class="footer__title">Reference</div><ul class="footer__items clean-list"><li class="footer__item"><a class="footer__link-item" href="/reference/config-and-nvs">Config &amp; NVS</a></li><li class="footer__item"><a class="footer__link-item" href="/reference/tool-catalog">Tool catalog</a></li><li class="footer__item"><a class="footer__link-item" href="/reference/turn-contract">Turn contract</a></li><li class="footer__item"><a class="footer__link-item" href="/reference/changelog">Changelog</a></li></ul></div><div class="theme-layout-footer-column col footer__col"><div class="footer__title">More</div><ul class="footer__items clean-list"><li class="footer__item"><a href="https://github.com/ristllin/Nimbus" target="_blank" rel="noopener noreferrer" class="footer__link-item">GitHub<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li></ul></div></div><div class="footer__bottom text--center"><div class="footer__copyright">Nimbus - source-available, free for noncommercial use (PolyForm-NC / CC BY-NC-SA). Built with Docusaurus.</div></div></div></footer></div>
+</body>
+</html>

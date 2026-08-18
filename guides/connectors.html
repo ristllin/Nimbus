@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="en" dir="ltr" class="docs-wrapper plugin-docs plugin-id-default docs-version-current docs-doc-page docs-doc-id-guides/connectors" data-has-hydrated="false">
+<head>
+<meta charset="UTF-8">
+<meta name="generator" content="Docusaurus v3.10.2">
+<title data-rh="true">Connectors - external tools per provider | Nimbus</title><meta data-rh="true" name="viewport" content="width=device-width,initial-scale=1"><meta data-rh="true" name="twitter:card" content="summary_large_image"><meta data-rh="true" property="og:image" content="https://docs.cumulo-nimbus.ai/img/social-card.png"><meta data-rh="true" name="twitter:image" content="https://docs.cumulo-nimbus.ai/img/social-card.png"><meta data-rh="true" property="og:url" content="https://docs.cumulo-nimbus.ai/guides/connectors"><meta data-rh="true" property="og:locale" content="en"><meta data-rh="true" name="docusaurus_locale" content="en"><meta data-rh="true" name="docsearch:language" content="en"><meta data-rh="true" name="docusaurus_version" content="current"><meta data-rh="true" name="docusaurus_tag" content="docs-default-current"><meta data-rh="true" name="docsearch:version" content="current"><meta data-rh="true" name="docsearch:docusaurus_tag" content="docs-default-current"><meta data-rh="true" property="og:title" content="Connectors - external tools per provider | Nimbus"><meta data-rh="true" name="description" content="Migrated from docs/connectors.md - the canonical source lives in the repo."><meta data-rh="true" property="og:description" content="Migrated from docs/connectors.md - the canonical source lives in the repo."><link data-rh="true" rel="icon" href="/img/favicon.svg"><link data-rh="true" rel="canonical" href="https://docs.cumulo-nimbus.ai/guides/connectors"><link data-rh="true" rel="alternate" href="https://docs.cumulo-nimbus.ai/guides/connectors" hreflang="en"><link data-rh="true" rel="alternate" href="https://docs.cumulo-nimbus.ai/guides/connectors" hreflang="x-default"><script data-rh="true" type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Connectors","item":"https://docs.cumulo-nimbus.ai/guides/connectors"}]}</script><link rel="stylesheet" href="/assets/css/styles.5ae419b2.css">
+<script src="/assets/js/runtime~main.e74ebefa.js" defer="defer"></script>
+<script src="/assets/js/main.92f144b6.js" defer="defer"></script>
+</head>
+<body>
+<svg style="display: none;"><defs>
+<symbol id="theme-svg-external-link" viewBox="0 0 24 24"><path fill="currentColor" d="M21 13v10h-21v-19h12v2h-10v15h17v-8h2zm3-12h-10.988l4.035 4-6.977 7.07 2.828 2.828 6.977-7.07 4.125 4.172v-11z"/></symbol>
+</defs></svg>
+<script>!function(){var t=function(){try{return new URLSearchParams(window.location.search).get("docusaurus-theme")}catch(t){}}()||function(){try{return window.localStorage.getItem("theme")}catch(t){}}();document.documentElement.setAttribute("data-theme",t||(window.matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light")),document.documentElement.setAttribute("data-theme-choice",t||"system")}(),function(){try{const c=new URLSearchParams(window.location.search).entries();for(var[t,e]of c)if(t.startsWith("docusaurus-data-")){var a=t.replace("docusaurus-data-","data-");document.documentElement.setAttribute(a,e)}}catch(t){}}()</script><div id="__docusaurus"><div role="region" aria-label="Skip to main content"><a class="skipToContent_fXgn" href="#__docusaurus_skipToContent_fallback">Skip to main content</a></div><nav aria-label="Main" class="theme-layout-navbar navbar navbar--fixed-top"><div class="navbar__inner"><div class="theme-layout-navbar-left navbar__items"><button aria-label="Toggle navigation bar" aria-expanded="false" class="navbar__toggle clean-btn" type="button"><svg width="30" height="30" viewBox="0 0 30 30" aria-hidden="true"><path stroke="currentColor" stroke-linecap="round" stroke-miterlimit="10" stroke-width="2" d="M4 7h22M4 15h22M4 23h22"></path></svg></button><a class="navbar__brand" href="/"><div class="navbar__logo"><img src="/img/logo.svg" alt="Nimbus" class="themedComponent_mlkZ themedComponent--light_NVdE"><img src="/img/logo.svg" alt="Nimbus" class="themedComponent_mlkZ themedComponent--dark_xIcU"></div><b class="navbar__title text--truncate">Nimbus</b></a><a class="navbar__item navbar__link" href="/quick-start/what-you-need">Get started</a><a class="navbar__item navbar__link" href="/flash">Flash</a></div><div class="theme-layout-navbar-right navbar__items navbar__items--right"><a href="https://github.com/ristllin/Nimbus" target="_blank" rel="noopener noreferrer" class="navbar__item navbar__link">GitHub<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a><div class="toggle_vylO colorModeToggle_DEke"><button class="clean-btn toggleButton_gllP toggleButtonDisabled_aARS" type="button" disabled="" title="system mode" aria-label="Switch between dark and light mode (currently system mode)"><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP lightToggleIcon_pyhR"><path fill="currentColor" d="M12,9c1.65,0,3,1.35,3,3s-1.35,3-3,3s-3-1.35-3-3S10.35,9,12,9 M12,7c-2.76,0-5,2.24-5,5s2.24,5,5,5s5-2.24,5-5 S14.76,7,12,7L12,7z M2,13l2,0c0.55,0,1-0.45,1-1s-0.45-1-1-1l-2,0c-0.55,0-1,0.45-1,1S1.45,13,2,13z M20,13l2,0c0.55,0,1-0.45,1-1 s-0.45-1-1-1l-2,0c-0.55,0-1,0.45-1,1S19.45,13,20,13z M11,2v2c0,0.55,0.45,1,1,1s1-0.45,1-1V2c0-0.55-0.45-1-1-1S11,1.45,11,2z M11,20v2c0,0.55,0.45,1,1,1s1-0.45,1-1v-2c0-0.55-0.45-1-1-1C11.45,19,11,19.45,11,20z M5.99,4.58c-0.39-0.39-1.03-0.39-1.41,0 c-0.39,0.39-0.39,1.03,0,1.41l1.06,1.06c0.39,0.39,1.03,0.39,1.41,0s0.39-1.03,0-1.41L5.99,4.58z M18.36,16.95 c-0.39-0.39-1.03-0.39-1.41,0c-0.39,0.39-0.39,1.03,0,1.41l1.06,1.06c0.39,0.39,1.03,0.39,1.41,0c0.39-0.39,0.39-1.03,0-1.41 L18.36,16.95z M19.42,5.99c0.39-0.39,0.39-1.03,0-1.41c-0.39-0.39-1.03-0.39-1.41,0l-1.06,1.06c-0.39,0.39-0.39,1.03,0,1.41 s1.03,0.39,1.41,0L19.42,5.99z M7.05,18.36c0.39-0.39,0.39-1.03,0-1.41c-0.39-0.39-1.03-0.39-1.41,0l-1.06,1.06 c-0.39,0.39-0.39,1.03,0,1.41s1.03,0.39,1.41,0L7.05,18.36z"></path></svg><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP darkToggleIcon_wfgR"><path fill="currentColor" d="M9.37,5.51C9.19,6.15,9.1,6.82,9.1,7.5c0,4.08,3.32,7.4,7.4,7.4c0.68,0,1.35-0.09,1.99-0.27C17.45,17.19,14.93,19,12,19 c-3.86,0-7-3.14-7-7C5,9.07,6.81,6.55,9.37,5.51z M12,3c-4.97,0-9,4.03-9,9s4.03,9,9,9s9-4.03,9-9c0-0.46-0.04-0.92-0.1-1.36 c-0.98,1.37-2.58,2.26-4.4,2.26c-2.98,0-5.4-2.42-5.4-5.4c0-1.81,0.89-3.42,2.26-4.4C12.92,3.04,12.46,3,12,3L12,3z"></path></svg><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP systemToggleIcon_QzmC"><path fill="currentColor" d="m12 21c4.971 0 9-4.029 9-9s-4.029-9-9-9-9 4.029-9 9 4.029 9 9 9zm4.95-13.95c1.313 1.313 2.05 3.093 2.05 4.95s-0.738 3.637-2.05 4.95c-1.313 1.313-3.093 2.05-4.95 2.05v-14c1.857 0 3.637 0.737 4.95 2.05z"></path></svg></button></div><div class="navbarSearchContainer_Bca1"></div></div></div><div role="presentation" class="navbar-sidebar__backdrop"></div></nav><div id="__docusaurus_skipToContent_fallback" class="theme-layout-main main-wrapper mainWrapper_z2l0"><div class="docsWrapper_hBAB"><button aria-label="Scroll back to top" class="clean-btn theme-back-to-top-button backToTopButton_sjWU" type="button"></button><div class="docRoot_UBD9"><aside class="theme-doc-sidebar-container docSidebarContainer_YfHR"><div class="sidebarViewport_aRkj"><div class="sidebar_njMd"><nav aria-label="Docs sidebar" class="menu thin-scrollbar menu_SIkG"><ul class="theme-doc-sidebar-menu menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/"><span class="linkLabel_WmDU">Overview</span></a></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="true" href="/quick-start/what-you-need"><span class="categoryLinkLabel_W154">Quick Start</span></a></div><ul class="menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/what-you-need"><span class="linkLabel_WmDU">What you need</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/flash"><span class="linkLabel_WmDU">Flash the firmware</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/setup-wizard"><span class="linkLabel_WmDU">Set up the device</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/first-conversation"><span class="linkLabel_WmDU">First conversation</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/notifier-quick-start"><span class="linkLabel_WmDU">Notifier quick start</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/getting-started/first-time-setup"><span class="linkLabel_WmDU">First-time setup</span></a></li></ul></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/guides/hardware"><span class="categoryLinkLabel_W154">Hardware Build</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret menu__link--active" role="button" aria-expanded="true" href="/getting-started/webui-reference"><span class="categoryLinkLabel_W154">Using Nimbus</span></a></div><ul class="menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/getting-started/webui-reference"><span class="linkLabel_WmDU">Web UI reference</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/modes-and-signals"><span class="linkLabel_WmDU">Modes &amp; signals</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/led-ux"><span class="linkLabel_WmDU">LED experience</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/sfx-map"><span class="linkLabel_WmDU">SFX map</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link menu__link--active" aria-current="page" tabindex="0" href="/guides/connectors"><span class="linkLabel_WmDU">Connectors</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/people-and-privacy"><span class="linkLabel_WmDU">People &amp; privacy</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/notifier-status-language"><span class="linkLabel_WmDU">Status language</span></a></li></ul></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/guides/architecture"><span class="categoryLinkLabel_W154">How It Works</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/reference/config-and-nvs"><span class="categoryLinkLabel_W154">Reference</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/contributing/development"><span class="categoryLinkLabel_W154">Forking &amp; Contributing</span></a></div></li></ul></nav></div></div></aside><main class="docMainContainer_TBSr"><div class="container padding-top--md padding-bottom--lg"><div class="row"><div class="col docItemCol_VOVn"><div class="docItemContainer_Djhp"><article><nav class="theme-doc-breadcrumbs breadcrumbsContainer_Z_bl" aria-label="Breadcrumbs"><ul class="breadcrumbs"><li class="breadcrumbs__item"><a aria-label="Home page" class="breadcrumbs__link" href="/"><svg viewBox="0 0 24 24" class="breadcrumbHomeIcon_YNFT"><path d="M10 19v-5h4v5c0 .55.45 1 1 1h3c.55 0 1-.45 1-1v-7h1.7c.46 0 .68-.57.33-.87L12.67 3.6c-.38-.34-.96-.34-1.34 0l-8.36 7.53c-.34.3-.13.87.33.87H5v7c0 .55.45 1 1 1h3c.55 0 1-.45 1-1z" fill="currentColor"></path></svg></a></li><li class="breadcrumbs__item"><span class="breadcrumbs__link">Using Nimbus</span></li><li class="breadcrumbs__item breadcrumbs__item--active"><span class="breadcrumbs__link">Connectors</span></li></ul></nav><div class="tocCollapsible_ETCw theme-doc-toc-mobile tocMobile_ITEo"><button type="button" class="clean-btn tocCollapsibleButton_TO0P">On this page</button></div><div class="theme-doc-markdown markdown"><blockquote>
+<p>Sourced from <code>docs/connectors.md</code> in the firmware repo.</p>
+</blockquote>
+<header><h1>Connectors - external tools, per provider</h1></header>
+<p>Connectors let the Orchestrator (and the sub-agents it spawns) reach the
+outside world. With a connector enabled you can ask, over Telegram or voice,
+things like:</p>
+<ul>
+<li class="">&quot;Any new issues on my repo?&quot; - GitHub returns the live list.</li>
+<li class="">&quot;How many unread emails do I have?&quot; - Gmail answers.</li>
+<li class="">&quot;Publish that summary to my Notion workspace.&quot; - a page appears.</li>
+</ul>
+<p><strong>How it works, in one sentence:</strong> Nimbus does <em>not</em> speak to
+Gmail/Notion/GitHub itself. It attaches a small <em>connector descriptor</em> to the
+LLM request, and the <strong>provider runs the tool server-side in its own cloud</strong>.
+So what you can do is whatever your provider hosts, and the credential lives
+with the provider (Mistral Studio) or is pasted once into Nimbus&#x27;s web UI.</p>
+<blockquote>
+<p><strong>Scope note.</strong> This is the <em>provider-attach</em> model - the AI lab executes the
+tool. Nimbus does not (yet) run its own outbound MCP client, and Google
+<strong>Sheets/Slides</strong> have no hosted MCP anywhere, so they are not reachable this
+way today (they need direct REST - a future pass). Gmail, Calendar, and
+Drive <em>are</em> reachable.</p>
+</blockquote>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="setting-up-a-connector">Setting up a connector<a href="#setting-up-a-connector" class="hash-link" aria-label="Direct link to Setting up a connector" title="Direct link to Setting up a connector" translate="no">​</a></h2>
+<p>Every connector is a <strong>paste-a-credential card</strong> under <strong>Capabilities →
+Connectors</strong> in the web UI. Connector credentials are pasted once into that
+card and stored write-only on the device - setup never involves the firmware
+repository or any script:</p>
+<ol>
+<li class="">Create the credential once in a browser: a GitHub personal access token, a
+Notion integration token, a Slack bot token, an OAuth refresh token, or a
+Studio-side connection.</li>
+<li class="">Open the device web UI → <strong>Capabilities → Connectors</strong>.</li>
+<li class="">Pick the provider on the connector&#x27;s card, paste the credential (or, for
+Mistral, just enable it), toggle <strong>enabled</strong>, <strong>Save</strong>.</li>
+<li class="">The card&#x27;s status badge confirms whether it is live on your turns, via
+sub-agents, or idle until you change the host.</li>
+</ol>
+<p>The model can never set a connector or read a secret - that rail is enforced
+in firmware (<a href="#security" class="">Security</a>).</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="what-each-provider-runs-and-where">What each provider runs, and where<a href="#what-each-provider-runs-and-where" class="hash-link" aria-label="Direct link to What each provider runs, and where" title="Direct link to What each provider runs, and where" translate="no">​</a></h2>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th></th><th>On the Orchestrator&#x27;s <strong>own turns</strong></th><th>On <strong>sub-agents</strong> it spawns</th></tr></thead><tbody><tr><td><strong>OpenAI</strong></td><td>✅ remote MCP (<code>server_url</code> + token) and first-party connectors (Gmail, Calendar, Drive…)</td><td>✅ same</td></tr><tr><td><strong>Anthropic</strong></td><td>- (the head turn is a single forced tool; MCP can&#x27;t run mid-turn)</td><td>✅ BYO remote MCP by URL (<code>mcp_servers</code>)</td></tr><tr><td><strong>Mistral</strong></td><td>✅ Studio built-ins + Studio-named connectors - <strong>single-shot turns</strong></td><td>✅ sub-agents run over the Conversations API; built-ins <em>and</em> Studio connectors attach to the spawn dispatch (server-side)</td></tr></tbody></table>
+<p>Two consequences:</p>
+<ul>
+<li class=""><strong>The current provider matters.</strong> A Mistral connector is only live when
+Mistral is the Orchestrator&#x27;s host. An Anthropic connector only runs on
+sub-agents. Capabilities → Connectors badges each card with what applies
+<em>right now</em>, and the model is told the same thing every turn.</li>
+<li class=""><strong>Mistral requires the least setup.</strong> Its connectors are authenticated in
+<strong>Mistral Studio</strong> and referenced by name - Nimbus stores <em>no secret</em> for
+them.</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="how-nimbus-knows-a-connector-is-available">How Nimbus knows a connector is available<a href="#how-nimbus-knows-a-connector-is-available" class="hash-link" aria-label="Direct link to How Nimbus knows a connector is available" title="Direct link to How Nimbus knows a connector is available" translate="no">​</a></h2>
+<p>Nimbus does not blindly trust that a pasted key works. <strong>Capability validation</strong>
+(Capabilities → Models → Tool use) controls how it confirms provider access
+before it tells the assistant a connector is available:</p>
+<ul>
+<li class=""><strong>Off</strong> - trust the key as-is, and make no &quot;verified&quot; claim.</li>
+<li class=""><strong>Passive</strong> (default) - mark a provider verified once a real call, or a manual
+<strong>Verify</strong>, succeeds; the result is cached.</li>
+<li class=""><strong>Active</strong> - passive, plus a periodic re-verify on a slow schedule so a revoked
+key or changed access is caught. The re-check is a free metadata call
+(<code>GET /v1/models</code>, roughly $0), one provider per wake, spread so each keyed
+provider refreshes about every <em>re-check</em> interval (default 24 hours, range
+1–168).</li>
+</ul>
+<p>The settings persist as NVS <code>capProbe</code> (0/1/2) and <code>capProbeH</code> (hours,
+<code>src/agent/store.cpp</code>). Active mode runs only in Orchestrator mode (the re-verify
+needs the TLS heap) and reuses the same one-slot verify worker as the web
+<strong>Verify</strong> button - no new concurrency.</p>
+<p><strong>Per-connector credential state (v4.1).</strong> Enabling a connector is a checkbox,
+not proof it works. The catalog the assistant reads marks the two states that
+need the owner: a connector whose OAuth sign-in <strong>failed</strong> on its last mint
+(&quot;sign-in FAILED - tell the owner&quot;) and a remote MCP / first-party connector
+that has <strong>no credential at all</strong> (&quot;NO credential - not usable&quot;), which the
+attach layer skips rather than sending a doomed request. A bare name means no
+known problem; a successful OAuth mint this boot is positive proof the
+credential works (<code>src/agent/connectors.cpp</code> <code>authStateOf</code>, fed from the one
+credential choke point).</p>
+<blockquote>
+<p><strong>What validation does not do.</strong> It confirms the <em>provider key</em> works, not each
+connector&#x27;s individual tools. Per-connector <em>functional</em> probing - actually
+calling a connector, which would spend tokens - is not implemented. A connector
+can be attached and still fail on a specific call (a private repo, a missing
+scope); the assistant is guided to verify writes by reading them back.</p>
+</blockquote>
+<p>Whatever the mode, the model is told the truth every turn: its
+<code>[PROVIDERS &amp; CONNECTORS]</code> block marks each provider <strong>available, verified</strong> /
+<strong>key present, not yet verified</strong> / <strong>key present but rejected on last check</strong> /
+<strong>no key</strong> - and with validation off, <strong>key present (validation off - trusting
+key presence)</strong>. That block is built in <code>catalogText</code>
+(<code>lib/core/src/orch_connectors_wire.cpp</code>), fed the verify cache and the mode by
+<code>connectors.cpp</code> <code>catalog()</code>.</p>
+<hr>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="github">GitHub<a href="#github" class="hash-link" aria-label="Direct link to GitHub" title="Direct link to GitHub" translate="no">​</a></h2>
+<ul>
+<li class=""><strong>Providers:</strong> OpenAI / Anthropic (remote MCP by URL), Mistral (Studio).</li>
+<li class=""><strong>Credential:</strong> a <strong>Personal Access Token</strong> (<code>ghp_…</code>) - GitHub → Settings →
+Developer settings → Personal access tokens. A PAT avoids the OAuth flow
+entirely: paste it once and the connector works.</li>
+<li class=""><strong>MCP URL (OpenAI/Anthropic):</strong> <code>https://api.githubcopilot.com/mcp/</code></li>
+<li class=""><strong>Mistral:</strong> connect GitHub in Studio, then enable it by name here (no token
+on device).</li>
+<li class=""><strong>Unlocks:</strong> issues, PRs and reviews, code and commit search, <strong>creating
+repositories</strong>, and pushing file contents through the GitHub API (releases are
+read-only; there are no Actions or Gists tools). Verified against the
+OpenAI/Anthropic MCP endpoint; the Mistral Studio connector&#x27;s toolset may
+differ. For repo creation and file pushes the token needs the <code>repo</code> scope
+(or a fine-grained token with Administration and Contents read/write).</li>
+<li class=""><strong>Try it:</strong> once the card is saved, ask the assistant to <em>&quot;create a private
+repo named test-repo and add a README&quot;</em> - it should come back with the new
+repo&#x27;s URL.</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="gmail">Gmail<a href="#gmail" class="hash-link" aria-label="Direct link to Gmail" title="Direct link to Gmail" translate="no">​</a></h2>
+<ul>
+<li class=""><strong>Providers:</strong> OpenAI (first-party connector <code>connector_gmail</code>), Mistral (Studio).</li>
+<li class=""><strong>Credential:</strong> an <strong>OAuth refresh token</strong> created off-device (Google&#x27;s
+device flow excludes Gmail scopes, so do the one-time auth-code consent in a
+browser and paste the refresh token). For Mistral, connect Google in Studio
+instead.</li>
+<li class=""><strong>Unlocks:</strong> read, search, draft, and label email.</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="google-calendar">Google Calendar<a href="#google-calendar" class="hash-link" aria-label="Direct link to Google Calendar" title="Direct link to Google Calendar" translate="no">​</a></h2>
+<ul>
+<li class=""><strong>Providers:</strong> OpenAI (first-party <code>connector_googlecalendar</code>), Mistral (Studio).</li>
+<li class=""><strong>Credential:</strong> OAuth refresh token (as Gmail), or Studio-side for Mistral.</li>
+<li class=""><strong>Unlocks:</strong> read and manage events; calendar digests.</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="google-drive">Google Drive<a href="#google-drive" class="hash-link" aria-label="Direct link to Google Drive" title="Direct link to Google Drive" translate="no">​</a></h2>
+<ul>
+<li class=""><strong>Providers:</strong> OpenAI (first-party <code>connector_googledrive</code>), Mistral (Studio).</li>
+<li class=""><strong>Credential:</strong> OAuth refresh token (as Gmail), or Studio-side for Mistral.</li>
+<li class=""><strong>Unlocks:</strong> read and write Drive files - report and research-corpus storage.</li>
+<li class=""><strong>Note:</strong> Google <strong>Sheets/Slides</strong> are <em>not</em> covered by the hosted connector;
+they need direct REST (out of scope today).</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="notion">Notion<a href="#notion" class="hash-link" aria-label="Direct link to Notion" title="Direct link to Notion" translate="no">​</a></h2>
+<ul>
+<li class=""><strong>Providers:</strong> Mistral (Studio) requires the least setup; OpenAI/Anthropic
+via a remote MCP URL work too.</li>
+<li class=""><strong>Credential:</strong> a Notion <strong>Internal Integration</strong> token (<code>secret_…</code>) -
+Notion → Settings → Connections → Develop integrations. Share each target
+page with the integration once. (Notion&#x27;s <em>official</em> MCP mandates
+per-session OAuth and is unusable headless - prefer the static integration
+token.)</li>
+<li class=""><strong>Unlocks:</strong> create and query pages and databases - report publishing,
+research corpora.</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="slack">Slack<a href="#slack" class="hash-link" aria-label="Direct link to Slack" title="Direct link to Slack" translate="no">​</a></h2>
+<ul>
+<li class=""><strong>Providers:</strong> Mistral (Studio); elsewhere needs a small REST adapter (future).</li>
+<li class=""><strong>Credential:</strong> a <strong>bot token</strong> (<code>xoxb-…</code>) - create a Slack app once in a
+browser, install it to the workspace, copy the token. No on-device OAuth.</li>
+<li class=""><strong>Unlocks:</strong> read channel/DM history, search, post messages, reactions.</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="linear">Linear<a href="#linear" class="hash-link" aria-label="Direct link to Linear" title="Direct link to Linear" translate="no">​</a></h2>
+<ul>
+<li class=""><strong>Providers:</strong> OpenAI / Anthropic (remote MCP <code>https://mcp.linear.app</code>), Mistral (Studio).</li>
+<li class=""><strong>Credential:</strong> a static <strong>Linear API key</strong> (Bearer) that bypasses OAuth
+entirely - Linear → Settings → API.</li>
+<li class=""><strong>Unlocks:</strong> find, create, and update issues, projects, and comments.</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="mistral-builtins">Mistral built-ins<a href="#mistral-builtins" class="hash-link" aria-label="Direct link to Mistral built-ins" title="Direct link to Mistral built-ins" translate="no">​</a></h2>
+<p>Hosted tools that run inside Mistral with <strong>no device secret</strong> - just toggle
+them on here (provider = Mistral). They attach as <code>{type:&quot;&lt;name&gt;&quot;}</code> to the
+Orchestrator&#x27;s own single-shot Mistral turns.</p>
+<ul>
+<li class=""><strong>web_search</strong> - hosted web search with citations.</li>
+<li class=""><strong>code_interpreter</strong> - sandboxed Python execution.</li>
+<li class=""><strong>image_generation</strong> - hosted image generation.</li>
+<li class=""><strong>document_library</strong> - RAG over your Studio document library.</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="mistral-studio">Mistral Studio connectors<a href="#mistral-studio" class="hash-link" aria-label="Direct link to Mistral Studio connectors" title="Direct link to Mistral Studio connectors" translate="no">​</a></h2>
+<p>Third-party connectors (GitHub, Gmail, Notion, and custom MCP servers) are
+<strong>authenticated in Mistral Studio</strong>
+(<a href="https://console.mistral.ai/build/connectors" target="_blank" rel="noopener noreferrer" class="">console.mistral.ai/build/connectors</a>),
+not on the device - no secret is stored here. Two kinds:</p>
+<ul>
+<li class=""><strong>Built-in connectors</strong> (GitHub, Gmail/Calendar/Outlook): pre-registered -
+you authorize the account in Studio, then reference the connector by its
+<strong>name</strong> here.</li>
+<li class=""><strong>Custom MCP</strong> (e.g. Notion, DeepWiki): register the MCP server once via
+<code>client.beta.connectors.create(...)</code> in the Mistral SDK → you get a
+<strong>connector name/UUID</strong> → reference it here.</li>
+</ul>
+<p>Either way, on the device: add the connector with <strong>provider = Mistral</strong>, and
+put the Studio connector <strong>name or UUID</strong> in the connector-id field. It
+attaches as <code>{type:&quot;connector&quot;, connector_id:&quot;&lt;name-or-uuid&gt;&quot;}</code> on single-shot
+Mistral turns.</p>
+<blockquote>
+<p>The agentic <strong>tool-loop</strong> turns cannot carry Mistral built-ins or Studio
+connectors: the loop forces tool-choice (the model must call a tool every
+round), which Mistral rejects alongside built-in connectors - a documented
+provider limitation. Those attach on the single-shot Conversations turn and on
+sub-agent dispatch instead. So on loop turns the Orchestrator has only its
+registry tools (the Tavily <code>web.search</code> tool when configured) and should
+delegate connector work to a Mistral sub-agent.</p>
+</blockquote>
+<hr>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="operational-notes-live-verified-on-hardware">Operational notes (live-verified on hardware)<a href="#operational-notes-live-verified-on-hardware" class="hash-link" aria-label="Direct link to Operational notes (live-verified on hardware)" title="Direct link to Operational notes (live-verified on hardware)" translate="no">​</a></h2>
+<ul>
+<li class=""><strong>Mistral connectors attach on single-shot turns</strong> (tool loop off) <strong>and on
+sub-agent dispatch</strong> - not on the agentic tool-loop, which forces tool-choice
+(rejected alongside built-in connectors). Set the Orchestrator host to Mistral
+and the tool loop off to use them on your own turns, or spawn a Mistral
+sub-agent for connector work while the loop is on.</li>
+<li class=""><strong>Keep it to about 2 enabled Mistral connectors at a time.</strong> One or two work
+reliably (proven: GitHub returned a live issue count, Gmail a live unread
+count). Enabling around 4 at once made the Conversations response come back
+with no message output and the turn failed over to another provider. It
+fails <em>soft</em> (no crash), but the connector call won&#x27;t run.</li>
+<li class=""><strong>Changing a connector takes effect on the next turn</strong> - the device resets
+the Mistral conversation whenever you add, toggle, or remove a connector
+(connectors are pinned at conversation creation, so this is required for a
+change to apply).</li>
+<li class=""><strong>Private repos:</strong> a Studio GitHub connector only sees repos its authorized
+account or org can access - a private repo returns &quot;not accessible&quot; even
+though the connector itself is working.</li>
+<li class=""><strong>Heavy connector writes are streamed, not buffered.</strong> The device parses
+every provider response <em>off the socket</em> (only the filter-retained fields
+are stored), so a large connector-write response no longer exhausts the
+board&#x27;s memory - the Notion page-create that used to restart it now
+completes. For heavy writes and large fetches, prefer <strong>spawning a
+sub-agent</strong> (the Orchestrator is guided to): the work runs on the provider&#x27;s
+compute and only a short result returns.</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="security">Security<a href="#security" class="hash-link" aria-label="Direct link to Security" title="Direct link to Security" translate="no">​</a></h2>
+<ul>
+<li class="">Secrets are <strong>write-only</strong>: the web UI never echoes a token back (it shows a
+&quot;saved&quot; state); editing a card and leaving the credential blank keeps the
+stored secret.</li>
+<li class="">The model <strong>cannot</strong> configure connectors or read their secrets - the
+<code>connector</code> config key is a protected key, refused at the wire.</li>
+<li class="">Everything is behind the per-device access token (identify once per browser).</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="finance-connectors">Finance connectors<a href="#finance-connectors" class="hash-link" aria-label="Direct link to Finance connectors" title="Direct link to Finance connectors" translate="no">​</a></h2>
+<p>Any broker or finance connector (e.g. Alpaca) must stay <strong>read-only</strong> - Nimbus
+never places trades or moves money on its own. Keep write scopes off.</p></div><footer class="theme-doc-footer docusaurus-mt-lg"><div class="row margin-top--sm theme-doc-footer-edit-meta-row"><div class="col noPrint_WFHX"><a href="https://github.com/ristllin/Nimbus/blob/main/docs/connectors.md" target="_blank" rel="noopener noreferrer" class="theme-edit-this-page"><svg fill="currentColor" height="20" width="20" viewBox="0 0 40 40" class="iconEdit_Z9Sw" aria-hidden="true"><g><path d="m34.5 11.7l-3 3.1-6.3-6.3 3.1-3q0.5-0.5 1.2-0.5t1.1 0.5l3.9 3.9q0.5 0.4 0.5 1.1t-0.5 1.2z m-29.5 17.1l18.4-18.5 6.3 6.3-18.4 18.4h-6.3v-6.2z"></path></g></svg>Edit this page</a></div><div class="col lastUpdated_JAkA"></div></div></footer></article><nav class="docusaurus-mt-lg pagination-nav" aria-label="Docs pages"><a class="pagination-nav__link pagination-nav__link--prev" href="/guides/sfx-map"><div class="pagination-nav__sublabel">Previous</div><div class="pagination-nav__label">SFX map</div></a><a class="pagination-nav__link pagination-nav__link--next" href="/guides/people-and-privacy"><div class="pagination-nav__sublabel">Next</div><div class="pagination-nav__label">People &amp; privacy</div></a></nav></div></div><div class="col col--3"><div class="tableOfContents_bqdL thin-scrollbar theme-doc-toc-desktop"><ul class="table-of-contents table-of-contents__left-border"><li><a href="#setting-up-a-connector" class="table-of-contents__link toc-highlight">Setting up a connector</a></li><li><a href="#what-each-provider-runs-and-where" class="table-of-contents__link toc-highlight">What each provider runs, and where</a></li><li><a href="#how-nimbus-knows-a-connector-is-available" class="table-of-contents__link toc-highlight">How Nimbus knows a connector is available</a></li><li><a href="#github" class="table-of-contents__link toc-highlight">GitHub</a></li><li><a href="#gmail" class="table-of-contents__link toc-highlight">Gmail</a></li><li><a href="#google-calendar" class="table-of-contents__link toc-highlight">Google Calendar</a></li><li><a href="#google-drive" class="table-of-contents__link toc-highlight">Google Drive</a></li><li><a href="#notion" class="table-of-contents__link toc-highlight">Notion</a></li><li><a href="#slack" class="table-of-contents__link toc-highlight">Slack</a></li><li><a href="#linear" class="table-of-contents__link toc-highlight">Linear</a></li><li><a href="#mistral-builtins" class="table-of-contents__link toc-highlight">Mistral built-ins</a></li><li><a href="#mistral-studio" class="table-of-contents__link toc-highlight">Mistral Studio connectors</a></li><li><a href="#operational-notes-live-verified-on-hardware" class="table-of-contents__link toc-highlight">Operational notes (live-verified on hardware)</a></li><li><a href="#security" class="table-of-contents__link toc-highlight">Security</a></li><li><a href="#finance-connectors" class="table-of-contents__link toc-highlight">Finance connectors</a></li></ul></div></div></div></div></main></div></div></div><footer class="theme-layout-footer footer footer--dark"><div class="container container-fluid"><div class="row footer__links"><div class="theme-layout-footer-column col footer__col"><div class="footer__title">Docs</div><ul class="footer__items clean-list"><li class="footer__item"><a class="footer__link-item" href="/quick-start/what-you-need">Quick Start</a></li><li class="footer__item"><a class="footer__link-item" href="/guides/hardware-bom">Bill of materials</a></li><li class="footer__item"><a class="footer__link-item" href="/getting-started/webui-reference">Web UI reference</a></li></ul></div><div class="theme-layout-footer-column col footer__col"><div class="footer__title">Reference</div><ul class="footer__items clean-list"><li class="footer__item"><a class="footer__link-item" href="/reference/config-and-nvs">Config &amp; NVS</a></li><li class="footer__item"><a class="footer__link-item" href="/reference/tool-catalog">Tool catalog</a></li><li class="footer__item"><a class="footer__link-item" href="/reference/turn-contract">Turn contract</a></li><li class="footer__item"><a class="footer__link-item" href="/reference/changelog">Changelog</a></li></ul></div><div class="theme-layout-footer-column col footer__col"><div class="footer__title">More</div><ul class="footer__items clean-list"><li class="footer__item"><a href="https://github.com/ristllin/Nimbus" target="_blank" rel="noopener noreferrer" class="footer__link-item">GitHub<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li></ul></div></div><div class="footer__bottom text--center"><div class="footer__copyright">Nimbus - source-available, free for noncommercial use (PolyForm-NC / CC BY-NC-SA). Built with Docusaurus.</div></div></div></footer></div>
+</body>
+</html>

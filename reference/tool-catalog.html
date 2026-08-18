@@ -1,0 +1,779 @@
+<!doctype html>
+<html lang="en" dir="ltr" class="docs-wrapper plugin-docs plugin-id-default docs-version-current docs-doc-page docs-doc-id-reference/tool-catalog" data-has-hydrated="false">
+<head>
+<meta charset="UTF-8">
+<meta name="generator" content="Docusaurus v3.10.2">
+<title data-rh="true">Tool catalog | Nimbus</title><meta data-rh="true" name="viewport" content="width=device-width,initial-scale=1"><meta data-rh="true" name="twitter:card" content="summary_large_image"><meta data-rh="true" property="og:image" content="https://docs.cumulo-nimbus.ai/img/social-card.png"><meta data-rh="true" name="twitter:image" content="https://docs.cumulo-nimbus.ai/img/social-card.png"><meta data-rh="true" property="og:url" content="https://docs.cumulo-nimbus.ai/reference/tool-catalog"><meta data-rh="true" property="og:locale" content="en"><meta data-rh="true" name="docusaurus_locale" content="en"><meta data-rh="true" name="docsearch:language" content="en"><meta data-rh="true" name="docusaurus_version" content="current"><meta data-rh="true" name="docusaurus_tag" content="docs-default-current"><meta data-rh="true" name="docsearch:version" content="current"><meta data-rh="true" name="docsearch:docusaurus_tag" content="docs-default-current"><meta data-rh="true" property="og:title" content="Tool catalog | Nimbus"><meta data-rh="true" name="description" content="Migrated from docs/reference/tool-catalog.md - the canonical source lives in the repo."><meta data-rh="true" property="og:description" content="Migrated from docs/reference/tool-catalog.md - the canonical source lives in the repo."><link data-rh="true" rel="icon" href="/img/favicon.svg"><link data-rh="true" rel="canonical" href="https://docs.cumulo-nimbus.ai/reference/tool-catalog"><link data-rh="true" rel="alternate" href="https://docs.cumulo-nimbus.ai/reference/tool-catalog" hreflang="en"><link data-rh="true" rel="alternate" href="https://docs.cumulo-nimbus.ai/reference/tool-catalog" hreflang="x-default"><script data-rh="true" type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Tool catalog","item":"https://docs.cumulo-nimbus.ai/reference/tool-catalog"}]}</script><link rel="stylesheet" href="/assets/css/styles.5ae419b2.css">
+<script src="/assets/js/runtime~main.e74ebefa.js" defer="defer"></script>
+<script src="/assets/js/main.92f144b6.js" defer="defer"></script>
+</head>
+<body>
+<svg style="display: none;"><defs>
+<symbol id="theme-svg-external-link" viewBox="0 0 24 24"><path fill="currentColor" d="M21 13v10h-21v-19h12v2h-10v15h17v-8h2zm3-12h-10.988l4.035 4-6.977 7.07 2.828 2.828 6.977-7.07 4.125 4.172v-11z"/></symbol>
+</defs></svg>
+<script>!function(){var t=function(){try{return new URLSearchParams(window.location.search).get("docusaurus-theme")}catch(t){}}()||function(){try{return window.localStorage.getItem("theme")}catch(t){}}();document.documentElement.setAttribute("data-theme",t||(window.matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light")),document.documentElement.setAttribute("data-theme-choice",t||"system")}(),function(){try{const c=new URLSearchParams(window.location.search).entries();for(var[t,e]of c)if(t.startsWith("docusaurus-data-")){var a=t.replace("docusaurus-data-","data-");document.documentElement.setAttribute(a,e)}}catch(t){}}()</script><div id="__docusaurus"><div role="region" aria-label="Skip to main content"><a class="skipToContent_fXgn" href="#__docusaurus_skipToContent_fallback">Skip to main content</a></div><nav aria-label="Main" class="theme-layout-navbar navbar navbar--fixed-top"><div class="navbar__inner"><div class="theme-layout-navbar-left navbar__items"><button aria-label="Toggle navigation bar" aria-expanded="false" class="navbar__toggle clean-btn" type="button"><svg width="30" height="30" viewBox="0 0 30 30" aria-hidden="true"><path stroke="currentColor" stroke-linecap="round" stroke-miterlimit="10" stroke-width="2" d="M4 7h22M4 15h22M4 23h22"></path></svg></button><a class="navbar__brand" href="/"><div class="navbar__logo"><img src="/img/logo.svg" alt="Nimbus" class="themedComponent_mlkZ themedComponent--light_NVdE"><img src="/img/logo.svg" alt="Nimbus" class="themedComponent_mlkZ themedComponent--dark_xIcU"></div><b class="navbar__title text--truncate">Nimbus</b></a><a class="navbar__item navbar__link" href="/quick-start/what-you-need">Get started</a><a class="navbar__item navbar__link" href="/flash">Flash</a></div><div class="theme-layout-navbar-right navbar__items navbar__items--right"><a href="https://github.com/ristllin/Nimbus" target="_blank" rel="noopener noreferrer" class="navbar__item navbar__link">GitHub<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a><div class="toggle_vylO colorModeToggle_DEke"><button class="clean-btn toggleButton_gllP toggleButtonDisabled_aARS" type="button" disabled="" title="system mode" aria-label="Switch between dark and light mode (currently system mode)"><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP lightToggleIcon_pyhR"><path fill="currentColor" d="M12,9c1.65,0,3,1.35,3,3s-1.35,3-3,3s-3-1.35-3-3S10.35,9,12,9 M12,7c-2.76,0-5,2.24-5,5s2.24,5,5,5s5-2.24,5-5 S14.76,7,12,7L12,7z M2,13l2,0c0.55,0,1-0.45,1-1s-0.45-1-1-1l-2,0c-0.55,0-1,0.45-1,1S1.45,13,2,13z M20,13l2,0c0.55,0,1-0.45,1-1 s-0.45-1-1-1l-2,0c-0.55,0-1,0.45-1,1S19.45,13,20,13z M11,2v2c0,0.55,0.45,1,1,1s1-0.45,1-1V2c0-0.55-0.45-1-1-1S11,1.45,11,2z M11,20v2c0,0.55,0.45,1,1,1s1-0.45,1-1v-2c0-0.55-0.45-1-1-1C11.45,19,11,19.45,11,20z M5.99,4.58c-0.39-0.39-1.03-0.39-1.41,0 c-0.39,0.39-0.39,1.03,0,1.41l1.06,1.06c0.39,0.39,1.03,0.39,1.41,0s0.39-1.03,0-1.41L5.99,4.58z M18.36,16.95 c-0.39-0.39-1.03-0.39-1.41,0c-0.39,0.39-0.39,1.03,0,1.41l1.06,1.06c0.39,0.39,1.03,0.39,1.41,0c0.39-0.39,0.39-1.03,0-1.41 L18.36,16.95z M19.42,5.99c0.39-0.39,0.39-1.03,0-1.41c-0.39-0.39-1.03-0.39-1.41,0l-1.06,1.06c-0.39,0.39-0.39,1.03,0,1.41 s1.03,0.39,1.41,0L19.42,5.99z M7.05,18.36c0.39-0.39,0.39-1.03,0-1.41c-0.39-0.39-1.03-0.39-1.41,0l-1.06,1.06 c-0.39,0.39-0.39,1.03,0,1.41s1.03,0.39,1.41,0L7.05,18.36z"></path></svg><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP darkToggleIcon_wfgR"><path fill="currentColor" d="M9.37,5.51C9.19,6.15,9.1,6.82,9.1,7.5c0,4.08,3.32,7.4,7.4,7.4c0.68,0,1.35-0.09,1.99-0.27C17.45,17.19,14.93,19,12,19 c-3.86,0-7-3.14-7-7C5,9.07,6.81,6.55,9.37,5.51z M12,3c-4.97,0-9,4.03-9,9s4.03,9,9,9s9-4.03,9-9c0-0.46-0.04-0.92-0.1-1.36 c-0.98,1.37-2.58,2.26-4.4,2.26c-2.98,0-5.4-2.42-5.4-5.4c0-1.81,0.89-3.42,2.26-4.4C12.92,3.04,12.46,3,12,3L12,3z"></path></svg><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP systemToggleIcon_QzmC"><path fill="currentColor" d="m12 21c4.971 0 9-4.029 9-9s-4.029-9-9-9-9 4.029-9 9 4.029 9 9 9zm4.95-13.95c1.313 1.313 2.05 3.093 2.05 4.95s-0.738 3.637-2.05 4.95c-1.313 1.313-3.093 2.05-4.95 2.05v-14c1.857 0 3.637 0.737 4.95 2.05z"></path></svg></button></div><div class="navbarSearchContainer_Bca1"></div></div></div><div role="presentation" class="navbar-sidebar__backdrop"></div></nav><div id="__docusaurus_skipToContent_fallback" class="theme-layout-main main-wrapper mainWrapper_z2l0"><div class="docsWrapper_hBAB"><button aria-label="Scroll back to top" class="clean-btn theme-back-to-top-button backToTopButton_sjWU" type="button"></button><div class="docRoot_UBD9"><aside class="theme-doc-sidebar-container docSidebarContainer_YfHR"><div class="sidebarViewport_aRkj"><div class="sidebar_njMd"><nav aria-label="Docs sidebar" class="menu thin-scrollbar menu_SIkG"><ul class="theme-doc-sidebar-menu menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/"><span class="linkLabel_WmDU">Overview</span></a></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="true" href="/quick-start/what-you-need"><span class="categoryLinkLabel_W154">Quick Start</span></a></div><ul class="menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/what-you-need"><span class="linkLabel_WmDU">What you need</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/flash"><span class="linkLabel_WmDU">Flash the firmware</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/setup-wizard"><span class="linkLabel_WmDU">Set up the device</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/first-conversation"><span class="linkLabel_WmDU">First conversation</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/notifier-quick-start"><span class="linkLabel_WmDU">Notifier quick start</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/getting-started/first-time-setup"><span class="linkLabel_WmDU">First-time setup</span></a></li></ul></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/guides/hardware"><span class="categoryLinkLabel_W154">Hardware Build</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/getting-started/webui-reference"><span class="categoryLinkLabel_W154">Using Nimbus</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/guides/architecture"><span class="categoryLinkLabel_W154">How It Works</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret menu__link--active" role="button" aria-expanded="true" href="/reference/config-and-nvs"><span class="categoryLinkLabel_W154">Reference</span></a></div><ul class="menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/reference/config-and-nvs"><span class="linkLabel_WmDU">Config &amp; NVS</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link menu__link--active" aria-current="page" tabindex="0" href="/reference/tool-catalog"><span class="linkLabel_WmDU">Tool catalog</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/reference/turn-contract"><span class="linkLabel_WmDU">Turn contract</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/reference/tools-and-commands"><span class="linkLabel_WmDU">Tools &amp; commands</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/reference/changelog"><span class="linkLabel_WmDU">Changelog</span></a></li></ul></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/contributing/development"><span class="categoryLinkLabel_W154">Forking &amp; Contributing</span></a></div></li></ul></nav></div></div></aside><main class="docMainContainer_TBSr"><div class="container padding-top--md padding-bottom--lg"><div class="row"><div class="col docItemCol_VOVn"><div class="docItemContainer_Djhp"><article><nav class="theme-doc-breadcrumbs breadcrumbsContainer_Z_bl" aria-label="Breadcrumbs"><ul class="breadcrumbs"><li class="breadcrumbs__item"><a aria-label="Home page" class="breadcrumbs__link" href="/"><svg viewBox="0 0 24 24" class="breadcrumbHomeIcon_YNFT"><path d="M10 19v-5h4v5c0 .55.45 1 1 1h3c.55 0 1-.45 1-1v-7h1.7c.46 0 .68-.57.33-.87L12.67 3.6c-.38-.34-.96-.34-1.34 0l-8.36 7.53c-.34.3-.13.87.33.87H5v7c0 .55.45 1 1 1h3c.55 0 1-.45 1-1z" fill="currentColor"></path></svg></a></li><li class="breadcrumbs__item"><span class="breadcrumbs__link">Reference</span></li><li class="breadcrumbs__item breadcrumbs__item--active"><span class="breadcrumbs__link">Tool catalog</span></li></ul></nav><div class="tocCollapsible_ETCw theme-doc-toc-mobile tocMobile_ITEo"><button type="button" class="clean-btn tocCollapsibleButton_TO0P">On this page</button></div><div class="theme-doc-markdown markdown"><blockquote>
+<p>Sourced from <code>docs/reference/tool-catalog.md</code> in the firmware repo.</p>
+</blockquote>
+<header><h1>On-device tool catalog</h1></header>
+<p>The Nimbus Orchestrator exposes a single, authoritative set of tools through an
+on-device MCP (Model Context Protocol) server. This is the reference for every
+tool: its namespace, name, one-line purpose, arguments, and current state.</p>
+<p><strong>Single source of truth.</strong> Every tool is registered on one <code>ToolRegistry</code>
+(<code>lib/core/include/nimbus/orch/tool_registry.h</code>): <code>name</code> + one-line description</p>
+<ul>
+<li class="">JSON input-schema + handler. Two consumers read that one registry, so they can
+never drift:</li>
+</ul>
+<ul>
+<li class=""><strong>The live orchestrator turn</strong> - the tool list is pulled from
+<code>memory::registry().manifest()</code> and rendered into the composed World prompt&#x27;s
+<code>## CAPABILITIES</code> section, so the LLM sees exactly what it can call. (See the
+turn-side dispatch in the <a class="" href="/reference/turn-contract">turn contract</a>:
+<code>mem_write[]</code> → <code>memory.write</code>, <code>mem_query[]</code> → <code>memory.search</code>,
+<code>session_ops[]</code> → <code>session.*</code>.)</li>
+<li class=""><strong>External MCP clients</strong> - a JSON-RPC 2.0 client on the LAN reaches the same
+registry over <code>POST /mcp</code> (<code>handleMcp()</code> → <code>ToolRegistry::handleRpc()</code>,
+<code>src/agent/memory_subsystem.cpp</code>). Supported methods: <code>tools/list</code>,
+<code>tools/call</code>, <code>ping</code>. LAN MCP auth is an open item.</li>
+</ul>
+<p>Both paths execute through the same <code>dispatch()</code>, so the capability manifest, the
+prompt&#x27;s tool list, and what actually runs are the same thing. Architecture:
+<a class="" href="/guides/orchestrator-world">Orchestrator World</a>
+(§5 On-device MCP server &amp; tool registry).</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="the-human-web-only-rail">The human-web-only rail<a href="#the-human-web-only-rail" class="hash-link" aria-label="Direct link to The human-web-only rail" title="Direct link to The human-web-only rail" translate="no">​</a></h2>
+<p>Secrets, provider keys, provider <strong>priority/routing</strong>, and the device&#x27;s own auth
+are <strong>never tools</strong> - no registry tool and no <code>device.config</code> action can set
+them, and the protected-config denylist blocks them by name. Only the human web
+UI may change them. Specifically off-limits to the model:</p>
+<ul>
+<li class="">provider keys (<code>oaiKey</code> / <code>antKey</code> / <code>mistralKey</code> / <code>tavilyKey</code>), <code>tgToken</code>,
+<code>tgAllow</code> - SECRETS, blocked entirely; changing them needs owner confirmation
+via the web UI / Telegram.</li>
+<li class="">provider <code>priority</code> / routing (<code>providerPriority</code> and its aliases),
+<code>orchHost</code> / <code>fabric</code> - letting the model rewrite these would let it redirect
+its own brain / sub-agent backends.</li>
+<li class=""><code>allowlist</code> - the device&#x27;s own auth gate; the model must not grant itself
+access.</li>
+<li class="">the Local Loops blob (<code>loops</code>) and the budget/governor knobs - only the
+dedicated <code>loop.*</code> tools and the human web UI write these.</li>
+</ul>
+<p>The denial reports only a policy tag (<code>protected-BLOCKED</code>), <strong>never</strong> the blocked
+value, so a secret can never leak into a device log or the next-turn context
+(<code>lib/core/include/nimbus/orch/device_actions.h</code>, <code>kProtectedConfigKeys</code>). The
+one deliberate exception is the <code>orch_model</code> device action: the model may
+repoint its <strong>own</strong> head host + model at runtime.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="state-legend">State legend<a href="#state-legend" class="hash-link" aria-label="Direct link to State legend" title="Direct link to State legend" translate="no">​</a></h2>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Mark</th><th>Meaning</th></tr></thead><tbody><tr><td>live</td><td>registered and executing on hardware today</td></tr><tr><td>wiring</td><td>schema/handler shape landed; device handler pending in a named phase</td></tr><tr><td>planned</td><td>not built yet</td></tr></tbody></table>
+<p><strong>Access.</strong> Every tool call carries a <code>Principal</code> - the caller&#x27;s namespace,
+role, and quota. Tools marked <em>admin-only</em> require an admin conversation (the
+<code>manageTenants</code> permission) and additionally refuse in scheduled/unattended
+turns; the rest are open to any approved conversation. Hiding a tool from the
+advertisement is never the boundary - each handler re-checks the caller.</p>
+<p><strong>Advertisement is principal-scoped (v4.1.0).</strong> An admin-only tool is not
+listed in a member&#x27;s or guest&#x27;s prompt: previously every conversation was told
+the assistant could call <code>skill.save</code>, <code>tenant.set_role</code> or <code>loop.create</code>, so it
+offered a capability the handler then refused (a wasted round and a confusing
+walk-back) and described the owner&#x27;s admin surface to a guest. The registry
+carries an <code>adminOnly</code> mark (<code>ToolRegistry::setAdminOnly</code>) and the turn engine
+advertises <code>toolSpecsFor(who)</code>, restoring <em>advertised == callable</em>. This is
+<strong>visibility only</strong> - the handler check is unchanged, so a hidden tool reached
+another way (for example over <code>/mcp</code>) still refuses exactly as before.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="memory---associative--working-memory"><code>memory.*</code> - associative &amp; working memory<a href="#memory---associative--working-memory" class="hash-link" aria-label="Direct link to memory---associative--working-memory" title="Direct link to memory---associative--working-memory" translate="no">​</a></h2>
+<p>Registered by <code>registerMemoryTools()</code>
+(<code>lib/core/src/orch_memory_tools.cpp</code>). Backed by the portable engines
+(<code>VectorMemory</code>, <code>Scratchpad</code>, <code>MemConfig</code>, optional <code>EpisodicStore</code>) plus an
+injected <code>Embedder</code> (text → int8 vector via the provider <code>/embeddings</code> API).</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Tool</th><th>Description (as registered)</th><th>Arguments</th><th>State</th></tr></thead><tbody><tr><td><code>memory.write</code></td><td>Store a fact in long-term associative memory so you can recall it later.</td><td><code>content</code> (string, <strong>required</strong>), <code>importance</code> (number, 0–1, default 0.5), <code>permanent</code> (boolean, default false), <code>ttl</code> (enum: <code>session</code> | <code>days</code> | <code>weeks</code> | <code>months</code> | <code>permanent</code>), <code>source</code> (string, default <code>&quot;self&quot;</code>)</td><td>live</td></tr><tr><td><code>memory.search</code></td><td>Search your long-term memory for facts relevant to a query.</td><td><code>query</code> (string, <strong>required</strong>), <code>n_results</code> (integer, default = <code>cfg.retrievalCount</code>, i.e. 5)</td><td>live</td></tr><tr><td><code>memory.update</code></td><td>Replace a fact that changed: store new <code>content</code> and remove the closest stale match.</td><td><code>content</code> (string, <strong>required</strong>), <code>old</code> (string) or <code>id</code> (string), <code>importance</code> (number), <code>permanent</code> (boolean), <code>ttl</code> (enum)</td><td>live</td></tr><tr><td><code>memory.pin</code></td><td>Pin a memory (never forgotten), unpin it, or delete it.</td><td><code>action</code> (<strong>required</strong>, <code>pin</code> | <code>unpin</code> | <code>delete</code>), <code>content</code> (string) or <code>id</code> (string)</td><td>live</td></tr><tr><td><code>memory.config</code></td><td>View or tune how memory is retrieved.</td><td><code>action</code> (<strong>required</strong>, <code>view</code> | <code>update</code>); on <code>update</code>: <code>retrieval_count</code> (int), <code>relevance_threshold</code> (number), <code>decay_factor</code> (number), <code>max_context_bytes</code> (int), <code>max_vectors</code> (int), <code>recency_half_life_hours</code> (int), <code>mmr_lambda</code> (number)</td><td>live (update admin-only)</td></tr><tr><td><code>memory.scratchpad</code></td><td>Read or edit your working scratchpad (active task + short/mid/long-term goal tiers).</td><td><code>action</code> (<strong>required</strong>, <code>view</code> | <code>set_active</code> | <code>add</code> | <code>replace</code> | <code>clear</code>), <code>tier</code> (<code>short</code> | <code>mid</code> | <code>long</code>), <code>text</code> (string), <code>items</code> (array of string)</td><td>live (admin-only)</td></tr><tr><td><code>memory.episodic</code></td><td>Search your episodic history by kind, session, text, or a time window.</td><td><code>kind</code> (enum: <code>message</code>, <code>tool_output</code>, <code>llm_response</code>, <code>file</code>, <code>image</code>, <code>audio</code>, <code>transcript</code>, <code>log</code>), <code>session</code> (string), <code>text</code> (string), <code>limit</code> (int, clamped 1–100), <code>since_hours</code> (int), <code>before_hours</code> (int), <code>before</code> (paging cursor)</td><td>live (device only)</td></tr></tbody></table>
+<p>Notes:</p>
+<ul>
+<li class=""><code>memory.write</code> derives a deterministic content id (djb2 hash), embeds the
+content, and inserts; a duplicate bumps importance instead of storing again.</li>
+<li class=""><code>memory.search</code> filters hits below <code>cfg.relevanceThreshold</code>
+(similarity = 1 − distance) and formats each as <code>- [NN%] content</code>.</li>
+<li class=""><code>memory.update</code> and <code>memory.pin</code> identify the target by exact content or by id.</li>
+<li class=""><code>memory.config</code> knobs are device-global (a member changing <code>max_vectors</code> would
+evict the admin&#x27;s memory), so only an admin may <code>update</code>; viewing is open to
+any approved conversation.</li>
+<li class=""><code>memory.scratchpad</code> is injected into every turn&#x27;s prompt, so it is admin-only
+until it is per-person. <strong>Since v4.1.0 the model&#x27;s normal way to write the
+scratchpad is the top-level <code>scratchpad</code> response field of the turn contract</strong>
+<ul>
+<li class="">a free write (no tool round), persistent across turns and reboots (see
+<a class="" href="/reference/turn-contract">turn-contract.md</a>). This tool remains as the admin
+read/edit path (<code>view</code> / <code>set_active</code> / <code>add</code> / <code>replace</code> / <code>clear</code>), also
+reachable over <code>/mcp</code>.</li>
+</ul>
+</li>
+<li class=""><code>memory.episodic</code> reaches past the startup index - a cold scan over the full SD
+history - and answers one page at a time: when a result ends with a continue
+token, pass it back as <code>before</code> to read further into the past. Session
+<code>system</code> holds the device event timeline (restarts with reset reason, firmware
+updates with release notes, mode switches, storage changes). Registered only
+when an episodic store is bound (device).</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="session---sub-agent-control"><code>session.*</code> - sub-agent control<a href="#session---sub-agent-control" class="hash-link" aria-label="Direct link to session---sub-agent-control" title="Direct link to session---sub-agent-control" translate="no">​</a></h2>
+<p>Registered by <code>registerSessionTools()</code>
+(<code>lib/core/src/orch_session_tools.cpp</code>). Each tool&#x27;s device behavior depends on
+its injected <code>SessionHandlers</code> handler; a missing handler makes the tool report
+<code>&quot;not supported on this device&quot;</code>.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Tool</th><th>Description (as registered)</th><th>Arguments</th><th>State</th></tr></thead><tbody><tr><td><code>session.spawn</code></td><td>Start a sub-agent to work on a task in parallel. Returns its session id.</td><td><code>task</code> (string, <strong>required</strong>), <code>provider</code> (string, optional), <code>model</code> (string, optional)</td><td>live</td></tr><tr><td><code>session.list</code></td><td>List your running sub-agents and their state.</td><td>(none)</td><td>live</td></tr><tr><td><code>session.terminate</code></td><td>Stop a running sub-agent.</td><td><code>id</code> (string, <strong>required</strong>)</td><td>live</td></tr><tr><td><code>session.tell</code></td><td>Send a message to a running sub-agent, as if you were its user.</td><td><code>id</code> (string, <strong>required</strong>), <code>message</code> (string, <strong>required</strong>)</td><td>wiring: adapter continuation</td></tr><tr><td><code>session.poll</code></td><td>Read the latest reply from a sub-agent (like reading its message to you).</td><td><code>id</code> (string, <strong>required</strong>)</td><td>wiring: adapter continuation</td></tr></tbody></table>
+<p>Notes:</p>
+<ul>
+<li class="">Sub-agents are started <strong>only</strong> via the spawn op; there is no separate
+<code>spawn[]</code> turn-contract array. The turn wire (<code>session_ops[]</code>) offers only the
+<code>spawn</code> and <code>terminate</code> ops - <code>tell</code>/<code>poll</code>/<code>list</code> are not on it (they were
+advertised before and hard-failed at runtime), though they remain registry
+tools reachable over <code>/mcp</code>.</li>
+<li class="">The turn&#x27;s <code>session_ops[]</code> <strong>spawn</strong> op accepts, beyond <code>task</code>/<code>provider</code>/<code>model</code>:
+<ul>
+<li class=""><code>skill</code> - an <strong>approved</strong> skill capsule id, injected into the sub-agent&#x27;s brief.</li>
+<li class=""><code>name</code> - a short display name (also the sub-agent&#x27;s saved-document name).</li>
+<li class=""><code>project</code> - a run tag: the sub-agent&#x27;s full result <strong>auto-saves</strong> to the
+durable file store as <code>&lt;project&gt;/&lt;name&gt;-&lt;tag&gt;.md</code>. Use one project per
+fan-out run.</li>
+<li class=""><code>attach</code> - up to 4 <code>&lt;project&gt;/&lt;name&gt;</code> documents whose full content the device
+splices into the sub-agent&#x27;s instructions. It must be the JSON array field on
+the op; naming docs in the task text attaches nothing.</li>
+</ul>
+</li>
+<li class=""><code>session.tell</code> / <code>session.poll</code> report the fire-and-forget boundary honestly
+today. Making them real needs adapter <strong>continuation</strong> - persisting each
+sub-session&#x27;s conversation id (OpenAI <code>previous_response_id</code>, Anthropic
+multi-turn) so the orchestrator can drive a back-and-forth. The handler shape
+and schemas are in place; the fabric API is not yet exposed.</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="skill---knowledge-capsules-read--author"><code>skill.*</code> - knowledge capsules (read + author)<a href="#skill---knowledge-capsules-read--author" class="hash-link" aria-label="Direct link to skill---knowledge-capsules-read--author" title="Direct link to skill---knowledge-capsules-read--author" translate="no">​</a></h2>
+<p>Registered by the memory subsystem (<code>src/agent/memory_subsystem.cpp</code>; store in
+<code>src/agent/skills.cpp</code>). On-device markdown playbooks: four built-ins
+(<code>architecture</code>, <code>deep-research</code>, <code>hardware</code>, <code>tools-guide</code>) plus owner- or
+agent-authored capsules on the SD card.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Tool</th><th>Description (as registered)</th><th>Arguments</th><th>State</th></tr></thead><tbody><tr><td><code>skill.list</code></td><td>List the on-device knowledge capsules you can read (id + title).</td><td>(none)</td><td>live</td></tr><tr><td><code>skill.get</code></td><td>Read a knowledge capsule by id (from <code>skill.list</code>).</td><td><code>id</code> (string, <strong>required</strong>)</td><td>live</td></tr><tr><td><code>skill.save</code></td><td>Save (or update) a reusable skill capsule you authored.</td><td><code>id</code> (string, <strong>required</strong>, <code>a-z0-9-_</code>, max 23 chars), <code>md</code> (string, <strong>required</strong> - the SKILL.md text, optional <code>title:</code> / <code>inject:</code> front matter)</td><td>live (admin-only)</td></tr><tr><td><code>skill.delete</code></td><td>Delete a skill capsule you authored (<code>created_by: agent</code>).</td><td><code>id</code> (string, <strong>required</strong>)</td><td>live (admin-only)</td></tr></tbody></table>
+<p>Notes:</p>
+<ul>
+<li class=""><code>skill.save</code> and <code>skill.delete</code> require an admin conversation and are refused
+in scheduled/unattended turns.</li>
+<li class="">A capsule the model saves is server-stamped <code>created_by: agent</code>,
+<code>approved: false</code>, and stays <strong>inert</strong>: it can be read, but is never injected
+into a sub-agent brief until the owner approves it - in the web UI
+(Capabilities → Skills) or via Telegram <code>/skill approve &lt;id&gt;</code>. Approval is
+<strong>asynchronous</strong>: save a skill as an investment for future runs, never as a
+step of the current task.</li>
+<li class="">Reserved built-in ids cannot be shadowed. At most 4 agent-authored capsules
+may await approval at once.</li>
+<li class=""><code>skill.delete</code> removes only agent-authored capsules; owner-created ones are
+deleted from the web UI.</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="docs---the-devices-own-documentation"><code>docs.*</code> - the device&#x27;s own documentation<a href="#docs---the-devices-own-documentation" class="hash-link" aria-label="Direct link to docs---the-devices-own-documentation" title="Direct link to docs---the-devices-own-documentation" translate="no">​</a></h2>
+<p>Registered by the memory subsystem (<code>src/agent/memory_subsystem.cpp</code>; portable
+access layer in <code>lib/core/src/docs_pack.cpp</code>). A curated set of these docs -
+capability, tool, hardware, and privacy references - is embedded in the firmware
+image as a table of small sections, so the model can look up what it can do
+instead of guessing. Read-only, open to every principal.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Tool</th><th>Description (as registered)</th><th>Arguments</th><th>State</th></tr></thead><tbody><tr><td><code>docs.list</code></td><td>Browse the documentation index - the doc files, or one file&#x27;s sections.</td><td><code>file</code> (string, optional - a file slug from the top-level listing)</td><td>live</td></tr><tr><td><code>docs.search</code></td><td>Keyword AND-match over section titles + bodies; returns ids + a snippet.</td><td><code>query</code> (string, <strong>required</strong>)</td><td>live</td></tr><tr><td><code>docs.read</code></td><td>Read one section by id; an unknown id fails honestly with near-miss ids.</td><td><code>id</code> (string, <strong>required</strong> - <code>&lt;file-slug&gt;#&lt;heading-slug&gt;</code>)</td><td>live</td></tr></tbody></table>
+<p>Notes:</p>
+<ul>
+<li class="">The pack is <strong>generated</strong>: edit the markdown under <code>docs/</code>, then re-run
+<code>python3 tools/gen_docs_pack.py</code> (it rewrites
+<code>lib/core/include/nimbus/docs_pack_data.h</code>, which is committed). The pack
+ships inside the firmware image, so an OTA update carries matching docs -
+no SD sync, no version skew.</li>
+<li class="">Sections are split at build time (<code>##</code>/<code>###</code> headings, then paragraphs) so
+every <code>docs.read</code> result fits under the tool-loop&#x27;s per-result clamp.</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="files--artifactsave---durable-artifact-store"><code>files.*</code> &amp; <code>artifact.save</code> - durable artifact store<a href="#files--artifactsave---durable-artifact-store" class="hash-link" aria-label="Direct link to files--artifactsave---durable-artifact-store" title="Direct link to files--artifactsave---durable-artifact-store" translate="no">​</a></h2>
+<p>Registered by the files subsystem (<code>src/agent/files_subsystem.cpp</code>). Backed by
+the durable artifact store on the SD card (<code>/mem/files/&lt;project&gt;/&lt;name&gt;</code>);
+absent when no SD card is present. Reads honor per-person visibility (RBAC
+<code>readableBy</code>).</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Tool</th><th>Description (as registered)</th><th>Arguments</th><th>State</th></tr></thead><tbody><tr><td><code>files.list</code></td><td>List the device&#x27;s durable artifact store: projects and files.</td><td><code>project</code> (string, optional filter)</td><td>live</td></tr><tr><td><code>files.stat</code></td><td>Metadata for one stored file: size, kind, created time, provider file id.</td><td><code>project</code> (<strong>required</strong>), <code>name</code> (<strong>required</strong>)</td><td>live</td></tr><tr><td><code>files.read</code></td><td>Read a stored TEXT document&#x27;s content, paged.</td><td><code>project</code> (<strong>required</strong>), <code>name</code> (<strong>required</strong>), <code>offset</code> (number)</td><td>live</td></tr><tr><td><code>files.search</code></td><td>Search the CONTENT of saved text documents for words; returns the best matches with a snippet, ranked by term frequency.</td><td><code>query</code> (<strong>required</strong>), <code>project</code> (optional filter)</td><td>live</td></tr><tr><td><code>artifact.save</code></td><td>Persist a TEXT artifact (report, summary, document) into the durable store.</td><td><code>project</code> (<strong>required</strong>), <code>name</code> (<strong>required</strong>, with extension <code>.md</code>/<code>.txt</code>/<code>.csv</code>/<code>.json</code>), <code>text</code> (<strong>required</strong>, max ~24 KB per call)</td><td>live</td></tr><tr><td><code>files.share</code></td><td>Share one of your saved files read-only with everyone, or stop sharing it.</td><td><code>project</code> (<strong>required</strong>), <code>name</code> (<strong>required</strong>), <code>share</code> (boolean, default true)</td><td>live</td></tr><tr><td><code>files.send</code></td><td>Send a stored file to the owner on Telegram - images go as an inline photo, other files as a document.</td><td><code>project</code> (<strong>required</strong>), <code>name</code> (<strong>required</strong>), <code>chat_id</code> (optional)</td><td>live</td></tr><tr><td><code>image.generate</code></td><td>Generate an image from a text prompt and save it as a PNG in the durable store; returns the saved <code>project</code>/<code>name</code>.</td><td><code>prompt</code> (<strong>required</strong>), <code>project</code> (default <code>images</code>), <code>name</code> (optional stem), <code>size</code> (optional), <code>quality</code> (<code>low</code>/<code>medium</code>/<code>high</code>, default <code>low</code>), <code>model</code> (optional, default <code>gpt-image-1</code>), <code>describe</code> (boolean, default false)</td><td>live</td></tr></tbody></table>
+<p>Notes:</p>
+<ul>
+<li class=""><code>files.read</code> serves text extensions only (<code>.md</code> / <code>.txt</code> / <code>.json</code> / <code>.csv</code> /
+<code>.log</code>); binary documents are refused (use <code>files.share</code> or the web viewer).
+It is <strong>allowed in scheduled turns</strong>.</li>
+<li class=""><code>artifact.save</code> overwrites the same <code>project</code>+<code>name</code>, refuses a write onto
+another person&#x27;s file, and counts against the caller&#x27;s file-storage quota.</li>
+<li class=""><code>files.share</code> is owner-controlled and read-only; guests cannot share.</li>
+<li class=""><code>files.send</code> is a turn-output tool - refused from the LAN <code>/mcp</code> path. A file
+another person owns is invisible: the refusal deliberately matches &quot;not found&quot;
+so its existence is not disclosed.</li>
+<li class=""><code>image.generate</code> uses OpenAI <strong>gpt-image-1</strong> (it returns base64 natively;
+dall-e-* need a <code>response_format</code> param the current API rejects, or hand back a URL
+a one-TLS-slot device can&#x27;t re-fetch). The whole image decodes into <strong>PSRAM</strong>
+during the download, then lands on SD under a brief lock - it never holds the
+internal heap, and never the SD bus for the long TLS wait (which would either trip
+the main-loop watchdog or race other SD users; both were seen live). It is a
+<strong>turn-only</strong> tool (like <code>files.send</code>): it blocks ~1-2 min, so it runs on the turn
+task, never the AsyncTCP <code>/mcp</code> path. <code>quality</code> defaults to <strong>low</strong> (fast, small,
+cheap); SD- and OpenAI-key-gated. The saved PNG is a first-class <code>Image</code> artifact:
+<code>files.list</code>/<code>files.search</code>/<code>files.send</code> all see it, and <code>files.send</code> delivers it
+as an inline Telegram photo. <code>describe:true</code> adds a vision read-back (a second
+provider call). <strong>Hardware-verified</strong> end-to-end on an e-ink board (a 1024×1024
+gpt-image-1 PNG generated → saved intact → delivered). <strong>Out of scope on this
+device:</strong> embedding images into PDFs (no PDF engine), email attachments (no
+outbound email send exists), and in-turn multimodal vision beyond describe-once - a
+generated or received image enters the conversation as a <em>description</em>, not pixels,
+for the heap reasons in <code>image_vision.h</code>.</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="results---recent-tool-outputs"><code>results.*</code> - recent tool outputs<a href="#results---recent-tool-outputs" class="hash-link" aria-label="Direct link to results---recent-tool-outputs" title="Direct link to results---recent-tool-outputs" translate="no">​</a></h2>
+<p>Registered by <code>registerResultTools()</code> (<code>lib/core/src/orch_result_store.cpp</code>).
+A bounded ring of recent tool outputs and overflowed sub-agent results, so a
+truncated payload can be read back in full.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Tool</th><th>Description (as registered)</th><th>Arguments</th><th>State</th></tr></thead><tbody><tr><td><code>results.get</code></td><td>Fetch the full text of a stored result by tag, paged.</td><td><code>tag</code> (string, <strong>required</strong>), <code>offset</code> (number)</td><td>live</td></tr><tr><td><code>results.list</code></td><td>List the stored recent results (tag, kind, name, size).</td><td>(none)</td><td>live</td></tr></tbody></table>
+<p>Note: a tag that has aged out of the ring is not an error to retry - fall back to
+<code>memory.episodic</code> with the tag as <code>text</code>.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="loop---routines-scheduled-turns"><code>loop.*</code> - routines (scheduled turns)<a href="#loop---routines-scheduled-turns" class="hash-link" aria-label="Direct link to loop---routines-scheduled-turns" title="Direct link to loop---routines-scheduled-turns" translate="no">​</a></h2>
+<p>Registered by the memory subsystem. Scheduled or recurring tasks (&quot;routines&quot;)
+that fire as future Orchestrator turns.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Tool</th><th>Description (as registered)</th><th>Arguments</th><th>State</th></tr></thead><tbody><tr><td><code>wakeup.set</code></td><td>Schedule ONE future wakeup for the assistant itself - no owner approval (a bounded single fire under the same daily governor as routines; at most 4 armed; chaining allowed). In <code>minutes</code> (2 min–7 days) it gets a single automatic turn carrying its <code>note</code>, then the wakeup retires (one short retry if the turn itself failed, then an owner alert). Visible in /loops and web Routines; cancel with <code>loop.cancel</code>.</td><td><code>minutes</code> (<strong>required</strong>), <code>note</code> (<strong>required</strong>)</td><td>live (admin-only)</td></tr><tr><td><code>loop.create</code></td><td>Schedule a recurring or timed task that fires as a future turn.</td><td><code>name</code> (<strong>required</strong>), <code>prompt</code> (<strong>required</strong>), <code>chat_id</code> (optional, must be allow-listed), <code>schedule</code> (<strong>required</strong> object: <code>{kind:&quot;interval&quot;, every_seconds: N≥300}</code> or <code>{kind:&quot;daily&quot;|&quot;weekly&quot;, at:&quot;HH:MM&quot;, days:[...]}</code>)</td><td>live (admin-only)</td></tr><tr><td><code>loop.list</code></td><td>List all routines with schedule, next run, last result, enabled, and approval.</td><td>(none)</td><td>live (admin-only)</td></tr><tr><td><code>loop.cancel</code></td><td>Cancel (delete) a routine by its id.</td><td><code>id</code> (<strong>required</strong>)</td><td>live (admin-only)</td></tr></tbody></table>
+<p>Notes:</p>
+<ul>
+<li class="">All three require an admin conversation. <code>loop.create</code> is additionally refused
+in scheduled turns (a routine cannot create routines).</li>
+<li class="">A routine the model creates is saved <strong>pending</strong> the owner&#x27;s approval and
+cannot fire until approved (web Routines tab, or Telegram <code>/loop approve &lt;id&gt;</code>).</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="reply---output-channels"><code>reply.*</code> - output channels<a href="#reply---output-channels" class="hash-link" aria-label="Direct link to reply---output-channels" title="Direct link to reply---output-channels" translate="no">​</a></h2>
+<p>Registered by the memory subsystem. Turn-output tools: the model chooses how to
+reach the person. Both refuse outside a live turn.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Tool</th><th>Description (as registered)</th><th>Arguments</th><th>State</th></tr></thead><tbody><tr><td><code>reply.speak</code></td><td>Read text aloud on the device speaker (text-to-speech).</td><td><code>text</code> (<strong>required</strong>)</td><td>live</td></tr><tr><td><code>reply.telegram</code></td><td>Send a Telegram message; <code>voice:true</code> delivers it as spoken audio.</td><td><code>text</code> (<strong>required</strong>), <code>chat_id</code> (optional), <code>voice</code> (boolean)</td><td>live</td></tr></tbody></table>
+<p>Note: <code>reply.speak</code> degrades honestly when voice replies are switched off or the
+speaker volume is 0. With voice replies off, <code>reply.telegram</code> <code>voice:true</code> falls
+back to text - the content is never dropped.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="web---live-web-search"><code>web.*</code> - live web search<a href="#web---live-web-search" class="hash-link" aria-label="Direct link to web---live-web-search" title="Direct link to web---live-web-search" translate="no">​</a></h2>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Tool</th><th>Description (as registered)</th><th>Arguments</th><th>State</th></tr></thead><tbody><tr><td><code>web.search</code></td><td>Search the live web; returns an answer plus top results (title, url, snippet).</td><td><code>query</code> (string, <strong>required</strong>), <code>max_results</code> (integer, default 5)</td><td>live (when a web-search key is set)</td></tr></tbody></table>
+<p>Note: registered only when a web-search (Tavily) key is configured - the key is
+human-set, never model-writable. A monthly call budget can gate it.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="tenant---people--roles"><code>tenant.*</code> - people &amp; roles<a href="#tenant---people--roles" class="hash-link" aria-label="Direct link to tenant---people--roles" title="Direct link to tenant---people--roles" translate="no">​</a></h2>
+<p>Registered by the memory subsystem. Manage who may talk to the device and what
+they may store. Admin-only, and refused in scheduled turns.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Tool</th><th>Description (as registered)</th><th>Arguments</th><th>State</th></tr></thead><tbody><tr><td><code>tenant.list</code></td><td>List the people who can talk to this device: chat id, role, quotas.</td><td>(none)</td><td>live (admin-only)</td></tr><tr><td><code>tenant.set_role</code></td><td>Approve someone or change their role: <code>admin</code> | <code>user</code> | <code>guest</code> | <code>unknown</code> (revokes access).</td><td><code>chat</code> (<strong>required</strong>), <code>role</code> (<strong>required</strong>, enum)</td><td>live (admin-only)</td></tr><tr><td><code>tenant.set_quota</code></td><td>Set one person&#x27;s storage limits.</td><td><code>chat</code> (<strong>required</strong>), <code>vectors</code> (int), <code>bytes</code> (int), <code>ttl_hours</code> (int), <code>pins</code> (int) - 0 restores the role default</td><td>live (admin-only)</td></tr></tbody></table>
+<p>Note: the last admin cannot be demoted. Roles and quotas are the model-callable
+half of the people surface; the auth allow-list itself stays human-only (see the
+rail above). See <a class="" href="/guides/people-and-privacy">People &amp; privacy</a>.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="device--system-introspection">Device &amp; system introspection<a href="#device--system-introspection" class="hash-link" aria-label="Direct link to Device &amp; system introspection" title="Direct link to Device &amp; system introspection" translate="no">​</a></h2>
+<p>Read-only registry tools that report live state; none mutate durable state or
+(except <code>device.selftest</code>&#x27;s audible items) actuate hardware. Registered in
+<code>src/main.cpp</code> (<code>registerDeviceTools</code>) and the memory subsystem.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Tool</th><th>Description (as registered)</th><th>Arguments</th><th>State</th></tr></thead><tbody><tr><td><code>system.health</code></td><td>Report live hardware + subsystem health (ring, display, mic, speaker, SD, memory, PSRAM, Wi-Fi, Telegram).</td><td>(none)</td><td>live</td></tr><tr><td><code>files.fetch</code></td><td>Download a document from an https URL into the file store, governed by the owner&#x27;s URL-download trust policy (off / ask-per-link / AI scan / full trust; web: Usage → Downloads). Runs in the background; per-file size cap applies; under &quot;ask&quot; the owner approves each link (Telegram <code>/fetch approve &lt;id&gt;</code> or the web card); under &quot;scan&quot; the file is quarantined and promoted only on a SAFE AI verdict.</td><td><code>url</code>, <code>project</code>, <code>name</code></td><td>live</td></tr><tr><td><code>device.status</code></td><td>Read the complete live device state: firmware/build, update engine + slot + auto-update, local time + timezone + clock-sync, free heap/PSRAM, SD (including live <code>sdLost</code>) + internal flash usage, battery, Wi-Fi signal, Bluetooth bonds, fault mask, sound tier + sound-pack sync, ring posture + battery mode (user and effective) + attention hold + device name + sub-agent provider priority, memory counts vs live caps (vectors, episodic, scratchpad), file-store count/bytes/free, sub-agent capacity (running/queued vs limits), real billed token usage (last turn + session) including <code>usage.budget[]</code> - per-provider spend this billing period (tokens in/out, calls, estimated dollars from the owner&#x27;s rates) against the owner&#x27;s dollar and token ceilings plus the reset day (v4.1.2: plan work against the budget instead of discovering a refusal at dispatch), and the current value of every config knob (v4.1: the knobs the model can set are all readable here).</td><td>(none)</td><td>live</td></tr><tr><td><code>device.selftest</code></td><td>Run a hardware self-test; returns per-item PASS/FAIL/SKIP.</td><td><code>audible</code> (boolean - also runs the speaker/mic acoustic loopback)</td><td>live</td></tr><tr><td><code>ota.status</code></td><td>Read the firmware-update engine: state, latest version seen + its release notes, last install outcome.</td><td>(none)</td><td>live</td></tr></tbody></table>
+<p>Note: <code>device.status</code> is silent (never makes a sound); the battery reading is a
+voltage <strong>trend</strong> only - the device has no charge-detect hardware.
+<code>device.selftest</code>&#x27;s audible items are refused when the device is on silent or the
+owner disabled hardware tests. The model cannot <strong>install</strong> updates - only the
+owner can (Telegram <code>/update</code> or the web UI).</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="device---physical-device-actions-turn-array"><code>device[]</code> - physical device actions (turn array)<a href="#device---physical-device-actions-turn-array" class="hash-link" aria-label="Direct link to device---physical-device-actions-turn-array" title="Direct link to device---physical-device-actions-turn-array" translate="no">​</a></h2>
+<p>Device actions are <strong>not</strong> registry tools - they arrive as the turn&#x27;s
+<code>device[]</code> array and are validated by the portable half in
+<code>lib/core/include/nimbus/orch/device_actions.h</code>
+(<code>validateAction()</code>), then executed by <code>src/agent/device_actions.cpp</code> only for
+items with <code>allowed == true</code>. Each <code>device[]</code> element is exactly one of:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Action</th><th>What it does</th><th>Params</th><th>State</th></tr></thead><tbody><tr><td><code>led</code></td><td>ring pattern + color + brightness</td><td><code>mode</code> (<code>solid</code> | <code>spinner</code> | <code>pulse</code> | <code>flash</code> | <code>rainbow</code>), color <code>r</code>/<code>g</code>/<code>b</code> (0–255), <code>brightness</code> (0–255 or null)</td><td>live</td></tr><tr><td><code>lights</code></td><td>ring on/off shorthand</td><td><code>value</code> (<code>off</code> | <code>full</code>)</td><td>live</td></tr><tr><td><code>config</code></td><td>benign, owner-friendly knobs (allow-listed keys only)</td><td>e.g. <code>ledBrightness</code>, <code>priority</code> (routing <em>preference</em>), <code>posture</code>, <code>profile</code>, <code>theme</code>, <code>attnHoldMs</code>, <code>sfxLvlN</code>/<code>sfxLvlO</code>, <code>sfxVol</code>, <code>sfxTheme</code>, <code>sttProv</code>, <code>ttsProv</code>, <code>ttsVoice</code>, <code>ttsOn</code>, <code>sleepOvr</code>, <code>brightOvr</code>, <code>devName</code></td><td>live (rails enforced)</td></tr><tr><td><code>orch_model</code></td><td>switch the head&#x27;s own provider + model at runtime</td><td><code>provider</code> (<code>openai</code> | <code>anthropic</code> | <code>mistral</code>), <code>model</code> (string)</td><td>live</td></tr><tr><td><code>reboot</code></td><td>restart the device</td><td>(none)</td><td>live</td></tr><tr><td><code>tts</code></td><td>speak text</td><td><code>text</code></td><td>wiring: speaker path (see below)</td></tr></tbody></table>
+<p>Rails: a <code>config</code> action carrying any protected key (secrets, the auth
+allow-list, provider routing/priority, the Local Loops or budget governors - see
+the human-web-only rail above) is refused as a <strong>whole</strong> with reason
+<code>protected-BLOCKED</code>. <code>orch_model</code> is the one deliberate exception to the routing
+rule: the model may repoint its own head host + model. Session ops (spawn /
+terminate) are <strong>not</strong> device actions - they go through the turn&#x27;s
+<code>session_ops[]</code> / <code>session.*</code>, never <code>device[]</code>.</p>
+<p>On-device speech is available now through the <code>reply.speak</code> tool (and Telegram
+audio via <code>reply.telegram</code> <code>voice:true</code>); the <code>device[]</code> <code>tts</code> action&#x27;s speaker
+path is still being wired.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="planned-surfaces">Planned surfaces<a href="#planned-surfaces" class="hash-link" aria-label="Direct link to Planned surfaces" title="Direct link to Planned surfaces" translate="no">​</a></h2>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Namespace</th><th>Tool</th><th>What it will do</th><th>State</th></tr></thead><tbody><tr><td>audio</td><td><code>audio.transcribe</code></td><td>mic → STT text as a model-callable tool</td><td>planned</td></tr></tbody></table>
+<p>Inbound audio is already transcribed by the Telegram/voice pipeline, and Telegram
+media <strong>send</strong> is already exposed as tools - spoken audio via <code>reply.telegram</code>
+(<code>voice:true</code>) and documents via <code>files.send</code> - so only a model-callable
+mic-transcription tool remains planned.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="adding-tools">Adding tools<a href="#adding-tools" class="hash-link" aria-label="Direct link to Adding tools" title="Direct link to Adding tools" translate="no">​</a></h2>
+<p>Beyond the on-device set, capabilities can be extended two ways, both surfaced
+honestly in the web &quot;Tools&quot; panel (<code>GET /api/tools</code>, read live from
+<code>memory::registry().manifest()</code>):</p>
+<ul>
+<li class=""><strong>External MCP clients</strong> register/reach tools over <code>POST /mcp</code>.</li>
+<li class=""><strong>Provider-side tools</strong> (e.g. hosted web-search / deep-research) run on the
+spawn target, not on the device.</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="see-also">See also<a href="#see-also" class="hash-link" aria-label="Direct link to See also" title="Direct link to See also" translate="no">​</a></h2>
+<ul>
+<li class=""><a class="" href="/guides/orchestrator-world">Orchestrator World</a>
+<ul>
+<li class="">the World memory system and the MCP server (§5).</li>
+</ul>
+</li>
+<li class=""><a class="" href="/reference/turn-contract">Turn contract</a> - the single-shot turn JSON
+and how <code>mem_write[]</code> / <code>mem_query[]</code> / <code>session_ops[]</code> dispatch to these tools.</li>
+<li class=""><a class="" href="/guides/people-and-privacy">People &amp; privacy</a> - roles, quotas, and the RBAC
+gating the <code>tenant.*</code> and admin-only tools enforce.</li>
+</ul></div><footer class="theme-doc-footer docusaurus-mt-lg"><div class="row margin-top--sm theme-doc-footer-edit-meta-row"><div class="col noPrint_WFHX"><a href="https://github.com/ristllin/Nimbus/blob/main/docs/reference/tool-catalog.md" target="_blank" rel="noopener noreferrer" class="theme-edit-this-page"><svg fill="currentColor" height="20" width="20" viewBox="0 0 40 40" class="iconEdit_Z9Sw" aria-hidden="true"><g><path d="m34.5 11.7l-3 3.1-6.3-6.3 3.1-3q0.5-0.5 1.2-0.5t1.1 0.5l3.9 3.9q0.5 0.4 0.5 1.1t-0.5 1.2z m-29.5 17.1l18.4-18.5 6.3 6.3-18.4 18.4h-6.3v-6.2z"></path></g></svg>Edit this page</a></div><div class="col lastUpdated_JAkA"></div></div></footer></article><nav class="docusaurus-mt-lg pagination-nav" aria-label="Docs pages"><a class="pagination-nav__link pagination-nav__link--prev" href="/reference/config-and-nvs"><div class="pagination-nav__sublabel">Previous</div><div class="pagination-nav__label">Config &amp; NVS</div></a><a class="pagination-nav__link pagination-nav__link--next" href="/reference/turn-contract"><div class="pagination-nav__sublabel">Next</div><div class="pagination-nav__label">Turn contract</div></a></nav></div></div><div class="col col--3"><div class="tableOfContents_bqdL thin-scrollbar theme-doc-toc-desktop"><ul class="table-of-contents table-of-contents__left-border"><li><a href="#the-human-web-only-rail" class="table-of-contents__link toc-highlight">The human-web-only rail</a></li><li><a href="#state-legend" class="table-of-contents__link toc-highlight">State legend</a></li><li><a href="#memory---associative--working-memory" class="table-of-contents__link toc-highlight"><code>memory.*</code> - associative &amp; working memory</a></li><li><a href="#session---sub-agent-control" class="table-of-contents__link toc-highlight"><code>session.*</code> - sub-agent control</a></li><li><a href="#skill---knowledge-capsules-read--author" class="table-of-contents__link toc-highlight"><code>skill.*</code> - knowledge capsules (read + author)</a></li><li><a href="#docs---the-devices-own-documentation" class="table-of-contents__link toc-highlight"><code>docs.*</code> - the device&#39;s own documentation</a></li><li><a href="#files--artifactsave---durable-artifact-store" class="table-of-contents__link toc-highlight"><code>files.*</code> &amp; <code>artifact.save</code> - durable artifact store</a></li><li><a href="#results---recent-tool-outputs" class="table-of-contents__link toc-highlight"><code>results.*</code> - recent tool outputs</a></li><li><a href="#loop---routines-scheduled-turns" class="table-of-contents__link toc-highlight"><code>loop.*</code> - routines (scheduled turns)</a></li><li><a href="#reply---output-channels" class="table-of-contents__link toc-highlight"><code>reply.*</code> - output channels</a></li><li><a href="#web---live-web-search" class="table-of-contents__link toc-highlight"><code>web.*</code> - live web search</a></li><li><a href="#tenant---people--roles" class="table-of-contents__link toc-highlight"><code>tenant.*</code> - people &amp; roles</a></li><li><a href="#device--system-introspection" class="table-of-contents__link toc-highlight">Device &amp; system introspection</a></li><li><a href="#device---physical-device-actions-turn-array" class="table-of-contents__link toc-highlight"><code>device[]</code> - physical device actions (turn array)</a></li><li><a href="#planned-surfaces" class="table-of-contents__link toc-highlight">Planned surfaces</a></li><li><a href="#adding-tools" class="table-of-contents__link toc-highlight">Adding tools</a></li><li><a href="#see-also" class="table-of-contents__link toc-highlight">See also</a></li></ul></div></div></div></div></main></div></div></div><footer class="theme-layout-footer footer footer--dark"><div class="container container-fluid"><div class="row footer__links"><div class="theme-layout-footer-column col footer__col"><div class="footer__title">Docs</div><ul class="footer__items clean-list"><li class="footer__item"><a class="footer__link-item" href="/quick-start/what-you-need">Quick Start</a></li><li class="footer__item"><a class="footer__link-item" href="/guides/hardware-bom">Bill of materials</a></li><li class="footer__item"><a class="footer__link-item" href="/getting-started/webui-reference">Web UI reference</a></li></ul></div><div class="theme-layout-footer-column col footer__col"><div class="footer__title">Reference</div><ul class="footer__items clean-list"><li class="footer__item"><a class="footer__link-item" href="/reference/config-and-nvs">Config &amp; NVS</a></li><li class="footer__item"><a class="footer__link-item" href="/reference/tool-catalog">Tool catalog</a></li><li class="footer__item"><a class="footer__link-item" href="/reference/turn-contract">Turn contract</a></li><li class="footer__item"><a class="footer__link-item" href="/reference/changelog">Changelog</a></li></ul></div><div class="theme-layout-footer-column col footer__col"><div class="footer__title">More</div><ul class="footer__items clean-list"><li class="footer__item"><a href="https://github.com/ristllin/Nimbus" target="_blank" rel="noopener noreferrer" class="footer__link-item">GitHub<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li></ul></div></div><div class="footer__bottom text--center"><div class="footer__copyright">Nimbus - source-available, free for noncommercial use (PolyForm-NC / CC BY-NC-SA). Built with Docusaurus.</div></div></div></footer></div>
+</body>
+</html>

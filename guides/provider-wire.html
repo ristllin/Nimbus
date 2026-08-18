@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="en" dir="ltr" class="docs-wrapper plugin-docs plugin-id-default docs-version-current docs-doc-page docs-doc-id-guides/provider-wire" data-has-hydrated="false">
+<head>
+<meta charset="UTF-8">
+<meta name="generator" content="Docusaurus v3.10.2">
+<title data-rh="true">Provider wire - structured outputs &amp; tool loops | Nimbus</title><meta data-rh="true" name="viewport" content="width=device-width,initial-scale=1"><meta data-rh="true" name="twitter:card" content="summary_large_image"><meta data-rh="true" property="og:image" content="https://docs.cumulo-nimbus.ai/img/social-card.png"><meta data-rh="true" name="twitter:image" content="https://docs.cumulo-nimbus.ai/img/social-card.png"><meta data-rh="true" property="og:url" content="https://docs.cumulo-nimbus.ai/guides/provider-wire"><meta data-rh="true" property="og:locale" content="en"><meta data-rh="true" name="docusaurus_locale" content="en"><meta data-rh="true" name="docsearch:language" content="en"><meta data-rh="true" name="docusaurus_version" content="current"><meta data-rh="true" name="docusaurus_tag" content="docs-default-current"><meta data-rh="true" name="docsearch:version" content="current"><meta data-rh="true" name="docsearch:docusaurus_tag" content="docs-default-current"><meta data-rh="true" property="og:title" content="Provider wire - structured outputs &amp; tool loops | Nimbus"><meta data-rh="true" name="description" content="Migrated from docs/provider-wire.md - the canonical source lives in the repo."><meta data-rh="true" property="og:description" content="Migrated from docs/provider-wire.md - the canonical source lives in the repo."><link data-rh="true" rel="icon" href="/img/favicon.svg"><link data-rh="true" rel="canonical" href="https://docs.cumulo-nimbus.ai/guides/provider-wire"><link data-rh="true" rel="alternate" href="https://docs.cumulo-nimbus.ai/guides/provider-wire" hreflang="en"><link data-rh="true" rel="alternate" href="https://docs.cumulo-nimbus.ai/guides/provider-wire" hreflang="x-default"><script data-rh="true" type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Provider wire","item":"https://docs.cumulo-nimbus.ai/guides/provider-wire"}]}</script><link rel="stylesheet" href="/assets/css/styles.5ae419b2.css">
+<script src="/assets/js/runtime~main.e74ebefa.js" defer="defer"></script>
+<script src="/assets/js/main.92f144b6.js" defer="defer"></script>
+</head>
+<body>
+<svg style="display: none;"><defs>
+<symbol id="theme-svg-external-link" viewBox="0 0 24 24"><path fill="currentColor" d="M21 13v10h-21v-19h12v2h-10v15h17v-8h2zm3-12h-10.988l4.035 4-6.977 7.07 2.828 2.828 6.977-7.07 4.125 4.172v-11z"/></symbol>
+</defs></svg>
+<script>!function(){var t=function(){try{return new URLSearchParams(window.location.search).get("docusaurus-theme")}catch(t){}}()||function(){try{return window.localStorage.getItem("theme")}catch(t){}}();document.documentElement.setAttribute("data-theme",t||(window.matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light")),document.documentElement.setAttribute("data-theme-choice",t||"system")}(),function(){try{const c=new URLSearchParams(window.location.search).entries();for(var[t,e]of c)if(t.startsWith("docusaurus-data-")){var a=t.replace("docusaurus-data-","data-");document.documentElement.setAttribute(a,e)}}catch(t){}}()</script><div id="__docusaurus"><div role="region" aria-label="Skip to main content"><a class="skipToContent_fXgn" href="#__docusaurus_skipToContent_fallback">Skip to main content</a></div><nav aria-label="Main" class="theme-layout-navbar navbar navbar--fixed-top"><div class="navbar__inner"><div class="theme-layout-navbar-left navbar__items"><button aria-label="Toggle navigation bar" aria-expanded="false" class="navbar__toggle clean-btn" type="button"><svg width="30" height="30" viewBox="0 0 30 30" aria-hidden="true"><path stroke="currentColor" stroke-linecap="round" stroke-miterlimit="10" stroke-width="2" d="M4 7h22M4 15h22M4 23h22"></path></svg></button><a class="navbar__brand" href="/"><div class="navbar__logo"><img src="/img/logo.svg" alt="Nimbus" class="themedComponent_mlkZ themedComponent--light_NVdE"><img src="/img/logo.svg" alt="Nimbus" class="themedComponent_mlkZ themedComponent--dark_xIcU"></div><b class="navbar__title text--truncate">Nimbus</b></a><a class="navbar__item navbar__link" href="/quick-start/what-you-need">Get started</a><a class="navbar__item navbar__link" href="/flash">Flash</a></div><div class="theme-layout-navbar-right navbar__items navbar__items--right"><a href="https://github.com/ristllin/Nimbus" target="_blank" rel="noopener noreferrer" class="navbar__item navbar__link">GitHub<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a><div class="toggle_vylO colorModeToggle_DEke"><button class="clean-btn toggleButton_gllP toggleButtonDisabled_aARS" type="button" disabled="" title="system mode" aria-label="Switch between dark and light mode (currently system mode)"><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP lightToggleIcon_pyhR"><path fill="currentColor" d="M12,9c1.65,0,3,1.35,3,3s-1.35,3-3,3s-3-1.35-3-3S10.35,9,12,9 M12,7c-2.76,0-5,2.24-5,5s2.24,5,5,5s5-2.24,5-5 S14.76,7,12,7L12,7z M2,13l2,0c0.55,0,1-0.45,1-1s-0.45-1-1-1l-2,0c-0.55,0-1,0.45-1,1S1.45,13,2,13z M20,13l2,0c0.55,0,1-0.45,1-1 s-0.45-1-1-1l-2,0c-0.55,0-1,0.45-1,1S19.45,13,20,13z M11,2v2c0,0.55,0.45,1,1,1s1-0.45,1-1V2c0-0.55-0.45-1-1-1S11,1.45,11,2z M11,20v2c0,0.55,0.45,1,1,1s1-0.45,1-1v-2c0-0.55-0.45-1-1-1C11.45,19,11,19.45,11,20z M5.99,4.58c-0.39-0.39-1.03-0.39-1.41,0 c-0.39,0.39-0.39,1.03,0,1.41l1.06,1.06c0.39,0.39,1.03,0.39,1.41,0s0.39-1.03,0-1.41L5.99,4.58z M18.36,16.95 c-0.39-0.39-1.03-0.39-1.41,0c-0.39,0.39-0.39,1.03,0,1.41l1.06,1.06c0.39,0.39,1.03,0.39,1.41,0c0.39-0.39,0.39-1.03,0-1.41 L18.36,16.95z M19.42,5.99c0.39-0.39,0.39-1.03,0-1.41c-0.39-0.39-1.03-0.39-1.41,0l-1.06,1.06c-0.39,0.39-0.39,1.03,0,1.41 s1.03,0.39,1.41,0L19.42,5.99z M7.05,18.36c0.39-0.39,0.39-1.03,0-1.41c-0.39-0.39-1.03-0.39-1.41,0l-1.06,1.06 c-0.39,0.39-0.39,1.03,0,1.41s1.03,0.39,1.41,0L7.05,18.36z"></path></svg><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP darkToggleIcon_wfgR"><path fill="currentColor" d="M9.37,5.51C9.19,6.15,9.1,6.82,9.1,7.5c0,4.08,3.32,7.4,7.4,7.4c0.68,0,1.35-0.09,1.99-0.27C17.45,17.19,14.93,19,12,19 c-3.86,0-7-3.14-7-7C5,9.07,6.81,6.55,9.37,5.51z M12,3c-4.97,0-9,4.03-9,9s4.03,9,9,9s9-4.03,9-9c0-0.46-0.04-0.92-0.1-1.36 c-0.98,1.37-2.58,2.26-4.4,2.26c-2.98,0-5.4-2.42-5.4-5.4c0-1.81,0.89-3.42,2.26-4.4C12.92,3.04,12.46,3,12,3L12,3z"></path></svg><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP systemToggleIcon_QzmC"><path fill="currentColor" d="m12 21c4.971 0 9-4.029 9-9s-4.029-9-9-9-9 4.029-9 9 4.029 9 9 9zm4.95-13.95c1.313 1.313 2.05 3.093 2.05 4.95s-0.738 3.637-2.05 4.95c-1.313 1.313-3.093 2.05-4.95 2.05v-14c1.857 0 3.637 0.737 4.95 2.05z"></path></svg></button></div><div class="navbarSearchContainer_Bca1"></div></div></div><div role="presentation" class="navbar-sidebar__backdrop"></div></nav><div id="__docusaurus_skipToContent_fallback" class="theme-layout-main main-wrapper mainWrapper_z2l0"><div class="docsWrapper_hBAB"><button aria-label="Scroll back to top" class="clean-btn theme-back-to-top-button backToTopButton_sjWU" type="button"></button><div class="docRoot_UBD9"><aside class="theme-doc-sidebar-container docSidebarContainer_YfHR"><div class="sidebarViewport_aRkj"><div class="sidebar_njMd"><nav aria-label="Docs sidebar" class="menu thin-scrollbar menu_SIkG"><ul class="theme-doc-sidebar-menu menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/"><span class="linkLabel_WmDU">Overview</span></a></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="true" href="/quick-start/what-you-need"><span class="categoryLinkLabel_W154">Quick Start</span></a></div><ul class="menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/what-you-need"><span class="linkLabel_WmDU">What you need</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/flash"><span class="linkLabel_WmDU">Flash the firmware</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/setup-wizard"><span class="linkLabel_WmDU">Set up the device</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/first-conversation"><span class="linkLabel_WmDU">First conversation</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/notifier-quick-start"><span class="linkLabel_WmDU">Notifier quick start</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/getting-started/first-time-setup"><span class="linkLabel_WmDU">First-time setup</span></a></li></ul></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/guides/hardware"><span class="categoryLinkLabel_W154">Hardware Build</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/getting-started/webui-reference"><span class="categoryLinkLabel_W154">Using Nimbus</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret menu__link--active" role="button" aria-expanded="true" href="/guides/architecture"><span class="categoryLinkLabel_W154">How It Works</span></a></div><ul class="menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/architecture"><span class="linkLabel_WmDU">Architecture</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/turn-anatomy"><span class="linkLabel_WmDU">Turn anatomy</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/orchestrator-live-turn"><span class="linkLabel_WmDU">Live turn</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/orchestrator-world"><span class="linkLabel_WmDU">Orchestrator World</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/memory"><span class="linkLabel_WmDU">Memory</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/orchestrator-storage"><span class="linkLabel_WmDU">Storage tiering</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/sub-sessions"><span class="linkLabel_WmDU">Sub-sessions</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/harness"><span class="linkLabel_WmDU">Harness</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link menu__link--active" aria-current="page" tabindex="0" href="/guides/provider-wire"><span class="linkLabel_WmDU">Provider wire</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/security"><span class="linkLabel_WmDU">Security</span></a></li></ul></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/reference/config-and-nvs"><span class="categoryLinkLabel_W154">Reference</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/contributing/development"><span class="categoryLinkLabel_W154">Forking &amp; Contributing</span></a></div></li></ul></nav></div></div></aside><main class="docMainContainer_TBSr"><div class="container padding-top--md padding-bottom--lg"><div class="row"><div class="col docItemCol_VOVn"><div class="docItemContainer_Djhp"><article><nav class="theme-doc-breadcrumbs breadcrumbsContainer_Z_bl" aria-label="Breadcrumbs"><ul class="breadcrumbs"><li class="breadcrumbs__item"><a aria-label="Home page" class="breadcrumbs__link" href="/"><svg viewBox="0 0 24 24" class="breadcrumbHomeIcon_YNFT"><path d="M10 19v-5h4v5c0 .55.45 1 1 1h3c.55 0 1-.45 1-1v-7h1.7c.46 0 .68-.57.33-.87L12.67 3.6c-.38-.34-.96-.34-1.34 0l-8.36 7.53c-.34.3-.13.87.33.87H5v7c0 .55.45 1 1 1h3c.55 0 1-.45 1-1z" fill="currentColor"></path></svg></a></li><li class="breadcrumbs__item"><span class="breadcrumbs__link">How It Works</span></li><li class="breadcrumbs__item breadcrumbs__item--active"><span class="breadcrumbs__link">Provider wire</span></li></ul></nav><div class="tocCollapsible_ETCw theme-doc-toc-mobile tocMobile_ITEo"><button type="button" class="clean-btn tocCollapsibleButton_TO0P">On this page</button></div><div class="theme-doc-markdown markdown"><blockquote>
+<p>Sourced from <code>docs/provider-wire.md</code> in the firmware repo.</p>
+</blockquote>
+<header><h1>Provider wire - structured outputs, tool loops, and failure handling per provider</h1></header>
+<p>The technical companion to <a class="" href="/guides/turn-anatomy">turn-anatomy.md</a> and
+<a class="" href="/guides/harness">harness.md</a>: exactly how the turn contract is enforced on each
+provider&#x27;s API, how the tool loop rides each wire, and what happens when a
+provider misbehaves. Adapters live in <code>lib/harness/src/providers/</code>; the shared
+schema in <code>lib/core/include/nimbus/orch/orch_schema.h</code>.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="the-contract-has-one-source">The contract has one source<a href="#the-contract-has-one-source" class="hash-link" aria-label="Direct link to The contract has one source" title="Direct link to The contract has one source" translate="no">​</a></h2>
+<p>Every field of the <code>orch_turn</code> response (reply, ask, memory, device[],
+mem_write[], mem_query[], session_ops[]) is defined ONCE, as <code>ORCH_D_*</code>
+description macros in <code>orch_schema.h</code>. The same macros generate both:</p>
+<ul>
+<li class=""><strong>the JSON Schema</strong> sent to the provider (<code>ORCH_SCHEMA_BODY</code>), and</li>
+<li class=""><strong>the prompt&#x27;s field documentation</strong> (<code>ORCH_FIELD_DOCS</code>, the numbered list at
+the top of the system prompt).</li>
+</ul>
+<p>So the prose the model reads and the schema the wire enforces cannot drift -
+editing the macro updates both, and a schema golden (<code>test/golden/</code>) pins the
+result. This is why the prompt template contains field <em>descriptions</em> but no
+JSON example: the response format is not free-form prose guidance, it is
+carried by each provider&#x27;s structured-output channel (below).</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="how-each-provider-enforces-the-response-shape">How each provider enforces the response shape<a href="#how-each-provider-enforces-the-response-shape" class="hash-link" aria-label="Direct link to How each provider enforces the response shape" title="Direct link to How each provider enforces the response shape" translate="no">​</a></h2>
+<p>The <code>orch_turn</code> contract reaches the model two ways. The <strong>single-shot</strong> turn
+(tool loop off, or no tools supplied) carries the schema on the provider&#x27;s
+structured-output channel. The <strong>tool-loop</strong> round offers <code>orch_turn</code> as one
+function tool the model calls to end the turn. Wire enforcement differs by
+channel:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>provider</th><th>single-shot channel</th><th>tool-loop channel</th><th>schema enforced at the wire?</th></tr></thead><tbody><tr><td><strong>OpenAI</strong> (Responses API)</td><td><code>text.format</code> <code>json_schema</code>, <code>strict:true</code></td><td><code>orch_turn</code> function tool, <code>strict:true</code> parameters</td><td><strong>Yes</strong>, both channels - the model cannot emit an out-of-schema <code>orch_turn</code></td></tr><tr><td><strong>Anthropic</strong> (Messages API)</td><td>forced tool-use, <code>tool_choice:{type:&quot;tool&quot;,name:&quot;orch_turn&quot;}</code></td><td><code>orch_turn</code> offered alongside the registry tools (<code>tool_choice:auto</code>)</td><td><strong>No</strong> - the strict-grammar budget rejects a schema this size, so descriptions are stripped and the schema is advisory; the device parser + validator are the enforcement</td></tr><tr><td><strong>Mistral</strong></td><td>Conversations API, <code>response_format.json_schema</code>, <code>strict:true</code></td><td>chat/completions, <code>orch_turn</code> function tool (no <code>strict</code> flag)</td><td>single-shot <strong>yes</strong>; loop <strong>advisory</strong> - the device parser + validator enforce it</td></tr></tbody></table>
+<p><strong>&quot;Strict at the wire, lenient at the parser.&quot;</strong> Regardless of provider,
+<code>parseTurn</code> (<code>lib/core/src/orch_turn.cpp</code>) is tolerant - unknown fields are
+ignored, malformed items are dropped individually, string caps are applied on
+copy. And the portable device-action validator
+(<code>orch_device_actions.cpp</code>) re-checks EVERY device action - including the
+protected-key refusal (API keys, provider routing) - no matter what the wire
+promised. A provider bug can degrade a turn; it cannot make the device execute
+an action the validator refuses.</p>
+<p>Per-provider strict-schema requirements (each a hard API constraint):</p>
+<ul>
+<li class="">OpenAI strict mode: a <code>const</code> needs an explicit sibling <code>type</code>.</li>
+<li class="">Anthropic: a nullable enum must be <code>anyOf:[{enum},{type:null}]</code>, not a union
+type.</li>
+<li class="">The schema&#x27;s nesting depth exceeds ArduinoJson&#x27;s default limit - every parse
+of it uses <code>NestingLimit(16)</code>.</li>
+<li class="">The <code>device[]</code> array is a flat discriminated union (<code>{type:&quot;lights&quot;,...}</code>)
+because strict schemas reject heterogeneous keyed objects.</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="the-tool-loop-rides-one-canonical-transcript">The tool loop rides one canonical transcript<a href="#the-tool-loop-rides-one-canonical-transcript" class="hash-link" aria-label="Direct link to The tool loop rides one canonical transcript" title="Direct link to The tool loop rides one canonical transcript" translate="no">​</a></h2>
+<p>Every tool-loop turn is recorded into ONE device-owned <code>Transcript</code>
+(<code>lib/core/src/orch_transcript.cpp</code>, host-tested): the seeded user input, then
+per round the model&#x27;s prose, its tool calls, and their results. The portable
+controller (<code>runHeadLoop</code>, <code>lib/core/src/orch_head_loop.cpp</code>) owns rounds/
+deadline/heap/byte caps and records into the transcript through
+<code>hooks.transcript</code>; each provider adapter supplies a thin <code>step</code> closure that
+RE-RENDERS its wire shape from that transcript every round. The loops are
+therefore <strong>stateless</strong> - no provider-side conversation is retained between
+rounds, and turn continuity lives on the device, not on a provider&#x27;s server.</p>
+<p>This is the invariant that makes a mid-turn provider switch possible (below):
+executed tool results ride the transcript as DATA, so re-rendering a round
+against a different provider replays nothing - the tools already ran.</p>
+<p>Each renderer speaks its provider&#x27;s dialect from the same record:</p>
+<ul>
+<li class=""><strong>Anthropic</strong> (<code>renderAntMessages</code>, <code>anthropic.cpp</code>) rebuilds <code>messages[]</code>:
+the pinned user seed, then for each tool-carrying round an assistant message
+of <code>tool_use</code> blocks answered by a user message of <code>tool_result</code> blocks. The
+<strong>prefill rule</strong>: an assistant message is emitted ONLY for rounds that carried
+a tool call - a prose-only (stalled) round is never echoed, because a trailing
+assistant message plus forced <code>tool_choice</code> is a hard 400. Messages is the one
+wire whose body grows round over round, so it also carries an in-turn gradient
+fold (older rounds collapse to one line each past a byte trigger; the newest
+round stays verbatim, and folding never breaks the <code>tool_use</code>↔<code>tool_result</code>
+pairing an unanswered <code>tool_use</code> would 400 on).</li>
+<li class=""><strong>OpenAI</strong> (<code>renderOaiInput</code>, <code>openai.cpp</code>) sends the full Responses <code>input[]</code>
+with <code>store:false</code> every round - the user seed, then per round the reasoning
+items, <code>function_call</code> items, and their <code>function_call_output</code> answers. There
+is <strong>no <code>previous_response_id</code> and no <code>store:true</code></strong>: the server-side chain is
+gone, and with it the chain-poisoning failure class (an unanswered
+<code>function_call</code> left on a stored chain used to 400 every later turn). Reasoning
+models require their reasoning items replayed before each <code>function_call</code> under
+<code>store:false</code>, so <code>reasoning.encrypted_content</code> is captured into the transcript
+item&#x27;s <code>meta</code> and re-emitted by the OpenAI renderer only.</li>
+<li class=""><strong>Mistral</strong> (<code>renderMistralMessages</code>, <code>mistral.cpp</code>) runs the loop on the
+stateless <code>/v1/chat/completions</code> wire (assistant <code>tool_calls[]</code> answered by
+<code>role:&quot;tool&quot;</code> messages) - NOT the Conversations API, which only the single-shot
+path keeps. Chat/completions requires tool-call ids of exactly nine
+alphanumerics, so any foreign id carried in by a failover (an Anthropic
+<code>toolu_…</code> or OpenAI <code>call_…</code>) is normalized to a deterministic 9-char digest
+(<code>mistralCallId</code>), applied to both the assistant <code>tool_calls[]</code> and their
+paired <code>tool</code> messages.</li>
+</ul>
+<p>Wire rules shared across the renderers - each a hard requirement of the API it
+serves:</p>
+<ul>
+<li class=""><strong>Tool names</strong>: providers require <code>^[a-zA-Z0-9_-]{1,64}$</code>, so dotted registry
+names (<code>memory.search</code>) are sanitized <code>.</code>→<code>_</code> with a reverse map on dispatch.
+Mistral additionally reserves its built-in connector names (<code>web_search</code>,
+<code>code_interpreter</code>, …); a registry tool that collides gets a <code>reg_</code> prefix,
+inverted before dispatch.</li>
+<li class=""><strong>Serialization</strong>: never <code>serializeJson</code> straight into the TLS client -
+per-chunk TLS records fragment the internal heap. Every request body is
+serialized into one PSRAM buffer and written once.</li>
+<li class=""><strong>Tool choice per round</strong>: OpenAI and Mistral FORCE a tool on tool-allowed
+rounds - OpenAI <code>tool_choice:&quot;required&quot;</code>, Mistral chat/completions
+<code>tool_choice:&quot;any&quot;</code> - so the model always calls a registry tool or the
+terminal <code>orch_turn</code>, and a prose-only stall round cannot occur. Anthropic uses
+<code>tool_choice:auto</code> (the model may call a tool OR answer via <code>orch_turn</code>); a
+genuine text-only stall there is caught by the controller&#x27;s forced final round.
+The forced FINAL round (a cap tripped) pins <code>orch_turn</code> directly on every
+provider - OpenAI/Mistral via the named-function object, Anthropic via
+<code>tool_choice:{type:&quot;tool&quot;,name:&quot;orch_turn&quot;}</code>.</li>
+<li class=""><strong>Mistral built-ins</strong>: chat/completions forbids tool_choice forcing alongside
+the Studio built-in connectors, so loop rounds drop the built-ins and the
+registry&#x27;s <code>web.search</code> covers the gap. (The single-shot Conversations path
+keeps them.)</li>
+<li class=""><strong>Per-round socket budget</strong> (F25): each round&#x27;s exchange timeout is clamped to
+the turn&#x27;s REMAINING wall-clock budget (8 s floor), so N slow rounds cannot
+stack past the 600 s turn deadline.</li>
+<li class=""><strong>Thinking</strong>: Anthropic non-tool text blocks and OpenAI reasoning SUMMARIES
+(requested via <code>reasoning:{summary:&quot;auto&quot;}</code>, gated off the <code>-chat</code> variants
+that reject the parameter) are observed into the glass box, never replayed into
+the conversation. Only OpenAI&#x27;s ENCRYPTED reasoning items are replayed, and
+only because a reasoning model requires them under <code>store:false</code>.</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="context-overflow-reactive">Context overflow (reactive)<a href="#context-overflow-reactive" class="hash-link" aria-label="Direct link to Context overflow (reactive)" title="Direct link to Context overflow (reactive)" translate="no">​</a></h2>
+<p>A provider rejecting a request for size is recognized by wording
+(<code>isContextOverflowError</code>: OpenAI <code>context_length_exceeded</code> / &quot;maximum context
+length&quot;, Anthropic &quot;prompt is too long&quot;, Mistral &quot;exceeds the maximum&quot;, plus a
+generic &quot;context window&quot; guard). The turn itself recovers through the normal
+zero-tools fresh-thread retry below; additionally the chat is marked fold-due,
+so the next pump pass compacts it (<a class="" href="/guides/memory">memory.md</a>) instead of
+letting the failure recur.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="mid-turn-provider-failover">Mid-turn provider failover<a href="#mid-turn-provider-failover" class="hash-link" aria-label="Direct link to Mid-turn provider failover" title="Direct link to Mid-turn provider failover" translate="no">​</a></h2>
+<p>Because the transcript is device-owned, a provider that fails PART-WAY through a
+tool loop no longer loses the turn. <code>runFabricLoop</code>
+(<code>lib/harness/src/providers/loop_common.cpp</code>) drives the loop over an ordered
+host list against one shared <code>Transcript</code>, wrapping each controller step so that
+retry and failover happen INSIDE a single logical round:</p>
+<ol>
+<li class="">Run the round against the current host.</li>
+<li class="">On a transport failure, retry the SAME host once.</li>
+<li class="">Still failing → walk to the next keyed host and re-run the SAME round on the
+shared transcript. Up to two switches; the host list is the current provider
+plus up to two keyed, in-budget alternates from <code>providerPriority</code>.</li>
+</ol>
+<p>Nothing re-dispatches on a switch: every tool the loop already ran is in the
+transcript as a result, so the next provider&#x27;s renderer just reads it. A
+<strong>schema-parse failure does NOT fail over</strong> - that is a device-side contract
+error, identical on every host, so it returns immediately rather than burning a
+switch. The owner is notified on each switch (&quot;… hit trouble mid-task -
+switching to …; your progress this turn carries over&quot;), and turn-end bookkeeping
+attributes to the host that finished.</p>
+<p>Gated by NVS <code>midFail</code> (<code>store::midTurnFailover()</code>, default <strong>ON</strong>; web toggle
+&quot;Switch providers mid-task if one fails&quot;). The engine
+(<code>src/agent/orchestrator.cpp</code>) registers the fabric loop as <code>ProviderHosts.fabric</code>
+and routes a loop turn to it whenever the gate is on and tools are present.
+Otherwise the turn runs the single-host loop and relies on the between-turn
+ladder below.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="between-turn-retry-failover-and-the-side-effect-rule">Between-turn retry, failover, and the side-effect rule<a href="#between-turn-retry-failover-and-the-side-effect-rule" class="hash-link" aria-label="Direct link to Between-turn retry, failover, and the side-effect rule" title="Direct link to Between-turn retry, failover, and the side-effect rule" translate="no">​</a></h2>
+<p>This ladder governs single-shot turns and tool-loop turns when mid-turn failover
+is off. (With <code>midFail</code> on, a loop turn fails over INSIDE the fabric loop above
+and never re-enters this ladder - the ladder exists only because the older
+per-host loops could not carry a turn across providers.)</p>
+<ol>
+<li class="">A failed turn retries ONCE on the same host with a fresh conversation
+(transient TLS/handshake flakes), then walks up to two keyed alternates from
+<code>providerPriority</code>, notifying the owner at each switch.</li>
+<li class=""><strong>Both steps are skipped entirely if ANY tool executed during the failed
+attempt</strong> - replaying a turn re-runs its side effects (a memory write, a
+spawn, a message). The owner gets an honest error instead.</li>
+<li class="">A provider over its monthly token budget is skipped at turn entry (the
+budget gate picks the first keyed, under-budget alternate).</li>
+<li class="">Provider switches always start a fresh provider-side thread; continuity
+comes from the device&#x27;s own layers (recent-conversation window, per-chat
+running memory, vector recall) - see
+<a class="" href="/guides/turn-anatomy">turn-anatomy.md</a> §3.</li>
+</ol>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="graceful-degradation-ladder">Graceful degradation ladder<a href="#graceful-degradation-ladder" class="hash-link" aria-label="Direct link to Graceful degradation ladder" title="Direct link to Graceful degradation ladder" translate="no">​</a></h2>
+<p>From least to most degraded, all fail-open and none reboot:</p>
+<ul>
+<li class="">A tool dispatch fails → the model sees the error text as the tool result and
+is expected to recover (a tool error is never fatal to the loop).</li>
+<li class="">A cap trips (rounds/deadline/heap/bytes/stall) → one forced tool-less
+&quot;answer now&quot; round; if the model still doesn&#x27;t terminate, a clean error
+reply.</li>
+<li class="">The response parses but violates the contract → per-item drops (lenient
+parser) + validator refusals with reason strings the model sees next turn.</li>
+<li class="">The whole turn fails → retry/failover ladder above.</li>
+<li class="">Heap below the turn floor → the turn is deferred with a &quot;one moment&quot; reply
+before any provider call is made.</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="sub-agent-managed-agent-wire">Sub-agent (managed-agent) wire<a href="#sub-agent-managed-agent-wire" class="hash-link" aria-label="Direct link to Sub-agent (managed-agent) wire" title="Direct link to Sub-agent (managed-agent) wire" translate="no">​</a></h2>
+<p>Documented separately in <a class="" href="/guides/sub-sessions">sub-sessions.md</a> - Anthropic managed
+agents (environments/agents/sessions + an events poll), OpenAI background
+Responses, Mistral Conversations (synchronous under an async skin), and the
+custom LAN backend.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="local-model-as-the-custom-endpoint-ollama-and-friends">Local model as the custom endpoint (Ollama and friends)<a href="#local-model-as-the-custom-endpoint-ollama-and-friends" class="hash-link" aria-label="Direct link to Local model as the custom endpoint (Ollama and friends)" title="Direct link to Local model as the custom endpoint (Ollama and friends)" translate="no">​</a></h2>
+<p>The device can run against any OpenAI-compatible server on your own network -
+no cloud key, no internet. Verified setup (2026-08-12, Ollama on a Mac):</p>
+<ol>
+<li class="">On the server machine: install <a href="https://ollama.com" target="_blank" rel="noopener noreferrer" class="">Ollama</a>, pull a small
+model (<code>ollama pull qwen2.5:3b</code>), and bind it to your LAN by running
+<code>ollama serve</code> with <code>OLLAMA_HOST=0.0.0.0:11434</code>. ⚠ On macOS,
+<code>brew services restart ollama</code> regenerates its launchd plist and silently
+drops the env - use your own LaunchAgent (or Ollama.app&#x27;s settings) if you
+want the binding to persist.</li>
+<li class="">On the device (Capabilities → Models → Custom endpoint, or
+<code>POST /api/orch</code>): Base URL <code>http://&lt;server-ip&gt;:11434/v1</code>, conversation
+style <code>openai</code>, Model ID <code>qwen2.5:3b</code>. Restart the device - the custom
+backend registers at boot. Any URL path (the <code>/v1</code>) is ignored; only the
+host and port matter. ⚠ <code>&lt;server-ip&gt;</code> is a LAN address: a plain DHCP lease
+moves when the server machine reconnects or changes networks, and the device
+then silently can&#x27;t reach it (a stuck/failed sub-agent, not an error you&#x27;ll
+see on the panel). Give the server a reserved/static LAN IP - or point the
+Base URL at a <code>.local</code> mDNS name the server advertises - so the endpoint
+survives a reconnect.</li>
+<li class="">Route work to it: put <code>custom</code> in the sub-agent priority to send sub-agents
+there, or set it as the head to run the whole assistant locally.</li>
+</ol>
+<p>Notes, all deliberate:</p>
+<ul>
+<li class="">Keys are never sent over <code>http://</code> - a plain-HTTP LAN endpoint runs keyless.
+Everything the device sends (including its memory recalls) crosses your LAN
+in cleartext, so this is for trusted home networks; use <code>https://</code> + a key
+for anything else.</li>
+<li class="">The head speaks single-shot chat-completions with the strict orch_turn
+JSON schema (schema-less retry on 400); there is no mid-turn tool loop on
+the custom backend, and requests time out at 30 s.</li>
+<li class="">Firmware before v4.1.6 needs &quot;Mid-task provider switch&quot; (midFail) turned OFF
+while the HEAD runs on custom - older builds routed loop turns into the
+cloud-only fabric and failed before sending anything.</li>
+<li class="">A small model is honest but limited: expect terse replies and the occasional
+odd spawn. It is a great sub-agent workhorse and a private fallback head.</li>
+</ul></div><footer class="theme-doc-footer docusaurus-mt-lg"><div class="row margin-top--sm theme-doc-footer-edit-meta-row"><div class="col noPrint_WFHX"><a href="https://github.com/ristllin/Nimbus/blob/main/docs/provider-wire.md" target="_blank" rel="noopener noreferrer" class="theme-edit-this-page"><svg fill="currentColor" height="20" width="20" viewBox="0 0 40 40" class="iconEdit_Z9Sw" aria-hidden="true"><g><path d="m34.5 11.7l-3 3.1-6.3-6.3 3.1-3q0.5-0.5 1.2-0.5t1.1 0.5l3.9 3.9q0.5 0.4 0.5 1.1t-0.5 1.2z m-29.5 17.1l18.4-18.5 6.3 6.3-18.4 18.4h-6.3v-6.2z"></path></g></svg>Edit this page</a></div><div class="col lastUpdated_JAkA"></div></div></footer></article><nav class="docusaurus-mt-lg pagination-nav" aria-label="Docs pages"><a class="pagination-nav__link pagination-nav__link--prev" href="/guides/harness"><div class="pagination-nav__sublabel">Previous</div><div class="pagination-nav__label">Harness</div></a><a class="pagination-nav__link pagination-nav__link--next" href="/guides/security"><div class="pagination-nav__sublabel">Next</div><div class="pagination-nav__label">Security</div></a></nav></div></div><div class="col col--3"><div class="tableOfContents_bqdL thin-scrollbar theme-doc-toc-desktop"><ul class="table-of-contents table-of-contents__left-border"><li><a href="#the-contract-has-one-source" class="table-of-contents__link toc-highlight">The contract has one source</a></li><li><a href="#how-each-provider-enforces-the-response-shape" class="table-of-contents__link toc-highlight">How each provider enforces the response shape</a></li><li><a href="#the-tool-loop-rides-one-canonical-transcript" class="table-of-contents__link toc-highlight">The tool loop rides one canonical transcript</a></li><li><a href="#context-overflow-reactive" class="table-of-contents__link toc-highlight">Context overflow (reactive)</a></li><li><a href="#mid-turn-provider-failover" class="table-of-contents__link toc-highlight">Mid-turn provider failover</a></li><li><a href="#between-turn-retry-failover-and-the-side-effect-rule" class="table-of-contents__link toc-highlight">Between-turn retry, failover, and the side-effect rule</a></li><li><a href="#graceful-degradation-ladder" class="table-of-contents__link toc-highlight">Graceful degradation ladder</a></li><li><a href="#sub-agent-managed-agent-wire" class="table-of-contents__link toc-highlight">Sub-agent (managed-agent) wire</a></li><li><a href="#local-model-as-the-custom-endpoint-ollama-and-friends" class="table-of-contents__link toc-highlight">Local model as the custom endpoint (Ollama and friends)</a></li></ul></div></div></div></div></main></div></div></div><footer class="theme-layout-footer footer footer--dark"><div class="container container-fluid"><div class="row footer__links"><div class="theme-layout-footer-column col footer__col"><div class="footer__title">Docs</div><ul class="footer__items clean-list"><li class="footer__item"><a class="footer__link-item" href="/quick-start/what-you-need">Quick Start</a></li><li class="footer__item"><a class="footer__link-item" href="/guides/hardware-bom">Bill of materials</a></li><li class="footer__item"><a class="footer__link-item" href="/getting-started/webui-reference">Web UI reference</a></li></ul></div><div class="theme-layout-footer-column col footer__col"><div class="footer__title">Reference</div><ul class="footer__items clean-list"><li class="footer__item"><a class="footer__link-item" href="/reference/config-and-nvs">Config &amp; NVS</a></li><li class="footer__item"><a class="footer__link-item" href="/reference/tool-catalog">Tool catalog</a></li><li class="footer__item"><a class="footer__link-item" href="/reference/turn-contract">Turn contract</a></li><li class="footer__item"><a class="footer__link-item" href="/reference/changelog">Changelog</a></li></ul></div><div class="theme-layout-footer-column col footer__col"><div class="footer__title">More</div><ul class="footer__items clean-list"><li class="footer__item"><a href="https://github.com/ristllin/Nimbus" target="_blank" rel="noopener noreferrer" class="footer__link-item">GitHub<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li></ul></div></div><div class="footer__bottom text--center"><div class="footer__copyright">Nimbus - source-available, free for noncommercial use (PolyForm-NC / CC BY-NC-SA). Built with Docusaurus.</div></div></div></footer></div>
+</body>
+</html>

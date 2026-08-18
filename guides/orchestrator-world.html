@@ -1,0 +1,390 @@
+<!doctype html>
+<html lang="en" dir="ltr" class="docs-wrapper plugin-docs plugin-id-default docs-version-current docs-doc-page docs-doc-id-guides/orchestrator-world" data-has-hydrated="false">
+<head>
+<meta charset="UTF-8">
+<meta name="generator" content="Docusaurus v3.10.2">
+<title data-rh="true">Orchestrator World - memory &amp; control surface | Nimbus</title><meta data-rh="true" name="viewport" content="width=device-width,initial-scale=1"><meta data-rh="true" name="twitter:card" content="summary_large_image"><meta data-rh="true" property="og:image" content="https://docs.cumulo-nimbus.ai/img/social-card.png"><meta data-rh="true" name="twitter:image" content="https://docs.cumulo-nimbus.ai/img/social-card.png"><meta data-rh="true" property="og:url" content="https://docs.cumulo-nimbus.ai/guides/orchestrator-world"><meta data-rh="true" property="og:locale" content="en"><meta data-rh="true" name="docusaurus_locale" content="en"><meta data-rh="true" name="docsearch:language" content="en"><meta data-rh="true" name="docusaurus_version" content="current"><meta data-rh="true" name="docusaurus_tag" content="docs-default-current"><meta data-rh="true" name="docsearch:version" content="current"><meta data-rh="true" name="docsearch:docusaurus_tag" content="docs-default-current"><meta data-rh="true" property="og:title" content="Orchestrator World - memory &amp; control surface | Nimbus"><meta data-rh="true" name="description" content="Migrated from docs/orchestrator-world.md - the canonical source lives in the repo."><meta data-rh="true" property="og:description" content="Migrated from docs/orchestrator-world.md - the canonical source lives in the repo."><link data-rh="true" rel="icon" href="/img/favicon.svg"><link data-rh="true" rel="canonical" href="https://docs.cumulo-nimbus.ai/guides/orchestrator-world"><link data-rh="true" rel="alternate" href="https://docs.cumulo-nimbus.ai/guides/orchestrator-world" hreflang="en"><link data-rh="true" rel="alternate" href="https://docs.cumulo-nimbus.ai/guides/orchestrator-world" hreflang="x-default"><script data-rh="true" type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Orchestrator World","item":"https://docs.cumulo-nimbus.ai/guides/orchestrator-world"}]}</script><link rel="stylesheet" href="/assets/css/styles.5ae419b2.css">
+<script src="/assets/js/runtime~main.e74ebefa.js" defer="defer"></script>
+<script src="/assets/js/main.92f144b6.js" defer="defer"></script>
+</head>
+<body>
+<svg style="display: none;"><defs>
+<symbol id="theme-svg-external-link" viewBox="0 0 24 24"><path fill="currentColor" d="M21 13v10h-21v-19h12v2h-10v15h17v-8h2zm3-12h-10.988l4.035 4-6.977 7.07 2.828 2.828 6.977-7.07 4.125 4.172v-11z"/></symbol>
+</defs></svg>
+<script>!function(){var t=function(){try{return new URLSearchParams(window.location.search).get("docusaurus-theme")}catch(t){}}()||function(){try{return window.localStorage.getItem("theme")}catch(t){}}();document.documentElement.setAttribute("data-theme",t||(window.matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light")),document.documentElement.setAttribute("data-theme-choice",t||"system")}(),function(){try{const c=new URLSearchParams(window.location.search).entries();for(var[t,e]of c)if(t.startsWith("docusaurus-data-")){var a=t.replace("docusaurus-data-","data-");document.documentElement.setAttribute(a,e)}}catch(t){}}()</script><div id="__docusaurus"><div role="region" aria-label="Skip to main content"><a class="skipToContent_fXgn" href="#__docusaurus_skipToContent_fallback">Skip to main content</a></div><nav aria-label="Main" class="theme-layout-navbar navbar navbar--fixed-top"><div class="navbar__inner"><div class="theme-layout-navbar-left navbar__items"><button aria-label="Toggle navigation bar" aria-expanded="false" class="navbar__toggle clean-btn" type="button"><svg width="30" height="30" viewBox="0 0 30 30" aria-hidden="true"><path stroke="currentColor" stroke-linecap="round" stroke-miterlimit="10" stroke-width="2" d="M4 7h22M4 15h22M4 23h22"></path></svg></button><a class="navbar__brand" href="/"><div class="navbar__logo"><img src="/img/logo.svg" alt="Nimbus" class="themedComponent_mlkZ themedComponent--light_NVdE"><img src="/img/logo.svg" alt="Nimbus" class="themedComponent_mlkZ themedComponent--dark_xIcU"></div><b class="navbar__title text--truncate">Nimbus</b></a><a class="navbar__item navbar__link" href="/quick-start/what-you-need">Get started</a><a class="navbar__item navbar__link" href="/flash">Flash</a></div><div class="theme-layout-navbar-right navbar__items navbar__items--right"><a href="https://github.com/ristllin/Nimbus" target="_blank" rel="noopener noreferrer" class="navbar__item navbar__link">GitHub<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a><div class="toggle_vylO colorModeToggle_DEke"><button class="clean-btn toggleButton_gllP toggleButtonDisabled_aARS" type="button" disabled="" title="system mode" aria-label="Switch between dark and light mode (currently system mode)"><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP lightToggleIcon_pyhR"><path fill="currentColor" d="M12,9c1.65,0,3,1.35,3,3s-1.35,3-3,3s-3-1.35-3-3S10.35,9,12,9 M12,7c-2.76,0-5,2.24-5,5s2.24,5,5,5s5-2.24,5-5 S14.76,7,12,7L12,7z M2,13l2,0c0.55,0,1-0.45,1-1s-0.45-1-1-1l-2,0c-0.55,0-1,0.45-1,1S1.45,13,2,13z M20,13l2,0c0.55,0,1-0.45,1-1 s-0.45-1-1-1l-2,0c-0.55,0-1,0.45-1,1S19.45,13,20,13z M11,2v2c0,0.55,0.45,1,1,1s1-0.45,1-1V2c0-0.55-0.45-1-1-1S11,1.45,11,2z M11,20v2c0,0.55,0.45,1,1,1s1-0.45,1-1v-2c0-0.55-0.45-1-1-1C11.45,19,11,19.45,11,20z M5.99,4.58c-0.39-0.39-1.03-0.39-1.41,0 c-0.39,0.39-0.39,1.03,0,1.41l1.06,1.06c0.39,0.39,1.03,0.39,1.41,0s0.39-1.03,0-1.41L5.99,4.58z M18.36,16.95 c-0.39-0.39-1.03-0.39-1.41,0c-0.39,0.39-0.39,1.03,0,1.41l1.06,1.06c0.39,0.39,1.03,0.39,1.41,0c0.39-0.39,0.39-1.03,0-1.41 L18.36,16.95z M19.42,5.99c0.39-0.39,0.39-1.03,0-1.41c-0.39-0.39-1.03-0.39-1.41,0l-1.06,1.06c-0.39,0.39-0.39,1.03,0,1.41 s1.03,0.39,1.41,0L19.42,5.99z M7.05,18.36c0.39-0.39,0.39-1.03,0-1.41c-0.39-0.39-1.03-0.39-1.41,0l-1.06,1.06 c-0.39,0.39-0.39,1.03,0,1.41s1.03,0.39,1.41,0L7.05,18.36z"></path></svg><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP darkToggleIcon_wfgR"><path fill="currentColor" d="M9.37,5.51C9.19,6.15,9.1,6.82,9.1,7.5c0,4.08,3.32,7.4,7.4,7.4c0.68,0,1.35-0.09,1.99-0.27C17.45,17.19,14.93,19,12,19 c-3.86,0-7-3.14-7-7C5,9.07,6.81,6.55,9.37,5.51z M12,3c-4.97,0-9,4.03-9,9s4.03,9,9,9s9-4.03,9-9c0-0.46-0.04-0.92-0.1-1.36 c-0.98,1.37-2.58,2.26-4.4,2.26c-2.98,0-5.4-2.42-5.4-5.4c0-1.81,0.89-3.42,2.26-4.4C12.92,3.04,12.46,3,12,3L12,3z"></path></svg><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP systemToggleIcon_QzmC"><path fill="currentColor" d="m12 21c4.971 0 9-4.029 9-9s-4.029-9-9-9-9 4.029-9 9 4.029 9 9 9zm4.95-13.95c1.313 1.313 2.05 3.093 2.05 4.95s-0.738 3.637-2.05 4.95c-1.313 1.313-3.093 2.05-4.95 2.05v-14c1.857 0 3.637 0.737 4.95 2.05z"></path></svg></button></div><div class="navbarSearchContainer_Bca1"></div></div></div><div role="presentation" class="navbar-sidebar__backdrop"></div></nav><div id="__docusaurus_skipToContent_fallback" class="theme-layout-main main-wrapper mainWrapper_z2l0"><div class="docsWrapper_hBAB"><button aria-label="Scroll back to top" class="clean-btn theme-back-to-top-button backToTopButton_sjWU" type="button"></button><div class="docRoot_UBD9"><aside class="theme-doc-sidebar-container docSidebarContainer_YfHR"><div class="sidebarViewport_aRkj"><div class="sidebar_njMd"><nav aria-label="Docs sidebar" class="menu thin-scrollbar menu_SIkG"><ul class="theme-doc-sidebar-menu menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/"><span class="linkLabel_WmDU">Overview</span></a></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="true" href="/quick-start/what-you-need"><span class="categoryLinkLabel_W154">Quick Start</span></a></div><ul class="menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/what-you-need"><span class="linkLabel_WmDU">What you need</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/flash"><span class="linkLabel_WmDU">Flash the firmware</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/setup-wizard"><span class="linkLabel_WmDU">Set up the device</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/first-conversation"><span class="linkLabel_WmDU">First conversation</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/notifier-quick-start"><span class="linkLabel_WmDU">Notifier quick start</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/getting-started/first-time-setup"><span class="linkLabel_WmDU">First-time setup</span></a></li></ul></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/guides/hardware"><span class="categoryLinkLabel_W154">Hardware Build</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/getting-started/webui-reference"><span class="categoryLinkLabel_W154">Using Nimbus</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret menu__link--active" role="button" aria-expanded="true" href="/guides/architecture"><span class="categoryLinkLabel_W154">How It Works</span></a></div><ul class="menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/architecture"><span class="linkLabel_WmDU">Architecture</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/turn-anatomy"><span class="linkLabel_WmDU">Turn anatomy</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/orchestrator-live-turn"><span class="linkLabel_WmDU">Live turn</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link menu__link--active" aria-current="page" tabindex="0" href="/guides/orchestrator-world"><span class="linkLabel_WmDU">Orchestrator World</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/memory"><span class="linkLabel_WmDU">Memory</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/orchestrator-storage"><span class="linkLabel_WmDU">Storage tiering</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/sub-sessions"><span class="linkLabel_WmDU">Sub-sessions</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/harness"><span class="linkLabel_WmDU">Harness</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/provider-wire"><span class="linkLabel_WmDU">Provider wire</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/security"><span class="linkLabel_WmDU">Security</span></a></li></ul></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/reference/config-and-nvs"><span class="categoryLinkLabel_W154">Reference</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/contributing/development"><span class="categoryLinkLabel_W154">Forking &amp; Contributing</span></a></div></li></ul></nav></div></div></aside><main class="docMainContainer_TBSr"><div class="container padding-top--md padding-bottom--lg"><div class="row"><div class="col docItemCol_VOVn"><div class="docItemContainer_Djhp"><article><nav class="theme-doc-breadcrumbs breadcrumbsContainer_Z_bl" aria-label="Breadcrumbs"><ul class="breadcrumbs"><li class="breadcrumbs__item"><a aria-label="Home page" class="breadcrumbs__link" href="/"><svg viewBox="0 0 24 24" class="breadcrumbHomeIcon_YNFT"><path d="M10 19v-5h4v5c0 .55.45 1 1 1h3c.55 0 1-.45 1-1v-7h1.7c.46 0 .68-.57.33-.87L12.67 3.6c-.38-.34-.96-.34-1.34 0l-8.36 7.53c-.34.3-.13.87.33.87H5v7c0 .55.45 1 1 1h3c.55 0 1-.45 1-1z" fill="currentColor"></path></svg></a></li><li class="breadcrumbs__item"><span class="breadcrumbs__link">How It Works</span></li><li class="breadcrumbs__item breadcrumbs__item--active"><span class="breadcrumbs__link">Orchestrator World</span></li></ul></nav><div class="tocCollapsible_ETCw theme-doc-toc-mobile tocMobile_ITEo"><button type="button" class="clean-btn tocCollapsibleButton_TO0P">On this page</button></div><div class="theme-doc-markdown markdown"><blockquote>
+<p>Sourced from <code>docs/orchestrator-world.md</code> in the firmware repo.</p>
+</blockquote>
+<header><h1>Orchestrator &quot;World&quot; - memory, capability &amp; session architecture</h1></header>
+<p>The cognitive architecture for Nimbus&#x27;s Orchestrator mode: what the agent
+<em>has</em> (memory tiers), what it <em>knows about itself</em> (capability manifest,
+running sessions), and how it <em>acts</em> (tools over an on-device MCP server).</p>
+<p>This document describes each subsystem - memory record + tiers, vector memory
+semantics, working/context memory, the audit stream, the scratchpad goal tiers,
+recall query + injection, the maintenance cadence, the memory tools, the tool
+registry/dispatch, sessions (sub-agents), prompt assembly, the dashboard API,
+and the provider config schema - on its own terms, adapted for ESP32-S3
+constraints. Where a design choice is driven by the hardware&#x27;s RAM/flash limits,
+the constraint and its reason are called out explicitly.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="locked-decisions-2026-07-02">Locked decisions (2026-07-02)<a href="#locked-decisions-2026-07-02" class="hash-link" aria-label="Direct link to Locked decisions (2026-07-02)" title="Direct link to Locked decisions (2026-07-02)" translate="no">​</a></h2>
+<ul>
+<li class=""><strong>Tool interface = on-device MCP server</strong> (<code>memory.*</code> / <code>session.*</code> /
+<code>device.*</code>), bridged to the LLM via native function-calling; also reachable
+by external MCP clients over the LAN (Ph4, with auth).</li>
+<li class=""><strong>Episodic index = SQLite on the SD card</strong> + raw JSONL day-files + blob
+sidecars (a SQLite index paired with a <code>/data/blob/*.jsonl</code> raw stream).</li>
+<li class=""><strong>Embeddings configurable but SET-ONCE</strong> - changing provider/model/dims
+wipes + re-embeds the VDB; the web UI must warn loudly (destructive).</li>
+<li class=""><strong>SD card REQUIRED</strong> for tiers 2–4 (episodic + VDB). Directive + scratchpad
+<ul>
+<li class="">sessions work without SD.</li>
+</ul>
+</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="1-cognitive-tiers">1. Cognitive tiers<a href="#1-cognitive-tiers" class="hash-link" aria-label="Direct link to 1. Cognitive tiers" title="Direct link to 1. Cognitive tiers" translate="no">​</a></h2>
+<p>The model-facing prompt (the <code>[HOW YOU RUN]</code> section, <code>lib/harness/src/compose.cpp</code>)
+names <strong>four memory tiers the model itself reads and writes</strong>, in escalating
+durability: <strong>running memory</strong> (the <code>memory</code> response field - short-lived working
+notes for the NEXT turn only), the <strong>scratchpad</strong> (§1.2 - persistent goal tiers that
+survive across turns and reboots), <strong>long-term vector memory</strong> (§1.4 - durable
+embedded facts), and the <strong>episodic log</strong> (§1.3 - auto-captured conversation history).
+The <strong>directive</strong> (§1.1) sits above all four: human-owned, the model cannot write it.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="11-directive-exists">1.1 Directive (exists)<a href="#11-directive-exists" class="hash-link" aria-label="Direct link to 1.1 Directive (exists)" title="Direct link to 1.1 Directive (exists)" translate="no">​</a></h3>
+<p>User-owned, immutable to the model. <code>OrchMemory::directive</code> from
+<code>agent::store::sysPrompt</code> (600 B cap).
+Editable only by the human (web UI / provisioning).</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="12-scratchpad---model-owned-working-goals">1.2 Scratchpad - model-owned working goals<a href="#12-scratchpad---model-owned-working-goals" class="hash-link" aria-label="Direct link to 1.2 Scratchpad - model-owned working goals" title="Direct link to 1.2 Scratchpad - model-owned working goals" translate="no">​</a></h3>
+<p>A set of goal tiers (short-term / mid-term / long-term goals plus an
+active-task line), which the model rewrites as it works:</p>
+<div class="language-text codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#F8F8F2;--prism-background-color:#282A36"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-text codeBlock_bY9V thin-scrollbar" style="color:#F8F8F2;background-color:#282A36"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#F8F8F2"><span class="token plain">scratchpad = {</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">  active: string                 // what I&#x27;m doing right now</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">  short: [string]                // this-session tasks</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">  mid:   [string]                // this-week intentions</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">  long:  [string]                // standing projects/aspirations</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">}</span><br></div></code></pre></div></div>
+<p>Device caps (enforced because of NVS/RAM limits): 1 active line
+(240 B), 8 items/tier, 160 B/item, UTF-8-safe truncation
+(<code>caps.h</code>: <code>kScratchActiveMax</code> / <code>kScratchItemMax</code> / <code>kScratchTierItems</code>, via
+<code>capUtf8</code>). The model proposes, the device enforces - the same contract as the
+memory caps. Persisted in NVS, so it <strong>survives across turns AND reboots</strong> and
+works without SD.</p>
+<p><strong>Write path (v4.1.0): the scratchpad is a first-class <code>orch_turn</code> RESPONSE
+field, not a tool.</strong> It rides the turn contract
+(<code>orch_schema.h::ORCH_D_SCRATCH</code>) as a nullable object
+<code>{active, short, mid, long}</code> - <code>active</code> a string, the three tiers string arrays.
+The model returns it to update: a non-null tier REPLACES that tier&#x27;s items
+(≤8 each), a non-null <code>active</code> sets the active line, a null field leaves that part
+unchanged, and returning the whole field null means no change
+(<code>orch_turn.cpp</code> parse step 10). It is a <strong>free write</strong> - no tool round, returned
+every turn by every provider alongside <code>reply</code>/<code>memory</code>. The device applies it
+under the memory Lock, replacing only the returned tiers, then persists
+(<code>orchestrator.cpp::applyScratch</code> → <code>memory::scratchpad()</code>; the harness path is
+<code>lib/harness/src/apply.cpp</code>). Before v4.1.0 the scratchpad had no write trigger
+the model could reach on its own, so it went unused.</p>
+<p>It is rendered back into every prompt as a <code>## SCRATCHPAD</code> block <strong>with its write
+instruction printed directly beneath the data</strong> (<code>orch_world.cpp</code>) - the fix for
+&quot;rendered but never written to.&quot; The <code>memory</code> field is a SEPARATE tier
+(running memory, next-turn-only working notes), not a fallback for the scratchpad.
+The admin-only <code>memory.scratchpad</code> MCP tool (actions
+<code>view</code>/<code>set_active</code>/<code>add</code>/<code>replace</code>/<code>clear</code>) remains as a secondary read/edit
+surface over the same single scratchpad; it is admin-gated because the scratchpad
+is injected into every turn&#x27;s prompt, so a non-admin writing it is a
+prompt-injection channel aimed at the owner (<code>orch_memory_tools.cpp</code>).</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="13-episodic-store-sd---everything-that-ever-happened">1.3 Episodic store (SD) - everything that ever happened<a href="#13-episodic-store-sd---everything-that-ever-happened" class="hash-link" aria-label="Direct link to 1.3 Episodic store (SD) - everything that ever happened" title="Direct link to 1.3 Episodic store (SD) - everything that ever happened" translate="no">​</a></h3>
+<blockquote>
+<p><strong>Shipped (v4.0.0):</strong> the SQLite index sketched below was evaluated and
+<strong>retired</strong>. The episodic store is an <strong>append-only JSONL day-stream store with
+an in-RAM offset index</strong> (<code>AppendLogEpisodicStore</code>) - the system of record.
+History is uncapped on SD and <strong>reaches months back</strong>: the boot scan is
+deliberately budget-bounded (so a busy month cannot make the device unbootable),
+which leaves older rows on the card <em>below</em> the index; a deep query
+(<code>memory.episodic</code> cold-scan) pages down to them with a resume cursor and reports
+an honest floor. The storage tiers, the boot-scan bound, and the deep-history
+search are the canonical record in
+<a class="" href="/guides/orchestrator-storage"><code>orchestrator-storage.md</code></a> §3a. The original
+design below is kept for reference.</p>
+</blockquote>
+<p>The original design splits this into (a) an <strong>SQLite DB</strong> for structured rows
+and (b) an <strong>append-only JSONL day-file stream</strong> (<code>/data/blob/YYYY-MM-DD.jsonl</code>)
+for the raw audit trail, plus adapter transcripts. Nimbus keeps that exact split
+because it satisfies both requested query modes - SQL queries AND grepping
+raw files:</p>
+<div class="language-text codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#F8F8F2;--prism-background-color:#282A36"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-text codeBlock_bY9V thin-scrollbar" style="color:#F8F8F2;background-color:#282A36"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#F8F8F2"><span class="token plain">/sd/mem/nimbus.db          SQLite index</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">  sessions(id, started_at, agent_type, provider, model, title, status,</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">           turns, total_tokens)</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">  messages(id, session_id, ts, role, kind, text, blob_path, tags)</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">    role: creator | assistant | system | tool</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">    kind: message | tool_output | llm_response | file | image | audio |</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">          transcript | log            // event type + media</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">/sd/mem/blob/YYYY-MM-DD.jsonl   append-only raw event stream (grep-able)</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">/sd/mem/blobs/&lt;sha1&gt;.&lt;ext&gt;      binary artifacts (voice notes, images, files)</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">                                referenced by messages.blob_path</span><br></div></code></pre></div></div>
+<p>Retention: day-files older than 30 days move to <code>/sd/mem/blob/archive/</code>
+(<code>retention_days=30</code>); the SQLite index is permanent (it is small relative to
+the SD).</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="14-associative-memory-vdb-sd">1.4 Associative memory (VDB, SD)<a href="#14-associative-memory-vdb-sd" class="hash-link" aria-label="Direct link to 1.4 Associative memory (VDB, SD)" title="Direct link to 1.4 Associative memory (VDB, SD)" translate="no">​</a></h3>
+<p>Record:</p>
+<div class="language-text codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#F8F8F2;--prism-background-color:#282A36"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-text codeBlock_bY9V thin-scrollbar" style="color:#F8F8F2;background-color:#282A36"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#F8F8F2"><span class="token plain">{ id, content, importance_score (0-1, default 0.5),</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">  ttl_hours (default 720 = 30 d; -1 = none),</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">  created_at, source, creator_flag, permanent_flag, metadata }</span><br></div></code></pre></div></div>
+<p><strong>Semantics</strong> (constants included):</p>
+<ul>
+<li class=""><strong>Dedup on write:</strong> nearest neighbor at cosine distance &lt; <strong>0.05</strong> ⇒ skip
+the write but bump the existing entry&#x27;s importance to max(old, new).</li>
+<li class=""><strong>Decay:</strong> each maintenance cycle multiplies non-permanent importance by
+<strong>decay_factor (default 0.95)</strong>, floor 0.01.</li>
+<li class=""><strong>Prune:</strong> delete when importance &lt; <strong>0.05</strong> or age &gt; ttl_hours;
+<code>permanent_flag</code> and <code>creator_flag</code> entries are exempt.</li>
+<li class=""><strong>Browse/flush/dedupe-scan:</strong> <code>get_all</code> (importance-sorted, paged),
+<code>delete(id)</code>, <code>flush_all</code>, <code>flush_non_permanent</code>, pairwise <code>deduplicate</code>
+keeping the higher-importance twin - all exposed to the dashboard.</li>
+</ul>
+<p><strong>ESP32 delta - the embedding engine.</strong> An ESP32 cannot run a local
+embedder. Nimbus embeds via provider API
+(default <strong>OpenAI <code>text-embedding-3-small</code>, <code>dimensions=256</code></strong>, int8-quantized
+≈ 256 B/vector + text) through a new adapter method on the existing HTTPS
+path. Storage: vectors + metadata in SQLite (<code>vdb</code> table), recall =
+brute-force cosine over int8 (thousands of entries ≈ ms on the S3, PSRAM).
+The embed config <code>{provider, model, dims}</code> is stored beside the table;
+mixed-config vectors are refused; changing config = wipe + re-embed from the
+episodic store (background job) behind the loud UI warning.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="2-per-turn-context-assembly">2. Per-turn context assembly<a href="#2-per-turn-context-assembly" class="hash-link" aria-label="Direct link to 2. Per-turn context assembly" title="Direct link to 2. Per-turn context assembly" translate="no">​</a></h2>
+<p>The system prompt is assembled in this order (each section byte-capped; total
+default <strong>32 KB</strong>, tunable - the budget is in bytes rather than tokens because
+the constraint is device RAM):</p>
+<ol>
+<li class=""><strong>Immutable rules</strong> - safety + device rails (model cannot touch keys/
+priority/host; see §6).</li>
+<li class=""><strong>Identity/version</strong> - &quot;You are Nimbus vX on an ESP32-S3 desk device…&quot;</li>
+<li class=""><strong>DIRECTIVE</strong> - user text, verbatim.</li>
+<li class=""><strong>Capability/world manifest</strong> (§3) - hardware + tool list generated from
+the registry into a <code>## TOOLS</code> section.</li>
+<li class=""><strong>Scratchpad</strong> (§1.2) - active line + three goal tiers, rendered as a
+<code>## SCRATCHPAD</code> block with the write instruction printed directly beneath the
+data (<code>orch_world.cpp</code>) so the model always sees how to update it via the
+<code>scratchpad</code> response field.</li>
+<li class=""><strong>Running-sessions digest</strong> (§4) - a summary of the active sessions.</li>
+<li class=""><strong>RELEVANT MEMORIES</strong> - top-K recall (§2.1).</li>
+<li class=""><strong>MEMORY explainer</strong> - a <code>## MEMORY</code> section telling the model how its memory
+works and that <code>memory.config</code> can tune it.</li>
+<li class="">Recent conversation (rolling, trimmed front-first when over budget;
+a summarize-and-compress step keeps the last 2 messages + a summary block).</li>
+</ol>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="21-recall">2.1 Recall<a href="#21-recall" class="hash-link" aria-label="Direct link to 2.1 Recall" title="Direct link to 2.1 Recall" translate="no">​</a></h3>
+<div class="language-text codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#F8F8F2;--prism-background-color:#282A36"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-text codeBlock_bY9V thin-scrollbar" style="color:#F8F8F2;background-color:#282A36"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#F8F8F2"><span class="token plain">query = active_task + &quot; &quot; + latest_user_messages + &quot; &quot; + all_scratchpad_goals</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">hits  = vdb.search(query, k = retrieval_count)          # default 10</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">hits  = [h for h in hits if (1 - h.distance) &gt;= relevance_threshold]  # default 0</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain">inject as &quot;## RELEVANT MEMORIES&quot; bullets</span><br></div></code></pre></div></div>
+<p><code>retrieval_count</code> (1–100), <code>relevance_threshold</code> (0–1), <code>decay_factor</code>
+(0.5–1), <code>max_context_bytes</code> are the <strong>memory config</strong> - adjustable by BOTH
+the model (<code>memory.config</code> tool, clamped to those ranges) and the user
+(dashboard PUT <code>/api/mem/config</code>).</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="22-maintenance">2.2 Maintenance<a href="#22-maintenance" class="hash-link" aria-label="Direct link to 2.2 Maintenance" title="Direct link to 2.2 Maintenance" translate="no">​</a></h3>
+<p>Periodically (each N turns / daily): <code>vdb.decay_importance(decay_factor)</code> then
+<code>vdb.prune_expired()</code>; blob day-file archival monthly. Tool results worth
+keeping are written back via <code>memory.write</code> (the model decides what to keep).</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="3-capability--world-manifest">3. Capability &amp; world manifest<a href="#3-capability--world-manifest" class="hash-link" aria-label="Direct link to 3. Capability &amp; world manifest" title="Direct link to 3. Capability &amp; world manifest" translate="no">​</a></h2>
+<p>Generated, never hand-written (so it can&#x27;t drift): hardware inventory (ring,
+e-ink, encoder, mic/speaker, battery state), connectivity (Wi-Fi/BLE/Telegram
+up?), SD present?, and the tool list pulled from the MCP registry with
+one-line descriptions. The model knows its verbs and its body.</p>
+<p>The manifest also states the model&#x27;s <strong>self-model in plain language</strong>
+(<code>orch_world.cpp::renderCapabilities</code>) - what it can actually do, so it neither
+invents capabilities it lacks nor refuses ones it has:</p>
+<ul>
+<li class=""><strong>Sub-agents</strong> run in the background and are <strong>fire-and-forget</strong> - the model
+cannot talk to a running one. Each result is delivered to the owner as it
+lands, and once they have all finished the model is automatically given one
+more turn (a <code>[FRESH RESULTS]</code> block, with no new owner message) to synthesize
+them and update memory.</li>
+<li class=""><strong>Skills authoring (v4.0.0):</strong> the model <strong>can write its own reusable skill
+capsules</strong> (<code>skill.save</code> / <code>skill.delete</code>, admin conversations only). Approval
+is <strong>asynchronous</strong> - a saved capsule is server-stamped <code>created_by: agent</code>,
+<code>approved: false</code>, and stays <strong>inert</strong> (never injected into a spawn brief)
+until the owner approves it in the web UI or via Telegram <code>/skill approve</code>. So
+saving a skill is an investment for FUTURE runs, never a step of the current
+task; the model may delete only capsules it authored. Rails in §6.</li>
+<li class=""><strong>Honesty:</strong> it claims to have logged, saved, or remembered something only when
+it actually called the corresponding tool that turn; owner-only knobs (keys,
+routing) are named as owner-only so it can explain the boundary instead of
+silently trying and failing.</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="4-sessions-as-conversational-sub-agents">4. Sessions as conversational sub-agents<a href="#4-sessions-as-conversational-sub-agents" class="hash-link" aria-label="Direct link to 4. Sessions as conversational sub-agents" title="Direct link to 4. Sessions as conversational sub-agents" translate="no">​</a></h2>
+<p>A conversation-manager + agent-adapter layer over the existing heavy fabric +
+6-slot <code>Journal</code>:</p>
+<ul>
+<li class=""><strong>Adapter seam</strong>: <code>create_session(title, cfg)</code>,
+<code>send_message(id, text)</code>, <code>get_status(id)</code>, <code>abort(id)</code>, <code>cleanup(id)</code>.
+Provider adapters (openai/anthropic/custom) implement it for remote
+sub-sessions; the Journal keeps reboot re-attach exactly as today.</li>
+<li class=""><strong>Digest injected each turn</strong>: <code>[{id, agent_type/provider, model, title, turns, tokens, state, pending_reply}]</code>.</li>
+<li class=""><strong>Model surface</strong> (<code>session_ops</code>, v4.0.0): the turn contract advertises
+exactly <strong><code>spawn</code></strong> and <strong><code>terminate</code></strong> - &quot;advertised == callable&quot; is a
+standing rule, so the conversational ops (<code>tell</code>/<code>poll</code>/
+<code>list</code>) are <strong>deliberately not offered</strong>: the fabric is fire-and-forget, and
+output returns through the running-sessions digest plus an automatic synthesis
+turn, not a model-issued poll. Beyond <code>task</code>/<code>provider</code>/<code>model</code>, a <code>spawn</code>
+carries <code>skill</code> (an approved capsule id injected into the brief), <code>name</code>
+(display name, also the sub-agent&#x27;s saved-document name), <code>project</code> (a run tag:
+each sub-agent&#x27;s full result auto-saves as <code>&lt;project&gt;/&lt;name&gt;-&lt;tag&gt;</code>), and
+<strong><code>attach</code></strong> - up to 4 <code>&lt;project&gt;/&lt;name&gt;</code> documents the firmware reads from the
+file store and splices into the brief, so a sub-agent can read files it has no
+tools to open. The full brief format, per-provider wire, and what the head can
+and cannot do with a running or finished session are in
+<a class="" href="/guides/sub-sessions"><code>sub-sessions.md</code></a>.</li>
+<li class=""><strong>Hygiene</strong>: stale active sessions time out; idle sessions are cleaned
+after 30 min; every turn is persisted to the
+episodic store (transcript + blob emit).</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="5-on-device-mcp-server--tool-registry">5. On-device MCP server &amp; tool registry<a href="#5-on-device-mcp-server--tool-registry" class="hash-link" aria-label="Direct link to 5. On-device MCP server &amp; tool registry" title="Direct link to 5. On-device MCP server &amp; tool registry" translate="no">​</a></h2>
+<p>Registry semantics: every tool = name +
+description + JSON schema + timeout; dispatch validates against the safety
+rails, executes with a timeout, <strong>audits every call to the blob stream</strong>
+(tool, params ≤500 B, success, duration, error), and returns a uniform
+<code>{success, output, error, error_type}</code>.</p>
+<ul>
+<li class=""><strong>Namespaces:</strong> <code>memory.*</code> (write, search, update, pin, config, <code>scratchpad</code>
+<ul>
+<li class="">the admin-only read/edit surface; the model&#x27;s normal scratchpad write is the
+<code>scratchpad</code> response field, §1.2 - and <code>episodic</code>, the deep-history search,
+§1.3), <code>session.*</code> (§4), <code>skill.*</code>
+(list, get, and <strong>save/delete</strong> - authoring, v4.0.0, admin-only and
+owner-approval-gated), <code>files.*</code>/<code>artifact.*</code> (the durable SD file store),
+<code>system.health</code>, <code>device.*</code> (existing validated device actions - led/tts/
+screen; secret-block preserved).</li>
+</ul>
+</li>
+<li class=""><strong>Transport:</strong> JSON-RPC 2.0 (MCP). In-process for the orchestrator bridge
+(Ph1); WebSocket on the LAN for external clients (Ph4, token-auth).</li>
+<li class=""><strong>Bridge:</strong> the orchestrator advertises the registry to the LLM through
+native function-calling (OpenAI tools / Anthropic tool_use) and runs the
+tool-use loop (bounded iterations/turn), feeding results back - planning and
+execution collapse into this one loop on-device.</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="6-security-rails-unchanged-now-enumerated-in-the-immutable-rules-block">6. Security rails (unchanged, now enumerated in the immutable-rules block)<a href="#6-security-rails-unchanged-now-enumerated-in-the-immutable-rules-block" class="hash-link" aria-label="Direct link to 6. Security rails (unchanged, now enumerated in the immutable-rules block)" title="Direct link to 6. Security rails (unchanged, now enumerated in the immutable-rules block)" translate="no">​</a></h2>
+<ul>
+<li class="">The model may NEVER read or set provider keys, <code>providerPriority</code>,
+<code>orchHost</code>, or the Telegram token - no tool exposes them (redirecting its
+own brain / exfiltrating credentials). The HUMAN sets them via the web UI.</li>
+<li class=""><code>device.*</code> keeps the existing validator (clamps, allowlist).</li>
+<li class=""><strong>Skill authoring is admin-only and approval-gated</strong> (v4.0.0): <code>skill.save</code> /
+<code>skill.delete</code> require an admin conversation; a capsule the model writes is
+server-stamped <code>created_by: agent</code>, <code>approved: false</code>, and stays inert (never
+injected into a spawn) until the owner approves it - an agent-written
+instruction blob is a prompt-injection channel until a human signs off. Both
+ops are <strong>refused in scheduled/unattended turns</strong> (a routine firing, or a
+synthesis turn chewing on untrusted sub-agent output, must never persist a
+skill), the pending-approval queue is capped, and the model may delete only
+what it authored.</li>
+<li class="">Episodic and memory reads are typed tools (no free-form query language); the
+earlier <code>memory.sql</code> SELECT surface was dropped when SQLite was retired (§1.3).</li>
+<li class="">LAN MCP (Ph4) requires a bearer token minted on the device; off by default.</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="7-dashboard-web-ui---memory--providers-routes">7. Dashboard (web UI) - <code>/memory/*</code> + <code>/providers*</code> routes<a href="#7-dashboard-web-ui---memory--providers-routes" class="hash-link" aria-label="Direct link to 7-dashboard-web-ui---memory--providers-routes" title="Direct link to 7-dashboard-web-ui---memory--providers-routes" translate="no">​</a></h2>
+<ul>
+<li class=""><code>GET /api/mem/stats</code> - VDB count, blob file count/MB, DB size.</li>
+<li class=""><code>GET /api/mem/vector?query&amp;limit&amp;offset</code> - browse (importance-sorted) or
+semantic search; row actions: delete, mark-permanent, importance shown.</li>
+<li class=""><code>POST /api/mem/vector/flush?keep_permanent</code> · <code>POST /api/mem/vector/dedupe</code>.</li>
+<li class=""><code>GET /api/mem/blob?kind&amp;limit</code> - filtered episodic browse by day/kind.</li>
+<li class=""><code>GET /api/mem/working</code> - <strong>the prompt-sections snapshot</strong>: exactly what the
+model saw last turn, section by section, with byte/token estimates - the
+single most useful debug view.</li>
+<li class=""><code>PUT /api/mem/config</code> - retrieval_count / relevance_threshold /
+decay_factor / max_context_bytes (same clamps as the model&#x27;s tool).</li>
+<li class=""><code>GET/POST /api/sessions</code> + transcript view.</li>
+<li class="">Embed-config panel with the <strong>set-once destructive-change warning</strong>.</li>
+<li class="">Scratchpad + directive editors (directive human-editable; scratchpad
+human-viewable, clearable).</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="8-phasing">8. Phasing<a href="#8-phasing" class="hash-link" aria-label="Direct link to 8. Phasing" title="Direct link to 8. Phasing" translate="no">​</a></h2>
+<ul>
+<li class=""><strong>Ph1 (portable, no SD/network):</strong> scratchpad module · capability manifest ·
+sessions digest · context assembler (§2 ordering + budgets) · tool registry
+<ul>
+<li class="">in-process MCP dispatch · memory-config clamps. All host-tested.</li>
+</ul>
+</li>
+<li class=""><strong>Ph2 (SD):</strong> SQLite episodic store + JSONL blob stream + artifact sidecars
+<ul>
+<li class=""><code>memory.sql</code>/<code>memory.grep</code> tools + retention/archival.</li>
+</ul>
+</li>
+<li class=""><strong>Ph3 (SD+net):</strong> embedding adapter (set-once) · int8 VDB + recall +
+dedup/decay/prune · <code>memory.write/search/config</code> tools · dashboard memory
+panels.</li>
+<li class=""><strong>Ph4:</strong> conversational session control (<code>tell</code>/<code>poll</code> as user) · LAN MCP
+<ul>
+<li class="">auth · dashboard session console.</li>
+</ul>
+</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="9-open-items">9. Open items<a href="#9-open-items" class="hash-link" aria-label="Direct link to 9. Open items" title="Direct link to 9. Open items" translate="no">​</a></h2>
+<ul>
+<li class="">SQLite-on-ESP32 lib (<code>siara-cc/esp32_arduino_sqlite3_lib</code>) flash/RAM cost on
+the N16R8 - validate early in Ph2; fallback: typed flat-file index.</li>
+<li class="">int8 quantization recall accuracy at 256 dims (bench vs f32 on host).</li>
+<li class="">Tool-use loop cap per turn (start with 8 actions).</li>
+<li class="">Re-embed UX (background job progress on dashboard).</li>
+<li class="">Whether <code>memory.sql</code> free-form SELECT is worth the parser risk vs. canned
+query templates (by-date, by-kind, by-session, full-text).</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="build-status-2026-07-03">Build status (2026-07-03)<a href="#build-status-2026-07-03" class="hash-link" aria-label="Direct link to Build status (2026-07-03)" title="Direct link to Build status (2026-07-03)" translate="no">​</a></h2>
+<p>Legend: <strong>done</strong> = built + host-tested · <strong>hw</strong> = hardware-verified on-device ·
+<strong>compile</strong> = device code built + compile-verified · <strong>seam</strong> = portable core done,
+device seam pending · <strong>designed</strong> = designed only</p>
+<p><strong>307 native tests green + Part B MERGED to main (merge <code>f9baf9e</code>) + HARDWARE-
+VERIFIED E2E</strong> on the bench device. The UX2/BLE work is
+committed + tagged <code>agent2-ux2-ble</code>. On-device E2E (11/11): live OpenAI embedding
+→ int8 → store → cosine recall (the &quot;teal&quot; memory ranked first for a color query)
+over <code>POST /mcp</code>, <code>session.list</code>, the memory dashboard endpoints, the set-once
+embed lock, AND durable persistence across reboot (after fixing a LittleFS
+<code>/data</code>-dir bug, commit <code>0d1bf95</code>).</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="ph1---portable-cognitive-core--done-28-host-tests">Ph1 - portable cognitive core  [done] (28 host tests)<a href="#ph1---portable-cognitive-core--done-28-host-tests" class="hash-link" aria-label="Direct link to Ph1 - portable cognitive core  [done] (28 host tests)" title="Direct link to Ph1 - portable cognitive core  [done] (28 host tests)" translate="no">​</a></h3>
+<ul>
+<li class="">[done] Scratchpad (<code>orch/scratchpad</code>): short/mid/long goal tiers + active task,
+device-capped, NVS-serializable.</li>
+<li class="">[done] MemConfig (<code>orch/mem_config</code>): retrieval/decay clamps, model+user tunable.</li>
+<li class="">[done] Capability manifest + running-sessions digest + context assembler (<code>orch/world</code>).</li>
+<li class="">[done] Tool registry + MCP JSON-RPC 2.0 dispatcher (<code>orch/tool_registry</code>).</li>
+<li class="">[seam] Wiring into the live orchestrator turn loop - deferred: the console <code>TURN</code>
+path reboots the device (watchdog), so live-turn changes can&#x27;t be hardware-
+verified yet; the memory server runs decoupled (web + MCP), so this is additive.</li>
+</ul>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="ph2---episodic-store--seam-7-host-tests">Ph2 - episodic store  [seam] (7 host tests)<a href="#ph2---episodic-store--seam-7-host-tests" class="hash-link" aria-label="Direct link to Ph2 - episodic store  [seam] (7 host tests)" title="Direct link to Ph2 - episodic store  [seam] (7 host tests)" translate="no">​</a></h3>
+<ul>
+<li class="">[done] Records (session/message + kind column) + query model (session/kind/time/
+text) + <code>InMemoryEpisodicStore</code> reference (<code>orch/episodic</code>), used on-device now.</li>
+<li class="">[designed] Device SQLite-on-SD impl behind the same <code>EpisodicStore</code> interface +
+JSONL day-stream + blob sidecars - needs an SD card + the esp32 sqlite lib.</li>
+</ul>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="ph3---associative-vector-memory--hw-hardware-verified-24-host-tests">Ph3 - associative vector memory  [hw] hardware-verified (24 host tests)<a href="#ph3---associative-vector-memory--hw-hardware-verified-24-host-tests" class="hash-link" aria-label="Direct link to Ph3 - associative vector memory  [hw] hardware-verified (24 host tests)" title="Direct link to Ph3 - associative vector memory  [hw] hardware-verified (24 host tests)" translate="no">​</a></h3>
+<ul>
+<li class="">[done] <code>VectorMemory</code> (<code>orch/vector_memory</code>): int8 vectors, cosine recall,
+dedup/decay/prune/TTL/permanence; + binary serialize/
+deserialize for the SD/flash blob.</li>
+<li class="">[done] <code>memory.*</code> MCP tools (<code>orch/memory_tools</code>): write/search/config/scratchpad,
+host-tested E2E over JSON-RPC with an injected fake embedder.</li>
+<li class="">[done] Portable embeddings wire format (<code>orch/embedding</code>): build request + parse
+response (OpenAI shape), host-tested.</li>
+<li class="">[hw] <strong>Device (hardware-verified)</strong>: <code>agent::embeddings</code> (real OpenAI
+<code>/embeddings</code> TLS call → int8), <code>agent::memory</code> subsystem (engines + real
+embedder + LittleFS/NVS persistence + registered tools), web dashboard
+(<code>net/web_memory</code>: browse/search/tune/embed-config-set-once). Live embed →
+store → recall → persist-across-reboot all confirmed on the bench device.</li>
+</ul>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="ph4---sessions--lan-mcp--hw-device--compile-bidirectional-pending-9-host-tests">Ph4 - sessions + LAN MCP  [hw] device / [compile] bidirectional pending (9 host tests)<a href="#ph4---sessions--lan-mcp--hw-device--compile-bidirectional-pending-9-host-tests" class="hash-link" aria-label="Direct link to Ph4 - sessions + LAN MCP  [hw] device / [compile] bidirectional pending (9 host tests)" title="Direct link to Ph4 - sessions + LAN MCP  [hw] device / [compile] bidirectional pending (9 host tests)" translate="no">​</a></h3>
+<ul>
+<li class="">[done] <code>session.*</code> tools (<code>orch/session_tools</code>): spawn/tell-as-user/poll/terminate/
+list, host-tested with injected handlers + over MCP.</li>
+<li class="">[hw] <strong>Device</strong>: <code>POST /mcp</code> LAN JSON-RPC endpoint + <code>session.list</code> wired to the
+journal - hardware-verified (session.list returns over <code>/mcp</code>).</li>
+<li class="">[compile] Bidirectional <code>spawn/tell/poll/terminate</code> handlers are documented null seams
+(report &quot;not supported&quot;) until the fabric exposes conversational sub-session
+control; MCP LAN auth is an open item.</li>
+</ul>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="whats-proven-where">What&#x27;s proven where<a href="#whats-proven-where" class="hash-link" aria-label="Direct link to What&#x27;s proven where" title="Direct link to What&#x27;s proven where" translate="no">​</a></h3>
+<ul>
+<li class=""><strong>Part A control surface</strong>: hardware-verified E2E (the bench device,
+live OpenAI key verify=1).</li>
+<li class=""><strong>Part B memory system</strong>: hardware-verified E2E (11/11 on the bench device -
+live embed→store→recall→persist over <code>/mcp</code> + dashboard) + 307 native tests,
+merged to main. Remaining: SQLite-on-SD episodic impl, live-turn-loop recall
+injection (blocked by the console-<code>TURN</code> watchdog reboot), bidirectional
+session control, MCP LAN auth.</li>
+</ul>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="hardware-notes-2026-07-03-bring-up">Hardware notes (2026-07-03 bring-up)<a href="#hardware-notes-2026-07-03-bring-up" class="hash-link" aria-label="Direct link to Hardware notes (2026-07-03 bring-up)" title="Direct link to Hardware notes (2026-07-03 bring-up)" translate="no">​</a></h3>
+<ul>
+<li class=""><strong>A full <code>esptool write-flash</code> resets NVS</strong> (mode → Notifier, Wi-Fi creds + API
+keys wiped) - re-provision after every flash: <code>WIFI &lt;your-ssid&gt;|&lt;pass&gt;</code> over
+the console, then the OpenAI key via <code>/api/orch</code>. A plain reboot keeps NVS.</li>
+<li class=""><strong>Wi-Fi STA rejoin is slow/flaky right after a flash or reboot</strong> (tens of
+seconds, sometimes needs a re-provision); it joins reliably from a clean boot.
+Suspected Wi-Fi/BLE radio contention in the merged firmware (BLE is on in
+Notifier mode).</li>
+<li class=""><strong>LittleFS won&#x27;t auto-create parent dirs</strong> - the vector blob at
+<code>/data/orchvec.bin</code> needs an explicit <code>mkdir(&quot;/data&quot;)</code> (fixed, <code>0d1bf95</code>);
+same caveat applies to any new <code>/data/...</code> file.</li>
+</ul></div><footer class="theme-doc-footer docusaurus-mt-lg"><div class="row margin-top--sm theme-doc-footer-edit-meta-row"><div class="col noPrint_WFHX"><a href="https://github.com/ristllin/Nimbus/blob/main/docs/orchestrator-world.md" target="_blank" rel="noopener noreferrer" class="theme-edit-this-page"><svg fill="currentColor" height="20" width="20" viewBox="0 0 40 40" class="iconEdit_Z9Sw" aria-hidden="true"><g><path d="m34.5 11.7l-3 3.1-6.3-6.3 3.1-3q0.5-0.5 1.2-0.5t1.1 0.5l3.9 3.9q0.5 0.4 0.5 1.1t-0.5 1.2z m-29.5 17.1l18.4-18.5 6.3 6.3-18.4 18.4h-6.3v-6.2z"></path></g></svg>Edit this page</a></div><div class="col lastUpdated_JAkA"></div></div></footer></article><nav class="docusaurus-mt-lg pagination-nav" aria-label="Docs pages"><a class="pagination-nav__link pagination-nav__link--prev" href="/guides/orchestrator-live-turn"><div class="pagination-nav__sublabel">Previous</div><div class="pagination-nav__label">Live turn</div></a><a class="pagination-nav__link pagination-nav__link--next" href="/guides/memory"><div class="pagination-nav__sublabel">Next</div><div class="pagination-nav__label">Memory</div></a></nav></div></div><div class="col col--3"><div class="tableOfContents_bqdL thin-scrollbar theme-doc-toc-desktop"><ul class="table-of-contents table-of-contents__left-border"><li><a href="#locked-decisions-2026-07-02" class="table-of-contents__link toc-highlight">Locked decisions (2026-07-02)</a></li><li><a href="#1-cognitive-tiers" class="table-of-contents__link toc-highlight">1. Cognitive tiers</a><ul><li><a href="#11-directive-exists" class="table-of-contents__link toc-highlight">1.1 Directive (exists)</a></li><li><a href="#12-scratchpad---model-owned-working-goals" class="table-of-contents__link toc-highlight">1.2 Scratchpad - model-owned working goals</a></li><li><a href="#13-episodic-store-sd---everything-that-ever-happened" class="table-of-contents__link toc-highlight">1.3 Episodic store (SD) - everything that ever happened</a></li><li><a href="#14-associative-memory-vdb-sd" class="table-of-contents__link toc-highlight">1.4 Associative memory (VDB, SD)</a></li></ul></li><li><a href="#2-per-turn-context-assembly" class="table-of-contents__link toc-highlight">2. Per-turn context assembly</a><ul><li><a href="#21-recall" class="table-of-contents__link toc-highlight">2.1 Recall</a></li><li><a href="#22-maintenance" class="table-of-contents__link toc-highlight">2.2 Maintenance</a></li></ul></li><li><a href="#3-capability--world-manifest" class="table-of-contents__link toc-highlight">3. Capability &amp; world manifest</a></li><li><a href="#4-sessions-as-conversational-sub-agents" class="table-of-contents__link toc-highlight">4. Sessions as conversational sub-agents</a></li><li><a href="#5-on-device-mcp-server--tool-registry" class="table-of-contents__link toc-highlight">5. On-device MCP server &amp; tool registry</a></li><li><a href="#6-security-rails-unchanged-now-enumerated-in-the-immutable-rules-block" class="table-of-contents__link toc-highlight">6. Security rails (unchanged, now enumerated in the immutable-rules block)</a></li><li><a href="#7-dashboard-web-ui---memory--providers-routes" class="table-of-contents__link toc-highlight">7. Dashboard (web UI) - <code>/memory/*</code> + <code>/providers*</code> routes</a></li><li><a href="#8-phasing" class="table-of-contents__link toc-highlight">8. Phasing</a></li><li><a href="#9-open-items" class="table-of-contents__link toc-highlight">9. Open items</a></li><li><a href="#build-status-2026-07-03" class="table-of-contents__link toc-highlight">Build status (2026-07-03)</a><ul><li><a href="#ph1---portable-cognitive-core--done-28-host-tests" class="table-of-contents__link toc-highlight">Ph1 - portable cognitive core  [done] (28 host tests)</a></li><li><a href="#ph2---episodic-store--seam-7-host-tests" class="table-of-contents__link toc-highlight">Ph2 - episodic store  [seam] (7 host tests)</a></li><li><a href="#ph3---associative-vector-memory--hw-hardware-verified-24-host-tests" class="table-of-contents__link toc-highlight">Ph3 - associative vector memory  [hw] hardware-verified (24 host tests)</a></li><li><a href="#ph4---sessions--lan-mcp--hw-device--compile-bidirectional-pending-9-host-tests" class="table-of-contents__link toc-highlight">Ph4 - sessions + LAN MCP  [hw] device / [compile] bidirectional pending (9 host tests)</a></li><li><a href="#whats-proven-where" class="table-of-contents__link toc-highlight">What&#39;s proven where</a></li><li><a href="#hardware-notes-2026-07-03-bring-up" class="table-of-contents__link toc-highlight">Hardware notes (2026-07-03 bring-up)</a></li></ul></li></ul></div></div></div></div></main></div></div></div><footer class="theme-layout-footer footer footer--dark"><div class="container container-fluid"><div class="row footer__links"><div class="theme-layout-footer-column col footer__col"><div class="footer__title">Docs</div><ul class="footer__items clean-list"><li class="footer__item"><a class="footer__link-item" href="/quick-start/what-you-need">Quick Start</a></li><li class="footer__item"><a class="footer__link-item" href="/guides/hardware-bom">Bill of materials</a></li><li class="footer__item"><a class="footer__link-item" href="/getting-started/webui-reference">Web UI reference</a></li></ul></div><div class="theme-layout-footer-column col footer__col"><div class="footer__title">Reference</div><ul class="footer__items clean-list"><li class="footer__item"><a class="footer__link-item" href="/reference/config-and-nvs">Config &amp; NVS</a></li><li class="footer__item"><a class="footer__link-item" href="/reference/tool-catalog">Tool catalog</a></li><li class="footer__item"><a class="footer__link-item" href="/reference/turn-contract">Turn contract</a></li><li class="footer__item"><a class="footer__link-item" href="/reference/changelog">Changelog</a></li></ul></div><div class="theme-layout-footer-column col footer__col"><div class="footer__title">More</div><ul class="footer__items clean-list"><li class="footer__item"><a href="https://github.com/ristllin/Nimbus" target="_blank" rel="noopener noreferrer" class="footer__link-item">GitHub<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li></ul></div></div><div class="footer__bottom text--center"><div class="footer__copyright">Nimbus - source-available, free for noncommercial use (PolyForm-NC / CC BY-NC-SA). Built with Docusaurus.</div></div></div></footer></div>
+</body>
+</html>

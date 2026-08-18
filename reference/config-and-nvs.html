@@ -1,0 +1,642 @@
+<!doctype html>
+<html lang="en" dir="ltr" class="docs-wrapper plugin-docs plugin-id-default docs-version-current docs-doc-page docs-doc-id-reference/config-and-nvs" data-has-hydrated="false">
+<head>
+<meta charset="UTF-8">
+<meta name="generator" content="Docusaurus v3.10.2">
+<title data-rh="true">Config &amp; NVS reference | Nimbus</title><meta data-rh="true" name="viewport" content="width=device-width,initial-scale=1"><meta data-rh="true" name="twitter:card" content="summary_large_image"><meta data-rh="true" property="og:image" content="https://docs.cumulo-nimbus.ai/img/social-card.png"><meta data-rh="true" name="twitter:image" content="https://docs.cumulo-nimbus.ai/img/social-card.png"><meta data-rh="true" property="og:url" content="https://docs.cumulo-nimbus.ai/reference/config-and-nvs"><meta data-rh="true" property="og:locale" content="en"><meta data-rh="true" name="docusaurus_locale" content="en"><meta data-rh="true" name="docsearch:language" content="en"><meta data-rh="true" name="docusaurus_version" content="current"><meta data-rh="true" name="docusaurus_tag" content="docs-default-current"><meta data-rh="true" name="docsearch:version" content="current"><meta data-rh="true" name="docsearch:docusaurus_tag" content="docs-default-current"><meta data-rh="true" property="og:title" content="Config &amp; NVS reference | Nimbus"><meta data-rh="true" name="description" content="Migrated from docs/reference/config-and-nvs.md - the canonical source lives in the repo."><meta data-rh="true" property="og:description" content="Migrated from docs/reference/config-and-nvs.md - the canonical source lives in the repo."><link data-rh="true" rel="icon" href="/img/favicon.svg"><link data-rh="true" rel="canonical" href="https://docs.cumulo-nimbus.ai/reference/config-and-nvs"><link data-rh="true" rel="alternate" href="https://docs.cumulo-nimbus.ai/reference/config-and-nvs" hreflang="en"><link data-rh="true" rel="alternate" href="https://docs.cumulo-nimbus.ai/reference/config-and-nvs" hreflang="x-default"><script data-rh="true" type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Config & NVS","item":"https://docs.cumulo-nimbus.ai/reference/config-and-nvs"}]}</script><link rel="stylesheet" href="/assets/css/styles.5ae419b2.css">
+<script src="/assets/js/runtime~main.e74ebefa.js" defer="defer"></script>
+<script src="/assets/js/main.92f144b6.js" defer="defer"></script>
+</head>
+<body>
+<svg style="display: none;"><defs>
+<symbol id="theme-svg-external-link" viewBox="0 0 24 24"><path fill="currentColor" d="M21 13v10h-21v-19h12v2h-10v15h17v-8h2zm3-12h-10.988l4.035 4-6.977 7.07 2.828 2.828 6.977-7.07 4.125 4.172v-11z"/></symbol>
+</defs></svg>
+<script>!function(){var t=function(){try{return new URLSearchParams(window.location.search).get("docusaurus-theme")}catch(t){}}()||function(){try{return window.localStorage.getItem("theme")}catch(t){}}();document.documentElement.setAttribute("data-theme",t||(window.matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light")),document.documentElement.setAttribute("data-theme-choice",t||"system")}(),function(){try{const c=new URLSearchParams(window.location.search).entries();for(var[t,e]of c)if(t.startsWith("docusaurus-data-")){var a=t.replace("docusaurus-data-","data-");document.documentElement.setAttribute(a,e)}}catch(t){}}()</script><div id="__docusaurus"><div role="region" aria-label="Skip to main content"><a class="skipToContent_fXgn" href="#__docusaurus_skipToContent_fallback">Skip to main content</a></div><nav aria-label="Main" class="theme-layout-navbar navbar navbar--fixed-top"><div class="navbar__inner"><div class="theme-layout-navbar-left navbar__items"><button aria-label="Toggle navigation bar" aria-expanded="false" class="navbar__toggle clean-btn" type="button"><svg width="30" height="30" viewBox="0 0 30 30" aria-hidden="true"><path stroke="currentColor" stroke-linecap="round" stroke-miterlimit="10" stroke-width="2" d="M4 7h22M4 15h22M4 23h22"></path></svg></button><a class="navbar__brand" href="/"><div class="navbar__logo"><img src="/img/logo.svg" alt="Nimbus" class="themedComponent_mlkZ themedComponent--light_NVdE"><img src="/img/logo.svg" alt="Nimbus" class="themedComponent_mlkZ themedComponent--dark_xIcU"></div><b class="navbar__title text--truncate">Nimbus</b></a><a class="navbar__item navbar__link" href="/quick-start/what-you-need">Get started</a><a class="navbar__item navbar__link" href="/flash">Flash</a></div><div class="theme-layout-navbar-right navbar__items navbar__items--right"><a href="https://github.com/ristllin/Nimbus" target="_blank" rel="noopener noreferrer" class="navbar__item navbar__link">GitHub<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a><div class="toggle_vylO colorModeToggle_DEke"><button class="clean-btn toggleButton_gllP toggleButtonDisabled_aARS" type="button" disabled="" title="system mode" aria-label="Switch between dark and light mode (currently system mode)"><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP lightToggleIcon_pyhR"><path fill="currentColor" d="M12,9c1.65,0,3,1.35,3,3s-1.35,3-3,3s-3-1.35-3-3S10.35,9,12,9 M12,7c-2.76,0-5,2.24-5,5s2.24,5,5,5s5-2.24,5-5 S14.76,7,12,7L12,7z M2,13l2,0c0.55,0,1-0.45,1-1s-0.45-1-1-1l-2,0c-0.55,0-1,0.45-1,1S1.45,13,2,13z M20,13l2,0c0.55,0,1-0.45,1-1 s-0.45-1-1-1l-2,0c-0.55,0-1,0.45-1,1S19.45,13,20,13z M11,2v2c0,0.55,0.45,1,1,1s1-0.45,1-1V2c0-0.55-0.45-1-1-1S11,1.45,11,2z M11,20v2c0,0.55,0.45,1,1,1s1-0.45,1-1v-2c0-0.55-0.45-1-1-1C11.45,19,11,19.45,11,20z M5.99,4.58c-0.39-0.39-1.03-0.39-1.41,0 c-0.39,0.39-0.39,1.03,0,1.41l1.06,1.06c0.39,0.39,1.03,0.39,1.41,0s0.39-1.03,0-1.41L5.99,4.58z M18.36,16.95 c-0.39-0.39-1.03-0.39-1.41,0c-0.39,0.39-0.39,1.03,0,1.41l1.06,1.06c0.39,0.39,1.03,0.39,1.41,0c0.39-0.39,0.39-1.03,0-1.41 L18.36,16.95z M19.42,5.99c0.39-0.39,0.39-1.03,0-1.41c-0.39-0.39-1.03-0.39-1.41,0l-1.06,1.06c-0.39,0.39-0.39,1.03,0,1.41 s1.03,0.39,1.41,0L19.42,5.99z M7.05,18.36c0.39-0.39,0.39-1.03,0-1.41c-0.39-0.39-1.03-0.39-1.41,0l-1.06,1.06 c-0.39,0.39-0.39,1.03,0,1.41s1.03,0.39,1.41,0L7.05,18.36z"></path></svg><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP darkToggleIcon_wfgR"><path fill="currentColor" d="M9.37,5.51C9.19,6.15,9.1,6.82,9.1,7.5c0,4.08,3.32,7.4,7.4,7.4c0.68,0,1.35-0.09,1.99-0.27C17.45,17.19,14.93,19,12,19 c-3.86,0-7-3.14-7-7C5,9.07,6.81,6.55,9.37,5.51z M12,3c-4.97,0-9,4.03-9,9s4.03,9,9,9s9-4.03,9-9c0-0.46-0.04-0.92-0.1-1.36 c-0.98,1.37-2.58,2.26-4.4,2.26c-2.98,0-5.4-2.42-5.4-5.4c0-1.81,0.89-3.42,2.26-4.4C12.92,3.04,12.46,3,12,3L12,3z"></path></svg><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP systemToggleIcon_QzmC"><path fill="currentColor" d="m12 21c4.971 0 9-4.029 9-9s-4.029-9-9-9-9 4.029-9 9 4.029 9 9 9zm4.95-13.95c1.313 1.313 2.05 3.093 2.05 4.95s-0.738 3.637-2.05 4.95c-1.313 1.313-3.093 2.05-4.95 2.05v-14c1.857 0 3.637 0.737 4.95 2.05z"></path></svg></button></div><div class="navbarSearchContainer_Bca1"></div></div></div><div role="presentation" class="navbar-sidebar__backdrop"></div></nav><div id="__docusaurus_skipToContent_fallback" class="theme-layout-main main-wrapper mainWrapper_z2l0"><div class="docsWrapper_hBAB"><button aria-label="Scroll back to top" class="clean-btn theme-back-to-top-button backToTopButton_sjWU" type="button"></button><div class="docRoot_UBD9"><aside class="theme-doc-sidebar-container docSidebarContainer_YfHR"><div class="sidebarViewport_aRkj"><div class="sidebar_njMd"><nav aria-label="Docs sidebar" class="menu thin-scrollbar menu_SIkG"><ul class="theme-doc-sidebar-menu menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/"><span class="linkLabel_WmDU">Overview</span></a></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="true" href="/quick-start/what-you-need"><span class="categoryLinkLabel_W154">Quick Start</span></a></div><ul class="menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/what-you-need"><span class="linkLabel_WmDU">What you need</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/flash"><span class="linkLabel_WmDU">Flash the firmware</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/setup-wizard"><span class="linkLabel_WmDU">Set up the device</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/first-conversation"><span class="linkLabel_WmDU">First conversation</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/notifier-quick-start"><span class="linkLabel_WmDU">Notifier quick start</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/getting-started/first-time-setup"><span class="linkLabel_WmDU">First-time setup</span></a></li></ul></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/guides/hardware"><span class="categoryLinkLabel_W154">Hardware Build</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/getting-started/webui-reference"><span class="categoryLinkLabel_W154">Using Nimbus</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/guides/architecture"><span class="categoryLinkLabel_W154">How It Works</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret menu__link--active" role="button" aria-expanded="true" href="/reference/config-and-nvs"><span class="categoryLinkLabel_W154">Reference</span></a></div><ul class="menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link menu__link--active" aria-current="page" tabindex="0" href="/reference/config-and-nvs"><span class="linkLabel_WmDU">Config &amp; NVS</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/reference/tool-catalog"><span class="linkLabel_WmDU">Tool catalog</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/reference/turn-contract"><span class="linkLabel_WmDU">Turn contract</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/reference/tools-and-commands"><span class="linkLabel_WmDU">Tools &amp; commands</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/reference/changelog"><span class="linkLabel_WmDU">Changelog</span></a></li></ul></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/contributing/development"><span class="categoryLinkLabel_W154">Forking &amp; Contributing</span></a></div></li></ul></nav></div></div></aside><main class="docMainContainer_TBSr"><div class="container padding-top--md padding-bottom--lg"><div class="row"><div class="col docItemCol_VOVn"><div class="docItemContainer_Djhp"><article><nav class="theme-doc-breadcrumbs breadcrumbsContainer_Z_bl" aria-label="Breadcrumbs"><ul class="breadcrumbs"><li class="breadcrumbs__item"><a aria-label="Home page" class="breadcrumbs__link" href="/"><svg viewBox="0 0 24 24" class="breadcrumbHomeIcon_YNFT"><path d="M10 19v-5h4v5c0 .55.45 1 1 1h3c.55 0 1-.45 1-1v-7h1.7c.46 0 .68-.57.33-.87L12.67 3.6c-.38-.34-.96-.34-1.34 0l-8.36 7.53c-.34.3-.13.87.33.87H5v7c0 .55.45 1 1 1h3c.55 0 1-.45 1-1z" fill="currentColor"></path></svg></a></li><li class="breadcrumbs__item"><span class="breadcrumbs__link">Reference</span></li><li class="breadcrumbs__item breadcrumbs__item--active"><span class="breadcrumbs__link">Config &amp; NVS</span></li></ul></nav><div class="tocCollapsible_ETCw theme-doc-toc-mobile tocMobile_ITEo"><button type="button" class="clean-btn tocCollapsibleButton_TO0P">On this page</button></div><div class="theme-doc-markdown markdown"><blockquote>
+<p>Sourced from <code>docs/reference/config-and-nvs.md</code> in the firmware repo.</p>
+</blockquote>
+<header><h1>Config and NVS Reference</h1></header>
+<p>How Nimbus persists device state: the <code>solide</code> NVS namespace and every key it
+holds, the write-only credential fields, the model-vs-human credential-gate
+<strong>rails</strong>, the sparse-override <code>Config</code> model and its SD-backed blob (plus the
+no-SD non-persistence limitation, <strong>F10</strong>), and the <strong>set-once</strong> embed-config
+invariant.</p>
+<p>Related: <a class="" href="/reference/tools-and-commands">Tools &amp; Commands</a> (provisioning over
+serial), <a class="" href="/guides/orchestrator-world">Orchestrator World</a>
+(the security rails in context).</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="two-backends">Two backends<a href="#two-backends" class="hash-link" aria-label="Direct link to Two backends" title="Direct link to Two backends" translate="no">​</a></h2>
+<p>Persistence rides <code>solide::memory</code> (<a href="https://github.com/ristllin/solide-drivers" target="_blank" rel="noopener noreferrer" class="">solide-drivers</a>, <code>solide/memory.h</code>),
+which splits by size:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Backend</th><th>Store</th><th>Survives</th><th>Used for</th></tr></thead><tbody><tr><td><strong>NVS</strong> (Arduino Preferences)</td><td>flash</td><td>reflash; atomic</td><td>typed key-value config - keys must be <strong>≤ 15 chars</strong></td></tr><tr><td><strong>SD</strong> under <code>/memory/</code></td><td>SD card</td><td>only if a card is mounted</td><td>larger JSON / blobs; returns <code>false</code>/<code>0</code> when the card is absent</td></tr></tbody></table>
+<p>The NVS namespace is <strong><code>solide</code></strong> (opened via <code>solide::memory::begin(&quot;solide&quot;)</code>).
+Every typed config value below is an NVS key in that namespace. The one blob
+(<code>nimbus_cfg</code>, the profile override <code>Config</code>) rides the SD half - see
+<a href="#sparse-override-config--the-sd-blob" class="">Sparse-override Config + the SD blob</a>.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="nvs-keys">NVS keys<a href="#nvs-keys" class="hash-link" aria-label="Direct link to NVS keys" title="Direct link to NVS keys" translate="no">​</a></h2>
+<p>Two families write to the <code>solide</code> namespace: the <strong>system</strong> keys
+(<code>src/sys/config_nvs.cpp</code>) and the <strong>agent/orchestrator</strong> keys
+(<code>src/agent/store.cpp</code>, names in <code>src/agent/agent_config.h</code>). &quot;Read back?&quot; = No
+marks <strong>write-only</strong> fields the UI never reads back into itself.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="system-keys-srcsysconfig_nvscpp">System keys (<code>src/sys/config_nvs.cpp</code>)<a href="#system-keys-srcsysconfig_nvscpp" class="hash-link" aria-label="Direct link to system-keys-srcsysconfig_nvscpp" title="Direct link to system-keys-srcsysconfig_nvscpp" translate="no">​</a></h3>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Key</th><th>Type</th><th>Default</th><th>Holds</th><th>Read back?</th></tr></thead><tbody><tr><td><code>nimbus_mode</code></td><td>int</td><td><code>Notifier</code> (0)</td><td>Operating mode: <code>0=Notifier</code>, <code>1=Orchestrator</code> (<code>Mode</code> enum). Any value other than 1 resolves to Notifier.</td><td>Yes</td></tr><tr><td><code>nimbus_ble</code></td><td>int (bool)</td><td><code>1</code> (on)</td><td>Bluetooth advertising enable (Notifier-mode nsn transport). Runtime-applied, no reboot.</td><td>Yes</td></tr><tr><td><code>nimbus_name</code></td><td>string</td><td><code>&quot;&quot;</code> (auto)</td><td>Device name / identity; <code>&quot;&quot;</code> = auto-derived. Sanitized on write.</td><td>Yes</td></tr><tr><td><code>nimbus_cfg</code></td><td><strong>SD blob</strong></td><td>absent</td><td>Versioned profile-override <code>Config</code> (see below). <strong>Not an NVS key</strong> - rides <code>putBlob</code>/<code>getBlob</code> on SD.</td><td>-</td></tr></tbody></table>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="provider-credentials-srcagentstorecpp">Provider credentials (<code>src/agent/store.cpp</code>)<a href="#provider-credentials-srcagentstorecpp" class="hash-link" aria-label="Direct link to provider-credentials-srcagentstorecpp" title="Direct link to provider-credentials-srcagentstorecpp" translate="no">​</a></h3>
+<p>Every credential getter returns <code>&quot;&quot;</code> until provisioned - this is the
+<strong>credential gate</strong> (see below). <code>has*()</code> helpers let the turn loop degrade
+gracefully instead of firing a doomed TLS call.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Key</th><th>Type</th><th>Default</th><th>Holds</th><th>Read back?</th></tr></thead><tbody><tr><td><code>oaiKey</code></td><td>string</td><td><code>&quot;&quot;</code></td><td>OpenAI API key</td><td>No - write-only; UI exposes only a &quot;has key&quot; flag</td></tr><tr><td><code>antKey</code></td><td>string</td><td><code>&quot;&quot;</code></td><td>Anthropic API key</td><td>No - write-only</td></tr><tr><td><code>mistralKey</code></td><td>string</td><td><code>&quot;&quot;</code></td><td>Mistral API key (<code>== Nuage store::hasKey()</code>)</td><td>No - write-only</td></tr><tr><td><code>tavilyKey</code></td><td>string</td><td><code>&quot;&quot;</code></td><td>Tavily API key for the orchestrator <code>web.search</code> / deep-research tool</td><td>No - write-only</td></tr><tr><td><code>custBase</code></td><td>string</td><td><code>&quot;&quot;</code></td><td>Custom / proxy endpoint base (registers backend <code>custom</code> when non-empty)</td><td>Yes</td></tr><tr><td><code>custKey</code></td><td>string</td><td><code>&quot;&quot;</code></td><td>Custom endpoint key</td><td>No - write-only</td></tr><tr><td><code>custConv</code></td><td>string</td><td><code>&quot;openai&quot;</code></td><td>Custom wire convention: <code>openai|mistral|anthropic</code></td><td>Yes</td></tr><tr><td><code>custModel</code></td><td>string</td><td><code>&quot;&quot;</code></td><td>Custom endpoint model</td><td>Yes</td></tr></tbody></table>
+<p>Writing or clearing a provider key <strong>resets that provider&#x27;s verify cache</strong> to
+<code>-1, 0</code> (couldn&#x27;t-verify / never), so a swapped key can&#x27;t ride the old verdict.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="orchestrator-routing--models-srcagentstorecpp">Orchestrator routing + models (<code>src/agent/store.cpp</code>)<a href="#orchestrator-routing--models-srcagentstorecpp" class="hash-link" aria-label="Direct link to orchestrator-routing--models-srcagentstorecpp" title="Direct link to orchestrator-routing--models-srcagentstorecpp" translate="no">​</a></h3>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Key</th><th>Type</th><th>Default</th><th>Holds</th><th>Read back?</th></tr></thead><tbody><tr><td><code>orchHost</code></td><td>string</td><td><code>&quot;&quot;</code></td><td>Explicit host provider; <code>&quot;&quot;</code> = top of priority. <strong>Human-only + model-protected.</strong></td><td>Yes</td></tr><tr><td><code>orchConv</code></td><td>string</td><td><code>&quot;&quot;</code></td><td><code>&quot;host|convId&quot;</code> per-host conversation state</td><td>Yes</td></tr><tr><td><code>provPrio</code></td><td>string</td><td><code>&quot;openai,anthropic,mistral&quot;</code></td><td>Orchestrator-<strong>host</strong> priority list (alias <code>orchPriority</code>). <strong>Human-only + model-protected.</strong></td><td>Yes</td></tr><tr><td><code>subPrio</code></td><td>string</td><td><code>&quot;openai,anthropic,mistral&quot;</code></td><td>Sub-session provider priority - <strong>the only model-writable routing knob</strong> (<code>setSubPriority</code>)</td><td>Yes</td></tr><tr><td><code>orchM_&lt;provider&gt;</code></td><td>string</td><td><code>&quot;&quot;</code> → provider flagship</td><td>Per-provider orchestrator model override (prefix <code>orchM_</code> + provider)</td><td>Yes</td></tr><tr><td><code>subM_&lt;provider&gt;</code></td><td>string</td><td><code>&quot;&quot;</code> → provider flagship</td><td>Per-provider sub-session model override (prefix <code>subM_</code>)</td><td>Yes</td></tr><tr><td><code>agFabric</code></td><td>string</td><td><code>&quot;code:openai,research:openai,ops:anthropic&quot;</code></td><td>Legacy category→provider bindings</td><td>Yes</td></tr><tr><td><code>sysPrompt</code></td><td>string</td><td><code>&quot;&quot;</code></td><td>The user directive - <strong>immutable by the model</strong></td><td>Yes</td></tr></tbody></table>
+<p>All three hosts (OpenAI, Anthropic, Mistral) are in the default <code>provPrio</code> /
+<code>subPrio</code> lists; list order is the failover order, and an explicit <code>orchHost</code>
+overrides it.</p>
+<p>Default per-provider models: <code>OPENAI_MODEL</code> = <code>gpt-5.5</code>, <code>ANT_MODEL</code> =
+<code>claude-sonnet-4-6</code>, <code>MISTRAL_MODEL</code> = <code>mistral-large-latest</code>; custom →
+<code>custModel</code>.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="turn-behavior--tls-transport-srcagentstorecpp">Turn behavior + TLS transport (<code>src/agent/store.cpp</code>)<a href="#turn-behavior--tls-transport-srcagentstorecpp" class="hash-link" aria-label="Direct link to turn-behavior--tls-transport-srcagentstorecpp" title="Direct link to turn-behavior--tls-transport-srcagentstorecpp" translate="no">​</a></h3>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Key</th><th>Type</th><th>Default</th><th>Holds</th><th>Read back?</th></tr></thead><tbody><tr><td><code>midFail</code></td><td>bool</td><td><code>true</code> (on)</td><td>Mid-turn provider failover: on a tool-loop turn, fall back to the next host in priority order when the active provider call fails.</td><td>Yes</td></tr><tr><td><code>tlsSlots</code></td><td>int</td><td><code>1</code></td><td>Concurrent outbound work-TLS sessions the arbiter permits, clamped to <code>1..2</code>. Latched at boot; <code>1</code> keeps a heavy turn&#x27;s contiguous heap intact, <code>2</code> raises throughput on a board with headroom.</td><td>Yes</td></tr><tr><td><code>tlsVerify</code></td><td>bool</td><td><code>true</code> (on)</td><td>Validate provider TLS certificates against the bundled CA set.</td><td>Yes</td></tr></tbody></table>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="telegram-srcagentstorecpp">Telegram (<code>src/agent/store.cpp</code>)<a href="#telegram-srcagentstorecpp" class="hash-link" aria-label="Direct link to telegram-srcagentstorecpp" title="Direct link to telegram-srcagentstorecpp" translate="no">​</a></h3>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Key</th><th>Type</th><th>Default</th><th>Holds</th><th>Read back?</th></tr></thead><tbody><tr><td><code>tgToken</code></td><td>string</td><td><code>&quot;&quot;</code></td><td>Telegram bot token</td><td><strong>No - WRITE-ONLY.</strong> UI exposes only <code>hasTg</code> (a boolean); the token is never read back into the UI</td></tr><tr><td><code>tgAllow</code></td><td>string</td><td><code>&quot;&quot;</code></td><td>Allowlisted chat ids (comma-separated)</td><td>Yes</td></tr><tr><td><code>tgOffset</code></td><td>int</td><td><code>0</code></td><td>Telegram long-poll offset</td><td>Yes (internal)</td></tr></tbody></table>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="voice-led-and-misc-srcagentstorecpp">Voice, LED, and misc (<code>src/agent/store.cpp</code>)<a href="#voice-led-and-misc-srcagentstorecpp" class="hash-link" aria-label="Direct link to voice-led-and-misc-srcagentstorecpp" title="Direct link to voice-led-and-misc-srcagentstorecpp" translate="no">​</a></h3>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Key</th><th>Type</th><th>Default</th><th>Holds</th><th>Read back?</th></tr></thead><tbody><tr><td><code>sttProv</code></td><td>string</td><td><code>&quot;mistral&quot;</code> (Voxtral)</td><td>STT provider (<code>mistral|openai</code>). <strong>Freely changeable.</strong></td><td>Yes</td></tr><tr><td><code>ttsProv</code></td><td>string</td><td><code>&quot;mistral&quot;</code></td><td>TTS provider (<code>mistral|openai</code>). <strong>Freely changeable.</strong></td><td>Yes</td></tr><tr><td><code>ttsVoice</code></td><td>string</td><td><code>&quot;&quot;</code></td><td>TTS voice id/slug; <code>&quot;&quot;</code> = provider default</td><td>Yes</td></tr><tr><td><code>ttsEnabled</code></td><td>bool</td><td><code>false</code></td><td>Spoken-reply enable</td><td>Yes</td></tr><tr><td><code>theme</code></td><td>string</td><td><code>&quot;teal&quot;</code></td><td>LED color theme slug</td><td>Yes</td></tr><tr><td><code>ledBright</code></td><td>int</td><td><code>128</code></td><td>LED brightness (<code>ledBright</code> NVS key)</td><td>Yes</td></tr><tr><td><code>scrModel</code></td><td>string</td><td><code>&quot;eink&quot;</code></td><td>Display type (<code>eink|tft</code>), boot-applied. Exempt from Revert to Defaults (hardware identity).</td><td>Yes</td></tr><tr><td><code>devTz</code></td><td>string</td><td><code>&quot;&quot;</code> (= UTC)</td><td>POSIX timezone for daily/weekly routines + the device clock display (Settings → Mode &amp; identity). Applies immediately; wall-clock routines rebase budget-neutrally.</td><td>Yes</td></tr><tr><td><code>dreamScrHash</code></td><td>string</td><td><code>&quot;&quot;</code></td><td>fnv64-hex of the scratchpad after the last dream - the quiet-night skip baseline. Device-managed.</td><td>Yes</td></tr><tr><td><code>tchCal</code></td><td>string</td><td><code>&quot;&quot;</code></td><td>Touch-panel calibration (XPT2046); <code>&quot;&quot;</code> = identity/default</td><td>Yes</td></tr><tr><td><code>lbRing</code></td><td>bool</td><td><code>false</code></td><td>Low-battery ring cue (owner opt-in; off by default)</td><td>Yes</td></tr><tr><td><code>lbSaver</code></td><td>bool</td><td><code>true</code></td><td>Auto-drop to a lower battery mode on low battery</td><td>Yes</td></tr></tbody></table>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="anthropic-managed-agents-caches-srcagentstorecpp">Anthropic managed-agents caches (<code>src/agent/store.cpp</code>)<a href="#anthropic-managed-agents-caches-srcagentstorecpp" class="hash-link" aria-label="Direct link to anthropic-managed-agents-caches-srcagentstorecpp" title="Direct link to anthropic-managed-agents-caches-srcagentstorecpp" translate="no">​</a></h3>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Key</th><th>Type</th><th>Default</th><th>Holds</th></tr></thead><tbody><tr><td><code>antEnv</code></td><td>string</td><td><code>&quot;&quot;</code></td><td>Managed-agents environment id</td></tr><tr><td><code>antAgents</code></td><td>string</td><td><code>&quot;&quot;</code></td><td>Agent map cache</td></tr><tr><td><code>antOrchAg</code></td><td>string</td><td><code>&quot;&quot;</code></td><td>Orchestrator agent id</td></tr></tbody></table>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="provider-verify-cache-srcagentstorecpp-written-by-provider_verify">Provider verify cache (<code>src/agent/store.cpp</code>, written by <code>provider_verify</code>)<a href="#provider-verify-cache-srcagentstorecpp-written-by-provider_verify" class="hash-link" aria-label="Direct link to provider-verify-cache-srcagentstorecpp-written-by-provider_verify" title="Direct link to provider-verify-cache-srcagentstorecpp-written-by-provider_verify" translate="no">​</a></h3>
+<p>One key per provider: <code>vfy_&lt;provider&gt;</code> (e.g. <code>vfy_anthropic</code> = 13 chars, within
+the ≤ 15-char NVS limit). Value is <code>&quot;R:TS&quot;</code> where:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th><code>R</code></th><th>Meaning</th></tr></thead><tbody><tr><td><code>1</code></td><td>verified (HTTP 200)</td></tr><tr><td><code>0</code></td><td>rejected (401/403)</td></tr><tr><td><code>-1</code></td><td>couldn&#x27;t verify (no key / connect failed / never attempted)</td></tr></tbody></table>
+<p><code>TS</code> = <code>millis()</code> when the result landed. An <strong>absent</strong> key reads <code>R = -1</code>,
+<code>TS = 0</code>, which distinguishes &quot;never verified&quot; from a real verdict.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="capability-validation-srcagentstorecpp">Capability validation (<code>src/agent/store.cpp</code>)<a href="#capability-validation-srcagentstorecpp" class="hash-link" aria-label="Direct link to capability-validation-srcagentstorecpp" title="Direct link to capability-validation-srcagentstorecpp" translate="no">​</a></h3>
+<p>Controls whether the device claims a provider capability is &quot;verified&quot; and how
+often it re-checks. Both feed the provider catalog (<code>connectors::catalog()</code>) and
+are read back into the web UI.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Key</th><th>Type</th><th>Default</th><th>Holds</th><th>Read back?</th></tr></thead><tbody><tr><td><code>capProbe</code></td><td>int</td><td><code>1</code> (passive)</td><td>Capability-validation mode: <code>0</code> = off (trust key presence, make no &quot;verified&quot; claim); <code>1</code> = passive (report the cached verify verdict); <code>2</code> = active (passive <strong>plus</strong> a periodic free provider re-verify). Clamped <code>0..2</code>.</td><td>Yes</td></tr><tr><td><code>capProbeH</code></td><td>int</td><td><code>24</code></td><td>Active-mode re-verify interval, in hours. Clamped <code>1..168</code>.</td><td>Yes</td></tr></tbody></table>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="embedding-config-for-the-vector-memory-srcagentstorecpp">Embedding config for the vector memory (<code>src/agent/store.cpp</code>)<a href="#embedding-config-for-the-vector-memory-srcagentstorecpp" class="hash-link" aria-label="Direct link to embedding-config-for-the-vector-memory-srcagentstorecpp" title="Direct link to embedding-config-for-the-vector-memory-srcagentstorecpp" translate="no">​</a></h3>
+<p><strong>Set-once</strong> - see the invariant below. Defaults are OpenAI
+<code>text-embedding-3-small</code> truncated to 256 dims.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Key</th><th>Type</th><th>Default</th><th>Holds</th></tr></thead><tbody><tr><td><code>embProv</code></td><td>string</td><td><code>&quot;openai&quot;</code></td><td>Embedding provider (<code>openai|mistral</code>)</td></tr><tr><td><code>embModel</code></td><td>string</td><td><code>&quot;text-embedding-3-small&quot;</code></td><td>Embedding model</td></tr><tr><td><code>embDims</code></td><td>int</td><td><code>256</code></td><td>Embedding width; <code>0</code> = provider-native</td></tr><tr><td><code>embLocked</code></td><td>bool</td><td><code>false</code></td><td>Flips <code>true</code> the first time a vector is embedded</td></tr></tbody></table>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="credential-gate-rails-model-vs-human">Credential-gate rails (model vs. human)<a href="#credential-gate-rails-model-vs-human" class="hash-link" aria-label="Direct link to Credential-gate rails (model vs. human)" title="Direct link to Credential-gate rails (model vs. human)" translate="no">​</a></h2>
+<p>The rails keep the model from redirecting its own brain or granting itself
+access. There are two enforcement layers:</p>
+<p><strong>1. <code>store.cpp</code> - human-only setters.</strong> The write side of the credential gate.
+The setters for keys, <code>orchHost</code>, <code>provPrio</code> (provider-<strong>host</strong> list), and
+<code>sysPrompt</code> may be called <strong>only</strong> from surfaces a human drives directly (the
+config web page, the provision/test consoles) - never from any code path the
+model can reach (device-action executor, turn loop, tools). <code>setSubPriority()</code>
+is the <strong>only</strong> model-writable routing knob; it targets the <strong>sub-session</strong> list
+(<code>subPrio</code>), never the orchestrator-host list.</p>
+<p><strong>2. <code>lib/core</code> - the deny policy (portable security core).</strong> The model may
+tune exactly two config keys: <code>ledBrightness</code> (0..255) and <code>priority</code> (a routing
+<strong>preference</strong>, i.e. the sub-session list - not a host). Everything else is
+ignored (unknown) or <strong>BLOCKED</strong>. The protected list
+(<code>lib/core/src/orch_device_actions.cpp</code>, nullptr-terminated) is:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Key</th><th>Why blocked</th></tr></thead><tbody><tr><td><code>password</code>, <code>token</code>, <code>connector</code></td><td>Secrets - an LLM-issued chat action must never set a credential</td></tr><tr><td><code>allowlist</code></td><td>The device&#x27;s own auth gate - the model must not grant itself access</td></tr><tr><td><code>orchHost</code>, <code>fabric</code></td><td>Provider / sub-agent routing - the model must not redirect its own brain / sub-agent backends</td></tr></tbody></table>
+<p>If <strong>any</strong> protected key is present, the <strong>whole</strong> config action is refused
+(reason <code>&quot;protected-BLOCKED&quot;</code>). The reason string reports only the policy tag,
+never the blocked key&#x27;s value, so a secret can never leak into the log or the
+next-turn context.</p>
+<p>See <a class="" href="/guides/orchestrator-world">Orchestrator World</a>
+for these rails in the wider control-surface context.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="sparse-override-config--the-sd-blob">Sparse-override Config + the SD blob<a href="#sparse-override-config--the-sd-blob" class="hash-link" aria-label="Direct link to Sparse-override Config + the SD blob" title="Direct link to Sparse-override Config + the SD blob" translate="no">​</a></h2>
+<p>Battery <strong>modes</strong> (machine ids <code>BatterySaver</code>, <code>Balanced</code>, <code>Desk</code> - displayed
+as Dark / Balanced / Full) are named sets of defaults. The <code>Config</code> model (<code>lib/core/include/nimbus/profile.h</code>)
+layers <strong>sparse user overrides</strong> on top of the active profile:</p>
+<div class="language-text codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#F8F8F2;--prism-background-color:#282A36"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-text codeBlock_bY9V thin-scrollbar" style="color:#F8F8F2;background-color:#282A36"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#F8F8F2"><span class="token plain">effective(key) = userOverride(key) ?? activeProfile.preset(key)</span><br></div></code></pre></div></div>
+<p>Only keys the user actually touched are stored, so switching profiles never
+loses user intent. <code>Config</code> holds the active <code>ProfileId</code> plus a per-<code>Param</code>
+<code>has_[]</code>/<code>val_[]</code> override pair over the <code>Param</code> enum
+(<code>kParamCount = Param::COUNT</code>).</p>
+<p><strong>Serialization</strong> (<code>lib/core/include/nimbus/config_store.h</code>,
+<code>kConfigStoreVersion = 1</code>): little-endian, magic <code>&#x27;N&#x27; &#x27;C&#x27;</code>, then version,
+profile, count, and <code>count</code> × <code>{ param:u8, value:i32 }</code> records - only the
+overridden params. Header is <code>kConfigHeaderBytes = 5</code>, each record
+<code>kConfigRecordBytes = 5</code>, cap
+<code>kConfigMaxBytes = kConfigHeaderBytes + kParamCount * kConfigRecordBytes</code>.
+<code>deserializeConfig()</code> is <strong>all-or-nothing</strong>: any bad magic/version/param/length
+leaves <code>out</code> untouched and returns <code>false</code>, so a corrupt blob falls back to
+defaults rather than a half-applied config.</p>
+<p><strong>Persistence glue</strong> (<code>src/sys/config_nvs.cpp</code>): the serialized <code>Config</code> blob is
+stored under name <code>nimbus_cfg</code> via <code>solide::memory::putBlob</code> - the <strong>SD-backed</strong>
+half of the store. Everything degrades gracefully: with no backing store
+(<code>solide::memory::ok()</code> false, blob absent, or corrupt) <code>loadConfig</code> returns
+<code>false</code> / leaves defaults and <code>saveConfig</code> returns <code>false</code>, never crashing the
+caller.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="f10---no-sd-non-persistence-limitation">F10 - no-SD non-persistence limitation<a href="#f10---no-sd-non-persistence-limitation" class="hash-link" aria-label="Direct link to F10 - no-SD non-persistence limitation" title="Direct link to F10 - no-SD non-persistence limitation" translate="no">​</a></h3>
+<p>Because the <code>Config</code> override blob rides the <strong>SD</strong> half of <code>solide::memory</code>
+(<code>putBlob</code>), <strong>with no SD card the overrides do not survive reboot</strong> - only
+<code>nimbus_mode</code> (an NVS int) and the other NVS keys persist. This is a known open
+bug (<strong>F10</strong>), flagged in P4 review and not yet fixed. The device
+<code>test_persist_across_reboot</code> / <code>R_F10_persist_no_sd</code> test encodes the fix and
+<strong>xfails</strong> until the blob is moved to a store that survives without SD.</p>
+<p>See <a class="" href="/reference/tools-and-commands">Tools &amp; Commands</a> for provisioning over
+serial (<code>[env:provision]</code> or the test console <code>WIFI</code> / <code>MODE</code> commands).</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="set-once-embed-config-invariant">Set-once embed-config invariant<a href="#set-once-embed-config-invariant" class="hash-link" aria-label="Direct link to Set-once embed-config invariant" title="Direct link to Set-once embed-config invariant" translate="no">​</a></h2>
+<p>Vectors embedded under different <code>provider</code>/<code>model</code>/<code>dims</code> are <strong>incomparable</strong>,
+so the embed config is <strong>set-once</strong>: <code>embLocked</code> flips <code>true</code> the first time any
+vector is embedded, and after that changing the config invalidates the whole
+vector DB (VDB).</p>
+<p><code>store::setEmbedConfig()</code> itself is a plain accessor - the reset/lock <strong>policy</strong>
+lives with the caller. The server-side guard is <code>POST /api/mem/embedcfg</code>
+(<code>src/net/web_memory.cpp</code>): while locked, a change is refused with <strong>HTTP 409</strong>
+unless <code>reset=1</code> is passed. <code>reset=1</code> is the destructive path - it
+<strong>flushes and wipes the VDB</strong> (<code>flushAll</code> + <code>persistVectors</code>), clears
+<code>embLocked</code>, then writes the new config and reconfigures the engine to the new
+dims. A change can therefore never silently strand incomparable vectors; the web
+UI must warn and require the explicit reset. <code>provider</code> must be <code>openai</code> or
+<code>mistral</code> and <code>model</code> is required (else HTTP 400).</p></div><footer class="theme-doc-footer docusaurus-mt-lg"><div class="row margin-top--sm theme-doc-footer-edit-meta-row"><div class="col noPrint_WFHX"><a href="https://github.com/ristllin/Nimbus/blob/main/docs/reference/config-and-nvs.md" target="_blank" rel="noopener noreferrer" class="theme-edit-this-page"><svg fill="currentColor" height="20" width="20" viewBox="0 0 40 40" class="iconEdit_Z9Sw" aria-hidden="true"><g><path d="m34.5 11.7l-3 3.1-6.3-6.3 3.1-3q0.5-0.5 1.2-0.5t1.1 0.5l3.9 3.9q0.5 0.4 0.5 1.1t-0.5 1.2z m-29.5 17.1l18.4-18.5 6.3 6.3-18.4 18.4h-6.3v-6.2z"></path></g></svg>Edit this page</a></div><div class="col lastUpdated_JAkA"></div></div></footer></article><nav class="docusaurus-mt-lg pagination-nav" aria-label="Docs pages"><a class="pagination-nav__link pagination-nav__link--prev" href="/guides/security"><div class="pagination-nav__sublabel">Previous</div><div class="pagination-nav__label">Security</div></a><a class="pagination-nav__link pagination-nav__link--next" href="/reference/tool-catalog"><div class="pagination-nav__sublabel">Next</div><div class="pagination-nav__label">Tool catalog</div></a></nav></div></div><div class="col col--3"><div class="tableOfContents_bqdL thin-scrollbar theme-doc-toc-desktop"><ul class="table-of-contents table-of-contents__left-border"><li><a href="#two-backends" class="table-of-contents__link toc-highlight">Two backends</a></li><li><a href="#nvs-keys" class="table-of-contents__link toc-highlight">NVS keys</a><ul><li><a href="#system-keys-srcsysconfig_nvscpp" class="table-of-contents__link toc-highlight">System keys (<code>src/sys/config_nvs.cpp</code>)</a></li><li><a href="#provider-credentials-srcagentstorecpp" class="table-of-contents__link toc-highlight">Provider credentials (<code>src/agent/store.cpp</code>)</a></li><li><a href="#orchestrator-routing--models-srcagentstorecpp" class="table-of-contents__link toc-highlight">Orchestrator routing + models (<code>src/agent/store.cpp</code>)</a></li><li><a href="#turn-behavior--tls-transport-srcagentstorecpp" class="table-of-contents__link toc-highlight">Turn behavior + TLS transport (<code>src/agent/store.cpp</code>)</a></li><li><a href="#telegram-srcagentstorecpp" class="table-of-contents__link toc-highlight">Telegram (<code>src/agent/store.cpp</code>)</a></li><li><a href="#voice-led-and-misc-srcagentstorecpp" class="table-of-contents__link toc-highlight">Voice, LED, and misc (<code>src/agent/store.cpp</code>)</a></li><li><a href="#anthropic-managed-agents-caches-srcagentstorecpp" class="table-of-contents__link toc-highlight">Anthropic managed-agents caches (<code>src/agent/store.cpp</code>)</a></li><li><a href="#provider-verify-cache-srcagentstorecpp-written-by-provider_verify" class="table-of-contents__link toc-highlight">Provider verify cache (<code>src/agent/store.cpp</code>, written by <code>provider_verify</code>)</a></li><li><a href="#capability-validation-srcagentstorecpp" class="table-of-contents__link toc-highlight">Capability validation (<code>src/agent/store.cpp</code>)</a></li><li><a href="#embedding-config-for-the-vector-memory-srcagentstorecpp" class="table-of-contents__link toc-highlight">Embedding config for the vector memory (<code>src/agent/store.cpp</code>)</a></li></ul></li><li><a href="#credential-gate-rails-model-vs-human" class="table-of-contents__link toc-highlight">Credential-gate rails (model vs. human)</a></li><li><a href="#sparse-override-config--the-sd-blob" class="table-of-contents__link toc-highlight">Sparse-override Config + the SD blob</a><ul><li><a href="#f10---no-sd-non-persistence-limitation" class="table-of-contents__link toc-highlight">F10 - no-SD non-persistence limitation</a></li></ul></li><li><a href="#set-once-embed-config-invariant" class="table-of-contents__link toc-highlight">Set-once embed-config invariant</a></li></ul></div></div></div></div></main></div></div></div><footer class="theme-layout-footer footer footer--dark"><div class="container container-fluid"><div class="row footer__links"><div class="theme-layout-footer-column col footer__col"><div class="footer__title">Docs</div><ul class="footer__items clean-list"><li class="footer__item"><a class="footer__link-item" href="/quick-start/what-you-need">Quick Start</a></li><li class="footer__item"><a class="footer__link-item" href="/guides/hardware-bom">Bill of materials</a></li><li class="footer__item"><a class="footer__link-item" href="/getting-started/webui-reference">Web UI reference</a></li></ul></div><div class="theme-layout-footer-column col footer__col"><div class="footer__title">Reference</div><ul class="footer__items clean-list"><li class="footer__item"><a class="footer__link-item" href="/reference/config-and-nvs">Config &amp; NVS</a></li><li class="footer__item"><a class="footer__link-item" href="/reference/tool-catalog">Tool catalog</a></li><li class="footer__item"><a class="footer__link-item" href="/reference/turn-contract">Turn contract</a></li><li class="footer__item"><a class="footer__link-item" href="/reference/changelog">Changelog</a></li></ul></div><div class="theme-layout-footer-column col footer__col"><div class="footer__title">More</div><ul class="footer__items clean-list"><li class="footer__item"><a href="https://github.com/ristllin/Nimbus" target="_blank" rel="noopener noreferrer" class="footer__link-item">GitHub<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li></ul></div></div><div class="footer__bottom text--center"><div class="footer__copyright">Nimbus - source-available, free for noncommercial use (PolyForm-NC / CC BY-NC-SA). Built with Docusaurus.</div></div></div></footer></div>
+</body>
+</html>

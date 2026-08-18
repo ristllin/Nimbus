@@ -1,0 +1,445 @@
+<!doctype html>
+<html lang="en" dir="ltr" class="docs-wrapper plugin-docs plugin-id-default docs-version-current docs-doc-page docs-doc-id-guides/modes-and-signals" data-has-hydrated="false">
+<head>
+<meta charset="UTF-8">
+<meta name="generator" content="Docusaurus v3.10.2">
+<title data-rh="true">Modes &amp; signals | Nimbus</title><meta data-rh="true" name="viewport" content="width=device-width,initial-scale=1"><meta data-rh="true" name="twitter:card" content="summary_large_image"><meta data-rh="true" property="og:image" content="https://docs.cumulo-nimbus.ai/img/social-card.png"><meta data-rh="true" name="twitter:image" content="https://docs.cumulo-nimbus.ai/img/social-card.png"><meta data-rh="true" property="og:url" content="https://docs.cumulo-nimbus.ai/guides/modes-and-signals"><meta data-rh="true" property="og:locale" content="en"><meta data-rh="true" name="docusaurus_locale" content="en"><meta data-rh="true" name="docsearch:language" content="en"><meta data-rh="true" name="docusaurus_version" content="current"><meta data-rh="true" name="docusaurus_tag" content="docs-default-current"><meta data-rh="true" name="docsearch:version" content="current"><meta data-rh="true" name="docsearch:docusaurus_tag" content="docs-default-current"><meta data-rh="true" property="og:title" content="Modes &amp; signals | Nimbus"><meta data-rh="true" name="description" content="Migrated from docs/modes-and-signals.md - the canonical source lives in the repo."><meta data-rh="true" property="og:description" content="Migrated from docs/modes-and-signals.md - the canonical source lives in the repo."><link data-rh="true" rel="icon" href="/img/favicon.svg"><link data-rh="true" rel="canonical" href="https://docs.cumulo-nimbus.ai/guides/modes-and-signals"><link data-rh="true" rel="alternate" href="https://docs.cumulo-nimbus.ai/guides/modes-and-signals" hreflang="en"><link data-rh="true" rel="alternate" href="https://docs.cumulo-nimbus.ai/guides/modes-and-signals" hreflang="x-default"><script data-rh="true" type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Modes & signals","item":"https://docs.cumulo-nimbus.ai/guides/modes-and-signals"}]}</script><link rel="stylesheet" href="/assets/css/styles.5ae419b2.css">
+<script src="/assets/js/runtime~main.e74ebefa.js" defer="defer"></script>
+<script src="/assets/js/main.92f144b6.js" defer="defer"></script>
+</head>
+<body>
+<svg style="display: none;"><defs>
+<symbol id="theme-svg-external-link" viewBox="0 0 24 24"><path fill="currentColor" d="M21 13v10h-21v-19h12v2h-10v15h17v-8h2zm3-12h-10.988l4.035 4-6.977 7.07 2.828 2.828 6.977-7.07 4.125 4.172v-11z"/></symbol>
+</defs></svg>
+<script>!function(){var t=function(){try{return new URLSearchParams(window.location.search).get("docusaurus-theme")}catch(t){}}()||function(){try{return window.localStorage.getItem("theme")}catch(t){}}();document.documentElement.setAttribute("data-theme",t||(window.matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light")),document.documentElement.setAttribute("data-theme-choice",t||"system")}(),function(){try{const c=new URLSearchParams(window.location.search).entries();for(var[t,e]of c)if(t.startsWith("docusaurus-data-")){var a=t.replace("docusaurus-data-","data-");document.documentElement.setAttribute(a,e)}}catch(t){}}()</script><div id="__docusaurus"><div role="region" aria-label="Skip to main content"><a class="skipToContent_fXgn" href="#__docusaurus_skipToContent_fallback">Skip to main content</a></div><nav aria-label="Main" class="theme-layout-navbar navbar navbar--fixed-top"><div class="navbar__inner"><div class="theme-layout-navbar-left navbar__items"><button aria-label="Toggle navigation bar" aria-expanded="false" class="navbar__toggle clean-btn" type="button"><svg width="30" height="30" viewBox="0 0 30 30" aria-hidden="true"><path stroke="currentColor" stroke-linecap="round" stroke-miterlimit="10" stroke-width="2" d="M4 7h22M4 15h22M4 23h22"></path></svg></button><a class="navbar__brand" href="/"><div class="navbar__logo"><img src="/img/logo.svg" alt="Nimbus" class="themedComponent_mlkZ themedComponent--light_NVdE"><img src="/img/logo.svg" alt="Nimbus" class="themedComponent_mlkZ themedComponent--dark_xIcU"></div><b class="navbar__title text--truncate">Nimbus</b></a><a class="navbar__item navbar__link" href="/quick-start/what-you-need">Get started</a><a class="navbar__item navbar__link" href="/flash">Flash</a></div><div class="theme-layout-navbar-right navbar__items navbar__items--right"><a href="https://github.com/ristllin/Nimbus" target="_blank" rel="noopener noreferrer" class="navbar__item navbar__link">GitHub<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a><div class="toggle_vylO colorModeToggle_DEke"><button class="clean-btn toggleButton_gllP toggleButtonDisabled_aARS" type="button" disabled="" title="system mode" aria-label="Switch between dark and light mode (currently system mode)"><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP lightToggleIcon_pyhR"><path fill="currentColor" d="M12,9c1.65,0,3,1.35,3,3s-1.35,3-3,3s-3-1.35-3-3S10.35,9,12,9 M12,7c-2.76,0-5,2.24-5,5s2.24,5,5,5s5-2.24,5-5 S14.76,7,12,7L12,7z M2,13l2,0c0.55,0,1-0.45,1-1s-0.45-1-1-1l-2,0c-0.55,0-1,0.45-1,1S1.45,13,2,13z M20,13l2,0c0.55,0,1-0.45,1-1 s-0.45-1-1-1l-2,0c-0.55,0-1,0.45-1,1S19.45,13,20,13z M11,2v2c0,0.55,0.45,1,1,1s1-0.45,1-1V2c0-0.55-0.45-1-1-1S11,1.45,11,2z M11,20v2c0,0.55,0.45,1,1,1s1-0.45,1-1v-2c0-0.55-0.45-1-1-1C11.45,19,11,19.45,11,20z M5.99,4.58c-0.39-0.39-1.03-0.39-1.41,0 c-0.39,0.39-0.39,1.03,0,1.41l1.06,1.06c0.39,0.39,1.03,0.39,1.41,0s0.39-1.03,0-1.41L5.99,4.58z M18.36,16.95 c-0.39-0.39-1.03-0.39-1.41,0c-0.39,0.39-0.39,1.03,0,1.41l1.06,1.06c0.39,0.39,1.03,0.39,1.41,0c0.39-0.39,0.39-1.03,0-1.41 L18.36,16.95z M19.42,5.99c0.39-0.39,0.39-1.03,0-1.41c-0.39-0.39-1.03-0.39-1.41,0l-1.06,1.06c-0.39,0.39-0.39,1.03,0,1.41 s1.03,0.39,1.41,0L19.42,5.99z M7.05,18.36c0.39-0.39,0.39-1.03,0-1.41c-0.39-0.39-1.03-0.39-1.41,0l-1.06,1.06 c-0.39,0.39-0.39,1.03,0,1.41s1.03,0.39,1.41,0L7.05,18.36z"></path></svg><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP darkToggleIcon_wfgR"><path fill="currentColor" d="M9.37,5.51C9.19,6.15,9.1,6.82,9.1,7.5c0,4.08,3.32,7.4,7.4,7.4c0.68,0,1.35-0.09,1.99-0.27C17.45,17.19,14.93,19,12,19 c-3.86,0-7-3.14-7-7C5,9.07,6.81,6.55,9.37,5.51z M12,3c-4.97,0-9,4.03-9,9s4.03,9,9,9s9-4.03,9-9c0-0.46-0.04-0.92-0.1-1.36 c-0.98,1.37-2.58,2.26-4.4,2.26c-2.98,0-5.4-2.42-5.4-5.4c0-1.81,0.89-3.42,2.26-4.4C12.92,3.04,12.46,3,12,3L12,3z"></path></svg><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP systemToggleIcon_QzmC"><path fill="currentColor" d="m12 21c4.971 0 9-4.029 9-9s-4.029-9-9-9-9 4.029-9 9 4.029 9 9 9zm4.95-13.95c1.313 1.313 2.05 3.093 2.05 4.95s-0.738 3.637-2.05 4.95c-1.313 1.313-3.093 2.05-4.95 2.05v-14c1.857 0 3.637 0.737 4.95 2.05z"></path></svg></button></div><div class="navbarSearchContainer_Bca1"></div></div></div><div role="presentation" class="navbar-sidebar__backdrop"></div></nav><div id="__docusaurus_skipToContent_fallback" class="theme-layout-main main-wrapper mainWrapper_z2l0"><div class="docsWrapper_hBAB"><button aria-label="Scroll back to top" class="clean-btn theme-back-to-top-button backToTopButton_sjWU" type="button"></button><div class="docRoot_UBD9"><aside class="theme-doc-sidebar-container docSidebarContainer_YfHR"><div class="sidebarViewport_aRkj"><div class="sidebar_njMd"><nav aria-label="Docs sidebar" class="menu thin-scrollbar menu_SIkG"><ul class="theme-doc-sidebar-menu menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/"><span class="linkLabel_WmDU">Overview</span></a></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="true" href="/quick-start/what-you-need"><span class="categoryLinkLabel_W154">Quick Start</span></a></div><ul class="menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/what-you-need"><span class="linkLabel_WmDU">What you need</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/flash"><span class="linkLabel_WmDU">Flash the firmware</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/setup-wizard"><span class="linkLabel_WmDU">Set up the device</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/first-conversation"><span class="linkLabel_WmDU">First conversation</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/notifier-quick-start"><span class="linkLabel_WmDU">Notifier quick start</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/getting-started/first-time-setup"><span class="linkLabel_WmDU">First-time setup</span></a></li></ul></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/guides/hardware"><span class="categoryLinkLabel_W154">Hardware Build</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret menu__link--active" role="button" aria-expanded="true" href="/getting-started/webui-reference"><span class="categoryLinkLabel_W154">Using Nimbus</span></a></div><ul class="menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/getting-started/webui-reference"><span class="linkLabel_WmDU">Web UI reference</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link menu__link--active" aria-current="page" tabindex="0" href="/guides/modes-and-signals"><span class="linkLabel_WmDU">Modes &amp; signals</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/led-ux"><span class="linkLabel_WmDU">LED experience</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/sfx-map"><span class="linkLabel_WmDU">SFX map</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/connectors"><span class="linkLabel_WmDU">Connectors</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/people-and-privacy"><span class="linkLabel_WmDU">People &amp; privacy</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/notifier-status-language"><span class="linkLabel_WmDU">Status language</span></a></li></ul></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/guides/architecture"><span class="categoryLinkLabel_W154">How It Works</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/reference/config-and-nvs"><span class="categoryLinkLabel_W154">Reference</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/contributing/development"><span class="categoryLinkLabel_W154">Forking &amp; Contributing</span></a></div></li></ul></nav></div></div></aside><main class="docMainContainer_TBSr"><div class="container padding-top--md padding-bottom--lg"><div class="row"><div class="col docItemCol_VOVn"><div class="docItemContainer_Djhp"><article><nav class="theme-doc-breadcrumbs breadcrumbsContainer_Z_bl" aria-label="Breadcrumbs"><ul class="breadcrumbs"><li class="breadcrumbs__item"><a aria-label="Home page" class="breadcrumbs__link" href="/"><svg viewBox="0 0 24 24" class="breadcrumbHomeIcon_YNFT"><path d="M10 19v-5h4v5c0 .55.45 1 1 1h3c.55 0 1-.45 1-1v-7h1.7c.46 0 .68-.57.33-.87L12.67 3.6c-.38-.34-.96-.34-1.34 0l-8.36 7.53c-.34.3-.13.87.33.87H5v7c0 .55.45 1 1 1h3c.55 0 1-.45 1-1z" fill="currentColor"></path></svg></a></li><li class="breadcrumbs__item"><span class="breadcrumbs__link">Using Nimbus</span></li><li class="breadcrumbs__item breadcrumbs__item--active"><span class="breadcrumbs__link">Modes &amp; signals</span></li></ul></nav><div class="tocCollapsible_ETCw theme-doc-toc-mobile tocMobile_ITEo"><button type="button" class="clean-btn tocCollapsibleButton_TO0P">On this page</button></div><div class="theme-doc-markdown markdown"><blockquote>
+<p>Sourced from <code>docs/modes-and-signals.md</code> in the firmware repo.</p>
+</blockquote>
+<header><h1>Modes &amp; signals - what the settings mean and what the device is telling you</h1></header>
+<p>Nimbus has three settings that shape everything you see and hear. Two of them
+you choose; the third is the device&#x27;s job:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Setting</th><th>Choices</th><th>What it controls</th></tr></thead><tbody><tr><td><strong>Battery mode</strong></td><td>Dark · Balanced · Full</td><td>How much light the device shows, and how much power it spends doing it</td></tr><tr><td><strong>Sound</strong></td><td>level Off / Low / Medium / High, voice pack Terran / Protoss / Zerg, volume 0–100</td><td>Voice clips on device events</td></tr><tr><td><strong>Operating mode</strong></td><td>Notifier · Orchestrator</td><td>What drives the device: your AI coding sessions, or the hosted agent</td></tr></tbody></table>
+<p>They are independent. A silent device can still be at Full light; a Dark device
+still speaks if its sound level is up. What the battery mode does <strong>not</strong> mean:
+it is not the battery&#x27;s charge state (that rides the battery percentage on the
+header - <code>^75%</code> charging, <code>=75%</code> steady on external power, bare <code>75%</code> draining),
+and <code>power:Full</code> in the header means <em>the Full preset is active</em>, never &quot;plugged
+in&quot;.</p>
+<p>A quick example: on a desk, most people run <strong>Full</strong> - every session gets a
+color arc, the screen updates promptly. Unplugged for the evening, switch to
+<strong>Balanced</strong> - the ring quiets to a single soft cue and the screen batches its
+updates. Overnight on battery, <strong>Dark</strong> - no lights at all unless a job errors
+or needs you.</p>
+<p>One exception on Balanced, in Orchestrator mode only: while the assistant is
+running sub-agents, the ring temporarily splits into one arc per sub-agent -
+the same per-session view Full shows, at Balanced&#x27;s dimmer brightness - so a
+fan-out is glanceable while it works. The arcs fade out as each sub-agent
+finishes and the ring returns to its single soft cue.</p>
+<blockquote>
+<p>Vocabulary changed in July 2026: the old separate light setting is gone - the
+battery mode now decides how much light the device shows. &quot;Ring level&quot;
+survives only as one of the mode&#x27;s customizable reference values (§1).</p>
+</blockquote>
+<hr>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="1-battery-modes-are-preset-bundles-you-can-customize">1. Battery modes are preset bundles you can customize<a href="#1-battery-modes-are-preset-bundles-you-can-customize" class="hash-link" aria-label="Direct link to 1. Battery modes are preset bundles you can customize" title="Direct link to 1. Battery modes are preset bundles you can customize" translate="no">​</a></h2>
+<p>Each battery mode is a <strong>row of reference defaults</strong>. Pick a mode and you get
+the whole row; change any single value and your override survives mode
+switches until you reset it.</p>
+<ul>
+<li class=""><strong>On the device:</strong> Settings &gt; Battery mode to pick a mode; Settings &gt;
+Customize to change individual values; Settings &gt; Reset to defaults to drop
+every override.</li>
+<li class=""><strong>On the web page:</strong> Settings → Battery mode; Settings → Customize this mode;
+the <strong>Revert to Defaults</strong> button clears all overrides at once.</li>
+</ul>
+<p>The reference defaults:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Value</th><th>Dark</th><th>Balanced</th><th>Full</th></tr></thead><tbody><tr><td>Ring level (§2)</td><td>Dark</td><td>Calm</td><td>Full</td></tr><tr><td>Ring brightness</td><td>10</td><td>30</td><td>60</td></tr><tr><td>Animation smoothness (FPS)</td><td>20</td><td>30</td><td>60</td></tr><tr><td>Screen update pace (batching)</td><td>60 s</td><td>30 s</td><td>15 s</td></tr><tr><td>Ghost-clear interval (e-ink)</td><td>30 min</td><td>20 min</td><td>15 min</td></tr><tr><td>On-screen status refresh</td><td>300 s</td><td>120 s</td><td>60 s</td></tr><tr><td>Low-battery Telegram alert</td><td>on</td><td>on</td><td>off - not needed on external power</td></tr><tr><td>Needs-you hold</td><td>1 min</td><td>2 min</td><td>5 min</td></tr></tbody></table>
+<p>The needs-you hold scales with the mode like everything else: a desk display
+can insist for five minutes, a dim room clears sooner - and every value here
+is tunable per mode in Customize.</p>
+<details class="details_lb9f alert alert--info details_b_Ee" data-collapsed="true"><summary>For developers - machine keys and source</summary><div><div class="collapsibleContent_i85q">
+<!-- -->
+<p>Source of truth: <code>lib/core/src/profile.cpp</code> (<code>kPresets</code>). Machine keys stay
+<code>battery_saver</code> / <code>balanced</code> / <code>desk</code> (NVS, <code>/api</code>, the AI config schema) -
+only the user-facing labels changed. &quot;Revert to Defaults&quot; is
+<code>revert_overrides</code> on <code>POST /api/config</code>.</p>
+</div></div></details>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="2-ring-level---what-the-ring-shows-in-each-mode">2. Ring level - what the ring shows in each mode<a href="#2-ring-level---what-the-ring-shows-in-each-mode" class="hash-link" aria-label="Direct link to 2. Ring level - what the ring shows in each mode" title="Direct link to 2. Ring level - what the ring shows in each mode" translate="no">​</a></h2>
+<p>Each battery mode binds one <strong>ring level</strong> as its reference default (Dark →
+Dark, Balanced → Calm, Full → Full). The &quot;Ring level&quot; row under Settings &gt;
+Customize is the only place you change it independently.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th></th><th>Dark</th><th>Calm</th><th>Full</th></tr></thead><tbody><tr><td>Session arcs and animations</td><td>-</td><td>-</td><td>✔ every session a color arc</td></tr><tr><td>Needs-you cue</td><td>✔ one attention LED</td><td>✔ one attention LED</td><td>shown as arcs</td></tr><tr><td>Orchestrator activity glow (working breathe)</td><td>-</td><td>✔</td><td>via arcs</td></tr><tr><td>Idle</td><td>dark</td><td>dark</td><td>dark - a lit ring always means something</td></tr><tr><td>How long ambient status lingers after the link goes quiet</td><td>5 s</td><td>30 s</td><td>5 min</td></tr><tr><td>How long a needs-you cue holds</td><td>1 min</td><td>2 min</td><td>5 min</td></tr></tbody></table>
+<p><strong>Single click = wake the ring</strong>, in every ring level including Full: a ~4 s
+full-brightness reveal of live status, then back to normal. This is how you
+glance state on a dark idle ring.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="the-screen-on-a-color-panel">The screen on a color panel<a href="#the-screen-on-a-color-panel" class="hash-link" aria-label="Direct link to The screen on a color panel" title="Direct link to The screen on a color panel" translate="no">​</a></h3>
+<p>On the reflective e-ink panel the battery mode only changes the lights. On a
+color touch panel the <strong>backlight is the largest continuous draw</strong> - bigger
+than the ring - so the battery mode reaches it too:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Battery mode</th><th>Backlight</th></tr></thead><tbody><tr><td>Dark</td><td>35%</td></tr><tr><td>Balanced</td><td>65%</td></tr><tr><td>Full</td><td>100%</td></tr></tbody></table>
+<p>When the screen rests (screensaver), it dims to a faint glow rather than going
+fully dark - a black color panel is indistinguishable from a broken one, and at
+this level the backlight draws a few percent of its lit value, so nearly all of
+the saving is kept. Any touch or activity brings it straight back to the
+current mode&#x27;s level.</p>
+<p>The screen also <strong>rests sooner on a color panel</strong>: the default idle delay is
+<strong>5 minutes</strong>, against 60 on e-ink. E-ink is reflective, so resting it saves
+nothing and its screensaver is really about ghosting; on a color panel an hour
+of backlight at an empty desk is the most wasteful thing the device can do.
+Setting the delay yourself (Settings &gt; Screensaver on the device, Settings →
+Mode &amp; identity on the web) always wins over either default.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="low-battery">Low battery<a href="#low-battery" class="hash-link" aria-label="Direct link to Low battery" title="Direct link to Low battery" translate="no">​</a></h3>
+<p>Two settings under <strong>Settings → Battery mode</strong>, both about a low battery
+rather than about a mode:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Setting</th><th>Default</th><th>What it does</th></tr></thead><tbody><tr><td>Low-battery light</td><td>off</td><td>A dim red pulse on the ring, about three seconds each minute, while the battery is low</td></tr><tr><td>Save power when low</td><td>on</td><td>Switches to the Dark battery mode while the battery is low, then returns to your chosen mode once it recovers</td></tr></tbody></table>
+<p>The light is off by default because a ring lit all night spends the power it is
+warning about - and it is the brightest thing the device does. When on, it is
+deliberately recessive: dimmed in Full, pulsed rather than continuous in every
+mode, so it reads as information rather than an alarm.</p>
+<p>Neither setting weakens protection. The screen notice, the Telegram message,
+and the low-battery deep sleep all happen either way; a <strong>job</strong> error still
+breathes red at full brightness in every mode, including Dark.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="3-sound---independent-of-everything-above">3. Sound - independent of everything above<a href="#3-sound---independent-of-everything-above" class="hash-link" aria-label="Direct link to 3. Sound - independent of everything above" title="Direct link to 3. Sound - independent of everything above" translate="no">​</a></h2>
+<p>Set under Settings &gt; Sound (device) or Settings → Sound (web): a level per
+<strong>operating mode</strong>, a voice pack (Terran / Protoss / Zerg), and a master
+volume. Notifier defaults to <strong>Off</strong>, Orchestrator to <strong>Medium</strong> - Notifier
+receives a flood of session events, so its clip table is sparser at every
+level. Sound pauses automatically while the microphone is recording, and it
+never changes what the ring or screen do.</p>
+<p>The full event → clip map is <a class="" href="/guides/sfx-map">docs/sfx-map.md</a>.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="4-notifier-vs-orchestrator">4. Notifier vs Orchestrator<a href="#4-notifier-vs-orchestrator" class="hash-link" aria-label="Direct link to 4. Notifier vs Orchestrator" title="Direct link to 4. Notifier vs Orchestrator" translate="no">​</a></h2>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th></th><th>Notifier</th><th>Orchestrator</th></tr></thead><tbody><tr><td>Purpose</td><td>Status light for your AI coding sessions</td><td>The hosted agent (Telegram + voice)</td></tr><tr><td>Ring is driven by</td><td>Session frames from the host broker, over Bluetooth only</td><td>The agent&#x27;s own sessions and turns</td></tr><tr><td>Bluetooth</td><td>on (advertising, bonded)</td><td>off - this is why the broker only finds a Notifier board</td></tr><tr><td>Telegram and providers</td><td>off</td><td>on</td></tr><tr><td>Sound default</td><td>Off</td><td>Medium</td></tr><tr><td>Status language (§5)</td><td>identical</td><td>identical</td></tr></tbody></table>
+<p>Switch modes from Settings &gt; Mode on the device (selecting it restarts the
+device), Settings → Mode &amp; identity on the web page, or the <code>MODE</code> console
+command. Everything in §1–§3 applies to both modes.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="5-the-status-language---colors-motion-themes">5. The status language - colors, motion, themes<a href="#5-the-status-language---colors-motion-themes" class="hash-link" aria-label="Direct link to 5. The status language - colors, motion, themes" title="Direct link to 5. The status language - colors, motion, themes" translate="no">​</a></h2>
+<p>One rule to remember: <strong>movement means it needs you or it is working; still
+means nothing to do.</strong></p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Status</th><th>Color (theme role)</th><th>Motion</th><th>Read it as</th></tr></thead><tbody><tr><td>Running</td><td>role 0 - the theme&#x27;s primary</td><td>comet (sliding)</td><td>working</td></tr><tr><td>Waiting for input</td><td>role 1 - cool analogous</td><td>breathe</td><td>it needs YOU</td></tr><tr><td>Awaiting approval</td><td>role 3 - amber-leaning</td><td>breathe</td><td>decision gate</td></tr><tr><td>Done</td><td>role 2 - green-leaning</td><td>fade → settles to dim static (38%)</td><td>finished, settling</td></tr><tr><td>Error</td><td>the theme&#x27;s alert hue</td><td>breathe</td><td>broken, look at it</td></tr><tr><td>Idle</td><td>neutral white, theme-less</td><td>static, dim</td><td>nothing happening</td></tr></tbody></table>
+<p><strong>Themes</strong> (10): <code>teal ocean ember forest openai anthropic mistral rainbow gemini perplexity</code> - each is a four-stop color family plus a per-theme alert
+hue. Changing the theme recolors every role in both modes, live. The web
+legend (Settings → Battery mode) is generated from the same tables the
+firmware uses, so it cannot drift from what the ring actually does.</p>
+<p>Rules the firmware enforces (and tests assert):</p>
+<ul>
+<li class=""><strong>Red belongs to errors only.</strong> No theme may place a role in the red band.</li>
+<li class="">Every theme&#x27;s four roles are hue-distinct.</li>
+<li class="">Idle never moves and never wears the theme - a dim, intentionally neutral white.</li>
+<li class="">One session fills the <strong>full ring</strong>; multiple sessions are arcs separated by
+dim static white divider LEDs - count dividers, count agents.</li>
+</ul>
+<p>Full specification: <a class="" href="/guides/notifier-status-language">Notifier status language</a>.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="6-menu-ring-echo">6. Menu ring echo<a href="#6-menu-ring-echo" class="hash-link" aria-label="Direct link to 6. Menu ring echo" title="Direct link to 6. Menu ring echo" translate="no">​</a></h2>
+<p>While the settings menu is open, the ring becomes a <strong>fill bar</strong> - an instant
+echo of the slow e-ink. Browsing shows position and count; adjusting a value
+(click Volume → rotate → click) shows the value itself. Dim by design; it holds
+about 2 s after the last detent, then live status resumes.</p>
+<hr>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="for-developers---where-the-logic-lives">For developers - where the logic lives<a href="#for-developers---where-the-logic-lives" class="hash-link" aria-label="Direct link to For developers - where the logic lives" title="Direct link to For developers - where the logic lives" translate="no">​</a></h2>
+<p>If this page ever disagrees with the code, the code&#x27;s single sources win:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Thing</th><th>File</th></tr></thead><tbody><tr><td>Battery-mode presets</td><td><code>lib/core/src/profile.cpp</code></td></tr><tr><td>Ring-level render rules</td><td><code>lib/core/src/ring_plan.cpp</code></td></tr><tr><td>Status → role/motion</td><td><code>lib/core/src/status_style.cpp</code></td></tr><tr><td>Palettes + alert hues</td><td><code>lib/core/src/theme.cpp</code></td></tr><tr><td>Arc animation envelopes + dividers</td><td><code>lib/core/src/ring_animator.cpp</code></td></tr><tr><td>Ambient/needs-you holds + tombstones</td><td><code>lib/core/src/notifier_map.cpp</code>, <code>attention.cpp</code></td></tr><tr><td>Backlight per mode + rest glow</td><td><code>lib/core/include/nimbus/duty.h</code></td></tr><tr><td>Sound event ranks</td><td><code>lib/core/nimbus/sfx_map.*</code> + <code>docs/sfx-map.md</code></td></tr><tr><td>Header (<code>ring:/sound:/power:</code>)</td><td><code>lib/core/src/epd_screens.cpp</code> <code>drawHeader</code></td></tr></tbody></table></div><footer class="theme-doc-footer docusaurus-mt-lg"><div class="row margin-top--sm theme-doc-footer-edit-meta-row"><div class="col noPrint_WFHX"><a href="https://github.com/ristllin/Nimbus/blob/main/docs/modes-and-signals.md" target="_blank" rel="noopener noreferrer" class="theme-edit-this-page"><svg fill="currentColor" height="20" width="20" viewBox="0 0 40 40" class="iconEdit_Z9Sw" aria-hidden="true"><g><path d="m34.5 11.7l-3 3.1-6.3-6.3 3.1-3q0.5-0.5 1.2-0.5t1.1 0.5l3.9 3.9q0.5 0.4 0.5 1.1t-0.5 1.2z m-29.5 17.1l18.4-18.5 6.3 6.3-18.4 18.4h-6.3v-6.2z"></path></g></svg>Edit this page</a></div><div class="col lastUpdated_JAkA"></div></div></footer></article><nav class="docusaurus-mt-lg pagination-nav" aria-label="Docs pages"><a class="pagination-nav__link pagination-nav__link--prev" href="/getting-started/webui-reference"><div class="pagination-nav__sublabel">Previous</div><div class="pagination-nav__label">Web UI reference</div></a><a class="pagination-nav__link pagination-nav__link--next" href="/guides/led-ux"><div class="pagination-nav__sublabel">Next</div><div class="pagination-nav__label">LED experience</div></a></nav></div></div><div class="col col--3"><div class="tableOfContents_bqdL thin-scrollbar theme-doc-toc-desktop"><ul class="table-of-contents table-of-contents__left-border"><li><a href="#1-battery-modes-are-preset-bundles-you-can-customize" class="table-of-contents__link toc-highlight">1. Battery modes are preset bundles you can customize</a></li><li><a href="#2-ring-level---what-the-ring-shows-in-each-mode" class="table-of-contents__link toc-highlight">2. Ring level - what the ring shows in each mode</a><ul><li><a href="#the-screen-on-a-color-panel" class="table-of-contents__link toc-highlight">The screen on a color panel</a></li><li><a href="#low-battery" class="table-of-contents__link toc-highlight">Low battery</a></li></ul></li><li><a href="#3-sound---independent-of-everything-above" class="table-of-contents__link toc-highlight">3. Sound - independent of everything above</a></li><li><a href="#4-notifier-vs-orchestrator" class="table-of-contents__link toc-highlight">4. Notifier vs Orchestrator</a></li><li><a href="#5-the-status-language---colors-motion-themes" class="table-of-contents__link toc-highlight">5. The status language - colors, motion, themes</a></li><li><a href="#6-menu-ring-echo" class="table-of-contents__link toc-highlight">6. Menu ring echo</a></li><li><a href="#for-developers---where-the-logic-lives" class="table-of-contents__link toc-highlight">For developers - where the logic lives</a></li></ul></div></div></div></div></main></div></div></div><footer class="theme-layout-footer footer footer--dark"><div class="container container-fluid"><div class="row footer__links"><div class="theme-layout-footer-column col footer__col"><div class="footer__title">Docs</div><ul class="footer__items clean-list"><li class="footer__item"><a class="footer__link-item" href="/quick-start/what-you-need">Quick Start</a></li><li class="footer__item"><a class="footer__link-item" href="/guides/hardware-bom">Bill of materials</a></li><li class="footer__item"><a class="footer__link-item" href="/getting-started/webui-reference">Web UI reference</a></li></ul></div><div class="theme-layout-footer-column col footer__col"><div class="footer__title">Reference</div><ul class="footer__items clean-list"><li class="footer__item"><a class="footer__link-item" href="/reference/config-and-nvs">Config &amp; NVS</a></li><li class="footer__item"><a class="footer__link-item" href="/reference/tool-catalog">Tool catalog</a></li><li class="footer__item"><a class="footer__link-item" href="/reference/turn-contract">Turn contract</a></li><li class="footer__item"><a class="footer__link-item" href="/reference/changelog">Changelog</a></li></ul></div><div class="theme-layout-footer-column col footer__col"><div class="footer__title">More</div><ul class="footer__items clean-list"><li class="footer__item"><a href="https://github.com/ristllin/Nimbus" target="_blank" rel="noopener noreferrer" class="footer__link-item">GitHub<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li></ul></div></div><div class="footer__bottom text--center"><div class="footer__copyright">Nimbus - source-available, free for noncommercial use (PolyForm-NC / CC BY-NC-SA). Built with Docusaurus.</div></div></div></footer></div>
+</body>
+</html>

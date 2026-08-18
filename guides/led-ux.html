@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="en" dir="ltr" class="docs-wrapper plugin-docs plugin-id-default docs-version-current docs-doc-page docs-doc-id-guides/led-ux" data-has-hydrated="false">
+<head>
+<meta charset="UTF-8">
+<meta name="generator" content="Docusaurus v3.10.2">
+<title data-rh="true">LED experience - motion &amp; color | Nimbus</title><meta data-rh="true" name="viewport" content="width=device-width,initial-scale=1"><meta data-rh="true" name="twitter:card" content="summary_large_image"><meta data-rh="true" property="og:image" content="https://docs.cumulo-nimbus.ai/img/social-card.png"><meta data-rh="true" name="twitter:image" content="https://docs.cumulo-nimbus.ai/img/social-card.png"><meta data-rh="true" property="og:url" content="https://docs.cumulo-nimbus.ai/guides/led-ux"><meta data-rh="true" property="og:locale" content="en"><meta data-rh="true" name="docusaurus_locale" content="en"><meta data-rh="true" name="docsearch:language" content="en"><meta data-rh="true" name="docusaurus_version" content="current"><meta data-rh="true" name="docusaurus_tag" content="docs-default-current"><meta data-rh="true" name="docsearch:version" content="current"><meta data-rh="true" name="docsearch:docusaurus_tag" content="docs-default-current"><meta data-rh="true" property="og:title" content="LED experience - motion &amp; color | Nimbus"><meta data-rh="true" name="description" content="Migrated from docs/led-ux.md - the canonical source lives in the repo."><meta data-rh="true" property="og:description" content="Migrated from docs/led-ux.md - the canonical source lives in the repo."><link data-rh="true" rel="icon" href="/img/favicon.svg"><link data-rh="true" rel="canonical" href="https://docs.cumulo-nimbus.ai/guides/led-ux"><link data-rh="true" rel="alternate" href="https://docs.cumulo-nimbus.ai/guides/led-ux" hreflang="en"><link data-rh="true" rel="alternate" href="https://docs.cumulo-nimbus.ai/guides/led-ux" hreflang="x-default"><script data-rh="true" type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"LED experience","item":"https://docs.cumulo-nimbus.ai/guides/led-ux"}]}</script><link rel="stylesheet" href="/assets/css/styles.5ae419b2.css">
+<script src="/assets/js/runtime~main.e74ebefa.js" defer="defer"></script>
+<script src="/assets/js/main.92f144b6.js" defer="defer"></script>
+</head>
+<body>
+<svg style="display: none;"><defs>
+<symbol id="theme-svg-external-link" viewBox="0 0 24 24"><path fill="currentColor" d="M21 13v10h-21v-19h12v2h-10v15h17v-8h2zm3-12h-10.988l4.035 4-6.977 7.07 2.828 2.828 6.977-7.07 4.125 4.172v-11z"/></symbol>
+</defs></svg>
+<script>!function(){var t=function(){try{return new URLSearchParams(window.location.search).get("docusaurus-theme")}catch(t){}}()||function(){try{return window.localStorage.getItem("theme")}catch(t){}}();document.documentElement.setAttribute("data-theme",t||(window.matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light")),document.documentElement.setAttribute("data-theme-choice",t||"system")}(),function(){try{const c=new URLSearchParams(window.location.search).entries();for(var[t,e]of c)if(t.startsWith("docusaurus-data-")){var a=t.replace("docusaurus-data-","data-");document.documentElement.setAttribute(a,e)}}catch(t){}}()</script><div id="__docusaurus"><div role="region" aria-label="Skip to main content"><a class="skipToContent_fXgn" href="#__docusaurus_skipToContent_fallback">Skip to main content</a></div><nav aria-label="Main" class="theme-layout-navbar navbar navbar--fixed-top"><div class="navbar__inner"><div class="theme-layout-navbar-left navbar__items"><button aria-label="Toggle navigation bar" aria-expanded="false" class="navbar__toggle clean-btn" type="button"><svg width="30" height="30" viewBox="0 0 30 30" aria-hidden="true"><path stroke="currentColor" stroke-linecap="round" stroke-miterlimit="10" stroke-width="2" d="M4 7h22M4 15h22M4 23h22"></path></svg></button><a class="navbar__brand" href="/"><div class="navbar__logo"><img src="/img/logo.svg" alt="Nimbus" class="themedComponent_mlkZ themedComponent--light_NVdE"><img src="/img/logo.svg" alt="Nimbus" class="themedComponent_mlkZ themedComponent--dark_xIcU"></div><b class="navbar__title text--truncate">Nimbus</b></a><a class="navbar__item navbar__link" href="/quick-start/what-you-need">Get started</a><a class="navbar__item navbar__link" href="/flash">Flash</a></div><div class="theme-layout-navbar-right navbar__items navbar__items--right"><a href="https://github.com/ristllin/Nimbus" target="_blank" rel="noopener noreferrer" class="navbar__item navbar__link">GitHub<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a><div class="toggle_vylO colorModeToggle_DEke"><button class="clean-btn toggleButton_gllP toggleButtonDisabled_aARS" type="button" disabled="" title="system mode" aria-label="Switch between dark and light mode (currently system mode)"><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP lightToggleIcon_pyhR"><path fill="currentColor" d="M12,9c1.65,0,3,1.35,3,3s-1.35,3-3,3s-3-1.35-3-3S10.35,9,12,9 M12,7c-2.76,0-5,2.24-5,5s2.24,5,5,5s5-2.24,5-5 S14.76,7,12,7L12,7z M2,13l2,0c0.55,0,1-0.45,1-1s-0.45-1-1-1l-2,0c-0.55,0-1,0.45-1,1S1.45,13,2,13z M20,13l2,0c0.55,0,1-0.45,1-1 s-0.45-1-1-1l-2,0c-0.55,0-1,0.45-1,1S19.45,13,20,13z M11,2v2c0,0.55,0.45,1,1,1s1-0.45,1-1V2c0-0.55-0.45-1-1-1S11,1.45,11,2z M11,20v2c0,0.55,0.45,1,1,1s1-0.45,1-1v-2c0-0.55-0.45-1-1-1C11.45,19,11,19.45,11,20z M5.99,4.58c-0.39-0.39-1.03-0.39-1.41,0 c-0.39,0.39-0.39,1.03,0,1.41l1.06,1.06c0.39,0.39,1.03,0.39,1.41,0s0.39-1.03,0-1.41L5.99,4.58z M18.36,16.95 c-0.39-0.39-1.03-0.39-1.41,0c-0.39,0.39-0.39,1.03,0,1.41l1.06,1.06c0.39,0.39,1.03,0.39,1.41,0c0.39-0.39,0.39-1.03,0-1.41 L18.36,16.95z M19.42,5.99c0.39-0.39,0.39-1.03,0-1.41c-0.39-0.39-1.03-0.39-1.41,0l-1.06,1.06c-0.39,0.39-0.39,1.03,0,1.41 s1.03,0.39,1.41,0L19.42,5.99z M7.05,18.36c0.39-0.39,0.39-1.03,0-1.41c-0.39-0.39-1.03-0.39-1.41,0l-1.06,1.06 c-0.39,0.39-0.39,1.03,0,1.41s1.03,0.39,1.41,0L7.05,18.36z"></path></svg><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP darkToggleIcon_wfgR"><path fill="currentColor" d="M9.37,5.51C9.19,6.15,9.1,6.82,9.1,7.5c0,4.08,3.32,7.4,7.4,7.4c0.68,0,1.35-0.09,1.99-0.27C17.45,17.19,14.93,19,12,19 c-3.86,0-7-3.14-7-7C5,9.07,6.81,6.55,9.37,5.51z M12,3c-4.97,0-9,4.03-9,9s4.03,9,9,9s9-4.03,9-9c0-0.46-0.04-0.92-0.1-1.36 c-0.98,1.37-2.58,2.26-4.4,2.26c-2.98,0-5.4-2.42-5.4-5.4c0-1.81,0.89-3.42,2.26-4.4C12.92,3.04,12.46,3,12,3L12,3z"></path></svg><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP systemToggleIcon_QzmC"><path fill="currentColor" d="m12 21c4.971 0 9-4.029 9-9s-4.029-9-9-9-9 4.029-9 9 4.029 9 9 9zm4.95-13.95c1.313 1.313 2.05 3.093 2.05 4.95s-0.738 3.637-2.05 4.95c-1.313 1.313-3.093 2.05-4.95 2.05v-14c1.857 0 3.637 0.737 4.95 2.05z"></path></svg></button></div><div class="navbarSearchContainer_Bca1"></div></div></div><div role="presentation" class="navbar-sidebar__backdrop"></div></nav><div id="__docusaurus_skipToContent_fallback" class="theme-layout-main main-wrapper mainWrapper_z2l0"><div class="docsWrapper_hBAB"><button aria-label="Scroll back to top" class="clean-btn theme-back-to-top-button backToTopButton_sjWU" type="button"></button><div class="docRoot_UBD9"><aside class="theme-doc-sidebar-container docSidebarContainer_YfHR"><div class="sidebarViewport_aRkj"><div class="sidebar_njMd"><nav aria-label="Docs sidebar" class="menu thin-scrollbar menu_SIkG"><ul class="theme-doc-sidebar-menu menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/"><span class="linkLabel_WmDU">Overview</span></a></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="true" href="/quick-start/what-you-need"><span class="categoryLinkLabel_W154">Quick Start</span></a></div><ul class="menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/what-you-need"><span class="linkLabel_WmDU">What you need</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/flash"><span class="linkLabel_WmDU">Flash the firmware</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/setup-wizard"><span class="linkLabel_WmDU">Set up the device</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/first-conversation"><span class="linkLabel_WmDU">First conversation</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/notifier-quick-start"><span class="linkLabel_WmDU">Notifier quick start</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/getting-started/first-time-setup"><span class="linkLabel_WmDU">First-time setup</span></a></li></ul></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/guides/hardware"><span class="categoryLinkLabel_W154">Hardware Build</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret menu__link--active" role="button" aria-expanded="true" href="/getting-started/webui-reference"><span class="categoryLinkLabel_W154">Using Nimbus</span></a></div><ul class="menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/getting-started/webui-reference"><span class="linkLabel_WmDU">Web UI reference</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/modes-and-signals"><span class="linkLabel_WmDU">Modes &amp; signals</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link menu__link--active" aria-current="page" tabindex="0" href="/guides/led-ux"><span class="linkLabel_WmDU">LED experience</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/sfx-map"><span class="linkLabel_WmDU">SFX map</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/connectors"><span class="linkLabel_WmDU">Connectors</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/people-and-privacy"><span class="linkLabel_WmDU">People &amp; privacy</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/notifier-status-language"><span class="linkLabel_WmDU">Status language</span></a></li></ul></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/guides/architecture"><span class="categoryLinkLabel_W154">How It Works</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/reference/config-and-nvs"><span class="categoryLinkLabel_W154">Reference</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/contributing/development"><span class="categoryLinkLabel_W154">Forking &amp; Contributing</span></a></div></li></ul></nav></div></div></aside><main class="docMainContainer_TBSr"><div class="container padding-top--md padding-bottom--lg"><div class="row"><div class="col docItemCol_VOVn"><div class="docItemContainer_Djhp"><article><nav class="theme-doc-breadcrumbs breadcrumbsContainer_Z_bl" aria-label="Breadcrumbs"><ul class="breadcrumbs"><li class="breadcrumbs__item"><a aria-label="Home page" class="breadcrumbs__link" href="/"><svg viewBox="0 0 24 24" class="breadcrumbHomeIcon_YNFT"><path d="M10 19v-5h4v5c0 .55.45 1 1 1h3c.55 0 1-.45 1-1v-7h1.7c.46 0 .68-.57.33-.87L12.67 3.6c-.38-.34-.96-.34-1.34 0l-8.36 7.53c-.34.3-.13.87.33.87H5v7c0 .55.45 1 1 1h3c.55 0 1-.45 1-1z" fill="currentColor"></path></svg></a></li><li class="breadcrumbs__item"><span class="breadcrumbs__link">Using Nimbus</span></li><li class="breadcrumbs__item breadcrumbs__item--active"><span class="breadcrumbs__link">LED experience</span></li></ul></nav><div class="tocCollapsible_ETCw theme-doc-toc-mobile tocMobile_ITEo"><button type="button" class="clean-btn tocCollapsibleButton_TO0P">On this page</button></div><div class="theme-doc-markdown markdown"><blockquote>
+<p>Sourced from <code>docs/led-ux.md</code> in the firmware repo.</p>
+</blockquote>
+<header><h1>The LED ring - motion &amp; color language</h1></header>
+<p>The ring is not a status readout, it is an <strong>ambient companion on your desk</strong>.
+Its job is to make the state of your work <em>felt</em> at a glance and in the corner
+of your eye - calm when nothing needs you, alive when things happen,
+unmistakable when you&#x27;re needed.</p>
+<p>Reading it takes one sentence: <strong>color says what, motion says whether it is
+live, brightness says how much it matters.</strong> A sliding comet is work in
+progress; a slow breathe is something waiting on you; a still, settled ring
+means &quot;handled, relax.&quot;</p>
+<p>Three design principles behind everything below:</p>
+<ol>
+<li class=""><strong>Nothing pops.</strong> Every appearance, change, and disappearance is a short,
+purposeful transition (150–400 ms), never an instant swap. Instant swaps
+read as glitches; motion reads as intention.</li>
+<li class=""><strong>Motion means work; stillness means rest.</strong> Anything moving is <em>happening
+now</em>.</li>
+<li class=""><strong>Color is meaning, brightness is urgency, motion is life.</strong></li>
+</ol>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="reading-the-colors">Reading the colors<a href="#reading-the-colors" class="hash-link" aria-label="Direct link to Reading the colors" title="Direct link to Reading the colors" translate="no">​</a></h2>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Meaning</th><th>Hue</th><th>Used for</th></tr></thead><tbody><tr><td>Running / thinking</td><td>blue (170)</td><td>active jobs</td></tr><tr><td>Waiting for you (input)</td><td>purple (213)</td><td>your turn to answer</td></tr><tr><td>Waiting for you (approval)</td><td>amber (32)</td><td>permission gate</td></tr><tr><td>Done / success</td><td>green (85)</td><td>completion, connect success</td></tr><tr><td>Error</td><td>red (0)</td><td>failures, critical battery</td></tr><tr><td>Provider accents</td><td>Anthropic cyan · OpenAI green · Mistral amber · unknown white</td><td>segment tint</td></tr><tr><td>System / neutral</td><td>white</td><td>boot, connecting, &quot;saved&quot; blip</td></tr><tr><td>Setup needed</td><td>slow rainbow</td><td>unconfigured, invites setup</td></tr></tbody></table>
+<p>Provider accent tints the segment; status drives the <em>animation</em>. The two
+compose: a blue-comet &quot;running&quot; segment tinted cyan reads as &quot;Anthropic is
+thinking.&quot;</p>
+<p>The exact hues follow your <strong>theme</strong>: each theme maps the status roles to its
+own color family, and changing the theme recolors the ring live. The
+status → role mapping and the theme rules (red reserved for errors, roles
+hue-distinct) are in
+<a class="" href="/guides/modes-and-signals">Modes &amp; signals §5</a> and the full specification,
+<a class="" href="/guides/notifier-status-language">Notifier status language</a>.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="what-youll-see---the-job-lifecycle">What you&#x27;ll see - the job lifecycle<a href="#what-youll-see---the-job-lifecycle" class="hash-link" aria-label="Direct link to What you&#x27;ll see - the job lifecycle" title="Direct link to What you&#x27;ll see - the job lifecycle" translate="no">​</a></h2>
+<p>Every session on the ring is an arc, and every moment of its life gets motion:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Moment</th><th>Motion</th><th>Why</th></tr></thead><tbody><tr><td><strong>Birth</strong> (new session)</td><td>arc <strong>grows</strong> from 1 LED to full width (~350 ms), starting as a bright shimmer, <strong>settling</strong> to the provider color</td><td>&quot;a new thing began&quot; - celebratory but brief</td></tr><tr><td><strong>Status change</strong></td><td><strong>crossfade</strong> the segment old → new hue (~250 ms)</td><td>continuity, never a jarring recolor</td></tr><tr><td><strong>Progress</strong></td><td>fill <strong>eases</strong> to the new percentage, doesn&#x27;t jump</td><td>smooth, legible</td></tr><tr><td><strong>Attention arrives</strong> (input/approval/error)</td><td>one <strong>emphasis flash</strong> (bright, 120 ms), then the steady breathe</td><td>&quot;hey - look here,&quot; then sustained</td></tr><tr><td><strong>Completion</strong> (done)</td><td>a bright green <strong>success ripple</strong> sweeps the arc → fades to a dim ember</td><td>earned closure</td></tr><tr><td><strong>Termination</strong> (offline)</td><td>arc <strong>contracts</strong> back to a point and winks out (~350 ms)</td><td>graceful closure, symmetric with birth</td></tr></tbody></table>
+<p>And smaller, transient feedback:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Moment</th><th>Motion</th></tr></thead><tbody><tr><td>Knob turn (cursor)</td><td>soft <strong>trailing comet</strong> follows the cursor LED, decays after the dwell</td></tr><tr><td>Config saved (menu or web change persisted)</td><td>a single white <strong>blip travels once around</strong> the ring - &quot;saved&quot;</td></tr><tr><td>Voice: recording / processing / speaking</td><td>breathe (in) / comet (thinking) / solid (out), with smooth entry and exit</td></tr><tr><td>Low battery (first warning)</td><td>a slow <strong>red breathe</strong> overlaid under everything else</td></tr></tbody></table>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="how-the-ring-level-changes-the-language">How the ring level changes the language<a href="#how-the-ring-level-changes-the-language" class="hash-link" aria-label="Direct link to How the ring level changes the language" title="Direct link to How the ring level changes the language" translate="no">​</a></h2>
+<p>The <a class="" href="/guides/modes-and-signals">ring level</a> (Dark / Calm / Full - each battery mode
+binds one as its default) decides how much of this vocabulary plays:</p>
+<ul>
+<li class=""><strong>Dark:</strong> everything collapses to the <em>single attention LED</em> - system states
+and the top attention job play on that one LED (dim breathe / emphasis
+flash); the rest of the ring stays dark. Birth, death, and ripple are
+suppressed to a brief one-LED blip. Quiet by design.</li>
+<li class=""><strong>Calm</strong> (Balanced default): Dark, plus a soft activity glow - the
+Orchestrator&#x27;s &quot;working&quot; heartbeat and sub-agent births/deaths - so an
+idle-looking ring still shows something is happening, without the full
+segment treatment.</li>
+<li class=""><strong>Full:</strong> the full motion language above. When <strong>idle</strong> (no jobs, no voice)
+the ring goes <strong>fully dark</strong> - an all-day desk ring shouldn&#x27;t glow with
+nothing happening. A call for your attention or a single-click reveal still
+lights it, and a real job lights instantly at full brightness.</li>
+<li class="">The battery mode&#x27;s <strong>brightness cap</strong> scales everything; in the Dark battery
+mode the whole language runs dimmer and slower (longer cycles, fewer FPS).</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="how-long-a-state-lingers">How long a state lingers<a href="#how-long-a-state-lingers" class="hash-link" aria-label="Direct link to How long a state lingers" title="Direct link to How long a state lingers" translate="no">​</a></h2>
+<p>The broker sends a frame on every change, not continuously, so a quiet ring is
+normal between events. What lingers is deliberately split so a call for your
+attention can&#x27;t be lost while ambient noise still clears:</p>
+<ul>
+<li class=""><strong>Ambient</strong> states (running / done / idle) expire on a clock scaled to the
+ring level after the link goes quiet: <strong>Full = 5 min</strong> (a desk display stays
+lit), <strong>Calm = 30 s</strong>, <strong>Dark = 5 s</strong> (battery-frugal). A dead session
+shouldn&#x27;t leave a stale ring, but a desk shouldn&#x27;t blank every few seconds
+either.</li>
+<li class=""><strong>Calls for your attention</strong> (waiting for input / awaiting approval / error)
+are what you must not miss, so they hold well past the ambient cues - <strong>1
+minute in Dark, 2 in Balanced, 5 in Full</strong>, each tunable in Customize - and
+keep animating the whole time. A job waiting on <em>you</em> never vanishes just
+because the broker stopped re-sending.</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="wake-the-ring---the-single-click">Wake the ring - the single click<a href="#wake-the-ring---the-single-click" class="hash-link" aria-label="Direct link to Wake the ring - the single click" title="Direct link to Wake the ring - the single click" translate="no">​</a></h2>
+<p>A <strong>single click</strong> briefly wakes the ring: for ~4 s it promotes <strong>any</strong> ring
+level to the full-brightness segment treatment, so you can glance live status
+on demand - even from a fully dark idle ring. It then decays back to normal.
+(Double-click still opens the menu in Orchestrator; long-press is the menu in
+Notifier / hold-to-talk in Orchestrator.)</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="whole-ring-system-states---design-targets-not-yet-wired">Whole-ring system states - design targets, not yet wired<a href="#whole-ring-system-states---design-targets-not-yet-wired" class="hash-link" aria-label="Direct link to Whole-ring system states - design targets, not yet wired" title="Direct link to Whole-ring system states - design targets, not yet wired" translate="no">​</a></h2>
+<p>Some whole-ring moments are designed but <strong>not implemented</strong> - don&#x27;t cite these
+rows as current behavior:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Moment</th><th>Motion</th><th>Status</th></tr></thead><tbody><tr><td><strong>Boot / waking</strong></td><td>very dim white breathe, slow (~2.5 s cycle)</td><td><strong>live</strong> (<code>main.cpp</code> boot-breathe window → driver <code>Pattern::Pulse</code>)</td></tr><tr><td><strong>Idle</strong></td><td>dark in every ring level; a needs-you cue or a single click still lights it</td><td><strong>live</strong> (<code>ring_plan</code> compose - an empty Full plan renders black)</td></tr><tr><td><strong>Connecting</strong> (Wi-Fi/Bluetooth)</td><td>dim white comet, brightness building as it retries</td><td><em>design intent, not wired</em></td></tr><tr><td><strong>Connected</strong></td><td>one quick bright green flash (150 ms) → fade to idle</td><td><em>design intent, not wired</em></td></tr><tr><td><strong>Connect failed / no credentials</strong></td><td>slow amber double-pulse, then rest</td><td><em>design intent, not wired</em></td></tr><tr><td><strong>Setup mode</strong> (unconfigured)</td><td>slow rainbow drift, dim - pairs with the sign-in QR</td><td><em>design intent, not wired</em></td></tr><tr><td><strong>Entering deep sleep</strong> (critical battery)</td><td>inward collapse to the top LED, then off</td><td><em>design intent, not wired</em></td></tr></tbody></table>
+<details class="details_lb9f alert alert--info details_b_Ee" data-collapsed="true"><summary>Why the &quot;not wired&quot; rows exist</summary><div><div class="collapsibleContent_i85q">
+<!-- -->
+<p>These were once a whole-ring <code>SysState</code> overlay in <code>ring_animator</code> that <strong>no
+production code ever drove</strong> (<code>setSystem()</code> had zero callers) - it was removed
+in the 2026-07 UX cleanup to stop it reading as implemented. The boot/connect
+<em>audio</em> cues are live (SFX link sounds on the Wi-Fi had-IP and Bluetooth
+connect edges); the LED equivalents are kept here as the design target if and
+when they are wired.</p>
+</div></div></details>
+<hr>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="for-developers---architecture-and-status">For developers - architecture and status<a href="#for-developers---architecture-and-status" class="hash-link" aria-label="Direct link to For developers - architecture and status" title="Direct link to For developers - architecture and status" translate="no">​</a></h2>
+<p><code>solide::leds</code> today exposes only fixed <strong>Patterns</strong> and an <strong>agent-segment</strong>
+API - no raw per-pixel access - so the transitions above cannot all be
+expressed through it. The clean seam:</p>
+<!-- -->
+<ul>
+<li class=""><strong>The Animator is portable and host-tested</strong>: it holds per-segment animation
+state (phase, start time, from/to color, progress) and a system-state
+overlay, and on <code>frame(nowMs)</code> computes all 45 LEDs. Deterministic (the
+clock is passed in), so tests assert exact LED colors at chosen times during
+a birth grow-in, a death collapse, a crossfade midpoint, a success ripple -
+the golden-frame equivalent for the ring.</li>
+<li class=""><strong>Device glue is thin</strong>: feed it the same router/notifier events the ring
+already gets, call <code>frame()</code> at the profile FPS, push to <code>showFrame()</code>.</li>
+<li class=""><strong>One upstream ask</strong> (flagged to the solide worker):
+<code>solide::leds::showFrame(RGB[], n)</code> - a raw framebuffer path alongside the
+existing pattern/segment renderer. Until it lands, the current
+pattern/segment rendering stays and the Animator ships host-tested and
+dark-launched.</li>
+</ul>
+<p><strong>Status:</strong> this document is the design. It is implemented incrementally in
+<code>lib/core</code> <code>ring::Animator</code> (see <code>test_ring_animator</code>) - transitions land
+host-tested first, and device rendering switches on when <code>showFrame()</code> exists
+upstream. The existing <code>ring_plan</code> (Dark single-LED vs Full segments) remains
+the <em>steady-state</em> decision layer; the Animator is the <em>motion</em> layer that
+renders those decisions with transitions between them.</p></div><footer class="theme-doc-footer docusaurus-mt-lg"><div class="row margin-top--sm theme-doc-footer-edit-meta-row"><div class="col noPrint_WFHX"><a href="https://github.com/ristllin/Nimbus/blob/main/docs/led-ux.md" target="_blank" rel="noopener noreferrer" class="theme-edit-this-page"><svg fill="currentColor" height="20" width="20" viewBox="0 0 40 40" class="iconEdit_Z9Sw" aria-hidden="true"><g><path d="m34.5 11.7l-3 3.1-6.3-6.3 3.1-3q0.5-0.5 1.2-0.5t1.1 0.5l3.9 3.9q0.5 0.4 0.5 1.1t-0.5 1.2z m-29.5 17.1l18.4-18.5 6.3 6.3-18.4 18.4h-6.3v-6.2z"></path></g></svg>Edit this page</a></div><div class="col lastUpdated_JAkA"></div></div></footer></article><nav class="docusaurus-mt-lg pagination-nav" aria-label="Docs pages"><a class="pagination-nav__link pagination-nav__link--prev" href="/guides/modes-and-signals"><div class="pagination-nav__sublabel">Previous</div><div class="pagination-nav__label">Modes &amp; signals</div></a><a class="pagination-nav__link pagination-nav__link--next" href="/guides/sfx-map"><div class="pagination-nav__sublabel">Next</div><div class="pagination-nav__label">SFX map</div></a></nav></div></div><div class="col col--3"><div class="tableOfContents_bqdL thin-scrollbar theme-doc-toc-desktop"><ul class="table-of-contents table-of-contents__left-border"><li><a href="#reading-the-colors" class="table-of-contents__link toc-highlight">Reading the colors</a></li><li><a href="#what-youll-see---the-job-lifecycle" class="table-of-contents__link toc-highlight">What you&#39;ll see - the job lifecycle</a></li><li><a href="#how-the-ring-level-changes-the-language" class="table-of-contents__link toc-highlight">How the ring level changes the language</a></li><li><a href="#how-long-a-state-lingers" class="table-of-contents__link toc-highlight">How long a state lingers</a></li><li><a href="#wake-the-ring---the-single-click" class="table-of-contents__link toc-highlight">Wake the ring - the single click</a></li><li><a href="#whole-ring-system-states---design-targets-not-yet-wired" class="table-of-contents__link toc-highlight">Whole-ring system states - design targets, not yet wired</a></li><li><a href="#for-developers---architecture-and-status" class="table-of-contents__link toc-highlight">For developers - architecture and status</a></li></ul></div></div></div></div></main></div></div></div><footer class="theme-layout-footer footer footer--dark"><div class="container container-fluid"><div class="row footer__links"><div class="theme-layout-footer-column col footer__col"><div class="footer__title">Docs</div><ul class="footer__items clean-list"><li class="footer__item"><a class="footer__link-item" href="/quick-start/what-you-need">Quick Start</a></li><li class="footer__item"><a class="footer__link-item" href="/guides/hardware-bom">Bill of materials</a></li><li class="footer__item"><a class="footer__link-item" href="/getting-started/webui-reference">Web UI reference</a></li></ul></div><div class="theme-layout-footer-column col footer__col"><div class="footer__title">Reference</div><ul class="footer__items clean-list"><li class="footer__item"><a class="footer__link-item" href="/reference/config-and-nvs">Config &amp; NVS</a></li><li class="footer__item"><a class="footer__link-item" href="/reference/tool-catalog">Tool catalog</a></li><li class="footer__item"><a class="footer__link-item" href="/reference/turn-contract">Turn contract</a></li><li class="footer__item"><a class="footer__link-item" href="/reference/changelog">Changelog</a></li></ul></div><div class="theme-layout-footer-column col footer__col"><div class="footer__title">More</div><ul class="footer__items clean-list"><li class="footer__item"><a href="https://github.com/ristllin/Nimbus" target="_blank" rel="noopener noreferrer" class="footer__link-item">GitHub<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li></ul></div></div><div class="footer__bottom text--center"><div class="footer__copyright">Nimbus - source-available, free for noncommercial use (PolyForm-NC / CC BY-NC-SA). Built with Docusaurus.</div></div></div></footer></div>
+</body>
+</html>

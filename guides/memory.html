@@ -1,0 +1,362 @@
+<!doctype html>
+<html lang="en" dir="ltr" class="docs-wrapper plugin-docs plugin-id-default docs-version-current docs-doc-page docs-doc-id-guides/memory" data-has-hydrated="false">
+<head>
+<meta charset="UTF-8">
+<meta name="generator" content="Docusaurus v3.10.2">
+<title data-rh="true">Memory - RAM pools, turn budget, and compaction | Nimbus</title><meta data-rh="true" name="viewport" content="width=device-width,initial-scale=1"><meta data-rh="true" name="twitter:card" content="summary_large_image"><meta data-rh="true" property="og:image" content="https://docs.cumulo-nimbus.ai/img/social-card.png"><meta data-rh="true" name="twitter:image" content="https://docs.cumulo-nimbus.ai/img/social-card.png"><meta data-rh="true" property="og:url" content="https://docs.cumulo-nimbus.ai/guides/memory"><meta data-rh="true" property="og:locale" content="en"><meta data-rh="true" name="docusaurus_locale" content="en"><meta data-rh="true" name="docsearch:language" content="en"><meta data-rh="true" name="docusaurus_version" content="current"><meta data-rh="true" name="docusaurus_tag" content="docs-default-current"><meta data-rh="true" name="docsearch:version" content="current"><meta data-rh="true" name="docsearch:docusaurus_tag" content="docs-default-current"><meta data-rh="true" property="og:title" content="Memory - RAM pools, turn budget, and compaction | Nimbus"><meta data-rh="true" name="description" content="Migrated from docs/memory.md - the canonical source lives in the repo."><meta data-rh="true" property="og:description" content="Migrated from docs/memory.md - the canonical source lives in the repo."><link data-rh="true" rel="icon" href="/img/favicon.svg"><link data-rh="true" rel="canonical" href="https://docs.cumulo-nimbus.ai/guides/memory"><link data-rh="true" rel="alternate" href="https://docs.cumulo-nimbus.ai/guides/memory" hreflang="en"><link data-rh="true" rel="alternate" href="https://docs.cumulo-nimbus.ai/guides/memory" hreflang="x-default"><script data-rh="true" type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Memory","item":"https://docs.cumulo-nimbus.ai/guides/memory"}]}</script><link rel="stylesheet" href="/assets/css/styles.5ae419b2.css">
+<script src="/assets/js/runtime~main.e74ebefa.js" defer="defer"></script>
+<script src="/assets/js/main.92f144b6.js" defer="defer"></script>
+</head>
+<body>
+<svg style="display: none;"><defs>
+<symbol id="theme-svg-external-link" viewBox="0 0 24 24"><path fill="currentColor" d="M21 13v10h-21v-19h12v2h-10v15h17v-8h2zm3-12h-10.988l4.035 4-6.977 7.07 2.828 2.828 6.977-7.07 4.125 4.172v-11z"/></symbol>
+</defs></svg>
+<script>!function(){var t=function(){try{return new URLSearchParams(window.location.search).get("docusaurus-theme")}catch(t){}}()||function(){try{return window.localStorage.getItem("theme")}catch(t){}}();document.documentElement.setAttribute("data-theme",t||(window.matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light")),document.documentElement.setAttribute("data-theme-choice",t||"system")}(),function(){try{const c=new URLSearchParams(window.location.search).entries();for(var[t,e]of c)if(t.startsWith("docusaurus-data-")){var a=t.replace("docusaurus-data-","data-");document.documentElement.setAttribute(a,e)}}catch(t){}}()</script><div id="__docusaurus"><div role="region" aria-label="Skip to main content"><a class="skipToContent_fXgn" href="#__docusaurus_skipToContent_fallback">Skip to main content</a></div><nav aria-label="Main" class="theme-layout-navbar navbar navbar--fixed-top"><div class="navbar__inner"><div class="theme-layout-navbar-left navbar__items"><button aria-label="Toggle navigation bar" aria-expanded="false" class="navbar__toggle clean-btn" type="button"><svg width="30" height="30" viewBox="0 0 30 30" aria-hidden="true"><path stroke="currentColor" stroke-linecap="round" stroke-miterlimit="10" stroke-width="2" d="M4 7h22M4 15h22M4 23h22"></path></svg></button><a class="navbar__brand" href="/"><div class="navbar__logo"><img src="/img/logo.svg" alt="Nimbus" class="themedComponent_mlkZ themedComponent--light_NVdE"><img src="/img/logo.svg" alt="Nimbus" class="themedComponent_mlkZ themedComponent--dark_xIcU"></div><b class="navbar__title text--truncate">Nimbus</b></a><a class="navbar__item navbar__link" href="/quick-start/what-you-need">Get started</a><a class="navbar__item navbar__link" href="/flash">Flash</a></div><div class="theme-layout-navbar-right navbar__items navbar__items--right"><a href="https://github.com/ristllin/Nimbus" target="_blank" rel="noopener noreferrer" class="navbar__item navbar__link">GitHub<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a><div class="toggle_vylO colorModeToggle_DEke"><button class="clean-btn toggleButton_gllP toggleButtonDisabled_aARS" type="button" disabled="" title="system mode" aria-label="Switch between dark and light mode (currently system mode)"><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP lightToggleIcon_pyhR"><path fill="currentColor" d="M12,9c1.65,0,3,1.35,3,3s-1.35,3-3,3s-3-1.35-3-3S10.35,9,12,9 M12,7c-2.76,0-5,2.24-5,5s2.24,5,5,5s5-2.24,5-5 S14.76,7,12,7L12,7z M2,13l2,0c0.55,0,1-0.45,1-1s-0.45-1-1-1l-2,0c-0.55,0-1,0.45-1,1S1.45,13,2,13z M20,13l2,0c0.55,0,1-0.45,1-1 s-0.45-1-1-1l-2,0c-0.55,0-1,0.45-1,1S19.45,13,20,13z M11,2v2c0,0.55,0.45,1,1,1s1-0.45,1-1V2c0-0.55-0.45-1-1-1S11,1.45,11,2z M11,20v2c0,0.55,0.45,1,1,1s1-0.45,1-1v-2c0-0.55-0.45-1-1-1C11.45,19,11,19.45,11,20z M5.99,4.58c-0.39-0.39-1.03-0.39-1.41,0 c-0.39,0.39-0.39,1.03,0,1.41l1.06,1.06c0.39,0.39,1.03,0.39,1.41,0s0.39-1.03,0-1.41L5.99,4.58z M18.36,16.95 c-0.39-0.39-1.03-0.39-1.41,0c-0.39,0.39-0.39,1.03,0,1.41l1.06,1.06c0.39,0.39,1.03,0.39,1.41,0c0.39-0.39,0.39-1.03,0-1.41 L18.36,16.95z M19.42,5.99c0.39-0.39,0.39-1.03,0-1.41c-0.39-0.39-1.03-0.39-1.41,0l-1.06,1.06c-0.39,0.39-0.39,1.03,0,1.41 s1.03,0.39,1.41,0L19.42,5.99z M7.05,18.36c0.39-0.39,0.39-1.03,0-1.41c-0.39-0.39-1.03-0.39-1.41,0l-1.06,1.06 c-0.39,0.39-0.39,1.03,0,1.41s1.03,0.39,1.41,0L7.05,18.36z"></path></svg><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP darkToggleIcon_wfgR"><path fill="currentColor" d="M9.37,5.51C9.19,6.15,9.1,6.82,9.1,7.5c0,4.08,3.32,7.4,7.4,7.4c0.68,0,1.35-0.09,1.99-0.27C17.45,17.19,14.93,19,12,19 c-3.86,0-7-3.14-7-7C5,9.07,6.81,6.55,9.37,5.51z M12,3c-4.97,0-9,4.03-9,9s4.03,9,9,9s9-4.03,9-9c0-0.46-0.04-0.92-0.1-1.36 c-0.98,1.37-2.58,2.26-4.4,2.26c-2.98,0-5.4-2.42-5.4-5.4c0-1.81,0.89-3.42,2.26-4.4C12.92,3.04,12.46,3,12,3L12,3z"></path></svg><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP systemToggleIcon_QzmC"><path fill="currentColor" d="m12 21c4.971 0 9-4.029 9-9s-4.029-9-9-9-9 4.029-9 9 4.029 9 9 9zm4.95-13.95c1.313 1.313 2.05 3.093 2.05 4.95s-0.738 3.637-2.05 4.95c-1.313 1.313-3.093 2.05-4.95 2.05v-14c1.857 0 3.637 0.737 4.95 2.05z"></path></svg></button></div><div class="navbarSearchContainer_Bca1"></div></div></div><div role="presentation" class="navbar-sidebar__backdrop"></div></nav><div id="__docusaurus_skipToContent_fallback" class="theme-layout-main main-wrapper mainWrapper_z2l0"><div class="docsWrapper_hBAB"><button aria-label="Scroll back to top" class="clean-btn theme-back-to-top-button backToTopButton_sjWU" type="button"></button><div class="docRoot_UBD9"><aside class="theme-doc-sidebar-container docSidebarContainer_YfHR"><div class="sidebarViewport_aRkj"><div class="sidebar_njMd"><nav aria-label="Docs sidebar" class="menu thin-scrollbar menu_SIkG"><ul class="theme-doc-sidebar-menu menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/"><span class="linkLabel_WmDU">Overview</span></a></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="true" href="/quick-start/what-you-need"><span class="categoryLinkLabel_W154">Quick Start</span></a></div><ul class="menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/what-you-need"><span class="linkLabel_WmDU">What you need</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/flash"><span class="linkLabel_WmDU">Flash the firmware</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/setup-wizard"><span class="linkLabel_WmDU">Set up the device</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/first-conversation"><span class="linkLabel_WmDU">First conversation</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/notifier-quick-start"><span class="linkLabel_WmDU">Notifier quick start</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/getting-started/first-time-setup"><span class="linkLabel_WmDU">First-time setup</span></a></li></ul></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/guides/hardware"><span class="categoryLinkLabel_W154">Hardware Build</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/getting-started/webui-reference"><span class="categoryLinkLabel_W154">Using Nimbus</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret menu__link--active" role="button" aria-expanded="true" href="/guides/architecture"><span class="categoryLinkLabel_W154">How It Works</span></a></div><ul class="menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/architecture"><span class="linkLabel_WmDU">Architecture</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/turn-anatomy"><span class="linkLabel_WmDU">Turn anatomy</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/orchestrator-live-turn"><span class="linkLabel_WmDU">Live turn</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/orchestrator-world"><span class="linkLabel_WmDU">Orchestrator World</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link menu__link--active" aria-current="page" tabindex="0" href="/guides/memory"><span class="linkLabel_WmDU">Memory</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/orchestrator-storage"><span class="linkLabel_WmDU">Storage tiering</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/sub-sessions"><span class="linkLabel_WmDU">Sub-sessions</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/harness"><span class="linkLabel_WmDU">Harness</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/provider-wire"><span class="linkLabel_WmDU">Provider wire</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/security"><span class="linkLabel_WmDU">Security</span></a></li></ul></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/reference/config-and-nvs"><span class="categoryLinkLabel_W154">Reference</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/contributing/development"><span class="categoryLinkLabel_W154">Forking &amp; Contributing</span></a></div></li></ul></nav></div></div></aside><main class="docMainContainer_TBSr"><div class="container padding-top--md padding-bottom--lg"><div class="row"><div class="col docItemCol_VOVn"><div class="docItemContainer_Djhp"><article><nav class="theme-doc-breadcrumbs breadcrumbsContainer_Z_bl" aria-label="Breadcrumbs"><ul class="breadcrumbs"><li class="breadcrumbs__item"><a aria-label="Home page" class="breadcrumbs__link" href="/"><svg viewBox="0 0 24 24" class="breadcrumbHomeIcon_YNFT"><path d="M10 19v-5h4v5c0 .55.45 1 1 1h3c.55 0 1-.45 1-1v-7h1.7c.46 0 .68-.57.33-.87L12.67 3.6c-.38-.34-.96-.34-1.34 0l-8.36 7.53c-.34.3-.13.87.33.87H5v7c0 .55.45 1 1 1h3c.55 0 1-.45 1-1z" fill="currentColor"></path></svg></a></li><li class="breadcrumbs__item"><span class="breadcrumbs__link">How It Works</span></li><li class="breadcrumbs__item breadcrumbs__item--active"><span class="breadcrumbs__link">Memory</span></li></ul></nav><div class="tocCollapsible_ETCw theme-doc-toc-mobile tocMobile_ITEo"><button type="button" class="clean-btn tocCollapsibleButton_TO0P">On this page</button></div><div class="theme-doc-markdown markdown"><blockquote>
+<p>Sourced from <code>docs/memory.md</code> in the firmware repo.</p>
+</blockquote>
+<header><h1>Memory - the two RAM pools, the turn budget, and conversation compaction</h1></header>
+<p>How Nimbus fits a memory-hungry agent into a microcontroller: the two very
+different RAM pools and which one is actually scarce, what a live turn costs
+and how it stays bounded, and how long conversations fold into a compact
+summary instead of growing forever.</p>
+<p>This page merges three earlier documents (<code>memory-model.md</code>,
+<code>heap-and-psram.md</code>, <code>compaction.md</code>) into one progressive read: start at the
+hardware, end at the conversation.</p>
+<p>Related: <a class="" href="/guides/orchestrator-storage">orchestrator-storage.md</a> (what lives on SD,
+PSRAM, NVS, and flash), <a class="" href="/guides/turn-anatomy">turn-anatomy.md</a> (what the model
+sees), <a class="" href="/guides/provider-wire">provider-wire.md</a> (the wire mechanics per provider).</p>
+<p>The memory tiers at a glance - information flows left to right from the
+shortest-lived tier to the most durable, and each tier is backed by the
+storage that fits its lifetime (details: §1–§3 below and
+<a class="" href="/guides/orchestrator-storage">orchestrator-storage.md</a>):</p>
+<!-- -->
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="1-the-two-pools-read-this-before-touching-heap-floors">1. The two pools (read this before touching heap floors)<a href="#1-the-two-pools-read-this-before-touching-heap-floors" class="hash-link" aria-label="Direct link to 1. The two pools (read this before touching heap floors)" title="Direct link to 1. The two pools (read this before touching heap floors)" translate="no">​</a></h2>
+<p>The Solide S3 board is an <strong>ESP32-S3-DevKitC-1 N16R8</strong>. It has <strong>two very
+different memory pools</strong>, and conflating them has repeatedly caused work to be
+throttled or deferred while most of the device&#x27;s RAM sat idle. Know which pool
+you mean.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Pool</th><th>Size</th><th>Speed</th><th>DMA</th><th>What reports it</th><th>Character</th></tr></thead><tbody><tr><td><strong>Internal SRAM</strong></td><td>~266 KB heap (of 512 KB total; the rest is static/ROM)</td><td>Fast</td><td>Yes</td><td><code>ESP.getFreeHeap()</code>, <code>heap_caps_*(…, MALLOC_CAP_INTERNAL)</code></td><td><strong>SCARCE</strong> - the real constraint</td></tr><tr><td><strong>PSRAM</strong> (external, octal)</td><td><strong>8 MB</strong></td><td>~2–4× slower</td><td>Limited</td><td><code>ESP.getFreePsram()</code>, <code>heap_caps_*(…, MALLOC_CAP_SPIRAM)</code></td><td><strong>ABUNDANT</strong> - normally ~98% free</td></tr></tbody></table>
+<p><strong><code>ESP.getFreeHeap()</code> measures INTERNAL ONLY.</strong> When it reads &quot;16 KB free&quot; the
+device is NOT out of memory - it has ~8 MB of PSRAM free. It is out of the
+<em>scarce</em> pool.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="what-must-live-in-internal-sram-do-not-try-to-move-these">What MUST live in internal SRAM (do not try to move these)<a href="#what-must-live-in-internal-sram-do-not-try-to-move-these" class="hash-link" aria-label="Direct link to What MUST live in internal SRAM (do not try to move these)" title="Direct link to What MUST live in internal SRAM (do not try to move these)" translate="no">​</a></h3>
+<ul>
+<li class=""><strong>FreeRTOS task stacks</strong> - every <code>xTaskCreate*</code> stack is internal. A task
+that does TLS (<code>tg_poll</code>&#x27;s deep mbedTLS handshake call chain), touches
+flash, or runs in an ISR cannot use a PSRAM stack.</li>
+<li class=""><strong>DMA buffers</strong> - Wi-Fi, I²S, SPI (display/SD), LED RMT. These request
+<code>MALLOC_CAP_DMA</code> explicitly and bypass the PSRAM spill entirely.</li>
+<li class=""><strong>lwIP pbufs + the TLS record working set</strong> - the ~24 KB &quot;danger zone.&quot; A
+network call needs this much <em>contiguous-ish internal</em> to not fail; it is
+the real internal red line.</li>
+</ul>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="what-is-routed-to-psram-already-dont-duplicate">What IS routed to PSRAM already (don&#x27;t duplicate)<a href="#what-is-routed-to-psram-already-dont-duplicate" class="hash-link" aria-label="Direct link to What IS routed to PSRAM already (don&#x27;t duplicate)" title="Direct link to What IS routed to PSRAM already (don&#x27;t duplicate)" translate="no">​</a></h3>
+<p>Installed in <code>main.cpp</code> at boot:</p>
+<ul>
+<li class=""><strong>mbedTLS allocator → PSRAM</strong> (<code>mbedtls_platform_set_calloc_free</code>): the big
+RX/TX content buffers (~16 KB each) + session/cert parse land in PSRAM. The
+~40 K contiguous handshake that used to fail at ~50 K internal now lands in
+PSRAM.</li>
+<li class=""><strong>General malloc/<code>new</code>/<code>String</code>/JSON churn ≥ the spill threshold → PSRAM</strong>
+(<code>heap_caps_malloc_extmem_enable(N)</code>; currently <strong>N = 128 B</strong>). Allocations
+<code>&lt; N</code> stay internal to keep hot paths fast; <code>≥ N</code> go to PSRAM. <strong>Lowering N
+frees more internal</strong> at a small PSRAM-speed cost - this alone took internal
+free from 16 KB → ~48 KB and made Telegram turns run (they had been
+deferring at the 34 KB floor).</li>
+</ul>
+<p>Also PSRAM-backed by design: the vector-DB working set
+(<code>setWorkingAllocators</code>), ArduinoJson node pools (<code>ps_json.h</code>) - including the
+single-shot turn response docs - per-adapter request/response bodies
+(serialized into one contiguous PSRAM-spilled string and written once), the
+SFX manifest, and the web audio test-tone buffers.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="a-deliberate-exception-the-episodic-deep-history-read-stays-internal">A deliberate exception: the episodic deep-history read stays internal<a href="#a-deliberate-exception-the-episodic-deep-history-read-stays-internal" class="hash-link" aria-label="Direct link to A deliberate exception: the episodic deep-history read stays internal" title="Direct link to A deliberate exception: the episodic deep-history read stays internal" translate="no">​</a></h3>
+<p>Not every transient belongs in PSRAM. The episodic <strong>deep-history</strong> search
+(<code>memory.episodic</code> cold-scan, <code>GET /api/mem/episodic?cold=1</code>) reaches history
+that sits on the SD card below the boot-scan index by walking the day-streams
+backward, one small window at a time, on the <strong>querying task</strong> - the AsyncTCP
+web task or the turn task, each of which runs on a tight internal stack. That
+read window is a heap allocation on that task, so its size is a <strong>crash
+boundary, not a performance knob</strong>: a large window (an early design used
+128 KB) starves the task&#x27;s contiguous internal SRAM and drops the device off
+the LAN mid-query. It is kept small (≈8 KB, escalating only when a single
+record is longer than the window). What bounds the work is the <strong>per-call read
+budget</strong> (a few files, ~128 KB total) - not a big buffer - so deep history
+<em>pages</em>: the store returns a resume cursor rather than allocating for the
+whole scan. This is the counter-lesson to &quot;route churn to PSRAM&quot; - a small
+bounded internal read on a stack-tight task is the correct shape. Full design:
+<a class="" href="/guides/orchestrator-storage"><code>orchestrator-storage.md</code></a> §3a.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="the-heap-floors-are-internal-only-guards---not-a-whole-device-budget">The heap floors are INTERNAL-only guards - not a whole-device budget<a href="#the-heap-floors-are-internal-only-guards---not-a-whole-device-budget" class="hash-link" aria-label="Direct link to The heap floors are INTERNAL-only guards - not a whole-device budget" title="Direct link to The heap floors are INTERNAL-only guards - not a whole-device budget" translate="no">​</a></h3>
+<p><code>agent_config.h</code> defines <code>ORCH_TURN_HARD_FLOOR</code> / <code>ORCH_AUTO_TURN_MIN_HEAP</code> /
+<code>ORCH_DISPATCH_MIN_HEAP</code> / <code>ORCH_RECALL_MIN_HEAP</code> / <code>ORCH_LOOP_MIN_HEAP</code>, plus
+<code>provider_verify</code>&#x27;s <code>VERIFY_MIN_MAX8</code> and the <code>/api/tools</code> async-stack guard.
+They all gate on <strong>internal</strong> heap. Because the heavy allocations they used to
+protect are now on PSRAM, a turn&#x27;s true internal cost is small transients +
+the lwIP/TLS stack, so the floors sit just above the ~24 KB danger zone
+(≈28 KB), <strong>not</strong> at the pre-PSRAM 34–40 KB.</p>
+<p><strong>Do NOT re-raise these floors to &quot;survive with no PSRAM.&quot;</strong> PSRAM is present
+and carries the churn. If turns are deferring (&quot;low on working memory&quot;) while
+PSRAM is free, the fix is to move more internal churn to PSRAM (lower the
+spill threshold), not to raise the floor. A turn that still OOMs fails soft
+(error reply, no restart).</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="levers-to-free-internal-sram-biggest-first-verify-on-device">Levers to free internal SRAM (biggest first, verify on-device)<a href="#levers-to-free-internal-sram-biggest-first-verify-on-device" class="hash-link" aria-label="Direct link to Levers to free internal SRAM (biggest first, verify on-device)" title="Direct link to Levers to free internal SRAM (biggest first, verify on-device)" translate="no">​</a></h3>
+<ol>
+<li class=""><strong>Route Wi-Fi/lwIP buffers to PSRAM</strong> (<code>CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP</code>,
+Wi-Fi static-buffer counts) - potentially the largest single win; needs an
+<code>sdkconfig.defaults</code>.</li>
+<li class=""><strong>Lower the malloc spill threshold</strong> (<code>heap_caps_malloc_extmem_enable</code>,
+main.cpp).</li>
+<li class=""><strong>Right-size / statically-place buffers</strong> (framebuffers, static arrays)
+into PSRAM.</li>
+<li class=""><strong>Re-anchor over-conservative internal floors</strong> (above, done).</li>
+</ol>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="how-to-measure-dont-guess">How to measure (don&#x27;t guess)<a href="#how-to-measure-dont-guess" class="hash-link" aria-label="Direct link to How to measure (don&#x27;t guess)" title="Direct link to How to measure (don&#x27;t guess)" translate="no">​</a></h3>
+<p><code>ESP.getFreeHeap()</code> = internal free; <code>ESP.getFreePsram()</code> = PSRAM free.
+<code>/api/state</code> reports both (<code>heap</code>/<code>heapMin</code> vs <code>psramFree</code>/<code>psramTotal</code>) and
+<code>/api/health</code> lists PSRAM as its own row. For an internal-vs-PSRAM-vs-DMA
+breakdown use
+<code>heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA)</code>
+and <code>heap_caps_get_largest_free_block(...)</code>.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="2-heap-under-a-live-turn---whats-movable-what-isnt">2. Heap under a live turn - what&#x27;s movable, what isn&#x27;t<a href="#2-heap-under-a-live-turn---whats-movable-what-isnt" class="hash-link" aria-label="Direct link to 2. Heap under a live turn - what&#x27;s movable, what isn&#x27;t" title="Direct link to 2. Heap under a live turn - what&#x27;s movable, what isn&#x27;t" translate="no">​</a></h2>
+<p>A live orchestrator turn runs with only <strong>~47 K free <em>internal</em> SRAM</strong> (TLS +
+lwIP + the orchestrator all resident). PSRAM is nearly empty but is <strong>not</strong> in
+the default malloc pool by default. What is already in PSRAM is listed above;
+this section records what is stuck internal, and why (measured while chasing
+the heavy-connector-write restart, 2026-07).</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="what-is-still-internal-and-why">What is STILL internal (and why)<a href="#what-is-still-internal-and-why" class="hash-link" aria-label="Direct link to What is STILL internal (and why)" title="Direct link to What is STILL internal (and why)" translate="no">​</a></h3>
+<ul>
+<li class=""><strong>lwIP RX pbufs</strong> - inbound TLS/socket data queues as pbufs in
+<code>MALLOC_CAP_INTERNAL/DMA</code> by design; the extmem hook cannot move them. This
+was the dominant internal spike when the device buffered a whole large
+response. <strong>Mitigation: streaming.</strong> The transport stream-parses the
+response off the socket (<code>transport_tls.cpp</code> <code>execJson</code> →
+<code>deserializeJson(doc, BlockingClientReader, Filter)</code>), so pbufs drain
+continuously as the parser pulls bytes instead of piling up while a whole
+body is buffered. This is the real fix for the heavy-connector-write
+restart.</li>
+<li class=""><strong>Small (&lt; 128 B) allocations</strong> - stay internal by the extmem threshold;
+cheap and not worth lowering the threshold (churn).</li>
+<li class=""><strong>FreeRTOS task stacks</strong> - e.g. <code>tg_poll</code> (16 K), which runs the whole
+turn. Internal by nature. The response parse is bounded to
+<code>NestingLimit(16)</code>, well within this stack.</li>
+</ul>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="the-size-transparency-contract">The size-transparency contract<a href="#the-size-transparency-contract" class="hash-link" aria-label="Direct link to The size-transparency contract" title="Direct link to The size-transparency contract" translate="no">​</a></h3>
+<p>The harness must handle any response / context / file size without crashing:</p>
+<ol>
+<li class=""><strong>Responses stream</strong> off the socket; only filter-retained fields are stored
+(a 128 KB wire body → &lt; 4 KB retained doc - <code>test_harness_streaming</code>).</li>
+<li class=""><strong>Tool results into the model are clamped</strong> (4 KB/result, 24 KB total -
+<code>head_loop</code>), so context stays bounded.</li>
+<li class=""><strong>Heavy connector work is offloaded</strong> to a sub-agent on the connector&#x27;s
+provider (the orchestrator is guided to; routing in <code>jobs.cpp</code>), so the
+device only ever ingests a short result.</li>
+<li class=""><strong>Large payloads spill to SD</strong> (the artifact store) rather than transiting
+RAM or the model&#x27;s context.</li>
+</ol>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="do-not">Do NOT<a href="#do-not" class="hash-link" aria-label="Direct link to Do NOT" title="Direct link to Do NOT" translate="no">​</a></h3>
+<ul>
+<li class="">Do not raise the turn heap floors to &quot;fix&quot; OOM - the fix is streaming +
+PSRAM routing, not gating turns out (the historical 34 K floor
+false-deferred healthy turns; the live floor is 28 K).</li>
+<li class="">Do not buffer a whole provider response then parse - stream it.</li>
+<li class="">Do not put connector write content through the model&#x27;s context -
+offload/spill.</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="3-conversation-compaction---the-fold">3. Conversation compaction - the fold<a href="#3-conversation-compaction---the-fold" class="hash-link" aria-label="Direct link to 3. Conversation compaction - the fold" title="Direct link to 3. Conversation compaction - the fold" translate="no">​</a></h2>
+<p>How the device keeps long conversations fast, cheap, and continuous: when a
+chat accumulates enough history, the device summarizes it into a compact
+per-chat memory (the <strong>fold</strong>), resets the provider-side thread, and keeps
+going - nothing the owner said is lost, and every future turn carries the
+summary instead of an ever-growing transcript. Shipped in v3.6.0 after a
+reviewed design; E2E-proven on hardware.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="owners-view">Owner&#x27;s view<a href="#owners-view" class="hash-link" aria-label="Direct link to Owner&#x27;s view" title="Direct link to Owner&#x27;s view" translate="no">​</a></h3>
+<ul>
+<li class=""><strong>When it happens</strong>: automatically, after roughly 48 KB of conversation on a
+chat since its last fold (knob: <code>compactKB</code>, 8–512, 0 turns auto-fold off) -
+or on demand with the <strong><code>/compact</code></strong> command (owner-only, also listed in
+/help).</li>
+<li class=""><strong>What you see</strong>: automatic compaction is silent - its record is the
+&quot;Conversation compacted: … folded into a … summary&quot; row in the chat history.
+A manual <code>/compact</code> acknowledges immediately and then confirms with
+&quot;✓ Compacted.&quot; (or tells you it couldn&#x27;t, with the next step). The web chat
+never gets notices (they would desync the reply pairing).</li>
+<li class=""><strong>What changes</strong>: nothing you&#x27;d notice in conversation quality - the last
+dozen messages stay verbatim in the model&#x27;s context, the summary carries
+everything older, and long-term facts were already in vector memory. What
+improves: turns stop getting slower and more expensive as a chat ages.</li>
+<li class=""><strong>If a provider is down</strong>: the fold tries the device&#x27;s other configured
+providers before counting a failure (the same order turns use), so one
+provider having trouble doesn&#x27;t stall compaction - or message you about it.</li>
+<li class=""><strong>If it keeps failing</strong>: after 3 consecutive failures (or a fold that
+refills immediately), automatic compaction pauses for that chat and you get
+ONE alert; <code>/compact</code> always remains available and un-pauses it.</li>
+</ul>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="how-it-works-the-design-in-one-page">How it works (the design, in one page)<a href="#how-it-works-the-design-in-one-page" class="hash-link" aria-label="Direct link to How it works (the design, in one page)" title="Direct link to How it works (the design, in one page)" translate="no">​</a></h3>
+<p>The device cannot edit provider-side conversation threads (they&#x27;re opaque
+ids - and only OpenAI even has a cross-turn thread; Anthropic is stateless and
+Mistral&#x27;s tool-loop mode starts fresh every turn). So compaction is built on
+the device&#x27;s own episodic store, provider-uniformly:</p>
+<!-- -->
+<ul>
+<li class=""><strong>Trigger</strong> (<code>FoldStore::evaluateDue</code>): bytes-since-fold ≥ <code>compactKB</code> OR
+≥200 messages - provider-independent by design. A reactive path also
+classifies real provider context-overflow errors (<code>isContextOverflowError</code>)
+and queues a fold; the turn itself recovers via the existing fresh-thread
+retry.</li>
+<li class=""><strong>The fold call</strong> (<code>TurnEngine::runFold</code>) is deliberately NOT a turn: no
+delivery, no recall, no tool loop, no conversation-map writes, no capture of
+the summary as chat history - the model&#x27;s reply IS the summary and every
+other field of its output is structurally inert. Its spend is metered under
+the <code>compact</code> attribution (never a routine&#x27;s budget). Gates (low heap, over
+budget, turn in flight) <strong>defer</strong> - only a real failed attempt counts
+against the breaker.</li>
+<li class=""><strong>Anchored, not cumulative</strong>: each fold UPDATES the previous summary with
+the new slice (opencode&#x27;s pattern), so fold cost stays bounded forever. The
+summary re-enters every prompt as <code>## CONVERSATION SUMMARY</code> - explicitly
+framed as <em>information, not instructions</em>, and instructions found inside
+tool outputs are folded as data, never preserved as directives (prompt-
+injection posture).</li>
+<li class=""><strong>Summary + verbatim tail</strong>: the summary sits directly above the RECENT
+CONVERSATION window, the shape every surveyed harness (Claude Code, codex,
+opencode, aider) converged on. Under prompt-budget pressure the summary is
+sacrificed BEFORE the window (the tail is the fresher signal).</li>
+<li class=""><strong>Durability &amp; rollback</strong>: all fold state (summary, counters, breaker) lives
+in one tolerant-load LittleFS blob (<code>/data/chatsum.txt</code>, LRU-16 chats). The
+NVS conversation map is untouched, so an OTA rollback to pre-v3.6 firmware
+simply ignores the file - rollback-safe by construction. Crash mid-fold:
+the write order (summary first, thread reset second) means the worst case is
+a fold that re-runs, never a lost summary with a reset thread.</li>
+</ul>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="verification">Verification<a href="#verification" class="hash-link" aria-label="Direct link to Verification" title="Direct link to Verification" translate="no">​</a></h3>
+<p>Host: <code>test_orch_compact</code> (trigger math, breaker, thrash guard, codec,
+UTF-8-safe caps, fold-prompt contract), <code>test_harness_turn</code> (runFold&#x27;s
+no-side-effects contract incl. a hostile summary carrying device actions -
+inert), <code>test_harness_compose</code> (§5a placement + budget-pressure drop).</p>
+<p>Hardware (Board 2, both suites green): <code>tests/hil/test_l16_compaction.py</code> -
+the full cycle with a marker planted OLDER than the verbatim window, proving
+recall comes from the summary (<code>/api/lastturn</code> shows it) - and
+<code>tests/hil/test_l15_memory_caps.py</code> - vector-store cap eviction (synthetic-only
+damage), episodic retention past the PSRAM ring, and a fold completing from
+the RAM ring under a simulated SD failure. Measured along the way: 512
+episodic-ring rows with short texts pin ~30 K of internal SRAM (small strings
+don&#x27;t spill to PSRAM), which is why the ring deliberately stays at 512.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="reference">Reference<a href="#reference" class="hash-link" aria-label="Direct link to Reference" title="Direct link to Reference" translate="no">​</a></h3>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>thing</th><th>where</th></tr></thead><tbody><tr><td>knob</td><td><code>compactKB</code> (NVS; default 48, clamp 8–512, 0 = auto off)</td></tr><tr><td>command</td><td><code>/compact</code> (owner-only; async - runs on the next pump pass)</td></tr><tr><td>boundary record</td><td>episodic row, kind=log, tag <code>ev:compact</code>, in the chat&#x27;s session</td></tr><tr><td>prompt section</td><td><code>## CONVERSATION SUMMARY</code> (above the recent window)</td></tr><tr><td>state file</td><td>LittleFS <code>/data/chatsum.txt</code> (rollback-safe; LRU-16 chats, byte-bounded, written atomically)</td></tr><tr><td>fold prompt + trigger core</td><td><code>lib/core/{include/nimbus/orch/compact.h, src/orch_compact.cpp}</code></td></tr><tr><td>engine call</td><td><code>TurnEngine::runFold</code> / <code>clearChatConv</code> (lib/harness)</td></tr><tr><td>device pump</td><td><code>compactTick()</code> in <code>src/agent/orchestrator.cpp</code></td></tr><tr><td>test seams (TEST builds)</td><td><code>CTX?</code> / <code>COMPACT &lt;chat&gt;</code> / <code>MEMFILL</code> console + <code>/api/test/{ctx,compact,memfill}</code></td></tr></tbody></table>
+<p>⚠ <strong>Assert on the <code>ev:compact</code> row, not on <code>CTX?</code>.</strong> The diagnostic reads a
+cross-task echo buffer, and until v3.7.0 that buffer was refreshed only at turn
+end - so it reported the fold stamp as of the last TURN, never as of the last
+FOLD, and a completed compaction stayed invisible until the next turn ended. A
+test written against it passed only when the echo happened to be one fold stale,
+observing the <em>previous</em> run&#x27;s fold. The echo is now republished on every fold
+outcome (success and failure alike), but the durable <code>ev:compact</code> episodic row
+remains the right thing to assert on: it is written only on success, it carries
+the byte/message counts, and it survives a restart.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="derived-context-budgets-context-fabric-2026-08-05">Derived context budgets (Context Fabric, 2026-08-05)<a href="#derived-context-budgets-context-fabric-2026-08-05" class="hash-link" aria-label="Direct link to Derived context budgets (Context Fabric, 2026-08-05)" title="Direct link to Derived context budgets (Context Fabric, 2026-08-05)" translate="no">​</a></h3>
+<p>Every context allocation is <strong>derived from the head model&#x27;s context window</strong>
+rather than hardcoded: <code>nimbus::orch::deriveBudget(ctxTokens, overrides)</code>
+(<code>lib/core/src/orch_budget.cpp</code>) turns the window into a system-prompt budget,
+summary cap, verbatim-tail cap, per-tool-result clamp, cumulative tool budget,
+sub-agent brief size and fold-slice size - each a ratio with a floor and a cap.
+The window comes from the existing <code>modelCtxTokens()</code> table.</p>
+<p><strong>Anchor invariant:</strong> at a 200K window the derived values equal the previously
+hardcoded constants exactly (32768 / 4096 / 3000 / 8192 / 65536 / 1200 / 65536),
+so a device on defaults behaves identically. A smaller-window model degrades
+gracefully; a larger one automatically gets a richer prompt.</p>
+<p><strong>Owner overrides win.</strong> <code>max_context_bytes</code> (memory config) and the two loop-cap
+NVS keys now treat <strong>0 / absent as &quot;auto&quot;</strong>; any value you set is used verbatim
+under the same clamps as before. <code>/api/orch</code> reports <code>loopRescapEff</code>,
+<code>loopTotcapEff</code> and <code>ctxTokens</code> so the UI can show &quot;auto (currently N)&quot;. Each
+turn logs one line: <code>budget: ctx=200K sys=32768 res=8192 tot=65536 (auto|owner)</code>.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="gradient-trimming---never-a-dumb-clip">Gradient trimming - never a dumb clip<a href="#gradient-trimming---never-a-dumb-clip" class="hash-link" aria-label="Direct link to Gradient trimming - never a dumb clip" title="Direct link to Gradient trimming - never a dumb clip" translate="no">​</a></h3>
+<p>The research principle (summary + verbatim tail) also applies <strong>inside</strong> a
+turn and at every clip site:</p>
+<ul>
+<li class=""><strong>In-turn replay (Anthropic only</strong> - OpenAI/Mistral keep history server-side**)**:
+once the replayed conversation passes a quarter of the window, rounds older
+than the newest two collapse to one <code>[earlier round N] tool: gist… (N B)</code> line.
+Pairs fold whole, so every <code>tool_use</code> keeps its <code>tool_result</code>.</li>
+<li class=""><strong>Tool results</strong>: a clamped result keeps its full text in the recent-results
+ring and the marker says how to get it -
+<code>…[truncated 8192 of 51234 B - fetch the rest with results.get(&quot;r3&quot;)]</code>.</li>
+<li class=""><strong>Sub-agent results</strong>: past the 6-slot block cap, a result parks as a one-line
+stub with a <code>results.get(&quot;sub:&lt;tag&gt;&quot;)</code> pointer instead of being dropped; the
+episodic row on SD keeps the full text.</li>
+<li class=""><strong>Context assembly</strong>: the anchored summary <strong>clips</strong> (floor 1024 B) before it
+is dropped, and anything omitted is named in a bounded <code>## OMITTED (budget)</code>
+trailer so the model knows a category was withheld rather than empty.</li>
+</ul></div><footer class="theme-doc-footer docusaurus-mt-lg"><div class="row margin-top--sm theme-doc-footer-edit-meta-row"><div class="col noPrint_WFHX"><a href="https://github.com/ristllin/Nimbus/blob/main/docs/memory.md" target="_blank" rel="noopener noreferrer" class="theme-edit-this-page"><svg fill="currentColor" height="20" width="20" viewBox="0 0 40 40" class="iconEdit_Z9Sw" aria-hidden="true"><g><path d="m34.5 11.7l-3 3.1-6.3-6.3 3.1-3q0.5-0.5 1.2-0.5t1.1 0.5l3.9 3.9q0.5 0.4 0.5 1.1t-0.5 1.2z m-29.5 17.1l18.4-18.5 6.3 6.3-18.4 18.4h-6.3v-6.2z"></path></g></svg>Edit this page</a></div><div class="col lastUpdated_JAkA"></div></div></footer></article><nav class="docusaurus-mt-lg pagination-nav" aria-label="Docs pages"><a class="pagination-nav__link pagination-nav__link--prev" href="/guides/orchestrator-world"><div class="pagination-nav__sublabel">Previous</div><div class="pagination-nav__label">Orchestrator World</div></a><a class="pagination-nav__link pagination-nav__link--next" href="/guides/orchestrator-storage"><div class="pagination-nav__sublabel">Next</div><div class="pagination-nav__label">Storage tiering</div></a></nav></div></div><div class="col col--3"><div class="tableOfContents_bqdL thin-scrollbar theme-doc-toc-desktop"><ul class="table-of-contents table-of-contents__left-border"><li><a href="#1-the-two-pools-read-this-before-touching-heap-floors" class="table-of-contents__link toc-highlight">1. The two pools (read this before touching heap floors)</a><ul><li><a href="#what-must-live-in-internal-sram-do-not-try-to-move-these" class="table-of-contents__link toc-highlight">What MUST live in internal SRAM (do not try to move these)</a></li><li><a href="#what-is-routed-to-psram-already-dont-duplicate" class="table-of-contents__link toc-highlight">What IS routed to PSRAM already (don&#39;t duplicate)</a></li><li><a href="#a-deliberate-exception-the-episodic-deep-history-read-stays-internal" class="table-of-contents__link toc-highlight">A deliberate exception: the episodic deep-history read stays internal</a></li><li><a href="#the-heap-floors-are-internal-only-guards---not-a-whole-device-budget" class="table-of-contents__link toc-highlight">The heap floors are INTERNAL-only guards - not a whole-device budget</a></li><li><a href="#levers-to-free-internal-sram-biggest-first-verify-on-device" class="table-of-contents__link toc-highlight">Levers to free internal SRAM (biggest first, verify on-device)</a></li><li><a href="#how-to-measure-dont-guess" class="table-of-contents__link toc-highlight">How to measure (don&#39;t guess)</a></li></ul></li><li><a href="#2-heap-under-a-live-turn---whats-movable-what-isnt" class="table-of-contents__link toc-highlight">2. Heap under a live turn - what&#39;s movable, what isn&#39;t</a><ul><li><a href="#what-is-still-internal-and-why" class="table-of-contents__link toc-highlight">What is STILL internal (and why)</a></li><li><a href="#the-size-transparency-contract" class="table-of-contents__link toc-highlight">The size-transparency contract</a></li><li><a href="#do-not" class="table-of-contents__link toc-highlight">Do NOT</a></li></ul></li><li><a href="#3-conversation-compaction---the-fold" class="table-of-contents__link toc-highlight">3. Conversation compaction - the fold</a><ul><li><a href="#owners-view" class="table-of-contents__link toc-highlight">Owner&#39;s view</a></li><li><a href="#how-it-works-the-design-in-one-page" class="table-of-contents__link toc-highlight">How it works (the design, in one page)</a></li><li><a href="#verification" class="table-of-contents__link toc-highlight">Verification</a></li><li><a href="#reference" class="table-of-contents__link toc-highlight">Reference</a></li><li><a href="#derived-context-budgets-context-fabric-2026-08-05" class="table-of-contents__link toc-highlight">Derived context budgets (Context Fabric, 2026-08-05)</a></li><li><a href="#gradient-trimming---never-a-dumb-clip" class="table-of-contents__link toc-highlight">Gradient trimming - never a dumb clip</a></li></ul></li></ul></div></div></div></div></main></div></div></div><footer class="theme-layout-footer footer footer--dark"><div class="container container-fluid"><div class="row footer__links"><div class="theme-layout-footer-column col footer__col"><div class="footer__title">Docs</div><ul class="footer__items clean-list"><li class="footer__item"><a class="footer__link-item" href="/quick-start/what-you-need">Quick Start</a></li><li class="footer__item"><a class="footer__link-item" href="/guides/hardware-bom">Bill of materials</a></li><li class="footer__item"><a class="footer__link-item" href="/getting-started/webui-reference">Web UI reference</a></li></ul></div><div class="theme-layout-footer-column col footer__col"><div class="footer__title">Reference</div><ul class="footer__items clean-list"><li class="footer__item"><a class="footer__link-item" href="/reference/config-and-nvs">Config &amp; NVS</a></li><li class="footer__item"><a class="footer__link-item" href="/reference/tool-catalog">Tool catalog</a></li><li class="footer__item"><a class="footer__link-item" href="/reference/turn-contract">Turn contract</a></li><li class="footer__item"><a class="footer__link-item" href="/reference/changelog">Changelog</a></li></ul></div><div class="theme-layout-footer-column col footer__col"><div class="footer__title">More</div><ul class="footer__items clean-list"><li class="footer__item"><a href="https://github.com/ristllin/Nimbus" target="_blank" rel="noopener noreferrer" class="footer__link-item">GitHub<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li></ul></div></div><div class="footer__bottom text--center"><div class="footer__copyright">Nimbus - source-available, free for noncommercial use (PolyForm-NC / CC BY-NC-SA). Built with Docusaurus.</div></div></div></footer></div>
+</body>
+</html>

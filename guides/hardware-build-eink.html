@@ -1,0 +1,662 @@
+<!doctype html>
+<html lang="en" dir="ltr" class="docs-wrapper plugin-docs plugin-id-default docs-version-current docs-doc-page docs-doc-id-guides/hardware-build-eink" data-has-hydrated="false">
+<head>
+<meta charset="UTF-8">
+<meta name="generator" content="Docusaurus v3.10.2">
+<title data-rh="true">Build Guide - E-Paper + Knob | Nimbus</title><meta data-rh="true" name="viewport" content="width=device-width,initial-scale=1"><meta data-rh="true" name="twitter:card" content="summary_large_image"><meta data-rh="true" property="og:image" content="https://docs.cumulo-nimbus.ai/img/social-card.png"><meta data-rh="true" name="twitter:image" content="https://docs.cumulo-nimbus.ai/img/social-card.png"><meta data-rh="true" property="og:url" content="https://docs.cumulo-nimbus.ai/guides/hardware-build-eink"><meta data-rh="true" property="og:locale" content="en"><meta data-rh="true" name="docusaurus_locale" content="en"><meta data-rh="true" name="docsearch:language" content="en"><meta data-rh="true" name="docusaurus_version" content="current"><meta data-rh="true" name="docusaurus_tag" content="docs-default-current"><meta data-rh="true" name="docsearch:version" content="current"><meta data-rh="true" name="docsearch:docusaurus_tag" content="docs-default-current"><meta data-rh="true" property="og:title" content="Build Guide - E-Paper + Knob | Nimbus"><meta data-rh="true" name="description" content="Migrated from docs/hardware/build-eink.md - the canonical source lives in the repo."><meta data-rh="true" property="og:description" content="Migrated from docs/hardware/build-eink.md - the canonical source lives in the repo."><link data-rh="true" rel="icon" href="/img/favicon.svg"><link data-rh="true" rel="canonical" href="https://docs.cumulo-nimbus.ai/guides/hardware-build-eink"><link data-rh="true" rel="alternate" href="https://docs.cumulo-nimbus.ai/guides/hardware-build-eink" hreflang="en"><link data-rh="true" rel="alternate" href="https://docs.cumulo-nimbus.ai/guides/hardware-build-eink" hreflang="x-default"><script data-rh="true" type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Build: E-paper + knob","item":"https://docs.cumulo-nimbus.ai/guides/hardware-build-eink"}]}</script><link rel="stylesheet" href="/assets/css/styles.5ae419b2.css">
+<script src="/assets/js/runtime~main.e74ebefa.js" defer="defer"></script>
+<script src="/assets/js/main.92f144b6.js" defer="defer"></script>
+</head>
+<body>
+<svg style="display: none;"><defs>
+<symbol id="theme-svg-external-link" viewBox="0 0 24 24"><path fill="currentColor" d="M21 13v10h-21v-19h12v2h-10v15h17v-8h2zm3-12h-10.988l4.035 4-6.977 7.07 2.828 2.828 6.977-7.07 4.125 4.172v-11z"/></symbol>
+</defs></svg>
+<script>!function(){var t=function(){try{return new URLSearchParams(window.location.search).get("docusaurus-theme")}catch(t){}}()||function(){try{return window.localStorage.getItem("theme")}catch(t){}}();document.documentElement.setAttribute("data-theme",t||(window.matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light")),document.documentElement.setAttribute("data-theme-choice",t||"system")}(),function(){try{const c=new URLSearchParams(window.location.search).entries();for(var[t,e]of c)if(t.startsWith("docusaurus-data-")){var a=t.replace("docusaurus-data-","data-");document.documentElement.setAttribute(a,e)}}catch(t){}}()</script><div id="__docusaurus"><div role="region" aria-label="Skip to main content"><a class="skipToContent_fXgn" href="#__docusaurus_skipToContent_fallback">Skip to main content</a></div><nav aria-label="Main" class="theme-layout-navbar navbar navbar--fixed-top"><div class="navbar__inner"><div class="theme-layout-navbar-left navbar__items"><button aria-label="Toggle navigation bar" aria-expanded="false" class="navbar__toggle clean-btn" type="button"><svg width="30" height="30" viewBox="0 0 30 30" aria-hidden="true"><path stroke="currentColor" stroke-linecap="round" stroke-miterlimit="10" stroke-width="2" d="M4 7h22M4 15h22M4 23h22"></path></svg></button><a class="navbar__brand" href="/"><div class="navbar__logo"><img src="/img/logo.svg" alt="Nimbus" class="themedComponent_mlkZ themedComponent--light_NVdE"><img src="/img/logo.svg" alt="Nimbus" class="themedComponent_mlkZ themedComponent--dark_xIcU"></div><b class="navbar__title text--truncate">Nimbus</b></a><a class="navbar__item navbar__link" href="/quick-start/what-you-need">Get started</a><a class="navbar__item navbar__link" href="/flash">Flash</a></div><div class="theme-layout-navbar-right navbar__items navbar__items--right"><a href="https://github.com/ristllin/Nimbus" target="_blank" rel="noopener noreferrer" class="navbar__item navbar__link">GitHub<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a><div class="toggle_vylO colorModeToggle_DEke"><button class="clean-btn toggleButton_gllP toggleButtonDisabled_aARS" type="button" disabled="" title="system mode" aria-label="Switch between dark and light mode (currently system mode)"><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP lightToggleIcon_pyhR"><path fill="currentColor" d="M12,9c1.65,0,3,1.35,3,3s-1.35,3-3,3s-3-1.35-3-3S10.35,9,12,9 M12,7c-2.76,0-5,2.24-5,5s2.24,5,5,5s5-2.24,5-5 S14.76,7,12,7L12,7z M2,13l2,0c0.55,0,1-0.45,1-1s-0.45-1-1-1l-2,0c-0.55,0-1,0.45-1,1S1.45,13,2,13z M20,13l2,0c0.55,0,1-0.45,1-1 s-0.45-1-1-1l-2,0c-0.55,0-1,0.45-1,1S19.45,13,20,13z M11,2v2c0,0.55,0.45,1,1,1s1-0.45,1-1V2c0-0.55-0.45-1-1-1S11,1.45,11,2z M11,20v2c0,0.55,0.45,1,1,1s1-0.45,1-1v-2c0-0.55-0.45-1-1-1C11.45,19,11,19.45,11,20z M5.99,4.58c-0.39-0.39-1.03-0.39-1.41,0 c-0.39,0.39-0.39,1.03,0,1.41l1.06,1.06c0.39,0.39,1.03,0.39,1.41,0s0.39-1.03,0-1.41L5.99,4.58z M18.36,16.95 c-0.39-0.39-1.03-0.39-1.41,0c-0.39,0.39-0.39,1.03,0,1.41l1.06,1.06c0.39,0.39,1.03,0.39,1.41,0c0.39-0.39,0.39-1.03,0-1.41 L18.36,16.95z M19.42,5.99c0.39-0.39,0.39-1.03,0-1.41c-0.39-0.39-1.03-0.39-1.41,0l-1.06,1.06c-0.39,0.39-0.39,1.03,0,1.41 s1.03,0.39,1.41,0L19.42,5.99z M7.05,18.36c0.39-0.39,0.39-1.03,0-1.41c-0.39-0.39-1.03-0.39-1.41,0l-1.06,1.06 c-0.39,0.39-0.39,1.03,0,1.41s1.03,0.39,1.41,0L7.05,18.36z"></path></svg><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP darkToggleIcon_wfgR"><path fill="currentColor" d="M9.37,5.51C9.19,6.15,9.1,6.82,9.1,7.5c0,4.08,3.32,7.4,7.4,7.4c0.68,0,1.35-0.09,1.99-0.27C17.45,17.19,14.93,19,12,19 c-3.86,0-7-3.14-7-7C5,9.07,6.81,6.55,9.37,5.51z M12,3c-4.97,0-9,4.03-9,9s4.03,9,9,9s9-4.03,9-9c0-0.46-0.04-0.92-0.1-1.36 c-0.98,1.37-2.58,2.26-4.4,2.26c-2.98,0-5.4-2.42-5.4-5.4c0-1.81,0.89-3.42,2.26-4.4C12.92,3.04,12.46,3,12,3L12,3z"></path></svg><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP systemToggleIcon_QzmC"><path fill="currentColor" d="m12 21c4.971 0 9-4.029 9-9s-4.029-9-9-9-9 4.029-9 9 4.029 9 9 9zm4.95-13.95c1.313 1.313 2.05 3.093 2.05 4.95s-0.738 3.637-2.05 4.95c-1.313 1.313-3.093 2.05-4.95 2.05v-14c1.857 0 3.637 0.737 4.95 2.05z"></path></svg></button></div><div class="navbarSearchContainer_Bca1"></div></div></div><div role="presentation" class="navbar-sidebar__backdrop"></div></nav><div id="__docusaurus_skipToContent_fallback" class="theme-layout-main main-wrapper mainWrapper_z2l0"><div class="docsWrapper_hBAB"><button aria-label="Scroll back to top" class="clean-btn theme-back-to-top-button backToTopButton_sjWU" type="button"></button><div class="docRoot_UBD9"><aside class="theme-doc-sidebar-container docSidebarContainer_YfHR"><div class="sidebarViewport_aRkj"><div class="sidebar_njMd"><nav aria-label="Docs sidebar" class="menu thin-scrollbar menu_SIkG"><ul class="theme-doc-sidebar-menu menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/"><span class="linkLabel_WmDU">Overview</span></a></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="true" href="/quick-start/what-you-need"><span class="categoryLinkLabel_W154">Quick Start</span></a></div><ul class="menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/what-you-need"><span class="linkLabel_WmDU">What you need</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/flash"><span class="linkLabel_WmDU">Flash the firmware</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/setup-wizard"><span class="linkLabel_WmDU">Set up the device</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/first-conversation"><span class="linkLabel_WmDU">First conversation</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/quick-start/notifier-quick-start"><span class="linkLabel_WmDU">Notifier quick start</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/getting-started/first-time-setup"><span class="linkLabel_WmDU">First-time setup</span></a></li></ul></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret menu__link--active" role="button" aria-expanded="true" href="/guides/hardware"><span class="categoryLinkLabel_W154">Hardware Build</span></a></div><ul class="menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/hardware"><span class="linkLabel_WmDU">Hardware overview</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/hardware-bom"><span class="linkLabel_WmDU">Bill of materials</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link menu__link--active" aria-current="page" tabindex="0" href="/guides/hardware-build-eink"><span class="linkLabel_WmDU">Build: E-paper + knob</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/hardware-build-tft"><span class="linkLabel_WmDU">Build: Touch TFT</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/hardware-eink-knob"><span class="linkLabel_WmDU">HW: E-paper + knob</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/guides/hardware-touch-tft"><span class="linkLabel_WmDU">HW: Touch TFT</span></a></li></ul></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/getting-started/webui-reference"><span class="categoryLinkLabel_W154">Using Nimbus</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/guides/architecture"><span class="categoryLinkLabel_W154">How It Works</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/reference/config-and-nvs"><span class="categoryLinkLabel_W154">Reference</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/contributing/development"><span class="categoryLinkLabel_W154">Forking &amp; Contributing</span></a></div></li></ul></nav></div></div></aside><main class="docMainContainer_TBSr"><div class="container padding-top--md padding-bottom--lg"><div class="row"><div class="col docItemCol_VOVn"><div class="docItemContainer_Djhp"><article><nav class="theme-doc-breadcrumbs breadcrumbsContainer_Z_bl" aria-label="Breadcrumbs"><ul class="breadcrumbs"><li class="breadcrumbs__item"><a aria-label="Home page" class="breadcrumbs__link" href="/"><svg viewBox="0 0 24 24" class="breadcrumbHomeIcon_YNFT"><path d="M10 19v-5h4v5c0 .55.45 1 1 1h3c.55 0 1-.45 1-1v-7h1.7c.46 0 .68-.57.33-.87L12.67 3.6c-.38-.34-.96-.34-1.34 0l-8.36 7.53c-.34.3-.13.87.33.87H5v7c0 .55.45 1 1 1h3c.55 0 1-.45 1-1z" fill="currentColor"></path></svg></a></li><li class="breadcrumbs__item"><span class="breadcrumbs__link">Hardware Build</span></li><li class="breadcrumbs__item breadcrumbs__item--active"><span class="breadcrumbs__link">Build: E-paper + knob</span></li></ul></nav><div class="tocCollapsible_ETCw theme-doc-toc-mobile tocMobile_ITEo"><button type="button" class="clean-btn tocCollapsibleButton_TO0P">On this page</button></div><div class="theme-doc-markdown markdown"><blockquote>
+<p>Sourced from <code>docs/hardware/build-eink.md</code> in the firmware repo.</p>
+</blockquote>
+<header><h1>Build Guide - E-Paper + Knob</h1></header>
+<p>How to construct the default Nimbus configuration from parts: a 2.9&quot; SSD1680
+e-paper panel with an EC11 rotary knob on the Solide S3 board
+(ESP32-S3-DevKitC-1 N16R8). This is the shipped build - a fresh or erased
+device boots as <code>screenModel = eink</code>.</p>
+<p><img decoding="async" loading="lazy" alt="Assembled e-paper Nimbus" src="/assets/images/eink-front-54ff27b5c0ce33d713db0c2b4854cabc.webp" width="825" height="1100" class="img_ev3q"></p>
+<p>This page is the assembly walk-through. The companion pages:</p>
+<ul>
+<li class=""><a class="" href="/guides/hardware-eink-knob">E-paper + knob reference</a> - the pinout drawing and
+display/input pin table for this configuration.</li>
+<li class=""><a class="" href="/guides/hardware">Hardware reference</a> - everything common to both
+configurations: first flash, shared peripherals, power, battery sensing.</li>
+<li class=""><a class="" href="/guides/hardware-build-tft">Touch TFT build guide</a> - the other configuration.</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="bill-of-materials">Bill of materials<a href="#bill-of-materials" class="hash-link" aria-label="Direct link to Bill of materials" title="Direct link to Bill of materials" translate="no">​</a></h2>
+<p>All commodity parts; any listing matching the <strong>Module / chip</strong> column works.
+Prices are approximate street prices in USD, excluding shipping. The
+consolidated parts list for both configurations, with the shared-parts
+breakdown and safety notes, is the <strong><a class="" href="/guides/hardware-bom">bill of materials</a></strong>.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Qty</th><th>Part</th><th>Module / chip</th><th>Notes</th><th>Purchase</th><th>~Price</th></tr></thead><tbody><tr><td>1</td><td>Dev board</td><td><strong>ESP32-S3-DevKitC-1 N16R8</strong></td><td>16 MB QIO flash, 8 MB octal PSRAM. The N16R8 variant specifically - octal PSRAM occupies GPIO 33–37.</td><td><a href="https://www.aliexpress.com/w/wholesale-esp32-s3-devkitc-1-n16r8.html" target="_blank" rel="noopener noreferrer" class="">AliExpress</a> · <a href="https://www.mouser.com/c/?q=ESP32-S3-DevKitC-1-N16R8" target="_blank" rel="noopener noreferrer" class="">Mouser</a></td><td>$12</td></tr><tr><td>1</td><td>Display</td><td><strong>WeAct 2.9&quot; 3-color e-paper (SSD1680)</strong>, 296×128</td><td>B/W + red panel; the firmware drives it in fast B/W (~2.2 s refresh).</td><td><a href="https://weactstudio.aliexpress.com" target="_blank" rel="noopener noreferrer" class="">WeAct Studio official store</a></td><td>$9</td></tr><tr><td>1</td><td>Knob</td><td><strong>EC11 rotary encoder</strong> with push switch</td><td>3-pin side + 2-pin side, five unmarked pins - see the trap below.</td><td><a href="https://www.aliexpress.com/w/wholesale-ec11-rotary-encoder.html" target="_blank" rel="noopener noreferrer" class="">AliExpress</a></td><td>$1</td></tr><tr><td>1</td><td>LED ring</td><td><strong>WS2812B ring, 45 pixels</strong></td><td>Addressable RGB; 5 V power, 3.3 V logic.</td><td><a href="https://www.aliexpress.com/w/wholesale-ws2812b-led-ring.html" target="_blank" rel="noopener noreferrer" class="">AliExpress</a></td><td>$6</td></tr><tr><td>1</td><td>Amp</td><td><strong>MAX98357A I²S amplifier</strong> breakout</td><td>Class-D, built-in thermal and over-current protection.</td><td><a href="https://www.adafruit.com/product/3006" target="_blank" rel="noopener noreferrer" class="">Adafruit 3006</a> · <a href="https://www.aliexpress.com/w/wholesale-max98357a.html" target="_blank" rel="noopener noreferrer" class="">AliExpress</a></td><td>$2–6</td></tr><tr><td>1</td><td>Speaker</td><td><strong>4 Ω · 3 W · ~40 mm</strong> full-range</td><td>The standard MAX98357A pairing; any small 4 Ω 3 W driver (28–45 mm) works.</td><td><a href="https://www.aliexpress.com/w/wholesale-40mm-4ohm-3w-speaker.html" target="_blank" rel="noopener noreferrer" class="">AliExpress</a></td><td>$2</td></tr><tr><td>1</td><td>Mic</td><td><strong>INMP441</strong> or <strong>ICS-43434</strong> I²S MEMS mic breakout</td><td>Separate breakout from the amp. <strong>3.3 V only</strong> - 5 V damages the S3.</td><td><a href="https://www.aliexpress.com/w/wholesale-inmp441-i2s.html" target="_blank" rel="noopener noreferrer" class="">AliExpress</a></td><td>$2</td></tr><tr><td>1</td><td>Storage</td><td><strong>microSD module (SPI)</strong> + microSD card</td><td>Card must be formatted <strong>FAT32</strong> - see the trap below.</td><td><a href="https://www.aliexpress.com/w/wholesale-micro-sd-card-module-spi.html" target="_blank" rel="noopener noreferrer" class="">AliExpress</a> + any 16–32 GB card</td><td>$6</td></tr><tr><td>2</td><td>Cells</td><td><strong>18650 Li-ion</strong></td><td>Wired in <strong>series</strong> (2S). Brand-name cells from a reputable vendor only. Reference pack: owner-measured 3500 mAh, 8.40 V full.</td><td><a href="https://www.18650batterystore.com/" target="_blank" rel="noopener noreferrer" class="">18650batterystore.com</a></td><td>$12</td></tr><tr><td>1</td><td>Charger/protection</td><td><strong>2S BMS with USB-C charging</strong></td><td>Protection + balance + charging in one module.</td><td><a href="https://www.aliexpress.com/w/wholesale-2s-bms-usb-c-charging-board.html" target="_blank" rel="noopener noreferrer" class="">AliExpress</a></td><td>$3</td></tr><tr><td>1</td><td>Regulator</td><td><strong>DC-DC converter → 5 V</strong></td><td>From the 2S pack (~6.0–8.4 V) to a clean 5 V bus, ≥2 A.</td><td><a href="https://www.aliexpress.com/w/wholesale-dc-dc-buck-converter-5v-3a.html" target="_blank" rel="noopener noreferrer" class="">AliExpress</a></td><td>$2</td></tr><tr><td>1 each</td><td>Battery sense</td><td>220 kΩ + 100 kΩ resistors</td><td>Optional but recommended - the pack-voltage divider on GPIO 4.</td><td>any electronics supplier</td><td>$1</td></tr><tr><td>-</td><td>Misc</td><td>wire, protoboard/PCB, JST connectors; optional 330 Ω resistor (LED DIN) and 1000 µF capacitor (ring 5 V/GND)</td><td>The resistor and capacitor improve LED reliability on long runs.</td><td><a href="https://www.aliexpress.com/w/wholesale-jst-connector-kit-protoboard.html" target="_blank" rel="noopener noreferrer" class="">AliExpress</a></td><td>$5</td></tr></tbody></table>
+<p><strong>Total: ≈ $61–65</strong> (AliExpress-class sourcing; US distributors add ~$15–25).</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="power-architecture">Power architecture<a href="#power-architecture" class="hash-link" aria-label="Direct link to Power architecture" title="Direct link to Power architecture" translate="no">​</a></h2>
+<!-- -->
+<ul>
+<li class=""><strong>On battery:</strong> the DC-DC 5 V bus feeds the ESP32&#x27;s VIN; the DevKit&#x27;s
+on-board regulator makes the 3.3 V rail. USB-C on the BMS charges the pack.</li>
+<li class=""><strong>On USB alone (development):</strong> the DevKit runs from USB - the MCU, e-paper,
+SD, encoder, and mic all work. The <strong>LED ring will not light and the speaker
+will not drive audibly without the 5 V bus</strong>, which is the pack path.</li>
+<li class=""><strong>Every ground is common</strong> - tie all GNDs together: cells, BMS, DC-DC,
+ESP32, and every module.</li>
+<li class="">⚠ <strong>The mic VCC is 3.3 V only.</strong> Its VDD and data lines follow VCC, and 5 V
+damages the S3&#x27;s input. Never put the mic on the 5 V bus.</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="wiring">Wiring<a href="#wiring" class="hash-link" aria-label="Direct link to Wiring" title="Direct link to Wiring" translate="no">​</a></h2>
+<p>The whole build at block level - each peripheral with its bus and rail, and
+the battery chain along the bottom (the pin-by-pin tables follow):</p>
+<p><img decoding="async" loading="lazy" alt="Block-level wiring of the e-paper build: e-paper, encoder, microSD, battery sense on the left; LED ring, amp and mic on the right; USB-C to BMS to 2S pack to DC-DC to the 5 V bus along the bottom" src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMTgwIDgzMCIgZm9udC1mYW1pbHk9InVpLXNhbnMtc2VyaWYsc3lzdGVtLXVpLEFyaWFsIiBmb250LXNpemU9IjEzIj4KICA8c3R5bGU+CiAgICAudGl0bGV7Zm9udC13ZWlnaHQ6NzAwO2ZvbnQtc2l6ZToxNHB4fQogICAgLnBpbntmb250LWZhbWlseTp1aS1tb25vc3BhY2UsTWVubG8sbW9ub3NwYWNlO2ZvbnQtc2l6ZToxMnB4fQogICAgLnJhaWx7Zm9udC1zaXplOjExcHg7ZmlsbDojNTU1fQogICAgLmxlYWR7c3Ryb2tlOiM5YWE7c3Ryb2tlLXdpZHRoOjEuNTtmaWxsOm5vbmV9CiAgICAubm90ZXtmb250LXNpemU6MTFweDtmaWxsOiM0NDR9CiAgICAucDV7c3Ryb2tlOiNkYzI2MjY7c3Ryb2tlLXdpZHRoOjIuNTtmaWxsOm5vbmV9CiAgICAucDMze3N0cm9rZTojMTZhMzRhO3N0cm9rZS13aWR0aDoyLjU7ZmlsbDpub25lfQogIDwvc3R5bGU+CgogIDxyZWN0IHdpZHRoPSIxMTgwIiBoZWlnaHQ9IjgzMCIgZmlsbD0iI2ZiZmJmZCIvPgogIDx0ZXh0IHg9IjU5MCIgeT0iMzAiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGNsYXNzPSJ0aXRsZSIgZm9udC1zaXplPSIyMCI+TmltYnVzIHdpcmluZyBibG9ja3MgLSBlLXBhcGVyICsga25vYiBidWlsZDwvdGV4dD4KICA8dGV4dCB4PSI1OTAiIHk9IjUwIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBjbGFzcz0ibm90ZSI+YmxvY2stbGV2ZWwgdmlldzogZXZlcnkgcGVyaXBoZXJhbCwgaXRzIGJ1cyArIHBpbiBncm91cCwgYW5kIHdoaWNoIHJhaWwgZmVlZHMgaXQgwrcgZXhhY3QgcGluIHRhYmxlczogYnVpbGQtZWluay5tZCDCtyBwaW5vdXQ6IHBpbm91dC1laW5rLnN2ZzwvdGV4dD4KICA8cmVjdCB4PSI0NzAiIHk9IjI3MCIgd2lkdGg9IjI0MCIgaGVpZ2h0PSIxOTAiIHJ4PSIxMCIgZmlsbD0iI2VlZjJmZiIgc3Ryb2tlPSIjNGY0NmU1IiBzdHJva2Utd2lkdGg9IjIiLz4KICA8dGV4dCB4PSI0ODIiIHk9IjI5MiIgY2xhc3M9InRpdGxlIiBmaWxsPSIjMzczMGEzIj5FU1AzMi1TMyBEZXZLaXQ8L3RleHQ+CiAgPHRleHQgeD0iNDgyIiB5PSIzMTIiIGNsYXNzPSJub3RlIj5OMTZSOCDCtyAxNiBNQiBmbGFzaCDCtyA4IE1CIFBTUkFNPC90ZXh0PgogIDx0ZXh0IHg9IjQ4MiIgeT0iMzMwIiBjbGFzcz0ibm90ZSI+cnVucyBmcm9tIHRoZSA1IFYgYnVzIChWSU4pPC90ZXh0PgogIDx0ZXh0IHg9IjQ4MiIgeT0iMzQ4IiBjbGFzcz0ibm90ZSI+b3IgVVNCLUMgZHVyaW5nIGRldmVsb3BtZW50PC90ZXh0PgogIDx0ZXh0IHg9IjQ4MiIgeT0iMzY2IiBjbGFzcz0icGluIj5vbi1ib2FyZCBMRE8g4oaSIDMuMyBWIHJhaWw8L3RleHQ+CiAgPHRleHQgeD0iNDgyIiB5PSIzODQiIGNsYXNzPSJyYWlsIj4zLjMgViBmZWVkcyBldmVyeSBsb2dpYy1sZXZlbDwvdGV4dD4KICA8dGV4dCB4PSI0ODIiIHk9IjQwMiIgY2xhc3M9InJhaWwiPnBlcmlwaGVyYWwgYmVsb3c8L3RleHQ+CiAgPHJlY3QgeD0iNjEyIiB5PSIyNzkiIHdpZHRoPSI4OCIgaGVpZ2h0PSIxOCIgcng9IjkiIGZpbGw9IiMxNmEzNGEiLz4KICA8dGV4dCB4PSI2NTYiIHk9IjI5MiIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1zaXplPSIxMSIgZm9udC13ZWlnaHQ9IjcwMCIgZmlsbD0iI2ZmZmZmZiI+M1YzIHNvdXJjZTwvdGV4dD4KICA8cmVjdCB4PSI3MCIgeT0iODAiIHdpZHRoPSIzMzAiIGhlaWdodD0iMTA4IiByeD0iMTAiIGZpbGw9IiNlMGYyZmUiIHN0cm9rZT0iIzAyODRjNyIgc3Ryb2tlLXdpZHRoPSIyIi8+CiAgPHRleHQgeD0iODIiIHk9IjEwMiIgY2xhc3M9InRpdGxlIiBmaWxsPSIjMDc1OTg1Ij5FLXBhcGVyIDIuOeKAsyBTU0QxNjgwPC90ZXh0PgogIDx0ZXh0IHg9IjgyIiB5PSIxMjIiIGNsYXNzPSJwaW4iPlNQSTMgwrcgTU9TSSAzOSDCtyBTQ0sgMzggwrcgQ1MgNDA8L3RleHQ+CiAgPHRleHQgeD0iODIiIHk9IjE0MCIgY2xhc3M9InBpbiI+RC9DIDQxIMK3IFJFUyA0MiDCtyBCVVNZIDQ3PC90ZXh0PgogIDx0ZXh0IHg9IjgyIiB5PSIxNTgiIGNsYXNzPSJub3RlIj5tb2R1bGUgc2lsayBzYXlzIFNEQS9TQ0wgLSBpdCBpcyBTUEk8L3RleHQ+CiAgPHJlY3QgeD0iMzYxIiB5PSI4OSIgd2lkdGg9IjI5IiBoZWlnaHQ9IjE4IiByeD0iOSIgZmlsbD0iIzE2YTM0YSIvPgogIDx0ZXh0IHg9IjM3NS41IiB5PSIxMDIiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtc2l6ZT0iMTEiIGZvbnQtd2VpZ2h0PSI3MDAiIGZpbGw9IiNmZmZmZmYiPjNWMzwvdGV4dD4KICA8cmVjdCB4PSI3MCIgeT0iMjEyIiB3aWR0aD0iMzMwIiBoZWlnaHQ9IjEwNiIgcng9IjEwIiBmaWxsPSIjZmVmOWMzIiBzdHJva2U9IiNjYThhMDQiIHN0cm9rZS13aWR0aD0iMiIvPgogIDx0ZXh0IHg9IjgyIiB5PSIyMzQiIGNsYXNzPSJ0aXRsZSIgZmlsbD0iIzg1NGQwZSI+RUMxMSByb3Rhcnkga25vYjwvdGV4dD4KICA8dGV4dCB4PSI4MiIgeT0iMjU0IiBjbGFzcz0icGluIj5BIOKGkiAxIMK3IEIg4oaSIDIgwrcgU1cg4oaSIDQ4PC90ZXh0PgogIDx0ZXh0IHg9IjgyIiB5PSIyNzIiIGNsYXNzPSJwaW4iPmNvbW1vbiArIG90aGVyIFNXIHBpbiDihpIgR05EPC90ZXh0PgogIDx0ZXh0IHg9IjgyIiB5PSIyOTAiIGNsYXNzPSJub3RlIj5maXJtd2FyZSBwdWxsLXVwcyAtIG5vIHJlc2lzdG9yczwvdGV4dD4KICA8cmVjdCB4PSIzNjEiIHk9IjIyMSIgd2lkdGg9IjI5IiBoZWlnaHQ9IjE4IiByeD0iOSIgZmlsbD0iIzY0NzQ4YiIvPgogIDx0ZXh0IHg9IjM3NS41IiB5PSIyMzQiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtc2l6ZT0iMTEiIGZvbnQtd2VpZ2h0PSI3MDAiIGZpbGw9IiNmZmZmZmYiPkdORDwvdGV4dD4KICA8bGluZSBjbGFzcz0ibGVhZCIgeDE9IjQwMCIgeTE9IjEzMCIgeDI9IjQ3MCIgeTI9IjMwMCIvPgogIDxsaW5lIGNsYXNzPSJsZWFkIiB4MT0iNDAwIiB5MT0iMjYyIiB4Mj0iNDcwIiB5Mj0iMzQwIi8+CiAgPHJlY3QgeD0iNzAiIHk9IjM0NCIgd2lkdGg9IjMzMCIgaGVpZ2h0PSI4OCIgcng9IjEwIiBmaWxsPSIjZGNmY2U3IiBzdHJva2U9IiMxNmEzNGEiIHN0cm9rZS13aWR0aD0iMiIvPgogIDx0ZXh0IHg9IjgyIiB5PSIzNjYiIGNsYXNzPSJ0aXRsZSIgZmlsbD0iIzE2NjUzNCI+bWljcm9TRCAoU1BJMiAtIGl0cyBvd24gYnVzKTwvdGV4dD4KICA8dGV4dCB4PSI4MiIgeT0iMzg2IiBjbGFzcz0icGluIj5DUyAxMCDCtyBNT1NJIDExIMK3IFNDSyAxMiDCtyBNSVNPIDEzPC90ZXh0PgogIDx0ZXh0IHg9IjgyIiB5PSI0MDQiIGNsYXNzPSJub3RlIj5GQVQzMiBjYXJkIMK3IHNoYXJlcyBvbmx5IDNWMyArIEdORDwvdGV4dD4KICA8cmVjdCB4PSIzNjEiIHk9IjM1MyIgd2lkdGg9IjI5IiBoZWlnaHQ9IjE4IiByeD0iOSIgZmlsbD0iIzE2YTM0YSIvPgogIDx0ZXh0IHg9IjM3NS41IiB5PSIzNjYiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtc2l6ZT0iMTEiIGZvbnQtd2VpZ2h0PSI3MDAiIGZpbGw9IiNmZmZmZmYiPjNWMzwvdGV4dD4KICA8bGluZSBjbGFzcz0ibGVhZCIgeDE9IjQwMCIgeTE9IjM4OCIgeDI9IjQ3MCIgeTI9IjM5MCIvPgogIDxyZWN0IHg9IjcwIiB5PSI0NTgiIHdpZHRoPSIzMzAiIGhlaWdodD0iMTA2IiByeD0iMTAiIGZpbGw9IiNmZmU0ZTYiIHN0cm9rZT0iI2UxMWQ0OCIgc3Ryb2tlLXdpZHRoPSIyIi8+CiAgPHRleHQgeD0iODIiIHk9IjQ4MCIgY2xhc3M9InRpdGxlIiBmaWxsPSIjOWYxMjM5Ij5CYXR0ZXJ5IHNlbnNlIChvcHRpb25hbCk8L3RleHQ+CiAgPHRleHQgeD0iODIiIHk9IjUwMCIgY2xhc3M9InBpbiI+cGFjayBCQVQrIOKGkiAyMjAgayDihpIgbm9kZSDihpIgMTAwIGsg4oaSIEdORDwvdGV4dD4KICA8dGV4dCB4PSI4MiIgeT0iNTE4IiBjbGFzcz0icGluIj5ub2RlIOKGkiBHUElPIDQgKEFEQzEpPC90ZXh0PgogIDx0ZXh0IHg9IjgyIiB5PSI1MzYiIGNsYXNzPSJub3RlIj50YXBzIHRoZSBQQUNLLCBiZWZvcmUgdGhlIERDLURDPC90ZXh0PgogIDxsaW5lIGNsYXNzPSJsZWFkIiB4MT0iNDAwIiB5MT0iNTA1IiB4Mj0iNDcwIiB5Mj0iNDMwIi8+CiAgPHJlY3QgeD0iODAwIiB5PSI4MCIgd2lkdGg9IjMxMCIgaGVpZ2h0PSI5MiIgcng9IjEwIiBmaWxsPSIjZjNlOGZmIiBzdHJva2U9IiM5MzMzZWEiIHN0cm9rZS13aWR0aD0iMiIvPgogIDx0ZXh0IHg9IjgxMiIgeT0iMTAyIiBjbGFzcz0idGl0bGUiIGZpbGw9IiM2YjIxYTgiPkxFRCByaW5nIFdTMjgxMkIgw5c0NTwvdGV4dD4KICA8dGV4dCB4PSI4MTIiIHk9IjEyMiIgY2xhc3M9InBpbiI+RElOIOKGkiAyMSAoMzMwIM6pIGluIHNlcmllcyBpcyB3aXNlKTwvdGV4dD4KICA8dGV4dCB4PSI4MTIiIHk9IjE0MCIgY2xhc3M9Im5vdGUiPjUgViBwb3dlciDCtyAzLjMgViBsb2dpYzwvdGV4dD4KICA8cmVjdCB4PSIxMDc4IiB5PSI4OSIgd2lkdGg9IjIyIiBoZWlnaHQ9IjE4IiByeD0iOSIgZmlsbD0iI2RjMjYyNiIvPgogIDx0ZXh0IHg9IjEwODkuMCIgeT0iMTAyIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LXNpemU9IjExIiBmb250LXdlaWdodD0iNzAwIiBmaWxsPSIjZmZmZmZmIj41VjwvdGV4dD4KICA8bGluZSBjbGFzcz0ibGVhZCIgeDE9IjgwMCIgeTE9IjEyMiIgeDI9IjcxMCIgeTI9IjMxMCIvPgogIDxyZWN0IHg9IjgwMCIgeT0iMTk2IiB3aWR0aD0iMzEwIiBoZWlnaHQ9IjEwNiIgcng9IjEwIiBmaWxsPSIjZmZlZGQ1IiBzdHJva2U9IiNlYTU4MGMiIHN0cm9rZS13aWR0aD0iMiIvPgogIDx0ZXh0IHg9IjgxMiIgeT0iMjE4IiBjbGFzcz0idGl0bGUiIGZpbGw9IiM5YTM0MTIiPkFtcCBNQVg5ODM1N0EgKyBzcGVha2VyPC90ZXh0PgogIDx0ZXh0IHg9IjgxMiIgeT0iMjM4IiBjbGFzcz0icGluIj5JwrJTIMK3IEJDTEsgNyDCtyBMUkNMSyA4IMK3IERJTiAxNzwvdGV4dD4KICA8dGV4dCB4PSI4MTIiIHk9IjI1NiIgY2xhc3M9InBpbiI+c3BlYWtlcjogNCDOqSDCtyAzIFc8L3RleHQ+CiAgPHRleHQgeD0iODEyIiB5PSIyNzQiIGNsYXNzPSJub3RlIj5WQ0MgM1YzIChvciA1IFYgYnVzIGZvciBsb3VkZXIpPC90ZXh0PgogIDxyZWN0IHg9IjEwNzEiIHk9IjIwNSIgd2lkdGg9IjI5IiBoZWlnaHQ9IjE4IiByeD0iOSIgZmlsbD0iIzE2YTM0YSIvPgogIDx0ZXh0IHg9IjEwODUuNSIgeT0iMjE4IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LXNpemU9IjExIiBmb250LXdlaWdodD0iNzAwIiBmaWxsPSIjZmZmZmZmIj4zVjM8L3RleHQ+CiAgPGxpbmUgY2xhc3M9ImxlYWQiIHgxPSI4MDAiIHkxPSIyNDUiIHgyPSI3MTAiIHkyPSIzNTAiLz4KICA8cmVjdCB4PSI4MDAiIHk9IjMyNiIgd2lkdGg9IjMxMCIgaGVpZ2h0PSIxMDYiIHJ4PSIxMCIgZmlsbD0iI2NmZmFmZSIgc3Ryb2tlPSIjMDg5MWIyIiBzdHJva2Utd2lkdGg9IjIiLz4KICA8dGV4dCB4PSI4MTIiIHk9IjM0OCIgY2xhc3M9InRpdGxlIiBmaWxsPSIjMTU1ZTc1Ij5JwrJTIE1FTVMgbWljPC90ZXh0PgogIDx0ZXh0IHg9IjgxMiIgeT0iMzY4IiBjbGFzcz0icGluIj5CQ0xLIDE1IMK3IFdTIDE4IMK3IFNEIDE2PC90ZXh0PgogIDx0ZXh0IHg9IjgxMiIgeT0iMzg2IiBjbGFzcz0icGluIj5ML1Ig4oaSIEdORCAobGVmdCBzbG90KTwvdGV4dD4KICA8dGV4dCB4PSI4MTIiIHk9IjQwNCIgY2xhc3M9Im5vdGUiPuKaoCBWREQgMy4zIFYgT05MWSAtIDUgViBkYW1hZ2VzIHRoZSBTMzwvdGV4dD4KICA8cmVjdCB4PSIxMDM2IiB5PSIzMzUiIHdpZHRoPSI2NCIgaGVpZ2h0PSIxOCIgcng9IjkiIGZpbGw9IiMxNmEzNGEiLz4KICA8dGV4dCB4PSIxMDY4LjAiIHk9IjM0OCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1zaXplPSIxMSIgZm9udC13ZWlnaHQ9IjcwMCIgZmlsbD0iI2ZmZmZmZiI+M1YzIE9OTFk8L3RleHQ+CiAgPGxpbmUgY2xhc3M9ImxlYWQiIHgxPSI4MDAiIHkxPSIzNzUiIHgyPSI3MTAiIHkyPSI0MDAiLz4KICA8cmVjdCB4PSI3MCIgeT0iNjQwIiB3aWR0aD0iMTUwIiBoZWlnaHQ9IjY0IiByeD0iMTAiIGZpbGw9IiNmMWY1ZjkiIHN0cm9rZT0iIzQ3NTU2OSIgc3Ryb2tlLXdpZHRoPSIyIi8+CiAgPHRleHQgeD0iMTQ1IiB5PSI2NjYiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGNsYXNzPSJ0aXRsZSIgZmlsbD0iIzMzNDE1NSI+VVNCLUM8L3RleHQ+CiAgPHRleHQgeD0iMTQ1IiB5PSI2ODYiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGNsYXNzPSJyYWlsIj5jaGFyZ2UgaW5wdXQ8L3RleHQ+CiAgPHJlY3QgeD0iMjUwIiB5PSI2NDAiIHdpZHRoPSIxNTAiIGhlaWdodD0iNjQiIHJ4PSIxMCIgZmlsbD0iI2YxZjVmOSIgc3Ryb2tlPSIjNDc1NTY5IiBzdHJva2Utd2lkdGg9IjIiLz4KICA8dGV4dCB4PSIzMjUiIHk9IjY2NiIgdGV4dC1hbmNob3I9Im1pZGRsZSIgY2xhc3M9InRpdGxlIiBmaWxsPSIjMzM0MTU1Ij4yUyBCTVM8L3RleHQ+CiAgPHRleHQgeD0iMzI1IiB5PSI2ODYiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGNsYXNzPSJyYWlsIj5jaGFyZ2UgKyBwcm90ZWN0ICsgYmFsYW5jZTwvdGV4dD4KICA8cmVjdCB4PSI0MzAiIHk9IjY0MCIgd2lkdGg9IjE1MCIgaGVpZ2h0PSI2NCIgcng9IjEwIiBmaWxsPSIjZjFmNWY5IiBzdHJva2U9IiM0NzU1NjkiIHN0cm9rZS13aWR0aD0iMiIvPgogIDx0ZXh0IHg9IjUwNSIgeT0iNjY2IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBjbGFzcz0idGl0bGUiIGZpbGw9IiMzMzQxNTUiPjLDlzE4NjUwIHBhY2s8L3RleHQ+CiAgPHRleHQgeD0iNTA1IiB5PSI2ODYiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGNsYXNzPSJyYWlsIj42LjDigJM4LjQgVjwvdGV4dD4KICA8cmVjdCB4PSI2MTAiIHk9IjY0MCIgd2lkdGg9IjE1MCIgaGVpZ2h0PSI2NCIgcng9IjEwIiBmaWxsPSIjZjFmNWY5IiBzdHJva2U9IiM0NzU1NjkiIHN0cm9rZS13aWR0aD0iMiIvPgogIDx0ZXh0IHg9IjY4NSIgeT0iNjY2IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBjbGFzcz0idGl0bGUiIGZpbGw9IiMzMzQxNTUiPkRDLURDIOKGkiA1IFY8L3RleHQ+CiAgPHRleHQgeD0iNjg1IiB5PSI2ODYiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGNsYXNzPSJyYWlsIj7iiaUyIEEgYnVjazwvdGV4dD4KICA8cmVjdCB4PSI3OTAiIHk9IjY0MCIgd2lkdGg9IjE1MCIgaGVpZ2h0PSI2NCIgcng9IjEwIiBmaWxsPSIjZmVlMmUyIiBzdHJva2U9IiNkYzI2MjYiIHN0cm9rZS13aWR0aD0iMiIvPgogIDx0ZXh0IHg9Ijg2NSIgeT0iNjY2IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBjbGFzcz0idGl0bGUiIGZpbGw9IiMzMzQxNTUiPjUgViBidXM8L3RleHQ+CiAgPHRleHQgeD0iODY1IiB5PSI2ODYiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGNsYXNzPSJyYWlsIj5yaW5nICs1ViDCtyBFU1AzMiBWSU48L3RleHQ+CiAgPGxpbmUgY2xhc3M9ImxlYWQiIHgxPSIyMjAiIHkxPSI2NzIiIHgyPSIyNTAiIHkyPSI2NzIiLz4KICA8cGF0aCBkPSJNIDI0NCA2NjcgTCAyNTAgNjcyIEwgMjQ0IDY3NyIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjOWFhIiBzdHJva2Utd2lkdGg9IjEuNSIvPgogIDxsaW5lIGNsYXNzPSJsZWFkIiB4MT0iNDAwIiB5MT0iNjcyIiB4Mj0iNDMwIiB5Mj0iNjcyIi8+CiAgPHBhdGggZD0iTSA0MjQgNjY3IEwgNDMwIDY3MiBMIDQyNCA2NzciIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzlhYSIgc3Ryb2tlLXdpZHRoPSIxLjUiLz4KICA8bGluZSBjbGFzcz0ibGVhZCIgeDE9IjU4MCIgeTE9IjY3MiIgeDI9IjYxMCIgeTI9IjY3MiIvPgogIDxwYXRoIGQ9Ik0gNjA0IDY2NyBMIDYxMCA2NzIgTCA2MDQgNjc3IiBmaWxsPSJub25lIiBzdHJva2U9IiM5YWEiIHN0cm9rZS13aWR0aD0iMS41Ii8+CiAgPGxpbmUgY2xhc3M9InA1IiB4MT0iNzYwIiB5MT0iNjcyIiB4Mj0iNzkwIiB5Mj0iNjcyIi8+CiAgPHBhdGggZD0iTSA3ODQgNjY3IEwgNzkwIDY3MiBMIDc4NCA2NzciIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2RjMjYyNiIgc3Ryb2tlLXdpZHRoPSIxLjUiLz4KICA8bGluZSBjbGFzcz0icDUiIHgxPSI4NjUiIHkxPSI2NDAiIHgyPSI4NjUiIHkyPSI0NzAiLz4KICA8bGluZSBjbGFzcz0icDUiIHgxPSI4NjUiIHkxPSI0NzAiIHgyPSI3MTAiIHkyPSI0NTUiLz4KICA8bGluZSBjbGFzcz0icDUiIHgxPSI5NDAiIHkxPSI2NzIiIHgyPSIxMTQwIiB5Mj0iNjcyIi8+CiAgPGxpbmUgY2xhc3M9InA1IiB4MT0iMTE0MCIgeTE9IjY3MiIgeDI9IjExNDAiIHkyPSIxMjYiLz4KICA8bGluZSBjbGFzcz0icDUiIHgxPSIxMTQwIiB5MT0iMTI2IiB4Mj0iMTExMCIgeTI9IjEyNiIvPgogIDx0ZXh0IHg9Ijg3NSIgeT0iNTAwIiBjbGFzcz0icmFpbCIgZmlsbD0iI2RjMjYyNiI+NSBWIOKGkiBWSU48L3RleHQ+CiAgPHRleHQgeD0iMTE0OCIgeT0iMjMwIiBjbGFzcz0icmFpbCIgZmlsbD0iI2RjMjYyNiI+NSBWPC90ZXh0PgogIDxsaW5lIGNsYXNzPSJsZWFkIiB4MT0iNTA1IiB5MT0iNjQwIiB4Mj0iNTA1IiB5Mj0iNjEwIi8+CiAgPGxpbmUgY2xhc3M9ImxlYWQiIHgxPSI1MDUiIHkxPSI2MTAiIHgyPSIyNDAiIHkyPSI2MTAiIHN0cm9rZS1kYXNoYXJyYXk9IjQgMyIvPgogIDxsaW5lIGNsYXNzPSJsZWFkIiB4MT0iMjQwIiB5MT0iNjEwIiB4Mj0iMjQwIiB5Mj0iNTY0IiBzdHJva2UtZGFzaGFycmF5PSI0IDMiLz4KICA8dGV4dCB4PSI1MTIiIHk9IjYwNiIgY2xhc3M9InJhaWwiPnBhY2sgdGFwIOKGkiBiYXR0ZXJ5LXNlbnNlIGRpdmlkZXI8L3RleHQ+CiAgPHJlY3QgeD0iNzAiIHk9IjczMCIgd2lkdGg9IjEwNDAiIGhlaWdodD0iNzgiIHJ4PSIxMCIgZmlsbD0iI2ZmZmZmZiIgc3Ryb2tlPSIjY2JkNWUxIi8+CiAgPHRleHQgeD0iODYiIHk9Ijc1NCIgY2xhc3M9Im5vdGUiPjx0c3BhbiBmb250LXdlaWdodD0iNzAwIiBmaWxsPSIjMTZhMzRhIj4zVjM8L3RzcGFuPiA9IHRoZSBEZXZLaXTigJlzIG9uLWJvYXJkIHJlZ3VsYXRvciDCtyA8dHNwYW4gZm9udC13ZWlnaHQ9IjcwMCIgZmlsbD0iI2RjMjYyNiI+NVY8L3RzcGFuPiA9IHRoZSBiYXR0ZXJ5L0RDLURDIGJ1cywgcHJlc2VudCBvbmx5IG9uY2UgdGhlIHBvd2VyIHNlY3Rpb24gaXMgYnVpbHQuPC90ZXh0PgogIDx0ZXh0IHg9Ijg2IiB5PSI3NzIiIGNsYXNzPSJub3RlIj5PbiBVU0IgYWxvbmUgZXZlcnl0aGluZyBydW5zIEVYQ0VQVCB0aGUgTEVEIHJpbmcgKGFuZCB0aGUgc3BlYWtlciBzdGF5cyBxdWlldCkuIEdyYXkgbGluZXMgPSBzaWduYWwgYnVzZXMuPC90ZXh0PgogIDx0ZXh0IHg9Ijg2IiB5PSI3OTAiIGNsYXNzPSJub3RlIj5FdmVyeSBncm91bmQgaXMgY29tbW9uIC0gdGllIGFsbCBHTkRzIHRvZ2V0aGVyOiBjZWxscywgQk1TLCBEQy1EQywgRVNQMzIsIGFuZCBldmVyeSBtb2R1bGUuPC90ZXh0Pgo8L3N2Zz4K" width="1180" height="830" class="img_ev3q"></p>
+<p>Pin numbers are the canonical ones from
+<code>board_solide_s3.h</code> in the
+<a href="https://github.com/ristllin/solide-drivers" target="_blank" rel="noopener noreferrer" class="">solide-drivers</a> board-support
+repository; the tables below are copied from its
+<a href="https://github.com/ristllin/solide-drivers/blob/main/docs/build.md" target="_blank" rel="noopener noreferrer" class="">build guide</a>
+and the <a class="" href="/guides/hardware-eink-knob">e-paper + knob reference</a>. <code>3V3</code>/<code>5V</code>/<code>GND</code> are the
+rails above.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="e-paper-weact-29-ssd1680">E-paper (WeAct 2.9&quot;, SSD1680)<a href="#e-paper-weact-29-ssd1680" class="hash-link" aria-label="Direct link to E-paper (WeAct 2.9&quot;, SSD1680)" title="Direct link to E-paper (WeAct 2.9&quot;, SSD1680)" translate="no">​</a></h3>
+<p>The WeAct silk screen labels the SPI lines I²C-style - <strong>SDA is MOSI and SCL
+is SCK</strong>; the panel is SPI, not I²C.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Module pin</th><th>→</th><th>ESP32</th></tr></thead><tbody><tr><td>VCC</td><td>→</td><td><strong>3V3</strong></td></tr><tr><td>GND</td><td>→</td><td><strong>GND</strong></td></tr><tr><td>SDA (MOSI)</td><td>→</td><td>GPIO <strong>39</strong></td></tr><tr><td>SCL (SCK)</td><td>→</td><td>GPIO <strong>38</strong></td></tr><tr><td>CS</td><td>→</td><td>GPIO <strong>40</strong></td></tr><tr><td>D/C</td><td>→</td><td>GPIO <strong>41</strong></td></tr><tr><td>RES (RST)</td><td>→</td><td>GPIO <strong>42</strong></td></tr><tr><td>BUSY</td><td>→</td><td>GPIO <strong>47</strong></td></tr></tbody></table>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="ec11-rotary-encoder">EC11 rotary encoder<a href="#ec11-rotary-encoder" class="hash-link" aria-label="Direct link to EC11 rotary encoder" title="Direct link to EC11 rotary encoder" translate="no">​</a></h3>
+<p>3-pin side = rotation (A · common · B); 2-pin side = the push switch.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Encoder pin</th><th>→</th><th>ESP32 / rail</th></tr></thead><tbody><tr><td>A (3-pin, outer)</td><td>→</td><td>GPIO <strong>1</strong></td></tr><tr><td>C / common (3-pin, <strong>middle</strong>)</td><td>→</td><td><strong>GND</strong></td></tr><tr><td>B (3-pin, outer)</td><td>→</td><td>GPIO <strong>2</strong></td></tr><tr><td>SW (2-pin)</td><td>→</td><td>GPIO <strong>48</strong></td></tr><tr><td>SW (2-pin, other)</td><td>→</td><td><strong>GND</strong></td></tr></tbody></table>
+<p>Internal pull-ups are enabled in the driver - no external resistors needed.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="microsd-module-spi">microSD module (SPI)<a href="#microsd-module-spi" class="hash-link" aria-label="Direct link to microSD module (SPI)" title="Direct link to microSD module (SPI)" translate="no">​</a></h3>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Module pin</th><th>→</th><th>ESP32</th></tr></thead><tbody><tr><td>VCC (3V3)</td><td>→</td><td><strong>3V3</strong></td></tr><tr><td>GND</td><td>→</td><td><strong>GND</strong></td></tr><tr><td>CS</td><td>→</td><td>GPIO <strong>10</strong></td></tr><tr><td>MOSI (DI)</td><td>→</td><td>GPIO <strong>11</strong></td></tr><tr><td>SCK (CLK)</td><td>→</td><td>GPIO <strong>12</strong></td></tr><tr><td>MISO (DO)</td><td>→</td><td>GPIO <strong>13</strong></td></tr></tbody></table>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="ws2812b-led-ring">WS2812B LED ring<a href="#ws2812b-led-ring" class="hash-link" aria-label="Direct link to WS2812B LED ring" title="Direct link to WS2812B LED ring" translate="no">​</a></h3>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Module pin</th><th>→</th><th>ESP32 / rail</th></tr></thead><tbody><tr><td>+5V</td><td>→</td><td><strong>5 V bus</strong></td></tr><tr><td>GND</td><td>→</td><td><strong>GND</strong> (common)</td></tr><tr><td>DIN</td><td>→</td><td>GPIO <strong>21</strong> (a 330 Ω series resistor on DIN is good practice)</td></tr></tbody></table>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="audio---max98357a-amp--is-mic">Audio - MAX98357A amp + I²S mic<a href="#audio---max98357a-amp--is-mic" class="hash-link" aria-label="Direct link to Audio - MAX98357A amp + I²S mic" title="Direct link to Audio - MAX98357A amp + I²S mic" translate="no">​</a></h3>
+<p>Two separate breakouts. The amp runs at reduced volume on 3.3 V (fine as a
+status speaker); use the 5 V bus for more volume - but never share that VCC
+with the mic.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Module</th><th>Pin</th><th>Role</th><th>→</th><th>ESP32 / rail</th></tr></thead><tbody><tr><td>amp</td><td>VCC</td><td>power</td><td>→</td><td><strong>3V3</strong> (5 V bus for louder)</td></tr><tr><td>amp</td><td>GND</td><td>ground</td><td>→</td><td><strong>GND</strong></td></tr><tr><td>amp</td><td>BCLK</td><td>bit clock</td><td>→</td><td>GPIO <strong>7</strong></td></tr><tr><td>amp</td><td>LRCLK</td><td>word clock</td><td>→</td><td>GPIO <strong>8</strong></td></tr><tr><td>amp</td><td>DIN</td><td>data in</td><td>→</td><td>GPIO <strong>17</strong></td></tr><tr><td>mic</td><td>VDD</td><td>power</td><td>→</td><td><strong>3V3</strong> ⚠ (never 5 V)</td></tr><tr><td>mic</td><td>GND</td><td>ground</td><td>→</td><td><strong>GND</strong></td></tr><tr><td>mic</td><td>BCLK / SCK</td><td>bit clock</td><td>→</td><td>GPIO <strong>15</strong></td></tr><tr><td>mic</td><td>WS / LRCLK</td><td>word select</td><td>→</td><td>GPIO <strong>18</strong></td></tr><tr><td>mic</td><td>SD</td><td>data out</td><td>→</td><td>GPIO <strong>16</strong></td></tr><tr><td>mic</td><td>L/R</td><td>channel select</td><td>→</td><td><strong>GND</strong> (left slot)</td></tr></tbody></table>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="battery-sense-optional-recommended">Battery sense (optional, recommended)<a href="#battery-sense-optional-recommended" class="hash-link" aria-label="Direct link to Battery sense (optional, recommended)" title="Direct link to Battery sense (optional, recommended)" translate="no">​</a></h3>
+<p>A resistor divider from the <strong>pack</strong> - not the regulated 5 V rail, which stays
+flat and tells you nothing about charge - into GPIO 4 (ADC1):</p>
+<!-- -->
+<p>The ÷3.2 ratio scales 8.4 V to ~2.6 V, inside the ADC&#x27;s range; quiescent draw
+is about 26 µA. Enable with <code>-DNIMBUS_HAS_BATTERY_ADC</code>. Full detail, the ADC
+top-band caveat, and the single-cell variant:
+<a class="" href="/guides/hardware#battery-voltage-sampling-how-to-add-it">Battery voltage sampling</a>.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="assembly-walk-through">Assembly walk-through<a href="#assembly-walk-through" class="hash-link" aria-label="Direct link to Assembly walk-through" title="Direct link to Assembly walk-through" translate="no">​</a></h2>
+<p>A photo-by-photo build of an actual Nimbus, from printed parts to the finished
+device. The <a href="#wiring" class="">wiring tables</a> above are the pin-level authority; this
+section is the physical order of operations. The electronics, power, and case
+stages are the same on both display builds - only the final display stage
+differs. Bench-flash and self-test each subsystem (the <a href="#assembly-order" class="">Assembly order</a>
+below) before you close the case.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="print-the-case-and-set-the-heat-inserts">Print the case and set the heat inserts<a href="#print-the-case-and-set-the-heat-inserts" class="hash-link" aria-label="Direct link to Print the case and set the heat inserts" title="Direct link to Print the case and set the heat inserts" translate="no">​</a></h3>
+<p>Print all enclosure parts before you touch the electronics. STL, material, and support notes live in <a href="#enclosure-and-cad" class="">Enclosure and CAD</a> - print in PLA or PETG, main body needs no supports on most printers.</p>
+<p><img decoding="async" loading="lazy" alt="Full set of black 3D-printed enclosure parts: top plate, bottom tub, small clip brackets, an S-logo bracket, and a hex plug" src="/assets/images/printed-parts-ec8eed902092c1da55ae4539b58f3a8a.webp" width="825" height="1100" class="img_ev3q"></p>
+<p><strong>Confirm the print set is complete.</strong> Lay every part out and account for it before starting. This build uses:</p>
+<ul>
+<li class="">the <strong>top plate</strong> (upper right) - flat hexagon carrying the board standoffs, two long rail mounts, and the clustered mounting bosses;</li>
+<li class="">the <strong>bottom tub</strong> (lower) - deep hexagon with the circular LED-ring channel and the rectangular center pocket;</li>
+<li class="">the small <strong>clip brackets</strong> and the <strong>S-logo bracket</strong> (left);</li>
+<li class="">the <strong>hex plug</strong> (center left).</li>
+</ul>
+<p>Check that the boss holes printed clean and open. If a hole bridged over or is stringy, clear it before pressing an insert - an insert will not seat square in a fouled hole.</p>
+<p><strong>Set the inserts in the tub half.</strong> Press a brass heat-set insert into each boss around the LED-ring channel and into the corner posts.</p>
+<p><img decoding="async" loading="lazy" alt="Bottom tub with brass heat-set inserts seated flush in the ring-channel bosses and corner posts" src="/assets/images/heat-inserts-top-7e45c10161bb304d48063a83a4bdc233.webp" width="1100" height="825" class="img_ev3q"></p>
+<p>Use a soldering iron fitted with an insert tip (or a plain conical tip). Follow the iron&#x27;s own guidance for temperature and the insert maker&#x27;s recommended setting - do not guess a number. Rest the insert on the hole, let it heat, then press straight down so the knurled body sinks into the plastic. Check each one: the insert should sit flush or a hair below the boss face, square to the surface, with a small bead of melted plastic pushed up around it. Wipe stray plastic off the threads while it is still warm.</p>
+<p><strong>Set the inserts in the plate half.</strong> Repeat for every boss on the top plate, including the two long rail mounts and the standoff clusters.</p>
+<p><img decoding="async" loading="lazy" alt="Top plate with brass inserts pressed into the two rail mounts and the standoff-boss clusters" src="/assets/images/heat-inserts-bottom-85da98e21816ac0830f761a686ce15fd.webp" width="1100" height="825" class="img_ev3q"></p>
+<p>The plate carries more inserts and they sit at different heights on the raised standoffs. Keep each one vertical as it sinks - a leaning insert throws off board alignment later. Confirm the two inserts at the ends of each rail mount are flush; those take the load when the assembly is screwed together. Let the whole part cool fully before you thread anything into a fresh insert.</p>
+<p><strong>Fastener note: the microSD holder screws.</strong> The microSD holder module stands taller than the flat-seated parts, so it uses a longer pair of screws than the rest of the assembly.</p>
+<p><img decoding="async" loading="lazy" alt="Assembled Nimbus shield on the ESP32-S3 DevKit with the microSD holder, and two longer screws laid on the bench below" src="/assets/images/sd-holder-screws-3e1a710f669f0acdadfe976b305a9487.webp" width="825" height="1100" class="img_ev3q"></p>
+<p>Set the two longer screws (shown on the bench beneath the board) aside with the SD holder so they do not get mixed into the shorter case hardware. Match screw length to what each part actually needs - a screw too long will bottom out or push past a boss. If you are unsure of a length, match it against the part before driving it.</p>
+<p>Seat inserts and dry-fit the case, but leave the board and Li-ion pack out until wiring is done. Keep the earlier safety framing in view once electronics go in: brand-name cells only, the 2S BMS stays between the cells and everything else, never charge the pack outside the BMS, verify a clean 5V at the DC-DC output with a meter before the board or pack is connected, tie every ground common, and treat any warm or hot module or SD card as an electrical fault - power off first. The firmware caps LED brightness at 60% and it must not be raised.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="assemble-the-carrier-board">Assemble the carrier board<a href="#assemble-the-carrier-board" class="hash-link" aria-label="Direct link to Assemble the carrier board" title="Direct link to Assemble the carrier board" translate="no">​</a></h3>
+<p>There are two ways to wire a Nimbus. This section covers the <strong>optional custom carrier PCB</strong> (Nimbus V0.1) - a single blue board that sockets the DevKit and every module and routes the power section for you. If you would rather hand-wire, skip this section entirely and build on protoboard straight from the <a href="#wiring" class="">Wiring</a> tables - the carrier PCB carries no signals the tables do not, it just makes them solder-free. The manufacturing outputs (Gerbers, ODB++, CAM) to order your own board live in <a href="https://github.com/ristllin/Nimbus/tree/main/hardware/fab" target="_blank" rel="noopener noreferrer" class=""><code>hardware/fab/</code></a>; see <a href="https://github.com/ristllin/Nimbus/tree/main/hardware/fab#ordering-the-pcb" target="_blank" rel="noopener noreferrer" class="">how to order the board</a>.</p>
+<p>The whole point of the board is that <strong>nothing is soldered down permanently</strong>. The DevKit and the small modules drop into female headers, so any one of them can be pulled and replaced. Solder the headers, not the modules.</p>
+<h4 class="anchor anchorTargetStickyNavbar_Vzrq" id="the-devkit">The DevKit<a href="#the-devkit" class="hash-link" aria-label="Direct link to The DevKit" title="Direct link to The DevKit" translate="no">​</a></h4>
+<p><img decoding="async" loading="lazy" alt="ESP32-S3-DevKitC-1 N16R8 dev board with a loose black female header strip at top left" src="/assets/images/esp32-s3-f6032932c42d15ece7e3ab17ee16e6bb.webp" width="825" height="1100" class="img_ev3q"></p>
+<p>The brain is the <strong>ESP32-S3-DevKitC-1 N16R8</strong> - the wide black board with the shielded ESP32-S3-N16R8 module and two USB-C ports at the bottom edge. The two ports are not interchangeable: one is the UART bridge and one is the native USB. Flash a fresh board over the <strong>UART</strong> port - see <a class="" href="/guides/hardware#first-flash-of-a-fresh-board--use-the-uart-port">First flash of a fresh board</a> - before you commit it to the carrier. The pin numbers silkscreened down both long edges (3V3, RST, 4, 5, 6 ... on one side; GND, TX, RX, 1, 2, 42 ... on the other) are the same numbers the <a href="#wiring" class="">Wiring</a> tables use. Note the loose black header strip in the corner of the photo: that is the part you solder to the carrier, not to the DevKit.</p>
+<h4 class="anchor anchorTargetStickyNavbar_Vzrq" id="the-modules">The modules<a href="#the-modules" class="hash-link" aria-label="Direct link to The modules" title="Direct link to The modules" translate="no">​</a></h4>
+<p><img decoding="async" loading="lazy" alt="Loose modules laid out: a USB-C charger board, a purple MAX98357A amp, a blue DC-DC LM2596 buck converter, a round INMP441 mic, a green screw terminal, and male header strips" src="/assets/images/modules-833fedb5dd148c6d0c26a1181810849b.webp" width="1100" height="825" class="img_ev3q"></p>
+<p>Everything that sockets into the carrier, laid out. From the parts in the <a class="" href="/guides/hardware-bom">bill of materials</a>: the purple <strong>MAX98357A</strong> I²S amp (with its green 2-position speaker screw terminal), the round <strong>INMP441</strong> I²S mic breakout, the blue <strong>DC-DC LM2596</strong> buck converter (the large module with the <code>470</code> inductor, the <code>100</code>/<code>220</code> electrolytics, and the blue trimmer pot), and the black USB-C <strong>charger/BMS</strong> board. Also shown are the male header strips for the module breakouts. Keep the mic separate in your mind from the amp - they are two different breakouts, and the mic is <strong>3.3 V only</strong>.</p>
+<h4 class="anchor anchorTargetStickyNavbar_Vzrq" id="the-bare-board-top">The bare board, top<a href="#the-bare-board-top" class="hash-link" aria-label="Direct link to The bare board, top" title="Direct link to The bare board, top" translate="no">​</a></h4>
+<p><img decoding="async" loading="lazy" alt="Bare Nimbus V0.1 carrier PCB, top side, blue soldermask with white silkscreen naming each section" src="/assets/images/custom-pcb-top-3583032598e95b429e5da223c1dfd443.webp" width="1100" height="825" class="img_ev3q"></p>
+<p>The bare carrier, top side. Read the silkscreen before you solder anything - every footprint is named:</p>
+<ul>
+<li class=""><strong>ESP32-S3-Devkit-C-1 N16R8</strong> - the two long through-hole rows down the left that the DevKit straddles.</li>
+<li class=""><strong>SD Card</strong>, <strong>INMP441</strong>, <strong>MAX98357</strong> - the three module rows across the middle, each with its pin names (<code>cs</code>/<code>mosi</code>/<code>clk</code>/<code>miso</code>, <code>sck</code>/<code>ws</code>/<code>sd</code>/<code>L/R</code>, <code>LRC</code>/<code>BCLK</code>/<code>DIN</code>/<code>GAIN</code>/<code>SD</code>/<code>Vin</code>).</li>
+<li class=""><strong>Charger</strong> and <strong>DC-DC LM2596</strong> - the power section on the right, with the <code>B+</code>/<code>BM</code>/<code>B-</code>, <code>VIN</code>, and <code>In+</code>/<code>In-</code>/<code>Out+</code>/<code>Out-</code> pads.</li>
+<li class=""><strong>Battery</strong> (<code>GND</code> / <code>Vin 2s li-ion</code> / <code>BM</code>) and <strong>LED ring</strong> (<code>Vin 5V</code> / <code>data</code> / <code>GND</code>) at the bottom left, plus the <strong>100kΩ / 220kΩ</strong> footprint for the battery-sense divider.</li>
+</ul>
+<p>Every pad name maps one-to-one to a row in the <a href="#wiring" class="">Wiring</a> tables. When in doubt, the silk is the authority.</p>
+<h4 class="anchor anchorTargetStickyNavbar_Vzrq" id="the-bare-board-back">The bare board, back<a href="#the-bare-board-back" class="hash-link" aria-label="Direct link to The bare board, back" title="Direct link to The bare board, back" translate="no">​</a></h4>
+<p><img decoding="async" loading="lazy" alt="Bare carrier PCB, back side, showing copper traces and plated through-holes with no components" src="/assets/images/custom-pcb-back-198b4abc20ff36bb7fbc8536027cfa7c.webp" width="1100" height="825" class="img_ev3q"></p>
+<p>The back, bare. This is where all your solder joints will land, so give it a look first: the plated through-holes and the routed traces should be clean and unbridged out of the box. Nothing mounts on this side - components all sit on the top.</p>
+<h4 class="anchor anchorTargetStickyNavbar_Vzrq" id="the-routing-for-reference">The routing, for reference<a href="#the-routing-for-reference" class="hash-link" aria-label="Direct link to The routing, for reference" title="Direct link to The routing, for reference" translate="no">​</a></h4>
+<p><img decoding="async" loading="lazy" alt="EDA layout view of the carrier: red top-copper and blue bottom-copper traces carrying the GND, 5V, BAT, and 3V3 nets between every footprint" src="/assets/images/pcb-layout-30787707739d9f7aa7bc744a9de3f94d.webp" width="1065" height="890" class="img_ev3q"></p>
+<p>Not a build step - the board layout, for anyone who wants to trace a net or fork the design. It shows how the four nets (raw <code>BAT</code> from the pack, the regulated <code>5V</code> bus, <code>3V3</code>, and a common <code>GND</code>) reach every module. It is the visual companion to <a href="#power-architecture" class="">Power architecture</a>: the pack feeds the DC-DC, the DC-DC feeds the 5 V bus, the DevKit&#x27;s on-board regulator makes 3.3 V, and <strong>every ground is tied common</strong>.</p>
+<h4 class="anchor anchorTargetStickyNavbar_Vzrq" id="solder-the-female-headers">Solder the female headers<a href="#solder-the-female-headers" class="hash-link" aria-label="Direct link to Solder the female headers" title="Direct link to Solder the female headers" translate="no">​</a></h4>
+<p><img decoding="async" loading="lazy" alt="Carrier PCB with black female headers soldered into the DevKit and module rows, two divider resistors and green screw terminals in place" src="/assets/images/pcb-female-headers-4941f9237c5e456d8c733ee85bc566d9.webp" width="825" height="1100" class="img_ev3q"></p>
+<p><strong>Set the headers.</strong> Cut female header strips to the length of each row and solder them in from the top so the sockets face up: the two long rows for the DevKit, and one short row each for the SD Card, INMP441, and MAX98357 footprints. Tack one end pin, check the strip sits flat and square against the board, then solder the rest. Straight headers here are what let you unplug a module later.</p>
+<p><strong>Set the fixed parts.</strong> While the iron is hot, place the two battery-sense resistors in the <code>100kΩ</code> / <code>220kΩ</code> footprint (the divider into GPIO 4 - see <a href="#wiring" class="">Battery sense</a>), and the green screw terminals at the <strong>Battery</strong> and <strong>LED ring</strong> positions. These few parts do solder down; the modules do not. Check the finished joints are shiny and full, with none bridged to a neighbor.</p>
+<h4 class="anchor anchorTargetStickyNavbar_Vzrq" id="seat-the-charger-and-dc-dc">Seat the charger and DC-DC<a href="#seat-the-charger-and-dc-dc" class="hash-link" aria-label="Direct link to Seat the charger and DC-DC" title="Direct link to Seat the charger and DC-DC" translate="no">​</a></h4>
+<p><img decoding="async" loading="lazy" alt="Carrier PCB, power side up, with the DC-DC LM2596 buck converter and the USB-C charger board mounted at the board edge" src="/assets/images/pcb-charger-dcdc-1a66c1db2a2cba7ce875e4b1006af44b.webp" width="825" height="1100" class="img_ev3q"></p>
+<p>Mount the two large power modules at their labeled edge footprints: the <strong>DC-DC LM2596</strong> at the <code>In+</code>/<code>In-</code>/<code>Out+</code>/<code>Out-</code> pads and the <strong>charger/BMS</strong> at the <code>Charger</code> pads (<code>B+</code>/<code>BM</code>/<code>B-</code>, <code>VIN</code>). Their outputs are the 5 V bus and the pack rail, so get the polarity right against the silk.</p>
+<p>Li-ion safety is not optional here. <strong>Buy brand-name cells from a reputable vendor</strong> - counterfeits are common. The <strong>2S BMS stays between the cells and everything else</strong> - the pack wires land on the charger/BMS, never straight onto the DC-DC or a module. <strong>Never charge the pack outside the BMS.</strong> Set the DC-DC output before you connect the DevKit: with the pack on the charger, turn the blue trimmer until a meter reads a clean <strong>5 V</strong> at <code>Out+</code>/<code>Out-</code>, as called out in <a href="#power-architecture" class="">Power architecture</a>.</p>
+<h4 class="anchor anchorTargetStickyNavbar_Vzrq" id="seat-the-devkit-and-modules">Seat the DevKit and modules<a href="#seat-the-devkit-and-modules" class="hash-link" aria-label="Direct link to Seat the DevKit and modules" title="Direct link to Seat the DevKit and modules" translate="no">​</a></h4>
+<p><img decoding="async" loading="lazy" alt="Fully assembled carrier: DevKit, mic, MAX98357 amp, DC-DC, and charger all socketed, with a three-conductor battery lead at the top left" src="/assets/images/pcb-assembled-b3b0bd6ca20e7dd7b92f88bf5408e5f4.webp" width="825" height="1100" class="img_ev3q"></p>
+<p><strong>Seat the board.</strong> Push the DevKit into its two header rows so both USB-C ports overhang the board edge and stay reachable, and so its silk pin numbers line up with the carrier&#x27;s. Then drop in the three small modules - SD card, INMP441 mic, MAX98357 amp - matching each module&#x27;s pin labels to the socket labels beneath it. The amp&#x27;s green screw terminal is the speaker output.</p>
+<p><strong>Connect the pack.</strong> The three-conductor lead at the top left is the 2S pack: it lands on the <strong>Battery</strong> input (<code>GND</code>, <code>Vin 2s li-ion</code>, <code>BM</code>) - pack negative, the balance mid-tap, and pack positive - which routes to the BMS, not to anything downstream. Confirm every ground is common before power-on.</p>
+<p>The firmware caps LED-ring brightness at 60% for thermal safety; do not raise that limit. And once running, treat any warm module or a warm SD card as an electrical fault - <strong>power off first</strong>, then debug (see the <a class="" href="/guides/hardware#shared-peripherals">hot-card safety check</a>).</p>
+<h4 class="anchor anchorTargetStickyNavbar_Vzrq" id="check-the-back">Check the back<a href="#check-the-back" class="hash-link" aria-label="Direct link to Check the back" title="Direct link to Check the back" translate="no">​</a></h4>
+<p><img decoding="async" loading="lazy" alt="Back of the fully assembled carrier, showing the soldered header rows and the battery lead routed over the top edge" src="/assets/images/pcb-assembled-back-e564515f9116590f1a510ef91a2f8880.webp" width="825" height="1100" class="img_ev3q"></p>
+<p>Flip it and inspect. Every header row should show a clean line of full, shiny joints with no cold joints and no bridges between adjacent pins - the DevKit rows and the module rows are the ones to scrutinize, since a single bridge there can short a rail into a signal. With the joints good and the pack on the BMS, the board is ready for the <a href="#wiring" class="">Wiring</a> verification and first flash.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="led-ring-speaker-and-power-switch">LED ring, speaker, and power switch<a href="#led-ring-speaker-and-power-switch" class="hash-link" aria-label="Direct link to LED ring, speaker, and power switch" title="Direct link to LED ring, speaker, and power switch" translate="no">​</a></h3>
+<p>Three ring-and-shell parts finish the build: the WS2812B light ring behind the face, the status speaker in its pocket, and the rocker that switches pack power. Wire them per the pinout tables already in this page - do not re-derive the pins here.</p>
+<p><strong>1. Identify the ring and its pigtail.</strong></p>
+<p><img decoding="async" loading="lazy" alt="WS2812B 45-pixel ring with a three-wire pigtail terminating in a 3-pin JST connector" src="/assets/images/led-ring-218d9013507d43d2472ed01ca9482e22.webp" width="825" height="1100" class="img_ev3q"></p>
+<p>The ring is a flexible 45-pixel WS2812B on a black PCB. A three-conductor pigtail is soldered to the three pads at one point on the ring and runs out to a 3-pin JST connector: one conductor for +5V, one for GND, one for DIN. Confirm which pad is which against the silkscreen before you trust the wire colors - the colors are just whatever the pigtail shipped with and carry no standard meaning. Land those three wires exactly as the <a href="#ws2812b-led-ring" class="">WS2812B LED ring</a> table specifies: +5V to the 5 V bus, GND common, DIN to the data pin (a 330 Ω series resistor on DIN is good practice). Power the +5V leg only from the 5 V bus, never from 3V3.</p>
+<p><strong>2. Cut the ring open for the case pass-through.</strong></p>
+<p><img decoding="async" loading="lazy" alt="The ring opened at one point where the single power ribbon bridging its ends has been cut, the loop no longer continuous, the pigtail and every pixel left intact" src="/assets/images/led-ring-cut-ea42cb1fdf3b88f01ab4257c2b756b46.webp" width="825" height="1100" class="img_ev3q"></p>
+<p>The ring must open at one spot so the pigtail can drop straight through the case wall instead of being pinched around the rim. Cut the single power ribbon that bridges the ring&#x27;s two ends closed, at the seam next to where the pigtail attaches. Cut that ribbon only - never cut the LED strip itself, and do not nick or sever the three pigtail conductors; they must stay intact and carry the signal. The pixels are a single addressable chain, so any break in the strip kills every pixel downstream of it - the power ribbon is the one and only thing you cut. Route the pigtail through the case opening and reseat the ring so the open ends sit flush.</p>
+<p><strong>Brightness cap.</strong> The firmware caps the ring at 60% brightness and this cap must not be raised. It is a thermal and current limit for a 45-pixel ring on this pack, not a preference. Leave it where it is.</p>
+<p><strong>3. Prep the speaker.</strong></p>
+<p><img decoding="async" loading="lazy" alt="Small round 4 ohm speaker in a square frame with a gold cone and a twisted red-and-black lead pair, ends tinned" src="/assets/images/speaker-507caeb9f93ec2122a3facb25a0d4344.webp" width="825" height="1100" class="img_ev3q"></p>
+<p>The speaker is the small 4 Ω full-range driver in a square frame. It comes with a twisted red/black lead pair, tinned at the free ends. This is a bare driver with no polarity that matters for a mono status tone, but keep the pair twisted to hold noise down. Land the two leads on the amp&#x27;s speaker output per the <a href="#audio---max98357a-amp--i%C2%B2s-mic" class="">Audio wiring</a> section - the driver connects to the MAX98357A output, not to any ESP32 pin or rail directly.</p>
+<p><strong>4. Mount the speaker in the case.</strong></p>
+<p><img decoding="async" loading="lazy" alt="Speaker seated in a printed pocket beside a cluster of brass heat-set inserts, with a self-tapping screw staged nearby" src="/assets/images/speaker-mounted-60d717cd8e5ffcd13a026e0c0efa76da.webp" width="825" height="1100" class="img_ev3q"></p>
+<p>Seat the driver into its printed pocket so the frame sits flat against the shelf and the cone faces the grille. Fix it with the frame&#x27;s mounting tab against the printed post; drive the self-tapping screw shown into the post - use the screw that fits the printed boss, do not overtighten into the plastic. Route the twisted lead pair out through the channel toward the amp. Check that the frame is fully seated and the cone is not fouling any wall before you close up. A speaker enclosure that buzzes is almost always a loose frame or a lead trapped under the cone, not a bad driver.</p>
+<p><strong>5. Press in the power rocker.</strong></p>
+<p><img decoding="async" loading="lazy" alt="Black rocker switch pressed into a rectangular cutout in the printed case top, next to vent slots, above an embossed PWR label" src="/assets/images/rocker-switch-717b53d0de3698026246fadd9ab31350.webp" width="825" height="1100" class="img_ev3q"></p>
+<p>The rocker drops into the rectangular cutout in the case top, beside the vent slots and above the embossed <strong>PWR</strong> marking. Wire it before you press it home: the switch breaks the pack power line, so its two spade terminals go inline on the main power feed, one lead in and one out. Push the switch straight into the cutout until both retaining clips snap and the bezel sits flush with the case face. It should hold with no adhesive. The <strong>I / O</strong> markings on the paddle are the live/off states; confirm the paddle throws freely once seated and that the leads clear the vent slots.</p>
+<p>This switch sits ahead of everything downstream but the pack always stays behind its 2S BMS - never bypass the BMS to reach the cells, and never charge the pack outside it. Keep every ground common across the ring, speaker, and switch. If any module or the SD card runs warm or hot, that is an electrical fault: throw the rocker to off first, then investigate.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="build-the-2s-battery-pack">Build the 2S battery pack<a href="#build-the-2s-battery-pack" class="hash-link" aria-label="Direct link to Build the 2S battery pack" title="Direct link to Build the 2S battery pack" translate="no">​</a></h3>
+<blockquote>
+<p><strong>Read this before you touch a cell - 2S Li-ion.</strong> Two 18650s in series hold real energy, and this is the one stage of the build that can burn you or start a fire. Buy brand-name cells from a reputable vendor (the reference pack uses matched LiitoKala Lii-35A); counterfeit 18650s are common and dangerous. The <strong>2S BMS stays between the cells and everything else</strong> - it is the only protection, balance, and charge path, so never charge the pack outside the BMS and never feed the DC-DC from anything but the BMS output. Tie every ground common. If a cell, a module, or the SD card ever gets warm that should not, treat it as an electrical fault: power off first, debug second. Work on one joint at a time, keep the two pack leads from ever touching, and never leave a bare cell terminal exposed. Full framing lives in the <a class="" href="/guides/hardware-bom#safety-note---2s-li-ion">2S Li-ion safety note</a> and <a href="#power-architecture" class="">Power architecture</a>.</p>
+</blockquote>
+<p>Build the pack as its own sub-assembly and verify a clean 5 V at the DC-DC output <strong>before</strong> it feeds anything downstream. This is step 4 of the <a href="#assembly-order" class="">Assembly order</a>; do not connect the 5 V bus to VIN or the LED ring until the meter reads right.</p>
+<p><strong>1. Insulate the cell tops.</strong></p>
+<p><img decoding="async" loading="lazy" alt="Two 18650 cells taped side by side with a translucent fish-paper insulator covering the terminal ends, pack leads exiting the bottom" src="/assets/images/cell-insulation-563e275a8668edccaea8a521a0b65585.webp" width="825" height="1100" class="img_ev3q"></p>
+<p>Lay the two cells side by side, same polarity conventions as your series plan, and cap the terminal ends with an insulating barrier before any metal goes near them. Here a sheet of fish-paper (Kapton works too) is taped down over the top of the pack so only the intended weld points are exposed. Check that the wraps on both cells are intact with no nicks down to bare steel, and that the insulator sits flat with no bare terminal ring peeking out from under the tape. The pack leads exit the opposite end.</p>
+<p><strong>2. Spot-weld the series link.</strong></p>
+<p><img decoding="async" loading="lazy" alt="A spot welder pressing two copper electrodes onto a nickel strip laid across the top of a LiitoKala cell, joining it to the neighbouring cell" src="/assets/images/spot-weld-2f484111dcb29cfb4bd4bf12eadd82c1.webp" width="825" height="1100" class="img_ev3q"></p>
+<p>Bridge the two cells with a nickel strip and spot-weld it down - this is the series (2S) link that turns two cells into one 6.0–8.4 V pack. Both copper electrodes must land on the strip over the cell can, never bridging directly cell-to-cell. <strong>Do not solder this joint</strong> and do not guess the weld setting: dial the welder in on a scrap strip and cell first, per the welder&#x27;s own guidance, until you get welds that bite without blowing through. Check each joint by tugging the strip lightly - it should not peel - and confirm you see clean weld dimples, not a scorched or lifted strip.</p>
+<p><strong>3. Solder the BMS pack lead.</strong></p>
+<p><img decoding="async" loading="lazy" alt="A nickel strip with a yellow lead wire soldered to a tinned pad in its middle" src="/assets/images/solder-pack-wire-06483e58ab31bd821bd3d5a798a2f30f.webp" width="825" height="1100" class="img_ev3q"></p>
+<p>Solder the pack lead to its nickel tab as shown, keeping the iron on the tab and off the cell body. Use a hot, tinned iron and get in and out fast - follow your iron&#x27;s guidance rather than any fixed temperature, because prolonged heat into an 18650 is what damages it. A good joint is a shiny, concave fillet with the wire fully anchored, not a dull gray blob. Let it cool before flexing.</p>
+<p><strong>4. Confirm the mid-point tap sits between the cells.</strong></p>
+<p><img decoding="async" loading="lazy" alt="The welded nickel strip bridging the two cell terminals with the balance tap wire soldered at the series junction" src="/assets/images/bms-between-cells-e472ebacb28407feebbf0ad8a8da38c0.webp" width="825" height="1100" class="img_ev3q"></p>
+<p>The strip now joins the two cell terminals and the tap wire lands at that series junction. This mid-point is the balance/sense tap that goes to the BMS, which is what places the <strong>BMS electrically between the cells</strong> so it can watch each one independently. Route this tap and the two pack leads to the BMS, never straight to the DC-DC. Verify the junction is solid and the tap wire is not shorting to the adjacent cell can. If your BMS labels its tap pads differently, follow its silk screen and datasheet for which lead is the mid-point.</p>
+<p><strong>5. Terminate the pack lead.</strong></p>
+<p><img decoding="async" loading="lazy" alt="An orange pack lead wire with a gold female spade crimp terminal on the end" src="/assets/images/battery-lead-terminal-8c8fce80566bfc5c936d850b5f3d57cf.webp" width="825" height="1100" class="img_ev3q"></p>
+<p>Crimp a female spade terminal onto the pack output lead so it lands on the board without a bare soldered wire flapping loose. Use the correct crimp for the wire (do not eyeball the terminal size) and crimp both the conductor barrel and the insulation grip. Check that the terminal grips copper, not just insulation, that no whiskers stick out, and give it a firm pull - it must not slide off. A heat-shrink collar over the crimp keeps it from shorting to a neighbour.</p>
+<p><strong>6. Connect the pack to the board.</strong></p>
+<p><img decoding="async" loading="lazy" alt="The 2S pack wired to the Nimbus V0.1 board: pack leads landing on the board power-input terminal, with the DC-DC converter on the board" src="/assets/images/connect-battery-4b771cb35de2d13115703b54f180363b.webp" width="825" height="1100" class="img_ev3q"></p>
+<p>Land the pack leads on the board so the BMS output feeds the <strong>DC-DC input only</strong> at this point. Get polarity right before anything is energized - a reversed pack is how boards die. Confirm every ground is common between cells, BMS, DC-DC, and the board per <a href="#power-architecture" class="">Power architecture</a>. Leave the 5 V bus disconnected from the ESP32 VIN and the LED ring until the next step passes; a mis-set converter must not be allowed to reach the MCU or the ring.</p>
+<p><strong>7. Calibrate the DC-DC to a clean 5 V, then stop.</strong></p>
+<p><img decoding="async" loading="lazy" alt="An Extech EX330 multimeter reading 05.00 V DC beside the Nimbus board&amp;#39;s DC-DC converter" src="/assets/images/calibrate-dcdc-5v-b8444f64a7201d9d0ba2f236e910044c.webp" width="1100" height="825" class="img_ev3q"></p>
+<p>With the pack feeding the DC-DC input and <strong>nothing on the output yet</strong>, set the meter to DC volts and read across the converter&#x27;s OUT + and OUT -. Turn the module&#x27;s trim pot until it reads a clean 5.00 V, exactly as the meter shows here. This gate is non-negotiable: a converter shipped at 8 V or wandering under load will destroy the ESP32 and the ring the instant they are connected. Only once you have a steady 5.00 V do you wire the 5 V bus to VIN and the LED ring +5 V (step 5 of the <a href="#assembly-order" class="">Assembly order</a>).</p>
+<p>After the pack is assembled and running, charge it fully through the BMS USB-C port and run <code>BATTCAL</code> on the console so the gauge reads 100 % at full - the ADC under-reads a full pack. See <a href="#battery-pack" class="">Battery pack</a> and <a class="" href="/guides/hardware#battery-voltage-sampling-how-to-add-it">Battery voltage sampling</a>. Remember the firmware caps LED brightness at 60 %: sustained higher levels can overheat and damage the internal electronics, and must not be raised.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="stack-the-electronics-and-close-the-case">Stack the electronics and close the case<a href="#stack-the-electronics-and-close-the-case" class="hash-link" aria-label="Direct link to Stack the electronics and close the case" title="Direct link to Stack the electronics and close the case" translate="no">​</a></h3>
+<p>Do the full electrical bring-up <strong>before</strong> anything goes into the case. Once the boards are stacked and screwed down, the pin headers and the self-test console are hard to reach - so flash and pass the self-test on the bench first, following <a href="#assembly-order" class="">Assembly order</a> steps 1-5: first flash over the UART port (<a class="" href="/guides/hardware#first-flash-of-a-fresh-board--use-the-uart-port">First flash of a fresh board</a>), then <code>TEST all</code> on the self-test console with <code>led</code>/<code>epd</code>/<code>sd</code>/<code>memory</code>/<code>input</code> all PASS. A board that boots clean loose on the bench is the only board worth closing up.</p>
+<p><img decoding="async" loading="lazy" alt="Assembled Nimbus electronics seen from above: ESP32-S3-N16R8 DevKit at top with dual USB-C, the DC-DC buck converter with its two electrolytic caps and inductor at lower left, the purple MAX98357A amp and INMP441 mic in the center, the microSD module with a card seated at right, and green screw terminals along the edges" src="/assets/images/electronics-stack-50d8edaca44eed0b3482a5e51122485c.webp" width="825" height="1100" class="img_ev3q"></p>
+<p><strong>Confirm the stack matches <a href="#wiring" class="">Wiring</a>.</strong> Top-down, every module from the pinout tables is present and seated: the ESP32-S3-N16R8 DevKit up top (both USB-C ports, RST and BOOT buttons clear), the DC-DC buck with its <code>220 35V</code> and <code>100 50V</code> electrolytics, <code>470</code> inductor, and blue output trimpot, the purple MAX98357A amp beside the INMP441 mic and the buzzer, the microSD module with a card fully home, and the BMS USB-C board. Check the microSD card is seated flush, not proud - a card that stands off the socket is the <code>cardType=0</code> trap. Green screw terminals carry the pack and 5 V leads; verify each is clamped on stripped copper, not on insulation. Keep the <strong>2S BMS between the cells and everything else</strong>, and <strong>never charge the pack outside the BMS</strong> - charge only through its USB-C port. Use brand-name cells from a reputable vendor (counterfeits are common); see the 2S Li-ion safety note in the <a class="" href="/guides/hardware-bom">BOM</a>.</p>
+<p><img decoding="async" loading="lazy" alt="The same electronics stack at an angle, the blue Nimbus PCB carrying all modules and resting on the black printed standoff frame, green screw terminals along the front edge" src="/assets/images/electronics-stack-2-0cbe225b4f9e5c693443c67398428ac7.webp" width="1100" height="825" class="img_ev3q"></p>
+<p><strong>Check the vertical stack from the side.</strong> The tall parts - the DevKit module can, the two DC-DC electrolytics, the amp and mic breakouts - all clear each other with no board bowing and no header touching a neighbor&#x27;s pads. The blue PCB seats down onto the printed standoff frame with an even gap all around; no component is crushed against the frame. Reconfirm <strong>every ground is common</strong> here (<a href="#power-architecture" class="">Power architecture</a>): cells, BMS, DC-DC, ESP32, and every module share one GND. A missing common ground reads as flaky peripherals, not a dead board.</p>
+<p><img decoding="async" loading="lazy" alt="The blue PCB assembly lowered into the black 3D-printed bottom case, brass heat-set inserts and screw posts visible at the corners, with a separate black module and its twisted red-and-black lead pair resting loose above the case, not yet secured" src="/assets/images/assembled-bottom-case-fad9279328d7f6a086636d21203e5764.webp" width="825" height="1100" class="img_ev3q"></p>
+<p><strong>Seat the PCB into the printed bottom case.</strong> Lower the assembly so the board mounting holes line up over the case&#x27;s screw posts and brass heat-set inserts. It should drop in without forcing - if it fights, find the tall part or lead that is catching before pressing harder. Drive the case screws into the brass inserts snug, not hard; the insert strips before the plastic complains, so stop at first resistance rather than chasing a number.</p>
+<p><strong>Route every lead so nothing is pinched.</strong> Before the screws go tight, sweep all wiring - the twisted red/black lead pair and any module still to be secured - clear of the board edges, screw posts, and the case wall so nothing is trapped or crushed when the case closes. Pinched insulation is a short waiting to happen. Give the pack and 5 V-bus leads a gentle tug to confirm the screw terminals hold.</p>
+<p><strong>Set the buck to 5 V before the pack feeds the stack.</strong> The DC-DC output is adjustable at the blue trimpot, so never trust it blind. With the pack connected to the buck input but the 5 V lead still off the board, meter the buck output and confirm it reads <strong>5 V</strong> before you land it on the bus. A buck left high pushes past 5 V into every board on the 5 V bus and destroys them.</p>
+<p><strong>One last power-on before the lid.</strong> With the stack in the case but still openable, power up and confirm the device boots and the self-test still passes in its installed position - a fault that only appears after seating is almost always a pinched lead or a ground gone open. Keep a hand near the modules for the first minute: <strong>a warm or hot module or SD card is an electrical fault</strong> - kill power immediately and find the short before going further (<a class="" href="/guides/hardware#shared-peripherals">hot-card safety check</a>). Only then install the production firmware (<a href="#assembly-order" class="">Assembly order</a> step 7) and close the case.</p>
+<p>The firmware caps LED-ring brightness at 60%; leave it there. Raising it pushes ring current and heat past what the 5 V bus and this enclosure are sized for.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="fit-the-e-paper-panel-and-the-knob">Fit the e-paper panel and the knob<a href="#fit-the-e-paper-panel-and-the-knob" class="hash-link" aria-label="Direct link to Fit the e-paper panel and the knob" title="Direct link to Fit the e-paper panel and the knob" translate="no">​</a></h3>
+<p>The panel and the knob are the two parts the user actually touches, so they go in last, after every peripheral has passed the self-test on the bench. Wire the encoder off the enclosure first, then seat the board and route to it.</p>
+<p><strong>1. Prep the encoder and its leads.</strong></p>
+<p><img decoding="async" loading="lazy" alt="Bare EC11 rotary encoder beside a ribbon of female-ended Dupont jumper leads" src="/assets/images/encoder-jumpers-3facc431408479fb20889e3f2dfbb7dc.webp" width="825" height="1100" class="img_ev3q"></p>
+<p>The EC11 comes as a bare encoder: silver shaft, blue body, five pins and nothing marking them. Cut five jumper leads (the photo uses one salvaged ribbon, split at one end) long enough to reach from the knob&#x27;s mounting position through to the board header with slack to spare. Female Dupont ends push straight onto the board&#x27;s pin strip; tin and solder the other ends to the encoder pins. Keep the colors consistent so you can trace them later - the routing, not the color, is what matters.</p>
+<p><strong>2. Solder to the five unmarked pins - mind which pin is which.</strong></p>
+<p><img decoding="async" loading="lazy" alt="EC11 encoder with signal leads soldered to the 3-pin side and switch leads to the 2-pin side" src="/assets/images/encoder-wired-68d94b7a16ea75609cb0319f2360fb65.webp" width="825" height="1100" class="img_ev3q"></p>
+<p>This is the build&#x27;s easiest wiring mistake. The <strong>3-pin side is the signal side</strong>: the two <strong>outer</strong> pins are A and B (rotation), and the <strong>middle</strong> pin is common to <strong>GND</strong>. The <strong>2-pin side is the push switch</strong>. In the photo the three signal leads land on the row nearest the shaft collar and the switch leads come off the opposite side. Solder accordingly:</p>
+<ul>
+<li class="">Outer pin → A → GPIO <strong>1</strong></li>
+<li class=""><strong>Middle</strong> pin → common → <strong>GND</strong></li>
+<li class="">Outer pin → B → GPIO <strong>2</strong></li>
+<li class="">One switch pin → GPIO <strong>48</strong>, the other switch pin → <strong>GND</strong> (the two are interchangeable)</li>
+</ul>
+<p>Full table and rail assignments are in <a href="#ec11-rotary-encoder" class="">EC11 rotary encoder</a>. The exact failure mode is called out in <a href="#known-traps" class="">Known traps</a>: swapping A and B only reverses rotation direction, but wiring a signal lead to the <strong>middle</strong> position instead of GND breaks detent counting outright. Internal pull-ups are enabled in the driver, so no external resistors go on any of the three inputs.</p>
+<p><strong>3. Seat the e-paper board and route the leads to its header.</strong></p>
+<p><img decoding="async" loading="lazy" alt="Interior of the hex enclosure: WeAct 2.9-inch e-paper board seated in its recess, jumper wires routed to the header, encoder mounted through the side wall" src="/assets/images/eink-top-609e7b99a2c1bfb7cdf1f79214bdb224.webp" width="825" height="1100" class="img_ev3q"></p>
+<p>Drop the WeAct 2.9&quot; board into its recess so the FPC ribbon and the pin header sit clear of the standoffs, then push the display leads onto the header. Remember the WeAct silk screen labels the SPI lines I²C-style - <strong>SDA is MOSI and SCL is SCK</strong> - so match by function against the <a href="#e-paper-weact-29-ssd1680" class="">E-paper table</a> rather than trusting the printed letters. Pass the encoder shaft through the hole in the side wall and tighten its panel nut against the wall so the knob does not spin loose in the hand.</p>
+<p><img decoding="async" loading="lazy" alt="Second interior angle showing the same board, header wiring, and the encoder body seated against the wall" src="/assets/images/eink-top-2-b24cab13ddb28f6a191dc9abf11b81db.webp" width="825" height="1100" class="img_ev3q"></p>
+<p>Check from a second angle before closing up: every lead fully seated on the header, no strand shorting to its neighbor, and the encoder body flat against the wall with its three signal leads and two switch leads dressed clear of the board. Confirm every ground in the build is common - the encoder common, the display GND, and the rail grounds all tie together.</p>
+<p><strong>4. Verify the finished front.</strong></p>
+<p><img decoding="async" loading="lazy" alt="Assembled Nimbus: hex enclosure, 45-pixel LED ring around the rim, e-paper panel showing the WeAct test frame, knob shaft protruding on the right" src="/assets/images/eink-front-54ff27b5c0ce33d713db0c2b4854cabc.webp" width="825" height="1100" class="img_ev3q"></p>
+<p>With the case closed the front should read like this one: the 45-pixel WS2812B ring around the rim, the 2.9&quot; panel centered, and the knob shaft standing proud on the right. Power up and drive the panel - the WeAct factory frame (&quot;Hello World&quot;, 296 x 128) or your own boot frame should latch and hold, since the panel keeps its image in RAM with no backlight draw. Rotate the knob to move the cursor and long-press for hold-to-talk. If a module or the SD card runs warm or hot, that is an electrical fault: power off first, then find the short - do not keep it running. And leave the firmware LED cap at 60%; it is there to keep ring current and heat in bounds and must not be raised.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="assembly-order">Assembly order<a href="#assembly-order" class="hash-link" aria-label="Direct link to Assembly order" title="Direct link to Assembly order" translate="no">​</a></h2>
+<p>The photo-by-photo build is the <a href="#assembly-walk-through" class="">Assembly walk-through</a>
+above; the same shots gathered on one page are the build photos.</p>
+<ol>
+<li class=""><strong>Bench-check the bare DevKit first.</strong> Flash it over the <strong>UART</strong> USB-C
+port - on a factory-fresh board the native USB port has no path into
+download mode, so getting this wrong looks like a dead board. See
+<a class="" href="/guides/hardware#first-flash-of-a-fresh-board--use-the-uart-port">First flash of a fresh board</a>.</li>
+<li class=""><strong>Wire the 3.3 V peripherals on USB power</strong> - e-paper, encoder, microSD,
+mic, amp. No pack or 5 V bus needed yet.</li>
+<li class=""><strong>Verify each peripheral before going further.</strong> Flash the solide-drivers
+self-test console and drive it over serial:
+<div class="language-bash codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#F8F8F2;--prism-background-color:#282A36"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-bash codeBlock_bY9V thin-scrollbar" style="color:#F8F8F2;background-color:#282A36"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#F8F8F2"><span class="token assign-left variable" style="color:rgb(189, 147, 249);font-style:italic">SOLIDE_EXAMPLE</span><span class="token operator">=</span><span class="token plain">08_selftest_console pio run </span><span class="token parameter variable" style="color:rgb(189, 147, 249);font-style:italic">-e</span><span class="token plain"> esp32s3 </span><span class="token parameter variable" style="color:rgb(189, 147, 249);font-style:italic">-t</span><span class="token plain"> upload</span><br></div><div class="token-line" style="color:#F8F8F2"><span class="token plain"></span><span class="token comment" style="color:rgb(98, 114, 164)"># then over serial:  TEST all</span><br></div></code></pre></div></div>
+<code>led</code>/<code>epd</code>/<code>sd</code>/<code>memory</code>/<code>input</code> should PASS (<code>sd</code> SKIPs with no card;
+<code>audio</code> needs the 5 V amp and a working mic). No 5 V bus is needed for most
+of the tests.</li>
+<li class=""><strong>Build the power section separately</strong>: cells into the 2S BMS, BMS output
+into the DC-DC. Verify a clean 5 V at the DC-DC output with a meter before
+connecting anything.</li>
+<li class=""><strong>Connect the 5 V bus</strong>: LED ring +5V and the ESP32 VIN. Confirm every
+ground is common.</li>
+<li class=""><strong>Add the battery-sense divider</strong> (previous section) if you want a battery
+gauge.</li>
+<li class=""><strong>Install the production firmware</strong> with the guarded installer, which also
+records the display configuration and operating mode:
+<div class="language-bash codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#F8F8F2;--prism-background-color:#282A36"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-bash codeBlock_bY9V thin-scrollbar" style="color:#F8F8F2;background-color:#282A36"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#F8F8F2"><span class="token plain">python3 tools/setup_device.py</span><br></div></code></pre></div></div>
+</li>
+</ol>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="known-traps">Known traps<a href="#known-traps" class="hash-link" aria-label="Direct link to Known traps" title="Direct link to Known traps" translate="no">​</a></h2>
+<ul>
+<li class=""><strong>The encoder&#x27;s five pins are unmarked.</strong> The 3-pin side is the signal
+side: the two <strong>outer</strong> pins are A (→ GPIO 1) and B (→ GPIO 2), and the
+<strong>middle</strong> pin is common → GND. The 2-pin side is the switch: one pin →
+GPIO 48, the other → GND (interchangeable). Swapping A/B just reverses
+rotation; wiring a signal pin to the middle position breaks detent counting.</li>
+<li class=""><strong>The SD card must be FAT32, not exFAT.</strong> Cards over 32 GB ship
+exFAT-formatted by default and mount as <code>cardType!=0, ok=false</code>. Reformat as
+FAT32 (&quot;MS-DOS (FAT)&quot; on macOS) before first use.</li>
+<li class=""><strong>A cold SD ground joint reads as <code>cardType=0</code></strong> - the card looks absent, not
+faulty. If a previously working card intermittently disappears, check
+continuity from the SD module&#x27;s GND to system GND before suspecting the card.</li>
+<li class=""><strong>A warm or hot SD card is an electrical fault.</strong> Disconnect power
+immediately - see the
+<a class="" href="/guides/hardware#shared-peripherals">hot-card safety check</a>.</li>
+<li class=""><strong>The e-paper silk screen lies about the bus.</strong> <code>SDA</code>/<code>SCL</code> on the module
+are SPI MOSI/SCK. Do not wire it to I²C pins.</li>
+<li class=""><strong>Never route anything to GPIO 33–37</strong> (octal PSRAM on the N16R8), nor to
+0/45/46 (strapping), 19/20 (USB), 43/44 (UART), 26–32 (flash).</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="battery-pack">Battery pack<a href="#battery-pack" class="hash-link" aria-label="Direct link to Battery pack" title="Direct link to Battery pack" translate="no">​</a></h2>
+<p>Two 18650 cells in series (2S, 6.0–8.4 V range) behind the BMS. Ground truths
+from the reference pack, measured on a dedicated analyzer: <strong>3500 mAh
+capacity, 8.40 V full</strong>. Measured runtimes on that pack: 5.75 h at ring
+brightness 77/255 (608 mA average), about 23 h idle (~150 mA - the radios and
+CPU, not the LEDs, set the idle floor). Quote about a day of battery life,
+not more; details in
+<a class="" href="/guides/hardware#measured-battery-reality-curve-run-4-board-2-2026-07-16">Measured battery reality</a>.</p>
+<p>Note that the ADC under-reads a full pack - after assembly, charge fully and
+run <code>BATTCAL</code> (console) so 100 % reads as 100 %. See
+<a class="" href="/guides/hardware#battery-voltage-sampling-how-to-add-it">Battery voltage sampling</a>.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="enclosure-and-cad">Enclosure and CAD<a href="#enclosure-and-cad" class="hash-link" aria-label="Direct link to Enclosure and CAD" title="Direct link to Enclosure and CAD" translate="no">​</a></h2>
+<p>A 3D-printable enclosure for this build is published:
+<strong><a href="https://github.com/ristllin/Nimbus/blob/main/hardware/fab/case_eink.stl" target="_blank" rel="noopener noreferrer" class=""><code>hardware/fab/case_eink.stl</code></a></strong>
+(GitHub renders it in a 3D viewer). Print in PLA or PETG; the main body needs no
+supports on most printers. The
+<a href="https://github.com/ristllin/Nimbus/tree/main/hardware/fab" target="_blank" rel="noopener noreferrer" class=""><code>hardware/fab/</code></a> folder
+also holds the PCB manufacturing outputs (Gerbers, ODB++) and
+<a href="https://github.com/ristllin/Nimbus/tree/main/hardware/fab#ordering-the-pcb" target="_blank" rel="noopener noreferrer" class="">how to order the board</a>.</p></div><footer class="theme-doc-footer docusaurus-mt-lg"><div class="row margin-top--sm theme-doc-footer-edit-meta-row"><div class="col noPrint_WFHX"><a href="https://github.com/ristllin/Nimbus/blob/main/docs/hardware/build-eink.md" target="_blank" rel="noopener noreferrer" class="theme-edit-this-page"><svg fill="currentColor" height="20" width="20" viewBox="0 0 40 40" class="iconEdit_Z9Sw" aria-hidden="true"><g><path d="m34.5 11.7l-3 3.1-6.3-6.3 3.1-3q0.5-0.5 1.2-0.5t1.1 0.5l3.9 3.9q0.5 0.4 0.5 1.1t-0.5 1.2z m-29.5 17.1l18.4-18.5 6.3 6.3-18.4 18.4h-6.3v-6.2z"></path></g></svg>Edit this page</a></div><div class="col lastUpdated_JAkA"></div></div></footer></article><nav class="docusaurus-mt-lg pagination-nav" aria-label="Docs pages"><a class="pagination-nav__link pagination-nav__link--prev" href="/guides/hardware-bom"><div class="pagination-nav__sublabel">Previous</div><div class="pagination-nav__label">Bill of materials</div></a><a class="pagination-nav__link pagination-nav__link--next" href="/guides/hardware-build-tft"><div class="pagination-nav__sublabel">Next</div><div class="pagination-nav__label">Build: Touch TFT</div></a></nav></div></div><div class="col col--3"><div class="tableOfContents_bqdL thin-scrollbar theme-doc-toc-desktop"><ul class="table-of-contents table-of-contents__left-border"><li><a href="#bill-of-materials" class="table-of-contents__link toc-highlight">Bill of materials</a></li><li><a href="#power-architecture" class="table-of-contents__link toc-highlight">Power architecture</a></li><li><a href="#wiring" class="table-of-contents__link toc-highlight">Wiring</a><ul><li><a href="#e-paper-weact-29-ssd1680" class="table-of-contents__link toc-highlight">E-paper (WeAct 2.9&quot;, SSD1680)</a></li><li><a href="#ec11-rotary-encoder" class="table-of-contents__link toc-highlight">EC11 rotary encoder</a></li><li><a href="#microsd-module-spi" class="table-of-contents__link toc-highlight">microSD module (SPI)</a></li><li><a href="#ws2812b-led-ring" class="table-of-contents__link toc-highlight">WS2812B LED ring</a></li><li><a href="#audio---max98357a-amp--is-mic" class="table-of-contents__link toc-highlight">Audio - MAX98357A amp + I²S mic</a></li><li><a href="#battery-sense-optional-recommended" class="table-of-contents__link toc-highlight">Battery sense (optional, recommended)</a></li></ul></li><li><a href="#assembly-walk-through" class="table-of-contents__link toc-highlight">Assembly walk-through</a><ul><li><a href="#print-the-case-and-set-the-heat-inserts" class="table-of-contents__link toc-highlight">Print the case and set the heat inserts</a></li><li><a href="#assemble-the-carrier-board" class="table-of-contents__link toc-highlight">Assemble the carrier board</a></li><li><a href="#led-ring-speaker-and-power-switch" class="table-of-contents__link toc-highlight">LED ring, speaker, and power switch</a></li><li><a href="#build-the-2s-battery-pack" class="table-of-contents__link toc-highlight">Build the 2S battery pack</a></li><li><a href="#stack-the-electronics-and-close-the-case" class="table-of-contents__link toc-highlight">Stack the electronics and close the case</a></li><li><a href="#fit-the-e-paper-panel-and-the-knob" class="table-of-contents__link toc-highlight">Fit the e-paper panel and the knob</a></li></ul></li><li><a href="#assembly-order" class="table-of-contents__link toc-highlight">Assembly order</a></li><li><a href="#known-traps" class="table-of-contents__link toc-highlight">Known traps</a></li><li><a href="#battery-pack" class="table-of-contents__link toc-highlight">Battery pack</a></li><li><a href="#enclosure-and-cad" class="table-of-contents__link toc-highlight">Enclosure and CAD</a></li></ul></div></div></div></div></main></div></div></div><footer class="theme-layout-footer footer footer--dark"><div class="container container-fluid"><div class="row footer__links"><div class="theme-layout-footer-column col footer__col"><div class="footer__title">Docs</div><ul class="footer__items clean-list"><li class="footer__item"><a class="footer__link-item" href="/quick-start/what-you-need">Quick Start</a></li><li class="footer__item"><a class="footer__link-item" href="/guides/hardware-bom">Bill of materials</a></li><li class="footer__item"><a class="footer__link-item" href="/getting-started/webui-reference">Web UI reference</a></li></ul></div><div class="theme-layout-footer-column col footer__col"><div class="footer__title">Reference</div><ul class="footer__items clean-list"><li class="footer__item"><a class="footer__link-item" href="/reference/config-and-nvs">Config &amp; NVS</a></li><li class="footer__item"><a class="footer__link-item" href="/reference/tool-catalog">Tool catalog</a></li><li class="footer__item"><a class="footer__link-item" href="/reference/turn-contract">Turn contract</a></li><li class="footer__item"><a class="footer__link-item" href="/reference/changelog">Changelog</a></li></ul></div><div class="theme-layout-footer-column col footer__col"><div class="footer__title">More</div><ul class="footer__items clean-list"><li class="footer__item"><a href="https://github.com/ristllin/Nimbus" target="_blank" rel="noopener noreferrer" class="footer__link-item">GitHub<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a></li></ul></div></div><div class="footer__bottom text--center"><div class="footer__copyright">Nimbus - source-available, free for noncommercial use (PolyForm-NC / CC BY-NC-SA). Built with Docusaurus.</div></div></div></footer></div>
+</body>
+</html>
