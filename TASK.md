@@ -53,3 +53,28 @@ use it to validate/self-heal device connector config — instead of ASSUMING acc
 - [ ] /api/keyaudit + web card
 - [ ] docs + live 3-provider probe
 - [ ] prism
+
+## Continuation notes (turnkey — device seam)
+BLOCKED on owner: set nimbus-4 Mistral key to the new token (one-liner in chat) so the
+live device audit runs against the account that HAS github_app.
+
+Device seam (src/agent/keyaudit.cpp, model on provider_verify.cpp):
+- Per keyed provider, TLS GET (reuse the provider_verify runOne() shape: host+key+path,
+  WiFiClientSecure, arbiter::acquireWork/releaseWork, readHttpBody):
+    mistral: GET /v1/connectors  AND  GET /v1/models
+    openai/anthropic: GET /v1/models  (+ later: live MCP probe)
+- Feed bodies to core::parseMistralConnectors / core::parseModelsList (DONE, committed).
+- Cache the report (RAM); expose GET /api/keyaudit (webui.cpp, token-gated) -> per-provider
+  {models[], connectors[{name,id,protocol}]}.
+- SELF-HEAL: for each configured connector whose prov can be mistral, if its cid != the
+  fetched connectorIdByName(name-or-remap) UUID, update the blob cid (owner-confirmed or
+  auto). NB attachMistralWire remaps github->github_app: match on "github_app".
+- Web card: Harness -> "Key access" panel rendering /api/keyaudit.
+- Verify: live probe all 3 keys; then a Mistral github create_repository test should work
+  once cid = 019d8b52-... (confirm whether Mistral accepts name vs UUID for connector_id).
+
+## Status (updated)
+- [x] lib/core provider_audit parser + host test (test_provider_audit 4/4)
+- [x] token validated live (55 models, 17 connectors incl github_app UUID)
+- [ ] BLOCKED: owner sets new token on nimbus-4 -> then device seam + live test
+- [ ] /api/keyaudit + web card ; docs ; prism
