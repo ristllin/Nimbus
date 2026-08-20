@@ -1,6 +1,7 @@
 #include "nimbus/tft_render/screens.h"
 
 #include <algorithm>
+#include <cmath>
 
 #include "nimbus/device_identity.h"   // wifiQrPayload - the setup screen's join QR
 #include "nimbus/qr.h"
@@ -158,8 +159,44 @@ void drawHeader(Fb565& fb, Rendered& r, const ScreenCtx& ctx,
 
 // ---- status home ------------------------------------------------------------
 
+// RGB (0-255 per channel) -> logical RGB565 (Fb565 swaps to big-endian on store).
+static inline uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b) {
+  return uint16_t(((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3));
+}
+
+// The on-screen ring: draw the composited LED frame as a circle of small discs
+// inside the square [x,y,size]. Boards with no physical ring show this in the
+// notifier so the panel says exactly what the LEDs would have. Dot 0 at top,
+// clockwise. Only ever called when ctx.ringLeds is non-empty, so the existing
+// (empty-ringLeds) goldens are untouched.
+static void drawRingWidget(Fb565& fb, int x, int y, int size,
+                           const std::vector<ScreenCtx::RingLed>& leds) {
+  const int n = int(leds.size());
+  if (n <= 0) return;
+  const float cx = x + size / 2.0f;
+  const float cy = y + size / 2.0f;
+  const int   dotD = size >= 96 ? 8 : 6;
+  const float R = size / 2.0f - dotD / 2.0f - 1.0f;
+  for (int i = 0; i < n; ++i) {
+    const float a = -1.57079633f + 6.28318531f * float(i) / float(n);   // top, clockwise
+    const int dx = int(std::lround(cx + R * std::cos(a))) - dotD / 2;
+    const int dy = int(std::lround(cy + R * std::sin(a))) - dotD / 2;
+    const auto& L = leds[size_t(i)];
+    const bool lit = (L.r | L.g | L.b) != 0;
+    fb.fillRoundRect(dx, dy, dotD, dotD, dotD / 2, lit ? rgb565(L.r, L.g, L.b) : kRaise2);
+  }
+}
+
 void drawStatusHome(Fb565& fb, Rendered& r, const ScreenCtx& ctx) {
   drawHeader(fb, r, ctx, "", false);
+
+  // On-screen ring (ringless boards): reserve a square on the right for the ring
+  // and reflow the session cards to a single narrower column on the left. When
+  // ringLeds is empty (a board WITH a ring), everything below is byte-for-byte
+  // the original two-up layout, so the goldens do not move.
+  const bool showRing = !ctx.ringLeds.empty();
+  const int  ringW    = showRing ? 116 : 0;
+  const int  bodyRight = kW - ringW;
 
   // ⚠ The mic is ORCHESTRATOR-ONLY. Hold-to-talk records, transcribes and sends a
   // TURN; in Notifier mode there is no orchestrator running to send it to, so the
@@ -174,13 +211,13 @@ void drawStatusHome(Fb565& fb, Rendered& r, const ScreenCtx& ctx) {
 
   if (ctx.jobs.empty()) {
     // Empty state: say what the device is doing, not "no data".
-    fb.card(kGut, gridTop, kW - 2 * kGut, 84);
+    fb.card(kGut, gridTop, bodyRight - 2 * kGut, 84);
     const std::string l1 = "Nothing running";
     const std::string l2 = ctx.modeName && std::string(ctx.modeName) == "notifier"
                                ? "Waiting for a session"
                                : "Ready when you are";
-    fb.text((kW - fb.textWidth(l1, 2)) / 2, gridTop + 26, l1, kInk, 2);
-    fb.text((kW - fb.textWidth(l2, 1)) / 2, gridTop + 50, l2, kInk3, 1);
+    fb.text((bodyRight - fb.textWidth(l1, 2)) / 2, gridTop + 26, l1, kInk, 2);
+    fb.text((bodyRight - fb.textWidth(l2, 1)) / 2, gridTop + 50, l2, kInk3, 1);
   } else {
     // TWO-UP grid. A single column is right on a 240px-wide portrait panel, but
     // this panel is mounted landscape: 320 wide gives each card ~144px (enough
@@ -188,9 +225,10 @@ void drawStatusHome(Fb565& fb, Rendered& r, const ScreenCtx& ctx) {
     // a session list at all. Two columns x two rows shows four sessions.
     // (The earlier rejection of a 2-up grid was measured at 240px WIDE, where it
     // left ~7 characters of title. It is a different trade at 320.)
-    constexpr int cols = 2;
+    // One column when the ring occupies the right; two otherwise (unchanged).
+    const int cols = showRing ? 1 : 2;
     constexpr int gap = 8;
-    const int cardW = (kW - 2 * kGut - gap * (cols - 1)) / cols;
+    const int cardW = (bodyRight - 2 * kGut - gap * (cols - 1)) / cols;
     constexpr int cardH = 56;
     const int maxRows = std::max(1, (gridBot - gridTop + gap) / (cardH + gap));
     const int shown = std::min<int>(int(ctx.jobs.size()), maxRows * cols);
@@ -253,6 +291,16 @@ void drawStatusHome(Fb565& fb, Rendered& r, const ScreenCtx& ctx) {
 
       push(r, cx, cy, cardW, cardH, TapRegion::Action::SessionCard, i);
     }
+  }
+
+  // On-screen ring, centered in the reserved right-hand column. It mirrors the
+  // physical LED frame the notifier composed, so a board with no ring still shows
+  // per-session colours + the cursor glow the same way the LEDs would.
+  if (showRing) {
+    const int rs = std::min(ringW - 12, (gridBot - gridTop) - 8);
+    const int rx = bodyRight + (ringW - rs) / 2;
+    const int ry = gridTop + ((gridBot - gridTop) - rs) / 2;
+    drawRingWidget(fb, rx, ry, rs, ctx.ringLeds);
   }
 
   // Hold-to-talk bar. Full width, unmissable, and the only accent-filled

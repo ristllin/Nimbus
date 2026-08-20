@@ -852,6 +852,17 @@ static epd::ScreenCtx buildCtx(int cursorJob) {
       default:                                     c.badgeText = "!";        break;
     }
   }
+
+  // On-screen ring: a board with no physical LED ring mirrors the composited ring
+  // frame onto the panel (the notifier draws it as a dot-ring). Only meaningful on
+  // the colour panel; the e-ink renderer ignores ringLeds.
+  if (g_screenIsTft && !solide::board().hasRing) {
+    const solide::ring::RGB* rf = hw::currentRingFrame();
+    const int n = hw::currentRingCount();
+    c.ringLeds.resize(size_t(n));
+    for (int i = 0; i < n; ++i)
+      c.ringLeds[size_t(i)] = { rf[i].r, rf[i].g, rf[i].b };
+  }
   return c;
 }
 
