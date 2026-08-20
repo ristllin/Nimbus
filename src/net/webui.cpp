@@ -864,12 +864,17 @@ static bool applyOrchField(const String& n, const String& v, bool& cfgDirty) {
     if (s.length()) agent::store::setProviderPriority(s);
     return true;
   }
+  // Only mistral/openai do on-device voice, and only if a key is configured -
+  // reject an unconfigured provider rather than store a voice setting that can
+  // never run (the onboarding UI also gates this, this is the backstop).
   if (n == "sttProv") {
-    if (v == "mistral" || v == "openai") agent::store::setSttProvider(v);
+    if ((v == "mistral" || v == "openai") && agent::store::providerHasKey(v))
+      agent::store::setSttProvider(v);
     return true;
   }
   if (n == "ttsProv") {
-    if (v == "mistral" || v == "openai") agent::store::setTtsProvider(v);
+    if ((v == "mistral" || v == "openai") && agent::store::providerHasKey(v))
+      agent::store::setTtsProvider(v);
     return true;
   }
   if (n == "ttsVoice") {   // free-form voice id/slug; validated against the provider on use

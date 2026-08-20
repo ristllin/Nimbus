@@ -53,7 +53,8 @@ bool   hasCustom();          // customBase() non-empty
 
 // ---- orchestrator routing + models ----
 String orchHost();                          // explicit host provider ("" => top of priority)
-String resolvedOrchHost();                  // orchHost, else the head of providerPriority - use
+bool   providerHasKey(const String& name);  // is an API key stored for openai|anthropic|mistral
+String resolvedOrchHost();                  // orchHost, else the first KEYED provider in priority - use
                                             // this whenever the model WINDOW is resolved
 int    effectiveToolResultCap();            // the per-result clamp a turn will apply (derived|owner)
 String orchConvId();                        // "host|convId" (per-host conversation state)

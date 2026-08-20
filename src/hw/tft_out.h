@@ -33,6 +33,13 @@ enum class Push : uint8_t {
 // frame; on Dropped they still describe the older frame that IS on the panel.
 Push renderAndPush(nimbus::attn::ScreenId screen, const nimbus::epd::ScreenCtx& ctx);
 
+// Repaint ONLY the on-screen ring rectangle (ringless-board Notifier screen) from
+// the given StatusIdle context, at animation cadence. Composes the frame in RAM
+// and region-pushes just the ring square via display_tft::pushRegion, so the ring
+// animates smoothly without the ~31 ms full-frame blit. Returns false if not ready,
+// busy, or the frame has no ring. MUST be called on the main task (see ring_out).
+bool repaintRingRegion(const nimbus::epd::ScreenCtx& ctx);
+
 // The bytes of the frame currently ON THE PANEL (big-endian RGB565, kFbBytes),
 // or null before the first push. This is the dirty-gate snapshot, i.e. what the
 // glass is actually showing - not a fresh re-render, so a screenshot taken from

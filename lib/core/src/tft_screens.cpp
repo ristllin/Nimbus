@@ -191,7 +191,7 @@ static void drawRingWidget(Fb565& fb, int x, int y, int size,
   if (n <= 0) return;
   const int cx = x + size / 2;
   const int cy = y + size / 2;
-  const int dotD = size >= 96 ? 8 : 6;
+  const int dotD = size >= 160 ? 11 : size >= 96 ? 8 : 6;
   const int R = size / 2 - dotD / 2 - 1;
   for (int i = 0; i < n; ++i) {
     const int t = (i * 45) / n;                       // map onto the 45-entry table
@@ -204,16 +204,67 @@ static void drawRingWidget(Fb565& fb, int x, int y, int size,
   }
 }
 
+// Ring-dominant Notifier screen for boards with NO physical LED ring: the ring is
+// the whole display. Sessions are the arcs the ring already draws; a small legend
+// sits inside it, and orchestrator's hold-to-talk shrinks to a compact bottom pill
+// so the ring keeps the space. The ring square is exposed on Rendered so the
+// device can push ONLY that rectangle at animation cadence.
+static void drawRingHome(Fb565& fb, Rendered& r, const ScreenCtx& ctx) {
+  const bool showMic = ctx.modeName && std::string(ctx.modeName) == "orchestrator";
+  const int micH = showMic ? kMinTap : 0;             // >= tap minimum when shown
+  const int bodyTop = kBodyTop;
+  const int bodyBot = kH - kGut - (showMic ? micH + kGut : 0);
+  const int bodyH = bodyBot - bodyTop;
+
+  const int rs = std::min(kW - 2 * kGut, bodyH);      // big square ring
+  const int rx = (kW - rs) / 2;
+  const int ry = bodyTop + (bodyH - rs) / 2;
+  drawRingWidget(fb, rx, ry, rs, ctx.ringLeds);
+  r.ringX = int16_t(rx); r.ringY = int16_t(ry);
+  r.ringW = int16_t(rs); r.ringH = int16_t(rs);
+
+  const int cx = rx + rs / 2, cy = ry + rs / 2;
+  const int inner = rs - 64;                          // keep text inside the dots
+  if (ctx.jobs.empty()) {
+    const std::string l1 = "Nothing running";
+    const std::string l2 = "Waiting for a session";
+    fb.text(cx - fb.textWidth(l1, 1) / 2, cy - 8, l1, kInk, 1);
+    fb.text(cx - fb.textWidth(l2, 1) / 2, cy + 6, l2, kInk3, 1);
+  } else {
+    const int fi = (ctx.cursorJob >= 0 && ctx.cursorJob < int(ctx.jobs.size()))
+                     ? ctx.cursorJob : 0;
+    const auto& j = ctx.jobs[size_t(fi)];
+    const StatusTone tone = toneFor(j.status);
+    const std::string name = j.label.empty() ? std::string("session") : j.label;
+    const std::string state = labelFor(tone);
+    const int nameW = std::min(fb.textWidth(name, 1), inner);
+    fb.textClipped(cx - nameW / 2, cy - 12, name, kInk, inner, 1);
+    fb.label(cx - fb.labelWidth(state) / 2, cy + 2, state, colourFor(tone));
+    if (ctx.jobs.size() > 1) {
+      char cnt[24];
+      std::snprintf(cnt, sizeof cnt, "%d active", int(ctx.jobs.size()));
+      fb.text(cx - fb.textWidth(cnt, 1) / 2, cy + 16, cnt, kInk3, 1);
+    }
+  }
+
+  if (showMic) {
+    const int pw = 168, ph = micH;
+    const int px = (kW - pw) / 2, py = kH - kGut - ph;
+    fb.fillRoundRect(px, py, pw, ph, ph / 2, kTeal);
+    iconMic(fb, px + 26, py + ph / 2, kBg);
+    fb.text(px + 46, py + (ph - fb.textHeight(1)) / 2, "Hold to talk", kBg, 1);
+    push(r, px, py, pw, ph, TapRegion::Action::Mic);
+  }
+}
+
 void drawStatusHome(Fb565& fb, Rendered& r, const ScreenCtx& ctx) {
   drawHeader(fb, r, ctx, "", false);
 
-  // On-screen ring (ringless boards): reserve a square on the right for the ring
-  // and reflow the session cards to a single narrower column on the left. When
-  // ringLeds is empty (a board WITH a ring), everything below is byte-for-byte
-  // the original two-up layout, so the goldens do not move.
-  const bool showRing = !ctx.ringLeds.empty();
-  const int  ringW    = showRing ? 116 : 0;
-  const int  bodyRight = kW - ringW;
+  // Ringless board: the ring IS the display, so use the dedicated ring-dominant
+  // layout. buildCtx fills ringLeds only on a board with no physical ring, so a
+  // ring board falls straight through to the original card layout (goldens hold).
+  if (!ctx.ringLeds.empty()) { drawRingHome(fb, r, ctx); return; }
+  const int bodyRight = kW;
 
   // ⚠ The mic is ORCHESTRATOR-ONLY. Hold-to-talk records, transcribes and sends a
   // TURN; in Notifier mode there is no orchestrator running to send it to, so the
@@ -242,8 +293,7 @@ void drawStatusHome(Fb565& fb, Rendered& r, const ScreenCtx& ctx) {
     // a session list at all. Two columns x two rows shows four sessions.
     // (The earlier rejection of a 2-up grid was measured at 240px WIDE, where it
     // left ~7 characters of title. It is a different trade at 320.)
-    // One column when the ring occupies the right; two otherwise (unchanged).
-    const int cols = showRing ? 1 : 2;
+    constexpr int cols = 2;
     constexpr int gap = 8;
     const int cardW = (bodyRight - 2 * kGut - gap * (cols - 1)) / cols;
     constexpr int cardH = 56;
@@ -308,16 +358,6 @@ void drawStatusHome(Fb565& fb, Rendered& r, const ScreenCtx& ctx) {
 
       push(r, cx, cy, cardW, cardH, TapRegion::Action::SessionCard, i);
     }
-  }
-
-  // On-screen ring, centered in the reserved right-hand column. It mirrors the
-  // physical LED frame the notifier composed, so a board with no ring still shows
-  // per-session colours + the cursor glow the same way the LEDs would.
-  if (showRing) {
-    const int rs = std::min(ringW - 12, (gridBot - gridTop) - 8);
-    const int rx = bodyRight + (ringW - rs) / 2;
-    const int ry = gridTop + ((gridBot - gridTop) - rs) / 2;
-    drawRingWidget(fb, rx, ry, rs, ctx.ringLeds);
   }
 
   // Hold-to-talk bar. Full width, unmissable, and the only accent-filled

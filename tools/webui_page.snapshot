@@ -3101,8 +3101,15 @@ function sendChatTurn(){
         fetch('/api/chat').then(r=>r.json()).then(d=>{
           if(d.reply){pend.textContent=d.reply;pend.style.opacity=1;_chatBusy=false;$('chatMsg').textContent='';
             setTimeout(loadChatHistory,900);}   // re-sync from the canonical store
-          else if(tries<40){setTimeout(poll,1500);}
-          else{pend.textContent='(No reply - check the provider key and try again)';pend.style.opacity=1;_chatBusy=false;$('chatMsg').textContent='';}
+          // Keep polling while a turn is IN FLIGHT (d.pending). A turn that uses
+          // tools can legitimately run for minutes, so a fixed 60 s cap dropped
+          // real replies; poll up to the ~13 min turn budget, with a 40-try floor
+          // for quick turns even if pending flips off in a race.
+          else if((d.pending||tries<40)&&tries<520){$('chatMsg').textContent='Working…';setTimeout(poll,1500);}
+          // Gave up waiting: re-sync from the canonical store so a reply that
+          // staged after we stopped polling still appears, rather than a frozen pane.
+          else{pend.style.opacity=1;_chatBusy=false;$('chatMsg').textContent='';loadChatHistory();
+            pend.textContent='(Still working - reloading the conversation. If nothing appears, check the provider key.)';}
         }).catch(()=>{pend.textContent='(Couldn\'t fetch the reply - try again)';_chatBusy=false;});};
       setTimeout(poll,1500);
     })
@@ -3135,7 +3142,7 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
     {id:'name',t:'Name this device',skip:1},
     {id:'done',t:'All set'},
   ];
-  let idx=0, wifiOk=false, provOk=false, pendingMode=null, curMode=0, scanTimer=null;
+  let idx=0, wifiOk=false, provOk=false, pendingMode=null, curMode=0, scanTimer=null, onbProvider='';
   let handoffProbe=null;
   // Display step: bootDisp is what the device booted with (a TFT board that was
   // never told it has a TFT boots "eink" and shows a white panel - this step is
@@ -3160,7 +3167,8 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
       '<div class=row style="margin-top:8px"><button type=button id=onb_wifisave>Connect</button><span class=hint id=onb_wifimsg></span></div>'+
       '<div id=onb_handoff class=hint style="display:none;margin-top:12px;padding:12px;border:1px solid var(--line2);border-radius:8px"></div>';
     if(s.id==='provider')return '<label>Provider</label>'+
-      '<select id=onb_prov><option value=openai>OpenAI</option><option value=anthropic>Anthropic</option><option value=mistral>Mistral</option></select>'+
+      '<select id=onb_prov><option value=mistral selected>Mistral</option><option value=openai>OpenAI</option><option value=anthropic>Anthropic</option></select>'+
+      '<p class=hint id=onb_provguide></p>'+
       '<label>API key</label><input id=onb_key type=password placeholder="Paste your API key">'+
       '<div class=row style="margin-top:8px"><button type=button id=onb_provsave>Save &amp; Verify</button><span class=hint id=onb_provmsg></span></div>'+
       '<p class=hint>The key stays on the device and is never shown again. It is checked with the provider before you continue.</p>';
@@ -3213,6 +3221,13 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
       el('onb_wifisave').onclick=doWifi;
       refreshWifiState();
     } else if(s.id==='provider'){
+      // Per-provider setup guidance, updated as the selection changes.
+      const pv=el('onb_prov'),pg=el('onb_provguide');
+      const G={mistral:'Mistral (recommended): sign up at console.mistral.ai, add billing credits, then create an API key. Good value and it also powers on-device voice.',
+        openai:'OpenAI: sign up at platform.openai.com, add credit under Billing, then create a key under API keys.',
+        anthropic:'Anthropic: sign up at console.anthropic.com, add credit, then create an API key. Note: text only, no on-device voice.'};
+      const upd=()=>{pg.textContent=G[pv.value]||'';};
+      pv.onchange=upd;upd();
       el('onb_provsave').onclick=doProvider;
     } else if(s.id==='mode'){
       [...document.querySelectorAll('.onbmb')].forEach(b=>{
@@ -3223,7 +3238,15 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
       el('onb_tgsave').onclick=()=>{const v=el('onb_tg').value.trim();if(!v){el('onb_tgmsg').textContent='Enter a token first.';return;}
         orchApply({tgToken:v}).then(ok=>{el('onb_tgmsg').textContent=ok?'Saved ✓':'Rejected';});};
     } else if(s.id==='voice'){
-      el('onb_voicesave').onclick=()=>orchApply({sttProv:el('onb_stt').value,ttsProv:el('onb_tts').value})
+      // Only mistral/openai do on-device voice. Offer ONLY the provider the owner
+      // configured; if the configured provider is Anthropic (no voice), skip this
+      // step entirely - nothing here would be usable.
+      const cap=(onbProvider==='mistral'||onbProvider==='openai')?onbProvider:'';
+      if(!cap){next();return;}
+      const lbl=cap==='mistral'?'Mistral':'OpenAI';
+      el('onb_stt').innerHTML='<option value='+cap+'>'+lbl+'</option>';
+      el('onb_tts').innerHTML='<option value='+cap+'>'+lbl+'</option>';
+      el('onb_voicesave').onclick=()=>orchApply({sttProv:cap,ttsProv:cap})
         .then(ok=>{el('onb_voicemsg').textContent=ok?'Saved ✓':'Rejected';});
     } else if(s.id==='name'){
       el('onb_namesave').onclick=()=>{const v=el('onb_name').value.trim();if(!v){el('onb_namemsg').textContent='Enter a name.';return;}
@@ -3312,7 +3335,7 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
     .then(()=>{
       let tries=0;const vp=setInterval(()=>fetch('/api/orch').then(r=>r.json()).then(d=>{
         const v=d.providers&&d.providers[p]?d.providers[p].verify:-1;
-        if(v===1){clearInterval(vp);b.disabled=false;provOk=true;el('onb_provmsg').textContent='Verified ✓';el('onb_key').value='';}
+        if(v===1){clearInterval(vp);b.disabled=false;provOk=true;onbProvider=p;el('onb_provmsg').textContent='Verified ✓';el('onb_key').value='';}
         else if(v===0){clearInterval(vp);b.disabled=false;el('onb_provmsg').textContent='Rejected - check the key.';}
         else if(++tries>20){clearInterval(vp);b.disabled=false;el('onb_provmsg').textContent='Still verifying - tap Save & Verify again in a moment.';}
       }).catch(()=>{}),2000);

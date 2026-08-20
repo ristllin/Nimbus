@@ -121,14 +121,35 @@ String orchHost() { return solide::memory::getString(AKEY_ORCH_HOST, ""); }
 // back to the conservative 100K default, which silently HALVED the derived
 // brief/fold-slice budgets and made the web UI report the wrong effective caps
 // (prism 2026-08-05). The engine resolves the same way inline.
+bool providerHasKey(const String& name) {
+  String n = name; n.trim();
+  if (n == "openai")    return hasOpenaiKey();
+  if (n == "anthropic") return hasAnthropicKey();
+  if (n == "mistral")   return hasMistralKey();
+  return false;
+}
 String resolvedOrchHost() {
   String h = orchHost();
   if (h.length()) return h;
-  String pr = providerPriority();
-  int c = pr.indexOf(',');
-  h = (c > 0) ? pr.substring(0, c) : pr;
-  h.trim();
-  return h;
+  // Walk the priority list and pick the FIRST provider that actually has a key,
+  // so the active provider is one the owner configured. A bare default list heads
+  // with "openai" even when only Mistral is keyed - the reported bug. Fall back to
+  // the raw head only if nothing is keyed yet (fresh device mid-onboarding).
+  const String pr = providerPriority();
+  String head;
+  int start = 0;
+  while (start <= (int)pr.length()) {
+    int c = pr.indexOf(',', start);
+    String tok = (c < 0) ? pr.substring(start) : pr.substring(start, c);
+    tok.trim();
+    if (tok.length()) {
+      if (head.length() == 0) head = tok;
+      if (providerHasKey(tok)) return tok;
+    }
+    if (c < 0) break;
+    start = c + 1;
+  }
+  return head;
 }
 String orchConvId() { return solide::memory::getString(AKEY_ORCH_CONVID, ""); }
 void   setOrchConvId(const String& v) { solide::memory::setString(AKEY_ORCH_CONVID, v); }

@@ -685,15 +685,11 @@ static bool ringHasAttention() {
 static size_t focusCount() { return 1 + g_sessionList.size(); }
 
 // The active orchestrator host provider, for the root's label: the explicit orchHost
-// override, else the head of the priority list, else "auto".
+// override, else the first KEYED provider in the priority list (so the label matches
+// the provider a turn will actually run on), else "auto".
 static std::string activeHostProvider() {
-  String h = agent::store::orchHost();
-  if (h.length()) return std::string(h.c_str());
-  String prio = agent::store::providerPriority();
-  int comma = prio.indexOf(',');
-  String first = comma >= 0 ? prio.substring(0, comma) : prio;
-  first.trim();
-  return first.length() ? std::string(first.c_str()) : std::string("auto");
+  const String h = agent::store::resolvedOrchHost();
+  return h.length() ? std::string(h.c_str()) : std::string("auto");
 }
 
 // Populate ScreenCtx session fields for focus index `idx`: 0 = the Orchestrator root
@@ -1386,6 +1382,11 @@ static void refreshRing() {
 // not touch g_cfg/g_selector/persistConfig() - a preview is a look, not a choice.
 static void startPreview(int profileId) {
   if (profileId < 0 || profileId >= nimbus::kProfileCount) return;
+  // A preview is meant to be SEEN, so wake the panel if the screensaver has it
+  // blanked (restores the backlight + repaints StatusIdle). On a ringless board
+  // this is the difference between the demo showing on the panel and nothing at
+  // all; refreshRing() alone only recomposes the frame, it never un-blanks.
+  saverKick();
   g_previewActive = true;
   g_previewProfile = ProfileId(profileId);
   g_previewUntil = millis() + NIMBUS_PREVIEW_MS;
@@ -4737,7 +4738,11 @@ void loop() {
   // Gated on StatusIdle so a CTA badge, menu, detail, ask or QR screen can never
   // time out into the logo; every activity seam (input pop, real job edges, any
   // non-ambient render) resets the clock and saverKick() restores live status.
-  if (!g_menu.isOpen() && g_saver.due(now) &&
+  // A ringless Notifier board draws the status ring on the panel, so the ring IS
+  // the point - never blank it there. (Orchestrator still saves power by blanking;
+  // the demo/a session wakes it via saverKick.)
+  const bool ringIsTheScreen = g_screenIsTft && !solide::board().hasRing && !g_orchMode;
+  if (!g_menu.isOpen() && !ringIsTheScreen && g_saver.due(now) &&
       g_lastScreen == uint8_t(attn::ScreenId::StatusIdle)) {
 #ifdef NIMBUS_TEST
     Serial.printf("SAVERDBG fire now=%lu last=%lu thr=%u\n",
@@ -4814,6 +4819,20 @@ void loop() {
     // orchestrator led/lights override, or an OTA install (the progress bar is
     // the sole raw-frame owner then - racing it was the heavy download flicker).
     hw::tickAnimation(now);
+  }
+
+  // On-screen ring animation (ringless boards): the ring IS the notifier display,
+  // so repaint it at ~30 fps via a region push instead of waiting for a scheduler
+  // event (which is why it looked frozen). Region-only, so it never runs the
+  // ~31 ms full-frame blit; skipped over the menu or while the saver has blanked
+  // the panel. tickAnimation() above already refreshed the ring frame it reads.
+  static uint32_t s_lastRingPaint = 0;
+  if (g_screenIsTft && !solide::board().hasRing && !g_menu.isOpen() &&
+      g_lastScreen == uint8_t(attn::ScreenId::StatusIdle) &&
+      hw::tft::backlight() > nimbus::kBacklightRestPct &&
+      uint32_t(now - s_lastRingPaint) >= 33) {
+    s_lastRingPaint = now;
+    hw::tft::repaintRingRegion(buildCtx(-1));
   }
 
   delay(3);

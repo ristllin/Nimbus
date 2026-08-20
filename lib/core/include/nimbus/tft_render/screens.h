@@ -29,6 +29,11 @@ namespace nimbus::tft {
 struct Rendered {
   std::vector<TapRegion> taps;
 
+  // On-screen ring bounding box on the panel (ringless-board Notifier screen), so
+  // the device loop can push ONLY that rectangle at animation cadence instead of
+  // the whole 320x240 frame. w == 0 means this screen has no on-screen ring.
+  int16_t ringX = 0, ringY = 0, ringW = 0, ringH = 0;
+
   const TapRegion* hit(int x, int y) const {
     // Last match wins: regions are emitted back-to-front, so a control drawn
     // over a card claims the tap rather than the card underneath it.
