@@ -12,30 +12,45 @@ This page is the Nimbus-side consolidated view.
 
 ## Board configurations
 
-A Nimbus device is built in **one of two display/input configurations**. They run the
-**same firmware** - a single NVS setting, `screenModel`, is read once at boot to select
-both the display driver and the input driver. The two share the SPI3 pads and the TFT
-consumes the encoder's GPIOs, so a board is only ever one or the other.
+A Nimbus device runs in **one of three display/input configurations**. Two are
+hand-built on the **Solide S3** board and picked by a single NVS setting,
+`screenModel`, read once at boot to select both the display driver and the input
+driver (they share the SPI3 pads and the TFT consumes the encoder's GPIOs, so a
+hand-built board is only ever one or the other). The third is an off-the-shelf
+all-in-one module, the **Freenove ESP32-S3 Display (CYD)**, that arrives as a
+single part and runs its own firmware image.
 
-| Configuration | Display | Input | `screenModel` | Details |
-|---|---|---|---|---|
-| **[E-paper + knob](hardware/eink-knob.md)** *(default, shipped)* | 2.9" SSD1680, 296×128 1-bit | EC11 rotary knob | `eink` | [→ pinout & pins](hardware/eink-knob.md) |
-| **[Touch TFT](hardware/touch-tft.md)** | 2.8" ILI9341, 240×320 RGB565 | XPT2046 touch | `tft` | [→ pinout, wiring, touch cal](hardware/touch-tft.md) |
+| Configuration | Display | Input | `screenModel` | Board | Details |
+|---|---|---|---|---|---|
+| **[E-paper + knob](hardware/eink-knob.md)** *(default, shipped)* | 2.9" SSD1680, 296×128 1-bit | EC11 rotary knob | `eink` | `solide_s3` | [→ pinout & pins](hardware/eink-knob.md) |
+| **[Touch TFT](hardware/touch-tft.md)** | 2.8" ILI9341, 240×320 RGB565 | XPT2046 resistive touch | `tft` | `solide_s3` | [→ pinout, wiring, touch cal](hardware/touch-tft.md) |
+| **[All-in-one (Freenove CYD)](hardware/all-in-one-cyd.md)** *(lowest effort)* | 2.8" ILI9341, 240×320 capacitive touch | Touch | `tft` | `freenove_s3` | [→ pinout & happy-path build](hardware/all-in-one-cyd.md) |
+
+The two Solide S3 pinouts:
 
 | E-paper + knob | Touch TFT |
 |---|---|
 | ![e-paper pinout](hardware/diagrams/pinout-eink.svg) | ![touch-TFT pinout](hardware/diagrams/pinout-tft.svg) |
 
-For a new board, `python3 tools/setup_device.py` asks which configuration is
-fitted and stores it over UART before production firmware boots. This is
-essential for TFT: it has no knob, and the raw firmware default is e-ink.
+The all-in-one has its own complete pinout on its page:
+[All-in-one (Freenove CYD)](hardware/all-in-one-cyd.md).
+
+For a hand-built Solide S3 board, `python3 tools/setup_device.py` asks which
+configuration is fitted and stores it over UART before production firmware boots.
+This is essential for TFT: it has no knob, and the raw firmware default is e-ink.
 Afterward it can be changed in **Settings → Mode & identity → Display** (web) or
 `POST /api/orch scrModel=tft`. It is **hardware identity, not a preference**:
 read once at boot to pick both drivers, so a change needs a restart, and it is
 exempt from "Revert to Defaults". Surfaced as `scrModel` in `/api/state` and
 `scr=` in `STATUS`.
 
-Everything below this section is **common to both configurations**.
+The all-in-one is different: its pinout is a **compile-time identity** chosen by
+`SOLIDE_BOARD=freenove_s3` at flash time, and `screenModel` is fixed to `tft`.
+There is no display setting to pick, and nothing to wire.
+
+Everything below this section is **common to the two Solide S3 configurations**.
+The all-in-one carries the same peripherals on a different, fixed pinout, covered
+in full on its own page.
 
 ## First flash of a fresh board - use the UART port
 
@@ -110,9 +125,10 @@ for reflashing. The UART port remains the guaranteed path if a build ever wedges
 
 ## Shared peripherals
 
-These are present in **both** configurations. The display + input pins are
+These are present in **both** Solide S3 configurations. The display + input pins are
 config-specific - see [E-paper + knob](hardware/eink-knob.md) or
-[Touch TFT](hardware/touch-tft.md).
+[Touch TFT](hardware/touch-tft.md). The all-in-one carries the same peripherals on
+its own fixed pinout - see [All-in-one (Freenove CYD)](hardware/all-in-one-cyd.md).
 
 | Peripheral | Bus | Pins | Rail | Notes |
 |---|---|---|---|---|

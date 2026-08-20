@@ -42,6 +42,7 @@ const PAGES = [
   ['hardware/build-tft.md', 'guides/hardware-build-tft.md', 'Build Guide - Touch TFT', 'Build: Touch TFT'],
   ['hardware/eink-knob.md', 'guides/hardware-eink-knob.md', 'Configuration A - E-paper + knob', 'HW: E-paper + knob'],
   ['hardware/touch-tft.md', 'guides/hardware-touch-tft.md', 'Configuration B - Touch TFT', 'HW: Touch TFT'],
+  ['hardware/all-in-one-cyd.md', 'guides/hardware-all-in-one-cyd.md', 'Configuration C - all-in-one (Freenove CYD)', 'HW: All-in-one (CYD)'],
   // Using Nimbus
   ['modes-and-signals.md', 'guides/modes-and-signals.md', 'Modes & signals', 'Modes & signals'],
   ['led-ux.md', 'guides/led-ux.md', 'LED experience - motion & color', 'LED experience'],

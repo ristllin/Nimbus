@@ -108,12 +108,21 @@ Default per-provider models: `OPENAI_MODEL` = `gpt-5.5`, `ANT_MODEL` =
 | `ttsEnabled` | bool | `false` | Spoken-reply enable | Yes |
 | `theme` | string | `"teal"` | LED color theme slug | Yes |
 | `ledBright` | int | `128` | LED brightness (`ledBright` NVS key) | Yes |
-| `scrModel` | string | `"eink"` | Display type (`eink\|tft`), boot-applied. Exempt from Revert to Defaults (hardware identity). | Yes |
+| `scrModel` | string | `"eink"` | Display type (`eink\|tft`), boot-applied. Exempt from Revert to Defaults (hardware identity). On all-in-one boards it is **fixed to `tft`** and the selector is locked - see the note below. | Yes |
 | `devTz` | string | `""` (= UTC) | POSIX timezone for daily/weekly routines + the device clock display (Settings → Mode & identity). Applies immediately; wall-clock routines rebase budget-neutrally. | Yes |
 | `dreamScrHash` | string | `""` | fnv64-hex of the scratchpad after the last dream - the quiet-night skip baseline. Device-managed. | Yes |
 | `tchCal` | string | `""` | Touch-panel calibration (XPT2046); `""` = identity/default | Yes |
 | `lbRing` | bool | `false` | Low-battery ring cue (owner opt-in; off by default) | Yes |
 | `lbSaver` | bool | `true` | Auto-drop to a lower battery mode on low battery | Yes |
+
+**`scrModel` vs. the board pinout.** `scrModel` picks the display and input
+**family** (renderer + touch/knob) on a hand-built Solide S3 board, where one
+firmware image serves both the e-ink and TFT builds. The **board pinout** is a
+separate, coarser identity fixed at **compile time** by `SOLIDE_BOARD`
+(`solide_s3` or `freenove_s3`): a Freenove all-in-one runs its own firmware image,
+so its pinout is baked in, its `scrModel` is fixed to `tft`, and the web display
+selector is locked (driven by board id, not by `scrModel`). See the
+[hardware reference](../hardware.md#board-configurations).
 
 ### Anthropic managed-agents caches (`src/agent/store.cpp`)
 

@@ -19,7 +19,7 @@ This page is the assembly walk-through. The companion pages:
 
 All commodity parts; any listing matching the **Module / chip** column works.
 Prices are approximate street prices in USD, excluding shipping. The
-consolidated parts list for both configurations, with the shared-parts
+consolidated parts list for all configurations, with the shared-parts
 breakdown and safety notes, is the **[bill of materials](bom.md)**.
 
 | Qty | Part | Module / chip | Notes | Purchase | ~Price |

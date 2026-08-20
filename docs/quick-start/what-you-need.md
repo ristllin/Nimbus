@@ -8,7 +8,9 @@ Everything required to go from parts to a working Nimbus. Budget roughly
 1. **The electronics** - an ESP32-S3-DevKitC-1 (N16R8), a display (2.9" e-ink
    + knob, or a 2.8" color touchscreen), the 45-LED ring, mic, amp, speaker,
    microSD module, and the 2S battery section. Full parts list with sourcing
-   links and prices: **[Bill of materials](../hardware/bom.md)**.
+   links and prices: **[Bill of materials](../hardware/bom.md)**. *Prefer the
+   least effort?* The [all-in-one board](../hardware/all-in-one-cyd.md) (Freenove
+   CYD) replaces this whole list with one module: about $20-25, nothing to wire.
 2. **A USB-C cable** (data-capable) for the first firmware install.
 3. **A computer** for flashing - any OS with a Chromium-based browser (for the
    browser flasher), or Python 3 + [PlatformIO](https://platformio.org/) for
@@ -27,14 +29,17 @@ Everything required to go from parts to a working Nimbus. Budget roughly
 
 ## Choose your build
 
-| | E-ink + knob *(default)* | Touch TFT |
-|---|---|---|
-| Display | 2.9" e-paper, always readable | 2.8" color touchscreen |
-| Input | Rotary knob | Touch |
-| Guide | [Build guide](../hardware/build-eink.md) | [Build guide](../hardware/build-tft.md) |
+| | E-ink + knob *(default)* | Touch TFT | All-in-one *(lowest effort)* |
+|---|---|---|---|
+| Display | 2.9" e-paper, always readable | 2.8" color touchscreen | 2.8" color touchscreen |
+| Input | Rotary knob | Touch | Touch |
+| Build | Hand-wired from parts | Hand-wired from parts | One off-the-shelf module, no wiring |
+| Guide | [Build guide](../hardware/build-eink.md) | [Build guide](../hardware/build-tft.md) | [All-in-one guide](../hardware/all-in-one-cyd.md) |
 
-Both builds run the same firmware and support both operating modes
-(Notifier status light, Orchestrator assistant).
+All three builds run the same firmware and support both operating modes
+(Notifier status light, Orchestrator assistant). The all-in-one (Freenove CYD)
+is the fastest path: buy one board, plug in USB-C, and flash - there is nothing
+to wire or solder.
 
 Next step: **[Flash the firmware](flash.md)**.
 

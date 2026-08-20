@@ -35,6 +35,7 @@ const sidebars = {
         'guides/hardware-build-tft',
         'guides/hardware-eink-knob',
         'guides/hardware-touch-tft',
+        'guides/hardware-all-in-one-cyd',
       ],
     },
     {
