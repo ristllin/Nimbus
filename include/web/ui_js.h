@@ -369,6 +369,13 @@ function applyState(d){
       ls.onchange=()=>{const f=new FormData();f.append('lbSaver',ls.checked?'1':'0');
         fetch('/api/config',{method:'POST',body:f}).then(jok)
           .then(()=>toast(ls.checked?'Power saving on':'Power saving off')).catch(failToast);};}
+    // Battery monitoring opt-in (populated even when telemetry is invalid, so an
+    // all-in-one owner can turn it on before a pack is ever read). Boot-applied.
+    const bm=$('battMon');
+    if(bm&&document.activeElement!==bm){bm.checked=!!d.batt.battMon;
+      bm.onchange=()=>{const f=new FormData();f.append('battMon',bm.checked?'1':'0');
+        fetch('/api/config',{method:'POST',body:f}).then(jok)
+          .then(()=>toast('Restart to apply')).catch(failToast);};}
   }
   // battery analytics panel (Device tab) - shown only when telemetry is valid
   var bt=d.batt;

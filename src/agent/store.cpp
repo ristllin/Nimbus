@@ -425,6 +425,10 @@ bool     lowBattRing()  { return solide::memory::getInt(AKEY_LOWBATT_RING, 0) !=
 // Owner default ON (note the 1): the T1 battery-mode switch is SHIPPED behaviour,
 // so defaulting this off would silently remove a power saving from every device.
 bool     lowBattSaver() { return solide::memory::getInt(AKEY_LOWBATT_SAVER, 1) != 0; }
+// Battery monitoring on/off. def is the board-derived default (battery-native
+// boards ON; all-in-one desk boards OFF/opt-in) - passed in by main so the store
+// layer stays board-agnostic.
+bool     battMon(bool def) { return solide::memory::getInt(AKEY_BATT_MON, def ? 1 : 0) != 0; }
 void setSfxLevelNotif(uint8_t v) { solide::memory::setInt(AKEY_SFX_LVL_NOTIF, v > 3 ? 3 : v); }
 void setSfxLevelOrch(uint8_t v)  { solide::memory::setInt(AKEY_SFX_LVL_ORCH, v > 3 ? 3 : v); }
 void setSfxTheme(const String& v) {
@@ -447,6 +451,7 @@ void setBrightOvr(bool on)   { solide::memory::setInt(AKEY_BRIGHT_OVR, on ? 1 : 
 void setTftFlip(bool on)      { solide::memory::setInt(AKEY_TFT_FLIP, on ? 1 : 0); }
 void setLowBattRing(bool on)  { solide::memory::setInt(AKEY_LOWBATT_RING, on ? 1 : 0); }
 void setLowBattSaver(bool on) { solide::memory::setInt(AKEY_LOWBATT_SAVER, on ? 1 : 0); }
+void setBattMon(bool on) { solide::memory::setInt(AKEY_BATT_MON, on ? 1 : 0); }
 String connectorsJson() { return solide::memory::getString(AKEY_CONNECTORS, ""); }
 void   setConnectorsJson(const String& v) { solide::memory::setString(AKEY_CONNECTORS, v); }
 void   setTheme(const String& v)       { solide::memory::setString(AKEY_THEME, v); }

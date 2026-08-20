@@ -392,6 +392,11 @@ static nimbus::power::BatteryEstimate g_battEstimate;
 static uint8_t  battCells()  { const uint8_t c = solide::board().batt.cells; return c ? c : uint8_t(NIMBUS_BATT_CELLS); }
 static int      battAdcPin() { return solide::board().batt.sense >= 0 ? int(solide::board().batt.sense) : int(NIMBUS_BATT_SENSE_PIN); }
 static uint16_t battDivX100() { return solide::board().epd.sck < 0 ? solide::board().batt.dividerX100 : agent::store::battDividerX100(); }
+// Battery monitoring on/off. A hand-built board ships WITH a pack, so monitoring
+// defaults ON; an all-in-one desk board (no e-paper option) treats a battery as an
+// add-on, so it defaults OFF (opt-in) - otherwise the floating ADC reads "empty"
+// and the device sleeps with no pack fitted. The owner can opt in (web Settings).
+static bool battMonOn() { return agent::store::battMon(solide::board().epd.sck >= 0); }
 static uint16_t g_battSavedSegments = 0xFFFF;   // last-persisted segment count (persist on change)
 // Low-battery ping gate (field 2026-08-11: the T1 edge re-fires on every wake-
 // sniff boot; the ping needs its own persisted memory). Loaded in setup().
@@ -2518,7 +2523,13 @@ void setup() {
   //  - divider: a hand-built board's resistors are OWNER-tuned (220/100 vs 270/120,
   //    web Settings), but an all-in-one has a FIXED divider, so it takes the board's
   //    value (÷2) rather than the tuned default (÷3.2).
-  g_battAdc.begin(battAdcPin(), battDivX100(), battCells(), NIMBUS_BATT_VBUS_PIN);
+  // Only bring the ADC up when monitoring is enabled; otherwise the monitor stays
+  // un-begun and reports invalid (desk-powered), so the glyph hides and the low-
+  // battery sleep never fires on a board with no pack fitted.
+  if (battMonOn())
+    g_battAdc.begin(battAdcPin(), battDivX100(), battCells(), NIMBUS_BATT_VBUS_PIN);
+  else
+    Serial.println("power: battery monitoring off (opt-in) - no pack assumed");
   g_battModel.setCapacityMah(agent::store::battCapMah());
 #endif
   loadBattModel();   // restore the analytics learning (health baseline + rate) from NVS
@@ -2630,11 +2641,13 @@ void setup() {
   };
   // Battery HARDWARE reconfigure (divider resistors / pack capacity changed on the
   // web). Re-arms the ADC with the new divider and pushes capacity into the model -
-  // both idempotent, cells fixed 2S. Runs on the main task (owns ADC + model), same
-  // staging as calibrateBatteryFull. ⚠ a divider change re-scales every mV, so the
-  // BATTCAL anchor is now stale; the UI tells the owner to re-Calibrate.
+  // both idempotent; pin/cells/divider come from the board map. Runs on the main
+  // task (owns ADC + model), same staging as calibrateBatteryFull. ⚠ a divider
+  // change re-scales every mV, so the BATTCAL anchor is now stale; the UI tells the
+  // owner to re-Calibrate. Skips the ADC when monitoring is off (opt-in boards).
   wc.reconfigureBattery = [] {
-    g_battAdc.begin(battAdcPin(), battDivX100(), battCells(), NIMBUS_BATT_VBUS_PIN);
+    if (battMonOn())
+      g_battAdc.begin(battAdcPin(), battDivX100(), battCells(), NIMBUS_BATT_VBUS_PIN);
     g_battModel.setCapacityMah(agent::store::battCapMah());
     g_battEstimate = g_battModel.estimate();
     agent::alogf("batt: hardware reconfig - divider=/%.2f capacity=%umAh",

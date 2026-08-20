@@ -114,6 +114,7 @@ Default per-provider models: `OPENAI_MODEL` = `gpt-5.5`, `ANT_MODEL` =
 | `tchCal` | string | `""` | Touch-panel calibration (XPT2046); `""` = identity/default | Yes |
 | `lbRing` | bool | `false` | Low-battery ring cue (owner opt-in; off by default) | Yes |
 | `lbSaver` | bool | `true` | Auto-drop to a lower battery mode on low battery | Yes |
+| `battMon` | bool | board-derived | Battery monitoring on/off. Default is on for hand-built boards (a pack is part of the build) and off for the all-in-one board (a battery is optional, so it is opt-in). Off means the sense pin is never read, the glyph is hidden, and low-battery sleep never fires. Applied at boot. | Yes |
 
 **`scrModel` vs. the board pinout.** `scrModel` picks the display and input
 **family** (renderer + touch/knob) on a hand-built Solide S3 board, where one

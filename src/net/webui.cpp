@@ -410,6 +410,9 @@ static void buildState(String& out) {
   // when there is no valid reading).
   batt["lbRing"]  = agent::store::lowBattRing();
   batt["lbSaver"] = agent::store::lowBattSaver();
+  // Battery monitoring on/off; default is board-derived (all-in-one boards, which
+  // have no e-paper option, treat a battery as opt-in and default this OFF).
+  batt["battMon"] = agent::store::battMon(solide::board().epd.sck >= 0);
 
   // E1 artifact store presence (SD /mem/files): the web UI's Files section +
   // the campaign harness read this.
@@ -1285,6 +1288,12 @@ void beginWeb(const WebConfig& wc) {
     // level-triggered within 2 s, which repaints on its own.
     if (r->hasParam("lbSaver", true)) {
       agent::store::setLowBattSaver(r->getParam("lbSaver", true)->value().toInt() != 0);
+      touched = true;
+    }
+    // Battery monitoring on/off. Applied at boot (the ADC is brought up in setup),
+    // so a change takes effect after restart - the UI says so.
+    if (r->hasParam("battMon", true)) {
+      agent::store::setBattMon(r->getParam("battMon", true)->value().toInt() != 0);
       touched = true;
     }
     // OTA auto-install knob (device-level, both modes). Handled HERE on /api/config

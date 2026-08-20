@@ -86,6 +86,8 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 <p class="hint tip">Shows a dim red pulse on the ring for a few seconds each minute while the battery is low. Off by default, because a ring lit all night uses the power it is warning about. The screen notice and the Telegram message are sent either way.</p>
 <label class=pr><input type=checkbox id=lbSaver> Save power when low <button class=qh type=button aria-expanded=false aria-label="About saving power when low">?</button></label>
 <p class="hint tip">Switches to the Dark battery mode while the battery is low, then returns to the chosen mode once it recovers. On by default.</p>
+<label class=pr><input type=checkbox id=battMon> Monitor the battery <button class=qh type=button aria-expanded=false aria-label="About battery monitoring">?</button></label>
+<p class="hint tip">Reads the battery pack for the charge readout, low-battery warnings, and sleep protection. On boards built with a pack it is on; on the all-in-one board a battery is optional, so it is off until you turn it on. Takes effect after restart.</p>
 <p class=hint id=effprof></p>
 <label>Theme <button class=qh type=button aria-expanded=false aria-label="About themes">?</button></label>
 <p class="hint tip">Each theme is a family of colors. A session's status picks its color role and motion &mdash; the ring's status language. The legend below shows the mapping.</p>
@@ -168,7 +170,7 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 </tbody></table>
 <p class=hint style="margin-top:12px"><b>Battery hardware</b> &mdash; match these to the pack and sense resistors actually fitted, so voltage and estimates are correct.</p>
 <table><tbody>
-<tr><td>Pack capacity</td><td><input id=battCapMah type=number min=100 max=20000 step=50 style="width:90px"> mAh <button class=qh type=button aria-expanded=false aria-label="About pack capacity">?</button><p class="hint tip">The fitted pack: LiitoKala 3500, a reclaimed ~500 mAh cell, and so on. Drives time-left and the capacity readout. Always 2S.</p></td></tr>
+<tr><td>Pack capacity</td><td><input id=battCapMah type=number min=100 max=20000 step=50 style="width:90px"> mAh <button class=qh type=button aria-expanded=false aria-label="About pack capacity">?</button><p class="hint tip">The fitted pack: LiitoKala 3500, a reclaimed ~500 mAh cell, and so on. Drives time-left and the capacity readout. Cell count is set by the board.</p></td></tr>
 <tr><td>Sense resistor (top)</td><td><input id=battRtop type=number min=1000 max=10000000 step=1000 style="width:110px"> &#8486; <button class=qh type=button aria-expanded=false aria-label="About the sense resistors">?</button><p class="hint tip">The two divider resistors between the pack and the ADC pin. Defaults 220k / 100k; some boards use 270k / 120k. Getting these right fixes the voltage reading. After changing them, re-run Calibrate on a full pack.</p></td></tr>
 <tr><td>Sense resistor (bottom)</td><td><input id=battRbot type=number min=1000 max=10000000 step=1000 style="width:110px"> &#8486;</td></tr>
 </tbody></table>
