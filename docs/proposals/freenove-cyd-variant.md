@@ -1,7 +1,10 @@
 # Plan: Nimbus support for the Freenove ESP32-S3 Display (CYD) all-in-one board
 
-Status: proposal, revised after a four-lens prism review (roast / simplify / peer-review /
-security). Target: worktree `freenove-cyd-variant`. Nothing has been implemented yet.
+Status: IMPLEMENTED (this branch) after a four-lens prism review of the plan AND the
+code. Board bring-up (display + touch) validated on hardware; audio/SD/battery/ring
+smoothness pending owner bench validation (tests/hil/MANUAL_freenove_cyd.md). See the
+"Next TODOs" section at the end for the deferred multi-resolution work and the landing
+step. Target: worktree `freenove-cyd-variant` + driver branch `feat/freenove-cyd`.
 
 > The v1 of this plan rested on `board.h`'s promise that a new board is "a new Board
 > constant + `-DSOLIDE_BOARD`, with zero driver changes." **Prism proved that promise
@@ -288,3 +291,17 @@ proven only via HIL + the manual script.
   #7/#8/#11, roast #10/#12). -> Phases 0/6/8.
 - **Kept as sound:** `scrModel=tft` (no new slug), compile-time board for HW-harm safety,
   reuse `golden_tft` for 2.8", inline audio (no-concurrency), staged Phase B.
+
+## Next TODOs (deferred, tracked)
+- **Multi-resolution (IMPORTANT, user-flagged):** parameterize the TFT renderer by
+  `{w,h}` (derive layout from the `theme.h` tokens instead of the fixed 320x240
+  constants) so the 3.5"/4.0" Freenove panels work. The 2.8" is 320x240 and needs
+  none of this; a larger physical panel is needed to bless new goldens. This is the
+  "highly valued" item from the original task, kept out of the board-bring-up scope
+  so it can't threaten first light or the goldens.
+- **On-device bench validation (owner):** ES8311 audio (the shared-channel mic RX
+  slot mono/stereo is the likely gotcha - see the code note + MANUAL step 2), SDMMC
+  card, battery voltage, the ring SMOOTHNESS on real hardware, and touch orientation
+  in the live UI. All in `tests/hil/MANUAL_freenove_cyd.md`.
+- **Landing:** tag `solide-drivers` and flip `platformio.ini` off the dev symlink
+  (Phase 8) - the two repos land together.
