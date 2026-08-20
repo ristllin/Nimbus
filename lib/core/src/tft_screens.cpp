@@ -1,7 +1,6 @@
 #include "nimbus/tft_render/screens.h"
 
 #include <algorithm>
-#include <cmath>
 
 #include "nimbus/device_identity.h"   // wifiQrPayload - the setup screen's join QR
 #include "nimbus/qr.h"
@@ -164,26 +163,44 @@ static inline uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b) {
   return uint16_t(((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3));
 }
 
+// Q15 unit-circle offsets for the 45-LED ring, dot 0 at top going clockwise.
+// Integer table (not runtime sin/cos), so the on-screen ring is bit-deterministic
+// across hosts - a golden could safely capture it later without libm variance.
+static const int16_t kRingCos[45] = {
+  0, 4560, 9032, 13328, 17364, 21062, 24351, 27165, 29451,
+  31163, 32269, 32747, 32587, 31794, 30381, 28377, 25821, 22762,
+  19260, 15383, 11207, 6813, 2286, -2286, -6813, -11207, -15383,
+  -19260, -22762, -25821, -28377, -30381, -31794, -32587, -32747, -32269,
+  -31163, -29451, -27165, -24351, -21062, -17364, -13328, -9032, -4560,
+};
+static const int16_t kRingSin[45] = {
+  -32767, -32448, -31498, -29934, -27788, -25101, -21925, -18323, -14364,
+  -10126, -5690, -1144, 3425, 7927, 12275, 16383, 20173, 23571,
+  26509, 28932, 30791, 32051, 32687, 32687, 32051, 30791, 28932,
+  26509, 23571, 20173, 16384, 12275, 7927, 3425, -1144, -5690,
+  -10126, -14364, -18323, -21925, -25101, -27788, -29934, -31498, -32448,
+};
+
 // The on-screen ring: draw the composited LED frame as a circle of small discs
 // inside the square [x,y,size]. Boards with no physical ring show this in the
-// notifier so the panel says exactly what the LEDs would have. Dot 0 at top,
-// clockwise. Only ever called when ctx.ringLeds is non-empty, so the existing
-// (empty-ringLeds) goldens are untouched.
+// notifier so the panel says exactly what the LEDs would have. Only ever called
+// when ctx.ringLeds is non-empty, so the existing (empty-ringLeds) goldens are untouched.
 static void drawRingWidget(Fb565& fb, int x, int y, int size,
                            const std::vector<ScreenCtx::RingLed>& leds) {
   const int n = int(leds.size());
   if (n <= 0) return;
-  const float cx = x + size / 2.0f;
-  const float cy = y + size / 2.0f;
-  const int   dotD = size >= 96 ? 8 : 6;
-  const float R = size / 2.0f - dotD / 2.0f - 1.0f;
+  const int cx = x + size / 2;
+  const int cy = y + size / 2;
+  const int dotD = size >= 96 ? 8 : 6;
+  const int R = size / 2 - dotD / 2 - 1;
   for (int i = 0; i < n; ++i) {
-    const float a = -1.57079633f + 6.28318531f * float(i) / float(n);   // top, clockwise
-    const int dx = int(std::lround(cx + R * std::cos(a))) - dotD / 2;
-    const int dy = int(std::lround(cy + R * std::sin(a))) - dotD / 2;
+    const int t = (i * 45) / n;                       // map onto the 45-entry table
+    const int px = cx + (R * kRingCos[t]) / 32767;
+    const int py = cy + (R * kRingSin[t]) / 32767;
     const auto& L = leds[size_t(i)];
     const bool lit = (L.r | L.g | L.b) != 0;
-    fb.fillRoundRect(dx, dy, dotD, dotD, dotD / 2, lit ? rgb565(L.r, L.g, L.b) : kRaise2);
+    fb.fillRoundRect(px - dotD / 2, py - dotD / 2, dotD, dotD, dotD / 2,
+                     lit ? rgb565(L.r, L.g, L.b) : kRaise2);
   }
 }
 

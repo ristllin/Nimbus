@@ -379,8 +379,19 @@ static uint32_t g_lastPowerTick = 0;
 // a self-improving discharge rate (nimbus::power::BatteryModel, host-tested).
 // Sampled on each telemetryDue edge; learned state persists to NVS so accuracy
 // carries across reboots. g_battEstimate is a POD snapshot the web layer reads.
-static nimbus::power::BatteryModel   g_battModel(NIMBUS_BATT_CELLS);
+// Cells comes from the board map (the Freenove is 1S, the Solide 2S), not a
+// compile constant - a wrong cell count makes the per-cell SoC read a 1S pack as
+// a half-charged 2S one (pinned at 0%). board() is constexpr-initialized, so it is
+// safe to read here at static-init time.
+static nimbus::power::BatteryModel   g_battModel(solide::board().batt.cells);
 static nimbus::power::BatteryEstimate g_battEstimate;
+
+// Battery hardware from the board map. cells never 0 (both boards set it); the
+// divider is owner-tuned on hand-built boards (resistors vary) but fixed on an
+// all-in-one (no e-paper option -> board().epd.sck < 0).
+static uint8_t  battCells()  { const uint8_t c = solide::board().batt.cells; return c ? c : uint8_t(NIMBUS_BATT_CELLS); }
+static int      battAdcPin() { return solide::board().batt.sense >= 0 ? int(solide::board().batt.sense) : int(NIMBUS_BATT_SENSE_PIN); }
+static uint16_t battDivX100() { return solide::board().epd.sck < 0 ? solide::board().batt.dividerX100 : agent::store::battDividerX100(); }
 static uint16_t g_battSavedSegments = 0xFFFF;   // last-persisted segment count (persist on change)
 // Low-battery ping gate (field 2026-08-11: the T1 edge re-fires on every wake-
 // sniff boot; the ping needs its own persisted memory). Loaded in setup().
@@ -1757,11 +1768,11 @@ static String storageSet(int pct) {
   }
   if (pct < 40 || pct > 95) return String("bad pct (40-95)");
   const uint16_t targetPack =
-      uint16_t(nimbus::power::liIonCellMvForPct(uint8_t(pct))) * NIMBUS_BATT_CELLS;
+      uint16_t(nimbus::power::liIonCellMvForPct(uint8_t(pct))) * battCells();
   power::Sample s = g_monitor->sample();
   if (s.valid && s.millivolts <= targetPack) {
     g_highLoadActive = false; g_storageTargetMv = 0;
-    return String("already at/below storage (") + (s.millivolts / NIMBUS_BATT_CELLS) +
+    return String("already at/below storage (") + (s.millivolts / battCells()) +
            "mV/cell) - charge to " + pct + "%";
   }
   g_storageTargetMv = targetPack;
@@ -1777,7 +1788,7 @@ static String storageSet(int pct) {
   g_thermalAbortLatch = false;
   applyHighLoadRing(kDrainBright);
   g_power.setTelemetryPeriodMs(30000);
-  return String("storage -> ") + pct + "% (target " + (targetPack / NIMBUS_BATT_CELLS) +
+  return String("storage -> ") + pct + "% (target " + (targetPack / battCells()) +
          "mV/cell), draining";
 }
 
@@ -2499,20 +2510,15 @@ void setup() {
   g_fuelgauge.begin(NIMBUS_FUELGAUGE_SDA, NIMBUS_FUELGAUGE_SCL,
                     NIMBUS_VBUS_SENSE_PIN);
 #elif defined(NIMBUS_HAS_BATTERY_ADC)
-  // Divider + capacity are owner-configurable (boards differ: 220/100 vs 270/120
-  // resistors, LiitoKala 3500 vs reclaimed ~500 mAh packs - web Settings). Cells is
-  // fixed 2S. The stored divider default is the compile constant, so an un-set board
-  // behaves exactly as before; a board with the ACTUAL 270/120 resistors can finally
-  // read its true voltage instead of the baked-in ÷3.20.
-  // Sense pin comes from the board map so a variant with a different ADC node
-  // (the Freenove's GPIO9 vs the Solide's GPIO4) reads the real divider instead
-  // of running analogRead on an unconnected pin (the boot-time "not configured
-  // as analog channel" warning). Divider + cells stay owner-configurable.
-  const int battPin = solide::board().batt.sense >= 0
-                        ? int(solide::board().batt.sense)
-                        : NIMBUS_BATT_SENSE_PIN;
-  g_battAdc.begin(battPin, agent::store::battDividerX100(),
-                  NIMBUS_BATT_CELLS, NIMBUS_BATT_VBUS_PIN);
+  // Battery hardware is described by the board map, not compile constants, so a
+  // variant reads its OWN pack:
+  //  - sense pin: the Freenove's GPIO9 vs the Solide's GPIO4 (else analogRead runs
+  //    on an unconnected pin - the boot-time "not configured as analog channel").
+  //  - cells: 1S (Freenove) vs 2S (Solide) - a wrong count reads the pack at 0%.
+  //  - divider: a hand-built board's resistors are OWNER-tuned (220/100 vs 270/120,
+  //    web Settings), but an all-in-one has a FIXED divider, so it takes the board's
+  //    value (÷2) rather than the tuned default (÷3.2).
+  g_battAdc.begin(battAdcPin(), battDivX100(), battCells(), NIMBUS_BATT_VBUS_PIN);
   g_battModel.setCapacityMah(agent::store::battCapMah());
 #endif
   loadBattModel();   // restore the analytics learning (health baseline + rate) from NVS
@@ -2628,8 +2634,7 @@ void setup() {
   // staging as calibrateBatteryFull. ⚠ a divider change re-scales every mV, so the
   // BATTCAL anchor is now stale; the UI tells the owner to re-Calibrate.
   wc.reconfigureBattery = [] {
-    g_battAdc.begin(NIMBUS_BATT_SENSE_PIN, agent::store::battDividerX100(),
-                    NIMBUS_BATT_CELLS, NIMBUS_BATT_VBUS_PIN);
+    g_battAdc.begin(battAdcPin(), battDivX100(), battCells(), NIMBUS_BATT_VBUS_PIN);
     g_battModel.setCapacityMah(agent::store::battCapMah());
     g_battEstimate = g_battModel.estimate();
     agent::alogf("batt: hardware reconfig - divider=/%.2f capacity=%umAh",

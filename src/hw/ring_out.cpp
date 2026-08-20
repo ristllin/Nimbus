@@ -224,6 +224,10 @@ void tickAnimation(uint32_t nowMs) {
 // The current 45-entry composited ring frame (segments + cursor glow + envelopes),
 // exactly what the physical LEDs would show. On a ringless board the notifier
 // draws these on the panel instead. Always valid; kept fresh by tickAnimation().
+// ⚠ MUST be called on the MAIN task. g_animBuf is written by tickAnimation()/
+// applyRingPlan(), which also run on the main loop, so the read is race-free ONLY
+// because rendering is on that same task. If TFT rendering ever moves to its own
+// task, snapshot g_animBuf under a lock instead of exposing it directly.
 const solide::ring::RGB* currentRingFrame() { return g_animBuf; }
 int currentRingCount() { return NIMBUS_RING_LEDS; }
 
