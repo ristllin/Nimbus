@@ -791,6 +791,7 @@ static epd::ScreenCtx buildCtx(int cursorJob) {
   c.apUp = ((uint32_t)WiFi.softAPIP() != 0u);
   c.configUrl = configUrl();
   c.setupUrl = setupUrl();   // SetupInfo QR: always the AP address (P1.2)
+  c.fwVersion = NIMBUS_FW_VERSION;   // shown small on the Setup screen
   c.webToken = std::string(agent::store::webAuthToken().c_str());
   c.netStatus = netStatusLine();
   c.cursorJob = cursorJob;
@@ -1494,6 +1495,7 @@ static void renderMenu() {
     // show AP credentials only when they are actually needed.
     c.setupUrl = setupUrl();
     c.configUrl = configUrl();
+    c.fwVersion = NIMBUS_FW_VERSION;
     c.apName = std::string(net::apSsid().c_str());
     c.apPass = std::string(net::apPass().c_str());   // per-device stored passphrase
     c.apUp = ((uint32_t)WiFi.softAPIP() != 0u);

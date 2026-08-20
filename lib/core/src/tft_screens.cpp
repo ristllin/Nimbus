@@ -787,6 +787,8 @@ void drawSetup(Fb565& fb, Rendered& r, const ScreenCtx& ctx, bool config) {
     y += 14;
     drawTextCard(fb, y, ctx.deviceName.empty() ? std::string("Nimbus") : ctx.deviceName,
                  1, kTeal, 0);
+    if (!ctx.fwVersion.empty())
+      fb.text(kGut, kH - fb.textHeight(1) - 1, ctx.fwVersion, kInk3, 1);
     return;
   }
   drawHeader(fb, r, ctx, config ? "Sign in" : "Setup", true);
@@ -828,6 +830,10 @@ void drawSetup(Fb565& fb, Rendered& r, const ScreenCtx& ctx, bool config) {
                             : (showPass ? ctx.apPass : displayUrl(ctx.setupUrl)),
                      1, kTeal, textW);
   }
+  // Firmware version, small in the bottom-left. Guarded so the golden fixture
+  // (empty fwVersion) draws nothing and stays byte-identical.
+  if (!ctx.fwVersion.empty())
+    fb.text(kGut, kH - fb.textHeight(1) - 1, ctx.fwVersion, kInk3, 1);
 }
 
 void drawTokenDetail(Fb565& fb, Rendered& r, const ScreenCtx& ctx) {

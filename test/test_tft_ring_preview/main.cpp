@@ -70,6 +70,12 @@ static void test_ring_previews() {
   render("ring_4sessions.bin", ringCtx(4, 12));
   { ScreenCtx c = ringCtx(2, 8); c.modeName = "orchestrator"; render("ring_orch.bin", c); }
   { ScreenCtx c = ringCtx(0, 0); c.modeName = "orchestrator"; render("ring_orch_empty.bin", c); }
+  // Setup screen with a firmware version (bottom-left), to eyeball placement.
+  { ScreenCtx c; c.deviceName = "Nimbus-CYD"; c.modeName = "orchestrator";
+    c.apName = "Nimbus-CYD-setup"; c.apPass = "swift-owl-42";
+    c.setupUrl = "http://192.168.4.1"; c.fwVersion = "v4.2.0";
+    static Fb565 fb; const Rendered rr = renderScreen(fb, ScreenId::SetupInfo, c); (void)rr;
+    writeBin("setup_ver.bin", fb); }
   TEST_ASSERT_TRUE(true);
 }
 

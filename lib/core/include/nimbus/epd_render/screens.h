@@ -84,6 +84,7 @@ struct ScreenCtx {
 
   // setup info
   std::string apName, apPass, portalUrl;
+  std::string fwVersion;  // firmware version string, shown small on the Setup screen
   bool apUp = false;      // the setup SoftAP is CURRENTLY up (reachable). On e-ink it
                           // never drops; on a TFT board it is torn down after STA joins.
                           // ConfigQr prefers the AP address while it holds (routable from
