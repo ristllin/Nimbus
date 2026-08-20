@@ -201,10 +201,34 @@ static ScreenCtx sessionCtx() {
   return c;
 }
 
+// A ringless board mirrors the 45-LED frame onto the panel: ringLeds is filled
+// with the composited colors buildCtx() would copy from the ring driver.
+static ScreenCtx ringCtx() {
+  ScreenCtx c = jobsCtx();
+  c.ringLeds.resize(45);
+  for (int i = 0; i < 45; ++i)
+    c.ringLeds[size_t(i)] = { uint8_t((i * 5) & 0xFF),
+                              uint8_t((255 - i * 5) & 0xFF),
+                              uint8_t((i * 11) & 0xFF) };
+  return c;
+}
+
 // ---- cases ------------------------------------------------------------------
 
 static void test_status_empty()   { golden("status_empty", ScreenId::StatusIdle, baseCtx()); }
 static void test_status_jobs()    { golden("status_jobs", ScreenId::StatusIdle, jobsCtx()); }
+
+// On-screen ring: structural check only (no golden bless without eyes-on the
+// render). The ring must draw without crashing and must NOT corrupt the reflowed
+// single-column session-card tap targets. The empty-ringLeds cases above already
+// prove the ring-absent layout is byte-identical to before.
+static void test_status_ring() {
+  static Fb565 fb;
+  const Rendered r = renderScreen(fb, ScreenId::StatusIdle, ringCtx());
+  assertRegionsSane("status_ring", r);
+  TEST_ASSERT_TRUE_MESSAGE(!r.taps.empty(),
+                           "status_ring: session cards should still be tappable");
+}
 static void test_menu_main()      { golden("menu_main", ScreenId::Menu, menuCtx()); }
 static void test_menu_stepper()   { golden("menu_stepper", ScreenId::Menu, stepperCtx()); }
 static void test_session_detail() { golden("session_detail", ScreenId::SessionDetail, sessionCtx()); }
@@ -460,6 +484,7 @@ int main() {
   UNITY_BEGIN();
   RUN_TEST(test_status_empty);
   RUN_TEST(test_status_jobs);
+  RUN_TEST(test_status_ring);
   RUN_TEST(test_menu_main);
   RUN_TEST(test_menu_stepper);
   RUN_TEST(test_session_detail);
