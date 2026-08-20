@@ -2388,6 +2388,17 @@ void setup() {
           Serial.printf("[tft] stored touch calibration is malformed (%s) - using defaults\n",
                         cal.c_str());
         }
+      } else if (solide::board().touchKind == solide::TouchKind::CapacitiveI2c) {
+        // No stored calibration on a capacitive panel (e.g. the Freenove
+        // FT6336U): it already reports pixel coordinates, so min/max scaling
+        // does not apply - only the orientation flags do. This is the measured
+        // default that maps the portrait-native controller onto the landscape
+        // surface (swapXY) the right way up. A saved calibration overrides it.
+        solide::touch::Calibration sc;
+        sc.swapXY = true;
+        sc.invertY = true;
+        solide::touch::setCalibration(sc);
+        Serial.println("[tft] capacitive touch: default orientation (swapXY, invertY)");
       }
       Serial.printf("[tft] colour touch panel up (%dx%d, touch=%d)\n",
                     int(solide::display_tft::kW), int(solide::display_tft::kH),
@@ -2482,7 +2493,14 @@ void setup() {
   // fixed 2S. The stored divider default is the compile constant, so an un-set board
   // behaves exactly as before; a board with the ACTUAL 270/120 resistors can finally
   // read its true voltage instead of the baked-in ÷3.20.
-  g_battAdc.begin(NIMBUS_BATT_SENSE_PIN, agent::store::battDividerX100(),
+  // Sense pin comes from the board map so a variant with a different ADC node
+  // (the Freenove's GPIO9 vs the Solide's GPIO4) reads the real divider instead
+  // of running analogRead on an unconnected pin (the boot-time "not configured
+  // as analog channel" warning). Divider + cells stay owner-configurable.
+  const int battPin = solide::board().batt.sense >= 0
+                        ? int(solide::board().batt.sense)
+                        : NIMBUS_BATT_SENSE_PIN;
+  g_battAdc.begin(battPin, agent::store::battDividerX100(),
                   NIMBUS_BATT_CELLS, NIMBUS_BATT_VBUS_PIN);
   g_battModel.setCapacityMah(agent::store::battCapMah());
 #endif

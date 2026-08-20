@@ -35,6 +35,38 @@ using nimbus::ota::State;
 #ifndef NIMBUS_OTA_VARIANT
 #define NIMBUS_OTA_VARIANT ""
 #endif
+#ifndef SOLIDE_BOARD
+#define SOLIDE_BOARD solide_s3
+#endif
+
+// Hard-bind the OTA variant string to the compile-time board pinout. The variant
+// is the ONLY thing an OTA manifest matches against, and the image is signed by
+// bytes - nothing at runtime re-checks that a "cyd" image was built for the
+// Freenove pinout. So enforce it here at build time: a *cyd* variant iff the
+// board is freenove_s3. This makes it impossible to accidentally publish a
+// solide_s3 image under a cyd slot (or vice-versa) and drive the wrong pin map
+// onto an all-in-one PCB. Add a board->variant family to the table when boards grow.
+namespace {
+constexpr bool ota_streq(const char* a, const char* b) {
+  return (*a == *b) && (*a == '\0' || ota_streq(a + 1, b + 1));
+}
+constexpr bool ota_contains(const char* hay, const char* needle) {
+  for (const char* h = hay; *h; ++h) {
+    const char* a = h; const char* b = needle;
+    while (*a && *b && *a == *b) { ++a; ++b; }
+    if (*b == '\0') return true;
+  }
+  return false;
+}
+#define NIMBUS_OTA_STR2(x) #x
+#define NIMBUS_OTA_STR(x) NIMBUS_OTA_STR2(x)
+constexpr bool kBoardIsFreenove = ota_streq(NIMBUS_OTA_STR(SOLIDE_BOARD), "freenove_s3");
+constexpr bool kVariantIsCyd    = ota_contains(NIMBUS_OTA_VARIANT, "cyd");
+static_assert(NIMBUS_OTA_VARIANT[0] == '\0' || (kBoardIsFreenove == kVariantIsCyd),
+              "OTA variant does not match SOLIDE_BOARD: freenove_s3 must use a "
+              "*cyd* variant and solide_s3 must not, or a wrong-pinout image "
+              "could be delivered to a board.");
+}  // namespace
 
 // ---- module state -----------------------------------------------------------
 
