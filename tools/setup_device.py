@@ -65,12 +65,12 @@ def extract_mac(output: str) -> str | None:
     return matches[-1].lower() if matches else None
 
 
-def bootstrap_commands(display: str | None, mode: str | None) -> list[tuple[str, str]]:
+def bootstrap_commands(display: str | None, mode: str | None, board: str = "solide_s3") -> list[tuple[str, str]]:
     """Return (command, expected reply) pairs for the serial NVS diagnostic."""
     commands: list[tuple[str, str]] = []
     if display:
         commands.append((f"SET scrModel={display}", "SET scrModel ok=1"))
-        if display == "tft":
+        if display == "tft" and board != "freenove_s3":
             # Nimbus mounts the landscape module with the connector at the end
             # that needs MADCTL's 180-degree variant. The bring-up sketch had
             # this hard-coded, but fresh-board provisioning only stored
@@ -253,6 +253,7 @@ def serial_bootstrap(
     display: str | None,
     mode: str | None,
     show_token: bool = False,
+    board: str = "solide_s3",
 ) -> int:
     """Apply bootstrap settings using the UART-only provision firmware."""
     try:
@@ -291,7 +292,7 @@ def serial_bootstrap(
                     return text
             raise RuntimeError(f"No reply containing {expected!r} to {line!r}; last lines: {seen[-3:]}")
 
-        for line, expected in bootstrap_commands(display, mode):
+        for line, expected in bootstrap_commands(display, mode, board):
             print(f"  {command(line, expected)}")
         status = command("STATUS", "STATUS ")
         if display and f"screen='{display}'" not in status:
@@ -328,6 +329,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="initial operating mode (prompted for a blank board)",
     )
     parser.add_argument(
+        "--board",
+        choices=("solide_s3", "freenove_s3"),
+        default="solide_s3",
+        help=(
+            "board pinout (compile-time). solide_s3 = the hand-built boards; "
+            "freenove_s3 = the Freenove CYD all-in-one (its display is fixed to tft "
+            "and it flashes the cyd firmware + provisioning envs)"
+        ),
+    )
+    parser.add_argument(
         "--yes",
         action="store_true",
         help="skip the typed-MAC confirmation; requires an explicit --port",
@@ -348,17 +359,26 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     if args._bootstrap_port:
-        return serial_bootstrap(args._bootstrap_port, args.display, args.mode, args._show_token)
+        return serial_bootstrap(args._bootstrap_port, args.display, args.mode, args._show_token, board=args.board)
     if args.yes and not args.port:
         print("error: --yes is allowed only with an explicit --port", file=sys.stderr)
         return 2
+    # Board pinout is compile-time: pick the matching firmware + provisioning envs.
+    # The Freenove all-in-one has a fixed display, so force it to tft.
+    is_cyd = args.board == "freenove_s3"
+    prod_env = "esp32s3-cyd" if is_cyd else "esp32s3"
+    # The Freenove is native-USB only (no CP2102 UART bridge), so its provisioning
+    # console rides native USB CDC (provision-cyd), not UART0 (provision-uart).
+    prov_env = "provision-cyd" if is_cyd else "provision-uart"
+    if is_cyd:
+        args.display = "tft"
     try:
         port = select_port(args.port)
         core, pio = platformio_executable()
         esptool = esptool_command(core)
         if esptool is None:
             print("PlatformIO needs to install the ESP32 build tools first.")
-            run_checked([pio, "run", "-e", "esp32s3"])
+            run_checked([pio, "run", "-e", prod_env])
             esptool = esptool_command(core)
         if esptool is None:
             raise RuntimeError("PlatformIO did not install its esptool package.")
@@ -374,7 +394,7 @@ def main(argv: list[str] | None = None) -> int:
                         pio,
                         "run",
                         "-e",
-                        "provision-uart",
+                        prov_env,
                         "-t",
                         "upload",
                         "--upload-port",
@@ -397,7 +417,7 @@ def main(argv: list[str] | None = None) -> int:
                         pio,
                         "run",
                         "-e",
-                        "esp32s3",
+                        prod_env,
                         "-t",
                         "upload",
                         "--upload-port",
@@ -416,7 +436,7 @@ def main(argv: list[str] | None = None) -> int:
                         pio,
                         "run",
                         "-e",
-                        "provision-uart",
+                        prov_env,
                         "-t",
                         "upload",
                         "--upload-port",
@@ -429,6 +449,8 @@ def main(argv: list[str] | None = None) -> int:
                         str(Path(__file__).resolve()),
                         "--_bootstrap-port",
                         port,
+                        "--board",
+                        args.board,
                         *(["--display", display] if display else []),
                         *(["--mode", mode] if mode else []),
                     ]
@@ -442,7 +464,7 @@ def main(argv: list[str] | None = None) -> int:
                         pio,
                         "run",
                         "-e",
-                        "esp32s3",
+                        prod_env,
                         "-t",
                         "upload",
                         "--upload-port",
@@ -455,7 +477,7 @@ def main(argv: list[str] | None = None) -> int:
                     pio,
                     "run",
                     "-e",
-                    "esp32s3",
+                    prod_env,
                     "-t",
                     "upload",
                     "--upload-port",
