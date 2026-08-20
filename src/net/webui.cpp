@@ -46,6 +46,7 @@
 #include "../sys/config_nvs.h"          // device identity (devName, P2)
 #include "../hw/tft_out.h"                     // /api/screenshot - the bytes on the glass
 #include <solide/display_tft.h>                 // ...and the panel geometry it advertises
+#include <solide/board.h>                       // board identity + panel-fixed capability
 #include "nimbus/touch_cal.h"                 // tchCal validation (shared with the console)
 #include "solide/touch.h"                     // live-apply a new calibration
 #include "../sys/ota_update.h"          // /api/ota/* + /api/state ota fields
@@ -460,6 +461,19 @@ static void buildState(String& out) {
     int b = agent::store::bootScreenIsTft();
     if (b >= 0) d["scrBoot"] = b ? "tft" : "eink";
   }
+  // Board pinout identity (compile-time) + whether the panel is fixed. An
+  // all-in-one board has no e-paper option (epd.sck < 0), so its scrModel cannot
+  // change - the UI locks the selector and the setter rejects a switch.
+#ifndef SOLIDE_BOARD
+#define SOLIDE_BOARD solide_s3
+#endif
+#define NIMBUS_BSTR2(x) #x
+#define NIMBUS_BSTR(x) NIMBUS_BSTR2(x)
+  d["board"] = NIMBUS_BSTR(SOLIDE_BOARD);
+  d["scrFixed"] = (solide::board().epd.sck < 0);
+  // Capacitive touch reports pixel coordinates, so the resistive min/max
+  // calibration is meaningless - the UI hides that field on such a board.
+  d["touchCap"] = (solide::board().touchKind == solide::TouchKind::CapacitiveI2c);
   // Idle minutes before the screen rests. Surfaced because it is an owner
   // setting the web UI edits, yet it was not readable back from any endpoint -
   // so its per-panel default (e-ink 60, colour 10, because a backlight is the
@@ -977,6 +991,9 @@ static bool applyOrchField(const String& n, const String& v, bool& cfgDirty) {
     // bound once at boot, so this deliberately has NO live side effect; the UI
     // tells the owner to restart. Reject unknown slugs (returning true for a
     // value we dropped would report a change that never happened).
+    // A fixed-panel board (no e-paper option) can only be "tft"; reject a switch
+    // to eink rather than brick the display until the next reflash.
+    if (solide::board().epd.sck < 0 && v != "tft") return false;
     if (v != "eink" && v != "tft") return false;
     agent::store::setScreenModel(v);
     return true;

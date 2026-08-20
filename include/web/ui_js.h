@@ -511,7 +511,12 @@ function applyState(d){
   // Display panel: hardware identity, bound at boot. Confirm before changing -
   // picking the wrong one leaves the fitted screen dark until it is set back.
   const sm=$('scrModel'); if(sm&&d.scrModel!==undefined&&sm!==document.activeElement)sm.value=d.scrModel;
+  // Fixed-panel board (all-in-one): the display type can't change, so lock it.
+  if(sm&&d.scrFixed){sm.disabled=true;sm.title='This board has a fixed display';}
   const tc=$('tchCal'); if(tc&&d.tchCal!==undefined&&tc!==document.activeElement)tc.value=d.tchCal||'';
+  // Capacitive touch self-calibrates (pixel coordinates), so the resistive
+  // min/max field does nothing - hide it and its row.
+  if(tc&&d.touchCap){const r=tc.closest('.row,.field,label')||tc;r.style.display='none';}
   // device identity: mark dirty while editing; Save persists (reboot-to-apply)
   $('devName').oninput=()=>{$('devName').dataset.dirty=1;};
   $('devNameSave').onclick=()=>apply({devName:$('devName').value})
