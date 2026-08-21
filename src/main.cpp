@@ -1230,6 +1230,11 @@ static void refreshRing() {
   if (g_lightsOff) {
     solide::leds::clearFrame();   // release any raw-frame (Full animator) hold
     solide::leds::off();
+    // On a panel-ring board the ring is mirrored from g_animBuf, which the off()
+    // above does NOT clear - without this the 30 fps panel repaint keeps showing the
+    // last frame, so a lights:off (or any lights-off state) would FREEZE the ring
+    // instead of darkening it. Zero the buffer so the mirror goes dark.
+    if (g_screenIsTft && !solide::board().hasRing) hw::paintRingSolid(0, 0, 0);
 #ifdef NIMBUS_TEST
     g_lastSeg = 0; g_lastSingle = false; g_lastDark = true; g_lastBright = 0;
     tc::onRender(g_lastScreen, uint8_t(g_cfg.posture()), 0, false, true, 0);
@@ -4211,7 +4216,15 @@ void loop() {
             break;
           default: break;
         }
-      } else if (t >= kGlobalLedKillC && !g_lightsOff) {
+      } else if (solide::board().hasRing && t >= kGlobalLedKillC && !g_lightsOff) {
+        // Global LED backstop: kill the WS2812 ring when the die runs hot, since a
+        // sustained bright ring overheats adjacent electronics. This protects the
+        // PHYSICAL ring only. On a ringless board there is no ring to overheat - the
+        // "ring" is drawn on the panel and draws no LED power - and the S3 internal
+        // die sensor reads high under normal Wi-Fi+BLE+TFT load, so this would trip
+        // spuriously and FREEZE the on-screen ring (g_lightsOff stops the animator
+        // while the panel keeps mirroring the last frame). So skip it when !hasRing;
+        // real chip protection is the SoC's own thermal throttling, not this.
         g_lightsOff = true;
         solide::leds::clearFrame();
         solide::leds::off();
