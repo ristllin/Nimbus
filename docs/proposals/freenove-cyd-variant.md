@@ -1,10 +1,15 @@
 # Plan: Nimbus support for the Freenove ESP32-S3 Display (CYD) all-in-one board
 
 Status: IMPLEMENTED (this branch) after a four-lens prism review of the plan AND the
-code. Board bring-up (display + touch) validated on hardware; audio/SD/battery/ring
-smoothness pending owner bench validation (tests/hil/MANUAL_freenove_cyd.md). See the
-"Next TODOs" section at the end for the deferred multi-resolution work and the landing
-step. Target: worktree `freenove-cyd-variant` + driver branch `feat/freenove-cyd`.
+code. Board bring-up (display + touch) validated on hardware. A round of owner bench
+feedback then landed fixes for: the on-screen ring freezing during a live session (a
+thermal LED-kill backstop that only makes sense on a physical-ring board), the ES8311
+speaker (its external power amp was never enabled) and mic (stereo-to-mono
+de-interleave), the ring-demo mirroring status+posture, hold-to-talk cues, battery-mode
+persistence across a mode switch, and the mode-switch web reconnect. These are code-
+complete and host-verified; final confirmation is on the bench (tests/hil/MANUAL_freenove_cyd.md).
+See the "Next TODOs" section at the end for the deferred multi-resolution work and the
+landing step. Target: worktree `freenove-cyd-variant` + driver branch `feat/freenove-cyd`.
 
 > The v1 of this plan rested on `board.h`'s promise that a new board is "a new Board
 > constant + `-DSOLIDE_BOARD`, with zero driver changes." **Prism proved that promise
@@ -299,9 +304,12 @@ proven only via HIL + the manual script.
   none of this; a larger physical panel is needed to bless new goldens. This is the
   "highly valued" item from the original task, kept out of the board-bring-up scope
   so it can't threaten first light or the goldens.
-- **On-device bench validation (owner):** ES8311 audio (the shared-channel mic RX
-  slot mono/stereo is the likely gotcha - see the code note + MANUAL step 2), SDMMC
-  card, battery voltage, the ring SMOOTHNESS on real hardware, and touch orientation
-  in the live UI. All in `tests/hil/MANUAL_freenove_cyd.md`.
+- **On-device bench confirmation (owner):** the audio fixes are now landed - the
+  ES8311 speaker amp is enabled (GPIO1, active-low) and the shared-channel mic is
+  de-interleaved to mono - so step 2 is now "confirm clean beep + echo", not "debug".
+  The on-screen ring freeze (thermal LED-kill backstop) is fixed, so confirm the ring
+  animates with separated per-agent segments in a live session. Still to confirm on
+  the bench: SDMMC card, battery voltage, and touch orientation in the live UI. All in
+  `tests/hil/MANUAL_freenove_cyd.md`.
 - **Landing:** tag `solide-drivers` and flip `platformio.ini` off the dev symlink
   (Phase 8) - the two repos land together.
