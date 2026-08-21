@@ -369,6 +369,13 @@ function applyState(d){
       ls.onchange=()=>{const f=new FormData();f.append('lbSaver',ls.checked?'1':'0');
         fetch('/api/config',{method:'POST',body:f}).then(jok)
           .then(()=>toast(ls.checked?'Power saving on':'Power saving off')).catch(failToast);};}
+    // Battery monitoring opt-in (populated even when telemetry is invalid, so an
+    // all-in-one owner can turn it on before a pack is ever read). Boot-applied.
+    const bm=$('battMon');
+    if(bm&&document.activeElement!==bm){bm.checked=!!d.batt.battMon;
+      bm.onchange=()=>{const f=new FormData();f.append('battMon',bm.checked?'1':'0');
+        fetch('/api/config',{method:'POST',body:f}).then(jok)
+          .then(()=>toast('Restart to apply')).catch(failToast);};}
   }
   // battery analytics panel (Device tab) - shown only when telemetry is valid
   var bt=d.batt;
@@ -499,24 +506,48 @@ function applyState(d){
     (d.effectiveProfile!==d.profile?' (adjusted automatically for power)':'');
   // mode
   $('mode').value=d.mode;
-  $('mode').onchange=()=>apply({mode:$('mode').value});
+  $('mode').onchange=()=>{ if(!switchMode(+$('mode').value)) $('mode').value=d.mode; };
   // Prominent header mode switch (same effect as the Device-tab selector) - the owner
   // couldn't find how to switch modes; it now lives at the top of every tab.
   const mh=$('modehdr'); if(mh){[...mh.children].forEach(b=>{
     const mv=+b.dataset.m; b.classList.toggle('on',mv===d.mode); b.classList.toggle('nf',mv===0);
-    b.onclick=()=>{ if(mv===d.mode)return;
-      if(!confirm('Switch to '+(mv?'Orchestrator':'Notifier')+'?\n\nThe device restarts to change modes. This takes a few seconds.'))return;
-      apply({mode:mv}); };
+    b.onclick=()=>{ if(mv!==d.mode) switchMode(mv); };
   });}
   // Display panel: hardware identity, bound at boot. Confirm before changing -
   // picking the wrong one leaves the fitted screen dark until it is set back.
   const sm=$('scrModel'); if(sm&&d.scrModel!==undefined&&sm!==document.activeElement)sm.value=d.scrModel;
+  // Fixed-panel board (all-in-one): the display type is a compile-time identity,
+  // not a runtime choice - a disabled-but-visible dropdown reads as broken ("why
+  // won't it click?"). Show a plain read-only value instead, same as the pattern
+  // used elsewhere (touchCap swapping the calibration field for orientation below).
+  const smf=$('scrModelFixed');
+  if(sm&&d.scrFixed){
+    sm.style.display='none';
+    if(smf){const lbl=sm.querySelector('option[value="'+d.scrModel+'"]');
+      smf.textContent=(lbl?lbl.textContent:d.scrModel)+' (fixed)';smf.style.display='';}
+  }else if(sm){sm.style.display='';if(smf)smf.style.display='none';}
   const sf=$('scrFlip');
   if(sf&&document.activeElement!==sf){sf.checked=!!d.scrFlip;
     sf.onchange=()=>{const f=new FormData();f.append('scrFlip',sf.checked?'1':'0');
       fetch('/api/config',{method:'POST',body:f}).then(jok)
         .then(()=>toast(sf.checked?'Display flipped':'Display normal')).catch(failToast);};}
   const tc=$('tchCal'); if(tc&&d.tchCal!==undefined&&tc!==document.activeElement)tc.value=d.tchCal||'';
+  // Capacitive touch self-calibrates (pixel coordinates), so the resistive
+  // min/max field does nothing - hide it and its label, and show the 3-flag
+  // orientation control instead (swap/flipX/flipY, applied live). Toggle the
+  // WRAPPER div (label + hint + row together) - toggling just the .row via
+  // .closest() left the label/hint above it visible, an empty-looking section.
+  if(tc&&d.touchCap){const w=$('tchCalWrap'); if(w)w.style.display='none';
+    const or=$('tOrient');
+    if(or){or.style.display='';
+      // Current flags: last field of tchCal, else the capacitive default (swap+flipY=5).
+      let f=5;const parts=(d.tchCal||'').split(',');if(parts.length>=5){const n=parseInt(parts[parts.length-1],10);if(!isNaN(n))f=n;}
+      if(document.activeElement!==$('tSwap'))$('tSwap').checked=(f&1)!==0;
+      if(document.activeElement!==$('tFlipX'))$('tFlipX').checked=(f&2)!==0;
+      if(document.activeElement!==$('tFlipY'))$('tFlipY').checked=(f&4)!==0;
+      const applyOrient=()=>{const nf=($('tSwap').checked?1:0)|($('tFlipX').checked?2:0)|($('tFlipY').checked?4:0);
+        orchApply({tchCal:'0,320,0,240,'+nf}).then(()=>toast('Touch updated')).catch(failToast);};
+      $('tSwap').onchange=applyOrient;$('tFlipX').onchange=applyOrient;$('tFlipY').onchange=applyOrient;}}
   // device identity: mark dirty while editing; Save persists (reboot-to-apply)
   $('devName').oninput=()=>{$('devName').dataset.dirty=1;};
   $('devNameSave').onclick=()=>apply({devName:$('devName').value})
@@ -698,12 +729,19 @@ function _tfetch(url){
   }));
 }
 function failToast(e){toast(e===401?'Sign in required':'Couldn\'t save - try again');}
-// Live ring preview: POSTs the currently-selected profile radio; the device
-// drives the ring for ~4s and auto-reverts. Nothing persists.
+// Live ring demo: POSTs the ring simulator's CURRENT selection - its posture
+// picks the battery mode (Full/Balanced/Dark), its status picks what the ring
+// shows - so the device mirrors exactly what the on-page simulator is showing,
+// not just the theme. The device drives the ring for ~4s and auto-reverts.
 document.addEventListener('DOMContentLoaded',()=>{const b=document.getElementById('prevBtn');
- if(b)b.onclick=()=>{const r=document.querySelector('input[name=profile]:checked');
-  const body=new URLSearchParams();body.set('profile',r?r.value:'1');
-  fetch('/api/preview',{method:'POST',body}).then(jok).then(()=>toast('Previewing…')).catch(failToast);};});
+ if(b)b.onclick=()=>{
+  const POST={Full:2,Balanced:1,Dark:0};        // posture -> profile (battery mode)
+  const ROLE2ST={'-2':0,'0':1,'1':2,'3':3,'2':4,'-1':5};  // sim role -> ring Status
+  const body=new URLSearchParams();
+  body.set('profile',String(typeof _rs!=='undefined'&&POST[_rs.posture]!=null?POST[_rs.posture]:1));
+  const st=typeof _rs!=='undefined'?ROLE2ST[String(_rs.role)]:undefined;
+  if(st!=null)body.set('status',String(st));
+  fetch('/api/preview',{method:'POST',body}).then(jok).then(()=>toast('Playing on device')).catch(failToast);};});
 function apply(body){
   // Resolves to true/false so callers can react HONESTLY: the old bare
   // .catch(failToast) swallowed the rejection, so chained .then()s reported
@@ -712,6 +750,36 @@ function apply(body){
     body:new URLSearchParams(body).toString()})
    .then(jok).then(()=>{toast('Saved');loadState();return true;})
    .catch(e=>{failToast(e);return false;});
+}
+
+// Switching Notifier<->Orchestrator reboots the device (the two modes bring up
+// different subsystems), so the config POST's connection drops mid-flight. Don't
+// surface that as a save error the way apply() would: fire the change, tell the
+// owner it is restarting, then (Orchestrator direction only) poll until the device
+// answers again and reload into the new mode. Returns false if the owner cancels (so
+// the caller can revert a dropdown). This is why the mode controls do NOT go
+// through apply().
+//
+// Notifier mode runs with NO WiFi radio at all (main.cpp: WiFi.mode(WIFI_OFF),
+// frees SRAM for BLE) - the web server never starts there. So switching TO Notifier
+// can never be followed by a reconnect: polling /api/state would just spin until it
+// gives up. Tell the owner that plainly instead of pretending a reconnect is coming.
+function switchMode(mv){
+  if(!confirm('Switch to '+(mv?'Orchestrator':'Notifier')+'?\n\nThe device restarts to change modes. This takes a few seconds.'))return false;
+  fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:new URLSearchParams({mode:mv}).toString()}).catch(()=>{});
+  if(!mv){   // -> Notifier: no WiFi in that mode, so the web app cannot reconnect
+    toast('Restarting into Notifier - the web app won\'t be reachable there');
+    return true;
+  }
+  toast('Restarting to switch');
+  let tries=0;
+  const ping=()=>{ tries++;
+    fetch('/api/state',{cache:'no-store'})
+      .then(r=>{ if(r.ok) location.reload(); else throw 0; })
+      .catch(()=>{ if(tries<40) setTimeout(ping,1500); else toast('Reload the page'); }); };
+  setTimeout(ping,4000);   // let the reboot begin before polling
+  return true;
 }
 
 // Revert-to-defaults (owner 2026-07-18): drop EVERY per-param override so the
@@ -2293,8 +2361,15 @@ function sendChatTurn(){
         fetch('/api/chat').then(r=>r.json()).then(d=>{
           if(d.reply){pend.textContent=d.reply;pend.style.opacity=1;_chatBusy=false;$('chatMsg').textContent='';
             setTimeout(loadChatHistory,900);}   // re-sync from the canonical store
-          else if(tries<40){setTimeout(poll,1500);}
-          else{pend.textContent='(No reply - check the provider key and try again)';pend.style.opacity=1;_chatBusy=false;$('chatMsg').textContent='';}
+          // Keep polling while a turn is IN FLIGHT (d.pending). A turn that uses
+          // tools can legitimately run for minutes, so a fixed 60 s cap dropped
+          // real replies; poll up to the ~13 min turn budget, with a 40-try floor
+          // for quick turns even if pending flips off in a race.
+          else if((d.pending||tries<40)&&tries<520){$('chatMsg').textContent='Working…';setTimeout(poll,1500);}
+          // Gave up waiting: re-sync from the canonical store so a reply that
+          // staged after we stopped polling still appears, rather than a frozen pane.
+          else{pend.style.opacity=1;_chatBusy=false;$('chatMsg').textContent='';loadChatHistory();
+            pend.textContent='(Still working - reloading the conversation. If nothing appears, check the provider key.)';}
         }).catch(()=>{pend.textContent='(Couldn\'t fetch the reply - try again)';_chatBusy=false;});};
       setTimeout(poll,1500);
     })
@@ -2327,7 +2402,7 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
     {id:'name',t:'Name this device',skip:1},
     {id:'done',t:'All set'},
   ];
-  let idx=0, wifiOk=false, provOk=false, pendingMode=null, curMode=0, scanTimer=null;
+  let idx=0, wifiOk=false, provOk=false, pendingMode=null, curMode=0, scanTimer=null, onbProvider='';
   let handoffProbe=null;
   // Display step: bootDisp is what the device booted with (a TFT board that was
   // never told it has a TFT boots "eink" and shows a white panel - this step is
@@ -2352,7 +2427,8 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
       '<div class=row style="margin-top:8px"><button type=button id=onb_wifisave>Connect</button><span class=hint id=onb_wifimsg></span></div>'+
       '<div id=onb_handoff class=hint style="display:none;margin-top:12px;padding:12px;border:1px solid var(--line2);border-radius:8px"></div>';
     if(s.id==='provider')return '<label>Provider</label>'+
-      '<select id=onb_prov><option value=openai>OpenAI</option><option value=anthropic>Anthropic</option><option value=mistral>Mistral</option></select>'+
+      '<select id=onb_prov><option value=mistral selected>Mistral</option><option value=openai>OpenAI</option><option value=anthropic>Anthropic</option></select>'+
+      '<p class=hint id=onb_provguide></p>'+
       '<label>API key</label><input id=onb_key type=password placeholder="Paste your API key">'+
       '<div class=row style="margin-top:8px"><button type=button id=onb_provsave>Save &amp; Verify</button><span class=hint id=onb_provmsg></span></div>'+
       '<p class=hint>The key stays on the device and is never shown again. It is checked with the provider before you continue.</p>';
@@ -2405,6 +2481,13 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
       el('onb_wifisave').onclick=doWifi;
       refreshWifiState();
     } else if(s.id==='provider'){
+      // Per-provider setup guidance, updated as the selection changes.
+      const pv=el('onb_prov'),pg=el('onb_provguide');
+      const G={mistral:'Mistral (recommended): sign up at console.mistral.ai, add billing credits, then create an API key. Good value and it also powers on-device voice.',
+        openai:'OpenAI: sign up at platform.openai.com, add credit under Billing, then create a key under API keys.',
+        anthropic:'Anthropic: sign up at console.anthropic.com, add credit, then create an API key. Note: text only, no on-device voice.'};
+      const upd=()=>{pg.textContent=G[pv.value]||'';};
+      pv.onchange=upd;upd();
       el('onb_provsave').onclick=doProvider;
     } else if(s.id==='mode'){
       [...document.querySelectorAll('.onbmb')].forEach(b=>{
@@ -2415,7 +2498,15 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
       el('onb_tgsave').onclick=()=>{const v=el('onb_tg').value.trim();if(!v){el('onb_tgmsg').textContent='Enter a token first.';return;}
         orchApply({tgToken:v}).then(ok=>{el('onb_tgmsg').textContent=ok?'Saved ✓':'Rejected';});};
     } else if(s.id==='voice'){
-      el('onb_voicesave').onclick=()=>orchApply({sttProv:el('onb_stt').value,ttsProv:el('onb_tts').value})
+      // Only mistral/openai do on-device voice. Offer ONLY the provider the owner
+      // configured; if the configured provider is Anthropic (no voice), skip this
+      // step entirely - nothing here would be usable.
+      const cap=(onbProvider==='mistral'||onbProvider==='openai')?onbProvider:'';
+      if(!cap){next();return;}
+      const lbl=cap==='mistral'?'Mistral':'OpenAI';
+      el('onb_stt').innerHTML='<option value='+cap+'>'+lbl+'</option>';
+      el('onb_tts').innerHTML='<option value='+cap+'>'+lbl+'</option>';
+      el('onb_voicesave').onclick=()=>orchApply({sttProv:cap,ttsProv:cap})
         .then(ok=>{el('onb_voicemsg').textContent=ok?'Saved ✓':'Rejected';});
     } else if(s.id==='name'){
       el('onb_namesave').onclick=()=>{const v=el('onb_name').value.trim();if(!v){el('onb_namemsg').textContent='Enter a name.';return;}
@@ -2504,7 +2595,7 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
     .then(()=>{
       let tries=0;const vp=setInterval(()=>fetch('/api/orch').then(r=>r.json()).then(d=>{
         const v=d.providers&&d.providers[p]?d.providers[p].verify:-1;
-        if(v===1){clearInterval(vp);b.disabled=false;provOk=true;el('onb_provmsg').textContent='Verified ✓';el('onb_key').value='';}
+        if(v===1){clearInterval(vp);b.disabled=false;provOk=true;onbProvider=p;el('onb_provmsg').textContent='Verified ✓';el('onb_key').value='';}
         else if(v===0){clearInterval(vp);b.disabled=false;el('onb_provmsg').textContent='Rejected - check the key.';}
         else if(++tries>20){clearInterval(vp);b.disabled=false;el('onb_provmsg').textContent='Still verifying - tap Save & Verify again in a moment.';}
       }).catch(()=>{}),2000);

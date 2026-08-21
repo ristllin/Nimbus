@@ -53,7 +53,8 @@ bool   hasCustom();          // customBase() non-empty
 
 // ---- orchestrator routing + models ----
 String orchHost();                          // explicit host provider ("" => top of priority)
-String resolvedOrchHost();                  // orchHost, else the head of providerPriority - use
+bool   providerHasKey(const String& name);  // is an API key stored for openai|anthropic|mistral
+String resolvedOrchHost();                  // orchHost, else the first KEYED provider in priority - use
                                             // this whenever the model WINDOW is resolved
 int    effectiveToolResultCap();            // the per-result clamp a turn will apply (derived|owner)
 String orchConvId();                        // "host|convId" (per-host conversation state)
@@ -230,6 +231,7 @@ bool     brightOvr();    // lift the 60% LED cap to 100% - panel/shell heat risk
 bool     tftFlip();      // colour panel rotated 180 deg (which end of landscape is up)
 bool     lowBattRing();  // show the low-battery ring light (default OFF - see ring_plan)
 bool     lowBattSaver(); // low battery switches the battery mode (default ON - shipped)
+bool     battMon(bool def); // battery monitoring enabled (def = board-derived default)
 // Connector registry (Phase C): one JSON blob, OWNER-ONLY writes (token-gated
 // web endpoint; the model's `connector` config key is protected-BLOCKED).
 // Parsed by agent::connectors::list(); may contain secrets - never echo raw.
@@ -255,6 +257,7 @@ void   setBrightOvr(bool on);
 void   setTftFlip(bool on);
 void   setLowBattRing(bool on);
 void   setLowBattSaver(bool on);
+void   setBattMon(bool on);
 
 // ---- per-provider usage ledger + budgets (owner: "limit budget, budget per
 // provider - Tavily monthly calls, LLM monthly tokens, per-provider month reset").

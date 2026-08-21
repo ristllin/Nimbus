@@ -6,6 +6,7 @@
 
 #include <solide/storage.h>
 #include <solide/audio.h>
+#include <solide/board.h>   // board().hasRing - truthful led item on a ringless board
 
 #include "nimbus/fault.h"
 #include "nimbus_config.h"           // NIMBUS_BATT_NOMINAL_MAH (capacity mAh)
@@ -79,7 +80,16 @@ std::vector<SelfTestItem> runSelfTest(const SelfTestInputs& in, bool audible) {
   }
   // ---- screen / led / input / memory (HAL + fault) --------------------------
   r.push_back(capItem("screen", in.halDisplay, nimbus::fault::SCREEN));
-  r.push_back(capItem("led",    in.halLeds,    nimbus::fault::LED));
+  // On a board with no physical ring the "led" is a single status pixel and the
+  // notifier ring is drawn on the panel - so a bare PASS reads as "ring works"
+  // when there is no ring. Report the truth: the pixel is up and the ring is on
+  // the screen (a genuine begin() failure still FAILs).
+  if (!solide::board().hasRing)
+    r.push_back(mk("led", in.halLeds ? St::Pass : St::Fail,
+                   in.halLeds ? "1px status LED (no ring; drawn on the panel)"
+                              : "status LED begin() failed"));
+  else
+    r.push_back(capItem("led", in.halLeds, nimbus::fault::LED));
   // ⚠ On a touch board the encoder is NOT fitted - the TFT consumes its pins -
   // so halInput is false BY DESIGN and reporting FAIL slandered healthy
   // hardware (the same class as the heap false-FAIL fixed in 9d18d06). Report

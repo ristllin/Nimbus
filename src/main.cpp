@@ -199,6 +199,10 @@ static uint8_t ringBrightByte() {
 static bool      g_previewActive = false;
 static uint32_t  g_previewUntil = 0;
 static ProfileId g_previewProfile = ProfileId::Balanced;
+// The status the web ring simulator asked to demo (0..5 = solide::ring::Status),
+// or -1 = the default two-arc showcase. Lets "Demo on Device" mirror the exact
+// status the on-page simulator is showing, not just the theme.
+static int       g_previewStatus = -1;
 // Posture of the last PLAN actually applied to the ring - diverges from
 // g_cfg.posture() while a preview is live; RENDER? must report what the ring shows.
 static uint8_t   g_lastPosture = 0;
@@ -379,8 +383,24 @@ static uint32_t g_lastPowerTick = 0;
 // a self-improving discharge rate (nimbus::power::BatteryModel, host-tested).
 // Sampled on each telemetryDue edge; learned state persists to NVS so accuracy
 // carries across reboots. g_battEstimate is a POD snapshot the web layer reads.
-static nimbus::power::BatteryModel   g_battModel(NIMBUS_BATT_CELLS);
+// Cells comes from the board map (the Freenove is 1S, the Solide 2S), not a
+// compile constant - a wrong cell count makes the per-cell SoC read a 1S pack as
+// a half-charged 2S one (pinned at 0%). board() is constexpr-initialized, so it is
+// safe to read here at static-init time.
+static nimbus::power::BatteryModel   g_battModel(solide::board().batt.cells);
 static nimbus::power::BatteryEstimate g_battEstimate;
+
+// Battery hardware from the board map. cells never 0 (both boards set it); the
+// divider is owner-tuned on hand-built boards (resistors vary) but fixed on an
+// all-in-one (no e-paper option -> board().epd.sck < 0).
+static uint8_t  battCells()  { const uint8_t c = solide::board().batt.cells; return c ? c : uint8_t(NIMBUS_BATT_CELLS); }
+static int      battAdcPin() { return solide::board().batt.sense >= 0 ? int(solide::board().batt.sense) : int(NIMBUS_BATT_SENSE_PIN); }
+static uint16_t battDivX100() { return solide::board().epd.sck < 0 ? solide::board().batt.dividerX100 : agent::store::battDividerX100(); }
+// Battery monitoring on/off. A hand-built board ships WITH a pack, so monitoring
+// defaults ON; an all-in-one desk board (no e-paper option) treats a battery as an
+// add-on, so it defaults OFF (opt-in) - otherwise the floating ADC reads "empty"
+// and the device sleeps with no pack fitted. The owner can opt in (web Settings).
+static bool battMonOn() { return agent::store::battMon(solide::board().epd.sck >= 0); }
 static uint16_t g_battSavedSegments = 0xFFFF;   // last-persisted segment count (persist on change)
 // Low-battery ping gate (field 2026-08-11: the T1 edge re-fires on every wake-
 // sniff boot; the ping needs its own persisted memory). Loaded in setup().
@@ -669,15 +689,11 @@ static bool ringHasAttention() {
 static size_t focusCount() { return 1 + g_sessionList.size(); }
 
 // The active orchestrator host provider, for the root's label: the explicit orchHost
-// override, else the head of the priority list, else "auto".
+// override, else the first KEYED provider in the priority list (so the label matches
+// the provider a turn will actually run on), else "auto".
 static std::string activeHostProvider() {
-  String h = agent::store::orchHost();
-  if (h.length()) return std::string(h.c_str());
-  String prio = agent::store::providerPriority();
-  int comma = prio.indexOf(',');
-  String first = comma >= 0 ? prio.substring(0, comma) : prio;
-  first.trim();
-  return first.length() ? std::string(first.c_str()) : std::string("auto");
+  const String h = agent::store::resolvedOrchHost();
+  return h.length() ? std::string(h.c_str()) : std::string("auto");
 }
 
 // Populate ScreenCtx session fields for focus index `idx`: 0 = the Orchestrator root
@@ -779,6 +795,7 @@ static epd::ScreenCtx buildCtx(int cursorJob) {
   c.apUp = ((uint32_t)WiFi.softAPIP() != 0u);
   c.configUrl = configUrl();
   c.setupUrl = setupUrl();   // SetupInfo QR: always the AP address (P1.2)
+  c.fwVersion = NIMBUS_FW_VERSION;   // shown small on the Setup screen
   c.webToken = std::string(agent::store::webAuthToken().c_str());
   c.netStatus = netStatusLine();
   c.cursorJob = cursorJob;
@@ -851,6 +868,18 @@ static epd::ScreenCtx buildCtx(int cursorJob) {
       case solide::ring::Status::Error:            c.badgeText = "ERROR";    break;
       default:                                     c.badgeText = "!";        break;
     }
+  }
+
+  // On-screen ring: a board with no physical LED ring mirrors the composited ring
+  // frame onto the panel (the notifier draws it as a dot-ring). Only meaningful on
+  // the colour panel; the e-ink renderer ignores ringLeds.
+  if (g_screenIsTft && !solide::board().hasRing) {
+    const solide::ring::RGB* rf = hw::currentRingFrame();
+    const int n = hw::currentRingCount();
+    c.ringLeds.resize(size_t(n));
+    for (int i = 0; i < n; ++i)
+      c.ringLeds[size_t(i)] = { rf[i].r, rf[i].g, rf[i].b };
+    c.micHeld = g_voiceActive;   // instant pressed feedback on the hold-to-talk button
   }
   return c;
 }
@@ -1017,13 +1046,18 @@ static void voiceReleaseWatcher(void*) {
   vTaskDelete(nullptr);
 }
 
-static void captureVoiceTurn() {
-  if (g_voiceActive) return;   // re-entry guard: LongPress auto-repeats while held
+// Voice hold-to-talk sub-steps, split out of captureVoiceTurn to keep it under the
+// complexity gate. All run on the main task and touch the same file-scope voice +
+// screen state captureVoiceTurn does.
+
+// Pre-flight: returns true (having shown the reason on-screen) when a voice turn
+// can't start now - firmware updating, or no speech-to-text key configured.
+static bool voiceStartBlocked() {
   if (otaupd::installing()) {  // flash write + TLS own the device right now
     g_askOverride = "Updating firmware - try again after the restart.";
     g_askSticky = true; g_askPage = 0;
     renderScreen(attn::ScreenId::Ask, -1);
-    return;
+    return true;
   }
   if (!agent::stt::available()) {
     // Give the owner ACTUAL feedback instead of a silent no-op on a silent-serial
@@ -1032,9 +1066,56 @@ static void captureVoiceTurn() {
     g_askOverride = "Voice needs a speech-to-text key (set one in the web UI).";
     g_askSticky = true; g_askPage = 0;   // hold until click (P2.3)
     renderScreen(attn::ScreenId::Ask, -1);
-    return;
+    return true;
   }
+  return false;
+}
+
+// Instant press feedback: repaint so the hold-to-talk button shows pressed the
+// moment it is touched (the region-only ring repaint would miss it - the button
+// sits outside the ring rectangle). On a panel-ring board also paint a static
+// LISTENING frame (the whole ring in the theme hue): the physical Pulse drives
+// only the absent LED, and recordToFile blocks the loop so the animator can't
+// breathe it live - a steady lit ring is the honest single-task listening cue.
+static void voicePressFeedback() {
+  if (!g_screenIsTft || g_menu.isOpen()) return;
+  if (!solide::board().hasRing) {
+    nimbus::ThemeColor lt =
+        nimbus::themeAccent(std::string(agent::store::theme().c_str()));
+    hw::paintRingSolid(lt.r, lt.g, lt.b);
+  }
+  renderScreen(attn::ScreenId::StatusIdle, -1);
+}
+
+// Release feedback: recompose + un-press the mic button if still on the ring home
+// (a reply/ask screen otherwise replaces it, un-pressing it by leaving Idle).
+static void voiceReleaseFeedback() {
+  if (!g_screenIsTft || g_menu.isOpen() ||
+      g_lastScreen != uint8_t(attn::ScreenId::StatusIdle))
+    return;
+  refreshRing();   // replace the static LISTENING frame with the real idle ring
+  renderScreen(attn::ScreenId::StatusIdle, -1);
+}
+
+// Nothing usable was heard: LEDs off, ring back to idle, and a panel-aware retry
+// hint held until the owner clicks.
+static void voiceEmptyTranscript() {
+  solide::leds::off();
+  refreshRing();
+  // A touch board has no knob - its hold-to-talk is the mic bar (owner-caught:
+  // "hold the knob" on a knobless screen).
+  g_askOverride = g_screenIsTft
+      ? "Didn't catch that - hold the mic button and speak."
+      : "Didn't catch that - hold the knob and speak.";
+  g_askSticky = true; g_askPage = 0;   // hold until click (P2.3)
+  renderScreen(attn::ScreenId::Ask, -1);
+}
+
+static void captureVoiceTurn() {
+  if (g_voiceActive) return;   // re-entry guard: LongPress auto-repeats while held
+  if (voiceStartBlocked()) return;
   g_voiceActive = true;
+  voicePressFeedback();
   String reId;  // snapshot the focused session id BEFORE recording (it can complete mid-record)
   // Focus 0 = the Orchestrator itself -> talk to it directly, no "[re:]" hint. Focus
   // >=1 = a sub-session -> hint the turn at that job's id (still routed to the head).
@@ -1091,18 +1172,8 @@ static void captureVoiceTurn() {
   agent::alogf("[voice] result transcriptLen=%u text=\"%.80s\"",
                (unsigned)transcript.length(), transcript.c_str());
   g_voiceActive = false;
-  if (transcript.length() == 0) {
-    solide::leds::off();
-    refreshRing();
-    // Panel-aware retry hint: a touch board has no knob - its hold-to-talk is
-    // the mic bar (owner-caught: "hold the knob" on a knobless screen).
-    g_askOverride = g_screenIsTft
-        ? "Didn't catch that - hold the mic button and speak."
-        : "Didn't catch that - hold the knob and speak.";
-    g_askSticky = true; g_askPage = 0;   // hold until click (P2.3)
-    renderScreen(attn::ScreenId::Ask, -1);
-    return;
-  }
+  voiceReleaseFeedback();
+  if (transcript.length() == 0) { voiceEmptyTranscript(); return; }
   g_askOverride = String("You: ") + transcript;   // show what was heard on the e-ink
   g_askSticky = true; g_askPage = 0;   // hold the transcript while the turn runs;
                                        // the reply overwrites it directly (P2.3)
@@ -1159,6 +1230,11 @@ static void refreshRing() {
   if (g_lightsOff) {
     solide::leds::clearFrame();   // release any raw-frame (Full animator) hold
     solide::leds::off();
+    // On a panel-ring board the ring is mirrored from g_animBuf, which the off()
+    // above does NOT clear - without this the 30 fps panel repaint keeps showing the
+    // last frame, so a lights:off (or any lights-off state) would FREEZE the ring
+    // instead of darkening it. Zero the buffer so the mirror goes dark.
+    if (g_screenIsTft && !solide::board().hasRing) hw::paintRingSolid(0, 0, 0);
 #ifdef NIMBUS_TEST
     g_lastSeg = 0; g_lastSingle = false; g_lastDark = true; g_lastBright = 0;
     tc::onRender(g_lastScreen, uint8_t(g_cfg.posture()), 0, false, true, 0);
@@ -1241,6 +1317,17 @@ static void refreshRing() {
       Config previewCfg;
       previewCfg.setProfile(g_previewProfile);
       p = ring::compose(g_router, previewCfg, g_cursor, g_panelBusy, millis(), co);
+    } else if (g_screenIsTft && !solide::board().hasRing) {
+      // On a board with NO physical LED ring, the ring is drawn on the panel, so
+      // the battery-mode postures (Dark/Calm) that collapse the LED ring to a
+      // single dim LED to save POWER make no sense - there is no LED power to save,
+      // and the collapse froze the on-screen ring (g_animActive went false, so
+      // tickAnimation stopped advancing g_animBuf and the panel mirrored a stale
+      // frame = the "stuck full green" bug). Compose the FULL per-session ring at
+      // full brightness always; the battery mode dims the BACKLIGHT instead.
+      Config ringCfg;
+      ringCfg.setProfile(ProfileId::Desk);   // Desk => Full posture + full brightness
+      p = ring::compose(g_router, ringCfg, g_cursor, g_panelBusy, millis(), co);
     } else {
       p = ring::compose(g_router, g_cfg, g_cursor, g_panelBusy, millis(), co);
     }
@@ -1264,17 +1351,30 @@ static void refreshRing() {
         p.segs[i].hasAccent = false;   // themed by the role-hue overwrite below
         p.segs[i].accentHue = 0;
       };
-      demoSeg(0, 0xD3300001u, solide::ring::Status::Running);
-      demoSeg(1, 0xD3300002u, solide::ring::Status::WaitingInput);
-      p.segCount = 2;
+      if (g_previewStatus >= 0) {
+        // Mirror the simulator's picked status across a few arcs so its color +
+        // motion read clearly (matches the page's "Full lights the whole ring").
+        const solide::ring::Status st = solide::ring::Status(g_previewStatus);
+        demoSeg(0, 0xD3300001u, st);
+        demoSeg(1, 0xD3300002u, st);
+        demoSeg(2, 0xD3300003u, st);
+        p.segCount = 3;
+      } else {
+        demoSeg(0, 0xD3300001u, solide::ring::Status::Running);
+        demoSeg(1, 0xD3300002u, solide::ring::Status::WaitingInput);
+        p.segCount = 2;
+      }
     } else {
-      // Dark/Calm preview: the single attention LED, breathing in the theme's
-      // needs-you role hue at the previewed brightness.
-      const nimbus::StatusStyle ss =
-          nimbus::statusStyle(solide::ring::Status::WaitingInput);
+      // Dark/Calm preview: the single attention LED, animating the picked status in
+      // its theme hue (default: the needs-you breathe) at the previewed brightness.
+      const solide::ring::Status st = g_previewStatus >= 0
+                                          ? solide::ring::Status(g_previewStatus)
+                                          : solide::ring::Status::WaitingInput;
+      const nimbus::StatusStyle ss = nimbus::statusStyle(st);
       p.single.lit = true;
-      p.single.hue = nimbus::themeRoleHue(themeName, ss.roleIdx);
-      p.single.anim = uint8_t(solide::ring::Anim::Breathe);
+      p.single.hue = ss.alert ? nimbus::themeAlertHue(themeName)
+                              : nimbus::themeRoleHue(themeName, ss.roleIdx);
+      p.single.anim = uint8_t(ss.anim);
       p.single.periodMs = 2600;
     }
   }
@@ -1357,8 +1457,17 @@ static void refreshRing() {
 // every other g_cfg-adjacent mutation). Drives the ring to `profileId`'s look
 // immediately; loop() reverts once NIMBUS_PREVIEW_MS elapses. Deliberately does
 // not touch g_cfg/g_selector/persistConfig() - a preview is a look, not a choice.
-static void startPreview(int profileId) {
+static void startPreview(int profileId, int status = -1) {
   if (profileId < 0 || profileId >= nimbus::kProfileCount) return;
+  // status: 0..5 = a specific solide::ring::Status to demo; anything else = the
+  // default two-arc showcase (-1).
+  g_previewStatus = (status >= 0 && status <= int(solide::ring::Status::Error))
+                        ? status : -1;
+  // A preview is meant to be SEEN, so wake the panel if the screensaver has it
+  // blanked (restores the backlight + repaints StatusIdle). On a ringless board
+  // this is the difference between the demo showing on the panel and nothing at
+  // all; refreshRing() alone only recomposes the frame, it never un-blanks.
+  saverKick();
   g_previewActive = true;
   g_previewProfile = ProfileId(profileId);
   g_previewUntil = millis() + NIMBUS_PREVIEW_MS;
@@ -1466,6 +1575,7 @@ static void renderMenu() {
     // show AP credentials only when they are actually needed.
     c.setupUrl = setupUrl();
     c.configUrl = configUrl();
+    c.fwVersion = NIMBUS_FW_VERSION;
     c.apName = std::string(net::apSsid().c_str());
     c.apPass = std::string(net::apPass().c_str());   // per-device stored passphrase
     c.apUp = ((uint32_t)WiFi.softAPIP() != 0u);
@@ -1746,11 +1856,11 @@ static String storageSet(int pct) {
   }
   if (pct < 40 || pct > 95) return String("bad pct (40-95)");
   const uint16_t targetPack =
-      uint16_t(nimbus::power::liIonCellMvForPct(uint8_t(pct))) * NIMBUS_BATT_CELLS;
+      uint16_t(nimbus::power::liIonCellMvForPct(uint8_t(pct))) * battCells();
   power::Sample s = g_monitor->sample();
   if (s.valid && s.millivolts <= targetPack) {
     g_highLoadActive = false; g_storageTargetMv = 0;
-    return String("already at/below storage (") + (s.millivolts / NIMBUS_BATT_CELLS) +
+    return String("already at/below storage (") + (s.millivolts / battCells()) +
            "mV/cell) - charge to " + pct + "%";
   }
   g_storageTargetMv = targetPack;
@@ -1766,7 +1876,7 @@ static String storageSet(int pct) {
   g_thermalAbortLatch = false;
   applyHighLoadRing(kDrainBright);
   g_power.setTelemetryPeriodMs(30000);
-  return String("storage -> ") + pct + "% (target " + (targetPack / NIMBUS_BATT_CELLS) +
+  return String("storage -> ") + pct + "% (target " + (targetPack / battCells()) +
          "mV/cell), draining";
 }
 
@@ -2388,6 +2498,17 @@ void setup() {
           Serial.printf("[tft] stored touch calibration is malformed (%s) - using defaults\n",
                         cal.c_str());
         }
+      } else if (solide::board().touchKind == solide::TouchKind::CapacitiveI2c) {
+        // No stored calibration on a capacitive panel (e.g. the Freenove
+        // FT6336U): it already reports pixel coordinates, so min/max scaling
+        // does not apply - only the orientation flags do. This is the measured
+        // default that maps the portrait-native controller onto the landscape
+        // surface (swapXY) the right way up. A saved calibration overrides it.
+        solide::touch::Calibration sc;
+        sc.swapXY = true;
+        sc.invertY = true;
+        solide::touch::setCalibration(sc);
+        Serial.println("[tft] capacitive touch: default orientation (swapXY, invertY)");
       }
       Serial.printf("[tft] colour touch panel up (%dx%d, touch=%d)\n",
                     int(solide::display_tft::kW), int(solide::display_tft::kH),
@@ -2477,13 +2598,21 @@ void setup() {
   g_fuelgauge.begin(NIMBUS_FUELGAUGE_SDA, NIMBUS_FUELGAUGE_SCL,
                     NIMBUS_VBUS_SENSE_PIN);
 #elif defined(NIMBUS_HAS_BATTERY_ADC)
-  // Divider + capacity are owner-configurable (boards differ: 220/100 vs 270/120
-  // resistors, LiitoKala 3500 vs reclaimed ~500 mAh packs - web Settings). Cells is
-  // fixed 2S. The stored divider default is the compile constant, so an un-set board
-  // behaves exactly as before; a board with the ACTUAL 270/120 resistors can finally
-  // read its true voltage instead of the baked-in ÷3.20.
-  g_battAdc.begin(NIMBUS_BATT_SENSE_PIN, agent::store::battDividerX100(),
-                  NIMBUS_BATT_CELLS, NIMBUS_BATT_VBUS_PIN);
+  // Battery hardware is described by the board map, not compile constants, so a
+  // variant reads its OWN pack:
+  //  - sense pin: the Freenove's GPIO9 vs the Solide's GPIO4 (else analogRead runs
+  //    on an unconnected pin - the boot-time "not configured as analog channel").
+  //  - cells: 1S (Freenove) vs 2S (Solide) - a wrong count reads the pack at 0%.
+  //  - divider: a hand-built board's resistors are OWNER-tuned (220/100 vs 270/120,
+  //    web Settings), but an all-in-one has a FIXED divider, so it takes the board's
+  //    value (÷2) rather than the tuned default (÷3.2).
+  // Only bring the ADC up when monitoring is enabled; otherwise the monitor stays
+  // un-begun and reports invalid (desk-powered), so the glyph hides and the low-
+  // battery sleep never fires on a board with no pack fitted.
+  if (battMonOn())
+    g_battAdc.begin(battAdcPin(), battDivX100(), battCells(), NIMBUS_BATT_VBUS_PIN);
+  else
+    Serial.println("power: battery monitoring off (opt-in) - no pack assumed");
   g_battModel.setCapacityMah(agent::store::battCapMah());
 #endif
   loadBattModel();   // restore the analytics learning (health baseline + rate) from NVS
@@ -2595,12 +2724,13 @@ void setup() {
   };
   // Battery HARDWARE reconfigure (divider resistors / pack capacity changed on the
   // web). Re-arms the ADC with the new divider and pushes capacity into the model -
-  // both idempotent, cells fixed 2S. Runs on the main task (owns ADC + model), same
-  // staging as calibrateBatteryFull. ⚠ a divider change re-scales every mV, so the
-  // BATTCAL anchor is now stale; the UI tells the owner to re-Calibrate.
+  // both idempotent; pin/cells/divider come from the board map. Runs on the main
+  // task (owns ADC + model), same staging as calibrateBatteryFull. ⚠ a divider
+  // change re-scales every mV, so the BATTCAL anchor is now stale; the UI tells the
+  // owner to re-Calibrate. Skips the ADC when monitoring is off (opt-in boards).
   wc.reconfigureBattery = [] {
-    g_battAdc.begin(NIMBUS_BATT_SENSE_PIN, agent::store::battDividerX100(),
-                    NIMBUS_BATT_CELLS, NIMBUS_BATT_VBUS_PIN);
+    if (battMonOn())
+      g_battAdc.begin(battAdcPin(), battDivX100(), battCells(), NIMBUS_BATT_VBUS_PIN);
     g_battModel.setCapacityMah(agent::store::battCapMah());
     g_battEstimate = g_battModel.estimate();
     agent::alogf("batt: hardware reconfig - divider=/%.2f capacity=%umAh",
@@ -2655,7 +2785,7 @@ void setup() {
   };
   // Live ring preview (POST /api/preview): staged on the AsyncTCP task, fired
   // here from loopWeb() on the main task like every other webui mutation.
-  wc.onPreview = [](int profileId) { startPreview(profileId); };
+  wc.onPreview = [](int profileId, int status) { startPreview(profileId, status); };
   wc.factoryReset = [] { g_factoryResetPending = true; };  // main loop erases NVS + reboots
   wc.sdReset = [] { g_sdResetPending = true; };            // main loop erases /mem + reboots
   wc.chatSend = [](const String& t) {   // -> tg_poll turn
@@ -2699,16 +2829,24 @@ void setup() {
   // temporary, deleted each turn, and don't need the space.)
   BOOT_STAGE(0, 120, 120);   // CYAN: WiFi/portal up; about to mount the SD
   if (solide::storage::begin()) {
-    agent::memory::setDataFs(SD);
+    // activeFs() - NOT the SPI `SD` global directly. On an SDMMC board (Freenove)
+    // the card is mounted via SD_MMC and `SD` is never begun (its pins are
+    // repurposed for the TFT bus there); hardcoding SD silently wired orchestrator
+    // memory to an unmounted filesystem, so every real I/O failed and the health
+    // tracker demoted the tier to "no SD" despite the card being present and
+    // readable (round-4 bench report).
+    agent::memory::setDataFs(solide::storage::activeFs());
     agent::alogf("[sd] mounted: %llu MB total, %llu MB free",
                  (unsigned long long)solide::storage::cardSizeMB(),
                  (unsigned long long)solide::storage::freeMB());
   } else {
-    // cardType 0 (CARD_NONE) means the card never answered on the SPI bus at all ->
+    // cardType 0 (CARD_NONE) means the card never answered on the bus at all ->
     // NOT a format issue (an exFAT card would still report its type; only the FAT
     // mount would fail). 0 => no card / unseated / slot wiring fault. Non-0 + mount
     // fail => reformat FAT32. Data stays on internal flash either way.
-    int ct = (int)SD.cardType();
+    // solide::storage::cardType() (not the SPI `SD` global) - same active-backend
+    // reasoning as above, or this diagnostic always reads 0 on an SDMMC board.
+    int ct = (int)solide::storage::cardType();
     agent::alogf("[sd] mount FAILED (cardType=%d: 0=none 1=MMC 2=SDSC 3=SDHC). %s", ct,
                  ct == 0 ? "Card not seen on the bus -> reseat it / check the slot solder."
                          : "Card seen but FAT mount failed -> reformat it FAT32.");
@@ -3415,6 +3553,19 @@ static void settleMenuAfterMutation(uint32_t now) {
   }
 }
 
+// Page a held Ask reply by `dir` (+1/-1) and repaint. Shared by the knob
+// (encoder rotate, e-ink) and touch (swipe, TFT) paths - each renderer has its
+// OWN page count (the e-ink panel's fixed 48-col/7-line grid vs the TFT card's
+// actual pixel geometry; they legitimately disagree), so this picks the right
+// one rather than risk stranding the tail page unreachable on either board.
+static void pageAskReply(int dir) {
+  const std::string text(g_askOverride.c_str());
+  const int pages = g_screenIsTft ? nimbus::tft::askPageCount(text)
+                                  : epd::askPageCount(text);
+  g_askPage = std::max(0, std::min(g_askPage + dir, pages > 0 ? pages - 1 : 0));
+  renderScreen(attn::ScreenId::Ask, -1);
+}
+
 // ---- touch input (TFT boards) ------------------------------------------------
 // Translate a tap into the SAME calls the encoder makes. Nothing downstream is
 // touch-aware: the menu FSM keeps its onRotate/onClick/onLongPress contract, and
@@ -3439,24 +3590,28 @@ static void drainTouch(uint32_t now) {
   }
   if (g.kind == hw::touch::Gesture::Kind::HoldEnd) return;   // recording self-terminates
 
-  // Swipe = scroll the open menu. With no knob, a list longer than one page had
-  // no way to move except the header pager, which is easy to miss (owner:
-  // "no easy way to go up or down to see more options"). A swipe is the gesture
-  // a touch surface implies, and it costs nothing when no menu is open.
+  // Swipe = scroll the open menu, OR page a held Ask reply. With no knob, a
+  // list longer than one page (or a reply longer than one screen) had no way
+  // to move except the header pager, which is easy to miss (owner: "no easy
+  // way to go up or down to see more options" - the same gap that left a long
+  // orchestrator reply silently cut off with nothing to swipe with).
   //
-  // Moves a CHUNK rather than one row: at six rows a page, single-stepping
-  // needs a swipe per row, which is worse than the problem being solved. The
-  // FSM clamps at the ends, so over-scrolling is harmless.
+  // Menu scroll moves a CHUNK rather than one row: at six rows a page,
+  // single-stepping needs a swipe per row, which is worse than the problem
+  // being solved. The FSM clamps at the ends, so over-scrolling is harmless.
   if (g.kind == hw::touch::Gesture::Kind::SwipeUp ||
       g.kind == hw::touch::Gesture::Kind::SwipeDown) {
-    if (!g_menu.isOpen()) return;
-    constexpr int kSwipeRows = 5;
     const int dir = (g.kind == hw::touch::Gesture::Kind::SwipeDown) ? +1 : -1;
-    {
-      net::ConfigLockGuard lk;
-      for (int i = 0; i < kSwipeRows; i++) g_menu.onRotate(dir);
+    if (g_menu.isOpen()) {
+      constexpr int kSwipeRows = 5;
+      {
+        net::ConfigLockGuard lk;
+        for (int i = 0; i < kSwipeRows; i++) g_menu.onRotate(dir);
+      }
+      settleMenuAfterMutation(now);
+    } else if (g_askSticky) {
+      pageAskReply(dir);
     }
-    settleMenuAfterMutation(now);
     return;
   }
   if (g.kind != hw::touch::Gesture::Kind::Tap) return;
@@ -4097,7 +4252,15 @@ void loop() {
             break;
           default: break;
         }
-      } else if (t >= kGlobalLedKillC && !g_lightsOff) {
+      } else if (solide::board().hasRing && t >= kGlobalLedKillC && !g_lightsOff) {
+        // Global LED backstop: kill the WS2812 ring when the die runs hot, since a
+        // sustained bright ring overheats adjacent electronics. This protects the
+        // PHYSICAL ring only. On a ringless board there is no ring to overheat - the
+        // "ring" is drawn on the panel and draws no LED power - and the S3 internal
+        // die sensor reads high under normal Wi-Fi+BLE+TFT load, so this would trip
+        // spuriously and FREEZE the on-screen ring (g_lightsOff stops the animator
+        // while the panel keeps mirroring the last frame). So skip it when !hasRing;
+        // real chip protection is the SoC's own thermal throttling, not this.
         g_lightsOff = true;
         solide::leds::clearFrame();
         solide::leds::off();
@@ -4491,12 +4654,8 @@ void loop() {
       const int dir = (e == solide::input::Event::RotateCW) ? +1 : -1;
       if (g_askSticky) {
         // Reading a held reply (P2.3): rotate PAGES through it instead of moving
-        // the session cursor underneath the reading. Clamp with the RENDERER'S
-        // page count (a byte-length estimate under-counted wrapped text and made
-        // the tail pages unreachable - review).
-        const int pages = epd::askPageCount(std::string(g_askOverride.c_str()));
-        g_askPage = std::max(0, std::min(g_askPage + dir, pages > 0 ? pages - 1 : 0));
-        renderScreen(attn::ScreenId::Ask, -1);
+        // the session cursor underneath the reading.
+        pageAskReply(dir);
         continue;
       }
       if (g_orchMode) {
@@ -4701,7 +4860,11 @@ void loop() {
   // Gated on StatusIdle so a CTA badge, menu, detail, ask or QR screen can never
   // time out into the logo; every activity seam (input pop, real job edges, any
   // non-ambient render) resets the clock and saverKick() restores live status.
-  if (!g_menu.isOpen() && g_saver.due(now) &&
+  // A ringless Notifier board draws the status ring on the panel, so the ring IS
+  // the point - never blank it there. (Orchestrator still saves power by blanking;
+  // the demo/a session wakes it via saverKick.)
+  const bool ringIsTheScreen = g_screenIsTft && !solide::board().hasRing && !g_orchMode;
+  if (!g_menu.isOpen() && !ringIsTheScreen && g_saver.due(now) &&
       g_lastScreen == uint8_t(attn::ScreenId::StatusIdle)) {
 #ifdef NIMBUS_TEST
     Serial.printf("SAVERDBG fire now=%lu last=%lu thr=%u\n",
@@ -4778,6 +4941,20 @@ void loop() {
     // orchestrator led/lights override, or an OTA install (the progress bar is
     // the sole raw-frame owner then - racing it was the heavy download flicker).
     hw::tickAnimation(now);
+  }
+
+  // On-screen ring animation (ringless boards): the ring IS the notifier display,
+  // so repaint it at ~30 fps via a region push instead of waiting for a scheduler
+  // event (which is why it looked frozen). Region-only, so it never runs the
+  // ~31 ms full-frame blit; skipped over the menu or while the saver has blanked
+  // the panel. tickAnimation() above already refreshed the ring frame it reads.
+  static uint32_t s_lastRingPaint = 0;
+  if (g_screenIsTft && !solide::board().hasRing && !g_menu.isOpen() &&
+      g_lastScreen == uint8_t(attn::ScreenId::StatusIdle) &&
+      hw::tft::backlight() > nimbus::kBacklightRestPct &&
+      uint32_t(now - s_lastRingPaint) >= 33) {
+    s_lastRingPaint = now;
+    hw::tft::repaintRingRegion(buildCtx(-1));
   }
 
   delay(3);

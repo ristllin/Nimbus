@@ -323,8 +323,23 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   if (host.empty()) {
     std::string pr =
         d_.cfg.provider.providerPriority ? d_.cfg.provider.providerPriority() : std::string();
-    size_t c = pr.find(',');
-    host = (c != std::string::npos && c > 0) ? pr.substr(0, c) : pr;
+    // First provider in priority order that HAS a key, so the turn runs on a
+    // provider the owner configured (a bare default list heads with openai even
+    // when only mistral is keyed). Fall back to the raw head if none is keyed yet.
+    std::string head;
+    for (size_t start = 0; start <= pr.length();) {
+      size_t c = pr.find(',', start);
+      const size_t end = (c == std::string::npos) ? pr.length() : c;
+      std::string cand = pr.substr(start, end - start);
+      trimInPlace(cand);
+      if (cand.length()) {
+        if (head.empty()) head = cand;
+        if (d_.cfg.provider.hasKey && d_.cfg.provider.hasKey(cand)) { host = cand; break; }
+      }
+      if (c == std::string::npos) break;
+      start = c + 1;
+    }
+    if (host.empty()) host = head;
     trimInPlace(host);
   }
 

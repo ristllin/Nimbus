@@ -121,14 +121,35 @@ String orchHost() { return solide::memory::getString(AKEY_ORCH_HOST, ""); }
 // back to the conservative 100K default, which silently HALVED the derived
 // brief/fold-slice budgets and made the web UI report the wrong effective caps
 // (prism 2026-08-05). The engine resolves the same way inline.
+bool providerHasKey(const String& name) {
+  String n = name; n.trim();
+  if (n == "openai")    return hasOpenaiKey();
+  if (n == "anthropic") return hasAnthropicKey();
+  if (n == "mistral")   return hasMistralKey();
+  return false;
+}
 String resolvedOrchHost() {
   String h = orchHost();
   if (h.length()) return h;
-  String pr = providerPriority();
-  int c = pr.indexOf(',');
-  h = (c > 0) ? pr.substring(0, c) : pr;
-  h.trim();
-  return h;
+  // Walk the priority list and pick the FIRST provider that actually has a key,
+  // so the active provider is one the owner configured. A bare default list heads
+  // with "openai" even when only Mistral is keyed - the reported bug. Fall back to
+  // the raw head only if nothing is keyed yet (fresh device mid-onboarding).
+  const String pr = providerPriority();
+  String head;
+  int start = 0;
+  while (start <= (int)pr.length()) {
+    int c = pr.indexOf(',', start);
+    String tok = (c < 0) ? pr.substring(start) : pr.substring(start, c);
+    tok.trim();
+    if (tok.length()) {
+      if (head.length() == 0) head = tok;
+      if (providerHasKey(tok)) return tok;
+    }
+    if (c < 0) break;
+    start = c + 1;
+  }
+  return head;
 }
 String orchConvId() { return solide::memory::getString(AKEY_ORCH_CONVID, ""); }
 void   setOrchConvId(const String& v) { solide::memory::setString(AKEY_ORCH_CONVID, v); }
@@ -425,6 +446,10 @@ bool     lowBattRing()  { return solide::memory::getInt(AKEY_LOWBATT_RING, 0) !=
 // Owner default ON (note the 1): the T1 battery-mode switch is SHIPPED behaviour,
 // so defaulting this off would silently remove a power saving from every device.
 bool     lowBattSaver() { return solide::memory::getInt(AKEY_LOWBATT_SAVER, 1) != 0; }
+// Battery monitoring on/off. def is the board-derived default (battery-native
+// boards ON; all-in-one desk boards OFF/opt-in) - passed in by main so the store
+// layer stays board-agnostic.
+bool     battMon(bool def) { return solide::memory::getInt(AKEY_BATT_MON, def ? 1 : 0) != 0; }
 void setSfxLevelNotif(uint8_t v) { solide::memory::setInt(AKEY_SFX_LVL_NOTIF, v > 3 ? 3 : v); }
 void setSfxLevelOrch(uint8_t v)  { solide::memory::setInt(AKEY_SFX_LVL_ORCH, v > 3 ? 3 : v); }
 void setSfxTheme(const String& v) {
@@ -447,6 +472,7 @@ void setBrightOvr(bool on)   { solide::memory::setInt(AKEY_BRIGHT_OVR, on ? 1 : 
 void setTftFlip(bool on)      { solide::memory::setInt(AKEY_TFT_FLIP, on ? 1 : 0); }
 void setLowBattRing(bool on)  { solide::memory::setInt(AKEY_LOWBATT_RING, on ? 1 : 0); }
 void setLowBattSaver(bool on) { solide::memory::setInt(AKEY_LOWBATT_SAVER, on ? 1 : 0); }
+void setBattMon(bool on) { solide::memory::setInt(AKEY_BATT_MON, on ? 1 : 0); }
 String connectorsJson() { return solide::memory::getString(AKEY_CONNECTORS, ""); }
 void   setConnectorsJson(const String& v) { solide::memory::setString(AKEY_CONNECTORS, v); }
 void   setTheme(const String& v)       { solide::memory::setString(AKEY_THEME, v); }

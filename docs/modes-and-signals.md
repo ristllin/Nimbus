@@ -118,6 +118,27 @@ of backlight at an empty desk is the most wasteful thing the device can do.
 Setting the delay yourself (Settings > Screensaver on the device, Settings →
 Mode & identity on the web) always wins over either default.
 
+### The screen on a board with no ring
+
+Some boards, like the [all-in-one](../hardware/all-in-one-cyd.md) (Freenove CYD),
+have a single RGB LED instead of the 45-pixel ring. On those, the **Notifier**
+status ring is drawn on the screen: each active session shows as an arc in the
+same colors and animations the physical ring would use, so the status language is
+identical whichever board you have. Unlike a physical ring, the on-screen ring
+always renders at full brightness and detail regardless of battery mode - there
+is no LED power to save by dimming it, so dimming it would only make it harder to
+read. The battery mode instead dims the **backlight** (see
+[the screen on a color panel](#the-screen-on-a-color-panel) above), which is
+where this board's actual power draw is.
+
+The ring shows exactly what the connected notifier broker sends. A broker with
+stale sessions left over from earlier test runs can legitimately show more
+"active" arcs than you expect for a moment; the device clears a session that
+stops sending frames on its own, within a hold window scaled to the battery mode
+(minutes in Full, seconds in Dark) - not something you need to reconnect or
+trigger. If it never clears, check the broker's own session bookkeeping rather
+than the device.
+
 ### Display flip
 
 On the color touch panel, **Settings > Display flip** on the device (or the

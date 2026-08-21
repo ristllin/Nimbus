@@ -1,7 +1,9 @@
 # Bill of materials
 
-Every part needed to build a Nimbus, consolidated across both display
-configurations, with sourcing links and rough prices. The modules are all
+Every part needed to build a Nimbus, consolidated across the display
+configurations, with sourcing links and rough prices. Two are hand-built on the
+Solide S3 board; the third (Configuration C) is a single off-the-shelf all-in-one
+module with nothing to source beyond the board itself. The modules are all
 commodity parts - the links below are stable store or search links; any
 listing matching the **Module / chip** column works.
 
@@ -14,7 +16,7 @@ Prices are approximate 2026 street prices in USD for AliExpress-class
 sourcing, excluding shipping. Sourcing the branded parts from a US distributor
 (Adafruit, SparkFun, DigiKey, Mouser) typically adds $15–25 to the total.
 
-## Shared parts (both configurations)
+## Shared parts (both hand-built configurations)
 
 | Qty | Part | Module / chip | Notes | Purchase | ~Price |
 |---|---|---|---|---|---|
@@ -54,6 +56,22 @@ pack-build consumables are listed separately below).
 There is no knob in this build - the touch layer is the input.
 
 **Configuration B total: ≈ $59–63** · [Build guide →](build-tft.md)
+
+## Configuration C - all-in-one (Freenove CYD)
+
+The lowest-effort build: **one part, nothing to wire**. The screen, capacitive
+touch, microSD, mic, speaker, and RGB LED are all on the module. None of the
+shared parts above are needed - no separate display, LED ring, mic, amp, speaker,
+SD module, carrier PCB, headers, or battery section for a desk-powered unit.
+
+| Qty | Part | Module / chip | Notes | Purchase | ~Price |
+|---|---|---|---|---|---|
+| 1 | All-in-one board | **Freenove ESP32-S3 Display 2.8" (FNK0104B)** | ESP32-S3 N16R8, 2.8" ILI9341 240×320 IPS capacitive touchscreen, on-board microSD, ES8311 mic + speaker, single RGB LED, USB-C. Runs the Nimbus firmware built for `SOLIDE_BOARD=freenove_s3`. | [Amazon B0FSQF6FKN](https://www.amazon.com/dp/B0FSQF6FKN) · [Freenove](https://freenove.com/) | $20–25 |
+
+Nothing else is required. A data-capable **USB-C cable** for flashing is the only
+other thing you need, and most people already have one.
+
+**Configuration C total: ≈ $20–25** · [Pinout & happy-path build →](all-in-one-cyd.md)
 
 ## Safety note - 2S Li-ion
 

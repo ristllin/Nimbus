@@ -90,10 +90,11 @@ struct WebConfig {
   std::function<void()>       onChanged;
   // mode select persistence (e.g. solide::memory::setInt("mode", m)).
   std::function<void(int)>    onModeChanged;
-  // Live ring preview (POST /api/preview): fired from loopWeb() on the main
-  // task with the requested profile id; the device drives + auto-reverts the
-  // ring without touching Config/Selector (a preview never persists).
-  std::function<void(int)>    onPreview;
+  // Live ring preview (POST /api/preview): fired from loopWeb() on the main task
+  // with the requested profile id and an optional status to demo (0..5 =
+  // solide::ring::Status, -1 = default showcase); the device drives + auto-reverts
+  // the ring without touching Config/Selector (a preview never persists).
+  std::function<void(int,int)> onPreview;
   // Factory reset (POST /api/factory-reset, confirm-gated): sets a deferred flag so
   // the MAIN loop erases NVS + reboots (never on the AsyncTCP task). Null => no-op.
   std::function<void()>       factoryReset;

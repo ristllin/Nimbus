@@ -29,6 +29,11 @@ namespace nimbus::tft {
 struct Rendered {
   std::vector<TapRegion> taps;
 
+  // On-screen ring bounding box on the panel (ringless-board Notifier screen), so
+  // the device loop can push ONLY that rectangle at animation cadence instead of
+  // the whole 320x240 frame. w == 0 means this screen has no on-screen ring.
+  int16_t ringX = 0, ringY = 0, ringW = 0, ringH = 0;
+
   const TapRegion* hit(int x, int y) const {
     // Last match wins: regions are emitted back-to-front, so a control drawn
     // over a card claims the tap rather than the card underneath it.
@@ -43,6 +48,13 @@ struct Rendered {
 // Every attn::ScreenId is handled; unknown ids fall back to the status screen
 // so the panel is never left blank.
 Rendered renderScreen(Fb565& fb, attn::ScreenId screen, const epd::ScreenCtx& ctx);
+
+// Real page count drawAsk would produce for this text on THIS renderer - the
+// TFT card's pixel geometry/font metrics differ from the e-ink panel's, so this
+// is deliberately separate from epd::askPageCount() (hardcoded to the e-ink
+// 48-col/7-line grid) rather than reusing it; a touch board's swipe-to-page must
+// clamp against what it will actually render, not a mismatched page count.
+int askPageCount(const std::string& text);
 
 // Map a wire status (solide::ring::Status) to the screen's status tone. Kept
 // here so the card tint and the ring's statusStyle() role stay in agreement.

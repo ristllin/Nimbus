@@ -38,6 +38,29 @@ def test_native_usb_is_rejected_as_a_first_flash_target():
     assert not SETUP.is_native_usb_port("/dev/cu.usbserial-A5069RR4")
 
 
+def test_freenove_cyd_native_usb_port_is_allowed_when_requested():
+    # Default (--board solide_s3): a native-USB port is rejected outright - the
+    # DevKitC-1 must use its UART bridge. This must fail BEFORE any filesystem
+    # check (the port below does not exist on the test machine either way).
+    try:
+        SETUP.select_port("/dev/cu.usbmodem101")
+    except RuntimeError as exc:
+        assert "native USB port" in str(exc)
+    else:
+        raise AssertionError("a native USB port must be rejected without allow_native")
+
+    # --board freenove_s3 passes allow_native=True (its only port IS native USB -
+    # it has no UART bridge to require instead). The rejection above must be
+    # skipped, reaching the NEXT check (the port existing) instead.
+    try:
+        SETUP.select_port("/dev/cu.usbmodem101", allow_native=True)
+    except RuntimeError as exc:
+        assert "native USB port" not in str(exc)
+        assert "does not exist" in str(exc)
+    else:
+        raise AssertionError("a nonexistent test port must still fail on existence")
+
+
 def test_bootstrap_commands_keep_hardware_and_mode_independent():
     assert SETUP.bootstrap_commands("tft", "orchestrator") == [
         ("SET scrModel=tft", "SET scrModel ok=1"),
@@ -73,6 +96,7 @@ if __name__ == "__main__":
     test_nvs_classification_does_not_need_to_decode_values()
     test_extracts_the_factory_mac_from_esptool_output()
     test_native_usb_is_rejected_as_a_first_flash_target()
+    test_freenove_cyd_native_usb_port_is_allowed_when_requested()
     test_bootstrap_commands_keep_hardware_and_mode_independent()
     test_unattended_non_nimbus_board_requires_both_bootstrap_choices()
     test_show_token_is_an_explicit_recovery_mode()

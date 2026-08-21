@@ -23,6 +23,19 @@ namespace nimbus::hw {
 // last call collapse out (Animator::terminated) instead of just vanishing.
 void applyRingPlan(const ring::Plan& plan);
 
+// The current composited 45-entry ring frame, exactly what the physical LEDs
+// show (or WOULD show on a board with no ring). The notifier's on-screen ring
+// reads this to mirror the LEDs on the panel. Always valid; kept fresh by
+// tickAnimation(). currentRingCount() is the entry count (NIMBUS_RING_LEDS).
+const solide::ring::RGB* currentRingFrame();
+int currentRingCount();
+
+// Overwrite the composited ring frame with a solid color (every LED = r,g,b) so
+// the panel mirror (currentRingFrame) shows it at once. For the hold-to-talk
+// LISTENING cue on a panel-ring board: recordToFile blocks the loop, so the
+// animator can't paint a live breathe - a steady lit ring is the honest cue.
+void paintRingSolid(uint8_t r, uint8_t g, uint8_t b);
+
 // Advance the Active-posture Animator and push a fresh frame when it's time
 // (rate-limited internally to ~30 FPS - this call is cheap to make every main
 // loop iteration). No-op in Dark/Calm levels or whenever applyRingPlan() hasn't

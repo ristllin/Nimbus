@@ -104,7 +104,11 @@ table{width:100%;border-collapse:collapse;font-size:12.5px}td,th{text-align:left
 .ptitle{font-size:21px;font-weight:700;margin:0 0 2px;letter-spacing:-.01em}
 .plede{color:var(--ink2);font-size:13.5px;margin:0 0 14px;max-width:62ch}
 /* ---- tap-? help: button.qh toggles the adjacent .hint.tip (AGENTS.md copy style guide) ---- */
-button.qh{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;padding:0;margin-left:6px;border-radius:50%;border:1px solid var(--line2);background:var(--raise2);color:var(--ink3);font-size:11px;font-weight:650;line-height:1;vertical-align:-3px;flex:none;cursor:pointer}
+/* vertical-align:middle (not a fixed px offset) so the icon centers correctly
+   next to text at every font-size/line-height it's reused against - labels
+   (12px), headers, and table cells all differ, and one fixed offset can't be
+   right for all of them. */
+button.qh{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;padding:0;margin-left:6px;border-radius:50%;border:1px solid var(--line2);background:var(--raise2);color:var(--ink3);font-size:11px;font-weight:650;line-height:1;vertical-align:middle;flex:none;cursor:pointer}
 button.qh:hover{color:var(--ink);border-color:var(--ink3);filter:none}
 button.qh[aria-expanded=true]{background:var(--teal-soft);color:var(--teal);border-color:var(--teal)}
 .hint.tip{display:none}

@@ -34,11 +34,12 @@ Three other generators read this tree - keep them in sync when you edit:
 |---|---|
 | `hardware.md` | Pinout, wiring, and first-flash guidance (overview) |
 | `hardware/README.md` | Folder map for the hardware directory |
-| `hardware/bom.md` | Consolidated bill of materials (both configurations) |
+| `hardware/bom.md` | Consolidated bill of materials (all configurations) |
 | `hardware/build-eink.md` | Build guide - e-paper + knob |
 | `hardware/build-tft.md` | Build guide - touch TFT |
 | `hardware/eink-knob.md` | Configuration A - e-paper + knob |
 | `hardware/touch-tft.md` | Configuration B - touch TFT |
+| `hardware/all-in-one-cyd.md` | Configuration C - all-in-one (Freenove CYD) |
 
 
 ### Using Nimbus

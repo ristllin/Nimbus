@@ -1,5 +1,5 @@
 [
-  {"x":0,"y":0,"w":56,"h":44,"action":"Back","index":-1},
+  {"x":0,"y":0,"w":96,"h":44,"action":"Back","index":-1},
   {"x":276,"y":0,"w":44,"h":44,"action":"OpenMenu","index":-1},
   {"x":24,"y":104,"w":56,"h":56,"action":"ValueDown","index":-1},
   {"x":240,"y":104,"w":56,"h":56,"action":"ValueUp","index":-1},

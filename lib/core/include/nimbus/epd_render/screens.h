@@ -61,6 +61,14 @@ struct ScreenCtx {
   int  cursorJob = -1;                 // index into jobs for JobDetail
   int  detailPage = 0;                 // TextPager page for JobDetail
 
+  // On-screen ring mirror for boards with no physical LED ring. Empty = none;
+  // 45 entries = the composited ring frame (segments + cursor glow), drawn by the
+  // TFT notifier screen as a dot-ring instead of driving WS2812s. POD RGB so
+  // lib/core stays free of any solide/ header and remains golden-testable.
+  struct RingLed { uint8_t r = 0, g = 0, b = 0; };
+  std::vector<RingLed> ringLeds;
+  bool micHeld = false;   // hold-to-talk is being pressed -> draw the button pressed
+
   // SessionDetail (Orchestrator encoder-cursor focus). The Orchestrator itself is
   // ALWAYS focus index 0 (sessionIsRoot) - the head agent you're always talking to
   // - so this screen never shows "nothing"; sub-sessions are focus indices 1..N.
@@ -77,6 +85,7 @@ struct ScreenCtx {
 
   // setup info
   std::string apName, apPass, portalUrl;
+  std::string fwVersion;  // firmware version string, shown small on the Setup screen
   bool apUp = false;      // the setup SoftAP is CURRENTLY up (reachable). On e-ink it
                           // never drops; on a TFT board it is torn down after STA joins.
                           // ConfigQr prefers the AP address while it holds (routable from

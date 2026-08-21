@@ -161,6 +161,32 @@ Push renderAndPush(nimbus::attn::ScreenId screen, const nimbus::epd::ScreenCtx& 
   return Push::Pushed;
 }
 
+bool repaintRingRegion(const nimbus::epd::ScreenCtx& ctx) {
+  if (!g_ready) return false;
+  if (nimbus::fault::active(nimbus::fault::SCREEN)) return false;
+  if (solide::display_tft::busy()) return false;   // never collide with an async full blit
+
+  // Compose the whole StatusIdle frame in RAM (cheap - no SPI), but push ONLY the
+  // ring square. The static parts (header) are already on the panel from the last
+  // full renderAndPush; the animated ring + its inner legend are inside the rect.
+  Fb565* fb = g_fb[g_slot];
+  Rendered r = renderScreen(*fb, nimbus::attn::ScreenId::StatusIdle, ctx);
+  if (r.ringW <= 0 || r.ringH <= 0) return false;   // this frame has no on-screen ring
+
+  const uint16_t* win = fb->pixels() + size_t(r.ringY) * size_t(kW) + size_t(r.ringX);
+  if (!solide::display_tft::pushRegion(r.ringX, r.ringY, r.ringW, r.ringH, win, kW))
+    return false;
+
+  // Keep the dirty-gate snapshot + hit-testing coherent with the ring we just drew.
+  if (g_last)
+    for (int rr = 0; rr < r.ringH; ++rr) {
+      const size_t off = (size_t(r.ringY + rr) * size_t(kW) + size_t(r.ringX)) * 2;
+      std::memcpy(g_last + off, fb->data() + off, size_t(r.ringW) * 2);
+    }
+  g_taps = std::move(r);
+  return true;
+}
+
 const uint8_t* lastFrame() { return (g_ready && g_haveLast) ? g_last : nullptr; }
 size_t lastFrameBytes() { return size_t(kFbBytes); }
 

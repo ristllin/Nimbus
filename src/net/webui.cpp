@@ -46,6 +46,7 @@
 #include "../sys/config_nvs.h"          // device identity (devName, P2)
 #include "../hw/tft_out.h"                     // /api/screenshot - the bytes on the glass
 #include <solide/display_tft.h>                 // ...and the panel geometry it advertises
+#include <solide/board.h>                       // board identity + panel-fixed capability
 #include "nimbus/touch_cal.h"                 // tchCal validation (shared with the console)
 #include "solide/touch.h"                     // live-apply a new calibration
 #include "../sys/ota_update.h"          // /api/ota/* + /api/state ota fields
@@ -184,6 +185,7 @@ static volatile bool    s_onbRestartPending = false;
 // (a preview never persists and never touches g_cfg).
 static volatile bool    s_havePreview = false;
 static volatile int     s_pendPreview = 0;
+static volatile int     s_pendPreviewStatus = -1;
 // POST /api/battcal staging - owner asserts a full pack. The battery model + its
 // NVS save are main-task-owned, so the anchor is applied in loopWeb() (main task),
 // never from the AsyncTCP handler.
@@ -409,6 +411,9 @@ static void buildState(String& out) {
   // when there is no valid reading).
   batt["lbRing"]  = agent::store::lowBattRing();
   batt["lbSaver"] = agent::store::lowBattSaver();
+  // Battery monitoring on/off; default is board-derived (all-in-one boards, which
+  // have no e-paper option, treat a battery as opt-in and default this OFF).
+  batt["battMon"] = agent::store::battMon(solide::board().epd.sck >= 0);
 
   // E1 artifact store presence (SD /mem/files): the web UI's Files section +
   // the campaign harness read this.
@@ -460,6 +465,19 @@ static void buildState(String& out) {
     int b = agent::store::bootScreenIsTft();
     if (b >= 0) d["scrBoot"] = b ? "tft" : "eink";
   }
+  // Board pinout identity (compile-time) + whether the panel is fixed. An
+  // all-in-one board has no e-paper option (epd.sck < 0), so its scrModel cannot
+  // change - the UI locks the selector and the setter rejects a switch.
+#ifndef SOLIDE_BOARD
+#define SOLIDE_BOARD solide_s3
+#endif
+#define NIMBUS_BSTR2(x) #x
+#define NIMBUS_BSTR(x) NIMBUS_BSTR2(x)
+  d["board"] = NIMBUS_BSTR(SOLIDE_BOARD);
+  d["scrFixed"] = (solide::board().epd.sck < 0);
+  // Capacitive touch reports pixel coordinates, so the resistive min/max
+  // calibration is meaningless - the UI hides that field on such a board.
+  d["touchCap"] = (solide::board().touchKind == solide::TouchKind::CapacitiveI2c);
   // Idle minutes before the screen rests. Surfaced because it is an owner
   // setting the web UI edits, yet it was not readable back from any endpoint -
   // so its per-panel default (e-ink 60, colour 10, because a backlight is the
@@ -848,12 +866,17 @@ static bool applyOrchField(const String& n, const String& v, bool& cfgDirty) {
     if (s.length()) agent::store::setProviderPriority(s);
     return true;
   }
+  // Only mistral/openai do on-device voice, and only if a key is configured -
+  // reject an unconfigured provider rather than store a voice setting that can
+  // never run (the onboarding UI also gates this, this is the backstop).
   if (n == "sttProv") {
-    if (v == "mistral" || v == "openai") agent::store::setSttProvider(v);
+    if ((v == "mistral" || v == "openai") && agent::store::providerHasKey(v))
+      agent::store::setSttProvider(v);
     return true;
   }
   if (n == "ttsProv") {
-    if (v == "mistral" || v == "openai") agent::store::setTtsProvider(v);
+    if ((v == "mistral" || v == "openai") && agent::store::providerHasKey(v))
+      agent::store::setTtsProvider(v);
     return true;
   }
   if (n == "ttsVoice") {   // free-form voice id/slug; validated against the provider on use
@@ -978,6 +1001,9 @@ static bool applyOrchField(const String& n, const String& v, bool& cfgDirty) {
     // bound once at boot, so this deliberately has NO live side effect; the UI
     // tells the owner to restart. Reject unknown slugs (returning true for a
     // value we dropped would report a change that never happened).
+    // A fixed-panel board (no e-paper option) can only be "tft"; reject a switch
+    // to eink rather than brick the display until the next reflash.
+    if (solide::board().epd.sck < 0 && v != "tft") return false;
     if (v != "eink" && v != "tft") return false;
     agent::store::setScreenModel(v);
     return true;
@@ -1283,6 +1309,12 @@ void beginWeb(const WebConfig& wc) {
       agent::store::setLowBattSaver(r->getParam("lbSaver", true)->value().toInt() != 0);
       touched = true;
     }
+    // Battery monitoring on/off. Applied at boot (the ADC is brought up in setup),
+    // so a change takes effect after restart - the UI says so.
+    if (r->hasParam("battMon", true)) {
+      agent::store::setBattMon(r->getParam("battMon", true)->value().toInt() != 0);
+      touched = true;
+    }
     // OTA auto-install knob (device-level, both modes). Handled HERE on /api/config
     // (not applyOrchField) because the web Firmware panel POSTs it here and OTA is
     // not orchestrator-gated. Default OFF; the idle-window gate still applies.
@@ -1429,7 +1461,13 @@ void beginWeb(const WebConfig& wc) {
       r->send(400, "application/json", "{\"error\":\"bad profile\"}");
       return;
     }
+    // Optional status to demo (0..5 = solide::ring::Status); absent/-1 => the
+    // default two-arc showcase. Lets the ring simulator's status picker drive the
+    // on-device demo, not just the theme.
+    int st = r->hasParam("status", true)
+                 ? r->getParam("status", true)->value().toInt() : -1;
     s_pendPreview = p;
+    s_pendPreviewStatus = st;
     s_havePreview = true;
     r->send(200, "application/json", "{\"ok\":true}");
   });
@@ -2798,7 +2836,7 @@ void loopWeb() {
   }
   if (s_havePreview) {
     s_havePreview = false;
-    if (s_wc.onPreview) s_wc.onPreview(s_pendPreview);
+    if (s_wc.onPreview) s_wc.onPreview(s_pendPreview, s_pendPreviewStatus);
   }
   if (s_battCalPending) {
     s_battCalPending = false;

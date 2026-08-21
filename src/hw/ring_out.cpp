@@ -2,6 +2,7 @@
 #include "nimbus/power/bright_cap.h"
 
 #include <solide/leds.h>
+#include <solide/board.h>   // board().hasRing - suppress the physical push on ringless boards
 
 #include "nimbus/fault.h"    // resilience: simulated LED-ring fault (freezes the push)
 #include "nimbus/ring_animator.h"
@@ -38,6 +39,16 @@ uint32_t               g_animTickMs = 33;  // frame cadence; driven by the RingF
                                            // no-op menu/web control; audit P11).
 solide::ring::RGB      g_animBuf[NIMBUS_RING_LEDS];
 ring::CursorGlow       g_cursorGlow;   // stashed from the last plan for the glow overlay
+
+// A board with no physical ring (led.count == 1 status pixel) still composes the
+// full 45-color frame into g_animBuf - the notifier renders it on the panel
+// instead (see nimbus::hw::currentRingFrame + the TFT status screen). Suppress
+// only the WS2812 push; everything upstream runs unchanged so the on-screen ring
+// is a faithful mirror of what the LEDs would have shown.
+inline bool ringIsPhysical() { return solide::board().hasRing; }
+inline void pushRingFrame() {
+  if (ringIsPhysical()) solide::leds::showFrame(g_animBuf, NIMBUS_RING_LEDS);
+}
 }  // namespace
 
 void setRingFps(int fps) {
@@ -92,13 +103,18 @@ void applyRingPlan(const ring::Plan& plan) {
       // Nothing needs you: release raw-frame ownership and turn the ring off.
       if (g_animActive) { solide::leds::clearFrame(); g_animActive = false; }
       solide::leds::off();
+      // Zero the frame buffer too. On a ringless board the panel mirrors
+      // g_animBuf (currentRingFrame) at 30 fps; without this it would keep
+      // pushing whatever was last painted (a frozen "stuck" ring) after the
+      // ring goes dark. Physical-ring boards are already off, so this is free.
+      for (auto& px : g_animBuf) px = solide::ring::RGB{0, 0, 0};
       return;
     }
     g_animActive = true;   // tickAnimation drives the breathe + feeds the driver's
                            // 500 ms raw-frame staleness watchdog (RingFps clamps >= 5,
                            // so the tick is <= 200 ms - always fresh).
     g_anim.frame(millis(), g_animBuf, NIMBUS_RING_LEDS);   // paint now, not next tick
-    solide::leds::showFrame(g_animBuf, NIMBUS_RING_LEDS);
+    pushRingFrame();
     return;
   }
   g_wasFullMode = true;
@@ -207,7 +223,21 @@ void tickAnimation(uint32_t nowMs) {
         : solide::ring::hsv(uint16_t(g_cursorGlow.hue) * 257, 255, lvl);
     g_animBuf[glowLed] = g;
   }
-  solide::leds::showFrame(g_animBuf, NIMBUS_RING_LEDS);
+  pushRingFrame();
+}
+
+// The current 45-entry composited ring frame (segments + cursor glow + envelopes),
+// exactly what the physical LEDs would show. On a ringless board the notifier
+// draws these on the panel instead. Always valid; kept fresh by tickAnimation().
+// ⚠ MUST be called on the MAIN task. g_animBuf is written by tickAnimation()/
+// applyRingPlan(), which also run on the main loop, so the read is race-free ONLY
+// because rendering is on that same task. If TFT rendering ever moves to its own
+// task, snapshot g_animBuf under a lock instead of exposing it directly.
+const solide::ring::RGB* currentRingFrame() { return g_animBuf; }
+int currentRingCount() { return NIMBUS_RING_LEDS; }
+
+void paintRingSolid(uint8_t r, uint8_t g, uint8_t b) {
+  for (auto& px : g_animBuf) px = solide::ring::RGB{r, g, b};
 }
 
 }  // namespace nimbus::hw

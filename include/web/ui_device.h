@@ -64,11 +64,17 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 <option value=eink>E-ink &mdash; knob</option>
 <option value=tft>Touch &mdash; color touchscreen</option>
 </select>
+<div class=memv id=scrModelFixed style="display:none"></div>
 <label class=pr style="margin-top:8px"><input type=checkbox id=scrFlip> Display flip <button class=qh type=button aria-expanded=false aria-label="About display flip">?</button></label>
 <p class="hint tip">Turns the screen 180 degrees for an upside-down mount. Touch display only; takes effect right away.</p>
+<div id=tchCalWrap>
 <label>Touch calibration <button class=qh type=button aria-expanded=false aria-label="About touch calibration">?</button></label>
 <p class="hint tip">Only for the touch display. Each panel reads slightly differently, so if taps land off-target, enter the corner readings as <b>minX,maxX,minY,maxY</b> &mdash; optionally a fifth number to flip axes (1 swaps X and Y, 2 flips X, 4 flips Y; add them together). Leave blank for the defaults. Applies immediately.</p>
 <div class=row><input id=tchCal placeholder="200,3900,240,3850" maxlength=32><button id=tchCalSave type=button>Save</button></div>
+</div>
+<div id=tOrient style="display:none"><label>Touch orientation</label>
+<p class="hint tip">This screen self-calibrates, so there is nothing to measure. If taps land in the wrong place, toggle these until a tap lands where you touch. Applies immediately.</p>
+<div class=row style="gap:16px;flex-wrap:wrap"><label class=pr><input type=checkbox id=tSwap> Swap X and Y</label><label class=pr><input type=checkbox id=tFlipX> Flip X</label><label class=pr><input type=checkbox id=tFlipY> Flip Y</label></div></div>
 <label>Recovery access token <button class=qh type=button aria-expanded=false aria-label="About the access token">?</button></label>
 <p class="hint tip">The Sign-in QR carries this automatically; normal setup never asks you to type it. Use this value only to recover a browser that cannot scan the QR. Tap to copy. Generate a new one under <b>Connectivity</b> below.</p>
 <div class="memv" id=idToken style="cursor:pointer" title="tap to copy">&hellip;</div>
@@ -88,17 +94,19 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 <p class="hint tip">Shows a dim red pulse on the ring for a few seconds each minute while the battery is low. Off by default, because a ring lit all night uses the power it is warning about. The screen notice and the Telegram message are sent either way.</p>
 <label class=pr><input type=checkbox id=lbSaver> Save power when low <button class=qh type=button aria-expanded=false aria-label="About saving power when low">?</button></label>
 <p class="hint tip">Switches to the Dark battery mode while the battery is low, then returns to the chosen mode once it recovers. On by default.</p>
+<label class=pr><input type=checkbox id=battMon> Monitor the battery <button class=qh type=button aria-expanded=false aria-label="About battery monitoring">?</button></label>
+<p class="hint tip">Reads the battery pack for the charge readout, low-battery warnings, and sleep protection. On boards built with a pack it is on; on the all-in-one board a battery is optional, so it is off until you turn it on. Takes effect after restart.</p>
 <p class=hint id=effprof></p>
 <label>Theme <button class=qh type=button aria-expanded=false aria-label="About themes">?</button></label>
 <p class="hint tip">Each theme is a family of colors. A session's status picks its color role and motion &mdash; the ring's status language. The legend below shows the mapping.</p>
 <div id=themeChips></div>
+<button id=prevBtn type=button style="margin-top:6px">Demo on Device</button>
 <label>Preview <button class=qh type=button aria-expanded=false aria-label="About the preview">?</button></label>
-<p class="hint tip">Pick a status and mode to see the pattern in the selected theme. <b>Demo on Device</b> plays it on the physical ring for a few seconds &mdash; nothing is saved.</p>
+<p class="hint tip">Pick a status and mode to see the pattern in the selected theme. <b>Demo on Device</b> (above) plays it on the physical ring for a few seconds &mdash; nothing is saved.</p>
 <div id=ringsimwrap style="display:flex;flex-direction:column;align-items:center;gap:10px;margin:6px 0 2px">
 <canvas id=ringsim width=440 height=440 style="width:220px;height:220px"></canvas>
 <div id=ringsimStatus style="display:flex;gap:4px;flex-wrap:wrap;justify-content:center"></div>
 <div id=ringsimPosture style="display:flex;gap:4px;justify-content:center"></div>
-<button id=prevBtn type=button style="margin-top:2px">Demo on Device</button>
 </div>
 <div id=statusLegend></div>
 </div>
@@ -170,7 +178,7 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 </tbody></table>
 <p class=hint style="margin-top:12px"><b>Battery hardware</b> &mdash; match these to the pack and sense resistors actually fitted, so voltage and estimates are correct.</p>
 <table><tbody>
-<tr><td>Pack capacity</td><td><input id=battCapMah type=number min=100 max=20000 step=50 style="width:90px"> mAh <button class=qh type=button aria-expanded=false aria-label="About pack capacity">?</button><p class="hint tip">The fitted pack: LiitoKala 3500, a reclaimed ~500 mAh cell, and so on. Drives time-left and the capacity readout. Always 2S.</p></td></tr>
+<tr><td>Pack capacity</td><td><input id=battCapMah type=number min=100 max=20000 step=50 style="width:90px"> mAh <button class=qh type=button aria-expanded=false aria-label="About pack capacity">?</button><p class="hint tip">The fitted pack: LiitoKala 3500, a reclaimed ~500 mAh cell, and so on. Drives time-left and the capacity readout. Cell count is set by the board.</p></td></tr>
 <tr><td>Sense resistor (top)</td><td><input id=battRtop type=number min=1000 max=10000000 step=1000 style="width:110px"> &#8486; <button class=qh type=button aria-expanded=false aria-label="About the sense resistors">?</button><p class="hint tip">The two divider resistors between the pack and the ADC pin. Defaults 220k / 100k; some boards use 270k / 120k. Getting these right fixes the voltage reading. After changing them, re-run Calibrate on a full pack.</p></td></tr>
 <tr><td>Sense resistor (bottom)</td><td><input id=battRbot type=number min=1000 max=10000000 step=1000 style="width:110px"> &#8486;</td></tr>
 </tbody></table>

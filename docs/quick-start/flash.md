@@ -71,6 +71,28 @@ TFT board cannot correct a wrong display setting from its own controls.
 Answer **TFT** when the installer asks.
 :::
 
+### The Freenove CYD all-in-one
+
+The [all-in-one board](../hardware/all-in-one-cyd.md) uses the **same**
+installer, with one flag: `--board freenove_s3`.
+
+```bash
+python3 tools/setup_device.py --board freenove_s3
+```
+
+Everything above still applies (typed-MAC confirmation, no settings erased),
+with two differences specific to this board:
+
+- **One port, no picking.** The CYD has a single USB-C port and no separate
+  UART bridge - it rides the ESP32-S3's native USB the whole way, so there is
+  no "wrong port" the way the DevKitC-1's two-port caution above describes.
+  Just connect a data-capable USB-C cable.
+- **The display prompt is skipped.** This board's screen is a compile-time
+  identity (see [hardware configurations](../hardware.md#board-configurations))
+  - it is always the color touchscreen, so `--board freenove_s3` sets
+  `--display tft` for you. You'll still be asked for the starting **operating
+  mode** on a new board (`--mode notifier|orchestrator` skips that prompt too).
+
 Done? Continue to the **[setup wizard](setup-wizard.md)**. The rest of this
 page is reference for reflashing and recovery.
 

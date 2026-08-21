@@ -4,6 +4,7 @@
 
 #include "nimbus/device_identity.h"   // wifiQrPayload - the setup screen's join QR
 #include "nimbus/qr.h"
+#include "nimbus/text_page.h"         // TextPager - Ask-screen pagination
 
 // The colour touch UI. Layout language is lifted from the web interface so the
 // two surfaces read as one product: cards are the web's .sec (raised fill, 1px
@@ -112,12 +113,13 @@ void drawHeader(Fb565& fb, Rendered& r, const ScreenCtx& ctx,
   int tx = kGut;
   if (backable) {
     iconChevronLeft(fb, kGut + 6, kHeaderH / 2, kTeal);
-    // The tap target is deliberately much larger than the glyph - the whole
-    // left end of the bar goes Back, which is the easiest target to hit.
-    push(r, 0, 0, 56, kHeaderH, TapRegion::Action::Back);
+    // The tap target is deliberately MUCH larger than the glyph - the whole left
+    // third of the bar goes Back (capacitive edge taps are easy to miss on a small
+    // target). 96px wide comfortably clears the title, which starts at tx below.
+    push(r, 0, 0, 96, kHeaderH, TapRegion::Action::Back);
     tx = kGut + 22;
   } else {
-    push(r, 0, 0, 100, kHeaderH, TapRegion::Action::Home);
+    push(r, 0, 0, 110, kHeaderH, TapRegion::Action::Home);
   }
 
   std::string name = title.empty()
@@ -158,8 +160,120 @@ void drawHeader(Fb565& fb, Rendered& r, const ScreenCtx& ctx,
 
 // ---- status home ------------------------------------------------------------
 
+// RGB (0-255 per channel) -> logical RGB565 (Fb565 swaps to big-endian on store).
+static inline uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b) {
+  return uint16_t(((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3));
+}
+
+// Q15 unit-circle offsets for the 45-LED ring, dot 0 at top going clockwise.
+// Integer table (not runtime sin/cos), so the on-screen ring is bit-deterministic
+// across hosts - a golden could safely capture it later without libm variance.
+static const int16_t kRingCos[45] = {
+  0, 4560, 9032, 13328, 17364, 21062, 24351, 27165, 29451,
+  31163, 32269, 32747, 32587, 31794, 30381, 28377, 25821, 22762,
+  19260, 15383, 11207, 6813, 2286, -2286, -6813, -11207, -15383,
+  -19260, -22762, -25821, -28377, -30381, -31794, -32587, -32747, -32269,
+  -31163, -29451, -27165, -24351, -21062, -17364, -13328, -9032, -4560,
+};
+static const int16_t kRingSin[45] = {
+  -32767, -32448, -31498, -29934, -27788, -25101, -21925, -18323, -14364,
+  -10126, -5690, -1144, 3425, 7927, 12275, 16383, 20173, 23571,
+  26509, 28932, 30791, 32051, 32687, 32687, 32051, 30791, 28932,
+  26509, 23571, 20173, 16384, 12275, 7927, 3425, -1144, -5690,
+  -10126, -14364, -18323, -21925, -25101, -27788, -29934, -31498, -32448,
+};
+
+// The on-screen ring: draw the composited LED frame as a circle of small discs
+// inside the square [x,y,size]. Boards with no physical ring show this in the
+// notifier so the panel says exactly what the LEDs would have. Only ever called
+// when ctx.ringLeds is non-empty, so the existing (empty-ringLeds) goldens are untouched.
+static void drawRingWidget(Fb565& fb, int x, int y, int size,
+                           const std::vector<ScreenCtx::RingLed>& leds) {
+  const int n = int(leds.size());
+  if (n <= 0) return;
+  const int cx = x + size / 2;
+  const int cy = y + size / 2;
+  const int dotD = size >= 160 ? 11 : size >= 96 ? 8 : 6;
+  const int R = size / 2 - dotD / 2 - 1;
+  for (int i = 0; i < n; ++i) {
+    const int t = (i * 45) / n;                       // map onto the 45-entry table
+    const int px = cx + (R * kRingCos[t]) / 32767;
+    const int py = cy + (R * kRingSin[t]) / 32767;
+    const auto& L = leds[size_t(i)];
+    const bool lit = (L.r | L.g | L.b) != 0;
+    fb.fillRoundRect(px - dotD / 2, py - dotD / 2, dotD, dotD, dotD / 2,
+                     lit ? rgb565(L.r, L.g, L.b) : kRaise2);
+  }
+}
+
+// Center a single line inside the ring, clipped to the inner circle so text never
+// spills onto the dots.
+static void ringCenterLine(Fb565& fb, int cx, int y, int inner, const std::string& s,
+                           uint16_t colour) {
+  const int w = std::min(fb.textWidth(s, 1), inner);
+  fb.textClipped(cx - w / 2, y, s, colour, inner, 1);
+}
+
+// Ring-dominant Notifier screen for boards with NO physical LED ring: the ring is
+// the whole display. Sessions are the arcs the ring already draws; a small legend
+// sits inside it (clipped to the inner circle), and orchestrator's hold-to-talk is
+// a tall button on the RIGHT so the ring keeps the full screen height. The ring
+// square is exposed on Rendered so the device pushes ONLY it at animation cadence.
+static void drawRingHome(Fb565& fb, Rendered& r, const ScreenCtx& ctx) {
+  const bool showMic = ctx.modeName && std::string(ctx.modeName) == "orchestrator";
+  const int micW = showMic ? 84 : 0;                  // right-side strip for the mic
+  const int bodyTop = kBodyTop;
+  const int bodyH = (kH - kGut) - bodyTop;            // ring uses the FULL body height
+  const int ringAreaW = kW - micW - 2 * kGut;         // width left of the mic strip
+
+  const int rs = std::min(ringAreaW, bodyH);
+  const int rx = kGut + (ringAreaW - rs) / 2;
+  const int ry = bodyTop + (bodyH - rs) / 2;
+  drawRingWidget(fb, rx, ry, rs, ctx.ringLeds);
+  r.ringX = int16_t(rx); r.ringY = int16_t(ry);
+  r.ringW = int16_t(rs); r.ringH = int16_t(rs);
+
+  const int cx = rx + rs / 2, cy = ry + rs / 2;
+  const int inner = rs - 72;                           // text stays well inside the dots
+  if (ctx.jobs.empty()) {
+    ringCenterLine(fb, cx, cy - 8, inner, "Nothing running", kInk);
+    ringCenterLine(fb, cx, cy + 8, inner, "no sessions yet", kInk3);
+  } else {
+    const int fi = (ctx.cursorJob >= 0 && ctx.cursorJob < int(ctx.jobs.size()))
+                     ? ctx.cursorJob : 0;
+    const auto& j = ctx.jobs[size_t(fi)];
+    const StatusTone tone = toneFor(j.status);
+    const std::string name = j.label.empty() ? std::string("session") : j.label;
+    ringCenterLine(fb, cx, cy - 14, inner, name, kInk);
+    fb.label(cx - std::min(fb.labelWidth(labelFor(tone)), inner) / 2, cy + 2,
+             labelFor(tone), colourFor(tone));
+    if (ctx.jobs.size() > 1) {
+      char cnt[24];
+      std::snprintf(cnt, sizeof cnt, "%d active", int(ctx.jobs.size()));
+      ringCenterLine(fb, cx, cy + 18, inner, cnt, kInk3);
+    }
+  }
+
+  // Hold-to-talk: a tall button on the RIGHT (orchestrator only). Pressed state
+  // fills brighter so a touch is felt instantly (ctx.micHeld set by the device).
+  if (showMic) {
+    const int bw = micW - kGut, bh = std::min(bodyH, 132);
+    const int bx = kW - kGut - bw, by = bodyTop + (bodyH - bh) / 2;
+    fb.fillRoundRect(bx, by, bw, bh, kCardRadius, ctx.micHeld ? kInk : kTeal);
+    iconMic(fb, bx + bw / 2, by + bh / 2 - 9, kBg);
+    fb.text(bx + (bw - fb.textWidth("hold", 1)) / 2, by + bh / 2 + 7, "hold", kBg, 1);
+    push(r, bx, by, bw, bh, TapRegion::Action::Mic);
+  }
+}
+
 void drawStatusHome(Fb565& fb, Rendered& r, const ScreenCtx& ctx) {
   drawHeader(fb, r, ctx, "", false);
+
+  // Ringless board: the ring IS the display, so use the dedicated ring-dominant
+  // layout. buildCtx fills ringLeds only on a board with no physical ring, so a
+  // ring board falls straight through to the original card layout (goldens hold).
+  if (!ctx.ringLeds.empty()) { drawRingHome(fb, r, ctx); return; }
+  const int bodyRight = kW;
 
   // ⚠ The mic is ORCHESTRATOR-ONLY. Hold-to-talk records, transcribes and sends a
   // TURN; in Notifier mode there is no orchestrator running to send it to, so the
@@ -174,13 +288,13 @@ void drawStatusHome(Fb565& fb, Rendered& r, const ScreenCtx& ctx) {
 
   if (ctx.jobs.empty()) {
     // Empty state: say what the device is doing, not "no data".
-    fb.card(kGut, gridTop, kW - 2 * kGut, 84);
+    fb.card(kGut, gridTop, bodyRight - 2 * kGut, 84);
     const std::string l1 = "Nothing running";
     const std::string l2 = ctx.modeName && std::string(ctx.modeName) == "notifier"
                                ? "Waiting for a session"
                                : "Ready when you are";
-    fb.text((kW - fb.textWidth(l1, 2)) / 2, gridTop + 26, l1, kInk, 2);
-    fb.text((kW - fb.textWidth(l2, 1)) / 2, gridTop + 50, l2, kInk3, 1);
+    fb.text((bodyRight - fb.textWidth(l1, 2)) / 2, gridTop + 26, l1, kInk, 2);
+    fb.text((bodyRight - fb.textWidth(l2, 1)) / 2, gridTop + 50, l2, kInk3, 1);
   } else {
     // TWO-UP grid. A single column is right on a 240px-wide portrait panel, but
     // this panel is mounted landscape: 320 wide gives each card ~144px (enough
@@ -190,7 +304,7 @@ void drawStatusHome(Fb565& fb, Rendered& r, const ScreenCtx& ctx) {
     // left ~7 characters of title. It is a different trade at 320.)
     constexpr int cols = 2;
     constexpr int gap = 8;
-    const int cardW = (kW - 2 * kGut - gap * (cols - 1)) / cols;
+    const int cardW = (bodyRight - 2 * kGut - gap * (cols - 1)) / cols;
     constexpr int cardH = 56;
     const int maxRows = std::max(1, (gridBot - gridTop + gap) / (cardH + gap));
     const int shown = std::min<int>(int(ctx.jobs.size()), maxRows * cols);
@@ -568,9 +682,57 @@ void drawSessionDetail(Fb565& fb, Rendered& r, const ScreenCtx& ctx) {
   push(r, kGut, my, kW - 2 * kGut, kMinTap, TapRegion::Action::Mic);
 }
 
+// Ask-screen text-card geometry (perLine chars, maxLines rows, lineH px), shared
+// between drawAsk (which needs it to actually draw) and the standalone
+// askPageCount() below (which needs it to report a page count a touch board's
+// swipe-to-page can clamp against) - so the two can never disagree about how
+// much text fits. Fixed geometry (kBodyTop, scale 2, full width): Ask has one
+// call site. Always reserves room for the "page N/M" indicator line + a gap
+// above the Close button, whether or not this particular reply needs it, so the
+// card height (and the button's position) stay stable across single- and
+// multi-page replies.
+struct AskGeom { int perLine; int maxLines; int lineH; };
+AskGeom askGeometry() {
+  constexpr int scale = 2;
+  constexpr int y = kBodyTop;
+  const int cardW = kW - 2 * kGut;
+  const int innerW = cardW - 2 * 12;
+  const int lineH = Fb565::textHeight(scale) + 6;
+  const int perLine = std::max(1, innerW / (6 * scale));
+  constexpr int kFooterGap = 6, kIndicatorH = 14;
+  const int textBottom = (kH - kGut - kMinTap) - kFooterGap - kIndicatorH;
+  const int maxLines = std::max(1, (textBottom - y - 24) / lineH);
+  return {perLine, maxLines, lineH};
+}
+
+// Ask: title + the wrapped body, PAGINATED - a long reply used to silently
+// truncate to whatever fit one card, with no indication there was more (the
+// "message is cut off, no way to see the rest" report). ctx.detailPage selects
+// the page; a footer shows "page i/N" when there is more. On a knob board the
+// encoder pages it (main.cpp); on a touch board a swipe does (also main.cpp) -
+// this renderer only draws whatever page it's asked for.
 void drawAsk(Fb565& fb, Rendered& r, const ScreenCtx& ctx) {
   drawHeader(fb, r, ctx, "Message", true);
-  drawTextCard(fb, kBodyTop, ctx.askText.empty() ? "(no message)" : ctx.askText, 2);
+  const std::string body = ctx.askText.empty() ? "(no message)" : ctx.askText;
+  const AskGeom g = askGeometry();
+  TextPager pager;
+  pager.setText(body, size_t(g.perLine), size_t(g.maxLines));
+  const size_t pages = pager.pageCount();
+  size_t idx = ctx.detailPage < 0 ? 0 : size_t(ctx.detailPage);
+  if (pages && idx >= pages) idx = pages - 1;
+  const std::vector<std::string> lines = pager.page(idx);
+
+  const int cardH = g.maxLines * g.lineH + 24;
+  fb.card(kGut, kBodyTop, kW - 2 * kGut, cardH);
+  for (size_t i = 0; i < lines.size(); ++i)
+    fb.text(kGut + 12, kBodyTop + 12 + int(i) * g.lineH, lines[i], kInk, 2);
+
+  if (pages > 1) {
+    char foot[32];
+    std::snprintf(foot, sizeof foot, "page %u/%u", unsigned(idx + 1), unsigned(pages));
+    fb.text((kW - fb.textWidth(foot, 1)) / 2, kBodyTop + cardH + 6, foot, kInk3, 1);
+  }
+
   const int by = kH - kGut - kMinTap;
   fb.fillRoundRect(kGut, by, kW - 2 * kGut, kMinTap, kCardRadius, kRaise2);
   fb.roundRect(kGut, by, kW - 2 * kGut, kMinTap, kCardRadius, kLine2);
@@ -682,6 +844,8 @@ void drawSetup(Fb565& fb, Rendered& r, const ScreenCtx& ctx, bool config) {
     y += 14;
     drawTextCard(fb, y, ctx.deviceName.empty() ? std::string("Nimbus") : ctx.deviceName,
                  1, kTeal, 0);
+    if (!ctx.fwVersion.empty())
+      fb.text(kGut, kH - fb.textHeight(1) - 1, ctx.fwVersion, kInk3, 1);
     return;
   }
   drawHeader(fb, r, ctx, config ? "Sign in" : "Setup", true);
@@ -723,6 +887,10 @@ void drawSetup(Fb565& fb, Rendered& r, const ScreenCtx& ctx, bool config) {
                             : (showPass ? ctx.apPass : displayUrl(ctx.setupUrl)),
                      1, kTeal, textW);
   }
+  // Firmware version, small in the bottom-left. Guarded so the golden fixture
+  // (empty fwVersion) draws nothing and stays byte-identical.
+  if (!ctx.fwVersion.empty())
+    fb.text(kGut, kH - fb.textHeight(1) - 1, ctx.fwVersion, kInk3, 1);
 }
 
 void drawTokenDetail(Fb565& fb, Rendered& r, const ScreenCtx& ctx) {
@@ -774,6 +942,20 @@ void drawScreensaver(Fb565& fb, Rendered& r, const ScreenCtx& ctx) {
 }
 
 }  // namespace
+
+// Real page count drawAsk will produce for this text (declared in
+// tft_render/screens.h). Deliberately NOT epd::askPageCount() - that's
+// hardcoded to the e-ink panel's 48-col/7-line grid, which does not match this
+// renderer's pixel geometry/font metrics. Needs external linkage (unlike every
+// draw* helper above, which is only ever reached via renderScreen's switch) so
+// a touch board's swipe-to-page (main.cpp) can clamp against exactly what this
+// renderer will draw.
+int askPageCount(const std::string& text) {
+  const AskGeom g = askGeometry();
+  TextPager pager;
+  pager.setText(text, size_t(g.perLine), size_t(g.maxLines));
+  return int(pager.pageCount());
+}
 
 StatusTone toneFor(uint8_t status) {
   // solide::ring::Status - kept in lockstep with statusStyle()'s roles so the

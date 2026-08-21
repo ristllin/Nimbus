@@ -243,6 +243,7 @@
 #define AKEY_LOWBATT_RING   "lbRing"         // owner opt-in: show the low-battery ring light at all (DEFAULT OFF)
 #define AKEY_TFT_FLIP       "tftFlip"        // colour panel mounted 180 deg round (landscape only)
 #define AKEY_LOWBATT_SAVER  "lbSaver"        // T1 switches the battery mode to save power (DEFAULT ON = shipped behaviour)
+#define AKEY_BATT_MON       "battMon"        // battery monitoring enabled (default board-derived: ON for battery-native hand-built boards, OFF/opt-in for all-in-one desk boards). OFF => the ADC is never read, the glyph is hidden, and low-batt sleep never fires.
 // SFX asset sync source (public repo; see tools/sounds + docs). The device GETs
 // <SFX_SYNC_BASE>/manifest.json and the dist/sd/* WAVs it lists onto the SD card.
 // OTA release manifest - served from the PUBLIC firmware-releases repo (the
