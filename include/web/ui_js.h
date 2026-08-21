@@ -516,13 +516,23 @@ function applyState(d){
   // Display panel: hardware identity, bound at boot. Confirm before changing -
   // picking the wrong one leaves the fitted screen dark until it is set back.
   const sm=$('scrModel'); if(sm&&d.scrModel!==undefined&&sm!==document.activeElement)sm.value=d.scrModel;
-  // Fixed-panel board (all-in-one): the display type can't change, so lock it.
-  if(sm&&d.scrFixed){sm.disabled=true;sm.title='This board has a fixed display';}
+  // Fixed-panel board (all-in-one): the display type is a compile-time identity,
+  // not a runtime choice - a disabled-but-visible dropdown reads as broken ("why
+  // won't it click?"). Show a plain read-only value instead, same as the pattern
+  // used elsewhere (touchCap swapping the calibration field for orientation below).
+  const smf=$('scrModelFixed');
+  if(sm&&d.scrFixed){
+    sm.style.display='none';
+    if(smf){const lbl=sm.querySelector('option[value="'+d.scrModel+'"]');
+      smf.textContent=(lbl?lbl.textContent:d.scrModel)+' (fixed)';smf.style.display='';}
+  }else if(sm){sm.style.display='';if(smf)smf.style.display='none';}
   const tc=$('tchCal'); if(tc&&d.tchCal!==undefined&&tc!==document.activeElement)tc.value=d.tchCal||'';
   // Capacitive touch self-calibrates (pixel coordinates), so the resistive
   // min/max field does nothing - hide it and its label, and show the 3-flag
-  // orientation control instead (swap/flipX/flipY, applied live).
-  if(tc&&d.touchCap){const r=tc.closest('.row,.field,label')||tc;r.style.display='none';
+  // orientation control instead (swap/flipX/flipY, applied live). Toggle the
+  // WRAPPER div (label + hint + row together) - toggling just the .row via
+  // .closest() left the label/hint above it visible, an empty-looking section.
+  if(tc&&d.touchCap){const w=$('tchCalWrap'); if(w)w.style.display='none';
     const or=$('tOrient');
     if(or){or.style.display='';
       // Current flags: last field of tchCal, else the capacitive default (swap+flipY=5).
@@ -740,13 +750,23 @@ function apply(body){
 // Switching Notifier<->Orchestrator reboots the device (the two modes bring up
 // different subsystems), so the config POST's connection drops mid-flight. Don't
 // surface that as a save error the way apply() would: fire the change, tell the
-// owner it is restarting, then poll until the device answers again and reload into
-// the new mode. Returns false if the owner cancels (so the caller can revert a
-// dropdown). This is why the mode controls do NOT go through apply().
+// owner it is restarting, then (Orchestrator direction only) poll until the device
+// answers again and reload into the new mode. Returns false if the owner cancels (so
+// the caller can revert a dropdown). This is why the mode controls do NOT go
+// through apply().
+//
+// Notifier mode runs with NO WiFi radio at all (main.cpp: WiFi.mode(WIFI_OFF),
+// frees SRAM for BLE) - the web server never starts there. So switching TO Notifier
+// can never be followed by a reconnect: polling /api/state would just spin until it
+// gives up. Tell the owner that plainly instead of pretending a reconnect is coming.
 function switchMode(mv){
   if(!confirm('Switch to '+(mv?'Orchestrator':'Notifier')+'?\n\nThe device restarts to change modes. This takes a few seconds.'))return false;
   fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
     body:new URLSearchParams({mode:mv}).toString()}).catch(()=>{});
+  if(!mv){   // -> Notifier: no WiFi in that mode, so the web app cannot reconnect
+    toast('Restarting into Notifier - the web app won\'t be reachable there');
+    return true;
+  }
   toast('Restarting to switch');
   let tries=0;
   const ping=()=>{ tries++;

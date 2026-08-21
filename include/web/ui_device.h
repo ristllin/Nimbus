@@ -64,9 +64,12 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 <option value=eink>E-ink &mdash; knob</option>
 <option value=tft>Touch &mdash; color touchscreen</option>
 </select>
+<div class=memv id=scrModelFixed style="display:none"></div>
+<div id=tchCalWrap>
 <label>Touch calibration <button class=qh type=button aria-expanded=false aria-label="About touch calibration">?</button></label>
 <p class="hint tip">Only for the touch display. Each panel reads slightly differently, so if taps land off-target, enter the corner readings as <b>minX,maxX,minY,maxY</b> &mdash; optionally a fifth number to flip axes (1 swaps X and Y, 2 flips X, 4 flips Y; add them together). Leave blank for the defaults. Applies immediately.</p>
 <div class=row><input id=tchCal placeholder="200,3900,240,3850" maxlength=32><button id=tchCalSave type=button>Save</button></div>
+</div>
 <div id=tOrient style="display:none"><label>Touch orientation</label>
 <p class="hint tip">This screen self-calibrates, so there is nothing to measure. If taps land in the wrong place, toggle these until a tap lands where you touch. Applies immediately.</p>
 <div class=row style="gap:16px;flex-wrap:wrap"><label class=pr><input type=checkbox id=tSwap> Swap X and Y</label><label class=pr><input type=checkbox id=tFlipX> Flip X</label><label class=pr><input type=checkbox id=tFlipY> Flip Y</label></div></div>
@@ -95,13 +98,13 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 <label>Theme <button class=qh type=button aria-expanded=false aria-label="About themes">?</button></label>
 <p class="hint tip">Each theme is a family of colors. A session's status picks its color role and motion &mdash; the ring's status language. The legend below shows the mapping.</p>
 <div id=themeChips></div>
+<button id=prevBtn type=button style="margin-top:6px">Demo on Device</button>
 <label>Preview <button class=qh type=button aria-expanded=false aria-label="About the preview">?</button></label>
-<p class="hint tip">Pick a status and mode to see the pattern in the selected theme. <b>Demo on Device</b> plays it on the physical ring for a few seconds &mdash; nothing is saved.</p>
+<p class="hint tip">Pick a status and mode to see the pattern in the selected theme. <b>Demo on Device</b> (above) plays it on the physical ring for a few seconds &mdash; nothing is saved.</p>
 <div id=ringsimwrap style="display:flex;flex-direction:column;align-items:center;gap:10px;margin:6px 0 2px">
 <canvas id=ringsim width=440 height=440 style="width:220px;height:220px"></canvas>
 <div id=ringsimStatus style="display:flex;gap:4px;flex-wrap:wrap;justify-content:center"></div>
 <div id=ringsimPosture style="display:flex;gap:4px;justify-content:center"></div>
-<button id=prevBtn type=button style="margin-top:2px">Demo on Device</button>
 </div>
 <div id=statusLegend></div>
 </div>

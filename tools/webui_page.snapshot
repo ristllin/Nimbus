@@ -92,7 +92,11 @@ table{width:100%;border-collapse:collapse;font-size:12.5px}td,th{text-align:left
 .ptitle{font-size:21px;font-weight:700;margin:0 0 2px;letter-spacing:-.01em}
 .plede{color:var(--ink2);font-size:13.5px;margin:0 0 14px;max-width:62ch}
 /* ---- tap-? help: button.qh toggles the adjacent .hint.tip (AGENTS.md copy style guide) ---- */
-button.qh{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;padding:0;margin-left:6px;border-radius:50%;border:1px solid var(--line2);background:var(--raise2);color:var(--ink3);font-size:11px;font-weight:650;line-height:1;vertical-align:-3px;flex:none;cursor:pointer}
+/* vertical-align:middle (not a fixed px offset) so the icon centers correctly
+   next to text at every font-size/line-height it's reused against - labels
+   (12px), headers, and table cells all differ, and one fixed offset can't be
+   right for all of them. */
+button.qh{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;padding:0;margin-left:6px;border-radius:50%;border:1px solid var(--line2);background:var(--raise2);color:var(--ink3);font-size:11px;font-weight:650;line-height:1;vertical-align:middle;flex:none;cursor:pointer}
 button.qh:hover{color:var(--ink);border-color:var(--ink3);filter:none}
 button.qh[aria-expanded=true]{background:var(--teal-soft);color:var(--teal);border-color:var(--teal)}
 .hint.tip{display:none}
@@ -202,9 +206,12 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <option value=eink>E-ink &mdash; knob</option>
 <option value=tft>Touch &mdash; color touchscreen</option>
 </select>
+<div class=memv id=scrModelFixed style="display:none"></div>
+<div id=tchCalWrap>
 <label>Touch calibration <button class=qh type=button aria-expanded=false aria-label="About touch calibration">?</button></label>
 <p class="hint tip">Only for the touch display. Each panel reads slightly differently, so if taps land off-target, enter the corner readings as <b>minX,maxX,minY,maxY</b> &mdash; optionally a fifth number to flip axes (1 swaps X and Y, 2 flips X, 4 flips Y; add them together). Leave blank for the defaults. Applies immediately.</p>
 <div class=row><input id=tchCal placeholder="200,3900,240,3850" maxlength=32><button id=tchCalSave type=button>Save</button></div>
+</div>
 <div id=tOrient style="display:none"><label>Touch orientation</label>
 <p class="hint tip">This screen self-calibrates, so there is nothing to measure. If taps land in the wrong place, toggle these until a tap lands where you touch. Applies immediately.</p>
 <div class=row style="gap:16px;flex-wrap:wrap"><label class=pr><input type=checkbox id=tSwap> Swap X and Y</label><label class=pr><input type=checkbox id=tFlipX> Flip X</label><label class=pr><input type=checkbox id=tFlipY> Flip Y</label></div></div>
@@ -233,13 +240,13 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <label>Theme <button class=qh type=button aria-expanded=false aria-label="About themes">?</button></label>
 <p class="hint tip">Each theme is a family of colors. A session's status picks its color role and motion &mdash; the ring's status language. The legend below shows the mapping.</p>
 <div id=themeChips></div>
+<button id=prevBtn type=button style="margin-top:6px">Demo on Device</button>
 <label>Preview <button class=qh type=button aria-expanded=false aria-label="About the preview">?</button></label>
-<p class="hint tip">Pick a status and mode to see the pattern in the selected theme. <b>Demo on Device</b> plays it on the physical ring for a few seconds &mdash; nothing is saved.</p>
+<p class="hint tip">Pick a status and mode to see the pattern in the selected theme. <b>Demo on Device</b> (above) plays it on the physical ring for a few seconds &mdash; nothing is saved.</p>
 <div id=ringsimwrap style="display:flex;flex-direction:column;align-items:center;gap:10px;margin:6px 0 2px">
 <canvas id=ringsim width=440 height=440 style="width:220px;height:220px"></canvas>
 <div id=ringsimStatus style="display:flex;gap:4px;flex-wrap:wrap;justify-content:center"></div>
 <div id=ringsimPosture style="display:flex;gap:4px;justify-content:center"></div>
-<button id=prevBtn type=button style="margin-top:2px">Demo on Device</button>
 </div>
 <div id=statusLegend></div>
 </div>
@@ -1320,13 +1327,23 @@ function applyState(d){
   // Display panel: hardware identity, bound at boot. Confirm before changing -
   // picking the wrong one leaves the fitted screen dark until it is set back.
   const sm=$('scrModel'); if(sm&&d.scrModel!==undefined&&sm!==document.activeElement)sm.value=d.scrModel;
-  // Fixed-panel board (all-in-one): the display type can't change, so lock it.
-  if(sm&&d.scrFixed){sm.disabled=true;sm.title='This board has a fixed display';}
+  // Fixed-panel board (all-in-one): the display type is a compile-time identity,
+  // not a runtime choice - a disabled-but-visible dropdown reads as broken ("why
+  // won't it click?"). Show a plain read-only value instead, same as the pattern
+  // used elsewhere (touchCap swapping the calibration field for orientation below).
+  const smf=$('scrModelFixed');
+  if(sm&&d.scrFixed){
+    sm.style.display='none';
+    if(smf){const lbl=sm.querySelector('option[value="'+d.scrModel+'"]');
+      smf.textContent=(lbl?lbl.textContent:d.scrModel)+' (fixed)';smf.style.display='';}
+  }else if(sm){sm.style.display='';if(smf)smf.style.display='none';}
   const tc=$('tchCal'); if(tc&&d.tchCal!==undefined&&tc!==document.activeElement)tc.value=d.tchCal||'';
   // Capacitive touch self-calibrates (pixel coordinates), so the resistive
   // min/max field does nothing - hide it and its label, and show the 3-flag
-  // orientation control instead (swap/flipX/flipY, applied live).
-  if(tc&&d.touchCap){const r=tc.closest('.row,.field,label')||tc;r.style.display='none';
+  // orientation control instead (swap/flipX/flipY, applied live). Toggle the
+  // WRAPPER div (label + hint + row together) - toggling just the .row via
+  // .closest() left the label/hint above it visible, an empty-looking section.
+  if(tc&&d.touchCap){const w=$('tchCalWrap'); if(w)w.style.display='none';
     const or=$('tOrient');
     if(or){or.style.display='';
       // Current flags: last field of tchCal, else the capacitive default (swap+flipY=5).
@@ -1544,13 +1561,23 @@ function apply(body){
 // Switching Notifier<->Orchestrator reboots the device (the two modes bring up
 // different subsystems), so the config POST's connection drops mid-flight. Don't
 // surface that as a save error the way apply() would: fire the change, tell the
-// owner it is restarting, then poll until the device answers again and reload into
-// the new mode. Returns false if the owner cancels (so the caller can revert a
-// dropdown). This is why the mode controls do NOT go through apply().
+// owner it is restarting, then (Orchestrator direction only) poll until the device
+// answers again and reload into the new mode. Returns false if the owner cancels (so
+// the caller can revert a dropdown). This is why the mode controls do NOT go
+// through apply().
+//
+// Notifier mode runs with NO WiFi radio at all (main.cpp: WiFi.mode(WIFI_OFF),
+// frees SRAM for BLE) - the web server never starts there. So switching TO Notifier
+// can never be followed by a reconnect: polling /api/state would just spin until it
+// gives up. Tell the owner that plainly instead of pretending a reconnect is coming.
 function switchMode(mv){
   if(!confirm('Switch to '+(mv?'Orchestrator':'Notifier')+'?\n\nThe device restarts to change modes. This takes a few seconds.'))return false;
   fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
     body:new URLSearchParams({mode:mv}).toString()}).catch(()=>{});
+  if(!mv){   // -> Notifier: no WiFi in that mode, so the web app cannot reconnect
+    toast('Restarting into Notifier - the web app won\'t be reachable there');
+    return true;
+  }
   toast('Restarting to switch');
   let tries=0;
   const ping=()=>{ tries++;
