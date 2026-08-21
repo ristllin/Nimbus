@@ -105,6 +105,7 @@ Default per-provider models: `OPENAI_MODEL` = `gpt-5.5`, `ANT_MODEL` =
 | `sttProv` | string | `"mistral"` (Voxtral) | STT provider (`mistral\|openai`). **Freely changeable.** | Yes |
 | `ttsProv` | string | `"mistral"` | TTS provider (`mistral\|openai`). **Freely changeable.** | Yes |
 | `ttsVoice` | string | `""` | TTS voice id/slug; `""` = provider default | Yes |
+| `tftFlip` | bool | `false` | Display flip: rotate the color panel 180 degrees (touch panel only). Applies live; touch mapping follows. | Yes |
 | `ttsEnabled` | bool | `false` | Spoken-reply enable | Yes |
 | `theme` | string | `"teal"` | LED color theme slug | Yes |
 | `ledBright` | int | `128` | LED brightness (`ledBright` NVS key) | Yes |

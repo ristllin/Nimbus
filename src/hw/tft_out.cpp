@@ -164,6 +164,8 @@ Push renderAndPush(nimbus::attn::ScreenId screen, const nimbus::epd::ScreenCtx& 
 const uint8_t* lastFrame() { return (g_ready && g_haveLast) ? g_last : nullptr; }
 size_t lastFrameBytes() { return size_t(kFbBytes); }
 
+void forceRepaint() { g_haveLast = false; }  // next push always lands (post-flip)
+
 // Compare what the panel HOLDS against what we last PUSHED.
 //
 // This is the health check MADCTL cannot be: it verifies CONTENT, not

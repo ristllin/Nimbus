@@ -242,6 +242,12 @@ class SettingsMenu {
   // different granularity. Defaults false, so e-ink behaviour is untouched.
   void setScreenIsTft(bool on) { screenIsTft_ = on; }
 
+  // Main > Display flip (colour panel only): turns the screen 180 degrees for an
+  // upside-down mount. Same NVS-sync contract as theme/sfx - the device seeds it
+  // before opening and persists on dirty(). The row only shows on TFT.
+  void setScreenFlip(bool on) { screenFlip_ = on; }
+  bool screenFlip() const { return screenFlip_; }
+
   bool adjustingValue() const {
     return volAdjusting_ || (state_ == State::Edit && adjusting_);
   }
@@ -291,9 +297,12 @@ class SettingsMenu {
   // Rows on the Main screen, in display order. Sound absorbs the old
   // Sounds/Voice/Volume rows (one submenu for everything audible); Screensaver
   // cycles in place; Software update opens its own submenu.
+  // RowFlip is TFT-only (appended before RowClose, never inserted). On e-ink the
+  // Main list hides it, so mainRowAt() remaps the visible index past it.
   enum MainRow : int {
     RowMode = 0, RowProfile, RowTune, RowConn, RowSound, RowTheme,
-    RowSaver, RowUpdate, RowReset, RowSelfTest, RowBattery, RowSdCard, RowClose, kMainRows };
+    RowSaver, RowUpdate, RowReset, RowSelfTest, RowBattery, RowSdCard,
+    RowFlip, RowClose, kMainRows };
 
   // Rows in the Sound submenu, in display order. Dictation/Spoken replies cycle
   // the STT/TTS provider (0 Mistral / 1 OpenAI - device maps string<->index).
@@ -315,6 +324,7 @@ class SettingsMenu {
     WifiPublishAp = 0, WifiChooseNet, WifiForgetNet, WifiRowBack, kWifiRows };
 
   int itemCount() const;   // rows in the current list state
+  MainRow mainRowAt(int idx) const;  // visible Main index -> logical row (skips RowFlip on e-ink)
   void clampSel();         // keep sel_ in [0, itemCount()-1]
   void enter(State s);     // switch state, reset cursor to a sane default
 
@@ -339,6 +349,7 @@ class SettingsMenu {
   bool    volAdjusting_ = false;     // Sound > Volume row captured rotation (classic adjust)
   uint16_t saverMin_ = 60;           // Main > Screensaver idle minutes (0 = off, NVS-synced)
   bool screenIsTft_ = false;         // panel type - picks the screensaver step table
+  bool screenFlip_ = false;          // Main > Display flip (TFT only, NVS-synced)
   bool    autoUpdate_ = false;       // Software update > Automatic updates (NVS-synced)
   int     sttProv_ = 0;              // Sound > Dictation (0 Mistral / 1 OpenAI, NVS-synced)
   int     ttsProv_ = 0;              // Sound > Spoken replies (0 Mistral / 1 OpenAI, NVS-synced)

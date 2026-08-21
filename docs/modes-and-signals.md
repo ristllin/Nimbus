@@ -118,6 +118,14 @@ of backlight at an empty desk is the most wasteful thing the device can do.
 Setting the delay yourself (Settings > Screensaver on the device, Settings →
 Mode & identity on the web) always wins over either default.
 
+### Display flip
+
+On the color touch panel, **Settings > Display flip** on the device (or the
+Display flip toggle under Settings → Device on the web) rotates the screen 180
+degrees for an upside-down mount. It applies right away, and touch follows the
+flip so taps still land where you touch. The e-ink panel is fixed orientation,
+so the option only appears on the touch model.
+
 ### Low battery
 
 Two settings under **Settings → Battery mode**, both about a low battery

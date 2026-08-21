@@ -3124,6 +3124,7 @@ static void openSettingsMenu() {
   // backlit panel (where resting IS the power saving), hours on e-ink (where it
   // is about ghosting).
   g_menu.setScreenIsTft(g_screenIsTft);
+  g_menu.setScreenFlip(agent::store::tftFlip());   // Main > Display flip (TFT only)
   g_menu.setSaverMinutes(agent::store::saverMin());
   g_menu.setAutoUpdate(agent::store::otaAutoUpdate());
   g_menu.setSttProvider(agent::store::sttProvider() == "openai" ? 1 : 0);
@@ -3218,6 +3219,16 @@ static void settleMenuAfterMutation(uint32_t now) {
     if (g_menu.saverMinutes() != agent::store::saverMin()) {
       agent::store::setSaverMin(g_menu.saverMinutes());
       g_saver.setThresholdMin(g_menu.saverMinutes());
+    }
+    // Display flip (TFT only): persist + apply live. setFlip re-arms MADCTL with
+    // no reset; the menu's own label change repaints, so the new orientation is
+    // visible immediately. forceRepaint covers any caller whose frame is identical.
+    if (g_menu.screenFlip() != agent::store::tftFlip()) {
+      agent::store::setTftFlip(g_menu.screenFlip());
+      if (g_screenIsTft) {
+        solide::display_tft::setFlip(g_menu.screenFlip());
+        hw::tft::forceRepaint();
+      }
     }
     if (g_menu.autoUpdate() != agent::store::otaAutoUpdate())
       agent::store::setOtaAutoUpdate(g_menu.autoUpdate());

@@ -5,6 +5,7 @@
 #include <cstdlib>
 
 #include "solide/touch.h"
+#include "solide/display_tft.h"   // kW/kH + flipped() - mirror touch to match a 180 flip
 
 namespace nimbus::hw::touch {
 
@@ -76,6 +77,14 @@ Gesture poll() {
 #endif
     const solide::touch::Point p = solide::touch::read();
     down = p.down; x = p.x; y = p.y;
+    // A 180 degree display flip mirrors both axes, but touch calibration maps to
+    // the UN-flipped landscape, so mirror the point too or taps land at the
+    // diagonally opposite spot. Only the real read is flipped; the test-inject
+    // path above already carries logical (post-flip) screen coordinates.
+    if (down && solide::display_tft::flipped()) {
+      x = solide::display_tft::kW - 1 - x;
+      y = solide::display_tft::kH - 1 - y;
+    }
 #ifdef NIMBUS_TEST
   }
 #endif

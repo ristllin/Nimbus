@@ -511,6 +511,11 @@ function applyState(d){
   // Display panel: hardware identity, bound at boot. Confirm before changing -
   // picking the wrong one leaves the fitted screen dark until it is set back.
   const sm=$('scrModel'); if(sm&&d.scrModel!==undefined&&sm!==document.activeElement)sm.value=d.scrModel;
+  const sf=$('scrFlip');
+  if(sf&&document.activeElement!==sf){sf.checked=!!d.scrFlip;
+    sf.onchange=()=>{const f=new FormData();f.append('scrFlip',sf.checked?'1':'0');
+      fetch('/api/config',{method:'POST',body:f}).then(jok)
+        .then(()=>toast(sf.checked?'Display flipped':'Display normal')).catch(failToast);};}
   const tc=$('tchCal'); if(tc&&d.tchCal!==undefined&&tc!==document.activeElement)tc.value=d.tchCal||'';
   // device identity: mark dirty while editing; Save persists (reboot-to-apply)
   $('devName').oninput=()=>{$('devName').dataset.dirty=1;};
