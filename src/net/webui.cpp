@@ -733,6 +733,7 @@ static void buildOrchState(String& out) {
   d["ttsVoice"] = agent::store::ttsVoice();
   d["theme"]    = agent::store::theme();
   d["scrModel"] = agent::store::screenModel();
+  d["scrFlip"]  = agent::store::tftFlip();   // display mounted 180 deg (TFT only)
   d["directive"]= agent::store::sysPrompt();
   d["verifyPending"] = agent::provider_verify::pending();
 
@@ -1279,6 +1280,18 @@ void beginWeb(const WebConfig& wc) {
     }
     if (r->hasParam("brightOvr", true)) {
       agent::store::setBrightOvr(r->getParam("brightOvr", true)->value().toInt() != 0);
+      touched = true;
+    }
+    if (r->hasParam("scrFlip", true)) {
+      // Display mounted 180 deg round (TFT only). setFlip re-arms MADCTL with no
+      // reset, so it applies live; forceRepaint makes the next frame land even
+      // when the composed pixels are unchanged. Persisted for the next boot too.
+      const bool on = r->getParam("scrFlip", true)->value().toInt() != 0;
+      agent::store::setTftFlip(on);
+      if (agent::store::screenModel() == "tft") {
+        solide::display_tft::setFlip(on);
+        hw::tft::forceRepaint();
+      }
       touched = true;
     }
     // Low-battery light (default OFF). s_ringRefresh is REQUIRED: compose() only

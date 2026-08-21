@@ -74,6 +74,12 @@ bool panelConfigOk();
 // Returns true when the caller should repaint the current screen.
 bool tickHealth(uint32_t now);
 
+// Drop the identical-frame cache so the NEXT renderAndPush always blits, even if
+// the composed pixels are byte-identical to the last frame. Used after a 180
+// degree flip: setFlip re-maps MADCTL but the on-screen GRAM only rotates when a
+// fresh frame lands, and a same-content frame would otherwise be skipped.
+void forceRepaint();
+
 const uint8_t* lastFrame();
 size_t lastFrameBytes();
 

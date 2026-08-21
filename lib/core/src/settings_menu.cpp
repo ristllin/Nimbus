@@ -110,7 +110,7 @@ void SettingsMenu::enter(State s) {
 int SettingsMenu::itemCount() const {
   switch (state_) {
     case State::Closed:      return 0;
-    case State::Main:        return kMainRows;
+    case State::Main:        return screenIsTft_ ? kMainRows : kMainRows - 1;  // -1: e-ink hides Display flip
     case State::ProfilePick: return kProfileCount + 1;             // profiles + Back
     case State::ThemePick:   return themeCount() + 1;              // themes + Back
     case State::TuneList:    return kParamCount + 1;               // params + Back
@@ -132,6 +132,14 @@ int SettingsMenu::itemCount() const {
     case State::ConfirmInstall: return 2;  // Cancel / Install and restart
   }
   return 0;
+}
+
+// The Display-flip row is TFT-only and sits just before Close. On e-ink it is
+// hidden, so a visible index at or past RowFlip maps one row further along (onto
+// Close). On TFT the mapping is identity.
+SettingsMenu::MainRow SettingsMenu::mainRowAt(int idx) const {
+  if (!screenIsTft_ && idx >= RowFlip) return MainRow(idx + 1);
+  return MainRow(idx);
 }
 
 void SettingsMenu::clampSel() {
@@ -189,7 +197,7 @@ void SettingsMenu::onClick() {
       return;
 
     case State::Main:
-      switch (sel_) {
+      switch (mainRowAt(sel_)) {
         case RowMode:
           mode_ = (mode_ == Mode::Notifier) ? Mode::Orchestrator : Mode::Notifier;
           dirty_ = true;
@@ -239,6 +247,10 @@ void SettingsMenu::onClick() {
           // Same action as Connectivity > Re-probe SD: reseat the card, click,
           // and the device re-inits the bus + refreshes this row's status.
           sdProbeRequested_ = true;
+          return;
+        case RowFlip:                    // TFT only: turn the screen 180 degrees
+          screenFlip_ = !screenFlip_;
+          dirty_ = true;
           return;
         case RowClose:
           close();
@@ -582,7 +594,10 @@ const char* SettingsMenu::helpText() const {
   // a "battery state"; "Full" looks like it might mean sound). Clarify the three
   // rows the owner flagged, right at the top level. (<=144 chars: 3 wrapped lines.)
   if (state_ == State::Main) {
-    switch (sel_) {
+    switch (mainRowAt(sel_)) {
+      case RowFlip:
+        return "Turns the screen 180 degrees for an upside-down mount. "
+               "Takes effect right away.";
       case RowMode:
         return "Notifier: a Bluetooth status light for your coding "
                "sessions. Orchestrator: the AI assistant (Telegram + voice).";
@@ -715,6 +730,8 @@ void SettingsMenu::view(solide::menu::MenuView& out) const {
       out.items.push_back("Self-test >"); // '>' = opens a screen (menu convention)
       out.items.push_back("Battery >");   // live battery detail full-screen
       out.items.push_back(std::string("SD card: ") + (sdStatus_.empty() ? "?" : sdStatus_));
+      if (screenIsTft_)  // RowFlip: colour panel only (e-ink rotation is fixed)
+        out.items.push_back(std::string("Display flip: ") + (screenFlip_ ? "On" : "Off"));
       out.items.push_back("Done");
       return;
     }

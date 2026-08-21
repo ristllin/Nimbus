@@ -1219,6 +1219,46 @@ static void test_selftest_battery_fullscreen() {
   TEST_ASSERT_EQUAL(10, viewOf(m).selected);
 }
 
+// Display flip (TFT only): the row shows just before Done on TFT, is hidden on
+// e-ink, and toggling it dirties + updates the label. Guards the conditional-row
+// remap (mainRowAt) that the new RowFlip introduced.
+static void test_flip_row_present_on_tft() {
+  Config c;
+  SettingsMenu m(c);
+  m.setScreenIsTft(true);
+  m.setScreenFlip(false);
+  m.open();
+  auto v = viewOf(m);
+  const int n = int(v.items.size());
+  TEST_ASSERT_EQUAL_STRING("Done", v.items[n - 1].c_str());
+  TEST_ASSERT_EQUAL_STRING("Display flip: Off", v.items[n - 2].c_str());
+}
+
+static void test_flip_row_hidden_on_eink() {
+  Config c;
+  SettingsMenu m(c);
+  m.setScreenIsTft(false);   // e-ink: no flip row
+  m.open();
+  auto v = viewOf(m);
+  TEST_ASSERT_EQUAL_STRING("Done", v.items[v.items.size() - 1].c_str());
+  for (const auto& s : v.items)
+    TEST_ASSERT_TRUE(s.find("Display flip") == std::string::npos);
+}
+
+static void test_flip_toggle_dirties_and_labels() {
+  Config c;
+  SettingsMenu m(c);
+  m.setScreenIsTft(true);
+  m.setScreenFlip(false);
+  m.open();
+  const int flipIdx = int(viewOf(m).items.size()) - 2;   // just before Done
+  while (viewOf(m).selected != flipIdx) m.onRotate(+1);
+  m.onClick();
+  TEST_ASSERT_TRUE(m.screenFlip());
+  TEST_ASSERT_TRUE(m.dirty());
+  TEST_ASSERT_EQUAL_STRING("Display flip: On", viewOf(m).items[flipIdx].c_str());
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_selftest_battery_fullscreen);
@@ -1260,5 +1300,8 @@ int main() {
   RUN_TEST(test_titles_are_breadcrumb_paths);
   RUN_TEST(test_main_row_says_power_profile);
   RUN_TEST(test_help_text_per_state);
+  RUN_TEST(test_flip_row_present_on_tft);
+  RUN_TEST(test_flip_row_hidden_on_eink);
+  RUN_TEST(test_flip_toggle_dirties_and_labels);
   return UNITY_END();
 }

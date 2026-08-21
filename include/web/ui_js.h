@@ -526,6 +526,11 @@ function applyState(d){
     if(smf){const lbl=sm.querySelector('option[value="'+d.scrModel+'"]');
       smf.textContent=(lbl?lbl.textContent:d.scrModel)+' (fixed)';smf.style.display='';}
   }else if(sm){sm.style.display='';if(smf)smf.style.display='none';}
+  const sf=$('scrFlip');
+  if(sf&&document.activeElement!==sf){sf.checked=!!d.scrFlip;
+    sf.onchange=()=>{const f=new FormData();f.append('scrFlip',sf.checked?'1':'0');
+      fetch('/api/config',{method:'POST',body:f}).then(jok)
+        .then(()=>toast(sf.checked?'Display flipped':'Display normal')).catch(failToast);};}
   const tc=$('tchCal'); if(tc&&d.tchCal!==undefined&&tc!==document.activeElement)tc.value=d.tchCal||'';
   // Capacitive touch self-calibrates (pixel coordinates), so the resistive
   // min/max field does nothing - hide it and its label, and show the 3-flag

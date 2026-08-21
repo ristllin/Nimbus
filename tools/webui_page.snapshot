@@ -207,6 +207,8 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <option value=tft>Touch &mdash; color touchscreen</option>
 </select>
 <div class=memv id=scrModelFixed style="display:none"></div>
+<label class=pr style="margin-top:8px"><input type=checkbox id=scrFlip> Display flip <button class=qh type=button aria-expanded=false aria-label="About display flip">?</button></label>
+<p class="hint tip">Turns the screen 180 degrees for an upside-down mount. Touch display only; takes effect right away.</p>
 <div id=tchCalWrap>
 <label>Touch calibration <button class=qh type=button aria-expanded=false aria-label="About touch calibration">?</button></label>
 <p class="hint tip">Only for the touch display. Each panel reads slightly differently, so if taps land off-target, enter the corner readings as <b>minX,maxX,minY,maxY</b> &mdash; optionally a fifth number to flip axes (1 swaps X and Y, 2 flips X, 4 flips Y; add them together). Leave blank for the defaults. Applies immediately.</p>
@@ -1337,6 +1339,11 @@ function applyState(d){
     if(smf){const lbl=sm.querySelector('option[value="'+d.scrModel+'"]');
       smf.textContent=(lbl?lbl.textContent:d.scrModel)+' (fixed)';smf.style.display='';}
   }else if(sm){sm.style.display='';if(smf)smf.style.display='none';}
+  const sf=$('scrFlip');
+  if(sf&&document.activeElement!==sf){sf.checked=!!d.scrFlip;
+    sf.onchange=()=>{const f=new FormData();f.append('scrFlip',sf.checked?'1':'0');
+      fetch('/api/config',{method:'POST',body:f}).then(jok)
+        .then(()=>toast(sf.checked?'Display flipped':'Display normal')).catch(failToast);};}
   const tc=$('tchCal'); if(tc&&d.tchCal!==undefined&&tc!==document.activeElement)tc.value=d.tchCal||'';
   // Capacitive touch self-calibrates (pixel coordinates), so the resistive
   // min/max field does nothing - hide it and its label, and show the 3-flag
