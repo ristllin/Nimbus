@@ -33,7 +33,10 @@ pio run -e <env> -t upload --upload-port /dev/cu.usbmodemXXXX
 
 - Flash `audio-cyd`. It loops: a 440 Hz beep, then a ~1.5 s record, then plays the
   recording back.
-- **Pass (speaker):** you hear a clean beep each cycle.
+- **Pass (speaker):** you hear a clean beep each cycle. The external power amp is
+  enabled in codecInit (GPIO1, active-low); if the beep is silent but the codec
+  reports OK, probe GPIO1 (should read LOW while audio is up) and confirm the amp
+  chip has power.
 - **Pass (microphone):** speak during the "recording..." window; you hear yourself
   played back a moment later.
 - If silent: the beep alone failing points at the codec DAC / I2S TX / amp; the
@@ -101,7 +104,7 @@ python3 -m pytest tests/hil/test_l27_freenove.py -m "hil and not manual" --allow
 | Display (panel, colors, backlight) | Validated on hardware (dev) |
 | Capacitive touch reads | Validated on hardware (dev) |
 | Touch orientation in the UI | Needs step 3 |
-| Speaker (ES8311 DAC) | Needs step 2 - NOT yet bench-validated |
+| Speaker (ES8311 DAC + amp) | Power-amp enable (GPIO1, active-low) landed; confirm the beep in step 2 |
 | Mic (ES8311 ADC) | Stereo-to-mono de-interleave landed; confirm clean echo in step 2 |
 | microSD (SDMMC) | Needs step 4 - NOT yet bench-validated |
 | Battery sense | Needs step 5 |

@@ -13,6 +13,8 @@
 #include <vector>
 
 #include "nimbus/tft_render/screens.h"
+#include "nimbus/ring_animator.h"
+#include "nimbus/status_style.h"
 
 using nimbus::tft::Fb565;
 using nimbus::tft::renderScreen;
@@ -61,6 +63,63 @@ static void render(const char* name, const ScreenCtx& c) {
 void setUp() {}
 void tearDown() {}
 
+// Two live "working" sessions rendered through the REAL animation pipeline
+// (nimbus::ring::Animator, the portable motion layer the device runs), sampled at
+// successive instants. Proves (a) the comet actually MOVES between frames - the
+// "frozen while an agent works" report - and (b) the two sessions land on SEPARATE
+// ring arcs. This is the host stand-in for the on-device 30 fps panel repaint.
+static ScreenCtx ctxFromRing(const solide::ring::RGB* f, int n) {
+  ScreenCtx c;
+  c.deviceName = "Nimbus-CYD";
+  c.modeName = "notifier";
+  c.jobs.push_back({0xA1u, uint8_t(1), uint8_t(50), uint8_t(40), "session A", uint8_t(1)});
+  c.jobs.push_back({0xB2u, uint8_t(1), uint8_t(50), uint8_t(120), "session B", uint8_t(2)});
+  c.ringLeds.resize(size_t(n));
+  for (int i = 0; i < n; ++i) c.ringLeds[size_t(i)] = {f[i].r, f[i].g, f[i].b};
+  return c;
+}
+
+static void test_ring_animation_two_working() {
+  std::system("mkdir -p test/out");
+  nimbus::ring::Animator anim;
+  anim.configure(45, nimbus::Posture::Full, 200);
+  const nimbus::StatusStyle ss = nimbus::statusStyle(solide::ring::Status::Running);
+  anim.born(0xA1u, 80, 0);   anim.setAnim(0xA1u, uint8_t(ss.anim), ss.brightPct);
+  anim.born(0xB2u, 8,  0);   anim.setAnim(0xB2u, uint8_t(ss.anim), ss.brightPct);
+
+  solide::ring::RGB prev[45]; solide::ring::RGB cur[45];
+  const uint32_t times[] = {500, 540, 580, 620, 660};   // steady-state comet, 40 ms apart
+  int movedFrames = 0;
+  for (int k = 0; k < 5; ++k) {
+    anim.frame(times[k], cur, 45);
+    char name[64];
+    std::snprintf(name, sizeof name, "anim2_%u.bin", (unsigned)times[k]);
+    static Fb565 fb;
+    const Rendered r = renderScreen(fb, ScreenId::StatusIdle, ctxFromRing(cur, 45));
+    (void)r;
+    writeBin(name, fb);
+    if (k > 0) {
+      for (int i = 0; i < 45; ++i)
+        if (cur[i].r != prev[i].r || cur[i].g != prev[i].g || cur[i].b != prev[i].b) {
+          ++movedFrames; break;
+        }
+    }
+    std::memcpy(prev, cur, sizeof cur);
+  }
+  // Separation: count contiguous lit arcs in one steady frame.
+  anim.frame(600, cur, 45);
+  int litArcs = 0; bool inRun = false;
+  for (int i = 0; i < 45; ++i) {
+    const bool lit = cur[i].r || cur[i].g || cur[i].b;
+    if (lit && !inRun) ++litArcs;
+    inRun = lit;
+  }
+  std::printf("ANIM2: movedFrames=%d/4 litArcs=%d liveCount=%d\n",
+              movedFrames, litArcs, anim.liveCount());
+  TEST_ASSERT_TRUE_MESSAGE(movedFrames >= 3, "comet must move between successive frames");
+  TEST_ASSERT_EQUAL_MESSAGE(2, anim.liveCount(), "two live working segments expected");
+}
+
 static void test_ring_previews() {
   std::system("mkdir -p test/out");
   render("ring_empty.bin", ringCtx(0, 0));
@@ -89,5 +148,6 @@ static void test_ring_previews() {
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_ring_previews);
+  RUN_TEST(test_ring_animation_two_working);
   return UNITY_END();
 }
