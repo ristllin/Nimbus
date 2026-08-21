@@ -10,6 +10,9 @@ namespace nimbus::sys {
 namespace {
 constexpr char kCfgBlob[] = "nimbus_cfg";   // SD blob: versioned Config
 constexpr char kModeKey[] = "nimbus_mode";  // NVS int: active Mode (<=15 chars)
+constexpr char kProfKey[] = "nimbus_prof";  // NVS int: battery mode (profile), a
+                                            // standalone mirror of Config.profile so
+                                            // it survives a config-blob version bump
 constexpr char kBleKey[]  = "nimbus_ble";   // NVS int: BLE advertising enable
 constexpr char kNameKey[] = "nimbus_name";  // NVS str: device identity ("" = auto)
 
@@ -42,8 +45,18 @@ bool loadConfig(Config& out) {
   if (!nvsReady()) return false;
   uint8_t buf[kConfigMaxBytes];
   size_t n = solide::memory::getBlob(kCfgBlob, buf, sizeof(buf));
-  if (n == 0) return false;  // absent → keep defaults
-  return deserializeConfig(buf, n, out);  // corrupt → leaves out untouched
+  const bool ok = (n != 0) && deserializeConfig(buf, n, out);
+  // Overlay the standalone battery-mode int. The profile lives inside the
+  // versioned Config blob, which deserializeConfig rejects wholesale on a version
+  // bump or corruption - that silently reverted the owner's battery mode to the
+  // compiled default (Balanced) on the next firmware update, while the operating
+  // Mode (its own NVS int) survived. Mirroring the profile the same way keeps the
+  // two in step. Applied even when the blob is absent/rejected so the battery mode
+  // is restored regardless.
+  const int32_t pv = solide::memory::getInt(kProfKey, -1);
+  if (pv >= int32_t(ProfileId::BatterySaver) && pv <= int32_t(ProfileId::Desk))
+    out.setProfile(ProfileId(pv));
+  return ok;
 }
 
 bool saveConfig(const Config& cfg) {
@@ -51,7 +64,11 @@ bool saveConfig(const Config& cfg) {
   uint8_t buf[kConfigMaxBytes];
   size_t n = serializeConfig(cfg, buf, sizeof(buf));
   if (n == 0) return false;
-  return solide::memory::putBlob(kCfgBlob, buf, n);
+  const bool wrote = solide::memory::putBlob(kCfgBlob, buf, n);
+  // Best-effort standalone mirror (see loadConfig); the blob write is the source
+  // of truth for everything else, so its result is what we return.
+  solide::memory::setInt(kProfKey, int32_t(cfg.profile()));
+  return wrote;
 }
 
 Mode loadMode(Mode def) {
