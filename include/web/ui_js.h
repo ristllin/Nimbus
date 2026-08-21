@@ -522,8 +522,19 @@ function applyState(d){
   if(sm&&d.scrFixed){sm.disabled=true;sm.title='This board has a fixed display';}
   const tc=$('tchCal'); if(tc&&d.tchCal!==undefined&&tc!==document.activeElement)tc.value=d.tchCal||'';
   // Capacitive touch self-calibrates (pixel coordinates), so the resistive
-  // min/max field does nothing - hide it and its row.
-  if(tc&&d.touchCap){const r=tc.closest('.row,.field,label')||tc;r.style.display='none';}
+  // min/max field does nothing - hide it and its label, and show the 3-flag
+  // orientation control instead (swap/flipX/flipY, applied live).
+  if(tc&&d.touchCap){const r=tc.closest('.row,.field,label')||tc;r.style.display='none';
+    const or=$('tOrient');
+    if(or){or.style.display='';
+      // Current flags: last field of tchCal, else the capacitive default (swap+flipY=5).
+      let f=5;const parts=(d.tchCal||'').split(',');if(parts.length>=5){const n=parseInt(parts[parts.length-1],10);if(!isNaN(n))f=n;}
+      if(document.activeElement!==$('tSwap'))$('tSwap').checked=(f&1)!==0;
+      if(document.activeElement!==$('tFlipX'))$('tFlipX').checked=(f&2)!==0;
+      if(document.activeElement!==$('tFlipY'))$('tFlipY').checked=(f&4)!==0;
+      const applyOrient=()=>{const nf=($('tSwap').checked?1:0)|($('tFlipX').checked?2:0)|($('tFlipY').checked?4:0);
+        orchApply({tchCal:'0,320,0,240,'+nf}).then(()=>toast('Touch updated')).catch(failToast);};
+      $('tSwap').onchange=applyOrient;$('tFlipX').onchange=applyOrient;$('tFlipY').onchange=applyOrient;}}
   // device identity: mark dirty while editing; Save persists (reboot-to-apply)
   $('devName').oninput=()=>{$('devName').dataset.dirty=1;};
   $('devNameSave').onclick=()=>apply({devName:$('devName').value})
@@ -705,12 +716,19 @@ function _tfetch(url){
   }));
 }
 function failToast(e){toast(e===401?'Sign in required':'Couldn\'t save - try again');}
-// Live ring preview: POSTs the currently-selected profile radio; the device
-// drives the ring for ~4s and auto-reverts. Nothing persists.
+// Live ring demo: POSTs the ring simulator's CURRENT selection - its posture
+// picks the battery mode (Full/Balanced/Dark), its status picks what the ring
+// shows - so the device mirrors exactly what the on-page simulator is showing,
+// not just the theme. The device drives the ring for ~4s and auto-reverts.
 document.addEventListener('DOMContentLoaded',()=>{const b=document.getElementById('prevBtn');
- if(b)b.onclick=()=>{const r=document.querySelector('input[name=profile]:checked');
-  const body=new URLSearchParams();body.set('profile',r?r.value:'1');
-  fetch('/api/preview',{method:'POST',body}).then(jok).then(()=>toast('Previewing…')).catch(failToast);};});
+ if(b)b.onclick=()=>{
+  const POST={Full:2,Balanced:1,Dark:0};        // posture -> profile (battery mode)
+  const ROLE2ST={'-2':0,'0':1,'1':2,'3':3,'2':4,'-1':5};  // sim role -> ring Status
+  const body=new URLSearchParams();
+  body.set('profile',String(typeof _rs!=='undefined'&&POST[_rs.posture]!=null?POST[_rs.posture]:1));
+  const st=typeof _rs!=='undefined'?ROLE2ST[String(_rs.role)]:undefined;
+  if(st!=null)body.set('status',String(st));
+  fetch('/api/preview',{method:'POST',body}).then(jok).then(()=>toast('Playing on device')).catch(failToast);};});
 function apply(body){
   // Resolves to true/false so callers can react HONESTLY: the old bare
   // .catch(failToast) swallowed the rejection, so chained .then()s reported

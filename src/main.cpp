@@ -199,6 +199,10 @@ static uint8_t ringBrightByte() {
 static bool      g_previewActive = false;
 static uint32_t  g_previewUntil = 0;
 static ProfileId g_previewProfile = ProfileId::Balanced;
+// The status the web ring simulator asked to demo (0..5 = solide::ring::Status),
+// or -1 = the default two-arc showcase. Lets "Demo on Device" mirror the exact
+// status the on-page simulator is showing, not just the theme.
+static int       g_previewStatus = -1;
 // Posture of the last PLAN actually applied to the ring - diverges from
 // g_cfg.posture() while a preview is live; RENDER? must report what the ring shows.
 static uint8_t   g_lastPosture = 0;
@@ -875,6 +879,7 @@ static epd::ScreenCtx buildCtx(int cursorJob) {
     c.ringLeds.resize(size_t(n));
     for (int i = 0; i < n; ++i)
       c.ringLeds[size_t(i)] = { rf[i].r, rf[i].g, rf[i].b };
+    c.micHeld = g_voiceActive;   // instant pressed feedback on the hold-to-talk button
   }
   return c;
 }
@@ -1041,13 +1046,18 @@ static void voiceReleaseWatcher(void*) {
   vTaskDelete(nullptr);
 }
 
-static void captureVoiceTurn() {
-  if (g_voiceActive) return;   // re-entry guard: LongPress auto-repeats while held
+// Voice hold-to-talk sub-steps, split out of captureVoiceTurn to keep it under the
+// complexity gate. All run on the main task and touch the same file-scope voice +
+// screen state captureVoiceTurn does.
+
+// Pre-flight: returns true (having shown the reason on-screen) when a voice turn
+// can't start now - firmware updating, or no speech-to-text key configured.
+static bool voiceStartBlocked() {
   if (otaupd::installing()) {  // flash write + TLS own the device right now
     g_askOverride = "Updating firmware - try again after the restart.";
     g_askSticky = true; g_askPage = 0;
     renderScreen(attn::ScreenId::Ask, -1);
-    return;
+    return true;
   }
   if (!agent::stt::available()) {
     // Give the owner ACTUAL feedback instead of a silent no-op on a silent-serial
@@ -1056,9 +1066,56 @@ static void captureVoiceTurn() {
     g_askOverride = "Voice needs a speech-to-text key (set one in the web UI).";
     g_askSticky = true; g_askPage = 0;   // hold until click (P2.3)
     renderScreen(attn::ScreenId::Ask, -1);
-    return;
+    return true;
   }
+  return false;
+}
+
+// Instant press feedback: repaint so the hold-to-talk button shows pressed the
+// moment it is touched (the region-only ring repaint would miss it - the button
+// sits outside the ring rectangle). On a panel-ring board also paint a static
+// LISTENING frame (the whole ring in the theme hue): the physical Pulse drives
+// only the absent LED, and recordToFile blocks the loop so the animator can't
+// breathe it live - a steady lit ring is the honest single-task listening cue.
+static void voicePressFeedback() {
+  if (!g_screenIsTft || g_menu.isOpen()) return;
+  if (!solide::board().hasRing) {
+    nimbus::ThemeColor lt =
+        nimbus::themeAccent(std::string(agent::store::theme().c_str()));
+    hw::paintRingSolid(lt.r, lt.g, lt.b);
+  }
+  renderScreen(attn::ScreenId::StatusIdle, -1);
+}
+
+// Release feedback: recompose + un-press the mic button if still on the ring home
+// (a reply/ask screen otherwise replaces it, un-pressing it by leaving Idle).
+static void voiceReleaseFeedback() {
+  if (!g_screenIsTft || g_menu.isOpen() ||
+      g_lastScreen != uint8_t(attn::ScreenId::StatusIdle))
+    return;
+  refreshRing();   // replace the static LISTENING frame with the real idle ring
+  renderScreen(attn::ScreenId::StatusIdle, -1);
+}
+
+// Nothing usable was heard: LEDs off, ring back to idle, and a panel-aware retry
+// hint held until the owner clicks.
+static void voiceEmptyTranscript() {
+  solide::leds::off();
+  refreshRing();
+  // A touch board has no knob - its hold-to-talk is the mic bar (owner-caught:
+  // "hold the knob" on a knobless screen).
+  g_askOverride = g_screenIsTft
+      ? "Didn't catch that - hold the mic button and speak."
+      : "Didn't catch that - hold the knob and speak.";
+  g_askSticky = true; g_askPage = 0;   // hold until click (P2.3)
+  renderScreen(attn::ScreenId::Ask, -1);
+}
+
+static void captureVoiceTurn() {
+  if (g_voiceActive) return;   // re-entry guard: LongPress auto-repeats while held
+  if (voiceStartBlocked()) return;
   g_voiceActive = true;
+  voicePressFeedback();
   String reId;  // snapshot the focused session id BEFORE recording (it can complete mid-record)
   // Focus 0 = the Orchestrator itself -> talk to it directly, no "[re:]" hint. Focus
   // >=1 = a sub-session -> hint the turn at that job's id (still routed to the head).
@@ -1115,18 +1172,8 @@ static void captureVoiceTurn() {
   agent::alogf("[voice] result transcriptLen=%u text=\"%.80s\"",
                (unsigned)transcript.length(), transcript.c_str());
   g_voiceActive = false;
-  if (transcript.length() == 0) {
-    solide::leds::off();
-    refreshRing();
-    // Panel-aware retry hint: a touch board has no knob - its hold-to-talk is
-    // the mic bar (owner-caught: "hold the knob" on a knobless screen).
-    g_askOverride = g_screenIsTft
-        ? "Didn't catch that - hold the mic button and speak."
-        : "Didn't catch that - hold the knob and speak.";
-    g_askSticky = true; g_askPage = 0;   // hold until click (P2.3)
-    renderScreen(attn::ScreenId::Ask, -1);
-    return;
-  }
+  voiceReleaseFeedback();
+  if (transcript.length() == 0) { voiceEmptyTranscript(); return; }
   g_askOverride = String("You: ") + transcript;   // show what was heard on the e-ink
   g_askSticky = true; g_askPage = 0;   // hold the transcript while the turn runs;
                                        // the reply overwrites it directly (P2.3)
@@ -1265,6 +1312,17 @@ static void refreshRing() {
       Config previewCfg;
       previewCfg.setProfile(g_previewProfile);
       p = ring::compose(g_router, previewCfg, g_cursor, g_panelBusy, millis(), co);
+    } else if (g_screenIsTft && !solide::board().hasRing) {
+      // On a board with NO physical LED ring, the ring is drawn on the panel, so
+      // the battery-mode postures (Dark/Calm) that collapse the LED ring to a
+      // single dim LED to save POWER make no sense - there is no LED power to save,
+      // and the collapse froze the on-screen ring (g_animActive went false, so
+      // tickAnimation stopped advancing g_animBuf and the panel mirrored a stale
+      // frame = the "stuck full green" bug). Compose the FULL per-session ring at
+      // full brightness always; the battery mode dims the BACKLIGHT instead.
+      Config ringCfg;
+      ringCfg.setProfile(ProfileId::Desk);   // Desk => Full posture + full brightness
+      p = ring::compose(g_router, ringCfg, g_cursor, g_panelBusy, millis(), co);
     } else {
       p = ring::compose(g_router, g_cfg, g_cursor, g_panelBusy, millis(), co);
     }
@@ -1288,17 +1346,30 @@ static void refreshRing() {
         p.segs[i].hasAccent = false;   // themed by the role-hue overwrite below
         p.segs[i].accentHue = 0;
       };
-      demoSeg(0, 0xD3300001u, solide::ring::Status::Running);
-      demoSeg(1, 0xD3300002u, solide::ring::Status::WaitingInput);
-      p.segCount = 2;
+      if (g_previewStatus >= 0) {
+        // Mirror the simulator's picked status across a few arcs so its color +
+        // motion read clearly (matches the page's "Full lights the whole ring").
+        const solide::ring::Status st = solide::ring::Status(g_previewStatus);
+        demoSeg(0, 0xD3300001u, st);
+        demoSeg(1, 0xD3300002u, st);
+        demoSeg(2, 0xD3300003u, st);
+        p.segCount = 3;
+      } else {
+        demoSeg(0, 0xD3300001u, solide::ring::Status::Running);
+        demoSeg(1, 0xD3300002u, solide::ring::Status::WaitingInput);
+        p.segCount = 2;
+      }
     } else {
-      // Dark/Calm preview: the single attention LED, breathing in the theme's
-      // needs-you role hue at the previewed brightness.
-      const nimbus::StatusStyle ss =
-          nimbus::statusStyle(solide::ring::Status::WaitingInput);
+      // Dark/Calm preview: the single attention LED, animating the picked status in
+      // its theme hue (default: the needs-you breathe) at the previewed brightness.
+      const solide::ring::Status st = g_previewStatus >= 0
+                                          ? solide::ring::Status(g_previewStatus)
+                                          : solide::ring::Status::WaitingInput;
+      const nimbus::StatusStyle ss = nimbus::statusStyle(st);
       p.single.lit = true;
-      p.single.hue = nimbus::themeRoleHue(themeName, ss.roleIdx);
-      p.single.anim = uint8_t(solide::ring::Anim::Breathe);
+      p.single.hue = ss.alert ? nimbus::themeAlertHue(themeName)
+                              : nimbus::themeRoleHue(themeName, ss.roleIdx);
+      p.single.anim = uint8_t(ss.anim);
       p.single.periodMs = 2600;
     }
   }
@@ -1381,8 +1452,12 @@ static void refreshRing() {
 // every other g_cfg-adjacent mutation). Drives the ring to `profileId`'s look
 // immediately; loop() reverts once NIMBUS_PREVIEW_MS elapses. Deliberately does
 // not touch g_cfg/g_selector/persistConfig() - a preview is a look, not a choice.
-static void startPreview(int profileId) {
+static void startPreview(int profileId, int status = -1) {
   if (profileId < 0 || profileId >= nimbus::kProfileCount) return;
+  // status: 0..5 = a specific solide::ring::Status to demo; anything else = the
+  // default two-arc showcase (-1).
+  g_previewStatus = (status >= 0 && status <= int(solide::ring::Status::Error))
+                        ? status : -1;
   // A preview is meant to be SEEN, so wake the panel if the screensaver has it
   // blanked (restores the backlight + repaints StatusIdle). On a ringless board
   // this is the difference between the demo showing on the panel and nothing at
@@ -2705,7 +2780,7 @@ void setup() {
   };
   // Live ring preview (POST /api/preview): staged on the AsyncTCP task, fired
   // here from loopWeb() on the main task like every other webui mutation.
-  wc.onPreview = [](int profileId) { startPreview(profileId); };
+  wc.onPreview = [](int profileId, int status) { startPreview(profileId, status); };
   wc.factoryReset = [] { g_factoryResetPending = true; };  // main loop erases NVS + reboots
   wc.sdReset = [] { g_sdResetPending = true; };            // main loop erases /mem + reboots
   wc.chatSend = [](const String& t) {   // -> tg_poll turn

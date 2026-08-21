@@ -112,12 +112,13 @@ void drawHeader(Fb565& fb, Rendered& r, const ScreenCtx& ctx,
   int tx = kGut;
   if (backable) {
     iconChevronLeft(fb, kGut + 6, kHeaderH / 2, kTeal);
-    // The tap target is deliberately much larger than the glyph - the whole
-    // left end of the bar goes Back, which is the easiest target to hit.
-    push(r, 0, 0, 56, kHeaderH, TapRegion::Action::Back);
+    // The tap target is deliberately MUCH larger than the glyph - the whole left
+    // third of the bar goes Back (capacitive edge taps are easy to miss on a small
+    // target). 96px wide comfortably clears the title, which starts at tx below.
+    push(r, 0, 0, 96, kHeaderH, TapRegion::Action::Back);
     tx = kGut + 22;
   } else {
-    push(r, 0, 0, 100, kHeaderH, TapRegion::Action::Home);
+    push(r, 0, 0, 110, kHeaderH, TapRegion::Action::Home);
   }
 
   std::string name = title.empty()
@@ -204,56 +205,63 @@ static void drawRingWidget(Fb565& fb, int x, int y, int size,
   }
 }
 
+// Center a single line inside the ring, clipped to the inner circle so text never
+// spills onto the dots.
+static void ringCenterLine(Fb565& fb, int cx, int y, int inner, const std::string& s,
+                           uint16_t colour) {
+  const int w = std::min(fb.textWidth(s, 1), inner);
+  fb.textClipped(cx - w / 2, y, s, colour, inner, 1);
+}
+
 // Ring-dominant Notifier screen for boards with NO physical LED ring: the ring is
 // the whole display. Sessions are the arcs the ring already draws; a small legend
-// sits inside it, and orchestrator's hold-to-talk shrinks to a compact bottom pill
-// so the ring keeps the space. The ring square is exposed on Rendered so the
-// device can push ONLY that rectangle at animation cadence.
+// sits inside it (clipped to the inner circle), and orchestrator's hold-to-talk is
+// a tall button on the RIGHT so the ring keeps the full screen height. The ring
+// square is exposed on Rendered so the device pushes ONLY it at animation cadence.
 static void drawRingHome(Fb565& fb, Rendered& r, const ScreenCtx& ctx) {
   const bool showMic = ctx.modeName && std::string(ctx.modeName) == "orchestrator";
-  const int micH = showMic ? kMinTap : 0;             // >= tap minimum when shown
+  const int micW = showMic ? 84 : 0;                  // right-side strip for the mic
   const int bodyTop = kBodyTop;
-  const int bodyBot = kH - kGut - (showMic ? micH + kGut : 0);
-  const int bodyH = bodyBot - bodyTop;
+  const int bodyH = (kH - kGut) - bodyTop;            // ring uses the FULL body height
+  const int ringAreaW = kW - micW - 2 * kGut;         // width left of the mic strip
 
-  const int rs = std::min(kW - 2 * kGut, bodyH);      // big square ring
-  const int rx = (kW - rs) / 2;
+  const int rs = std::min(ringAreaW, bodyH);
+  const int rx = kGut + (ringAreaW - rs) / 2;
   const int ry = bodyTop + (bodyH - rs) / 2;
   drawRingWidget(fb, rx, ry, rs, ctx.ringLeds);
   r.ringX = int16_t(rx); r.ringY = int16_t(ry);
   r.ringW = int16_t(rs); r.ringH = int16_t(rs);
 
   const int cx = rx + rs / 2, cy = ry + rs / 2;
-  const int inner = rs - 64;                          // keep text inside the dots
+  const int inner = rs - 72;                           // text stays well inside the dots
   if (ctx.jobs.empty()) {
-    const std::string l1 = "Nothing running";
-    const std::string l2 = "Waiting for a session";
-    fb.text(cx - fb.textWidth(l1, 1) / 2, cy - 8, l1, kInk, 1);
-    fb.text(cx - fb.textWidth(l2, 1) / 2, cy + 6, l2, kInk3, 1);
+    ringCenterLine(fb, cx, cy - 8, inner, "Nothing running", kInk);
+    ringCenterLine(fb, cx, cy + 8, inner, "no sessions yet", kInk3);
   } else {
     const int fi = (ctx.cursorJob >= 0 && ctx.cursorJob < int(ctx.jobs.size()))
                      ? ctx.cursorJob : 0;
     const auto& j = ctx.jobs[size_t(fi)];
     const StatusTone tone = toneFor(j.status);
     const std::string name = j.label.empty() ? std::string("session") : j.label;
-    const std::string state = labelFor(tone);
-    const int nameW = std::min(fb.textWidth(name, 1), inner);
-    fb.textClipped(cx - nameW / 2, cy - 12, name, kInk, inner, 1);
-    fb.label(cx - fb.labelWidth(state) / 2, cy + 2, state, colourFor(tone));
+    ringCenterLine(fb, cx, cy - 14, inner, name, kInk);
+    fb.label(cx - std::min(fb.labelWidth(labelFor(tone)), inner) / 2, cy + 2,
+             labelFor(tone), colourFor(tone));
     if (ctx.jobs.size() > 1) {
       char cnt[24];
       std::snprintf(cnt, sizeof cnt, "%d active", int(ctx.jobs.size()));
-      fb.text(cx - fb.textWidth(cnt, 1) / 2, cy + 16, cnt, kInk3, 1);
+      ringCenterLine(fb, cx, cy + 18, inner, cnt, kInk3);
     }
   }
 
+  // Hold-to-talk: a tall button on the RIGHT (orchestrator only). Pressed state
+  // fills brighter so a touch is felt instantly (ctx.micHeld set by the device).
   if (showMic) {
-    const int pw = 168, ph = micH;
-    const int px = (kW - pw) / 2, py = kH - kGut - ph;
-    fb.fillRoundRect(px, py, pw, ph, ph / 2, kTeal);
-    iconMic(fb, px + 26, py + ph / 2, kBg);
-    fb.text(px + 46, py + (ph - fb.textHeight(1)) / 2, "Hold to talk", kBg, 1);
-    push(r, px, py, pw, ph, TapRegion::Action::Mic);
+    const int bw = micW - kGut, bh = std::min(bodyH, 132);
+    const int bx = kW - kGut - bw, by = bodyTop + (bodyH - bh) / 2;
+    fb.fillRoundRect(bx, by, bw, bh, kCardRadius, ctx.micHeld ? kInk : kTeal);
+    iconMic(fb, bx + bw / 2, by + bh / 2 - 9, kBg);
+    fb.text(bx + (bw - fb.textWidth("hold", 1)) / 2, by + bh / 2 + 7, "hold", kBg, 1);
+    push(r, bx, by, bw, bh, TapRegion::Action::Mic);
   }
 }
 

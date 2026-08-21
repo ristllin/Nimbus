@@ -185,6 +185,7 @@ static volatile bool    s_onbRestartPending = false;
 // (a preview never persists and never touches g_cfg).
 static volatile bool    s_havePreview = false;
 static volatile int     s_pendPreview = 0;
+static volatile int     s_pendPreviewStatus = -1;
 // POST /api/battcal staging - owner asserts a full pack. The battery model + its
 // NVS save are main-task-owned, so the anchor is applied in loopWeb() (main task),
 // never from the AsyncTCP handler.
@@ -1447,7 +1448,13 @@ void beginWeb(const WebConfig& wc) {
       r->send(400, "application/json", "{\"error\":\"bad profile\"}");
       return;
     }
+    // Optional status to demo (0..5 = solide::ring::Status); absent/-1 => the
+    // default two-arc showcase. Lets the ring simulator's status picker drive the
+    // on-device demo, not just the theme.
+    int st = r->hasParam("status", true)
+                 ? r->getParam("status", true)->value().toInt() : -1;
     s_pendPreview = p;
+    s_pendPreviewStatus = st;
     s_havePreview = true;
     r->send(200, "application/json", "{\"ok\":true}");
   });
@@ -2816,7 +2823,7 @@ void loopWeb() {
   }
   if (s_havePreview) {
     s_havePreview = false;
-    if (s_wc.onPreview) s_wc.onPreview(s_pendPreview);
+    if (s_wc.onPreview) s_wc.onPreview(s_pendPreview, s_pendPreviewStatus);
   }
   if (s_battCalPending) {
     s_battCalPending = false;

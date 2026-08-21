@@ -30,6 +30,12 @@ void applyRingPlan(const ring::Plan& plan);
 const solide::ring::RGB* currentRingFrame();
 int currentRingCount();
 
+// Overwrite the composited ring frame with a solid color (every LED = r,g,b) so
+// the panel mirror (currentRingFrame) shows it at once. For the hold-to-talk
+// LISTENING cue on a panel-ring board: recordToFile blocks the loop, so the
+// animator can't paint a live breathe - a steady lit ring is the honest cue.
+void paintRingSolid(uint8_t r, uint8_t g, uint8_t b);
+
 // Advance the Active-posture Animator and push a fresh frame when it's time
 // (rate-limited internally to ~30 FPS - this call is cheap to make every main
 // loop iteration). No-op in Dark/Calm levels or whenever applyRingPlan() hasn't

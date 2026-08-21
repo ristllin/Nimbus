@@ -69,7 +69,14 @@ static void test_ring_previews() {
   render("ring_2sessions_p16.bin", ringCtx(2, 16));
   render("ring_4sessions.bin", ringCtx(4, 12));
   { ScreenCtx c = ringCtx(2, 8); c.modeName = "orchestrator"; render("ring_orch.bin", c); }
+  { ScreenCtx c = ringCtx(2, 8); c.modeName = "orchestrator"; c.micHeld = true;
+    render("ring_orch_held.bin", c); }
   { ScreenCtx c = ringCtx(0, 0); c.modeName = "orchestrator"; render("ring_orch_empty.bin", c); }
+  // Hold-to-talk pressed: the mic button shows pressed and the ring is a solid
+  // theme-hue LISTENING fill (what paintRingSolid mirrors during a blocking record).
+  { ScreenCtx c = ringCtx(0, 0); c.micHeld = true;
+    for (auto& px : c.ringLeds) px = {127, 209, 200};
+    render("ring_listening.bin", c); }
   // Setup screen with a firmware version (bottom-left), to eyeball placement.
   { ScreenCtx c; c.deviceName = "Nimbus-CYD"; c.modeName = "orchestrator";
     c.apName = "Nimbus-CYD-setup"; c.apPass = "swift-owl-42";

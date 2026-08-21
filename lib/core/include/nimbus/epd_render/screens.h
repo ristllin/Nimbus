@@ -67,6 +67,7 @@ struct ScreenCtx {
   // lib/core stays free of any solide/ header and remains golden-testable.
   struct RingLed { uint8_t r = 0, g = 0, b = 0; };
   std::vector<RingLed> ringLeds;
+  bool micHeld = false;   // hold-to-talk is being pressed -> draw the button pressed
 
   // SessionDetail (Orchestrator encoder-cursor focus). The Orchestrator itself is
   // ALWAYS focus index 0 (sessionIsRoot) - the head agent you're always talking to

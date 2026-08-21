@@ -103,6 +103,11 @@ void applyRingPlan(const ring::Plan& plan) {
       // Nothing needs you: release raw-frame ownership and turn the ring off.
       if (g_animActive) { solide::leds::clearFrame(); g_animActive = false; }
       solide::leds::off();
+      // Zero the frame buffer too. On a ringless board the panel mirrors
+      // g_animBuf (currentRingFrame) at 30 fps; without this it would keep
+      // pushing whatever was last painted (a frozen "stuck" ring) after the
+      // ring goes dark. Physical-ring boards are already off, so this is free.
+      for (auto& px : g_animBuf) px = solide::ring::RGB{0, 0, 0};
       return;
     }
     g_animActive = true;   // tickAnimation drives the breathe + feeds the driver's
@@ -230,5 +235,9 @@ void tickAnimation(uint32_t nowMs) {
 // task, snapshot g_animBuf under a lock instead of exposing it directly.
 const solide::ring::RGB* currentRingFrame() { return g_animBuf; }
 int currentRingCount() { return NIMBUS_RING_LEDS; }
+
+void paintRingSolid(uint8_t r, uint8_t g, uint8_t b) {
+  for (auto& px : g_animBuf) px = solide::ring::RGB{r, g, b};
+}
 
 }  // namespace nimbus::hw
