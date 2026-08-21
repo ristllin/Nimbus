@@ -1,15 +1,25 @@
 # Plan: Nimbus support for the Freenove ESP32-S3 Display (CYD) all-in-one board
 
 Status: IMPLEMENTED (this branch) after a four-lens prism review of the plan AND the
-code. Board bring-up (display + touch) validated on hardware. A round of owner bench
-feedback then landed fixes for: the on-screen ring freezing during a live session (a
-thermal LED-kill backstop that only makes sense on a physical-ring board), the ES8311
-speaker (its external power amp was never enabled) and mic (stereo-to-mono
+code. Board bring-up (display + touch) validated on hardware. Two further rounds of
+owner bench feedback then landed fixes for: the on-screen ring freezing during a live
+session (a thermal LED-kill backstop that only makes sense on a physical-ring board),
+the ES8311 speaker (its external power amp was never enabled) and mic (stereo-to-mono
 de-interleave), the ring-demo mirroring status+posture, hold-to-talk cues, battery-mode
-persistence across a mode switch, and the mode-switch web reconnect. These are code-
-complete and host-verified; final confirmation is on the bench (tests/hil/MANUAL_freenove_cyd.md).
-See the "Next TODOs" section at the end for the deferred multi-resolution work and the
-landing step. Target: worktree `freenove-cyd-variant` + driver branch `feat/freenove-cyd`.
+persistence across a mode switch, the mode-switch web reconnect (message-only, since
+Notifier mode runs with no WiFi radio at all), a real SD-detection bug (orchestrator
+memory hardcoded the SPI `SD` object instead of the actually-mounted `SD_MMC`
+filesystem), several web-UI DOM/CSS bugs (touch-calibration section rendering empty,
+demo-button placement, tooltip alignment, a disabled display dropdown that read as
+broken), and a TFT-wide (not CYD-specific) bug where a long Ask/reply screen silently
+truncated with no pagination and no touch gesture to page it - now fixed with real
+TextPager-based paging and swipe-to-page, alongside the knob's existing rotate-to-page.
+`tools/setup_device.py --board freenove_s3` also needed a real fix (its port guard only
+accepted a UART bridge, which this board doesn't have) before the CYD flash path could
+be honestly documented. These are code-complete and host-verified; final confirmation
+is on the bench (tests/hil/MANUAL_freenove_cyd.md). See the "Next TODOs" section at the
+end for the deferred multi-resolution work and the landing step. Target: worktree
+`freenove-cyd-variant` + driver branch `feat/freenove-cyd`.
 
 > The v1 of this plan rested on `board.h`'s promise that a new board is "a new Board
 > constant + `-DSOLIDE_BOARD`, with zero driver changes." **Prism proved that promise
@@ -308,8 +318,30 @@ proven only via HIL + the manual script.
   ES8311 speaker amp is enabled (GPIO1, active-low) and the shared-channel mic is
   de-interleaved to mono - so step 2 is now "confirm clean beep + echo", not "debug".
   The on-screen ring freeze (thermal LED-kill backstop) is fixed, so confirm the ring
-  animates with separated per-agent segments in a live session. Still to confirm on
-  the bench: SDMMC card, battery voltage, and touch orientation in the live UI. All in
+  animates with separated per-agent segments in a live session. Also confirm: the
+  orchestrator memory status no longer reports "no SD" with a card actually inserted;
+  a long Ask/reply pages with a swipe instead of cutting off; the web UI fixes (touch
+  calibration section, demo-button placement, tooltip alignment, the display row)
+  render correctly; and Orchestrator -> Notifier mode switch shows the new "won't be
+  reachable" message instead of hanging. Still to confirm on the bench: SDMMC card
+  capacity numbers, battery voltage, and touch orientation in the live UI. All in
   `tests/hil/MANUAL_freenove_cyd.md`.
+- **Pre-release regression flash (owner):** reflash the latest firmware to the
+  physical-ring board and a Touch-variant Solide S3 to confirm this round's
+  shared-code changes (thermal backstop board-guard, config_nvs profile mirror, the
+  SD `fs::FS` fix, the shared Ask-pagination/swipe code, the web JS) don't regress the
+  non-CYD boards - the Ask-pagination fix in particular is Touch-board-wide, not
+  CYD-specific, and needs verifying there too.
+- **Browser flasher (`/flash`) has no CYD support (owner-flagged, not implemented):**
+  `website/src/pages/flash.jsx` points one install button at one fixed manifest URL,
+  and `.github/workflows/release.yml`'s release job never builds/publishes
+  `esp32s3-cyd` for web-flash at all (only `esp32s3`+`test`) - a CYD owner has no
+  browser-flash artifact to point at yet. Needs: release.yml building + publishing a
+  second web-flash manifest for the CYD (the manifest script itself is already
+  board-agnostic - `tools/release/make_webflash_manifest.py`), a board picker on the
+  flash page swapping which manifest the install button uses, and CYD-aware page
+  copy (mirroring the docs/quick-start/flash.md split already done). Deferred: this
+  is a real release-pipeline change only fully verifiable by cutting an actual
+  release tag, out of scope for a single session pass.
 - **Landing:** tag `solide-drivers` and flip `platformio.ini` off the dev symlink
   (Phase 8) - the two repos land together.

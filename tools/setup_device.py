@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
-"""Safely configure and install Nimbus firmware on a board connected by UART.
+"""Safely configure and install Nimbus firmware on a connected board.
 
 The installer never lets PlatformIO guess the upload port.  Before writing it
 reads the board's NVS partition, reports the immutable factory MAC, and requires
 that MAC to be typed back.  On a new board it also asks for the fitted display
 and operating mode, writes only those two bootstrap settings through a temporary
-UART diagnostic, then installs production firmware.  It never erases NVS or
+serial diagnostic, then installs production firmware.  It never erases NVS or
 factory-resets a configured Nimbus.
+
+Port: --board solide_s3 (default) boards connect over their CP210x/CH34x UART
+bridge; --board freenove_s3 (the Freenove CYD all-in-one) has no such bridge -
+its single USB-C port rides the ESP32-S3's native USB-CDC directly instead.
 """
 
 from __future__ import annotations
@@ -30,6 +34,14 @@ UART_GLOBS = (
     "/dev/cu.wchusbserial*",
     "/dev/ttyUSB*",
 )
+# The Freenove CYD has no CP210x/CH34x UART bridge at all - a single USB-C port
+# rides the ESP32-S3's native USB-CDC straight through. --board freenove_s3
+# searches these instead of UART_GLOBS (see uart_candidates/select_port below).
+NATIVE_USB_GLOBS = (
+    "/dev/cu.usbmodem*",
+    "/dev/tty.usbmodem*",
+    "/dev/ttyACM*",
+)
 NATIVE_USB_MARKERS = ("usbmodem", "ttyACM")
 NIMBUS_NVS_MARKERS = (
     b"nimbus_mode",
@@ -42,9 +54,12 @@ NVS_OFFSET = "0x9000"
 NVS_SIZE = "0x5000"
 
 
-def uart_candidates() -> list[str]:
-    """Return likely CP210x/CH34x UART ports, never native USB ports."""
-    return sorted({port for pattern in UART_GLOBS for port in glob.glob(pattern)})
+def uart_candidates(*, allow_native: bool = False) -> list[str]:
+    """Return likely CP210x/CH34x UART ports - or (allow_native, for the
+    Freenove CYD) the ESP32-S3 native USB-CDC ports it uses instead, since it
+    has no UART bridge for UART_GLOBS to ever find."""
+    globs = NATIVE_USB_GLOBS if allow_native else UART_GLOBS
+    return sorted({port for pattern in globs for port in glob.glob(pattern)})
 
 
 def is_native_usb_port(port: str) -> bool:
@@ -126,25 +141,33 @@ def prompt_bootstrap(args: argparse.Namespace, nvs_state: str) -> tuple[str | No
     return display, mode
 
 
-def select_port(explicit: str | None) -> str:
+def select_port(explicit: str | None, *, allow_native: bool = False) -> str:
     if explicit:
         port = explicit
     else:
-        ports = uart_candidates()
+        ports = uart_candidates(allow_native=allow_native)
         if not ports:
+            if allow_native:
+                raise RuntimeError(
+                    "No board found on its USB-C port. Connect the Freenove CYD "
+                    "with a data-capable USB-C cable, then try again."
+                )
             raise RuntimeError(
                 "No UART bridge found. Connect the cable to the DevKit port labeled UART, then try again."
             )
-        print("UART devices:")
+        print("USB devices:" if allow_native else "UART devices:")
         for index, candidate in enumerate(ports, 1):
             print(f"  {index}. {candidate}")
         answer = input("Select the board to install [number]: ").strip()
         try:
             port = ports[int(answer) - 1]
         except (ValueError, IndexError):
-            raise RuntimeError("No valid UART device was selected.") from None
+            raise RuntimeError("No valid device was selected.") from None
 
-    if is_native_usb_port(port):
+    # The native-USB rejection below exists to keep a DevKitC-1 owner off its
+    # download-mode-only native port; it does not apply to the Freenove CYD,
+    # whose ONLY port is native USB (--board freenove_s3 sets allow_native).
+    if not allow_native and is_native_usb_port(port):
         raise RuntimeError(
             f"{port} is the ESP32-S3 native USB port, not the UART bridge. "
             "Move the cable to the DevKit port labeled UART."
@@ -225,7 +248,7 @@ def confirm_target(
     assume_yes: bool,
 ) -> None:
     print("\nTarget board")
-    print(f"  UART port:   {port}")
+    print(f"  Port:        {port}")
     print(f"  Factory MAC: {mac}")
     if nvs_state == "blank":
         print("  Saved state: blank (no persistent settings detected)")
@@ -316,8 +339,11 @@ def serial_bootstrap(
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Safely install production Nimbus firmware over the UART port.")
-    parser.add_argument("--port", help="exact UART serial device (otherwise choose from a list)")
+    parser = argparse.ArgumentParser(description="Safely install production Nimbus firmware.")
+    parser.add_argument(
+        "--port",
+        help="exact serial device - UART bridge, or native USB for --board freenove_s3 (otherwise choose from a list)",
+    )
     parser.add_argument(
         "--display",
         choices=("eink", "tft"),
@@ -373,7 +399,7 @@ def main(argv: list[str] | None = None) -> int:
     if is_cyd:
         args.display = "tft"
     try:
-        port = select_port(args.port)
+        port = select_port(args.port, allow_native=is_cyd)
         core, pio = platformio_executable()
         esptool = esptool_command(core)
         if esptool is None:

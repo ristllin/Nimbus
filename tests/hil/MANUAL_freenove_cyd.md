@@ -83,6 +83,13 @@ pio run -e <env> -t upload --upload-port /dev/cu.usbmodemXXXX
   focused session's cursor glow tracks - the same information the LED ring gives on
   the hand-built boards. The single on-board RGB LED (GPIO 42) is a status pixel,
   not the ring.
+- **Not a bug:** the ring/panel shows literally whatever the connected broker sends.
+  If your broker has stale sessions from earlier test runs, you may briefly see more
+  "active" dots than you expect, mostly dim (Idle sessions render dim/white by
+  design). This self-heals within `ambientHoldFor(posture)` of no further frames for
+  a stale session (5s Dark / 30s Calm / 300s Full) - the device's own timeout, not a
+  reconnect you need to trigger. If it never converges, the broker itself is the
+  thing to check (it should prune dead sessions before it connects), not the device.
 
 ## 7. Wi-Fi, memory, a full turn
 
