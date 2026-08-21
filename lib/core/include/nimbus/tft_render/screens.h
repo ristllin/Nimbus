@@ -49,6 +49,13 @@ struct Rendered {
 // so the panel is never left blank.
 Rendered renderScreen(Fb565& fb, attn::ScreenId screen, const epd::ScreenCtx& ctx);
 
+// Real page count drawAsk would produce for this text on THIS renderer - the
+// TFT card's pixel geometry/font metrics differ from the e-ink panel's, so this
+// is deliberately separate from epd::askPageCount() (hardcoded to the e-ink
+// 48-col/7-line grid) rather than reusing it; a touch board's swipe-to-page must
+// clamp against what it will actually render, not a mismatched page count.
+int askPageCount(const std::string& text);
+
 // Map a wire status (solide::ring::Status) to the screen's status tone. Kept
 // here so the card tint and the ring's statusStyle() role stay in agreement.
 StatusTone toneFor(uint8_t status);

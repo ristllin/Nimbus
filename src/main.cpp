@@ -2829,16 +2829,24 @@ void setup() {
   // temporary, deleted each turn, and don't need the space.)
   BOOT_STAGE(0, 120, 120);   // CYAN: WiFi/portal up; about to mount the SD
   if (solide::storage::begin()) {
-    agent::memory::setDataFs(SD);
+    // activeFs() - NOT the SPI `SD` global directly. On an SDMMC board (Freenove)
+    // the card is mounted via SD_MMC and `SD` is never begun (its pins are
+    // repurposed for the TFT bus there); hardcoding SD silently wired orchestrator
+    // memory to an unmounted filesystem, so every real I/O failed and the health
+    // tracker demoted the tier to "no SD" despite the card being present and
+    // readable (round-4 bench report).
+    agent::memory::setDataFs(solide::storage::activeFs());
     agent::alogf("[sd] mounted: %llu MB total, %llu MB free",
                  (unsigned long long)solide::storage::cardSizeMB(),
                  (unsigned long long)solide::storage::freeMB());
   } else {
-    // cardType 0 (CARD_NONE) means the card never answered on the SPI bus at all ->
+    // cardType 0 (CARD_NONE) means the card never answered on the bus at all ->
     // NOT a format issue (an exFAT card would still report its type; only the FAT
     // mount would fail). 0 => no card / unseated / slot wiring fault. Non-0 + mount
     // fail => reformat FAT32. Data stays on internal flash either way.
-    int ct = (int)SD.cardType();
+    // solide::storage::cardType() (not the SPI `SD` global) - same active-backend
+    // reasoning as above, or this diagnostic always reads 0 on an SDMMC board.
+    int ct = (int)solide::storage::cardType();
     agent::alogf("[sd] mount FAILED (cardType=%d: 0=none 1=MMC 2=SDSC 3=SDHC). %s", ct,
                  ct == 0 ? "Card not seen on the bus -> reseat it / check the slot solder."
                          : "Card seen but FAT mount failed -> reformat it FAT32.");
@@ -3534,6 +3542,19 @@ static void settleMenuAfterMutation(uint32_t now) {
   }
 }
 
+// Page a held Ask reply by `dir` (+1/-1) and repaint. Shared by the knob
+// (encoder rotate, e-ink) and touch (swipe, TFT) paths - each renderer has its
+// OWN page count (the e-ink panel's fixed 48-col/7-line grid vs the TFT card's
+// actual pixel geometry; they legitimately disagree), so this picks the right
+// one rather than risk stranding the tail page unreachable on either board.
+static void pageAskReply(int dir) {
+  const std::string text(g_askOverride.c_str());
+  const int pages = g_screenIsTft ? nimbus::tft::askPageCount(text)
+                                  : epd::askPageCount(text);
+  g_askPage = std::max(0, std::min(g_askPage + dir, pages > 0 ? pages - 1 : 0));
+  renderScreen(attn::ScreenId::Ask, -1);
+}
+
 // ---- touch input (TFT boards) ------------------------------------------------
 // Translate a tap into the SAME calls the encoder makes. Nothing downstream is
 // touch-aware: the menu FSM keeps its onRotate/onClick/onLongPress contract, and
@@ -3558,24 +3579,28 @@ static void drainTouch(uint32_t now) {
   }
   if (g.kind == hw::touch::Gesture::Kind::HoldEnd) return;   // recording self-terminates
 
-  // Swipe = scroll the open menu. With no knob, a list longer than one page had
-  // no way to move except the header pager, which is easy to miss (owner:
-  // "no easy way to go up or down to see more options"). A swipe is the gesture
-  // a touch surface implies, and it costs nothing when no menu is open.
+  // Swipe = scroll the open menu, OR page a held Ask reply. With no knob, a
+  // list longer than one page (or a reply longer than one screen) had no way
+  // to move except the header pager, which is easy to miss (owner: "no easy
+  // way to go up or down to see more options" - the same gap that left a long
+  // orchestrator reply silently cut off with nothing to swipe with).
   //
-  // Moves a CHUNK rather than one row: at six rows a page, single-stepping
-  // needs a swipe per row, which is worse than the problem being solved. The
-  // FSM clamps at the ends, so over-scrolling is harmless.
+  // Menu scroll moves a CHUNK rather than one row: at six rows a page,
+  // single-stepping needs a swipe per row, which is worse than the problem
+  // being solved. The FSM clamps at the ends, so over-scrolling is harmless.
   if (g.kind == hw::touch::Gesture::Kind::SwipeUp ||
       g.kind == hw::touch::Gesture::Kind::SwipeDown) {
-    if (!g_menu.isOpen()) return;
-    constexpr int kSwipeRows = 5;
     const int dir = (g.kind == hw::touch::Gesture::Kind::SwipeDown) ? +1 : -1;
-    {
-      net::ConfigLockGuard lk;
-      for (int i = 0; i < kSwipeRows; i++) g_menu.onRotate(dir);
+    if (g_menu.isOpen()) {
+      constexpr int kSwipeRows = 5;
+      {
+        net::ConfigLockGuard lk;
+        for (int i = 0; i < kSwipeRows; i++) g_menu.onRotate(dir);
+      }
+      settleMenuAfterMutation(now);
+    } else if (g_askSticky) {
+      pageAskReply(dir);
     }
-    settleMenuAfterMutation(now);
     return;
   }
   if (g.kind != hw::touch::Gesture::Kind::Tap) return;
@@ -4618,12 +4643,8 @@ void loop() {
       const int dir = (e == solide::input::Event::RotateCW) ? +1 : -1;
       if (g_askSticky) {
         // Reading a held reply (P2.3): rotate PAGES through it instead of moving
-        // the session cursor underneath the reading. Clamp with the RENDERER'S
-        // page count (a byte-length estimate under-counted wrapped text and made
-        // the tail pages unreachable - review).
-        const int pages = epd::askPageCount(std::string(g_askOverride.c_str()));
-        g_askPage = std::max(0, std::min(g_askPage + dir, pages > 0 ? pages - 1 : 0));
-        renderScreen(attn::ScreenId::Ask, -1);
+        // the session cursor underneath the reading.
+        pageAskReply(dir);
         continue;
       }
       if (g_orchMode) {

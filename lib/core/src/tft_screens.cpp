@@ -4,6 +4,7 @@
 
 #include "nimbus/device_identity.h"   // wifiQrPayload - the setup screen's join QR
 #include "nimbus/qr.h"
+#include "nimbus/text_page.h"         // TextPager - Ask-screen pagination
 
 // The colour touch UI. Layout language is lifted from the web interface so the
 // two surfaces read as one product: cards are the web's .sec (raised fill, 1px
@@ -681,9 +682,57 @@ void drawSessionDetail(Fb565& fb, Rendered& r, const ScreenCtx& ctx) {
   push(r, kGut, my, kW - 2 * kGut, kMinTap, TapRegion::Action::Mic);
 }
 
+// Ask-screen text-card geometry (perLine chars, maxLines rows, lineH px), shared
+// between drawAsk (which needs it to actually draw) and the standalone
+// askPageCount() below (which needs it to report a page count a touch board's
+// swipe-to-page can clamp against) - so the two can never disagree about how
+// much text fits. Fixed geometry (kBodyTop, scale 2, full width): Ask has one
+// call site. Always reserves room for the "page N/M" indicator line + a gap
+// above the Close button, whether or not this particular reply needs it, so the
+// card height (and the button's position) stay stable across single- and
+// multi-page replies.
+struct AskGeom { int perLine; int maxLines; int lineH; };
+AskGeom askGeometry() {
+  constexpr int scale = 2;
+  constexpr int y = kBodyTop;
+  const int cardW = kW - 2 * kGut;
+  const int innerW = cardW - 2 * 12;
+  const int lineH = Fb565::textHeight(scale) + 6;
+  const int perLine = std::max(1, innerW / (6 * scale));
+  constexpr int kFooterGap = 6, kIndicatorH = 14;
+  const int textBottom = (kH - kGut - kMinTap) - kFooterGap - kIndicatorH;
+  const int maxLines = std::max(1, (textBottom - y - 24) / lineH);
+  return {perLine, maxLines, lineH};
+}
+
+// Ask: title + the wrapped body, PAGINATED - a long reply used to silently
+// truncate to whatever fit one card, with no indication there was more (the
+// "message is cut off, no way to see the rest" report). ctx.detailPage selects
+// the page; a footer shows "page i/N" when there is more. On a knob board the
+// encoder pages it (main.cpp); on a touch board a swipe does (also main.cpp) -
+// this renderer only draws whatever page it's asked for.
 void drawAsk(Fb565& fb, Rendered& r, const ScreenCtx& ctx) {
   drawHeader(fb, r, ctx, "Message", true);
-  drawTextCard(fb, kBodyTop, ctx.askText.empty() ? "(no message)" : ctx.askText, 2);
+  const std::string body = ctx.askText.empty() ? "(no message)" : ctx.askText;
+  const AskGeom g = askGeometry();
+  TextPager pager;
+  pager.setText(body, size_t(g.perLine), size_t(g.maxLines));
+  const size_t pages = pager.pageCount();
+  size_t idx = ctx.detailPage < 0 ? 0 : size_t(ctx.detailPage);
+  if (pages && idx >= pages) idx = pages - 1;
+  const std::vector<std::string> lines = pager.page(idx);
+
+  const int cardH = g.maxLines * g.lineH + 24;
+  fb.card(kGut, kBodyTop, kW - 2 * kGut, cardH);
+  for (size_t i = 0; i < lines.size(); ++i)
+    fb.text(kGut + 12, kBodyTop + 12 + int(i) * g.lineH, lines[i], kInk, 2);
+
+  if (pages > 1) {
+    char foot[32];
+    std::snprintf(foot, sizeof foot, "page %u/%u", unsigned(idx + 1), unsigned(pages));
+    fb.text((kW - fb.textWidth(foot, 1)) / 2, kBodyTop + cardH + 6, foot, kInk3, 1);
+  }
+
   const int by = kH - kGut - kMinTap;
   fb.fillRoundRect(kGut, by, kW - 2 * kGut, kMinTap, kCardRadius, kRaise2);
   fb.roundRect(kGut, by, kW - 2 * kGut, kMinTap, kCardRadius, kLine2);
@@ -893,6 +942,20 @@ void drawScreensaver(Fb565& fb, Rendered& r, const ScreenCtx& ctx) {
 }
 
 }  // namespace
+
+// Real page count drawAsk will produce for this text (declared in
+// tft_render/screens.h). Deliberately NOT epd::askPageCount() - that's
+// hardcoded to the e-ink panel's 48-col/7-line grid, which does not match this
+// renderer's pixel geometry/font metrics. Needs external linkage (unlike every
+// draw* helper above, which is only ever reached via renderScreen's switch) so
+// a touch board's swipe-to-page (main.cpp) can clamp against exactly what this
+// renderer will draw.
+int askPageCount(const std::string& text) {
+  const AskGeom g = askGeometry();
+  TextPager pager;
+  pager.setText(text, size_t(g.perLine), size_t(g.maxLines));
+  return int(pager.pageCount());
+}
 
 StatusTone toneFor(uint8_t status) {
   // solide::ring::Status - kept in lockstep with statusStyle()'s roles so the

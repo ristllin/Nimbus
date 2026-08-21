@@ -120,6 +120,38 @@ static void test_ring_animation_two_working() {
   TEST_ASSERT_EQUAL_MESSAGE(2, anim.liveCount(), "two live working segments expected");
 }
 
+// Ask-screen pagination (round-4 bench report: a long orchestrator reply was
+// silently cut off, no page indicator, nothing to scroll with). A body long
+// enough to force several pages, rendered at each detailPage, so the "page N/M"
+// indicator and per-page content can be eyeballed instead of trusting math.
+static void test_ask_pagination() {
+  std::system("mkdir -p test/out");
+  const std::string body =
+      "The deploy finished, but two integration tests failed on the release "
+      "branch after the merge: the checkout webhook retry test and the "
+      "session-token refresh test. Both look related to the new rate limiter "
+      "landed yesterday - the retry logic backs off past the test's own "
+      "timeout window. Do you want me to open a pull request with the fixes, "
+      "raise the test timeout instead, or hold off until you've looked at the "
+      "rate limiter change yourself? I can also just revert that commit if "
+      "you'd rather ship clean and revisit the limiter tomorrow.";
+  const int pages = nimbus::tft::askPageCount(body);
+  std::printf("ASK_PAGES: pages=%d\n", pages);
+  TEST_ASSERT_TRUE_MESSAGE(pages > 1, "body must force multiple pages for this test to prove anything");
+  for (int p = 0; p < pages; ++p) {
+    ScreenCtx c;
+    c.deviceName = "Nimbus-CYD";
+    c.askText = body;
+    c.detailPage = p;
+    char name[48];
+    std::snprintf(name, sizeof name, "ask_page%d.bin", p);
+    static Fb565 fb;
+    const Rendered r = renderScreen(fb, ScreenId::Ask, c);
+    (void)r;
+    writeBin(name, fb);
+  }
+}
+
 static void test_ring_previews() {
   std::system("mkdir -p test/out");
   render("ring_empty.bin", ringCtx(0, 0));
@@ -149,5 +181,6 @@ int main() {
   UNITY_BEGIN();
   RUN_TEST(test_ring_previews);
   RUN_TEST(test_ring_animation_two_working);
+  RUN_TEST(test_ask_pagination);
   return UNITY_END();
 }
