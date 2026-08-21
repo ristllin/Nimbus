@@ -38,8 +38,13 @@ pio run -e <env> -t upload --upload-port /dev/cu.usbmodemXXXX
   played back a moment later.
 - If silent: the beep alone failing points at the codec DAC / I2S TX / amp; the
   beep working but no echo points at the codec ADC / mic / I2S RX. The ES8311
-  register init or MCLK clocking is the usual cause - this path is new and was not
-  bench-validated during development.
+  register init or MCLK clocking is the usual cause - this path is new.
+- Mic note: the ES8311 RX shares the speaker's stereo I2S slot config, so a mono
+  mic arrives interleaved. The record path now collapses each frame to the louder
+  slot (codecStereoToMono), so playback should be clean mono at normal pitch. If
+  the echo is half-speed / low-pitched or every other sample is silent, the
+  de-interleave is not taking effect - check that the codec (kCodec) build path is
+  active for this board.
 
 ## 3. Touch inside the real UI (production firmware)
 
@@ -96,7 +101,8 @@ python3 -m pytest tests/hil/test_l27_freenove.py -m "hil and not manual" --allow
 | Display (panel, colors, backlight) | Validated on hardware (dev) |
 | Capacitive touch reads | Validated on hardware (dev) |
 | Touch orientation in the UI | Needs step 3 |
-| Speaker + mic (ES8311) | Needs step 2 - NOT yet bench-validated |
+| Speaker (ES8311 DAC) | Needs step 2 - NOT yet bench-validated |
+| Mic (ES8311 ADC) | Stereo-to-mono de-interleave landed; confirm clean echo in step 2 |
 | microSD (SDMMC) | Needs step 4 - NOT yet bench-validated |
 | Battery sense | Needs step 5 |
 | On-screen ring | Needs step 6 |
