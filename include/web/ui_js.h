@@ -506,14 +506,12 @@ function applyState(d){
     (d.effectiveProfile!==d.profile?' (adjusted automatically for power)':'');
   // mode
   $('mode').value=d.mode;
-  $('mode').onchange=()=>apply({mode:$('mode').value});
+  $('mode').onchange=()=>{ if(!switchMode(+$('mode').value)) $('mode').value=d.mode; };
   // Prominent header mode switch (same effect as the Device-tab selector) - the owner
   // couldn't find how to switch modes; it now lives at the top of every tab.
   const mh=$('modehdr'); if(mh){[...mh.children].forEach(b=>{
     const mv=+b.dataset.m; b.classList.toggle('on',mv===d.mode); b.classList.toggle('nf',mv===0);
-    b.onclick=()=>{ if(mv===d.mode)return;
-      if(!confirm('Switch to '+(mv?'Orchestrator':'Notifier')+'?\n\nThe device restarts to change modes. This takes a few seconds.'))return;
-      apply({mode:mv}); };
+    b.onclick=()=>{ if(mv!==d.mode) switchMode(mv); };
   });}
   // Display panel: hardware identity, bound at boot. Confirm before changing -
   // picking the wrong one leaves the fitted screen dark until it is set back.
@@ -737,6 +735,26 @@ function apply(body){
     body:new URLSearchParams(body).toString()})
    .then(jok).then(()=>{toast('Saved');loadState();return true;})
    .catch(e=>{failToast(e);return false;});
+}
+
+// Switching Notifier<->Orchestrator reboots the device (the two modes bring up
+// different subsystems), so the config POST's connection drops mid-flight. Don't
+// surface that as a save error the way apply() would: fire the change, tell the
+// owner it is restarting, then poll until the device answers again and reload into
+// the new mode. Returns false if the owner cancels (so the caller can revert a
+// dropdown). This is why the mode controls do NOT go through apply().
+function switchMode(mv){
+  if(!confirm('Switch to '+(mv?'Orchestrator':'Notifier')+'?\n\nThe device restarts to change modes. This takes a few seconds.'))return false;
+  fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:new URLSearchParams({mode:mv}).toString()}).catch(()=>{});
+  toast('Restarting to switch');
+  let tries=0;
+  const ping=()=>{ tries++;
+    fetch('/api/state',{cache:'no-store'})
+      .then(r=>{ if(r.ok) location.reload(); else throw 0; })
+      .catch(()=>{ if(tries<40) setTimeout(ping,1500); else toast('Reload the page'); }); };
+  setTimeout(ping,4000);   // let the reboot begin before polling
+  return true;
 }
 
 // Revert-to-defaults (owner 2026-07-18): drop EVERY per-param override so the
