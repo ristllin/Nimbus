@@ -25,6 +25,7 @@ With no FILE, measures the two composed-prompt goldens plus the connector catalo
 
 Run from the repo root.
 """
+
 import argparse
 import json
 import os
@@ -40,6 +41,7 @@ try:
 
     TOKENIZER = "tiktoken/cl100k_base"
 except Exception:  # pragma: no cover - offline fallback
+
     def count_tokens(s):
         return round(len(s.encode("utf-8")) / 4)
 
@@ -102,7 +104,7 @@ def field_docs_span(text):
     e = text.find(FIELD_DOCS_END)
     if s == -1 or e == -1 or e <= s:
         return None
-    block = text[s + len(FIELD_DOCS_START):e]
+    block = text[s + len(FIELD_DOCS_START) : e]
     return block
 
 
@@ -135,7 +137,7 @@ def measure_file(path):
 
 def print_report(results):
     print(f"# Harness prompt cost report   (tokenizer: {TOKENIZER})")
-    print(f"# Byte budget ceiling kContextBudgetMax = 32768 B\n")
+    print("# Byte budget ceiling kContextBudgetMax = 32768 B\n")
     all_rows = []
     for r in results:
         print(f"## {r['file']}")
@@ -162,9 +164,7 @@ def print_report(results):
     for r in results:
         if r.get("field_docs"):
             fd = r["field_docs"]
-            best["orch_turn field-docs"] = max(
-                best.get("orch_turn field-docs", (0, 0)), (fd["bytes"], fd["tokens"])
-            )
+            best["orch_turn field-docs"] = max(best.get("orch_turn field-docs", (0, 0)), (fd["bytes"], fd["tokens"]))
             if "role_field_docs" in best:
                 rb, rt = best["role_field_docs"]
                 best["role framing (excl. field-docs)"] = (rb - fd["bytes"], rt - fd["tokens"])

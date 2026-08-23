@@ -3,6 +3,7 @@
 
 Run: python3 -m pytest tools/test_harness_prompt_cost.py
 """
+
 import importlib.util
 import os
 
@@ -11,9 +12,7 @@ _ROOT = os.path.dirname(_HERE)
 
 
 def _load():
-    spec = importlib.util.spec_from_file_location(
-        "harness_prompt_cost", os.path.join(_HERE, "harness_prompt_cost.py")
-    )
+    spec = importlib.util.spec_from_file_location("harness_prompt_cost", os.path.join(_HERE, "harness_prompt_cost.py"))
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
