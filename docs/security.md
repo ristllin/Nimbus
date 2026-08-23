@@ -32,9 +32,14 @@ server - findings are weighted by real reachability.
   *look* like one: the browser stores the token per ORIGIN, so a browser that identified
   at `http://<ip>` is silently authenticated there while `http://<name>.local` - a
   different origin - still shows the gate. Same device, same gate, two storage buckets.
-- **Secret redaction in logs.** The Telegram token (embedded in the `/bot<token>/…`
-  send path) is redacted before it can reach `GET /api/log`. That endpoint is itself
-  token-gated, so the redaction is defence-in-depth rather than the only barrier.
+- **Secret redaction in logs.** Every line written to the agent log ring (served by
+  the token-gated `GET /api/log`) passes through `core::LogRing::redact` at the one
+  `logring::put` choke point. Two layers: the provider keys and the Telegram bot
+  token are registered as exact secrets at boot (masked wherever they appear), and a
+  heuristic backstop strips `Bearer <token>`, `api_key=`/`"key":"..."` values, and
+  `user:pass@host` URL credentials, so a provider error body echoed into the log
+  cannot carry a key onto the ring. Host-tested (`test_logring`). The endpoint is
+  also token-gated, so redaction is defence-in-depth rather than the only barrier.
 - **Telegram allowlist fails CLOSED.** An empty allowlist rejects all chats (was
   fail-open = allow-all); the poll task warns loudly if a token is set with no allowlist.
 - **Shared-engine mutex.** `memory::Lock` (recursive) serializes VectorMemory /

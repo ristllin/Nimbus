@@ -81,6 +81,11 @@ static char   g_lastError[24] = {0};     // short reason for state Error (fixed 
                                          // OTA task reassigned it mid-read)
 static bool   g_wifiEverUp = false;
 static bool   g_markedValid = false;     // RAM latch: guard resolved this boot
+// Whether the LAST check's fetch actually reached the release server (any HTTP
+// status back, incl. 404/5xx) vs. a transport failure (DNS/TLS/timeout). Lets
+// checkResult() tell "unreachable" from "reached but bad manifest" so a polled
+// /api/ota/check always resolves to a definitive result and never hangs.
+static bool   g_lastCheckReached = false;
 // Single-flight claim for the ONE check/install task. ATOMIC because requestCheck/
 // requestInstall are reachable from TWO tasks in production - the main loop's tick()
 // (daily check + hourly auto-install) and the AsyncTCP web task (/api/ota/*). A plain
@@ -397,6 +402,7 @@ static const char* fetchManifest() {
   std::unique_ptr<char, decltype(&free)> guard(b.p, &free);
 
   int code = httpsGetUrl(manifestUrl(), psSink, &b, 30000);
+  g_lastCheckReached = (code > 0);   // any HTTP status back == server reached
   // 404 = no release / no manifest asset published yet - NOT an error, just
   // "nothing to update" (the common state before the first release exists). A
   // real transport failure (0) or 5xx stays an error worth retrying/surfacing.
@@ -434,6 +440,7 @@ static void finishCheck() {
 
 static void checkTask(void*) {
   g_state = State::Checking;
+  g_lastCheckReached = false;   // set true iff fetchManifest reaches the server
   const char* err = "arbiter";
   if (agent::arbiter::acquireWork(10000)) {
     err = fetchManifest();
@@ -673,6 +680,22 @@ bool requestInstall(bool dryRun, bool force, const char** whyOut) {
     if (e != Eligibility::Newer)
       return refuse((e == Eligibility::BlockedMinVersion) ? "min-version" : "not-newer");
   }
+  // Battery / health gate (manual path): an interrupted write on a dying pack
+  // can brick a slot. force bypasses it - that is the "Install anyway, I am
+  // charging" escape hatch the UI offers, since the board has no VBUS sense.
+  if (!force && g_idleProvider) {
+    nimbus::ota::IdleSnapshot snap;
+    if (g_idleProvider(snap)) {
+      nimbus::ota::InstallGateInput gi;
+      gi.battMonEnabled  = snap.battMonEnabled;
+      gi.onExternalPower = snap.onExternalPower;
+      gi.battPct         = snap.battPct;
+      gi.healthPct       = snap.healthPct;
+      nimbus::ota::InstallGate g = nimbus::ota::installGate(gi);
+      if (g != nimbus::ota::InstallGate::Allowed)
+        return refuse(nimbus::ota::installGateStr(g));  // need-power / need-recalibrate
+    }
+  }
   g_installDry = dryRun;
   g_installForce = force;
   if (xTaskCreate(installTask, "otainstall", 16384, nullptr, 1, nullptr) != pdPASS) {
@@ -754,6 +777,10 @@ bool installing() {
 }
 
 const char* statusStr() { return nimbus::ota::stateStr(g_state); }
+const char* checkResultStr() {
+  return nimbus::ota::checkResultStr(
+      nimbus::ota::checkResult(g_state, g_lastCheckReached));
+}
 const char* lastError() { return g_lastError; }
 int progressPct() { return g_progressPct; }
 String latestSeen() { return g_latestVersion; }

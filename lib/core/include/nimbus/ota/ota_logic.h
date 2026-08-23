@@ -111,18 +111,57 @@ bool shouldRollback(bool pending, uint8_t bootCount);
 // 600 s so a fine image on a moved/renamed network never false-rollbacks.
 bool bootHealthy(uint32_t uptimeS, bool wifiEverUp);
 
+// --- battery / health install gate ------------------------------------------
+// Both the manual and the auto install paths consult this gate before flashing:
+// an interrupted write on a dying pack can leave a slot unbootable. Install is
+// allowed when the pack is healthy enough to finish the write - level at or
+// above kManualBattFloorPct AND estimated health at or above kManualHealthFloorPct
+// - OR the device is on external power, OR battery monitoring is disabled (there
+// is no pack to protect). Otherwise the caller shows the matching next step. The
+// owner can still force past a NeedPower stop ("Install anyway, I am charging")
+// because this board has no VBUS sense line to prove the charger on its own.
+enum class InstallGate : uint8_t {
+  Allowed = 0,       // healthy enough, on external power, or monitoring off
+  NeedPower,         // pack below the level floor  -> "Connect power"
+  NeedRecalibrate,   // health estimate below floor -> "Recalibrate to 100%"
+};
+inline constexpr int     kManualBattFloorPct   = 40;
+inline constexpr uint8_t kManualHealthFloorPct = 60;
+
+struct InstallGateInput {
+  bool    battMonEnabled  = true;   // false => no pack, gate is a no-op
+  bool    onExternalPower = false;  // BatteryEstimate.onExternalPower
+  int     battPct         = 0;      // calibrated SoC
+  uint8_t healthPct       = 100;    // estimated capacity health
+};
+InstallGate installGate(const InstallGateInput& in);
+const char* installGateStr(InstallGate g);  // "allowed"/"need-power"/"need-recalibrate"
+
 // --- auto-install idle window ------------------------------------------------
 struct IdleSnapshot {
   bool     turnInFlight    = false;  // orchestrator turn / tool loop running
   bool     voiceActive     = false;  // hold-to-talk capture or STT in flight
   bool     audioPlaying    = false;  // SFX/TTS speaker output
   bool     onExternalPower = false;  // BatteryEstimate.onExternalPower
+  bool     battMonEnabled  = true;   // battery monitoring on (false => no pack)
   int      battPct         = 0;      // calibrated SoC
+  uint8_t  healthPct       = 100;    // estimated capacity health (gate parity)
   uint32_t internalFreeB   = 0;      // free INTERNAL heap
 };
 inline constexpr int      kAutoBattFloorPct  = 50;
 inline constexpr uint32_t kAutoHeapFloorB    = 24u * 1024u;
 bool autoInstallAllowed(const IdleSnapshot& s);
+
+// --- definitive check result ------------------------------------------------
+// A completed /api/ota/check ALWAYS resolves to one of these, so a caller that
+// polls the check never hangs on "checking": UpToDate (reachable, nothing
+// newer), NewVersion (reachable, a newer release with notes), Unreachable (the
+// release feed could not be fetched at all), or Failed (reached the server but
+// the manifest was rejected). Derived from the settled State plus whether the
+// last fetch actually reached the server. Pending = still checking / never ran.
+enum class CheckResult : uint8_t { Pending = 0, UpToDate, NewVersion, Unreachable, Failed };
+CheckResult checkResult(State settled, bool reachedServer);
+const char* checkResultStr(CheckResult r);  // "pending"/"up-to-date"/"new-version"/"unreachable"/"failed"
 
 }  // namespace ota
 }  // namespace nimbus

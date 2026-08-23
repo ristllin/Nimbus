@@ -89,6 +89,27 @@ struct LoopCaps {
   int      maxRepeats      = kLoopMaxRepeats;
 };
 
+// --- owner NVS overrides for the caps (clamped; may only TIGHTEN) -----------
+// The owner may make the Local-Loops governor STRICTER than the caps.h defaults
+// (fewer loops, longer minimum interval, lower daily/rate ceilings); it may
+// NEVER loosen one, and the model can never touch any of it. Convention: a field
+// left 0 means "no override, keep the default". clampLoopCaps folds each present
+// override toward the safe side - ceilings can only move DOWN (min with the
+// default), the interval floor can only move UP (max with the default) - so a
+// looser value is silently ignored rather than trusted. Pure + host-tested;
+// device glue reads the raw NVS ints and calls this once at loops begin().
+struct LoopCapOverrides {
+  int      maxCount        = 0;
+  uint32_t minIntervalSec  = 0;
+  int      maxFiresPerDay  = 0;
+  uint32_t maxTokensPerDay = 0;
+  uint32_t devTokensPerDay = 0;
+  int      devFiresWindow  = 0;
+  int      maxConsecFails  = 0;
+  int      maxRepeats      = 0;
+};
+LoopCaps clampLoopCaps(const LoopCaps& base, const LoopCapOverrides& ov);
+
 // --- device-wide counters (rolled daily / per rate-window) -----------------
 struct DeviceCounters {
   uint32_t tokensToday   = 0;

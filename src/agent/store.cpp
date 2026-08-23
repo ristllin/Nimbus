@@ -213,6 +213,23 @@ void setOrchLoopDeadlineS(int v) { solide::memory::setInt(AKEY_LOOP_DEADLINE, cl
 void setOrchLoopResultCap(int v) { solide::memory::setInt(AKEY_LOOP_RESCAP, v <= 0 ? 0 : clampI(v, 512, 65536)); }
 void setOrchLoopTotalCap(int v)  { solide::memory::setInt(AKEY_LOOP_TOTCAP, v <= 0 ? 0 : clampI(v, 2048, 1048576)); }
 
+// Local Loops governor overrides (CUM-73). Stored raw (0 = no override); the
+// tighten-only fold against the caps.h defaults happens in clampLoopCaps at the
+// loops subsystem. Getters guard against a negative NVS value (treated as unset)
+// and an absurd upper bound so a stray write can never overflow the caps math.
+int  loopCapMaxCount()        { int v = solide::memory::getInt(AKEY_LOOP_MAXCNT, 0); return v > 0 ? clampI(v, 1, 1000) : 0; }
+int  loopCapMinIntervalS()    { int v = solide::memory::getInt(AKEY_LOOP_MINIVL, 0); return v > 0 ? clampI(v, 1, 86400) : 0; }
+int  loopCapFiresPerDay()     { int v = solide::memory::getInt(AKEY_LOOP_FIRES, 0);  return v > 0 ? clampI(v, 1, 100000) : 0; }
+int  loopCapTokensPerDay()    { int v = solide::memory::getInt(AKEY_LOOP_TOKENS, 0); return v > 0 ? clampI(v, 1, 100000000) : 0; }
+int  loopCapDevTokensPerDay() { int v = solide::memory::getInt(AKEY_LOOP_DEVTOK, 0); return v > 0 ? clampI(v, 1, 100000000) : 0; }
+int  loopCapDevFiresWindow()  { int v = solide::memory::getInt(AKEY_LOOP_DEVFIR, 0); return v > 0 ? clampI(v, 1, 100000) : 0; }
+void setLoopCapMaxCount(int v)        { solide::memory::setInt(AKEY_LOOP_MAXCNT, v <= 0 ? 0 : clampI(v, 1, 1000)); }
+void setLoopCapMinIntervalS(int v)    { solide::memory::setInt(AKEY_LOOP_MINIVL, v <= 0 ? 0 : clampI(v, 1, 86400)); }
+void setLoopCapFiresPerDay(int v)     { solide::memory::setInt(AKEY_LOOP_FIRES,  v <= 0 ? 0 : clampI(v, 1, 100000)); }
+void setLoopCapTokensPerDay(int v)    { solide::memory::setInt(AKEY_LOOP_TOKENS, v <= 0 ? 0 : clampI(v, 1, 100000000)); }
+void setLoopCapDevTokensPerDay(int v) { solide::memory::setInt(AKEY_LOOP_DEVTOK, v <= 0 ? 0 : clampI(v, 1, 100000000)); }
+void setLoopCapDevFiresWindow(int v)  { solide::memory::setInt(AKEY_LOOP_DEVFIR, v <= 0 ? 0 : clampI(v, 1, 100000)); }
+
 // The per-tool-result clamp a turn will actually apply (owner override, else the
 // value derived from the resolved head model's window). The results.get view
 // must fit inside THIS together with its header.

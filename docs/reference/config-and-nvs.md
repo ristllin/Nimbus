@@ -126,6 +126,38 @@ so its pinout is baked in, its `scrModel` is fixed to `tft`, and the web display
 selector is locked (driven by board id, not by `scrModel`). See the
 [hardware reference](../hardware.md#board-configurations).
 
+### Head tool-loop caps (`src/agent/store.cpp`)
+
+The multi-round tool-use loop the head runs per turn. `0`/absent on the byte caps
+means "auto" (the engine derives the cap from the model's context window); a set
+value is the owner's override and wins under the listed clamp.
+
+| Key | Type | Default | Holds | Read back? |
+|---|---|---|---|---|
+| `orchLoop` | bool | `true` (on) | Head multi-round tool-use loop enable. | Yes |
+| `orchLoopRnds` | int | `12` | Max tool-dispatch rounds per turn. Clamped `1..32`. | Yes |
+| `orchLoopDlS` | int | `600` | Wall-clock budget for the loop, in seconds. Clamped `30..3600`. | Yes |
+| `orchLoopRCap` | int | `0` (auto) | Per-tool-result byte clamp. `0` = auto; else `512..65536`. | Yes |
+| `orchLoopTCap` | int | `0` (auto) | Cumulative tool-output byte budget. `0` = auto; else `2048..1048576`. | Yes |
+
+### Local Loops governor caps (`src/agent/store.cpp`)
+
+Owner overrides for the routine/scheduler governor. Each defaults to the hard
+ceiling in `lib/core/include/nimbus/orch/caps.h`; an override may only make a cap
+**stricter**, never looser, and the model can never touch any of it. `0`/absent
+means "no override, use the default". The fold is `nimbus::orch::clampLoopCaps`
+(a looser value is ignored, not trusted), applied at loops `begin()` and live on
+each web write.
+
+| Key | Type | Default (cap) | Holds | Read back? |
+|---|---|---|---|---|
+| `loopMaxCnt` | int | `8` | Most routines that can exist at once. Override may only lower it. | Yes |
+| `loopMinIvl` | int | `300` | Minimum seconds between fires. Override may only raise it. | Yes |
+| `loopFires` | int | `24` | Per-routine daily fire ceiling. Override may only lower it. | Yes |
+| `loopTokens` | int | `120000` | Per-routine daily token ceiling. Override may only lower it. | Yes |
+| `loopDevTok` | int | `400000` | Device-wide daily token ceiling. Override may only lower it. | Yes |
+| `loopDevFir` | int | `6` | Device-wide fires per rate window. Override may only lower it. | Yes |
+
 ### Anthropic managed-agents caches (`src/agent/store.cpp`)
 
 | Key | Type | Default | Holds |

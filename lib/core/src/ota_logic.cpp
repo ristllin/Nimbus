@@ -266,7 +266,51 @@ bool bootHealthy(uint32_t uptimeS, bool wifiEverUp) {
 bool autoInstallAllowed(const IdleSnapshot& s) {
   if (s.turnInFlight || s.voiceActive || s.audioPlaying) return false;
   if (!s.onExternalPower && s.battPct < kAutoBattFloorPct) return false;
+  // Health floor applies on battery too (gate parity with the manual path): a
+  // worn pack can sag under the write load and brick a slot mid-flash.
+  if (!s.onExternalPower && s.healthPct < kManualHealthFloorPct) return false;
   return s.internalFreeB >= kAutoHeapFloorB;
+}
+
+// --- battery / health install gate ------------------------------------------
+
+InstallGate installGate(const InstallGateInput& in) {
+  if (!in.battMonEnabled) return InstallGate::Allowed;   // no pack to protect
+  if (in.onExternalPower) return InstallGate::Allowed;   // wall power finishes it
+  if (in.battPct < kManualBattFloorPct) return InstallGate::NeedPower;
+  if (in.healthPct < kManualHealthFloorPct) return InstallGate::NeedRecalibrate;
+  return InstallGate::Allowed;
+}
+
+const char* installGateStr(InstallGate g) {
+  switch (g) {
+    case InstallGate::Allowed: return "allowed";
+    case InstallGate::NeedPower: return "need-power";
+    case InstallGate::NeedRecalibrate: return "need-recalibrate";
+  }
+  return "?";
+}
+
+// --- definitive check result ------------------------------------------------
+
+CheckResult checkResult(State settled, bool reachedServer) {
+  switch (settled) {
+    case State::UpToDate: return CheckResult::UpToDate;
+    case State::Available: return CheckResult::NewVersion;
+    case State::Error: return reachedServer ? CheckResult::Failed : CheckResult::Unreachable;
+    default: return CheckResult::Pending;  // Idle/Checking/install states
+  }
+}
+
+const char* checkResultStr(CheckResult r) {
+  switch (r) {
+    case CheckResult::Pending: return "pending";
+    case CheckResult::UpToDate: return "up-to-date";
+    case CheckResult::NewVersion: return "new-version";
+    case CheckResult::Unreachable: return "unreachable";
+    case CheckResult::Failed: return "failed";
+  }
+  return "?";
 }
 
 }  // namespace ota

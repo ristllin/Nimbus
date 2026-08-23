@@ -565,6 +565,8 @@ static void buildState(String& out) {
   // OTA firmware update (device-level, both modes) - the Device-tab panel and
   // the HIL suite read these; progress rides the 3 s /api/state poll.
   d["ota"]      = otaupd::statusStr();     // idle/checking/available/downloading/...
+  d["otaResult"]= otaupd::checkResultStr(); // definitive check outcome: pending/
+                                            // up-to-date/new-version/unreachable/failed
   d["otaPct"]   = otaupd::progressPct();   // -1 unless downloading
   d["otaLatest"]= otaupd::latestSeen();    // newest release seen ("" = none)
   d["otaNotes"] = otaupd::latestNotes();
@@ -681,6 +683,13 @@ static void buildOrchState(String& out) {
   d["loopRounds"]   = agent::store::orchLoopRounds();
   d["loopRescap"]   = agent::store::orchLoopResultCap();   // 0 = auto (derived per turn)
   d["loopTotcap"]   = agent::store::orchLoopTotalCap();    // 0 = auto
+  // Local Loops governor cap overrides (0 = no override, using the caps.h default).
+  d["loopMaxCnt"]   = agent::store::loopCapMaxCount();
+  d["loopMinIvl"]   = agent::store::loopCapMinIntervalS();
+  d["loopFires"]    = agent::store::loopCapFiresPerDay();
+  d["loopTokens"]   = agent::store::loopCapTokensPerDay();
+  d["loopDevTok"]   = agent::store::loopCapDevTokensPerDay();
+  d["loopDevFir"]   = agent::store::loopCapDevFiresWindow();
   {
     // Effective derived caps so the UI can render "auto (currently N)" - same
     // derivation the engine applies at turn time (budget.h anchor invariant).
@@ -950,6 +959,13 @@ static bool applyOrchField(const String& n, const String& v, bool& cfgDirty) {
   if (n == "loopRounds")   { agent::store::setOrchLoopRounds(v.toInt()); return true; }
   if (n == "loopRescap")   { agent::store::setOrchLoopResultCap(v.toInt()); return true; }  // per-tool-result byte cap (dialable for stress)
   if (n == "loopTotcap")   { agent::store::setOrchLoopTotalCap(v.toInt()); return true; }   // cumulative tool-output byte budget
+  // Local Loops governor caps (routines) - owner may only TIGHTEN; reloadCaps() applies live.
+  if (n == "loopMaxCnt")   { agent::store::setLoopCapMaxCount(v.toInt()); agent::loops::reloadCaps(); return true; }
+  if (n == "loopMinIvl")   { agent::store::setLoopCapMinIntervalS(v.toInt()); agent::loops::reloadCaps(); return true; }
+  if (n == "loopFires")    { agent::store::setLoopCapFiresPerDay(v.toInt()); agent::loops::reloadCaps(); return true; }
+  if (n == "loopTokens")   { agent::store::setLoopCapTokensPerDay(v.toInt()); agent::loops::reloadCaps(); return true; }
+  if (n == "loopDevTok")   { agent::store::setLoopCapDevTokensPerDay(v.toInt()); agent::loops::reloadCaps(); return true; }
+  if (n == "loopDevFir")   { agent::store::setLoopCapDevFiresWindow(v.toInt()); agent::loops::reloadCaps(); return true; }
   if (n == "compactKB")    { agent::store::setCompactAtKB((uint16_t)v.toInt()); return true; }
   if (n == "tlsSlots")     { agent::store::setTlsSlots(v.toInt()); return true; }   // latched at boot (arbiter::begin)
   if (n == "tlsVerify")    { agent::store::setTlsVerify(v == "1" || v == "true"); return true; }   // live: next TLS connect honours it

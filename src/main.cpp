@@ -1980,6 +1980,18 @@ static void orchestratorBegin() {
   ORCH_MARK("orch: begin");
   agent::orchestrator::begin(&g_fabric, sinks);
 
+  // Register the device's own secrets so the agent log ring (GET /api/log) masks
+  // them if a provider error body ever echoes one (CUM-73). This is the reliable
+  // redaction layer for keys provisioned by now; keys added later are still
+  // caught by the Bearer/api_key heuristics in core::LogRing::redact.
+  agent::logring::clearSecrets();
+  agent::logring::addSecret(agent::store::openaiKey().c_str());
+  agent::logring::addSecret(agent::store::anthropicKey().c_str());
+  agent::logring::addSecret(agent::store::mistralKey().c_str());
+  agent::logring::addSecret(agent::store::tavilyKey().c_str());
+  agent::logring::addSecret(agent::store::customKey().c_str());
+  agent::logring::addSecret(agent::store::telegramToken().c_str());
+
   // Local Loops: wire the scheduler's hooks (kept out of the subsystem so it
   // carries no orchestrator/telegram deps). fire = run a scheduled turn on
   // tg_poll; chatAllowed = fire-time allowlist re-check; alert = owner ping.
@@ -2293,7 +2305,9 @@ static bool otaIdleSnapshot(nimbus::ota::IdleSnapshot& s) {
   s.voiceActive = g_voiceActive;
   s.audioPlaying = false;   // SFX clips are seconds-long; the turn/voice gates carry the policy
   s.onExternalPower = g_battEstimate.onExternalPower;
+  s.battMonEnabled = battMonOn();
   s.battPct = g_battEstimate.percent;
+  s.healthPct = g_battEstimate.healthPct;
   s.internalFreeB = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
   return true;
 }
@@ -2410,13 +2424,17 @@ void setup() {
       const char* why = "";
       if (otaupd::requestInstall(/*dry=*/false, /*force=*/false, &why)) {
         return String("Installing ") + otaupd::latestSeen() +
-               ". The device will download, verify, and restart \xE2\x80\x94 about two "
+               ". The device will download, verify, and restart, about two "
                "minutes. The ring shows progress. Keep the device powered on.";
       }
       String w = why && why[0] ? why : "busy";
       if (w == "low-heap" || w == "unsupported")
-        return "This device can't update itself right now \xE2\x80\x94 it needs Orchestrator mode and more free memory. Update it over USB instead.";
+        return "This device can't update itself right now. It needs Orchestrator mode and more free memory. Update it over USB instead.";
       if (w == "no-wifi") return "Couldn't reach the network. Check Wi-Fi and try again.";
+      if (w == "need-power")
+        return "Battery is low. Connect power, then send /update again. It will also install on its own once you plug in.";
+      if (w == "need-recalibrate")
+        return "Battery health reads low, so the level may be off. Charge to full and recalibrate to 100% in the app, then send /update again.";
       return String("Couldn't start the update (") + w + "). Try again in a moment.";
     }
     if (st == "error") {
@@ -2424,7 +2442,7 @@ void setup() {
       return String("Couldn't check for updates (") + (err && err[0] ? err : "network error") +
              "). Try again in a minute.";
     }
-    if (st == "checking") return "Still checking for updates \xE2\x80\x94 send /update again in a minute.";
+    if (st == "checking") return "Still checking for updates, send /update again in a minute.";
     return String("Nimbus is up to date (") + NIMBUS_FW_VERSION + ").";
   });
   Serial.begin(115200);

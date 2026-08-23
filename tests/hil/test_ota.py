@@ -316,3 +316,22 @@ def test_web_api_check_token_gated(ota_server, device, net):
     assert r.status_code in (202, 409)
     state = net.get_json(f"/api/state?t={tok}", ip=ip, timeout=5.0)
     assert "ota" in state and "lastOta" in state
+    # CUM-58: a check always ends in a definitive result, surfaced as otaResult.
+    assert "otaResult" in state
+    assert state["otaResult"] in (
+        "pending", "up-to-date", "new-version", "unreachable", "failed",
+    )
+
+
+def test_check_result_new_version(ota_server, device, net):
+    """CUM-58: after a check that finds a release, otaResult settles to
+    'new-version' (not a hung 'pending' or a false 'up-to-date')."""
+    ip, tok, base, serve_dir = ota_server
+    _sign_manifest(serve_dir.parent, TEST_KEY, base, serve_dir / "firmware-test.bin")
+    os.replace(serve_dir.parent / "manifest.json", serve_dir / "manifest.json")
+    _point_at(device, base)
+    _start(device, "OTACHECK")
+    _wait_state(device, "available", timeout=60.0)
+    state = net.get_json(f"/api/state?t={tok}", ip=ip, timeout=5.0)
+    assert state["otaResult"] == "new-version", state
+    assert state["otaLatest"] == SERVED_VERSION

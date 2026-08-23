@@ -166,6 +166,15 @@
 #define AKEY_LOOP_DEADLINE  "orchLoopDlS"   // wall-clock budget seconds (default 600, 30..3600)
 #define AKEY_LOOP_RESCAP    "orchLoopRCap"  // per-tool-result byte clamp (default 4096)
 #define AKEY_LOOP_TOTCAP    "orchLoopTCap"  // cumulative tool-output byte budget (default 24576)
+// Local Loops governor (routines/scheduler) owner overrides - may only TIGHTEN
+// the caps.h defaults, never loosen; 0/absent = keep the default. Read at loops
+// begin(), folded through nimbus::orch::clampLoopCaps (CUM-73). NVS keys <=15 ch.
+#define AKEY_LOOP_MAXCNT    "loopMaxCnt"    // max concurrent routines (default 8)
+#define AKEY_LOOP_MINIVL    "loopMinIvl"    // min seconds between fires (default 300)
+#define AKEY_LOOP_FIRES     "loopFires"     // per-routine daily fire ceiling (default 24)
+#define AKEY_LOOP_TOKENS    "loopTokens"    // per-routine daily token ceiling (default 120000)
+#define AKEY_LOOP_DEVTOK    "loopDevTok"    // device-wide daily token ceiling (default 400000)
+#define AKEY_LOOP_DEVFIR    "loopDevFir"    // device-wide fires per rate window (default 6)
 #define AKEY_ALLOW_HW_TESTS "allowHwTest"   // orchestrator may run hardware self-tests (default ON)
 // OTA firmware update (src/sys/ota_update). The pend/boots/prev trio is the
 // app-level rollback guard (arduino sdkconfig lacks bootloader rollback):

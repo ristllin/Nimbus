@@ -86,6 +86,21 @@ void   setOrchLoopRounds(int v);
 void   setOrchLoopDeadlineS(int v);
 void   setOrchLoopResultCap(int v);
 void   setOrchLoopTotalCap(int v);
+// Local Loops governor (routines) owner overrides (CUM-73). 0 = no override,
+// keep the caps.h default; a set value may only TIGHTEN (the actual folding is
+// nimbus::orch::clampLoopCaps). Getters report the raw stored override.
+int    loopCapMaxCount();          // 0 or a stricter max routine count
+int    loopCapMinIntervalS();      // 0 or a longer minimum fire interval (s)
+int    loopCapFiresPerDay();       // 0 or a lower per-routine daily fire ceiling
+int    loopCapTokensPerDay();      // 0 or a lower per-routine daily token ceiling
+int    loopCapDevTokensPerDay();   // 0 or a lower device-wide daily token ceiling
+int    loopCapDevFiresWindow();    // 0 or a lower device-wide fires-per-window
+void   setLoopCapMaxCount(int v);
+void   setLoopCapMinIntervalS(int v);
+void   setLoopCapFiresPerDay(int v);
+void   setLoopCapTokensPerDay(int v);
+void   setLoopCapDevTokensPerDay(int v);
+void   setLoopCapDevFiresWindow(int v);
 bool   allowHwTests();       // orchestrator may run device hardware self-tests (default ON)
 bool   onboarded();          // first-run onboarding completed (plain NVS bool; false => show the setup wizard)
 void   setOnboarded(bool v); // set true when the wizard finishes; cleared by an NVS-wipe factory reset

@@ -23,7 +23,7 @@ using orch::CivilTime;
 // ---- state (single-writer on tg_poll) -------------------------------------
 static std::vector<LoopRecord> g_loops;
 static orch::DeviceCounters    g_dev;
-static orch::LoopCaps          g_caps;   // TODO: honour owner NVS overrides (clamped)
+static orch::LoopCaps          g_caps;   // caps.h defaults, tightened by owner NVS overrides (reloadCaps)
 static FireHook                g_fire;
 static ChatAllowedHook         g_chatAllowed;
 static AlertHook               g_alert;
@@ -166,9 +166,24 @@ static void onTzChanged() {
 }
 
 // ---- lifecycle -------------------------------------------------------------
+// Fold the owner's NVS overrides onto the caps.h defaults (tighten-only; the
+// clamp lives in the pure core). Called at begin() and whenever the web config
+// path writes a governor key, so a tightened cap takes effect without a reboot.
+void reloadCaps() {
+  orch::LoopCapOverrides ov;
+  ov.maxCount        = store::loopCapMaxCount();
+  ov.minIntervalSec  = (uint32_t)store::loopCapMinIntervalS();
+  ov.maxFiresPerDay  = store::loopCapFiresPerDay();
+  ov.maxTokensPerDay = (uint32_t)store::loopCapTokensPerDay();
+  ov.devTokensPerDay = (uint32_t)store::loopCapDevTokensPerDay();
+  ov.devFiresWindow  = store::loopCapDevFiresWindow();
+  g_caps = orch::clampLoopCaps(orch::LoopCaps{}, ov);
+}
+
 void begin(FireHook fire, ChatAllowedHook chatAllowed, AlertHook alert) {
   if (!g_mux) g_mux = xSemaphoreCreateRecursiveMutex();   // before any g_loops access
   Lock lk;
+  reloadCaps();   // honour owner NVS cap overrides (clamped, tighten-only)
   g_fire = fire; g_chatAllowed = chatAllowed; g_alert = alert;
   orch::loadLoops(loadRaw(), g_loops);
   g_loaded = true;

@@ -351,7 +351,17 @@ function applyState(d){
       .then(()=>{toast('Checking…');setTimeout(loadState,2500);}).catch(failToast);};
     fi.onclick=()=>{
       if(!confirm('Install firmware '+(d.otaLatest||'')+'?\n\nThe device will download, verify the signature, and restart - about two minutes. Keep it powered on.'))return;
-      fetch('/api/ota/apply',{method:'POST'}).then(jok).then(()=>{toast('Updating…');setTimeout(loadState,2000);}).catch(failToast);};
+      var apply=function(force){var f=new FormData();if(force)f.append('force','1');
+        fetch('/api/ota/apply',{method:'POST',body:f}).then(r=>r.json()).then(j=>{
+          if(j&&j.ok===false){
+            if(j.err==='need-power'){
+              if(confirm('Battery is low. Connect power and try again, or install anyway (I am charging)?'))apply(true);
+            }else if(j.err==='need-recalibrate'){
+              if(confirm('Battery health reads low, so the level may be wrong. Charge to full and recalibrate to 100% (Battery, then Calibrate), or install anyway (I am charging)?'))apply(true);
+            }else{toast('Update refused: '+(j.err||'busy'));}
+            return;}
+          toast('Updating…');setTimeout(loadState,2000);}).catch(failToast);};
+      apply(false);};
   }
   renderDevTiles(d);
   if(d.fw){const fv=$('fwver'); if(fv)fv.textContent=d.fw+(d.build&&d.build!==d.fw?(' ('+d.build+')'):''); fv&&(fv.title='firmware version (build id)');}
