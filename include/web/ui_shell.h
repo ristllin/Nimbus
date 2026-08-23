@@ -104,6 +104,22 @@ table{width:100%;border-collapse:collapse;font-size:12.5px}td,th{text-align:left
 @media(prefers-reduced-motion:reduce){.fb-bar.fb-indet>i{animation:none;width:100%;opacity:.4}}
 /* Chat file drop zone (CUM-57): highlight while a file is dragged over it. */
 #chatDrop.dropping{outline:2px dashed var(--teal);outline-offset:-6px;background:var(--teal-soft)}
+/* ---- Global search (CUM-62): sidebar trigger + command palette ---- */
+.searchbtn{display:flex;align-items:center;gap:9px;margin:0 4px 10px;padding:8px 11px;border-radius:11px;border:1px solid var(--line2);background:var(--raise2);color:var(--ink3);font-size:13px;font-weight:550;cursor:pointer;width:calc(100% - 8px)}
+.searchbtn:hover{color:var(--ink);filter:none}
+.searchbtn svg{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.8;flex:none}
+.searchbtn kbd{margin-left:auto;font-size:10.5px;background:var(--raise3);border:1px solid var(--line2);border-radius:5px;padding:1px 5px;color:var(--ink3);font-family:var(--mono)}
+#searchOverlay{position:fixed;inset:0;z-index:300;background:rgba(0,0,0,.45);display:flex;align-items:flex-start;justify-content:center;padding:12vh 16px 16px}
+#searchBox{width:100%;max-width:640px;background:var(--raise);border:1px solid var(--line2);border-radius:16px;box-shadow:var(--shadow);overflow:hidden;display:flex;flex-direction:column;max-height:70vh}
+#searchInput{border:0;border-bottom:1px solid var(--line);border-radius:0;background:transparent;color:var(--ink);font-size:16px;padding:15px 16px;margin:0}
+#searchInput:focus{outline:none;border-color:var(--line)}
+#searchResults{overflow-y:auto;padding:6px}
+.sgroup{font-size:10.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--ink3);font-weight:700;padding:10px 10px 4px}
+.sresult{display:block;width:100%;text-align:left;border:0;background:transparent;color:var(--ink);padding:8px 10px;border-radius:9px;cursor:pointer;font-size:13.5px;font-weight:500}
+.sresult:hover,.sresult.sel{background:var(--teal-soft);color:var(--teal);filter:none}
+.sresult .scx{display:block;font-size:11.5px;color:var(--ink3);margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sresult.sel .scx{color:var(--teal-d)}
+.sempty{padding:18px 12px;color:var(--ink3);font-size:13px}
 .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:10px 0}
 .tile{background:var(--raise);border:1px solid var(--line);border-radius:14px;padding:14px 15px;box-shadow:var(--shadow)}
 .tile .k{font-size:10.5px;text-transform:uppercase;letter-spacing:.1em;color:var(--ink3);font-weight:650}
@@ -166,6 +182,8 @@ padding:16px 12px;display:flex;flex-direction:column;gap:3px;z-index:50}
 .brand b,.brand .fw{display:none}
 .modeswitch{display:none}
 .tabs .tl{display:none}
+.searchbtn{justify-content:center;width:auto;margin:0 auto 10px;padding:9px}
+.searchbtn .tl,.searchbtn kbd{display:none}
 .tab{justify-content:center;padding:10px 0}
 .tab svg{width:19px;height:19px}
 body{padding-left:92px}
@@ -176,6 +194,7 @@ body{padding:16px 12px calc(84px + env(safe-area-inset-bottom))}
 flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-inset-bottom));gap:0;overflow-x:auto}
 .brand{display:none}
 .modeswitch{display:none}
+.searchbtn{display:none}
 .tabs{flex-direction:row;flex:1;justify-content:space-around;gap:0}
 .tab{flex-direction:column;gap:3px;font-size:9.5px;padding:5px 7px;border-radius:9px;text-align:center;width:auto}
 .tab svg{width:19px;height:19px}
@@ -190,6 +209,7 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <button data-m=0 type=button>Notifier</button>
 <button data-m=1 type=button>Orchestrator</button>
 </div>
+<button class=searchbtn id=globalSearchBtn type=button aria-label="Search (Control K)"><svg viewBox="0 0 24 24"><circle cx=11 cy=11 r=7/><path d="M21 21l-4-4"/></svg><span class=tl>Search</span><kbd>Ctrl K</kbd></button>
 <nav class=tabs>
 <button class=tab data-p=home title=Home><svg viewBox="0 0 24 24"><path d="M4 13h6V4H4zM14 20h6v-9h-6zM14 8h6V4h-6zM4 20h6v-4H4z"/></svg><span class=tl>Home</span></button>
 <button class=tab data-p=chat title=Chat><svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H8l-4 4V5a2 2 0 0 1 2-2h13a2 2 0 0 1 2 2z"/></svg><span class=tl>Chat</span></button>

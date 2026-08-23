@@ -138,6 +138,20 @@ export const TENANT = { name: 'default', tenants: ['default'] };
 export const TRACE = { turns: [] };
 export const VOICES = { voices: ['alloy', 'verse'] };
 
+// Global search sources (CUM-62).
+export const DOCS_SEARCH = {
+  results: [
+    { id: 'ota#battery-gate', title: 'Updates and the battery gate', snippet: 'An update waits until the battery is high enough, then downloads and verifies.' },
+    { id: 'memory#recall', title: 'How recall works', snippet: 'The assistant searches memories by meaning and injects the top matches.' },
+  ],
+};
+export const MEM_VECTOR = {
+  items: [
+    { text: 'Amber is reserved for money and attention signals only.' },
+    { text: 'The ring shows one arc per active session.' },
+  ],
+};
+
 // Generic OK for POST/action endpoints.
 export const OK = { ok: true };
 
@@ -173,4 +187,6 @@ export const DEFAULTS = {
   '/api/trace': TRACE,
   '/api/voices': VOICES,
   '/api/ota/check': OTA_CHECK,
+  '/api/docs/search': DOCS_SEARCH,
+  '/api/mem/vector': MEM_VECTOR,
 };

@@ -157,6 +157,92 @@ document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>goDest(b.dataset.p));
 // Quick actions (Home) and any in-page link that jumps to a destination.
 document.querySelectorAll('[data-go]').forEach(b=>b.onclick=()=>goDest(b.dataset.go));
 goDest('home');   // default destination
+
+// ---- Global search / command palette (CUM-62) ------------------------------
+// One search over destinations + actions (a static index), files, memory,
+// sessions, and the embedded docs pack. Keyboard: Ctrl/Cmd+K or "/" opens, Esc
+// closes, Up/Down move, Enter activates. Results are grouped by source.
+const SEARCH_INDEX=[
+  {group:'Go to',label:'Home',kw:'dashboard status tiles sessions alerts health',act:()=>goDest('home')},
+  {group:'Go to',label:'Chat',kw:'message assistant talk conversation',act:()=>goDest('chat')},
+  {group:'Go to',label:'Memory',kw:'files long-term scratchpad directive storage',act:()=>goDest('memory')},
+  {group:'Go to',label:'Assistant',kw:'providers models tools connectors mcp skills usage budget routines wake-ups safety',act:()=>goDest('assistant')},
+  {group:'Go to',label:'Device',kw:'settings display sound battery network updates cloud danger',act:()=>goDest('device')},
+  {group:'Action',label:'Attach a file to chat',kw:'upload drag drop file',act:()=>{goDest('chat');var b=$('chatAttach');b&&b.focus();}},
+  {group:'Action',label:'Check for updates',kw:'ota firmware software update install',act:()=>{goDest('device');_openGroup('Software update');var b=$('fwCheck');b&&b.focus();}},
+  {group:'Action',label:'Pair with the cloud',kw:'cloud link code pairing qr',act:()=>{goDest('device');_openGroup('Cloud access');var b=$('cloudPair');b&&b.focus();}},
+  {group:'Action',label:'Add a provider key',kw:'api key anthropic openai model verify provider',act:()=>goDest('assistant')},
+  {group:'Action',label:'Sign-in code and connectivity',kw:'device sign-in token qr wifi network recovery',act:()=>{goDest('device');_openGroup('Connectivity');}},
+  {group:'Action',label:'Erase / factory reset',kw:'erase reset wipe factory sd danger',act:()=>{goDest('device');_openGroup('Danger zone');}}
+];
+// Open a Device <details> group by its summary text, so an action can jump to it.
+function _openGroup(name){document.querySelectorAll('#pane-set details.setgroup').forEach(d=>{var s=d.querySelector('summary');if(s&&s.textContent.indexOf(name)===0)d.open=true;});}
+function _sEsc(s){return (s||'').replace(/[<>&]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));}
+let _sSel=0,_sItems=[];
+function openSearch(){
+  if($('searchOverlay'))return;
+  const ov=document.createElement('div');ov.id='searchOverlay';
+  ov.innerHTML='<div id=searchBox><input id=searchInput placeholder="Search settings, files, memory, sessions, docs&hellip;" autocomplete=off spellcheck=false><div id=searchResults></div></div>';
+  document.body.appendChild(ov);
+  ov.addEventListener('mousedown',e=>{if(e.target===ov)closeSearch();});
+  const inp=$('searchInput');
+  inp.addEventListener('input',()=>runSearch(inp.value));
+  inp.addEventListener('keydown',onSearchKey);
+  inp.focus(); runSearch('');
+}
+function closeSearch(){const ov=$('searchOverlay');if(ov)ov.remove();}
+function onSearchKey(e){
+  if(e.key==='Escape'){e.preventDefault();closeSearch();}
+  else if(e.key==='ArrowDown'){e.preventDefault();_sMove(1);}
+  else if(e.key==='ArrowUp'){e.preventDefault();_sMove(-1);}
+  else if(e.key==='Enter'){e.preventDefault();const it=_sItems[_sSel];if(it)_sActivate(it);}
+}
+function _sMove(d){if(!_sItems.length)return;_sSel=(_sSel+d+_sItems.length)%_sItems.length;_sPaint();}
+function _sPaint(){document.querySelectorAll('.sresult').forEach((el,i)=>{el.classList.toggle('sel',i===_sSel);if(i===_sSel)el.scrollIntoView({block:'nearest'});});}
+function _sActivate(it){closeSearch();if(it&&it.act)it.act();}
+function renderSearch(groups){
+  const box=$('searchResults');if(!box)return;
+  _sItems=[];let html='';
+  groups.forEach(g=>{if(!g.items.length)return;html+='<div class=sgroup>'+_sEsc(g.name)+'</div>';
+    g.items.forEach(it=>{const idx=_sItems.length;_sItems.push(it);
+      html+='<button class=sresult data-i="'+idx+'"><span>'+_sEsc(it.label)+'</span>'+(it.cx?'<span class=scx>'+_sEsc(it.cx)+'</span>':'')+'</button>';});});
+  box.innerHTML=html||'<div class=sempty>No matches. Try a different word.</div>';
+  box.querySelectorAll('.sresult').forEach(el=>{el.onmouseenter=()=>{_sSel=+el.dataset.i;_sPaint();};el.onclick=()=>_sActivate(_sItems[+el.dataset.i]);});
+  _sSel=0;_sPaint();
+}
+// The search "index": a static settings/actions index plus live source fetchers.
+// Static hits are synchronous; each source fills its group as it resolves, so the
+// palette stays responsive. searchIndexStatic() is pure and unit-testable.
+function searchIndexStatic(q){
+  const ql=(q||'').trim().toLowerCase();
+  return ql?SEARCH_INDEX.filter(x=>(x.label+' '+x.kw).toLowerCase().indexOf(ql)>=0):SEARCH_INDEX.slice();
+}
+let _sSeq=0;
+function runSearch(q){
+  q=(q||'').trim();const ql=q.toLowerCase();const seq=++_sSeq;
+  const groups=[{name:'Settings & actions',items:searchIndexStatic(q).map(x=>({label:x.label,cx:x.group,act:x.act}))},
+    {name:'Files',items:[]},{name:'Memory',items:[]},{name:'Sessions',items:[]},{name:'Docs',items:[]}];
+  renderSearch(groups);
+  if(q.length<2)return;
+  const upd=(name,items)=>{if(seq!==_sSeq)return;const g=groups.find(x=>x.name===name);if(g){g.items=items;renderSearch(groups);}};
+  fetch('/api/files/list').then(r=>r.json()).then(d=>{
+    upd('Files',(d.files||[]).filter(f=>((f.project+'/'+f.name)||'').toLowerCase().indexOf(ql)>=0).slice(0,6)
+      .map(f=>({label:f.project+'/'+f.name,cx:_fbytes(f.bytes),act:()=>{goDest('memory');_openGroup('Files');}})));}).catch(()=>{});
+  fetch('/api/mem/vector?limit=6&query='+encodeURIComponent(q)).then(r=>r.json()).then(d=>{
+    const rows=(d.items||d.results||d.rows||[]);
+    upd('Memory',rows.slice(0,6).map(m=>({label:((m.text||m.content||m.summary||'memory')+'').slice(0,80),cx:'memory',act:()=>{goDest('memory');_openGroup('Long-term memory');}})));}).catch(()=>{});
+  const jobs=(typeof ORCH!=='undefined'&&ORCH&&ORCH.jobs)||[];
+  upd('Sessions',jobs.filter(j=>((j.tag+' '+j.model+' '+j.category)||'').toLowerCase().indexOf(ql)>=0).slice(0,6)
+    .map(j=>({label:j.tag+' - '+j.model,cx:(j.category||'')+' · '+(j.state||''),act:()=>goDest('home')})));
+  fetch('/api/docs/search?q='+encodeURIComponent(q)).then(r=>r.json()).then(d=>{
+    upd('Docs',(d.results||[]).slice(0,6).map(x=>({label:x.title||x.id,cx:(x.snippet||'').slice(0,80),
+      act:()=>window.open('https://docs.cumulo-nimbus.ai/','_blank','noopener')})));}).catch(()=>{});
+}
+$('globalSearchBtn')&&($('globalSearchBtn').onclick=openSearch);
+document.addEventListener('keydown',e=>{
+  if((e.key==='k'||e.key==='K')&&(e.metaKey||e.ctrlKey)){e.preventDefault();openSearch();}
+  else if(e.key==='/'&&!$('searchOverlay')&&!/^(INPUT|TEXTAREA|SELECT)$/.test((e.target&&e.target.tagName)||'')){e.preventDefault();openSearch();}
+});
 // Sub-tab switching (Harness pane): mirror of the top switcher, scoped to
 // .subtab/data-sp and #subpane-<x>. .subpane is a different class from .pane, so the
 // top switcher never touches these. Default = the first sub-tab (Connectors).

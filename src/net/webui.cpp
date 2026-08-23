@@ -40,6 +40,7 @@
 #include "nimbus/fault.h"
 #include "nimbus/signin_codes.h"   // CUM-45: one-time sign-in codes (token out of URLs)
 #include "nimbus/qr.h"             // CUM-51: server-rendered QR for the pairing card
+#include "nimbus/docs_pack.h"      // CUM-62: global search over the embedded docs pack
 #include "nimbus/orch/budget.h"    // deriveBudget - "auto (currently N)" effective caps
 #include "nimbus/orch/compact.h"   // modelCtxTokens (window table)
 #include "nimbus/power/bright_cap.h"          // resilience: simulated mic/speaker faults
@@ -1332,6 +1333,33 @@ void beginWeb(const WebConfig& wc) {
     }
     svg += "\"/></svg>";
     AsyncWebServerResponse* res = r->beginResponse(200, "image/svg+xml", svg);
+    res->addHeader("Cache-Control", "no-store");
+    r->send(res);
+  });
+
+  // ---- Global search: embedded docs pack (CUM-62, N1 UI endpoint) ----------
+  // GET /api/docs/search?q=<query> returns the top matching doc sections from the
+  // firmware-embedded docs pack (title + id + a query-centered snippet), so the
+  // web app's global search can cover the device's own documentation. Reuses the
+  // byte-locked nimbus::docs::search the Orchestrator model uses. Token-gated.
+  s_server.on("/api/docs/search", HTTP_GET, [](AsyncWebServerRequest* r) {
+    if (authBlocked(r)) return;
+    String q = r->hasParam("q") ? r->getParam("q")->value() : "";
+    JsonDocument d;
+    JsonArray arr = d["results"].to<JsonArray>();
+    if (q.length() >= 2) {
+      const nimbus::docs::DocSection* hits[8] = {nullptr};
+      size_t n = nimbus::docs::search(std::string(q.c_str()), hits, 8);
+      for (size_t i = 0; i < n && i < 8; i++) {
+        if (!hits[i]) continue;
+        JsonObject o = arr.add<JsonObject>();
+        o["id"] = hits[i]->id;
+        o["title"] = hits[i]->title;
+        o["snippet"] = nimbus::docs::snippet(*hits[i], std::string(q.c_str()));
+      }
+    }
+    String s; serializeJson(d, s);
+    AsyncWebServerResponse* res = r->beginResponse(200, "application/json", s);
     res->addHeader("Cache-Control", "no-store");
     r->send(res);
   });
