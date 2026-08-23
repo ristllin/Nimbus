@@ -215,6 +215,33 @@ agents (environments/agents/sessions + an events poll), OpenAI background
 Responses, Mistral Conversations (synchronous under an async skin), and the
 custom LAN backend.
 
+## Z.ai (GLM)
+
+Z.ai's GLM models speak the OpenAI chat-completions dialect, but under the base
+path `/api/paas/v4` (not `/v1`). The same token is served by two hosts depending
+on region: `api.z.ai` and `open.bigmodel.cn`. On the first verify the device
+**probes both** (a `GET /api/paas/v4/models` with the token) and pins whichever
+answers, so you never pick the wrong region by hand. The model list is harvested
+into the catalog (GET /api/models) with GLM ids classified into roles; a GLM
+sub-agent runs one synchronous `POST /api/paas/v4/chat/completions` and its reply
+is read from `choices[0].message.content`. Set the key on Capabilities > Models
+(Z.ai token); leave the endpoint to the probe.
+
+## Cumulo Nimbus router
+
+Cumulo Nimbus is a router: one key, and the upstream provider is chosen per role.
+The device speaks the OpenAI chat-completions dialect to
+`/router/<upstream>/v1/...` on the router host (default `app.cumulo-nimbus.ai`,
+overridable), and the router forwards to the chosen upstream (Anthropic, OpenAI,
+Mistral, Z.ai) and normalizes the reply. The key verifies against
+`/router/<upstream>/v1/models`. A model is selected as `<upstream>/<model>` (for
+example `anthropic/claude-sonnet-5`); the adapter splits the upstream off, routes
+to `/router/<upstream>/v1/chat/completions`, and sends the bare model id. This
+lets one key drive the orchestrator on one upstream and sub-agents on another,
+with embeddings/vision/STT/TTS available where the chosen upstream supports them.
+Get the key from your Cumulo Nimbus account (see the cloud docs page); set it on
+Capabilities > Models (Cumulo key).
+
 ## Local model as the custom endpoint (Ollama and friends)
 
 The device can run against any OpenAI-compatible server on your own network -

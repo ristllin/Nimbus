@@ -190,5 +190,27 @@ FabricErr customDispatch(const ProviderDeps& pd, const Directive& d, char outJob
 FabricErr customPoll(const ProviderDeps& pd, const char* jobId, ResultEnvelope& env);
 FabricErr customCancel(const ProviderDeps& pd, const char* jobId);
 
+// Generic OpenAI-compatible sub-session (Z.ai GLM, Cumulo router, or any other
+// chat-completions endpoint). Synchronous: dispatch runs the call inline against
+// host+basePath (basePath+"/chat/completions", Bearer key) and caches the answer;
+// poll returns it. jobId = "<backendTag>:<id>"; the SAME backendTag routes poll/
+// cancel back here via the device adapter. A small multi-slot RAM cache lets Z.ai
+// and Cumulo coexist. The endpoint is passed explicitly (not via the pd.custom*
+// closures) so several such providers run at once.
+struct CompatEndpoint {
+  const char* host = nullptr;
+  uint16_t    port = 443;
+  bool        tls = true;
+  std::string basePath;     // e.g. "/api/paas/v4" or "/router/anthropic/v1"
+  std::string key;          // Bearer token ("" = no auth header)
+  std::string model;
+  const char* backendTag = "compat";  // jobId prefix + adapter route key
+};
+FabricErr openaiCompatDispatch(const ProviderDeps& pd, const CompatEndpoint& ep,
+                               const Directive& d, char outJobId[72]);
+FabricErr openaiCompatPoll(const ProviderDeps& pd, const char* backendTag, const char* jobId,
+                           ResultEnvelope& env);
+FabricErr openaiCompatCancel(const ProviderDeps& pd, const char* jobId);
+
 }  // namespace providers
 }  // namespace agent
