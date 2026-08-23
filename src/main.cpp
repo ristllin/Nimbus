@@ -89,6 +89,7 @@
 #include "net/wifi_store.h"   // the Wi-Fi menu reads saved networks by name
 #include "sfx/sound_fx.h"
 #include "sfx/sfx_sync.h"            // sfxsync::statusStr -> device.status sfxSync (W11)
+#include "sfx/music.h"              // CUM-40 music player (media.* tools + /play)
 #include "nimbus/orch/caps.h"        // spawn capacity constants -> device.status (W11)
 #include "nimbus/orch/fetch_policy.h"  // fetchPolicyName -> device.status (W18)
 #include "sys/config_nvs.h"
@@ -2929,6 +2930,9 @@ void setup() {
   // The router tap is the single seam through which BOTH modes' attention
   // events reach the sound engine.
   ::sfx::begin(g_orchMode);
+  // Music player (CUM-40): the media.* tools + /play are Orchestrator features, and
+  // its dedicated task should not compete for Notifier mode's tight internal SRAM.
+  if (g_orchMode) { music::begin(); music::registerTools(); }
   g_router.setEventTap(&sfxEventTap);
   // Screensaver idle clock: threshold from NVS (default 60 min, 0 = off); boot
   // counts as activity so a freshly powered device never saver-jumps early.

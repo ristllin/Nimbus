@@ -25,6 +25,8 @@
 #include "memory_subsystem.h"           // memory::registry/scratchpad/vectors (live World)
 #include "adapters/moderation.h"        // CUM-69 device classifier (behind the gate decision core)
 #include "nimbus/orch/moderation.h"     // portable gate decision core (fail-open/closed, admin-exempt)
+#include "nimbus/orch/media.h"          // CUM-40 validMusicName (for /play)
+#include "../sfx/music.h"               // CUM-40 music player control (/play)
 #include "adapters/audio_tts.h"         // spoken replies (TTS -> Telegram audio / device speaker)
 #include "adapters/provider_file_fetch.h"  // captureProviderFile - v4.1 code_interpreter file capture
 #include <solide/audio.h>               // reply.speak - play WAV on the device speaker (P6)
@@ -1219,7 +1221,7 @@ void handleMessage(const String& text, const String& fromName, const String& cha
       // the owner's queued URL downloads; closed alongside adding `remind`.)
       const bool ownerCmd = (v == "loops" || v == "loop" || v == "update" || v == "compact" ||
                              v == "skill" || v == "fetch" || v == "remind" || v == "clear" ||
-                             v == "mcp");
+                             v == "mcp" || v == "play");
       const bool owner = pseudo || agent::telegram::isOwner(chatId);
       // Every deterministic command reply SELF-IDENTIFIES (device name + fw).
       // Live confusion 2026-07-24: two devices sharing one bot token take turns
@@ -1240,6 +1242,27 @@ void handleMessage(const String& text, const String& fromName, const String& cha
         }
         deliver(chatId, selfTag + (g_otaInstallHook ? g_otaInstallHook()
                                                     : String("Updates aren't available on this build.")));
+        return;
+      }
+      if (v == "play") {
+        // Music control (CUM-40): "/play" all of /music, "/play <name>.mp3" one
+        // track, "/play stop|pause". WAV plays today; MP3 needs the decoder build.
+        String arg = String(cmd.args.c_str()); arg.trim();
+        String low = arg; low.toLowerCase();
+        if (low == "stop")      { music::stop();  deliver(chatId, selfTag + "Stopped music."); return; }
+        if (low == "pause")     { music::pause(); deliver(chatId, selfTag + "Paused music."); return; }
+        if (arg.length() == 0) {
+          int n = music::playAll();
+          deliver(chatId, selfTag + (n ? ("Playing " + String(n) + " track" + (n == 1 ? "" : "s") + " from the music folder.")
+                                        : String("No tracks in the music folder (SD /music).")));
+          return;
+        }
+        if (!nimbus::orch::validMusicName(arg.c_str())) {
+          deliver(chatId, selfTag + "That is not a valid track name. Use a .wav or .mp3 file in the music folder.");
+          return;
+        }
+        music::playNow({std::string(arg.c_str())});
+        deliver(chatId, selfTag + "Playing " + arg + ".");
         return;
       }
       if (v == "clear") {
@@ -1414,6 +1437,7 @@ void handleMessage(const String& text, const String& fromName, const String& cha
                         "/compact \xE2\x80\x94 summarize this conversation into memory\n"
                         "/clear - forget this conversation (keeps memory and files)\n"
                         "/mcp approve|deny <name> - approve a tool server\n"
+                        "/play [track|stop|pause] - play music from the SD card\n"
                         "/loop approve|deny|off|on <id> \xE2\x80\x94 manage a routine\n"
                         "/skill approve|deny <id> \xE2\x80\x94 manage a saved skill");
         return;

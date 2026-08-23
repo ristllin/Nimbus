@@ -27,6 +27,8 @@
 #include "agent/adapters/audio_stt.h"  // MICREC - mic + STT test
 #include "nimbus/fault.h"              // FAULT - resilience capability injection
 #include "sfx/sound_fx.h"              // SFX - play a sound clip by slug
+#include "sfx/music.h"                 // PLAY - music player drill (CUM-40)
+#include "nimbus/orch/media.h"         // validMusicName
 #include "sfx/sfx_sync.h"              // sfxsync - sync status in STATUS
 #include <LittleFS.h>
 #include <esp_task_wdt.h>
@@ -109,6 +111,17 @@ void dispatch(String line) {
     Serial.printf("SFX %s -> %s (level=%u theme=%s tier=%s vol=%u)\n", slug.c_str(),
                   ok ? "queued" : "unknown slug", ::sfx::level(), ::sfx::theme(),
                   ::sfx::tierStr(), agent::store::sfxVolume());
+    return;
+  }
+  if (line == "PLAY" || line.startsWith("PLAY ")) {
+    // Music player drill (CUM-40): "PLAY" all of /music, "PLAY <name>" one track,
+    // "PLAY stop|pause". WAV plays; MP3 needs the Helix decoder build.
+    String arg = line.length() > 4 ? line.substring(5) : String(""); arg.trim();
+    String low = arg; low.toLowerCase();
+    if (low == "stop")       { music::stop();  Serial.println("PLAY stop"); }
+    else if (low == "pause") { music::pause(); Serial.println("PLAY pause"); }
+    else if (arg.length() == 0) { int n = music::playAll(); Serial.printf("PLAY all -> %d track(s), mp3=%s\n", n, music::mp3Supported() ? "yes" : "no"); }
+    else { bool ok = nimbus::orch::validMusicName(arg.c_str()) && music::playNow({std::string(arg.c_str())}) >= 0; Serial.printf("PLAY %s -> %s\n", arg.c_str(), ok ? "queued" : "invalid name"); }
     return;
   }
   if (line == "STATUS") {
