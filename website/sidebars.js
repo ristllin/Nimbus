@@ -77,6 +77,7 @@ const sidebars = {
         'reference/config-and-nvs',
         'reference/tool-catalog',
         'reference/turn-contract',
+        'reference/capabilities-matrix',
         'reference/tools-and-commands',
         'reference/changelog',
       ],

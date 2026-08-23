@@ -242,6 +242,29 @@ with embeddings/vision/STT/TTS available where the chosen upstream supports them
 Get the key from your Cumulo Nimbus account (see the cloud docs page); set it on
 Capabilities > Models (Cumulo key).
 
+## Model catalog, capabilities, and fallbacks
+
+The device builds a live, capability-aware model catalog per provider by harvesting
+each key's own `/v1/models` (dropping the old 8-id cap) and classifying every model
+into roles (orchestrator, sub-agent, embedding, vision, STT, TTS, image), a size
+class (S/M/L), and capability flags. It reads capability fields where the API
+supplies them (Anthropic `max_input_tokens`/`max_tokens`/`capabilities`, Mistral
+`capabilities`) and id-family heuristics otherwise. A one-shot cheap usability probe
+per selected model means a model your key cannot actually use never appears. The
+catalog is served at `GET /api/models` (add `?all=1` to include probe-hidden models)
+and cached in PSRAM with a 24 h refresh. The generated
+[capability matrix](reference/capabilities-matrix.md) shows which role and feature
+each provider offers.
+
+Provider failover is a rule engine shared with the cloud (one admin-editable rule
+set): predicates match provider, model (with a trailing-`*` glob), size class,
+capability, and error class; the ordered targets are tried in turn, skipping the
+one that just failed. It ships with size-class defaults that reproduce the classic
+priority walk, applies to every turn (the mid-turn switch and the between-turn
+ladder both consult it), never falls embeddings back cross-provider, and records
+each switch as a context note the assistant can mention if relevant. The active set
+is served at `GET /api/fallbacks`. See [harness.md](harness.md) for the turn flow.
+
 ## Local model as the custom endpoint (Ollama and friends)
 
 The device can run against any OpenAI-compatible server on your own network -
