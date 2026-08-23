@@ -25,6 +25,16 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 <button type=button data-go=device>Check for updates</button>
 </div>
 </div>
+<div class=sec id=whatNext style="display:none;border-color:var(--teal)">
+<h2>What next</h2>
+<p class=hint>You're all set up. A few good next steps:</p>
+<div class=row style="flex-wrap:wrap;gap:8px">
+<button type=button data-go=chat>Say hello in Chat</button>
+<button type=button data-go=assistant>Add more providers or tools</button>
+<button type=button data-go=device>Pair with the cloud</button>
+</div>
+<div class=row style="margin-top:8px"><button id=whatNextDismiss type=button style="background:var(--raise3);color:var(--ink2)">Dismiss</button></div>
+</div>
 <div class=info id=info>loading&hellip;</div>
 <div class=sec>
 <h2>Active sessions</h2>
@@ -67,13 +77,8 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 <label>Device clock</label>
 <p class="hint tip">Set automatically from the internet once Wi-Fi connects - there is no manual clock. Until it syncs, daily and weekly routines wait.</p>
 <div class=row><b id=devClock>&hellip;</b><span class=hint id=clockBadge>&hellip;</span><button id=clockSyncBtn type=button>Sync now</button></div>
-<label>Display <button class=qh type=button aria-expanded=false aria-label="About the display">?</button></label>
-<p class="hint tip">Which screen is fitted to this device. <b>E-ink</b> is the 2.9&quot; black-and-white panel with the knob. <b>Touch</b> is the 2.8&quot; color touchscreen - it replaces the knob, so the menu is tapped instead of turned. Change this only if the hardware changed. Takes effect after restart.</p>
-<select id=scrModel>
-<option value=eink>E-ink - knob</option>
-<option value=tft>Touch - color touchscreen</option>
-</select>
-<div class=memv id=scrModelFixed style="display:none"></div>
+<label>Display</label>
+<p class=hint>This device uses a touch screen.</p>
 <label class=pr style="margin-top:8px"><input type=checkbox id=scrFlip> Display flip <button class=qh type=button aria-expanded=false aria-label="About display flip">?</button></label>
 <p class="hint tip">Turns the screen 180 degrees for an upside-down mount. Touch display only; takes effect right away.</p>
 <div id=tchCalWrap>

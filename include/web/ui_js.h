@@ -157,6 +157,12 @@ document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>goDest(b.dataset.p));
 // Quick actions (Home) and any in-page link that jumps to a destination.
 document.querySelectorAll('[data-go]').forEach(b=>b.onclick=()=>goDest(b.dataset.go));
 goDest('home');   // default destination
+// "What next" card on Home, shown once right after onboarding finishes (CUM-66).
+(function(){try{if(localStorage.getItem('nimbusJustOnboarded')==='1'){
+  localStorage.removeItem('nimbusJustOnboarded');
+  const w=$('whatNext'); if(w)w.style.display='';
+}}catch(e){}
+const dz=$('whatNextDismiss'); if(dz)dz.onclick=()=>{const w=$('whatNext'); if(w)w.style.display='none';};})();
 
 // ---- Global search / command palette (CUM-62) ------------------------------
 // One search over destinations + actions (a static index), files, memory,
@@ -666,19 +672,8 @@ function applyState(d){
     const mv=+b.dataset.m; b.classList.toggle('on',mv===d.mode); b.classList.toggle('nf',mv===0);
     b.onclick=()=>{ if(mv!==d.mode) switchMode(mv); };
   });}
-  // Display panel: hardware identity, bound at boot. Confirm before changing -
-  // picking the wrong one leaves the fitted screen dark until it is set back.
-  const sm=$('scrModel'); if(sm&&d.scrModel!==undefined&&sm!==document.activeElement)sm.value=d.scrModel;
-  // Fixed-panel board (all-in-one): the display type is a compile-time identity,
-  // not a runtime choice - a disabled-but-visible dropdown reads as broken ("why
-  // won't it click?"). Show a plain read-only value instead, same as the pattern
-  // used elsewhere (touchCap swapping the calibration field for orientation below).
-  const smf=$('scrModelFixed');
-  if(sm&&d.scrFixed){
-    sm.style.display='none';
-    if(smf){const lbl=sm.querySelector('option[value="'+d.scrModel+'"]');
-      smf.textContent=(lbl?lbl.textContent:d.scrModel)+' (fixed)';smf.style.display='';}
-  }else if(sm){sm.style.display='';if(smf)smf.style.display='none';}
+  // Display is touch-only now (e-ink deprecated); the panel selector was retired,
+  // so only the 180-degree flip remains a runtime choice.
   const sf=$('scrFlip');
   if(sf&&document.activeElement!==sf){sf.checked=!!d.scrFlip;
     sf.onchange=()=>{const f=new FormData();f.append('scrFlip',sf.checked?'1':'0');
@@ -1701,11 +1696,6 @@ if($('tchCalSave'))$('tchCalSave').onclick=()=>{
   }
   orchApply({tchCal:v});
 };
-if($('scrModel'))$('scrModel').onchange=function(){
-  const v=this.value,was=v==='tft'?'eink':'tft';
-  if(!confirm('Change the display to '+(v==='tft'?'Touch':'E-ink')+'?\n\nSet this only if the screen fitted to the device changed. Restart to apply. If it does not match the hardware, the screen stays blank until you set it back.')){this.value=was;return;}
-  orchApply({scrModel:v}).then(ok=>{if(ok)toast('Restart to apply');});
-};
 $('sfxVol').oninput=()=>{$('sfxVolPct').textContent=$('sfxVol').value+'%';};
 $('sfxVol').onchange=()=>orchApply({sfxVol:$('sfxVol').value});
 $('sfxPlay').onclick=()=>{const b=new URLSearchParams();b.set('slug',$('sfxSlug').value);
@@ -2725,10 +2715,9 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
   function show(){el('onbov').style.display='';render();}
   function bodyHtml(s){
     if(s.id==='welcome')return '<p class=hint>Two quick required steps - Wi-Fi and one AI provider key - then a few optional extras you can skip. Takes about a minute.</p>';
-    if(s.id==='display')return '<p class=hint>Which display is fitted on this device? A touch-screen board can\'t ask on its own screen until this is set.</p>'+
-      '<div class=row style="gap:10px"><button type=button class="onbmb onbdb" data-d=eink style="padding:20px 10px">E-ink + knob</button>'+
-      '<button type=button class="onbmb onbdb" data-d=tft style="padding:20px 10px">Touch screen</button></div>'+
-      '<p class=hint id=onb_dispmsg>Saved to the device right away. A change applies after a restart.</p>';
+    if(s.id==='display')return '<p class=hint>This device has a touch screen. If it is mounted upside down, flip the display so it reads the right way up.</p>'+
+      '<label class=pr style="margin-top:8px"><input type=checkbox id=onb_flip> Flip display 180 degrees</label>'+
+      '<p class=hint id=onb_dispmsg>Applies to the screen right away.</p>';
     if(s.id==='wifi')return '<label>Network name</label>'+
       '<div class=row><input id=onb_ssid placeholder="Network name"><button type=button id=onb_scan>Scan</button></div>'+
       '<p class=hint style="margin:4px 0">Nimbus connects to 2.4 GHz networks.</p>'+
@@ -2737,7 +2726,7 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
       '<div class=row style="margin-top:8px"><button type=button id=onb_wifisave>Connect</button><span class=hint id=onb_wifimsg></span></div>'+
       '<div id=onb_handoff class=hint style="display:none;margin-top:12px;padding:12px;border:1px solid var(--line2);border-radius:8px"></div>';
     if(s.id==='provider')return '<label>Provider</label>'+
-      '<select id=onb_prov><option value=mistral selected>Mistral</option><option value=openai>OpenAI</option><option value=anthropic>Anthropic</option></select>'+
+      '<select id=onb_prov><option value=cumulo selected>Cumulo Nimbus</option><option value=anthropic>Anthropic</option><option value=openai>OpenAI</option><option value=mistral>Mistral</option><option value=zai>Z.ai</option></select>'+
       '<p class=hint id=onb_provguide></p>'+
       '<label>API key</label><input id=onb_key type=password placeholder="Paste your API key">'+
       '<div class=row style="margin-top:8px"><button type=button id=onb_provsave>Save &amp; Verify</button><span class=hint id=onb_provmsg></span></div>'+
@@ -2777,15 +2766,16 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
   function next(){ idx=Math.min(idx+1,STEPS.length-1);rememberStep();render(); }
   function wire(s){
     if(s.id==='display'){
-      [...document.querySelectorAll('.onbdb')].forEach(b=>{
-        b.classList.toggle('on',b.dataset.d===(dispSel!==null?dispSel:bootDisp));
-        b.onclick=()=>{const v=b.dataset.d;
-          orchApply({scrModel:v}).then(ok=>{
-            if(!ok){el('onb_dispmsg').textContent='Couldn\'t save - try again.';return;}
-            dispSel=v;render();
-            el('onb_dispmsg').textContent=dispChanged()?'Saved ✓ - applies when the device restarts at the end of setup.':'Saved ✓';
-          });};
-      });
+      // New devices are touch screens; a board that booted blind (reported eink)
+      // is set to its touch panel here so its own screen can render. E-ink is
+      // deprecated and no longer offered. Then the 180-degree flip for upside-down
+      // mounts applies live.
+      if(bootDisp!=='tft'){orchApply({scrModel:'tft'}).then(ok=>{if(ok)dispSel='tft';});}
+      const fl=el('onb_flip');
+      if(fl){fl.onchange=()=>{const fd=new FormData();fd.append('scrFlip',fl.checked?'1':'0');
+        fetch('/api/config',{method:'POST',body:fd})
+          .then(()=>{el('onb_dispmsg').textContent=fl.checked?'Flipped - applied.':'Normal - applied.';})
+          .catch(()=>{el('onb_dispmsg').textContent='Couldn\'t save - try again.';});};}
     } else if(s.id==='wifi'){
       el('onb_scan').onclick=doScan;
       el('onb_wifisave').onclick=doWifi;
@@ -2793,9 +2783,11 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
     } else if(s.id==='provider'){
       // Per-provider setup guidance, updated as the selection changes.
       const pv=el('onb_prov'),pg=el('onb_provguide');
-      const G={mistral:'Mistral (recommended): sign up at console.mistral.ai, add billing credits, then create an API key. Good value and it also powers on-device voice.',
+      const G={cumulo:'Cumulo Nimbus (recommended): sign in at app.cumulo-nimbus.ai and create a device key. One account, no separate provider billing to manage.',
+        anthropic:'Anthropic: sign up at console.anthropic.com, add credit, then create an API key. Note: text only, no on-device voice.',
         openai:'OpenAI: sign up at platform.openai.com, add credit under Billing, then create a key under API keys.',
-        anthropic:'Anthropic: sign up at console.anthropic.com, add credit, then create an API key. Note: text only, no on-device voice.'};
+        mistral:'Mistral: sign up at console.mistral.ai, add billing credits, then create an API key. Good value and it also powers on-device voice.',
+        zai:'Z.ai: sign up at z.ai, add credit, then create an API key.'};
       const upd=()=>{pg.textContent=G[pv.value]||'';};
       pv.onchange=upd;upd();
       el('onb_provsave').onclick=doProvider;
@@ -2824,7 +2816,7 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
     } else if(s.id==='done'){
       const mn=pendingMode!==null?pendingMode:curMode;
       el('onb_summary').innerHTML='&bull; Wi-Fi: '+(wifiOk?'connected':'not connected')+'<br>&bull; Provider: '+(provOk?'verified':'not verified')+'<br>&bull; Mode: '+(mn?'Orchestrator':'Notifier')+
-        (dispChanged()?'<br>&bull; Display: '+(dispSel==='tft'?'Touch screen':'E-ink + knob')+' - the device restarts when you finish to apply it':'');
+        (dispChanged()?'<br>&bull; Display: touch screen - the device restarts when you finish to apply it':'');
     }
   }
   function doScan(){
@@ -2915,7 +2907,7 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
     const b=el('onbNext');b.disabled=true;msg('Finishing…');
     fetch('/api/onboard/complete',{method:'POST'}).then(r=>r.ok?r.json():r.json().then(e=>Promise.reject(e.error||r.status)))
     .then(res=>{
-      try{localStorage.removeItem('nimbusOnboardStep');}catch(e){}
+      try{localStorage.removeItem('nimbusOnboardStep');localStorage.setItem('nimbusJustOnboarded','1');}catch(e){}
       const mn=pendingMode!==null?pendingMode:curMode;
       // The server decides whether the display change needs a restart (stored
       // panel vs the driver bound at boot) - robust to the TFT Wi-Fi handoff
