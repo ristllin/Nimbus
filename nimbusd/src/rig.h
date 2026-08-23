@@ -133,6 +133,13 @@ class NimbusdRig {
     return out;
   }
 
+  // Outbound delivery hook: called (on the engine thread, inside a turn) with
+  // every reply the engine produces, so the daemon can forward it to Telegram.
+  // Set once at wiring time; the rig still records deliveries for scenarios.
+  void setDeliver(std::function<void(const std::string&, const std::string&)> fn) {
+    onDeliver_ = std::move(fn);
+  }
+
   agent::TurnEngine& engine() { return *eng_; }
   orch::ToolRegistry& registry() { return reg_; }
   orch::VectorMemory& vectors() { return vec_; }
@@ -483,6 +490,7 @@ class NimbusdRig {
   void record(const std::string& chat, const std::string& text) {
     cur_.deliveries.push_back(text);
     capture(chat, "assistant", text, "");
+    if (onDeliver_) onDeliver_(chat, text);
   }
 
   static std::string trunc(const std::string& s, size_t n) {
@@ -508,6 +516,7 @@ class NimbusdRig {
   std::unique_ptr<agent::TurnEngine> eng_;
 
   std::string convId_, antEnv_, antAgents_, memory_, lastHost_;
+  std::function<void(const std::string&, const std::string&)> onDeliver_;
 
   TurnRecord cur_;
   std::vector<TurnRecord> turns_;

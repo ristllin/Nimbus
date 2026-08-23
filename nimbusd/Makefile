@@ -64,8 +64,25 @@ CORE_VPATH := $(sort $(dir $(CORE_SRCS)))
 TEST_SRCS := $(wildcard $(CURDIR)/tests/test_*.cpp)
 TEST_BINS := $(patsubst $(CURDIR)/tests/%.cpp,$(BUILD)/%,$(TEST_SRCS))
 
-.PHONY: all test check clean
-all: check
+BIN := $(BUILD)/nimbusd
+
+.PHONY: all test check clean daemon
+all: daemon
+
+# The daemon binary.
+daemon: $(BIN)
+$(BIN): $(CURDIR)/src/main.cpp $(CORE_OBJS) | $(BUILD)
+	$(CXX) $(CXXFLAGS) $< $(CORE_OBJS) $(LDFLAGS) -o $@
+	@echo "built $@"
+
+# The live scenario suite (PAID: runs real provider turns). Built by `make
+# scenarios`, but never run automatically - `make test` stays offline/free.
+SCN_BIN := $(BUILD)/nimbusd-scenarios
+.PHONY: scenarios
+scenarios: $(SCN_BIN)
+$(SCN_BIN): $(CURDIR)/scenarios/scenarios.cpp $(CORE_OBJS) | $(BUILD)
+	$(CXX) $(CXXFLAGS) $< $(CORE_OBJS) $(LDFLAGS) -o $@
+	@echo "built $@ (run with provider keys in the env; PAID)"
 
 vpath %.cpp $(CORE_VPATH)
 
@@ -84,13 +101,14 @@ test: $(TEST_BINS)
 	 echo; if [ $$fail -eq 0 ]; then echo "ALL NIMBUSD TESTS PASSED"; else echo "NIMBUSD TESTS FAILED"; fi; \
 	 exit $$fail
 
-# Compile-only: prove the store layer + tests still build against the current
-# engine headers, no network or keys needed.
-check: $(TEST_BINS)
-	@echo "nimbusd tests compile against the current engine"
+# Compile-only: prove the daemon + store layer + tests still build against the
+# current engine headers, no network or keys needed.
+check: $(BIN) $(TEST_BINS)
+	@echo "nimbusd + tests compile against the current engine"
 
 -include $(CORE_OBJS:.o=.d)
 -include $(TEST_BINS:=.d)
+-include $(BIN:=.d)
 
 clean:
 	@rm -rf $(BUILD)
