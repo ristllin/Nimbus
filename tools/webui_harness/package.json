@@ -1,0 +1,15 @@
+{
+  "name": "nimbus-webui-harness",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Host-side sim-e2e (T4) harness + Playwright suite for the Nimbus web app (lane N1).",
+  "scripts": {
+    "serve": "node server.mjs",
+    "test": "playwright test",
+    "test:headed": "playwright test --headed"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.0"
+  }
+}
