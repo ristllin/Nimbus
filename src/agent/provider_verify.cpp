@@ -94,6 +94,129 @@ static void buildAndStoreCatalog(const String& provider, const char* body, size_
         (unsigned)cat.size(), (unsigned)out.length());
 }
 
+// One minimal probe call confirming a specific model is usable by this key (the
+// usability probe: "a model your key cannot use never appears"). Opens its own
+// short-lived TLS session, so the caller MUST already hold the work arbiter and
+// have closed the verify GET client (single TLS slot). Returns the portable
+// verdict from the HTTP status + a bounded slice of the error body.
+// Build the minimal per-provider probe request (host + full HTTP/1.0 request incl.
+// body). Returns false for a provider that has no probe wire. Split out to keep
+// probeModel under the complexity gate.
+static bool buildProbeRequest(const String& provider, const String& model,
+                              const char*& host, String& req) {
+  String path, body, authHdr;
+  if (provider == "openai") {
+    host = OPENAI_HOST;
+    path = "/v1/responses";
+    body = String("{\"model\":\"") + model + "\",\"input\":\"hi\",\"max_output_tokens\":16}";
+    authHdr = String("Authorization: Bearer ") + store::openaiKey() + "\r\n";
+  } else if (provider == "anthropic") {
+    host = ANTHROPIC_HOST;
+    path = "/v1/messages";
+    body = String("{\"model\":\"") + model +
+           "\",\"max_tokens\":1,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}";
+    authHdr = String("x-api-key: ") + store::anthropicKey() + "\r\nanthropic-version: " ANTHROPIC_VER "\r\n";
+  } else if (provider == "mistral") {
+    host = MISTRAL_HOST;
+    path = "/v1/chat/completions";
+    body = String("{\"model\":\"") + model +
+           "\",\"max_tokens\":1,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}";
+    authHdr = String("Authorization: Bearer ") + store::mistralKey() + "\r\n";
+  } else {
+    return false;
+  }
+  req = String("POST ") + path + " HTTP/1.0\r\nHost: " + host + "\r\n" + authHdr +
+        "Content-Type: application/json\r\nContent-Length: ";
+  req += (int)body.length();
+  req += "\r\nAccept-Encoding: identity\r\nUser-Agent: Nimbus\r\nConnection: close\r\n\r\n";
+  req += body;
+  return true;
+}
+
+// Read the HTTP status code and a bounded slice of the response body (enough for
+// error classification) off an already-sent probe request. Returns the code (0 if
+// none). Shares the read shape with the verify GET above.
+static int readProbeResponse(WiFiClientSecure& client, String& errBody) {
+  const uint32_t deadline = millis() + 15000;
+  String status;
+  while ((int32_t)(millis() - deadline) < 0) {
+    if (client.available()) {
+      char c = client.read();
+      if (c == '\n') break;
+      if (c != '\r') status += c;
+    } else if (!client.connected() && !client.available()) {
+      break;
+    } else {
+      delay(2);
+    }
+  }
+  int code = 0, sp = status.indexOf(' ');
+  if (sp > 0 && (int)status.length() >= sp + 4) code = status.substring(sp + 1, sp + 4).toInt();
+  errBody.reserve(1200);
+  while ((int32_t)(millis() - deadline) < 0 && errBody.length() < 1100) {
+    if (client.available()) errBody += (char)client.read();
+    else if (!client.connected() && !client.available()) break;
+    else delay(2);
+  }
+  return code;
+}
+
+static nimbus::orch::ProbeVerdict probeModel(const String& provider, const String& model) {
+  const char* host = nullptr;
+  String req;
+  if (!buildProbeRequest(provider, model, host, req)) return nimbus::orch::ProbeVerdict::Unknown;
+  WiFiClientSecure client;
+  tlsSetup(client);
+  client.setHandshakeTimeout(12);
+  client.setConnectionTimeout(15000);
+  if (!client.connect(host, 443)) return nimbus::orch::ProbeVerdict::Unknown;
+  client.print(req);
+  String errBody;
+  const int code = readProbeResponse(client, errBody);
+  tlsClose(client);
+  return nimbus::orch::probeVerdict(code, std::string(errBody.c_str()));
+}
+
+// Probe the owner's SELECTED models for a provider (bounded to protect the single
+// TLS slot) and fold the verdicts into the cached catalog. An Unknown (transient)
+// verdict leaves the model as-is for a later retry; a definitive verdict marks the
+// model probed and sets usable, so an unusable selection stops appearing.
+static void probeSelectedModels(const String& provider) {
+  String cands[2];
+  int nc = 0;
+  const String om = store::orchModel(provider);
+  const String sm = store::subModel(provider);
+  if (om.length()) cands[nc++] = om;
+  if (sm.length() && sm != om) cands[nc++] = sm;
+  if (!nc) return;
+  const String blob = store::modelCatalogJson(provider);
+  if (!blob.length()) return;
+  JsonDocument md(&PsramJsonAllocator::instance());
+  if (deserializeJson(md, blob) != DeserializationError::Ok) return;
+  std::vector<nimbus::orch::ModelInfo> cat;
+  nimbus::orch::modelsFromJson(md.as<JsonArrayConst>(), cat);
+  bool changed = false;
+  for (int i = 0; i < nc; ++i) {
+    nimbus::orch::ModelInfo* found = nullptr;
+    for (auto& mi : cat)
+      if (mi.id == cands[i].c_str()) { found = &mi; break; }
+    if (!found) continue;
+    const nimbus::orch::ProbeVerdict v = probeModel(provider, cands[i]);
+    if (v == nimbus::orch::ProbeVerdict::Unknown) continue;
+    found->usable = (v == nimbus::orch::ProbeVerdict::Usable);
+    found->probed = true;
+    changed = true;
+    alogf("verify: %s probe %s -> %s", provider.c_str(), cands[i].c_str(),
+          found->usable ? "usable" : "UNUSABLE");
+  }
+  if (!changed) return;
+  JsonDocument out(&PsramJsonAllocator::instance());
+  nimbus::orch::modelsToJson(cat, out.to<JsonArray>(), true);
+  String s;
+  serializeJson(out, s);
+  if (s.length() <= 3900) store::setModelCatalogJson(provider, s);
+}
+
 static void runOne() {
   String provider = g_provider;
 
@@ -202,10 +325,11 @@ static void runOne() {
              : (code == 401 || code == 403 || (isTg && code == 404)) ? 0
              : -1;
       // LLM providers: the verify already fetched /v1/models - HARVEST it (owner
-      // 2026-07-16: the static model dropdowns were stale; no Opus 4.8 / Fable /
-      // new-gen OpenAI). Stream the body into a bounded PSRAM buffer, pull every
-      // "id" that passes the per-provider chat-capable filter, cap at 8, store as
-      // the live choice list (NVS; static defaults remain the fallback).
+      // 2026-07-16: the static model dropdowns were stale, missing current-gen
+      // models). Stream the body into a bounded PSRAM buffer, pull every "id" that
+      // passes the per-provider chat-capable filter, cap at 8, store as the live
+      // choice list (NVS; static defaults remain the fallback). The richer
+      // capability catalog is built separately by buildAndStoreCatalog below.
       if (!isTg && !isTav && code == 200) {
         const size_t kCap = 65536;   // OpenAI's list is the biggest (~40 KB)
         char* buf = (char*)heap_caps_malloc(kCap, MALLOC_CAP_SPIRAM);
@@ -424,6 +548,10 @@ static void runOne() {
     }
     tlsClose(client);  // RST-close on EVERY path (connected or not)
   }
+  // Usability probe (bounded): now that the GET client is closed but we still hold
+  // the work slot, confirm the owner's SELECTED models actually run on this key.
+  if (result == 1 && (provider == "openai" || provider == "anthropic" || provider == "mistral"))
+    probeSelectedModels(provider);
   arbiter::releaseWork();
   recordVerify(provider, result);
   g_pending = false;  // clear LAST so pending() covers the whole run

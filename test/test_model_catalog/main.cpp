@@ -243,6 +243,12 @@ static void test_probe_verdict() {
   TEST_ASSERT_TRUE(probeVerdict(404, "{\"error\":{\"code\":\"model_not_found\"}}") ==
                    ProbeVerdict::Unusable);
   TEST_ASSERT_TRUE(probeVerdict(400, "The model `x` does not exist") == ProbeVerdict::Unusable);
+  // Real error bodies observed live 2026-08-23 from each provider's probe wire:
+  TEST_ASSERT_TRUE(probeVerdict(400, "The requested model 'gpt-5-x' does not exist.") ==
+                   ProbeVerdict::Unusable);                                   // OpenAI
+  TEST_ASSERT_TRUE(probeVerdict(404, "{\"error\":{\"type\":\"not_found_error\",\"message\":"
+                                     "\"model: claude-x\"}}") == ProbeVerdict::Unusable);  // Anthropic
+  TEST_ASSERT_TRUE(probeVerdict(400, "Invalid model: mistral-x") == ProbeVerdict::Unusable);  // Mistral
   TEST_ASSERT_TRUE(probeVerdict(403, "your key does not have access to this model") ==
                    ProbeVerdict::Unusable);
   TEST_ASSERT_TRUE(probeVerdict(401, "unauthorized") == ProbeVerdict::Unusable);
