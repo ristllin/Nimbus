@@ -50,6 +50,66 @@ RGB rainbowWheel(uint32_t nowMs, int pos, int ledCount) {
                                nowMs * 11u);
   return solide::ring::hsv(hp, 255, 255);
 }
+
+// --- CUM-42: the five candidate "working" (Running) animations ---------------
+// Each returns a per-LED brightness in permille (0..1000) for LED index k of a
+// `len`-LED arc at `nowMs`. PURE + DETERMINISTIC (no rand/millis capture) so the LED
+// ring, the on-screen ring, and the web simulator render byte-identically and the
+// host tests can pin exact frames. The hue/brightness scaling is applied by the
+// caller's put(); this only shapes the motion.
+constexpr uint16_t kSparkLingerMs = 900;    // ember fade time behind the CometSparks head
+constexpr uint16_t kFireflyMs     = 2200;   // per-LED Fireflies breathe period
+constexpr uint8_t  kFireflyThresh = 150;    // below this a firefly reads as dark(ish)
+
+// Small integer hash for the stable per-LED randomness (spark seeds, firefly phases).
+uint32_t h32(uint32_t x) { x *= 2654435761u; x ^= x >> 15; x *= 2246822519u; x ^= x >> 13; return x; }
+
+uint32_t lvl8(uint8_t v) { return uint32_t(v) * 1000u / 255u; }   // 0..255 -> permille
+uint8_t withFloor(uint8_t f) { return f < kFloorDim ? kFloorDim : f; }   // arc never fully dark
+
+// Each variant is its own small function so the dispatcher stays flat (keeps the
+// per-function complexity low) - all return a per-LED level in permille (0..1000).
+uint32_t cometTailLevel(int k, int len, uint32_t nowMs) {
+  const int tail = (len - 1 < kCometTail) ? (len - 1) : kCometTail;
+  const int dist = (solide::ring::cometHead(nowMs, len, kCometStepMs) - k + len) % len;
+  return lvl8(withFloor(solide::ring::cometFalloff(dist, tail)));
+}
+uint32_t cometSparksLevel(int k, int len, uint32_t nowMs) {
+  const int tail = 2 < len - 1 ? 2 : (len - 1 > 0 ? len - 1 : 0);
+  const int dist = (solide::ring::cometHead(nowMs, len, kCometStepMs) - k + len) % len;
+  uint8_t f = solide::ring::cometFalloff(dist, tail);
+  if (dist > tail && (h32((uint32_t)k) & 3u) == 0u) {   // ~1 in 4 LEDs seed an ember
+    const uint8_t e = solide::ring::fadeLevel((uint32_t)(dist - tail) * kCometStepMs, kSparkLingerMs);
+    if (e > f) f = e;                                    // ember lingers, then dies
+  }
+  return lvl8(withFloor(f));
+}
+uint32_t dualCometLevel(int k, int len, uint32_t nowMs) {
+  const int tail = 3 < len - 1 ? 3 : (len - 1 > 0 ? len - 1 : 0);
+  const int head = solide::ring::cometHead(nowMs, len, kCometStepMs);
+  const uint8_t f1 = solide::ring::cometFalloff((head - k + len) % len, tail);
+  const uint8_t f2 = solide::ring::cometFalloff(((head + len / 2) - k + len) % len, tail);
+  return lvl8(withFloor(f1 > f2 ? f1 : f2));
+}
+uint32_t firefliesLevel(int k, uint32_t nowMs) {
+  const uint16_t phase = (uint16_t)(h32((uint32_t)k + 0x9e37u) % kFireflyMs);
+  const uint8_t b = solide::ring::breatheLevel(nowMs + phase, kFireflyMs);
+  if (b <= kFireflyThresh) return lvl8(kFloorDim);   // dim between twinkles
+  // Map (thresh..255] -> (floor..1000] so lit fireflies pop above the floor.
+  return lvl8(kFloorDim) + uint32_t(b - kFireflyThresh) * (1000u - lvl8(kFloorDim)) / (255u - kFireflyThresh);
+}
+
+uint32_t runStyleLevel(RunStyle style, int k, int len, uint32_t nowMs) {
+  if (len <= 0) return 0;
+  switch (style) {
+    case RunStyle::CometSparks: return cometSparksLevel(k, len, nowMs);
+    case RunStyle::DualComet:   return dualCometLevel(k, len, nowMs);
+    case RunStyle::BreatheArc:  return lvl8(solide::ring::breatheLevel(nowMs, kBreatheMs));
+    case RunStyle::Fireflies:   return firefliesLevel(k, nowMs);
+    case RunStyle::CometTail:
+    default:                    return cometTailLevel(k, len, nowMs);
+  }
+}
 }  // namespace
 
 void Animator::configure(int ledCount, Posture posture, uint8_t brightness) {
@@ -283,15 +343,10 @@ void Animator::frame(uint32_t nowMs, RGB* out, int n) {
           out[(sp.start + k) % L] = scaled(c);
         };
         const auto A = solide::ring::Anim(seg.anim);
-        if (A == solide::ring::Anim::Comet) {           // sliding head + fading tail
-          const int tail = (sp.len - 1 < kCometTail) ? (sp.len - 1) : kCometTail;
-          const int head = solide::ring::cometHead(nowMs, sp.len, kCometStepMs);
-          for (int k = 0; k < sp.len; ++k) {
-            const int dist = (head - k + sp.len) % sp.len;
-            uint8_t f = solide::ring::cometFalloff(dist, tail);
-            if (f < kFloorDim) f = kFloorDim;
-            put(k, uint32_t(f) * 1000 / 255);
-          }
+        if (A == solide::ring::Anim::Comet) {           // the "working" slide - one of the
+          // five CUM-42 candidate variants, selected by runStyle_ (default = the shipped
+          // comet). Pure per-LED shaping keeps frame() itself simple.
+          for (int k = 0; k < sp.len; ++k) put(k, runStyleLevel(runStyle_, k, sp.len, nowMs));
         } else if (A == solide::ring::Anim::Breathe) {  // whole arc breathes
           const uint32_t lp = uint32_t(solide::ring::breatheLevel(nowMs, kBreatheMs)) * 1000 / 255;
           for (int k = 0; k < sp.len; ++k) put(k, lp);

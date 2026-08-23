@@ -176,6 +176,19 @@ upstream. The existing `ring_plan` (Dark single-LED vs Full segments) remains
 the *steady-state* decision layer; the Animator is the *motion* layer that
 renders those decisions with transitions between them.
 
+### Candidate "working" animations
+
+The processing slide is the one animated steady state the ambient grammar allows, and
+it has five candidate looks behind a selector (`nimbus::ring::RunStyle`): comet with a
+fading tail (the default), comet with sparse trailing sparks, a dual comet, a breathing
+arc, and fireflies. Each is a deterministic function of `(nowMs, arc geometry)`, so the
+LED ring, the on-screen ring, and the web simulator render identical frames; the host
+suite `test_ring_styles` pins the frame invariants (fail-dark, no stray pixels after a
+retire) for every variant. Preview and compare them in
+[`tools/ring_ab_demo.html`](../tools/ring_ab_demo.html) (a self-contained page that
+ports the device math one-to-one), or drive them on real hardware with the test-console
+`RINGANIM 0..4` command. The device default stays the comet until a variant is chosen.
+
 ### Keeping the head arc honest (wake-ups)
 
 The orchestrator paints a "head" arc while a turn runs and holds it while that

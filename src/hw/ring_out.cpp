@@ -57,6 +57,8 @@ void setRingFps(int fps) {
   g_animTickMs = 1000u / uint32_t(fps);
 }
 
+void setRunStyle(nimbus::ring::RunStyle style) { g_anim.setRunStyle(style); }   // CUM-42
+
 // Reveal brightness hold (P2.4): while the wake-reveal's eased envelope owns the
 // global brightness (main loop writes it every iteration), applyRingPlan must NOT
 // fight it - during an Orchestrator turn refreshRing() fires on every sub-agent
