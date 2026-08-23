@@ -215,6 +215,56 @@ agents (environments/agents/sessions + an events poll), OpenAI background
 Responses, Mistral Conversations (synchronous under an async skin), and the
 custom LAN backend.
 
+## Z.ai (GLM)
+
+Z.ai's GLM models speak the OpenAI chat-completions dialect, but under the base
+path `/api/paas/v4` (not `/v1`). The same token is served by two hosts depending
+on region: `api.z.ai` and `open.bigmodel.cn`. On the first verify the device
+**probes both** (a `GET /api/paas/v4/models` with the token) and pins whichever
+answers, so you never pick the wrong region by hand. The model list is harvested
+into the catalog (GET /api/models) with GLM ids classified into roles; a GLM
+sub-agent runs one synchronous `POST /api/paas/v4/chat/completions` and its reply
+is read from `choices[0].message.content`. Set the key on Capabilities > Models
+(Z.ai token); leave the endpoint to the probe.
+
+## Cumulo Nimbus router
+
+Cumulo Nimbus is a router: one key, and the upstream provider is chosen per role.
+The device speaks the OpenAI chat-completions dialect to
+`/router/<upstream>/v1/...` on the router host (default `app.cumulo-nimbus.ai`,
+overridable), and the router forwards to the chosen upstream (Anthropic, OpenAI,
+Mistral, Z.ai) and normalizes the reply. The key verifies against
+`/router/<upstream>/v1/models`. A model is selected as `<upstream>/<model>` (for
+example `anthropic/claude-sonnet-5`); the adapter splits the upstream off, routes
+to `/router/<upstream>/v1/chat/completions`, and sends the bare model id. This
+lets one key drive the orchestrator on one upstream and sub-agents on another,
+with embeddings/vision/STT/TTS available where the chosen upstream supports them.
+Get the key from your Cumulo Nimbus account (see the cloud docs page); set it on
+Capabilities > Models (Cumulo key).
+
+## Model catalog, capabilities, and fallbacks
+
+The device builds a live, capability-aware model catalog per provider by harvesting
+each key's own `/v1/models` (dropping the old 8-id cap) and classifying every model
+into roles (orchestrator, sub-agent, embedding, vision, STT, TTS, image), a size
+class (S/M/L), and capability flags. It reads capability fields where the API
+supplies them (Anthropic `max_input_tokens`/`max_tokens`/`capabilities`, Mistral
+`capabilities`) and id-family heuristics otherwise. A one-shot cheap usability probe
+per selected model means a model your key cannot actually use never appears. The
+catalog is served at `GET /api/models` (add `?all=1` to include probe-hidden models)
+and cached in PSRAM with a 24 h refresh. The generated
+[capability matrix](reference/capabilities-matrix.md) shows which role and feature
+each provider offers.
+
+Provider failover is a rule engine shared with the cloud (one admin-editable rule
+set): predicates match provider, model (with a trailing-`*` glob), size class,
+capability, and error class; the ordered targets are tried in turn, skipping the
+one that just failed. It ships with size-class defaults that reproduce the classic
+priority walk, applies to every turn (the mid-turn switch and the between-turn
+ladder both consult it), never falls embeddings back cross-provider, and records
+each switch as a context note the assistant can mention if relevant. The active set
+is served at `GET /api/fallbacks`. See [harness.md](harness.md) for the turn flow.
+
 ## Local model as the custom endpoint (Ollama and friends)
 
 The device can run against any OpenAI-compatible server on your own network -

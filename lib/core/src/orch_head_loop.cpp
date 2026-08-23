@@ -17,7 +17,7 @@ const char* const kFinalRoundNotice =
 
 const char* capReasonText(const std::string& reason) {
   if (reason == "heap")     return "the device is low on memory";
-  if (reason == "rounds")   return "the tool-call limit for this turn was reached";
+  if (reason == "rounds")   return "this turn ran out of its tool-call budget";
   if (reason == "deadline") return "this turn ran out of time";
   if (reason == "bytes")    return "the tool-output budget for this turn was reached";
   if (reason == "stalled")  return "the turn stalled without requesting anything";

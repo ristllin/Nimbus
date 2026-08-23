@@ -299,13 +299,15 @@ static bool providerHasKey(const String& p) {
   if (p == "anthropic") return store::hasAnthropicKey();
   if (p == "custom")    return store::hasCustom();
   if (p == "mistral")   return store::hasMistralKey();
+  if (p == "zai")       return store::hasZaiKey();
+  if (p == "cumulo")    return store::hasCumuloKey();
   return false;
 }
 
 static String modelChoicesFor(const String& p) {
   // Live-harvested list first (the verify pass reads the provider's /v1/models -
-  // keeps Opus 4.8 / Fable / new-gen ids selectable without a firmware release);
-  // the compile-time list stays the fallback for never-verified providers.
+  // keeps current-generation ids selectable without a firmware release); the
+  // compile-time list stays the fallback for never-verified providers.
   String dyn = store::modelChoices(p);
   if (dyn.length()) return dyn;
   if (p == "openai")    return OPENAI_MODEL_CHOICES;

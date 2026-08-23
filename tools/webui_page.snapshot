@@ -539,6 +539,8 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <div class=setbody>
 <label class=pr><input type=checkbox id=orchLoop checked> Enabled <button class=qh type=button aria-expanded=false aria-label="About tool use">?</button></label>
 <label class=pr><input type=checkbox id=midFail checked> Switch providers mid-task if one fails</label>
+<label class=pr><input type=checkbox id=codeSbx> Code sandbox <button class=qh type=button aria-expanded=false aria-label="About the code sandbox">?</button></label>
+<p class="hint tip">Lets the assistant run code in a provider sandbox to build files (charts, PDFs, data). Finished files land under Files. Needs an OpenAI key (Mistral where supported); Anthropic sub-agents can build files too.</p>
 <p class="hint tip">When on, the assistant uses its tools mid-turn &mdash; memory, sessions, web search, device control &mdash; and iterates before answering. When off, it answers in a single step.</p>
 <label class=pr><input type=checkbox id=orchTrace checked> Record tool calls &amp; thinking <button class=qh type=button aria-expanded=false aria-label="About activity recording">?</button></label>
 <p class="hint tip">Keeps a per-turn record of what the assistant did &mdash; each tool call, its result, and the reasoning between them &mdash; viewable in the chat. Stored on the SD card with the same 30-day retention as history.</p>
@@ -1878,6 +1880,7 @@ function applyOrch(d){
     r.style.color=parts.some(p=>p[0]==='✗')?'#e77':(parts.some(p=>p[0]==='⚠')?'#e0b870':'#7fd1c8');}}
   $('orchLoop').checked=!!d.orchLoop;
   if($('midFail'))$('midFail').checked=!!d.midFail;
+  if($('codeSbx'))$('codeSbx').checked=!!d.codeSbx;
   if(d.orchTrace!==undefined){$('orchTrace').checked=!!d.orchTrace;
     GB.trace=!!d.orchTrace;_chatTraceHint();}   // glass-box honesty (no extra poll)
   // "Voice replies" toggle (P2.5): applies immediately (like the SFX controls).
@@ -2304,6 +2307,7 @@ $('orchsave').onclick=()=>{
     tgToken:$('tgToken').value,
     orchLoop:$('orchLoop').checked?1:0,
     midFail:$('midFail')&&$('midFail').checked?1:0,
+    codeSbx:$('codeSbx')&&$('codeSbx').checked?1:0,
     orchTrace:$('orchTrace').checked?1:0,
     loopRounds:$('loopRounds').value,loopDeadline:$('loopDeadline').value,tlsSlots:$('tlsSlots').value,compactKB:$('compactKB').value,
     tlsVerify:$('tlsVerify').checked?1:0,

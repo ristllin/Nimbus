@@ -137,6 +137,8 @@ static const char UI_AGENT[] PROGMEM = R"=====(<div class=pane id=pane-harness s
 <div class=setbody>
 <label class=pr><input type=checkbox id=orchLoop checked> Enabled <button class=qh type=button aria-expanded=false aria-label="About tool use">?</button></label>
 <label class=pr><input type=checkbox id=midFail checked> Switch providers mid-task if one fails</label>
+<label class=pr><input type=checkbox id=codeSbx> Code sandbox <button class=qh type=button aria-expanded=false aria-label="About the code sandbox">?</button></label>
+<p class="hint tip">Lets the assistant run code in a provider sandbox to build files (charts, PDFs, data). Finished files land under Files. Needs an OpenAI key (Mistral where supported); Anthropic sub-agents can build files too.</p>
 <p class="hint tip">When on, the assistant uses its tools mid-turn &mdash; memory, sessions, web search, device control &mdash; and iterates before answering. When off, it answers in a single step.</p>
 <label class=pr><input type=checkbox id=orchTrace checked> Record tool calls &amp; thinking <button class=qh type=button aria-expanded=false aria-label="About activity recording">?</button></label>
 <p class="hint tip">Keeps a per-turn record of what the assistant did &mdash; each tool call, its result, and the reasoning between them &mdash; viewable in the chat. Stored on the SD card with the same 30-day retention as history.</p>

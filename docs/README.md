@@ -63,7 +63,7 @@ Three other generators read this tree - keep them in sync when you edit:
 | `orchestrator-storage.md` | Storage tiering (SD / PSRAM / NVS / LittleFS) |
 | `sub-sessions.md` | Background sub-agents, end to end |
 | `harness.md` | The agentic harness |
-| `provider-wire.md` | Structured outputs and tool loops per provider |
+| `provider-wire.md` | Structured outputs, tool loops, model catalog, and fallbacks per provider |
 | `security.md` | The auth model and open items |
 
 ### Reference
@@ -72,6 +72,7 @@ Three other generators read this tree - keep them in sync when you edit:
 | `reference/config-and-nvs.md` | Config keys and NVS layout |
 | `reference/tool-catalog.md` | The tool catalog |
 | `reference/turn-contract.md` | The turn contract |
+| `reference/capabilities-matrix.md` | Provider x role x feature matrix (generated from the catalog) |
 | `tools-and-commands.md` | User and contributor tools and console commands |
 | `changelog.md` | Release history |
 

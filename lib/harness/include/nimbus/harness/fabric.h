@@ -96,7 +96,7 @@ class HeavyFabric {
   struct Binding { char category[16]; char backendId[16]; };
 
  private:
-  static constexpr int MAX_ADAPTERS = 4;
+  static constexpr int MAX_ADAPTERS = 6;   // anthropic/openai/mistral/custom + zai/cumulo
   static constexpr int MAX_BINDINGS = 8;
 
   ManagedAgentAdapter* adapters_[MAX_ADAPTERS] = {};

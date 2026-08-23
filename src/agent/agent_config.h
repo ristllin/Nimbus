@@ -35,6 +35,16 @@
 
 // ---- Mistral REST endpoints (host ported 2026-07 - Conversations API) -------
 #define MISTRAL_HOST "api.mistral.ai"
+
+// Z.ai (GLM) - OpenAI-compatible, but the base path is /api/paas/v4 (NOT /v1). The
+// token answers at one of two hosts; the device probes both and pins the winner.
+#define ZAI_HOST_PRIMARY  "api.z.ai"
+#define ZAI_HOST_FALLBACK "open.bigmodel.cn"
+#define ZAI_BASE_PATH     "/api/paas/v4"
+
+// Cumulo Nimbus router - one key, upstream selectable per role. OpenAI-compatible
+// wire under /router/<upstream>/v1/...; verify hits /router/<upstream>/v1/models.
+#define CUMULO_HOST_DEFAULT "app.cumulo-nimbus.ai"
 #define MISTRAL_PORT 443
 // Default Mistral model (orchestrator + sub-session fallback); the "-latest"
 // alias tracks the flagship without a periodic bump.
@@ -93,7 +103,7 @@
 // with these as fallbacks; the web UI clamps to the ranges noted on each key).
 // The conversation accumulates in PSRAM so rounds are cheap; the deadline is the
 // real ceiling on a runaway/hung provider.
-#define ORCH_LOOP_MAX_ROUNDS      12      // tool-dispatch rounds before the forced final answer
+#define ORCH_LOOP_MAX_ROUNDS      8       // tool-dispatch rounds before the forced final answer
 #define ORCH_LOOP_DEADLINE_MS     600000U // wall-clock budget across the whole loop (10 min)
 // Bumped 2026-08-03 (owner): the accumulating context is PSRAM-backed, so a bigger
 // tool-output budget costs PSRAM not internal SRAM. 8 KB/result, 64 KB total (~16 K tokens)
@@ -143,6 +153,12 @@
 #define AKEY_DREAM_SCRATCH  "dreamScrHash"   // fnv64 of the scratchpad after the last dream (hex)
 #define AKEY_CUSTOM_BASE    "custBase"
 #define AKEY_CUSTOM_KEY     "custKey"
+#define AKEY_ZAI_KEY        "zaiKey"      // Z.ai (GLM) token (Z_AI_TOKEN)
+#define AKEY_ZAI_BASE       "zaiBase"     // probed working host (api.z.ai | open.bigmodel.cn)
+#define AKEY_CUMULO_KEY     "cumuloKey"   // Cumulo router key (one key, all upstreams)
+#define AKEY_CUMULO_BASE    "cumuloBase"  // router base URL/host ("" -> CUMULO_HOST_DEFAULT)
+#define AKEY_FALLBACK_RULES "fbRules"     // fallback rule set JSON (v1 schema); "" -> shipped defaults
+#define AKEY_FALLBACK_SYNC  "fbSyncTs"    // epoch s of last cloud sync (0 = never/local edit)
 #define AKEY_CUSTOM_CONV    "custConv"      // "openai"|"mistral"|"anthropic"
 #define AKEY_CUSTOM_MODEL   "custModel"
 #define AKEY_ORCH_HOST      "orchHost"      // explicit host provider ("" => priority top)
@@ -159,10 +175,11 @@
 #define AKEY_TG_PUBLIC      "tgPublic"       // DANGER: accept anyone (default off, P8)
 #define AKEY_TTS_ENABLED    "ttsEnabled"    // "Voice replies" master toggle (default OFF, P2.5)
 #define AKEY_ORCH_TOOLLOOP  "orchLoop"      // head multi-turn tool-use loop on/off (default ON, P6)
+#define AKEY_CODE_SANDBOX   "codeSbx"       // Assistant > Tools "Code sandbox" toggle (default OFF)
 #define AKEY_MID_FAILOVER   "midFail"       // mid-turn provider failover on loop turns (default ON, Stage 2 ph5)
 // Head tool-loop caps, user-tunable (P6). NVS keys <=15 chars. Deadline stored in
 // SECONDS (fits uint16, avoids ms overflow). Empty/absent -> the macro defaults.
-#define AKEY_LOOP_ROUNDS    "orchLoopRnds"  // max tool-dispatch rounds (default 12, 1..32)
+#define AKEY_LOOP_ROUNDS    "orchLoopRnds"  // max tool-dispatch rounds (default 8, 1..32)
 #define AKEY_LOOP_DEADLINE  "orchLoopDlS"   // wall-clock budget seconds (default 600, 30..3600)
 #define AKEY_LOOP_RESCAP    "orchLoopRCap"  // per-tool-result byte clamp (default 4096)
 #define AKEY_LOOP_TOTCAP    "orchLoopTCap"  // cumulative tool-output byte budget (default 24576)

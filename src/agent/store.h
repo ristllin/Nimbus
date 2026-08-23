@@ -51,6 +51,17 @@ String customConv();         // "openai"|"mistral"|"anthropic" (wire convention)
 String customModel();
 bool   hasCustom();          // customBase() non-empty
 
+// Z.ai (GLM) - OpenAI-compatible provider. zaiBase is the probed working host.
+String zaiKey();             bool hasZaiKey();
+String zaiBase();            void setZaiBase(const String& host);   // "" until probed
+// Cumulo Nimbus router - one key, per-role upstream chosen via the model id.
+String cumuloKey();          bool hasCumuloKey();
+String cumuloBase();         // "" -> CUMULO_HOST_DEFAULT
+// Fallback rule set (device engine; shared v1 schema with the cloud). "" = use the
+// shipped size-class defaults. syncTs>0 means the set was pulled from the cloud.
+String   fallbackRulesJson();      void setFallbackRulesJson(const String& json);
+uint32_t fallbackSyncTs();         void setFallbackSyncTs(uint32_t ts);
+
 // ---- orchestrator routing + models ----
 String orchHost();                          // explicit host provider ("" => top of priority)
 bool   providerHasKey(const String& name);  // is an API key stored for openai|anthropic|mistral
@@ -68,6 +79,11 @@ String subModel(const String& provider);    // per-provider sub-session model
 // "" until a verify has run. Callers fall back to the static compile-time list.
 String modelChoices(const String& provider);
 void   setModelChoices(const String& provider, const String& csv);
+// Rich capability-aware catalog per provider (GET /api/models model array as JSON,
+// NVS key "mcat_<provider>"). "" = never harvested. Backs the PSRAM runtime cache
+// and survives a reboot; the CSV above stays for the legacy /api/orch dropdowns.
+String modelCatalogJson(const String& provider);
+void   setModelCatalogJson(const String& provider, const String& json);
 String agentFabricCfg();                    // legacy category bindings "code:openai,..."
 
 // ---- user directive + TTS ----
@@ -75,10 +91,11 @@ String sysPrompt();          // the user directive (immutable by the model)
 bool   ttsEnabled();         // "Voice replies" master toggle (default OFF, P2.5): gates the
                              // tts action, reply.speak, and reply.telegram voice - OFF = text only
 bool   orchToolLoop();       // head multi-turn tool-use loop enabled (default ON, P6)
+bool   codeSandbox();        // Assistant > Tools: Code sandbox (code_interpreter/code_execution) (default OFF)
 bool   midTurnFailover();    // mid-turn provider failover on loop turns (default ON)
 bool   orchTrace();          void setOrchTrace(bool v);   // glass-box trace rows (default ON, A4)
 // Head tool-loop caps (P6), user-tunable + clamped. Deadline in seconds.
-int    orchLoopRounds();     // 1..32   (default 12)
+int    orchLoopRounds();     // 1..32   (default 8)
 int    orchLoopDeadlineS();  // 30..3600 (default 600)
 int    orchLoopResultCap();  // 512..65536 (default 8192)
 int    orchLoopTotalCap();   // 2048..1048576 (~256K tok ceiling; default 65536)
@@ -157,6 +174,9 @@ void setCustomBase(const String& v);
 void setCustomKey(const String& v);
 void setCustomConv(const String& v);       // "openai"|"mistral"|"anthropic"
 void setCustomModel(const String& v);
+void setZaiKey(const String& v);           // Z.ai (GLM) token ("" clears)
+void setCumuloKey(const String& v);        // Cumulo router key ("" clears)
+void setCumuloBase(const String& v);       // router base URL/host ("" -> default)
 void setOrchHost(const String& v);         // ""=auto (top of priority)
 void setProviderPriority(const String& v); // orchestrator-HOST list (human only)
 void setSysPrompt(const String& v);        // the user directive
@@ -166,6 +186,7 @@ void setTelegramToken(const String& v);    // WRITE-ONLY on the web surface
 void setTelegramAllowlist(const String& v);
 void setTtsEnabled(bool v);
 void setOrchToolLoop(bool v);               // enable/disable the head tool-use loop
+void setCodeSandbox(bool v);                // enable/disable the code sandbox tool
 void setMidTurnFailover(bool v);            // enable/disable mid-turn provider failover
 void setAllowHwTests(bool v);               // owner gate for orchestrator-triggered hw tests
 

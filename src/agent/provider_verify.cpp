@@ -4,6 +4,9 @@
 #include <ArduinoJson.h>
 
 #include "../sys/ps_json.h"       // PsramJsonAllocator - Mistral model-metadata parse off internal heap
+#include "nimbus/orch/model_catalog.h"  // portable role/capability catalog (GET /api/models)
+#include "nimbus/orch/fallback_rules.h" // portable fallback rule parse (Cumulo cloud sync)
+#include <time.h>
 
 #include "esp_heap_caps.h"
 #include "agent_config.h"
@@ -61,9 +64,231 @@ bool request(const String& provider) {
 
 bool pending() { return g_pending; }
 
+// Build the rich capability catalog from a raw /v1/models response body and
+// persist it to NVS (mcat_<provider>). Independent of the legacy CSV harvest; an
+// empty parse keeps the last good catalog. The body may still carry HTTP headers
+// (the portable parser locates the JSON). The doc rides PSRAM, not internal heap.
+static void buildAndStoreCatalog(const String& provider, const char* body, size_t len) {
+  using namespace nimbus::orch;
+  std::vector<ModelInfo> cat;
+  parseModelsList(std::string(provider.c_str()), std::string(body, len), cat,
+                  &PsramJsonAllocator::instance());
+  if (cat.empty()) return;  // parse failed - keep whatever was stored
+  JsonDocument doc(&PsramJsonAllocator::instance());
+  modelsToJson(cat, doc.to<JsonArray>(), /*includeUnusable=*/true);
+  String out;
+  serializeJson(doc, out);
+  // NVS string values cap near 4 KB. Flagships sort first, so drop the trailing
+  // (lowest-priority) models until it fits, and say how many were trimmed.
+  int dropped = 0;
+  while (out.length() > 3800 && cat.size() > 1) {
+    cat.pop_back();
+    ++dropped;
+    doc.clear();
+    modelsToJson(cat, doc.to<JsonArray>(), true);
+    out = "";
+    serializeJson(doc, out);
+  }
+  if (dropped)
+    alogf("verify: %s catalog trimmed %d model(s) to fit NVS", provider.c_str(), dropped);
+  store::setModelCatalogJson(provider, out);
+  alogf("verify: %s catalog stored (%u models, %u B)", provider.c_str(),
+        (unsigned)cat.size(), (unsigned)out.length());
+}
+
+// One minimal probe call confirming a specific model is usable by this key (the
+// usability probe: "a model your key cannot use never appears"). Opens its own
+// short-lived TLS session, so the caller MUST already hold the work arbiter and
+// have closed the verify GET client (single TLS slot). Returns the portable
+// verdict from the HTTP status + a bounded slice of the error body.
+// Build the minimal per-provider probe request (host + full HTTP/1.0 request incl.
+// body). Returns false for a provider that has no probe wire. Split out to keep
+// probeModel under the complexity gate.
+static bool buildProbeRequest(const String& provider, const String& model,
+                              const char*& host, String& req) {
+  String path, body, authHdr;
+  if (provider == "openai") {
+    host = OPENAI_HOST;
+    path = "/v1/responses";
+    body = String("{\"model\":\"") + model + "\",\"input\":\"hi\",\"max_output_tokens\":16}";
+    authHdr = String("Authorization: Bearer ") + store::openaiKey() + "\r\n";
+  } else if (provider == "anthropic") {
+    host = ANTHROPIC_HOST;
+    path = "/v1/messages";
+    body = String("{\"model\":\"") + model +
+           "\",\"max_tokens\":1,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}";
+    authHdr = String("x-api-key: ") + store::anthropicKey() + "\r\nanthropic-version: " ANTHROPIC_VER "\r\n";
+  } else if (provider == "mistral") {
+    host = MISTRAL_HOST;
+    path = "/v1/chat/completions";
+    body = String("{\"model\":\"") + model +
+           "\",\"max_tokens\":1,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}";
+    authHdr = String("Authorization: Bearer ") + store::mistralKey() + "\r\n";
+  } else {
+    return false;
+  }
+  req = String("POST ") + path + " HTTP/1.0\r\nHost: " + host + "\r\n" + authHdr +
+        "Content-Type: application/json\r\nContent-Length: ";
+  req += (int)body.length();
+  req += "\r\nAccept-Encoding: identity\r\nUser-Agent: Nimbus\r\nConnection: close\r\n\r\n";
+  req += body;
+  return true;
+}
+
+// Read the HTTP status code and a bounded slice of the response body (enough for
+// error classification) off an already-sent probe request. Returns the code (0 if
+// none). Shares the read shape with the verify GET above.
+static int readProbeResponse(WiFiClientSecure& client, String& errBody, size_t maxBytes = 1100) {
+  const uint32_t deadline = millis() + 15000;
+  String status;
+  while ((int32_t)(millis() - deadline) < 0) {
+    if (client.available()) {
+      char c = client.read();
+      if (c == '\n') break;
+      if (c != '\r') status += c;
+    } else if (!client.connected() && !client.available()) {
+      break;
+    } else {
+      delay(2);
+    }
+  }
+  int code = 0, sp = status.indexOf(' ');
+  if (sp > 0 && (int)status.length() >= sp + 4) code = status.substring(sp + 1, sp + 4).toInt();
+  errBody.reserve(maxBytes + 100);
+  while ((int32_t)(millis() - deadline) < 0 && errBody.length() < maxBytes) {
+    if (client.available()) errBody += (char)client.read();
+    else if (!client.connected() && !client.available()) break;
+    else delay(2);
+  }
+  return code;
+}
+
+static nimbus::orch::ProbeVerdict probeModel(const String& provider, const String& model) {
+  const char* host = nullptr;
+  String req;
+  if (!buildProbeRequest(provider, model, host, req)) return nimbus::orch::ProbeVerdict::Unknown;
+  WiFiClientSecure client;
+  tlsSetup(client);
+  client.setHandshakeTimeout(12);
+  client.setConnectionTimeout(15000);
+  if (!client.connect(host, 443)) return nimbus::orch::ProbeVerdict::Unknown;
+  client.print(req);
+  String errBody;
+  const int code = readProbeResponse(client, errBody);
+  tlsClose(client);
+  return nimbus::orch::probeVerdict(code, std::string(errBody.c_str()));
+}
+
+// Probe the owner's SELECTED models for a provider (bounded to protect the single
+// TLS slot) and fold the verdicts into the cached catalog. An Unknown (transient)
+// verdict leaves the model as-is for a later retry; a definitive verdict marks the
+// model probed and sets usable, so an unusable selection stops appearing.
+static void probeSelectedModels(const String& provider) {
+  String cands[2];
+  int nc = 0;
+  const String om = store::orchModel(provider);
+  const String sm = store::subModel(provider);
+  if (om.length()) cands[nc++] = om;
+  if (sm.length() && sm != om) cands[nc++] = sm;
+  if (!nc) return;
+  const String blob = store::modelCatalogJson(provider);
+  if (!blob.length()) return;
+  JsonDocument md(&PsramJsonAllocator::instance());
+  if (deserializeJson(md, blob) != DeserializationError::Ok) return;
+  std::vector<nimbus::orch::ModelInfo> cat;
+  nimbus::orch::modelsFromJson(md.as<JsonArrayConst>(), cat);
+  bool changed = false;
+  for (int i = 0; i < nc; ++i) {
+    nimbus::orch::ModelInfo* found = nullptr;
+    for (auto& mi : cat)
+      if (mi.id == cands[i].c_str()) { found = &mi; break; }
+    if (!found) continue;
+    const nimbus::orch::ProbeVerdict v = probeModel(provider, cands[i]);
+    if (v == nimbus::orch::ProbeVerdict::Unknown) continue;
+    found->usable = (v == nimbus::orch::ProbeVerdict::Usable);
+    found->probed = true;
+    changed = true;
+    alogf("verify: %s probe %s -> %s", provider.c_str(), cands[i].c_str(),
+          found->usable ? "usable" : "UNUSABLE");
+  }
+  if (!changed) return;
+  JsonDocument out(&PsramJsonAllocator::instance());
+  nimbus::orch::modelsToJson(cat, out.to<JsonArray>(), true);
+  String s;
+  serializeJson(out, s);
+  if (s.length() <= 3900) store::setModelCatalogJson(provider, s);
+}
+
+// Does a Z.ai candidate host answer the models list for this token? One quick GET
+// (must run inside the held work slot). Returns true only on HTTP 200.
+static bool zaiHostAnswers(const char* h, const String& key) {
+  WiFiClientSecure client;
+  tlsSetup(client);
+  client.setHandshakeTimeout(12);
+  client.setConnectionTimeout(15000);
+  if (!client.connect(h, 443)) return false;
+  String req = String("GET ") + ZAI_BASE_PATH + "/models HTTP/1.0\r\nHost: " + h +
+               "\r\nAuthorization: Bearer " + key +
+               "\r\nAccept-Encoding: identity\r\nUser-Agent: Nimbus\r\nConnection: close\r\n\r\n";
+  client.print(req);
+  String errBody;
+  const int code = readProbeResponse(client, errBody);
+  tlsClose(client);
+  return code == 200;
+}
+
+// Resolve the Z.ai host: the pinned one if known, else probe api.z.ai then
+// open.bigmodel.cn and pin the winner. Falls back to the primary host so the main
+// verify still runs (and records couldn't-verify) if neither answered.
+static String zaiPickHost(const String& key) {
+  const String pinned = store::zaiBase();
+  if (pinned.length()) return pinned;
+  if (!key.length()) return String(ZAI_HOST_PRIMARY);
+  const char* cands[] = {ZAI_HOST_PRIMARY, ZAI_HOST_FALLBACK};
+  for (const char* h : cands) {
+    if (zaiHostAnswers(h, key)) {
+      store::setZaiBase(h);
+      alogf("verify: zai endpoint probe -> %s", h);
+      return String(h);
+    }
+  }
+  return String(ZAI_HOST_PRIMARY);
+}
+
+// PROVISIONAL cloud sync (CUM-41): when on a Cumulo key, pull the admin master
+// fallback rule set from the router and store it (source becomes "cloud" via a
+// non-zero syncTs). The exact endpoint is pending C3 (CUM-105); this hits
+// "<base>/fallbacks" best-effort and is a SAFE NO-OP on any non-rule response
+// (parse yields 0 rules -> nothing stored), so it does no harm on the old router.
+// Runs inside the held work slot after a successful Cumulo verify.
+static void syncCumuloFallbacks(const char* host, const String& key) {
+  WiFiClientSecure client;
+  tlsSetup(client);
+  client.setHandshakeTimeout(12);
+  client.setConnectionTimeout(15000);
+  if (!client.connect(host, 443)) return;
+  String req = String("GET /fallbacks HTTP/1.0\r\nHost: ") + host +
+               "\r\nAuthorization: Bearer " + key +
+               "\r\nAccept-Encoding: identity\r\nUser-Agent: Nimbus\r\nConnection: close\r\n\r\n";
+  client.print(req);
+  String body;
+  const int code = readProbeResponse(client, body, 4096);
+  tlsClose(client);
+  if (code != 200) return;
+  nimbus::orch::FallbackRuleSet rs;
+  if (nimbus::orch::parseFallbackRules(std::string(body.c_str()), rs,
+                                       &PsramJsonAllocator::instance()) == 0)
+    return;  // not a rule set (old router / 404 page) - keep local/default
+  store::setFallbackRulesJson(body);
+  time_t now = time(nullptr);
+  store::setFallbackSyncTs(now > 100000 ? (uint32_t)now : 1);
+  alogf("verify: cumulo fallback rules synced (%u rules)", (unsigned)rs.rules.size());
+}
+
 static void runOne() {
   String provider = g_provider;
 
+  String hostBuf;               // backs a dynamic host (zai probe result / cumulo base)
   const char* host = nullptr;
   String path = "/v1/models";
   String key;
@@ -75,9 +300,22 @@ static void runOne() {
   // Tavily is POST-shaped: there is no cheap GET, so the verify is one minimal
   // /search (1 credit) - the same "tiny real call" contract as the others.
   const bool isTav = (provider == "tavily");
+  // Z.ai host is probed AFTER the arbiter is held (the probe itself is a TLS call);
+  // the base path is /api/paas/v4, not /v1.
+  const bool isZai = (provider == "zai");
   if (provider == "openai")         { host = OPENAI_HOST;    key = store::openaiKey(); }
   else if (provider == "anthropic") { host = ANTHROPIC_HOST; key = store::anthropicKey(); }
   else if (provider == "mistral")   { host = MISTRAL_HOST;   key = store::mistralKey(); }
+  else if (isZai)                   { key = store::zaiKey(); path = ZAI_BASE_PATH "/models"; }
+  else if (provider == "cumulo")    { key = store::cumuloKey();
+                                      hostBuf = store::cumuloBase();
+                                      if (!hostBuf.length()) hostBuf = CUMULO_HOST_DEFAULT;
+                                      int sch = hostBuf.indexOf("://");
+                                      if (sch >= 0) hostBuf = hostBuf.substring(sch + 3);
+                                      int sl = hostBuf.indexOf('/');
+                                      if (sl >= 0) hostBuf = hostBuf.substring(0, sl);
+                                      host = hostBuf.c_str();
+                                      path = "/router/openai/v1/models"; }
   else if (isTg)                    { host = "api.telegram.org"; key = store::telegramToken();
                                       path = String("/bot") + key + "/getMe"; }
   else if (isTav)                   { host = "api.tavily.com"; key = store::tavilyKey();
@@ -120,6 +358,10 @@ static void runOne() {
     g_pending = false;
     return;
   }
+
+  // Z.ai endpoint probe (inside the held slot): pick whichever host the token
+  // answers, pinned in NVS for next time.
+  if (isZai) { hostBuf = zaiPickHost(key); host = hostBuf.c_str(); }
 
   int8_t result = -1;  // couldn't verify; 1 on HTTP 200, 0 on 401/403
   {
@@ -169,10 +411,11 @@ static void runOne() {
              : (code == 401 || code == 403 || (isTg && code == 404)) ? 0
              : -1;
       // LLM providers: the verify already fetched /v1/models - HARVEST it (owner
-      // 2026-07-16: the static model dropdowns were stale; no Opus 4.8 / Fable /
-      // new-gen OpenAI). Stream the body into a bounded PSRAM buffer, pull every
-      // "id" that passes the per-provider chat-capable filter, cap at 8, store as
-      // the live choice list (NVS; static defaults remain the fallback).
+      // 2026-07-16: the static model dropdowns were stale, missing current-gen
+      // models). Stream the body into a bounded PSRAM buffer, pull every "id" that
+      // passes the per-provider chat-capable filter, cap at 8, store as the live
+      // choice list (NVS; static defaults remain the fallback). The richer
+      // capability catalog is built separately by buildAndStoreCatalog below.
       if (!isTg && !isTav && code == 200) {
         const size_t kCap = 65536;   // OpenAI's list is the biggest (~40 KB)
         char* buf = (char*)heap_caps_malloc(kCap, MALLOC_CAP_SPIRAM);
@@ -225,6 +468,8 @@ static void runOne() {
             }
             if (provider == "anthropic") return !id.startsWith("claude-");
             if (provider == "mistral")   return !id.endsWith("-latest");
+            if (provider == "zai")       return !id.startsWith("glm");
+            if (provider == "cumulo")    return false;   // router ids are already curated
             return true;
           };
           // Flagship-family ids first: the provider's list order is arbitrary, and a
@@ -238,6 +483,7 @@ static void runOne() {
             // gpt-5 family first - the o-series ids precede gpt-5* in the body and
             // were filling every slot before the flagship (live-caught).
             if (provider == "openai")    return id.startsWith("gpt-5");
+            if (provider == "zai")       return id.startsWith("glm-5");
             return true;   // anthropic's list arrives newest-first already
           };
           // Mistral: METADATA-driven filter. Unlike OpenAI's id-only /v1/models,
@@ -357,6 +603,9 @@ static void runOne() {
             alogf("verify: %s harvest EMPTY (read %u bytes) - keeping the stored list",
                   provider.c_str(), (unsigned)blen);
           }
+          // Rich capability-aware catalog (GET /api/models): built from the SAME
+          // body via the portable parser, independent of the legacy CSV above.
+          buildAndStoreCatalog(provider, buf, blen);
           free(buf);
         }
       }
@@ -388,6 +637,12 @@ static void runOne() {
     }
     tlsClose(client);  // RST-close on EVERY path (connected or not)
   }
+  // Usability probe (bounded): now that the GET client is closed but we still hold
+  // the work slot, confirm the owner's SELECTED models actually run on this key.
+  if (result == 1 && (provider == "openai" || provider == "anthropic" || provider == "mistral"))
+    probeSelectedModels(provider);
+  // On a Cumulo key, pull the admin master fallback rule set (provisional; CUM-41).
+  if (result == 1 && provider == "cumulo" && host) syncCumuloFallbacks(host, key);
   arbiter::releaseWork();
   recordVerify(provider, result);
   g_pending = false;  // clear LAST so pending() covers the whole run

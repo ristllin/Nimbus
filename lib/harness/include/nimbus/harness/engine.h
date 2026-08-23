@@ -323,6 +323,9 @@ class TurnEngine {
   // mem_query[] results from the previous turn, parked for the next turn's
   // inputs (deferred-result pattern).
   std::string pendingMemResults_;
+  // A fallback switch recorded on the previous turn, surfaced to the model as a
+  // one-line context note on the next turn (CUM-41). Consumed by buildDynamicContext.
+  std::string pendingFallbackNote_;
 };
 
 }  // namespace agent

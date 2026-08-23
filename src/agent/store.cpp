@@ -112,6 +112,16 @@ String customConv()  { return solide::memory::getString(AKEY_CUSTOM_CONV, "opena
 String customModel() { return solide::memory::getString(AKEY_CUSTOM_MODEL, ""); }
 bool   hasCustom()   { return customBase().length() > 0; }
 
+String zaiKey()      { return solide::memory::getString(AKEY_ZAI_KEY, ""); }
+bool   hasZaiKey()   { return zaiKey().length() > 0; }
+String zaiBase()     { return solide::memory::getString(AKEY_ZAI_BASE, ""); }
+void   setZaiBase(const String& host) { solide::memory::setString(AKEY_ZAI_BASE, host); }
+String cumuloKey()   { return solide::memory::getString(AKEY_CUMULO_KEY, ""); }
+bool   hasCumuloKey(){ return cumuloKey().length() > 0; }
+String cumuloBase()  { return solide::memory::getString(AKEY_CUMULO_BASE, ""); }
+String   fallbackRulesJson() { return solide::memory::getString(AKEY_FALLBACK_RULES, ""); }
+uint32_t fallbackSyncTs()    { return (uint32_t)solide::memory::getInt(AKEY_FALLBACK_SYNC, 0); }
+
 // ---- routing + models ----
 String orchHost() { return solide::memory::getString(AKEY_ORCH_HOST, ""); }
 
@@ -186,6 +196,7 @@ bool   ttsEnabled() { return solide::memory::getBool(AKEY_TTS_ENABLED, false); }
 // P6: the tool loop is THE turn path now - default ON (single-shot survives only
 // as the heap-pressure fallback in runTurn). Caps are user-tunable + clamped.
 bool   orchToolLoop() { return solide::memory::getBool(AKEY_ORCH_TOOLLOOP, true); }
+bool   codeSandbox() { return solide::memory::getBool(AKEY_CODE_SANDBOX, false); }
 bool   midTurnFailover() { return solide::memory::getBool(AKEY_MID_FAILOVER, true); }
 bool   orchTrace() { return solide::memory::getBool(AKEY_ORCH_TRACE, true); }
 void   setOrchTrace(bool v) { solide::memory::setBool(AKEY_ORCH_TRACE, v); }
@@ -322,6 +333,11 @@ void setCustomBase(const String& v)   { solide::memory::setString(AKEY_CUSTOM_BA
 void setCustomKey(const String& v)    { solide::memory::setString(AKEY_CUSTOM_KEY, v); }
 void setCustomConv(const String& v)   { solide::memory::setString(AKEY_CUSTOM_CONV, v); }
 void setCustomModel(const String& v)  { solide::memory::setString(AKEY_CUSTOM_MODEL, v); }
+void setZaiKey(const String& v)       { solide::memory::setString(AKEY_ZAI_KEY, v); }
+void setCumuloKey(const String& v)    { solide::memory::setString(AKEY_CUMULO_KEY, v); }
+void setCumuloBase(const String& v)   { solide::memory::setString(AKEY_CUMULO_BASE, v); }
+void setFallbackRulesJson(const String& json) { solide::memory::setString(AKEY_FALLBACK_RULES, json); }
+void setFallbackSyncTs(uint32_t ts)   { solide::memory::setInt(AKEY_FALLBACK_SYNC, (int)ts); }
 void setOrchHost(const String& v)     { solide::memory::setString(AKEY_ORCH_HOST, v); }
 void setProviderPriority(const String& v) { solide::memory::setString(AKEY_PROV_PRIORITY, v); }
 void setSysPrompt(const String& v)    { solide::memory::setString(AKEY_SYS_PROMPT, v); }
@@ -344,10 +360,19 @@ void setModelChoices(const String& provider, const String& csv) {
   String key = String("mch_") + provider;
   solide::memory::setString(key.c_str(), csv);
 }
+String modelCatalogJson(const String& provider) {
+  String key = String("mcat_") + provider;
+  return solide::memory::getString(key.c_str(), "");
+}
+void setModelCatalogJson(const String& provider, const String& json) {
+  String key = String("mcat_") + provider;
+  solide::memory::setString(key.c_str(), json);
+}
 void setTelegramToken(const String& v)     { solide::memory::setString(AKEY_TG_TOKEN, v); }
 void setTelegramAllowlist(const String& v) { solide::memory::setString(AKEY_TG_ALLOWLIST, v); }
 void setTtsEnabled(bool v)                 { solide::memory::setBool(AKEY_TTS_ENABLED, v); }
 void setOrchToolLoop(bool v)               { solide::memory::setBool(AKEY_ORCH_TOOLLOOP, v); }
+void setCodeSandbox(bool v)                { solide::memory::setBool(AKEY_CODE_SANDBOX, v); }
 void setMidTurnFailover(bool v)            { solide::memory::setBool(AKEY_MID_FAILOVER, v); }
 void setAllowHwTests(bool v)               { solide::memory::setBool(AKEY_ALLOW_HW_TESTS, v); }
 

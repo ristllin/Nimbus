@@ -63,6 +63,9 @@
 #include "../agent/adapters/tts_voices.h"
 #include "../agent/provider_verify.h"
 #include "../agent/store.h"
+#include "../sys/ps_json.h"                // PsramJsonAllocator - keep /api/models off internal heap
+#include "nimbus/orch/model_catalog.h"    // role tokens for the catalog response
+#include "nimbus/orch/fallback_rules.h"   // device fallback rule engine (GET/POST /api/fallbacks)
 #include "relay_client.h"                // cloud tunnel status + control
 #include "../agent/connectors.h"           // /api/connectors - known catalog + host
 #include "web_memory.h"
@@ -620,7 +623,7 @@ static constexpr int kProvCount = sizeof(kProviders) / sizeof(kProviders[0]);
 static bool isKnownProvider(const String& p) {
   for (int i = 0; i < kProvCount; i++)
     if (p == kProviders[i].name) return true;
-  return p == "custom";
+  return p == "custom" || p == "zai" || p == "cumulo";
 }
 
 // Sanitize a comma-separated priority list: keep only known provider tokens,
@@ -674,6 +677,7 @@ static void buildOrchState(String& out) {
   d["subPrio"]  = agent::store::subPriority();
   d["orchLoop"] = agent::store::orchToolLoop();
   d["midFail"]  = agent::store::midTurnFailover();
+  d["codeSbx"]  = agent::store::codeSandbox();
   d["orchTrace"] = agent::store::orchTrace();   // glass-box trace capture (A4)
   d["ttsOn"]    = agent::store::ttsEnabled();   // "Voice replies" toggle (P2.5)
   d["tgLive"]   = agent::telegram::enabled();   // poll task actually running with a
@@ -775,6 +779,92 @@ static void buildOrchState(String& out) {
   serializeJson(d, out);
 }
 
+// GET /api/models - the capability-aware catalog (contract on CUM-26). Reads each
+// provider's persisted catalog blob (mcat_<provider>, built by the verify harvest
+// from the portable parser) and frames it with keyed/verified/probe/refresh state.
+// Unusable models are omitted unless ?all=1 ("a model your key cannot use never
+// appears"). Built in PSRAM: three per-provider blobs re-parsed here would spike
+// internal heap on the default allocator.
+static bool providerKeyed(const char* p) {
+  if (!strcmp(p, "openai")) return agent::store::hasOpenaiKey();
+  if (!strcmp(p, "anthropic")) return agent::store::hasAnthropicKey();
+  if (!strcmp(p, "mistral")) return agent::store::hasMistralKey();
+  if (!strcmp(p, "zai")) return agent::store::hasZaiKey();
+  if (!strcmp(p, "cumulo")) return agent::store::hasCumuloKey();
+  return false;
+}
+static void buildModelsCatalog(String& out, const String& only, bool includeUnusable) {
+  JsonDocument d(&agent::PsramJsonAllocator::instance());
+  const time_t nowT = time(nullptr);
+  const uint32_t now = (nowT > 100000) ? (uint32_t)nowT : 0;   // 0 until the clock is set
+  const uint32_t ttl = (uint32_t)agent::store::capProbeHours() * 3600u;
+  d["generatedAt"] = now;
+  d["ttlSec"] = ttl;
+  int rc = 0;
+  const char* const* rt = nimbus::orch::roleTokens(rc);
+  JsonArray roles = d["roles"].to<JsonArray>();
+  for (int i = 0; i < rc; i++) roles.add(rt[i]);
+
+  JsonObject provs = d["providers"].to<JsonObject>();
+  static const char* const kCatProviders[] = {"openai", "anthropic", "mistral", "zai", "cumulo"};
+  for (const char* p : kCatProviders) {
+    if (only.length() && only != p) continue;
+    JsonObject o = provs[p].to<JsonObject>();
+    o["keyed"] = providerKeyed(p);
+    o["verified"] = agent::store::verifyResult(p);
+    o["probe"] = agent::store::capProbe();
+    const uint32_t rts = agent::store::verifyTs(p);
+    o["refreshedAt"] = rts;
+    o["stale"] = (now && rts) ? (now - rts > ttl) : true;
+    JsonArray marr = o["models"].to<JsonArray>();
+    String blob = agent::store::modelCatalogJson(p);
+    if (!blob.length()) continue;
+    JsonDocument md(&agent::PsramJsonAllocator::instance());
+    if (deserializeJson(md, blob) != DeserializationError::Ok) continue;
+    for (JsonObjectConst m : md.as<JsonArrayConst>()) {
+      if (!includeUnusable && !(m["usable"] | true)) continue;
+      marr.add(m);   // deep-copies the stored model object into the response
+    }
+  }
+  serializeJson(d, out);
+}
+
+// GET /api/fallbacks - the active fallback rule set (contract on CUM-41; shared v1
+// schema with the cloud). Serves the stored set if present, else the shipped
+// size-class defaults built from providerPriority. The device-local envelope
+// (source/syncedAt/embeddingsCrossProvider) rides outside the shared rule schema.
+static void buildFallbacks(String& out) {
+  JsonDocument d(&agent::PsramJsonAllocator::instance());
+  const uint32_t sync = agent::store::fallbackSyncTs();
+  const String stored = agent::store::fallbackRulesJson();
+  nimbus::orch::FallbackRuleSet rs;
+  const char* source;
+  if (stored.length()) {
+    nimbus::orch::parseFallbackRules(std::string(stored.c_str()), rs);
+    source = sync ? "cloud" : "local";
+  } else {
+    std::vector<std::string> prio;
+    String csv = agent::store::providerPriority();
+    int start = 0;
+    while (start < (int)csv.length()) {
+      int comma = csv.indexOf(',', start);
+      if (comma < 0) comma = csv.length();
+      String p = csv.substring(start, comma);
+      p.trim();
+      if (p.length()) prio.push_back(std::string(p.c_str()));
+      start = comma + 1;
+    }
+    rs = nimbus::orch::defaultRuleSet(prio);
+    source = "default";
+  }
+  JsonObject root = d.to<JsonObject>();
+  nimbus::orch::fallbackRulesToJson(rs, root);  // version + rules
+  root["source"] = source;
+  root["syncedAt"] = sync;
+  root["embeddingsCrossProvider"] = false;  // hard invariant: embeddings never cross-provider
+  serializeJson(d, out);
+}
+
 // Apply one POSTed orchestrator field. Key writes invalidate that provider's
 // verify cache (result -1, ts 0 = "never verified") so a swapped key can't ride
 // a stale "verified" badge. Returns true if the field was recognized.
@@ -808,6 +898,17 @@ static bool applyOrchField(const String& n, const String& v, bool& cfgDirty) {
     return true;
   }
   if (n == "custModel") { agent::store::setCustomModel(v); return true; }
+  // Z.ai (GLM) + Cumulo router credentials. A key write invalidates the verify
+  // cache and enqueues a verify (which probes/harvests + builds the catalog).
+  if (n == "zaiKey")    { if (v.length()) { agent::store::setZaiKey(v); agent::store::setZaiBase("");
+                                            agent::store::setVerify("zai", -1, 0);
+                                            agent::provider_verify::request("zai"); } return true; }
+  if (n == "clr_zaiKey"){ agent::store::setZaiKey(""); agent::store::setVerify("zai", -1, 0); return true; }
+  if (n == "cumuloBase"){ agent::store::setCumuloBase(v); return true; }
+  if (n == "cumuloKey") { if (v.length()) { agent::store::setCumuloKey(v);
+                                            agent::store::setVerify("cumulo", -1, 0);
+                                            agent::provider_verify::request("cumulo"); } return true; }
+  if (n == "clr_cumuloKey") { agent::store::setCumuloKey(""); agent::store::setVerify("cumulo", -1, 0); return true; }
 
   // Per-provider budget (owner: "limit budget per provider"). Composite value
   // "provider:tokenLimit:callLimit:resetDay" - one field, four correlated knobs.
@@ -944,6 +1045,7 @@ static bool applyOrchField(const String& n, const String& v, bool& cfgDirty) {
   // Head multi-turn tool-use loop (P6: default ON, the turn path). HUMAN-only surface -
   // the model's config action can't reach these (not whitelisted benign keys).
   if (n == "orchLoop")     { agent::store::setOrchToolLoop(v == "1" || v == "true"); return true; }
+  if (n == "codeSbx")      { agent::store::setCodeSandbox(v == "1" || v == "true"); return true; }
   if (n == "midFail")      { agent::store::setMidTurnFailover(v == "1" || v == "true"); return true; }
   if (n == "orchTrace")    { agent::store::setOrchTrace(v == "1" || v == "true"); return true; }
   if (n == "ttsOn")        { agent::store::setTtsEnabled(v == "1" || v == "true"); return true; }
@@ -1341,6 +1443,46 @@ void beginWeb(const WebConfig& wc) {
     AsyncWebServerResponse* res = r->beginResponse(200, "application/json", s);
     res->addHeader("Cache-Control", "no-store");
     r->send(res);
+  });
+  // GET /api/models[?provider=<slug>][&all=1] - the capability catalog (CUM-26).
+  s_server.on("/api/models", HTTP_GET, [](AsyncWebServerRequest* r) {
+    if (authBlocked(r)) return;
+    String only = r->hasParam("provider") ? r->getParam("provider")->value() : String();
+    const bool all = r->hasParam("all") && r->getParam("all")->value() == "1";
+    String s; buildModelsCatalog(s, only, all);
+    AsyncWebServerResponse* res = r->beginResponse(200, "application/json", s);
+    res->addHeader("Cache-Control", "no-store");
+    r->send(res);
+  });
+  // POST /api/models/refresh {provider} - force a re-harvest (enqueues a verify;
+  // the UI polls generatedAt / verifyPending). No body provider = refresh nothing.
+  s_server.on("/api/models/refresh", HTTP_POST, [](AsyncWebServerRequest* r) {
+    if (authBlocked(r)) return;
+    String p = r->hasParam("provider", true) ? r->getParam("provider", true)->value() : String();
+    bool ok = p.length() && agent::provider_verify::request(p);
+    r->send(ok ? 200 : 409, "application/json",
+            ok ? "{\"ok\":true}" : "{\"ok\":false,\"error\":\"busy or no provider\"}");
+  });
+  // GET /api/fallbacks - the active fallback rule set (CUM-41).
+  s_server.on("/api/fallbacks", HTTP_GET, [](AsyncWebServerRequest* r) {
+    if (authBlocked(r)) return;
+    String s; buildFallbacks(s);
+    AsyncWebServerResponse* res = r->beginResponse(200, "application/json", s);
+    res->addHeader("Cache-Control", "no-store");
+    r->send(res);
+  });
+  // POST /api/fallbacks {rules=<v1 JSON>} - replace the local rule set (admin edit).
+  s_server.on("/api/fallbacks", HTTP_POST, [](AsyncWebServerRequest* r) {
+    if (authBlocked(r)) return;
+    String body = r->hasParam("rules", true) ? r->getParam("rules", true)->value() : String();
+    nimbus::orch::FallbackRuleSet rs;
+    if (!body.length() || nimbus::orch::parseFallbackRules(std::string(body.c_str()), rs) == 0) {
+      r->send(400, "application/json", "{\"ok\":false,\"error\":\"invalid or empty rule set\"}");
+      return;
+    }
+    agent::store::setFallbackRulesJson(body);
+    agent::store::setFallbackSyncTs(0);   // a local edit is authoritative until the next cloud sync
+    r->send(200, "application/json", "{\"ok\":true}");
   });
   // Daily per-provider usage buckets for the Usage-pane graphs (owner: spend over
   // time + estimated price). Raw counts only - the $ math happens client-side from
