@@ -41,6 +41,13 @@ To stop remote access, use "Unpair" (keeps cloud access on, drops this pairing) 
   built-in certificate bundle. It never falls back to an unvalidated connection.
 - The credential the device uses to connect is issued by the service at pairing and is
   stored only on the device. Unpairing revokes it.
+- The credential expires (30 days by default) and the device renews it on its own,
+  quietly, before it lapses: it re-mints at a randomized point past the halfway mark of
+  the credential's life, and only while the tunnel is idle, so a renewal never
+  interrupts a request. An expired credential can still be renewed for a short grace
+  period; past that, the device shows a fresh pairing code so you can sign in again.
+  Older devices whose credential never expires keep working and pick up an expiring one
+  the first time they renew or re-pair.
 - Requests arriving over the tunnel are already authenticated by the service (the
   signed-in owner, an active subscription, and device ownership are all checked before
   anything is forwarded). The device treats the tunnel as trusted and stamps its own

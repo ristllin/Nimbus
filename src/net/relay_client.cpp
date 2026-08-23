@@ -7,6 +7,7 @@
 #include <esp_heap_caps.h>
 #include <esp_mac.h>
 #include <esp_random.h>
+#include <time.h>
 
 #include <string>
 #include <vector>
@@ -20,6 +21,7 @@
 #include "../sys/tls_arbiter.h"   // pairing HTTP takes the work slot
 #include "nimbus/cloud/http_replay.h"
 #include "nimbus/cloud/relay_codec.h"
+#include "nimbus/cloud/relay_credential.h"   // CUM-52: exp/re-mint policy (pure core)
 #include "nimbus/cloud/relay_ws.h"
 #include "version.h"
 
@@ -365,6 +367,109 @@ bool persistClaimed(JsonDocument& pd, const String& host, const String& deviceId
   return true;
 }
 
+// --- CUM-52: credential expiry + re-mint (consumes the C6 contract, CUM-87) ------
+// The device credential is a JWT that now carries an optional `exp` (30d default).
+// The device re-mints it BEFORE expiry at a jittered [50-80%] point, and re-mints an
+// expired-within-grace credential before reconnecting; past grace it re-pairs. All
+// re-mint POSTs run while the WSS is DOWN (single-TLS-slot rule) and never mid-turn.
+
+// Stable per-device jitter seed so a fleet that restarted together does not all
+// re-mint at the same instant. FNV-1a over the deviceId (stable across reboots).
+uint32_t remintSeed() {
+  String id = agent::store::cloudDeviceId();
+  uint32_t h = 2166136261u;
+  for (size_t i = 0; i < id.length(); ++i) { h ^= (uint8_t)id[i]; h *= 16777619u; }
+  return h;
+}
+
+// The proactive re-mint target for the CURRENT credential (epoch s; 0 = none, e.g. a
+// legacy no-exp credential). Cached at session start so the online loop can end the
+// session (while idle) the moment the window opens, without re-parsing every tick.
+uint64_t g_remintAtEpoch = 0;
+
+enum class RemintResult { Ok, Reauth, Transient };
+
+// POST /device/credential/remint with the CURRENT credential; on 200 persist the fresh
+// one atomically (setCloudPairing -> NVS) BEFORE returning. Caller guarantees the WSS
+// is down. Reauth => must re-pair; Transient => retry later.
+RemintResult remintCredential() {
+  String host = agent::store::cloudHost();
+  String deviceId = agent::store::cloudDeviceId();
+  String cred = agent::store::cloudCred();
+  if (host.isEmpty() || deviceId.isEmpty() || cred.isEmpty()) return RemintResult::Transient;
+  JsonDocument req;
+  req["deviceId"]   = deviceId;
+  req["credential"] = cred;
+  String body;
+  serializeJson(req, body);
+  String resp;
+  const int st = httpsPostJson(host, "/device/credential/remint", body, resp);
+  if (st == 200) {
+    JsonDocument pd;
+    if (deserializeJson(pd, resp)) return RemintResult::Transient;   // garbled 200
+    String newCred = pd["credential"] | "";
+    if (newCred.isEmpty()) return RemintResult::Transient;
+    String relayUrl = pd["relayUrl"] | "";
+    String rHost = host;
+    int hs = relayUrl.indexOf("://");
+    if (hs > 0) {
+      int he = relayUrl.indexOf('/', hs + 3);
+      rHost = relayUrl.substring(hs + 3, he > 0 ? he : relayUrl.length());
+    }
+    // Atomic swap: setCloudPairing writes NVS, then future reads see the new cred.
+    agent::store::setCloudPairing(deviceId, newCred, rHost, agent::store::cloudName());
+    agent::alog("relay: credential re-minted");
+    return RemintResult::Ok;
+  }
+  if (st == 401 || st == 404) return RemintResult::Reauth;   // past grace / rotated / unpaired
+  return RemintResult::Transient;                            // network / 5xx / rate-limited
+}
+
+// Wipe the dead pairing and hand off to the pairing flow (shows the claim code).
+void dropToPairing(const char* why) {
+  agent::store::clearCloudPairing();
+  setState(State::Idle);
+  setErr(why);
+  g_reqPair = true;   // auto-start pairing so the device shows a fresh claim code
+}
+
+// Between-session maintenance (WSS down): re-mint proactively at the jittered window,
+// or re-mint an expired-within-grace credential before the next connect; re-pair once
+// past grace. Returns false only when a re-pair is needed (caller must not connect).
+bool maintainCredential() {
+  String cred = agent::store::cloudCred();
+  if (cred.isEmpty()) return true;
+  const uint64_t now = (uint64_t)time(nullptr);
+  if (now < 1000000000ULL) return true;   // clock unsynced: never act on a bogus time
+  const std::string credStd(cred.c_str());
+  const uint64_t exp = nimbus::cloud::credentialExp(credStd);
+  const uint64_t iat = nimbus::cloud::credentialIat(credStd);
+  const uint32_t seed = remintSeed();
+  if (nimbus::cloud::expiredPastGrace(exp, now)) { dropToPairing("Sign-in expired. Pair again when ready."); return false; }
+  const bool due = nimbus::cloud::remintDueProactive(iat, exp, now, seed) ||
+                   nimbus::cloud::expiredWithinGrace(exp, now);
+  if (due && remintCredential() == RemintResult::Reauth) {
+    dropToPairing("Sign-in expired. Pair again when ready.");
+    return false;
+  }
+  return true;
+}
+
+// After a server BadToken (4001) close: the relay rejected our credential. Try a
+// re-mint (fixes an expired-within-grace token) and, failing that, re-pair. Returns
+// true if a reconnect is worth trying with the (possibly fresh) credential.
+bool recoverFromBadToken() {
+  const uint64_t now = (uint64_t)time(nullptr);
+  const uint64_t exp = nimbus::cloud::credentialExp(std::string(agent::store::cloudCred().c_str()));
+  if (now > 1000000000ULL && nimbus::cloud::expiredPastGrace(exp, now)) {
+    dropToPairing("Sign-in expired. Pair again when ready.");
+    return false;
+  }
+  const RemintResult r = remintCredential();
+  if (r == RemintResult::Reauth) { dropToPairing("Sign-in expired. Pair again when ready."); return false; }
+  return true;   // Ok (fresh cred) or Transient (retry the connect)
+}
+
 // Run the full pairing exchange: /pair/init then poll /pair/poll. On success, persist
 // the credential and return true (caller connects). Surfaces the code+URL for e-ink.
 bool runPairing() {
@@ -533,10 +638,18 @@ bool sendHello(const String& deviceId, const String& cred) {
   return wsSendSmall(ws::Opcode::Text, (const uint8_t*)s.data(), s.size());
 }
 
-// A locally-initiated stop: opt-out/unpair staged, WiFi gone, or the socket dropped. Any
-// of these ends the session cleanly (close code 0).
+// A locally-initiated stop: opt-out/unpair staged, WiFi gone, the socket dropped, or a
+// proactive re-mint just came due while idle (CUM-52: we can't open a 2nd TLS to
+// re-mint, so we end the idle session, re-mint between sessions, then reconnect). Any
+// of these ends the session cleanly (close code 0). This is only ever reached between
+// tunneled requests, so it never fires mid-turn.
 bool sessionShouldStop() {
-  return g_reqOptIn == 0 || g_reqUnpair || !wifiReady() || !g_ws->connected();
+  if (g_reqOptIn == 0 || g_reqUnpair || !wifiReady() || !g_ws->connected()) return true;
+  if (g_remintAtEpoch) {
+    const uint64_t now = (uint64_t)time(nullptr);
+    if (now > 1000000000ULL && now >= g_remintAtEpoch) return true;   // window open -> recycle
+  }
+  return false;
 }
 
 // The online read/pump/heartbeat loop, after the handshake + hello. Returns the WS close
@@ -578,6 +691,13 @@ uint16_t runSession() {
   String deviceId = agent::store::cloudDeviceId();
   String cred = agent::store::cloudCred();
   if (deviceId.isEmpty() || cred.isEmpty()) return 0;
+
+  // CUM-52: cache this credential's jittered re-mint target so the idle online loop can
+  // recycle the session the moment the window opens (0 => legacy/no-exp, never recycles).
+  const std::string credStd(cred.c_str());
+  g_remintAtEpoch = nimbus::cloud::remintTarget(nimbus::cloud::credentialIat(credStd),
+                                                nimbus::cloud::credentialExp(credStd),
+                                                remintSeed());
 
   setState(State::Connecting);
   if (!g_ws) g_ws = new WiFiClientSecure();
@@ -641,8 +761,12 @@ void applyCloseCodePolicy(uint16_t code, uint32_t& backoff, uint32_t& badToken) 
     return;
   }
   if (code == (uint16_t)CloseCode::BadToken) {
+    // CUM-52: the relay rejected our credential (expired or rotated). Try to recover
+    // by re-minting (an expired-within-grace token) or re-pairing, rather than idling
+    // 5 min. If recovery re-paired, reset and let the pairing flow run.
+    if (!recoverFromBadToken()) { badToken = 0; backoff = 500; return; }
     if (++badToken >= 3) { setState(State::Disabled); setErr("Sign-in expired. Pair again when ready."); vTaskDelay(pdMS_TO_TICKS(300000)); return; }
-    vTaskDelay(pdMS_TO_TICKS(300000));
+    vTaskDelay(pdMS_TO_TICKS(2000));   // brief: reconnect with the (possibly fresh) credential
     return;
   }
   badToken = 0;
@@ -687,6 +811,11 @@ void relayTask(void*) {
       continue;
     }
     if (!agent::store::cloudPaired()) { setState(State::Idle); vTaskDelay(pdMS_TO_TICKS(1000)); continue; }
+
+    // CUM-52: proactive/within-grace re-mint runs here, while the WSS is DOWN (single
+    // TLS slot). If the credential is past grace, maintainCredential re-pairs and we
+    // loop back without connecting.
+    if (!maintainCredential()) continue;
 
     uint16_t code = runSession();
     applyCloseCodePolicy(code, backoff, badToken);
