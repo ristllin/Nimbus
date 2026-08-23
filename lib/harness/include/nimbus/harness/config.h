@@ -30,6 +30,7 @@ struct ProviderConfig {
   std::function<std::string(const std::string& host)> orchModel;
   std::function<std::string(const std::string& host)> subModel;
   std::function<std::string(const std::string& host)> modelChoices; // live-verified csv, "" = none
+  std::function<std::string()> fallbackRules;      // fallback rule set JSON (v1); "" => size-class defaults
 
   // Per-host conversation continuity, stored "host|convId".
   std::function<std::string()> convId;

@@ -7,6 +7,10 @@
 
 #include <algorithm>
 #include <memory>
+#include <set>
+
+#include "nimbus/orch/fallback_rules.h"  // CUM-41 unified fallback engine
+#include "nimbus/orch/model_catalog.h"   // modelSizeClass for the size-class predicate
 
 #include "nimbus/harness/log.h"
 #include "nimbus/orch/turn.h"
@@ -159,7 +163,14 @@ std::string TurnEngine::jobsSummaryText() const {
 }
 
 std::string TurnEngine::buildDynamicContext() {
-  std::string ctx = "[ACTIVE SESSIONS]\n";
+  std::string ctx;
+  // A provider fallback from the previous turn, surfaced once (mention only if
+  // relevant/asked). Cleared after it is handed to the model.
+  if (!pendingFallbackNote_.empty()) {
+    ctx += pendingFallbackNote_ + "\n";
+    pendingFallbackNote_.clear();
+  }
+  ctx += "[ACTIVE SESSIONS]\n";
   ctx += jobsSummaryText();
   // The spawn cap (kAgentMaxJobs) was invisible to the model: it would promise
   // to start N sub-agents, the engine would silently refuse past the cap, and
@@ -545,6 +556,91 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   auto hostHasKey = [&](const std::string& h) -> bool {
     return d_.hosts.has(h) && d_.cfg.provider.hasKey && d_.cfg.provider.hasKey(h);
   };
+  auto fabricCanHost = [&](const std::string& h) {
+    return !d_.hosts.fabricSupports || d_.hosts.fabricSupports(h);
+  };
+  // Raw providerPriority walk (the pre-engine midFail order) - the safety net the
+  // rule engine falls back to, so failover can never regress to "no alternates".
+  auto rawAlternates = [&](bool needFabric) {
+    std::vector<std::string> out;
+    std::string prio =
+        d_.cfg.provider.providerPriority ? d_.cfg.provider.providerPriority() : std::string();
+    for (size_t start = 0; start < prio.length();) {
+      size_t c = prio.find(',', start);
+      if (c == std::string::npos) c = prio.length();
+      std::string cand = prio.substr(start, c - start);
+      trimInPlace(cand);
+      start = c + 1;
+      if (cand.empty() || cand == host || !hostHasKey(cand)) continue;
+      if (needFabric && !fabricCanHost(cand)) continue;
+      if (d_.cfg.budget.overBudget && d_.cfg.budget.overBudget(cand)) continue;
+      out.push_back(cand);
+    }
+    return out;
+  };
+  // Classify a head-turn error string into a fallback error class (best-effort;
+  // the head path carries a free-text error, not a FabricErr).
+  auto classifyErr = [&](const std::string& e) -> orch::ErrorClass {
+    std::string s = e;
+    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return (char)tolower(c); });
+    if (s.find("429") != std::string::npos || s.find("rate") != std::string::npos)
+      return orch::ErrorClass::RateLimited;
+    if (s.find("401") != std::string::npos || s.find("403") != std::string::npos ||
+        s.find("auth") != std::string::npos)
+      return orch::ErrorClass::Auth;
+    if (s.find("timeout") != std::string::npos || s.find("timed out") != std::string::npos)
+      return orch::ErrorClass::Timeout;
+    if (s.find("500") != std::string::npos || s.find("502") != std::string::npos ||
+        s.find("503") != std::string::npos || s.find("server") != std::string::npos)
+      return orch::ErrorClass::ServerError;
+    return orch::ErrorClass::Network;
+  };
+  // The unified fallback ordering (CUM-41): the admin/default rule set decides which
+  // providers to try, in what order, for the head model's size class + error class.
+  // Applied to BOTH the mid-turn fabric host list and the between-turn ladder, so
+  // one rule set governs all turns. Empty result -> the raw priority walk above.
+  auto fallbackOrder = [&](orch::ErrorClass ec, bool needFabric) {
+    orch::FallbackRuleSet rs;
+    std::string rulesJson =
+        d_.cfg.provider.fallbackRules ? d_.cfg.provider.fallbackRules() : std::string();
+    if (!rulesJson.empty()) orch::parseFallbackRules(rulesJson, rs);
+    if (rs.rules.empty()) {
+      std::vector<std::string> prio;
+      std::string p =
+          d_.cfg.provider.providerPriority ? d_.cfg.provider.providerPriority() : std::string();
+      for (size_t s2 = 0; s2 < p.length();) {
+        size_t c = p.find(',', s2);
+        if (c == std::string::npos) c = p.length();
+        std::string t = p.substr(s2, c - s2);
+        trimInPlace(t);
+        s2 = c + 1;
+        if (t.length()) prio.push_back(t);
+      }
+      rs = orch::defaultRuleSet(prio);
+    }
+    std::string model = d_.cfg.provider.orchModel ? d_.cfg.provider.orchModel(host) : std::string();
+    orch::TurnContext ctx;
+    ctx.provider = host;
+    ctx.model = model;
+    ctx.sizeClass = orch::sizeClassWord(orch::modelSizeClass(host, model));
+    ctx.capability = "chat";
+    ctx.errorClass = ec;
+    std::set<std::string> used;
+    std::vector<std::string> out;
+    for (int i = 0; i < 3; ++i) {
+      auto avail = [&](const std::string& p, const std::string&) {
+        if (p == host || used.count(p) || !hostHasKey(p)) return false;
+        if (needFabric && !fabricCanHost(p)) return false;
+        return !(d_.cfg.budget.overBudget && d_.cfg.budget.overBudget(p));
+      };
+      orch::FallbackChoice ch = orch::selectFallback(rs, ctx, avail);
+      if (!ch.found) break;
+      out.push_back(ch.target.provider);
+      used.insert(ch.target.provider);
+    }
+    if (out.empty()) out = rawAlternates(needFabric);  // never regress below the priority walk
+    return out;
+  };
 
   // Per-provider LLM token budget (owner: "limit budget per provider"). Opt-in - a
   // limit defaults to 0 (unlimited), so this only fires when the owner SET one and the
@@ -592,19 +688,11 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   bool ok;
   if (fabricOn) {
     std::vector<std::string> hostList{host};
-    std::string prio =
-        d_.cfg.provider.providerPriority ? d_.cfg.provider.providerPriority() : std::string();
-    for (size_t start = 0; start < prio.length() && hostList.size() < 3;) {
-      size_t c = prio.find(',', start);
-      if (c == std::string::npos) c = prio.length();
-      std::string cand = prio.substr(start, c - start);
-      trimInPlace(cand);
-      start = c + 1;
-      if (cand.empty() || cand == host || !hostHasKey(cand)) continue;
-      if (!fabricCan(cand)) continue;   // custom in the priority list must not
-                                        // truncate the ladder mid-switch
-      if (d_.cfg.budget.overBudget && d_.cfg.budget.overBudget(cand)) continue;
-      hostList.push_back(cand);
+    // Alternates chosen by the unified fallback engine (CUM-41). The error is not
+    // known until a round fails, so precompute with a representative transport class.
+    for (const std::string& alt : fallbackOrder(orch::ErrorClass::Network, /*needFabric=*/true)) {
+      if (hostList.size() >= 3) break;
+      hostList.push_back(alt);
     }
     ok = d_.hosts.fabric(
         hostList, instructions, inputs, outJson, err, *headToolsPtr, &turnUsage,
@@ -612,6 +700,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
           deliver(chatId, std::string("\xE2\x9A\xA0\xEF\xB8\x8F ") + from +
                   " hit trouble mid-task - switching to " + to +
                   ". Your progress this turn carries over.");
+          pendingFallbackNote_ = orch::fallbackNote(from, "", to, "", orch::ErrorClass::None);
           host = to;   // TurnEndEv / conv bookkeeping attribute to the final host
         });
     convId = "";   // stateless loops keep no provider-side conversation
@@ -630,22 +719,17 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     if (d_.platform.delayMs) d_.platform.delayMs(400);
     convId = ""; ok = runTurnHost(host, convId);
   }
-  if (!ok && !fabricOn && *loopDispatched == 0) {   // walk the priority list; up to 2 alternates that differ + have a key
-    std::string prio =
-        d_.cfg.provider.providerPriority ? d_.cfg.provider.providerPriority() : std::string();
+  if (!ok && !fabricOn && *loopDispatched == 0) {   // unified fallback ladder (CUM-41): up to 2 alternates
+    const orch::ErrorClass ec = classifyErr(err);
     int tried = 0;
-    size_t start = 0;
-    while (!ok && tried < 2 && start < prio.length()) {
-      size_t comma = prio.find(',', start);
-      if (comma == std::string::npos) comma = prio.length();
-      std::string fb = prio.substr(start, comma - start);
-      trimInPlace(fb);
-      start = comma + 1;
-      if (fb.empty() || fb == host || !hostHasKey(fb)) continue;
+    for (const std::string& fb : fallbackOrder(ec, /*needFabric=*/false)) {
+      if (ok || tried >= 2) break;
       tried++;
       hlog::logf("orchestrator: %s down -> failover to %s", host.c_str(), fb.c_str());
       deliver(chatId, std::string("\xE2\x9A\xA0\xEF\xB8\x8F ") + host + " is unavailable - switching to " +
               fb + " (your recent messages carry over; the provider-side thread restarts).");
+      // Record the switch as a model-facing context note for the next turn.
+      pendingFallbackNote_ = orch::fallbackNote(host, "", fb, "", ec);
       convId = ""; host = fb; ok = runTurnHost(host, convId);
     }
   }

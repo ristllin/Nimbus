@@ -40,6 +40,7 @@ HarnessConfig harnessConfigFromStore() {
   p.orchModel = [](const std::string& h) { return s(store::orchModel(h.c_str())); };
   p.subModel = [](const std::string& h) { return s(store::subModel(h.c_str())); };
   p.modelChoices = [](const std::string& h) { return s(store::modelChoices(h.c_str())); };
+  p.fallbackRules = [] { return s(store::fallbackRulesJson()); };
   p.convId = [] { return s(store::orchConvId()); };
   p.setConvId = [](const std::string& v) { store::setOrchConvId(v.c_str()); };
   p.customBase = [] { return s(store::customBase()); };

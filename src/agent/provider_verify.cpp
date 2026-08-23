@@ -5,6 +5,8 @@
 
 #include "../sys/ps_json.h"       // PsramJsonAllocator - Mistral model-metadata parse off internal heap
 #include "nimbus/orch/model_catalog.h"  // portable role/capability catalog (GET /api/models)
+#include "nimbus/orch/fallback_rules.h" // portable fallback rule parse (Cumulo cloud sync)
+#include <time.h>
 
 #include "esp_heap_caps.h"
 #include "agent_config.h"
@@ -136,7 +138,7 @@ static bool buildProbeRequest(const String& provider, const String& model,
 // Read the HTTP status code and a bounded slice of the response body (enough for
 // error classification) off an already-sent probe request. Returns the code (0 if
 // none). Shares the read shape with the verify GET above.
-static int readProbeResponse(WiFiClientSecure& client, String& errBody) {
+static int readProbeResponse(WiFiClientSecure& client, String& errBody, size_t maxBytes = 1100) {
   const uint32_t deadline = millis() + 15000;
   String status;
   while ((int32_t)(millis() - deadline) < 0) {
@@ -152,8 +154,8 @@ static int readProbeResponse(WiFiClientSecure& client, String& errBody) {
   }
   int code = 0, sp = status.indexOf(' ');
   if (sp > 0 && (int)status.length() >= sp + 4) code = status.substring(sp + 1, sp + 4).toInt();
-  errBody.reserve(1200);
-  while ((int32_t)(millis() - deadline) < 0 && errBody.length() < 1100) {
+  errBody.reserve(maxBytes + 100);
+  while ((int32_t)(millis() - deadline) < 0 && errBody.length() < maxBytes) {
     if (client.available()) errBody += (char)client.read();
     else if (!client.connected() && !client.available()) break;
     else delay(2);
@@ -251,6 +253,36 @@ static String zaiPickHost(const String& key) {
     }
   }
   return String(ZAI_HOST_PRIMARY);
+}
+
+// PROVISIONAL cloud sync (CUM-41): when on a Cumulo key, pull the admin master
+// fallback rule set from the router and store it (source becomes "cloud" via a
+// non-zero syncTs). The exact endpoint is pending C3 (CUM-105); this hits
+// "<base>/fallbacks" best-effort and is a SAFE NO-OP on any non-rule response
+// (parse yields 0 rules -> nothing stored), so it does no harm on the old router.
+// Runs inside the held work slot after a successful Cumulo verify.
+static void syncCumuloFallbacks(const char* host, const String& key) {
+  WiFiClientSecure client;
+  tlsSetup(client);
+  client.setHandshakeTimeout(12);
+  client.setConnectionTimeout(15000);
+  if (!client.connect(host, 443)) return;
+  String req = String("GET /fallbacks HTTP/1.0\r\nHost: ") + host +
+               "\r\nAuthorization: Bearer " + key +
+               "\r\nAccept-Encoding: identity\r\nUser-Agent: Nimbus\r\nConnection: close\r\n\r\n";
+  client.print(req);
+  String body;
+  const int code = readProbeResponse(client, body, 4096);
+  tlsClose(client);
+  if (code != 200) return;
+  nimbus::orch::FallbackRuleSet rs;
+  if (nimbus::orch::parseFallbackRules(std::string(body.c_str()), rs,
+                                       &PsramJsonAllocator::instance()) == 0)
+    return;  // not a rule set (old router / 404 page) - keep local/default
+  store::setFallbackRulesJson(body);
+  time_t now = time(nullptr);
+  store::setFallbackSyncTs(now > 100000 ? (uint32_t)now : 1);
+  alogf("verify: cumulo fallback rules synced (%u rules)", (unsigned)rs.rules.size());
 }
 
 static void runOne() {
@@ -609,6 +641,8 @@ static void runOne() {
   // the work slot, confirm the owner's SELECTED models actually run on this key.
   if (result == 1 && (provider == "openai" || provider == "anthropic" || provider == "mistral"))
     probeSelectedModels(provider);
+  // On a Cumulo key, pull the admin master fallback rule set (provisional; CUM-41).
+  if (result == 1 && provider == "cumulo" && host) syncCumuloFallbacks(host, key);
   arbiter::releaseWork();
   recordVerify(provider, result);
   g_pending = false;  // clear LAST so pending() covers the whole run
