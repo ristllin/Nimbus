@@ -167,16 +167,34 @@ static void test_prompt_v2_is_smaller() {
 
 // N11: v2 must still NAME every orch_turn field (a schema field the model never
 // hears about in-prompt is invisible on Anthropic, which strips schema
-// descriptions). This guards against a new field being added to the wire but
-// forgotten in the hand-written v2 block.
+// descriptions). To actually GUARD against a new wire field being forgotten in
+// the hand-written v2 block, the field set is DERIVED from the v1 prompt (whose
+// field-doc block is generated from the ORCH_D_* single source), not hardcoded:
+// add a 9th ORCH_D_* field and v1 grows a "- <field>:" line automatically, which
+// this test then requires v2 to carry too.
 static void test_prompt_v2_names_every_field() {
   ComposeInputs in = cannedInputs();
+  in.promptV2 = false;
+  std::string v1 = agent::composeInstructions(in);
   in.promptV2 = true;
-  std::string p = agent::composeInstructions(in);
-  for (const char* field :
-       {"reply:", "ask:", "memory:", "device:", "mem_write:", "mem_query:",
-        "session_ops:", "scratchpad:"})
-    TEST_ASSERT_TRUE_MESSAGE(p.find(field) != std::string::npos, field);
+  std::string v2 = agent::composeInstructions(in);
+  // Extract the field labels from v1's field-doc block: lines like "- reply: ..."
+  // between "Fill the orch_turn fields:" and the FRESH RESULTS sentence.
+  size_t start = v1.find("Fill the orch_turn fields:\n");
+  size_t end = v1.find("\nWhen [FRESH RESULTS] appears");
+  TEST_ASSERT_TRUE(start != std::string::npos && end != std::string::npos && start < end);
+  std::string block = v1.substr(start, end - start);
+  int found = 0;
+  size_t pos = 0;
+  while ((pos = block.find("\n- ", pos)) != std::string::npos) {
+    pos += 3;
+    size_t colon = block.find(':', pos);
+    if (colon == std::string::npos) break;
+    std::string label = block.substr(pos, colon - pos + 1);   // e.g. "reply:"
+    TEST_ASSERT_TRUE_MESSAGE(v2.find(label) != std::string::npos, label.c_str());
+    found++;
+  }
+  TEST_ASSERT_TRUE_MESSAGE(found >= 8, "expected >=8 orch_turn fields derived from v1");
 }
 
 // N11: v2 must PRESERVE every safety rail that v1 carries. Losing one of these

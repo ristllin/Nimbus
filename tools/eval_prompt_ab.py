@@ -14,9 +14,15 @@ the two prompts and hold everything else identical. The oracle is the gate; a
 judge is intentionally omitted (the oracle checks the structured output, which is
 what the prompt compression could actually break).
 
-Cost control: temperature 0, small max_tokens, a hard --max-calls cap, and a
---dry-run that grades nothing but prints the plan. Secrets are read from the env
-(cumulo .env) and never printed. Corpus + summary persist under ~/nimbus-evals/.
+Determinism is approximated by forced tool-choice (the model must emit orch_turn)
+plus repetition (--reps); temperature is deliberately NOT set, because current
+S-tier models reject a non-default temperature on this path (claude-sonnet-5
+deprecates it; some gpt-5 variants reject it). Treat a single rep as noisy and
+read the aggregate.
+
+Cost control: small max_tokens, a hard --max-calls cap, and a --dry-run that
+grades nothing but prints the plan. Secrets are read from the env (cumulo .env)
+and never printed. Corpus + summary persist under ~/nimbus-evals/.
 
 Providers: anthropic (forced tool_use, the case that MATTERS for v2 because it
 strips schema descriptions at the wire) and openai (strict json_schema tool).

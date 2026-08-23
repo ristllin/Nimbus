@@ -135,42 +135,52 @@ def measure_file(path):
     }
 
 
+def rank_contributors(results):
+    """Deduplicated top contributors (max bytes across prompts), with the inlined
+    field-docs split out of its enclosing role block. Both pieces are computed
+    PER RESULT (role minus that same result's field-docs), then maxed across
+    prompts, so two prompts with different field-doc sizes never mix."""
+    best = {}  # label -> (bytes, tokens)
+    for r in results:
+        for row in r["sections"]:
+            if row["section"] == "role_field_docs":
+                continue  # handled below via the split
+            lbl = row["section"]
+            if row["bytes"] > best.get(lbl, (0, 0))[0]:
+                best[lbl] = (row["bytes"], row["tokens"])
+    best_fd = (0, 0)
+    best_framing = (0, 0)
+    for r in results:
+        fd = r.get("field_docs")
+        if not fd:
+            continue
+        best_fd = max(best_fd, (fd["bytes"], fd["tokens"]))
+        role = next((s for s in r["sections"] if s["section"] == "role_field_docs"), None)
+        if role:
+            best_framing = max(best_framing, (role["bytes"] - fd["bytes"], role["tokens"] - fd["tokens"]))
+    if best_fd[0]:
+        best["orch_turn field-docs"] = best_fd
+    if best_framing[0]:
+        best["role framing (excl. field-docs)"] = best_framing
+    return sorted(best.items(), key=lambda kv: -kv[1][0])
+
+
 def print_report(results):
     print(f"# Harness prompt cost report   (tokenizer: {TOKENIZER})")
     print("# Byte budget ceiling kContextBudgetMax = 32768 B\n")
-    all_rows = []
     for r in results:
         print(f"## {r['file']}")
         print(f"   total: {r['total_bytes']:>6} B   {r['total_words']:>5} words   {r['total_tokens']:>5} tokens")
         for row in sorted(r["sections"], key=lambda x: -x["bytes"]):
             share = 100.0 * row["bytes"] / r["total_bytes"] if r["total_bytes"] else 0
             print(f"     {row['bytes']:>6} B  {row['tokens']:>5} tok  {share:5.1f}%  {row['section']}")
-            all_rows.append((r["file"], row))
         if r["field_docs"]:
             fd = r["field_docs"]
             share = 100.0 * fd["bytes"] / r["total_bytes"] if r["total_bytes"] else 0
             print(f"     {fd['bytes']:>6} B  {fd['tokens']:>5} tok  {share:5.1f}%  {fd['section']}")
         print()
-    # Top heaviest contributors, deduplicated by section (max across prompts) and
-    # with the inlined field-docs split out of its enclosing role block, so the
-    # ranking names distinct pieces rather than the same section twice.
     print("## Top 5 heaviest distinct contributors (max bytes across measured prompts)")
-    best = {}  # label -> (bytes, tokens)
-    for _fname, row in all_rows:
-        lbl = row["section"]
-        if row["bytes"] > best.get(lbl, (0, 0))[0]:
-            best[lbl] = (row["bytes"], row["tokens"])
-    # split field-docs out of role_field_docs
-    for r in results:
-        if r.get("field_docs"):
-            fd = r["field_docs"]
-            best["orch_turn field-docs"] = max(best.get("orch_turn field-docs", (0, 0)), (fd["bytes"], fd["tokens"]))
-            if "role_field_docs" in best:
-                rb, rt = best["role_field_docs"]
-                best["role framing (excl. field-docs)"] = (rb - fd["bytes"], rt - fd["tokens"])
-                del best["role_field_docs"]
-    ranked = sorted(best.items(), key=lambda kv: -kv[1][0])[:5]
-    for i, (lbl, (b, t)) in enumerate(ranked, 1):
+    for i, (lbl, (b, t)) in enumerate(rank_contributors(results)[:5], 1):
         print(f"   {i}. {b:>6} B  {t:>5} tok  {lbl}")
 
 
