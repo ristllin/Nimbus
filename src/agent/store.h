@@ -57,6 +57,10 @@ String zaiBase();            void setZaiBase(const String& host);   // "" until 
 // Cumulo Nimbus router - one key, per-role upstream chosen via the model id.
 String cumuloKey();          bool hasCumuloKey();
 String cumuloBase();         // "" -> CUMULO_HOST_DEFAULT
+// Fallback rule set (device engine; shared v1 schema with the cloud). "" = use the
+// shipped size-class defaults. syncTs>0 means the set was pulled from the cloud.
+String   fallbackRulesJson();      void setFallbackRulesJson(const String& json);
+uint32_t fallbackSyncTs();         void setFallbackSyncTs(uint32_t ts);
 
 // ---- orchestrator routing + models ----
 String orchHost();                          // explicit host provider ("" => top of priority)

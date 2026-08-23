@@ -157,6 +157,8 @@
 #define AKEY_ZAI_BASE       "zaiBase"     // probed working host (api.z.ai | open.bigmodel.cn)
 #define AKEY_CUMULO_KEY     "cumuloKey"   // Cumulo router key (one key, all upstreams)
 #define AKEY_CUMULO_BASE    "cumuloBase"  // router base URL/host ("" -> CUMULO_HOST_DEFAULT)
+#define AKEY_FALLBACK_RULES "fbRules"     // fallback rule set JSON (v1 schema); "" -> shipped defaults
+#define AKEY_FALLBACK_SYNC  "fbSyncTs"    // epoch s of last cloud sync (0 = never/local edit)
 #define AKEY_CUSTOM_CONV    "custConv"      // "openai"|"mistral"|"anthropic"
 #define AKEY_CUSTOM_MODEL   "custModel"
 #define AKEY_ORCH_HOST      "orchHost"      // explicit host provider ("" => priority top)

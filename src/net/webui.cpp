@@ -65,6 +65,7 @@
 #include "../agent/store.h"
 #include "../sys/ps_json.h"                // PsramJsonAllocator - keep /api/models off internal heap
 #include "nimbus/orch/model_catalog.h"    // role tokens for the catalog response
+#include "nimbus/orch/fallback_rules.h"   // device fallback rule engine (GET/POST /api/fallbacks)
 #include "relay_client.h"                // cloud tunnel status + control
 #include "../agent/connectors.h"           // /api/connectors - known catalog + host
 #include "web_memory.h"
@@ -827,6 +828,42 @@ static void buildModelsCatalog(String& out, const String& only, bool includeUnus
   serializeJson(d, out);
 }
 
+// GET /api/fallbacks - the active fallback rule set (contract on CUM-41; shared v1
+// schema with the cloud). Serves the stored set if present, else the shipped
+// size-class defaults built from providerPriority. The device-local envelope
+// (source/syncedAt/embeddingsCrossProvider) rides outside the shared rule schema.
+static void buildFallbacks(String& out) {
+  JsonDocument d(&agent::PsramJsonAllocator::instance());
+  const uint32_t sync = agent::store::fallbackSyncTs();
+  const String stored = agent::store::fallbackRulesJson();
+  nimbus::orch::FallbackRuleSet rs;
+  const char* source;
+  if (stored.length()) {
+    nimbus::orch::parseFallbackRules(std::string(stored.c_str()), rs);
+    source = sync ? "cloud" : "local";
+  } else {
+    std::vector<std::string> prio;
+    String csv = agent::store::providerPriority();
+    int start = 0;
+    while (start < (int)csv.length()) {
+      int comma = csv.indexOf(',', start);
+      if (comma < 0) comma = csv.length();
+      String p = csv.substring(start, comma);
+      p.trim();
+      if (p.length()) prio.push_back(std::string(p.c_str()));
+      start = comma + 1;
+    }
+    rs = nimbus::orch::defaultRuleSet(prio);
+    source = "default";
+  }
+  JsonObject root = d.to<JsonObject>();
+  nimbus::orch::fallbackRulesToJson(rs, root);  // version + rules
+  root["source"] = source;
+  root["syncedAt"] = sync;
+  root["embeddingsCrossProvider"] = false;  // hard invariant: embeddings never cross-provider
+  serializeJson(d, out);
+}
+
 // Apply one POSTed orchestrator field. Key writes invalidate that provider's
 // verify cache (result -1, ts 0 = "never verified") so a swapped key can't ride
 // a stale "verified" badge. Returns true if the field was recognized.
@@ -1423,6 +1460,27 @@ void beginWeb(const WebConfig& wc) {
     bool ok = p.length() && agent::provider_verify::request(p);
     r->send(ok ? 200 : 409, "application/json",
             ok ? "{\"ok\":true}" : "{\"ok\":false,\"error\":\"busy or no provider\"}");
+  });
+  // GET /api/fallbacks - the active fallback rule set (CUM-41).
+  s_server.on("/api/fallbacks", HTTP_GET, [](AsyncWebServerRequest* r) {
+    if (authBlocked(r)) return;
+    String s; buildFallbacks(s);
+    AsyncWebServerResponse* res = r->beginResponse(200, "application/json", s);
+    res->addHeader("Cache-Control", "no-store");
+    r->send(res);
+  });
+  // POST /api/fallbacks {rules=<v1 JSON>} - replace the local rule set (admin edit).
+  s_server.on("/api/fallbacks", HTTP_POST, [](AsyncWebServerRequest* r) {
+    if (authBlocked(r)) return;
+    String body = r->hasParam("rules", true) ? r->getParam("rules", true)->value() : String();
+    nimbus::orch::FallbackRuleSet rs;
+    if (!body.length() || nimbus::orch::parseFallbackRules(std::string(body.c_str()), rs) == 0) {
+      r->send(400, "application/json", "{\"ok\":false,\"error\":\"invalid or empty rule set\"}");
+      return;
+    }
+    agent::store::setFallbackRulesJson(body);
+    agent::store::setFallbackSyncTs(0);   // a local edit is authoritative until the next cloud sync
+    r->send(200, "application/json", "{\"ok\":true}");
   });
   // Daily per-provider usage buckets for the Usage-pane graphs (owner: spend over
   // time + estimated price). Raw counts only - the $ math happens client-side from

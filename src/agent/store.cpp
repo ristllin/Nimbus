@@ -119,6 +119,8 @@ void   setZaiBase(const String& host) { solide::memory::setString(AKEY_ZAI_BASE,
 String cumuloKey()   { return solide::memory::getString(AKEY_CUMULO_KEY, ""); }
 bool   hasCumuloKey(){ return cumuloKey().length() > 0; }
 String cumuloBase()  { return solide::memory::getString(AKEY_CUMULO_BASE, ""); }
+String   fallbackRulesJson() { return solide::memory::getString(AKEY_FALLBACK_RULES, ""); }
+uint32_t fallbackSyncTs()    { return (uint32_t)solide::memory::getInt(AKEY_FALLBACK_SYNC, 0); }
 
 // ---- routing + models ----
 String orchHost() { return solide::memory::getString(AKEY_ORCH_HOST, ""); }
@@ -333,6 +335,8 @@ void setCustomModel(const String& v)  { solide::memory::setString(AKEY_CUSTOM_MO
 void setZaiKey(const String& v)       { solide::memory::setString(AKEY_ZAI_KEY, v); }
 void setCumuloKey(const String& v)    { solide::memory::setString(AKEY_CUMULO_KEY, v); }
 void setCumuloBase(const String& v)   { solide::memory::setString(AKEY_CUMULO_BASE, v); }
+void setFallbackRulesJson(const String& json) { solide::memory::setString(AKEY_FALLBACK_RULES, json); }
+void setFallbackSyncTs(uint32_t ts)   { solide::memory::setInt(AKEY_FALLBACK_SYNC, (int)ts); }
 void setOrchHost(const String& v)     { solide::memory::setString(AKEY_ORCH_HOST, v); }
 void setProviderPriority(const String& v) { solide::memory::setString(AKEY_PROV_PRIORITY, v); }
 void setSysPrompt(const String& v)    { solide::memory::setString(AKEY_SYS_PROMPT, v); }
