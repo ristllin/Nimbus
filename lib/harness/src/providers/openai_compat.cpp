@@ -35,43 +35,68 @@ CompatSlot* findSlot(const char* jobId) {
     if (!s.used && s.jobId[0] && strcmp(s.jobId, jobId) == 0) return &s;
   return nullptr;
 }
+
+// Build the request for the endpoint's wire: sets `path` + response `filter`, and
+// returns the serialized body. OpenAI/Mistral use chat-completions; Anthropic uses
+// Messages (system is top-level, max_tokens required, reply at content[0].text).
+std::string buildCompatRequest(const CompatEndpoint& ep, const Directive& d,
+                               const std::string& sysText, std::string& path,
+                               JsonDocument& filter) {
+  JsonDocument doc;
+  doc["model"] = ep.model;
+  const char* instr = d.instruction ? d.instruction : "";
+  if (ep.wire == CompatWire::AnthropicMessages) {
+    path = ep.basePath + "/messages";
+    doc["max_tokens"] = 1024;
+    doc["system"] = sysText;
+    JsonObject u = doc["messages"].to<JsonArray>().add<JsonObject>();
+    u["role"] = "user";
+    u["content"] = instr;
+    filter["content"][0]["text"] = true;
+  } else {
+    path = ep.basePath + "/chat/completions";
+    JsonArray msgs = doc["messages"].to<JsonArray>();
+    JsonObject sys = msgs.add<JsonObject>();
+    sys["role"] = "system";
+    sys["content"] = sysText;
+    JsonObject u = msgs.add<JsonObject>();
+    u["role"] = "user";
+    u["content"] = instr;
+    filter["choices"][0]["message"]["content"] = true;
+  }
+  filter["error"]["message"] = true;
+  return serializeBody(doc);
+}
 }  // namespace
 
 FabricErr openaiCompatDispatch(const ProviderDeps& pd, const CompatEndpoint& ep,
                                const Directive& d, char outJobId[72]) {
   if (!ep.host || !*ep.host || ep.model.empty()) return FabricErr::BadRequest;
   const char* backendTag = ep.backendTag ? ep.backendTag : "compat";
+  const bool anthropic = (ep.wire == CompatWire::AnthropicMessages);
+  const std::string sysText = std::string("You are an autonomous ") +
+                              (d.category ? d.category : "ops") +
+                              " agent. Complete the task and reply with the final result only.";
 
-  JsonDocument doc;
-  doc["model"] = ep.model;
-  JsonArray msgs = doc["messages"].to<JsonArray>();
-  JsonObject sys = msgs.add<JsonObject>();
-  sys["role"] = "system";
-  sys["content"] = std::string("You are an autonomous ") + (d.category ? d.category : "ops") +
-                   " agent. Complete the task and reply with the final result only.";
-  JsonObject u = msgs.add<JsonObject>();
-  u["role"] = "user";
-  u["content"] = d.instruction ? d.instruction : "";
-  std::string body = serializeBody(doc);
-
+  std::string path;
   JsonDocument filter;
-  filter["choices"][0]["message"]["content"] = true;
-  filter["error"]["message"] = true;
+  std::string body = buildCompatRequest(ep, d, sysText, path, filter);
 
   std::vector<std::pair<std::string, std::string>> headers;
   if (!ep.key.empty()) headers.push_back({"Authorization", "Bearer " + ep.key});
   headers.push_back({"Content-Type", "application/json"});
 
   JsonDocument out;
-  int code = exchange(pd, ep.host, ep.port, ep.tls, "POST", ep.basePath + "/chat/completions",
-                      std::move(headers), std::move(body), 30000, out, filter);
+  int code = exchange(pd, ep.host, ep.port, ep.tls, "POST", path, std::move(headers),
+                      std::move(body), 30000, out, filter);
   if (code == 401 || code == 403) return FabricErr::Auth;
   if (code <= 0) return FabricErr::Network;
   if (code != 200) {
     hlog::logf("%s: HTTP %d", backendTag, code);
     return FabricErr::RemoteFail;
   }
-  std::string reply((const char*)(out["choices"][0]["message"]["content"] | ""));
+  std::string reply = anthropic ? std::string((const char*)(out["content"][0]["text"] | ""))
+                                : std::string((const char*)(out["choices"][0]["message"]["content"] | ""));
   if (reply.empty()) return FabricErr::ParseFail;
 
   char id[24];

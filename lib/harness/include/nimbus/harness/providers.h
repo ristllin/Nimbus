@@ -197,6 +197,11 @@ FabricErr customCancel(const ProviderDeps& pd, const char* jobId);
 // cancel back here via the device adapter. A small multi-slot RAM cache lets Z.ai
 // and Cumulo coexist. The endpoint is passed explicitly (not via the pd.custom*
 // closures) so several such providers run at once.
+// The upstream's native wire. A router (Cumulo) proxies each upstream on ITS OWN
+// wire under /router/<upstream>/v1/: OpenAI/Mistral/Z.ai speak chat-completions,
+// Anthropic speaks Messages. Auth is Bearer either way (the router key).
+enum class CompatWire { OpenAIChat, AnthropicMessages };
+
 struct CompatEndpoint {
   const char* host = nullptr;
   uint16_t    port = 443;
@@ -205,6 +210,7 @@ struct CompatEndpoint {
   std::string key;          // Bearer token ("" = no auth header)
   std::string model;
   const char* backendTag = "compat";  // jobId prefix + adapter route key
+  CompatWire  wire = CompatWire::OpenAIChat;
 };
 FabricErr openaiCompatDispatch(const ProviderDeps& pd, const CompatEndpoint& ep,
                                const Directive& d, char outJobId[72]);

@@ -39,6 +39,10 @@ FabricErr CumuloAdapter::dispatch(const Directive& d, char outJobId[72]) {
   ep.key = std::string(store::cumuloKey().c_str());
   ep.model = std::string(model.c_str());
   ep.backendTag = "cumulo";
+  // The router proxies each upstream on its native wire: Anthropic speaks Messages,
+  // everyone else chat-completions.
+  ep.wire = (upstream == "anthropic") ? providers::CompatWire::AnthropicMessages
+                                      : providers::CompatWire::OpenAIChat;
   return providers::openaiCompatDispatch(deviceProviderDeps(), ep, d, outJobId);
 }
 
