@@ -450,6 +450,9 @@ uint32_t battRtop()     { long v = solide::memory::getInt(AKEY_BATT_RTOP, 220000
 uint32_t battRbot()     { long v = solide::memory::getInt(AKEY_BATT_RBOT, 100000); return v < 1000 ? 1000 : (v > 10000000 ? 10000000 : (uint32_t)v); }
 uint16_t battDividerX100() { uint32_t rt = battRtop(), rb = battRbot(); uint32_t d = (uint64_t(rt + rb) * 100) / (rb ? rb : 1); return d < 100 ? 100 : (d > 2000 ? 2000 : (uint16_t)d); }
 uint16_t battCapMah()   { int v = solide::memory::getInt(AKEY_BATT_CAPMAH, 3500); return v < 100 ? 100 : (v > 20000 ? 20000 : (uint16_t)v); }
+String   battChem()     { return solide::memory::getString(AKEY_BATT_CHEM, "liion"); }   // "liion" | "lifepo4"
+uint8_t  battCellsOvr() { int v = solide::memory::getInt(AKEY_BATT_CELLS, 0); return (v == 1 || v == 2) ? (uint8_t)v : 0; }  // 0 = board default
+String   battCurve()    { return solide::memory::getString(AKEY_BATT_CURVE, ""); }        // "" = chemistry default curve
 uint16_t sleepMv()      { int v = solide::memory::getInt(AKEY_SLEEP_MV, 6000); return v < 0 ? 0 : (v > 6800 ? 6800 : (uint16_t)v); }
 uint16_t wakeMv()       { int v = solide::memory::getInt(AKEY_WAKE_MV, nimbus::power::kWakeMvDefault); return v < 0 ? 0 : (v > 7600 ? 7600 : (uint16_t)v); }
 bool     sleepOvr()     { return solide::memory::getInt(AKEY_SLEEP_OVR, 0) != 0; }
@@ -482,6 +485,9 @@ void setSaverMin(uint16_t v) { solide::memory::setInt(AKEY_SAVER_MIN, v > 1440 ?
 void setBattRtop(uint32_t o) { solide::memory::setInt(AKEY_BATT_RTOP, int(o < 1000 ? 1000 : (o > 10000000 ? 10000000 : o))); }
 void setBattRbot(uint32_t o) { solide::memory::setInt(AKEY_BATT_RBOT, int(o < 1000 ? 1000 : (o > 10000000 ? 10000000 : o))); }
 void setBattCapMah(uint16_t m) { solide::memory::setInt(AKEY_BATT_CAPMAH, m < 100 ? 100 : (m > 20000 ? 20000 : m)); }
+void setBattChem(const String& slug) { solide::memory::setString(AKEY_BATT_CHEM, slug == "lifepo4" ? "lifepo4" : "liion"); }
+void setBattCells(uint8_t cells) { solide::memory::setInt(AKEY_BATT_CELLS, (cells == 1 || cells == 2) ? cells : 0); }
+void setBattCurve(const String& csv) { solide::memory::setString(AKEY_BATT_CURVE, csv); }
 void setSleepMv(uint16_t v)  { solide::memory::setInt(AKEY_SLEEP_MV, v > 6800 ? 6800 : v); }
 void setWakeMv(uint16_t v)   { solide::memory::setInt(AKEY_WAKE_MV, v > 7600 ? 7600 : v); }
 void setSleepOvr(bool on)    { solide::memory::setInt(AKEY_SLEEP_OVR, on ? 1 : 0); }

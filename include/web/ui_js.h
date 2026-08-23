@@ -402,6 +402,9 @@ function applyState(d){
     if(document.activeElement!==$('battCapMah')&&$('battCapMah'))$('battCapMah').value=(bt.capMah!==undefined?bt.capMah:3500);
     if(document.activeElement!==$('battRtop')&&$('battRtop'))$('battRtop').value=(bt.rtop!==undefined?bt.rtop:220000);
     if(document.activeElement!==$('battRbot')&&$('battRbot'))$('battRbot').value=(bt.rbot!==undefined?bt.rbot:100000);
+    if(document.activeElement!==$('battChem')&&$('battChem'))$('battChem').value=(bt.chem||'liion');
+    if(document.activeElement!==$('battCells')&&$('battCells'))$('battCells').value=(bt.cells!==undefined?bt.cells:0);
+    if(document.activeElement!==$('battCurve')&&$('battCurve'))$('battCurve').value=(bt.curve||'');
     window._battState={rtop:bt.rtop,rbot:bt.rbot};   // for the divider-change confirm
     // never hide the measurement behind the correction: raw stays one hover away
     $('battmv').title=(bt.mvTrue&&bt.mvTrue!==bt.millivolts)
@@ -427,6 +430,9 @@ function applyState(d){
     if($('sleepOvr').checked&&!confirm('Skip low-battery protection?\n\nThe battery can discharge to a point where it no longer recharges and must be replaced. This applies to measurement runs only and resets at restart.'))return;
     // battery hardware (divider resistors + capacity) - send only if present + changed
     if($('battCapMah'))f.append('battCapMah',$('battCapMah').value||'3500');
+    if($('battChem'))f.append('battChem',$('battChem').value||'liion');
+    if($('battCells'))f.append('battCells',$('battCells').value||'0');
+    if($('battCurve'))f.append('battCurve',$('battCurve').value||'');
     if($('battRtop'))f.append('battRtop',$('battRtop').value||'220000');
     if($('battRbot'))f.append('battRbot',$('battRbot').value||'100000');
     var dividerChanged=$('battRtop')&&$('battRbot')&&window._battState&&(+$('battRtop').value!==window._battState.rtop||+$('battRbot').value!==window._battState.rbot);

@@ -117,6 +117,25 @@ Default per-provider models: `OPENAI_MODEL` = `gpt-5.5`, `ANT_MODEL` =
 | `lbSaver` | bool | `true` | Auto-drop to a lower battery mode on low battery | Yes |
 | `battMon` | bool | board-derived | Battery monitoring on/off. Default is on for hand-built boards (a pack is part of the build) and off for the all-in-one board (a battery is optional, so it is opt-in). Off means the sense pin is never read, the glyph is hidden, and low-battery sleep never fires. Applied at boot. | Yes |
 
+### Battery hardware and chemistry (`src/agent/store.cpp`)
+
+What each value means and how to estimate it without lab tooling is in
+[Battery settings and estimation](battery-estimation.md). Divider, capacity,
+chemistry, cells, and a custom curve apply live (a divider or chemistry change
+re-scales the reading, so the device asks the owner to Recalibrate). Defaults
+reproduce the shipped behaviour exactly.
+
+| Key | Type | Default | Holds | Read back? |
+|---|---|---|---|---|
+| `battRtop` | int (ohms) | `220000` | Voltage-divider top resistor. With `battRbot` sets the pack:node ratio. Clamped `1000..10000000`. | Yes |
+| `battRbot` | int (ohms) | `100000` | Voltage-divider bottom resistor. | Yes |
+| `battCapMah` | int | `3500` | Pack capacity in mAh. Drives the measured-load time-to-empty and the capacity = health x capacity readout. Clamped `100..20000`. | Yes |
+| `battChem` | string | `liion` | Battery chemistry: `liion` (Li-ion / LiPo) or `lifepo4` (lithium iron phosphate). Picks the per-cell voltage to state-of-charge curve. | Yes |
+| `battCells` | int | `0` (board) | Series-cell count override (`1` or `2`); `0`/absent uses the board default (1S Freenove, 2S Solide). Pack mV / cells = per-cell mV. | Yes |
+| `battCurve` | string | `""` | Optional custom per-cell curve, `"mv:pct,mv:pct,..."` high-mV first, strictly descending in mV. Empty uses the chemistry curve. A malformed string is rejected, never stored. | Yes |
+| `sleepMv` | int | `6000` | Low-battery deep-sleep threshold in pack mV; `0` disarms the protection. | Yes |
+| `wakeMv` | int | `7200` | Stay-awake bar after a low-battery sleep (rested-empty packs read a bit higher than the sleep mark). | Yes |
+
 **`scrModel` vs. the board pinout.** `scrModel` picks the display and input
 **family** (renderer + touch/knob) on a hand-built Solide S3 board, where one
 firmware image serves both the e-ink and TFT builds. The **board pinout** is a

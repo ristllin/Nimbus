@@ -40,6 +40,7 @@
 #include "nimbus/orch/budget.h"    // deriveBudget - "auto (currently N)" effective caps
 #include "nimbus/orch/compact.h"   // modelCtxTokens (window table)
 #include "nimbus/power/bright_cap.h"          // resilience: simulated mic/speaker faults
+#include "nimbus/power/power_monitor.h"       // battery chemistry + custom curve parse (config)
 
 #include "../agent/agent_config.h"
 #include "../agent/memory_subsystem.h"
@@ -365,6 +366,9 @@ static void buildState(String& out) {
     batt["rtop"]   = agent::store::battRtop();
     batt["rbot"]   = agent::store::battRbot();
     batt["capMah"] = agent::store::battCapMah();
+    batt["chem"]   = agent::store::battChem();     // "liion" | "lifepo4"
+    batt["cells"]  = agent::store::battCellsOvr();  // 0 = board default
+    batt["curve"]  = agent::store::battCurve();      // "" = chemistry default
     if (e.valid) {
       batt["minsToEmpty"] = e.minutesToEmpty;   // only while discharging
       batt["ratePctHr"]   = e.ratePctPerHr;
@@ -1287,6 +1291,22 @@ void beginWeb(const WebConfig& wc) {
     }
     if (r->hasParam("battCapMah", true)) {
       agent::store::setBattCapMah(uint16_t(r->getParam("battCapMah", true)->value().toInt()));
+      battHw = true;
+    }
+    if (r->hasParam("battChem", true)) {
+      agent::store::setBattChem(r->getParam("battChem", true)->value());   // "liion"|"lifepo4"
+      battHw = true;
+    }
+    if (r->hasParam("battCells", true)) {
+      agent::store::setBattCells(uint8_t(r->getParam("battCells", true)->value().toInt()));  // 1/2, 0=board
+      battHw = true;
+    }
+    if (r->hasParam("battCurve", true)) {
+      // Store only a valid custom curve (or "" to clear); a bad string never lands.
+      String cv = r->getParam("battCurve", true)->value();
+      nimbus::power::LiIonCurvePoint pts[nimbus::power::kMaxCurvePoints];
+      if (cv.length() == 0 || nimbus::power::parseCurveCsv(cv.c_str(), pts, nimbus::power::kMaxCurvePoints) >= 2)
+        agent::store::setBattCurve(cv);
       battHw = true;
     }
     if (battHw) { s_battHwPending = true; touched = true; }

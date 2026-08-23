@@ -241,6 +241,9 @@
 #define AKEY_BATT_RTOP      "battRtop"       // divider R_top (ohms); default 220000
 #define AKEY_BATT_RBOT      "battRbot"       // divider R_bottom (ohms); default 100000
 #define AKEY_BATT_CAPMAH    "battCapMah"     // pack capacity mAh (LiitoKala 3500, reclaimed vape ~500, ...)
+#define AKEY_BATT_CHEM      "battChem"       // battery chemistry slug: "liion" (default) | "lifepo4"; picks the SoC curve
+#define AKEY_BATT_CELLS     "battCells"      // series cell count override (1/2); 0/absent = board-derived default
+#define AKEY_BATT_CURVE     "battCurve"      // optional custom SoC curve "mv:pct,mv:pct,..." (high-mV first); "" = chemistry default
 #define AKEY_WAKE_MV        "wakeMv"         // stay-awake bar after a low-batt sleep (rested-empty packs read 6918-6992; default 7200)
 #define AKEY_LOWBATT_PING   "lbPingEp"       // epoch of the last low-battery owner ping (AlertGate persistence - survives the 5-min wake-sniff boots)
 #define AKEY_SLEEP_OVR      "sleepOvr"       // owner/AI override: skip the low-batt sleep (deep-discharge risk accepted)

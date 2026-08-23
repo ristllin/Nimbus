@@ -237,6 +237,12 @@ uint32_t battRtop();     // divider R_top ohms (default 220000)
 uint32_t battRbot();     // divider R_bottom ohms (default 100000)
 uint16_t battDividerX100();  // (Rtop+Rbot)/Rbot * 100, clamped 100-2000 - what begin() wants
 uint16_t battCapMah();   // pack capacity mAh, 100-20000 (default 3500)
+String   battChem();     // chemistry slug "liion" (default) | "lifepo4" - picks the SoC curve
+uint8_t  battCellsOvr(); // owner series-cell override (1/2); 0 = board-derived default
+String   battCurve();    // optional custom SoC curve "mv:pct,..." (high-mV first); "" = chemistry default
+void     setBattChem(const String& slug);
+void     setBattCells(uint8_t cells);
+void     setBattCurve(const String& csv);
 uint16_t sleepMv();
 // wakeMv: after a low-batt sleep, stay awake only at/above THIS (a drained pack
 // RESTS UPWARD to 6918-6992 mV - same-threshold wake tests oscillate forever).

@@ -393,7 +393,7 @@ static nimbus::power::BatteryEstimate g_battEstimate;
 // Battery hardware from the board map. cells never 0 (both boards set it); the
 // divider is owner-tuned on hand-built boards (resistors vary) but fixed on an
 // all-in-one (no e-paper option -> board().epd.sck < 0).
-static uint8_t  battCells()  { const uint8_t c = solide::board().batt.cells; return c ? c : uint8_t(NIMBUS_BATT_CELLS); }
+static uint8_t  battCells()  { if (uint8_t o = agent::store::battCellsOvr()) return o; const uint8_t c = solide::board().batt.cells; return c ? c : uint8_t(NIMBUS_BATT_CELLS); }
 static int      battAdcPin() { return solide::board().batt.sense >= 0 ? int(solide::board().batt.sense) : int(NIMBUS_BATT_SENSE_PIN); }
 static uint16_t battDivX100() { return solide::board().epd.sck < 0 ? solide::board().batt.dividerX100 : agent::store::battDividerX100(); }
 // Battery monitoring on/off. A hand-built board ships WITH a pack, so monitoring
@@ -407,6 +407,19 @@ static uint16_t g_battSavedSegments = 0xFFFF;   // last-persisted segment count 
 static nimbus::power::AlertGate g_lowBattGate;
 static uint32_t g_lowBattSavedPingEp = 0;
 static uint16_t g_battSavedAnchor   = 0xFFFF;   // last-persisted full anchor mV (persist on change)
+
+// Apply the owner's battery chemistry + cell count + optional custom SoC curve to
+// the model. Defaults (chemistry "liion", board cells, no custom curve) reproduce
+// the shipped behaviour exactly. Called at boot and after a live config change.
+static void applyBattChemConfig() {
+  g_battModel.setChemistry(nimbus::power::chemistryFromSlug(agent::store::battChem().c_str()));
+  g_battModel.setCells(battCells());
+  String cv = agent::store::battCurve();
+  nimbus::power::LiIonCurvePoint pts[nimbus::power::kMaxCurvePoints];
+  int n = cv.length() ? nimbus::power::parseCurveCsv(cv.c_str(), pts, nimbus::power::kMaxCurvePoints) : 0;
+  if (n >= 2) g_battModel.setCustomCurve(pts, n);
+  else        g_battModel.clearCustomCurve();
+}
 
 // Serialize/parse BatteryModelState as a compact CSV in one NVS key.
 static void loadBattModel() {
@@ -2632,6 +2645,7 @@ void setup() {
   else
     Serial.println("power: battery monitoring off (opt-in) - no pack assumed");
   g_battModel.setCapacityMah(agent::store::battCapMah());
+  applyBattChemConfig();   // chemistry + cells + optional custom SoC curve (owner settings)
 #endif
   loadBattModel();   // restore the analytics learning (health baseline + rate) from NVS
   g_lowBattSavedPingEp = agent::store::lowBattPingEpoch();
@@ -2750,6 +2764,7 @@ void setup() {
     if (battMonOn())
       g_battAdc.begin(battAdcPin(), battDivX100(), battCells(), NIMBUS_BATT_VBUS_PIN);
     g_battModel.setCapacityMah(agent::store::battCapMah());
+    applyBattChemConfig();   // chemistry + cells + custom SoC curve apply live
     g_battEstimate = g_battModel.estimate();
     agent::alogf("batt: hardware reconfig - divider=/%.2f capacity=%umAh",
                  double(agent::store::battDividerX100()) / 100.0,
