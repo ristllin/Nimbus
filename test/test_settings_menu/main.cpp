@@ -431,7 +431,7 @@ static void test_connectivity_and_config_qr() {
   TEST_ASSERT_TRUE(contains(v.items[2], "Forget"));
   TEST_ASSERT_TRUE(contains(v.items[3], "Rescan SD card"));
   TEST_ASSERT_TRUE(contains(v.items[4], "Sign-in QR"));
-  TEST_ASSERT_TRUE(contains(v.items[5], "Sign-in code"));
+  TEST_ASSERT_TRUE(contains(v.items[5], "Device sign-in code"));   // canonical (CUM-45)
   TEST_ASSERT_TRUE(contains(v.items[5], ">"));             // real full-screen destination
 
   // Config via QR (row 4) -> ConfigQr full-screen state.
@@ -458,7 +458,7 @@ static void test_connectivity_and_config_qr() {
   m.onClick();
   TEST_ASSERT_TRUE(m.showingTokenDetail());
   TEST_ASSERT_TRUE(viewOf(m).items.empty());
-  TEST_ASSERT_TRUE(contains(viewOf(m).title, "Sign-in code"));
+  TEST_ASSERT_TRUE(contains(viewOf(m).title, "Device sign-in code"));   // canonical (CUM-45)
   TEST_ASSERT_FALSE(m.dirty());
   m.onClick();
   TEST_ASSERT_FALSE(m.showingTokenDetail());

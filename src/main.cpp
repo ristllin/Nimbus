@@ -1657,7 +1657,7 @@ static void renderMenu() {
       // two-column row. It clipped there and its chevron led nowhere. The row is
       // now a real destination whose full-screen view receives c.webToken above.
       if (c.menuItems.size() > 5)
-        c.menuItems[5] = "Sign-in code >";
+        c.menuItems[5] = "Device sign-in code >";   // canonical (CUM-45)
     }
 #ifdef NIMBUS_NOTIFIER_DEBUG
     Serial.printf("renderMenu: visible=%d items=%d sel=%d title=%s\n",

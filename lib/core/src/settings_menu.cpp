@@ -854,7 +854,7 @@ void SettingsMenu::view(solide::menu::MenuView& out) const {
       out.items.push_back("Sign-in QR >");
       // The value cannot fit safely in a two-column row. This is a real
       // destination: the device renders the exact token full-screen.
-      out.items.push_back("Sign-in code >");
+      out.items.push_back("Device sign-in code >");
       out.items.push_back("< Back");
       return;
 
@@ -890,7 +890,7 @@ void SettingsMenu::view(solide::menu::MenuView& out) const {
       return;
 
     case State::TokenDetail:
-      out.title = "Settings > Connectivity > Sign-in code";
+      out.title = "Settings > Connectivity > Device sign-in code";
       return;
   }
 }
