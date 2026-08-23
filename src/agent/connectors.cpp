@@ -219,14 +219,19 @@ std::vector<nimbus::orch::ConnectorInfo> portableList() {
       if ((e.type.empty() ? e.name : e.type) == "code_interpreter" && e.kind == "builtin")
         have = true;
     if (!have) {
-      nimbus::orch::ConnectorInfo sb;
-      sb.name = "code_interpreter";
-      sb.type = "code_interpreter";
-      sb.prov = "openai,mistral";
-      sb.kind = "builtin";
-      sb.enabled = true;
-      sb.auth = -1;   // builtins authenticate provider-side
-      out.push_back(std::move(sb));
+      // provMatches() is an EXACT provider match, so inject one entry per provider
+      // (openai + mistral, the two with a code_interpreter builtin) rather than a
+      // comma list that would match neither.
+      for (const char* prov : {"openai", "mistral"}) {
+        nimbus::orch::ConnectorInfo sb;
+        sb.name = "code_interpreter";
+        sb.type = "code_interpreter";
+        sb.prov = prov;
+        sb.kind = "builtin";
+        sb.enabled = true;
+        sb.auth = -1;   // builtins authenticate provider-side
+        out.push_back(std::move(sb));
+      }
     }
   }
   return out;

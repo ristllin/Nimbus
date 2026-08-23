@@ -246,12 +246,16 @@ std::string mistralCanonicalId(JsonObjectConst m) {
   return id;
 }
 
-// Cumulo router ids may be "<upstream>/<model>"; split the upstream tag off.
-void splitCumuloUpstream(ModelInfo& mi) {
-  size_t slash = mi.id.find('/');
-  if (slash == std::string::npos || slash == 0) return;
-  mi.upstream = mi.id.substr(0, slash);
-  mi.id = mi.id.substr(slash + 1);
+// Classify one harvested id. For Cumulo the id is "<upstream>/<model>": classify
+// against the UPSTREAM so its heuristics (vision/size/family) fire, then tag it.
+ModelInfo classifyEntry(const std::string& provider, const std::string& id) {
+  if (provider != "cumulo") return classifyModel(provider, id);
+  const size_t slash = id.find('/');
+  if (slash == std::string::npos || slash == 0) return classifyModel("openai", id);
+  const std::string up = id.substr(0, slash);
+  ModelInfo mi = classifyModel(up, id.substr(slash + 1));
+  mi.upstream = up;
+  return mi;
 }
 
 // Locate the JSON body when HTTP response headers precede it.
@@ -303,8 +307,7 @@ size_t parseModelsList(const std::string& provider, const std::string& body,
         (provider == "mistral") ? mistralCanonicalId(m) : std::string((const char*)(m["id"] | ""));
     if (id.size() < 2) continue;
 
-    ModelInfo mi = classifyModel(provider, id);
-    if (provider == "cumulo") splitCumuloUpstream(mi);
+    ModelInfo mi = classifyEntry(provider, id);
 
     bool keep = true;
     if (provider == "anthropic") {

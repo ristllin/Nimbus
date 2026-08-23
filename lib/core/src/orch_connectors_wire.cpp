@@ -487,7 +487,7 @@ std::string catalogText(const std::vector<ConnectorInfo>& cs, const ProviderStat
   // Code sandbox availability (CUM-49): tell the model whether it can run code to
   // build files, and the owner-facing way to turn it on when it is off.
   {
-    bool sandbox = openaiCodeInterp;
+    bool sandbox = ps.openaiKeyed && openaiCodeInterp;   // must be KEYED to actually run
     for (const ConnectorInfo& c : cs) {
       if (!c.enabled || c.kind != "builtin") continue;
       if ((c.type.empty() ? c.name : c.type) != "code_interpreter") continue;

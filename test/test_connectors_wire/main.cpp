@@ -353,6 +353,21 @@ static void test_catalog_marks_verified_state() {
 // W7b: the OpenAI code_interpreter BUILTIN attaches as its own tool type (with
 // the auto container), never the mcp shape - and an unknown openai builtin is
 // skipped rather than emitted as a doomed mcp entry.
+// CUM-49: the CODE SANDBOX availability line must be gated on a KEYED provider, not
+// just an enabled code_interpreter builtin (the toggle injects the builtin regardless
+// of keys). Off when no key; available only when keyed.
+static void test_code_sandbox_availability_key_gated() {
+  std::vector<ConnectorInfo> cs = {mk("code_interpreter", "openai", "builtin")};
+  ProviderState off;                          // no provider keyed
+  std::string toff = catalogText(cs, off);
+  TEST_ASSERT_TRUE(toff.find("CODE SANDBOX: off") != std::string::npos);
+  TEST_ASSERT_TRUE(toff.find("CODE SANDBOX: available") == std::string::npos);
+  ProviderState on;
+  on.openaiKeyed = true;                      // now a keyed provider can run it
+  std::string ton = catalogText(cs, on);
+  TEST_ASSERT_TRUE(ton.find("CODE SANDBOX: available") != std::string::npos);
+}
+
 static void test_openai_code_interpreter_builtin_attaches() {
   std::vector<ConnectorInfo> cs = {
       mk("code_interpreter", "openai", "builtin"),
@@ -654,6 +669,7 @@ int main() {
   RUN_TEST(test_catalog_marks_verified_state);
   RUN_TEST(test_catalog_validation_off_makes_no_claim);
   RUN_TEST(test_openai_code_interpreter_builtin_attaches);
+  RUN_TEST(test_code_sandbox_availability_key_gated);
   RUN_TEST(test_catalog_marks_connector_auth_problems);
   RUN_TEST(test_catalog_custom_mcp_gets_a_line);
   RUN_TEST(test_subagent_capabilities_block_is_generated);

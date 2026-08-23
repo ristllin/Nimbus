@@ -25,15 +25,28 @@ struct CompatSlot {
   std::string reply;
   bool used;
 };
-// A few slots so distinct backends (zai, cumulo) coexist without evicting each
-// other; proxy jobs are short-lived, so 4 is plenty.
-static CompatSlot s_slots[4];
+// One slot per possible in-flight sub-agent (kAgentMaxJobs = 6) plus headroom, so
+// a full fan-out of zai/cumulo subs whose replies are not yet polled never evicts
+// an un-polled result. Proxy jobs are short-lived; dispatch prefers a free slot
+// and only round-robin-evicts when every slot still holds an unpolled reply.
+static CompatSlot s_slots[8];
 static int s_next = 0;
 
 CompatSlot* findSlot(const char* jobId) {
   for (CompatSlot& s : s_slots)
     if (!s.used && s.jobId[0] && strcmp(s.jobId, jobId) == 0) return &s;
   return nullptr;
+}
+
+// Pick a slot to write: a free one (never used, or already drained) if any, else
+// the round-robin oldest (last resort, only when all slots hold unpolled replies).
+CompatSlot& claimSlot() {
+  const int n = (int)(sizeof(s_slots) / sizeof(s_slots[0]));
+  for (int i = 0; i < n; ++i)
+    if (s_slots[i].used || s_slots[i].jobId[0] == 0) return s_slots[i];
+  CompatSlot& s = s_slots[s_next];
+  s_next = (s_next + 1) % n;
+  return s;
 }
 
 // Build the request for the endpoint's wire: sets `path` + response `filter`, and
@@ -85,6 +98,10 @@ FabricErr openaiCompatDispatch(const ProviderDeps& pd, const CompatEndpoint& ep,
   std::vector<std::pair<std::string, std::string>> headers;
   if (!ep.key.empty()) headers.push_back({"Authorization", "Bearer " + ep.key});
   headers.push_back({"Content-Type", "application/json"});
+  // The Anthropic Messages wire requires a version header. A router that proxies
+  // on the native wire adds it, but sending it is harmless there and correct if
+  // the endpoint is Anthropic directly.
+  if (anthropic) headers.push_back({"anthropic-version", "2023-06-01"});
 
   JsonDocument out;
   int code = exchange(pd, ep.host, ep.port, ep.tls, "POST", path, std::move(headers),
@@ -102,8 +119,7 @@ FabricErr openaiCompatDispatch(const ProviderDeps& pd, const CompatEndpoint& ep,
   char id[24];
   snprintf(id, sizeof(id), "%08lx", (unsigned long)(pd.nowMs ? pd.nowMs() : 0));
   snprintf(outJobId, 72, "%s:%s", backendTag, id);
-  CompatSlot& slot = s_slots[s_next];
-  s_next = (s_next + 1) % (int)(sizeof(s_slots) / sizeof(s_slots[0]));
+  CompatSlot& slot = claimSlot();
   strncpy(slot.jobId, outJobId, sizeof(slot.jobId) - 1);
   slot.jobId[sizeof(slot.jobId) - 1] = 0;
   slot.reply = reply;

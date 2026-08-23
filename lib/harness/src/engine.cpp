@@ -559,19 +559,27 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   auto fabricCanHost = [&](const std::string& h) {
     return !d_.hosts.fabricSupports || d_.hosts.fabricSupports(h);
   };
+  // Split the providerPriority CSV into trimmed, non-empty entries.
+  auto splitPriority = [&]() {
+    std::vector<std::string> prio;
+    std::string p =
+        d_.cfg.provider.providerPriority ? d_.cfg.provider.providerPriority() : std::string();
+    for (size_t s2 = 0; s2 < p.length();) {
+      size_t c = p.find(',', s2);
+      if (c == std::string::npos) c = p.length();
+      std::string t = p.substr(s2, c - s2);
+      trimInPlace(t);
+      s2 = c + 1;
+      if (t.length()) prio.push_back(t);
+    }
+    return prio;
+  };
   // Raw providerPriority walk (the pre-engine midFail order) - the safety net the
   // rule engine falls back to, so failover can never regress to "no alternates".
   auto rawAlternates = [&](bool needFabric) {
     std::vector<std::string> out;
-    std::string prio =
-        d_.cfg.provider.providerPriority ? d_.cfg.provider.providerPriority() : std::string();
-    for (size_t start = 0; start < prio.length();) {
-      size_t c = prio.find(',', start);
-      if (c == std::string::npos) c = prio.length();
-      std::string cand = prio.substr(start, c - start);
-      trimInPlace(cand);
-      start = c + 1;
-      if (cand.empty() || cand == host || !hostHasKey(cand)) continue;
+    for (const std::string& cand : splitPriority()) {
+      if (cand == host || !hostHasKey(cand)) continue;
       if (needFabric && !fabricCanHost(cand)) continue;
       if (d_.cfg.budget.overBudget && d_.cfg.budget.overBudget(cand)) continue;
       out.push_back(cand);
@@ -604,20 +612,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     std::string rulesJson =
         d_.cfg.provider.fallbackRules ? d_.cfg.provider.fallbackRules() : std::string();
     if (!rulesJson.empty()) orch::parseFallbackRules(rulesJson, rs);
-    if (rs.rules.empty()) {
-      std::vector<std::string> prio;
-      std::string p =
-          d_.cfg.provider.providerPriority ? d_.cfg.provider.providerPriority() : std::string();
-      for (size_t s2 = 0; s2 < p.length();) {
-        size_t c = p.find(',', s2);
-        if (c == std::string::npos) c = p.length();
-        std::string t = p.substr(s2, c - s2);
-        trimInPlace(t);
-        s2 = c + 1;
-        if (t.length()) prio.push_back(t);
-      }
-      rs = orch::defaultRuleSet(prio);
-    }
+    if (rs.rules.empty()) rs = orch::defaultRuleSet(splitPriority());
     std::string model = d_.cfg.provider.orchModel ? d_.cfg.provider.orchModel(host) : std::string();
     orch::TurnContext ctx;
     ctx.provider = host;
@@ -678,13 +673,10 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // legacy between-turn retry/failover below then does not apply: it exists
   // precisely because the old loops could not carry a turn across providers.
   // A head the fabric cannot drive (custom) takes the legacy single-shot path
-  // below - its step table only knows the cloud providers.
-  auto fabricCan = [&](const std::string& h) {
-    return !d_.hosts.fabricSupports || d_.hosts.fabricSupports(h);
-  };
+  // below - its step table only knows the cloud providers. (fabricCanHost above.)
   const bool fabricOn = headToolsPtr && d_.hosts.fabric &&
                         d_.cfg.loop.midTurnFailover && d_.cfg.loop.midTurnFailover() &&
-                        fabricCan(host);
+                        fabricCanHost(host);
   bool ok;
   if (fabricOn) {
     std::vector<std::string> hostList{host};
