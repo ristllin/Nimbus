@@ -58,7 +58,7 @@ test('the button is disabled during pending and re-enabled after', async ({ page
 test('file upload (converted action) shows pending then a success result', async ({ page }) => {
   await seedToken(page);
   await openApp(page);
-  await page.locator('nav.tabs .tab[data-p=mem]').click();
+  await page.locator('nav.tabs .tab[data-p=memory]').click();
   await page.locator('#pane-mem details summary', { hasText: 'Files' }).click();
   await page.locator('#upFile').setInputFiles({ name: 'hello.txt', mimeType: 'text/plain', buffer: Buffer.from('hi') });
   await page.locator('#upBtn').click();
@@ -71,7 +71,7 @@ test('file upload error names the next step', async ({ page }) => {
   await seedToken(page);
   await page.route('**/api/files/upload**', (route) => route.fulfill({ status: 500, body: 'err' }));
   await openApp(page);
-  await page.locator('nav.tabs .tab[data-p=mem]').click();
+  await page.locator('nav.tabs .tab[data-p=memory]').click();
   await page.locator('#pane-mem details summary', { hasText: 'Files' }).click();
   await page.locator('#upFile').setInputFiles({ name: 'bad.txt', mimeType: 'text/plain', buffer: Buffer.from('x') });
   await page.locator('#upBtn').click();

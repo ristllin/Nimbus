@@ -15,6 +15,9 @@ export const STATE = {
     minsToEmpty: 240, onExtPower: false, charging: false, dieTempC: 41,
   },
   storeSD: true, sdLost: false,
+  // Reach info the Home info line + connectivity render.
+  apSsid: 'Nimbus-setup', apIp: '192.168.4.1', ip: '192.168.1.42',
+  mdns: 'nimbus.local', running: true, scrModel: 'tft',
   // OTA (N5 contract stub): installed/latest/notes + result state
   ota: 'idle', otaLatest: '', otaNotes: '', otaPct: -1, otaErr: '',
   lastOta: '-', autoUpd: false,
@@ -24,17 +27,38 @@ export const STATE = {
   card: { sizeMB: 30436, freeMB: 28112, usedMB: 2324, quotaMB: 4096, quotaUsedMB: 512 },
 };
 
+// applyOrch consumes /api/orch as a rich object: providers is keyed BY NAME,
+// cust is always present, and jobs is the sessions array (tag/backend/model/
+// category/state). This mirrors the device closely enough that applyOrch runs
+// clean (a thin stub throws on d.cust.base and never reaches the jobs block).
+const provider = (present, verify, model) => ({ present, hasKey: present, verify, model, models: [model] });
 export const ORCH = {
-  providers: [
-    { id: 'anthropic', name: 'Anthropic', present: true, verify: 'ok', model: 'claude-sonnet-5' },
-    { id: 'openai', name: 'OpenAI', present: false, verify: 'unk', model: '' },
-    { id: 'cumulo', name: 'Cumulo Nimbus', present: true, verify: 'ok', model: 'nimbus-1' },
-    { id: 'zai', name: 'Z.ai', present: false, verify: 'unk', model: '' },
-  ],
+  running: true,
+  providers: {
+    anthropic: provider(true, 'ok', 'claude-sonnet-5'),
+    openai: provider(false, 'unk', ''),
+    cumulo: provider(true, 'ok', 'nimbus-1'),
+    zai: provider(false, 'unk', ''),
+  },
+  cust: { base: '', conv: '', model: '', hasKey: false },
+  orchHost: 'anthropic',
+  provPrio: 'anthropic,cumulo,zai', subPrio: 'cumulo,anthropic',
+  sttProv: 'openai', ttsOn: false, ttsProv: 'openai', ttsVoice: 'alloy',
+  theme: 'nimbus', hasTav: false, hasTg: false,
+  tgAllow: '', tgBot: '', tgLive: false, tgVerify: 'unk', tgVts: 0,
+  tavVerify: 'unk', tavVts: 0,
+  fetchPol: 'ask', compactKB: 0, loopRounds: 0, loopDeadline: '', orchLoop: false,
+  orchTrace: false, midFail: 0, tlsSlots: 1, tlsVerify: 'unk',
+  sfxLvlN: 2, sfxLvlO: 2, sfxTheme: 'terran', sfxVol: 60, sfxTier: 'basic', sfxSync: 'idle',
+  usage: {
+    sessIn: 12000, sessOut: 4300, turns: 8, lastIn: 900, lastOut: 300,
+    byProvider: [{ provider: 'anthropic', in: 12000, out: 4300, calls: 8, limit: 0 }],
+  },
   budget: { dailyUsd: 5, spentUsd: 1.24, cap: 'auto', effective: 5 },
+  // Session rows as applyOrch renders them.
   jobs: [
-    { id: 'sess-1', title: 'Refactor webui', model: 'claude-sonnet-5', state: 'running' },
-    { id: 'sess-2', title: 'Draft release notes', model: 'nimbus-1', state: 'running' },
+    { tag: 'sess-1', backend: 'anthropic', model: 'claude-sonnet-5', category: 'chat', state: 'running' },
+    { tag: 'sess-2', backend: 'cumulo', model: 'nimbus-1', category: 'routine', state: 'running' },
   ],
 };
 

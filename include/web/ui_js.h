@@ -122,26 +122,41 @@ function showMigrationHint(){
 document.addEventListener('DOMContentLoaded',showMigrationHint);
 // No stored token -> gate immediately, before any load/poll renders data.
 if(!nimbusTok())document.addEventListener('DOMContentLoaded',showAuth);
-// Tab switching: show one .pane, highlight its .tab. Default = the first tab (Home).
-document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{
-  document.querySelectorAll('.pane').forEach(p=>p.style.display='none');
-  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('on'));
-  $('pane-'+b.dataset.p).style.display='';
-  b.classList.add('on');
-  // Lazy-loads per area (Phase 3 C1 IA)
-  if(b.dataset.p==='gov')loadLoops();
-  if(b.dataset.p==='mem'){if(typeof loadMemDash==='function')loadMemDash();if(typeof loadFiles==='function')loadFiles();}
-  if(b.dataset.p==='harness'){if(typeof loadOrch==='function')loadOrch();if(typeof loadConnectors==='function')loadConnectors();if(typeof loadTools==='function')loadTools();if(typeof loadSkills==='function')loadSkills();}
-  if(b.dataset.p==='usage'){if(typeof loadOrch==='function')loadOrch();if(typeof loadFetchQ==='function')loadFetchQ();   // usage tiles + budget rows + downloads
-    if(typeof loadUsageHistory==='function')loadUsageHistory();}          // spend graph buckets
-  if(b.dataset.p==='chat'&&typeof loadChatHistory==='function')loadChatHistory();   // unified history refresh
-  if(b.dataset.p==='set'){                 // Settings: ring sim init + connectivity secrets
-    if(typeof loadThemes==='function')loadThemes();
-    if(typeof loadConnect==='function')loadConnect();
-    if(typeof loadWifi==='function')loadWifi();     // saved Wi-Fi networks
+// Navigation (CUM-25): five destinations, each backed by one or more existing
+// pane divs shown together. This preserves every inner element id (the JS builds
+// against ids, not pane structure) while presenting the approved IA:
+//   Home (status tiles + active sessions + quick actions + alerts),
+//   Chat, Memory (files + long-term memory + scratchpad),
+//   Assistant (providers/models, tools + sandbox, connectors + MCP, skills,
+//              routines + wake-ups, usage + budgets, safety),
+//   Device (display, sound, battery, network, updates, cloud, advanced, danger).
+const DEST={home:['dash'],chat:['chat'],memory:['mem'],assistant:['harness','usage','gov'],device:['set']};
+// Per-pane lazy loaders, run when a destination containing that pane opens.
+function loadPane(p){
+  if(p==='dash'){   // Home: active sessions + health load immediately, not on the next poll
+    if(typeof loadOrch==='function')loadOrch();
+    if(typeof loadHealth==='function')loadHealth();
   }
-});
-document.querySelector('.tab').classList.add('on');
+  if(p==='gov'&&typeof loadLoops==='function')loadLoops();
+  if(p==='mem'){if(typeof loadMemDash==='function')loadMemDash();if(typeof loadFiles==='function')loadFiles();}
+  if(p==='harness'){if(typeof loadOrch==='function')loadOrch();if(typeof loadConnectors==='function')loadConnectors();if(typeof loadTools==='function')loadTools();if(typeof loadSkills==='function')loadSkills();}
+  if(p==='usage'){if(typeof loadOrch==='function')loadOrch();if(typeof loadFetchQ==='function')loadFetchQ();if(typeof loadUsageHistory==='function')loadUsageHistory();}
+  if(p==='chat'&&typeof loadChatHistory==='function')loadChatHistory();
+  if(p==='set'){if(typeof loadThemes==='function')loadThemes();if(typeof loadConnect==='function')loadConnect();if(typeof loadWifi==='function')loadWifi();}
+}
+// Switch to a destination: show its pane group, hide the rest, mark the tab, run
+// the group's loaders. Exposed as goDest() so quick actions can navigate too.
+function goDest(dest){
+  const panes=DEST[dest]; if(!panes)return;
+  document.querySelectorAll('.pane').forEach(p=>p.style.display='none');
+  document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('on',t.dataset.p===dest));
+  panes.forEach(id=>{const el=$('pane-'+id); if(el)el.style.display='';loadPane(id);});
+  try{window.scrollTo(0,0);}catch(e){}
+}
+document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>goDest(b.dataset.p));
+// Quick actions (Home) and any in-page link that jumps to a destination.
+document.querySelectorAll('[data-go]').forEach(b=>b.onclick=()=>goDest(b.dataset.go));
+goDest('home');   // default destination
 // Sub-tab switching (Harness pane): mirror of the top switcher, scoped to
 // .subtab/data-sp and #subpane-<x>. .subpane is a different class from .pane, so the
 // top switcher never touches these. Default = the first sub-tab (Connectors).
@@ -505,7 +520,7 @@ function applyState(d){
         // 3 s poll would destroy the Sync-now button mid-click (prism).
         if(!gc.firstChild){
           gc.innerHTML='<p class="hint tip">The device clock hasn\'t synced, so daily and weekly routines '+
-            '&mdash; including nightly memory upkeep &mdash; can\'t run yet. It sets itself from the '+
+            '- including nightly memory upkeep - can\'t run yet. It sets itself from the '+
             'internet once Wi-Fi connects. <button id=govSync type=button>Sync now</button></p>';
           const b=$('govSync'); if(b)b.onclick=()=>apply({clockSync:1});
         }
@@ -1272,7 +1287,7 @@ function renderBudgets(bp){
        '<b>'+(BUDLBL[p.prov]||p.prov)+(p.over?' <span class="badge vfy bad">over budget</span>':'')+'</b>'+
        '<span class=hint>'+io+right+'</span></div>'+
        ((lim>0||hasUsd)?'<div class=g style="margin-top:4px"><i style="width:'+pct+'%;background:'+col+'"></i></div>':'')+
-       (noRates?'<p class=hint style="margin:2px 0 0">The $ cap needs prices &mdash; set rates above or this cap can\'t count.</p>':'')+'</div>';
+       (noRates?'<p class=hint style="margin:2px 0 0">The $ cap needs prices - set rates above or this cap can\'t count.</p>':'')+'</div>';
   });
   box.innerHTML=h;
 }
@@ -1791,7 +1806,7 @@ function loadHealth(){
  const box=$('healthpanel'); if(!box)return;
  fetch('/api/health').then(jok).then(d=>{
   healthSkeleton(box);
-  $('hphead').innerHTML='&mdash; '+(d.ok||0)+' ok &middot; '+(d.degraded||0)+
+  $('hphead').innerHTML='- '+(d.ok||0)+' ok &middot; '+(d.degraded||0)+
     ' degraded &middot; '+(d.absent||0)+' absent';
   let h='';
   (d.components||[]).forEach(c=>{
@@ -2550,7 +2565,7 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
   function esc(s){return (s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
   function show(){el('onbov').style.display='';render();}
   function bodyHtml(s){
-    if(s.id==='welcome')return '<p class=hint>Two quick required steps &mdash; Wi-Fi and one AI provider key &mdash; then a few optional extras you can skip. Takes about a minute.</p>';
+    if(s.id==='welcome')return '<p class=hint>Two quick required steps - Wi-Fi and one AI provider key - then a few optional extras you can skip. Takes about a minute.</p>';
     if(s.id==='display')return '<p class=hint>Which display is fitted on this device? A touch-screen board can\'t ask on its own screen until this is set.</p>'+
       '<div class=row style="gap:10px"><button type=button class="onbmb onbdb" data-d=eink style="padding:20px 10px">E-ink + knob</button>'+
       '<button type=button class="onbmb onbdb" data-d=tft style="padding:20px 10px">Touch screen</button></div>'+
@@ -2584,7 +2599,7 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
       '<div class=row><input id=onb_name placeholder="Nimbus"><button type=button id=onb_namesave>Save</button></div>'+
       '<span class=hint id=onb_namemsg></span>'+
       '<p class=hint>Shown on the display, the network, and the setup Wi-Fi. Applies after the next restart.</p>';
-    if(s.id==='done')return '<p class=hint>You’re ready &mdash; Wi-Fi is connected and your provider is verified. Click Finish to open the dashboard.</p>'+
+    if(s.id==='done')return '<p class=hint>You’re ready - Wi-Fi is connected and your provider is verified. Click Finish to open the dashboard.</p>'+
       '<div class=hint id=onb_summary></div>';
     return '';
   }

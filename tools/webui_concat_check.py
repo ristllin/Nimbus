@@ -51,16 +51,20 @@ def main() -> None:
 
     page = "".join(fragment_payload(ROOT / "include" / "web" / f"{n}.h") for n in order)
 
-    # Structural invariants a bad split or edit would break. (Phase 3 C1: the shell
-    # became a <nav class=tabs> sidebar and Connectivity folded into pane-set, so the
-    # old '<div class=tabs>' + pane-wifi checks were retired for the 8-area IA.)
-    panes = ["dash", "fleet", "chat", "mem", "harness", "usage", "gov", "set"]
+    # Structural invariants a bad split or edit would break. (CUM-25: the nav is a
+    # five-destination sidebar - Home/Chat/Memory/Assistant/Device - where each
+    # destination shows one or more of these pane divs; every inner element id is
+    # preserved so ui_js.h wiring works unchanged. The old standalone Sessions
+    # (pane-fleet) folded into Home/pane-dash.)
+    panes = ["dash", "chat", "mem", "harness", "usage", "gov", "set"]
+    dests = ["home", "chat", "memory", "assistant", "device"]
     checks = {
         "<!doctype html>": page.lower().startswith("<!doctype html>"),
         "one <script>": page.count("<script>") == 1,
         "one </script>": page.count("</script>") == 1,
         "nav bar": 'class=tabs>' in page,
-        "8 panes": all(("id=pane-" + p) in page for p in panes),
+        "5 destinations": all(("data-p=" + d) in page for d in dests),
+        "panes present": all(("id=pane-" + p) in page for p in panes),
         "ring sim": "id=ringsim" in page,
     }
     bad = [k for k, ok in checks.items() if not ok]

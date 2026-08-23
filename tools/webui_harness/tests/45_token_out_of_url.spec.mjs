@@ -12,7 +12,7 @@ test('file downloads carry the token in a header, never in a URL', async ({ page
   await openApp(page);
   // Open Memory & Files (the mem pane lazy-loads the file list), then expand the
   // collapsed Files section so its table is on screen.
-  await page.locator('nav.tabs .tab[data-p=mem]').click();
+  await page.locator('nav.tabs .tab[data-p=memory]').click();
   await page.locator('#pane-mem details summary', { hasText: 'Files' }).click();
   await expect(page.locator('#filesList table')).toBeVisible();
   // No anchor anywhere may carry a token query param.

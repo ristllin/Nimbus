@@ -13,7 +13,7 @@ static const char UI_LOOPS[] PROGMEM = R"=====(<div class=pane id=pane-gov style
 <p class=plede>Tasks that run on a schedule. Routines the assistant creates for itself wait for your approval, and spending limits pause anything that misbehaves.</p>
 <div class=sec>
 <h2>Routines <button class=qh type=button aria-expanded=false aria-label="About routines">?</button></h2>
-<p class="hint tip">The assistant runs a turn on a schedule &mdash; a morning digest, a reminder, nightly upkeep. Spend counts against per-routine and daily limits.</p>
+<p class="hint tip">The assistant runs a turn on a schedule - a morning digest, a reminder, nightly upkeep. Spend counts against per-routine and daily limits.</p>
 <div id=govClock style="display:none"></div>
 <div id=loopList>loading&hellip;</div>
 </div>

@@ -29,8 +29,11 @@ static const char UI_SHELL[] PROGMEM = R"=====(<!doctype html>
 }
 *{box-sizing:border-box}
 html,body{overflow-x:hidden}
+/* Fluid, centered content column that caps at 1,280 px (CUM-25). The fixed
+   sidebar sits at the viewport's left edge; the content box centers in the space
+   beside it and stops growing at 1,280 px on wide screens. */
 body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;background:var(--bg);color:var(--ink);
-margin:0;padding:20px 22px 40px 244px;max-width:1060px;font-size:14.5px;line-height:1.55;-webkit-font-smoothing:antialiased}
+margin:0 auto;padding:20px 30px 40px 254px;max-width:1280px;font-size:14.5px;line-height:1.55;-webkit-font-smoothing:antialiased}
 /* Robust anti-overflow: long URLs/JSON/code + wide content can never push the page
    sideways. Break within any element; scroll wide code/tables inside their own box. */
 code,.memv,#idToken,#cxToken,#btMac{overflow-wrap:anywhere;word-break:break-word}
@@ -152,6 +155,19 @@ padding:16px 12px;display:flex;flex-direction:column;gap:3px;z-index:50}
 .tab .tl{flex:1}
 #toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%) translateY(20px);background:var(--teal);color:#052420;font-weight:650;padding:9px 18px;border-radius:20px;opacity:0;transition:opacity .2s,transform .2s;pointer-events:none;z-index:99}
 #toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+/* Icon rail (CUM-25): on narrower desktops/tablets the sidebar collapses to
+   icons only, reclaiming width for the content. Labels return above 1080 px.
+   The full nav is still keyboard-reachable; each button keeps its title tooltip. */
+@media(min-width:861px) and (max-width:1080px){
+.side{width:66px;padding:14px 8px;align-items:center}
+.brand{justify-content:center;padding:4px 0 12px}
+.brand b,.brand .fw{display:none}
+.modeswitch{display:none}
+.tabs .tl{display:none}
+.tab{justify-content:center;padding:10px 0}
+.tab svg{width:19px;height:19px}
+body{padding-left:92px}
+}
 @media(max-width:860px){
 body{padding:16px 12px calc(84px + env(safe-area-inset-bottom))}
 .side{top:auto;right:0;bottom:0;left:0;width:auto;height:auto;border-right:0;border-top:1px solid var(--line);
@@ -173,14 +189,11 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <button data-m=1 type=button>Orchestrator</button>
 </div>
 <nav class=tabs>
-<button class=tab data-p=dash><svg viewBox="0 0 24 24"><path d="M4 13h6V4H4zM14 20h6v-9h-6zM14 8h6V4h-6zM4 20h6v-4H4z"/></svg><span class=tl>Dashboard</span></button>
-<button class=tab data-p=fleet><svg viewBox="0 0 24 24"><circle cx="12" cy="7" r="3"/><path d="M5 21v-1a4 4 0 0 1 4-4h6a4 4 0 0 1 4 4v1"/></svg><span class=tl>Sessions</span></button>
-<button class=tab data-p=chat><svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H8l-4 4V5a2 2 0 0 1 2-2h13a2 2 0 0 1 2 2z"/></svg><span class=tl>Chat</span></button>
-<button class=tab data-p=mem><svg viewBox="0 0 24 24"><path d="M4 7c0-1.7 3.6-3 8-3s8 1.3 8 3-3.6 3-8 3-8-1.3-8-3zM4 7v10c0 1.7 3.6 3 8 3s8-1.3 8-3V7"/></svg><span class=tl>Memory &amp; Files</span></button>
-<button class=tab data-p=harness><svg viewBox="0 0 24 24"><circle cx="6" cy="12" r="3"/><circle cx="18" cy="12" r="3"/><path d="M9 12h6"/></svg><span class=tl>Capabilities</span></button>
-<button class=tab data-p=usage><svg viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg><span class=tl>Usage</span></button>
-<button class=tab data-p=gov><svg viewBox="0 0 24 24"><path d="M12 3l7 4v5c0 4-3 7-7 9-4-2-7-5-7-9V7z"/><path d="M9 12l2 2 4-4"/></svg><span class=tl>Routines</span></button>
-<button class=tab data-p=set><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a7 7 0 0 0 0-6l1.6-1.3-2-3.4-2 .8a7 7 0 0 0-1.7-1L15 2H9l-.3 2.1a7 7 0 0 0-1.7 1l-2-.8-2 3.4L4.6 9a7 7 0 0 0 0 6l-1.6 1.3 2 3.4 2-.8a7 7 0 0 0 1.7 1L9 22h6l.3-2.1a7 7 0 0 0 1.7-1l2 .8 2-3.4z"/></svg><span class=tl>Settings</span></button>
+<button class=tab data-p=home title=Home><svg viewBox="0 0 24 24"><path d="M4 13h6V4H4zM14 20h6v-9h-6zM14 8h6V4h-6zM4 20h6v-4H4z"/></svg><span class=tl>Home</span></button>
+<button class=tab data-p=chat title=Chat><svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H8l-4 4V5a2 2 0 0 1 2-2h13a2 2 0 0 1 2 2z"/></svg><span class=tl>Chat</span></button>
+<button class=tab data-p=memory title=Memory><svg viewBox="0 0 24 24"><path d="M4 7c0-1.7 3.6-3 8-3s8 1.3 8 3-3.6 3-8 3-8-1.3-8-3zM4 7v10c0 1.7 3.6 3 8 3s8-1.3 8-3V7"/></svg><span class=tl>Memory</span></button>
+<button class=tab data-p=assistant title=Assistant><svg viewBox="0 0 24 24"><circle cx="6" cy="12" r="3"/><circle cx="18" cy="12" r="3"/><path d="M9 12h6"/></svg><span class=tl>Assistant</span></button>
+<button class=tab data-p=device title=Device><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a7 7 0 0 0 0-6l1.6-1.3-2-3.4-2 .8a7 7 0 0 0-1.7-1L15 2H9l-.3 2.1a7 7 0 0 0-1.7 1l-2-.8-2 3.4L4.6 9a7 7 0 0 0 0 6l-1.6 1.3 2 3.4 2-.8a7 7 0 0 0 1.7 1L9 22h6l.3-2.1a7 7 0 0 0 1.7-1l2 .8 2-3.4z"/></svg><span class=tl>Device</span></button>
 </nav>
 </aside>
 <div id=toast></div>

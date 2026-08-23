@@ -17,8 +17,11 @@
 }
 *{box-sizing:border-box}
 html,body{overflow-x:hidden}
+/* Fluid, centered content column that caps at 1,280 px (CUM-25). The fixed
+   sidebar sits at the viewport's left edge; the content box centers in the space
+   beside it and stops growing at 1,280 px on wide screens. */
 body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;background:var(--bg);color:var(--ink);
-margin:0;padding:20px 22px 40px 244px;max-width:1060px;font-size:14.5px;line-height:1.55;-webkit-font-smoothing:antialiased}
+margin:0 auto;padding:20px 30px 40px 254px;max-width:1280px;font-size:14.5px;line-height:1.55;-webkit-font-smoothing:antialiased}
 /* Robust anti-overflow: long URLs/JSON/code + wide content can never push the page
    sideways. Break within any element; scroll wide code/tables inside their own box. */
 code,.memv,#idToken,#cxToken,#btMac{overflow-wrap:anywhere;word-break:break-word}
@@ -140,6 +143,19 @@ padding:16px 12px;display:flex;flex-direction:column;gap:3px;z-index:50}
 .tab .tl{flex:1}
 #toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%) translateY(20px);background:var(--teal);color:#052420;font-weight:650;padding:9px 18px;border-radius:20px;opacity:0;transition:opacity .2s,transform .2s;pointer-events:none;z-index:99}
 #toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+/* Icon rail (CUM-25): on narrower desktops/tablets the sidebar collapses to
+   icons only, reclaiming width for the content. Labels return above 1080 px.
+   The full nav is still keyboard-reachable; each button keeps its title tooltip. */
+@media(min-width:861px) and (max-width:1080px){
+.side{width:66px;padding:14px 8px;align-items:center}
+.brand{justify-content:center;padding:4px 0 12px}
+.brand b,.brand .fw{display:none}
+.modeswitch{display:none}
+.tabs .tl{display:none}
+.tab{justify-content:center;padding:10px 0}
+.tab svg{width:19px;height:19px}
+body{padding-left:92px}
+}
 @media(max-width:860px){
 body{padding:16px 12px calc(84px + env(safe-area-inset-bottom))}
 .side{top:auto;right:0;bottom:0;left:0;width:auto;height:auto;border-right:0;border-top:1px solid var(--line);
@@ -161,23 +177,29 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <button data-m=1 type=button>Orchestrator</button>
 </div>
 <nav class=tabs>
-<button class=tab data-p=dash><svg viewBox="0 0 24 24"><path d="M4 13h6V4H4zM14 20h6v-9h-6zM14 8h6V4h-6zM4 20h6v-4H4z"/></svg><span class=tl>Dashboard</span></button>
-<button class=tab data-p=fleet><svg viewBox="0 0 24 24"><circle cx="12" cy="7" r="3"/><path d="M5 21v-1a4 4 0 0 1 4-4h6a4 4 0 0 1 4 4v1"/></svg><span class=tl>Sessions</span></button>
-<button class=tab data-p=chat><svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H8l-4 4V5a2 2 0 0 1 2-2h13a2 2 0 0 1 2 2z"/></svg><span class=tl>Chat</span></button>
-<button class=tab data-p=mem><svg viewBox="0 0 24 24"><path d="M4 7c0-1.7 3.6-3 8-3s8 1.3 8 3-3.6 3-8 3-8-1.3-8-3zM4 7v10c0 1.7 3.6 3 8 3s8-1.3 8-3V7"/></svg><span class=tl>Memory &amp; Files</span></button>
-<button class=tab data-p=harness><svg viewBox="0 0 24 24"><circle cx="6" cy="12" r="3"/><circle cx="18" cy="12" r="3"/><path d="M9 12h6"/></svg><span class=tl>Capabilities</span></button>
-<button class=tab data-p=usage><svg viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg><span class=tl>Usage</span></button>
-<button class=tab data-p=gov><svg viewBox="0 0 24 24"><path d="M12 3l7 4v5c0 4-3 7-7 9-4-2-7-5-7-9V7z"/><path d="M9 12l2 2 4-4"/></svg><span class=tl>Routines</span></button>
-<button class=tab data-p=set><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a7 7 0 0 0 0-6l1.6-1.3-2-3.4-2 .8a7 7 0 0 0-1.7-1L15 2H9l-.3 2.1a7 7 0 0 0-1.7 1l-2-.8-2 3.4L4.6 9a7 7 0 0 0 0 6l-1.6 1.3 2 3.4 2-.8a7 7 0 0 0 1.7 1L9 22h6l.3-2.1a7 7 0 0 0 1.7-1l2 .8 2-3.4z"/></svg><span class=tl>Settings</span></button>
+<button class=tab data-p=home title=Home><svg viewBox="0 0 24 24"><path d="M4 13h6V4H4zM14 20h6v-9h-6zM14 8h6V4h-6zM4 20h6v-4H4z"/></svg><span class=tl>Home</span></button>
+<button class=tab data-p=chat title=Chat><svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H8l-4 4V5a2 2 0 0 1 2-2h13a2 2 0 0 1 2 2z"/></svg><span class=tl>Chat</span></button>
+<button class=tab data-p=memory title=Memory><svg viewBox="0 0 24 24"><path d="M4 7c0-1.7 3.6-3 8-3s8 1.3 8 3-3.6 3-8 3-8-1.3-8-3zM4 7v10c0 1.7 3.6 3 8 3s8-1.3 8-3V7"/></svg><span class=tl>Memory</span></button>
+<button class=tab data-p=assistant title=Assistant><svg viewBox="0 0 24 24"><circle cx="6" cy="12" r="3"/><circle cx="18" cy="12" r="3"/><path d="M9 12h6"/></svg><span class=tl>Assistant</span></button>
+<button class=tab data-p=device title=Device><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a7 7 0 0 0 0-6l1.6-1.3-2-3.4-2 .8a7 7 0 0 0-1.7-1L15 2H9l-.3 2.1a7 7 0 0 0-1.7 1l-2-.8-2 3.4L4.6 9a7 7 0 0 0 0 6l-1.6 1.3 2 3.4 2-.8a7 7 0 0 0 1.7 1L9 22h6l.3-2.1a7 7 0 0 0 1.7-1l2 .8 2-3.4z"/></svg><span class=tl>Device</span></button>
 </nav>
 </aside>
 <div id=toast></div>
 
 <div class=pane id=pane-dash>
 <div class=eyebrow>Overview</div>
-<div class=ptitle>Dashboard</div>
+<div class=ptitle>Home</div>
 <p class=plede>Health, activity, and anything that needs your attention.</p>
 <div id=devtiles class=tiles></div>
+<div class=sec>
+<h2>Quick actions</h2>
+<div class=row style="flex-wrap:wrap;gap:8px">
+<button type=button data-go=chat>Open Chat</button>
+<button type=button data-go=memory>Add a file</button>
+<button type=button data-go=assistant>Providers &amp; models</button>
+<button type=button data-go=device>Check for updates</button>
+</div>
+</div>
 <div class=info id=info>loading&hellip;</div>
 <div class=sec>
 <h2>Active sessions</h2>
@@ -189,21 +211,21 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <div class=pane id=pane-set style="display:none">
 <div class=eyebrow>Device</div>
 <div class=ptitle>Settings</div>
-<p class=plede>Mode, light, sound, power, and connectivity &mdash; all in one place.</p>
+<p class=plede>Mode, light, sound, power, and connectivity - all in one place.</p>
 
 <details class=setgroup open><summary>Mode &amp; identity<span class=chev>&rsaquo;</span></summary>
 <div class=setbody>
 <label>Mode <button class=qh type=button aria-expanded=false aria-label="About modes">?</button></label>
-<p class="hint tip"><b>Notifier</b> turns the ring into a status light for your coding sessions, connected over Bluetooth. <b>Orchestrator</b> runs the AI assistant &mdash; Telegram, voice, and memory. Switching modes restarts the device.</p>
+<p class="hint tip"><b>Notifier</b> turns the ring into a status light for your coding sessions, connected over Bluetooth. <b>Orchestrator</b> runs the AI assistant - Telegram, voice, and memory. Switching modes restarts the device.</p>
 <select id=mode>
-<option value=0>Notifier &mdash; status light</option>
-<option value=1>Orchestrator &mdash; AI assistant</option>
+<option value=0>Notifier - status light</option>
+<option value=1>Orchestrator - AI assistant</option>
 </select>
 <label>Device name <button class=qh type=button aria-expanded=false aria-label="About the device name">?</button></label>
 <p class="hint tip">Used for the setup Wi-Fi network (<b><span id=idApSsid>&hellip;</span></b>), the network address (<b><span id=idMdns>&hellip;</span></b>), Bluetooth, and what the assistant calls itself. Leave blank to name it automatically. Takes effect after restart.</p>
 <div class=row><input id=devName placeholder="Nimbus" maxlength=24><button id=devNameSave type=button>Save</button></div>
 <label>Timezone <button class=qh type=button aria-expanded=false aria-label="About the timezone">?</button></label>
-<p class="hint tip">Sets when daily and weekly routines &mdash; including nightly memory upkeep &mdash; fire. POSIX format: pick a suggestion or type one, e.g. <b>GMT0BST,M3.5.0/1,M10.5.0/2</b> for the UK. Blank = UTC. Applies immediately &mdash; check the clock below after saving.</p>
+<p class="hint tip">Sets when daily and weekly routines - including nightly memory upkeep - fire. POSIX format: pick a suggestion or type one, e.g. <b>GMT0BST,M3.5.0/1,M10.5.0/2</b> for the UK. Blank = UTC. Applies immediately - check the clock below after saving.</p>
 <div class=row><input id=devTz list=tzlist placeholder="UTC0" maxlength=48><button id=devTzSave type=button>Save</button></div>
 <datalist id=tzlist>
 <option value="UTC0">UTC</option>
@@ -218,20 +240,20 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <option value="AEST-10AEDT,M10.1.0,M4.1.0/3">Sydney</option>
 </datalist>
 <label>Device clock</label>
-<p class="hint tip">Set automatically from the internet once Wi-Fi connects &mdash; there is no manual clock. Until it syncs, daily and weekly routines wait.</p>
+<p class="hint tip">Set automatically from the internet once Wi-Fi connects - there is no manual clock. Until it syncs, daily and weekly routines wait.</p>
 <div class=row><b id=devClock>&hellip;</b><span class=hint id=clockBadge>&hellip;</span><button id=clockSyncBtn type=button>Sync now</button></div>
 <label>Display <button class=qh type=button aria-expanded=false aria-label="About the display">?</button></label>
-<p class="hint tip">Which screen is fitted to this device. <b>E-ink</b> is the 2.9&quot; black-and-white panel with the knob. <b>Touch</b> is the 2.8&quot; color touchscreen &mdash; it replaces the knob, so the menu is tapped instead of turned. Change this only if the hardware changed. Takes effect after restart.</p>
+<p class="hint tip">Which screen is fitted to this device. <b>E-ink</b> is the 2.9&quot; black-and-white panel with the knob. <b>Touch</b> is the 2.8&quot; color touchscreen - it replaces the knob, so the menu is tapped instead of turned. Change this only if the hardware changed. Takes effect after restart.</p>
 <select id=scrModel>
-<option value=eink>E-ink &mdash; knob</option>
-<option value=tft>Touch &mdash; color touchscreen</option>
+<option value=eink>E-ink - knob</option>
+<option value=tft>Touch - color touchscreen</option>
 </select>
 <div class=memv id=scrModelFixed style="display:none"></div>
 <label class=pr style="margin-top:8px"><input type=checkbox id=scrFlip> Display flip <button class=qh type=button aria-expanded=false aria-label="About display flip">?</button></label>
 <p class="hint tip">Turns the screen 180 degrees for an upside-down mount. Touch display only; takes effect right away.</p>
 <div id=tchCalWrap>
 <label>Touch calibration <button class=qh type=button aria-expanded=false aria-label="About touch calibration">?</button></label>
-<p class="hint tip">Only for the touch display. Each panel reads slightly differently, so if taps land off-target, enter the corner readings as <b>minX,maxX,minY,maxY</b> &mdash; optionally a fifth number to flip axes (1 swaps X and Y, 2 flips X, 4 flips Y; add them together). Leave blank for the defaults. Applies immediately.</p>
+<p class="hint tip">Only for the touch display. Each panel reads slightly differently, so if taps land off-target, enter the corner readings as <b>minX,maxX,minY,maxY</b> - optionally a fifth number to flip axes (1 swaps X and Y, 2 flips X, 4 flips Y; add them together). Leave blank for the defaults. Applies immediately.</p>
 <div class=row><input id=tchCal placeholder="200,3900,240,3850" maxlength=32><button id=tchCalSave type=button>Save</button></div>
 </div>
 <div id=tOrient style="display:none"><label>Touch orientation</label>
@@ -251,7 +273,7 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <label class=pr><input type=radio name=profile value=2> Full</label>
 <button class=qh type=button aria-expanded=false aria-label="About battery modes">?</button>
 </div>
-<p class="hint tip">The battery mode sets the light. <b>Dark</b>: lights off &mdash; only a job error breathes red. <b>Balanced</b>: a single soft cue in the theme color, dimmer, shorter holds. <b>Full</b>: every session a color arc at full brightness. Each mode is a preset you can adjust under Customize this mode.</p>
+<p class="hint tip">The battery mode sets the light. <b>Dark</b>: lights off - only a job error breathes red. <b>Balanced</b>: a single soft cue in the theme color, dimmer, shorter holds. <b>Full</b>: every session a color arc at full brightness. Each mode is a preset you can adjust under Customize this mode.</p>
 <label class=pr style="margin-top:8px"><input type=checkbox id=lbRing> Low-battery light <button class=qh type=button aria-expanded=false aria-label="About the low-battery light">?</button></label>
 <p class="hint tip">Shows a dim red pulse on the ring for a few seconds each minute while the battery is low. Off by default, because a ring lit all night uses the power it is warning about. The screen notice and the Telegram message are sent either way.</p>
 <label class=pr><input type=checkbox id=lbSaver> Save power when low <button class=qh type=button aria-expanded=false aria-label="About saving power when low">?</button></label>
@@ -260,11 +282,11 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <p class="hint tip">Reads the battery pack for the charge readout, low-battery warnings, and sleep protection. On boards built with a pack it is on; on the all-in-one board a battery is optional, so it is off until you turn it on. Takes effect after restart.</p>
 <p class=hint id=effprof></p>
 <label>Theme <button class=qh type=button aria-expanded=false aria-label="About themes">?</button></label>
-<p class="hint tip">Each theme is a family of colors. A session's status picks its color role and motion &mdash; the ring's status language. The legend below shows the mapping.</p>
+<p class="hint tip">Each theme is a family of colors. A session's status picks its color role and motion - the ring's status language. The legend below shows the mapping.</p>
 <div id=themeChips></div>
 <button id=prevBtn type=button style="margin-top:6px">Demo on Device</button>
 <label>Preview <button class=qh type=button aria-expanded=false aria-label="About the preview">?</button></label>
-<p class="hint tip">Pick a status and mode to see the pattern in the selected theme. <b>Demo on Device</b> (above) plays it on the physical ring for a few seconds &mdash; nothing is saved.</p>
+<p class="hint tip">Pick a status and mode to see the pattern in the selected theme. <b>Demo on Device</b> (above) plays it on the physical ring for a few seconds - nothing is saved.</p>
 <div id=ringsimwrap style="display:flex;flex-direction:column;align-items:center;gap:10px;margin:6px 0 2px">
 <canvas id=ringsim width=440 height=440 style="width:220px;height:220px"></canvas>
 <div id=ringsimStatus style="display:flex;gap:4px;flex-wrap:wrap;justify-content:center"></div>
@@ -321,24 +343,24 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <div class=setbody>
 <div style="height:20px;background:var(--raise2);border:1px solid var(--line2);border-radius:6px;margin:10px 0 6px;overflow:hidden;position:relative">
 <div id=battbar style="height:100%;width:0;background:linear-gradient(90deg,#3a7,#7fd1c8);transition:width .3s"></div>
-<span id=battpct style="position:absolute;left:8px;top:2px;font-size:12px;color:#eee">&mdash;</span></div>
+<span id=battpct style="position:absolute;left:8px;top:2px;font-size:12px;color:#eee">-</span></div>
 <table><tbody>
-<tr><td>Voltage</td><td id=battmv>&mdash;</td></tr>
-<tr><td>Estimated time left</td><td id=batttime>&mdash;</td></tr>
-<tr><td>Discharge rate</td><td id=battrate>&mdash;</td></tr>
-<tr><td>Health</td><td id=batthealth>&mdash;</td></tr>
-<tr><td>Power source</td><td id=battsrc>&mdash;</td></tr>
-<tr><td>Calibration</td><td id=battcal>&mdash;</td></tr>
+<tr><td>Voltage</td><td id=battmv>-</td></tr>
+<tr><td>Estimated time left</td><td id=batttime>-</td></tr>
+<tr><td>Discharge rate</td><td id=battrate>-</td></tr>
+<tr><td>Health</td><td id=batthealth>-</td></tr>
+<tr><td>Power source</td><td id=battsrc>-</td></tr>
+<tr><td>Calibration</td><td id=battcal>-</td></tr>
 </tbody></table>
 <div class=row><button id=battcalBtn type=button>Calibrate Full Charge</button><button class=qh type=button aria-expanded=false aria-label="About calibration">?</button></div>
-<p class="hint tip">The voltage sensor reads a full pack low. With the battery fully charged, calibrate to anchor 100% to the current reading &mdash; stored per device.</p>
+<p class="hint tip">The voltage sensor reads a full pack low. With the battery fully charged, calibrate to anchor 100% to the current reading - stored per device.</p>
 <table><tbody>
 <tr><td>Low-battery sleep</td><td><input id=sleepMv type=number min=0 max=6800 step=50 style="width:90px"> mV <button class=qh type=button aria-expanded=false aria-label="About low-battery sleep">?</button><p class="hint tip">Below this pack voltage the device sleeps to protect the battery. Default 6000 mV, about 10% charge. 0 turns protection off.</p></td></tr>
 <tr><td>Stay awake above</td><td><input id=wakeMv type=number min=0 max=7600 step=50 style="width:90px"> mV <button class=qh type=button aria-expanded=false aria-label="About the wake threshold">?</button><p class="hint tip">After waking, the device stays on only above this voltage. Lower values allow deeper drain cycles; 7200 mV stops strictly at 10%.</p></td></tr>
 <tr><td>Skip low-battery sleep</td><td><label><input id=sleepOvr type=checkbox> override</label> <span class=hint>&#9888; Allows discharge below the safe floor, which can permanently damage the battery. Resets at restart.</span></td></tr>
 <tr><td>Full brightness</td><td><label><input id=brightOvr type=checkbox> allow 100%</label> <span class=hint>&#9888; Can overheat and damage the device. The thermal guard stays active. Resets at restart.</span></td></tr>
 </tbody></table>
-<p class=hint style="margin-top:12px"><b>Battery hardware</b> &mdash; match these to the pack and sense resistors actually fitted, so voltage and estimates are correct.</p>
+<p class=hint style="margin-top:12px"><b>Battery hardware</b> - match these to the pack and sense resistors actually fitted, so voltage and estimates are correct.</p>
 <table><tbody>
 <tr><td>Pack capacity</td><td><input id=battCapMah type=number min=100 max=20000 step=50 style="width:90px"> mAh <button class=qh type=button aria-expanded=false aria-label="About pack capacity">?</button><p class="hint tip">The fitted pack: LiitoKala 3500, a reclaimed ~500 mAh cell, and so on. Drives time-left and the capacity readout. Cell count is set by the board.</p></td></tr>
 <tr><td>Sense resistor (top)</td><td><input id=battRtop type=number min=1000 max=10000000 step=1000 style="width:110px"> &#8486; <button class=qh type=button aria-expanded=false aria-label="About the sense resistors">?</button><p class="hint tip">The two divider resistors between the pack and the ADC pin. Defaults 220k / 100k; some boards use 270k / 120k. Getting these right fixes the voltage reading. After changing them, re-run Calibrate on a full pack.</p></td></tr>
@@ -352,14 +374,14 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <details class=setgroup id=fwsec><summary>Software update<span class=chev>&rsaquo;</span></summary>
 <div class=setbody>
 <table><tbody>
-<tr><td>Installed</td><td id=fwCur>&mdash;</td></tr>
-<tr><td>Latest</td><td id=fwLatest>&mdash;</td></tr>
-<tr><td>Status</td><td id=fwState>&mdash;</td></tr>
-<tr><td>Last result</td><td id=fwLast>&mdash;</td></tr>
+<tr><td>Installed</td><td id=fwCur>-</td></tr>
+<tr><td>Latest</td><td id=fwLatest>-</td></tr>
+<tr><td>Status</td><td id=fwState>-</td></tr>
+<tr><td>Last result</td><td id=fwLast>-</td></tr>
 </tbody></table>
 <div id=fwBarWrap style="display:none;height:14px;background:var(--raise2);border:1px solid var(--line2);border-radius:6px;margin:8px 0;overflow:hidden"><div id=fwBar style="height:100%;width:0;background:linear-gradient(90deg,#3a7,#7fd1c8);transition:width .5s"></div></div>
 <div class=row><button id=fwCheck type=button>Check for Updates</button><button id=fwInstall type=button style="display:none">Install Update</button><button class=qh type=button aria-expanded=false aria-label="About updates">?</button></div>
-<p class="hint tip">Updates download from this project's GitHub releases over TLS and are cryptographically signed &mdash; the device verifies each one and reverts on its own if the new version fails to start. Keep the device powered during an install.</p>
+<p class="hint tip">Updates download from this project's GitHub releases over TLS and are cryptographically signed - the device verifies each one and reverts on its own if the new version fails to start. Keep the device powered during an install.</p>
 <label class=pr style="margin-top:8px"><input type=checkbox id=autoUpd> Automatic updates <button class=qh type=button aria-expanded=false aria-label="About automatic updates">?</button></label>
 <p class="hint tip">Installs new firmware when the device is idle and charged, then restarts.</p>
 </div>
@@ -370,26 +392,26 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <b style="display:block;margin-top:10px">Connect to this device <button class=qh type=button aria-expanded=false aria-label="About connecting">?</button></b>
 <p class="hint tip">You're connected now. To return later, open the <b>On your network</b> address, or scan the Sign-in QR on the device's screen (Settings &gt; Connectivity &gt; Sign-in QR). Setting up a new device? Join its setup Wi-Fi network with the password below and the setup page opens automatically. The password and token appear only after you've signed in. Full walk-through: <a href="https://ristllin.github.io/Nimbus/docs/getting-started/first-time-setup" target=_blank rel=noopener>First-time setup</a>.</p>
 <table><tbody>
-<tr><td>Device name</td><td id=cxName>&mdash;</td></tr>
-<tr><td>On your network</td><td id=cxLan>&mdash;</td></tr>
-<tr><td>Setup Wi-Fi network</td><td id=cxApSsid>&mdash;</td></tr>
-<tr><td>Setup Wi-Fi password</td><td id=cxApPass>&mdash;</td></tr>
+<tr><td>Device name</td><td id=cxName>-</td></tr>
+<tr><td>On your network</td><td id=cxLan>-</td></tr>
+<tr><td>Setup Wi-Fi network</td><td id=cxApSsid>-</td></tr>
+<tr><td>Setup Wi-Fi password</td><td id=cxApPass>-</td></tr>
 <tr><td>Device sign-in code</td><td id=cxToken style="word-break:break-all">-</td></tr>
 </tbody></table>
 <div class=row style="margin-top:6px"><button id=regenTok type=button style="background:rgba(240,104,122,.12);color:var(--crit)">Generate New Code</button></div>
 <p class=hint>Signs out every browser except this one.</p>
 
 <b style="display:block;margin-top:14px">Bluetooth <button class=qh type=button aria-expanded=false aria-label="About Bluetooth">?</button></b>
-<p class="hint tip">In Notifier mode, the ring and screen are driven over an encrypted Bluetooth link from the nimbus-notify broker on your computer. Pairing happens automatically on the broker's first connect &mdash; Nimbus won't appear in your computer's Bluetooth list. Bluetooth is off in Orchestrator mode.</p>
+<p class="hint tip">In Notifier mode, the ring and screen are driven over an encrypted Bluetooth link from the nimbus-notify broker on your computer. Pairing happens automatically on the broker's first connect - Nimbus won't appear in your computer's Bluetooth list. Bluetooth is off in Orchestrator mode.</p>
 <table><tbody>
-<tr><td>Status</td><td id=btState>&mdash;</td></tr>
-<tr><td>Paired devices</td><td id=btBonds>&mdash;</td></tr>
-<tr><td>Bluetooth address</td><td id=btMac style="word-break:break-all">&mdash;</td></tr>
+<tr><td>Status</td><td id=btState>-</td></tr>
+<tr><td>Paired devices</td><td id=btBonds>-</td></tr>
+<tr><td>Bluetooth address</td><td id=btMac style="word-break:break-all">-</td></tr>
 </tbody></table>
 <div class=row style="margin-top:6px"><button id=btForget type=button style="background:rgba(240,104,122,.12);color:var(--crit)">Forget Paired Devices</button></div>
 
 <b style="display:block;margin-top:14px">Wi-Fi <button class=qh type=button aria-expanded=false aria-label="About Wi-Fi">?</button></b>
-<p class="hint tip">Connects the device to your network &mdash; required for Orchestrator mode. Notifier over Bluetooth works without it. 2.4 GHz networks only.</p>
+<p class="hint tip">Connects the device to your network - required for Orchestrator mode. Notifier over Bluetooth works without it. 2.4 GHz networks only.</p>
 <label>Saved Wi-Fi networks <span id=wifiCount class=hint style="font-weight:normal"></span></label>
 <p class=hint>The device remembers several networks and joins whichever one it can see, so carrying it between places keeps it online.</p>
 <div id=wifiKnown></div>
@@ -436,7 +458,7 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <div class=pane id=pane-harness style="display:none">
 <div class=eyebrow>AI &amp; integrations</div>
 <div class=ptitle>Capabilities</div>
-<p class=plede>Everything the device can reach and run &mdash; providers, tools, connectors, and skills. Keys are set by you, never by the model.</p>
+<p class=plede>Everything the device can reach and run - providers, tools, connectors, and skills. Keys are set by you, never by the model.</p>
 
 <div class=subtabs>
 <button type=button class=subtab data-sp=connectors>Connectors</button>
@@ -448,10 +470,10 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <div class=subpane id=subpane-connectors>
 <div class=sec>
 <h2>Connectors <button class=qh type=button aria-expanded=false aria-label="About connectors">?</button></h2>
-<p class="hint tip">Tools that run in your AI provider's cloud &mdash; on the assistant's own turns and on the sessions it starts. Create each credential once and paste it here. <a href="https://ristllin.github.io/Nimbus/guides/connectors" target=_blank>Setup guide &rarr;</a></p>
+<p class="hint tip">Tools that run in your AI provider's cloud - on the assistant's own turns and on the sessions it starts. Create each credential once and paste it here. <a href="https://ristllin.github.io/Nimbus/guides/connectors" target=_blank>Setup guide &rarr;</a></p>
 <p class=hint id=connhost></p>
 <div id=conncards></div>
-<details style="margin-top:12px"><summary class=hint style="cursor:pointer">Advanced &mdash; edit raw JSON</summary>
+<details style="margin-top:12px"><summary class=hint style="cursor:pointer">Advanced - edit raw JSON</summary>
 <p class=hint>A JSON array; secrets are write-only. Example: <code>{"name":"github","prov":"openai","kind":"mcp","url":"https://api.githubcopilot.com/mcp/","tok":"ghp_...","type":"github","en":1}</code></p>
 <div class=row><textarea id=connBlob rows=5 style="width:100%;font-family:monospace" placeholder='[{"name":"web_search","prov":"mistral","kind":"builtin","en":1}]'></textarea></div>
 <div class=row><button type=button onclick="saveConnectors()">Save JSON</button><span class=hint id=connstat></span></div>
@@ -465,14 +487,14 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <p id=tgReady class=hint></p>
 <div class=row><input id=tgToken type=password placeholder="Bot token from @BotFather"><button type=button onclick="orchApply({tgToken:$('tgToken').value})">Save</button><button type=button onclick="orchApply({clr_tgToken:1})">Clear</button></div>
 <label>Who can message this device <button class=qh type=button aria-expanded=false aria-label="About members">?</button></label>
-<p class="hint tip">New senders appear here for one-tap approval. Access is enforced by chat ID &mdash; Telegram usernames can change hands.</p>
+<p class="hint tip">New senders appear here for one-tap approval. Access is enforced by chat ID - Telegram usernames can change hands.</p>
 <div id=tgPending></div>
 <div id=tgChips></div>
 <div class=row><input id=tgAddId placeholder="Chat ID"><input id=tgAddName placeholder="Name (optional)" style="flex:1"><button id=tgAddBtn type=button>Add</button></div>
 <label class=pr style="margin-top:8px;color:#e0b870"><input type=checkbox id=tgPublic> <b>Open access</b></label>
-<span class=hint>Anyone who finds this bot on Telegram can use it &mdash; and your API credits.</span>
+<span class=hint>Anyone who finds this bot on Telegram can use it - and your API credits.</span>
 <label class=pr><input type=checkbox id=ttsOn> Voice replies <button class=qh type=button aria-expanded=false aria-label="About voice replies">?</button></label>
-<p class="hint tip">When on, the assistant may answer with a spoken voice note when that fits &mdash; never audio duplicating the same text. When off, it always replies in text.</p>
+<p class="hint tip">When on, the assistant may answer with a spoken voice note when that fits - never audio duplicating the same text. When off, it always replies in text.</p>
 </div>
 </details>
 </div>
@@ -480,7 +502,7 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <div class=subpane id=subpane-tools style="display:none">
 <div class=sec>
 <h2>Tools <span class="badge" id=toolstat></span> <button class=qh type=button aria-expanded=false aria-label="About tools">?</button></h2>
-<p class="hint tip">What the assistant can do right now &mdash; the live on-device tool surface. External MCP clients can call it too, over <code>POST /mcp</code>.</p>
+<p class="hint tip">What the assistant can do right now - the live on-device tool surface. External MCP clients can call it too, over <code>POST /mcp</code>.</p>
 <div id=toollist></div>
 </div>
 <div class=sec>
@@ -497,11 +519,11 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 
 <div class=subpane id=subpane-llm style="display:none">
 <div class=sec>
-<h2>Models <span class="badge ext" id=orchoff style="display:none">Notifier mode &mdash; these settings apply when you switch to Orchestrator</span></h2>
+<h2>Models <span class="badge ext" id=orchoff style="display:none">Notifier mode - these settings apply when you switch to Orchestrator</span></h2>
 
 <details class=setgroup open><summary>Providers &amp; keys<span class=chev>&rsaquo;</span></summary>
 <div class=setbody>
-<p class=hint>Keys are write-only &mdash; a saved key shows as &quot;set&quot; and is never displayed again. Model choices unlock after the key verifies.</p>
+<p class=hint>Keys are write-only - a saved key shows as &quot;set&quot; and is never displayed again. Model choices unlock after the key verifies.</p>
 <div id=provs></div>
 </div>
 </details>
@@ -509,7 +531,7 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <details class=setgroup><summary>Custom endpoint<span class=chev>&rsaquo;</span></summary>
 <div class=setbody>
 <label>Base URL <button class=qh type=button aria-expanded=false aria-label="About custom endpoints">?</button></label>
-<p class="hint tip">Point the assistant at any OpenAI-, Anthropic-, or Mistral-compatible server. An <b>http://</b> base uses plain HTTP for a LAN server &mdash; e.g. a local Ollama at <code>http://192.168.1.50:11434/v1</code> with the openai wire, model <code>qwen2.5</code>, and a blank key. An https:// or bare host stays TLS.</p>
+<p class="hint tip">Point the assistant at any OpenAI-, Anthropic-, or Mistral-compatible server. An <b>http://</b> base uses plain HTTP for a LAN server - e.g. a local Ollama at <code>http://192.168.1.50:11434/v1</code> with the openai wire, model <code>qwen2.5</code>, and a blank key. An https:// or bare host stays TLS.</p>
 <input id=custBase placeholder="https://proxy.example/v1">
 <div class=row><input id=custKey type=password placeholder="API key (blank for a keyless LAN endpoint)"><button type=button onclick="orchApply({clr_custKey:1})">Clear</button></div>
 <div class=row>
@@ -540,7 +562,7 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <details class=setgroup><summary>Voice<span class=chev>&rsaquo;</span></summary>
 <div class=setbody>
 <label>Dictation <button class=qh type=button aria-expanded=false aria-label="About dictation">?</button></label>
-<p class="hint tip">Turns your voice &mdash; from the microphone or Telegram voice notes &mdash; into text. Works as soon as the provider's key is set, independent of chat verification.</p>
+<p class="hint tip">Turns your voice - from the microphone or Telegram voice notes - into text. Works as soon as the provider's key is set, independent of chat verification.</p>
 <select id=sttProv><option value=mistral>Mistral (Voxtral)</option><option value=openai>OpenAI</option></select>
 <label>Spoken replies</label>
 <select id=ttsProv><option value=mistral>Mistral (Voxtral)</option><option value=openai>OpenAI</option></select>
@@ -561,24 +583,24 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <label class=pr><input type=checkbox id=midFail checked> Switch providers mid-task if one fails</label>
 <label class=pr><input type=checkbox id=codeSbx> Code sandbox <button class=qh type=button aria-expanded=false aria-label="About the code sandbox">?</button></label>
 <p class="hint tip">Lets the assistant run code in a provider sandbox to build files (charts, PDFs, data). Finished files land under Files. Needs an OpenAI key (Mistral where supported); Anthropic sub-agents can build files too.</p>
-<p class="hint tip">When on, the assistant uses its tools mid-turn &mdash; memory, sessions, web search, device control &mdash; and iterates before answering. When off, it answers in a single step.</p>
+<p class="hint tip">When on, the assistant uses its tools mid-turn - memory, sessions, web search, device control - and iterates before answering. When off, it answers in a single step.</p>
 <label class=pr><input type=checkbox id=orchTrace checked> Record tool calls &amp; thinking <button class=qh type=button aria-expanded=false aria-label="About activity recording">?</button></label>
-<p class="hint tip">Keeps a per-turn record of what the assistant did &mdash; each tool call, its result, and the reasoning between them &mdash; viewable in the chat. Stored on the SD card with the same 30-day retention as history.</p>
+<p class="hint tip">Keeps a per-turn record of what the assistant did - each tool call, its result, and the reasoning between them - viewable in the chat. Stored on the SD card with the same 30-day retention as history.</p>
 <label>Tool rounds <span class=hint>(1&ndash;32)</span></label>
 <input id=loopRounds type=number min=1 max=32>
 <label>Time limit, seconds <span class=hint>(30&ndash;3600)</span></label>
 <input id=loopDeadline type=number min=30 max=3600>
 <label>Compact conversations after, KB <span class=hint>(8&ndash;512; 0 turns automatic compaction off)</span> <button class=qh type=button aria-expanded=false aria-label="About compaction">?</button></label>
-<p class="hint tip">When a chat accumulates this much history, the assistant folds it into a compact summary and starts a fresh provider thread &mdash; conversations stay fast and inexpensive without losing continuity. Send /compact to run it on demand.</p>
+<p class="hint tip">When a chat accumulates this much history, the assistant folds it into a compact summary and starts a fresh provider thread - conversations stay fast and inexpensive without losing continuity. Send /compact to run it on demand.</p>
 <input id=compactKB type=number min=0 max=512>
 <label>Concurrent connections <button class=qh type=button aria-expanded=false aria-label="About concurrent connections">?</button></label>
-<p class="hint tip">One is the default and the stable choice &mdash; the device does one secure connection at a time, which uses the least memory. Two lets voice transcription run alongside a provider turn, but needs memory headroom and can fail a heavy turn. Applies after restart.</p>
-<select id=tlsSlots><option value=1>1 (default) &mdash; one at a time</option><option value=2>2 &mdash; concurrent (needs headroom)</option></select>
+<p class="hint tip">One is the default and the stable choice - the device does one secure connection at a time, which uses the least memory. Two lets voice transcription run alongside a provider turn, but needs memory headroom and can fail a heavy turn. Applies after restart.</p>
+<select id=tlsSlots><option value=1>1 (default) - one at a time</option><option value=2>2 - concurrent (needs headroom)</option></select>
 <label class=pr style="margin-top:8px"><input type=checkbox id=tlsVerify checked> Validate provider TLS certificates <button class=qh type=button aria-expanded=false aria-label="About TLS validation">?</button></label>
 <p class="hint tip">Checks each provider's certificate against a built-in bundle, so a hostile network can't impersonate a provider and capture your keys. Turn off only for a self-hosted server with a self-signed certificate.</p>
 <label style="margin-top:8px">Capability validation <button class=qh type=button aria-expanded=false aria-label="About capability validation">?</button></label>
-<p class="hint tip">How the device confirms a provider key actually works before it tells the assistant a connector is available &mdash; so it relies on tested capabilities, not guesses. Off trusts the key as-is. Passive marks a provider verified once a real call or a manual check succeeds. Active also re-checks on a schedule so the status stays current.</p>
-<select id=capProbe onchange=capProbeUpd()><option value=1>Passive (default)</option><option value=0>Off</option><option value=2>Active &mdash; re-check on a schedule</option></select>
+<p class="hint tip">How the device confirms a provider key actually works before it tells the assistant a connector is available - so it relies on tested capabilities, not guesses. Off trusts the key as-is. Passive marks a provider verified once a real call or a manual check succeeds. Active also re-checks on a schedule so the status stays current.</p>
+<select id=capProbe onchange=capProbeUpd()><option value=1>Passive (default)</option><option value=0>Off</option><option value=2>Active - re-check on a schedule</option></select>
 <div id=capProbeActive style="display:none;margin-top:6px">
 <label>Re-check every, hours</label>
 <input id=capProbeH type=number min=1 max=168 onchange=capProbeUpd()>
@@ -596,13 +618,13 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <div class=sec>
 <h2>Skills <button class=qh type=button aria-expanded=false aria-label="About skills">?</button></h2>
 <p class="hint tip">Saved instruction sets the assistant applies when it starts a matching session.</p>
-<p class=hint id=skStat>&mdash;</p>
+<p class=hint id=skStat>-</p>
 <div id=skList class=hint>loading&hellip;</div>
 <label style="margin-top:10px">Skill ID <span class=hint>(a-z 0-9 - _ &middot; max 23 chars)</span></label>
 <div class=row><input id=skId placeholder="deep-research" style="max-width:200px"><button id=skLoad type=button>Load</button></div>
 <textarea id=skMd rows=8 spellcheck=false placeholder="---&#10;title: My skill&#10;inject: spawn&#10;---&#10;Instructions the session receives when it starts with this skill."></textarea>
 <div class=row><button id=skSave type=button>Save</button><button id=skDel type=button style="background:#333;color:#cde">Delete</button><button class=qh type=button aria-expanded=false aria-label="About skill storage">?</button></div>
-<p class="hint tip">Skills live on the SD card at <span class=badge>/mem/skills/&lt;id&gt;/SKILL.md</span>. Front matter: <span class=badge>title</span>, optional <span class=badge>version</span> and <span class=badge>inject: spawn|context|both</span>. Only you can write skills &mdash; the assistant reads them with <span class=badge>skill.get</span> and receives them when a session names the skill.</p>
+<p class="hint tip">Skills live on the SD card at <span class=badge>/mem/skills/&lt;id&gt;/SKILL.md</span>. Front matter: <span class=badge>title</span>, optional <span class=badge>version</span> and <span class=badge>inject: spawn|context|both</span>. Only you can write skills - the assistant reads them with <span class=badge>skill.get</span> and receives them when a session names the skill.</p>
 <p class=hint id=skMsg></p>
 </div>
 <div class=sec>
@@ -610,16 +632,6 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 </div>
 </div>
 
-</div>
-
-<div class=pane id=pane-fleet style="display:none">
-<div class=eyebrow>Active work</div>
-<div class=ptitle>Sessions</div>
-<p class=plede>Everything the assistant is working on right now.</p>
-<div class=sec>
-<h2>Running now</h2>
-<div id=jobs class=hint>none</div>
-</div>
 </div>
 
 <div class=pane id=pane-chat style="display:none">
@@ -639,8 +651,8 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 
 <div class=pane id=pane-mem style="display:none">
 <div class=eyebrow>On-device storage</div>
-<div class=ptitle>Memory &amp; Files</div>
-<p class=plede>What the device knows and the files it has made &mdash; stored on its SD card, not in a cloud.</p>
+<div class=ptitle>Memory</div>
+<p class=plede>What the device knows and the files it has made, stored on its SD card, not in a cloud.</p>
 
 <details class=setgroup open><summary>Memory<span class=chev>&rsaquo;</span></summary>
 <div class=setbody>
@@ -685,7 +697,7 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <label>Relevance threshold <span class=hint>(0&ndash;1; 0 keeps all)</span></label>
 <input id=cfg_rt type=number step=0.05 min=0 max=1>
 <label>Storage limit <span class=hint>(0 = unlimited)</span> <button class=qh type=button aria-expanded=false aria-label="About the storage limit">?</button></label>
-<p class="hint tip">At the limit, the least valuable memory is dropped &mdash; lowest importance, closest to expiry. Recall boosts what you use, so it survives.</p>
+<p class="hint tip">At the limit, the least valuable memory is dropped - lowest importance, closest to expiry. Recall boosts what you use, so it survives.</p>
 <input id=cfg_mv type=number min=0 max=20000>
 <div class=row><button id=cfgsave type=button>Save</button></div>
 <b style="display:block;margin-top:14px">Embedding model <span class="badge" id=emblock style="display:none">locked</span> <button class=qh type=button aria-expanded=false aria-label="About the embedding model">?</button></b>
@@ -704,7 +716,7 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 
 <details class=setgroup><summary>Files<span class=chev>&rsaquo;</span></summary>
 <div class=setbody>
-<p class=hint id=filesStat>&mdash;</p>
+<p class=hint id=filesStat>-</p>
 <div class=row><input id=filesProj placeholder="Filter by project"><button id=filesRefresh type=button>Refresh</button><button id=filesRmProj type=button style="color:#f0687a">Delete folder</button></div>
 <div id=filesList class=hint>loading&hellip;</div>
 <div id=filePrev style="display:none;margin-top:12px;border:1px solid var(--line);border-radius:10px;padding:12px"></div>
@@ -724,7 +736,7 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <div class=sec>
 <div id=usageTiles class=tiles></div>
 <div id=usageSummary class=tiles></div>
-<p class=hint>Token counts are actual billed usage. Dollar figures are estimates from the rates below &mdash; a close guide, not an invoice.</p>
+<p class=hint>Token counts are actual billed usage. Dollar figures are estimates from the rates below - a close guide, not an invoice.</p>
 </div>
 
 <div class=sec>
@@ -747,7 +759,7 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 
 <div class=sec>
 <h2>Rates <button class=qh type=button aria-expanded=false aria-label="About rates">?</button></h2>
-<p class="hint tip">What each provider charges &mdash; used only for the estimates above. Language models: dollars per million input and output tokens. Search: dollars per thousand calls. 0 uses a built-in default, marked ~.</p>
+<p class="hint tip">What each provider charges - used only for the estimates above. Language models: dollars per million input and output tokens. Search: dollars per thousand calls. 0 uses a built-in default, marked ~.</p>
 <div class=row>
 <select id=rate_prov style="flex:1 1 120px"><option value=openai>OpenAI</option><option value=anthropic>Anthropic</option><option value=mistral>Mistral</option><option value=tavily>Tavily (search)</option></select>
 <input id=rate_in type=number min=0 step=0.01 placeholder="$ per 1M input" style="flex:1 1 110px">
@@ -769,7 +781,7 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <div id=fetchRows></div>
 
 <h2>Budgets <button class=qh type=button aria-expanded=false aria-label="About budgets">?</button></h2>
-<p class="hint tip">Caps each provider's spend for the month &mdash; by tokens, by dollars, or both; 0 means unlimited. The dollar cap uses your rates above, so set prices for it to count. At any cap, that provider's turns and searches are refused until the reset day &mdash; the assistant fails over to another in-budget provider when it can.</p>
+<p class="hint tip">Caps each provider's spend for the month - by tokens, by dollars, or both; 0 means unlimited. The dollar cap uses your rates above, so set prices for it to count. At any cap, that provider's turns and searches are refused until the reset day - the assistant fails over to another in-budget provider when it can.</p>
 <div id=budgetRows></div>
 <div class=provrow style="border-top:0;margin-top:6px;padding-top:0">
 <label>Set a budget</label>
@@ -792,7 +804,7 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <p class=plede>Tasks that run on a schedule. Routines the assistant creates for itself wait for your approval, and spending limits pause anything that misbehaves.</p>
 <div class=sec>
 <h2>Routines <button class=qh type=button aria-expanded=false aria-label="About routines">?</button></h2>
-<p class="hint tip">The assistant runs a turn on a schedule &mdash; a morning digest, a reminder, nightly upkeep. Spend counts against per-routine and daily limits.</p>
+<p class="hint tip">The assistant runs a turn on a schedule - a morning digest, a reminder, nightly upkeep. Spend counts against per-routine and daily limits.</p>
 <div id=govClock style="display:none"></div>
 <div id=loopList>loading&hellip;</div>
 </div>
@@ -957,26 +969,41 @@ function showMigrationHint(){
 document.addEventListener('DOMContentLoaded',showMigrationHint);
 // No stored token -> gate immediately, before any load/poll renders data.
 if(!nimbusTok())document.addEventListener('DOMContentLoaded',showAuth);
-// Tab switching: show one .pane, highlight its .tab. Default = the first tab (Home).
-document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{
-  document.querySelectorAll('.pane').forEach(p=>p.style.display='none');
-  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('on'));
-  $('pane-'+b.dataset.p).style.display='';
-  b.classList.add('on');
-  // Lazy-loads per area (Phase 3 C1 IA)
-  if(b.dataset.p==='gov')loadLoops();
-  if(b.dataset.p==='mem'){if(typeof loadMemDash==='function')loadMemDash();if(typeof loadFiles==='function')loadFiles();}
-  if(b.dataset.p==='harness'){if(typeof loadOrch==='function')loadOrch();if(typeof loadConnectors==='function')loadConnectors();if(typeof loadTools==='function')loadTools();if(typeof loadSkills==='function')loadSkills();}
-  if(b.dataset.p==='usage'){if(typeof loadOrch==='function')loadOrch();if(typeof loadFetchQ==='function')loadFetchQ();   // usage tiles + budget rows + downloads
-    if(typeof loadUsageHistory==='function')loadUsageHistory();}          // spend graph buckets
-  if(b.dataset.p==='chat'&&typeof loadChatHistory==='function')loadChatHistory();   // unified history refresh
-  if(b.dataset.p==='set'){                 // Settings: ring sim init + connectivity secrets
-    if(typeof loadThemes==='function')loadThemes();
-    if(typeof loadConnect==='function')loadConnect();
-    if(typeof loadWifi==='function')loadWifi();     // saved Wi-Fi networks
+// Navigation (CUM-25): five destinations, each backed by one or more existing
+// pane divs shown together. This preserves every inner element id (the JS builds
+// against ids, not pane structure) while presenting the approved IA:
+//   Home (status tiles + active sessions + quick actions + alerts),
+//   Chat, Memory (files + long-term memory + scratchpad),
+//   Assistant (providers/models, tools + sandbox, connectors + MCP, skills,
+//              routines + wake-ups, usage + budgets, safety),
+//   Device (display, sound, battery, network, updates, cloud, advanced, danger).
+const DEST={home:['dash'],chat:['chat'],memory:['mem'],assistant:['harness','usage','gov'],device:['set']};
+// Per-pane lazy loaders, run when a destination containing that pane opens.
+function loadPane(p){
+  if(p==='dash'){   // Home: active sessions + health load immediately, not on the next poll
+    if(typeof loadOrch==='function')loadOrch();
+    if(typeof loadHealth==='function')loadHealth();
   }
-});
-document.querySelector('.tab').classList.add('on');
+  if(p==='gov'&&typeof loadLoops==='function')loadLoops();
+  if(p==='mem'){if(typeof loadMemDash==='function')loadMemDash();if(typeof loadFiles==='function')loadFiles();}
+  if(p==='harness'){if(typeof loadOrch==='function')loadOrch();if(typeof loadConnectors==='function')loadConnectors();if(typeof loadTools==='function')loadTools();if(typeof loadSkills==='function')loadSkills();}
+  if(p==='usage'){if(typeof loadOrch==='function')loadOrch();if(typeof loadFetchQ==='function')loadFetchQ();if(typeof loadUsageHistory==='function')loadUsageHistory();}
+  if(p==='chat'&&typeof loadChatHistory==='function')loadChatHistory();
+  if(p==='set'){if(typeof loadThemes==='function')loadThemes();if(typeof loadConnect==='function')loadConnect();if(typeof loadWifi==='function')loadWifi();}
+}
+// Switch to a destination: show its pane group, hide the rest, mark the tab, run
+// the group's loaders. Exposed as goDest() so quick actions can navigate too.
+function goDest(dest){
+  const panes=DEST[dest]; if(!panes)return;
+  document.querySelectorAll('.pane').forEach(p=>p.style.display='none');
+  document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('on',t.dataset.p===dest));
+  panes.forEach(id=>{const el=$('pane-'+id); if(el)el.style.display='';loadPane(id);});
+  try{window.scrollTo(0,0);}catch(e){}
+}
+document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>goDest(b.dataset.p));
+// Quick actions (Home) and any in-page link that jumps to a destination.
+document.querySelectorAll('[data-go]').forEach(b=>b.onclick=()=>goDest(b.dataset.go));
+goDest('home');   // default destination
 // Sub-tab switching (Harness pane): mirror of the top switcher, scoped to
 // .subtab/data-sp and #subpane-<x>. .subpane is a different class from .pane, so the
 // top switcher never touches these. Default = the first sub-tab (Connectors).
@@ -1340,7 +1367,7 @@ function applyState(d){
         // 3 s poll would destroy the Sync-now button mid-click (prism).
         if(!gc.firstChild){
           gc.innerHTML='<p class="hint tip">The device clock hasn\'t synced, so daily and weekly routines '+
-            '&mdash; including nightly memory upkeep &mdash; can\'t run yet. It sets itself from the '+
+            '- including nightly memory upkeep - can\'t run yet. It sets itself from the '+
             'internet once Wi-Fi connects. <button id=govSync type=button>Sync now</button></p>';
           const b=$('govSync'); if(b)b.onclick=()=>apply({clockSync:1});
         }
@@ -2107,7 +2134,7 @@ function renderBudgets(bp){
        '<b>'+(BUDLBL[p.prov]||p.prov)+(p.over?' <span class="badge vfy bad">over budget</span>':'')+'</b>'+
        '<span class=hint>'+io+right+'</span></div>'+
        ((lim>0||hasUsd)?'<div class=g style="margin-top:4px"><i style="width:'+pct+'%;background:'+col+'"></i></div>':'')+
-       (noRates?'<p class=hint style="margin:2px 0 0">The $ cap needs prices &mdash; set rates above or this cap can\'t count.</p>':'')+'</div>';
+       (noRates?'<p class=hint style="margin:2px 0 0">The $ cap needs prices - set rates above or this cap can\'t count.</p>':'')+'</div>';
   });
   box.innerHTML=h;
 }
@@ -2626,7 +2653,7 @@ function loadHealth(){
  const box=$('healthpanel'); if(!box)return;
  fetch('/api/health').then(jok).then(d=>{
   healthSkeleton(box);
-  $('hphead').innerHTML='&mdash; '+(d.ok||0)+' ok &middot; '+(d.degraded||0)+
+  $('hphead').innerHTML='- '+(d.ok||0)+' ok &middot; '+(d.degraded||0)+
     ' degraded &middot; '+(d.absent||0)+' absent';
   let h='';
   (d.components||[]).forEach(c=>{
@@ -3385,7 +3412,7 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
   function esc(s){return (s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
   function show(){el('onbov').style.display='';render();}
   function bodyHtml(s){
-    if(s.id==='welcome')return '<p class=hint>Two quick required steps &mdash; Wi-Fi and one AI provider key &mdash; then a few optional extras you can skip. Takes about a minute.</p>';
+    if(s.id==='welcome')return '<p class=hint>Two quick required steps - Wi-Fi and one AI provider key - then a few optional extras you can skip. Takes about a minute.</p>';
     if(s.id==='display')return '<p class=hint>Which display is fitted on this device? A touch-screen board can\'t ask on its own screen until this is set.</p>'+
       '<div class=row style="gap:10px"><button type=button class="onbmb onbdb" data-d=eink style="padding:20px 10px">E-ink + knob</button>'+
       '<button type=button class="onbmb onbdb" data-d=tft style="padding:20px 10px">Touch screen</button></div>'+
@@ -3419,7 +3446,7 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
       '<div class=row><input id=onb_name placeholder="Nimbus"><button type=button id=onb_namesave>Save</button></div>'+
       '<span class=hint id=onb_namemsg></span>'+
       '<p class=hint>Shown on the display, the network, and the setup Wi-Fi. Applies after the next restart.</p>';
-    if(s.id==='done')return '<p class=hint>You’re ready &mdash; Wi-Fi is connected and your provider is verified. Click Finish to open the dashboard.</p>'+
+    if(s.id==='done')return '<p class=hint>You’re ready - Wi-Fi is connected and your provider is verified. Click Finish to open the dashboard.</p>'+
       '<div class=hint id=onb_summary></div>';
     return '';
   }

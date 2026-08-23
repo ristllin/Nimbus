@@ -1,23 +1,14 @@
 #pragma once
 #include <Arduino.h>
 
-// ui_memory - the Sessions, Chat, Memory & Files, and Usage panes (Phase 3 C1
-// IA). Every element ID is unchanged from the old Orchestrator sub-panes so
-// ui_js.h's wiring (sessions #jobs, memory dashboard, files browser,
-// #usageTiles) works as-is. The Tools/Tavily/MCP-connector controls moved to
-// ui_agent.h (Capabilities pane). Copy follows the AGENTS.md copy style guide.
+// ui_memory - the Chat, Memory, and Usage panes (CUM-25 five-destination IA).
+// Every element ID is unchanged from the old Orchestrator sub-panes so ui_js.h's
+// wiring (memory dashboard, files browser, #usageTiles) works as-is. Active
+// sessions live on Home (pane-dash #dashJobs); the old standalone Sessions pane
+// was folded there. The pane-usage block is shown under the Assistant destination.
+// Copy follows the AGENTS.md copy style guide.
 
-static const char UI_MEMORY[] PROGMEM = R"=====(<div class=pane id=pane-fleet style="display:none">
-<div class=eyebrow>Active work</div>
-<div class=ptitle>Sessions</div>
-<p class=plede>Everything the assistant is working on right now.</p>
-<div class=sec>
-<h2>Running now</h2>
-<div id=jobs class=hint>none</div>
-</div>
-</div>
-
-<div class=pane id=pane-chat style="display:none">
+static const char UI_MEMORY[] PROGMEM = R"=====(<div class=pane id=pane-chat style="display:none">
 <div class=eyebrow>Assistant</div>
 <div class=ptitle>Chat</div>
 <p class=plede>Message the assistant and see its replies.</p>
@@ -34,8 +25,8 @@ static const char UI_MEMORY[] PROGMEM = R"=====(<div class=pane id=pane-fleet st
 
 <div class=pane id=pane-mem style="display:none">
 <div class=eyebrow>On-device storage</div>
-<div class=ptitle>Memory &amp; Files</div>
-<p class=plede>What the device knows and the files it has made &mdash; stored on its SD card, not in a cloud.</p>
+<div class=ptitle>Memory</div>
+<p class=plede>What the device knows and the files it has made, stored on its SD card, not in a cloud.</p>
 
 <details class=setgroup open><summary>Memory<span class=chev>&rsaquo;</span></summary>
 <div class=setbody>
@@ -80,7 +71,7 @@ static const char UI_MEMORY[] PROGMEM = R"=====(<div class=pane id=pane-fleet st
 <label>Relevance threshold <span class=hint>(0&ndash;1; 0 keeps all)</span></label>
 <input id=cfg_rt type=number step=0.05 min=0 max=1>
 <label>Storage limit <span class=hint>(0 = unlimited)</span> <button class=qh type=button aria-expanded=false aria-label="About the storage limit">?</button></label>
-<p class="hint tip">At the limit, the least valuable memory is dropped &mdash; lowest importance, closest to expiry. Recall boosts what you use, so it survives.</p>
+<p class="hint tip">At the limit, the least valuable memory is dropped - lowest importance, closest to expiry. Recall boosts what you use, so it survives.</p>
 <input id=cfg_mv type=number min=0 max=20000>
 <div class=row><button id=cfgsave type=button>Save</button></div>
 <b style="display:block;margin-top:14px">Embedding model <span class="badge" id=emblock style="display:none">locked</span> <button class=qh type=button aria-expanded=false aria-label="About the embedding model">?</button></b>
@@ -99,7 +90,7 @@ static const char UI_MEMORY[] PROGMEM = R"=====(<div class=pane id=pane-fleet st
 
 <details class=setgroup><summary>Files<span class=chev>&rsaquo;</span></summary>
 <div class=setbody>
-<p class=hint id=filesStat>&mdash;</p>
+<p class=hint id=filesStat>-</p>
 <div class=row><input id=filesProj placeholder="Filter by project"><button id=filesRefresh type=button>Refresh</button><button id=filesRmProj type=button style="color:#f0687a">Delete folder</button></div>
 <div id=filesList class=hint>loading&hellip;</div>
 <div id=filePrev style="display:none;margin-top:12px;border:1px solid var(--line);border-radius:10px;padding:12px"></div>
@@ -119,7 +110,7 @@ static const char UI_MEMORY[] PROGMEM = R"=====(<div class=pane id=pane-fleet st
 <div class=sec>
 <div id=usageTiles class=tiles></div>
 <div id=usageSummary class=tiles></div>
-<p class=hint>Token counts are actual billed usage. Dollar figures are estimates from the rates below &mdash; a close guide, not an invoice.</p>
+<p class=hint>Token counts are actual billed usage. Dollar figures are estimates from the rates below - a close guide, not an invoice.</p>
 </div>
 
 <div class=sec>
@@ -142,7 +133,7 @@ static const char UI_MEMORY[] PROGMEM = R"=====(<div class=pane id=pane-fleet st
 
 <div class=sec>
 <h2>Rates <button class=qh type=button aria-expanded=false aria-label="About rates">?</button></h2>
-<p class="hint tip">What each provider charges &mdash; used only for the estimates above. Language models: dollars per million input and output tokens. Search: dollars per thousand calls. 0 uses a built-in default, marked ~.</p>
+<p class="hint tip">What each provider charges - used only for the estimates above. Language models: dollars per million input and output tokens. Search: dollars per thousand calls. 0 uses a built-in default, marked ~.</p>
 <div class=row>
 <select id=rate_prov style="flex:1 1 120px"><option value=openai>OpenAI</option><option value=anthropic>Anthropic</option><option value=mistral>Mistral</option><option value=tavily>Tavily (search)</option></select>
 <input id=rate_in type=number min=0 step=0.01 placeholder="$ per 1M input" style="flex:1 1 110px">
@@ -164,7 +155,7 @@ static const char UI_MEMORY[] PROGMEM = R"=====(<div class=pane id=pane-fleet st
 <div id=fetchRows></div>
 
 <h2>Budgets <button class=qh type=button aria-expanded=false aria-label="About budgets">?</button></h2>
-<p class="hint tip">Caps each provider's spend for the month &mdash; by tokens, by dollars, or both; 0 means unlimited. The dollar cap uses your rates above, so set prices for it to count. At any cap, that provider's turns and searches are refused until the reset day &mdash; the assistant fails over to another in-budget provider when it can.</p>
+<p class="hint tip">Caps each provider's spend for the month - by tokens, by dollars, or both; 0 means unlimited. The dollar cap uses your rates above, so set prices for it to count. At any cap, that provider's turns and searches are refused until the reset day - the assistant fails over to another in-budget provider when it can.</p>
 <div id=budgetRows></div>
 <div class=provrow style="border-top:0;margin-top:6px;padding-top:0">
 <label>Set a budget</label>
