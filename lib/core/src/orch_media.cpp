@@ -52,6 +52,14 @@ MediaFormat sniffFormat(const uint8_t* head, size_t n, const char* filename) {
   return MediaFormat::Unknown;
 }
 
+// A single filename-safe character: letters/digits + '.', '_', '-', space. No path
+// separators, control chars, or FAT-hostile punctuation. (Kept separate so
+// validMusicName stays under the complexity gate.)
+static bool isMusicNameChar(char ch) {
+  return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+         (ch >= '0' && ch <= '9') || ch == '.' || ch == '_' || ch == '-' || ch == ' ';
+}
+
 bool validMusicName(const char* name) {
   if (!name) return false;
   const size_t len = std::strlen(name);
@@ -59,13 +67,8 @@ bool validMusicName(const char* name) {
   if (!endsWithCI(name, ".wav") && !endsWithCI(name, ".mp3")) return false;
   if (name[0] == '.') return false;                       // no leading dot / hidden
   if (std::strstr(name, "..")) return false;              // no traversal
-  for (const char* c = name; *c; c++) {
-    const char ch = *c;
-    const bool ok = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
-                    (ch >= '0' && ch <= '9') || ch == '.' || ch == '_' ||
-                    ch == '-' || ch == ' ';
-    if (!ok) return false;                                // no '/','\\', control, etc.
-  }
+  for (const char* c = name; *c; c++)
+    if (!isMusicNameChar(*c)) return false;               // no '/','\\', control, etc.
   return true;
 }
 

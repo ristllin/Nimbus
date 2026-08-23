@@ -322,8 +322,13 @@ static void deliver(const String& chatId, const String& text) {
   // outage fails open, so an outage never silences the assistant). Admin/web/serial
   // /voice resolve to Admin and are never screened (gateApplies returns Allow fast,
   // no classifier call). Runs on the delivering task, same TLS-slot discipline as
-  // the fetch scan.
-  if (moderateGate(nimbus::orch::ModGate::OutboundReply, chatId, text) == nimbus::orch::ModAction::Block) {
+  // the fetch scan. The device's own deterministic system copy (command replies,
+  // confirmations, the block notice) is self-tagged with the device name; skip it
+  // so we never pay a classifier call to screen our own known-safe strings.
+  const String selfName = String(nimbus::sys::deviceName().c_str());
+  const bool systemMsg = selfName.length() && text.startsWith(selfName);
+  if (!systemMsg &&
+      moderateGate(nimbus::orch::ModGate::OutboundReply, chatId, text) == nimbus::orch::ModAction::Block) {
     alogf("moderation: outbound reply to %s suppressed (flagged)", chatId.c_str());
     return;
   }

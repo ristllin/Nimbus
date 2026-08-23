@@ -86,39 +86,46 @@ static bool keepPlaying(uint32_t gen) {
   return g_q.state() != MediaState::Stopped && g_gen == gen;
 }
 
+// Parse a canonical RIFF/WAVE header: walk chunks for 'fmt ' (sample rate) and
+// 'data' (payload length). Returns true with rate+dataLen set when a data chunk is
+// found. Caller holds the SD-bus lock. Split out to keep streamWav under the
+// complexity gate.
+static bool parseWavHeader(File& f, uint32_t& rate, uint32_t& dataLen) {
+  uint8_t hdr[12];
+  if (f.read(hdr, 12) != 12 || memcmp(hdr, "RIFF", 4) || memcmp(hdr + 8, "WAVE", 4)) return false;
+  while (f.available() >= 8) {
+    uint8_t ch[8];
+    if (f.read(ch, 8) != 8) return false;
+    const uint32_t clen = (uint32_t)ch[4] | (ch[5] << 8) | (ch[6] << 16) | ((uint32_t)ch[7] << 24);
+    if (!memcmp(ch, "fmt ", 4)) {
+      uint8_t fmt[16] = {0};
+      const uint32_t take = clen < 16 ? clen : 16;
+      f.read(fmt, take);
+      rate = (uint32_t)fmt[4] | (fmt[5] << 8) | (fmt[6] << 16) | ((uint32_t)fmt[7] << 24);
+      if (clen > take) f.seek(f.position() + (clen - take));
+    } else if (!memcmp(ch, "data", 4)) {
+      dataLen = clen;
+      return true;
+    } else {
+      f.seek(f.position() + clen + (clen & 1));   // skip (chunks are word-aligned)
+    }
+  }
+  return false;
+}
+
 // ---- the streaming WAV player (chunked, watchdog-safe, responsive control) ----
 // Returns true if the track played to its end, false if stop was requested.
 static bool streamWav(const std::string& path, uint32_t gen) {
   File f;
-  uint8_t hdr[12];
-  bool badHdr = false;
-  { agent::memory::Lock sdlk;
-    f = SD.open(path.c_str(), FILE_READ);
-    if (f) badHdr = (f.read(hdr, 12) != 12 || memcmp(hdr, "RIFF", 4) || memcmp(hdr + 8, "WAVE", 4)); }
-  if (!f) { agent::alogf("music: open failed %s", path.c_str()); return true; }
-  if (badHdr) { agent::memory::Lock sdlk; f.close(); agent::alogf("music: not a WAV %s", path.c_str()); return true; }
   uint32_t rate = 16000, dataLen = 0;
   bool haveData = false;
-  // Walk chunks for 'fmt ' (sample rate) and 'data' (payload start + length).
   { agent::memory::Lock sdlk;
-    while (f.available() >= 8) {
-      uint8_t ch[8];
-      if (f.read(ch, 8) != 8) break;
-      uint32_t clen = (uint32_t)ch[4] | (ch[5] << 8) | (ch[6] << 16) | ((uint32_t)ch[7] << 24);
-      if (!memcmp(ch, "fmt ", 4)) {
-        uint8_t fmt[16] = {0};
-        const uint32_t take = clen < 16 ? clen : 16;
-        f.read(fmt, take);
-        rate = (uint32_t)fmt[4] | (fmt[5] << 8) | (fmt[6] << 16) | ((uint32_t)fmt[7] << 24);
-        if (clen > take) f.seek(f.position() + (clen - take));
-      } else if (!memcmp(ch, "data", 4)) {
-        dataLen = clen; haveData = true; break;
-      } else {
-        f.seek(f.position() + clen + (clen & 1));   // skip (chunks are word-aligned)
-      }
-    }
+    f = SD.open(path.c_str(), FILE_READ);
+    if (f) haveData = parseWavHeader(f, rate, dataLen); }
+  if (!f) { agent::alogf("music: open failed %s", path.c_str()); return true; }
+  if (!haveData || rate < 8000 || rate > 48000) {
+    agent::memory::Lock sdlk; f.close(); agent::alogf("music: not a usable WAV %s", path.c_str()); return true;
   }
-  if (!haveData || rate < 8000 || rate > 48000) { agent::memory::Lock sdlk; f.close(); return true; }
 
   solide::audio::setVolume(agent::store::sfxVolume() / 100.0f);
   solide::audio::spkOpen(rate);
@@ -151,6 +158,35 @@ struct Mp3Work {
   int16_t  mono[MINIMP3_MAX_SAMPLES_PER_FRAME / 2];   // downmix scratch
 };
 
+// Feed one decoded frame to the speaker, downmixing stereo to mono. Split out to
+// keep streamMp3 under the complexity gate.
+static void feedMp3Frame(Mp3Work* w, int samples, int channels) {
+  if (channels == 2) {
+    for (int i = 0; i < samples; i++)
+      w->mono[i] = (int16_t)(((int)w->pcm[2 * i] + (int)w->pcm[2 * i + 1]) / 2);
+    solide::audio::spkFeedBytes((const uint8_t*)w->mono, (size_t)samples * 2);
+  } else {
+    solide::audio::spkFeedBytes((const uint8_t*)w->pcm, (size_t)samples * 2);
+  }
+}
+
+// Top up the sliding MP3 input window from the card (SD op under the bus lock).
+static void refillMp3(File& f, Mp3Work* w, size_t& avail) {
+  if (avail >= 2048) return;
+  int r; { agent::memory::Lock sdlk; r = f.read(w->in + avail, (int)(sizeof(w->in) - avail)); }
+  if (r > 0) avail += (size_t)r;
+}
+
+// Open the speaker at the stream's sample rate on the first decoded frame.
+static void openSpeakerOnce(bool& opened, int hz) {
+  if (opened) return;
+  uint32_t rate = hz ? (uint32_t)hz : 44100u;
+  rate = rate < 8000 ? 8000 : (rate > 48000 ? 48000 : rate);
+  solide::audio::setVolume(agent::store::sfxVolume() / 100.0f);
+  solide::audio::spkOpen(rate);
+  opened = true;
+}
+
 static bool streamMp3(const std::string& path, uint32_t gen) {
   File f;
   { agent::memory::Lock sdlk; f = SD.open(path.c_str(), FILE_READ); }
@@ -162,36 +198,17 @@ static bool streamMp3(const std::string& path, uint32_t gen) {
   size_t avail = 0;
   bool opened = false, finished = true;
   for (;;) {
-    // Refill the sliding input window from the card when it runs low (SD op locked).
-    if (avail < 2048) {
-      int r; { agent::memory::Lock sdlk; r = f.read(w->in + avail, (int)(sizeof(w->in) - avail)); }
-      if (r > 0) avail += (size_t)r;
-    }
+    refillMp3(f, w, avail);
     if (avail == 0) break;                       // EOF, all frames consumed
     if (!keepPlaying(gen)) { finished = false; break; }
     mp3dec_frame_info_t info;
     const int samples = mp3dec_decode_frame(&w->dec, w->in, (int)avail, w->pcm, &info);
-    if (info.frame_bytes > 0) {
-      memmove(w->in, w->in + info.frame_bytes, avail - (size_t)info.frame_bytes);
-      avail -= (size_t)info.frame_bytes;
-    } else {
-      break;   // no full frame in the buffer and no more input -> done
-    }
+    if (info.frame_bytes <= 0) break;            // no full frame + no more input -> done
+    memmove(w->in, w->in + info.frame_bytes, avail - (size_t)info.frame_bytes);
+    avail -= (size_t)info.frame_bytes;
     if (samples <= 0) continue;                  // skipped ID3/junk, keep going
-    if (!opened) {
-      uint32_t rate = info.hz ? (uint32_t)info.hz : 44100u;
-      if (rate < 8000) rate = 8000; if (rate > 48000) rate = 48000;
-      solide::audio::setVolume(agent::store::sfxVolume() / 100.0f);
-      solide::audio::spkOpen(rate);
-      opened = true;
-    }
-    if (info.channels == 2) {
-      for (int i = 0; i < samples; i++)
-        w->mono[i] = (int16_t)(((int)w->pcm[2 * i] + (int)w->pcm[2 * i + 1]) / 2);
-      solide::audio::spkFeedBytes((const uint8_t*)w->mono, (size_t)samples * 2);
-    } else {
-      solide::audio::spkFeedBytes((const uint8_t*)w->pcm, (size_t)samples * 2);
-    }
+    openSpeakerOnce(opened, info.hz);
+    feedMp3Frame(w, samples, info.channels);
   }
   if (opened) solide::audio::spkClose();
   heap_caps_free(w);
