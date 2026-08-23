@@ -35,6 +35,16 @@
 
 // ---- Mistral REST endpoints (host ported 2026-07 - Conversations API) -------
 #define MISTRAL_HOST "api.mistral.ai"
+
+// Z.ai (GLM) - OpenAI-compatible, but the base path is /api/paas/v4 (NOT /v1). The
+// token answers at one of two hosts; the device probes both and pins the winner.
+#define ZAI_HOST_PRIMARY  "api.z.ai"
+#define ZAI_HOST_FALLBACK "open.bigmodel.cn"
+#define ZAI_BASE_PATH     "/api/paas/v4"
+
+// Cumulo Nimbus router - one key, upstream selectable per role. OpenAI-compatible
+// wire under /router/<upstream>/v1/...; verify hits /router/<upstream>/v1/models.
+#define CUMULO_HOST_DEFAULT "app.cumulo-nimbus.ai"
 #define MISTRAL_PORT 443
 // Default Mistral model (orchestrator + sub-session fallback); the "-latest"
 // alias tracks the flagship without a periodic bump.
@@ -143,6 +153,10 @@
 #define AKEY_DREAM_SCRATCH  "dreamScrHash"   // fnv64 of the scratchpad after the last dream (hex)
 #define AKEY_CUSTOM_BASE    "custBase"
 #define AKEY_CUSTOM_KEY     "custKey"
+#define AKEY_ZAI_KEY        "zaiKey"      // Z.ai (GLM) token (Z_AI_TOKEN)
+#define AKEY_ZAI_BASE       "zaiBase"     // probed working host (api.z.ai | open.bigmodel.cn)
+#define AKEY_CUMULO_KEY     "cumuloKey"   // Cumulo router key (one key, all upstreams)
+#define AKEY_CUMULO_BASE    "cumuloBase"  // router base URL/host ("" -> CUMULO_HOST_DEFAULT)
 #define AKEY_CUSTOM_CONV    "custConv"      // "openai"|"mistral"|"anthropic"
 #define AKEY_CUSTOM_MODEL   "custModel"
 #define AKEY_ORCH_HOST      "orchHost"      // explicit host provider ("" => priority top)

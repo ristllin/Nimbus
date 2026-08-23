@@ -217,9 +217,46 @@ static void probeSelectedModels(const String& provider) {
   if (s.length() <= 3900) store::setModelCatalogJson(provider, s);
 }
 
+// Does a Z.ai candidate host answer the models list for this token? One quick GET
+// (must run inside the held work slot). Returns true only on HTTP 200.
+static bool zaiHostAnswers(const char* h, const String& key) {
+  WiFiClientSecure client;
+  tlsSetup(client);
+  client.setHandshakeTimeout(12);
+  client.setConnectionTimeout(15000);
+  if (!client.connect(h, 443)) return false;
+  String req = String("GET ") + ZAI_BASE_PATH + "/models HTTP/1.0\r\nHost: " + h +
+               "\r\nAuthorization: Bearer " + key +
+               "\r\nAccept-Encoding: identity\r\nUser-Agent: Nimbus\r\nConnection: close\r\n\r\n";
+  client.print(req);
+  String errBody;
+  const int code = readProbeResponse(client, errBody);
+  tlsClose(client);
+  return code == 200;
+}
+
+// Resolve the Z.ai host: the pinned one if known, else probe api.z.ai then
+// open.bigmodel.cn and pin the winner. Falls back to the primary host so the main
+// verify still runs (and records couldn't-verify) if neither answered.
+static String zaiPickHost(const String& key) {
+  const String pinned = store::zaiBase();
+  if (pinned.length()) return pinned;
+  if (!key.length()) return String(ZAI_HOST_PRIMARY);
+  const char* cands[] = {ZAI_HOST_PRIMARY, ZAI_HOST_FALLBACK};
+  for (const char* h : cands) {
+    if (zaiHostAnswers(h, key)) {
+      store::setZaiBase(h);
+      alogf("verify: zai endpoint probe -> %s", h);
+      return String(h);
+    }
+  }
+  return String(ZAI_HOST_PRIMARY);
+}
+
 static void runOne() {
   String provider = g_provider;
 
+  String hostBuf;               // backs a dynamic host (zai probe result / cumulo base)
   const char* host = nullptr;
   String path = "/v1/models";
   String key;
@@ -231,9 +268,22 @@ static void runOne() {
   // Tavily is POST-shaped: there is no cheap GET, so the verify is one minimal
   // /search (1 credit) - the same "tiny real call" contract as the others.
   const bool isTav = (provider == "tavily");
+  // Z.ai host is probed AFTER the arbiter is held (the probe itself is a TLS call);
+  // the base path is /api/paas/v4, not /v1.
+  const bool isZai = (provider == "zai");
   if (provider == "openai")         { host = OPENAI_HOST;    key = store::openaiKey(); }
   else if (provider == "anthropic") { host = ANTHROPIC_HOST; key = store::anthropicKey(); }
   else if (provider == "mistral")   { host = MISTRAL_HOST;   key = store::mistralKey(); }
+  else if (isZai)                   { key = store::zaiKey(); path = ZAI_BASE_PATH "/models"; }
+  else if (provider == "cumulo")    { key = store::cumuloKey();
+                                      hostBuf = store::cumuloBase();
+                                      if (!hostBuf.length()) hostBuf = CUMULO_HOST_DEFAULT;
+                                      int sch = hostBuf.indexOf("://");
+                                      if (sch >= 0) hostBuf = hostBuf.substring(sch + 3);
+                                      int sl = hostBuf.indexOf('/');
+                                      if (sl >= 0) hostBuf = hostBuf.substring(0, sl);
+                                      host = hostBuf.c_str();
+                                      path = "/router/openai/v1/models"; }
   else if (isTg)                    { host = "api.telegram.org"; key = store::telegramToken();
                                       path = String("/bot") + key + "/getMe"; }
   else if (isTav)                   { host = "api.tavily.com"; key = store::tavilyKey();
@@ -276,6 +326,10 @@ static void runOne() {
     g_pending = false;
     return;
   }
+
+  // Z.ai endpoint probe (inside the held slot): pick whichever host the token
+  // answers, pinned in NVS for next time.
+  if (isZai) { hostBuf = zaiPickHost(key); host = hostBuf.c_str(); }
 
   int8_t result = -1;  // couldn't verify; 1 on HTTP 200, 0 on 401/403
   {
@@ -382,6 +436,8 @@ static void runOne() {
             }
             if (provider == "anthropic") return !id.startsWith("claude-");
             if (provider == "mistral")   return !id.endsWith("-latest");
+            if (provider == "zai")       return !id.startsWith("glm");
+            if (provider == "cumulo")    return false;   // router ids are already curated
             return true;
           };
           // Flagship-family ids first: the provider's list order is arbitrary, and a
@@ -395,6 +451,7 @@ static void runOne() {
             // gpt-5 family first - the o-series ids precede gpt-5* in the body and
             // were filling every slot before the flagship (live-caught).
             if (provider == "openai")    return id.startsWith("gpt-5");
+            if (provider == "zai")       return id.startsWith("glm-5");
             return true;   // anthropic's list arrives newest-first already
           };
           // Mistral: METADATA-driven filter. Unlike OpenAI's id-only /v1/models,

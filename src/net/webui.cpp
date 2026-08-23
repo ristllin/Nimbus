@@ -622,7 +622,7 @@ static constexpr int kProvCount = sizeof(kProviders) / sizeof(kProviders[0]);
 static bool isKnownProvider(const String& p) {
   for (int i = 0; i < kProvCount; i++)
     if (p == kProviders[i].name) return true;
-  return p == "custom";
+  return p == "custom" || p == "zai" || p == "cumulo";
 }
 
 // Sanitize a comma-separated priority list: keep only known provider tokens,
@@ -787,6 +787,8 @@ static bool providerKeyed(const char* p) {
   if (!strcmp(p, "openai")) return agent::store::hasOpenaiKey();
   if (!strcmp(p, "anthropic")) return agent::store::hasAnthropicKey();
   if (!strcmp(p, "mistral")) return agent::store::hasMistralKey();
+  if (!strcmp(p, "zai")) return agent::store::hasZaiKey();
+  if (!strcmp(p, "cumulo")) return agent::store::hasCumuloKey();
   return false;
 }
 static void buildModelsCatalog(String& out, const String& only, bool includeUnusable) {
@@ -802,7 +804,7 @@ static void buildModelsCatalog(String& out, const String& only, bool includeUnus
   for (int i = 0; i < rc; i++) roles.add(rt[i]);
 
   JsonObject provs = d["providers"].to<JsonObject>();
-  static const char* const kCatProviders[] = {"openai", "anthropic", "mistral"};
+  static const char* const kCatProviders[] = {"openai", "anthropic", "mistral", "zai", "cumulo"};
   for (const char* p : kCatProviders) {
     if (only.length() && only != p) continue;
     JsonObject o = provs[p].to<JsonObject>();
@@ -858,6 +860,17 @@ static bool applyOrchField(const String& n, const String& v, bool& cfgDirty) {
     return true;
   }
   if (n == "custModel") { agent::store::setCustomModel(v); return true; }
+  // Z.ai (GLM) + Cumulo router credentials. A key write invalidates the verify
+  // cache and enqueues a verify (which probes/harvests + builds the catalog).
+  if (n == "zaiKey")    { if (v.length()) { agent::store::setZaiKey(v); agent::store::setZaiBase("");
+                                            agent::store::setVerify("zai", -1, 0);
+                                            agent::provider_verify::request("zai"); } return true; }
+  if (n == "clr_zaiKey"){ agent::store::setZaiKey(""); agent::store::setVerify("zai", -1, 0); return true; }
+  if (n == "cumuloBase"){ agent::store::setCumuloBase(v); return true; }
+  if (n == "cumuloKey") { if (v.length()) { agent::store::setCumuloKey(v);
+                                            agent::store::setVerify("cumulo", -1, 0);
+                                            agent::provider_verify::request("cumulo"); } return true; }
+  if (n == "clr_cumuloKey") { agent::store::setCumuloKey(""); agent::store::setVerify("cumulo", -1, 0); return true; }
 
   // Per-provider budget (owner: "limit budget per provider"). Composite value
   // "provider:tokenLimit:callLimit:resetDay" - one field, four correlated knobs.

@@ -51,6 +51,13 @@ String customConv();         // "openai"|"mistral"|"anthropic" (wire convention)
 String customModel();
 bool   hasCustom();          // customBase() non-empty
 
+// Z.ai (GLM) - OpenAI-compatible provider. zaiBase is the probed working host.
+String zaiKey();             bool hasZaiKey();
+String zaiBase();            void setZaiBase(const String& host);   // "" until probed
+// Cumulo Nimbus router - one key, per-role upstream chosen via the model id.
+String cumuloKey();          bool hasCumuloKey();
+String cumuloBase();         // "" -> CUMULO_HOST_DEFAULT
+
 // ---- orchestrator routing + models ----
 String orchHost();                          // explicit host provider ("" => top of priority)
 bool   providerHasKey(const String& name);  // is an API key stored for openai|anthropic|mistral
@@ -162,6 +169,9 @@ void setCustomBase(const String& v);
 void setCustomKey(const String& v);
 void setCustomConv(const String& v);       // "openai"|"mistral"|"anthropic"
 void setCustomModel(const String& v);
+void setZaiKey(const String& v);           // Z.ai (GLM) token ("" clears)
+void setCumuloKey(const String& v);        // Cumulo router key ("" clears)
+void setCumuloBase(const String& v);       // router base URL/host ("" -> default)
 void setOrchHost(const String& v);         // ""=auto (top of priority)
 void setProviderPriority(const String& v); // orchestrator-HOST list (human only)
 void setSysPrompt(const String& v);        // the user directive

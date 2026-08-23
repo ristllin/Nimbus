@@ -112,6 +112,14 @@ String customConv()  { return solide::memory::getString(AKEY_CUSTOM_CONV, "opena
 String customModel() { return solide::memory::getString(AKEY_CUSTOM_MODEL, ""); }
 bool   hasCustom()   { return customBase().length() > 0; }
 
+String zaiKey()      { return solide::memory::getString(AKEY_ZAI_KEY, ""); }
+bool   hasZaiKey()   { return zaiKey().length() > 0; }
+String zaiBase()     { return solide::memory::getString(AKEY_ZAI_BASE, ""); }
+void   setZaiBase(const String& host) { solide::memory::setString(AKEY_ZAI_BASE, host); }
+String cumuloKey()   { return solide::memory::getString(AKEY_CUMULO_KEY, ""); }
+bool   hasCumuloKey(){ return cumuloKey().length() > 0; }
+String cumuloBase()  { return solide::memory::getString(AKEY_CUMULO_BASE, ""); }
+
 // ---- routing + models ----
 String orchHost() { return solide::memory::getString(AKEY_ORCH_HOST, ""); }
 
@@ -322,6 +330,9 @@ void setCustomBase(const String& v)   { solide::memory::setString(AKEY_CUSTOM_BA
 void setCustomKey(const String& v)    { solide::memory::setString(AKEY_CUSTOM_KEY, v); }
 void setCustomConv(const String& v)   { solide::memory::setString(AKEY_CUSTOM_CONV, v); }
 void setCustomModel(const String& v)  { solide::memory::setString(AKEY_CUSTOM_MODEL, v); }
+void setZaiKey(const String& v)       { solide::memory::setString(AKEY_ZAI_KEY, v); }
+void setCumuloKey(const String& v)    { solide::memory::setString(AKEY_CUMULO_KEY, v); }
+void setCumuloBase(const String& v)   { solide::memory::setString(AKEY_CUMULO_BASE, v); }
 void setOrchHost(const String& v)     { solide::memory::setString(AKEY_ORCH_HOST, v); }
 void setProviderPriority(const String& v) { solide::memory::setString(AKEY_PROV_PRIORITY, v); }
 void setSysPrompt(const String& v)    { solide::memory::setString(AKEY_SYS_PROMPT, v); }
