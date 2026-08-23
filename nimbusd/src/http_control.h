@@ -38,8 +38,9 @@ class HttpControl {
   // `token` empty = no gate (dev). Non-empty = require Authorization: Bearer or
   // ?token= on every path except /healthz.
   HttpControl(EngineThread* eng, const std::string& bindAddr, int port,
-              std::string token)
-      : eng_(eng), bindAddr_(bindAddr), port_(port), token_(std::move(token)) {}
+              std::string token, std::string dataDir = "/data")
+      : eng_(eng), bindAddr_(bindAddr), port_(port), token_(std::move(token)),
+        dataDir_(std::move(dataDir)) {}
   ~HttpControl() { stop(); }
 
   // Bind + listen synchronously (so a caller/test knows the port is ready), then
@@ -147,6 +148,16 @@ class HttpControl {
       respond(fd, 202, "application/json", R"({"queued":true})");
       return;
     }
+    if (method == "GET" && pathIs(path, "/backup")) {
+      // Flush to a consistent on-disk state, then stream a tar of the mem tree.
+      // nimbusd owns the write discipline, so only it can produce a consistent
+      // archive (plan §3.4); a CronJob drives this to GCS nightly.
+      eng_->flushNow();
+      std::string tar;
+      if (!makeBackupTar(tar)) { respond(fd, 500, "text/plain", "backup failed"); return; }
+      respond(fd, 200, "application/x-tar", tar);
+      return;
+    }
     if (method == "POST" && pathIs(path, "/mcp")) {
       auto fut = eng_->dispatchMcp(body, nimbus::orch::principalForRole("owner", nimbus::orch::Role::Admin));
       if (fut.wait_for(std::chrono::seconds(30)) != std::future_status::ready) {
@@ -227,6 +238,28 @@ class HttpControl {
     return body.substr(p, e - p);
   }
 
+  // Produce a tar of the durable mem tree via the system tar (present in the
+  // runtime image). The daemon has already flushed, and the archive is read
+  // wholly into memory - fine for the small mem set at MVP scale (a chunked
+  // stream is a later optimization). Returns false on any failure.
+  bool makeBackupTar(std::string& out) {
+    out.clear();
+    // -C <dataDir> mem: archive the "mem" subtree with stable relative paths.
+    const std::string cmd = "tar -cf - -C '" + shellEscape(dataDir_) + "' mem 2>/dev/null";
+    FILE* p = popen(cmd.c_str(), "r");
+    if (!p) return false;
+    char buf[65536];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), p)) > 0) out.append(buf, n);
+    const int rc = pclose(p);
+    return rc == 0 && !out.empty();
+  }
+  static std::string shellEscape(const std::string& s) {
+    std::string o;
+    for (char c : s) { if (c == '\'') o += "'\\''"; else o += c; }
+    return o;
+  }
+
   void respond(int fd, int status, const char* ctype, const std::string& body) {
     const char* reason = status == 200 ? "OK" : status == 202 ? "Accepted"
                          : status == 400 ? "Bad Request" : status == 401 ? "Unauthorized"
@@ -244,6 +277,7 @@ class HttpControl {
   std::string bindAddr_;
   int port_;
   std::string token_;
+  std::string dataDir_;
   int listenFd_ = -1;
   std::atomic<bool> running_{false};
   std::thread thread_;

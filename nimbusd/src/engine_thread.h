@@ -88,6 +88,16 @@ class EngineThread {
     return fut;
   }
 
+  // Flush all durable stores ON the engine thread and wait. Used by the backup
+  // endpoint so it captures a CONSISTENT on-disk state (nimbusd owns the
+  // tmp->rename + append discipline; a naive tar of a live volume races it).
+  void flushNow() {
+    auto prom = std::make_shared<std::promise<void>>();
+    auto fut = prom->get_future();
+    post([this, prom] { rig_->flush(); prom->set_value(); });
+    fut.wait();
+  }
+
   // A read served from the snapshot - never enters the engine, so it returns
   // immediately even mid-turn.
   StateSnapshot snapshot() const {

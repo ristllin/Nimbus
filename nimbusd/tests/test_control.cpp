@@ -77,7 +77,7 @@ int main() {
   eng.start();
 
   const std::string token = "s3kret-web-token";
-  HttpControl http(&eng, "127.0.0.1", 0, token);
+  HttpControl http(&eng, "127.0.0.1", 0, token, dataDir);
   const int port = http.start();
   c.ok(port > 0, "control surface bound a loopback port");
 
@@ -119,6 +119,17 @@ int main() {
        "POST /api/message -> 202 (enqueued, not blocked on)");
   c.ok(httpGet(client, port, "/api/state", token, status, body) && status == 200,
        "GET /api/state still answers immediately (snapshot read)");
+
+  // ---- backup: flush-and-stream a consistent tar of the mem tree -----------
+  // Seed a vector so the flushed vectors.bin has content, then pull /backup.
+  rig.vectors().configure(64);
+  { orch::VecEntry e; e.id = "b1"; e.content = "backup me"; e.vec.assign(64, 0); e.vec[1] = 100; rig.vectors().add(e); }
+  c.ok(httpGet(client, port, "/backup", token, status, body) && status == 200,
+       "GET /backup with token -> 200");
+  c.ok(body.size() > 0 && body.find("vectors.bin") != std::string::npos,
+       "the backup tar contains mem/vectors.bin");
+  c.ok(httpGet(client, port, "/backup", "", status, body) && status == 401,
+       "GET /backup without a token -> 401 (gated)");
 
   http.stop();
   eng.stop();
