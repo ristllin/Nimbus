@@ -5,6 +5,7 @@
 #include <ArduinoJson.h>
 
 #include "nimbus/orch/mcp_client.h"
+#include "real_fixtures.h"   // byte-exact captures from a real MCP server
 
 using namespace nimbus::orch::mcp;
 
@@ -291,8 +292,50 @@ static void test_namespace_helpers() {
   TEST_ASSERT_EQUAL_STRING("", serverOf("memory.search").c_str());
 }
 
+// ---- real server (CUM-61 local-server validation, no hardware) --------------
+// These feed byte-exact responses from @modelcontextprotocol/server-everything
+// (streamableHttp) through the parser, proving it handles a real server's SSE.
+
+static void test_real_server_initialize() {
+  InitializeResult r = parseInitialize(200, kSse, mcpfix::kInitBody, "everything");
+  TEST_ASSERT_TRUE(r.ok);
+  TEST_ASSERT_EQUAL_STRING("2025-06-18", r.protocolVersion.c_str());
+  TEST_ASSERT_EQUAL_STRING("mcp-servers/everything", r.serverName.c_str());
+  TEST_ASSERT_TRUE(r.hasTools);
+}
+
+static void test_real_server_tools_list() {
+  ToolsListResult r = parseToolsList(200, kSse, mcpfix::kToolsListBody, "everything");
+  TEST_ASSERT_TRUE(r.ok);
+  TEST_ASSERT_EQUAL(mcpfix::kToolsListCount, (int)r.tools.size());
+  bool sawEcho = false;
+  for (const auto& t : r.tools)
+    if (t.name == "echo") {
+      sawEcho = true;
+      TEST_ASSERT_TRUE(t.inputSchemaJson.find("message") != std::string::npos);
+    }
+  TEST_ASSERT_TRUE(sawEcho);
+}
+
+static void test_real_server_call_echo() {
+  CallToolResult r = parseCallTool(200, kSse, mcpfix::kCallEchoBody, "everything");
+  TEST_ASSERT_TRUE(r.ok);
+  TEST_ASSERT_FALSE(r.isError);
+  TEST_ASSERT_EQUAL_STRING("Echo: nimbus-mcp-ok", r.text.c_str());
+}
+
+static void test_real_server_tool_namespacing() {
+  // a real hyphenated server tool name slugifies to a wire-safe registry name
+  TEST_ASSERT_EQUAL_STRING("mcp.everything.get_annotated_message",
+                           namespacedTool("everything", "get-annotated-message").c_str());
+}
+
 int main() {
   UNITY_BEGIN();
+  RUN_TEST(test_real_server_initialize);
+  RUN_TEST(test_real_server_tools_list);
+  RUN_TEST(test_real_server_call_echo);
+  RUN_TEST(test_real_server_tool_namespacing);
   RUN_TEST(test_build_initialize_shape);
   RUN_TEST(test_build_initialized_is_a_notification);
   RUN_TEST(test_build_tools_list_cursor);

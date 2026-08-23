@@ -292,6 +292,13 @@ String knownCatalog() {
 // ---- outbound MCP client (N4) ------------------------------------------------
 
 namespace mcp {
+
+// Forward declaration (defined after the anonymous namespace) so the discovery
+// closures registered below can reference the proxy handler.
+nimbus::orch::ToolResult callTool(const std::string& slug, const std::string& toolName,
+                                  ArduinoJson::JsonObjectConst args,
+                                  const nimbus::orch::Principal& who);
+
 namespace {
 
 namespace mc = nimbus::orch::mcp;
@@ -441,93 +448,110 @@ void readChunked(Client& c, uint32_t deadline, std::string& out, bool& tooLarge)
   }
 }
 
-// One Streamable HTTP request/response under the work arbiter. Returns the HTTP
-// status (0 on transport failure, with kindOut set). Fills body, content-type,
-// and any Mcp-Session-Id. The whole exchange is bounded by timeoutMs.
-int exchange(const UrlParts& u, const String& bearer, const String& sessionIn,
-             const std::string& reqBody, uint32_t timeoutMs, std::string& bodyOut,
-             std::string& ctypeOut, String& sessionOut, mc::ErrorKind& kindOut) {
-  bodyOut.clear();
-  ctypeOut.clear();
-  sessionOut = "";
-  kindOut = mc::ErrorKind::None;
-  if (!arbiter::acquireWork(timeoutMs)) { kindOut = mc::ErrorKind::Timeout; return 0; }
+// A request/response for one Streamable HTTP exchange, bundled so the transport
+// helpers stay under the argument + complexity budget.
+struct McpReq {
+  UrlParts    u;
+  String      bearer;
+  String      session;      // Mcp-Session-Id to echo (empty = none)
+  std::string body;
+  uint32_t    timeoutMs = 8000;
+};
+struct McpResp {
+  int           status = 0;             // HTTP status (0 = transport failure)
+  std::string   body;
+  std::string   ctype;                  // Content-Type
+  String        session;                // Mcp-Session-Id from the response
+  mc::ErrorKind kind = mc::ErrorKind::None;
+};
 
-  WiFiClientSecure tls;
-  WiFiClient plain;
-  Client* c = nullptr;
-  if (u.tls) {
-    tlsSetup(tls);
-    tls.setHandshakeTimeout(12);
-    tls.setConnectionTimeout(timeoutMs);
-    c = &tls;
-  } else {
-    plain.setTimeout(timeoutMs / 1000 ? timeoutMs / 1000 : 1);
-    c = &plain;
-  }
-
-  const uint32_t deadline = millis() + timeoutMs;
-  bool connected = false;
-  for (int attempt = 0; attempt < 3 && !connected && (int32_t)(millis() - deadline) < 0; attempt++) {
-    if (c->connect(u.host.c_str(), u.port)) { connected = true; break; }
+// Open the socket (TLS or plain) with a short connect-retry, bounded by deadline.
+bool mcpConnect(Client& c, const UrlParts& u, uint32_t deadline) {
+  for (int attempt = 0; attempt < 3 && (int32_t)(millis() - deadline) < 0; attempt++) {
+    if (c.connect(u.host.c_str(), u.port)) return true;
     delay(400);
   }
-  if (!connected) {
-    c->stop();
-    arbiter::releaseWork();
-    kindOut = mc::ErrorKind::Connect;
-    return 0;
-  }
+  return false;
+}
 
-  // Request. Accept BOTH shapes so a server may answer with JSON or stream SSE.
-  String req = String("POST ") + u.path + " HTTP/1.1\r\n"
-             + "Host: " + u.host + "\r\n"
+// Send the POST request line, headers, and body. Accept BOTH response shapes so
+// a server may answer with a JSON body or a streamed (SSE) one.
+void mcpSend(Client& c, const McpReq& q) {
+  String req = String("POST ") + q.u.path + " HTTP/1.1\r\n"
+             + "Host: " + q.u.host + "\r\n"
              + "Content-Type: application/json\r\n"
              + "Accept: application/json, text/event-stream\r\n"
              + "MCP-Protocol-Version: " + mc::kProtocolVersion + "\r\n";
-  if (bearer.length())    req += "Authorization: Bearer " + bearer + "\r\n";
-  if (sessionIn.length()) req += "Mcp-Session-Id: " + sessionIn + "\r\n";
-  req += "Content-Length: " + String((unsigned)reqBody.size()) + "\r\n"
+  if (q.bearer.length())  req += "Authorization: Bearer " + q.bearer + "\r\n";
+  if (q.session.length()) req += "Mcp-Session-Id: " + q.session + "\r\n";
+  req += "Content-Length: " + String((unsigned)q.body.size()) + "\r\n"
        + "Connection: close\r\n\r\n";
-  c->print(req);
-  if (!reqBody.empty()) c->write((const uint8_t*)reqBody.data(), reqBody.size());
+  c.print(req);
+  if (!q.body.empty()) c.write((const uint8_t*)q.body.data(), q.body.size());
+}
 
-  // Status line: "HTTP/1.1 200 OK".
+// Read the status line + headers. Returns the HTTP status (0 on timeout before a
+// status line); sets r.ctype/r.session and the body-framing out-params.
+int mcpReadHead(Client& c, uint32_t deadline, McpResp& r, bool& chunked, long& contentLen) {
+  chunked = false;
+  contentLen = -1;
   String statusLine;
-  if (!readLine(*c, deadline, statusLine)) {
-    c->stop(); arbiter::releaseWork();
-    kindOut = mc::ErrorKind::Timeout;
-    return 0;
-  }
+  if (!readLine(c, deadline, statusLine)) return 0;
   int sp = statusLine.indexOf(' ');
   int status = sp >= 0 ? statusLine.substring(sp + 1, sp + 4).toInt() : 0;
-
-  // Headers until a blank line; capture the few we need.
-  bool chunked = false;
-  long contentLen = -1;
-  while (true) {
-    String h;
-    if (!readLine(*c, deadline, h)) break;
-    if (h.length() == 0) break;  // end of headers
+  String h;
+  while (readLine(c, deadline, h) && h.length() > 0) {
     int colon = h.indexOf(':');
     if (colon < 0) continue;
     String key = h.substring(0, colon); key.trim(); key.toLowerCase();
     String val = h.substring(colon + 1); val.trim();
-    if (key == "content-type") ctypeOut = val.c_str();
-    else if (key == "mcp-session-id") sessionOut = val;
-    else if (key == "transfer-encoding") { String v = val; v.toLowerCase(); if (v.indexOf("chunked") >= 0) chunked = true; }
+    if (key == "content-type") r.ctype = val.c_str();
+    else if (key == "mcp-session-id") r.session = val;
+    else if (key == "transfer-encoding") { val.toLowerCase(); if (val.indexOf("chunked") >= 0) chunked = true; }
     else if (key == "content-length") contentLen = val.toInt();
   }
+  return status;
+}
 
+// One Streamable HTTP request/response under the work arbiter. Fills `r`; on a
+// transport failure r.status == 0 and r.kind says why. Bounded by q.timeoutMs.
+void exchange(const McpReq& q, McpResp& r) {
+  r = McpResp{};
+  if (!arbiter::acquireWork(q.timeoutMs)) { r.kind = mc::ErrorKind::Timeout; return; }
+  WiFiClientSecure tls;
+  WiFiClient plain;
+  Client* c;
+  if (q.u.tls) {
+    tlsSetup(tls);
+    tls.setHandshakeTimeout(12);
+    tls.setConnectionTimeout(q.timeoutMs);
+    c = &tls;
+  } else {
+    plain.setTimeout(q.timeoutMs / 1000 ? q.timeoutMs / 1000 : 1);
+    c = &plain;
+  }
+  const uint32_t deadline = millis() + q.timeoutMs;
+  if (!mcpConnect(*c, q.u, deadline)) {
+    c->stop(); arbiter::releaseWork();
+    r.kind = mc::ErrorKind::Connect;
+    return;
+  }
+  mcpSend(*c, q);
+  bool chunked;
+  long clen;
+  r.status = mcpReadHead(*c, deadline, r, chunked, clen);
+  if (r.status == 0) {
+    c->stop(); arbiter::releaseWork();
+    r.kind = mc::ErrorKind::Timeout;
+    return;
+  }
   bool tooLarge = false;
-  if (chunked)              readChunked(*c, deadline, bodyOut, tooLarge);
-  else if (contentLen >= 0) readN(*c, deadline, (size_t)contentLen, bodyOut, tooLarge);
-  else                      readToClose(*c, deadline, bodyOut, tooLarge);
-
+  if (chunked)        readChunked(*c, deadline, r.body, tooLarge);
+  else if (clen >= 0) readN(*c, deadline, (size_t)clen, r.body, tooLarge);
+  else                readToClose(*c, deadline, r.body, tooLarge);
   c->stop();
   arbiter::releaseWork();
-  if (tooLarge) kindOut = mc::ErrorKind::TooLarge;
-  return status;
+  if (tooLarge) r.kind = mc::ErrorKind::TooLarge;
 }
 
 // Look up a device-dialed server's live config (secrets included) by slug. Fills
@@ -575,22 +599,37 @@ std::vector<Desired> desiredServers() {
 std::string prefixOf(const String& slug) { return std::string("mcp.") + slug.c_str() + "."; }
 
 // Retry-with-jitter wrapper around exchange() for the (Lock-free) discovery path.
-int exchangeRetry(const UrlParts& u, const String& bearer, const String& sessionIn,
-                  const std::string& reqBody, uint32_t timeoutMs, int maxAttempts,
-                  std::string& bodyOut, std::string& ctypeOut, String& sessionOut,
-                  mc::ErrorKind& kindOut) {
+void exchangeRetry(const McpReq& q, int maxAttempts, McpResp& r) {
   mc::RetryConfig rc;
-  int status = 0;
   for (int attempt = 0; attempt < maxAttempts; attempt++) {
-    status = exchange(u, bearer, sessionIn, reqBody, timeoutMs, bodyOut, ctypeOut, sessionOut, kindOut);
-    bool transportFail = (status == 0);
-    bool retryable = transportFail ? true : mc::isRetryable(kindOut, status);
-    // A 2xx with a good body is success at this layer; the parser judges content.
-    if (status >= 200 && status < 300 && kindOut == mc::ErrorKind::None) return status;
-    if (!retryable || attempt + 1 >= maxAttempts) return status;
+    exchange(q, r);
+    if (r.status >= 200 && r.status < 300 && r.kind == mc::ErrorKind::None) return;  // parser judges content
+    bool retryable = (r.status == 0) ? true : mc::isRetryable(r.kind, r.status);
+    if (!retryable || attempt + 1 >= maxAttempts) return;
     delay(mc::retryDelayMs(rc, attempt, esp_random()));
   }
-  return status;
+}
+
+// Collect one tools/list page into `tools`; returns the ToolsListResult so the
+// caller can read ok/nextCursor.
+mc::ToolsListResult collectToolsPage(const McpReq& base, const String& session,
+                                     const String& serverName, const String& cursor,
+                                     std::vector<mc::ToolDef>& tools) {
+  McpReq lq = base;
+  lq.session = session;
+  lq.body = mc::buildToolsList(std::string(cursor.c_str()));
+  McpResp r;
+  exchangeRetry(lq, 2, r);
+  mc::ToolsListResult lr = mc::parseToolsList(r.status, r.ctype, r.body, serverName.c_str());
+  if (!lr.ok) return lr;
+  for (auto& t : lr.tools) {
+    if ((int)tools.size() >= kMaxToolsPerSrv) {
+      alogf("mcp: %s exposed >%d tools - the rest are dropped", serverName.c_str(), kMaxToolsPerSrv);
+      break;
+    }
+    tools.push_back(std::move(t));
+  }
+  return lr;
 }
 
 // Discover one server: initialize -> initialized -> tools/list (paged). Collects
@@ -598,41 +637,73 @@ int exchangeRetry(const UrlParts& u, const String& bearer, const String& session
 // failure (breaker updated by the caller).
 bool discover(ServerState& st, const UrlParts& u, const String& bearer,
               std::vector<mc::ToolDef>& tools, mc::ErrorKind& kindOut) {
-  std::string body, ctype;
-  String session;
-  // initialize
-  int status = exchangeRetry(u, bearer, "", mc::buildInitialize("nimbus", ""),
-                             kDiscoverTimeout, 2, body, ctype, session, kindOut);
-  mc::InitializeResult ir = mc::parseInitialize(status, ctype, body, st.name.c_str());
+  McpReq base;
+  base.u = u;
+  base.bearer = bearer;
+  base.timeoutMs = kDiscoverTimeout;
+  McpReq init = base;
+  init.body = mc::buildInitialize("nimbus", "");
+  McpResp r;
+  exchangeRetry(init, 2, r);
+  mc::InitializeResult ir = mc::parseInitialize(r.status, r.ctype, r.body, st.name.c_str());
   if (!ir.ok) { kindOut = ir.error; return false; }
-  st.sessionId = session;  // capture a stateful server's session id
-  // initialized notification (best-effort; no response expected)
-  {
-    std::string b2, c2; String s2; mc::ErrorKind k2;
-    exchange(u, bearer, st.sessionId, mc::buildInitializedNotification(),
-             kDiscoverTimeout, b2, c2, s2, k2);
+  st.sessionId = r.session;  // capture a stateful server's session id
+  {  // initialized notification (best-effort; no response expected)
+    McpReq n = base;
+    n.session = st.sessionId;
+    n.body = mc::buildInitializedNotification();
+    McpResp nr;
+    exchange(n, nr);
   }
   if (!ir.hasTools) { kindOut = mc::ErrorKind::None; return true; }  // no tools is valid
-  // tools/list, paginated
   String cursor = "";
   for (int page = 0; page < kMaxPages; page++) {
-    std::string b, ct; String sess; mc::ErrorKind k;
-    status = exchangeRetry(u, bearer, st.sessionId,
-                           mc::buildToolsList(std::string(cursor.c_str())),
-                           kDiscoverTimeout, 2, b, ct, sess, k);
-    mc::ToolsListResult lr = mc::parseToolsList(status, ct, b, st.name.c_str());
+    mc::ToolsListResult lr = collectToolsPage(base, st.sessionId, st.name, cursor, tools);
     if (!lr.ok) { kindOut = lr.error; return false; }
-    for (auto& t : lr.tools) {
-      if ((int)tools.size() >= kMaxToolsPerSrv) {
-        alogf("mcp: %s exposed >%d tools - the rest are dropped", st.name.c_str(), kMaxToolsPerSrv);
-        break;
-      }
-      tools.push_back(std::move(t));
-    }
     if (lr.nextCursor.empty() || (int)tools.size() >= kMaxToolsPerSrv) break;
     cursor = lr.nextCursor.c_str();
   }
   kindOut = mc::ErrorKind::None;
+  return true;
+}
+
+// Register a discovered server's tools into the registry (brief in-RAM mutation
+// under the memory Lock, safe against the AsyncTCP /mcp reader).
+void registerTools(ToolRegistry& reg, const String& slug, const std::vector<mc::ToolDef>& tools) {
+  agent::memory::Lock lk;
+  reg.removeByPrefix(prefixOf(slug));   // clear any stale set before re-adding
+  for (const auto& t : tools) {
+    std::string regName = mc::namespacedTool(std::string(slug.c_str()), t.name);
+    std::string s = slug.c_str();
+    std::string tn = t.name;
+    std::string desc = t.description.empty() ? (std::string(slug.c_str()) + " tool") : t.description;
+    reg.add(regName, desc,
+            [s, tn](ArduinoJson::JsonObjectConst a, const Principal& who) { return callTool(s, tn, a, who); },
+            t.inputSchemaJson);
+  }
+}
+
+// Discover + register one wanted server. Returns true once a discovery attempt
+// ran (success OR failure), so the caller stops after one per sync().
+bool syncOne(ToolRegistry& reg, const Desired& d, ServerState& st) {
+  UrlParts u = parseUrl(d.url);
+  if (!u.ok) { st.lastErr = (int8_t)mc::ErrorKind::Malformed; return false; }
+  String bearer, url2, name2;
+  resolveServer(d.slug, url2, bearer, name2);   // bearer only (URL comes from d)
+  std::vector<mc::ToolDef> tools;
+  mc::ErrorKind kind = mc::ErrorKind::None;
+  if (!discover(st, u, bearer, tools, kind)) {
+    st.breaker.onFailure(millis());
+    st.lastErr = (int8_t)kind;
+    alogf("mcp: discover %s failed (%d)", d.name.c_str(), (int)kind);
+    return true;
+  }
+  registerTools(reg, d.slug, tools);
+  st.discovered = true;
+  st.toolCount = (int)tools.size();
+  st.breaker.onSuccess();
+  st.lastErr = -1;
+  alogf("mcp: %s ready (%d tools)", d.name.c_str(), st.toolCount);
   return true;
 }
 
@@ -671,15 +742,19 @@ ToolResult callTool(const std::string& slug, const std::string& toolName,
 
   std::string argsJson;
   serializeJson(args, argsJson);
-  std::string body, ctype; String session; mc::ErrorKind kind;
   // Single attempt on the hot path: it runs under the dispatch Lock, so total
   // time stays well under the main-loop watchdog; the breaker handles a server
   // that keeps failing.
-  int status = exchange(u, bearer, st ? st->sessionId : String(""),
-                        mc::buildToolsCall(toolName, argsJson), kCallTimeout,
-                        body, ctype, session, kind);
-  if (st && session.length()) st->sessionId = session;
-  mc::CallToolResult r = mc::parseCallTool(status, ctype, body, nameS);
+  McpReq q;
+  q.u = u;
+  q.bearer = bearer;
+  q.session = st ? st->sessionId : String("");
+  q.body = mc::buildToolsCall(toolName, argsJson);
+  q.timeoutMs = kCallTimeout;
+  McpResp resp;
+  exchange(q, resp);
+  if (st && resp.session.length()) st->sessionId = resp.session;
+  mc::CallToolResult r = mc::parseCallTool(resp.status, resp.ctype, resp.body, nameS);
   if (!r.ok) {
     if (st) st->breaker.onFailure(millis());
     return ToolResult::fail(r.errorMsg);
@@ -711,50 +786,15 @@ void sync(ToolRegistry& reg) {
   //    of a server that keeps failing.
   for (const auto& d : want) {
     ServerState* st = slotFor(d.slug, true);
-    if (!st) { alogf("mcp: too many device MCP servers (>%d) - %s skipped",
-                     kMaxMcpServers, d.name.c_str()); continue; }
+    if (!st) {
+      alogf("mcp: too many device MCP servers (>%d) - %s skipped", kMaxMcpServers, d.name.c_str());
+      continue;
+    }
     st->name = d.name;
     st->url = d.url;
     if (st->discovered) continue;
     if (!st->breaker.allow(millis())) continue;   // cooling down; try a later turn
-
-    UrlParts u = parseUrl(d.url);
-    if (!u.ok) { st->lastErr = (int8_t)mc::ErrorKind::Malformed; continue; }
-    String bearer, url2, name2;
-    resolveServer(d.slug, url2, bearer, name2);   // bearer only (url from d)
-
-    std::vector<mc::ToolDef> tools;
-    mc::ErrorKind kind = mc::ErrorKind::None;
-    bool ok = discover(*st, u, bearer, tools, kind);
-    if (!ok) {
-      st->breaker.onFailure(millis());
-      st->lastErr = (int8_t)kind;
-      alogf("mcp: discover %s failed (%d)", d.name.c_str(), (int)kind);
-      return;   // one discovery attempt per sync()
-    }
-    // Register the discovered tools (brief in-RAM mutation under the Lock).
-    {
-      agent::memory::Lock lk;
-      reg.removeByPrefix(prefixOf(d.slug));  // clear any stale set before re-adding
-      for (const auto& t : tools) {
-        std::string regName = mc::namespacedTool(std::string(d.slug.c_str()), t.name);
-        std::string slug = d.slug.c_str();
-        std::string tname = t.name;
-        reg.add(regName,
-                t.description.empty() ? (name2.length() ? std::string(name2.c_str()) + " tool" : t.name)
-                                      : t.description,
-                [slug, tname](ArduinoJson::JsonObjectConst a, const Principal& who) {
-                  return callTool(slug, tname, a, who);
-                },
-                t.inputSchemaJson);
-      }
-    }
-    st->discovered = true;
-    st->toolCount = (int)tools.size();
-    st->breaker.onSuccess();
-    st->lastErr = -1;
-    alogf("mcp: %s ready (%d tools)", d.name.c_str(), st->toolCount);
-    return;   // one server per sync()
+    if (syncOne(reg, d, *st)) return;             // one discovery attempt per sync()
   }
 }
 
