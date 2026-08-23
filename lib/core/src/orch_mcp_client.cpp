@@ -182,21 +182,20 @@ ErrorKind extractResult(int httpStatus, const std::string& contentType,
     rpcDetail = "HTTP " + std::to_string(httpStatus);
     return ErrorKind::Http;
   }
+  if (body.empty()) return ErrorKind::Empty;
+  // Parse both shapes, ordered by the content-type hint but never trusting it
+  // blindly: a server that mislabels (or omits) Content-Type must still parse.
   JsonDocument env;  // the JSON-RPC envelope
+  auto tryJson = [&](JsonDocument& out) {
+    return deserializeJson(out, body) == DeserializationError::Ok && isRpcResponse(out);
+  };
   bool haveEnv = false;
   if (containsCI(contentType, "text/event-stream")) {
-    haveEnv = extractFromSse(body, env);
-    if (!haveEnv) {
-      // An SSE body with no JSON-RPC response is either empty (a 202 ack) or junk.
-      return body.empty() ? ErrorKind::Empty : ErrorKind::Malformed;
-    }
+    haveEnv = extractFromSse(body, env) || tryJson(env);
   } else {
-    if (body.empty()) return ErrorKind::Empty;
-    if (deserializeJson(env, body) != DeserializationError::Ok) return ErrorKind::Malformed;
-    if (!isRpcResponse(env)) return ErrorKind::Malformed;
-    haveEnv = true;
+    haveEnv = tryJson(env) || extractFromSse(body, env);
   }
-  (void)haveEnv;
+  if (!haveEnv) return ErrorKind::Malformed;
   if (!env["error"].isNull()) {
     JsonObjectConst e = env["error"].as<JsonObjectConst>();
     const char* msg = e["message"] | "";

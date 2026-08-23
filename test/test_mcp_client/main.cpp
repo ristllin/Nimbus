@@ -256,6 +256,17 @@ static void test_sse_multiline_data_field() {
   TEST_ASSERT_EQUAL_STRING("t", r.tools[0].name.c_str());
 }
 
+// Content-type is a hint, not gospel: a JSON body mislabeled as SSE (and an SSE
+// body with no content-type) must still parse.
+static void test_content_type_mismatch_falls_back() {
+  ToolsListResult a = parseToolsList(200, kSse, kListOk, "s");  // JSON body, SSE label
+  TEST_ASSERT_TRUE(a.ok);
+  TEST_ASSERT_EQUAL(2, (int)a.tools.size());
+  ToolsListResult b = parseToolsList(200, "", sse(kListOk), "s");  // SSE body, no label
+  TEST_ASSERT_TRUE(b.ok);
+  TEST_ASSERT_EQUAL(2, (int)b.tools.size());
+}
+
 static void test_timeout_error_copy() {
   std::string m = nextStepError(ErrorKind::Timeout, "files", "20s");
   TEST_ASSERT_TRUE(m.find("files") != std::string::npos);
@@ -359,6 +370,7 @@ int main() {
   RUN_TEST(test_empty_2xx_body);
   RUN_TEST(test_sse_with_leading_notifications_then_response);
   RUN_TEST(test_sse_multiline_data_field);
+  RUN_TEST(test_content_type_mismatch_falls_back);
   RUN_TEST(test_timeout_error_copy);
   RUN_TEST(test_slugify_server);
   RUN_TEST(test_namespaced_tool_is_wire_safe);
