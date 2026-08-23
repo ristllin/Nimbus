@@ -47,51 +47,48 @@ From a clone of the firmware repository, with Python 3 and
 python3 tools/setup_device.py
 ```
 
-The installer is deliberately hard to point at the wrong board:
+The installer identifies the board for you and confirms before it writes:
 
-- It lists **only UART bridges** (`/dev/cu.usbserial-*` and similar) and makes
-  you pick one; it refuses native-USB ports and always passes the chosen port
-  to PlatformIO explicitly.
-- It reads the board's **immutable factory MAC** and its saved settings, then
-  asks you to **type the MAC back** before anything is written - the guard
-  that matters when more than one board is connected.
+- It **discovers connected boards** by their USB descriptor and works out the
+  **board family** (Nimbus board or Freenove CYD) from that plus the saved
+  settings, so you rarely need to say which board you have.
+- **One board** connected? It shows what it found and asks a single question:
+  `Install to '<name>' (<board family>, <configured or blank>) on <port>? [Y/n]`.
+  **Several boards?** It lists them and lets you pick by number, with an
+  **Identify** action (`i2`) that blinks that board's ring or screen for about
+  three seconds so you can tell which is which.
 - It **never erases saved settings.** An already-configured Nimbus keeps its
   Wi-Fi, keys, pairings, and access token.
-- On a new board it asks two setup questions - the fitted **display** (e-ink +
-  knob, or the TFT touchscreen) and the starting **operating mode** (Notifier
-  or Orchestrator) - verifies them, then installs the production firmware.
+- On a new board it asks for the starting **operating mode** (Notifier or
+  Orchestrator), and for a Freenove the **panel size** (2.8 / 3.5 / 4.0 inch).
+  It seeds the display, orientation, mode, and the board's update type, verifies
+  them, then installs the production firmware.
 
-Useful flags: `--port` (skip the picker), `--display eink|tft` and
-`--mode notifier|orchestrator` (skip the prompts), `--yes` (skip the typed-MAC
-confirmation; allowed only with an explicit `--port`).
-
-:::caution The TFT choice must be made at install time
-A touchscreen board has no knob, and the firmware's raw default is e-ink - a
-TFT board cannot correct a wrong display setting from its own controls.
-Answer **TFT** when the installer asks.
-:::
+Useful flags: `--port` (skip discovery), `--board solide_s3|freenove_s3` (skip
+autodetect), `--size 28|35|40` (Freenove panel), `--mode notifier|orchestrator`
+(skip the mode prompt), `--yes` (skip the confirm prompt for CI; needs a single
+connected board or an explicit `--port`, plus `--mode` for a blank board).
 
 ### The Freenove CYD all-in-one
 
 The [all-in-one board](../hardware/all-in-one-cyd.md) uses the **same**
-installer, with one flag: `--board freenove_s3`.
+installer and is auto-detected; no flag is required.
 
 ```bash
-python3 tools/setup_device.py --board freenove_s3
+python3 tools/setup_device.py           # autodetects the Freenove on its USB-C port
+python3 tools/setup_device.py --board freenove_s3 --size 35   # or be explicit
 ```
 
-Everything above still applies (typed-MAC confirmation, no settings erased),
-with two differences specific to this board:
+Two things are specific to this board:
 
-- **One port, no picking.** The CYD has a single USB-C port and no separate
-  UART bridge - it rides the ESP32-S3's native USB the whole way, so there is
-  no "wrong port" the way the DevKitC-1's two-port caution above describes.
-  Just connect a data-capable USB-C cable.
-- **The display prompt is skipped.** This board's screen is a compile-time
-  identity (see [hardware configurations](../hardware.md#board-configurations))
-  - it is always the color touchscreen, so `--board freenove_s3` sets
-  `--display tft` for you. You'll still be asked for the starting **operating
-  mode** on a new board (`--mode notifier|orchestrator` skips that prompt too).
+- **One port, no UART bridge.** The CYD has a single USB-C port and rides the
+  ESP32-S3's native USB the whole way, so there is no "wrong port" the way the
+  DevKitC-1's two-port caution above describes. Just connect a data-capable
+  USB-C cable.
+- **The panel size sets the update type.** All Freenove sizes share one firmware
+  image; the size you pick only labels which typed update the board receives
+  (`freenove-28` / `freenove-35` / `freenove-40`). It is always the color
+  touchscreen, so there is no display question.
 
 Done? Continue to the **[setup wizard](setup-wizard.md)**. The rest of this
 page is reference for reflashing and recovery.
