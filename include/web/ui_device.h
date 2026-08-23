@@ -209,8 +209,10 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 <tr><td>Status</td><td id=fwState>-</td></tr>
 <tr><td>Last result</td><td id=fwLast>-</td></tr>
 </tbody></table>
+<div class=warnbox id=fwBatt style="display:none;margin:8px 0"></div>
 <div id=fwBarWrap style="display:none;height:14px;background:var(--raise2);border:1px solid var(--line2);border-radius:6px;margin:8px 0;overflow:hidden"><div id=fwBar style="height:100%;width:0;background:linear-gradient(90deg,#3a7,#7fd1c8);transition:width .5s"></div></div>
 <div class=row><button id=fwCheck type=button>Check for Updates</button><button id=fwInstall type=button style="display:none">Install Update</button><button class=qh type=button aria-expanded=false aria-label="About updates">?</button></div>
+<div class=hint id=fwMsg></div>
 <p class="hint tip">Updates download from this project's GitHub releases over TLS and are cryptographically signed - the device verifies each one and reverts on its own if the new version fails to start. Keep the device powered during an install.</p>
 <label class=pr style="margin-top:8px"><input type=checkbox id=autoUpd> Automatic updates <button class=qh type=button aria-expanded=false aria-label="About automatic updates">?</button></label>
 <p class="hint tip">Installs new firmware when the device is idle and charged, then restarts.</p>

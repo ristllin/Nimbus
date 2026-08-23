@@ -95,6 +95,7 @@ static const char UI_MEMORY[] PROGMEM = R"=====(<div class=pane id=pane-chat sty
 <details class=setgroup><summary>Files<span class=chev>&rsaquo;</span></summary>
 <div class=setbody>
 <p class=hint id=filesStat>-</p>
+<p class=hint id=filesQuota></p>
 <div class=row><input id=filesProj placeholder="Filter by project"><button id=filesRefresh type=button>Refresh</button><button id=filesRmProj type=button style="color:#f0687a">Delete folder</button></div>
 <div id=filesList class=hint>loading&hellip;</div>
 <div id=filePrev style="display:none;margin-top:12px;border:1px solid var(--line);border-radius:10px;padding:12px"></div>

@@ -20,7 +20,7 @@ export const STATE = {
   mdns: 'nimbus.local', running: true, scrModel: 'tft',
   // OTA (N5 contract stub): installed/latest/notes + result state
   ota: 'idle', otaLatest: '', otaNotes: '', otaPct: -1, otaErr: '',
-  lastOta: '-', autoUpd: false,
+  lastOta: '-', autoUpd: false, otaBattOk: true, otaBattMsg: '',
   // Cloud pairing (Pairing + cloud card) - in the pairing state so the card,
   // code, and QR render for the harness + screenshots.
   cloud: { line: 'Pairing: enter the Cloud link code at app.cumulo-nimbus.ai.', state: 'pairing', paired: false, optIn: true, code: 'CN-4821-QK' },
@@ -108,10 +108,12 @@ export const MEM_CONFIG = { longTerm: true, embedProvider: 'anthropic' };
 export const MEM_EMBEDCFG = { provider: 'anthropic', model: 'text-embed-3', present: true };
 
 export const FILES_LIST = {
+  present: true, count: 2, bytes: 221640, freeBytes: 29478158336,
   card: { sizeMB: 30436, freeMB: 28112 },
+  quota: { limitMB: 4096, usedMB: 512 },
   files: [
-    { name: 'notes.txt', size: 1240, project: 'default', mtime: 1690000000 },
-    { name: 'photo.jpg', size: 220400, project: 'default', mtime: 1690000500 },
+    { name: 'notes.txt', bytes: 1240, kind: 'text', project: 'default', mtime: 1690000000 },
+    { name: 'photo.jpg', bytes: 220400, kind: 'image', project: 'default', mtime: 1690000500 },
   ],
 };
 

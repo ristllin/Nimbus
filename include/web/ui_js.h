@@ -500,17 +500,38 @@ function applyState(d){
     $('fwLast').textContent=d.lastOta||'-';
     $('fwBarWrap').style.display=(d.ota==='downloading'||d.ota==='verifying')?'block':'none';
     if(d.otaPct>=0)$('fwBar').style.width=d.otaPct+'%';
-    var fi=$('fwInstall');fi.style.display=(d.ota==='available')?'inline-block':'none';
-    $('fwCheck').disabled=busy;fi.disabled=busy;
+    var fi=$('fwInstall');
+    // Battery gate (CUM-68, N5 payload): an update needs enough charge. When it is
+    // available but the battery is too low, name the threshold and block install
+    // rather than letting it fail mid-flash.
+    var battOk=(d.otaBattOk===undefined)?true:!!d.otaBattOk;
+    var fb=$('fwBatt');
+    if(fb){var gated=(d.ota==='available')&&!battOk;
+      fb.style.display=gated?'block':'none';
+      fb.textContent=gated?(d.otaBattMsg||'Charge the device to install this update.'):'';}
+    fi.style.display=(d.ota==='available')?'inline-block':'none';
+    $('fwCheck').disabled=busy;fi.disabled=busy||((d.ota==='available')&&!battOk);
     if(d.autoUpd!==undefined){const au=$('autoUpd');
       if(au&&document.activeElement!==au){au.checked=!!d.autoUpd;
         au.onchange=()=>{const f=new FormData();f.append('autoUpd',au.checked?'1':'0');
           fetch('/api/config',{method:'POST',body:f}).then(()=>toast(au.checked?'Auto-update on':'Auto-update off'));};}}
-    $('fwCheck').onclick=()=>{fetch('/api/ota/check',{method:'POST'}).then(jok)
-      .then(()=>{toast('Checking…');setTimeout(loadState,2500);}).catch(failToast);};
+    // Check-for-updates renders a result state (found / up to date / error naming
+    // the next step) from N5's check payload, then re-syncs from /api/state.
+    $('fwCheck').onclick=()=>run({status:'fwMsg',btn:$('fwCheck'),pending:'Checking for updates…',
+      work:()=>fetch('/api/ota/check',{method:'POST'}).then(jok),
+      ok:o=>{setTimeout(loadState,2000);
+        var res=(o&&o.result)||'';
+        if(res==='available'||(o&&o.latest&&o.latest!==o.installed))return 'Update available: '+((o&&o.latest)||'a new version')+'.';
+        if(res==='error')return {none:false};   // fall through to error via throw below is not needed
+        return {none:true,msg:'You are on the latest version.'};},
+      error:e=>'Couldn\'t check for updates'+(e?(' ('+e+')'):'')+' - check the network and try again.'});
     fi.onclick=()=>{
+      if((d.ota==='available')&&!battOk){fbState('fwMsg','error',d.otaBattMsg||'Charge the device before installing.');return;}
       if(!confirm('Install firmware '+(d.otaLatest||'')+'?\n\nThe device will download, verify the signature, and restart - about two minutes. Keep it powered on.'))return;
-      fetch('/api/ota/apply',{method:'POST'}).then(jok).then(()=>{toast('Updating…');setTimeout(loadState,2000);}).catch(failToast);};
+      run({status:'fwMsg',btn:fi,pending:'Starting the update…',
+        work:()=>fetch('/api/ota/apply',{method:'POST'}).then(jok),
+        ok:()=>{setTimeout(loadState,2000);return 'Updating. Keep the device powered on; it restarts when done.';},
+        error:e=>'Couldn\'t start the update'+(e?(' ('+e+')'):'')+' - try again.'});};
   }
   renderDevTiles(d);
   if(d.fw){const fv=$('fwver'); if(fv)fv.textContent=d.fw+(d.build&&d.build!==d.fw?(' ('+d.build+')'):''); fv&&(fv.title='firmware version (build id)');}
@@ -2202,6 +2223,12 @@ function loadFiles(){
     if($('filesStat'))$('filesStat').textContent=d.present
       ?((d.count||0)+' files · '+_fbytes(d.bytes)+' used'+(d.freeBytes!==undefined?(' · '+_fbytes(d.freeBytes)+' free'):''))
       :'No SD card - insert a card to store files';
+    // Real card size/free + the file quota with a caption (CUM-68, N5 payload).
+    if($('filesQuota')){const c=d.card||{},q=d.quota||{},_mb=n=>n>=1024?((n/1024).toFixed(1)+' GB'):(Math.round(n)+' MB');
+      const parts=[];
+      if(c.sizeMB!==undefined)parts.push('Card: '+_mb(c.freeMB||0)+' free of '+_mb(c.sizeMB));
+      if(q.limitMB)parts.push('file quota '+_mb(q.usedMB||0)+' of '+_mb(q.limitMB));
+      $('filesQuota').textContent=d.present?parts.join(' · '):'';}
     const files=d.files||[];
     if(!files.length){box.innerHTML='<span class=hint>No files'+(proj?(' in '+_fesc(proj)):'')+'</span>';return;}
     box.innerHTML='<table><tbody>'+files.map(f=>{

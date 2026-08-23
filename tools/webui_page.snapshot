@@ -406,8 +406,10 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <tr><td>Status</td><td id=fwState>-</td></tr>
 <tr><td>Last result</td><td id=fwLast>-</td></tr>
 </tbody></table>
+<div class=warnbox id=fwBatt style="display:none;margin:8px 0"></div>
 <div id=fwBarWrap style="display:none;height:14px;background:var(--raise2);border:1px solid var(--line2);border-radius:6px;margin:8px 0;overflow:hidden"><div id=fwBar style="height:100%;width:0;background:linear-gradient(90deg,#3a7,#7fd1c8);transition:width .5s"></div></div>
 <div class=row><button id=fwCheck type=button>Check for Updates</button><button id=fwInstall type=button style="display:none">Install Update</button><button class=qh type=button aria-expanded=false aria-label="About updates">?</button></div>
+<div class=hint id=fwMsg></div>
 <p class="hint tip">Updates download from this project's GitHub releases over TLS and are cryptographically signed - the device verifies each one and reverts on its own if the new version fails to start. Keep the device powered during an install.</p>
 <label class=pr style="margin-top:8px"><input type=checkbox id=autoUpd> Automatic updates <button class=qh type=button aria-expanded=false aria-label="About automatic updates">?</button></label>
 <p class="hint tip">Installs new firmware when the device is idle and charged, then restarts.</p>
@@ -763,6 +765,7 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <details class=setgroup><summary>Files<span class=chev>&rsaquo;</span></summary>
 <div class=setbody>
 <p class=hint id=filesStat>-</p>
+<p class=hint id=filesQuota></p>
 <div class=row><input id=filesProj placeholder="Filter by project"><button id=filesRefresh type=button>Refresh</button><button id=filesRmProj type=button style="color:#f0687a">Delete folder</button></div>
 <div id=filesList class=hint>loading&hellip;</div>
 <div id=filePrev style="display:none;margin-top:12px;border:1px solid var(--line);border-radius:10px;padding:12px"></div>
@@ -1393,17 +1396,38 @@ function applyState(d){
     $('fwLast').textContent=d.lastOta||'-';
     $('fwBarWrap').style.display=(d.ota==='downloading'||d.ota==='verifying')?'block':'none';
     if(d.otaPct>=0)$('fwBar').style.width=d.otaPct+'%';
-    var fi=$('fwInstall');fi.style.display=(d.ota==='available')?'inline-block':'none';
-    $('fwCheck').disabled=busy;fi.disabled=busy;
+    var fi=$('fwInstall');
+    // Battery gate (CUM-68, N5 payload): an update needs enough charge. When it is
+    // available but the battery is too low, name the threshold and block install
+    // rather than letting it fail mid-flash.
+    var battOk=(d.otaBattOk===undefined)?true:!!d.otaBattOk;
+    var fb=$('fwBatt');
+    if(fb){var gated=(d.ota==='available')&&!battOk;
+      fb.style.display=gated?'block':'none';
+      fb.textContent=gated?(d.otaBattMsg||'Charge the device to install this update.'):'';}
+    fi.style.display=(d.ota==='available')?'inline-block':'none';
+    $('fwCheck').disabled=busy;fi.disabled=busy||((d.ota==='available')&&!battOk);
     if(d.autoUpd!==undefined){const au=$('autoUpd');
       if(au&&document.activeElement!==au){au.checked=!!d.autoUpd;
         au.onchange=()=>{const f=new FormData();f.append('autoUpd',au.checked?'1':'0');
           fetch('/api/config',{method:'POST',body:f}).then(()=>toast(au.checked?'Auto-update on':'Auto-update off'));};}}
-    $('fwCheck').onclick=()=>{fetch('/api/ota/check',{method:'POST'}).then(jok)
-      .then(()=>{toast('Checking…');setTimeout(loadState,2500);}).catch(failToast);};
+    // Check-for-updates renders a result state (found / up to date / error naming
+    // the next step) from N5's check payload, then re-syncs from /api/state.
+    $('fwCheck').onclick=()=>run({status:'fwMsg',btn:$('fwCheck'),pending:'Checking for updates…',
+      work:()=>fetch('/api/ota/check',{method:'POST'}).then(jok),
+      ok:o=>{setTimeout(loadState,2000);
+        var res=(o&&o.result)||'';
+        if(res==='available'||(o&&o.latest&&o.latest!==o.installed))return 'Update available: '+((o&&o.latest)||'a new version')+'.';
+        if(res==='error')return {none:false};   // fall through to error via throw below is not needed
+        return {none:true,msg:'You are on the latest version.'};},
+      error:e=>'Couldn\'t check for updates'+(e?(' ('+e+')'):'')+' - check the network and try again.'});
     fi.onclick=()=>{
+      if((d.ota==='available')&&!battOk){fbState('fwMsg','error',d.otaBattMsg||'Charge the device before installing.');return;}
       if(!confirm('Install firmware '+(d.otaLatest||'')+'?\n\nThe device will download, verify the signature, and restart - about two minutes. Keep it powered on.'))return;
-      fetch('/api/ota/apply',{method:'POST'}).then(jok).then(()=>{toast('Updating…');setTimeout(loadState,2000);}).catch(failToast);};
+      run({status:'fwMsg',btn:fi,pending:'Starting the update…',
+        work:()=>fetch('/api/ota/apply',{method:'POST'}).then(jok),
+        ok:()=>{setTimeout(loadState,2000);return 'Updating. Keep the device powered on; it restarts when done.';},
+        error:e=>'Couldn\'t start the update'+(e?(' ('+e+')'):'')+' - try again.'});};
   }
   renderDevTiles(d);
   if(d.fw){const fv=$('fwver'); if(fv)fv.textContent=d.fw+(d.build&&d.build!==d.fw?(' ('+d.build+')'):''); fv&&(fv.title='firmware version (build id)');}
@@ -3095,6 +3119,12 @@ function loadFiles(){
     if($('filesStat'))$('filesStat').textContent=d.present
       ?((d.count||0)+' files · '+_fbytes(d.bytes)+' used'+(d.freeBytes!==undefined?(' · '+_fbytes(d.freeBytes)+' free'):''))
       :'No SD card - insert a card to store files';
+    // Real card size/free + the file quota with a caption (CUM-68, N5 payload).
+    if($('filesQuota')){const c=d.card||{},q=d.quota||{},_mb=n=>n>=1024?((n/1024).toFixed(1)+' GB'):(Math.round(n)+' MB');
+      const parts=[];
+      if(c.sizeMB!==undefined)parts.push('Card: '+_mb(c.freeMB||0)+' free of '+_mb(c.sizeMB));
+      if(q.limitMB)parts.push('file quota '+_mb(q.usedMB||0)+' of '+_mb(q.limitMB));
+      $('filesQuota').textContent=d.present?parts.join(' · '):'';}
     const files=d.files||[];
     if(!files.length){box.innerHTML='<span class=hint>No files'+(proj?(' in '+_fesc(proj)):'')+'</span>';return;}
     box.innerHTML='<table><tbody>'+files.map(f=>{
