@@ -91,6 +91,19 @@ entry (owner msg | sub-agents finished | loop fired | post-OTA)   [tg_poll]
   → usage summed across rounds+failovers → ledger (attribution: turn/synthesis/loop:<id>)
 ```
 
+Prompt v2 (the `promptV2` flag): the system prompt has two variants selected by
+the NVS `promptV2` flag (default OFF). v1 is the historical prompt. v2 compresses
+the inlined orch_turn field docs to their essentials plus the rules a JSON schema
+cannot enforce, de-duplicates the memory-tier explainer, and keeps every safety
+rail; the wire schema (`ORCH_SCHEMA_BODY`) is unchanged. v2 is about 37% smaller
+(14.5 KB to 9.0 KB) and, in the A/B eval (`tools/eval_prompt_ab.py`), reached
+task-success parity with v1 on Anthropic and OpenAI while billing roughly 1,200
+to 1,900 fewer input tokens per turn. It stays OFF until enabled per device;
+`composeInstructions` reads it from `ComposeInputs::promptV2` (wired from
+`HarnessConfig::promptV2`). See `docs/proposals/harness-prompt-audit.md` for the
+comparison and findings, and `tools/harness_prompt_cost.py` for the size
+measurement.
+
 Model routing: the head host comes from `orchHost` (or the first
 `providerPriority` entry); the model can switch its OWN host/model via the
 `orch_model` action (validated against the choice list, key required), but

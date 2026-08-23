@@ -177,6 +177,7 @@
 #define AKEY_ORCH_TOOLLOOP  "orchLoop"      // head multi-turn tool-use loop on/off (default ON, P6)
 #define AKEY_CODE_SANDBOX   "codeSbx"       // Assistant > Tools "Code sandbox" toggle (default OFF)
 #define AKEY_MID_FAILOVER   "midFail"       // mid-turn provider failover on loop turns (default ON, Stage 2 ph5)
+#define AKEY_ORCH_PROMPTV2  "orchPromptV2"  // N11: simplified v2 system prompt A/B (default OFF)
 // Head tool-loop caps, user-tunable (P6). NVS keys <=15 chars. Deadline stored in
 // SECONDS (fits uint16, avoids ms overflow). Empty/absent -> the macro defaults.
 #define AKEY_LOOP_ROUNDS    "orchLoopRnds"  // max tool-dispatch rounds (default 8, 1..32)

@@ -93,6 +93,7 @@ bool   ttsEnabled();         // "Voice replies" master toggle (default OFF, P2.5
 bool   orchToolLoop();       // head multi-turn tool-use loop enabled (default ON, P6)
 bool   codeSandbox();        // Assistant > Tools: Code sandbox (code_interpreter/code_execution) (default OFF)
 bool   midTurnFailover();    // mid-turn provider failover on loop turns (default ON)
+bool   orchPromptV2();       // N11: simplified v2 system prompt A/B (default OFF)
 bool   orchTrace();          void setOrchTrace(bool v);   // glass-box trace rows (default ON, A4)
 // Head tool-loop caps (P6), user-tunable + clamped. Deadline in seconds.
 int    orchLoopRounds();     // 1..32   (default 8)

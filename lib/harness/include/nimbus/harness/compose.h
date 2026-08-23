@@ -59,6 +59,12 @@ struct ComposeInputs {
   // ("This message is from Roy - role: admin" on an injection-carrying
   // [FRESH RESULTS] turn). The engine sets it from the turn source.
   bool speakerPresent = false;
+  // N11 (harness prompt audit): select the simplified v2 prompt (compressed
+  // field docs + de-duplicated rails, wire schema unchanged). Default false =
+  // byte-identical v1, so a fleet on defaults is untouched. The device sets it
+  // from the NVS `promptV2` flag via HarnessConfig::promptV2; adoption is gated
+  // by the eval suite. See docs/proposals/harness-prompt-audit.md.
+  bool promptV2 = false;
 };
 
 // Compose the full World system prompt in the assembler's priority order under

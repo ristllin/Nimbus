@@ -2815,9 +2815,11 @@ turns (≤768 KB), and older ones report `evicted`.
 
 A byte-pinned copy of the full system-prompt template lives in the goldens:
 `test/golden/orch_prompt_default.txt` (tool-loop ON) and
-`test/golden/orch_prompt_recall_loopoff.txt` - regenerated with
-`GOLDEN_UPDATE=1 pio test -e native -f test_harness_compose`. Those two files ARE
-the raw template, kept honest by CI.
+`test/golden/orch_prompt_recall_loopoff.txt`, plus
+`test/golden/orch_prompt_v2_default.txt` (the simplified v2 prompt, behind the
+`promptV2` flag - see [harness.md](harness.md)) - regenerated with
+`GOLDEN_UPDATE=1 pio test -e native -f test_harness_compose`. Those files ARE the
+raw template, kept honest by CI.
 
 For the whole lifecycle around a turn (boot, ticks, sub-agents, loops, dreaming,
 watchdogs) see [harness.md](harness.md); for the sub-agent side see

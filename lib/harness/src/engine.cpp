@@ -386,6 +386,10 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // wiring below so "advertised == callable" can't drift). Verified live:
   // without this block Mistral/OpenAI skip mid-turn tools entirely.
   ci.loopOn = loopOnThisTurn;   // decided from entry heap (above), not live
+  // N11: opt this turn into the simplified v2 prompt when the device flag is set
+  // (nullable closure => v1 when unwired: byte-identical, so a default fleet is
+  // untouched). The eval gate decides promotion.
+  if (d_.cfg.promptV2 && d_.cfg.promptV2()) ci.promptV2 = true;
   ci.tools.clear();
   for (const auto& s : specs) {
     if (loopToolHidden(s.name)) continue;

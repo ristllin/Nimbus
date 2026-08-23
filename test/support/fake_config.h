@@ -34,6 +34,7 @@ struct FakeConfig {
   std::vector<Recorded> recorded;
 
   bool tts = false;
+  bool promptV2 = false;   // N11: select the simplified v2 system prompt
   std::string devName = "Nimbus";
 
   agent::HarnessConfig contract() {
@@ -83,6 +84,7 @@ struct FakeConfig {
 
     c.ttsEnabled = [this] { return tts; };
     c.deviceName = [this] { return devName; };
+    c.promptV2 = [this] { return promptV2; };
     return c;
   }
 };

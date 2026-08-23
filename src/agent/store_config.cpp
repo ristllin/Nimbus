@@ -50,6 +50,7 @@ HarnessConfig harnessConfigFromStore() {
 
   c.loop.toolLoopOn = [] { return store::orchToolLoop(); };
   c.loop.midTurnFailover = [] { return store::midTurnFailover(); };
+  c.promptV2 = [] { return store::orchPromptV2(); };
   c.loop.rounds = [] { return store::orchLoopRounds(); };
   c.loop.deadlineS = [] { return store::orchLoopDeadlineS(); };
   c.loop.resultCap = [] { return store::orchLoopResultCap(); };

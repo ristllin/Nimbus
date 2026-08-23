@@ -74,6 +74,10 @@ struct HarnessConfig {
 
   std::function<bool()> ttsEnabled;      // "Voice replies" master toggle
   std::function<std::string()> deviceName;
+  // N11: select the simplified v2 system prompt (NVS `promptV2`, default off).
+  // Nullable = off (v1, byte-identical) so host rigs and un-wired devices are
+  // unaffected. The engine reads it into ComposeInputs::promptV2 before compose.
+  std::function<bool()> promptV2;
 };
 
 }  // namespace agent
