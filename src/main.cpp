@@ -29,6 +29,7 @@
 #include <driver/rtc_io.h>       // RTC pullups for the knob-rotation deep-sleep wake
 #include <esp_task_wdt.h>
 #include <nvs_flash.h>   // nvs_flash_erase() - web factory reset
+#include <nvs.h>         // nvs_open/nvs_set_str - restore identity after a factory erase
 #include <mbedtls/platform.h>  // mbedtls_platform_set_calloc_free (route TLS -> PSRAM)
 #include <solide/solide.h>
 
@@ -2000,6 +2001,8 @@ static void orchestratorBegin() {
   // redaction layer for keys provisioned by now; keys added later are still
   // caught by the Bearer/api_key heuristics in core::LogRing::redact.
   agent::logring::clearSecrets();
+  agent::logring::g_secrets.reserve(8);   // no realloc during the appends below, so a
+                                          // concurrent redact() reader never sees a moved buffer
   agent::logring::addSecret(agent::store::openaiKey().c_str());
   agent::logring::addSecret(agent::store::anthropicKey().c_str());
   agent::logring::addSecret(agent::store::mistralKey().c_str());
@@ -3749,10 +3752,23 @@ void loop() {
     renderScreen(attn::ScreenId::Ask, -1);   // buys the e-ink ~2.2 s to paint before erase
     Serial.flush();
     if (g_factoryEraseSd) agent::memory::eraseDurableStore();   // optional combined /mem erase
-    nvs_flash_erase();                        // wipes every namespace (creds/keys/token/bonds)
-    nvs_flash_init();                         // re-init the blank partition so we can write again
-    if (keepName.length() && solide::memory::begin("solide"))
-      nimbus::sys::saveDeviceName(keepName);  // restore identity into the fresh namespace
+    // Wipe every NVS namespace (creds/keys/token/bonds), then restore ONLY the
+    // identity. solide::memory's Preferences handle is stale after the erase and its
+    // begin() is idempotent (will not reopen), so deinit->erase->init the flash and
+    // write the name back through the raw NVS API - Preferences reads String keys via
+    // nvs_get_str, so an nvs_set_str under the same "solide" namespace is read-compatible
+    // on the next boot. Best-effort: a failure just means the board auto-names again.
+    nvs_flash_deinit();
+    nvs_flash_erase();
+    nvs_flash_init();
+    if (keepName.length()) {
+      nvs_handle_t h;
+      if (nvs_open("solide", NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_str(h, "nimbus_name", keepName.c_str());
+        nvs_commit(h);
+        nvs_close(h);
+      }
+    }
     delay(50);
     ESP.restart();
   }

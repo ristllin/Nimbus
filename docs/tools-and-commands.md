@@ -260,9 +260,9 @@ of the same volume control as sound effects (Settings, Sound). Reach it from the
 `media.play` / `media.pause` / `media.stop` / `media.list` tools (the assistant), the
 `/play` Telegram command, or the `PLAY` console command.
 
-- **Formats.** 16-bit PCM **WAV** plays today. **MP3** support needs the Helix
-  decoder build (the `media.list` player state reports whether MP3 is available); a
-  track whose format is not supported is skipped, not played as noise.
+- **Formats.** 16-bit PCM **WAV** and **MP3** both play (MP3 decode uses the
+  bundled public-domain minimp3 decoder). A file whose format is not recognized is
+  skipped, never played as noise.
 - **Queue behavior.** Music is foreground audio, so a track is never dropped and
   plays to completion (unlike the sound-effect cues, which drop when busy). The
   player holds one now-playing track plus an ordered list: `media.play song.wav`

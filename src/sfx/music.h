@@ -12,8 +12,8 @@
 // Playback runs on a DEDICATED low-priority task (like the SFX task), never on
 // loopTask/tg_poll: a multi-minute clip would otherwise starve the loop watchdog
 // (the reply.speak lesson at 15x the duration). Volume rides the shared master
-// (agent::store::sfxVolume via solide::audio::setVolume). WAV plays today; MP3
-// needs the Helix decoder library (a build dependency, see mp3Supported()).
+// (agent::store::sfxVolume via solide::audio::setVolume). WAV and MP3 both play;
+// MP3 decode uses the vendored CC0 minimp3 decoder (lib/minimp3).
 namespace music {
 
 // Start the player task. Call once from setup() after NVS + solide::begin().
@@ -39,8 +39,8 @@ void setRepeat(bool on);
 // tracks:[...]} - built from the queue under the lock.
 String statusJson();
 
-// True when this build has an MP3 decoder linked (the Helix library). When false,
-// an MP3 track is skipped with a legible reason and only WAV plays.
+// True when this build can decode MP3 (the vendored minimp3 is always present, so
+// this returns true; kept as a seam the UI/tools can report).
 bool mp3Supported();
 
 // Register the media.play / media.pause / media.stop / media.list tools on the
