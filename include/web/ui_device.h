@@ -75,7 +75,7 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 <div id=tOrient style="display:none"><label>Touch orientation</label>
 <p class="hint tip">This screen self-calibrates, so there is nothing to measure. If taps land in the wrong place, toggle these until a tap lands where you touch. Applies immediately.</p>
 <div class=row style="gap:16px;flex-wrap:wrap"><label class=pr><input type=checkbox id=tSwap> Swap X and Y</label><label class=pr><input type=checkbox id=tFlipX> Flip X</label><label class=pr><input type=checkbox id=tFlipY> Flip Y</label></div></div>
-<label>Recovery access token <button class=qh type=button aria-expanded=false aria-label="About the access token">?</button></label>
+<label>Device sign-in code <button class=qh type=button aria-expanded=false aria-label="About the device sign-in code">?</button></label>
 <p class="hint tip">The Sign-in QR carries this automatically; normal setup never asks you to type it. Use this value only to recover a browser that cannot scan the QR. Tap to copy. Generate a new one under <b>Connectivity</b> below.</p>
 <div class="memv" id=idToken style="cursor:pointer" title="tap to copy">&hellip;</div>
 </div>
@@ -212,9 +212,9 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 <tr><td>On your network</td><td id=cxLan>&mdash;</td></tr>
 <tr><td>Setup Wi-Fi network</td><td id=cxApSsid>&mdash;</td></tr>
 <tr><td>Setup Wi-Fi password</td><td id=cxApPass>&mdash;</td></tr>
-<tr><td>Access token</td><td id=cxToken style="word-break:break-all">&mdash;</td></tr>
+<tr><td>Device sign-in code</td><td id=cxToken style="word-break:break-all">-</td></tr>
 </tbody></table>
-<div class=row style="margin-top:6px"><button id=regenTok type=button style="background:rgba(240,104,122,.12);color:var(--crit)">Generate New Token</button></div>
+<div class=row style="margin-top:6px"><button id=regenTok type=button style="background:rgba(240,104,122,.12);color:var(--crit)">Generate New Code</button></div>
 <p class=hint>Signs out every browser except this one.</p>
 
 <b style="display:block;margin-top:14px">Bluetooth <button class=qh type=button aria-expanded=false aria-label="About Bluetooth">?</button></b>
@@ -247,7 +247,7 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 
 <details class=setgroup><summary>Cloud access<span class=chev>&rsaquo;</span></summary>
 <div class=setbody>
-<p class="hint tip">Reach this device from anywhere through CumuloNimbus. Available in Orchestrator mode. Pairing shows a code to enter at app.cumulo-nimbus.ai while signed in.</p>
+<p class="hint tip">Reach this device from anywhere through CumuloNimbus. Available in Orchestrator mode. Pairing shows a Cloud link code to enter at app.cumulo-nimbus.ai while signed in.</p>
 <div id=cloudLine class=hint>Cloud access is off.</div>
 <div id=cloudCode class=hint style="display:none;margin-top:6px"></div>
 <div class=row style="margin-top:6px">
@@ -262,10 +262,10 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 <div class=setbody>
 <b style="display:block;margin-top:6px;color:var(--crit)">Erase storage</b>
 <div class=row style="margin-top:6px"><button id=sdReset type=button style="background:rgba(240,104,122,.12);color:var(--crit)">Erase Storage&hellip;</button></div>
-<p class=hint style="color:var(--crit)">Deletes everything on the SD card &mdash; all memories, conversation history, saved files, and media &mdash; then restarts. Wi-Fi, keys, and settings are kept.</p>
+<p class=hint style="color:var(--crit)">Deletes everything on the SD card (all memories, conversation history, saved files, and media), then restarts. Wi-Fi, keys, and settings are kept.</p>
 <b style="display:block;margin-top:14px;color:var(--crit)">Factory reset</b>
 <div class=row style="margin-top:6px"><button id=factoryReset type=button style="background:rgba(240,104,122,.12);color:var(--crit)">Factory Reset&hellip;</button></div>
-<p class=hint style="color:var(--crit)">Erases <b>everything</b> &mdash; Wi-Fi, API keys, the Telegram list, Bluetooth pairings, themes, sound settings, memory, and the access token &mdash; then restarts into first-time setup.</p>
+<p class=hint style="color:var(--crit)">Erases <b>everything</b> (Wi-Fi, API keys, the Telegram list, Bluetooth pairings, themes, sound settings, memory, and the device sign-in code), then restarts into first-time setup.</p>
 </div>
 </details>
 

@@ -24,15 +24,24 @@ let _memTok='';
 function nimbusTok(){try{return localStorage.getItem('nimbusTok')||_memTok;}catch(e){return _memTok;}}
 // Store the token. Returns true only when it is DURABLY stored (survives a reload).
 function setTok(t){_memTok=t;try{localStorage.setItem('nimbusTok',t);return localStorage.getItem('nimbusTok')===t;}catch(e){return false;}}
+// True when this load accepted a deprecated ?t= sign-in link, so a one-time
+// migration hint can be shown once the page is up (CUM-45).
+let _signinMigrated=false;
 (function(){
   try{const legacy=sessionStorage.getItem('nimbusTok');   // migrate pre-R2 tabs
       if(legacy&&!nimbusTok())setTok(legacy);}catch(e){}
   const u=new URLSearchParams(location.search).get('t');
-  // Strip the token from the address bar ONLY once it is durably stored - when storage
-  // is unavailable the ?t= is the one thing keeping a reload authenticated. Preserve
-  // non-secret handoff state (notably ?onboard=provider) instead of discarding the
-  // wizard's destination while moving from the setup AP to the LAN origin.
+  // Legacy ?t= sign-in link (deprecated, CUM-45). The durable token must never
+  // stay in a URL: the navigation is committed to browser history before any
+  // script runs, and browsers sync history across machines while localStorage is
+  // never synced, so a ?t= link silently authenticates a machine you never used.
+  // Accept it ONCE for backward compatibility (existing QR codes / bookmarks),
+  // store it client-side so every later request carries it in the X-Nimbus-Token
+  // header, strip it from the address bar, and flag the migration hint. New
+  // sign-ins use the one-time ?c= exchange below - nothing durable in the URL.
+  // Preserve non-secret handoff state (notably ?onboard=provider) when stripping.
   if(u&&setTok(u)){
+    _signinMigrated=true;
     const q=new URLSearchParams(location.search);q.delete('t');
     history.replaceState(null,'',location.pathname+(q.toString()?'?'+q.toString():''));
   }
@@ -71,18 +80,46 @@ function showAuth(){
   b.innerHTML='<div style="max-width:420px">'+
     '<img src=/logo.svg alt="" style="width:96px;height:96px;display:block;margin:0 auto 14px;background:#fff;border-radius:50%;padding:6px">'+
     '<h2 style="margin:0 0 8px">Sign in to Nimbus</h2>'+
-    '<p style="color:#9ab">Scan Settings &gt; Connectivity &gt; Sign-in QR. The QR opens a signed-in link, so there is no code to copy during normal setup.</p>'+
-    '<input id=authtok placeholder="recovery access token" style="width:240px;padding:8px;font-size:15px"> '+
+    '<p style="color:#9ab">Scan the Sign-in QR on the device (Settings &gt; Connectivity). The QR signs this browser in, so there is no code to copy during normal setup.</p>'+
+    '<input id=authtok placeholder="device sign-in code" style="width:240px;padding:8px;font-size:15px"> '+
     '<button id=authuse style="padding:8px 16px;font-size:15px">Continue</button>'+
     '<p style="color:#678;font-size:12px">New device? Open 192.168.4.1 on its setup hotspot. First-time setup signs you in automatically.</p></div>';
   document.body.appendChild(b);
-  // When storage is blocked, the in-memory token would die with the reload and bring
-  // the gate straight back - an unescapable loop for someone who typed the address by
-  // hand (no ?t= to re-seed from). Carry it in the URL instead; that survives.
   $('authuse').onclick=()=>{const t=$('authtok').value.trim();if(!t)return;
-    if(setTok(t))location.reload();
-    else location.search='?t='+encodeURIComponent(t);};
+    // Durably stored -> reload clean so every poller restarts signed in.
+    if(setTok(t)){location.reload();return;}
+    // Storage blocked (private browsing): keep the code in memory only, never in
+    // the URL (CUM-45). Drop the gate and resume; the interval pollers pick it up.
+    _authPaused=false;b.remove();if(typeof loadState==='function')loadState();};
 }
+// One-time sign-in code (CUM-45): the Sign-in QR can carry a short-lived,
+// single-use ?c=<code> instead of the durable token. Exchange it for the token,
+// store it client-side, strip the URL, and reload clean. Nothing durable ever
+// appears in a URL, so a synced-history copy of the link is inert once used.
+(function(){
+  const c=new URLSearchParams(location.search).get('c'); if(!c)return;
+  const q=new URLSearchParams(location.search);q.delete('c');
+  const clean=location.pathname+(q.toString()?'?'+q.toString():'');
+  const fd=new FormData();fd.append('code',c);
+  fetch('/api/signin/exchange',{method:'POST',body:fd}).then(r=>r.ok?r.json():Promise.reject(r.status))
+    .then(o=>{history.replaceState(null,'',clean);
+      if(o&&o.token&&setTok(o.token))location.reload();})
+    .catch(()=>{history.replaceState(null,'',clean);});   // bad/expired code -> the gate handles sign-in
+})();
+// One-time migration hint for a deprecated ?t= sign-in link (CUM-45): the person
+// is already signed in on this browser; nudge them to the Sign-in QR next time.
+function showMigrationHint(){
+  if(!_signinMigrated||$('migHint'))return;
+  const b=document.createElement('div');b.id='migHint';b.className='warnbox';
+  b.style.cssText='position:fixed;left:50%;top:12px;transform:translateX(-50%);max-width:520px;z-index:200;display:flex;gap:12px;align-items:flex-start';
+  const s=document.createElement('span');
+  s.textContent='You are signed in on this browser. That sign-in link is being retired for security; next time scan the Sign-in QR on the device.';
+  const x=document.createElement('button');x.textContent='Got it';
+  x.style.cssText='background:var(--raise3);color:var(--ink2);white-space:nowrap';
+  x.onclick=()=>b.remove();
+  b.appendChild(s);b.appendChild(x);document.body.appendChild(b);
+}
+document.addEventListener('DOMContentLoaded',showMigrationHint);
 // No stored token -> gate immediately, before any load/poll renders data.
 if(!nimbusTok())document.addEventListener('DOMContentLoaded',showAuth);
 // Tab switching: show one .pane, highlight its .tab. Default = the first tab (Home).
@@ -319,7 +356,7 @@ function applyState(d){
     $('cloudLine').textContent=c.line||'';
     var cc=$('cloudCode');
     if(c.state==='pairing'&&c.code){cc.style.display='block';
-      cc.innerHTML='Enter this code at <b>app.cumulo-nimbus.ai</b> while signed in: <b></b>';
+      cc.innerHTML='Enter this Cloud link code at <b>app.cumulo-nimbus.ai</b> while signed in: <b></b>';
       cc.lastChild.textContent=c.code;}   // code is from the untrusted pairing server: textContent, never innerHTML
     else{cc.style.display='none';}
     $('cloudPair').style.display=(c.paired||c.state==='pairing')?'none':'inline-block';
@@ -594,11 +631,12 @@ function loadConnect(){
      if($('cxToken'))$('cxToken').textContent=c.token||'';
      // Access token also shown in Device → identity (owner ask); click to copy.
      if($('idToken')){$('idToken').textContent=c.token||'-';
-       $('idToken').onclick=()=>{if(navigator.clipboard&&c.token){navigator.clipboard.writeText(c.token);toast('Token copied');}};}
+       $('idToken').onclick=()=>{if(navigator.clipboard&&c.token){navigator.clipboard.writeText(c.token);toast('Sign-in code copied');}};}
      // Every address links to ITSELF. This used to render one link labelled with the
      // mDNS name whose href was the raw-IP URL, so clicking "nimbus.local" signed you in
      // at the IP origin and the name kept asking for the token forever (the token is
-     // stored per origin). Each address now carries its own ?t= so either one works.
+     // stored per origin). Each address carries its own one-time ?c= sign-in code
+     // (exchanged for the token over POST), so either one signs in with one click.
      if($('cxLan')&&(c.url||c.mdnsUrl)){
        const link=(href,label)=>'<a href="'+href+'" target=_blank rel=noopener>'+label+'</a>';
        const parts=[];
@@ -611,7 +649,7 @@ function loadConnect(){
      if($('btBonds'))$('btBonds').textContent=(c.bleBonds||0)+' paired'+((c.bleBonds||0)?' · pairing survives restart':'');
      if($('btMac'))$('btMac').textContent=c.bleMac||'-';
    })
-   .catch(()=>{const h='🔒 Scan the Config QR on the device';
+   .catch(()=>{const h='🔒 Scan the Sign-in QR on the device';
      if($('cxApPass'))$('cxApPass').textContent=h;
      if($('cxToken'))$('cxToken').textContent=h;});
 }
@@ -626,7 +664,7 @@ function loadConnect(){
 // then persist the NEW token locally so THIS browser stays in; every other browser 401s
 // on its next call and gets the identify gate.
 (function(){const b=$('regenTok'); if(!b)return; b.onclick=()=>{
-  if(!confirm('Generate a new access token?\n\nEvery browser is signed out except this one. Scan the new Config QR on each other device.'))return;
+  if(!confirm('Generate a new device sign-in code?\n\nEvery browser is signed out except this one. Scan the new Sign-in QR on each other device.'))return;
   fetch('/api/token/regen',{method:'POST'}).then(r=>r.ok?r.json():Promise.reject(r.status)).then(o=>{
     if(o&&o.token){setTok(o.token);
       if($('cxToken'))$('cxToken').textContent=o.token;
@@ -646,7 +684,7 @@ function loadConnect(){
 })();
 // Factory reset: type-to-confirm, then POST the exact confirm phrase the device requires.
 (function(){const b=$('factoryReset'); if(!b)return; b.onclick=()=>{
-  const p=prompt('Erase all content and settings?\n\nThis removes Wi-Fi, API keys, the Telegram list, Bluetooth pairings, memory, and the access token, then restarts into first-time setup.\n\nType FACTORY RESET to confirm:');
+  const p=prompt('Erase all content and settings?\n\nThis removes Wi-Fi, API keys, the Telegram list, Bluetooth pairings, memory, and the device sign-in code, then restarts into first-time setup.\n\nType FACTORY RESET to confirm:');
   if(p===null)return;
   if(p.trim().toUpperCase()!=='FACTORY RESET'){toast('Not reset - the phrase didn\'t match');return;}
   const fd=new FormData();fd.append('confirm','FACTORY RESET');
@@ -1904,14 +1942,28 @@ function _fviewable(name){
   if(/\.(txt|md|log|csv)$/.test(n))return 'txt';
   return '';
 }
+// Header-only download (CUM-45): the token rides the X-Nimbus-Token header via
+// the fetch shim, never a ?t= query param, so nothing token-bearing lands in
+// browser/download history or server logs. Fetches the file as a Blob and hands
+// it to the browser through an object URL, then revokes it. Returns a promise so
+// callers can render pending/result feedback.
+function dlFile(project,name){
+  const url='/api/files/dl?project='+encodeURIComponent(project)+'&name='+encodeURIComponent(name);
+  return fetch(url).then(r=>r.ok?r.blob():Promise.reject(r.status)).then(b=>{
+    const u=URL.createObjectURL(b);
+    const a=document.createElement('a');a.href=u;a.download=name;
+    document.body.appendChild(a);a.click();a.remove();
+    setTimeout(()=>URL.revokeObjectURL(u),0);
+  });
+}
 // Show a file in place. Images load through the img tag; text is fetched and
 // inserted with textContent, never innerHTML - the whole point is that file
-// contents are data, not markup.
+// contents are data, not markup. The image bytes are fetched (token in the
+// header) and shown from an object URL, so no ?t= appears in an <img src>.
 function _fpreview(project,name,kind){
   const box=$('filePrev'); if(!box)return;
-  const tok=nimbusTok();
   const url='/api/files/dl?inline=1&project='+encodeURIComponent(project)+
-            '&name='+encodeURIComponent(name)+'&t='+encodeURIComponent(tok);
+            '&name='+encodeURIComponent(name);
   box.style.display='block';
   box.innerHTML='';
   const bar=document.createElement('div');
@@ -1928,9 +1980,12 @@ function _fpreview(project,name,kind){
     const img=document.createElement('img');
     img.style.cssText='max-width:100%;max-height:60vh;border-radius:8px;display:block';
     img.alt=name;
-    img.onerror=()=>{box.appendChild(document.createTextNode('Couldn\'t load that image.'));};
-    img.src=url;
     box.appendChild(img);
+    // Fetch the bytes (token in the header) and show them from an object URL, so
+    // the <img src> never carries a ?t= token.
+    fetch(url).then(r=>r.ok?r.blob():Promise.reject(r.status)).then(b=>{
+      const u=URL.createObjectURL(b);img.onload=()=>URL.revokeObjectURL(u);img.src=u;
+    }).catch(()=>{box.appendChild(document.createTextNode('Couldn\'t load that image.'));});
     return;
   }
   const pre=document.createElement('pre');
@@ -1957,19 +2012,20 @@ function loadFiles(){
       :'No SD card - insert a card to store files';
     const files=d.files||[];
     if(!files.length){box.innerHTML='<span class=hint>No files'+(proj?(' in '+_fesc(proj)):'')+'</span>';return;}
-    const tok=nimbusTok();
     box.innerHTML='<table><tbody>'+files.map(f=>{
-      const dl='/api/files/dl?project='+encodeURIComponent(f.project)+'&name='+encodeURIComponent(f.name)+'&t='+encodeURIComponent(tok);
       // "view" only for what the device is willing to render inline (the server
       // decides; this just avoids offering a link that would download anyway).
       const v=_fviewable(f.name);
       const view=v?('<a href="#" data-vp="'+_fesc(f.project)+'" data-vn="'+_fesc(f.name)+'" data-vk="'+v+'">view</a> &middot; '):'';
+      // "get" is a header-only download (dlFile), never a token-bearing link.
       return '<tr><td style="word-break:break-all">'+_fesc(f.project)+'/'+_fesc(f.name)+'</td><td>'+_fesc(f.kind||'')+
         '</td><td style="white-space:nowrap">'+_fbytes(f.bytes)+'</td><td style="white-space:nowrap">'+view+
-        '<a href="'+dl+'" target=_blank rel=noopener>get</a> &middot; <a href="#" data-rmp="'+_fesc(f.project)+'" data-rmn="'+_fesc(f.name)+'">delete</a></td></tr>';
+        '<a href="#" data-dlp="'+_fesc(f.project)+'" data-dln="'+_fesc(f.name)+'">get</a> &middot; <a href="#" data-rmp="'+_fesc(f.project)+'" data-rmn="'+_fesc(f.name)+'">delete</a></td></tr>';
     }).join('')+'</tbody></table>';
     box.querySelectorAll('a[data-vp]').forEach(a=>a.onclick=e=>{
       e.preventDefault(); _fpreview(a.dataset.vp,a.dataset.vn,a.dataset.vk);});
+    box.querySelectorAll('a[data-dlp]').forEach(a=>a.onclick=e=>{e.preventDefault();
+      dlFile(a.dataset.dlp,a.dataset.dln).catch(()=>toast('Couldn\'t download - try again'));});
     box.querySelectorAll('a[data-rmp]').forEach(a=>a.onclick=e=>{e.preventDefault();
       if(!confirm('Delete '+a.dataset.rmp+'/'+a.dataset.rmn+'?'))return;
       const fd=new FormData();fd.append('project',a.dataset.rmp);fd.append('name',a.dataset.rmn);

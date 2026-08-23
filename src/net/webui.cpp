@@ -30,6 +30,7 @@
 #include <ESPAsyncWebServer.h>
 #include <ArduinoJson.h>
 #include <Esp.h>
+#include <esp_random.h>     // esp_random() - one-time sign-in code entropy (CUM-45)
 #include <esp_heap_caps.h>  // heap_caps breakdown for /api/state mem{} (docs/memory-model.md)
 #include <LittleFS.h>              // fs free/used for the memory panel
 #include <solide/storage.h>        // SD card free/total (orch data store)
@@ -37,6 +38,7 @@
 #include <solide/audio.h>          // mic/speaker diagnostics (VU meter, beep, loopback)
 #include <math.h>                  // sqrtf/sinf for the audio diagnostics
 #include "nimbus/fault.h"
+#include "nimbus/signin_codes.h"   // CUM-45: one-time sign-in codes (token out of URLs)
 #include "nimbus/orch/budget.h"    // deriveBudget - "auto (currently N)" effective caps
 #include "nimbus/orch/compact.h"   // modelCtxTokens (window table)
 #include "nimbus/power/bright_cap.h"          // resilience: simulated mic/speaker faults
@@ -104,6 +106,25 @@ static bool onFreshAllowlist(const String& id) {
 static volatile uint8_t  s_authFails       = 0;
 static volatile uint32_t s_authFirstFailMs = 0;
 
+// ===================== N1 UI endpoints (web app revamp) =====================
+// Owned by lane N1 (CUM-45 and the web-app revamp). One-time sign-in codes keep
+// the durable access token out of every URL: a Sign-in QR / cross-origin link /
+// Wi-Fi-handoff link carries a short single-use code, and the page exchanges it
+// once for the token over POST /api/signin/exchange. Runs on the single web-server
+// task (no on-device concurrency), so the code table needs no lock.
+static nimbus::SigninCodes s_signinCodes;
+
+// Mint a fresh single-use code (12 hex chars from the hardware RNG) and register
+// it. Returns the code by value.
+static String mintSigninCode() {
+  char buf[13];
+  snprintf(buf, sizeof buf, "%08x%04x",
+           (unsigned)esp_random(), (unsigned)(esp_random() & 0xFFFF));
+  s_signinCodes.mint(buf, millis());
+  return String(buf);
+}
+// ================== end N1 UI endpoints (file-scope state) ==================
+
 // Per-device web auth (prism): a state-changing request must carry the device token
 // (X-Nimbus-Token header OR ?t= param), constant-time compared vs store::webAuthToken().
 // The owner obtains it via the Config QR. Closes the unauthenticated config/CSRF surface
@@ -111,8 +132,12 @@ static volatile uint32_t s_authFirstFailMs = 0;
 bool webAuthOk(::AsyncWebServerRequest* r) {
   String want = agent::store::webAuthToken();
   String got;
+  // CUM-45: authenticate on the X-Nimbus-Token header (the fetch shim sends it on
+  // every request) or a form field, NEVER a ?t= query param. A URL query lands in
+  // browser/history/log records and syncs across machines; dropping it makes any
+  // leaked deep link inert on every API route. New sign-ins arrive as a one-time
+  // ?c= code exchanged over POST /api/signin/exchange, never the durable token.
   if (r->hasHeader("X-Nimbus-Token"))    got = r->getHeader("X-Nimbus-Token")->value();
-  else if (r->hasParam("t"))             got = r->getParam("t")->value();          // query
   else if (r->hasParam("t", true))       got = r->getParam("t", true)->value();    // form
   bool ok = !(got.length() == 0 || got.length() != want.length());
   if (ok) {
@@ -1214,13 +1239,13 @@ void beginWeb(const WebConfig& wc) {
     d["ip"]     = sta ? staIp() : "";
     d["apIp"]   = apIp();
     d["token"]  = tok;
-    d["url"]    = String("http://") + host + "/?t=" + tok;
-    // A SECOND token-bearing URL for the mDNS name. The browser stores the token per
-    // ORIGIN (localStorage), and http://<ip> and http://<name>.local are different
-    // origins - so a token minted at the IP does NOT sign you in at nimbus.local, which
-    // read as "the IP works but the name asks me to identify again". Handing out both
-    // lets either address sign in with one click. mDNS only runs once STA is up.
-    if (sta) d["mdnsUrl"] = String("http://") + mdnsName() + "/?t=" + tok;
+    // Cross-origin one-click sign-in without the durable token in a URL (CUM-45):
+    // each address gets its OWN one-time ?c= code (the browser stores the token per
+    // ORIGIN, so http://<ip> and http://<name>.local each need to sign in once).
+    // The page exchanges the code for the token over POST and strips the URL; a
+    // copy of the link in synced history is inert once used or after the TTL.
+    d["url"]    = String("http://") + host + "/?c=" + mintSigninCode();
+    if (sta) d["mdnsUrl"] = String("http://") + mdnsName() + "/?c=" + mintSigninCode();
     // Bluetooth (Notifier link): the ring/e-ink are painted over a bonded BLE link in
     // Notifier mode. macOS hides the central's identity for a custom peripheral, so we
     // can show the bond COUNT + this device's BLE address (for targeting), not "who".
@@ -1228,6 +1253,47 @@ void beginWeb(const WebConfig& wc) {
     d["bleConn"]  = net::ble::connected();
     d["bleBonds"] = net::ble::numBonds();
     d["bleMac"]   = net::ble::macAddress();
+    String s; serializeJson(d, s);
+    AsyncWebServerResponse* res = r->beginResponse(200, "application/json", s);
+    res->addHeader("Cache-Control", "no-store");
+    r->send(res);
+  });
+
+  // ---- One-time sign-in code exchange (CUM-45, N1 UI endpoint) --------------
+  // PRE-AUTH by design: the caller does not have the token yet - that is the
+  // whole point. It presents a single-use, short-lived code (from a Sign-in QR,
+  // a cross-origin link, or the Wi-Fi handoff) and receives the durable token in
+  // the response body, which the page stores client-side and sends as a header
+  // thereafter. A wrong/expired/reused code returns 401 and reveals nothing. The
+  // code table is single-use, so a leaked link cannot be replayed.
+  s_server.on("/api/signin/exchange", HTTP_POST, [](AsyncWebServerRequest* r) {
+    String code = r->hasParam("code", true) ? r->getParam("code", true)->value() : "";
+    if (code.length() == 0 || !s_signinCodes.redeem(code.c_str(), millis())) {
+      r->send(401, "application/json", "{\"error\":\"invalid or expired code\"}");
+      return;
+    }
+    JsonDocument d;
+    d["token"] = agent::store::webAuthToken();
+    String s; serializeJson(d, s);
+    AsyncWebServerResponse* res = r->beginResponse(200, "application/json", s);
+    res->addHeader("Cache-Control", "no-store");
+    r->send(res);
+  });
+
+  // ---- Mint a fresh one-time sign-in code (CUM-45, N1 UI endpoint) ----------
+  // Token-gated: only an already-signed-in caller can mint a code, which it uses
+  // to render a Sign-in QR or hand off a cross-origin link. Contract for other
+  // lanes that render the device-screen QR: fetch a code here (or mint one via
+  // the same table) and encode "http://<host>/?c=<code>", never "?t=<token>".
+  s_server.on("/api/signin/code", HTTP_GET, [](AsyncWebServerRequest* r) {
+    if (authBlocked(r)) return;
+    const bool sta = staConnected();
+    const String host = sta && staIp().length() ? staIp() : apIp();
+    JsonDocument d;
+    d["code"] = mintSigninCode();
+    d["url"]  = String("http://") + host + "/?c=" + mintSigninCode();
+    if (sta) d["mdnsUrl"] = String("http://") + mdnsName() + "/?c=" + mintSigninCode();
+    d["ttlMs"] = (uint32_t)nimbus::SigninCodes::DEFAULT_TTL_MS;
     String s; serializeJson(d, s);
     AsyncWebServerResponse* res = r->beginResponse(200, "application/json", s);
     res->addHeader("Cache-Control", "no-store");
