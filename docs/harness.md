@@ -78,7 +78,7 @@ entry (owner msg | sub-agents finished | loop fired | post-OTA)   [tg_poll]
   → input: [MEMORY RESULTS] + [FRESH RESULTS] + [ACTIVE SESSIONS] + providers/models
     /connectors digest + [CHANNEL]/[USER] (or [SYSTEM]/[SCHEDULED LOOP])
   → host pick (orchHost || first of providerPriority) + per-chat conv chain
-  → budget gate → head tool loop (≤12 rounds / 600 s wall clock / heap re-gate
+  → budget gate → head tool loop (≤8 rounds / 600 s wall clock / heap re-gate
     / byte budgets; each round's socket timeout clamped to the REMAINING budget)
       round: model → tool calls → registry dispatch (memory.*, web.search,
       device.control, files.*, loop.*, session terminate…) → results fed back;

@@ -495,7 +495,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
         r.output = std::string(content[0]["text"] | "");
       return done(r);
     };
-    headTools.cfg.maxRounds          = d_.cfg.loop.rounds ? d_.cfg.loop.rounds() : 12;  // user-tunable (P6)
+    headTools.cfg.maxRounds          = d_.cfg.loop.rounds ? d_.cfg.loop.rounds() : 8;  // user-tunable (P6); default 8
     headTools.cfg.deadlineMs         =
         (uint32_t)(d_.cfg.loop.deadlineS ? d_.cfg.loop.deadlineS() : 600) * 1000U;
     headTools.cfg.roundMinHeap       = t_.loopMinHeap;                 // measured floor - not tunable

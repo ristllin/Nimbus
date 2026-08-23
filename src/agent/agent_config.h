@@ -93,7 +93,7 @@
 // with these as fallbacks; the web UI clamps to the ranges noted on each key).
 // The conversation accumulates in PSRAM so rounds are cheap; the deadline is the
 // real ceiling on a runaway/hung provider.
-#define ORCH_LOOP_MAX_ROUNDS      12      // tool-dispatch rounds before the forced final answer
+#define ORCH_LOOP_MAX_ROUNDS      8       // tool-dispatch rounds before the forced final answer
 #define ORCH_LOOP_DEADLINE_MS     600000U // wall-clock budget across the whole loop (10 min)
 // Bumped 2026-08-03 (owner): the accumulating context is PSRAM-backed, so a bigger
 // tool-output budget costs PSRAM not internal SRAM. 8 KB/result, 64 KB total (~16 K tokens)
@@ -162,7 +162,7 @@
 #define AKEY_MID_FAILOVER   "midFail"       // mid-turn provider failover on loop turns (default ON, Stage 2 ph5)
 // Head tool-loop caps, user-tunable (P6). NVS keys <=15 chars. Deadline stored in
 // SECONDS (fits uint16, avoids ms overflow). Empty/absent -> the macro defaults.
-#define AKEY_LOOP_ROUNDS    "orchLoopRnds"  // max tool-dispatch rounds (default 12, 1..32)
+#define AKEY_LOOP_ROUNDS    "orchLoopRnds"  // max tool-dispatch rounds (default 8, 1..32)
 #define AKEY_LOOP_DEADLINE  "orchLoopDlS"   // wall-clock budget seconds (default 600, 30..3600)
 #define AKEY_LOOP_RESCAP    "orchLoopRCap"  // per-tool-result byte clamp (default 4096)
 #define AKEY_LOOP_TOTCAP    "orchLoopTCap"  // cumulative tool-output byte budget (default 24576)

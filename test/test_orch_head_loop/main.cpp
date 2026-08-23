@@ -179,6 +179,28 @@ static void test_rounds_cap_forces_final_answer() {
   TEST_ASSERT_FALSE(f.allowToolsSeen[2]);   // forced final round: no tools
 }
 
+// (d1b) the tool-loop cap defaults to 8 rounds (CUM-54): a well-behaved model that
+// keeps calling tools is forced to answer on the 9th call (round index 8), the turn
+// ends gracefully (ok), and the cap reason is "rounds". Pins the DoD number and the
+// graceful "ran out of tool budget" ending together.
+static void test_rounds_cap_default_eight_is_graceful() {
+  Fake f;
+  std::vector<HeadStep> s;
+  for (int i = 0; i < 8; ++i) s.push_back(stepCall("web.search"));  // 8 tool rounds
+  s.push_back(stepFinished("{\"reply\":\"answer\"}"));              // forced final round answers
+  f.script = s;
+  HeadLoopConfig cfg; cfg.maxRounds = 8;   // the shipped default (ORCH_LOOP_MAX_ROUNDS)
+  HeadOutcome o = runHeadLoop(cfg, f.hooks());
+  TEST_ASSERT_TRUE(o.ok);
+  TEST_ASSERT_EQUAL_INT(8, o.rounds);
+  TEST_ASSERT_TRUE(o.hitCap);
+  TEST_ASSERT_EQUAL_STRING("rounds", o.capReason.c_str());
+  TEST_ASSERT_EQUAL_INT(9, (int)f.allowToolsSeen.size());  // 8 tool rounds + 1 forced final
+  TEST_ASSERT_FALSE(f.allowToolsSeen.back());              // final round: tools withdrawn
+  // The model-facing reason phrases the graceful ending as a spent tool budget.
+  TEST_ASSERT_TRUE(has(capReasonText("rounds"), "budget"));
+}
+
 // The forced final round must tell the model WHY its tools went away. Without
 // this the loop removed them silently, and every provider confabulated a promise
 // of future work instead of admitting it could not finish ("I'll report back when
@@ -501,6 +523,7 @@ int main(int, char**) {
   RUN_TEST(test_one_tool_round_then_finish);
   RUN_TEST(test_tool_error_is_not_fatal);
   RUN_TEST(test_rounds_cap_forces_final_answer);
+  RUN_TEST(test_rounds_cap_default_eight_is_graceful);
   RUN_TEST(test_forced_final_round_carries_the_cap_reason);
   RUN_TEST(test_each_cap_reason_reaches_the_step);
   RUN_TEST(test_cap_reason_text_is_readable);

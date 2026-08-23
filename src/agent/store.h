@@ -78,7 +78,7 @@ bool   orchToolLoop();       // head multi-turn tool-use loop enabled (default O
 bool   midTurnFailover();    // mid-turn provider failover on loop turns (default ON)
 bool   orchTrace();          void setOrchTrace(bool v);   // glass-box trace rows (default ON, A4)
 // Head tool-loop caps (P6), user-tunable + clamped. Deadline in seconds.
-int    orchLoopRounds();     // 1..32   (default 12)
+int    orchLoopRounds();     // 1..32   (default 8)
 int    orchLoopDeadlineS();  // 30..3600 (default 600)
 int    orchLoopResultCap();  // 512..65536 (default 8192)
 int    orchLoopTotalCap();   // 2048..1048576 (~256K tok ceiling; default 65536)
