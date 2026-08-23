@@ -29,6 +29,9 @@
 #include <driver/rtc_io.h>       // RTC pullups for the knob-rotation deep-sleep wake
 #include <esp_task_wdt.h>
 #include <nvs_flash.h>   // nvs_flash_erase() - web factory reset
+#include <nvs.h>         // raw NVS read/write to preserve identity across the wipe
+#include "agent/agent_config.h"            // AKEY_* frozen NVS key macros
+#include "nimbus/config/identity_keys.h"  // keys that must survive a factory reset
 #include <mbedtls/platform.h>  // mbedtls_platform_set_calloc_free (route TLS -> PSRAM)
 #include <solide/solide.h>
 
@@ -3015,6 +3018,7 @@ void setup() {
       return net::saveAndConnect(s, p);
     };
     h.reboot = [] { ESP.restart(); };
+    h.factoryReset = [] { g_factoryResetPending = true; };  // FACTRESET: same seam as web
     h.hang   = [] { for (;;) {} };  // test-only spin - the F12 WDT reboots us in ~8 s
     h.setMode = [](int m) {
       sys::saveMode(m == 1 ? sys::Mode::Orchestrator : sys::Mode::Notifier);
@@ -3682,6 +3686,51 @@ static void drainTouch(uint32_t now) {
   }
 }
 
+// Pin the portable identity-key list to the frozen AKEY_* machine keys, so a
+// rename on one side fails the build instead of silently un-preserving a key.
+namespace {
+constexpr bool cstreq(const char* a, const char* b) {
+  return *a == *b && (*a == '\0' ? true : cstreq(a + 1, b + 1));
+}
+static_assert(cstreq(nimbus::config::kIdentityStrKeys[0], AKEY_SCREEN_MODEL), "identity drift: scrModel");
+static_assert(cstreq(nimbus::config::kIdentityStrKeys[1], AKEY_TOUCH_CAL), "identity drift: tchCal");
+static_assert(cstreq(nimbus::config::kIdentityStrKeys[2], AKEY_OTA_TYPE), "identity drift: otaType");
+static_assert(cstreq(nimbus::config::kIdentityIntKeyTftFlip, AKEY_TFT_FLIP), "identity drift: tftFlip");
+}  // namespace
+
+// Factory reset that KEEPS the board's hardware identity. A bare nvs_flash_erase()
+// wipes scrModel/tftFlip/tchCal/otaType too, so a TFT board reboots into the e-ink
+// default driver and shows a white screen it cannot correct from its own controls
+// (CUM-50). Capture the identity keys via raw NVS, erase every namespace (Wi-Fi,
+// keys, token, bonds all go), re-init, then write the identity back - so the next
+// boot is clean onboarding on the RIGHT panel.
+static void factoryResetPreserveIdentity() {
+  static const char* kNs = "solide";
+  constexpr int kN = nimbus::config::kIdentityStrKeyCount;
+  char strv[kN][64];
+  bool strPresent[kN] = {false};
+  int32_t flip = 0;
+  bool flipPresent = false;
+  nvs_handle_t h;
+  if (nvs_open(kNs, NVS_READONLY, &h) == ESP_OK) {
+    for (int i = 0; i < kN; i++) {
+      size_t len = sizeof strv[i];
+      strPresent[i] = nvs_get_str(h, nimbus::config::kIdentityStrKeys[i], strv[i], &len) == ESP_OK;
+    }
+    flipPresent = nvs_get_i32(h, nimbus::config::kIdentityIntKeyTftFlip, &flip) == ESP_OK;
+    nvs_close(h);
+  }
+  nvs_flash_erase();   // wipe every namespace
+  nvs_flash_init();    // re-mount the now-empty partition
+  if (nvs_open(kNs, NVS_READWRITE, &h) == ESP_OK) {
+    for (int i = 0; i < kN; i++)
+      if (strPresent[i]) nvs_set_str(h, nimbus::config::kIdentityStrKeys[i], strv[i]);
+    if (flipPresent) nvs_set_i32(h, nimbus::config::kIdentityIntKeyTftFlip, flip);
+    nvs_commit(h);
+    nvs_close(h);
+  }
+}
+
 void loop() {
   esp_task_wdt_reset();
 #ifdef NIMBUS_TEST
@@ -3694,12 +3743,14 @@ void loop() {
 #endif  // feed the F12 watchdog every iteration
   otaupd::tick();        // OTA: mark-valid once healthy + check/auto-install cadence
   otaLoopUx();           // OTA install e-ink/ring UX (no-op unless installing)
-  if (g_factoryResetPending) {  // web factory reset: wipe ALL config, then reboot fresh
-    Serial.println("FACTORY RESET -> erase NVS + restart");
-    g_askOverride = "Factory reset...";
-    renderScreen(attn::ScreenId::Ask, -1);   // buys the e-ink ~2.2 s to paint before erase
+  if (g_factoryResetPending) {  // web factory reset: wipe config, KEEP identity, reboot fresh
+    Serial.println("FACTORY RESET -> keep identity, erase config, restart");
+    // Progress screen with an honest duration; also buys the e-ink ~2.2 s to paint
+    // before the erase blocks. The screen setup is preserved, so this is safe on TFT.
+    g_askOverride = "Resetting to factory settings. This takes a few seconds.";
+    renderScreen(attn::ScreenId::Ask, -1);
     Serial.flush();
-    nvs_flash_erase();                        // wipes every namespace (creds/keys/token/bonds)
+    factoryResetPreserveIdentity();
     delay(50);
     ESP.restart();
   }
