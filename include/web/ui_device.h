@@ -266,8 +266,8 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 <b style="display:block;margin-top:6px;color:var(--crit)">Erase storage</b>
 <div class=row style="margin-top:6px"><button id=sdReset type=button style="background:rgba(240,104,122,.12);color:var(--crit)">Erase Storage&hellip;</button></div>
 <p class=hint style="color:var(--crit)">Deletes everything on the SD card (all memories, conversation history, saved files, and media), then restarts. Wi-Fi, keys, and settings are kept. This can take up to a minute.</p>
-<div class=row style="margin-top:6px"><button id=sdFormat type=button style="background:rgba(240,104,122,.12);color:var(--crit)">Format Card&hellip;</button></div>
-<p class=hint style="color:var(--crit)">Reformats the whole card, not only the assistant's data. Use this only if the card looks corrupted. It asks for its own typed confirmation.</p>
+<div id=sdFormatRow style="display:none"><div class=row style="margin-top:6px"><button id=sdFormat type=button style="background:rgba(240,104,122,.12);color:var(--crit)">Format Card&hellip;</button></div>
+<p class=hint style="color:var(--crit)">Reformats the whole card, not only the assistant's data. Use this only if the card looks corrupted. It asks for its own typed confirmation.</p></div>
 <b style="display:block;margin-top:14px;color:var(--crit)">Factory reset</b>
 <div class=row style="margin-top:6px"><button id=factoryReset type=button style="background:rgba(240,104,122,.12);color:var(--crit)">Factory Reset&hellip;</button></div>
 <div class=row style="margin-top:6px"><label><input type=checkbox id=factoryEraseSd> Also erase the SD card</label></div>

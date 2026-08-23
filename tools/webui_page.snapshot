@@ -408,8 +408,8 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <b style="display:block;margin-top:6px;color:var(--crit)">Erase storage</b>
 <div class=row style="margin-top:6px"><button id=sdReset type=button style="background:rgba(240,104,122,.12);color:var(--crit)">Erase Storage&hellip;</button></div>
 <p class=hint style="color:var(--crit)">Deletes everything on the SD card (all memories, conversation history, saved files, and media), then restarts. Wi-Fi, keys, and settings are kept. This can take up to a minute.</p>
-<div class=row style="margin-top:6px"><button id=sdFormat type=button style="background:rgba(240,104,122,.12);color:var(--crit)">Format Card&hellip;</button></div>
-<p class=hint style="color:var(--crit)">Reformats the whole card, not only the assistant's data. Use this only if the card looks corrupted. It asks for its own typed confirmation.</p>
+<div id=sdFormatRow style="display:none"><div class=row style="margin-top:6px"><button id=sdFormat type=button style="background:rgba(240,104,122,.12);color:var(--crit)">Format Card&hellip;</button></div>
+<p class=hint style="color:var(--crit)">Reformats the whole card, not only the assistant's data. Use this only if the card looks corrupted. It asks for its own typed confirmation.</p></div>
 <b style="display:block;margin-top:14px;color:var(--crit)">Factory reset</b>
 <div class=row style="margin-top:6px"><button id=factoryReset type=button style="background:rgba(240,104,122,.12);color:var(--crit)">Factory Reset&hellip;</button></div>
 <div class=row style="margin-top:6px"><label><input type=checkbox id=factoryEraseSd> Also erase the SD card</label></div>
@@ -1146,6 +1146,8 @@ function _chatTraceHint(){
 }
 function applyState(d){
   if(d.storeSD!==undefined){GB.sd=!!d.storeSD&&!d.sdLost;_chatTraceHint();}
+  // CUM-15: reveal the full-card Format control only when the driver supports it.
+  if($('sdFormatRow'))$('sdFormatRow').style.display=(d.files&&d.files.canFormat)?'block':'none';
   // ---- Cloud access (cumulo-nimbus tunnel) ----
   if(d.cloud&&$('cloudLine')){
     var c=d.cloud;

@@ -313,6 +313,8 @@ function _chatTraceHint(){
 }
 function applyState(d){
   if(d.storeSD!==undefined){GB.sd=!!d.storeSD&&!d.sdLost;_chatTraceHint();}
+  // CUM-15: reveal the full-card Format control only when the driver supports it.
+  if($('sdFormatRow'))$('sdFormatRow').style.display=(d.files&&d.files.canFormat)?'block':'none';
   // ---- Cloud access (cumulo-nimbus tunnel) ----
   if(d.cloud&&$('cloudLine')){
     var c=d.cloud;

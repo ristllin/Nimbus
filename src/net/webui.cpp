@@ -431,6 +431,10 @@ static void buildState(String& out) {
     fl["bytes"]       = (unsigned long long)t.used;
     fl["quota"]       = (unsigned long long)t.quota;       // card - 512 MB reserve
     fl["cardFree"]    = (unsigned long long)t.cardFree;    // free-on-card
+    // CUM-15: only advertise full-card format when the board-support driver actually
+    // has the primitive (the hook is set). A Format control that can only 501 is a
+    // lying knob, so the UI renders it only when this is true.
+    fl["canFormat"]   = (bool)s_wc.sdFormat;
   }
 
   bool sta = staConnected();
