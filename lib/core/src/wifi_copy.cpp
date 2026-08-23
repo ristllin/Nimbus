@@ -117,20 +117,32 @@ std::string forgetRowLabel(const KnownNet& n, bool current, size_t maxChars) {
   return fit(s, maxChars);
 }
 
-std::vector<std::string> buildScanRows(const std::vector<ScanHit>& scan,
-                                       const std::vector<KnownNet>& known,
-                                       size_t maxChars) {
-  // Collapse duplicate SSIDs to their strongest sighting; count hidden APs separately.
+// Collapse duplicate SSIDs to their strongest sighting; return the count of hidden
+// (empty-SSID) access points separately. `locked` merges with OR so a secured network
+// seen open on another band is never presented as open.
+static std::vector<ScanHit> dedupeScan(const std::vector<ScanHit>& scan, int& hidden) {
   std::vector<ScanHit> uniq;
-  int hidden = 0;
+  hidden = 0;
   for (const ScanHit& h : scan) {
-    if (h.ssid.empty()) { ++hidden; continue; }   // hidden AP: no name to show/pick
+    if (h.ssid.empty()) { ++hidden; continue; }
     bool merged = false;
     for (ScanHit& u : uniq) {
-      if (u.ssid == h.ssid) { if (h.rssi > u.rssi) u.rssi = h.rssi; u.locked = u.locked && h.locked; merged = true; break; }
+      if (u.ssid != h.ssid) continue;
+      if (h.rssi > u.rssi) u.rssi = h.rssi;
+      u.locked = u.locked || h.locked;
+      merged = true;
+      break;
     }
     if (!merged) uniq.push_back(h);
   }
+  return uniq;
+}
+
+std::vector<std::string> buildScanRows(const std::vector<ScanHit>& scan,
+                                       const std::vector<KnownNet>& known,
+                                       size_t maxChars) {
+  int hidden = 0;
+  std::vector<ScanHit> uniq = dedupeScan(scan, hidden);
   // Saved networks first, then by signal (strongest first). Stable insertion sort keeps
   // equal-key ties in first-seen order, so the output is deterministic for the goldens.
   auto isSaved = [&](const ScanHit& h) { return findNetwork(known, h.ssid) >= 0; };

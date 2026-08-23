@@ -291,6 +291,15 @@ static void test_scan_rows_collapse_duplicate_ssids() {
   TEST_ASSERT_TRUE(rows[0].find("-45") != std::string::npos);
 }
 
+static void test_scan_rows_dedup_never_downgrades_lock() {
+  // Same SSID seen encrypted on one band and (spuriously) open on another: the merged
+  // row must stay locked - never present a secured network as open.
+  std::vector<ScanHit> scan = { hit("Home", -60, /*locked=*/true), hit("Home", -50, /*locked=*/false) };
+  auto rows = buildScanRows(scan, {});
+  TEST_ASSERT_EQUAL_INT(1, (int)rows.size());
+  TEST_ASSERT_TRUE(rows[0].find("lock") != std::string::npos);   // stays locked
+}
+
 static void test_scan_rows_mark_hidden_networks() {
   std::vector<ScanHit> scan = { hit("Named", -50), hit("", -60), hit("", -75) };
   auto rows = buildScanRows(scan, {});
@@ -327,6 +336,7 @@ int main() {
   RUN_TEST(test_forget_row_marks_the_network_in_use);
   RUN_TEST(test_scan_rows_saved_first_then_by_signal);
   RUN_TEST(test_scan_rows_collapse_duplicate_ssids);
+  RUN_TEST(test_scan_rows_dedup_never_downgrades_lock);
   RUN_TEST(test_scan_rows_mark_hidden_networks);
   RUN_TEST(test_scan_rows_empty_scan_is_empty_list);
   return UNITY_END();

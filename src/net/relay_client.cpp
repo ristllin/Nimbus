@@ -387,6 +387,16 @@ uint32_t remintSeed() {
 // session (while idle) the moment the window opens, without re-parsing every tick.
 uint64_t g_remintAtEpoch = 0;
 
+// After a TRANSIENT re-mint failure (5xx / rate-limit / network blip), do not recycle
+// the online session again until this epoch. Without it, the proactive target stays in
+// the past (the credential is unchanged), so every reconnect would tear the session
+// down before serving a single request - a multi-day reconnect storm that also breaks
+// cloud access while the OLD credential is still perfectly valid (review finding). The
+// credential stays valid until its own exp, so we simply serve normally and retry the
+// re-mint on this slow cadence.
+uint64_t g_remintBackoffUntil = 0;
+constexpr uint32_t kRemintRetryBackoffSec = 1800;   // 30 min between failed re-mint tries
+
 enum class RemintResult { Ok, Reauth, Transient };
 
 // POST /device/credential/remint with the CURRENT credential; on 200 persist the fresh
@@ -448,26 +458,36 @@ bool maintainCredential() {
   if (nimbus::cloud::expiredPastGrace(exp, now)) { dropToPairing("Sign-in expired. Pair again when ready."); return false; }
   const bool due = nimbus::cloud::remintDueProactive(iat, exp, now, seed) ||
                    nimbus::cloud::expiredWithinGrace(exp, now);
-  if (due && remintCredential() == RemintResult::Reauth) {
-    dropToPairing("Sign-in expired. Pair again when ready.");
-    return false;
+  if (due && now >= g_remintBackoffUntil) {
+    const RemintResult r = remintCredential();
+    if (r == RemintResult::Reauth) { dropToPairing("Sign-in expired. Pair again when ready."); return false; }
+    // Ok: the new credential's target is far in the future, so the session will not
+    // recycle again. Transient: keep serving on the still-valid credential and do not
+    // retry (or recycle) for a while - otherwise the past-due target would tear down
+    // every reconnect immediately (the storm the review caught).
+    g_remintBackoffUntil = (r == RemintResult::Ok) ? 0 : now + kRemintRetryBackoffSec;
   }
   return true;
 }
 
-// After a server BadToken (4001) close: the relay rejected our credential. Try a
-// re-mint (fixes an expired-within-grace token) and, failing that, re-pair. Returns
-// true if a reconnect is worth trying with the (possibly fresh) credential.
-bool recoverFromBadToken() {
+// After a server BadToken (4001) close: the relay rejected our credential.
+//   Repaired  - past grace or a 401/404: pairing flow started, do not reconnect.
+//   Refreshed - a fresh credential was minted: reconnect now, and this is PROGRESS
+//               (the caller must NOT count it as a bad-token strike, or a legit
+//               re-mint would push the device toward the Disabled state - review).
+//   Retry     - transient failure: reconnect with the old (still in-grace) credential
+//               and count a strike so repeated hard failures eventually back off.
+enum class BadTokenOutcome { Repaired, Refreshed, Retry };
+BadTokenOutcome recoverFromBadToken() {
   const uint64_t now = (uint64_t)time(nullptr);
   const uint64_t exp = nimbus::cloud::credentialExp(std::string(agent::store::cloudCred().c_str()));
   if (now > 1000000000ULL && nimbus::cloud::expiredPastGrace(exp, now)) {
     dropToPairing("Sign-in expired. Pair again when ready.");
-    return false;
+    return BadTokenOutcome::Repaired;
   }
   const RemintResult r = remintCredential();
-  if (r == RemintResult::Reauth) { dropToPairing("Sign-in expired. Pair again when ready."); return false; }
-  return true;   // Ok (fresh cred) or Transient (retry the connect)
+  if (r == RemintResult::Reauth) { dropToPairing("Sign-in expired. Pair again when ready."); return BadTokenOutcome::Repaired; }
+  return r == RemintResult::Ok ? BadTokenOutcome::Refreshed : BadTokenOutcome::Retry;
 }
 
 // Run the full pairing exchange: /pair/init then poll /pair/poll. On success, persist
@@ -647,7 +667,10 @@ bool sessionShouldStop() {
   if (g_reqOptIn == 0 || g_reqUnpair || !wifiReady() || !g_ws->connected()) return true;
   if (g_remintAtEpoch) {
     const uint64_t now = (uint64_t)time(nullptr);
-    if (now > 1000000000ULL && now >= g_remintAtEpoch) return true;   // window open -> recycle
+    // Recycle to re-mint only when the window is open AND we are not in a post-failure
+    // backoff - otherwise a transient re-mint failure (target still past) would recycle
+    // every reconnect and storm the link while the old credential is still valid.
+    if (now > 1000000000ULL && now >= g_remintAtEpoch && now >= g_remintBackoffUntil) return true;
   }
   return false;
 }
@@ -763,10 +786,14 @@ void applyCloseCodePolicy(uint16_t code, uint32_t& backoff, uint32_t& badToken) 
   if (code == (uint16_t)CloseCode::BadToken) {
     // CUM-52: the relay rejected our credential (expired or rotated). Try to recover
     // by re-minting (an expired-within-grace token) or re-pairing, rather than idling
-    // 5 min. If recovery re-paired, reset and let the pairing flow run.
-    if (!recoverFromBadToken()) { badToken = 0; backoff = 500; return; }
+    // 5 min. A SUCCESSFUL re-mint is progress and must not count as a strike, or a
+    // legit re-mint would march the device to Disabled (review finding).
+    const BadTokenOutcome o = recoverFromBadToken();
+    if (o == BadTokenOutcome::Repaired)  { badToken = 0; backoff = 500; return; }
+    if (o == BadTokenOutcome::Refreshed) { badToken = 0; vTaskDelay(pdMS_TO_TICKS(2000)); return; }
+    // Retry (transient): count a strike; back off hard only after repeated failures.
     if (++badToken >= 3) { setState(State::Disabled); setErr("Sign-in expired. Pair again when ready."); vTaskDelay(pdMS_TO_TICKS(300000)); return; }
-    vTaskDelay(pdMS_TO_TICKS(2000));   // brief: reconnect with the (possibly fresh) credential
+    vTaskDelay(pdMS_TO_TICKS(2000));
     return;
   }
   badToken = 0;
