@@ -14,7 +14,8 @@ server - findings are weighted by real reachability.
 ## In place (implemented + on-device verified)
 
 - **Per-device web/MCP auth token.** `store::webAuthToken()` (96-bit hardware-random,
-  NVS, no setter). `net::webAuthOk()` checks `X-Nimbus-Token` (or `?t=`) constant-time
+  NVS, no setter). `net::webAuthOk()` checks `X-Nimbus-Token` (header or form field,
+  never a `?t=` query param since CUM-45) constant-time
   and fails closed. Gates **every** route, reads included - `GET /api/state`,
   `/api/log`, `/api/connect`, `/api/sdprobe` and the LAN `POST /mcp` among them. The
   only two ungated responses are the ones the gate itself needs: `GET /` (the static
@@ -99,48 +100,50 @@ bundle symbol resolved. Each provider must be confirmed to still CONNECT with va
 on (trigger `provider_verify` per provider → `result=1 verified`, plus one real turn) -
 a provider whose root isn't bundled fails as a connect error until the flag is flipped.
 
-### TODO(security): get the access token out of URLs
+### Access token out of URLs (largely implemented 2026-08-23)
 
-**Status: OPEN - design note, not yet implemented.** The token is delivered as a query
-parameter (`?t=<token>`) and that is currently the *only* delivery mechanism:
-`configUrl()`/`setupUrl()` build the Config-QR link, the unprovisioned-AP redirect uses
-it, `/api/connect` returns `url`/`mdnsUrl`, and `/api/files/dl` puts it in every
-download link. The page strips it from the address bar
-(`history.replaceState`, `ui_js.h`) as soon as it is durably stored.
+**Status: LAN paths fixed; device-screen QR + AP first-run redirect pending.** The
+durable token is no longer carried in any LAN-facing URL. What changed (CUM-45):
 
-**Why the strip is not enough.** The navigation is committed to the browser's history
-database *before* any script runs, so `replaceState` cannot unwrite it - it only edits
-the current session-history entry. That leaves a `http://<ip>/?t=<token>` record in
-history, and Chrome/Edge/Firefox **sync history and bookmarks across machines while
-localStorage is never synced**. A second computer signed into the same browser profile
-can therefore omnibox-autocomplete a token-bearing URL and silently authenticate - which
-is exactly what "the IP let me straight in on a machine I'd never used" turns out to be.
-Two related leaks: `/api/files/dl?…&t=<token>` opens in a new tab (`target=_blank`), so
-it lands in history *and* download history and is never stripped (no script runs on a
-binary response); and the Connectivity panel's copy-token control puts the token on the
-system clipboard, which macOS Universal Clipboard and Windows Cloud Clipboard sync
-across devices.
+- **One-time exchange code.** A Sign-in QR / cross-origin link / Wi-Fi-handoff link now
+  carries a short, single-use, TTL-bounded code (`?c=<code>`), not the token. The page
+  POSTs it to `POST /api/signin/exchange` and receives the token in the response body,
+  stores it client-side, and strips the URL. The code table is
+  `nimbus::SigninCodes` (host-unit-tested, `test/test_signin_codes`); it is single-use
+  and expires (default 2 min), so a copy of the link in synced history is inert once
+  used or expired. `/api/connect` returns `?c=` links; `GET /api/signin/code` mints a
+  fresh code for a caller that renders a QR.
+- **Header-only downloads.** `/api/files/dl` is fetched as a Blob and handed to the
+  browser via `URL.createObjectURL`, so the token rides the `X-Nimbus-Token` header and
+  no `?t=`/`&t=` appears in a download link or the image preview.
+- **API routes reject `?t=`.** `webAuthOk` reads the token only from the header or a
+  form field, never a query param, so a leaked `?t=` deep link is inert on every API
+  route.
+- **Legacy links still work, with a hint.** The page still accepts a legacy `?t=` link
+  once (existing QR codes / bookmarks), stores the token, strips it, and shows a one-time
+  migration hint pointing the owner at the Sign-in QR.
 
-**Blast radius (why this is a TODO, not an incident).** Everything above stays inside
-surfaces the owner already controls - their own synced browser profile and their own
-clipboard. It is not remotely reachable and grants nothing an owner does not have. What
-it does defeat is the *revocation* story: rotating the token cannot claw back copies
-sitting in synced history on machines you have forgotten about.
+**Still to do (owned outside the web layer):** the on-device Sign-in QR string is built
+by `configUrl()`/`setupUrl()` in `main.cpp` (device-screen owner), and the unprovisioned
+setup-AP redirect + captive-portal redirect still emit `/?t=<token>`. These are the
+first-run paths; switching them to `/?c=<code>` (via `GET /api/signin/code` or the same
+mint) needs hardware-in-the-loop verification of first-run + the Wi-Fi handoff. Until
+then the client accepts the legacy `?t=` on those paths and shows the migration hint.
+`POST /api/token/regen` remains the revocation lever.
 
-**Options when picked up** (rough order of value/effort):
-1. **One-time exchange code.** The QR carries a short-lived, single-use code; the page
-   POSTs it and receives the real token in the response body. Nothing durable ever
-   appears in a URL. Needs a small server-side code table with a TTL.
-2. **Header-only downloads.** Replace the `?t=`-bearing `/api/files/dl` anchors with a
-   `fetch` + `Blob` + `URL.createObjectURL` download so the token rides the
-   `X-Nimbus-Token` header like every other request. Self-contained, no protocol change.
-3. **Scope the QR token.** Issue a separate, rotatable "enrollment" secret for the QR so
-   the long-lived control token is never the thing printed on the panel.
-4. **Belt-and-braces:** keep `replaceState`, and additionally accept `?t=` only on `GET /`
-   (never on API routes) so a leaked deep link is inert.
+The historical analysis that motivated this work is kept below.
 
-Until then, `POST /api/token/regen` (Settings → Connectivity) is the mitigation: it
-invalidates every previously-issued URL, including any sitting in synced history.
+**Why stripping the token from the address bar was not enough.** The navigation is
+committed to the browser's history database *before* any script runs, so `replaceState`
+cannot unwrite it - it only edits the current session-history entry. That left a
+`http://<ip>/?t=<token>` record in history, and Chrome/Edge/Firefox **sync history and
+bookmarks across machines while localStorage is never synced**. A second computer signed
+into the same browser profile could therefore omnibox-autocomplete a token-bearing URL
+and silently authenticate. Two related leaks are also closed: `/api/files/dl` no longer
+opens a token-bearing tab, and the durable token is not placed in a URL for the clipboard
+to sync.
+
+**Revocation.** `POST /api/token/regen` rotates the token and invalidates every previously-issued code and link, including any sitting in synced history.
 
 ### Setup AP password - per-device random (fixed 2026-08-10)
 

@@ -24,15 +24,24 @@ let _memTok='';
 function nimbusTok(){try{return localStorage.getItem('nimbusTok')||_memTok;}catch(e){return _memTok;}}
 // Store the token. Returns true only when it is DURABLY stored (survives a reload).
 function setTok(t){_memTok=t;try{localStorage.setItem('nimbusTok',t);return localStorage.getItem('nimbusTok')===t;}catch(e){return false;}}
+// True when this load accepted a deprecated ?t= sign-in link, so a one-time
+// migration hint can be shown once the page is up (CUM-45).
+let _signinMigrated=false;
 (function(){
   try{const legacy=sessionStorage.getItem('nimbusTok');   // migrate pre-R2 tabs
       if(legacy&&!nimbusTok())setTok(legacy);}catch(e){}
   const u=new URLSearchParams(location.search).get('t');
-  // Strip the token from the address bar ONLY once it is durably stored - when storage
-  // is unavailable the ?t= is the one thing keeping a reload authenticated. Preserve
-  // non-secret handoff state (notably ?onboard=provider) instead of discarding the
-  // wizard's destination while moving from the setup AP to the LAN origin.
+  // Legacy ?t= sign-in link (deprecated, CUM-45). The durable token must never
+  // stay in a URL: the navigation is committed to browser history before any
+  // script runs, and browsers sync history across machines while localStorage is
+  // never synced, so a ?t= link silently authenticates a machine you never used.
+  // Accept it ONCE for backward compatibility (existing QR codes / bookmarks),
+  // store it client-side so every later request carries it in the X-Nimbus-Token
+  // header, strip it from the address bar, and flag the migration hint. New
+  // sign-ins use the one-time ?c= exchange below - nothing durable in the URL.
+  // Preserve non-secret handoff state (notably ?onboard=provider) when stripping.
   if(u&&setTok(u)){
+    _signinMigrated=true;
     const q=new URLSearchParams(location.search);q.delete('t');
     history.replaceState(null,'',location.pathname+(q.toString()?'?'+q.toString():''));
   }
@@ -71,40 +80,183 @@ function showAuth(){
   b.innerHTML='<div style="max-width:420px">'+
     '<img src=/logo.svg alt="" style="width:96px;height:96px;display:block;margin:0 auto 14px;background:#fff;border-radius:50%;padding:6px">'+
     '<h2 style="margin:0 0 8px">Sign in to Nimbus</h2>'+
-    '<p style="color:#9ab">Scan Settings &gt; Connectivity &gt; Sign-in QR. The QR opens a signed-in link, so there is no code to copy during normal setup.</p>'+
-    '<input id=authtok placeholder="recovery access token" style="width:240px;padding:8px;font-size:15px"> '+
+    '<p style="color:#9ab">Scan the Sign-in QR on the device (Settings &gt; Connectivity). The QR signs this browser in, so there is no code to copy during normal setup.</p>'+
+    '<input id=authtok placeholder="device sign-in code" style="width:240px;padding:8px;font-size:15px"> '+
     '<button id=authuse style="padding:8px 16px;font-size:15px">Continue</button>'+
     '<p style="color:#678;font-size:12px">New device? Open 192.168.4.1 on its setup hotspot. First-time setup signs you in automatically.</p></div>';
   document.body.appendChild(b);
-  // When storage is blocked, the in-memory token would die with the reload and bring
-  // the gate straight back - an unescapable loop for someone who typed the address by
-  // hand (no ?t= to re-seed from). Carry it in the URL instead; that survives.
   $('authuse').onclick=()=>{const t=$('authtok').value.trim();if(!t)return;
-    if(setTok(t))location.reload();
-    else location.search='?t='+encodeURIComponent(t);};
+    // Durably stored -> reload clean so every poller restarts signed in.
+    if(setTok(t)){location.reload();return;}
+    // Storage blocked (private browsing): keep the code in memory only, never in
+    // the URL (CUM-45). Drop the gate and resume; the interval pollers pick it up.
+    _authPaused=false;b.remove();if(typeof loadState==='function')loadState();};
 }
+// One-time sign-in code (CUM-45): the Sign-in QR can carry a short-lived,
+// single-use ?c=<code> instead of the durable token. Exchange it for the token,
+// store it client-side, strip the URL, and reload clean. Nothing durable ever
+// appears in a URL, so a synced-history copy of the link is inert once used.
+(function(){
+  const c=new URLSearchParams(location.search).get('c'); if(!c)return;
+  const q=new URLSearchParams(location.search);q.delete('c');
+  const clean=location.pathname+(q.toString()?'?'+q.toString():'');
+  const fd=new FormData();fd.append('code',c);
+  fetch('/api/signin/exchange',{method:'POST',body:fd}).then(r=>r.ok?r.json():Promise.reject(r.status))
+    .then(o=>{history.replaceState(null,'',clean);
+      if(!o||!o.token)return;
+      if(setTok(o.token)){location.reload();return;}
+      // Storage blocked (private browsing): the token lives in memory only, so a
+      // reload would drop it and the single-use code is already spent. Instead
+      // dismiss any sign-in gate and resume with the in-memory token.
+      _authPaused=false;const g=$('authgate');if(g)g.remove();
+      if(typeof loadState==='function')loadState();})
+    .catch(()=>{history.replaceState(null,'',clean);});   // bad/expired code -> the gate handles sign-in
+})();
+// One-time migration hint for a deprecated ?t= sign-in link (CUM-45): the person
+// is already signed in on this browser; nudge them to the Sign-in QR next time.
+function showMigrationHint(){
+  if(!_signinMigrated||$('migHint'))return;
+  const b=document.createElement('div');b.id='migHint';b.className='warnbox';
+  b.style.cssText='position:fixed;left:50%;top:12px;transform:translateX(-50%);max-width:520px;z-index:200;display:flex;gap:12px;align-items:flex-start';
+  const s=document.createElement('span');
+  s.textContent='You are signed in on this browser. That sign-in link is being retired for security; next time scan the Sign-in QR on the device.';
+  const x=document.createElement('button');x.textContent='Got it';
+  x.style.cssText='background:var(--raise3);color:var(--ink2);white-space:nowrap';
+  x.onclick=()=>b.remove();
+  b.appendChild(s);b.appendChild(x);document.body.appendChild(b);
+}
+document.addEventListener('DOMContentLoaded',showMigrationHint);
 // No stored token -> gate immediately, before any load/poll renders data.
 if(!nimbusTok())document.addEventListener('DOMContentLoaded',showAuth);
-// Tab switching: show one .pane, highlight its .tab. Default = the first tab (Home).
-document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{
-  document.querySelectorAll('.pane').forEach(p=>p.style.display='none');
-  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('on'));
-  $('pane-'+b.dataset.p).style.display='';
-  b.classList.add('on');
-  // Lazy-loads per area (Phase 3 C1 IA)
-  if(b.dataset.p==='gov')loadLoops();
-  if(b.dataset.p==='mem'){if(typeof loadMemDash==='function')loadMemDash();if(typeof loadFiles==='function')loadFiles();}
-  if(b.dataset.p==='harness'){if(typeof loadOrch==='function')loadOrch();if(typeof loadConnectors==='function')loadConnectors();if(typeof loadTools==='function')loadTools();if(typeof loadSkills==='function')loadSkills();}
-  if(b.dataset.p==='usage'){if(typeof loadOrch==='function')loadOrch();if(typeof loadFetchQ==='function')loadFetchQ();   // usage tiles + budget rows + downloads
-    if(typeof loadUsageHistory==='function')loadUsageHistory();}          // spend graph buckets
-  if(b.dataset.p==='chat'&&typeof loadChatHistory==='function')loadChatHistory();   // unified history refresh
-  if(b.dataset.p==='set'){                 // Settings: ring sim init + connectivity secrets
-    if(typeof loadThemes==='function')loadThemes();
-    if(typeof loadConnect==='function')loadConnect();
-    if(typeof loadWifi==='function')loadWifi();     // saved Wi-Fi networks
+// Navigation (CUM-25): five destinations, each backed by one or more existing
+// pane divs shown together. This preserves every inner element id (the JS builds
+// against ids, not pane structure) while presenting the approved IA:
+//   Home (status tiles + active sessions + quick actions + alerts),
+//   Chat, Memory (files + long-term memory + scratchpad),
+//   Assistant (providers/models, tools + sandbox, connectors + MCP, skills,
+//              routines + wake-ups, usage + budgets, safety),
+//   Device (display, sound, battery, network, updates, cloud, advanced, danger).
+const DEST={home:['dash'],chat:['chat'],memory:['mem'],assistant:['harness','usage','gov'],device:['set']};
+// Per-pane lazy loaders, run when a destination containing that pane opens.
+function loadPane(p){
+  if(p==='dash'){   // Home: active sessions + health load immediately, not on the next poll
+    if(typeof loadOrch==='function')loadOrch();
+    if(typeof loadHealth==='function')loadHealth();
   }
+  if(p==='gov'){if(typeof loadLoops==='function')loadLoops();
+    if(typeof loadWakeups==='function')loadWakeups();
+    if(typeof loadSafety==='function')loadSafety();}
+  if(p==='mem'){if(typeof loadMemDash==='function')loadMemDash();if(typeof loadFiles==='function')loadFiles();}
+  if(p==='harness'){if(typeof loadOrch==='function')loadOrch();if(typeof loadConnectors==='function')loadConnectors();if(typeof loadTools==='function')loadTools();if(typeof loadSkills==='function')loadSkills();}
+  if(p==='usage'){if(typeof loadOrch==='function')loadOrch();if(typeof loadFetchQ==='function')loadFetchQ();if(typeof loadUsageHistory==='function')loadUsageHistory();}
+  if(p==='chat'&&typeof loadChatHistory==='function')loadChatHistory();
+  if(p==='set'){if(typeof loadThemes==='function')loadThemes();if(typeof loadConnect==='function')loadConnect();if(typeof loadWifi==='function')loadWifi();}
+}
+// Switch to a destination: show its pane group, hide the rest, mark the tab, run
+// the group's loaders. Exposed as goDest() so quick actions can navigate too.
+function goDest(dest){
+  const panes=DEST[dest]; if(!panes)return;
+  document.querySelectorAll('.pane').forEach(p=>p.style.display='none');
+  document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('on',t.dataset.p===dest));
+  panes.forEach(id=>{const el=$('pane-'+id); if(el)el.style.display='';loadPane(id);});
+  try{window.scrollTo(0,0);}catch(e){}
+}
+document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>goDest(b.dataset.p));
+// Quick actions (Home) and any in-page link that jumps to a destination.
+document.querySelectorAll('[data-go]').forEach(b=>b.onclick=()=>goDest(b.dataset.go));
+goDest('home');   // default destination
+// "What next" card on Home, shown once right after onboarding finishes (CUM-66).
+(function(){try{if(localStorage.getItem('nimbusJustOnboarded')==='1'){
+  localStorage.removeItem('nimbusJustOnboarded');
+  const w=$('whatNext'); if(w)w.style.display='';
+}}catch(e){}
+const dz=$('whatNextDismiss'); if(dz)dz.onclick=()=>{const w=$('whatNext'); if(w)w.style.display='none';};})();
+
+// ---- Global search / command palette (CUM-62) ------------------------------
+// One search over destinations + actions (a static index), files, memory,
+// sessions, and the embedded docs pack. Keyboard: Ctrl/Cmd+K or "/" opens, Esc
+// closes, Up/Down move, Enter activates. Results are grouped by source.
+const SEARCH_INDEX=[
+  {group:'Go to',label:'Home',kw:'dashboard status tiles sessions alerts health',act:()=>goDest('home')},
+  {group:'Go to',label:'Chat',kw:'message assistant talk conversation',act:()=>goDest('chat')},
+  {group:'Go to',label:'Memory',kw:'files long-term scratchpad directive storage',act:()=>goDest('memory')},
+  {group:'Go to',label:'Assistant',kw:'providers models tools connectors mcp skills usage budget routines wake-ups safety',act:()=>goDest('assistant')},
+  {group:'Go to',label:'Device',kw:'settings display sound battery network updates cloud danger',act:()=>goDest('device')},
+  {group:'Action',label:'Attach a file to chat',kw:'upload drag drop file',act:()=>{goDest('chat');var b=$('chatAttach');b&&b.focus();}},
+  {group:'Action',label:'Check for updates',kw:'ota firmware software update install',act:()=>{goDest('device');_openGroup('Software update');var b=$('fwCheck');b&&b.focus();}},
+  {group:'Action',label:'Pair with the cloud',kw:'cloud link code pairing qr',act:()=>{goDest('device');_openGroup('Cloud access');var b=$('cloudPair');b&&b.focus();}},
+  {group:'Action',label:'Add a provider key',kw:'api key anthropic openai model verify provider',act:()=>goDest('assistant')},
+  {group:'Action',label:'Sign-in code and connectivity',kw:'device sign-in token qr wifi network recovery',act:()=>{goDest('device');_openGroup('Connectivity');}},
+  {group:'Action',label:'Erase / factory reset',kw:'erase reset wipe factory sd danger',act:()=>{goDest('device');_openGroup('Danger zone');}}
+];
+// Open a Device <details> group by its summary text, so an action can jump to it.
+function _openGroup(name){document.querySelectorAll('details.setgroup').forEach(d=>{var s=d.querySelector('summary');if(s&&s.textContent.indexOf(name)===0)d.open=true;});}
+function _sEsc(s){return (s||'').replace(/[<>&]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));}
+let _sSel=0,_sItems=[];
+function openSearch(){
+  if($('searchOverlay'))return;
+  const ov=document.createElement('div');ov.id='searchOverlay';
+  ov.innerHTML='<div id=searchBox><input id=searchInput placeholder="Search settings, files, memory, sessions, docs&hellip;" autocomplete=off spellcheck=false><div id=searchResults></div></div>';
+  document.body.appendChild(ov);
+  ov.addEventListener('mousedown',e=>{if(e.target===ov)closeSearch();});
+  const inp=$('searchInput');
+  inp.addEventListener('input',()=>runSearch(inp.value));
+  inp.addEventListener('keydown',onSearchKey);
+  inp.focus(); runSearch('');
+}
+function closeSearch(){const ov=$('searchOverlay');if(ov)ov.remove();}
+function onSearchKey(e){
+  if(e.key==='Escape'){e.preventDefault();closeSearch();}
+  else if(e.key==='ArrowDown'){e.preventDefault();_sMove(1);}
+  else if(e.key==='ArrowUp'){e.preventDefault();_sMove(-1);}
+  else if(e.key==='Enter'){e.preventDefault();const it=_sItems[_sSel];if(it)_sActivate(it);}
+}
+function _sMove(d){if(!_sItems.length)return;_sSel=(_sSel+d+_sItems.length)%_sItems.length;_sPaint();}
+function _sPaint(){document.querySelectorAll('.sresult').forEach((el,i)=>{el.classList.toggle('sel',i===_sSel);if(i===_sSel)el.scrollIntoView({block:'nearest'});});}
+function _sActivate(it){closeSearch();if(it&&it.act)it.act();}
+function renderSearch(groups){
+  const box=$('searchResults');if(!box)return;
+  _sItems=[];let html='';
+  groups.forEach(g=>{if(!g.items.length)return;html+='<div class=sgroup>'+_sEsc(g.name)+'</div>';
+    g.items.forEach(it=>{const idx=_sItems.length;_sItems.push(it);
+      html+='<button class=sresult data-i="'+idx+'"><span>'+_sEsc(it.label)+'</span>'+(it.cx?'<span class=scx>'+_sEsc(it.cx)+'</span>':'')+'</button>';});});
+  box.innerHTML=html||'<div class=sempty>No matches. Try a different word.</div>';
+  box.querySelectorAll('.sresult').forEach(el=>{el.onmouseenter=()=>{_sSel=+el.dataset.i;_sPaint();};el.onclick=()=>_sActivate(_sItems[+el.dataset.i]);});
+  _sSel=0;_sPaint();
+}
+// The search "index": a static settings/actions index plus live source fetchers.
+// Static hits are synchronous; each source fills its group as it resolves, so the
+// palette stays responsive. searchIndexStatic() is pure and unit-testable.
+function searchIndexStatic(q){
+  const ql=(q||'').trim().toLowerCase();
+  return ql?SEARCH_INDEX.filter(x=>(x.label+' '+x.kw).toLowerCase().indexOf(ql)>=0):SEARCH_INDEX.slice();
+}
+let _sSeq=0;
+function runSearch(q){
+  q=(q||'').trim();const ql=q.toLowerCase();const seq=++_sSeq;
+  const groups=[{name:'Settings & actions',items:searchIndexStatic(q).map(x=>({label:x.label,cx:x.group,act:x.act}))},
+    {name:'Files',items:[]},{name:'Memory',items:[]},{name:'Sessions',items:[]},{name:'Docs',items:[]}];
+  renderSearch(groups);
+  if(q.length<2)return;
+  const upd=(name,items)=>{if(seq!==_sSeq)return;const g=groups.find(x=>x.name===name);if(g){g.items=items;renderSearch(groups);}};
+  fetch('/api/files/list').then(r=>r.json()).then(d=>{
+    upd('Files',(d.files||[]).filter(f=>((f.project+'/'+f.name)||'').toLowerCase().indexOf(ql)>=0).slice(0,6)
+      .map(f=>({label:f.project+'/'+f.name,cx:_fbytes(f.bytes),act:()=>{goDest('memory');_openGroup('Files');}})));}).catch(()=>{});
+  fetch('/api/mem/vector?limit=6&query='+encodeURIComponent(q)).then(r=>r.json()).then(d=>{
+    const rows=(d.items||d.results||d.rows||[]);
+    upd('Memory',rows.slice(0,6).map(m=>({label:((m.text||m.content||m.summary||'memory')+'').slice(0,80),cx:'memory',act:()=>{goDest('memory');_openGroup('Long-term memory');}})));}).catch(()=>{});
+  const jobs=(typeof ORCH!=='undefined'&&ORCH&&ORCH.jobs)||[];
+  upd('Sessions',jobs.filter(j=>((j.tag+' '+j.model+' '+j.category)||'').toLowerCase().indexOf(ql)>=0).slice(0,6)
+    .map(j=>({label:j.tag+' - '+j.model,cx:(j.category||'')+' · '+(j.state||''),act:()=>goDest('home')})));
+  fetch('/api/docs/search?q='+encodeURIComponent(q)).then(r=>r.json()).then(d=>{
+    upd('Docs',(d.results||[]).slice(0,6).map(x=>({label:x.title||x.id,cx:(x.snippet||'').slice(0,80),
+      act:()=>window.open('https://docs.cumulo-nimbus.ai/','_blank','noopener')})));}).catch(()=>{});
+}
+$('globalSearchBtn')&&($('globalSearchBtn').onclick=openSearch);
+document.addEventListener('keydown',e=>{
+  if((e.key==='k'||e.key==='K')&&(e.metaKey||e.ctrlKey)){e.preventDefault();openSearch();}
+  else if(e.key==='/'&&!$('searchOverlay')&&!/^(INPUT|TEXTAREA|SELECT)$/.test((e.target&&e.target.tagName)||'')){e.preventDefault();openSearch();}
 });
-document.querySelector('.tab').classList.add('on');
 // Sub-tab switching (Harness pane): mirror of the top switcher, scoped to
 // .subtab/data-sp and #subpane-<x>. .subpane is a different class from .pane, so the
 // top switcher never touches these. Default = the first sub-tab (Connectors).
@@ -317,19 +469,34 @@ function applyState(d){
   if(d.cloud&&$('cloudLine')){
     var c=d.cloud;
     $('cloudLine').textContent=c.line||'';
-    var cc=$('cloudCode');
-    if(c.state==='pairing'&&c.code){cc.style.display='block';
-      cc.innerHTML='Enter this code at <b>app.cumulo-nimbus.ai</b> while signed in: <b></b>';
-      cc.lastChild.textContent=c.code;}   // code is from the untrusted pairing server: textContent, never innerHTML
-    else{cc.style.display='none';}
-    $('cloudPair').style.display=(c.paired||c.state==='pairing')?'none':'inline-block';
+    var pairing=(c.state==='pairing'&&!!c.code);
+    var card=$('cloudPairCard'); if(card)card.style.display=pairing?'block':'none';
+    if(pairing){
+      // Large, high-contrast code (CUM-51: no more grayed-out code). The value is
+      // from the untrusted pairing server, so textContent - never innerHTML.
+      $('cloudCode').textContent=c.code;
+      // QR encodes the app deep link carrying the code, so a phone can scan instead
+      // of typing. Rendered by our own /api/qr (trusted SVG); re-fetched only when
+      // the code changes.
+      var qbox=$('cloudQr');
+      if(qbox&&qbox.dataset.code!==c.code){qbox.dataset.code=c.code;
+        var link='https://app.cumulo-nimbus.ai/link?code='+encodeURIComponent(c.code);
+        fetch('/api/qr?data='+encodeURIComponent(link)).then(r=>r.ok?r.text():Promise.reject(r.status))
+          .then(svg=>{qbox.innerHTML=svg;}).catch(()=>{qbox.textContent='';});}
+      var cp=$('cloudCopy');
+      if(cp)cp.onclick=()=>{if(navigator.clipboard&&c.code)navigator.clipboard.writeText(c.code).then(()=>toast('Cloud link code copied'));};
+    }
+    $('cloudPair').style.display=(c.paired||pairing)?'none':'inline-block';
     $('cloudUnpair').style.display=c.paired?'inline-block':'none';
-    $('cloudOff').style.display=(c.optIn&&!c.paired&&c.state!=='pairing')?'inline-block':'none';
-    var cpost=function(a,msg){var f=new FormData();f.append('action',a);
-      fetch('/api/cloud',{method:'POST',body:f}).then(jok).then(()=>{toast(msg);setTimeout(loadState,1500);}).catch(failToast);};
-    $('cloudPair').onclick=()=>cpost('pair','Starting pairing…');
-    $('cloudUnpair').onclick=()=>cpost('unpair','Unpaired');
-    $('cloudOff').onclick=()=>cpost('optout','Cloud access off');
+    $('cloudOff').style.display=(c.optIn&&!c.paired&&!pairing)?'inline-block':'none';
+    var cpost=function(a,btn,pending,okmsg){
+      run({status:'cloudMsg',btn:btn,pending:pending,
+        work:()=>{var f=new FormData();f.append('action',a);return fetch('/api/cloud',{method:'POST',body:f}).then(jok);},
+        ok:()=>{setTimeout(loadState,1500);return okmsg;},
+        error:e=>'Couldn\'t update cloud access'+(e?(' ('+e+')'):'')+' - try again.'});};
+    $('cloudPair').onclick=()=>cpost('pair',$('cloudPair'),'Starting pairing…','Pairing started - scan the QR or enter the code.');
+    $('cloudUnpair').onclick=()=>cpost('unpair',$('cloudUnpair'),'Unpairing…','Unpaired.');
+    $('cloudOff').onclick=()=>cpost('optout',$('cloudOff'),'Turning off…','Cloud access off.');
   }
   // ---- Firmware update (OTA) ----
   if(d.ota!==undefined&&$('fwState')){
@@ -341,17 +508,38 @@ function applyState(d){
     $('fwLast').textContent=d.lastOta||'-';
     $('fwBarWrap').style.display=(d.ota==='downloading'||d.ota==='verifying')?'block':'none';
     if(d.otaPct>=0)$('fwBar').style.width=d.otaPct+'%';
-    var fi=$('fwInstall');fi.style.display=(d.ota==='available')?'inline-block':'none';
-    $('fwCheck').disabled=busy;fi.disabled=busy;
+    var fi=$('fwInstall');
+    // Battery gate (CUM-68, N5 payload): an update needs enough charge. When it is
+    // available but the battery is too low, name the threshold and block install
+    // rather than letting it fail mid-flash.
+    var battOk=(d.otaBattOk===undefined)?true:!!d.otaBattOk;
+    var fb=$('fwBatt');
+    if(fb){var gated=(d.ota==='available')&&!battOk;
+      fb.style.display=gated?'block':'none';
+      fb.textContent=gated?(d.otaBattMsg||'Charge the device to install this update.'):'';}
+    fi.style.display=(d.ota==='available')?'inline-block':'none';
+    $('fwCheck').disabled=busy;fi.disabled=busy||((d.ota==='available')&&!battOk);
     if(d.autoUpd!==undefined){const au=$('autoUpd');
       if(au&&document.activeElement!==au){au.checked=!!d.autoUpd;
         au.onchange=()=>{const f=new FormData();f.append('autoUpd',au.checked?'1':'0');
           fetch('/api/config',{method:'POST',body:f}).then(()=>toast(au.checked?'Auto-update on':'Auto-update off'));};}}
-    $('fwCheck').onclick=()=>{fetch('/api/ota/check',{method:'POST'}).then(jok)
-      .then(()=>{toast('Checking…');setTimeout(loadState,2500);}).catch(failToast);};
+    // Check-for-updates renders a result state (found / up to date / error naming
+    // the next step) from N5's check payload, then re-syncs from /api/state.
+    $('fwCheck').onclick=()=>run({status:'fwMsg',btn:$('fwCheck'),pending:'Checking for updates…',
+      work:()=>fetch('/api/ota/check',{method:'POST'}).then(jok),
+      ok:o=>{setTimeout(loadState,2000);
+        var res=(o&&o.result)||'';
+        if(res==='available'||(o&&o.latest&&o.latest!==o.installed))return 'Update available: '+((o&&o.latest)||'a new version')+'.';
+        if(res==='error')throw ((o&&o.msg)||'the update check failed');   // -> error state
+        return {none:true,msg:'You are on the latest version.'};},
+      error:e=>'Couldn\'t check for updates'+(e?(' ('+e+')'):'')+' - check the network and try again.'});
     fi.onclick=()=>{
+      if((d.ota==='available')&&!battOk){fbState('fwMsg','error',d.otaBattMsg||'Charge the device before installing.');return;}
       if(!confirm('Install firmware '+(d.otaLatest||'')+'?\n\nThe device will download, verify the signature, and restart - about two minutes. Keep it powered on.'))return;
-      fetch('/api/ota/apply',{method:'POST'}).then(jok).then(()=>{toast('Updating…');setTimeout(loadState,2000);}).catch(failToast);};
+      run({status:'fwMsg',btn:fi,pending:'Starting the update…',
+        work:()=>fetch('/api/ota/apply',{method:'POST'}).then(jok),
+        ok:()=>{setTimeout(loadState,2000);return 'Updating. Keep the device powered on; it restarts when done.';},
+        error:e=>'Couldn\'t start the update'+(e?(' ('+e+')'):'')+' - try again.'});};
   }
   renderDevTiles(d);
   if(d.fw){const fv=$('fwver'); if(fv)fv.textContent=d.fw+(d.build&&d.build!==d.fw?(' ('+d.build+')'):''); fv&&(fv.title='firmware version (build id)');}
@@ -424,7 +612,10 @@ function applyState(d){
     fetch('/api/config',{method:'POST',body:f}).then(function(){pb.textContent='Saved';setTimeout(function(){pb.textContent='Save';},1200);});
   };
       if(!confirm('Set the battery to 100%?\n\nOnly do this with the pack fully charged - the reading becomes this device\'s 100% anchor.')) return;
-      fetch('/api/battcal',{method:'POST'}).then(jok).then(()=>{toast('Calibrating…');setTimeout(loadState,1200);}).catch(failToast);};
+      run({status:'battcalMsg',btn:bcb,pending:'Calibrating…',
+        work:()=>fetch('/api/battcal',{method:'POST'}).then(jok),
+        ok:()=>{setTimeout(loadState,1200);return 'Calibrated - this reading is now the 100% anchor.';},
+        error:e=>'Couldn\'t calibrate'+(e?(' ('+e+')'):'')+' - try again.'});};
   } else { $('battsec').style.display='none'; }
   // Device identity readouts (P2): live SSID/mDNS; the input is only synced when
   // the user isn't mid-edit (3 s poll would stomp their typing otherwise).
@@ -468,7 +659,7 @@ function applyState(d){
         // 3 s poll would destroy the Sync-now button mid-click (prism).
         if(!gc.firstChild){
           gc.innerHTML='<p class="hint tip">The device clock hasn\'t synced, so daily and weekly routines '+
-            '&mdash; including nightly memory upkeep &mdash; can\'t run yet. It sets itself from the '+
+            '- including nightly memory upkeep - can\'t run yet. It sets itself from the '+
             'internet once Wi-Fi connects. <button id=govSync type=button>Sync now</button></p>';
           const b=$('govSync'); if(b)b.onclick=()=>apply({clockSync:1});
         }
@@ -513,19 +704,8 @@ function applyState(d){
     const mv=+b.dataset.m; b.classList.toggle('on',mv===d.mode); b.classList.toggle('nf',mv===0);
     b.onclick=()=>{ if(mv!==d.mode) switchMode(mv); };
   });}
-  // Display panel: hardware identity, bound at boot. Confirm before changing -
-  // picking the wrong one leaves the fitted screen dark until it is set back.
-  const sm=$('scrModel'); if(sm&&d.scrModel!==undefined&&sm!==document.activeElement)sm.value=d.scrModel;
-  // Fixed-panel board (all-in-one): the display type is a compile-time identity,
-  // not a runtime choice - a disabled-but-visible dropdown reads as broken ("why
-  // won't it click?"). Show a plain read-only value instead, same as the pattern
-  // used elsewhere (touchCap swapping the calibration field for orientation below).
-  const smf=$('scrModelFixed');
-  if(sm&&d.scrFixed){
-    sm.style.display='none';
-    if(smf){const lbl=sm.querySelector('option[value="'+d.scrModel+'"]');
-      smf.textContent=(lbl?lbl.textContent:d.scrModel)+' (fixed)';smf.style.display='';}
-  }else if(sm){sm.style.display='';if(smf)smf.style.display='none';}
+  // Display is touch-only now (e-ink deprecated); the panel selector was retired,
+  // so only the 180-degree flip remains a runtime choice.
   const sf=$('scrFlip');
   if(sf&&document.activeElement!==sf){sf.checked=!!d.scrFlip;
     sf.onchange=()=>{const f=new FormData();f.append('scrFlip',sf.checked?'1':'0');
@@ -594,11 +774,12 @@ function loadConnect(){
      if($('cxToken'))$('cxToken').textContent=c.token||'';
      // Access token also shown in Device → identity (owner ask); click to copy.
      if($('idToken')){$('idToken').textContent=c.token||'-';
-       $('idToken').onclick=()=>{if(navigator.clipboard&&c.token){navigator.clipboard.writeText(c.token);toast('Token copied');}};}
+       $('idToken').onclick=()=>{if(navigator.clipboard&&c.token){navigator.clipboard.writeText(c.token);toast('Sign-in code copied');}};}
      // Every address links to ITSELF. This used to render one link labelled with the
      // mDNS name whose href was the raw-IP URL, so clicking "nimbus.local" signed you in
      // at the IP origin and the name kept asking for the token forever (the token is
-     // stored per origin). Each address now carries its own ?t= so either one works.
+     // stored per origin). Each address carries its own one-time ?c= sign-in code
+     // (exchanged for the token over POST), so either one signs in with one click.
      if($('cxLan')&&(c.url||c.mdnsUrl)){
        const link=(href,label)=>'<a href="'+href+'" target=_blank rel=noopener>'+label+'</a>';
        const parts=[];
@@ -611,7 +792,7 @@ function loadConnect(){
      if($('btBonds'))$('btBonds').textContent=(c.bleBonds||0)+' paired'+((c.bleBonds||0)?' · pairing survives restart':'');
      if($('btMac'))$('btMac').textContent=c.bleMac||'-';
    })
-   .catch(()=>{const h='🔒 Scan the Config QR on the device';
+   .catch(()=>{const h='🔒 Scan the Sign-in QR on the device';
      if($('cxApPass'))$('cxApPass').textContent=h;
      if($('cxToken'))$('cxToken').textContent=h;});
 }
@@ -626,7 +807,7 @@ function loadConnect(){
 // then persist the NEW token locally so THIS browser stays in; every other browser 401s
 // on its next call and gets the identify gate.
 (function(){const b=$('regenTok'); if(!b)return; b.onclick=()=>{
-  if(!confirm('Generate a new access token?\n\nEvery browser is signed out except this one. Scan the new Config QR on each other device.'))return;
+  if(!confirm('Generate a new device sign-in code?\n\nEvery browser is signed out except this one. Scan the new Sign-in QR on each other device.'))return;
   fetch('/api/token/regen',{method:'POST'}).then(r=>r.ok?r.json():Promise.reject(r.status)).then(o=>{
     if(o&&o.token){setTok(o.token);
       if($('cxToken'))$('cxToken').textContent=o.token;
@@ -646,7 +827,7 @@ function loadConnect(){
 })();
 // Factory reset: type-to-confirm, then POST the exact confirm phrase the device requires.
 (function(){const b=$('factoryReset'); if(!b)return; b.onclick=()=>{
-  const p=prompt('Erase all content and settings?\n\nThis removes Wi-Fi, API keys, the Telegram list, Bluetooth pairings, memory, and the access token, then restarts into first-time setup.\n\nType FACTORY RESET to confirm:');
+  const p=prompt('Erase all content and settings?\n\nThis removes Wi-Fi, API keys, the Telegram list, Bluetooth pairings, memory, and the device sign-in code, then restarts into first-time setup.\n\nType FACTORY RESET to confirm:');
   if(p===null)return;
   if(p.trim().toUpperCase()!=='FACTORY RESET'){toast('Not reset - the phrase didn\'t match');return;}
   const fd=new FormData();fd.append('confirm','FACTORY RESET');
@@ -692,6 +873,50 @@ function loadLoops(){
     });
   }).catch(()=>{el.innerHTML='<span class=hint>Couldn\'t load routines</span>';});
 }
+// ---- Wake-ups (CUM-72, N2 /api/wakeups) ------------------------------------
+// Policy default silent-allow; "ask me first" surfaces at most ONE pending
+// approval as a single yes/no card - never a repeating prompt / loop.
+function loadWakeups(){
+  const sel=$('wkPolicy'); if(!sel)return;
+  fetch('/api/wakeups').then(r=>r.ok?r.json():Promise.reject(r.status)).then(d=>{
+    if(document.activeElement!==sel)sel.value=d.policy||'silent-allow';
+    sel.onchange=()=>run({status:'wkMsg',pending:'Saving…',
+      work:()=>fetch('/api/wakeups',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({policy:sel.value}).toString()}).then(jok),
+      ok:()=>sel.value==='ask'?'Ask me first - new wake-ups wait for approval.':'Wake-ups run silently.',
+      error:e=>'Couldn\'t save'+(e?(' ('+e+')'):'')+' - try again.'});
+    // A single pending approval card (never a loop): only the FIRST pending item.
+    const p=d.pending, box=$('wkPending');
+    if(box){
+      if(p){box.style.display='block';
+        $('wkPendLabel').textContent=p.label||'A new wake-up';
+        $('wkPendWhen').textContent=(p.when?('When: '+p.when+'. '):'')+(p.why||'The assistant wants to follow up later.');
+        const act=(a,msg)=>run({status:'wkPendMsg',pending:msg,
+          work:()=>fetch('/api/wakeups',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({action:a,id:p.id||''}).toString()}).then(jok),
+          ok:()=>{setTimeout(loadWakeups,400);return a==='approve'?'Approved.':'Denied.';},
+          error:e=>'Couldn\'t '+a+(e?(' ('+e+')'):'')+' - try again.'});
+        $('wkApprove').onclick=()=>act('approve','Approving…');
+        $('wkDeny').onclick=()=>act('deny','Denying…');
+      } else box.style.display='none';
+    }
+    const list=$('wkList');
+    if(list){const items=d.items||[];
+      list.innerHTML=items.length?('Scheduled: '+items.map(w=>_sEsc(w.label||w.when||'wake-up')+(w.enabled===false?' (off)':'')).join(' &middot; ')):'No wake-ups scheduled.';}
+  }).catch(()=>{const m=$('wkMsg');if(m)fbState('wkMsg','error','Couldn\'t load wake-ups - try again.');});
+}
+// ---- Safety (CUM-72, N5 endpoints) -----------------------------------------
+// Three moderation gates + a cost note. Each toggle writes independently.
+function loadSafety(){
+  const gi=$('safeIn'); if(!gi)return;
+  fetch('/api/safety').then(r=>r.ok?r.json():Promise.reject(r.status)).then(d=>{
+    const set=(id,v)=>{const e=$(id);if(e&&document.activeElement!==e)e.checked=!!v;};
+    set('safeIn',d.input);set('safeOut',d.output);set('safeMedia',d.media);
+    if($('safeCost'))$('safeCost').textContent=d.costNote||'Each gate that is on adds a small provider call per item.';
+    const wire=(id,gate)=>{const e=$(id);if(!e)return;e.onchange=()=>run({status:'safeMsg',pending:'Saving…',
+      work:()=>fetch('/api/safety',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({gate:gate,on:e.checked?'1':'0'}).toString()}).then(jok),
+      ok:()=>'Saved.',error:er=>'Couldn\'t save'+(er?(' ('+er+')'):'')+' - try again.'});};
+    wire('safeIn','input');wire('safeOut','output');wire('safeMedia','media');
+  }).catch(()=>{if($('safeMsg'))fbState('safeMsg','error','Couldn\'t load safety settings - try again.');});
+}
 function initLoopForm(){
   const kind=$('lpKind'); if(!kind)return;
   const upd=()=>{$('lpEveryRow').style.display=kind.value==='interval'?'':'none';
@@ -729,6 +954,66 @@ function _tfetch(url){
   }));
 }
 function failToast(e){toast(e===401?'Sign in required':'Couldn\'t save - try again');}
+
+// ---- Feedback-state system (CUM-31) ----------------------------------------
+// One helper renders every async action through pending -> result, so nothing
+// ever just "disappears": the status element shows a pending state, then exactly
+// one of success / nothing-found / error, and an error always names the next
+// step. A determinate progress bar is shown when a percent is knowable.
+//
+// fbState(el, state, msg, pct):
+//   state = 'pending' | 'ok' | 'none' | 'error' | 'idle'
+//   pct   = 0..100 for a determinate bar, or undefined for none / an
+//           indeterminate pending shimmer.
+function fbState(el, state, msg, pct){
+  el = (typeof el==='string')?$(el):el; if(!el)return;
+  el.classList.remove('fb-pending','fb-ok','fb-none','fb-error');
+  if(state==='idle'){el.textContent='';el.removeAttribute('data-fb');el.style.display='none';return;}
+  el.style.display='';
+  el.classList.add('fb-'+state);
+  el.setAttribute('data-fb',state);
+  el.setAttribute('role','status');
+  const hasBar=(state==='pending'||state==='ok'||state==='error')&&typeof pct==='number';
+  el.innerHTML='';
+  const line=document.createElement('div');line.className='fb-line';
+  const dot=document.createElement('span');dot.className='fb-dot';
+  const txt=document.createElement('span');txt.className='fb-msg';txt.textContent=msg||'';
+  line.appendChild(dot);line.appendChild(txt);el.appendChild(line);
+  if(hasBar){
+    const wrap=document.createElement('div');wrap.className='fb-bar';
+    const fill=document.createElement('i');fill.style.width=Math.max(0,Math.min(100,pct))+'%';
+    wrap.appendChild(fill);el.appendChild(wrap);
+  } else if(state==='pending'){
+    const wrap=document.createElement('div');wrap.className='fb-bar fb-indet';
+    wrap.appendChild(document.createElement('i'));el.appendChild(wrap);
+  }
+}
+// run(opts): drive one async action through the feedback states.
+//   opts.status  : status element (id or node) - required
+//   opts.btn     : optional button to disable while pending
+//   opts.pending : pending message (default "Working...")
+//   opts.work()  : returns a promise for the action's result - required
+//   opts.ok(res) : string result message, OR return {none:true, msg} to render
+//                  the "nothing found" state instead of success
+//   opts.none    : default "nothing found" message
+//   opts.error(e): error message (should name the next step); default provided
+// Returns the work() promise so callers can chain. Never leaves a pending state.
+function run(opts){
+  const el=(typeof opts.status==='string')?$(opts.status):opts.status;
+  const btn=opts.btn;
+  fbState(el,'pending',opts.pending||'Working...');
+  if(btn)btn.disabled=true;
+  return Promise.resolve().then(opts.work).then(res=>{
+    let msg=opts.ok?opts.ok(res):'Done.';
+    if(msg&&typeof msg==='object'&&msg.none){fbState(el,'none',msg.msg||opts.none||'Nothing found.');}
+    else fbState(el,'ok',(typeof msg==='string')?msg:(opts.okMsg||'Done.'));
+    return res;
+  }).catch(e=>{
+    const m=opts.error?opts.error(e):((e===401||e&&e.status===401)?'Sign in required, then try again.':'Something went wrong - try again.');
+    fbState(el,'error',m);
+    throw e;
+  }).finally(()=>{ if(btn)btn.disabled=false; });
+}
 // Live ring demo: POSTs the ring simulator's CURRENT selection - its posture
 // picks the battery mode (Full/Balanced/Dark), its status picks what the ring
 // shows - so the device mirrors exactly what the on-page simulator is showing,
@@ -1174,7 +1459,7 @@ function renderBudgets(bp){
        '<b>'+(BUDLBL[p.prov]||p.prov)+(p.over?' <span class="badge vfy bad">over budget</span>':'')+'</b>'+
        '<span class=hint>'+io+right+'</span></div>'+
        ((lim>0||hasUsd)?'<div class=g style="margin-top:4px"><i style="width:'+pct+'%;background:'+col+'"></i></div>':'')+
-       (noRates?'<p class=hint style="margin:2px 0 0">The $ cap needs prices &mdash; set rates above or this cap can\'t count.</p>':'')+'</div>';
+       (noRates?'<p class=hint style="margin:2px 0 0">The $ cap needs prices - set rates above or this cap can\'t count.</p>':'')+'</div>';
   });
   box.innerHTML=h;
 }
@@ -1361,11 +1646,37 @@ function connCard(k,c,keyed,host){
   h+='<div class=row id="cc_'+id+'_cidrow" style="margin-top:6px;display:'+(showCid?'flex':'none')+'"><input id="cc_'+id+'_cid" placeholder="connector_id (Studio name / UUID)" value="'+connEsc(set&&c.cid?c.cid:connCidDefault(curProv,k))+'"></div>';
   const ph=(set&&c.hasTok)?'•••• saved - leave blank to keep':(k.cred||'Credential / token');
   h+='<div class=row id="cc_'+id+'_tokrow" style="margin-top:6px;display:'+(showTok?'flex':'none')+'"><input id="cc_'+id+'_tok" type=password placeholder="'+connEsc(ph)+'"></div>';
+  // MCP device-dialed server approval (per CUM-33): a "dev" mcp server is only
+  // dialed once the owner approves it. Render its approval state + Approve/Deny,
+  // which flip the connectors-blob "appr" bit through the existing owner-gated
+  // write. Enforcement + persistence live in N4's lane; this only renders + writes.
+  if(set&&(c.dev==1||c.dev===true)){
+    const appr=(c.appr==1||c.appr===true);
+    h+='<div class=row style="margin-top:6px;align-items:center;gap:8px">';
+    h+= appr
+      ? '<span class="badge vfy ok">approved</span><button type=button onclick="mcpApprove(\''+connEsc(c.name)+'\',\''+connEsc(id)+'\',0)">Revoke</button>'
+      : '<span class="badge" style="background:var(--amber-soft);color:var(--amber)">pending approval</span>'+
+        '<button type=button onclick="mcpApprove(\''+connEsc(c.name)+'\',\''+connEsc(id)+'\',1)">Approve</button> '+
+        '<button type=button onclick="mcpApprove(\''+connEsc(c.name)+'\',\''+connEsc(id)+'\',0)">Deny</button>';
+    h+='</div><div class=hint id="cc_'+id+'_apprmsg"></div>';
+  }
   h+='<div class=row style="margin-top:6px"><label class=pr><input type=checkbox id="cc_'+id+'_en"'+(en?' checked':'')+'> enabled</label>';
   h+='<button type=button onclick="saveConnCard(\''+connEsc(id)+'\')">Save</button>';
   if(set)h+='<button type=button onclick="delConn(\''+connEsc(c.name)+'\')">Remove</button>';
   h+='</div>';
   return '<div class=tile style="margin:8px 0">'+h+'</div>';
+}
+// Flip the mcp "appr" bit through the owner-gated connectors write (per CUM-33).
+// A patch-upsert preserves omitted fields (incl. the saved token); the device
+// reconciles on its next turn (discovers on approve, retracts tools on deny).
+function mcpApprove(name,id,bit){
+  run({status:'cc_'+id+'_apprmsg',pending:(bit?'Approving ':'Denying ')+name+'…',
+    work:()=>fetch('/api/connectors',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
+      body:new URLSearchParams({patch:JSON.stringify({name:name,appr:bit})}).toString()})
+      .then(r=>{if(!r.ok)throw r.status;return r;}),
+    ok:()=>{setTimeout(loadConnectors,300);
+      return (bit?'Approved ':'Denied ')+name+'. The device applies this on its next turn.';},
+    error:e=>'Couldn\'t update '+name+(e?(' ('+e+')'):'')+' - try again.'});
 }
 function connFindKnown(id){return (window._connKnown||[]).find(k=>k.id===id)||{id:id,kind:'mcp',cid:''};}
 function connProvChange(id){
@@ -1460,11 +1771,6 @@ if($('tchCalSave'))$('tchCalSave').onclick=()=>{
     if(p.length===5&&n[4]>7){toast('Flags must be 0-7');return;}
   }
   orchApply({tchCal:v});
-};
-if($('scrModel'))$('scrModel').onchange=function(){
-  const v=this.value,was=v==='tft'?'eink':'tft';
-  if(!confirm('Change the display to '+(v==='tft'?'Touch':'E-ink')+'?\n\nSet this only if the screen fitted to the device changed. Restart to apply. If it does not match the hardware, the screen stays blank until you set it back.')){this.value=was;return;}
-  orchApply({scrModel:v}).then(ok=>{if(ok)toast('Restart to apply');});
 };
 $('sfxVol').oninput=()=>{$('sfxVolPct').textContent=$('sfxVol').value+'%';};
 $('sfxVol').onchange=()=>orchApply({sfxVol:$('sfxVol').value});
@@ -1693,7 +1999,7 @@ function loadHealth(){
  const box=$('healthpanel'); if(!box)return;
  fetch('/api/health').then(jok).then(d=>{
   healthSkeleton(box);
-  $('hphead').innerHTML='&mdash; '+(d.ok||0)+' ok &middot; '+(d.degraded||0)+
+  $('hphead').innerHTML='- '+(d.ok||0)+' ok &middot; '+(d.degraded||0)+
     ' degraded &middot; '+(d.absent||0)+' absent';
   let h='';
   (d.components||[]).forEach(c=>{
@@ -1904,14 +2210,28 @@ function _fviewable(name){
   if(/\.(txt|md|log|csv)$/.test(n))return 'txt';
   return '';
 }
+// Header-only download (CUM-45): the token rides the X-Nimbus-Token header via
+// the fetch shim, never a ?t= query param, so nothing token-bearing lands in
+// browser/download history or server logs. Fetches the file as a Blob and hands
+// it to the browser through an object URL, then revokes it. Returns a promise so
+// callers can render pending/result feedback.
+function dlFile(project,name){
+  const url='/api/files/dl?project='+encodeURIComponent(project)+'&name='+encodeURIComponent(name);
+  return fetch(url).then(r=>r.ok?r.blob():Promise.reject(r.status)).then(b=>{
+    const u=URL.createObjectURL(b);
+    const a=document.createElement('a');a.href=u;a.download=name;
+    document.body.appendChild(a);a.click();a.remove();
+    setTimeout(()=>URL.revokeObjectURL(u),0);
+  });
+}
 // Show a file in place. Images load through the img tag; text is fetched and
 // inserted with textContent, never innerHTML - the whole point is that file
-// contents are data, not markup.
+// contents are data, not markup. The image bytes are fetched (token in the
+// header) and shown from an object URL, so no ?t= appears in an <img src>.
 function _fpreview(project,name,kind){
   const box=$('filePrev'); if(!box)return;
-  const tok=nimbusTok();
   const url='/api/files/dl?inline=1&project='+encodeURIComponent(project)+
-            '&name='+encodeURIComponent(name)+'&t='+encodeURIComponent(tok);
+            '&name='+encodeURIComponent(name);
   box.style.display='block';
   box.innerHTML='';
   const bar=document.createElement('div');
@@ -1928,9 +2248,12 @@ function _fpreview(project,name,kind){
     const img=document.createElement('img');
     img.style.cssText='max-width:100%;max-height:60vh;border-radius:8px;display:block';
     img.alt=name;
-    img.onerror=()=>{box.appendChild(document.createTextNode('Couldn\'t load that image.'));};
-    img.src=url;
     box.appendChild(img);
+    // Fetch the bytes (token in the header) and show them from an object URL, so
+    // the <img src> never carries a ?t= token.
+    fetch(url).then(r=>r.ok?r.blob():Promise.reject(r.status)).then(b=>{
+      const u=URL.createObjectURL(b);img.onload=()=>URL.revokeObjectURL(u);img.src=u;
+    }).catch(()=>{box.appendChild(document.createTextNode('Couldn\'t load that image.'));});
     return;
   }
   const pre=document.createElement('pre');
@@ -1955,21 +2278,28 @@ function loadFiles(){
     if($('filesStat'))$('filesStat').textContent=d.present
       ?((d.count||0)+' files · '+_fbytes(d.bytes)+' used'+(d.freeBytes!==undefined?(' · '+_fbytes(d.freeBytes)+' free'):''))
       :'No SD card - insert a card to store files';
+    // Real card size/free + the file quota with a caption (CUM-68, N5 payload).
+    if($('filesQuota')){const c=d.card||{},q=d.quota||{},_mb=n=>n>=1024?((n/1024).toFixed(1)+' GB'):(Math.round(n)+' MB');
+      const parts=[];
+      if(c.sizeMB!==undefined)parts.push('Card: '+_mb(c.freeMB||0)+' free of '+_mb(c.sizeMB));
+      if(q.limitMB)parts.push('file quota '+_mb(q.usedMB||0)+' of '+_mb(q.limitMB));
+      $('filesQuota').textContent=d.present?parts.join(' · '):'';}
     const files=d.files||[];
     if(!files.length){box.innerHTML='<span class=hint>No files'+(proj?(' in '+_fesc(proj)):'')+'</span>';return;}
-    const tok=nimbusTok();
     box.innerHTML='<table><tbody>'+files.map(f=>{
-      const dl='/api/files/dl?project='+encodeURIComponent(f.project)+'&name='+encodeURIComponent(f.name)+'&t='+encodeURIComponent(tok);
       // "view" only for what the device is willing to render inline (the server
       // decides; this just avoids offering a link that would download anyway).
       const v=_fviewable(f.name);
       const view=v?('<a href="#" data-vp="'+_fesc(f.project)+'" data-vn="'+_fesc(f.name)+'" data-vk="'+v+'">view</a> &middot; '):'';
+      // "get" is a header-only download (dlFile), never a token-bearing link.
       return '<tr><td style="word-break:break-all">'+_fesc(f.project)+'/'+_fesc(f.name)+'</td><td>'+_fesc(f.kind||'')+
         '</td><td style="white-space:nowrap">'+_fbytes(f.bytes)+'</td><td style="white-space:nowrap">'+view+
-        '<a href="'+dl+'" target=_blank rel=noopener>get</a> &middot; <a href="#" data-rmp="'+_fesc(f.project)+'" data-rmn="'+_fesc(f.name)+'">delete</a></td></tr>';
+        '<a href="#" data-dlp="'+_fesc(f.project)+'" data-dln="'+_fesc(f.name)+'">get</a> &middot; <a href="#" data-rmp="'+_fesc(f.project)+'" data-rmn="'+_fesc(f.name)+'">delete</a></td></tr>';
     }).join('')+'</tbody></table>';
     box.querySelectorAll('a[data-vp]').forEach(a=>a.onclick=e=>{
       e.preventDefault(); _fpreview(a.dataset.vp,a.dataset.vn,a.dataset.vk);});
+    box.querySelectorAll('a[data-dlp]').forEach(a=>a.onclick=e=>{e.preventDefault();
+      dlFile(a.dataset.dlp,a.dataset.dln).catch(()=>toast('Couldn\'t download - try again'));});
     box.querySelectorAll('a[data-rmp]').forEach(a=>a.onclick=e=>{e.preventDefault();
       if(!confirm('Delete '+a.dataset.rmp+'/'+a.dataset.rmn+'?'))return;
       const fd=new FormData();fd.append('project',a.dataset.rmp);fd.append('name',a.dataset.rmn);
@@ -1987,14 +2317,32 @@ $('filesRmProj')&&($('filesRmProj').onclick=()=>{
   fetch('/api/files/rmproject',{method:'POST',body:fd}).then(r=>r.ok?r.json():Promise.reject(r.status))
     .then(o=>{toast('Deleted '+((o&&o.removed)||0)+' files');loadFiles();})
     .catch(s=>toast(s===404?'No such folder':'Couldn\'t delete - try again'));});
+// Upload one file with a determinate progress bar (duration is knowable).
+// Uses XHR so upload progress events drive the feedback bar; the token rides the
+// X-Nimbus-Token header like every request. onPct(0..100) is called as it climbs.
+// Returns a promise that resolves to the parsed JSON (or {}), rejects with the
+// HTTP status (or 0 on a network error). Reused by the chat drag-and-drop (CUM-57).
+function uploadFile(file, proj, onPct){
+  return new Promise((resolve,reject)=>{
+    const url='/api/files/upload?project='+encodeURIComponent(proj)+'&name='+encodeURIComponent(file.name);
+    const x=new XMLHttpRequest();
+    x.open('POST',url);
+    try{x.setRequestHeader('X-Nimbus-Token',nimbusTok());}catch(e){}
+    x.upload.onprogress=e=>{if(onPct&&e.lengthComputable)onPct(Math.round(e.loaded/e.total*100));};
+    x.onload=()=>{if(x.status>=200&&x.status<300){try{resolve(JSON.parse(x.responseText||'{}'));}catch(e){resolve({});}}else reject(x.status);};
+    x.onerror=()=>reject(0);
+    const fd=new FormData();fd.append('file',file,file.name);
+    x.send(fd);
+  });
+}
 $('upBtn')&&($('upBtn').onclick=()=>{
-  const inp=$('upFile'),f=inp&&inp.files[0]; if(!f){toast('Choose a file first');return;}
+  const inp=$('upFile'),f=inp&&inp.files[0];
+  if(!f){fbState('upMsg','error','Choose a file first, then Upload.');return;}
   const proj=($('upProj').value.trim())||'uploads';
-  const fd=new FormData();fd.append('file',f,f.name);
-  $('upMsg').textContent='Uploading '+f.name+'…';
-  fetch('/api/files/upload?project='+encodeURIComponent(proj)+'&name='+encodeURIComponent(f.name),{method:'POST',body:fd})
-    .then(r=>r.ok?r.json():Promise.reject(r.status)).then(()=>{$('upMsg').textContent='Uploaded ✓';inp.value='';loadFiles();})
-    .catch(s=>{$('upMsg').textContent='Upload failed ('+s+') - try again.';});
+  run({status:'upMsg',btn:$('upBtn'),pending:'Uploading '+f.name+'…',
+    work:()=>uploadFile(f,proj,pct=>fbState('upMsg','pending','Uploading '+f.name+'… '+pct+'%',pct)),
+    ok:()=>{inp.value='';loadFiles();return 'Uploaded '+f.name+'.';},
+    error:s=>'Upload failed'+(s?(' ('+s+')'):'')+' - check the file and try again.'});
 });
 // ---- Skills (P2 dynamic capsules): list + load/save/delete on the SD card ----
 function loadSkills(){
@@ -2380,6 +2728,38 @@ function sendChatTurn(){
 $('chatSend')&&($('chatSend').onclick=sendChatTurn);
 loadChatHistory();
 $('chatInput')&&$('chatInput').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendChatTurn();}});
+
+// ---- Chat file upload: file picker + drag-and-drop (CUM-57) -----------------
+// Files upload to the shared artifact store (/api/files/upload) with a real
+// progress bar via the feedback helper, and land as a chat bubble so the
+// assistant can reference them. Reuses uploadFile() (token in the header).
+function chatUpload(files){
+  const list=Array.from(files||[]).filter(Boolean); if(!list.length)return;
+  const proj='chat';
+  // Upload sequentially so the single status line reads clearly; each result is
+  // announced in the chat log so nothing "disappears".
+  let i=0;
+  const next=()=>{
+    if(i>=list.length)return;   // leave the last file's result state on screen
+    const f=list[i++];
+    run({status:'chatUpMsg',pending:'Uploading '+f.name+'…',
+      work:()=>uploadFile(f,proj,pct=>fbState('chatUpMsg','pending','Uploading '+f.name+'… '+pct+'%',pct)),
+      ok:()=>{if(typeof _chatBubble==='function')_chatBubble('u','Attached '+f.name+' (in Files > '+proj+'). Ask me about it.','web');
+        return 'Attached '+f.name+'.';},
+      error:s=>'Upload of '+f.name+' failed'+(s?(' ('+s+')'):'')+' - check the file and try again.'})
+      .then(next).catch(next);   // keep going even if one file fails
+  };
+  next();
+}
+$('chatAttach')&&($('chatAttach').onclick=()=>$('chatFile').click());
+$('chatFile')&&($('chatFile').onchange=e=>{chatUpload(e.target.files);e.target.value='';});
+(function(){const z=$('chatDrop'); if(!z)return;
+  const stop=e=>{e.preventDefault();e.stopPropagation();};
+  ['dragenter','dragover'].forEach(ev=>z.addEventListener(ev,e=>{stop(e);z.classList.add('dropping');}));
+  ['dragleave','dragend'].forEach(ev=>z.addEventListener(ev,e=>{stop(e);if(e.target===z)z.classList.remove('dropping');}));
+  z.addEventListener('drop',e=>{stop(e);z.classList.remove('dropping');
+    if(e.dataTransfer&&e.dataTransfer.files)chatUpload(e.dataTransfer.files);});
+})();
 loadOrch();loadConnectors();
 setInterval(loadOrch,5000);
 loadMemDash();
@@ -2416,11 +2796,10 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
   function esc(s){return (s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
   function show(){el('onbov').style.display='';render();}
   function bodyHtml(s){
-    if(s.id==='welcome')return '<p class=hint>Two quick required steps &mdash; Wi-Fi and one AI provider key &mdash; then a few optional extras you can skip. Takes about a minute.</p>';
-    if(s.id==='display')return '<p class=hint>Which display is fitted on this device? A touch-screen board can\'t ask on its own screen until this is set.</p>'+
-      '<div class=row style="gap:10px"><button type=button class="onbmb onbdb" data-d=eink style="padding:20px 10px">E-ink + knob</button>'+
-      '<button type=button class="onbmb onbdb" data-d=tft style="padding:20px 10px">Touch screen</button></div>'+
-      '<p class=hint id=onb_dispmsg>Saved to the device right away. A change applies after a restart.</p>';
+    if(s.id==='welcome')return '<p class=hint>Two quick required steps - Wi-Fi and one AI provider key - then a few optional extras you can skip. Takes about a minute.</p>';
+    if(s.id==='display')return '<p class=hint>This device has a touch screen. If it is mounted upside down, flip the display so it reads the right way up.</p>'+
+      '<label class=pr style="margin-top:8px"><input type=checkbox id=onb_flip> Flip display 180 degrees</label>'+
+      '<p class=hint id=onb_dispmsg>Applies to the screen right away.</p>';
     if(s.id==='wifi')return '<label>Network name</label>'+
       '<div class=row><input id=onb_ssid placeholder="Network name"><button type=button id=onb_scan>Scan</button></div>'+
       '<p class=hint style="margin:4px 0">Nimbus connects to 2.4 GHz networks.</p>'+
@@ -2429,7 +2808,7 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
       '<div class=row style="margin-top:8px"><button type=button id=onb_wifisave>Connect</button><span class=hint id=onb_wifimsg></span></div>'+
       '<div id=onb_handoff class=hint style="display:none;margin-top:12px;padding:12px;border:1px solid var(--line2);border-radius:8px"></div>';
     if(s.id==='provider')return '<label>Provider</label>'+
-      '<select id=onb_prov><option value=mistral selected>Mistral</option><option value=openai>OpenAI</option><option value=anthropic>Anthropic</option></select>'+
+      '<select id=onb_prov><option value=cumulo selected>Cumulo Nimbus</option><option value=anthropic>Anthropic</option><option value=openai>OpenAI</option><option value=mistral>Mistral</option><option value=zai>Z.ai</option></select>'+
       '<p class=hint id=onb_provguide></p>'+
       '<label>API key</label><input id=onb_key type=password placeholder="Paste your API key">'+
       '<div class=row style="margin-top:8px"><button type=button id=onb_provsave>Save &amp; Verify</button><span class=hint id=onb_provmsg></span></div>'+
@@ -2450,7 +2829,7 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
       '<div class=row><input id=onb_name placeholder="Nimbus"><button type=button id=onb_namesave>Save</button></div>'+
       '<span class=hint id=onb_namemsg></span>'+
       '<p class=hint>Shown on the display, the network, and the setup Wi-Fi. Applies after the next restart.</p>';
-    if(s.id==='done')return '<p class=hint>You’re ready &mdash; Wi-Fi is connected and your provider is verified. Click Finish to open the dashboard.</p>'+
+    if(s.id==='done')return '<p class=hint>You’re ready - Wi-Fi is connected and your provider is verified. Click Finish to open the dashboard.</p>'+
       '<div class=hint id=onb_summary></div>';
     return '';
   }
@@ -2469,15 +2848,16 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
   function next(){ idx=Math.min(idx+1,STEPS.length-1);rememberStep();render(); }
   function wire(s){
     if(s.id==='display'){
-      [...document.querySelectorAll('.onbdb')].forEach(b=>{
-        b.classList.toggle('on',b.dataset.d===(dispSel!==null?dispSel:bootDisp));
-        b.onclick=()=>{const v=b.dataset.d;
-          orchApply({scrModel:v}).then(ok=>{
-            if(!ok){el('onb_dispmsg').textContent='Couldn\'t save - try again.';return;}
-            dispSel=v;render();
-            el('onb_dispmsg').textContent=dispChanged()?'Saved ✓ - applies when the device restarts at the end of setup.':'Saved ✓';
-          });};
-      });
+      // New devices are touch screens; a board that booted blind (reported eink)
+      // is set to its touch panel here so its own screen can render. E-ink is
+      // deprecated and no longer offered. Then the 180-degree flip for upside-down
+      // mounts applies live.
+      if(bootDisp!=='tft'){orchApply({scrModel:'tft'}).then(ok=>{if(ok)dispSel='tft';});}
+      const fl=el('onb_flip');
+      if(fl){fl.onchange=()=>{const fd=new FormData();fd.append('scrFlip',fl.checked?'1':'0');
+        fetch('/api/config',{method:'POST',body:fd})
+          .then(()=>{el('onb_dispmsg').textContent=fl.checked?'Flipped - applied.':'Normal - applied.';})
+          .catch(()=>{el('onb_dispmsg').textContent='Couldn\'t save - try again.';});};}
     } else if(s.id==='wifi'){
       el('onb_scan').onclick=doScan;
       el('onb_wifisave').onclick=doWifi;
@@ -2485,9 +2865,11 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
     } else if(s.id==='provider'){
       // Per-provider setup guidance, updated as the selection changes.
       const pv=el('onb_prov'),pg=el('onb_provguide');
-      const G={mistral:'Mistral (recommended): sign up at console.mistral.ai, add billing credits, then create an API key. Good value and it also powers on-device voice.',
+      const G={cumulo:'Cumulo Nimbus (recommended): sign in at app.cumulo-nimbus.ai and create a device key. One account, no separate provider billing to manage.',
+        anthropic:'Anthropic: sign up at console.anthropic.com, add credit, then create an API key. Note: text only, no on-device voice.',
         openai:'OpenAI: sign up at platform.openai.com, add credit under Billing, then create a key under API keys.',
-        anthropic:'Anthropic: sign up at console.anthropic.com, add credit, then create an API key. Note: text only, no on-device voice.'};
+        mistral:'Mistral: sign up at console.mistral.ai, add billing credits, then create an API key. Good value and it also powers on-device voice.',
+        zai:'Z.ai: sign up at z.ai, add credit, then create an API key.'};
       const upd=()=>{pg.textContent=G[pv.value]||'';};
       pv.onchange=upd;upd();
       el('onb_provsave').onclick=doProvider;
@@ -2516,7 +2898,7 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
     } else if(s.id==='done'){
       const mn=pendingMode!==null?pendingMode:curMode;
       el('onb_summary').innerHTML='&bull; Wi-Fi: '+(wifiOk?'connected':'not connected')+'<br>&bull; Provider: '+(provOk?'verified':'not verified')+'<br>&bull; Mode: '+(mn?'Orchestrator':'Notifier')+
-        (dispChanged()?'<br>&bull; Display: '+(dispSel==='tft'?'Touch screen':'E-ink + knob')+' - the device restarts when you finish to apply it':'');
+        (dispChanged()?'<br>&bull; Display: touch screen - the device restarts when you finish to apply it':'');
     }
   }
   function doScan(){
@@ -2607,7 +2989,7 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
     const b=el('onbNext');b.disabled=true;msg('Finishing…');
     fetch('/api/onboard/complete',{method:'POST'}).then(r=>r.ok?r.json():r.json().then(e=>Promise.reject(e.error||r.status)))
     .then(res=>{
-      try{localStorage.removeItem('nimbusOnboardStep');}catch(e){}
+      try{localStorage.removeItem('nimbusOnboardStep');localStorage.setItem('nimbusJustOnboarded','1');}catch(e){}
       const mn=pendingMode!==null?pendingMode:curMode;
       // The server decides whether the display change needs a restart (stored
       // panel vs the driver bound at boot) - robust to the TFT Wi-Fi handoff

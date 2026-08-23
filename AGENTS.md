@@ -254,7 +254,7 @@ sentence case, verb-led, ≤5 words; failures name the next step.
 | sound level: Off / Low / Medium / High | none/light/medium/heavy, mute |
 | Notifier, Orchestrator (capitalized) | notifier / orchestrator in copy |
 | routine (user noun) | loop (in user copy) |
-| access token; Config QR (web) / Sign-in QR (e-ink) | webtok, "the QR" |
+| device sign-in code; Cloud link code; Sign-in QR | access token, webtok, Config QR, "the QR" |
 | restart | reboot (in user copy) |
 | erase | wipe, nuke |
 | the display / the screen (user copy); e-ink (docs) | E Ink, eink |

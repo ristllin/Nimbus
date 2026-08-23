@@ -29,8 +29,11 @@ static const char UI_SHELL[] PROGMEM = R"=====(<!doctype html>
 }
 *{box-sizing:border-box}
 html,body{overflow-x:hidden}
+/* Fluid, centered content column that caps at 1,280 px (CUM-25). The fixed
+   sidebar sits at the viewport's left edge; the content box centers in the space
+   beside it and stops growing at 1,280 px on wide screens. */
 body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;background:var(--bg);color:var(--ink);
-margin:0;padding:20px 22px 40px 244px;max-width:1060px;font-size:14.5px;line-height:1.55;-webkit-font-smoothing:antialiased}
+margin:0 auto;padding:20px 30px 40px 254px;max-width:1280px;font-size:14.5px;line-height:1.55;-webkit-font-smoothing:antialiased}
 /* Robust anti-overflow: long URLs/JSON/code + wide content can never push the page
    sideways. Break within any element; scroll wide code/tables inside their own box. */
 code,.memv,#idToken,#cxToken,#btMac{overflow-wrap:anywhere;word-break:break-word}
@@ -79,6 +82,44 @@ table{width:100%;border-collapse:collapse;font-size:12.5px}td,th{text-align:left
 .net:hover{background:var(--raise3)}.bars{color:var(--ink3);font-size:13px}#nets{margin:8px 0}
 #msg{font-size:13px;color:var(--ok)}
 .warnbox{background:var(--amber-soft);border:1px solid rgba(240,180,90,.3);border-radius:10px;padding:10px;color:var(--amber);font-size:13px}
+/* ---- Feedback-state system (CUM-31): pending -> result for every async action.
+   One status element renders exactly one of pending/ok/none/error; nothing ever
+   just disappears, and an error always names the next step. ---- */
+[data-fb]{font-size:12.5px;margin:6px 0;line-height:1.5}
+.fb-line{display:flex;align-items:center;gap:8px}
+.fb-dot{width:8px;height:8px;border-radius:50%;flex:none;background:var(--ink3)}
+.fb-pending .fb-dot{background:var(--info)}
+.fb-ok .fb-dot{background:var(--ok)}
+.fb-none .fb-dot{background:var(--ink3)}
+.fb-error .fb-dot{background:var(--crit)}
+.fb-pending .fb-msg{color:var(--ink2)}
+.fb-ok .fb-msg{color:var(--ok)}
+.fb-none .fb-msg{color:var(--ink2)}
+.fb-error .fb-msg{color:var(--crit)}
+.fb-bar{height:5px;border-radius:4px;background:var(--line);margin-top:7px;overflow:hidden}
+.fb-bar>i{display:block;height:100%;border-radius:4px;background:var(--teal);transition:width .25s ease}
+.fb-error .fb-bar>i{background:var(--crit)}
+.fb-bar.fb-indet>i{width:35%;background:var(--info);animation:fbslide 1.1s ease-in-out infinite}
+@keyframes fbslide{0%{margin-left:-35%}100%{margin-left:100%}}
+@media(prefers-reduced-motion:reduce){.fb-bar.fb-indet>i{animation:none;width:100%;opacity:.4}}
+/* Chat file drop zone (CUM-57): highlight while a file is dragged over it. */
+#chatDrop.dropping{outline:2px dashed var(--teal);outline-offset:-6px;background:var(--teal-soft)}
+/* ---- Global search (CUM-62): sidebar trigger + command palette ---- */
+.searchbtn{display:flex;align-items:center;gap:9px;margin:0 4px 10px;padding:8px 11px;border-radius:11px;border:1px solid var(--line2);background:var(--raise2);color:var(--ink3);font-size:13px;font-weight:550;cursor:pointer;width:calc(100% - 8px)}
+.searchbtn:hover{color:var(--ink);filter:none}
+.searchbtn svg{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.8;flex:none}
+.searchbtn kbd{margin-left:auto;font-size:10.5px;background:var(--raise3);border:1px solid var(--line2);border-radius:5px;padding:1px 5px;color:var(--ink3);font-family:var(--mono)}
+#searchOverlay{position:fixed;inset:0;z-index:300;background:rgba(0,0,0,.45);display:flex;align-items:flex-start;justify-content:center;padding:12vh 16px 16px}
+#searchBox{width:100%;max-width:640px;background:var(--raise);border:1px solid var(--line2);border-radius:16px;box-shadow:var(--shadow);overflow:hidden;display:flex;flex-direction:column;max-height:70vh}
+#searchInput{border:0;border-bottom:1px solid var(--line);border-radius:0;background:transparent;color:var(--ink);font-size:16px;padding:15px 16px;margin:0}
+#searchInput:focus{outline:none;border-color:var(--line)}
+#searchResults{overflow-y:auto;padding:6px}
+.sgroup{font-size:10.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--ink3);font-weight:700;padding:10px 10px 4px}
+.sresult{display:block;width:100%;text-align:left;border:0;background:transparent;color:var(--ink);padding:8px 10px;border-radius:9px;cursor:pointer;font-size:13.5px;font-weight:500}
+.sresult:hover,.sresult.sel{background:var(--teal-soft);color:var(--teal);filter:none}
+.sresult .scx{display:block;font-size:11.5px;color:var(--ink3);margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sresult.sel .scx{color:var(--teal-d)}
+.sempty{padding:18px 12px;color:var(--ink3);font-size:13px}
 .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:10px 0}
 .tile{background:var(--raise);border:1px solid var(--line);border-radius:14px;padding:14px 15px;box-shadow:var(--shadow)}
 .tile .k{font-size:10.5px;text-transform:uppercase;letter-spacing:.1em;color:var(--ink3);font-weight:650}
@@ -132,12 +173,28 @@ padding:16px 12px;display:flex;flex-direction:column;gap:3px;z-index:50}
 .tab .tl{flex:1}
 #toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%) translateY(20px);background:var(--teal);color:#052420;font-weight:650;padding:9px 18px;border-radius:20px;opacity:0;transition:opacity .2s,transform .2s;pointer-events:none;z-index:99}
 #toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+/* Icon rail (CUM-25): on narrower desktops/tablets the sidebar collapses to
+   icons only, reclaiming width for the content. Labels return above 1080 px.
+   The full nav is still keyboard-reachable; each button keeps its title tooltip. */
+@media(min-width:861px) and (max-width:1080px){
+.side{width:66px;padding:14px 8px;align-items:center}
+.brand{justify-content:center;padding:4px 0 12px}
+.brand b,.brand .fw{display:none}
+.modeswitch{display:none}
+.tabs .tl{display:none}
+.searchbtn{justify-content:center;width:auto;margin:0 auto 10px;padding:9px}
+.searchbtn .tl,.searchbtn kbd{display:none}
+.tab{justify-content:center;padding:10px 0}
+.tab svg{width:19px;height:19px}
+body{padding-left:92px}
+}
 @media(max-width:860px){
 body{padding:16px 12px calc(84px + env(safe-area-inset-bottom))}
 .side{top:auto;right:0;bottom:0;left:0;width:auto;height:auto;border-right:0;border-top:1px solid var(--line);
 flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-inset-bottom));gap:0;overflow-x:auto}
 .brand{display:none}
 .modeswitch{display:none}
+.searchbtn{display:none}
 .tabs{flex-direction:row;flex:1;justify-content:space-around;gap:0}
 .tab{flex-direction:column;gap:3px;font-size:9.5px;padding:5px 7px;border-radius:9px;text-align:center;width:auto}
 .tab svg{width:19px;height:19px}
@@ -152,15 +209,13 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <button data-m=0 type=button>Notifier</button>
 <button data-m=1 type=button>Orchestrator</button>
 </div>
+<button class=searchbtn id=globalSearchBtn type=button aria-label="Search (Control K)"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg><span class=tl>Search</span><kbd>Ctrl K</kbd></button>
 <nav class=tabs>
-<button class=tab data-p=dash><svg viewBox="0 0 24 24"><path d="M4 13h6V4H4zM14 20h6v-9h-6zM14 8h6V4h-6zM4 20h6v-4H4z"/></svg><span class=tl>Dashboard</span></button>
-<button class=tab data-p=fleet><svg viewBox="0 0 24 24"><circle cx="12" cy="7" r="3"/><path d="M5 21v-1a4 4 0 0 1 4-4h6a4 4 0 0 1 4 4v1"/></svg><span class=tl>Sessions</span></button>
-<button class=tab data-p=chat><svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H8l-4 4V5a2 2 0 0 1 2-2h13a2 2 0 0 1 2 2z"/></svg><span class=tl>Chat</span></button>
-<button class=tab data-p=mem><svg viewBox="0 0 24 24"><path d="M4 7c0-1.7 3.6-3 8-3s8 1.3 8 3-3.6 3-8 3-8-1.3-8-3zM4 7v10c0 1.7 3.6 3 8 3s8-1.3 8-3V7"/></svg><span class=tl>Memory &amp; Files</span></button>
-<button class=tab data-p=harness><svg viewBox="0 0 24 24"><circle cx="6" cy="12" r="3"/><circle cx="18" cy="12" r="3"/><path d="M9 12h6"/></svg><span class=tl>Capabilities</span></button>
-<button class=tab data-p=usage><svg viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg><span class=tl>Usage</span></button>
-<button class=tab data-p=gov><svg viewBox="0 0 24 24"><path d="M12 3l7 4v5c0 4-3 7-7 9-4-2-7-5-7-9V7z"/><path d="M9 12l2 2 4-4"/></svg><span class=tl>Routines</span></button>
-<button class=tab data-p=set><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a7 7 0 0 0 0-6l1.6-1.3-2-3.4-2 .8a7 7 0 0 0-1.7-1L15 2H9l-.3 2.1a7 7 0 0 0-1.7 1l-2-.8-2 3.4L4.6 9a7 7 0 0 0 0 6l-1.6 1.3 2 3.4 2-.8a7 7 0 0 0 1.7 1L9 22h6l.3-2.1a7 7 0 0 0 1.7-1l2 .8 2-3.4z"/></svg><span class=tl>Settings</span></button>
+<button class=tab data-p=home title=Home><svg viewBox="0 0 24 24"><path d="M4 13h6V4H4zM14 20h6v-9h-6zM14 8h6V4h-6zM4 20h6v-4H4z"/></svg><span class=tl>Home</span></button>
+<button class=tab data-p=chat title=Chat><svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H8l-4 4V5a2 2 0 0 1 2-2h13a2 2 0 0 1 2 2z"/></svg><span class=tl>Chat</span></button>
+<button class=tab data-p=memory title=Memory><svg viewBox="0 0 24 24"><path d="M4 7c0-1.7 3.6-3 8-3s8 1.3 8 3-3.6 3-8 3-8-1.3-8-3zM4 7v10c0 1.7 3.6 3 8 3s8-1.3 8-3V7"/></svg><span class=tl>Memory</span></button>
+<button class=tab data-p=assistant title=Assistant><svg viewBox="0 0 24 24"><circle cx="6" cy="12" r="3"/><circle cx="18" cy="12" r="3"/><path d="M9 12h6"/></svg><span class=tl>Assistant</span></button>
+<button class=tab data-p=device title=Device><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a7 7 0 0 0 0-6l1.6-1.3-2-3.4-2 .8a7 7 0 0 0-1.7-1L15 2H9l-.3 2.1a7 7 0 0 0-1.7 1l-2-.8-2 3.4L4.6 9a7 7 0 0 0 0 6l-1.6 1.3 2 3.4 2-.8a7 7 0 0 0 1.7 1L9 22h6l.3-2.1a7 7 0 0 0 1.7-1l2 .8 2-3.4z"/></svg><span class=tl>Device</span></button>
 </nav>
 </aside>
 <div id=toast></div>
