@@ -20,7 +20,7 @@ Forking the project and shipping to your own devices? See
 
 ```mermaid
 flowchart TD
-  TAG["tag vX.Y.Z on Nimbus<br/>(source repo)"] --> CI["release.yml<br/>build esp32s3 + test<br/>sign manifest (ECDSA)<br/>publish bins + manifest"]
+  TAG["tag vX.Y.Z on Nimbus<br/>(source repo)"] --> CI["release.yml<br/>build nimbus-tft + freenove images<br/>sign typed manifest (ECDSA)<br/>publish images + per-variant web-flash"]
   CI --> REL["Release on nimbus-fw-releases<br/>(PUBLIC delivery repo)"]
   REL -->|"GET /releases/latest/download/manifest.json<br/>302 → objects.githubusercontent.com (followed)"| GET
   subgraph DEV["device (daily / button)"]
@@ -111,11 +111,19 @@ recorded in [`adr/0001-ota-releases-repo.md`](adr/0001-ota-releases-repo.md).
 
 1. Bump `NIMBUS_FW_VERSION` in `include/version.h`; commit.
 2. `git tag vX.Y.Z && git push origin main vX.Y.Z`.
-3. Watch the `release` workflow: it gates tag==version.h, builds
-   `esp32s3`+`test`, signs, and publishes `firmware-esp32s3.bin`,
-   `firmware-test.bin`, `manifest.json`. `-rcN` tags publish as pre-releases -
-   note `releases/latest` (what devices poll) only tracks FULL releases, so rc
-   testing uses `OTAURL`/a draft URL, not the daily check.
+3. Watch the `release` workflow: it gates tag==version.h, builds the `esp32s3`
+   (nimbus-tft) and `esp32s3-cyd` (freenove) images, signs the typed manifest,
+   and publishes `firmware-nimbus-tft.bin`, `firmware-freenove.bin`, and
+   `manifest.json` (plus per-variant web-flash images on the `webflash` branch).
+   `-rcN` tags publish as pre-releases - note `releases/latest` (what devices
+   poll) only tracks FULL releases, so rc testing uses `OTAURL`/a draft URL, not
+   the daily check.
+   - **Transition release (one-time, for existing fielded devices):** also cut a
+     schema-1 manifest so devices still on the old build tag can install it and
+     cross into the typed scheme. Build the images, then
+     `tools/make_manifest.py --schema 1 --version vX.Y.Z --key ... esp32s3=firmware-nimbus-tft.bin cyd=firmware-freenove.bin`
+     and publish it under the tag those devices poll. New devices are seeded with
+     their type by the flasher and never need this.
 4. Devices see it on their daily check (or the **Check for Updates** button,
    Settings → Software update on the web page); Orchestrator-mode devices
    Telegram the owner once per version - the notice ends "Reply /update to

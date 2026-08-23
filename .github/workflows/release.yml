@@ -23,13 +23,13 @@ jobs:
           path: Nimbus
           fetch-depth: 0   # tools/git_version.py needs `git describe --tags`
 
-      # solide-drivers is public - plain checkout, pinned to the validated tag.
+      # solide-drivers is public - plain checkout, pinned to the validated release.
       # RELEASE_PAT now needs only: nimbus-fw-releases = Contents:write (publish
       # the release there); the default github.token is scoped to THIS repo only.
       - uses: actions/checkout@v4
         with:
           repository: ristllin/solide-drivers
-          ref: 080bf82a41f5c044ae5a1fb81aa4f7c4ea86f84a   # solide-drivers v0.4.0 (pin the SHA - a tag is mutable)
+          ref: fc03b8dc3fbe00e3258ffeb8e145a28308f532b5   # solide-drivers v0.5.1 (freenove CYD) - pin the SHA, a tag is mutable
           path: solide-drivers
 
       - name: Tag / version.h coherence gate
@@ -53,45 +53,59 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Build firmware (both OTA variants)
+      - name: Build firmware (both board images)
         working-directory: Nimbus
         run: |
           pip install platformio
-          pio run -e esp32s3 -e test
-          cp .pio/build/esp32s3/firmware.bin firmware-esp32s3.bin
-          cp .pio/build/test/firmware.bin firmware-test.bin
+          # esp_idf_nvs_partition_gen: the NVS seed baked into each web-flash image.
+          pip install esp-idf-nvs-partition-gen
+          pio run -e esp32s3 -e esp32s3-cyd
+          cp .pio/build/esp32s3/firmware.bin firmware-nimbus-tft.bin
+          cp .pio/build/esp32s3-cyd/firmware.bin firmware-freenove.bin
 
-      - name: Sign + build manifest
+      - name: Sign + build typed OTA manifest (schema 2)
         working-directory: Nimbus
         env:
           OTA_SIGNING_KEY: ${{ secrets.OTA_SIGNING_KEY }}
         run: |
           test -n "$OTA_SIGNING_KEY" || { echo "::error::OTA_SIGNING_KEY secret is not set"; exit 1; }
           printf '%s\n' "$OTA_SIGNING_KEY" > /tmp/ota_priv.pem
+          # One typed manifest keyed on the device TYPE. The three Freenove sizes
+          # share one firmware image (they differ only by the NVS-seeded panel
+          # size) but each is signed over its own type in the message.
           python3 tools/make_manifest.py \
             --version "${GITHUB_REF_NAME}" \
             --build "$(git describe --tags --always)" \
             --key /tmp/ota_priv.pem \
             --url-base "https://github.com/ristllin/nimbus-fw-releases/releases/download/${GITHUB_REF_NAME}" \
             --out manifest.json \
-            esp32s3=firmware-esp32s3.bin test=firmware-test.bin
+            nimbus-tft=firmware-nimbus-tft.bin \
+            freenove-28=firmware-freenove.bin \
+            freenove-35=firmware-freenove.bin \
+            freenove-40=firmware-freenove.bin
           rm -f /tmp/ota_priv.pem
 
       # Browser-flasher artifacts (docs site /flash, ESP Web Tools): one merged
-      # full-flash image + its manifest. The manifest's part path is the ABSOLUTE
-      # raw.githubusercontent.com URL because GitHub release-asset downloads send
-      # no Access-Control-Allow-Origin header - the raw host does.
-      - name: Build web-flash image + manifest
+      # full-flash image PER VARIANT, each with an NVS seed so the board comes up
+      # on the right panel and knows its OTA type. The manifest's part path is the
+      # ABSOLUTE raw.githubusercontent.com URL because GitHub release-asset
+      # downloads send no Access-Control-Allow-Origin header - the raw host does.
+      - name: Build per-variant web-flash images + manifests
         working-directory: Nimbus
         run: |
-          python3 tools/release/make_webflash_manifest.py \
-            --build-dir .pio/build/esp32s3 \
-            --version "${GITHUB_REF_NAME}" \
-            --out-dir webflash \
-            --base-url "https://raw.githubusercontent.com/ristllin/nimbus-fw-releases/webflash/latest"
-          # The release already carries an OTA manifest.json - publish the web-flash
-          # one under a distinct asset name to avoid the collision.
-          cp webflash/manifest.json webflash/webflash-manifest.json
+          set -e
+          base="https://raw.githubusercontent.com/ristllin/nimbus-fw-releases/webflash/latest"
+          for v in nimbus-tft freenove-28 freenove-35 freenove-40; do
+            case "$v" in
+              nimbus-tft) dir=.pio/build/esp32s3 ;;
+              *)          dir=.pio/build/esp32s3-cyd ;;
+            esac
+            python3 tools/release/make_webflash_manifest.py \
+              --variant "$v" --build-dir "$dir" \
+              --version "${GITHUB_REF_NAME}" \
+              --out-dir webflash \
+              --base-url "$base/$v"
+          done
 
       # Publish to the PUBLIC releases repo (devices download unauthenticated), not
       # the private source repo. tag_name creates the tag over there.
@@ -101,13 +115,13 @@ jobs:
           repository: ristllin/nimbus-fw-releases
           token: ${{ secrets.RELEASE_PAT }}
           tag_name: ${{ github.ref_name }}
+          # The OTA images + typed manifest are release assets (devices fetch
+          # them by version). The web-flash images live on the webflash branch
+          # (per-variant subdirs) because their names collide as flat assets.
           files: |
-            Nimbus/firmware-esp32s3.bin
-            Nimbus/firmware-test.bin
+            Nimbus/firmware-nimbus-tft.bin
+            Nimbus/firmware-freenove.bin
             Nimbus/manifest.json
-            Nimbus/webflash/nimbus-webflash.bin
-            Nimbus/webflash/nimbus-webflash.bin.sha256
-            Nimbus/webflash/webflash-manifest.json
           prerelease: ${{ contains(github.ref_name, '-rc') }}
           generate_release_notes: false
 
@@ -125,10 +139,13 @@ jobs:
           git init -b webflash
           git config user.name "nimbus-release-bot"
           git config user.email "actions@github.com"
-          mkdir latest
-          cp ../Nimbus/webflash/nimbus-webflash.bin latest/
-          cp ../Nimbus/webflash/nimbus-webflash.bin.sha256 latest/
-          cp ../Nimbus/webflash/manifest.json latest/
+          # One subdir per variant: latest/<variant>/{manifest.json,image,sha256}.
+          for v in nimbus-tft freenove-28 freenove-35 freenove-40; do
+            mkdir -p "latest/$v"
+            cp "../Nimbus/webflash/$v/nimbus-webflash.bin" "latest/$v/"
+            cp "../Nimbus/webflash/$v/nimbus-webflash.bin.sha256" "latest/$v/"
+            cp "../Nimbus/webflash/$v/manifest.json" "latest/$v/"
+          done
           git add latest
           git commit -m "web-flash ${GITHUB_REF_NAME}"
           # RELEASE_PAT is a registered Actions secret (auto-masked in logs) and no

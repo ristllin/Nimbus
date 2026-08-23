@@ -58,7 +58,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ristllin/solide-drivers
-          ref: 080bf82a41f5c044ae5a1fb81aa4f7c4ea86f84a   # solide-drivers v0.4.0 (pin the SHA - a tag is mutable)
+          ref: fc03b8dc3fbe00e3258ffeb8e145a28308f532b5   # solide-drivers v0.5.1 (freenove CYD) - pin the SHA, a tag is mutable
           path: solide-drivers
       - uses: actions/setup-python@v5
         with:
