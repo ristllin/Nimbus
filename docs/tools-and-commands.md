@@ -62,6 +62,14 @@ out): it fires once without approval, shows up in /loops like any routine, and
 can be cancelled the same way. Managing people, keys, and other settings stays
 web-only - see the web control surface, not the bot.
 
+Wake-ups: ask me first. If you would rather approve even those one-time wakeups,
+turn on "Wake-ups: ask me first" from the web control surface. With it on, a
+wakeup the assistant arms lands pending and you get a single approval card (the
+same approve/deny as a routine); it never re-asks while it waits. Only an admin
+can arm or approve a wakeup. The web surface for this is `GET /api/wakeups` (the
+wakeup list, arm state, and approval mode) and `POST /api/wakeups` with
+`action=mode&value=ask|auto`, `action=approve&id=<id>`, or `action=cancel&id=<id>`.
+
 ## Contributor tools
 
 Everything below is for working on the firmware or driving a bench board -

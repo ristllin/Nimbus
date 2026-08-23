@@ -1463,6 +1463,50 @@ void beginWeb(const WebConfig& wc) {
     r->send(200, "application/json", "{\"ok\":true}");
   });
 
+  // --- Wake-ups (CUM-27; the Once-loop view, contract shared with lane N1) ---
+  // GET: the wake-up list + arm state + approval mode. POST: STAGE an owner
+  // control action (single-writer on tg_poll like /api/loops). The web surface is
+  // token-gated, and the token holder is the device owner (admin) - the same
+  // authority the wakeup.set tool checks via manageTenants - so arming/approving
+  // here is already admin-gated. Actions:
+  //   action=mode&value=ask|auto     - set "Wake-ups: ask me first"
+  //   action=approve&id=<id>         - approve a pending wake-up (the single card)
+  //   action=cancel&id=<id>          - cancel a wake-up
+  s_server.on("/api/wakeups", HTTP_GET, [](AsyncWebServerRequest* r) {
+    if (authBlocked(r)) return;
+    AsyncWebServerResponse* res = r->beginResponse(200, "application/json",
+                                                   agent::loops::wakeupsJson());
+    res->addHeader("Cache-Control", "no-store");
+    r->send(res);
+  });
+  s_server.on("/api/wakeups", HTTP_POST, [](AsyncWebServerRequest* r) {
+    if (authBlocked(r)) return;
+    auto p = [&](const char* k) -> String {
+      return r->hasParam(k, true) ? r->getParam(k, true)->value() : String();
+    };
+    const String action = p("action");
+    JsonDocument d;
+    if (action == "mode") {
+      const String v = p("value");
+      if (v != "ask" && v != "auto") {
+        r->send(400, "application/json", "{\"error\":\"value must be ask or auto\"}");
+        return;
+      }
+      d["action"] = "wakeup_mode";
+      d["value"]  = v.c_str();
+    } else if (action == "approve" || action == "cancel") {
+      if (p("id").length() == 0) { r->send(400, "application/json", "{\"error\":\"id required\"}"); return; }
+      d["action"] = (action == "approve") ? "approve" : "delete";
+      d["id"]     = p("id").c_str();
+    } else {
+      r->send(400, "application/json", "{\"error\":\"action must be mode, approve, or cancel\"}");
+      return;
+    }
+    String out; serializeJson(d, out);
+    agent::loops::stageWebMutation(out);
+    r->send(200, "application/json", "{\"ok\":true}");
+  });
+
   // Form-encoded apply. profile/mode AND p_<param>/clr_<param> overrides are all
   // staged here and applied in loopWeb() on the main task (the Config is never
   // written from this AsyncTCP task). Any mutation marks the config dirty so

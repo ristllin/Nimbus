@@ -142,9 +142,23 @@ static void test_legacy_adoption_changes_nobody_by_surprise() {
   TEST_ASSERT_EQUAL(1, (int)ts2.adminCount());
 }
 
+// CUM-27: only an Admin may ARM a wake-up. A wake-up fires an unattended turn into
+// the owner's channel, so it is gated on manageTenants, the admin-only permission.
+// This is the single predicate the tool rail and the web surface both consult.
+static void test_only_admin_may_arm_wakeup() {
+  TEST_ASSERT_TRUE (mayArmWakeup(Role::Admin));
+  TEST_ASSERT_FALSE(mayArmWakeup(Role::User));
+  TEST_ASSERT_FALSE(mayArmWakeup(Role::Guest));
+  TEST_ASSERT_FALSE(mayArmWakeup(Role::Unknown));
+  // The gate must track the manageTenants permission exactly (one source of truth).
+  for (Role r : {Role::Unknown, Role::Guest, Role::User, Role::Admin})
+    TEST_ASSERT_EQUAL(permsFor(r).manageTenants, mayArmWakeup(r));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_role_permissions_matrix);
+  RUN_TEST(test_only_admin_may_arm_wakeup);
   RUN_TEST(test_ttl_is_clamped_not_refused);
   RUN_TEST(test_permanent_pins_are_bounded);
   RUN_TEST(test_explicit_quota_overrides_role_default);

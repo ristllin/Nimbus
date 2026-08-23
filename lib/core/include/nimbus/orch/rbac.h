@@ -43,6 +43,13 @@ struct Perms {
 
 Perms permsFor(Role r);
 
+// May this role ARM a wake-up (wakeup.set / an agent Once loop)? A wake-up fires
+// an unattended turn that replies into the owner's channel, so it is an
+// admin-only control action, gated on the same `manageTenants` permission the
+// tool handler enforces (CUM-27). One predicate so the tool rail, the web
+// surface, and the tests can never disagree on the gate.
+inline bool mayArmWakeup(Role r) { return permsFor(r).manageTenants; }
+
 // ---- quotas ------------------------------------------------------------------
 // Per-tenant ceilings. 0 means "unset" and falls back to the role default, so an
 // admin can raise one tenant without editing every other. Admins are unquotaed

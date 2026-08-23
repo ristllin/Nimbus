@@ -39,8 +39,17 @@ constexpr int      kWakeupMaxPending = 4;
 // /loops and the web Routines list, cancellable, and it consumes the same
 // daily fire/token governor as everything else - chaining wakeups cannot
 // outrun the caps a recurring loop lives under.
-inline bool autoApproved(SchedKind kind, bool byAgent) {
-  return !byAgent || kind == SchedKind::Once;
+//
+// `wakeupsAskFirst` is the owner's "Wake-ups: ask me first" policy (CUM-27):
+// when set, an agent-created wakeup is NOT auto-approved - it lands pending and
+// the owner gets a SINGLE approval card at arm time (createLoop raises it once;
+// evaluate() then blocks it without re-asking, so there is no re-ask loop).
+// Owner-created loops are always auto-approved regardless; recurring agent loops
+// always await approval regardless. Default false keeps the shipped behavior.
+inline bool autoApproved(SchedKind kind, bool byAgent, bool wakeupsAskFirst = false) {
+  if (!byAgent) return true;                        // owner-created: always
+  if (kind == SchedKind::Once) return !wakeupsAskFirst;  // agent wakeup: auto unless ask-first
+  return false;                                     // agent recurring: owner must bless
 }
 
 struct SchedSpec {
@@ -222,6 +231,26 @@ uint64_t fnv64(const std::string& s);
 // --- serialization (pure, ArduinoJson) -------------------------------------
 std::string dumpLoops(const std::vector<LoopRecord>& loops);
 bool        loadLoops(const std::string& json, std::vector<LoopRecord>& out);
+
+// --- /api/wakeups contract (pure; the read surface shared with lane N1) ------
+// The wake-up view of the loop table: ONLY Once loops, plus the arm state and the
+// owner's approval mode. Stable JSON contract (see docs/tools-and-commands.md):
+//   {
+//     "approvalMode": "auto" | "ask",   // the "Wake-ups: ask me first" policy
+//     "armed":   <int>,                 // enabled wakeups right now
+//     "maxArmed":<int>,                 // kWakeupMaxPending
+//     "wakeups": [ {
+//        "id","name","note",            // note = the prompt fired on wake
+//        "createdBy":"agent"|"owner",
+//        "enabled","approved",
+//        "pending": <bool>,             // enabled && !approved (awaiting the card)
+//        "nextRun": <epoch s>, "inSec": <int, >=0>,
+//        "lastResult":"none|ok|fail|skipped|paused"
+//     } ]
+//   }
+// `nowEpoch` lets the pure function report `inSec` without a clock dep (0 => omit).
+std::string dumpWakeupsApi(const std::vector<LoopRecord>& loops,
+                           bool wakeupsAskFirst, uint64_t nowEpoch = 0);
 
 }  // namespace orch
 }  // namespace nimbus

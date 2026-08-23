@@ -280,6 +280,39 @@ std::string dumpLoops(const std::vector<LoopRecord>& loops) {
   return out;
 }
 
+std::string dumpWakeupsApi(const std::vector<LoopRecord>& loops,
+                           bool wakeupsAskFirst, uint64_t nowEpoch) {
+  static const char* kRes[] = {"none", "ok", "fail", "skipped", "paused"};
+  ArduinoJson::JsonDocument d;
+  d["approvalMode"] = wakeupsAskFirst ? "ask" : "auto";
+  d["maxArmed"]     = (int)kWakeupMaxPending;
+  int armed = 0;
+  ArduinoJson::JsonArray arr = d["wakeups"].to<ArduinoJson::JsonArray>();
+  for (const LoopRecord& l : loops) {
+    if (l.sched.kind != SchedKind::Once) continue;   // wake-ups are Once loops only
+    if (l.enabled) armed++;
+    ArduinoJson::JsonObject o = arr.add<ArduinoJson::JsonObject>();
+    o["id"]        = l.id;
+    o["name"]      = l.name;
+    o["note"]      = l.prompt;   // the note fired back on wake
+    o["createdBy"] = l.createdBy == CreatedBy::Agent ? "agent" : "owner";
+    o["enabled"]   = l.enabled;
+    o["approved"]  = l.approved;
+    o["pending"]   = l.enabled && !l.approved;   // awaiting the single approval card
+    o["nextRun"]   = l.nextRun;
+    // inSec: whole seconds until the next fire, floored at 0 (never negative), so
+    // a UI can say "in ~3 min" without its own clock. Omitted when no clock is
+    // supplied (nowEpoch == 0) or the loop has no scheduled time.
+    if (nowEpoch && l.nextRun)
+      o["inSec"] = l.nextRun > nowEpoch ? (uint32_t)(l.nextRun - nowEpoch) : 0u;
+    o["lastResult"] = kRes[(int)l.lastResult % 5];
+  }
+  d["armed"] = armed;
+  std::string out;
+  ArduinoJson::serializeJson(d, out);
+  return out;
+}
+
 bool loadLoops(const std::string& json, std::vector<LoopRecord>& out) {
   out.clear();
   if (json.empty()) return true;   // no file yet = zero loops, not an error

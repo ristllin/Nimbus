@@ -65,6 +65,26 @@ static void persist() {
   f.close();
 }
 
+// "Wake-ups: ask me first" policy (CUM-27). Off by default = an agent-armed wakeup
+// is auto-approved (shipped behavior); on = it lands pending and the owner gets one
+// approval card. Persisted in its own tiny file so the loops.json array shape (and
+// its roundtrip test) is untouched.
+static const char* kWakeupModePath = "/data/wakeup_mode";
+static bool g_wakeupsAskFirst = false;
+static void loadWakeupMode() {
+  File f = LittleFS.open(kWakeupModePath, FILE_READ);
+  if (!f) { g_wakeupsAskFirst = false; return; }
+  String s = f.readString();
+  f.close();
+  g_wakeupsAskFirst = (s.length() > 0 && s[0] == '1');
+}
+static void persistWakeupMode() {
+  File f = LittleFS.open(kWakeupModePath, FILE_WRITE);
+  if (!f) { alog("loops: wakeup-mode write failed"); return; }
+  f.write((const uint8_t*)(g_wakeupsAskFirst ? "1" : "0"), 1);
+  f.close();
+}
+
 // ---- time helpers (the ONLY tz-aware code; libc, on tg_poll) --------------
 static bool clockValid() { time_t t = time(nullptr); return t > 1000000000; }
 
@@ -186,6 +206,7 @@ void begin(FireHook fire, ChatAllowedHook chatAllowed, AlertHook alert) {
   reloadCaps();   // honour owner NVS cap overrides (clamped, tighten-only)
   g_fire = fire; g_chatAllowed = chatAllowed; g_alert = alert;
   orch::loadLoops(loadRaw(), g_loops);
+  loadWakeupMode();
   g_loaded = true;
   const bool clk = clockValid();
   const uint64_t now = (uint64_t)time(nullptr);
@@ -394,6 +415,18 @@ void onNetworkUp() {
 }
 
 // ---- mutations -------------------------------------------------------------
+// True (and sets `err`) if arming another one-shot wakeup would exceed the cap.
+// Call with the loops lock held (createLoop does).
+static bool wakeupArmedCapReached(std::string& err) {
+  int armed = 0;
+  for (const auto& e : g_loops)
+    if (e.sched.kind == orch::SchedKind::Once && e.enabled) armed++;
+  if (armed < orch::kWakeupMaxPending) return false;
+  err = "you already have " + std::to_string(orch::kWakeupMaxPending) +
+        " wakeups armed - cancel one (loop.cancel) or let one fire first";
+  return true;
+}
+
 CreateResult createLoop(const String& name, const String& prompt, const String& chatId,
                         ArduinoJson::JsonObjectConst schedule, bool byAgent,
                         bool inScheduledTurn) {
@@ -411,16 +444,7 @@ CreateResult createLoop(const String& name, const String& prompt, const String& 
   if (byAgent && inScheduledTurn && probe.kind != orch::SchedKind::Once) {
     r.err = "a scheduled loop cannot create loops"; return r;
   }
-  if (probe.kind == orch::SchedKind::Once) {
-    int armed = 0;
-    for (const auto& e : g_loops)
-      if (e.sched.kind == orch::SchedKind::Once && e.enabled) armed++;
-    if (armed >= orch::kWakeupMaxPending) {
-      r.err = "you already have " + std::to_string(orch::kWakeupMaxPending) +
-              " wakeups armed - cancel one (loop.cancel) or let one fire first";
-      return r;
-    }
-  }
+  if (probe.kind == orch::SchedKind::Once && wakeupArmedCapReached(r.err)) return r;
   if ((int)g_loops.size() >= g_caps.maxCount) { r.err = "too many loops (max " + std::to_string(g_caps.maxCount) + ")"; return r; }
   if (prompt.length() == 0) { r.err = "prompt is required"; return r; }
   orch::SchedSpec spec = probe;   // parsed once above
@@ -433,17 +457,22 @@ CreateResult createLoop(const String& name, const String& prompt, const String& 
   l.sched = spec;
   l.createdBy = byAgent ? orch::CreatedBy::Agent : orch::CreatedBy::Owner;
   l.enabled = true;
-  l.approved = orch::autoApproved(l.sched.kind, byAgent);   // Once wakeups are
-                            // auto-approved even byAgent (see loops.h rationale);
-                            // recurring agent loops still await the owner
+  l.approved = orch::autoApproved(l.sched.kind, byAgent, g_wakeupsAskFirst);
+                            // Once wakeups are auto-approved even byAgent UNLESS
+                            // the owner turned on "Wake-ups: ask me first" (CUM-27);
+                            // recurring agent loops always await the owner.
   const uint64_t now = (uint64_t)time(nullptr);
   advanceNextRun(l, now, clockValid());
   g_loops.push_back(l);
   persist();
-  if (byAgent && g_alert)
+  // Raise the SINGLE approval card only when the loop actually lands pending - an
+  // auto-approved wakeup must not tell the owner to approve something already
+  // live, and evaluate() blocks a pending loop each tick without re-asking, so
+  // there is no re-ask loop.
+  if (byAgent && !l.approved && g_alert)
     g_alert(AlertLevel::Warn, l.id, "the assistant wants to schedule '" + l.name +
             "' - reply /loop approve " + l.id + " to allow it (or /loop deny " + l.id + ")");
-  r.ok = true; r.id = l.id;
+  r.ok = true; r.id = l.id; r.approved = l.approved;
   return r;
 }
 
@@ -504,6 +533,21 @@ String loopsJson() {
   return out;
 }
 
+String wakeupsJson() {
+  Lock lk;
+  return String(orch::dumpWakeupsApi(g_loops, g_wakeupsAskFirst,
+                                     (uint64_t)time(nullptr)).c_str());
+}
+
+bool wakeupsAskFirst() { Lock lk; return g_wakeupsAskFirst; }
+
+void setWakeupsAskFirst(bool on) {
+  Lock lk;
+  if (g_wakeupsAskFirst == on) return;
+  g_wakeupsAskFirst = on;
+  persistWakeupMode();
+}
+
 String loopsText() {
   Lock lk;
   if (g_loops.empty()) return "No scheduled loops. Ask me to set one up, e.g. \"every morning at 8, summarize my overnight sessions\".";
@@ -558,6 +602,10 @@ void drainWebMutations() {
     } else if (!strcmp(action, "pause"))   { setEnabled(id, false);
     } else if (!strcmp(action, "resume"))  { setEnabled(id, true);
     } else if (!strcmp(action, "delete"))  { cancelLoop(id);
+    } else if (!strcmp(action, "wakeup_mode")) {
+      // "Wake-ups: ask me first" toggle from the web surface (CUM-27).
+      const char* v = d["value"] | "";
+      setWakeupsAskFirst(!strcmp(v, "ask"));
     } else if (!strcmp(action, "tzapply")) {
       // devTz was already persisted on the AsyncTCP task (NVS is mutexed);
       // the tz APPLY must run here - g_loops is single-writer on tg_poll, and
