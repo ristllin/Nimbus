@@ -55,6 +55,16 @@ server - findings are weighted by real reachability.
     instruction and MARKS it untrusted so the model treats it as data; it never
     blocks. The decision policy is the pure `nimbus::orch` moderation core; the
     device classifier is `src/agent/adapters/moderation`.
+- **Danger-zone actions are typed-confirm gated, each distinct.** Erase Storage
+  (`ERASE STORAGE`), Factory Reset (`FACTORY RESET`), and full-card Format
+  (`FORMAT CARD`) each require their OWN exact phrase, so one confirmation can never
+  trigger a heavier action than the owner meant (`nimbus::orch::confirmOk`, one
+  source of truth, host-tested). All three are token-gated POSTs and are deferred to
+  the main loop (never erased on the web task). **Factory Reset preserves the device
+  identity** (the user-visible name) across the wipe and can optionally erase the SD
+  card in the same flow; everything else (keys, token, bonds, config) is fresh.
+  Full-card format needs a board-support driver primitive that does not exist yet,
+  so `/api/sdformat` reports that honestly until it lands.
 - **Telegram allowlist fails CLOSED.** An empty allowlist rejects all chats (was
   fail-open = allow-all); the poll task warns loudly if a token is set with no allowlist.
 - **Shared-engine mutex.** `memory::Lock` (recursive) serializes VectorMemory /

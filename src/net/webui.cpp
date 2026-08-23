@@ -41,6 +41,7 @@
 #include "nimbus/orch/compact.h"   // modelCtxTokens (window table)
 #include "nimbus/power/bright_cap.h"          // resilience: simulated mic/speaker faults
 #include "nimbus/power/power_monitor.h"       // battery chemistry + custom curve parse (config)
+#include "nimbus/orch/danger_zone.h"          // CUM-15 confirm phrases (one source of truth)
 
 #include "../agent/agent_config.h"
 #include "../agent/memory_subsystem.h"
@@ -1746,13 +1747,15 @@ void beginWeb(const WebConfig& wc) {
   s_server.on("/api/factory-reset", HTTP_POST, [](AsyncWebServerRequest* r) {
     if (authBlocked(r)) return;
     String confirm = r->hasParam("confirm", true) ? r->getParam("confirm", true)->value() : "";
-    if (confirm != "FACTORY RESET") {
+    if (!nimbus::orch::confirmOk(nimbus::orch::kConfirmFactoryReset, confirm.c_str())) {
       r->send(400, "application/json", "{\"error\":\"confirm phrase required\"}");
       return;
     }
     if (!s_wc.factoryReset) { r->send(501, "application/json", "{\"error\":\"unsupported\"}"); return; }
+    // CUM-15: optional combined SD erase in the same flow. Identity is always kept.
+    const bool eraseSd = r->hasParam("eraseSd", true) && r->getParam("eraseSd", true)->value() == "1";
     r->send(200, "application/json", "{\"ok\":true,\"rebooting\":true}");
-    s_wc.factoryReset();   // sets the deferred flag; main loop erases NVS + reboots
+    s_wc.factoryReset(eraseSd);   // sets the deferred flag; main loop erases NVS + reboots
   });
 
   // SD reset: erase the durable data store (/mem - vector memories, conversation
@@ -1762,13 +1765,33 @@ void beginWeb(const WebConfig& wc) {
   s_server.on("/api/sdreset", HTTP_POST, [](AsyncWebServerRequest* r) {
     if (authBlocked(r)) return;
     String confirm = r->hasParam("confirm", true) ? r->getParam("confirm", true)->value() : "";
-    if (confirm != "ERASE STORAGE") {
+    if (!nimbus::orch::confirmOk(nimbus::orch::kConfirmEraseStorage, confirm.c_str())) {
       r->send(400, "application/json", "{\"error\":\"confirm phrase required\"}");
       return;
     }
     if (!s_wc.sdReset) { r->send(501, "application/json", "{\"error\":\"unsupported\"}"); return; }
     r->send(200, "application/json", "{\"ok\":true,\"rebooting\":true}");
     s_wc.sdReset();
+  });
+
+  // Full-card format (CUM-15): its OWN typed confirm ("FORMAT CARD"), separate from
+  // Erase Storage, because it wipes the WHOLE card, not just /mem. Deferred to the
+  // main loop. When the board-support driver has no low-level format primitive yet,
+  // the hook is null and the route says so honestly (a contract to the driver lane).
+  s_server.on("/api/sdformat", HTTP_POST, [](AsyncWebServerRequest* r) {
+    if (authBlocked(r)) return;
+    String confirm = r->hasParam("confirm", true) ? r->getParam("confirm", true)->value() : "";
+    if (!nimbus::orch::confirmOk(nimbus::orch::kConfirmFormatCard, confirm.c_str())) {
+      r->send(400, "application/json", "{\"error\":\"confirm phrase required\"}");
+      return;
+    }
+    if (!s_wc.sdFormat) {
+      r->send(501, "application/json",
+              "{\"error\":\"full-card format needs a firmware update\"}");
+      return;
+    }
+    r->send(200, "application/json", "{\"ok\":true,\"rebooting\":true}");
+    s_wc.sdFormat();
   });
 
   // TTS voice catalog for the picker: OpenAI static; Mistral live from its

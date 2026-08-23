@@ -316,6 +316,7 @@ static volatile bool g_rebootPending = false;
 static volatile int  g_modeSwitchTo = -1;   // >=0: the pending reboot is a web mode switch
                                             // (target mode) -> show the same confirm UX as the menu
 static volatile bool g_factoryResetPending = false;  // web factory-reset: erase NVS + reboot on main task
+static volatile bool g_factoryEraseSd = false;       // CUM-15: also erase /mem in the factory-reset flow
 static volatile bool g_sdResetPending = false;       // web SD reset: erase /mem durable store + reboot
 // Voice turn "waiting for the agent" state: after the transcript is sent, a theme
 // spinner runs until the reply lands (or a timeout) so the ring shows work in flight
@@ -2819,8 +2820,10 @@ void setup() {
   // Live ring preview (POST /api/preview): staged on the AsyncTCP task, fired
   // here from loopWeb() on the main task like every other webui mutation.
   wc.onPreview = [](int profileId, int status) { startPreview(profileId, status); };
-  wc.factoryReset = [] { g_factoryResetPending = true; };  // main loop erases NVS + reboots
+  wc.factoryReset = [](bool eraseSd) { g_factoryEraseSd = eraseSd; g_factoryResetPending = true; };  // main loop erases NVS (+optional /mem) + reboots, keeps identity
   wc.sdReset = [] { g_sdResetPending = true; };            // main loop erases /mem + reboots
+  // wc.sdFormat left unset: the board-support driver has no low-level format
+  // primitive yet, so /api/sdformat reports it honestly (contract to the driver lane).
   wc.chatSend = [](const String& t) {   // -> tg_poll turn
     if (!agent::telegram::injectMessage("web", t)) return false;
     g_webTurnDeadlineMs = millis() + kWebTurnMaxMs;
@@ -3728,11 +3731,24 @@ void loop() {
   otaupd::tick();        // OTA: mark-valid once healthy + check/auto-install cadence
   otaLoopUx();           // OTA install e-ink/ring UX (no-op unless installing)
   if (g_factoryResetPending) {  // web factory reset: wipe ALL config, then reboot fresh
-    Serial.println("FACTORY RESET -> erase NVS + restart");
-    g_askOverride = "Factory reset...";
+    // CUM-15: preserve the device IDENTITY (the user-visible name) across the wipe -
+    // it answers "which device is this", not a setting - so the board keeps its name
+    // (and does not auto-renumber against siblings) after a reset. Read it BEFORE the
+    // erase; restore it AFTER re-init. Everything else (keys/token/bonds/config) is
+    // fresh. Best-effort: if the restore path fails the device simply auto-names as
+    // before, never a brick.
+    const String keepName = sys::deviceName();
+    Serial.println(g_factoryEraseSd ? "FACTORY RESET (+SD) -> erase NVS + /mem + restart"
+                                    : "FACTORY RESET -> erase NVS + restart");
+    g_askOverride = g_factoryEraseSd ? "Factory reset + erasing storage, up to a minute..."
+                                     : "Factory reset, this takes a few seconds...";
     renderScreen(attn::ScreenId::Ask, -1);   // buys the e-ink ~2.2 s to paint before erase
     Serial.flush();
+    if (g_factoryEraseSd) agent::memory::eraseDurableStore();   // optional combined /mem erase
     nvs_flash_erase();                        // wipes every namespace (creds/keys/token/bonds)
+    nvs_flash_init();                         // re-init the blank partition so we can write again
+    if (keepName.length() && solide::memory::begin("solide"))
+      nimbus::sys::saveDeviceName(keepName);  // restore identity into the fresh namespace
     delay(50);
     ESP.restart();
   }

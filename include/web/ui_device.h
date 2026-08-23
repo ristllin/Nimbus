@@ -265,10 +265,13 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 <div class=setbody>
 <b style="display:block;margin-top:6px;color:var(--crit)">Erase storage</b>
 <div class=row style="margin-top:6px"><button id=sdReset type=button style="background:rgba(240,104,122,.12);color:var(--crit)">Erase Storage&hellip;</button></div>
-<p class=hint style="color:var(--crit)">Deletes everything on the SD card &mdash; all memories, conversation history, saved files, and media &mdash; then restarts. Wi-Fi, keys, and settings are kept.</p>
+<p class=hint style="color:var(--crit)">Deletes everything on the SD card (all memories, conversation history, saved files, and media), then restarts. Wi-Fi, keys, and settings are kept. This can take up to a minute.</p>
+<div class=row style="margin-top:6px"><button id=sdFormat type=button style="background:rgba(240,104,122,.12);color:var(--crit)">Format Card&hellip;</button></div>
+<p class=hint style="color:var(--crit)">Reformats the whole card, not only the assistant's data. Use this only if the card looks corrupted. It asks for its own typed confirmation.</p>
 <b style="display:block;margin-top:14px;color:var(--crit)">Factory reset</b>
 <div class=row style="margin-top:6px"><button id=factoryReset type=button style="background:rgba(240,104,122,.12);color:var(--crit)">Factory Reset&hellip;</button></div>
-<p class=hint style="color:var(--crit)">Erases <b>everything</b> &mdash; Wi-Fi, API keys, the Telegram list, Bluetooth pairings, themes, sound settings, memory, and the access token &mdash; then restarts into first-time setup.</p>
+<div class=row style="margin-top:6px"><label><input type=checkbox id=factoryEraseSd> Also erase the SD card</label></div>
+<p class=hint style="color:var(--crit)">Erases <b>everything</b> (Wi-Fi, API keys, the Telegram list, Bluetooth pairings, themes, sound settings, memory, and the access token), then restarts into first-time setup. The device keeps its name. This takes a few seconds, or up to a minute when erasing the card.</p>
 </div>
 </details>
 

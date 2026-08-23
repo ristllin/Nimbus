@@ -662,10 +662,11 @@ function loadConnect(){
 })();
 // Factory reset: type-to-confirm, then POST the exact confirm phrase the device requires.
 (function(){const b=$('factoryReset'); if(!b)return; b.onclick=()=>{
-  const p=prompt('Erase all content and settings?\n\nThis removes Wi-Fi, API keys, the Telegram list, Bluetooth pairings, memory, and the access token, then restarts into first-time setup.\n\nType FACTORY RESET to confirm:');
+  const alsoSd=$('factoryEraseSd')&&$('factoryEraseSd').checked;
+  const p=prompt('Erase all content and settings?\n\nThis removes Wi-Fi, API keys, the Telegram list, Bluetooth pairings, memory, and the access token, then restarts into first-time setup. The device keeps its name.'+(alsoSd?'\n\nThe SD card will also be erased (up to a minute).':'')+'\n\nType FACTORY RESET to confirm:');
   if(p===null)return;
   if(p.trim().toUpperCase()!=='FACTORY RESET'){toast('Not reset - the phrase didn\'t match');return;}
-  const fd=new FormData();fd.append('confirm','FACTORY RESET');
+  const fd=new FormData();fd.append('confirm','FACTORY RESET');fd.append('eraseSd',alsoSd?'1':'0');
   fetch('/api/factory-reset',{method:'POST',body:fd}).then(r=>r.ok?r.json():Promise.reject(r.status)).then(()=>{
     // The erase wipes this device's auth token, so our stored one is now stale -
     // drop it so we don't 401-loop against the old token when it reboots into the
@@ -677,6 +678,17 @@ function loadConnect(){
       '<p style="color:var(--ink2);line-height:1.5">Everything has been erased and the device is restarting into first-time setup. '+
       'Reconnect to its <b>&ldquo;…-setup&rdquo;</b> Wi-Fi network to run the setup wizard.</p></div>';
   }).catch(()=>toast('Reset failed - try again'));};
+})();
+// Full-card format (CUM-15): its own typed confirm, distinct from Erase Storage.
+(function(){const b=$('sdFormat'); if(!b)return; b.onclick=()=>{
+  const p=prompt('Reformat the entire SD card?\n\nThis erases the WHOLE card, not just the assistant\'s data. Use it only if the card is corrupted. The device restarts. This can take up to a minute.\n\nType FORMAT CARD to confirm:');
+  if(p===null)return;
+  if(p.trim().toUpperCase()!=='FORMAT CARD'){toast('Not formatted - the phrase didn\'t match');return;}
+  const fd=new FormData();fd.append('confirm','FORMAT CARD');
+  fetch('/api/sdformat',{method:'POST',body:fd}).then(r=>r.json().then(j=>({ok:r.ok,j})))
+    .then(({ok,j})=>{ if(ok){toast('Formatting the card - the device is restarting');}
+      else{toast(j&&j.error?j.error:'Couldn\'t format the card');} })
+    .catch(()=>toast('Couldn\'t format - try again'));};
 })();
 // --- Local Loops ---
 function loadLoops(){
