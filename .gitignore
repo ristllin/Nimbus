@@ -48,3 +48,8 @@ website/docs/contributing/
 
 # golden-test diff output + ring-preview harness renders
 test/out/
+
+# fleet lane files (never commit)
+TASK.md
+PROGRESS.md
+BLOCKERS.md
