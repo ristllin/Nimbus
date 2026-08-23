@@ -137,7 +137,9 @@ function loadPane(p){
     if(typeof loadOrch==='function')loadOrch();
     if(typeof loadHealth==='function')loadHealth();
   }
-  if(p==='gov'&&typeof loadLoops==='function')loadLoops();
+  if(p==='gov'){if(typeof loadLoops==='function')loadLoops();
+    if(typeof loadWakeups==='function')loadWakeups();
+    if(typeof loadSafety==='function')loadSafety();}
   if(p==='mem'){if(typeof loadMemDash==='function')loadMemDash();if(typeof loadFiles==='function')loadFiles();}
   if(p==='harness'){if(typeof loadOrch==='function')loadOrch();if(typeof loadConnectors==='function')loadConnectors();if(typeof loadTools==='function')loadTools();if(typeof loadSkills==='function')loadSkills();}
   if(p==='usage'){if(typeof loadOrch==='function')loadOrch();if(typeof loadFetchQ==='function')loadFetchQ();if(typeof loadUsageHistory==='function')loadUsageHistory();}
@@ -861,6 +863,50 @@ function loadLoops(){
       fetch('/api/loops',{method:'POST',body:fd}).then(()=>setTimeout(loadLoops,500));
     });
   }).catch(()=>{el.innerHTML='<span class=hint>Couldn\'t load routines</span>';});
+}
+// ---- Wake-ups (CUM-72, N2 /api/wakeups) ------------------------------------
+// Policy default silent-allow; "ask me first" surfaces at most ONE pending
+// approval as a single yes/no card - never a repeating prompt / loop.
+function loadWakeups(){
+  const sel=$('wkPolicy'); if(!sel)return;
+  fetch('/api/wakeups').then(r=>r.ok?r.json():Promise.reject(r.status)).then(d=>{
+    if(document.activeElement!==sel)sel.value=d.policy||'silent-allow';
+    sel.onchange=()=>run({status:'wkMsg',pending:'Saving…',
+      work:()=>fetch('/api/wakeups',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({policy:sel.value}).toString()}).then(jok),
+      ok:()=>sel.value==='ask'?'Ask me first - new wake-ups wait for approval.':'Wake-ups run silently.',
+      error:e=>'Couldn\'t save'+(e?(' ('+e+')'):'')+' - try again.'});
+    // A single pending approval card (never a loop): only the FIRST pending item.
+    const p=d.pending, box=$('wkPending');
+    if(box){
+      if(p){box.style.display='block';
+        $('wkPendLabel').textContent=p.label||'A new wake-up';
+        $('wkPendWhen').textContent=(p.when?('When: '+p.when+'. '):'')+(p.why||'The assistant wants to follow up later.');
+        const act=(a,msg)=>run({status:'wkPendMsg',pending:msg,
+          work:()=>fetch('/api/wakeups',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({action:a,id:p.id||''}).toString()}).then(jok),
+          ok:()=>{setTimeout(loadWakeups,400);return a==='approve'?'Approved.':'Denied.';},
+          error:e=>'Couldn\'t '+a+(e?(' ('+e+')'):'')+' - try again.'});
+        $('wkApprove').onclick=()=>act('approve','Approving…');
+        $('wkDeny').onclick=()=>act('deny','Denying…');
+      } else box.style.display='none';
+    }
+    const list=$('wkList');
+    if(list){const items=d.items||[];
+      list.innerHTML=items.length?('Scheduled: '+items.map(w=>_sEsc(w.label||w.when||'wake-up')+(w.enabled===false?' (off)':'')).join(' &middot; ')):'No wake-ups scheduled.';}
+  }).catch(()=>{const m=$('wkMsg');if(m)fbState('wkMsg','error','Couldn\'t load wake-ups - try again.');});
+}
+// ---- Safety (CUM-72, N5 endpoints) -----------------------------------------
+// Three moderation gates + a cost note. Each toggle writes independently.
+function loadSafety(){
+  const gi=$('safeIn'); if(!gi)return;
+  fetch('/api/safety').then(r=>r.ok?r.json():Promise.reject(r.status)).then(d=>{
+    const set=(id,v)=>{const e=$(id);if(e&&document.activeElement!==e)e.checked=!!v;};
+    set('safeIn',d.input);set('safeOut',d.output);set('safeMedia',d.media);
+    if($('safeCost'))$('safeCost').textContent=d.costNote||'Each gate that is on adds a small provider call per item.';
+    const wire=(id,gate)=>{const e=$(id);if(!e)return;e.onchange=()=>run({status:'safeMsg',pending:'Saving…',
+      work:()=>fetch('/api/safety',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({gate:gate,on:e.checked?'1':'0'}).toString()}).then(jok),
+      ok:()=>'Saved.',error:er=>'Couldn\'t save'+(er?(' ('+er+')'):'')+' - try again.'});};
+    wire('safeIn','input');wire('safeOut','output');wire('safeMedia','media');
+  }).catch(()=>{if($('safeMsg'))fbState('safeMsg','error','Couldn\'t load safety settings - try again.');});
 }
 function initLoopForm(){
   const kind=$('lpKind'); if(!kind)return;

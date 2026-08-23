@@ -83,6 +83,12 @@ export const WAKEUPS = {
   pending: null, // when a wake-up needs approval, an object; single card, never a loop
 };
 
+// N5 safety stub: three moderation gates + a cost note.
+export const SAFETY = {
+  input: false, output: false, media: false,
+  costNote: 'Each gate that is on adds a small provider moderation call per item.',
+};
+
 export const HEALTH = { ok: true, checks: [{ name: 'wifi', ok: true }, { name: 'sd', ok: true }] };
 
 export const CONNECT = {
@@ -170,6 +176,7 @@ export const DEFAULTS = {
   '/api/models': MODELS,
   '/api/fallbacks': FALLBACKS,
   '/api/wakeups': WAKEUPS,
+  '/api/safety': SAFETY,
   '/api/health': HEALTH,
   '/api/connect': CONNECT,
   '/api/themes': THEMES,

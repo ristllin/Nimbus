@@ -858,6 +858,32 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <div id=loopList>loading&hellip;</div>
 </div>
 <div class=sec>
+<h2>Wake-ups <button class=qh type=button aria-expanded=false aria-label="About wake-ups">?</button></h2>
+<p class="hint tip">A wake-up is a turn the assistant schedules for itself to follow up later. Allow silently lets them run; "Ask me first" holds each new one for a single yes/no, never a repeating prompt.</p>
+<label>When the assistant schedules a wake-up</label>
+<select id=wkPolicy>
+<option value=silent-allow>Allow silently</option>
+<option value=ask>Ask me first</option>
+</select>
+<div class=hint id=wkMsg></div>
+<div id=wkPending style="display:none;margin-top:10px;padding:12px;border:1px solid var(--teal);border-radius:12px;background:var(--raise2)">
+<b id=wkPendLabel></b>
+<p class=hint id=wkPendWhen style="margin:4px 0"></p>
+<div class=row><button id=wkApprove type=button>Approve</button><button id=wkDeny type=button style="background:var(--raise3);color:var(--ink2)">Deny</button></div>
+<div class=hint id=wkPendMsg></div>
+</div>
+<div id=wkList class=hint style="margin-top:8px"></div>
+</div>
+<div class=sec>
+<h2>Safety <button class=qh type=button aria-expanded=false aria-label="About safety">?</button></h2>
+<p class="hint tip">Moderation gates screen content with your provider before it is acted on. Each gate that is on adds a small provider call per item, so it costs a little more.</p>
+<label class=pr><input type=checkbox id=safeIn> Screen incoming messages</label>
+<label class=pr><input type=checkbox id=safeOut> Screen the assistant's replies</label>
+<label class=pr><input type=checkbox id=safeMedia> Screen images and files</label>
+<p class=hint id=safeCost></p>
+<div class=hint id=safeMsg></div>
+</div>
+<div class=sec>
 <h2>New routine</h2>
 <div class=row><input id=lpName placeholder="Name (e.g. Morning digest)" maxlength=24></div>
 <div class=row><input id=lpPrompt placeholder="What should the assistant do?"></div>
@@ -1033,7 +1059,9 @@ function loadPane(p){
     if(typeof loadOrch==='function')loadOrch();
     if(typeof loadHealth==='function')loadHealth();
   }
-  if(p==='gov'&&typeof loadLoops==='function')loadLoops();
+  if(p==='gov'){if(typeof loadLoops==='function')loadLoops();
+    if(typeof loadWakeups==='function')loadWakeups();
+    if(typeof loadSafety==='function')loadSafety();}
   if(p==='mem'){if(typeof loadMemDash==='function')loadMemDash();if(typeof loadFiles==='function')loadFiles();}
   if(p==='harness'){if(typeof loadOrch==='function')loadOrch();if(typeof loadConnectors==='function')loadConnectors();if(typeof loadTools==='function')loadTools();if(typeof loadSkills==='function')loadSkills();}
   if(p==='usage'){if(typeof loadOrch==='function')loadOrch();if(typeof loadFetchQ==='function')loadFetchQ();if(typeof loadUsageHistory==='function')loadUsageHistory();}
@@ -1757,6 +1785,50 @@ function loadLoops(){
       fetch('/api/loops',{method:'POST',body:fd}).then(()=>setTimeout(loadLoops,500));
     });
   }).catch(()=>{el.innerHTML='<span class=hint>Couldn\'t load routines</span>';});
+}
+// ---- Wake-ups (CUM-72, N2 /api/wakeups) ------------------------------------
+// Policy default silent-allow; "ask me first" surfaces at most ONE pending
+// approval as a single yes/no card - never a repeating prompt / loop.
+function loadWakeups(){
+  const sel=$('wkPolicy'); if(!sel)return;
+  fetch('/api/wakeups').then(r=>r.ok?r.json():Promise.reject(r.status)).then(d=>{
+    if(document.activeElement!==sel)sel.value=d.policy||'silent-allow';
+    sel.onchange=()=>run({status:'wkMsg',pending:'Saving…',
+      work:()=>fetch('/api/wakeups',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({policy:sel.value}).toString()}).then(jok),
+      ok:()=>sel.value==='ask'?'Ask me first - new wake-ups wait for approval.':'Wake-ups run silently.',
+      error:e=>'Couldn\'t save'+(e?(' ('+e+')'):'')+' - try again.'});
+    // A single pending approval card (never a loop): only the FIRST pending item.
+    const p=d.pending, box=$('wkPending');
+    if(box){
+      if(p){box.style.display='block';
+        $('wkPendLabel').textContent=p.label||'A new wake-up';
+        $('wkPendWhen').textContent=(p.when?('When: '+p.when+'. '):'')+(p.why||'The assistant wants to follow up later.');
+        const act=(a,msg)=>run({status:'wkPendMsg',pending:msg,
+          work:()=>fetch('/api/wakeups',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({action:a,id:p.id||''}).toString()}).then(jok),
+          ok:()=>{setTimeout(loadWakeups,400);return a==='approve'?'Approved.':'Denied.';},
+          error:e=>'Couldn\'t '+a+(e?(' ('+e+')'):'')+' - try again.'});
+        $('wkApprove').onclick=()=>act('approve','Approving…');
+        $('wkDeny').onclick=()=>act('deny','Denying…');
+      } else box.style.display='none';
+    }
+    const list=$('wkList');
+    if(list){const items=d.items||[];
+      list.innerHTML=items.length?('Scheduled: '+items.map(w=>_sEsc(w.label||w.when||'wake-up')+(w.enabled===false?' (off)':'')).join(' &middot; ')):'No wake-ups scheduled.';}
+  }).catch(()=>{const m=$('wkMsg');if(m)fbState('wkMsg','error','Couldn\'t load wake-ups - try again.');});
+}
+// ---- Safety (CUM-72, N5 endpoints) -----------------------------------------
+// Three moderation gates + a cost note. Each toggle writes independently.
+function loadSafety(){
+  const gi=$('safeIn'); if(!gi)return;
+  fetch('/api/safety').then(r=>r.ok?r.json():Promise.reject(r.status)).then(d=>{
+    const set=(id,v)=>{const e=$(id);if(e&&document.activeElement!==e)e.checked=!!v;};
+    set('safeIn',d.input);set('safeOut',d.output);set('safeMedia',d.media);
+    if($('safeCost'))$('safeCost').textContent=d.costNote||'Each gate that is on adds a small provider call per item.';
+    const wire=(id,gate)=>{const e=$(id);if(!e)return;e.onchange=()=>run({status:'safeMsg',pending:'Saving…',
+      work:()=>fetch('/api/safety',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({gate:gate,on:e.checked?'1':'0'}).toString()}).then(jok),
+      ok:()=>'Saved.',error:er=>'Couldn\'t save'+(er?(' ('+er+')'):'')+' - try again.'});};
+    wire('safeIn','input');wire('safeOut','output');wire('safeMedia','media');
+  }).catch(()=>{if($('safeMsg'))fbState('safeMsg','error','Couldn\'t load safety settings - try again.');});
 }
 function initLoopForm(){
   const kind=$('lpKind'); if(!kind)return;
