@@ -63,6 +63,8 @@
 #include "../agent/adapters/tts_voices.h"
 #include "../agent/provider_verify.h"
 #include "../agent/store.h"
+#include "../sys/ps_json.h"                // PsramJsonAllocator - keep /api/models off internal heap
+#include "nimbus/orch/model_catalog.h"    // role tokens for the catalog response
 #include "relay_client.h"                // cloud tunnel status + control
 #include "../agent/connectors.h"           // /api/connectors - known catalog + host
 #include "web_memory.h"
@@ -775,6 +777,54 @@ static void buildOrchState(String& out) {
   serializeJson(d, out);
 }
 
+// GET /api/models - the capability-aware catalog (contract on CUM-26). Reads each
+// provider's persisted catalog blob (mcat_<provider>, built by the verify harvest
+// from the portable parser) and frames it with keyed/verified/probe/refresh state.
+// Unusable models are omitted unless ?all=1 ("a model your key cannot use never
+// appears"). Built in PSRAM: three per-provider blobs re-parsed here would spike
+// internal heap on the default allocator.
+static bool providerKeyed(const char* p) {
+  if (!strcmp(p, "openai")) return agent::store::hasOpenaiKey();
+  if (!strcmp(p, "anthropic")) return agent::store::hasAnthropicKey();
+  if (!strcmp(p, "mistral")) return agent::store::hasMistralKey();
+  return false;
+}
+static void buildModelsCatalog(String& out, const String& only, bool includeUnusable) {
+  JsonDocument d(&agent::PsramJsonAllocator::instance());
+  const time_t nowT = time(nullptr);
+  const uint32_t now = (nowT > 100000) ? (uint32_t)nowT : 0;   // 0 until the clock is set
+  const uint32_t ttl = (uint32_t)agent::store::capProbeHours() * 3600u;
+  d["generatedAt"] = now;
+  d["ttlSec"] = ttl;
+  int rc = 0;
+  const char* const* rt = nimbus::orch::roleTokens(rc);
+  JsonArray roles = d["roles"].to<JsonArray>();
+  for (int i = 0; i < rc; i++) roles.add(rt[i]);
+
+  JsonObject provs = d["providers"].to<JsonObject>();
+  static const char* const kCatProviders[] = {"openai", "anthropic", "mistral"};
+  for (const char* p : kCatProviders) {
+    if (only.length() && only != p) continue;
+    JsonObject o = provs[p].to<JsonObject>();
+    o["keyed"] = providerKeyed(p);
+    o["verified"] = agent::store::verifyResult(p);
+    o["probe"] = agent::store::capProbe();
+    const uint32_t rts = agent::store::verifyTs(p);
+    o["refreshedAt"] = rts;
+    o["stale"] = (now && rts) ? (now - rts > ttl) : true;
+    JsonArray marr = o["models"].to<JsonArray>();
+    String blob = agent::store::modelCatalogJson(p);
+    if (!blob.length()) continue;
+    JsonDocument md(&agent::PsramJsonAllocator::instance());
+    if (deserializeJson(md, blob) != DeserializationError::Ok) continue;
+    for (JsonObjectConst m : md.as<JsonArrayConst>()) {
+      if (!includeUnusable && !(m["usable"] | true)) continue;
+      marr.add(m);   // deep-copies the stored model object into the response
+    }
+  }
+  serializeJson(d, out);
+}
+
 // Apply one POSTed orchestrator field. Key writes invalidate that provider's
 // verify cache (result -1, ts 0 = "never verified") so a swapped key can't ride
 // a stale "verified" badge. Returns true if the field was recognized.
@@ -1341,6 +1391,25 @@ void beginWeb(const WebConfig& wc) {
     AsyncWebServerResponse* res = r->beginResponse(200, "application/json", s);
     res->addHeader("Cache-Control", "no-store");
     r->send(res);
+  });
+  // GET /api/models[?provider=<slug>][&all=1] - the capability catalog (CUM-26).
+  s_server.on("/api/models", HTTP_GET, [](AsyncWebServerRequest* r) {
+    if (authBlocked(r)) return;
+    String only = r->hasParam("provider") ? r->getParam("provider")->value() : String();
+    const bool all = r->hasParam("all") && r->getParam("all")->value() == "1";
+    String s; buildModelsCatalog(s, only, all);
+    AsyncWebServerResponse* res = r->beginResponse(200, "application/json", s);
+    res->addHeader("Cache-Control", "no-store");
+    r->send(res);
+  });
+  // POST /api/models/refresh {provider} - force a re-harvest (enqueues a verify;
+  // the UI polls generatedAt / verifyPending). No body provider = refresh nothing.
+  s_server.on("/api/models/refresh", HTTP_POST, [](AsyncWebServerRequest* r) {
+    if (authBlocked(r)) return;
+    String p = r->hasParam("provider", true) ? r->getParam("provider", true)->value() : String();
+    bool ok = p.length() && agent::provider_verify::request(p);
+    r->send(ok ? 200 : 409, "application/json",
+            ok ? "{\"ok\":true}" : "{\"ok\":false,\"error\":\"busy or no provider\"}");
   });
   // Daily per-provider usage buckets for the Usage-pane graphs (owner: spend over
   // time + estimated price). Raw counts only - the $ math happens client-side from

@@ -362,6 +362,69 @@ const char* capToken(ModelCap c) {
   return "";
 }
 
+ProbeVerdict probeVerdict(int httpStatus, const std::string& errBody) {
+  if (httpStatus == 200) return ProbeVerdict::Usable;
+  const std::string e = lower(errBody);
+  // The model itself is rejected -> hide it. Match the shapes providers use for an
+  // unknown / inaccessible model id.
+  const bool modelRejected = has(e, "model_not_found") || has(e, "model not found") ||
+                             has(e, "does not exist") || has(e, "no such model") ||
+                             has(e, "unknown model") || has(e, "not have access") ||
+                             has(e, "does not have access") || has(e, "not allowed to use") ||
+                             has(e, "invalid model");
+  if (modelRejected) return ProbeVerdict::Unusable;
+  if (httpStatus == 404) return ProbeVerdict::Unusable;  // endpoint has no such model
+  if (httpStatus == 401 || httpStatus == 403) return ProbeVerdict::Unusable;  // key can't use it
+  // 429 / 5xx / network / a generic 400 (bad probe shape) are transient or
+  // unrelated to the model - never demote on those.
+  return ProbeVerdict::Unknown;
+}
+
+namespace {
+uint16_t roleBitFromToken(const std::string& t) {
+  for (const RoleBit& b : kRoleBits)
+    if (t == b.t) return b.r;
+  return 0;
+}
+uint16_t capBitFromKey(const std::string& k) {
+  if (k == "tools") return CapTools;
+  if (k == "vision") return CapVision;
+  if (k == "streaming") return CapStreaming;
+  if (k == "json") return CapJson;
+  if (k == "embedding") return CapEmbedding;
+  if (k == "audioIn") return CapAudioIn;
+  if (k == "audioOut") return CapAudioOut;
+  return 0;
+}
+}  // namespace
+
+size_t modelsFromJson(JsonArrayConst arr, std::vector<ModelInfo>& out) {
+  if (arr.isNull()) return 0;
+  const size_t start = out.size();
+  for (JsonObjectConst o : arr) {
+    ModelInfo mi;
+    mi.id = (const char*)(o["id"] | "");
+    if (mi.id.empty()) continue;
+    for (JsonVariantConst r : o["roles"].as<JsonArrayConst>())
+      mi.roles |= roleBitFromToken((const char*)(r | ""));
+    JsonObjectConst caps = o["caps"];
+    for (JsonPairConst kv : caps)
+      if (kv.value().as<bool>()) mi.caps |= capBitFromKey(kv.key().c_str());
+    mi.usable = o["usable"] | true;
+    mi.probed = o["probed"] | false;
+    mi.ctxTokens = o["ctxTokens"] | 0u;
+    mi.maxOutTokens = o["maxOutTokens"] | 0u;
+    const char* sz = o["size"] | "";
+    mi.size = sz[0] ? sz[0] : 0;
+    mi.family = (const char*)(o["family"] | "");
+    mi.apiCaps = (std::string((const char*)(o["source"] | "")) == "api");
+    mi.deprecated = o["deprecated"] | false;
+    mi.upstream = (const char*)(o["upstream"] | "");
+    out.push_back(std::move(mi));
+  }
+  return out.size() - start;
+}
+
 void modelsToJson(const std::vector<ModelInfo>& models, JsonArray arr, bool includeUnusable) {
   for (const ModelInfo& mi : models) {
     if (!includeUnusable && !mi.usable) continue;
@@ -371,6 +434,7 @@ void modelsToJson(const std::vector<ModelInfo>& models, JsonArray arr, bool incl
     for (const RoleBit& b : kRoleBits)
       if (mi.roles & b.r) roles.add(b.t);
     o["usable"] = mi.usable;
+    o["probed"] = mi.probed;
     o["ctxTokens"] = mi.ctxTokens;
     o["maxOutTokens"] = mi.maxOutTokens;
     JsonObject caps = o["caps"].to<JsonObject>();

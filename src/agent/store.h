@@ -68,6 +68,11 @@ String subModel(const String& provider);    // per-provider sub-session model
 // "" until a verify has run. Callers fall back to the static compile-time list.
 String modelChoices(const String& provider);
 void   setModelChoices(const String& provider, const String& csv);
+// Rich capability-aware catalog per provider (GET /api/models model array as JSON,
+// NVS key "mcat_<provider>"). "" = never harvested. Backs the PSRAM runtime cache
+// and survives a reboot; the CSV above stays for the legacy /api/orch dropdowns.
+String modelCatalogJson(const String& provider);
+void   setModelCatalogJson(const String& provider, const String& json);
 String agentFabricCfg();                    // legacy category bindings "code:openai,..."
 
 // ---- user directive + TTS ----

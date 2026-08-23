@@ -236,8 +236,62 @@ static void test_parse_tolerates_http_headers() {
   TEST_ASSERT_TRUE(present(v, "glm-5"));
 }
 
+// ---- usability probe verdict ------------------------------------------------
+static void test_probe_verdict() {
+  TEST_ASSERT_TRUE(probeVerdict(200, "") == ProbeVerdict::Usable);
+  // model-specific rejections hide the model
+  TEST_ASSERT_TRUE(probeVerdict(404, "{\"error\":{\"code\":\"model_not_found\"}}") ==
+                   ProbeVerdict::Unusable);
+  TEST_ASSERT_TRUE(probeVerdict(400, "The model `x` does not exist") == ProbeVerdict::Unusable);
+  TEST_ASSERT_TRUE(probeVerdict(403, "your key does not have access to this model") ==
+                   ProbeVerdict::Unusable);
+  TEST_ASSERT_TRUE(probeVerdict(401, "unauthorized") == ProbeVerdict::Unusable);
+  // transient / unrelated faults never demote a model
+  TEST_ASSERT_TRUE(probeVerdict(429, "rate limit exceeded") == ProbeVerdict::Unknown);
+  TEST_ASSERT_TRUE(probeVerdict(500, "internal error") == ProbeVerdict::Unknown);
+  TEST_ASSERT_TRUE(probeVerdict(0, "connection reset") == ProbeVerdict::Unknown);
+  TEST_ASSERT_TRUE(probeVerdict(400, "missing required field: messages") == ProbeVerdict::Unknown);
+}
+
+// ---- NVS round-trip: modelsToJson -> modelsFromJson preserves the catalog ----
+static void test_models_json_round_trip() {
+  std::vector<ModelInfo> v;
+  parseModelsList("mistral", readFixture("mistral.json"), v);
+  parseModelsList("cumulo", "{\"data\":[{\"id\":\"anthropic/claude-opus-5\"}]}", v);
+  for (ModelInfo& m : v)
+    if (m.id == "mistral-embed") m.usable = false;
+
+  JsonDocument doc;
+  JsonArray arr = doc.to<JsonArray>();
+  modelsToJson(v, arr, /*includeUnusable=*/true);   // persist everything
+  std::string blob;
+  serializeJson(doc, blob);
+
+  JsonDocument re;
+  deserializeJson(re, blob);
+  std::vector<ModelInfo> back;
+  size_t n = modelsFromJson(re.as<JsonArrayConst>(), back);
+  TEST_ASSERT_EQUAL_UINT(v.size(), n);
+  const ModelInfo* large = find(back, "mistral-large-latest");
+  TEST_ASSERT_NOT_NULL(large);
+  TEST_ASSERT_TRUE(large->hasRole(RoleOrchestrator));
+  TEST_ASSERT_TRUE(large->hasRole(RoleVision));
+  TEST_ASSERT_TRUE(large->hasCap(CapTools));
+  TEST_ASSERT_EQUAL_CHAR('L', large->size);
+  TEST_ASSERT_TRUE(large->apiCaps);
+  const ModelInfo* emb = find(back, "mistral-embed");
+  TEST_ASSERT_NOT_NULL(emb);
+  TEST_ASSERT_FALSE(emb->usable);                 // usability verdict survives the round-trip
+  TEST_ASSERT_TRUE(emb->hasRole(RoleEmbedding));
+  const ModelInfo* cum = find(back, "claude-opus-5");
+  TEST_ASSERT_NOT_NULL(cum);
+  TEST_ASSERT_EQUAL_STRING("anthropic", cum->upstream.c_str());  // upstream tag survives
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
+  RUN_TEST(test_probe_verdict);
+  RUN_TEST(test_models_json_round_trip);
   RUN_TEST(test_size_class_by_family);
   RUN_TEST(test_family_bucket);
   RUN_TEST(test_role_classification_by_id);

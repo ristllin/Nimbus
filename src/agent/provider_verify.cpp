@@ -4,6 +4,7 @@
 #include <ArduinoJson.h>
 
 #include "../sys/ps_json.h"       // PsramJsonAllocator - Mistral model-metadata parse off internal heap
+#include "nimbus/orch/model_catalog.h"  // portable role/capability catalog (GET /api/models)
 
 #include "esp_heap_caps.h"
 #include "agent_config.h"
@@ -60,6 +61,38 @@ bool request(const String& provider) {
 }
 
 bool pending() { return g_pending; }
+
+// Build the rich capability catalog from a raw /v1/models response body and
+// persist it to NVS (mcat_<provider>). Independent of the legacy CSV harvest; an
+// empty parse keeps the last good catalog. The body may still carry HTTP headers
+// (the portable parser locates the JSON). The doc rides PSRAM, not internal heap.
+static void buildAndStoreCatalog(const String& provider, const char* body, size_t len) {
+  using namespace nimbus::orch;
+  std::vector<ModelInfo> cat;
+  parseModelsList(std::string(provider.c_str()), std::string(body, len), cat,
+                  &PsramJsonAllocator::instance());
+  if (cat.empty()) return;  // parse failed - keep whatever was stored
+  JsonDocument doc(&PsramJsonAllocator::instance());
+  modelsToJson(cat, doc.to<JsonArray>(), /*includeUnusable=*/true);
+  String out;
+  serializeJson(doc, out);
+  // NVS string values cap near 4 KB. Flagships sort first, so drop the trailing
+  // (lowest-priority) models until it fits, and say how many were trimmed.
+  int dropped = 0;
+  while (out.length() > 3800 && cat.size() > 1) {
+    cat.pop_back();
+    ++dropped;
+    doc.clear();
+    modelsToJson(cat, doc.to<JsonArray>(), true);
+    out = "";
+    serializeJson(doc, out);
+  }
+  if (dropped)
+    alogf("verify: %s catalog trimmed %d model(s) to fit NVS", provider.c_str(), dropped);
+  store::setModelCatalogJson(provider, out);
+  alogf("verify: %s catalog stored (%u models, %u B)", provider.c_str(),
+        (unsigned)cat.size(), (unsigned)out.length());
+}
 
 static void runOne() {
   String provider = g_provider;
@@ -357,6 +390,9 @@ static void runOne() {
             alogf("verify: %s harvest EMPTY (read %u bytes) - keeping the stored list",
                   provider.c_str(), (unsigned)blen);
           }
+          // Rich capability-aware catalog (GET /api/models): built from the SAME
+          // body via the portable parser, independent of the legacy CSV above.
+          buildAndStoreCatalog(provider, buf, blen);
           free(buf);
         }
       }

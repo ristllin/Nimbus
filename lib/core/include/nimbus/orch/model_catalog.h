@@ -92,12 +92,25 @@ size_t parseModelsList(const std::string& provider, const std::string& body,
                        std::vector<ModelInfo>& out,
                        ArduinoJson::Allocator* alloc = nullptr);
 
+// ---- usability probe verdict -------------------------------------------------
+// A model your key cannot actually run must never appear (the phantom-model
+// complaint). The device does one cheap probe call per candidate; this maps the
+// probe's HTTP status + error body to a verdict. Unusable is reserved for the
+// model itself being rejected (unknown model / no access), NOT a transient fault -
+// a network/rate-limit/server error is Unknown and must not demote a model.
+enum class ProbeVerdict { Usable, Unusable, Unknown };
+ProbeVerdict probeVerdict(int httpStatus, const std::string& errBody);
+
 // ---- serialization for GET /api/models --------------------------------------
 // Append each model as an object to `arr`. When includeUnusable is false, models
 // with usable=false are skipped (the default "a model your key cannot use never
 // appears"). Roles/caps render as string arrays / boolean maps per the contract.
 void modelsToJson(const std::vector<ModelInfo>& models, JsonArray arr,
                   bool includeUnusable);
+
+// Inverse of modelsToJson: rebuild ModelInfo entries from a persisted /api/models
+// model array (device NVS cache round-trip). Returns the number appended.
+size_t modelsFromJson(JsonArrayConst arr, std::vector<ModelInfo>& out);
 
 // Canonical role token list (index-stable), for the contract's top-level "roles".
 const char* const* roleTokens(int& countOut);

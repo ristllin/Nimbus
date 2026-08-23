@@ -344,6 +344,14 @@ void setModelChoices(const String& provider, const String& csv) {
   String key = String("mch_") + provider;
   solide::memory::setString(key.c_str(), csv);
 }
+String modelCatalogJson(const String& provider) {
+  String key = String("mcat_") + provider;
+  return solide::memory::getString(key.c_str(), "");
+}
+void setModelCatalogJson(const String& provider, const String& json) {
+  String key = String("mcat_") + provider;
+  solide::memory::setString(key.c_str(), json);
+}
 void setTelegramToken(const String& v)     { solide::memory::setString(AKEY_TG_TOKEN, v); }
 void setTelegramAllowlist(const String& v) { solide::memory::setString(AKEY_TG_ALLOWLIST, v); }
 void setTtsEnabled(bool v)                 { solide::memory::setBool(AKEY_TTS_ENABLED, v); }
