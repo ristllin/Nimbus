@@ -882,7 +882,7 @@ function showAuth(){
   const b=document.createElement('div');b.id='authgate';
   b.style.cssText='position:fixed;inset:0;background:#14181c;color:#dde;z-index:9999;display:flex;align-items:center;justify-content:center;text-align:center;padding:24px';
   b.innerHTML='<div style="max-width:420px">'+
-    '<img src=/logo.svg alt="" style="width:96px;height:96px;display:block;margin:0 auto 14px;background:#fff;border-radius:50%;padding:6px">'+
+    '<img src=logo.svg alt="" style="width:96px;height:96px;display:block;margin:0 auto 14px;background:#fff;border-radius:50%;padding:6px">'+
     '<h2 style="margin:0 0 8px">Sign in to Nimbus</h2>'+
     '<p style="color:#9ab">Scan Settings &gt; Connectivity &gt; Sign-in QR. The QR opens a signed-in link, so there is no code to copy during normal setup.</p>'+
     '<input id=authtok placeholder="recovery access token" style="width:240px;padding:8px;font-size:15px"> '+
@@ -1132,8 +1132,10 @@ function applyState(d){
     $('cloudLine').textContent=c.line||'';
     var cc=$('cloudCode');
     if(c.state==='pairing'&&c.code){cc.style.display='block';
-      cc.innerHTML='Enter this code at <b>app.cumulo-nimbus.ai</b> while signed in: <b></b>';
-      cc.lastChild.textContent=c.code;}   // code is from the untrusted pairing server: textContent, never innerHTML
+      cc.innerHTML='<div style="margin:2px 0 8px">Enter this code at <b>app.cumulo-nimbus.ai</b> while signed in:</div>'+
+        '<div id=cloudCodeVal title="tap to copy" style="font:800 30px/1.15 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:4px;color:#67e8c3;background:#0c1a19;border:1px solid #1f3d39;border-radius:10px;padding:12px 14px;text-align:center;cursor:pointer;user-select:all"></div>';
+      var _cv=$('cloudCodeVal');_cv.textContent=c.code;   // untrusted pairing code: textContent, never innerHTML
+      _cv.onclick=function(){try{navigator.clipboard.writeText(c.code);toast('Code copied');}catch(e){}};}
     else{cc.style.display='none';}
     $('cloudPair').style.display=(c.paired||c.state==='pairing')?'none':'inline-block';
     $('cloudUnpair').style.display=c.paired?'inline-block':'none';
@@ -1470,7 +1472,7 @@ function loadConnect(){
     // portal / GET /?t=).
     _memTok='';try{localStorage.removeItem('nimbusTok');}catch(e){}
     document.body.innerHTML='<div style="max-width:460px;margin:18vh auto;padding:0 20px;text-align:center;font-family:inherit;color:var(--ink)">'+
-      '<img src=/logo.svg style="width:52px;height:52px"><h2 style="margin:14px 0 8px">Device is resetting…</h2>'+
+      '<img src=logo.svg style="width:52px;height:52px"><h2 style="margin:14px 0 8px">Device is resetting…</h2>'+
       '<p style="color:var(--ink2);line-height:1.5">Everything has been erased and the device is restarting into first-time setup. '+
       'Reconnect to its <b>&ldquo;…-setup&rdquo;</b> Wi-Fi network to run the setup wizard.</p></div>';
   }).catch(()=>toast('Reset failed - try again'));};
