@@ -35,9 +35,11 @@ static bool httpGet(DaemonHttpTransport& c, int port, const std::string& path,
   return true;
 }
 
+// Out-params for a request, grouped so the helpers stay within the arg-count gate.
+struct HttpOut { int status = 0; std::string body; };
+
 static bool httpPost(DaemonHttpTransport& c, int port, const std::string& path,
-                     const std::string& authToken, const std::string& reqBody,
-                     int& status, std::string& body) {
+                     const std::string& authToken, const std::string& reqBody, HttpOut& out) {
   agent::HttpRequest req;
   req.method = "POST";
   req.host = "127.0.0.1";
@@ -51,8 +53,8 @@ static bool httpPost(DaemonHttpTransport& c, int port, const std::string& path,
   agent::HttpResponse resp;
   std::string err;
   if (!c.exec(req, resp, err)) return false;
-  status = resp.status;
-  body = resp.body;
+  out.status = resp.status;
+  out.body = resp.body;
   return true;
 }
 
@@ -104,18 +106,19 @@ int main() {
   c.ok(body.find("\"running\":true") != std::string::npos, "state reports running");
 
   // ---- MCP dispatch runs on the engine thread ------------------------------
+  HttpOut mcp;
   c.ok(httpPost(client, port, "/mcp", token,
-                R"({"jsonrpc":"2.0","id":1,"method":"tools/list"})", status, body) &&
-           status == 200,
+                R"({"jsonrpc":"2.0","id":1,"method":"tools/list"})", mcp) &&
+           mcp.status == 200,
        "POST /mcp tools/list -> 200");
-  c.ok(body.find("memory.write") != std::string::npos,
+  c.ok(mcp.body.find("memory.write") != std::string::npos,
        "the MCP tool list includes memory.write (engine dispatch worked)");
 
   // ---- a snapshot read returns immediately even with a turn queued ----------
   // Queue a (keyless -> fast no-op) message, then read state without blocking.
-  int s2 = 0; std::string b2;
-  c.ok(httpPost(client, port, "/api/message", token, R"({"chat_id":"owner","text":"hi"})", s2, b2) &&
-           s2 == 202,
+  HttpOut msg;
+  c.ok(httpPost(client, port, "/api/message", token, R"({"chat_id":"owner","text":"hi"})", msg) &&
+           msg.status == 202,
        "POST /api/message -> 202 (enqueued, not blocked on)");
   c.ok(httpGet(client, port, "/api/state", token, status, body) && status == 200,
        "GET /api/state still answers immediately (snapshot read)");

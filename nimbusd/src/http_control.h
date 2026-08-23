@@ -121,53 +121,72 @@ class HttpControl {
     route(fd, method, path, head, body);
   }
 
+  // One route: method + path -> handler (fd, body). Gated iff !ungated.
+  struct Route {
+    const char* method;
+    const char* path;
+    void (HttpControl::*fn)(int, const std::string&);
+    bool ungated;  // true = served without the token gate (health only)
+  };
+
   void route(int fd, const std::string& method, const std::string& path,
              const std::string& head, const std::string& body) {
-    // Liveness is never gated - it must answer even before readiness/token setup.
-    if (method == "GET" && pathIs(path, "/healthz")) { respond(fd, 200, "text/plain", "ok"); return; }
-
-    if (!authorized(path, head)) {
-      respond(fd, 401, "application/json", R"({"error":"unauthorized"})");
-      return;
-    }
-
-    if (method == "GET" && pathIs(path, "/readyz")) {
-      const bool ready = eng_ && eng_->running();
-      respond(fd, ready ? 200 : 503, "text/plain", ready ? "ready" : "not ready");
-      return;
-    }
-    if (method == "GET" && pathIs(path, "/api/state")) {
-      respond(fd, 200, "application/json", stateJson());
-      return;
-    }
-    if (method == "POST" && pathIs(path, "/api/message")) {
-      const std::string chat = jsonField(body, "chat_id");
-      const std::string text = jsonField(body, "text");
-      if (text.empty()) { respond(fd, 400, "application/json", R"({"error":"missing text"})"); return; }
-      eng_->postMessage(chat.empty() ? "owner" : chat, text);
-      respond(fd, 202, "application/json", R"({"queued":true})");
-      return;
-    }
-    if (method == "GET" && pathIs(path, "/backup")) {
-      // Flush to a consistent on-disk state, then stream a tar of the mem tree.
-      // nimbusd owns the write discipline, so only it can produce a consistent
-      // archive (plan §3.4); a CronJob drives this to GCS nightly.
-      eng_->flushNow();
-      std::string tar;
-      if (!makeBackupTar(tar)) { respond(fd, 500, "text/plain", "backup failed"); return; }
-      respond(fd, 200, "application/x-tar", tar);
-      return;
-    }
-    if (method == "POST" && pathIs(path, "/mcp")) {
-      auto fut = eng_->dispatchMcp(body, nimbus::orch::principalForRole("owner", nimbus::orch::Role::Admin));
-      if (fut.wait_for(std::chrono::seconds(30)) != std::future_status::ready) {
-        respond(fd, 503, "application/json", R"({"error":"engine busy"})");
+    static const Route kRoutes[] = {
+        {"GET", "/healthz", &HttpControl::handleHealthz, true},
+        {"GET", "/readyz", &HttpControl::handleReadyz, false},
+        {"GET", "/api/state", &HttpControl::handleState, false},
+        {"GET", "/backup", &HttpControl::handleBackup, false},
+        {"POST", "/api/message", &HttpControl::handleMessage, false},
+        {"POST", "/mcp", &HttpControl::handleMcp, false},
+    };
+    for (const auto& r : kRoutes) {
+      if (method != r.method || !pathIs(path, r.path)) continue;
+      if (!r.ungated && !authorized(path, head)) {
+        respond(fd, 401, "application/json", R"({"error":"unauthorized"})");
         return;
       }
-      respond(fd, 200, "application/json", fut.get());
+      (this->*r.fn)(fd, body);
       return;
     }
     respond(fd, 404, "application/json", R"({"error":"not found"})");
+  }
+
+  void handleHealthz(int fd, const std::string&) { respond(fd, 200, "text/plain", "ok"); }
+
+  void handleReadyz(int fd, const std::string&) {
+    const bool ready = eng_ && eng_->running();
+    respond(fd, ready ? 200 : 503, "text/plain", ready ? "ready" : "not ready");
+  }
+
+  void handleState(int fd, const std::string&) {
+    respond(fd, 200, "application/json", stateJson());
+  }
+
+  void handleMessage(int fd, const std::string& body) {
+    const std::string chat = jsonField(body, "chat_id");
+    const std::string text = jsonField(body, "text");
+    if (text.empty()) { respond(fd, 400, "application/json", R"({"error":"missing text"})"); return; }
+    eng_->postMessage(chat.empty() ? "owner" : chat, text);
+    respond(fd, 202, "application/json", R"({"queued":true})");
+  }
+
+  void handleBackup(int fd, const std::string&) {
+    // Flush to a consistent on-disk state, then stream a tar of the mem tree.
+    // nimbusd owns the write discipline, so only it can produce a consistent
+    // archive (plan §3.4); a CronJob drives this to GCS nightly.
+    eng_->flushNow();
+    std::string tar;
+    if (!makeBackupTar(tar)) { respond(fd, 500, "text/plain", "backup failed"); return; }
+    respond(fd, 200, "application/x-tar", tar);
+  }
+
+  void handleMcp(int fd, const std::string& body) {
+    auto fut = eng_->dispatchMcp(body, nimbus::orch::principalForRole("owner", nimbus::orch::Role::Admin));
+    if (fut.wait_for(std::chrono::seconds(30)) != std::future_status::ready) {
+      respond(fd, 503, "application/json", R"({"error":"engine busy"})");
+      return;
+    }
+    respond(fd, 200, "application/json", fut.get());
   }
 
   bool authorized(const std::string& path, const std::string& head) const {
@@ -247,14 +266,23 @@ class HttpControl {
     if (p == std::string::npos) return std::string();
     p++;
     while (p < body.size() && (body[p] == ' ' || body[p] == '\t')) p++;
-    if (p < body.size() && body[p] == '"') {
-      size_t e = p + 1; std::string out;
-      for (; e < body.size() && body[e] != '"'; e++) {
-        if (body[e] == '\\' && e + 1 < body.size()) { e++; if (body[e] == 'n') { out += '\n'; continue; } }
-        out += body[e];
+    if (p < body.size() && body[p] == '"') return jsonQuotedValue(body, p + 1);
+    return jsonBareValue(body, p);
+  }
+  // Read a double-quoted value starting at `p` (the char after the opening ").
+  static std::string jsonQuotedValue(const std::string& body, size_t p) {
+    std::string out;
+    for (; p < body.size() && body[p] != '"'; p++) {
+      if (body[p] == '\\' && p + 1 < body.size()) {
+        p++;
+        if (body[p] == 'n') { out += '\n'; continue; }
       }
-      return out;
+      out += body[p];
     }
+    return out;
+  }
+  // Read a bare (unquoted) value up to a delimiter.
+  static std::string jsonBareValue(const std::string& body, size_t p) {
     size_t e = p;
     while (e < body.size() && body[e] != ',' && body[e] != '}' && body[e] != ' ') e++;
     return body.substr(p, e - p);

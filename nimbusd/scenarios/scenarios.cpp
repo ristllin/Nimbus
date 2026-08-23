@@ -163,6 +163,69 @@ const Scenario kScenarios[] = {
 
 }  // namespace
 
+struct RunTotals { int failed = 0, ran = 0, skipped = 0; };
+struct Keys { bool provider = false; bool search = false; };
+
+// dotenv precedence: explicit --env, then NIMBUS_ENV_FILE, then ~/.env.
+void loadEnv(Config& cfg, const std::string& envPath) {
+  if (!envPath.empty()) cfg.loadFile(envPath);
+  if (const char* nf = std::getenv("NIMBUS_ENV_FILE")) cfg.loadFile(nf);
+  if (const char* home = std::getenv("HOME")) cfg.loadFile(std::string(home) + "/.env");
+}
+
+bool selected(const std::vector<std::string>& names, const char* name) {
+  return names.empty() || std::find(names.begin(), names.end(), name) != names.end();
+}
+
+void printBanner(Config& cfg, const Keys& keys) {
+  auto mark = [&](const char* h) { return cfg.providerKey(h).empty() ? "-" : "y"; };
+  std::printf("nimbusd scenarios - providers[mistral:%s openai:%s anthropic:%s] tavily:%s\n\n",
+              mark("mistral"), mark("openai"), mark("anthropic"), keys.search ? "y" : "-");
+}
+
+// Run one scenario (or record it as SKIPPED), updating the totals.
+void runOne(Config& cfg, const Scenario& s, const Keys& keys, RunTotals& t) {
+  const bool providerNeeded = std::strcmp(s.name, "search-errors") != 0;  // only that one is provider-free
+  if (providerNeeded && !keys.provider) {
+    std::printf("=== %s ===\n    SKIPPED - no provider key (a live turn needs one)\n\n", s.name);
+    t.skipped++;
+    return;
+  }
+  if (s.needsSearch && !keys.search) {
+    std::printf("=== %s ===\n    SKIPPED - no TAVILY_API_KEY (this is the search-regression catcher)\n\n", s.name);
+    t.skipped++;
+    return;
+  }
+  std::printf("=== %s - %s ===\n", s.name, s.what);
+  auto opt = baseOpt(cfg, s.name);
+  wipe(opt.dataDir);
+  NimbusdRig rig(cfg, opt);
+  Ctx c;
+  c.name = s.name;
+  s.fn(rig, c);
+  wipe(opt.dataDir);
+  t.ran++;
+  if (c.failures) { t.failed++; std::printf("    --> %d failure(s)\n", c.failures); }
+  std::printf("\n");
+}
+
+// The restart scenario runs whenever a provider (for embeddings) is present.
+void runRestart(Config& cfg, const Keys& keys, RunTotals& t) {
+  if (!keys.provider) {
+    std::printf("=== restart ===\n    SKIPPED - no provider key for live embeddings "
+                "(the offline restart proof is tests/test_rig + test_posix_stores)\n\n");
+    t.skipped++;
+    return;
+  }
+  std::printf("=== restart - memory survives a real daemon restart (live embeddings) ===\n");
+  Ctx c;
+  c.name = "restart";
+  scRestartPersistence(cfg, c);
+  t.ran++;
+  if (c.failures) { t.failed++; std::printf("    --> %d failure(s)\n", c.failures); }
+  std::printf("\n");
+}
+
 int main(int argc, char** argv) {
   Config cfg;
   std::string envPath;
@@ -173,62 +236,21 @@ int main(int argc, char** argv) {
     else if (a == "--env" && i + 1 < argc) envPath = argv[++i];
     else names.push_back(a);
   }
-  // dotenv precedence: explicit --env, then NIMBUS_ENV_FILE, then ~/.env.
-  if (!envPath.empty()) cfg.loadFile(envPath);
-  if (const char* nf = std::getenv("NIMBUS_ENV_FILE")) cfg.loadFile(nf);
-  if (const char* home = std::getenv("HOME")) cfg.loadFile(std::string(home) + "/.env");
+  loadEnv(cfg, envPath);
 
-  const bool haveSearch = !cfg.get("TAVILY_API_KEY").empty();
-  const bool haveProvider = !cfg.providerKey("mistral").empty() ||
-                            !cfg.providerKey("openai").empty() ||
-                            !cfg.providerKey("anthropic").empty();
-  std::printf("nimbusd scenarios - providers[mistral:%s openai:%s anthropic:%s] tavily:%s\n\n",
-              cfg.providerKey("mistral").empty() ? "-" : "y",
-              cfg.providerKey("openai").empty() ? "-" : "y",
-              cfg.providerKey("anthropic").empty() ? "-" : "y", haveSearch ? "y" : "-");
+  Keys keys;
+  keys.search = !cfg.get("TAVILY_API_KEY").empty();
+  keys.provider = !cfg.providerKey("mistral").empty() || !cfg.providerKey("openai").empty() ||
+                  !cfg.providerKey("anthropic").empty();
+  printBanner(cfg, keys);
 
-  int failed = 0, ran = 0, skipped = 0;
-  for (const auto& s : kScenarios) {
-    if (!names.empty() && std::find(names.begin(), names.end(), s.name) == names.end()) continue;
-    const bool providerNeeded = std::strcmp(s.name, "search-errors") != 0;  // only that one is provider-free
-    if (providerNeeded && !haveProvider) {
-      std::printf("=== %s ===\n    SKIPPED - no provider key (a live turn needs one)\n\n", s.name);
-      skipped++; continue;
-    }
-    if (s.needsSearch && !haveSearch) {
-      std::printf("=== %s ===\n    SKIPPED - no TAVILY_API_KEY (this is the search-regression catcher)\n\n", s.name);
-      skipped++; continue;
-    }
-    std::printf("=== %s - %s ===\n", s.name, s.what);
-    auto opt = baseOpt(cfg, s.name);
-    wipe(opt.dataDir);
-    NimbusdRig rig(cfg, opt);
-    Ctx c; c.name = s.name;
-    s.fn(rig, c);
-    wipe(opt.dataDir);
-    ran++;
-    if (c.failures) { failed++; std::printf("    --> %d failure(s)\n", c.failures); }
-    std::printf("\n");
-  }
-
-  // The restart scenario runs whenever a provider (for embeddings) is present.
-  if (names.empty() || std::find(names.begin(), names.end(), "restart") != names.end()) {
-    if (haveProvider) {
-      std::printf("=== restart - memory survives a real daemon restart (live embeddings) ===\n");
-      Ctx c; c.name = "restart";
-      scRestartPersistence(cfg, c);
-      ran++;
-      if (c.failures) { failed++; std::printf("    --> %d failure(s)\n", c.failures); }
-      std::printf("\n");
-    } else {
-      std::printf("=== restart ===\n    SKIPPED - no provider key for live embeddings "
-                  "(the offline restart proof is tests/test_rig + test_posix_stores)\n\n");
-      skipped++;
-    }
-  }
+  RunTotals t;
+  for (const auto& s : kScenarios)
+    if (selected(names, s.name)) runOne(cfg, s, keys, t);
+  if (selected(names, "restart")) runRestart(cfg, keys, t);
 
   std::printf("---------------------------------------------\n");
-  std::printf("%d scenario(s) run, %d failed, %d skipped\n", ran, failed, skipped);
-  if (skipped) std::printf("WARNING: %d scenario(s) were SKIPPED - that is not a pass.\n", skipped);
-  return failed ? 1 : 0;
+  std::printf("%d scenario(s) run, %d failed, %d skipped\n", t.ran, t.failed, t.skipped);
+  if (t.skipped) std::printf("WARNING: %d scenario(s) were SKIPPED - that is not a pass.\n", t.skipped);
+  return t.failed ? 1 : 0;
 }

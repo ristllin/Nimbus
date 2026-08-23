@@ -23,23 +23,42 @@ class Config {
   void loadFile(const std::string& path) {
     std::ifstream f(path);
     if (!f) return;
-    std::string line;
+    std::string line, k, v;
     while (std::getline(f, line)) {
-      const size_t b = line.find_first_not_of(" \t");
-      if (b == std::string::npos || line[b] == '#') continue;
-      line = line.substr(b);
-      if (line.rfind("export ", 0) == 0) line = line.substr(7);
-      const size_t eq = line.find('=');
-      if (eq == std::string::npos) continue;
-      std::string k = line.substr(0, eq), v = line.substr(eq + 1);
-      while (!k.empty() && (k.back() == ' ' || k.back() == '\t')) k.pop_back();
-      if (k.empty() || k.find_first_of(" \t") != std::string::npos) continue;
-      while (!v.empty() && (v.back() == '\r' || v.back() == '\n')) v.pop_back();
-      if (v.size() >= 2 && (v.front() == '"' || v.front() == '\'') && v.back() == v.front())
-        v = v.substr(1, v.size() - 2);
-      if (!file_.count(k)) file_[k] = v;
+      if (parseEnvLine(line, k, v) && !file_.count(k)) file_[k] = v;  // first load wins
     }
   }
+
+ private:
+  // Parse one dotenv line into (k, v). Returns false for a comment/blank/malformed
+  // line. Tolerant: strips a leading `export`, trims the key, and unquotes a
+  // fully-quoted value.
+  static bool parseEnvLine(const std::string& raw, std::string& k, std::string& v) {
+    const size_t b = raw.find_first_not_of(" \t");
+    if (b == std::string::npos || raw[b] == '#') return false;
+    std::string line = raw.substr(b);
+    if (line.rfind("export ", 0) == 0) line = line.substr(7);
+    const size_t eq = line.find('=');
+    if (eq == std::string::npos) return false;
+    k = line.substr(0, eq);
+    v = line.substr(eq + 1);
+    if (!cleanKey(k)) return false;
+    cleanValue(v);
+    return true;
+  }
+  // Trim trailing whitespace; a valid key is non-empty with no internal whitespace.
+  static bool cleanKey(std::string& k) {
+    while (!k.empty() && (k.back() == ' ' || k.back() == '\t')) k.pop_back();
+    return !k.empty() && k.find_first_of(" \t") == std::string::npos;
+  }
+  // Trim a trailing CR/LF and unwrap a fully single- or double-quoted value.
+  static void cleanValue(std::string& v) {
+    while (!v.empty() && (v.back() == '\r' || v.back() == '\n')) v.pop_back();
+    if (v.size() >= 2 && (v.front() == '"' || v.front() == '\'') && v.back() == v.front())
+      v = v.substr(1, v.size() - 2);
+  }
+
+ public:
 
   // Environment wins over the file.
   std::string get(const std::string& name, const std::string& dflt = "") const {
