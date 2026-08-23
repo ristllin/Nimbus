@@ -20,7 +20,7 @@ namespace nimbus {
 
 class SigninCodes {
  public:
-  static constexpr size_t CAP = 4;                    // a few concurrent scans
+  static constexpr size_t CAP = 8;                    // a few concurrent scans/links
   static constexpr size_t MAXLEN = 16;                // code buffer incl. null
   static constexpr uint32_t DEFAULT_TTL_MS = 120000;  // 2 minutes
 

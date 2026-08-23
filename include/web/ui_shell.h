@@ -209,7 +209,7 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <button data-m=0 type=button>Notifier</button>
 <button data-m=1 type=button>Orchestrator</button>
 </div>
-<button class=searchbtn id=globalSearchBtn type=button aria-label="Search (Control K)"><svg viewBox="0 0 24 24"><circle cx=11 cy=11 r=7/><path d="M21 21l-4-4"/></svg><span class=tl>Search</span><kbd>Ctrl K</kbd></button>
+<button class=searchbtn id=globalSearchBtn type=button aria-label="Search (Control K)"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg><span class=tl>Search</span><kbd>Ctrl K</kbd></button>
 <nav class=tabs>
 <button class=tab data-p=home title=Home><svg viewBox="0 0 24 24"><path d="M4 13h6V4H4zM14 20h6v-9h-6zM14 8h6V4h-6zM4 20h6v-4H4z"/></svg><span class=tl>Home</span></button>
 <button class=tab data-p=chat title=Chat><svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H8l-4 4V5a2 2 0 0 1 2-2h13a2 2 0 0 1 2 2z"/></svg><span class=tl>Chat</span></button>

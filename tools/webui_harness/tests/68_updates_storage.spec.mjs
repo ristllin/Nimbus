@@ -39,6 +39,15 @@ test('Check for updates names the next step on error', async ({ page }) => {
   await expect(page.locator('#fwMsg')).toContainText('try again');
 });
 
+test('a logical error result (HTTP 200) renders an error, not a green Done', async ({ page }) => {
+  await seedToken(page);
+  await page.route('**/api/ota/check', (r) => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ result: 'error', msg: 'release server unreachable' }) }));
+  await openUpdate(page);
+  await page.locator('#fwCheck').click();
+  await expect(page.locator('#fwMsg')).toHaveAttribute('data-fb', 'error');
+  await expect(page.locator('#fwMsg')).toContainText('release server unreachable');
+});
+
 test('battery gate blocks install and shows the reason', async ({ page }) => {
   await seedToken(page);
   await page.route('**/api/state', (r) => r.fulfill({ status: 200, contentType: 'application/json',

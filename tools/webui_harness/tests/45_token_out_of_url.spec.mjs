@@ -62,6 +62,18 @@ test('a one-time ?c= code is exchanged for the token over POST', async ({ page }
   await expect.poll(() => new URL(page.url()).search).toBe('');
 });
 
+test('incognito ?c= sign-in resumes without getting stuck behind the gate', async ({ page }) => {
+  // Simulate blocked storage (private browsing): setItem throws, so the token is
+  // memory-only. The exchange must still dismiss the gate and resume.
+  await page.addInitScript(() => { Storage.prototype.setItem = function () { throw new Error('blocked'); }; });
+  await page.route('**/api/signin/exchange', (r) => r.fulfill({ status: 200, contentType: 'application/json', body: '{"token":"MEMTOK1"}' }));
+  let stateTok = null;
+  page.on('request', (r) => { if (r.url().endsWith('/api/state')) stateTok = r.headers()['x-nimbus-token']; });
+  await page.goto('/?c=ONECODE');
+  await expect(page.locator('#authgate')).toHaveCount(0);
+  await expect.poll(() => stateTok).toBe('MEMTOK1');
+});
+
 test('naming: device sign-in code, cloud link code, sign-in QR', async ({ page }) => {
   await seedToken(page);
   await openApp(page);

@@ -103,7 +103,13 @@ function showAuth(){
   const fd=new FormData();fd.append('code',c);
   fetch('/api/signin/exchange',{method:'POST',body:fd}).then(r=>r.ok?r.json():Promise.reject(r.status))
     .then(o=>{history.replaceState(null,'',clean);
-      if(o&&o.token&&setTok(o.token))location.reload();})
+      if(!o||!o.token)return;
+      if(setTok(o.token)){location.reload();return;}
+      // Storage blocked (private browsing): the token lives in memory only, so a
+      // reload would drop it and the single-use code is already spent. Instead
+      // dismiss any sign-in gate and resume with the in-memory token.
+      _authPaused=false;const g=$('authgate');if(g)g.remove();
+      if(typeof loadState==='function')loadState();})
     .catch(()=>{history.replaceState(null,'',clean);});   // bad/expired code -> the gate handles sign-in
 })();
 // One-time migration hint for a deprecated ?t= sign-in link (CUM-45): the person
@@ -184,7 +190,7 @@ const SEARCH_INDEX=[
   {group:'Action',label:'Erase / factory reset',kw:'erase reset wipe factory sd danger',act:()=>{goDest('device');_openGroup('Danger zone');}}
 ];
 // Open a Device <details> group by its summary text, so an action can jump to it.
-function _openGroup(name){document.querySelectorAll('#pane-set details.setgroup').forEach(d=>{var s=d.querySelector('summary');if(s&&s.textContent.indexOf(name)===0)d.open=true;});}
+function _openGroup(name){document.querySelectorAll('details.setgroup').forEach(d=>{var s=d.querySelector('summary');if(s&&s.textContent.indexOf(name)===0)d.open=true;});}
 function _sEsc(s){return (s||'').replace(/[<>&]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));}
 let _sSel=0,_sItems=[];
 function openSearch(){
@@ -524,7 +530,7 @@ function applyState(d){
       ok:o=>{setTimeout(loadState,2000);
         var res=(o&&o.result)||'';
         if(res==='available'||(o&&o.latest&&o.latest!==o.installed))return 'Update available: '+((o&&o.latest)||'a new version')+'.';
-        if(res==='error')return {none:false};   // fall through to error via throw below is not needed
+        if(res==='error')throw ((o&&o.msg)||'the update check failed');   // -> error state
         return {none:true,msg:'You are on the latest version.'};},
       error:e=>'Couldn\'t check for updates'+(e?(' ('+e+')'):'')+' - check the network and try again.'});
     fi.onclick=()=>{
@@ -1000,7 +1006,7 @@ function run(opts){
   return Promise.resolve().then(opts.work).then(res=>{
     let msg=opts.ok?opts.ok(res):'Done.';
     if(msg&&typeof msg==='object'&&msg.none){fbState(el,'none',msg.msg||opts.none||'Nothing found.');}
-    else fbState(el,msg&&msg.none===false?'ok':'ok',(typeof msg==='string')?msg:(opts.okMsg||'Done.'));
+    else fbState(el,'ok',(typeof msg==='string')?msg:(opts.okMsg||'Done.'));
     return res;
   }).catch(e=>{
     const m=opts.error?opts.error(e):((e===401||e&&e.status===401)?'Sign in required, then try again.':'Something went wrong - try again.');

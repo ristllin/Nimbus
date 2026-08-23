@@ -1291,10 +1291,13 @@ void beginWeb(const WebConfig& wc) {
     if (authBlocked(r)) return;
     const bool sta = staConnected();
     const String host = sta && staIp().length() ? staIp() : apIp();
+    // ONE code, reused for the raw code and both link forms - a caller uses
+    // exactly one of them, and minting three would needlessly churn the table.
+    const String code = mintSigninCode();
     JsonDocument d;
-    d["code"] = mintSigninCode();
-    d["url"]  = String("http://") + host + "/?c=" + mintSigninCode();
-    if (sta) d["mdnsUrl"] = String("http://") + mdnsName() + "/?c=" + mintSigninCode();
+    d["code"] = code;
+    d["url"]  = String("http://") + host + "/?c=" + code;
+    if (sta) d["mdnsUrl"] = String("http://") + mdnsName() + "/?c=" + code;
     d["ttlMs"] = (uint32_t)nimbus::SigninCodes::DEFAULT_TTL_MS;
     String s; serializeJson(d, s);
     AsyncWebServerResponse* res = r->beginResponse(200, "application/json", s);

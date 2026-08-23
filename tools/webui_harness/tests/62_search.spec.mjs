@@ -63,6 +63,18 @@ test('memory results appear from the memory source', async ({ page }) => {
   await expect(page.locator('.sresult', { hasText: 'one arc per active session' })).toBeVisible();
 });
 
+test('a memory search result opens the Long-term memory section', async ({ page }) => {
+  await seedToken(page);
+  await openApp(page);
+  await page.locator('#globalSearchBtn').click();
+  await page.locator('#searchInput').fill('ring');
+  await page.locator('.sresult', { hasText: 'one arc per active session' }).click();
+  await expect(page.locator('.tab[data-p=memory]')).toHaveClass(/on/);
+  // The Long-term memory <details> in #pane-mem must be expanded (its recall
+  // search input becomes visible) - proves _openGroup reaches non-Device panes.
+  await expect(page.locator('#memq')).toBeVisible();
+});
+
 test('Enter on a result navigates to its destination', async ({ page }) => {
   await seedToken(page);
   await openApp(page);
