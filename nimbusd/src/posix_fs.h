@@ -104,11 +104,15 @@ class PosixEpiFs : public nimbus::orch::EpiFs {
   long append(const std::string& path, const std::string& bytes) override {
     const std::string dir = fsutil::dirOf(path);
     if (!dir.empty() && !fsutil::mkdirs(dir)) return -1;
-    // Open for append, learn the pre-append size (== this record's start offset),
-    // write, and require the whole record to land (a short write is a failure).
+    // The pre-append size IS this record's start offset (what the index records so
+    // a later readRange pulls exactly this record back). Read it via stat, NOT
+    // ofstream::tellp(): in append mode tellp() before the first write is
+    // implementation-defined - correct on libc++ (macOS), but 0 on some libstdc++
+    // (the daemon's Linux runtime), which would corrupt every index offset and
+    // break the cold/large-history read path. The device impl uses file size too.
+    const long off = size(path);
     std::ofstream f(path, std::ios::binary | std::ios::app);
     if (!f) return -1;
-    const long off = (long)f.tellp();
     f.write(bytes.data(), (std::streamsize)bytes.size());
     f.flush();
     if (!f) return -1;

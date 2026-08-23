@@ -172,15 +172,31 @@ class HttpControl {
 
   bool authorized(const std::string& path, const std::string& head) const {
     if (token_.empty()) return true;  // no gate configured (dev)
-    // Authorization: Bearer <token>
+    // Authorization: Bearer <token> - match the header VALUE exactly (trimmed),
+    // not a substring, so a token can't be accepted merely for appearing somewhere
+    // in the header.
     size_t p = ciFind(head, "authorization:");
     if (p != std::string::npos) {
-      const std::string line = head.substr(p, head.find("\r\n", p) - p);
-      if (line.find(token_) != std::string::npos) return true;
+      size_t eol = head.find("\r\n", p);
+      std::string val = head.substr(p + 14, (eol == std::string::npos ? head.size() : eol) - (p + 14));
+      val = trim(val);
+      if (val == "Bearer " + token_) return true;
     }
-    // ?token=<token> (the sidecar may inject either; both are the same secret)
-    const std::string q = "token=" + token_;
-    if (path.find(q) != std::string::npos) return true;
+    // ?token=<token> as an exact query parameter value (the sidecar may inject
+    // either; both are the same secret). Match "token=<tok>" bounded by ? & or end.
+    const std::string needle = "token=" + token_;
+    size_t qs = path.find('?');
+    if (qs != std::string::npos) {
+      const std::string query = path.substr(qs + 1);
+      size_t at = 0;
+      while (at < query.size()) {
+        size_t amp = query.find('&', at);
+        const std::string kv = query.substr(at, (amp == std::string::npos ? query.size() : amp) - at);
+        if (kv == needle) return true;
+        if (amp == std::string::npos) break;
+        at = amp + 1;
+      }
+    }
     return false;
   }
 
@@ -210,6 +226,12 @@ class HttpControl {
     std::string low = hay;
     for (auto& c : low) c = (char)tolower((unsigned char)c);
     return low.find(needleLower);
+  }
+  static std::string trim(const std::string& s) {
+    size_t b = s.find_first_not_of(" \t\r\n");
+    if (b == std::string::npos) return std::string();
+    size_t e = s.find_last_not_of(" \t\r\n");
+    return s.substr(b, e - b + 1);
   }
   static std::string quote(const std::string& s) {
     std::string o = "\"";

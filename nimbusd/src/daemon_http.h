@@ -1,6 +1,7 @@
 #pragma once
 #include <curl/curl.h>
 
+#include <atomic>
 #include <mutex>
 #include <string>
 
@@ -25,12 +26,18 @@ namespace nimbusd {
 class DaemonHttpTransport : public agent::HttpTransport {
  public:
   DaemonHttpTransport() {
-    curl_global_init(CURL_GLOBAL_DEFAULT);
+    // curl_global_init/cleanup are process-global and NOT refcounted by libcurl.
+    // The daemon holds several transports (the engine's, plus the Telegram
+    // poll/send pair), so guard the global init/cleanup with a refcount: init on
+    // the first, cleanup only when the last is destroyed. Without this, the first
+    // transport's destructor would tear down global curl state the others still
+    // use.
+    if (globalRefs().fetch_add(1) == 0) curl_global_init(CURL_GLOBAL_DEFAULT);
     handle_ = curl_easy_init();
   }
   ~DaemonHttpTransport() override {
     if (handle_) curl_easy_cleanup(handle_);
-    curl_global_cleanup();
+    if (globalRefs().fetch_sub(1) == 1) curl_global_cleanup();
   }
 
   DaemonHttpTransport(const DaemonHttpTransport&) = delete;
@@ -99,6 +106,12 @@ class DaemonHttpTransport : public agent::HttpTransport {
   static size_t onWrite(char* p, size_t sz, size_t nm, void* ud) {
     static_cast<std::string*>(ud)->append(p, sz * nm);
     return sz * nm;
+  }
+
+  // Process-wide refcount for curl_global_init/cleanup.
+  static std::atomic<int>& globalRefs() {
+    static std::atomic<int> refs{0};
+    return refs;
   }
 
   std::mutex mu_;

@@ -104,6 +104,36 @@ static void testEpisodicRestart(ndtest::Ctx& t) {
   ndtest::rmTree(root);
 }
 
+// ---- 2b. out-of-ring records read back by their append offset ---------------
+// With more messages than the recent-window cap, a query must pull the older
+// records off disk via readRange(offset,len) using the offset append() returned.
+// A wrong offset (the ofstream::tellp-in-append-mode trap on some libstdc++)
+// makes those records decode as garbage and vanish. Force that path here so the
+// Linux Docker `make test` guards the offset cross-platform.
+static void testEpisodicColdRead(ndtest::Ctx& t) {
+  const std::string root = ndtest::scratchDir("epicold");
+  ndtest::rmTree(root);
+  const std::string dir = root + "/mem/episodic";
+  PosixEpiFs fs;
+  orch::AppendLogEpisodicStore store(fs, dir, /*recentCap=*/2);  // tiny ring
+  store.hydrate(0, 0);
+  for (int i = 0; i < 6; i++)
+    store.addMessage(msg("owner", "user", "record-" + std::to_string(i), 100 + i));
+  t.eqi(store.messageCount(), 6, "six messages written (recentCap 2, so 4 are out-of-ring)");
+
+  orch::MsgQuery q;
+  q.sessionId = "owner";
+  q.limit = 10;
+  auto rows = store.query(q);
+  t.eqi((long)rows.size(), 6, "query returns all six (the 4 out-of-ring read via offset)");
+  // The oldest record (record-0) is out of the ring; it must come back intact -
+  // which only works if its append offset was recorded correctly.
+  bool foundOldest = false;
+  for (const auto& m : rows) if (m.text == "record-0") foundOldest = true;
+  t.ok(foundOldest, "the oldest out-of-ring record read back intact by its offset");
+  ndtest::rmTree(root);
+}
+
 // ---- 3. vector memory persists across a restart (atomic vectors.bin) --------
 static void testVectorRestart(ndtest::Ctx& t) {
   const std::string root = ndtest::scratchDir("vec");
@@ -161,6 +191,8 @@ int main() {
   testFsutil(c);
   std::printf("  -- episodic append-log restart --\n");
   testEpisodicRestart(c);
+  std::printf("  -- episodic out-of-ring offset read --\n");
+  testEpisodicColdRead(c);
   std::printf("  -- vector memory restart --\n");
   testVectorRestart(c);
   std::printf("  -- tolerant deserialize --\n");
