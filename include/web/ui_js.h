@@ -369,19 +369,34 @@ function applyState(d){
   if(d.cloud&&$('cloudLine')){
     var c=d.cloud;
     $('cloudLine').textContent=c.line||'';
-    var cc=$('cloudCode');
-    if(c.state==='pairing'&&c.code){cc.style.display='block';
-      cc.innerHTML='Enter this Cloud link code at <b>app.cumulo-nimbus.ai</b> while signed in: <b></b>';
-      cc.lastChild.textContent=c.code;}   // code is from the untrusted pairing server: textContent, never innerHTML
-    else{cc.style.display='none';}
-    $('cloudPair').style.display=(c.paired||c.state==='pairing')?'none':'inline-block';
+    var pairing=(c.state==='pairing'&&!!c.code);
+    var card=$('cloudPairCard'); if(card)card.style.display=pairing?'block':'none';
+    if(pairing){
+      // Large, high-contrast code (CUM-51: no more grayed-out code). The value is
+      // from the untrusted pairing server, so textContent - never innerHTML.
+      $('cloudCode').textContent=c.code;
+      // QR encodes the app deep link carrying the code, so a phone can scan instead
+      // of typing. Rendered by our own /api/qr (trusted SVG); re-fetched only when
+      // the code changes.
+      var qbox=$('cloudQr');
+      if(qbox&&qbox.dataset.code!==c.code){qbox.dataset.code=c.code;
+        var link='https://app.cumulo-nimbus.ai/link?code='+encodeURIComponent(c.code);
+        fetch('/api/qr?data='+encodeURIComponent(link)).then(r=>r.ok?r.text():Promise.reject(r.status))
+          .then(svg=>{qbox.innerHTML=svg;}).catch(()=>{qbox.textContent='';});}
+      var cp=$('cloudCopy');
+      if(cp)cp.onclick=()=>{if(navigator.clipboard&&c.code)navigator.clipboard.writeText(c.code).then(()=>toast('Cloud link code copied'));};
+    }
+    $('cloudPair').style.display=(c.paired||pairing)?'none':'inline-block';
     $('cloudUnpair').style.display=c.paired?'inline-block':'none';
-    $('cloudOff').style.display=(c.optIn&&!c.paired&&c.state!=='pairing')?'inline-block':'none';
-    var cpost=function(a,msg){var f=new FormData();f.append('action',a);
-      fetch('/api/cloud',{method:'POST',body:f}).then(jok).then(()=>{toast(msg);setTimeout(loadState,1500);}).catch(failToast);};
-    $('cloudPair').onclick=()=>cpost('pair','Starting pairing…');
-    $('cloudUnpair').onclick=()=>cpost('unpair','Unpaired');
-    $('cloudOff').onclick=()=>cpost('optout','Cloud access off');
+    $('cloudOff').style.display=(c.optIn&&!c.paired&&!pairing)?'inline-block':'none';
+    var cpost=function(a,btn,pending,okmsg){
+      run({status:'cloudMsg',btn:btn,pending:pending,
+        work:()=>{var f=new FormData();f.append('action',a);return fetch('/api/cloud',{method:'POST',body:f}).then(jok);},
+        ok:()=>{setTimeout(loadState,1500);return okmsg;},
+        error:e=>'Couldn\'t update cloud access'+(e?(' ('+e+')'):'')+' - try again.'});};
+    $('cloudPair').onclick=()=>cpost('pair',$('cloudPair'),'Starting pairing…','Pairing started - scan the QR or enter the code.');
+    $('cloudUnpair').onclick=()=>cpost('unpair',$('cloudUnpair'),'Unpairing…','Unpaired.');
+    $('cloudOff').onclick=()=>cpost('optout',$('cloudOff'),'Turning off…','Cloud access off.');
   }
   // ---- Firmware update (OTA) ----
   if(d.ota!==undefined&&$('fwState')){

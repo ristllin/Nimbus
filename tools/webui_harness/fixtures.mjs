@@ -21,8 +21,9 @@ export const STATE = {
   // OTA (N5 contract stub): installed/latest/notes + result state
   ota: 'idle', otaLatest: '', otaNotes: '', otaPct: -1, otaErr: '',
   lastOta: '-', autoUpd: false,
-  // Cloud pairing (Pairing + cloud card)
-  cloud: { line: 'Cloud access is off.', state: 'off', paired: false, optIn: false, code: '' },
+  // Cloud pairing (Pairing + cloud card) - in the pairing state so the card,
+  // code, and QR render for the harness + screenshots.
+  cloud: { line: 'Pairing: enter the Cloud link code at app.cumulo-nimbus.ai.', state: 'pairing', paired: false, optIn: true, code: 'CN-4821-QK' },
   // Storage / files quota surface (N5 files payload stub)
   card: { sizeMB: 30436, freeMB: 28112, usedMB: 2324, quotaMB: 4096, quotaUsedMB: 512 },
 };

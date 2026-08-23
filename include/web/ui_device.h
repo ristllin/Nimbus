@@ -258,12 +258,27 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 <div class=setbody>
 <p class="hint tip">Reach this device from anywhere through CumuloNimbus. Available in Orchestrator mode. Pairing shows a Cloud link code to enter at app.cumulo-nimbus.ai while signed in.</p>
 <div id=cloudLine class=hint>Cloud access is off.</div>
-<div id=cloudCode class=hint style="display:none;margin-top:6px"></div>
+<div id=cloudPairCard style="display:none;margin:10px 0;padding:14px;border:1px solid var(--line);border-radius:14px;background:var(--raise2)">
+<div style="display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start">
+<div id=cloudQr style="width:168px;height:168px;background:#fff;border-radius:12px;padding:10px;flex:none"></div>
+<div style="min-width:200px;flex:1">
+<div class=eyebrow>Cloud link code</div>
+<div id=cloudCode style="font-family:var(--mono);font-size:30px;font-weight:730;letter-spacing:.08em;color:var(--ink);word-break:break-all;line-height:1.2"></div>
+<div class=row style="margin-top:8px"><button id=cloudCopy type=button>Copy code</button></div>
+<ol class=hint style="margin:12px 0 0;padding-left:18px;line-height:1.7">
+<li>Sign in at <b>app.cumulo-nimbus.ai</b>.</li>
+<li>Scan the QR, or enter the Cloud link code above.</li>
+<li>This device appears in your account once it links.</li>
+</ol>
+</div>
+</div>
+</div>
 <div class=row style="margin-top:6px">
 <button id=cloudPair type=button>Pair with the cloud</button>
 <button id=cloudUnpair type=button style="display:none">Unpair</button>
 <button id=cloudOff type=button style="display:none">Turn off</button>
 </div>
+<div class=hint id=cloudMsg></div>
 </div>
 </details>
 

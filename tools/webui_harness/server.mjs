@@ -28,6 +28,12 @@ const server = createServer((req, res) => {
   if (path === '/logo.svg') {
     return send(res, 200, 'image/svg+xml', logoSvg());
   }
+  if (path === '/api/qr') {
+    // Stand-in QR SVG (the device renders a real one via nimbus::qr). Encodes
+    // nothing scannable; the specs assert the endpoint is called with the code.
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10" role="img" aria-label="QR code"><rect width="100%" height="100%" fill="#fff"/><rect x="1" y="1" width="3" height="3" fill="#000"/><rect x="6" y="1" width="3" height="3" fill="#000"/><rect x="1" y="6" width="3" height="3" fill="#000"/></svg>';
+    return send(res, 200, 'image/svg+xml', svg);
+  }
   if (path === '/healthz') {
     return send(res, 200, 'text/plain', 'ok');
   }

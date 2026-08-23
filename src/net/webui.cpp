@@ -39,6 +39,7 @@
 #include <math.h>                  // sqrtf/sinf for the audio diagnostics
 #include "nimbus/fault.h"
 #include "nimbus/signin_codes.h"   // CUM-45: one-time sign-in codes (token out of URLs)
+#include "nimbus/qr.h"             // CUM-51: server-rendered QR for the pairing card
 #include "nimbus/orch/budget.h"    // deriveBudget - "auto (currently N)" effective caps
 #include "nimbus/orch/compact.h"   // modelCtxTokens (window table)
 #include "nimbus/power/bright_cap.h"          // resilience: simulated mic/speaker faults
@@ -1296,6 +1297,41 @@ void beginWeb(const WebConfig& wc) {
     d["ttlMs"] = (uint32_t)nimbus::SigninCodes::DEFAULT_TTL_MS;
     String s; serializeJson(d, s);
     AsyncWebServerResponse* res = r->beginResponse(200, "application/json", s);
+    res->addHeader("Cache-Control", "no-store");
+    r->send(res);
+  });
+
+  // ---- Server-rendered QR (CUM-51, N1 UI endpoint) -------------------------
+  // Renders GET /api/qr?data=<text> as a crisp, high-contrast SVG using the same
+  // byte-locked encoder the device screens use (nimbus::qr), so the pairing card
+  // can show a QR without shipping a JS encoder or reaching any external service.
+  // Token-gated. The text is capped by the encoder (v6-M, ~107 bytes); over-long
+  // or empty input returns 400.
+  s_server.on("/api/qr", HTTP_GET, [](AsyncWebServerRequest* r) {
+    if (authBlocked(r)) return;
+    String data = r->hasParam("data") ? r->getParam("data")->value() : "";
+    nimbus::qr::QrCode qr;
+    if (data.length() == 0 || !nimbus::qr::encode(std::string(data.c_str()), qr)) {
+      r->send(400, "text/plain", "qr: empty or too long");
+      return;
+    }
+    const int quiet = 4, total = qr.size + 2 * quiet;
+    String svg;
+    svg.reserve(1024 + qr.size * qr.size * 6);
+    svg += "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 ";
+    svg += total; svg += " "; svg += total;
+    svg += "\" shape-rendering=\"crispEdges\" role=\"img\" aria-label=\"QR code\">";
+    svg += "<rect width=\"100%\" height=\"100%\" fill=\"#fff\"/>";
+    svg += "<path fill=\"#000\" d=\"";
+    for (int y = 0; y < qr.size; y++) {
+      for (int x = 0; x < qr.size; x++) {
+        if (qr.module(x, y)) {
+          svg += "M"; svg += (x + quiet); svg += " "; svg += (y + quiet); svg += "h1v1h-1z";
+        }
+      }
+    }
+    svg += "\"/></svg>";
+    AsyncWebServerResponse* res = r->beginResponse(200, "image/svg+xml", svg);
     res->addHeader("Cache-Control", "no-store");
     r->send(res);
   });
