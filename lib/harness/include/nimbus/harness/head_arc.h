@@ -47,7 +47,24 @@ class HeadArcTracker {
   explicit HeadArcTracker(uint32_t refreshMs = 60000, uint32_t frozenMs = 1800000)
       : refreshMs_(refreshMs), frozenMs_(frozenMs) {}
 
-  Action reconcile(bool turnInFlight, int activeChildren, uint32_t nowMs) {
+  // turnEndedSinceLast: a turn COMPLETED since the previous call (an edge derived
+  // from the engine's monotonic turnCount). This catches the wake-up stuck-arc
+  // root cause: a short wake-up turn fires on tg_poll and finishes BETWEEN two
+  // 5 s watchdog ticks, so this tracker never samples turnInFlight=true. If that
+  // turn fanned out and the TurnGuard left the arc lit, then the children drained
+  // to 0 before our first tick, nothing here owed a Clear (sawTurn_ was never set)
+  // and the guard-lit arc stranded until a backstop. The completion edge sets the
+  // clear-owed flag even for a turn we never saw in flight, so the PRIMARY path
+  // clears it and the backstop stays at 0 (CUM-11).
+  Action reconcile(bool turnInFlight, int activeChildren, uint32_t nowMs,
+                   bool turnEndedSinceLast = false) {
+    if (turnEndedSinceLast) {
+      // A turn happened (even one too brief to ever be sampled in flight): owe a
+      // Clear once children reach 0, and treat the completed turn as proof of life
+      // so a stale frozen backstop releases.
+      sawTurn_ = true;
+      backstopped_ = false;
+    }
     if (turnInFlight) {
       // The turn owns the arc; forget our state so we re-light on the first
       // post-turn tick if children remain. A turn also proves the system is
@@ -67,6 +84,10 @@ class HeadArcTracker {
       if (lit_ && (int32_t)(nowMs - lastCountChangeMs_) >= (int32_t)frozenMs_) {
         backstopped_ = true;   // frozen count: stop claiming "working"
         lit_ = false;
+        ++backstopFires_;      // CUM-11 metric: the belt-and-braces path fired. In a
+                               // healthy system the PRIMARY edge (a count move or a
+                               // turn) always clears first, so this stays 0; a nonzero
+                               // count means a real wedge slipped past the primary path.
         return Action::Clear;
       }
       if (!lit_ || (int32_t)(nowMs - lastLightMs_) >= (int32_t)refreshMs_) {
@@ -90,6 +111,10 @@ class HeadArcTracker {
 
   bool lit() const { return lit_; }
   bool backstopped() const { return backstopped_; }
+  // CUM-11: how many times the frozen-children backstop has had to fire. The 24 h
+  // soak acceptance is this == 0: the backstop is belt-and-braces, never the
+  // mechanism that clears a healthy wake-up's arc.
+  uint32_t backstopFires() const { return backstopFires_; }
 
  private:
   uint32_t refreshMs_;
@@ -100,6 +125,7 @@ class HeadArcTracker {
   int lastCount_ = 0;
   uint32_t lastLightMs_ = 0;
   uint32_t lastCountChangeMs_ = 0;
+  uint32_t backstopFires_ = 0;
 };
 
 }  // namespace harness

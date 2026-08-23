@@ -362,6 +362,11 @@ static void buildState(String& out) {
   for (uint8_t i = 0; i < nimbus::fault::COUNT; i++)
     fj[nimbus::fault::name(nimbus::fault::Cap(i))] = (fmask & (1u << i)) != 0;
 
+  // CUM-11: how many times a belt-and-braces ring backstop had to clear a stuck
+  // arc. The primary edge clears a healthy wake-up's arc, so this stays 0; a
+  // nonzero value flags a real wedge. The 24 h wake-up soak asserts it stays flat.
+  d["ringBackstopFires"] = agent::orchestrator::ringBackstopFires();
+
   power::Sample b = s_wc.power ? s_wc.power->sample() : power::Sample{};
   JsonObject batt = d["batt"].to<JsonObject>();
   batt["valid"]       = b.valid;

@@ -3903,6 +3903,7 @@ void loop() {
     if (cleared) {
       agent::alogf("ring: attention watchdog force-expired a stuck arc (>%us) - reap path stalled",
                    (unsigned)(cap / 1000));
+      if (g_orchMode) agent::orchestrator::noteRingBackstopFired();   // CUM-11 metric
       if (!g_menu.isOpen() && !g_voiceWaiting) refreshRing();
     }
     // Head-turn reaper: the blue "processing" Running arc is NOT an attention status,
@@ -3936,6 +3937,7 @@ void loop() {
         if (s_workingSinceMs == 0) s_workingSinceMs = now;
         if (!g_workingCeilingHit && (int32_t)(now - s_workingSinceMs) >= (int32_t)kWorkingHardMaxMs) {
           g_workingCeilingHit = true;
+          agent::orchestrator::noteRingBackstopFired();   // CUM-11 metric
           agent::alog("ring: working-breathe hit its 30 min absolute ceiling - dropped (stuck-turn reaper stalled?)");
           if (!g_menu.isOpen() && !g_voiceWaiting) refreshRing();
         }
