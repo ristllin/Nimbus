@@ -341,12 +341,37 @@ static void test_real_server_tool_namespacing() {
                            namespacedTool("everything", "get-annotated-message").c_str());
 }
 
+// Real Linear MCP (the DoD's named remote target): stateless SSE, real serverInfo.
+static void test_real_linear_initialize() {
+  InitializeResult r = parseInitialize(200, kSse, mcpfix::kLinearInitBody, "linear");
+  TEST_ASSERT_TRUE(r.ok);
+  TEST_ASSERT_EQUAL_STRING("2025-06-18", r.protocolVersion.c_str());
+  TEST_ASSERT_EQUAL_STRING("Linear MCP", r.serverName.c_str());
+  TEST_ASSERT_TRUE(r.hasTools);
+}
+
+static void test_real_linear_tools_slice() {
+  ToolsListResult r = parseToolsList(200, kSse, mcpfix::kLinearToolsSliceBody, "linear");
+  TEST_ASSERT_TRUE(r.ok);
+  TEST_ASSERT_EQUAL(mcpfix::kLinearToolsSliceCount, (int)r.tools.size());
+  bool sawAttachment = false;
+  for (const auto& t : r.tools) {
+    if (t.name == "get_attachment") sawAttachment = true;
+    // every real Linear tool name is already wire-safe (underscores, no colon)
+    std::string ns = namespacedTool("linear", t.name);
+    TEST_ASSERT_TRUE(ns.rfind("mcp.linear.", 0) == 0);
+  }
+  TEST_ASSERT_TRUE(sawAttachment);
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_real_server_initialize);
   RUN_TEST(test_real_server_tools_list);
   RUN_TEST(test_real_server_call_echo);
   RUN_TEST(test_real_server_tool_namespacing);
+  RUN_TEST(test_real_linear_initialize);
+  RUN_TEST(test_real_linear_tools_slice);
   RUN_TEST(test_build_initialize_shape);
   RUN_TEST(test_build_initialized_is_a_notification);
   RUN_TEST(test_build_tools_list_cursor);

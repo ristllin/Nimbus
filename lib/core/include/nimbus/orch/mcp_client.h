@@ -25,9 +25,10 @@ namespace nimbus {
 namespace orch {
 namespace mcp {
 
-// The JSON-RPC id the client uses for request/response correlation. Each device
-// exchange is a fresh POST, so a small fixed id per method is enough; the SSE
-// path still filters to the response carrying this id when several events arrive.
+// The JSON-RPC id the client uses per method. Each device exchange is its own
+// POST, so a small fixed id per method is enough. On the SSE path, the parser
+// picks the last event whose object carries "result"/"error" (a JSON-RPC
+// response), skipping any server notifications; it does not match on this id.
 enum RpcId : int {
   kIdInitialize = 1,
   kIdToolsList  = 2,
