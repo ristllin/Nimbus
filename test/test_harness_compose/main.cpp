@@ -131,6 +131,80 @@ static void test_prompt_golden_with_recall_loop_off() {
                   agent::composeInstructions(in));
 }
 
+// N11: the simplified v2 prompt (behind the promptV2 flag) - byte-pinned golden.
+static void test_prompt_golden_v2_default() {
+  ComposeInputs in = cannedInputs();
+  in.promptV2 = true;
+  checkTextGolden("orch_prompt_v2_default.txt", agent::composeInstructions(in));
+}
+
+// N11: v1 must stay byte-identical when the flag is off (a default fleet is
+// untouched). The default golden IS composed with promptV2=false.
+static void test_prompt_v2_flag_off_is_v1() {
+  ComposeInputs in = cannedInputs();
+  in.promptV2 = false;
+  std::string v1 = agent::composeInstructions(in);
+  in.promptV2 = true;
+  std::string v2 = agent::composeInstructions(in);
+  TEST_ASSERT_TRUE(v1 != v2);                 // the flag actually changes the prompt
+  // and v1-with-flag-off equals the pinned v1 default golden (same fixture)
+  std::string blessed;
+  if (readFile(std::string(kGoldenDir) + "/orch_prompt_default.txt", blessed))
+    TEST_ASSERT_TRUE(v1 == blessed);
+}
+
+// N11: v2 must be materially smaller than v1 (the whole point) - the field-docs
+// compression alone is ~4.5 KB. Guard the win so a future edit can't quietly
+// erase it.
+static void test_prompt_v2_is_smaller() {
+  ComposeInputs in = cannedInputs();
+  in.promptV2 = false;
+  size_t v1 = agent::composeInstructions(in).size();
+  in.promptV2 = true;
+  size_t v2 = agent::composeInstructions(in).size();
+  TEST_ASSERT_TRUE(v2 + 3000 < v1);           // at least 3 KB smaller
+}
+
+// N11: v2 must still NAME every orch_turn field (a schema field the model never
+// hears about in-prompt is invisible on Anthropic, which strips schema
+// descriptions). This guards against a new field being added to the wire but
+// forgotten in the hand-written v2 block.
+static void test_prompt_v2_names_every_field() {
+  ComposeInputs in = cannedInputs();
+  in.promptV2 = true;
+  std::string p = agent::composeInstructions(in);
+  for (const char* field :
+       {"reply:", "ask:", "memory:", "device:", "mem_write:", "mem_query:",
+        "session_ops:", "scratchpad:"})
+    TEST_ASSERT_TRUE_MESSAGE(p.find(field) != std::string::npos, field);
+}
+
+// N11: v2 must PRESERVE every safety rail that v1 carries. Losing one of these
+// to compression would be a real regression, not a simplification.
+static void test_prompt_v2_keeps_safety_rails() {
+  ComposeInputs in = cannedInputs();
+  in.promptV2 = true;
+  std::string p = agent::composeInstructions(in);
+  // reply honesty
+  TEST_ASSERT_TRUE(p.find("ONLY when a tool RESULT confirms it") != std::string::npos);
+  TEST_ASSERT_TRUE(p.find("Never invent ids") != std::string::npos);
+  // the two RISK knobs, named, with consent + state-the-risk
+  TEST_ASSERT_TRUE(p.find("sleepOvr") != std::string::npos);
+  TEST_ASSERT_TRUE(p.find("brightOvr") != std::string::npos);
+  TEST_ASSERT_TRUE(p.find("explicit owner consent") != std::string::npos);
+  // keys / priority / routing owner-only
+  TEST_ASSERT_TRUE(p.find("owner-only") != std::string::npos);
+  // mem_write is a prediction (applies after the reply)
+  TEST_ASSERT_TRUE(p.find("applies AFTER this reply") != std::string::npos);
+  // sub-agent fan-out governor
+  TEST_ASSERT_TRUE(p.find("[SPAWN CAPACITY]") != std::string::npos);
+  // the deep-history search instruction survives the memory-tier compression
+  TEST_ASSERT_TRUE(p.find("MONTHS") != std::string::npos);
+  TEST_ASSERT_TRUE(p.find("memory.episodic") != std::string::npos);
+  // v2 drops the standalone memory-howto block
+  TEST_ASSERT_TRUE(p.find("## HOW YOUR MEMORY WORKS") == std::string::npos);
+}
+
 // Release B1: the per-chat conversation window renders as its own section when
 // the device supplies it, ordered before the scratchpad; absent when empty (the
 // goldens pin the empty case - no dangling header).
@@ -358,6 +432,11 @@ int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_prompt_golden_default);
   RUN_TEST(test_prompt_golden_with_recall_loop_off);
+  RUN_TEST(test_prompt_golden_v2_default);
+  RUN_TEST(test_prompt_v2_flag_off_is_v1);
+  RUN_TEST(test_prompt_v2_is_smaller);
+  RUN_TEST(test_prompt_v2_names_every_field);
+  RUN_TEST(test_prompt_v2_keeps_safety_rails);
   RUN_TEST(test_recent_conversation_section);
   RUN_TEST(test_chat_summary_section_above_window);
   RUN_TEST(test_chat_summary_yields_to_window_by_clipping);

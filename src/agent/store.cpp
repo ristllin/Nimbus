@@ -198,6 +198,7 @@ bool   ttsEnabled() { return solide::memory::getBool(AKEY_TTS_ENABLED, false); }
 bool   orchToolLoop() { return solide::memory::getBool(AKEY_ORCH_TOOLLOOP, true); }
 bool   codeSandbox() { return solide::memory::getBool(AKEY_CODE_SANDBOX, false); }
 bool   midTurnFailover() { return solide::memory::getBool(AKEY_MID_FAILOVER, true); }
+bool   orchPromptV2() { return solide::memory::getBool(AKEY_ORCH_PROMPTV2, false); }
 bool   orchTrace() { return solide::memory::getBool(AKEY_ORCH_TRACE, true); }
 void   setOrchTrace(bool v) { solide::memory::setBool(AKEY_ORCH_TRACE, v); }
 static int clampI(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
