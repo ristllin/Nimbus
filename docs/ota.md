@@ -36,11 +36,13 @@ flowchart TD
 ## Trust model
 
 - **Signature** (the real gate): CI signs, per variant, the canonical message
-  `nimbus-ota-v1\n<version>\n<variant>\n<sha256-hex>\n` with ECDSA P-256
+  `nimbus-ota-v2\n<version>\n<type>\n<sha256-hex>\n` with ECDSA P-256
   (secret `OTA_SIGNING_KEY`). The device rebuilds that message from what it
   actually downloaded and verifies against the public keys baked into
   [`include/ota_pubkey.h`](../include/ota_pubkey.h) **before** the boot flag
-  flips. Binding version+variant kills mix-and-match and cross-version replay.
+  flips. Binding version+type kills mix-and-match and cross-version replay. (The
+  transition release still signs the legacy `nimbus-ota-v1\n...\n<variant>\n...`
+  message so existing fielded firmware can verify it - see Typed manifests.)
 - **TLS**: downloads ride `tlsSetup()` (CA-bundle validation, `tlsVerify`
   default ON), so the transport is also authenticated on default settings.
 - **Residual**: a MITM against a `tlsVerify=0` device can only replay an old
@@ -50,6 +52,45 @@ flowchart TD
 - The `test` variant additionally trusts a COMMITTED test key
   (`test/ota_test_key.pem`, `#ifdef NIMBUS_TEST` only) so the HIL suite can
   sign fixtures. Never flash `env:test` on a production unit.
+
+## Typed manifests (v2)
+
+The manifest is **typed**: `schema: 2`, and each entry in `variants` is keyed on
+the device **type**, not the build tag. The four types are frozen:
+`nimbus-tft` (the TFT + ring board), and `freenove-28` / `freenove-35` /
+`freenove-40` (the all-in-one touchscreen, by panel size). A release publishes one
+`manifest.json` holding every type that has an image; a device looks up only its
+own type.
+
+```
+{ "schema": 2, "version": "v4.3.0", "notes": "...",
+  "variants": {
+    "nimbus-tft":  { "url": "...", "size": 3600000, "sha256": "...", "sig": "..." },
+    "freenove-28": { "url": "...", "size": 3600000, "sha256": "...", "sig": "..." },
+    "freenove-35": { ... }, "freenove-40": { ... } } }
+```
+
+- **Where the type comes from**: NVS key `otaType`, seeded by the flasher on a
+  fresh install or written by the transition release on an existing device. If it
+  is unset, the build falls back to its compile-time tag so dev/HIL builds
+  (`test`/`test-cyd`) still resolve. A stored type from the wrong board family is
+  refused (a Solide build only accepts `nimbus-tft`, a Freenove build only the
+  `freenove-*` sizes), so a mis-seeded NVS can never pull a wrong-pinout image -
+  the runtime twin of the compile-time board/variant bind in `ota_update.cpp`.
+- **Untyped devices get no update**: a device whose type is empty (or absent from
+  the manifest) matches no variant and reports "no update" - a settled state, not
+  an error. **E-ink devices are frozen this way**: they carry no type, so after
+  the transition release they never install again, and the final e-ink image reads
+  "Updates have ended for this board."
+- **The transition release** is a final **schema-1** manifest published under the
+  tag existing firmware polls. Fielded firmware matches it by its build tag
+  (`esp32s3`/`cyd`) and installs it; on first boot the new image derives its type
+  from `scrModel` + board and persists `otaType`, then uses the schema-2 manifest
+  thereafter. Generate it with `tools/make_manifest.py --schema 1`; the typed
+  releases use the default `--schema 2`.
+
+The repo-layout decision (reuse `nimbus-fw-releases`, one manifest per release) is
+recorded in [`adr/0001-ota-releases-repo.md`](adr/0001-ota-releases-repo.md).
 
 ## CI secrets (two)
 

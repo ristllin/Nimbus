@@ -144,7 +144,7 @@ bool parseManifest(const char* json, size_t len, const char* variant,
   DeserializationError err =
       deserializeJson(doc, json, len, DeserializationOption::Filter(filter));
   if (err) return fail(errOut, "schema");
-  if ((doc["schema"] | 0) != 1) return fail(errOut, "schema");
+  if ((doc["schema"] | 0) != 2) return fail(errOut, "schema");
 
   const char* ver = doc["version"] | (const char*)nullptr;
   int mj, mi, pa;
@@ -185,11 +185,32 @@ bool parseManifest(const char* json, size_t len, const char* variant,
   return true;
 }
 
+// --- device type ------------------------------------------------------------
+
+bool typeAllowedForBoard(const char* type, bool isFreenove) {
+  if (!type || !*type) return false;
+  if (isFreenove)
+    return strcmp(type, kTypeFreenove28) == 0 ||
+           strcmp(type, kTypeFreenove35) == 0 ||
+           strcmp(type, kTypeFreenove40) == 0;
+  return strcmp(type, kTypeNimbusTft) == 0;
+}
+
+size_t deriveDeviceType(char* buf, size_t cap, bool isFreenove,
+                        bool screenIsTft) {
+  const char* t = isFreenove ? kTypeFreenove28
+                             : (screenIsTft ? kTypeNimbusTft : "");
+  size_t n = strlen(t);
+  if (cap < n + 1) { if (cap) buf[0] = '\0'; return 0; }
+  memcpy(buf, t, n + 1);
+  return n;
+}
+
 // --- signed message ---------------------------------------------------------
 
 size_t buildSigMessage(char* buf, size_t cap, const char* version,
                        const char* variant, const char* shaHex) {
-  static const char kPrefix[] = "nimbus-ota-v1";
+  static const char kPrefix[] = "nimbus-ota-v2";
   size_t need = sizeof(kPrefix) - 1 + 1 + strlen(version) + 1 +
                 strlen(variant) + 1 + strlen(shaHex) + 1;
   if (cap < need + 1) return 0;

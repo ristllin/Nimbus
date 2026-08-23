@@ -14,6 +14,12 @@ redirect hop (the GitHub asset-URL shape).
 
 Markers: ``net`` (LAN + serial console). The real-GitHub install path is the
 Phase-5 manual acceptance (docs/ota.md), not this suite.
+
+Typed OTA (schema 2): the fixture manifest is a v2 typed manifest keyed on the
+device type. This suite runs on the Solide ``env:test`` board, whose OTA type
+resolves (NVS ``otaType`` unset -> compile-time fallback) to ``test``, so the
+manifest is signed for the ``test`` variant. A Freenove test board runs the
+``test-cyd`` build and its own suite; do not repoint FW_BIN at it.
 """
 
 from __future__ import annotations
@@ -112,11 +118,15 @@ def _sign_manifest(tmp: Path, key: Path, url_base: str, fw: Path) -> Path:
             url_base,
             "--notes",
             "hil fixture",
-            f"test={fw}",
+            f"test={fw}",  # schema 2 (default) -> typed manifest, variant "test"
         ],
         check=True,
         capture_output=True,
     )
+    import json
+
+    man = json.loads(out.read_text())
+    assert man["schema"] == 2 and "test" in man["variants"], man
     return out
 
 

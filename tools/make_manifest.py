@@ -6,18 +6,23 @@ secret) and by tests/hil/test_ota.py (the committed test key). The canonical
 signed message MUST stay byte-identical to nimbus::ota::buildSigMessage()
 (lib/core/src/ota_logic.cpp - golden-tested in test/test_ota_logic):
 
-    nimbus-ota-v1\n<version>\n<variant>\n<sha256-hex-lowercase>\n
+    nimbus-ota-v<schema>\n<version>\n<variant>\n<sha256-hex-lowercase>\n
+
+where <schema> is 2 for the typed manifest (default) and 1 for the legacy
+transition manifest existing fielded firmware still consumes. In schema 2 the
+variant key is the device TYPE (nimbus-tft, freenove-28/35/40); in schema 1 it
+is the compile-time build tag (esp32s3, cyd, test).
 
 Signature: ECDSA P-256 over SHA-256 of that message, DER, base64.
 
 Usage:
-  make_manifest.py --version v2.11.0 --key priv.pem --out manifest.json \
-      [--notes "..."] [--min-version vX.Y.Z] [--build <git-describe>] \
-      [--url-base https://github.com/OWNER/REPO/releases/download/v2.11.0] \
-      esp32s3=firmware-esp32s3.bin test=firmware-test.bin
+  make_manifest.py --version v4.3.0 --key priv.pem --out manifest.json \
+      [--schema 2] [--notes "..."] [--min-version vX.Y.Z] [--build <describe>] \
+      [--url-base https://github.com/OWNER/REPO/releases/download/v4.3.0] \
+      nimbus-tft=firmware-nimbus-tft.bin freenove-28=firmware-freenove.bin
 
-  make_manifest.py --print-message --version v2.11.0 --variant esp32s3 \
-      --sha <64-hex>          # golden cross-check (no signing)
+  make_manifest.py --print-message --schema 2 --version v4.3.0 \
+      --variant nimbus-tft --sha <64-hex>    # golden cross-check (no signing)
 """
 
 import argparse
@@ -30,8 +35,8 @@ import tempfile
 from pathlib import Path
 
 
-def sig_message(version: str, variant: str, sha_hex: str) -> bytes:
-    return f"nimbus-ota-v1\n{version}\n{variant}\n{sha_hex}\n".encode()
+def sig_message(version: str, variant: str, sha_hex: str, schema: int = 2) -> bytes:
+    return f"nimbus-ota-v{schema}\n{version}\n{variant}\n{sha_hex}\n".encode()
 
 
 def sign(key_pem: Path, message: bytes) -> str:
@@ -51,6 +56,7 @@ def main() -> None:
     ap.add_argument("--version", required=True)
     ap.add_argument("--key")
     ap.add_argument("--out")
+    ap.add_argument("--schema", type=int, default=2, choices=(1, 2))
     ap.add_argument("--notes", default="")
     ap.add_argument("--min-version", default="")
     ap.add_argument("--build", default="")
@@ -64,7 +70,7 @@ def main() -> None:
     if a.print_message:
         if not (a.variant and a.sha):
             sys.exit("--print-message needs --variant and --sha")
-        sys.stdout.buffer.write(sig_message(a.version, a.variant, a.sha))
+        sys.stdout.buffer.write(sig_message(a.version, a.variant, a.sha, a.schema))
         return
 
     if not (a.key and a.out and a.pairs):
@@ -85,11 +91,11 @@ def main() -> None:
             "url": f"{url_base}/{p.name}",
             "size": len(blob),
             "sha256": sha_hex,
-            "sig": sign(Path(a.key), sig_message(a.version, variant, sha_hex)),
+            "sig": sign(Path(a.key), sig_message(a.version, variant, sha_hex, a.schema)),
         }
         print(f"{variant}: {p.name} {len(blob)} bytes sha256={sha_hex[:16]}…")
 
-    manifest = {"schema": 1, "version": a.version}
+    manifest = {"schema": a.schema, "version": a.version}
     if a.build:
         manifest["build"] = a.build
     if a.notes:
