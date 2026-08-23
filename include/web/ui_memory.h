@@ -9,15 +9,19 @@
 // Copy follows the AGENTS.md copy style guide.
 
 static const char UI_MEMORY[] PROGMEM = R"=====(<div class=pane id=pane-chat style="display:none">
-<div class=eyebrow>Assistant</div>
+<div class=eyebrow>Conversation</div>
 <div class=ptitle>Chat</div>
 <p class=plede>Message the assistant and see its replies.</p>
-<div class=sec>
+<div class=sec id=chatDrop>
 <div id=chatLog style="min-height:120px;max-height:52vh;overflow-y:auto;display:flex;flex-direction:column;gap:10px"></div>
 <div class=row style="margin-top:10px;align-items:flex-end">
 <textarea id=chatInput rows=2 placeholder="Message Nimbus&hellip;" style="flex:1"></textarea>
+<input id=chatFile type=file multiple style="display:none">
+<button id=chatAttach type=button title="Attach a file" aria-label="Attach a file" style="background:var(--raise3);color:var(--ink2)">Attach</button>
 <button id=chatSend type=button>Send</button>
 </div>
+<p class=hint>Drop a file here or use Attach. Supported: images (png, jpg, gif, webp), text, md, csv, log, json, pdf.</p>
+<div class=hint id=chatUpMsg></div>
 <p class=hint id=chatMsg>Replies also go to your Telegram, if connected.</p>
 <p class="hint tip" id=chatTrace style="display:none"></p>
 </div>

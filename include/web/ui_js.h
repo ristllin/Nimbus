@@ -1474,11 +1474,37 @@ function connCard(k,c,keyed,host){
   h+='<div class=row id="cc_'+id+'_cidrow" style="margin-top:6px;display:'+(showCid?'flex':'none')+'"><input id="cc_'+id+'_cid" placeholder="connector_id (Studio name / UUID)" value="'+connEsc(set&&c.cid?c.cid:connCidDefault(curProv,k))+'"></div>';
   const ph=(set&&c.hasTok)?'•••• saved - leave blank to keep':(k.cred||'Credential / token');
   h+='<div class=row id="cc_'+id+'_tokrow" style="margin-top:6px;display:'+(showTok?'flex':'none')+'"><input id="cc_'+id+'_tok" type=password placeholder="'+connEsc(ph)+'"></div>';
+  // MCP device-dialed server approval (per CUM-33): a "dev" mcp server is only
+  // dialed once the owner approves it. Render its approval state + Approve/Deny,
+  // which flip the connectors-blob "appr" bit through the existing owner-gated
+  // write. Enforcement + persistence live in N4's lane; this only renders + writes.
+  if(set&&(c.dev==1||c.dev===true)){
+    const appr=(c.appr==1||c.appr===true);
+    h+='<div class=row style="margin-top:6px;align-items:center;gap:8px">';
+    h+= appr
+      ? '<span class="badge vfy ok">approved</span><button type=button onclick="mcpApprove(\''+connEsc(c.name)+'\',\''+connEsc(id)+'\',0)">Revoke</button>'
+      : '<span class="badge" style="background:var(--amber-soft);color:var(--amber)">pending approval</span>'+
+        '<button type=button onclick="mcpApprove(\''+connEsc(c.name)+'\',\''+connEsc(id)+'\',1)">Approve</button> '+
+        '<button type=button onclick="mcpApprove(\''+connEsc(c.name)+'\',\''+connEsc(id)+'\',0)">Deny</button>';
+    h+='</div><div class=hint id="cc_'+id+'_apprmsg"></div>';
+  }
   h+='<div class=row style="margin-top:6px"><label class=pr><input type=checkbox id="cc_'+id+'_en"'+(en?' checked':'')+'> enabled</label>';
   h+='<button type=button onclick="saveConnCard(\''+connEsc(id)+'\')">Save</button>';
   if(set)h+='<button type=button onclick="delConn(\''+connEsc(c.name)+'\')">Remove</button>';
   h+='</div>';
   return '<div class=tile style="margin:8px 0">'+h+'</div>';
+}
+// Flip the mcp "appr" bit through the owner-gated connectors write (per CUM-33).
+// A patch-upsert preserves omitted fields (incl. the saved token); the device
+// reconciles on its next turn (discovers on approve, retracts tools on deny).
+function mcpApprove(name,id,bit){
+  run({status:'cc_'+id+'_apprmsg',pending:(bit?'Approving ':'Denying ')+name+'…',
+    work:()=>fetch('/api/connectors',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
+      body:new URLSearchParams({patch:JSON.stringify({name:name,appr:bit})}).toString()})
+      .then(r=>{if(!r.ok)throw r.status;return r;}),
+    ok:()=>{setTimeout(loadConnectors,300);
+      return (bit?'Approved ':'Denied ')+name+'. The device applies this on its next turn.';},
+    error:e=>'Couldn\'t update '+name+(e?(' ('+e+')'):'')+' - try again.'});
 }
 function connFindKnown(id){return (window._connKnown||[]).find(k=>k.id===id)||{id:id,kind:'mcp',cid:''};}
 function connProvChange(id){
@@ -2529,6 +2555,38 @@ function sendChatTurn(){
 $('chatSend')&&($('chatSend').onclick=sendChatTurn);
 loadChatHistory();
 $('chatInput')&&$('chatInput').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendChatTurn();}});
+
+// ---- Chat file upload: file picker + drag-and-drop (CUM-57) -----------------
+// Files upload to the shared artifact store (/api/files/upload) with a real
+// progress bar via the feedback helper, and land as a chat bubble so the
+// assistant can reference them. Reuses uploadFile() (token in the header).
+function chatUpload(files){
+  const list=Array.from(files||[]).filter(Boolean); if(!list.length)return;
+  const proj='chat';
+  // Upload sequentially so the single status line reads clearly; each result is
+  // announced in the chat log so nothing "disappears".
+  let i=0;
+  const next=()=>{
+    if(i>=list.length)return;   // leave the last file's result state on screen
+    const f=list[i++];
+    run({status:'chatUpMsg',pending:'Uploading '+f.name+'…',
+      work:()=>uploadFile(f,proj,pct=>fbState('chatUpMsg','pending','Uploading '+f.name+'… '+pct+'%',pct)),
+      ok:()=>{if(typeof _chatBubble==='function')_chatBubble('u','Attached '+f.name+' (in Files > '+proj+'). Ask me about it.','web');
+        return 'Attached '+f.name+'.';},
+      error:s=>'Upload of '+f.name+' failed'+(s?(' ('+s+')'):'')+' - check the file and try again.'})
+      .then(next).catch(next);   // keep going even if one file fails
+  };
+  next();
+}
+$('chatAttach')&&($('chatAttach').onclick=()=>$('chatFile').click());
+$('chatFile')&&($('chatFile').onchange=e=>{chatUpload(e.target.files);e.target.value='';});
+(function(){const z=$('chatDrop'); if(!z)return;
+  const stop=e=>{e.preventDefault();e.stopPropagation();};
+  ['dragenter','dragover'].forEach(ev=>z.addEventListener(ev,e=>{stop(e);z.classList.add('dropping');}));
+  ['dragleave','dragend'].forEach(ev=>z.addEventListener(ev,e=>{stop(e);if(e.target===z)z.classList.remove('dropping');}));
+  z.addEventListener('drop',e=>{stop(e);z.classList.remove('dropping');
+    if(e.dataTransfer&&e.dataTransfer.files)chatUpload(e.dataTransfer.files);});
+})();
 loadOrch();loadConnectors();
 setInterval(loadOrch,5000);
 loadMemDash();

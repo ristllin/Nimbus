@@ -102,6 +102,8 @@ table{width:100%;border-collapse:collapse;font-size:12.5px}td,th{text-align:left
 .fb-bar.fb-indet>i{width:35%;background:var(--info);animation:fbslide 1.1s ease-in-out infinite}
 @keyframes fbslide{0%{margin-left:-35%}100%{margin-left:100%}}
 @media(prefers-reduced-motion:reduce){.fb-bar.fb-indet>i{animation:none;width:100%;opacity:.4}}
+/* Chat file drop zone (CUM-57): highlight while a file is dragged over it. */
+#chatDrop.dropping{outline:2px dashed var(--teal);outline-offset:-6px;background:var(--teal-soft)}
 .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:10px 0}
 .tile{background:var(--raise);border:1px solid var(--line);border-radius:14px;padding:14px 15px;box-shadow:var(--shadow)}
 .tile .k{font-size:10.5px;text-transform:uppercase;letter-spacing:.1em;color:var(--ink3);font-weight:650}

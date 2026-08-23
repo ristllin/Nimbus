@@ -114,7 +114,19 @@ export const FILES_LIST = {
   ],
 };
 
-export const CONNECTORS = { connectors: [{ id: 'telegram', name: 'Telegram', state: 'on' }], mcp: [] };
+// Shape loadConnectors expects: {configured, known, keyed, host}. Includes a
+// device-dialed MCP server pending owner approval (CUM-33), so the approval card
+// renders in the harness.
+export const CONNECTORS = {
+  host: 'anthropic',
+  keyed: { anthropic: true },
+  known: [
+    { id: 'github', name: 'GitHub MCP', providers: 'anthropic', kind: 'mcp', cred: 'GitHub token', desc: 'Repos and issues over MCP.', docs: 'github' },
+  ],
+  configured: [
+    { name: 'devtools', type: 'devtools', prov: 'anthropic', kind: 'mcp', url: 'https://mcp.example.dev/', en: 1, dev: 1, appr: 0, hasTok: true },
+  ],
+};
 export const TOOLS = { tools: [{ id: 'web', name: 'Web fetch', enabled: true }], sandbox: { enabled: false } };
 export const SKILLS = { skills: [{ id: 'summarize', name: 'Summarize', enabled: true }] };
 export const LOOPS = { loops: [] };
