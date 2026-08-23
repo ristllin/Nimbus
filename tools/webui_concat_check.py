@@ -37,7 +37,8 @@ def fragment_payload(path: Path) -> str:
     return m.group(1)
 
 
-def main() -> None:
+def fragment_order() -> list[str]:
+    """The fragment list from web_pages.h, cross-checked include-order vs parts-order."""
     manifest = MANIFEST.read_text()
     order = re.findall(r'#include "web/(ui_\w+)\.h"', manifest)
     if not order:
@@ -48,6 +49,11 @@ def main() -> None:
     idents = [t.strip() for t in listed.group(1).split(",") if t.strip()]
     if [i.lower() for i in idents] != order:
         sys.exit(f"FAIL: include order {order} != parts order {idents}")
+    return order
+
+
+def main() -> None:
+    order = fragment_order()
 
     page = "".join(fragment_payload(ROOT / "include" / "web" / f"{n}.h") for n in order)
 
