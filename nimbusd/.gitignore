@@ -1,0 +1,2 @@
+# Build output (objects, dep files, test/daemon binaries).
+build/
