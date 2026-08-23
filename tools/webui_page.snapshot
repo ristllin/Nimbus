@@ -67,6 +67,26 @@ table{width:100%;border-collapse:collapse;font-size:12.5px}td,th{text-align:left
 .net:hover{background:var(--raise3)}.bars{color:var(--ink3);font-size:13px}#nets{margin:8px 0}
 #msg{font-size:13px;color:var(--ok)}
 .warnbox{background:var(--amber-soft);border:1px solid rgba(240,180,90,.3);border-radius:10px;padding:10px;color:var(--amber);font-size:13px}
+/* ---- Feedback-state system (CUM-31): pending -> result for every async action.
+   One status element renders exactly one of pending/ok/none/error; nothing ever
+   just disappears, and an error always names the next step. ---- */
+[data-fb]{font-size:12.5px;margin:6px 0;line-height:1.5}
+.fb-line{display:flex;align-items:center;gap:8px}
+.fb-dot{width:8px;height:8px;border-radius:50%;flex:none;background:var(--ink3)}
+.fb-pending .fb-dot{background:var(--info)}
+.fb-ok .fb-dot{background:var(--ok)}
+.fb-none .fb-dot{background:var(--ink3)}
+.fb-error .fb-dot{background:var(--crit)}
+.fb-pending .fb-msg{color:var(--ink2)}
+.fb-ok .fb-msg{color:var(--ok)}
+.fb-none .fb-msg{color:var(--ink2)}
+.fb-error .fb-msg{color:var(--crit)}
+.fb-bar{height:5px;border-radius:4px;background:var(--line);margin-top:7px;overflow:hidden}
+.fb-bar>i{display:block;height:100%;border-radius:4px;background:var(--teal);transition:width .25s ease}
+.fb-error .fb-bar>i{background:var(--crit)}
+.fb-bar.fb-indet>i{width:35%;background:var(--info);animation:fbslide 1.1s ease-in-out infinite}
+@keyframes fbslide{0%{margin-left:-35%}100%{margin-left:100%}}
+@media(prefers-reduced-motion:reduce){.fb-bar.fb-indet>i{animation:none;width:100%;opacity:.4}}
 .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:10px 0}
 .tile{background:var(--raise);border:1px solid var(--line);border-radius:14px;padding:14px 15px;box-shadow:var(--shadow)}
 .tile .k{font-size:10.5px;text-transform:uppercase;letter-spacing:.1em;color:var(--ink3);font-weight:650}
@@ -692,7 +712,7 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <div class=row><input id=upProj placeholder="Project (default: uploads)" style="max-width:160px"><input id=upFile type=file></div>
 <div class=row><button id=upBtn type=button>Upload</button><button class=qh type=button aria-expanded=false aria-label="About files">?</button></div>
 <p class="hint tip">Files persist across restarts and are never deleted automatically. The assistant saves reports here with <span class=badge>artifact.save</span>; you can download, delete, or add your own.</p>
-<p class=hint id=upMsg></p>
+<div class=hint id=upMsg></div>
 </div>
 </details>
 </div>
@@ -1582,6 +1602,66 @@ function _tfetch(url){
   }));
 }
 function failToast(e){toast(e===401?'Sign in required':'Couldn\'t save - try again');}
+
+// ---- Feedback-state system (CUM-31) ----------------------------------------
+// One helper renders every async action through pending -> result, so nothing
+// ever just "disappears": the status element shows a pending state, then exactly
+// one of success / nothing-found / error, and an error always names the next
+// step. A determinate progress bar is shown when a percent is knowable.
+//
+// fbState(el, state, msg, pct):
+//   state = 'pending' | 'ok' | 'none' | 'error' | 'idle'
+//   pct   = 0..100 for a determinate bar, or undefined for none / an
+//           indeterminate pending shimmer.
+function fbState(el, state, msg, pct){
+  el = (typeof el==='string')?$(el):el; if(!el)return;
+  el.classList.remove('fb-pending','fb-ok','fb-none','fb-error');
+  if(state==='idle'){el.textContent='';el.removeAttribute('data-fb');el.style.display='none';return;}
+  el.style.display='';
+  el.classList.add('fb-'+state);
+  el.setAttribute('data-fb',state);
+  el.setAttribute('role','status');
+  const hasBar=(state==='pending'||state==='ok'||state==='error')&&typeof pct==='number';
+  el.innerHTML='';
+  const line=document.createElement('div');line.className='fb-line';
+  const dot=document.createElement('span');dot.className='fb-dot';
+  const txt=document.createElement('span');txt.className='fb-msg';txt.textContent=msg||'';
+  line.appendChild(dot);line.appendChild(txt);el.appendChild(line);
+  if(hasBar){
+    const wrap=document.createElement('div');wrap.className='fb-bar';
+    const fill=document.createElement('i');fill.style.width=Math.max(0,Math.min(100,pct))+'%';
+    wrap.appendChild(fill);el.appendChild(wrap);
+  } else if(state==='pending'){
+    const wrap=document.createElement('div');wrap.className='fb-bar fb-indet';
+    wrap.appendChild(document.createElement('i'));el.appendChild(wrap);
+  }
+}
+// run(opts): drive one async action through the feedback states.
+//   opts.status  : status element (id or node) - required
+//   opts.btn     : optional button to disable while pending
+//   opts.pending : pending message (default "Working...")
+//   opts.work()  : returns a promise for the action's result - required
+//   opts.ok(res) : string result message, OR return {none:true, msg} to render
+//                  the "nothing found" state instead of success
+//   opts.none    : default "nothing found" message
+//   opts.error(e): error message (should name the next step); default provided
+// Returns the work() promise so callers can chain. Never leaves a pending state.
+function run(opts){
+  const el=(typeof opts.status==='string')?$(opts.status):opts.status;
+  const btn=opts.btn;
+  fbState(el,'pending',opts.pending||'Working...');
+  if(btn)btn.disabled=true;
+  return Promise.resolve().then(opts.work).then(res=>{
+    let msg=opts.ok?opts.ok(res):'Done.';
+    if(msg&&typeof msg==='object'&&msg.none){fbState(el,'none',msg.msg||opts.none||'Nothing found.');}
+    else fbState(el,msg&&msg.none===false?'ok':'ok',(typeof msg==='string')?msg:(opts.okMsg||'Done.'));
+    return res;
+  }).catch(e=>{
+    const m=opts.error?opts.error(e):((e===401||e&&e.status===401)?'Sign in required, then try again.':'Something went wrong - try again.');
+    fbState(el,'error',m);
+    throw e;
+  }).finally(()=>{ if(btn)btn.disabled=false; });
+}
 // Live ring demo: POSTs the ring simulator's CURRENT selection - its posture
 // picks the battery mode (Full/Balanced/Dark), its status picks what the ring
 // shows - so the device mirrors exactly what the on-page simulator is showing,
@@ -2858,14 +2938,32 @@ $('filesRmProj')&&($('filesRmProj').onclick=()=>{
   fetch('/api/files/rmproject',{method:'POST',body:fd}).then(r=>r.ok?r.json():Promise.reject(r.status))
     .then(o=>{toast('Deleted '+((o&&o.removed)||0)+' files');loadFiles();})
     .catch(s=>toast(s===404?'No such folder':'Couldn\'t delete - try again'));});
+// Upload one file with a determinate progress bar (duration is knowable).
+// Uses XHR so upload progress events drive the feedback bar; the token rides the
+// X-Nimbus-Token header like every request. onPct(0..100) is called as it climbs.
+// Returns a promise that resolves to the parsed JSON (or {}), rejects with the
+// HTTP status (or 0 on a network error). Reused by the chat drag-and-drop (CUM-57).
+function uploadFile(file, proj, onPct){
+  return new Promise((resolve,reject)=>{
+    const url='/api/files/upload?project='+encodeURIComponent(proj)+'&name='+encodeURIComponent(file.name);
+    const x=new XMLHttpRequest();
+    x.open('POST',url);
+    try{x.setRequestHeader('X-Nimbus-Token',nimbusTok());}catch(e){}
+    x.upload.onprogress=e=>{if(onPct&&e.lengthComputable)onPct(Math.round(e.loaded/e.total*100));};
+    x.onload=()=>{if(x.status>=200&&x.status<300){try{resolve(JSON.parse(x.responseText||'{}'));}catch(e){resolve({});}}else reject(x.status);};
+    x.onerror=()=>reject(0);
+    const fd=new FormData();fd.append('file',file,file.name);
+    x.send(fd);
+  });
+}
 $('upBtn')&&($('upBtn').onclick=()=>{
-  const inp=$('upFile'),f=inp&&inp.files[0]; if(!f){toast('Choose a file first');return;}
+  const inp=$('upFile'),f=inp&&inp.files[0];
+  if(!f){fbState('upMsg','error','Choose a file first, then Upload.');return;}
   const proj=($('upProj').value.trim())||'uploads';
-  const fd=new FormData();fd.append('file',f,f.name);
-  $('upMsg').textContent='Uploading '+f.name+'…';
-  fetch('/api/files/upload?project='+encodeURIComponent(proj)+'&name='+encodeURIComponent(f.name),{method:'POST',body:fd})
-    .then(r=>r.ok?r.json():Promise.reject(r.status)).then(()=>{$('upMsg').textContent='Uploaded ✓';inp.value='';loadFiles();})
-    .catch(s=>{$('upMsg').textContent='Upload failed ('+s+') - try again.';});
+  run({status:'upMsg',btn:$('upBtn'),pending:'Uploading '+f.name+'…',
+    work:()=>uploadFile(f,proj,pct=>fbState('upMsg','pending','Uploading '+f.name+'… '+pct+'%',pct)),
+    ok:()=>{inp.value='';loadFiles();return 'Uploaded '+f.name+'.';},
+    error:s=>'Upload failed'+(s?(' ('+s+')'):'')+' - check the file and try again.'});
 });
 // ---- Skills (P2 dynamic capsules): list + load/save/delete on the SD card ----
 function loadSkills(){

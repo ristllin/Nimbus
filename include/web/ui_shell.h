@@ -79,6 +79,26 @@ table{width:100%;border-collapse:collapse;font-size:12.5px}td,th{text-align:left
 .net:hover{background:var(--raise3)}.bars{color:var(--ink3);font-size:13px}#nets{margin:8px 0}
 #msg{font-size:13px;color:var(--ok)}
 .warnbox{background:var(--amber-soft);border:1px solid rgba(240,180,90,.3);border-radius:10px;padding:10px;color:var(--amber);font-size:13px}
+/* ---- Feedback-state system (CUM-31): pending -> result for every async action.
+   One status element renders exactly one of pending/ok/none/error; nothing ever
+   just disappears, and an error always names the next step. ---- */
+[data-fb]{font-size:12.5px;margin:6px 0;line-height:1.5}
+.fb-line{display:flex;align-items:center;gap:8px}
+.fb-dot{width:8px;height:8px;border-radius:50%;flex:none;background:var(--ink3)}
+.fb-pending .fb-dot{background:var(--info)}
+.fb-ok .fb-dot{background:var(--ok)}
+.fb-none .fb-dot{background:var(--ink3)}
+.fb-error .fb-dot{background:var(--crit)}
+.fb-pending .fb-msg{color:var(--ink2)}
+.fb-ok .fb-msg{color:var(--ok)}
+.fb-none .fb-msg{color:var(--ink2)}
+.fb-error .fb-msg{color:var(--crit)}
+.fb-bar{height:5px;border-radius:4px;background:var(--line);margin-top:7px;overflow:hidden}
+.fb-bar>i{display:block;height:100%;border-radius:4px;background:var(--teal);transition:width .25s ease}
+.fb-error .fb-bar>i{background:var(--crit)}
+.fb-bar.fb-indet>i{width:35%;background:var(--info);animation:fbslide 1.1s ease-in-out infinite}
+@keyframes fbslide{0%{margin-left:-35%}100%{margin-left:100%}}
+@media(prefers-reduced-motion:reduce){.fb-bar.fb-indet>i{animation:none;width:100%;opacity:.4}}
 .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:10px 0}
 .tile{background:var(--raise);border:1px solid var(--line);border-radius:14px;padding:14px 15px;box-shadow:var(--shadow)}
 .tile .k{font-size:10.5px;text-transform:uppercase;letter-spacing:.1em;color:var(--ink3);font-weight:650}

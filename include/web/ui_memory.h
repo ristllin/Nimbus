@@ -107,7 +107,7 @@ static const char UI_MEMORY[] PROGMEM = R"=====(<div class=pane id=pane-fleet st
 <div class=row><input id=upProj placeholder="Project (default: uploads)" style="max-width:160px"><input id=upFile type=file></div>
 <div class=row><button id=upBtn type=button>Upload</button><button class=qh type=button aria-expanded=false aria-label="About files">?</button></div>
 <p class="hint tip">Files persist across restarts and are never deleted automatically. The assistant saves reports here with <span class=badge>artifact.save</span>; you can download, delete, or add your own.</p>
-<p class=hint id=upMsg></p>
+<div class=hint id=upMsg></div>
 </div>
 </details>
 </div>
