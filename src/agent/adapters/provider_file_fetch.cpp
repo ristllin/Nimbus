@@ -18,6 +18,7 @@ namespace {
 
 constexpr const char* kMistralHost = "api.mistral.ai";
 constexpr const char* kOpenAIHost  = "api.openai.com";
+constexpr const char* kAnthropicHost = "api.anthropic.com";
 constexpr uint16_t    kTlsPort     = 443;
 // Bound the fetch: mirror the FileStore per-file cap so a runaway/hostile file
 // can't stream forever, and give a slow WiFi link a generous but finite window.
@@ -108,7 +109,7 @@ bool safeFileId(const std::string& id) {
 // caller uses both to refuse to register a TRUNCATED download as saved.
 int httpsGetToSink(const char* host, const std::string& path, const std::string& key,
                    bool (*sink)(const uint8_t*, size_t, void*), void* ctx,
-                   size_t* outExpected, bool* outEof) {
+                   size_t* outExpected, bool* outEof, bool anthropicAuth = false) {
   if (outExpected) *outExpected = SIZE_MAX;
   if (outEof) *outEof = false;
   const uint32_t deadline = millis() + kFetchTimeoutMs;
@@ -124,9 +125,15 @@ int httpsGetToSink(const char* host, const std::string& path, const std::string&
   }
   if (!connected) return 0;
 
+  // Anthropic authenticates the Files API with x-api-key + version + the files
+  // beta header, not a Bearer token.
+  String auth = anthropicAuth
+                    ? (String("x-api-key: ") + key.c_str() +
+                       "\r\nanthropic-version: 2023-06-01"
+                       "\r\nanthropic-beta: files-api-2025-04-14\r\n")
+                    : (String("Authorization: Bearer ") + key.c_str() + "\r\n");
   String req = String("GET ") + path.c_str() + " HTTP/1.0\r\n" +
-               "Host: " + host + "\r\n" +
-               "Authorization: Bearer " + key.c_str() + "\r\n" +
+               "Host: " + host + "\r\n" + auth +
                "User-Agent: nimbus-fw\r\n" + "Connection: close\r\n\r\n";
   if (client.print(req) != req.length()) { tlsClose(client); return 0; }
 
@@ -212,6 +219,12 @@ std::string captureProviderFile(const std::string& backend, const std::string& f
     host = kOpenAIHost;
     path = "/v1/containers/" + cid + "/files/" + fid + "/content";
     key = std::string(store::openaiKey().c_str());
+  } else if (backend == "anthropic") {
+    // Anthropic Files API: GET /v1/files/<id>/content (x-api-key + files beta).
+    if (!safeFileId(fileId)) return "[file FAILED: bad file id from provider]";
+    host = kAnthropicHost;
+    path = "/v1/files/" + fileId + "/content";
+    key = std::string(store::anthropicKey().c_str());
   } else {
     return std::string();   // no capture backend for this provider
   }
@@ -234,7 +247,8 @@ std::string captureProviderFile(const std::string& backend, const std::string& f
   SinkCtx sc;
   size_t expected = SIZE_MAX;
   bool eof = false;
-  const int code = httpsGetToSink(host, path, key, chunkSink, &sc, &expected, &eof);
+  const int code =
+      httpsGetToSink(host, path, key, chunkSink, &sc, &expected, &eof, backend == "anthropic");
   arbiter::releaseWork();
 
   // A partial file registered as saved is a LIE the head then repeats to the

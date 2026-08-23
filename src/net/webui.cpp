@@ -677,6 +677,7 @@ static void buildOrchState(String& out) {
   d["subPrio"]  = agent::store::subPriority();
   d["orchLoop"] = agent::store::orchToolLoop();
   d["midFail"]  = agent::store::midTurnFailover();
+  d["codeSbx"]  = agent::store::codeSandbox();
   d["orchTrace"] = agent::store::orchTrace();   // glass-box trace capture (A4)
   d["ttsOn"]    = agent::store::ttsEnabled();   // "Voice replies" toggle (P2.5)
   d["tgLive"]   = agent::telegram::enabled();   // poll task actually running with a
@@ -1044,6 +1045,7 @@ static bool applyOrchField(const String& n, const String& v, bool& cfgDirty) {
   // Head multi-turn tool-use loop (P6: default ON, the turn path). HUMAN-only surface -
   // the model's config action can't reach these (not whitelisted benign keys).
   if (n == "orchLoop")     { agent::store::setOrchToolLoop(v == "1" || v == "true"); return true; }
+  if (n == "codeSbx")      { agent::store::setCodeSandbox(v == "1" || v == "true"); return true; }
   if (n == "midFail")      { agent::store::setMidTurnFailover(v == "1" || v == "true"); return true; }
   if (n == "orchTrace")    { agent::store::setOrchTrace(v == "1" || v == "true"); return true; }
   if (n == "ttsOn")        { agent::store::setTtsEnabled(v == "1" || v == "true"); return true; }

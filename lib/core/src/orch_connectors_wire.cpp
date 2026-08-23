@@ -484,6 +484,24 @@ std::string catalogText(const std::vector<ConnectorInfo>& cs, const ProviderStat
            "say plainly that PDF delivery needs an OpenAI key.\n";
   }
 
+  // Code sandbox availability (CUM-49): tell the model whether it can run code to
+  // build files, and the owner-facing way to turn it on when it is off.
+  {
+    bool sandbox = openaiCodeInterp;
+    for (const ConnectorInfo& c : cs) {
+      if (!c.enabled || c.kind != "builtin") continue;
+      if ((c.type.empty() ? c.name : c.type) != "code_interpreter") continue;
+      if (provMatches(c, "mistral") && ps.mistralKeyed) sandbox = true;
+    }
+    if (sandbox)
+      out += "CODE SANDBOX: available - you can run code to build files; finished "
+             "files land under Files on the device (via the provider Files API).\n";
+    else
+      out += "CODE SANDBOX: off. To enable it, the owner turns on Code sandbox on the "
+             "device web page (Capabilities > Assistant > Tools); it needs an OpenAI "
+             "key (or Mistral where supported).\n";
+  }
+
   bool anyEnabled = false;
   for (const ConnectorInfo& c : cs)
     if (c.enabled) { anyEnabled = true; break; }

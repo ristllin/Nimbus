@@ -1065,6 +1065,7 @@ function applyOrch(d){
     r.style.color=parts.some(p=>p[0]==='✗')?'#e77':(parts.some(p=>p[0]==='⚠')?'#e0b870':'#7fd1c8');}}
   $('orchLoop').checked=!!d.orchLoop;
   if($('midFail'))$('midFail').checked=!!d.midFail;
+  if($('codeSbx'))$('codeSbx').checked=!!d.codeSbx;
   if(d.orchTrace!==undefined){$('orchTrace').checked=!!d.orchTrace;
     GB.trace=!!d.orchTrace;_chatTraceHint();}   // glass-box honesty (no extra poll)
   // "Voice replies" toggle (P2.5): applies immediately (like the SFX controls).
@@ -1491,6 +1492,7 @@ $('orchsave').onclick=()=>{
     tgToken:$('tgToken').value,
     orchLoop:$('orchLoop').checked?1:0,
     midFail:$('midFail')&&$('midFail').checked?1:0,
+    codeSbx:$('codeSbx')&&$('codeSbx').checked?1:0,
     orchTrace:$('orchTrace').checked?1:0,
     loopRounds:$('loopRounds').value,loopDeadline:$('loopDeadline').value,tlsSlots:$('tlsSlots').value,compactKB:$('compactKB').value,
     tlsVerify:$('tlsVerify').checked?1:0,

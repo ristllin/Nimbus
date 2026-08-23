@@ -196,6 +196,7 @@ bool   ttsEnabled() { return solide::memory::getBool(AKEY_TTS_ENABLED, false); }
 // P6: the tool loop is THE turn path now - default ON (single-shot survives only
 // as the heap-pressure fallback in runTurn). Caps are user-tunable + clamped.
 bool   orchToolLoop() { return solide::memory::getBool(AKEY_ORCH_TOOLLOOP, true); }
+bool   codeSandbox() { return solide::memory::getBool(AKEY_CODE_SANDBOX, false); }
 bool   midTurnFailover() { return solide::memory::getBool(AKEY_MID_FAILOVER, true); }
 bool   orchTrace() { return solide::memory::getBool(AKEY_ORCH_TRACE, true); }
 void   setOrchTrace(bool v) { solide::memory::setBool(AKEY_ORCH_TRACE, v); }
@@ -371,6 +372,7 @@ void setTelegramToken(const String& v)     { solide::memory::setString(AKEY_TG_T
 void setTelegramAllowlist(const String& v) { solide::memory::setString(AKEY_TG_ALLOWLIST, v); }
 void setTtsEnabled(bool v)                 { solide::memory::setBool(AKEY_TTS_ENABLED, v); }
 void setOrchToolLoop(bool v)               { solide::memory::setBool(AKEY_ORCH_TOOLLOOP, v); }
+void setCodeSandbox(bool v)                { solide::memory::setBool(AKEY_CODE_SANDBOX, v); }
 void setMidTurnFailover(bool v)            { solide::memory::setBool(AKEY_MID_FAILOVER, v); }
 void setAllowHwTests(bool v)               { solide::memory::setBool(AKEY_ALLOW_HW_TESTS, v); }
 

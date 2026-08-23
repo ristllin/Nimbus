@@ -175,6 +175,7 @@
 #define AKEY_TG_PUBLIC      "tgPublic"       // DANGER: accept anyone (default off, P8)
 #define AKEY_TTS_ENABLED    "ttsEnabled"    // "Voice replies" master toggle (default OFF, P2.5)
 #define AKEY_ORCH_TOOLLOOP  "orchLoop"      // head multi-turn tool-use loop on/off (default ON, P6)
+#define AKEY_CODE_SANDBOX   "codeSbx"       // Assistant > Tools "Code sandbox" toggle (default OFF)
 #define AKEY_MID_FAILOVER   "midFail"       // mid-turn provider failover on loop turns (default ON, Stage 2 ph5)
 // Head tool-loop caps, user-tunable (P6). NVS keys <=15 chars. Deadline stored in
 // SECONDS (fits uint16, avoids ms overflow). Empty/absent -> the macro defaults.

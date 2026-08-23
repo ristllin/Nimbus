@@ -210,6 +210,25 @@ std::vector<nimbus::orch::ConnectorInfo> portableList() {
     else if (c.hasOauth)          c.auth = authStateOf(c.name.c_str());  // live mint outcome
     else                          c.auth = 2;                         // credential MISSING
   }
+  // Assistant > Tools "Code sandbox" (CUM-49): inject the code_interpreter builtin
+  // when the toggle is on, so the OpenAI/Mistral sandbox is enabled without an
+  // explicit connector card. Skipped if a code_interpreter card is already present.
+  if (store::codeSandbox()) {
+    bool have = false;
+    for (const auto& e : out)
+      if ((e.type.empty() ? e.name : e.type) == "code_interpreter" && e.kind == "builtin")
+        have = true;
+    if (!have) {
+      nimbus::orch::ConnectorInfo sb;
+      sb.name = "code_interpreter";
+      sb.type = "code_interpreter";
+      sb.prov = "openai,mistral";
+      sb.kind = "builtin";
+      sb.enabled = true;
+      sb.auth = -1;   // builtins authenticate provider-side
+      out.push_back(std::move(sb));
+    }
+  }
   return out;
 }
 

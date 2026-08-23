@@ -91,6 +91,7 @@ String sysPrompt();          // the user directive (immutable by the model)
 bool   ttsEnabled();         // "Voice replies" master toggle (default OFF, P2.5): gates the
                              // tts action, reply.speak, and reply.telegram voice - OFF = text only
 bool   orchToolLoop();       // head multi-turn tool-use loop enabled (default ON, P6)
+bool   codeSandbox();        // Assistant > Tools: Code sandbox (code_interpreter/code_execution) (default OFF)
 bool   midTurnFailover();    // mid-turn provider failover on loop turns (default ON)
 bool   orchTrace();          void setOrchTrace(bool v);   // glass-box trace rows (default ON, A4)
 // Head tool-loop caps (P6), user-tunable + clamped. Deadline in seconds.
@@ -185,6 +186,7 @@ void setTelegramToken(const String& v);    // WRITE-ONLY on the web surface
 void setTelegramAllowlist(const String& v);
 void setTtsEnabled(bool v);
 void setOrchToolLoop(bool v);               // enable/disable the head tool-use loop
+void setCodeSandbox(bool v);                // enable/disable the code sandbox tool
 void setMidTurnFailover(bool v);            // enable/disable mid-turn provider failover
 void setAllowHwTests(bool v);               // owner gate for orchestrator-triggered hw tests
 
