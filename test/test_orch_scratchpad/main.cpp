@@ -28,6 +28,24 @@ static void test_active_task_set_and_cap() {
   TEST_ASSERT_TRUE(sp.activeTask().empty());
 }
 
+// CUM-28 /clear semantics: clearing the ACTIVE TASK must leave the goal tiers
+// intact (that is what lets /clear drop the conversation's focus while keeping
+// long-term memory). Contrast with clearAll(), which wipes everything.
+static void test_clear_active_preserves_tiers() {
+  Scratchpad sp;
+  sp.setActiveTask("debugging the SD mount");
+  sp.add(Tier::Short, "check the card seating");
+  sp.add(Tier::Long, "ship v4.3.0");
+  sp.setActiveTask("");                     // the /clear active-task drop
+  TEST_ASSERT_TRUE(sp.activeTask().empty());
+  TEST_ASSERT_EQUAL_INT(1, sp.count(Tier::Short));   // tiers untouched
+  TEST_ASSERT_EQUAL_INT(1, sp.count(Tier::Long));
+  TEST_ASSERT_FALSE(sp.empty());
+  // clearAll() is the heavier op /clear deliberately does NOT use.
+  sp.clearAll();
+  TEST_ASSERT_TRUE(sp.empty());
+}
+
 static void test_tier_add_and_count_cap() {
   Scratchpad sp;
   for (int i = 0; i < kScratchTierItems; i++)
@@ -132,6 +150,7 @@ static void test_memconfig_apply_named() {
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_active_task_set_and_cap);
+  RUN_TEST(test_clear_active_preserves_tiers);
   RUN_TEST(test_tier_add_and_count_cap);
   RUN_TEST(test_item_byte_cap_and_newline_strip);
   RUN_TEST(test_replace_applies_both_caps);

@@ -868,6 +868,7 @@ static bool applyOrchField(const String& n, const String& v, bool& cfgDirty) {
   // provider-side history chain so the next turn starts clean. State-only - no
   // TLS, safe on the AsyncTCP task.
   if (n == "convReset")     { agent::orchestrator::requestConvReset(); return true; }  // staged on tg_poll (prism B)
+  if (n == "clearConv")     { if (v == "1") agent::orchestrator::requestConvClear(); return true; }  // /clear: drop conversation + active task, keep memory/files
 
   // routing (HUMAN-only surface - this handler is exactly that)
   if (n == "orchHost") {

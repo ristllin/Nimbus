@@ -47,6 +47,9 @@ static const char UI_MEMORY[] PROGMEM = R"=====(<div class=pane id=pane-fleet st
 <p class="hint tip">Working notes the assistant keeps per conversation. Shown here: the most recently active conversation&rsquo;s notes. Clear erases every conversation&rsquo;s notes.</p>
 <pre id=memview class=memv>(empty)</pre>
 <div class=row><button id=clearmem type=button>Clear</button></div>
+<label>This conversation <button class=qh type=button aria-expanded=false aria-label="About clearing the conversation">?</button></label>
+<p class="hint tip">Forget the current conversation and its active task, and start fresh. Long-term memory and files are kept.</p>
+<div class=row><button id=clearconv type=button>Clear conversation</button></div>
 </div>
 </details>
 

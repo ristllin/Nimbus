@@ -633,6 +633,9 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <p class="hint tip">Working notes the assistant keeps per conversation. Shown here: the most recently active conversation&rsquo;s notes. Clear erases every conversation&rsquo;s notes.</p>
 <pre id=memview class=memv>(empty)</pre>
 <div class=row><button id=clearmem type=button>Clear</button></div>
+<label>This conversation <button class=qh type=button aria-expanded=false aria-label="About clearing the conversation">?</button></label>
+<p class="hint tip">Forget the current conversation and its active task, and start fresh. Long-term memory and files are kept.</p>
+<div class=row><button id=clearconv type=button>Clear conversation</button></div>
 </div>
 </details>
 
@@ -2345,6 +2348,10 @@ $('clearmem').onclick=()=>{
   if(confirm('Erase the assistant\'s memory?\n\nYour directive is kept.'))
     orchApply({clearMem:1});
 };
+$('clearconv')&&($('clearconv').onclick=()=>{
+  if(confirm('Clear this conversation and its active task?\n\nLong-term memory and files are kept.'))
+    orchApply({clearConv:1}).then(()=>toast('Conversation cleared'));
+});
 
 // ---- Wi-Fi: saved networks, scan, join (P3: BOUNDED, visible timeout, explicit verdicts) ----
 // The old flow polled /scan forever and left "Saving..." on screen when the

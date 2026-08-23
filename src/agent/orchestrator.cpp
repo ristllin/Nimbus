@@ -167,6 +167,7 @@ static void syncMemEcho() {
 static volatile bool g_memClearReq = false;
 static volatile bool g_cfgReloadReq = false;
 static volatile bool g_convResetReq = false;   // prism B: reset must land BETWEEN turns
+static volatile bool g_convClearReq = false;   // /clear: drop conversation + active task, keep memory/files
 static void drainStaged() {
   if (g_memClearReq) {
     g_memClearReq = false;
@@ -182,6 +183,20 @@ static void drainStaged() {
     // silently re-added by that turn's end-of-turn upsert).
     store::setOrchConvId("");
     alog("orchestrator: provider conversations reset (web)");
+  }
+  if (g_convClearReq) {
+    g_convClearReq = false;
+    // /clear: forget the current conversation (provider continuity) AND the
+    // scratchpad's ACTIVE TASK line, but keep long-term memory, the memory tiers,
+    // vectors, episodic history, and files. Same between-turns discipline as the
+    // conv reset above so an in-flight turn's convId write-back is already landed.
+    store::setOrchConvId("");
+    {
+      memory::Lock lk;
+      memory::scratchpad().setActiveTask("");   // clears just the active line, tiers untouched
+    }
+    memory::persistScratchpad();
+    alog("orchestrator: /clear - conversation + active task cleared (memory/files kept)");
   }
   if (g_cfgReloadReq) {
     g_cfgReloadReq = false;
@@ -1160,7 +1175,7 @@ void handleMessage(const String& text, const String& fromName, const String& cha
       // not run these. (`fetch` was missing here - a member could approve/deny
       // the owner's queued URL downloads; closed alongside adding `remind`.)
       const bool ownerCmd = (v == "loops" || v == "loop" || v == "update" || v == "compact" ||
-                             v == "skill" || v == "fetch" || v == "remind");
+                             v == "skill" || v == "fetch" || v == "remind" || v == "clear");
       const bool owner = pseudo || agent::telegram::isOwner(chatId);
       // Every deterministic command reply SELF-IDENTIFIES (device name + fw).
       // Live confusion 2026-07-24: two devices sharing one bot token take turns
@@ -1181,6 +1196,21 @@ void handleMessage(const String& text, const String& fromName, const String& cha
         }
         deliver(chatId, selfTag + (g_otaInstallHook ? g_otaInstallHook()
                                                     : String("Updates aren't available on this build.")));
+        return;
+      }
+      if (v == "clear") {
+        // Drop the current conversation + the scratchpad's active task, keeping
+        // long-term memory and files. Light two-step confirm (this is recoverable,
+        // not a danger-zone erase): "/clear" explains + asks, "/clear yes" does it.
+        String arg = String(cmd.args.c_str()); arg.trim(); arg.toLowerCase();
+        if (arg == "yes" || arg == "confirm") {
+          requestConvClear();
+          deliver(chatId, selfTag + "Cleared this conversation and its active task. "
+                          "Long-term memory and files are kept.");
+        } else {
+          deliver(chatId, selfTag + "Clear this conversation and the current active task? "
+                          "Long-term memory and files are kept. Send /clear yes to confirm.");
+        }
         return;
       }
       if (v == "compact") {
@@ -1301,6 +1331,7 @@ void handleMessage(const String& text, const String& fromName, const String& cha
                         "/loops \xE2\x80\x94 list routines\n"
                         "/remind <when> <what> \xE2\x80\x94 one-time reminder (e.g. /remind 30m ...)\n"
                         "/compact \xE2\x80\x94 summarize this conversation into memory\n"
+                        "/clear - forget this conversation (keeps memory and files)\n"
                         "/loop approve|deny|off|on <id> \xE2\x80\x94 manage a routine\n"
                         "/skill approve|deny <id> \xE2\x80\x94 manage a saved skill");
         return;
@@ -1854,6 +1885,11 @@ String lastInstructions() {
 }
 
 void requestConvReset() { g_convResetReq = true; }
+
+// /clear: staged between-turns drop of the conversation context + scratchpad
+// active task, keeping long-term memory and files. Safe from any task (a flag the
+// turn/poll task drains); see drainStaged().
+void requestConvClear() { g_convClearReq = true; }
 
 void requestMemoryClear() {
   // Zero the echo immediately so the UI reflects the clear without waiting for

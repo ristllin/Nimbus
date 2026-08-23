@@ -1529,6 +1529,10 @@ $('clearmem').onclick=()=>{
   if(confirm('Erase the assistant\'s memory?\n\nYour directive is kept.'))
     orchApply({clearMem:1});
 };
+$('clearconv')&&($('clearconv').onclick=()=>{
+  if(confirm('Clear this conversation and its active task?\n\nLong-term memory and files are kept.'))
+    orchApply({clearConv:1}).then(()=>toast('Conversation cleared'));
+});
 
 // ---- Wi-Fi: saved networks, scan, join (P3: BOUNDED, visible timeout, explicit verdicts) ----
 // The old flow polled /scan forever and left "Saving..." on screen when the

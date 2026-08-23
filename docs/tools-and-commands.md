@@ -50,6 +50,7 @@ confused.
 | `/loops` | List the device's routines (and any reminders you've set). |
 | `/loop approve\|deny\|off\|on <id>` | Approve, remove, pause, or resume one routine. |
 | `/compact` | Summarize this conversation into memory. Runs in the background. |
+| `/clear` | Forget the current conversation and its active task, and start fresh. Long-term memory and files are kept. Send `/clear` to confirm, then `/clear yes` to do it. The web page has the same action (Memory, then Clear conversation). |
 | `/skill approve\|deny <id>` | Approve a saved skill so it can be used, or remove it. |
 
 A routine or skill the assistant creates on its own stays inactive until the

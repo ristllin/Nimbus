@@ -223,6 +223,8 @@ bool   sendToChat(const String& chatId, const String& text, bool asVoice);  // "
 void   requestMemoryClear(); // stage a model-memory wipe (echo zeroed at once)
 void   requestConvReset();   // stage a provider-conversation reset (drained on tg_poll,
                              // AFTER any in-flight turn's write-back - prism B)
+void   requestConvClear();   // /clear: stage a drop of conversation context + scratchpad
+                             // active task, keeping long-term memory and files
 void   noteConfigChanged();  // stage a directive (sysPrompt) reload from NVS
 
 }  // namespace orchestrator
