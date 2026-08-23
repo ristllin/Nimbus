@@ -26,16 +26,15 @@ your API credits. Leave it off unless you mean to run a public bot.
 
 ## Hold-to-talk (on the device)
 
-On the e-ink + knob build: **press and hold the knob**, speak, release. The
-ring breathes red while listening, then shows a blue spinner while it
-transcribes; the reply renders on the display (and speaks, when a voice
-provider that supports the device speaker is configured). Up to 60 seconds per
-hold.
+**Press and hold the on-screen mic bar**, speak, release. While listening, the
+Nimbus board's ring breathes red (the all-in-one shows the state on its screen),
+then a spinner appears while it transcribes; the reply renders on the display
+(and speaks, when a voice provider that supports the device speaker is
+configured). Up to 60 seconds per hold.
 
-Other knob gestures: **rotate** moves between sessions, **double-click** opens
-the menu, **single-click** goes back and wakes the ring for a
-glance at live status. On the touchscreen build, tap your way - same screens,
-touch instead of knob.
+Everything else is a **tap**: move between sessions, open the menu, and go back
+from the touchscreen. The 45-LED ring on the Nimbus board wakes for a glance at
+live status.
 
 ## The dashboard tour (two minutes)
 

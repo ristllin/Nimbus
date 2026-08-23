@@ -19,12 +19,8 @@ sequenceDiagram
   You->>Dev: captive page opens → http://192.168.4.1<br/>(already signed in - the QR carries the token)
   You->>Dev: wizard: pick your Wi-Fi + password (required)
   Dev->>LAN: join your home Wi-Fi
-  alt touchscreen board
-    Dev->>Dev: setup hotspot shuts down after handoff
-    Dev-->>You: wizard carries you to the device's LAN address
-  else e-paper board
-    Note over You,Dev: setup network stays up - finish the wizard either way
-  end
+  Dev->>Dev: setup hotspot shuts down after handoff
+  Dev-->>You: wizard carries you to the device's LAN address
   You->>Dev: wizard: provider key + Verify (required)
   opt skippable steps
     You->>Dev: operating mode · Telegram · voice · device name
