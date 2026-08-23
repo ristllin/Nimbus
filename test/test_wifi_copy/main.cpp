@@ -4,6 +4,7 @@
 
 #include "nimbus/wifi/copy.h"
 
+using nimbus::wifi::buildScanRows;
 using nimbus::wifi::deviceUrl;
 using nimbus::wifi::forgetRowLabel;
 using nimbus::wifi::KnownNet;
@@ -50,11 +51,12 @@ static void test_device_url_refuses_empty_ip() {
 }
 
 static void test_device_url_valid() {
-  TEST_ASSERT_EQUAL_STRING("http://192.168.4.1/?t=abc",
+  // CUM-45: the QR now carries a sign-in CODE as ?c=, never a bearer token as ?t=.
+  TEST_ASSERT_EQUAL_STRING("http://192.168.4.1/?c=abc",
                            deviceUrl("192.168.4.1", "abc").c_str());
 }
 
-static void test_device_url_without_token() {
+static void test_device_url_without_code() {
   TEST_ASSERT_EQUAL_STRING("http://10.0.0.5/", deviceUrl("10.0.0.5", "").c_str());
 }
 
@@ -256,13 +258,59 @@ static void test_row_label_is_complete_not_a_fragment() {
   }
 }
 
+// ---- buildScanRows: the on-device picker ordering (CUM-48) ------------------
+static ScanHit hit(const char* ssid, int rssi, bool locked = true) {
+  ScanHit h; h.ssid = ssid; h.rssi = (int8_t)rssi; h.locked = locked; return h;
+}
+static KnownNet saved(const char* ssid) { KnownNet n; n.ssid = ssid; return n; }
+static bool starts(const std::string& s, const char* p) { return s.rfind(p, 0) == 0; }
+
+static void test_scan_rows_saved_first_then_by_signal() {
+  // Two saved, three unsaved, mixed signal. Saved must lead (each block strongest-first).
+  std::vector<ScanHit> scan = { hit("Weak", -80), hit("Strong", -40), hit("HomeA", -70),
+                                hit("HomeB", -55), hit("Guest", -50) };
+  std::vector<KnownNet> known = { saved("HomeA"), saved("HomeB") };
+  auto rows = buildScanRows(scan, known);
+  TEST_ASSERT_EQUAL_INT(5, (int)rows.size());
+  TEST_ASSERT_TRUE(starts(rows[0], "HomeB"));   // saved, stronger of the two saved
+  TEST_ASSERT_TRUE(starts(rows[1], "HomeA"));   // saved
+  TEST_ASSERT_TRUE(starts(rows[2], "Strong"));  // unsaved, strongest
+  TEST_ASSERT_TRUE(starts(rows[3], "Guest"));
+  TEST_ASSERT_TRUE(starts(rows[4], "Weak"));
+  // saved rows carry the "saved" cue, unsaved do not.
+  TEST_ASSERT_TRUE(rows[0].find("saved") != std::string::npos);
+  TEST_ASSERT_TRUE(rows[2].find("saved") == std::string::npos);
+}
+
+static void test_scan_rows_collapse_duplicate_ssids() {
+  // One network on two bands -> one row, at its strongest signal.
+  std::vector<ScanHit> scan = { hit("Dual", -70), hit("Dual", -45), hit("Other", -60) };
+  auto rows = buildScanRows(scan, {});
+  TEST_ASSERT_EQUAL_INT(2, (int)rows.size());
+  TEST_ASSERT_TRUE(starts(rows[0], "Dual"));           // strongest sighting wins the sort
+  TEST_ASSERT_TRUE(rows[0].find("-45") != std::string::npos);
+}
+
+static void test_scan_rows_mark_hidden_networks() {
+  std::vector<ScanHit> scan = { hit("Named", -50), hit("", -60), hit("", -75) };
+  auto rows = buildScanRows(scan, {});
+  TEST_ASSERT_EQUAL_INT(2, (int)rows.size());          // one named + one hidden marker
+  TEST_ASSERT_TRUE(starts(rows[0], "Named"));
+  TEST_ASSERT_TRUE(rows[1].find("hidden") != std::string::npos);   // hidden is marked, and last
+  TEST_ASSERT_TRUE(rows[1].find("2") != std::string::npos);        // both counted
+}
+
+static void test_scan_rows_empty_scan_is_empty_list() {
+  TEST_ASSERT_EQUAL_INT(0, (int)buildScanRows({}, {}).size());
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_row_label_is_complete_not_a_fragment);
   RUN_TEST(test_device_url_refuses_0_0_0_0);
   RUN_TEST(test_device_url_refuses_empty_ip);
   RUN_TEST(test_device_url_valid);
-  RUN_TEST(test_device_url_without_token);
+  RUN_TEST(test_device_url_without_code);
   RUN_TEST(test_net_status_uses_the_live_ap_ssid_not_the_macro);
   RUN_TEST(test_net_status_spells_wi_fi_with_a_hyphen);
   RUN_TEST(test_net_status_is_ascii_and_bounded_in_every_state);
@@ -277,5 +325,9 @@ int main() {
   RUN_TEST(test_scan_row_truncates_a_long_ssid);
   RUN_TEST(test_non_ascii_ssid_is_sanitised_not_passed_through);
   RUN_TEST(test_forget_row_marks_the_network_in_use);
+  RUN_TEST(test_scan_rows_saved_first_then_by_signal);
+  RUN_TEST(test_scan_rows_collapse_duplicate_ssids);
+  RUN_TEST(test_scan_rows_mark_hidden_networks);
+  RUN_TEST(test_scan_rows_empty_scan_is_empty_list);
   return UNITY_END();
 }
