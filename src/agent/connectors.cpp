@@ -1,13 +1,20 @@
 #include "connectors.h"
 #include "store.h"
 #include "agent_config.h"
+#include "memory_subsystem.h"                // memory::registry(), memory::Lock
+#include "orchestrator.h"                    // orchestrator::inScheduledTurn()
 #include "../sys/agent_log.h"
 #include "../sys/net_util.h"
 #include "../sys/tls_arbiter.h"
 
-#include "nimbus/orch/connectors_wire.h"   // portable attach builders + catalog
+#include "nimbus/orch/connectors_wire.h"     // portable attach builders + catalog
+#include "nimbus/orch/mcp_client.h"          // portable JSON-RPC + Streamable HTTP framing
+#include "nimbus/orch/mcp_resilience.h"      // portable circuit breaker + retry policy
+#include "nimbus/orch/tool_registry.h"       // ToolRegistry (outbound tool registration)
 
+#include <WiFiClient.h>
 #include <WiFiClientSecure.h>
+#include <esp_system.h>   // esp_random - retry jitter source
 #include <memory>
 #include <new>       // std::nothrow - alloc failure degrades, never panics
 #include <vector>
@@ -175,32 +182,33 @@ String bearerFor(const Info& c) {
 // bearer is resolved separately via the closure below).
 namespace {
 std::vector<nimbus::orch::ConnectorInfo> portableList() {
-  // Heap, not stack: kMaxConnectors Infos are ~5 KB of Strings - see the
-  // kMaxConnectors note in connectors.h (the old Info[8] here silently hid
-  // every connector past the eighth from BOTH the catalog and the wire attach).
-  std::unique_ptr<Info[]> cs(new (std::nothrow) Info[kMaxConnectors]);
-  if (!cs) return {};   // exhausted heap: an empty catalog beats a panic-reboot
-  const int n = list(cs.get(), kMaxConnectors);
+  // The blob parse (non-secret fields + no-silent-drop cap accounting) lives in
+  // the portable, host-tested nimbus::orch::parseConnectorsJson - the single
+  // parser that locks the Info[8]-vs-kMaxConnectors regression. Secrets (the
+  // static token, the OAuth broker fields) are resolved separately by
+  // bearerClosure(), so the catalog/attach path never carries them.
+  String blob = store::connectorsJson();
   std::vector<nimbus::orch::ConnectorInfo> out;
-  out.reserve(n);
-  for (int i = 0; i < n; i++) {
-    nimbus::orch::ConnectorInfo c;
-    c.name        = cs[i].name.c_str();
-    c.prov        = cs[i].prov.c_str();
-    c.kind        = cs[i].kind.c_str();
-    c.url         = cs[i].url.c_str();
-    c.connectorId = cs[i].connectorId.c_str();
-    c.type        = cs[i].type.length() ? cs[i].type.c_str() : cs[i].name.c_str();
-    c.enabled     = cs[i].enabled;
-    // W12: honest per-connector credential state for the catalog. Built-ins
-    // authenticate provider-side (no device credential); a remote MCP/first-
-    // party connector NEEDS one - enabled-with-no-credential is skipped at
-    // attach, so the model must not treat it as usable.
-    if (cs[i].kind == "builtin")            c.auth = -1;              // n/a
-    else if (cs[i].tok.length())            c.auth = 1;               // static token present
-    else if (cs[i].hasOauth)                c.auth = authStateOf(cs[i].name);  // live mint outcome
-    else                                    c.auth = 2;               // credential MISSING
-    out.push_back(std::move(c));
+  int total = 0;
+  const int n = nimbus::orch::parseConnectorsJson(blob.c_str(), out, kMaxConnectors, &total);
+  if (total > n) {
+    // Never truncate in SILENCE (the exact N=8 bug, guarded at N=24): the
+    // byte-capped blob can hold far more minimal entries than kMaxConnectors, so
+    // hitting the cap means real connectors vanished from the catalog + attach
+    // while /api/connectors (which parses the blob directly) still shows them.
+    alogf("connectors: portableList capped at %d - %d blob entr%s DROPPED",
+          kMaxConnectors, total - n, (total - n) == 1 ? "y" : "ies");
+  }
+  // W12: honest per-connector credential state for the catalog. Built-ins
+  // authenticate provider-side (no device credential); a remote MCP / first-
+  // party connector NEEDS one - enabled-with-no-credential is skipped at attach,
+  // so the model must not treat it as usable. The OAuth mint outcome is device
+  // RAM state (authStateOf), applied here on top of the portable presence flags.
+  for (auto& c : out) {
+    if (c.kind == "builtin")      c.auth = -1;                        // n/a
+    else if (c.hasToken)          c.auth = 1;                         // static token present
+    else if (c.hasOauth)          c.auth = authStateOf(c.name.c_str());  // live mint outcome
+    else                          c.auth = 2;                         // credential MISSING
   }
   return out;
 }
@@ -269,12 +277,620 @@ String catalog() {
   ps.mistralVerified   = store::verifyResult("mistral");
   ps.capProbe       = (int8_t)store::capProbe();   // W3b: off => no verified claims
   ps.currentHost    = currentHost();
-  return nimbus::orch::catalogText(portableList(), ps).c_str();
+  std::string out = nimbus::orch::catalogText(portableList(), ps).c_str();
+  // N4: reconcile + discover device-dialed MCP servers on the turn path (WiFi is
+  // up here), then append their live status so the model plans around them.
+  mcp::sync(memory::registry());
+  out += mcp::catalogSection();
+  return out.c_str();
 }
 
 String knownCatalog() {
   return nimbus::orch::knownCatalogJson().c_str();
 }
+
+// ---- outbound MCP client (N4) ------------------------------------------------
+
+namespace mcp {
+
+// Forward declaration (defined after the anonymous namespace) so the discovery
+// closures registered below can reference the proxy handler.
+nimbus::orch::ToolResult callTool(const std::string& slug, const std::string& toolName,
+                                  ArduinoJson::JsonObjectConst args,
+                                  const nimbus::orch::Principal& who);
+
+namespace {
+
+namespace mc = nimbus::orch::mcp;
+using nimbus::orch::Principal;
+using nimbus::orch::ToolRegistry;
+using nimbus::orch::ToolResult;
+
+constexpr int      kMaxMcpServers  = 6;        // device-dialed servers we track
+constexpr int      kMaxToolsPerSrv = 48;       // registry budget guard per server
+constexpr int      kMaxPages       = 6;        // tools/list pagination bound
+// Response body cap (PSRAM-backed). Sized from a LIVE capture: the real Linear
+// MCP tools/list is ~75 KB (53 tools with rich schemas) and arrives in ONE page,
+// so a smaller cap (an earlier 48 KB) would TooLarge a real server on discovery.
+// 160 KB clears that with headroom while staying well under the transport's
+// 256 KB ceiling; PSRAM holds it, and discovery is Lock-free so the parse time
+// is bounded only by the discovery timeout.
+constexpr size_t   kMaxBodyBytes   = 160 * 1024;
+constexpr uint32_t kDiscoverTimeout = 8000;    // per-request budget during discovery
+// A tools/call runs UNDER the dispatch (memory) Lock, and it is reachable on the
+// AsyncTCP /mcp task as well as the turn task, so the whole exchange must stay
+// well under the main-loop 8 s watchdog: cap the work-slot wait AND the I/O so
+// the worst case (busy slot, then a slow server) is ~kCallAcquire + kCallTimeout.
+constexpr uint32_t kCallTimeout    = 4000;     // per tools/call I/O deadline
+constexpr uint32_t kCallAcquire    = 2000;     // max wait for the TLS work slot on a call
+
+// Per-server runtime state. A tiny fixed table (no dynamic servers on a device).
+// ⚠ s_srv is read/written by BOTH the turn task (sync/catalogSection via
+// catalog()) and the AsyncTCP /mcp task (callTool via handleRpc). EVERY access
+// MUST hold agent::memory::Lock - the one recursive mutex handleMcp already takes
+// around dispatch - so the two tasks never race on these String members. The
+// network itself always runs OUTSIDE the Lock.
+struct ServerState {
+  String   slug;
+  String   name;
+  String   url;               // the URL we discovered against (re-discover on change)
+  bool     inUse = false;
+  bool     discovered = false;
+  int      toolCount = 0;
+  String   sessionId;         // Mcp-Session-Id for a stateful server ("" if stateless)
+  mc::CircuitBreaker breaker;
+  int8_t   lastErr = -1;      // last mc::ErrorKind on failure (-1 = none), for the catalog
+};
+ServerState s_srv[kMaxMcpServers];
+
+// Caller MUST hold agent::memory::Lock (see the s_srv note above).
+ServerState* slotFor(const String& slug, bool create) {
+  for (int i = 0; i < kMaxMcpServers; i++)
+    if (s_srv[i].inUse && s_srv[i].slug == slug) return &s_srv[i];
+  if (!create) return nullptr;
+  for (int i = 0; i < kMaxMcpServers; i++)
+    if (!s_srv[i].inUse) {
+      s_srv[i] = ServerState{};
+      s_srv[i].inUse = true;
+      s_srv[i].slug = slug;
+      return &s_srv[i];
+    }
+  return nullptr;  // table full: caller logs, the extra server is skipped (not silent)
+}
+
+// ---- URL parse ---------------------------------------------------------------
+struct UrlParts { bool ok = false; bool tls = true; String host; uint16_t port = 443; String path; };
+
+UrlParts parseUrl(const String& url) {
+  UrlParts u;
+  int sep = url.indexOf("://");
+  if (sep < 0) return u;
+  String scheme = url.substring(0, sep);
+  scheme.toLowerCase();
+  if (scheme == "https")      { u.tls = true;  u.port = 443; }
+  else if (scheme == "http")  { u.tls = false; u.port = 80; }
+  else return u;
+  String rest = url.substring(sep + 3);
+  int slash = rest.indexOf('/');
+  String hostport = slash >= 0 ? rest.substring(0, slash) : rest;
+  u.path = slash >= 0 ? rest.substring(slash) : "/";
+  int colon = hostport.indexOf(':');
+  if (colon >= 0) {
+    u.host = hostport.substring(0, colon);
+    long p = hostport.substring(colon + 1).toInt();
+    if (p <= 0 || p > 65535) return u;
+    u.port = (uint16_t)p;
+  } else {
+    u.host = hostport;
+  }
+  if (u.host.length() == 0) return u;
+  u.ok = true;
+  return u;
+}
+
+// ---- low-level HTTP read helpers --------------------------------------------
+// Read one CRLF-terminated line (without the CRLF) before the deadline. Returns
+// false if the socket closes with no more data before a full line arrives.
+bool readLine(Client& c, uint32_t deadline, String& line) {
+  line = "";
+  while ((int32_t)(millis() - deadline) < 0) {
+    if (c.available()) {
+      char ch = (char)c.read();
+      if (ch == '\n') return true;
+      if (ch != '\r') line += ch;
+    } else if (!c.connected() && !c.available()) {
+      return line.length() > 0;  // last unterminated line
+    } else {
+      delay(2);
+    }
+  }
+  return false;  // timed out
+}
+
+// Read exactly n bytes (or until close) into out, respecting the deadline and the
+// body cap. Returns false only on a hard timeout with nothing pending.
+bool readN(Client& c, uint32_t deadline, size_t n, std::string& out, bool& tooLarge) {
+  while (out.size() < n && (int32_t)(millis() - deadline) < 0) {
+    if (c.available()) {
+      char ch = (char)c.read();
+      if (out.size() >= kMaxBodyBytes) { tooLarge = true; return true; }
+      out += ch;
+    } else if (!c.connected() && !c.available()) {
+      return true;  // server closed early
+    } else {
+      delay(2);
+    }
+  }
+  return out.size() >= n || (int32_t)(millis() - deadline) < 0;
+}
+
+// Read to end-of-connection (Connection: close / no length), capped.
+void readToClose(Client& c, uint32_t deadline, std::string& out, bool& tooLarge) {
+  while ((int32_t)(millis() - deadline) < 0) {
+    if (c.available()) {
+      char ch = (char)c.read();
+      if (out.size() >= kMaxBodyBytes) { tooLarge = true; return; }
+      out += ch;
+    } else if (!c.connected() && !c.available()) {
+      return;
+    } else {
+      delay(2);
+    }
+  }
+}
+
+// De-chunk a Transfer-Encoding: chunked body off the socket, capped.
+void readChunked(Client& c, uint32_t deadline, std::string& out, bool& tooLarge) {
+  while ((int32_t)(millis() - deadline) < 0) {
+    String sizeLine;
+    if (!readLine(c, deadline, sizeLine)) return;
+    if (sizeLine.length() == 0) continue;             // tolerate stray CRLF
+    long sz = strtol(sizeLine.c_str(), nullptr, 16);  // hex chunk size
+    if (sz <= 0) return;                              // 0 => last chunk (or parse fail)
+    for (long i = 0; i < sz && (int32_t)(millis() - deadline) < 0;) {
+      if (c.available()) {
+        char ch = (char)c.read();
+        if (out.size() >= kMaxBodyBytes) { tooLarge = true; return; }
+        out += ch;
+        i++;
+      } else if (!c.connected() && !c.available()) {
+        return;
+      } else {
+        delay(2);
+      }
+    }
+    String crlf;
+    readLine(c, deadline, crlf);  // consume the CRLF after the chunk
+  }
+}
+
+// A request/response for one Streamable HTTP exchange, bundled so the transport
+// helpers stay under the argument + complexity budget.
+struct McpReq {
+  UrlParts    u;
+  String      bearer;
+  String      session;      // Mcp-Session-Id to echo (empty = none)
+  std::string body;
+  uint32_t    timeoutMs = 8000;
+  uint32_t    acquireMs  = 0;   // max wait for the work slot (0 = use timeoutMs).
+                                // The call path sets this small so the memory-Lock
+                                // hold stays bounded when the slot is busy.
+};
+struct McpResp {
+  int           status = 0;             // HTTP status (0 = transport failure)
+  std::string   body;
+  std::string   ctype;                  // Content-Type
+  String        session;                // Mcp-Session-Id from the response
+  mc::ErrorKind kind = mc::ErrorKind::None;
+};
+
+// Open the socket (TLS or plain) with a short connect-retry, bounded by deadline.
+bool mcpConnect(Client& c, const UrlParts& u, uint32_t deadline) {
+  for (int attempt = 0; attempt < 3 && (int32_t)(millis() - deadline) < 0; attempt++) {
+    if (c.connect(u.host.c_str(), u.port)) return true;
+    delay(400);
+  }
+  return false;
+}
+
+// Send the POST request line, headers, and body. Accept BOTH response shapes so
+// a server may answer with a JSON body or a streamed (SSE) one.
+void mcpSend(Client& c, const McpReq& q) {
+  String req = String("POST ") + q.u.path + " HTTP/1.1\r\n"
+             + "Host: " + q.u.host + "\r\n"
+             + "Content-Type: application/json\r\n"
+             + "Accept: application/json, text/event-stream\r\n"
+             + "MCP-Protocol-Version: " + mc::kProtocolVersion + "\r\n";
+  if (q.bearer.length())  req += "Authorization: Bearer " + q.bearer + "\r\n";
+  if (q.session.length()) req += "Mcp-Session-Id: " + q.session + "\r\n";
+  req += "Content-Length: " + String((unsigned)q.body.size()) + "\r\n"
+       + "Connection: close\r\n\r\n";
+  c.print(req);
+  if (!q.body.empty()) c.write((const uint8_t*)q.body.data(), q.body.size());
+}
+
+// Read the status line + headers. Returns the HTTP status (0 on timeout before a
+// status line); sets r.ctype/r.session and the body-framing out-params.
+int mcpReadHead(Client& c, uint32_t deadline, McpResp& r, bool& chunked, long& contentLen) {
+  chunked = false;
+  contentLen = -1;
+  String statusLine;
+  if (!readLine(c, deadline, statusLine)) return 0;
+  int sp = statusLine.indexOf(' ');
+  int status = sp >= 0 ? statusLine.substring(sp + 1, sp + 4).toInt() : 0;
+  String h;
+  while (readLine(c, deadline, h) && h.length() > 0) {
+    int colon = h.indexOf(':');
+    if (colon < 0) continue;
+    String key = h.substring(0, colon); key.trim(); key.toLowerCase();
+    String val = h.substring(colon + 1); val.trim();
+    if (key == "content-type") r.ctype = val.c_str();
+    else if (key == "mcp-session-id") r.session = val;
+    else if (key == "transfer-encoding") { val.toLowerCase(); if (val.indexOf("chunked") >= 0) chunked = true; }
+    else if (key == "content-length") contentLen = val.toInt();
+  }
+  return status;
+}
+
+// One Streamable HTTP request/response under the work arbiter. Fills `r`; on a
+// transport failure r.status == 0 and r.kind says why. Bounded by q.timeoutMs.
+void exchange(const McpReq& q, McpResp& r) {
+  r = McpResp{};
+  if (!arbiter::acquireWork(q.acquireMs ? q.acquireMs : q.timeoutMs)) {
+    r.kind = mc::ErrorKind::Timeout;
+    return;
+  }
+  WiFiClientSecure tls;
+  WiFiClient plain;
+  Client* c;
+  if (q.u.tls) {
+    tlsSetup(tls);
+    tls.setHandshakeTimeout(12);
+    tls.setConnectionTimeout(q.timeoutMs);
+    c = &tls;
+  } else {
+    plain.setTimeout(q.timeoutMs / 1000 ? q.timeoutMs / 1000 : 1);
+    c = &plain;
+  }
+  const uint32_t deadline = millis() + q.timeoutMs;
+  if (!mcpConnect(*c, q.u, deadline)) {
+    c->stop(); arbiter::releaseWork();
+    r.kind = mc::ErrorKind::Connect;
+    return;
+  }
+  mcpSend(*c, q);
+  bool chunked;
+  long clen;
+  r.status = mcpReadHead(*c, deadline, r, chunked, clen);
+  if (r.status == 0) {
+    c->stop(); arbiter::releaseWork();
+    r.kind = mc::ErrorKind::Timeout;
+    return;
+  }
+  bool tooLarge = false;
+  if (chunked)        readChunked(*c, deadline, r.body, tooLarge);
+  else if (clen >= 0) readN(*c, deadline, (size_t)clen, r.body, tooLarge);
+  else                readToClose(*c, deadline, r.body, tooLarge);
+  c->stop();
+  arbiter::releaseWork();
+  if (tooLarge) r.kind = mc::ErrorKind::TooLarge;
+}
+
+// Resolve a device-dialed server's live URL + bearer by slug, FAIL-CLOSED on the
+// same predicate as desiredServers (kind=mcp, enabled, device-dialed, approved,
+// has url). This is the dial-time gate, so a revoked (appr:0) or non-device
+// server whose stale tool is still registered, or a same-slug provider-only MCP,
+// is never dialed. The dev/appr flags come from the portable parser (list()/Info
+// does not carry them); the secret bearer comes from the secret-carrying list().
+bool resolveServer(const String& slug, String& urlOut, String& bearerOut, String& nameOut) {
+  std::vector<nimbus::orch::ConnectorInfo> pcs;
+  nimbus::orch::parseConnectorsJson(store::connectorsJson().c_str(), pcs, kMaxConnectors, nullptr);
+  String name;
+  for (const auto& c : pcs) {
+    if (c.kind != "mcp" || !c.enabled || !c.deviceDialed || !c.approved || c.url.empty()) continue;
+    if (mc::slugifyServer(c.name) != std::string(slug.c_str())) continue;
+    name = c.name.c_str();
+    urlOut = c.url.c_str();
+    break;
+  }
+  if (name.length() == 0) return false;   // not an approved, device-dialed server
+  std::unique_ptr<Info[]> cs(new (std::nothrow) Info[kMaxConnectors]);
+  if (!cs) return false;
+  const int n = list(cs.get(), kMaxConnectors);
+  for (int i = 0; i < n; i++)
+    if (cs[i].name == name) { bearerOut = bearerFor(cs[i]); break; }
+  nameOut = name;
+  return true;
+}
+
+// The desired set entry for reconcile: a device-dialed, approved, enabled MCP
+// server with a URL. Read from the portable list (carries dev/appr flags).
+struct Desired { String slug; String name; String url; };
+std::vector<Desired> desiredServers() {
+  std::vector<Desired> out;
+  std::vector<nimbus::orch::ConnectorInfo> cs;
+  nimbus::orch::parseConnectorsJson(store::connectorsJson().c_str(), cs, kMaxConnectors, nullptr);
+  for (const auto& c : cs) {
+    if (c.kind != "mcp" || !c.enabled || !c.deviceDialed || !c.approved) continue;
+    if (c.url.empty()) continue;
+    Desired d;
+    d.slug = mc::slugifyServer(c.name).c_str();
+    d.name = c.name.c_str();
+    d.url  = c.url.c_str();
+    out.push_back(std::move(d));
+  }
+  return out;
+}
+
+// The registry name prefix owning one server's tools.
+std::string prefixOf(const String& slug) { return std::string("mcp.") + slug.c_str() + "."; }
+
+// Retry-with-jitter wrapper around exchange() for the (Lock-free) discovery path.
+void exchangeRetry(const McpReq& q, int maxAttempts, McpResp& r) {
+  mc::RetryConfig rc;
+  for (int attempt = 0; attempt < maxAttempts; attempt++) {
+    exchange(q, r);
+    if (r.status >= 200 && r.status < 300 && r.kind == mc::ErrorKind::None) return;  // parser judges content
+    // Retryable: a transport failure (status 0), any 5xx (exchange leaves kind
+    // None for HTTP responses, so check the status directly), or a transient kind.
+    bool retryable = (r.status == 0) ? true
+                   : (r.status >= 500 && r.status < 600) ? true
+                   : mc::isRetryable(r.kind, r.status);
+    if (!retryable || attempt + 1 >= maxAttempts) return;
+    delay(mc::retryDelayMs(rc, attempt, esp_random()));
+  }
+}
+
+// Collect one tools/list page into `tools`; returns the ToolsListResult so the
+// caller can read ok/nextCursor.
+mc::ToolsListResult collectToolsPage(const McpReq& base, const String& session,
+                                     const String& serverName, const String& cursor,
+                                     std::vector<mc::ToolDef>& tools) {
+  McpReq lq = base;
+  lq.session = session;
+  lq.body = mc::buildToolsList(std::string(cursor.c_str()));
+  McpResp r;
+  exchangeRetry(lq, 2, r);
+  mc::ToolsListResult lr = mc::parseToolsList(r.status, r.ctype, r.body, serverName.c_str());
+  if (!lr.ok) return lr;
+  for (auto& t : lr.tools) {
+    if ((int)tools.size() >= kMaxToolsPerSrv) {
+      alogf("mcp: %s exposed >%d tools - the rest are dropped", serverName.c_str(), kMaxToolsPerSrv);
+      break;
+    }
+    tools.push_back(std::move(t));
+  }
+  return lr;
+}
+
+// Discover one server: initialize -> initialized -> tools/list (paged). Pure
+// NETWORK, touching NO shared s_srv state (so it runs entirely OUTSIDE the memory
+// Lock): tool defs land in `tools`, any session id in `sessionOut`. Returns false
+// on any transport/RPC failure.
+bool discover(const String& serverName, const UrlParts& u, const String& bearer,
+              std::vector<mc::ToolDef>& tools, String& sessionOut, mc::ErrorKind& kindOut) {
+  McpReq base;
+  base.u = u;
+  base.bearer = bearer;
+  base.timeoutMs = kDiscoverTimeout;
+  McpReq init = base;
+  init.body = mc::buildInitialize("nimbus", "");
+  McpResp r;
+  exchangeRetry(init, 2, r);
+  mc::InitializeResult ir = mc::parseInitialize(r.status, r.ctype, r.body, serverName.c_str());
+  if (!ir.ok) { kindOut = ir.error; return false; }
+  sessionOut = r.session;  // capture a stateful server's session id
+  {  // initialized notification (best-effort; no response expected)
+    McpReq n = base;
+    n.session = sessionOut;
+    n.body = mc::buildInitializedNotification();
+    McpResp nr;
+    exchange(n, nr);
+  }
+  if (!ir.hasTools) { kindOut = mc::ErrorKind::None; return true; }  // no tools is valid
+  String cursor = "";
+  for (int page = 0; page < kMaxPages; page++) {
+    mc::ToolsListResult lr = collectToolsPage(base, sessionOut, serverName, cursor, tools);
+    if (!lr.ok) { kindOut = lr.error; return false; }
+    if (lr.nextCursor.empty() || (int)tools.size() >= kMaxToolsPerSrv) break;
+    cursor = lr.nextCursor.c_str();
+  }
+  kindOut = mc::ErrorKind::None;
+  return true;
+}
+
+// Register a discovered server's tools into the registry. CALLER MUST HOLD
+// agent::memory::Lock (this is an in-RAM mutation of the shared registry, which
+// the AsyncTCP /mcp reader also touches under that Lock).
+void registerToolsLocked(ToolRegistry& reg, const String& slug, const std::vector<mc::ToolDef>& tools) {
+  reg.removeByPrefix(prefixOf(slug));   // clear any stale set before re-adding
+  for (const auto& t : tools) {
+    std::string regName = mc::namespacedTool(std::string(slug.c_str()), t.name);
+    std::string s = slug.c_str();
+    std::string tn = t.name;
+    std::string desc = t.description.empty() ? (std::string(slug.c_str()) + " tool") : t.description;
+    reg.add(regName, desc,
+            [s, tn](ArduinoJson::JsonObjectConst a, const Principal& who) { return callTool(s, tn, a, who); },
+            t.inputSchemaJson);
+  }
+}
+
+}  // namespace
+
+// The handler body for a discovered tool: proxy the call out to its server.
+// Runs on the turn task under the dispatch (memory) Lock, so it is bounded by a
+// short timeout + the per-server breaker (like web.search) - never a long hold.
+ToolResult callTool(const std::string& slug, const std::string& toolName,
+                    ArduinoJson::JsonObjectConst args, const Principal& who) {
+  // RBAC: a remote tool can have side effects; require an approved account with
+  // write access. Unknown/revoked (no perms) and Guest are refused, fail-closed.
+  if (!who.perms().writeOwn)
+    return ToolResult::fail("This tool needs an approved account with write access.");
+  // An unattended turn (a routine firing, a fan-out synthesis chewing on
+  // untrusted sub-agent text) must never reach an external server.
+  if (agent::orchestrator::inScheduledTurn())
+    return ToolResult::fail("External tools are turned off during automated turns.");
+
+  // resolveServer is FAIL-CLOSED: it returns false unless the slug is an enabled,
+  // device-dialed, APPROVED mcp entry - so a revoked server whose stale tool is
+  // still registered, or a same-slug provider-only MCP, is never dialed.
+  String url, bearer, name;
+  if (!resolveServer(String(slug.c_str()), url, bearer, name))
+    return ToolResult::fail(mc::nextStepError(mc::ErrorKind::Connect, slug,
+                                              "server not configured or not approved"));
+  const std::string nameS = name.c_str();
+  UrlParts u = parseUrl(url);
+  if (!u.ok)
+    return ToolResult::fail("MCP server " + nameS + " has an invalid URL. Fix it on the device web page.");
+
+  // Guard the shared s_srv slot (see the s_srv note): this handler is reachable on
+  // the AsyncTCP /mcp task, so hold the same Lock sync() uses. The Lock is
+  // recursive, so nesting under handleMcp's own Lock is a no-op. exchange()'s
+  // work-slot wait is capped (kCallAcquire) so the hold stays under the watchdog.
+  agent::memory::Lock lk;
+  ServerState* st = slotFor(String(slug.c_str()), true);
+  const uint32_t now = millis();
+  if (st && !st->breaker.allow(now)) {
+    uint32_t left = st->breaker.cooldownRemaining(now) / 1000;
+    return ToolResult::fail("MCP server " + nameS + " is cooling down after repeated failures. "
+                            "Try again in about " + std::to_string(left) + "s.");
+  }
+
+  std::string argsJson;
+  serializeJson(args, argsJson);
+  // Single attempt on the hot path, with a bounded work-slot wait + I/O deadline
+  // so the memory-Lock hold stays under the main-loop watchdog; the breaker
+  // handles a server that keeps failing.
+  McpReq q;
+  q.u = u;
+  q.bearer = bearer;
+  q.session = st ? st->sessionId : String("");
+  q.body = mc::buildToolsCall(toolName, argsJson);
+  q.timeoutMs = kCallTimeout;
+  q.acquireMs = kCallAcquire;
+  McpResp resp;
+  exchange(q, resp);
+  if (st && resp.session.length()) st->sessionId = resp.session;
+  mc::CallToolResult r = mc::parseCallTool(resp.status, resp.ctype, resp.body, nameS);
+  if (!r.ok) {
+    if (st) st->breaker.onFailure(millis());
+    return ToolResult::fail(r.errorMsg);
+  }
+  if (st) st->breaker.onSuccess();
+  if (r.isError) return ToolResult::fail(r.text.empty() ? "the tool reported an error" : r.text);
+  return ToolResult::ok(r.text);
+}
+
+// Phase 1 (LOCK, in-RAM only): retract tools for servers no longer wanted, then
+// pick at most ONE not-yet-discovered server to dial. Returns true + fills `pick`.
+bool reconcileAndPick(ToolRegistry& reg, const std::vector<Desired>& want, Desired& pick) {
+  agent::memory::Lock lk;
+  for (int i = 0; i < kMaxMcpServers; i++) {
+    ServerState& st = s_srv[i];
+    if (!st.inUse) continue;
+    bool keep = false;
+    for (const auto& d : want)
+      if (d.slug == st.slug && d.url == st.url) { keep = true; break; }
+    if (!keep) { reg.removeByPrefix(prefixOf(st.slug)); st = ServerState{}; }
+  }
+  for (const auto& d : want) {
+    ServerState* st = slotFor(d.slug, true);
+    if (!st) {
+      alogf("mcp: too many device MCP servers (>%d) - %s skipped", kMaxMcpServers, d.name.c_str());
+      continue;
+    }
+    st->name = d.name;
+    st->url = d.url;
+    if (st->discovered) continue;
+    if (!st->breaker.allow(millis())) continue;   // cooling down; try a later turn
+    pick = d;
+    return true;
+  }
+  return false;
+}
+
+// The result of a phase-2 network discovery, handed to phase 3.
+struct DiscoveryOutcome {
+  bool                     urlOk = false;  // the picked URL parsed
+  bool                     ok = false;     // discovery succeeded
+  std::vector<mc::ToolDef> tools;
+  String                   session;
+  mc::ErrorKind            kind = mc::ErrorKind::None;
+};
+
+// Phase 3 (LOCK, in-RAM only): commit the discovery outcome to the slot + registry.
+void commitDiscovery(ToolRegistry& reg, const Desired& pick, const DiscoveryOutcome& o) {
+  agent::memory::Lock lk;
+  ServerState* st = slotFor(pick.slug, true);
+  if (!st) return;   // table filled up between phases (config churn); next turn retries
+  if (!o.ok) {
+    st->breaker.onFailure(millis());
+    st->lastErr = (int8_t)(o.urlOk ? o.kind : mc::ErrorKind::Malformed);
+    alogf("mcp: discover %s failed (%d)", pick.name.c_str(), (int)st->lastErr);
+    return;
+  }
+  registerToolsLocked(reg, pick.slug, o.tools);
+  st->discovered = true;
+  st->toolCount = (int)o.tools.size();
+  st->sessionId = o.session;
+  st->breaker.onSuccess();
+  st->lastErr = -1;
+  alogf("mcp: %s ready (%d tools)", pick.name.c_str(), st->toolCount);
+}
+
+void sync(ToolRegistry& reg) {
+  std::vector<Desired> want = desiredServers();   // blob parse only, no s_srv - Lock-free
+  Desired pick;
+  if (!reconcileAndPick(reg, want, pick)) return;  // phase 1 (Lock)
+  // phase 2 (LOCK-FREE): the network handshake for the picked server.
+  UrlParts u = parseUrl(pick.url);
+  String url2, bearer, name2;
+  DiscoveryOutcome o;
+  o.urlOk = u.ok;
+  bool okCfg = u.ok && resolveServer(pick.slug, url2, bearer, name2);
+  o.ok = okCfg && discover(pick.name, u, bearer, o.tools, o.session, o.kind);
+  commitDiscovery(reg, pick, o);                   // phase 3 (Lock)
+}
+
+std::string catalogSection() {
+  std::vector<Desired> want = desiredServers();
+  // Names of device-dialed servers that are enabled but NOT approved (pending).
+  std::vector<std::string> pending;
+  {
+    std::vector<nimbus::orch::ConnectorInfo> cs;
+    nimbus::orch::parseConnectorsJson(store::connectorsJson().c_str(), cs, kMaxConnectors, nullptr);
+    for (const auto& c : cs)
+      if (c.kind == "mcp" && c.enabled && c.deviceDialed && !c.approved && !c.url.empty())
+        pending.push_back(c.name);
+  }
+  if (want.empty() && pending.empty()) return "";
+
+  std::string out = "\n[DEVICE MCP SERVERS]\n"
+                    "These remote MCP servers are dialed by the device directly; their tools "
+                    "appear as mcp.<server>.<tool> and you can call them like any tool.\n";
+  const uint32_t now = millis();
+  {
+    agent::memory::Lock lk;   // reads the shared s_srv table (see its note)
+    for (const auto& d : want) {
+      ServerState* st = slotFor(d.slug, false);
+      out += "- " + std::string(d.name.c_str()) + ": ";
+      if (st && st->discovered) {
+        out += std::to_string(st->toolCount) + " tool(s) ready (mcp." + std::string(d.slug.c_str()) + ".*)";
+      } else if (st && st->breaker.state() != mc::BreakerState::Closed) {
+        out += "unreachable, cooling down (" + std::to_string(st->breaker.cooldownRemaining(now) / 1000) + "s)";
+      } else {
+        out += "connecting on the next turn";
+      }
+      out += "\n";
+    }
+  }
+  for (const auto& p : pending)
+    out += "- " + std::string(p.c_str()) +
+           ": configured but NOT yet approved - the owner must approve it before its tools can be used.\n";
+  return out;
+}
+
+}  // namespace mcp
 
 }  // namespace connectors
 }  // namespace agent

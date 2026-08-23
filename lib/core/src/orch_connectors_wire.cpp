@@ -75,6 +75,41 @@ const KnownConnector* knownConnectors(int& countOut) {
   return kKnown;
 }
 
+// ---- blob parse (no silent drop) ---------------------------------------------
+
+int parseConnectorsJson(const char* blobJson, std::vector<ConnectorInfo>& out,
+                        int maxN, int* totalEntries) {
+  out.clear();
+  if (totalEntries) *totalEntries = 0;
+  if (!blobJson || !blobJson[0] || maxN <= 0) return 0;
+  JsonDocument d;
+  if (deserializeJson(d, blobJson)) return 0;   // malformed blob: no connectors
+  JsonArrayConst arr = d.as<JsonArrayConst>();
+  if (arr.isNull()) return 0;                    // not an array
+  if (totalEntries) *totalEntries = (int)arr.size();
+  int n = 0;
+  for (JsonObjectConst c : arr) {
+    if (n >= maxN) break;   // caller compares n to *totalEntries to see the drop
+    ConnectorInfo ci;
+    ci.name        = (const char*)(c["name"] | "");
+    if (ci.name.empty()) continue;              // nameless: skipped, still counted
+    ci.prov        = (const char*)(c["prov"] | "any");
+    ci.kind        = (const char*)(c["kind"] | "mcp");
+    ci.url         = (const char*)(c["url"]  | "");
+    ci.connectorId = (const char*)(c["cid"]  | "");
+    const char* ty = c["type"] | "";
+    ci.type        = ty[0] ? ty : ci.name;      // type defaults to name (match list())
+    ci.enabled     = (c["en"] | 0) != 0;
+    ci.deviceDialed = (c["dev"] | 0) != 0;
+    ci.approved    = (c["appr"] | 0) != 0;
+    ci.hasToken    = std::string((const char*)(c["tok"] | "")).size() > 0;
+    ci.hasOauth    = !c["oauth"].isNull();
+    out.push_back(std::move(ci));
+    n++;
+  }
+  return n;
+}
+
 // ---- helpers -----------------------------------------------------------------
 static bool provMatches(const ConnectorInfo& c, const char* prov) {
   return c.enabled && (c.prov == prov || c.prov == "any");

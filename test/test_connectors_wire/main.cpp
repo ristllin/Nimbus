@@ -540,8 +540,98 @@ static void test_pdf_recipe_requires_an_openai_reachable_code_interpreter() {
   TEST_ASSERT_TRUE(catalogText(off, ps).find("not possible right now") != std::string::npos);
 }
 
+// ---- CUM-44: parseConnectorsJson - the no-silent-drop blob parser -----------
+using nimbus::orch::parseConnectorsJson;
+
+// REGRESSION (Board 1, 2026-08-09): a hardcoded Info[8] silently dropped every
+// blob entry past the eighth from the catalog + wire attach while /api/connectors
+// showed them. The cap is now kMaxConnectors=24 and the parser must return ALL
+// entries up to it - here nine, the exact count that used to vanish.
+static void test_parse_connectors_reads_past_eight() {
+  std::string blob = "[";
+  for (int i = 0; i < 9; i++) {
+    if (i) blob += ",";
+    blob += "{\"name\":\"c" + std::to_string(i) + "\",\"kind\":\"mcp\",\"en\":1}";
+  }
+  blob += "]";
+  std::vector<ConnectorInfo> out;
+  int total = -1;
+  int n = parseConnectorsJson(blob.c_str(), out, 24, &total);
+  TEST_ASSERT_EQUAL(9, n);
+  TEST_ASSERT_EQUAL(9, (int)out.size());
+  TEST_ASSERT_EQUAL(9, total);
+  TEST_ASSERT_EQUAL_STRING("c8", out[8].name.c_str());  // the 9th, once dropped
+}
+
+// Over the cap: the parser writes maxN and reports the true total so the caller
+// can see (and LOUD-LOG) that a drop happened - never a silent truncation.
+static void test_parse_connectors_caps_and_reports_drop() {
+  std::string blob = "[";
+  for (int i = 0; i < 30; i++) {
+    if (i) blob += ",";
+    blob += "{\"name\":\"c" + std::to_string(i) + "\"}";
+  }
+  blob += "]";
+  std::vector<ConnectorInfo> out;
+  int total = 0;
+  int n = parseConnectorsJson(blob.c_str(), out, 24, &total);
+  TEST_ASSERT_EQUAL(24, n);
+  TEST_ASSERT_EQUAL(30, total);       // the drop is observable: total > n
+  TEST_ASSERT_TRUE(total > n);
+}
+
+static void test_parse_connectors_skips_nameless_but_counts_it() {
+  const char* blob = "[{\"name\":\"a\"},{\"kind\":\"mcp\"},{\"name\":\"b\"}]";
+  std::vector<ConnectorInfo> out;
+  int total = 0;
+  int n = parseConnectorsJson(blob, out, 24, &total);
+  TEST_ASSERT_EQUAL(2, n);            // the nameless middle entry is not written
+  TEST_ASSERT_EQUAL(3, total);        // but it IS counted (array had 3)
+  TEST_ASSERT_EQUAL_STRING("a", out[0].name.c_str());
+  TEST_ASSERT_EQUAL_STRING("b", out[1].name.c_str());
+}
+
+static void test_parse_connectors_defaults_and_flags() {
+  const char* blob =
+      "[{\"name\":\"srv\",\"url\":\"https://x/mcp\",\"tok\":\"abcd1234\",\"en\":1,\"dev\":1,\"appr\":1},"
+      "{\"name\":\"o\",\"oauth\":{\"rurl\":\"https://t\"}}]";
+  std::vector<ConnectorInfo> out;
+  int n = parseConnectorsJson(blob, out, 24, nullptr);
+  TEST_ASSERT_EQUAL(2, n);
+  // defaults: prov -> "any", kind -> "mcp", type -> name
+  TEST_ASSERT_EQUAL_STRING("any", out[0].prov.c_str());
+  TEST_ASSERT_EQUAL_STRING("mcp", out[0].kind.c_str());
+  TEST_ASSERT_EQUAL_STRING("srv", out[0].type.c_str());
+  TEST_ASSERT_TRUE(out[0].enabled);
+  TEST_ASSERT_TRUE(out[0].deviceDialed);   // "dev":1
+  TEST_ASSERT_TRUE(out[0].approved);       // "appr":1
+  TEST_ASSERT_TRUE(out[0].hasToken);       // presence only - no secret carried
+  TEST_ASSERT_FALSE(out[0].hasOauth);
+  // secret VALUE is never copied into the portable struct
+  TEST_ASSERT_FALSE(out[1].hasToken);
+  TEST_ASSERT_TRUE(out[1].hasOauth);
+  TEST_ASSERT_FALSE(out[1].deviceDialed);
+  TEST_ASSERT_FALSE(out[1].approved);      // fail-closed: absent -> not approved
+}
+
+static void test_parse_connectors_malformed_and_empty() {
+  std::vector<ConnectorInfo> out;
+  int total = 5;
+  TEST_ASSERT_EQUAL(0, parseConnectorsJson("{not json", out, 24, &total));
+  TEST_ASSERT_EQUAL(0, total);
+  TEST_ASSERT_EQUAL(0, parseConnectorsJson("", out, 24, &total));
+  TEST_ASSERT_EQUAL(0, parseConnectorsJson("{\"name\":\"x\"}", out, 24, &total));  // object, not array
+  TEST_ASSERT_EQUAL(0, total);
+  TEST_ASSERT_EQUAL(0, parseConnectorsJson("[{\"name\":\"a\"}]", out, 0, nullptr));  // maxN 0
+}
+
 int main() {
   UNITY_BEGIN();
+  RUN_TEST(test_parse_connectors_reads_past_eight);
+  RUN_TEST(test_parse_connectors_caps_and_reports_drop);
+  RUN_TEST(test_parse_connectors_skips_nameless_but_counts_it);
+  RUN_TEST(test_parse_connectors_defaults_and_flags);
+  RUN_TEST(test_parse_connectors_malformed_and_empty);
   RUN_TEST(test_catalog_full_golden);
   RUN_TEST(test_mistral_60s_cap_is_disclosed_and_routes_elsewhere);
   RUN_TEST(test_pdf_recipe_is_stated_and_routed_to_openai);

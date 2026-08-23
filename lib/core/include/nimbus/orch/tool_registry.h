@@ -157,6 +157,17 @@ class ToolRegistry {
   bool has(const std::string& name) const;
   int  size() const { return (int)tools_.size(); }
 
+  // Remove a tool by exact name; also clears any static policy entry for it.
+  // Returns true if a tool was removed. Used to retract dynamically-registered
+  // tools (outbound MCP tools when a server is disabled or its approval is
+  // revoked) so "advertised == callable" holds - a retracted tool must not
+  // linger in the manifest.
+  bool remove(const std::string& name);
+  // Remove every tool whose name starts with `prefix` (e.g. "mcp.linear.") and
+  // clear their policies. Returns the count removed. Order of the survivors is
+  // preserved.
+  int removeByPrefix(const std::string& prefix);
+
   // For the capability manifest (the tool summaries): stable order = add
   // order.
   std::vector<ToolInfo> manifest() const;

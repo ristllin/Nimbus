@@ -15,11 +15,12 @@ LLM request, and the **provider runs the tool server-side in its own cloud**.
 So what you can do is whatever your provider hosts, and the credential lives
 with the provider (Mistral Studio) or is pasted once into Nimbus's web UI.
 
-> **Scope note.** This is the *provider-attach* model - the AI lab executes the
-> tool. Nimbus does not (yet) run its own outbound MCP client, and Google
-> **Sheets/Slides** have no hosted MCP anywhere, so they are not reachable this
-> way today (they need direct REST - a future pass). Gmail, Calendar, and
-> Drive *are* reachable.
+> **Scope note.** This page is the *provider-attach* model - the AI lab executes
+> the tool in its own cloud. Nimbus can *also* dial a remote MCP server itself
+> (the device as an MCP client): see [MCP](mcp.md) for that path, its approval
+> model, and limits. Google **Sheets/Slides** have no hosted MCP anywhere, so
+> they are not reachable either way today (they need direct REST - a future
+> pass). Gmail, Calendar, and Drive *are* reachable.
 
 ## Setting up a connector
 
