@@ -357,8 +357,32 @@ static void test_binary_fetch_write_and_register() {
   TEST_ASSERT_EQUAL((int)FileKind::Doc, (int)r->kind);
 }
 
+// CUM-7: SD quota = card - 512 MB reserve; cards < 1 GB are unsupported.
+static void test_sd_quota_and_supported_card() {
+  using FS = nimbus::orch::FileStore;
+  const uint64_t MB = 1024ull * 1024, GB = 1024 * MB;
+  // Unsupported below 1 GB (quota 0), supported at/above.
+  TEST_ASSERT_FALSE(FS::sdCardSupported(512 * MB));
+  TEST_ASSERT_FALSE(FS::sdCardSupported(1 * GB - 1));
+  TEST_ASSERT_TRUE(FS::sdCardSupported(1 * GB));
+  TEST_ASSERT_EQUAL_UINT64(0, FS::quotaForCard(512 * MB));   // unsupported -> 0
+  // 1 GB card: quota = 1 GB - 512 MB reserve = 512 MB.
+  TEST_ASSERT_EQUAL_UINT64(512 * MB, FS::quotaForCard(1 * GB));
+  // 16 GB card: quota = 16 GB - 512 MB.
+  TEST_ASSERT_EQUAL_UINT64(16 * GB - 512 * MB, FS::quotaForCard(16 * GB));
+  // A supported card exactly at the reserve boundary never underflows.
+  TEST_ASSERT_EQUAL_UINT64(0, FS::quotaForCard(0));
+
+  // A store limited to the unsupported-card quota (0) refuses a real save.
+  FS::Limits lim; lim.maxTotalBytes = 0;
+  FS store(lim);
+  std::string err;
+  TEST_ASSERT_TRUE(store.wouldExceed("p", "f", 100, err));  // any real add refused
+}
+
 int main() {
   UNITY_BEGIN();
+  RUN_TEST(test_sd_quota_and_supported_card);
   RUN_TEST(test_binary_fetch_write_and_register);
   RUN_TEST(test_owner_boundary_read_and_overwrite);
   RUN_TEST(test_index_owner_field_roundtrip_and_legacy_load);

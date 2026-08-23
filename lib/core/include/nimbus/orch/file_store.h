@@ -69,6 +69,22 @@ class FileStore {
   FileStore() = default;
   explicit FileStore(const Limits& l) : lim_(l) {}
 
+  // ---- SD quota + supported-card truth (CUM-7; static + pure, host-tested) ----
+  // The device recomputes the artifact-store quota from the REAL card size at
+  // mount: quota = card capacity - a fixed reserve (headroom the firmware, logs,
+  // and FS metadata need). A card below the minimum is UNSUPPORTED - too small to
+  // be a useful bulk store once the reserve is taken - and the store stays off with
+  // an explicit state rather than a silent tiny quota.
+  static constexpr uint64_t kSdReserveBytes = 512ull * 1024 * 1024;   // 512 MB reserve
+  static constexpr uint64_t kSdMinCardBytes = 1024ull * 1024 * 1024;  // < 1 GB => unsupported
+  static bool sdCardSupported(uint64_t cardBytes) { return cardBytes >= kSdMinCardBytes; }
+  // Quota for a card, in bytes: card - reserve, or 0 if the card is unsupported or
+  // smaller than the reserve (never underflows).
+  static uint64_t quotaForCard(uint64_t cardBytes) {
+    if (!sdCardSupported(cardBytes)) return 0;
+    return cardBytes > kSdReserveBytes ? (cardBytes - kSdReserveBytes) : 0;
+  }
+
   // ---- path safety (static: usable before any store exists) ----
   // A valid segment: 1..maxLen printable-ASCII chars, no '/', '\\', control
   // chars or spaces-only, not "." / "..", no leading dot (hidden files), no ':'

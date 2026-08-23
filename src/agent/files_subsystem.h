@@ -36,6 +36,21 @@ bool available();
 // Stats for /api/state + the capability manifest.
 void stats(bool& present, uint16_t& count, uint64_t& bytes, uint32_t& freeBytes);
 
+// CUM-7: the full storage truth for the files payload. `quota` = card - 512 MB
+// reserve (0 when the card is unsupported); `cardTotal`/`cardFree` are the raw
+// card numbers; `unsupported` is set when a mounted card is below the 1 GB
+// minimum. All bytes.
+struct StorageTruth {
+  bool     present     = false;
+  bool     unsupported = false;
+  uint16_t files       = 0;
+  uint64_t used        = 0;
+  uint64_t quota       = 0;
+  uint64_t cardTotal   = 0;
+  uint64_t cardFree    = 0;
+};
+StorageTruth storageTruth();
+
 // ---- streaming upload session (web_files.cpp) ----
 // Single concurrent session (an ESP32 has no business running parallel SD
 // uploads): beginWrite() -> false if busy/refused (reason in err - quota, path,

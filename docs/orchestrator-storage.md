@@ -294,6 +294,34 @@ is **intermittent** on this bench board, a cold-joint on the SD-slot GND, so it 
 - Journal/logs → SD day-streams; periodic `pruneRetention()` scheduler tick + its
   on-device run (the delete path is real code; the logic is host-tested).
 
+## 5c. SD quota + truth (CUM-7)
+
+The artifact store must not be able to fill the card the bulk tiers also live on,
+so it carries a quota, recomputed from the REAL card size at every mount:
+
+- **Quota = card capacity - a 512 MB reserve** (`FileStore::quotaForCard`, pure +
+  host-tested). The reserve is headroom the firmware, logs, media, and sound packs
+  need. A 16 GB card gets a ~15.5 GB store quota; a 1 GB card gets 512 MB.
+- **Cards below 1 GB are UNSUPPORTED** (`FileStore::sdCardSupported`): once the
+  reserve is taken there is too little left to be a useful store, so the card
+  mounts with a zero quota and an explicit `unsupported` state, and saves refuse
+  legibly rather than the store silently offering a tiny space.
+- **A flaky mount that reports `cardSizeMB()==0`** keeps the safe 512 MB default
+  quota (never a zero quota from a transient read).
+
+**The payload carries four distinct truths** so a client never reconciles two
+payloads to tell the store quota from the raw card free space. `GET /api/files/list`:
+
+```
+present card:  {present:true, unsupported:false, count, bytes(=used),
+                quota(=card-512MB), cardTotal, cardFree, freeBytes(=quota-used), files:[...]}
+absent card:   {present:false, files:[]}
+tiny card:     {present:false, unsupported:true, files:[]}
+```
+
+`/api/state.files` mirrors `present/unsupported/count/bytes/quota/cardFree`, and the
+`files.list` tool returns `count/bytes/quota/cardFree/freeBytes` for the model.
+
 ## 6. Implementation phases (value × testability)
 
 **Phase A - host-testable now, no hardware.** Append-log episodic store behind the

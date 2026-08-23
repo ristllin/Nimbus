@@ -422,12 +422,14 @@ static void buildState(String& out) {
   // E1 artifact store presence (SD /mem/files): the web UI's Files section +
   // the campaign harness read this.
   {
-    bool fp; uint16_t fc; uint64_t fb; uint32_t ff;
-    agent::files::stats(fp, fc, fb, ff);
+    agent::files::StorageTruth t = agent::files::storageTruth();
     JsonObject fl = d["files"].to<JsonObject>();
-    fl["present"] = fp;
-    fl["count"]   = fc;
-    fl["bytes"]   = (unsigned long)fb;
+    fl["present"]     = t.present;
+    fl["unsupported"] = t.unsupported;   // CUM-7: mounted card < 1 GB
+    fl["count"]       = t.files;
+    fl["bytes"]       = (unsigned long long)t.used;
+    fl["quota"]       = (unsigned long long)t.quota;       // card - 512 MB reserve
+    fl["cardFree"]    = (unsigned long long)t.cardFree;    // free-on-card
   }
 
   bool sta = staConnected();
