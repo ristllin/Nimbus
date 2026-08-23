@@ -41,6 +41,33 @@ const Tool* ToolRegistry::find(const std::string& name) const {
 }
 bool ToolRegistry::has(const std::string& name) const { return find(name) != nullptr; }
 
+bool ToolRegistry::remove(const std::string& name) {
+  for (size_t i = 0; i < tools_.size(); ++i) {
+    if (tools_[i].name == name) {
+      tools_.erase(tools_.begin() + i);
+      setPolicy(name, Verdict::allow());  // drop any lingering static policy
+      return true;
+    }
+  }
+  return false;
+}
+
+int ToolRegistry::removeByPrefix(const std::string& prefix) {
+  if (prefix.empty()) return 0;
+  int removed = 0;
+  for (size_t i = 0; i < tools_.size();) {
+    if (tools_[i].name.rfind(prefix, 0) == 0) {
+      std::string name = tools_[i].name;
+      tools_.erase(tools_.begin() + i);
+      setPolicy(name, Verdict::allow());
+      ++removed;
+    } else {
+      ++i;
+    }
+  }
+  return removed;
+}
+
 std::vector<ToolInfo> ToolRegistry::manifest() const {
   std::vector<ToolInfo> out;
   out.reserve(tools_.size());

@@ -45,7 +45,33 @@ struct ConnectorInfo {
   // provably minted this boot, 0 = the last OAuth sign-in FAILED, 2 = a
   // credential is REQUIRED but missing (the attach skips this connector).
   int8_t auth = -1;
+  // Credential PRESENCE (no secret value): whether the blob entry carries a
+  // static token / OAuth broker fields. These are the same has-flags the web GET
+  // already exposes, and let the portable parser compute `auth` without the
+  // device secret-parse. Set by parseConnectorsJson.
+  bool hasToken = false;
+  bool hasOauth = false;
+  // N4: the DEVICE dials this remote MCP server directly (blob "dev":1), as
+  // opposed to only attaching it to a provider's request body. Only meaningful
+  // for kind=="mcp".
+  bool deviceDialed = false;
+  // N4: the owner has APPROVED this server for device-side use (blob "appr":1).
+  // Fail-closed: an unapproved device-dialed server is never dialed and its
+  // tools are never registered. Set by parseConnectorsJson.
+  bool approved = false;
 };
+
+// Parse the connectors NVS blob (a JSON array of entries; shape in connectors.h)
+// into ConnectorInfo, NON-SECRET fields only (the device resolves the actual
+// token/OAuth secrets separately). Returns the number written to `out` (<= maxN).
+// If `totalEntries` is non-null it receives the number of array elements SEEN -
+// including any past maxN and any nameless ones - so a caller can detect and
+// LOUD-LOG a silent drop (the Info[8]-vs-kMaxConnectors regression). A malformed
+// or non-array blob yields 0. Nameless entries are skipped (not written) but are
+// still counted in totalEntries. This is the single no-silent-drop parser shared
+// by the catalog/attach path and locked by host tests.
+int parseConnectorsJson(const char* blobJson, std::vector<ConnectorInfo>& out,
+                        int maxN, int* totalEntries = nullptr);
 
 // Resolves the bearer for one connector (device: static tok or OAuth mint).
 // Returns "" when unauthenticated (attach proceeds; provider surfaces the 401).

@@ -2,6 +2,10 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 
+// Forward declaration so the outbound-MCP sync() can take the registry by
+// reference without this widely-included header pulling the whole registry TU.
+namespace nimbus { namespace orch { class ToolRegistry; } }
+
 // connectors - per-provider external-tool wiring (Phase C). The OWNER configures
 // connectors once (web UI -> one NVS JSON blob, store::connectorsJson); the
 // firmware then (a) ATTACHES them to provider requests and (b) SURFACES an
@@ -91,6 +95,34 @@ String catalog();
 // The known-connector catalog (Tier-1 + Mistral built-ins) as a JSON array, for
 // GET /api/connectors so the UI can describe/link not-yet-configured connectors.
 String knownCatalog();
+
+// ---- outbound MCP client (N4) -------------------------------------------------
+// The device is already an MCP SERVER (memory::handleMcp over the LAN). This is
+// the CLIENT half: the device dialing REMOTE MCP servers over Streamable HTTP,
+// discovering their tools, and registering them into the on-device tool registry
+// namespaced mcp.<serverSlug>.<tool> so the model can call them like any native
+// tool. A device-dialed server is a connectors-blob kind:"mcp" entry with
+// "dev":1; it is only dialed once the owner sets "appr":1 (fail-closed). The
+// pure JSON-RPC + Streamable-HTTP framing is host-tested in lib/core
+// (nimbus::orch::mcp::*); this device layer does the TLS/HTTP under the work
+// arbiter and the registry wiring.
+namespace mcp {
+
+// Reconcile the tool registry with the approved + enabled + device-dialed MCP
+// servers in the blob: discover newly-approved servers (initialize + tools/list)
+// and register their tools; retract the tools of servers now gone, disabled, or
+// unapproved. Idempotent and cheap once discovery has settled (network only for
+// a not-yet-discovered server, at most one per call). Call it on the turn path
+// (WiFi is up). Network runs Lock-free under the work arbiter; the brief registry
+// mutation takes memory::Lock, so it is safe against the AsyncTCP /mcp reader.
+void sync(nimbus::orch::ToolRegistry& reg);
+
+// A short model-facing status block for the device-dialed MCP servers - which
+// are ready (with a tool count), pending owner approval, or cooling down after
+// failures - appended to catalog() so the model plans around real state.
+std::string catalogSection();
+
+}  // namespace mcp
 
 }  // namespace connectors
 }  // namespace agent

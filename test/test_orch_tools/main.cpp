@@ -200,6 +200,49 @@ static void test_rpc_tools_call_missing_name() {
   TEST_ASSERT_TRUE(has(resp, "-32602"));
 }
 
+// ---- remove / removeByPrefix (dynamic tool retraction, e.g. outbound MCP) ---
+
+static void test_registry_remove_one() {
+  ToolRegistry reg = buildRegistry();
+  int before = reg.size();
+  TEST_ASSERT_TRUE(reg.has("device.reboot"));
+  TEST_ASSERT_TRUE(reg.remove("device.reboot"));
+  TEST_ASSERT_FALSE(reg.has("device.reboot"));
+  TEST_ASSERT_EQUAL(before - 1, reg.size());
+  TEST_ASSERT_FALSE(reg.remove("device.reboot"));  // already gone -> false
+  TEST_ASSERT_TRUE(reg.has("memory.write"));       // survivor intact
+}
+
+static void test_registry_remove_clears_policy() {
+  ToolRegistry reg = buildRegistry();
+  reg.setPolicy("device.reboot", ToolRegistry::Verdict::gated("pending"));
+  TEST_ASSERT_EQUAL(ToolRegistry::Verdict::Gated, reg.policyFor("device.reboot").kind);
+  reg.remove("device.reboot");
+  // A same-named tool re-added later must not inherit the retracted gate.
+  reg.add("device.reboot", "x", [](ArduinoJson::JsonObjectConst, const nimbus::orch::Principal&) {
+    return ToolResult::ok("ok");
+  });
+  TEST_ASSERT_EQUAL(ToolRegistry::Verdict::Allow, reg.policyFor("device.reboot").kind);
+}
+
+static void test_registry_remove_by_prefix() {
+  ToolRegistry reg;
+  auto noop = [](ArduinoJson::JsonObjectConst, const nimbus::orch::Principal&) {
+    return ToolResult::ok("");
+  };
+  reg.add("mcp.linear.create_issue", "d", noop);
+  reg.add("mcp.linear.list_issues", "d", noop);
+  reg.add("mcp.files.read", "d", noop);
+  reg.add("memory.search", "d", noop);
+  int n = reg.removeByPrefix("mcp.linear.");
+  TEST_ASSERT_EQUAL(2, n);
+  TEST_ASSERT_FALSE(reg.has("mcp.linear.create_issue"));
+  TEST_ASSERT_FALSE(reg.has("mcp.linear.list_issues"));
+  TEST_ASSERT_TRUE(reg.has("mcp.files.read"));   // different server survives
+  TEST_ASSERT_TRUE(reg.has("memory.search"));    // native tool untouched
+  TEST_ASSERT_EQUAL(0, reg.removeByPrefix(""));  // empty prefix is a no-op
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_registry_add_and_manifest);
@@ -217,6 +260,9 @@ int main(int, char**) {
   RUN_TEST(test_rpc_non_object_is_invalid_request);
   RUN_TEST(test_rpc_tools_call_unknown_tool);
   RUN_TEST(test_rpc_tools_call_missing_name);
+  RUN_TEST(test_registry_remove_one);
+  RUN_TEST(test_registry_remove_clears_policy);
+  RUN_TEST(test_registry_remove_by_prefix);
   UNITY_END();
   return 0;
 }
