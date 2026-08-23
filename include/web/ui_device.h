@@ -183,6 +183,7 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 <tr><td>Calibration</td><td id=battcal>-</td></tr>
 </tbody></table>
 <div class=row><button id=battcalBtn type=button>Calibrate Full Charge</button><button class=qh type=button aria-expanded=false aria-label="About calibration">?</button></div>
+<div class=hint id=battcalMsg></div>
 <p class="hint tip">The voltage sensor reads a full pack low. With the battery fully charged, calibrate to anchor 100% to the current reading - stored per device.</p>
 <table><tbody>
 <tr><td>Low-battery sleep</td><td><input id=sleepMv type=number min=0 max=6800 step=50 style="width:90px"> mV <button class=qh type=button aria-expanded=false aria-label="About low-battery sleep">?</button><p class="hint tip">Below this pack voltage the device sleeps to protect the battery. Default 6000 mV, about 10% charge. 0 turns protection off.</p></td></tr>

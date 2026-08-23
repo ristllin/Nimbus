@@ -606,7 +606,10 @@ function applyState(d){
     fetch('/api/config',{method:'POST',body:f}).then(function(){pb.textContent='Saved';setTimeout(function(){pb.textContent='Save';},1200);});
   };
       if(!confirm('Set the battery to 100%?\n\nOnly do this with the pack fully charged - the reading becomes this device\'s 100% anchor.')) return;
-      fetch('/api/battcal',{method:'POST'}).then(jok).then(()=>{toast('Calibrating…');setTimeout(loadState,1200);}).catch(failToast);};
+      run({status:'battcalMsg',btn:bcb,pending:'Calibrating…',
+        work:()=>fetch('/api/battcal',{method:'POST'}).then(jok),
+        ok:()=>{setTimeout(loadState,1200);return 'Calibrated - this reading is now the 100% anchor.';},
+        error:e=>'Couldn\'t calibrate'+(e?(' ('+e+')'):'')+' - try again.'});};
   } else { $('battsec').style.display='none'; }
   // Device identity readouts (P2): live SSID/mDNS; the input is only synced when
   // the user isn't mid-edit (3 s poll would stomp their typing otherwise).

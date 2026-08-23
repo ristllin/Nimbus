@@ -380,6 +380,7 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <tr><td>Calibration</td><td id=battcal>-</td></tr>
 </tbody></table>
 <div class=row><button id=battcalBtn type=button>Calibrate Full Charge</button><button class=qh type=button aria-expanded=false aria-label="About calibration">?</button></div>
+<div class=hint id=battcalMsg></div>
 <p class="hint tip">The voltage sensor reads a full pack low. With the battery fully charged, calibrate to anchor 100% to the current reading - stored per device.</p>
 <table><tbody>
 <tr><td>Low-battery sleep</td><td><input id=sleepMv type=number min=0 max=6800 step=50 style="width:90px"> mV <button class=qh type=button aria-expanded=false aria-label="About low-battery sleep">?</button><p class="hint tip">Below this pack voltage the device sleeps to protect the battery. Default 6000 mV, about 10% charge. 0 turns protection off.</p></td></tr>
@@ -1528,7 +1529,10 @@ function applyState(d){
     fetch('/api/config',{method:'POST',body:f}).then(function(){pb.textContent='Saved';setTimeout(function(){pb.textContent='Save';},1200);});
   };
       if(!confirm('Set the battery to 100%?\n\nOnly do this with the pack fully charged - the reading becomes this device\'s 100% anchor.')) return;
-      fetch('/api/battcal',{method:'POST'}).then(jok).then(()=>{toast('Calibrating…');setTimeout(loadState,1200);}).catch(failToast);};
+      run({status:'battcalMsg',btn:bcb,pending:'Calibrating…',
+        work:()=>fetch('/api/battcal',{method:'POST'}).then(jok),
+        ok:()=>{setTimeout(loadState,1200);return 'Calibrated - this reading is now the 100% anchor.';},
+        error:e=>'Couldn\'t calibrate'+(e?(' ('+e+')'):'')+' - try again.'});};
   } else { $('battsec').style.display='none'; }
   // Device identity readouts (P2): live SSID/mDNS; the input is only synced when
   // the user isn't mid-edit (3 s poll would stomp their typing otherwise).
