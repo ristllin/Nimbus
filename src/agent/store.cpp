@@ -258,6 +258,12 @@ void   setTlsVerify(bool v) { solide::memory::setBool(AKEY_TLS_VERIFY, v); }
 int    capProbe() { int v = solide::memory::getInt(AKEY_CAP_PROBE, 1); return v < 0 ? 0 : (v > 2 ? 2 : v); }
 int    fetchPolicy() { int v = solide::memory::getInt(AKEY_FETCH_POL, 1); return v < 0 ? 1 : (v > 3 ? 1 : v); }
 void   setFetchPolicy(int v) { solide::memory::setInt(AKEY_FETCH_POL, v < 0 ? 1 : (v > 3 ? 1 : v)); }
+bool   modInbound()  { return solide::memory::getInt(AKEY_MOD_INBOUND, 0) != 0; }
+bool   modOutbound() { return solide::memory::getInt(AKEY_MOD_OUTBOUND, 0) != 0; }
+bool   modInjection(){ return solide::memory::getInt(AKEY_MOD_INJECTION, 0) != 0; }
+void   setModInbound(bool on)  { solide::memory::setInt(AKEY_MOD_INBOUND, on ? 1 : 0); }
+void   setModOutbound(bool on) { solide::memory::setInt(AKEY_MOD_OUTBOUND, on ? 1 : 0); }
+void   setModInjection(bool on){ solide::memory::setInt(AKEY_MOD_INJECTION, on ? 1 : 0); }
 void   setCapProbe(int v) { solide::memory::setInt(AKEY_CAP_PROBE, v < 0 ? 0 : (v > 2 ? 2 : v)); }
 int    capProbeHours() { int v = solide::memory::getInt(AKEY_CAP_PROBE_H, 24); return v < 1 ? 1 : (v > 168 ? 168 : v); }
 void   setCapProbeHours(int v) { solide::memory::setInt(AKEY_CAP_PROBE_H, v < 1 ? 1 : (v > 168 ? 168 : v)); }

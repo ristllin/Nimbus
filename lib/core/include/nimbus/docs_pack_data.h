@@ -799,6 +799,7 @@ confused.)NIMBUSDOC"},
 | `/compact` | Summarize this conversation into memory. Runs in the background. |
 | `/clear` | Forget the current conversation and its active task, and start fresh. Long-term memory and files are kept. Send `/clear` to confirm, then `/clear yes` to do it. The web page has the same action (Memory, then Clear conversation). |
 | `/skill approve\|deny <id>` | Approve a saved skill so it can be used, or remove it. |
+| `/mcp approve\|deny <name>` | Approve a tool server (MCP) the assistant discovered, so its tools can be used, or remove that approval. The same action is on the web page. |
 
 A routine or skill the assistant creates on its own stays inactive until the
 owner approves it here (or from the web UI). The one exception is a one-time

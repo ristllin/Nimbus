@@ -115,6 +115,10 @@ void   setTlsVerify(bool v); // false = fall back to setInsecure (self-signed ho
 // 2 = active (passive + a periodic free provider re-verify to keep the marking fresh).
 int    capProbe();           void setCapProbe(int v);      // clamped 0..2 (default 1)
 int    fetchPolicy();        void setFetchPolicy(int v);   // W18 URL downloads: 0 off/1 approve(default)/2 scan/3 yolo
+// Moderation gate switches (non-admin only; each a paid classifier call). Default off.
+bool   modInbound();         void setModInbound(bool on);   // inbound guest text pre-turn (fail-closed)
+bool   modOutbound();        void setModOutbound(bool on);  // outbound replies to guests (fail-open)
+bool   modInjection();       void setModInjection(bool on); // injection-screen world content (fail-open + mark)
 int    capProbeHours();      void setCapProbeHours(int v); // active re-verify interval, clamped 1..168 (default 24)
 // ---- OTA firmware update (src/sys/ota_update) ----
 int    otaPending();             void setOtaPending(int v);        // 1 = image awaiting validation

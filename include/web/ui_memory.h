@@ -166,6 +166,17 @@ static const char UI_MEMORY[] PROGMEM = R"=====(<div class=pane id=pane-fleet st
 <p class=hint id=fetchpolmsg></p>
 <div id=fetchRows></div>
 
+<h2>Guest moderation <button class=qh type=button aria-expanded=false aria-label="About guest moderation">?</button></h2>
+<p class="hint tip">Screens guests, never you. Your own messages and the web page are always exempt. Each switch adds a safety check that costs one moderation call per screened item (Cumulo moderation on a Cumulo key, otherwise Mistral on your key), so leave them off unless guests can reach the bot.</p>
+<div class=row><label><input type=checkbox id=modInbound> Check guest messages before answering</label></div>
+<p class="hint">If a message cannot be checked, it is not answered. Costs one call per guest message.</p>
+<div class=row><label><input type=checkbox id=modOutbound> Check replies sent to guests</label></div>
+<p class="hint">A flagged reply is held back. If a check cannot run, the reply still goes out. Costs one call per guest reply.</p>
+<div class=row><label><input type=checkbox id=modInjection> Flag suspicious fetched content</label></div>
+<p class="hint">Marks fetched web content that looks like a hidden instruction as untrusted, so it is treated as data. It marks, never blocks. Costs one call per fetched item.</p>
+<div class=row><button id=modSave type=button>Save</button></div>
+<p class=hint id=modmsg></p>
+
 <h2>Budgets <button class=qh type=button aria-expanded=false aria-label="About budgets">?</button></h2>
 <p class="hint tip">Caps each provider's spend for the month &mdash; by tokens, by dollars, or both; 0 means unlimited. The dollar cap uses your rates above, so set prices for it to count. At any cap, that provider's turns and searches are refused until the reset day &mdash; the assistant fails over to another in-budget provider when it can.</p>
 <div id=budgetRows></div>

@@ -177,6 +177,18 @@ each web write.
 | `loopDevTok` | int | `400000` | Device-wide daily token ceiling. Override may only lower it. | Yes |
 | `loopDevFir` | int | `6` | Device-wide fires per rate window. Override may only lower it. | Yes |
 
+### Guest moderation gates (`src/agent/store.cpp`)
+
+Owner opt-in checks that screen non-admin traffic only (the owner is never
+classified). Each costs one classifier call per screened item. Fail behavior is
+fixed per gate (see [security.md](../security.md)). Default off.
+
+| Key | Type | Default | Holds | Read back? |
+|---|---|---|---|---|
+| `modInbound` | bool | `false` | Screen inbound guest/member text before a turn (fail-closed). | Yes |
+| `modOutbound` | bool | `false` | Screen outbound replies to guests (fail-open). | Yes |
+| `modInject` | bool | `false` | Injection-screen fetched world content (fail-open, marks untrusted). | Yes |
+
 ### Anthropic managed-agents caches (`src/agent/store.cpp`)
 
 | Key | Type | Default | Holds |

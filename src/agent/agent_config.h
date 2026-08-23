@@ -213,6 +213,11 @@
 #define AKEY_TLS_VERIFY     "tlsVerify"      // validate provider certs vs the CA bundle (default ON)
 #define AKEY_CAP_PROBE      "capProbe"       // capability validation: 0 off / 1 passive (default) / 2 active
 #define AKEY_FETCH_POL      "fetchPol"       // files.fetch trust: 0 off / 1 approve (default) / 2 scan / 3 yolo
+// Moderation gates (non-admin roles only; each a paid classifier call per item).
+// Default OFF. Cumulo moderation endpoint on a Cumulo key, else Mistral on the user key.
+#define AKEY_MOD_INBOUND    "modInbound"     // screen inbound guest/member text pre-turn (fail-closed)
+#define AKEY_MOD_OUTBOUND   "modOutbound"    // screen outbound replies to guests (fail-open)
+#define AKEY_MOD_INJECTION  "modInject"      // injection-screen fetched world content (fail-open + mark)
 #define AKEY_CAP_PROBE_H    "capProbeH"      // active re-verify interval in hours (1..168, default 24)
 #define AKEY_STT_PROVIDER   "sttProv"        // "mistral"|"openai" (voice -> text)
 #define AKEY_TTS_PROVIDER   "ttsProv"        // "mistral"|"openai" (text -> voice)

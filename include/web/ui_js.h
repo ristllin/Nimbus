@@ -1008,6 +1008,9 @@ function syncModelSel(id,cur,choices,verified){
 }
 function applyOrch(d){
   if($('fetchpol')&&d.fetchPol!=null)$('fetchpol').value=d.fetchPol;
+  if($('modInbound')&&d.modInbound!=null)$('modInbound').checked=!!d.modInbound;
+  if($('modOutbound')&&d.modOutbound!=null)$('modOutbound').checked=!!d.modOutbound;
+  if($('modInjection')&&d.modInjection!=null)$('modInjection').checked=!!d.modInjection;
   ORCH=d;
   $('orchoff').style.display=d.running?'none':'inline-block';
   const host=$('provs');
@@ -1159,6 +1162,12 @@ function fetchQAct(id,op){
 if($('fetchpolsave'))$('fetchpolsave').onclick=()=>{
   orchApply({fetchPol:$('fetchpol').value}).then(ok=>{
     if(ok!==false)$('fetchpolmsg').textContent='Saved.';
+  });
+};
+if($('modSave'))$('modSave').onclick=()=>{
+  orchApply({modInbound:$('modInbound').checked?1:0,modOutbound:$('modOutbound').checked?1:0,
+             modInjection:$('modInjection').checked?1:0}).then(ok=>{
+    if(ok!==false)$('modmsg').textContent='Saved.';
   });
 };
 function renderBudgets(bp){

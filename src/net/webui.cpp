@@ -712,6 +712,9 @@ static void buildOrchState(String& out) {
   d["tlsVerify"]    = agent::store::tlsVerify();   // validate provider certs (default ON)
   d["capProbe"]     = agent::store::capProbe();     // capability validation mode (W3b): 0 off / 1 passive / 2 active
   d["fetchPol"]     = agent::store::fetchPolicy();  // W18 URL downloads: 0 off / 1 approve / 2 scan / 3 yolo
+  d["modInbound"]   = agent::store::modInbound();   // CUM-69 moderation gates (non-admin only; paid per item)
+  d["modOutbound"]  = agent::store::modOutbound();
+  d["modInjection"] = agent::store::modInjection();
   d["capProbeH"]    = agent::store::capProbeHours(); // active re-verify interval (hours)
   d["loopDeadline"] = agent::store::orchLoopDeadlineS();
   // Token usage (Phase-0 TokenUsage seam) - real billed in/out tokens, last turn +
@@ -976,6 +979,9 @@ static bool applyOrchField(const String& n, const String& v, bool& cfgDirty) {
   if (n == "tlsVerify")    { agent::store::setTlsVerify(v == "1" || v == "true"); return true; }   // live: next TLS connect honours it
   if (n == "capProbe")     { agent::store::setCapProbe(v.toInt()); return true; }   // W3b: 0 off / 1 passive / 2 active
   if (n == "fetchPol")     { agent::store::setFetchPolicy(v.toInt()); return true; } // W18: 0 off/1 approve/2 scan/3 yolo
+  if (n == "modInbound")   { agent::store::setModInbound(v == "1" || v == "true"); return true; }   // CUM-69 gates (non-admin)
+  if (n == "modOutbound")  { agent::store::setModOutbound(v == "1" || v == "true"); return true; }
+  if (n == "modInjection") { agent::store::setModInjection(v == "1" || v == "true"); return true; }
   if (n == "capProbeH")    { agent::store::setCapProbeHours(v.toInt()); return true; }   // active re-verify interval (hours)
   if (n == "loopDeadline") { agent::store::setOrchLoopDeadlineS(v.toInt()); return true; }
   // Sound cues: per-mode sound levels + shared sound theme (clamped/validated).
