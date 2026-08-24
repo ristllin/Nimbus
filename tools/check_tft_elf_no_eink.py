@@ -21,6 +21,7 @@ Usage:
   tools/check_tft_elf_no_eink.py [ELF ...]
 Defaults to .pio/build/esp32s3/firmware.elf when no path is given.
 """
+
 import os
 import shutil
 import subprocess
@@ -60,17 +61,17 @@ def check(nm, elf):
     ok = True
     if gxepd2:
         ok = False
-        print(f"FAIL  {elf}: {len(gxepd2)} GxEPD2 symbol(s) linked into a TFT build "
-              "(the e-ink stack must stay compiled out; SOLIDE_HAS_EPAPER is off).")
+        print(
+            f"FAIL  {elf}: {len(gxepd2)} GxEPD2 symbol(s) linked into a TFT build "
+            "(the e-ink stack must stay compiled out; SOLIDE_HAS_EPAPER is off)."
+        )
         for ln in gxepd2[:8]:
             print(f"        {ln.strip()}")
     if not tft:
         ok = False
-        print(f"FAIL  {elf}: no solide::display_tft:: symbols - the colour TFT path "
-              "did not link.")
+        print(f"FAIL  {elf}: no solide::display_tft:: symbols - the colour TFT path did not link.")
     if ok:
-        print(f"OK    {elf}: 0 GxEPD2 symbols, colour TFT path present "
-              f"({len(tft)} display_tft symbols).")
+        print(f"OK    {elf}: 0 GxEPD2 symbols, colour TFT path present ({len(tft)} display_tft symbols).")
     return ok
 
 
@@ -78,8 +79,7 @@ def main(argv):
     elfs = argv[1:] or [".pio/build/esp32s3/firmware.elf"]
     nm = find_nm()
     if not nm:
-        print("error: no nm found (need xtensa-esp32s3-elf-nm or nm on PATH)",
-              file=sys.stderr)
+        print("error: no nm found (need xtensa-esp32s3-elf-nm or nm on PATH)", file=sys.stderr)
         return 2
     return 0 if all(check(nm, e) for e in elfs) else 1
 
