@@ -219,7 +219,8 @@ static char* ensurePollBody() {
 // the same place the poll body and the reply/inbound queues already live - off the
 // internal heap that a live turn's TLS handshake is contending for. Lazy-allocated;
 // a null (PSRAM exhausted, never seen on an 8 MB board) falls through to each
-// caller's existing soft-failure path, so no message is lost.
+// caller's existing soft-failure path - the inbound drain leaves messages queued
+// (lossless), and the already-best-effort media fetches just skip that pass.
 static InboundMsg* g_inboundStage = nullptr;
 static InboundMsg* ensureInboundStage() {
   if (!g_inboundStage)
@@ -228,9 +229,11 @@ static InboundMsg* ensureInboundStage() {
 }
 
 // One shared response scratch for the mutually-exclusive Telegram API helpers
-// (send / getFile / download): each reads its HTTP body here then extracts what it
-// needs before the next helper runs, so a single PSRAM buffer replaces three
-// internal statics.
+// that parse a small JSON body: doSendMessageRaw and the two getFile calls (voice
+// + attachment). Each reads its HTTP body here then extracts what it needs before
+// the next helper runs, so a single PSRAM buffer replaces three internal statics.
+// (The file DOWNLOAD paths stream to LittleFS through their own local buffer, not
+// this one.)
 static constexpr size_t kTgApiRespCap = 1024;
 static char* g_apiResp = nullptr;
 static char* ensureApiResp() {
