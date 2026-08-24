@@ -86,7 +86,12 @@ Also PSRAM-backed by design: the vector-DB working set
 (`setWorkingAllocators`), ArduinoJson node pools (`ps_json.h`) - including the
 single-shot turn response docs - per-adapter request/response bodies
 (serialized into one contiguous PSRAM-spilled string and written once), the
-SFX manifest, and the web audio test-tone buffers.
+SFX manifest, the web audio test-tone buffers, and the Telegram poll body plus
+the poll task's staging buffers (the inbound-drain slot and the shared API
+response scratch). The last two are safe in PSRAM because `tg_poll` is their
+single consumer and its TLS work is fully serialized, so a batch never needs two
+of either live at once - moving them off internal freed ~6.7 KB of the scarce
+pool with no behavior change.
 
 ### A deliberate exception: the episodic deep-history read stays internal
 
