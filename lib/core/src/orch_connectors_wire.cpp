@@ -532,5 +532,47 @@ std::string knownCatalogJson() {
   return out;
 }
 
+// --- capability scope (CUM-159) ----------------------------------------------
+const char* capScopeSlug(CapScope s) {
+  switch (s) {
+    case CapScope::OrchestratorDirect: return "orchestrator-direct";
+    case CapScope::SubsessionsOnly:    return "subsessions-only";
+    case CapScope::Unavailable:        return "unavailable";
+  }
+  return "unavailable";
+}
+
+const char* capScopeLabel(CapScope s) {
+  switch (s) {
+    case CapScope::OrchestratorDirect: return "Orchestrator";
+    case CapScope::SubsessionsOnly:    return "Sub-agents";
+    case CapScope::Unavailable:        return "Unavailable";
+  }
+  return "Unavailable";
+}
+
+static bool providerKeyed(const std::string& prov, const ProviderState& ps) {
+  if (prov == "openai")    return ps.openaiKeyed;
+  if (prov == "anthropic") return ps.anthropicKeyed;
+  if (prov == "mistral")   return ps.mistralKeyed;
+  // A provider-agnostic connector ("any") rides whatever provider the turn uses,
+  // so it is usable as long as ANY provider is keyed.
+  if (prov == "any")       return ps.openaiKeyed || ps.anthropicKeyed || ps.mistralKeyed;
+  return false;   // a custom/unknown provider name has no key state here
+}
+
+CapScope connectorScope(const ConnectorInfo& c, const ProviderState& ps) {
+  if (!providerKeyed(c.prov, ps)) return CapScope::Unavailable;   // NO KEY
+  if (!c.enabled)                 return CapScope::Unavailable;   // owner turned it off
+  if (c.auth == 0 || c.auth == 2) return CapScope::Unavailable;   // sign-in FAILED / credential missing
+  // Keyed + enabled + credential ok. The head can run it on its OWN turns only
+  // when the connector lives on the current host provider (or is provider-
+  // agnostic); otherwise the head must spawn a sub-agent on that provider - the
+  // exact split catalogText() states in prose.
+  const bool onHost = (c.prov == "any") ||
+                      (!ps.currentHost.empty() && c.prov == ps.currentHost);
+  return onHost ? CapScope::OrchestratorDirect : CapScope::SubsessionsOnly;
+}
+
 }  // namespace orch
 }  // namespace nimbus

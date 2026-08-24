@@ -130,5 +130,28 @@ std::string catalogText(const std::vector<ConnectorInfo>& cs, const ProviderStat
 // The known-catalog as a JSON array string, for GET /api/connectors.
 std::string knownCatalogJson();
 
+// --- capability scope (CUM-159) ----------------------------------------------
+// Where a connector capability is reachable FROM. This is the machine-readable
+// sibling of the "callable on YOUR OWN turns vs reachable only by spawning a
+// sub-agent" prose that catalogText() renders (orch_connectors_wire.cpp) - the
+// two encode the SAME rule and must stay in sync. The device web UI Capabilities
+// table badges each connector row with one of these:
+//   OrchestratorDirect - the head can use it on its own turns: a keyed + enabled
+//                        connector on the CURRENT host provider (credential ok).
+//   SubsessionsOnly    - reachable ONLY by spawning a sub-agent on the connector's
+//                        provider: a keyed + enabled connector on a NON-host one.
+//   Unavailable        - not usable now: provider unkeyed, connector disabled, or
+//                        its credential failed / is missing.
+enum class CapScope : uint8_t { OrchestratorDirect = 0, SubsessionsOnly = 1, Unavailable = 2 };
+
+// Machine slug (FROZEN once shipped - it rides /api/tools and HIL reads it) and
+// the short human label for the web badge.
+const char* capScopeSlug(CapScope s);
+const char* capScopeLabel(CapScope s);
+
+// Classify one connector for a head currently running on ps.currentHost. Pure and
+// host-tested; mirrors the callable-here-vs-spawn decision in catalogText().
+CapScope connectorScope(const ConnectorInfo& c, const ProviderState& ps);
+
 }  // namespace orch
 }  // namespace nimbus

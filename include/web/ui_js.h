@@ -2440,13 +2440,16 @@ function loadTools(){
     $('toolstat').textContent=(d.count||0)+' tools';
     const host=$('toollist'); host.innerHTML='';
     const byG={}; (d.tools||[]).forEach(t=>{(byG[t.group||'registry']=byG[t.group||'registry']||[]).push(t);});
+    const AVL={'orchestrator-direct':['Orchestrator',''],'subsessions-only':['Sub-agents','ext'],'unavailable':['Unavailable','un']};
     const mkRow=t=>{
       const row=document.createElement('div'); row.className='row'; row.style.alignItems='flex-start';
       const tag=t.tag?('<span class="badge ext" style="margin-left:6px">'+t.tag+'</span>'):'';
       const loop=t.rides_loop?'<span class=badge style="margin-left:6px">loop</span>':'';
+      const a=AVL[t.availability];
+      const av=a?('<span class="badge '+a[1]+'" style="margin-left:6px">'+a[0]+'</span>'):'';
       row.innerHTML='<code style="min-width:150px;display:inline-block">'+
         (t.name||'').replace(/</g,'&lt;')+'</code><span class=hint style="flex:1">'+
-        (t.description||'').replace(/</g,'&lt;')+loop+tag+'</span>';
+        (t.description||'').replace(/</g,'&lt;')+av+loop+tag+'</span>';
       return row;};
     ['registry','device','connector'].forEach(g=>{   // skills get their OWN panel below
       if(!byG[g])return;

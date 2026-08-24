@@ -58,6 +58,7 @@ table{width:100%;border-collapse:collapse;font-size:12.5px}td,th{text-align:left
 .sec{border:1px solid var(--line);background:var(--raise);border-radius:16px;padding:16px;margin:14px 0;box-shadow:var(--shadow)}
 .badge{display:inline-block;padding:1px 8px;border-radius:11px;font-size:11px;background:rgba(99,209,154,.14);color:var(--ok)}
 .badge.ext{background:rgba(108,184,255,.13);color:var(--info)}
+.badge.un{background:rgba(150,160,170,.14);color:var(--ink3)}
 .hint{font-size:12px;color:var(--ink3);margin:2px 0 0}
 .row{display:flex;align-items:center;gap:8px}
 .row input{flex:1}
@@ -245,7 +246,7 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <div class=ptitle>Settings</div>
 <p class=plede>Mode, light, sound, power, and connectivity - all in one place.</p>
 
-<details class=setgroup open><summary>Mode &amp; identity<span class=chev>&rsaquo;</span></summary>
+<details class=setgroup><summary>Mode &amp; identity<span class=chev>&rsaquo;</span></summary>
 <div class=setbody>
 <label>Mode <button class=qh type=button aria-expanded=false aria-label="About modes">?</button></label>
 <p class="hint tip"><b>Notifier</b> turns the ring into a status light for your coding sessions, connected over Bluetooth. <b>Orchestrator</b> runs the AI assistant - Telegram, voice, and memory. Switching modes restarts the device.</p>
@@ -292,7 +293,7 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 </div>
 </details>
 
-<details class=setgroup open><summary>Battery mode<span class=chev>&rsaquo;</span></summary>
+<details class=setgroup><summary>Battery mode<span class=chev>&rsaquo;</span></summary>
 <div class=setbody>
 <div id=profiles>
 <label class=pr><input type=radio name=profile value=0> Dark</label>
@@ -554,6 +555,7 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <div class=sec>
 <h2>Tools <span class="badge" id=toolstat></span> <button class=qh type=button aria-expanded=false aria-label="About tools">?</button></h2>
 <p class="hint tip">What the assistant can do right now - the live on-device tool surface. External MCP clients can call it too, over <code>POST /mcp</code>.</p>
+<p class=hint style="margin:2px 0 8px">Each capability is tagged by where it runs: <span class="badge">Orchestrator</span> the assistant runs it directly, <span class="badge ext">Sub-agents</span> only a spawned helper can, <span class="badge un">Unavailable</span> not usable now.</p>
 <div id=toollist></div>
 </div>
 <div class=sec>
@@ -572,7 +574,7 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <div class=sec>
 <h2>Models <span class="badge ext" id=orchoff style="display:none">Notifier mode - these settings apply when you switch to Orchestrator</span></h2>
 
-<details class=setgroup open><summary>Providers &amp; keys<span class=chev>&rsaquo;</span></summary>
+<details class=setgroup><summary>Providers &amp; keys<span class=chev>&rsaquo;</span></summary>
 <div class=setbody>
 <p class=hint>Keys are write-only - a saved key shows as &quot;set&quot; and is never displayed again. Model choices unlock after the key verifies.</p>
 <div id=provs></div>
@@ -709,7 +711,7 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <div class=ptitle>Memory</div>
 <p class=plede>What the device knows and the files it has made, stored on its SD card, not in a cloud.</p>
 
-<details class=setgroup open><summary>Memory<span class=chev>&rsaquo;</span></summary>
+<details class=setgroup><summary>Memory<span class=chev>&rsaquo;</span></summary>
 <div class=setbody>
 <label>Directive <button class=qh type=button aria-expanded=false aria-label="About the directive">?</button></label>
 <p class="hint tip">Your standing instructions to the assistant. Only you can change them. Up to 600 characters.</p>
@@ -3383,13 +3385,16 @@ function loadTools(){
     $('toolstat').textContent=(d.count||0)+' tools';
     const host=$('toollist'); host.innerHTML='';
     const byG={}; (d.tools||[]).forEach(t=>{(byG[t.group||'registry']=byG[t.group||'registry']||[]).push(t);});
+    const AVL={'orchestrator-direct':['Orchestrator',''],'subsessions-only':['Sub-agents','ext'],'unavailable':['Unavailable','un']};
     const mkRow=t=>{
       const row=document.createElement('div'); row.className='row'; row.style.alignItems='flex-start';
       const tag=t.tag?('<span class="badge ext" style="margin-left:6px">'+t.tag+'</span>'):'';
       const loop=t.rides_loop?'<span class=badge style="margin-left:6px">loop</span>':'';
+      const a=AVL[t.availability];
+      const av=a?('<span class="badge '+a[1]+'" style="margin-left:6px">'+a[0]+'</span>'):'';
       row.innerHTML='<code style="min-width:150px;display:inline-block">'+
         (t.name||'').replace(/</g,'&lt;')+'</code><span class=hint style="flex:1">'+
-        (t.description||'').replace(/</g,'&lt;')+loop+tag+'</span>';
+        (t.description||'').replace(/</g,'&lt;')+av+loop+tag+'</span>';
       return row;};
     ['registry','device','connector'].forEach(g=>{   // skills get their OWN panel below
       if(!byG[g])return;
