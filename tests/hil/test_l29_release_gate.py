@@ -78,9 +78,7 @@ class TestTunnelLoopback:
 
     def test_cloudloop_serves_the_ui_root(self, device):
         _require_wifi(device)
-        m = device.cmd_re(
-            "CLOUDLOOP /", r"CLOUDLOOP\s+/\s+->\s+(-?\d+)", timeout=20.0
-        )
+        m = device.cmd_re("CLOUDLOOP /", r"CLOUDLOOP\s+/\s+->\s+(-?\d+)", timeout=20.0)
         assert int(m.group(1)) == 200, "the device UI root did not serve over the loopback path"
 
 
@@ -112,7 +110,8 @@ class TestRenderToGlass:
         # RDDPM (0x0A) bit 2 = display on; the driver also prints the expected MADCTL.
         device.drain(quiet=0.2)
         device.send("TFTPWR?")
-        m = device.expect_re(r"madctl_expect=0x([0-9A-Fa-f]+)", timeout=6.0)
+        # Read past the expected-MADCTL line to the post-rearm power readback.
+        device.expect_re(r"madctl_expect=0x([0-9A-Fa-f]+)", timeout=6.0)
         # A readable, non-zero power register is the minimum; the value itself is
         # panel-specific, so we assert it is not the all-zero 'nothing answered'.
         pm = device.expect_re(r"after-rearm rddpm=0x([0-9A-Fa-f]+)", timeout=6.0)

@@ -61,8 +61,7 @@ class WedgeSentinel:
             return self.recovered
         self.recovery_attempted = True
         self._log(
-            "\n[wedge_guard] CUM-141: console-death signature - attempting one "
-            "in-place USB bus reset (no reboot)"
+            "\n[wedge_guard] CUM-141: console-death signature - attempting one in-place USB bus reset (no reboot)"
         )
         try:
             if not self.device.bus_reset():

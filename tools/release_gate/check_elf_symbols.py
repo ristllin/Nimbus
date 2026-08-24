@@ -71,7 +71,9 @@ def main(argv: "list[str] | None" = None) -> int:
         return 1
     nm = find_nm()
     if not nm:
-        print("[gate:elf-symbols] FAIL: xtensa-esp32s3-elf-nm not found (build the firmware once to fetch the toolchain)")
+        print(
+            "[gate:elf-symbols] FAIL: xtensa-esp32s3-elf-nm not found (build the firmware once to fetch the toolchain)"
+        )
         return 1
 
     ok, msgs = check(read_symbols(nm, args.elf))
