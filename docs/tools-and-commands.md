@@ -149,7 +149,6 @@ Firmware variants are PlatformIO environments in `platformio.ini`. Build with
 | `test` | Production firmware plus the serial test console (`NIMBUS_TEST`) - what the HIL harness drives. Never the flash target for a production unit. |
 | `testuart` | Same as `test`, but the console lives on the UART USB-C port instead of the native USB port (which drops bytes on the V0.1 board). |
 | `bttest` | Same as `test`, but advertises over Bluetooth as "Nimbus-BT" so a bench board is unambiguous next to a production "Nimbus". |
-| `p2bringup` | Standalone hardware bring-up sketch (no `main.cpp`). |
 | `beep` | Minimal speaker diagnostic - isolates the amp and speaker from the full firmware. |
 | `mictest` | Minimal I²S microphone bring-up - verifies the mic read path and concurrent speaker+mic loopback. |
 | `tftmin` / `tftmin-uart` | The smallest program that puts anything on the TFT panel: init, one solid fill, nothing else. Exists to take every variable out of a blank-screen fault. |

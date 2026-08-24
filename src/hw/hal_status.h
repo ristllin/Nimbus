@@ -16,11 +16,7 @@ struct HalHealth {
   bool leds    = true;
   bool storage = true;
   bool memory  = true;
-  // `input` mirrors `touch` (the color panel is the only input device). Kept as a
-  // distinct field because /api/state and its HIL assertions pin the `input` key.
-  bool input   = true;
-  bool touch   = true;
-  bool isTouchBoard = true;   // always a touch board
+  bool touch   = true;   // color touch panel (the only input device)
 };
 
 void            setHalHealth(const HalHealth& h);

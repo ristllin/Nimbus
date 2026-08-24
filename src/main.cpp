@@ -468,8 +468,9 @@ static bool          g_orchMode = false;       // resolved once at boot
 // True once it is up; flips false only in the fail-soft path when panel bring-up
 // fails, which gates rendering off so a dead panel cannot stall the device.
 static bool          g_screenIsTft = false;
-// The stored scrModel still reads "eink" on a stale unit (frozen NVS key). We run
-// the color panel regardless and surface a clear "unsupported display" notice.
+// True when the stored scrModel is not "tft" (a stale "eink" unit; frozen NVS key).
+// We run the color panel regardless and hold a clear "unsupported display" notice on
+// it at the end of setup (see the boot-notice block).
 static bool          g_unsupportedScreenModel = false;
 // White-screen mitigation (TFT): drop the SoftAP once STA is up so its continuous
 // beacon TX stops disturbing the panel; bring it BACK when STA goes down so the
@@ -654,21 +655,14 @@ static void orchOnMessage(const String& from, const String& chatId,
 // TickCallback: advance background jobs once per poll cycle; returns active count.
 static int orchTick() { return agent::orchestrator::pollJobs(); }
 
-// Async panel-done approximation (solide::display has no completion callback):
-// treat the panel as busy for the measured refresh, then release the scheduler.
-static uint32_t g_panelDoneAt = 0;
-static bool     g_panelBusy = false;
-
 // Menu repaint request: the menu paints directly (bypassing the scheduler), but
 // the panel takes ~2.2 s per refresh, so a burst of knob events must coalesce.
 // Events set this flag; the loop flushes one paint once the menu's OWN refresh
 // window (g_menuDoneAt) has elapsed - deliberately independent of the status
-// path's g_panelBusy so an in-flight/stuck status render can never stall the
-// menu (the "long-press shows nothing" failure). The menu renders into its own
-// framebuffer (g_menuFb) so an immediate paint can't tear a status frame the
-// display task is still streaming out of the shared g_fb.
+// render path so an in-flight/stuck status render can never stall the menu (the
+// "long-press shows nothing" failure).
 static bool     g_menuNeedsPaint = false;
-static uint32_t g_menuDoneAt = 0;   // menu-refresh busy deadline (its own, not g_panelBusy)
+static uint32_t g_menuDoneAt = 0;   // menu-refresh busy deadline (its own)
 static uint32_t g_updCheckKickMs = 0;  // last menu "Check for updates" kick - the loop-body
                                        // reseed holds "Checking..." through the async task
                                        // spin-up instead of overwriting it with stale state
@@ -1266,7 +1260,7 @@ static void refreshRing() {
     if (g_previewActive) {
       Config previewCfg;
       previewCfg.setProfile(g_previewProfile);
-      p = ring::compose(g_router, previewCfg, g_cursor, g_panelBusy, millis(), co);
+      p = ring::compose(g_router, previewCfg, g_cursor, /*panelBusy=*/false, millis(), co);
     } else if (g_screenIsTft && !solide::board().hasRing) {
       // On a board with NO physical LED ring, the ring is drawn on the panel, so
       // the battery-mode postures (Dark/Calm) that collapse the LED ring to a
@@ -1277,9 +1271,9 @@ static void refreshRing() {
       // full brightness always; the battery mode dims the BACKLIGHT instead.
       Config ringCfg;
       ringCfg.setProfile(ProfileId::Desk);   // Desk => Full posture + full brightness
-      p = ring::compose(g_router, ringCfg, g_cursor, g_panelBusy, millis(), co);
+      p = ring::compose(g_router, ringCfg, g_cursor, /*panelBusy=*/false, millis(), co);
     } else {
-      p = ring::compose(g_router, g_cfg, g_cursor, g_panelBusy, millis(), co);
+      p = ring::compose(g_router, g_cfg, g_cursor, /*panelBusy=*/false, millis(), co);
     }
   }
   // Preview DEMO (audit P1.4): with no live jobs an idle ring composes DARK (the
@@ -2461,13 +2455,12 @@ void setup() {
     }
   }
   // Publish HAL health now that the panel outcome is final, so the self-test and
-  // /api/health read the SAME state (they disagreed when this ran first: one saw
-  // the live g_screenIsTft, the other the frozen copy).
+  // /api/health read the SAME state.
   hw::setHalHealth({g_hal.display, g_hal.leds, g_hal.storage, g_hal.memory,
-                    g_hal.input, g_hal.touch, g_screenIsTft});
-  // Record the DRIVER that actually bound (may be forced to eink by a fail-soft
-  // TFT bring-up, and differs from the stored preference until the next restart)
-  // so the onboarding wizard can tell whether a display change needs a reboot.
+                    g_hal.touch});
+  // Record whether the panel actually bound (a fail-soft bring-up leaves it false
+  // and differs from the stored preference until the next restart) so the
+  // onboarding wizard can tell whether a display change needs a reboot.
   agent::store::setBootScreenIsTft(g_screenIsTft);
   BOOT_STAGE(50, 50, 50);   // WHITE: HAL (SD/mem/display/leds/input) up
   // Start the breathing-white boot flourish now that the LED ring is up - the
@@ -3095,7 +3088,7 @@ void setup() {
   }
 
   // Low-battery protection: seed the policy from NVS, and if THIS boot is a wake
-  // from the low-batt sleep (knob rotation or the charger-sniff timer), give a
+  // from the low-batt sleep (the charger-sniff timer or the VBUS pin), give a
   // grace window before re-sleeping so a human can react / a charger can be seen.
   g_power.policyRef().setT2PackMv(agent::store::sleepMv());
   g_power.policyRef().setT2Override(agent::store::sleepOvr());
@@ -3106,6 +3099,19 @@ void setup() {
       s_lowBattGraceUntil = millis() + 90u * 1000u;   // 90 s to react
       agent::alogf("power: woke from low-batt sleep (cause=%d) - timer/charger sniff", int(wc));
     }
+  }
+
+  // A stale scrModel of "eink" is unsupported (e-ink was removed). The color panel
+  // is up regardless; hold a clear notice on it so the owner is never left guessing,
+  // and the web page can switch the setting to the touch screen. Sticky, so it holds
+  // until a tap dismisses it; the scheduler gate (loop, !g_askSticky) keeps status
+  // frames from painting over it. A normal unit (scrModel=tft) never sees this.
+  if (g_unsupportedScreenModel && g_screenIsTft) {
+    g_askOverride = "Unsupported display setting.\n"
+                    "This unit is set to e-ink, which is no longer supported.\n"
+                    "Open the device web page to switch it to the touch screen.";
+    g_askSticky = true; g_askPage = 0;
+    renderScreen(attn::ScreenId::Ask, -1);
   }
 
   tc::ready();  // "READY mode=<n> ip=<..>" boot beacon (no-op in production)
@@ -4062,12 +4068,12 @@ void loop() {
     // ⚠ the grace-pending gate is load-bearing (review, CRITICAL): deep sleep wipes
     // the policy's RAM state, so after a wake the debounce re-fires ~8 s into the
     // boot - long before the grace window's own check ever ran. Without this gate
-    // the "90 s to react" was dead code and every knob wake re-slept in ~10 s.
+    // the "90 s to react" was dead code and every timer/charger wake re-slept in ~10 s.
     const bool gracePending = s_wokeFromLowBatt && s_lowBattGraceUntil != 0;
     if (pa.shutdownT2 && !gracePending &&
         !(g_highLoadActive && g_drainDeep) && !agent::store::sleepOvr()) {
-      agent::alogf("power: pack at/below %umV (debounced) - deep sleep (rotate knob "
-                   "or charge to wake)", unsigned(agent::store::sleepMv()));
+      agent::alogf("power: pack at/below %umV (debounced) - deep sleep "
+                   "(charge to wake)", unsigned(agent::store::sleepMv()));
       enterLowBattSleep();
     }
   }
@@ -4123,13 +4129,6 @@ void loop() {
           ? "SD card lost - memory demoted to RAM tier (no reboot)"
           : "SD card recovered - memory promoted back to SD tier");
     }
-  }
-
-  if (g_panelBusy && int32_t(now - g_panelDoneAt) >= 0) {
-    g_panelBusy = false;
-    g_sched.onRenderDone(now);
-    if (!g_menu.isOpen())
-      refreshRing();  // drop the syncing shimmer now the panel is free
   }
 
   // Header BT/WiFi status glyphs are computed at render time (buildCtx), so they
@@ -4207,7 +4206,7 @@ void loop() {
   }
 
   // Flush a coalesced menu repaint once the menu's OWN refresh window elapses.
-  // Gated on g_menuDoneAt (not g_panelBusy) so a busy/stuck status render can
+  // Gated on g_menuDoneAt so a busy/stuck status render can
   // never stall the menu: g_menuDoneAt only ever tracks the previous MENU frame,
   // which is elapsed in the common open case, so this fires on the next loop
   // (~3 ms) and the menu appears within one refresh. When a menu frame is still

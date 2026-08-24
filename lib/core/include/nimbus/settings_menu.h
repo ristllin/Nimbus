@@ -343,7 +343,7 @@ class SettingsMenu {
   bool    sdProbeRequested_ = false; // Re-probe SD rows (Main SD + Connectivity; device drains)
   std::string sdStatus_;             // Main "SD:" row text (device-seeded live)
   bool    volAdjusting_ = false;     // Sound > Volume row captured rotation (classic adjust)
-  uint16_t saverMin_ = 60;           // Main > Screensaver idle minutes (0 = off, NVS-synced)
+  uint16_t saverMin_ = 5;            // Main > Screensaver idle minutes (0 = off, NVS-synced)
   bool screenFlip_ = false;          // Main > Display flip (TFT only, NVS-synced)
   bool    autoUpdate_ = false;       // Software update > Automatic updates (NVS-synced)
   int     sttProv_ = 0;              // Sound > Dictation (0 Mistral / 1 OpenAI, NVS-synced)

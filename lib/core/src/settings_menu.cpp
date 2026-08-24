@@ -202,7 +202,7 @@ void SettingsMenu::onClick() {
         case RowSound:
           enter(State::Sound);
           return;
-        case RowSaver: {                // cycle Off -> 15 -> 30 -> 60 -> 120 -> 240 -> Off
+        case RowSaver: {                // cycle Off -> 1 -> 2 -> 5 -> 10 -> 15 -> 30 -> 60 -> Off
           const uint16_t* steps = kSaverStepsTft;
           const int count = int(sizeof(kSaverStepsTft) / sizeof(kSaverStepsTft[0]));
           int next = 0;                 // wrap default: back to Off
