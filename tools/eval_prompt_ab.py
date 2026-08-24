@@ -44,19 +44,23 @@ import time
 import urllib.error
 import urllib.request
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# The persistence format, pricing table, and ~/nimbus-evals/ location now live in
+# the shared suite-agnostic runner (tools/eval_harness.py); this tool is its first
+# client. Import it robustly whether run as a script or loaded by a test.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+import eval_harness as H  # noqa: E402
+
+ROOT = os.path.dirname(_HERE)
 SCHEMA_PATH = os.path.join(ROOT, "test/golden/orch_schema.json")
 V1_PROMPT = os.path.join(ROOT, "test/golden/orch_prompt_default.txt")
 V2_PROMPT = os.path.join(ROOT, "test/golden/orch_prompt_v2_default.txt")
-EVALS_DIR = os.path.expanduser("~/nimbus-evals")
+EVALS_DIR = H.EVALS_DIR
 
-# Rough public per-1M-token prices (USD) for the $ estimate only. Update as
-# needed; the token counts in the report are the ground truth.
-PRICING = {
-    "anthropic": {"in": 3.0, "out": 15.0},
-    "openai": {"in": 2.5, "out": 10.0},
-    "mistral": {"in": 2.0, "out": 6.0},
-}
+# Rough public per-1M-token prices (USD) for the $ estimate only; the token counts
+# in the report are the ground truth. Shared with every other suite via the runner.
+PRICING = H.PRICING
 DEFAULT_MODEL = {
     "anthropic": "claude-sonnet-5",
     "openai": "gpt-5",
@@ -228,6 +232,51 @@ CALLERS = {"anthropic": call_anthropic, "openai": call_openai}
 def load_prompt(path):
     with open(path, encoding="utf-8") as f:
         return f.read()
+
+
+# ---- registration through the suite-agnostic runner -------------------------
+# Wiring the N11 prompt A/B through tools/eval_harness so the nightly/trend layer
+# treats it like any other suite: each (version, scenario) pair is a case, graded
+# by the same oracle, and the two prompt bodies feed the change-detection hash so
+# an unchanged prompt set skips on the nightly. `caller` is injectable so a host
+# test can build the suite and hash it with a mock provider (no network, $0).
+def build_n11_suite(provider="anthropic", model=None, caller=None):
+    model = model or DEFAULT_MODEL[provider]
+    caller = caller or CALLERS[provider]
+    schema = json.load(open(SCHEMA_PATH))
+    prompts = {"v1": load_prompt(V1_PROMPT), "v2": load_prompt(V2_PROMPT)}
+    cases = [(name, user, oracle, ver) for ver in ("v1", "v2") for (name, user, oracle) in SCENARIOS]
+
+    def run(m, case):
+        name, user, oracle, ver = case
+        turn, usage = caller(m, prompts[ver], user, schema, 700)
+        usage = usage or {"in": 0, "out": 0}
+        if turn is None:
+            return H.CaseResult(ok=False, score=0.0, note=f"{ver}:no orch_turn returned", usage=usage)
+        passed, note = oracle(turn)
+        return H.CaseResult(ok=bool(passed), score=1.0 if passed else 0.0, note=f"{ver}:{note}", usage=usage)
+
+    inputs = {
+        "kind": "prompt_ab",
+        "provider": provider,
+        "models": [model],
+        "scenarios": [s[0] for s in SCENARIOS],
+        "v1_prompt": prompts["v1"],
+        "v2_prompt": prompts["v2"],
+        "schema": schema,
+    }
+    suite = H.Suite(
+        id=f"n11_prompt_ab_{provider}",
+        description="N11 orchestrator system-prompt A/B (v1 vs v2), oracle-graded orch_turn.",
+        provider=provider,
+        models=[model],
+        cases=cases,
+        inputs=inputs,
+        run=run,
+        budget=H.Budget(max_calls=40, max_usd=2.0),
+        case_id=lambda c: f"{c[3]}/{c[0]}",
+    )
+    return H.register(suite)
 
 
 def run(args, model):
