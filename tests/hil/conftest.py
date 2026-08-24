@@ -31,6 +31,15 @@ from secrets import Secrets, SecretsUnavailable  # noqa: E402
 HARDWARE_MARKERS = ("hil", "net", "agent", "audio")
 GATE_REASON = "hardware gated: pass --allow-hardware (board must be recovered first - F11/F12 brick)"
 
+# ---- CUM-141: mid-run console-wedge detection + in-place auto-recovery ------
+# The pure, host-testable core lives in wedge_guard.py; here it is wired to the
+# pytest runtest hooks (below). On the FIRST console-death signature the sentinel
+# attempts ONE in-place USB bus reset (clears the stalled endpoint without
+# rebooting the chip); if the console does not come back the session is marked
+# wedged and every remaining hardware test FAILS FAST with a clear marker instead
+# of each burning a full read timeout (the 58-cascade this replaces).
+from wedge_guard import WedgeSentinel, is_wedge_candidate as _is_wedge_candidate  # noqa: E402
+
 
 # ---- markers (registered here AND in pytest.ini; belt + suspenders) --------
 def pytest_configure(config: "pytest.Config") -> None:
@@ -45,6 +54,8 @@ def pytest_configure(config: "pytest.Config") -> None:
         ("qa", "comprehensive pre-OTA connector + follow-up QA (recorded + judged); gated"),
     ):
         config.addinivalue_line("markers", f"{name}: {desc}")
+    # One wedge sentinel per session, reachable from the runtest hooks below.
+    config._nimbus_wedge = WedgeSentinel(enabled=not config.getoption("--no-wedge-recovery"))
 
 
 # ---- CLI options -----------------------------------------------------------
@@ -77,6 +88,13 @@ def pytest_addoption(parser: "pytest.Parser") -> None:
         "never bypasses the test's own assertion, refused under "
         "`-m manual`",
     )
+    g.addoption(
+        "--no-wedge-recovery",
+        action="store_true",
+        default=False,
+        help="CUM-141: disable the automatic in-place USB bus-reset recovery on a "
+        "mid-run console wedge (leave the raw cascade for debugging)",
+    )
 
 
 # ---- collection-safety gate (spec §2.4) ------------------------------------
@@ -90,6 +108,50 @@ def pytest_collection_modifyitems(config: "pytest.Config", items) -> None:
     for item in items:
         if any(item.get_closest_marker(m) for m in HARDWARE_MARKERS):
             item.add_marker(skip_gate)
+
+
+def _is_hardware_item(item) -> bool:
+    return any(item.get_closest_marker(m) for m in HARDWARE_MARKERS)
+
+
+# ---- CUM-141: fail-fast once the console is known-wedged -------------------
+def pytest_runtest_setup(item: "pytest.Item") -> None:
+    """Before a hardware test runs, if the console is already known-wedged and
+    unrecovered, fail it IMMEDIATELY with a clear marker rather than letting each
+    console command burn a full read timeout (the 58-cascade this replaces)."""
+    sentinel = getattr(item.config, "_nimbus_wedge", None)
+    if sentinel is None or not sentinel.wedged:
+        return
+    if _is_hardware_item(item):
+        pytest.fail(
+            "CONSOLE WEDGED (CUM-141): the USB-Serial-JTAG console stalled earlier "
+            "and an in-place bus reset did not bring it back. Remaining hardware "
+            "tests fail fast. Recover with `python3 tools/usb_reset.py --serial <MAC>` "
+            "(or power-cycle / BOOT+RST) and rerun.",
+            pytrace=False,
+        )
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item: "pytest.Item", call):
+    """Detect a console-death signature in a hardware test's failure and, on the
+    first one, attempt a single in-place recovery (CUM-141). A genuine assertion
+    failure or a firmware boot-loop (BootError) is NOT a wedge and flows through
+    untouched."""
+    outcome = yield
+    report = outcome.get_result()
+    if report.when != "call" or not report.failed:
+        return
+    sentinel = getattr(item.config, "_nimbus_wedge", None)
+    if sentinel is None or not sentinel.enabled or sentinel.wedged or sentinel.recovery_attempted:
+        return
+    if not _is_hardware_item(item) or getattr(call, "excinfo", None) is None:
+        return
+    # A candidate signature only ARMS the check; try_recover() confirms the console
+    # is actually dead (via a ping) before any disruptive USB reset, so an ordinary
+    # ExpectTimeout on a live console does not trigger a gratuitous reset.
+    if _is_wedge_candidate(call.excinfo.value):
+        sentinel.try_recover()
 
 
 # ---- fixtures --------------------------------------------------------------
@@ -121,6 +183,11 @@ def device(request, allow_hardware, port):
 
     flash_env = request.config.getoption("--flash-env")
     dev = Device(port=port, flash_env=flash_env)
+    # CUM-141: hand the live device to the wedge sentinel so the runtest hooks can
+    # attempt an in-place USB bus-reset recovery if the console stalls mid-run.
+    sentinel = getattr(request.config, "_nimbus_wedge", None)
+    if sentinel is not None:
+        sentinel.device = dev
 
     # LAN-only mode: with NIMBUS_TEST_IP + NIMBUS_TEST_TOKEN set, a `net` suite
     # reaches the board entirely over HTTP and needs no console. Serial bring-up
@@ -185,6 +252,20 @@ def nsn(device):
         pytest.skip(str(exc))
     yield injector
     injector.close()
+
+
+@pytest.fixture()
+def wake_home(device):
+    """Return a callable that brings the panel to a known StatusIdle 'home' state
+    (taps Back out of any menu, dismisses screensaver/detail screens). Use at the
+    top of a test that assumes the idle screen so it does not inherit whatever the
+    previous test left on the glass. LAN-only runs (no console) skip cleanly via
+    the device's own guard."""
+
+    def _wake(timeout: float = 25.0):
+        device.ensure_status_idle(timeout=timeout)
+
+    return _wake
 
 
 @pytest.fixture()

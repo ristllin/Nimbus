@@ -44,6 +44,13 @@ jobs:
             *) echo "::error::tag $TAG != NIMBUS_FW_VERSION $VER"; exit 1 ;;
           esac
 
+      # RELEASE GATE (CUM-174 #6): refuse to build/publish on a known white-screen
+      # driver pin (CUM-167). Fast, no toolchain - fails the release before the
+      # expensive build if the firmware still points at a denylisted driver.
+      - name: Release gate - driver pin (CUM-167)
+        working-directory: Nimbus
+        run: python3 tools/release_gate/check_driver_pin.py
+
       - uses: actions/cache@v4
         with:
           path: ~/.platformio
@@ -68,6 +75,13 @@ jobs:
           cp .pio/build/esp32s3-cyd/firmware.bin firmware-freenove.bin
           cp .pio/build/esp32s3-cyd-35/firmware.bin firmware-freenove-35.bin
           cp .pio/build/esp32s3-cyd-40/firmware.bin firmware-freenove-40.bin
+
+      # RELEASE GATE (CUM-174 #6 / CUM-167): the shipped TFT image must link ZERO
+      # e-paper (GxEPD2) symbols (the 14.5 KB internal-SRAM win) and MUST link the
+      # color-TFT plumbing. Runs on the just-built ELF, before signing/publishing.
+      - name: Release gate - e-paper symbol check (CUM-167)
+        working-directory: Nimbus
+        run: python3 tools/release_gate/check_elf_symbols.py --elf .pio/build/esp32s3/firmware.elf
 
       - name: Sign + build typed OTA manifest (schema 2)
         working-directory: Nimbus
