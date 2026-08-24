@@ -119,6 +119,12 @@ static String g_askOverride;
 // within seconds ("can't read more than a line or two").
 static bool g_askSticky = false;
 static int  g_askPage = 0;
+// A transient Ask override that precedes a reboot (mode switch): the device
+// restarts on its own, so the Ask screen draws NO Close button (it would be dead -
+// the reset lands before a tap could reach it). Set true right before rendering
+// such a confirmation; a reboot follows immediately, so it never leaks to a later
+// dismissible reply (and a fresh boot clears it).
+static bool g_askTransient = false;
 // Voice hold-to-talk state. g_voiceActive guards re-entry (LongPress auto-repeats
 // while held); g_voiceStop is the recordToFile stop flag driven by the release
 // watcher; g_voiceDone lets the watcher exit. g_voiceReply* carries the async turn
@@ -820,6 +826,7 @@ static render::ScreenCtx buildCtx(int cursorJob) {
   }
   if (g_askOverride.length()) {
     c.askText = std::string(g_askOverride.c_str());  // mode-switch / voice screen
+    c.askClosable = !g_askTransient;                 // no Close on a pre-reboot notice
     c.detailPage = g_askPage;                        // rotate pages a held reply (P2.3)
   }
   // Copy the slots under the lock into a local buffer (tiny, no heap), then build
@@ -3337,6 +3344,7 @@ static void settleMenuAfterMutation(uint32_t now) {
       Serial.printf("MODE menu -> %d (reboot)\n", int(wantOrch));
       g_askOverride = wantOrch ? "Switching to Orchestrator mode..."
                                : "Switching to Notifier mode...";
+      g_askTransient = true;                          // reboot follows: no Close button
       ::sfx::fire(nimbus::sfx::Ev::ModeSwitch);       // "Set the course." (plays under the sweep)
       renderScreen(attn::ScreenId::Ask, -1);        // panel confirmation screen
       playModeSwitchFeedback(wantOrch);             // LED sweep (+ time for the panel)
@@ -3748,6 +3756,7 @@ void loop() {
           (toOrch ? "Orchestrator" : "Notifier") + " mode (restart follows)");
       g_askOverride = toOrch ? "Switching to Orchestrator mode..."
                              : "Switching to Notifier mode...";
+      g_askTransient = true;                          // reboot follows: no Close button
       ::sfx::fire(nimbus::sfx::Ev::ModeSwitch);
       renderScreen(attn::ScreenId::Ask, -1);
       playModeSwitchFeedback(toOrch);

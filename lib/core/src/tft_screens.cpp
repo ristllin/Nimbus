@@ -740,6 +740,11 @@ void drawAsk(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx) {
     fb.text((L.w - fb.textWidth(foot, 1)) / 2, L.bodyTop() + cardH + 6, foot, kInk3, 1);
   }
 
+  // A transient pre-reboot notice (mode switch) restarts the device on its own,
+  // so it draws NO Close button: the control could never be used before the reset
+  // and read as dead (owner: "switching to notifier mode always shows a button
+  // saying close, it does nothing"). A real reply keeps Close as its dismiss exit.
+  if (!ctx.askClosable) return;
   const int by = L.h - L.gut() - L.minTap;
   fb.fillRoundRect(L.gut(), by, L.w - 2 * L.gut(), L.minTap, L.cardRadius, kRaise2);
   fb.roundRect(L.gut(), by, L.w - 2 * L.gut(), L.minTap, L.cardRadius, kLine2);

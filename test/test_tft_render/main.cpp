@@ -270,6 +270,30 @@ static void test_ask() {
   golden("ask", ScreenId::Ask, c);
 }
 
+// CUM-175: the mode-switch confirmation reuses the Ask screen, but the device
+// restarts on its own right after, so the "Close" button could never be tapped
+// and read as dead ("switching to notifier mode always shows a button saying
+// close, it does nothing"). askClosable=false suppresses it. A real reply keeps it.
+static void test_ask_mode_switch_has_no_close() {
+  ScreenCtx c = baseCtx();
+  c.askText = "Switching to Notifier mode...";
+  c.askClosable = false;
+  golden("ask_mode_switch", ScreenId::Ask, c);
+  Fb565 fb;
+  const Rendered r = renderScreen(fb, ScreenId::Ask, c);
+  for (const auto& t : r.taps)
+    TEST_ASSERT_MESSAGE(t.action != TapRegion::Action::Home,
+                        "mode-switch Ask must not draw a Close/Home target");
+  ScreenCtx c2 = c;
+  c2.askClosable = true;
+  Fb565 fb2;
+  const Rendered r2 = renderScreen(fb2, ScreenId::Ask, c2);
+  bool home = false;
+  for (const auto& t : r2.taps)
+    if (t.action == TapRegion::Action::Home) home = true;
+  TEST_ASSERT_TRUE_MESSAGE(home, "a closable reply must keep its Close exit");
+}
+
 static void test_voice_recording() {
   ScreenCtx c = baseCtx();
   c.voice = VoiceStage::Recording;
@@ -519,6 +543,7 @@ int main() {
   RUN_TEST(test_menu_stepper);
   RUN_TEST(test_session_detail);
   RUN_TEST(test_ask);
+  RUN_TEST(test_ask_mode_switch_has_no_close);
   RUN_TEST(test_voice_recording);
   RUN_TEST(test_battery);
   RUN_TEST(test_battery_low);
