@@ -53,14 +53,17 @@ def test_danger_requires_exact_confirm(device, net, secrets, require_secret, pat
     _need_requests()
     ip = lan_ip_or_skip(device, net, secrets, require_secret)
     tok = _webtok(device)
-    base = f"http://{ip}{path}?t={tok}"
+    base = f"http://{ip}{path}"
+    # CUM-45 took the token out of URLs: auth rides the X-Nimbus-Token header
+    # (or a form-body `t`), never a `?t=` query param.
+    hdr = {"X-Nimbus-Token": tok}
     # missing confirm
-    assert requests.post(base, timeout=8).status_code == 400
+    assert requests.post(base, headers=hdr, timeout=8).status_code == 400
     # wrong phrase (another action's word, or a partial)
-    assert requests.post(base, data={"confirm": "NOPE"}, timeout=8).status_code == 400
-    assert requests.post(base, data={"confirm": phrase.lower()}, timeout=8).status_code == 400
-    assert requests.post(base, data={"confirm": phrase[:-1]}, timeout=8).status_code == 400
+    assert requests.post(base, headers=hdr, data={"confirm": "NOPE"}, timeout=8).status_code == 400
+    assert requests.post(base, headers=hdr, data={"confirm": phrase.lower()}, timeout=8).status_code == 400
+    assert requests.post(base, headers=hdr, data={"confirm": phrase[:-1]}, timeout=8).status_code == 400
     # A different action's exact phrase must NOT satisfy this route.
     for _, other in ROUTES:
         if other != phrase:
-            assert requests.post(base, data={"confirm": other}, timeout=8).status_code == 400
+            assert requests.post(base, headers=hdr, data={"confirm": other}, timeout=8).status_code == 400
