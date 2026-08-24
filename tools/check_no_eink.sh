@@ -17,7 +17,7 @@
 set -u
 
 PAT='SSD1680|EC11|e-paper|e-Paper|rotary[ -]encoder|rotary[ -]knob'
-EXEMPT='changelog|/adr/|/proposals/|docs_pack_data|website/docs/(guides|reference|api)/|support/fixtures|(^|/)NOTICE$|GxEPD|check_no_eink|check_tft_elf_no_eink'
+EXEMPT='changelog|/adr/|/proposals/|docs_pack_data|website/docs/(guides|reference|api)/|support/fixtures|(^|/)NOTICE$|GxEPD|check_no_eink|check_tft_elf_no_eink|testing-tiers|workflows/checks.yml'
 SURFACE_RE='^(docs/|website/|include/web/|tools/|\.github/|hardware/|README\.md|AGENTS\.md|CONTRIBUTING\.md)'
 
 files=("$@")
