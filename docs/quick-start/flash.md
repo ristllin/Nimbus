@@ -85,10 +85,12 @@ Two things are specific to this board:
   ESP32-S3's native USB the whole way, so there is no "wrong port" the way the
   DevKitC-1's two-port caution above describes. Just connect a data-capable
   USB-C cable.
-- **The panel size sets the update type.** All Freenove sizes share one firmware
-  image; the size you pick only labels which typed update the board receives
-  (`freenove-28` / `freenove-35` / `freenove-40`). It is always the color
-  touchscreen, so there is no display question.
+- **The panel size sets the update type.** Each Freenove panel size is its own
+  firmware image, compiled at that panel's resolution, and its own typed update
+  (`freenove-28` / `freenove-35` / `freenove-40`); the size you pick is what the
+  flasher seeds so the board is only ever offered a matching image. It is always
+  the color touchscreen, so there is no display question. The 3.5" and 4.0" sizes
+  are [host-verified only](../hardware/all-in-one-cyd.md#supported-panels) today.
 
 Done? Continue to the **[setup wizard](setup-wizard.md)**. The rest of this
 page is reference for reflashing and recovery.

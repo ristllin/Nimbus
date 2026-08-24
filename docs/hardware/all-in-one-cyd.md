@@ -14,9 +14,35 @@ firmware as the hand-built boards, selected at flash time by
 
 This board is a **compile-time identity**: its pinout ships baked into a dedicated
 firmware image, so there is no display setting to choose and no risk of a
-mis-selected pin map. For the hand-built boards and everything shared across the
-lineup (power, battery sensing, the operating modes), see the
+mis-selected pin map. The Freenove comes in more than one panel size, and each
+size is its own firmware image compiled at that panel's resolution (see
+[Supported panels](#supported-panels)). For the hand-built boards and everything
+shared across the lineup (power, battery sensing, the operating modes), see the
 [hardware reference](../hardware.md).
+
+## Supported panels
+
+The Freenove all-in-one ships in three panel sizes. The UI renderer is
+parameterized by resolution, so one code path draws every size; each size is a
+separate OTA type and firmware image so a board is only ever offered an image
+that matches its glass.
+
+| Size | Panel | Resolution | OTA type | Firmware env | Verification |
+|---|---|---|---|---|---|
+| 2.8" | ILI9341 | 320×240 | `freenove-28` | `esp32s3-cyd` | **Hardware-verified** - display first-light and touch validated on the bench board. |
+| 3.5" | ILI9488 | 480×320 | `freenove-35` | `esp32s3-cyd-35` | **Host-verified only** - renderer, goldens, and firmware image proven on the host; no panel owned. |
+| 4.0" | 480×480 class | 480×480 | `freenove-40` | `esp32s3-cyd-40` | **Host-verified only** - renderer, goldens, and firmware image proven on the host; no panel owned. |
+
+**What "host-verified only" means.** The firmware for the 3.5" and 4.0" sizes
+compiles, links, and passes its own per-size golden framebuffers
+(`test/golden_tft/480x320/`, `test/golden_tft/480x480/`), so the layout is proven
+to reflow correctly at those resolutions. It has **not** run on a physical 3.5" or
+4.0" panel, and the `solide-drivers` display driver still initializes the 2.8"
+geometry - so bringing a larger panel up on hardware needs the matching driver
+init (panel controller, resolution, orientation) added when a panel is in hand.
+The resolution assumed for each size is the standard for that panel class and is
+confirmed against hardware before any device-verified claim is made. Release notes
+carry the same host-verified labels.
 
 ## Happy path - buy one, flash, done
 

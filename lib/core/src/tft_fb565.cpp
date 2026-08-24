@@ -15,20 +15,20 @@ namespace nimbus::tft {
 
 namespace {
 
-bool clipRect(int& x, int& y, int& w, int& h) {
-  if (w <= 0 || h <= 0 || x >= kW || y >= kH) return false;
-  if (x < 0) { w += x; x = 0; }
-  if (y < 0) { h += y; y = 0; }
-  if (w <= 0 || h <= 0) return false;
-  if (w > kW - x) w = kW - x;
-  if (h > kH - y) h = kH - y;
-  return w > 0 && h > 0;
-}
-
 // Letter spacing for the caption/label style (the web .k tracking).
 constexpr int kLabelTrack = 1;
 
 }  // namespace
+
+bool Fb565::clipRect(int& x, int& y, int& w, int& h) const {
+  if (w <= 0 || h <= 0 || x >= w_ || y >= h_) return false;
+  if (x < 0) { w += x; x = 0; }
+  if (y < 0) { h += y; y = 0; }
+  if (w <= 0 || h <= 0) return false;
+  if (w > w_ - x) w = w_ - x;
+  if (h > h_ - y) h = h_ - y;
+  return w > 0 && h > 0;
+}
 
 std::string asciiSanitize(const std::string& s) {
   std::string out;
@@ -45,20 +45,20 @@ void Fb565::clear(uint16_t colour) {
 }
 
 void Fb565::set(int x, int y, uint16_t colour) {
-  if (x < 0 || x >= kW || y < 0 || y >= kH) return;
-  buf_[size_t(y) * kW + size_t(x)] = swap(colour);
+  if (x < 0 || x >= w_ || y < 0 || y >= h_) return;
+  buf_[size_t(y) * size_t(w_) + size_t(x)] = swap(colour);
 }
 
 uint16_t Fb565::get(int x, int y) const {
-  if (x < 0 || x >= kW || y < 0 || y >= kH) return 0;
-  return swap(buf_[size_t(y) * kW + size_t(x)]);
+  if (x < 0 || x >= w_ || y < 0 || y >= h_) return 0;
+  return swap(buf_[size_t(y) * size_t(w_) + size_t(x)]);
 }
 
 void Fb565::fillRect(int x, int y, int w, int h, uint16_t colour) {
   if (!clipRect(x, y, w, h)) return;
   const uint16_t v = swap(colour);
   for (int yy = y; yy < y + h; yy++) {
-    auto* row = &buf_[size_t(yy) * kW + size_t(x)];
+    auto* row = &buf_[size_t(yy) * size_t(w_) + size_t(x)];
     std::fill(row, row + w, v);
   }
 }
@@ -127,7 +127,7 @@ void Fb565::text(int x, int y, const std::string& s, uint16_t colour, int scale)
   if (scale < 1) scale = 1;
   const std::string clean = asciiSanitize(s);
   for (char ch : clean) {
-    if (x >= kW) break;                       // rest of the string is off-panel
+    if (x >= w_) break;                        // rest of the string is off-panel
     if (x + 5 * scale > 0) {                  // cheap cull; set() clips the rest
       const uint8_t* g = nimbus::font::glyphFor(ch);
       for (int col = 0; col < 5; col++) {

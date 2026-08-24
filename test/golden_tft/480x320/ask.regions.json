@@ -1,0 +1,5 @@
+[
+  {"x":0,"y":0,"w":96,"h":44,"action":"Back","index":-1},
+  {"x":436,"y":0,"w":44,"h":44,"action":"OpenMenu","index":-1},
+  {"x":12,"y":264,"w":456,"h":44,"action":"Home","index":-1}
+]

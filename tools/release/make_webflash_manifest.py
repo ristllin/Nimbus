@@ -10,7 +10,8 @@ Produces, PER BOARD VARIANT, into <out-dir>/<variant>/:
   nvs-seed-<variant>.{csv,bin}   the generated NVS seed (kept for audit)
 
 The merged image is produced with `esptool merge-bin` from a PlatformIO build
-(esp32s3 for nimbus-tft, esp32s3-cyd for the freenove sizes). The offsets are
+(esp32s3 for nimbus-tft; esp32s3-cyd / -cyd-35 / -cyd-40 for the freenove 2.8" /
+3.5" / 4.0" panels - each compiled at its own resolution). The offsets are
 the standard Arduino-ESP32 layout for this board, verified against
 default_16MB.csv (nvs @ 0x9000, otadata @ 0xe000, app0 @ 0x10000). The NVS at
 0x9000 is SEEDED (scrModel/tftFlip/mode/otaType) so the board comes up on the

@@ -29,22 +29,34 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import struct
 import sys
 import zlib
 
+# Default panel is the 2.8" (freenove-28) 320x240. Nimbus now renders more than
+# one size (freenove-35 = 480x320, freenove-40 = 480x480), so every command takes
+# an optional trailing WxH to preview those goldens; without it the default holds.
 W, H = 320, 240
 BPP = 2
-FB_BYTES = W * H * BPP  # 153600
+FB_BYTES = W * H * BPP  # 153600 at the default size
 SCALE = 2
 MIN_TAP = 44  # minimum tap-target edge, in panel px (see plan / a11y rule)
 
-USAGE = """usage:
-  tftpreview.py render  <in.bin> <out.png>                RGB565 -> PNG (2x)
-  tftpreview.py diff    <a.bin> <b.bin> <out.png>         magenta-diff; exit 1 on mismatch
-  tftpreview.py contact <dir> <out.png>                   all *.bin tiled into one sheet
-  tftpreview.py regions <fb.bin> <regions.json> <out.png> tap-target overlay; exit 1 if invalid
+USAGE = """usage (append an optional WxH, e.g. 480x320, to preview a larger panel):
+  tftpreview.py render  <in.bin> <out.png> [WxH]                RGB565 -> PNG (2x)
+  tftpreview.py diff    <a.bin> <b.bin> <out.png> [WxH]         magenta-diff; exit 1 on mismatch
+  tftpreview.py contact <dir> <out.png> [WxH]                   all *.bin tiled into one sheet
+  tftpreview.py regions <fb.bin> <regions.json> <out.png> [WxH] tap-target overlay; exit 1 if invalid
 """
+
+
+def set_panel(spec: str) -> None:
+    """Set the module's panel geometry from a 'WxH' token (e.g. '480x320')."""
+    global W, H, FB_BYTES
+    wtxt, _, htxt = spec.partition("x")
+    W, H = int(wtxt), int(htxt)
+    FB_BYTES = W * H * BPP
 
 
 # ---- framebuffer ------------------------------------------------------------
@@ -282,6 +294,9 @@ def cmd_regions(fb_src: str, json_src: str, dst: str) -> None:
 
 def main() -> None:
     args = sys.argv[1:]
+    # An optional trailing WxH token selects a non-default panel size.
+    if args and re.fullmatch(r"\d+x\d+", args[-1]):
+        set_panel(args.pop())
     if len(args) == 3 and args[0] == "render":
         cmd_render(args[1], args[2])
     elif len(args) == 4 and args[0] == "diff":

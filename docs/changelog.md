@@ -12,6 +12,14 @@ installs on your say-so ([how updates work](ota.md)).
   configurations are color touch panels (the Solide S3 with its LED ring, and the
   Freenove CYD all-in-one). E-ink devices stay on their final firmware (typed OTA
   delivers them no further updates).
+- **Multi-resolution touch UI.** The color renderer is now parameterized by panel
+  resolution, so one code path draws every supported size. The 2.8" panel is
+  unchanged (its goldens are byte-identical). Two larger Freenove sizes are added
+  as their own firmware images and typed updates: **3.5" (480×320, `freenove-35`)**
+  and **4.0" (480×480, `freenove-40`)**. Both are **host-verified only** - proven
+  by per-size golden framebuffers and a linking firmware image, not yet run on a
+  physical panel (the panel driver gains the larger geometry when hardware is in
+  hand). See [Supported panels](hardware/all-in-one-cyd.md#supported-panels).
 
 ## v4.1.0 - Orchestrator self-knowledge, honest capacity, real file delivery
 
