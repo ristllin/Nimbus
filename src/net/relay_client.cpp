@@ -26,7 +26,9 @@
 #include "nimbus/cloud/relay_timing.h"        // CUM-160: bound the TLS slot-hold below the watchdog
 #include "nimbus/cloud/loopback_target.h"     // CUM-173: never dial 0.0.0.0 for the loopback fallback
 #include "nimbus/cloud/relay_heap.h"          // CUM-167: heap-floor policy (host-tested, bounce-buffer aware)
+#include "nimbus/cloud/relay_presence.h"      // CUM-182: hello-ack-gated, identity-bound presence
 #include "nimbus/cloud/relay_ws.h"
+#include "nimbus/cloud/ws_write.h"            // CUM-182: host-tested whole-frame write driver
 #include "nimbus/cloud/tunnel_guard.h"   // canonicalize+deny secret paths, scrub secret bodies
 #include "version.h"
 
@@ -57,6 +59,16 @@ constexpr size_t kMaxRespBody = nimbus::cloud::kLoopbackMaxRespBody;
 constexpr size_t kMaxInboundFrame = 16 * 1024;
 constexpr size_t kMaxReqBody = 16 * 1024;
 constexpr uint32_t kLoopbackTimeoutMs = 15000;
+// Deadline for writing ONE outbound WS frame in full (CUM-182). The largest res
+// frame is the config/login page: ~277 KB body -> a ~370 KB masked frame. A
+// single WiFiClientSecure::write does not always flush that much at once (a
+// partial or WANT_WRITE return under a momentarily full TLS/socket buffer), and
+// the old code treated "did not write it all in one call" as failure - which
+// truncated the frame on the wire and dropped the whole session mid-page (the
+// field "can't load the page over the tunnel" 502 + reconnect). We now loop the
+// write until the frame is fully sent, bounded by this deadline (kept below the
+// relay's 30 s request timeout so a genuinely stuck socket still fails cleanly).
+constexpr uint32_t kResWriteTimeoutMs = 20000;
 // Loopback CONNECT timeout (CUM-173): a working lwIP loopback connects in ~2 ms and a
 // refusal returns immediately, so this only bounds a pathological no-answer case. Kept
 // short so a bad target never adds the multi-second stall the old 4 s value did.
@@ -88,16 +100,25 @@ WiFiClientSecure* g_ws = nullptr;
 uint32_t g_heartbeatMs = kDefaultHeartbeatMs;
 
 void setState(State s) {
+  bool clearedOnline = false;
   portENTER_CRITICAL(&g_mux);
   g_state = s;
-  if (s != State::Online) g_online = false;
+  if (s != State::Online && g_online) { g_online = false; clearedOnline = true; }
   portEXIT_CRITICAL(&g_mux);
+  // A state move out of Online (e.g. into Backoff after a drop) also ends presence.
+  if (clearedOnline) agent::alogf("relay: online=0 cause=state-%s", stateName());
 }
-void setOnline(bool on) {
+// CUM-182: every cloud.online transition is logged with its cause so the field
+// (via /api/log) shows exactly why presence changed. `cause` is a short machine
+// tag (e.g. "hello-ack", "session-end"), never a secret.
+void setOnline(bool on, const char* cause) {
+  bool changed;
   portENTER_CRITICAL(&g_mux);
+  changed = (g_online != on);
   g_online = on;
   g_state = on ? State::Online : g_state;
   portEXIT_CRITICAL(&g_mux);
+  if (changed) agent::alogf("relay: online=%d cause=%s", on ? 1 : 0, cause ? cause : "");
 }
 void setErr(const char* e) {
   portENTER_CRITICAL(&g_mux);
@@ -222,13 +243,34 @@ bool doLoopback(const std::string& method, const std::string& path,
 }
 
 // --- WS send -----------------------------------------------------------------
+// Write an entire framed message to the resident WS, tolerating partial and
+// would-block writes (CUM-182). A large res frame does not always leave in one
+// WiFiClientSecure::write; treat a short write as "more to send", not failure,
+// so the frame is never truncated on the wire. Loops until the whole buffer is
+// out, the socket dies, or kResWriteTimeoutMs elapses. The relay task is not
+// watchdog-subscribed, so the bounded retry-yield here cannot starve the WDT.
+bool wsWriteAll(const uint8_t* data, size_t len) {
+  if (!g_ws) return false;
+  // Bounded chunks: handing mbedtls a single ~370 KB buffer is exactly what
+  // returned short before; 8 KB records drain reliably as the TLS/socket buffer
+  // frees, and a partial return just resumes at the sent offset. The loop lives
+  // in lib/core (drainAll) so it is host-tested.
+  const uint32_t deadline = millis() + kResWriteTimeoutMs;
+  return nimbus::cloud::drainAll(
+      len, 8192,
+      [&](size_t off, size_t want) -> size_t { return g_ws->write(data + off, want); },
+      [&]() -> bool { return g_ws && g_ws->connected(); },
+      [&]() -> bool { return (int32_t)(deadline - millis()) <= 0; },
+      []() { vTaskDelay(pdMS_TO_TICKS(5)); });  // WANT_WRITE / full buffer: yield, then retry
+}
+
 bool wsSendSmall(ws::Opcode op, const uint8_t* payload, size_t len) {
   if (!g_ws) return false;
   uint8_t mask[4];
   fillMask(mask);
   std::string frame;
   ws::encodeClientFrame(op, payload, len, mask, frame);
-  return g_ws->write(reinterpret_cast<const uint8_t*>(frame.data()), frame.size()) == frame.size();
+  return wsWriteAll(reinterpret_cast<const uint8_t*>(frame.data()), frame.size());
 }
 
 // Secret-containment policy for the tunnel lives in the portable, host-tested guard
@@ -321,7 +363,10 @@ void emitResFrame(const char* id, int status, const http_replay::Headers& header
     frame[off++] = '}';
   }
   for (size_t i = hn; i < off; i++) frame[i] ^= mask[(i - hn) & 3];  // mask the payload
-  bool sent = g_ws && g_ws->write(frame, off) == off;
+  // Reliable full-frame write (CUM-182): a large page (~370 KB) is flushed in as
+  // many WiFiClientSecure::write calls as it takes, never truncated into a
+  // session-killing partial frame.
+  bool sent = wsWriteAll(frame, off);
   heap_caps_free(frame);
   agent::alog((String("relay: res ") + status + " body=" + (uint32_t)obodyLen + " sent=" +
                (sent ? 1 : 0))
@@ -662,24 +707,44 @@ uint16_t byeToCloseCode(const char* reason) {
   return 4000;
 }
 
+// Handle a Welcome (the relay's hello-ack). Returns false to END the session:
+// CUM-182 presence is hello-ack-gated AND identity-bound, so a Welcome that
+// echoes a DIFFERENT device id (wrong endpoint / spoof) is refused rather than
+// latched as a false "connected". A matching id (or a legacy relay that echoes
+// none) goes online.
+bool handleWelcome(const RelayFrame& f, bool& welcomed, uint16_t& closeOut,
+                   const char* ourDeviceId) {
+  if (evaluateHelloAck(f.deviceId, ourDeviceId) != AckResult::Accept) {
+    agent::alogf("relay: hello-ack MISMATCH got=%s want=%s - refusing online",
+                 f.deviceId ? f.deviceId : "", ourDeviceId ? ourDeviceId : "");
+    setErr("Cloud identity mismatch.");
+    closeOut = (uint16_t)CloseCode::ProtocolError;
+    return false;
+  }
+  welcomed = true;
+  // Clamp the relay-supplied heartbeat to a sane band: a huge value would push the
+  // next ping to the far future and overflow the silence watchdog, leaving the
+  // device stuck "online" on a dead/half-open socket.
+  g_heartbeatMs = f.heartbeatMs < kHeartbeatMinMs   ? kHeartbeatMinMs
+                  : f.heartbeatMs > kHeartbeatMaxMs ? kHeartbeatMaxMs
+                                                    : f.heartbeatMs;
+  agent::alogf("relay: hello-ack id=%s hb=%ums",
+               (f.deviceId && f.deviceId[0]) ? f.deviceId : "(none)", (unsigned)g_heartbeatMs);
+  setOnline(true, "hello-ack");
+  setErr("");
+  return true;
+}
+
 // Handle one parsed WS message. Returns false to end the session (closeOut set).
-bool handleFrame(const ws::Message& m, bool& welcomed, uint16_t& closeOut) {
+bool handleFrame(const ws::Message& m, bool& welcomed, uint16_t& closeOut,
+                 const char* ourDeviceId) {
   if (m.op == ws::Opcode::Text) {
     JsonDocument doc(&agent::PsramJsonAllocator::instance());
     if (deserializeJson(doc, m.payload.data(), m.payload.size())) return true;
     RelayFrame f;
     if (!parseRelayFrame(doc, f)) return true;
     if (f.type == FrameType::Welcome) {
-      welcomed = true;
-      // Clamp the relay-supplied heartbeat to a sane band: a huge value would push the
-      // next ping to the far future and overflow the silence watchdog, leaving the
-      // device stuck "online" on a dead/half-open socket.
-      g_heartbeatMs = f.heartbeatMs < kHeartbeatMinMs   ? kHeartbeatMinMs
-                      : f.heartbeatMs > kHeartbeatMaxMs ? kHeartbeatMaxMs
-                                                        : f.heartbeatMs;
-      setOnline(true);
-      setErr("");
-      agent::alog("relay: online");
+      if (!handleWelcome(f, welcomed, closeOut, ourDeviceId)) return false;
     } else if (f.type == FrameType::Req) {
       handleReq(f.req);
     } else if (f.type == FrameType::Bye) {
@@ -697,10 +762,11 @@ bool handleFrame(const ws::Message& m, bool& welcomed, uint16_t& closeOut) {
 }
 
 // Drain all ready inbound messages. Returns false once a message ends the session.
-bool pumpInbound(ws::Parser& parser, bool& welcomed, uint16_t& closeOut) {
+bool pumpInbound(ws::Parser& parser, bool& welcomed, uint16_t& closeOut,
+                 const char* ourDeviceId) {
   ws::Message m;
   while (parser.next(m)) {
-    if (!handleFrame(m, welcomed, closeOut)) return false;
+    if (!handleFrame(m, welcomed, closeOut, ourDeviceId)) return false;
   }
   return true;
 }
@@ -734,9 +800,21 @@ bool wsUpgrade(const String& host, ws::Parser& parser) {
     if (n > 0) head.append((const char*)buf, n);
     else if (n < 0) break;
   }
+  // CUM-182 instrumentation: log the WS upgrade HTTP status + validity. A stale
+  // or wrong Cloudflare-fronted endpoint typically answers non-101 here (or a
+  // 101 with a bad Sec-WebSocket-Accept), which is the real cause of the field
+  // "Cloud handshake failed" oscillation - now visible in /api/log.
+  int httpStatus = -1;
+  if (head.compare(0, 5, "HTTP/") == 0) {
+    size_t sp = head.find(' ');
+    if (sp != std::string::npos) httpStatus = atoi(head.c_str() + sp + 1);
+  }
   size_t hend = head.find("\r\n\r\n");
-  if (hend == std::string::npos ||
-      !ws::validateUpgradeResponse(head.substr(0, hend + 4), keyB64)) {
+  const bool valid = (hend != std::string::npos) &&
+                     ws::validateUpgradeResponse(head.substr(0, hend + 4), keyB64);
+  agent::alogf("relay: ws upgrade http=%d %s (head=%uB)", httpStatus,
+               valid ? "ok" : "FAIL", (unsigned)head.size());
+  if (!valid) {
     return false;
   }
   // Any bytes past the handshake are the first WS frames.
@@ -773,7 +851,7 @@ bool sessionShouldStop() {
 
 // The online read/pump/heartbeat loop, after the handshake + hello. Returns the WS close
 // code (0 = clean/local drop).
-uint16_t runOnlineLoop(ws::Parser& parser) {
+uint16_t runOnlineLoop(ws::Parser& parser, const char* ourDeviceId) {
   uint32_t welcomeBy = millis() + kWelcomeDeadlineMs;
   bool welcomed = false;
   g_heartbeatMs = kDefaultHeartbeatMs;
@@ -792,7 +870,7 @@ uint16_t runOnlineLoop(ws::Parser& parser) {
       break;
     }
     if (parser.protocolError()) { closeCode = (uint16_t)CloseCode::ProtocolError; break; }
-    if (!pumpInbound(parser, welcomed, closeCode)) break;
+    if (!pumpInbound(parser, welcomed, closeCode, ourDeviceId)) break;
     if (!welcomed && millis() > welcomeBy) { setErr("Cloud handshake timed out."); break; }
     uint32_t now = millis();
     if (welcomed && now >= nextPing) {
@@ -821,7 +899,17 @@ uint16_t runSession() {
   setState(State::Connecting);
   if (!g_ws) g_ws = new WiFiClientSecure();
   relayTlsSetup(*g_ws);
-  if (!g_ws->connect(host.c_str(), kTlsPort, kConnectTimeoutMs)) {
+  // CUM-182 instrumentation: log the resolved dial target (host:port + WS path)
+  // before every TLS connect so /api/log shows exactly WHERE the device dials
+  // (catches a stale/wrong NVS relay host). deviceId is not a secret (it rides
+  // the public tunnel URL); the credential never appears in any log.
+  agent::alogf("relay: dial host=%s:%u path=%s id=%s", host.c_str(), (unsigned)kTlsPort,
+               kWsPath, deviceId.c_str());
+  const uint32_t tlsT0 = millis();
+  const bool tlsOk = g_ws->connect(host.c_str(), kTlsPort, kConnectTimeoutMs);
+  const uint32_t tlsMs = millis() - tlsT0;
+  agent::alogf("relay: tls %s in %ums", tlsOk ? "ok" : "FAIL", tlsMs);
+  if (!tlsOk) {
     setErr("Couldn't reach the cloud. Retrying.");
     return 0;
   }
@@ -835,13 +923,15 @@ uint16_t runSession() {
     return 0;
   }
   if (!sendHello(deviceId, cred)) {
+    agent::alog("relay: hello write FAIL");
     tlsClose(*g_ws);
     return 0;
   }
+  agent::alogf("relay: hello sent id=%s fw=%s", deviceId.c_str(), NIMBUS_FW_VERSION);
 
-  uint16_t closeCode = runOnlineLoop(parser);
+  uint16_t closeCode = runOnlineLoop(parser, deviceId.c_str());
   tlsClose(*g_ws);
-  setOnline(false);
+  setOnline(false, "session-end");
   return closeCode;
 }
 

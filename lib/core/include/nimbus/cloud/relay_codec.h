@@ -50,6 +50,8 @@ struct ReqFrame {
 struct RelayFrame {
   FrameType type = FrameType::Unknown;
   uint32_t heartbeatMs = 0;       // Welcome
+  const char* deviceId = "";      // Welcome: the device id the relay echoes back
+                                   // (identity-bound hello-ack; "" on a legacy relay)
   ReqFrame req;                    // Req
   const char* byeReason = "";     // Bye
   int64_t pongTs = 0;              // Pong
