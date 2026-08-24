@@ -18,7 +18,7 @@ dock as a bottom bar. The content column is fluid and centers up to 1,280 px.
 | [Home](#home) | Status tiles, quick actions, active sessions, alerts |
 | [Chat](#chat) | Message the assistant, drop files into the conversation |
 | [Memory](#memory) | Directive, long-term memory, scratchpad, and files |
-| [Assistant](#assistant) | Providers, tools, connectors, skills, usage, routines, safety |
+| [Assistant](#assistant) | Models, connectors, tools, skills, routines, usage, safety (seven exclusive subtabs) |
 | [Device](#device) | Display, sound, battery, network, updates, cloud, danger zone |
 
 Controls that sit outside the destinations:
@@ -127,11 +127,24 @@ Internals: **[Orchestrator World](../guides/orchestrator-world.md)** and
 
 ## Assistant
 
-Everything the assistant can reach and run, plus what it costs and how it is
-governed. Providers, tools, connectors, skills, usage and budgets, routines and
-wake-ups, and safety - keys are set by you, never by the model.
+One page with a single flat row of seven subtabs - **Models**, **Connectors**,
+**Tools**, **Skills**, **Routines**, **Usage**, and **Safety**. Choosing a subtab
+shows only that subtab, never a stack. Everything the assistant can reach and run,
+plus what it costs and how it is governed - keys are set by you, never by the model.
 
-### Connectors and MCP
+### Models
+
+- **Providers & keys** - Cumulo Nimbus, Anthropic, OpenAI, Mistral, Z.ai. Keys
+  are write-only (a saved key shows as "set" and is never displayed again); model
+  choices unlock after the key verifies.
+- **Custom endpoint** - point the assistant at any OpenAI-, Anthropic-, or
+  Mistral-compatible server: base URL, wire convention, and model ID.
+- **Routing** - the **Primary provider** (or Automatic), the **Fallback order**,
+  and a separate **Session fallback order** for spawned sessions.
+- **Voice** - the **Dictation** provider, the **Spoken replies** provider, and
+  the voice itself.
+
+### Connectors
 
 External tools that run in your AI provider's cloud, on the assistant's own turns
 and on the sessions it starts. Each connector is a card: create the credential
@@ -152,21 +165,11 @@ with a status badge. External MCP clients can call the same surface over
 `POST /mcp`. A **Web search** section takes a Tavily API key so the assistant can
 search the web live.
 
-### Models
-
-- **Providers & keys** - Cumulo Nimbus, Anthropic, OpenAI, Mistral, Z.ai. Keys
-  are write-only (a saved key shows as "set" and is never displayed again); model
-  choices unlock after the key verifies.
-- **Custom endpoint** - point the assistant at any OpenAI-, Anthropic-, or
-  Mistral-compatible server: base URL, wire convention, and model ID.
-- **Routing** - the **Primary provider** (or Automatic), the **Fallback order**,
-  and a separate **Session fallback order** for spawned sessions.
-- **Voice** - the **Dictation** provider, the **Spoken replies** provider, and
-  the voice itself.
-- **Tool use** - when enabled, the assistant uses its tools mid-turn and iterates
-  before answering. Caps: **Tool rounds** (1-32) and a **Time limit** (30-3600 s),
-  plus **Switch providers mid-turn**, **Concurrent connections**, and **Validate
-  provider TLS certificates**. See the **[Turn contract](../reference/turn-contract.md)**.
+**Tool use** governs that tool surface: when enabled, the assistant uses its
+tools mid-turn and iterates before answering. Caps: **Tool rounds** (1-32) and a
+**Time limit** (30-3600 s), plus **Switch providers mid-turn**, **Concurrent
+connections**, **Validate provider TLS certificates**, and **Capability
+validation**. See the **[Turn contract](../reference/turn-contract.md)**.
 
 ### Skills
 
@@ -175,15 +178,7 @@ on the SD card at `/mem/skills/<id>/SKILL.md`. You create, edit, and delete them
 here; a skill the assistant drafts arrives **pending your approval** and does
 nothing until you approve it (here, or `/skill approve <id>` in Telegram).
 
-### Usage and budgets
-
-Token usage reported by your providers, tracked since the device last restarted.
-Token counts are actual billed usage; dollar figures are estimates. A
-7/30/60-day **Spend over time** chart, per-provider **Rates**, and a monthly
-**Budget** per provider (0 = unlimited; at the cap that provider is refused until
-the reset day and the assistant fails over when it can).
-
-### Routines and wake-ups
+### Routines
 
 - **Routines** - tasks that run on a schedule (a morning digest, a reminder,
   nightly upkeep). Create one with a name, a prompt, and a schedule (**On an
@@ -195,11 +190,28 @@ the reset day and the assistant fails over when it can).
   up later. The policy is **Allow silently** by default; **Ask me first** holds
   each new wake-up for a single yes/no approval card - never a repeating prompt.
 
+### Usage
+
+Token usage reported by your providers, tracked since the device last restarted.
+Token counts are actual billed usage; dollar figures are estimates. A
+7/30/60-day **Spend over time** chart, per-provider **Rates**, and a monthly
+**Budget** per provider (0 = unlimited; at the cap that provider is refused until
+the reset day and the assistant fails over when it can).
+
 ### Safety
 
-Three moderation gates - screen incoming messages, screen the assistant's
-replies, screen images and files. Each gate that is on adds a small provider
-moderation call per item, so it costs a little more.
+Download trust and guest screening. Your own messages, the web page, and voice
+are always exempt.
+
+- **Downloads** - how much trust the assistant gets to download a file from the
+  web: **Off**, **Ask me per link**, **Scan, then keep**, or **Full trust**.
+- **Guest moderation** - screens people other than you who reach the bot.
+  **Check guest messages before answering** (a flagged or uncheckable message is
+  not answered), **Check replies sent to guests** (a flagged reply is held; if the
+  check cannot run the reply still goes out), and **Flag suspicious fetched
+  content** (marks web content that looks like a hidden instruction as data - it
+  marks, never blocks, and runs on the device at no extra cost). The message and
+  reply checks each cost one moderation call per screened item.
 
 ---
 
@@ -211,9 +223,11 @@ collapsible groups:
 - **Mode & identity** - the operating mode (**Notifier** or **Orchestrator**;
   switching restarts the device), the **Device name**, the **Timezone**, the
   **Device clock** (set automatically from the internet; a badge shows **synced**
-  or **waiting**, with **Sync now**), the **Display** (touch screen, with a
-  180-degree **Display flip** for upside-down mounts), and the **Device sign-in
-  code** (only needed when a QR cannot be scanned; tap to copy).
+  or **waiting**, with **Sync now**), and the **Device sign-in code** (only needed
+  when a QR cannot be scanned; tap to copy).
+- **Display** - a 180-degree **Display flip** for upside-down mounts, and **Touch
+  calibration** for the touch screen (or the self-calibrating panel's swap/flip
+  orientation toggles). Takes effect right away.
 - **Battery mode** - **Dark / Balanced / Full**, which sets the light. The
   **Theme** picks the color family, and **Preview** shows any status pattern in
   the ring simulator; **Demo on Device** plays it on the physical ring. Full

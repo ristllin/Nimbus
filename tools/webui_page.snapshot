@@ -275,9 +275,16 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <label>Device clock</label>
 <p class="hint tip">Set automatically from the internet once Wi-Fi connects - there is no manual clock. Until it syncs, daily and weekly routines wait.</p>
 <div class=row><b id=devClock>&hellip;</b><span class=hint id=clockBadge>&hellip;</span><button id=clockSyncBtn type=button>Sync now</button></div>
-<label>Display</label>
+<label>Device sign-in code <button class=qh type=button aria-expanded=false aria-label="About the device sign-in code">?</button></label>
+<p class="hint tip">The Sign-in QR carries this automatically; normal setup never asks you to type it. Use this value only to recover a browser that cannot scan the QR. Tap to copy. Generate a new one under <b>Connectivity</b> below.</p>
+<div class="memv" id=idToken style="cursor:pointer" title="tap to copy">&hellip;</div>
+</div>
+</details>
+
+<details class=setgroup><summary>Display<span class=chev>&rsaquo;</span></summary>
+<div class=setbody>
 <p class=hint>This device uses a touch screen.</p>
-<label class=pr style="margin-top:8px"><input type=checkbox id=scrFlip> Display flip <button class=qh type=button aria-expanded=false aria-label="About display flip">?</button></label>
+<label class=pr><input type=checkbox id=scrFlip> Display flip <button class=qh type=button aria-expanded=false aria-label="About display flip">?</button></label>
 <p class="hint tip">Turns the screen 180 degrees for an upside-down mount. Touch display only; takes effect right away.</p>
 <div id=tchCalWrap>
 <label>Touch calibration <button class=qh type=button aria-expanded=false aria-label="About touch calibration">?</button></label>
@@ -287,9 +294,6 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <div id=tOrient style="display:none"><label>Touch orientation</label>
 <p class="hint tip">This screen self-calibrates, so there is nothing to measure. If taps land in the wrong place, toggle these until a tap lands where you touch. Applies immediately.</p>
 <div class=row style="gap:16px;flex-wrap:wrap"><label class=pr><input type=checkbox id=tSwap> Swap X and Y</label><label class=pr><input type=checkbox id=tFlipX> Flip X</label><label class=pr><input type=checkbox id=tFlipY> Flip Y</label></div></div>
-<label>Device sign-in code <button class=qh type=button aria-expanded=false aria-label="About the device sign-in code">?</button></label>
-<p class="hint tip">The Sign-in QR carries this automatically; normal setup never asks you to type it. Use this value only to recover a browser that cannot scan the QR. Tap to copy. Generate a new one under <b>Connectivity</b> below.</p>
-<div class="memv" id=idToken style="cursor:pointer" title="tap to copy">&hellip;</div>
 </div>
 </details>
 
@@ -508,18 +512,17 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 </div>
 
 <div class=pane id=pane-harness style="display:none">
-<div class=eyebrow>AI &amp; integrations</div>
-<div class=ptitle>Capabilities</div>
-<p class=plede>Everything the device can reach and run - providers, tools, connectors, and skills. Keys are set by you, never by the model.</p>
-
 <div class=subtabs>
+<button type=button class=subtab data-sp=llm>Models</button>
 <button type=button class=subtab data-sp=connectors>Connectors</button>
 <button type=button class=subtab data-sp=tools>Tools</button>
-<button type=button class=subtab data-sp=llm>Models</button>
 <button type=button class=subtab data-sp=skills>Skills</button>
+<button type=button class=subtab data-sp=routines>Routines</button>
+<button type=button class=subtab data-sp=usage>Usage</button>
+<button type=button class=subtab data-sp=safety>Safety</button>
 </div>
 
-<div class=subpane id=subpane-connectors>
+<div class=subpane id=subpane-connectors style="display:none">
 <div class=sec>
 <h2>Connectors <button class=qh type=button aria-expanded=false aria-label="About connectors">?</button></h2>
 <p class="hint tip">Tools that run in your AI provider's cloud - on the assistant's own turns and on the sessions it starts. Create each credential once and paste it here. <a href="https://ristllin.github.io/Nimbus/guides/connectors" target=_blank>Setup guide &rarr;</a></p>
@@ -568,9 +571,47 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 </div>
 <p class=hint id=tavstat></p>
 </div>
+
+<div class=sec>
+<h2>Tool use <button class=qh type=button aria-expanded=false aria-label="About tool use">?</button></h2>
+<p class="hint tip">How the assistant uses its tools mid-turn - the rounds, time limits, and sandbox that govern the tool surface above.</p>
+<details class=setgroup><summary>Tool use<span class=chev>&rsaquo;</span></summary>
+<div class=setbody>
+<label class=pr><input type=checkbox id=orchLoop checked> Enabled <button class=qh type=button aria-expanded=false aria-label="About tool use">?</button></label>
+<label class=pr><input type=checkbox id=midFail checked> Switch providers mid-task if one fails</label>
+<label class=pr><input type=checkbox id=codeSbx> Code sandbox <button class=qh type=button aria-expanded=false aria-label="About the code sandbox">?</button></label>
+<p class="hint tip">Lets the assistant run code in a provider sandbox to build files (charts, PDFs, data). Finished files land under Files. Needs an OpenAI key (Mistral where supported); Anthropic sub-agents can build files too.</p>
+<p class="hint tip">When on, the assistant uses its tools mid-turn - memory, sessions, web search, device control - and iterates before answering. When off, it answers in a single step.</p>
+<label class=pr><input type=checkbox id=orchTrace checked> Record tool calls &amp; thinking <button class=qh type=button aria-expanded=false aria-label="About activity recording">?</button></label>
+<p class="hint tip">Keeps a per-turn record of what the assistant did - each tool call, its result, and the reasoning between them - viewable in the chat. Stored on the SD card with the same 30-day retention as history.</p>
+<label>Tool rounds <span class=hint>(1&ndash;32)</span></label>
+<input id=loopRounds type=number min=1 max=32>
+<label>Time limit, seconds <span class=hint>(30&ndash;3600)</span></label>
+<input id=loopDeadline type=number min=30 max=3600>
+<label>Compact conversations after, KB <span class=hint>(8&ndash;512; 0 turns automatic compaction off)</span> <button class=qh type=button aria-expanded=false aria-label="About compaction">?</button></label>
+<p class="hint tip">When a chat accumulates this much history, the assistant folds it into a compact summary and starts a fresh provider thread - conversations stay fast and inexpensive without losing continuity. Send /compact to run it on demand.</p>
+<input id=compactKB type=number min=0 max=512>
+<label>Concurrent connections <button class=qh type=button aria-expanded=false aria-label="About concurrent connections">?</button></label>
+<p class="hint tip">One is the default and the stable choice - the device does one secure connection at a time, which uses the least memory. Two lets voice transcription run alongside a provider turn, but needs memory headroom and can fail a heavy turn. Applies after restart.</p>
+<select id=tlsSlots><option value=1>1 (default) - one at a time</option><option value=2>2 - concurrent (needs headroom)</option></select>
+<label class=pr style="margin-top:8px"><input type=checkbox id=tlsVerify checked> Validate provider TLS certificates <button class=qh type=button aria-expanded=false aria-label="About TLS validation">?</button></label>
+<p class="hint tip">Checks each provider's certificate against a built-in bundle, so a hostile network can't impersonate a provider and capture your keys. Turn off only for a self-hosted server with a self-signed certificate.</p>
+<label style="margin-top:8px">Capability validation <button class=qh type=button aria-expanded=false aria-label="About capability validation">?</button></label>
+<p class="hint tip">How the device confirms a provider key actually works before it tells the assistant a connector is available - so it relies on tested capabilities, not guesses. Off trusts the key as-is. Passive marks a provider verified once a real call or a manual check succeeds. Active also re-checks on a schedule so the status stays current.</p>
+<select id=capProbe onchange=capProbeUpd()><option value=1>Passive (default)</option><option value=0>Off</option><option value=2>Active - re-check on a schedule</option></select>
+<div id=capProbeActive style="display:none;margin-top:6px">
+<label>Re-check every, hours</label>
+<input id=capProbeH type=number min=1 max=168 onchange=capProbeUpd()>
+<p class="hint" id=capProbeCost></p>
+</div>
+</div>
+</details>
+<div class=row style="margin-top:10px"><button id=toolusesave type=button>Save Changes</button></div>
+<p id=toolusemsg class=hint></p>
+</div>
 </div>
 
-<div class=subpane id=subpane-llm style="display:none">
+<div class=subpane id=subpane-llm>
 <div class=sec>
 <h2>Models <span class="badge ext" id=orchoff style="display:none">Notifier mode - these settings apply when you switch to Orchestrator</span></h2>
 
@@ -627,38 +668,6 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <select id=vEmotion style="display:none"></select>
 </div>
 <p class=hint id=voiceHint></p>
-</div>
-</details>
-
-<details class=setgroup><summary>Tool use<span class=chev>&rsaquo;</span></summary>
-<div class=setbody>
-<label class=pr><input type=checkbox id=orchLoop checked> Enabled <button class=qh type=button aria-expanded=false aria-label="About tool use">?</button></label>
-<label class=pr><input type=checkbox id=midFail checked> Switch providers mid-task if one fails</label>
-<label class=pr><input type=checkbox id=codeSbx> Code sandbox <button class=qh type=button aria-expanded=false aria-label="About the code sandbox">?</button></label>
-<p class="hint tip">Lets the assistant run code in a provider sandbox to build files (charts, PDFs, data). Finished files land under Files. Needs an OpenAI key (Mistral where supported); Anthropic sub-agents can build files too.</p>
-<p class="hint tip">When on, the assistant uses its tools mid-turn - memory, sessions, web search, device control - and iterates before answering. When off, it answers in a single step.</p>
-<label class=pr><input type=checkbox id=orchTrace checked> Record tool calls &amp; thinking <button class=qh type=button aria-expanded=false aria-label="About activity recording">?</button></label>
-<p class="hint tip">Keeps a per-turn record of what the assistant did - each tool call, its result, and the reasoning between them - viewable in the chat. Stored on the SD card with the same 30-day retention as history.</p>
-<label>Tool rounds <span class=hint>(1&ndash;32)</span></label>
-<input id=loopRounds type=number min=1 max=32>
-<label>Time limit, seconds <span class=hint>(30&ndash;3600)</span></label>
-<input id=loopDeadline type=number min=30 max=3600>
-<label>Compact conversations after, KB <span class=hint>(8&ndash;512; 0 turns automatic compaction off)</span> <button class=qh type=button aria-expanded=false aria-label="About compaction">?</button></label>
-<p class="hint tip">When a chat accumulates this much history, the assistant folds it into a compact summary and starts a fresh provider thread - conversations stay fast and inexpensive without losing continuity. Send /compact to run it on demand.</p>
-<input id=compactKB type=number min=0 max=512>
-<label>Concurrent connections <button class=qh type=button aria-expanded=false aria-label="About concurrent connections">?</button></label>
-<p class="hint tip">One is the default and the stable choice - the device does one secure connection at a time, which uses the least memory. Two lets voice transcription run alongside a provider turn, but needs memory headroom and can fail a heavy turn. Applies after restart.</p>
-<select id=tlsSlots><option value=1>1 (default) - one at a time</option><option value=2>2 - concurrent (needs headroom)</option></select>
-<label class=pr style="margin-top:8px"><input type=checkbox id=tlsVerify checked> Validate provider TLS certificates <button class=qh type=button aria-expanded=false aria-label="About TLS validation">?</button></label>
-<p class="hint tip">Checks each provider's certificate against a built-in bundle, so a hostile network can't impersonate a provider and capture your keys. Turn off only for a self-hosted server with a self-signed certificate.</p>
-<label style="margin-top:8px">Capability validation <button class=qh type=button aria-expanded=false aria-label="About capability validation">?</button></label>
-<p class="hint tip">How the device confirms a provider key actually works before it tells the assistant a connector is available - so it relies on tested capabilities, not guesses. Off trusts the key as-is. Passive marks a provider verified once a real call or a manual check succeeds. Active also re-checks on a schedule so the status stays current.</p>
-<select id=capProbe onchange=capProbeUpd()><option value=1>Passive (default)</option><option value=0>Off</option><option value=2>Active - re-check on a schedule</option></select>
-<div id=capProbeActive style="display:none;margin-top:6px">
-<label>Re-check every, hours</label>
-<input id=capProbeH type=number min=1 max=168 onchange=capProbeUpd()>
-<p class="hint" id=capProbeCost></p>
-</div>
 </div>
 </details>
 
@@ -791,8 +800,7 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 </div>
 
 <div class=pane id=pane-usage style="display:none">
-<div class=eyebrow>Costs</div>
-<div class=ptitle>Usage &amp; Budget</div>
+<div class=subpane id=subpane-usage style="display:none">
 <p class=plede>Token usage reported by your providers, tracked since the device last restarted.</p>
 <div class=sec>
 <div id=usageTiles class=tiles></div>
@@ -832,26 +840,6 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 </div>
 
 <div class=sec>
-<h2>Downloads <button class=qh type=button aria-expanded=false aria-label="About downloads">?</button></h2>
-<p class="hint tip">How much trust the assistant gets when it wants to download a file from the web. Approve asks you for each link; Scan checks the file with AI before keeping it; Full trust downloads immediately.</p>
-<div class=row style="gap:8px;flex-wrap:wrap">
-<select id=fetchpol style="flex:1 1 160px"><option value=0>Off</option><option value=1 selected>Ask me per link</option><option value=2>Scan, then keep</option><option value=3>Full trust</option></select>
-<button id=fetchpolsave type=button>Save</button>
-</div>
-<p class=hint id=fetchpolmsg></p>
-<div id=fetchRows></div>
-
-<h2>Guest moderation <button class=qh type=button aria-expanded=false aria-label="About guest moderation">?</button></h2>
-<p class="hint tip">Screens guests, never you. Your own messages and the web page are always exempt. Each switch adds a safety check that costs one moderation call per screened item (Cumulo moderation on a Cumulo key, otherwise Mistral on your key), so leave them off unless guests can reach the bot.</p>
-<div class=row><label><input type=checkbox id=modInbound> Check guest messages before answering</label></div>
-<p class="hint">If a message cannot be checked, it is not answered. Costs one call per guest message.</p>
-<div class=row><label><input type=checkbox id=modOutbound> Check replies sent to guests</label></div>
-<p class="hint">A flagged reply is held back. If a check cannot run, the reply still goes out. Costs one call per guest reply.</p>
-<div class=row><label><input type=checkbox id=modInjection> Flag suspicious fetched content</label></div>
-<p class="hint">Marks fetched web content that looks like a hidden instruction as untrusted, so it is treated as data. It marks, never blocks. Costs one call per fetched item.</p>
-<div class=row><button id=modSave type=button>Save</button></div>
-<p class=hint id=modmsg></p>
-
 <h2>Budgets <button class=qh type=button aria-expanded=false aria-label="About budgets">?</button></h2>
 <p class="hint tip">Caps each provider's spend for the month - by tokens, by dollars, or both; 0 means unlimited. The dollar cap uses your rates above, so set prices for it to count. At any cap, that provider's turns and searches are refused until the reset day - the assistant fails over to another in-budget provider when it can.</p>
 <div id=budgetRows></div>
@@ -869,10 +857,10 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 </div>
 </div>
 </div>
+</div>
 
 <div class=pane id=pane-gov style="display:none">
-<div class=eyebrow>Automation</div>
-<div class=ptitle>Routines</div>
+<div class=subpane id=subpane-routines style="display:none">
 <p class=plede>Tasks that run on a schedule. Routines the assistant creates for itself wait for your approval, and spending limits pause anything that misbehaves.</p>
 <div class=sec>
 <h2>Routines <button class=qh type=button aria-expanded=false aria-label="About routines">?</button></h2>
@@ -898,15 +886,6 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <div id=wkList class=hint style="margin-top:8px"></div>
 </div>
 <div class=sec>
-<h2>Safety <button class=qh type=button aria-expanded=false aria-label="About safety">?</button></h2>
-<p class="hint tip">Moderation gates screen content with your provider before it is acted on. Each gate that is on adds a small provider call per item, so it costs a little more.</p>
-<label class=pr><input type=checkbox id=safeIn> Screen incoming messages</label>
-<label class=pr><input type=checkbox id=safeOut> Screen the assistant's replies</label>
-<label class=pr><input type=checkbox id=safeMedia> Screen images and files</label>
-<p class=hint id=safeCost></p>
-<div class=hint id=safeMsg></div>
-</div>
-<div class=sec>
 <h2>New routine</h2>
 <div class=row><input id=lpName placeholder="Name (e.g. Morning digest)" maxlength=24></div>
 <div class=row><input id=lpPrompt placeholder="What should the assistant do?"></div>
@@ -930,6 +909,33 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <div class=row><input id=lpChat placeholder="Telegram chat ID (blank = you)"></div>
 <button id=lpCreate type=button>Create Routine</button>
 <p id=lpMsg class=hint></p>
+</div>
+</div>
+
+<div class=subpane id=subpane-safety style="display:none">
+<p class=plede>Download trust and guest screening. Your own messages and the web page are always exempt.</p>
+<div class=sec>
+<h2>Downloads <button class=qh type=button aria-expanded=false aria-label="About downloads">?</button></h2>
+<p class="hint tip">How much trust the assistant gets when it wants to download a file from the web. Approve asks you for each link; Scan checks the file with AI before keeping it; Full trust downloads immediately.</p>
+<div class=row style="gap:8px;flex-wrap:wrap">
+<select id=fetchpol style="flex:1 1 160px"><option value=0>Off</option><option value=1 selected>Ask me per link</option><option value=2>Scan, then keep</option><option value=3>Full trust</option></select>
+<button id=fetchpolsave type=button>Save</button>
+</div>
+<p class=hint id=fetchpolmsg></p>
+<div id=fetchRows></div>
+</div>
+<div class=sec>
+<h2>Guest moderation <button class=qh type=button aria-expanded=false aria-label="About guest moderation">?</button></h2>
+<p class="hint tip">Screens guests, never you. Your own messages, the web page, and voice are always exempt. The message and reply checks each cost one moderation call per screened item (Cumulo moderation on a Cumulo key, otherwise Mistral on your key), so leave them off unless guests can reach the bot.</p>
+<div class=row><label><input type=checkbox id=modInbound> Check guest messages before answering</label></div>
+<p class="hint">If a message cannot be checked, it is not answered. Costs one call per guest message.</p>
+<div class=row><label><input type=checkbox id=modOutbound> Check replies sent to guests</label></div>
+<p class="hint">A flagged reply is held back. If a check cannot run, the reply still goes out. Costs one call per guest reply.</p>
+<div class=row><label><input type=checkbox id=modInjection> Flag suspicious fetched content</label></div>
+<p class="hint">Marks fetched web content that looks like a hidden instruction as untrusted, so it is treated as data. It marks, never blocks, and runs on the device at no extra cost.</p>
+<div class=row><button id=modSave type=button>Save</button></div>
+<p class=hint id=modmsg></p>
+</div>
 </div>
 </div>
 
@@ -1089,8 +1095,9 @@ function loadPane(p){
     if(typeof loadHealth==='function')loadHealth();
   }
   if(p==='gov'){if(typeof loadLoops==='function')loadLoops();
-    if(typeof loadWakeups==='function')loadWakeups();
-    if(typeof loadSafety==='function')loadSafety();}
+    if(typeof loadWakeups==='function')loadWakeups();}
+  // Safety (fetchpol + moderation) loads with pane-usage's loadOrch/loadFetchQ,
+  // which run in the same DEST.assistant group; no separate load needed here.
   if(p==='mem'){if(typeof loadMemDash==='function')loadMemDash();if(typeof loadFiles==='function')loadFiles();}
   if(p==='harness'){if(typeof loadOrch==='function')loadOrch();if(typeof loadConnectors==='function')loadConnectors();if(typeof loadTools==='function')loadTools();if(typeof loadSkills==='function')loadSkills();}
   if(p==='usage'){if(typeof loadOrch==='function')loadOrch();if(typeof loadFetchQ==='function')loadFetchQ();if(typeof loadUsageHistory==='function')loadUsageHistory();}
@@ -1125,17 +1132,27 @@ const SEARCH_INDEX=[
   {group:'Go to',label:'Home',kw:'dashboard status tiles sessions alerts health',act:()=>goDest('home')},
   {group:'Go to',label:'Chat',kw:'message assistant talk conversation',act:()=>goDest('chat')},
   {group:'Go to',label:'Memory',kw:'files long-term scratchpad directive storage',act:()=>goDest('memory')},
-  {group:'Go to',label:'Assistant',kw:'providers models tools connectors mcp skills usage budget routines wake-ups safety',act:()=>goDest('assistant')},
+  {group:'Go to',label:'Assistant',kw:'assistant providers models tools connectors mcp skills usage budget routines wake-ups safety moderation downloads',act:()=>goDest('assistant')},
+  {group:'Go to',label:'Models',kw:'assistant providers api keys anthropic openai mistral custom endpoint routing fallback voice dictation',act:()=>_goSub('llm')},
+  {group:'Go to',label:'Connectors',kw:'assistant connectors mcp telegram bot integrations',act:()=>_goSub('connectors')},
+  {group:'Go to',label:'Tools',kw:'assistant tools web search tavily tool use rounds sandbox tls capability',act:()=>_goSub('tools')},
+  {group:'Go to',label:'Skills',kw:'assistant skills instructions session',act:()=>_goSub('skills')},
+  {group:'Go to',label:'Routines',kw:'assistant routines loops schedule wake-ups automation digest',act:()=>_goSub('routines')},
+  {group:'Go to',label:'Usage',kw:'assistant usage tokens spend cost rates budget limits',act:()=>_goSub('usage')},
+  {group:'Go to',label:'Safety',kw:'assistant safety moderation guest screening downloads injection trust',act:()=>_goSub('safety')},
   {group:'Go to',label:'Device',kw:'settings display sound battery network updates cloud danger',act:()=>goDest('device')},
   {group:'Action',label:'Attach a file to chat',kw:'upload drag drop file',act:()=>{goDest('chat');var b=$('chatAttach');b&&b.focus();}},
   {group:'Action',label:'Check for updates',kw:'ota firmware software update install',act:()=>{goDest('device');_openGroup('Software update');var b=$('fwCheck');b&&b.focus();}},
   {group:'Action',label:'Pair with the cloud',kw:'cloud link code pairing qr',act:()=>{goDest('device');_openGroup('Cloud access');var b=$('cloudPair');b&&b.focus();}},
-  {group:'Action',label:'Add a provider key',kw:'api key anthropic openai model verify provider',act:()=>goDest('assistant')},
+  {group:'Action',label:'Add a provider key',kw:'api key anthropic openai model verify provider',act:()=>_goSub('llm')},
+  {group:'Action',label:'Display and touch',kw:'screen display flip touch calibration orientation rotate',act:()=>{goDest('device');_openGroup('Display');}},
   {group:'Action',label:'Sign-in code and connectivity',kw:'device sign-in token qr wifi network recovery',act:()=>{goDest('device');_openGroup('Connectivity');}},
   {group:'Action',label:'Erase / factory reset',kw:'erase reset wipe factory sd danger',act:()=>{goDest('device');_openGroup('Danger zone');}}
 ];
 // Open a Device <details> group by its summary text, so an action can jump to it.
 function _openGroup(name){document.querySelectorAll('details.setgroup').forEach(d=>{var s=d.querySelector('summary');if(s&&s.textContent.indexOf(name)===0)d.open=true;});}
+// Jump to the Assistant page and activate one of its seven exclusive subtabs.
+function _goSub(sp){goDest('assistant');var b=document.querySelector('.subtab[data-sp='+sp+']');if(b)b.click();}
 function _sEsc(s){return (s||'').replace(/[<>&]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));}
 let _sSel=0,_sItems=[];
 function openSearch(){
@@ -1202,9 +1219,13 @@ document.addEventListener('keydown',e=>{
   if((e.key==='k'||e.key==='K')&&(e.metaKey||e.ctrlKey)){e.preventDefault();openSearch();}
   else if(e.key==='/'&&!$('searchOverlay')&&!/^(INPUT|TEXTAREA|SELECT)$/.test((e.target&&e.target.tagName)||'')){e.preventDefault();openSearch();}
 });
-// Sub-tab switching (Harness pane): mirror of the top switcher, scoped to
-// .subtab/data-sp and #subpane-<x>. .subpane is a different class from .pane, so the
-// top switcher never touches these. Default = the first sub-tab (Connectors).
+// Sub-tab switching (Assistant page): the seven subtabs render EXCLUSIVELY - one
+// subpane at a time (owner amendment, CUM-163). Scoped to .subtab/data-sp and
+// #subpane-<x>; .subpane is a different class from .pane, so the top destination
+// switcher never touches these. The subpanes live across pane-harness (Models,
+// Connectors, Tools, Skills), pane-usage (Usage), and pane-gov (Routines, Safety),
+// all shown together by DEST.assistant, so hiding every .subpane and showing one
+// gives a single visible pane. Default = the first sub-tab (Models).
 document.querySelectorAll('.subtab').forEach(b=>b.onclick=()=>{
   document.querySelectorAll('.subpane').forEach(p=>p.style.display='none');
   document.querySelectorAll('.subtab').forEach(t=>t.classList.remove('on'));
@@ -1216,6 +1237,9 @@ document.querySelectorAll('.subtab').forEach(b=>b.onclick=()=>{
   else if(sp==='tools'&&typeof loadTools==='function')loadTools();
   else if(sp==='llm'&&typeof loadOrch==='function')loadOrch();
   else if(sp==='skills'&&typeof loadSkills==='function')loadSkills();
+  else if(sp==='routines'){if(typeof loadLoops==='function')loadLoops();if(typeof loadWakeups==='function')loadWakeups();}
+  else if(sp==='usage'){if(typeof loadUsageHistory==='function')loadUsageHistory();if(typeof loadFetchQ==='function')loadFetchQ();}
+  else if(sp==='safety'){if(typeof loadOrch==='function')loadOrch();if(typeof loadFetchQ==='function')loadFetchQ();}
 });
 {const st=document.querySelector('.subtab'); if(st)st.classList.add('on');}
 // Tap-? help: every button.qh toggles the first .hint.tip among its own or its
@@ -1404,7 +1428,7 @@ let GB={trace:true,sd:true};
 function _chatTraceHint(){
   const el=$('chatTrace'); if(!el)return;
   let m='';
-  if(!GB.trace)m='Activity recording is off, so turn details aren’t captured. Turn it on in Capabilities → Models → Tool use.';
+  if(!GB.trace)m='Activity recording is off, so turn details aren’t captured. Turn it on in Assistant → Tools → Tool use.';
   else if(!GB.sd)m='No SD card, so turn details can’t be stored.';
   el.textContent=m; el.style.display=m?'':'none';
 }
@@ -1882,20 +1906,6 @@ function loadWakeups(){
     if(list){const items=d.items||[];
       list.innerHTML=items.length?('Scheduled: '+items.map(w=>_sEsc(w.label||w.when||'wake-up')+(w.enabled===false?' (off)':'')).join(' &middot; ')):'No wake-ups scheduled.';}
   }).catch(()=>{const m=$('wkMsg');if(m)fbState('wkMsg','error','Couldn\'t load wake-ups - try again.');});
-}
-// ---- Safety (CUM-72, N5 endpoints) -----------------------------------------
-// Three moderation gates + a cost note. Each toggle writes independently.
-function loadSafety(){
-  const gi=$('safeIn'); if(!gi)return;
-  fetch('/api/safety').then(r=>r.ok?r.json():Promise.reject(r.status)).then(d=>{
-    const set=(id,v)=>{const e=$(id);if(e&&document.activeElement!==e)e.checked=!!v;};
-    set('safeIn',d.input);set('safeOut',d.output);set('safeMedia',d.media);
-    if($('safeCost'))$('safeCost').textContent=d.costNote||'Each gate that is on adds a small provider call per item.';
-    const wire=(id,gate)=>{const e=$(id);if(!e)return;e.onchange=()=>run({status:'safeMsg',pending:'Saving…',
-      work:()=>fetch('/api/safety',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({gate:gate,on:e.checked?'1':'0'}).toString()}).then(jok),
-      ok:()=>'Saved.',error:er=>'Couldn\'t save'+(er?(' ('+er+')'):'')+' - try again.'});};
-    wire('safeIn','input');wire('safeOut','output');wire('safeMedia','media');
-  }).catch(()=>{if($('safeMsg'))fbState('safeMsg','error','Couldn\'t load safety settings - try again.');});
 }
 function initLoopForm(){
   const kind=$('lpKind'); if(!kind)return;
@@ -2775,13 +2785,15 @@ function saveVerdict(ok,okMsg){
   m.textContent=ok?('✓ '+okMsg):'✗ Save failed - nothing was stored. Check the connection and try again.';
   m.style.cssText=ok?'color:#7fd1c8;font-weight:bold':'color:#e77;font-weight:bold';
 }
-$('orchsave').onclick=()=>{
-  $('orchmsg').textContent='Saving…';$('orchmsg').style.cssText='';
-  // provPrio/subPrio deliberately NOT here (review HIGH): those inputs were replaced
-  // by the #provPrioList/#subPrioList checkbox lists, which persist per-interaction
-  // via renderPrio's own save() - the stale $('provPrio').value deref threw a
-  // TypeError that made this button store NOTHING, silently, for every field.
-  orchApply({custBase:$('custBase').value,custKey:$('custKey').value,
+// The Models "Save Changes" and the Tools "Save Changes" (the relocated Tool use
+// group, CUM-163) both persist the whole orch field set: every input is read by id
+// and both subtabs' inputs stay in the DOM even while hidden, so either button
+// stores the current value of every field. provPrio/subPrio deliberately NOT here
+// (review HIGH): those inputs were replaced by the #provPrioList/#subPrioList
+// checkbox lists, which persist per-interaction via renderPrio's own save() - the
+// stale $('provPrio').value deref threw a TypeError that made this button store
+// NOTHING, silently, for every field.
+function _orchSavePayload(){return {custBase:$('custBase').value,custKey:$('custKey').value,
     custConv:$('custConv').value,custModel:$('custModel').value,
     orchHost:$('orchHost').value,
     tgToken:$('tgToken').value,
@@ -2792,7 +2804,10 @@ $('orchsave').onclick=()=>{
     loopRounds:$('loopRounds').value,loopDeadline:$('loopDeadline').value,tlsSlots:$('tlsSlots').value,compactKB:$('compactKB').value,
     tlsVerify:$('tlsVerify').checked?1:0,
     capProbe:$('capProbe')?$('capProbe').value:1,
-    capProbeH:($('capProbeH')&&$('capProbeH').value)?$('capProbeH').value:24})
+    capProbeH:($('capProbeH')&&$('capProbeH').value)?$('capProbeH').value:24};}
+$('orchsave').onclick=()=>{
+  $('orchmsg').textContent='Saving…';$('orchmsg').style.cssText='';
+  orchApply(_orchSavePayload())
   .then(ok=>{saveVerdict(ok,'Orchestrator settings saved.');
     if(ok){const hadTok=!!$('tgToken').value;$('custKey').value='';$('tgToken').value='';
       // The device runs a getMe verify on the arbited task (~a few s). Re-poll a few
@@ -2803,6 +2818,10 @@ $('orchsave').onclick=()=>{
         _tgVerifyWatch=true;
         [1500,3500,7000,15000].forEach(t=>setTimeout(loadOrch,t));}}});
 };
+$('toolusesave')&&($('toolusesave').onclick=()=>{
+  const m=$('toolusemsg'); if(m){m.textContent='Saving…';m.style.cssText='';}
+  orchApply(_orchSavePayload()).then(ok=>{if(m){m.textContent=ok===false?'✗ Save failed - try again.':'✓ Tool use settings saved.';m.style.cssText=ok===false?'color:#e77;font-weight:bold':'color:#7fd1c8;font-weight:bold';}});
+});
 let _tgVerifyWatch=false;
 $('savedir').onclick=()=>orchApply({sysPrompt:$('directive').value})
   .then(ok=>saveVerdict(ok,'Directive saved - applies from the next turn.'));
@@ -3525,7 +3544,7 @@ function loadTelegram(){
         const lim=document.createElement('span');
         lim.style.cssText='margin-left:6px;font-size:10px;color:#888';
         lim.textContent=q.vectors+' memories · '+Math.round(q.bytes/1024)+'KB · '+q.ttl+'h'+(q.pins?' · '+q.pins+' pins':'');
-        lim.title='What this person may store. Change it in Capabilities → Connectors → Telegram.';
+        lim.title='What this person may store. Change it in Assistant → Connectors → Telegram.';
         chip.appendChild(lim);
       }
       const x=document.createElement('a');x.href='#';x.textContent='×';x.style.cssText='margin-left:6px;color:#c55;text-decoration:none';

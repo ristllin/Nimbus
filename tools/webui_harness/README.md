@@ -57,5 +57,5 @@ run in headless CI.
 - `62_search`          - global search palette over all sources, keyboard reachable, grouped.
 - `66_onboarding`      - onboarding v2: flip step, Cumulo Nimbus + Z.ai, no e-ink, what-next card.
 - `68_updates_storage` - OTA result states + battery gate, files quota caption, typed erase confirm.
-- `72_wakeups_safety`  - wake-ups policy + single approval card; three safety gates + cost note.
+- `72_wakeups_safety`  - wake-ups policy + single approval card; Safety subtab downloads policy + guest moderation gates (the retired dead gates are gone).
 - `90_screenshots`     - archives {desktop,phone}-{home,chat,memory,assistant,device}.png.

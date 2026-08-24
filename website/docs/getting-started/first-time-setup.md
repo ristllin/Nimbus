@@ -238,7 +238,7 @@ on-chip storage with lower limits).
 
 ## 7. Add a provider key (Orchestrator)
 
-In **Capabilities → Models**, under *Providers & keys*, paste a key for at
+In **Assistant → Models**, under *Providers & keys*, paste a key for at
 least one provider (OpenAI, Anthropic, or Mistral) and click its **Verify**
 button.
 
@@ -277,7 +277,7 @@ want it to lead.
 To reach the device from Telegram:
 
 1. Create a bot with [@BotFather](https://t.me/BotFather) and paste its **bot
-   token** into **Capabilities → Connectors → Telegram**.
+   token** into **Assistant → Connectors → Telegram**.
 2. **Message your bot once** from your own Telegram account.
 3. Your message appears in the Telegram section as a **pending approval card**
    - click **Approve**. No chat-ID hunting.
@@ -296,7 +296,7 @@ aloud on the device speaker (or as a Telegram voice note) when that fits. It is 
 by default; turn it off to always reply in text. Spoken replies work whichever
 voice provider you pick: the speaker plays OpenAI's WAV directly and decodes
 Mistral's MP3 with the bundled decoder. Set the dictation and spoken-reply
-providers and the voice itself under **Capabilities → Models → Voice**.
+providers and the voice itself under **Assistant → Models → Voice**.
 
 ---
 

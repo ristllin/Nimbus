@@ -6,7 +6,7 @@ the browser chat.
 ## Telegram (the main channel)
 
 1. Create a bot with [@BotFather](https://t.me/BotFather) and paste its **bot
-   token** into **Capabilities → Connectors → Telegram** on the device's web
+   token** into **Assistant → Connectors → Telegram** on the device's web
    page.
 2. Restart the device (token changes are read at boot).
 3. **Message your bot once** from your own account. Your message appears on
@@ -44,8 +44,10 @@ hasn't signed in yet):
 - **Dashboard** - health, battery, storage, and live sessions. Watch a turn's
   ring arc mirror here while the assistant works.
 - **Chat** - a browser conversation with the same assistant, same memory.
-- **Capabilities** - provider keys and routing (Models), connectors like
-  Telegram and Tavily web search (Connectors), and approved skills (Skills).
+- **Assistant** - one page with seven subtabs: provider keys and routing
+  (Models), connectors like Telegram (Connectors), the tool surface and Tavily
+  web search (Tools), approved skills (Skills), scheduled routines (Routines),
+  token usage and budgets (Usage), and download trust and guest screening (Safety).
 - **Memory & Files** - what the assistant remembers (vector memories,
   conversation history) and every file it has saved; search, preview, share,
   delete.

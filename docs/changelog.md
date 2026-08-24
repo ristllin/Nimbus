@@ -51,7 +51,7 @@ owner's follow-up review of the composed prompt.
   ("sign-in FAILED - tell the owner") and a missing credential ("NO credential
   - not usable"), fed from the one credential choke point. Enabled is a
   checkbox; these markers are evidence.
-- **Capability validation is a user setting** (Capabilities → Models → Tool
+- **Capability validation is a user setting** (Assistant → Models → Tool
   use): off / passive (default) / active. Passive marks a provider verified
   when a real turn succeeds; active adds a periodic free re-verify
   (`GET /v1/models`, ~$0) so a revoked key is caught.
@@ -154,7 +154,7 @@ building clean.
 ### New
 - **Skills authoring**: the assistant can draft its own reusable skills
   (`skill.save`/`skill.delete`). Every assistant-written skill arrives pending
-  your approval (web Capabilities → Skills, or `/skill approve <id>` in
+  your approval (web Assistant → Skills, or `/skill approve <id>` in
   Telegram) and does nothing until approved. Built-in skills can't be
   overwritten; you can delete any skill, the assistant only its own.
 - **Deep research** (built-in skill): multi-wave sub-agent fan-out into a

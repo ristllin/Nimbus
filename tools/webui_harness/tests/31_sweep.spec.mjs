@@ -73,11 +73,14 @@ test('Wi-Fi scan ends with a visible result', async ({ page }) => {
   await expect(page.locator('#msg')).toContainText(/network/i);
 });
 
-test('wake-ups policy + safety toggle end with a visible result', async ({ page }) => {
+test('wake-ups policy + guest moderation end with a visible result', async ({ page }) => {
   await seedToken(page); await openApp(page);
   await page.locator('.tab[data-p=assistant]').click();
+  await page.locator('.subtab[data-sp=routines]').click();
   await page.locator('#wkPolicy').selectOption('ask');
   await settled(page.locator('#wkMsg'));
-  await page.locator('#safeIn').check();
-  await settled(page.locator('#safeMsg'));
+  await page.locator('.subtab[data-sp=safety]').click();
+  await page.locator('#modInbound').check();
+  await page.locator('#modSave').click();
+  await expect(page.locator('#modmsg')).toHaveText(/saved/i);
 });

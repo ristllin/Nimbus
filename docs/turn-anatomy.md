@@ -32,8 +32,8 @@ a bubble with its trace by identity. (Before v4.2.0 the tag was `turn:tN` from a
 RAM counter that reset every boot and the UI grouped by chronological adjacency,
 which mis-filed rows whenever a Telegram or voice turn interleaved with a web one.)
 
-Turn details are **SD-gated** and gated on **Activity recording** (Capabilities →
-Models → Tool use, `otrace`, default on). With either missing the chat says so
+Turn details are **SD-gated** and gated on **Activity recording** (Assistant →
+Tools → Tool use, `otrace`, default on). With either missing the chat says so
 rather than showing an empty panel; the dossier ring keeps the most recent 16
 turns (≤768 KB), and older ones report `evicted`.
 

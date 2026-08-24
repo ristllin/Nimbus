@@ -548,7 +548,7 @@ def preflight(dev: Dev, judge, want_build: str = "", need_sd: bool = True, allow
             "orchTrace not confirmed ON (got "
             + repr(o.get("orchTrace"))
             + ") - tool-trace oracles would be ungrounded; enable Activity "
-            "recording (Capabilities → Models → Tool use) and retry"
+            "recording (Assistant → Tools → Tool use) and retry"
         )
     # web.search canary - the whole point of Phase 0
     reset_scenario(dev)

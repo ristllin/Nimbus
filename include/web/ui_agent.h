@@ -1,29 +1,31 @@
 #pragma once
 #include <Arduino.h>
 
-// ui_agent - the Capabilities pane (#pane-harness): the device's providers +
-// tool surface, split into four sub-tabs (Connectors / Tools / Models / Skills)
-// via the .subtab/.subpane switcher in ui_js.h. Every element ID (and the
-// data-sp keys, incl. the historical "llm") is unchanged from the old flat
-// Connectors pane so ui_js.h's applyOrch/loadOrch/loadConnectors/loadTools/
-// loadSkills wiring works as-is - only display text changed. The single
-// #orchsave button collects every orch field by id() regardless of which
-// sub-pane holds it. Self-contained (opens + closes the pane). Copy follows
-// the AGENTS.md copy style guide.
+// ui_agent - #pane-harness, the first host of the Assistant page. It carries the
+// seven-subtab row (Models / Connectors / Tools / Skills / Routines / Usage /
+// Safety, CUM-163) and the first four subpanes (Models / Connectors / Tools /
+// Skills); Usage lives in #pane-usage and Routines + Safety in #pane-gov, all
+// shown together by DEST.assistant so the .subtab/.subpane switcher in ui_js.h
+// renders exactly one subpane at a time (owner subpage-exclusive amendment). Every
+// element ID (and the data-sp keys, incl. the historical "llm") is unchanged so
+// ui_js.h's applyOrch/loadOrch/loadConnectors/loadTools/loadSkills wiring works
+// as-is. The Tool use group moved under Tools (it governs the tool surface, not
+// provider keys); its #toolusesave and the Models #orchsave both persist the whole
+// orch field set by id() regardless of which subpane holds each input. Copy
+// follows the AGENTS.md copy style guide.
 
 static const char UI_AGENT[] PROGMEM = R"=====(<div class=pane id=pane-harness style="display:none">
-<div class=eyebrow>AI &amp; integrations</div>
-<div class=ptitle>Capabilities</div>
-<p class=plede>Everything the device can reach and run - providers, tools, connectors, and skills. Keys are set by you, never by the model.</p>
-
 <div class=subtabs>
+<button type=button class=subtab data-sp=llm>Models</button>
 <button type=button class=subtab data-sp=connectors>Connectors</button>
 <button type=button class=subtab data-sp=tools>Tools</button>
-<button type=button class=subtab data-sp=llm>Models</button>
 <button type=button class=subtab data-sp=skills>Skills</button>
+<button type=button class=subtab data-sp=routines>Routines</button>
+<button type=button class=subtab data-sp=usage>Usage</button>
+<button type=button class=subtab data-sp=safety>Safety</button>
 </div>
 
-<div class=subpane id=subpane-connectors>
+<div class=subpane id=subpane-connectors style="display:none">
 <div class=sec>
 <h2>Connectors <button class=qh type=button aria-expanded=false aria-label="About connectors">?</button></h2>
 <p class="hint tip">Tools that run in your AI provider's cloud - on the assistant's own turns and on the sessions it starts. Create each credential once and paste it here. <a href="https://ristllin.github.io/Nimbus/guides/connectors" target=_blank>Setup guide &rarr;</a></p>
@@ -72,9 +74,47 @@ static const char UI_AGENT[] PROGMEM = R"=====(<div class=pane id=pane-harness s
 </div>
 <p class=hint id=tavstat></p>
 </div>
+
+<div class=sec>
+<h2>Tool use <button class=qh type=button aria-expanded=false aria-label="About tool use">?</button></h2>
+<p class="hint tip">How the assistant uses its tools mid-turn - the rounds, time limits, and sandbox that govern the tool surface above.</p>
+<details class=setgroup><summary>Tool use<span class=chev>&rsaquo;</span></summary>
+<div class=setbody>
+<label class=pr><input type=checkbox id=orchLoop checked> Enabled <button class=qh type=button aria-expanded=false aria-label="About tool use">?</button></label>
+<label class=pr><input type=checkbox id=midFail checked> Switch providers mid-task if one fails</label>
+<label class=pr><input type=checkbox id=codeSbx> Code sandbox <button class=qh type=button aria-expanded=false aria-label="About the code sandbox">?</button></label>
+<p class="hint tip">Lets the assistant run code in a provider sandbox to build files (charts, PDFs, data). Finished files land under Files. Needs an OpenAI key (Mistral where supported); Anthropic sub-agents can build files too.</p>
+<p class="hint tip">When on, the assistant uses its tools mid-turn - memory, sessions, web search, device control - and iterates before answering. When off, it answers in a single step.</p>
+<label class=pr><input type=checkbox id=orchTrace checked> Record tool calls &amp; thinking <button class=qh type=button aria-expanded=false aria-label="About activity recording">?</button></label>
+<p class="hint tip">Keeps a per-turn record of what the assistant did - each tool call, its result, and the reasoning between them - viewable in the chat. Stored on the SD card with the same 30-day retention as history.</p>
+<label>Tool rounds <span class=hint>(1&ndash;32)</span></label>
+<input id=loopRounds type=number min=1 max=32>
+<label>Time limit, seconds <span class=hint>(30&ndash;3600)</span></label>
+<input id=loopDeadline type=number min=30 max=3600>
+<label>Compact conversations after, KB <span class=hint>(8&ndash;512; 0 turns automatic compaction off)</span> <button class=qh type=button aria-expanded=false aria-label="About compaction">?</button></label>
+<p class="hint tip">When a chat accumulates this much history, the assistant folds it into a compact summary and starts a fresh provider thread - conversations stay fast and inexpensive without losing continuity. Send /compact to run it on demand.</p>
+<input id=compactKB type=number min=0 max=512>
+<label>Concurrent connections <button class=qh type=button aria-expanded=false aria-label="About concurrent connections">?</button></label>
+<p class="hint tip">One is the default and the stable choice - the device does one secure connection at a time, which uses the least memory. Two lets voice transcription run alongside a provider turn, but needs memory headroom and can fail a heavy turn. Applies after restart.</p>
+<select id=tlsSlots><option value=1>1 (default) - one at a time</option><option value=2>2 - concurrent (needs headroom)</option></select>
+<label class=pr style="margin-top:8px"><input type=checkbox id=tlsVerify checked> Validate provider TLS certificates <button class=qh type=button aria-expanded=false aria-label="About TLS validation">?</button></label>
+<p class="hint tip">Checks each provider's certificate against a built-in bundle, so a hostile network can't impersonate a provider and capture your keys. Turn off only for a self-hosted server with a self-signed certificate.</p>
+<label style="margin-top:8px">Capability validation <button class=qh type=button aria-expanded=false aria-label="About capability validation">?</button></label>
+<p class="hint tip">How the device confirms a provider key actually works before it tells the assistant a connector is available - so it relies on tested capabilities, not guesses. Off trusts the key as-is. Passive marks a provider verified once a real call or a manual check succeeds. Active also re-checks on a schedule so the status stays current.</p>
+<select id=capProbe onchange=capProbeUpd()><option value=1>Passive (default)</option><option value=0>Off</option><option value=2>Active - re-check on a schedule</option></select>
+<div id=capProbeActive style="display:none;margin-top:6px">
+<label>Re-check every, hours</label>
+<input id=capProbeH type=number min=1 max=168 onchange=capProbeUpd()>
+<p class="hint" id=capProbeCost></p>
+</div>
+</div>
+</details>
+<div class=row style="margin-top:10px"><button id=toolusesave type=button>Save Changes</button></div>
+<p id=toolusemsg class=hint></p>
+</div>
 </div>
 
-<div class=subpane id=subpane-llm style="display:none">
+<div class=subpane id=subpane-llm>
 <div class=sec>
 <h2>Models <span class="badge ext" id=orchoff style="display:none">Notifier mode - these settings apply when you switch to Orchestrator</span></h2>
 
@@ -131,38 +171,6 @@ static const char UI_AGENT[] PROGMEM = R"=====(<div class=pane id=pane-harness s
 <select id=vEmotion style="display:none"></select>
 </div>
 <p class=hint id=voiceHint></p>
-</div>
-</details>
-
-<details class=setgroup><summary>Tool use<span class=chev>&rsaquo;</span></summary>
-<div class=setbody>
-<label class=pr><input type=checkbox id=orchLoop checked> Enabled <button class=qh type=button aria-expanded=false aria-label="About tool use">?</button></label>
-<label class=pr><input type=checkbox id=midFail checked> Switch providers mid-task if one fails</label>
-<label class=pr><input type=checkbox id=codeSbx> Code sandbox <button class=qh type=button aria-expanded=false aria-label="About the code sandbox">?</button></label>
-<p class="hint tip">Lets the assistant run code in a provider sandbox to build files (charts, PDFs, data). Finished files land under Files. Needs an OpenAI key (Mistral where supported); Anthropic sub-agents can build files too.</p>
-<p class="hint tip">When on, the assistant uses its tools mid-turn - memory, sessions, web search, device control - and iterates before answering. When off, it answers in a single step.</p>
-<label class=pr><input type=checkbox id=orchTrace checked> Record tool calls &amp; thinking <button class=qh type=button aria-expanded=false aria-label="About activity recording">?</button></label>
-<p class="hint tip">Keeps a per-turn record of what the assistant did - each tool call, its result, and the reasoning between them - viewable in the chat. Stored on the SD card with the same 30-day retention as history.</p>
-<label>Tool rounds <span class=hint>(1&ndash;32)</span></label>
-<input id=loopRounds type=number min=1 max=32>
-<label>Time limit, seconds <span class=hint>(30&ndash;3600)</span></label>
-<input id=loopDeadline type=number min=30 max=3600>
-<label>Compact conversations after, KB <span class=hint>(8&ndash;512; 0 turns automatic compaction off)</span> <button class=qh type=button aria-expanded=false aria-label="About compaction">?</button></label>
-<p class="hint tip">When a chat accumulates this much history, the assistant folds it into a compact summary and starts a fresh provider thread - conversations stay fast and inexpensive without losing continuity. Send /compact to run it on demand.</p>
-<input id=compactKB type=number min=0 max=512>
-<label>Concurrent connections <button class=qh type=button aria-expanded=false aria-label="About concurrent connections">?</button></label>
-<p class="hint tip">One is the default and the stable choice - the device does one secure connection at a time, which uses the least memory. Two lets voice transcription run alongside a provider turn, but needs memory headroom and can fail a heavy turn. Applies after restart.</p>
-<select id=tlsSlots><option value=1>1 (default) - one at a time</option><option value=2>2 - concurrent (needs headroom)</option></select>
-<label class=pr style="margin-top:8px"><input type=checkbox id=tlsVerify checked> Validate provider TLS certificates <button class=qh type=button aria-expanded=false aria-label="About TLS validation">?</button></label>
-<p class="hint tip">Checks each provider's certificate against a built-in bundle, so a hostile network can't impersonate a provider and capture your keys. Turn off only for a self-hosted server with a self-signed certificate.</p>
-<label style="margin-top:8px">Capability validation <button class=qh type=button aria-expanded=false aria-label="About capability validation">?</button></label>
-<p class="hint tip">How the device confirms a provider key actually works before it tells the assistant a connector is available - so it relies on tested capabilities, not guesses. Off trusts the key as-is. Passive marks a provider verified once a real call or a manual check succeeds. Active also re-checks on a schedule so the status stays current.</p>
-<select id=capProbe onchange=capProbeUpd()><option value=1>Passive (default)</option><option value=0>Off</option><option value=2>Active - re-check on a schedule</option></select>
-<div id=capProbeActive style="display:none;margin-top:6px">
-<label>Re-check every, hours</label>
-<input id=capProbeH type=number min=1 max=168 onchange=capProbeUpd()>
-<p class="hint" id=capProbeCost></p>
-</div>
 </div>
 </details>
 
