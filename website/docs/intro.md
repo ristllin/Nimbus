@@ -63,7 +63,7 @@ drivers.
 
 | Configuration | Display | Input |
 |---|---|---|
-| **[E-paper + knob](guides/hardware-eink-knob.md)** *(default)* | 2.9" e-ink (SSD1680) | Rotary knob (EC11) |
+| **[E-paper + knob](guides/hardware.md)** *(default)* | 2.9" e-ink (SSD1680) | Rotary knob (EC11) |
 | **[Touch TFT](guides/hardware-touch-tft.md)** | 2.8" color touchscreen (ILI9341, 240×320) | Resistive touch (XPT2046) |
 
 The touchscreen consumes the knob's pins, so a board is only ever one or the
@@ -73,7 +73,7 @@ other. Everything else - ring, audio, SD card, battery - is common to both.
 
 - **Build one** - [What you need](quick-start/what-you-need.md) →
   [BOM](guides/hardware-bom.md) → the
-  [build guides](guides/hardware-build-eink.md) →
+  [build guides](guides/hardware.md) →
   [Flash](quick-start/flash.md) → [Set up](quick-start/setup-wizard.md).
 - **Use one** - [Modes & signals](guides/modes-and-signals.md) explains every
   light and sound; the
