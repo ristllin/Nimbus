@@ -1041,17 +1041,6 @@ void dispatch(String line) {
     Serial.flush();
     return;
   }
-  if (line == "DEGHOST") {
-    // Force the next panel push down the de-ghost (OTP full-update) path - the one
-    // refresh that composites the 3-colour panel's red plane. Exercises the
-    // stuck-red fix (driver-side red-RAM blank) on demand instead of a 15-min idle
-    // wait; the render lands within the scheduler tick and logs
-    // "epd: de-ghost full-update" to /api/log.
-    if (s_h.deghost) { s_h.deghost(); Serial.println("DEGHOST scheduled"); }
-    else Serial.println("DEGHOST unavailable (no hook)");
-    Serial.flush();
-    return;
-  }
   if (line == "RAWFRAME?") {
     // 1 while the Active-posture Animator owns the ring via showFrame() (P-E).
     const int rf = (s_h.rawFrameActive && s_h.rawFrameActive()) ? 1 : 0;

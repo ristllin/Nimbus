@@ -4,21 +4,18 @@
 #include <vector>
 
 #include "nimbus/attention.h"
-#include "nimbus/epd_render/fb.h"
 #include "nimbus/power/power_monitor.h"
 #include "nimbus/profile.h"
 
-// epd_render/screens - every screen Nimbus can draw, rendered from a plain
-// context struct into a 1-bit framebuffer. 100% host-side: the golden-image
-// suite renders the full matrix (screen x posture x representative states)
-// and byte-compares against blessed buffers (tools/golden.py makes PNGs).
+// screen_context - the display-agnostic context every screen is rendered from.
+// The color panel renderer (tft_render) draws these structs directly; lib/core
+// stays free of any board header so the render context remains host-testable.
 //
-// Layout conventions: a 12px header strip (mode + posture + battery glyph when
-// telemetry is valid), body below. JobDetail uses TextPager with two body
-// lines and a "page i/N" hint when N > 1. Badge draws only into a compact
-// region (right ~90x40px) so it can go out over the grey partial path.
+// Layout conventions are the renderer's: a header strip (mode + posture +
+// battery glyph when telemetry is valid) over a body region; JobDetail pages
+// long text; Badge draws only a compact attention region.
 
-namespace nimbus::epd {
+namespace nimbus::render {
 
 struct JobInfo {
   uint32_t key = 0;
@@ -63,13 +60,13 @@ struct ScreenCtx {
 
   // On-screen ring mirror for boards with no physical LED ring. Empty = none;
   // 45 entries = the composited ring frame (segments + cursor glow), drawn by the
-  // TFT notifier screen as a dot-ring instead of driving WS2812s. POD RGB so
+  // notifier screen as a dot-ring instead of driving WS2812s. POD RGB so
   // lib/core stays free of any solide/ header and remains golden-testable.
   struct RingLed { uint8_t r = 0, g = 0, b = 0; };
   std::vector<RingLed> ringLeds;
   bool micHeld = false;   // hold-to-talk is being pressed -> draw the button pressed
 
-  // SessionDetail (Orchestrator encoder-cursor focus). The Orchestrator itself is
+  // SessionDetail (Orchestrator cursor focus). The Orchestrator itself is
   // ALWAYS focus index 0 (sessionIsRoot) - the head agent you're always talking to
   // - so this screen never shows "nothing"; sub-sessions are focus indices 1..N.
   bool sessionIsRoot = false;          // true = the Orchestrator (head), not a sub-session
@@ -86,10 +83,9 @@ struct ScreenCtx {
   // setup info
   std::string apName, apPass, portalUrl;
   std::string fwVersion;  // firmware version string, shown small on the Setup screen
-  bool apUp = false;      // the setup SoftAP is CURRENTLY up (reachable). On e-ink it
-                          // never drops; on a TFT board it is torn down after STA joins.
-                          // ConfigQr prefers the AP address while it holds (routable from
-                          // a phone on the AP) and the LAN address only once it is gone.
+  bool apUp = false;      // the setup SoftAP is CURRENTLY up (reachable); torn down after
+                          // STA joins. ConfigQr prefers the AP address while it holds
+                          // (routable from a phone on the AP) and the LAN address once gone.
   std::string configUrl;  // encoded as the QR on the ConfigQr screen (LAN IP when joined)
   std::string setupUrl;   // encoded as the QR on SetupInfo - ALWAYS the SoftAP address
                           // (the scanning phone is on the setup AP; a LAN IP is
@@ -100,7 +96,7 @@ struct ScreenCtx {
 
   // BLE secure pairing (Pairing screen). The 6-digit passkey the Mac must enter,
   // shown while a central is mid-pairing. On a production (silent-serial) unit
-  // this e-ink screen is the ONLY place the code appears, so the bonded link can
+  // this screen is the ONLY place the code appears, so the bonded link can
   // actually be completed.
   std::string pairingCode;
 
@@ -114,8 +110,8 @@ struct ScreenCtx {
   int menuSelected = 0;
   std::string menuTitle;  // breadcrumb path band; empty = legacy titleless layout
   std::string menuHelp;   // param help pane at the bottom; empty = no pane
-  bool menuAdjusting = false;  // rotation is captured editing the selected row's
-                               // value -> drawMenu INVERTS that row (P2.2)
+  bool menuAdjusting = false;  // the selected row's value is being edited -> drawMenu
+                               // INVERTS that row (P2.2)
 
   // self-test (SelfTest screen). Device fills rows from hw::runSelfTest(); the
   // portable renderer just lays them out. status: 0 PASS, 1 FAIL, 2 SKIP.
@@ -124,21 +120,4 @@ struct ScreenCtx {
   std::string selfTestSummary;   // e.g. "8P/0F/3S"
 };
 
-// Draw `screen` into `fb` (fb is cleared first). Every ScreenId in
-// attention.h except IdleArt (3-color, rendered device-side from status_art)
-// must be handled.
-void renderScreen(Fb& fb, attn::ScreenId screen, const ScreenCtx& ctx);
-
-// Real page count drawAsk would produce for this text (TextPager, 48 cols x 7
-// lines/page) - clamp knob-paging of a held reply with THIS, not a byte estimate
-// (which under-counts wrap-expanded text and strands the tail pages; P2.3).
-int askPageCount(const std::string& text);
-
-// Badge-only variant: draws JUST the badge region (for the grey-partial
-// window path); returns the region {x,y,w,h} it touched.
-struct Region { int x, y, w, h; };
-Region renderBadgeRegion(Fb& fb, const ScreenCtx& ctx);
-
-const char* statusLabel(uint8_t status);  // "idle".."offline" for job rows
-
-}  // namespace nimbus::epd
+}  // namespace nimbus::render

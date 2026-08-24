@@ -45,8 +45,8 @@ static void test_frame_populates_jobs_by_index() {
   TEST_ASSERT_EQUAL(2, res.eventsRouted);
   TEST_ASSERT_TRUE(res.ringDirty);
   TEST_ASSERT_FALSE(res.anyAttention);           // Running/Done aren't attention
-  TEST_ASSERT_EQUAL(int(attn::ScreenId::StatusIdle), int(res.epd.screen));
-  TEST_ASSERT_FALSE(res.epd.attention);
+  TEST_ASSERT_EQUAL(int(attn::ScreenId::StatusIdle), int(res.screen.id));
+  TEST_ASSERT_FALSE(res.screen.attention);
 
   TEST_ASSERT_EQUAL(2, r.jobs().count());
   TEST_ASSERT_EQUAL(int(Status::Running), int(slotForKey(r, 0).status));
@@ -75,8 +75,8 @@ static void test_attention_segment_flags_badge() {
                   seg(Status::AwaitingApproval, 32)}),
       r, 0);
   TEST_ASSERT_TRUE(res.anyAttention);
-  TEST_ASSERT_EQUAL(int(attn::ScreenId::StatusIdle), int(res.epd.screen));
-  TEST_ASSERT_TRUE(res.epd.attention);
+  TEST_ASSERT_EQUAL(int(attn::ScreenId::StatusIdle), int(res.screen.id));
+  TEST_ASSERT_TRUE(res.screen.attention);
   // topAttention resolves to the approval job (positional key 1).
   attn::Router::Attention top = r.topAttention();
   TEST_ASSERT_TRUE(top.active);
@@ -145,7 +145,7 @@ static void test_timeout_offlines_stale_ring() {
   res = m.timeout(r, 6001, 5000, 5000);
   TEST_ASSERT_TRUE(res.ringDirty);
   TEST_ASSERT_EQUAL(0, r.jobs().count());
-  TEST_ASSERT_EQUAL(int(attn::ScreenId::StatusIdle), int(res.epd.screen));
+  TEST_ASSERT_EQUAL(int(attn::ScreenId::StatusIdle), int(res.screen.id));
 
   // Idempotent: a second timeout does nothing.
   res = m.timeout(r, 20000, 5000, 5000);

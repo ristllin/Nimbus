@@ -149,7 +149,7 @@ static void test_with_sd_config_and_mode_both_persist() {
   Config cfg;
   cfg.setProfile(ProfileId::Desk);
   cfg.setOverride(Param::RingBrightness, 123);
-  cfg.setOverride(Param::EpdCoalesceMs, 45000);
+  cfg.setOverride(Param::CoalesceMs, 45000);
   TEST_ASSERT_TRUE(saveConfig(store, cfg));
   TEST_ASSERT_TRUE(saveMode(store, Mode::Orchestrator));
 
@@ -160,7 +160,7 @@ static void test_with_sd_config_and_mode_both_persist() {
   TEST_ASSERT_EQUAL(int(ProfileId::Desk), int(restored.profile()));
   TEST_ASSERT_TRUE(restored.hasOverride(Param::RingBrightness));
   TEST_ASSERT_EQUAL(123, restored.effective(Param::RingBrightness));
-  TEST_ASSERT_EQUAL(45000, restored.effective(Param::EpdCoalesceMs));
+  TEST_ASSERT_EQUAL(45000, restored.effective(Param::CoalesceMs));
   TEST_ASSERT_EQUAL(int(Mode::Orchestrator), int(loadMode(store, Mode::Notifier)));
 }
 

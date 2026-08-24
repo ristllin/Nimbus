@@ -58,9 +58,9 @@ static solide::ring::Slot slotFor(const Router& r, uint32_t key) {
 // Macro (not function) so Unity failure lines point at the call site.
 #define ASSERT_DECISION(d, wantScreen, wantAttn, wantNotify, wantRingDirty) \
   do {                                                                      \
-    TEST_ASSERT_TRUE((d).epd.render);                                       \
-    TEST_ASSERT_EQUAL(int(wantScreen), int((d).epd.screen));                \
-    TEST_ASSERT_EQUAL(int(wantAttn), int((d).epd.attention));               \
+    TEST_ASSERT_TRUE((d).screen.render);                                       \
+    TEST_ASSERT_EQUAL(int(wantScreen), int((d).screen.id));                \
+    TEST_ASSERT_EQUAL(int(wantAttn), int((d).screen.attention));               \
     TEST_ASSERT_EQUAL(int(wantNotify), int((d).notify.notify));             \
     TEST_ASSERT_EQUAL(int(wantRingDirty), int((d).ringDirty));              \
   } while (0)
@@ -343,7 +343,7 @@ static void test_out_of_range_status_is_dropped() {
   e.key = 5;
   e.status = 9;  // > Offline (6)
   Decision d = r.route(e, 0);
-  TEST_ASSERT_FALSE(d.epd.render);
+  TEST_ASSERT_FALSE(d.screen.render);
   TEST_ASSERT_FALSE(d.ringDirty);
   TEST_ASSERT_EQUAL(0, r.jobs().count());
   // A valid status for the same key still works afterwards.

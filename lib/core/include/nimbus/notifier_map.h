@@ -39,7 +39,7 @@ struct FrameResult {
   bool anyAttention = false;   // any segment is an attention status this frame
   // One aggregate e-ink intent for the whole frame: immediate Badge when any
   // segment needs attention, else a coalesced StatusIdle refresh.
-  attn::EpdIntent epd;
+  attn::ScreenIntent screen;
 };
 
 class Mapper {

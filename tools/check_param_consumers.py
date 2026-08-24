@@ -14,8 +14,8 @@ for a param consumed via genuine indirection.
 
 NOTE: this catches the ZERO-consumer class (dead knobs). It does NOT catch a param
 that reaches a Plan field which a lower layer then drops (AttnLedIndex, AttnPeriodMs
-in Dark/Calm, FullRefreshEveryN) - that seam-drop class is guarded by the LED/e-ink
-golden-frame contract tests instead. Two mechanisms, two failure modes.
+in Dark/Calm) - that seam-drop class is guarded by the LED golden-frame contract
+tests instead. Two mechanisms, two failure modes.
 """
 
 from __future__ import annotations

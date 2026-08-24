@@ -18,7 +18,7 @@ namespace nimbus::tft {
 
 namespace {
 
-using epd::ScreenCtx;
+using render::ScreenCtx;
 
 constexpr int kGut = kPad;                 // 12px page gutter
 constexpr int kBodyTop = kHeaderH + 8;
@@ -944,7 +944,7 @@ void drawScreensaver(Fb565& fb, Rendered& r, const ScreenCtx& ctx) {
 }  // namespace
 
 // Real page count drawAsk will produce for this text (declared in
-// tft_render/screens.h). Deliberately NOT epd::askPageCount() - that's
+// tft_render/screens.h). Deliberately its own count - the old 48-col grid was
 // hardcoded to the e-ink panel's 48-col/7-line grid, which does not match this
 // renderer's pixel geometry/font metrics. Needs external linkage (unlike every
 // draw* helper above, which is only ever reached via renderScreen's switch) so

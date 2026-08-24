@@ -60,7 +60,6 @@
 #include "agent/telegram.h"
 #include "agent/adapters/audio_tts.h"  // orchSpeakSink - tts device action -> Telegram audio
 #include "sys/tls_arbiter.h"
-#include "hw/epd_out.h"
 #include "hw/hal_status.h"
 #include "hw/tft_out.h"      // colour touch panel (screenModel=tft)
 #include "hw/touch_input.h"  // taps -> the same gestures the encoder makes
@@ -73,8 +72,8 @@
 #include "modes/notifier_mode.h"
 #include "nimbus/attention.h"
 #include "nimbus/wifi/copy.h"                  // portable, tested Wi-Fi copy + deviceUrl
-#include "nimbus/epd_render/screens.h"
-#include "nimbus/epd_sched.h"
+#include "nimbus/render_context.h"
+#include "nimbus/render_sched.h"
 #include "hw/power_fuelgauge.h"
 #include "hw/power_battery_adc.h"
 #include "nimbus/power/power_manager.h"
@@ -328,12 +327,7 @@ static volatile bool g_sdResetPending = false;       // web SD reset: erase /mem
 // instead of going dark. Cleared in the reply drain / timeout in loop().
 static volatile bool g_voiceWaiting = false;
 static uint32_t      g_voiceWaitStart = 0;
-static epd::Scheduler g_sched;
-// PSRAM-backed (allocated in setup): the 4736-byte framebuffer is CPU-read by the
-// e-ink render task, so it lives in the idle 8 MB PSRAM, not the scarce internal SRAM
-// - Notifier mode (NimBLE) rests near-OOM otherwise. requestBitmap keeps the pointer
-// until rendered, so the allocation must be long-lived (it is: never freed).
-static epd::Fb* g_fb = nullptr;
+static render::Scheduler g_sched;
 static NotifierMode g_notifier(g_router);
 static SettingsMenu g_menu(g_cfg);
 
@@ -471,10 +465,13 @@ static void saveBattModel() {
 // tells the main loop to recompose the ring + queue an e-ink intent.
 static agent::HeavyFabric g_fabric;
 static bool          g_orchMode = false;       // resolved once at boot
-// Which display is fitted (agent::store::screenModel(), resolved ONCE at boot).
-// It selects the display driver AND the input driver: on a TFT board the panel
-// consumes the encoder pins, so there is no knob to read.
+// The color touch panel is the only supported display (e-ink removed in v4.4).
+// True once it is up; flips false only in the fail-soft path when panel bring-up
+// fails, which gates rendering off so a dead panel cannot stall the device.
 static bool          g_screenIsTft = false;
+// The stored scrModel still reads "eink" on a stale unit (frozen NVS key). We run
+// the color panel regardless and surface a clear "unsupported display" notice.
+static bool          g_unsupportedScreenModel = false;
 // White-screen mitigation (TFT): drop the SoftAP once STA is up so its continuous
 // beacon TX stops disturbing the panel; bring it BACK when STA goes down so the
 // setup/recovery web page is always reachable when Wi-Fi is unavailable. Set in
@@ -542,10 +539,10 @@ static void orchEventSink(const attn::Event& e) {
   }
   const attn::Decision d = g_router.route(e, millis());
   if (d.ringDirty) g_orchRingDirty = true;
-  if (d.epd.render) {
+  if (d.screen.render) {
     g_orchEpdRender = true;
-    g_orchEpdScreen = uint8_t(d.epd.screen);
-    g_orchEpdAttn = d.epd.attention;
+    g_orchEpdScreen = uint8_t(d.screen.id);
+    g_orchEpdAttn = d.screen.attention;
   }
 }
 
@@ -676,9 +673,6 @@ static uint32_t g_menuDoneAt = 0;   // menu-refresh busy deadline (its own, not 
 static uint32_t g_updCheckKickMs = 0;  // last menu "Check for updates" kick - the loop-body
                                        // reseed holds "Checking..." through the async task
                                        // spin-up instead of overwriting it with stale state
-static epd::Fb* g_menuFb = nullptr;  // dedicated menu framebuffer (no aliasing with g_fb);
-                                     // PSRAM-backed, allocated in setup (see g_fb)
-
 // (g_rebootPending - the deferred-reboot flag serviced at the top of loop() - is
 // declared with the device-action override state above, since the orchestrator
 // DeviceSink also sets it for the model's `reboot` action.)
@@ -721,7 +715,7 @@ static std::string activeHostProvider() {
 
 // Populate ScreenCtx session fields for focus index `idx`: 0 = the Orchestrator root
 // (live - provider/state computed now, not snapshotted), >=1 = a sub-session snapshot.
-static void fillFocus(epd::ScreenCtx& c, size_t idx) {
+static void fillFocus(render::ScreenCtx& c, size_t idx) {
   if (idx == 0) {
     c.sessionIsRoot   = true;
     c.sessionTitle    = "Nimbus";
@@ -744,7 +738,7 @@ static std::string netStatusLine();  // defined below (one-line connectivity rea
 // status render (buildCtx) and the menu render (renderMenu) so the header is
 // identical on EVERY screen - the menu path used to leave these defaulted, which
 // hid the battery % and froze the glyphs at wi-/bt- (off) on all sub-menus.
-static void fillHeaderCtx(epd::ScreenCtx& c) {
+static void fillHeaderCtx(render::ScreenCtx& c) {
   c.deviceName = std::string(sys::deviceName().c_str());   // top-left identity (which unit is this)
   c.modeName = (g_menu.mode() == Mode::Orchestrator) ? "orchestrator" : "notifier";
   c.posture = g_cfg.posture();
@@ -806,8 +800,8 @@ static void fillHeaderCtx(epd::ScreenCtx& c) {
   }
 }
 
-static epd::ScreenCtx buildCtx(int cursorJob) {
-  epd::ScreenCtx c;
+static render::ScreenCtx buildCtx(int cursorJob) {
+  render::ScreenCtx c;
   fillHeaderCtx(c);   // mode/profile/posture + WiFi/BT/battery/net-degraded header
   // Setup/QR context - filled on EVERY build (P2/P3): SetupInfo shows the AP
   // SSID + a scan-to-configure QR on unprovisioned boot, and a scheduler-driven
@@ -908,91 +902,31 @@ static epd::ScreenCtx buildCtx(int cursorJob) {
 }
 
 static void renderScreen(attn::ScreenId screen, int cursorJob, bool fullClear) {
-  // TFT-fitted device: the colour renderer draws the same ScreenCtx and the
-  // panel refreshes in ~31 ms, so none of the e-ink dwell/ghosting/scheduler
-  // machinery below applies. Return early rather than thread `if (tft)` through
-  // all of it - that machinery exists only because e-ink is slow.
-  if (g_screenIsTft) {
-    const uint32_t tnow = millis();
-    // Honour a dropped push. renderAndPush returns false when the previous
-    // ~31 ms blit is still in flight - and it only swaps the tap map on a
-    // SUCCESSFUL push, so pretending it painted leaves the panel AND the hit
-    // regions a screen behind while the FSM has already moved on. Leave
-    // g_lastScreen alone so the caller's entry gates still re-fire.
-    const auto push = hw::tft::renderAndPush(screen, buildCtx(cursorJob));
-    if (push == hw::tft::Push::Dropped) {
-      g_sched.onRenderDone(tnow);   // never leave the scheduler latched
-      return;                       // panel is a frame behind; caller retries
-    }
-    // Pushed OR Unchanged: the panel genuinely shows this screen, so the entry
-    // gates that key off g_lastScreen must see it (an Unchanged frame is a
-    // SUCCESS - treating it as a drop is what latched the repaint loop).
-    g_lastScreen = uint8_t(screen);
-    // ⚠ Release the scheduler's busy latch. g_sched.tick() sets busy_ when it
-    // issues a render and clears it ONLY in onRenderDone(); the e-ink path pays
-    // that back via the g_panelBusy window. A TFT frame is ~31 ms with no dwell
-    // to wait out, so it is done the moment the push returns - but if this call
-    // is missed the scheduler stays busy forever and every ambient StatusIdle
-    // refresh, CTA badge and detail intent silently stops after the FIRST frame.
-    g_sched.onRenderDone(tnow);
-#ifdef NIMBUS_TEST
-    // RENDER? must follow the TFT too, or it reports a stale e-ink frame
-    // forever and every test asserting on it passes against a frozen value.
-    tc::onRender(g_lastScreen, uint8_t(g_cfg.posture()), g_lastSeg, g_lastSingle,
-                 g_lastDark, g_lastBright);
-#endif
-    return;
+  (void)fullClear;   // legacy e-ink refresh hint; the color panel ignores it
+  const uint32_t tnow = millis();
+  // Honour a dropped push. renderAndPush returns false when the previous
+  // ~31 ms blit is still in flight - and it only swaps the tap map on a
+  // SUCCESSFUL push, so pretending it painted leaves the panel AND the hit
+  // regions a screen behind while the FSM has already moved on. Leave
+  // g_lastScreen alone so the caller's entry gates still re-fire.
+  const auto push = hw::tft::renderAndPush(screen, buildCtx(cursorJob));
+  if (push == hw::tft::Push::Dropped) {
+    g_sched.onRenderDone(tnow);   // never leave the scheduler latched
+    return;                       // panel is a frame behind; caller retries
   }
-  epd::renderScreen(*g_fb, screen, buildCtx(cursorJob));
-  const uint32_t now = millis();
+  // Pushed OR Unchanged: the panel genuinely shows this screen, so the entry
+  // gates that key off g_lastScreen must see it (an Unchanged frame is a
+  // SUCCESS - treating it as a drop is what latched the repaint loop).
   g_lastScreen = uint8_t(screen);
-  // NOTE: rendering a screen is NOT a screensaver-activity signal. It used to be
-  // ("any non-ambient render resets the clock"), but that reset on SYSTEM-driven
-  // renders too - the auth-fail Config QR (a stale browser polling with a bad
-  // token repaints it), WiFi/error surfaces, a scheduled turn's reply - none of
-  // which is the owner touching the device. On a bench those incidental renders
-  // land inside every idle window, so the 60-min clock never matured and the
-  // logo never appeared (owner: "a full night, no logo, inconsistent"). Activity
-  // is now ONLY the genuine signals: knob/button (saverKick on the input pop) and
-  // real CTA/job edges (saverKick in the router event tap). The screensaver can't
-  // clobber a screen the owner is viewing regardless - entry is gated on the
-  // panel already showing StatusIdle.
-  // StatusIdle is the churn-prone ambient screen (job rows flip while agents run) -
-  // render it with the flash-free PARTIAL waveform so processing never strobes the
-  // panel (owner: "heavy flickering while processing"). Attention screens (Ask /
-  // SessionDetail / Pairing …) keep the crisp fast-full frame: they appear once per
-  // event, and a CTA deserves the sharper paint.
-  const epd::Kind kind = (screen == attn::ScreenId::StatusIdle && !fullClear)
-                             ? epd::Kind::Partial
-                             : epd::Kind::FastBW;
-  if (!hw::pushFramebuffer(*g_fb, kind, fullClear)) {
-    // Frame identical to what's already on the panel (or SCREEN fault-injected):
-    // no ~2.2 s flash. Release the scheduler busy_ latch that g_sched.tick() set
-    // when it issued THIS render - otherwise the FSM stays busy forever and no
-    // future intent (status/CTA badge/detail) ever renders. onRenderDone no-ops
-    // when the render came from a direct, non-scheduler call (busy_ already false),
-    // so this is safe for the direct call sites too. No panel-busy window opens.
-    g_sched.onRenderDone(now);
+  // ⚠ Release the scheduler's busy latch. g_sched.tick() sets busy_ when it
+  // issues a render and clears it ONLY in onRenderDone(). A frame is ~31 ms with
+  // no dwell to wait out, so it is done the moment the push returns - but if this
+  // call is missed the scheduler stays busy forever and every ambient StatusIdle
+  // refresh, CTA badge and detail intent silently stops after the FIRST frame.
+  g_sched.onRenderDone(tnow);
 #ifdef NIMBUS_TEST
-    // Log only when the SKIPPED screen changes. An idle device re-renders the
-    // same status frame every few seconds, and logging each one filled the whole
-    // 1280-byte ring with "epd: skip" - so on exactly the [env:test] boards we
-    // diagnose with, nothing else survived long enough to read. (Board 1's ring
-    // held nothing but this line while it was panic-rebooting.) The test console
-    // asserts through tc::onRender below, which is unaffected.
-    static uint8_t s_lastSkipLogged = 0xFF;
-    if (g_lastScreen != s_lastSkipLogged) {
-      s_lastSkipLogged = g_lastScreen;
-      agent::alogf("epd: skip screen=%u (identical frame - no refresh)", g_lastScreen);
-    }
-    tc::onRender(g_lastScreen, uint8_t(g_cfg.posture()), g_lastSeg, g_lastSingle,
-                 g_lastDark, g_lastBright);
-#endif
-    return;
-  }
-  g_panelBusy = true;
-  g_panelDoneAt = now + NIMBUS_EPD_FASTBW_MS;
-#ifdef NIMBUS_TEST
+  // RENDER? must follow every push, or it reports a stale frame forever and every
+  // test asserting on it passes against a frozen value.
   tc::onRender(g_lastScreen, uint8_t(g_cfg.posture()), g_lastSeg, g_lastSingle,
                g_lastDark, g_lastBright);
 #endif
@@ -1590,7 +1524,7 @@ static std::string netStatusLine() {
 // menu is on the "Config QR" row, the SAME foreground path renders the
 // full-screen ConfigQr screen instead (device owns the net-derived URL).
 static void renderMenu() {
-  epd::ScreenCtx c;
+  render::ScreenCtx c;
   fillHeaderCtx(c);   // same header (mode/profile/posture + WiFi/BT/battery) as the status screen
   const bool qr = g_menu.showingConfigQr();
   const bool tokenDetail = g_menu.showingTokenDetail();
@@ -1669,63 +1603,42 @@ static void renderMenu() {
                   v.title.c_str());
 #endif
   }
-  // TFT: one renderer, one buffer pair, no separate menu framebuffer - the
-  // panel is fast enough that the menu is just another frame.
-  if (g_screenIsTft) {
-    // Honour a dropped push, exactly as renderScreen does: renderAndPush swaps
-    // the tap map ONLY on success, so clearing g_menuNeedsPaint on a drop leaves
-    // the panel AND the hit regions one screen behind the FSM with nothing to
-    // reschedule the repaint - and the next tap resolves against the stale map.
-    // ⚠ ONLY a genuine drop may retain g_menuNeedsPaint. An Unchanged frame
-    // means the panel is already correct - retaining the flag there left the
-    // gate permanently satisfied (g_menuDoneAt only advances on a real push),
-    // re-composing a full frame plus a 150 KB memcmp every ~3 ms forever.
-    // Reachable in steady state: the ~1 Hz update-status reseed, or a '+' tap
-    // at Volume 100 (onRotate marks dirty even when the value clamps).
-    if (hw::tft::renderAndPush(screen, c) == hw::tft::Push::Dropped) return;
-    g_menuNeedsPaint = false;
-    g_lastScreen = uint8_t(screen);
-    // ⚠ Keep g_menuDoneAt moving. The repaint gate is int32_t(now - g_menuDoneAt)
-    // >= 0; left at 0 that becomes int32_t(now), which goes NEGATIVE once uptime
-    // passes ~24.8 days and the menu then never repaints again. A TFT frame has
-    // no dwell to wait out, so "done now" is the honest value.
-    g_menuDoneAt = millis();
-#ifdef NIMBUS_TEST
-    // Same reason as renderScreen: without this RENDER? never follows the menu
-    // on a TFT board, and the touch-nav tests assert against a frozen value.
-    tc::onRender(g_lastScreen, uint8_t(g_cfg.posture()), g_lastSeg, g_lastSingle,
-                 g_lastDark, g_lastBright);
-#endif
-    return;
-  }
-  // Render into the menu's OWN framebuffer + enqueue it: the display task
-  // serializes it behind any in-flight status frame (which streams from g_fb),
-  // so painting the menu the instant it opens can't corrupt that frame. The
-  // menu's busy window is tracked separately from g_panelBusy.
-  epd::renderScreen(*g_menuFb, screen, c);
-  const bool pushed = hw::pushFramebuffer(*g_menuFb, epd::Kind::FastBW);
+  // One renderer, one buffer pair: the menu is just another frame.
+  // Honour a dropped push, exactly as renderScreen does: renderAndPush swaps
+  // the tap map ONLY on success, so clearing g_menuNeedsPaint on a drop leaves
+  // the panel AND the hit regions one screen behind the FSM with nothing to
+  // reschedule the repaint - and the next tap resolves against the stale map.
+  // ⚠ ONLY a genuine drop may retain g_menuNeedsPaint. An Unchanged frame
+  // means the panel is already correct - retaining the flag there left the
+  // gate permanently satisfied (g_menuDoneAt only advances on a real push),
+  // re-composing a full frame plus a 150 KB memcmp every ~3 ms forever.
+  // Reachable in steady state: the ~1 Hz update-status reseed, or a '+' tap
+  // at Volume 100 (onRotate marks dirty even when the value clamps).
+  if (hw::tft::renderAndPush(screen, c) == hw::tft::Push::Dropped) return;
   g_menuNeedsPaint = false;
-  // Only open the menu busy window if a real refresh happened; an identical
-  // re-paint is suppressed by the dirty-gate (no ~2.2 s flash to wait out).
-  if (pushed) g_menuDoneAt = millis() + NIMBUS_EPD_FASTBW_MS;
   g_lastScreen = uint8_t(screen);
+  // ⚠ Keep g_menuDoneAt moving. The repaint gate is int32_t(now - g_menuDoneAt)
+  // >= 0; left at 0 that becomes int32_t(now), which goes NEGATIVE once uptime
+  // passes ~24.8 days and the menu then never repaints again. A frame has no
+  // dwell to wait out, so "done now" is the honest value.
+  g_menuDoneAt = millis();
 #ifdef NIMBUS_TEST
+  // Without this RENDER? never follows the menu and the touch-nav tests assert
+  // against a frozen value.
   tc::onRender(g_lastScreen, uint8_t(g_cfg.posture()), g_lastSeg, g_lastSingle,
-               g_lastDark, g_lastBright);  // F3 - menu/QR visible over serial
+               g_lastDark, g_lastBright);
 #endif
 }
 
 // Re-derive device timings from the (possibly overridden) config and re-apply
 // them live. Called after boot-load and after any menu/web mutation so a changed
-// DwellMs/EpdCoalesce/FullRefresh/brightness takes effect without a reboot.
+// DwellMs/CoalesceMs/brightness takes effect without a reboot.
 static void applyConfig() {
-  // fullEveryN = 0 disables the scheduler's render-count ghost-clear: the de-ghost is
-  // now TIME-based (idle failsafe in epd_out), driven by the same knob reinterpreted as
-  // minutes, so the render-count path would double up (and it fired mid-interaction).
+  // fullEveryN = 0: the color panel has no ghosting, so the render-count refresh
+  // upgrade stays off. Dwell and the coalesce window still pace the scheduler.
   g_sched.configure({uint32_t(g_cfg.effective(Param::DwellMs)),
-                     uint32_t(g_cfg.effective(Param::EpdCoalesceMs)),
+                     uint32_t(g_cfg.effective(Param::CoalesceMs)),
                      0});
-  hw::setGhostClearMinutes(uint16_t(g_cfg.effective(Param::FullRefreshEveryN)));
   // On a colour panel the BACKLIGHT is the largest continuous draw - larger than
   // the ring - so the battery mode has to reach it, or "Dark" saves almost
   // nothing on a TFT board. Skipped while the screensaver has it blanked, so a
@@ -2492,41 +2405,31 @@ void setup() {
 #if ARDUINO_USB_CDC_ON_BOOT
   Serial.setTxTimeoutMs(20);
 #endif
-  // e-ink framebuffers to PSRAM (before any render). ~14 KB of internal SRAM reclaimed
-  // (g_fb + g_menuFb + epd_out's s_last) - the difference between a comfortable and a
-  // near-OOM resting heap in Notifier mode, where NimBLE owns most of the internal SRAM
-  // and the 8 MB PSRAM otherwise sits idle. Fallback to internal only if PSRAM is absent.
-  auto allocFbPsram = []() -> epd::Fb* {
-    void* p = heap_caps_malloc(sizeof(epd::Fb), MALLOC_CAP_SPIRAM);
-    if (!p) p = heap_caps_malloc(sizeof(epd::Fb), MALLOC_CAP_INTERNAL);
-    return p ? new (p) epd::Fb() : nullptr;
-  };
-  g_fb = allocFbPsram();
-  g_menuFb = allocFbPsram();
-  // Which panel is fitted - resolved BEFORE the HAL comes up, because it decides
-  // which display AND input driver solide::begin() binds. The two share the SPI3
-  // pads and the TFT takes over the encoder's GPIOs, so exactly one pair may be
-  // initialised. Resolved ONCE and never re-read: changing it mid-run would leave
-  // half the device talking to hardware that is not there, which is why the web
-  // setter says "restart to apply".
+  // The color touch panel is the only supported display: e-ink was removed in
+  // v4.4. The stored scrModel is still read (frozen NVS key), but a unit that
+  // still reads "eink" is a stale/unsupported configuration - bring the panel up
+  // anyway and flag it (a clear notice, below), never a blank device. Typed OTA
+  // guarantees a real e-ink unit never receives this image, so it keeps its last
+  // e-ink firmware and its "updates have ended" notice.
   //
   // ⚠ NVS must be OPEN first. agent::store reads go straight to solide::memory,
   // which silently returns the DEFAULT until memory::begin() has run - and
   // memory::begin() normally runs inside solide::begin(), i.e. after this point.
-  // Without this line screenModel always read "eink" and the TFT could never
-  // bind. memory::begin() is idempotent, so solide::begin()'s own call below is
-  // still safe.
+  // memory::begin() is idempotent, so solide::begin()'s own call below is safe.
   solide::memory::begin();
-  g_screenIsTft = agent::store::screenIsTft();
-  g_hal = solide::begin({/*tft=*/g_screenIsTft});  // per-subsystem health for STATUS/api-state
+  g_unsupportedScreenModel = !agent::store::screenIsTft();  // stale "eink" flag
+  if (g_unsupportedScreenModel)
+    Serial.println("[disp] scrModel=eink is unsupported (e-ink removed) - running the color panel");
+  g_screenIsTft = true;   // the only supported display
+  g_hal = solide::begin({/*tft=*/true});  // per-subsystem health for STATUS/api-state
   // Publish it solide-free so the web + agent layers can read peripheral health
   // without depending on <solide/solide.h> (P5: /api/health, system.health tool,
   // the live capability manifest).
-  // (published AFTER the TFT bring-up below - a failed panel must not be
+  // (published AFTER the panel bring-up below - a failed panel must not be
   //  reported healthy, and g_screenIsTft can still flip in the fail-soft path.)
-  if (g_screenIsTft) {
-    // solide::begin() already brought the panel + touch up; this allocates the
-    // PSRAM framebuffers and wires the renderer to them.
+  {
+    // solide::begin() already brought the panel + touch up; this wires the
+    // renderer to them.
     if (hw::tft::begin()) {
       // Which end of the landscape panel is up. Applied BEFORE the first frame so
       // the boot screen is already the right way round; MADCTL-only, so it costs
@@ -3106,14 +3009,6 @@ void setup() {
       pairing = net::ble::pairingActive() ? 1 : 0;
     };
     h.bleForget = [] { net::ble::forgetBonds(); };      // FORGETBONDS
-    h.deghost = [] {                                    // DEGHOST (stuck-red test seam)
-      hw::forceGhostClearNextPush();
-      // Schedule an immediate StatusIdle render (attention=true bypasses the ambient
-      // coalesce) so the forced OTP full-update lands within a scheduler tick. The
-      // console runs on the main task - same task as the scheduler/render path.
-      if (!g_menu.isOpen())
-        g_sched.onIntent(uint8_t(attn::ScreenId::StatusIdle), true, millis());
-    };
     h.rawFrameActive = [] { return solide::leds::currentState().rawFrame; };  // RAWFRAME?
     h.battCal = [] () -> String {                                             // BATTCAL
       if (!g_battModel.calibrateFullNow())
@@ -3187,10 +3082,6 @@ void setup() {
     // DRAIN on|off [deep] - ttl=0: a human at the console has no refresher, so the
     // host dead-man must stay DISARMED here or it would yank the load mid-test.
     h.drain   = [](bool on, bool deep) { return drainSet(on, deep, -1, 0); };
-    // (DEGHOST is bound ABOVE with the render-scheduling lambda - a duplicate
-    // flag-only binding here from the merge was silently overwriting it, leaving
-    // the forced de-ghost waiting for the next natural render instead of landing
-    // within a scheduler tick.)
     h.storage = [](int pct) { return storageSet(pct); };               // STORAGE <pct>|off
     h.drainState = [](bool& active, bool& deep, uint16_t& restMv) {     // STATUS surfacing
       active = g_highLoadActive; deep = g_drainDeep; restMv = g_hlRestingMv; };
@@ -3626,13 +3517,11 @@ static void settleMenuAfterMutation(uint32_t now) {
 
 // Page a held Ask reply by `dir` (+1/-1) and repaint. Shared by the knob
 // (encoder rotate, e-ink) and touch (swipe, TFT) paths - each renderer has its
-// OWN page count (the e-ink panel's fixed 48-col/7-line grid vs the TFT card's
-// actual pixel geometry; they legitimately disagree), so this picks the right
-// one rather than risk stranding the tail page unreachable on either board.
+// Page count from the renderer's actual pixel geometry/font metrics, so the tail
+// page is never stranded unreachable.
 static void pageAskReply(int dir) {
   const std::string text(g_askOverride.c_str());
-  const int pages = g_screenIsTft ? nimbus::tft::askPageCount(text)
-                                  : epd::askPageCount(text);
+  const int pages = nimbus::tft::askPageCount(text);
   g_askPage = std::max(0, std::min(g_askPage + dir, pages > 0 ? pages - 1 : 0));
   renderScreen(attn::ScreenId::Ask, -1);
 }
@@ -4131,7 +4020,7 @@ void loop() {
       { net::ConfigLockGuard lk; d = g_router.route(be, now); }
       if (!g_menu.isOpen()) {
         refreshRing();
-        if (d.epd.render) g_sched.onIntent(uint8_t(d.epd.screen), d.epd.attention, now);
+        if (d.screen.render) g_sched.onIntent(uint8_t(d.screen.id), d.screen.attention, now);
       }
       // The ping itself fires below, AFTER the telemetry block has refreshed
       // g_battEstimate - the message reports the calibrated scale, and on the
@@ -4699,17 +4588,17 @@ void loop() {
     if (g_notifier.tick(now, notifier::ambientHoldFor(g_cfg.posture()),
                         uint32_t(g_cfg.effective(Param::AttnHoldMs)))) {
       if (!g_menu.isOpen()) refreshRing();
-      const attn::EpdIntent& in = g_notifier.last().epd;
+      const attn::ScreenIntent& in = g_notifier.last().screen;
       if (in.render && !g_menu.isOpen() && epdAmbientAllowedOverSaver(in.attention))
-        g_sched.onIntent(uint8_t(in.screen), in.attention, now);
+        g_sched.onIntent(uint8_t(in.id), in.attention, now);
     }
 
     // BLE transport: drain queued FRAME bytes through the Mapper/Router.
     if (net::ble::drain(g_notifier, now)) {
       if (!g_menu.isOpen()) refreshRing();
-      const attn::EpdIntent& in = g_notifier.last().epd;
+      const attn::ScreenIntent& in = g_notifier.last().screen;
       if (in.render && !g_menu.isOpen() && epdAmbientAllowedOverSaver(in.attention))
-        g_sched.onIntent(uint8_t(in.screen), in.attention, now);
+        g_sched.onIntent(uint8_t(in.id), in.attention, now);
 #ifdef NIMBUS_NOTIFIER_DEBUG
       Serial.printf("NSN(ble) jobs=%d attn=%d bright=%d\n", jobCount(),
                     int(g_notifier.last().anyAttention),
@@ -4858,16 +4747,14 @@ void loop() {
   // reply is being held (P2.3): a sticky reply must not be overwritten by the
   // next scheduled render - it dismisses on click, like the menu's own gating.
   if (!g_menu.isOpen() && !g_askSticky) {
-    epd::RenderCommand cmd = g_sched.tick(now);
+    render::RenderCommand cmd = g_sched.tick(now);
     if (cmd.render) {
       const attn::ScreenId screen = attn::ScreenId(cmd.screenId);
       const int cursorJob =
           (screen == attn::ScreenId::JobDetail && jobCount() > 0)
               ? int(g_cursor.index())
               : -1;
-      // Honor the scheduler's periodic ghost-clear (FullRefreshEveryN): pass its
-      // fullClear through so a real full-update waveform actually runs (it was
-      // computed then dropped here - the "Ghost-clear interval" knob did nothing).
+      // fullClear is a legacy slow-panel refresh hint; the color panel ignores it.
       renderScreen(screen, cursorJob, cmd.fullClear);
     }
   }

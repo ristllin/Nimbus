@@ -54,7 +54,7 @@ class NotifierMode {
       ++bleFrames_;
       bleLastSeq_ = frame.seq;
       last_ = mapper_.apply(frame, router_, nowMs);
-      return last_.ringDirty || last_.epd.render;
+      return last_.ringDirty || last_.screen.render;
     }
     return false;
   }

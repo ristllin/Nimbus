@@ -44,7 +44,7 @@ FrameResult Mapper::apply(const nsn::Frame& f, attn::Router& router,
                      nowMs);
     r.eventsRouted++;
     r.ringDirty |= d.ringDirty;
-    if (d.epd.attention) r.anyAttention = true;
+    if (d.screen.attention) r.anyAttention = true;
   }
 
   // Tail that shrank away since the last frame: free those slots.
@@ -63,8 +63,8 @@ FrameResult Mapper::apply(const nsn::Frame& f, attn::Router& router,
   seen_ = true;
 
   // One aggregate intent for the whole snapshot.
-  r.epd = r.anyAttention ? attn::EpdIntent{true, attn::ScreenId::StatusIdle, true}
-                         : attn::EpdIntent{true, attn::ScreenId::StatusIdle, false};
+  r.screen = r.anyAttention ? attn::ScreenIntent{true, attn::ScreenId::StatusIdle, true}
+                         : attn::ScreenIntent{true, attn::ScreenId::StatusIdle, false};
   return r;
 }
 
@@ -101,7 +101,7 @@ FrameResult Mapper::timeout(attn::Router& router, uint32_t nowMs,
   }
   if (!anyLive) liveCount_ = 0;                     // everything expired
   if (r.ringDirty)
-    r.epd = attn::EpdIntent{true, attn::ScreenId::StatusIdle, false};
+    r.screen = attn::ScreenIntent{true, attn::ScreenId::StatusIdle, false};
   return r;
 }
 

@@ -19,7 +19,7 @@
 using nimbus::tft::Fb565;
 using nimbus::tft::renderScreen;
 using nimbus::tft::Rendered;
-using nimbus::epd::ScreenCtx;
+using nimbus::render::ScreenCtx;
 using nimbus::attn::ScreenId;
 
 static void writeBin(const char* name, const Fb565& fb) {

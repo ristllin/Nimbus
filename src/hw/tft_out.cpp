@@ -99,7 +99,7 @@ bool begin() {
 
 bool ready() { return g_ready; }
 
-Push renderAndPush(nimbus::attn::ScreenId screen, const nimbus::epd::ScreenCtx& ctx) {
+Push renderAndPush(nimbus::attn::ScreenId screen, const nimbus::render::ScreenCtx& ctx) {
   if (!g_ready) return Push::Dropped;
   // Resilience: FAULT screen drops the panel update while the compose pipeline
   // upstream keeps running - the device is exercised as if the display failed.
@@ -161,7 +161,7 @@ Push renderAndPush(nimbus::attn::ScreenId screen, const nimbus::epd::ScreenCtx& 
   return Push::Pushed;
 }
 
-bool repaintRingRegion(const nimbus::epd::ScreenCtx& ctx) {
+bool repaintRingRegion(const nimbus::render::ScreenCtx& ctx) {
   if (!g_ready) return false;
   if (nimbus::fault::active(nimbus::fault::SCREEN)) return false;
   if (solide::display_tft::busy()) return false;   // never collide with an async full blit

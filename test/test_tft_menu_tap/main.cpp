@@ -20,7 +20,7 @@
 using nimbus::Config;
 using nimbus::SettingsMenu;
 using nimbus::attn::ScreenId;
-using nimbus::epd::ScreenCtx;
+using nimbus::render::ScreenCtx;
 using nimbus::tft::applyMenuTap;
 using nimbus::tft::Fb565;
 using nimbus::tft::Rendered;

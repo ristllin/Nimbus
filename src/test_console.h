@@ -93,10 +93,6 @@ struct Hooks {
   std::function<String()>                                 bleMac;
   std::function<void(int& bonds, int& pairing)>           bleBonds;
   std::function<void()>                                   bleForget;
-  // DEGHOST: force the next e-ink push down the de-ghost (OTP full-update) path +
-  // schedule a StatusIdle render, so the red-plane-compositing refresh - the
-  // "screen occasionally turns red" bug path - is exercisable in seconds.
-  std::function<void()>                                   deghost;
   // solide::leds::currentState().rawFrame for the `RAWFRAME?` diagnostic: true
   // while the Active-posture Animator (src/hw/ring_out.cpp) owns the physical
   // ring via showFrame(). Proves the raw-frame path actually engages/releases

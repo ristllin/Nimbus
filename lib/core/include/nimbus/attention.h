@@ -7,13 +7,13 @@
 // semantic events here; the router classifies them (attention vs ambient),
 // maintains the job table (solide::ring::Allocator), and fans each event out
 // as pure data:
-//   - an EpdIntent for the scheduler (attention => immediate path),
+//   - a ScreenIntent for the scheduler (attention => immediate path),
 //   - a NotifyIntent for the mode layer (Telegram ping, Orchestrator only),
 //   - ringDirty, telling the caller to recompute the ring plan (ring_plan.h).
 //
 // Attention events: WaitingInput, AwaitingApproval, Error (job states),
 // IncomingAsk, LowBattery-T1. Everything else is ambient and touches only the
-// e-ink (coalesced). In the Dark/Calm ring levels the ring shows just the single
+// panel (coalesced). In the Dark/Calm ring levels the ring shows just the single
 // highest-priority attention source; topAttention() reports it.
 
 namespace nimbus::attn {
@@ -21,8 +21,9 @@ namespace nimbus::attn {
 // Voice pipeline stages (shown on the ring, one glyph max on the panel).
 enum class VoiceStage : uint8_t { None = 0, Recording, Processing, Speaking };
 
-// Stable ids for every screen epd_render can draw. Shared vocabulary between
-// the router, scheduler and renderer.
+// Stable ids for every screen the renderer can draw. Shared vocabulary between
+// the router, scheduler and renderer. Wire numbers are frozen (HIL mirrors them
+// positionally); do not reorder or renumber.
 enum class ScreenId : uint8_t {
   StatusIdle = 0,   // ambient status (mode, jobs summary, battery)
   JobDetail,        // cursor-selected job, paged text
@@ -65,9 +66,9 @@ struct Event {
   uint8_t  accentHue = 255;
 };
 
-struct EpdIntent {
+struct ScreenIntent {
   bool     render = false;
-  ScreenId screen = ScreenId::StatusIdle;
+  ScreenId id = ScreenId::StatusIdle;
   bool     attention = false;
 };
 
@@ -77,7 +78,7 @@ struct NotifyIntent {
 };
 
 struct Decision {
-  EpdIntent    epd;
+  ScreenIntent screen;
   NotifyIntent notify;
   bool         ringDirty = false;
 };

@@ -36,9 +36,8 @@ enum class Param : uint8_t {
   AttnHue,            // 0-254; 255=white; -1 = auto (derive from state)
   AttnAnim,           // solide::ring::Anim as int
   AttnPeriodMs,       // breathe/blink period for the attention LED
-  EpdCoalesceMs,      // ambient refresh window
-  DwellMs,            // encoder settle before detail render
-  FullRefreshEveryN,  // ghosting: full clear after N fast/partials
+  CoalesceMs,         // ambient refresh window (NVS key stays "epd_coalesce_ms")
+  DwellMs,            // cursor settle before detail render
   TelemetryPeriodS,   // battery/status telemetry cadence (0 = off)
   TgLowBattPing,      // 0/1: Telegram low-battery ping (Orchestrator mode)
   AttnHoldMs,         // notifier: how long a call-to-action (input/approval/error)

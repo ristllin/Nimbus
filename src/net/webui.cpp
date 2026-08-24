@@ -181,7 +181,7 @@ static const ParamMeta kParams[] = {
   { Param::Posture,          "posture" },   // ring level (Dark/Calm/Full)
   { Param::RingBrightness,   "num"     },
   { Param::AttnHoldMs,       "num"     },   // how long a needs-you CTA holds (ms)
-  { Param::EpdCoalesceMs,    "num"     },
+  { Param::CoalesceMs,    "num"     },
   { Param::DwellMs,          "num"     },
   { Param::TelemetryPeriodS, "num"     },
   { Param::TgLowBattPing,    "bool"    },   // Orchestrator low-battery Telegram alert

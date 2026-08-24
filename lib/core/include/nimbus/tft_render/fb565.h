@@ -9,7 +9,7 @@
 // ============================================================================
 // tft_render/fb565 - a portable RGB565 framebuffer for the 240x320 touch panel.
 //
-// The colour counterpart of epd_render/fb.h, and deliberately a SEPARATE type:
+// A color 1-word-per-pixel framebuffer, deliberately a SEPARATE type from the
 // the e-ink renderer is frozen and must keep producing byte-identical goldens,
 // so nothing here may perturb it.
 //

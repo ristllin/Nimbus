@@ -1,6 +1,6 @@
 #include "nimbus/text_page.h"
 
-#include "nimbus/epd_render/fb.h"  // epd::asciiSanitize - wrap the ASCII the font renders
+#include "nimbus/render_text.h"  // render::asciiSanitize - wrap the ASCII the font renders
 
 // Greedy word-wrap. Words are runs of non-space, non-newline characters;
 // runs of spaces collapse to a single separator and vanish entirely at line
@@ -14,7 +14,7 @@ namespace nimbus {
 std::vector<std::string> wrapText(const std::string& textRaw, size_t cols) {
   // Wrap the SANITIZED text so line lengths match what the font actually draws (a
   // multi-byte UTF-8 char collapses to its ASCII form before wrapping, not after).
-  const std::string text = epd::asciiSanitize(textRaw);
+  const std::string text = render::asciiSanitize(textRaw);
   if (cols == 0) cols = 1;  // degenerate but well-defined: one char per line
 
   std::vector<std::string> lines;

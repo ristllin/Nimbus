@@ -14,10 +14,8 @@ constexpr Row kPresets[kParamCount] = {
     /* AttnHue           */ {{-1, -1, -1}},   // auto: derive from state
     /* AttnAnim          */ {{2, 2, 2}},      // solide::ring::Anim::Breathe
     /* AttnPeriodMs      */ {{3200, 2400, 2400}},
-    /* EpdCoalesceMs     */ {{60000, 30000, 15000}},
+    /* CoalesceMs        */ {{60000, 30000, 15000}},
     /* DwellMs           */ {{300, 300, 300}},
-    /* FullRefreshEveryN */ {{30, 20, 15}},  // minutes-idle before a ghost-clear
-                                             // (BatterySaver longest = fewest full refreshes)
     /* TelemetryPeriodS  */ {{300, 120, 60}},
     /* TgLowBattPing     */ {{1, 1, 0}},      // pointless on desk power
     /* AttnHoldMs        */ {{60000, 120000, 300000}},  // 1 / 2 / 5 min - a CTA on a desk
@@ -28,7 +26,7 @@ constexpr Row kPresets[kParamCount] = {
 constexpr const char* kParamNames[kParamCount] = {
     "posture",       "ring_brightness", "ring_fps",       "attn_led_index",
     "attn_hue",      "attn_anim",       "attn_period_ms", "epd_coalesce_ms",
-    "dwell_ms",      "full_refresh_every_n", "telemetry_period_s", "tg_low_batt_ping",
+    "dwell_ms",      "telemetry_period_s", "tg_low_batt_ping",
     "attn_hold_ms",
 };
 
@@ -41,17 +39,15 @@ constexpr const char* kParamLabels[kParamCount] = {
     /* AttnHue           */ "Attention color",
     /* AttnAnim          */ "Attention motion",
     /* AttnPeriodMs      */ "Attention speed",
-    /* EpdCoalesceMs     */ "Screen update pace",
-    /* DwellMs           */ "Knob response delay",
-    /* FullRefreshEveryN */ "Ghost-clear interval",
+    /* CoalesceMs        */ "Screen update pace",
+    /* DwellMs           */ "Cursor response delay",
     /* TelemetryPeriodS  */ "On-screen status refresh",
     /* TgLowBattPing     */ "Low-battery Telegram alert",
     /* AttnHoldMs        */ "Needs-you hold time",
 };
 
 // User-facing help: what you'd SEE change / why you'd care, plain language.
-// Panel-visible strings: printable ASCII 32-126 only, <= 108 chars each so a
-// description wraps to at most three 48-col lines on the e-ink.
+// Panel-visible strings: printable ASCII 32-126 only, <= 108 chars each.
 constexpr const char* kParamDescs[kParamCount] = {
     /* Posture           */ "Dark: one LED, only when a session needs you. Calm: a soft working glow. Full: every session a color arc.",
     /* RingBrightness    */ "How bright the LED ring glows. Lower is dimmer and uses less power.",
@@ -60,9 +56,8 @@ constexpr const char* kParamDescs[kParamCount] = {
     /* AttnHue           */ "Color of that attention LED. Auto matches the session status: purple=input, amber=approve, red=error.",
     /* AttnAnim          */ "How the attention LED moves to catch your eye: breathe, blink, a sweeping comet, and so on.",
     /* AttnPeriodMs      */ "How fast the attention LED breathes or blinks, in ms. Smaller number means a faster pulse.",
-    /* EpdCoalesceMs     */ "The e-ink is slow (~2s/refresh), so minor changes wait this long and batch instead of flickering.",
-    /* DwellMs           */ "After you stop turning the knob, how long to wait before the slow e-ink redraws the detail.",
-    /* FullRefreshEveryN */ "E-ink ghosts old text. After it sits unchanged this many minutes, a full refresh clears the ghosts.",
+    /* CoalesceMs        */ "Minor changes wait this long and batch together, so the screen updates calmly instead of constantly.",
+    /* DwellMs           */ "After you move the cursor, how long to wait before the detail view redraws for the item you landed on.",
     /* TelemetryPeriodS  */ "How often the battery/status numbers on the screen refresh, in seconds. 0 turns updates off.",
     /* TgLowBattPing     */ "In Orchestrator mode, message you on Telegram when the battery first gets low.",
     /* AttnHoldMs        */ "How long a session that needs you (input/approve/error) stays lit after updates stop, in ms.",
@@ -83,9 +78,8 @@ constexpr ParamMeta kMeta[kParamCount] = {
     /* AttnHue           */ {-1, 255, 8, ParamKind::Int},      // -1 = auto
     /* AttnAnim          */ {0, 5, 1, ParamKind::Enum},        // ring::Anim
     /* AttnPeriodMs      */ {500, 5000, 100, ParamKind::Int},
-    /* EpdCoalesceMs     */ {5000, 120000, 5000, ParamKind::Int},
+    /* CoalesceMs        */ {5000, 120000, 5000, ParamKind::Int},
     /* DwellMs           */ {100, 1000, 50, ParamKind::Int},
-    /* FullRefreshEveryN */ {5, 60, 1, ParamKind::Int},   // minutes idle before ghost-clear
     /* TelemetryPeriodS  */ {0, 600, 30, ParamKind::Int},
     /* TgLowBattPing     */ {0, 1, 1, ParamKind::Bool},
     /* AttnHoldMs        */ {30000, 1800000, 30000, ParamKind::Int},  // 30 s .. 30 min

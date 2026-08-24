@@ -3,13 +3,13 @@
 #include <vector>
 
 #include "nimbus/attention.h"
-#include "nimbus/epd_render/screens.h"   // ScreenCtx - ONE shared data model
+#include "nimbus/render_context.h"   // ScreenCtx - ONE shared data model
 #include "nimbus/tft_render/fb565.h"
 
 // ============================================================================
 // tft_render/screens - the colour touch UI.
 //
-// It reads the SAME nimbus::epd::ScreenCtx the e-ink renderer reads. That is
+// It reads the SAME nimbus::render::ScreenCtx the e-ink renderer reads. That is
 // the whole design: one data model, two presentations. The e-ink renderer is
 // frozen (its goldens must stay byte-identical), so this is a parallel
 // renderer, not a refactor of it - a screen added to the device populates one
@@ -47,11 +47,11 @@ struct Rendered {
 // Draw `screen` into `fb` (cleared first) and return its tap regions.
 // Every attn::ScreenId is handled; unknown ids fall back to the status screen
 // so the panel is never left blank.
-Rendered renderScreen(Fb565& fb, attn::ScreenId screen, const epd::ScreenCtx& ctx);
+Rendered renderScreen(Fb565& fb, attn::ScreenId screen, const render::ScreenCtx& ctx);
 
 // Real page count drawAsk would produce for this text on THIS renderer - the
 // TFT card's pixel geometry/font metrics differ from the e-ink panel's, so this
-// is deliberately separate from epd::askPageCount() (hardcoded to the e-ink
+// is deliberately separate from the removed 48-col grid page count (which was hardcoded to the old
 // 48-col/7-line grid) rather than reusing it; a touch board's swipe-to-page must
 // clamp against what it will actually render, not a mismatched page count.
 int askPageCount(const std::string& text);

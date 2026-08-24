@@ -28,7 +28,7 @@
 using namespace nimbus::tft;
 using nimbus::attn::ScreenId;
 using nimbus::attn::VoiceStage;
-using nimbus::epd::ScreenCtx;
+using nimbus::render::ScreenCtx;
 
 void setUp() {}
 void tearDown() {}

@@ -865,10 +865,10 @@ static void test_titles_are_breadcrumb_paths() {
   TEST_ASSERT_EQUAL_STRING("Settings > Customize > Ring level", viewOf(m).title.c_str());
   m.onLongPress();        // back to TuneList
 
-  // Edit title carries the edited param's name; check the longest one too.
-  while (viewOf(m).selected != int(Param::FullRefreshEveryN)) m.onRotate(+1);
+  // Edit title carries the edited param's name; check a long one too.
+  while (viewOf(m).selected != int(Param::TelemetryPeriodS)) m.onRotate(+1);
   m.onClick();
-  TEST_ASSERT_EQUAL_STRING("Settings > Customize > Ghost-clear interval",
+  TEST_ASSERT_EQUAL_STRING("Settings > Customize > On-screen status refresh",
                            viewOf(m).title.c_str());
   m.onLongPress();        // back to TuneList
   m.onLongPress();        // back to Main, cursor on the Tune row (2)

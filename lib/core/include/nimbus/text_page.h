@@ -2,10 +2,9 @@
 #include <string>
 #include <vector>
 
-// text_page - word-wrap + encoder paging for the e-ink detail pane.
-// The brief bans marquee scrolling (e-ink can't animate); long text wraps into
-// fixed-width lines shown a page (default two lines) at a time, and the encoder
-// pages through. Pure string math, host-tested.
+// text_page - word-wrap + paging for the detail pane. The brief bans marquee
+// scrolling; long text wraps into fixed-width lines shown a page (default two
+// lines) at a time, and the cursor pages through. Pure string math, host-tested.
 
 namespace nimbus {
 

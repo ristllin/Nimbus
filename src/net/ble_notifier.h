@@ -69,7 +69,7 @@ void begin();
 // decoder), emit the [0x02, seq] echo per applied frame, flush a pending conn
 // ack, refresh the CONFIG snapshot cache. Returns true if Router state changed
 // this call (same contract as NotifierMode::poll - the caller recomposes the
-// ring and feeds last().epd to the e-ink scheduler). No-op returning false
+// ring and feeds last().screen to the e-ink scheduler). No-op returning false
 // when begin() never ran.
 bool drain(NotifierMode& n, uint32_t nowMs);
 
