@@ -2368,8 +2368,8 @@ function applyOrch(d){
   if(!d.jobs||!d.jobs.length){const t=d.running?'none running':'(Orchestrator mode is off)';
     if(j)j.textContent=t; if(dj)dj.textContent=t;}
   else{let h='<table><tr><th>Session</th><th>Provider</th><th>Model</th><th>Category</th><th>State</th></tr>';
-    d.jobs.forEach(x=>{h+='<tr><td>'+x.tag+'</td><td>'+x.backend+'</td><td>'+x.model+
-      '</td><td>'+x.category+'</td><td>'+x.state+'</td></tr>';});
+    d.jobs.forEach(x=>{h+='<tr><td>'+_sEsc(x.tag)+'</td><td>'+_sEsc(x.backend)+'</td><td>'+_sEsc(x.model)+
+      '</td><td>'+_sEsc(x.category)+'</td><td>'+_sEsc(x.state)+'</td></tr>';});
     h+='</table>'; if(j)j.innerHTML=h; if(dj)dj.innerHTML=h;}
 }
 // Per-provider monthly budget rows (owner: budget per provider). Each provider that
@@ -3471,8 +3471,8 @@ function loadTelegram(){
     const pb=$('tgPending');pb.innerHTML='';
     (d.pending||[]).forEach(p=>{
       const row=document.createElement('div');row.className='sec';row.style.cssText='border-color:#e0b870;padding:8px;margin:6px 0';
-      row.innerHTML='<b>'+(p.name||'?')+'</b> <span class=hint>('+p.chatId+')</span> wants access<br>'+
-        '<span class=hint>"'+(p.preview||'').replace(/</g,'&lt;')+'"</span><br>';
+      row.innerHTML='<b>'+_sEsc(p.name||'?')+'</b> <span class=hint>('+_sEsc(String(p.chatId==null?'':p.chatId))+')</span> wants access<br>'+
+        '<span class=hint>"'+_sEsc(p.preview||'')+'"</span><br>';
       const ok=document.createElement('button');ok.textContent='Approve';ok.style.marginTop='6px';
       ok.onclick=()=>tgPost('/api/telegram/approve',{id:p.chatId,name:p.name||''});
       const no=document.createElement('button');no.textContent='Ignore';no.style.cssText='margin:6px 0 0 6px;background:#333;color:#cde';
