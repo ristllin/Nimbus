@@ -77,9 +77,16 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 <label>Device clock</label>
 <p class="hint tip">Set automatically from the internet once Wi-Fi connects - there is no manual clock. Until it syncs, daily and weekly routines wait.</p>
 <div class=row><b id=devClock>&hellip;</b><span class=hint id=clockBadge>&hellip;</span><button id=clockSyncBtn type=button>Sync now</button></div>
-<label>Display</label>
+<label>Device sign-in code <button class=qh type=button aria-expanded=false aria-label="About the device sign-in code">?</button></label>
+<p class="hint tip">The Sign-in QR carries this automatically; normal setup never asks you to type it. Use this value only to recover a browser that cannot scan the QR. Tap to copy. Generate a new one under <b>Connectivity</b> below.</p>
+<div class="memv" id=idToken style="cursor:pointer" title="tap to copy">&hellip;</div>
+</div>
+</details>
+
+<details class=setgroup><summary>Display<span class=chev>&rsaquo;</span></summary>
+<div class=setbody>
 <p class=hint>This device uses a touch screen.</p>
-<label class=pr style="margin-top:8px"><input type=checkbox id=scrFlip> Display flip <button class=qh type=button aria-expanded=false aria-label="About display flip">?</button></label>
+<label class=pr><input type=checkbox id=scrFlip> Display flip <button class=qh type=button aria-expanded=false aria-label="About display flip">?</button></label>
 <p class="hint tip">Turns the screen 180 degrees for an upside-down mount. Touch display only; takes effect right away.</p>
 <div id=tchCalWrap>
 <label>Touch calibration <button class=qh type=button aria-expanded=false aria-label="About touch calibration">?</button></label>
@@ -89,9 +96,6 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 <div id=tOrient style="display:none"><label>Touch orientation</label>
 <p class="hint tip">This screen self-calibrates, so there is nothing to measure. If taps land in the wrong place, toggle these until a tap lands where you touch. Applies immediately.</p>
 <div class=row style="gap:16px;flex-wrap:wrap"><label class=pr><input type=checkbox id=tSwap> Swap X and Y</label><label class=pr><input type=checkbox id=tFlipX> Flip X</label><label class=pr><input type=checkbox id=tFlipY> Flip Y</label></div></div>
-<label>Device sign-in code <button class=qh type=button aria-expanded=false aria-label="About the device sign-in code">?</button></label>
-<p class="hint tip">The Sign-in QR carries this automatically; normal setup never asks you to type it. Use this value only to recover a browser that cannot scan the QR. Tap to copy. Generate a new one under <b>Connectivity</b> below.</p>
-<div class="memv" id=idToken style="cursor:pointer" title="tap to copy">&hellip;</div>
 </div>
 </details>
 

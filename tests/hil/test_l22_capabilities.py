@@ -1,7 +1,7 @@
 """§L22 - Capabilities table availability (CUM-159).
 
 Asserts the live ``GET /api/tools`` seam carries the where-it-runs tag the web
-Capabilities > Tools panel badges each row with: registry + device rows are
+Assistant > Tools panel badges each row with: registry + device rows are
 ``orchestrator-direct``, and every connector row is one of the three known
 slugs. This is the real-seam check behind the UI badge, so a wrong or missing
 classification fails here rather than only being visible in the browser.

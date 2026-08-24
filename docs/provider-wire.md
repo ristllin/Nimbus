@@ -224,7 +224,7 @@ on region: `api.z.ai` and `open.bigmodel.cn`. On the first verify the device
 answers, so you never pick the wrong region by hand. The model list is harvested
 into the catalog (GET /api/models) with GLM ids classified into roles; a GLM
 sub-agent runs one synchronous `POST /api/paas/v4/chat/completions` and its reply
-is read from `choices[0].message.content`. Set the key on Capabilities > Models
+is read from `choices[0].message.content`. Set the key on Assistant > Models
 (Z.ai token); leave the endpoint to the probe.
 
 ## Cumulo Nimbus router
@@ -240,7 +240,7 @@ to `/router/<upstream>/v1/chat/completions`, and sends the bare model id. This
 lets one key drive the orchestrator on one upstream and sub-agents on another,
 with embeddings/vision/STT/TTS available where the chosen upstream supports them.
 Get the key from your Cumulo Nimbus account (see the cloud docs page); set it on
-Capabilities > Models (Cumulo key).
+Assistant > Models (Cumulo key).
 
 ## Model catalog, capabilities, and fallbacks
 
@@ -276,7 +276,7 @@ no cloud key, no internet. Verified setup (2026-08-12, Ollama on a Mac):
    `brew services restart ollama` regenerates its launchd plist and silently
    drops the env - use your own LaunchAgent (or Ollama.app's settings) if you
    want the binding to persist.
-2. On the device (Capabilities → Models → Custom endpoint, or
+2. On the device (Assistant → Models → Custom endpoint, or
    `POST /api/orch`): Base URL `http://<server-ip>:11434/v1`, conversation
    style `openai`, Model ID `qwen2.5:3b`. Restart the device - the custom
    backend registers at boot. Any URL path (the `/v1`) is ignored; only the

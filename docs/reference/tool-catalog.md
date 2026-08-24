@@ -170,7 +170,7 @@ Notes:
 - A capsule the model saves is server-stamped `created_by: agent`,
   `approved: false`, and stays **inert**: it can be read, but is never injected
   into a sub-agent brief until the owner approves it - in the web UI
-  (Capabilities → Skills) or via Telegram `/skill approve <id>`. Approval is
+  (Assistant → Skills) or via Telegram `/skill approve <id>`. Approval is
   **asynchronous**: save a skill as an investment for future runs, never as a
   step of the current task.
 - Reserved built-in ids cannot be shadowed. At most 4 agent-authored capsules
@@ -326,7 +326,7 @@ Read-only registry tools that report live state; none mutate durable state or
 | Tool | Description (as registered) | Arguments | State |
 |---|---|---|---|
 | `system.health` | Report live hardware + subsystem health (ring, display, mic, speaker, SD, memory, PSRAM, Wi-Fi, Telegram). | (none) | live |
-| `files.fetch` | Download a document from an https URL into the file store, governed by the owner's URL-download trust policy (off / ask-per-link / AI scan / full trust; web: Usage → Downloads). Runs in the background; per-file size cap applies; under "ask" the owner approves each link (Telegram `/fetch approve <id>` or the web card); under "scan" the file is quarantined and promoted only on a SAFE AI verdict. | `url`, `project`, `name` | live |
+| `files.fetch` | Download a document from an https URL into the file store, governed by the owner's URL-download trust policy (off / ask-per-link / AI scan / full trust; web: Assistant → Safety → Downloads). Runs in the background; per-file size cap applies; under "ask" the owner approves each link (Telegram `/fetch approve <id>` or the web card); under "scan" the file is quarantined and promoted only on a SAFE AI verdict. | `url`, `project`, `name` | live |
 | `device.status` | Read the complete live device state: firmware/build, update engine + slot + auto-update, local time + timezone + clock-sync, free heap/PSRAM, SD (including live `sdLost`) + internal flash usage, battery, Wi-Fi signal, Bluetooth bonds, fault mask, sound tier + sound-pack sync, ring posture + battery mode (user and effective) + attention hold + device name + sub-agent provider priority, memory counts vs live caps (vectors, episodic, scratchpad), file-store count/bytes/free, sub-agent capacity (running/queued vs limits), real billed token usage (last turn + session) including `usage.budget[]` - per-provider spend this billing period (tokens in/out, calls, estimated dollars from the owner's rates) against the owner's dollar and token ceilings plus the reset day (v4.1.2: plan work against the budget instead of discovering a refusal at dispatch), and the current value of every config knob (v4.1: the knobs the model can set are all readable here). | (none) | live |
 | `device.selftest` | Run a hardware self-test; returns per-item PASS/FAIL/SKIP. | `audible` (boolean - also runs the speaker/mic acoustic loopback) | live |
 | `ota.status` | Read the firmware-update engine: state, latest version seen + its release notes, last install outcome. | (none) | live |

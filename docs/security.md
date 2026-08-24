@@ -101,7 +101,7 @@ All 13 clients converted: `telegram.cpp`, `openai_adapter`, `anthropic_adapter`,
 `mistral_adapter`, `custom_adapter`, `embeddings`, `tavily`, `tts_voices`, `audio_tts`,
 `http_multipart`, `provider_verify`, `connectors`, `sfx_sync`.
 
-**Escape hatch:** `store::setTlsVerify(false)` (the web UI checkbox (Capabilities → Models) → `POST /api/orch`
+**Escape hatch:** `store::setTlsVerify(false)` (the web UI checkbox (Assistant → Models) → `POST /api/orch`
 `tlsVerify=0`, surfaced in `/api/state`) falls back to `setInsecure()` - for a
 self-signed custom `orchHost` or a provider whose root isn't in the bundle (a connection
 ERROR, not a security hole). ⚠ **Known limitation:** the flag is GLOBAL, not per-provider

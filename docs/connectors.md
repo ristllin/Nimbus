@@ -24,7 +24,7 @@ with the provider (Mistral Studio) or is pasted once into Nimbus's web UI.
 
 ## Setting up a connector
 
-Every connector is a **paste-a-credential card** under **Capabilities →
+Every connector is a **paste-a-credential card** under **Assistant →
 Connectors** in the web UI. Connector credentials are pasted once into that
 card and stored write-only on the device - setup never involves the firmware
 repository or any script:
@@ -32,7 +32,7 @@ repository or any script:
 1. Create the credential once in a browser: a GitHub personal access token, a
    Notion integration token, a Slack bot token, an OAuth refresh token, or a
    Studio-side connection.
-2. Open the device web UI → **Capabilities → Connectors**.
+2. Open the device web UI → **Assistant → Connectors**.
 3. Pick the provider on the connector's card, paste the credential (or, for
    Mistral, just enable it), toggle **enabled**, **Save**.
 4. The card's status badge confirms whether it is live on your turns, via
@@ -53,7 +53,7 @@ Two consequences:
 
 - **The current provider matters.** A Mistral connector is only live when
   Mistral is the Orchestrator's host. An Anthropic connector only runs on
-  sub-agents. Capabilities → Connectors badges each card with what applies
+  sub-agents. Assistant → Connectors badges each card with what applies
   *right now*, and the model is told the same thing every turn.
 - **Mistral requires the least setup.** Its connectors are authenticated in
   **Mistral Studio** and referenced by name - Nimbus stores *no secret* for
@@ -62,7 +62,7 @@ Two consequences:
 ## How Nimbus knows a connector is available
 
 Nimbus does not blindly trust that a pasted key works. **Capability validation**
-(Capabilities → Models → Tool use) controls how it confirms provider access
+(Assistant → Tools → Tool use) controls how it confirms provider access
 before it tells the assistant a connector is available:
 
 - **Off** - trust the key as-is, and make no "verified" claim.

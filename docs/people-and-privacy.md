@@ -43,7 +43,7 @@ Two rules the device enforces for you:
 
 Two surfaces, one source of truth:
 
-- **Capabilities → Connectors → Telegram** - each person's chip shows a role
+- **Assistant → Connectors → Telegram** - each person's chip shows a role
   badge. Click it to cycle admin → user → guest. Their limits are shown next
   to it.
 - **In conversation** - an admin can just ask: "approve 12345 as a guest",

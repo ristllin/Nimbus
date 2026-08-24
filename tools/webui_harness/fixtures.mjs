@@ -50,6 +50,7 @@ export const ORCH = {
   tavVerify: 'unk', tavVts: 0,
   fetchPol: 'ask', compactKB: 0, loopRounds: 0, loopDeadline: '', orchLoop: false,
   orchTrace: false, midFail: 0, tlsSlots: 1, tlsVerify: 'unk',
+  modInbound: 0, modOutbound: 0, modInjection: 0,
   sfxLvlN: 2, sfxLvlO: 2, sfxTheme: 'terran', sfxVol: 60, sfxTier: 'basic', sfxSync: 'idle',
   usage: {
     sessIn: 12000, sessOut: 4300, turns: 8, lastIn: 900, lastOut: 300,
@@ -81,12 +82,6 @@ export const WAKEUPS = {
     { id: 'w2', when: '18:00', label: 'Evening recap', enabled: false },
   ],
   pending: null, // when a wake-up needs approval, an object; single card, never a loop
-};
-
-// N5 safety stub: three moderation gates + a cost note.
-export const SAFETY = {
-  input: false, output: false, media: false,
-  costNote: 'Each gate that is on adds a small provider moderation call per item.',
 };
 
 export const HEALTH = { ok: true, checks: [{ name: 'wifi', ok: true }, { name: 'sd', ok: true }] };
@@ -176,7 +171,6 @@ export const DEFAULTS = {
   '/api/models': MODELS,
   '/api/fallbacks': FALLBACKS,
   '/api/wakeups': WAKEUPS,
-  '/api/safety': SAFETY,
   '/api/health': HEALTH,
   '/api/connect': CONNECT,
   '/api/themes': THEMES,

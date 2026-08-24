@@ -144,8 +144,9 @@ function loadPane(p){
     if(typeof loadHealth==='function')loadHealth();
   }
   if(p==='gov'){if(typeof loadLoops==='function')loadLoops();
-    if(typeof loadWakeups==='function')loadWakeups();
-    if(typeof loadSafety==='function')loadSafety();}
+    if(typeof loadWakeups==='function')loadWakeups();}
+  // Safety (fetchpol + moderation) loads with pane-usage's loadOrch/loadFetchQ,
+  // which run in the same DEST.assistant group; no separate load needed here.
   if(p==='mem'){if(typeof loadMemDash==='function')loadMemDash();if(typeof loadFiles==='function')loadFiles();}
   if(p==='harness'){if(typeof loadOrch==='function')loadOrch();if(typeof loadConnectors==='function')loadConnectors();if(typeof loadTools==='function')loadTools();if(typeof loadSkills==='function')loadSkills();}
   if(p==='usage'){if(typeof loadOrch==='function')loadOrch();if(typeof loadFetchQ==='function')loadFetchQ();if(typeof loadUsageHistory==='function')loadUsageHistory();}
@@ -180,17 +181,27 @@ const SEARCH_INDEX=[
   {group:'Go to',label:'Home',kw:'dashboard status tiles sessions alerts health',act:()=>goDest('home')},
   {group:'Go to',label:'Chat',kw:'message assistant talk conversation',act:()=>goDest('chat')},
   {group:'Go to',label:'Memory',kw:'files long-term scratchpad directive storage',act:()=>goDest('memory')},
-  {group:'Go to',label:'Assistant',kw:'providers models tools connectors mcp skills usage budget routines wake-ups safety',act:()=>goDest('assistant')},
+  {group:'Go to',label:'Assistant',kw:'assistant providers models tools connectors mcp skills usage budget routines wake-ups safety moderation downloads',act:()=>goDest('assistant')},
+  {group:'Go to',label:'Models',kw:'assistant providers api keys anthropic openai mistral custom endpoint routing fallback voice dictation',act:()=>_goSub('llm')},
+  {group:'Go to',label:'Connectors',kw:'assistant connectors mcp telegram bot integrations',act:()=>_goSub('connectors')},
+  {group:'Go to',label:'Tools',kw:'assistant tools web search tavily tool use rounds sandbox tls capability',act:()=>_goSub('tools')},
+  {group:'Go to',label:'Skills',kw:'assistant skills instructions session',act:()=>_goSub('skills')},
+  {group:'Go to',label:'Routines',kw:'assistant routines loops schedule wake-ups automation digest',act:()=>_goSub('routines')},
+  {group:'Go to',label:'Usage',kw:'assistant usage tokens spend cost rates budget limits',act:()=>_goSub('usage')},
+  {group:'Go to',label:'Safety',kw:'assistant safety moderation guest screening downloads injection trust',act:()=>_goSub('safety')},
   {group:'Go to',label:'Device',kw:'settings display sound battery network updates cloud danger',act:()=>goDest('device')},
   {group:'Action',label:'Attach a file to chat',kw:'upload drag drop file',act:()=>{goDest('chat');var b=$('chatAttach');b&&b.focus();}},
   {group:'Action',label:'Check for updates',kw:'ota firmware software update install',act:()=>{goDest('device');_openGroup('Software update');var b=$('fwCheck');b&&b.focus();}},
   {group:'Action',label:'Pair with the cloud',kw:'cloud link code pairing qr',act:()=>{goDest('device');_openGroup('Cloud access');var b=$('cloudPair');b&&b.focus();}},
-  {group:'Action',label:'Add a provider key',kw:'api key anthropic openai model verify provider',act:()=>goDest('assistant')},
+  {group:'Action',label:'Add a provider key',kw:'api key anthropic openai model verify provider',act:()=>_goSub('llm')},
+  {group:'Action',label:'Display and touch',kw:'screen display flip touch calibration orientation rotate',act:()=>{goDest('device');_openGroup('Display');}},
   {group:'Action',label:'Sign-in code and connectivity',kw:'device sign-in token qr wifi network recovery',act:()=>{goDest('device');_openGroup('Connectivity');}},
   {group:'Action',label:'Erase / factory reset',kw:'erase reset wipe factory sd danger',act:()=>{goDest('device');_openGroup('Danger zone');}}
 ];
 // Open a Device <details> group by its summary text, so an action can jump to it.
 function _openGroup(name){document.querySelectorAll('details.setgroup').forEach(d=>{var s=d.querySelector('summary');if(s&&s.textContent.indexOf(name)===0)d.open=true;});}
+// Jump to the Assistant page and activate one of its seven exclusive subtabs.
+function _goSub(sp){goDest('assistant');var b=document.querySelector('.subtab[data-sp='+sp+']');if(b)b.click();}
 function _sEsc(s){return (s||'').replace(/[<>&]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));}
 let _sSel=0,_sItems=[];
 function openSearch(){
@@ -257,9 +268,13 @@ document.addEventListener('keydown',e=>{
   if((e.key==='k'||e.key==='K')&&(e.metaKey||e.ctrlKey)){e.preventDefault();openSearch();}
   else if(e.key==='/'&&!$('searchOverlay')&&!/^(INPUT|TEXTAREA|SELECT)$/.test((e.target&&e.target.tagName)||'')){e.preventDefault();openSearch();}
 });
-// Sub-tab switching (Harness pane): mirror of the top switcher, scoped to
-// .subtab/data-sp and #subpane-<x>. .subpane is a different class from .pane, so the
-// top switcher never touches these. Default = the first sub-tab (Connectors).
+// Sub-tab switching (Assistant page): the seven subtabs render EXCLUSIVELY - one
+// subpane at a time (owner amendment, CUM-163). Scoped to .subtab/data-sp and
+// #subpane-<x>; .subpane is a different class from .pane, so the top destination
+// switcher never touches these. The subpanes live across pane-harness (Models,
+// Connectors, Tools, Skills), pane-usage (Usage), and pane-gov (Routines, Safety),
+// all shown together by DEST.assistant, so hiding every .subpane and showing one
+// gives a single visible pane. Default = the first sub-tab (Models).
 document.querySelectorAll('.subtab').forEach(b=>b.onclick=()=>{
   document.querySelectorAll('.subpane').forEach(p=>p.style.display='none');
   document.querySelectorAll('.subtab').forEach(t=>t.classList.remove('on'));
@@ -271,6 +286,9 @@ document.querySelectorAll('.subtab').forEach(b=>b.onclick=()=>{
   else if(sp==='tools'&&typeof loadTools==='function')loadTools();
   else if(sp==='llm'&&typeof loadOrch==='function')loadOrch();
   else if(sp==='skills'&&typeof loadSkills==='function')loadSkills();
+  else if(sp==='routines'){if(typeof loadLoops==='function')loadLoops();if(typeof loadWakeups==='function')loadWakeups();}
+  else if(sp==='usage'){if(typeof loadUsageHistory==='function')loadUsageHistory();if(typeof loadFetchQ==='function')loadFetchQ();}
+  else if(sp==='safety'){if(typeof loadOrch==='function')loadOrch();if(typeof loadFetchQ==='function')loadFetchQ();}
 });
 {const st=document.querySelector('.subtab'); if(st)st.classList.add('on');}
 // Tap-? help: every button.qh toggles the first .hint.tip among its own or its
@@ -459,7 +477,7 @@ let GB={trace:true,sd:true};
 function _chatTraceHint(){
   const el=$('chatTrace'); if(!el)return;
   let m='';
-  if(!GB.trace)m='Activity recording is off, so turn details aren’t captured. Turn it on in Capabilities → Models → Tool use.';
+  if(!GB.trace)m='Activity recording is off, so turn details aren’t captured. Turn it on in Assistant → Tools → Tool use.';
   else if(!GB.sd)m='No SD card, so turn details can’t be stored.';
   el.textContent=m; el.style.display=m?'':'none';
 }
@@ -937,20 +955,6 @@ function loadWakeups(){
     if(list){const items=d.items||[];
       list.innerHTML=items.length?('Scheduled: '+items.map(w=>_sEsc(w.label||w.when||'wake-up')+(w.enabled===false?' (off)':'')).join(' &middot; ')):'No wake-ups scheduled.';}
   }).catch(()=>{const m=$('wkMsg');if(m)fbState('wkMsg','error','Couldn\'t load wake-ups - try again.');});
-}
-// ---- Safety (CUM-72, N5 endpoints) -----------------------------------------
-// Three moderation gates + a cost note. Each toggle writes independently.
-function loadSafety(){
-  const gi=$('safeIn'); if(!gi)return;
-  fetch('/api/safety').then(r=>r.ok?r.json():Promise.reject(r.status)).then(d=>{
-    const set=(id,v)=>{const e=$(id);if(e&&document.activeElement!==e)e.checked=!!v;};
-    set('safeIn',d.input);set('safeOut',d.output);set('safeMedia',d.media);
-    if($('safeCost'))$('safeCost').textContent=d.costNote||'Each gate that is on adds a small provider call per item.';
-    const wire=(id,gate)=>{const e=$(id);if(!e)return;e.onchange=()=>run({status:'safeMsg',pending:'Saving…',
-      work:()=>fetch('/api/safety',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({gate:gate,on:e.checked?'1':'0'}).toString()}).then(jok),
-      ok:()=>'Saved.',error:er=>'Couldn\'t save'+(er?(' ('+er+')'):'')+' - try again.'});};
-    wire('safeIn','input');wire('safeOut','output');wire('safeMedia','media');
-  }).catch(()=>{if($('safeMsg'))fbState('safeMsg','error','Couldn\'t load safety settings - try again.');});
 }
 function initLoopForm(){
   const kind=$('lpKind'); if(!kind)return;
@@ -1830,13 +1834,15 @@ function saveVerdict(ok,okMsg){
   m.textContent=ok?('✓ '+okMsg):'✗ Save failed - nothing was stored. Check the connection and try again.';
   m.style.cssText=ok?'color:#7fd1c8;font-weight:bold':'color:#e77;font-weight:bold';
 }
-$('orchsave').onclick=()=>{
-  $('orchmsg').textContent='Saving…';$('orchmsg').style.cssText='';
-  // provPrio/subPrio deliberately NOT here (review HIGH): those inputs were replaced
-  // by the #provPrioList/#subPrioList checkbox lists, which persist per-interaction
-  // via renderPrio's own save() - the stale $('provPrio').value deref threw a
-  // TypeError that made this button store NOTHING, silently, for every field.
-  orchApply({custBase:$('custBase').value,custKey:$('custKey').value,
+// The Models "Save Changes" and the Tools "Save Changes" (the relocated Tool use
+// group, CUM-163) both persist the whole orch field set: every input is read by id
+// and both subtabs' inputs stay in the DOM even while hidden, so either button
+// stores the current value of every field. provPrio/subPrio deliberately NOT here
+// (review HIGH): those inputs were replaced by the #provPrioList/#subPrioList
+// checkbox lists, which persist per-interaction via renderPrio's own save() - the
+// stale $('provPrio').value deref threw a TypeError that made this button store
+// NOTHING, silently, for every field.
+function _orchSavePayload(){return {custBase:$('custBase').value,custKey:$('custKey').value,
     custConv:$('custConv').value,custModel:$('custModel').value,
     orchHost:$('orchHost').value,
     tgToken:$('tgToken').value,
@@ -1847,7 +1853,10 @@ $('orchsave').onclick=()=>{
     loopRounds:$('loopRounds').value,loopDeadline:$('loopDeadline').value,tlsSlots:$('tlsSlots').value,compactKB:$('compactKB').value,
     tlsVerify:$('tlsVerify').checked?1:0,
     capProbe:$('capProbe')?$('capProbe').value:1,
-    capProbeH:($('capProbeH')&&$('capProbeH').value)?$('capProbeH').value:24})
+    capProbeH:($('capProbeH')&&$('capProbeH').value)?$('capProbeH').value:24};}
+$('orchsave').onclick=()=>{
+  $('orchmsg').textContent='Saving…';$('orchmsg').style.cssText='';
+  orchApply(_orchSavePayload())
   .then(ok=>{saveVerdict(ok,'Orchestrator settings saved.');
     if(ok){const hadTok=!!$('tgToken').value;$('custKey').value='';$('tgToken').value='';
       // The device runs a getMe verify on the arbited task (~a few s). Re-poll a few
@@ -1858,6 +1867,10 @@ $('orchsave').onclick=()=>{
         _tgVerifyWatch=true;
         [1500,3500,7000,15000].forEach(t=>setTimeout(loadOrch,t));}}});
 };
+$('toolusesave')&&($('toolusesave').onclick=()=>{
+  const m=$('toolusemsg'); if(m){m.textContent='Saving…';m.style.cssText='';}
+  orchApply(_orchSavePayload()).then(ok=>{if(m){m.textContent=ok===false?'✗ Save failed - try again.':'✓ Tool use settings saved.';m.style.cssText=ok===false?'color:#e77;font-weight:bold':'color:#7fd1c8;font-weight:bold';}});
+});
 let _tgVerifyWatch=false;
 $('savedir').onclick=()=>orchApply({sysPrompt:$('directive').value})
   .then(ok=>saveVerdict(ok,'Directive saved - applies from the next turn.'));
@@ -2580,7 +2593,7 @@ function loadTelegram(){
         const lim=document.createElement('span');
         lim.style.cssText='margin-left:6px;font-size:10px;color:#888';
         lim.textContent=q.vectors+' memories · '+Math.round(q.bytes/1024)+'KB · '+q.ttl+'h'+(q.pins?' · '+q.pins+' pins':'');
-        lim.title='What this person may store. Change it in Capabilities → Connectors → Telegram.';
+        lim.title='What this person may store. Change it in Assistant → Connectors → Telegram.';
         chip.appendChild(lim);
       }
       const x=document.createElement('a');x.href='#';x.textContent='×';x.style.cssText='margin-left:6px;color:#c55;text-decoration:none';

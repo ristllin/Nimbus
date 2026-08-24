@@ -19,7 +19,7 @@ the build - see [`tools/README.md`](../tools/README.md).
 
 These are workshop tools for people building or servicing boards - a device
 owner configures connectors, credentials, and everything else from the device's
-web page (Capabilities → Connectors), never from this repository.
+web page (Assistant → Connectors), never from this repository.
 
 All scripts live in `tools/` and run with `python3` from the repository root
 unless noted. Most need only the standard library.

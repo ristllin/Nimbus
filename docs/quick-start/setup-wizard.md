@@ -61,7 +61,7 @@ The wizard asks for two required things and lets you skip the rest:
 | **Connect to Wi-Fi** | Yes | Scan, pick your home network, type its password. 2.4 GHz only; SSIDs are case-sensitive. |
 | **Provider key** | Yes - one verified key | Paste an API key and click **Verify**. **Mistral is the recommended starting point** - free tier, and the voice default; OpenAI and Anthropic work too. Keys are write-only: shown as "set", never displayed again. |
 | Operating mode | Skippable | Defaults to what the installer chose; changeable later (a change restarts the device). |
-| Telegram | Skippable | Add a bot token later under Capabilities → Connectors → Telegram. |
+| Telegram | Skippable | Add a bot token later under Assistant → Connectors → Telegram. |
 | Voice | Skippable | Dictation and spoken replies default to Mistral. |
 | Device name | Skippable | One name drives the setup network SSID, the LAN address, the Bluetooth name, and what the assistant calls itself. |
 
@@ -93,15 +93,15 @@ specific provider or key - honestly, today:
 | Spoken replies on the device speaker | - | ✓ | - |
 | Image generation (`image.generate`) | - | ✓ | - |
 | Long-term memory embeddings | ✓ *(switch before first use)* | ✓ *(default)* | - |
-| Web search | needs a separate **Tavily** key (Usage → Downloads & search) | same | same |
+| Web search | needs a separate **Tavily** key (Assistant → Tools → Web search) | same | same |
 
 ## 4. The dashboard
 
 The wizard ends on the device's **dashboard** at its LAN address - health,
-battery, memory, and sessions at a glance, with tabs for **Capabilities**
-(providers, connectors, skills), **Memory & Files**, **Routines**, and
-**Settings**. You sign in once per browser; the sign-in QR on the device
-screen gets any new browser in.
+battery, memory, and sessions at a glance, with **Home**, **Chat**, **Memory**,
+the **Assistant** page (one flat subtab row: Models, Connectors, Tools, Skills,
+Routines, Usage, and Safety), and **Device** settings. You sign in once per
+browser; the sign-in QR on the device screen gets any new browser in.
 
 Full tab-by-tab detail: the
 [web UI reference](https://docs.cumulo-nimbus.ai/getting-started/webui-reference).

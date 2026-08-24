@@ -39,7 +39,7 @@ What happens once you add and approve one:
 
 ### Setting one up
 
-In the web UI under **Capabilities -> Connectors**, add a server with:
+In the web UI under **Assistant -> Connectors**, add a server with:
 
 - a **name** (for example `linear`),
 - its **MCP endpoint URL** (for example `https://mcp.linear.app/mcp`, or a

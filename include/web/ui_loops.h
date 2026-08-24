@@ -1,15 +1,19 @@
 #pragma once
 #include <Arduino.h>
 
-// ui_loops - the Routines pane (#pane-gov, Phase 3 C1). Scheduled/recurring
-// tasks are the real governance surface: agent-created loops start pending your
-// approval; hard token/fire caps auto-pause a runaway. Element IDs (loopList,
-// lpName, lpPrompt, lpKind, …) are unchanged so ui_js.h's loops wiring works.
-// User copy says "routine"; the wire/commands stay loops (AGENTS.md style guide).
+// ui_loops - #pane-gov, host of the Assistant page's Routines and Safety subpanes
+// (CUM-163). Routines (Phase 3 C1) are the governance surface: agent-created loops
+// start pending your approval; hard token/fire caps auto-pause a runaway. Safety
+// unifies the real controls only - the Downloads trust policy (#fetchpol) and Guest
+// moderation (#modInbound/#modOutbound/#modInjection), both wired to /api/orch. The
+// old safeIn/safeOut/safeMedia toggles were retired: they posted to /api/safety,
+// which has no firmware handler, so they enforced nothing (CUM-163 investigation).
+// Element IDs (loopList, lpName, lpPrompt, lpKind, fetchpol, modInbound, …) are
+// unchanged so ui_js.h's wiring works. User copy says "routine"; the wire/commands
+// stay loops (AGENTS.md style guide).
 
 static const char UI_LOOPS[] PROGMEM = R"=====(<div class=pane id=pane-gov style="display:none">
-<div class=eyebrow>Automation</div>
-<div class=ptitle>Routines</div>
+<div class=subpane id=subpane-routines style="display:none">
 <p class=plede>Tasks that run on a schedule. Routines the assistant creates for itself wait for your approval, and spending limits pause anything that misbehaves.</p>
 <div class=sec>
 <h2>Routines <button class=qh type=button aria-expanded=false aria-label="About routines">?</button></h2>
@@ -35,15 +39,6 @@ static const char UI_LOOPS[] PROGMEM = R"=====(<div class=pane id=pane-gov style
 <div id=wkList class=hint style="margin-top:8px"></div>
 </div>
 <div class=sec>
-<h2>Safety <button class=qh type=button aria-expanded=false aria-label="About safety">?</button></h2>
-<p class="hint tip">Moderation gates screen content with your provider before it is acted on. Each gate that is on adds a small provider call per item, so it costs a little more.</p>
-<label class=pr><input type=checkbox id=safeIn> Screen incoming messages</label>
-<label class=pr><input type=checkbox id=safeOut> Screen the assistant's replies</label>
-<label class=pr><input type=checkbox id=safeMedia> Screen images and files</label>
-<p class=hint id=safeCost></p>
-<div class=hint id=safeMsg></div>
-</div>
-<div class=sec>
 <h2>New routine</h2>
 <div class=row><input id=lpName placeholder="Name (e.g. Morning digest)" maxlength=24></div>
 <div class=row><input id=lpPrompt placeholder="What should the assistant do?"></div>
@@ -67,6 +62,33 @@ static const char UI_LOOPS[] PROGMEM = R"=====(<div class=pane id=pane-gov style
 <div class=row><input id=lpChat placeholder="Telegram chat ID (blank = you)"></div>
 <button id=lpCreate type=button>Create Routine</button>
 <p id=lpMsg class=hint></p>
+</div>
+</div>
+
+<div class=subpane id=subpane-safety style="display:none">
+<p class=plede>Download trust and guest screening. Your own messages and the web page are always exempt.</p>
+<div class=sec>
+<h2>Downloads <button class=qh type=button aria-expanded=false aria-label="About downloads">?</button></h2>
+<p class="hint tip">How much trust the assistant gets when it wants to download a file from the web. Approve asks you for each link; Scan checks the file with AI before keeping it; Full trust downloads immediately.</p>
+<div class=row style="gap:8px;flex-wrap:wrap">
+<select id=fetchpol style="flex:1 1 160px"><option value=0>Off</option><option value=1 selected>Ask me per link</option><option value=2>Scan, then keep</option><option value=3>Full trust</option></select>
+<button id=fetchpolsave type=button>Save</button>
+</div>
+<p class=hint id=fetchpolmsg></p>
+<div id=fetchRows></div>
+</div>
+<div class=sec>
+<h2>Guest moderation <button class=qh type=button aria-expanded=false aria-label="About guest moderation">?</button></h2>
+<p class="hint tip">Screens guests, never you. Your own messages, the web page, and voice are always exempt. The message and reply checks each cost one moderation call per screened item (Cumulo moderation on a Cumulo key, otherwise Mistral on your key), so leave them off unless guests can reach the bot.</p>
+<div class=row><label><input type=checkbox id=modInbound> Check guest messages before answering</label></div>
+<p class="hint">If a message cannot be checked, it is not answered. Costs one call per guest message.</p>
+<div class=row><label><input type=checkbox id=modOutbound> Check replies sent to guests</label></div>
+<p class="hint">A flagged reply is held back. If a check cannot run, the reply still goes out. Costs one call per guest reply.</p>
+<div class=row><label><input type=checkbox id=modInjection> Flag suspicious fetched content</label></div>
+<p class="hint">Marks fetched web content that looks like a hidden instruction as untrusted, so it is treated as data. It marks, never blocks, and runs on the device at no extra cost.</p>
+<div class=row><button id=modSave type=button>Save</button></div>
+<p class=hint id=modmsg></p>
+</div>
 </div>
 </div>
 

@@ -1,6 +1,6 @@
 // CUM-25: the five-destination IA + fluid layout.
 //  - exactly five destinations: Home, Chat, Memory, Assistant, Device
-//  - each shows its expected content; Assistant stacks providers/tools/usage/routines
+//  - each shows its expected content; Assistant is one page with seven exclusive subtabs
 //  - default is Home; quick actions navigate; reduced-motion respected
 //  - responsive: phone shows the bottom tab bar; content column caps at 1280px
 import { test, expect } from '@playwright/test';
@@ -42,11 +42,17 @@ test('each destination reveals its content and hides the others', async ({ page 
   await expect(page.locator('#pane-mem')).toBeVisible();
   await expect(page.locator('#pane-dash')).toBeHidden();
 
-  // Assistant stacks the capabilities, usage, and routines panes together.
+  // Assistant is one page with seven exclusive subtabs; the default is Models
+  // (only its subpane shows) and choosing another shows only that subpane.
   await page.locator('.tab[data-p=assistant]').click();
-  await expect(page.locator('#pane-harness')).toBeVisible();
-  await expect(page.locator('#pane-usage')).toBeVisible();
-  await expect(page.locator('#pane-gov')).toBeVisible();
+  await expect(page.locator('.subtab[data-sp=llm]')).toHaveClass(/on/);
+  await expect(page.locator('#subpane-llm')).toBeVisible();
+  await expect(page.locator('#subpane-usage')).toBeHidden();
+  await expect(page.locator('#subpane-safety')).toBeHidden();
+  await page.locator('.subtab[data-sp=safety]').click();
+  await expect(page.locator('#subpane-safety')).toBeVisible();
+  await expect(page.locator('#subpane-llm')).toBeHidden();
+  await expect(page.locator('#subpane-usage')).toBeHidden();
 
   await page.locator('.tab[data-p=device]').click();
   await expect(page.locator('#pane-set')).toBeVisible();

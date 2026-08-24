@@ -5,7 +5,9 @@
 // Every element ID is unchanged from the old Orchestrator sub-panes so ui_js.h's
 // wiring (memory dashboard, files browser, #usageTiles) works as-is. Active
 // sessions live on Home (pane-dash #dashJobs); the old standalone Sessions pane
-// was folded there. The pane-usage block is shown under the Assistant destination.
+// was folded there. #pane-usage hosts the Usage subpane of the Assistant page
+// (CUM-163): usage tiles, spend, rates, and budgets. The Downloads policy and
+// Guest moderation that used to sit here moved to the Safety subpane (ui_loops.h).
 // Copy follows the AGENTS.md copy style guide.
 
 static const char UI_MEMORY[] PROGMEM = R"=====(<div class=pane id=pane-chat style="display:none">
@@ -112,8 +114,7 @@ static const char UI_MEMORY[] PROGMEM = R"=====(<div class=pane id=pane-chat sty
 </div>
 
 <div class=pane id=pane-usage style="display:none">
-<div class=eyebrow>Costs</div>
-<div class=ptitle>Usage &amp; Budget</div>
+<div class=subpane id=subpane-usage style="display:none">
 <p class=plede>Token usage reported by your providers, tracked since the device last restarted.</p>
 <div class=sec>
 <div id=usageTiles class=tiles></div>
@@ -153,26 +154,6 @@ static const char UI_MEMORY[] PROGMEM = R"=====(<div class=pane id=pane-chat sty
 </div>
 
 <div class=sec>
-<h2>Downloads <button class=qh type=button aria-expanded=false aria-label="About downloads">?</button></h2>
-<p class="hint tip">How much trust the assistant gets when it wants to download a file from the web. Approve asks you for each link; Scan checks the file with AI before keeping it; Full trust downloads immediately.</p>
-<div class=row style="gap:8px;flex-wrap:wrap">
-<select id=fetchpol style="flex:1 1 160px"><option value=0>Off</option><option value=1 selected>Ask me per link</option><option value=2>Scan, then keep</option><option value=3>Full trust</option></select>
-<button id=fetchpolsave type=button>Save</button>
-</div>
-<p class=hint id=fetchpolmsg></p>
-<div id=fetchRows></div>
-
-<h2>Guest moderation <button class=qh type=button aria-expanded=false aria-label="About guest moderation">?</button></h2>
-<p class="hint tip">Screens guests, never you. Your own messages and the web page are always exempt. Each switch adds a safety check that costs one moderation call per screened item (Cumulo moderation on a Cumulo key, otherwise Mistral on your key), so leave them off unless guests can reach the bot.</p>
-<div class=row><label><input type=checkbox id=modInbound> Check guest messages before answering</label></div>
-<p class="hint">If a message cannot be checked, it is not answered. Costs one call per guest message.</p>
-<div class=row><label><input type=checkbox id=modOutbound> Check replies sent to guests</label></div>
-<p class="hint">A flagged reply is held back. If a check cannot run, the reply still goes out. Costs one call per guest reply.</p>
-<div class=row><label><input type=checkbox id=modInjection> Flag suspicious fetched content</label></div>
-<p class="hint">Marks fetched web content that looks like a hidden instruction as untrusted, so it is treated as data. It marks, never blocks. Costs one call per fetched item.</p>
-<div class=row><button id=modSave type=button>Save</button></div>
-<p class=hint id=modmsg></p>
-
 <h2>Budgets <button class=qh type=button aria-expanded=false aria-label="About budgets">?</button></h2>
 <p class="hint tip">Caps each provider's spend for the month - by tokens, by dollars, or both; 0 means unlimited. The dollar cap uses your rates above, so set prices for it to count. At any cap, that provider's turns and searches are refused until the reset day - the assistant fails over to another in-budget provider when it can.</p>
 <div id=budgetRows></div>
@@ -187,6 +168,7 @@ static const char UI_MEMORY[] PROGMEM = R"=====(<div class=pane id=pane-chat sty
 <button id=budsave type=button>Save</button>
 </div>
 <p class=hint id=budmsg></p>
+</div>
 </div>
 </div>
 </div>
