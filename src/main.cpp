@@ -322,6 +322,7 @@ static volatile int  g_modeSwitchTo = -1;   // >=0: the pending reboot is a web 
 static volatile bool g_factoryResetPending = false;  // web factory-reset: erase NVS + reboot on main task
 static volatile bool g_factoryEraseSd = false;       // CUM-15: also erase /mem in the factory-reset flow
 static volatile bool g_sdResetPending = false;       // web SD reset: erase /mem durable store + reboot
+static volatile bool g_sdFormatPending = false;      // CUM-15: web full-card format (reformat whole SD) + reboot
 // Voice turn "waiting for the agent" state: after the transcript is sent, a theme
 // spinner runs until the reply lands (or a timeout) so the ring shows work in flight
 // instead of going dark. Cleared in the reply drain / timeout in loop().
@@ -2719,8 +2720,14 @@ void setup() {
   wc.onPreview = [](int profileId, int status) { startPreview(profileId, status); };
   wc.factoryReset = [](bool eraseSd) { g_factoryEraseSd = eraseSd; g_factoryResetPending = true; };  // main loop erases NVS (+optional /mem) + reboots, keeps identity
   wc.sdReset = [] { g_sdResetPending = true; };            // main loop erases /mem + reboots
-  // wc.sdFormat left unset: the board-support driver has no low-level format
-  // primitive yet, so /api/sdformat reports it honestly (contract to the driver lane).
+  // Full-card format (CUM-15 / CUM-132): the board-support driver now exposes a
+  // low-level format primitive (solide::storage::format(): FATFS f_mkfs over the
+  // mounted card, SPI + SDMMC). Wiring this lights up webui's canFormat capability
+  // (webui.cpp: canFormat = (bool)s_wc.sdFormat). Deferred to the main loop like
+  // the other destructive SD actions - reformatting blocks and must not run on the
+  // AsyncTCP task. The on-card destructive acceptance stays deferred pending a
+  // scratch card (CUM-131); the driver's host tests cover the guards/state machine.
+  wc.sdFormat = [] { g_sdFormatPending = true; };          // main loop reformats the whole card + reboots
   wc.chatSend = [](const String& t) {   // -> tg_poll turn
     if (!agent::telegram::injectMessage("web", t)) return false;
     g_webTurnDeadlineMs = millis() + kWebTurnMaxMs;
@@ -3733,6 +3740,30 @@ void loop() {
       // reboot into a device that reads "erased" while the data survives on the card.
       Serial.println("SD RESET refused -> storage not available");
       g_askOverride = "Couldn't erase - storage not available";
+      renderScreen(attn::ScreenId::Ask, -1);
+    }
+  }
+  if (g_sdFormatPending) {  // web full-card format: reformat the whole SD, then reboot
+    g_sdFormatPending = false;            // consume the request either way (no re-fire)
+    Serial.println("SD FORMAT -> reformat whole card + restart");
+    g_askOverride = "Formatting storage. Up to a minute.";
+    renderScreen(attn::ScreenId::Ask, -1);
+    Serial.flush();
+    // Reformat the ENTIRE card (not just /mem). The driver refuses cleanly with no
+    // side effects when no card is mounted, so a missing card yields an honest
+    // message and NO reboot - never a device that reads "formatted" over surviving
+    // data. On success everything on the card is gone; reboot so the memory engines
+    // reload empty (NVS config is untouched).
+    solide::storage::FormatResult fr = solide::storage::format();
+    if (fr == solide::storage::FormatResult::Ok) {
+      delay(50);
+      ESP.restart();
+    } else {
+      const char* msg = fr == solide::storage::FormatResult::NoCard
+                          ? "Couldn't format - storage not available"
+                          : "Couldn't format - card error";
+      Serial.printf("SD FORMAT refused/failed -> %s\n", solide::storage::formatResultStr(fr));
+      g_askOverride = msg;
       renderScreen(attn::ScreenId::Ask, -1);
     }
   }
