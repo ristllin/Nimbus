@@ -16,3 +16,23 @@ Every new test states its tier; every tier has one runner.
 Rules: never mock the thing under test to make a tier pass; hardware claims need hardware
 (T5) or an explicit handed-off manual step; T6 results persist to `~/nimbus-evals/`
 (JSONL per run with model, scores, token and dollar cost) - never into the repo.
+
+## The release gate
+
+A cross-cutting battery that must be green before any firmware tag or client flash.
+It exists because the 2026-08-24 incident shipped a white screen, a universal tunnel
+502, a rotated touch surface, and reconnect flapping in one release. Each of those
+classes now has a test that fails on the pre-fix build and passes on the fix.
+
+- Host checks (T0-adjacent, run in CI): `python3 tools/release_gate/run_gate.py --host-only`.
+  The driver-pin check refuses a build on a known white-screen driver; the ELF check
+  keeps the e-paper footprint out of the TFT image. `python3 -m pytest tools/release_gate`
+  tests the gate logic.
+- On-hardware legs (T5): `tests/hil/test_l29_release_gate.py` - loopback serves the local
+  page (not a 502), render reaches the glass (with a recorded human glance), touch lands
+  where tapped, a wedged loop is caught by the watchdog, a bad OTA image rolls back.
+- Cloud legs (in the cloud repo, run by `pnpm e2e`): the connected-device 5xx interstitial,
+  the reconnect storm, and the read-only live smoke.
+
+`tools/release_gate/run_gate.py` prints the full battery with exact commands and the block
+condition. See `tools/release_gate/README.md` for what each leg catches.

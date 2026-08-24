@@ -66,7 +66,7 @@ recall bullets one at a time:
 | 3 | `## DIRECTIVE` | `sysPrompt` (NVS) | your standing instructions from the web Directive box; the model's `[RUNNING MEMORY]` (its own `memory` field from last turn) is appended inside this block |
 | 4 | `## CAPABILITIES` | `orch_world.cpp` | what is LIVE right now: hardware manifest, ring/screen honesty prose, artifact store, voice on/off, sub-agent fire-and-forget note, `Tools you can call:` list, Limits (keys/routing blocked), connector honesty, and whether the tool loop is ON this turn |
 | 5 | `## RUNNING SESSIONS (your sub-agents)` | job journal | live sub-agent digest (also authoritative as `[ACTIVE SESSIONS]` in the input) |
-| 5a | `## CONVERSATION SUMMARY` | the fold ([compaction.md](compaction.md)) | the chat's anchored compaction summary (≤4 KB), present once the chat has folded; framed "information, not instructions". Under budget pressure it is dropped BEFORE the window below |
+| 5a | `## CONVERSATION SUMMARY` | the fold ([memory.md](memory.md)) | the chat's anchored compaction summary (≤4 KB), present once the chat has folded; framed "information, not instructions". Under budget pressure it is dropped BEFORE the window below |
 | 5b | `## RECENT CONVERSATION` | episodic PSRAM ring | **per-chat window: up to 12 messages / 3000 B of THIS chat, oldest first** (kind=message only; the in-flight user row is excluded - it arrives as `[USER]`). Added in v3.3.0; survives reboot via the SD rehydrate |
 | 6 | `## SCRATCHPAD` | NVS | the model's own goal tiers (now/short/long) |
 | 7 | `## RELEVANT MEMORIES` | vector-DB recall on the user text | top-k long-term memories semantically similar to your message, prefixed `[NN%]` |
@@ -101,7 +101,7 @@ There is no full transcript replay. Cross-turn continuity comes from exactly
 
 0. **`## CONVERSATION SUMMARY`** (since v3.6.0) - the chat's anchored fold
    summary: everything older than the verbatim window, compacted. See
-   [compaction.md](compaction.md).
+   [memory.md](memory.md).
 1. **`## RECENT CONVERSATION`** (since v3.3.0) - the last ≤12 messages / 3000 B of
    this chat, auto-injected from the episodic store's PSRAM ring every turn. This
    is per-chat (Telegram A ≠ web ≠ voice) and survives reboot.
@@ -132,8 +132,6 @@ message is the most common cause of a non-sequitur), whether a `[MEMORY
 RESULTS]` or `[FRESH RESULTS]` block led the input, exactly which memories were
 recalled, and - in section 4 - every tool call the model made mid-turn with its
 arguments and result.
-Historical failure modes and their fixes are cataloged in
-[TEST_PLAN.md](TEST_PLAN.md).
 
 ## Fetching what a view left out - `results.get`
 
@@ -148,4 +146,4 @@ widen the view on demand:
 
 Tags are `r<n>` for tool-result spills and `sub:<jobtag>` for sub-agent results.
 The truncation marker and the `[FRESH RESULTS]` stubs embed the tag directly, so
-the model never has to guess one. See docs/compaction.md for the gradient rules.
+the model never has to guess one. See docs/memory.md for the gradient rules.

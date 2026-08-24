@@ -45,6 +45,7 @@ website/docs/quick-start/
 website/docs/guides/
 website/docs/reference/
 website/docs/contributing/
+website/docs/cloud/
 
 # golden-test diff output + ring-preview harness renders
 test/out/

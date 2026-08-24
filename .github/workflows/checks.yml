@@ -76,6 +76,24 @@ jobs:
         working-directory: Nimbus
         run: pio test -e native
 
+  # The release-gate + HIL-harness LOGIC must itself be tested (it is the thing
+  # that decides whether a release ships). These are pure host tests - no board,
+  # no PlatformIO: the wedge-recovery classifier/state machine (CUM-141) and the
+  # release-gate host checks (CUM-167 driver-pin + e-paper-symbol logic, CUM-174).
+  gate-logic:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install pytest
+        run: pip install pytest
+      - name: Wedge-recovery + host-safe HIL logic (CUM-141)
+        run: python3 -m pytest tests/hil
+      - name: Release-gate host-check logic (CUM-167 / CUM-174)
+        run: python3 -m pytest tools/release_gate
+
   # HIL suite must stay importable/collectable on a device-less box (the repo's
   # own contract: `pytest tests/hil --collect-only` clean with no hardware).
   hil-collect:

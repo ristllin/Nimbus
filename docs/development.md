@@ -149,6 +149,13 @@ header. The [docs map](README.md) says which file is canonical for what.
   hardware-proven; every attempt at concurrency destabilized the device.
 - **Internal SRAM is the scarce pool, not total RAM.** Route churn to PSRAM;
   never "fix" OOM by raising heap floors. See [Memory](memory.md).
+- **Never DMA a full frame straight from PSRAM to the panel.** A ~150 KB SPI
+  burst sourced from PSRAM shares the S3 external-memory bus and resets the
+  ILI9341 (MADCTL to its power-on default), leaving the glass white while every
+  register readback and the render task still look healthy. The colour-TFT driver
+  stages a PSRAM frame band-by-band through an internal DMA bounce for this
+  reason. `tools/check_tft_elf_no_eink.py` guards the companion property (a TFT
+  build links zero GxEPD2, so the e-ink SRAM win survives).
 - **The two USB-C ports are not interchangeable** - a factory-fresh board
   flashes only through `UART`. See [Flash the firmware](quick-start/flash.md).
 - **Structured outputs everywhere** - never ask a model for JSON in prose.

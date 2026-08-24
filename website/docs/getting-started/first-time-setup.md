@@ -65,7 +65,7 @@ above to install the real production firmware.
 </details>
 
 For details about the board's two USB-C ports, see the
-[hardware reference](../guides/hardware.md#first-flash-of-a-fresh-board--use-the-uart-port).
+[hardware reference](../guides/hardware.md#first-flash-of-a-fresh-board-use-the-uart-port).
 
 ---
 

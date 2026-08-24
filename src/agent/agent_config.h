@@ -267,7 +267,7 @@
 // legacy sound-theme slugs kept as stored NVS values; the shipped theme is 'pulse'.
 #define AKEY_SFX_LVL_NOTIF  "sfxLvlN"
 #define AKEY_SFX_LVL_ORCH   "sfxLvlO"
-#define AKEY_SFX_THEME      "sfxTheme"       // "terran" | "protoss" | "zerg"
+#define AKEY_SFX_THEME      "sfxTheme"       // sound theme slug; "pulse" is the only shipping theme
 #define AKEY_SFX_VOL        "sfxVol"         // master speaker volume 0-100 (%)
 #define AKEY_SAVER_MIN      "saverMin"       // screensaver idle minutes (0 = off)
 #define AKEY_COMPACT_KB     "compactKB"      // fold trigger: chat KB since last fold (0 = off)

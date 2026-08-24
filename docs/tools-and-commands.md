@@ -186,12 +186,13 @@ Commands grouped by purpose, one line each. Arguments in angle brackets.
 | `LEDSTATE` | What the LED driver is physically driving (raw frame layer vs a fallback pattern) - the physical counterpart of `RENDER?`. |
 | `LEDTEST` | Eyes-on LED data-path test: cycles red, green, blue through the real driver. |
 | `RAWFRAME?` | Whether the animator currently owns the ring via the raw frame path. |
-| `INPUTLOG on\|off` | Echo touch events to serial. |
+| `RINGANIM <0-4>` | Select the working-ring animation variant. |
 | `SELFTEST [FULL]` | Run the aggregated self-test (FULL adds the audible items). |
 | `FAULT <cap> <on\|off>` / `FAULT?` | Inject or clear a capability fault (sd, memory, mic, speaker, led, screen) to prove graceful degradation; query the mask. |
 | `SDCHECK` | Probe SD card health and report the current storage tier. |
 | `TEST <name>` | Pass a test name through to the board-support self-test. |
 | `REBOOT` | Software restart - the only sanctioned way to restart from the host. |
+| `FACTRESET` | Trigger the deferred factory reset (preserves hardware identity, erases config, restarts) - the console path to the web `/api/factory-reset`. |
 | `HANG` | Deliberately hang the main loop to prove the watchdog recovers (~8 s). |
 | `MEMFILL <epi\|vec> <n> [bytes]` | Fill episodic or vector memory with test rows to exercise caps and pruning. |
 | `WEBTOK?` | Print the device's web access token (for the HIL harness). |
@@ -299,6 +300,17 @@ of the same volume control as sound effects (Settings, Sound). Reach it from the
 
 For the full OTA story, see [ota.md](ota.md) and the operations runbook
 [ota-operations.md](ota-operations.md).
+
+#### Cloud access
+
+| Command | What it does |
+|---|---|
+| `CLOUD?` | Cloud-relay status as JSON (opt-in, pairing state, pairing code and claim URL when pairing). |
+| `CLOUDPAIR` | Opt in and start pairing; poll `CLOUD?` for the code (also shown on the panel), then claim it at app.cumulo-nimbus.ai. |
+| `CLOUDOFF` | Unpair and disable cloud access. |
+| `CLOUDLOOP [path]` | Loopback self-test of the tunnel replay path against a local route (default `/api/state`); no cloud dependency. |
+
+For the pairing flow and security model, see [cloud-relay.md](cloud-relay.md).
 
 The device also answers a few fixed owner commands over Telegram - see
 [Telegram owner commands](#telegram-owner-commands) under User tools above.

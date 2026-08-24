@@ -31,6 +31,7 @@ const imgRoot = resolve(here, '..', 'static', 'hw');
 const PAGES = [
   // Quick Start
   ['quick-start/what-you-need.md', 'quick-start/what-you-need.md', 'What you need', 'What you need'],
+  ['quick-start/computer-setup.md', 'quick-start/computer-setup.md', 'Set up your computer', 'Set up your computer'],
   ['quick-start/flash.md', 'quick-start/flash.md', 'Flash the firmware', 'Flash the firmware'],
   ['quick-start/setup-wizard.md', 'quick-start/setup-wizard.md', 'Set up the device', 'Set up the device'],
   ['quick-start/first-conversation.md', 'quick-start/first-conversation.md', 'Your first conversation', 'First conversation'],
@@ -46,8 +47,12 @@ const PAGES = [
   ['led-ux.md', 'guides/led-ux.md', 'LED experience - motion & color', 'LED experience'],
   ['sfx-map.md', 'guides/sfx-map.md', 'SFX - sound state language', 'SFX map'],
   ['connectors.md', 'guides/connectors.md', 'Connectors - external tools per provider', 'Connectors'],
+  ['mcp.md', 'guides/mcp.md', 'MCP - the device as client and server', 'MCP'],
   ['people-and-privacy.md', 'guides/people-and-privacy.md', 'People and privacy - roles, quotas, what stays private', 'People & privacy'],
   ['notifier-status-language.md', 'guides/notifier-status-language.md', 'Notifier status language', 'Status language'],
+  // Cloud
+  ['cloud-relay.md', 'cloud/cloud-access.md', 'Cloud access - reach the device from anywhere', 'Cloud access'],
+  ['cloud/cumulo-key.md', 'cloud/cumulo-key.md', 'Use your Cumulo key', 'Use your Cumulo key'],
   // How It Works
   ['architecture.md', 'guides/architecture.md', 'Nimbus Architecture', 'Architecture'],
   ['turn-anatomy.md', 'guides/turn-anatomy.md', 'Turn anatomy - what the model sees', 'Turn anatomy'],
