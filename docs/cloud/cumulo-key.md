@@ -32,8 +32,8 @@ models without any other provider account.
 3. Once it verifies, pick a model. The key is stored write-only: it shows as
    "set" and is never displayed again.
 
-That is all. The device routes its turns through your balance. Set a spending
-limit on the key first if you want a firm ceiling.
+The device routes its turns through your balance. For a firm ceiling, set a
+per-key spending limit when you create the key.
 
 ## Use it from your own code
 
@@ -93,10 +93,8 @@ to the key you just made, so you can copy them there too.
 
 ## Costs and limits
 
-- **One balance, every provider.** Requests draw from your prepaid credits; there
-  are no separate provider bills.
 - **Per-key spending limit.** Set a monthly limit on any key for a hard cap.
-- **Actual billed usage.** Usage is metered per key and shown in the portal.
+- **Per-key usage.** Usage is metered per key and shown in the portal.
 
 ## Related
 

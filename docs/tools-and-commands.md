@@ -186,7 +186,7 @@ Commands grouped by purpose, one line each. Arguments in angle brackets.
 | `LEDSTATE` | What the LED driver is physically driving (raw frame layer vs a fallback pattern) - the physical counterpart of `RENDER?`. |
 | `LEDTEST` | Eyes-on LED data-path test: cycles red, green, blue through the real driver. |
 | `RAWFRAME?` | Whether the animator currently owns the ring via the raw frame path. |
-| `RINGANIM <0-4>` | Select the working-ring animation variant (0-4). |
+| `RINGANIM <0-4>` | Select the working-ring animation variant. |
 | `SELFTEST [FULL]` | Run the aggregated self-test (FULL adds the audible items). |
 | `FAULT <cap> <on\|off>` / `FAULT?` | Inject or clear a capability fault (sd, memory, mic, speaker, led, screen) to prove graceful degradation; query the mask. |
 | `SDCHECK` | Probe SD card health and report the current storage tier. |

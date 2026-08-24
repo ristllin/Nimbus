@@ -7,8 +7,8 @@ computers) a USB-serial driver.
 
 :::tip Most people can skip this page
 The **[browser flasher](flash.md#path-1---browser-flasher-recommended)** needs
-none of this: a Chromium-based browser (Chrome or Edge) and a data-capable USB
-cable, and you are done. Come here only if you want the command-line path, or the
+none of the below. All it takes is a Chromium-based browser (Chrome or Edge) and
+a data-capable USB cable. Come here only if you want the command-line path, or the
 browser flasher never shows your board's serial port.
 :::
 

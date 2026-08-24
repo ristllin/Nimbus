@@ -117,7 +117,7 @@ Mode & identity on the web) always wins over either default.
 
 ### The screen on a board with no ring
 
-Some boards, like the [all-in-one](../hardware/all-in-one-cyd.md) (Freenove CYD),
+Some boards, like the [all-in-one](hardware/all-in-one-cyd.md) (Freenove CYD),
 have a single RGB LED instead of the 45-pixel ring. On those, the **Notifier**
 status ring is drawn on the screen: each active session shows as an arc in the
 same colors and animations the physical ring would use, so the status language is

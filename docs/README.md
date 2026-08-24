@@ -90,12 +90,37 @@ Three other generators read this tree - keep them in sync when you edit:
 | `ota-operations.md` | OTA operations and maintenance |
 | `self-hosted-ota.md` | Running your own OTA release channel |
 
+## Page types (Divio)
+
+Every page is one of the four [Divio](https://docs.divio.com/documentation-system/)
+types, and the sidebar groups them by type so a reader lands in the right mode.
+Keep new pages to one type; the few intentional blends below are called out so
+they are not "fixed" into fragments (coherency over richness).
+
+| Type (learning mode) | Sidebar group(s) | Pages |
+|---|---|---|
+| **Tutorial** (learning by doing) | Quick Start | `what-you-need`, `computer-setup`, `flash`, `setup-wizard`, `first-conversation`, `notifier-quick-start` |
+| **How-to** (task recipes) | Hardware Build, Using Nimbus, Cloud, Forking & Contributing | `hardware/*`, `modes-and-signals`, `connectors`, `mcp`, `people-and-privacy`, `cloud-relay`, `cloud/cumulo-key`, `ota`, `ota-operations`, `self-hosted-ota`, `development` |
+| **Reference** (look it up) | Reference | `reference/*`, `tools-and-commands`, `changelog`, `notifier-status-language`, `sfx-map`, `hardware/bom` |
+| **Explanation** (understand why) | How It Works | `architecture`, `turn-anatomy`, `architecture/orchestrator-live-turn`, `orchestrator-world`, `memory`, `orchestrator-storage`, `sub-sessions`, `harness`, `provider-wire`, `security`, `led-ux` |
+
+Intentional blends (kept whole on purpose):
+
+- `what-you-need` is a tutorial that opens with a reference checklist; the
+  checklist is what a first build needs in front of it.
+- `flash` is a how-to whose back half is reference (reflash, recovery, build
+  environments), clearly separated by a rule and a "the rest of this page is
+  reference" line.
+- `hardware.md` and `modes-and-signals.md` carry a short "for developers" source
+  table at the end so a reader never has to leave the page to find where the
+  behavior lives; the body stays single-type.
+
 ## Rules of the road
 
 - **Site structure** lives in `website/sidebars.js`; a page migrated by `PAGES`
   but absent from the sidebar is an orphan the site never links to.
 - **Generated files are never hand-edited**: `sfx-map.md`,
-  `website/docs/{guides,reference,quick-start,contributing}/**`, and
+  `website/docs/{guides,reference,quick-start,contributing,cloud}/**`, and
   `lib/core/include/nimbus/docs_pack_data.h`.
 - **Docs follow every commit**: rename or move anything user-visible and you grep
   for the old wording and fix every hit in the same commit; before a release,

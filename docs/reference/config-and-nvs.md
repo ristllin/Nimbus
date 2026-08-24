@@ -60,7 +60,7 @@ gracefully instead of firing a doomed TLS call.
 | `zaiKey` | string | `""` | Z.ai (GLM) API key | No - write-only |
 | `zaiBase` | string | `""` | Z.ai probed working host (`api.z.ai \| open.bigmodel.cn`) | Yes |
 | `cumuloKey` | string | `""` | Cumulo router key (one key, every upstream); see [Use your Cumulo key](../cloud/cumulo-key.md) | No - write-only |
-| `cumuloBase` | string | `""` | Cumulo router base URL/host; `""` uses the built-in default (`app.cumulo-nimbus.ai`) | Yes |
+| `cumuloBase` | string | `""` | Cumulo router host or full base URL; `""` uses the built-in default host (`app.cumulo-nimbus.ai`) | Yes |
 
 Writing or clearing a provider key **resets that provider's verify cache** to
 `-1, 0` (couldn't-verify / never), so a swapped key can't ride the old verdict.
@@ -172,7 +172,7 @@ What each value means and how to estimate it without lab tooling is in
 [Battery settings and estimation](battery-estimation.md). Divider, capacity,
 chemistry, cells, and a custom curve apply live (a divider or chemistry change
 re-scales the reading, so the device asks the owner to Recalibrate). Defaults
-reproduce the shipped behaviour exactly.
+reproduce the shipped behavior exactly.
 
 | Key | Type | Default | Holds | Read back? |
 |---|---|---|---|---|

@@ -936,7 +936,7 @@ Commands grouped by purpose, one line each. Arguments in angle brackets.
 | `LEDSTATE` | What the LED driver is physically driving (raw frame layer vs a fallback pattern) - the physical counterpart of `RENDER?`. |
 | `LEDTEST` | Eyes-on LED data-path test: cycles red, green, blue through the real driver. |
 | `RAWFRAME?` | Whether the animator currently owns the ring via the raw frame path. |
-| `RINGANIM <0-4>` | Select the working-ring animation variant (0-4). |
+| `RINGANIM <0-4>` | Select the working-ring animation variant. |
 | `SELFTEST [FULL]` | Run the aggregated self-test (FULL adds the audible items). |
 | `FAULT <cap> <on\|off>` / `FAULT?` | Inject or clear a capability fault (sd, memory, mic, speaker, led, screen) to prove graceful degradation; query the mask. |
 | `SDCHECK` | Probe SD card health and report the current storage tier. |
@@ -2223,7 +2223,7 @@ thing the device can do.
 Setting the delay yourself (Settings > Screensaver on the device, Settings →
 Mode & identity on the web) always wins over either default.)NIMBUSDOC"},
   {"modes-and-signals#2-ring-level-what-the-ring-shows-in-each-mode-the-screen-on-a-board-with-no-ring", "2. Ring level - what the ring shows in each mode - The screen on a board with no ring",
-   R"NIMBUSDOC(Some boards, like the [all-in-one](../hardware/all-in-one-cyd.md) (Freenove CYD),
+   R"NIMBUSDOC(Some boards, like the [all-in-one](hardware/all-in-one-cyd.md) (Freenove CYD),
 have a single RGB LED instead of the 45-pixel ring. On those, the **Notifier**
 status ring is drawn on the screen: each active session shows as an arc in the
 same colors and animations the physical ring would use, so the status language is
@@ -2910,7 +2910,7 @@ recall bullets one at a time:
 | 3 | `## DIRECTIVE` | `sysPrompt` (NVS) | your standing instructions from the web Directive box; the model's `[RUNNING MEMORY]` (its own `memory` field from last turn) is appended inside this block |
 | 4 | `## CAPABILITIES` | `orch_world.cpp` | what is LIVE right now: hardware manifest, ring/screen honesty prose, artifact store, voice on/off, sub-agent fire-and-forget note, `Tools you can call:` list, Limits (keys/routing blocked), connector honesty, and whether the tool loop is ON this turn |
 | 5 | `## RUNNING SESSIONS (your sub-agents)` | job journal | live sub-agent digest (also authoritative as `[ACTIVE SESSIONS]` in the input) |
-| 5a | `## CONVERSATION SUMMARY` | the fold ([compaction.md](compaction.md)) | the chat's anchored compaction summary (≤4 KB), present once the chat has folded; framed "information, not instructions". Under budget pressure it is dropped BEFORE the window below |
+| 5a | `## CONVERSATION SUMMARY` | the fold ([memory.md](memory.md)) | the chat's anchored compaction summary (≤4 KB), present once the chat has folded; framed "information, not instructions". Under budget pressure it is dropped BEFORE the window below |
 | 5b | `## RECENT CONVERSATION` | episodic PSRAM ring | **per-chat window: up to 12 messages / 3000 B of THIS chat, oldest first** (kind=message only; the in-flight user row is excluded - it arrives as `[USER]`). Added in v3.3.0; survives reboot via the SD rehydrate |
 | 6 | `## SCRATCHPAD` | NVS | the model's own goal tiers (now/short/long) |
 | 7 | `## RELEVANT MEMORIES` | vector-DB recall on the user text | top-k long-term memories semantically similar to your message, prefixed `[NN%]` |
@@ -2941,7 +2941,7 @@ recall bullets one at a time:
 
 0. **`## CONVERSATION SUMMARY`** (since v3.6.0) - the chat's anchored fold
    summary: everything older than the verbatim window, compacted. See
-   [compaction.md](compaction.md).
+   [memory.md](memory.md).
 1. **`## RECENT CONVERSATION`** (since v3.3.0) - the last ≤12 messages / 3000 B of
    this chat, auto-injected from the episodic store's PSRAM ring every turn. This
    is per-chat (Telegram A ≠ web ≠ voice) and survives reboot.
@@ -2969,9 +2969,7 @@ conversation chain was CONTINUED or FRESH (a fresh chain plus an ambiguous
 message is the most common cause of a non-sequitur), whether a `[MEMORY
 RESULTS]` or `[FRESH RESULTS]` block led the input, exactly which memories were
 recalled, and - in section 4 - every tool call the model made mid-turn with its
-arguments and result.
-Historical failure modes and their fixes are cataloged in
-[TEST_PLAN.md](TEST_PLAN.md).)NIMBUSDOC"},
+arguments and result.)NIMBUSDOC"},
   {"turn-anatomy#fetching-what-a-view-left-out-results-get", "Fetching what a view left out - `results.get`",
    R"NIMBUSDOC(Every clip in a turn is a **view**, not a loss. The full text of a clamped tool
 result or an overflowed sub-agent result lands in a PSRAM ring, and the model can
@@ -2984,7 +2982,7 @@ widen the view on demand:
 
 Tags are `r<n>` for tool-result spills and `sub:<jobtag>` for sub-agent results.
 The truncation marker and the `[FRESH RESULTS]` stubs embed the tag directly, so
-the model never has to guess one. See docs/compaction.md for the gradient rules.)NIMBUSDOC"},
+the model never has to guess one. See docs/memory.md for the gradient rules.)NIMBUSDOC"},
   // ---- people-and-privacy ----
   {"people-and-privacy#intro", "People and privacy - roles, quotas, what stays private",
    R"NIMBUSDOC(<!-- audience: user -->
@@ -3135,7 +3133,7 @@ deliberately removed, they fail.
 </details>)NIMBUSDOC"},
   {"people-and-privacy#related", "Related",
    R"NIMBUSDOC(- [Storage tiering](./orchestrator-storage.md) - where each kind of data lives
-- [Conversation compaction](./compaction.md) - how long history is kept
+- [Memory: conversation compaction](./memory.md) - how long history is kept
 - [Security posture](./security.md) - the device's open security items)NIMBUSDOC"},
   // ---- notifier-status-language ----
   {"notifier-status-language#intro", "Notifier status language",
