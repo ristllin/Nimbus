@@ -70,6 +70,7 @@ table{width:100%;border-collapse:collapse;font-size:12.5px}td,th{text-align:left
 .sec{border:1px solid var(--line);background:var(--raise);border-radius:16px;padding:16px;margin:14px 0;box-shadow:var(--shadow)}
 .badge{display:inline-block;padding:1px 8px;border-radius:11px;font-size:11px;background:rgba(99,209,154,.14);color:var(--ok)}
 .badge.ext{background:rgba(108,184,255,.13);color:var(--info)}
+.badge.un{background:rgba(150,160,170,.14);color:var(--ink3)}
 .hint{font-size:12px;color:var(--ink3);margin:2px 0 0}
 .row{display:flex;align-items:center;gap:8px}
 .row input{flex:1}

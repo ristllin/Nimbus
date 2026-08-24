@@ -32,7 +32,7 @@ static const char UI_MEMORY[] PROGMEM = R"=====(<div class=pane id=pane-chat sty
 <div class=ptitle>Memory</div>
 <p class=plede>What the device knows and the files it has made, stored on its SD card, not in a cloud.</p>
 
-<details class=setgroup open><summary>Memory<span class=chev>&rsaquo;</span></summary>
+<details class=setgroup><summary>Memory<span class=chev>&rsaquo;</span></summary>
 <div class=setbody>
 <label>Directive <button class=qh type=button aria-expanded=false aria-label="About the directive">?</button></label>
 <p class="hint tip">Your standing instructions to the assistant. Only you can change them. Up to 600 characters.</p>

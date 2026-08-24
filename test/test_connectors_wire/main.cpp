@@ -18,6 +18,9 @@ using nimbus::orch::ConnectorInfo;
 using nimbus::orch::knownCatalogJson;
 using nimbus::orch::knownConnectors;
 using nimbus::orch::ProviderState;
+using nimbus::orch::CapScope;
+using nimbus::orch::capScopeSlug;
+using nimbus::orch::connectorScope;
 
 void setUp() {}
 void tearDown() {}
@@ -640,6 +643,61 @@ static void test_parse_connectors_malformed_and_empty() {
   TEST_ASSERT_EQUAL(0, parseConnectorsJson("[{\"name\":\"a\"}]", out, 0, nullptr));  // maxN 0
 }
 
+// --- capability scope (CUM-159) ----------------------------------------------
+static ProviderState psAllKeyed(const char* host) {
+  ProviderState ps;
+  ps.openaiKeyed = ps.anthropicKeyed = ps.mistralKeyed = true;
+  ps.currentHost = host;
+  return ps;
+}
+
+static void test_capscope_slugs_are_frozen() {
+  TEST_ASSERT_EQUAL_STRING("orchestrator-direct", capScopeSlug(CapScope::OrchestratorDirect));
+  TEST_ASSERT_EQUAL_STRING("subsessions-only", capScopeSlug(CapScope::SubsessionsOnly));
+  TEST_ASSERT_EQUAL_STRING("unavailable", capScopeSlug(CapScope::Unavailable));
+}
+
+static void test_capscope_on_host_is_orchestrator_direct() {
+  ProviderState ps = psAllKeyed("openai");
+  ConnectorInfo c = mk("github", "openai", "mcp", "https://x/", "");
+  TEST_ASSERT_EQUAL(int(CapScope::OrchestratorDirect), int(connectorScope(c, ps)));
+}
+
+static void test_capscope_off_host_is_subsessions_only() {
+  // Keyed + enabled but on a provider that is NOT the current head: the head can
+  // only reach it by spawning a sub-agent on that provider.
+  ProviderState ps = psAllKeyed("openai");
+  ConnectorInfo c = mk("notion", "anthropic", "mcp", "https://x/", "");
+  TEST_ASSERT_EQUAL(int(CapScope::SubsessionsOnly), int(connectorScope(c, ps)));
+}
+
+static void test_capscope_unkeyed_provider_is_unavailable() {
+  ProviderState ps;                 // only openai keyed
+  ps.openaiKeyed = true;
+  ps.currentHost = "openai";
+  ConnectorInfo c = mk("notion", "anthropic", "mcp");
+  TEST_ASSERT_EQUAL(int(CapScope::Unavailable), int(connectorScope(c, ps)));
+}
+
+static void test_capscope_disabled_is_unavailable() {
+  ProviderState ps = psAllKeyed("openai");
+  ConnectorInfo c = mk("github", "openai", "mcp", "", "", /*en=*/false);
+  TEST_ASSERT_EQUAL(int(CapScope::Unavailable), int(connectorScope(c, ps)));
+}
+
+static void test_capscope_auth_failed_is_unavailable() {
+  ProviderState ps = psAllKeyed("openai");
+  ConnectorInfo c = mk("gmail", "openai", "connector", "", "connector_gmail");
+  c.auth = 0;                       // last OAuth sign-in FAILED
+  TEST_ASSERT_EQUAL(int(CapScope::Unavailable), int(connectorScope(c, ps)));
+}
+
+static void test_capscope_any_provider_rides_the_host() {
+  ProviderState ps = psAllKeyed("mistral");
+  ConnectorInfo c = mk("web_search", "any", "builtin");
+  TEST_ASSERT_EQUAL(int(CapScope::OrchestratorDirect), int(connectorScope(c, ps)));
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_parse_connectors_reads_past_eight);
@@ -673,5 +731,12 @@ int main() {
   RUN_TEST(test_catalog_marks_connector_auth_problems);
   RUN_TEST(test_catalog_custom_mcp_gets_a_line);
   RUN_TEST(test_subagent_capabilities_block_is_generated);
+  RUN_TEST(test_capscope_slugs_are_frozen);
+  RUN_TEST(test_capscope_on_host_is_orchestrator_direct);
+  RUN_TEST(test_capscope_off_host_is_subsessions_only);
+  RUN_TEST(test_capscope_unkeyed_provider_is_unavailable);
+  RUN_TEST(test_capscope_disabled_is_unavailable);
+  RUN_TEST(test_capscope_auth_failed_is_unavailable);
+  RUN_TEST(test_capscope_any_provider_rides_the_host);
   return UNITY_END();
 }

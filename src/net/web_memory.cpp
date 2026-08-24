@@ -14,6 +14,7 @@
 #include "../agent/memory_subsystem.h"
 #include "../agent/orchestrator.h"        // toolRidesLoop - /api/tools rides_loop flag (P7)
 #include "../agent/connectors.h"          // provider connector catalog for /api/tools (P7)
+#include "nimbus/orch/connectors_wire.h"   // connectorScope - the orchestrator-direct/subsessions-only/unavailable badge (CUM-159)
 #include "../agent/skills.h"              // skill capsules surfaced in /api/tools (P7)
 #include "../agent/store.h"
 #include "webui.h"                         // webAuthOk() - /mcp token gate
@@ -331,31 +332,45 @@ void handleToolsGet(AsyncWebServerRequest* r) {
   if (authBlocked(r)) return;  // strict gate (owner R2)
   JsonDocument d;
   JsonArray arr = d["tools"].to<JsonArray>();   // create ONCE - .to<>() clears on each call
+  // availability (CUM-159): where each capability is reachable from -
+  // "orchestrator-direct" (the head calls it), "subsessions-only" (only a spawned
+  // sub-agent can), or "unavailable". Registry + device rows are always the head's
+  // own; connectors are classified per provider by connectorScope() below.
+  ProviderState ps;
+  ps.openaiKeyed    = agent::store::hasOpenaiKey();
+  ps.anthropicKeyed = agent::store::hasAnthropicKey();
+  ps.mistralKeyed   = agent::store::hasMistralKey();
+  ps.currentHost    = std::string(agent::store::resolvedOrchHost().c_str());
+  const char* kDirect  = capScopeSlug(CapScope::OrchestratorDirect);
+  const char* kUnavail = capScopeSlug(CapScope::Unavailable);
   auto grp = [&](const char* group, const char* name, const char* desc,
-                 const char* tag, bool loop) {
+                 const char* tag, bool loop, const char* avail) {
     JsonObject o = arr.add<JsonObject>();
     o["group"] = group; o["name"] = name; o["description"] = desc;
     if (tag && tag[0]) o["tag"] = tag;
     o["rides_loop"] = loop;
+    if (avail) o["availability"] = avail;   // static slug (capScopeSlug) or nullptr
   };
-  // Registry tools (memory.*/session.*/web.search/system.health/skill.*/reply.*).
+  // Registry tools (memory.*/session.*/web.search/system.health/skill.*/reply.*):
+  // the head orchestrator's own surface (loop or turn contract) - direct.
   for (const auto& t : mem::registry().manifest())
     grp("registry", t.name.c_str(), t.description.c_str(), "",
-        agent::orchestrator::toolRidesLoop(t.name));
+        agent::orchestrator::toolRidesLoop(t.name), kDirect);
   // orch_turn device actions - always available via the turn contract (not the loop).
   // One authoritative doc row generated from the ORCH_D_DEVICE macro - the same
   // string the model's schema carries, so this list can never drift from the wire
   // (the four rows below are just friendly headings).
-  grp("device", "device.*", ORCH_D_DEVICE, "turn contract", false);
-  grp("device", "device.led", "Ring pattern: solid/spinner/pulse/flash/rainbow + RGB + brightness", "turn action", false);
-  grp("device", "device.lights", "Turn the ring on (full) or off", "turn action", false);
-  grp("device", "device.config", "Adjust ring level, brightness, theme, power profile, voice", "turn action", false);
-  grp("device", "device.tts", "Speak text to the owner (Telegram voice / desk speaker)", "turn action", false);
+  grp("device", "device.*", ORCH_D_DEVICE, "turn contract", false, kDirect);
+  grp("device", "device.led", "Ring pattern: solid/spinner/pulse/flash/rainbow + RGB + brightness", "turn action", false, kDirect);
+  grp("device", "device.lights", "Turn the ring on (full) or off", "turn action", false, kDirect);
+  grp("device", "device.config", "Adjust ring level, brightness, theme, power profile, voice", "turn action", false, kDirect);
+  grp("device", "device.tts", "Speak text to the owner (Telegram voice / desk speaker)", "turn action", false, kDirect);
   // Skill capsules (readable via skill.get; SD capsules also inject at spawn).
+  // Rendered in their own panel, not the availability-badged tool table.
   for (const auto& c : agent::skills::list()) {
     std::string tag = c.source == "sd" ? "sd skill.get" : "skill.get";
     if (c.origin == "agent") tag += c.approved ? " agent" : " agent pending";
-    grp("skill", ("skill:" + c.id).c_str(), c.title.c_str(), tag.c_str(), false);
+    grp("skill", ("skill:" + c.id).c_str(), c.title.c_str(), tag.c_str(), false, nullptr);
   }
   // Provider-side connectors, with a "<provider> only" availability tag. The Info
   // array is String-heavy; keep it small + skip it entirely under heap pressure so
@@ -365,9 +380,8 @@ void handleToolsGet(AsyncWebServerRequest* r) {
   if (ESP.getFreeHeap() <= 30000) {
     grp("connector", "(connectors hidden)",
         "Device memory is momentarily low - connector rows are omitted to keep this "
-        "endpoint safe. Reload in a moment.", "low memory", false);
-  }
-  if (ESP.getFreeHeap() > 30000) {
+        "endpoint safe. Reload in a moment.", "low memory", false, nullptr);
+  } else {
     // HEAP, not stack - the AsyncTCP stack is the one an Info[12] already reset
     // (comment above); and the old Info[4] cap silently hid every connector past
     // the fourth from this dashboard (see kMaxConnectors in connectors.h).
@@ -376,14 +390,21 @@ void handleToolsGet(AsyncWebServerRequest* r) {
     int nc = ci ? agent::connectors::list(ci.get(), agent::connectors::kMaxConnectors) : 0;
     for (int i = 0; i < nc; i++) {
       String tag = ci[i].prov + " " + ci[i].kind + (ci[i].enabled ? "" : " (disabled)");
+      // Classify this connector by the same rule the model's catalog states in
+      // prose: on the current host provider (callable directly) vs another
+      // provider (spawn a sub-agent) vs unkeyed/disabled/sign-in-failed.
+      ConnectorInfo cw;
+      cw.prov    = std::string(ci[i].prov.c_str());
+      cw.enabled = ci[i].enabled;
+      cw.auth    = agent::connectors::authStateOf(ci[i].name);
       grp("connector", ci[i].name.c_str(),
           "Provider-side connector - the cloud provider runs it for the model.",
-          tag.c_str(), false);
+          tag.c_str(), false, capScopeSlug(connectorScope(cw, ps)));
     }
   }
   if (!agent::store::tavilyKey().length())
     grp("connector", "web.search (Tavily)", "Live web search - add a Tavily key to enable.",
-        "needs Tavily key", false);
+        "needs Tavily key", false, kUnavail);
   d["count"] = d["tools"].as<JsonArray>().size();
   String out; serializeJson(d, out); sendJson(r, 200, out);
 }

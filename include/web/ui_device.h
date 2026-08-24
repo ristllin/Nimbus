@@ -48,7 +48,7 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 <div class=ptitle>Settings</div>
 <p class=plede>Mode, light, sound, power, and connectivity - all in one place.</p>
 
-<details class=setgroup open><summary>Mode &amp; identity<span class=chev>&rsaquo;</span></summary>
+<details class=setgroup><summary>Mode &amp; identity<span class=chev>&rsaquo;</span></summary>
 <div class=setbody>
 <label>Mode <button class=qh type=button aria-expanded=false aria-label="About modes">?</button></label>
 <p class="hint tip"><b>Notifier</b> turns the ring into a status light for your coding sessions, connected over Bluetooth. <b>Orchestrator</b> runs the AI assistant - Telegram, voice, and memory. Switching modes restarts the device.</p>
@@ -95,7 +95,7 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 </div>
 </details>
 
-<details class=setgroup open><summary>Battery mode<span class=chev>&rsaquo;</span></summary>
+<details class=setgroup><summary>Battery mode<span class=chev>&rsaquo;</span></summary>
 <div class=setbody>
 <div id=profiles>
 <label class=pr><input type=radio name=profile value=0> Dark</label>

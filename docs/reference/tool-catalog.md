@@ -391,6 +391,20 @@ honestly in the web "Tools" panel (`GET /api/tools`, read live from
 - **Provider-side tools** (e.g. hosted web-search / deep-research) run on the
   spawn target, not on the device.
 
+Each row in that panel also carries a **where-it-runs** tag, so the live surface
+shows not just what exists but who can reach it:
+
+- **Orchestrator** - the head runs it directly (the registry tools and the
+  turn-contract device actions; a connector on the current host provider).
+- **Sub-agents** - reachable only by spawning a sub-agent on that provider (a
+  connector on a provider that is not the current head).
+- **Unavailable** - not usable now: the provider is unkeyed, the connector is
+  turned off, or its sign-in failed.
+
+The tag is computed from the same host-vs-spawn policy the model's
+`[PROVIDERS & CONNECTORS]` block states in prose - one rule, `connectorScope()`
+in `lib/core/.../connectors_wire.cpp`, host-tested so the two never drift.
+
 ## See also
 
 - [Orchestrator World](../orchestrator-world.md)

@@ -59,6 +59,7 @@ static const char UI_AGENT[] PROGMEM = R"=====(<div class=pane id=pane-harness s
 <div class=sec>
 <h2>Tools <span class="badge" id=toolstat></span> <button class=qh type=button aria-expanded=false aria-label="About tools">?</button></h2>
 <p class="hint tip">What the assistant can do right now - the live on-device tool surface. External MCP clients can call it too, over <code>POST /mcp</code>.</p>
+<p class=hint style="margin:2px 0 8px">Each capability is tagged by where it runs: <span class="badge">Orchestrator</span> the assistant runs it directly, <span class="badge ext">Sub-agents</span> only a spawned helper can, <span class="badge un">Unavailable</span> not usable now.</p>
 <div id=toollist></div>
 </div>
 <div class=sec>
@@ -77,7 +78,7 @@ static const char UI_AGENT[] PROGMEM = R"=====(<div class=pane id=pane-harness s
 <div class=sec>
 <h2>Models <span class="badge ext" id=orchoff style="display:none">Notifier mode - these settings apply when you switch to Orchestrator</span></h2>
 
-<details class=setgroup open><summary>Providers &amp; keys<span class=chev>&rsaquo;</span></summary>
+<details class=setgroup><summary>Providers &amp; keys<span class=chev>&rsaquo;</span></summary>
 <div class=setbody>
 <p class=hint>Keys are write-only - a saved key shows as &quot;set&quot; and is never displayed again. Model choices unlock after the key verifies.</p>
 <div id=provs></div>
