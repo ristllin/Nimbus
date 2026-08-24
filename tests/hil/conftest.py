@@ -38,7 +38,7 @@ GATE_REASON = "hardware gated: pass --allow-hardware (board must be recovered fi
 # rebooting the chip); if the console does not come back the session is marked
 # wedged and every remaining hardware test FAILS FAST with a clear marker instead
 # of each burning a full read timeout (the 58-cascade this replaces).
-from wedge_guard import WedgeSentinel, is_console_death as _is_console_death  # noqa: E402
+from wedge_guard import WedgeSentinel, is_wedge_candidate as _is_wedge_candidate  # noqa: E402
 
 
 # ---- markers (registered here AND in pytest.ini; belt + suspenders) --------
@@ -147,7 +147,10 @@ def pytest_runtest_makereport(item: "pytest.Item", call):
         return
     if not _is_hardware_item(item) or getattr(call, "excinfo", None) is None:
         return
-    if _is_console_death(call.excinfo.value):
+    # A candidate signature only ARMS the check; try_recover() confirms the console
+    # is actually dead (via a ping) before any disruptive USB reset, so an ordinary
+    # ExpectTimeout on a live console does not trigger a gratuitous reset.
+    if _is_wedge_candidate(call.excinfo.value):
         sentinel.try_recover()
 
 

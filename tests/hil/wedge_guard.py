@@ -22,11 +22,14 @@ import time
 _WEDGE_MSG_MARKERS = ("unresponsive", "no serial", "not open", "silent", "console", "no lines")
 
 
-def is_console_death(exc: BaseException) -> bool:
-    """True when `exc` looks like the USB-Serial-JTAG endpoint stalled (a wedge),
-    as opposed to a genuine assertion failure or a firmware boot-loop."""
+def is_wedge_candidate(exc: BaseException) -> bool:
+    """True when `exc` COULD be a stalled USB-Serial-JTAG endpoint. This is only a
+    candidate: an ``ExpectTimeout`` is far more often an ordinary content-assertion
+    miss on a perfectly live console (a wanted line never arrived), so a candidate
+    must be confirmed by an actual liveness probe before any recovery runs (see
+    WedgeSentinel.try_recover). A firmware crash / boot-loop (BootError) is a real
+    finding and is never a candidate."""
     name = type(exc).__name__
-    # A real crash/boot-loop is a finding, not a wedge - never auto-recover it.
     if name == "BootError":
         return False
     if name in ("ExpectTimeout", "DeviceLostError"):
@@ -35,6 +38,10 @@ def is_console_death(exc: BaseException) -> bool:
         msg = str(exc).lower()
         return any(m in msg for m in _WEDGE_MSG_MARKERS)
     return False
+
+
+# Back-compat alias (older name); prefer is_wedge_candidate.
+is_console_death = is_wedge_candidate
 
 
 class WedgeSentinel:
@@ -54,14 +61,28 @@ class WedgeSentinel:
         self._sleep = sleep
         self._log = log
 
+    def _console_alive(self) -> bool:
+        """Cheap liveness probe: PING -> PONG. Never raises."""
+        try:
+            return bool(self.device.ping(timeout=3.0))
+        except Exception:  # noqa: BLE001 - a dead link must read as "not alive", not crash
+            return False
+
     def try_recover(self) -> bool:
-        """One-shot libusb bus reset + reopen, no chip reboot. Returns True if the
-        console answers afterward. Idempotent: only the first call does work."""
+        """Confirm the console is actually dead, then (if so) do a one-shot libusb
+        bus reset + reopen - no chip reboot. Returns True if the console is or comes
+        back alive. A bare candidate signature (usually an ordinary ExpectTimeout on
+        a LIVE console) is NOT treated as a wedge: the confirming ping short-circuits
+        it, so no gratuitous USB reset happens on a normal test failure."""
         if self.device is None or self.recovery_attempted:
             return self.recovered
+        # Confirm death before the disruptive reset. If the console answers, this was
+        # just a content-assertion miss, not a wedge - leave everything untouched.
+        if self._console_alive():
+            return False
         self.recovery_attempted = True
         self._log(
-            "\n[wedge_guard] CUM-141: console-death signature - attempting one in-place USB bus reset (no reboot)"
+            "\n[wedge_guard] CUM-141: console confirmed unresponsive - attempting one in-place USB bus reset (no reboot)"
         )
         try:
             if not self.device.bus_reset():
