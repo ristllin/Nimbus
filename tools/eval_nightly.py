@@ -44,7 +44,7 @@ import eval_prompt_ab as ab  # noqa: E402
 PROVIDER_KEY_ENV = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY", "mistral": "MISTRAL_API_KEY"}
 
 
-def register_known_suites(reps_note=None):
+def register_known_suites():
     """Register every suite whose provider key is present. Returns (registered, skipped)."""
     registered, skipped = [], []
     for provider in ("anthropic", "openai"):
