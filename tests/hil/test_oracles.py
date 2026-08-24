@@ -116,7 +116,7 @@ CASES = [
     ),
     (
         "channel_routing: honest capability-gap admission passes",
-        _B(["The e-ink is firmware-owned so I can't push text; Gmail is draft-only."], jobs_seen=4),
+        _B(["The screen is firmware-owned so I can't push text; Gmail is draft-only."], jobs_seen=4),
         S.channel_routing,
         True,
     ),

@@ -1,22 +1,22 @@
-"""L22 - a menu edit PERSISTS and APPLIES, on both input paths.
+"""L22 - a menu edit PERSISTS and APPLIES, on the touch path.
 
 The gap this closes (found in the v3.9.0 review): the host suite proves the menu
 FSM sets ``dirty()``, and the HIL suites prove screens transition - but nothing
 asserted that a real menu edit travels through the device glue
 (``settleMenuAfterMutation``: persist -> applyConfig -> re-read) and SURVIVES a
-reboot. That exact seam broke once on the touch branch: the persist/apply block
-lived inside the encoder pump's loop, which a TFT board exits immediately, so
-the menu repainted while every setting silently failed to save. A green here
-means that bug class cannot come back unnoticed.
+reboot. That exact seam broke once: the persist/apply block lived inside an
+input pump's loop that a TFT board exits immediately, so the menu repainted
+while every setting silently failed to save. A green here means that bug class
+cannot come back unnoticed.
 
 Oracle: the menu's OWN row text via the ``MENU?`` seam. ``openSettingsMenu``
 re-reads the store into the FSM, so reopening the menu (and rebooting, then
 reopening again) reads back what was actually persisted - a durable artifact,
 not an echo (the tests-that-lie lesson).
 
-The edited setting is Screensaver: present on both panels, a plain value row,
-and restorable out-of-band via the ``SAVER <min>`` console setter (used ONLY in
-the finally-restore, never as the test oracle - the point is to prove the MENU
+The edited setting is Battery mode: a plain picker row reachable by tap, and
+restorable out-of-band via the ``PROFILE <n>`` console setter (used ONLY in the
+finally-restore, never as the test oracle - the point is to prove the MENU
 writer).
 """
 
@@ -41,8 +41,6 @@ PLUS_CENTER = (PANEL_W - GUT - 12 - _BTN + _BTN // 2, _BY + _BTN // 2)
 SAVE_CENTER = (PANEL_W // 2, PANEL_H - GUT - MIN_TAP + MIN_TAP // 2)
 GEAR_TAP = (PANEL_W - MIN_TAP // 2, HEADER_H // 2)
 BACK_TAP = (20, HEADER_H // 2)
-
-_ROW_LABEL = "Screensaver"
 
 
 def _scr_model(device) -> str:
@@ -71,21 +69,6 @@ def _find_row(items, label):
     return -1
 
 
-def _row_minutes(text) -> int:
-    """'Screensaver  30 min' -> 30; 'Screensaver  off' -> 0."""
-    m = re.search(r"(\d+)", text)
-    return int(m.group(1)) if m else 0
-
-
-def _close_menu_eink(device):
-    for _ in range(4):
-        opened, _, _ = _menu_view(device)
-        if not opened:
-            return
-        device.enc_settle("LONG")
-        time.sleep(0.4)
-
-
 def _close_menu_tft(device):
     for _ in range(6):
         opened, _, _ = _menu_view(device)
@@ -93,72 +76,6 @@ def _close_menu_tft(device):
             return
         device.cmd(f"TAP {BACK_TAP[0]} {BACK_TAP[1]}", "TAP<", timeout=5.0)
         time.sleep(0.5)
-
-
-@pytest.mark.hil
-def test_menu_edit_persists_and_applies_encoder(device):
-    """E-ink/knob path: rotate to Screensaver, click, +1 step, click to save,
-    close - then the new value must read back on reopen AND after a reboot."""
-    if _scr_model(device) == "tft":
-        pytest.skip(
-            "encoder path needs the e-ink board (this one reports scr=tft) "
-            "- run test_menu_edit_persists_and_applies_tap here instead"
-        )
-
-    device.ensure_status_idle()
-    device.enc_double_click()
-    time.sleep(0.6)
-    opened, sel, items = _menu_view(device)
-    assert opened, "menu did not open on the injected double-click"
-    idx = _find_row(items, _ROW_LABEL)
-    assert idx >= 0, f"no '{_ROW_LABEL}' row in the menu: {items!r}"
-
-    orig_min = None
-    try:
-        # Navigate adaptively - by label, never by a hardcoded detent count.
-        for _ in range(3):  # correction rounds
-            opened, sel, items = _menu_view(device)
-            if sel == idx:
-                break
-            step = "CW" if idx > sel else "CCW"
-            for _ in range(abs(idx - sel)):
-                device.enc_settle(step)
-        opened, sel, items = _menu_view(device)
-        assert sel == idx, f"could not land on row {idx} ({items[idx]!r}); sel={sel}"
-        orig_min = _row_minutes(items[idx])
-        before = items[idx]
-
-        device.enc_settle("CLICK")  # enter the value editor
-        device.enc_settle("CW")  # one step up
-        device.enc_settle("CLICK")  # save (dirty -> persist + apply)
-        _close_menu_eink(device)
-
-        # Reopen: openSettingsMenu re-reads the STORE - a durable readback.
-        device.enc_double_click()
-        time.sleep(0.6)
-        _, _, items2 = _menu_view(device)
-        after = items2[_find_row(items2, _ROW_LABEL)]
-        assert after != before, (
-            f"menu edit did not stick: row still {after!r} - the persist/apply "
-            "drain (settleMenuAfterMutation) never ran for the encoder path"
-        )
-        _close_menu_eink(device)
-
-        # Reboot: the value must come back from NVS.
-        device.reset()
-        device.ensure_status_idle()
-        device.enc_double_click()
-        time.sleep(0.6)
-        _, _, items3 = _menu_view(device)
-        rebooted = items3[_find_row(items3, _ROW_LABEL)]
-        assert _row_minutes(rebooted) == _row_minutes(after), (
-            f"survived the session but not the reboot: {after!r} -> {rebooted!r}"
-        )
-    finally:
-        _close_menu_eink(device)
-        if orig_min is not None:
-            device.cmd(f"SAVER {orig_min}", "SAVER<", timeout=5.0)
-        device.ensure_status_idle()
 
 
 # "Battery mode" row geometry (deterministic, from lib/core/src/tft_screens.cpp
@@ -173,17 +90,14 @@ _BM_LABEL = "Battery mode"
 def test_menu_edit_persists_and_applies_tap(device):
     """Touch path: tap the "Battery mode" row (page 1 - Screensaver sits on
     page 2, which TAP injection cannot reach: there is no drag inject, and the
-    two-column menu is page-aligned), tap [+], tap Save, Back out - then the
-    same persist + reboot assertions as the encoder variant.
+    two-column menu is page-aligned), tap [+], tap Save, Back out - then assert
+    the edit persisted and survived a reboot.
 
     Restore goes through the PROFILE console command, which routes through the
     SAME selector path the menu uses - so the restore cannot mask a broken menu
     writer (the thing under test)."""
     if _scr_model(device) != "tft":
-        pytest.skip(
-            "tap path needs the touch board (this one is not scr=tft) "
-            "- run test_menu_edit_persists_and_applies_encoder here instead"
-        )
+        pytest.skip("tap path needs the touch board (this one is not scr=tft)")
 
     device.cmd(f"TAP {GEAR_TAP[0]} {GEAR_TAP[1]}", "TAP<", timeout=5.0)  # gear
     time.sleep(0.7)

@@ -14,7 +14,6 @@ Serial contract this helper speaks (device -> host lines it matches):
   * ping:                   ``PING`` -> ``PONG``
   * status:                 ``STATUS`` -> ``STATUS mode=.. wifi=.. ip=.. heap=.. up=..``
   * render:                 ``RENDER?`` -> ``RENDER screen=.. posture=.. ring=<dark|single|seg:N> bright=..``
-  * input echo:             ``INPUTLOG on`` -> ``ENC <CW|CCW|CLICK|LONG> ...``
   * selftest:               ``TEST <name>`` -> ``RESULT <name> PASS|FAIL|SKIP <k=v>..``
   * wifi reason:            ``WIFI_DISCONNECTED reason=<n>``
   * wifi ip:                ``WIFI_GOT_IP <ip>``
@@ -266,7 +265,7 @@ class Device:
         ser = self._require_open()
         soft = False
         # Three PING attempts: a reply can be delayed past one window when the
-        # device is mid e-ink refresh burst or the first attach was marginal.
+        # device is mid refresh burst or the first attach was marginal.
         for _ in range(3):
             try:
                 self.drain(quiet=0.1)
@@ -455,16 +454,6 @@ class Device:
         return self.expect_re(pattern, timeout=timeout)
 
     # -- high-level affordances ---------------------------------------------
-    def enc_double_click(self) -> None:
-        """Inject a DOUBLE-CLICK: two ENC CLICK events queued back-to-back so the
-        firmware's 350 ms pair-window sees them on consecutive drains. This is the
-        menu-open gesture in BOTH modes since the voice UX landed (Orchestrator
-        long-press = hold-to-talk; test_l3's old LONG-opens-menu was stale)."""
-        self.send("ENC CLICK")
-        self.send("ENC CLICK")
-        self.expect_re(r"ENC< CLICK", timeout=3.0)
-        self.expect_re(r"ENC< CLICK", timeout=3.0)
-
     def webtok(self) -> str:
         """``WEBTOK?`` -> the per-device 96-bit web auth token (hex). Raises on
         timeout. Used by Net to token-gate every /api request (owner-batch-2)."""
@@ -558,31 +547,9 @@ class Device:
             timeout=timeout,
         )
 
-    def inputlog(self, on: bool = True) -> None:
-        self.send(f"INPUTLOG {'on' if on else 'off'}")
-
-    # Menu paint takes one fast-B/W refresh (~2.2 s) and menu repaints coalesce
-    # on the menu's own busy window, so a nav step needs a settle before RENDER?
-    # reflects it. Matches the measured NIMBUS_EPD_FASTBW_MS with headroom.
+    # Menu paint plus repaint coalescing on the menu's own busy window means a
+    # nav step needs a short settle before RENDER? reflects it.
     MENU_SETTLE = 2.6
-
-    def enc(self, event: str) -> None:
-        """Inject a SYNTHETIC encoder event (NIMBUS_TEST ``ENC`` command) so the
-        settings menu is driveable with no physical knob. event in
-        CW|CCW|CLICK|LONG; the firmware acks ``ENC< <event>``."""
-        ev = event.upper()
-        assert ev in ("CW", "CCW", "CLICK", "LONG"), ev
-        self.cmd(f"ENC {ev}", f"ENC< {ev}", timeout=3.0)
-
-    def enc_settle(self, event: str, settle: float = MENU_SETTLE) -> None:
-        """enc() then wait one menu-refresh window so the next render() is fresh."""
-        self.enc(event)
-        time.sleep(settle)
-
-    def sw(self, timeout: float = 3.0) -> int:
-        """``SW?`` -> raw debounced encoder-switch level (0/1). Isolates a physical
-        button/GPIO48 fault from a decode/render fault."""
-        return int(self.cmd_re("SW?", r"SW (\d)", timeout=timeout).group(1))
 
     def ble_state(self, timeout: float = 3.0) -> "tuple[int, int]":
         """``BLE?`` -> (enabled, connected). enabled=1 means advertising-enabled
@@ -594,17 +561,18 @@ class Device:
     def ensure_status_idle(self, timeout: float = 25.0) -> None:
         """Soft precondition for menu tests: get the panel to StatusIdle WITHOUT a
         reset (consecutive resets race the CDC reopen + WiFi rejoin - the
-        documented flake). Backs out of an open menu with LONG, dismisses the
-        screensaver/other screens with a CLICK, then waits for screen 0."""
+        documented flake). Taps Back (top-left header) to back out of an open
+        menu, taps the panel center to dismiss the screensaver/other screens,
+        then waits for screen 0."""
         deadline = time.time() + timeout
         while time.time() < deadline:
             r = self.render()
             if r.screen == 0:
                 return
-            if r.screen == 3:  # Menu: LONG backs out (Main -> close)
-                self.enc("LONG")
-            else:  # Screensaver/detail/...: click wakes to status
-                self.enc("CLICK")
+            if r.screen == 3:  # Menu: a Back tap (top-left header) backs out
+                self.cmd("TAP 20 22", "TAP<", timeout=5.0)
+            else:  # Screensaver/detail/...: a tap wakes to status
+                self.cmd("TAP 160 120", "TAP<", timeout=5.0)
             time.sleep(self.MENU_SETTLE)
         raise ExpectTimeout("StatusIdle precondition", self._transcript)
 
@@ -619,17 +587,6 @@ class Device:
                 return last
             time.sleep(0.4)
         raise ExpectTimeout(f"screen={screen} (last {last!r})", self._transcript)
-
-    def collect_enc(self, seconds: float) -> List[str]:
-        """Collect ``ENC ...`` lines for ``seconds`` (used by the manual encoder
-        test after ``INPUTLOG on``)."""
-        out: List[str] = []
-        deadline = time.time() + seconds
-        while time.time() < deadline:
-            line = self._readline(deadline)
-            if line and line.startswith("ENC "):
-                out.append(line)
-        return out
 
     def turn(self, text: str) -> None:
         """``TURN <text>`` - fire one orchestrator turn (Orchestrator mode)."""
