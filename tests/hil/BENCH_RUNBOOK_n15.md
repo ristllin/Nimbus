@@ -53,14 +53,24 @@ side effect, one of:
 The following "lag" is the reboot + relay reconnect/backoff cycle
 (`applyCloseCodePolicy`).
 
-### Proposed minimal fix (validate on bench before landing)
-Keep the frozen invariants (single TLS slot, no on-device concurrency). The hazard is the
-HOLD of the one slot for a 12 s TLS connect crossing the 8 s watchdog while a fed task
-waits. Candidate: bound the relay pairing / re-mint TLS connect (and any main-loop
-`acquireWork`) below the watchdog budget so a contended slot fails GRACEFULLY (returns the
-error, retried on the next relay tick) instead of parking a fed task past 8 s. Do not raise
-the slot count. Confirm on bench that the reset disappears and pairing / re-mint still
-succeed under normal timing.
+### Fix (IMPLEMENTED - lane N15, second handback)
+Keeps the frozen invariants (single TLS slot, no on-device concurrency). `httpsPostJson`
+now bounds its WHOLE slot-hold (connect AND read) to a budget derived from the watchdog:
+`nimbus::cloud::relaySlotHoldBudgetMs(kTaskWdtTimeoutMs)` = 8000 - 2500 = **5500 ms**, so
+the slot is never held past ~5.5 s, leaving 2.5 s for a fed waiter to take the freed slot
+and reset the dog before the 8 s panic. `kTaskWdtTimeoutMs` is the SINGLE source used by
+both the watchdog config (`main.cpp`) and the budget, so they cannot drift. The budget math
+is host-tested (`test/test_relay_timing`). Over budget -> the pairing / re-mint returns its
+error and retries on the next relay tick; never a reset.
+
+**Timing instrumentation (device evidence):** every `httpsPostJson` now logs to the agent
+log (GET /api/log):
+```
+relay: httpsPost held=<ms> budget=5500ms wdt=8000ms status=<n> ok
+```
+`ok` means the hold stayed within budget; an `OVER-BUDGET` line would be the old bug
+signature. Bench verify: pair / re-mint over the relay and confirm every line reads `ok`
+and no reset follows a forced 504.
 
 ### Bench procedure (manual)
 1. Lock the port; USB-reset-clear if the console is wedged (CUM-141 pyusb recipe in
@@ -96,15 +106,24 @@ display flip set from `agent::store::tftFlip()` (boot: `main.cpp`; live: the set
 the web toggle, and the `TFTFLIP` console command). A 180 reversal means the touch mirror
 and the display flip DISAGREE: taps land at the diagonally opposite point.
 
-### Two candidate states (bench decides which)
-- The panel is effectively flipped but `flipped()` is FALSE, so the mirror never runs
-  (taps read 180 off). Fix: make the persisted `tftFlip` match the true mounting.
-- `flipped()` is TRUE but the driver calibration already accounts for the flip, so the
-  mirror DOUBLE-applies. Fix: drop the mirror for that calibration.
+### Fix (IMPLEMENTED - lane N15, second handback)
+Root cause is TWO sources of truth for the 180: the touch calibration's invert flags AND
+the runtime flip mirror could each try to handle it, so they could double-apply (taps 180
+out) or disagree. The fix makes the DISPLAY FLIP the single source of truth: the 180 is now
+applied by one pure, host-tested function `nimbus::touch::orientTouch(point, displayFlipped,
+w, h)` (`lib/core/.../touch_cal.cpp`, tests in `test/test_touch_cal`), which `touch_input.cpp`
+calls instead of the inline mirror. The calibration maps ONLY the mount (canonical,
+un-flipped landscape); the flip is applied there exactly once, so it can never double-apply.
 
-This is not decidable host-side - it depends on the physical mounting and the persisted
-`tftFlip` on each board - so no blind edit is made. The console inject path bypasses this
-branch, so a physical tap is required.
+**Reachable calibration path (already user-facing, confirmed):** the web Device tab exposes
+a **Display flip** toggle (flips display + touch together now, applies immediately), a
+**Touch calibration** field (minX,maxX,minY,maxY,flags), and a **Touch orientation** control
+for the capacitive panel ("toggle these until a tap lands where you touch"); the console has
+`TFTFLIP` and `TOUCHCAL`. So a 180 is correctable on-device with no reflash.
+
+### Bench check (physical taps, confirms the field report is closed)
+The polarity of a given mount is still a physical fact; the console inject path bypasses the
+orient branch, so verify with real taps:
 
 ### Bench procedure (manual, physical taps)
 1. Lock the port; flash `test` firmware.
