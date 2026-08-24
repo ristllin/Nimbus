@@ -42,4 +42,30 @@ bool parseCal(const std::string& s, Cal& out);
 // The inverse, for round-tripping through NVS and the web UI.
 std::string formatCal(const Cal& c);
 
+// ============================================================================
+// Orientation (CUM-160): reconciling touch with the display's 180 flip.
+//
+// A calibrated touch point is in the CANONICAL (un-flipped) landscape frame - the
+// Cal above maps the controller's fixed axes onto that frame and NOTHING else. The
+// panel can be turned 180 (which end of the landscape is up), a display-only MADCTL
+// change tracked by store::tftFlip. If touch did not follow, taps would land at the
+// diagonally opposite point - the field-reported "touch reversed 180".
+//
+// The rule this function enforces: the DISPLAY FLIP is the SINGLE source of truth
+// for the 180. It is applied here, once, on top of the calibration - never baked
+// into the Cal (which would double-apply against this and put taps 180 out). Both
+// the device poll (src/hw/touch_input.cpp) and any host test go through this one
+// function, so the two can never drift.
+// ============================================================================
+
+struct Point {
+  int16_t x = -1, y = -1;
+  bool down = false;
+};
+
+// Apply the 180 display flip - and ONLY the 180 - to a calibrated landscape point.
+// `w`,`h` are the landscape screen dimensions. A point that is not down passes
+// through untouched (there is no live coordinate to mirror).
+Point orientTouch(Point p, bool displayFlipped, int16_t w, int16_t h);
+
 }  // namespace nimbus::touch
