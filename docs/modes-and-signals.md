@@ -7,7 +7,7 @@ you choose; the third is the device's job:
 | Setting | Choices | What it controls |
 |---|---|---|
 | **Battery mode** | Dark · Balanced · Full | How much light the device shows, and how much power it spends doing it |
-| **Sound** | level Off / Low / Medium / High, voice pack Terran / Protoss / Zerg, volume 0–100 | Voice clips on device events |
+| **Sound** | level Off / Low / Medium / High, sound theme (Pulse), volume 0-100 | Sound clips on device events |
 | **Operating mode** | Notifier · Orchestrator | What drives the device: your AI coding sessions, or the hosted agent |
 
 They are independent. A silent device can still be at Full light; a Dark device
@@ -165,7 +165,7 @@ breathes red at full brightness in every mode, including Dark.
 ## 3. Sound - independent of everything above
 
 Set under Settings > Sound (device) or Settings → Sound (web): a level per
-**operating mode**, a voice pack (Terran / Protoss / Zerg), and a master
+**operating mode**, a sound theme (**Pulse**), and a master
 volume. Notifier defaults to **Off**, Orchestrator to **Medium** - Notifier
 receives a flood of session events, so its clip table is sparser at every
 level. Sound pauses automatically while the microphone is recording, and it

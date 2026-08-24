@@ -45,7 +45,7 @@ Everything below this section covers the **Solide S3** board. The all-in-one
 carries the same peripherals on a different, fixed pinout, covered in full on its
 own page.
 
-## First flash of a fresh board - use the UART port
+## First flash of a fresh board: use the UART port
 
 ⚠ **The DevKitC-1 has TWO USB-C ports and they are not interchangeable for
 flashing.** Getting this wrong on a factory-fresh board looks like a dead board.

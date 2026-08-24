@@ -24,6 +24,7 @@ Three other generators read this tree - keep them in sync when you edit:
 | File | Covers |
 |---|---|
 | `quick-start/what-you-need.md` | Parts, tools, and prerequisites |
+| `quick-start/computer-setup.md` | Set up your computer for the command-line flasher (terminal, Python, PlatformIO, drivers) |
 | `quick-start/flash.md` | Flashing the firmware (browser flasher or the UART port) |
 | `quick-start/setup-wizard.md` | Joining the setup network and walking the wizard |
 | `quick-start/first-conversation.md` | First Orchestrator conversation |
@@ -48,7 +49,14 @@ Three other generators read this tree - keep them in sync when you edit:
 | `notifier-status-language.md` | Session-status → color/animation map (CI-checked against code) |
 | `sfx-map.md` | Audio state language (**generated** - never hand-edit) |
 | `connectors.md` | External tools per provider |
+| `mcp.md` | The device as an MCP client and server |
 | `people-and-privacy.md` | Roles, quotas, and what stays private |
+
+### Cloud
+| File | Covers |
+|---|---|
+| `cloud-relay.md` | Cloud access: reach the device from anywhere (remote tunnel) |
+| `cloud/cumulo-key.md` | Use your Cumulo key on the device and from your own code |
 
 ### How it works
 | File | Covers |

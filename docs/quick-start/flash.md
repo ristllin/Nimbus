@@ -213,4 +213,4 @@ settings are unaffected.
 
 ---
 
-*How it works → [Hardware reference: first flash of a fresh board](../hardware.md#first-flash-of-a-fresh-board--use-the-uart-port)*
+*How it works → [Hardware reference: first flash of a fresh board](../hardware.md#first-flash-of-a-fresh-board-use-the-uart-port)*

@@ -141,7 +141,7 @@ The SD is **not** on the TFT's SPI bus - they share only 3.3 V and ground.
 | GND | → | **GND** (common) |
 | DIN | → | GPIO **21** (a 330 Ω series resistor on DIN is good practice) |
 
-### Audio - MAX98357A amp + I²S mic
+### Audio - MAX98357A amp + I²S mic {#audio-wiring}
 
 Two separate breakouts. The amp runs at reduced volume on 3.3 V (fine as a
 status speaker); use the 5 V bus for more volume - but never share that VCC
@@ -220,7 +220,7 @@ The whole point of the board is that **nothing is soldered down permanently**. T
 
 ![ESP32-S3-DevKitC-1 N16R8 dev board with a loose black female header strip at top left](photos/esp32-s3.webp)
 
-The brain is the **ESP32-S3-DevKitC-1 N16R8** - the wide black board with the shielded ESP32-S3-N16R8 module and two USB-C ports at the bottom edge. The two ports are not interchangeable: one is the UART bridge and one is the native USB. Flash a fresh board over the **UART** port - see [First flash of a fresh board](../hardware.md#first-flash-of-a-fresh-board--use-the-uart-port) - before you commit it to the carrier. The pin numbers silkscreened down both long edges (3V3, RST, 4, 5, 6 ... on one side; GND, TX, RX, 1, 2, 42 ... on the other) are the same numbers the [Wiring](#wiring) tables use. Note the loose black header strip in the corner of the photo: that is the part you solder to the carrier, not to the DevKit.
+The brain is the **ESP32-S3-DevKitC-1 N16R8** - the wide black board with the shielded ESP32-S3-N16R8 module and two USB-C ports at the bottom edge. The two ports are not interchangeable: one is the UART bridge and one is the native USB. Flash a fresh board over the **UART** port - see [First flash of a fresh board](../hardware.md#first-flash-of-a-fresh-board-use-the-uart-port) - before you commit it to the carrier. The pin numbers silkscreened down both long edges (3V3, RST, 4, 5, 6 ... on one side; GND, TX, RX, 1, 2, 42 ... on the other) are the same numbers the [Wiring](#wiring) tables use. Note the loose black header strip in the corner of the photo: that is the part you solder to the carrier, not to the DevKit.
 
 #### The modules
 
@@ -307,7 +307,7 @@ The ring must open at one spot so the pigtail can drop straight through the case
 
 ![Small round 4 ohm speaker in a square frame with a gold cone and a twisted red-and-black lead pair, ends tinned](photos/speaker.webp)
 
-The speaker is the small 4 Ω full-range driver in a square frame. It comes with a twisted red/black lead pair, tinned at the free ends. This is a bare driver with no polarity that matters for a mono status tone, but keep the pair twisted to hold noise down. Land the two leads on the amp's speaker output per the [Audio wiring](#audio---max98357a-amp--i²s-mic) section - the driver connects to the MAX98357A output, not to any ESP32 pin or rail directly.
+The speaker is the small 4 Ω full-range driver in a square frame. It comes with a twisted red/black lead pair, tinned at the free ends. This is a bare driver with no polarity that matters for a mono status tone, but keep the pair twisted to hold noise down. Land the two leads on the amp's speaker output per the [Audio wiring](#audio-wiring) section - the driver connects to the MAX98357A output, not to any ESP32 pin or rail directly.
 
 **4. Mount the speaker in the case.**
 
@@ -375,7 +375,7 @@ After the pack is assembled and running, charge it fully through the BMS USB-C p
 
 ### Stack the electronics and close the case
 
-Do the full electrical bring-up **before** anything goes into the case. Once the boards are stacked and screwed down, the pin headers and the self-test console are hard to reach - so flash and pass the self-test on the bench first, following [Assembly order](#assembly-order) steps 1-5: first flash over the UART port ([First flash of a fresh board](../hardware.md#first-flash-of-a-fresh-board--use-the-uart-port)), then `TEST all` on the self-test console with `led`/`screen`/`sd`/`memory`/`input` all PASS. A board that boots clean loose on the bench is the only board worth closing up.
+Do the full electrical bring-up **before** anything goes into the case. Once the boards are stacked and screwed down, the pin headers and the self-test console are hard to reach - so flash and pass the self-test on the bench first, following [Assembly order](#assembly-order) steps 1-5: first flash over the UART port ([First flash of a fresh board](../hardware.md#first-flash-of-a-fresh-board-use-the-uart-port)), then `TEST all` on the self-test console with `led`/`screen`/`sd`/`memory`/`input` all PASS. A board that boots clean loose on the bench is the only board worth closing up.
 
 ![Assembled Nimbus electronics seen from above: ESP32-S3-N16R8 DevKit at top with dual USB-C, the DC-DC buck converter with its two electrolytic caps and inductor at lower left, the purple MAX98357A amp and INMP441 mic in the center, the microSD module with a card seated at right, and green screw terminals along the edges](photos/electronics-stack.webp)
 
@@ -432,7 +432,7 @@ above; the same shots gathered on one page are the [build photos](build-photos.m
 2. **Bench-check the bare DevKit.** Flash it over the **UART** USB-C port - on
    a factory-fresh board the native USB port has no path into download mode,
    so getting this wrong looks like a dead board. See
-   [First flash of a fresh board](../hardware.md#first-flash-of-a-fresh-board--use-the-uart-port).
+   [First flash of a fresh board](../hardware.md#first-flash-of-a-fresh-board-use-the-uart-port).
 3. **Wire the TFT module** per the table above, then run the standalone
    bring-up sketch - it exercises the panel, colors, backlight, and raw touch
    without the full firmware:

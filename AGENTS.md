@@ -258,6 +258,17 @@ sentence case, verb-led, ≤5 words; failures name the next step.
 | restart | reboot (in user copy) |
 | erase | wipe, nuke |
 | the display / the screen (user copy) | the panel, the TFT (in user copy) |
+| sound theme: Pulse | voice pack, Terran / Protoss / Zerg |
+| provider, Providers | vendor, backend (in user copy) |
+| routing, Router | dispatch, egress (in labels) |
+| pair, Pairing | claim, adopt, link (in labels) |
+| usage, Usage | consumption, activity |
+
+The last block is the cross-surface vocabulary from the IA naming proposal
+(section 4.4), binding on the cloud surfaces too. On the portal and admin, also:
+Credits (not wallet or a balance-as-page-name), Plans (not Subscriptions in nav;
+fine in body copy and code), Virtual Nimbus / Instances (not virtual device / VM),
+Cloud link code (not 8-character code or claim code).
 
 ---
 

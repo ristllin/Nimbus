@@ -17,6 +17,7 @@ const sidebars = {
       collapsed: false,
       items: [
         'quick-start/what-you-need',
+        'quick-start/computer-setup',
         'quick-start/flash',
         'quick-start/setup-wizard',
         'quick-start/first-conversation',
@@ -46,8 +47,18 @@ const sidebars = {
         'guides/led-ux',
         'guides/sfx-map',
         'guides/connectors',
+        'guides/mcp',
         'guides/people-and-privacy',
         'guides/notifier-status-language',
+      ],
+    },
+    {
+      type: 'category',
+      label: 'Cloud',
+      collapsed: true,
+      items: [
+        'cloud/cloud-access',
+        'cloud/cumulo-key',
       ],
     },
     {

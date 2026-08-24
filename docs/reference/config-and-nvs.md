@@ -57,6 +57,10 @@ gracefully instead of firing a doomed TLS call.
 | `custKey` | string | `""` | Custom endpoint key | No - write-only |
 | `custConv` | string | `"openai"` | Custom wire convention: `openai\|mistral\|anthropic` | Yes |
 | `custModel` | string | `""` | Custom endpoint model | Yes |
+| `zaiKey` | string | `""` | Z.ai (GLM) API key | No - write-only |
+| `zaiBase` | string | `""` | Z.ai probed working host (`api.z.ai \| open.bigmodel.cn`) | Yes |
+| `cumuloKey` | string | `""` | Cumulo router key (one key, every upstream); see [Use your Cumulo key](../cloud/cumulo-key.md) | No - write-only |
+| `cumuloBase` | string | `""` | Cumulo router base URL/host; `""` uses the built-in default (`app.cumulo-nimbus.ai`) | Yes |
 
 Writing or clearing a provider key **resets that provider's verify cache** to
 `-1, 0` (couldn't-verify / never), so a swapped key can't ride the old verdict.
@@ -96,7 +100,41 @@ Default per-provider models: `OPENAI_MODEL` = `gpt-5.5`, `ANT_MODEL` =
 |---|---|---|---|---|
 | `tgToken` | string | `""` | Telegram bot token | **No - WRITE-ONLY.** UI exposes only `hasTg` (a boolean); the token is never read back into the UI |
 | `tgAllow` | string | `""` | Allowlisted chat ids (comma-separated) | Yes |
+| `tgOwners` | string | `""` | Owner chat ids (comma-separated subset of `tgAllow`); empty means the first allow entry is owner. | Yes |
+| `tgNames` | string | `""` | Display-name sidecar for known chats (`id:name,...`). | Yes |
+| `tgBotName` | string | `""` | The connected bot's `@username` (from getMe), display only. | Yes |
+| `tgPublic` | bool | `false` | Open access: accept anyone who messages the bot. Default off. | Yes |
 | `tgOffset` | int | `0` | Telegram long-poll offset | Yes (internal) |
+
+### Cloud access / relay (`src/agent/store.cpp`)
+
+Reaching the device from anywhere through CumuloNimbus. Orchestrator-only; ships
+dark (off). See [Cloud access](../cloud-relay.md) for the pairing flow and the
+security model.
+
+| Key | Type | Default | Holds | Read back? |
+|---|---|---|---|---|
+| `cloudOptIn` | bool | `false` | Cloud relay enabled. | Yes |
+| `cloudDevId` | string | `""` | Cloud device id assigned at pairing. | Yes |
+| `cloudCred` | string | `""` | Cloud-minted device credential (bearer); wiped on unpair. | No - write-only |
+| `cloudHost` | string | `app.cumulo-nimbus.ai` | Relay host. | Yes |
+| `cloudName` | string | `""` | Paired device display name for the web status line. | Yes |
+
+### OTA / update engine (`src/agent/store.cpp`)
+
+Persisted across the install reboot so the device can validate a fresh image and
+roll back if it fails. See [OTA updates](../ota.md).
+
+| Key | Type | Default | Holds | Read back? |
+|---|---|---|---|---|
+| `otaPend` | bool | `false` | A fresh image is awaiting first-boot validation. | Yes (internal) |
+| `otaBoots` | int | `0` | Boot attempts since the slot flip. | Yes (internal) |
+| `otaPrev` | string | `""` | Previous app slot label (`app0`/`app1`) for rollback. | Yes (internal) |
+| `otaLast` | string | `""` | Last OTA outcome (`ok vX` / `rollback vX` / ...). | Yes |
+| `autoUpd` | bool | `false` | Auto-install a pending update in an idle window. | Yes |
+| `otaNotif` | string | `""` | Last version already Telegram-notified (no re-nag). | Yes (internal) |
+| `otaType` | string | board-derived | Typed-OTA device slug (`nimbus-tft`, `freenove-28`, ...) so a board is only offered a matching image. | Yes |
+| `otaNotes` | string | `""` | `"ver\|notes"` carried across the install reboot. | Yes (internal) |
 
 ### Voice, LED, and misc (`src/agent/store.cpp`)
 
@@ -109,6 +147,17 @@ Default per-provider models: `OPENAI_MODEL` = `gpt-5.5`, `ANT_MODEL` =
 | `ttsEnabled` | bool | `false` | Spoken-reply enable | Yes |
 | `theme` | string | `"teal"` | LED color theme slug | Yes |
 | `ledBright` | int | `128` | LED brightness (`ledBright` NVS key) | Yes |
+| `sfxLvlN` | int | `0` (Off) | Sound-effect level in Notifier mode: `0` Off / `1` Low / `2` Medium / `3` High. | Yes |
+| `sfxLvlO` | int | `2` (Medium) | Sound-effect level in Orchestrator mode (same scale). | Yes |
+| `sfxTheme` | string | `"pulse"` | Sound theme slug. `pulse` is the only shipping theme; an unknown value is coerced back to `pulse` on write. | Yes |
+| `sfxVol` | int | `50` | Master speaker volume, `0..100`. | Yes |
+| `saverMin` | int | `-1` (mode default) | Screensaver idle threshold in minutes; `0` = off, unset (`-1`) uses the battery-mode default (5 min). | Yes |
+| `webTok` | string | gen on first use | Per-device web/MCP auth token behind the LAN surface. | No - printed only over UART (`WEBTOK?`) |
+| `apPass` | string | gen on first use | Per-device setup-network passphrase, shown on the setup screen. | Yes (on-device only) |
+| `codeSbx` | bool | `false` | Code sandbox toggle (Assistant > Tools). | Yes |
+| `orchPromptV2` | bool | `false` | Use the simplified v2 system prompt (A/B flag). | Yes |
+| `fetchPol` | int | `1` (ask) | Download trust for `files.fetch`: `0` off / `1` ask per link / `2` scan then keep / `3` full trust (Assistant > Safety > Downloads). | Yes |
+| `onbrded` | bool | `false` | First-run onboarding completed. Plain NVS bool (survives a reboot with no SD), not the profile override blob. | Yes |
 | `scrModel` | string | `"eink"` (legacy) | Display type (`eink\|tft`), boot-applied. Exempt from Revert to Defaults (hardware identity). `"tft"` is the only supported value; `"eink"` is a frozen legacy value that boots an unsupported-display notice, so setup writes `tft`. On all-in-one boards it is **fixed to `tft`** and the selector is locked - see the note below. | Yes |
 | `devTz` | string | `""` (= UTC) | POSIX timezone for daily/weekly routines + the device clock display (Settings → Mode & identity). Applies immediately; wall-clock routines rebase budget-neutrally. | Yes |
 | `dreamScrHash` | string | `""` | fnv64-hex of the scratchpad after the last dream - the quiet-night skip baseline. Device-managed. | Yes |
