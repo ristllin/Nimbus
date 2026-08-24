@@ -76,15 +76,54 @@ static void test_sig_message_golden() {
   char buf[160];
   const char* sha =
       "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-  size_t n = buildSigMessage(buf, sizeof buf, "v2.11.0", "esp32s3", sha);
+  size_t n = buildSigMessage(buf, sizeof buf, "v4.3.0", "nimbus-tft", sha);
   // GOLDEN - tools/make_manifest.py --print-message must produce these bytes.
+  // Byte-locked to tools/test_make_manifest.py::test_print_message_golden_v2.
   const char* want =
-      "nimbus-ota-v1\nv2.11.0\nesp32s3\n"
+      "nimbus-ota-v2\nv4.3.0\nnimbus-tft\n"
       "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n";
   TEST_ASSERT_EQUAL_UINT(strlen(want), n);
   TEST_ASSERT_EQUAL_STRING(want, buf);
   // too-small buffer refuses cleanly
-  TEST_ASSERT_EQUAL_UINT(0, buildSigMessage(buf, 20, "v2.11.0", "esp32s3", sha));
+  TEST_ASSERT_EQUAL_UINT(0, buildSigMessage(buf, 20, "v4.3.0", "nimbus-tft", sha));
+}
+
+static void test_type_allowed_for_board() {
+  // Solide build: only nimbus-tft.
+  TEST_ASSERT_TRUE(typeAllowedForBoard("nimbus-tft", false));
+  TEST_ASSERT_FALSE(typeAllowedForBoard("freenove-28", false));
+  // Freenove build: only the freenove sizes.
+  TEST_ASSERT_TRUE(typeAllowedForBoard("freenove-28", true));
+  TEST_ASSERT_TRUE(typeAllowedForBoard("freenove-35", true));
+  TEST_ASSERT_TRUE(typeAllowedForBoard("freenove-40", true));
+  TEST_ASSERT_FALSE(typeAllowedForBoard("nimbus-tft", true));
+  // Unknown / legacy / untyped slugs never match either family.
+  TEST_ASSERT_FALSE(typeAllowedForBoard("", false));
+  TEST_ASSERT_FALSE(typeAllowedForBoard("", true));
+  TEST_ASSERT_FALSE(typeAllowedForBoard(nullptr, false));
+  TEST_ASSERT_FALSE(typeAllowedForBoard("esp32s3", false));   // legacy build tag
+  TEST_ASSERT_FALSE(typeAllowedForBoard("freenove-99", true));
+}
+
+static void test_derive_device_type() {
+  char b[24];
+  // Solide + TFT -> nimbus-tft.
+  TEST_ASSERT_EQUAL_UINT(10, deriveDeviceType(b, sizeof b, false, true));
+  TEST_ASSERT_EQUAL_STRING("nimbus-tft", b);
+  // Solide + e-ink -> untyped (frozen, no updates).
+  TEST_ASSERT_EQUAL_UINT(0, deriveDeviceType(b, sizeof b, false, false));
+  TEST_ASSERT_EQUAL_STRING("", b);
+  // Freenove -> base size default.
+  TEST_ASSERT_EQUAL_UINT(11, deriveDeviceType(b, sizeof b, true, true));
+  TEST_ASSERT_EQUAL_STRING("freenove-28", b);
+  // Whatever a derived type is, it must be one this board is allowed to run.
+  deriveDeviceType(b, sizeof b, false, true);
+  TEST_ASSERT_TRUE(typeAllowedForBoard(b, false));
+  deriveDeviceType(b, sizeof b, true, true);
+  TEST_ASSERT_TRUE(typeAllowedForBoard(b, true));
+  // Too-small buffer refuses cleanly.
+  TEST_ASSERT_EQUAL_UINT(0, deriveDeviceType(b, 4, false, true));
+  TEST_ASSERT_EQUAL_STRING("", b);
 }
 
 // --- manifest ---------------------------------------------------------------
@@ -99,21 +138,21 @@ static void makeManifestJson(char* buf, size_t cap, const char* schema,
   snprintf(buf, cap,
            "{\"schema\":%s,\"version\":\"v2.11.0\",\"build\":\"v2.11.0-0-gabc\","
            "\"notes\":\"test release\",\"minVersion\":\"%s\",\"variants\":{"
-           "\"esp32s3\":{\"url\":\"%s\",\"size\":%s,\"sha256\":\"%s\","
+           "\"nimbus-tft\":{\"url\":\"%s\",\"size\":%s,\"sha256\":\"%s\","
            "\"sig\":\"%s\"},"
-           "\"test\":{\"url\":\"https://x/y.bin\",\"size\":3000000,"
+           "\"freenove-28\":{\"url\":\"https://x/y.bin\",\"size\":3000000,"
            "\"sha256\":\"%s\",\"sig\":\"%s\"}}}",
            schema, minVersion, url, size, sha, sig, kSha64, "TWFuTWFuTWFu");
 }
 
 static void test_manifest_valid() {
   char json[900];
-  makeManifestJson(json, sizeof json, "1",
+  makeManifestJson(json, sizeof json, "2",
                    "https://github.com/x/y/releases/download/v2.11.0/fw.bin",
                    "3014656", kSha64, "TWFuTWFuTWFu");
   ManifestInfo m;
   const char* err = nullptr;
-  TEST_ASSERT_TRUE(parseManifest(json, strlen(json), "esp32s3", m, &err));
+  TEST_ASSERT_TRUE(parseManifest(json, strlen(json), "nimbus-tft", m, &err));
   TEST_ASSERT_EQUAL_STRING("v2.11.0", m.version);
   TEST_ASSERT_EQUAL_STRING("test release", m.notes);
   TEST_ASSERT_EQUAL_UINT32(3014656u, m.v.size);
@@ -121,10 +160,14 @@ static void test_manifest_valid() {
   TEST_ASSERT_EQUAL_HEX8(0x01, m.v.sha256[0]);
   TEST_ASSERT_EQUAL_HEX8(0xef, m.v.sha256[31]);
   TEST_ASSERT_EQUAL_UINT8(9, m.v.sigLen);  // "ManManMan"
-  // the other variant parses independently
+  // the other typed variant parses independently
   ManifestInfo t;
-  TEST_ASSERT_TRUE(parseManifest(json, strlen(json), "test", t, &err));
+  TEST_ASSERT_TRUE(parseManifest(json, strlen(json), "freenove-28", t, &err));
   TEST_ASSERT_EQUAL_UINT32(3000000u, t.v.size);
+  // an untyped device ("") matches no variant -> "no update"
+  ManifestInfo u;
+  TEST_ASSERT_FALSE(parseManifest(json, strlen(json), "", u, &err));
+  TEST_ASSERT_EQUAL_STRING("schema", err);  // empty variant rejected up front
 }
 
 static void test_manifest_uppercase_sha_canonicalized() {
@@ -135,10 +178,10 @@ static void test_manifest_uppercase_sha_canonicalized() {
   }
   upper[64] = '\0';
   char json[900];
-  makeManifestJson(json, sizeof json, "1", "https://x/fw.bin", "3014656",
+  makeManifestJson(json, sizeof json, "2", "https://x/fw.bin", "3014656",
                    upper, "TWFuTWFuTWFu");
   ManifestInfo m;
-  TEST_ASSERT_TRUE(parseManifest(json, strlen(json), "esp32s3", m));
+  TEST_ASSERT_TRUE(parseManifest(json, strlen(json), "nimbus-tft", m));
   TEST_ASSERT_EQUAL_STRING(kSha64, m.v.shaHex);  // lowercased for the message
 }
 
@@ -147,47 +190,52 @@ static void test_manifest_rejects() {
   ManifestInfo m;
   const char* err;
 
-  makeManifestJson(json, sizeof json, "2", "https://x/fw.bin", "3014656",
-                   kSha64, "TWFuTWFuTWFu");
-  TEST_ASSERT_FALSE(parseManifest(json, strlen(json), "esp32s3", m, &err));
+  makeManifestJson(json, sizeof json, "1", "https://x/fw.bin", "3014656",
+                   kSha64, "TWFuTWFuTWFu");  // legacy schema 1 now rejected
+  TEST_ASSERT_FALSE(parseManifest(json, strlen(json), "nimbus-tft", m, &err));
   TEST_ASSERT_EQUAL_STRING("schema", err);
 
-  makeManifestJson(json, sizeof json, "1", "http://x/fw.bin", "3014656",
+  makeManifestJson(json, sizeof json, "3", "https://x/fw.bin", "3014656",
+                   kSha64, "TWFuTWFuTWFu");  // future schema also rejected
+  TEST_ASSERT_FALSE(parseManifest(json, strlen(json), "nimbus-tft", m, &err));
+  TEST_ASSERT_EQUAL_STRING("schema", err);
+
+  makeManifestJson(json, sizeof json, "2", "http://x/fw.bin", "3014656",
                    kSha64, "TWFuTWFuTWFu");  // not https
-  TEST_ASSERT_FALSE(parseManifest(json, strlen(json), "esp32s3", m, &err));
+  TEST_ASSERT_FALSE(parseManifest(json, strlen(json), "nimbus-tft", m, &err));
   TEST_ASSERT_EQUAL_STRING("url", err);
 
-  makeManifestJson(json, sizeof json, "1", "https://x/fw.bin", "1000",
+  makeManifestJson(json, sizeof json, "2", "https://x/fw.bin", "1000",
                    kSha64, "TWFuTWFuTWFu");  // below floor
-  TEST_ASSERT_FALSE(parseManifest(json, strlen(json), "esp32s3", m, &err));
+  TEST_ASSERT_FALSE(parseManifest(json, strlen(json), "nimbus-tft", m, &err));
   TEST_ASSERT_EQUAL_STRING("size", err);
 
-  makeManifestJson(json, sizeof json, "1", "https://x/fw.bin", "9000000",
+  makeManifestJson(json, sizeof json, "2", "https://x/fw.bin", "9000000",
                    kSha64, "TWFuTWFuTWFu");  // above one slot
-  TEST_ASSERT_FALSE(parseManifest(json, strlen(json), "esp32s3", m, &err));
+  TEST_ASSERT_FALSE(parseManifest(json, strlen(json), "nimbus-tft", m, &err));
   TEST_ASSERT_EQUAL_STRING("size", err);
 
-  makeManifestJson(json, sizeof json, "1", "https://x/fw.bin", "3014656",
+  makeManifestJson(json, sizeof json, "2", "https://x/fw.bin", "3014656",
                    "deadbeef", "TWFuTWFuTWFu");  // short sha
-  TEST_ASSERT_FALSE(parseManifest(json, strlen(json), "esp32s3", m, &err));
+  TEST_ASSERT_FALSE(parseManifest(json, strlen(json), "nimbus-tft", m, &err));
   TEST_ASSERT_EQUAL_STRING("sha256", err);
 
-  makeManifestJson(json, sizeof json, "1", "https://x/fw.bin", "3014656",
+  makeManifestJson(json, sizeof json, "2", "https://x/fw.bin", "3014656",
                    kSha64, "!!bad!!!");  // bad b64
-  TEST_ASSERT_FALSE(parseManifest(json, strlen(json), "esp32s3", m, &err));
+  TEST_ASSERT_FALSE(parseManifest(json, strlen(json), "nimbus-tft", m, &err));
   TEST_ASSERT_EQUAL_STRING("sig", err);
 
-  makeManifestJson(json, sizeof json, "1", "https://x/fw.bin", "3014656",
+  makeManifestJson(json, sizeof json, "2", "https://x/fw.bin", "3014656",
                    kSha64, "TWFuTWFuTWFu");
-  TEST_ASSERT_FALSE(parseManifest(json, strlen(json), "p2bringup", m, &err));
-  TEST_ASSERT_EQUAL_STRING("variant", err);  // unknown variant
+  TEST_ASSERT_FALSE(parseManifest(json, strlen(json), "freenove-99", m, &err));
+  TEST_ASSERT_EQUAL_STRING("variant", err);  // unknown/absent device type
 
-  makeManifestJson(json, sizeof json, "1", "https://x/fw.bin", "3014656",
+  makeManifestJson(json, sizeof json, "2", "https://x/fw.bin", "3014656",
                    kSha64, "TWFuTWFuTWFu", "not-a-version");
-  TEST_ASSERT_FALSE(parseManifest(json, strlen(json), "esp32s3", m, &err));
+  TEST_ASSERT_FALSE(parseManifest(json, strlen(json), "nimbus-tft", m, &err));
   TEST_ASSERT_EQUAL_STRING("version", err);  // bad minVersion
 
-  TEST_ASSERT_FALSE(parseManifest("{", 1, "esp32s3", m, &err));  // truncated json
+  TEST_ASSERT_FALSE(parseManifest("{", 1, "nimbus-tft", m, &err));  // truncated json
 }
 
 // --- state machine ----------------------------------------------------------
@@ -289,6 +337,8 @@ int main(int, char**) {
   RUN_TEST(test_decode_hex);
   RUN_TEST(test_decode_b64);
   RUN_TEST(test_sig_message_golden);
+  RUN_TEST(test_type_allowed_for_board);
+  RUN_TEST(test_derive_device_type);
   RUN_TEST(test_manifest_valid);
   RUN_TEST(test_manifest_uppercase_sha_canonicalized);
   RUN_TEST(test_manifest_rejects);

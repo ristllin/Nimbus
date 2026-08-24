@@ -34,7 +34,7 @@ include path, which expects a sibling checkout:
 
 ```bash
 git clone https://github.com/ristllin/solide-drivers.git ../solide-drivers
-git -C ../solide-drivers checkout v0.4.0   # the tag the firmware pins
+git -C ../solide-drivers checkout v0.5.1   # the tag the firmware pins
 ```
 
 Driver developers can point the device builds at that same sibling by swapping

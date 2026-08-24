@@ -31,9 +31,7 @@ const sidebars = {
       items: [
         'guides/hardware',
         'guides/hardware-bom',
-        'guides/hardware-build-eink',
         'guides/hardware-build-tft',
-        'guides/hardware-eink-knob',
         'guides/hardware-touch-tft',
         'guides/hardware-all-in-one-cyd',
       ],

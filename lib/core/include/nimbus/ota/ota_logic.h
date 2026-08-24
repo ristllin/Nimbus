@@ -46,14 +46,44 @@ struct ManifestInfo {
 
 // Parse + validate manifest JSON for one variant. On failure returns false and
 // (if errOut) points errOut at a static reason string ("schema", "version",
-// "variant", "url", "size", "sha256", "sig"). Accepts only schema==1, an https
-// URL, size in [kMinFwBytes, kMaxFwBytes], 64-hex sha256, base64 DER sig.
+// "variant", "url", "size", "sha256", "sig"). Accepts only schema==2 (typed
+// manifests; see the device-type slugs below), an https URL, size in
+// [kMinFwBytes, kMaxFwBytes], 64-hex sha256, base64 DER sig. The "variant"
+// argument is the device TYPE (e.g. "nimbus-tft", "freenove-28"); an untyped
+// device passes "" and never matches, which the glue reports as "no update".
 bool parseManifest(const char* json, size_t len, const char* variant,
                    ManifestInfo& out, const char** errOut = nullptr);
 
+// --- device type ------------------------------------------------------------
+// The four frozen OTA device-type slugs the typed manifest keys on. Every real
+// device is exactly one of these; e-ink / untyped devices carry "" and get no
+// updates.
+inline constexpr const char* kTypeNimbusTft = "nimbus-tft";
+inline constexpr const char* kTypeFreenove28 = "freenove-28";
+inline constexpr const char* kTypeFreenove35 = "freenove-35";
+inline constexpr const char* kTypeFreenove40 = "freenove-40";
+
+// True when this firmware build may run under the given type slug. isFreenove =
+// (SOLIDE_BOARD==freenove_s3). A Solide build accepts only "nimbus-tft"; a
+// Freenove build accepts only the "freenove-*" sizes. Any unknown slug (incl.
+// "", legacy build tags, or a mismatched family) returns false, so a misseeded
+// otaType can never pull a wrong-pinout image. Legacy compile-time build tags
+// ("test", "test-cyd") are handled by the glue's fallback, not here.
+bool typeAllowedForBoard(const char* type, bool isFreenove);
+
+// Derive the OTA device type from hardware identity during the transition boot
+// (existing devices that carry no otaType yet). isFreenove = SOLIDE_BOARD==
+// freenove_s3; screenIsTft = stored scrModel=="tft". Solide+tft -> "nimbus-tft";
+// Solide+eink -> "" (frozen: e-ink gets no more updates); Freenove -> the base
+// "freenove-28" size (the flasher seeds the exact size on fresh installs, so this
+// default only ever applies to a Freenove reaching the typed scheme by transition
+// without a seeded size - the smallest safe panel). Writes buf, returns its
+// length (0 for the untyped e-ink case, which the glue leaves unset).
+size_t deriveDeviceType(char* buf, size_t cap, bool isFreenove, bool screenIsTft);
+
 // --- signed message ---------------------------------------------------------
 // The canonical payload CI signs and the device verifies:
-//   "nimbus-ota-v1\n<version>\n<variant>\n<sha256-hex-lowercase>\n"
+//   "nimbus-ota-v2\n<version>\n<type>\n<sha256-hex-lowercase>\n"
 // Golden-tested against tools/make_manifest.py --print-message. Returns the
 // message length, or 0 if buf is too small.
 size_t buildSigMessage(char* buf, size_t cap, const char* version,

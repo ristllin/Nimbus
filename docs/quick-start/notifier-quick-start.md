@@ -57,7 +57,7 @@ Start a coding session. The ring assigns the session a colored segment:
 - **slow breathe** - waiting on you (hue says which kind: input vs approval)
 - **fade to a dim ember** - done
 - **breathing red** - error
-- rotate the knob to point at a session; the display shows its detail
+- tap a session's segment on the screen; the display shows its detail
 
 Two devices? Both advertise as "Nimbus" - target one by address:
 `nimbus-notify-broker --ble-address <mac>` (the device prints its address in

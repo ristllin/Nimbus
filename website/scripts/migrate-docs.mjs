@@ -38,9 +38,10 @@ const PAGES = [
   // Hardware Build
   ['hardware.md', 'guides/hardware.md', 'Hardware reference', 'Hardware overview'],
   ['hardware/bom.md', 'guides/hardware-bom.md', 'Bill of materials', 'Bill of materials'],
-  ['hardware/build-eink.md', 'guides/hardware-build-eink.md', 'Build Guide - E-Paper + Knob', 'Build: E-paper + knob'],
+  // E-ink (e-paper + knob) is deprecated and out of the published nav; the source
+  // docs stay in the repo until N10 removes them. build-eink.md / eink-knob.md
+  // are intentionally not migrated.
   ['hardware/build-tft.md', 'guides/hardware-build-tft.md', 'Build Guide - Touch TFT', 'Build: Touch TFT'],
-  ['hardware/eink-knob.md', 'guides/hardware-eink-knob.md', 'Configuration A - E-paper + knob', 'HW: E-paper + knob'],
   ['hardware/touch-tft.md', 'guides/hardware-touch-tft.md', 'Configuration B - Touch TFT', 'HW: Touch TFT'],
   ['hardware/all-in-one-cyd.md', 'guides/hardware-all-in-one-cyd.md', 'Configuration C - all-in-one (Freenove CYD)', 'HW: All-in-one (CYD)'],
   // Using Nimbus

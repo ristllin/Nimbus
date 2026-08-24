@@ -68,11 +68,12 @@ static void handle(const String& cmd) {
     waitConnect("CONNECTNVS");
   } else if (cmd == "STATUS") {
     Serial.printf(
-        "STATUS wifi=%d ip=%s mode=%d screen='%s' staSsid='%s' staPassLen=%d oaiLen=%d "
-        "antLen=%d\n",
+        "STATUS wifi=%d ip=%s mode=%d screen='%s' type='%s' staSsid='%s' staPassLen=%d "
+        "oaiLen=%d antLen=%d\n",
         WiFi.status(), WiFi.localIP().toString().c_str(),
         int(solide::memory::getInt("nimbus_mode", 0)),
         solide::memory::getString("scrModel", "eink").c_str(),
+        solide::memory::getString("otaType", "").c_str(),
         solide::memory::getString("staSsid", "").c_str(),
         solide::memory::getString("staPass", "").length(),
         solide::memory::getString("oaiKey", "").length(),

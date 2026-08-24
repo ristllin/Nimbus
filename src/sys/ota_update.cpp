@@ -133,6 +133,63 @@ static const char* runningLabel() {
   return p ? p->label : "?";
 }
 
+// The device TYPE the typed (schema 2) manifest is matched against. Prefer the
+// NVS otaType seeded by the flasher or written by the transition boot; fall back
+// to the compile-time build tag so dev + HIL builds (test / test-cyd, which never
+// get an otaType) keep resolving. A stored type from the wrong board family is
+// refused (resolves to "") so a misseeded NVS can never pull a wrong-pinout image,
+// the runtime twin of the compile-time board<->variant static_assert above.
+// Resolved once and cached: NVS is stable for the life of a boot and the OTA path
+// runs well after nvs init.
+static bool nvsGetStr(const char* key, char* buf, size_t cap) {
+  nvs_handle_t h;
+  buf[0] = '\0';
+  if (nvs_open(kNs, NVS_READONLY, &h) != ESP_OK) return false;
+  size_t len = cap;
+  bool ok = nvs_get_str(h, key, buf, &len) == ESP_OK;
+  if (!ok) buf[0] = '\0';
+  nvs_close(h);
+  return ok;
+}
+
+static const char* otaVariant() {
+  static char cached[24];
+  static bool resolved = false;
+  if (resolved) return cached;
+  char t[24] = {0};
+  nvsGetStr(AKEY_OTA_TYPE, t, sizeof t);
+#ifndef NIMBUS_TEST
+  if (!t[0]) {
+    // Transition boot: a fielded production device that carries no type yet.
+    // Derive it once from stored hardware identity and persist it, so a TFT board
+    // starts matching "nimbus-tft" (an untyped fallback to the build tag would
+    // never match the typed manifest) and e-ink stays untyped -> frozen.
+    char scr[8] = {0};
+    nvsGetStr(AKEY_SCREEN_MODEL, scr, sizeof scr);
+    char derived[24];
+    if (nimbus::ota::deriveDeviceType(derived, sizeof derived, kBoardIsFreenove,
+                                      strcmp(scr, "tft") == 0)) {
+      nvs_handle_t h;
+      if (nvs_open(kNs, NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_str(h, AKEY_OTA_TYPE, derived);
+        nvs_commit(h);
+        nvs_close(h);
+      }
+      snprintf(t, sizeof t, "%s", derived);
+    }
+    // e-ink derives to "" -> left unset -> untyped -> no update (correct).
+  }
+#endif
+  if (t[0] && nimbus::ota::typeAllowedForBoard(t, kBoardIsFreenove))
+    snprintf(cached, sizeof cached, "%s", t);
+  else if (t[0])
+    cached[0] = '\0';                       // misseeded -> untyped -> no update
+  else
+    snprintf(cached, sizeof cached, "%s", NIMBUS_OTA_VARIANT);  // dev/HIL fallback
+  resolved = true;
+  return cached;
+}
+
 void bootGuard() {
   nvs_handle_t h;
   if (nvs_open(kNs, NVS_READWRITE, &h) != ESP_OK) return;  // no NVS: nothing to guard
@@ -405,7 +462,7 @@ static const char* fetchManifest() {
 
   const char* err = nullptr;
   nimbus::ota::ManifestInfo m;
-  if (!nimbus::ota::parseManifest(b.p, b.len, NIMBUS_OTA_VARIANT, m, &err))
+  if (!nimbus::ota::parseManifest(b.p, b.len, otaVariant(), m, &err))
     return err ? err : "schema";
   if (!verifySignature(m)) return "sig-fail";
   g_manifest = m;
@@ -439,8 +496,11 @@ static void checkTask(void*) {
     err = fetchManifest();
     agent::arbiter::releaseWork();
   }
-  if (err && strcmp(err, "no-release") == 0) {
-    g_state = State::UpToDate;   // nothing published yet - not an error
+  if (err && (strcmp(err, "no-release") == 0 || strcmp(err, "variant") == 0)) {
+    // no-release: nothing published yet. variant: this device TYPE has no image
+    // in the typed manifest (untyped/e-ink, or a family with no build). Both mean
+    // "no update for this device" - a settled state, never a scary Error.
+    g_state = State::UpToDate;
   } else if (err) {
     setLastError(err);
     g_state = State::Error;
@@ -494,7 +554,7 @@ static bool dlSink(const uint8_t* d, size_t n, void* ctx) {
 static bool verifySignature(const nimbus::ota::ManifestInfo& m) {
   char msg[192];
   size_t n = nimbus::ota::buildSigMessage(msg, sizeof msg, m.version,
-                                          NIMBUS_OTA_VARIANT, m.v.shaHex);
+                                          otaVariant(), m.v.shaHex);
   if (!n) return false;
   uint8_t hash[32];
   mbedtls_sha256((const unsigned char*)msg, n, hash, 0);

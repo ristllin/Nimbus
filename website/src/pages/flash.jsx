@@ -1,18 +1,29 @@
 // /flash - browser flasher for Nimbus, powered by ESP Web Tools (vendored under
 // static/vendor/esp-web-tools - no CDN/runtime third-party dependency).
 //
-// The manifest + merged image live at a FIXED path on the `webflash` branch of
-// the public ristllin/nimbus-fw-releases repo, published by every release run
-// of .github/workflows/release.yml. They are fetched via raw.githubusercontent.com
-// because GitHub release-asset downloads send no Access-Control-Allow-Origin
-// header - the raw host does.
-import React, {useEffect} from 'react';
+// One merged image PER BOARD VARIANT lives at a FIXED per-variant path on the
+// `webflash` branch of the public ristllin/nimbus-fw-releases repo, published by
+// every release run of .github/workflows/release.yml. Each image carries an NVS
+// seed (scrModel/tftFlip/mode/type) so the board comes up on the RIGHT panel and
+// already knows its update type - it never boots to a blank screen. Fetched via
+// raw.githubusercontent.com because GitHub release-asset downloads send no
+// Access-Control-Allow-Origin header - the raw host does.
+import React, {useEffect, useState} from 'react';
 import Layout from '@theme/Layout';
 import Link from '@docusaurus/Link';
 import useBaseUrl from '@docusaurus/useBaseUrl';
 
-const MANIFEST_URL =
-  'https://raw.githubusercontent.com/ristllin/nimbus-fw-releases/webflash/latest/manifest.json';
+// Board/size variants. `slug` is the typed-OTA device type and the per-variant
+// webflash path segment; the two must match what release.yml publishes.
+const VARIANTS = [
+  {slug: 'nimbus-tft', label: 'Nimbus board (TFT + ring)'},
+  {slug: 'freenove-28', label: 'Freenove CYD - 2.8 inch'},
+  {slug: 'freenove-35', label: 'Freenove CYD - 3.5 inch'},
+  {slug: 'freenove-40', label: 'Freenove CYD - 4.0 inch'},
+];
+
+const manifestUrlFor = (slug) =>
+  `https://raw.githubusercontent.com/ristllin/nimbus-fw-releases/webflash/latest/${slug}/manifest.json`;
 
 const styles = {
   main: {maxWidth: 760, margin: '0 auto', padding: '2rem 1rem 4rem'},
@@ -34,6 +45,7 @@ const styles = {
 
 export default function FlashPage() {
   const moduleUrl = useBaseUrl('/vendor/esp-web-tools/install-button.js');
+  const [variant, setVariant] = useState(VARIANTS[0].slug);
 
   useEffect(() => {
     // The web component ships as an ES module with hashed sibling chunks it
@@ -73,18 +85,51 @@ export default function FlashPage() {
           </ul>
         </div>
 
-        <div style={styles.warn}>
-          <strong>Use the port labeled UART.</strong> The DevKitC-1 has two
-          USB-C ports and only one can flash a fresh board. Plug into the port
-          silkscreened <code>UART</code>, not <code>USB</code> - on a
-          factory-fresh board the native <code>USB</code> port has no path into
-          download mode at all until Nimbus owns it. A board that
-          &quot;won&apos;t flash&quot; on that port is not broken; it is on the
-          wrong port.
+        {variant === 'nimbus-tft' ? (
+          <div style={styles.warn}>
+            <strong>Nimbus board: use the port labeled UART.</strong> The
+            DevKitC-1 has two USB-C ports and only one can flash a fresh board.
+            Plug into the port silkscreened <code>UART</code>, not{' '}
+            <code>USB</code> - on a factory-fresh board the native{' '}
+            <code>USB</code> port has no path into download mode until Nimbus
+            owns it. A board that &quot;won&apos;t flash&quot; on that port is
+            not broken; it is on the wrong port.
+          </div>
+        ) : (
+          <div style={styles.warn}>
+            <strong>Freenove CYD: use its single USB-C port.</strong> The
+            all-in-one board has one USB-C port and no separate UART bridge -
+            just connect a data-capable USB-C cable. There is no wrong port to
+            avoid.
+          </div>
+        )}
+
+        <div style={styles.box}>
+          <label htmlFor="variant" style={{fontWeight: 600, display: 'block', marginBottom: '0.5rem'}}>
+            Which board do you have?
+          </label>
+          <select
+            id="variant"
+            value={variant}
+            onChange={(e) => setVariant(e.target.value)}
+            style={{padding: '0.4rem 0.6rem', fontSize: '1rem', width: '100%', maxWidth: 420}}>
+            {VARIANTS.map((v) => (
+              <option key={v.slug} value={v.slug}>
+                {v.label}
+              </option>
+            ))}
+          </select>
+          <p style={{margin: '0.5rem 0 0'}}>
+            <small>
+              The image is matched to your board and screen size, so it comes up
+              on the right display and already knows which updates it should get.
+            </small>
+          </p>
         </div>
 
         <div style={styles.installRow}>
-          <esp-web-install-button manifest={MANIFEST_URL}>
+          {/* key by variant so the button re-mounts with the new manifest */}
+          <esp-web-install-button key={variant} manifest={manifestUrlFor(variant)}>
             <button
               slot="activate"
               className="button button--primary button--lg">
@@ -101,8 +146,7 @@ export default function FlashPage() {
           </esp-web-install-button>
           <p style={{marginTop: '0.75rem'}}>
             <small>
-              Pick the board&apos;s serial port when the browser asks (a CP210x
-              / <code>usbserial</code> entry on the UART port). Choosing
+              Pick the board&apos;s serial port when the browser asks. Choosing
               &quot;Erase device&quot; is fine on a new board; on a board
               already running Nimbus it wipes its saved settings.
             </small>
@@ -125,11 +169,10 @@ export default function FlashPage() {
             <Link to="/quick-start/setup-wizard">Set up the device</Link>.
           </li>
           <li>
-            <strong>Touch-screen boards:</strong> the first wizard step asks
-            which display is fitted. A touch-screen (TFT) board shows a blank
-            white panel until you answer <em>Touch screen</em> there - the
-            firmware boots for e-ink until it is told otherwise, so a blank
-            panel right after flashing is expected, not a fault.
+            <strong>The screen is ready right away.</strong> The image you
+            picked already tells the board which display it has, so it comes up
+            on the correct panel - there is no blank-screen step and no display
+            question in the wizard.
           </li>
         </ul>
 

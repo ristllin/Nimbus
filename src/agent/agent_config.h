@@ -194,6 +194,10 @@
 #define AKEY_OTA_LASTRES    "otaLast"        // last OTA outcome ("ok vX"/"rollback vX"/...)
 #define AKEY_OTA_AUTO       "autoUpd"        // auto-install in an idle window (default OFF)
 #define AKEY_OTA_NOTIF      "otaNotif"       // last version Telegram-notified (no re-nag)
+#define AKEY_OTA_TYPE       "otaType"        // typed-OTA device slug: "nimbus-tft" |
+                                             // "freenove-28|35|40" | "" (untyped/e-ink:
+                                             // no update). Set by the flasher or the
+                                             // transition boot; frozen machine key.
 #define AKEY_OTA_NOTES      "otaNotes"       // "ver|notes" persisted across the install reboot
                                              // (RAM-only notes died on the very reboot they
                                              // describe - Glass Box A2)

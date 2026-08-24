@@ -12,8 +12,9 @@ serial console.
 
 The stages, in order:
 
-1. **Install the firmware** over the UART port, choosing the fitted display
-   and the operating mode.
+1. **Install the firmware.** The installer detects the board and asks only for
+   the operating mode (and, for a Freenove, its panel size); the display is
+   seeded for you.
 2. **Power on.** A Notifier pairs over Bluetooth and is nearly done; an
    Orchestrator broadcasts its own setup Wi-Fi network.
 3. **Orchestrator:** join the setup network and move the device onto *your*
@@ -35,30 +36,24 @@ python3 tools/setup_device.py
 ```
 
 The installer lists every UART device and asks which one to use. On a new board
-it asks two independent questions:
+it detects the board family from its USB descriptor and saved settings, then
+confirms the target and asks what it cannot know:
 
 | Choice | Options | Effect |
 |---|---|---|
-| **Display hardware** | E-ink + knob / TFT color touchscreen | Selects both the display and input drivers at boot |
 | **Operating mode** | Notifier / Orchestrator | Notifier uses Bluetooth with Wi-Fi off; Orchestrator starts Wi-Fi and the web UI |
+| **Panel size** *(Freenove only)* | 2.8 / 3.5 / 4.0 inch | Sets the board's update type |
 
-It then shows the selected board's immutable factory MAC and whether persistent
-Nimbus settings already exist. Nothing is written until you type that MAC back -
-this guard matters when more than one board is connected, because a bare
-PlatformIO upload can pick the wrong serial port, and a changing USB port suffix
-never identifies a board on its own. The selected port is passed to PlatformIO
-explicitly, and stored settings are not erased.
+It shows what it found - the board, whether persistent Nimbus settings already
+exist, and the port - and confirms before writing. When more than one board is
+connected it lists them and offers an Identify action that blinks a board so you
+can pick the right one; the chosen port is passed to PlatformIO explicitly, and
+stored settings are not erased.
 
-For a new board, a temporary UART diagnostic stores and verifies the display,
-its known Nimbus mounting orientation (TFT only), and the operating-mode choice;
-production Nimbus firmware is always installed last.
-
-:::caution TFT must be selected here
-A TFT board has no knob - the touchscreen replaces its pins. The raw firmware
-defaults are e-ink and Notifier, so a TFT board cannot correct either choice
-from its own controls, and Notifier will not broadcast Wi-Fi. Select **TFT
-color touchscreen** in the installer.
-:::
+For a new board, a temporary diagnostic seeds and verifies the display, its
+mounting orientation, the operating mode, and the board's update type; production
+Nimbus firmware is always installed last. A board flashed from the browser
+flasher is seeded the same way by the image itself.
 
 <details>
 <summary>I flashed <code>[env:provision]</code> - is that setup?</summary>
@@ -143,12 +138,10 @@ devices are present.
 :::note Wi-Fi requirements
 - The radio is **2.4 GHz only** - a 5 GHz-only SSID won't appear in the scan.
 - SSIDs are **case-sensitive**.
-- On a TFT board the setup AP turns off after a short, bounded handoff (to
-  protect the panel from the beacon train). The wizard carries authentication
-  to the exact reported LAN IP first; the setup AP returns if the LAN link is
-  lost.
-- On an e-ink Orchestrator the setup AP remains available. In Notifier mode
-  Wi-Fi stays off entirely.
+- The setup AP turns off after a short, bounded handoff (to protect the panel
+  from the beacon train). The wizard carries authentication to the exact
+  reported LAN IP first; the setup AP returns if the LAN link is lost. In
+  Notifier mode Wi-Fi stays off entirely.
 :::
 
 :::info Home Wi-Fi and the setup hotspot are different
@@ -309,8 +302,8 @@ dictation and spoken-reply providers and the voice itself under **Capabilities
 
 - **Telegram:** send the bot a message. It runs a turn and replies (text, and
   sometimes voice if it chooses to speak).
-- **On the device** (e-paper + knob build): **long-press** the knob to
-  hold-to-talk. The ring goes red-breathe while listening, then a blue spinner
+- **On the device:** press and hold the **on-screen mic bar** to hold-to-talk.
+  On the Nimbus board the ring goes red-breathe while listening, then a spinner
   while it transcribes; release to send the turn.
 
 That's it - the device is live. From here, the

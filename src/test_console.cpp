@@ -495,6 +495,13 @@ void dispatch(String line) {
     if (s_h.reboot) s_h.reboot();
     return;
   }
+  if (line == "FACTRESET") {
+    // HIL trigger for the same deferred factory reset the web /api/factory-reset
+    // uses: the main loop preserves hardware identity, erases config, reboots.
+    reply(s_h.factoryReset ? "FACTRESET ok" : "FACTRESET no-hook");
+    if (s_h.factoryReset) s_h.factoryReset();
+    return;
+  }
   if (line == "HANG") {
     reply("HANGING");                                      // F12 - proves the WDT once added
     if (s_h.hang) s_h.hang();

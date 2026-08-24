@@ -70,6 +70,7 @@ struct Hooks {
   std::function<void(const String& text)>                 turn;    // TURN
   std::function<bool(const String& ssid, const String& pass)> wifi;  // WIFI
   std::function<void()>                                   reboot;  // REBOOT
+  std::function<void()>                                   factoryReset;  // FACTRESET (HIL)
   std::function<void()>                                   hang;    // HANG (spin)
   // MODE <0|1>: persist the operating mode and restart so it takes effect (mode
   // is resolved once at boot). Lets HIL tests drive Notifier-path assertions on
