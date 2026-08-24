@@ -28,10 +28,8 @@ struct SelfTestItem {
 // Caller-owned state the engine can't reach on its own.
 struct SelfTestInputs {
   // solide::begin() BeginResult (captured in main.cpp g_hal).
-  bool halDisplay = true, halLeds = true, halStorage = true, halMemory = true, halInput = true;
-  // Touch board: the encoder is absent by design (the TFT owns its pins), so
-  // halInput false is EXPECTED there and only halTouch is a real fault.
-  bool halTouch = true, halTouchBoard = false;
+  bool halDisplay = true, halLeds = true, halStorage = true, halMemory = true;
+  bool halTouch = true;   // color touch panel (the only input device)
   nimbus::power::Sample battery;   // g_power.last()
   nimbus::power::BatteryEstimate batteryEst;   // analytics (time-left / health)
   bool wifiConnected = false;  int wifiRssi = 0;

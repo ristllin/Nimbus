@@ -27,11 +27,10 @@ namespace orch {
 struct Hardware {
   const char* deviceName = "Nimbus";
   const char* version    = "";
-  // Display/input pair. A device has EITHER eink+encoder OR touch (whose panel
-  // consumes the encoder's pins) - never both. Without `touch` the manifest
-  // could not express a touchscreen at all, so the model told owners of a touch
-  // board to look at an e-ink panel and listed no input device.
-  bool ring = true, eink = true, touch = false, encoder = true, mic = false, speaker = false;
+  // The display is a color touchscreen (the only supported panel). `touch` is
+  // its presence, so the model's self-model matches the hardware in front of the
+  // owner.
+  bool ring = true, touch = true, mic = false, speaker = false;
   bool battery = false, sd = false, wifi = false, ble = false, telegram = false;
   // E1 artifact store: SD /mem/files present (files.list / artifact.save /
   // files.send are genuinely callable).

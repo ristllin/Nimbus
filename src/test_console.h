@@ -76,10 +76,6 @@ struct Hooks {
   // is resolved once at boot). Lets HIL tests drive Notifier-path assertions on
   // a device that booted in Orchestrator mode, and vice versa.
   std::function<void(int mode)>                           setMode;
-  // Raw debounced encoder-switch level (solide::input::pressed()). Backs the
-  // `SW?` diagnostic so a physical-button fault (GPIO48 / wiring) can be told
-  // apart from a long-press DECODE or RENDER fault without a knob in hand.
-  std::function<bool()>                                   swRaw;
   // BLE radio state for the `BLE?` diagnostic: enabled = advertising-enabled
   // (net::ble::enabled()), connected = a central is linked. Lets the harness
   // assert the Connectivity > Bluetooth toggle actually starts/stops the radio.
@@ -157,16 +153,6 @@ void pumpOrch();
 void onRender(uint8_t screenId, uint8_t posture, int segCount, bool single,
               bool dark, uint8_t bright);
 
-// Echo an encoder event ("CW"/"CCW"/"CLICK"/"LONG") when INPUTLOG is on (F1).
-void onEncoder(const char* en);
-
-// Drain one SYNTHETIC encoder event queued by the `ENC <CW|CCW|CLICK|LONG>`
-// console command. The main loop calls this alongside solide::input::pop() so
-// the settings menu is fully HIL-driveable without a physical knob (F1/F18).
-// codeOut matches solide::input::Event: 1=CW 2=CCW 3=Click 4=LongPress.
-// Returns false when the injection queue is empty.
-bool popInjectedEncoder(int& codeOut);
-
 // Drain one screensaver console command. `SAVER` queues -1 (force the saver
 // screen NOW - HIL/demo); `SAVER <min>` queues the new threshold (persisted +
 // applied by the main loop; 0 disables). Returns false when nothing is queued.
@@ -192,8 +178,6 @@ inline void begin(const Hooks&) {}
 inline void ready() {}
 inline void pumpOrch() {}
 inline void onRender(uint8_t, uint8_t, int, bool, bool, uint8_t) {}
-inline void onEncoder(const char*) {}
-inline bool popInjectedEncoder(int&) { return false; }
 inline bool popSaverCmd(int&) { return false; }
 inline void onWifiReason(int) {}
 inline void onWifiGotIp(const String&) {}

@@ -78,21 +78,16 @@ std::string reportJson(const Env& env) {
   Row rows[12];
   int n = 0;
 
-  // LED ring + e-ink: HAL begin-result AND not fault-injected.
+  // LED ring + color panel: HAL begin-result AND not fault-injected.
   rows[n++] = {"led", "LED ring",
                active(Cap::LED) ? kAbsent : (hal.leds ? kOk : kDegraded),
                active(Cap::LED) ? "fault-injected (test)" : (hal.leds ? "up" : "init failed")};
-  rows[n++] = {"screen", hal.isTouchBoard ? "Display (color touch)" : "E-ink display",
+  rows[n++] = {"screen", "Display (color touch)",
                active(Cap::SCREEN) ? kAbsent : (hal.display ? kOk : kDegraded),
                active(Cap::SCREEN) ? "fault-injected (test)" : (hal.display ? "up" : "init failed")};
-  rows[n++] = {"encoder", hal.isTouchBoard ? "Touch panel" : "Encoder/knob",
-               // A touch board has no encoder by design (the TFT owns its pins), so report
-      // the input device it actually HAS rather than calling healthy hardware
-      // degraded for a peripheral that was never fitted.
-      hal.isTouchBoard ? (hal.touch ? kOk : kDegraded)
-                       : (hal.input ? kOk : kDegraded),
-      hal.isTouchBoard ? (hal.touch ? "touch up" : "touch init failed")
-                       : (hal.input ? "up" : "init failed")};
+  rows[n++] = {"touch", "Touch panel",
+               hal.touch ? kOk : kDegraded,
+               hal.touch ? "touch up" : "touch init failed"};
 
   // Audio (active-probe capabilities).
   rows[n++] = audioRow("mic", "Microphone (I²S)", active(Cap::MIC), /*isMic=*/true);

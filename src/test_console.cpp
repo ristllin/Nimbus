@@ -50,26 +50,11 @@ namespace {
 
 Hooks    s_h;                 // captured by begin()
 String   s_line;             // command-line accumulator (also the frame-tee prefix buffer)
-bool     s_inputLog = false;  // INPUTLOG on/off - gates onEncoder() echo (F1)
-bool     s_badge = false;     // F9 e-ink error badge armed
+bool     s_badge = false;     // F9 error badge armed
 int      s_badgeReason = 0;   // last WiFi disconnect reason
 
 constexpr size_t kLineCap = 512;   // matches the existing orch-console cap
 constexpr int    kByteBudget = 256;  // bytes drained per pump call (loop stays responsive)
-
-// Synthetic encoder-event queue (single-producer/single-consumer, both on the
-// main task: dispatch() runs from pumpOrch()/pumpNotifier() and the loop drains
-// via popInjectedEncoder()). A tiny ring is plenty - the harness injects one
-// event per line and reads the RENDER echo before sending the next.
-constexpr int kEncQCap = 16;
-int s_encQ[kEncQCap];
-int s_encHead = 0, s_encTail = 0;
-void encPush(int code) {
-  const int nxt = (s_encHead + 1) % kEncQCap;
-  if (nxt == s_encTail) return;  // full: drop (harness reads between sends)
-  s_encQ[s_encHead] = code;
-  s_encHead = nxt;
-}
 
 // One-slot screensaver command mailbox (same producer/consumer pair as the
 // encoder queue): -1 = force the saver screen now, >=0 = new threshold minutes.
@@ -277,12 +262,6 @@ void dispatch(String line) {
     Serial.printf("RINGANIM %d (%s)\n", v, kNames[v]);
     Serial.flush();
     return;
-  }
-  if (line == "INPUTLOG on") {
-    s_inputLog = true;  reply("INPUTLOG on");  return;      // F1
-  }
-  if (line == "INPUTLOG off") {
-    s_inputLog = false; reply("INPUTLOG off"); return;
   }
   if (line.startsWith("TURN ")) {
     String t = line.substring(5);
@@ -760,27 +739,6 @@ void dispatch(String line) {
     reply(v < 0 ? "SAVER< force" : (String("SAVER< min=") + v));
     return;
   }
-  if (line.startsWith("ENC ")) {
-    // Inject a synthetic encoder event so the settings menu can be driven from
-    // the HIL harness (no physical knob). Codes match solide::input::Event.
-    String a = line.substring(4); a.trim();
-    int code = 0;
-    if (a == "CW")         code = 1;
-    else if (a == "CCW")   code = 2;
-    else if (a == "CLICK") code = 3;
-    else if (a == "LONG")  code = 4;
-    if (code) { encPush(code); Serial.printf("ENC< %s\n", a.c_str()); Serial.flush(); }
-    else      reply("ERR enc want CW|CCW|CLICK|LONG");
-    return;
-  }
-  if (line == "SW?") {
-    // Raw debounced switch level - isolates a physical-button fault from a
-    // decode/render fault. 1 = pressed (GPIO48 pulled low).
-    const int sw = (s_h.swRaw && s_h.swRaw()) ? 1 : 0;
-    Serial.printf("SW %d\n", sw);
-    Serial.flush();
-    return;
-  }
   if (line.startsWith("TAP ")) {
     // Inject a synthetic tap so the touch UI is HIL-driveable with no finger -
     // the ENC seam's counterpart. "TAP <x> <y>" presses and releases at a panel
@@ -1174,19 +1132,6 @@ void onRender(uint8_t screenId, uint8_t posture, int segCount, bool single,
                 int(screenId), int(posture), segCount, int(single), int(dark),
                 int(bright));
   Serial.flush();
-}
-
-void onEncoder(const char* en) {
-  if (!s_inputLog) return;                                  // F1 - gated by INPUTLOG
-  Serial.printf("ENC %s\n", en);
-  Serial.flush();
-}
-
-bool popInjectedEncoder(int& codeOut) {
-  if (s_encTail == s_encHead) return false;                 // empty
-  codeOut = s_encQ[s_encTail];
-  s_encTail = (s_encTail + 1) % kEncQCap;
-  return true;
 }
 
 bool popSaverCmd(int& minsOut) {

@@ -986,10 +986,7 @@ static void voiceReleaseWatcher(void*) {
   // hw::touch::poll() cannot be used here because the main task is blocked
   // inside recordToFile for the whole capture, and polling would also eat
   // gestures the drain owes.
-  const auto stillHeld = []() -> bool {
-    if (g_screenIsTft) return solide::touch::read().down;
-    return solide::input::pressed();
-  };
+  const auto stillHeld = []() -> bool { return solide::touch::read().down; };
   while (!g_voiceDone) {
     if (stillHeld()) {
       releasedFor = 0;                // still held (or a bounce recovered): keep going
@@ -1663,27 +1660,22 @@ static void applyConfig() {
 // 5574 mV live. The firmware now protects at agent::store::sleepMv() (default 6000 mV =
 // ~10% REAL SoC from the discharge study), debounced in the power policy and
 // overridable by the owner/AI (agent::store::sleepOvr - deep-discharge risk accepted).
-// Wake sources: rotate the knob (encoder A/B = GPIO 1/2, RTC-capable - the BUTTON
-// on GPIO 48 canNOT wake from deep sleep) or the periodic timer (charger sniff).
+// Wake source: the periodic charger-sniff timer (plus the fuel-gauge VBUS pin
+// where fitted). The panel has no wake gesture, so the copy must not promise one.
 static void persistConfig();                // defined below (config section)
 static bool s_wokeFromLowBatt = false;      // this boot is a low-batt wake
 static uint32_t s_lowBattGraceUntil = 0;    // awake window before re-sleeping
 
 [[noreturn]] static void enterLowBattSleep() {
   persistConfig();
-  // Leave the instructions on the panel. On e-ink they survive at 0 mA; on a TFT
-  // they are only readable until the rails drop, so the copy must not promise a
-  // wake gesture that board does not have.
-  if (g_screenIsTft) {
-    // The idle path may have blanked the backlight (that IS the TFT power
-    // saving), and neither the T2 path nor this function calls saverKick - so
-    // without this the message would be blitted onto an unlit panel.
-    hw::tft::setBacklight(nimbus::backlightPctFor(g_cfg.posture()));
-    g_askOverride = "Battery empty - going to sleep.\nPlease charge me.\n"
-                    "It will wake when you plug in a charger.";
-  } else {
-    g_askOverride = "Battery empty - going to sleep.\nPlease charge me.\nTurn the knob to wake.";
-  }
+  // Leave the instructions on the panel. They are only readable until the rails
+  // drop, so the copy promises only the wake gesture this board actually has.
+  // The idle path may have blanked the backlight (that IS the power saving), and
+  // neither the T2 path nor this function calls saverKick - so without this the
+  // message would be blitted onto an unlit panel.
+  hw::tft::setBacklight(nimbus::backlightPctFor(g_cfg.posture()));
+  g_askOverride = "Battery empty - going to sleep.\nPlease charge me.\n"
+                  "It will wake when you plug in a charger.";
   renderScreen(attn::ScreenId::Ask, -1);
   solide::leds::clearFrame();
   solide::leds::show(solide::leds::Pattern::Solid, 0, 0, 0);
@@ -1696,20 +1688,9 @@ static uint32_t s_lowBattGraceUntil = 0;    // awake window before re-sleeping
 #if defined(NIMBUS_HAS_FUEL_GAUGE)
   esp_sleep_enable_ext0_wakeup(gpio_num_t(NIMBUS_VBUS_SENSE_PIN), 1);
 #endif
-  // Knob-rotation wake: a detent click drives the quadrature pair through its
-  // phases, pulling A/B low - ANY_LOW fires on the first edge. Keep the RTC
-  // domain pullups alive so the idle-high lines don't float.
-  // ⚠ TFT boards have NO knob - GPIO 1 is the panel's MISO and GPIO 2 its
-  // backlight (board_solide_s3.h), and T_IRQ is not connected, so touch cannot
-  // wake either. Arming ext1 there would pull up an LEDC-driven output through
-  // deep sleep: pointless at best, extra draw on a dying pack at worst. The
-  // charger-sniff timer below is the only recovery path on that board, which is
-  // exactly what its copy above now says.
-  if (!g_screenIsTft) {
-    rtc_gpio_pullup_en(GPIO_NUM_1);  rtc_gpio_pulldown_dis(GPIO_NUM_1);
-    rtc_gpio_pullup_en(GPIO_NUM_2);  rtc_gpio_pulldown_dis(GPIO_NUM_2);
-    esp_sleep_enable_ext1_wakeup((1ULL << 1) | (1ULL << 2), ESP_EXT1_WAKEUP_ANY_LOW);
-  }
+  // The panel has no wake gesture (GPIO 1/2 are the panel's MISO/backlight, and
+  // T_IRQ is not wired), so the charger-sniff timer below is the only recovery
+  // path - exactly what the on-screen copy above promises.
   // Periodic charger sniff (no VBUS pin): wake, read the pack, stay up only if
   // it recovered - so plugging a charger in revives the device on its own.
   esp_sleep_enable_timer_wakeup(uint64_t(kLowBattWakeMinutes) * 60ULL * 1000000ULL);
@@ -2008,8 +1989,8 @@ static void orchestratorBegin() {
 static nimbus::hw::SelfTestInputs buildSelfTestInputs() {
   nimbus::hw::SelfTestInputs in;
   in.halDisplay = g_hal.display; in.halLeds = g_hal.leds; in.halStorage = g_hal.storage;
-  in.halMemory  = g_hal.memory;  in.halInput = g_hal.input;
-  in.halTouch   = g_hal.touch;   in.halTouchBoard = g_screenIsTft;
+  in.halMemory  = g_hal.memory;
+  in.halTouch   = g_hal.touch;
   in.battery = g_power.last();
   in.batteryEst = g_battEstimate;
   in.wifiConnected = net::staConnected();
@@ -2985,7 +2966,6 @@ void setup() {
       delay(1500);  // reply flush + let the mode-switch clip finish before restart
       ESP.restart();
     };
-    h.swRaw = [] { return solide::input::pressed(); };  // raw debounced switch (SW?)
     h.bleState = [](int& en, int& conn) {               // BLE? diagnostic
       en = (!g_orchMode && net::ble::enabled()) ? 1 : 0;
       conn = net::ble::connected() ? 1 : 0;
@@ -3124,12 +3104,10 @@ void setup() {
   g_power.policyRef().setT2Override(agent::store::sleepOvr());
   {
     const esp_sleep_wakeup_cause_t wc = esp_sleep_get_wakeup_cause();
-    if (wc == ESP_SLEEP_WAKEUP_EXT1 || wc == ESP_SLEEP_WAKEUP_TIMER ||
-        wc == ESP_SLEEP_WAKEUP_EXT0) {
+    if (wc == ESP_SLEEP_WAKEUP_TIMER || wc == ESP_SLEEP_WAKEUP_EXT0) {
       s_wokeFromLowBatt = true;
       s_lowBattGraceUntil = millis() + 90u * 1000u;   // 90 s to react
-      agent::alogf("power: woke from low-batt sleep (cause=%d) - %s", int(wc),
-                   wc == ESP_SLEEP_WAKEUP_EXT1 ? "knob rotation" : "timer/charger sniff");
+      agent::alogf("power: woke from low-batt sleep (cause=%d) - timer/charger sniff", int(wc));
     }
   }
 
@@ -4619,133 +4597,15 @@ void loop() {
       renderScreen(attn::ScreenId::StatusIdle, -1);
   }
 
-  // Touch (TFT boards only - there is no knob, its pins are the panel's). A tap
-  // is resolved against the tap regions of the frame ACTUALLY on the panel and
-  // then dispatched into the SAME calls the encoder makes, so the menu FSM, its
-  // dirty-persist block and its request-flag drains below all run unchanged and
-  // never learn that touch exists.
-  // ⚠ TOUCHPOLL 0 disables the touch pump at runtime. The panel shows content for
+  // Touch input. A tap is resolved against the tap regions of the frame ACTUALLY
+  // on the panel and dispatched into the menu FSM and cursor, so its dirty-persist
+  // block and request-flag drains below all run unchanged.
+  // ⚠ TOUCHPOLL 0 disables the touch pump at runtime.
   if (g_screenIsTft) drainTouch(now);
 
-  // Encoder. Long-press toggles the settings menu; while open, the knob drives
-  // the menu instead of the job cursor. Under NIMBUS_TEST the same body also
-  // consumes synthetic events queued by the `ENC` console command, so the menu
-  // is fully HIL-driveable without a physical knob (real events take priority).
-  solide::input::Event e;
-  for (;;) {
-    bool got = solide::input::pop(e);
-#ifdef NIMBUS_TEST
-    if (!got) {
-      int code;
-      if (tc::popInjectedEncoder(code)) { e = solide::input::Event(code); got = true; }
-    }
-#endif
-    if (!got) break;
-    // Knob/button = the owner is present: reset the screensaver clock (and
-    // restore live status if the logo is showing) BEFORE the event handling,
-    // so the event acts on a live screen.
-    saverKick();
-#if defined(NIMBUS_NOTIFIER_DEBUG) || defined(NIMBUS_TEST)
-    // Encoder-event name, shared by the debug print and the test console's ENC
-    // echo (F1). Computed once here so both consumers see the same value.
-    const char* en = e == solide::input::Event::RotateCW    ? "CW"
-                   : e == solide::input::Event::RotateCCW   ? "CCW"
-                   : e == solide::input::Event::Click       ? "CLICK"
-                   : e == solide::input::Event::LongPress   ? "LONG"
-                                                            : "?";
-#endif
-#ifdef NIMBUS_NOTIFIER_DEBUG
-    Serial.printf("ENC %s menuOpen=%d jobs=%d panelBusy=%d needPaint=%d\n", en,
-                  int(g_menu.isOpen()), jobCount(), int(g_panelBusy),
-                  int(g_menuNeedsPaint));
-#endif
-#ifdef NIMBUS_TEST
-    tc::onEncoder(en);  // clean, gated (INPUTLOG) machine form for the harness
-#endif
-    if (g_menu.isOpen()) {
-      // The menu mutates g_cfg's override arrays on this (main) task while the
-      // web layer's buildState() reads them on the AsyncTCP task. Hold the net
-      // config lock across the write so /api/state can't serialize a torn value.
-      {
-        net::ConfigLockGuard lk;
-        switch (e) {
-          case solide::input::Event::RotateCW:  g_menu.onRotate(+1); break;
-          case solide::input::Event::RotateCCW: g_menu.onRotate(-1); break;
-          case solide::input::Event::Click:     g_menu.onClick(); break;
-          case solide::input::Event::LongPress: g_menu.onLongPress(); break;
-          default: break;
-        }
-      }
-      settleMenuAfterMutation(now);
-      continue;
-    }
-
-    // Menu closed. Notifier: rotate = job cursor, long-press = menu. Orchestrator
-    // (Phase 4): rotate = SESSION cursor (blink the focused session's ring segment
-    // + e-ink SessionDetail), long-press = HOLD-TO-TALK, and click opens the menu
-    // (since long-press is taken by voice; on-device config is also on the web UI).
-    if (e == solide::input::Event::RotateCW ||
-        e == solide::input::Event::RotateCCW) {
-      const int dir = (e == solide::input::Event::RotateCW) ? +1 : -1;
-      if (g_askSticky) {
-        // Reading a held reply (P2.3): rotate PAGES through it instead of moving
-        // the session cursor underneath the reading.
-        pageAskReply(dir);
-        continue;
-      }
-      if (g_orchMode) {
-        // Focus universe = Orchestrator root (0) + sub-sessions (1..N) - always >= 1,
-        // so rotating always has the head to land on even with no sub-agents running.
-        g_cursor.onDetent(dir, int(focusCount()), now);
-        g_sched.onDetent(uint8_t(attn::ScreenId::SessionDetail), now);
-      } else {
-        g_cursor.onDetent(dir, jobCount() > 0 ? jobCount() : 1, now);
-        g_sched.onDetent(uint8_t(attn::ScreenId::JobDetail), now);
-      }
-      refreshRing();
-    } else if (e == solide::input::Event::Click) {
-      // Dismiss a held reply FIRST (P2.3): the click closes it and falls through
-      // to the normal wake behavior; the attention intent repaints status now.
-      if (g_askSticky) {
-        g_askSticky = false; g_askPage = 0; g_askOverride = "";
-        g_sched.onIntent(uint8_t(attn::ScreenId::StatusIdle), true, now);
-      }
-      // Every single click "wakes" the ring: a brief full-brightness reveal of live
-      // status in any posture (Dark/Calm's dark ring, or the dimmed Desk idle glow).
-      // It also clears any orchestrator lights/led override - a click means "show
-      // me the ring", which outranks an earlier spoken "lights off" / pattern.
-      // (Raw byte-flag writes: single-writer main task; the poll task's staged
-      // update would simply re-run the drain, which is idempotent.)
-      g_lightsOff = false;
-      g_ledOverrideActive = false;
-      g_revealUntilMs = now + kRevealMs;
-      g_revealDurMs   = kRevealMs;
-      hw::setBrightnessHold(true);   // the eased envelope owns brightness now (P2.4)
-      refreshRing();
-      // DOUBLE-click opens the menu in BOTH modes. In Orchestrator long-press is
-      // hold-to-talk, so double-click is the only knob path to the menu; in Notifier
-      // long-press ALSO opens it, but double-click is offered for parity so the same
-      // gesture works everywhere (owner hit this: double-tap did nothing in Notifier).
-      static uint32_t s_lastClickMs = 0;
-      if (s_lastClickMs && (now - s_lastClickMs) < 350) {
-        s_lastClickMs = 0;                     // consume the pair
-        openSettingsMenu();
-      } else {
-        s_lastClickMs = now;
-        g_sched.onIntent(uint8_t(attn::ScreenId::StatusIdle), false, now);
-      }
-    } else if (e == solide::input::Event::LongPress) {
-      if (g_orchMode) {
-        captureVoiceTurn();  // hold-to-talk -> STT -> orchestrator turn
-      } else {
-        openSettingsMenu();  // Notifier: long-press opens the menu (no voice here)
-      }
-    }
-  }
-
-  // The e-ink scheduler only drives the panel while the menu is closed AND no
+  // The render scheduler only drives the panel while the menu is closed AND no
   // reply is being held (P2.3): a sticky reply must not be overwritten by the
-  // next scheduled render - it dismisses on click, like the menu's own gating.
+  // next scheduled render - it dismisses on tap, like the menu's own gating.
   if (!g_menu.isOpen() && !g_askSticky) {
     render::RenderCommand cmd = g_sched.tick(now);
     if (cmd.render) {

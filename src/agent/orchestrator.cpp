@@ -793,12 +793,9 @@ static TurnEngine::Deps buildTurnDeps() {
     const nimbus::hw::HalHealth& hal = nimbus::hw::halHealth();
     using nimbus::fault::active;
     in.hw.ring     = hal.leds    && !active(nimbus::fault::LED);
-    // Which panel is actually fitted - the manifest exists so the model's
-    // self-model matches reality, and on a touch board claiming "e-ink" told
-    // the owner to look at hardware that is not there.
-    in.hw.eink     = hal.display && !hal.isTouchBoard && !active(nimbus::fault::SCREEN);
-    in.hw.touch    = hal.display &&  hal.isTouchBoard && !active(nimbus::fault::SCREEN);
-    in.hw.encoder  = hal.input;   // already false on a touch board, by construction
+    // The color touchscreen is the only supported display; the manifest reports
+    // it so the model's self-model matches the hardware in front of the owner.
+    in.hw.touch    = hal.display && !active(nimbus::fault::SCREEN);
     in.hw.mic      = !active(nimbus::fault::MIC);
     in.hw.speaker  = !active(nimbus::fault::SPEAKER);   // reconnected + loopback-verified
     // W10: the old `= false // NullMonitor` was STALE - every s3 build carries

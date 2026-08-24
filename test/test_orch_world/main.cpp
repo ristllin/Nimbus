@@ -20,7 +20,7 @@ static bool has(const std::string& hay, const char* needle) {
 static void test_capabilities_lists_present_hardware() {
   Hardware hw;
   hw.deviceName = "Nimbus"; hw.version = "1.0";
-  hw.ring = true; hw.eink = true; hw.mic = true; hw.sd = true;
+  hw.ring = true; hw.touch = true; hw.mic = true; hw.sd = true;
   hw.wifi = true; hw.telegram = true;
   std::vector<ToolInfo> tools = {{"memory.search", "search long-term memory"}};
   std::string m = renderCapabilities(hw, tools);
