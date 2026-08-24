@@ -130,6 +130,31 @@ bundle symbol resolved. Each provider must be confirmed to still CONNECT with va
 on (trigger `provider_verify` per provider → `result=1 verified`, plus one real turn) -
 a provider whose root isn't bundled fails as a connect error until the flag is flipped.
 
+### DONE(security): tunnel secret-containment (canonicalize, deny, scrub)
+
+The loopback replay stamps a valid LAN token onto every tunneled request, so any endpoint
+whose response reflects a durable secret must never be served over the tunnel. That
+containment now lives in one portable, host-tested place
+(`lib/core/.../cloud/tunnel_guard.*`, `test/test_tunnel_guard`) with three layers:
+
+- **Canonicalize before the check.** The local web server percent-decodes and strips the
+  query from a path before it routes, so the guard first reduces the raw tunneled path to
+  the same form (percent-decode, drop the query, strip a trailing slash). A request for
+  `/api/%63onnect` now resolves to `/api/connect` and is caught, where a raw string compare
+  would have missed it and leaked the token and setup-AP password.
+- **Deny the secret endpoints.** The canonical path is refused (403, the handler never
+  runs) for `/api/connect`, `/api/token/regen`, and the sign-in endpoints
+  `/api/signin/code` and `/api/signin/exchange`. The sign-in pair was the gap that let a
+  hostile relay read a single-use code and exchange it for the durable token.
+- **Scrub as a backstop.** Any tunneled JSON response has the `token` and `apPass` field
+  values stripped before it is framed back, so even a future un-denied endpoint cannot
+  carry those secrets off the device. (The sign-in `code` field is contained by the
+  denylist instead of the scrubber, because that field name is also the legitimate
+  cloud-pairing code in the relay-status response.)
+
+The remote owner is already authenticated by the service and reaches the device on its own
+network for anything the denylist withholds, so remote use is unaffected.
+
 ### Access token out of URLs (largely implemented 2026-08-23)
 
 **Status: LAN paths fixed; device-screen QR + AP first-run redirect pending.** The
