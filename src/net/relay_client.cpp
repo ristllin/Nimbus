@@ -25,6 +25,7 @@
 #include "nimbus/cloud/relay_credential.h"   // CUM-52: exp/re-mint policy (pure core)
 #include "nimbus/cloud/relay_timing.h"        // CUM-160: bound the TLS slot-hold below the watchdog
 #include "nimbus/cloud/loopback_target.h"     // CUM-173: never dial 0.0.0.0 for the loopback fallback
+#include "nimbus/cloud/relay_heap.h"          // CUM-167: heap-floor policy (host-tested, bounce-buffer aware)
 #include "nimbus/cloud/relay_ws.h"
 #include "nimbus/cloud/tunnel_guard.h"   // canonicalize+deny secret paths, scrub secret bodies
 #include "version.h"
@@ -63,12 +64,10 @@ constexpr uint32_t kLoopbackConnectMs = 1500;
 constexpr uint32_t kHeartbeatMinMs = 5000;     // clamp the relay-supplied heartbeat to a
 constexpr uint32_t kHeartbeatMaxMs = 300000;   // sane band (a huge value disables liveness)
 constexpr size_t kMaxHandshakeHead = 4096;     // WS upgrade response head cap (anti-OOM)
-// Realistic floor for the relay: its task stack is already allocated at begin() and
-// its big buffers (TLS arena, response body, res frame) are PSRAM-backed, so it does
-// NOT need OTA's 16 KB-contiguous internal block. This only refuses to dial when the
-// head is genuinely starved; normal S3 fragmentation (largest ~13 KB) is fine.
-constexpr size_t kHeapFloorFree = 16000;
-constexpr size_t kHeapFloorLargest = 8000;
+// The relay heap floor (CUM-167) lives in lib/core (nimbus/cloud/relay_heap.h),
+// host-tested: the relay's big buffers are PSRAM-backed so it only needs a small
+// contiguous internal block (the 4 KB WS handshake head), and the largest-block floor
+// was lowered to coexist with solide-drivers v0.6.1's internal DMA bounce buffer.
 
 // --- status snapshot (written by the task, read by web/console) --------------
 portMUX_TYPE g_mux = portMUX_INITIALIZER_UNLOCKED;
@@ -118,7 +117,7 @@ void setPairing(const char* code, const char* url) {
 bool heapFloorOk() {
   size_t freeInt = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
   size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-  return freeInt >= kHeapFloorFree && largest >= kHeapFloorLargest;
+  return nimbus::cloud::relayCanDial(freeInt, largest);
 }
 
 void fillMask(uint8_t m[4]) {
@@ -196,8 +195,11 @@ bool doLoopback(const std::string& method, const std::string& path,
 
   // Read buffer off the task stack (heap) - a large on-stack buffer here overflowed
   // the relay task while a tunneled request was in flight (crash + reboot, found live).
+  // Prefer PSRAM (CUM-167): keep this transient buffer OUT of the scarce internal SRAM
+  // the display bounce buffer now shares, falling back to internal only if PSRAM is full.
   const size_t kBuf = 1460;
-  uint8_t* buf = (uint8_t*)heap_caps_malloc(kBuf, MALLOC_CAP_8BIT);
+  uint8_t* buf = (uint8_t*)heap_caps_malloc(kBuf, MALLOC_CAP_SPIRAM);
+  if (!buf) buf = (uint8_t*)heap_caps_malloc(kBuf, MALLOC_CAP_8BIT);
   if (!buf) { c.stop(); return false; }
   uint32_t deadline = millis() + kLoopbackTimeoutMs;
   while (millis() < deadline && !rp.complete() && !rp.error()) {
@@ -923,7 +925,21 @@ void relayTask(void*) {
 
     if (!agent::store::cloudOptIn()) { setState(State::Disabled); vTaskDelay(pdMS_TO_TICKS(1000)); continue; }
     if (!wifiReady()) { vTaskDelay(pdMS_TO_TICKS(2000)); continue; }
-    if (!heapFloorOk()) { setState(State::Disabled); setErr("Not enough memory right now."); vTaskDelay(pdMS_TO_TICKS(60000)); continue; }
+    if (!heapFloorOk()) {
+      // CUM-167: refuse to dial only while genuinely starved, and RE-CHECK often so the
+      // relay comes online promptly once internal SRAM frees (the old 60 s latch left it
+      // "disabled" long after recovery). The next pass clears this error when it proceeds
+      // to dial. Log the live numbers so the bench sees the actual free/largest.
+      setState(State::Disabled);
+      setErr("Not enough memory right now.");
+      agent::alogf("relay: heap floor - free=%u largest=%u (need free>=%u largest>=%u); retry 10s",
+                   (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                   (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                   (unsigned)nimbus::cloud::kRelayHeapFloorFree,
+                   (unsigned)nimbus::cloud::kRelayHeapFloorLargest);
+      vTaskDelay(pdMS_TO_TICKS(10000));
+      continue;
+    }
 
     // Pairing requested (or not yet paired but explicitly asked).
     if (g_reqPair) {

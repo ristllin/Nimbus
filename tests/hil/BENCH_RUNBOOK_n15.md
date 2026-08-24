@@ -138,3 +138,37 @@ orient branch, so verify with real taps:
 5. If reversed, apply the matching fix above, reflash, and re-verify all four corners.
 6. Restore Nimbus-4's original `tftFlip` / NVS when done (personal board).
 Pass = taps land on the on-screen target in the mounted orientation, all four corners.
+
+---
+
+## Symptom C - relay refuses to dial: "Not enough memory right now" (CUM-167)
+
+### Root cause (instrument-proven, NOT a lane-N15 code regression)
+On final main Nimbus-4's /api/state reports cloud state=disabled, err="Not enough memory
+right now": the relay heap-floor guard (heapFloorOk) refused to dial. Measured: internal
+free ~26 KB but the largest free internal block dipped below the old 8000 floor.
+
+The cause is solide-drivers **v0.6.1** (CUM-167 white-screen fix): full frames from PSRAM
+are staged through a persistent **internal DMA bounce buffer**
+(`display_tft.cpp` `kBlitBandRows=8` -> `8*320*2 = 5120 B`, `MALLOC_CAP_INTERNAL|MALLOC_CAP_DMA`).
+That 5 KB block, allocated at display init, sits mid-heap and SPLITS the largest free
+internal block below 8000 - so the relay's contiguous-block floor failed even with ample
+total free. It is NOT the N15 third-handback code: static RAM is byte-identical (83068)
+across b69b2bb, my HEAD, and 32703ed, and the relay's big buffers (TLS/body/frame) are
+PSRAM-backed. The buffer is essential (a PSRAM DMA burst resets the panel) and cannot move
+to PSRAM; it can only be shrunk in the driver (owner: CUM-167).
+
+### Fix (lane N15 scope)
+The relay's real internal-contiguous demand is only the 4 KB WS handshake head - the floor's
+8000 was headroom assuming "largest ~13 KB is normal", which the bounce buffer broke. Lowered
+`kRelayHeapFloorLargest` 8000 -> 5000 (host-tested in `test/test_relay_heap`; still clears the
+4 KB handshake need with margin, free floor unchanged so genuine starvation still refuses).
+The guard now RE-CHECKS every 10 s (was 60 s) and logs the live numbers
+`relay: heap floor - free=<n> largest=<n> ...` so it comes online promptly on recovery. The
+relay's own transient loopback buffer moved to prefer PSRAM.
+
+### Bench numbers (before/after intLargest)
+- BEFORE (floor 8000): /api/state cloud.state=disabled, err="Not enough memory right now".
+- AFTER (floor 5000): with the same intFree/intLargest, relayCanDial returns true; /api/state
+  cloud dials (Idle/Connecting/Online). Read `mem.intFree` / `mem.intLargest` from /api/state
+  before and after. Field-verify on Nimbus-4 (owner) that the cloud link comes up.
