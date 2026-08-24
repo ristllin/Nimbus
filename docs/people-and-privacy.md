@@ -161,5 +161,5 @@ deliberately removed, they fail.
 ## Related
 
 - [Storage tiering](./orchestrator-storage.md) - where each kind of data lives
-- [Conversation compaction](./compaction.md) - how long history is kept
+- [Memory: conversation compaction](./memory.md) - how long history is kept
 - [Security posture](./security.md) - the device's open security items

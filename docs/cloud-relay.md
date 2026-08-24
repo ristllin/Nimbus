@@ -25,10 +25,10 @@ can never touch the signed-in session on the main origin.
 
 1. Put the device in Orchestrator mode.
 2. On the device web UI, open Settings > Cloud access and choose "Pair with the cloud".
-   The device shows an eight-character code (and a QR) on its screen. The console
-   command `CLOUDPAIR` does the same on a test build.
-3. Sign in at `app.cumulo-nimbus.ai`, open your account, and enter the code under
-   "Pair a new device".
+   The device shows a **Cloud link code** (8 characters, and a QR) on its screen. The
+   console command `CLOUDPAIR` does the same on a test build.
+3. Sign in at `app.cumulo-nimbus.ai`, open the pairing page, and enter the Cloud link
+   code (or scan the QR) to pair the device.
 4. The device connects and appears in your account as online. "Open" serves its UI
    through the tunnel.
 
