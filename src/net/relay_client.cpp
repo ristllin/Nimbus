@@ -9,6 +9,7 @@
 #include <esp_random.h>
 #include <time.h>
 
+#include <cctype>
 #include <string>
 #include <vector>
 
@@ -23,6 +24,7 @@
 #include "nimbus/cloud/relay_codec.h"
 #include "nimbus/cloud/relay_credential.h"   // CUM-52: exp/re-mint policy (pure core)
 #include "nimbus/cloud/relay_ws.h"
+#include "nimbus/cloud/tunnel_guard.h"   // canonicalize+deny secret paths, scrub secret bodies
 #include "version.h"
 
 namespace nimbus {
@@ -188,19 +190,23 @@ bool wsSendSmall(ws::Opcode op, const uint8_t* payload, size_t len) {
   return g_ws->write(reinterpret_cast<const uint8_t*>(frame.data()), frame.size()) == frame.size();
 }
 
-// Endpoints whose RESPONSE reflects the device's LAN secrets (the webAuthToken, the
-// setup-AP password) must NEVER be replayed over the tunnel: the loopback injects a
-// valid token so they return 200, and the body would then carry that persistent,
-// unrevocable secret out to the cloud, breaking "the token never leaves the device".
-// The remote owner is already authenticated by the cloud and does not need the LAN
-// token (it is a same-network concept). Matched by exact path or path?query.
-static bool isTunnelDeniedPath(const char* path) {
-  static const char* kDenied[] = {"/api/connect", "/api/token/regen"};
-  for (const char* d : kDenied) {
-    size_t n = strlen(d);
-    if (strncmp(path, d, n) == 0 && (path[n] == '\0' || path[n] == '?')) return true;
+// Secret-containment policy for the tunnel lives in the portable, host-tested guard
+// (lib/core, nimbus::cloud::tunnel): it canonicalizes the raw tunneled path to the form
+// the local router dispatches on (percent-decode + query/trailing-slash strip) BEFORE the
+// denylist check, refuses the secret-bearing endpoints (connect / token-regen / signin),
+// and scrubs the durable token + AP password from any tunneled JSON body as a backstop.
+// Cap the backstop copy: a JSON secret response is a few hundred bytes, so only small
+// bodies are copied+scrubbed; the big bodies (the UI page, downloads) skip it untouched.
+constexpr size_t kMaxScrubBody = 16 * 1024;
+
+// Return the value of a header by case-insensitive name, or "" if absent.
+std::string headerValue(const http_replay::Headers& headers, const char* nameLower) {
+  for (const auto& kv : headers) {
+    std::string n = kv.first;
+    for (char& c : n) c = (char)tolower((unsigned char)c);
+    if (n == nameLower) return kv.second;
   }
-  return false;
+  return std::string();
 }
 
 // Collect the tunneled request's headers + decoded body, then replay it into the local
@@ -283,7 +289,7 @@ void emitResFrame(const char* id, int status, const http_replay::Headers& header
 
 // Answer a tunneled request: replay into the local server, frame the response back.
 void handleReq(const ReqFrame& req) {
-  const bool denied = isTunnelDeniedPath(req.path);
+  const bool denied = tunnel::isTunnelDenied(req.path ? req.path : "");
   http_replay::ResponseParser rp(kMaxRespBody);
   bool ok = denied ? false : replayReq(req, rp);
 
@@ -296,9 +302,21 @@ void handleReq(const ReqFrame& req) {
   const uint8_t* obody = nullptr;
   size_t obodyLen = 0;
   std::string errStr;
+  std::string scrubbed;  // holds a redacted copy when the JSON secret backstop fires
   if (ok && status < 500) {
     outHdrs = rp.headers();
     if (!rp.body().empty()) { obody = rp.body().data(); obodyLen = rp.body().size(); }
+    // Backstop: strip the durable token / AP password from a small JSON body before it is
+    // framed to the cloud, so an un-denied endpoint can never carry them off the device.
+    if (obodyLen && obodyLen <= kMaxScrubBody) {
+      std::string ct = headerValue(outHdrs, "content-type");
+      scrubbed.assign(reinterpret_cast<const char*>(obody), obodyLen);
+      if (tunnel::scrubJsonSecrets(ct, scrubbed)) {
+        obody = reinterpret_cast<const uint8_t*>(scrubbed.data());
+        obodyLen = scrubbed.size();
+        agent::alog("relay: scrubbed secret field from tunneled body");
+      }
+    }
   } else {
     outHdrs.emplace_back("content-type", "text/plain");
     errStr = denied ? "Not available over the cloud; use this device on its network."
