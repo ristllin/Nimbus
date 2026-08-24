@@ -40,6 +40,16 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 MASTER_SEED = 5  # variant I - the owner-approved draw
 MARK_SEED = 7
 
+# Safe-zone inset for the small mark. The mark is the version shown inside
+# ROUND chrome at tiny sizes - the web UI sidebar orb (a 34 px circle), the
+# browser favicon, the reset splash - and it used to fill the 128 viewBox
+# edge-to-edge, so the outer ring sat on (and was clipped by) the circular
+# mask and crowded the orb's glow ring. Insetting the ring by this factor
+# leaves an app-icon-style margin; it is a uniform scale about the center, so
+# the dot pattern (count, colors, opacities) is byte-for-byte the same draw,
+# just smaller. The master/card art is unaffected - only mark_dots() uses it.
+MARK_FIT = 0.85
+
 # Teal palette, dark -> pale (sampled to match the reference art).
 PALETTE = [
     "#0B7285",  # 0 deep
@@ -111,10 +121,10 @@ def mark_dots():
     return dot_ring(
         cx=64,
         cy=64,
-        r_in=37,
-        r_out=56,
+        r_in=37 * MARK_FIT,
+        r_out=56 * MARK_FIT,
         rows=3,
-        dot_r=4.8,
+        dot_r=4.8 * MARK_FIT,
         seed=MARK_SEED,
         spacing=2.0,
         weights=FLAT_WEIGHTS[:7],
