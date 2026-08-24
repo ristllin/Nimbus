@@ -88,8 +88,9 @@ String agentFabricCfg();                    // legacy category bindings "code:op
 
 // ---- user directive + TTS ----
 String sysPrompt();          // the user directive (immutable by the model)
-bool   ttsEnabled();         // "Voice replies" master toggle (default OFF, P2.5): gates the
-                             // tts action, reply.speak, and reply.telegram voice - OFF = text only
+bool   ttsEnabled();         // "Voice replies" master toggle (default ON, N12 - see
+                             // TTS_ENABLED_DEFAULT): gates the tts action, reply.speak, and
+                             // reply.telegram voice - OFF = text only
 bool   orchToolLoop();       // head multi-turn tool-use loop enabled (default ON, P6)
 bool   codeSandbox();        // Assistant > Tools: Code sandbox (code_interpreter/code_execution) (default OFF)
 bool   midTurnFailover();    // mid-turn provider failover on loop turns (default ON)

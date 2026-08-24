@@ -192,7 +192,7 @@ String agentFabricCfg() {
 
 // ---- directive + TTS + benign config ----
 String sysPrompt() { return solide::memory::getString(AKEY_SYS_PROMPT, ""); }
-bool   ttsEnabled() { return solide::memory::getBool(AKEY_TTS_ENABLED, false); }
+bool   ttsEnabled() { return solide::memory::getBool(AKEY_TTS_ENABLED, TTS_ENABLED_DEFAULT); }
 // P6: the tool loop is THE turn path now - default ON (single-shot survives only
 // as the heap-pressure fallback in runTurn). Caps are user-tunable + clamped.
 bool   orchToolLoop() { return solide::memory::getBool(AKEY_ORCH_TOOLLOOP, true); }

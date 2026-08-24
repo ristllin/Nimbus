@@ -28,7 +28,8 @@
 #include "agent/adapters/audio_stt.h"  // MICREC - mic + STT test
 #include "nimbus/fault.h"              // FAULT - resilience capability injection
 #include "sfx/sound_fx.h"              // SFX - play a sound clip by slug
-#include "sfx/music.h"                 // PLAY - music player drill (CUM-40)
+#include "sfx/music.h"                 // PLAY - music player drill (CUM-40); SPKSAY MP3 play
+#include "nimbus/tts_catalog.h"        // SPKSAY - provider -> speaker format routing
 #include "nimbus/orch/media.h"         // validMusicName
 #include "sfx/sfx_sync.h"              // sfxsync - sync status in STATUS
 #include <LittleFS.h>
@@ -291,15 +292,23 @@ void dispatch(String line) {
     return;
   }
   if (line.startsWith("SPKSAY ")) {
-    // TTS the text and play it on the speaker. Watchdog off during the blocking
-    // network synth + playback (both exceed the main-loop budget individually).
+    // TTS the text and play it on the speaker, in the format the CONFIGURED provider
+    // emits (OpenAI -> WAV; Mistral/Voxtral -> MP3 via minimp3). This mirrors the real
+    // reply.speak routing so the bench proves the owner's actual provider. Watchdog off
+    // during the blocking network synth + playback (both exceed the main-loop budget).
     String txt = line.substring(7);
-    Serial.printf("SPKSAY synth+play: %s\n", txt.c_str()); Serial.flush();
+    bool mp3 = false;
+    const char* fmt = core::speakerTtsFormat(std::string(agent::tts::activeProvider().c_str()), &mp3);
+    const char* path = mp3 ? "/tts.mp3" : "/tts.wav";
+    Serial.printf("SPKSAY synth+play (%s): %s\n", fmt, txt.c_str()); Serial.flush();
     esp_task_wdt_delete(nullptr);
-    size_t n = agent::tts::synthesizeToFile(txt, "/tts.wav", "wav");
-    bool played = n ? solide::audio::playWavFile(LittleFS, "/tts.wav") : false;
+    size_t n = agent::tts::synthesizeToFile(txt, path, fmt);
+    bool played = false;
+    if (n) played = mp3 ? music::streamMp3File(LittleFS, path)
+                        : solide::audio::playWavFile(LittleFS, path);
     esp_task_wdt_add(nullptr);
-    Serial.printf("SPKSAY bytes=%u played=%d (did you HEAR it?)\n", (unsigned)n, (int)played);
+    Serial.printf("SPKSAY bytes=%u fmt=%s played=%d (did you HEAR it?)\n",
+                  (unsigned)n, fmt, (int)played);
     return;
   }
   if (line == "WEBTOK?") {

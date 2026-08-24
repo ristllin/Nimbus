@@ -1,5 +1,6 @@
 #include "sound_fx.h"
 #include "sfx_sync.h"
+#include "music.h"   // streamMp3File (MP3 reply playback) + stopForSpeech (I2S duck)
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
@@ -30,15 +31,22 @@ namespace {
 
 constexpr int kQueueDepth = 2;
 constexpr int kMaxVariants = 8;   // variants per (slug, pool) the resolver considers
+// sfx task stack. Sized to hold the minimp3 decoder's ~16 KB stack scratch (used by
+// a spoken MP3 reply, music::streamMp3File) plus the sync tick's TLS client, with
+// margin. See begin() for the full rationale + the bench validation note.
+constexpr uint32_t kSfxStackBytes = 20480;
 
 struct Item {
   uint8_t ev;
   bool    forced;   // console/web test play: skip nothing at play time, it was pre-gated
-  bool    speak = false;  // play /reply.wav (LittleFS) instead of an event clip -
-                          // the reply.speak tool queues here so an in-turn TTS
+  bool    speak = false;  // play a synthesized reply (LittleFS) instead of an event
+                          // clip - the reply.speak tool queues here so an in-turn TTS
                           // readout never blocks tg_poll for the clip's duration
                           // (a ~12 s inline fetch+playback starved loopTask's
                           // watchdog: task_wdt -> abort, field "harness reset").
+  bool    mp3 = false;    // reply format: true => /reply.mp3 (minimp3), false =>
+                          // /reply.wav (playWavFile). A Mistral (MP3-only) device
+                          // uses the MP3 branch so it can finally speak.
 };
 
 bool          g_began = false;
@@ -131,11 +139,21 @@ void sfxTask(void*) {
     // after the current bounded step finishes (a few seconds, worst case).
     if (xQueueReceive(g_q, &it, pdMS_TO_TICKS(2000)) == pdTRUE) {
       if (it.speak) {
-        // Spoken reply. /reply.wav may be overwritten by a rapid next synth -
-        // acceptable for speech (latest wins); the history row was captured at
-        // queue time. Muted/faulted checks re-run here, not just at post time.
-        if (speakerUsable() && !g_muted)
-          solide::audio::playWavFile(LittleFS, "/reply.wav");
+        // Spoken reply. /reply.wav|/reply.mp3 may be overwritten by a rapid next
+        // synth - acceptable for speech (latest wins); the history row was captured
+        // at queue time. Muted/faulted checks re-run here, not just at post time.
+        if (speakerUsable() && !g_muted) {
+          // Both the reply and any music track feed the ONE shared I2S TX (the driver
+          // serializes it with a whole-clip mutex), so an active track would make the
+          // reply queue behind minutes of audio. Duck music first: a spoken reply wins.
+          music::stopForSpeech();
+          // Playback runs async on this task, so speakOnDevice already reported
+          // "spoken" at queue time (same as the WAV path). Log a decode/playback miss
+          // here so a corrupt clip is at least diagnosable in /api/log.
+          if (it.mp3) { if (!music::streamMp3File(LittleFS, "/reply.mp3"))
+                          agent::alogf("sfx: /reply.mp3 did not play (decode/speaker)"); }
+          else        solide::audio::playWavFile(LittleFS, "/reply.wav");
+        }
       } else {
         resolveAndPlay((Ev)it.ev);
       }
@@ -157,8 +175,15 @@ void begin(bool orchestratorMode) {
   }
   // Low priority, core 0 (main loop + LED render live on core 1): a sound is
   // decoration - it must never contend with rendering or the radio tasks.
-  // 8 KB: playback transients + the sync tick's TLS client both live here.
-  if (xTaskCreatePinnedToCore(sfxTask, "sfx", 8192, nullptr, 1, nullptr, 0) != pdPASS) {
+  // Stack: playback transients + the sync tick's TLS client (~8 KB) USED to fit in
+  // 8 KB, but a spoken MP3 reply now decodes on this task via music::streamMp3File,
+  // and minimp3's mp3dec_decode_frame puts a ~16 KB mp3dec_scratch_t on the STACK
+  // (grbuf + syn + maindata - it cannot be moved to PSRAM the way Mp3Work is). So
+  // the decode path peaks near 17 KB; size the stack to hold it with margin. If a
+  // board cannot spare this, xTaskCreate fails and sfx (and on-device voice) degrade
+  // gracefully rather than bricking. BENCH: confirm the stack high-water mark keeps
+  // >2 KB free on a real MP3 reply and that free internal heap stays healthy.
+  if (xTaskCreatePinnedToCore(sfxTask, "sfx", kSfxStackBytes, nullptr, 1, nullptr, 0) != pdPASS) {
     agent::alogf("sfx: task create failed - sfx disabled");
     vQueueDelete(g_q);
     g_q = nullptr;
@@ -210,10 +235,10 @@ bool onJobState(uint32_t key, uint8_t status) {
   return true;
 }
 
-bool speakReplyWav() {
+bool speakReply(bool mp3) {
   if (!g_began || !g_q) return false;
   if (!speakerUsable()) return false;
-  Item it{0, false, true};
+  Item it{0, false, true, mp3};
   return xQueueSend(g_q, &it, 0) == pdTRUE;   // full queue -> honest false
 }
 

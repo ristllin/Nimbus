@@ -173,7 +173,14 @@
 #define AKEY_TG_NAMES       "tgNames"        // display sidecar "id:name,..." (P8)
 #define AKEY_TG_BOTNAME     "tgBotName"      // connected bot's @username (getMe, display-only)
 #define AKEY_TG_PUBLIC      "tgPublic"       // DANGER: accept anyone (default off, P8)
-#define AKEY_TTS_ENABLED    "ttsEnabled"    // "Voice replies" master toggle (default OFF, P2.5)
+#define AKEY_TTS_ENABLED    "ttsEnabled"    // "Voice replies" master toggle (default: TTS_ENABLED_DEFAULT)
+// DECISION (N12, CUM-134 #1): default voice replies ON. This board has a speaker, and
+// the whole field bug was that it could never speak; shipping the toggle OFF by default
+// reproduces "the device won't talk" for the next owner. A single, clearly-flagged flag
+// so the owner (or the orchestrator at merge) can flip it back to OFF in one place. The
+// NVS key is unchanged, so a device that already set the toggle keeps its stored value;
+// only a fresh/never-set device now defaults ON.
+#define TTS_ENABLED_DEFAULT  true
 #define AKEY_ORCH_TOOLLOOP  "orchLoop"      // head multi-turn tool-use loop on/off (default ON, P6)
 #define AKEY_CODE_SANDBOX   "codeSbx"       // Assistant > Tools "Code sandbox" toggle (default OFF)
 #define AKEY_MID_FAILOVER   "midFail"       // mid-turn provider failover on loop turns (default ON, Stage 2 ph5)

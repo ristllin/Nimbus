@@ -50,7 +50,7 @@ static const char UI_AGENT[] PROGMEM = R"=====(<div class=pane id=pane-harness s
 <label class=pr style="margin-top:8px;color:#e0b870"><input type=checkbox id=tgPublic> <b>Open access</b></label>
 <span class=hint>Anyone who finds this bot on Telegram can use it - and your API credits.</span>
 <label class=pr><input type=checkbox id=ttsOn> Voice replies <button class=qh type=button aria-expanded=false aria-label="About voice replies">?</button></label>
-<p class="hint tip">When on, the assistant may answer with a spoken voice note when that fits - never audio duplicating the same text. When off, it always replies in text.</p>
+<p class="hint tip">When on, the assistant may speak its reply aloud on the device speaker (or as a Telegram voice note) when that fits, never duplicating the same text as audio. When off, it always replies in text.</p>
 </div>
 </details>
 </div>

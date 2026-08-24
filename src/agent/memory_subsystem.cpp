@@ -504,8 +504,9 @@ void begin() {
               if (!agent::store::ttsEnabled())
                 return nimbus::orch::ToolResult::fail(
                     "voice replies are switched OFF - reply with text; if the owner just "
-                    "ASKED for spoken replies, enable them with a config device action "
-                    "setting ttsOn true, then speak on your NEXT turn");
+                    "ASKED for spoken replies, enable them NOW with the device.control tool "
+                    "({\"action\":{\"type\":\"config\",\"ttsOn\":true}}) and call reply.speak "
+                    "again in THIS same turn");
               // Volume 0 = the driver multiplies every sample to silence, but
               // playback still "succeeds" - the model would truthfully report
               // "spoken" while the owner hears nothing. Refuse honestly instead.

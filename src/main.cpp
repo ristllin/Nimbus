@@ -630,16 +630,20 @@ static bool orchSendSink(const String& chatId, const String& text) {
   return agent::telegram::send(chatId, text);
 }
 
-// SpeakSink: voice the text to the OWNER as a Telegram audio message (same
-// pipeline the TTSTG console command proves). The on-device speaker also works
-// (loopback-verified); a direct speaker voice-out tool lands with the
-// channel-aware reply tools (plan P6) - this sink stays the Telegram path.
-// Runs on the poll task between long-polls (single-TLS: the Telegram socket is
-// closed), so the TTS synth + media upload are safe here.
+// SpeakSink: voice the `tts` device action's text. Prefer the on-device speaker
+// (that is what the action promises and what the world prompt now tells the model),
+// and fall back to a Telegram audio message only when on-device speech is not
+// possible (no speaker / synth failed) - so the action is no longer a silent no-op
+// on a device with no Telegram allowlist. Runs on the poll task between long-polls
+// (single-TLS: the Telegram socket is closed), so the TTS synth + upload are safe.
 static void orchSpeakSink(const String& text) {
+  if (text.length() == 0) return;
+  // capture=false: the tts device action records the spoken text to history itself
+  // (apply.cpp captureAssistant), so speakOnDevice must not also capture it.
+  if (agent::orchestrator::speakOnDevice(text, /*capture=*/false)) return;   // played on the speaker
   String allow = agent::store::telegramAllowlist();
   int c = allow.indexOf(','); String chat = (c > 0) ? allow.substring(0, c) : allow; chat.trim();
-  if (chat.length() == 0 || text.length() == 0) return;
+  if (chat.length() == 0) return;
   size_t n = agent::tts::synthesizeToFile(text, "/tts.mp3", "mp3");
   if (n) agent::telegram::sendMedia(chat, "audio", "/tts.mp3", "Nimbus voice");
 }

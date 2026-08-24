@@ -12,8 +12,8 @@ the browser chat.
 3. **Message your bot once** from your own account. Your message appears on
    the Telegram card as a **pending approval** - click **Approve**. No
    chat-ID hunting.
-4. Say hello. The assistant replies in text - and, if **Voice replies** is on,
-   sometimes with a spoken voice note.
+4. Say hello. The assistant replies in text, and, with **Voice replies** on (the
+   default), can also speak the reply aloud on the device speaker.
 
 The first approved account becomes the **owner**: only the owner can run the
 management commands (`/update`, `/loops`, `/compact`, `/skill`, `/help` lists
