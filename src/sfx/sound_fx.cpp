@@ -1,5 +1,6 @@
 #include "sound_fx.h"
 #include "sfx_sync.h"
+#include "music.h"   // streamMp3File (MP3 reply playback) + stopForSpeech (I2S duck)
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
@@ -34,11 +35,14 @@ constexpr int kMaxVariants = 8;   // variants per (slug, pool) the resolver cons
 struct Item {
   uint8_t ev;
   bool    forced;   // console/web test play: skip nothing at play time, it was pre-gated
-  bool    speak = false;  // play /reply.wav (LittleFS) instead of an event clip -
-                          // the reply.speak tool queues here so an in-turn TTS
+  bool    speak = false;  // play a synthesized reply (LittleFS) instead of an event
+                          // clip - the reply.speak tool queues here so an in-turn TTS
                           // readout never blocks tg_poll for the clip's duration
                           // (a ~12 s inline fetch+playback starved loopTask's
                           // watchdog: task_wdt -> abort, field "harness reset").
+  bool    mp3 = false;    // reply format: true => /reply.mp3 (minimp3), false =>
+                          // /reply.wav (playWavFile). A Mistral (MP3-only) device
+                          // uses the MP3 branch so it can finally speak.
 };
 
 bool          g_began = false;
@@ -131,11 +135,17 @@ void sfxTask(void*) {
     // after the current bounded step finishes (a few seconds, worst case).
     if (xQueueReceive(g_q, &it, pdMS_TO_TICKS(2000)) == pdTRUE) {
       if (it.speak) {
-        // Spoken reply. /reply.wav may be overwritten by a rapid next synth -
-        // acceptable for speech (latest wins); the history row was captured at
-        // queue time. Muted/faulted checks re-run here, not just at post time.
-        if (speakerUsable() && !g_muted)
-          solide::audio::playWavFile(LittleFS, "/reply.wav");
+        // Spoken reply. /reply.wav|/reply.mp3 may be overwritten by a rapid next
+        // synth - acceptable for speech (latest wins); the history row was captured
+        // at queue time. Muted/faulted checks re-run here, not just at post time.
+        if (speakerUsable() && !g_muted) {
+          // Both the reply and any music track feed the ONE shared I2S TX (the driver
+          // serializes it with a whole-clip mutex), so an active track would make the
+          // reply queue behind minutes of audio. Duck music first: a spoken reply wins.
+          music::stopForSpeech();
+          if (it.mp3) music::streamMp3File(LittleFS, "/reply.mp3");
+          else        solide::audio::playWavFile(LittleFS, "/reply.wav");
+        }
       } else {
         resolveAndPlay((Ev)it.ev);
       }
@@ -210,10 +220,10 @@ bool onJobState(uint32_t key, uint8_t status) {
   return true;
 }
 
-bool speakReplyWav() {
+bool speakReply(bool mp3) {
   if (!g_began || !g_q) return false;
   if (!speakerUsable()) return false;
-  Item it{0, false, true};
+  Item it{0, false, true, mp3};
   return xQueueSend(g_q, &it, 0) == pdTRUE;   // full queue -> honest false
 }
 

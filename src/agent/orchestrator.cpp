@@ -28,6 +28,7 @@
 #include "nimbus/orch/media.h"          // CUM-40 validMusicName (for /play)
 #include "../sfx/music.h"               // CUM-40 music player control (/play)
 #include "adapters/audio_tts.h"         // spoken replies (TTS -> Telegram audio / device speaker)
+#include "nimbus/tts_catalog.h"         // core::speakerTtsFormat - provider -> speaker format (host-tested)
 #include "adapters/provider_file_fetch.h"  // captureProviderFile - v4.1 code_interpreter file capture
 #include <solide/audio.h>               // reply.speak - play WAV on the device speaker (P6)
 #include <LittleFS.h>
@@ -1478,16 +1479,23 @@ String currentChat() { return g_engine ? String(g_engine->currentChat().c_str())
 bool speakOnDevice(const String& text) {
   if (text.length() == 0) return false;
   if (nimbus::fault::active(nimbus::fault::SPEAKER)) return false;
-  // TTS -> WAV on LittleFS -> device speaker (I2S TX, independent of the mic).
-  size_t n = agent::tts::synthesizeToFile(text, "/reply.wav", "wav");
+  // Synthesize in the format the CONFIGURED provider actually emits, then play it
+  // on the speaker (I2S TX, independent of the mic). OpenAI -> WAV (played directly);
+  // Mistral/Voxtral -> MP3 (decoded by the vendored minimp3). This is the field-bug
+  // fix: the old path forced "wav", but a Mistral-only device can't make WAV, so
+  // synth returned 0 and the device NEVER spoke. speakerTtsFormat() is host-tested.
+  bool mp3 = false;
+  const char* fmt = core::speakerTtsFormat(std::string(store::ttsProvider().c_str()), &mp3);
+  const char* path = mp3 ? "/reply.mp3" : "/reply.wav";
+  size_t n = agent::tts::synthesizeToFile(text, path, fmt);
   if (!n) return false;
   // QUEUE the playback on the sfx task - never play inline. This runs on
   // tg_poll inside a tool round; the synth fetch above is bounded (~4 s) but
   // fetch + an 8 s clip held the tool dispatch locks past loopTask's 8 s
   // watchdog budget: task_wdt abort, observed in the field as "the harness
   // reset itself" on 'count to ten out loud'.
-  const bool played = ::sfx::speakReplyWav();
-  if (!played) alogf("speak: could not queue /reply.wav (%u bytes) - sfx queue full/off?", (unsigned)n);
+  const bool played = ::sfx::speakReply(mp3);
+  if (!played) alogf("speak: could not queue %s (%u bytes) - sfx queue full/off?", path, (unsigned)n);
   // Capture spoken output so a voice-only reply is still in history ("what did you
   // just say?" works on stateless hosts once device history reads these rows).
   if (played) memory::captureMessage(currentChat().c_str(), "assistant",

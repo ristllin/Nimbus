@@ -87,10 +87,10 @@ std::string applyDeviceElement(const std::string& json, bool scheduledTurn,
     }
     case ActionKind::Tts:
       // EXPLICIT tts action - but ONLY when the owner's "Voice replies" toggle is
-      // ON (default OFF). Field bug (P2.5): the model reliably chose to speak
-      // whenever the owner seemed nearby (voice input), and this gate bypass
-      // meant there was NO way to mute it. When OFF the action is a silent
-      // no-op - the text reply still delivers on its own channel.
+      // ON (default ON for a speaker board, N12). Field bug (P2.5): the model
+      // reliably chose to speak whenever the owner seemed nearby (voice input),
+      // and this gate bypass meant there was NO way to mute it. When OFF the action
+      // is a silent no-op - the text reply still delivers on its own channel.
       if (!d.ttsEnabled) { devSummary += "tts(voice-off) "; break; }
       if (d.speak && !va.text.empty()) {
         std::string s = va.text;

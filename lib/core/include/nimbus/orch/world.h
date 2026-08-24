@@ -36,9 +36,11 @@ struct Hardware {
   // E1 artifact store: SD /mem/files present (files.list / artifact.save /
   // files.send are genuinely callable).
   bool files = false;
-  // Owner's "Voice replies" toggle (default OFF): when false, spoken output
-  // (tts action / reply.speak / reply.telegram voice) is disabled and the
-  // prompt tells the model to reply in text (P2.5 - never audio-in-addition).
+  // Owner's "Voice replies" toggle (default ON for a speaker board, N12): when
+  // false, spoken output (tts action / reply.speak / reply.telegram voice) is
+  // disabled and the prompt tells the model to reply in text (never audio-in-
+  // addition). The struct default here stays false (a conservative host/test
+  // default); the device fills it from store::ttsEnabled(), whose default is ON.
   bool voiceReplies = false;
   // W10: the LIVE ring LED count from the driver - the manifest hardcoded
   // "45-LED ring" while the animator already took the count as a parameter.

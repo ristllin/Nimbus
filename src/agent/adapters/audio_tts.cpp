@@ -17,21 +17,16 @@ namespace {
 // Resolve the configured TTS provider. Mistral (Voxtral) is the default; both use
 // POST /v1/audio/speech but the response shapes differ (see below).
 struct TtsProvider { bool mistral; const char* host; const char* model; String key; String voice; };
-TtsProvider resolve(const char* voice, bool needWav) {
+TtsProvider resolve(const char* voice) {
   String p = store::ttsProvider();
   // Voice precedence: explicit arg > user-selected (store) > provider default.
   String vc = (voice && voice[0]) ? String(voice) : store::ttsVoice();
-  // Field bug 2026-07-16 ("the speaker def works so something in the tts flow
-  // isn't working"): the SPEAKER plays canonical PCM WAV only, but Mistral's TTS
-  // emits MP3 exclusively - with ttsProv=mistral every on-device speech request
-  // wrote MP3 bytes into /reply.wav, playWavFile refused them, and the agent
-  // reported "speaker unavailable". When the caller NEEDS WAV, reroute to OpenAI
-  // (the one WAV-capable provider) if it has a key - and use OpenAI's default
-  // voice, never the stored MISTRAL voice slug (OpenAI would 400 on it). The
-  // owner's Mistral voice preference still applies to every MP3 path (Telegram).
-  if (needWav && p != "openai" && store::openaiKey().length())
-    return {false, "api.openai.com", "gpt-4o-mini-tts", store::openaiKey(),
-            String("alloy")};
+  // Honor the CONFIGURED provider - do not silently swap providers by format. The
+  // speaker used to play WAV only, so a Mistral device (MP3 only) was force-routed
+  // to OpenAI to get WAV; the field bug was that with no OpenAI key it just failed
+  // and the device never spoke. Now the on-device path asks for the format the
+  // configured provider emits (see core::speakerTtsFormat + speakOnDevice) and the
+  // vendored minimp3 decoder plays a Mistral MP3, so no reroute is needed.
   if (p == "openai")
     return {false, "api.openai.com", "gpt-4o-mini-tts", store::openaiKey(),
             vc.length() ? vc : String("alloy")};
@@ -50,12 +45,14 @@ size_t synthesizeToFile(const String& text, const char* outPath,
                         const char* format, const char* voice) {
   if (text.length() == 0 || !outPath || !outPath[0]) return 0;
   const bool needWav = (format && strcmp(format, "wav") == 0);
-  TtsProvider prov = resolve(voice, needWav);
+  TtsProvider prov = resolve(voice);
   if (needWav && prov.mistral) {
-    // No WAV-capable provider available: Mistral only emits MP3 and the speaker
-    // can't play it. Fail LOUDLY and precisely - the old path wrote the MP3 into
-    // the .wav and let playback fail as "speaker unavailable".
-    alog("tts: on-device speech needs WAV (OpenAI); Mistral emits MP3 only and no OpenAI key is set");
+    // A WAV was requested but Mistral (Voxtral) emits MP3 only. Do NOT synthesize:
+    // Mistral ignores response_format and would return MP3, which written into a
+    // .wav is exactly the field bug (playWavFile then rejects it). The on-device
+    // speak path asks Mistral for "mp3" instead (minimp3 plays it); this guard just
+    // protects any stray WAV caller (e.g. a console command) from that mismatch.
+    alog("tts: wav requested but provider mistral emits mp3 only - not synthesizing");
     return 0;
   }
   if (prov.key.length() == 0) { alogf("tts: no key for provider %s", store::ttsProvider().c_str()); return 0; }

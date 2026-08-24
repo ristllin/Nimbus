@@ -65,8 +65,9 @@ namespace orch {
   "(value off|full; ALWAYS use lights:off to turn the ring off, including to " \
   "undo an led pattern; off is " \
   "overridden by any new needs-you event, a click, or lights full); tts " \
-  "voices the text to your owner as a Telegram audio message; to speak aloud on " \
-  "the device's own built-in speaker instead, use the reply.speak tool; reboot " \
+  "voices the text aloud on the device's built-in speaker (falling back to a " \
+  "Telegram audio message if the speaker is unavailable); to speak mid-turn " \
+  "rather than at end of turn, use the reply.speak tool instead; reboot " \
   "restarts the device; config tunes owner-friendly " \
   "knobs - ledBrightness 0-255, priority (comma-separated sub-agent provider " \
   "preference), posture (ring level dark|calm|full), profile (power profile " \

@@ -95,4 +95,19 @@ int mergeMistralVoicesPage(const char* pageJson, std::set<std::string>& seen,
   return processed;
 }
 
+const char* speakerTtsFormat(const std::string& provider, bool* playAsMp3) {
+  // OpenAI is the one provider whose /v1/audio/speech emits WAV the speaker plays
+  // directly; every other provider (Mistral/Voxtral today) emits MP3, which the
+  // vendored minimp3 decoder plays. Default unknown providers to the MP3 path.
+  const bool wav = (provider == "openai");
+  if (playAsMp3) *playAsMp3 = !wav;
+  return wav ? "wav" : "mp3";
+}
+
+void downmixStereoToMono(const int16_t* interleaved, int frames, int16_t* out) {
+  for (int i = 0; i < frames; i++)
+    out[i] = static_cast<int16_t>(
+        ((int)interleaved[2 * i] + (int)interleaved[2 * i + 1]) / 2);
+}
+
 }  // namespace core

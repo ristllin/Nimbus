@@ -142,16 +142,17 @@ std::string renderCapabilities(const Hardware& hw, const std::vector<ToolInfo>& 
   if (hw.speaker || hw.telegram) {
     if (hw.voiceReplies)
       out += "- YOU choose the reply channel per situation (owner rule): short status or a "
-             "heads-up while the owner is nearby -> speak it (tts / reply.speak); longer "
-             "content, lists, code -> Telegram text; a question you need answered -> ask. "
-             "tts is delivered as a Telegram voice message (and may also play on the desk "
-             "speaker). Never send the SAME content as both text and audio. There is no "
-             "live phone call.\n";
+             "heads-up while the owner is nearby -> speak it aloud on the device speaker "
+             "(reply.speak, or the tts device action); longer content, lists, code -> "
+             "Telegram text; a question you need answered -> ask. For a spoken Telegram "
+             "message use reply.telegram with voice true. Never send the SAME content as "
+             "both text and audio. There is no live phone call.\n";
     else
-      out += "- Reply in TEXT (Telegram / on-screen). Voice replies are currently OFF: "
-             "tts and reply.speak will not play. If the owner asks you to speak or to "
-             "turn voice replies on, ENABLE them yourself with a config device action "
-             "setting ttsOn true (owner-request only - never enable voice unasked).\n";
+      out += "- Reply in TEXT (Telegram / on-screen) by default: spoken replies are switched "
+             "OFF, so tts and reply.speak will not play. If the owner asks you to speak or to "
+             "turn on voice replies, enable it IN THIS SAME TURN with the device.control tool "
+             "({\"action\":{\"type\":\"config\",\"ttsOn\":true}}) and then call reply.speak in "
+             "the same turn (owner-request only - never enable voice unasked).\n";
   }
   if (hw.battery)
     out += "- Battery percentage is INFERRED from voltage; there is NO charge-detect hardware, "

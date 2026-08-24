@@ -1,11 +1,12 @@
 #pragma once
 #include <Arduino.h>
+#include <FS.h>
 
 #include <string>
 #include <vector>
 
-// music - the device music player: WAV (and MP3 via the Helix decoder) from the SD
-// card's /music folder, driven by the portable nimbus::orch::MediaQueue state
+// music - the device music player: WAV (and MP3 via the vendored minimp3 decoder)
+// from the SD card's /music folder, driven by the portable nimbus::orch::MediaQueue state
 // machine (lib/core). Foreground playback: a track is never dropped and plays to
 // completion, distinct from the SFX engine's drop-when-full decoration queue.
 //
@@ -42,6 +43,20 @@ String statusJson();
 // True when this build can decode MP3 (the vendored minimp3 is always present, so
 // this returns true; kept as a seam the UI/tools can report).
 bool mp3Supported();
+
+// Decode an MP3 file at `path` on `fs` and play it on the speaker, blocking on the
+// CALLING task until it finishes (watchdog-safe: it yields on the I2S DMA between
+// frames). This is the reply/SFX seam for a Mistral (MP3-only) spoken reply, which
+// the WAV-only playWavFile cannot play. The ~13 KB decode work buffer is allocated
+// in PSRAM (never on the caller's stack - the sfx task stack is only 8 KB). Returns
+// true if the clip decoded and played to the end. NOTE: the shared I2S TX means a
+// caller should stopForSpeech() first if music might be streaming (see below).
+bool streamMp3File(fs::FS& fs, const char* path);
+
+// Stop music playback if a track is currently playing, so a spoken reply can take
+// the shared I2S TX channel immediately instead of queueing behind the whole track
+// (solide::audio serializes the TX with a whole-clip mutex). A no-op when idle.
+void stopForSpeech();
 
 // Register the media.play / media.pause / media.stop / media.list tools on the
 // orchestrator registry (call from the tool-registration phase).

@@ -352,7 +352,7 @@ items with `allowed == true`. Each `device[]` element is exactly one of:
 | `config` | benign, owner-friendly knobs (allow-listed keys only) | e.g. `ledBrightness`, `priority` (routing *preference*), `posture`, `profile`, `theme`, `attnHoldMs`, `sfxLvlN`/`sfxLvlO`, `sfxVol`, `sfxTheme`, `sttProv`, `ttsProv`, `ttsVoice`, `ttsOn`, `sleepOvr`, `brightOvr`, `devName` | live (rails enforced) |
 | `orch_model` | switch the head's own provider + model at runtime | `provider` (`openai` \| `anthropic` \| `mistral`), `model` (string) | live |
 | `reboot` | restart the device | (none) | live |
-| `tts` | speak text | `text` | wiring: speaker path (see below) |
+| `tts` | speak text aloud on the device speaker (Telegram audio fallback) | `text` | live |
 
 Rails: a `config` action carrying any protected key (secrets, the auth
 allow-list, provider routing/priority, the Local Loops or budget governors - see
@@ -362,9 +362,13 @@ rule: the model may repoint its own head host + model. Session ops (spawn /
 terminate) are **not** device actions - they go through the turn's
 `session_ops[]` / `session.*`, never `device[]`.
 
-On-device speech is available now through the `reply.speak` tool (and Telegram
-audio via `reply.telegram` `voice:true`); the `device[]` `tts` action's speaker
-path is still being wired.
+On-device speech plays through the built-in speaker. Both the `reply.speak` tool
+(mid-turn) and the end-of-turn `device[]` `tts` action synthesize the reply and
+play it on the speaker; `tts` falls back to a Telegram audio message when the
+device has no working speaker. A spoken Telegram message is also available via
+`reply.telegram` `voice:true`. The speaker plays WAV directly and decodes MP3 with
+the bundled decoder, so the reply speaks whether the configured voice provider
+emits WAV (OpenAI) or MP3 (Mistral).
 
 ## Planned surfaces
 

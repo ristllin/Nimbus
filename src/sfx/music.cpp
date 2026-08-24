@@ -17,6 +17,7 @@
 #include "nimbus/fault.h"
 #include "nimbus/orch/media.h"
 #include "nimbus/orch/tool_registry.h"
+#include "nimbus/tts_catalog.h"             // core::downmixStereoToMono (host-tested)
 
 namespace music {
 
@@ -159,21 +160,25 @@ struct Mp3Work {
 };
 
 // Feed one decoded frame to the speaker, downmixing stereo to mono. Split out to
-// keep streamMp3 under the complexity gate.
+// keep streamMp3 under the complexity gate. The mix math lives in lib/core so it is
+// host-tested independent of the I2S sink.
 static void feedMp3Frame(Mp3Work* w, int samples, int channels) {
   if (channels == 2) {
-    for (int i = 0; i < samples; i++)
-      w->mono[i] = (int16_t)(((int)w->pcm[2 * i] + (int)w->pcm[2 * i + 1]) / 2);
+    core::downmixStereoToMono(w->pcm, samples, w->mono);
     solide::audio::spkFeedBytes((const uint8_t*)w->mono, (size_t)samples * 2);
   } else {
     solide::audio::spkFeedBytes((const uint8_t*)w->pcm, (size_t)samples * 2);
   }
 }
 
-// Top up the sliding MP3 input window from the card (SD op under the bus lock).
-static void refillMp3(File& f, Mp3Work* w, size_t& avail) {
+// Top up the sliding MP3 input window from the file. `useSdLock` wraps the read in
+// the shared SD-bus lock (SD music path); the LittleFS reply path passes false - it
+// is not on the SD/SPI bus, so it must not contend for that mutex.
+static void refillMp3(File& f, Mp3Work* w, size_t& avail, bool useSdLock) {
   if (avail >= 2048) return;
-  int r; { agent::memory::Lock sdlk; r = f.read(w->in + avail, (int)(sizeof(w->in) - avail)); }
+  int r;
+  if (useSdLock) { agent::memory::Lock sdlk; r = f.read(w->in + avail, (int)(sizeof(w->in) - avail)); }
+  else           { r = f.read(w->in + avail, (int)(sizeof(w->in) - avail)); }
   if (r > 0) avail += (size_t)r;
 }
 
@@ -187,20 +192,21 @@ static void openSpeakerOnce(bool& opened, int hz) {
   opened = true;
 }
 
-static bool streamMp3(const std::string& path, uint32_t gen) {
-  File f;
-  { agent::memory::Lock sdlk; f = SD.open(path.c_str(), FILE_READ); }
-  if (!f) { agent::alogf("music: open failed %s", path.c_str()); return true; }
-  Mp3Work* w = (Mp3Work*)heap_caps_malloc(sizeof(Mp3Work), MALLOC_CAP_SPIRAM);
-  if (!w) w = (Mp3Work*)malloc(sizeof(Mp3Work));
-  if (!w) { agent::memory::Lock sdlk; f.close(); agent::alogf("music: MP3 out of memory"); return true; }
+// The shared decode loop for both the SD-music and the LittleFS-reply paths. `f` is
+// an already-open MP3 file; `useSdLock` locks each file read on the SD-bus mutex
+// (SD path only). When `hasGen`, the SD queue's stop/pause control is honored via
+// keepPlaying(gen); the reply path passes hasGen=false and only stops on a speaker
+// fault. Returns true if the clip played to its natural end. Watchdog-safe: the
+// per-frame spkFeedBytes blocks on the I2S DMA, which yields.
+static bool decodeMp3Stream(File& f, Mp3Work* w, bool useSdLock, uint32_t gen, bool hasGen) {
   mp3dec_init(&w->dec);
   size_t avail = 0;
   bool opened = false, finished = true;
   for (;;) {
-    refillMp3(f, w, avail);
+    refillMp3(f, w, avail, useSdLock);
     if (avail == 0) break;                       // EOF, all frames consumed
-    if (!keepPlaying(gen)) { finished = false; break; }
+    if (hasGen ? !keepPlaying(gen)
+               : nimbus::fault::active(nimbus::fault::SPEAKER)) { finished = false; break; }
     mp3dec_frame_info_t info;
     const int samples = mp3dec_decode_frame(&w->dec, w->in, (int)avail, w->pcm, &info);
     if (info.frame_bytes <= 0) break;            // no full frame + no more input -> done
@@ -211,9 +217,48 @@ static bool streamMp3(const std::string& path, uint32_t gen) {
     feedMp3Frame(w, samples, info.channels);
   }
   if (opened) solide::audio::spkClose();
+  return finished;
+}
+
+// Allocate the ~13 KB decode work buffer in PSRAM (never on the caller's task stack;
+// the sfx task stack is only 8 KB). Falls back to internal heap only if PSRAM is
+// exhausted. Caller frees with heap_caps_free.
+static Mp3Work* allocMp3Work() {
+  Mp3Work* w = (Mp3Work*)heap_caps_malloc(sizeof(Mp3Work), MALLOC_CAP_SPIRAM);
+  if (!w) w = (Mp3Work*)malloc(sizeof(Mp3Work));
+  return w;
+}
+
+static bool streamMp3(const std::string& path, uint32_t gen) {
+  File f;
+  { agent::memory::Lock sdlk; f = SD.open(path.c_str(), FILE_READ); }
+  if (!f) { agent::alogf("music: open failed %s", path.c_str()); return true; }
+  Mp3Work* w = allocMp3Work();
+  if (!w) { agent::memory::Lock sdlk; f.close(); agent::alogf("music: MP3 out of memory"); return true; }
+  bool finished = decodeMp3Stream(f, w, /*useSdLock=*/true, gen, /*hasGen=*/true);
   heap_caps_free(w);
   { agent::memory::Lock sdlk; f.close(); }
   return finished;
+}
+
+bool streamMp3File(fs::FS& fs, const char* path) {
+  if (nimbus::fault::active(nimbus::fault::SPEAKER)) return false;
+  File f = fs.open(path, FILE_READ);
+  if (!f) { agent::alogf("music: mp3 reply open failed %s", path); return false; }
+  Mp3Work* w = allocMp3Work();
+  if (!w) { f.close(); agent::alogf("music: MP3 reply out of memory"); return false; }
+  // No SD-bus lock (LittleFS is off that bus) and no queue gen (a short reply clip
+  // is not a controllable track). Natural EOF returns true; a mid-clip speaker fault
+  // returns false.
+  bool ok = decodeMp3Stream(f, w, /*useSdLock=*/false, /*gen=*/0, /*hasGen=*/false);
+  heap_caps_free(w);
+  f.close();
+  return ok;
+}
+
+void stopForSpeech() {
+  Lock lk;
+  if (g_q.playing()) { g_q.stop(); g_gen++; }   // free the shared I2S TX for the reply
 }
 
 static void playTrack(const std::string& name, uint32_t gen) {

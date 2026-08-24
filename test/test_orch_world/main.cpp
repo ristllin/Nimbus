@@ -46,6 +46,32 @@ static void test_capabilities_offline_and_absent_hardware() {
   TEST_ASSERT_TRUE(has(m, "cannot set provider API keys"));
 }
 
+// ---- voice-reply prompt lines (N12 / CUM-134 #1) ----------------------------
+
+static void test_voice_on_speaks_on_device_not_falsely_telegram() {
+  Hardware hw;
+  hw.speaker = true; hw.voiceReplies = true;
+  std::string m = renderCapabilities(hw, {});
+  // The spoken channel is the DEVICE speaker now that reply.speak/tts reach it.
+  TEST_ASSERT_TRUE(has(m, "device speaker"));
+  // The old prompt claimed tts is "a Telegram voice message (and may also play on
+  // the desk speaker)" - a falsehood that shipped. It must be gone.
+  TEST_ASSERT_FALSE(has(m, "may also play on the desk speaker"));
+  TEST_ASSERT_FALSE(has(m, "Telegram voice message (and"));
+}
+
+static void test_voice_off_enables_in_same_turn_not_next() {
+  Hardware hw;
+  hw.speaker = true; hw.voiceReplies = false;
+  std::string m = renderCapabilities(hw, {});
+  // Enabling voice must happen via the mid-turn device.control tool and speak in the
+  // SAME turn - the old copy said to use an end-of-turn config action and "speak on
+  // your NEXT turn", which guaranteed the asking turn was silent.
+  TEST_ASSERT_TRUE(has(m, "device.control"));
+  TEST_ASSERT_TRUE(has(m, "SAME TURN"));
+  TEST_ASSERT_FALSE(has(m, "NEXT turn"));
+}
+
 // ---- running-sessions digest ------------------------------------------------
 
 static void test_sessions_empty_is_blank() {
@@ -212,6 +238,8 @@ int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_capabilities_lists_present_hardware);
   RUN_TEST(test_capabilities_offline_and_absent_hardware);
+  RUN_TEST(test_voice_on_speaks_on_device_not_falsely_telegram);
+  RUN_TEST(test_voice_off_enables_in_same_turn_not_next);
   RUN_TEST(test_sessions_empty_is_blank);
   RUN_TEST(test_sessions_digest_content);
   RUN_TEST(test_assemble_orders_sections);

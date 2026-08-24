@@ -291,10 +291,12 @@ your API credits. It sits behind a confirmation dialog; leave it off unless
 you mean to run a public bot.
 :::
 
-The **Voice replies** toggle in the same group lets the assistant answer with a
-spoken voice note when that fits; when off, it always replies in text. Set the
-dictation and spoken-reply providers and the voice itself under **Capabilities
-→ Models → Voice**.
+The **Voice replies** toggle in the same group lets the assistant speak its reply
+aloud on the device speaker (or as a Telegram voice note) when that fits. It is on
+by default; turn it off to always reply in text. Spoken replies work whichever
+voice provider you pick: the speaker plays OpenAI's WAV directly and decodes
+Mistral's MP3 with the bundled decoder. Set the dictation and spoken-reply
+providers and the voice itself under **Capabilities → Models → Voice**.
 
 ---
 
