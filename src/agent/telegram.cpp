@@ -211,6 +211,33 @@ static char* ensurePollBody() {
   return g_pollBody;
 }
 
+// SRAM headroom (N7): the two staging buffers below used to sit in the scarce
+// internal SRAM as .bss statics - the InboundMsg drain slot (~4.1 KB) and the
+// three per-call API response scratches (~2.5 KB). tg_poll is the single consumer
+// of both and its TLS work is fully serialized (one slot at a time), so a batch
+// never needs two of either live at once. They move to the abundant PSRAM pool -
+// the same place the poll body and the reply/inbound queues already live - off the
+// internal heap that a live turn's TLS handshake is contending for. Lazy-allocated;
+// a null (PSRAM exhausted, never seen on an 8 MB board) falls through to each
+// caller's existing soft-failure path, so no message is lost.
+static InboundMsg* g_inboundStage = nullptr;
+static InboundMsg* ensureInboundStage() {
+  if (!g_inboundStage)
+    g_inboundStage = (InboundMsg*)heap_caps_malloc(sizeof(InboundMsg), MALLOC_CAP_SPIRAM);
+  return g_inboundStage;
+}
+
+// One shared response scratch for the mutually-exclusive Telegram API helpers
+// (send / getFile / download): each reads its HTTP body here then extracts what it
+// needs before the next helper runs, so a single PSRAM buffer replaces three
+// internal statics.
+static constexpr size_t kTgApiRespCap = 1024;
+static char* g_apiResp = nullptr;
+static char* ensureApiResp() {
+  if (!g_apiResp) g_apiResp = (char*)heap_caps_malloc(kTgApiRespCap, MALLOC_CAP_SPIRAM);
+  return g_apiResp;
+}
+
 // Files-lane seam (inbound documents/photos). Unset in R1 -> such messages get a
 // deterministic "can't store files yet" reply instead of being silently dropped.
 static AttachmentSink g_attachSink = nullptr;
@@ -613,8 +640,9 @@ static bool doSendMessageRaw(const char* chatId, const char* text, bool htmlMode
   char line[MAX_LINE];
   readLine(sc, line, sizeof(line), deadline);   // status line
   skipHeaders(sc, deadline);
-  static char resp[512];
-  readBody(sc, resp, sizeof(resp), deadline);
+  char* resp = ensureApiResp();
+  if (!resp) { tlsClose(sc); return false; }
+  readBody(sc, resp, 512, deadline);
   tlsClose(sc);
 
   return strstr(resp, "\"ok\":true") != nullptr;
@@ -677,8 +705,9 @@ static void handleVoice() {
     uint32_t deadline = millis() + 12000;
     char line[MAX_LINE]; readLine(sc, line, sizeof(line), deadline);
     skipHeaders(sc, deadline);
-    static char resp[1024];
-    readBody(sc, resp, sizeof(resp), deadline);
+    char* resp = ensureApiResp();
+    if (!resp) { tlsClose(sc); break; }
+    readBody(sc, resp, (int)kTgApiRespCap, deadline);
     tlsClose(sc);
     jsonStr(resp, "file_path", filePath, sizeof(filePath));
     if (filePath[0] == 0) { vTaskDelay(pdMS_TO_TICKS(400)); continue; }
@@ -841,8 +870,9 @@ static void handleAttachment() {
     uint32_t deadline = millis() + 12000;
     char line[MAX_LINE]; readLine(sc, line, sizeof(line), deadline);
     skipHeaders(sc, deadline);
-    static char resp[1024];
-    readBody(sc, resp, sizeof(resp), deadline);
+    char* resp = ensureApiResp();
+    if (!resp) { tlsClose(sc); break; }
+    readBody(sc, resp, (int)kTgApiRespCap, deadline);
     tlsClose(sc);
     jsonStr(resp, "file_path", filePath, sizeof(filePath));
     if (filePath[0] == 0) { vTaskDelay(pdMS_TO_TICKS(400)); continue; }
@@ -1100,13 +1130,14 @@ void pollTask(void*) {
 
     // Dispatch injected inbound messages (console TURN / web / voice) - ALWAYS.
     if (g_inboundQ && g_cb) {
-      // static: the 4 KB text buffer (grew from 1 KB with the full-length inbound
-      // fix) must not sit on the tg_poll 16 KB stack across the whole synchronous
-      // turn that g_cb runs. This drain is single-consumer (tg_poll only), so a
-      // static scratch slot is safe and keeps the stack headroom the turn needs.
-      static InboundMsg im;
-      while (xQueueReceive(g_inboundQ, &im, 0) == pdTRUE)
-        g_cb(String(im.from[0] ? im.from : im.chatId), String(im.chatId), String(im.text));
+      // The 4 KB text buffer (grew from 1 KB with the full-length inbound fix) must
+      // not sit on the tg_poll stack across the whole synchronous turn that g_cb
+      // runs. This drain is single-consumer (tg_poll only), so ONE staging slot is
+      // safe - and it lives in PSRAM (N7), off the scarce internal heap, not on the
+      // stack. A null (no PSRAM) leaves messages queued for the next cycle.
+      InboundMsg* im = ensureInboundStage();
+      while (im && xQueueReceive(g_inboundQ, im, 0) == pdTRUE)
+        g_cb(String(im->from[0] ? im->from : im->chatId), String(im->chatId), String(im->text));
     }
 
     if (haveToken) handleVoice();   // voice notes arrive via Telegram; own TLS
