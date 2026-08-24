@@ -298,7 +298,7 @@ void dispatch(String line) {
     // during the blocking network synth + playback (both exceed the main-loop budget).
     String txt = line.substring(7);
     bool mp3 = false;
-    const char* fmt = core::speakerTtsFormat(std::string(agent::store::ttsProvider().c_str()), &mp3);
+    const char* fmt = core::speakerTtsFormat(std::string(agent::tts::activeProvider().c_str()), &mp3);
     const char* path = mp3 ? "/tts.mp3" : "/tts.wav";
     Serial.printf("SPKSAY synth+play (%s): %s\n", fmt, txt.c_str()); Serial.flush();
     esp_task_wdt_delete(nullptr);

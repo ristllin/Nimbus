@@ -14,6 +14,12 @@ namespace tts {
 
 bool available();   // an OpenAI key is configured
 
+// The provider that will actually voice a request ("openai" | "mistral"): the
+// configured provider, or the other one when the configured has no key but the
+// other does (so the device still speaks). speakOnDevice picks the playback format
+// from this so the format always matches the synthesizing provider.
+String activeProvider();
+
 // Synthesize `text` to `outPath` on LittleFS. `format` ("mp3" | "wav") is honored
 // only by OpenAI; Mistral (Voxtral) always returns MP3, so a "wav" request on a
 // Mistral device returns 0 rather than writing MP3 into a .wav. `voice` nullptr

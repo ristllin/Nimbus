@@ -220,7 +220,9 @@ bool   toolRidesLoop(const std::string& name);   // P7: is this registry tool lo
 
 // Output-channel helpers backing the reply.speak / reply.telegram tools (P6).
 String currentChat();                    // routing chatId of the in-flight turn ("" if none)
-bool   speakOnDevice(const String& text);// TTS -> device speaker; false if unavailable/faulted
+bool   speakOnDevice(const String& text, bool capture = true);// TTS -> device speaker; false if
+                                         // unavailable/faulted. capture=false when the caller already
+                                         // records the spoken text to history (the tts device action does)
 bool   sendToChat(const String& chatId, const String& text, bool asVoice);  // "" chatId => current turn's chat
 void   requestMemoryClear(); // stage a model-memory wipe (echo zeroed at once)
 void   requestConvReset();   // stage a provider-conversation reset (drained on tg_poll,

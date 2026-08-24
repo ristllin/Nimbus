@@ -638,7 +638,9 @@ static bool orchSendSink(const String& chatId, const String& text) {
 // (single-TLS: the Telegram socket is closed), so the TTS synth + upload are safe.
 static void orchSpeakSink(const String& text) {
   if (text.length() == 0) return;
-  if (agent::orchestrator::speakOnDevice(text)) return;   // played on the desk speaker
+  // capture=false: the tts device action records the spoken text to history itself
+  // (apply.cpp captureAssistant), so speakOnDevice must not also capture it.
+  if (agent::orchestrator::speakOnDevice(text, /*capture=*/false)) return;   // played on the speaker
   String allow = agent::store::telegramAllowlist();
   int c = allow.indexOf(','); String chat = (c > 0) ? allow.substring(0, c) : allow; chat.trim();
   if (chat.length() == 0) return;

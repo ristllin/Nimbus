@@ -9,6 +9,7 @@
 #include "../store.h"
 #include "../../sys/agent_log.h"
 #include "b64_stream.h"              // shared base64 socket->file stream decoder
+#include "nimbus/tts_catalog.h"     // core::ttsActiveProvider (host-tested key fallback)
 
 namespace agent {
 namespace tts {
@@ -18,23 +19,39 @@ namespace {
 // POST /v1/audio/speech but the response shapes differ (see below).
 struct TtsProvider { bool mistral; const char* host; const char* model; String key; String voice; };
 TtsProvider resolve(const char* voice) {
-  String p = store::ttsProvider();
-  // Voice precedence: explicit arg > user-selected (store) > provider default.
-  String vc = (voice && voice[0]) ? String(voice) : store::ttsVoice();
-  // Honor the CONFIGURED provider - do not silently swap providers by format. The
-  // speaker used to play WAV only, so a Mistral device (MP3 only) was force-routed
-  // to OpenAI to get WAV; the field bug was that with no OpenAI key it just failed
-  // and the device never spoke. Now the on-device path asks for the format the
-  // configured provider emits (see core::speakerTtsFormat + speakOnDevice) and the
-  // vendored minimp3 decoder plays a Mistral MP3, so no reroute is needed.
-  if (p == "openai")
-    return {false, "api.openai.com", "gpt-4o-mini-tts", store::openaiKey(),
-            vc.length() ? vc : String("alloy")};
+  const String cfg = store::ttsProvider();
+  const String eff = activeProvider();
+  // Voice precedence: explicit arg > stored voice (ONLY when the effective provider
+  // matches the configured one) > provider default. A stored MISTRAL voice slug would
+  // 400 on OpenAI (and vice versa), so on a key-driven fallback to the OTHER provider
+  // we drop the stored voice and use the fallback provider's default.
+  const bool storedApplies = ((eff == "openai") == (cfg == "openai"));
+  const String stored = storedApplies ? store::ttsVoice() : String();
+  auto pick = [&](const char* dflt) -> String {
+    if (voice && voice[0]) return String(voice);
+    return stored.length() ? stored : String(dflt);
+  };
+  if (eff == "openai")
+    return {false, "api.openai.com", "gpt-4o-mini-tts", store::openaiKey(), pick("alloy")};
   return {true, "api.mistral.ai", "voxtral-mini-tts-latest", store::mistralKey(),
-          vc.length() ? vc : String("en_paul_neutral")};
+          pick("en_paul_neutral")};
 }
 
 }  // namespace
+
+String activeProvider() {
+  // The provider that will actually voice this request: the configured one, or the
+  // OTHER provider when the configured one has no key but the other does, so the
+  // device still speaks instead of going silent (the old code force-rerouted a WAV
+  // request to OpenAI for the same reason; this restores that graceful fallback for
+  // any missing-key case, in both directions). speakOnDevice derives the playback
+  // format from THIS, so the format always matches the provider that synthesizes.
+  // The decision itself is the host-tested core::ttsActiveProvider.
+  std::string eff = core::ttsActiveProvider(std::string(store::ttsProvider().c_str()),
+                                            store::openaiKey().length() > 0,
+                                            store::mistralKey().length() > 0);
+  return String(eff.c_str());
+}
 
 bool available() {
   String p = store::ttsProvider();

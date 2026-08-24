@@ -54,6 +54,35 @@ static void test_unknown_provider_defaults_to_mp3(void) {
   TEST_ASSERT_EQUAL_STRING("mp3", core::speakerTtsFormat("some-future-tts", nullptr));
 }
 
+// ---- provider key fallback (the regression this lane must not reintroduce) --
+
+static void test_active_provider_prefers_configured(void) {
+  // Both keys present: use exactly what the owner configured.
+  TEST_ASSERT_EQUAL_STRING("mistral", core::ttsActiveProvider("mistral", true, true).c_str());
+  TEST_ASSERT_EQUAL_STRING("openai", core::ttsActiveProvider("openai", true, true).c_str());
+}
+
+static void test_active_provider_falls_back_when_configured_key_missing(void) {
+  // Mistral configured, only an OpenAI key -> speak via OpenAI (the exact regression:
+  // dropping the old reroute left this case silent). And the reverse direction.
+  TEST_ASSERT_EQUAL_STRING("openai", core::ttsActiveProvider("mistral", true, false).c_str());
+  TEST_ASSERT_EQUAL_STRING("mistral", core::ttsActiveProvider("openai", false, true).c_str());
+}
+
+static void test_active_provider_keeps_configured_when_it_has_the_key(void) {
+  // Configured provider has its key; presence/absence of the other never overrides it.
+  TEST_ASSERT_EQUAL_STRING("mistral", core::ttsActiveProvider("mistral", false, true).c_str());
+  TEST_ASSERT_EQUAL_STRING("openai", core::ttsActiveProvider("openai", true, false).c_str());
+}
+
+static void test_active_provider_no_keys_returns_configured(void) {
+  // No keys at all: return the configured provider (the caller fails at the key check
+  // with a clear log, not a wrong-provider attempt). Unknown slug -> mistral.
+  TEST_ASSERT_EQUAL_STRING("mistral", core::ttsActiveProvider("mistral", false, false).c_str());
+  TEST_ASSERT_EQUAL_STRING("openai", core::ttsActiveProvider("openai", false, false).c_str());
+  TEST_ASSERT_EQUAL_STRING("mistral", core::ttsActiveProvider("", false, false).c_str());
+}
+
 // ---- stereo -> mono downmix -------------------------------------------------
 
 static void test_downmix_averages_lr(void) {
@@ -118,6 +147,10 @@ int main(int, char**) {
   RUN_TEST(test_openai_routes_to_wav);
   RUN_TEST(test_mistral_routes_to_mp3);
   RUN_TEST(test_unknown_provider_defaults_to_mp3);
+  RUN_TEST(test_active_provider_prefers_configured);
+  RUN_TEST(test_active_provider_falls_back_when_configured_key_missing);
+  RUN_TEST(test_active_provider_keeps_configured_when_it_has_the_key);
+  RUN_TEST(test_active_provider_no_keys_returns_configured);
   RUN_TEST(test_downmix_averages_lr);
   RUN_TEST(test_downmix_zero_frames_is_noop);
   RUN_TEST(test_minimp3_decodes_fixture_to_pcm);

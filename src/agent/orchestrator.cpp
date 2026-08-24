@@ -1476,7 +1476,7 @@ void handleMessage(const String& text, const String& fromName, const String& cha
 // speaker (loopback-verified working); reply.telegram delivers text to a chat.
 String currentChat() { return g_engine ? String(g_engine->currentChat().c_str()) : String(); }
 
-bool speakOnDevice(const String& text) {
+bool speakOnDevice(const String& text, bool capture) {
   if (text.length() == 0) return false;
   if (nimbus::fault::active(nimbus::fault::SPEAKER)) return false;
   // Synthesize in the format the CONFIGURED provider actually emits, then play it
@@ -1485,7 +1485,9 @@ bool speakOnDevice(const String& text) {
   // fix: the old path forced "wav", but a Mistral-only device can't make WAV, so
   // synth returned 0 and the device NEVER spoke. speakerTtsFormat() is host-tested.
   bool mp3 = false;
-  const char* fmt = core::speakerTtsFormat(std::string(store::ttsProvider().c_str()), &mp3);
+  // Use the EFFECTIVE provider (accounts for a key-driven fallback to the other
+  // provider), so the format we synthesize matches the provider that will voice it.
+  const char* fmt = core::speakerTtsFormat(std::string(agent::tts::activeProvider().c_str()), &mp3);
   const char* path = mp3 ? "/reply.mp3" : "/reply.wav";
   size_t n = agent::tts::synthesizeToFile(text, path, fmt);
   if (!n) return false;
@@ -1497,10 +1499,12 @@ bool speakOnDevice(const String& text) {
   const bool played = ::sfx::speakReply(mp3);
   if (!played) alogf("speak: could not queue %s (%u bytes) - sfx queue full/off?", path, (unsigned)n);
   // Capture spoken output so a voice-only reply is still in history ("what did you
-  // just say?" works on stateless hosts once device history reads these rows).
-  if (played) memory::captureMessage(currentChat().c_str(), "assistant",
-                                     orch::MsgKind::Message, text, "",
-                                     withTurnTag("via:speaker"));
+  // just say?" works on stateless hosts once device history reads these rows). Skip
+  // when the caller already records it (the tts device action captures in apply.cpp),
+  // so the same utterance is not written to history twice.
+  if (played && capture) memory::captureMessage(currentChat().c_str(), "assistant",
+                                                orch::MsgKind::Message, text, "",
+                                                withTurnTag("via:speaker"));
   return played;
 }
 

@@ -104,6 +104,14 @@ const char* speakerTtsFormat(const std::string& provider, bool* playAsMp3) {
   return wav ? "wav" : "mp3";
 }
 
+std::string ttsActiveProvider(const std::string& configured,
+                              bool hasOpenaiKey, bool hasMistralKey) {
+  if (configured == "openai")
+    return (hasOpenaiKey || !hasMistralKey) ? "openai" : "mistral";
+  // Any non-"openai" slug is treated as Mistral (the default).
+  return (hasMistralKey || !hasOpenaiKey) ? "mistral" : "openai";
+}
+
 void downmixStereoToMono(const int16_t* interleaved, int frames, int16_t* out) {
   for (int i = 0; i < frames; i++)
     out[i] = static_cast<int16_t>(

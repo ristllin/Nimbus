@@ -181,7 +181,14 @@ def test_spoken_reply_audible(device, require_manual):
 
     Requires a TTS key + network already provisioned. No key / no network -> bytes=0 ->
     LOUD skip with the /api/log pointer, never a silent green. An absent speaker is caught
-    by test_speaker_audible; this test is about the reply pipeline, not the driver."""
+    by test_speaker_audible; this test is about the reply pipeline, not the driver.
+
+    STACK CAVEAT (bench): SPKSAY decodes on the console/loop task, NOT the sfx task that
+    the real reply.speak/tts action path uses. minimp3's frame decoder puts a ~16 KB
+    scratch on the stack, and the sfx task stack was raised for it (see sound_fx.cpp
+    kSfxStackBytes). To validate the REAL path, also drive an actual voice reply (send a
+    turn that makes the model call reply.speak) and check `STACK?`/the boot stack-HWM log
+    for the sfx task keeps healthy headroom while an MP3 reply plays."""
     device.reset()
     device.wait_ready(timeout=20.0)
 

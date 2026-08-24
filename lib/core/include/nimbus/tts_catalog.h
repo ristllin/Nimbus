@@ -50,6 +50,18 @@ int mergeMistralVoicesPage(const char* pageJson, std::set<std::string>& seen,
 // (orchestrator::speakOnDevice) and the test can never drift.
 const char* speakerTtsFormat(const std::string& provider, bool* playAsMp3 = nullptr);
 
+// The TTS provider that will actually voice a request, given the configured provider
+// and which provider keys are present. Prefers the configured provider; falls back to
+// the OTHER provider when the configured one has no key but the other does, so the
+// device still speaks instead of going silent (the field-bug regression: dropping the
+// old WAV->OpenAI reroute left a Mistral-default device holding only an OpenAI key
+// silent). Returns "openai" or "mistral"; anything other than "openai" is treated as
+// Mistral. With NO keys at all it returns the configured provider (the caller then
+// fails at the key check with a clear log). Pure + host-tested so the device
+// (agent::tts::activeProvider) and the test cannot drift.
+std::string ttsActiveProvider(const std::string& configured,
+                              bool hasOpenaiKey, bool hasMistralKey);
+
 // Downmix interleaved stereo LE16 PCM to mono by averaging L+R per frame, writing
 // `frames` mono samples to `out`. Split out of the MP3 speaker feed so the mixing
 // math is host-tested independent of the I2S sink. `interleaved` holds 2*frames

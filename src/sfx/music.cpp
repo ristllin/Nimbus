@@ -258,7 +258,12 @@ bool streamMp3File(fs::FS& fs, const char* path) {
 
 void stopForSpeech() {
   Lock lk;
-  if (g_q.playing()) { g_q.stop(); g_gen++; }   // free the shared I2S TX for the reply
+  // Stop ANY non-stopped track, not just an actively Playing one. A PAUSED track
+  // leaves the music task parked inside keepPlaying() with the driver's whole-clip
+  // I2S TX mutex still held (spkClose runs only after the stream loop exits), so a
+  // reply's spkOpen would block forever. Bumping g_gen + Stopped forces keepPlaying
+  // to return false, the loop exits, spkClose releases the TX, and the reply plays.
+  if (g_q.state() != MediaState::Stopped) { g_q.stop(); g_gen++; }
 }
 
 static void playTrack(const std::string& name, uint32_t gen) {
