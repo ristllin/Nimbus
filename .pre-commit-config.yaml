@@ -47,6 +47,12 @@ repos:
         types: [text]
         exclude: '^test/support/fixtures/|^website/static/vendor/'
 
+      - id: no-eink
+        name: no e-ink / rotary knob on user surfaces (lane N10 removal)
+        entry: tools/check_no_eink.sh
+        language: script
+        files: '^(docs/|website/|include/web/|tools/|\.github/|hardware/|README\.md|AGENTS\.md|CONTRIBUTING\.md)'
+
       - id: lizard-complexity
         name: lizard complexity (CCN<=15, len<=120, args<=6)
         entry: lizard -C 15 -L 120 -a 6 -w -W tools/release/lizard_whitelist.txt
