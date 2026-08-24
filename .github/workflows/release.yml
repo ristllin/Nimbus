@@ -53,15 +53,21 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Build firmware (both board images)
+      - name: Build firmware (every board/panel image)
         working-directory: Nimbus
         run: |
           pip install platformio
           # esp_idf_nvs_partition_gen: the NVS seed baked into each web-flash image.
           pip install esp-idf-nvs-partition-gen
-          pio run -e esp32s3 -e esp32s3-cyd
+          # One image per device TYPE. The Freenove sizes are DISTINCT images now:
+          # each is compiled at its own panel resolution (-DNIMBUS_PANEL_W/H via its
+          # env), so a 3.5"/4.0" board gets a firmware whose renderer matches its
+          # glass, not a 2.8" image re-seeded.
+          pio run -e esp32s3 -e esp32s3-cyd -e esp32s3-cyd-35 -e esp32s3-cyd-40
           cp .pio/build/esp32s3/firmware.bin firmware-nimbus-tft.bin
           cp .pio/build/esp32s3-cyd/firmware.bin firmware-freenove.bin
+          cp .pio/build/esp32s3-cyd-35/firmware.bin firmware-freenove-35.bin
+          cp .pio/build/esp32s3-cyd-40/firmware.bin firmware-freenove-40.bin
 
       - name: Sign + build typed OTA manifest (schema 2)
         working-directory: Nimbus
@@ -70,9 +76,9 @@ jobs:
         run: |
           test -n "$OTA_SIGNING_KEY" || { echo "::error::OTA_SIGNING_KEY secret is not set"; exit 1; }
           printf '%s\n' "$OTA_SIGNING_KEY" > /tmp/ota_priv.pem
-          # One typed manifest keyed on the device TYPE. The three Freenove sizes
-          # share one firmware image (they differ only by the NVS-seeded panel
-          # size) but each is signed over its own type in the message.
+          # One typed manifest keyed on the device TYPE. Each Freenove panel size
+          # is its own image, compiled at that panel's resolution, signed over its
+          # own type in the message.
           python3 tools/make_manifest.py \
             --version "${GITHUB_REF_NAME}" \
             --build "$(git describe --tags --always)" \
@@ -81,8 +87,8 @@ jobs:
             --out manifest.json \
             nimbus-tft=firmware-nimbus-tft.bin \
             freenove-28=firmware-freenove.bin \
-            freenove-35=firmware-freenove.bin \
-            freenove-40=firmware-freenove.bin
+            freenove-35=firmware-freenove-35.bin \
+            freenove-40=firmware-freenove-40.bin
           rm -f /tmp/ota_priv.pem
 
       # Browser-flasher artifacts (docs site /flash, ESP Web Tools): one merged
@@ -97,8 +103,10 @@ jobs:
           base="https://raw.githubusercontent.com/ristllin/nimbus-fw-releases/webflash/latest"
           for v in nimbus-tft freenove-28 freenove-35 freenove-40; do
             case "$v" in
-              nimbus-tft) dir=.pio/build/esp32s3 ;;
-              *)          dir=.pio/build/esp32s3-cyd ;;
+              nimbus-tft)  dir=.pio/build/esp32s3 ;;
+              freenove-28) dir=.pio/build/esp32s3-cyd ;;
+              freenove-35) dir=.pio/build/esp32s3-cyd-35 ;;
+              freenove-40) dir=.pio/build/esp32s3-cyd-40 ;;
             esac
             python3 tools/release/make_webflash_manifest.py \
               --variant "$v" --build-dir "$dir" \
@@ -121,6 +129,8 @@ jobs:
           files: |
             Nimbus/firmware-nimbus-tft.bin
             Nimbus/firmware-freenove.bin
+            Nimbus/firmware-freenove-35.bin
+            Nimbus/firmware-freenove-40.bin
             Nimbus/manifest.json
           prerelease: ${{ contains(github.ref_name, '-rc') }}
           generate_release_notes: false

@@ -1,0 +1,15 @@
+[
+  {"x":0,"y":0,"w":96,"h":44,"action":"Back","index":-1},
+  {"x":436,"y":0,"w":44,"h":44,"action":"OpenMenu","index":-1},
+  {"x":12,"y":52,"w":224,"h":46,"action":"MenuRow","index":0},
+  {"x":12,"y":102,"w":224,"h":46,"action":"MenuRow","index":1},
+  {"x":12,"y":152,"w":224,"h":46,"action":"MenuRow","index":2},
+  {"x":12,"y":202,"w":224,"h":46,"action":"MenuRow","index":3},
+  {"x":12,"y":252,"w":224,"h":46,"action":"MenuRow","index":4},
+  {"x":244,"y":52,"w":224,"h":46,"action":"MenuRow","index":5},
+  {"x":244,"y":102,"w":224,"h":46,"action":"MenuRow","index":6},
+  {"x":244,"y":152,"w":224,"h":46,"action":"MenuRow","index":7},
+  {"x":244,"y":202,"w":224,"h":46,"action":"MenuRow","index":8},
+  {"x":244,"y":252,"w":224,"h":46,"action":"MenuRow","index":9},
+  {"x":388,"y":0,"w":44,"h":44,"action":"ScrollDown","index":-1}
+]

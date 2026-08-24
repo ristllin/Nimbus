@@ -79,8 +79,10 @@ static void writeRegions(const std::string& path, const Rendered& r) {
   std::fclose(f);
 }
 
-// Structural rules every screen must satisfy, independent of how it looks.
-static void assertRegionsSane(const char* name, const Rendered& r) {
+// Structural rules every screen must satisfy, independent of how it looks. The
+// panel bounds (w,h) are passed in so the same checks run at every supported
+// size; the 44px tap minimum is an absolute a11y floor, so it does NOT scale.
+static void assertRegionsSane(const char* name, const Rendered& r, int w, int h) {
   for (size_t i = 0; i < r.taps.size(); i++) {
     const auto& t = r.taps[i];
     char msg[192];
@@ -90,8 +92,8 @@ static void assertRegionsSane(const char* name, const Rendered& r) {
     TEST_ASSERT_TRUE_MESSAGE(t.w >= kMinTap && t.h >= kMinTap, msg);
 
     std::snprintf(msg, sizeof msg, "%s: '%s' (%d,%d,%d,%d) falls outside %dx%d",
-                  name, actionName(t.action), t.x, t.y, t.w, t.h, kW, kH);
-    TEST_ASSERT_TRUE_MESSAGE(t.x >= 0 && t.y >= 0 && t.x + t.w <= kW && t.y + t.h <= kH, msg);
+                  name, actionName(t.action), t.x, t.y, t.w, t.h, w, h);
+    TEST_ASSERT_TRUE_MESSAGE(t.x >= 0 && t.y >= 0 && t.x + t.w <= w && t.y + t.h <= h, msg);
 
     std::snprintf(msg, sizeof msg, "%s: '%s' has action None", name, actionName(t.action));
     TEST_ASSERT_TRUE_MESSAGE(t.action != TapRegion::Action::None, msg);
@@ -115,19 +117,39 @@ static void assertRegionsSane(const char* name, const Rendered& r) {
   }
 }
 
-static void golden(const char* name, ScreenId id, const ScreenCtx& ctx) {
-  static Fb565 fb;
+// The supported panels, each golden-tested at its own resolution. The default
+// (2.8" / freenove-28) keeps the ROOT golden dir so its files stay byte-identical
+// and frozen; the larger, host-verified-only panels get a per-size subdir.
+struct PanelSize { const char* subdir; int w; int h; };
+static const PanelSize kPanels[] = {
+    {"", 320, 240},          // freenove-28 (2.8") - frozen baseline, hardware-owned
+    {"480x320", 480, 320},   // freenove-35 (3.5") - host-verified only
+    {"480x480", 480, 480},   // freenove-40 (4.0") - host-verified only
+};
+
+// Golden dir for a panel size: the root dir for the default, a subdir otherwise.
+static std::string panelDir(const PanelSize& p) {
+  return p.subdir[0] ? std::string(kDir) + "/" + p.subdir : std::string(kDir);
+}
+
+// Render `ctx` at one panel size and golden it (pixels + tap regions). Every
+// supported size is exercised, so a layout that reflows wrong on a larger panel
+// (a tap target off-panel, an overlap) fails here, not on hardware we do not own.
+static void goldenAt(const char* name, ScreenId id, const ScreenCtx& ctx,
+                     const PanelSize& p) {
+  Fb565 fb(p.w, p.h);
   const Rendered r = renderScreen(fb, id, ctx);
+  assertRegionsSane(name, r, p.w, p.h);
 
-  assertRegionsSane(name, r);
-
-  const std::string base = std::string(kDir) + "/" + name;
+  const std::string dir = panelDir(p);
+  const std::string base = dir + "/" + name;
+  const size_t bytes = fb.byteSize();
   const char* env = std::getenv("GOLDEN_UPDATE");
   const bool update = env != nullptr && std::strcmp(env, "1") == 0;
 
   if (update) {
-    (void)std::system((std::string("mkdir -p ") + kDir).c_str());
-    writeFile(base + ".bin", fb.data(), fb.byteSize());
+    (void)std::system((std::string("mkdir -p ") + dir).c_str());
+    writeFile(base + ".bin", fb.data(), bytes);
     writeRegions(base + ".regions.json", r);
     TEST_MESSAGE((std::string("updated golden: ") + base).c_str());
     return;
@@ -138,16 +160,22 @@ static void golden(const char* name, ScreenId id, const ScreenCtx& ctx) {
       f, (std::string("missing golden ") + base +
           ".bin - run `GOLDEN_UPDATE=1 pio test -e native -f test_tft_render`")
              .c_str());
-  static uint8_t expect[kFbBytes];
-  const size_t got = std::fread(expect, 1, size_t(kFbBytes), f);
+  std::vector<uint8_t> expect(bytes);
+  const size_t got = std::fread(expect.data(), 1, bytes, f);
   std::fclose(f);
-  TEST_ASSERT_TRUE_MESSAGE(got == size_t(kFbBytes), "golden file truncated");
+  TEST_ASSERT_TRUE_MESSAGE(got == bytes, "golden file truncated");
 
-  if (std::memcmp(expect, fb.data(), size_t(kFbBytes)) != 0) {
-    (void)std::system((std::string("mkdir -p ") + kOutDir).c_str());
-    writeFile(std::string(kOutDir) + "/" + name + ".bin", fb.data(), fb.byteSize());
+  if (std::memcmp(expect.data(), fb.data(), bytes) != 0) {
+    const std::string outDir = p.subdir[0]
+        ? std::string(kOutDir) + "/" + p.subdir : std::string(kOutDir);
+    (void)std::system((std::string("mkdir -p ") + outDir).c_str());
+    writeFile(outDir + "/" + name + ".bin", fb.data(), bytes);
   }
-  TEST_ASSERT_EQUAL_MEMORY_MESSAGE(expect, fb.data(), kFbBytes, name);
+  TEST_ASSERT_EQUAL_MEMORY_MESSAGE(expect.data(), fb.data(), bytes, name);
+}
+
+static void golden(const char* name, ScreenId id, const ScreenCtx& ctx) {
+  for (const auto& p : kPanels) goldenAt(name, id, ctx, p);
 }
 
 // ---- fixtures ---------------------------------------------------------------
@@ -223,11 +251,13 @@ static void test_status_jobs()    { golden("status_jobs", ScreenId::StatusIdle, 
 // single-column session-card tap targets. The empty-ringLeds cases above already
 // prove the ring-absent layout is byte-identical to before.
 static void test_status_ring() {
-  static Fb565 fb;
-  const Rendered r = renderScreen(fb, ScreenId::StatusIdle, ringCtx());
-  assertRegionsSane("status_ring", r);
-  TEST_ASSERT_TRUE_MESSAGE(!r.taps.empty(),
-                           "status_ring: session cards should still be tappable");
+  for (const auto& p : kPanels) {
+    Fb565 fb(p.w, p.h);
+    const Rendered r = renderScreen(fb, ScreenId::StatusIdle, ringCtx());
+    assertRegionsSane("status_ring", r, p.w, p.h);
+    TEST_ASSERT_TRUE_MESSAGE(!r.taps.empty(),
+                             "status_ring: session cards should still be tappable");
+  }
 }
 static void test_menu_main()      { golden("menu_main", ScreenId::Menu, menuCtx()); }
 static void test_menu_stepper()   { golden("menu_stepper", ScreenId::Menu, stepperCtx()); }

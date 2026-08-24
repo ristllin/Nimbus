@@ -24,10 +24,14 @@
 
 namespace nimbus::tft {
 
-constexpr int kW = kScreenW;              // 320 (landscape)
-constexpr int kH = kScreenH;              // 240 (landscape)
+// Default panel size (2.8" / freenove-28, or whatever -DNIMBUS_PANEL_W/H a
+// larger-panel firmware build sets). A default-constructed Fb565 is this size;
+// the host golden suite also builds other sizes via Fb565(w, h). These constants
+// size the device's static/PSRAM buffers for its single compiled panel.
+constexpr int kW = kScreenW;              // 320 (landscape) by default
+constexpr int kH = kScreenH;              // 240 (landscape) by default
 constexpr int kPixels = kW * kH;
-constexpr int kFbBytes = kPixels * 2;     // 153600
+constexpr int kFbBytes = kPixels * 2;     // 153600 at the default size
 
 // A tap target: a rectangle plus what activating it means. The renderer emits
 // these alongside the pixels so the device can hit-test without duplicating any
@@ -62,13 +66,20 @@ struct TapRegion {
 
 class Fb565 {
  public:
-  Fb565() : buf_(size_t(kPixels), 0) { clear(); }
+  // Default size is the compiled panel (kW x kH). The host golden suite passes an
+  // explicit {w, h} to render other panels in one binary.
+  explicit Fb565(int w = kW, int h = kH)
+      : w_(w), h_(h), buf_(size_t(w) * size_t(h), 0) { clear(); }
+
+  // ---- geometry ------------------------------------------------------------
+  int width() const { return w_; }
+  int height() const { return h_; }
 
   // ---- raw access (device blit + goldens) ----------------------------------
   const uint8_t* data() const { return reinterpret_cast<const uint8_t*>(buf_.data()); }
   const uint16_t* pixels() const { return buf_.data(); }
   uint16_t* pixels() { return buf_.data(); }
-  static constexpr size_t byteSize() { return size_t(kFbBytes); }
+  size_t byteSize() const { return size_t(w_) * size_t(h_) * 2; }
 
   // ---- drawing (all colours are LOGICAL RGB565; storage swaps to BE) --------
   void clear(uint16_t colour = kBg);
@@ -109,6 +120,10 @@ class Fb565 {
  private:
   // Stored big-endian so data() is blit-ready; every accessor swaps.
   static constexpr uint16_t swap(uint16_t v) { return uint16_t((v << 8) | (v >> 8)); }
+  // Clip a rectangle to the framebuffer's own bounds; false = fully off-panel.
+  bool clipRect(int& x, int& y, int& w, int& h) const;
+  int w_;
+  int h_;
   std::vector<uint16_t> buf_;
 };
 

@@ -1,0 +1,8 @@
+[
+  {"x":0,"y":0,"w":110,"h":44,"action":"Home","index":-1},
+  {"x":436,"y":0,"w":44,"h":44,"action":"OpenMenu","index":-1},
+  {"x":12,"y":52,"w":224,"h":56,"action":"SessionCard","index":0},
+  {"x":244,"y":52,"w":224,"h":56,"action":"SessionCard","index":1},
+  {"x":12,"y":116,"w":224,"h":56,"action":"SessionCard","index":2},
+  {"x":244,"y":116,"w":224,"h":56,"action":"SessionCard","index":3}
+]

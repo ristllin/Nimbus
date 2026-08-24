@@ -63,8 +63,21 @@ constexpr uint16_t kInfo    = hex(0x6cb8ff);  // --info    informational
 // or taps land somewhere other than where the pixels are.
 // The pixel COUNT is identical either way, so the 150 KB framebuffers and every
 // allocation guard are unaffected by the rotation.
-constexpr int kScreenW    = 320;
-constexpr int kScreenH    = 240;
+//
+// kScreenW/kScreenH are the DEFAULT (2.8" / freenove-28) panel size. A firmware
+// build for a larger panel overrides them at compile time with
+// -DNIMBUS_PANEL_W / -DNIMBUS_PANEL_H (see the freenove-35/40 envs), which resizes
+// the default framebuffer + Layout for that image. The host golden suite renders
+// every size in one binary by constructing Fb565(w,h) / Layout::forSize(w,h)
+// explicitly, so it does not depend on these defaults.
+#ifndef NIMBUS_PANEL_W
+#define NIMBUS_PANEL_W 320
+#endif
+#ifndef NIMBUS_PANEL_H
+#define NIMBUS_PANEL_H 240
+#endif
+constexpr int kScreenW    = NIMBUS_PANEL_W;
+constexpr int kScreenH    = NIMBUS_PANEL_H;
 constexpr int kPad        = 12;  // outer page gutter
 constexpr int kCardPad    = 12;  // web .sec uses 16; tightened for a small panel
 constexpr int kCardRadius = 12;  // web .sec 16px, scaled to the smaller cards
@@ -76,6 +89,53 @@ constexpr int kHeaderH    = 44;
 constexpr int kTabBarH    = 46;  // web mobile .tabs
 constexpr int kRowH       = 46;  // menu row: >= the 44px tap minimum
 constexpr int kMinTap     = 44;  // a11y floor; tftpreview.py regions enforces it
+
+// ---- layout tokens, parameterized by panel size ----------------------------
+// One product runs on more than one panel (freenove-28/35/40 today: 320x240,
+// 480x320, 480x480). Layout carries the panel's {w,h} plus the chrome metrics so
+// the renderer draws to whatever size its framebuffer is, instead of the old
+// hard-wired kScreenW/kScreenH.
+//
+// ⚠ The chrome metrics are ABSOLUTE pixels and DO NOT scale with the panel. A
+// 44px tap target is the a11y floor whatever the screen; a 12px gutter is a 12px
+// gutter. A bigger panel therefore gets MORE room (more grid columns, more menu
+// rows per page, a larger QR) at the SAME chrome scale - it does not get a
+// zoomed-in copy of the small layout. Only w/h and what derives from them flow.
+//
+// At {kScreenW,kScreenH} every field below equals the frozen constant above and
+// every derived value is identical, so the default-size render stays byte-for-
+// byte what it was before this struct existed (the golden regression gate).
+struct Layout {
+  int w = kScreenW;
+  int h = kScreenH;
+  int pad = kPad;
+  int cardPad = kCardPad;
+  int cardRadius = kCardRadius;
+  int pillRadius = kPillRadius;
+  int headerH = kHeaderH;
+  int tabBarH = kTabBarH;
+  int rowH = kRowH;
+  int minTap = kMinTap;
+
+  // The page gutter is the outer pad; the body starts just below the header.
+  // Kept as helpers so the renderer reads the same names it always did (kGut,
+  // kBodyTop) without recomputing the offset at each call site.
+  constexpr int gut() const { return pad; }
+  constexpr int bodyTop() const { return headerH + 8; }
+
+  // A Layout for an arbitrary panel size (host golden suite; device builds use
+  // the default, sized by -DNIMBUS_PANEL_W/H). Chrome metrics keep their defaults.
+  static constexpr Layout forSize(int w, int h) {
+    Layout l;
+    l.w = w;
+    l.h = h;
+    return l;
+  }
+};
+
+// The compile-time default panel (kScreenW x kScreenH). Device builds render at
+// this size; the host suite also renders larger sizes via Layout::forSize.
+constexpr Layout defaultLayout() { return Layout{}; }
 
 // ---- soft tint --------------------------------------------------------------
 // The web fills status chips with the status colour at ~12% alpha over the card
