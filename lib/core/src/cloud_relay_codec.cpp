@@ -12,6 +12,9 @@ bool parseWelcomeFrame(const JsonDocument& doc, RelayFrame& out) {
   out.heartbeatMs = doc["heartbeatMs"].is<uint32_t>() ? doc["heartbeatMs"].as<uint32_t>()
                                                       : kDefaultHeartbeatMs;
   if (out.heartbeatMs == 0) out.heartbeatMs = kDefaultHeartbeatMs;
+  // The relay echoes our device id in the hello-ack (identity binding, CUM-182).
+  // Absent on a legacy relay: left as "" so the caller treats it as unbound.
+  out.deviceId = doc["deviceId"].is<const char*>() ? doc["deviceId"].as<const char*>() : "";
   return true;
 }
 
