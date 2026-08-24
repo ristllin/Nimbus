@@ -2,6 +2,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include "nimbus/wifi/known_networks.h"
 #include "nimbus/wifi/policy.h"
@@ -38,12 +39,16 @@ struct LinkView {
   uint32_t    nextRetrySec = 0;
 };
 
-// The URL encoded into the Config QR / handed to a browser.
+// The URL encoded into the Sign-in QR / handed to a browser.
 // Returns "" when there is no usable address, so the caller draws "no url" instead
 // of a QR code that resolves to nothing. An unreachable device used to render a
 // confident QR pointing at http://0.0.0.0/ - worse than showing nothing, because it
 // looks like it works.
-std::string deviceUrl(const std::string& ip, const std::string& token);
+// `code` is the short single-use SIGN-IN CODE (from GET /api/signin/code), carried as
+// `?c=`. It replaces the older `?t=<token>`: a bearer token in a URL is logged,
+// shoulder-surfed, and shared by accident, so the web side stopped accepting it
+// (CUM-45). An empty code yields the bare "http://<ip>/".
+std::string deviceUrl(const std::string& ip, const std::string& code);
 
 // One line under the Config QR: what the network is doing, and the next step when
 // it is not working.
@@ -54,6 +59,16 @@ std::string wifiRowLabel(const LinkView& v, size_t maxChars = 44);
 
 // One row of the on-device network picker: name, signal, and whether we have it saved.
 std::string scanRowLabel(const ScanHit& h, bool known, size_t maxChars = 42);
+
+// Build the whole on-device Wi-Fi picker list from a raw scan (CUM-48): SAVED networks
+// first, then the rest by SIGNAL strength (strongest first). Duplicate SSIDs (one
+// network seen on several channels/bands) collapse to their strongest sighting, and
+// hidden access points (empty SSID in the scan) collapse into a single trailing
+// "hidden network" marker row - they carry no name to pick. Pure + host-tested; the
+// device passes the result straight to SettingsMenu::setWifiScan().
+std::vector<std::string> buildScanRows(const std::vector<ScanHit>& scan,
+                                       const std::vector<KnownNet>& known,
+                                       size_t maxChars = 42);
 
 // One row of the forget-network list.
 std::string forgetRowLabel(const KnownNet& n, bool current, size_t maxChars = 42);

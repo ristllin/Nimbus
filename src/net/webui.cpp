@@ -362,6 +362,11 @@ static void buildState(String& out) {
   for (uint8_t i = 0; i < nimbus::fault::COUNT; i++)
     fj[nimbus::fault::name(nimbus::fault::Cap(i))] = (fmask & (1u << i)) != 0;
 
+  // CUM-11: how many times a belt-and-braces ring backstop had to clear a stuck
+  // arc. The primary edge clears a healthy wake-up's arc, so this stays 0; a
+  // nonzero value flags a real wedge. The 24 h wake-up soak asserts it stays flat.
+  d["ringBackstopFires"] = agent::orchestrator::ringBackstopFires();
+
   power::Sample b = s_wc.power ? s_wc.power->sample() : power::Sample{};
   JsonObject batt = d["batt"].to<JsonObject>();
   batt["valid"]       = b.valid;
@@ -1457,6 +1462,50 @@ void beginWeb(const WebConfig& wc) {
       d["chatId"] = p("chatId").c_str();
       JsonDocument sd;   // schedule arrives as a JSON string param
       if (deserializeJson(sd, p("schedule")) == DeserializationError::Ok) d["schedule"] = sd;
+    }
+    String out; serializeJson(d, out);
+    agent::loops::stageWebMutation(out);
+    r->send(200, "application/json", "{\"ok\":true}");
+  });
+
+  // --- Wake-ups (CUM-27; the Once-loop view, contract shared with lane N1) ---
+  // GET: the wake-up list + arm state + approval mode. POST: STAGE an owner
+  // control action (single-writer on tg_poll like /api/loops). The web surface is
+  // token-gated, and the token holder is the device owner (admin) - the same
+  // authority the wakeup.set tool checks via manageTenants - so arming/approving
+  // here is already admin-gated. Actions:
+  //   action=mode&value=ask|auto     - set "Wake-ups: ask me first"
+  //   action=approve&id=<id>         - approve a pending wake-up (the single card)
+  //   action=cancel&id=<id>          - cancel a wake-up
+  s_server.on("/api/wakeups", HTTP_GET, [](AsyncWebServerRequest* r) {
+    if (authBlocked(r)) return;
+    AsyncWebServerResponse* res = r->beginResponse(200, "application/json",
+                                                   agent::loops::wakeupsJson());
+    res->addHeader("Cache-Control", "no-store");
+    r->send(res);
+  });
+  s_server.on("/api/wakeups", HTTP_POST, [](AsyncWebServerRequest* r) {
+    if (authBlocked(r)) return;
+    auto p = [&](const char* k) -> String {
+      return r->hasParam(k, true) ? r->getParam(k, true)->value() : String();
+    };
+    const String action = p("action");
+    JsonDocument d;
+    if (action == "mode") {
+      const String v = p("value");
+      if (v != "ask" && v != "auto") {
+        r->send(400, "application/json", "{\"error\":\"value must be ask or auto\"}");
+        return;
+      }
+      d["action"] = "wakeup_mode";
+      d["value"]  = v.c_str();
+    } else if (action == "approve" || action == "cancel") {
+      if (p("id").length() == 0) { r->send(400, "application/json", "{\"error\":\"id required\"}"); return; }
+      d["action"] = (action == "approve") ? "approve" : "delete";
+      d["id"]     = p("id").c_str();
+    } else {
+      r->send(400, "application/json", "{\"error\":\"action must be mode, approve, or cancel\"}");
+      return;
     }
     String out; serializeJson(d, out);
     agent::loops::stageWebMutation(out);

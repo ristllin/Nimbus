@@ -406,6 +406,14 @@ void begin() {
                       "minutes must be between 2 and 10080 (7 days)");
                 return nimbus::orch::ToolResult::fail(r.err);
               }
+              if (!r.approved)
+                // Owner turned on "Wake-ups: ask me first": it is staged, not live,
+                // until they approve the single card. Don't promise a firing time.
+                return nimbus::orch::ToolResult::ok(
+                    "wakeup staged (id " + r.id + "), pending the owner's approval. "
+                    "It will NOT fire until they approve it; tell the owner you have "
+                    "requested a follow-up in ~" + std::to_string(minutes) +
+                    " min and are waiting on their approval.");
               return nimbus::orch::ToolResult::ok(
                   "wakeup armed (id " + r.id + "): in ~" + std::to_string(minutes) +
                   " min you get one automatic turn with your note. It fires once, "

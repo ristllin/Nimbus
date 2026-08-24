@@ -175,3 +175,30 @@ host-tested first, and device rendering switches on when `showFrame()` exists
 upstream. The existing `ring_plan` (Dark single-LED vs Full segments) remains
 the *steady-state* decision layer; the Animator is the *motion* layer that
 renders those decisions with transitions between them.
+
+### Candidate "working" animations
+
+The processing slide is the one animated steady state the ambient grammar allows, and
+it has five candidate looks behind a selector (`nimbus::ring::RunStyle`): comet with a
+fading tail (the default), comet with sparse trailing sparks, a dual comet, a breathing
+arc, and fireflies. Each is a deterministic function of `(nowMs, arc geometry)`, so the
+LED ring, the on-screen ring, and the web simulator render identical frames; the host
+suite `test_ring_styles` pins the frame invariants (fail-dark, no stray pixels after a
+retire) for every variant. Preview and compare them in the self-contained page
+`tools/ring_ab_demo.html` (it ports the device math one-to-one), or drive them on real
+hardware with the test-console `RINGANIM 0..4` command. The device default stays the
+comet until a variant is chosen.
+
+### Keeping the head arc honest (wake-ups)
+
+The orchestrator paints a "head" arc while a turn runs and holds it while that
+turn's sub-agents run (`nimbus::harness::HeadArcTracker`, host-tested in
+`test_head_arc`). The main loop reconciles it every few seconds. A short wake-up
+turn can start and finish *between* two of those ticks, so the tracker never sees
+it in flight; the tracker also watches the engine's monotonic turn counter, so a
+completed-turn edge still tells it to clear an arc a finished turn may have left
+lit. Several belt-and-braces backstops (a frozen-children latch, the stuck-turn
+reaper, an absolute working-breathe ceiling) exist purely as insurance. In a
+healthy system the primary edge always clears first, so `ringBackstopFires` in
+`/api/state` stays **0**; a nonzero value means a real wedge slipped past the
+primary path and is worth investigating.

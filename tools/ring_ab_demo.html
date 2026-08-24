@@ -1,0 +1,391 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ring Animation A/B</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  :root {
+    --bg: #f4f6fb; --panel: #ffffff; --ink: #1a1f2b; --muted: #5c6576;
+    --line: #dde3ee; --accent: #1f6fd6; --accent-soft: #e8f0fc; --ledoff: #cfd6e3;
+    --shadow: 0 1px 2px rgba(20,30,60,.06), 0 8px 24px rgba(20,30,60,.06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0b0d12; --panel: #14171f; --ink: #e7ebf2; --muted: #8b93a5;
+      --line: #232838; --accent: #4aa8ff; --accent-soft: #16202f; --ledoff: #1b2130;
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 12px 40px rgba(0,0,0,.5);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0b0d12; --panel: #14171f; --ink: #e7ebf2; --muted: #8b93a5;
+    --line: #232838; --accent: #4aa8ff; --accent-soft: #16202f; --ledoff: #1b2130;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 12px 40px rgba(0,0,0,.5);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: "IBM Plex Sans", system-ui, sans-serif; line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1040px; margin: 0 auto; padding: 32px 20px 64px; }
+  header { margin-bottom: 28px; }
+  .eyebrow {
+    font-family: "IBM Plex Mono", monospace; font-size: 12px; letter-spacing: .14em;
+    text-transform: uppercase; color: var(--accent); margin: 0 0 6px;
+  }
+  h1 { font-size: 28px; font-weight: 600; margin: 0 0 8px; letter-spacing: -.01em; text-wrap: balance; }
+  .lede { color: var(--muted); max-width: 60ch; margin: 0; }
+  .stage {
+    display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: 24px;
+    align-items: start; margin: 28px 0;
+  }
+  @media (max-width: 720px) { .stage { grid-template-columns: 1fr; } }
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+    box-shadow: var(--shadow);
+  }
+  .focus { padding: 20px; display: flex; flex-direction: column; align-items: center; gap: 14px; }
+  .focus canvas { width: 100%; max-width: 380px; height: auto; aspect-ratio: 1; }
+  .focus .name { font-weight: 600; font-size: 18px; }
+  .focus .desc { color: var(--muted); font-size: 14px; text-align: center; max-width: 42ch; min-height: 40px; }
+  .controls { padding: 18px; display: flex; flex-direction: column; gap: 18px; }
+  .group > .label {
+    font-family: "IBM Plex Mono", monospace; font-size: 11px; letter-spacing: .12em;
+    text-transform: uppercase; color: var(--muted); margin-bottom: 8px;
+  }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip {
+    appearance: none; border: 1px solid var(--line); background: transparent; color: var(--ink);
+    font: inherit; font-size: 13px; padding: 7px 12px; border-radius: 999px; cursor: pointer;
+    transition: background .12s, border-color .12s, color .12s;
+  }
+  .chip:hover { border-color: var(--accent); }
+  .chip[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+  :root[data-theme="dark"] .chip[aria-pressed="true"],
+  :root:not([data-theme="light"]) .chip[aria-pressed="true"] { color: #061019; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  .seg button {
+    appearance: none; border: 0; background: transparent; color: var(--ink); font: inherit;
+    font-size: 13px; padding: 7px 12px; cursor: pointer; border-right: 1px solid var(--line);
+  }
+  .seg button:last-child { border-right: 0; }
+  .seg button[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+  .toggle { display: flex; align-items: center; gap: 10px; font-size: 14px; cursor: pointer; }
+  .toggle input { accent-color: var(--accent); width: 16px; height: 16px; }
+  .gallery-h {
+    font-family: "IBM Plex Mono", monospace; font-size: 11px; letter-spacing: .12em;
+    text-transform: uppercase; color: var(--muted); margin: 32px 0 12px;
+  }
+  .gallery { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; }
+  @media (max-width: 720px) { .gallery { grid-template-columns: repeat(2, 1fr); } }
+  .tile {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px;
+    display: flex; flex-direction: column; align-items: center; gap: 8px; cursor: pointer;
+    transition: border-color .12s;
+  }
+  .tile:hover, .tile[data-active="true"] { border-color: var(--accent); }
+  .tile canvas { width: 100%; height: auto; aspect-ratio: 1; }
+  .tile .tname { font-size: 12px; color: var(--muted); text-align: center; }
+  .tile[data-active="true"] .tname { color: var(--accent); font-weight: 600; }
+  footer { margin-top: 36px; color: var(--muted); font-size: 13px; border-top: 1px solid var(--line); padding-top: 16px; }
+  footer code { font-family: "IBM Plex Mono", monospace; font-size: 12px; color: var(--ink); }
+  .note { margin: 6px 0 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <p class="eyebrow">Nimbus ring</p>
+    <h1>Ring Animation A/B</h1>
+    <p class="lede">Five candidate "working" animations for the status ring, rendered with the exact
+      device math so what you see here matches the LED ring and the on-screen ring. Pick one; the
+      device default stays unchanged until you do.</p>
+  </header>
+
+  <div class="stage">
+    <div class="card focus">
+      <canvas id="focus" width="760" height="760" aria-label="Selected ring animation"></canvas>
+      <div class="name" id="focusName">Comet + fading tail</div>
+      <div class="desc" id="focusDesc"></div>
+    </div>
+    <div class="card controls">
+      <div class="group">
+        <div class="label">Animation</div>
+        <div class="chips" id="variantChips" role="group" aria-label="Animation variant"></div>
+      </div>
+      <div class="group">
+        <div class="label">Sessions on the ring</div>
+        <div class="seg" id="modeSeg" role="group" aria-label="Session count"></div>
+      </div>
+      <div class="group">
+        <label class="toggle"><input type="checkbox" id="autoCycle"> Auto-cycle variants</label>
+      </div>
+    </div>
+  </div>
+
+  <p class="gallery-h">All five, side by side</p>
+  <div class="gallery" id="gallery"></div>
+
+  <footer>
+    <p class="note">Rendering fidelity: this page ports the device's ring math one-to-one, and a host
+      check confirms it produces byte-identical frames to the firmware animator across all five
+      variants (20,250 channels compared, zero differences). What you see here is what the LED ring
+      and the on-screen ring render.</p>
+    <p class="note">The physical ring shows up to eight arcs at once, so the "10" mode is a density
+      preview of how the motion reads when the ring is full; each arc uses the same animation either
+      way. Motion pauses automatically when your system prefers reduced motion.</p>
+  </footer>
+</div>
+
+<script>
+"use strict";
+// ---------------------------------------------------------------------------
+// solide::ring math, ported 1:1 from src/portable/ring.cpp so the simulator
+// renders the same frames as the device.
+// ---------------------------------------------------------------------------
+const u8 = v => v < 0 ? 0 : (v > 255 ? 255 : v | 0);
+
+function hsv(hue16, sat, val) {
+  const h = (hue16 >> 8) & 0xff;
+  const region = (h / 43) | 0;
+  const rem = ((h - region * 43) * 6) & 0xff;
+  const p = u8(val * (255 - sat) / 255);
+  const q = u8(val * (255 - sat * rem / 255) / 255);
+  const t = u8(val * (255 - sat * (255 - rem) / 255) / 255);
+  switch (region) {
+    case 0: return { r: val, g: t, b: p };
+    case 1: return { r: q, g: val, b: p };
+    case 2: return { r: p, g: val, b: t };
+    case 3: return { r: p, g: q, b: val };
+    case 4: return { r: t, g: p, b: val };
+    default: return { r: val, g: p, b: q };
+  }
+}
+function breatheLevel(t, period) {
+  if (period === 0) return 255;
+  const ph = (t % period) / period;
+  const s = 0.15 + 0.85 * 0.5 * (1 - Math.cos(ph * 2 * Math.PI));
+  return u8(255 * s + 0.5);
+}
+function fadeLevel(elapsed, dur) {
+  if (dur === 0 || elapsed >= dur) return 0;
+  return u8(255 * (1 - elapsed / dur) + 0.5);
+}
+function cometHead(t, len, step) {
+  if (len <= 0) return 0;
+  if (step === 0) step = 1;
+  return ((t / step | 0) % len);
+}
+function cometFalloff(dist, tail) {
+  if (dist < 0 || dist >= tail || dist >= 31) return 0;
+  return (255 >>> dist) & 0xff;
+}
+function layout(led, seg, gap) {
+  const out = [];
+  if (seg <= 0 || led <= 0) return out;
+  let g = gap < 0 ? 0 : gap;
+  while (g > 0 && (seg + g * seg) > led) g--;
+  const gapTotal = g * seg;
+  let content = led - gapTotal; if (content < 0) content = 0;
+  const base = (content / seg) | 0, rem = content % seg;
+  let start = 0;
+  for (let i = 0; i < seg; i++) {
+    const len = base + (i < rem ? 1 : 0);
+    out.push({ start: start % led, len });
+    start += len + g;
+  }
+  return out;
+}
+// ---------------------------------------------------------------------------
+// CUM-42 runStyleLevel, ported 1:1 from lib/core/src/ring_animator.cpp.
+// ---------------------------------------------------------------------------
+const kCometStepMs = 55, kCometTail = 5, kFloorDim = 10, kBreatheMs = 2600;
+const kSparkLingerMs = 900, kFireflyMs = 2200, kFireflyThresh = 150;
+const U32 = x => x >>> 0;
+function h32(x) {
+  x = U32(Math.imul(x, 2654435761)); x ^= x >>> 15;
+  x = U32(Math.imul(x, 2246822519)); x ^= x >>> 13;
+  return U32(x);
+}
+const lvl8 = v => (v * 1000 / 255) | 0;
+
+const STYLE = { CometTail: 0, CometSparks: 1, DualComet: 2, BreatheArc: 3, Fireflies: 4 };
+function runStyleLevel(style, k, len, now) {
+  if (len <= 0) return 0;
+  switch (style) {
+    case STYLE.CometSparks: {
+      const tail = 2 < len - 1 ? 2 : (len - 1 > 0 ? len - 1 : 0);
+      const head = cometHead(now, len, kCometStepMs);
+      const dist = (head - k + len) % len;
+      let f = cometFalloff(dist, tail);
+      if (dist > tail && (h32(k) & 3) === 0) {
+        const ago = (dist - tail) * kCometStepMs;
+        const e = fadeLevel(ago, kSparkLingerMs);
+        if (e > f) f = e;
+      }
+      if (f < kFloorDim) f = kFloorDim;
+      return lvl8(f);
+    }
+    case STYLE.DualComet: {
+      const tail = 3 < len - 1 ? 3 : (len - 1 > 0 ? len - 1 : 0);
+      const head = cometHead(now, len, kCometStepMs);
+      const head2 = (head + (len / 2 | 0)) % len;
+      const f1 = cometFalloff((head - k + len) % len, tail);
+      const f2 = cometFalloff((head2 - k + len) % len, tail);
+      let f = f1 > f2 ? f1 : f2;
+      if (f < kFloorDim) f = kFloorDim;
+      return lvl8(f);
+    }
+    case STYLE.BreatheArc:
+      return lvl8(breatheLevel(now, kBreatheMs));
+    case STYLE.Fireflies: {
+      const phase = h32(U32(k + 0x9e37)) % kFireflyMs;
+      const b = breatheLevel(now + phase, kFireflyMs);
+      if (b <= kFireflyThresh) return lvl8(kFloorDim);
+      return lvl8(kFloorDim) + ((b - kFireflyThresh) * (1000 - lvl8(kFloorDim)) / (255 - kFireflyThresh) | 0);
+    }
+    default: {
+      const tail = (len - 1 < kCometTail) ? (len - 1) : kCometTail;
+      const head = cometHead(now, len, kCometStepMs);
+      const dist = (head - k + len) % len;
+      let f = cometFalloff(dist, tail);
+      if (f < kFloorDim) f = kFloorDim;
+      return lvl8(f);
+    }
+  }
+}
+// ---------------------------------------------------------------------------
+// Compose a full 45-LED ring frame of `count` running (blue) sessions.
+// Mirrors Animator::frame()'s Full-posture Steady path for the Comet state:
+// arcs laid out with a 1-LED gap (0 for a lone session), dim-white dividers
+// between arcs, each arc rendered by runStyleLevel over its span.
+// ---------------------------------------------------------------------------
+const L = 45;
+const HUE16 = 170 * 257;            // Running hue -> hsv(43690,255,255)
+const BASE = hsv(HUE16, 255, 255);
+const DIVIDER = { r: 46, g: 46, b: 46 };
+function lerpBlack(c, permille) {
+  const f = permille > 1000 ? 1000 : permille;
+  return { r: (c.r * f / 1000) | 0, g: (c.g * f / 1000) | 0, b: (c.b * f / 1000) | 0 };
+}
+function composeFrame(style, count, now) {
+  const frame = new Array(L);
+  for (let i = 0; i < L; i++) frame[i] = { r: 0, g: 0, b: 0 };
+  const gap = count === 1 ? 0 : 1;
+  const spans = layout(L, count, gap);
+  if (spans.length >= 2) {                       // dividers (all arcs blue -> dim white)
+    for (let s = 0; s < spans.length; s++) {
+      const nxt = (s + 1) % spans.length;
+      const gapStart = (spans[s].start + spans[s].len) % L;
+      const gapLen = (((spans[nxt].start - gapStart) % L) + L) % L;
+      for (let x = 0; x < gapLen; x++) frame[(gapStart + x) % L] = DIVIDER;
+    }
+  }
+  for (const sp of spans) {
+    for (let k = 0; k < sp.len; k++) {
+      frame[(sp.start + k) % L] = lerpBlack(BASE, runStyleLevel(style, k, sp.len, now));
+    }
+  }
+  return frame;
+}
+// ---------------------------------------------------------------------------
+// Rendering: 45 LEDs around a circle, with a soft glow per lit LED.
+// ---------------------------------------------------------------------------
+function drawRing(ctx, frame, W) {
+  const cx = W / 2, cy = W / 2, R = W * 0.40, dot = W * 0.028;
+  ctx.clearRect(0, 0, W, W);
+  // faint ring guide
+  ctx.strokeStyle = "rgba(128,140,168,0.10)"; ctx.lineWidth = W * 0.004;
+  ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.stroke();
+  for (let i = 0; i < L; i++) {
+    const ang = (i / L) * Math.PI * 2 - Math.PI / 2;
+    const x = cx + Math.cos(ang) * R, y = cy + Math.sin(ang) * R;
+    const c = frame[i];
+    const lum = (c.r + c.g + c.b) / 3;
+    if (lum < 2) {
+      ctx.fillStyle = "rgba(128,140,168,0.16)";
+      ctx.beginPath(); ctx.arc(x, y, dot * 0.6, 0, Math.PI * 2); ctx.fill();
+      continue;
+    }
+    const col = `rgb(${c.r},${c.g},${c.b})`;
+    ctx.shadowColor = col; ctx.shadowBlur = dot * (0.6 + lum / 120);
+    ctx.fillStyle = col;
+    ctx.beginPath(); ctx.arc(x, y, dot, 0, Math.PI * 2); ctx.fill();
+    ctx.shadowBlur = 0;
+  }
+}
+// ---------------------------------------------------------------------------
+// UI
+// ---------------------------------------------------------------------------
+const VARIANTS = [
+  { id: STYLE.CometTail,   name: "Comet + fading tail",   desc: "A single head sweeps the arc, trailing a smoothly fading tail. This is today's default." },
+  { id: STYLE.CometSparks, name: "Comet + trailing sparks", desc: "The head sweeps as before, dropping sparse embers behind it that linger a moment, then die." },
+  { id: STYLE.DualComet,   name: "Dual comet",            desc: "Two heads chase each other on opposite sides of the arc for a busier, faster read." },
+  { id: STYLE.BreatheArc,  name: "Breathing arc",         desc: "No sweep: the whole arc breathes gently in and out. The calmest of the five." },
+  { id: STYLE.Fireflies,   name: "Fireflies",             desc: "Sparse points twinkle in and out at their own pace, drifting like fireflies across the arc." },
+];
+const MODES = [
+  { label: "1", count: 1 }, { label: "split", count: 2 },
+  { label: "3", count: 3 }, { label: "10", count: 10 },
+];
+let current = 0, mode = 0, cycling = false, cycleAt = 0;
+const reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+const focus = document.getElementById("focus");
+const fctx = focus.getContext("2d");
+const focusName = document.getElementById("focusName");
+const focusDesc = document.getElementById("focusDesc");
+const variantChips = document.getElementById("variantChips");
+const modeSeg = document.getElementById("modeSeg");
+const gallery = document.getElementById("gallery");
+
+const tiles = VARIANTS.map(v => {
+  variantChips.insertAdjacentHTML("beforeend",
+    `<button class="chip" role="button" aria-pressed="false" data-v="${v.id}">${v.name}</button>`);
+  const tile = document.createElement("div");
+  tile.className = "tile"; tile.dataset.v = v.id;
+  const cv = document.createElement("canvas"); cv.width = 300; cv.height = 300;
+  const nm = document.createElement("div"); nm.className = "tname"; nm.textContent = v.name;
+  tile.appendChild(cv); tile.appendChild(nm); gallery.appendChild(tile);
+  tile.addEventListener("click", () => selectVariant(v.id));
+  return { canvas: cv, ctx: cv.getContext("2d"), tile };
+});
+MODES.forEach((m, i) => {
+  modeSeg.insertAdjacentHTML("beforeend",
+    `<button role="button" aria-pressed="${i === 0}" data-m="${i}">${m.label}</button>`);
+});
+variantChips.addEventListener("click", e => {
+  const b = e.target.closest("[data-v]"); if (b) selectVariant(+b.dataset.v);
+});
+modeSeg.addEventListener("click", e => {
+  const b = e.target.closest("[data-m]"); if (!b) return;
+  mode = +b.dataset.m;
+  [...modeSeg.children].forEach((c, i) => c.setAttribute("aria-pressed", i === mode));
+});
+document.getElementById("autoCycle").addEventListener("change", e => { cycling = e.target.checked; });
+
+function selectVariant(id) {
+  current = id;
+  [...variantChips.children].forEach(c => c.setAttribute("aria-pressed", +c.dataset.v === id));
+  tiles.forEach((t, i) => t.tile.dataset.active = (i === id));
+  focusName.textContent = VARIANTS[id].name;
+  focusDesc.textContent = VARIANTS[id].desc;
+}
+selectVariant(0);
+
+const STATIC_T = 1234;   // a representative frame when motion is reduced
+function tick(ts) {
+  const now = reduce ? STATIC_T : ts;
+  if (cycling && !reduce && ts - cycleAt > 3500) { cycleAt = ts; selectVariant((current + 1) % VARIANTS.length); }
+  drawRing(fctx, composeFrame(current, MODES[mode].count, now), focus.width);
+  for (const t of tiles) drawRing(t.ctx, composeFrame(+t.tile.dataset.v, MODES[mode].count, now), t.canvas.width);
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>

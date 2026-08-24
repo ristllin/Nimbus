@@ -65,7 +65,8 @@ void onNetworkUp();
 // --- owner/agent mutations (call on tg_poll, or stage from the web task) -----
 // createLoop parses `schedule` via the pure parseSpec. byAgent => createdBy=Agent,
 // approved=false (owner must approve). inScheduledTurn => refused (fork-bomb guard).
-struct CreateResult { bool ok = false; std::string id; std::string err; };
+struct CreateResult { bool ok = false; std::string id; std::string err;
+                      bool approved = true; };   // false => landed pending (ask-first)
 CreateResult createLoop(const String& name, const String& prompt, const String& chatId,
                         ArduinoJson::JsonObjectConst schedule, bool byAgent,
                         bool inScheduledTurn);
@@ -77,6 +78,14 @@ bool cancelLoop(const String& id);           // disable + remove
 String loopsJson();
 String loopsText();   // human-readable list for the Telegram /loops command
 int    count();
+
+// --- wake-up approval surface (CUM-27; contract shared with lane N1) ---------
+// GET /api/wakeups body: the Once-loop view + arm state + approval mode.
+String wakeupsJson();
+// "Wake-ups: ask me first" policy. Off (default) = agent wakeups auto-approve;
+// on = they land pending for a single owner approval card. Persisted.
+bool wakeupsAskFirst();
+void setWakeupsAskFirst(bool on);
 
 // --- web staging (POST /api/loops runs on the AsyncTCP task) -----------------
 // Stage a mutation JSON ({"action":"create|approve|pause|resume|delete", ...});

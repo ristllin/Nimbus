@@ -1520,14 +1520,23 @@ static nimbus::wifi::LinkView liveLinkView() {
   return v;
 }
 
+// The single-use sign-in code carried in the Sign-in QR / setup QR as `?c=` (CUM-45).
+// A bearer token in a URL is logged, cached, and shared by accident, so the web side
+// stopped accepting `?t=<token>`; the browser now exchanges a short single-use code
+// (served by GET /api/signin/code) for a session. That endpoint lands with lane N1;
+// until the orchestrator wires it at integration this returns "" (the QR opens the
+// config page and the owner signs in there), which is the safe direction - it never
+// puts the long-lived token in a QR. INTEGRATION: source this from /api/signin/code.
+static std::string signinCode() {
+  return std::string();   // stub to the CUM-45 contract; filled at integration
+}
+
 static std::string configUrl() {
   const String ip = net::staConnected() ? net::staIp() : net::apIp();
-  // Carry the per-device auth token in the QR so scanning it opens an AUTHENTICATED
-  // config page (the page captures ?t= and sends it on every state-changing POST).
-  // deviceUrl() returns "" for 0.0.0.0 - an interface that never came up reports that
-  // address, and it encodes into a perfectly valid QR that resolves to nothing.
-  return nimbus::wifi::deviceUrl(std::string(ip.c_str()),
-                                 std::string(agent::store::webAuthToken().c_str()));
+  // Scanning the QR opens the config page; a single-use `?c=` code (when present) signs
+  // the browser in. deviceUrl() returns "" for 0.0.0.0 - an interface that never came up
+  // reports that address, and it encodes into a valid QR that resolves to nothing.
+  return nimbus::wifi::deviceUrl(std::string(ip.c_str()), signinCode());
 }
 
 // The ONBOARDING URL for the SetupInfo screen - ALWAYS the SoftAP address. The
@@ -1537,9 +1546,9 @@ static std::string configUrl() {
 // (field bug, audit P1.2). Token-carrying like configUrl().
 static std::string setupUrl() {
   // Same 0.0.0.0 guard: a failed softAP() reports it, and this screen is exactly
-  // where a confident QR to nowhere does the most damage.
-  return nimbus::wifi::deviceUrl(std::string(net::apIp().c_str()),
-                                 std::string(agent::store::webAuthToken().c_str()));
+  // where a confident QR to nowhere does the most damage. Sign-in code as `?c=`
+  // (CUM-45), same interim-empty behavior as configUrl() until integration.
+  return nimbus::wifi::deviceUrl(std::string(net::apIp().c_str()), signinCode());
 }
 
 // Live Bluetooth state for the Connectivity > Bluetooth row + Config QR line.
@@ -1648,7 +1657,7 @@ static void renderMenu() {
       // two-column row. It clipped there and its chevron led nowhere. The row is
       // now a real destination whose full-screen view receives c.webToken above.
       if (c.menuItems.size() > 5)
-        c.menuItems[5] = "Sign-in code >";
+        c.menuItems[5] = "Device sign-in code >";   // canonical (CUM-45)
     }
 #ifdef NIMBUS_NOTIFIER_DEBUG
     Serial.printf("renderMenu: visible=%d items=%d sel=%d title=%s\n",
@@ -3503,10 +3512,21 @@ static void settleMenuAfterMutation(uint32_t now) {
     std::vector<std::string> rows;
     JsonDocument d;
     if (!deserializeJson(d, js)) {
+      // Build the picker rows via the pure, host-tested formatter (CUM-48): saved
+      // networks first, then by signal; hidden APs collapse to a marker. Hidden APs
+      // scan with an empty SSID, so they are carried through (not dropped here) for
+      // buildScanRows to count and mark.
+      std::vector<nimbus::wifi::ScanHit> scan;
       for (JsonVariantConst n : d["networks"].as<JsonArrayConst>()) {
-        const char* ss = n["ssid"] | "";
-        if (ss[0]) rows.push_back(std::string(ss));
+        nimbus::wifi::ScanHit h;
+        h.ssid   = std::string(n["ssid"] | "");
+        h.rssi   = (int8_t)(int)(n["rssi"] | -127);
+        h.locked = n["enc"] | true;
+        scan.push_back(h);
       }
+      std::vector<nimbus::wifi::KnownNet> known;
+      nimbus::net::wifistore::all(known);
+      rows = nimbus::wifi::buildScanRows(scan, known);
     }
     if (!rows.empty()) g_menu.setWifiScan(rows);
     if (!d["scanning"].as<bool>()) g_menu.clearWifiScanRequest();
@@ -3903,6 +3923,7 @@ void loop() {
     if (cleared) {
       agent::alogf("ring: attention watchdog force-expired a stuck arc (>%us) - reap path stalled",
                    (unsigned)(cap / 1000));
+      if (g_orchMode) agent::orchestrator::noteRingBackstopFired();   // CUM-11 metric
       if (!g_menu.isOpen() && !g_voiceWaiting) refreshRing();
     }
     // Head-turn reaper: the blue "processing" Running arc is NOT an attention status,
@@ -3936,6 +3957,7 @@ void loop() {
         if (s_workingSinceMs == 0) s_workingSinceMs = now;
         if (!g_workingCeilingHit && (int32_t)(now - s_workingSinceMs) >= (int32_t)kWorkingHardMaxMs) {
           g_workingCeilingHit = true;
+          agent::orchestrator::noteRingBackstopFired();   // CUM-11 metric
           agent::alog("ring: working-breathe hit its 30 min absolute ceiling - dropped (stuck-turn reaper stalled?)");
           if (!g_menu.isOpen() && !g_voiceWaiting) refreshRing();
         }

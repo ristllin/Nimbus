@@ -11,6 +11,7 @@
 #include "net/wifi_portal.h"   // WIFIKNOWN? - saved-network list
 #include "net/wifi_store.h"    // WIFIRENAME - re-key a network, keeping its password
 #include "hw/tft_out.h"        // TFTHEALTH? - panel watchdog counter
+#include "hw/ring_out.h"       // RINGANIM - select the working-ring animation variant
 #include "hw/touch_input.h"    // TAP/TAPUP - synthetic taps (the ENC seam's counterpart)
 #include "solide/touch.h"
 #include "solide/display_tft.h"   // TFTID? - shared-MISO readback diagnostic       // TOUCH? - raw XPT2046 state for calibration
@@ -261,6 +262,18 @@ void dispatch(String line) {
     solide::leds::off();
     solide::leds::setBrightness(before.bright);
     Serial.println("LEDTEST done (expected: red, green, blue; normal control resumed)");
+    Serial.flush();
+    return;
+  }
+  if (line.startsWith("RINGANIM ")) {
+    // CUM-42: select the working-ring animation variant so the five candidates can be
+    // A/B'd on the physical ring / on-screen ring against the web simulator. 0=comet+
+    // tail (default), 1=comet+sparks, 2=dual comet, 3=breathing arc, 4=fireflies.
+    const int v = line.substring(9).toInt();
+    if (v < 0 || v >= (int)nimbus::ring::kRunStyleCount) { reply("RINGANIM range 0-4"); return; }
+    static const char* kNames[] = {"comet+tail", "comet+sparks", "dual-comet", "breathing-arc", "fireflies"};
+    nimbus::hw::setRunStyle((nimbus::ring::RunStyle)v);
+    Serial.printf("RINGANIM %d (%s)\n", v, kNames[v]);
     Serial.flush();
     return;
   }

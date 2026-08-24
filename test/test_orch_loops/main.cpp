@@ -305,6 +305,59 @@ static void test_once_wakeups_skip_owner_approval() {
   TEST_ASSERT_TRUE(autoApproved(SchedKind::Once, false));
 }
 
+// CUM-27: the "Wake-ups: ask me first" gate table. The whole approval policy lives
+// in autoApproved(); this pins every cell so a refactor can't quietly change who
+// needs a card.
+static void test_wakeup_ask_first_gate_table() {
+  // Auto mode (shipped default): agent Once auto; owner always; agent recurring never.
+  TEST_ASSERT_TRUE (autoApproved(SchedKind::Once,     true,  false));
+  TEST_ASSERT_TRUE (autoApproved(SchedKind::Once,     false, false));
+  TEST_ASSERT_FALSE(autoApproved(SchedKind::Interval, true,  false));
+  // Ask-first: agent Once now lands PENDING; owner still auto; recurring still pending.
+  TEST_ASSERT_FALSE(autoApproved(SchedKind::Once,     true,  true));
+  TEST_ASSERT_TRUE (autoApproved(SchedKind::Once,     false, true));   // owner unaffected
+  TEST_ASSERT_FALSE(autoApproved(SchedKind::Interval, true,  true));
+  TEST_ASSERT_FALSE(autoApproved(SchedKind::Weekly,   true,  true));
+}
+
+// CUM-27: the /api/wakeups contract (shared with lane N1). Only Once loops appear;
+// arm state, approval mode, pending flag, and inSec are all present and correct.
+static void test_wakeups_api_contract() {
+  std::vector<LoopRecord> loops;
+  { LoopRecord l; l.id = "lp1"; l.name = "wakeup"; l.prompt = "check the report";
+    l.sched.kind = SchedKind::Once; l.sched.intervalSec = 600;
+    l.createdBy = CreatedBy::Agent; l.enabled = true; l.approved = true;
+    l.nextRun = 1000; l.lastResult = LastResult::Ok; loops.push_back(l); }
+  { LoopRecord l; l.id = "lp2"; l.name = "wakeup"; l.prompt = "follow up";
+    l.sched.kind = SchedKind::Once; l.createdBy = CreatedBy::Agent;
+    l.enabled = true; l.approved = false; l.nextRun = 2000; loops.push_back(l); }
+  { LoopRecord l; l.id = "lp3"; l.name = "digest"; l.sched.kind = SchedKind::Daily;
+    l.enabled = true; l.approved = true; loops.push_back(l); }   // recurring: excluded
+
+  std::string js = dumpWakeupsApi(loops, /*askFirst=*/true, /*now=*/940);
+  ArduinoJson::JsonDocument d;
+  TEST_ASSERT_FALSE(ArduinoJson::deserializeJson(d, js));
+  TEST_ASSERT_EQUAL_STRING("ask", d["approvalMode"]);
+  TEST_ASSERT_EQUAL_INT(4, d["maxArmed"].as<int>());
+  TEST_ASSERT_EQUAL_INT(2, d["armed"].as<int>());          // both Once loops enabled
+  ArduinoJson::JsonArrayConst arr = d["wakeups"].as<ArduinoJson::JsonArrayConst>();
+  TEST_ASSERT_EQUAL_INT(2, arr.size());                    // recurring loop excluded
+  TEST_ASSERT_EQUAL_STRING("lp1", arr[0]["id"]);
+  TEST_ASSERT_EQUAL_STRING("check the report", arr[0]["note"]);
+  TEST_ASSERT_EQUAL_STRING("agent", arr[0]["createdBy"]);
+  TEST_ASSERT_EQUAL_STRING("ok", arr[0]["lastResult"]);
+  TEST_ASSERT_FALSE(arr[0]["pending"].as<bool>());
+  TEST_ASSERT_EQUAL_INT(60, arr[0]["inSec"].as<int>());    // 1000 - 940
+  TEST_ASSERT_TRUE(arr[1]["pending"].as<bool>());          // lp2 enabled && !approved
+
+  // Auto mode + no clock supplied: mode string flips, inSec omitted.
+  std::string js2 = dumpWakeupsApi(loops, /*askFirst=*/false, /*now=*/0);
+  ArduinoJson::JsonDocument d2;
+  ArduinoJson::deserializeJson(d2, js2);
+  TEST_ASSERT_EQUAL_STRING("auto", d2["approvalMode"]);
+  TEST_ASSERT_TRUE(d2["wakeups"][0]["inSec"].isNull());    // no clock => omitted
+}
+
 // After its single fire a wakeup retires - except ONE short retry when the turn
 // itself failed (a silently lost wakeup breaks the model's follow-up promise);
 // the second failure retires it.
@@ -413,6 +466,8 @@ int main() {
   RUN_TEST(test_persistence_roundtrip);
   RUN_TEST(test_once_spec_parses_with_own_bounds);
   RUN_TEST(test_once_wakeups_skip_owner_approval);
+  RUN_TEST(test_wakeup_ask_first_gate_table);
+  RUN_TEST(test_wakeups_api_contract);
   RUN_TEST(test_once_after_fire_retires_with_one_retry);
   RUN_TEST(test_parse_duration_secs);
   RUN_TEST(test_clamp_loop_caps);

@@ -36,13 +36,13 @@ std::string apName(const LinkView& v) {
 
 }  // namespace
 
-std::string deviceUrl(const std::string& ip, const std::string& token) {
+std::string deviceUrl(const std::string& ip, const std::string& code) {
   // "0.0.0.0" is what softAPIP()/localIP() report when the interface never came up.
   // It encodes into a perfectly valid QR that goes nowhere, which is exactly how a
   // failed AP still looked healthy on the panel.
   if (ip.empty() || ip == "0.0.0.0") return std::string();
   std::string u = "http://" + ip + "/";
-  if (!token.empty()) u += "?t=" + token;
+  if (!code.empty()) u += "?c=" + code;   // sign-in CODE, not a bearer token (CUM-45)
   return u;
 }
 
@@ -115,6 +115,59 @@ std::string forgetRowLabel(const KnownNet& n, bool current, size_t maxChars) {
   std::string s = clip(asciiOnly(n.ssid), 30);
   if (current) s += "  (in use)";
   return fit(s, maxChars);
+}
+
+// Collapse duplicate SSIDs to their strongest sighting; return the count of hidden
+// (empty-SSID) access points separately. `locked` merges with OR so a secured network
+// seen open on another band is never presented as open.
+static std::vector<ScanHit> dedupeScan(const std::vector<ScanHit>& scan, int& hidden) {
+  std::vector<ScanHit> uniq;
+  hidden = 0;
+  for (const ScanHit& h : scan) {
+    if (h.ssid.empty()) { ++hidden; continue; }
+    bool merged = false;
+    for (ScanHit& u : uniq) {
+      if (u.ssid != h.ssid) continue;
+      if (h.rssi > u.rssi) u.rssi = h.rssi;
+      u.locked = u.locked || h.locked;
+      merged = true;
+      break;
+    }
+    if (!merged) uniq.push_back(h);
+  }
+  return uniq;
+}
+
+std::vector<std::string> buildScanRows(const std::vector<ScanHit>& scan,
+                                       const std::vector<KnownNet>& known,
+                                       size_t maxChars) {
+  int hidden = 0;
+  std::vector<ScanHit> uniq = dedupeScan(scan, hidden);
+  // Saved networks first, then by signal (strongest first). Stable insertion sort keeps
+  // equal-key ties in first-seen order, so the output is deterministic for the goldens.
+  auto isSaved = [&](const ScanHit& h) { return findNetwork(known, h.ssid) >= 0; };
+  for (size_t i = 1; i < uniq.size(); ++i) {
+    ScanHit key = uniq[i];
+    const bool ks = isSaved(key);
+    size_t j = i;
+    while (j > 0) {
+      const bool js = isSaved(uniq[j - 1]);
+      const bool better = (ks && !js) || (ks == js && key.rssi > uniq[j - 1].rssi);
+      if (!better) break;
+      uniq[j] = uniq[j - 1];
+      --j;
+    }
+    uniq[j] = key;
+  }
+  std::vector<std::string> rows;
+  rows.reserve(uniq.size() + 1);
+  for (const ScanHit& h : uniq) rows.push_back(scanRowLabel(h, isSaved(h), maxChars));
+  if (hidden > 0) {
+    const std::string marker = hidden == 1 ? "(hidden network)"
+                                           : "(" + std::to_string(hidden) + " hidden networks)";
+    rows.push_back(fit(marker, maxChars));
+  }
+  return rows;
 }
 
 }  // namespace wifi

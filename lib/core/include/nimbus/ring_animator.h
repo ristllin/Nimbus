@@ -29,6 +29,22 @@ using solide::ring::RGB;
 #define ANIM_MAX_SEGMENTS 8
 #endif
 
+// Candidate "working" (Running) animations (CUM-42). These are alternate renderings
+// of the one animated steady state the ambient grammar allows - the processing slide -
+// behind a selector, so Roy can A/B them on the ring, the on-screen ring, and the web
+// simulator and pick one. Every variant is a DETERMINISTIC function of (nowMs, arc
+// geometry) so the three surfaces render byte-identically and the host tests can pin
+// exact frames. The default is CometTail, which reproduces the shipped comet exactly,
+// so nothing changes on any device until a variant is selected.
+enum class RunStyle : uint8_t {
+  CometTail   = 0,  // variant 1 (default): sliding head + smoothly fading tail
+  CometSparks = 1,  // variant 2: comet head + sparse trailing embers that linger and die
+  DualComet   = 2,  // variant 3: two comet heads chasing on opposite sides of the arc
+  BreatheArc  = 3,  // variant 4: the whole arc breathes gently in its hue
+  Fireflies   = 4,  // variant 5: sparse per-LED twinkles drifting across the arc
+};
+constexpr uint8_t kRunStyleCount = 5;
+
 class Animator {
  public:
   void configure(int ledCount, Posture posture, uint8_t brightness);
@@ -72,6 +88,11 @@ class Animator {
     envPeriodMs_ = periodMs;
   }
 
+  // Select the "working" (Running) animation variant (CUM-42). Idempotent; affects
+  // only the Comet/Running steady state - needs-you states keep their calm breathe.
+  void setRunStyle(RunStyle s) { runStyle_ = s; }
+  RunStyle runStyle() const { return runStyle_; }
+
   // Render the current frame into out[0..n) at nowMs. n should be ledCount.
   void frame(uint32_t nowMs, RGB* out, int n);
 
@@ -114,6 +135,7 @@ class Animator {
   int      leds_ = 45;
   Posture  posture_ = Posture::Full;
   uint8_t  bright_ = 30;
+  RunStyle runStyle_ = RunStyle::CometTail;   // CUM-42 selector; default = shipped comet
   SingleCue single_;
   bool     rainbow_ = false;      // active theme is "rainbow" -> cycling hues
   uint8_t  rainbowAlert_ = 0;     // the theme's alert hue (exempt from cycling)

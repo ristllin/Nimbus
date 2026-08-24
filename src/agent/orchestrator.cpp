@@ -1939,10 +1939,20 @@ int  pendingSpawnCount() { return g_jobs ? g_jobs->pendingCount() : 0; }   // qu
 bool turnInFlight()   { return g_engine && g_engine->turnInFlight(); }
 uint32_t headJobKey() { return keyFromTag("head"); }
 
+// CUM-11 backstop metric: every time a belt-and-braces path (not the primary edge)
+// has to clear a stuck ring arc, this counts it. The 24 h wake-up soak acceptance is
+// this == 0 - the backstops are insurance, never the mechanism. Surfaced in
+// /api/state as ring.backstopFires so the soak can assert it stayed flat.
+static uint32_t s_ringBackstopFires = 0;
+uint32_t ringBackstopFires() { return s_ringBackstopFires; }
+void noteRingBackstopFired() { ++s_ringBackstopFires; }
+
 // Stuck-turn reaper - the decision + the arc-freeing event live in the portable
 // TurnEngine (loop budget + 2 min margin). Called from the always-alive loop().
 bool reapStuckTurn(uint32_t nowMs) {
-  return g_engine && g_engine->reapStuckTurn(nowMs);
+  const bool fired = g_engine && g_engine->reapStuckTurn(nowMs);
+  if (fired) ++s_ringBackstopFires;   // a dead turn slipped past the primary clear
+  return fired;
 }
 
 // W6: keep the orchestrator's own "head" ring arc lit while its sub-agents run.
@@ -1955,9 +1965,22 @@ bool reapStuckTurn(uint32_t nowMs) {
 bool reconcileHeadArc(uint32_t nowMs) {
   if (!g_engine) return false;
   static nimbus::harness::HeadArcTracker s_tracker;
+  static uint32_t s_lastTurnCount = 0;
+  // Completion EDGE: turnCount() bumps once per finished turn. A short wake-up turn
+  // can start AND finish between two watchdog ticks, so turnInFlight below never
+  // samples true - the edge is what tells the tracker a (possibly arc-leaving) turn
+  // happened, so the primary clear path fires instead of a backstop (CUM-11).
+  const uint32_t tc = g_engine->turnCount();
+  const bool turnEnded = (tc != s_lastTurnCount);
+  s_lastTurnCount = tc;
   const bool inTurn = g_engine->turnInFlight();
   const int children = g_jobs ? g_jobs->activeCount() : 0;
-  switch (s_tracker.reconcile(inTurn, children, nowMs)) {
+  const auto action = s_tracker.reconcile(inTurn, children, nowMs, turnEnded);
+  // Fold the tracker's own frozen-children backstop into the aggregate metric.
+  static uint32_t s_lastTrackerBackstops = 0;
+  const uint32_t tb = s_tracker.backstopFires();
+  if (tb != s_lastTrackerBackstops) { s_ringBackstopFires += tb - s_lastTrackerBackstops; s_lastTrackerBackstops = tb; }
+  switch (action) {
     case nimbus::harness::HeadArcTracker::Action::Light:
       g_engine->setHeadArc(true);
       return true;

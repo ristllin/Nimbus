@@ -894,7 +894,7 @@ void drawSetup(Fb565& fb, Rendered& r, const ScreenCtx& ctx, bool config) {
 }
 
 void drawTokenDetail(Fb565& fb, Rendered& r, const ScreenCtx& ctx) {
-  drawHeader(fb, r, ctx, "Sign-in code", true);
+  drawHeader(fb, r, ctx, "Device sign-in code", true);   // canonical (CUM-45)
   const int y = kBodyTop;
   fb.text(kGut, y, "Recovery only - scan the QR normally.", kInk3, 1);
 

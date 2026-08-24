@@ -1,5 +1,6 @@
 #pragma once
 #include "nimbus/ring_plan.h"
+#include "nimbus/ring_animator.h"   // RunStyle (CUM-42 selector)
 
 // ring_out - device glue from a portable ring::Plan to solide::leds.
 //
@@ -52,6 +53,12 @@ void stopAnimation();
 // 5..60). Wires Param::RingFps to real hardware - it was a no-op menu/web control
 // while the cadence was a compile-time constant.
 void setRingFps(int fps);
+
+// CUM-42: select the "working" (Running) animation variant. The physical LED ring
+// and the on-screen ring mirror both render this Animator, so this drives both
+// identically (and matches the web simulator). Default is the shipped comet; this
+// exists so the five candidates can be A/B'd on real hardware for a pick.
+void setRunStyle(nimbus::ring::RunStyle style);
 
 // While true, applyRingPlan() does NOT write the global LED brightness - the
 // caller (the wake-reveal's eased envelope in loop()) owns it. Prevents the
