@@ -58,7 +58,7 @@ a multi-second turn does not reboot the board.
 
    The capability manifest lists tools **live from the MCP registry manifest**, so
    it never drifts from what actually dispatches. The `hw` descriptor is mostly
-   static (ring/e-ink/encoder/mic/speaker present; no battery/SD/BLE) with the
+   static (ring/screen/mic/speaker present; no battery/SD/BLE) with the
    Telegram capability read live from `telegram::enabled()`. The composed prompt is
    also stashed in `g_lastInstructions` so the `PROMPT?` console command can dump it
    without a provider round-trip.

@@ -8,7 +8,7 @@
 // NotifierMode - the device loop for Notifier mode. Owns the incremental nsn
 // decoder and the portable frame→event Mapper; applies complete frames to the
 // attention Router and expires the ring if the link goes quiet. All UX logic
-// (posture, ring plan, e-ink scheduling) lives downstream in the portable
+// (posture, ring plan, render scheduling) lives downstream in the portable
 // core - this class is only the transport edge.
 //
 // BLE-only (decided 2026-07; USB serial is power + flashing only, never a
@@ -47,7 +47,7 @@ class NotifierMode {
   // shared decoder would tear frames across transports. Both paths land in the
   // same mapper_/router_/last_, so the link-timeout in poll() naturally means
   // "quiet on ALL transports" and poll() stays untouched. Returns true when
-  // Router state changed (caller drives the ring / e-ink, same as poll()).
+  // Router state changed (caller drives the ring / panel, same as poll()).
   bool feedBle(uint8_t byte, uint32_t nowMs) {
     nsn::Frame frame;
     if (bleDecoder_.feed(byte, frame)) {

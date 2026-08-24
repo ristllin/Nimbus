@@ -23,8 +23,8 @@
 // NOT own the display/LED. Sub-session states flow OUT as nimbus::attn::Event via a
 // caller-supplied sink, so they land on the SAME attention Router / ring path as
 // Notifier jobs. main.cpp installs the sink (routing each Event into its
-// attn::Router, recomposing the ring, feeding EpdIntents to the scheduler) and the
-// Telegram/TTS sinks. The orchestrator itself pulls in NO Router / renderer / EPD.
+// attn::Router, recomposing the ring, feeding ScreenIntents to the scheduler) and the
+// Telegram/TTS sinks. The orchestrator itself pulls in NO Router / renderer.
 //
 // The turn parse + validation, two-part memory, journal, and device-action
 // classification are the PORTABLE core (lib/core nimbus::orch::*); this file is the
@@ -55,7 +55,7 @@ using SpeakSink = void (*)(const String& text);
 using DeviceSink = void (*)(const nimbus::orch::ValidatedAction& a);
 
 struct Sinks {
-  EventSink  event  = nullptr;  // -> attn::Router (required for ring/e-ink feedback)
+  EventSink  event  = nullptr;  // -> attn::Router (required for ring/panel feedback)
   SendSink   send   = nullptr;  // -> telegram::send (required to answer the owner)
   SpeakSink  speak  = nullptr;  // -> audio TTS (optional; bench-broken here)
   DeviceSink device = nullptr;  // -> ring/power executor (led/lights/reboot)
@@ -137,7 +137,7 @@ bool   turnInFlight();       // true while a runTurn() is executing (drives the 
 // Returns a heap_caps PSRAM buffer (caller frees; stream it chunked - never copy
 // into an internal String) or nullptr if no turn has run. Serves GET /api/lastturn.
 char*  lastTurnDebugPs(size_t& outLen);
-// Router key of the synthetic "head" turn job (ring feedback only). The e-ink job
+// Router key of the synthetic "head" turn job (ring feedback only). The panel job
 // list SKIPS it - its Running/Offline edges were flashing a full 2.2 s refresh at
 // the start AND end of every turn (owner: "heavy flickering while processing").
 uint32_t headJobKey();

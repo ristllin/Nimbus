@@ -1,4 +1,4 @@
-# Configuration C - all-in-one (Freenove CYD, `screenModel = tft`)
+# Configuration B - all-in-one (Freenove CYD, `screenModel = tft`)
 
 The lowest-effort way to run Nimbus: a single off-the-shelf module with the
 screen, touch, microSD, mic, speaker, and an RGB LED already on one board. There
@@ -22,7 +22,7 @@ lineup (power, battery sensing, the operating modes), see the
 
 1. **Buy the module.** One part: the Freenove ESP32-S3 Display 2.8" (FNK0104B),
    about $20-25. Nothing else is required for a desk-powered unit. See the
-   [bill of materials](bom.md#configuration-c---all-in-one-freenove-cyd).
+   [bill of materials](bom.md#configuration-b---all-in-one-freenove-cyd).
 2. **Plug in USB-C.** Connect the board to your computer with a data-capable
    USB-C cable. The board has a single USB-C port, so there is no wrong port to
    pick.
@@ -74,4 +74,4 @@ connect.
   together, in place of the separate I²S mic and amp on the hand-built boards.
 - **Backlight is a continuous draw**, as on any color panel: the idle path blanks
   it rather than drawing a screensaver. Battery mode sets its lit level - see
-  [The screen on a color panel](../modes-and-signals.md#the-screen-on-a-color-panel).
+  [The screen backlight](../modes-and-signals.md#the-screen-backlight).

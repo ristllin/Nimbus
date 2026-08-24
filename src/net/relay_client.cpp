@@ -509,7 +509,7 @@ BadTokenOutcome recoverFromBadToken() {
 }
 
 // Run the full pairing exchange: /pair/init then poll /pair/poll. On success, persist
-// the credential and return true (caller connects). Surfaces the code+URL for e-ink.
+// the credential and return true (caller connects). Surfaces the code+URL for the panel.
 bool runPairing() {
   String host = agent::store::cloudHost();
   String mac;

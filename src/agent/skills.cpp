@@ -24,7 +24,7 @@ const char kDeepResearch[] PROGMEM =
     "synthesized straight into your reply, nothing persisted).\n\n"
     "## Setup\n"
     "1. Pick ONE project tag for the whole run: dr-<topic-slug>-<MMDDHHMM> (<=24\n"
-    "   chars, e.g. dr-eink-mkt-08061530). Every spawn in this run carries it in\n"
+    "   chars, e.g. dr-mkt-08061530). Every spawn in this run carries it in\n"
     "   session_ops project - each sub-agent's full result then AUTO-SAVES as\n"
     "   <project>/<name>-<tag>.md (the [saved: ...] line in FRESH RESULTS confirms it).\n"
     "2. Plan ORTHOGONAL sub-questions that together cover the ask - not overlapping\n"
@@ -94,11 +94,9 @@ const char kHardware[] PROGMEM =
     "# Device hardware\n"
     "Board: ESP32-S3-DevKitC-1 N16R8 (16 MB flash, 8 MB PSRAM; TLS + the memory\n"
     "working set live in PSRAM, ~300 KB internal SRAM is scarce).\n"
-    // ⚠ No display/input claim here: a device has EITHER the e-ink + knob OR the
-    // colour touchscreen (whose panel takes the knob's pins), and this capsule is
-    // static. Hardcoding one told half the fleet to look at hardware it does not
-    // have. The live manifest (orch_world) and system.health answer this
-    // correctly per board - and the capsule already directs the model there.
+    // ⚠ No display/input claim here: the live manifest (orch_world) and
+    // system.health name the color touch panel per board, and this capsule is
+    // static - so it defers to them rather than hardcoding hardware details.
     "Peripherals: 45-LED WS2812B ring; a status display with its input device (the\n"
     "live manifest names which); I2S MEMS microphone (INMP441/ICS-43434); MAX98357A I2S speaker\n"
     "(both audio paths verified via acoustic loopback); microSD (orchestrator data\n"

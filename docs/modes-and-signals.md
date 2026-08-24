@@ -55,7 +55,6 @@ The reference defaults:
 | Ring brightness | 10 | 30 | 60 |
 | Animation smoothness (FPS) | 20 | 30 | 60 |
 | Screen update pace (batching) | 60 s | 30 s | 15 s |
-| Ghost-clear interval (e-ink) | 30 min | 20 min | 15 min |
 | On-screen status refresh | 300 s | 120 s | 60 s |
 | Low-battery Telegram alert | on | on | off - not needed on external power |
 | Needs-you hold | 1 min | 2 min | 5 min |
@@ -93,11 +92,10 @@ Customize is the only place you change it independently.
 full-brightness reveal of live status, then back to normal. This is how you
 glance state on a dark idle ring.
 
-### The screen on a color panel
+### The screen backlight
 
-On the reflective e-ink panel the battery mode only changes the lights. On a
-color touch panel the **backlight is the largest continuous draw** - bigger
-than the ring - so the battery mode reaches it too:
+On the color touch panel the **backlight is the largest continuous draw** -
+bigger than the ring - so the battery mode reaches it too:
 
 | Battery mode | Backlight |
 |---|---|
@@ -111,10 +109,9 @@ this level the backlight draws a few percent of its lit value, so nearly all of
 the saving is kept. Any touch or activity brings it straight back to the
 current mode's level.
 
-The screen also **rests sooner on a color panel**: the default idle delay is
-**5 minutes**, against 60 on e-ink. E-ink is reflective, so resting it saves
-nothing and its screensaver is really about ghosting; on a color panel an hour
-of backlight at an empty desk is the most wasteful thing the device can do.
+The screen also **rests after a short idle**: the default idle delay is
+**5 minutes**, because an hour of backlight at an empty desk is the most wasteful
+thing the device can do.
 Setting the delay yourself (Settings > Screensaver on the device, Settings →
 Mode & identity on the web) always wins over either default.
 
@@ -128,7 +125,7 @@ identical whichever board you have. Unlike a physical ring, the on-screen ring
 always renders at full brightness and detail regardless of battery mode - there
 is no LED power to save by dimming it, so dimming it would only make it harder to
 read. The battery mode instead dims the **backlight** (see
-[the screen on a color panel](#the-screen-on-a-color-panel) above), which is
+[the screen backlight](#the-screen-backlight) above), which is
 where this board's actual power draw is.
 
 The ring shows exactly what the connected notifier broker sends. A broker with
@@ -141,11 +138,10 @@ than the device.
 
 ### Display flip
 
-On the color touch panel, **Settings > Display flip** on the device (or the
-Display flip toggle under Settings → Device on the web) rotates the screen 180
-degrees for an upside-down mount. It applies right away, and touch follows the
-flip so taps still land where you touch. The e-ink panel is fixed orientation,
-so the option only appears on the touch model.
+**Settings > Display flip** on the device (or the Display flip toggle under
+Settings → Device on the web) rotates the screen 180 degrees for an upside-down
+mount. It applies right away, and touch follows the flip so taps still land where
+you touch.
 
 ### Low battery
 
@@ -224,10 +220,10 @@ Full specification: [Notifier status language](./notifier-status-language.md).
 
 ## 6. Menu ring echo
 
-While the settings menu is open, the ring becomes a **fill bar** - an instant
-echo of the slow e-ink. Browsing shows position and count; adjusting a value
-(click Volume → rotate → click) shows the value itself. Dim by design; it holds
-about 2 s after the last detent, then live status resumes.
+While the settings menu is open, the ring becomes a **fill bar** that echoes the
+menu. Browsing shows position and count; adjusting a value shows the value
+itself. Dim by design; it holds about 2 s after the last change, then live status
+resumes.
 
 ---
 
@@ -245,4 +241,4 @@ If this page ever disagrees with the code, the code's single sources win:
 | Ambient/needs-you holds + tombstones | `lib/core/src/notifier_map.cpp`, `attention.cpp` |
 | Backlight per mode + rest glow | `lib/core/include/nimbus/duty.h` |
 | Sound event ranks | `lib/core/nimbus/sfx_map.*` + `docs/sfx-map.md` |
-| Header (`ring:/sound:/power:`) | `lib/core/src/epd_screens.cpp` `drawHeader` |
+| Header (`ring:/sound:/power:`) | `lib/core/src/tft_screens.cpp` `drawHeader` |

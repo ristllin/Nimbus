@@ -55,7 +55,7 @@ const TapRegion* rowRegion(const Rendered& r, int nth) {
 
 }  // namespace
 
-// A tap must land on the SAME state the knob would reach: rotate onto the row,
+// A tap must land on the SAME state the gesture API would reach: rotate onto the row,
 // then click. This is the real invariant of the whole design ("taps dispatch
 // into the existing FSM"), and it is far stronger than checking the cursor -
 // onClick() descends, which resets the cursor in the new state, so the tapped
@@ -89,7 +89,7 @@ static void test_tap_matches_the_knob() {
   TEST_ASSERT_EQUAL_INT(target, hit->index);
   TEST_ASSERT_TRUE(applyMenuTap(menu, *hit));
 
-  // The knob doing the equivalent thing, from the same starting point.
+  // The gesture API doing the equivalent thing, from the same starting point.
   Config cfg2;
   SettingsMenu knob(cfg2);
   knob.open();
@@ -97,10 +97,10 @@ static void test_tap_matches_the_knob() {
   knob.onClick();
 
   TEST_ASSERT_TRUE_MESSAGE(sameState(menu, knob),
-                           "a tap on a row did not reach the same state the knob does");
+                           "a tap on a row did not reach the same state the gesture API does");
 }
 
-// Every visible row must be reachable and land where the knob lands - the
+// Every visible row must be reachable and land where the gesture API lands - the
 // cursor wraps, so a naive stepper can converge from the wrong side.
 static void test_every_visible_row_matches_the_knob() {
   Config cfg;

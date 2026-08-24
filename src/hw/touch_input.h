@@ -1,7 +1,7 @@
 #pragma once
 #include <cstdint>
 
-// touch_input - turns panel taps into the SAME abstract gestures the EC11
+// touch_input - turns panel taps into the SAME abstract menu/cursor gestures the
 // encoder produces.
 //
 // The point of this file is that nothing downstream learns touch exists. The

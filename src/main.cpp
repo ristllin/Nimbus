@@ -1,32 +1,31 @@
 // Nimbus firmware - Notifier mode device.
 //
-// BLE nsn frames -> decoder -> Mapper -> attention Router -> ring + e-ink.
+// BLE nsn frames -> decoder -> Mapper -> attention Router -> ring + panel.
 // USB serial is power + flashing only, never a status transport (decided
 // 2026-07 - see AGENTS.md). The ring is instant (per-job segments / cursor);
-// the e-ink follows on the dwell/coalesce schedule. Encoder rotates a cursor
-// over the job list and the detail pane renders after the knob settles.
+// the panel follows on the dwell/coalesce schedule. Encoder rotates a cursor
+// over the job list and the detail pane renders after the cursor settles.
 //
 // P4 wiring lives here now:
 //   - boot loads the persisted Config + Mode from NVS/SD (config_nvs), so the
 //     profile/overrides survive reboots; a fresh device falls back to defaults.
 //   - a LONG-PRESS on the encoder opens the portable SettingsMenu; while it is
-//     open the knob drives the menu (rotate/click/long-press) and the panel
+//     open, touch drives the menu (rotate/click/long-press gestures) and the panel
 //     shows ScreenId::Menu rendered from view(). Any menu mutation applies live
 //     (scheduler dwell/coalesce + ring brightness) and persists.
 //   - a WiFi AP + captive config portal (src/net) starts in setup(); its save
 //     callback persists the same Config and re-syncs the active profile.
 // The Notifier BLE path is untouched when the menu is closed: nsn frames keep
-// flowing to the ring + e-ink exactly as before.
+// flowing to the ring + panel exactly as before.
 //
 // Build:  pio run -e esp32s3 -t upload           (silent - clean nsn stream)
 //         pio run -e notifierdbg -t upload        (adds a device->host status
 //                                                  echo for E2E validation)
 #include <Arduino.h>
 #include <esp_heap_caps.h>  // heap_caps_calloc (PSRAM-backed mbedTLS allocator)
-#include <new>              // placement new (PSRAM-backed e-ink framebuffers)
+#include <new>              // placement new (PSRAM-backed panel framebuffers)
 #include <esp_bt.h>         // esp_bt_controller_mem_release (free BT RAM in Orch mode)
 #include <esp_sleep.h>
-#include <driver/rtc_io.h>       // RTC pullups for the knob-rotation deep-sleep wake
 #include <esp_task_wdt.h>
 #include <nvs_flash.h>   // nvs_flash_erase() - web factory reset
 #include <nvs.h>         // raw NVS read/write to preserve identity across the wipe
@@ -114,7 +113,7 @@ static std::vector<nimbus::orch::SessionInfo> g_sessionList;
 // voice reply). When set, the Ask screen renders it.
 static String g_askOverride;
 // STICKY reply (P2.3): a reply/voice message on the Ask screen HOLDS until the
-// next click (the scheduler is gated while set, like the menu), and the knob
+// next click (the scheduler is gated while set, like the menu), and the cursor
 // pages through it - it used to be overwritten by the next scheduled render
 // within seconds ("can't read more than a line or two").
 static bool g_askSticky = false;
@@ -122,7 +121,7 @@ static int  g_askPage = 0;
 // Voice hold-to-talk state. g_voiceActive guards re-entry (LongPress auto-repeats
 // while held); g_voiceStop is the recordToFile stop flag driven by the release
 // watcher; g_voiceDone lets the watcher exit. g_voiceReply* carries the async turn
-// reply back from the poll task to the main loop for e-ink rendering.
+// reply back from the poll task to the main loop for panel rendering.
 static volatile bool g_voiceActive = false;
 static volatile bool g_voiceStop = false;
 static volatile bool g_voiceDone = false;
@@ -331,20 +330,20 @@ static render::Scheduler g_sched;
 static NotifierMode g_notifier(g_router);
 static SettingsMenu g_menu(g_cfg);
 
-// The e-ink screen currently on the panel - always compiled: the loop's header-
+// The panel currently on the panel - always compiled: the loop's header-
 // glyph change-detector gates its repaint on "is StatusIdle live?" (below), so
 // production needs this too. Set by renderScreen()/renderMenu().
 static volatile uint8_t g_lastScreen = uint8_t(attn::ScreenId::StatusIdle);
 
-// An AMBIENT (non-attention) e-ink intent must NOT repaint over the long-idle
+// An AMBIENT (non-attention) screen intent must NOT repaint over the long-idle
 // screensaver logo. When the logo is up, the broker's ~30 s snapshot heartbeats
-// still emit a StatusIdle EPD intent; repainting it under the logo makes the
+// still emit a StatusIdle screen intent; repainting it under the logo makes the
 // screensaver entry re-fire, and each StatusIdle<->Screensaver swap is a ~2.2 s
 // FastBW invert flash (owner: "the standby logo keeps flashing"). A CTA
 // (attention) still renders - it wakes the panel because a job needs the owner -
 // and a genuine job edge calls saverKick() -> StatusIdle first, so real activity
 // is never dropped. This gates ONLY the ambient heartbeats while the logo shows.
-static inline bool epdAmbientAllowedOverSaver(bool attention) {
+static inline bool screenAmbientAllowedOverSaver(bool attention) {
   return attention || g_lastScreen != uint8_t(attn::ScreenId::Screensaver);
 }
 #ifdef NIMBUS_TEST
@@ -392,12 +391,12 @@ static nimbus::power::BatteryEstimate g_battEstimate;
 
 // Battery hardware from the board map. cells never 0 (both boards set it); the
 // divider is owner-tuned on hand-built boards (resistors vary) but fixed on an
-// all-in-one (no e-paper option -> board().epd.sck < 0).
+// all-in-one (no separate panel option -> board().epd.sck < 0).
 static uint8_t  battCells()  { if (uint8_t o = agent::store::battCellsOvr()) return o; const uint8_t c = solide::board().batt.cells; return c ? c : uint8_t(NIMBUS_BATT_CELLS); }
 static int      battAdcPin() { return solide::board().batt.sense >= 0 ? int(solide::board().batt.sense) : int(NIMBUS_BATT_SENSE_PIN); }
 static uint16_t battDivX100() { return solide::board().epd.sck < 0 ? solide::board().batt.dividerX100 : agent::store::battDividerX100(); }
 // Battery monitoring on/off. A hand-built board ships WITH a pack, so monitoring
-// defaults ON; an all-in-one desk board (no e-paper option) treats a battery as an
+// defaults ON; an all-in-one desk board (no separate panel option) treats a battery as an
 // add-on, so it defaults OFF (opt-in) - otherwise the floating ADC reads "empty"
 // and the device sleeps with no pack fitted. The owner can opt in (web Settings).
 static bool battMonOn() { return agent::store::battMon(solide::board().epd.sck >= 0); }
@@ -458,11 +457,11 @@ static void saveBattModel() {
 // ---- Orchestrator mode state (plan §3.6) -----------------------------------
 // The orchestrator turn loop + Telegram poll run on their own FreeRTOS task
 // (tg_poll, spawned by telegram::begin). Sub-session states flow OUT via the
-// EventSink onto the SAME attn::Router the Notifier feeds, so the ring + e-ink
+// EventSink onto the SAME attn::Router the Notifier feeds, so the ring + panel
 // render sub-agent jobs exactly like nsn jobs. The sink runs on the poll task
 // while the main loop reads g_router on the main task, so the two are serialized
 // with the same net::ConfigLockGuard the menu/web layer already uses; a flag
-// tells the main loop to recompose the ring + queue an e-ink intent.
+// tells the main loop to recompose the ring + queue an screen intent.
 static agent::HeavyFabric g_fabric;
 static bool          g_orchMode = false;       // resolved once at boot
 // The color touch panel is the only supported display (e-ink removed in v4.4).
@@ -488,14 +487,14 @@ static uint32_t      g_lastApReconcileMs = 0;  // periodic AP<->STA reconcile (s
 static solide::BeginResult g_hal{};            // per-subsystem HAL health from solide::begin()
 static bool          g_bleEnabled = true;       // Connectivity > Bluetooth (NVS, runtime)
 static volatile bool g_orchRingDirty = false;  // set by the sink, drained by loop()
-static volatile bool g_orchEpdRender = false;  // an attention event wants the panel
+static volatile bool g_orchScreenRender = false;  // an attention event wants the panel
 static volatile bool g_saverRestoreReq = false; // saverKick wants the screensaver
                                                 // painted over with live status; the
                                                 // RENDER is deferred to loop() because
                                                 // saverKick fires from the event tap on
                                                 // the tg_poll turn task (crash, below)
-static volatile uint8_t g_orchEpdScreen = uint8_t(attn::ScreenId::StatusIdle);
-static volatile bool g_orchEpdAttn = false;
+static volatile uint8_t g_orchScreenId = uint8_t(attn::ScreenId::StatusIdle);
+static volatile bool g_orchScreenAttn = false;
 
 // EventSink: route a sub-session event into the attention Router (poll task).
 // Held under the net config lock so /api/state and the main loop never read a
@@ -540,9 +539,9 @@ static void orchEventSink(const attn::Event& e) {
   const attn::Decision d = g_router.route(e, millis());
   if (d.ringDirty) g_orchRingDirty = true;
   if (d.screen.render) {
-    g_orchEpdRender = true;
-    g_orchEpdScreen = uint8_t(d.screen.id);
-    g_orchEpdAttn = d.screen.attention;
+    g_orchScreenRender = true;
+    g_orchScreenId = uint8_t(d.screen.id);
+    g_orchScreenAttn = d.screen.attention;
   }
 }
 
@@ -576,7 +575,7 @@ static void orchDeviceSink(const nimbus::orch::ValidatedAction& a) {
   } else if (a.kind == ActionKind::Config) {
     // Talk-to-configure: stage the validated knobs; the main loop applies them
     // through the SAME pipeline as the menu/web UI (g_cfg + applyConfig +
-    // persistConfig), so a spoken "go full" behaves exactly like the knob.
+    // persistConfig), so a spoken "go full" behaves exactly like a tap.
     if (a.hasPosture)    g_cfgPendPosture = a.posture;
     if (a.hasProfile)    g_cfgPendProfile = a.profile;
     if (a.hasAttnHoldMs) g_cfgPendAttnHold = a.attnHoldMs;
@@ -607,9 +606,9 @@ static bool orchSendSink(const String& chatId, const String& text) {
 #endif
     return true;
   }
-  // On-device voice turns (chatId "voice") route the reply to the e-ink, not
+  // On-device voice turns (chatId "voice") route the reply to the panel, not
   // Telegram. Runs on the poll task, so hand it to the main loop via a flag (the
-  // e-ink is main-loop-owned) under the config lock.
+  // panel is main-loop-owned) under the config lock.
   if (chatId == "voice") {
     net::ConfigLockGuard lk;
     g_voiceReply = text;
@@ -733,7 +732,7 @@ static std::string configUrl();      // defined below (net-derived, token-carryi
 static std::string setupUrl();       // defined below (ALWAYS the SoftAP address - P1.2)
 static std::string netStatusLine();  // defined below (one-line connectivity readout)
 
-// Fill the ScreenCtx fields the shared e-ink HEADER reads (mode / profile /
+// Fill the ScreenCtx fields the shared panel HEADER reads (mode / profile /
 // posture + WiFi/BT glyphs + battery % + net-degraded "!"). Called from BOTH the
 // status render (buildCtx) and the menu render (renderMenu) so the header is
 // identical on EVERY screen - the menu path used to leave these defaulted, which
@@ -767,7 +766,7 @@ static void fillHeaderCtx(render::ScreenCtx& c) {
     c.battery.charging = g_battEstimate.chargeState == nimbus::power::ChargeState::Charging;
     // Hysteresis on the DISPLAYED percent: the S3 ADC (÷3.2 divider, no coulomb
     // counter) dithers the reading +/-1-2%, which would otherwise change the header
-    // frame every telemetry tick and defeat the e-ink dirty-gate - a redundant
+    // frame every telemetry tick and defeat the panel dirty-gate - a redundant
     // ~2.2 s refresh once a minute forever. Only move the shown value on a
     // sustained >=2-point change (0/100 always shown exactly). Purely cosmetic
     // for the header; the model's raw SoC is unchanged for analytics/logging.
@@ -780,7 +779,7 @@ static void fillHeaderCtx(render::ScreenCtx& c) {
     // F27: the trend GLYPH (^/=/none, from charging+onExternalPower) had NO
     // hysteresis while the % beside it did - a dithering charge inference flipped
     // it every ~2 s telemetry tick, changing the header frame and defeating the
-    // e-ink dirty-gate (a redundant ~2.2 s refresh a minute, WiFi-independent).
+    // panel dirty-gate (a redundant ~2.2 s refresh a minute, WiFi-independent).
     // Debounce the trend pair the same way: only commit a NEW trend that has held
     // for ~3 consecutive ticks (~6 s); a real sustained transition still shows.
     static int8_t s_shownTrend = -1;   // -1 unset; 0 draining, 1 external, 2 charging
@@ -844,7 +843,7 @@ static render::ScreenCtx buildCtx(int cursorJob) {
   for (int i = 0; i < n; ++i) {
     // Skip the synthetic "head" turn job on the PANEL (it stays on the ring): its
     // Running/Offline edges re-rendered the job list at the start and end of every
-    // turn - two full 2.2 s e-ink flashes per turn, four with the synthesis turn
+    // turn - two full 2.2 s panel flashes per turn, four with the synthesis turn
     // (owner: "heavy flickering while processing", 2026-07-16).
     if (g_orchMode && snap[i].key == agent::orchestrator::headJobKey()) continue;
     // nsn v2: name the session (harness + title) from the notifier Mapper, keyed by
@@ -860,7 +859,7 @@ static render::ScreenCtx buildCtx(int cursorJob) {
 
   // BLE secure-pairing passkey for the Pairing screen. DORMANT under the active
   // Just Works config (pairingActive() never becomes true - macOS bonds with no
-  // passkey); populates only if MITM is re-enabled, when the e-ink screen becomes
+  // passkey); populates only if MITM is re-enabled, when the panel becomes
   // the code's channel.
   if (net::ble::pairingActive()) {
     char pk[8];
@@ -868,7 +867,7 @@ static render::ScreenCtx buildCtx(int cursorJob) {
     c.pairingCode = pk;
   }
   // Cloud (cumulo-nimbus) pairing: the claim code + a scannable claim URL. claimUrl
-  // non-empty switches the Pairing screen to the cloud variant (see epd_screens).
+  // non-empty switches the Pairing screen to the cloud variant (see the renderer).
   if (nimbus::relay::pairingActive()) {
     c.pairingCode = nimbus::relay::claimCode().c_str();
     c.claimUrl = nimbus::relay::claimUrl().c_str();
@@ -889,7 +888,7 @@ static render::ScreenCtx buildCtx(int cursorJob) {
 
   // On-screen ring: a board with no physical LED ring mirrors the composited ring
   // frame onto the panel (the notifier draws it as a dot-ring). Only meaningful on
-  // the colour panel; the e-ink renderer ignores ringLeds.
+  // the colour panel; the renderer ignores ringLeds.
   if (g_screenIsTft && !solide::board().hasRing) {
     const solide::ring::RGB* rf = hw::currentRingFrame();
     const int n = hw::currentRingCount();
@@ -902,7 +901,7 @@ static render::ScreenCtx buildCtx(int cursorJob) {
 }
 
 static void renderScreen(attn::ScreenId screen, int cursorJob, bool fullClear) {
-  (void)fullClear;   // legacy e-ink refresh hint; the color panel ignores it
+  (void)fullClear;   // legacy panel refresh hint; the color panel ignores it
   const uint32_t tnow = millis();
   // Honour a dropped push. renderAndPush returns false when the previous
   // ~31 ms blit is still in flight - and it only swaps the tap map on a
@@ -961,7 +960,7 @@ static void saverKick() {
   // tap -> saverKick). Rendering there pushes buildCtx()'s ScreenCtx + a devName
   // NVS read onto the already-deep turn stack AND races the main render task's NVS
   // handle -> nvs::Lock abort() (backtrace decoded live 2026-08-04, fan-out turn).
-  // Defer to loop() (the only task that renders), mirroring g_orchEpdRender.
+  // Defer to loop() (the only task that renders), mirroring g_orchScreenRender.
   if (g_lastScreen == uint8_t(attn::ScreenId::Screensaver) && !g_menu.isOpen())
     g_saverRestoreReq = true;
 }
@@ -1015,7 +1014,7 @@ static bool voiceStartBlocked() {
   }
   if (!agent::stt::available()) {
     // Give the owner ACTUAL feedback instead of a silent no-op on a silent-serial
-    // device: an e-ink line telling them voice needs a key (audit device-flows).
+    // device: a panel line telling them voice needs a key (audit device-flows).
     Serial.println("VOICE: no STT provider key");
     g_askOverride = "Voice needs a speech-to-text key (set one in the web UI).";
     g_askSticky = true; g_askPage = 0;   // hold until click (P2.3)
@@ -1056,11 +1055,8 @@ static void voiceReleaseFeedback() {
 static void voiceEmptyTranscript() {
   solide::leds::off();
   refreshRing();
-  // A touch board has no knob - its hold-to-talk is the mic bar (owner-caught:
-  // "hold the knob" on a knobless screen).
-  g_askOverride = g_screenIsTft
-      ? "Didn't catch that - hold the mic button and speak."
-      : "Didn't catch that - hold the knob and speak.";
+  // Hold-to-talk is the mic button on the touch panel.
+  g_askOverride = "Didn't catch that - hold the mic button and speak.";
   g_askSticky = true; g_askPage = 0;   // hold until click (P2.3)
   renderScreen(attn::ScreenId::Ask, -1);
 }
@@ -1079,7 +1075,7 @@ static void captureVoiceTurn() {
       reId = g_sessionList[idx - 1].id.c_str();
   }
   // IMMEDIATE LED feedback: the ring turns a self-animating red breathe the instant
-  // you hold (the e-ink is far too slow to be the primary cue). It keeps pulsing
+  // you hold (the panel is far too slow to be the primary cue). It keeps pulsing
   // through the blocking record because solide::leds Patterns self-animate.
   nimbus::ThemeColor th = nimbus::themeAccent(std::string(agent::store::theme().c_str()));
   solide::leds::clearFrame();
@@ -1128,7 +1124,7 @@ static void captureVoiceTurn() {
   g_voiceActive = false;
   voiceReleaseFeedback();
   if (transcript.length() == 0) { voiceEmptyTranscript(); return; }
-  g_askOverride = String("You: ") + transcript;   // show what was heard on the e-ink
+  g_askOverride = String("You: ") + transcript;   // show what was heard on the panel
   g_askSticky = true; g_askPage = 0;   // hold the transcript while the turn runs;
                                        // the reply overwrites it directly (P2.3)
   agent::orchestrator::clearAsk();   // the owner just answered by voice -> clear any pending ask
@@ -1147,16 +1143,16 @@ static void captureVoiceTurn() {
   // loop()) - the ring shows the agent is working instead of going dark.
   solide::leds::show(solide::leds::Pattern::Spinner, th.r, th.g, th.b);
   g_voiceWaiting = true; g_voiceWaitStart = millis();
-  if (!agent::telegram::injectMessage("voice", msg))    // reply routes back to the e-ink (see orchSendSink)
+  if (!agent::telegram::injectMessage("voice", msg))    // reply routes back to the panel (see orchSendSink)
     agent::alog("voice: inbound queue full - transcript dropped");
 }
 
 // Mode-switch visual: a short LED sweep in the destination mode's colour (teal for
 // Orchestrator, amber for Notifier) so the switch is unmistakable before the reboot
-// drops the CDC. LEDs are instant; the e-ink can't render in the reboot window.
+// drops the CDC. LEDs are instant; the panel can't render in the reboot window.
 static void playModeSwitchFeedback(bool toOrch) {
   // Breathe through the current THEME's PALETTE (rainbow cycles ROYGBIV, ember red->
-  // amber, etc.) over ~2.4 s - long enough for the ~2.2 s e-ink transition screen.
+  // amber, etc.) over ~2.4 s - long enough for the ~2.2 s panel transition screen.
   nimbus::ThemeColor pal[nimbus::kThemeMaxColors];
   int n = nimbus::themePalette(std::string(agent::store::theme().c_str()), pal, nimbus::kThemeMaxColors);
   if (n < 1) n = 1;
@@ -1250,7 +1246,7 @@ static void refreshRing() {
     // full statement per field: a future reflow now breaks the build or falls back
     // to the struct's FAIL-DARK defaults - it can never latch a light on.
     ring::ComposeOpts co;
-    co.cursorDecayMs = 8000;   // e-ink needs ~2 s to even show the detail - the
+    co.cursorDecayMs = 8000;   // panel needs ~2 s to even show the detail - the
                                // cursor marker must outlive the refresh + reading time
     co.orchWorking = g_orchMode && agent::orchestrator::turnInFlight() && !g_workingCeilingHit;
     // Orchestrator only: live sub-sessions split the Balanced ring into per-
@@ -1899,7 +1895,7 @@ static void orchestratorBegin() {
   agent::fabricInit(g_fabric);  // register adapters + category bindings from NVS
 
   agent::orchestrator::Sinks sinks;
-  sinks.event  = orchEventSink;   // -> attn::Router (ring/e-ink feedback)
+  sinks.event  = orchEventSink;   // -> attn::Router (ring/panel feedback)
   sinks.send   = orchSendSink;    // -> Telegram
   sinks.speak  = orchSpeakSink;   // tts action -> Telegram audio (device-speaker tool: P6)
   sinks.device = orchDeviceSink;  // -> led/lights/reboot executor (main loop applies)
@@ -1971,7 +1967,7 @@ static void orchestratorBegin() {
 
   // Telegram long-poll task. begin() returns immediately (spawns tg_poll) only if
   // a token is configured; otherwise it's a no-op and the device idles in
-  // Orchestrator mode with just the local ring/e-ink + web UI live.
+  // Orchestrator mode with just the local ring/panel + web UI live.
   ORCH_MARK("orch: telegram");
   agent::telegram::begin(agent::store::telegramToken(),
                          agent::store::telegramAllowlist(), orchOnMessage);
@@ -2240,7 +2236,7 @@ static bool otaIdleSnapshot(nimbus::ota::IdleSnapshot& s) {
   return true;
 }
 
-// Install-time UX, driven from loop(): e-ink painted once per state change (the
+// Install-time UX, driven from loop(): panel painted once per state change (the
 // panel is ~2.2 s/refresh), the ring is the live channel - a dim theme-colour
 // fill bar tracking download progress (same mental model as the menu ring).
 static void otaLoopUx() {
@@ -2249,7 +2245,7 @@ static void otaLoopUx() {
   const bool ins = otaupd::installing();
   const char* st = otaupd::statusStr();   // static strings - pointer compare is safe
 
-  static uint32_t lastEinkMs = 0;
+  static uint32_t lastPanelMs = 0;
   if (ins) {
     if (!wasInstalling) {
       // Install just started: take the ring cleanly. The in-flight turn's Running
@@ -2268,12 +2264,12 @@ static void otaLoopUx() {
     // screen) could otherwise overwrite the warning and never repaint it, leaving
     // the user looking at a normal screen while a flash write is in flight.
     const bool edge = (st != lastState);
-    if (downloading && (edge || millis() - lastEinkMs >= 15000)) {
+    if (downloading && (edge || millis() - lastPanelMs >= 15000)) {
       g_askOverride = String("Installing ") + otaupd::latestSeen() +
                       ". Keep the device powered on.";
       g_askSticky = false; g_askPage = 0;
       renderScreen(attn::ScreenId::Ask, -1);
-      lastEinkMs = millis();
+      lastPanelMs = millis();
     } else if (edge && strcmp(st, "rebooting") == 0) {
       g_askOverride = "Update verified. Restarting...";
       g_askSticky = false; g_askPage = 0;
@@ -2282,7 +2278,7 @@ static void otaLoopUx() {
     // Ring fill bar (raw frame takes the ring; released below when we finish).
     // Re-pushed EVERY pass - the menu-dark discipline - so the driver's 500 ms
     // raw-staleness watchdog can never release the frame and let a Pattern bleed
-    // back (it did: the inline 2.2 s e-ink renders above starve a throttled
+    // back (it did: the inline 2.2 s panel renders above starve a throttled
     // push). Cheap: a 45-LED memcpy per ~3 ms loop pass.
     if (!g_menu.isOpen()) {   // menu-dark wins while the owner reads the menu -
                               // two per-pass raw writers would strobe (prism)
@@ -2386,12 +2382,13 @@ void setup() {
 #if ARDUINO_USB_CDC_ON_BOOT
   Serial.setTxTimeoutMs(20);
 #endif
-  // The color touch panel is the only supported display: e-ink was removed in
+  // The color touch panel is the only supported display: panel was removed in
   // v4.4. The stored scrModel is still read (frozen NVS key), but a unit that
   // still reads "eink" is a stale/unsupported configuration - bring the panel up
   // anyway and flag it (a clear notice, below), never a blank device. Typed OTA
-  // guarantees a real e-ink unit never receives this image, so it keeps its last
-  // e-ink firmware and its "updates have ended" notice.
+  // guarantees a real e-ink unit never receives this image: it derives to the
+  // untyped device type, which matches no variant, so its update check reports
+  // no update and it stays on its last e-ink firmware (see docs/ota.md).
   //
   // ⚠ NVS must be OPEN first. agent::store reads go straight to solide::memory,
   // which silently returns the DEFAULT until memory::begin() has run - and
@@ -3067,7 +3064,7 @@ void setup() {
       active = g_highLoadActive; deep = g_drainDeep; restMv = g_hlRestingMv; };
     tc::begin(h);
   }
-  // Surface WiFi disconnect reason on serial + arm the e-ink error badge (F9),
+  // Surface WiFi disconnect reason on serial + arm the attention badge (F9),
   // and echo GOT_IP on success (F8). Same event pattern as provision.cpp:85.
   // wifi_portal.cpp has no such handler today; the console adds it under test.
   WiFi.onEvent([](WiFiEvent_t ev, WiFiEventInfo_t info) {
@@ -3135,7 +3132,7 @@ static String sdStatusLine() {
 
 // MENU RING (two owner asks, reconciled): while the menu is open the ring's
 // BASELINE is black - the click-wake reveal and the Full-posture animator
-// resuming over the top were washing out the 2.9" e-ink (the v3.0.0 menu-dark
+// resuming over the top were washing out the 2.9" panel (the v3.0.0 menu-dark
 // fix). But the dim fill-bar POSITION ECHO is restored (it was removed with the
 // flood by mistake - owner: "the % of the ring colored is almost instant...
 // very helpful for menu navigation"): each detent repaints the bar (list mode:
@@ -3169,7 +3166,7 @@ static void menuRingRepaint(bool bump) {
     }
     const nimbus::ThemeColor th =
         nimbus::themeAccent(std::string(agent::store::theme().c_str()));
-    // MINIMAL brightness (owner: full accent was blinding next to the e-ink -
+    // MINIMAL brightness (owner: full accent was blinding next to the panel -
     // an indicator, not a lamp). ~1/7th of the accent reads clearly in a lit room.
     const solide::ring::RGB dim{uint8_t(th.r / 7), uint8_t(th.g / 7), uint8_t(th.b / 7)};
     const int lit = (pct * L + 50) / 100;
@@ -3188,9 +3185,8 @@ static void openSettingsMenu() {
                      : agent::store::sfxTheme() == "zerg" ? 2 : 0);
   g_menu.setSfxVolume(agent::store::sfxVolume());
   // Panel type drives which screensaver choices the row offers - minutes on a
-  // backlit panel (where resting IS the power saving), hours on e-ink (where it
+  // backlit panel (where resting IS the power saving), hours on panel (where it
   // is about ghosting).
-  g_menu.setScreenIsTft(g_screenIsTft);
   g_menu.setScreenFlip(agent::store::tftFlip());   // Main > Display flip (TFT only)
   g_menu.setSaverMinutes(agent::store::saverMin());
   g_menu.setAutoUpdate(agent::store::otaAutoUpdate());
@@ -3227,7 +3223,7 @@ static void openSettingsMenu() {
 // applyConfig()/renderScreen() and does real work (NVS writes, renders).
 static void settleMenuAfterMutation(uint32_t now) {
   // Menu ring echo: every detent repaints the dim fill-bar INSTANTLY (the
-  // e-ink is the slow truth, the LEDs are the echo) and restarts its ~2 s
+  // panel is the slow truth, the LEDs are the echo) and restarts its ~2 s
   // hold, after which the ring yields back to the black baseline. If this
   // event just CLOSED the menu, release the raw frame and restore status.
   if (g_menu.isOpen()) {
@@ -3254,7 +3250,7 @@ static void settleMenuAfterMutation(uint32_t now) {
     }
     refreshRing();
     // Menu CLOSED: force the panel back to LIVE STATUS. Without this the
-    // e-ink scheduler resumes on its last ambient intent - which can be a
+    // render scheduler resumes on its last ambient intent - which can be a
     // STALE Screensaver latched before the menu session - flashing the logo
     // for one refresh before the next status tick (field bug, 2026-07-18:
     // close-menu -> ~3 s of screensaver -> StatusIdle). The saver clock was
@@ -3333,8 +3329,8 @@ static void settleMenuAfterMutation(uint32_t now) {
       g_askOverride = wantOrch ? "Switching to Orchestrator mode..."
                                : "Switching to Notifier mode...";
       ::sfx::fire(nimbus::sfx::Ev::ModeSwitch);       // "Set the course." (plays under the sweep)
-      renderScreen(attn::ScreenId::Ask, -1);        // e-ink confirmation screen
-      playModeSwitchFeedback(wantOrch);             // LED sweep (+ time for the e-ink)
+      renderScreen(attn::ScreenId::Ask, -1);        // panel confirmation screen
+      playModeSwitchFeedback(wantOrch);             // LED sweep (+ time for the panel)
       ESP.restart();
     }
   }
@@ -3361,7 +3357,7 @@ static void settleMenuAfterMutation(uint32_t now) {
     g_menu.setSdStatus(std::string(sdStatusLine().c_str()));  // refresh the Main row
     g_menuNeedsPaint = true;
   }
-  // ---- Connectivity > Wi-Fi: the knob-only escape hatch --------------
+  // ---- Connectivity > Wi-Fi: the on-device escape hatch --------------
   // These four flags are the ONLY thing that makes that submenu real. The
   // menu core raises them and waits; without this drain the rows latch a
   // bool nobody reads, the pickers stay empty, and the help text asserts
@@ -3460,7 +3456,7 @@ static void settleMenuAfterMutation(uint32_t now) {
     const char* why = nullptr;
     if (!otaupd::requestInstall(false, false, &why)) {
       // Refused (low heap / no Wi-Fi / already installing): reopen the
-      // submenu path is overkill - surface the reason on the e-ink Ask,
+      // submenu path is overkill - surface the reason on the panel Ask,
       // STICKY (holds until a click) so the menu-close cleanup below can't
       // wipe it in this same event pass (prism v3.1.0 finding).
       g_askOverride = String("Couldn't start the update: ") +
@@ -3493,8 +3489,8 @@ static void settleMenuAfterMutation(uint32_t now) {
   }
 }
 
-// Page a held Ask reply by `dir` (+1/-1) and repaint. Shared by the knob
-// (encoder rotate, e-ink) and touch (swipe, TFT) paths - each renderer has its
+// Page a held Ask reply by `dir` (+1/-1) and repaint. Shared by the cursor
+// (encoder rotate, panel) and touch (swipe, TFT) paths - each renderer has its
 // Page count from the renderer's actual pixel geometry/font metrics, so the tail
 // page is never stranded unreachable.
 static void pageAskReply(int dir) {
@@ -3508,12 +3504,12 @@ static void pageAskReply(int dir) {
 // Translate a tap into the SAME calls the encoder makes. Nothing downstream is
 // touch-aware: the menu FSM keeps its onRotate/onClick/onLongPress contract, and
 // the dirty-persist + request-flag drains in loop() run exactly as they do for
-// the knob. That is the whole reason a second input device needed no FSM change.
+// the same gestures. That is the whole reason a second input device needed no FSM change.
 static void drainTouch(uint32_t now) {
   const auto g = hw::touch::poll();
   if (g.kind == hw::touch::Gesture::Kind::None) return;
 
-  // A finger on the panel is the owner being present - same signal the knob
+  // A finger on the panel is the owner being present - same signal a step
   // gives, so the screensaver clock resets before the event is handled.
   saverKick();
 
@@ -3570,7 +3566,7 @@ static void drainTouch(uint32_t now) {
       net::ConfigLockGuard lk;
       acted = nimbus::tft::applyMenuTap(g_menu, *t);
     }
-    // ⚠ Must call the SAME settle the knob calls. Setting g_menuNeedsPaint alone
+    // ⚠ Must call the SAME settle the gesture path calls. Setting g_menuNeedsPaint alone
     // repaints the screen while the change never persists or applies - the menu
     // would look like it worked and silently revert on reboot.
     if (acted) settleMenuAfterMutation(now);
@@ -3606,7 +3602,7 @@ static void drainTouch(uint32_t now) {
       break;
     case Action::Back:
     case Action::Home:
-      // Same as the knob's single click: clear any override and show live status.
+      // Same as a single click: clear any override and show live status.
       g_lightsOff = false;
       g_ledOverrideActive = false;
       g_askOverride = "";
@@ -3633,7 +3629,7 @@ static_assert(cstreq(nimbus::config::kIdentityIntKeyTftFlip, AKEY_TFT_FLIP), "id
 }  // namespace
 
 // Factory reset that KEEPS the board's hardware identity. A bare nvs_flash_erase()
-// wipes scrModel/tftFlip/tchCal/otaType too, so a TFT board reboots into the e-ink
+// wipes scrModel/tftFlip/tchCal/otaType too, so a TFT board reboots into the panel
 // default driver and shows a white screen it cannot correct from its own controls
 // (CUM-50). It ALSO preserves the user-visible device name (nimbus_name, CUM-15):
 // the name answers "which device is this", not a setting, so a real factory reset
@@ -3694,7 +3690,7 @@ void loop() {
   }
 #endif  // feed the F12 watchdog every iteration
   otaupd::tick();        // OTA: mark-valid once healthy + check/auto-install cadence
-  otaLoopUx();           // OTA install e-ink/ring UX (no-op unless installing)
+  otaLoopUx();           // OTA install panel/ring UX (no-op unless installing)
   if (g_factoryResetPending) {  // web factory reset: wipe config, KEEP identity + name, reboot fresh
     // CUM-50 + CUM-15 union: factoryResetPreserveIdentity() keeps BOTH the hardware
     // identity (scrModel/tftFlip/tchCal/otaType, so a TFT board comes back on the right
@@ -3703,7 +3699,7 @@ void loop() {
     // fresh. g_factoryEraseSd additionally wipes the durable /mem store in the same flow.
     Serial.println(g_factoryEraseSd ? "FACTORY RESET (+SD) -> keep identity, erase config + /mem, restart"
                                     : "FACTORY RESET -> keep identity, erase config, restart");
-    // Progress screen with an honest duration; also buys the e-ink ~2.2 s to paint
+    // Progress screen with an honest duration; also buys the panel ~2.2 s to paint
     // before the erase blocks. The screen setup is preserved, so this is safe on TFT.
     g_askOverride = g_factoryEraseSd ? "Resetting to factory settings and erasing storage. Up to a minute."
                                      : "Resetting to factory settings. This takes a few seconds.";
@@ -3734,10 +3730,10 @@ void loop() {
   if (g_rebootPending) {  // web mode change / orchestrator reboot action
     Serial.println("REBOOT pending -> restart");
     if (g_modeSwitchTo >= 0) {
-      // A WEB mode switch: give the same confirmation UX as the knob-menu path
-      // (was an abrupt ~50 ms reboot with no screen/LED/sound). e-ink "Switching
+      // A WEB mode switch: give the same confirmation UX as the on-device menu path
+      // (was an abrupt ~50 ms reboot with no screen/LED/sound). panel "Switching
       // to X...", the ModeSwitch sound, and the teal/amber LED sweep (which also
-      // buys the ~2.2 s the e-ink needs to actually paint before the reset).
+      // buys the ~2.2 s the panel needs to actually paint before the reset).
       const bool toOrch = (g_modeSwitchTo == 1);
       agent::memory::captureEvent("mode", String("Switching to ") +
           (toOrch ? "Orchestrator" : "Notifier") + " mode (restart follows)");
@@ -4146,7 +4142,7 @@ void loop() {
   // glyph when WiFi-reconnect scans starve the shared 2.4 GHz radio and the
   // broker link drops/relinks every few seconds, and (before staConfigured()
   // was fixed to read stored config) the WiFi glyph on every retry. Each flap
-  // repainted StatusIdle - a real e-ink refresh per bounce. A change must now
+  // repainted StatusIdle - a real panel refresh per bounce. A change must now
   // hold for the debounce window before it repaints; a boot-time link-up still
   // shows within ~2.5 s.
   {
@@ -4317,15 +4313,15 @@ void loop() {
 #endif
     // Orchestrator mode: sub-session events are routed into g_router by the
     // EventSink on the Telegram poll task (under the net config lock). Here we
-    // just drain the flags it set and drive the ring + e-ink the same way the
+    // just drain the flags it set and drive the ring + panel the same way the
     // nsn path does - the job table has already been updated. The job table and
     // ask/reply surface render exactly like Notifier jobs (plan §3.6).
-    bool ringDirty; bool epdRender; uint8_t epdScreen; bool epdAttn;
+    bool ringDirty; bool screenRender; uint8_t screenId; bool screenAttn;
     {
       net::ConfigLockGuard lk;  // serialize with the sink's route()
       ringDirty = g_orchRingDirty; g_orchRingDirty = false;
-      epdRender = g_orchEpdRender; g_orchEpdRender = false;
-      epdScreen = g_orchEpdScreen; epdAttn = g_orchEpdAttn;
+      screenRender = g_orchScreenRender; g_orchScreenRender = false;
+      screenId = g_orchScreenId; screenAttn = g_orchScreenAttn;
     }
     if (ringDirty) {
       // Refresh the session-cursor snapshot when the sub-session set changed, and
@@ -4429,19 +4425,19 @@ void loop() {
       // Turn just ENDED: settle the panel to the final state with ONE render (the
       // ambient intents below were held back while the turn ran). Not over the
       // screensaver - a settle there would flash the logo off and back.
-      if (!workingNow && !g_menu.isOpen() && epdAmbientAllowedOverSaver(false))
+      if (!workingNow && !g_menu.isOpen() && screenAmbientAllowedOverSaver(false))
         g_sched.onIntent(uint8_t(attn::ScreenId::StatusIdle), false, now);
     }
-    // While a turn is IN FLIGHT, hold back AMBIENT e-ink intents - every job-state
+    // While a turn is IN FLIGHT, hold back AMBIENT screen intents - every job-state
     // edge was flashing a full 2.2 s refresh mid-processing (owner: "heavy
     // flickering while processing"). The ring carries the live activity; the panel
     // settles once on the falling edge above. ATTENTION intents (Error/NeedsInput/
     // Ask - a job waiting on the owner) still render immediately: that's the CTA
     // safety contract, never gate those.
-    if (epdRender && !g_menu.isOpen() && (epdAttn || !workingNow) &&
-        epdAmbientAllowedOverSaver(epdAttn))
-      g_sched.onIntent(epdScreen, epdAttn, now);
-    // Voice turn reply arrived on the poll task -> render it on the e-ink here.
+    if (screenRender && !g_menu.isOpen() && (screenAttn || !workingNow) &&
+        screenAmbientAllowedOverSaver(screenAttn))
+      g_sched.onIntent(screenId, screenAttn, now);
+    // Voice turn reply arrived on the poll task -> render it on the panel here.
     if (g_voiceReplyPending && !g_menu.isOpen()) {
       String reply;
       { net::ConfigLockGuard lk; reply = g_voiceReply; g_voiceReplyPending = false; }
@@ -4567,7 +4563,7 @@ void loop() {
                         uint32_t(g_cfg.effective(Param::AttnHoldMs)))) {
       if (!g_menu.isOpen()) refreshRing();
       const attn::ScreenIntent& in = g_notifier.last().screen;
-      if (in.render && !g_menu.isOpen() && epdAmbientAllowedOverSaver(in.attention))
+      if (in.render && !g_menu.isOpen() && screenAmbientAllowedOverSaver(in.attention))
         g_sched.onIntent(uint8_t(in.id), in.attention, now);
     }
 
@@ -4575,7 +4571,7 @@ void loop() {
     if (net::ble::drain(g_notifier, now)) {
       if (!g_menu.isOpen()) refreshRing();
       const attn::ScreenIntent& in = g_notifier.last().screen;
-      if (in.render && !g_menu.isOpen() && epdAmbientAllowedOverSaver(in.attention))
+      if (in.render && !g_menu.isOpen() && screenAmbientAllowedOverSaver(in.attention))
         g_sched.onIntent(uint8_t(in.id), in.attention, now);
 #ifdef NIMBUS_NOTIFIER_DEBUG
       Serial.printf("NSN(ble) jobs=%d attn=%d bright=%d\n", jobCount(),
@@ -4621,7 +4617,7 @@ void loop() {
 
 #ifdef NIMBUS_TEST
   // F9: a WiFi auth-fail surfaced by the onWifiReason handler paints a one-shot
-  // e-ink error Badge (the reason itself already went out on serial). Only when
+  // attention Badge (the reason itself already went out on serial). Only when
   // the menu isn't holding the panel. This keeps the "no silent hang" contract:
   // a wrong PSK produces a visible error surface, not a dead screen.
   if (int r; tc::errorBadgePending(r) && !g_menu.isOpen()) {

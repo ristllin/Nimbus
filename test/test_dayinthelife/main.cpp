@@ -14,7 +14,7 @@
 //   attention::Router  (semantic events -> ScreenIntent + ring-dirty)
 //   ring::compose       (router state + cfg + cursor -> ring Plan)
 //   render::Scheduler      (ScreenIntents/detents -> timed RenderCommands)
-// - asserting the EXACT ring plans + e-ink RenderCommand sequence over time as
+// - asserting the EXACT ring plans + RenderCommand sequence over time as
 // jobs appear/progress/complete, attention fires, and posture/profile change.
 //
 // This is the integration gap the 189 unit tests missed (the HIL test spec): each
@@ -39,7 +39,7 @@ void tearDown() {}
 
 namespace {
 
-// One issued e-ink command, tagged with the millisecond it fired.
+// One issued render command, tagged with the millisecond it fired.
 struct Issued {
   uint32_t atMs;
   uint8_t  screen;
@@ -62,7 +62,7 @@ struct Device {
     applyProfileToSched();
   }
 
-  // Push the active profile's e-ink windows into the scheduler, exactly as the
+  // Push the active profile's render windows into the scheduler, exactly as the
   // device does on a profile switch (main.cpp applies cfg -> SchedConfig).
   void applyProfileToSched() {
     render::SchedConfig sc;
@@ -162,8 +162,8 @@ void assertTrace(const std::vector<Issued>& expected,
 //            StatusIdle immediately; panel busy 2214 ms (measured fast B/W).
 //   t=5000   job #2 asks for approval (attention) - Badge bypasses the coalesce
 //            window and renders as soon as the panel is free.
-//   t=20000  user turns the knob 3x to inspect - cursor moves instantly on the
-//            ring; e-ink JobDetail renders 300 ms after the LAST detent.
+//   t=20000  user steps the cursor 3x to inspect - cursor moves instantly on the
+//            ring; JobDetail renders 300 ms after the LAST detent.
 //   t=40000  job #2 approved -> Running again (ambient); job #1 completes (Done).
 //   t=60000  both jobs go Offline - ring empties.
 // Asserts the exact RenderCommand sequence AND the ring Plan (segCount, per-job
@@ -203,7 +203,7 @@ static void test_desk_session_active_jobs_attention_and_cursor() {
   dev.run(5000, 5000);    // Badge (attention) fires immediately
   dev.done(5000 + 2214);
 
-  // -- t=20000: user inspects with the knob. Ring cursor is INSTANT; e-ink
+  // -- t=20000: user inspects with the cursor. Ring cursor is INSTANT; the panel
   //    JobDetail waits dwell (300 ms) after the last detent. --
   dev.detent(+1, 20000);
   dev.detent(+1, 20100);
@@ -241,7 +241,7 @@ static void test_desk_session_active_jobs_attention_and_cursor() {
     TEST_ASSERT_FALSE(p.single.lit);
   }
 
-  // Exact e-ink sequence over the whole session. Screens:
+  // Exact render sequence over the whole session. Screens:
   //   StatusIdle=0, JobDetail=1, Badge=2. Desk fullEveryN=8 so no ghost upgrade
   //   inside these 4 renders.
   assertTrace(
@@ -370,7 +370,7 @@ static void test_profile_switch_flips_ring_representation_live() {
     TEST_ASSERT_TRUE(p.single.lit);
     TEST_ASSERT_EQUAL_UINT8(32, p.single.hue);
   }
-  // The initial Badge is the only e-ink render in this short window.
+  // The initial Badge is the only render in this short window.
   assertTrace({{0, uint8_t(ScreenId::StatusIdle), Kind::FastBW, false}}, dev.issued);
 }
 

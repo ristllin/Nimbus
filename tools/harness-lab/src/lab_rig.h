@@ -32,7 +32,7 @@
 // an SD card. Everything above the transport seam is the SAME CODE the board
 // runs, so a bug reproduced here is a bug there.
 //
-// What is deliberately NOT simulated: the LEDs, the e-ink panel, Telegram, and
+// What is deliberately NOT simulated: the LEDs, the panel, Telegram, and
 // the ~46 KB internal heap. `freeHeap` reports a large value so the device's
 // memory gates never fire - the lab is for exercising harness LOGIC, and a
 // scenario that depends on heap pressure belongs on hardware.

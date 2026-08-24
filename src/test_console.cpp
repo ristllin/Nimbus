@@ -56,8 +56,8 @@ int      s_badgeReason = 0;   // last WiFi disconnect reason
 constexpr size_t kLineCap = 512;   // matches the existing orch-console cap
 constexpr int    kByteBudget = 256;  // bytes drained per pump call (loop stays responsive)
 
-// One-slot screensaver command mailbox (same producer/consumer pair as the
-// encoder queue): -1 = force the saver screen now, >=0 = new threshold minutes.
+// One-slot screensaver command mailbox (single-producer/single-consumer, both on
+// the main task): -1 = force the saver screen now, >=0 = new threshold minutes.
 int  s_saverCmd = 0;
 bool s_saverPending = false;
 
@@ -304,7 +304,7 @@ void dispatch(String line) {
   }
   if (line == "CLOUDPAIR") {
     // Ensure opted in, then start pairing. The code + claim URL print via CLOUD? and
-    // show on the e-ink screen; the owner claims it at app.cumulo-nimbus.ai.
+    // show on the panel; the owner claims it at app.cumulo-nimbus.ai.
     nimbus::relay::requestOptIn(true);
     nimbus::relay::requestPair();
     Serial.println("CLOUDPAIR started (poll CLOUD? for the code)");
@@ -437,7 +437,7 @@ void dispatch(String line) {
   }
   if (line.startsWith("VOICE ")) {
     // Simulate a voice transcript: inject a turn on the "voice" chatId so the reply
-    // renders on the e-ink (Ask screen), exactly like a real hold-to-talk would -
+    // renders on the panel (Ask screen), exactly like a real hold-to-talk would -
     // testable without the physical mic.
     String t = line.substring(6);
     Serial.printf("VOICE inject <- %s\n", t.c_str()); Serial.flush();
@@ -1052,14 +1052,11 @@ void dispatch(String line) {
     return;
   }
   if (line.startsWith("SCREEN ")) {
-    // SCREEN <eink|tft>: persist the fitted panel + restart (screenModel is
-    // boot-resolved, like MODE).
-    //
-    // ⚠ This exists because of a real bootstrap trap: a fresh TFT board boots
-    // the DEFAULT "eink", drives the e-paper driver onto pins that have a TFT,
-    // and the panel stays dark - including the setup screen that would have told
-    // the owner the AP name and QR. Without a cable-only way to set this, the
-    // recovery path is displayed on the very screen that cannot come up.
+    // SCREEN <eink|tft>: persist the scrModel NVS key + restart (boot-resolved,
+    // like MODE). "tft" is the only supported value; "eink" is the frozen legacy
+    // value, kept so this seam can drive the unsupported-display notice on demand.
+    // A cable-only setter matters because the recovery/setup screen is shown on
+    // the very panel whose config this fixes.
     String a = line.substring(7); a.trim();
     if (a != "eink" && a != "tft") { reply("ERR screen must be eink|tft"); return; }
     agent::store::setScreenModel(a);

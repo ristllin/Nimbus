@@ -79,8 +79,7 @@ everyday use of a device needs none of it.
 
 | Tool | What it does | When you need it |
 |---|---|---|
-| `golden.py` | Converts the e-ink golden test buffers (296×128 1-bit framebuffers in `test/golden/*.bin`) to PNGs for human review, and pixel-diffs two buffers (differences in red, exit 1 on mismatch). Standard library only. | Reviewing or debugging a red e-ink golden test - `render` to look at a screen, `diff` to see exactly what changed. |
-| `tftpreview.py` | The color counterpart of `golden.py` for the TFT golden suite (240×320 RGB565 buffers in `test/golden_tft/*.bin`). Adds `contact` (tile every blessed screen into one labelled sheet) and `regions` (overlay tap targets and fail on targets under the 44 px minimum or on overlaps). | Reviewing TFT screens after a layout change - `contact` shows the whole UI at a glance; `regions` catches the two bugs a pixel diff cannot see. |
+| `tftpreview.py` | Converts the TFT golden suite (240×320 RGB565 buffers in `test/golden_tft/*.bin`) to PNGs for human review, and pixel-diffs two buffers (differences in red, exit 1 on mismatch). Adds `contact` (tile every blessed screen into one labelled sheet) and `regions` (overlay tap targets and fail on targets under the 44 px minimum or on overlaps). | Reviewing TFT screens after a layout change - `render` to look at a screen, `diff` to see what changed, `contact` shows the whole UI at a glance, and `regions` catches the two bugs a pixel diff cannot see. |
 | `logo/gen_logo.py` | Generates the Nimbus logo (the dotted teal ring) and every artifact derived from it: `assets/logo*.svg`, the website logo, favicon, social card, and the PROGMEM mark served at `GET /logo.svg`. | Any logo change. Edit the generator and re-run it - never hand-edit its outputs. |
 
 ### Test-vector & artifact generators
@@ -188,7 +187,7 @@ Commands grouped by purpose, one line each. Arguments in angle brackets.
 | `LEDSTATE` | What the LED driver is physically driving (raw frame layer vs a fallback pattern) - the physical counterpart of `RENDER?`. |
 | `LEDTEST` | Eyes-on LED data-path test: cycles red, green, blue through the real driver. |
 | `RAWFRAME?` | Whether the animator currently owns the ring via the raw frame path. |
-| `INPUTLOG on\|off` | Echo knob/button/touch events to serial. |
+| `INPUTLOG on\|off` | Echo touch events to serial. |
 | `SELFTEST [FULL]` | Run the aggregated self-test (FULL adds the audible items). |
 | `FAULT <cap> <on\|off>` / `FAULT?` | Inject or clear a capability fault (sd, memory, mic, speaker, led, screen) to prove graceful degradation; query the mask. |
 | `SDCHECK` | Probe SD card health and report the current storage tier. |
@@ -214,9 +213,8 @@ Commands grouped by purpose, one line each. Arguments in angle brackets.
 
 | Command | What it does |
 |---|---|
-| `SCREEN <eink\|tft>` / `SCREEN?` | Set the display preference; report both the stored preference and the driver that actually bound. |
-| `SAVER [min]` | Force the e-ink screensaver now, or set and persist its idle threshold (0 = off). |
-| `DEGHOST` | Force the next e-ink refresh down the full de-ghost path (exercises the stuck-red-plane fix on demand). |
+| `SCREEN <tft>` / `SCREEN?` | Set the display preference and report both the stored value and the driver that actually bound. `eink` is a frozen legacy value that binds no supported display (it drives the unsupported-display notice). |
+| `SAVER [min]` | Force the screensaver now, or set and persist its idle threshold (0 = off). |
 | `TFTHEALTH?` | TFT panel configuration check, heal count, and live backlight state. |
 | `TFTHZ [hz]` | Sweep or set the panel SPI clock, measuring pixel-path errors at each step. |
 | `TFTFILL?` | Push whole frames through the real blit path and read back the far corners - proves the pixel path with nobody looking at the glass. |
@@ -226,13 +224,11 @@ Commands grouped by purpose, one line each. Arguments in angle brackets.
 | `TFTBREAK` | Drill: reset the panel behind the driver to reproduce the white screen on demand and prove the watchdog heals it. |
 | `PANELPROBE <0\|1>` | Enable or disable the panel health probe. |
 
-#### Input - knob & touch
+#### Input - touch
 
 | Command | What it does |
 |---|---|
-| `ENC <code>` | Inject a synthetic encoder event so the menu is driveable with no physical knob. |
-| `SW?` | Raw debounced button level - isolates a physical-button fault from a decode fault. |
-| `TAP <x> <y> [HOLD]` / `TAPUP` | Inject a synthetic tap (or press-and-hold, released by `TAPUP`) - the touch counterpart of `ENC`. |
+| `TAP <x> <y> [HOLD]` / `TAPUP` | Inject a synthetic tap (or press-and-hold, released by `TAPUP`) so the touch UI is HIL-driveable with no finger. |
 | `TOUCH?` | Raw touch-controller state, for calibration. |
 | `TCAL [minX,maxX,minY,maxY[,flags]]` | Read or set the touch calibration (`tcal_wizard.py` derives it for you). |
 | `TOUCHISO?` | Read touch with the panel held in reset - isolates the two devices sharing the MISO line. |
@@ -245,7 +241,7 @@ Commands grouped by purpose, one line each. Arguments in angle brackets.
 | `BATTCAL` | Anchor 100% to the current reading - the owner asserts the pack is full right now. |
 | `BATTRESET` | Discard everything the battery model learned by observation (keeps the `BATTCAL` anchor). Needed after a drain campaign. |
 | `SLEEPMV [mv]` | Read or set the low-battery deep-sleep threshold (0 = off). A safety knob: 0 disarms the protection persistently - restore the default the moment a pack is connected. |
-| `SLEEP` | Enter low-battery deep sleep immediately to test the wake mechanics (knob rotation or the 5-minute timer wakes it; the USB console dies with it). |
+| `SLEEP` | Enter low-battery deep sleep immediately to test the wake mechanics (the 5-minute timer wakes it; the USB console dies with it). |
 | `DRAIN on\|off [deep]` | Battery drain campaign load: pin the ring to a heavy solid-white draw; `deep` runs past the clean shutdown to the real cutoff. |
 | `STORAGE <pct\|off>` | Discharge to a storage charge level (~70%) and hold. |
 

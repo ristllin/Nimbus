@@ -2,9 +2,8 @@
 
 How to construct the touch-screen Nimbus configuration from parts: a 2.8"
 ILI9341 240×320 color TFT with an XPT2046 resistive touch controller on the
-Solide S3 board (ESP32-S3-DevKitC-1 N16R8). The TFT **replaces both** the
-e-paper panel and the knob - it shares the e-paper's SPI pads and consumes the
-encoder's GPIOs, so a board is only ever one configuration or the other.
+Solide S3 board (ESP32-S3-DevKitC-1 N16R8). The display and touch controller
+share the board's SPI3 pads, and the touch layer is the only input.
 
 ![Assembled touch-TFT Nimbus](photos/tft-assembled.webp)
 
@@ -12,9 +11,8 @@ This page is the assembly walk-through. The companion pages:
 
 - [Touch TFT reference](touch-tft.md) - the pinout drawing, touch
   calibration, screenshots, and the white-screen investigation.
-- [Hardware reference](../hardware.md) - everything common to both
-  configurations: first flash, shared peripherals, power, battery sensing.
-- [E-paper + knob build guide](build-eink.md) - the default configuration.
+- [Hardware reference](../hardware.md) - everything common across the boards:
+  first flash, shared peripherals, power, battery sensing.
 
 ## Bill of materials
 
@@ -40,8 +38,7 @@ breakdown and safety notes, is the **[bill of materials](bom.md)**.
 
 **Total: ≈ $59–63** (AliExpress-class sourcing; US distributors add ~$15–25).
 
-There is no encoder in this build - the panel's touch layer is the input, and
-there are no free reachable GPIOs to keep a knob (see the trap below).
+The panel's touch layer is the only input.
 
 ## Power architecture
 
@@ -67,9 +64,9 @@ flowchart LR
   ESP32, and every module.
 - ⚠ **The mic VCC is 3.3 V only.** Its VDD and data lines follow VCC, and 5 V
   damages the S3's input. Never put the mic on the 5 V bus.
-- ⚠ Unlike the reflective e-paper, **the TFT backlight is a continuous draw**
-  whenever it is lit. It sits on a PWM pin so the firmware's idle path blanks
-  it rather than drawing a screensaver.
+- ⚠ **The TFT backlight is a continuous draw** whenever it is lit. It sits on a
+  PWM pin so the firmware's idle path blanks it rather than drawing a
+  screensaver.
 
 ## The three on-module solder bridges (do this first)
 
@@ -107,18 +104,18 @@ touch table first, then the shared peripherals from the
 
 ### TFT + touch (SPI3)
 
-| ESP32 GPIO | Net | Module pins | Was (e-paper build) |
-|---|---|---|---|
-| 42 | SPI clock | SCK **+ T_CLK** | e-paper RES |
-| 41 | SPI MOSI | SDI **+ T_DIN** | e-paper D/C |
-| 1 | SPI MISO | SDO **+ T_DO** | encoder A |
-| 40 | display D/C | DC | e-paper CS |
-| 39 | display reset | RESET | e-paper MOSI |
-| 38 | display CS | CS | e-paper SCK |
-| 48 | touch CS | T_CS | encoder SW |
-| 2 | backlight (PWM) | LED | encoder B |
-| - | *not connected* | T_IRQ | - |
-| 3V3 / GND | power | VCC / GND | - |
+| ESP32 GPIO | Net | Module pins |
+|---|---|---|
+| 42 | SPI clock | SCK **+ T_CLK** |
+| 41 | SPI MOSI | SDI **+ T_DIN** |
+| 1 | SPI MISO | SDO **+ T_DO** |
+| 40 | display D/C | DC |
+| 39 | display reset | RESET |
+| 38 | display CS | CS |
+| 48 | touch CS | T_CS |
+| 2 | backlight (PWM) | LED |
+| - | *not connected* | T_IRQ |
+| 3V3 / GND | power | VCC / GND |
 
 The three on-module bridges make display and touch one SPI bus with two chip
 selects, which is what fits the whole panel into seven GPIOs.
@@ -166,17 +163,14 @@ with the mic.
 
 ### Battery sense (optional, recommended)
 
-Identical to the e-paper build - a 220 kΩ / 100 kΩ divider from the pack
-(before the DC-DC) into GPIO 4 (ADC1).
-See the [e-paper guide's battery-sense section](build-eink.md#battery-sense-optional-recommended)
-and [Battery voltage sampling](../hardware.md#battery-voltage-sampling-how-to-add-it).
+A 220 kΩ / 100 kΩ divider from the pack (before the DC-DC) into GPIO 4 (ADC1).
+See [Battery voltage sampling](../hardware.md#battery-voltage-sampling-how-to-add-it).
 
 ## Assembly walk-through
 
 A photo-by-photo build of an actual Nimbus, from printed parts to the finished
 device. The [wiring tables](#wiring) above are the pin-level authority; this
-section is the physical order of operations. The electronics, power, and case
-stages are shared with the e-paper build; only the final display stage differs.
+section is the physical order of operations.
 On this build the [three on-module solder bridges](#the-three-on-module-solder-bridges-do-this-first)
 come first, before any step below. Bench-flash and self-test each subsystem (the
 [Assembly order](#assembly-order) below) before you close the case.
@@ -381,7 +375,7 @@ After the pack is assembled and running, charge it fully through the BMS USB-C p
 
 ### Stack the electronics and close the case
 
-Do the full electrical bring-up **before** anything goes into the case. Once the boards are stacked and screwed down, the pin headers and the self-test console are hard to reach - so flash and pass the self-test on the bench first, following [Assembly order](#assembly-order) steps 1-5: first flash over the UART port ([First flash of a fresh board](../hardware.md#first-flash-of-a-fresh-board--use-the-uart-port)), then `TEST all` on the self-test console with `led`/`epd`/`sd`/`memory`/`input` all PASS. A board that boots clean loose on the bench is the only board worth closing up.
+Do the full electrical bring-up **before** anything goes into the case. Once the boards are stacked and screwed down, the pin headers and the self-test console are hard to reach - so flash and pass the self-test on the bench first, following [Assembly order](#assembly-order) steps 1-5: first flash over the UART port ([First flash of a fresh board](../hardware.md#first-flash-of-a-fresh-board--use-the-uart-port)), then `TEST all` on the self-test console with `led`/`screen`/`sd`/`memory`/`input` all PASS. A board that boots clean loose on the bench is the only board worth closing up.
 
 ![Assembled Nimbus electronics seen from above: ESP32-S3-N16R8 DevKit at top with dual USB-C, the DC-DC buck converter with its two electrolytic caps and inductor at lower left, the purple MAX98357A amp and INMP441 mic in the center, the microSD module with a card seated at right, and green screw terminals along the edges](photos/electronics-stack.webp)
 
@@ -405,7 +399,7 @@ The firmware caps LED-ring brightness at 60%; leave it there. Raising it pushes 
 
 ### Fit the touch TFT
 
-This is the 2.8" ILI9341 240×320 panel with the XPT2046 resistive touch controller. It carries the display, the touch layer, and a microSD socket on one red module. There is **no knob on this build** - the touch layer is the only input, and the encoder GPIOs are gone (see [The three on-module solder bridges (do this first)](#the-three-on-module-solder-bridges-do-this-first) and the [wiring table](#tft--touch-spi3) for why).
+This is the 2.8" ILI9341 240×320 panel with the XPT2046 resistive touch controller. It carries the display, the touch layer, and a microSD socket on one red module. The touch layer is the only input (see [The three on-module solder bridges (do this first)](#the-three-on-module-solder-bridges-do-this-first) and the [wiring table](#tft--touch-spi3)).
 
 **Do the bridges first.** Before the module goes anywhere near the enclosure, the three on-module touch-to-display bridges must already be soldered and continuity-checked with power disconnected. That is not part of this step - it is the prerequisite for it. If you have not done it, stop and complete [The three on-module solder bridges (do this first)](#the-three-on-module-solder-bridges-do-this-first) now. A missing bridge is the number-one build fault and produces a blank display or dead touch with no error anywhere.
 
@@ -415,7 +409,7 @@ This is the 2.8" ILI9341 240×320 panel with the XPT2046 resistive touch control
 
 ![Finished touch-TFT Nimbus, enclosure open: the red TFT module mounted in the lid inside the LED ring, wired back to the ESP32-S3 carrier in the base](photos/tft-assembled.webp)
 
-**Seat the module in the lid.** Mount the panel face-out in the enclosure lid so the glass sits centered inside the WS2812B ring, as shown. Route the display and touch harness back to the ESP32-S3 carrier in the base, keeping the bundle clear of the ring so the lid can close. Dress the wires so nothing is pinched at the hinge. Confirm there is no encoder anywhere on this build - the base carries only the DevKit and the shared peripherals (mic, amp, microSD, power section), and the panel is the sole input.
+**Seat the module in the lid.** Mount the panel face-out in the enclosure lid so the glass sits centered inside the WS2812B ring, as shown. Route the display and touch harness back to the ESP32-S3 carrier in the base, keeping the bundle clear of the ring so the lid can close. Dress the wires so nothing is pinched at the hinge. The base carries only the DevKit and the shared peripherals (mic, amp, microSD, power section), and the panel is the sole input.
 
 **Check before you close it up.**
 
@@ -424,7 +418,7 @@ This is the 2.8" ILI9341 240×320 panel with the XPT2046 resistive touch control
 - Run the bring-up sketch (`pio run -e tftbringup -t upload`) and confirm color bars, the backlight fade, and raw touch before installing the production firmware. Uncalibrated touch looks identical to broken touch, so calibrate ([Touch calibration](touch-tft.md#touch-calibration)) before concluding anything is miswired.
 - If the panel or the SD card ever runs warm or hot, that is an electrical fault: power off first, then investigate ([hot-card safety check](../hardware.md#shared-peripherals)). A shorted SD socket can brown out or damage the display even though the two buses are separate.
 
-The backlight is a continuous draw whenever the screen is lit, unlike the reflective e-paper. It sits on a PWM pin and the firmware blanks it when idle. The firmware caps LED ring brightness at 60%; do not raise it.
+The backlight is a continuous draw whenever the screen is lit. It sits on a PWM pin and the firmware blanks it when idle. The firmware caps LED ring brightness at 60%; do not raise it.
 
 ## Assembly order
 
@@ -456,9 +450,8 @@ above; the same shots gathered on one page are the [build photos](build-photos.m
    ```bash
    python3 tools/setup_device.py
    ```
-   When it asks for the fitted display, answer **TFT**. This step matters more
-   here than on the e-paper build: the raw firmware default is e-ink, and a
-   TFT board has no knob to fix a wrong setting on-device.
+   The installer stores `scrModel=tft` so the board binds its display and touch
+   drivers on the first boot.
 9. **Calibrate the touch panel.** Every resistive panel reads differently, so
    the raw-count-to-pixel mapping is measured per unit - until it is set,
    taps land somewhere else and touch looks broken. Run the wizard:
@@ -472,12 +465,12 @@ above; the same shots gathered on one page are the [build photos](build-photos.m
 - **The three bridges are the number-one build fault.** A missing bridge
   produces a blank display or dead touch with no error anywhere - see the
   continuity check above.
-- **The encoder cannot be kept.** Only the J3 header is reachable on the
-  carrier, GPIO 35/36/37 (octal PSRAM) sit in the middle of it, and the
+- **Reachable GPIOs are nearly all consumed.** Only the J3 header is reachable
+  on the carrier, GPIO 35/36/37 (octal PSRAM) sit in the middle of it, and the
   longest usable contiguous run is seven pins (`1, 2, 42, 41, 40, 39, 38`) -
   all consumed by the panel. The documented free spares are on J1, which the
-  carrier does not break out. GPIO 47 (the old e-paper BUSY) is the only
-  genuinely free reachable pin on this variant.
+  carrier does not break out. GPIO 47 is the only genuinely free reachable pin
+  on this variant.
 - **The backlight is a continuous draw.** Plan for it in battery estimates;
   the firmware blanks it when idle rather than drawing a screensaver, because
   on a TFT showing nothing is cheaper than showing anything.
@@ -511,7 +504,7 @@ above; the same shots gathered on one page are the [build photos](build-photos.m
 
 Two 18650 cells in series (2S, 6.0–8.4 V range) behind the BMS. Ground truths
 from the reference pack, measured on a dedicated analyzer: **3500 mAh
-capacity, 8.40 V full**. Measured runtimes on that pack (e-paper board):
+capacity, 8.40 V full**. Measured runtimes on that pack:
 5.75 h at ring brightness 77/255 (608 mA average), about 23 h idle (~150 mA).
 The TFT backlight adds continuous draw on top of those figures whenever the
 screen is lit. Details in

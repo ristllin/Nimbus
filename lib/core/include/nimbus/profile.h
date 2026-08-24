@@ -22,7 +22,7 @@ namespace nimbus {
 //          Done cue so a FINISHED session is glanceable (self-clears on the 30 s
 //          ambient hold). No persistent multi-segment arcs.
 //   Full - every job rendered as a colored arc (full segment treatment).
-// Ordered by intensity so the knob cycles Dark->Calm->Full.
+// Ordered by intensity so the control cycles Dark->Calm->Full.
 enum class Posture : uint8_t { Dark = 0, Calm = 1, Full = 2 };
 
 enum class ProfileId : uint8_t { BatterySaver = 0, Balanced = 1, Desk = 2 };
@@ -59,12 +59,12 @@ const char* paramLabel(Param p);
 // Plain-English help for a param, shown in the menu's help pane and the web UI.
 // Leads with what the user OBSERVES / why they'd care, not the mechanism.
 // Panel-visible: printable ASCII 32-126 only, <= 108 chars (wraps to <= 3
-// 48-col lines on the e-ink). Guarded by test_profile.
+// 48-col lines on the panel). Guarded by test_profile.
 const char* paramDescription(Param p);
 
 // Editable-range descriptor for a Param. Ranges live here (portable, host-
 // tested) rather than in the device menu so the editor and its tests share one
-// source of truth. `step` is the per-detent delta a knob applies.
+// source of truth. `step` is the per-detent delta a step applies.
 //   Int   - clamp to [min,max] (no wrap); e.g. brightness, periods.
 //   Bool  - 0/1 toggle; step ignored, rotate flips.
 //   Enum  - cycle [min,max] inclusive, wrapping; e.g. AttnAnim over ring::Anim.
@@ -80,7 +80,7 @@ struct ParamMeta {
 
 ParamMeta paramMeta(Param p);
 
-// Apply one knob detent (dir = +1 / -1) to `cur` under a param's meta, and
+// Apply one detent (dir = +1 / -1) to `cur` under a param's meta, and
 // return the new value. Int clamps at the bounds; Bool/Enum wrap. Deterministic
 // and side-effect free so both the menu FSM and its tests can call it.
 int32_t stepParam(Param p, int32_t cur, int dir);

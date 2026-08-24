@@ -5,7 +5,7 @@
 
 // power_policy - the two-threshold battery policy as a pure, host-tested FSM.
 //
-//   T1 (default 20%): force the Battery Saver profile + warn (e-ink badge,
+//   T1 (default 20%): force the Battery Saver profile + warn (attention badge,
 //       optional Telegram ping). Exits at T1 + hysteresis or on external power.
 //   T2 (default 8%):  request shutdown (flush journals + clean deep sleep).
 //       Latched until external power appears.

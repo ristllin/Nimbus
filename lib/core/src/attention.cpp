@@ -86,7 +86,7 @@ Decision Router::route(const Event& e, uint32_t nowMs) {
       break;
     case Event::Type::LowBattery:
       // T1 warning is a compact badge over the persistent status display (brief:
-      // "force Battery Saver + warn (e-ink badge)"), not the full Battery
+      // "force Battery Saver + warn (attention badge)"), not the full Battery
       // telemetry screen the user navigates to explicitly.
       lowBattery_ = true;
       d.ringDirty = true;

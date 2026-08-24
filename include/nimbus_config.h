@@ -3,25 +3,13 @@
 // and defaults. Hardware pin choices live in solide-drivers' board header
 // (solide/boards/board_solide_s3.h); this file holds Nimbus policy only.
 
-// ---- E-paper timing (fast B/W HARDWARE-MEASURED 2026-07-02 on the connected
-// S3 board: driver logged fastFull = 2213994 us; others still per solide docs) -
-#define NIMBUS_EPD_W                296
-#define NIMBUS_EPD_H                128
-#define NIMBUS_EPD_FASTBW_MS       2214   // fast B/W full refresh (measured)
-#define NIMBUS_EPD_PARTIAL_MS       750   // grey partial (low contrast; badge/menu only)
-#define NIMBUS_EPD_COLOR_MS       18500   // 3-color OTP waveform (idle art only)
-
 // ---- Interaction defaults (profile presets may override; see profile.cpp) --
-#define NIMBUS_DWELL_MS             300   // encoder settle before an e-ink render
-#define NIMBUS_EPD_COALESCE_MS    30000   // ambient (non-attention) refresh window
-#define NIMBUS_FULL_REFRESH_EVERY_N   6   // ghosting: full clear after N fast/partials
-
 // How long after the last detent a busy panel may hold the cursor glow as the
-// "panel syncing" shimmer: the interaction's own dwell render starts at most
-// DWELL_MS after the last detent and costs at most a full-clear cycle (~2x a
-// fast B/W refresh). Beyond this window a busy panel is doing unrelated work
-// (ambient coalesce flush, attention screen) and must not resurrect the glow.
-#define NIMBUS_CURSOR_SYNC_HOLD_MS (NIMBUS_DWELL_MS + 2 * NIMBUS_EPD_FASTBW_MS)
+// "panel syncing" shimmer. Beyond this window a busy panel is doing unrelated
+// work (ambient coalesce flush, attention screen) and must not resurrect the
+// glow. The value is a legacy of the slow-panel era (a dwell plus two full
+// refreshes); the ring cursor still honors it, so it is kept byte-stable.
+#define NIMBUS_CURSOR_SYNC_HOLD_MS 4728
 
 // ---- LED ring ---------------------------------------------------------------
 #define NIMBUS_RING_LEDS             45

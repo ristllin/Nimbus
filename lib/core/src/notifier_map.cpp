@@ -34,7 +34,7 @@ FrameResult Mapper::apply(const nsn::Frame& f, attn::Router& router,
   // Present segments: index == stable job key. The wire hue is the accent.
   for (uint8_t i = 0; i < n; ++i) {
     segStatus_[i] = f.segs[i].state;   // remembered so timeout() can tell CTAs apart
-    harness_[i] = f.segs[i].harness;   // v2: session metadata for the e-ink
+    harness_[i] = f.segs[i].harness;   // v2: session metadata for the panel
     size_t k = 0;
     for (; k < size_t(nsn::kMaxTitle) && f.segs[i].title[k]; ++k) title_[i][k] = f.segs[i].title[k];
     title_[i][k] = 0;

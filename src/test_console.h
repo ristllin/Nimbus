@@ -38,7 +38,7 @@ struct Hooks {
   // Which display driver ACTUALLY bound at boot (g_screenIsTft), not the stored
   // preference. The two differ whenever the fail-soft path trips, and that is
   // exactly the case a test must be able to see - a board that silently fell
-  // back to e-ink looks identical to a working one if STATUS echoes the setting.
+  // back to a legacy value looks identical to a working one if STATUS echoes the setting.
   std::function<bool()>    screenIsTft;
   // Feed ONE byte of a synthetic nsn frame through the same decoder/mapper/
   // router path a real BLE frame takes. Backs NSNFEED: it lets the notifier UI
@@ -47,7 +47,7 @@ struct Hooks {
   // the card design could otherwise only ever be seen in its EMPTY state.
   std::function<void(uint8_t byte)> nsnFeedByte;
   // TFTFLIP - apply the landscape 180-degree flip live (MADCTL only). Set on a
-  // TFT board; absent on e-ink, where the command is a no-op beyond the NVS write.
+  // color panel; the command persists the NVS value and restarts.
   std::function<void(bool)> tftFlip;
   // PROFILE <0|1|2> - set the battery mode from the console so HIL can assert
   // mode-dependent behaviour (backlight, ring) without the network. Routed
@@ -104,8 +104,8 @@ struct Hooks {
   // KEEPING the BATTCAL anchor. Recovers a model poisoned by a drain campaign -
   // the learned state persists to NVS, so a reflash alone does NOT heal it.
   std::function<String()>                                 battReset;
-  // SLEEP: enter the low-battery deep sleep NOW (test-only) - verifies the e-ink
-  // sleep screen + knob-rotation/timer wake mechanics without draining a pack.
+  // SLEEP: enter the low-battery deep sleep NOW (test-only) - verifies the panel
+  // sleep screen + timer/charger wake mechanics without draining a pack.
   // ⚠ USB serial dies with the chip; the 5-min charger-sniff timer wakes it.
   std::function<void()>                                   sleepNow;
   // Battery drain/storage (battery-measurement). DRAIN is a TEST characterization tool;
@@ -159,14 +159,14 @@ void onRender(uint8_t screenId, uint8_t posture, int segCount, bool single,
 bool popSaverCmd(int& minsOut);
 
 // Surface a WiFi disconnect reason: prints "WIFI_DISCONNECTED reason=<n>" and
-// arms the e-ink error badge (F9). Called from a WiFi.onEvent handler.
+// arms the panel error badge (F9). Called from a WiFi.onEvent handler.
 void onWifiReason(int reason);
 
 // Print "WIFI_GOT_IP <ip>" on a successful STA association (F8). Called from the
 // same WiFi.onEvent handler.
 void onWifiGotIp(const String& ip);
 
-// True while an e-ink error badge is armed (main.cpp paints ScreenId::StatusIdle with
+// True while a panel error badge is armed (main.cpp paints ScreenId::StatusIdle with
 // the reason). F9.
 bool errorBadgePending(int& reasonOut);
 void clearErrorBadge();

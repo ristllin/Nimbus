@@ -1,9 +1,8 @@
-# Configuration B - Touch TFT (`screenModel = tft`)
+# Configuration A - Touch TFT (`screenModel = tft`)
 
-An alternative build: a 2.8" **ILI9341** 240×320 color TFT with an **XPT2046**
-resistive touch controller. The TFT **replaces both** the e-paper panel and the knob -
-it shares the e-paper's SPI pads and consumes the encoder's GPIOs, so the two
-configurations can never be present at once.
+The hand-built Solide S3 build: a 2.8" **ILI9341** 240×320 color TFT with an
+**XPT2046** resistive touch controller. The display and touch controller share the
+board's SPI3 pads, and the touch layer is the only input.
 
 For everything common to both boards - first flash, power, battery sensing, the
 shared peripherals (SD, LED ring, speaker, mic) - see the
@@ -40,36 +39,35 @@ has not accidentally been connected to GPIO 48.
 
 ## Wiring
 
-| ESP32 GPIO | Net | Module pins | Was (e-paper build) |
-|---|---|---|---|
-| 42 | SPI clock | SCK **+ T_CLK** | e-paper RES |
-| 41 | SPI MOSI | SDI **+ T_DIN** | e-paper D/C |
-| 1 | SPI MISO | SDO **+ T_DO** | encoder A |
-| 40 | display D/C | DC | e-paper CS |
-| 39 | display reset | RESET | e-paper MOSI |
-| 38 | display CS | CS | e-paper SCK |
-| 48 | touch CS | T_CS | encoder SW |
-| 2 | backlight (PWM) | LED | encoder B |
-| - | *not connected* | T_IRQ | - |
-| 3V3 / GND | power | VCC / GND | - |
+| ESP32 GPIO | Net | Module pins |
+|---|---|---|
+| 42 | SPI clock | SCK **+ T_CLK** |
+| 41 | SPI MOSI | SDI **+ T_DIN** |
+| 1 | SPI MISO | SDO **+ T_DO** |
+| 40 | display D/C | DC |
+| 39 | display reset | RESET |
+| 38 | display CS | CS |
+| 48 | touch CS | T_CS |
+| 2 | backlight (PWM) | LED |
+| - | *not connected* | T_IRQ |
+| 3V3 / GND | power | VCC / GND |
 
 The three on-module bridges above make display and touch one SPI bus with two chip
 selects, which is what fits the whole panel into seven GPIOs.
 
-⚠ **Why the knob has to go.** Only the **J3** header is reachable on the carrier, and
-GPIO 35/36/37 (OCTAL PSRAM) sit in the middle of it - so the longest usable
-contiguous run is seven pins (`1, 2, 42, 41, 40, 39, 38`). The documented free spares
-(3/5/6/9) are all on **J1**, which the carrier does not break out, so they cannot
-rescue it. There is no arrangement that keeps the encoder. On this variant **GPIO 47**
-(the old e-paper BUSY) is the only genuinely free reachable pin.
+⚠ **Reachable GPIOs are nearly all consumed.** Only the **J3** header is reachable on
+the carrier, and GPIO 35/36/37 (OCTAL PSRAM) sit in the middle of it - so the longest
+usable contiguous run is seven pins (`1, 2, 42, 41, 40, 39, 38`), all consumed by the
+panel. The documented free spares (3/5/6/9) are all on **J1**, which the carrier does
+not break out. On this variant **GPIO 47** is the only genuinely free reachable pin.
 
 ⚠ **The touch controller is slow.** XPT2046 tops out near 2 MHz against the panel's
 40 MHz, so each device gets its own SPI transaction settings. Getting this wrong does
 not fail loudly - it returns plausible-looking garbage coordinates.
 
-⚠ **The backlight is a continuous draw**, unlike the reflective e-paper. It is on a
-PWM pin so the idle path *blanks* it rather than drawing a screensaver - on a TFT,
-drawing a screensaver costs more power than showing nothing.
+⚠ **The backlight is a continuous draw.** It is on a PWM pin so the idle path
+*blanks* it rather than drawing a screensaver - on a TFT, drawing a screensaver costs
+more power than showing nothing.
 
 ⚠ **The microSD is not on this SPI bus.** It uses dedicated SPI2 GPIOs
 `CS 10 · MOSI 11 · SCK 12 · MISO 13`; TFT + touch use SPI3 above. The two
@@ -115,8 +113,8 @@ goldens prove the rasterizer agrees with itself, and `RENDER?` only names the
 screen. Neither can catch a panel showing the wrong thing. Three real layout
 defects were found this way and fixed - a doubled chevron; a value clipped to
 "Battery .."; a title clipped to "Settings .." (a breadcrumb is most specific at
-its TAIL, so it is now trimmed head-first and "Brightness" survives); and the
-e-ink cursor decorations ("[ 30 ]", "< Back", "< 30 >") leaking onto a panel that
+its TAIL, so it is now trimmed head-first and "Brightness" survives); and legacy
+text-cursor decorations ("[ 30 ]", "< Back", "< 30 >") leaking onto a panel that
 has real buttons instead.
 
 The value editor's [-] and [+] were driven on hardware: 30 -> 35 -> 40 -> 35.

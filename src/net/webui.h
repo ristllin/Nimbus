@@ -147,7 +147,7 @@ bool consumeWifiHandoffReady();
 
 // True (once) when repeated web-auth failures (3 x 401 inside 60 s) suggest the
 // owner is on a token-less page - the main loop consumes it and shows the
-// Config QR screen on the e-ink. Re-arms after 5 min (no refresh churn); any
+// Config QR screen on the panel. Re-arms after 5 min (no refresh churn); any
 // successfully authed request resets the failure counter.
 bool consumeAuthQrRequest();
 

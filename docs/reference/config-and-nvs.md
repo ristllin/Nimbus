@@ -109,7 +109,7 @@ Default per-provider models: `OPENAI_MODEL` = `gpt-5.5`, `ANT_MODEL` =
 | `ttsEnabled` | bool | `false` | Spoken-reply enable | Yes |
 | `theme` | string | `"teal"` | LED color theme slug | Yes |
 | `ledBright` | int | `128` | LED brightness (`ledBright` NVS key) | Yes |
-| `scrModel` | string | `"eink"` | Display type (`eink\|tft`), boot-applied. Exempt from Revert to Defaults (hardware identity). On all-in-one boards it is **fixed to `tft`** and the selector is locked - see the note below. | Yes |
+| `scrModel` | string | `"eink"` (legacy) | Display type (`eink\|tft`), boot-applied. Exempt from Revert to Defaults (hardware identity). `"tft"` is the only supported value; `"eink"` is a frozen legacy value that boots an unsupported-display notice, so setup writes `tft`. On all-in-one boards it is **fixed to `tft`** and the selector is locked - see the note below. | Yes |
 | `devTz` | string | `""` (= UTC) | POSIX timezone for daily/weekly routines + the device clock display (Settings → Mode & identity). Applies immediately; wall-clock routines rebase budget-neutrally. | Yes |
 | `dreamScrHash` | string | `""` | fnv64-hex of the scratchpad after the last dream - the quiet-night skip baseline. Device-managed. | Yes |
 | `tchCal` | string | `""` | Touch-panel calibration (XPT2046); `""` = identity/default | Yes |
@@ -136,10 +136,11 @@ reproduce the shipped behaviour exactly.
 | `sleepMv` | int | `6000` | Low-battery deep-sleep threshold in pack mV; `0` disarms the protection. | Yes |
 | `wakeMv` | int | `7200` | Stay-awake bar after a low-battery sleep (rested-empty packs read a bit higher than the sleep mark). | Yes |
 
-**`scrModel` vs. the board pinout.** `scrModel` picks the display and input
-**family** (renderer + touch/knob) on a hand-built Solide S3 board, where one
-firmware image serves both the e-ink and TFT builds. The **board pinout** is a
-separate, coarser identity fixed at **compile time** by `SOLIDE_BOARD`
+**`scrModel` vs. the board pinout.** `scrModel` selects the display renderer on a
+hand-built Solide S3 board. `"tft"` is the only supported value; `"eink"` is a
+frozen legacy value that boots an unsupported-display notice rather than binding a
+display. The **board pinout** is a separate, coarser identity fixed at **compile
+time** by `SOLIDE_BOARD`
 (`solide_s3` or `freenove_s3`): a Freenove all-in-one runs its own firmware image,
 so its pinout is baked in, its `scrModel` is fixed to `tft`, and the web display
 selector is locked (driven by board id, not by `scrModel`). See the

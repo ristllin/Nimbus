@@ -10,9 +10,9 @@
 
 // settings_menu - the portable, host-testable settings FSM for Nimbus.
 //
-// A knob-driven menu over a nimbus::Config. It is pure state + deterministic
-// transitions: no Arduino, no display, no NVS. The device glue feeds encoder
-// events (onRotate/onClick/onLongPress), reads view() into a ScreenCtx, and
+// A gesture-driven menu over a nimbus::Config. It is pure state + deterministic
+// transitions: no Arduino, no display, no NVS. The device glue feeds gesture
+// events (onRotate/onClick/onLongPress) from touch, reads view() into a ScreenCtx, and
 // drains dirty() to persist + re-render.
 //
 // Tree (every screen titles itself with its full breadcrumb path, ASCII '>'
@@ -36,7 +36,7 @@
 // Edit-screen interaction: the value row is a two-state control. Click it to
 // enter "adjusting" - rotate then steps the value; click (or long-press) exits
 // adjusting. When not adjusting, rotate moves the cursor over {value, Clear
-// override?, Back} so every row stays reachable with a single knob.
+// override?, Back} so every row stays reachable with a single step.
 namespace nimbus {
 
 // The Notifier/Orchestrator mode. The menu only toggles the flag and marks the
@@ -54,7 +54,7 @@ class SettingsMenu {
   void close();
   bool isOpen() const { return state_ != State::Closed; }
 
-  // Encoder events (already debounced to one unit per detent).
+  // Gesture events (already debounced to one unit per detent).
   void onRotate(int dir);   // +1 / -1: move cursor, or adjust value in Edit
   void onClick();           // descend / commit / run the selected row
   void onLongPress();       // back one level; from Main, closes
@@ -167,7 +167,7 @@ class SettingsMenu {
 
   // Networks the picker lists. Each element is ONE SSID exactly as the radio /
   // known-networks store reported it; the menu displays a printable-ASCII,
-  // width-clipped copy (an SSID is arbitrary bytes off the air and the e-ink
+  // width-clipped copy (an SSID is arbitrary bytes off the air and the panel
   // font is 32-126 only) while wifiPickedSsid() hands back the ORIGINAL bytes,
   // because that is what has to go to the radio. Re-seeding while the picker is
   // open is safe: a shrinking list clamps the cursor.
@@ -211,7 +211,7 @@ class SettingsMenu {
   // straight from the main menu.
   void setSdStatus(const std::string& st) { sdStatus_ = st; }
 
-  // RING-ECHO feedback (owner ask 2026-07-13): the e-ink refreshes in ~2 s but
+  // RING-ECHO feedback (owner ask 2026-07-13): a slow panel refresh lagged, but
   // the LEDs are instant, so while the menu is open the device paints the menu
   // STATE on the ring after every detent - list mode: N segments = N options,
   // the bright one = the cursor (you SEE each tick land); value-edit mode: a
@@ -227,7 +227,7 @@ class SettingsMenu {
 
   // True while the "Config QR" row is active: the device renders the full-screen
   // ConfigQr screen (a scannable link to the on-device config page) INSTEAD of
-  // the menu list, until any encoder event returns to Main. Lets the menu stay a
+  // the menu list, until any gesture returns to Main. Lets the menu stay a
   // pure list FSM while the device owns the QR pixels (net-dependent URL).
   bool showingConfigQr() const { return state_ == State::ConfigQr; }
   // The compact Connectivity row cannot fit the recovery token. Activating it
@@ -235,12 +235,8 @@ class SettingsMenu {
   // nothing or a clipped credential that cannot be transcribed.
   bool showingTokenDetail() const { return state_ == State::TokenDetail; }
   // True while ROTATION IS CAPTURED editing a value (Volume on Main, or a Tune
-  // param in Edit) - the device inverts the selected e-ink row so "editing" is
+  // param in Edit) - the device inverts the selected row so "editing" is
   // unmistakable from "navigating" (owner P2.2: volume gave no visual feedback).
-  // Which panel is fitted. Only affects the screensaver choices, which are a
-  // different feature on each display (ghosting vs battery life) and need very
-  // different granularity. Defaults false, so e-ink behaviour is untouched.
-  void setScreenIsTft(bool on) { screenIsTft_ = on; }
 
   // Main > Display flip (colour panel only): turns the screen 180 degrees for an
   // upside-down mount. Same NVS-sync contract as theme/sfx - the device seeds it
@@ -254,7 +250,7 @@ class SettingsMenu {
 
   // Full-screen Self-test / Battery views (same pattern as ConfigQr): launched
   // from their Main rows, the device renders the live results/detail INSTEAD of
-  // the menu list until ANY encoder event returns to Main. The portable FSM only
+  // the menu list until ANY gesture returns to Main. The portable FSM only
   // owns the entry/exit; the device fills the pixels (runs the self-test engine /
   // reads the battery model) since that state isn't knowable to the pure FSM.
   bool showingSelfTest() const { return state_ == State::SelfTest; }
@@ -297,8 +293,8 @@ class SettingsMenu {
   // Rows on the Main screen, in display order. Sound absorbs the old
   // Sounds/Voice/Volume rows (one submenu for everything audible); Screensaver
   // cycles in place; Software update opens its own submenu.
-  // RowFlip is TFT-only (appended before RowClose, never inserted). On e-ink the
-  // Main list hides it, so mainRowAt() remaps the visible index past it.
+  // RowFlip (Display flip) sits before RowClose. mainRowAt() maps the visible
+  // index to the logical row.
   enum MainRow : int {
     RowMode = 0, RowProfile, RowTune, RowConn, RowSound, RowTheme,
     RowSaver, RowUpdate, RowReset, RowSelfTest, RowBattery, RowSdCard,
@@ -312,7 +308,7 @@ class SettingsMenu {
   // Rows in the Connectivity submenu, in display order. ConnToken opens the
   // full-screen recovery token (the compact row cannot show it without clipping).
   // ⚠ Do NOT insert or renumber: main.cpp overlays these rows by literal index
-  // and the HIL suite counts knob detents to reach them, so a shifted row makes
+  // and the HIL suite counts taps to reach them, so a shifted row makes
   // both land somewhere else and assert something unrelated - silently. New
   // Wi-Fi affordances hang off the EXISTING ConnWifi row's submenu instead.
   enum ConnRow : int {
@@ -324,7 +320,7 @@ class SettingsMenu {
     WifiPublishAp = 0, WifiChooseNet, WifiForgetNet, WifiRowBack, kWifiRows };
 
   int itemCount() const;   // rows in the current list state
-  MainRow mainRowAt(int idx) const;  // visible Main index -> logical row (skips RowFlip on e-ink)
+  MainRow mainRowAt(int idx) const;  // visible Main index -> logical row (identity)
   void clampSel();         // keep sel_ in [0, itemCount()-1]
   void enter(State s);     // switch state, reset cursor to a sane default
 
@@ -348,7 +344,6 @@ class SettingsMenu {
   std::string sdStatus_;             // Main "SD:" row text (device-seeded live)
   bool    volAdjusting_ = false;     // Sound > Volume row captured rotation (classic adjust)
   uint16_t saverMin_ = 60;           // Main > Screensaver idle minutes (0 = off, NVS-synced)
-  bool screenIsTft_ = false;         // panel type - picks the screensaver step table
   bool screenFlip_ = false;          // Main > Display flip (TFT only, NVS-synced)
   bool    autoUpdate_ = false;       // Software update > Automatic updates (NVS-synced)
   int     sttProv_ = 0;              // Sound > Dictation (0 Mistral / 1 OpenAI, NVS-synced)

@@ -15,19 +15,10 @@ const char* kAnimNames[] = {"Off", "Solid", "Breathe", "Comet", "Blink", "Fade"}
 
 std::string toStr(int32_t v) { return std::to_string(v); }
 
-// Screensaver delay buckets, PER PANEL - because the screensaver is not the same
-// feature on the two displays.
-//
-// E-ink is reflective: resting it saves essentially nothing, and its screensaver
-// exists to limit ghosting. Hours are the right granularity.
-//
-// A colour panel's backlight is the largest continuous draw on the device -
-// larger than the 45-LED ring - so resting it IS the power saving, and an hour
-// of backlight at an empty desk is the most wasteful thing the device can do.
-// Minutes are the right granularity, and the e-ink table could not even express
-// them: its shortest choice, 15 min, was LONGER than the colour panel's own
-// default, so the useful values were unreachable from the menu (owner, 2026-07-30).
-constexpr uint16_t kSaverStepsEpd[] = {0, 15, 30, 60, 120, 240};
+// Screensaver delay buckets. The color panel's backlight is the largest
+// continuous draw on the device - larger than the 45-LED ring - so resting it IS
+// the power saving, and an hour of backlight at an empty desk is the most
+// wasteful thing the device can do. Minutes are the right granularity.
 constexpr uint16_t kSaverStepsTft[] = {0, 1, 2, 5, 10, 15, 30, 60};
 
 // Display text for a screensaver delay. Bucket values get friendly units; a
@@ -40,7 +31,7 @@ std::string saverText(uint16_t m) {
 
 const char* kVoiceProvNames[] = {"Mistral", "OpenAI"};
 
-// An SSID is arbitrary bytes off the air and the e-ink 5x7 font only draws
+// An SSID is arbitrary bytes off the air and the 5x7 font only draws
 // 32-126, so one UTF-8 network name would paint a row of '?'-noise (the "many
 // ???" bug, live). Sanitise + clip HERE, in the FSM, so every consumer of
 // view() - panel, serial RENDER?, a future surface - is safe by construction
@@ -89,7 +80,7 @@ std::string valueLabel(Param p, int32_t v) {
 
 const char* modeName(Mode m) { return m == Mode::Orchestrator ? "orchestrator" : "notifier"; }
 // Display label for menu rows (the lowercase modeName() is a wire/renderer
-// contract - epd_screens string-matches it; only the copy is Title Case).
+// contract - the renderer string-matches it; only the copy is Title Case).
 const char* modeLabel(Mode m) { return m == Mode::Orchestrator ? "Orchestrator" : "Notifier"; }
 
 void SettingsMenu::open() { enter(State::Main); }
@@ -110,7 +101,7 @@ void SettingsMenu::enter(State s) {
 int SettingsMenu::itemCount() const {
   switch (state_) {
     case State::Closed:      return 0;
-    case State::Main:        return screenIsTft_ ? kMainRows : kMainRows - 1;  // -1: e-ink hides Display flip
+    case State::Main:        return kMainRows;
     case State::ProfilePick: return kProfileCount + 1;             // profiles + Back
     case State::ThemePick:   return themeCount() + 1;              // themes + Back
     case State::TuneList:    return kParamCount + 1;               // params + Back
@@ -134,11 +125,9 @@ int SettingsMenu::itemCount() const {
   return 0;
 }
 
-// The Display-flip row is TFT-only and sits just before Close. On e-ink it is
-// hidden, so a visible index at or past RowFlip maps one row further along (onto
-// Close). On TFT the mapping is identity.
+// Visible Main index -> logical row. Every row is shown, so the mapping is
+// identity (kept as a seam in case a row becomes conditional again).
 SettingsMenu::MainRow SettingsMenu::mainRowAt(int idx) const {
-  if (!screenIsTft_ && idx >= RowFlip) return MainRow(idx + 1);
   return MainRow(idx);
 }
 
@@ -214,10 +203,8 @@ void SettingsMenu::onClick() {
           enter(State::Sound);
           return;
         case RowSaver: {                // cycle Off -> 15 -> 30 -> 60 -> 120 -> 240 -> Off
-          const uint16_t* steps = screenIsTft_ ? kSaverStepsTft : kSaverStepsEpd;
-          const int count = screenIsTft_
-              ? int(sizeof(kSaverStepsTft) / sizeof(kSaverStepsTft[0]))
-              : int(sizeof(kSaverStepsEpd) / sizeof(kSaverStepsEpd[0]));
+          const uint16_t* steps = kSaverStepsTft;
+          const int count = int(sizeof(kSaverStepsTft) / sizeof(kSaverStepsTft[0]));
           int next = 0;                 // wrap default: back to Off
           for (int i = 0; i < count; ++i)
             if (steps[i] > saverMin_) { next = steps[i]; break; }
@@ -300,7 +287,7 @@ void SettingsMenu::onClick() {
 
     case State::Connectivity:
       if (sel_ == ConnWifi) {
-        enter(State::WifiMenu);   // the escape hatch: recover the network with the knob alone
+        enter(State::WifiMenu);   // the escape hatch: recover the network on the device alone
         return;
       }
       if (sel_ == ConnBluetooth) {
@@ -610,7 +597,7 @@ const char* SettingsMenu::helpText() const {
                "services for dictation and spoken replies.";
       case RowSaver:
         return "After this long with nothing new to show, the screen rests "
-               "on the Nimbus mark. Turn the knob to wake it.";
+               "on the Nimbus mark. Tap the screen to wake it.";
       case RowUpdate:
         return "Check for and install firmware updates. Every update is "
                "signed and verified before it runs.";
@@ -730,8 +717,7 @@ void SettingsMenu::view(solide::menu::MenuView& out) const {
       out.items.push_back("Self-test >"); // '>' = opens a screen (menu convention)
       out.items.push_back("Battery >");   // live battery detail full-screen
       out.items.push_back(std::string("SD card: ") + (sdStatus_.empty() ? "?" : sdStatus_));
-      if (screenIsTft_)  // RowFlip: colour panel only (e-ink rotation is fixed)
-        out.items.push_back(std::string("Display flip: ") + (screenFlip_ ? "On" : "Off"));
+      out.items.push_back(std::string("Display flip: ") + (screenFlip_ ? "On" : "Off"));
       out.items.push_back("Done");
       return;
     }

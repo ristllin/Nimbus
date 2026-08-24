@@ -126,7 +126,7 @@ void drawHeader(Fb565& fb, Rendered& r, const ScreenCtx& ctx,
       ? (ctx.deviceName.empty() ? std::string("Nimbus") : ctx.deviceName)
       : title;
   // Drop a trailing "  vX.Y.Z": the menu breadcrumb carries it for the wider
-  // e-ink layout, and here it only pushed the actual title into an ellipsis
+  // the earlier layout, and here it only pushed the actual title into an ellipsis
   // ("Settings .."). The version is on the Software update row and in /api/state.
   {
     const size_t v = name.rfind("  v");
@@ -388,9 +388,9 @@ void drawMenu(Fb565& fb, Rendered& r, const ScreenCtx& ctx) {
   if (n == 0) return;
 
   // When a value is being adjusted the selected row becomes a stepper - the
-  // touch replacement for turning the knob.
+  // the touch cursor step.
   if (ctx.menuAdjusting && ctx.menuSelected >= 0 && ctx.menuSelected < n) {
-    // The FSM wraps the captured value in "< ... >" as the E-INK cursor's
+    // The FSM wraps the captured value in "< ... >" as the cursor's
     // adjust affordance. Here there are real [-] and [+] buttons directly
     // beneath it, so the arrows are noise that competes with them.
     std::string row = ctx.menuItems[size_t(ctx.menuSelected)];
@@ -503,7 +503,7 @@ void drawMenu(Fb565& fb, Rendered& r, const ScreenCtx& ctx) {
                          label.compare(label.size() - 2, 2, " >") == 0;
     if (forward)
       label.erase(label.size() - 2);
-    // The FSM decorates rows for the E-INK cursor: "[ 30 ]" marks the value row
+    // The FSM decorates rows for the cursor: "[ 30 ]" marks the value row
     // and "< Back" the way out. On a touch panel the brackets are meaningless
     // and the "<" fought the right-chevron drawn beside it. Strip both and let
     // the chevron carry the direction.
@@ -945,7 +945,7 @@ void drawScreensaver(Fb565& fb, Rendered& r, const ScreenCtx& ctx) {
 
 // Real page count drawAsk will produce for this text (declared in
 // tft_render/screens.h). Deliberately its own count - the old 48-col grid was
-// hardcoded to the e-ink panel's 48-col/7-line grid, which does not match this
+// hardcoded to the old 48-col/7-line grid, which does not match this
 // renderer's pixel geometry/font metrics. Needs external linkage (unlike every
 // draw* helper above, which is only ever reached via renderScreen's switch) so
 // a touch board's swipe-to-page (main.cpp) can clamp against exactly what this

@@ -59,7 +59,7 @@ release. The full annotated list is in
 ## The verification ladder
 
 "Compiles + links + boots" is **not** verification - that fallacy once shipped
-a build whose knob, Wi-Fi, and agent had never been exercised. The ladder:
+a build whose touch, Wi-Fi, and agent had never been exercised. The ladder:
 
 1. **Portable logic** → `pio test -e native`. Fast, no hardware, must stay at
    100%. Over a thousand cases as of v4.1. These are the C++ Unity suites in
@@ -90,13 +90,13 @@ one.
 
 ## Golden tests (screens and protocol)
 
-UI screens are pinned as **golden framebuffers**: e-ink screens in
-`test/golden/*.bin` (296×128 1-bit), TFT screens in `test/golden_tft/*.bin`
-(240×320 RGB565). The flow after an intentional screen change:
+UI screens are pinned as **golden framebuffers** in `test/golden_tft/*.bin`
+(240×320 RGB565); several protocol and prompt surfaces have golden text in
+`test/golden/`. The flow after an intentional screen change:
 
 1. Run the native suite; the golden test fails and writes the new buffer.
-2. Render it for human review: `python3 tools/golden.py render <name>` (e-ink)
-   or `python3 tools/tftpreview.py contact` (TFT - the whole UI on one sheet).
+2. Render it for human review: `python3 tools/tftpreview.py contact`
+   (the whole UI on one sheet).
 3. If it looks right, bless the new buffer and commit it with the change.
 
 The nsn wire protocol is pinned the same way - `test/test_proto/nsn_vectors.h`

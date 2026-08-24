@@ -4,15 +4,13 @@ Fabrication files for the **Solide S3 carrier PCB** - the artifacts a board hous
 to manufacture the board.
 
 **You do not need anything in here to build, flash, or use the Nimbus firmware.** For
-wiring and pinouts see the [hardware reference](../../docs/hardware.md) and the two
-configuration pages ([e-paper + knob](../../docs/hardware/eink-knob.md),
-[touch TFT](../../docs/hardware/touch-tft.md)).
+wiring and pinouts see the [hardware reference](../../docs/hardware.md) and the
+[touch TFT configuration page](../../docs/hardware/touch-tft.md).
 
 | Path | Contents |
 |---|---|
 | [`gerbers/`](gerbers/) | Gerber layers (copper, silkscreen, soldermask, solderpaste, profile), the drill file, and the Gerber job file |
 | [`odb/pcb3_v7.zip`](odb/pcb3_v7.zip) | ODB++ export of the same board (zipped - most fabs accept either format) |
-| [`case_eink.stl`](case_eink.stl) | 3D-printable enclosure for the e-paper + knob build |
 | [`case_touch_screen.stl`](case_touch_screen.stl) | 3D-printable enclosure for the touch TFT build |
 
 Both PCB formats describe the same board; supply whichever your fab prefers.
@@ -44,7 +42,5 @@ any fab works the same way.
 
 ## 3D-printing the enclosure
 
-[`case_eink.stl`](case_eink.stl) and [`case_touch_screen.stl`](case_touch_screen.stl)
-are the two enclosure options - print the one that matches your display (e-paper + knob,
-or touch TFT). PLA or PETG both work; the main body prints without supports on most
-machines.
+[`case_touch_screen.stl`](case_touch_screen.stl) is the enclosure for the touch TFT
+build. PLA or PETG both work; the main body prints without supports on most machines.

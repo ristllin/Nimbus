@@ -211,7 +211,7 @@
 #define AKEY_OTA_AUTO       "autoUpd"        // auto-install in an idle window (default OFF)
 #define AKEY_OTA_NOTIF      "otaNotif"       // last version Telegram-notified (no re-nag)
 #define AKEY_OTA_TYPE       "otaType"        // typed-OTA device slug: "nimbus-tft" |
-                                             // "freenove-28|35|40" | "" (untyped/e-ink:
+                                             // "freenove-28|35|40" | "" (untyped legacy device:
                                              // no update). Set by the flasher or the
                                              // transition boot; frozen machine key.
 #define AKEY_OTA_NOTES      "otaNotes"       // "ver|notes" persisted across the install reboot
@@ -252,7 +252,7 @@
 #define AKEY_TTS_PROVIDER   "ttsProv"        // "mistral"|"openai" (text -> voice)
 #define AKEY_TTS_VOICE      "ttsVoice"       // voice id/slug ("" = provider default)
 #define AKEY_THEME          "theme"          // LED colour theme (default "teal")
-// Display panel fitted to THIS device: "eink" (2.9" SSD1680 + EC11 knob, the
+// Display setting for THIS device (frozen NVS key): "eink" is a legacy value (the
 // default and the shipped config) | "tft" (2.8" ILI9341 + XPT2046 touch). It is
 // hardware identity, not a preference: it re-pins GPIO 1/2/48 and selects both
 // the display driver and the input driver, so it is applied at boot (restart to
@@ -269,7 +269,7 @@
 #define AKEY_SFX_LVL_ORCH   "sfxLvlO"
 #define AKEY_SFX_THEME      "sfxTheme"       // "terran" | "protoss" | "zerg"
 #define AKEY_SFX_VOL        "sfxVol"         // master speaker volume 0-100 (%)
-#define AKEY_SAVER_MIN      "saverMin"       // e-ink screensaver idle minutes (0 = off)
+#define AKEY_SAVER_MIN      "saverMin"       // screensaver idle minutes (0 = off)
 #define AKEY_COMPACT_KB     "compactKB"      // fold trigger: chat KB since last fold (0 = off)
 #define AKEY_SLEEP_MV       "sleepMv"        // low-batt deep-sleep threshold, pack mV (0 = off; default 6000 = ~10% real SoC)
 #define AKEY_BATT_RTOP      "battRtop"       // divider R_top (ohms); default 220000

@@ -9,13 +9,12 @@
 // ============================================================================
 // tft_render/screens - the colour touch UI.
 //
-// It reads the SAME nimbus::render::ScreenCtx the e-ink renderer reads. That is
-// the whole design: one data model, two presentations. The e-ink renderer is
+// It reads the shared nimbus::render::ScreenCtx. One data model drives the
 // frozen (its goldens must stay byte-identical), so this is a parallel
 // renderer, not a refactor of it - a screen added to the device populates one
 // context and both surfaces can draw it.
 //
-// Two differences from the e-ink side, both forced by the hardware:
+// Notes on this renderer, forced by the hardware:
 //   - PORTRAIT 240x320 with colour, versus landscape 296x128 1-bit. The layouts
 //     are therefore genuinely different, not scaled.
 //   - There is NO KNOB (the panel consumes the encoder pins), so every screen
@@ -50,7 +49,7 @@ struct Rendered {
 Rendered renderScreen(Fb565& fb, attn::ScreenId screen, const render::ScreenCtx& ctx);
 
 // Real page count drawAsk would produce for this text on THIS renderer - the
-// TFT card's pixel geometry/font metrics differ from the e-ink panel's, so this
+// TFT card's pixel geometry/font metrics need their own page count, so this
 // is deliberately separate from the removed 48-col grid page count (which was hardcoded to the old
 // 48-col/7-line grid) rather than reusing it; a touch board's swipe-to-page must
 // clamp against what it will actually render, not a mismatched page count.

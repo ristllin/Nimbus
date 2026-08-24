@@ -10,7 +10,7 @@
 // tft_render/fb565 - a portable RGB565 framebuffer for the 240x320 touch panel.
 //
 // A color 1-word-per-pixel framebuffer, deliberately a SEPARATE type from the
-// the e-ink renderer is frozen and must keep producing byte-identical goldens,
+// the color renderer must keep producing byte-identical goldens,
 // so nothing here may perturb it.
 //
 // Coordinates: (0,0) top-left, x right, y down, PORTRAIT 240x320.
@@ -112,7 +112,7 @@ class Fb565 {
   std::vector<uint16_t> buf_;
 };
 
-// Sanitize to the printable ASCII the glyph atlas covers (mirrors the e-ink
+// Sanitize to the printable ASCII the glyph atlas covers (mirrors the shared
 // renderer's rule; the panel can show more, but one atlas keeps goldens honest).
 std::string asciiSanitize(const std::string& s);
 

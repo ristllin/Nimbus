@@ -45,7 +45,7 @@
 //
 // Threading contract (HARD RULE): NimBLE callbacks (onWrite / onSubscribe /
 // onDisconnect / onRead) run on the NimBLE host task and must NOT touch the
-// Router / Mapper / ring / e-ink. The FRAME onWrite only copies the write's
+// Router / Mapper / ring / panel. The FRAME onWrite only copies the write's
 // bytes into a FreeRTOS StreamBuffer (single writer = NimBLE task, single
 // reader = main loop; a write that doesn't fit is dropped WHOLE and counted -
 // frames are idempotent full state, the next one repairs). drain() runs in
@@ -69,7 +69,7 @@ void begin();
 // decoder), emit the [0x02, seq] echo per applied frame, flush a pending conn
 // ack, refresh the CONFIG snapshot cache. Returns true if Router state changed
 // this call (same contract as NotifierMode::poll - the caller recomposes the
-// ring and feeds last().screen to the e-ink scheduler). No-op returning false
+// ring and feeds last().screen to the render scheduler). No-op returning false
 // when begin() never ran.
 bool drain(NotifierMode& n, uint32_t nowMs);
 

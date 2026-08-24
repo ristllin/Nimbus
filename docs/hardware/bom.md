@@ -1,8 +1,8 @@
 # Bill of materials
 
 Every part needed to build a Nimbus, consolidated across the display
-configurations, with sourcing links and rough prices. Two are hand-built on the
-Solide S3 board; the third (Configuration C) is a single off-the-shelf all-in-one
+configurations, with sourcing links and rough prices. One is hand-built on the
+Solide S3 board; the other (Configuration B) is a single off-the-shelf all-in-one
 module with nothing to source beyond the board itself. The modules are all
 commodity parts - the links below are stable store or search links; any
 listing matching the **Module / chip** column works.
@@ -16,7 +16,7 @@ Prices are approximate 2026 street prices in USD for AliExpress-class
 sourcing, excluding shipping. Sourcing the branded parts from a US distributor
 (Adafruit, SparkFun, DigiKey, Mouser) typically adds $15–25 to the total.
 
-## Shared parts (both hand-built configurations)
+## Solide S3 build parts
 
 | Qty | Part | Module / chip | Notes | Purchase | ~Price |
 |---|---|---|---|---|---|
@@ -38,26 +38,17 @@ sourcing, excluding shipping. Sourcing the branded parts from a US distributor
 **Shared subtotal: ≈ $55–67** (electronics only; enclosure, fasteners, and
 pack-build consumables are listed separately below).
 
-## Configuration A - E-paper + knob *(default)*
-
-| Qty | Part | Module / chip | Notes | Purchase | ~Price |
-|---|---|---|---|---|---|
-| 1 | Display | **WeAct 2.9" 3-color e-paper (SSD1680)**, 296×128 | B/W + red panel; the firmware drives it in fast B/W (~2.2 s refresh). | [WeAct Studio official store](https://weactstudio.aliexpress.com) · [AliExpress](https://www.aliexpress.com/w/wholesale-weact-2.9-epaper-ssd1680.html) | $9 |
-| 1 | Knob | **EC11 rotary encoder** with push switch | 3-pin side + 2-pin side, five unmarked pins - see the [build guide](build-eink.md#known-traps). | [AliExpress](https://www.aliexpress.com/w/wholesale-ec11-rotary-encoder.html) | $1 |
-
-**Configuration A total: ≈ $61–65** · [Build guide →](build-eink.md)
-
-## Configuration B - Touch TFT
+## Configuration A - Touch TFT
 
 | Qty | Part | Module / chip | Notes | Purchase | ~Price |
 |---|---|---|---|---|---|
 | 1 | Display | **2.8" ILI9341 SPI TFT, 240×320**, with **XPT2046** resistive touch | The common SPI module with display pads (SCK/SDI/SDO/DC/RESET/CS/LED) plus a touch header (T_CLK/T_DIN/T_DO/T_CS/T_IRQ). Three on-module solder bridges are required - see the [build guide](build-tft.md#the-three-on-module-solder-bridges-do-this-first). | [AliExpress](https://www.aliexpress.com/w/wholesale-2.8-ili9341-spi-touch-xpt2046.html) | $8 |
 
-There is no knob in this build - the touch layer is the input.
+The touch layer is the input.
 
-**Configuration B total: ≈ $59–63** · [Build guide →](build-tft.md)
+**Configuration A total: ≈ $59–63** · [Build guide →](build-tft.md)
 
-## Configuration C - all-in-one (Freenove CYD)
+## Configuration B - all-in-one (Freenove CYD)
 
 The lowest-effort build: **one part, nothing to wire**. The screen, capacitive
 touch, microSD, mic, speaker, and RGB LED are all on the module. None of the
@@ -71,7 +62,7 @@ SD module, carrier PCB, headers, or battery section for a desk-powered unit.
 Nothing else is required. A data-capable **USB-C cable** for flashing is the only
 other thing you need, and most people already have one.
 
-**Configuration C total: ≈ $20–25** · [Pinout & happy-path build →](all-in-one-cyd.md)
+**Configuration B total: ≈ $20–25** · [Pinout & happy-path build →](all-in-one-cyd.md)
 
 ## Safety note - 2S Li-ion
 
@@ -92,11 +83,11 @@ are approximate. The [build photos](build-photos.md) show every step.
 
 | Qty | Part | Notes | Purchase | ~Price |
 |---|---|---|---|---|
-| 1 set | **3D-printed enclosure** | Print [`case_eink.stl`](https://github.com/ristllin/Nimbus/blob/main/hardware/fab/case_eink.stl) or [`case_touch_screen.stl`](https://github.com/ristllin/Nimbus/blob/main/hardware/fab/case_touch_screen.stl) (GitHub renders both in a 3D viewer) in PLA or PETG. | self-print or a print service | $0–15 |
+| 1 set | **3D-printed enclosure** | Print [`case_touch_screen.stl`](https://github.com/ristllin/Nimbus/blob/main/hardware/fab/case_touch_screen.stl) (GitHub renders it in a 3D viewer) in PLA or PETG. | self-print or a print service | $0–15 |
 | ~10 | **M3 brass heat-set inserts** | Melted into the printed case with a soldering iron; screws thread into these. | [AliExpress](https://www.aliexpress.com/w/wholesale-m3-heat-set-insert.html) | $5 |
 | assorted | **M3 machine screws** | A short-length assortment, plus a few **longer M3** screws for the microSD-module standoff. | [AliExpress](https://www.aliexpress.com/w/wholesale-m3-screw-assortment-kit.html) | $3 |
 | 1 | **Rocker power switch** (SPST) | Cuts the pack to the DC-DC. Generic, ~20 x 12 mm panel cutout. | [AliExpress](https://www.aliexpress.com/w/wholesale-kcd1-rocker-switch.html) | $1 |
-| - | **2S pack build materials** | The reference build spot-welds **nickel strip** to the cells (needs a spot welder), insulates with **fishpaper** + **Kapton tape**, and finishes the leads with spade/terminal connectors and silicone hookup wire. **No spot welder?** Use pre-tabbed cells you solder, or a **2S 18650 holder with leads** - see the battery-pack section of the [build guide](build-eink.md#battery-pack). | [AliExpress](https://www.aliexpress.com/w/wholesale-18650-nickel-strip-fishpaper-kapton.html) | $3–8 |
+| - | **2S pack build materials** | The reference build spot-welds **nickel strip** to the cells (needs a spot welder), insulates with **fishpaper** + **Kapton tape**, and finishes the leads with spade/terminal connectors and silicone hookup wire. **No spot welder?** Use pre-tabbed cells you solder, or a **2S 18650 holder with leads** - see the battery section of the [build guide](build-tft.md#battery-sense-optional-recommended). | [AliExpress](https://www.aliexpress.com/w/wholesale-18650-nickel-strip-fishpaper-kapton.html) | $3–8 |
 
 **Enclosure + consumables subtotal: ≈ $12–35.** Mostly one-time: a spot welder,
 if you choose to buy one rather than use tabbed cells or a holder, is extra and

@@ -6,6 +6,13 @@ ships as a signed image on the public
 repository; a device on Orchestrator mode sees it on its daily check and
 installs on your say-so ([how updates work](ota.md)).
 
+## Unreleased
+
+- Removed the deprecated e-ink display and rotary-knob code paths. Both shipping
+  configurations are color touch panels (the Solide S3 with its LED ring, and the
+  Freenove CYD all-in-one). E-ink devices stay on their final firmware (typed OTA
+  delivers them no further updates).
+
 ## v4.1.0 - Orchestrator self-knowledge, honest capacity, real file delivery
 
 Everything the assistant tells you about itself is now generated from live,

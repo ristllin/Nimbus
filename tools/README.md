@@ -63,7 +63,6 @@ a generated file.
 
 | Tool | One-liner |
 |---|---|
-| `golden.py` | Render/diff e-ink golden framebuffers (`test/golden/*.bin`) to PNG. |
 | `tftpreview.py` | Color counterpart for the TFT golden suite - `contact` sheet + tap-`regions` linter. |
 | `nsn_send.py` | End-to-end broker→Bluetooth→device validation (needs `bleak` + macOS BT entitlement). |
 | `harness-lab/` | Runs the real agent harness on the Mac instead of the device (see its README). |

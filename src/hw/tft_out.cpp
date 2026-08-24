@@ -52,7 +52,7 @@ bool begin() {
 
   // 150 KB each. PSRAM ONLY: two of these in internal SRAM would consume the
   // whole ~327 KB internal heap and the device would not survive a TLS
-  // handshake (the same lesson as the e-ink framebuffers and the SFX queue).
+  // handshake (the same lesson as the earlier framebuffers and the SFX queue).
   //
   // ⚠ Fb565 holds a std::vector, so placement-new into PSRAM puts only the
   // 12-byte header there - the PIXELS come from the default allocator. That

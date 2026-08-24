@@ -45,7 +45,7 @@ constexpr uint32_t dutyPermille(uint32_t nowMs, uint16_t onMs, uint16_t periodMs
 
 // Backlight level for a battery mode, percent.
 //
-// On a reflective e-ink panel the battery mode only changes LEDs. On a colour
+// The battery mode changes the LEDs and the backlight. On a colour
 // TFT the BACKLIGHT is the single largest continuous draw - larger than the ring
 // - so a battery mode that dims the LEDs while leaving the screen at full
 // brightness is not actually a battery mode. Dark is meant to disengage.

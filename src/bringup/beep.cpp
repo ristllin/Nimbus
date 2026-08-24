@@ -1,5 +1,5 @@
 // Minimal beep - the smallest possible speaker test. NOTHING but the board init
-// and a tone loop: no WiFi, BLE, e-ink, LED, tasks, web server. If THIS is silent,
+// and a tone loop: no WiFi, BLE, display, LED, tasks, web server. If THIS is silent,
 // the fault is the amp/speaker/wiring/5V; if it beeps, something in the full Nimbus
 // firmware is muting the amp.  Flash:  pio run -e beep -t upload
 #include <Arduino.h>

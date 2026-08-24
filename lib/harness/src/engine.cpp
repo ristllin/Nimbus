@@ -145,7 +145,7 @@ std::string TurnEngine::takePendingMemResults() {
 // via the reply.speak / reply.telegram tools when the loop is on.
 const char* TurnEngine::channelOf(const std::string& chatId) {
   if (chatId == "serial") return "the developer serial console";
-  if (chatId == "voice")  return "the device microphone (hold-to-talk); your reply shows on the e-ink panel";
+  if (chatId == "voice")  return "the device microphone (hold-to-talk); your reply shows on the panel";
   if (chatId == "web")    return "the web UI";
   return "Telegram; your reply is delivered as a Telegram message to that chat";
 }

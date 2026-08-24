@@ -5,7 +5,7 @@
 //
 // The device shows ScreenId::Screensaver after `thresholdMin` minutes with no
 // ACTIVITY, where activity is a deliberately narrow set of edges wired in
-// main.cpp: encoder events, attention-router job EDGES (repeat frames and the
+// main.cpp: input events, attention-router job EDGES (repeat frames and the
 // broker's ~30 s snapshot heartbeats must NOT count, or a Notifier with a
 // running broker would never sleep), and any non-ambient screen render (turns,
 // asks, menu, QR...). Periodic ambient StatusIdle repaints do not count.
@@ -31,7 +31,7 @@ class SaverTimer {
   // FUTURE-SAFE (field bug 2026-07-18, Board 1): the caller captures `nowMs` at
   // its loop top, but noteActivity() runs mid-iteration with a FRESHER millis()
   // - so lastMs_ can be a few ms "ahead" of nowMs. The old bare subtraction
-  // underflowed that to ~2^32 and fired the screensaver SECONDS after a knob
+  // underflowed that to ~2^32 and fired the screensaver SECONDS after a gesture
   // interaction (repro: menu close -> logo flash; SAVERDBG now=19937
   // last=19938). A "future" lastMs means zero idle, not a 49-day wrap.
   bool due(uint32_t nowMs) const {

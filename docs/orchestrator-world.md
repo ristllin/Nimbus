@@ -193,7 +193,7 @@ keeping are written back via `memory.write` (the model decides what to keep).
 ## 3. Capability & world manifest
 
 Generated, never hand-written (so it can't drift): hardware inventory (ring,
-e-ink, encoder, mic/speaker, battery state), connectivity (Wi-Fi/BLE/Telegram
+screen, mic/speaker, battery state), connectivity (Wi-Fi/BLE/Telegram
 up?), SD present?, and the tool list pulled from the MCP registry with
 one-line descriptions. The model knows its verbs and its body.
 

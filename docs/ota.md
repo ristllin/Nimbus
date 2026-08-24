@@ -154,7 +154,7 @@ recorded in [`adr/0001-ota-releases-repo.md`](adr/0001-ota-releases-repo.md).
   restart), Telegram `/update` (owner only), or `POST /api/ota/apply` (`dry=1`
   downloads + verifies without flipping, `force=1` allows same/older AND bypasses
   the battery gate below). During install the
-  ring is a theme-color progress bar, the e-ink says "do not power off", and
+  ring is a theme-color progress bar, the screen says "do not power off", and
   voice capture is refused. The download runs alongside the live Telegram poller
   (heap stays steady; an earlier "stop the poller to free heap" hook is gone - it
   deleted a live queue and crash-rebooted the device).

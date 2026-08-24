@@ -245,13 +245,13 @@ String touchCal();
 void   setTouchCal(const String& v);
 bool   screenIsTft();    // convenience: screenModel() == "tft" (STORED preference)
 void   setBootScreenIsTft(bool v);  // main.cpp records the boot-bound driver (RAM-only)
-int    bootScreenIsTft();           // 1/0 = bound tft/eink, -1 = not yet recorded
+int    bootScreenIsTft();           // 1/0 = bound tft/other, -1 = not yet recorded
 // Sound cues: per-mode sound levels (0-3) + shared sound theme (src/sfx).
 uint8_t sfxLevelNotif(); // default 0 (none - a silent Notifier out of the box)
 uint8_t sfxLevelOrch();  // default 2 (medium)
 String  sfxTheme();      // "pulse" (default) | legacy themes fall back to the general pool
 uint8_t sfxVolume();     // master speaker volume 0-100 (default 50 - the amp+speaker overdrive hot)
-uint16_t saverMin();     // e-ink screensaver idle minutes, 0 = off (default 60)
+uint16_t saverMin();     // screensaver idle minutes, 0 = off (default 5)
 uint16_t compactAtKB();  // fold trigger: KB of chat since last fold, 0 = off (default 48, clamp 8..512)
 void     setCompactAtKB(uint16_t v);
 // ---- battery/LED protection (owner feature 2026-07-17; study-grounded) -------

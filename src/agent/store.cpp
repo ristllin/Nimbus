@@ -455,24 +455,16 @@ uint16_t compactAtKB() {
   return v < 8 ? 8 : (v > 512 ? 512 : (uint16_t)v);
 }
 void setCompactAtKB(uint16_t v) { solide::memory::setInt(AKEY_COMPACT_KB, v > 512 ? 512 : v); }
-// Idle minutes before the screen rests. The DEFAULT is per-panel; an explicit
-// owner setting always wins.
+// Idle minutes before the screen rests. An explicit owner setting always wins.
 //
-// ⚠ e-ink keeps 60 unchanged - it is reflective, so resting it saves nothing and
-// the screensaver is really about ghosting. A colour panel is the opposite: the
-// backlight is the largest continuous draw on the device, so an hour of full
+// The backlight is the largest continuous draw on the device, so an hour of full
 // brightness at an empty desk is the single most wasteful thing a battery board
-// can do. A tap wakes it instantly, so a short rest costs the owner nothing.
-//
-// The sentinel matters: getInt(key, 60) cannot tell "unset" from "the owner
-// chose 60", so the fallback has to be resolved from a value that cannot be set.
+// can do. A tap wakes it instantly, so a short default rest costs the owner
+// nothing. The sentinel matters: getInt(key, 5) cannot tell "unset" from "the
+// owner chose 5", so the fallback has to be resolved from a value that cannot be set.
 uint16_t saverMin() {
   int v = solide::memory::getInt(AKEY_SAVER_MIN, -1);
-  // ⚠ 5 min on a colour panel. The backlight is the largest continuous draw on
-  // the device, so an idle lit screen is the single most wasteful thing it can
-  // do; e-ink is reflective and keeps its hour, where the screensaver is about
-  // ghosting rather than power.
-  if (v < 0) v = screenIsTft() ? 5 : 60;
+  if (v < 0) v = 5;   // default 5 min: the backlight is the device's largest idle draw
   return v < 0 ? 0 : (v > 1440 ? 1440 : (uint16_t)v);
 }
 // ⚠ ceiling 6800, NOT 8000: a truly-full pack reads ~7900 mV RAW (S3 ADC top-band

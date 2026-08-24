@@ -51,7 +51,7 @@ src/agent/telegram.cpp:agent::telegram::pollTask
 src/agent/adapters/url_fetch.cpp:agent::urlfetch::httpsGetStream
 src/sfx/sfx_sync.cpp:sfxsync::httpsGet
 src/agent/adapters/embeddings.cpp:agent::embeddings::embedWith
-lib/core/src/epd_fb.cpp:nimbus::epd::appendCp
+lib/core/src/render_text.cpp:nimbus::render::appendCp
 lib/core/src/orch_episodic_log.cpp:nimbus::orch::AppendLogEpisodicStore::hydrate
 src/agent/orchestrator.cpp:agent::orchestrator::buildApplyDeps
 lib/core/src/orch_episodic_log.cpp:nimbus::orch::AppendLogEpisodicStore::query
@@ -86,7 +86,6 @@ src/agent/telegram.cpp:agent::telegram::handleVoice
 src/agent/files_subsystem.cpp:agent::files::runScanFetch
 tools/tcal_wizard.py:main
 src/main.cpp:otaEventHook
-lib/core/src/epd_screens.cpp:nimbus::epd::drawHeader
 lib/core/src/orch_device_actions.cpp:nimbus::orch::validateAction
 src/main.cpp:drainTouch
 src/agent/telegram.cpp:agent::telegram::doGetUpdates
@@ -129,7 +128,6 @@ tests/hil/mock_llm.py:do_POST
 lib/harness/src/engine.cpp:agent::TurnEngine::buildDynamicContext
 lib/core/src/orch_vector_memory.cpp:nimbus::orch::VectorMemory::deserialize
 lib/core/src/power_battery_model.cpp:nimbus::power::BatteryModel::estimate
-lib/core/src/epd_screens.cpp:nimbus::epd::renderScreen
 src/agent/memory_subsystem.cpp:agent::memory::captureMediaFile
 lib/core/src/logring.cpp:core::isBoundary
 tools/setup_device.py:main
@@ -138,7 +136,6 @@ lib/harness/src/providers/anthropic.cpp:agent::providers::orchTurnAnthropic
 src/main.cpp:buildCtx
 lib/harness/src/providers/loop_common.cpp:agent::providers::runFabricLoop
 src/agent/adapters/url_fetch.cpp:agent::urlfetch::scanVerdict
-src/hw/epd_out.cpp:nimbus::hw::pushFramebuffer
 tests/hil/run_scenarios.py:preflight
 lib/core/src/qr.cpp:nimbus::qr::encode
 lib/core/src/orch_file_store.cpp:nimbus::orch::FileStore::load
@@ -158,7 +155,6 @@ src/net/web_files.cpp:nimbus::net::contentTypeFor
 lib/harness/src/compose.cpp:agent::composeInstructions
 src/net/web_skills.cpp:nimbus::net::registerSkillRoutes
 lib/harness/src/providers/mistral.cpp:agent::providers::renderMistralMessages
-lib/core/src/epd_screens.cpp:nimbus::epd::drawConfigQr
 src/agent/skills.cpp:agent::skills::list
 lib/core/src/tft_screens.cpp:nimbus::tft::drawSetup
 lib/core/src/orch_fetch_policy.cpp:nimbus::orch::parseHttpsUrl

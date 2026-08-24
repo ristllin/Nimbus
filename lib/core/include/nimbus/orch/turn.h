@@ -39,7 +39,7 @@ struct Spawn {
   std::string task;       // the NL instruction; non-empty or the item is dropped
   std::string category;   // "code" | "research" | "ops"; defaults to "research"
   std::string name;        // model-chosen short display name ("css-fixer"); owner-facing
-                           // everywhere (Telegram/e-ink/prompt digest). "" = unnamed
+                           // everywhere (Telegram/panel/prompt digest). "" = unnamed
                            // (older wire) -> callers fall back to model+category.
   std::string note;       // one-line owner ack; defaults to "On it."
   std::string project;    // v4.0.0: FileStore project tag (auto-persist target)
