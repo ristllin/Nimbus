@@ -342,6 +342,60 @@ static void test_parse_duration_secs() {
   TEST_ASSERT_EQUAL(7 * 24 * 3600 + 1, parseDurationSecs("99999999999d"));
 }
 
+static void test_clamp_loop_caps() {
+  LoopCaps def;  // caps.h defaults
+  // No overrides (all 0): identity.
+  LoopCaps id = clampLoopCaps(def, LoopCapOverrides{});
+  TEST_ASSERT_EQUAL_INT(def.maxCount, id.maxCount);
+  TEST_ASSERT_EQUAL_UINT32(def.minIntervalSec, id.minIntervalSec);
+  TEST_ASSERT_EQUAL_INT(def.maxFiresPerDay, id.maxFiresPerDay);
+  TEST_ASSERT_EQUAL_UINT32(def.maxTokensPerDay, id.maxTokensPerDay);
+
+  // Stricter overrides win: fewer loops, longer interval, lower ceilings.
+  LoopCapOverrides strict;
+  strict.maxCount        = 3;
+  strict.minIntervalSec  = 600;      // longer than the 300 default (stricter)
+  strict.maxFiresPerDay  = 10;
+  strict.maxTokensPerDay = 50000;
+  strict.devTokensPerDay = 100000;
+  strict.devFiresWindow  = 2;
+  strict.maxConsecFails  = 2;
+  strict.maxRepeats      = 3;
+  LoopCaps t = clampLoopCaps(def, strict);
+  TEST_ASSERT_EQUAL_INT(3, t.maxCount);
+  TEST_ASSERT_EQUAL_UINT32(600, t.minIntervalSec);
+  TEST_ASSERT_EQUAL_INT(10, t.maxFiresPerDay);
+  TEST_ASSERT_EQUAL_UINT32(50000, t.maxTokensPerDay);
+  TEST_ASSERT_EQUAL_UINT32(100000, t.devTokensPerDay);
+  TEST_ASSERT_EQUAL_INT(2, t.devFiresWindow);
+  TEST_ASSERT_EQUAL_INT(2, t.maxConsecFails);
+  TEST_ASSERT_EQUAL_INT(3, t.maxRepeats);
+
+  // Looser overrides are ignored (owner may only TIGHTEN, never loosen).
+  LoopCapOverrides loose;
+  loose.maxCount        = 999;       // more loops -> ignored
+  loose.minIntervalSec  = 60;        // faster than 300 -> ignored (shorter = looser)
+  loose.maxFiresPerDay  = 1000;
+  loose.maxTokensPerDay = 9999999;
+  loose.devTokensPerDay = 9999999;
+  loose.devFiresWindow  = 100;
+  LoopCaps l = clampLoopCaps(def, loose);
+  TEST_ASSERT_EQUAL_INT(def.maxCount, l.maxCount);
+  TEST_ASSERT_EQUAL_UINT32(def.minIntervalSec, l.minIntervalSec);
+  TEST_ASSERT_EQUAL_INT(def.maxFiresPerDay, l.maxFiresPerDay);
+  TEST_ASSERT_EQUAL_UINT32(def.maxTokensPerDay, l.maxTokensPerDay);
+  TEST_ASSERT_EQUAL_UINT32(def.devTokensPerDay, l.devTokensPerDay);
+  TEST_ASSERT_EQUAL_INT(def.devFiresWindow, l.devFiresWindow);
+
+  // Mixed: one stricter, one looser -> each resolved independently.
+  LoopCapOverrides mix;
+  mix.maxCount = 2;        // stricter
+  mix.maxFiresPerDay = 99; // looser -> ignored
+  LoopCaps m = clampLoopCaps(def, mix);
+  TEST_ASSERT_EQUAL_INT(2, m.maxCount);
+  TEST_ASSERT_EQUAL_INT(def.maxFiresPerDay, m.maxFiresPerDay);
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_civil_roundtrip);
@@ -361,5 +415,6 @@ int main() {
   RUN_TEST(test_once_wakeups_skip_owner_approval);
   RUN_TEST(test_once_after_fire_retires_with_one_retry);
   RUN_TEST(test_parse_duration_secs);
+  RUN_TEST(test_clamp_loop_caps);
   return UNITY_END();
 }

@@ -1,0 +1,9 @@
+{
+  "name": "minimp3",
+  "version": "1.0.0-vendored",
+  "description": "Vendored minimp3 (lieff/minimp3), a small single-header MP3 decoder. CC0 / public domain. Used by the device music player (src/sfx/music) for MP3 playback from SD /music.",
+  "license": "CC0-1.0",
+  "keywords": ["mp3", "decoder", "audio"],
+  "frameworks": "*",
+  "platforms": "*"
+}

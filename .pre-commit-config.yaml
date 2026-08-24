@@ -55,7 +55,9 @@ repos:
         files: '.*\.(cpp|h|py)$'
         # include/web/ui_*.h are HTML/JS fragments inside C string literals -
         # lizard "parses" the embedded JS as C++ and the numbers are meaningless.
-        exclude: '^include/web/'
+        # lib/minimp3 is vendored third-party (CC0); it is not our code to refactor,
+        # so it stays out of the gate (and out of the shrinking whitelist).
+        exclude: '^include/web/|^lib/minimp3/'
         # tools/release/lizard_whitelist.txt baselines today's offenders so the
         # gate passes now but holds NEW code to the thresholds.
 

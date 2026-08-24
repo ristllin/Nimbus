@@ -2,6 +2,36 @@
 
 namespace nimbus::power {
 
+// Parse "mv:pct,mv:pct,..." (high-mV first) into curve points. Returns the count
+// (>=2) or 0 on any malformed / non-monotonic input. No allocation, no <string>.
+int parseCurveCsv(const char* csv, LiIonCurvePoint* out, int maxN) {
+  if (!csv || !out || maxN < 2) return 0;
+  int count = 0;
+  const char* p = csv;
+  while (*p && count < maxN) {
+    while (*p == ' ' || *p == ',') p++;
+    if (!*p) break;
+    if (*p < '0' || *p > '9') return 0;
+    long mv = 0;
+    while (*p >= '0' && *p <= '9') { mv = mv * 10 + (*p - '0'); if (mv > 60000) return 0; p++; }
+    if (*p != ':') return 0;
+    p++;
+    if (*p < '0' || *p > '9') return 0;
+    long pct = 0;
+    while (*p >= '0' && *p <= '9') { pct = pct * 10 + (*p - '0'); if (pct > 1000) return 0; p++; }
+    if (pct > 100) return 0;
+    // strictly descending mV, non-increasing pct (matches socForCurve's shape).
+    if (count > 0 && (mv >= out[count - 1].mv || pct > out[count - 1].pct)) return 0;
+    out[count].mv = (uint16_t)mv;
+    out[count].pct = (uint8_t)pct;
+    count++;
+    while (*p == ' ') p++;
+    if (*p && *p != ',') return 0;   // junk between points
+  }
+  if (*p) { while (*p == ' ' || *p == ',') p++; if (*p) return 0; }  // trailing junk / overflow
+  return count >= 2 ? count : 0;
+}
+
 const char* chargeStateStr(ChargeState s) {
   switch (s) {
     case ChargeState::Discharging: return "discharging";
@@ -55,7 +85,26 @@ uint16_t BatteryModel::correctedCellMv(uint16_t cmv) const {
 }
 
 uint8_t BatteryModel::percentFor(uint16_t cmv) const {
+  // A custom curve (if configured) wins; otherwise the chemistry curve. Li-ion is
+  // the default and keeps the top-band ADC stretch (correctedCellMv) so a full 2S
+  // reads 100%; the LiFePO4 band sits below the knee, so the stretch is inert there
+  // and the curve is read directly. This is the only chemistry-aware SoC point.
+  if (customN_ > 0) return socForCurve(correctedCellMv(cmv), custom_, customN_);
+  if (chem_ == Chemistry::LiFePO4) return socForCurve(cmv, kLiFePO4Curve, kLiFePO4CurveN);
   return liIonPercent(correctedCellMv(cmv));
+}
+
+bool BatteryModel::setCustomCurve(const LiIonCurvePoint* pts, int n) {
+  if (!pts || n < 2 || n > kMaxCurvePoints) return false;
+  // Must be high-mV first, strictly descending in mV, pct within 0..100 and non-
+  // increasing - the same shape socForCurve interpolates over.
+  for (int i = 0; i < n; i++) {
+    if (pts[i].pct > 100) return false;
+    if (i > 0 && (pts[i].mv >= pts[i - 1].mv || pts[i].pct > pts[i - 1].pct)) return false;
+  }
+  for (int i = 0; i < n; i++) custom_[i] = pts[i];
+  customN_ = n;
+  return true;
 }
 
 // Infer charge state from the voltage trend (reference-point hysteresis). Updates

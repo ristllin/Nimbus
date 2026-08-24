@@ -465,6 +465,8 @@ function _chatTraceHint(){
 }
 function applyState(d){
   if(d.storeSD!==undefined){GB.sd=!!d.storeSD&&!d.sdLost;_chatTraceHint();}
+  // CUM-15: reveal the full-card Format control only when the driver supports it.
+  if($('sdFormatRow'))$('sdFormatRow').style.display=(d.files&&d.files.canFormat)?'block':'none';
   // ---- Cloud access (cumulo-nimbus tunnel) ----
   if(d.cloud&&$('cloudLine')){
     var c=d.cloud;
@@ -536,8 +538,23 @@ function applyState(d){
     fi.onclick=()=>{
       if((d.ota==='available')&&!battOk){fbState('fwMsg','error',d.otaBattMsg||'Charge the device before installing.');return;}
       if(!confirm('Install firmware '+(d.otaLatest||'')+'?\n\nThe device will download, verify the signature, and restart - about two minutes. Keep it powered on.'))return;
+      // CUM-58 battery gate expressed THROUGH the run() feedback helper (N1): doApply
+      // POSTs (with force on a retry); a {ok:false} gate answer either confirms and
+      // retries with force (need-power/need-recalibrate = "install anyway, I'm charging")
+      // or throws so run() renders the error state; success resolves to the run() ok copy.
+      var doApply=function(force){var f=new FormData();if(force)f.append('force','1');
+        return fetch('/api/ota/apply',{method:'POST',body:f}).then(r=>r.json()).then(j=>{
+          if(j&&j.ok===false){
+            if(j.err==='need-power'){
+              if(confirm('Battery is low. Connect power and try again, or install anyway (I am charging)?'))return doApply(true);
+              throw 'need-power';}
+            if(j.err==='need-recalibrate'){
+              if(confirm('Battery health reads low, so the level may be wrong. Charge to full and recalibrate to 100% (Battery, then Calibrate), or install anyway (I am charging)?'))return doApply(true);
+              throw 'need-recalibrate';}
+            throw (j.err||'busy');}
+          return j;});};
       run({status:'fwMsg',btn:fi,pending:'Starting the update…',
-        work:()=>fetch('/api/ota/apply',{method:'POST'}).then(jok),
+        work:()=>doApply(false),
         ok:()=>{setTimeout(loadState,2000);return 'Updating. Keep the device powered on; it restarts when done.';},
         error:e=>'Couldn\'t start the update'+(e?(' ('+e+')'):'')+' - try again.'});};
   }
@@ -580,6 +597,9 @@ function applyState(d){
     if(document.activeElement!==$('battCapMah')&&$('battCapMah'))$('battCapMah').value=(bt.capMah!==undefined?bt.capMah:3500);
     if(document.activeElement!==$('battRtop')&&$('battRtop'))$('battRtop').value=(bt.rtop!==undefined?bt.rtop:220000);
     if(document.activeElement!==$('battRbot')&&$('battRbot'))$('battRbot').value=(bt.rbot!==undefined?bt.rbot:100000);
+    if(document.activeElement!==$('battChem')&&$('battChem'))$('battChem').value=(bt.chem||'liion');
+    if(document.activeElement!==$('battCells')&&$('battCells'))$('battCells').value=(bt.cells!==undefined?bt.cells:0);
+    if(document.activeElement!==$('battCurve')&&$('battCurve'))$('battCurve').value=(bt.curve||'');
     window._battState={rtop:bt.rtop,rbot:bt.rbot};   // for the divider-change confirm
     // never hide the measurement behind the correction: raw stays one hover away
     $('battmv').title=(bt.mvTrue&&bt.mvTrue!==bt.millivolts)
@@ -605,6 +625,9 @@ function applyState(d){
     if($('sleepOvr').checked&&!confirm('Skip low-battery protection?\n\nThe battery can discharge to a point where it no longer recharges and must be replaced. This applies to measurement runs only and resets at restart.'))return;
     // battery hardware (divider resistors + capacity) - send only if present + changed
     if($('battCapMah'))f.append('battCapMah',$('battCapMah').value||'3500');
+    if($('battChem'))f.append('battChem',$('battChem').value||'liion');
+    if($('battCells'))f.append('battCells',$('battCells').value||'0');
+    if($('battCurve'))f.append('battCurve',$('battCurve').value||'');
     if($('battRtop'))f.append('battRtop',$('battRtop').value||'220000');
     if($('battRbot'))f.append('battRbot',$('battRbot').value||'100000');
     var dividerChanged=$('battRtop')&&$('battRbot')&&window._battState&&(+$('battRtop').value!==window._battState.rtop||+$('battRbot').value!==window._battState.rbot);
@@ -827,10 +850,11 @@ function loadConnect(){
 })();
 // Factory reset: type-to-confirm, then POST the exact confirm phrase the device requires.
 (function(){const b=$('factoryReset'); if(!b)return; b.onclick=()=>{
-  const p=prompt('Erase all content and settings?\n\nThis removes Wi-Fi, API keys, the Telegram list, Bluetooth pairings, memory, and the device sign-in code, then restarts into first-time setup.\n\nType FACTORY RESET to confirm:');
+  const alsoSd=$('factoryEraseSd')&&$('factoryEraseSd').checked;
+  const p=prompt('Erase all content and settings?\n\nThis removes Wi-Fi, API keys, the Telegram list, Bluetooth pairings, memory, and the device sign-in code, then restarts into first-time setup. The device keeps its name.'+(alsoSd?'\n\nThe SD card will also be erased (up to a minute).':'')+'\n\nType FACTORY RESET to confirm:');
   if(p===null)return;
   if(p.trim().toUpperCase()!=='FACTORY RESET'){toast('Not reset - the phrase didn\'t match');return;}
-  const fd=new FormData();fd.append('confirm','FACTORY RESET');
+  const fd=new FormData();fd.append('confirm','FACTORY RESET');fd.append('eraseSd',alsoSd?'1':'0');
   fetch('/api/factory-reset',{method:'POST',body:fd}).then(r=>r.ok?r.json():Promise.reject(r.status)).then(()=>{
     // The erase wipes this device's auth token, so our stored one is now stale -
     // drop it so we don't 401-loop against the old token when it reboots into the
@@ -842,6 +866,17 @@ function loadConnect(){
       '<p style="color:var(--ink2);line-height:1.5">Everything has been erased and the device is restarting into first-time setup. '+
       'Reconnect to its <b>&ldquo;…-setup&rdquo;</b> Wi-Fi network to run the setup wizard.</p></div>';
   }).catch(()=>toast('Reset failed - try again'));};
+})();
+// Full-card format (CUM-15): its own typed confirm, distinct from Erase Storage.
+(function(){const b=$('sdFormat'); if(!b)return; b.onclick=()=>{
+  const p=prompt('Reformat the entire SD card?\n\nThis erases the WHOLE card, not just the assistant\'s data. Use it only if the card is corrupted. The device restarts. This can take up to a minute.\n\nType FORMAT CARD to confirm:');
+  if(p===null)return;
+  if(p.trim().toUpperCase()!=='FORMAT CARD'){toast('Not formatted - the phrase didn\'t match');return;}
+  const fd=new FormData();fd.append('confirm','FORMAT CARD');
+  fetch('/api/sdformat',{method:'POST',body:fd}).then(r=>r.json().then(j=>({ok:r.ok,j})))
+    .then(({ok,j})=>{ if(ok){toast('Formatting the card - the device is restarting');}
+      else{toast(j&&j.error?j.error:'Couldn\'t format the card');} })
+    .catch(()=>toast('Couldn\'t format - try again'));};
 })();
 // --- Local Loops ---
 function loadLoops(){
@@ -1277,6 +1312,9 @@ function syncModelSel(id,cur,choices,verified){
 }
 function applyOrch(d){
   if($('fetchpol')&&d.fetchPol!=null)$('fetchpol').value=d.fetchPol;
+  if($('modInbound')&&d.modInbound!=null)$('modInbound').checked=!!d.modInbound;
+  if($('modOutbound')&&d.modOutbound!=null)$('modOutbound').checked=!!d.modOutbound;
+  if($('modInjection')&&d.modInjection!=null)$('modInjection').checked=!!d.modInjection;
   ORCH=d;
   $('orchoff').style.display=d.running?'none':'inline-block';
   const host=$('provs');
@@ -1429,6 +1467,12 @@ function fetchQAct(id,op){
 if($('fetchpolsave'))$('fetchpolsave').onclick=()=>{
   orchApply({fetchPol:$('fetchpol').value}).then(ok=>{
     if(ok!==false)$('fetchpolmsg').textContent='Saved.';
+  });
+};
+if($('modSave'))$('modSave').onclick=()=>{
+  orchApply({modInbound:$('modInbound').checked?1:0,modOutbound:$('modOutbound').checked?1:0,
+             modInjection:$('modInjection').checked?1:0}).then(ok=>{
+    if(ok!==false)$('modmsg').textContent='Saved.';
   });
 };
 function renderBudgets(bp){
@@ -1821,6 +1865,10 @@ $('clearmem').onclick=()=>{
   if(confirm('Erase the assistant\'s memory?\n\nYour directive is kept.'))
     orchApply({clearMem:1});
 };
+$('clearconv')&&($('clearconv').onclick=()=>{
+  if(confirm('Clear this conversation and its active task?\n\nLong-term memory and files are kept.'))
+    orchApply({clearConv:1}).then(()=>toast('Conversation cleared'));
+});
 
 // ---- Wi-Fi: saved networks, scan, join (P3: BOUNDED, visible timeout, explicit verdicts) ----
 // The old flow polled /scan forever and left "Saving..." on screen when the

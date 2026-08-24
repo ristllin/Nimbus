@@ -49,3 +49,8 @@ Third-party material:
 4. Sound effects: the bundled sound pack combines original synthesized tones
    (this project's license) and CC0 (public-domain-dedicated) clips from
    Kenney (kenney.nl) - CC0 requires no attribution, credited with thanks.
+
+5. minimp3 (CC0 / public domain): the MP3 decoder used by the device music
+   player is a vendored copy of lieff/minimp3 (github.com/lieff/minimp3),
+   dedicated to the public domain under CC0 1.0. It lives in lib/minimp3/.
+   CC0 requires no attribution; credited with thanks.

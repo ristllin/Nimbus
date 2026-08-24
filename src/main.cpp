@@ -32,6 +32,7 @@
 #include <nvs.h>         // raw NVS read/write to preserve identity across the wipe
 #include "agent/agent_config.h"            // AKEY_* frozen NVS key macros
 #include "nimbus/config/identity_keys.h"  // keys that must survive a factory reset
+#include "nimbus/orch/danger_zone.h"      // CUM-15: device-name keep-list preserved across a reset
 #include <mbedtls/platform.h>  // mbedtls_platform_set_calloc_free (route TLS -> PSRAM)
 #include <solide/solide.h>
 
@@ -92,6 +93,7 @@
 #include "net/wifi_store.h"   // the Wi-Fi menu reads saved networks by name
 #include "sfx/sound_fx.h"
 #include "sfx/sfx_sync.h"            // sfxsync::statusStr -> device.status sfxSync (W11)
+#include "sfx/music.h"              // CUM-40 music player (media.* tools + /play)
 #include "nimbus/orch/caps.h"        // spawn capacity constants -> device.status (W11)
 #include "nimbus/orch/fetch_policy.h"  // fetchPolicyName -> device.status (W18)
 #include "sys/config_nvs.h"
@@ -319,6 +321,7 @@ static volatile bool g_rebootPending = false;
 static volatile int  g_modeSwitchTo = -1;   // >=0: the pending reboot is a web mode switch
                                             // (target mode) -> show the same confirm UX as the menu
 static volatile bool g_factoryResetPending = false;  // web factory-reset: erase NVS + reboot on main task
+static volatile bool g_factoryEraseSd = false;       // CUM-15: also erase /mem in the factory-reset flow
 static volatile bool g_sdResetPending = false;       // web SD reset: erase /mem durable store + reboot
 // Voice turn "waiting for the agent" state: after the transcript is sent, a theme
 // spinner runs until the reply lands (or a timeout) so the ring shows work in flight
@@ -396,7 +399,7 @@ static nimbus::power::BatteryEstimate g_battEstimate;
 // Battery hardware from the board map. cells never 0 (both boards set it); the
 // divider is owner-tuned on hand-built boards (resistors vary) but fixed on an
 // all-in-one (no e-paper option -> board().epd.sck < 0).
-static uint8_t  battCells()  { const uint8_t c = solide::board().batt.cells; return c ? c : uint8_t(NIMBUS_BATT_CELLS); }
+static uint8_t  battCells()  { if (uint8_t o = agent::store::battCellsOvr()) return o; const uint8_t c = solide::board().batt.cells; return c ? c : uint8_t(NIMBUS_BATT_CELLS); }
 static int      battAdcPin() { return solide::board().batt.sense >= 0 ? int(solide::board().batt.sense) : int(NIMBUS_BATT_SENSE_PIN); }
 static uint16_t battDivX100() { return solide::board().epd.sck < 0 ? solide::board().batt.dividerX100 : agent::store::battDividerX100(); }
 // Battery monitoring on/off. A hand-built board ships WITH a pack, so monitoring
@@ -410,6 +413,19 @@ static uint16_t g_battSavedSegments = 0xFFFF;   // last-persisted segment count 
 static nimbus::power::AlertGate g_lowBattGate;
 static uint32_t g_lowBattSavedPingEp = 0;
 static uint16_t g_battSavedAnchor   = 0xFFFF;   // last-persisted full anchor mV (persist on change)
+
+// Apply the owner's battery chemistry + cell count + optional custom SoC curve to
+// the model. Defaults (chemistry "liion", board cells, no custom curve) reproduce
+// the shipped behaviour exactly. Called at boot and after a live config change.
+static void applyBattChemConfig() {
+  g_battModel.setChemistry(nimbus::power::chemistryFromSlug(agent::store::battChem().c_str()));
+  g_battModel.setCells(battCells());
+  String cv = agent::store::battCurve();
+  nimbus::power::LiIonCurvePoint pts[nimbus::power::kMaxCurvePoints];
+  int n = cv.length() ? nimbus::power::parseCurveCsv(cv.c_str(), pts, nimbus::power::kMaxCurvePoints) : 0;
+  if (n >= 2) g_battModel.setCustomCurve(pts, n);
+  else        g_battModel.clearCustomCurve();
+}
 
 // Serialize/parse BatteryModelState as a compact CSV in one NVS key.
 static void loadBattModel() {
@@ -1983,6 +1999,20 @@ static void orchestratorBegin() {
   ORCH_MARK("orch: begin");
   agent::orchestrator::begin(&g_fabric, sinks);
 
+  // Register the device's own secrets so the agent log ring (GET /api/log) masks
+  // them if a provider error body ever echoes one (CUM-73). This is the reliable
+  // redaction layer for keys provisioned by now; keys added later are still
+  // caught by the Bearer/api_key heuristics in core::LogRing::redact.
+  agent::logring::clearSecrets();
+  agent::logring::g_secrets.reserve(8);   // no realloc during the appends below, so a
+                                          // concurrent redact() reader never sees a moved buffer
+  agent::logring::addSecret(agent::store::openaiKey().c_str());
+  agent::logring::addSecret(agent::store::anthropicKey().c_str());
+  agent::logring::addSecret(agent::store::mistralKey().c_str());
+  agent::logring::addSecret(agent::store::tavilyKey().c_str());
+  agent::logring::addSecret(agent::store::customKey().c_str());
+  agent::logring::addSecret(agent::store::telegramToken().c_str());
+
   // Local Loops: wire the scheduler's hooks (kept out of the subsystem so it
   // carries no orchestrator/telegram deps). fire = run a scheduled turn on
   // tg_poll; chatAllowed = fire-time allowlist re-check; alert = owner ping.
@@ -2296,7 +2326,9 @@ static bool otaIdleSnapshot(nimbus::ota::IdleSnapshot& s) {
   s.voiceActive = g_voiceActive;
   s.audioPlaying = false;   // SFX clips are seconds-long; the turn/voice gates carry the policy
   s.onExternalPower = g_battEstimate.onExternalPower;
+  s.battMonEnabled = battMonOn();
   s.battPct = g_battEstimate.percent;
+  s.healthPct = g_battEstimate.healthPct;
   s.internalFreeB = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
   return true;
 }
@@ -2413,13 +2445,17 @@ void setup() {
       const char* why = "";
       if (otaupd::requestInstall(/*dry=*/false, /*force=*/false, &why)) {
         return String("Installing ") + otaupd::latestSeen() +
-               ". The device will download, verify, and restart \xE2\x80\x94 about two "
+               ". The device will download, verify, and restart, about two "
                "minutes. The ring shows progress. Keep the device powered on.";
       }
       String w = why && why[0] ? why : "busy";
       if (w == "low-heap" || w == "unsupported")
-        return "This device can't update itself right now \xE2\x80\x94 it needs Orchestrator mode and more free memory. Update it over USB instead.";
+        return "This device can't update itself right now. It needs Orchestrator mode and more free memory. Update it over USB instead.";
       if (w == "no-wifi") return "Couldn't reach the network. Check Wi-Fi and try again.";
+      if (w == "need-power")
+        return "Battery is low. Connect power, then send /update again. It will also install on its own once you plug in.";
+      if (w == "need-recalibrate")
+        return "Battery health reads low, so the level may be off. Charge to full and recalibrate to 100% in the app, then send /update again.";
       return String("Couldn't start the update (") + w + "). Try again in a moment.";
     }
     if (st == "error") {
@@ -2427,7 +2463,7 @@ void setup() {
       return String("Couldn't check for updates (") + (err && err[0] ? err : "network error") +
              "). Try again in a minute.";
     }
-    if (st == "checking") return "Still checking for updates \xE2\x80\x94 send /update again in a minute.";
+    if (st == "checking") return "Still checking for updates, send /update again in a minute.";
     return String("Nimbus is up to date (") + NIMBUS_FW_VERSION + ").";
   });
   Serial.begin(115200);
@@ -2617,6 +2653,7 @@ void setup() {
   else
     Serial.println("power: battery monitoring off (opt-in) - no pack assumed");
   g_battModel.setCapacityMah(agent::store::battCapMah());
+  applyBattChemConfig();   // chemistry + cells + optional custom SoC curve (owner settings)
 #endif
   loadBattModel();   // restore the analytics learning (health baseline + rate) from NVS
   g_lowBattSavedPingEp = agent::store::lowBattPingEpoch();
@@ -2735,6 +2772,7 @@ void setup() {
     if (battMonOn())
       g_battAdc.begin(battAdcPin(), battDivX100(), battCells(), NIMBUS_BATT_VBUS_PIN);
     g_battModel.setCapacityMah(agent::store::battCapMah());
+    applyBattChemConfig();   // chemistry + cells + custom SoC curve apply live
     g_battEstimate = g_battModel.estimate();
     agent::alogf("batt: hardware reconfig - divider=/%.2f capacity=%umAh",
                  double(agent::store::battDividerX100()) / 100.0,
@@ -2789,8 +2827,10 @@ void setup() {
   // Live ring preview (POST /api/preview): staged on the AsyncTCP task, fired
   // here from loopWeb() on the main task like every other webui mutation.
   wc.onPreview = [](int profileId, int status) { startPreview(profileId, status); };
-  wc.factoryReset = [] { g_factoryResetPending = true; };  // main loop erases NVS + reboots
+  wc.factoryReset = [](bool eraseSd) { g_factoryEraseSd = eraseSd; g_factoryResetPending = true; };  // main loop erases NVS (+optional /mem) + reboots, keeps identity
   wc.sdReset = [] { g_sdResetPending = true; };            // main loop erases /mem + reboots
+  // wc.sdFormat left unset: the board-support driver has no low-level format
+  // primitive yet, so /api/sdformat reports it honestly (contract to the driver lane).
   wc.chatSend = [](const String& t) {   // -> tg_poll turn
     if (!agent::telegram::injectMessage("web", t)) return false;
     g_webTurnDeadlineMs = millis() + kWebTurnMaxMs;
@@ -2896,6 +2936,9 @@ void setup() {
   // The router tap is the single seam through which BOTH modes' attention
   // events reach the sound engine.
   ::sfx::begin(g_orchMode);
+  // Music player (CUM-40): the media.* tools + /play are Orchestrator features, and
+  // its dedicated task should not compete for Notifier mode's tight internal SRAM.
+  if (g_orchMode) { music::begin(); music::registerTools(); }
   g_router.setEventTap(&sfxEventTap);
   // Screensaver idle clock: threshold from NVS (default 60 min, 0 = off); boot
   // counts as activity so a freshly powered device never saver-jumps early.
@@ -3701,14 +3744,19 @@ static_assert(cstreq(nimbus::config::kIdentityIntKeyTftFlip, AKEY_TFT_FLIP), "id
 // Factory reset that KEEPS the board's hardware identity. A bare nvs_flash_erase()
 // wipes scrModel/tftFlip/tchCal/otaType too, so a TFT board reboots into the e-ink
 // default driver and shows a white screen it cannot correct from its own controls
-// (CUM-50). Capture the identity keys via raw NVS, erase every namespace (Wi-Fi,
-// keys, token, bonds all go), re-init, then write the identity back - so the next
-// boot is clean onboarding on the RIGHT panel.
+// (CUM-50). It ALSO preserves the user-visible device name (nimbus_name, CUM-15):
+// the name answers "which device is this", not a setting, so a real factory reset
+// comes back with its display working AND its name intact. Capture both via raw NVS,
+// erase every namespace (Wi-Fi, keys, token, bonds all go), re-init, then write them
+// back - so the next boot is clean onboarding on the RIGHT panel, still named.
 static void factoryResetPreserveIdentity() {
   static const char* kNs = "solide";
   constexpr int kN = nimbus::config::kIdentityStrKeyCount;
+  constexpr int kNameN = nimbus::orch::kFactoryKeepKeyCount;   // CUM-15: device-name keep-list
   char strv[kN][64];
   bool strPresent[kN] = {false};
+  char namev[kNameN][64];
+  bool namePresent[kNameN] = {false};
   int32_t flip = 0;
   bool flipPresent = false;
   nvs_handle_t h;
@@ -3717,14 +3765,27 @@ static void factoryResetPreserveIdentity() {
       size_t len = sizeof strv[i];
       strPresent[i] = nvs_get_str(h, nimbus::config::kIdentityStrKeys[i], strv[i], &len) == ESP_OK;
     }
+    for (int i = 0; i < kNameN; i++) {   // CUM-15: capture the device name before the wipe
+      size_t len = sizeof namev[i];
+      namePresent[i] = nvs_get_str(h, nimbus::orch::kFactoryKeepKeys[i], namev[i], &len) == ESP_OK;
+    }
     flipPresent = nvs_get_i32(h, nimbus::config::kIdentityIntKeyTftFlip, &flip) == ESP_OK;
     nvs_close(h);
   }
+  // Deinit before erase (CUM-15 hardware finding): solide::memory left NVS initialized
+  // at boot, and its Preferences handle is stale after the wipe while its begin() is
+  // idempotent (will not reopen). Without the deinit, nvs_flash_init() below is a no-op
+  // over erased pages and the write-back can be lost. deinit -> erase -> init, then
+  // restore through fresh raw nvs_open handles (read-compatible with Preferences on
+  // the next boot). Best-effort throughout: a failure just means the board auto-names.
+  nvs_flash_deinit();
   nvs_flash_erase();   // wipe every namespace
   nvs_flash_init();    // re-mount the now-empty partition
   if (nvs_open(kNs, NVS_READWRITE, &h) == ESP_OK) {
     for (int i = 0; i < kN; i++)
       if (strPresent[i]) nvs_set_str(h, nimbus::config::kIdentityStrKeys[i], strv[i]);
+    for (int i = 0; i < kNameN; i++)   // CUM-15: restore the device name (identity, not a setting)
+      if (namePresent[i]) nvs_set_str(h, nimbus::orch::kFactoryKeepKeys[i], namev[i]);
     if (flipPresent) nvs_set_i32(h, nimbus::config::kIdentityIntKeyTftFlip, flip);
     nvs_commit(h);
     nvs_close(h);
@@ -3743,14 +3804,22 @@ void loop() {
 #endif  // feed the F12 watchdog every iteration
   otaupd::tick();        // OTA: mark-valid once healthy + check/auto-install cadence
   otaLoopUx();           // OTA install e-ink/ring UX (no-op unless installing)
-  if (g_factoryResetPending) {  // web factory reset: wipe config, KEEP identity, reboot fresh
-    Serial.println("FACTORY RESET -> keep identity, erase config, restart");
+  if (g_factoryResetPending) {  // web factory reset: wipe config, KEEP identity + name, reboot fresh
+    // CUM-50 + CUM-15 union: factoryResetPreserveIdentity() keeps BOTH the hardware
+    // identity (scrModel/tftFlip/tchCal/otaType, so a TFT board comes back on the right
+    // driver, never a white screen) AND the user-visible device name (it answers "which
+    // device is this", not a setting). Everything else (keys/token/bonds/config) is
+    // fresh. g_factoryEraseSd additionally wipes the durable /mem store in the same flow.
+    Serial.println(g_factoryEraseSd ? "FACTORY RESET (+SD) -> keep identity, erase config + /mem, restart"
+                                    : "FACTORY RESET -> keep identity, erase config, restart");
     // Progress screen with an honest duration; also buys the e-ink ~2.2 s to paint
     // before the erase blocks. The screen setup is preserved, so this is safe on TFT.
-    g_askOverride = "Resetting to factory settings. This takes a few seconds.";
+    g_askOverride = g_factoryEraseSd ? "Resetting to factory settings and erasing storage. Up to a minute."
+                                     : "Resetting to factory settings. This takes a few seconds.";
     renderScreen(attn::ScreenId::Ask, -1);
     Serial.flush();
-    factoryResetPreserveIdentity();
+    if (g_factoryEraseSd) agent::memory::eraseDurableStore();   // CUM-15: optional combined /mem erase
+    factoryResetPreserveIdentity();   // wipes NVS, restores hardware identity + device name
     delay(50);
     ESP.restart();
   }

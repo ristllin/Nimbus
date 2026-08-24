@@ -20,6 +20,10 @@ paths = [
   # value) as fixtures. Public spec constants, not secrets.
   '''test/test_relay_ws/.*''',
   '''test/test_relay_codec/.*''',
+  # The log-ring redaction test (CUM-73) exists to PROVE the ring masks secrets,
+  # so it embeds fabricated key=value / token fixtures (e.g. "api_key=live_9f8e...",
+  # "token":"t0p-s3cr3t-value") on purpose. Fake by construction, never real.
+  '''test/test_logring/.*''',
 ]
 regexes = [
   # The documented, intentional fleet-wide setup-AP password (docs/security.md).

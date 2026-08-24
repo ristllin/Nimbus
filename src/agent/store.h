@@ -104,6 +104,21 @@ void   setOrchLoopRounds(int v);
 void   setOrchLoopDeadlineS(int v);
 void   setOrchLoopResultCap(int v);
 void   setOrchLoopTotalCap(int v);
+// Local Loops governor (routines) owner overrides (CUM-73). 0 = no override,
+// keep the caps.h default; a set value may only TIGHTEN (the actual folding is
+// nimbus::orch::clampLoopCaps). Getters report the raw stored override.
+int    loopCapMaxCount();          // 0 or a stricter max routine count
+int    loopCapMinIntervalS();      // 0 or a longer minimum fire interval (s)
+int    loopCapFiresPerDay();       // 0 or a lower per-routine daily fire ceiling
+int    loopCapTokensPerDay();      // 0 or a lower per-routine daily token ceiling
+int    loopCapDevTokensPerDay();   // 0 or a lower device-wide daily token ceiling
+int    loopCapDevFiresWindow();    // 0 or a lower device-wide fires-per-window
+void   setLoopCapMaxCount(int v);
+void   setLoopCapMinIntervalS(int v);
+void   setLoopCapFiresPerDay(int v);
+void   setLoopCapTokensPerDay(int v);
+void   setLoopCapDevTokensPerDay(int v);
+void   setLoopCapDevFiresWindow(int v);
 bool   allowHwTests();       // orchestrator may run device hardware self-tests (default ON)
 bool   onboarded();          // first-run onboarding completed (plain NVS bool; false => show the setup wizard)
 void   setOnboarded(bool v); // set true when the wizard finishes; cleared by an NVS-wipe factory reset
@@ -118,6 +133,10 @@ void   setTlsVerify(bool v); // false = fall back to setInsecure (self-signed ho
 // 2 = active (passive + a periodic free provider re-verify to keep the marking fresh).
 int    capProbe();           void setCapProbe(int v);      // clamped 0..2 (default 1)
 int    fetchPolicy();        void setFetchPolicy(int v);   // W18 URL downloads: 0 off/1 approve(default)/2 scan/3 yolo
+// Moderation gate switches (non-admin only; each a paid classifier call). Default off.
+bool   modInbound();         void setModInbound(bool on);   // inbound guest text pre-turn (fail-closed)
+bool   modOutbound();        void setModOutbound(bool on);  // outbound replies to guests (fail-open)
+bool   modInjection();       void setModInjection(bool on); // injection-screen world content (fail-open + mark)
 int    capProbeHours();      void setCapProbeHours(int v); // active re-verify interval, clamped 1..168 (default 24)
 // ---- OTA firmware update (src/sys/ota_update) ----
 int    otaPending();             void setOtaPending(int v);        // 1 = image awaiting validation
@@ -244,6 +263,12 @@ uint32_t battRtop();     // divider R_top ohms (default 220000)
 uint32_t battRbot();     // divider R_bottom ohms (default 100000)
 uint16_t battDividerX100();  // (Rtop+Rbot)/Rbot * 100, clamped 100-2000 - what begin() wants
 uint16_t battCapMah();   // pack capacity mAh, 100-20000 (default 3500)
+String   battChem();     // chemistry slug "liion" (default) | "lifepo4" - picks the SoC curve
+uint8_t  battCellsOvr(); // owner series-cell override (1/2); 0 = board-derived default
+String   battCurve();    // optional custom SoC curve "mv:pct,..." (high-mV first); "" = chemistry default
+void     setBattChem(const String& slug);
+void     setBattCells(uint8_t cells);
+void     setBattCurve(const String& csv);
 uint16_t sleepMv();
 // wakeMv: after a low-batt sleep, stay awake only at/above THIS (a drained pack
 // RESTS UPWARD to 6918-6992 mV - same-threshold wake tests oscillate forever).

@@ -44,6 +44,8 @@
 #include "nimbus/orch/budget.h"    // deriveBudget - "auto (currently N)" effective caps
 #include "nimbus/orch/compact.h"   // modelCtxTokens (window table)
 #include "nimbus/power/bright_cap.h"          // resilience: simulated mic/speaker faults
+#include "nimbus/power/power_monitor.h"       // battery chemistry + custom curve parse (config)
+#include "nimbus/orch/danger_zone.h"          // CUM-15 confirm phrases (one source of truth)
 
 #include "../agent/agent_config.h"
 #include "../agent/memory_subsystem.h"
@@ -395,6 +397,9 @@ static void buildState(String& out) {
     batt["rtop"]   = agent::store::battRtop();
     batt["rbot"]   = agent::store::battRbot();
     batt["capMah"] = agent::store::battCapMah();
+    batt["chem"]   = agent::store::battChem();     // "liion" | "lifepo4"
+    batt["cells"]  = agent::store::battCellsOvr();  // 0 = board default
+    batt["curve"]  = agent::store::battCurve();      // "" = chemistry default
     if (e.valid) {
       batt["minsToEmpty"] = e.minutesToEmpty;   // only while discharging
       batt["ratePctHr"]   = e.ratePctPerHr;
@@ -448,12 +453,18 @@ static void buildState(String& out) {
   // E1 artifact store presence (SD /mem/files): the web UI's Files section +
   // the campaign harness read this.
   {
-    bool fp; uint16_t fc; uint64_t fb; uint32_t ff;
-    agent::files::stats(fp, fc, fb, ff);
+    agent::files::StorageTruth t = agent::files::storageTruth();
     JsonObject fl = d["files"].to<JsonObject>();
-    fl["present"] = fp;
-    fl["count"]   = fc;
-    fl["bytes"]   = (unsigned long)fb;
+    fl["present"]     = t.present;
+    fl["unsupported"] = t.unsupported;   // CUM-7: mounted card < 1 GB
+    fl["count"]       = t.files;
+    fl["bytes"]       = (unsigned long long)t.used;
+    fl["quota"]       = (unsigned long long)t.quota;       // card - 512 MB reserve
+    fl["cardFree"]    = (unsigned long long)t.cardFree;    // free-on-card
+    // CUM-15: only advertise full-card format when the board-support driver actually
+    // has the primitive (the hook is set). A Format control that can only 501 is a
+    // lying knob, so the UI renders it only when this is true.
+    fl["canFormat"]   = (bool)s_wc.sdFormat;
   }
 
   bool sta = staConnected();
@@ -595,6 +606,8 @@ static void buildState(String& out) {
   // OTA firmware update (device-level, both modes) - the Device-tab panel and
   // the HIL suite read these; progress rides the 3 s /api/state poll.
   d["ota"]      = otaupd::statusStr();     // idle/checking/available/downloading/...
+  d["otaResult"]= otaupd::checkResultStr(); // definitive check outcome: pending/
+                                            // up-to-date/new-version/unreachable/failed
   d["otaPct"]   = otaupd::progressPct();   // -1 unless downloading
   d["otaLatest"]= otaupd::latestSeen();    // newest release seen ("" = none)
   d["otaNotes"] = otaupd::latestNotes();
@@ -712,6 +725,13 @@ static void buildOrchState(String& out) {
   d["loopRounds"]   = agent::store::orchLoopRounds();
   d["loopRescap"]   = agent::store::orchLoopResultCap();   // 0 = auto (derived per turn)
   d["loopTotcap"]   = agent::store::orchLoopTotalCap();    // 0 = auto
+  // Local Loops governor cap overrides (0 = no override, using the caps.h default).
+  d["loopMaxCnt"]   = agent::store::loopCapMaxCount();
+  d["loopMinIvl"]   = agent::store::loopCapMinIntervalS();
+  d["loopFires"]    = agent::store::loopCapFiresPerDay();
+  d["loopTokens"]   = agent::store::loopCapTokensPerDay();
+  d["loopDevTok"]   = agent::store::loopCapDevTokensPerDay();
+  d["loopDevFir"]   = agent::store::loopCapDevFiresWindow();
   {
     // Effective derived caps so the UI can render "auto (currently N)" - same
     // derivation the engine applies at turn time (budget.h anchor invariant).
@@ -730,6 +750,9 @@ static void buildOrchState(String& out) {
   d["tlsVerify"]    = agent::store::tlsVerify();   // validate provider certs (default ON)
   d["capProbe"]     = agent::store::capProbe();     // capability validation mode (W3b): 0 off / 1 passive / 2 active
   d["fetchPol"]     = agent::store::fetchPolicy();  // W18 URL downloads: 0 off / 1 approve / 2 scan / 3 yolo
+  d["modInbound"]   = agent::store::modInbound();   // CUM-69 moderation gates (non-admin only; paid per item)
+  d["modOutbound"]  = agent::store::modOutbound();
+  d["modInjection"] = agent::store::modInjection();
   d["capProbeH"]    = agent::store::capProbeHours(); // active re-verify interval (hours)
   d["loopDeadline"] = agent::store::orchLoopDeadlineS();
   // Token usage (Phase-0 TokenUsage seam) - real billed in/out tokens, last turn +
@@ -983,6 +1006,7 @@ static bool applyOrchField(const String& n, const String& v, bool& cfgDirty) {
   // provider-side history chain so the next turn starts clean. State-only - no
   // TLS, safe on the AsyncTCP task.
   if (n == "convReset")     { agent::orchestrator::requestConvReset(); return true; }  // staged on tg_poll (prism B)
+  if (n == "clearConv")     { if (v == "1") agent::orchestrator::requestConvClear(); return true; }  // /clear: drop conversation + active task, keep memory/files
 
   // routing (HUMAN-only surface - this handler is exactly that)
   if (n == "orchHost") {
@@ -1079,11 +1103,21 @@ static bool applyOrchField(const String& n, const String& v, bool& cfgDirty) {
   if (n == "loopRounds")   { agent::store::setOrchLoopRounds(v.toInt()); return true; }
   if (n == "loopRescap")   { agent::store::setOrchLoopResultCap(v.toInt()); return true; }  // per-tool-result byte cap (dialable for stress)
   if (n == "loopTotcap")   { agent::store::setOrchLoopTotalCap(v.toInt()); return true; }   // cumulative tool-output byte budget
+  // Local Loops governor caps (routines) - owner may only TIGHTEN; reloadCaps() applies live.
+  if (n == "loopMaxCnt")   { agent::store::setLoopCapMaxCount(v.toInt()); agent::loops::reloadCaps(); return true; }
+  if (n == "loopMinIvl")   { agent::store::setLoopCapMinIntervalS(v.toInt()); agent::loops::reloadCaps(); return true; }
+  if (n == "loopFires")    { agent::store::setLoopCapFiresPerDay(v.toInt()); agent::loops::reloadCaps(); return true; }
+  if (n == "loopTokens")   { agent::store::setLoopCapTokensPerDay(v.toInt()); agent::loops::reloadCaps(); return true; }
+  if (n == "loopDevTok")   { agent::store::setLoopCapDevTokensPerDay(v.toInt()); agent::loops::reloadCaps(); return true; }
+  if (n == "loopDevFir")   { agent::store::setLoopCapDevFiresWindow(v.toInt()); agent::loops::reloadCaps(); return true; }
   if (n == "compactKB")    { agent::store::setCompactAtKB((uint16_t)v.toInt()); return true; }
   if (n == "tlsSlots")     { agent::store::setTlsSlots(v.toInt()); return true; }   // latched at boot (arbiter::begin)
   if (n == "tlsVerify")    { agent::store::setTlsVerify(v == "1" || v == "true"); return true; }   // live: next TLS connect honours it
   if (n == "capProbe")     { agent::store::setCapProbe(v.toInt()); return true; }   // W3b: 0 off / 1 passive / 2 active
   if (n == "fetchPol")     { agent::store::setFetchPolicy(v.toInt()); return true; } // W18: 0 off/1 approve/2 scan/3 yolo
+  if (n == "modInbound")   { agent::store::setModInbound(v == "1" || v == "true"); return true; }   // CUM-69 gates (non-admin)
+  if (n == "modOutbound")  { agent::store::setModOutbound(v == "1" || v == "true"); return true; }
+  if (n == "modInjection") { agent::store::setModInjection(v == "1" || v == "true"); return true; }
   if (n == "capProbeH")    { agent::store::setCapProbeHours(v.toInt()); return true; }   // active re-verify interval (hours)
   if (n == "loopDeadline") { agent::store::setOrchLoopDeadlineS(v.toInt()); return true; }
   // Sound cues: per-mode sound levels + shared sound theme (clamped/validated).
@@ -1506,6 +1540,22 @@ void beginWeb(const WebConfig& wc) {
     }
     if (r->hasParam("battCapMah", true)) {
       agent::store::setBattCapMah(uint16_t(r->getParam("battCapMah", true)->value().toInt()));
+      battHw = true;
+    }
+    if (r->hasParam("battChem", true)) {
+      agent::store::setBattChem(r->getParam("battChem", true)->value());   // "liion"|"lifepo4"
+      battHw = true;
+    }
+    if (r->hasParam("battCells", true)) {
+      agent::store::setBattCells(uint8_t(r->getParam("battCells", true)->value().toInt()));  // 1/2, 0=board
+      battHw = true;
+    }
+    if (r->hasParam("battCurve", true)) {
+      // Store only a valid custom curve (or "" to clear); a bad string never lands.
+      String cv = r->getParam("battCurve", true)->value();
+      nimbus::power::LiIonCurvePoint pts[nimbus::power::kMaxCurvePoints];
+      if (cv.length() == 0 || nimbus::power::parseCurveCsv(cv.c_str(), pts, nimbus::power::kMaxCurvePoints) >= 2)
+        agent::store::setBattCurve(cv);
       battHw = true;
     }
     if (battHw) { s_battHwPending = true; touched = true; }
@@ -1976,13 +2026,15 @@ void beginWeb(const WebConfig& wc) {
   s_server.on("/api/factory-reset", HTTP_POST, [](AsyncWebServerRequest* r) {
     if (authBlocked(r)) return;
     String confirm = r->hasParam("confirm", true) ? r->getParam("confirm", true)->value() : "";
-    if (confirm != "FACTORY RESET") {
+    if (!nimbus::orch::confirmOk(nimbus::orch::kConfirmFactoryReset, confirm.c_str())) {
       r->send(400, "application/json", "{\"error\":\"confirm phrase required\"}");
       return;
     }
     if (!s_wc.factoryReset) { r->send(501, "application/json", "{\"error\":\"unsupported\"}"); return; }
+    // CUM-15: optional combined SD erase in the same flow. Identity is always kept.
+    const bool eraseSd = r->hasParam("eraseSd", true) && r->getParam("eraseSd", true)->value() == "1";
     r->send(200, "application/json", "{\"ok\":true,\"rebooting\":true}");
-    s_wc.factoryReset();   // sets the deferred flag; main loop erases NVS + reboots
+    s_wc.factoryReset(eraseSd);   // sets the deferred flag; main loop erases NVS + reboots
   });
 
   // SD reset: erase the durable data store (/mem - vector memories, conversation
@@ -1992,13 +2044,33 @@ void beginWeb(const WebConfig& wc) {
   s_server.on("/api/sdreset", HTTP_POST, [](AsyncWebServerRequest* r) {
     if (authBlocked(r)) return;
     String confirm = r->hasParam("confirm", true) ? r->getParam("confirm", true)->value() : "";
-    if (confirm != "ERASE STORAGE") {
+    if (!nimbus::orch::confirmOk(nimbus::orch::kConfirmEraseStorage, confirm.c_str())) {
       r->send(400, "application/json", "{\"error\":\"confirm phrase required\"}");
       return;
     }
     if (!s_wc.sdReset) { r->send(501, "application/json", "{\"error\":\"unsupported\"}"); return; }
     r->send(200, "application/json", "{\"ok\":true,\"rebooting\":true}");
     s_wc.sdReset();
+  });
+
+  // Full-card format (CUM-15): its OWN typed confirm ("FORMAT CARD"), separate from
+  // Erase Storage, because it wipes the WHOLE card, not just /mem. Deferred to the
+  // main loop. When the board-support driver has no low-level format primitive yet,
+  // the hook is null and the route says so honestly (a contract to the driver lane).
+  s_server.on("/api/sdformat", HTTP_POST, [](AsyncWebServerRequest* r) {
+    if (authBlocked(r)) return;
+    String confirm = r->hasParam("confirm", true) ? r->getParam("confirm", true)->value() : "";
+    if (!nimbus::orch::confirmOk(nimbus::orch::kConfirmFormatCard, confirm.c_str())) {
+      r->send(400, "application/json", "{\"error\":\"confirm phrase required\"}");
+      return;
+    }
+    if (!s_wc.sdFormat) {
+      r->send(501, "application/json",
+              "{\"error\":\"full-card format needs a firmware update\"}");
+      return;
+    }
+    r->send(200, "application/json", "{\"ok\":true,\"rebooting\":true}");
+    s_wc.sdFormat();
   });
 
   // TTS voice catalog for the picker: OpenAI static; Mistral live from its

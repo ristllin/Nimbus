@@ -193,7 +193,10 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 </tbody></table>
 <p class=hint style="margin-top:12px"><b>Battery hardware</b> - match these to the pack and sense resistors actually fitted, so voltage and estimates are correct.</p>
 <table><tbody>
-<tr><td>Pack capacity</td><td><input id=battCapMah type=number min=100 max=20000 step=50 style="width:90px"> mAh <button class=qh type=button aria-expanded=false aria-label="About pack capacity">?</button><p class="hint tip">The fitted pack: LiitoKala 3500, a reclaimed ~500 mAh cell, and so on. Drives time-left and the capacity readout. Cell count is set by the board.</p></td></tr>
+<tr><td>Pack capacity</td><td><input id=battCapMah type=number min=100 max=20000 step=50 style="width:90px"> mAh <button class=qh type=button aria-expanded=false aria-label="About pack capacity">?</button><p class="hint tip">The fitted pack: LiitoKala 3500, a reclaimed ~500 mAh cell, and so on. Drives time-left and the capacity readout.</p></td></tr>
+<tr><td>Chemistry</td><td><select id=battChem style="width:150px"><option value=liion>Li-ion / LiPo</option><option value=lifepo4>LiFePO4</option></select> <button class=qh type=button aria-expanded=false aria-label="About battery chemistry">?</button><p class="hint tip">Which discharge curve to use. Li-ion runs about 4.2 to 3.0 V per cell; LiFePO4 sits near 3.2 to 3.3 V for most of its life, so its percent is coarser. Pick the one printed on your cell.</p></td></tr>
+<tr><td>Cells in series</td><td><select id=battCells style="width:150px"><option value=0>Board default</option><option value=1>1S (one cell)</option><option value=2>2S (two cells)</option></select></td></tr>
+<tr><td>Custom curve</td><td><input id=battCurve type=text placeholder="mv:pct,mv:pct,..." style="width:200px"> <button class=qh type=button aria-expanded=false aria-label="About the custom curve">?</button><p class="hint tip">Advanced, optional. Per-cell resting points, highest voltage first, e.g. 4200:100,3700:50,3200:0. Leave blank to use the chemistry curve.</p></td></tr>
 <tr><td>Sense resistor (top)</td><td><input id=battRtop type=number min=1000 max=10000000 step=1000 style="width:110px"> &#8486; <button class=qh type=button aria-expanded=false aria-label="About the sense resistors">?</button><p class="hint tip">The two divider resistors between the pack and the ADC pin. Defaults 220k / 100k; some boards use 270k / 120k. Getting these right fixes the voltage reading. After changing them, re-run Calibrate on a full pack.</p></td></tr>
 <tr><td>Sense resistor (bottom)</td><td><input id=battRbot type=number min=1000 max=10000000 step=1000 style="width:110px"> &#8486;</td></tr>
 </tbody></table>
@@ -294,10 +297,13 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 <div class=setbody>
 <b style="display:block;margin-top:6px;color:var(--crit)">Erase storage</b>
 <div class=row style="margin-top:6px"><button id=sdReset type=button style="background:rgba(240,104,122,.12);color:var(--crit)">Erase Storage&hellip;</button></div>
-<p class=hint style="color:var(--crit)">Deletes everything on the SD card (all memories, conversation history, saved files, and media), then restarts. Wi-Fi, keys, and settings are kept.</p>
+<p class=hint style="color:var(--crit)">Deletes everything on the SD card (all memories, conversation history, saved files, and media), then restarts. Wi-Fi, keys, and settings are kept. This can take up to a minute.</p>
+<div id=sdFormatRow style="display:none"><div class=row style="margin-top:6px"><button id=sdFormat type=button style="background:rgba(240,104,122,.12);color:var(--crit)">Format Card&hellip;</button></div>
+<p class=hint style="color:var(--crit)">Reformats the whole card, not only the assistant's data. Use this only if the card looks corrupted. It asks for its own typed confirmation.</p></div>
 <b style="display:block;margin-top:14px;color:var(--crit)">Factory reset</b>
 <div class=row style="margin-top:6px"><button id=factoryReset type=button style="background:rgba(240,104,122,.12);color:var(--crit)">Factory Reset&hellip;</button></div>
-<p class=hint style="color:var(--crit)">Erases <b>everything</b> (Wi-Fi, API keys, the Telegram list, Bluetooth pairings, themes, sound settings, memory, and the device sign-in code), then restarts into first-time setup.</p>
+<div class=row style="margin-top:6px"><label><input type=checkbox id=factoryEraseSd> Also erase the SD card</label></div>
+<p class=hint style="color:var(--crit)">Erases <b>everything</b> (Wi-Fi, API keys, the Telegram list, Bluetooth pairings, themes, sound settings, memory, and the device sign-in code), then restarts into first-time setup. The device keeps its name. This takes a few seconds, or up to a minute when erasing the card.</p>
 </div>
 </details>
 

@@ -94,12 +94,25 @@ void registerFileRoutes(AsyncWebServer& server) {
   // now distinct siblings under /api/files/ - none is a prefix of another.
   server.on("/api/files/list", HTTP_GET, [](AsyncWebServerRequest* r) {
     if (authBlocked(r)) return;
-    bool present; uint16_t count; uint64_t bytes; uint32_t freeB;
-    files::stats(present, count, bytes, freeB);
-    if (!present) { sendJson(r, 200, "{\"present\":false,\"files\":[]}"); return; }
-    String body = "{\"present\":true,\"count\":" + String(count) +
-                  ",\"bytes\":" + String((unsigned long)bytes) +
-                  ",\"freeBytes\":" + String((unsigned long)freeB) +
+    files::StorageTruth t = files::storageTruth();
+    if (!t.present) {
+      // Absent card, or a mounted card too small to support the store.
+      sendJson(r, 200, t.unsupported
+                           ? "{\"present\":false,\"unsupported\":true,\"files\":[]}"
+                           : "{\"present\":false,\"files\":[]}");
+      return;
+    }
+    // CUM-7: the four distinct truths so a client never reconciles two payloads:
+    // count (files), bytes (used), quota (card - 512 MB reserve), cardFree
+    // (free-on-card). freeBytes stays = quota headroom for back-compat.
+    const uint64_t headroom = t.quota > t.used ? t.quota - t.used : 0;
+    String body = "{\"present\":true,\"unsupported\":" + String(t.unsupported ? "true" : "false") +
+                  ",\"count\":" + String(t.files) +
+                  ",\"bytes\":" + String((unsigned long long)t.used) +
+                  ",\"quota\":" + String((unsigned long long)t.quota) +
+                  ",\"cardTotal\":" + String((unsigned long long)t.cardTotal) +
+                  ",\"cardFree\":" + String((unsigned long long)t.cardFree) +
+                  ",\"freeBytes\":" + String((unsigned long long)headroom) +
                   ",\"files\":" + files::listJson(qparam(r, "project")) + "}";
     sendJson(r, 200, body);
   });

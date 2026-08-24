@@ -56,6 +56,11 @@ bool installing();
 
 // One-word state for STATUS + /api/state ("idle"/"checking"/"available"/...).
 const char* statusStr();
+// Definitive outcome of the last completed check for /api/state + /api/ota/check
+// pollers: "pending"/"up-to-date"/"new-version"/"unreachable"/"failed". Unlike
+// statusStr() this never rests on a non-terminal "checking" once a check settles,
+// and it distinguishes a transport failure ("unreachable") from a bad manifest.
+const char* checkResultStr();
 // Download progress 0..100, or -1 when no download is running.
 int progressPct();
 // Version of the newest release seen by the last successful check ("" = none),

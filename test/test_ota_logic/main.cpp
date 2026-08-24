@@ -328,6 +328,56 @@ static void test_auto_install_window() {
     TEST_ASSERT_TRUE(autoInstallAllowed(s)); }
   { IdleSnapshot s = idle(); s.battPct = 5;  // charging/full/external => ok
     TEST_ASSERT_TRUE(autoInstallAllowed(s)); }
+  // health floor applies on battery, is excused by external power
+  { IdleSnapshot s = idle(); s.onExternalPower = false; s.battPct = 90; s.healthPct = 59;
+    TEST_ASSERT_FALSE(autoInstallAllowed(s)); }
+  { IdleSnapshot s = idle(); s.onExternalPower = false; s.battPct = 90; s.healthPct = 60;
+    TEST_ASSERT_TRUE(autoInstallAllowed(s)); }
+  { IdleSnapshot s = idle(); s.onExternalPower = true; s.healthPct = 10;  // wall power => ok
+    TEST_ASSERT_TRUE(autoInstallAllowed(s)); }
+}
+
+// --- battery / health install gate ------------------------------------------
+
+static void test_install_gate() {
+  auto in = [](bool mon, bool ext, int pct, uint8_t h) {
+    InstallGateInput g; g.battMonEnabled = mon; g.onExternalPower = ext;
+    g.battPct = pct; g.healthPct = h; return g;
+  };
+  // healthy pack on battery: allowed
+  TEST_ASSERT_EQUAL_INT((int)InstallGate::Allowed, (int)installGate(in(true, false, 80, 100)));
+  // exactly at the floors: allowed (>=)
+  TEST_ASSERT_EQUAL_INT((int)InstallGate::Allowed, (int)installGate(in(true, false, 40, 60)));
+  // below level floor -> NeedPower
+  TEST_ASSERT_EQUAL_INT((int)InstallGate::NeedPower, (int)installGate(in(true, false, 39, 100)));
+  // healthy level but worn pack -> NeedRecalibrate
+  TEST_ASSERT_EQUAL_INT((int)InstallGate::NeedRecalibrate, (int)installGate(in(true, false, 80, 59)));
+  // both low: level checked first -> NeedPower
+  TEST_ASSERT_EQUAL_INT((int)InstallGate::NeedPower, (int)installGate(in(true, false, 10, 10)));
+  // external power excuses everything
+  TEST_ASSERT_EQUAL_INT((int)InstallGate::Allowed, (int)installGate(in(true, true, 5, 10)));
+  // monitoring disabled: no pack to protect, always allowed
+  TEST_ASSERT_EQUAL_INT((int)InstallGate::Allowed, (int)installGate(in(false, false, 5, 10)));
+  TEST_ASSERT_EQUAL_STRING("allowed", installGateStr(InstallGate::Allowed));
+  TEST_ASSERT_EQUAL_STRING("need-power", installGateStr(InstallGate::NeedPower));
+  TEST_ASSERT_EQUAL_STRING("need-recalibrate", installGateStr(InstallGate::NeedRecalibrate));
+}
+
+// --- definitive check result ------------------------------------------------
+
+static void test_check_result() {
+  TEST_ASSERT_EQUAL_INT((int)CheckResult::UpToDate,   (int)checkResult(State::UpToDate, true));
+  TEST_ASSERT_EQUAL_INT((int)CheckResult::NewVersion, (int)checkResult(State::Available, true));
+  // Error that reached the server = a bad manifest; that didn't = unreachable
+  TEST_ASSERT_EQUAL_INT((int)CheckResult::Failed,      (int)checkResult(State::Error, true));
+  TEST_ASSERT_EQUAL_INT((int)CheckResult::Unreachable, (int)checkResult(State::Error, false));
+  // still-running / never-checked states are Pending, never a false terminal
+  TEST_ASSERT_EQUAL_INT((int)CheckResult::Pending, (int)checkResult(State::Checking, true));
+  TEST_ASSERT_EQUAL_INT((int)CheckResult::Pending, (int)checkResult(State::Idle, false));
+  TEST_ASSERT_EQUAL_STRING("up-to-date", checkResultStr(CheckResult::UpToDate));
+  TEST_ASSERT_EQUAL_STRING("new-version", checkResultStr(CheckResult::NewVersion));
+  TEST_ASSERT_EQUAL_STRING("unreachable", checkResultStr(CheckResult::Unreachable));
+  TEST_ASSERT_EQUAL_STRING("failed", checkResultStr(CheckResult::Failed));
 }
 
 int main(int, char**) {
@@ -347,5 +397,7 @@ int main(int, char**) {
   RUN_TEST(test_rollback_policy);
   RUN_TEST(test_boot_healthy);
   RUN_TEST(test_auto_install_window);
+  RUN_TEST(test_install_gate);
+  RUN_TEST(test_check_result);
   return UNITY_END();
 }

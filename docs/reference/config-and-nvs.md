@@ -117,6 +117,25 @@ Default per-provider models: `OPENAI_MODEL` = `gpt-5.5`, `ANT_MODEL` =
 | `lbSaver` | bool | `true` | Auto-drop to a lower battery mode on low battery | Yes |
 | `battMon` | bool | board-derived | Battery monitoring on/off. Default is on for hand-built boards (a pack is part of the build) and off for the all-in-one board (a battery is optional, so it is opt-in). Off means the sense pin is never read, the glyph is hidden, and low-battery sleep never fires. Applied at boot. | Yes |
 
+### Battery hardware and chemistry (`src/agent/store.cpp`)
+
+What each value means and how to estimate it without lab tooling is in
+[Battery settings and estimation](battery-estimation.md). Divider, capacity,
+chemistry, cells, and a custom curve apply live (a divider or chemistry change
+re-scales the reading, so the device asks the owner to Recalibrate). Defaults
+reproduce the shipped behaviour exactly.
+
+| Key | Type | Default | Holds | Read back? |
+|---|---|---|---|---|
+| `battRtop` | int (ohms) | `220000` | Voltage-divider top resistor. With `battRbot` sets the pack:node ratio. Clamped `1000..10000000`. | Yes |
+| `battRbot` | int (ohms) | `100000` | Voltage-divider bottom resistor. | Yes |
+| `battCapMah` | int | `3500` | Pack capacity in mAh. Drives the measured-load time-to-empty and the capacity = health x capacity readout. Clamped `100..20000`. | Yes |
+| `battChem` | string | `liion` | Battery chemistry: `liion` (Li-ion / LiPo) or `lifepo4` (lithium iron phosphate). Picks the per-cell voltage to state-of-charge curve. | Yes |
+| `battCells` | int | `0` (board) | Series-cell count override (`1` or `2`); `0`/absent uses the board default (1S Freenove, 2S Solide). Pack mV / cells = per-cell mV. | Yes |
+| `battCurve` | string | `""` | Optional custom per-cell curve, `"mv:pct,mv:pct,..."` high-mV first, strictly descending in mV. Empty uses the chemistry curve. A malformed string is rejected, never stored. | Yes |
+| `sleepMv` | int | `6000` | Low-battery deep-sleep threshold in pack mV; `0` disarms the protection. | Yes |
+| `wakeMv` | int | `7200` | Stay-awake bar after a low-battery sleep (rested-empty packs read a bit higher than the sleep mark). | Yes |
+
 **`scrModel` vs. the board pinout.** `scrModel` picks the display and input
 **family** (renderer + touch/knob) on a hand-built Solide S3 board, where one
 firmware image serves both the e-ink and TFT builds. The **board pinout** is a
@@ -125,6 +144,50 @@ separate, coarser identity fixed at **compile time** by `SOLIDE_BOARD`
 so its pinout is baked in, its `scrModel` is fixed to `tft`, and the web display
 selector is locked (driven by board id, not by `scrModel`). See the
 [hardware reference](../hardware.md#board-configurations).
+
+### Head tool-loop caps (`src/agent/store.cpp`)
+
+The multi-round tool-use loop the head runs per turn. `0`/absent on the byte caps
+means "auto" (the engine derives the cap from the model's context window); a set
+value is the owner's override and wins under the listed clamp.
+
+| Key | Type | Default | Holds | Read back? |
+|---|---|---|---|---|
+| `orchLoop` | bool | `true` (on) | Head multi-round tool-use loop enable. | Yes |
+| `orchLoopRnds` | int | `12` | Max tool-dispatch rounds per turn. Clamped `1..32`. | Yes |
+| `orchLoopDlS` | int | `600` | Wall-clock budget for the loop, in seconds. Clamped `30..3600`. | Yes |
+| `orchLoopRCap` | int | `0` (auto) | Per-tool-result byte clamp. `0` = auto; else `512..65536`. | Yes |
+| `orchLoopTCap` | int | `0` (auto) | Cumulative tool-output byte budget. `0` = auto; else `2048..1048576`. | Yes |
+
+### Local Loops governor caps (`src/agent/store.cpp`)
+
+Owner overrides for the routine/scheduler governor. Each defaults to the hard
+ceiling in `lib/core/include/nimbus/orch/caps.h`; an override may only make a cap
+**stricter**, never looser, and the model can never touch any of it. `0`/absent
+means "no override, use the default". The fold is `nimbus::orch::clampLoopCaps`
+(a looser value is ignored, not trusted), applied at loops `begin()` and live on
+each web write.
+
+| Key | Type | Default (cap) | Holds | Read back? |
+|---|---|---|---|---|
+| `loopMaxCnt` | int | `8` | Most routines that can exist at once. Override may only lower it. | Yes |
+| `loopMinIvl` | int | `300` | Minimum seconds between fires. Override may only raise it. | Yes |
+| `loopFires` | int | `24` | Per-routine daily fire ceiling. Override may only lower it. | Yes |
+| `loopTokens` | int | `120000` | Per-routine daily token ceiling. Override may only lower it. | Yes |
+| `loopDevTok` | int | `400000` | Device-wide daily token ceiling. Override may only lower it. | Yes |
+| `loopDevFir` | int | `6` | Device-wide fires per rate window. Override may only lower it. | Yes |
+
+### Guest moderation gates (`src/agent/store.cpp`)
+
+Owner opt-in checks that screen non-admin traffic only (the owner is never
+classified). Each costs one classifier call per screened item. Fail behavior is
+fixed per gate (see [security.md](../security.md)). Default off.
+
+| Key | Type | Default | Holds | Read back? |
+|---|---|---|---|---|
+| `modInbound` | bool | `false` | Screen inbound guest/member text before a turn (fail-closed). | Yes |
+| `modOutbound` | bool | `false` | Screen outbound replies to guests (fail-open). | Yes |
+| `modInject` | bool | `false` | Injection-screen fetched world content (fail-open, marks untrusted). | Yes |
 
 ### Anthropic managed-agents caches (`src/agent/store.cpp`)
 

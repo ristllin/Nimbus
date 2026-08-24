@@ -33,9 +33,39 @@ server - findings are weighted by real reachability.
   *look* like one: the browser stores the token per ORIGIN, so a browser that identified
   at `http://<ip>` is silently authenticated there while `http://<name>.local` - a
   different origin - still shows the gate. Same device, same gate, two storage buckets.
-- **Secret redaction in logs.** The Telegram token (embedded in the `/bot<token>/…`
-  send path) is redacted before it can reach `GET /api/log`. That endpoint is itself
-  token-gated, so the redaction is defence-in-depth rather than the only barrier.
+- **Secret redaction in logs.** Every line written to the agent log ring (served by
+  the token-gated `GET /api/log`) passes through `core::LogRing::redact` at the one
+  `logring::put` choke point. Two layers: the provider keys and the Telegram bot
+  token are registered as exact secrets at boot (masked wherever they appear), and a
+  heuristic backstop strips `Bearer <token>`, `api_key=`/`"key":"..."` values, and
+  `user:pass@host` URL credentials, so a provider error body echoed into the log
+  cannot carry a key onto the ring. Host-tested (`test_logring`). The endpoint is
+  also token-gated, so redaction is defence-in-depth rather than the only barrier.
+- **Guest moderation gates (owner opt-in, default off).** Three independent checks
+  that screen non-admin traffic only; the owner (Telegram owner, web, serial, voice)
+  is never classified. Each runs one classifier call per screened item (the Cumulo
+  moderation endpoint on a Cumulo key, else Mistral moderation on the user's key),
+  so each is a switch with a stated cost. The fail behavior is fixed per gate and
+  host-tested (`test_orch_moderation`):
+  - **Inbound guest text** (pre-turn): fail-CLOSED. A message that cannot be
+    classified is not answered, and a flagged message never starts a paid turn.
+  - **Outbound replies to guests**: fail-OPEN. A flagged reply is held back, but a
+    classifier outage never silences the assistant (it delivers unscreened).
+  - **Injection screen on fetched world content**: fail-OPEN with marking. A
+    heuristic (plus the classifier) flags content that looks like a hidden
+    instruction and MARKS it untrusted so the model treats it as data; it never
+    blocks. The decision policy is the pure `nimbus::orch` moderation core; the
+    device classifier is `src/agent/adapters/moderation`.
+- **Danger-zone actions are typed-confirm gated, each distinct.** Erase Storage
+  (`ERASE STORAGE`), Factory Reset (`FACTORY RESET`), and full-card Format
+  (`FORMAT CARD`) each require their OWN exact phrase, so one confirmation can never
+  trigger a heavier action than the owner meant (`nimbus::orch::confirmOk`, one
+  source of truth, host-tested). All three are token-gated POSTs and are deferred to
+  the main loop (never erased on the web task). **Factory Reset preserves the device
+  identity** (the user-visible name) across the wipe and can optionally erase the SD
+  card in the same flow; everything else (keys, token, bonds, config) is fresh.
+  Full-card format needs a board-support driver primitive that does not exist yet,
+  so `/api/sdformat` reports that honestly until it lands.
 - **Telegram allowlist fails CLOSED.** An empty allowlist rejects all chats (was
   fail-open = allow-all); the poll task warns loudly if a token is set with no allowlist.
 - **Shared-engine mutex.** `memory::Lock` (recursive) serializes VectorMemory /

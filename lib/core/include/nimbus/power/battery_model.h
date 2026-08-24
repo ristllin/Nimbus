@@ -166,6 +166,22 @@ class BatteryModel {
   void setCapacityMah(uint16_t mah) { if (mah) capacityMah_ = mah; }
   uint16_t capacityMah() const { return capacityMah_; }
 
+  // Battery chemistry - selects the per-cell voltage->SoC curve percentFor() uses.
+  // Default LiIonLipo reproduces the shipped behaviour exactly (kLiIonCurve + the
+  // top-band ADC stretch). LiFePO4 uses kLiFePO4Curve and, since its band sits below
+  // the Li-ion knee, the top-band stretch is naturally inert. The discharge-rate /
+  // health analytics stay Li-ion-tuned; only the reported SoC follows the chemistry.
+  void setChemistry(Chemistry c) { chem_ = c; }
+  Chemistry chemistry() const { return chem_; }
+
+  // Optional owner custom curve (high-mV first, strictly descending). When set it
+  // overrides the chemistry curve in percentFor(). Rejects n outside [2,
+  // kMaxCurvePoints]; returns whether it was accepted. clearCustomCurve() reverts
+  // to the chemistry default.
+  bool setCustomCurve(const LiIonCurvePoint* pts, int n);
+  void clearCustomCurve() { customN_ = 0; }
+  int  customCurveN() const { return customN_; }
+
  private:
   uint16_t cellMv(const Sample& s) const { return uint16_t(s.millivolts / cells_); }
   bool     nearMax(uint16_t cmv) const {
@@ -177,6 +193,9 @@ class BatteryModel {
 
   uint8_t  cells_ = 1;
   uint16_t capacityMah_ = kCapacityMah;   // runtime-configurable pack capacity
+  Chemistry chem_ = Chemistry::LiIonLipo; // SoC curve selector (default = shipped)
+  LiIonCurvePoint custom_[kMaxCurvePoints]; // owner custom curve (customN_>0 => active)
+  int      customN_ = 0;
   // live discharge trend
   bool     have_ = false;         // a prior valid discharging sample exists
   uint32_t lastMs_ = 0;

@@ -23,6 +23,10 @@
 #include "files_subsystem.h"            // files::available - E1 capability manifest
 #include "skills.h"                     // skills::spawnCapsule - per-spawn injection (P2)
 #include "memory_subsystem.h"           // memory::registry/scratchpad/vectors (live World)
+#include "adapters/moderation.h"        // CUM-69 device classifier (behind the gate decision core)
+#include "nimbus/orch/moderation.h"     // portable gate decision core (fail-open/closed, admin-exempt)
+#include "nimbus/orch/media.h"          // CUM-40 validMusicName (for /play)
+#include "../sfx/music.h"               // CUM-40 music player control (/play)
 #include "adapters/audio_tts.h"         // spoken replies (TTS -> Telegram audio / device speaker)
 #include "adapters/provider_file_fetch.h"  // captureProviderFile - v4.1 code_interpreter file capture
 #include <solide/audio.h>               // reply.speak - play WAV on the device speaker (P6)
@@ -167,6 +171,7 @@ static void syncMemEcho() {
 static volatile bool g_memClearReq = false;
 static volatile bool g_cfgReloadReq = false;
 static volatile bool g_convResetReq = false;   // prism B: reset must land BETWEEN turns
+static volatile bool g_convClearReq = false;   // /clear: drop conversation + active task, keep memory/files
 static void drainStaged() {
   if (g_memClearReq) {
     g_memClearReq = false;
@@ -182,6 +187,20 @@ static void drainStaged() {
     // silently re-added by that turn's end-of-turn upsert).
     store::setOrchConvId("");
     alog("orchestrator: provider conversations reset (web)");
+  }
+  if (g_convClearReq) {
+    g_convClearReq = false;
+    // /clear: forget the current conversation (provider continuity) AND the
+    // scratchpad's ACTIVE TASK line, but keep long-term memory, the memory tiers,
+    // vectors, episodic history, and files. Same between-turns discipline as the
+    // conv reset above so an in-flight turn's convId write-back is already landed.
+    store::setOrchConvId("");
+    {
+      memory::Lock lk;
+      memory::scratchpad().setActiveTask("");   // clears just the active line, tiers untouched
+    }
+    memory::persistScratchpad();
+    alog("orchestrator: /clear - conversation + active task cleared (memory/files kept)");
   }
   if (g_cfgReloadReq) {
     g_cfgReloadReq = false;
@@ -264,9 +283,55 @@ void clearAsk() {
 // setAttnHoldMs can fire from applyConfig BEFORE begin() constructs the engine.
 static uint32_t g_attnHoldMs = 300000;  // 5 min default, mirrors the Param preset
 
+// ---- moderation gates (CUM-69) ---------------------------------------------
+// The portable decision core (lib/core/orch_moderation) owns the fail-open/closed
+// policy + admin exemption; the device adapter runs the classifier. Every gate is
+// owner opt-in (default off) so with the switches off NO classifier call is made
+// and the turn path is byte-identical to before.
+
+nimbus::orch::Role roleOfChat(const String& chatId);   // fwd (defined below)
+
+static nimbus::orch::ModConfig modConfig() {
+  nimbus::orch::ModConfig c;
+  c.inbound   = store::modInbound();
+  c.outbound  = store::modOutbound();
+  c.injection = store::modInjection();
+  return c;
+}
+
+// Run one gate: apply the role/switch gate; if it applies, classify + decide. The
+// outbound gate can run while a turn holds the single TLS slot, so it uses a SHORT
+// acquire timeout (skips = fail-open if busy) rather than stalling the reply; the
+// inbound gate runs pre-turn with the slot free, so it waits the full window.
+static nimbus::orch::ModAction moderateGate(nimbus::orch::ModGate gate, const String& chatId,
+                                            const String& text) {
+  using namespace nimbus::orch;
+  ModConfig cfg = modConfig();
+  Role role = roleOfChat(chatId);
+  if (!gateApplies(gate, role, cfg)) return ModAction::Allow;
+  const uint32_t acquireMs = (gate == ModGate::OutboundReply) ? 250u : 15000u;
+  ClassifierVerdict v = agent::moderation::classify(std::string(text.c_str()), gate, acquireMs);
+  return decide(gate, v);
+}
+
 // ---- delivery helpers -------------------------------------------------------
 
 static void deliver(const String& chatId, const String& text) {
+  // Gate 2 (outbound to guests, fail-open): when the owner turns it on, a reply to
+  // a non-admin chat is screened; a flagged reply is suppressed (a classifier
+  // outage fails open, so an outage never silences the assistant). Admin/web/serial
+  // /voice resolve to Admin and are never screened (gateApplies returns Allow fast,
+  // no classifier call). Runs on the delivering task, same TLS-slot discipline as
+  // the fetch scan. The device's own deterministic system copy (command replies,
+  // confirmations, the block notice) is self-tagged with the device name; skip it
+  // so we never pay a classifier call to screen our own known-safe strings.
+  const String selfName = String(nimbus::sys::deviceName().c_str());
+  const bool systemMsg = selfName.length() && text.startsWith(selfName);
+  if (!systemMsg &&
+      moderateGate(nimbus::orch::ModGate::OutboundReply, chatId, text) == nimbus::orch::ModAction::Block) {
+    alogf("moderation: outbound reply to %s suppressed (flagged)", chatId.c_str());
+    return;
+  }
   // The send sink enqueues onto a bounded reply queue and returns false if it was
   // still full after its short block. The queue is now sized for a full turn's burst
   // (see REPLY_QUEUE_DEPTH), but if it ever overflows anyway, log it rather than drop
@@ -1162,7 +1227,8 @@ void handleMessage(const String& text, const String& fromName, const String& cha
       // not run these. (`fetch` was missing here - a member could approve/deny
       // the owner's queued URL downloads; closed alongside adding `remind`.)
       const bool ownerCmd = (v == "loops" || v == "loop" || v == "update" || v == "compact" ||
-                             v == "skill" || v == "fetch" || v == "remind");
+                             v == "skill" || v == "fetch" || v == "remind" || v == "clear" ||
+                             v == "mcp" || v == "play");
       const bool owner = pseudo || agent::telegram::isOwner(chatId);
       // Every deterministic command reply SELF-IDENTIFIES (device name + fw).
       // Live confusion 2026-07-24: two devices sharing one bot token take turns
@@ -1183,6 +1249,79 @@ void handleMessage(const String& text, const String& fromName, const String& cha
         }
         deliver(chatId, selfTag + (g_otaInstallHook ? g_otaInstallHook()
                                                     : String("Updates aren't available on this build.")));
+        return;
+      }
+      if (v == "play") {
+        // Music control (CUM-40): "/play" all of /music, "/play <name>.mp3" one
+        // track, "/play stop|pause". WAV plays today; MP3 needs the decoder build.
+        String arg = String(cmd.args.c_str()); arg.trim();
+        String low = arg; low.toLowerCase();
+        if (low == "stop")      { music::stop();  deliver(chatId, selfTag + "Stopped music."); return; }
+        if (low == "pause")     { music::pause(); deliver(chatId, selfTag + "Paused music."); return; }
+        if (arg.length() == 0) {
+          int n = music::playAll();
+          deliver(chatId, selfTag + (n ? ("Playing " + String(n) + " track" + (n == 1 ? "" : "s") + " from the music folder.")
+                                        : String("No tracks in the music folder (SD /music).")));
+          return;
+        }
+        if (!nimbus::orch::validMusicName(arg.c_str())) {
+          deliver(chatId, selfTag + "That is not a valid track name. Use a .wav or .mp3 file in the music folder.");
+          return;
+        }
+        music::playNow({std::string(arg.c_str())});
+        deliver(chatId, selfTag + "Playing " + arg + ".");
+        return;
+      }
+      if (v == "clear") {
+        // Drop the current conversation + the scratchpad's active task, keeping
+        // long-term memory and files. Light two-step confirm (this is recoverable,
+        // not a danger-zone erase): "/clear" explains + asks, "/clear yes" does it.
+        String arg = String(cmd.args.c_str()); arg.trim(); arg.toLowerCase();
+        if (arg == "yes" || arg == "confirm") {
+          requestConvClear();
+          deliver(chatId, selfTag + "Cleared this conversation and its active task. "
+                          "Long-term memory and files are kept.");
+        } else {
+          deliver(chatId, selfTag + "Clear this conversation and the current active task? "
+                          "Long-term memory and files are kept. Send /clear yes to confirm.");
+        }
+        return;
+      }
+      if (v == "mcp") {
+        // Cross-lane (CUM-33): owner approves/denies a device-dialed MCP server so
+        // its tools can be discovered. Flips the `appr` bit on the mcp entry in the
+        // connectors blob - the SAME NVS rail as the token-gated /api/connectors
+        // write. Enforcement (discovery/retraction) lives in N4's connectors sync.
+        String rest = String(cmd.args.c_str()); rest.trim();
+        int sp = rest.indexOf(' ');
+        String action = (sp < 0) ? rest : rest.substring(0, sp); action.toLowerCase();
+        String name = (sp < 0) ? String("") : rest.substring(sp + 1); name.trim();
+        if ((action != "approve" && action != "deny") || name.length() == 0) {
+          deliver(chatId, selfTag + "Usage: /mcp approve <name>  |  /mcp deny <name>");
+          return;
+        }
+        JsonDocument blob;
+        bool ok = !deserializeJson(blob, store::connectorsJson());   // truthy == error
+        bool found = false;
+        if (ok && blob.is<ArduinoJson::JsonArray>()) {
+          for (ArduinoJson::JsonObject e : blob.as<ArduinoJson::JsonArray>()) {
+            if (String((const char*)(e["kind"] | "")) == "mcp" &&
+                String((const char*)(e["name"] | "")) == name) {
+              e["appr"] = (action == "approve") ? 1 : 0;
+              found = true;
+              break;
+            }
+          }
+        }
+        if (!found) {
+          deliver(chatId, selfTag + "No MCP server named \"" + name + "\". Add it on the web page first.");
+          return;
+        }
+        String out; serializeJson(blob, out);
+        store::setConnectorsJson(out);
+        deliver(chatId, selfTag + (action == "approve"
+                  ? ("Approved MCP server \"" + name + "\". Its tools will be discovered shortly.")
+                  : ("Removed approval for MCP server \"" + name + "\". Its tools are retracted.")));
         return;
       }
       if (v == "compact") {
@@ -1303,6 +1442,9 @@ void handleMessage(const String& text, const String& fromName, const String& cha
                         "/loops \xE2\x80\x94 list routines\n"
                         "/remind <when> <what> \xE2\x80\x94 one-time reminder (e.g. /remind 30m ...)\n"
                         "/compact \xE2\x80\x94 summarize this conversation into memory\n"
+                        "/clear - forget this conversation (keeps memory and files)\n"
+                        "/mcp approve|deny <name> - approve a tool server\n"
+                        "/play [track|stop|pause] - play music from the SD card\n"
                         "/loop approve|deny|off|on <id> \xE2\x80\x94 manage a routine\n"
                         "/skill approve|deny <id> \xE2\x80\x94 manage a saved skill");
         return;
@@ -1314,6 +1456,15 @@ void handleMessage(const String& text, const String& fromName, const String& cha
     }
   }
   if (!g_engine) return;
+  // Gate 1 (CUM-69): inbound guest/member text screened PRE-turn, fail-CLOSED.
+  // Admin (owner / web / serial / voice) is never classified. Runs on tg_poll with
+  // the TLS slot free (like the fetch scan); a block stops the paid turn entirely.
+  if (moderateGate(nimbus::orch::ModGate::InboundText, chatId, text) == nimbus::orch::ModAction::Block) {
+    alogf("moderation: inbound blocked (chat=%s)", chatId.c_str());
+    deliver(chatId, String(nimbus::sys::deviceName().c_str()) + " \xC2\xB7 " NIMBUS_FW_VERSION
+                    ": That message couldn't be processed here.");
+    return;
+  }
   g_engine->handleMessage(std::string(text.c_str()), std::string(fromName.c_str()),
                           std::string(chatId.c_str()));
 }
@@ -1856,6 +2007,11 @@ String lastInstructions() {
 }
 
 void requestConvReset() { g_convResetReq = true; }
+
+// /clear: staged between-turns drop of the conversation context + scratchpad
+// active task, keeping long-term memory and files. Safe from any task (a flag the
+// turn/poll task drains); see drainStaged().
+void requestConvClear() { g_convClearReq = true; }
 
 void requestMemoryClear() {
   // Zero the echo immediately so the UI reflects the clear without waiting for

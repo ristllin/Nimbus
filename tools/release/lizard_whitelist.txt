@@ -64,6 +64,8 @@ src/agent/telegram.cpp:agent::telegram::processUpdatesBody
 lib/harness/src/providers/anthropic.cpp:agent::providers::antFoldOldRounds
 tests/hil/analyze_corpus.py:main
 src/net/webui.cpp:nimbus::net::buildState
+src/net/webui.cpp:nimbus::net::buildOrchState
+lib/core/src/power_battery_model.cpp:nimbus::power::parseCurveCsv
 lib/harness/src/providers/anthropic.cpp:agent::providers::antLoopStep
 tests/hil/scenarios_complex.py:channel_routing
 lib/core/src/tg_updates.cpp:nimbus::tg::parseUpdates

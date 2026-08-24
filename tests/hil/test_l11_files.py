@@ -87,6 +87,27 @@ def test_files_state_block(device, net, secrets, require_secret):
     assert "files" in st, "state missing files{} block"
     f = st["files"]
     assert "present" in f and "count" in f and "bytes" in f
+    # CUM-7: the state block also carries the quota + card-free truths + the
+    # unsupported flag (additive; present regardless of whether a card is in).
+    assert "quota" in f and "cardFree" in f and "unsupported" in f
+
+
+@pytest.mark.net
+def test_files_list_quota_truths(device, net, secrets, require_secret):
+    """CUM-7: /api/files/list exposes the four distinct storage truths and the
+    unsupported-card flag. With a supported card, quota = card - 512 MB reserve,
+    so cardFree/quota/used are all present and quota does not exceed cardTotal."""
+    ip = lan_ip_or_skip(device, net, secrets, require_secret)
+    tok = _webtok(device)
+    d = _list(net, ip, tok)
+    if not d.get("present"):
+        # absent OR unsupported (<1GB) card: the unsupported flag disambiguates
+        assert "unsupported" in d or d.get("present") is False
+        pytest.skip("no supported card mounted")
+    for k in ("count", "bytes", "quota", "cardTotal", "cardFree", "freeBytes", "unsupported"):
+        assert k in d, f"/api/files/list missing {k}: {list(d)}"
+    assert d["quota"] <= d["cardTotal"], "quota exceeds the card capacity"
+    assert d["bytes"] <= d["quota"] or d["quota"] == 0, "used exceeds quota"
 
 
 # ---- upload → list → download → delete -------------------------------------

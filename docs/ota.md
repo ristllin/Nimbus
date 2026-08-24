@@ -137,19 +137,42 @@ recorded in [`adr/0001-ota-releases-repo.md`](adr/0001-ota-releases-repo.md).
   update on the web page, the device's Settings > Software update menu
   (Orchestrator mode only - "Check for updates" renders "(unavailable)" in
   Notifier mode), or `POST /api/ota/check`. State surfaces in `/api/state`
-  (`ota`, `otaLatest`, `otaNotes`, `otaPct`, `lastOta`, `autoUpd`) and `STATUS`
-  (`ota=`, `lastOta=`).
+  (`ota`, `otaResult`, `otaLatest`, `otaNotes`, `otaPct`, `lastOta`, `autoUpd`)
+  and `STATUS` (`ota=`, `lastOta=`).
+- **A check always ends in a result.** `POST /api/ota/check` returns `202`
+  (accepted) or `409` (busy or gated); the verdict then lands in `/api/state`
+  as `otaResult`, which a poller can wait on without ever hanging on "checking".
+  It settles to exactly one of: `up-to-date` (reached the feed, nothing newer),
+  `new-version` (a newer release, with `otaLatest` + `otaNotes`), `unreachable`
+  (the release feed could not be reached at all), or `failed` (reached the
+  server but the manifest was rejected; `otaErr` carries the short reason).
+  `pending` means a check is still running or none has run yet. The distinction
+  between `unreachable` and `failed` is honest: a transport failure is never
+  reported as "up to date". (`nimbus::ota::checkResult`, host-tested.)
 - **Install**: the web page's **Install Update** button, the device menu's
   Settings > Software update > "Install vX" row (confirm: Cancel / Install and
   restart), Telegram `/update` (owner only), or `POST /api/ota/apply` (`dry=1`
-  downloads + verifies without flipping, `force=1` allows same/older). During install the
+  downloads + verifies without flipping, `force=1` allows same/older AND bypasses
+  the battery gate below). During install the
   ring is a theme-color progress bar, the e-ink says "do not power off", and
   voice capture is refused. The download runs alongside the live Telegram poller
   (heap stays steady; an earlier "stop the poller to free heap" hook is gone - it
   deleted a live queue and crash-rebooted the device).
+- **Battery / health gate** (both the manual and the auto path): an interrupted
+  flash on a dying pack can leave a slot unbootable, so install is allowed only
+  when the pack can finish the write. The rule: **level at or above 40 % AND
+  estimated health at or above 60 %, OR the device is on external power, OR
+  battery monitoring is disabled** (there is no pack to protect). Below that,
+  the refusal names the next step: a low level asks to **Connect power** (`err`
+  `need-power`), a low health estimate asks to **Recalibrate to 100 %** (`err`
+  `need-recalibrate`, charge full then Calibrate). Because this board has no
+  VBUS sense line to prove the charger for itself, every stop offers **Install
+  anyway (I am charging)**, which re-submits with `force=1` and skips the gate.
+  (`nimbus::ota::installGate`, host-tested.)
 - **Auto-install** (`autoUpd`, default OFF): hourly idle-window evaluation -
-  no turn/voice in flight, battery ≥50 % or external power, heap headroom
-  (`nimbus::ota::autoInstallAllowed`, host-tested).
+  no turn/voice in flight, battery ≥50 % or external power, estimated health
+  ≥60 % on battery, heap headroom (`nimbus::ota::autoInstallAllowed`,
+  host-tested).
 
 ## ⚠ Notifier mode: OTA is heap-gated (Orchestrator-mode only, for now)
 
@@ -174,7 +197,8 @@ internal), then the post-install restart restores it.
 
 - Host: `pio test -e native -f test_ota_logic` (version/manifest/policy core +
   the signed-message golden, cross-checked against `tools/make_manifest.py
-  --print-message`).
+  --print-message`; the battery/health `installGate` branches; the definitive
+  `checkResult` mapping incl. reachable-vs-unreachable).
 - HIL: `python3 -m pytest tests/hil/test_ota.py -m net --allow-hardware` -
   local self-signed TLS server (flips `tlsVerify` off/on), test-key-signed
   manifest, real dry-run E2E, sha-fail + sig-fail negatives, 302 redirect hop.

@@ -339,5 +339,24 @@ long parseDurationSecs(const std::string& s) {
   return (long)secs;
 }
 
+// ---- owner cap overrides (clamped; tighten-only) --------------------------
+
+LoopCaps clampLoopCaps(const LoopCaps& base, const LoopCapOverrides& ov) {
+  LoopCaps c = base;
+  // A present override applies ONLY if it is stricter than the default: a
+  // ceiling can move down, never up; the interval floor can move up, never down.
+  auto downI = [](int cur, int o)      { return (o > 0 && o < cur) ? o : cur; };
+  auto downU = [](uint32_t cur, uint32_t o) { return (o > 0 && o < cur) ? o : cur; };
+  c.maxCount        = downI(c.maxCount, ov.maxCount);
+  if (ov.minIntervalSec > c.minIntervalSec) c.minIntervalSec = ov.minIntervalSec;
+  c.maxFiresPerDay  = downI(c.maxFiresPerDay, ov.maxFiresPerDay);
+  c.maxTokensPerDay = downU(c.maxTokensPerDay, ov.maxTokensPerDay);
+  c.devTokensPerDay = downU(c.devTokensPerDay, ov.devTokensPerDay);
+  c.devFiresWindow  = downI(c.devFiresWindow, ov.devFiresWindow);
+  c.maxConsecFails  = downI(c.maxConsecFails, ov.maxConsecFails);
+  c.maxRepeats      = downI(c.maxRepeats, ov.maxRepeats);
+  return c;
+}
+
 }  // namespace orch
 }  // namespace nimbus

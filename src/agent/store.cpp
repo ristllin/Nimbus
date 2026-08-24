@@ -225,6 +225,23 @@ void setOrchLoopDeadlineS(int v) { solide::memory::setInt(AKEY_LOOP_DEADLINE, cl
 void setOrchLoopResultCap(int v) { solide::memory::setInt(AKEY_LOOP_RESCAP, v <= 0 ? 0 : clampI(v, 512, 65536)); }
 void setOrchLoopTotalCap(int v)  { solide::memory::setInt(AKEY_LOOP_TOTCAP, v <= 0 ? 0 : clampI(v, 2048, 1048576)); }
 
+// Local Loops governor overrides (CUM-73). Stored raw (0 = no override); the
+// tighten-only fold against the caps.h defaults happens in clampLoopCaps at the
+// loops subsystem. Getters guard against a negative NVS value (treated as unset)
+// and an absurd upper bound so a stray write can never overflow the caps math.
+int  loopCapMaxCount()        { int v = solide::memory::getInt(AKEY_LOOP_MAXCNT, 0); return v > 0 ? clampI(v, 1, 1000) : 0; }
+int  loopCapMinIntervalS()    { int v = solide::memory::getInt(AKEY_LOOP_MINIVL, 0); return v > 0 ? clampI(v, 1, 86400) : 0; }
+int  loopCapFiresPerDay()     { int v = solide::memory::getInt(AKEY_LOOP_FIRES, 0);  return v > 0 ? clampI(v, 1, 100000) : 0; }
+int  loopCapTokensPerDay()    { int v = solide::memory::getInt(AKEY_LOOP_TOKENS, 0); return v > 0 ? clampI(v, 1, 100000000) : 0; }
+int  loopCapDevTokensPerDay() { int v = solide::memory::getInt(AKEY_LOOP_DEVTOK, 0); return v > 0 ? clampI(v, 1, 100000000) : 0; }
+int  loopCapDevFiresWindow()  { int v = solide::memory::getInt(AKEY_LOOP_DEVFIR, 0); return v > 0 ? clampI(v, 1, 100000) : 0; }
+void setLoopCapMaxCount(int v)        { solide::memory::setInt(AKEY_LOOP_MAXCNT, v <= 0 ? 0 : clampI(v, 1, 1000)); }
+void setLoopCapMinIntervalS(int v)    { solide::memory::setInt(AKEY_LOOP_MINIVL, v <= 0 ? 0 : clampI(v, 1, 86400)); }
+void setLoopCapFiresPerDay(int v)     { solide::memory::setInt(AKEY_LOOP_FIRES,  v <= 0 ? 0 : clampI(v, 1, 100000)); }
+void setLoopCapTokensPerDay(int v)    { solide::memory::setInt(AKEY_LOOP_TOKENS, v <= 0 ? 0 : clampI(v, 1, 100000000)); }
+void setLoopCapDevTokensPerDay(int v) { solide::memory::setInt(AKEY_LOOP_DEVTOK, v <= 0 ? 0 : clampI(v, 1, 100000000)); }
+void setLoopCapDevFiresWindow(int v)  { solide::memory::setInt(AKEY_LOOP_DEVFIR, v <= 0 ? 0 : clampI(v, 1, 100000)); }
+
 // The per-tool-result clamp a turn will actually apply (owner override, else the
 // value derived from the resolved head model's window). The results.get view
 // must fit inside THIS together with its header.
@@ -253,6 +270,12 @@ void   setTlsVerify(bool v) { solide::memory::setBool(AKEY_TLS_VERIFY, v); }
 int    capProbe() { int v = solide::memory::getInt(AKEY_CAP_PROBE, 1); return v < 0 ? 0 : (v > 2 ? 2 : v); }
 int    fetchPolicy() { int v = solide::memory::getInt(AKEY_FETCH_POL, 1); return v < 0 ? 1 : (v > 3 ? 1 : v); }
 void   setFetchPolicy(int v) { solide::memory::setInt(AKEY_FETCH_POL, v < 0 ? 1 : (v > 3 ? 1 : v)); }
+bool   modInbound()  { return solide::memory::getInt(AKEY_MOD_INBOUND, 0) != 0; }
+bool   modOutbound() { return solide::memory::getInt(AKEY_MOD_OUTBOUND, 0) != 0; }
+bool   modInjection(){ return solide::memory::getInt(AKEY_MOD_INJECTION, 0) != 0; }
+void   setModInbound(bool on)  { solide::memory::setInt(AKEY_MOD_INBOUND, on ? 1 : 0); }
+void   setModOutbound(bool on) { solide::memory::setInt(AKEY_MOD_OUTBOUND, on ? 1 : 0); }
+void   setModInjection(bool on){ solide::memory::setInt(AKEY_MOD_INJECTION, on ? 1 : 0); }
 void   setCapProbe(int v) { solide::memory::setInt(AKEY_CAP_PROBE, v < 0 ? 0 : (v > 2 ? 2 : v)); }
 int    capProbeHours() { int v = solide::memory::getInt(AKEY_CAP_PROBE_H, 24); return v < 1 ? 1 : (v > 168 ? 168 : v); }
 void   setCapProbeHours(int v) { solide::memory::setInt(AKEY_CAP_PROBE_H, v < 1 ? 1 : (v > 168 ? 168 : v)); }
@@ -459,6 +482,9 @@ uint32_t battRtop()     { long v = solide::memory::getInt(AKEY_BATT_RTOP, 220000
 uint32_t battRbot()     { long v = solide::memory::getInt(AKEY_BATT_RBOT, 100000); return v < 1000 ? 1000 : (v > 10000000 ? 10000000 : (uint32_t)v); }
 uint16_t battDividerX100() { uint32_t rt = battRtop(), rb = battRbot(); uint32_t d = (uint64_t(rt + rb) * 100) / (rb ? rb : 1); return d < 100 ? 100 : (d > 2000 ? 2000 : (uint16_t)d); }
 uint16_t battCapMah()   { int v = solide::memory::getInt(AKEY_BATT_CAPMAH, 3500); return v < 100 ? 100 : (v > 20000 ? 20000 : (uint16_t)v); }
+String   battChem()     { return solide::memory::getString(AKEY_BATT_CHEM, "liion"); }   // "liion" | "lifepo4"
+uint8_t  battCellsOvr() { int v = solide::memory::getInt(AKEY_BATT_CELLS, 0); return (v == 1 || v == 2) ? (uint8_t)v : 0; }  // 0 = board default
+String   battCurve()    { return solide::memory::getString(AKEY_BATT_CURVE, ""); }        // "" = chemistry default curve
 uint16_t sleepMv()      { int v = solide::memory::getInt(AKEY_SLEEP_MV, 6000); return v < 0 ? 0 : (v > 6800 ? 6800 : (uint16_t)v); }
 uint16_t wakeMv()       { int v = solide::memory::getInt(AKEY_WAKE_MV, nimbus::power::kWakeMvDefault); return v < 0 ? 0 : (v > 7600 ? 7600 : (uint16_t)v); }
 bool     sleepOvr()     { return solide::memory::getInt(AKEY_SLEEP_OVR, 0) != 0; }
@@ -491,6 +517,9 @@ void setSaverMin(uint16_t v) { solide::memory::setInt(AKEY_SAVER_MIN, v > 1440 ?
 void setBattRtop(uint32_t o) { solide::memory::setInt(AKEY_BATT_RTOP, int(o < 1000 ? 1000 : (o > 10000000 ? 10000000 : o))); }
 void setBattRbot(uint32_t o) { solide::memory::setInt(AKEY_BATT_RBOT, int(o < 1000 ? 1000 : (o > 10000000 ? 10000000 : o))); }
 void setBattCapMah(uint16_t m) { solide::memory::setInt(AKEY_BATT_CAPMAH, m < 100 ? 100 : (m > 20000 ? 20000 : m)); }
+void setBattChem(const String& slug) { solide::memory::setString(AKEY_BATT_CHEM, slug == "lifepo4" ? "lifepo4" : "liion"); }
+void setBattCells(uint8_t cells) { solide::memory::setInt(AKEY_BATT_CELLS, (cells == 1 || cells == 2) ? cells : 0); }
+void setBattCurve(const String& csv) { solide::memory::setString(AKEY_BATT_CURVE, csv); }
 void setSleepMv(uint16_t v)  { solide::memory::setInt(AKEY_SLEEP_MV, v > 6800 ? 6800 : v); }
 void setWakeMv(uint16_t v)   { solide::memory::setInt(AKEY_WAKE_MV, v > 7600 ? 7600 : v); }
 void setSleepOvr(bool on)    { solide::memory::setInt(AKEY_SLEEP_OVR, on ? 1 : 0); }

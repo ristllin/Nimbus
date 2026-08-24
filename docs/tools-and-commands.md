@@ -50,7 +50,10 @@ confused.
 | `/loops` | List the device's routines (and any reminders you've set). |
 | `/loop approve\|deny\|off\|on <id>` | Approve, remove, pause, or resume one routine. |
 | `/compact` | Summarize this conversation into memory. Runs in the background. |
+| `/clear` | Forget the current conversation and its active task, and start fresh. Long-term memory and files are kept. Send `/clear` to confirm, then `/clear yes` to do it. The web page has the same action (Memory, then Clear conversation). |
 | `/skill approve\|deny <id>` | Approve a saved skill so it can be used, or remove it. |
+| `/mcp approve\|deny <name>` | Approve a tool server (MCP) the assistant discovered, so its tools can be used, or remove that approval. The same action is on the web page. |
+| `/play [track\|stop\|pause]` | Play music from the SD card's `/music` folder on the speaker. `/play` plays every track, `/play song.mp3` plays one, `/play stop` and `/play pause` control playback. |
 
 A routine or skill the assistant creates on its own stays inactive until the
 owner approves it here (or from the web UI). The one exception is a one-time
@@ -247,7 +250,26 @@ Commands grouped by purpose, one line each. Arguments in angle brackets.
 | `TTSTG <text>` | Synthesize the text and send it to the owner as a Telegram audio message - audible even with a dead bench speaker. |
 | `TGSEND` | Telegram document-send smoke test. |
 | `SFX <slug>` / `SFXVOL <0-100>` | Play a sound effect by slug; set the master volume. |
+| `PLAY [name\|stop\|pause]` | Music player: `PLAY` plays all of SD `/music`, `PLAY song.wav` one track, `PLAY stop`/`PLAY pause` control it. |
 | `MEDIATEST` | End-to-end test of the durable media path on the real SD card (write, capture, verify over HTTP). |
+
+#### Music playback
+
+The device plays music from the SD card's `/music` folder over the speaker, on top
+of the same volume control as sound effects (Settings, Sound). Reach it from the
+`media.play` / `media.pause` / `media.stop` / `media.list` tools (the assistant), the
+`/play` Telegram command, or the `PLAY` console command.
+
+- **Formats.** 16-bit PCM **WAV** and **MP3** both play (MP3 decode uses the
+  bundled public-domain minimp3 decoder). A file whose format is not recognized is
+  skipped, never played as noise.
+- **Queue behavior.** Music is foreground audio, so a track is never dropped and
+  plays to completion (unlike the sound-effect cues, which drop when busy). The
+  player holds one now-playing track plus an ordered list: `media.play song.wav`
+  (or `/play song.wav`) replaces the queue and plays now; `media.play` with
+  `queue: true` appends instead; a bare `/play` queues the whole folder in name
+  order. `media.pause` holds the position, `media.play` resumes, and `media.stop`
+  halts and clears the queue.
 
 #### Network & Bluetooth
 

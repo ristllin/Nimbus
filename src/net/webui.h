@@ -96,11 +96,16 @@ struct WebConfig {
   // the ring without touching Config/Selector (a preview never persists).
   std::function<void(int,int)> onPreview;
   // Factory reset (POST /api/factory-reset, confirm-gated): sets a deferred flag so
-  // the MAIN loop erases NVS + reboots (never on the AsyncTCP task). Null => no-op.
-  std::function<void()>       factoryReset;
+  // the MAIN loop erases NVS + reboots (never on the AsyncTCP task). The device
+  // IDENTITY (name) is preserved across the wipe; eraseSd=true additionally erases
+  // the durable /mem store in the same flow. Null => no-op.
+  std::function<void(bool /*eraseSd*/)> factoryReset;
   // SD reset (POST /api/sdreset, confirm-gated): erase the durable /mem store
   // (memories/history/files/blobs), keep config, reboot. Deferred flag like above.
   std::function<void()>       sdReset;
+  // Full-card format (POST /api/sdformat, its OWN typed confirm): reformat the whole
+  // card, not just /mem. Deferred flag; null or unsupported => the route reports it.
+  std::function<void()>       sdFormat;
   // Web chat (POST /api/chat): inject a message as an orchestrator turn (runs on the
   // poll task). chatPoll() returns + clears the last web-turn reply ("" if none yet).
   // FALSE when the device could not accept the message (inbound queue full

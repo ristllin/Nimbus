@@ -80,6 +80,17 @@ static void test_degenerate_inputs() {
   TEST_ASSERT_EQUAL_STRING("h", c.verb.c_str());
 }
 
+// /clear: bare confirms nothing, "/clear yes" carries the confirm arg (CUM-28).
+static void test_clear_verb_and_confirm() {
+  Command c = p("/clear");
+  TEST_ASSERT_TRUE(c.isCommand);
+  TEST_ASSERT_EQUAL_STRING("clear", c.verb.c_str());
+  TEST_ASSERT_EQUAL_STRING("", c.args.c_str());
+  Command y = p("/clear yes");
+  TEST_ASSERT_EQUAL_STRING("clear", y.verb.c_str());
+  TEST_ASSERT_EQUAL_STRING("yes", y.args.c_str());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_bare_command);
@@ -91,5 +102,6 @@ int main(int, char**) {
   RUN_TEST(test_loop_args_preserved);
   RUN_TEST(test_midsentence_slash_not_command);
   RUN_TEST(test_degenerate_inputs);
+  RUN_TEST(test_clear_verb_and_confirm);
   return UNITY_END();
 }

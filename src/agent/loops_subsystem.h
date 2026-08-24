@@ -35,6 +35,11 @@ using AlertHook       = std::function<void(AlertLevel, const std::string& loopId
 
 void begin(FireHook fire, ChatAllowedHook chatAllowed, AlertHook alert);
 
+// Re-read the owner's Local Loops cap overrides from NVS and re-fold them onto
+// the caps.h defaults (tighten-only). Call after the web config path writes a
+// governor key so a tightened cap applies live, no reboot (CUM-73).
+void reloadCaps();
+
 // --- reserved system loops (DREAMING) ---------------------------------------
 // Ensure a well-known record exists (insert-if-missing; NEVER duplicates or
 // overrides persisted owner state such as enabled=false) and mark its id

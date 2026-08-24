@@ -184,6 +184,15 @@
 #define AKEY_LOOP_DEADLINE  "orchLoopDlS"   // wall-clock budget seconds (default 600, 30..3600)
 #define AKEY_LOOP_RESCAP    "orchLoopRCap"  // per-tool-result byte clamp (default 4096)
 #define AKEY_LOOP_TOTCAP    "orchLoopTCap"  // cumulative tool-output byte budget (default 24576)
+// Local Loops governor (routines/scheduler) owner overrides - may only TIGHTEN
+// the caps.h defaults, never loosen; 0/absent = keep the default. Read at loops
+// begin(), folded through nimbus::orch::clampLoopCaps (CUM-73). NVS keys <=15 ch.
+#define AKEY_LOOP_MAXCNT    "loopMaxCnt"    // max concurrent routines (default 8)
+#define AKEY_LOOP_MINIVL    "loopMinIvl"    // min seconds between fires (default 300)
+#define AKEY_LOOP_FIRES     "loopFires"     // per-routine daily fire ceiling (default 24)
+#define AKEY_LOOP_TOKENS    "loopTokens"    // per-routine daily token ceiling (default 120000)
+#define AKEY_LOOP_DEVTOK    "loopDevTok"    // device-wide daily token ceiling (default 400000)
+#define AKEY_LOOP_DEVFIR    "loopDevFir"    // device-wide fires per rate window (default 6)
 #define AKEY_ALLOW_HW_TESTS "allowHwTest"   // orchestrator may run hardware self-tests (default ON)
 // OTA firmware update (src/sys/ota_update). The pend/boots/prev trio is the
 // app-level rollback guard (arduino sdkconfig lacks bootloader rollback):
@@ -226,6 +235,11 @@
 #define AKEY_TLS_VERIFY     "tlsVerify"      // validate provider certs vs the CA bundle (default ON)
 #define AKEY_CAP_PROBE      "capProbe"       // capability validation: 0 off / 1 passive (default) / 2 active
 #define AKEY_FETCH_POL      "fetchPol"       // files.fetch trust: 0 off / 1 approve (default) / 2 scan / 3 yolo
+// Moderation gates (non-admin roles only; each a paid classifier call per item).
+// Default OFF. Cumulo moderation endpoint on a Cumulo key, else Mistral on the user key.
+#define AKEY_MOD_INBOUND    "modInbound"     // screen inbound guest/member text pre-turn (fail-closed)
+#define AKEY_MOD_OUTBOUND   "modOutbound"    // screen outbound replies to guests (fail-open)
+#define AKEY_MOD_INJECTION  "modInject"      // injection-screen fetched world content (fail-open + mark)
 #define AKEY_CAP_PROBE_H    "capProbeH"      // active re-verify interval in hours (1..168, default 24)
 #define AKEY_STT_PROVIDER   "sttProv"        // "mistral"|"openai" (voice -> text)
 #define AKEY_TTS_PROVIDER   "ttsProv"        // "mistral"|"openai" (text -> voice)
@@ -254,6 +268,9 @@
 #define AKEY_BATT_RTOP      "battRtop"       // divider R_top (ohms); default 220000
 #define AKEY_BATT_RBOT      "battRbot"       // divider R_bottom (ohms); default 100000
 #define AKEY_BATT_CAPMAH    "battCapMah"     // pack capacity mAh (LiitoKala 3500, reclaimed vape ~500, ...)
+#define AKEY_BATT_CHEM      "battChem"       // battery chemistry slug: "liion" (default) | "lifepo4"; picks the SoC curve
+#define AKEY_BATT_CELLS     "battCells"      // series cell count override (1/2); 0/absent = board-derived default
+#define AKEY_BATT_CURVE     "battCurve"      // optional custom SoC curve "mv:pct,mv:pct,..." (high-mV first); "" = chemistry default
 #define AKEY_WAKE_MV        "wakeMv"         // stay-awake bar after a low-batt sleep (rested-empty packs read 6918-6992; default 7200)
 #define AKEY_LOWBATT_PING   "lbPingEp"       // epoch of the last low-battery owner ping (AlertGate persistence - survives the 5-min wake-sniff boots)
 #define AKEY_SLEEP_OVR      "sleepOvr"       // owner/AI override: skip the low-batt sleep (deep-discharge risk accepted)

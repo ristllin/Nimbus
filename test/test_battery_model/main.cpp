@@ -489,6 +489,80 @@ void test_real_drain_rate_still_learns_through_the_window(void) {
   TEST_ASSERT_TRUE(e.ratePctPerHr <= BatteryModel::kRateMaxPctHr);
 }
 
+// --- CUM-63: chemistry + custom curve --------------------------------------
+
+// The default chemistry reproduces the shipped Li-ion curve exactly (regression pin).
+static void test_default_chemistry_is_liion() {
+  BatteryModel m(1);
+  TEST_ASSERT_EQUAL_INT((int)Chemistry::LiIonLipo, (int)m.chemistry());
+  // socForCurve over the Li-ion table == liIonPercent at a few points.
+  TEST_ASSERT_EQUAL_UINT8(liIonPercent(3900), socForCurve(3900, kLiIonCurve, kLiIonCurveN));
+  TEST_ASSERT_EQUAL_UINT8(100, liIonPercent(4200));
+  TEST_ASSERT_EQUAL_UINT8(0, liIonPercent(3200));
+}
+
+// The LiFePO4 curve is monotonic and hits its endpoints; a mid-plateau voltage
+// reads very differently than it would on the Li-ion curve (proves selection works).
+static void test_lifepo4_curve_endpoints_and_monotonic() {
+  TEST_ASSERT_EQUAL_UINT8(100, socForCurve(3400, kLiFePO4Curve, kLiFePO4CurveN));
+  TEST_ASSERT_EQUAL_UINT8(0, socForCurve(2500, kLiFePO4Curve, kLiFePO4CurveN));
+  uint8_t prev = 100;
+  for (uint16_t mv = 3400; mv >= 2500; mv -= 10) {
+    uint8_t p = socForCurve(mv, kLiFePO4Curve, kLiFePO4CurveN);
+    TEST_ASSERT_TRUE(p <= prev);   // non-increasing as voltage falls
+    prev = p;
+  }
+  // 3.30 V/cell: near-empty on Li-ion (~2%), mid-pack on LiFePO4 (~60%).
+  TEST_ASSERT_TRUE(socForCurve(3300, kLiFePO4Curve, kLiFePO4CurveN) > 40);
+  TEST_ASSERT_TRUE(liIonPercent(3300) < 10);
+}
+
+// A model set to LiFePO4 reports the LiFePO4 SoC for a resting sample.
+static void test_model_lifepo4_reports_curve_soc() {
+  BatteryModel m(1);
+  m.setChemistry(Chemistry::LiFePO4);
+  TEST_ASSERT_EQUAL_INT((int)Chemistry::LiFePO4, (int)m.chemistry());
+  Sample s = dis(3300, 0);   // 3.30 V/cell resting
+  m.update(0, s);
+  uint8_t p = m.estimate().percent;
+  TEST_ASSERT_TRUE(p > 40 && p <= 70);   // LiFePO4 mid-pack, not ~2% (Li-ion)
+}
+
+// parseCurveCsv: valid, and every malformed / non-monotonic form rejected.
+static void test_parse_curve_csv() {
+  LiIonCurvePoint out[kMaxCurvePoints];
+  int n = parseCurveCsv("4200:100,3700:50,3200:0", out, kMaxCurvePoints);
+  TEST_ASSERT_EQUAL_INT(3, n);
+  TEST_ASSERT_EQUAL_UINT16(4200, out[0].mv);
+  TEST_ASSERT_EQUAL_UINT8(100, out[0].pct);
+  TEST_ASSERT_EQUAL_UINT8(0, out[2].pct);
+  // rejects: <2 points, pct>100, non-descending mv, increasing pct, junk, empty
+  TEST_ASSERT_EQUAL_INT(0, parseCurveCsv("4200:100", out, kMaxCurvePoints));
+  TEST_ASSERT_EQUAL_INT(0, parseCurveCsv("4200:150,3200:0", out, kMaxCurvePoints));
+  TEST_ASSERT_EQUAL_INT(0, parseCurveCsv("3200:0,4200:100", out, kMaxCurvePoints));   // ascending mv
+  TEST_ASSERT_EQUAL_INT(0, parseCurveCsv("4200:50,3700:80", out, kMaxCurvePoints));   // rising pct
+  TEST_ASSERT_EQUAL_INT(0, parseCurveCsv("4200:100;3200:0", out, kMaxCurvePoints));   // junk sep
+  TEST_ASSERT_EQUAL_INT(0, parseCurveCsv("", out, kMaxCurvePoints));
+  TEST_ASSERT_EQUAL_INT(0, parseCurveCsv("abc", out, kMaxCurvePoints));
+}
+
+// A custom curve overrides the chemistry curve; invalid shapes are rejected.
+static void test_custom_curve_overrides() {
+  BatteryModel m(1);
+  LiIonCurvePoint pts[3] = {{4000, 100}, {3600, 50}, {3200, 0}};
+  TEST_ASSERT_TRUE(m.setCustomCurve(pts, 3));
+  TEST_ASSERT_EQUAL_INT(3, m.customCurveN());
+  Sample s = dis(3600, 0);
+  m.update(0, s);
+  TEST_ASSERT_EQUAL_UINT8(50, m.estimate().percent);   // custom curve says 50% at 3.60 V
+  m.clearCustomCurve();
+  TEST_ASSERT_EQUAL_INT(0, m.customCurveN());
+  // rejected shapes leave the previous state untouched (return false)
+  LiIonCurvePoint bad[2] = {{3200, 0}, {4000, 100}};   // ascending
+  TEST_ASSERT_FALSE(m.setCustomCurve(bad, 2));
+  TEST_ASSERT_FALSE(m.setCustomCurve(pts, 1));          // too few
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_time_to_empty_from_rate);
@@ -519,5 +593,10 @@ int main() {
   RUN_TEST(test_artificial_load_does_not_teach_the_rate);
   RUN_TEST(test_normal_discharge_still_learns);
   RUN_TEST(test_reset_learned_keeps_the_battcal_anchor);
+  RUN_TEST(test_default_chemistry_is_liion);
+  RUN_TEST(test_lifepo4_curve_endpoints_and_monotonic);
+  RUN_TEST(test_model_lifepo4_reports_curve_soc);
+  RUN_TEST(test_parse_curve_csv);
+  RUN_TEST(test_custom_curve_overrides);
   return UNITY_END();
 }
