@@ -23,6 +23,7 @@
 #include "nimbus/cloud/http_replay.h"
 #include "nimbus/cloud/relay_codec.h"
 #include "nimbus/cloud/relay_credential.h"   // CUM-52: exp/re-mint policy (pure core)
+#include "nimbus/cloud/relay_timing.h"        // CUM-160: bound the TLS slot-hold below the watchdog
 #include "nimbus/cloud/relay_ws.h"
 #include "nimbus/cloud/tunnel_guard.h"   // canonicalize+deny secret paths, scrub secret bodies
 #include "version.h"
@@ -332,21 +333,31 @@ void handleReq(const ReqFrame& req) {
 // One-shot HTTPS POST of a JSON body to the relay host; returns status, body in out.
 int httpsPostJson(const String& host, const char* path, const String& reqBody, String& out) {
   if (!agent::arbiter::acquireWork(15000)) return -1;
+  // CUM-160: this is the one relay path that holds the single TLS work slot AND
+  // does a blocking connect + read. Bound the WHOLE hold below the task watchdog
+  // (connect timeout AND the read deadline both derive from one budget measured
+  // from slot acquisition), so a watchdog-fed task waiting on the slot can never be
+  // parked past the panic timeout. Over budget -> graceful failure + retry, never a
+  // reset. See nimbus/cloud/relay_timing.h.
+  const uint32_t t0 = millis();
+  const uint32_t budgetMs = nimbus::cloud::relaySlotHoldBudgetMs(nimbus::cloud::kTaskWdtTimeoutMs);
+  const uint32_t holdDeadline = t0 + budgetMs;
   WiFiClientSecure c;
   relayTlsSetup(c);
   int status = -1;
-  if (c.connect(host.c_str(), kTlsPort, kConnectTimeoutMs)) {
+  if (c.connect(host.c_str(), kTlsPort, budgetMs)) {
     String req = String("POST ") + path + " HTTP/1.1\r\nHost: " + host +
                  "\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: " +
                  String(reqBody.length()) + "\r\n\r\n" + reqBody;
     c.print(req);
     // Read the response with the same robust, host-tested parser the loopback uses
     // (Content-Length / chunked / until-close). Waiting on availability avoids the
-    // read-before-arrival race a hand-rolled readStringUntil hits.
+    // read-before-arrival race a hand-rolled readStringUntil hits. The read shares
+    // the slot-hold budget with the connect above (deadline is the SAME holdDeadline),
+    // so connect + read together never exceed it.
     http_replay::ResponseParser rp(8192);  // pairing JSON is small
     uint8_t buf[512];
-    uint32_t deadline = millis() + kConnectTimeoutMs;
-    while (millis() < deadline && !rp.complete() && !rp.error()) {
+    while (millis() < holdDeadline && !rp.complete() && !rp.error()) {
       int n = readSome(c, buf, sizeof(buf), 250);
       if (n > 0) rp.feed(buf, (size_t)n);
       else if (n < 0) { rp.endOfStream(); break; }
@@ -361,6 +372,13 @@ int httpsPostJson(const String& host, const char* path, const String& reqBody, S
   }
   tlsClose(c);
   agent::arbiter::releaseWork();
+  // Timing instrumentation (device evidence for CUM-160): the slot-hold and whether
+  // it stayed within the watchdog-safe budget. A line over budget is the bug signature.
+  const uint32_t heldMs = millis() - t0;
+  String tl = "relay: httpsPost held=" + String(heldMs) + "ms budget=" + String(budgetMs) +
+              "ms wdt=" + String(nimbus::cloud::kTaskWdtTimeoutMs) + "ms status=" + String(status) +
+              (heldMs <= budgetMs ? " ok" : " OVER-BUDGET");
+  agent::alog(tl.c_str());
   return status;
 }
 
