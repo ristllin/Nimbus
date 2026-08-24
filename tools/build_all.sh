@@ -11,7 +11,6 @@
 #   native                              host unit-test toolchain
 #   esp32s3                             production firmware
 #   notifierdbg                         esp32s3 + NIMBUS_NOTIFIER_DEBUG (status echo)
-#   p2bringup                           standalone HW bring-up sketch
 #   provision                           serial provisioning / STA test tool
 #   esp32s3 + -DNIMBUS_HAS_FUEL_GAUGE   the src/hw/power_fuelgauge path (no gauge
 #                                       on the board yet, so it never builds by
@@ -52,7 +51,6 @@ MATRIX=(
   "native|native|"
   "esp32s3|esp32s3|"
   "notifierdbg|notifierdbg|"
-  "p2bringup|p2bringup|"
   "provision|provision|"
   "esp32s3+fuelgauge|esp32s3|-DNIMBUS_HAS_FUEL_GAUGE"
   "esp32s3+battadc|esp32s3|-DNIMBUS_HAS_BATTERY_ADC"

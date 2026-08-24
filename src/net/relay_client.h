@@ -32,7 +32,7 @@ const char* stateName();
 bool online();
 bool pairingActive();
 String claimCode();           // current pairing code ("" if not pairing)
-String claimUrl();            // claim URL for the e-ink QR ("" if not pairing)
+String claimUrl();            // claim URL for the panel QR ("" if not pairing)
 String statusLine();          // one calm human line for web/console
 void statusInto(JsonObject obj); // fill an object for /api/state cloud{} and /api/cloud
 void statusJson(String& out); // same, serialized to a string (console)

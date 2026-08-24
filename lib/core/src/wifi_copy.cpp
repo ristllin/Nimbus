@@ -5,7 +5,7 @@ namespace wifi {
 
 namespace {
 
-// The e-ink font is printable ASCII only; anything else renders as garbage. An SSID
+// The panel font is printable ASCII only; anything else renders as garbage. An SSID
 // is arbitrary bytes from the air, so sanitise here rather than trusting the panel.
 std::string asciiOnly(const std::string& s) {
   std::string o;

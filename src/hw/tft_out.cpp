@@ -52,7 +52,7 @@ bool begin() {
 
   // 150 KB each. PSRAM ONLY: two of these in internal SRAM would consume the
   // whole ~327 KB internal heap and the device would not survive a TLS
-  // handshake (the same lesson as the e-ink framebuffers and the SFX queue).
+  // handshake (the same lesson as the earlier framebuffers and the SFX queue).
   //
   // ⚠ Fb565 holds a std::vector, so placement-new into PSRAM puts only the
   // 12-byte header there - the PIXELS come from the default allocator. That
@@ -99,7 +99,7 @@ bool begin() {
 
 bool ready() { return g_ready; }
 
-Push renderAndPush(nimbus::attn::ScreenId screen, const nimbus::epd::ScreenCtx& ctx) {
+Push renderAndPush(nimbus::attn::ScreenId screen, const nimbus::render::ScreenCtx& ctx) {
   if (!g_ready) return Push::Dropped;
   // Resilience: FAULT screen drops the panel update while the compose pipeline
   // upstream keeps running - the device is exercised as if the display failed.
@@ -161,7 +161,7 @@ Push renderAndPush(nimbus::attn::ScreenId screen, const nimbus::epd::ScreenCtx& 
   return Push::Pushed;
 }
 
-bool repaintRingRegion(const nimbus::epd::ScreenCtx& ctx) {
+bool repaintRingRegion(const nimbus::render::ScreenCtx& ctx) {
   if (!g_ready) return false;
   if (nimbus::fault::active(nimbus::fault::SCREEN)) return false;
   if (solide::display_tft::busy()) return false;   // never collide with an async full blit

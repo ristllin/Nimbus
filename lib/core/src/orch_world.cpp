@@ -95,9 +95,7 @@ std::string renderCapabilities(const Hardware& hw, const std::vector<ToolInfo>& 
   // firmware version, and no caller ever populated the field - a dead branch.)
   std::vector<std::string> parts;
   if (hw.ring)     parts.push_back(std::to_string(hw.ledCount) + "-LED ring");
-  if (hw.eink)     parts.push_back("2.9\" e-ink panel");
   if (hw.touch)    parts.push_back("2.8\" color touchscreen");
-  if (hw.encoder)  parts.push_back("rotary encoder");
   if (hw.mic)      parts.push_back("microphone");
   if (hw.speaker)  parts.push_back("speaker");
   if (hw.battery)  parts.push_back("battery");
@@ -128,12 +126,9 @@ std::string renderCapabilities(const Hardware& hw, const std::vector<ToolInfo>& 
            "flash + an RGB colour, or mode rainbow for a self-animating hue wheel), turn it "
            "off or back to full with `lights`, or recolour it with `config.theme`. Those are "
            "the only ring effects that exist.\n";
-  if (hw.eink)
-    out += "- The e-ink panel is a slow (~2 s refresh) status screen the firmware owns; you "
-           "do not render arbitrary content to it.\n";
   if (hw.touch)
     out += "- The colour touchscreen is a status screen the firmware owns; you do not render "
-           "arbitrary content to it. It replaces the knob, so the owner taps it.\n";
+           "arbitrary content to it. The owner navigates it by tapping.\n";
   if (hw.files)
     out += "- A durable PRIVATE artifact store lives on the SD card (/mem/files/<project>/"
            "<name>). Save reports/documents there with artifact.save; browse with files.list; "

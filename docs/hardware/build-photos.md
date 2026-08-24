@@ -2,8 +2,7 @@
 
 A photo walk-through of an actual Nimbus build, in assembly order. These
 complement the step-by-step wiring and assembly in the
-[e-paper + knob](build-eink.md) and [touch TFT](build-tft.md) guides - the
-electronics, power, and case steps are shared; only the final display differs.
+[touch TFT](build-tft.md) guide.
 
 ## Printed parts and heat-set inserts
 
@@ -23,12 +22,10 @@ electronics, power, and case steps are shared; only the final display differs.
 ![Carrier board with the BMS charger and DC-DC converter](photos/pcb-charger-dcdc.webp)
 ![The peripheral modules before assembly](photos/modules.webp)
 
-## LED ring, encoder, and audio
+## LED ring and audio
 
 ![WS2812B 45-pixel LED ring](photos/led-ring.webp)
 ![LED ring with one power ribbon cut for the case pass-through](photos/led-ring-cut.webp)
-![EC11 encoder with jumper leads](photos/encoder-jumpers.webp)
-![EC11 encoder wired to the board](photos/encoder-wired.webp)
 ![Full-range 4 ohm speaker](photos/speaker.webp)
 ![Speaker mounted in the case](photos/speaker-mounted.webp)
 ![Rocker switch pressed into place](photos/rocker-switch.webp)
@@ -49,12 +46,6 @@ electronics, power, and case steps are shared; only the final display differs.
 ![All electronics assembled](photos/electronics-stack.webp)
 ![All electronics assembled, other angle](photos/electronics-stack-2.webp)
 ![The stack fitted into the bottom case](photos/assembled-bottom-case.webp)
-
-## Display - e-paper + knob build
-
-![Assembled e-paper Nimbus, front](photos/eink-front.webp)
-![Assembled e-paper Nimbus, top](photos/eink-top.webp)
-![Assembled e-paper Nimbus, top, second view](photos/eink-top-2.webp)
 
 ## Display - touch TFT build
 

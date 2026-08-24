@@ -2,8 +2,8 @@
 
 # Nimbus
 
-<!-- HERO PHOTO PLACEHOLDER: assembled device on a desk - ring lit, e-ink
-     showing the status screen. Add the photo to assets/ and embed it here. -->
+<!-- HERO PHOTO PLACEHOLDER: assembled device on a desk - ring lit, the touch
+     panel showing the status screen. Add the photo to assets/ and embed it here. -->
 
 <p align="center">
   <a href="https://polyformproject.org/licenses/noncommercial/1.0.0/"><img alt="License: PolyForm Noncommercial 1.0.0" src="https://img.shields.io/badge/license-PolyForm%20Noncommercial-blue"></a>
@@ -15,8 +15,8 @@ A DIY desk device that keeps you informed without stealing your screen.
 Two modes on one firmware: an ambient **status light for AI coding sessions**
 (encrypted Bluetooth, per-session ring segments), and a **self-hosted AI
 assistant** with voice, Telegram, and long-term memory on its own SD card.
-A 45-LED ring plus a 2.9" e-ink panel + knob - or a 2.8" color touchscreen -
-on an ESP32-S3. Bring your own API key (Mistral, OpenAI, or Anthropic);
+A 45-LED ring plus a 2.8" color touchscreen (or a Freenove all-in-one touch
+board) on an ESP32-S3. Bring your own API key (Mistral, OpenAI, or Anthropic);
 about **$60–75 in commodity parts** to build.
 
 **Documentation: https://docs.cumulo-nimbus.ai/**

@@ -15,7 +15,7 @@
 // incremental decoder exactly as the serial loop would, map it into the
 // attention Router, and compose the ring Plan. This closes the loop that P2
 // proved on hardware (Plan -> solide::leds/display): broker bytes in, correct
-// ring/e-ink decisions out.
+// ring/panel decisions out.
 
 using namespace nimbus;
 using solide::ring::Status;

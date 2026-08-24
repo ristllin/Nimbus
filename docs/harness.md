@@ -20,7 +20,7 @@ Order matters; each step is in `src/main.cpp::setup()` or
 
 1. **`otaupd::bootGuard()`** - FIRST line: burns one A/B boot attempt, self-
    reverts a bad OTA image after 3 boots (before any driver can crash it).
-2. Board bring-up (`solide::begin`: SD, NVS, e-ink/LED/encoder tasks, battery),
+2. Board bring-up (`solide::begin`: SD, NVS, screen/LED tasks, battery),
    then two memory reroutes that everything downstream depends on: **mbedTLS →
    PSRAM** (TLS handshakes don't fit internal SRAM) and **malloc ≥128 B →
    PSRAM** (String/JSON churn).
@@ -52,10 +52,10 @@ Order matters; each step is in `src/main.cpp::setup()` or
 
 | task | watchdog | runs |
 |---|---|---|
-| main loop (core 1) | **8 s panic WDT** | rendering, ring, encoder, battery/thermal/OTA ticks, staged device actions, `reapStuckTurn`, retention prune (6 h) |
+| main loop (core 1) | **8 s panic WDT** | rendering, ring, touch, battery/thermal/OTA ticks, staged device actions, `reapStuckTurn`, retention prune (6 h) |
 | **`tg_poll`** (core 0) | **none - deliberate** (its long-poll blocks ~25 s) | EVERYTHING agentic, single-writer: Telegram long-poll, every LLM turn (owner, synthesis, scheduled, post-OTA), the loops tick (20 s gate), the dream firing, the sub-agent dispatch/poll pump (~15 s), staged-mutation drains |
 | AsyncTCP | none | all `/api/*` + `/mcp` handlers - they **stage** mutations and read snapshots, never touch agentic state directly |
-| epd / leds / enc / sfx | none | rendering + input + audio |
+| screen / leds / sfx | none | rendering + input + audio |
 
 The single-writer rule is the concurrency model: anything that wants to mutate
 orchestrator state from another task goes through a staged mailbox (spinlock'd
@@ -163,7 +163,8 @@ to 2 keyed alternates with an owner notice; a fresh provider thread each time.
   across the reboot in NVS).
 - **Voice hold-to-talk**: blocks the MAIN loop (WDT suspended around record +
   STT) - `tg_poll` keeps running; the transcript is injected as a normal turn.
-- **Low-battery deep sleep**: full stop; config persisted; wake by knob. All
+- **Low-battery deep sleep**: full stop; config persisted; wake by the 5-minute
+  timer. All
   loop state re-derives at the next boot (no backfill), and the first 10 min
   post-wake never dream.
 

@@ -16,9 +16,9 @@ static void test_presets_match_plan_table() {
   TEST_ASSERT_EQUAL(10, presetValue(ProfileId::BatterySaver, Param::RingBrightness));
   TEST_ASSERT_EQUAL(30, presetValue(ProfileId::Balanced, Param::RingBrightness));
   TEST_ASSERT_EQUAL(60, presetValue(ProfileId::Desk, Param::RingBrightness));
-  TEST_ASSERT_EQUAL(60000, presetValue(ProfileId::BatterySaver, Param::EpdCoalesceMs));
-  TEST_ASSERT_EQUAL(30000, presetValue(ProfileId::Balanced, Param::EpdCoalesceMs));
-  TEST_ASSERT_EQUAL(15000, presetValue(ProfileId::Desk, Param::EpdCoalesceMs));
+  TEST_ASSERT_EQUAL(60000, presetValue(ProfileId::BatterySaver, Param::CoalesceMs));
+  TEST_ASSERT_EQUAL(30000, presetValue(ProfileId::Balanced, Param::CoalesceMs));
+  TEST_ASSERT_EQUAL(15000, presetValue(ProfileId::Desk, Param::CoalesceMs));
   TEST_ASSERT_EQUAL(300, presetValue(ProfileId::Balanced, Param::DwellMs));
 }
 

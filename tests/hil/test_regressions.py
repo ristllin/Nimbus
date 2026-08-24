@@ -131,16 +131,15 @@ def test_R_F12_watchdog(device):
 # ---- R_F16 - web config cross-core race (F16) ------------------------------
 @pytest.mark.net
 def test_R_F16_web_race(device, net, secrets, require_secret):
-    """F16: hammer ``POST /api/config`` repeatedly while the encoder log runs, and
-    assert ``/api/state`` NEVER returns torn/invalid JSON and the last written value is
-    consistent - the direct regression for the AsyncTCP-vs-main-loop ``g_cfg`` race."""
+    """F16: hammer ``POST /api/config`` repeatedly and assert ``/api/state`` NEVER
+    returns torn/invalid JSON and the last written value is consistent - the direct
+    regression for the AsyncTCP-vs-main-loop ``g_cfg`` race."""
     ip = lan_ip_or_skip(device, net, secrets, require_secret)
 
     st0 = net.get_json("/api/state", ip=ip, timeout=5.0)
     bright = ringbright_param(st0)
     pkey = bright["key"]
 
-    device.inputlog(True)
     last = None
     for i in range(20):
         val = 20 + (i % 40)  # cycle 20..59
@@ -150,7 +149,6 @@ def test_R_F16_web_race(device, net, secrets, require_secret):
         cur = next((p for p in st["params"] if p["key"] == pkey), None)
         assert cur is not None, "RingBrightness vanished from params mid-hammer"
         assert 0 <= int(cur["value"]) <= 255, f"RingBrightness read a torn/out-of-range value {cur['value']!r} - F16"
-    device.inputlog(False)
 
     final = None
     for _ in range(10):

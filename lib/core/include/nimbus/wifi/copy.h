@@ -16,7 +16,7 @@
 // `build_src_filter = -<*>`, so `src/` is never compiled host-side, and both
 // functions were `static` in main.cpp.
 //
-// Every string here is printable ASCII and bounded, because the e-ink panel renders
+// Every string here is printable ASCII and bounded, because the panel renders
 // ~48 chars per line and clips silently - truncation is this layer's job, never the
 // renderer's. Spelling follows the copy style guide: "Wi-Fi", sentence case.
 

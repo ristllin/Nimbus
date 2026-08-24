@@ -5,10 +5,10 @@
 // font5x7 - the classic public-domain 5x7 ASCII atlas (the "glcdfont" lineage
 // used by countless LCD/OLED libraries), ASCII 32..126, 5 bytes per glyph.
 //
-// Shared by BOTH renderers: the 1-bit e-ink screens (epd_render) and the
+// Shared by the renderers and the text-metrics helpers. The 5x7 atlas lives
 // colour touch screens (tft_render). It lives here so the two cannot drift
 // apart and so the table exists once - extracting it from epd_fb.cpp was a
-// pure move, proven by the e-ink goldens staying byte-identical.
+// here once so every consumer shares one copy.
 //
 // Bit orientation: each byte is one COLUMN, left to right; within a byte,
 // bit 0 (LSB) is the TOP pixel row and bit 6 the bottom row; bit 7 is unused.

@@ -10,7 +10,7 @@
   </style>
   <rect width="1120" height="780" fill="#fbfbfd"/>
   <text x="560" y="30" text-anchor="middle" class="title" font-size="20">Nimbus - Solide S3 pinout (TOUCH TFT variant)</text>
-  <text x="560" y="50" text-anchor="middle" class="note">ESP32-S3-DevKitC-1 N16R8 · screenModel=tft · the TFT REPLACES the e-paper AND the knob · source of truth: board_solide_s3.h</text>
+  <text x="560" y="50" text-anchor="middle" class="note">ESP32-S3-DevKitC-1 N16R8 · screenModel=tft · source of truth: board_solide_s3.h</text>
 
   <!-- MCU -->
   <rect x="455" y="300" width="210" height="180" rx="12" fill="#eef2ff" stroke="#4f46e5" stroke-width="2.5"/>
@@ -31,9 +31,9 @@
   <line class="lead" x1="790" y1="560" x2="665" y2="455"/>
 
   <!-- LEFT peripherals -->
-  <!-- Colour TFT + touch - REPLACES the e-paper on the same SPI3 pads. Display
-       and touch share SCK/MOSI/MISO (bridged on the module) and are separated by
-       their own chip selects. T_IRQ is left unconnected: touch is polled. -->
+  <!-- Colour TFT + touch on the SPI3 pads. Display and touch share
+       SCK/MOSI/MISO (bridged on the module) and are separated by their own chip
+       selects. T_IRQ is left unconnected: touch is polled. -->
   <rect x="70" y="80" width="360" height="154" rx="10" fill="#e0f2fe" stroke="#0284c7"/>
   <text x="82" y="102" class="title" fill="#075985">2.8" TFT ILI9341 + touch (SPI3)</text>
   <text x="82" y="122" class="pin">Display: SCK 42 · SDI 41 · SDO 1 · CS 38</text>
@@ -51,16 +51,16 @@
   <text x="82" y="290" class="pin">CS 10 · MOSI 11 · SCK 12 · MISO 13</text>
   <text x="82" y="308" class="rail">3.3 V · orch /mem store · needs shared GND</text>
 
-  <!-- The encoder is GONE on this variant: its three GPIOs are the panel's. -->
-  <rect x="70" y="328" width="330" height="170" rx="10" fill="#f8fafc" stroke="#94a3b8" stroke-dasharray="6 4"/>
-  <text x="82" y="350" class="title" fill="#475569">EC11 rotary encoder - NOT FITTED</text>
-  <text x="82" y="374" class="note">The TFT consumes all three encoder pins:</text>
-  <text x="82" y="396" class="pin">GPIO 1  was enc A     → touch MISO</text>
-  <text x="82" y="416" class="pin">GPIO 2  was enc B     → backlight (PWM)</text>
-  <text x="82" y="436" class="pin">GPIO 48 was enc SW    → touch CS</text>
+  <!-- Reachable-GPIO note: the panel consumes the one contiguous run. -->
+  <rect x="70" y="328" width="330" height="170" rx="10" fill="#f8fafc" stroke="#94a3b8"/>
+  <text x="82" y="350" class="title" fill="#475569">Reachable GPIOs</text>
+  <text x="82" y="374" class="note">The TFT + touch panel consumes:</text>
+  <text x="82" y="396" class="pin">GPIO 1   → touch MISO</text>
+  <text x="82" y="416" class="pin">GPIO 2   → backlight (PWM)</text>
+  <text x="82" y="436" class="pin">GPIO 48  → touch CS</text>
   <text x="82" y="462" class="note">Only the J3 header is reachable on the carrier, and</text>
   <text x="82" y="478" class="note">GPIO 35/36/37 (OCTAL PSRAM) split it - so those seven</text>
-  <text x="82" y="494" class="rail" fill="#b91c1c">signals are the one contiguous run. No knob is possible.</text>
+  <text x="82" y="494" class="rail" fill="#b91c1c">signals are the one contiguous run.</text>
 
   <!-- Battery sense (NEW) -->
   <rect x="70" y="520" width="300" height="100" rx="10" fill="#ffe4e6" stroke="#e11d48"/>
@@ -105,5 +105,5 @@
   <text x="300" y="696" class="pin">0·45·46 strapping · 19·20 USB · 43·44 UART0 · 26–32 flash · 33–37 OCTAL PSRAM</text>
   <text x="86" y="718" class="pin" fill="#15803d">FREE spares:</text>
   <text x="300" y="718" class="pin">3 · 5 · 6 · 9 · 14 - but ALL on the J1 header, which the carrier does not break out</text>
-  <text x="86" y="740" class="rail">GPIO 47 (was e-paper BUSY) is the only genuinely free reachable pin on this variant. Selected by screenModel in NVS; restart to apply.</text>
+  <text x="86" y="740" class="rail">GPIO 47 is the only genuinely free reachable pin on this variant. Selected by screenModel in NVS; restart to apply.</text>
 </svg>

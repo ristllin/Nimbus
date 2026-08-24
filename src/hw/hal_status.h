@@ -16,12 +16,7 @@ struct HalHealth {
   bool leds    = true;
   bool storage = true;
   bool memory  = true;
-  bool input   = true;   // encoder - absent BY DESIGN on a touch board
-  // Touch controller. Distinct from `input`: on a TFT board the encoder is not
-  // fitted (its pins are the panel's), so `input` being false is expected there
-  // and only `touch` reports a real fault.
-  bool touch   = true;
-  bool isTouchBoard = false;   // which of the two the device actually has
+  bool touch   = true;   // color touch panel (the only input device)
 };
 
 void            setHalHealth(const HalHealth& h);

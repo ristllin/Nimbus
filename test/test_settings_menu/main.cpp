@@ -38,7 +38,7 @@ static void test_open_close_visibility() {
   TEST_ASSERT_TRUE(m.isOpen());
   auto v = viewOf(m);
   TEST_ASSERT_TRUE(v.visible);
-  TEST_ASSERT_EQUAL(13, int(v.items.size()));  // Mode, Profile, Tune, Connectivity, Reset, LED theme, Sounds, Voice, Volume, Self-test, Battery, SD, Close
+  TEST_ASSERT_EQUAL(14, int(v.items.size()));  // Mode, Profile, Tune, Connectivity, Reset, LED theme, Sounds, Voice, Volume, Self-test, Battery, SD, Display flip, Close
   TEST_ASSERT_EQUAL(0, v.selected);
 
   m.close();
@@ -50,7 +50,7 @@ static void test_rotate_wraps() {
   Config c;
   SettingsMenu m(c);
   m.open();
-  const int n = 13;   // Main rows (incl. Self-test + Battery + SD)
+  const int n = 14;   // Main rows (incl. Self-test + Battery + SD + Display flip)
 
   cw(m, n);  // full loop
   TEST_ASSERT_EQUAL(0, viewOf(m).selected);
@@ -78,7 +78,7 @@ static void test_click_descends_back_ascends() {
   // Back ascends and restores the cursor to the Tune row.
   m.onLongPress();
   v = viewOf(m);
-  TEST_ASSERT_EQUAL(13, int(v.items.size()));
+  TEST_ASSERT_EQUAL(14, int(v.items.size()));
   TEST_ASSERT_EQUAL(2, v.selected);
 
   // Long-press at Main closes.
@@ -301,7 +301,7 @@ static void test_reset_clears_all_overrides() {
   TEST_ASSERT_EQUAL(presetValue(ProfileId::Balanced, Param::RingFps),
                     c.effective(Param::RingFps));
   // Back at Main.
-  TEST_ASSERT_EQUAL(13, int(viewOf(m).items.size()));
+  TEST_ASSERT_EQUAL(14, int(viewOf(m).items.size()));
 }
 
 // The Sounds/Voice rows cycle in place (no submenu) and mark the menu dirty,
@@ -607,7 +607,7 @@ static void test_wifi_row_opens_the_wifi_screen() {
   TEST_ASSERT_EQUAL(0, viewOf(m).selected);
 }
 
-// Copy is a contract on this surface: printable ASCII (the e-ink 5x7 font is
+// Copy is a contract on this surface: printable ASCII (the 5x7 font is
 // 32-126), <=48 chars a line, "Wi-Fi" never "WiFi", sentence case.
 static void test_wifi_menu_rows_wording() {
   Config c;
@@ -750,7 +750,7 @@ static void test_wifi_pick_raises_join_with_the_right_ssid() {
 }
 
 // Nothing in range is the case that MUST still have a way out: the picker keeps
-// its Back row (never an empty screen the knob cannot leave) and the help pane
+// its Back row (never an empty screen a gesture cannot leave) and the help pane
 // says what to do instead.
 static void test_wifi_pick_empty_shows_back_only() {
   Config c;
@@ -846,7 +846,7 @@ static void test_view_marks_overrides_and_selected() {
 // --- breadcrumb titles -------------------------------------------------------
 
 // Every screen titles itself with its full breadcrumb path (ASCII '>'
-// separators - the e-ink font is 32-126 only) so the user always knows where
+// separators - the font is 32-126 only) so the user always knows where
 // they are. Exact-match per state.
 static void test_titles_are_breadcrumb_paths() {
   Config c;
@@ -865,10 +865,10 @@ static void test_titles_are_breadcrumb_paths() {
   TEST_ASSERT_EQUAL_STRING("Settings > Customize > Ring level", viewOf(m).title.c_str());
   m.onLongPress();        // back to TuneList
 
-  // Edit title carries the edited param's name; check the longest one too.
-  while (viewOf(m).selected != int(Param::FullRefreshEveryN)) m.onRotate(+1);
+  // Edit title carries the edited param's name; check a long one too.
+  while (viewOf(m).selected != int(Param::TelemetryPeriodS)) m.onRotate(+1);
   m.onClick();
-  TEST_ASSERT_EQUAL_STRING("Settings > Customize > Ghost-clear interval",
+  TEST_ASSERT_EQUAL_STRING("Settings > Customize > On-screen status refresh",
                            viewOf(m).title.c_str());
   m.onLongPress();        // back to TuneList
   m.onLongPress();        // back to Main, cursor on the Tune row (2)
@@ -906,9 +906,9 @@ static void test_main_row_says_power_profile() {
 
 // --- parity rows (Screensaver / Software update / voice providers) -----------
 
-// The Screensaver row cycles the bucket table Off -> 15 min -> 30 min -> 1 hr
-// -> 2 hr -> 4 hr -> Off, dirtying on every step; an in-between value seeded by
-// the console snaps to the next bucket up on the first click.
+// The Screensaver row cycles the color-panel bucket table
+// Off -> 1 -> 2 -> 5 -> 10 -> 15 -> 30 -> 1 hr -> Off, dirtying on every step; an
+// in-between value seeded by the console snaps to the next bucket up on the first click.
 static void test_saver_cycle_and_snap() {
   Config c;
   SettingsMenu m(c);
@@ -918,14 +918,14 @@ static void test_saver_cycle_and_snap() {
   TEST_ASSERT_TRUE(contains(viewOf(m).items[6], "Screensaver: Off"));
   m.clearDirty();
   m.onClick();
-  TEST_ASSERT_EQUAL(15, m.saverMinutes());
+  TEST_ASSERT_EQUAL(1, m.saverMinutes());
   TEST_ASSERT_TRUE(m.dirty());
-  TEST_ASSERT_TRUE(contains(viewOf(m).items[6], "15 min"));
-  m.onClick(); m.onClick();
-  TEST_ASSERT_EQUAL(60, m.saverMinutes());
+  TEST_ASSERT_TRUE(contains(viewOf(m).items[6], "1 min"));
+  m.onClick(); m.onClick();                        // 1 -> 2 -> 5
+  TEST_ASSERT_EQUAL(5, m.saverMinutes());
+  TEST_ASSERT_TRUE(contains(viewOf(m).items[6], "5 min"));
+  while (m.saverMinutes() != 60) m.onClick();      // advance to the 1 hr bucket
   TEST_ASSERT_TRUE(contains(viewOf(m).items[6], "1 hr"));
-  m.onClick(); m.onClick();
-  TEST_ASSERT_EQUAL(240, m.saverMinutes());
   m.onClick();                                     // wraps to Off
   TEST_ASSERT_EQUAL(0, m.saverMinutes());
   // A console-set 45 shows as raw minutes and snaps up to 60 on click.
@@ -1036,7 +1036,7 @@ static void test_help_text_per_state() {
   TEST_ASSERT_EQUAL_STRING("", m.helpText());  //   no pane
   cw(m, 4);                                    // row 6 Sounds
   TEST_ASSERT_FALSE(std::string(m.helpText()).empty());  //   has help
-  cw(m, 7);                                    // wrap back to row 0 (Mode; 13 rows now)
+  cw(m, 8);                                    // wrap back to row 0 (Mode; 14 rows now)
 
   cw(m, 1); m.onClick();                       // ProfilePick (from row 1)
   TEST_ASSERT_FALSE(std::string(m.helpText()).empty());  // per-profile description
@@ -1090,7 +1090,7 @@ static void test_help_text_per_state() {
   TEST_ASSERT_EQUAL_STRING("", m.helpText());
 }
 
-// Every string the menu ever shows must be printable ASCII (32-126): the e-ink
+// Every string the menu ever shows must be printable ASCII (32-126): the panel
 // 5x7 font renders anything else as '?', so one UTF-8 arrow becomes three '?'s
 // on the physical panel (observed live - the "many ???" bug). Walk EVERY menu
 // state (main, profile pick, tune list, every param's edit incl. adjusting,
@@ -1114,7 +1114,7 @@ static void test_fw_version_in_main_title() {
   m.setFwVersion("v2.0.0");
   TEST_ASSERT_EQUAL_STRING("Settings  v2.0.0", viewOf(m).title.c_str());
   for (unsigned char ch : viewOf(m).title)
-    TEST_ASSERT_TRUE(ch >= 32 && ch <= 126);   // e-ink 5x7 font: printable ASCII only
+    TEST_ASSERT_TRUE(ch >= 32 && ch <= 126);   // 5x7 font: printable ASCII only
   // Submenu breadcrumbs stay unversioned (band width is the deep path's budget).
   while (viewOf(m).selected != 3) m.onRotate(+1);
   m.onClick();
@@ -1151,7 +1151,7 @@ static void test_all_views_are_printable_ascii() {
 
   // Wi-Fi escape hatch. An SSID is arbitrary bytes broadcast by someone else's
   // router, so seed UTF-8 (and an over-long) name and prove the FSM sanitises
-  // + clips it - every consumer of view() must be safe, not just the e-ink
+  // + clips it - every consumer of view() must be safe, not just the panel
   // renderer. The RAW bytes still have to reach the radio, so the picked SSID
   // is checked against the original.
   m.setWifiScan({"caf\xC3\xA9-guest", "\xE2\x9C\x93 tick net",
@@ -1219,13 +1219,11 @@ static void test_selftest_battery_fullscreen() {
   TEST_ASSERT_EQUAL(10, viewOf(m).selected);
 }
 
-// Display flip (TFT only): the row shows just before Done on TFT, is hidden on
-// e-ink, and toggling it dirties + updates the label. Guards the conditional-row
-// remap (mainRowAt) that the new RowFlip introduced.
+// Display flip: the row shows just before Done, and toggling it dirties +
+// updates the label.
 static void test_flip_row_present_on_tft() {
   Config c;
   SettingsMenu m(c);
-  m.setScreenIsTft(true);
   m.setScreenFlip(false);
   m.open();
   auto v = viewOf(m);
@@ -1234,21 +1232,9 @@ static void test_flip_row_present_on_tft() {
   TEST_ASSERT_EQUAL_STRING("Display flip: Off", v.items[n - 2].c_str());
 }
 
-static void test_flip_row_hidden_on_eink() {
-  Config c;
-  SettingsMenu m(c);
-  m.setScreenIsTft(false);   // e-ink: no flip row
-  m.open();
-  auto v = viewOf(m);
-  TEST_ASSERT_EQUAL_STRING("Done", v.items[v.items.size() - 1].c_str());
-  for (const auto& s : v.items)
-    TEST_ASSERT_TRUE(s.find("Display flip") == std::string::npos);
-}
-
 static void test_flip_toggle_dirties_and_labels() {
   Config c;
   SettingsMenu m(c);
-  m.setScreenIsTft(true);
   m.setScreenFlip(false);
   m.open();
   const int flipIdx = int(viewOf(m).items.size()) - 2;   // just before Done
@@ -1301,7 +1287,6 @@ int main() {
   RUN_TEST(test_main_row_says_power_profile);
   RUN_TEST(test_help_text_per_state);
   RUN_TEST(test_flip_row_present_on_tft);
-  RUN_TEST(test_flip_row_hidden_on_eink);
   RUN_TEST(test_flip_toggle_dirties_and_labels);
   return UNITY_END();
 }

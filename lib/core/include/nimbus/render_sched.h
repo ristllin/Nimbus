@@ -1,15 +1,13 @@
 #pragma once
 #include <cstdint>
 
-// epd_sched - the e-ink render scheduler, a pure FSM designed around the
-// measured panel reality (fast B/W ≈ 2.2 s, grey partial ≈ 0.75 s, 3-color
-// ≈ 18.5 s). It decides WHEN to render and at what refresh kind; WHAT a screen
-// looks like is epd_render's job, and WHICH screen matters is the attention
-// router's. The caller owns the panel: it executes at most one RenderCommand
-// at a time and reports completion via onRenderDone().
+// screen_sched - the render scheduler, a pure FSM. It decides WHEN to render;
+// WHAT a screen looks like is the renderer's job, and WHICH screen matters is
+// the attention router's. The caller owns the panel: it executes at most one
+// RenderCommand at a time and reports completion via onRenderDone().
 //
 // Behavior contract (each host-tested):
-//  - Dwell: encoder detents never render. dwellMs after the LAST detent, the
+//  - Dwell: cursor detents never render. dwellMs after the LAST detent, the
 //    detail screen becomes due. New detents during panel-busy re-arm the dwell.
 //  - Latest-wins: exactly one pending slot. A newer request (any source)
 //    replaces the pending one; nothing queues deeper.
@@ -17,13 +15,12 @@
 //    coalesce window) - but still wait for a busy panel to free.
 //  - Coalescing: non-attention (ambient) intents sit in the pending slot until
 //    the coalesce window since the last COMPLETED ambient render elapses.
-//  - Ghosting: every fullEveryN completed fast/partial renders, the next
-//    command is upgraded to fullClear (a full standard-waveform refresh);
-//    the counter then resets. Invisible to callers.
-//  - Color renders (idle art) are only issued when explicitly requested and
-//    never upgrade or count toward ghosting.
+//
+// `Kind` and the fullClear refresh-upgrade counter are a legacy of slow-panel
+// support: a fast color panel repaints in ~31 ms and ignores both. They are
+// retained so the FSM contract and its host tests stay byte-stable.
 
-namespace nimbus::epd {
+namespace nimbus::render {
 
 enum class Kind : uint8_t { FastBW = 0, Partial = 1, Color = 2 };
 
@@ -31,7 +28,7 @@ struct RenderCommand {
   bool    render = false;   // false: nothing to do this tick
   uint8_t screenId = 0;
   Kind    kind = Kind::FastBW;
-  bool    fullClear = false;  // ghosting upgrade: use the full clear waveform
+  bool    fullClear = false;  // refresh-upgrade hint (legacy; fast panel ignores)
 };
 
 struct SchedConfig {
@@ -91,4 +88,4 @@ class Scheduler {
   bool     lastIssuedCounts_ = false;  // fast/partial (not color) → ghost counter
 };
 
-}  // namespace nimbus::epd
+}  // namespace nimbus::render

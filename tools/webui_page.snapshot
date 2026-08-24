@@ -1006,7 +1006,7 @@ let _signinMigrated=false;
 })();
 // An unauthenticated tab must STOP polling. Every token-gated GET (state/orch/
 // health/telegram/mem) 401s without a valid token, and the device treats a burst
-// of 401s as "someone wants to configure" and parks the e-ink on the Config QR -
+// of 401s as "someone wants to configure" and parks the panel on the Config QR -
 // which permanently blocked the idle screensaver from arming (owner: "a full
 // night, no logo"). canPoll() gates every background poll; a successful identify
 // reloads the page so polling resumes clean. Set on no-token or the first 401.
@@ -1670,8 +1670,8 @@ function applyState(d){
     const mv=+b.dataset.m; b.classList.toggle('on',mv===d.mode); b.classList.toggle('nf',mv===0);
     b.onclick=()=>{ if(mv!==d.mode) switchMode(mv); };
   });}
-  // Display is touch-only now (e-ink deprecated); the panel selector was retired,
-  // so only the 180-degree flip remains a runtime choice.
+  // The display is a color touch panel; the panel selector was retired, so only
+  // the 180-degree flip remains a runtime choice.
   const sf=$('scrFlip');
   if(sf&&document.activeElement!==sf){sf.checked=!!d.scrFlip;
     sf.onchange=()=>{const f=new FormData();f.append('scrFlip',sf.checked?'1':'0');
@@ -3685,7 +3685,7 @@ function loadChatHistory(){
     if(trace.length)_traceGroup(log,trace);
     // Orphans: a turn still in flight, or whose reply row fell outside this page.
     Object.keys(byTurn).forEach(k=>_traceGroup(log,byTurn[k]));
-    if(!any)log.innerHTML='<p class=hint>No conversation yet - say something below, message the bot on Telegram, or hold the knob to talk.</p>';
+    if(!any)log.innerHTML='<p class=hint>No conversation yet - say something below, message the bot on Telegram, or hold the mic button to talk.</p>';
     log.scrollTop=log.scrollHeight;
   }).catch(()=>{});
 }
@@ -3777,10 +3777,10 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
   ];
   let idx=0, wifiOk=false, provOk=false, pendingMode=null, curMode=0, scanTimer=null, onbProvider='';
   let handoffProbe=null;
-  // Display step: bootDisp is what the device booted with (a TFT board that was
-  // never told it has a TFT boots "eink" and shows a white panel - this step is
-  // how a blind-boot board gets fixed). dispSel is the owner's saved choice.
-  let bootDisp='eink', dispSel=null;
+  // Display step: bootDisp is the display the device booted with. A unit whose
+  // stored setting still reads the deprecated value is nudged to its touch panel
+  // here. dispSel is the owner's saved choice.
+  let bootDisp='tft', dispSel=null;
   const dispChanged=()=>dispSel!==null&&dispSel!==bootDisp;
   const el=id=>document.getElementById(id);
   const msg=t=>{el('onbMsg').textContent=t||'';};
@@ -3839,10 +3839,10 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
   function next(){ idx=Math.min(idx+1,STEPS.length-1);rememberStep();render(); }
   function wire(s){
     if(s.id==='display'){
-      // New devices are touch screens; a board that booted blind (reported eink)
-      // is set to its touch panel here so its own screen can render. E-ink is
-      // deprecated and no longer offered. Then the 180-degree flip for upside-down
-      // mounts applies live.
+      // The display is a color touch panel; a unit whose stored setting still
+      // reads the deprecated value is set to its touch panel here so its own
+      // screen can render. Then the 180-degree flip for upside-down mounts
+      // applies live.
       if(bootDisp!=='tft'){orchApply({scrModel:'tft'}).then(ok=>{if(ok)dispSel='tft';});}
       const fl=el('onb_flip');
       if(fl){fl.onchange=()=>{const fd=new FormData();fd.append('scrFlip',fl.checked?'1':'0');
@@ -4010,7 +4010,7 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
   // Kick off: only when we have a token (a fresh AP device gets one via /?t=).
   function maybeStart(){
     if(!nimbusTok())return;
-    fetch('/api/state').then(r=>r.json()).then(s=>{curMode=s.mode||0;bootDisp=s.scrModel||'eink';if(s.needsOnboarding){
+    fetch('/api/state').then(r=>r.json()).then(s=>{curMode=s.mode||0;bootDisp=s.scrModel||'tft';if(s.needsOnboarding){
       const requested=new URLSearchParams(location.search).get('onboard');
       if(requested==='provider')idx=STEPS.findIndex(x=>x.id==='provider');
       else try{const saved=+localStorage.getItem('nimbusOnboardStep');if(saved>=0&&saved<STEPS.length)idx=saved;}catch(e){}

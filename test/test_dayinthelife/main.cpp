@@ -4,17 +4,17 @@
 #include <vector>
 
 #include "nimbus/attention.h"
-#include "nimbus/epd_sched.h"
+#include "nimbus/render_sched.h"
 #include "nimbus/profile.h"
 #include "nimbus/ring_plan.h"
 #include "nimbus_config.h"
 
 // "Day in the life" (the HIL test spec): a scripted event stream driven through the
 // SAME three portable modules the device loop wires together -
-//   attention::Router  (semantic events -> EpdIntent + ring-dirty)
+//   attention::Router  (semantic events -> ScreenIntent + ring-dirty)
 //   ring::compose       (router state + cfg + cursor -> ring Plan)
-//   epd::Scheduler      (EpdIntents/detents -> timed RenderCommands)
-// - asserting the EXACT ring plans + e-ink RenderCommand sequence over time as
+//   render::Scheduler      (ScreenIntents/detents -> timed RenderCommands)
+// - asserting the EXACT ring plans + RenderCommand sequence over time as
 // jobs appear/progress/complete, attention fires, and posture/profile change.
 //
 // This is the integration gap the 189 unit tests missed (the HIL test spec): each
@@ -25,21 +25,21 @@
 //
 // The event->scheduler wiring mirrors src/main.cpp exactly:
 //   Decision d = router.route(e, now);
-//   if (d.epd.render) sched.onIntent(uint8_t(d.epd.screen), d.epd.attention, now);
+//   if (d.screen.render) sched.onIntent(uint8_t(d.screen.id), d.screen.attention, now);
 // and the ring is composed from the router + cfg + cursor at the same instants.
 
 using namespace nimbus;
 using solide::ring::Status;
 using attn::ScreenId;
-using epd::Kind;
-using epd::RenderCommand;
+using render::Kind;
+using render::RenderCommand;
 
 void setUp() {}
 void tearDown() {}
 
 namespace {
 
-// One issued e-ink command, tagged with the millisecond it fired.
+// One issued render command, tagged with the millisecond it fired.
 struct Issued {
   uint32_t atMs;
   uint8_t  screen;
@@ -52,7 +52,7 @@ struct Issued {
 // like a timeline of real user/agent activity.
 struct Device {
   attn::Router  router;
-  epd::Scheduler sched;
+  render::Scheduler sched;
   ring::Cursor  cursor;
   Config        cfg;
   std::vector<Issued> issued;
@@ -62,21 +62,20 @@ struct Device {
     applyProfileToSched();
   }
 
-  // Push the active profile's e-ink windows into the scheduler, exactly as the
+  // Push the active profile's render windows into the scheduler, exactly as the
   // device does on a profile switch (main.cpp applies cfg -> SchedConfig).
   void applyProfileToSched() {
-    epd::SchedConfig sc;
+    render::SchedConfig sc;
     sc.dwellMs    = uint32_t(cfg.effective(Param::DwellMs));
-    sc.coalesceMs = uint32_t(cfg.effective(Param::EpdCoalesceMs));
-    sc.fullEveryN = uint8_t(cfg.effective(Param::FullRefreshEveryN));
+    sc.coalesceMs = uint32_t(cfg.effective(Param::CoalesceMs));
     sched.configure(sc);
   }
 
-  // Route one semantic event and feed the resulting EpdIntent to the scheduler.
+  // Route one semantic event and feed the resulting ScreenIntent to the scheduler.
   attn::Decision emit(const attn::Event& e, uint32_t now) {
     attn::Decision d = router.route(e, now);
-    if (d.epd.render)
-      sched.onIntent(uint8_t(d.epd.screen), d.epd.attention, now);
+    if (d.screen.render)
+      sched.onIntent(uint8_t(d.screen.id), d.screen.attention, now);
     return d;
   }
 
@@ -163,8 +162,8 @@ void assertTrace(const std::vector<Issued>& expected,
 //            StatusIdle immediately; panel busy 2214 ms (measured fast B/W).
 //   t=5000   job #2 asks for approval (attention) - Badge bypasses the coalesce
 //            window and renders as soon as the panel is free.
-//   t=20000  user turns the knob 3x to inspect - cursor moves instantly on the
-//            ring; e-ink JobDetail renders 300 ms after the LAST detent.
+//   t=20000  user steps the cursor 3x to inspect - cursor moves instantly on the
+//            ring; JobDetail renders 300 ms after the LAST detent.
 //   t=40000  job #2 approved -> Running again (ambient); job #1 completes (Done).
 //   t=60000  both jobs go Offline - ring empties.
 // Asserts the exact RenderCommand sequence AND the ring Plan (segCount, per-job
@@ -204,7 +203,7 @@ static void test_desk_session_active_jobs_attention_and_cursor() {
   dev.run(5000, 5000);    // Badge (attention) fires immediately
   dev.done(5000 + 2214);
 
-  // -- t=20000: user inspects with the knob. Ring cursor is INSTANT; e-ink
+  // -- t=20000: user inspects with the cursor. Ring cursor is INSTANT; the panel
   //    JobDetail waits dwell (300 ms) after the last detent. --
   dev.detent(+1, 20000);
   dev.detent(+1, 20100);
@@ -242,7 +241,7 @@ static void test_desk_session_active_jobs_attention_and_cursor() {
     TEST_ASSERT_FALSE(p.single.lit);
   }
 
-  // Exact e-ink sequence over the whole session. Screens:
+  // Exact render sequence over the whole session. Screens:
   //   StatusIdle=0, JobDetail=1, Badge=2. Desk fullEveryN=8 so no ghost upgrade
   //   inside these 4 renders.
   assertTrace(
@@ -259,7 +258,7 @@ static void test_desk_session_active_jobs_attention_and_cursor() {
 // Passive posture (Balanced) - the F2 scenario as a positive/negative pair:
 // with no jobs the ring is DARK (looks dead but is correct), then a single
 // attention job lights exactly ONE LED with the state hue, and voice takes it
-// over while live. Also proves the attention EpdIntent still schedules a Badge.
+// over while live. Also proves the attention ScreenIntent still schedules a Badge.
 // ============================================================================
 static void test_passive_single_led_attention_and_voice_takeover() {
   Device dev;  // Balanced: Passive, brightness 30, coalesce 30000
@@ -371,7 +370,7 @@ static void test_profile_switch_flips_ring_representation_live() {
     TEST_ASSERT_TRUE(p.single.lit);
     TEST_ASSERT_EQUAL_UINT8(32, p.single.hue);
   }
-  // The initial Badge is the only e-ink render in this short window.
+  // The initial Badge is the only render in this short window.
   assertTrace({{0, uint8_t(ScreenId::StatusIdle), Kind::FastBW, false}}, dev.issued);
 }
 

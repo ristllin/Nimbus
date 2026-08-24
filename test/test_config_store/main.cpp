@@ -28,7 +28,7 @@ static void test_roundtrip_sparse_overrides() {
   c.setProfile(ProfileId::Balanced);
   c.setOverride(Param::RingBrightness, 77);
   c.setOverride(Param::AttnLedIndex, 22);
-  c.setOverride(Param::EpdCoalesceMs, 45000);
+  c.setOverride(Param::CoalesceMs, 45000);
   c.setOverride(Param::AttnHue, -1);  // negative value survives (i32)
 
   uint8_t buf[kConfigMaxBytes];
@@ -41,7 +41,7 @@ static void test_roundtrip_sparse_overrides() {
   TEST_ASSERT_TRUE(out.hasOverride(Param::RingBrightness));
   TEST_ASSERT_EQUAL(77, out.effective(Param::RingBrightness));
   TEST_ASSERT_EQUAL(22, out.effective(Param::AttnLedIndex));
-  TEST_ASSERT_EQUAL(45000, out.effective(Param::EpdCoalesceMs));
+  TEST_ASSERT_EQUAL(45000, out.effective(Param::CoalesceMs));
   TEST_ASSERT_EQUAL(-1, out.effective(Param::AttnHue));
   // A non-overridden param falls back to the (Balanced) preset.
   TEST_ASSERT_FALSE(out.hasOverride(Param::RingFps));

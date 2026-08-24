@@ -265,7 +265,7 @@ def test_capacitive_touch_registers_a_finger(device, require_manual):
 def test_suite_excludes_the_solide_board(device):
     """NON-REGRESSION: this Freenove suite must NEVER assert against a Solide board.
 
-    Deliberately inverted, mirroring test_l21's e-ink control: pointed at a
+    Deliberately inverted, an inverted-guard control: pointed at a
     non-Freenove board it SKIPS loudly (proving the ``_require_board`` guard keeps
     the whole file off the wrong hardware); on the Freenove it confirms the guard
     admits the board and the slug is stable.

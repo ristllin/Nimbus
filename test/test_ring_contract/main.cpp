@@ -1,6 +1,6 @@
 // test_ring_contract - golden-frame CONTRACT tests for the LED pipeline.
 //
-// Born from the 2026-07 UX audit: the e-ink pipeline has golden-image tests and
+// Born from the 2026-07 UX audit: the render pipeline has golden-image tests and
 // produced almost no layer-drift bugs; the LED pipeline had none and produced
 // all of them (idle rendered RED via the missed 255-white sentinel, brightness
 // applied twice, the Done ripple latching terminal, unscaled separators). These

@@ -11,7 +11,7 @@
 // glue (src/hw/ring_out.cpp) turns Plans into pixels via solide::leds.
 //
 // Division of labor (the brief): the ring is INSTANT. Detents move the cursor
-// on LEDs immediately; the e-ink follows after dwell. While the panel is busy
+// on LEDs immediately; the panel follows after dwell. While the panel is busy
 // rendering, the cursor LED shows a "panel syncing" shimmer.
 //
 // Ring levels (Posture{Dark,Calm,Full}):
@@ -91,7 +91,7 @@ class Cursor {
  public:
   // dir: +1 / -1 detents. Position wraps around ledCount.
   void onDetent(int dir, int ledCount, uint32_t nowMs);
-  // Jump straight to a position. A knob can only ever step, but a TAP names its
+  // Jump straight to a position. A step only ever moves by one, but a TAP names its
   // target directly, so touch needs an absolute set. Same bookkeeping as a
   // detent (clamped, marks the cursor active) so the ring's locate cue behaves
   // identically however the cursor moved.

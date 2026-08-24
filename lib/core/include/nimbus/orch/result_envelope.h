@@ -49,7 +49,7 @@ struct ResultEnvelope {
   char     jobId[96]   = {};  // "backend:remoteId"; empty for inline
   char     backend[16] = {};  // "anthropic" | "openai" | "mistral"
   char     category[16]= {};  // "code" | "research" | "ops"
-  char     thinking[128]={};  // short rationale for e-paper
+  char     thinking[128]={};  // short rationale for the panel
   char     reply[16384] = {}; // main text result. 1024 -> 4096 (owner R5f) ->
                               // 16384 (v4.0.0: a sub-agent can RETURN a whole
                               // document; auto-persist + the results ring carry

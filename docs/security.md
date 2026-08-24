@@ -72,7 +72,7 @@ server - findings are weighted by real reachability.
   Scratchpad / episodic access across the AsyncTCP web/MCP task + the Telegram turn
   task (fixes an iterator-invalidation / heap-corruption race). Never held across a
   blocking TLS embed.
-- **Notifier BLE link is bonded + encrypted.** In Notifier mode the ring/e-ink are
+- **Notifier BLE link is bonded + encrypted.** In Notifier mode the ring/screen are
   driven only over BLE. The GATT server requires a **bonded, encrypted** link (LE
   Secure Connections, Just Works) to write frames (`WRITE_ENC` on FRAME) or read/write
   CONFIG - so an unbonded central in RF range can connect and read the ungated STATUS
@@ -218,11 +218,11 @@ one on the first boot after the update. Its setup network only matters after a
 factory reset or when Wi-Fi is lost - from this update on, the setup network
 password is **the one shown on the device's screen**, not `nimbus1234`.
 
-The setup AP exists only in **Orchestrator** mode; Notifier keeps Wi-Fi off. On an
-e-ink Orchestrator it stays reachable, while a TFT Orchestrator drops it after STA
-gets an IP (to protect the panel from the beacon train) and restores it whenever
-STA is down. A new or disconnected Orchestrator therefore still exposes the setup
-AP - now gated on the per-device passphrase.
+The setup AP exists only in **Orchestrator** mode; Notifier keeps Wi-Fi off. An
+Orchestrator drops the setup AP after STA gets an IP (to protect the panel from the
+beacon train) and restores it whenever STA is down. A new or disconnected
+Orchestrator therefore still exposes the setup AP - now gated on the per-device
+passphrase.
 
 **TFT first-run handoff is bounded and authenticated.** `/savewifi` arms a maximum
 20-second AP+STA overlap instead of allowing `GOT_IP` to cut off the response. The
@@ -245,9 +245,6 @@ mirroring the `/savewifi` bootstrap exception. Once Wi-Fi is configured, an AP p
 knows the AP password lands on the token-less identify gate like any LAN peer, so
 RF range alone no longer grants full control. (Before this, the AP handed the
 full-control token to anyone who joined with the then-shipped `nimbus1234`.)
-
-**Remaining (deferred):** consider applying the TFT's post-join AP teardown to
-e-ink devices.
 
 ## Reporting-only (not acted on)
 

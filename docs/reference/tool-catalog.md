@@ -240,7 +240,7 @@ Notes:
   cheap); SD- and OpenAI-key-gated. The saved PNG is a first-class `Image` artifact:
   `files.list`/`files.search`/`files.send` all see it, and `files.send` delivers it
   as an inline Telegram photo. `describe:true` adds a vision read-back (a second
-  provider call). **Hardware-verified** end-to-end on an e-ink board (a 1024×1024
+  provider call). **Hardware-verified** end-to-end on-device (a 1024×1024
   gpt-image-1 PNG generated → saved intact → delivered). **Out of scope on this
   device:** embedding images into PDFs (no PDF engine), email attachments (no
   outbound email send exists), and in-turn multimodal vision beyond describe-once - a

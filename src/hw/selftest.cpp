@@ -90,16 +90,9 @@ std::vector<SelfTestItem> runSelfTest(const SelfTestInputs& in, bool audible) {
                               : "status LED begin() failed"));
   else
     r.push_back(capItem("led", in.halLeds, nimbus::fault::LED));
-  // ⚠ On a touch board the encoder is NOT fitted - the TFT consumes its pins -
-  // so halInput is false BY DESIGN and reporting FAIL slandered healthy
-  // hardware (the same class as the heap false-FAIL fixed in 9d18d06). Report
-  // whichever input device the board actually has.
-  if (in.halTouchBoard)
-    r.push_back(mk("input", in.halTouch ? St::Pass : St::Fail,
-                   in.halTouch ? "touch up" : "touch controller not responding"));
-  else
-    r.push_back(mk("input", in.halInput ? St::Pass : St::Fail,
-                   in.halInput ? "encoder up" : "boot begin() failed"));
+  // Input is the color touch panel (the only fitted input device).
+  r.push_back(mk("input", in.halTouch ? St::Pass : St::Fail,
+                 in.halTouch ? "touch up" : "touch controller not responding"));
   r.push_back(capItem("memory", in.halMemory, nimbus::fault::MEMORY));
 
   // ---- battery --------------------------------------------------------------

@@ -15,8 +15,8 @@ body:
     attributes:
       label: Hardware configuration
       options:
-        - E-ink + knob
-        - Touch TFT
+        - Nimbus board (TFT + ring)
+        - Freenove touch TFT
         - Not device-related
     validations:
       required: true

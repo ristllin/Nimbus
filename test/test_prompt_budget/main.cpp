@@ -80,7 +80,7 @@ static std::vector<ToolInfo> deviceShapedTools() {
 static Hardware deviceHw() {
   Hardware hw;
   hw.deviceName = "Nimbus-4";
-  hw.ring = true; hw.touch = true; hw.eink = false; hw.encoder = false;
+  hw.ring = true; hw.touch = true;
   hw.mic = hw.speaker = hw.battery = hw.sd = true;
   hw.wifi = hw.telegram = hw.files = true;
   hw.ledCount = 45;

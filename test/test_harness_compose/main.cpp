@@ -84,7 +84,7 @@ static ComposeInputs cannedInputs() {
   in.hostLabel = "anthropic / model-anthropic";
   in.directive = "Serve the owner. Be terse.";
   in.runningMemory = "owner is testing the harness";
-  in.hw.ring = in.hw.eink = in.hw.encoder = in.hw.mic = in.hw.speaker = true;
+  in.hw.ring = in.hw.touch = in.hw.mic = in.hw.speaker = true;
   in.hw.sd = in.hw.wifi = in.hw.telegram = true;
   in.hw.files = true;
   in.loopOn = true;

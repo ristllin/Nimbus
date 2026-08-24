@@ -7,12 +7,12 @@ description: "A DIY ESP32-S3 desk device - an ambient status light for AI coding
 
 # Nimbus
 
-<!-- HERO PHOTO PLACEHOLDER: assembled device on a desk, ring lit, e-ink
+<!-- HERO PHOTO PLACEHOLDER: assembled device on a desk, ring lit, screen
      showing the status screen. Drop the image into website/static/img/ and
      embed it here (another workstream is shooting hardware photos). -->
 
 Nimbus is a small, battery-capable desk device you build yourself: a 45-LED
-light ring, a display (e-ink or color touchscreen), and a microphone +
+light ring, a color touchscreen, and a microphone +
 speaker on an ESP32-S3. It sits at the edge of your attention and uses light
 first, screen second, sound last - dark and silent until something actually
 needs you.
@@ -57,17 +57,17 @@ air with signed releases.
 
 ## Two display builds
 
-A Nimbus is assembled in one of two display/input configurations. Both run
-the **same firmware** - a single setting, read once at boot, selects the
-drivers.
+A Nimbus is built in one of two display configurations. The hand-built Solide S3
+drives a color touchscreen alongside its LED ring; the Freenove CYD is an
+off-the-shelf all-in-one module.
 
 | Configuration | Display | Input |
 |---|---|---|
-| **[E-paper + knob](guides/hardware.md)** *(default)* | 2.9" e-ink (SSD1680) | Rotary knob (EC11) |
-| **[Touch TFT](guides/hardware-touch-tft.md)** | 2.8" color touchscreen (ILI9341, 240×320) | Resistive touch (XPT2046) |
+| **[Touch TFT](guides/hardware-touch-tft.md)** (Solide S3) | 2.8" color touchscreen (ILI9341, 240×320) | Resistive touch (XPT2046) |
+| **[All-in-one (Freenove CYD)](guides/hardware-all-in-one-cyd.md)** | 2.8" color touchscreen (ILI9341, 240×320) | Capacitive touch |
 
-The touchscreen consumes the knob's pins, so a board is only ever one or the
-other. Everything else - ring, audio, SD card, battery - is common to both.
+Everything else - ring, audio, SD card, battery - is common. Pinouts and wiring:
+[hardware reference](guides/hardware.md).
 
 ## Where to go
 

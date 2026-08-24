@@ -2,14 +2,14 @@
 #include <cstdint>
 
 #include "nimbus/attention.h"
-#include "nimbus/epd_render/screens.h"
+#include "nimbus/render_context.h"
 #include "nimbus/tft_render/screens.h"
 
 // tft_out - device glue from the portable RGB565 renderer to the ILI9341.
 //
 // The colour counterpart of epd_out. Two differences, both from the hardware:
 //   - the framebuffer is 150 KB, so it lives in PSRAM (never the ~300 KB
-//     internal SRAM - the same lesson as the e-ink buffers and the SFX queue);
+//     internal SRAM - the same lesson as the earlier buffers and the SFX queue);
 //   - the panel refreshes in ~31 ms rather than 2.2 s, so there is no dwell or
 //     ghosting machinery. A dirty-gate is still worth it: it saves the SPI
 //     traffic and, more importantly, keeps the shared bus free for touch.
@@ -31,14 +31,14 @@ enum class Push : uint8_t {
 // retained on Pushed - hitTest() below queries them, so the input path never
 // recomputes layout. On Unchanged the existing regions already describe this
 // frame; on Dropped they still describe the older frame that IS on the panel.
-Push renderAndPush(nimbus::attn::ScreenId screen, const nimbus::epd::ScreenCtx& ctx);
+Push renderAndPush(nimbus::attn::ScreenId screen, const nimbus::render::ScreenCtx& ctx);
 
 // Repaint ONLY the on-screen ring rectangle (ringless-board Notifier screen) from
 // the given StatusIdle context, at animation cadence. Composes the frame in RAM
 // and region-pushes just the ring square via display_tft::pushRegion, so the ring
 // animates smoothly without the ~31 ms full-frame blit. Returns false if not ready,
 // busy, or the frame has no ring. MUST be called on the main task (see ring_out).
-bool repaintRingRegion(const nimbus::epd::ScreenCtx& ctx);
+bool repaintRingRegion(const nimbus::render::ScreenCtx& ctx);
 
 // The bytes of the frame currently ON THE PANEL (big-endian RGB565, kFbBytes),
 // or null before the first push. This is the dirty-gate snapshot, i.e. what the

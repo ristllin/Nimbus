@@ -107,7 +107,7 @@ class SrvCb final : public NimBLEServerCallbacks {
     // NimBLE host task. If passkey pairing were on: DISPLAY_ONLY => WE choose the
     // code the Mac must type.
     // Fresh random 6-digit per pairing (never fixed); stash it for the main task
-    // to render on e-ink + echo on serial, and return it so the SM uses it as
+    // to render on the panel + echo on serial, and return it so the SM uses it as
     // the expected passkey. We deliberately never call setSecurityPasskey(), so
     // NimBLE routes the display here instead of a constant (NimBLEServer.cpp
     // ~L672: it only calls this while the stored passkey is the 123456 default).
@@ -324,7 +324,7 @@ bool drain(NotifierMode& n, uint32_t nowMs) {
   }
 
   // Pairing passkey / result surfaced on serial (main task, not the security
-  // callback - threading contract). The e-ink Pairing screen is driven from the
+  // callback - threading contract). The Pairing screen is driven from the
   // main loop via pairingActive()/pairingPasskey(); this echo is how a screenless
   // bench board (the spare) reads the code to complete OS pairing.
 #if defined(NIMBUS_NOTIFIER_DEBUG) || defined(NIMBUS_TEST)

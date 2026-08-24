@@ -3,8 +3,8 @@
 // NVS keys that encode the board's PHYSICAL identity: which panel is fitted, how
 // it is mounted, its touch calibration, and its typed-OTA device slug. These MUST
 // survive a factory reset. A plain nvs_flash_erase() wipes them too, and on the
-// next boot a TFT board reads the default screenModel ("eink") and brings up the
-// e-ink driver against a color panel - a white screen the board cannot recover
+// a stale board could read a screenModel of "eink"; that value is unsupported
+// now and boots an unsupported-display notice on the color panel
 // from on its own. The factory-reset path reads these, erases, then writes them
 // back (see src/main.cpp).
 //

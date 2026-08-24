@@ -12,45 +12,38 @@ This page is the Nimbus-side consolidated view.
 
 ## Board configurations
 
-A Nimbus device runs in **one of three display/input configurations**. Two are
-hand-built on the **Solide S3** board and picked by a single NVS setting,
-`screenModel`, read once at boot to select both the display driver and the input
-driver (they share the SPI3 pads and the TFT consumes the encoder's GPIOs, so a
-hand-built board is only ever one or the other). The third is an off-the-shelf
-all-in-one module, the **Freenove ESP32-S3 Display (CYD)**, that arrives as a
-single part and runs its own firmware image.
+A Nimbus device runs in **one of two display configurations**, one per board. The
+hand-built **Solide S3** board drives a 2.8" color touchscreen alongside its LED
+ring (`screenModel=tft`). The other is an off-the-shelf all-in-one module, the
+**Freenove ESP32-S3 Display (CYD)**, that arrives as a single part and runs its
+own firmware image.
 
 | Configuration | Display | Input | `screenModel` | Board | Details |
 |---|---|---|---|---|---|
-| **[E-paper + knob](hardware/eink-knob.md)** *(default, shipped)* | 2.9" SSD1680, 296×128 1-bit | EC11 rotary knob | `eink` | `solide_s3` | [→ pinout & pins](hardware/eink-knob.md) |
 | **[Touch TFT](hardware/touch-tft.md)** | 2.8" ILI9341, 240×320 RGB565 | XPT2046 resistive touch | `tft` | `solide_s3` | [→ pinout, wiring, touch cal](hardware/touch-tft.md) |
 | **[All-in-one (Freenove CYD)](hardware/all-in-one-cyd.md)** *(lowest effort)* | 2.8" ILI9341, 240×320 capacitive touch | Touch | `tft` | `freenove_s3` | [→ pinout & happy-path build](hardware/all-in-one-cyd.md) |
 
-The two Solide S3 pinouts:
+The Solide S3 pinout:
 
-| E-paper + knob | Touch TFT |
-|---|---|
-| ![e-paper pinout](hardware/diagrams/pinout-eink.svg) | ![touch-TFT pinout](hardware/diagrams/pinout-tft.svg) |
+![touch-TFT pinout](hardware/diagrams/pinout-tft.svg)
 
 The all-in-one has its own complete pinout on its page:
 [All-in-one (Freenove CYD)](hardware/all-in-one-cyd.md).
 
-For a hand-built Solide S3 board, `python3 tools/setup_device.py` asks which
-configuration is fitted and stores it over UART before production firmware boots.
-This is essential for TFT: it has no knob, and the raw firmware default is e-ink.
-Afterward it can be changed in **Settings → Mode & identity → Display** (web) or
-`POST /api/orch scrModel=tft`. It is **hardware identity, not a preference**:
-read once at boot to pick both drivers, so a change needs a restart, and it is
-exempt from "Revert to Defaults". Surfaced as `scrModel` in `/api/state` and
-`scr=` in `STATUS`.
+For a hand-built Solide S3 board, `python3 tools/setup_device.py` stores
+`scrModel=tft` over UART before production firmware boots, so the board binds its
+display and touch drivers on the first boot. It is **hardware identity, not a
+preference**: read once at boot to pick the drivers, so a change needs a restart,
+and it is exempt from "Revert to Defaults". Surfaced as `scrModel` in `/api/state`
+and `scr=` in `STATUS`.
 
 The all-in-one is different: its pinout is a **compile-time identity** chosen by
 `SOLIDE_BOARD=freenove_s3` at flash time, and `screenModel` is fixed to `tft`.
 There is no display setting to pick, and nothing to wire.
 
-Everything below this section is **common to the two Solide S3 configurations**.
-The all-in-one carries the same peripherals on a different, fixed pinout, covered
-in full on its own page.
+Everything below this section covers the **Solide S3** board. The all-in-one
+carries the same peripherals on a different, fixed pinout, covered in full on its
+own page.
 
 ## First flash of a fresh board - use the UART port
 
@@ -125,9 +118,8 @@ for reflashing. The UART port remains the guaranteed path if a build ever wedges
 
 ## Shared peripherals
 
-These are present in **both** Solide S3 configurations. The display + input pins are
-config-specific - see [E-paper + knob](hardware/eink-knob.md) or
-[Touch TFT](hardware/touch-tft.md). The all-in-one carries the same peripherals on
+These are present on the **Solide S3** board. The display + touch pins are on the
+[Touch TFT](hardware/touch-tft.md) page. The all-in-one carries the same peripherals on
 its own fixed pinout - see [All-in-one (Freenove CYD)](hardware/all-in-one-cyd.md).
 
 | Peripheral | Bus | Pins | Rail | Notes |
@@ -153,8 +145,8 @@ brown out or damage the display even though its bus is separate.
 :::
 
 **Reserved (never assign):** 0·45·46 strapping · 19·20 native USB · 43·44 UART0 ·
-26–32 flash · **33–37 OCTAL PSRAM** · 48 on-board RGB (used as the encoder switch on the
-e-paper build). **Free spares:** 3 · **4 (battery sense)** · 5 · 6 · 9. **(18 = I²S mic WS/LRCLK.)**
+26–32 flash · **33–37 OCTAL PSRAM** · 48 on-board RGB. **Free spares:** 3 · **4 (battery
+sense)** · 5 · 6 · 9. **(18 = I²S mic WS/LRCLK.)**
 
 > **Nimbus V0.1** moves audio to two separate, well-protected breakouts: a **MAX98357A**
 > I²S amp + an **INMP441/ICS-43434** I²S MEMS mic (replacing the old combined PDM-mic +
@@ -272,7 +264,7 @@ snapshots live with the Battery Lab, its own project at
 ### ⚠ Battery life: Dark posture is a VISUAL setting, not a power setting
 `Posture::Dark` only stops lighting LEDs. It does not touch Wi-Fi, Bluetooth, or the CPU -
 it appears in 4 places, none of them power-domain code. The three battery modes
-(Dark / Balanced / Full) are a table of LED/e-ink/telemetry settings (`profile.cpp`),
+(Dark / Balanced / Full) are a table of LED/screen/telemetry settings (`profile.cpp`),
 not radio or clock decisions.
 There is **no power management**: no `esp_light_sleep`, no `esp_pm_configure`, no
 `setCpuFrequencyMhz`, `CONFIG_PM_ENABLE` unset, CPU pinned at 240 MHz. The only

@@ -2,11 +2,9 @@
 
 Nimbus is firmware for a battery-capable desk device. It runs on the hand-built
 **Solide S3** board (ESP32-S3-DevKitC-1 N16R8) - a 45-LED ring, an I²S microphone
-and speaker, and one of two display/input configurations (a 2.9" e-paper panel
-with a rotary knob, or a 2.8" color touchscreen) - and on the off-the-shelf
-**Freenove ESP32-S3 Display** all-in-one board. One binary serves both Solide S3
-configurations; the all-in-one ships as its own image. Every build runs both of
-the device's two operating modes.
+and speaker, and a 2.8" color touchscreen - and on the off-the-shelf
+**Freenove ESP32-S3 Display** all-in-one board. Each board ships as its own
+firmware image. Every build runs both of the device's two operating modes.
 
 This page is the map: how the code is layered, what each operating mode turns
 on, which sibling repositories the project depends on, and how a release
@@ -111,27 +109,23 @@ agent host:
   (provider keys, routing, memory dashboard, routines, settings).
 - **Routines** - scheduled recurring turns (morning digests, reminders).
 
-## Three display configurations, two boards
+## Two display configurations, two boards
 
-Nimbus supports three display/input configurations across two boards. On the
-hand-built Solide S3, a single NVS setting, `scrModel` (`eink` by default, read
-via `store::screenModel()`), is read once at boot to select both the display
-driver and the input driver, so one binary serves both of its configurations:
+Nimbus supports two display configurations across two boards. The hand-built
+Solide S3 drives a 2.8" color touchscreen alongside its LED ring; the off-the-shelf
+Freenove CYD is an all-in-one module with its own capacitive touch panel:
 
 | Configuration | Board | Display | Input |
 |---|---|---|---|
-| **E-paper + knob** *(default)* | Solide S3 | 2.9" SSD1680, 296×128, 1-bit | EC11 rotary knob |
 | **Touch TFT** | Solide S3 | 2.8" ILI9341, 240×320 color | XPT2046 resistive touch |
 | **All-in-one (Freenove CYD)** | Freenove ESP32-S3 Display | 2.8" ILI9341, 240×320 color | FT6336U capacitive touch |
 
-The two Solide S3 configurations cannot coexist on one board - the TFT consumes
-the knob's GPIOs - so `scrModel` is hardware identity, not a preference: changing
-it requires a restart, and it is exempt from "Revert to Defaults". The all-in-one
-is a **different axis**: its pinout is a compile-time identity fixed by
-`SOLIDE_BOARD=freenove_s3`, so it is a separate firmware image rather than a
-runtime choice, with `scrModel` fixed to `tft`. Above the driver seam the firmware
-is configuration-blind; screens are composed once and rendered by whichever panel
-is bound. Pinouts and wiring: [hardware reference](./hardware.md).
+Each board's pinout is a compile-time identity fixed by `SOLIDE_BOARD`, so each is
+a separate firmware image. The display setting `scrModel` is fixed to `tft`; its
+legacy `eink` value is no longer supported (a board carrying it boots an
+unsupported-display notice). Above the driver seam the firmware is
+configuration-blind; screens are composed once and rendered by whichever panel is
+bound. Pinouts and wiring: [hardware reference](./hardware.md).
 
 ## Sibling repositories
 

@@ -9,7 +9,7 @@
 #include "nimbus/tft_render/fb565.h"
 #include "nimbus/tft_render/screens.h"
 
-// Golden-image + tap-region matrix for the COLOUR TOUCH UI (the e-ink suite is
+// Golden-image + tap-region matrix for the COLOUR TOUCH UI (the old raster suite is
 // test_golden and stays untouched).
 //
 // Each case renders a ScreenCtx fixture and writes two artefacts:
@@ -28,7 +28,7 @@
 using namespace nimbus::tft;
 using nimbus::attn::ScreenId;
 using nimbus::attn::VoiceStage;
-using nimbus::epd::ScreenCtx;
+using nimbus::render::ScreenCtx;
 
 void setUp() {}
 void tearDown() {}

@@ -1,14 +1,10 @@
 """§L21 - HIL touch-TFT display tests (screenModel=tft).
 
-Proves the second display variant on real hardware, with NO camera: every
+Proves the color touch panel on real hardware, with NO camera: every
 assertion rides ``STATUS scr=``, ``TOUCH?``, ``RENDER?`` and the ``TAP``/``TAPUP``
-inject seam (the touch counterpart of ``ENC``), so the UI is driveable with no
-finger.
+inject seam, so the UI is driveable with no finger.
 
-Two devices are in play and they are NOT interchangeable:
-  * **Nimbus-4** - the TFT board. Everything here targets it.
-  * **Nimbus-3** - the e-ink control. ``test_eink_control_unaffected`` is the
-    non-regression proof that the SAME firmware leaves it behaving as before.
+The device is the TFT color touch board (Nimbus-4); everything here targets it.
 
 ⚠ Sound is deliberately NOT exercised anywhere in this file (owner carve-out):
 no SFX, TTS, mic, speaker or loopback. The mic *control* is tested only as a
@@ -55,7 +51,7 @@ def _scr_model(device) -> str:
 
     Distinct from ``want=`` (the stored screenModel preference). They differ
     whenever the fail-soft path trips, which is exactly the case that must be
-    visible - a board that silently fell back to e-ink would otherwise look
+    visible - a board that failed to bind the color panel would otherwise look
     identical to a working one.
     """
     line = _status(device)
@@ -127,8 +123,8 @@ def test_boots_on_tft_and_reports_it(device):
     """The device comes up on the colour panel and SAYS SO.
 
     scr= reports the driver that actually BOUND (want= carries the stored
-    preference), so a board that silently fell back to e-ink is distinguishable
-    from a working one - see test_bound_driver_matches_the_setting.
+    preference), so a board that failed to bind the color panel is
+    distinguishable from a working one - see test_bound_driver_matches_the_setting.
     """
     device.reset()
     mode, _ip = device.wait_ready(timeout=25.0)
@@ -483,8 +479,8 @@ def test_bound_driver_matches_the_setting(device):
 def test_screen_model_survives_reboot(device):
     """screenModel is hardware identity - it MUST outlive a restart.
 
-    If it did not, every reboot would drop a TFT board back to the e-ink driver
-    and the panel would go dark.
+    If it did not, every reboot would risk losing the stored panel identity and
+    the display could fail to bind and go dark.
     """
     _require_tft(device)
     device.reset()
@@ -647,27 +643,3 @@ def test_session_cards_actually_paint(device, net, secrets, require_secret):
     # frame changed for some unrelated reason (a clock, a battery digit).
     changed = sum(a != b for a, b in zip(painted, empty))
     assert changed > 2000, f"only {changed} bytes differ - too little to be three cards"
-
-
-# ---- the e-ink control ------------------------------------------------------
-
-
-@pytest.mark.hil
-def test_eink_control_unaffected(device):
-    """NON-REGRESSION: the same firmware on the e-ink board still reports eink
-    and still renders.
-
-    Deliberately inverted - it SKIPS on the TFT board and runs on Nimbus-3, so
-    pointing the suite at either device exercises the right half.
-    """
-    model = _scr_model(device)
-    if model != "eink":
-        pytest.skip(
-            f"this board reports scr={model} - run this against Nimbus-3 (the e-ink "
-            "control) to prove the shared firmware did not regress it"
-        )
-    line = device.cmd("RENDER?", "RENDER ", timeout=12.0)  # e-ink is slow
-    assert "screen=" in line, f"e-ink board stopped rendering: {line!r}"
-
-    # The knob must still work on the board that has one.
-    device.cmd("ENC CW", "ENC<", timeout=5.0)

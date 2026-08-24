@@ -3,15 +3,15 @@
 #include <cstdio>
 #include <vector>
 
-#include "nimbus/epd_sched.h"
+#include "nimbus/render_sched.h"
 
-// Trace-driven tests for the e-ink scheduler: each test scripts a sequence of
+// Trace-driven tests for the render scheduler: each test scripts a sequence of
 // (time, action) steps - detents, intents, render completions, reconfigures,
 // and 1 ms-granular tick sweeps - and asserts the EXACT sequence of issued
 // RenderCommands (time, screen, kind, fullClear). Anything issued that the
 // expectation doesn't list, or issued at the wrong millisecond, fails.
 
-using namespace nimbus::epd;
+using namespace nimbus::render;
 
 void setUp() {}
 void tearDown() {}

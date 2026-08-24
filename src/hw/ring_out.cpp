@@ -155,7 +155,7 @@ void applyRingPlan(const ring::Plan& plan) {
                                           // ripple (stray done-sweep flicker, P2.4)
       g_anim.setHue(s.key, hue, now);     // no-op if unchanged (Animator dedupes)
     }
-    // (progress fill is an e-ink concept - the ring carries status by colour +
+    // (progress fill is a panel concept - the ring carries status by colour +
     // motion, not a fractional bar; job.progress renders on the panel, not here.)
     // Per-status MOTION + relative brightness. The desk idle-HEARTBEAT (synthetic
     // key) renders at FULL per-status brightness: it's already dimmed by the global

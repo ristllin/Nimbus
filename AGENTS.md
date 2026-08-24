@@ -15,11 +15,11 @@ flag the doc - but do not quietly work around a rule marked **frozen** or ⛔.
 
 Nimbus is product firmware for a battery-capable desk device built on an
 **ESP32-S3** (the Solide S3 board, an ESP32-S3-DevKitC-1 N16R8). The hardware is
-a 45-LED WS2812B ring, an I²S microphone and speaker, and **one of two
-display/input pairs** - a 2.9" e-ink panel (SSD1680) with an EC11 rotary encoder,
-or a 2.8" ILI9341 color touchscreen (240×320). Which one is present is chosen at
-boot from a stored setting (`screenModel`, default e-ink); a single firmware image
-drives either.
+a 45-LED WS2812B ring, an I²S microphone and speaker, and a **2.8" ILI9341 color
+touchscreen** (240×320) for display and input. A second supported build targets
+the Freenove all-in-one touch board. The `screenModel` NVS key is retained (frozen
+key), with `tft` as the value; the legacy `eink` value now boots an unsupported-
+display notice on the color panel.
 
 The device has **two operating modes** over one shared attention router. In
 **Notifier** mode it is an ambient status light for AI coding sessions: a host-side
@@ -101,11 +101,11 @@ Notes:
   code only; existing offenders are baselined in a whitelist that only ever
   shrinks - don't add to it without discussion.
 - The build matrix beyond the two shown (`notifierdbg`, `bttest`, the
-  `p2bringup`/`tft*`/`beep`/`provision` bring-up sketches) is compiled by
+  `tft*`/`beep`/`provision` bring-up sketches) is compiled by
   `tools/build_all.sh`.
 
 **"It compiles" is NOT "it works."** A clean build and a boot in the other mode
-prove nothing about the knob, the radio, the ring, or a live turn. Device behavior
+prove nothing about the touch input, the radio, the ring, or a live turn. Device behavior
 is verified one of two ways only: the HIL suite (`tests/hil/`, needs a board), or a
 human running an explicit manual step and confirming the result. Anything
 user-visible must be asserted through a real seam (`RENDER?`, `STATUS`, an echoed
@@ -153,9 +153,9 @@ them.
 
 ### Golden files
 
-UI screens are pinned as **golden framebuffers** (`test/golden/*.bin` for e-ink,
-`test/golden_tft/*.bin` for the color panel), and several protocol/prompt surfaces
-have golden text. A golden may only be re-blessed by running the suite with
+UI screens are pinned as **golden framebuffers** (`test/golden_tft/*.bin` for the
+color panel), and several protocol/prompt surfaces have golden text (`test/golden/`).
+A golden may only be re-blessed by running the suite with
 `GOLDEN_UPDATE=1` **and visually confirming** the new render is correct. A golden
 that changed because you "just ran the updater" and didn't look is a silent
 regression.
@@ -214,7 +214,7 @@ in `lib/core` with a host test; the device seam that wires it to hardware belong
 
 ## 6. Copy style guide - every user-facing word
 
-Applies to web UI copy, e-ink screens and menus, Telegram replies, OTA notices,
+Applies to web UI copy, device screens and menus, Telegram replies, OTA notices,
 human-visible auth errors, the README, `docs/`, and the website. Exempt:
 model-facing prompt strings, code identifiers, machine keys, and log lines.
 
@@ -239,7 +239,7 @@ colon, parentheses, or restructure the sentence. A pre-commit hook rejects any
 staged em dash (the one exception is recorded external data under
 `test/support/fixtures/`, which is byte-frozen).
 
-**Surface constraints.** E-ink and serial are printable ASCII only, ~48 chars per
+**Surface constraints.** The device screen and serial are printable ASCII only, ~48 chars per
 line, no emoji. Telegram may use UTF-8 and should read well aloud. Web toasts are
 sentence case, verb-led, ≤5 words; failures name the next step.
 
@@ -257,7 +257,7 @@ sentence case, verb-led, ≤5 words; failures name the next step.
 | device sign-in code; Cloud link code; Sign-in QR | access token, webtok, Config QR, "the QR" |
 | restart | reboot (in user copy) |
 | erase | wipe, nuke |
-| the display / the screen (user copy); e-ink (docs) | E Ink, eink |
+| the display / the screen (user copy) | the panel, the TFT (in user copy) |
 
 ---
 
@@ -278,7 +278,7 @@ Stale docs are a bug. Land the doc change in the **same** commit as the code.
   reference pages are generated; the hand-written site pages are
   `website/docs/intro.md` and `website/docs/getting-started/`.
 - **Parity ledger.** Every user setting has one canonical home and a declared
-  presence on the other surface (e-ink menu vs web UI). Adding or renaming a setting
+  presence on the other surface (device menu vs web UI). Adding or renaming a setting
   updates that ledger (in `docs/`) in the same commit - a setting that exists in code
   but not the ledger is a UI that lies while its tests pass.
 

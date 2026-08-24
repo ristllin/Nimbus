@@ -6,9 +6,9 @@ namespace {
 using solide::ring::Status;
 
 // Ambient path: render StatusIdle via the coalescer (attention=false).
-EpdIntent ambient() { return {true, ScreenId::StatusIdle, false}; }
+ScreenIntent ambient() { return {true, ScreenId::StatusIdle, false}; }
 // Attention path: immediate render, bypasses the coalescer.
-EpdIntent urgent(ScreenId s) { return {true, s, true}; }
+ScreenIntent urgent(ScreenId s) { return {true, s, true}; }
 }  // namespace
 
 bool isAttentionStatus(solide::ring::Status s) {
@@ -45,17 +45,17 @@ Decision Router::route(const Event& e, uint32_t nowMs) {
       if (e.hasAccent) jobs_.setAccent(e.key, e.accentHue);  // 255 = white is valid
       d.ringDirty = true;
       if (isAttentionStatus(st)) {
-        d.epd = urgent(ScreenId::StatusIdle);  // owner: no badge box - the job rows + ring say it
+        d.screen = urgent(ScreenId::StatusIdle);  // owner: no badge box - the job rows + ring say it
         d.notify = {true, Event::Type::JobState};
       } else {
-        d.epd = ambient();
+        d.screen = ambient();
       }
       break;
     }
     case Event::Type::JobProgress:
       jobs_.setProgress(e.key, e.value);
       d.ringDirty = true;
-      d.epd = ambient();
+      d.screen = ambient();
       break;
     case Event::Type::IncomingAsk:
       // The ask already reached the user's channel - no NotifyIntent.
@@ -69,42 +69,42 @@ Decision Router::route(const Event& e, uint32_t nowMs) {
       if (!askPending_) askSince_ = nowMs;
       askPending_ = true;
       d.ringDirty = true;
-      d.epd = urgent(ScreenId::Ask);
+      d.screen = urgent(ScreenId::Ask);
       break;
     case Event::Type::AskCleared:
       askPending_ = false;
       d.ringDirty = true;
-      d.epd = ambient();
+      d.screen = ambient();
       break;
     case Event::Type::Voice:
       // The glyph must not wait for the 30 s coalescer: any live stage takes
       // the attention path; returning to None settles back to ambient.
       voice_ = e.stage;
       d.ringDirty = true;
-      d.epd = (e.stage != VoiceStage::None) ? urgent(ScreenId::VoiceGlyph)
+      d.screen = (e.stage != VoiceStage::None) ? urgent(ScreenId::VoiceGlyph)
                                             : ambient();
       break;
     case Event::Type::LowBattery:
       // T1 warning is a compact badge over the persistent status display (brief:
-      // "force Battery Saver + warn (e-ink badge)"), not the full Battery
+      // "force Battery Saver + warn (attention badge)"), not the full Battery
       // telemetry screen the user navigates to explicitly.
       lowBattery_ = true;
       d.ringDirty = true;
-      d.epd = urgent(ScreenId::StatusIdle);  // owner: no badge box
+      d.screen = urgent(ScreenId::StatusIdle);  // owner: no badge box
       d.notify = {true, Event::Type::LowBattery};
       break;
     case Event::Type::BatteryOk:
       lowBattery_ = false;
       d.ringDirty = true;
-      d.epd = ambient();
+      d.screen = ambient();
       break;
     case Event::Type::NetworkDegraded:
       netDegraded_ = true;  // shown on the status screen only - ring untouched
-      d.epd = ambient();
+      d.screen = ambient();
       break;
     case Event::Type::NetworkOk:
       netDegraded_ = false;
-      d.epd = ambient();
+      d.screen = ambient();
       break;
   }
   return d;

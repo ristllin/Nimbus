@@ -174,8 +174,8 @@ volatile uint32_t g_pollStackMinFree = 0xFFFFFFFFu;
 // peaked at 16156 B used, and a FAN-OUT turn peaked at 17312 B (min free 3168 at
 // an interim 20480 - that size overflowed in the field, do not go back). 24576
 // clears the deepest observed peak by ~7.2 KB. The resting-heap cost is covered
-// by the NIMBUS_NO_COLOR_EINK reclaim (~9.6 KB, this same merge), keeping free
-// internal above the 30000 B tool-loop gate. If mem.pollStackMin ever trends
+// by the display-path reclaim from removing the old renderer, keeping free internal above
+// the 30000 B tool-loop gate. If mem.pollStackMin ever trends
 // under ~2 KB free, raise this AND reclaim bytes elsewhere (the 8 KB pverify
 // task is the known candidate) rather than eating the turn budget.
 static constexpr int POLL_STACK_BYTES = 24576;

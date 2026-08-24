@@ -2,7 +2,7 @@
 #include <cstdint>
 #include <string>
 
-// qr - a portable QR Code encoder for the e-ink config/setup screens.
+// qr - a portable QR Code encoder for the config/setup screens.
 //
 // Deliberately tiny scope: BYTE mode only, ECC level M only, versions 1-6
 // auto-selected (byte capacities at M: 14/26/42/62/84/106 chars - the config

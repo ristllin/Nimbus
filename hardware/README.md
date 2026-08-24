@@ -5,7 +5,6 @@ the board manufacturing files.
 
 > **New here?** Start with the documentation, which walks the whole build:
 > - [Bill of materials](../docs/hardware/bom.md) - what to buy, with sourcing links
-> - [Build guide - E-paper + knob](../docs/hardware/build-eink.md)
 > - [Build guide - Touch TFT](../docs/hardware/build-tft.md)
 > - [Hardware reference](../docs/hardware.md) - pinout, wiring, power
 >

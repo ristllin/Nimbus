@@ -7,7 +7,7 @@
 
 // notifier_map - the portable heart of Notifier mode. Translates decoded nsn
 // wire frames (nsn_proto.h) into attention-Router events so that Notifier jobs
-// and Orchestrator sub-sessions share ONE ring/e-ink code path (plan §3.6).
+// and Orchestrator sub-sessions share ONE ring/panel code path (plan §3.6).
 //
 // Model: each nsn frame is a COMPLETE snapshot of desired ring state, and the
 // broker packs segments densely in ring order, so the segment INDEX is the
@@ -37,9 +37,9 @@ struct FrameResult {
   int  eventsRouted = 0;
   bool ringDirty = false;      // OR of every routed Decision's ringDirty
   bool anyAttention = false;   // any segment is an attention status this frame
-  // One aggregate e-ink intent for the whole frame: immediate Badge when any
+  // One aggregate screen intent for the whole frame: immediate Badge when any
   // segment needs attention, else a coalesced StatusIdle refresh.
-  attn::EpdIntent epd;
+  attn::ScreenIntent screen;
 };
 
 class Mapper {
@@ -65,7 +65,7 @@ class Mapper {
   // v2 per-segment session metadata (protocol v2), keyed by segment index == job
   // key. harness = nsn::kHarness* (0 = unknown / v1 broker); title = short name
   // (cwd basename / task, "" if none). The device UI (buildCtx -> JobInfo) reads
-  // these to NAME a session on the e-ink instead of a bare "job N".
+  // these to NAME a session on the panel instead of a bare "job N".
   uint8_t     harnessOf(uint32_t key) const { return key < nsn::kMaxSegs ? harness_[key] : 0; }
   const char* titleOf(uint32_t key) const { return key < nsn::kMaxSegs ? title_[key] : ""; }
 

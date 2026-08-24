@@ -5,7 +5,7 @@
 #include "nimbus/font5x7.h"
 
 // Portable RGB565 framebuffer. Every primitive clips to the panel, so callers
-// can draw partially off-screen without guards (same contract as epd_fb).
+// can draw partially off-screen without guards.
 //
 // Pixels are STORED big-endian - the ILI9341's wire order - so data() blits
 // with no conversion. Callers always pass and receive LOGICAL colours; the

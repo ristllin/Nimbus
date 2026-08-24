@@ -38,7 +38,7 @@ struct Hooks {
   // Which display driver ACTUALLY bound at boot (g_screenIsTft), not the stored
   // preference. The two differ whenever the fail-soft path trips, and that is
   // exactly the case a test must be able to see - a board that silently fell
-  // back to e-ink looks identical to a working one if STATUS echoes the setting.
+  // back to a legacy value looks identical to a working one if STATUS echoes the setting.
   std::function<bool()>    screenIsTft;
   // Feed ONE byte of a synthetic nsn frame through the same decoder/mapper/
   // router path a real BLE frame takes. Backs NSNFEED: it lets the notifier UI
@@ -47,7 +47,7 @@ struct Hooks {
   // the card design could otherwise only ever be seen in its EMPTY state.
   std::function<void(uint8_t byte)> nsnFeedByte;
   // TFTFLIP - apply the landscape 180-degree flip live (MADCTL only). Set on a
-  // TFT board; absent on e-ink, where the command is a no-op beyond the NVS write.
+  // color panel; the command persists the NVS value and restarts.
   std::function<void(bool)> tftFlip;
   // PROFILE <0|1|2> - set the battery mode from the console so HIL can assert
   // mode-dependent behaviour (backlight, ring) without the network. Routed
@@ -76,10 +76,6 @@ struct Hooks {
   // is resolved once at boot). Lets HIL tests drive Notifier-path assertions on
   // a device that booted in Orchestrator mode, and vice versa.
   std::function<void(int mode)>                           setMode;
-  // Raw debounced encoder-switch level (solide::input::pressed()). Backs the
-  // `SW?` diagnostic so a physical-button fault (GPIO48 / wiring) can be told
-  // apart from a long-press DECODE or RENDER fault without a knob in hand.
-  std::function<bool()>                                   swRaw;
   // BLE radio state for the `BLE?` diagnostic: enabled = advertising-enabled
   // (net::ble::enabled()), connected = a central is linked. Lets the harness
   // assert the Connectivity > Bluetooth toggle actually starts/stops the radio.
@@ -93,10 +89,6 @@ struct Hooks {
   std::function<String()>                                 bleMac;
   std::function<void(int& bonds, int& pairing)>           bleBonds;
   std::function<void()>                                   bleForget;
-  // DEGHOST: force the next e-ink push down the de-ghost (OTP full-update) path +
-  // schedule a StatusIdle render, so the red-plane-compositing refresh - the
-  // "screen occasionally turns red" bug path - is exercisable in seconds.
-  std::function<void()>                                   deghost;
   // solide::leds::currentState().rawFrame for the `RAWFRAME?` diagnostic: true
   // while the Active-posture Animator (src/hw/ring_out.cpp) owns the physical
   // ring via showFrame(). Proves the raw-frame path actually engages/releases
@@ -112,8 +104,8 @@ struct Hooks {
   // KEEPING the BATTCAL anchor. Recovers a model poisoned by a drain campaign -
   // the learned state persists to NVS, so a reflash alone does NOT heal it.
   std::function<String()>                                 battReset;
-  // SLEEP: enter the low-battery deep sleep NOW (test-only) - verifies the e-ink
-  // sleep screen + knob-rotation/timer wake mechanics without draining a pack.
+  // SLEEP: enter the low-battery deep sleep NOW (test-only) - verifies the panel
+  // sleep screen + timer/charger wake mechanics without draining a pack.
   // ⚠ USB serial dies with the chip; the 5-min charger-sniff timer wakes it.
   std::function<void()>                                   sleepNow;
   // Battery drain/storage (battery-measurement). DRAIN is a TEST characterization tool;
@@ -161,30 +153,20 @@ void pumpOrch();
 void onRender(uint8_t screenId, uint8_t posture, int segCount, bool single,
               bool dark, uint8_t bright);
 
-// Echo an encoder event ("CW"/"CCW"/"CLICK"/"LONG") when INPUTLOG is on (F1).
-void onEncoder(const char* en);
-
-// Drain one SYNTHETIC encoder event queued by the `ENC <CW|CCW|CLICK|LONG>`
-// console command. The main loop calls this alongside solide::input::pop() so
-// the settings menu is fully HIL-driveable without a physical knob (F1/F18).
-// codeOut matches solide::input::Event: 1=CW 2=CCW 3=Click 4=LongPress.
-// Returns false when the injection queue is empty.
-bool popInjectedEncoder(int& codeOut);
-
 // Drain one screensaver console command. `SAVER` queues -1 (force the saver
 // screen NOW - HIL/demo); `SAVER <min>` queues the new threshold (persisted +
 // applied by the main loop; 0 disables). Returns false when nothing is queued.
 bool popSaverCmd(int& minsOut);
 
 // Surface a WiFi disconnect reason: prints "WIFI_DISCONNECTED reason=<n>" and
-// arms the e-ink error badge (F9). Called from a WiFi.onEvent handler.
+// arms the panel error badge (F9). Called from a WiFi.onEvent handler.
 void onWifiReason(int reason);
 
 // Print "WIFI_GOT_IP <ip>" on a successful STA association (F8). Called from the
 // same WiFi.onEvent handler.
 void onWifiGotIp(const String& ip);
 
-// True while an e-ink error badge is armed (main.cpp paints ScreenId::StatusIdle with
+// True while a panel error badge is armed (main.cpp paints ScreenId::StatusIdle with
 // the reason). F9.
 bool errorBadgePending(int& reasonOut);
 void clearErrorBadge();
@@ -196,8 +178,6 @@ inline void begin(const Hooks&) {}
 inline void ready() {}
 inline void pumpOrch() {}
 inline void onRender(uint8_t, uint8_t, int, bool, bool, uint8_t) {}
-inline void onEncoder(const char*) {}
-inline bool popInjectedEncoder(int&) { return false; }
 inline bool popSaverCmd(int&) { return false; }
 inline void onWifiReason(int) {}
 inline void onWifiGotIp(const String&) {}

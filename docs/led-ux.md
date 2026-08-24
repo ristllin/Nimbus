@@ -61,7 +61,7 @@ And smaller, transient feedback:
 
 | Moment | Motion |
 |---|---|
-| Knob turn (cursor) | soft **trailing comet** follows the cursor LED, decays after the dwell |
+| Cursor moves (menu navigation) | soft **trailing comet** follows the cursor LED, decays after the dwell |
 | Config saved (menu or web change persisted) | a single white **blip travels once around** the ring - "saved" |
 | Voice: recording / processing / speaking | breathe (in) / comet (thinking) / solid (out), with smooth entry and exit |
 | Low battery (first warning) | a slow **red breathe** overlaid under everything else |

@@ -29,7 +29,7 @@
   <text x="82" y="158" class="pin">touch T_CS 48 · backlight LED 2 (PWM)</text>
   <text x="82" y="176" class="note">3 on-module bridges join touch to the bus</text>
   <text x="82" y="194" class="note">T_IRQ stays unconnected (touch is polled)</text>
-  <text x="82" y="212" class="note">replaces BOTH the e-paper and the knob</text>
+  <text x="82" y="212" class="note">the touch layer is the only input</text>
   <rect x="361" y="89" width="29" height="18" rx="9" fill="#16a34a"/>
   <text x="375.5" y="102" text-anchor="middle" font-size="11" font-weight="700" fill="#ffffff">3V3</text>
   <line class="lead" x1="400" y1="160" x2="470" y2="320"/>

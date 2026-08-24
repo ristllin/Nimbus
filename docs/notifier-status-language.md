@@ -3,7 +3,7 @@
 
 The Notifier ring speaks a **status language**: every AI-coding-session status maps
 to a distinct **color _family_ role + animation pattern**, so a glance tells you
-*what* is happening *and* on *which* session - without reading the e-ink. This doc is
+*what* is happening *and* on *which* session - without reading the screen. This doc is
 the single cross-reference from a harness hook all the way to the LEDs, and it is
 checked against the code that actually drives them (edit the code, then this doc - do
 not let them drift).
@@ -111,8 +111,8 @@ pure-red clash on cool themes ("full red on ocean makes no sense"):
 The nsn frame is **v2**: each segment carries the legacy `{state, hue, anim, progress}`
 plus an optional **harness tag** (claude/codex/vibe) and a short **title** (session
 task / cwd basename), appended as a backward-compatible TLV under the same magic - a v1
-decoder ignores the trailing bytes (still CRC-covered). This is what lets the e-ink
-SessionDetail show "**codex · deploy-plan · waiting**" instead of a meaningless "job 3".
+decoder ignores the trailing bytes (still CRC-covered). This is what lets the
+SessionDetail screen show "**codex · deploy-plan · waiting**" instead of a meaningless "job 3".
 Codec: `lib/core/src/nsn_proto.cpp` (byte-locked to `notify/broker/frame.py` in [nimbus-notify](https://github.com/ristllin/nimbus-notify)
 via generated vectors). See [`hardware.md`](hardware.md) for the BLE transport.
 

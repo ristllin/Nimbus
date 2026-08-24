@@ -181,7 +181,7 @@ static const ParamMeta kParams[] = {
   { Param::Posture,          "posture" },   // ring level (Dark/Calm/Full)
   { Param::RingBrightness,   "num"     },
   { Param::AttnHoldMs,       "num"     },   // how long a needs-you CTA holds (ms)
-  { Param::EpdCoalesceMs,    "num"     },
+  { Param::CoalesceMs,    "num"     },
   { Param::DwellMs,          "num"     },
   { Param::TelemetryPeriodS, "num"     },
   { Param::TgLowBattPing,    "bool"    },   // Orchestrator low-battery Telegram alert
@@ -452,7 +452,7 @@ static void buildState(String& out) {
   batt["lbRing"]  = agent::store::lowBattRing();
   batt["lbSaver"] = agent::store::lowBattSaver();
   // Battery monitoring on/off; default is board-derived (all-in-one boards, which
-  // have no e-paper option, treat a battery as opt-in and default this OFF).
+  // are fixed-panel boards, treat a battery as opt-in and default this OFF).
   batt["battMon"] = agent::store::battMon(solide::board().epd.sck >= 0);
 
   // E1 artifact store presence (SD /mem/files): the web UI's Files section +
@@ -512,7 +512,7 @@ static void buildState(String& out) {
     if (b >= 0) d["scrBoot"] = b ? "tft" : "eink";
   }
   // Board pinout identity (compile-time) + whether the panel is fixed. An
-  // all-in-one board has no e-paper option (epd.sck < 0), so its scrModel cannot
+  // all-in-one board is fixed-panel (board().epd.sck < 0), so its scrModel cannot
   // change - the UI locks the selector and the setter rejects a switch.
 #ifndef SOLIDE_BOARD
 #define SOLIDE_BOARD solide_s3
@@ -526,7 +526,7 @@ static void buildState(String& out) {
   d["touchCap"] = (solide::board().touchKind == solide::TouchKind::CapacitiveI2c);
   // Idle minutes before the screen rests. Surfaced because it is an owner
   // setting the web UI edits, yet it was not readable back from any endpoint -
-  // so its per-panel default (e-ink 60, colour 10, because a backlight is the
+  // so its default (5 minutes, because a backlight is the
   // largest continuous draw) could not be confirmed on a device.
   d["saverMin"] = agent::store::saverMin();
   // Panel watchdog counters, on HTTP because reading them over the console
@@ -1169,7 +1169,7 @@ static bool applyOrchField(const String& n, const String& v, bool& cfgDirty) {
     // bound once at boot, so this deliberately has NO live side effect; the UI
     // tells the owner to restart. Reject unknown slugs (returning true for a
     // value we dropped would report a change that never happened).
-    // A fixed-panel board (no e-paper option) can only be "tft"; reject a switch
+    // A fixed-panel board (board().epd.sck < 0) can only be "tft"; reject a switch
     // to eink rather than brick the display until the next reflash.
     if (solide::board().epd.sck < 0 && v != "tft") return false;
     if (v != "eink" && v != "tft") return false;
@@ -1287,7 +1287,7 @@ void beginWeb(const WebConfig& wc) {
     // copy of the link in synced history is inert once used or after the TTL.
     d["url"]    = String("http://") + host + "/?c=" + mintSigninCode();
     if (sta) d["mdnsUrl"] = String("http://") + mdnsName() + "/?c=" + mintSigninCode();
-    // Bluetooth (Notifier link): the ring/e-ink are painted over a bonded BLE link in
+    // Bluetooth (Notifier link): the ring/panel are painted over a bonded BLE link in
     // Notifier mode. macOS hides the central's identity for a custom peripheral, so we
     // can show the bond COUNT + this device's BLE address (for targeting), not "who".
     d["bleOn"]    = net::ble::enabled();
@@ -2595,7 +2595,7 @@ void beginWeb(const WebConfig& wc) {
     const uint8_t* fb = nimbus::hw::tft::lastFrame();
     if (!fb) {
       r->send(404, "text/plain",
-              "No colour frame yet. This device is on the e-ink panel, or nothing has been drawn.");
+              "No colour frame yet. Nothing has been drawn.");
       return;
     }
     const size_t len = nimbus::hw::tft::lastFrameBytes();
@@ -3139,7 +3139,7 @@ void beginWeb(const WebConfig& wc) {
     if (!ssid.length()) { r->send(400, "application/json", "{\"error\":\"ssid required\"}"); return; }
     // Arm BEFORE WiFi.begin(): a fast association must still leave enough time
     // for the browser to receive the exact LAN IP + carry its auth token across
-    // origins. E-ink ignores the flag because its setup AP remains available.
+    // origins. A fixed-panel board ignores the flag because its setup AP remains available.
     s_wifiJoinStarted = true;
     saveAndConnect(ssid, pass);
     s_ledConfirm = true;   // creds accepted -> LED confirm blip (P3)

@@ -15,7 +15,7 @@
 // Segment:      [state] [hue 0-254, 255=white] [anim] [span, 0=auto-even]
 //
 // PROTOCOL v2 (backward-compatible, same MAGIC 0x4E): after the base N-segment
-// block the payload may carry an OPTIONAL per-segment extension so the e-ink can
+// block the payload may carry an OPTIONAL per-segment extension so the panel can
 // name a session - [harness:1][titleLen:1][title: titleLen bytes] repeated for the
 // first N segments. A v1 decoder ignores these trailing bytes (they are still
 // covered by the CRC), so a v2 frame decodes cleanly (harness/title empty) on old

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """tftpreview.py - RGB565 framebuffer <-> PNG tooling for the TFT golden suite.
 
-The colour counterpart of tools/golden.py. The native TFT tests
+The colour counterpart of the removed e-ink golden tool. The native TFT tests
 (test/test_tft_render) render every screen into the portable 240x320 RGB565
 framebuffer (nimbus/tft_render/fb565.h: big-endian 5-6-5, 2 bytes per pixel,
 row-major) and byte-compare against blessed buffers in test/golden_tft/*.bin.
@@ -22,7 +22,7 @@ on targets below the 44px minimum or on overlaps - the two bugs a pixel diff
 cannot see.
 
 Python 3 stdlib only - the PNG is hand-rolled with zlib + struct, no Pillow
-(same constraint as tools/golden.py).
+(same constraint as the former e-ink golden tool).
 """
 
 from __future__ import annotations

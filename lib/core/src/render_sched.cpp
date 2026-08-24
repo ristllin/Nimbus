@@ -1,10 +1,10 @@
-#include "nimbus/epd_sched.h"
+#include "nimbus/render_sched.h"
 
 // Pure FSM: no clock, no panel access - the caller feeds nowMs and executes
 // the returned commands. All timing is unsigned-subtraction interval math,
 // safe across uint32 wrap for intervals < 2^31 ms.
 
-namespace nimbus::epd {
+namespace nimbus::render {
 
 // ms since the last detent, robust to a detent stamped slightly AFTER the tick's
 // nowMs (encoder events are ISR-timestamped, then drained by a loop that may
@@ -102,4 +102,4 @@ RenderCommand Scheduler::tick(uint32_t nowMs) {
   return cmd;
 }
 
-}  // namespace nimbus::epd
+}  // namespace nimbus::render

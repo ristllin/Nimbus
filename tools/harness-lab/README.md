@@ -30,7 +30,7 @@ bug reproduced here is a bug on the board.
        (this lab)     |      (the device)
 ```
 
-**Not** simulated: the LEDs, the e-ink panel, Telegram, and the ~46 KB internal
+**Not** simulated: the LEDs, the panel, Telegram, and the ~46 KB internal
 heap. `freeHeap` reports a large value so the device's memory gates never fire.
 Anything that depends on memory pressure has to be tested on hardware.
 

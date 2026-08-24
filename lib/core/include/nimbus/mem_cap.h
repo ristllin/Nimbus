@@ -6,7 +6,7 @@
 // "memory" field, and a runaway value would blow the prompt budget). A naive byte
 // truncation (String::substring(0, n)) can split a multi-byte UTF-8 sequence,
 // leaving invalid trailing bytes that corrupt the next provider prompt or run the
-// ASCII e-ink glyph lookup past its table. utf8CapLen returns the largest length
+// ASCII glyph lookup past its table. utf8CapLen returns the largest length
 // <= maxBytes that ends on a complete-character boundary, so the kept prefix
 // [0, returned) is always valid UTF-8 when the input was.
 //

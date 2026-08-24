@@ -50,29 +50,14 @@ namespace {
 
 Hooks    s_h;                 // captured by begin()
 String   s_line;             // command-line accumulator (also the frame-tee prefix buffer)
-bool     s_inputLog = false;  // INPUTLOG on/off - gates onEncoder() echo (F1)
-bool     s_badge = false;     // F9 e-ink error badge armed
+bool     s_badge = false;     // F9 error badge armed
 int      s_badgeReason = 0;   // last WiFi disconnect reason
 
 constexpr size_t kLineCap = 512;   // matches the existing orch-console cap
 constexpr int    kByteBudget = 256;  // bytes drained per pump call (loop stays responsive)
 
-// Synthetic encoder-event queue (single-producer/single-consumer, both on the
-// main task: dispatch() runs from pumpOrch()/pumpNotifier() and the loop drains
-// via popInjectedEncoder()). A tiny ring is plenty - the harness injects one
-// event per line and reads the RENDER echo before sending the next.
-constexpr int kEncQCap = 16;
-int s_encQ[kEncQCap];
-int s_encHead = 0, s_encTail = 0;
-void encPush(int code) {
-  const int nxt = (s_encHead + 1) % kEncQCap;
-  if (nxt == s_encTail) return;  // full: drop (harness reads between sends)
-  s_encQ[s_encHead] = code;
-  s_encHead = nxt;
-}
-
-// One-slot screensaver command mailbox (same producer/consumer pair as the
-// encoder queue): -1 = force the saver screen now, >=0 = new threshold minutes.
+// One-slot screensaver command mailbox (single-producer/single-consumer, both on
+// the main task): -1 = force the saver screen now, >=0 = new threshold minutes.
 int  s_saverCmd = 0;
 bool s_saverPending = false;
 
@@ -278,12 +263,6 @@ void dispatch(String line) {
     Serial.flush();
     return;
   }
-  if (line == "INPUTLOG on") {
-    s_inputLog = true;  reply("INPUTLOG on");  return;      // F1
-  }
-  if (line == "INPUTLOG off") {
-    s_inputLog = false; reply("INPUTLOG off"); return;
-  }
   if (line.startsWith("TURN ")) {
     String t = line.substring(5);
     Serial.printf("TURN <- %s\n", t.c_str());               // F17 - reply arrives async
@@ -325,7 +304,7 @@ void dispatch(String line) {
   }
   if (line == "CLOUDPAIR") {
     // Ensure opted in, then start pairing. The code + claim URL print via CLOUD? and
-    // show on the e-ink screen; the owner claims it at app.cumulo-nimbus.ai.
+    // show on the panel; the owner claims it at app.cumulo-nimbus.ai.
     nimbus::relay::requestOptIn(true);
     nimbus::relay::requestPair();
     Serial.println("CLOUDPAIR started (poll CLOUD? for the code)");
@@ -458,7 +437,7 @@ void dispatch(String line) {
   }
   if (line.startsWith("VOICE ")) {
     // Simulate a voice transcript: inject a turn on the "voice" chatId so the reply
-    // renders on the e-ink (Ask screen), exactly like a real hold-to-talk would -
+    // renders on the panel (Ask screen), exactly like a real hold-to-talk would -
     // testable without the physical mic.
     String t = line.substring(6);
     Serial.printf("VOICE inject <- %s\n", t.c_str()); Serial.flush();
@@ -760,27 +739,6 @@ void dispatch(String line) {
     reply(v < 0 ? "SAVER< force" : (String("SAVER< min=") + v));
     return;
   }
-  if (line.startsWith("ENC ")) {
-    // Inject a synthetic encoder event so the settings menu can be driven from
-    // the HIL harness (no physical knob). Codes match solide::input::Event.
-    String a = line.substring(4); a.trim();
-    int code = 0;
-    if (a == "CW")         code = 1;
-    else if (a == "CCW")   code = 2;
-    else if (a == "CLICK") code = 3;
-    else if (a == "LONG")  code = 4;
-    if (code) { encPush(code); Serial.printf("ENC< %s\n", a.c_str()); Serial.flush(); }
-    else      reply("ERR enc want CW|CCW|CLICK|LONG");
-    return;
-  }
-  if (line == "SW?") {
-    // Raw debounced switch level - isolates a physical-button fault from a
-    // decode/render fault. 1 = pressed (GPIO48 pulled low).
-    const int sw = (s_h.swRaw && s_h.swRaw()) ? 1 : 0;
-    Serial.printf("SW %d\n", sw);
-    Serial.flush();
-    return;
-  }
   if (line.startsWith("TAP ")) {
     // Inject a synthetic tap so the touch UI is HIL-driveable with no finger -
     // the ENC seam's counterpart. "TAP <x> <y>" presses and releases at a panel
@@ -1041,17 +999,6 @@ void dispatch(String line) {
     Serial.flush();
     return;
   }
-  if (line == "DEGHOST") {
-    // Force the next panel push down the de-ghost (OTP full-update) path - the one
-    // refresh that composites the 3-colour panel's red plane. Exercises the
-    // stuck-red fix (driver-side red-RAM blank) on demand instead of a 15-min idle
-    // wait; the render lands within the scheduler tick and logs
-    // "epd: de-ghost full-update" to /api/log.
-    if (s_h.deghost) { s_h.deghost(); Serial.println("DEGHOST scheduled"); }
-    else Serial.println("DEGHOST unavailable (no hook)");
-    Serial.flush();
-    return;
-  }
   if (line == "RAWFRAME?") {
     // 1 while the Active-posture Animator owns the ring via showFrame() (P-E).
     const int rf = (s_h.rawFrameActive && s_h.rawFrameActive()) ? 1 : 0;
@@ -1105,14 +1052,11 @@ void dispatch(String line) {
     return;
   }
   if (line.startsWith("SCREEN ")) {
-    // SCREEN <eink|tft>: persist the fitted panel + restart (screenModel is
-    // boot-resolved, like MODE).
-    //
-    // ⚠ This exists because of a real bootstrap trap: a fresh TFT board boots
-    // the DEFAULT "eink", drives the e-paper driver onto pins that have a TFT,
-    // and the panel stays dark - including the setup screen that would have told
-    // the owner the AP name and QR. Without a cable-only way to set this, the
-    // recovery path is displayed on the very screen that cannot come up.
+    // SCREEN <eink|tft>: persist the scrModel NVS key + restart (boot-resolved,
+    // like MODE). "tft" is the only supported value; "eink" is the frozen legacy
+    // value, kept so this seam can drive the unsupported-display notice on demand.
+    // A cable-only setter matters because the recovery/setup screen is shown on
+    // the very panel whose config this fixes.
     String a = line.substring(7); a.trim();
     if (a != "eink" && a != "tft") { reply("ERR screen must be eink|tft"); return; }
     agent::store::setScreenModel(a);
@@ -1185,19 +1129,6 @@ void onRender(uint8_t screenId, uint8_t posture, int segCount, bool single,
                 int(screenId), int(posture), segCount, int(single), int(dark),
                 int(bright));
   Serial.flush();
-}
-
-void onEncoder(const char* en) {
-  if (!s_inputLog) return;                                  // F1 - gated by INPUTLOG
-  Serial.printf("ENC %s\n", en);
-  Serial.flush();
-}
-
-bool popInjectedEncoder(int& codeOut) {
-  if (s_encTail == s_encHead) return false;                 // empty
-  codeOut = s_encQ[s_encTail];
-  s_encTail = (s_encTail + 1) % kEncQCap;
-  return true;
 }
 
 bool popSaverCmd(int& minsOut) {
