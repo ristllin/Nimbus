@@ -162,6 +162,54 @@ def test_stt_micrec_transcribes(device, require_manual):
     print(f"[stt_micrec] bytes={nbytes} transcript={transcript!r}")
 
 
+# ---- spoken_reply_audible (N12 / CUM-134 #1) - manual ----------------------
+@pytest.mark.audio
+@pytest.mark.agent
+@pytest.mark.manual
+def test_spoken_reply_audible(device, require_manual):
+    """N12: the on-device spoken REPLY path, end to end on hardware - the bug that
+    shipped SILENT. ``SPKSAY <text>`` drives the exact seam reply.speak/the tts action
+    use: synthesize with the CONFIGURED provider's format, write it to LittleFS, and
+    play it on the speaker (OpenAI WAV via playWavFile, Mistral MP3 via the vendored
+    minimp3 decoder). On the shipped default (Mistral) this exercises the MP3-to-speaker
+    branch that never existed before - the reason a Mistral-only device could never talk.
+
+    Asserts synthesis produced bytes AND playback returned played=1, then a human
+    confirms they HEARD it (the confirmation is the real assertion - an I2S write into a
+    dead speaker still 'plays'). The reported fmt should be ``mp3`` on a Mistral device
+    and ``wav`` on an OpenAI one; either proves the routing.
+
+    Requires a TTS key + network already provisioned. No key / no network -> bytes=0 ->
+    LOUD skip with the /api/log pointer, never a silent green. An absent speaker is caught
+    by test_speaker_audible; this test is about the reply pipeline, not the driver."""
+    device.reset()
+    device.wait_ready(timeout=20.0)
+
+    # Synthesis is a network round-trip (bounded ~25 s) plus a short playback; give it room.
+    m = device.cmd_re(
+        "SPKSAY Nimbus voice reply check. One, two, three.",
+        r"SPKSAY bytes=(\d+) fmt=(wav|mp3) played=(\d)",
+        timeout=60.0,
+    )
+    nbytes, fmt, played = int(m.group(1)), m.group(2), int(m.group(3))
+    if nbytes == 0:
+        pytest.skip(
+            "SPKSAY synthesized 0 bytes - no TTS key/network provisioned "
+            "(check GET /api/log [tts] lines); nothing to sound"
+        )
+    assert played == 1, (
+        f"TTS synthesized {nbytes} bytes (fmt={fmt}) but playback returned played=0 - "
+        "the reply reached the speaker path and failed there (decode or I2S), NOT the "
+        "old silent 0-byte synthesis failure"
+    )
+    require_manual.confirm(
+        f"Did you HEAR the spoken phrase from the speaker just now? (synth fmt={fmt}) "
+        "Press y ONLY if you heard the words.",
+        timeout=30.0,
+    )
+    print(f"[spoken_reply] bytes={nbytes} fmt={fmt} played={played}")
+
+
 def _classify(kv: dict) -> "str | None":
     """Map LbDiag numbers to a fault class (audio.h interpretation), or None if the
     numbers are insufficient to decide."""
