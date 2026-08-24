@@ -24,6 +24,7 @@
 #include "nimbus/cloud/relay_codec.h"
 #include "nimbus/cloud/relay_credential.h"   // CUM-52: exp/re-mint policy (pure core)
 #include "nimbus/cloud/relay_timing.h"        // CUM-160: bound the TLS slot-hold below the watchdog
+#include "nimbus/cloud/loopback_target.h"     // CUM-173: never dial 0.0.0.0 for the loopback fallback
 #include "nimbus/cloud/relay_ws.h"
 #include "nimbus/cloud/tunnel_guard.h"   // canonicalize+deny secret paths, scrub secret bodies
 #include "version.h"
@@ -39,7 +40,13 @@ constexpr uint16_t kTlsPort = 443;
 constexpr char kWsPath[] = "/device";
 constexpr uint32_t kConnectTimeoutMs = 12000;
 constexpr uint32_t kWelcomeDeadlineMs = 10000;
-constexpr size_t kMaxRespBody = 256 * 1024;    // loopback RESPONSE (device UI page), PSRAM-backed
+// Loopback RESPONSE cap (PSRAM-backed). CUM-173: the config page (GET /) is the
+// biggest tunneled body and it GREW PAST the old 256 KB cap (~278 KB now) as the UI
+// gained features - so the parser flagged overflow and handleReq turned every tunneled
+// GET / into a 5xx (the field "white screen + bad gateway"; it serves fine to LAN
+// clients, which have no cap). The value + a host regression guard live in lib/core
+// (loopback_target.h) so the NEXT page growth fails the battery, not the field.
+constexpr size_t kMaxRespBody = nimbus::cloud::kLoopbackMaxRespBody;
 // Inbound cap for frames FROM the relay. A `req` frame is a browser request (method +
 // path + headers + small body), not a large response, so it is bounded low: the WS
 // parser + the decoded body accumulate in scarce INTERNAL SRAM, so a 512 KB frame
@@ -49,6 +56,10 @@ constexpr size_t kMaxRespBody = 256 * 1024;    // loopback RESPONSE (device UI p
 constexpr size_t kMaxInboundFrame = 16 * 1024;
 constexpr size_t kMaxReqBody = 16 * 1024;
 constexpr uint32_t kLoopbackTimeoutMs = 15000;
+// Loopback CONNECT timeout (CUM-173): a working lwIP loopback connects in ~2 ms and a
+// refusal returns immediately, so this only bounds a pathological no-answer case. Kept
+// short so a bad target never adds the multi-second stall the old 4 s value did.
+constexpr uint32_t kLoopbackConnectMs = 1500;
 constexpr uint32_t kHeartbeatMinMs = 5000;     // clamp the relay-supplied heartbeat to a
 constexpr uint32_t kHeartbeatMaxMs = 300000;   // sane band (a huge value disables liveness)
 constexpr size_t kMaxHandshakeHead = 4096;     // WS upgrade response head cap (anti-OOM)
@@ -149,11 +160,34 @@ bool doLoopback(const std::string& method, const std::string& path,
                 const http_replay::Headers& headers, const uint8_t* body, size_t bodyLen,
                 http_replay::ResponseParser& rp) {
   WiFiClient c;
-  // Prefer the lwIP loopback interface (127.0.0.1); the STA self-IP does not reliably
-  // hairpin. Fall back to the LAN IP if loopback is unavailable in this lwIP config.
-  bool connected = c.connect(IPAddress(127, 0, 0, 1), 80, 4000);
-  if (!connected) connected = c.connect(WiFi.localIP(), 80, 4000);
-  if (!connected) return false;
+  // CUM-173: replay INTO the device's own web server over the lwIP loopback.
+  // 127.0.0.1 is the reliable primary on esp32s3 (CONFIG_LWIP_NETIF_LOOPBACK=y -
+  // verified ~2 ms, serves every route); no wire, no AP hairpin. The STA self-IP is
+  // only a fallback, and ONLY when it is a real address - WiFi.localIP() can be
+  // 0.0.0.0 just after a (re)join, and dialing that guarantees a 502 (the policy is
+  // host-tested in loopbackFallbackUsable). Short connect timeout: a real loopback
+  // connects instantly and a refusal returns immediately, so the old 4 s stalls only
+  // ever added latency (part of the field "lag").
+  const uint32_t t0 = millis();
+  const char* via = "127.0.0.1";
+  bool connected = c.connect(IPAddress(127, 0, 0, 1), 80, kLoopbackConnectMs);
+  if (!connected) {
+    IPAddress self = WiFi.localIP();
+    const uint32_t ipABCD = (uint32_t(self[0]) << 24) | (uint32_t(self[1]) << 16) |
+                            (uint32_t(self[2]) << 8) | uint32_t(self[3]);
+    if (nimbus::cloud::loopbackFallbackUsable(ipABCD)) {
+      via = "sta-ip";
+      connected = c.connect(self, 80, kLoopbackConnectMs);
+    } else {
+      via = "sta-ip-skip";   // no usable self-IP yet: fail fast rather than dial 0.0.0.0
+    }
+  }
+  const uint32_t connMs = millis() - t0;
+  if (!connected) {
+    // Distinct tag for the tunnel-502 path (the release gate asserts on these lines).
+    agent::alogf("relay: loopback REFUSED via=%s conn=%ums (tunnel 502)", via, connMs);
+    return false;
+  }
   std::string head = http_replay::buildRequestHead(method, path, headers, bodyLen,
                                                    agent::store::webAuthToken().c_str());
   if (head.empty()) { c.stop(); return false; }  // rejected (CRLF/control in the request line)
@@ -178,6 +212,10 @@ bool doLoopback(const std::string& method, const std::string& path,
   if (!rp.complete()) rp.endOfStream();
   heap_caps_free(buf);
   c.stop();
+  // Permanent instrumentation (device evidence; the CUM-174 release gate asserts on
+  // this line): which target served, connect latency, status, and body size.
+  agent::alogf("relay: loopback via=%s conn=%ums status=%d bytes=%u", via, connMs,
+               rp.status(), (unsigned)rp.body().size());
   return rp.complete();
 }
 
@@ -289,13 +327,31 @@ void emitResFrame(const char* id, int status, const http_replay::Headers& header
 }
 
 // Answer a tunneled request: replay into the local server, frame the response back.
+// The plain-text body for a tunnel error status (kept out of handleReq to hold it
+// under the complexity gate). 500 is the CUM-173 over-cap backstop.
+const char* tunnelErrReason(bool denied, int status) {
+  if (denied) return "Not available over the cloud; use this device on its network.";
+  if (status == 500) return "This page is too large to load over the cloud link.";
+  if (status == 502) return "response too large";
+  return "device timeout";
+}
+
 void handleReq(const ReqFrame& req) {
   const bool denied = tunnel::isTunnelDenied(req.path ? req.path : "");
   http_replay::ResponseParser rp(kMaxRespBody);
   bool ok = denied ? false : replayReq(req, rp);
 
   int status = denied ? 403 : (ok ? rp.status() : 504);
-  if (ok && rp.overflow()) status = 502;
+  if (ok && rp.overflow()) {
+    // CUM-173: a body over kMaxRespBody would be truncated - never frame a partial
+    // page. Return an EXPLICIT 500-with-reason (distinct tag) so the cloud maps it to
+    // the "Reaching your Nimbus" interstitial instead of a bare Cloudflare 502, and so
+    // the regression is loud in the logs. (The cap now clears the config page; this is
+    // the backstop for anything genuinely oversized.)
+    status = 500;
+    agent::alogf("relay: response over cap (%u bytes, cap %u) -> 500",
+                 (unsigned)rp.body().size(), (unsigned)kMaxRespBody);
+  }
 
   // Choose the response body: the real loopback body for a clean <500 result, otherwise
   // a small plain-text explanation (the same policy the inline version used).
@@ -320,9 +376,7 @@ void handleReq(const ReqFrame& req) {
     }
   } else {
     outHdrs.emplace_back("content-type", "text/plain");
-    errStr = denied ? "Not available over the cloud; use this device on its network."
-             : (status == 502) ? "response too large"
-                               : "device timeout";
+    errStr = tunnelErrReason(denied, status);
     obody = reinterpret_cast<const uint8_t*>(errStr.data());
     obodyLen = errStr.size();
   }
@@ -333,35 +387,41 @@ void handleReq(const ReqFrame& req) {
 // One-shot HTTPS POST of a JSON body to the relay host; returns status, body in out.
 int httpsPostJson(const String& host, const char* path, const String& reqBody, String& out) {
   if (!agent::arbiter::acquireWork(15000)) return -1;
-  // CUM-160: this is the one relay path that holds the single TLS work slot AND
-  // does a blocking connect + read. Bound the WHOLE hold below the task watchdog
-  // (connect timeout AND the read deadline both derive from one budget measured
-  // from slot acquisition), so a watchdog-fed task waiting on the slot can never be
-  // parked past the panic timeout. Over budget -> graceful failure + retry, never a
-  // reset. See nimbus/cloud/relay_timing.h.
+  // CUM-160: the one relay path that holds the single TLS work slot AND does a blocking
+  // connect + read. A real relay/Cloudflare TLS connect legitimately takes many seconds
+  // - that is latency, NOT a hang - so it is NOT aborted early (an earlier 5.5 s abort
+  // stopped the device reconnecting at all, a field regression). The relay task is not
+  // watchdog-subscribed, so this blocking connect does not itself trip the 8 s watchdog;
+  // the READ then runs as watchdog-fed, bounded steps (driveStagedWait) so no single
+  // step blocks longer than relayStepMs and a fed task can never starve. Instrumented.
   const uint32_t t0 = millis();
-  const uint32_t budgetMs = nimbus::cloud::relaySlotHoldBudgetMs(nimbus::cloud::kTaskWdtTimeoutMs);
-  const uint32_t holdDeadline = t0 + budgetMs;
   WiFiClientSecure c;
   relayTlsSetup(c);
   int status = -1;
-  if (c.connect(host.c_str(), kTlsPort, budgetMs)) {
+  const bool connected = c.connect(host.c_str(), kTlsPort, kConnectTimeoutMs);
+  const uint32_t connMs = millis() - t0;
+  if (connected) {
     String req = String("POST ") + path + " HTTP/1.1\r\nHost: " + host +
                  "\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: " +
                  String(reqBody.length()) + "\r\n\r\n" + reqBody;
     c.print(req);
-    // Read the response with the same robust, host-tested parser the loopback uses
-    // (Content-Length / chunked / until-close). Waiting on availability avoids the
-    // read-before-arrival race a hand-rolled readStringUntil hits. The read shares
-    // the slot-hold budget with the connect above (deadline is the SAME holdDeadline),
-    // so connect + read together never exceed it.
+    // Robust, host-tested parser (Content-Length / chunked / until-close), driven as
+    // bounded + fed steps so the slot-holding read never starves the watchdog.
     http_replay::ResponseParser rp(8192);  // pairing JSON is small
     uint8_t buf[512];
-    while (millis() < holdDeadline && !rp.complete() && !rp.error()) {
-      int n = readSome(c, buf, sizeof(buf), 250);
-      if (n > 0) rp.feed(buf, (size_t)n);
-      else if (n < 0) { rp.endOfStream(); break; }
-    }
+    nimbus::cloud::driveStagedWait(
+        kConnectTimeoutMs, nimbus::cloud::relayStepMs,
+        []() { return (uint32_t)millis(); },
+        [&]() { return rp.complete() || rp.error(); },
+        [&](uint32_t stepMs) {
+          const uint32_t stepEnd = millis() + stepMs;
+          while ((int32_t)(stepEnd - millis()) > 0 && !rp.complete() && !rp.error()) {
+            int n = readSome(c, buf, sizeof(buf), 200);
+            if (n > 0) rp.feed(buf, (size_t)n);
+            else if (n < 0) { rp.endOfStream(); break; }
+          }
+        },
+        []() { vTaskDelay(1); });   // yield between steps (relay task is not WDT-subscribed)
     if (!rp.complete()) rp.endOfStream();
     if (rp.complete()) {
       status = rp.status();
@@ -372,13 +432,11 @@ int httpsPostJson(const String& host, const char* path, const String& reqBody, S
   }
   tlsClose(c);
   agent::arbiter::releaseWork();
-  // Timing instrumentation (device evidence for CUM-160): the slot-hold and whether
-  // it stayed within the watchdog-safe budget. A line over budget is the bug signature.
+  // Hold-instrumentation (kept per CUM-160; the CUM-174 release gate asserts on it):
+  // total slot-hold, the real connect latency (proves connects legitimately take
+  // seconds), and the status.
   const uint32_t heldMs = millis() - t0;
-  String tl = "relay: httpsPost held=" + String(heldMs) + "ms budget=" + String(budgetMs) +
-              "ms wdt=" + String(nimbus::cloud::kTaskWdtTimeoutMs) + "ms status=" + String(status) +
-              (heldMs <= budgetMs ? " ok" : " OVER-BUDGET");
-  agent::alog(tl.c_str());
+  agent::alogf("relay: httpsPost held=%ums connect=%ums status=%d", heldMs, connMs, status);
   return status;
 }
 
