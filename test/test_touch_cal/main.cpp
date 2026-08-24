@@ -9,7 +9,9 @@
 
 using nimbus::touch::Cal;
 using nimbus::touch::formatCal;
+using nimbus::touch::orientTouch;
 using nimbus::touch::parseCal;
+using nimbus::touch::Point;
 
 void setUp() {}
 void tearDown() {}
@@ -86,6 +88,48 @@ static void test_tolerates_spaces() {
   TEST_ASSERT_EQUAL_UINT16(3900, c.maxX);
 }
 
+// ---- orientTouch: the single-source 180 reconciliation (CUM-160) ------------
+static const int16_t W = 320, H = 240;
+
+static void test_unflipped_is_identity() {
+  Point p = orientTouch(Point{10, 20, true}, /*displayFlipped=*/false, W, H);
+  TEST_ASSERT_EQUAL_INT16(10, p.x);
+  TEST_ASSERT_EQUAL_INT16(20, p.y);
+  TEST_ASSERT_TRUE(p.down);
+}
+
+static void test_flipped_mirrors_both_axes() {
+  Point p = orientTouch(Point{10, 20, true}, /*displayFlipped=*/true, W, H);
+  TEST_ASSERT_EQUAL_INT16(W - 1 - 10, p.x);   // 309
+  TEST_ASSERT_EQUAL_INT16(H - 1 - 20, p.y);   // 219
+}
+
+static void test_flip_is_involutive_applied_once() {
+  // Applying the flip twice returns the original: proof the transform is the 180
+  // and nothing else, so a double-source (cal + this) would land 180 out.
+  Point once = orientTouch(Point{47, 96, true}, true, W, H);
+  Point twice = orientTouch(once, true, W, H);
+  TEST_ASSERT_EQUAL_INT16(47, twice.x);
+  TEST_ASSERT_EQUAL_INT16(96, twice.y);
+}
+
+static void test_corners_map_to_opposite_corners_when_flipped() {
+  Point tl = orientTouch(Point{0, 0, true}, true, W, H);
+  TEST_ASSERT_EQUAL_INT16(W - 1, tl.x);
+  TEST_ASSERT_EQUAL_INT16(H - 1, tl.y);
+  Point br = orientTouch(Point{W - 1, H - 1, true}, true, W, H);
+  TEST_ASSERT_EQUAL_INT16(0, br.x);
+  TEST_ASSERT_EQUAL_INT16(0, br.y);
+}
+
+static void test_not_down_passes_through_even_when_flipped() {
+  // No live coordinate to mirror; leave the sentinel intact.
+  Point p = orientTouch(Point{-1, -1, false}, true, W, H);
+  TEST_ASSERT_EQUAL_INT16(-1, p.x);
+  TEST_ASSERT_EQUAL_INT16(-1, p.y);
+  TEST_ASSERT_FALSE(p.down);
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_parses_four_fields);
@@ -94,5 +138,10 @@ int main() {
   RUN_TEST(test_rejects_malformed_without_mutating);
   RUN_TEST(test_accepts_boundaries);
   RUN_TEST(test_tolerates_spaces);
+  RUN_TEST(test_unflipped_is_identity);
+  RUN_TEST(test_flipped_mirrors_both_axes);
+  RUN_TEST(test_flip_is_involutive_applied_once);
+  RUN_TEST(test_corners_map_to_opposite_corners_when_flipped);
+  RUN_TEST(test_not_down_passes_through_even_when_flipped);
   return UNITY_END();
 }

@@ -86,6 +86,7 @@
 #include "version.h"
 #include "net/ble_notifier.h"
 #include "net/relay_client.h"  // cloud tunnel (cumulo-nimbus)
+#include "nimbus/cloud/relay_timing.h"  // kTaskWdtTimeoutMs - single source for the WDT budget
 #include "net/webui.h"
 #include "net/wifi_portal.h"
 #include "net/wifi_store.h"   // the Wi-Fi menu reads saved networks by name
@@ -2509,8 +2510,10 @@ void setup() {
   // blocks for ~25 s per cycle. Arduino may have already initialized the TWDT
   // (idle-task watch), so reconfigure on INVALID_STATE instead of failing.
   {
-    esp_task_wdt_config_t wdt{/*timeout_ms=*/8000, /*idle_core_mask=*/0,
-                              /*trigger_panic=*/true};
+    // Single source (nimbus/cloud/relay_timing.h): the relay's TLS slot-hold budget
+    // is derived from this same constant, so the two can never drift (CUM-160).
+    esp_task_wdt_config_t wdt{/*timeout_ms=*/nimbus::cloud::kTaskWdtTimeoutMs,
+                              /*idle_core_mask=*/0, /*trigger_panic=*/true};
     esp_err_t err = esp_task_wdt_init(&wdt);
     if (err == ESP_ERR_INVALID_STATE) esp_task_wdt_reconfigure(&wdt);
     // Subscribe the loop task at the END of setup (see below), NOT here. setup()

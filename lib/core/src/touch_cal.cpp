@@ -69,4 +69,12 @@ std::string formatCal(const Cal& c) {
          std::to_string(flags);
 }
 
+Point orientTouch(Point p, bool displayFlipped, int16_t w, int16_t h) {
+  if (p.down && displayFlipped) {
+    p.x = static_cast<int16_t>(w - 1 - p.x);
+    p.y = static_cast<int16_t>(h - 1 - p.y);
+  }
+  return p;
+}
+
 }  // namespace nimbus::touch
