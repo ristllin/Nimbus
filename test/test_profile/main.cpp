@@ -154,8 +154,27 @@ static void test_step_param_clamp_and_wrap() {
   TEST_ASSERT_EQUAL(0, stepParam(Param::TgLowBattPing, 1, +1));        // wrap
 }
 
+// CUM-187: the ring-only params (hidden on a ringless board, in both the device
+// menu and the web UI) are exactly the seven LED-ring controls; the five non-ring
+// params stay visible on every board. This predicate is the single source both
+// surfaces read.
+static void test_is_ring_param_classifies_the_led_controls() {
+  const Param ring[] = {Param::Posture, Param::RingBrightness, Param::RingFps,
+                        Param::AttnLedIndex, Param::AttnHue, Param::AttnAnim,
+                        Param::AttnPeriodMs};
+  const Param nonRing[] = {Param::CoalesceMs, Param::DwellMs, Param::TelemetryPeriodS,
+                           Param::TgLowBattPing, Param::AttnHoldMs};
+  for (Param p : ring) TEST_ASSERT_TRUE(isRingParam(p));
+  for (Param p : nonRing) TEST_ASSERT_FALSE(isRingParam(p));
+  int ringCount = 0;
+  for (int i = 0; i < kParamCount; ++i)
+    if (isRingParam(Param(i))) ++ringCount;
+  TEST_ASSERT_EQUAL(7, ringCount);   // the two sets partition every param (7 + 5 == 12)
+}
+
 int main() {
   UNITY_BEGIN();
+  RUN_TEST(test_is_ring_param_classifies_the_led_controls);
   RUN_TEST(test_presets_match_plan_table);
   RUN_TEST(test_param_meta_shapes);
   RUN_TEST(test_attn_hold_default_and_range);

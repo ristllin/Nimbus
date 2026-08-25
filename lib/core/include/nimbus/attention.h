@@ -40,6 +40,7 @@ enum class ScreenId : uint8_t {
   SelfTest,         // hardware health-check results (menu-triggered) (append-only!)
   Screensaver,      // long-idle logo screen: dotted-ring mark + device name (append-only!)
   TokenDetail,      // full recovery sign-in code; opened from Connectivity (append-only!)
+  TouchCal,         // on-device tap-the-crosses touch calibration (CUM-189) (append-only!)
 };
 
 struct Event {

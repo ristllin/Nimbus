@@ -524,6 +524,10 @@ static void buildState(String& out) {
   // Capacitive touch reports pixel coordinates, so the resistive min/max
   // calibration is meaningless - the UI hides that field on such a board.
   d["touchCap"] = (solide::board().touchKind == solide::TouchKind::CapacitiveI2c);
+  // Whether the board has a physical LED ring. A ringless board hides the ring-only
+  // param cards and the ring simulator in the web UI (CUM-187); the ring params are
+  // also omitted from d["params"] below, so the same predicate drives both surfaces.
+  d["hasRing"] = solide::board().hasRing;
   // Idle minutes before the screen rests. Surfaced because it is an owner
   // setting the web UI edits, yet it was not readable back from any endpoint -
   // so its default (5 minutes, because a backlight is the
@@ -592,8 +596,12 @@ static void buildState(String& out) {
   d["posture"] = posture;
 
   JsonArray arr = d["params"].to<JsonArray>();
+  const bool hasRing = solide::board().hasRing;
   for (int i = 0; i < kParamMetaCount; i++) {
     Param p = kParams[i].param;
+    // Ring-only params are hidden on a ringless board (CUM-187), from the same
+    // isRingParam() predicate the device menu uses, so the two surfaces cannot drift.
+    if (!hasRing && nimbus::isRingParam(p)) continue;
     nimbus::ParamMeta pm = nimbus::paramMeta(p);
     JsonObject o = arr.add<JsonObject>();
     o["key"]        = (int)p;
@@ -1144,11 +1152,22 @@ static bool applyOrchField(const String& n, const String& v, bool& cfgDirty) {
     // and applied live - recalibrating should not need a restart.
     if (v.length() == 0) {
       agent::store::setTouchCal("");
-      // Restore the driver defaults LIVE. Persisting alone left g_cal mapping
-      // through the discarded calibration until a restart while the page said
-      // "Saved" - and this is the recovery path an owner reaches for right
-      // after mis-calibrating. A default-constructed Calibration IS the default.
-      solide::touch::setCalibration(solide::touch::Calibration{});
+      // Restore the per-board-model DEFAULT LIVE (CUM-189): the SAME orientation a
+      // fresh board of this model boots with, not the generic driver default, so
+      // clearing a mis-calibration returns to a known-good starting point for THIS
+      // board. Sourced from the one boardDefaultCal() the boot path also reads, so
+      // "clear" and "fresh boot" can never drift. Persisting alone left the live
+      // mapping through the discarded calibration until a restart while the page
+      // said "Saved" - and this is the recovery path an owner reaches for right
+      // after mis-calibrating.
+      const bool cap = solide::board().touchKind == solide::TouchKind::CapacitiveI2c;
+      const nimbus::touch::Cal d = nimbus::touch::boardDefaultCal(
+          cap ? nimbus::touch::TouchKind::Capacitive : nimbus::touch::TouchKind::Resistive);
+      solide::touch::Calibration sc;   // driver-measured min/max; board-model flags
+      sc.swapXY = d.swapXY;
+      sc.invertX = d.invertX;
+      sc.invertY = d.invertY;
+      solide::touch::setCalibration(sc);
       return true;
     }
     nimbus::touch::Cal c;

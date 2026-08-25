@@ -2242,10 +2242,10 @@ stops sending frames on its own, within a hold window scaled to the battery mode
 trigger. If it never clears, check the broker's own session bookkeeping rather
 than the device.)NIMBUSDOC"},
   {"modes-and-signals#2-ring-level-what-the-ring-shows-in-each-mode-display-flip", "2. Ring level - what the ring shows in each mode - Display flip",
-   R"NIMBUSDOC(**Settings > Display flip** on the device (or the Display flip toggle under
-Settings → Display on the web) rotates the screen 180 degrees for an upside-down
-mount. It applies right away, and touch follows the flip so taps still land where
-you touch.)NIMBUSDOC"},
+   R"NIMBUSDOC(**Settings > Display > Display flip** on the device (or the Display flip toggle
+under Settings → Display on the web) rotates the screen 180 degrees for an
+upside-down mount. It applies right away, and touch follows the flip so taps still
+land where you touch.)NIMBUSDOC"},
   {"modes-and-signals#2-ring-level-what-the-ring-shows-in-each-mode-low-battery", "2. Ring level - what the ring shows in each mode - Low battery",
    R"NIMBUSDOC(Two settings under **Settings → Battery mode**, both about a low battery
 rather than about a mode:
