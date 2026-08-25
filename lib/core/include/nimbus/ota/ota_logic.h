@@ -229,5 +229,14 @@ UpdateView updateView(State s, int pct, const char* latest, const char* err,
 // web UI (served in the 409 body). (CUM-197)
 const char* checkRefusalCopy(const char* why);
 
+// True when a persisted OTA "last result" record ("ok vX" / "rollback vX" / ...)
+// no longer pertains to the image now running: its trailing version token names
+// a DIFFERENT firmware version than `runningVersion`. The current image then
+// arrived by some path other than the OTA that wrote the record (e.g. a later
+// dev/USB flash), so the record is stale and misleading (the owner saw "ok
+// v4.2.0" on a v4.3.0 device). Records whose trailing token is not a parseable
+// version (mid-operation or non-version labels) are left alone. (CUM-197)
+bool lastResultStale(const char* lastResult, const char* runningVersion);
+
 }  // namespace ota
 }  // namespace nimbus

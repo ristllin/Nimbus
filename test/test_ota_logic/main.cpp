@@ -465,6 +465,20 @@ static void test_check_refusal_copy() {
   }
 }
 
+// CUM-197: a persisted "last result" that names a different version than the one
+// running is stale (a later flash bypassed the OTA that wrote it).
+static void test_last_result_stale() {
+  TEST_ASSERT_FALSE(lastResultStale("ok v4.4.0", "v4.4.0"));          // same image
+  TEST_ASSERT_FALSE(lastResultStale("rollback v4.3.0", "v4.3.0"));
+  TEST_ASSERT_TRUE(lastResultStale("ok v4.2.0", "v4.3.0-154-g96b8bb3"));  // the owner's case
+  TEST_ASSERT_TRUE(lastResultStale("ok v4.4.0", "v4.2.0"));
+  TEST_ASSERT_FALSE(lastResultStale("ok v4.4.0", "v4.4.0-5-gabc"));   // same release, dev suffix
+  TEST_ASSERT_FALSE(lastResultStale("", "v4.4.0"));                   // nothing recorded
+  TEST_ASSERT_FALSE(lastResultStale(nullptr, "v4.4.0"));
+  TEST_ASSERT_FALSE(lastResultStale("sim-arm app0", "v4.4.0"));       // non-version token
+  TEST_ASSERT_FALSE(lastResultStale("rollback-lost", "v4.4.0"));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_parse_version);
@@ -487,5 +501,6 @@ int main(int, char**) {
   RUN_TEST(test_state_from_str_roundtrips);
   RUN_TEST(test_update_view);
   RUN_TEST(test_check_refusal_copy);
+  RUN_TEST(test_last_result_stale);
   return UNITY_END();
 }

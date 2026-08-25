@@ -389,6 +389,16 @@ const char* checkRefusalCopy(const char* why) {
   return "Couldn't start the check. Try again.";
 }
 
+bool lastResultStale(const char* lastResult, const char* runningVersion) {
+  if (!lastResult || !lastResult[0]) return false;   // nothing to clear
+  const char* tok = lastResult;                       // last space-separated field
+  for (const char* p = lastResult; *p; ++p)
+    if (*p == ' ') tok = p + 1;
+  int a, b, c;
+  if (!parseVersion(tok, a, b, c)) return false;      // not a version -> leave it
+  return compareVersions(tok, runningVersion) != 0;   // names a different image
+}
+
 UpdateView updateView(State s, int pct, const char* latest, const char* err,
                       const char* fwVersion) {
   UpdateView v;

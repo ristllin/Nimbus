@@ -201,6 +201,18 @@ void bootGuard() {
 
   if (!rawGetI32(h, AKEY_OTA_PENDING, 0)) {
     g_markedValid = true;  // nothing pending - this boot needs no validation
+    // CUM-197: clear a stale "last result". If the record names a different
+    // version than the one now running, the current image arrived by some path
+    // other than the OTA that wrote it (e.g. a later dev/USB flash), so showing
+    // "ok v4.2.0" on a v4.3.0 device is misleading. The next OTA writes a fresh,
+    // accurate result. Only touched when there is nothing pending (rollback /
+    // abort paths below record their own accurate outcome).
+    char lr[40] = {0};
+    rawGetStr(h, AKEY_OTA_LASTRES, lr, sizeof lr);
+    if (nimbus::ota::lastResultStale(lr, NIMBUS_FW_VERSION)) {
+      nvs_set_str(h, AKEY_OTA_LASTRES, "");
+      nvs_commit(h);
+    }
     nvs_close(h);
     return;
   }
