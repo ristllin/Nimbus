@@ -1236,9 +1236,29 @@ static void test_display_submenu_holds_the_flip() {
   m.onClick();
   auto d = viewOf(m);
   TEST_ASSERT_EQUAL_STRING("Settings > Display", d.title.c_str());
-  TEST_ASSERT_EQUAL(2, int(d.items.size()));
+  TEST_ASSERT_EQUAL(3, int(d.items.size()));
   TEST_ASSERT_EQUAL_STRING("Display flip: Off", d.items[0].c_str());
-  TEST_ASSERT_EQUAL_STRING("< Back", d.items[1].c_str());
+  TEST_ASSERT_EQUAL_STRING("Calibrate touch >", d.items[1].c_str());
+  TEST_ASSERT_EQUAL_STRING("< Back", d.items[2].c_str());
+}
+
+// CUM-189: the Display > Calibrate touch row raises a device-drained request
+// (not Config state, so no dirty()) instead of toggling anything itself.
+static void test_calibrate_touch_raises_a_request() {
+  Config c;
+  SettingsMenu m(c);
+  m.open();
+  const int dispIdx = int(viewOf(m).items.size()) - 2;   // "Display >"
+  while (viewOf(m).selected != dispIdx) m.onRotate(+1);
+  m.onClick();                       // enter Display (cursor on flip, row 0)
+  m.onRotate(+1);                    // -> Calibrate touch (row 1)
+  TEST_ASSERT_EQUAL(1, viewOf(m).selected);
+  TEST_ASSERT_FALSE(m.calibrateRequested());
+  m.onClick();
+  TEST_ASSERT_TRUE(m.calibrateRequested());
+  TEST_ASSERT_FALSE(m.dirty());      // a device-work request, never Config state
+  m.clearCalibrateRequest();
+  TEST_ASSERT_FALSE(m.calibrateRequested());
 }
 
 static void test_flip_toggle_dirties_and_labels() {
@@ -1350,6 +1370,7 @@ int main() {
   RUN_TEST(test_main_row_says_power_profile);
   RUN_TEST(test_help_text_per_state);
   RUN_TEST(test_display_submenu_holds_the_flip);
+  RUN_TEST(test_calibrate_touch_raises_a_request);
   RUN_TEST(test_flip_toggle_dirties_and_labels);
   RUN_TEST(test_customize_shows_all_params_with_a_ring);
   RUN_TEST(test_ringless_board_hides_ring_params);

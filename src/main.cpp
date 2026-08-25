@@ -3240,6 +3240,68 @@ static void openSettingsMenu() {
   menuRingRepaint(true);
 }
 
+// On-device tap-the-crosses touch calibration (CUM-189). Entered ONLY from
+// Settings > Display > Calibrate touch (an opt-in menu request), so it can never run
+// at boot or disturb normal operation. The pure CalWizard owns the targets + solve;
+// this wrapper draws each target, reads RAW touch (not the calibration under test),
+// and on completion applies + persists the result. Blocking and bounded (max four
+// 30 s waits), so it suspends the main-loop watchdog for its duration (the same
+// pattern the record/STT path uses) and aborts cleanly if a target is never tapped.
+static void runTouchCalibration() {
+  if (!g_screenIsTft || !solide::touch::present()) return;
+  const int16_t w = int16_t(solide::display_tft::kW);
+  const int16_t h = int16_t(solide::display_tft::kH);
+  nimbus::touch::CalWizard wiz;
+  wiz.begin(w, h, 24);
+
+  esp_task_wdt_delete(nullptr);   // blocking flow: suspend the loop WDT (MICREC pattern)
+  const uint32_t kPerTargetMs = 30000;
+  bool aborted = false;
+  while (!wiz.done()) {
+    render::ScreenCtx c;
+    c.calTotal   = wiz.count();
+    c.calStep    = wiz.step();
+    c.calTargetX = wiz.targetX();
+    c.calTargetY = wiz.targetY();
+    c.calMessage = "Tap each corner target";
+    hw::tft::renderAndPush(attn::ScreenId::TouchCal, c);
+
+    // Wait for one clean press: sample raw while a finger is down, keep the last
+    // reading, and record it on release. Bounded so a dead/absent touch line aborts
+    // instead of hanging the device.
+    const uint32_t start = millis();
+    bool sawDown = false;
+    uint16_t rx = 0, ry = 0, rz = 0, lastX = 0, lastY = 0;
+    while (int32_t(millis() - start) < int32_t(kPerTargetMs)) {
+      if (solide::touch::readRaw(rx, ry, rz)) {
+        lastX = rx; lastY = ry; sawDown = true;
+      } else if (sawDown) {
+        wiz.recordRaw(lastX, lastY);   // release edge: this corner is captured
+        break;
+      }
+      delay(15);
+    }
+    if (!sawDown) { aborted = true; break; }   // timed out with no press: cancel
+  }
+  esp_task_wdt_add(nullptr);   // re-arm the loop WDT
+
+  if (!aborted && wiz.done()) {
+    nimbus::touch::Cal cal;
+    if (wiz.solve(cal)) {
+      agent::store::setTouchCal(String(nimbus::touch::formatCal(cal).c_str()));
+      solide::touch::Calibration sc;
+      sc.minX = cal.minX; sc.maxX = cal.maxX; sc.minY = cal.minY; sc.maxY = cal.maxY;
+      sc.swapXY = cal.swapXY; sc.invertX = cal.invertX; sc.invertY = cal.invertY;
+      solide::touch::setCalibration(sc);
+      agent::alog("[cal] touch calibrated on device (applied + persisted)");
+    } else {
+      agent::alog("[cal] calibration presses were degenerate - calibration left unchanged");
+    }
+  }
+  hw::tft::forceRepaint();
+  renderScreen(attn::ScreenId::StatusIdle, -1, true);   // hand the screen back
+}
+
 // Everything that must happen AFTER the settings-menu FSM mutates: the ring
 // echo, the dirty()->persist+applyConfig block, and every request-flag drain
 // (bonds, SD probe, Wi-Fi, OTA install).
@@ -3388,6 +3450,14 @@ static void settleMenuAfterMutation(uint32_t now) {
     g_menu.clearSdProbeRequest();
     g_menu.setSdStatus(std::string(sdStatusLine().c_str()));  // refresh the Main row
     g_menuNeedsPaint = true;
+  }
+  if (g_menu.calibrateRequested()) {
+    // Settings > Display > Calibrate touch: hand the screen to the on-device
+    // tap-the-crosses flow, then restore the normal UI. Blocking + opt-in (CUM-189).
+    g_menu.clearCalibrateRequest();
+    g_menu.close();
+    runTouchCalibration();
+    g_menuNeedsPaint = false;   // the routine already restored the live screen
   }
   // ---- Connectivity > Wi-Fi: the on-device escape hatch --------------
   // These four flags are the ONLY thing that makes that submenu real. The

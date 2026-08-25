@@ -253,6 +253,12 @@ class SettingsMenu {
   void setHasRing(bool on) { hasRing_ = on; }
   bool hasRing() const { return hasRing_; }
 
+  // Settings > Display > Calibrate touch: raises a request the device drains to run
+  // the on-device tap-the-crosses calibration (CUM-189). Like the other device-work
+  // requests (SD re-probe, forget bonds) it is not Config state, so it never dirty()s.
+  bool calibrateRequested() const { return calibrateRequested_; }
+  void clearCalibrateRequest() { calibrateRequested_ = false; }
+
   bool adjustingValue() const {
     return volAdjusting_ || (state_ == State::Edit && adjusting_);
   }
@@ -330,8 +336,8 @@ class SettingsMenu {
     WifiPublishAp = 0, WifiChooseNet, WifiForgetNet, WifiRowBack, kWifiRows };
 
   // Rows in the Display submenu (Settings > Display), in display order. Groups the
-  // screen flip (and touch calibration once it lands) per the CUM-163 IA.
-  enum DispRow : int { DispFlip = 0, DispBack, kDispRows };
+  // screen flip and the touch-calibration entry per the CUM-163 IA.
+  enum DispRow : int { DispFlip = 0, DispCalibrate, DispBack, kDispRows };
 
   int itemCount() const;   // rows in the current list state
   MainRow mainRowAt(int idx) const;  // visible Main index -> logical row (identity)
@@ -366,6 +372,7 @@ class SettingsMenu {
   uint16_t saverMin_ = 5;            // Main > Screensaver idle minutes (0 = off, NVS-synced)
   bool screenFlip_ = false;          // Settings > Display > Display flip (TFT only, NVS-synced)
   bool hasRing_ = true;              // board has a physical LED ring (CUM-187 hide gate)
+  bool calibrateRequested_ = false;  // Settings > Display > Calibrate touch (device drains)
   bool    autoUpdate_ = false;       // Software update > Automatic updates (NVS-synced)
   int     sttProv_ = 0;              // Sound > Dictation (0 Mistral / 1 OpenAI, NVS-synced)
   int     ttsProv_ = 0;              // Sound > Spoken replies (0 Mistral / 1 OpenAI, NVS-synced)

@@ -950,6 +950,34 @@ void drawPairing(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx) 
           "Enter this on your computer", kInk3, 1);
 }
 
+// On-device tap-the-crosses touch calibration (CUM-189). Full-screen, chrome-free
+// so the corner targets are reachable: a crosshair at the current target plus a
+// centered instruction and a step counter. The device drives calTargetX/Y + calStep
+// each frame from CalWizard; a tap is read raw (not through the calibration under
+// test), so this screen deliberately draws no tap regions.
+void drawTouchCal(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx) {
+  (void)r;
+  fb.clear(kBg);
+
+  // The crosshair at the current target: a teal plus with a hollow box, so the
+  // exact pixel to press is unambiguous.
+  const int tx = ctx.calTargetX, ty = ctx.calTargetY;
+  const int arm = 14, box = 9;
+  fb.hline(tx - arm, ty, 2 * arm + 1, kTeal);
+  fb.vline(tx, ty - arm, 2 * arm + 1, kTeal);
+  fb.rect(tx - box, ty - box, 2 * box + 1, 2 * box + 1, kTeal);
+
+  // Centered instruction + step counter, clear of the crosshair.
+  const std::string msg = ctx.calMessage.empty() ? std::string("Tap each corner target")
+                                                  : ctx.calMessage;
+  fb.text((L.w - fb.textWidth(msg, 2)) / 2, L.h / 2 - 12, msg, kInk, 2);
+  if (ctx.calTotal > 0) {
+    const std::string step = std::to_string(ctx.calStep + 1) + " / " +
+                             std::to_string(ctx.calTotal);
+    fb.text((L.w - fb.textWidth(step, 1)) / 2, L.h / 2 + 12, step, kInk3, 1);
+  }
+}
+
 void drawScreensaver(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx) {
   // The backlight is blanked separately (that is the real power saving); this
   // is what shows if it is still lit. Any tap wakes.
@@ -1015,6 +1043,7 @@ Rendered renderScreen(Fb565& fb, attn::ScreenId screen, const ScreenCtx& ctx) {
     case attn::ScreenId::SetupInfo:     drawSetup(fb, L, r, ctx, false); break;
     case attn::ScreenId::ConfigQr:      drawSetup(fb, L, r, ctx, true); break;
     case attn::ScreenId::TokenDetail:   drawTokenDetail(fb, L, r, ctx); break;
+    case attn::ScreenId::TouchCal:      drawTouchCal(fb, L, r, ctx); break;
     case attn::ScreenId::Pairing:       drawPairing(fb, L, r, ctx); break;
     case attn::ScreenId::Screensaver:   drawScreensaver(fb, L, r, ctx); break;
     case attn::ScreenId::StatusIdle:

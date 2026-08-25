@@ -284,6 +284,10 @@ void SettingsMenu::onClick() {
         dirty_ = true;
         return;                          // stay on the row so the state flip is visible
       }
+      if (sel_ == DispCalibrate) {       // run the on-device tap-the-crosses flow
+        calibrateRequested_ = true;      // device drains -> enters CalWizard (not Config state)
+        return;                          // stay on the row; the device takes over the screen
+      }
       enter(State::Main);                // Back
       sel_ = RowDisplay;
       return;
@@ -682,10 +686,13 @@ const char* SettingsMenu::helpText() const {
       default: break;
     }
   }
-  // Display submenu: the flip row explains what it does; Back has no pane.
+  // Display submenu: each row explains what it does; Back has no pane.
   if (state_ == State::Display && sel_ == DispFlip)
     return "Turns the screen 180 degrees for an upside-down mount. "
            "Takes effect right away.";
+  if (state_ == State::Display && sel_ == DispCalibrate)
+    return "Tap the four corner targets so taps land where you touch. "
+           "Takes about ten seconds.";
   // Software update rows: live status while it exists; the Notifier-mode
   // explanation on the disabled Check row.
   if (state_ == State::UpdateMenu) {
@@ -775,6 +782,7 @@ void SettingsMenu::view(solide::menu::MenuView& out) const {
     case State::Display: {
       out.title = "Settings > Display";
       out.items.push_back(std::string("Display flip: ") + (screenFlip_ ? "On" : "Off"));
+      out.items.push_back("Calibrate touch >");   // runs the on-device tap-the-crosses flow
       out.items.push_back("< Back");
       return;
     }
