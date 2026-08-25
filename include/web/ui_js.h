@@ -1924,7 +1924,7 @@ function loadWifi(){
    ?('Temporary setup hotspot "'+(d.apSsid||'')+'" is available at '+(d.apIp||'')+'.')
    :(d.sta
      ?('Home Wi-Fi is connected at '+(d.staIp||'its LAN address')+'. The temporary setup hotspot is off; this is normal.')
-     :'The device is offline and its temporary setup hotspot is unavailable. Restart the device.');
+     :'The setup hotspot dropped and is coming back on its own. Reconnect to the setup network in a moment, then reload this page. No restart needed.');
  }).catch(()=>{box.innerHTML='<span class=hint>Couldn\'t load saved networks. Try again.</span>';});
 }
 // WATCH the join with a bounded countdown (12 x 2.5 s = 30 s): poll /api/state for

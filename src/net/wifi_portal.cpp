@@ -20,6 +20,7 @@ namespace nimbus::net {
 
 static DNSServer s_dns;
 static bool      s_mdnsStarted = false;
+static uint32_t  s_lastJoinMs = 0;   // millis() of the last credential test; 0 = none pending
 static uint32_t  s_mdnsNextAttemptMs = 0;   // backoff between failed MDNS.begin()
 static String    s_apSsid = NIMBUS_AP_SSID;
 static String    s_apPass = NIMBUS_AP_PASS;   // effective passphrase (resolved in begin())
@@ -100,7 +101,10 @@ void begin(const char* apSsid, const char* apPass) {
 }
 
 void process() {
-  if (staConnected() && !s_mdnsStarted) startMdns();
+  if (staConnected()) {
+    if (!s_mdnsStarted) startMdns();
+    s_lastJoinMs = 0;   // the join landed; the setup-AP watchdog has nothing to watch
+  }
   s_dns.processNextRequest();
   // Note: unlike Nuage-Solide we keep the AP + DNS up unconditionally - on the
   // S3's 8 MB PSRAM the TIME_WAIT/max8 churn that forced the captive teardown
@@ -222,6 +226,7 @@ bool saveAndConnect(const String& ssid, const String& pass) {
   wifistore::add(ssid, pass, staConnected() ? WiFi.SSID() : String(""));
   WiFi.disconnect();
   WiFi.begin(ssid.c_str(), pass.c_str());
+  s_lastJoinMs = millis() ? millis() : 1;   // watch this attempt; 0 is the "none" sentinel
   return true;
 }
 
@@ -231,6 +236,7 @@ bool saveAndConnect(const String& ssid, const String& pass) {
 // way out of the trap: with a bad password the core retries forever, and the endless
 // association attempts starve the AP's beacons on the shared 2.4 GHz radio.
 void publishSetupNetwork() {
+  s_lastJoinMs = 0;   // the station is being stood down; no join is in flight to watch
   WiFi.setAutoReconnect(false);
   WiFi.disconnect(/*wifioff=*/false, /*eraseap=*/false);
   // Re-assert the AP if it never came up (or was dragged off-channel by the STA).
@@ -249,7 +255,14 @@ void cancelSetupHold() {
   if (sta.length()) {
     const String p = solide::memory::getString(NIMBUS_KEY_STA_PASS, "");
     WiFi.begin(sta.c_str(), p.c_str());
+    s_lastJoinMs = millis() ? millis() : 1;   // a fresh attempt begins; watch it too
   }
+}
+
+uint32_t msSinceJoinAttempt() {
+  if (s_lastJoinMs == 0) return 0;              // nothing in flight
+  const uint32_t d = millis() - s_lastJoinMs;
+  return d == 0 ? 1 : d;                        // never report the "none" sentinel while pending
 }
 
 // --- known networks (thin pass-throughs; the store owns locking + persistence) ---

@@ -71,6 +71,7 @@
 #include "modes/notifier_mode.h"
 #include "nimbus/attention.h"
 #include "nimbus/wifi/copy.h"                  // portable, tested Wi-Fi copy + deviceUrl
+#include "nimbus/wifi/setup_ap.h"              // portable, tested setup-AP recovery policy (CUM-190)
 #include "nimbus/render_context.h"
 #include "nimbus/render_sched.h"
 #include "hw/power_fuelgauge.h"
@@ -4756,26 +4757,43 @@ void loop() {
   // periodic re-check self-heals any raced/missed event, so the AP can't be stranded.
   // ⚠ Orchestrator-only: Notifier runs the radio OFF (BLE owns the SRAM), so it has no
   // SoftAP to reconcile - without this gate the "offline" branch would fire every tick
-  // and turn the radio back on in Notifier mode, defeating the Wi-Fi-off design.
-  if (g_orchMode && g_screenIsTft && (g_dropApPending || g_restoreApPending ||
-                                      int32_t(now - g_lastApReconcileMs) >= 3000)) {
+  // and turn the radio back on in Notifier mode, defeating the Wi-Fi-off design. The
+  // per-tick decision lives in the pure, host-tested decideSetupAp() (CUM-190): the
+  // white-screen DROP stays TFT-only, but RESTORE now runs on any board, and a stalled
+  // first-run join that is starving the AP is re-published without a physical restart.
+  if (g_orchMode && (g_dropApPending || g_restoreApPending ||
+                     int32_t(now - g_lastApReconcileMs) >= 3000)) {
     g_dropApPending = false;
     g_restoreApPending = false;
     g_lastApReconcileMs = now;
     const bool connected = WiFi.status() == WL_CONNECTED && (uint32_t)WiFi.localIP() != 0u;
     const bool apUp = (uint32_t)WiFi.softAPIP() != 0u;
-    if (connected && apUp) {
-      const bool grace = g_apHandoffArmed ||
-                         (g_dropApAfterMs != 0 && int32_t(now - g_dropApAfterMs) < 0);
-      if (!grace) {
+    nimbus::wifi::SetupApInputs si;
+    si.orchestrator = g_orchMode;
+    si.tftBoard     = g_screenIsTft;
+    si.staConnected = connected;
+    si.apAddressed  = apUp;
+    si.onboarded    = agent::store::onboarded();
+    si.handoffGrace = g_apHandoffArmed ||
+                      (g_dropApAfterMs != 0 && int32_t(now - g_dropApAfterMs) < 0);
+    si.msSinceJoin  = net::msSinceJoinAttempt();
+    switch (nimbus::wifi::decideSetupAp(si)) {
+      case nimbus::wifi::SetupApAct::DropAp:
         net::dropSoftAP();
         g_dropApAfterMs = 0;
         agent::alog("[net] SoftAP dropped on a TFT board (white-screen mitigation)");
-      }
-    } else if (!connected && !apUp) {
-      g_dropApAfterMs = 0;
-      net::restoreSoftAP();
-      agent::alog("[net] Wi-Fi down - SoftAP restored so setup/recovery is reachable");
+        break;
+      case nimbus::wifi::SetupApAct::RestoreAp:
+        g_dropApAfterMs = 0;
+        net::restoreSoftAP();
+        agent::alog("[net] Wi-Fi down - SoftAP restored so setup/recovery is reachable");
+        break;
+      case nimbus::wifi::SetupApAct::ProtectAp:
+        net::publishSetupNetwork();
+        agent::alog("[net] setup join stalled - setup network re-published (no restart needed)");
+        break;
+      case nimbus::wifi::SetupApAct::None:
+        break;
     }
   }
 
