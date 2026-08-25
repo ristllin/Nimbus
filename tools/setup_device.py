@@ -700,8 +700,9 @@ def main(argv: list[str] | None = None) -> int:
     if mode == "orchestrator":
         print(
             "Wait for the selected display to show first-time setup, then join the\n"
-            "Wi-Fi network shown there (normally Nimbus-setup; password: nimbus1234)\n"
-            "and open http://192.168.4.1. The Wi-Fi radio is 2.4 GHz only."
+            "Wi-Fi network it names. Its name and password are both shown on that\n"
+            "screen (each device has its own password), so read them from the device.\n"
+            "Then open http://192.168.4.1. The Wi-Fi radio is 2.4 GHz only."
         )
     elif mode == "notifier":
         print(

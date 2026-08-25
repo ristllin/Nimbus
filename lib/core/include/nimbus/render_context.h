@@ -90,6 +90,10 @@ struct ScreenCtx {
   bool apUp = false;      // the setup SoftAP is CURRENTLY up (reachable); torn down after
                           // STA joins. ConfigQr prefers the AP address while it holds
                           // (routable from a phone on the AP) and the LAN address once gone.
+  bool staConnected = false;  // the station link is up (device is on the owner's LAN). With
+                          // it false and apUp true the owner is locked out - the ConfigQr
+                          // screen then shows how to JOIN the setup AP (SSID + current
+                          // password + Wi-Fi-join QR) instead of a sign-in URL (CUM-200).
   std::string configUrl;  // encoded as the QR on the ConfigQr screen (LAN IP when joined)
   std::string setupUrl;   // encoded as the QR on SetupInfo - ALWAYS the SoftAP address
                           // (the scanning phone is on the setup AP; a LAN IP is

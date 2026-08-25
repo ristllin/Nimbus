@@ -860,24 +860,36 @@ void drawSetup(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx, bo
       fb.text(L.gut(), L.h - fb.textHeight(1) - 1, ctx.fwVersion, kInk3, 1);
     return;
   }
-  drawHeader(fb, L, r, ctx, config ? "Sign in" : "Setup", true);
-  int y = L.bodyTop();
-  const std::string body = config
-      ? (ctx.netStatus.empty() ? std::string("Scan to open settings. You are signed in automatically.")
-                               : ctx.netStatus)
-      : ("Scan to join " + (ctx.apName.empty() ? std::string("the setup hotspot")
-                                               : ctx.apName) +
-         ". Setup then opens on your phone; nothing to type.");
-
   // Setup (pre-join) encodes a Wi-Fi JOIN code - a phone camera joins the setup
   // network directly, per-device password included, and the captive portal takes
-  // over. Sign-in (config) keeps the token-bearing settings URL. The passphrase
-  // is also printed below for anyone joining by hand: this screen is the only
-  // place the owner can learn it.
-  const std::string url = config
-      ? ctx.configUrl
-      : (!ctx.apName.empty() ? nimbus::identity::wifiQrPayload(ctx.apName, ctx.apPass)
-                             : (ctx.setupUrl.empty() ? ctx.configUrl : ctx.setupUrl));
+  // over. Sign-in (config) normally keeps the token-bearing settings URL.
+  //
+  // CUM-200: the Config screen doubles as the lock-out recovery screen. When the
+  // station link is down but the setup AP is up, the owner reached this screen
+  // because they cannot get on the LAN - so it must show how to JOIN the setup
+  // network, exactly like onboarding, not a sign-in URL to an address that is
+  // unreachable until they have joined. With the station up, Config keeps its
+  // sign-in QR. SetupInfo (config == false) always shows the join credentials.
+  const bool apRecover =
+      config && ctx.apUp && !ctx.staConnected && !ctx.apName.empty();
+  const bool joinScreen = !config || apRecover;  // show SSID + password + Wi-Fi-join QR
+
+  drawHeader(fb, L, r, ctx, joinScreen ? "Setup" : "Sign in", true);
+  int y = L.bodyTop();
+  const std::string body = joinScreen
+      ? ("Scan to join " + (ctx.apName.empty() ? std::string("the setup hotspot")
+                                               : ctx.apName) +
+         ". Setup then opens on your phone; nothing to type.")
+      : (ctx.netStatus.empty() ? std::string("Scan to open settings. You are signed in automatically.")
+                               : ctx.netStatus);
+
+  // The join QR carries the CURRENT per-device password (wifiQrPayload reads
+  // ctx.apPass, the live stored value); the passphrase is also printed below for
+  // anyone joining by hand. This screen is the only place the owner can learn it.
+  const std::string url = joinScreen
+      ? (!ctx.apName.empty() ? nimbus::identity::wifiQrPayload(ctx.apName, ctx.apPass)
+                             : (ctx.setupUrl.empty() ? ctx.configUrl : ctx.setupUrl))
+      : ctx.configUrl;
 
   // ⚠ The copy says "Scan to open the settings page" - so there had better be
   // something to scan. There was NOT: this screen drew the URL as text only, on
@@ -898,14 +910,14 @@ void drawSetup(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx, bo
 
   y = drawTextCard(fb, L, y, body, {1, kInk2}, textW) + 8;
   if (!url.empty()) {
-    const bool showPass = !config && !ctx.apPass.empty();
-    fb.label(L.gut(), y, config ? "QR includes sign-in"
-                             : (showPass ? "network password" : "setup address"),
+    const bool showPass = joinScreen && !ctx.apPass.empty();
+    fb.label(L.gut(), y, joinScreen ? (showPass ? "network password" : "setup address")
+                                    : "QR includes sign-in",
              kInk3);
     y += 14;
     y = drawTextCard(fb, L, y,
-                     config ? std::string("Nothing to type.")
-                            : (showPass ? ctx.apPass : displayUrl(ctx.setupUrl)),
+                     joinScreen ? (showPass ? ctx.apPass : displayUrl(ctx.setupUrl))
+                                : std::string("Nothing to type."),
                      {1, kTeal}, textW);
   }
   // Firmware version, small in the bottom-left. Guarded so the golden fixture

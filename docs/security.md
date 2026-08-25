@@ -235,8 +235,14 @@ the 20-second fallback still protects the RF-sensitive TFT.
 
 The station link and setup AP are reported as separate facts. In particular,
 `STA connected + AP off` is the expected TFT steady state and must never be presented
-as “Wi-Fi setup is down.” ConfigQr uses the reachable station URL in that state;
-SetupInfo alone owns the AP-first onboarding instructions.
+as “Wi-Fi setup is down.” ConfigQr uses the reachable station URL in that state.
+When the station is down but the setup AP is up (home Wi-Fi lost), ConfigQr instead
+shows the setup network's name, its current password, and a Wi-Fi-join QR, so a
+locked-out owner can rejoin from the device screen without needing the LAN it cannot
+reach. SetupInfo shows the same AP-first credentials during first-run onboarding.
+The password is on-glass only in both cases: it is never logged, never sent over
+serial, and the `/api/connect` endpoint that carries it is blocked and redacted on
+the tunnel.
 
 **Token handout is unprovisioned-only.** The AP interface auto-supplies the device
 token (`GET /?t=<token>` redirect, and the captive-portal catch-all) so first-run

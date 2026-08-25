@@ -8,6 +8,7 @@
 
 #include "nimbus/tft_render/fb565.h"
 #include "nimbus/tft_render/screens.h"
+#include "nimbus/device_identity.h"   // wifiQrPayload - the join QR carried by the setup screens
 
 // Golden-image + tap-region matrix for the COLOUR TOUCH UI (the old raster suite is
 // test_golden and stays untouched).
@@ -388,6 +389,94 @@ static void test_setup_info_notifier() {
   golden("setup_info_notifier", ScreenId::SetupInfo, c);
 }
 
+// CUM-200: the setup-AP password recovery screen. When home Wi-Fi is lost the
+// owner opens Settings > Connectivity > Config via QR; with the station link down
+// and the setup AP up, that screen (ScreenId::ConfigQr) must show how to JOIN the
+// setup network - SSID + the CURRENT password + a Wi-Fi-join QR - not a sign-in
+// URL to an address that is unreachable until they have already joined.
+static ScreenCtx configQrRecoverCtx(const std::string& pass) {
+  ScreenCtx c = baseCtx();
+  c.modeName = "orchestrator";
+  c.apName = "Nimbus-4-setup";
+  c.apPass = pass;
+  c.apUp = true;            // the setup AP is published
+  c.staConnected = false;   // ...and the station link is down => owner is locked out
+  c.setupUrl = "http://192.168.4.1/";
+  c.configUrl = "http://192.168.4.1/";   // no LAN address; both resolve to the AP
+  c.netStatus = "No known Wi-Fi found - use Nimbus-4-setup";
+  return c;
+}
+
+static void test_config_qr_recover() {
+  golden("config_qr_recover", ScreenId::ConfigQr, configQrRecoverCtx("wxyz2345pq"));
+}
+
+// The rendered password must track the STORED value, at every panel size: a
+// changed password renders differently from the shipped default (the exact field
+// bug - a stale default left on the glass), the same value renders deterministically,
+// and a set password renders distinctly from the open-AP (no-password) screen so a
+// present default is actually shown.
+static void test_config_qr_recover_shows_current_password() {
+  for (const auto& p : kPanels) {
+    Fb565 fbDefault(p.w, p.h), fbChanged(p.w, p.h), fbChanged2(p.w, p.h), fbEmpty(p.w, p.h);
+    renderScreen(fbDefault, ScreenId::ConfigQr, configQrRecoverCtx("nimbus1234"));
+    renderScreen(fbChanged, ScreenId::ConfigQr, configQrRecoverCtx("wxyz2345pq"));
+    renderScreen(fbChanged2, ScreenId::ConfigQr, configQrRecoverCtx("wxyz2345pq"));
+    renderScreen(fbEmpty, ScreenId::ConfigQr, configQrRecoverCtx(""));
+    const size_t n = fbDefault.byteSize();
+    TEST_ASSERT_EQUAL_MEMORY_MESSAGE(fbChanged.data(), fbChanged2.data(), n,
+        "the same stored password must render identically (deterministic)");
+    TEST_ASSERT_TRUE_MESSAGE(std::memcmp(fbDefault.data(), fbChanged.data(), n) != 0,
+        "a changed setup password must render differently from the default - the "
+        "screen shows the stored value, not a baked-in constant");
+    TEST_ASSERT_TRUE_MESSAGE(std::memcmp(fbDefault.data(), fbEmpty.data(), n) != 0,
+        "a present (default) password must render - it differs from the open-AP screen");
+  }
+}
+
+// The credential appears ONLY when locked out. With the station UP, ConfigQr is
+// the sign-in surface and must never depend on the AP password - neither when the
+// setup AP is already down (TFT steady state) NOR during the transient AP+STA
+// overlap (apUp && staConnected). That overlap is exactly the case the
+// !staConnected guard exists to suppress: without it, apUp alone would flip the
+// in-LAN sign-in screen into the password-bearing recovery screen. So this pins
+// both that the password moves no pixel AND that a still-up AP does not turn
+// sign-in into recovery - deleting !staConnected from apRecover fails here.
+static void test_config_qr_signin_hides_password() {
+  ScreenCtx base = baseCtx();
+  base.modeName = "orchestrator";
+  base.configUrl = "http://192.0.2.10/?t=ffffffffffff";
+  base.netStatus = "Home Wi-Fi connected: 192.0.2.10";
+  base.apName = "Nimbus-4-setup";
+  base.staConnected = true;   // on the LAN
+  base.apPass = "aaaa2345pq";
+  for (const auto& p : kPanels) {
+    ScreenCtx apDown = base;  apDown.apUp = false;   // TFT steady state (AP torn down)
+    ScreenCtx apUp = base;    apUp.apUp = true;       // transient AP+STA overlap
+    ScreenCtx apUpAlt = apUp; apUpAlt.apPass = "bbbb6789rs";
+    Fb565 fDown(p.w, p.h), fUp(p.w, p.h), fUpAlt(p.w, p.h);
+    renderScreen(fDown, ScreenId::ConfigQr, apDown);
+    renderScreen(fUp, ScreenId::ConfigQr, apUp);
+    renderScreen(fUpAlt, ScreenId::ConfigQr, apUpAlt);
+    const size_t n = fDown.byteSize();
+    TEST_ASSERT_EQUAL_MEMORY_MESSAGE(fUp.data(), fUpAlt.data(), n,
+        "station-up ConfigQr must not depend on the AP password (locks the !staConnected guard)");
+    TEST_ASSERT_EQUAL_MEMORY_MESSAGE(fDown.data(), fUp.data(), n,
+        "a still-up setup AP must not turn the in-LAN sign-in screen into the recovery screen");
+  }
+}
+
+// Item 2: the join QR must encode the CURRENT password, never the stale default.
+static void test_setup_join_qr_carries_current_password() {
+  const std::string qr = nimbus::identity::wifiQrPayload("Nimbus-4-setup", "wxyz2345pq");
+  TEST_ASSERT_TRUE_MESSAGE(qr.find("P:wxyz2345pq;") != std::string::npos,
+                           "join QR must carry the current password");
+  TEST_ASSERT_TRUE_MESSAGE(qr.find("nimbus1234") == std::string::npos,
+                           "join QR must not carry the shipped default password");
+  TEST_ASSERT_TRUE_MESSAGE(qr.find("S:Nimbus-4-setup;") != std::string::npos,
+                           "join QR must carry the setup SSID");
+}
+
 static void test_pairing() {
   ScreenCtx c = baseCtx();
   c.pairingCode = "428193";
@@ -579,6 +668,10 @@ int main() {
   RUN_TEST(test_token_detail);
   RUN_TEST(test_setup_info);
   RUN_TEST(test_setup_info_notifier);
+  RUN_TEST(test_config_qr_recover);
+  RUN_TEST(test_config_qr_recover_shows_current_password);
+  RUN_TEST(test_config_qr_signin_hides_password);
+  RUN_TEST(test_setup_join_qr_carries_current_password);
   RUN_TEST(test_pairing);
   RUN_TEST(test_screensaver);
 
