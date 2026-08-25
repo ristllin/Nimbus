@@ -50,6 +50,8 @@ LDFLAGS   := $(CURL_LIBS) -lpthread
 CORE_SRCS := $(wildcard $(REPO)/lib/harness/src/*.cpp) \
              $(wildcard $(REPO)/lib/harness/src/providers/*.cpp) \
              $(wildcard $(REPO)/lib/core/src/orch_*.cpp) \
+             $(REPO)/lib/core/src/fallback_rules.cpp \
+             $(REPO)/lib/core/src/model_catalog.cpp \
              $(REPO)/lib/core/src/attention.cpp \
              $(REPO)/lib/core/src/status_style.cpp \
              $(REPO)/lib/core/src/docs_pack.cpp \

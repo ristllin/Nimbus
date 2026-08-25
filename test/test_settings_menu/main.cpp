@@ -38,7 +38,7 @@ static void test_open_close_visibility() {
   TEST_ASSERT_TRUE(m.isOpen());
   auto v = viewOf(m);
   TEST_ASSERT_TRUE(v.visible);
-  TEST_ASSERT_EQUAL(14, int(v.items.size()));  // Mode, Profile, Tune, Connectivity, Reset, LED theme, Sounds, Voice, Volume, Self-test, Battery, SD, Display flip, Close
+  TEST_ASSERT_EQUAL(14, int(v.items.size()));  // Mode, Profile, Tune, Connectivity, Sound, Theme, Saver, Update, Reset, Self-test, Battery, SD, Display >, Done
   TEST_ASSERT_EQUAL(0, v.selected);
 
   m.close();
@@ -1219,9 +1219,10 @@ static void test_selftest_battery_fullscreen() {
   TEST_ASSERT_EQUAL(10, viewOf(m).selected);
 }
 
-// Display flip: the row shows just before Done, and toggling it dirties +
-// updates the label.
-static void test_flip_row_present_on_tft() {
+// CUM-188: the Display submenu (Settings > Display) groups the screen flip per
+// the CUM-163 IA. The Main menu shows "Display >" (a submenu entry, not the flip
+// toggle itself) just before Done; the flip lives one level down.
+static void test_display_submenu_holds_the_flip() {
   Config c;
   SettingsMenu m(c);
   m.setScreenFlip(false);
@@ -1229,7 +1230,35 @@ static void test_flip_row_present_on_tft() {
   auto v = viewOf(m);
   const int n = int(v.items.size());
   TEST_ASSERT_EQUAL_STRING("Done", v.items[n - 1].c_str());
-  TEST_ASSERT_EQUAL_STRING("Display flip: Off", v.items[n - 2].c_str());
+  TEST_ASSERT_EQUAL_STRING("Display >", v.items[n - 2].c_str());
+  // Enter Display (the row just before Done).
+  while (viewOf(m).selected != n - 2) m.onRotate(+1);
+  m.onClick();
+  auto d = viewOf(m);
+  TEST_ASSERT_EQUAL_STRING("Settings > Display", d.title.c_str());
+  TEST_ASSERT_EQUAL(3, int(d.items.size()));
+  TEST_ASSERT_EQUAL_STRING("Display flip: Off", d.items[0].c_str());
+  TEST_ASSERT_EQUAL_STRING("Calibrate touch >", d.items[1].c_str());
+  TEST_ASSERT_EQUAL_STRING("< Back", d.items[2].c_str());
+}
+
+// CUM-189: the Display > Calibrate touch row raises a device-drained request
+// (not Config state, so no dirty()) instead of toggling anything itself.
+static void test_calibrate_touch_raises_a_request() {
+  Config c;
+  SettingsMenu m(c);
+  m.open();
+  const int dispIdx = int(viewOf(m).items.size()) - 2;   // "Display >"
+  while (viewOf(m).selected != dispIdx) m.onRotate(+1);
+  m.onClick();                       // enter Display (cursor on flip, row 0)
+  m.onRotate(+1);                    // -> Calibrate touch (row 1)
+  TEST_ASSERT_EQUAL(1, viewOf(m).selected);
+  TEST_ASSERT_FALSE(m.calibrateRequested());
+  m.onClick();
+  TEST_ASSERT_TRUE(m.calibrateRequested());
+  TEST_ASSERT_FALSE(m.dirty());      // a device-work request, never Config state
+  m.clearCalibrateRequest();
+  TEST_ASSERT_FALSE(m.calibrateRequested());
 }
 
 static void test_flip_toggle_dirties_and_labels() {
@@ -1237,12 +1266,66 @@ static void test_flip_toggle_dirties_and_labels() {
   SettingsMenu m(c);
   m.setScreenFlip(false);
   m.open();
-  const int flipIdx = int(viewOf(m).items.size()) - 2;   // just before Done
-  while (viewOf(m).selected != flipIdx) m.onRotate(+1);
-  m.onClick();
+  // Navigate Main -> "Display >" -> enter -> flip row (row 0 in the submenu).
+  const int dispIdx = int(viewOf(m).items.size()) - 2;   // "Display >" just before Done
+  while (viewOf(m).selected != dispIdx) m.onRotate(+1);
+  m.onClick();                                            // enter Display; cursor on the flip row
+  TEST_ASSERT_EQUAL(0, viewOf(m).selected);
+  m.onClick();                                            // toggle the flip
   TEST_ASSERT_TRUE(m.screenFlip());
   TEST_ASSERT_TRUE(m.dirty());
-  TEST_ASSERT_EQUAL_STRING("Display flip: On", viewOf(m).items[flipIdx].c_str());
+  TEST_ASSERT_EQUAL_STRING("Display flip: On", viewOf(m).items[0].c_str());
+  // Back returns to Main with the cursor parked on the Display row.
+  m.onBack();
+  TEST_ASSERT_EQUAL(dispIdx, viewOf(m).selected);
+}
+
+// CUM-187: helper - enter Customize (Main row RowTune = index 2) and return its view.
+static solide::menu::MenuView openCustomize(SettingsMenu& m) {
+  m.open();
+  while (viewOf(m).selected != 2) m.onRotate(+1);   // RowTune
+  m.onClick();
+  return viewOf(m);
+}
+
+// A ring board (the default) shows every tunable param in Customize.
+static void test_customize_shows_all_params_with_a_ring() {
+  Config c;
+  SettingsMenu m(c);
+  m.setHasRing(true);
+  auto v = openCustomize(m);
+  TEST_ASSERT_EQUAL_STRING("Settings > Customize", v.title.c_str());
+  TEST_ASSERT_EQUAL(13, int(v.items.size()));   // 12 params + Back
+  bool sawRingLevel = false;
+  for (const auto& row : v.items)
+    if (row.rfind("Ring level", 0) == 0) sawRingLevel = true;
+  TEST_ASSERT_TRUE(sawRingLevel);
+}
+
+// CUM-187: a ringless board hides every ring-only param (not greys it), keeps the
+// five non-ring params, and leaves navigation + editing intact.
+static void test_ringless_board_hides_ring_params() {
+  Config c;
+  SettingsMenu m(c);
+  m.setHasRing(false);
+  auto v = openCustomize(m);
+  TEST_ASSERT_EQUAL(6, int(v.items.size()));   // 5 non-ring params + Back (was 12 + Back)
+  for (const auto& row : v.items) {
+    TEST_ASSERT_TRUE(row.rfind("Ring level", 0) != 0);
+    TEST_ASSERT_TRUE(row.rfind("Brightness", 0) != 0);
+    TEST_ASSERT_TRUE(row.rfind("Attention", 0) != 0);        // all four Attn* ring params
+    TEST_ASSERT_TRUE(row.rfind("Animation smoothness", 0) != 0);
+  }
+  // A non-ring param is still present and reachable...
+  bool sawNonRing = false;
+  for (const auto& row : v.items)
+    if (row.rfind("Needs-you hold time", 0) == 0) sawNonRing = true;
+  TEST_ASSERT_TRUE(sawNonRing);
+  // ...and editing one round-trips back onto its own visible row (index mapping holds).
+  m.onClick();                              // enter Edit on the first visible param
+  TEST_ASSERT_TRUE(m.rowCount() >= 2);      // value [+clear] + back
+  m.onBack();                               // back to Customize
+  TEST_ASSERT_EQUAL(0, viewOf(m).selected); // parked on the same (first) visible param
 }
 
 int main() {
@@ -1286,7 +1369,10 @@ int main() {
   RUN_TEST(test_titles_are_breadcrumb_paths);
   RUN_TEST(test_main_row_says_power_profile);
   RUN_TEST(test_help_text_per_state);
-  RUN_TEST(test_flip_row_present_on_tft);
+  RUN_TEST(test_display_submenu_holds_the_flip);
+  RUN_TEST(test_calibrate_touch_raises_a_request);
   RUN_TEST(test_flip_toggle_dirties_and_labels);
+  RUN_TEST(test_customize_shows_all_params_with_a_ring);
+  RUN_TEST(test_ringless_board_hides_ring_params);
   return UNITY_END();
 }

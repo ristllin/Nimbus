@@ -343,6 +343,28 @@ void dispatch(String line) {
     Serial.flush();
     return;
   }
+  if (line == "WIFIAP drop") {
+    // TEST SEAM (CUM-190 HIL): force a setup-AP teardown so the HIL can assert the
+    // firmware self-recovers it - no reboot - via the reconcile watchdog. Mirrors the
+    // white-screen dropSoftAP() path; softAPIP() falls to 0.0.0.0 until restore.
+    nimbus::net::dropSoftAP();
+    Serial.printf("WIFIAP drop ip=%s (setup AP torn down)\n",
+                  nimbus::net::apIp().c_str());
+    Serial.flush();
+    return;
+  }
+  if (line == "WIFIAP?") {
+    // TEST SEAM (CUM-190 HIL): report the setup-AP state + uptime so a poll can watch
+    // the AP address return and confirm the device did NOT reset (uptime monotonic).
+    Serial.printf("WIFIAP? ssid=%s ip=%s up=%d sta=%d onboarded=%d uptime=%lu\n",
+                  nimbus::net::apSsid().c_str(), nimbus::net::apIp().c_str(),
+                  (int)(nimbus::net::apIp() != "0.0.0.0" && nimbus::net::apIp().length() > 0),
+                  (int)nimbus::net::staConnected(),
+                  (int)agent::store::onboarded(),
+                  (unsigned long)millis());
+    Serial.flush();
+    return;
+  }
   if (line == "WIFISCAN") {
     // What the radio can actually SEE. Blocking is fine for a console command (the
     // WDT is released around it, the MICREC pattern); the running firmware only ever

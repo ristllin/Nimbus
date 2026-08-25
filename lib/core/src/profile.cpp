@@ -97,6 +97,21 @@ const char* profileLabel(ProfileId id) { return kProfileLabels[int(id)]; }
 
 ParamMeta paramMeta(Param p) { return kMeta[int(p)]; }
 
+bool isRingParam(Param p) {
+  switch (p) {
+    case Param::Posture:         // user label "Ring level"
+    case Param::RingBrightness:  // "Brightness"
+    case Param::RingFps:
+    case Param::AttnLedIndex:
+    case Param::AttnHue:
+    case Param::AttnAnim:
+    case Param::AttnPeriodMs:
+      return true;
+    default:
+      return false;
+  }
+}
+
 int32_t stepParam(Param p, int32_t cur, int dir) {
   const ParamMeta m = kMeta[int(p)];
   const int d = (dir >= 0) ? 1 : -1;

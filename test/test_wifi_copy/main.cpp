@@ -104,13 +104,18 @@ static void test_net_status_is_ascii_and_bounded_in_every_state() {
   }
 }
 
-// An error states what happened, then the one next step.
-static void test_net_status_ap_down_states_the_next_step() {
+// CUM-190: the setup AP self-recovers, so the AP-down line must announce the
+// recovery and the one next step - never instruct a physical restart of the device
+// (an onboarding wall on the flagship first-run flow). It states what is happening,
+// then the next step.
+static void test_net_status_ap_down_announces_recovery_not_a_restart() {
   LinkView v = view(LinkState::Unreachable);
   v.apUp = false;
   const std::string s = netStatusLine(v);
-  TEST_ASSERT_TRUE(has(s, "down"));
-  TEST_ASSERT_TRUE(has(s, "Restart"));
+  TEST_ASSERT_FALSE(has(s, "Restart the device"));
+  TEST_ASSERT_FALSE(has(s, "restart the device"));
+  TEST_ASSERT_TRUE(has(s, "restarting"));   // says what is happening
+  TEST_ASSERT_TRUE(has(s, "Reconnect"));    // the one next step
 }
 
 // A TFT intentionally drops its temporary setup hotspot after joining the LAN.
@@ -323,7 +328,7 @@ int main() {
   RUN_TEST(test_net_status_uses_the_live_ap_ssid_not_the_macro);
   RUN_TEST(test_net_status_spells_wi_fi_with_a_hyphen);
   RUN_TEST(test_net_status_is_ascii_and_bounded_in_every_state);
-  RUN_TEST(test_net_status_ap_down_states_the_next_step);
+  RUN_TEST(test_net_status_ap_down_announces_recovery_not_a_restart);
   RUN_TEST(test_online_outranks_expected_ap_shutdown);
   RUN_TEST(test_net_status_unset_vs_unreachable_differ);
   RUN_TEST(test_net_status_hold_reports_remaining_time);

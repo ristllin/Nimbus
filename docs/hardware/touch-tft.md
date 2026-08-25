@@ -125,7 +125,14 @@ Every resistive panel reads slightly differently, so the raw-count-to-pixel
 mapping is **measured per unit**, not assumed. Until it is set, a wrong guess is
 indistinguishable from broken touch - taps simply land somewhere else.
 
-The quickest path is the wizard - press the four corners when prompted and it
+**On the device, no computer needed.** Open **Settings > Display > Calibrate
+touch** and tap the four corner targets as they appear. The device derives the
+ranges and orientation, applies them right away, and stores them. This is the
+same measurement the wizard below does, driven from the panel itself. Clearing
+the calibration (Web: leave the Touch calibration field empty) restores the
+board's default orientation.
+
+The wizard path, from a computer - press the four corners when prompted and it
 derives the ranges and the orientation flags, applies them, and then lets you tap
 around to confirm the pixel matches where you pressed:
 

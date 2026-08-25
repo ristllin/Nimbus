@@ -138,10 +138,10 @@ than the device.
 
 ### Display flip
 
-**Settings > Display flip** on the device (or the Display flip toggle under
-Settings → Display on the web) rotates the screen 180 degrees for an upside-down
-mount. It applies right away, and touch follows the flip so taps still land where
-you touch.
+**Settings > Display > Display flip** on the device (or the Display flip toggle
+under Settings → Display on the web) rotates the screen 180 degrees for an
+upside-down mount. It applies right away, and touch follows the flip so taps still
+land where you touch.
 
 ### Low battery
 

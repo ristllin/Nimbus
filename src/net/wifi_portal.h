@@ -63,6 +63,13 @@ bool   saveAndConnect(const String& ssid, const String& pass);
 void   publishSetupNetwork();
 void   cancelSetupHold();          // resume normal joining
 
+// Milliseconds since the last credential test (saveAndConnect / cancelSetupHold)
+// began, or 0 when no join is in flight (cleared the moment the station connects, or
+// when the setup network is republished). The setup-AP watchdog uses this to tell a
+// slow-but-valid join from a wrong password whose endless retries starve the AP
+// beacons, so it can re-publish the setup network without a reboot (CUM-190).
+uint32_t msSinceJoinAttempt();
+
 // ---- known networks -------------------------------------------------------
 // The device remembers up to 5 networks so moving between them (home / office /
 // hotspot) does not destroy the previous credentials. A PASSWORD IS NEVER RETURNED

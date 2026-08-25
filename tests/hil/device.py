@@ -68,6 +68,8 @@ SCREEN_NAMES = (
     "Pairing",
     "SelfTest",
     "Screensaver",
+    "TokenDetail",
+    "TouchCal",
 )
 
 

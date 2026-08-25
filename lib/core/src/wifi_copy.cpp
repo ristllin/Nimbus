@@ -57,9 +57,12 @@ std::string netStatusLine(const LinkView& v, size_t maxChars) {
     return fit(s, maxChars);
   }
 
-  // AP-down only matters when there is no working station link to use instead.
+  // AP-down only matters when there is no working station link to use instead. The
+  // setup network self-recovers (the firmware re-asserts it within seconds), so this
+  // is a transient to wait out, never a reason to physically restart the device
+  // (CUM-190). Say what is happening and the one next step.
   if (!v.apUp)
-    return fit("Setup hotspot is down. Restart the device.", maxChars);
+    return fit("Setup hotspot restarting. Reconnect shortly.", maxChars);
 
   if (v.apHoldSecLeft > 0)
     return fit("Setup network on. Wi-Fi paused " + humanSecs(v.apHoldSecLeft) + ".", maxChars);

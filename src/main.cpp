@@ -71,6 +71,7 @@
 #include "modes/notifier_mode.h"
 #include "nimbus/attention.h"
 #include "nimbus/wifi/copy.h"                  // portable, tested Wi-Fi copy + deviceUrl
+#include "nimbus/wifi/setup_ap.h"              // portable, tested setup-AP recovery policy (CUM-190)
 #include "nimbus/render_context.h"
 #include "nimbus/render_sched.h"
 #include "hw/power_fuelgauge.h"
@@ -1891,6 +1892,30 @@ static void persistConfig() {
 #define BOOT_STAGE(r, g, b) do {} while (0)
 #endif
 
+// Contiguous-SRAM instrumentation (CUM-185). Samples the scarce axis - internal
+// free + LARGEST contiguous internal block (what a TLS handshake / AsyncTCP bind
+// needs) - and reports the delta from the previous snapshot, so the boot -> mode
+// switch -> Orchestrator steady-state curve is visible on Serial and in
+// GET /api/log even before (or when) the web server has not bound. The per-stage
+// dIntFree attributes internal-SRAM consumption to the boot stage that ran
+// between two snaps, which is how the top holders are identified. Cheap (a few
+// heap_caps reads + one log line); matches the existing [psram]/[sd] boot-line
+// style so it is useful field diagnostics too, not just a bench probe.
+static void sramSnap(const char* tag) {
+  static uint32_t prevIntFree = 0;
+  static bool have = false;
+  uint32_t intFree    = (uint32_t)heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+  uint32_t intLargest = (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+  uint32_t heapMin    = (uint32_t)ESP.getMinFreeHeap();
+  uint32_t psramFree  = (uint32_t)ESP.getFreePsram();
+  long dFree = have ? (long)intFree - (long)prevIntFree : 0;
+  agent::alogf("[sram] %-14s intFree=%u intLargest=%u heapMin=%u psramFree=%u dIntFree=%+ld",
+               tag, (unsigned)intFree, (unsigned)intLargest, (unsigned)heapMin,
+               (unsigned)psramFree, dFree);
+  prevIntFree = intFree;
+  have = true;
+}
+
 static void orchestratorBegin() {
   ORCH_MARK("orch: arbiter");
   agent::arbiter::begin();      // work-slot arbitration (heap-only)
@@ -2434,17 +2459,23 @@ void setup() {
           Serial.printf("[tft] stored touch calibration is malformed (%s) - using defaults\n",
                         cal.c_str());
         }
-      } else if (solide::board().touchKind == solide::TouchKind::CapacitiveI2c) {
-        // No stored calibration on a capacitive panel (e.g. the Freenove
-        // FT6336U): it already reports pixel coordinates, so min/max scaling
-        // does not apply - only the orientation flags do. This is the measured
-        // default that maps the portrait-native controller onto the landscape
-        // surface (swapXY) the right way up. A saved calibration overrides it.
-        solide::touch::Calibration sc;
-        sc.swapXY = true;
-        sc.invertY = true;
+      } else {
+        // No stored calibration (a freshly flashed board): apply the per-board-model
+        // DEFAULT (CUM-189), the SAME default the web "clear" path restores, from the
+        // one boardDefaultCal() source so the two can never drift. On a capacitive
+        // panel (FT6336U) only the orientation flags matter (it reports pixels); on a
+        // resistive panel the driver keeps its measured min/max and this pins the
+        // flags it already defaults to. A saved calibration overrides this.
+        const bool cap = solide::board().touchKind == solide::TouchKind::CapacitiveI2c;
+        const nimbus::touch::Cal d = nimbus::touch::boardDefaultCal(
+            cap ? nimbus::touch::TouchKind::Capacitive : nimbus::touch::TouchKind::Resistive);
+        solide::touch::Calibration sc;   // driver-measured min/max; board-model flags
+        sc.swapXY = d.swapXY;
+        sc.invertX = d.invertX;
+        sc.invertY = d.invertY;
         solide::touch::setCalibration(sc);
-        Serial.println("[tft] capacitive touch: default orientation (swapXY, invertY)");
+        Serial.printf("[tft] touch: board-model default orientation (swap=%d invX=%d invY=%d)\n",
+                      int(d.swapXY), int(d.invertX), int(d.invertY));
       }
       Serial.printf("[tft] colour touch panel up (%dx%d, touch=%d)\n",
                     int(solide::display_tft::kW), int(solide::display_tft::kH),
@@ -2511,6 +2542,7 @@ void setup() {
     // stops reading near-empty. See docs/memory-model.md.
     heap_caps_malloc_extmem_enable(128);
   }
+  sramSnap("boot-hal");   // CUM-185: internal-SRAM baseline once PSRAM routing is armed
 
   // Task watchdog on the MAIN LOOP only (F12): a hung loop panics + reboots in
   // ~8 s instead of wedging the device (and its USB) until a physical reset.
@@ -2621,6 +2653,7 @@ void setup() {
     WiFi.mode(WIFI_OFF);   // Notifier: radio stays off (frees SRAM for BLE, quiet panel)
     agent::alog("[net] Notifier - Wi-Fi off (BLE transport; the controller gets the SRAM)");
   }
+  sramSnap("post-net");   // CUM-185: after Wi-Fi AP+STA (Orch) / radio-off (Notifier)
 
   // Onboarding migration: a device already provisioned before the wizard existed
   // must NOT be dropped into first-run setup on upgrade. Treat any device with
@@ -2799,8 +2832,10 @@ void setup() {
                          : "Card seen but FAT mount failed -> reformat it FAT32.");
   }
   BOOT_STAGE(120, 0, 120);   // MAGENTA: SD stage done; entering web + memory::begin
+  sramSnap("pre-web");    // CUM-185: after SD mount, before memory::begin + web bind
   ORCH_MARK("setup: beginWeb");
   if (g_orchMode) net::beginWeb(wc);   // web server is Orchestrator-only (no Wi-Fi in Notifier)
+  sramSnap("post-web");   // CUM-185: after memory::begin (episodic/vector load) + s_server.begin()
   // Device-event timeline (Glass Box A3): the BOOT row - the answer to the
   // owner's live "did you manage to reboot?" that the model couldn't give
   // ("there's no reboot record available"). Reset reason distinguishes a
@@ -2898,6 +2933,7 @@ void setup() {
   // link and simply retry). Notifier mode leaves all of this dormant - the nsn
   // serial path below is unchanged.
   if (g_orchMode) orchestratorBegin();
+  sramSnap("post-orch");  // CUM-185: after tg_poll/fabric/orchestrator task stacks are up
   BOOT_STAGE(120, 120, 0);   // YELLOW: orchestrator up (final stage before loop)
 
 #ifdef NIMBUS_TEST
@@ -3210,7 +3246,8 @@ static void openSettingsMenu() {
   // Panel type drives which screensaver choices the row offers - minutes on a
   // backlit panel (where resting IS the power saving), hours on panel (where it
   // is about ghosting).
-  g_menu.setScreenFlip(agent::store::tftFlip());   // Main > Display flip (TFT only)
+  g_menu.setScreenFlip(agent::store::tftFlip());   // Settings > Display > Display flip (TFT only)
+  g_menu.setHasRing(solide::board().hasRing);      // hide ring-only Customize params on a ringless board (CUM-187)
   g_menu.setSaverMinutes(agent::store::saverMin());
   g_menu.setAutoUpdate(agent::store::otaAutoUpdate());
   g_menu.setSttProvider(agent::store::sttProvider() == "openai" ? 1 : 0);
@@ -3230,6 +3267,75 @@ static void openSettingsMenu() {
   g_revealUntilMs = 0;
   hw::setBrightnessHold(false);
   menuRingRepaint(true);
+}
+
+// On-device tap-the-crosses touch calibration (CUM-189). Entered ONLY from
+// Settings > Display > Calibrate touch (an opt-in menu request), so it can never run
+// at boot or disturb normal operation. The pure CalWizard owns the targets + solve;
+// this wrapper draws each target, reads RAW touch (not the calibration under test),
+// and on completion applies + persists the result. Blocking and bounded (max four
+// 30 s waits), so it suspends the main-loop watchdog for its duration (the same
+// pattern the record/STT path uses) and aborts cleanly if a target is never tapped.
+static void runTouchCalibration() {
+  if (!g_screenIsTft || !solide::touch::present()) return;
+  const int16_t w = int16_t(solide::display_tft::kW);
+  const int16_t h = int16_t(solide::display_tft::kH);
+  nimbus::touch::CalWizard wiz;
+  wiz.begin(w, h, 24);
+
+  esp_task_wdt_delete(nullptr);   // blocking flow: suspend the loop WDT (MICREC pattern)
+  const uint32_t kPerTargetMs = 30000;
+  bool aborted = false;
+  while (!wiz.done()) {
+    render::ScreenCtx c;
+    c.calTotal   = wiz.count();
+    c.calStep    = wiz.step();
+    c.calTargetX = wiz.targetX();
+    c.calTargetY = wiz.targetY();
+    c.calMessage = "Tap each corner target";
+    hw::tft::renderAndPush(attn::ScreenId::TouchCal, c);
+
+    // Capture ONE clean press-then-release for this target, bounded to kPerTargetMs.
+    // The panel must first be seen UP (so a held or bouncing finger from the previous
+    // corner cannot fill this one), then a press, then a release records the corner.
+    // A target that is never cleanly recorded - absent touch (never down) OR a
+    // stuck-down line (never released within the window) - aborts the whole flow, so
+    // the watchdog-suspended loop can never wedge on a shorted or held panel.
+    const uint32_t start = millis();
+    bool armed = false, sawDown = false, recorded = false;
+    uint16_t rx = 0, ry = 0, rz = 0, lastX = 0, lastY = 0;
+    while (int32_t(millis() - start) < int32_t(kPerTargetMs)) {
+      const bool down = solide::touch::readRaw(rx, ry, rz);
+      if (!armed) {                    // wait for the panel to be released first
+        if (!down) armed = true;
+      } else if (down) {
+        lastX = rx; lastY = ry; sawDown = true;
+      } else if (sawDown) {
+        wiz.recordRaw(lastX, lastY);   // release edge: this corner is captured
+        recorded = true;
+        break;
+      }
+      delay(15);
+    }
+    if (!recorded) { aborted = true; break; }   // no clean press+release in time: cancel
+  }
+  esp_task_wdt_add(nullptr);   // re-arm the loop WDT
+
+  if (!aborted && wiz.done()) {
+    nimbus::touch::Cal cal;
+    if (wiz.solve(cal)) {
+      agent::store::setTouchCal(String(nimbus::touch::formatCal(cal).c_str()));
+      solide::touch::Calibration sc;
+      sc.minX = cal.minX; sc.maxX = cal.maxX; sc.minY = cal.minY; sc.maxY = cal.maxY;
+      sc.swapXY = cal.swapXY; sc.invertX = cal.invertX; sc.invertY = cal.invertY;
+      solide::touch::setCalibration(sc);
+      agent::alog("[cal] touch calibrated on device (applied + persisted)");
+    } else {
+      agent::alog("[cal] calibration presses were degenerate - calibration left unchanged");
+    }
+  }
+  hw::tft::forceRepaint();
+  renderScreen(attn::ScreenId::StatusIdle, -1, true);   // hand the screen back
 }
 
 // Everything that must happen AFTER the settings-menu FSM mutates: the ring
@@ -3380,6 +3486,14 @@ static void settleMenuAfterMutation(uint32_t now) {
     g_menu.clearSdProbeRequest();
     g_menu.setSdStatus(std::string(sdStatusLine().c_str()));  // refresh the Main row
     g_menuNeedsPaint = true;
+  }
+  if (g_menu.calibrateRequested()) {
+    // Settings > Display > Calibrate touch: hand the screen to the on-device
+    // tap-the-crosses flow, then restore the normal UI. Blocking + opt-in (CUM-189).
+    g_menu.clearCalibrateRequest();
+    g_menu.close();
+    runTouchCalibration();
+    g_menuNeedsPaint = false;   // the routine already restored the live screen
   }
   // ---- Connectivity > Wi-Fi: the on-device escape hatch --------------
   // These four flags are the ONLY thing that makes that submenu real. The
@@ -3705,6 +3819,20 @@ static void factoryResetPreserveIdentity() {
 
 void loop() {
   esp_task_wdt_reset();
+#ifdef NIMBUS_NOTIFIER_DEBUG
+  // CUM-185: steady-state contiguous-SRAM sampler (test/debug builds only, so the
+  // production nsn serial stream stays clean). Emits the same line as the boot
+  // snaps every ~20 s, so the Orchestrator-mode steady-state intLargest floor is
+  // captured on Serial even while the web server is unreachable. /api/state gives
+  // the same numbers over HTTP once it binds; this is the pre-bind / soak backup.
+  {
+    static uint32_t s_nextSramMs = 8000;   // first sample ~8 s after boot
+    if ((int32_t)(millis() - s_nextSramMs) >= 0) {
+      sramSnap(g_orchMode ? "steady-orch" : "steady-notif");
+      s_nextSramMs = millis() + 20000;
+    }
+  }
+#endif
 #ifdef NIMBUS_TEST
   if (g_orchMode && agent::orchestrator::testRebootRequested()) {
     agent::alog("test: staged restart (HIL persistence proof)");
@@ -4756,26 +4884,43 @@ void loop() {
   // periodic re-check self-heals any raced/missed event, so the AP can't be stranded.
   // ⚠ Orchestrator-only: Notifier runs the radio OFF (BLE owns the SRAM), so it has no
   // SoftAP to reconcile - without this gate the "offline" branch would fire every tick
-  // and turn the radio back on in Notifier mode, defeating the Wi-Fi-off design.
-  if (g_orchMode && g_screenIsTft && (g_dropApPending || g_restoreApPending ||
-                                      int32_t(now - g_lastApReconcileMs) >= 3000)) {
+  // and turn the radio back on in Notifier mode, defeating the Wi-Fi-off design. The
+  // per-tick decision lives in the pure, host-tested decideSetupAp() (CUM-190): the
+  // white-screen DROP stays TFT-only, but RESTORE now runs on any board, and a stalled
+  // first-run join that is starving the AP is re-published without a physical restart.
+  if (g_orchMode && (g_dropApPending || g_restoreApPending ||
+                     int32_t(now - g_lastApReconcileMs) >= 3000)) {
     g_dropApPending = false;
     g_restoreApPending = false;
     g_lastApReconcileMs = now;
     const bool connected = WiFi.status() == WL_CONNECTED && (uint32_t)WiFi.localIP() != 0u;
     const bool apUp = (uint32_t)WiFi.softAPIP() != 0u;
-    if (connected && apUp) {
-      const bool grace = g_apHandoffArmed ||
-                         (g_dropApAfterMs != 0 && int32_t(now - g_dropApAfterMs) < 0);
-      if (!grace) {
+    nimbus::wifi::SetupApInputs si;
+    si.orchestrator = g_orchMode;
+    si.tftBoard     = g_screenIsTft;
+    si.staConnected = connected;
+    si.apAddressed  = apUp;
+    si.onboarded    = agent::store::onboarded();
+    si.handoffGrace = g_apHandoffArmed ||
+                      (g_dropApAfterMs != 0 && int32_t(now - g_dropApAfterMs) < 0);
+    si.msSinceJoin  = net::msSinceJoinAttempt();
+    switch (nimbus::wifi::decideSetupAp(si)) {
+      case nimbus::wifi::SetupApAct::DropAp:
         net::dropSoftAP();
         g_dropApAfterMs = 0;
         agent::alog("[net] SoftAP dropped on a TFT board (white-screen mitigation)");
-      }
-    } else if (!connected && !apUp) {
-      g_dropApAfterMs = 0;
-      net::restoreSoftAP();
-      agent::alog("[net] Wi-Fi down - SoftAP restored so setup/recovery is reachable");
+        break;
+      case nimbus::wifi::SetupApAct::RestoreAp:
+        g_dropApAfterMs = 0;
+        net::restoreSoftAP();
+        agent::alog("[net] Wi-Fi down - SoftAP restored so setup/recovery is reachable");
+        break;
+      case nimbus::wifi::SetupApAct::ProtectAp:
+        net::publishSetupNetwork();
+        agent::alog("[net] setup join stalled - setup network re-published (no restart needed)");
+        break;
+      case nimbus::wifi::SetupApAct::None:
+        break;
     }
   }
 
