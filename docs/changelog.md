@@ -8,6 +8,12 @@ installs on your say-so ([how updates work](ota.md)).
 
 ## Unreleased
 
+- **Cumulo Nimbus provider slot in the device Models UI.** Assistant > Models >
+  Providers & keys now lists **Cumulo Nimbus** first, the recommended one-key path:
+  paste your device key, and Verify checks it against the router (not a third-party
+  API) with the base wiring already set, so there is no URL to type. **Z.ai** is
+  listed too. Pasting a Cumulo key into a direct provider now says to use the Cumulo
+  Nimbus slot instead of a bare "key rejected."
 - Removed the deprecated e-ink display and rotary-knob code paths. Both shipping
   configurations are color touch panels (the Solide S3 with its LED ring, and the
   Freenove CYD all-in-one). E-ink devices stay on their final firmware (typed OTA

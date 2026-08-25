@@ -144,8 +144,9 @@ static const char UI_AGENT[] PROGMEM = R"=====(<div class=pane id=pane-harness s
 <p class="hint tip">The provider that runs the assistant. Automatic picks the first verified provider in your fallback order.</p>
 <select id=orchHost>
 <option value="">Automatic</option>
+<option value=cumulo>Cumulo Nimbus</option>
 <option value=openai>OpenAI</option><option value=anthropic>Anthropic</option>
-<option value=mistral>Mistral</option><option value=custom>Custom</option>
+<option value=mistral>Mistral</option><option value=zai>Z.ai</option><option value=custom>Custom</option>
 </select>
 <label>Fallback order <button class=qh type=button aria-expanded=false aria-label="About the fallback order">?</button></label>
 <p class="hint tip">Check a provider to enable it; use the arrows to set the order tried when the primary fails.</p>
