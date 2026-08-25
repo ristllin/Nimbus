@@ -44,7 +44,8 @@
 #include "hw/selftest.h"               // SELFTEST - firmware health-check engine
 #include "sys/ota_update.h"            // OTA? / OTACHECK / OTAAPPLY / OTASIM / OTAURL
 #include <esp_ota_ops.h>               // running-partition label for OTA?
-#include <SD.h>                        // FSPUT/FSTAT - stream a fixture to an absolute SD path
+#include <SD.h>                        // FSPUT/FSTAT - File type
+#include <solide/storage.h>            // activeFs(): the mounted card (SD_MMC on Freenove)
 #include <mbedtls/sha256.h>            // FSPUT/FSTAT - hash the on-card bytes as we write/read
 #include "nimbus/util/b64_decode.h"    // portable streaming base64 decoder (host-tested)
 
@@ -129,9 +130,9 @@ void fsputBegin(String rest) {
   String path = rest.substring(sp + 1); path.trim();
   if (len == 0 || path.length() == 0) { reply("FSPUT ERR bad args"); return; }
   int slash = path.lastIndexOf('/');   // ensure the parent dir exists (e.g. /music)
-  if (slash > 0) { String dir = path.substring(0, slash); SD.mkdir(dir.c_str()); }
-  SD.remove(path.c_str());  // truncate: FILE_WRITE appends on ESP32, so start clean
-  s_fsFile = SD.open(path.c_str(), FILE_WRITE);
+  if (slash > 0) { String dir = path.substring(0, slash); solide::storage::activeFs().mkdir(dir.c_str()); }
+  solide::storage::activeFs().remove(path.c_str());  // truncate: FILE_WRITE appends on ESP32, so start clean
+  s_fsFile = solide::storage::activeFs().open(path.c_str(), FILE_WRITE);
   if (!s_fsFile) { reply("FSPUT ERR open"); return; }
   mbedtls_sha256_init(&s_fsSha);
   mbedtls_sha256_starts(&s_fsSha, 0);
@@ -163,7 +164,7 @@ void fsputPump() {
 
 void fstat(String path) {
   path.trim();
-  File f = SD.open(path.c_str(), FILE_READ);
+  File f = solide::storage::activeFs().open(path.c_str(), FILE_READ);
   if (!f) { reply("FSTAT ERR open"); return; }
   mbedtls_sha256_context s;
   mbedtls_sha256_init(&s);

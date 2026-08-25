@@ -14,9 +14,25 @@ import argparse, base64, hashlib, sys, time
 import serial
 
 
+_NOISE = ("[E][", "[W][", "[I][", "Preferences", "nvs_get_str")
+
+
+def _is_noise(line: str) -> bool:
+    return any(n in line for n in _NOISE)
+
+
 def _readline(ser, deadline):
     ser.timeout = max(0.1, deadline - time.time())
     return ser.readline().decode("utf-8", "replace").strip()
+
+
+def _readsig(ser, deadline):
+    """Read the next non-noise (signal) line, or '' at the deadline."""
+    while time.time() < deadline:
+        line = _readline(ser, deadline)
+        if line and not _is_noise(line):
+            return line
+    return ""
 
 
 def main() -> int:
@@ -44,17 +60,36 @@ def main() -> int:
     time.sleep(0.5)
     ser.reset_input_buffer()
 
-    ser.write(f"FSPUT {len(data)} {a.dst}\n".encode())
-    ser.flush()
-    dl = time.time() + 15
-    ready = False
-    while time.time() < dl:
-        line = _readline(ser, dl)
-        if line:
-            print("<", line)
-        if line.startswith("FSPUT READY"):
-            ready = True
+    # Opening the ESP32-S3 native-USB port reboots the board; wait for boot +
+    # SD mount ("READY mode=..") before FSPUT so SD.open does not race the mount.
+    boot_dl = time.time() + 20
+    while time.time() < boot_dl:
+        line = _readsig(ser, boot_dl)
+        if line.startswith("READY mode="):
+            print("<", line, "(boot complete)")
             break
+    time.sleep(1.5)  # a touch more for the card mount to settle
+
+    ready = False
+    for attempt in range(3):
+        ser.reset_input_buffer()
+        ser.write(f"FSPUT {len(data)} {a.dst}\n".encode())
+        ser.flush()
+        dl = time.time() + 8
+        while time.time() < dl:
+            line = _readsig(ser, dl)
+            if not line:
+                continue
+            print("<", line)
+            if line.startswith("FSPUT READY"):
+                ready = True
+                break
+            if line.startswith("FSPUT ERR"):
+                print("ERROR:", line)
+                return 2
+        if ready:
+            break
+        print(f"(no READY, retry {attempt + 1})")
     if not ready:
         print("ERROR: no FSPUT READY")
         return 2
@@ -83,12 +118,10 @@ def main() -> int:
     ser.flush()
 
     done = None
-    dl = time.time() + 60
+    dl = time.time() + 90
     while time.time() < dl:
-        line = _readline(ser, dl)
-        if not line:
-            continue
-        if line.startswith("FSACK"):
+        line = _readsig(ser, dl)
+        if not line or line.startswith("FSACK"):
             continue
         print("<", line)
         if line.startswith("FSPUT DONE"):
@@ -109,7 +142,7 @@ def main() -> int:
     dl = time.time() + 30
     stat = None
     while time.time() < dl:
-        line = _readline(ser, dl)
+        line = _readsig(ser, dl)
         if line.startswith("FSTAT "):
             stat = line
             print("<", line)
