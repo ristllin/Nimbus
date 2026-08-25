@@ -68,6 +68,8 @@ SCREEN_NAMES = (
     "Pairing",
     "SelfTest",
     "Screensaver",
+    "TokenDetail",  # full device sign-in code (Connectivity > Device sign-in code,
+    # and the Sign-in QR "Show code" tap - CUM-48 #3)
 )
 
 

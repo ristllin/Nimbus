@@ -908,6 +908,21 @@ void drawSetup(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx, bo
                             : (showPass ? ctx.apPass : displayUrl(ctx.setupUrl)),
                      {1, kTeal}, textW);
   }
+  // "Show code" affordance (Sign-in QR only): the escape hatch for a camera
+  // that cannot scan. Tapping it opens the full device sign-in code (TokenDetail)
+  // to read and type by hand. It lives in the text column so it never collides
+  // with the QR on the right, is bottom-anchored above the fw-version line, and
+  // is at least minTap tall for the a11y tap floor. (CUM-48 #3)
+  if (config) {
+    const int bh = L.minTap;
+    const int bw = textW ? textW : (L.w - 2 * L.gut());
+    const int bx = L.gut();
+    int by = L.h - L.gut() - bh - (fb.textHeight(1) + 3);   // clear the fw-version line
+    if (by < y + 6) by = y + 6;                             // never overlap the caption above
+    fb.card(bx, by, bw, bh);
+    fb.text(bx + 10, by + (bh - fb.textHeight(1)) / 2, "Show code", kTeal, 1);
+    push(r, bx, by, bw, bh, TapRegion::Action::ShowCode);
+  }
   // Firmware version, small in the bottom-left. Guarded so the golden fixture
   // (empty fwVersion) draws nothing and stays byte-identical.
   if (!ctx.fwVersion.empty())

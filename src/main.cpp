@@ -3370,6 +3370,18 @@ static void settleMenuAfterMutation(uint32_t now) {
     g_menu.clearForgetRequest();
     g_menuNeedsPaint = true;
   }
+  if (g_menu.cloudPairRequested()) {
+    // Cloud link code (Connectivity): initiate cumulo-nimbus pairing FROM the
+    // device, mirroring the web "pair" action - opt in, then request a fresh
+    // claim code. The FSM only raises this in Orchestrator mode (the relay does
+    // not run in Notifier), so no mode guard is needed here. The rising-edge
+    // Pairing-screen driver in loop() surfaces the claim code + QR once the
+    // relay task produces it. (CUM-48 #4)
+    nimbus::relay::requestOptIn(true);
+    nimbus::relay::requestPair();
+    g_menu.clearCloudPairRequest();
+    g_menuNeedsPaint = true;
+  }
   if (g_menu.sdProbeRequested()) {
     // Rescan SD card: force a real SD bus re-init (end()+begin()) so a card
     // re-seated after boot re-mounts + the memory tier promotes back to SD -

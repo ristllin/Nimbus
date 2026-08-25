@@ -425,7 +425,7 @@ static void test_connectivity_and_config_qr() {
   m.onClick();  // -> Connectivity submenu
   auto v = viewOf(m);
   TEST_ASSERT_TRUE(contains(v.title, "Connectivity"));
-  TEST_ASSERT_EQUAL(7, int(v.items.size()));           // WiFi + Bluetooth + Forget + Re-probe SD + Config via QR + Token + Back
+  TEST_ASSERT_EQUAL(8, int(v.items.size()));           // WiFi + Bluetooth + Forget + Re-probe SD + Sign-in QR + Token + Cloud + Back
   TEST_ASSERT_TRUE(contains(v.items[0], "Wi-Fi"));
   TEST_ASSERT_TRUE(contains(v.items[1], "Bluetooth"));
   TEST_ASSERT_TRUE(contains(v.items[2], "Forget"));
@@ -433,6 +433,10 @@ static void test_connectivity_and_config_qr() {
   TEST_ASSERT_TRUE(contains(v.items[4], "Sign-in QR"));
   TEST_ASSERT_TRUE(contains(v.items[5], "Device sign-in code"));   // canonical (CUM-45)
   TEST_ASSERT_TRUE(contains(v.items[5], ">"));             // real full-screen destination
+  // Cloud link code (CUM-48 #4): appended enum, RENDERED before Back at index 6.
+  TEST_ASSERT_TRUE(contains(v.items[6], "Cloud link code"));
+  TEST_ASSERT_TRUE(contains(v.items[6], ">"));
+  TEST_ASSERT_EQUAL_STRING("< Back", v.items[7].c_str());  // Back still last, now index 7
 
   // Config via QR (row 4) -> ConfigQr full-screen state.
   while (viewOf(m).selected != 4) m.onRotate(+1);          // -> Config via QR
@@ -472,11 +476,81 @@ static void test_connectivity_and_config_qr() {
   m.onLongPress(); TEST_ASSERT_FALSE(m.showingTokenDetail());
   TEST_ASSERT_EQUAL(5, viewOf(m).selected);
 
-  // Back row (6) returns to Main on the Connectivity row.
-  while (viewOf(m).selected != 6) m.onRotate(+1);          // Back
+  // Back row (7, after the appended Cloud row) returns to Main on Connectivity.
+  while (viewOf(m).selected != 7) m.onRotate(+1);          // Back
   m.onClick();
   TEST_ASSERT_TRUE(contains(viewOf(m).title, "Settings"));
   TEST_ASSERT_EQUAL(3, viewOf(m).selected);                // Connectivity row
+}
+
+// CUM-48 #4: the appended "Cloud link code" row (enum ConnCloud, rendered at
+// visible index 6, before Back) maps correctly through connRowAt() and, in
+// Orchestrator mode, raises the cloud-pair request the device drains
+// (relay::requestOptIn + requestPair). Notifier mode is a no-op (the relay does
+// not run there); the row never dirties config and never enters a menu state.
+static void test_connectivity_cloud_link_row() {
+  Config c;
+  SettingsMenu m(c);
+
+  // --- Orchestrator: click raises the request, stays on the row, not dirty ----
+  m.setMode(Mode::Orchestrator);
+  m.open();
+  while (viewOf(m).selected != 3) m.onRotate(+1);          // Connectivity
+  m.onClick();
+  TEST_ASSERT_TRUE(m.showingConnectivity());
+  while (viewOf(m).selected != 6) m.onRotate(+1);          // Cloud link code (index 6)
+  TEST_ASSERT_TRUE(contains(viewOf(m).items[6], "Cloud link code"));
+  TEST_ASSERT_TRUE(m.onCloudRow());                        // connRowAt(6) == ConnCloud
+  TEST_ASSERT_FALSE(m.cloudPairRequested());
+  m.onClick();
+  TEST_ASSERT_TRUE(m.cloudPairRequested());                // device drains -> requestPair
+  TEST_ASSERT_TRUE(m.showingConnectivity());               // stays on the row
+  TEST_ASSERT_EQUAL(6, viewOf(m).selected);
+  TEST_ASSERT_FALSE(m.dirty());                            // a request flag, not Config state
+  m.clearCloudPairRequest();
+  TEST_ASSERT_FALSE(m.cloudPairRequested());
+
+  // --- Notifier: the same click is a no-op (relay never runs in Notifier) -----
+  SettingsMenu n(c);
+  n.setMode(Mode::Notifier);
+  n.open();
+  while (viewOf(n).selected != 3) n.onRotate(+1);
+  n.onClick();
+  while (viewOf(n).selected != 6) n.onRotate(+1);          // Cloud link code
+  TEST_ASSERT_TRUE(n.onCloudRow());
+  n.onClick();
+  TEST_ASSERT_FALSE(n.cloudPairRequested());               // no-op in Notifier
+  TEST_ASSERT_FALSE(n.dirty());
+}
+
+// CUM-48 #3: "Show code" on the Sign-in QR jumps to the full device sign-in code
+// (TokenDetail), the same destination as Connectivity > Device sign-in code, and
+// is a no-op anywhere else. Dismissing TokenDetail returns to the ConnToken row.
+static void test_show_code_from_signin_qr() {
+  Config c;
+  SettingsMenu m(c);
+  m.open();
+  while (viewOf(m).selected != 3) m.onRotate(+1);          // Connectivity
+  m.onClick();
+  while (viewOf(m).selected != 4) m.onRotate(+1);          // Sign-in QR
+  m.onClick();
+  TEST_ASSERT_TRUE(m.showingConfigQr());
+
+  m.showCode();                                            // the tap action
+  TEST_ASSERT_FALSE(m.showingConfigQr());
+  TEST_ASSERT_TRUE(m.showingTokenDetail());
+  TEST_ASSERT_FALSE(m.dirty());                            // view-only
+
+  // Any event dismisses TokenDetail back to the Device-sign-in-code row.
+  m.onClick();
+  TEST_ASSERT_FALSE(m.showingTokenDetail());
+  TEST_ASSERT_TRUE(m.showingConnectivity());
+  TEST_ASSERT_EQUAL(5, viewOf(m).selected);                // ConnToken row
+
+  // showCode() is inert off the Sign-in QR (guards a stale tap).
+  m.showCode();
+  TEST_ASSERT_TRUE(m.showingConnectivity());
+  TEST_ASSERT_FALSE(m.showingTokenDetail());
 }
 
 // The Connectivity > Bluetooth row toggles bleEnabled() (menu-visible, device
@@ -1271,6 +1345,8 @@ int main() {
   RUN_TEST(test_theme_picker);
   RUN_TEST(test_reset_no_keeps_overrides);
   RUN_TEST(test_connectivity_and_config_qr);
+  RUN_TEST(test_connectivity_cloud_link_row);
+  RUN_TEST(test_show_code_from_signin_qr);
   RUN_TEST(test_connectivity_bluetooth_toggle);
   RUN_TEST(test_connectivity_forget_paired);
   RUN_TEST(test_connectivity_sd_reprobe);

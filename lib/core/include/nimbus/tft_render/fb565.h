@@ -55,6 +55,7 @@ struct TapRegion {
     SessionCard, // focus session `index`
     ScrollUp,
     ScrollDown,
+    ShowCode,    // Sign-in QR: reveal the full device sign-in code (TokenDetail)
   };
   Action  action = Action::None;
   int16_t index = -1;   // row / session index where the action needs one

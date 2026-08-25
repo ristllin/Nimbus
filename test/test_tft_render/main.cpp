@@ -59,6 +59,7 @@ static const char* actionName(TapRegion::Action a) {
     case TapRegion::Action::SessionCard: return "SessionCard";
     case TapRegion::Action::ScrollUp:    return "ScrollUp";
     case TapRegion::Action::ScrollDown:  return "ScrollDown";
+    case TapRegion::Action::ShowCode:    return "ShowCode";
     case TapRegion::Action::None:
     default:                             return "None";
   }

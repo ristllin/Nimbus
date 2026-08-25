@@ -60,6 +60,12 @@ class SettingsMenu {
   void onLongPress();       // back one level; from Main, closes
   void onBack() { onLongPress(); }
 
+  // "Show code" affordance on the Sign-in QR (ConfigQr): reveal the full device
+  // sign-in code (the TokenDetail screen, same as Connectivity > Device sign-in
+  // code) so an owner who cannot scan the QR can read and type it. No-op when
+  // not on the Sign-in QR. (CUM-48 #3)
+  void showCode();
+
   // Mode is menu-visible state the device syncs with NVS. Set it before opening
   // so the Mode row shows the persisted value; read it back after edits.
   void setMode(Mode m) { mode_ = m; }
@@ -143,6 +149,19 @@ class SettingsMenu {
   // (net::ble::forgetBonds() + clearForgetRequest()). Mirrors the bleEnabled sync.
   bool forgetBondsRequested() const { return forgetRequested_; }
   void clearForgetRequest() { forgetRequested_ = false; }
+
+  // Cursor on the "Cloud link code" row - lets the device show mode-aware help.
+  bool onCloudRow() const {
+    return state_ == State::Connectivity && connRowAt(sel_) == ConnCloud;
+  }
+  // Set true when the user clicks "Cloud link code" in Orchestrator mode; the
+  // device drains it (relay::requestOptIn(true) + relay::requestPair()) and
+  // clears it. The existing Pairing screen then surfaces the claim code + QR on
+  // its rising edge, so no new full-screen menu state is needed. Notifier mode
+  // never raises it (the relay does not run there). Not Config state -> not
+  // dirty(), same as the other Connectivity request flags. (CUM-48 #4)
+  bool cloudPairRequested() const { return cloudPairRequested_; }
+  void clearCloudPairRequest() { cloudPairRequested_ = false; }
 
   // --- Wi-Fi: the ON-DEVICE escape hatch -----------------------------------
   // Clicking the Connectivity > Wi-Fi row opens a submenu instead of doing
@@ -313,7 +332,14 @@ class SettingsMenu {
   // Wi-Fi affordances hang off the EXISTING ConnWifi row's submenu instead.
   enum ConnRow : int {
     ConnWifi = 0, ConnBluetooth, ConnForget, ConnSdProbe, ConnConfigQr, ConnToken,
-    ConnBack, kConnRows };
+    ConnBack,
+    // Appended after ConnBack (append-only: the wire numbers of the rows above
+    // are frozen and positionally mirrored by the HIL suite). ConnCloud RENDERS
+    // before Back, so render order is no longer enum order; connRowAt() maps a
+    // visible list index back to the logical row and the click handler routes
+    // through it. New Wi-Fi affordances still hang off ConnWifi's submenu; this
+    // append is the sanctioned pattern for a NON-Wi-Fi top-level row. (CUM-48 #4)
+    ConnCloud, kConnRows };
 
   // Rows in the Wi-Fi submenu (Connectivity > Wi-Fi), in display order.
   enum WifiRow : int {
@@ -321,6 +347,8 @@ class SettingsMenu {
 
   int itemCount() const;   // rows in the current list state
   MainRow mainRowAt(int idx) const;  // visible Main index -> logical row (identity)
+  ConnRow connRowAt(int idx) const;  // visible Connectivity index -> logical row
+                                     // (ConnCloud renders before Back; see enum)
   void clampSel();         // keep sel_ in [0, itemCount()-1]
   void enter(State s);     // switch state, reset cursor to a sane default
 
@@ -333,6 +361,7 @@ class SettingsMenu {
   std::string fwVersion_;       // Main title suffix (device-seeded; "" = none)
   int     theme_ = 0;           // Theme submenu index into themeList() (NVS-synced)
   bool    forgetRequested_ = false;  // Connectivity > Forget paired devices (device drains)
+  bool    cloudPairRequested_ = false;  // Connectivity > Cloud link code (Orchestrator; device drains)
   std::vector<std::string> scan_;    // Wi-Fi > Choose network rows (device-seeded SSIDs)
   std::vector<std::string> known_;   // Wi-Fi > Forget network rows (device-seeded SSIDs)
   std::string pickedSsid_;           // SSID the pending join/forget request names
