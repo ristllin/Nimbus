@@ -219,5 +219,15 @@ struct UpdateView {
 UpdateView updateView(State s, int pct, const char* latest, const char* err,
                       const char* fwVersion);
 
+// The owner-facing reason a "Check for updates" was REFUSED (the device glue's
+// requestCheck() returns false -> HTTP 409). A refusal is always local (no
+// Wi-Fi, low memory, an update already running, or this build carries no OTA
+// variant); it is never "the network", so the copy names the real cause instead
+// of blaming the connection. `why` is the machine token from requestCheck()
+// ("no-wifi"/"low-heap"/"unsupported"/"busy"/"in-progress"); unknown/nullptr
+// yields a safe generic retry. One source for both the device screen and the
+// web UI (served in the 409 body). (CUM-197)
+const char* checkRefusalCopy(const char* why);
+
 }  // namespace ota
 }  // namespace nimbus

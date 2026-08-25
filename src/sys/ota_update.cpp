@@ -518,19 +518,29 @@ static void checkTask(void*) {
   vTaskDelete(nullptr);
 }
 
-bool requestCheck() {
+bool requestCheck(const char** whyOut) {
+  const char* why = "";
   bool expected = false;
-  if (!g_taskRunning.compare_exchange_strong(expected, true))
-    return false;   // an OTA task is already running (atomic single-flight)
-  const char* why;
-  if (!spawnGates(&why) || !nimbus::ota::canCheck(g_state)) {
+  if (!g_taskRunning.compare_exchange_strong(expected, true)) {
+    if (whyOut) *whyOut = "busy";   // an OTA task is already running (single-flight)
+    return false;
+  }
+  if (!spawnGates(&why)) {          // "unsupported" / "no-wifi" / "low-heap"
     g_taskRunning = false;
+    if (whyOut) *whyOut = why;
+    return false;
+  }
+  if (!nimbus::ota::canCheck(g_state)) {   // a check/install is mid-flight
+    g_taskRunning = false;
+    if (whyOut) *whyOut = "in-progress";
     return false;
   }
   if (xTaskCreate(checkTask, "otacheck", 16384, nullptr, 1, nullptr) != pdPASS) {
     g_taskRunning = false;
+    if (whyOut) *whyOut = "low-heap";
     return false;
   }
+  if (whyOut) *whyOut = "";
   return true;
 }
 

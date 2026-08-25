@@ -447,6 +447,24 @@ static void test_update_view() {
   }
 }
 
+// CUM-197: a "Check for updates" 409 is always a LOCAL refusal - the copy names
+// the real cause and NEVER blames the network.
+static void test_check_refusal_copy() {
+  TEST_ASSERT_EQUAL_STRING("Can't check: no Wi-Fi. Connect and try again.", checkRefusalCopy("no-wifi"));
+  TEST_ASSERT_EQUAL_STRING("Can't check now: low memory. Try again.", checkRefusalCopy("low-heap"));
+  TEST_ASSERT_EQUAL_STRING("This build doesn't receive updates.", checkRefusalCopy("unsupported"));
+  TEST_ASSERT_EQUAL_STRING("An update is already running.", checkRefusalCopy("busy"));
+  TEST_ASSERT_EQUAL_STRING("An update is already running.", checkRefusalCopy("in-progress"));
+  TEST_ASSERT_EQUAL_STRING("Couldn't start the check. Try again.", checkRefusalCopy("weird"));
+  TEST_ASSERT_EQUAL_STRING("Couldn't start the check. Try again.", checkRefusalCopy(nullptr));
+  const char* reasons[] = {"no-wifi", "low-heap", "unsupported", "busy", "in-progress", "weird", ""};
+  for (const char* w : reasons) {
+    const char* c = checkRefusalCopy(w);
+    TEST_ASSERT_NULL_MESSAGE(strstr(c, "network"), "refusal copy must not blame the network");
+    TEST_ASSERT_TRUE_MESSAGE(strlen(c) < 48, "refusal copy overruns the 48-char device row");
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_parse_version);
@@ -468,5 +486,6 @@ int main(int, char**) {
   RUN_TEST(test_check_result);
   RUN_TEST(test_state_from_str_roundtrips);
   RUN_TEST(test_update_view);
+  RUN_TEST(test_check_refusal_copy);
   return UNITY_END();
 }

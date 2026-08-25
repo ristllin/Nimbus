@@ -41,9 +41,11 @@ void bootGuard();
 // every loop() pass; it self-limits to ~1 Hz.
 void tick();
 
-// Spawn the on-demand check task (manifest fetch + compare). False when the
-// gates (heap/WiFi/state) refuse.
-bool requestCheck();
+// Spawn the on-demand check task (manifest fetch + compare). False when refused;
+// *whyOut (optional) gets the machine reason ("busy"/"unsupported"/"no-wifi"/
+// "low-heap"/"in-progress") so the caller can name the real cause instead of
+// blaming the network (CUM-197). Map it with nimbus::ota::checkRefusalCopy().
+bool requestCheck(const char** whyOut = nullptr);
 
 // Spawn the install task. dryRun = download + verify only, never flips.
 // force = allow Same/Older (explicit web-UI downgrade). False when refused;

@@ -379,6 +379,16 @@ static void updateLine(char* buf, State s, const char* lat, const char* err,
   }
 }
 
+const char* checkRefusalCopy(const char* why) {
+  if (!why) return "Couldn't start the check. Try again.";
+  if (!std::strcmp(why, "no-wifi"))     return "Can't check: no Wi-Fi. Connect and try again.";
+  if (!std::strcmp(why, "low-heap"))    return "Can't check now: low memory. Try again.";
+  if (!std::strcmp(why, "unsupported")) return "This build doesn't receive updates.";
+  if (!std::strcmp(why, "busy") || !std::strcmp(why, "in-progress"))
+    return "An update is already running.";
+  return "Couldn't start the check. Try again.";
+}
+
 UpdateView updateView(State s, int pct, const char* latest, const char* err,
                       const char* fwVersion) {
   UpdateView v;

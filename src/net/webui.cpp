@@ -2628,9 +2628,14 @@ void beginWeb(const WebConfig& wc) {
   // POST full = also the AUDIBLE tests (token-gated + silent/owner gated).
   s_server.on("/api/ota/check", HTTP_POST, [](AsyncWebServerRequest* r) {
     if (authBlocked(r)) return;
-    const bool ok = otaupd::requestCheck();
-    r->send(ok ? 202 : 409, "application/json",
-            ok ? "{\"ok\":true}" : "{\"ok\":false,\"err\":\"busy or gated\"}");
+    const char* why = "";
+    const bool ok = otaupd::requestCheck(&why);
+    // A 409 is a LOCAL refusal, never a network fault: return the real reason
+    // and an honest one-line message the UI can show as-is (CUM-197).
+    String body = ok ? String("{\"ok\":true}")
+                     : String("{\"ok\":false,\"err\":\"") + why + "\",\"msg\":\"" +
+                       nimbus::ota::checkRefusalCopy(why) + "\"}";
+    r->send(ok ? 202 : 409, "application/json", body);
   });
   s_server.on("/api/ota/apply", HTTP_POST, [](AsyncWebServerRequest* r) {
     if (authBlocked(r)) return;

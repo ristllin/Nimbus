@@ -3495,13 +3495,14 @@ static void settleMenuAfterMutation(uint32_t now) {
     // low-heap / unsupported) - branch on it so the panel can't show a
     // perpetual, false "Checking..." (prism v3.1.0 finding).
     g_menu.clearUpdateCheckRequest();
-    if (otaupd::requestCheck()) {
-      g_menu.setUpdateStatus("Checking...");
+    const char* why = "";
+    if (otaupd::requestCheck(&why)) {
+      g_menu.setUpdateStatus("Checking for updates...");
       g_updCheckKickMs = now;   // grace: don't let a stale state overwrite this
     } else {
-      g_menu.setUpdateStatus(net::staConnected()
-                                 ? "Couldn't start the check - try again."
-                                 : "Couldn't check - no Wi-Fi.");
+      // Name the real cause (no-wifi/low-heap/unsupported/busy), not "the
+      // network" - a refusal is always local (CUM-197).
+      g_menu.setUpdateStatus(nimbus::ota::checkRefusalCopy(why));
     }
     g_menuNeedsPaint = true;
   }
