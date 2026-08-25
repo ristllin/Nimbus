@@ -76,10 +76,12 @@ test('Cumulo Nimbus is the first provider row, marked recommended, with Z.ai pre
   await expect(page.locator('#key_cumulo')).toHaveAttribute('placeholder', /cumulo_sk_/);
   await expect(page.locator('#prov_zai')).toBeVisible(); // Z.ai surfaced too (item 4)
   await expect(page.locator('#prov_zai .provhead b')).toHaveText('Z.ai');
-  // Primary provider select can now choose Cumulo Nimbus + Z.ai.
+  // cumulo/zai are key slots only, NOT head Primary-provider options: the engine's
+  // head-host registry runs openai/anthropic/mistral/custom, so the router is not
+  // offered as "the provider that runs the assistant" (would fail every turn).
   const opts = await page.locator('#orchHost option').allTextContents();
-  expect(opts).toContain('Cumulo Nimbus');
-  expect(opts).toContain('Z.ai');
+  expect(opts).not.toContain('Cumulo Nimbus');
+  expect(opts).not.toContain('Z.ai');
   // Per-size visual evidence (desktop + phone projects).
   await page.screenshot({ path: `screenshots/cum201-models-${testInfo.project.name}.png`, fullPage: true });
 });

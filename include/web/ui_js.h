@@ -369,7 +369,13 @@ function fillVoices(prov, sel){
 }
 // Provider priority as an ordered, checkable list -> a comma string (no free-text).
 function renderPrio(hostId, field, csv){
-  const ALL=['cumulo','openai','anthropic','mistral','zai','custom'], host=$(hostId); if(!host)return;
+  // NOTE: cumulo/zai are deliberately NOT here. They are surfaced as key slots
+  // (their key powers sub-sessions via the fabric adapter), but the orchestrator
+  // HEAD host registry + fabricSupports only run openai/anthropic/mistral/custom,
+  // so offering cumulo/zai in the head Primary-provider / fallback order would let
+  // an owner pick a head the engine cannot run (every turn -> "host unavailable").
+  // Head-host support for the router is a separate backend change (see CUM-201).
+  const ALL=['openai','anthropic','mistral','custom'], host=$(hostId); if(!host)return;
   let order=csv.split(',').map(s=>s.trim()).filter(x=>ALL.includes(x));
   let rows=order.map(p=>({p,on:true})).concat(ALL.filter(x=>!order.includes(x)).map(p=>({p,on:false})));
   const save=()=>orchApply({[field]:rows.filter(r=>r.on).map(r=>r.p).join(',')});
@@ -3081,6 +3087,10 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
   function doProvider(){
     const p=el('onb_prov').value,key=el('onb_key').value.trim();
     if(!key){el('onb_provmsg').textContent='Paste an API key.';return;}
+    // Same misplaced-key guidance as the Models UI (CUM-201 item 3): a cumulo_sk_
+    // key belongs with the Cumulo Nimbus provider, not a direct one.
+    if(p!=='cumulo' && key.indexOf('cumulo_sk_')===0){
+      el('onb_provmsg').textContent='That looks like a Cumulo Nimbus key - choose Cumulo Nimbus above.';return;}
     const b=el('onb_provsave');b.disabled=true;el('onb_provmsg').textContent='Saving & verifying…';
     const body={};body[keyField(p)]=key;
     orchApply(body).then(()=>fetch('/api/verify',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'provider='+encodeURIComponent(p)}))
