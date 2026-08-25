@@ -912,8 +912,11 @@ void drawSetup(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx, bo
   // that cannot scan. Tapping it opens the full device sign-in code (TokenDetail)
   // to read and type by hand. It lives in the text column so it never collides
   // with the QR on the right, is bottom-anchored above the fw-version line, and
-  // is at least minTap tall for the a11y tap floor. (CUM-48 #3)
-  if (config) {
+  // is at least minTap tall for the a11y tap floor. Drawn ONLY when this ConfigQr
+  // is a MENU state (showCodeAffordance) - the tap layer routes ShowCode ->
+  // TokenDetail there; the repeated-401 auto-surface renders the QR with the menu
+  // closed and leaves the flag false, so the button never becomes a dead end. (CUM-48 #3)
+  if (config && ctx.showCodeAffordance) {
     const int bh = L.minTap;
     const int bw = textW ? textW : (L.w - 2 * L.gut());
     const int bx = L.gut();

@@ -1543,6 +1543,7 @@ static void renderMenu() {
     c.apUp = ((uint32_t)WiFi.softAPIP() != 0u);
     c.webToken = std::string(agent::store::webAuthToken().c_str());
     c.netStatus = netStatusLine();
+    c.showCodeAffordance = true;   // menu state: the ShowCode tap routes to TokenDetail
   } else if (tokenDetail) {
     c.webToken = std::string(agent::store::webAuthToken().c_str());
   } else if (stScreen) {

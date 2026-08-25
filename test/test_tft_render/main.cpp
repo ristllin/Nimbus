@@ -335,6 +335,8 @@ static void test_config_qr() {
   c.configUrl = "http://192.0.2.10/?t=ffffffffffff";
   c.setupUrl = "";  // TFT steady state: LAN connected, temporary setup AP off
   c.netStatus = "Home Wi-Fi connected: 192.0.2.10";
+  c.showCodeAffordance = true;  // the Sign-in QR is reached as a menu state, which
+                                // draws the tappable "Show code" button (CUM-48 #3)
   golden("config_qr", ScreenId::ConfigQr, c);
 }
 
@@ -343,6 +345,37 @@ static void test_token_detail() {
   c.modeName = "orchestrator";
   c.webToken = "0123456789abcdef01234567";  // obviously fake, full 24-char shape
   golden("token_detail", ScreenId::TokenDetail, c);
+}
+
+static bool hasTapAction(const Rendered& r, TapRegion::Action a) {
+  for (const auto& t : r.taps)
+    if (t.action == a) return true;
+  return false;
+}
+
+// CUM-48 #3: the "Show code" tap only appears when the Sign-in QR is a MENU
+// state (showCodeAffordance), whose tap layer routes ShowCode -> TokenDetail.
+// The repeated-401 auto-surface renders ConfigQr with the menu CLOSED, where the
+// tap has nowhere to go, so the button must NOT be drawn there (no dead end).
+static void test_show_code_button_gated_on_menu_state() {
+  ScreenCtx c = baseCtx();
+  c.modeName = "orchestrator";
+  c.configUrl = "http://192.0.2.10/?t=ffffffffffff";
+  c.netStatus = "Home Wi-Fi connected: 192.0.2.10";
+
+  Fb565 fb1;
+  c.showCodeAffordance = false;   // the menu-closed 401 auto-surface
+  const Rendered off = renderScreen(fb1, ScreenId::ConfigQr, c);
+  TEST_ASSERT_FALSE_MESSAGE(hasTapAction(off, TapRegion::Action::ShowCode),
+                            "Show code drawn on the menu-closed ConfigQr (dead-end tap)");
+  TEST_ASSERT_TRUE_MESSAGE(hasTapAction(off, TapRegion::Action::Back),
+                           "ConfigQr lost its header exit");
+
+  Fb565 fb2;
+  c.showCodeAffordance = true;    // the menu Sign-in QR state
+  const Rendered on = renderScreen(fb2, ScreenId::ConfigQr, c);
+  TEST_ASSERT_TRUE_MESSAGE(hasTapAction(on, TapRegion::Action::ShowCode),
+                           "Show code missing on the menu Sign-in QR");
 }
 
 static void test_setup_info() {
@@ -551,6 +584,7 @@ int main() {
   RUN_TEST(test_selftest);
   RUN_TEST(test_config_qr);
   RUN_TEST(test_token_detail);
+  RUN_TEST(test_show_code_button_gated_on_menu_state);
   RUN_TEST(test_setup_info);
   RUN_TEST(test_setup_info_notifier);
   RUN_TEST(test_pairing);

@@ -97,6 +97,11 @@ struct ScreenCtx {
   std::string netStatus;  // one-line live connectivity status under the ConfigQr QR
   std::string webToken;   // recovery-only device auth token. Normal setup/sign-in QRs
                           // carry it automatically; setup screens never require typing it.
+  bool showCodeAffordance = false;  // draw the tappable "Show code" button on the Sign-in
+                          // QR. Set ONLY when ConfigQr is rendered as a MENU state, whose
+                          // tap layer routes ShowCode -> TokenDetail. The repeated-401
+                          // auto-surface renders ConfigQr with the menu closed, where the
+                          // tap has nowhere to go, so it leaves this false (no dead button).
 
   // BLE secure pairing (Pairing screen). The 6-digit passkey the Mac must enter,
   // shown while a central is mid-pairing. On a production (silent-serial) unit
