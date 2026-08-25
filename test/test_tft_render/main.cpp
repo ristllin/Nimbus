@@ -220,6 +220,17 @@ static ScreenCtx stepperCtx() {
   return c;
 }
 
+// CUM-188: the Display submenu (Settings > Display) groups the screen flip.
+static ScreenCtx displayMenuCtx() {
+  ScreenCtx c = baseCtx();
+  c.menuTitle = "Settings > Display";
+  c.menuItems = {"Display flip: Off", "Calibrate touch >", "< Back"};
+  c.menuSelected = 0;
+  c.menuHelp = "Turns the screen 180 degrees for an upside-down mount. "
+               "Takes effect right away.";
+  return c;
+}
+
 static ScreenCtx sessionCtx() {
   ScreenCtx c = baseCtx();
   c.modeName = "orchestrator";
@@ -262,7 +273,6 @@ static void test_status_ring() {
 }
 static void test_menu_main()      { golden("menu_main", ScreenId::Menu, menuCtx()); }
 static void test_menu_stepper()   { golden("menu_stepper", ScreenId::Menu, stepperCtx()); }
-
 static ScreenCtx updateCtx() {
   ScreenCtx c = baseCtx();
   c.menuTitle = "Settings > Software update";
@@ -290,6 +300,21 @@ static void test_menu_update_available() {
   c.updateBusy = false;   // a settled result: the line persists, no progress bar
   golden("menu_update_available", ScreenId::Menu, c);
 }
+
+static void test_menu_display()   { golden("menu_display", ScreenId::Menu, displayMenuCtx()); }
+
+// CUM-189 (F5): the on-device tap-the-crosses calibration screen (crosshair at
+// the top-left target of a fresh 4-corner run).
+static ScreenCtx touchCalCtx() {
+  ScreenCtx c = baseCtx();
+  c.calTotal = 4;
+  c.calStep = 0;
+  c.calTargetX = 24;   // top-left, matching CalWizard's default inset
+  c.calTargetY = 24;
+  c.calMessage = "Tap each corner target";
+  return c;
+}
+static void test_touch_cal()      { golden("touch_cal", ScreenId::TouchCal, touchCalCtx()); }
 static void test_session_detail() { golden("session_detail", ScreenId::SessionDetail, sessionCtx()); }
 
 static void test_ask() {
@@ -605,6 +630,8 @@ int main() {
   RUN_TEST(test_menu_stepper);
   RUN_TEST(test_menu_update_checking);
   RUN_TEST(test_menu_update_available);
+  RUN_TEST(test_menu_display);
+  RUN_TEST(test_touch_cal);
   RUN_TEST(test_session_detail);
   RUN_TEST(test_ask);
   RUN_TEST(test_ask_mode_switch_has_no_close);

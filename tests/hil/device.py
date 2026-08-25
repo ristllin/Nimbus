@@ -70,6 +70,7 @@ SCREEN_NAMES = (
     "Screensaver",
     "TokenDetail",  # full device sign-in code (Connectivity > Device sign-in code,
     # and the Sign-in QR "Show code" tap - CUM-48 #3)
+    "TouchCal",  # touch-calibration wizard (Display > Calibrate touch - CUM-189, F5)
 )
 
 

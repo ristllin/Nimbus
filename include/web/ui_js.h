@@ -485,6 +485,9 @@ function applyState(d){
   if(d.storeSD!==undefined){GB.sd=!!d.storeSD&&!d.sdLost;_chatTraceHint();}
   // CUM-15: reveal the full-card Format control only when the driver supports it.
   if($('sdFormatRow'))$('sdFormatRow').style.display=(d.files&&d.files.canFormat)?'block':'none';
+  // CUM-187: hide the ring simulator on a board with no physical LED ring (the
+  // ring-only params are already omitted from d.params server-side).
+  if(d.hasRing!==undefined&&$('ringsimwrap'))$('ringsimwrap').style.display=d.hasRing?'':'none';
   // ---- Cloud access (cumulo-nimbus tunnel) ----
   if(d.cloud&&$('cloudLine')){
     var c=d.cloud;
@@ -1931,7 +1934,7 @@ function loadWifi(){
    ?('Temporary setup hotspot "'+(d.apSsid||'')+'" is available at '+(d.apIp||'')+'.')
    :(d.sta
      ?('Home Wi-Fi is connected at '+(d.staIp||'its LAN address')+'. The temporary setup hotspot is off; this is normal.')
-     :'The device is offline and its temporary setup hotspot is unavailable. Restart the device.');
+     :'The setup hotspot dropped and is coming back on its own. Reconnect to the setup network in a moment, then reload this page. No restart needed.');
  }).catch(()=>{box.innerHTML='<span class=hint>Couldn\'t load saved networks. Try again.</span>';});
 }
 // WATCH the join with a bounded countdown (12 x 2.5 s = 30 s): poll /api/state for

@@ -26,6 +26,7 @@
 //        │                     Bluetooth on/off (live status) +
 //        │                     Config via QR -> ConfigQr (full-screen link to
 //        │                     the on-device WiFi/BLE page)
+//        ├ Display ›       -> Display: screen flip (180) [+ touch calibration]
 //        ├ Reset to defaults -> ConfirmReset: "Reset all" clears all overrides
 //        └ Done            -> back to the normal UI
 //
@@ -261,11 +262,25 @@ class SettingsMenu {
   // param in Edit) - the device inverts the selected row so "editing" is
   // unmistakable from "navigating" (owner P2.2: volume gave no visual feedback).
 
-  // Main > Display flip (colour panel only): turns the screen 180 degrees for an
-  // upside-down mount. Same NVS-sync contract as theme/sfx - the device seeds it
-  // before opening and persists on dirty(). The row only shows on TFT.
+  // Settings > Display > Display flip (colour panel only): turns the screen 180
+  // degrees for an upside-down mount. Same NVS-sync contract as theme/sfx - the
+  // device seeds it before opening and persists on dirty(). Lives in the Display
+  // submenu (CUM-188).
   void setScreenFlip(bool on) { screenFlip_ = on; }
   bool screenFlip() const { return screenFlip_; }
+
+  // Whether this board has a physical LED ring. Seeded from solide::board().hasRing
+  // before opening; on a ringless board the Customize (Tune) list hides the
+  // ring-only params (CUM-187). Default true so a ring board (Solide S3) and the
+  // host tests are unaffected.
+  void setHasRing(bool on) { hasRing_ = on; }
+  bool hasRing() const { return hasRing_; }
+
+  // Settings > Display > Calibrate touch: raises a request the device drains to run
+  // the on-device tap-the-crosses calibration (CUM-189). Like the other device-work
+  // requests (SD re-probe, forget bonds) it is not Config state, so it never dirty()s.
+  bool calibrateRequested() const { return calibrateRequested_; }
+  void clearCalibrateRequest() { calibrateRequested_ = false; }
 
   bool adjustingValue() const {
     return volAdjusting_ || (state_ == State::Edit && adjusting_);
@@ -311,17 +326,18 @@ class SettingsMenu {
   enum class State : uint8_t {
     Closed, Main, ProfilePick, TuneList, Edit, ConfirmReset, Connectivity,
     ConfigQr, TokenDetail, ThemePick, SelfTest, Battery, Sound, UpdateMenu, ConfirmInstall,
-    WifiMenu, WifiPick, WifiForget };
+    WifiMenu, WifiPick, WifiForget, Display };
 
   // Rows on the Main screen, in display order. Sound absorbs the old
   // Sounds/Voice/Volume rows (one submenu for everything audible); Screensaver
   // cycles in place; Software update opens its own submenu.
-  // RowFlip (Display flip) sits before RowClose. mainRowAt() maps the visible
-  // index to the logical row.
+  // RowDisplay (Display >) opens the Display submenu (screen flip, and touch
+  // calibration once it lands); it sits before RowClose. mainRowAt() maps the
+  // visible index to the logical row.
   enum MainRow : int {
     RowMode = 0, RowProfile, RowTune, RowConn, RowSound, RowTheme,
     RowSaver, RowUpdate, RowReset, RowSelfTest, RowBattery, RowSdCard,
-    RowFlip, RowClose, kMainRows };
+    RowDisplay, RowClose, kMainRows };
 
   // Rows in the Sound submenu, in display order. Dictation/Spoken replies cycle
   // the STT/TTS provider (0 Mistral / 1 OpenAI - device maps string<->index).
@@ -349,10 +365,20 @@ class SettingsMenu {
   enum WifiRow : int {
     WifiPublishAp = 0, WifiChooseNet, WifiForgetNet, WifiRowBack, kWifiRows };
 
+  // Rows in the Display submenu (Settings > Display), in display order. Groups the
+  // screen flip and the touch-calibration entry per the CUM-163 IA.
+  enum DispRow : int { DispFlip = 0, DispCalibrate, DispBack, kDispRows };
+
   int itemCount() const;   // rows in the current list state
   MainRow mainRowAt(int idx) const;  // visible Main index -> logical row (identity)
   ConnRow connRowAt(int idx) const;  // visible Connectivity index -> logical row
                                      // (ConnCloud renders before Back; see enum)
+  // Customize (TuneList) is filtered by hasRing_ (CUM-187, F5): these map between
+  // the VISIBLE row index and the underlying Param so the ring-only params can be
+  // hidden without the row index and the Param ordinal drifting apart.
+  int   visibleParamCount() const;
+  Param tuneParamAt(int visibleIdx) const;
+  int   visibleIndexOf(Param p) const;
   void clampSel();         // keep sel_ in [0, itemCount()-1]
   void enter(State s);     // switch state, reset cursor to a sane default
 
@@ -377,7 +403,9 @@ class SettingsMenu {
   std::string sdStatus_;             // Main "SD:" row text (device-seeded live)
   bool    volAdjusting_ = false;     // Sound > Volume row captured rotation (classic adjust)
   uint16_t saverMin_ = 5;            // Main > Screensaver idle minutes (0 = off, NVS-synced)
-  bool screenFlip_ = false;          // Main > Display flip (TFT only, NVS-synced)
+  bool screenFlip_ = false;          // Settings > Display > Display flip (TFT only, NVS-synced)
+  bool hasRing_ = true;              // board has a physical LED ring (CUM-187 hide gate)
+  bool calibrateRequested_ = false;  // Settings > Display > Calibrate touch (device drains)
   bool    autoUpdate_ = false;       // Software update > Automatic updates (NVS-synced)
   int     sttProv_ = 0;              // Sound > Dictation (0 Mistral / 1 OpenAI, NVS-synced)
   int     ttsProv_ = 0;              // Sound > Spoken replies (0 Mistral / 1 OpenAI, NVS-synced)

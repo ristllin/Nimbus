@@ -133,6 +133,14 @@ struct ScreenCtx {
   int  updatePct = -1;         // 0..100 download progress, else -1 (indeterminate)
   uint8_t updateAnim = 0;      // indeterminate-bar animation phase (advances ~1 Hz)
 
+  // touch calibration (TouchCal screen; CUM-189, F5). The device fills the current
+  // target's pixel position and the step counter each frame; the renderer draws a
+  // crosshair there plus a centered instruction. calTotal == 0 means no calibration
+  // is in progress (the screen should not be drawn).
+  int16_t calTargetX = 0, calTargetY = 0;
+  int calStep = 0, calTotal = 0;
+  std::string calMessage;   // centered instruction, e.g. "Tap each corner target"
+
   // self-test (SelfTest screen). Device fills rows from hw::runSelfTest(); the
   // portable renderer just lays them out. status: 0 PASS, 1 FAIL, 2 SKIP.
   struct SelfTestRow { std::string name; uint8_t status = 2; };

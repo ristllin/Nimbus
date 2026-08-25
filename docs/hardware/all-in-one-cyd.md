@@ -91,9 +91,11 @@ connect.
   instead: each active session gets an arc in the same colors and animations the
   physical ring would show. The battery mode still dims it. See
   [The screen on a board with no ring](../modes-and-signals.md#the-screen-on-a-board-with-no-ring).
-- **Capacitive touch, self-calibrating.** The FT6336U reports pixel coordinates
-  directly, so the resistive-touch calibration used on the hand-built Touch TFT
-  does not apply here and is not shown for this board.
+- **Capacitive touch.** The FT6336U reports pixel coordinates directly, so the
+  resistive min/max calibration used on the hand-built Touch TFT does not apply
+  here and is not shown for this board. The board still ships a default touch
+  orientation; if taps land away from where you touch, correct it on the device
+  under **Settings > Display > Calibrate touch** (tap the four corner targets).
 - **One I²C bus.** Touch and the audio codec share the same I²C pins (SDA 16 /
   SCL 15) at different addresses.
 - **Audio through one codec.** The ES8311 handles the microphone and the speaker

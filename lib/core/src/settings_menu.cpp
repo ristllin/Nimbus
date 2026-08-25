@@ -104,7 +104,7 @@ int SettingsMenu::itemCount() const {
     case State::Main:        return kMainRows;
     case State::ProfilePick: return kProfileCount + 1;             // profiles + Back
     case State::ThemePick:   return themeCount() + 1;              // themes + Back
-    case State::TuneList:    return kParamCount + 1;               // params + Back
+    case State::TuneList:    return visibleParamCount() + 1;       // params (ring-filtered) + Back
     case State::Edit:        return cfg_->hasOverride(editing_) ? 3 : 2;  // value [+clear] +back
     case State::ConfirmReset: return 2;                            // No / Yes
     case State::Connectivity: return kConnRows;                    // Config via QR + Back
@@ -121,6 +121,7 @@ int SettingsMenu::itemCount() const {
     case State::UpdateMenu:  // Auto + Check + [Install] + Back
       return 3 + ((otaAllowed_ && !updateVersion_.empty()) ? 1 : 0);
     case State::ConfirmInstall: return 2;  // Cancel / Install and restart
+    case State::Display:     return kDispRows;   // Display flip + Back
   }
   return 0;
 }
@@ -152,6 +153,39 @@ SettingsMenu::ConnRow SettingsMenu::connRowAt(int idx) const {
 void SettingsMenu::showCode() {
   if (state_ != State::ConfigQr) return;
   enter(State::TokenDetail);   // dismiss paths already return to ConnToken
+}
+
+// Customize (TuneList) hides the ring-only params on a board with no LED ring
+// (CUM-187, F5). hasRing_ defaults true, so on a ring board these are all
+// identities and behaviour is unchanged.
+int SettingsMenu::visibleParamCount() const {
+  if (hasRing_) return kParamCount;
+  int n = 0;
+  for (int i = 0; i < kParamCount; ++i)
+    if (!isRingParam(Param(i))) ++n;
+  return n;
+}
+
+Param SettingsMenu::tuneParamAt(int visibleIdx) const {
+  int seen = 0;
+  for (int i = 0; i < kParamCount; ++i) {
+    const Param p = Param(i);
+    if (!hasRing_ && isRingParam(p)) continue;
+    if (seen == visibleIdx) return p;
+    ++seen;
+  }
+  return Param(kParamCount - 1);   // clamp: caller kept sel_ in range
+}
+
+int SettingsMenu::visibleIndexOf(Param p) const {
+  int seen = 0;
+  for (int i = 0; i < kParamCount; ++i) {
+    const Param q = Param(i);
+    if (!hasRing_ && isRingParam(q)) continue;
+    if (q == p) return seen;
+    ++seen;
+  }
+  return 0;
 }
 
 void SettingsMenu::clampSel() {
@@ -258,14 +292,27 @@ void SettingsMenu::onClick() {
           // and the device re-inits the bus + refreshes this row's status.
           sdProbeRequested_ = true;
           return;
-        case RowFlip:                    // TFT only: turn the screen 180 degrees
-          screenFlip_ = !screenFlip_;
-          dirty_ = true;
+        case RowDisplay:                 // open the Display submenu (screen flip, ...)
+          enter(State::Display);
           return;
         case RowClose:
           close();
           return;
       }
+      return;
+
+    case State::Display:
+      if (sel_ == DispFlip) {            // TFT only: turn the screen 180 degrees
+        screenFlip_ = !screenFlip_;      // device applies (setFlip) + persists on dirty()
+        dirty_ = true;
+        return;                          // stay on the row so the state flip is visible
+      }
+      if (sel_ == DispCalibrate) {       // run the on-device tap-the-crosses flow
+        calibrateRequested_ = true;      // device drains -> enters CalWizard (not Config state)
+        return;                          // stay on the row; the device takes over the screen
+      }
+      enter(State::Main);                // Back
+      sel_ = RowDisplay;
       return;
 
     case State::ProfilePick:
@@ -299,12 +346,12 @@ void SettingsMenu::onClick() {
       return;
 
     case State::TuneList:
-      if (sel_ >= kParamCount) {  // Back row
+      if (sel_ >= visibleParamCount()) {  // Back row
         enter(State::Main);
         sel_ = RowTune;
         return;
       }
-      editing_ = Param(sel_);
+      editing_ = tuneParamAt(sel_);
       enter(State::Edit);  // cursor on the value row
       return;
 
@@ -416,7 +463,7 @@ void SettingsMenu::onClick() {
       if (sel_ == backRow) {
         const Param p = editing_;
         enter(State::TuneList);
-        sel_ = int(p);
+        sel_ = visibleIndexOf(p);   // back onto this param's VISIBLE row (ring-filtered)
         return;
       }
       return;
@@ -545,7 +592,7 @@ void SettingsMenu::onLongPress() {
       }
       const Param p = editing_;
       enter(State::TuneList);
-      sel_ = int(p);
+      sel_ = visibleIndexOf(p);   // back onto this param's VISIBLE row (ring-filtered)
       return;
     }
     case State::ConfirmReset:
@@ -588,6 +635,10 @@ void SettingsMenu::onLongPress() {
       enter(State::Main);
       sel_ = RowSound;
       return;
+    case State::Display:
+      enter(State::Main);
+      sel_ = RowDisplay;
+      return;
     case State::UpdateMenu:
       enter(State::Main);
       sel_ = RowUpdate;
@@ -611,8 +662,8 @@ int SettingsMenu::editValuePct() const {
 
 const char* SettingsMenu::helpText() const {
   // TuneList: describe the param row the cursor points at (not the Back row).
-  if (state_ == State::TuneList && sel_ < kParamCount)
-    return paramDescription(Param(sel_));
+  if (state_ == State::TuneList && sel_ < visibleParamCount())
+    return paramDescription(tuneParamAt(sel_));
   // Edit: describe the edited param on every row, adjusting or not.
   if (state_ == State::Edit) return paramDescription(editing_);
   // Main: the top-level rows read ambiguously on their own (a profile looks like
@@ -620,9 +671,8 @@ const char* SettingsMenu::helpText() const {
   // rows the owner flagged, right at the top level. (<=144 chars: 3 wrapped lines.)
   if (state_ == State::Main) {
     switch (mainRowAt(sel_)) {
-      case RowFlip:
-        return "Turns the screen 180 degrees for an upside-down mount. "
-               "Takes effect right away.";
+      case RowDisplay:
+        return "Screen orientation and other display settings.";
       case RowMode:
         return "Notifier: a Bluetooth status light for your coding "
                "sessions. Orchestrator: the AI assistant (Telegram + voice).";
@@ -674,6 +724,13 @@ const char* SettingsMenu::helpText() const {
       default: break;
     }
   }
+  // Display submenu: each row explains what it does; Back has no pane.
+  if (state_ == State::Display && sel_ == DispFlip)
+    return "Turns the screen 180 degrees for an upside-down mount. "
+           "Takes effect right away.";
+  if (state_ == State::Display && sel_ == DispCalibrate)
+    return "Tap the four corner targets so taps land where you touch. "
+           "Takes about ten seconds.";
   // Software update rows: live status while it exists; the Notifier-mode
   // explanation on the disabled Check row.
   if (state_ == State::UpdateMenu) {
@@ -763,8 +820,16 @@ void SettingsMenu::view(solide::menu::MenuView& out) const {
       out.items.push_back("Self-test >"); // '>' = opens a screen (menu convention)
       out.items.push_back("Battery >");   // live battery detail full-screen
       out.items.push_back(std::string("SD card: ") + (sdStatus_.empty() ? "?" : sdStatus_));
-      out.items.push_back(std::string("Display flip: ") + (screenFlip_ ? "On" : "Off"));
+      out.items.push_back("Display >");          // screen flip (+ touch calibration)
       out.items.push_back("Done");
+      return;
+    }
+
+    case State::Display: {
+      out.title = "Settings > Display";
+      out.items.push_back(std::string("Display flip: ") + (screenFlip_ ? "On" : "Off"));
+      out.items.push_back("Calibrate touch >");   // runs the on-device tap-the-crosses flow
+      out.items.push_back("< Back");
       return;
     }
 
@@ -801,8 +866,9 @@ void SettingsMenu::view(solide::menu::MenuView& out) const {
 
     case State::TuneList: {
       out.title = "Settings > Customize";
-      for (int i = 0; i < kParamCount; ++i) {
-        const Param p = Param(i);
+      const int np = visibleParamCount();
+      for (int i = 0; i < np; ++i) {
+        const Param p = tuneParamAt(i);
         std::string row = std::string(paramLabel(p)) + ": " +
                           valueLabel(p, cfg_->effective(p));
         if (cfg_->hasOverride(p)) row += " *";
