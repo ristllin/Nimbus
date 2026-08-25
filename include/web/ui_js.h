@@ -1270,12 +1270,19 @@ function modelSel(id,cur,choices,verified){
   s.onchange=()=>orchApply({[id]:s.value});
   return s;
 }
+// Provider row header markup. Shared by provRow (build) and provSync (in-place
+// poll update) so the Recommended badge + verify badge never drift between them.
+function provHeadHtml(name,p){return '<b>'+(PROVLBL[name]||name)+'</b>'+
+  (name==='cumulo'?' <span class="badge" style="background:#12312e;color:#7fd1c8;border:1px solid #2b6b63">Recommended</span>':'')+
+  vfyBadge(p.verify,p.vts);}
+// Key-field placeholder. Shared by provRow + provSync so the cumulo_sk_ hint on the
+// Cumulo row is not stomped back to the generic "API key" by the in-place poll.
+function keyPlaceholder(name,p){return p.hasKey?'Key set - type to replace'
+  :(name==='cumulo'?'cumulo_sk_ key':'API key');}
 function provRow(name,p){
   const w=document.createElement('div'); w.className='provrow'; w.id='prov_'+name;
   const h=document.createElement('div'); h.className='provhead';
-  h.innerHTML='<b>'+(PROVLBL[name]||name)+'</b>'+
-    (name==='cumulo'?' <span class="badge" style="background:#12312e;color:#7fd1c8;border:1px solid #2b6b63">Recommended</span>':'')+
-    vfyBadge(p.verify,p.vts);
+  h.innerHTML=provHeadHtml(name,p);
   w.appendChild(h);
   // Cumulo Nimbus is the one-key, one-balance path: it carries the router base wiring
   // under the hood (no URL to type, unlike Custom endpoint) and Verify checks the key
@@ -1285,7 +1292,7 @@ function provRow(name,p){
     w.appendChild(ch);}
   const row=document.createElement('div'); row.className='row';
   const k=document.createElement('input'); k.type='password'; k.id='key_'+name;
-  k.placeholder=p.hasKey?'Key set - type to replace':(name==='cumulo'?'cumulo_sk_ key':'API key');
+  k.placeholder=keyPlaceholder(name,p);
   row.appendChild(k);
   const vb=document.createElement('button'); vb.type='button'; vb.id='vfy_'+name;
   const canV=!ORCH||ORCH.running;   // verify needs Orchestrator-mode heap (lexical ORCH - window.ORCH was always undefined)
@@ -1321,10 +1328,10 @@ function keyField(p){return KEYFIELD[p]||'mistKey';}
 function provSync(name,p){
   const w=$('prov_'+name); if(!w)return;
   const h=w.querySelector('.provhead');
-  if(h)h.innerHTML='<b>'+(PROVLBL[name]||name)+'</b>'+vfyBadge(p.verify,p.vts);
+  if(h)h.innerHTML=provHeadHtml(name,p);
   const k=$('key_'+name);
   if(k&&document.activeElement!==k&&!k.value)
-    k.placeholder=p.hasKey?'Key set - type to replace':'API key';
+    k.placeholder=keyPlaceholder(name,p);
   const vb=$('vfy_'+name);
   if(vb&&!vb.disabled){const canV=!ORCH||ORCH.running;
     vb.textContent=canV?(p.hasKey?'Verify':'Save & Verify'):'Save Key';}
