@@ -468,15 +468,24 @@ static void test_check_refusal_copy() {
 // CUM-197: a persisted "last result" that names a different version than the one
 // running is stale (a later flash bypassed the OTA that wrote it).
 static void test_last_result_stale() {
+  // ONLY "ok <version>" claims the running image; stale iff that version differs.
   TEST_ASSERT_FALSE(lastResultStale("ok v4.4.0", "v4.4.0"));          // same image
-  TEST_ASSERT_FALSE(lastResultStale("rollback v4.3.0", "v4.3.0"));
   TEST_ASSERT_TRUE(lastResultStale("ok v4.2.0", "v4.3.0-154-g96b8bb3"));  // the owner's case
   TEST_ASSERT_TRUE(lastResultStale("ok v4.4.0", "v4.2.0"));
   TEST_ASSERT_FALSE(lastResultStale("ok v4.4.0", "v4.4.0-5-gabc"));   // same release, dev suffix
-  TEST_ASSERT_FALSE(lastResultStale("", "v4.4.0"));                   // nothing recorded
+  // Records that intentionally name a NON-running version MUST be kept - a
+  // cross-release rollback/dryrun/failed-install is not stale (review finding).
+  TEST_ASSERT_FALSE(lastResultStale("rollback v4.4.0", "v4.3.0"));    // rolled back FROM v4.4.0
+  TEST_ASSERT_FALSE(lastResultStale("rollback v4.3.0", "v4.3.0"));
+  TEST_ASSERT_FALSE(lastResultStale("dryrun ok v4.4.0", "v4.3.0"));   // verified, not installed
+  TEST_ASSERT_FALSE(lastResultStale("download v4.4.0", "v4.3.0"));    // failed install of v4.4.0
+  TEST_ASSERT_FALSE(lastResultStale("installing v4.4.0", "v4.3.0"));
+  // Empty / non-version / non-ok tokens -> leave the record alone.
+  TEST_ASSERT_FALSE(lastResultStale("", "v4.4.0"));
   TEST_ASSERT_FALSE(lastResultStale(nullptr, "v4.4.0"));
-  TEST_ASSERT_FALSE(lastResultStale("sim-arm app0", "v4.4.0"));       // non-version token
+  TEST_ASSERT_FALSE(lastResultStale("sim-arm app0", "v4.4.0"));
   TEST_ASSERT_FALSE(lastResultStale("rollback-lost", "v4.4.0"));
+  TEST_ASSERT_FALSE(lastResultStale("aborted-preflip", "v4.4.0"));
 }
 
 int main(int, char**) {

@@ -556,7 +556,10 @@ function applyState(d){
         if(res==='available'||(o&&o.latest&&o.latest!==o.installed))return 'Update available: '+((o&&o.latest)||'a new version')+'.';
         if(res==='error')throw ((o&&o.msg)||'the update check failed');   // -> error state
         return {none:true,msg:'You are on the latest version.'};},
-      error:e=>(typeof e==='string'&&e)||'Couldn\'t start the update check. Try again.'});
+      // A string here is the server's honest local reason (409 msg); anything
+      // else is a real transport failure (fetch rejected) - only THEN is the
+      // connection the thing to check (CUM-197).
+      error:e=>(typeof e==='string'&&e)||'Couldn\'t reach the device. Check the connection and try again.'});
     fi.onclick=()=>{
       if((d.ota==='available')&&!battOk){fbState('fwMsg','error',d.otaBattMsg||'Charge the device before installing.');return;}
       if(!confirm('Install firmware '+(d.otaLatest||'')+'?\n\nThe device will download, verify the signature, and restart - about two minutes. Keep it powered on.'))return;

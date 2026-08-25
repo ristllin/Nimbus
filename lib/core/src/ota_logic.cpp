@@ -391,12 +391,18 @@ const char* checkRefusalCopy(const char* why) {
 
 bool lastResultStale(const char* lastResult, const char* runningVersion) {
   if (!lastResult || !lastResult[0]) return false;   // nothing to clear
-  const char* tok = lastResult;                       // last space-separated field
-  for (const char* p = lastResult; *p; ++p)
-    if (*p == ' ') tok = p + 1;
+  // Only a SUCCESSFUL-INSTALL record ("ok <version>") claims the device is
+  // running that version. rollback / "dryrun ok" / failed-install / mid-operation
+  // records intentionally name a PREVIOUS or CANDIDATE version while the device
+  // correctly runs a different image, so they must be kept (a cross-release
+  // rollback writes "rollback <newVersion>" then boots the OLD image - clearing
+  // it would erase the very outcome the owner needs to see). So staleness applies
+  // ONLY to "ok <version>" whose version is not the one now running.
+  if (std::strncmp(lastResult, "ok ", 3) != 0) return false;
+  const char* tok = lastResult + 3;                   // the version after "ok "
   int a, b, c;
-  if (!parseVersion(tok, a, b, c)) return false;      // not a version -> leave it
-  return compareVersions(tok, runningVersion) != 0;   // names a different image
+  if (!parseVersion(tok, a, b, c)) return false;      // malformed -> leave it
+  return compareVersions(tok, runningVersion) != 0;   // claims a different image
 }
 
 UpdateView updateView(State s, int pct, const char* latest, const char* err,
