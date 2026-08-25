@@ -121,6 +121,7 @@ int SettingsMenu::itemCount() const {
     case State::UpdateMenu:  // Auto + Check + [Install] + Back
       return 3 + ((otaAllowed_ && !updateVersion_.empty()) ? 1 : 0);
     case State::ConfirmInstall: return 2;  // Cancel / Install and restart
+    case State::Display:     return kDispRows;   // Display flip + Back
   }
   return 0;
 }
@@ -235,14 +236,23 @@ void SettingsMenu::onClick() {
           // and the device re-inits the bus + refreshes this row's status.
           sdProbeRequested_ = true;
           return;
-        case RowFlip:                    // TFT only: turn the screen 180 degrees
-          screenFlip_ = !screenFlip_;
-          dirty_ = true;
+        case RowDisplay:                 // open the Display submenu (screen flip, ...)
+          enter(State::Display);
           return;
         case RowClose:
           close();
           return;
       }
+      return;
+
+    case State::Display:
+      if (sel_ == DispFlip) {            // TFT only: turn the screen 180 degrees
+        screenFlip_ = !screenFlip_;      // device applies (setFlip) + persists on dirty()
+        dirty_ = true;
+        return;                          // stay on the row so the state flip is visible
+      }
+      enter(State::Main);                // Back
+      sel_ = RowDisplay;
       return;
 
     case State::ProfilePick:
@@ -550,6 +560,10 @@ void SettingsMenu::onLongPress() {
       enter(State::Main);
       sel_ = RowSound;
       return;
+    case State::Display:
+      enter(State::Main);
+      sel_ = RowDisplay;
+      return;
     case State::UpdateMenu:
       enter(State::Main);
       sel_ = RowUpdate;
@@ -582,9 +596,8 @@ const char* SettingsMenu::helpText() const {
   // rows the owner flagged, right at the top level. (<=144 chars: 3 wrapped lines.)
   if (state_ == State::Main) {
     switch (mainRowAt(sel_)) {
-      case RowFlip:
-        return "Turns the screen 180 degrees for an upside-down mount. "
-               "Takes effect right away.";
+      case RowDisplay:
+        return "Screen orientation and other display settings.";
       case RowMode:
         return "Notifier: a Bluetooth status light for your coding "
                "sessions. Orchestrator: the AI assistant (Telegram + voice).";
@@ -636,6 +649,10 @@ const char* SettingsMenu::helpText() const {
       default: break;
     }
   }
+  // Display submenu: the flip row explains what it does; Back has no pane.
+  if (state_ == State::Display && sel_ == DispFlip)
+    return "Turns the screen 180 degrees for an upside-down mount. "
+           "Takes effect right away.";
   // Software update rows: live status while it exists; the Notifier-mode
   // explanation on the disabled Check row.
   if (state_ == State::UpdateMenu) {
@@ -717,8 +734,15 @@ void SettingsMenu::view(solide::menu::MenuView& out) const {
       out.items.push_back("Self-test >"); // '>' = opens a screen (menu convention)
       out.items.push_back("Battery >");   // live battery detail full-screen
       out.items.push_back(std::string("SD card: ") + (sdStatus_.empty() ? "?" : sdStatus_));
-      out.items.push_back(std::string("Display flip: ") + (screenFlip_ ? "On" : "Off"));
+      out.items.push_back("Display >");          // screen flip (+ touch calibration)
       out.items.push_back("Done");
+      return;
+    }
+
+    case State::Display: {
+      out.title = "Settings > Display";
+      out.items.push_back(std::string("Display flip: ") + (screenFlip_ ? "On" : "Off"));
+      out.items.push_back("< Back");
       return;
     }
 

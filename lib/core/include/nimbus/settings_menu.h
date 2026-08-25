@@ -26,6 +26,7 @@
 //        │                     Bluetooth on/off (live status) +
 //        │                     Config via QR -> ConfigQr (full-screen link to
 //        │                     the on-device WiFi/BLE page)
+//        ├ Display ›       -> Display: screen flip (180) [+ touch calibration]
 //        ├ Reset to defaults -> ConfirmReset: "Reset all" clears all overrides
 //        └ Done            -> back to the normal UI
 //
@@ -238,9 +239,10 @@ class SettingsMenu {
   // param in Edit) - the device inverts the selected row so "editing" is
   // unmistakable from "navigating" (owner P2.2: volume gave no visual feedback).
 
-  // Main > Display flip (colour panel only): turns the screen 180 degrees for an
-  // upside-down mount. Same NVS-sync contract as theme/sfx - the device seeds it
-  // before opening and persists on dirty(). The row only shows on TFT.
+  // Settings > Display > Display flip (colour panel only): turns the screen 180
+  // degrees for an upside-down mount. Same NVS-sync contract as theme/sfx - the
+  // device seeds it before opening and persists on dirty(). Lives in the Display
+  // submenu (CUM-188).
   void setScreenFlip(bool on) { screenFlip_ = on; }
   bool screenFlip() const { return screenFlip_; }
 
@@ -288,17 +290,18 @@ class SettingsMenu {
   enum class State : uint8_t {
     Closed, Main, ProfilePick, TuneList, Edit, ConfirmReset, Connectivity,
     ConfigQr, TokenDetail, ThemePick, SelfTest, Battery, Sound, UpdateMenu, ConfirmInstall,
-    WifiMenu, WifiPick, WifiForget };
+    WifiMenu, WifiPick, WifiForget, Display };
 
   // Rows on the Main screen, in display order. Sound absorbs the old
   // Sounds/Voice/Volume rows (one submenu for everything audible); Screensaver
   // cycles in place; Software update opens its own submenu.
-  // RowFlip (Display flip) sits before RowClose. mainRowAt() maps the visible
-  // index to the logical row.
+  // RowDisplay (Display >) opens the Display submenu (screen flip, and touch
+  // calibration once it lands); it sits before RowClose. mainRowAt() maps the
+  // visible index to the logical row.
   enum MainRow : int {
     RowMode = 0, RowProfile, RowTune, RowConn, RowSound, RowTheme,
     RowSaver, RowUpdate, RowReset, RowSelfTest, RowBattery, RowSdCard,
-    RowFlip, RowClose, kMainRows };
+    RowDisplay, RowClose, kMainRows };
 
   // Rows in the Sound submenu, in display order. Dictation/Spoken replies cycle
   // the STT/TTS provider (0 Mistral / 1 OpenAI - device maps string<->index).
@@ -318,6 +321,10 @@ class SettingsMenu {
   // Rows in the Wi-Fi submenu (Connectivity > Wi-Fi), in display order.
   enum WifiRow : int {
     WifiPublishAp = 0, WifiChooseNet, WifiForgetNet, WifiRowBack, kWifiRows };
+
+  // Rows in the Display submenu (Settings > Display), in display order. Groups the
+  // screen flip (and touch calibration once it lands) per the CUM-163 IA.
+  enum DispRow : int { DispFlip = 0, DispBack, kDispRows };
 
   int itemCount() const;   // rows in the current list state
   MainRow mainRowAt(int idx) const;  // visible Main index -> logical row (identity)

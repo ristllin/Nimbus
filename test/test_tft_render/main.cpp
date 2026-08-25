@@ -219,6 +219,17 @@ static ScreenCtx stepperCtx() {
   return c;
 }
 
+// CUM-188: the Display submenu (Settings > Display) groups the screen flip.
+static ScreenCtx displayMenuCtx() {
+  ScreenCtx c = baseCtx();
+  c.menuTitle = "Settings > Display";
+  c.menuItems = {"Display flip: Off", "< Back"};
+  c.menuSelected = 0;
+  c.menuHelp = "Turns the screen 180 degrees for an upside-down mount. "
+               "Takes effect right away.";
+  return c;
+}
+
 static ScreenCtx sessionCtx() {
   ScreenCtx c = baseCtx();
   c.modeName = "orchestrator";
@@ -261,6 +272,7 @@ static void test_status_ring() {
 }
 static void test_menu_main()      { golden("menu_main", ScreenId::Menu, menuCtx()); }
 static void test_menu_stepper()   { golden("menu_stepper", ScreenId::Menu, stepperCtx()); }
+static void test_menu_display()   { golden("menu_display", ScreenId::Menu, displayMenuCtx()); }
 static void test_session_detail() { golden("session_detail", ScreenId::SessionDetail, sessionCtx()); }
 
 static void test_ask() {
@@ -541,6 +553,7 @@ int main() {
   RUN_TEST(test_status_ring);
   RUN_TEST(test_menu_main);
   RUN_TEST(test_menu_stepper);
+  RUN_TEST(test_menu_display);
   RUN_TEST(test_session_detail);
   RUN_TEST(test_ask);
   RUN_TEST(test_ask_mode_switch_has_no_close);
