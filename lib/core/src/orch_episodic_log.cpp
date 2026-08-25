@@ -126,6 +126,42 @@ void forEachLine(const std::string& buf,
 }
 }  // namespace
 
+// ---- ring-boundary string conversions (CUM-185) -----------------------------
+// The recent ring + index cache their strings in PSRAM (PsString); the public
+// EpisodicMessage/EpisodicSession API stays std::string. These bridge the two.
+AppendLogEpisodicStore::PsString AppendLogEpisodicStore::ps(const std::string& s) {
+  PsString o;
+  o.assign(s.data(), s.size());
+  return o;
+}
+std::string AppendLogEpisodicStore::st(const PsString& s) {
+  return std::string(s.data(), s.size());
+}
+AppendLogEpisodicStore::CachedMsg AppendLogEpisodicStore::cacheOf(const EpisodicMessage& m) {
+  CachedMsg c;
+  c.id = ps(m.id);
+  c.sessionId = ps(m.sessionId);
+  c.tsHours = m.tsHours;
+  c.role = ps(m.role);
+  c.kind = m.kind;
+  c.text = ps(m.text);
+  c.blobPath = ps(m.blobPath);
+  c.tags = ps(m.tags);
+  return c;
+}
+EpisodicMessage AppendLogEpisodicStore::msgOf(const CachedMsg& c) {
+  EpisodicMessage m;
+  m.id = st(c.id);
+  m.sessionId = st(c.sessionId);
+  m.tsHours = c.tsHours;
+  m.role = st(c.role);
+  m.kind = c.kind;
+  m.text = st(c.text);
+  m.blobPath = st(c.blobPath);
+  m.tags = st(c.tags);
+  return m;
+}
+
 // ---- sessions ---------------------------------------------------------------
 void AppendLogEpisodicStore::addSession(const EpisodicSession& s) {
   for (auto& e : sessions_)
@@ -172,7 +208,7 @@ void AppendLogEpisodicStore::addMessage(const EpisodicMessage& m) {
     // degrades). unpersisted_ > 0 also signals the device to demote the SD tier.
     unpersisted_++;
     maxIdSuffix_ = std::max(maxIdSuffix_, parseIdSuffix(m.id));
-    recent_.push_back(m);
+    recent_.push_back(cacheOf(m));
     if ((int)recent_.size() > recentCap_)
       recent_.erase(recent_.begin(), recent_.begin() + (recent_.size() - recentCap_));
     return;
@@ -184,11 +220,11 @@ void AppendLogEpisodicStore::addMessage(const EpisodicMessage& m) {
   r.len = (uint32_t)line.size();
   r.idSfx = epiIdSuffix(m.id);
   r.kind = m.kind;
-  r.sessionId = m.sessionId;
-  r.blobHash = blobHashOf(m.blobPath);
+  r.sessionId = ps(m.sessionId);
+  r.blobHash = ps(blobHashOf(m.blobPath));
   index_.push_back(r);
   maxIdSuffix_ = std::max(maxIdSuffix_, parseIdSuffix(m.id));
-  recent_.push_back(m);
+  recent_.push_back(cacheOf(m));
   if ((int)recent_.size() > recentCap_)
     recent_.erase(recent_.begin(), recent_.begin() + (recent_.size() - recentCap_));
 }
@@ -202,15 +238,17 @@ std::vector<EpisodicMessage> AppendLogEpisodicStore::queryRing(const MsgQuery& q
   std::vector<EpisodicMessage> out;
   const uint32_t beforeSfx = epiIdSuffix(q.before);
   for (auto it = recent_.rbegin(); it != recent_.rend(); ++it) {
-    const EpisodicMessage& m = *it;
-    if (beforeSfx && epiIdSuffix(m.id) >= beforeSfx) continue;
-    if (!q.sessionId.empty() && m.sessionId != q.sessionId) continue;
-    if (!q.sessionVisible(m.sessionId)) continue;   // v3.7.0 read boundary
-    if (!q.kindVisible(m.kind)) continue;
-    if (q.sinceHours && m.tsHours < q.sinceHours) continue;
-    if (q.beforeHours && m.tsHours >= q.beforeHours) continue;
+    // Cheap PSRAM-side pre-filters first (no std::string allocation), so only a
+    // surviving row pays for the CachedMsg -> EpisodicMessage conversion.
+    if (beforeSfx && epiIdSuffix(st(it->id)) >= beforeSfx) continue;
+    if (!q.sessionId.empty() && q.sessionId != it->sessionId.c_str()) continue;
+    if (!q.sessionVisible(st(it->sessionId))) continue;   // v3.7.0 read boundary
+    if (!q.kindVisible(it->kind)) continue;
+    if (q.sinceHours && it->tsHours < q.sinceHours) continue;
+    if (q.beforeHours && it->tsHours >= q.beforeHours) continue;
+    EpisodicMessage m = msgOf(*it);
     if (!epiTextMatch(m.text, q.textContains)) continue;
-    out.push_back(m);
+    out.push_back(std::move(m));
     if (q.limit > 0 && (int)out.size() >= q.limit) break;
   }
   return out;
@@ -272,8 +310,8 @@ std::vector<EpisodicMessage> AppendLogEpisodicStore::query(const MsgQuery& q,
     for (auto it = index_.rbegin(); it != index_.rend(); ++it) {
       const IdxRec& r = *it;
       if (beforeSfx && r.idSfx >= beforeSfx) continue;   // paging cursor
-      if (!q.sessionId.empty() && r.sessionId != q.sessionId) continue;
-      if (!q.sessionVisible(r.sessionId)) continue;   // v3.7.0 read boundary
+      if (!q.sessionId.empty() && q.sessionId != r.sessionId.c_str()) continue;
+      if (!q.sessionVisible(st(r.sessionId))) continue;   // v3.7.0 read boundary
       if (!q.kindVisible(r.kind)) continue;
       if (q.sinceHours && r.tsHours < q.sinceHours) continue;
       if (q.beforeHours && r.tsHours >= q.beforeHours) continue;
@@ -516,7 +554,7 @@ int AppendLogEpisodicStore::hydrate(int maxRows, size_t maxBytes,
   }
 
   std::vector<IdxRec> newestFirst;
-  std::vector<EpisodicMessage> recentNewestFirst;
+  std::vector<CachedMsg> recentNewestFirst;   // CUM-185: cache mirror (PSRAM strings)
   size_t bytesRead = 0;
   bool truncated = false;
 
@@ -567,8 +605,8 @@ int AppendLogEpisodicStore::hydrate(int maxRows, size_t maxBytes,
       r.len = (uint32_t)line.size();
       r.idSfx = epiIdSuffix(m.id);
       r.kind = m.kind;
-      r.sessionId = m.sessionId;
-      r.blobHash = blobHashOf(m.blobPath);
+      r.sessionId = ps(m.sessionId);
+      r.blobHash = ps(blobHashOf(m.blobPath));
       dayIdx.push_back(r);
       dayMsgs.push_back(m);
       maxIdSuffix_ = std::max(maxIdSuffix_, parseIdSuffix(m.id));
@@ -579,7 +617,7 @@ int AppendLogEpisodicStore::hydrate(int maxRows, size_t maxBytes,
     }
     for (auto mi = dayMsgs.rbegin();
          mi != dayMsgs.rend() && (int)recentNewestFirst.size() < recentCap_; ++mi)
-      recentNewestFirst.push_back(*mi);
+      recentNewestFirst.push_back(cacheOf(*mi));
     if (yield) yield();   // the caller feeds the watchdog here
   }
 
@@ -618,7 +656,7 @@ EpiPruneReport AppendLogEpisodicStore::prune(uint32_t cutoffDayNum, const std::s
                               [&](const IdxRec& r) { return gone.count(r.dayNum) != 0; }),
                index_.end());
   recent_.erase(std::remove_if(recent_.begin(), recent_.end(),
-                               [&](const EpisodicMessage& m) {
+                               [&](const CachedMsg& m) {
                                  return gone.count(m.tsHours / 24) != 0;
                                }),
                 recent_.end());
@@ -626,7 +664,7 @@ EpiPruneReport AppendLogEpisodicStore::prune(uint32_t cutoffDayNum, const std::s
   // Reference-count-scan blobs: delete any sidecar no surviving row references.
   std::set<std::string> referenced;
   for (const auto& r : index_)
-    if (!r.blobHash.empty()) referenced.insert(r.blobHash);
+    if (!r.blobHash.empty()) referenced.insert(st(r.blobHash));
   std::vector<std::string> present = fs_.list(blobDir);
   for (const auto& name : unreferencedBlobs(present, referenced)) {
     if (fs_.remove(blobDir + "/" + name)) rep.removedBlobs.push_back(name);
