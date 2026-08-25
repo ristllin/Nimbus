@@ -1,5 +1,6 @@
 #include "nimbus/touch_cal.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <vector>
 
@@ -78,6 +79,87 @@ Cal boardDefaultCal(TouchKind kind) {
   c.invertY = true;
   (void)kind;         // both shipping models share this default today; the seam stays per-kind
   return c;
+}
+
+bool solveCornerCal(const RawSample c[4], Cal& out, uint16_t minSpan) {
+  const RawSample& tl = c[0];
+  const RawSample& tr = c[1];
+  const RawSample& bl = c[2];
+  const RawSample& br = c[3];
+  // Averaged edge deltas (kept doubled - only signs and relative magnitudes matter):
+  // how much each raw axis moves when only screen X (dx_*) or only screen Y (dy_*)
+  // changes. Averaging the two parallel edges keeps one sloppy corner from flipping
+  // the swap decision. Mirrors tools/tcal_wizard.py derive().
+  const long dx_rawx = long(tr.x + br.x) - long(tl.x + bl.x);
+  const long dx_rawy = long(tr.y + br.y) - long(tl.y + bl.y);
+  const long dy_rawx = long(bl.x + br.x) - long(tl.x + tr.x);
+  const long dy_rawy = long(bl.y + br.y) - long(tl.y + tr.y);
+
+  const bool swap = std::labs(dx_rawy) > std::labs(dx_rawx);
+  uint16_t xv[4], yv[4];
+  long xDelta, yDelta;
+  if (swap) {  // screen X rides raw Y, screen Y rides raw X
+    xv[0] = tl.y; xv[1] = tr.y; xv[2] = bl.y; xv[3] = br.y;
+    yv[0] = tl.x; yv[1] = tr.x; yv[2] = bl.x; yv[3] = br.x;
+    xDelta = dx_rawy; yDelta = dy_rawx;
+  } else {
+    xv[0] = tl.x; xv[1] = tr.x; xv[2] = bl.x; xv[3] = br.x;
+    yv[0] = tl.y; yv[1] = tr.y; yv[2] = bl.y; yv[3] = br.y;
+    xDelta = dx_rawx; yDelta = dy_rawy;
+  }
+
+  uint16_t minX = xv[0], maxX = xv[0], minY = yv[0], maxY = yv[0];
+  for (int i = 1; i < 4; ++i) {
+    minX = std::min(minX, xv[i]); maxX = std::max(maxX, xv[i]);
+    minY = std::min(minY, yv[i]); maxY = std::max(maxY, yv[i]);
+  }
+  // Reject a degenerate press set (all in one spot, or a shorted line): the driver
+  // would divide by a near-zero span and every tap would land wrong.
+  if (int(maxX) - int(minX) < int(minSpan) || int(maxY) - int(minY) < int(minSpan))
+    return false;
+
+  Cal r;
+  r.minX = minX; r.maxX = maxX; r.minY = minY; r.maxY = maxY;
+  r.swapXY = swap;
+  // The driver maps lo->0 and hi->outMax, so a raw value that DECREASES as the
+  // screen coordinate grows needs its axis inverted.
+  r.invertX = xDelta < 0;
+  r.invertY = yDelta < 0;
+  out = r;
+  return true;
+}
+
+void CalWizard::begin(int16_t w, int16_t h, int16_t inset) {
+  w_ = w;
+  h_ = h;
+  // Keep the inset sane for small or odd sizes so targets never cross the middle.
+  const int16_t maxInset = int16_t((w_ < h_ ? w_ : h_) / 3);
+  inset_ = inset < 0 ? 0 : (inset > maxInset ? maxInset : inset);
+  step_ = 0;
+}
+
+int16_t CalWizard::targetX(int i) const {
+  // Order [tl, tr, bl, br]: left column for tl/bl, right column for tr/br.
+  const bool right = (i == 1 || i == 3);
+  return right ? int16_t(w_ - 1 - inset_) : inset_;
+}
+
+int16_t CalWizard::targetY(int i) const {
+  const bool bottom = (i == 2 || i == 3);
+  return bottom ? int16_t(h_ - 1 - inset_) : inset_;
+}
+
+bool CalWizard::recordRaw(uint16_t rawX, uint16_t rawY) {
+  if (done()) return true;
+  samples_[step_].x = rawX;
+  samples_[step_].y = rawY;
+  ++step_;
+  return done();
+}
+
+bool CalWizard::solve(Cal& out) const {
+  if (!done()) return false;
+  return solveCornerCal(samples_, out);
 }
 
 Point orientTouch(Point p, bool displayFlipped, int16_t w, int16_t h) {

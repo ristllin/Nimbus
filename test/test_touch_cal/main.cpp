@@ -154,8 +154,132 @@ static void test_board_default_round_trips_through_parse() {
   TEST_ASSERT_TRUE(d == back);
 }
 
+// CUM-189: solveCornerCal derives the axis mapping from four corner presses. Order
+// is [tl, tr, bl, br]. These vectors cover the three panel orientations the wizard
+// (tools/tcal_wizard.py derive) handles, plus the degenerate reject.
+using nimbus::touch::RawSample;
+using nimbus::touch::solveCornerCal;
+
+static void test_solve_identity_panel() {
+  // rawX == screenX, rawY == screenY: no swap, no invert.
+  const RawSample c[4] = {{200, 200}, {3900, 200}, {200, 3900}, {3900, 3900}};
+  Cal r;
+  TEST_ASSERT_TRUE(solveCornerCal(c, r));
+  TEST_ASSERT_FALSE(r.swapXY);
+  TEST_ASSERT_FALSE(r.invertX);
+  TEST_ASSERT_FALSE(r.invertY);
+  TEST_ASSERT_EQUAL_UINT16(200, r.minX);
+  TEST_ASSERT_EQUAL_UINT16(3900, r.maxX);
+}
+
+static void test_solve_swapped_panel() {
+  // screen X rides raw Y, screen Y rides raw X (a 90-degree mount).
+  const RawSample c[4] = {{200, 200}, {200, 3900}, {3900, 200}, {3900, 3900}};
+  Cal r;
+  TEST_ASSERT_TRUE(solveCornerCal(c, r));
+  TEST_ASSERT_TRUE(r.swapXY);
+  TEST_ASSERT_FALSE(r.invertX);
+  TEST_ASSERT_FALSE(r.invertY);
+}
+
+static void test_solve_inverted_x() {
+  // rawX DECREASES as screen X grows -> invertX.
+  const RawSample c[4] = {{3900, 200}, {200, 200}, {3900, 3900}, {200, 3900}};
+  Cal r;
+  TEST_ASSERT_TRUE(solveCornerCal(c, r));
+  TEST_ASSERT_FALSE(r.swapXY);
+  TEST_ASSERT_TRUE(r.invertX);
+  TEST_ASSERT_FALSE(r.invertY);
+  TEST_ASSERT_EQUAL_UINT16(200, r.minX);   // min/max stay ordered even when inverted
+  TEST_ASSERT_EQUAL_UINT16(3900, r.maxX);
+}
+
+// A solved calibration must survive a round trip through the wire format the NVS
+// key and the web field use.
+static void test_solved_cal_round_trips() {
+  const RawSample c[4] = {{200, 200}, {3900, 200}, {200, 3900}, {3900, 3900}};
+  Cal r;
+  TEST_ASSERT_TRUE(solveCornerCal(c, r));
+  Cal back;
+  TEST_ASSERT_TRUE(parseCal(formatCal(r), back));
+  TEST_ASSERT_TRUE(r == back);
+}
+
+// Presses all landing in one spot (or a shorted line) must be REJECTED, leaving the
+// previous calibration untouched - a half-applied cal looks deliberate and is worse.
+static void test_solve_rejects_degenerate_presses() {
+  const RawSample c[4] = {{2000, 2000}, {2010, 1995}, {1995, 2008}, {2005, 2002}};
+  Cal r;
+  r.minX = 111;   // sentinel; must be left untouched on reject
+  TEST_ASSERT_FALSE(solveCornerCal(c, r));
+  TEST_ASSERT_EQUAL_UINT16(111, r.minX);
+}
+
+// CUM-189: the on-device wizard sequences four corner targets and hands the raw
+// presses to the solver. This drives it exactly as the device loop would.
+using nimbus::touch::CalWizard;
+
+static void test_wizard_targets_are_the_four_corners_inset() {
+  CalWizard w;
+  w.begin(320, 240, 24);
+  TEST_ASSERT_EQUAL(4, w.count());
+  TEST_ASSERT_FALSE(w.done());
+  // [tl, tr, bl, br]
+  TEST_ASSERT_EQUAL_INT16(24, w.targetX(0));   TEST_ASSERT_EQUAL_INT16(24, w.targetY(0));
+  TEST_ASSERT_EQUAL_INT16(295, w.targetX(1));  TEST_ASSERT_EQUAL_INT16(24, w.targetY(1));
+  TEST_ASSERT_EQUAL_INT16(24, w.targetX(2));   TEST_ASSERT_EQUAL_INT16(215, w.targetY(2));
+  TEST_ASSERT_EQUAL_INT16(295, w.targetX(3));  TEST_ASSERT_EQUAL_INT16(215, w.targetY(3));
+}
+
+static void test_wizard_advances_and_solves() {
+  CalWizard w;
+  w.begin(320, 240, 24);
+  // Feed raw readings for an identity panel; each recordRaw advances the step.
+  const nimbus::touch::RawSample raw[4] = {
+      {200, 200}, {3900, 200}, {200, 3900}, {3900, 3900}};
+  for (int i = 0; i < 4; ++i) {
+    TEST_ASSERT_EQUAL(i, w.step());
+    const bool last = w.recordRaw(raw[i].x, raw[i].y);
+    TEST_ASSERT_EQUAL(i == 3, last);
+  }
+  TEST_ASSERT_TRUE(w.done());
+  Cal c;
+  TEST_ASSERT_TRUE(w.solve(c));
+  TEST_ASSERT_FALSE(c.swapXY);
+  TEST_ASSERT_EQUAL_UINT16(200, c.minX);
+  TEST_ASSERT_EQUAL_UINT16(3900, c.maxX);
+}
+
+static void test_wizard_solve_before_done_fails() {
+  CalWizard w;
+  w.begin(320, 240);
+  w.recordRaw(200, 200);   // only one corner
+  Cal c;
+  TEST_ASSERT_FALSE(w.solve(c));   // not done yet
+}
+
+static void test_wizard_reset_restarts() {
+  CalWizard w;
+  w.begin(320, 240);
+  w.recordRaw(200, 200);
+  w.recordRaw(3900, 200);
+  TEST_ASSERT_EQUAL(2, w.step());
+  w.reset();
+  TEST_ASSERT_EQUAL(0, w.step());
+  TEST_ASSERT_FALSE(w.done());
+}
+
 int main() {
   UNITY_BEGIN();
+  RUN_TEST(test_wizard_targets_are_the_four_corners_inset);
+  RUN_TEST(test_wizard_advances_and_solves);
+  RUN_TEST(test_wizard_solve_before_done_fails);
+  RUN_TEST(test_wizard_reset_restarts);
+  RUN_TEST(test_solve_identity_panel);
+  RUN_TEST(test_solve_swapped_panel);
+  RUN_TEST(test_solve_inverted_x);
+  RUN_TEST(test_solved_cal_round_trips);
+  RUN_TEST(test_solve_rejects_degenerate_presses);
   RUN_TEST(test_parses_four_fields);
   RUN_TEST(test_parses_flags);
   RUN_TEST(test_round_trips);

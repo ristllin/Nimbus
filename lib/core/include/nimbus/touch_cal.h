@@ -62,6 +62,60 @@ enum class TouchKind : uint8_t { Resistive = 0, Capacitive = 1 };
 Cal boardDefaultCal(TouchKind kind);
 
 // ============================================================================
+// On-device calibration (CUM-189): solve a Cal from four corner presses.
+//
+// A raw touch reading (12-bit ADC on a resistive panel; pixels on a capacitive
+// one). The on-device tap-the-crosses flow collects one per corner and hands the
+// four to solveCornerCal(); the same math also backs tools/tcal_wizard.py.
+struct RawSample {
+  uint16_t x = 0, y = 0;
+};
+
+// Solve a Cal from four raw corner readings in the FIXED screen order:
+//   corners[0]=top-left, [1]=top-right, [2]=bottom-left, [3]=bottom-right.
+// Which raw axis carries screen X is MEASURED (the axis that moves when only screen
+// X changes), so a panel mounted in any of eight orientations calibrates correctly.
+// Returns false and leaves `out` untouched when either corner span is below
+// `minSpan` (the presses were all in one spot, or a touch line is shorted) - a
+// half-applied calibration is worse than the default because it looks deliberate.
+bool solveCornerCal(const RawSample corners[4], Cal& out, uint16_t minSpan = 200);
+
+// The on-device tap-the-crosses calibration flow (CUM-189), as a PURE, host-tested
+// state machine: it owns the four corner targets and the collected raw samples, and
+// the device only reads raw touch, draws the current target, and applies the solved
+// Cal. No Arduino, no display - so the sequencing can be exercised host-side.
+class CalWizard {
+ public:
+  static constexpr int kTargets = 4;   // four corners, order [tl, tr, bl, br]
+
+  // Start a calibration for a `w` x `h` landscape panel. Targets are inset from the
+  // edge so a fingertip can actually reach them (and clear the header chrome).
+  void begin(int16_t w, int16_t h, int16_t inset = 24);
+  void reset() { step_ = 0; }
+
+  int  step() const { return step_; }          // index of the target awaiting a press
+  int  count() const { return kTargets; }
+  bool done() const { return step_ >= kTargets; }
+  int16_t targetX() const { return targetX(step_); }
+  int16_t targetY() const { return targetY(step_); }
+  int16_t targetX(int i) const;                 // pixel position of target i
+  int16_t targetY(int i) const;
+
+  // Record a raw press for the CURRENT target and advance. No-op once done().
+  // Returns true when this press completed the last target (done() is now true).
+  bool recordRaw(uint16_t rawX, uint16_t rawY);
+
+  // Solve the collected corners. Valid only when done(); returns false (leaving
+  // `out` untouched) if the presses were degenerate - the caller restarts.
+  bool solve(Cal& out) const;
+
+ private:
+  int16_t w_ = 0, h_ = 0, inset_ = 0;
+  int step_ = 0;
+  RawSample samples_[kTargets];
+};
+
+// ============================================================================
 // Orientation (CUM-160): reconciling touch with the display's 180 flip.
 //
 // A calibrated touch point is in the CANONICAL (un-flipped) landscape frame - the
