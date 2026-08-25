@@ -114,7 +114,7 @@ int SettingsMenu::itemCount() const {
     case State::WifiPick:    return int(scan_.size()) + 1;
     case State::WifiForget:  return int(known_.size()) + 1;
     case State::ConfigQr:    return 0;   // full-screen QR, not a list (any event exits)
-    case State::TokenDetail: return 0;   // full recovery code, not a list
+    case State::TokenDetail: return 0;   // full sign-in code, not a list
     case State::SelfTest:    return 0;   // full-screen results (device-filled), any event exits
     case State::Battery:     return 0;   // full-screen detail (device-filled), any event exits
     case State::Sound:       return kSoundRows;
@@ -593,7 +593,7 @@ const char* SettingsMenu::helpText() const {
                "shorter holds, Full = every session an arc. Each is a customizable "
                "preset.";
       case RowSound:
-        return "Sound effects, voice pack, speaker volume, and the voice "
+        return "Sound effects, sound theme, speaker volume, and the voice "
                "services for dictation and spoken replies.";
       case RowSaver:
         return "After this long with nothing new to show, the screen rests "
@@ -709,7 +709,7 @@ void SettingsMenu::view(solide::menu::MenuView& out) const {
       out.items.push_back(std::string("Battery mode: ") + profileLabel(cfg_->profile()));
       out.items.push_back("Customize >");     // ASCII only: font is 32-126
       out.items.push_back("Connectivity >");   // Wi-Fi/Bluetooth config via the QR->web page
-      out.items.push_back("Sound >");          // effects/voice pack/volume/providers
+      out.items.push_back("Sound >");          // effects/sound theme/volume/providers
       out.items.push_back(std::string("Theme: ") + titleCase(themeAt(theme_)));
       out.items.push_back(std::string("Screensaver: ") + saverText(saverMin_));
       out.items.push_back("Software update >");

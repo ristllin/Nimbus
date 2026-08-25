@@ -76,6 +76,10 @@ struct ScreenCtx {
 
   // ask / voice / badge
   std::string askText;                 // Ask screen body
+  bool askClosable = true;             // false on a transient pre-reboot notice (mode
+                                       // switch): the device restarts on its own, so no
+                                       // Close button is drawn (nothing to close). Real
+                                       // replies keep Close as their read/dismiss exit.
   attn::VoiceStage voice = attn::VoiceStage::None;
   bool badgeActive = false;            // Badge: something needs attention
   std::string badgeText;               // short, e.g. "INPUT?" / "APPROVE?"

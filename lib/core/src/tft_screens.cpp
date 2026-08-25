@@ -740,6 +740,11 @@ void drawAsk(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx) {
     fb.text((L.w - fb.textWidth(foot, 1)) / 2, L.bodyTop() + cardH + 6, foot, kInk3, 1);
   }
 
+  // A transient pre-reboot notice (mode switch) restarts the device on its own,
+  // so it draws NO Close button: the control could never be used before the reset
+  // and read as dead (owner: "switching to notifier mode always shows a button
+  // saying close, it does nothing"). A real reply keeps Close as its dismiss exit.
+  if (!ctx.askClosable) return;
   const int by = L.h - L.gut() - L.minTap;
   fb.fillRoundRect(L.gut(), by, L.w - 2 * L.gut(), L.minTap, L.cardRadius, kRaise2);
   fb.roundRect(L.gut(), by, L.w - 2 * L.gut(), L.minTap, L.cardRadius, kLine2);
@@ -845,7 +850,7 @@ void drawSetup(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx, bo
     int y = L.bodyTop();
     y = drawTextCard(fb, L, y,
         "Waiting for a Bluetooth connection.\n\nOn your computer, run the "
-        "nimbus-notify broker \xE2\x80\x94 it finds this device automatically.",
+        "nimbus-notify broker - it finds this device automatically.",
         {1, kInk2}, 0) + 10;
     fb.label(L.gut(), y, "device", kInk3);
     y += 14;
@@ -899,7 +904,7 @@ void drawSetup(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx, bo
              kInk3);
     y += 14;
     y = drawTextCard(fb, L, y,
-                     config ? std::string("No token to type.")
+                     config ? std::string("Nothing to type.")
                             : (showPass ? ctx.apPass : displayUrl(ctx.setupUrl)),
                      {1, kTeal}, textW);
   }
@@ -912,12 +917,12 @@ void drawSetup(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx, bo
 void drawTokenDetail(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx) {
   drawHeader(fb, L, r, ctx, "Device sign-in code", true);   // canonical (CUM-45)
   const int y = L.bodyTop();
-  fb.text(L.gut(), y, "Recovery only - scan the QR normally.", kInk3, 1);
+  fb.text(L.gut(), y, "Only if you can't scan the Sign-in QR.", kInk3, 1);
 
   const int cardY = y + 24;
   const int cardH = 116;
   fb.card(L.gut(), cardY, L.w - 2 * L.gut(), cardH);
-  fb.label(L.gut() + 14, cardY + 12, "full recovery code", kInk3);
+  fb.label(L.gut() + 14, cardY + 12, "sign-in code", kInk3);
 
   std::string token = asciiSanitize(ctx.webToken.empty() ? std::string("-")
                                                           : ctx.webToken);
