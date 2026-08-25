@@ -1,5 +1,6 @@
 #include "nimbus/ota/ota_logic.h"
 
+#include <cstdio>
 #include <cstring>
 
 #include <ArduinoJson.h>
@@ -332,6 +333,62 @@ const char* checkResultStr(CheckResult r) {
     case CheckResult::Failed: return "failed";
   }
   return "?";
+}
+
+State stateFromStr(const char* s) {
+  if (!s) return State::Idle;
+  if (!std::strcmp(s, "checking")) return State::Checking;
+  if (!std::strcmp(s, "up-to-date")) return State::UpToDate;
+  if (!std::strcmp(s, "available")) return State::Available;
+  if (!std::strcmp(s, "downloading")) return State::Downloading;
+  if (!std::strcmp(s, "verifying")) return State::Verifying;
+  if (!std::strcmp(s, "rebooting")) return State::ReadyToReboot;
+  if (!std::strcmp(s, "error")) return State::Error;
+  if (!std::strcmp(s, "unsupported")) return State::Unsupported;
+  return State::Idle;
+}
+
+// An in-progress affordance shows while a check or an install is running.
+static bool updateBusy(State s) {
+  return s == State::Checking || s == State::Downloading ||
+         s == State::Verifying || s == State::ReadyToReboot;
+}
+
+// Format the owner-facing status line for `s` into buf (always UpdateView::line,
+// so its fixed capacity is a constant). Split out of updateView, and holding the
+// param count at the gate's max, to keep each function within the complexity gate.
+static constexpr size_t kUpdateLineCap = sizeof(UpdateView::line);
+static void updateLine(char* buf, State s, const char* lat, const char* err,
+                       const char* fw, int pct) {
+  switch (s) {
+    case State::Idle:          buf[0] = '\0'; return;   // keep the default help
+    case State::Checking:      std::snprintf(buf, kUpdateLineCap, "Checking for updates..."); return;
+    case State::UpToDate:      std::snprintf(buf, kUpdateLineCap, "Up to date - %s", fw); return;
+    case State::Available:     std::snprintf(buf, kUpdateLineCap, "Update available: %s", lat); return;
+    case State::Downloading:
+      if (pct >= 0) std::snprintf(buf, kUpdateLineCap, "Installing... %d%%", pct);
+      else          std::snprintf(buf, kUpdateLineCap, "Installing...");
+      return;
+    case State::Verifying:     std::snprintf(buf, kUpdateLineCap, "Verifying update..."); return;
+    case State::ReadyToReboot: std::snprintf(buf, kUpdateLineCap, "Restarting to finish..."); return;
+    case State::Error:
+      if (err && err[0]) std::snprintf(buf, kUpdateLineCap, "Update check failed (%s)", err);
+      else               std::snprintf(buf, kUpdateLineCap, "Update check failed. Try again.");
+      return;
+    case State::Unsupported:   std::snprintf(buf, kUpdateLineCap, "Updates aren't available on this build."); return;
+  }
+}
+
+UpdateView updateView(State s, int pct, const char* latest, const char* err,
+                      const char* fwVersion) {
+  UpdateView v;
+  v.busy = updateBusy(s);
+  v.showInstall = (s == State::Available);
+  v.pct = (s == State::Downloading) ? pct : -1;
+  const char* lat = (latest && latest[0]) ? latest : "a new version";
+  const char* fw  = (fwVersion && fwVersion[0]) ? fwVersion : "this version";
+  updateLine(v.line, s, lat, err, fw, pct);
+  return v;
 }
 
 }  // namespace ota

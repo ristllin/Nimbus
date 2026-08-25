@@ -193,5 +193,31 @@ enum class CheckResult : uint8_t { Pending = 0, UpToDate, NewVersion, Unreachabl
 CheckResult checkResult(State settled, bool reachedServer);
 const char* checkResultStr(CheckResult r);  // "pending"/"up-to-date"/"new-version"/"unreachable"/"failed"
 
+// Inverse of stateStr(): the one-word status ("idle"/"checking"/...) back to the
+// State. Lets the device glue - which exposes the status only as a string - drive
+// updateView() below without duplicating the vocabulary. Any unknown word (incl.
+// nullptr) maps to Idle, the safe "nothing known" default.
+State stateFromStr(const char* s);
+
+// --- update UI view (CUM-193) -----------------------------------------------
+// The single source of truth for how an update state is SHOWN to the owner, so
+// the device screen and the web UI describe the same states in the same words.
+// Pure: given the state plus the live strings it interpolates (`latest` version,
+// `err` reason, `fwVersion` = the running version; "" / nullptr when N/A) and the
+// download progress (`pct`, 0..100 while downloading else -1), it fills one
+// printable-ASCII status line (the device screen is ~48 chars) and the affordance
+// flags the UI needs: `busy` = show an in-progress affordance (a check or an
+// install is running), `showInstall` = offer the Install action (a newer release
+// is staged). `line` is empty ONLY for Idle, where the caller keeps the control's
+// default help text.
+struct UpdateView {
+  bool busy = false;
+  bool showInstall = false;
+  int  pct = -1;
+  char line[48] = {0};
+};
+UpdateView updateView(State s, int pct, const char* latest, const char* err,
+                      const char* fwVersion);
+
 }  // namespace ota
 }  // namespace nimbus
