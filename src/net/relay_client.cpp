@@ -26,6 +26,7 @@
 #include "nimbus/cloud/relay_timing.h"        // CUM-160: bound the TLS slot-hold below the watchdog
 #include "nimbus/cloud/loopback_target.h"     // CUM-173: never dial 0.0.0.0 for the loopback fallback
 #include "nimbus/cloud/relay_heap.h"          // CUM-167: heap-floor policy (host-tested, bounce-buffer aware)
+#include "nimbus/cloud/relay_liveness.h"      // CUM-191: steady-state heartbeat-ack liveness (host-tested)
 #include "nimbus/cloud/relay_presence.h"      // CUM-182: hello-ack-gated, identity-bound presence
 #include "nimbus/cloud/relay_ws.h"
 #include "nimbus/cloud/ws_write.h"            // CUM-182: host-tested whole-frame write driver
@@ -736,8 +737,10 @@ bool handleWelcome(const RelayFrame& f, bool& welcomed, uint16_t& closeOut,
 }
 
 // Handle one parsed WS message. Returns false to end the session (closeOut set).
+// `gotPong` is set true when a matched heartbeat pong arrives (CUM-191 steady-state
+// liveness) so the caller can clear its missed-ack count.
 bool handleFrame(const ws::Message& m, bool& welcomed, uint16_t& closeOut,
-                 const char* ourDeviceId) {
+                 const char* ourDeviceId, bool& gotPong) {
   if (m.op == ws::Opcode::Text) {
     JsonDocument doc(&agent::PsramJsonAllocator::instance());
     if (deserializeJson(doc, m.payload.data(), m.payload.size())) return true;
@@ -747,6 +750,8 @@ bool handleFrame(const ws::Message& m, bool& welcomed, uint16_t& closeOut,
       if (!handleWelcome(f, welcomed, closeOut, ourDeviceId)) return false;
     } else if (f.type == FrameType::Req) {
       handleReq(f.req);
+    } else if (f.type == FrameType::Pong) {
+      gotPong = true;  // CUM-191: matched heartbeat ack - relay->device direction is live
     } else if (f.type == FrameType::Bye) {
       agent::alog((String("relay: bye ") + f.byeReason).c_str());
       closeOut = byeToCloseCode(f.byeReason);
@@ -762,11 +767,12 @@ bool handleFrame(const ws::Message& m, bool& welcomed, uint16_t& closeOut,
 }
 
 // Drain all ready inbound messages. Returns false once a message ends the session.
+// Sets `gotPong` if any drained frame was a matched heartbeat pong (CUM-191).
 bool pumpInbound(ws::Parser& parser, bool& welcomed, uint16_t& closeOut,
-                 const char* ourDeviceId) {
+                 const char* ourDeviceId, bool& gotPong) {
   ws::Message m;
   while (parser.next(m)) {
-    if (!handleFrame(m, welcomed, closeOut, ourDeviceId)) return false;
+    if (!handleFrame(m, welcomed, closeOut, ourDeviceId, gotPong)) return false;
   }
   return true;
 }
@@ -849,6 +855,24 @@ bool sessionShouldStop() {
   return false;
 }
 
+// Drive the steady-state heartbeat once welcomed (CUM-191): arm on the first call, send a
+// ping when one is due, and report whether too many acks have gone unanswered - a
+// half-open link the caller must tear down and redial. Kept a separate helper so the
+// online loop stays under the complexity gate.
+bool driveHeartbeat(nimbus::cloud::HeartbeatLiveness& live, bool& armed, uint32_t now) {
+  if (!armed) {
+    live.reset(now, g_heartbeatMs * 4 / 5);
+    armed = true;
+  }
+  if (!live.duePing(now)) return false;
+  sendPing(now);
+  live.notePingSent(now);
+  if (!live.dead()) return false;
+  agent::alogf("relay: heartbeat ack timeout (%u unacked) - link half-open, redialing",
+               (unsigned)live.outstanding);
+  return true;
+}
+
 // The online read/pump/heartbeat loop, after the handshake + hello. Returns the WS close
 // code (0 = clean/local drop).
 uint16_t runOnlineLoop(ws::Parser& parser, const char* ourDeviceId) {
@@ -856,7 +880,11 @@ uint16_t runOnlineLoop(ws::Parser& parser, const char* ourDeviceId) {
   bool welcomed = false;
   g_heartbeatMs = kDefaultHeartbeatMs;
   uint16_t closeCode = 0;
-  uint32_t nextPing = millis() + (g_heartbeatMs * 4 / 5);
+  // CUM-191: steady-state liveness. Ping cadence is 4/5 of the heartbeat window so a
+  // pong has room to arrive before the next ping falls due; the ack-gated monitor
+  // (armed once the Welcome lands) trips after kMaxMissedHeartbeatAcks unacked pings.
+  nimbus::cloud::HeartbeatLiveness live;
+  bool armed = false;
   uint32_t lastInbound = millis();
   uint8_t buf[512];
   while (true) {
@@ -870,14 +898,18 @@ uint16_t runOnlineLoop(ws::Parser& parser, const char* ourDeviceId) {
       break;
     }
     if (parser.protocolError()) { closeCode = (uint16_t)CloseCode::ProtocolError; break; }
-    if (!pumpInbound(parser, welcomed, closeCode, ourDeviceId)) break;
+    bool gotPong = false;
+    if (!pumpInbound(parser, welcomed, closeCode, ourDeviceId, gotPong)) break;
+    if (gotPong) live.notePong();  // matched ack clears the missed-heartbeat count
     if (!welcomed && millis() > welcomeBy) { setErr("Cloud handshake timed out."); break; }
     uint32_t now = millis();
-    if (welcomed && now >= nextPing) {
-      sendPing(now);
-      nextPing = now + (g_heartbeatMs * 4 / 5);
-    }
-    if (welcomed && now - lastInbound > g_heartbeatMs * 2) { closeCode = 0; break; }  // silence
+    // Half-open link (too many unacked heartbeats): drop presence honestly and let the
+    // task loop redial with backoff, re-registering a live session - the reboot-free
+    // recovery CUM-191 requires. Not an error to the user.
+    if (welcomed && driveHeartbeat(live, armed, now)) { closeCode = 0; break; }
+    // Coarse backstop: no inbound bytes at all for 2 heartbeat windows (the ack path
+    // above trips first on a half-open link, but this catches a wedged read).
+    if (welcomed && now - lastInbound > g_heartbeatMs * 2) { closeCode = 0; break; }
   }
   return closeCode;
 }

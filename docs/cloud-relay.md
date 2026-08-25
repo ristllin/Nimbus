@@ -61,5 +61,9 @@ To stop remote access, use "Unpair" (keeps cloud access on, drops this pairing) 
   connect; switch modes to use it.
 - One request is served at a time over the tunnel, which is ample for a single owner
   viewing the device UI.
+- If the connection to the relay is interrupted, the device notices on its own within a
+  few seconds and reconnects, so remote access recovers without a restart. While it
+  reconnects, the web app shows a brief "Reaching your Nimbus" page and loads the device
+  as soon as it is back.
 - A future hardening step pins the relay's certificate issuer in addition to the
   bundle check; see [security.md](security.md).
