@@ -1,5 +1,6 @@
 #include "nimbus/ota/ota_logic.h"
 
+#include <cstdio>
 #include <cstring>
 
 #include <ArduinoJson.h>
@@ -332,6 +333,88 @@ const char* checkResultStr(CheckResult r) {
     case CheckResult::Failed: return "failed";
   }
   return "?";
+}
+
+State stateFromStr(const char* s) {
+  if (!s) return State::Idle;
+  if (!std::strcmp(s, "checking")) return State::Checking;
+  if (!std::strcmp(s, "up-to-date")) return State::UpToDate;
+  if (!std::strcmp(s, "available")) return State::Available;
+  if (!std::strcmp(s, "downloading")) return State::Downloading;
+  if (!std::strcmp(s, "verifying")) return State::Verifying;
+  if (!std::strcmp(s, "rebooting")) return State::ReadyToReboot;
+  if (!std::strcmp(s, "error")) return State::Error;
+  if (!std::strcmp(s, "unsupported")) return State::Unsupported;
+  return State::Idle;
+}
+
+// An in-progress affordance shows while a check or an install is running.
+static bool updateBusy(State s) {
+  return s == State::Checking || s == State::Downloading ||
+         s == State::Verifying || s == State::ReadyToReboot;
+}
+
+// Format the owner-facing status line for `s` into buf (always UpdateView::line,
+// so its fixed capacity is a constant). Split out of updateView, and holding the
+// param count at the gate's max, to keep each function within the complexity gate.
+static constexpr size_t kUpdateLineCap = sizeof(UpdateView::line);
+static void updateLine(char* buf, State s, const char* lat, const char* err,
+                       const char* fw, int pct) {
+  switch (s) {
+    case State::Idle:          buf[0] = '\0'; return;   // keep the default help
+    case State::Checking:      std::snprintf(buf, kUpdateLineCap, "Checking for updates..."); return;
+    case State::UpToDate:      std::snprintf(buf, kUpdateLineCap, "Up to date - %s", fw); return;
+    case State::Available:     std::snprintf(buf, kUpdateLineCap, "Update available: %s", lat); return;
+    case State::Downloading:
+      if (pct >= 0) std::snprintf(buf, kUpdateLineCap, "Installing... %d%%", pct);
+      else          std::snprintf(buf, kUpdateLineCap, "Installing...");
+      return;
+    case State::Verifying:     std::snprintf(buf, kUpdateLineCap, "Verifying update..."); return;
+    case State::ReadyToReboot: std::snprintf(buf, kUpdateLineCap, "Restarting to finish..."); return;
+    case State::Error:
+      if (err && err[0]) std::snprintf(buf, kUpdateLineCap, "Update check failed (%s)", err);
+      else               std::snprintf(buf, kUpdateLineCap, "Update check failed. Try again.");
+      return;
+    case State::Unsupported:   std::snprintf(buf, kUpdateLineCap, "Updates aren't available on this build."); return;
+  }
+}
+
+const char* checkRefusalCopy(const char* why) {
+  if (!why) return "Couldn't start the check. Try again.";
+  if (!std::strcmp(why, "no-wifi"))     return "Can't check: no Wi-Fi. Connect and try again.";
+  if (!std::strcmp(why, "low-heap"))    return "Can't check now: low memory. Try again.";
+  if (!std::strcmp(why, "unsupported")) return "This build doesn't receive updates.";
+  if (!std::strcmp(why, "busy") || !std::strcmp(why, "in-progress"))
+    return "An update is already running.";
+  return "Couldn't start the check. Try again.";
+}
+
+bool lastResultStale(const char* lastResult, const char* runningVersion) {
+  if (!lastResult || !lastResult[0]) return false;   // nothing to clear
+  // Only a SUCCESSFUL-INSTALL record ("ok <version>") claims the device is
+  // running that version. rollback / "dryrun ok" / failed-install / mid-operation
+  // records intentionally name a PREVIOUS or CANDIDATE version while the device
+  // correctly runs a different image, so they must be kept (a cross-release
+  // rollback writes "rollback <newVersion>" then boots the OLD image - clearing
+  // it would erase the very outcome the owner needs to see). So staleness applies
+  // ONLY to "ok <version>" whose version is not the one now running.
+  if (std::strncmp(lastResult, "ok ", 3) != 0) return false;
+  const char* tok = lastResult + 3;                   // the version after "ok "
+  int a, b, c;
+  if (!parseVersion(tok, a, b, c)) return false;      // malformed -> leave it
+  return compareVersions(tok, runningVersion) != 0;   // claims a different image
+}
+
+UpdateView updateView(State s, int pct, const char* latest, const char* err,
+                      const char* fwVersion) {
+  UpdateView v;
+  v.busy = updateBusy(s);
+  v.showInstall = (s == State::Available);
+  v.pct = (s == State::Downloading) ? pct : -1;
+  const char* lat = (latest && latest[0]) ? latest : "a new version";
+  const char* fw  = (fwVersion && fwVersion[0]) ? fwVersion : "this version";
+  updateLine(v.line, s, lat, err, fw, pct);
+  return v;
 }
 
 }  // namespace ota

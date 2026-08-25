@@ -59,6 +59,7 @@ static const char* actionName(TapRegion::Action a) {
     case TapRegion::Action::SessionCard: return "SessionCard";
     case TapRegion::Action::ScrollUp:    return "ScrollUp";
     case TapRegion::Action::ScrollDown:  return "ScrollDown";
+    case TapRegion::Action::ShowCode:    return "ShowCode";
     case TapRegion::Action::None:
     default:                             return "None";
   }
@@ -272,10 +273,38 @@ static void test_status_ring() {
 }
 static void test_menu_main()      { golden("menu_main", ScreenId::Menu, menuCtx()); }
 static void test_menu_stepper()   { golden("menu_stepper", ScreenId::Menu, stepperCtx()); }
+static ScreenCtx updateCtx() {
+  ScreenCtx c = baseCtx();
+  c.menuTitle = "Settings > Software update";
+  c.menuItems = {"Automatic updates: Off", "Check for updates", "< Back"};
+  c.menuSelected = 1;
+  return c;
+}
+
+// CUM-193: the Software update screen shows the check/install with a status band
+// (the list rows alone never showed the check running or its result). Checking =
+// an indeterminate progress block; the anim phase is pinned for a stable golden.
+static void test_menu_update_checking() {
+  ScreenCtx c = updateCtx();
+  c.updateLine = "Checking for updates...";
+  c.updateBusy = true;
+  c.updatePct = -1;
+  c.updateAnim = 3;   // fixed phase -> deterministic golden
+  golden("menu_update_checking", ScreenId::Menu, c);
+}
+
+static void test_menu_update_available() {
+  ScreenCtx c = updateCtx();
+  c.menuItems = {"Automatic updates: Off", "Check for updates", "Install v4.4.1", "< Back"};
+  c.updateLine = "Update available: v4.4.1";
+  c.updateBusy = false;   // a settled result: the line persists, no progress bar
+  golden("menu_update_available", ScreenId::Menu, c);
+}
+
 static void test_menu_display()   { golden("menu_display", ScreenId::Menu, displayMenuCtx()); }
 
-// CUM-189: the on-device tap-the-crosses calibration screen (crosshair at the
-// top-left target of a fresh 4-corner run).
+// CUM-189 (F5): the on-device tap-the-crosses calibration screen (crosshair at
+// the top-left target of a fresh 4-corner run).
 static ScreenCtx touchCalCtx() {
   ScreenCtx c = baseCtx();
   c.calTotal = 4;
@@ -359,6 +388,8 @@ static void test_config_qr() {
   c.configUrl = "http://192.0.2.10/?t=ffffffffffff";
   c.setupUrl = "";  // TFT steady state: LAN connected, temporary setup AP off
   c.netStatus = "Home Wi-Fi connected: 192.0.2.10";
+  c.showCodeAffordance = true;  // the Sign-in QR is reached as a menu state, which
+                                // draws the tappable "Show code" button (CUM-48 #3)
   golden("config_qr", ScreenId::ConfigQr, c);
 }
 
@@ -367,6 +398,37 @@ static void test_token_detail() {
   c.modeName = "orchestrator";
   c.webToken = "0123456789abcdef01234567";  // obviously fake, full 24-char shape
   golden("token_detail", ScreenId::TokenDetail, c);
+}
+
+static bool hasTapAction(const Rendered& r, TapRegion::Action a) {
+  for (const auto& t : r.taps)
+    if (t.action == a) return true;
+  return false;
+}
+
+// CUM-48 #3: the "Show code" tap only appears when the Sign-in QR is a MENU
+// state (showCodeAffordance), whose tap layer routes ShowCode -> TokenDetail.
+// The repeated-401 auto-surface renders ConfigQr with the menu CLOSED, where the
+// tap has nowhere to go, so the button must NOT be drawn there (no dead end).
+static void test_show_code_button_gated_on_menu_state() {
+  ScreenCtx c = baseCtx();
+  c.modeName = "orchestrator";
+  c.configUrl = "http://192.0.2.10/?t=ffffffffffff";
+  c.netStatus = "Home Wi-Fi connected: 192.0.2.10";
+
+  Fb565 fb1;
+  c.showCodeAffordance = false;   // the menu-closed 401 auto-surface
+  const Rendered off = renderScreen(fb1, ScreenId::ConfigQr, c);
+  TEST_ASSERT_FALSE_MESSAGE(hasTapAction(off, TapRegion::Action::ShowCode),
+                            "Show code drawn on the menu-closed ConfigQr (dead-end tap)");
+  TEST_ASSERT_TRUE_MESSAGE(hasTapAction(off, TapRegion::Action::Back),
+                           "ConfigQr lost its header exit");
+
+  Fb565 fb2;
+  c.showCodeAffordance = true;    // the menu Sign-in QR state
+  const Rendered on = renderScreen(fb2, ScreenId::ConfigQr, c);
+  TEST_ASSERT_TRUE_MESSAGE(hasTapAction(on, TapRegion::Action::ShowCode),
+                           "Show code missing on the menu Sign-in QR");
 }
 
 static void test_setup_info() {
@@ -566,6 +628,8 @@ int main() {
   RUN_TEST(test_status_ring);
   RUN_TEST(test_menu_main);
   RUN_TEST(test_menu_stepper);
+  RUN_TEST(test_menu_update_checking);
+  RUN_TEST(test_menu_update_available);
   RUN_TEST(test_menu_display);
   RUN_TEST(test_touch_cal);
   RUN_TEST(test_session_detail);
@@ -577,6 +641,7 @@ int main() {
   RUN_TEST(test_selftest);
   RUN_TEST(test_config_qr);
   RUN_TEST(test_token_detail);
+  RUN_TEST(test_show_code_button_gated_on_menu_state);
   RUN_TEST(test_setup_info);
   RUN_TEST(test_setup_info_notifier);
   RUN_TEST(test_pairing);

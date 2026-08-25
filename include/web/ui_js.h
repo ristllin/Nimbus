@@ -549,13 +549,20 @@ function applyState(d){
     // Check-for-updates renders a result state (found / up to date / error naming
     // the next step) from N5's check payload, then re-syncs from /api/state.
     $('fwCheck').onclick=()=>run({status:'fwMsg',btn:$('fwCheck'),pending:'Checking for updates…',
-      work:()=>fetch('/api/ota/check',{method:'POST'}).then(jok),
+      // A 409 is a LOCAL refusal (no Wi-Fi / low memory / already running), not a
+      // network fault: surface the server's honest message rather than "check the
+      // network" (CUM-197).
+      work:()=>fetch('/api/ota/check',{method:'POST'}).then(r=>r.json().then(j=>{
+        if(!r.ok)throw ((j&&j.msg)||('Couldn\'t start the update check ('+r.status+').'));return j;})),
       ok:o=>{setTimeout(loadState,2000);
         var res=(o&&o.result)||'';
         if(res==='available'||(o&&o.latest&&o.latest!==o.installed))return 'Update available: '+((o&&o.latest)||'a new version')+'.';
         if(res==='error')throw ((o&&o.msg)||'the update check failed');   // -> error state
         return {none:true,msg:'You are on the latest version.'};},
-      error:e=>'Couldn\'t check for updates'+(e?(' ('+e+')'):'')+' - check the network and try again.'});
+      // A string here is the server's honest local reason (409 msg); anything
+      // else is a real transport failure (fetch rejected) - only THEN is the
+      // connection the thing to check (CUM-197).
+      error:e=>(typeof e==='string'&&e)||'Couldn\'t reach the device. Check the connection and try again.'});
     fi.onclick=()=>{
       if((d.ota==='available')&&!battOk){fbState('fwMsg','error',d.otaBattMsg||'Charge the device before installing.');return;}
       if(!confirm('Install firmware '+(d.otaLatest||'')+'?\n\nThe device will download, verify the signature, and restart - about two minutes. Keep it powered on.'))return;

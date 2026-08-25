@@ -38,6 +38,7 @@ from test_l4_network import lan_ip_or_skip
 PANEL_W, PANEL_H = 320, 240
 HEADER_H = 44
 MIN_TAP = 44
+GUT = 12  # page gutter (theme.h kPad); mirrored for tap-coordinate math
 
 
 def _status(device) -> str:
@@ -286,6 +287,102 @@ def test_hold_does_not_fire_as_a_tap(device):
     assert not re.search(r"screen=(3|Menu)", after), (
         f"a hold leaked through as a tap and opened the menu: {before!r} -> {after!r}"
     )
+
+
+# ---- CUM-48 device-screen parity: Show-code tap + Cloud link code row -------
+
+# Two-column, page-aligned menu geometry (lib/core/src/tft_screens.cpp drawMenu:
+# listTop=kBodyTop=52, kRowH=46 (+4 pitch), colW=(320-24-8)/2=144, 3 rows x 2
+# cols = 6 rows per page, COLUMN-MAJOR). Only page-1 rows (index < 6) are
+# reachable by TAP injection - there is no drag inject to turn the page.
+_MENU_LISTTOP, _MENU_ROWH, _MENU_COLW, _MENU_COLGAP, _MENU_ROWSPERCOL = 52, 46, 144, 8, 3
+
+
+def _row_tap_center(idx):
+    """Center of the tap card for visible menu row `idx` on PAGE 1 (idx < 6)."""
+    assert idx < _MENU_ROWSPERCOL * 2, f"row {idx} is on page 2 - TAP cannot reach it"
+    col, row = idx // _MENU_ROWSPERCOL, idx % _MENU_ROWSPERCOL
+    x = GUT + col * (_MENU_COLW + _MENU_COLGAP) + _MENU_COLW // 2
+    y = _MENU_LISTTOP + row * (_MENU_ROWH + 4) + _MENU_ROWH // 2
+    return x, y
+
+
+def _open_connectivity(device):
+    """Open Settings, click into the Connectivity submenu. Returns its MENU? items."""
+    from test_l22_menu_persist import _menu_view, _find_row  # shared MENU? parser
+
+    device.cmd(f"TAP {PANEL_W - MIN_TAP // 2} {HEADER_H // 2}", "TAP<", timeout=5.0)  # gear
+    time.sleep(0.8)
+    opened, _sel, items = _menu_view(device)
+    assert opened, "menu did not open on the gear tap"
+    ci = _find_row(items, "Connectivity")
+    assert 0 <= ci < 6, f"Connectivity is not a page-1 Main row (idx {ci}): {items!r}"
+    device.cmd(f"TAP {_row_tap_center(ci)[0]} {_row_tap_center(ci)[1]}", "TAP<", timeout=5.0)
+    time.sleep(0.8)
+    opened, _sel, items = _menu_view(device)
+    assert opened and _find_row(items, "Wi-Fi") == 0, f"not in Connectivity: {items!r}"
+    return items
+
+
+@pytest.mark.hil
+def test_show_code_tap_opens_the_device_sign_in_code(device):
+    """CUM-48 #3: the Sign-in QR gains a "Show code" tap that reveals the full
+    device sign-in code (ScreenId::TokenDetail) for an owner who cannot scan.
+
+    Proves the whole seam end to end on hardware: the affordance is a real tap
+    target on the config screen (not the header exit), and tapping it lands on
+    TokenDetail - not a no-op, not the Back gesture.
+    """
+    _require_tft(device)
+    _close_menu(device)
+    from test_l22_menu_persist import _find_row
+
+    items = _open_connectivity(device)
+    qi = _find_row(items, "Sign-in QR")
+    assert 0 <= qi < 6, f"Sign-in QR is not a page-1 Connectivity row (idx {qi}): {items!r}"
+    device.cmd(f"TAP {_row_tap_center(qi)[0]} {_row_tap_center(qi)[1]}", "TAP<", timeout=5.0)
+    time.sleep(0.8)
+    # ConfigQr is a full-screen menu state, so RENDER? now reports its ScreenId.
+    st = device.menu_wait_screen(9, timeout=8.0)  # 9 = ScreenId::ConfigQr
+    assert st.screen_name == "ConfigQr", f"tapping Sign-in QR did not open ConfigQr: {st!r}"
+
+    # The "Show code" affordance: a 138x44 card at (12,180) on the 320x240 panel
+    # (lib/core/src/tft_screens.cpp drawSetup, config branch). Its center:
+    device.cmd("TAP 81 202", "TAP<", timeout=5.0)
+    st = device.menu_wait_screen(14, timeout=8.0)  # 14 = ScreenId::TokenDetail
+    assert st.screen_name == "TokenDetail", (
+        f"'Show code' did not open the device sign-in code screen: {st!r} - the "
+        "ShowCode tap region or its routing (applyMenuTap -> showCode) is broken"
+    )
+    _close_menu(device)
+
+
+@pytest.mark.hil
+def test_cloud_link_code_row_is_present_before_back(device):
+    """CUM-48 #4: the Connectivity submenu gains a "Cloud link code" row that
+    initiates cumulo-nimbus pairing from the device. It is APPENDED to the
+    ConnRow enum (wire numbers of the rows above are frozen) but RENDERED just
+    before Back.
+
+    HIL coverage is the row's POSITION via the MENU? oracle: the six rows above
+    it keep their indices (so the frozen positional taps still land) and the new
+    row sits at index 6, directly before "< Back". The click behavior (Orchestrator
+    mode -> relay pairing) is proven in the host FSM suite; the row lives on menu
+    page 2, which TAP injection cannot reach (no drag inject).
+    """
+    _require_tft(device)
+    _close_menu(device)
+    from test_l22_menu_persist import _find_row
+
+    items = _open_connectivity(device)
+    # The frozen rows keep their positions (positional-mirror invariant).
+    assert _find_row(items, "Wi-Fi") == 0
+    assert _find_row(items, "Device sign-in code") == 5
+    ci = _find_row(items, "Cloud link code")
+    bi = _find_row(items, "Back")
+    assert ci == 6, f"'Cloud link code' is not at index 6: {items!r}"
+    assert bi == 7 and bi == ci + 1, f"Cloud link code must sit directly before Back: {items!r}"
+    _close_menu(device)
 
 
 # ---- persistence ------------------------------------------------------------

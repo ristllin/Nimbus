@@ -603,6 +603,39 @@ void drawMenu(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx) {
       push(r, dnX, 0, pagerW, L.headerH, TapRegion::Action::ScrollDown);
     }
   }
+
+  // Software update status band (CUM-193). The Software update screen is a short
+  // list (Auto / Check / [Install] / Back), so its status has room at the bottom.
+  // The rows alone never showed the check running or its result - the status
+  // lived only in the help pane, which a LIST never draws - so a check "ran with
+  // no feedback" (owner). This band gives it a persistent result line and, while
+  // a check or install runs, a progress bar so the owner sees it working. Only
+  // renders when the device set updateLine (i.e. on the Software update screen).
+  if (!ctx.updateLine.empty()) {
+    // 30px exactly fills the gutter below a full left column (rowsPerCol rows):
+    // on the 320x240 panel the lowest row ends at listTop + rowsPerCol*(rowH+4) -
+    // 4 = 198 and listBot = h - gut = 228, so a taller band would paint over that
+    // row's bottom edge. Bottom-anchored, it sits flush under the rows.
+    const int bandH = 30;
+    const int by = L.h - L.gut() - bandH;
+    const int bx = L.gut();
+    const int bw = L.w - 2 * L.gut();
+    fb.card(bx, by, bw, bandH);
+    fb.textClipped(bx + 10, by + 6, ctx.updateLine, kInk2, bw - 20, 1);
+    if (ctx.updateBusy) {
+      const int trackY = by + bandH - 10, trackX = bx + 10, trackW = bw - 20, trackH = 4;
+      fb.fillRoundRect(trackX, trackY, trackW, trackH, 2, kLine);
+      if (ctx.updatePct >= 0) {   // determinate: install download
+        const int p = ctx.updatePct > 100 ? 100 : ctx.updatePct;
+        fb.fillRoundRect(trackX, trackY, trackW * p / 100, trackH, 2, kTeal);
+      } else {                    // indeterminate: a check - a block that slides
+        const int blockW = trackW / 4;
+        const int span = trackW - blockW;
+        const int pos = span > 0 ? (int(ctx.updateAnim) % 8) * span / 7 : 0;
+        fb.fillRoundRect(trackX + pos, trackY, blockW, trackH, 2, kTeal);
+      }
+    }
+  }
 }
 
 // ---- text-ish screens -------------------------------------------------------
@@ -907,6 +940,24 @@ void drawSetup(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx, bo
                      config ? std::string("Nothing to type.")
                             : (showPass ? ctx.apPass : displayUrl(ctx.setupUrl)),
                      {1, kTeal}, textW);
+  }
+  // "Show code" affordance (Sign-in QR only): the escape hatch for a camera
+  // that cannot scan. Tapping it opens the full device sign-in code (TokenDetail)
+  // to read and type by hand. It lives in the text column so it never collides
+  // with the QR on the right, is bottom-anchored above the fw-version line, and
+  // is at least minTap tall for the a11y tap floor. Drawn ONLY when this ConfigQr
+  // is a MENU state (showCodeAffordance) - the tap layer routes ShowCode ->
+  // TokenDetail there; the repeated-401 auto-surface renders the QR with the menu
+  // closed and leaves the flag false, so the button never becomes a dead end. (CUM-48 #3)
+  if (config && ctx.showCodeAffordance) {
+    const int bh = L.minTap;
+    const int bw = textW ? textW : (L.w - 2 * L.gut());
+    const int bx = L.gut();
+    int by = L.h - L.gut() - bh - (fb.textHeight(1) + 3);   // clear the fw-version line
+    if (by < y + 6) by = y + 6;                             // never overlap the caption above
+    fb.card(bx, by, bw, bh);
+    fb.text(bx + 10, by + (bh - fb.textHeight(1)) / 2, "Show code", kTeal, 1);
+    push(r, bx, by, bw, bh, TapRegion::Action::ShowCode);
   }
   // Firmware version, small in the bottom-left. Guarded so the golden fixture
   // (empty fwVersion) draws nothing and stays byte-identical.

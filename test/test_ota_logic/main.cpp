@@ -380,6 +380,114 @@ static void test_check_result() {
   TEST_ASSERT_EQUAL_STRING("failed", checkResultStr(CheckResult::Failed));
 }
 
+static void test_state_from_str_roundtrips() {
+  const State all[] = {State::Idle, State::Checking, State::UpToDate, State::Available,
+                       State::Downloading, State::Verifying, State::ReadyToReboot,
+                       State::Error, State::Unsupported};
+  for (State s : all)
+    TEST_ASSERT_EQUAL_INT((int)s, (int)stateFromStr(stateStr(s)));
+  TEST_ASSERT_EQUAL_INT((int)State::Idle, (int)stateFromStr("bogus"));
+  TEST_ASSERT_EQUAL_INT((int)State::Idle, (int)stateFromStr(nullptr));
+}
+
+// CUM-193: the device screen + web UI describe the update state from this one
+// pure view. Locks the owner-facing copy and the affordance flags per state.
+static void test_update_view() {
+  UpdateView idle = updateView(State::Idle, -1, "", "", "v4.4.0");
+  TEST_ASSERT_EQUAL_STRING("", idle.line);   // Idle keeps the control's default help
+  TEST_ASSERT_FALSE(idle.busy);
+  TEST_ASSERT_FALSE(idle.showInstall);
+
+  UpdateView chk = updateView(State::Checking, -1, "", "", "v4.4.0");
+  TEST_ASSERT_EQUAL_STRING("Checking for updates...", chk.line);
+  TEST_ASSERT_TRUE(chk.busy);                // the in-progress affordance
+  TEST_ASSERT_FALSE(chk.showInstall);
+
+  UpdateView utd = updateView(State::UpToDate, -1, "", "", "v4.4.0");
+  TEST_ASSERT_EQUAL_STRING("Up to date - v4.4.0", utd.line);
+  TEST_ASSERT_FALSE(utd.busy);
+  TEST_ASSERT_FALSE(utd.showInstall);
+
+  UpdateView av = updateView(State::Available, -1, "v4.4.1", "", "v4.4.0");
+  TEST_ASSERT_EQUAL_STRING("Update available: v4.4.1", av.line);
+  TEST_ASSERT_FALSE(av.busy);
+  TEST_ASSERT_TRUE(av.showInstall);          // offer Install
+  UpdateView av2 = updateView(State::Available, -1, "", "", "v4.4.0");
+  TEST_ASSERT_EQUAL_STRING("Update available: a new version", av2.line);
+  TEST_ASSERT_TRUE(av2.showInstall);
+
+  UpdateView dl = updateView(State::Downloading, 42, "v4.4.1", "", "v4.4.0");
+  TEST_ASSERT_EQUAL_STRING("Installing... 42%", dl.line);
+  TEST_ASSERT_TRUE(dl.busy);
+  TEST_ASSERT_EQUAL_INT(42, dl.pct);
+  UpdateView dl0 = updateView(State::Downloading, -1, "", "", "");
+  TEST_ASSERT_EQUAL_STRING("Installing...", dl0.line);
+
+  UpdateView err = updateView(State::Error, -1, "", "no-release", "v4.4.0");
+  TEST_ASSERT_EQUAL_STRING("Update check failed (no-release)", err.line);  // honest reason
+  TEST_ASSERT_FALSE(err.busy);
+  UpdateView err2 = updateView(State::Error, -1, "", "", "v4.4.0");
+  TEST_ASSERT_EQUAL_STRING("Update check failed. Try again.", err2.line);
+
+  UpdateView un = updateView(State::Unsupported, -1, "", "", "v4.4.0");
+  TEST_ASSERT_EQUAL_STRING("Updates aren't available on this build.", un.line);
+
+  TEST_ASSERT_TRUE(updateView(State::Verifying, -1, "", "", "").busy);
+  TEST_ASSERT_TRUE(updateView(State::ReadyToReboot, -1, "", "", "").busy);
+
+  // Every line fits the device's ~48-char printable-ASCII row.
+  const State all[] = {State::Idle, State::Checking, State::UpToDate, State::Available,
+                       State::Downloading, State::Verifying, State::ReadyToReboot,
+                       State::Error, State::Unsupported};
+  for (State s : all) {
+    UpdateView v = updateView(s, 100, "v4.4.1", "sha-fail", "v4.4.0");
+    for (const char* p = v.line; *p; ++p)
+      TEST_ASSERT_TRUE_MESSAGE(*p >= 32 && *p < 127, "update line has a non-ASCII byte");
+    TEST_ASSERT_TRUE_MESSAGE(strlen(v.line) < 48, "update line overruns the 48-char row");
+  }
+}
+
+// CUM-197: a "Check for updates" 409 is always a LOCAL refusal - the copy names
+// the real cause and NEVER blames the network.
+static void test_check_refusal_copy() {
+  TEST_ASSERT_EQUAL_STRING("Can't check: no Wi-Fi. Connect and try again.", checkRefusalCopy("no-wifi"));
+  TEST_ASSERT_EQUAL_STRING("Can't check now: low memory. Try again.", checkRefusalCopy("low-heap"));
+  TEST_ASSERT_EQUAL_STRING("This build doesn't receive updates.", checkRefusalCopy("unsupported"));
+  TEST_ASSERT_EQUAL_STRING("An update is already running.", checkRefusalCopy("busy"));
+  TEST_ASSERT_EQUAL_STRING("An update is already running.", checkRefusalCopy("in-progress"));
+  TEST_ASSERT_EQUAL_STRING("Couldn't start the check. Try again.", checkRefusalCopy("weird"));
+  TEST_ASSERT_EQUAL_STRING("Couldn't start the check. Try again.", checkRefusalCopy(nullptr));
+  const char* reasons[] = {"no-wifi", "low-heap", "unsupported", "busy", "in-progress", "weird", ""};
+  for (const char* w : reasons) {
+    const char* c = checkRefusalCopy(w);
+    TEST_ASSERT_NULL_MESSAGE(strstr(c, "network"), "refusal copy must not blame the network");
+    TEST_ASSERT_TRUE_MESSAGE(strlen(c) < 48, "refusal copy overruns the 48-char device row");
+  }
+}
+
+// CUM-197: a persisted "last result" that names a different version than the one
+// running is stale (a later flash bypassed the OTA that wrote it).
+static void test_last_result_stale() {
+  // ONLY "ok <version>" claims the running image; stale iff that version differs.
+  TEST_ASSERT_FALSE(lastResultStale("ok v4.4.0", "v4.4.0"));          // same image
+  TEST_ASSERT_TRUE(lastResultStale("ok v4.2.0", "v4.3.0-154-g96b8bb3"));  // the owner's case
+  TEST_ASSERT_TRUE(lastResultStale("ok v4.4.0", "v4.2.0"));
+  TEST_ASSERT_FALSE(lastResultStale("ok v4.4.0", "v4.4.0-5-gabc"));   // same release, dev suffix
+  // Records that intentionally name a NON-running version MUST be kept - a
+  // cross-release rollback/dryrun/failed-install is not stale (review finding).
+  TEST_ASSERT_FALSE(lastResultStale("rollback v4.4.0", "v4.3.0"));    // rolled back FROM v4.4.0
+  TEST_ASSERT_FALSE(lastResultStale("rollback v4.3.0", "v4.3.0"));
+  TEST_ASSERT_FALSE(lastResultStale("dryrun ok v4.4.0", "v4.3.0"));   // verified, not installed
+  TEST_ASSERT_FALSE(lastResultStale("download v4.4.0", "v4.3.0"));    // failed install of v4.4.0
+  TEST_ASSERT_FALSE(lastResultStale("installing v4.4.0", "v4.3.0"));
+  // Empty / non-version / non-ok tokens -> leave the record alone.
+  TEST_ASSERT_FALSE(lastResultStale("", "v4.4.0"));
+  TEST_ASSERT_FALSE(lastResultStale(nullptr, "v4.4.0"));
+  TEST_ASSERT_FALSE(lastResultStale("sim-arm app0", "v4.4.0"));
+  TEST_ASSERT_FALSE(lastResultStale("rollback-lost", "v4.4.0"));
+  TEST_ASSERT_FALSE(lastResultStale("aborted-preflip", "v4.4.0"));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_parse_version);
@@ -399,5 +507,9 @@ int main(int, char**) {
   RUN_TEST(test_auto_install_window);
   RUN_TEST(test_install_gate);
   RUN_TEST(test_check_result);
+  RUN_TEST(test_state_from_str_roundtrips);
+  RUN_TEST(test_update_view);
+  RUN_TEST(test_check_refusal_copy);
+  RUN_TEST(test_last_result_stale);
   return UNITY_END();
 }

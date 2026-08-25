@@ -97,6 +97,11 @@ struct ScreenCtx {
   std::string netStatus;  // one-line live connectivity status under the ConfigQr QR
   std::string webToken;   // recovery-only device auth token. Normal setup/sign-in QRs
                           // carry it automatically; setup screens never require typing it.
+  bool showCodeAffordance = false;  // draw the tappable "Show code" button on the Sign-in
+                          // QR. Set ONLY when ConfigQr is rendered as a MENU state, whose
+                          // tap layer routes ShowCode -> TokenDetail. The repeated-401
+                          // auto-surface renders ConfigQr with the menu closed, where the
+                          // tap has nowhere to go, so it leaves this false (no dead button).
 
   // BLE secure pairing (Pairing screen). The 6-digit passkey the Mac must enter,
   // shown while a central is mid-pairing. On a production (silent-serial) unit
@@ -117,7 +122,18 @@ struct ScreenCtx {
   bool menuAdjusting = false;  // the selected row's value is being edited -> drawMenu
                                // INVERTS that row (P2.2)
 
-  // touch calibration (TouchCal screen; CUM-189). The device fills the current
+  // Software update status band (CUM-193). Non-empty updateLine draws a bottom
+  // status band on the Software update screen so the check/install has visible
+  // progress + a persistent result (the list rows alone never showed it). busy
+  // draws an in-progress affordance: a determinate bar when updatePct >= 0
+  // (install download), else an indeterminate "working" block whose position
+  // comes from updateAnim (kept in ctx so a golden fixture can pin the phase).
+  std::string updateLine;      // owner-facing status (from nimbus::ota::updateView)
+  bool updateBusy = false;     // a check or install is running -> show progress
+  int  updatePct = -1;         // 0..100 download progress, else -1 (indeterminate)
+  uint8_t updateAnim = 0;      // indeterminate-bar animation phase (advances ~1 Hz)
+
+  // touch calibration (TouchCal screen; CUM-189, F5). The device fills the current
   // target's pixel position and the step counter each frame; the renderer draws a
   // crosshair there plus a centered instruction. calTotal == 0 means no calibration
   // is in progress (the screen should not be drawn).

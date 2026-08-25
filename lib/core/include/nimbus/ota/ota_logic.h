@@ -193,5 +193,50 @@ enum class CheckResult : uint8_t { Pending = 0, UpToDate, NewVersion, Unreachabl
 CheckResult checkResult(State settled, bool reachedServer);
 const char* checkResultStr(CheckResult r);  // "pending"/"up-to-date"/"new-version"/"unreachable"/"failed"
 
+// Inverse of stateStr(): the one-word status ("idle"/"checking"/...) back to the
+// State. Lets the device glue - which exposes the status only as a string - drive
+// updateView() below without duplicating the vocabulary. Any unknown word (incl.
+// nullptr) maps to Idle, the safe "nothing known" default.
+State stateFromStr(const char* s);
+
+// --- update UI view (CUM-193) -----------------------------------------------
+// The single source of truth for how an update state is SHOWN to the owner, so
+// the device screen and the web UI describe the same states in the same words.
+// Pure: given the state plus the live strings it interpolates (`latest` version,
+// `err` reason, `fwVersion` = the running version; "" / nullptr when N/A) and the
+// download progress (`pct`, 0..100 while downloading else -1), it fills one
+// printable-ASCII status line (the device screen is ~48 chars) and the affordance
+// flags the UI needs: `busy` = show an in-progress affordance (a check or an
+// install is running), `showInstall` = offer the Install action (a newer release
+// is staged). `line` is empty ONLY for Idle, where the caller keeps the control's
+// default help text.
+struct UpdateView {
+  bool busy = false;
+  bool showInstall = false;
+  int  pct = -1;
+  char line[48] = {0};
+};
+UpdateView updateView(State s, int pct, const char* latest, const char* err,
+                      const char* fwVersion);
+
+// The owner-facing reason a "Check for updates" was REFUSED (the device glue's
+// requestCheck() returns false -> HTTP 409). A refusal is always local (no
+// Wi-Fi, low memory, an update already running, or this build carries no OTA
+// variant); it is never "the network", so the copy names the real cause instead
+// of blaming the connection. `why` is the machine token from requestCheck()
+// ("no-wifi"/"low-heap"/"unsupported"/"busy"/"in-progress"); unknown/nullptr
+// yields a safe generic retry. One source for both the device screen and the
+// web UI (served in the 409 body). (CUM-197)
+const char* checkRefusalCopy(const char* why);
+
+// True when a persisted OTA "last result" record ("ok vX" / "rollback vX" / ...)
+// no longer pertains to the image now running: its trailing version token names
+// a DIFFERENT firmware version than `runningVersion`. The current image then
+// arrived by some path other than the OTA that wrote the record (e.g. a later
+// dev/USB flash), so the record is stale and misleading (the owner saw "ok
+// v4.2.0" on a v4.3.0 device). Records whose trailing token is not a parseable
+// version (mid-operation or non-version labels) are left alone. (CUM-197)
+bool lastResultStale(const char* lastResult, const char* runningVersion);
+
 }  // namespace ota
 }  // namespace nimbus

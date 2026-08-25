@@ -132,9 +132,32 @@ SettingsMenu::MainRow SettingsMenu::mainRowAt(int idx) const {
   return MainRow(idx);
 }
 
+// Visible Connectivity index -> logical row. Identity for every row above the
+// tail; the "Cloud link code" row is APPENDED to the enum (ConnCloud, after
+// ConnBack) but RENDERED before Back, so the last two visible slots are swapped
+// relative to the enum. Keeping the mapping here means the click handler and
+// help text compare logical rows while the overlays/HIL keep their frozen
+// indices for rows 0..ConnToken. (CUM-48 #4)
+SettingsMenu::ConnRow SettingsMenu::connRowAt(int idx) const {
+  if (idx == kConnRows - 1) return ConnBack;   // Back is always the last visible row
+  if (idx == kConnRows - 2) return ConnCloud;  // Cloud link code sits just above Back
+  return ConnRow(idx);                         // rows 0..ConnToken: index == enum
+}
+
+// "Show code" on the Sign-in QR: jump to the full device sign-in code screen
+// (TokenDetail), the same destination as Connectivity > Device sign-in code, so
+// an owner who cannot scan can read and type it. Dismissing TokenDetail returns
+// to the Connectivity submenu on the Device-sign-in-code row (its existing
+// behavior). No-op off the Sign-in QR - the tap region only exists there, but
+// guard anyway so a stale tap cannot wrench the FSM out of some other state.
+void SettingsMenu::showCode() {
+  if (state_ != State::ConfigQr) return;
+  enter(State::TokenDetail);   // dismiss paths already return to ConnToken
+}
+
 // Customize (TuneList) hides the ring-only params on a board with no LED ring
-// (CUM-187). hasRing_ defaults true, so on a ring board these are all identities
-// and behaviour is unchanged.
+// (CUM-187, F5). hasRing_ defaults true, so on a ring board these are all
+// identities and behaviour is unchanged.
 int SettingsMenu::visibleParamCount() const {
   if (hasRing_) return kParamCount;
   int n = 0;
@@ -332,35 +355,50 @@ void SettingsMenu::onClick() {
       enter(State::Edit);  // cursor on the value row
       return;
 
-    case State::Connectivity:
-      if (sel_ == ConnWifi) {
+    case State::Connectivity: {
+      // Route through connRowAt(): the cursor/tap index is a VISIBLE list
+      // position, and ConnCloud renders before Back, so index != enum at the
+      // tail. (CUM-48 #4)
+      const ConnRow row = connRowAt(sel_);
+      if (row == ConnWifi) {
         enter(State::WifiMenu);   // the escape hatch: recover the network on the device alone
         return;
       }
-      if (sel_ == ConnBluetooth) {
+      if (row == ConnBluetooth) {
         bleEnabled_ = !bleEnabled_;  // device applies (net::ble::setEnabled) + persists
         dirty_ = true;
         return;                      // stay on the row so the state flip is visible
       }
-      if (sel_ == ConnForget) {
+      if (row == ConnForget) {
         forgetRequested_ = true;  // device drains -> net::ble::forgetBonds()
         return;                   // stay on the row so the new count is visible
       }
-      if (sel_ == ConnSdProbe) {
+      if (row == ConnSdProbe) {
         sdProbeRequested_ = true;  // device drains -> memory::promoteSd() (SD.end()+begin())
         return;                    // stay on the row so the new card state is visible
       }
-      if (sel_ == ConnConfigQr) {
+      if (row == ConnConfigQr) {
         enter(State::ConfigQr);   // device shows the full-screen QR until any event
         return;
       }
-      if (sel_ == ConnToken) {
+      if (row == ConnToken) {
         enter(State::TokenDetail);   // device renders the full, untruncated code
+        return;
+      }
+      if (row == ConnCloud) {
+        // Cloud link code: initiate cumulo-nimbus pairing FROM the device. The
+        // relay is Orchestrator-mode only, so this is a no-op in Notifier (the
+        // help pane says why); in Orchestrator the device drains the flag ->
+        // relay::requestOptIn(true) + relay::requestPair(), and the existing
+        // Pairing screen surfaces the claim code + QR on its rising edge. Stay
+        // on the row so a mode-switch hint or the pairing screen is what moves.
+        if (mode_ == Mode::Orchestrator) cloudPairRequested_ = true;
         return;
       }
       enter(State::Main);         // Back
       sel_ = RowConn;
       return;
+    }
 
     case State::WifiMenu:
       switch (sel_) {
@@ -746,6 +784,14 @@ const char* SettingsMenu::helpText() const {
   // Re-probe SD row: static fallback (device overlays the live card state).
   if (state_ == State::Connectivity && sel_ == ConnSdProbe)
     return "Remounts a reseated card without restarting.";
+  // Cloud link code row: mode-aware. The relay only runs in Orchestrator mode,
+  // so in Notifier the click is a no-op and the pane says why. (CUM-48 #4)
+  if (state_ == State::Connectivity && connRowAt(sel_) == ConnCloud)
+    return mode_ == Mode::Orchestrator
+             ? "Links this device to your cloud account. Shows a code to enter "
+               "at the cloud portal while you are signed in."
+             : "Available in Orchestrator mode. Switch modes, then link this "
+               "device to the cloud.";
   return "";  // no pane anywhere else (renderer hides it on empty)
 }
 
@@ -907,6 +953,10 @@ void SettingsMenu::view(solide::menu::MenuView& out) const {
       // The value cannot fit safely in a two-column row. This is a real
       // destination: the device renders the exact token full-screen.
       out.items.push_back("Device sign-in code >");
+      // Cloud link code: initiates cumulo-nimbus pairing from the device and
+      // shows the claim code + QR (Orchestrator mode). APPENDED to the enum but
+      // RENDERED here, before Back, per the append-only ConnRow ruling. (CUM-48 #4)
+      out.items.push_back("Cloud link code >");
       out.items.push_back("< Back");
       return;
 
