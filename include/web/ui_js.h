@@ -1262,7 +1262,9 @@ function modelSel(id,cur,choices,verified){
   const s=document.createElement('select'); s.id=id; s.disabled=!verified;
   const d=document.createElement('option'); d.value=''; d.textContent='(default)';
   s.appendChild(d);
-  choices.split(',').forEach(m=>{const o=document.createElement('option');
+  // filter(Boolean): cumulo/zai have no static choice list, so choices is "" until a
+  // verify harvest fills it - without this that produced one stray blank <option>.
+  choices.split(',').filter(Boolean).forEach(m=>{const o=document.createElement('option');
     o.value=m;o.textContent=m;if(m===cur)o.selected=true;s.appendChild(o);});
   if(!verified){const t=document.createElement('option');
     t.value='';t.textContent='Verify the key to unlock';t.selected=!cur;s.appendChild(t);}
