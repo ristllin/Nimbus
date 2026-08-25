@@ -80,6 +80,13 @@ struct ParamMeta {
 
 ParamMeta paramMeta(Param p);
 
+// True for a param that only exists because the board has a physical LED ring.
+// Hidden on a ringless board (CUM-187) in BOTH the device menu and the web UI, from
+// this one predicate so the two surfaces cannot drift. The non-ring params (refresh
+// coalescing, dwell, telemetry cadence, the Telegram low-battery ping, and the
+// notifier call-to-action hold) stay visible on every board.
+bool isRingParam(Param p);
+
 // Apply one detent (dir = +1 / -1) to `cur` under a param's meta, and
 // return the new value. Int clamps at the bounds; Bool/Enum wrap. Deterministic
 // and side-effect free so both the menu FSM and its tests can call it.

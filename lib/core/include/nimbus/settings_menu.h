@@ -246,6 +246,13 @@ class SettingsMenu {
   void setScreenFlip(bool on) { screenFlip_ = on; }
   bool screenFlip() const { return screenFlip_; }
 
+  // Whether this board has a physical LED ring. Seeded from solide::board().hasRing
+  // before opening; on a ringless board the Customize (Tune) list hides the
+  // ring-only params (CUM-187). Default true so a ring board (Solide S3) and the
+  // host tests are unaffected.
+  void setHasRing(bool on) { hasRing_ = on; }
+  bool hasRing() const { return hasRing_; }
+
   bool adjustingValue() const {
     return volAdjusting_ || (state_ == State::Edit && adjusting_);
   }
@@ -328,6 +335,12 @@ class SettingsMenu {
 
   int itemCount() const;   // rows in the current list state
   MainRow mainRowAt(int idx) const;  // visible Main index -> logical row (identity)
+  // Customize (TuneList) is filtered by hasRing_ (CUM-187): these map between the
+  // VISIBLE row index and the underlying Param so the ring-only params can be
+  // hidden without the row index and the Param ordinal drifting apart.
+  int   visibleParamCount() const;
+  Param tuneParamAt(int visibleIdx) const;
+  int   visibleIndexOf(Param p) const;
   void clampSel();         // keep sel_ in [0, itemCount()-1]
   void enter(State s);     // switch state, reset cursor to a sane default
 
@@ -351,7 +364,8 @@ class SettingsMenu {
   std::string sdStatus_;             // Main "SD:" row text (device-seeded live)
   bool    volAdjusting_ = false;     // Sound > Volume row captured rotation (classic adjust)
   uint16_t saverMin_ = 5;            // Main > Screensaver idle minutes (0 = off, NVS-synced)
-  bool screenFlip_ = false;          // Main > Display flip (TFT only, NVS-synced)
+  bool screenFlip_ = false;          // Settings > Display > Display flip (TFT only, NVS-synced)
+  bool hasRing_ = true;              // board has a physical LED ring (CUM-187 hide gate)
   bool    autoUpdate_ = false;       // Software update > Automatic updates (NVS-synced)
   int     sttProv_ = 0;              // Sound > Dictation (0 Mistral / 1 OpenAI, NVS-synced)
   int     ttsProv_ = 0;              // Sound > Spoken replies (0 Mistral / 1 OpenAI, NVS-synced)

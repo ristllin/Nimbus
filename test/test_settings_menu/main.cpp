@@ -1260,6 +1260,54 @@ static void test_flip_toggle_dirties_and_labels() {
   TEST_ASSERT_EQUAL(dispIdx, viewOf(m).selected);
 }
 
+// CUM-187: helper - enter Customize (Main row RowTune = index 2) and return its view.
+static solide::menu::MenuView openCustomize(SettingsMenu& m) {
+  m.open();
+  while (viewOf(m).selected != 2) m.onRotate(+1);   // RowTune
+  m.onClick();
+  return viewOf(m);
+}
+
+// A ring board (the default) shows every tunable param in Customize.
+static void test_customize_shows_all_params_with_a_ring() {
+  Config c;
+  SettingsMenu m(c);
+  m.setHasRing(true);
+  auto v = openCustomize(m);
+  TEST_ASSERT_EQUAL_STRING("Settings > Customize", v.title.c_str());
+  TEST_ASSERT_EQUAL(13, int(v.items.size()));   // 12 params + Back
+  bool sawRingLevel = false;
+  for (const auto& row : v.items)
+    if (row.rfind("Ring level", 0) == 0) sawRingLevel = true;
+  TEST_ASSERT_TRUE(sawRingLevel);
+}
+
+// CUM-187: a ringless board hides every ring-only param (not greys it), keeps the
+// five non-ring params, and leaves navigation + editing intact.
+static void test_ringless_board_hides_ring_params() {
+  Config c;
+  SettingsMenu m(c);
+  m.setHasRing(false);
+  auto v = openCustomize(m);
+  TEST_ASSERT_EQUAL(6, int(v.items.size()));   // 5 non-ring params + Back (was 12 + Back)
+  for (const auto& row : v.items) {
+    TEST_ASSERT_TRUE(row.rfind("Ring level", 0) != 0);
+    TEST_ASSERT_TRUE(row.rfind("Brightness", 0) != 0);
+    TEST_ASSERT_TRUE(row.rfind("Attention", 0) != 0);        // all four Attn* ring params
+    TEST_ASSERT_TRUE(row.rfind("Animation smoothness", 0) != 0);
+  }
+  // A non-ring param is still present and reachable...
+  bool sawNonRing = false;
+  for (const auto& row : v.items)
+    if (row.rfind("Needs-you hold time", 0) == 0) sawNonRing = true;
+  TEST_ASSERT_TRUE(sawNonRing);
+  // ...and editing one round-trips back onto its own visible row (index mapping holds).
+  m.onClick();                              // enter Edit on the first visible param
+  TEST_ASSERT_TRUE(m.rowCount() >= 2);      // value [+clear] + back
+  m.onBack();                               // back to Customize
+  TEST_ASSERT_EQUAL(0, viewOf(m).selected); // parked on the same (first) visible param
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_selftest_battery_fullscreen);
@@ -1303,5 +1351,7 @@ int main() {
   RUN_TEST(test_help_text_per_state);
   RUN_TEST(test_display_submenu_holds_the_flip);
   RUN_TEST(test_flip_toggle_dirties_and_labels);
+  RUN_TEST(test_customize_shows_all_params_with_a_ring);
+  RUN_TEST(test_ringless_board_hides_ring_params);
   return UNITY_END();
 }

@@ -524,6 +524,10 @@ static void buildState(String& out) {
   // Capacitive touch reports pixel coordinates, so the resistive min/max
   // calibration is meaningless - the UI hides that field on such a board.
   d["touchCap"] = (solide::board().touchKind == solide::TouchKind::CapacitiveI2c);
+  // Whether the board has a physical LED ring. A ringless board hides the ring-only
+  // param cards and the ring simulator in the web UI (CUM-187); the ring params are
+  // also omitted from d["params"] below, so the same predicate drives both surfaces.
+  d["hasRing"] = solide::board().hasRing;
   // Idle minutes before the screen rests. Surfaced because it is an owner
   // setting the web UI edits, yet it was not readable back from any endpoint -
   // so its default (5 minutes, because a backlight is the
@@ -592,8 +596,12 @@ static void buildState(String& out) {
   d["posture"] = posture;
 
   JsonArray arr = d["params"].to<JsonArray>();
+  const bool hasRing = solide::board().hasRing;
   for (int i = 0; i < kParamMetaCount; i++) {
     Param p = kParams[i].param;
+    // Ring-only params are hidden on a ringless board (CUM-187), from the same
+    // isRingParam() predicate the device menu uses, so the two surfaces cannot drift.
+    if (!hasRing && nimbus::isRingParam(p)) continue;
     nimbus::ParamMeta pm = nimbus::paramMeta(p);
     JsonObject o = arr.add<JsonObject>();
     o["key"]        = (int)p;

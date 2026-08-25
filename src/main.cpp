@@ -3217,7 +3217,8 @@ static void openSettingsMenu() {
   // Panel type drives which screensaver choices the row offers - minutes on a
   // backlit panel (where resting IS the power saving), hours on panel (where it
   // is about ghosting).
-  g_menu.setScreenFlip(agent::store::tftFlip());   // Main > Display flip (TFT only)
+  g_menu.setScreenFlip(agent::store::tftFlip());   // Settings > Display > Display flip (TFT only)
+  g_menu.setHasRing(solide::board().hasRing);      // hide ring-only Customize params on a ringless board (CUM-187)
   g_menu.setSaverMinutes(agent::store::saverMin());
   g_menu.setAutoUpdate(agent::store::otaAutoUpdate());
   g_menu.setSttProvider(agent::store::sttProvider() == "openai" ? 1 : 0);

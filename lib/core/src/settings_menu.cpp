@@ -104,7 +104,7 @@ int SettingsMenu::itemCount() const {
     case State::Main:        return kMainRows;
     case State::ProfilePick: return kProfileCount + 1;             // profiles + Back
     case State::ThemePick:   return themeCount() + 1;              // themes + Back
-    case State::TuneList:    return kParamCount + 1;               // params + Back
+    case State::TuneList:    return visibleParamCount() + 1;       // params (ring-filtered) + Back
     case State::Edit:        return cfg_->hasOverride(editing_) ? 3 : 2;  // value [+clear] +back
     case State::ConfirmReset: return 2;                            // No / Yes
     case State::Connectivity: return kConnRows;                    // Config via QR + Back
@@ -130,6 +130,39 @@ int SettingsMenu::itemCount() const {
 // identity (kept as a seam in case a row becomes conditional again).
 SettingsMenu::MainRow SettingsMenu::mainRowAt(int idx) const {
   return MainRow(idx);
+}
+
+// Customize (TuneList) hides the ring-only params on a board with no LED ring
+// (CUM-187). hasRing_ defaults true, so on a ring board these are all identities
+// and behaviour is unchanged.
+int SettingsMenu::visibleParamCount() const {
+  if (hasRing_) return kParamCount;
+  int n = 0;
+  for (int i = 0; i < kParamCount; ++i)
+    if (!isRingParam(Param(i))) ++n;
+  return n;
+}
+
+Param SettingsMenu::tuneParamAt(int visibleIdx) const {
+  int seen = 0;
+  for (int i = 0; i < kParamCount; ++i) {
+    const Param p = Param(i);
+    if (!hasRing_ && isRingParam(p)) continue;
+    if (seen == visibleIdx) return p;
+    ++seen;
+  }
+  return Param(kParamCount - 1);   // clamp: caller kept sel_ in range
+}
+
+int SettingsMenu::visibleIndexOf(Param p) const {
+  int seen = 0;
+  for (int i = 0; i < kParamCount; ++i) {
+    const Param q = Param(i);
+    if (!hasRing_ && isRingParam(q)) continue;
+    if (q == p) return seen;
+    ++seen;
+  }
+  return 0;
 }
 
 void SettingsMenu::clampSel() {
@@ -286,12 +319,12 @@ void SettingsMenu::onClick() {
       return;
 
     case State::TuneList:
-      if (sel_ >= kParamCount) {  // Back row
+      if (sel_ >= visibleParamCount()) {  // Back row
         enter(State::Main);
         sel_ = RowTune;
         return;
       }
-      editing_ = Param(sel_);
+      editing_ = tuneParamAt(sel_);
       enter(State::Edit);  // cursor on the value row
       return;
 
@@ -388,7 +421,7 @@ void SettingsMenu::onClick() {
       if (sel_ == backRow) {
         const Param p = editing_;
         enter(State::TuneList);
-        sel_ = int(p);
+        sel_ = visibleIndexOf(p);   // back onto this param's VISIBLE row (ring-filtered)
         return;
       }
       return;
@@ -517,7 +550,7 @@ void SettingsMenu::onLongPress() {
       }
       const Param p = editing_;
       enter(State::TuneList);
-      sel_ = int(p);
+      sel_ = visibleIndexOf(p);   // back onto this param's VISIBLE row (ring-filtered)
       return;
     }
     case State::ConfirmReset:
@@ -587,8 +620,8 @@ int SettingsMenu::editValuePct() const {
 
 const char* SettingsMenu::helpText() const {
   // TuneList: describe the param row the cursor points at (not the Back row).
-  if (state_ == State::TuneList && sel_ < kParamCount)
-    return paramDescription(Param(sel_));
+  if (state_ == State::TuneList && sel_ < visibleParamCount())
+    return paramDescription(tuneParamAt(sel_));
   // Edit: describe the edited param on every row, adjusting or not.
   if (state_ == State::Edit) return paramDescription(editing_);
   // Main: the top-level rows read ambiguously on their own (a profile looks like
@@ -779,8 +812,9 @@ void SettingsMenu::view(solide::menu::MenuView& out) const {
 
     case State::TuneList: {
       out.title = "Settings > Customize";
-      for (int i = 0; i < kParamCount; ++i) {
-        const Param p = Param(i);
+      const int np = visibleParamCount();
+      for (int i = 0; i < np; ++i) {
+        const Param p = tuneParamAt(i);
         std::string row = std::string(paramLabel(p)) + ": " +
                           valueLabel(p, cfg_->effective(p));
         if (cfg_->hasOverride(p)) row += " *";
