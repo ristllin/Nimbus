@@ -44,6 +44,9 @@
 #include "hw/selftest.h"               // SELFTEST - firmware health-check engine
 #include "sys/ota_update.h"            // OTA? / OTACHECK / OTAAPPLY / OTASIM / OTAURL
 #include <esp_ota_ops.h>               // running-partition label for OTA?
+#include <SD.h>                        // FSPUT/FSTAT - stream a fixture to an absolute SD path
+#include <mbedtls/sha256.h>            // FSPUT/FSTAT - hash the on-card bytes as we write/read
+#include "nimbus/util/b64_decode.h"    // portable streaming base64 decoder (host-tested)
 
 namespace nimbus::tc {
 namespace {
@@ -73,10 +76,118 @@ void ringSummary(int& seg, bool& single, bool& dark, uint8_t& bright) {
   if (s_h.ringSummary) s_h.ringSummary(seg, single, dark, bright);
 }
 
+// ---- FSPUT / FSTAT (test build only) --------------------------------------
+// Stream a file to an ABSOLUTE SD path from the host. Loads a bench fixture (e.g.
+// a /music/ MP3) that has no other software write path - the file API only writes
+// /mem/files, and the music player only reads /music. The host sends base64 in
+// ACK-paced chunks; the device decodes straight to SD and hashes as it writes, so
+// the reported size+sha256 verify the bytes actually on the card. FSTAT re-reads
+// the card independently. Driver: tools/fsput_stream.py.
+File   s_fsFile;
+bool   s_fsActive = false;
+size_t s_fsTarget = 0, s_fsWritten = 0, s_fsAckNext = 0;
+mbedtls_sha256_context s_fsSha;
+nimbus::b64::StreamDecoder s_fsDec;
+uint8_t s_fsBuf[512];
+size_t  s_fsBufN = 0;
+constexpr size_t kFsAckStep = 4096;   // ACK cadence; host paces on it to bound RX in-flight
+
+void fsHex(const uint8_t* d, size_t n, char* out) {
+  static const char* H = "0123456789abcdef";
+  for (size_t i = 0; i < n; i++) { out[i * 2] = H[d[i] >> 4]; out[i * 2 + 1] = H[d[i] & 0xF]; }
+  out[n * 2] = 0;
+}
+
+void fsFlush() {
+  if (s_fsBufN) {
+    s_fsFile.write(s_fsBuf, s_fsBufN);
+    mbedtls_sha256_update(&s_fsSha, s_fsBuf, s_fsBufN);
+    s_fsBufN = 0;
+  }
+}
+
+void fsputFinish() {
+  fsFlush();
+  s_fsFile.flush();
+  s_fsFile.close();
+  uint8_t dig[32];
+  mbedtls_sha256_finish(&s_fsSha, dig);
+  mbedtls_sha256_free(&s_fsSha);
+  char hex[65];
+  fsHex(dig, 32, hex);
+  Serial.printf("FSPUT DONE bytes=%u sha256=%s\n", (unsigned)s_fsWritten, hex);
+  Serial.flush();
+  s_fsActive = false;
+}
+
+void fsputBegin(String rest) {
+  rest.trim();
+  // "FSPUT <len> <path>" - length first so the path may contain spaces.
+  int sp = rest.indexOf(' ');
+  if (sp <= 0) { reply("FSPUT ERR usage FSPUT <len> <path>"); return; }
+  size_t len = (size_t)rest.substring(0, sp).toInt();
+  String path = rest.substring(sp + 1); path.trim();
+  if (len == 0 || path.length() == 0) { reply("FSPUT ERR bad args"); return; }
+  int slash = path.lastIndexOf('/');   // ensure the parent dir exists (e.g. /music)
+  if (slash > 0) { String dir = path.substring(0, slash); SD.mkdir(dir.c_str()); }
+  SD.remove(path.c_str());  // truncate: FILE_WRITE appends on ESP32, so start clean
+  s_fsFile = SD.open(path.c_str(), FILE_WRITE);
+  if (!s_fsFile) { reply("FSPUT ERR open"); return; }
+  mbedtls_sha256_init(&s_fsSha);
+  mbedtls_sha256_starts(&s_fsSha, 0);
+  s_fsDec.reset();
+  s_fsTarget = len; s_fsWritten = 0; s_fsAckNext = kFsAckStep; s_fsBufN = 0;
+  s_fsActive = true;
+  Serial.printf("FSPUT READY %u\n", (unsigned)len);
+  Serial.flush();
+}
+
+void fsputPump() {
+  int budget = 16384;  // bounded per call so the loop watchdog is never starved
+  while (Serial.available() > 0 && s_fsWritten < s_fsTarget && budget-- > 0) {
+    char c = (char)Serial.read();
+    s_fsDec.feed(c, [&](uint8_t b) {
+      if (s_fsWritten >= s_fsTarget) return;
+      s_fsBuf[s_fsBufN++] = b; s_fsWritten++;
+      if (s_fsBufN == sizeof(s_fsBuf)) fsFlush();
+      if (s_fsWritten >= s_fsAckNext) {
+        fsFlush();
+        Serial.printf("FSACK %u\n", (unsigned)s_fsWritten);
+        Serial.flush();
+        s_fsAckNext += kFsAckStep;
+      }
+    });
+  }
+  if (s_fsWritten >= s_fsTarget) fsputFinish();
+}
+
+void fstat(String path) {
+  path.trim();
+  File f = SD.open(path.c_str(), FILE_READ);
+  if (!f) { reply("FSTAT ERR open"); return; }
+  mbedtls_sha256_context s;
+  mbedtls_sha256_init(&s);
+  mbedtls_sha256_starts(&s, 0);
+  uint8_t buf[512];
+  size_t total = 0;
+  int n;
+  while ((n = f.read(buf, sizeof(buf))) > 0) { mbedtls_sha256_update(&s, buf, (size_t)n); total += (size_t)n; }
+  f.close();
+  uint8_t dig[32];
+  mbedtls_sha256_finish(&s, dig);
+  mbedtls_sha256_free(&s);
+  char hex[65];
+  fsHex(dig, 32, hex);
+  Serial.printf("FSTAT %s bytes=%u sha256=%s\n", path.c_str(), (unsigned)total, hex);
+  Serial.flush();
+}
+
 // Dispatch one complete command line (no trailing newline). Trims leading ws.
 void dispatch(String line) {
   line.trim();
   if (line.length() == 0) return;
+  if (line.startsWith("FSPUT ")) { fsputBegin(line.substring(6)); return; }
+  if (line.startsWith("FSTAT ")) { fstat(line.substring(6)); return; }
 
   if (line == "PING") {
     reply("PONG");                                       // F13 liveness / reconnect probe
@@ -1128,13 +1239,18 @@ void ready() {
 }
 
 void pumpOrch() {
+  // A file transfer in progress owns the byte stream: raw base64 straight to SD.
+  if (s_fsActive) { fsputPump(); return; }
   // Serial is otherwise idle in Orchestrator mode: read whole lines, dispatch.
   int budget = kByteBudget;
   while (Serial.available() > 0 && budget-- > 0) {
     const int c = Serial.read();
     if (c < 0) break;
     if (c == '\n' || c == '\r') {
-      if (s_line.length()) { dispatch(s_line); s_line = ""; }
+      if (s_line.length()) {
+        dispatch(s_line); s_line = "";
+        if (s_fsActive) { fsputPump(); return; }  // FSPUT just armed - hand the stream over
+      }
     } else if (s_line.length() < kLineCap) {
       s_line += char(c);
     }
