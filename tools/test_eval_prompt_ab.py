@@ -81,3 +81,26 @@ def test_strip_descriptions():
     assert "description" not in node
     assert "description" not in node["properties"]["a"]
     assert node["properties"]["a"]["type"] == "string"
+
+
+def test_n11_suite_wires_through_runner(tmp_path, monkeypatch):
+    """Proof that the N11 prompt A/B runs through the suite-agnostic runner, with a
+    mock provider (no network, no spend): the suite builds, every (version,
+    scenario) pair becomes a case, a run persists a ledger row, and change
+    detection then skips an unchanged re-run."""
+    monkeypatch.setattr(e.H, "EVALS_DIR", str(tmp_path))
+
+    def mock_caller(model, sys_prompt, user, schema, max_tokens):
+        # a turn that satisfies at least the mem_write oracle; we assert the
+        # pipeline, not the per-scenario scores.
+        return ({"reply": "noted", "mem_write": [{"content": "cat is named Waffles"}]}, {"in": 11, "out": 3})
+
+    suite = e.build_n11_suite("anthropic", model="mock-tiny", caller=mock_caller)
+    assert suite.id == "n11_prompt_ab_anthropic"
+    assert len(suite.cases) == 2 * len(e.SCENARIOS)  # v1 + v2 across every scenario
+    assert suite.inputs["v1_prompt"] and suite.inputs["v2_prompt"]  # prompts feed the hash
+
+    summary = e.H.run_suite(suite, reps=1, now="2026-08-25T00:00:00+00:00", log=lambda *a: None)
+    assert summary["n"] == len(suite.cases)
+    assert len(e.H.read_ledger(suite.id)) == 1
+    assert not e.H.suite_changed(suite)  # unchanged inputs -> nightly would skip
