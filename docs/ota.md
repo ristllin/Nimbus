@@ -149,6 +149,13 @@ recorded in [`adr/0001-ota-releases-repo.md`](adr/0001-ota-releases-repo.md).
   `pending` means a check is still running or none has run yet. The distinction
   between `unreachable` and `failed` is honest: a transport failure is never
   reported as "up to date". (`nimbus::ota::checkResult`, host-tested.)
+- **On-screen feedback (device menu).** Settings > Software update shows a status
+  band while a check or install runs and after it settles, so the check is never
+  silent: a progress bar (the download percent while installing, an indeterminate
+  "working" block while checking) plus a persistent result line ("Checking for
+  updates...", "Up to date - vX", "Update available: vX", or an honest "Update
+  check failed (reason)"). The web page's Software update table shows the same
+  states. (`nimbus::ota::updateView`, host-tested.)
 - **Install**: the web page's **Install Update** button, the device menu's
   Settings > Software update > "Install vX" row (confirm: Cancel / Install and
   restart), Telegram `/update` (owner only), or `POST /api/ota/apply` (`dry=1`
