@@ -262,6 +262,34 @@ static void test_status_ring() {
 }
 static void test_menu_main()      { golden("menu_main", ScreenId::Menu, menuCtx()); }
 static void test_menu_stepper()   { golden("menu_stepper", ScreenId::Menu, stepperCtx()); }
+
+static ScreenCtx updateCtx() {
+  ScreenCtx c = baseCtx();
+  c.menuTitle = "Settings > Software update";
+  c.menuItems = {"Automatic updates: Off", "Check for updates", "< Back"};
+  c.menuSelected = 1;
+  return c;
+}
+
+// CUM-193: the Software update screen shows the check/install with a status band
+// (the list rows alone never showed the check running or its result). Checking =
+// an indeterminate progress block; the anim phase is pinned for a stable golden.
+static void test_menu_update_checking() {
+  ScreenCtx c = updateCtx();
+  c.updateLine = "Checking for updates...";
+  c.updateBusy = true;
+  c.updatePct = -1;
+  c.updateAnim = 3;   // fixed phase -> deterministic golden
+  golden("menu_update_checking", ScreenId::Menu, c);
+}
+
+static void test_menu_update_available() {
+  ScreenCtx c = updateCtx();
+  c.menuItems = {"Automatic updates: Off", "Check for updates", "Install v4.4.1", "< Back"};
+  c.updateLine = "Update available: v4.4.1";
+  c.updateBusy = false;   // a settled result: the line persists, no progress bar
+  golden("menu_update_available", ScreenId::Menu, c);
+}
 static void test_session_detail() { golden("session_detail", ScreenId::SessionDetail, sessionCtx()); }
 
 static void test_ask() {
@@ -575,6 +603,8 @@ int main() {
   RUN_TEST(test_status_ring);
   RUN_TEST(test_menu_main);
   RUN_TEST(test_menu_stepper);
+  RUN_TEST(test_menu_update_checking);
+  RUN_TEST(test_menu_update_available);
   RUN_TEST(test_session_detail);
   RUN_TEST(test_ask);
   RUN_TEST(test_ask_mode_switch_has_no_close);

@@ -122,6 +122,17 @@ struct ScreenCtx {
   bool menuAdjusting = false;  // the selected row's value is being edited -> drawMenu
                                // INVERTS that row (P2.2)
 
+  // Software update status band (CUM-193). Non-empty updateLine draws a bottom
+  // status band on the Software update screen so the check/install has visible
+  // progress + a persistent result (the list rows alone never showed it). busy
+  // draws an in-progress affordance: a determinate bar when updatePct >= 0
+  // (install download), else an indeterminate "working" block whose position
+  // comes from updateAnim (kept in ctx so a golden fixture can pin the phase).
+  std::string updateLine;      // owner-facing status (from nimbus::ota::updateView)
+  bool updateBusy = false;     // a check or install is running -> show progress
+  int  updatePct = -1;         // 0..100 download progress, else -1 (indeterminate)
+  uint8_t updateAnim = 0;      // indeterminate-bar animation phase (advances ~1 Hz)
+
   // self-test (SelfTest screen). Device fills rows from hw::runSelfTest(); the
   // portable renderer just lays them out. status: 0 PASS, 1 FAIL, 2 SKIP.
   struct SelfTestRow { std::string name; uint8_t status = 2; };

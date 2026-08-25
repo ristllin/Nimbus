@@ -603,6 +603,35 @@ void drawMenu(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx) {
       push(r, dnX, 0, pagerW, L.headerH, TapRegion::Action::ScrollDown);
     }
   }
+
+  // Software update status band (CUM-193). The Software update screen is a short
+  // list (Auto / Check / [Install] / Back), so its status has room at the bottom.
+  // The rows alone never showed the check running or its result - the status
+  // lived only in the help pane, which a LIST never draws - so a check "ran with
+  // no feedback" (owner). This band gives it a persistent result line and, while
+  // a check or install runs, a progress bar so the owner sees it working. Only
+  // renders when the device set updateLine (i.e. on the Software update screen).
+  if (!ctx.updateLine.empty()) {
+    const int bandH = 34;
+    const int by = L.h - L.gut() - bandH;
+    const int bx = L.gut();
+    const int bw = L.w - 2 * L.gut();
+    fb.card(bx, by, bw, bandH);
+    fb.textClipped(bx + 10, by + 6, ctx.updateLine, kInk2, bw - 20, 1);
+    if (ctx.updateBusy) {
+      const int trackY = by + bandH - 10, trackX = bx + 10, trackW = bw - 20, trackH = 4;
+      fb.fillRoundRect(trackX, trackY, trackW, trackH, 2, kLine);
+      if (ctx.updatePct >= 0) {   // determinate: install download
+        const int p = ctx.updatePct > 100 ? 100 : ctx.updatePct;
+        fb.fillRoundRect(trackX, trackY, trackW * p / 100, trackH, 2, kTeal);
+      } else {                    // indeterminate: a check - a block that slides
+        const int blockW = trackW / 4;
+        const int span = trackW - blockW;
+        const int pos = span > 0 ? (int(ctx.updateAnim) % 8) * span / 7 : 0;
+        fb.fillRoundRect(trackX + pos, trackY, blockW, trackH, 2, kTeal);
+      }
+    }
+  }
 }
 
 // ---- text-ish screens -------------------------------------------------------

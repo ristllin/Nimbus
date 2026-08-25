@@ -674,6 +674,16 @@ static uint32_t g_menuDoneAt = 0;   // menu-refresh busy deadline (its own)
 static uint32_t g_updCheckKickMs = 0;  // last menu "Check for updates" kick - the loop-body
                                        // reseed holds "Checking..." through the async task
                                        // spin-up instead of overwriting it with stale state
+static uint8_t  g_updateAnim = 0;      // Software update indeterminate-bar phase (CUM-193)
+
+// The owner-facing update view (CUM-193): one place maps the live OTA state to
+// the status line + affordance flags, so the reseed (status line + HIL MENU?
+// seam) and renderMenu (the on-screen status band) never diverge.
+static nimbus::ota::UpdateView otaViewNow() {
+  return nimbus::ota::updateView(
+      nimbus::ota::stateFromStr(otaupd::statusStr()), otaupd::progressPct(),
+      otaupd::latestSeen().c_str(), otaupd::lastError(), NIMBUS_FW_VERSION);
+}
 // (g_rebootPending - the deferred-reboot flag serviced at the top of loop() - is
 // declared with the device-action override state above, since the orchestrator
 // DeviceSink also sets it for the model's `reboot` action.)
@@ -1564,6 +1574,13 @@ static void renderMenu() {
     c.menuSelected = v.selected;
     c.menuTitle = v.title;             // breadcrumb path band
     c.menuHelp = g_menu.helpText();    // param help pane ("" = hidden)
+    if (g_menu.showingUpdate()) {      // Software update status band (CUM-193)
+      const nimbus::ota::UpdateView uv = otaViewNow();
+      c.updateLine = uv.line;
+      c.updateBusy = uv.busy;
+      c.updatePct = uv.pct;
+      c.updateAnim = g_updateAnim;
+    }
     c.menuAdjusting = g_menu.adjustingValue();   // invert the row while editing (P2.2)
     // Overlay the Connectivity > Bluetooth row (index 0) with LIVE status the
     // portable FSM can't know (advertising / linked / off), so the menu shows
@@ -4247,24 +4264,14 @@ void loop() {
       const bool kickGrace = g_updCheckKickMs &&
                              (now - g_updCheckKickMs < 2500) && st != "checking";
       if (!kickGrace) {
-        std::string line;
-        if (st == "available") {
+        // One mapping for the line + affordances (CUM-193); the on-screen band
+        // in renderMenu reads the same view.
+        const nimbus::ota::UpdateView uv = otaViewNow();
+        if (uv.showInstall)
           g_menu.setUpdateAvailable(std::string(otaupd::latestSeen().c_str()));
-          line = "Update found: " + std::string(otaupd::latestSeen().c_str());
-        } else if (st == "checking") {
-          line = "Checking...";
-        } else if (st == "up-to-date") {
-          line = "Up to date (" NIMBUS_FW_VERSION ")";
-        } else if (st == "error") {
-          const char* err = otaupd::lastError();
-          line = std::string("Check failed - ") + (err ? err : "unknown");
-        } else if (st == "unsupported") {
-          line = "Updates aren't available on this build.";
-        } else if (st == "downloading" || st == "verifying" || st == "rebooting") {
-          line = "Installing...";
-        }   // "idle" (no check yet): keep the default help
+        if (uv.busy) g_updateAnim++;   // slide the indeterminate progress block
         if (!(st == "idle" && !g_updCheckKickMs)) {  // never blank the pre-check help
-          g_menu.setUpdateStatus(line);
+          g_menu.setUpdateStatus(uv.line);
           g_menuNeedsPaint = true;
         }
       }
