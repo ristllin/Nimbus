@@ -205,7 +205,9 @@ def test_files_path_traversal_rejected(device, net, secrets, require_secret):
     r = _upload(ip, tok, "..", "x.txt", b"x")
     assert r.status_code >= 400, f"traversal project accepted -> {r.status_code}"
     # download traversal
-    got = requests.get(_url(ip, "/api/files/dl", tok, project=PROJECT, name="../../../etc/passwd"), headers=_hdr(tok), timeout=10)
+    got = requests.get(
+        _url(ip, "/api/files/dl", tok, project=PROJECT, name="../../../etc/passwd"), headers=_hdr(tok), timeout=10
+    )
     assert got.status_code == 404, f"traversal dl -> {got.status_code}, want 404"
 
 
