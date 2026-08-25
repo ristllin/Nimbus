@@ -3266,22 +3266,29 @@ static void runTouchCalibration() {
     c.calMessage = "Tap each corner target";
     hw::tft::renderAndPush(attn::ScreenId::TouchCal, c);
 
-    // Wait for one clean press: sample raw while a finger is down, keep the last
-    // reading, and record it on release. Bounded so a dead/absent touch line aborts
-    // instead of hanging the device.
+    // Capture ONE clean press-then-release for this target, bounded to kPerTargetMs.
+    // The panel must first be seen UP (so a held or bouncing finger from the previous
+    // corner cannot fill this one), then a press, then a release records the corner.
+    // A target that is never cleanly recorded - absent touch (never down) OR a
+    // stuck-down line (never released within the window) - aborts the whole flow, so
+    // the watchdog-suspended loop can never wedge on a shorted or held panel.
     const uint32_t start = millis();
-    bool sawDown = false;
+    bool armed = false, sawDown = false, recorded = false;
     uint16_t rx = 0, ry = 0, rz = 0, lastX = 0, lastY = 0;
     while (int32_t(millis() - start) < int32_t(kPerTargetMs)) {
-      if (solide::touch::readRaw(rx, ry, rz)) {
+      const bool down = solide::touch::readRaw(rx, ry, rz);
+      if (!armed) {                    // wait for the panel to be released first
+        if (!down) armed = true;
+      } else if (down) {
         lastX = rx; lastY = ry; sawDown = true;
       } else if (sawDown) {
         wiz.recordRaw(lastX, lastY);   // release edge: this corner is captured
+        recorded = true;
         break;
       }
       delay(15);
     }
-    if (!sawDown) { aborted = true; break; }   // timed out with no press: cancel
+    if (!recorded) { aborted = true; break; }   // no clean press+release in time: cancel
   }
   esp_task_wdt_add(nullptr);   // re-arm the loop WDT
 

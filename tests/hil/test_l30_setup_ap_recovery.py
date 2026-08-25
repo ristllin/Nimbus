@@ -64,8 +64,7 @@ def test_setup_ap_self_recovers_without_reboot(device):
             up, ip, _s, _o, uptime = _wifiap(device)
             last = (up, ip, uptime)
             assert uptime >= uptime_drop, (
-                f"uptime went backwards ({uptime} < {uptime_drop}): the device RESET "
-                f"instead of self-recovering the AP"
+                f"uptime went backwards ({uptime} < {uptime_drop}): the device RESET instead of self-recovering the AP"
             )
             if up and ip != "0.0.0.0":
                 recovered = True
