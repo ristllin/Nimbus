@@ -130,6 +130,30 @@ static void test_not_down_passes_through_even_when_flipped() {
   TEST_ASSERT_FALSE(p.down);
 }
 
+// CUM-189: the per-board-model default is a single source both the fresh-boot path
+// and the web "clear" fallback read, so they can never restore different
+// orientations. Both shipping boards mount portrait-native under landscape.
+static void test_board_default_is_swap_and_invert_y() {
+  for (nimbus::touch::TouchKind k :
+       {nimbus::touch::TouchKind::Resistive, nimbus::touch::TouchKind::Capacitive}) {
+    const Cal d = nimbus::touch::boardDefaultCal(k);
+    TEST_ASSERT_TRUE(d.swapXY);
+    TEST_ASSERT_FALSE(d.invertX);
+    TEST_ASSERT_TRUE(d.invertY);
+  }
+}
+
+// The default must be a valid, self-consistent calibration (a non-empty span that
+// parseCal would accept), so pushing it never divides by zero on a resistive panel.
+static void test_board_default_round_trips_through_parse() {
+  const Cal d = nimbus::touch::boardDefaultCal(nimbus::touch::TouchKind::Resistive);
+  TEST_ASSERT_TRUE(d.minX < d.maxX);
+  TEST_ASSERT_TRUE(d.minY < d.maxY);
+  Cal back;
+  TEST_ASSERT_TRUE(parseCal(formatCal(d), back));
+  TEST_ASSERT_TRUE(d == back);
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_parses_four_fields);
@@ -143,5 +167,7 @@ int main() {
   RUN_TEST(test_flip_is_involutive_applied_once);
   RUN_TEST(test_corners_map_to_opposite_corners_when_flipped);
   RUN_TEST(test_not_down_passes_through_even_when_flipped);
+  RUN_TEST(test_board_default_is_swap_and_invert_y);
+  RUN_TEST(test_board_default_round_trips_through_parse);
   return UNITY_END();
 }

@@ -1144,11 +1144,22 @@ static bool applyOrchField(const String& n, const String& v, bool& cfgDirty) {
     // and applied live - recalibrating should not need a restart.
     if (v.length() == 0) {
       agent::store::setTouchCal("");
-      // Restore the driver defaults LIVE. Persisting alone left g_cal mapping
-      // through the discarded calibration until a restart while the page said
-      // "Saved" - and this is the recovery path an owner reaches for right
-      // after mis-calibrating. A default-constructed Calibration IS the default.
-      solide::touch::setCalibration(solide::touch::Calibration{});
+      // Restore the per-board-model DEFAULT LIVE (CUM-189): the SAME orientation a
+      // fresh board of this model boots with, not the generic driver default, so
+      // clearing a mis-calibration returns to a known-good starting point for THIS
+      // board. Sourced from the one boardDefaultCal() the boot path also reads, so
+      // "clear" and "fresh boot" can never drift. Persisting alone left the live
+      // mapping through the discarded calibration until a restart while the page
+      // said "Saved" - and this is the recovery path an owner reaches for right
+      // after mis-calibrating.
+      const bool cap = solide::board().touchKind == solide::TouchKind::CapacitiveI2c;
+      const nimbus::touch::Cal d = nimbus::touch::boardDefaultCal(
+          cap ? nimbus::touch::TouchKind::Capacitive : nimbus::touch::TouchKind::Resistive);
+      solide::touch::Calibration sc;   // driver-measured min/max; board-model flags
+      sc.swapXY = d.swapXY;
+      sc.invertX = d.invertX;
+      sc.invertY = d.invertY;
+      solide::touch::setCalibration(sc);
       return true;
     }
     nimbus::touch::Cal c;

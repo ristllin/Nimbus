@@ -2435,17 +2435,23 @@ void setup() {
           Serial.printf("[tft] stored touch calibration is malformed (%s) - using defaults\n",
                         cal.c_str());
         }
-      } else if (solide::board().touchKind == solide::TouchKind::CapacitiveI2c) {
-        // No stored calibration on a capacitive panel (e.g. the Freenove
-        // FT6336U): it already reports pixel coordinates, so min/max scaling
-        // does not apply - only the orientation flags do. This is the measured
-        // default that maps the portrait-native controller onto the landscape
-        // surface (swapXY) the right way up. A saved calibration overrides it.
-        solide::touch::Calibration sc;
-        sc.swapXY = true;
-        sc.invertY = true;
+      } else {
+        // No stored calibration (a freshly flashed board): apply the per-board-model
+        // DEFAULT (CUM-189), the SAME default the web "clear" path restores, from the
+        // one boardDefaultCal() source so the two can never drift. On a capacitive
+        // panel (FT6336U) only the orientation flags matter (it reports pixels); on a
+        // resistive panel the driver keeps its measured min/max and this pins the
+        // flags it already defaults to. A saved calibration overrides this.
+        const bool cap = solide::board().touchKind == solide::TouchKind::CapacitiveI2c;
+        const nimbus::touch::Cal d = nimbus::touch::boardDefaultCal(
+            cap ? nimbus::touch::TouchKind::Capacitive : nimbus::touch::TouchKind::Resistive);
+        solide::touch::Calibration sc;   // driver-measured min/max; board-model flags
+        sc.swapXY = d.swapXY;
+        sc.invertX = d.invertX;
+        sc.invertY = d.invertY;
         solide::touch::setCalibration(sc);
-        Serial.println("[tft] capacitive touch: default orientation (swapXY, invertY)");
+        Serial.printf("[tft] touch: board-model default orientation (swap=%d invX=%d invY=%d)\n",
+                      int(d.swapXY), int(d.invertX), int(d.invertY));
       }
       Serial.printf("[tft] colour touch panel up (%dx%d, touch=%d)\n",
                     int(solide::display_tft::kW), int(solide::display_tft::kH),

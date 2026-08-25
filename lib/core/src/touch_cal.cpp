@@ -69,6 +69,17 @@ std::string formatCal(const Cal& c) {
          std::to_string(flags);
 }
 
+Cal boardDefaultCal(TouchKind kind) {
+  Cal c;              // nominal min/max span (200..3900); unused on a capacitive panel
+  // Both shipping boards mount the controller portrait-native under a landscape
+  // panel, so the canonical mapping swaps the axes and inverts Y. Held in one place
+  // so the fresh-boot default and the web "clear" fallback can never disagree.
+  c.swapXY = true;
+  c.invertY = true;
+  (void)kind;         // both shipping models share this default today; the seam stays per-kind
+  return c;
+}
+
 Point orientTouch(Point p, bool displayFlipped, int16_t w, int16_t h) {
   if (p.down && displayFlipped) {
     p.x = static_cast<int16_t>(w - 1 - p.x);
