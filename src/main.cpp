@@ -1891,6 +1891,30 @@ static void persistConfig() {
 #define BOOT_STAGE(r, g, b) do {} while (0)
 #endif
 
+// Contiguous-SRAM instrumentation (CUM-185). Samples the scarce axis - internal
+// free + LARGEST contiguous internal block (what a TLS handshake / AsyncTCP bind
+// needs) - and reports the delta from the previous snapshot, so the boot -> mode
+// switch -> Orchestrator steady-state curve is visible on Serial and in
+// GET /api/log even before (or when) the web server has not bound. The per-stage
+// dIntFree attributes internal-SRAM consumption to the boot stage that ran
+// between two snaps, which is how the top holders are identified. Cheap (a few
+// heap_caps reads + one log line); matches the existing [psram]/[sd] boot-line
+// style so it is useful field diagnostics too, not just a bench probe.
+static void sramSnap(const char* tag) {
+  static uint32_t prevIntFree = 0;
+  static bool have = false;
+  uint32_t intFree    = (uint32_t)heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+  uint32_t intLargest = (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+  uint32_t heapMin    = (uint32_t)ESP.getMinFreeHeap();
+  uint32_t psramFree  = (uint32_t)ESP.getFreePsram();
+  long dFree = have ? (long)intFree - (long)prevIntFree : 0;
+  agent::alogf("[sram] %-14s intFree=%u intLargest=%u heapMin=%u psramFree=%u dIntFree=%+ld",
+               tag, (unsigned)intFree, (unsigned)intLargest, (unsigned)heapMin,
+               (unsigned)psramFree, dFree);
+  prevIntFree = intFree;
+  have = true;
+}
+
 static void orchestratorBegin() {
   ORCH_MARK("orch: arbiter");
   agent::arbiter::begin();      // work-slot arbitration (heap-only)
@@ -2511,6 +2535,7 @@ void setup() {
     // stops reading near-empty. See docs/memory-model.md.
     heap_caps_malloc_extmem_enable(128);
   }
+  sramSnap("boot-hal");   // CUM-185: internal-SRAM baseline once PSRAM routing is armed
 
   // Task watchdog on the MAIN LOOP only (F12): a hung loop panics + reboots in
   // ~8 s instead of wedging the device (and its USB) until a physical reset.
@@ -2621,6 +2646,7 @@ void setup() {
     WiFi.mode(WIFI_OFF);   // Notifier: radio stays off (frees SRAM for BLE, quiet panel)
     agent::alog("[net] Notifier - Wi-Fi off (BLE transport; the controller gets the SRAM)");
   }
+  sramSnap("post-net");   // CUM-185: after Wi-Fi AP+STA (Orch) / radio-off (Notifier)
 
   // Onboarding migration: a device already provisioned before the wizard existed
   // must NOT be dropped into first-run setup on upgrade. Treat any device with
@@ -2799,8 +2825,10 @@ void setup() {
                          : "Card seen but FAT mount failed -> reformat it FAT32.");
   }
   BOOT_STAGE(120, 0, 120);   // MAGENTA: SD stage done; entering web + memory::begin
+  sramSnap("pre-web");    // CUM-185: after SD mount, before memory::begin + web bind
   ORCH_MARK("setup: beginWeb");
   if (g_orchMode) net::beginWeb(wc);   // web server is Orchestrator-only (no Wi-Fi in Notifier)
+  sramSnap("post-web");   // CUM-185: after memory::begin (episodic/vector load) + s_server.begin()
   // Device-event timeline (Glass Box A3): the BOOT row - the answer to the
   // owner's live "did you manage to reboot?" that the model couldn't give
   // ("there's no reboot record available"). Reset reason distinguishes a
@@ -2898,6 +2926,7 @@ void setup() {
   // link and simply retry). Notifier mode leaves all of this dormant - the nsn
   // serial path below is unchanged.
   if (g_orchMode) orchestratorBegin();
+  sramSnap("post-orch");  // CUM-185: after tg_poll/fabric/orchestrator task stacks are up
   BOOT_STAGE(120, 120, 0);   // YELLOW: orchestrator up (final stage before loop)
 
 #ifdef NIMBUS_TEST
@@ -3705,6 +3734,20 @@ static void factoryResetPreserveIdentity() {
 
 void loop() {
   esp_task_wdt_reset();
+#ifdef NIMBUS_NOTIFIER_DEBUG
+  // CUM-185: steady-state contiguous-SRAM sampler (test/debug builds only, so the
+  // production nsn serial stream stays clean). Emits the same line as the boot
+  // snaps every ~20 s, so the Orchestrator-mode steady-state intLargest floor is
+  // captured on Serial even while the web server is unreachable. /api/state gives
+  // the same numbers over HTTP once it binds; this is the pre-bind / soak backup.
+  {
+    static uint32_t s_nextSramMs = 8000;   // first sample ~8 s after boot
+    if ((int32_t)(millis() - s_nextSramMs) >= 0) {
+      sramSnap(g_orchMode ? "steady-orch" : "steady-notif");
+      s_nextSramMs = millis() + 20000;
+    }
+  }
+#endif
 #ifdef NIMBUS_TEST
   if (g_orchMode && agent::orchestrator::testRebootRequested()) {
     agent::alog("test: staged restart (HIL persistence proof)");

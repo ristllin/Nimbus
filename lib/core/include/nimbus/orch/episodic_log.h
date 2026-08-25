@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "nimbus/orch/episodic.h"
+#include "nimbus/orch/psram_alloc.h"   // WorkingAllocator - route the recent-ring + index cache to PSRAM (CUM-185)
 
 // episodic_log - the SD system-of-record backing for EpisodicStore
 // (docs/orchestrator-storage.md §3). Replaces the in-RAM 500-ring whole-blob
@@ -186,6 +187,20 @@ class AppendLogEpisodicStore : public EpisodicStore {
   static std::string civilDate(uint32_t dayNum);
 
  private:
+  // CUM-185: the recent-window cache + index are the dominant Orchestrator-mode
+  // internal-SRAM holder. On a busy device the ~512-row ring plus one IdxRec per
+  // message hold hundreds of small (<128 B) std::strings, and the 128 B extmem
+  // spill threshold keeps every one of them on the SCARCE internal heap - the
+  // measured -53 KB off the largest contiguous internal block at Orchestrator
+  // steady state (what a TLS handshake / AsyncTCP accept needs). PsString routes
+  // those string bytes through the same PSRAM working-allocator seam the VDB uses
+  // (host default = malloc, so host tests are unchanged; device = PSRAM), and the
+  // two container buffers use WorkingAllocator too, so the whole cache lands in
+  // the abundant 8 MB PSRAM. The public EpisodicMessage/EpisodicSession stay
+  // std::string - conversion happens only at the ring boundary (transient, bounded
+  // by the query limit), so the wire/query semantics are byte-identical.
+  using PsString = std::basic_string<char, std::char_traits<char>, WorkingAllocator<char>>;
+
   struct IdxRec {
     uint32_t tsHours = 0;
     uint32_t dayNum = 0;     // tsHours / 24 (epoch-day, == the day-file identity)
@@ -193,9 +208,29 @@ class AppendLogEpisodicStore : public EpisodicStore {
     uint32_t len = 0;        // JSON length (bytes, excluding the '\n')
     uint32_t idSfx = 0;      // epiIdSuffix(id) - orders rows for the `before` cursor
     MsgKind  kind = MsgKind::Message;
-    std::string sessionId;   // cheap pre-read session filter
-    std::string blobHash;    // blobHashOf(blobPath), "" if none - for the prune scan
+    PsString sessionId;      // cheap pre-read session filter (PSRAM)
+    PsString blobHash;       // blobHashOf(blobPath), "" if none - for the prune scan (PSRAM)
   };
+
+  // PSRAM-resident mirror of EpisodicMessage for the recent-window cache. Same
+  // fields; only the string storage differs (PsString -> PSRAM).
+  struct CachedMsg {
+    PsString id;
+    PsString sessionId;
+    uint32_t tsHours = 0;
+    PsString role;
+    MsgKind  kind = MsgKind::Message;
+    PsString text;
+    PsString blobPath;
+    PsString tags;
+  };
+
+  // Ring-boundary conversions (defined in the .cpp). ps()/st() bridge the string
+  // types; cacheOf()/msgOf() convert a whole message either way.
+  static PsString      ps(const std::string& s);
+  static std::string   st(const PsString& s);
+  static CachedMsg        cacheOf(const EpisodicMessage& m);
+  static EpisodicMessage  msgOf(const CachedMsg& c);
 
   // Read + decode a single record by its index entry; false if the line is
   // missing/garbage (tolerant - a torn last line just drops out of results).
@@ -224,9 +259,9 @@ class AppendLogEpisodicStore : public EpisodicStore {
   EpiFs& fs_;
   std::string dir_;
   int recentCap_;
-  std::vector<IdxRec> index_;              // one per message, oldest-first
-  std::vector<EpisodicMessage> recent_;    // last <=recentCap_ full messages
-  std::vector<EpisodicSession> sessions_;  // LWW-by-id session table
+  std::vector<IdxRec, WorkingAllocator<IdxRec>>       index_;   // one per message, oldest-first (PSRAM)
+  std::vector<CachedMsg, WorkingAllocator<CachedMsg>> recent_;  // last <=recentCap_ full messages (PSRAM)
+  std::vector<EpisodicSession> sessions_;  // LWW-by-id session table (small, internal ok)
   uint32_t maxIdSuffix_ = 0;               // high-water for nextIdHint()
   int unpersisted_ = 0;                    // recent_ entries the FS refused (SD loss)
   bool hydrateTruncated_ = false;          // boot scan hit its budget (older rows unindexed)

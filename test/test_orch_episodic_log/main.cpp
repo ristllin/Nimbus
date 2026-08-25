@@ -7,6 +7,8 @@
 
 #include "nimbus/orch/episodic_log.h"
 #include "nimbus/orch/blob_store.h"
+#include "nimbus/orch/psram_alloc.h"   // CUM-185: prove the recent-ring/index cache routes to PSRAM
+#include <cstdlib>
 
 using namespace nimbus::orch;
 
@@ -760,8 +762,64 @@ static void test_cold_paging_with_resident_truncated_ring() {
   TEST_ASSERT_TRUE(found);                    // <-- catches the stranded-cold bug
 }
 
+// CUM-185: the recent-window ring + the index cache route their strings AND their
+// container buffers through the PSRAM working-allocator seam (the same hook the VDB
+// uses). Proven with a counting hook (host default = malloc); on-device the hook is
+// heap_caps_malloc(MALLOC_CAP_SPIRAM), so routing here proves PSRAM residency there,
+// lifting the measured -53 KB off the scarce internal heap at Orchestrator steady
+// state. Correctness (query results) must be unchanged under the custom allocator.
+static long g_epiWsBytes = 0;
+static int  g_epiWsCalls = 0;
+static void* epiWsCountingAlloc(std::size_t n) { g_epiWsCalls++; g_epiWsBytes += (long)n; return std::malloc(n); }
+static void  epiWsCountingFree(void* p) { std::free(p); }
+
+static void test_recent_ring_and_index_route_through_psram_seam() {
+  g_epiWsBytes = 0; g_epiWsCalls = 0;
+  setWorkingAllocators(epiWsCountingAlloc, epiWsCountingFree);
+  {
+    FakeFs fs;
+    AppendLogEpisodicStore st(fs, "/mem/episodic", 100);
+    // Strings must exceed the std::string SSO buffer (15 bytes) so PsString actually
+    // heap-allocates - a short string would live inline and never hit the seam.
+    const int N = 40;
+    for (int i = 0; i < N; i++) {
+      st.addMessage(msg("m" + std::to_string(1000 + i),
+                        "session-longenough-" + std::to_string(i),   // > 15 chars -> heap
+                        dayTs(200, i % 24), "user", MsgKind::Message,
+                        "this episodic text is comfortably beyond SSO length #" + std::to_string(i)));
+    }
+    // The index (one IdxRec/message, PSRAM sessionId) + the recent ring (CachedMsg
+    // with PSRAM id/sessionId/text/...) + both vector buffers flowed through OUR hook.
+    TEST_ASSERT_TRUE(g_epiWsCalls > 0);
+    TEST_ASSERT_TRUE(g_epiWsBytes >= (long)N * 40);   // at least the long strings, conservatively
+
+    // Round-trip correctness is unaffected by the custom allocator: the ring answers
+    // a text query with the right rows, newest-first, over the PSRAM-backed cache.
+    MsgQuery q; q.limit = 5; q.textContains = "beyond SSO length #39";
+    auto hits = st.query(q);
+    TEST_ASSERT_EQUAL(1, (int)hits.size());
+    TEST_ASSERT_EQUAL_STRING("m1039", hits[0].id.c_str());
+    TEST_ASSERT_EQUAL_STRING("session-longenough-39", hits[0].sessionId.c_str());
+
+    MsgQuery q2; q2.limit = N; q2.sessionId = "session-longenough-7";
+    auto onlyOne = st.query(q2);
+    TEST_ASSERT_EQUAL(1, (int)onlyOne.size());
+    TEST_ASSERT_EQUAL_STRING("m1007", onlyOne[0].id.c_str());
+
+    // Hydrate (the boot path) also rebuilds the PSRAM cache from the day-streams.
+    AppendLogEpisodicStore st2(fs, "/mem/episodic", 100);
+    int loaded = st2.hydrate(0, 0, nullptr);
+    TEST_ASSERT_EQUAL(N, loaded);
+    auto after = st2.query(q);
+    TEST_ASSERT_EQUAL(1, (int)after.size());
+    TEST_ASSERT_EQUAL_STRING("m1039", after[0].id.c_str());
+  }  // stores destruct here (free via the hook) BEFORE we restore the default
+  setWorkingAllocators(nullptr, nullptr);  // restore malloc/free for the other tests
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
+  RUN_TEST(test_recent_ring_and_index_route_through_psram_seam);
   RUN_TEST(test_boot_scan_is_bounded_so_a_full_store_still_boots);
   RUN_TEST(test_a_small_store_is_fully_indexed_and_not_truncated);
   RUN_TEST(test_codec_roundtrip_escaping);
