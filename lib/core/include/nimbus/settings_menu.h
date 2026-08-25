@@ -112,6 +112,10 @@ class SettingsMenu {
   bool showingUpdate() const {
     return state_ == State::UpdateMenu || state_ == State::ConfirmInstall;
   }
+  // The Software update LIST specifically (not the install confirm) - the status
+  // band belongs only there; under the "Install vX?" confirm it would be
+  // redundant. (CUM-193)
+  bool showingUpdateMenu() const { return state_ == State::UpdateMenu; }
   bool updateCheckRequested() const { return updateCheckRequested_; }
   void clearUpdateCheckRequest() { updateCheckRequested_ = false; }
   bool updateInstallRequested() const { return updateInstallRequested_; }

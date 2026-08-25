@@ -612,7 +612,11 @@ void drawMenu(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx) {
   // a check or install runs, a progress bar so the owner sees it working. Only
   // renders when the device set updateLine (i.e. on the Software update screen).
   if (!ctx.updateLine.empty()) {
-    const int bandH = 34;
+    // 30px exactly fills the gutter below a full left column (rowsPerCol rows):
+    // on the 320x240 panel the lowest row ends at listTop + rowsPerCol*(rowH+4) -
+    // 4 = 198 and listBot = h - gut = 228, so a taller band would paint over that
+    // row's bottom edge. Bottom-anchored, it sits flush under the rows.
+    const int bandH = 30;
     const int by = L.h - L.gut() - bandH;
     const int bx = L.gut();
     const int bw = L.w - 2 * L.gut();

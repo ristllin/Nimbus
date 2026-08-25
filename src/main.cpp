@@ -1574,7 +1574,8 @@ static void renderMenu() {
     c.menuSelected = v.selected;
     c.menuTitle = v.title;             // breadcrumb path band
     c.menuHelp = g_menu.helpText();    // param help pane ("" = hidden)
-    if (g_menu.showingUpdate()) {      // Software update status band (CUM-193)
+    if (g_menu.showingUpdateMenu()) {  // Software update status band (CUM-193;
+                                       // not the install-confirm sub-screen)
       const nimbus::ota::UpdateView uv = otaViewNow();
       c.updateLine = uv.line;
       c.updateBusy = uv.busy;
