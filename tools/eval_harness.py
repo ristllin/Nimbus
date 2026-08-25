@@ -79,7 +79,10 @@ def content_hash(inputs: Any) -> str:
 # ---- suite model ------------------------------------------------------------
 @dataclass
 class Budget:
-    """Hard per-run caps. The run stops at whichever binds first."""
+    """Per-run caps, checked before each call. `max_calls` is exact. `max_usd` is a
+    pre-call ceiling: the run stops once accumulated spend reaches it, so the final
+    call can push total spend past it by up to one call's cost (bounded, since
+    per-call cost is small at the suite's max_tokens)."""
 
     max_calls: int = 40
     max_usd: float = 1.0
@@ -172,7 +175,8 @@ def _now_iso(now: Optional[str]) -> str:
 
 
 def _budget_hit(budget: Budget, calls: int, spent: float) -> Optional[str]:
-    """Which cap (if any) has bound. Checked BEFORE each call so neither is exceeded."""
+    """Which cap (if any) has bound, checked BEFORE each call. `max_calls` is exact;
+    `max_usd` is a pre-call ceiling, so the last call can exceed it by its own cost."""
     if calls >= budget.max_calls:
         return "max_calls"
     if spent >= budget.max_usd:

@@ -36,6 +36,7 @@ Usage:
 """
 
 import argparse
+import inspect
 import json
 import os
 import re
@@ -256,11 +257,15 @@ def build_n11_suite(provider="anthropic", model=None, caller=None):
         passed, note = oracle(turn)
         return H.CaseResult(ok=bool(passed), score=1.0 if passed else 0.0, note=f"{ver}:{note}", usage=usage)
 
+    # Hash the FULL case content, not just names: the user message (s[1]) and the
+    # oracle's source (s[2]) both define the eval, so editing either must flip the
+    # hash and force a nightly re-run. Hashing names alone would silently skip a
+    # changed prompt or a tightened oracle.
     inputs = {
         "kind": "prompt_ab",
         "provider": provider,
         "models": [model],
-        "scenarios": [s[0] for s in SCENARIOS],
+        "scenarios": [(s[0], s[1], inspect.getsource(s[2])) for s in SCENARIOS],
         "v1_prompt": prompts["v1"],
         "v2_prompt": prompts["v2"],
         "schema": schema,

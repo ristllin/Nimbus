@@ -3754,14 +3754,24 @@ void loop() {
     // message and NO reboot - never a device that reads "formatted" over surviving
     // data. On success everything on the card is gone; reboot so the memory engines
     // reload empty (NVS config is untouched).
-    solide::storage::FormatResult fr = solide::storage::format();
-    if (fr == solide::storage::FormatResult::Ok) {
+    using FR = solide::storage::FormatResult;
+    const FR fr = solide::storage::format();
+    // Ok AND RemountFailed both mean the card is already erased (mkfs succeeded),
+    // so reboot either way - boot re-probes the card and the memory engines reload
+    // empty; only the pre-reboot message differs. NoCard and MkfsFailed left the
+    // card's data as it was, so report honestly and do NOT reboot (never claim an
+    // erase that did not happen).
+    if (fr == FR::Ok || fr == FR::RemountFailed) {
+      g_askOverride = fr == FR::Ok ? "Storage formatted. Restarting."
+                                   : "Formatted; remount failed. Restarting.";
+      Serial.printf("SD FORMAT -> %s; restarting\n", solide::storage::formatResultStr(fr));
+      renderScreen(attn::ScreenId::Ask, -1);
+      Serial.flush();
       delay(50);
       ESP.restart();
     } else {
-      const char* msg = fr == solide::storage::FormatResult::NoCard
-                          ? "Couldn't format - storage not available"
-                          : "Couldn't format - card error";
+      const char* msg =
+        fr == FR::NoCard ? "Couldn't format - storage not available" : "Couldn't format - card error";
       Serial.printf("SD FORMAT refused/failed -> %s\n", solide::storage::formatResultStr(fr));
       g_askOverride = msg;
       renderScreen(attn::ScreenId::Ask, -1);
