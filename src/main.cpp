@@ -119,6 +119,12 @@ static String g_askOverride;
 // within seconds ("can't read more than a line or two").
 static bool g_askSticky = false;
 static int  g_askPage = 0;
+// A transient Ask override that precedes a reboot (mode switch): the device
+// restarts on its own, so the Ask screen draws NO Close button (it would be dead -
+// the reset lands before a tap could reach it). Set true right before rendering
+// such a confirmation; a reboot follows immediately, so it never leaks to a later
+// dismissible reply (and a fresh boot clears it).
+static bool g_askTransient = false;
 // Voice hold-to-talk state. g_voiceActive guards re-entry (LongPress auto-repeats
 // while held); g_voiceStop is the recordToFile stop flag driven by the release
 // watcher; g_voiceDone lets the watcher exit. g_voiceReply* carries the async turn
@@ -322,6 +328,7 @@ static volatile int  g_modeSwitchTo = -1;   // >=0: the pending reboot is a web 
 static volatile bool g_factoryResetPending = false;  // web factory-reset: erase NVS + reboot on main task
 static volatile bool g_factoryEraseSd = false;       // CUM-15: also erase /mem in the factory-reset flow
 static volatile bool g_sdResetPending = false;       // web SD reset: erase /mem durable store + reboot
+static volatile bool g_sdFormatPending = false;      // CUM-15: web full-card format (reformat whole SD) + reboot
 // Voice turn "waiting for the agent" state: after the transcript is sent, a theme
 // spinner runs until the reply lands (or a timeout) so the ring shows work in flight
 // instead of going dark. Cleared in the reply drain / timeout in loop().
@@ -820,6 +827,7 @@ static render::ScreenCtx buildCtx(int cursorJob) {
   }
   if (g_askOverride.length()) {
     c.askText = std::string(g_askOverride.c_str());  // mode-switch / voice screen
+    c.askClosable = !g_askTransient;                 // no Close on a pre-reboot notice
     c.detailPage = g_askPage;                        // rotate pages a held reply (P2.3)
   }
   // Copy the slots under the lock into a local buffer (tiny, no heap), then build
@@ -2719,8 +2727,14 @@ void setup() {
   wc.onPreview = [](int profileId, int status) { startPreview(profileId, status); };
   wc.factoryReset = [](bool eraseSd) { g_factoryEraseSd = eraseSd; g_factoryResetPending = true; };  // main loop erases NVS (+optional /mem) + reboots, keeps identity
   wc.sdReset = [] { g_sdResetPending = true; };            // main loop erases /mem + reboots
-  // wc.sdFormat left unset: the board-support driver has no low-level format
-  // primitive yet, so /api/sdformat reports it honestly (contract to the driver lane).
+  // Full-card format (CUM-15 / CUM-132): the board-support driver now exposes a
+  // low-level format primitive (solide::storage::format(): FATFS f_mkfs over the
+  // mounted card, SPI + SDMMC). Wiring this lights up webui's canFormat capability
+  // (webui.cpp: canFormat = (bool)s_wc.sdFormat). Deferred to the main loop like
+  // the other destructive SD actions - reformatting blocks and must not run on the
+  // AsyncTCP task. The on-card destructive acceptance stays deferred pending a
+  // scratch card (CUM-131); the driver's host tests cover the guards/state machine.
+  wc.sdFormat = [] { g_sdFormatPending = true; };          // main loop reformats the whole card + reboots
   wc.chatSend = [](const String& t) {   // -> tg_poll turn
     if (!agent::telegram::injectMessage("web", t)) return false;
     g_webTurnDeadlineMs = millis() + kWebTurnMaxMs;
@@ -3337,6 +3351,7 @@ static void settleMenuAfterMutation(uint32_t now) {
       Serial.printf("MODE menu -> %d (reboot)\n", int(wantOrch));
       g_askOverride = wantOrch ? "Switching to Orchestrator mode..."
                                : "Switching to Notifier mode...";
+      g_askTransient = true;                          // reboot follows: no Close button
       ::sfx::fire(nimbus::sfx::Ev::ModeSwitch);       // "Set the course." (plays under the sweep)
       renderScreen(attn::ScreenId::Ask, -1);        // panel confirmation screen
       playModeSwitchFeedback(wantOrch);             // LED sweep (+ time for the panel)
@@ -3736,6 +3751,40 @@ void loop() {
       renderScreen(attn::ScreenId::Ask, -1);
     }
   }
+  if (g_sdFormatPending) {  // web full-card format: reformat the whole SD, then reboot
+    g_sdFormatPending = false;            // consume the request either way (no re-fire)
+    Serial.println("SD FORMAT -> reformat whole card + restart");
+    g_askOverride = "Formatting storage. Up to a minute.";
+    renderScreen(attn::ScreenId::Ask, -1);
+    Serial.flush();
+    // Reformat the ENTIRE card (not just /mem). The driver refuses cleanly with no
+    // side effects when no card is mounted, so a missing card yields an honest
+    // message and NO reboot - never a device that reads "formatted" over surviving
+    // data. On success everything on the card is gone; reboot so the memory engines
+    // reload empty (NVS config is untouched).
+    using FR = solide::storage::FormatResult;
+    const FR fr = solide::storage::format();
+    // Ok AND RemountFailed both mean the card is already erased (mkfs succeeded),
+    // so reboot either way - boot re-probes the card and the memory engines reload
+    // empty; only the pre-reboot message differs. NoCard and MkfsFailed left the
+    // card's data as it was, so report honestly and do NOT reboot (never claim an
+    // erase that did not happen).
+    if (fr == FR::Ok || fr == FR::RemountFailed) {
+      g_askOverride = fr == FR::Ok ? "Storage formatted. Restarting."
+                                   : "Formatted; remount failed. Restarting.";
+      Serial.printf("SD FORMAT -> %s; restarting\n", solide::storage::formatResultStr(fr));
+      renderScreen(attn::ScreenId::Ask, -1);
+      Serial.flush();
+      delay(50);
+      ESP.restart();
+    } else {
+      const char* msg =
+        fr == FR::NoCard ? "Couldn't format - storage not available" : "Couldn't format - card error";
+      Serial.printf("SD FORMAT refused/failed -> %s\n", solide::storage::formatResultStr(fr));
+      g_askOverride = msg;
+      renderScreen(attn::ScreenId::Ask, -1);
+    }
+  }
   if (g_rebootPending) {  // web mode change / orchestrator reboot action
     Serial.println("REBOOT pending -> restart");
     if (g_modeSwitchTo >= 0) {
@@ -3748,6 +3797,7 @@ void loop() {
           (toOrch ? "Orchestrator" : "Notifier") + " mode (restart follows)");
       g_askOverride = toOrch ? "Switching to Orchestrator mode..."
                              : "Switching to Notifier mode...";
+      g_askTransient = true;                          // reboot follows: no Close button
       ::sfx::fire(nimbus::sfx::Ev::ModeSwitch);
       renderScreen(attn::ScreenId::Ask, -1);
       playModeSwitchFeedback(toOrch);
