@@ -10,8 +10,9 @@ These codify the hand-run device smoke that first shipped E1 (and caught the
 found). Every test RESTORES what it created (delete uploads, clear faults) in a
 ``finally`` - a leaked file or fault would cascade into downstream tests.
 
-Auth rides ``?t=<token>`` (webAuthOk accepts the query param), so no header plumbing
-is needed. Markers: ``@pytest.mark.net`` (LAN + serial for the token).
+Auth rides the ``X-Nimbus-Token`` header (CUM-45 took the token out of URLs; a
+``?t=`` query param is not read by the firmware). Markers: ``@pytest.mark.net``
+(LAN + serial for the token).
 """
 
 from __future__ import annotations
@@ -37,19 +38,30 @@ def _need_requests():
         pytest.skip("requests not installed")
 
 
+def _hdr(tok: str) -> dict:
+    # CUM-45 took the token out of URLs: the web fetch shim + the HIL harness send
+    # it on the X-Nimbus-Token header (a form-body `t` also works on POSTs). A `?t=`
+    # query param is NOT read by the firmware, so raw requests must carry the header.
+    return {"X-Nimbus-Token": tok}
+
+
 def _url(ip: str, path: str, tok: str, **params) -> str:
-    q = "&".join(f"{k}={v}" for k, v in {"t": tok, **params}.items())
-    return f"http://{ip}{path}?{q}"
+    # Token rides the header (see _hdr); only non-secret params go in the URL.
+    q = "&".join(f"{k}={v}" for k, v in params.items())
+    return f"http://{ip}{path}" + (f"?{q}" if q else "")
 
 
 def _upload(ip, tok, project, name, data, timeout=20):
     return requests.post(
-        _url(ip, "/api/files/upload", tok, project=project, name=name), files={"file": (name, data)}, timeout=timeout
+        _url(ip, "/api/files/upload", tok, project=project, name=name),
+        files={"file": (name, data)},
+        headers=_hdr(tok),
+        timeout=timeout,
     )
 
 
 def _list(net, ip, tok, project=""):
-    path = f"/api/files/list?t={tok}" + (f"&project={project}" if project else "")
+    path = "/api/files/list" + (f"?project={project}" if project else "")
     return net.get_json(path, ip=ip, timeout=8.0)
 
 
@@ -58,9 +70,9 @@ def _rm(net, ip, tok, project, name):
 
 
 def _state(net, ip, tok) -> dict:
-    """/api/state is token-gated (since owner-batch-2 every /api GET is) - always
-    pass ?t=."""
-    return net.get_json(f"/api/state?t={tok}", ip=ip, timeout=6.0)
+    """/api/state is token-gated (since owner-batch-2 every /api GET is). The harness
+    authenticates it on the X-Nimbus-Token header (net adds it)."""
+    return net.get_json("/api/state", ip=ip, timeout=6.0)
 
 
 # ---- auth gate -------------------------------------------------------------
@@ -126,7 +138,7 @@ def test_files_text_roundtrip(device, net, secrets, require_secret):
         lst = _list(net, ip, tok, PROJECT)
         names = [e["name"] for e in lst["files"]]
         assert name in names, f"uploaded file not listed: {names}"
-        got = requests.get(_url(ip, "/api/files/dl", tok, project=PROJECT, name=name), timeout=15)
+        got = requests.get(_url(ip, "/api/files/dl", tok, project=PROJECT, name=name), headers=_hdr(tok), timeout=15)
         assert got.status_code == 200
         assert got.content == body, "download not byte-identical"
     finally:
@@ -147,7 +159,7 @@ def test_files_binary_multichunk_roundtrip(device, net, secrets, require_secret)
     try:
         r = _upload(ip, tok, PROJECT, name, blob, timeout=60)
         assert r.status_code == 200, f"upload -> {r.status_code}: {r.text[:120]}"
-        got = requests.get(_url(ip, "/api/files/dl", tok, project=PROJECT, name=name), timeout=60)
+        got = requests.get(_url(ip, "/api/files/dl", tok, project=PROJECT, name=name), headers=_hdr(tok), timeout=60)
         assert got.status_code == 200
         assert hashlib.md5(got.content).hexdigest() == want, "256KB round-trip corrupted"
     finally:
@@ -169,7 +181,7 @@ def test_files_dl_route_not_swallowed_by_list(device, net, secrets, require_secr
     body = b"ROUTE-MARKER-9f3a not-a-json-listing"
     try:
         assert _upload(ip, tok, PROJECT, name, body).status_code == 200
-        got = requests.get(_url(ip, "/api/files/dl", tok, project=PROJECT, name=name), timeout=15)
+        got = requests.get(_url(ip, "/api/files/dl", tok, project=PROJECT, name=name), headers=_hdr(tok), timeout=15)
         assert got.content == body
         assert b'"present"' not in got.content, "dl returned the listing JSON - route swallowed"
     finally:
@@ -193,7 +205,7 @@ def test_files_path_traversal_rejected(device, net, secrets, require_secret):
     r = _upload(ip, tok, "..", "x.txt", b"x")
     assert r.status_code >= 400, f"traversal project accepted -> {r.status_code}"
     # download traversal
-    got = requests.get(_url(ip, "/api/files/dl", tok, project=PROJECT, name="../../../etc/passwd"), timeout=10)
+    got = requests.get(_url(ip, "/api/files/dl", tok, project=PROJECT, name="../../../etc/passwd"), headers=_hdr(tok), timeout=10)
     assert got.status_code == 404, f"traversal dl -> {got.status_code}, want 404"
 
 

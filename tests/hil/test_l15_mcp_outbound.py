@@ -67,7 +67,10 @@ def _device_tool_names(net, ip) -> list[str]:
     import requests
 
     resp = requests.post(
-        f"http://{ip}/mcp?t={net.token()}", data=body, headers={"Content-Type": "application/json"}, timeout=15.0
+        f"http://{ip}/mcp",
+        data=body,
+        headers={"Content-Type": "application/json", "X-Nimbus-Token": net.token()},
+        timeout=15.0,
     )
     assert resp.status_code == 200, f"/mcp tools/list -> {resp.status_code}: {resp.text[:160]}"
     tools = resp.json().get("result", {}).get("tools", [])
