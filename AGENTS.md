@@ -59,6 +59,13 @@ host suite (fast, no hardware), `tests/hil/` is the Python HIL suite (needs a
 board). The `test` **build environment** is a third thing again - the production
 firmware plus a serial command console the HIL suite drives.
 
+**Capability-matrix rule (CUM-94):** any new provider or capability MUST land
+with either an entry in the capability matrix test
+(`test/test_capabilities_matrix/`, re-bless the generated
+`docs/reference/capabilities-matrix.md`) or an explicit not-supported entry -
+never silently absent. The cloud repo enforces the same rule in its
+`capability-matrix.ts` (see cumulo-nimbus/CLAUDE.md).
+
 ---
 
 ## 3. Build & test - the verification battery

@@ -130,10 +130,31 @@ static void test_base64_rejects_garbage() {
   TEST_ASSERT_FALSE(b64Decode("A", 1, out));  // single leftover sextet is impossible
 }
 
+// CUM-182: the Welcome frame carries an optional `deviceId` (the relay's
+// identity-bound hello-ack). Present -> parsed; absent -> "" (legacy relay).
+static void test_welcome_device_id() {
+  {
+    JsonDocument doc;
+    deserializeJson(doc, "{\"t\":\"welcome\",\"v\":1,\"heartbeatMs\":30000,\"deviceId\":\"dev_da5802\"}");
+    RelayFrame f;
+    TEST_ASSERT_TRUE(parseRelayFrame(doc, f));
+    TEST_ASSERT_EQUAL_INT((int)FrameType::Welcome, (int)f.type);
+    TEST_ASSERT_EQUAL_STRING("dev_da5802", f.deviceId);
+  }
+  {
+    JsonDocument doc;
+    deserializeJson(doc, "{\"t\":\"welcome\",\"v\":1,\"heartbeatMs\":30000}");
+    RelayFrame f;
+    TEST_ASSERT_TRUE(parseRelayFrame(doc, f));
+    TEST_ASSERT_EQUAL_STRING("", f.deviceId);  // legacy relay: no echo
+  }
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_relay_vectors_decode);
   RUN_TEST(test_rejects_malformed);
+  RUN_TEST(test_welcome_device_id);
   RUN_TEST(test_build_hello);
   RUN_TEST(test_build_res);
   RUN_TEST(test_build_res_no_body);
