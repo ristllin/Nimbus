@@ -238,8 +238,9 @@ std::vector<EpisodicMessage> AppendLogEpisodicStore::queryRing(const MsgQuery& q
   std::vector<EpisodicMessage> out;
   const uint32_t beforeSfx = epiIdSuffix(q.before);
   for (auto it = recent_.rbegin(); it != recent_.rend(); ++it) {
-    // Cheap PSRAM-side pre-filters first (no std::string allocation), so only a
-    // surviving row pays for the CachedMsg -> EpisodicMessage conversion.
+    // Run the pre-filters first (only the id/session bridges below allocate a small
+    // transient std::string; the kind/time checks are alloc-free), so only a
+    // surviving row pays for the full CachedMsg -> EpisodicMessage conversion.
     if (beforeSfx && epiIdSuffix(st(it->id)) >= beforeSfx) continue;
     if (!q.sessionId.empty() && q.sessionId != it->sessionId.c_str()) continue;
     if (!q.sessionVisible(st(it->sessionId))) continue;   // v3.7.0 read boundary
