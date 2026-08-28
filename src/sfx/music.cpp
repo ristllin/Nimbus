@@ -1,6 +1,7 @@
 #include "music.h"
 
 #include <SD.h>
+#include <solide/storage.h>   // activeFs(): the mounted card (SD_MMC on Freenove, SD on solide)
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <freertos/task.h>
@@ -56,7 +57,7 @@ static std::string fullPath(const std::string& name) {
 std::vector<std::string> listMusicDir() {
   std::vector<std::string> out;
   agent::memory::Lock sdlk;   // the dir scan is quick; hold the SD-bus lock for it
-  File dir = SD.open(kDir);
+  File dir = solide::storage::activeFs().open(kDir);
   if (!dir || !dir.isDirectory()) { if (dir) dir.close(); return out; }
   for (File f = dir.openNextFile(); f; f = dir.openNextFile()) {
     if (!f.isDirectory()) {
@@ -121,7 +122,7 @@ static bool streamWav(const std::string& path, uint32_t gen) {
   uint32_t rate = 16000, dataLen = 0;
   bool haveData = false;
   { agent::memory::Lock sdlk;
-    f = SD.open(path.c_str(), FILE_READ);
+    f = solide::storage::activeFs().open(path.c_str(), FILE_READ);
     if (f) haveData = parseWavHeader(f, rate, dataLen); }
   if (!f) { agent::alogf("music: open failed %s", path.c_str()); return true; }
   if (!haveData || rate < 8000 || rate > 48000) {
@@ -231,7 +232,7 @@ static Mp3Work* allocMp3Work() {
 
 static bool streamMp3(const std::string& path, uint32_t gen) {
   File f;
-  { agent::memory::Lock sdlk; f = SD.open(path.c_str(), FILE_READ); }
+  { agent::memory::Lock sdlk; f = solide::storage::activeFs().open(path.c_str(), FILE_READ); }
   if (!f) { agent::alogf("music: open failed %s", path.c_str()); return true; }
   Mp3Work* w = allocMp3Work();
   if (!w) { agent::memory::Lock sdlk; f.close(); agent::alogf("music: MP3 out of memory"); return true; }
@@ -273,7 +274,7 @@ static void playTrack(const std::string& name, uint32_t gen) {
   MediaFormat fmt = MediaFormat::Unknown;
   {
     agent::memory::Lock sdlk;
-    File f = SD.open(path.c_str(), FILE_READ);
+    File f = solide::storage::activeFs().open(path.c_str(), FILE_READ);
     if (f) { uint8_t head[12]; int n = f.read(head, sizeof head); f.close();
              fmt = nimbus::orch::sniffFormat(head, n < 0 ? 0 : (size_t)n, name.c_str()); }
   }
