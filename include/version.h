@@ -8,7 +8,7 @@
 // NIMBUS_FW_BUILD is injected by tools/git_version.py (platformio extra_scripts)
 // as `git describe --tags --dirty --always`; this fallback covers builds outside
 // a git checkout (e.g. exported source).
-#define NIMBUS_FW_VERSION "v4.4.2"
+#define NIMBUS_FW_VERSION "v4.4.3"
 
 #ifndef NIMBUS_FW_BUILD
 #define NIMBUS_FW_BUILD NIMBUS_FW_VERSION
