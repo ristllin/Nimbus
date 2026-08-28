@@ -9,8 +9,13 @@ API only writes /mem/files; the music player only reads /music). Test build only
   python3 tools/fsput_stream.py --port /dev/cu.usbmodem101 \
       --src ".dev_assets/song.mp3" --dst "/music/long.mp3"
 """
+
 from __future__ import annotations
-import argparse, base64, hashlib, sys, time
+import argparse
+import base64
+import hashlib
+import sys
+import time
 import serial
 
 
@@ -133,7 +138,7 @@ def main() -> int:
     dt = time.time() - t0
     fields = dict(kv.split("=") for kv in done.split()[1:])
     ok_put = int(fields.get("bytes", -1)) == len(data) and fields.get("sha256") == sha
-    print(f"FSPUT verify: {'OK' if ok_put else 'MISMATCH'} ({dt:.1f}s, {len(data)/max(dt,0.01)/1024:.1f} KB/s)")
+    print(f"FSPUT verify: {'OK' if ok_put else 'MISMATCH'} ({dt:.1f}s, {len(data) / max(dt, 0.01) / 1024:.1f} KB/s)")
 
     # independent re-read off the card
     ser.reset_input_buffer()
