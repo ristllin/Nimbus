@@ -437,7 +437,27 @@ def test_panel_recovers_from_a_silent_reset(device):
         healthy, heals0, _bl = _health(device)
         assert healthy == 1, "panel is already unhealthy before the drill"
 
-        device.cmd("TFTBREAK", "TFTBREAK", timeout=8.0)
+        # TFTBREAK toggles the panel's hardware RESET line to clear MADCTL behind
+        # the driver's back. On a board whose TFT RST is NOT wired to a GPIO
+        # (Freenove CYD: board tft.rst == -1), holdReset() is a no-op, so the fault
+        # is never injected and healthy() stays 1. The firmware reports that value
+        # in the reply ("... healthy=%d (expect 0)"); if it did not drop to 0 the
+        # drill cannot exercise the register-probe heal path on THIS board, so we
+        # SKIP LOUDLY rather than fail asserting a heal that had no cause to happen.
+        # The heal counter is HONEST - verified on the bench Freenove (CUM-186): it
+        # ticks only on a genuine classified reset, so healthy=1 heals=0 here means
+        # "nothing broke", not "the counter is broken". This leg needs a board whose
+        # TFT_RST is wired (Solide S3) to actually inject the reset.
+        brk = device.cmd("TFTBREAK", "TFTBREAK", timeout=8.0)
+        m = re.search(r"healthy=(\d)", brk)
+        if m and m.group(1) == "1":
+            pytest.skip(
+                "TFTBREAK did not induce a silent reset on this board: healthy=1 "
+                "right after the break, so the TFT panel's hardware RST is not wired "
+                "(e.g. Freenove CYD, board tft.rst=-1) and holdReset() is a no-op. "
+                "The heal counter is honest (it ticks only on a real classified "
+                "reset); this leg needs a board whose TFT_RST is wired (Solide S3)."
+            )
         time.sleep(1.0)
 
         # Give the watchdog a couple of its ~5 s windows, polling so a fast
