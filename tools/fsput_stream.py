@@ -40,21 +40,8 @@ def _readsig(ser, deadline):
     return ""
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--port", default="/dev/cu.usbmodem101")
-    ap.add_argument("--src", required=True)
-    ap.add_argument("--dst", required=True, help="absolute SD path, e.g. /music/long.mp3")
-    ap.add_argument("--baud", type=int, default=115200)
-    ap.add_argument("--window", type=int, default=64 * 1024, help="max decoded bytes in flight")
-    a = ap.parse_args()
-
-    data = open(a.src, "rb").read()
-    sha = hashlib.sha256(data).hexdigest()
-    b64 = base64.b64encode(data)
-    print(f"src={a.src} bytes={len(data)} sha256={sha}")
-    print(f"dst={a.dst} base64_len={len(b64)}")
-
+def _open_and_boot(a):
+    """Open the native-USB port (no reset toggles) and wait for boot + SD mount."""
     ser = serial.Serial()
     ser.port = a.port
     ser.baudrate = a.baud
@@ -64,7 +51,6 @@ def main() -> int:
     ser.open()
     time.sleep(0.5)
     ser.reset_input_buffer()
-
     # Opening the ESP32-S3 native-USB port reboots the board; wait for boot +
     # SD mount ("READY mode=..") before FSPUT so SD.open does not race the mount.
     boot_dl = time.time() + 20
@@ -74,8 +60,11 @@ def main() -> int:
             print("<", line, "(boot complete)")
             break
     time.sleep(1.5)  # a touch more for the card mount to settle
+    return ser
 
-    ready = False
+
+def _fsput_handshake(ser, a, data) -> bool:
+    """Issue FSPUT and wait for READY (3 attempts). False on error/no-READY."""
     for attempt in range(3):
         ser.reset_input_buffer()
         ser.write(f"FSPUT {len(data)} {a.dst}\n".encode())
@@ -87,23 +76,21 @@ def main() -> int:
                 continue
             print("<", line)
             if line.startswith("FSPUT READY"):
-                ready = True
-                break
+                return True
             if line.startswith("FSPUT ERR"):
                 print("ERROR:", line)
-                return 2
-        if ready:
-            break
+                return False
         print(f"(no READY, retry {attempt + 1})")
-    if not ready:
-        print("ERROR: no FSPUT READY")
-        return 2
+    print("ERROR: no FSPUT READY")
+    return False
 
+
+def _stream_windowed(ser, a, b64):
+    """Stream the base64 payload with an ACK window so the card keeps up."""
     acked = 0
     sent_dec = 0
     i = 0
     CH = 4096
-    t0 = time.time()
     while i < len(b64):
         chunk = b64[i : i + CH]
         ser.write(chunk)
@@ -122,7 +109,9 @@ def main() -> int:
                 acked = int(line.split()[1])
     ser.flush()
 
-    done = None
+
+def _await_done(ser):
+    """Wait for the FSPUT DONE line; None on timeout."""
     dl = time.time() + 90
     while time.time() < dl:
         line = _readsig(ser, dl)
@@ -130,17 +119,12 @@ def main() -> int:
             continue
         print("<", line)
         if line.startswith("FSPUT DONE"):
-            done = line
-            break
-    if not done:
-        print("ERROR: no FSPUT DONE")
-        return 3
-    dt = time.time() - t0
-    fields = dict(kv.split("=") for kv in done.split()[1:])
-    ok_put = int(fields.get("bytes", -1)) == len(data) and fields.get("sha256") == sha
-    print(f"FSPUT verify: {'OK' if ok_put else 'MISMATCH'} ({dt:.1f}s, {len(data) / max(dt, 0.01) / 1024:.1f} KB/s)")
+            return line
+    return None
 
-    # independent re-read off the card
+
+def _fstat_verify(ser, a, data, sha) -> bool:
+    """Independent on-card re-read via FSTAT; True when size+sha match."""
     ser.reset_input_buffer()
     ser.write(f"FSTAT {a.dst}\n".encode())
     ser.flush()
@@ -152,13 +136,47 @@ def main() -> int:
             stat = line
             print("<", line)
             break
-    ser.close()
     if not stat:
         print("ERROR: no FSTAT reply")
-        return 4
+        return False
     sf = dict(kv.split("=") for kv in stat.split() if "=" in kv)
     ok_stat = int(sf.get("bytes", -1)) == len(data) and sf.get("sha256") == sha
     print(f"FSTAT verify (on-card): {'OK' if ok_stat else 'MISMATCH'}")
+    return ok_stat
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--port", default="/dev/cu.usbmodem101")
+    ap.add_argument("--src", required=True)
+    ap.add_argument("--dst", required=True, help="absolute SD path, e.g. /music/long.mp3")
+    ap.add_argument("--baud", type=int, default=115200)
+    ap.add_argument("--window", type=int, default=64 * 1024, help="max decoded bytes in flight")
+    a = ap.parse_args()
+
+    data = open(a.src, "rb").read()
+    sha = hashlib.sha256(data).hexdigest()
+    b64 = base64.b64encode(data)
+    print(f"src={a.src} bytes={len(data)} sha256={sha}")
+    print(f"dst={a.dst} base64_len={len(b64)}")
+
+    ser = _open_and_boot(a)
+    if not _fsput_handshake(ser, a, data):
+        return 2
+
+    t0 = time.time()
+    _stream_windowed(ser, a, b64)
+    done = _await_done(ser)
+    if not done:
+        print("ERROR: no FSPUT DONE")
+        return 3
+    dt = time.time() - t0
+    fields = dict(kv.split("=") for kv in done.split()[1:])
+    ok_put = int(fields.get("bytes", -1)) == len(data) and fields.get("sha256") == sha
+    print(f"FSPUT verify: {'OK' if ok_put else 'MISMATCH'} ({dt:.1f}s, {len(data) / max(dt, 0.01) / 1024:.1f} KB/s)")
+
+    ok_stat = _fstat_verify(ser, a, data, sha)
+    ser.close()
     return 0 if (ok_put and ok_stat) else 5
 
 
