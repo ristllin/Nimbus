@@ -134,7 +134,28 @@ class AlertGate {
 // wakes into further ~1-2 h drain cycles, parking nearer ~3-4% real than 10% -
 // more usable bottom-end runtime traded for deep-discharge wear. 7200 (above the
 // rested-empty band) is the strict no-rewake setting; per-board tunable (wakeMv).
-constexpr uint16_t kWakeMvDefault = 6500;
+constexpr uint16_t kWakeMvDefault = 6500;   // == the 2S default (kWakeMvPerCell * 2)
+
+// ── PER-CELL sleep/wake thresholds (CUM-202) ────────────────────────────────
+// The sleep + wake decisions compare a PACK voltage, but the measured defaults
+// and clamps above were all set for the 2S Solide pack. On a 1S board (Freenove)
+// the "pack" IS a single cell (~3000-4200 mV), which is ALWAYS below a 2S 6000 mV
+// sleep floor - so a fully-charged 1S board would deep-sleep the instant it left
+// USB, at any charge. Express the seeds per-cell instead: pack threshold = per-cell
+// x series count. 2S reproduces 6000/6500/6800/7600 exactly; 1S halves them. A
+// board that has an owner-set pack mV stored keeps it; these only seed the default
+// and the clamp ceiling. The precise low-end 1S curve wants a per-board drain study
+// (BATTCAL) - this is the safe, non-speculative floor that stops the insta-sleep.
+constexpr uint16_t kSleepMvPerCell     = 3000;  // ~10% real SoC (measured 2S: ~6034 mV pack)
+constexpr uint16_t kSleepMvPerCellCeil = 3400;  // clamp ceiling (2S: 6800; a full pack reads ~3950/cell RAW)
+constexpr uint16_t kWakeMvPerCell      = 3250;  // stay-awake bar (2S: 6500)
+constexpr uint16_t kWakeMvPerCellCeil  = 3800;  // clamp ceiling (2S: 7600)
+
+inline uint8_t  battCellsOr1(uint8_t cells) { return cells ? cells : 1; }
+inline uint16_t sleepMvDefaultFor(uint8_t cells) { return uint16_t(kSleepMvPerCell     * battCellsOr1(cells)); }
+inline uint16_t sleepMvCeilFor(uint8_t cells)    { return uint16_t(kSleepMvPerCellCeil * battCellsOr1(cells)); }
+inline uint16_t wakeMvDefaultFor(uint8_t cells)  { return uint16_t(kWakeMvPerCell      * battCellsOr1(cells)); }
+inline uint16_t wakeMvCeilFor(uint8_t cells)     { return uint16_t(kWakeMvPerCellCeil  * battCellsOr1(cells)); }
 
 inline bool stayAwakeAfterSleep(uint16_t packMv, uint16_t sleepMv, uint16_t wakeMv,
                                 bool charging) {

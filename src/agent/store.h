@@ -256,8 +256,10 @@ uint16_t compactAtKB();  // fold trigger: KB of chat since last fold, 0 = off (d
 void     setCompactAtKB(uint16_t v);
 // ---- battery/LED protection (owner feature 2026-07-17; study-grounded) -------
 // sleepMv: pack mV that triggers the low-battery deep sleep (debounced in the
-// power policy). Default 6000 = ~10% REAL SoC from the measured discharge study
-// (resting 10% ≈ 6034 mV pack; the pack's own BMS let it fall to 5574 live). 0 = off.
+// power policy). Default + clamp scale with the series-cell count (CUM-202): 2S =
+// 6000 (~10% REAL SoC from the measured discharge study; resting 10% ≈ 6034 mV
+// pack, BMS let it fall to 5574 live), 1S = 3000. Cell-aware so a full 1S pack
+// (~4200 mV) does not sit permanently below a 2S floor and insta-sleep. 0 = off.
 // ---- battery HARDWARE config (owner feature 2026-07-17; boards differ: 220/100
 // vs 270/120 dividers, LiitoKala 3500 vs reclaimed vape/18650 ~500 mAh; always 2S) --
 uint32_t battRtop();     // divider R_top ohms (default 220000)
@@ -298,8 +300,8 @@ void   setSaverMin(uint16_t v);       // clamped 0-1440 (a day)
 void   setBattRtop(uint32_t ohms);    // clamped 1k-10M
 void   setBattRbot(uint32_t ohms);    // clamped 1k-10M
 void   setBattCapMah(uint16_t mah);   // clamped 100-20000
-void   setSleepMv(uint16_t v);        // clamped 0-6800 (a truly-full pack reads ~7900 RAW - 8000 was always-true = soft-brick)
-void   setWakeMv(uint16_t v);         // clamped 0-7600
+void   setSleepMv(uint16_t v);        // clamped 0 - (3400 x cells) (2S 6800; a truly-full pack reads ~3950/cell RAW - a pack-wide ceiling was always-true = soft-brick)
+void   setWakeMv(uint16_t v);         // clamped 0 - (3800 x cells) (2S 7600)
 void   setSleepOvr(bool on);
 void   setBrightOvr(bool on);
 void   setTftFlip(bool on);
