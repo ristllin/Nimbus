@@ -182,8 +182,8 @@ reproduce the shipped behavior exactly.
 | `battChem` | string | `liion` | Battery chemistry: `liion` (Li-ion / LiPo) or `lifepo4` (lithium iron phosphate). Picks the per-cell voltage to state-of-charge curve. | Yes |
 | `battCells` | int | `0` (board) | Series-cell count override (`1` or `2`); `0`/absent uses the board default (1S Freenove, 2S Solide). Pack mV / cells = per-cell mV. | Yes |
 | `battCurve` | string | `""` | Optional custom per-cell curve, `"mv:pct,mv:pct,..."` high-mV first, strictly descending in mV. Empty uses the chemistry curve. A malformed string is rejected, never stored. | Yes |
-| `sleepMv` | int | `6000` | Low-battery deep-sleep threshold in pack mV; `0` disarms the protection. | Yes |
-| `wakeMv` | int | `7200` | Stay-awake bar after a low-battery sleep (rested-empty packs read a bit higher than the sleep mark). | Yes |
+| `sleepMv` | int | `3000` x cells (2S `6000`, 1S `3000`) | Low-battery deep-sleep threshold in pack mV; `0` disarms the protection. The default and the clamp ceiling scale with the series-cell count, so a full 1S pack (~4200 mV) is not judged against a 2S floor and slept immediately. | Yes |
+| `wakeMv` | int | `3250` x cells (2S `6500`, 1S `3250`) | Stay-awake bar after a low-battery sleep (rested-empty packs read a bit higher than the sleep mark). Scales per cell like `sleepMv`. | Yes |
 
 **`scrModel` vs. the board pinout.** `scrModel` selects the display renderer on a
 hand-built Solide S3 board. `"tft"` is the only supported value; `"eink"` is a
