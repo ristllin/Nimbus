@@ -810,25 +810,33 @@ static void buildOrchState(String& out) {
   cust["model"]  = agent::store::customModel();
   cust["hasKey"] = agent::store::customKey().length() > 0;
 
+  // The provider ROWS the Models UI renders come from this object, in insertion
+  // order. Cumulo Nimbus is emitted FIRST (the recommended path: one key, one
+  // balance, verified against the router - see CUM-201), then the three direct
+  // providers, then Z.ai. Backend verify/routing for cumulo + zai already lives in
+  // provider_verify.cpp; this just surfaces them so the rows exist.
   JsonObject provs = d["providers"].to<JsonObject>();
-  for (int i = 0; i < kProvCount; i++) {
-    const char* p = kProviders[i].name;
+  auto addProv = [&](const char* p, bool hasKey, const char* fallbackChoices) {
     JsonObject o = provs[p].to<JsonObject>();
-    bool hasKey =
-        (i == 0) ? agent::store::hasOpenaiKey()
-      : (i == 1) ? agent::store::hasAnthropicKey()
-                 : agent::store::hasMistralKey();
     o["hasKey"]    = hasKey;
     o["verify"]    = agent::store::verifyResult(p);
     o["vts"]       = agent::store::verifyTs(p);
     o["orchModel"] = agent::store::orchModel(p);
     o["subModel"]  = agent::store::subModel(p);
     // Live-harvested list first (verify pass reads /v1/models), static fallback.
-    {
-      String dyn = agent::store::modelChoices(p);
-      o["choices"] = dyn.length() ? dyn : String(kProviders[i].choices);
-    }
-  }
+    // cumulo/zai carry no static list: their choices are harvested on verify and
+    // empty until then (the model selects stay locked behind "Verify the key").
+    String dyn = agent::store::modelChoices(p);
+    o["choices"] = dyn.length() ? dyn : String(fallbackChoices);
+  };
+  addProv("cumulo", agent::store::hasCumuloKey(), "");
+  for (int i = 0; i < kProvCount; i++)
+    addProv(kProviders[i].name,
+            i == 0 ? agent::store::hasOpenaiKey()
+          : i == 1 ? agent::store::hasAnthropicKey()
+                   : agent::store::hasMistralKey(),
+            kProviders[i].choices);
+  addProv("zai", agent::store::hasZaiKey(), "");
 
   d["hasTav"]    = agent::store::hasTavilyKey();   // web-search tool configured
   d["tavVerify"] = agent::store::verifyResult("tavily");   // 1 ok / 0 rejected / -1 unknown

@@ -369,6 +369,12 @@ function fillVoices(prov, sel){
 }
 // Provider priority as an ordered, checkable list -> a comma string (no free-text).
 function renderPrio(hostId, field, csv){
+  // NOTE: cumulo/zai are deliberately NOT here. They are surfaced as key slots
+  // (their key powers sub-sessions via the fabric adapter), but the orchestrator
+  // HEAD host registry + fabricSupports only run openai/anthropic/mistral/custom,
+  // so offering cumulo/zai in the head Primary-provider / fallback order would let
+  // an owner pick a head the engine cannot run (every turn -> "host unavailable").
+  // Head-host support for the router is a separate backend change (see CUM-201).
   const ALL=['openai','anthropic','mistral','custom'], host=$(hostId); if(!host)return;
   let order=csv.split(',').map(s=>s.trim()).filter(x=>ALL.includes(x));
   let rows=order.map(p=>({p,on:true})).concat(ALL.filter(x=>!order.includes(x)).map(p=>({p,on:false})));
@@ -1127,7 +1133,7 @@ if($('revertProf'))$('revertProf').onclick=()=>{
 };
 
 // ---- Orchestrator control surface (ROUND 3 Part A) ----
-const PROVLBL={openai:'OpenAI',anthropic:'Anthropic',mistral:'Mistral'};
+const PROVLBL={cumulo:'Cumulo Nimbus',openai:'OpenAI',anthropic:'Anthropic',mistral:'Mistral',zai:'Z.ai'};
 let ORCH=null, VPOLL={};   // verify polls PER PROVIDER (review: a single global let a
                            // second provider's verify kill the first's completion poll,
                            // stranding its button disabled at "checking..." forever)
@@ -1262,7 +1268,9 @@ function modelSel(id,cur,choices,verified){
   const s=document.createElement('select'); s.id=id; s.disabled=!verified;
   const d=document.createElement('option'); d.value=''; d.textContent='(default)';
   s.appendChild(d);
-  choices.split(',').forEach(m=>{const o=document.createElement('option');
+  // filter(Boolean): cumulo/zai have no static choice list, so choices is "" until a
+  // verify harvest fills it - without this that produced one stray blank <option>.
+  choices.split(',').filter(Boolean).forEach(m=>{const o=document.createElement('option');
     o.value=m;o.textContent=m;if(m===cur)o.selected=true;s.appendChild(o);});
   if(!verified){const t=document.createElement('option');
     t.value='';t.textContent='Verify the key to unlock';t.selected=!cur;s.appendChild(t);}
@@ -1270,14 +1278,29 @@ function modelSel(id,cur,choices,verified){
   s.onchange=()=>orchApply({[id]:s.value});
   return s;
 }
+// Provider row header markup. Shared by provRow (build) and provSync (in-place
+// poll update) so the Recommended badge + verify badge never drift between them.
+function provHeadHtml(name,p){return '<b>'+(PROVLBL[name]||name)+'</b>'+
+  (name==='cumulo'?' <span class="badge" style="background:#12312e;color:#7fd1c8;border:1px solid #2b6b63">Recommended</span>':'')+
+  vfyBadge(p.verify,p.vts);}
+// Key-field placeholder. Shared by provRow + provSync so the cumulo_sk_ hint on the
+// Cumulo row is not stomped back to the generic "API key" by the in-place poll.
+function keyPlaceholder(name,p){return p.hasKey?'Key set - type to replace'
+  :(name==='cumulo'?'cumulo_sk_ key':'API key');}
 function provRow(name,p){
   const w=document.createElement('div'); w.className='provrow'; w.id='prov_'+name;
   const h=document.createElement('div'); h.className='provhead';
-  h.innerHTML='<b>'+(PROVLBL[name]||name)+'</b>'+vfyBadge(p.verify,p.vts);
+  h.innerHTML=provHeadHtml(name,p);
   w.appendChild(h);
+  // Cumulo Nimbus is the one-key, one-balance path: it carries the router base wiring
+  // under the hood (no URL to type, unlike Custom endpoint) and Verify checks the key
+  // against the router, not a third party (CUM-201 items 1-2).
+  if(name==='cumulo'){const ch=document.createElement('div'); ch.className='hint';
+    ch.textContent='One key, one balance. Verified against the router - no URL to type.';
+    w.appendChild(ch);}
   const row=document.createElement('div'); row.className='row';
   const k=document.createElement('input'); k.type='password'; k.id='key_'+name;
-  k.placeholder=p.hasKey?'Key set - type to replace':'API key';
+  k.placeholder=keyPlaceholder(name,p);
   row.appendChild(k);
   const vb=document.createElement('button'); vb.type='button'; vb.id='vfy_'+name;
   const canV=!ORCH||ORCH.running;   // verify needs Orchestrator-mode heap (lexical ORCH - window.ORCH was always undefined)
@@ -1288,6 +1311,7 @@ function provRow(name,p){
   const cb=document.createElement('button'); cb.type='button'; cb.textContent='Clear';
   cb.onclick=()=>{if(confirm('Remove the '+(PROVLBL[name]||name)+' key?'))orchApply({['clr_'+keyField(name)]:1});};
   row.appendChild(cb); w.appendChild(row);
+  const pm=document.createElement('div'); pm.className='hint'; pm.id='pmsg_'+name; w.appendChild(pm);
   const mrow=document.createElement('div'); mrow.className='row';
   const l1=document.createElement('div'); l1.style.flex='1';
   l1.innerHTML='<label>Orchestrator model</label>';
@@ -1298,7 +1322,11 @@ function provRow(name,p){
   mrow.appendChild(l1); mrow.appendChild(l2); w.appendChild(mrow);
   return w;
 }
-function keyField(p){return p==='openai'?'oaiKey':p==='anthropic'?'antKey':'mistKey';}
+// Maps a provider slug to its /api/orch key-write field. cumulo/zai have their own
+// store slots and router/probed-host verify routing; the old two-way ternary sent
+// everything else to mistKey, which silently wrote a cumulo_sk_ key into Mistral.
+const KEYFIELD={openai:'oaiKey',anthropic:'antKey',mistral:'mistKey',cumulo:'cumuloKey',zai:'zaiKey'};
+function keyField(p){return KEYFIELD[p]||'mistKey';}
 
 // In-place sync of a provider row on the 5s poll - the old unconditional rebuild of
 // #provs destroyed the API-key input mid-typing (the field-QA "key deletes itself
@@ -1308,10 +1336,10 @@ function keyField(p){return p==='openai'?'oaiKey':p==='anthropic'?'antKey':'mist
 function provSync(name,p){
   const w=$('prov_'+name); if(!w)return;
   const h=w.querySelector('.provhead');
-  if(h)h.innerHTML='<b>'+(PROVLBL[name]||name)+'</b>'+vfyBadge(p.verify,p.vts);
+  if(h)h.innerHTML=provHeadHtml(name,p);
   const k=$('key_'+name);
   if(k&&document.activeElement!==k&&!k.value)
-    k.placeholder=p.hasKey?'Key set - type to replace':'API key';
+    k.placeholder=keyPlaceholder(name,p);
   const vb=$('vfy_'+name);
   if(vb&&!vb.disabled){const canV=!ORCH||ORCH.running;
     vb.textContent=canV?(p.hasKey?'Verify':'Save & Verify'):'Save Key';}
@@ -1446,7 +1474,7 @@ function applyOrch(d){
 // Per-provider monthly budget rows (owner: budget per provider). Each provider that
 // has usage OR a set limit renders a labelled bar: tokens for LLM hosts, calls for
 // search providers. Over-budget rows go red. 0 limit shows the raw count, no bar.
-const BUDLBL={openai:'OpenAI',anthropic:'Anthropic',mistral:'Mistral',tavily:'Tavily',custom:'Custom'};
+const BUDLBL={cumulo:'Cumulo Nimbus',openai:'OpenAI',anthropic:'Anthropic',mistral:'Mistral',zai:'Z.ai',tavily:'Tavily',custom:'Custom'};
 // ---- W18: URL-download queue (policy select + pending/approve cards) --------
 function loadFetchQ(){fetch('/api/fetchq').then(r=>r.json()).then(renderFetchQ).catch(()=>{});}
 function renderFetchQ(rows){
@@ -1772,9 +1800,21 @@ function orchApply(body){
    .then(jok).then(()=>{toast('Saved');loadOrch();return true;})
    .catch(e=>{failToast(e);return false;});
 }
+// Per-provider row message (below the key row). Warn=amber guidance, else teal.
+function setProvMsg(p,t,warn){const m=$('pmsg_'+p);
+  if(m){m.textContent=t||''; m.style.color=t?(warn?'#e0b870':'#7fd1c8'):'';}}
 function saveAndVerify(p){
   const inp=$('key_'+p), body={};
-  if(inp.value) body[keyField(p)]=inp.value;
+  setProvMsg(p,'');
+  // Misplaced-key guidance (CUM-201 item 3): a cumulo_sk_ key belongs in the Cumulo
+  // Nimbus slot. Pasted into a direct provider it would be checked against that third
+  // party and come back a bare "key rejected"; catch it here and point to the row.
+  const val=inp?inp.value.trim():'';
+  if(val && p!=='cumulo' && val.indexOf('cumulo_sk_')===0){
+    setProvMsg(p,'That looks like a Cumulo Nimbus key - use the Cumulo Nimbus provider above.',true);
+    return;
+  }
+  if(inp&&inp.value) body[keyField(p)]=inp.value;
   // In Notifier mode the live TLS verify can't get enough free RAM, so just SAVE the
   // key (writing NVS works in any mode) and tell the user to verify from Orchestrator.
   // (Lexical ORCH, not window.ORCH - a top-level `let` never creates a window
@@ -3047,6 +3087,10 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
   function doProvider(){
     const p=el('onb_prov').value,key=el('onb_key').value.trim();
     if(!key){el('onb_provmsg').textContent='Paste an API key.';return;}
+    // Same misplaced-key guidance as the Models UI (CUM-201 item 3): a cumulo_sk_
+    // key belongs with the Cumulo Nimbus provider, not a direct one.
+    if(p!=='cumulo' && key.indexOf('cumulo_sk_')===0){
+      el('onb_provmsg').textContent='That looks like a Cumulo Nimbus key - choose Cumulo Nimbus above.';return;}
     const b=el('onb_provsave');b.disabled=true;el('onb_provmsg').textContent='Saving & verifying…';
     const body={};body[keyField(p)]=key;
     orchApply(body).then(()=>fetch('/api/verify',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'provider='+encodeURIComponent(p)}))
