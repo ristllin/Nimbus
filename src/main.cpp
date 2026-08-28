@@ -822,6 +822,7 @@ static render::ScreenCtx buildCtx(int cursorJob) {
   c.apName = std::string(net::apSsid().c_str());
   c.apPass = std::string(net::apPass().c_str());   // per-device stored passphrase
   c.apUp = ((uint32_t)WiFi.softAPIP() != 0u);
+  c.staConnected = net::staConnected();   // locked-out ConfigQr shows AP creds (CUM-200)
   c.configUrl = configUrl();
   c.setupUrl = setupUrl();   // SetupInfo QR: always the AP address (P1.2)
   c.fwVersion = NIMBUS_FW_VERSION;   // shown small on the Setup screen
@@ -1552,6 +1553,7 @@ static void renderMenu() {
     c.apName = std::string(net::apSsid().c_str());
     c.apPass = std::string(net::apPass().c_str());   // per-device stored passphrase
     c.apUp = ((uint32_t)WiFi.softAPIP() != 0u);
+    c.staConnected = net::staConnected();   // locked-out ConfigQr shows AP creds (CUM-200)
     c.webToken = std::string(agent::store::webAuthToken().c_str());
     c.netStatus = netStatusLine();
     c.showCodeAffordance = true;   // menu state: the ShowCode tap routes to TokenDetail
