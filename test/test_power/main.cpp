@@ -3,6 +3,7 @@
 #include "nimbus/power/power_monitor.h"
 #include "nimbus/power/power_policy.h"
 #include "nimbus/power/bright_cap.h"
+#include "nimbus/power/board_power.h"
 
 using namespace nimbus::power;
 
@@ -443,9 +444,33 @@ void test_2s_default_would_have_slept_a_full_1s_pack(void) {
   TEST_ASSERT_TRUE(bad.shutdownRequested());
 }
 
+// ── explicit per-board battMon default (CUM-202) ─────────────────────────────
+// Pins the shipped policy so it cannot drift back into a fragile proxy: the
+// Solide S3 ships with a pack (ON); the Freenove/all-in-one CYD treats a battery
+// as an optional add-on (OFF, opt-in). An unknown board is OFF (the safe default).
+void test_board_battmon_defaults(void) {
+  using nimbus::power::battMonDefaultForBoard;
+  TEST_ASSERT_TRUE(battMonDefaultForBoard("solide_s3"));     // hand-built 2S, shipped ON
+  TEST_ASSERT_FALSE(battMonDefaultForBoard("freenove_s3"));  // all-in-one, opt-in
+  TEST_ASSERT_FALSE(battMonDefaultForBoard("some_future_board"));  // unknown -> safe OFF
+  TEST_ASSERT_FALSE(battMonDefaultForBoard(nullptr));        // null -> safe OFF
+  // constexpr: the policy is resolved at compile time (no runtime cost on device).
+  static_assert(nimbus::power::battMonDefaultForBoard("solide_s3"), "Solide S3 defaults ON");
+  static_assert(!nimbus::power::battMonDefaultForBoard("freenove_s3"), "Freenove defaults OFF");
+  // Both shipped boards are present in the table (a new board must add a row).
+  bool haveSolide = false, haveFreenove = false;
+  for (const auto& e : nimbus::power::kBoardBattMonDefaults) {
+    if (nimbus::power::boardSlugEq(e.boardSlug, "solide_s3")) haveSolide = true;
+    if (nimbus::power::boardSlugEq(e.boardSlug, "freenove_s3")) haveFreenove = true;
+  }
+  TEST_ASSERT_TRUE_MESSAGE(haveSolide, "solide_s3 must have an explicit battMon default row");
+  TEST_ASSERT_TRUE_MESSAGE(haveFreenove, "freenove_s3 must have an explicit battMon default row");
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_liion_percent_curve);
+  RUN_TEST(test_board_battmon_defaults);
   RUN_TEST(test_percell_threshold_seeds);
   RUN_TEST(test_1s_full_pack_does_not_insta_sleep);
   RUN_TEST(test_2s_default_would_have_slept_a_full_1s_pack);

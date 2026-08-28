@@ -83,6 +83,7 @@
 #include "nimbus/ring_plan.h"
 #include "nimbus/saver.h"                 // screensaver idle clock (logo after 1 h idle)
 #include "nimbus/settings_menu.h"
+#include "nimbus_board_power.h"           // explicit per-board battMon default (CUM-202)
 #include "nimbus_config.h"
 #include "version.h"
 #include "net/ble_notifier.h"
@@ -404,11 +405,14 @@ static nimbus::power::BatteryEstimate g_battEstimate;
 static uint8_t  battCells()  { if (uint8_t o = agent::store::battCellsOvr()) return o; const uint8_t c = solide::board().batt.cells; return c ? c : uint8_t(NIMBUS_BATT_CELLS); }
 static int      battAdcPin() { return solide::board().batt.sense >= 0 ? int(solide::board().batt.sense) : int(NIMBUS_BATT_SENSE_PIN); }
 static uint16_t battDivX100() { return solide::board().epd.sck < 0 ? solide::board().batt.dividerX100 : agent::store::battDividerX100(); }
-// Battery monitoring on/off. A hand-built board ships WITH a pack, so monitoring
-// defaults ON; an all-in-one desk board (no separate panel option) treats a battery as an
-// add-on, so it defaults OFF (opt-in) - otherwise the floating ADC reads "empty"
-// and the device sleeps with no pack fitted. The owner can opt in (web Settings).
-static bool battMonOn() { return agent::store::battMon(solide::board().epd.sck >= 0); }
+// Battery monitoring on/off. A hand-built board (Solide S3) ships WITH a pack, so
+// monitoring defaults ON; an all-in-one desk board (Freenove CYD) treats a battery as
+// an add-on, so it defaults OFF (opt-in) - otherwise the floating ADC reads "empty"
+// and the device sleeps with no pack fitted. The owner can opt in (web Settings). The
+// default is an EXPLICIT per-board field (nimbus_board_power.h), not the old
+// epd.sck>=0 e-ink proxy that would silently flip if the deprecated epd pins were
+// cleaned out of the board table (CUM-202).
+static bool battMonOn() { return agent::store::battMon(nimbus::battMonDefaultForThisBoard()); }
 static uint16_t g_battSavedSegments = 0xFFFF;   // last-persisted segment count (persist on change)
 // Low-battery ping gate (field 2026-08-11: the T1 edge re-fires on every wake-
 // sniff boot; the ping needs its own persisted memory). Loaded in setup().
