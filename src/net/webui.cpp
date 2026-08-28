@@ -45,6 +45,7 @@
 #include "nimbus/orch/compact.h"   // modelCtxTokens (window table)
 #include "nimbus/power/bright_cap.h"          // resilience: simulated mic/speaker faults
 #include "nimbus/power/power_monitor.h"       // battery chemistry + custom curve parse (config)
+#include "nimbus_board_power.h"               // explicit per-board battMon default (CUM-202)
 #include "nimbus/orch/danger_zone.h"          // CUM-15 confirm phrases (one source of truth)
 
 #include "../agent/agent_config.h"
@@ -453,7 +454,7 @@ static void buildState(String& out) {
   batt["lbSaver"] = agent::store::lowBattSaver();
   // Battery monitoring on/off; default is board-derived (all-in-one boards, which
   // are fixed-panel boards, treat a battery as opt-in and default this OFF).
-  batt["battMon"] = agent::store::battMon(solide::board().epd.sck >= 0);
+  batt["battMon"] = agent::store::battMon(nimbus::battMonDefaultForThisBoard());
 
   // E1 artifact store presence (SD /mem/files): the web UI's Files section +
   // the campaign harness read this.
