@@ -390,9 +390,65 @@ static void test_alert_gate_unsynced_clock() {
   TEST_ASSERT_FALSE(fresh.shouldPing(9, true, 43));   // but only one per boot
 }
 
+// ── per-cell sleep/wake thresholds (CUM-202) ─────────────────────────────────
+// The sleep + wake mV are PACK voltages; their defaults and clamp ceilings scale
+// with the series-cell count so a 1S board is not judged against a 2S floor.
+void test_percell_threshold_seeds(void) {
+  using namespace nimbus::power;
+  // 2S reproduces the historical constants EXACTLY (no behaviour change on the Solide).
+  TEST_ASSERT_EQUAL_UINT16(6000, sleepMvDefaultFor(2));
+  TEST_ASSERT_EQUAL_UINT16(6800, sleepMvCeilFor(2));
+  TEST_ASSERT_EQUAL_UINT16(6500, wakeMvDefaultFor(2));
+  TEST_ASSERT_EQUAL_UINT16(7600, wakeMvCeilFor(2));
+  TEST_ASSERT_EQUAL_UINT16(kWakeMvDefault, wakeMvDefaultFor(2));
+  // 1S halves them - all below a full 1S cell (~4200 mV).
+  TEST_ASSERT_EQUAL_UINT16(3000, sleepMvDefaultFor(1));
+  TEST_ASSERT_EQUAL_UINT16(3400, sleepMvCeilFor(1));
+  TEST_ASSERT_EQUAL_UINT16(3250, wakeMvDefaultFor(1));
+  TEST_ASSERT_EQUAL_UINT16(3800, wakeMvCeilFor(1));
+  // 0 cells is treated as 1 (never divide-by / multiply-by zero).
+  TEST_ASSERT_EQUAL_UINT16(sleepMvDefaultFor(1), sleepMvDefaultFor(0));
+}
+
+// The core CUM-202 defect: a full 1S pack must NOT trip the voltage-grounded T2.
+void test_1s_full_pack_does_not_insta_sleep(void) {
+  using namespace nimbus::power;
+  // The 1S default sleep threshold, exactly as the store now seeds it.
+  Policy p(PolicyConfig{20, 8, 5, 1500, sleepMvDefaultFor(1), 3, false});
+  uint32_t t = 0;
+  // A full 1S cell reads ~4200 mV pack; hammer it well past the debounce count.
+  for (int i = 0; i < 10; i++) {
+    auto ev = p.update(mvSample(4200, 100), t += 60000);
+    TEST_ASSERT_FALSE(ev.enterT2);
+  }
+  TEST_ASSERT_FALSE(p.shutdownRequested());
+  // And a genuinely empty 1S cell (~3000 mV) still protects after the debounce.
+  Policy q(PolicyConfig{20, 8, 5, 1500, sleepMvDefaultFor(1), 3, false});
+  uint32_t u = 0;
+  for (int i = 0; i < 2; i++) TEST_ASSERT_FALSE(q.update(mvSample(2990, 2), u += 60000).enterT2);
+  TEST_ASSERT_TRUE(q.update(mvSample(2990, 2), u += 60000).enterT2);
+  TEST_ASSERT_TRUE(q.shutdownRequested());
+}
+
+// Documents the bug being fixed: the OLD 2S default (6000) on a 1S pack was an
+// unconditional sleep - a full 4200 mV pack is below 6000 and sleeps after debounce.
+void test_2s_default_would_have_slept_a_full_1s_pack(void) {
+  using namespace nimbus::power;
+  Policy bad(PolicyConfig{20, 8, 5, 1500, /*t2PackMv=*/6000, 3, false});
+  uint32_t t = 0;
+  bad.update(mvSample(4200, 100), t += 60000);
+  bad.update(mvSample(4200, 100), t += 60000);
+  auto ev = bad.update(mvSample(4200, 100), t += 60000);
+  TEST_ASSERT_TRUE(ev.enterT2);            // the pre-fix behaviour: full pack, asleep
+  TEST_ASSERT_TRUE(bad.shutdownRequested());
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_liion_percent_curve);
+  RUN_TEST(test_percell_threshold_seeds);
+  RUN_TEST(test_1s_full_pack_does_not_insta_sleep);
+  RUN_TEST(test_2s_default_would_have_slept_a_full_1s_pack);
   RUN_TEST(test_null_monitor_is_desk_powered);
   RUN_TEST(test_liion_pack_plausibility_rejects_a_floating_divider);
   RUN_TEST(test_invalid_samples_change_nothing);

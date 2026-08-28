@@ -7,6 +7,7 @@
 #include <esp_random.h>
 #include <esp_heap_caps.h>   // PSRAM buffer for the usage-history JSON payload
 #include <solide/memory.h>
+#include <solide/board.h>   // batt.cells: per-cell sleep/wake threshold scaling (CUM-202)
 #include <LittleFS.h>   // daily usage history (/data/usage_hist.txt - too big for NVS)
 
 #include <ctime>
@@ -477,8 +478,16 @@ uint16_t battCapMah()   { int v = solide::memory::getInt(AKEY_BATT_CAPMAH, 3500)
 String   battChem()     { return solide::memory::getString(AKEY_BATT_CHEM, "liion"); }   // "liion" | "lifepo4"
 uint8_t  battCellsOvr() { int v = solide::memory::getInt(AKEY_BATT_CELLS, 0); return (v == 1 || v == 2) ? (uint8_t)v : 0; }  // 0 = board default
 String   battCurve()    { return solide::memory::getString(AKEY_BATT_CURVE, ""); }        // "" = chemistry default curve
-uint16_t sleepMv()      { int v = solide::memory::getInt(AKEY_SLEEP_MV, 6000); return v < 0 ? 0 : (v > 6800 ? 6800 : (uint16_t)v); }
-uint16_t wakeMv()       { int v = solide::memory::getInt(AKEY_WAKE_MV, nimbus::power::kWakeMvDefault); return v < 0 ? 0 : (v > 7600 ? 7600 : (uint16_t)v); }
+// Effective series-cell count for the sleep/wake VOLTAGE thresholds: an owner
+// override wins, else the board map (both boards set it; guard to 1). The sleep +
+// wake mV are PACK voltages, so their defaults AND clamp ceilings must scale with
+// cells - a 2S 6000 mV floor is above the whole 1S range and would insta-sleep a
+// full 1S board the moment it left USB (CUM-202).
+static uint8_t battCellsEff() { uint8_t o = battCellsOvr(); if (o) return o; uint8_t c = solide::board().batt.cells; return c ? c : 1; }
+uint16_t sleepMv()      { const uint8_t n = battCellsEff(); const uint16_t ceil = nimbus::power::sleepMvCeilFor(n);
+                          int v = solide::memory::getInt(AKEY_SLEEP_MV, nimbus::power::sleepMvDefaultFor(n)); return v < 0 ? 0 : (v > ceil ? ceil : (uint16_t)v); }
+uint16_t wakeMv()       { const uint8_t n = battCellsEff(); const uint16_t ceil = nimbus::power::wakeMvCeilFor(n);
+                          int v = solide::memory::getInt(AKEY_WAKE_MV, nimbus::power::wakeMvDefaultFor(n)); return v < 0 ? 0 : (v > ceil ? ceil : (uint16_t)v); }
 bool     sleepOvr()     { return solide::memory::getInt(AKEY_SLEEP_OVR, 0) != 0; }
 bool     brightOvr()    { return solide::memory::getInt(AKEY_BRIGHT_OVR, 0) != 0; }
 // Owner default OFF: a ring breathing red all night is the brightest thing the
@@ -512,8 +521,8 @@ void setBattCapMah(uint16_t m) { solide::memory::setInt(AKEY_BATT_CAPMAH, m < 10
 void setBattChem(const String& slug) { solide::memory::setString(AKEY_BATT_CHEM, slug == "lifepo4" ? "lifepo4" : "liion"); }
 void setBattCells(uint8_t cells) { solide::memory::setInt(AKEY_BATT_CELLS, (cells == 1 || cells == 2) ? cells : 0); }
 void setBattCurve(const String& csv) { solide::memory::setString(AKEY_BATT_CURVE, csv); }
-void setSleepMv(uint16_t v)  { solide::memory::setInt(AKEY_SLEEP_MV, v > 6800 ? 6800 : v); }
-void setWakeMv(uint16_t v)   { solide::memory::setInt(AKEY_WAKE_MV, v > 7600 ? 7600 : v); }
+void setSleepMv(uint16_t v)  { const uint16_t ceil = nimbus::power::sleepMvCeilFor(battCellsEff()); solide::memory::setInt(AKEY_SLEEP_MV, v > ceil ? ceil : v); }
+void setWakeMv(uint16_t v)   { const uint16_t ceil = nimbus::power::wakeMvCeilFor(battCellsEff());  solide::memory::setInt(AKEY_WAKE_MV,  v > ceil ? ceil : v); }
 void setSleepOvr(bool on)    { solide::memory::setInt(AKEY_SLEEP_OVR, on ? 1 : 0); }
 void setBrightOvr(bool on)   { solide::memory::setInt(AKEY_BRIGHT_OVR, on ? 1 : 0); }
 void setTftFlip(bool on)      { solide::memory::setInt(AKEY_TFT_FLIP, on ? 1 : 0); }

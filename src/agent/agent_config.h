@@ -271,14 +271,14 @@
 #define AKEY_SFX_VOL        "sfxVol"         // master speaker volume 0-100 (%)
 #define AKEY_SAVER_MIN      "saverMin"       // screensaver idle minutes (0 = off)
 #define AKEY_COMPACT_KB     "compactKB"      // fold trigger: chat KB since last fold (0 = off)
-#define AKEY_SLEEP_MV       "sleepMv"        // low-batt deep-sleep threshold, pack mV (0 = off; default 6000 = ~10% real SoC)
+#define AKEY_SLEEP_MV       "sleepMv"        // low-batt deep-sleep threshold, pack mV (0 = off; default/clamp scale per cell: 2S 6000 = ~10% real SoC, 1S 3000)
 #define AKEY_BATT_RTOP      "battRtop"       // divider R_top (ohms); default 220000
 #define AKEY_BATT_RBOT      "battRbot"       // divider R_bottom (ohms); default 100000
 #define AKEY_BATT_CAPMAH    "battCapMah"     // pack capacity mAh (LiitoKala 3500, reclaimed vape ~500, ...)
 #define AKEY_BATT_CHEM      "battChem"       // battery chemistry slug: "liion" (default) | "lifepo4"; picks the SoC curve
 #define AKEY_BATT_CELLS     "battCells"      // series cell count override (1/2); 0/absent = board-derived default
 #define AKEY_BATT_CURVE     "battCurve"      // optional custom SoC curve "mv:pct,mv:pct,..." (high-mV first); "" = chemistry default
-#define AKEY_WAKE_MV        "wakeMv"         // stay-awake bar after a low-batt sleep (rested-empty packs read 6918-6992; default 7200)
+#define AKEY_WAKE_MV        "wakeMv"         // stay-awake bar after a low-batt sleep (rested-empty 2S packs read 6918-6992; default/clamp scale per cell: 2S 6500, 1S 3250)
 #define AKEY_LOWBATT_PING   "lbPingEp"       // epoch of the last low-battery owner ping (AlertGate persistence - survives the 5-min wake-sniff boots)
 #define AKEY_SLEEP_OVR      "sleepOvr"       // owner/AI override: skip the low-batt sleep (deep-discharge risk accepted)
 #define AKEY_BRIGHT_OVR     "brightOvr"      // owner/AI override: lift the 60% LED cap to 100% (panel/shell heat risk accepted)
