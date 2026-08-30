@@ -90,6 +90,7 @@ injected `Embedder` (text → int8 vector via the provider `/embeddings` API).
 | `memory.config` | View or tune how memory is retrieved. | `action` (**required**, `view` \| `update`); on `update`: `retrieval_count` (int), `relevance_threshold` (number), `decay_factor` (number), `max_context_bytes` (int), `max_vectors` (int), `recency_half_life_hours` (int), `mmr_lambda` (number) | live (update admin-only) |
 | `memory.scratchpad` | Read or edit your working scratchpad (active task + short/mid/long-term goal tiers). | `action` (**required**, `view` \| `set_active` \| `add` \| `replace` \| `clear`), `tier` (`short` \| `mid` \| `long`), `text` (string), `items` (array of string) | live (admin-only) |
 | `memory.episodic` | Search your episodic history by kind, session, text, or a time window. | `kind` (enum: `message`, `tool_output`, `llm_response`, `file`, `image`, `audio`, `transcript`, `log`), `session` (string), `text` (string), `limit` (int, clamped 1–100), `since_hours` (int), `before_hours` (int), `before` (paging cursor) | live (device only) |
+| `memory.archive` | Search or restore memories that expired (reached their TTL) and were moved to the SD archive instead of being deleted. | `action` (**required**, `search` \| `restore` \| `list`); `query` (string), `id` (string), `n_results` (int), `limit` (int), `ttl` (enum, on restore) | live (SD only) |
 
 Notes:
 - `memory.write` derives a deterministic content id (djb2 hash), embeds the
@@ -113,6 +114,19 @@ Notes:
   `system` holds the device event timeline (restarts with reset reason, firmware
   updates with release notes, mode switches, storage changes). Registered only
   when an episodic store is bound (device).
+- `memory.archive` reaches the **cold store** of TTL-expired memories. Because
+  re-embedding is expensive, a memory that reaches its time-to-live is moved to an
+  archive on the SD card (embedding preserved) instead of being deleted, so it can be
+  found or restored later. It is **SD-only**: registered only when a card is present,
+  and every action refuses cleanly if the card is later pulled. `restore` brings an
+  entry back into the live store and counts against the normal memory limit (it resets
+  the entry's TTL, lifts its importance above the prune floor, and honors
+  `max_vectors` / the pin budget - refusing without losing the entry if the live store
+  is full). Archived entries are invisible to `memory.search`/recall; this is the only
+  surface that reaches them. Everything stays inside the caller's namespace: a member
+  searches or restores only its own archived memories. See
+  [orchestrator-storage.md §2a](../orchestrator-storage.md). With no card, memories
+  drop at their TTL exactly as before and this tool is absent.
 
 ## `session.*` - sub-agent control
 

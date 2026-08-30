@@ -22,6 +22,9 @@
 namespace nimbus {
 namespace orch {
 
+class VectorArchive;   // cold store for expired entries (vector_archive.h) - the
+                       // optional prune sink; only a pointer is held here.
+
 // ---- reserved data namespaces (v3.7.0) --------------------------------------
 // Declared here (the lowest layer that stores them) so vector_memory does not
 // depend on the tool layer. kOwnerNs is the human who owns the device - ALL of
@@ -166,11 +169,20 @@ class VectorMemory {
   // search() returned after injecting them into a turn.
   int boostAccessed(const std::vector<std::string>& ids, float impBoost, uint32_t nowHours = 0);
 
+  // Attach a cold store as the prune sink (CUM-225). When set, pruneExpired MOVES
+  // each expired entry into the archive (embedding preserved) instead of dropping
+  // it; when null (the default, and what the no-SD device leaves it), pruneExpired
+  // deletes exactly as before. Set once at wiring time; the pointer must outlive
+  // the store. Passing null detaches (e.g. on SD loss - back to drop-at-TTL).
+  void setArchiveSink(VectorArchive* sink) { archiveSink_ = sink; }
+
   // Maintenance cadence: decay then prune.
   //  decayImportance: importance *= factor for non-permanent entries, floor
   //    kDecayFloor.
-  //  pruneExpired: delete entries with importance < kMinImportance OR older than
-  //    ttlHours (unless permanent/creator). Returns the count removed.
+  //  pruneExpired: remove entries with importance < kMinImportance OR older than
+  //    ttlHours (unless permanent/creator). With an archive sink attached, each
+  //    removed entry is moved into it (stamped `nowHours`) rather than dropped.
+  //    Returns the count removed from the live set.
   void decayImportance(float factor = kDefaultDecay);
   int  pruneExpired(uint32_t nowHours);
   // Re-stamp entries created with a BOOT-RELATIVE clock (createdAtHours below
@@ -256,6 +268,7 @@ class VectorMemory {
 
   int dims_ = 256;
   int maxEntries_ = 0;   // 0 = unlimited
+  VectorArchive* archiveSink_ = nullptr;   // CUM-225: prune moves here when set
   std::vector<Stored, WorkingAllocator<Stored>> entries_;
 };
 
@@ -263,6 +276,12 @@ class VectorMemory {
 // Returns 1.0 (orthogonal) if either is zero-length or widths differ. Exposed
 // for tests.
 float cosineDistanceI8(const std::vector<int8_t>& a, const std::vector<int8_t>& b);
+
+// Cosine distance over raw int8 buffers, both `n` wide. Allocator-agnostic (works
+// over a std::vector query and a PSRAM-allocated stored vec alike), so a sibling
+// engine (vector_archive) can score without copying the PSRAM buffers out. Returns
+// 1.0 for n==0 or a zero-length vector.
+float cosineDistanceRaw(const int8_t* a, const int8_t* b, size_t n);
 
 }  // namespace orch
 }  // namespace nimbus

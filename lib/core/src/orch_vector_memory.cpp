@@ -4,6 +4,8 @@
 #include <cmath>
 #include <cstring>
 
+#include "nimbus/orch/vector_archive.h"   // prune sink (CUM-225)
+
 namespace nimbus {
 namespace orch {
 
@@ -95,6 +97,10 @@ std::vector<int8_t> VectorMemory::quantize(const std::vector<float>& v) {
 float cosineDistanceI8(const std::vector<int8_t>& a, const std::vector<int8_t>& b) {
   if (a.size() != b.size() || a.empty()) return 1.0f;
   return cosineRaw(a.data(), b.data(), a.size());
+}
+
+float cosineDistanceRaw(const int8_t* a, const int8_t* b, size_t n) {
+  return cosineRaw(a, b, n);
 }
 
 VecEntry VectorMemory::toPublic(const Stored& s) {
@@ -275,9 +281,15 @@ int VectorMemory::pruneExpired(uint32_t nowHours) {
   size_t before = entries_.size();
   entries_.erase(
       std::remove_if(entries_.begin(), entries_.end(),
-                     [nowHours](const Stored& e) {
-                       return isExpiredRaw(e.importance, e.ttlHours, e.createdAtHours,
-                                           e.permanentFlag, e.creatorFlag, nowHours);
+                     [this, nowHours](const Stored& e) {
+                       if (!isExpiredRaw(e.importance, e.ttlHours, e.createdAtHours,
+                                         e.permanentFlag, e.creatorFlag, nowHours))
+                         return false;
+                       // CUM-225: with a cold store attached, an expired entry is
+                       // MOVED there (embedding preserved) instead of dropped. The
+                       // no-SD device leaves the sink null and this stays a delete.
+                       if (archiveSink_) archiveSink_->archive(toPublic(e), nowHours);
+                       return true;
                      }),
       entries_.end());
   return (int)(before - entries_.size());

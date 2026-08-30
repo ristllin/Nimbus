@@ -76,6 +76,16 @@ SD. Everything bulk targets SD with a **bounded** LittleFS/RAM degraded mode.
 
 ## 2. VDB - working set in PSRAM, durable on SD
 
+The engine is **in-house**, not a ported vector database: `VectorMemory`
+(`lib/core`) is a flat (brute-force) cosine store over **int8-quantized** vectors at
+a **set-once dimensionality** (256 by default; the embed gate may lock a
+provider-native width). "Flat" means every recall scans every candidate - fine for
+the low thousands of small vectors a desk device holds, and it needs no index to
+keep in sync. Recall is `relevance x recency x importance` with query-time TTL
+filtering, near-duplicate collapse, and MMR-on-ties. The whole store is browsable and
+capped; there is no ANN library and no on-device embedder (vectors arrive already
+embedded through the provider `/embeddings` seam).
+
 `VectorMemory` is portable/Arduino-free and allocator-agnostic, so its allocations
 are routed **from the device seam**, not by editing the portable class.
 
@@ -94,6 +104,38 @@ are routed **from the device seam**, not by editing the portable class.
 - **Migration** is already half-built: `loadBlob` reads SD-first, LittleFS-
   fallback, so the first SD-backed persist carries existing LittleFS memories onto
   the card.
+
+### 2a. Archive - the TTL-expired cold store (CUM-225)
+
+Re-embedding text is the expensive operation the device most wants to avoid, so a
+memory that reaches its time-to-live is **not deleted - it is moved to an archive**,
+embedding and all, where it can be searched or restored later without paying to embed
+it again. **This exists only on the SD card.** With no card the live engine drops
+entries at TTL exactly as before; an archive is a bonus of having storage, never
+something the card-less device pays for.
+
+- **Same engine, separate store.** `VectorArchive` (`lib/core`) is the same in-house
+  int8 flat-cosine PSRAM store as the live VDB, persisted to its own SD blob
+  `/mem/archive.bin` (byte-clean `serialize`/`deserialize`, `.tmp`→rename, written
+  only when a **dirty flag** says it changed). It is a distinct engine, not a flag on
+  `VectorMemory`, so archived entries are **invisible to normal recall by
+  construction** - they are simply not in the live set.
+- **Expiry moves, not deletes.** `VectorMemory::pruneExpired` takes an optional
+  archive **sink**. The device attaches it **only when a card is present**, so the
+  nightly maintenance pass that used to delete an expired entry now moves it into the
+  archive instead. On SD loss mid-run the sink detaches (back to drop-at-TTL); on
+  recovery it re-attaches.
+- **Capped, FIFO.** The archive is bounded (default 2000 entries); when full the
+  **oldest-archived** entry is evicted first. Pinned/creator memories never expire, so
+  nothing pinned is ever in the archive.
+- **Tools, gated on the card.** `memory.archive` (`search` | `restore` | `list`) is
+  registered **only when the archive is bound** (i.e. a card was present at boot), and
+  every action re-checks the card is still there (a mid-run pull refuses cleanly).
+  `restore` brings an entry back into the live store, **quota-respecting**: it resets
+  the TTL clock, lifts importance above the prune floor, honors `max_vectors` and the
+  pin budget, and - if the live store is at its cap - refuses without losing the
+  archived entry. All of it stays inside the caller's **namespace boundary**: a member
+  only searches or restores its own archived memories.
 
 ## 3. Episodic - SD append-log + index, PSRAM recent window
 
