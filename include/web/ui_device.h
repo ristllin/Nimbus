@@ -297,6 +297,14 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 </div>
 </details>
 
+<details class=setgroup><summary>Power<span class=chev>&rsaquo;</span></summary>
+<div class=setbody>
+<p class=hint>Turn the device off to save power. It keeps its settings.</p>
+<div class=row style="margin-top:6px"><button id=powerOff type=button>Power Off&hellip;</button><button class=qh type=button aria-expanded=false aria-label="About power off">?</button></div>
+<p class="hint tip">Saves everything, turns the screen off, and puts the device into deep sleep. How it comes back on depends on the model: touch models wake when you tap the screen; others wake when you reconnect power.</p>
+</div>
+</details>
+
 <details class=setgroup><summary style="color:var(--crit)">Danger zone<span class=chev>&rsaquo;</span></summary>
 <div class=setbody>
 <b style="display:block;margin-top:6px;color:var(--crit)">Erase storage</b>

@@ -106,6 +106,13 @@ struct WebConfig {
   // Full-card format (POST /api/sdformat, its OWN typed confirm): reformat the whole
   // card, not just /mem. Deferred flag; null or unsupported => the route reports it.
   std::function<void()>       sdFormat;
+  // Power off (POST /api/poweroff, CUM-224): clean shutdown + ESP32-S3 deep sleep.
+  // Deferred flag like the resets - the AsyncTCP task cannot sleep the chip inline
+  // (mode rule); the main loop runs the shutdown. Also reports whether a touch can
+  // wake this board, so the web can show the honest "tap to wake" vs "reconnect
+  // power" interstitial.
+  std::function<void()>       powerOff;
+  std::function<bool()>       canWakeOnTouch;
   // Web chat (POST /api/chat): inject a message as an orchestrator turn (runs on the
   // poll task). chatPoll() returns + clears the last web-turn reply ("" if none yet).
   // FALSE when the device could not accept the message (inbound queue full

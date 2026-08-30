@@ -331,6 +331,7 @@ static volatile bool g_factoryResetPending = false;  // web factory-reset: erase
 static volatile bool g_factoryEraseSd = false;       // CUM-15: also erase /mem in the factory-reset flow
 static volatile bool g_sdResetPending = false;       // web SD reset: erase /mem durable store + reboot
 static volatile bool g_sdFormatPending = false;      // CUM-15: web full-card format (reformat whole SD) + reboot
+static volatile bool g_powerOffPending = false;      // CUM-224: web power-off -> clean shutdown + deep sleep on main task
 // Voice turn "waiting for the agent" state: after the transcript is sent, a theme
 // spinner runs until the reply lands (or a timeout) so the ring shows work in flight
 // instead of going dark. Cleared in the reply drain / timeout in loop().
@@ -1723,6 +1724,60 @@ static uint32_t s_lowBattGraceUntil = 0;    // awake window before re-sleeping
   __builtin_unreachable();
 }
 
+// ── Software power-off (CUM-224) ─────────────────────────────────────────────
+// The "Power off" menu row and the web power-off button land here: a clean
+// shutdown (persist config, flush the memory journal), a readable notice on the
+// panel, ring + backlight off, then ESP32-S3 deep sleep. Wake is per board: a
+// board that wires the touch controller's INT line to an RTC GPIO (Freenove
+// CYD's FT6336U INT) wakes on a tap via ext0; a board that leaves it
+// unconnected (Solide S3, XPT2046 T_IRQ not routed) has no wake gesture and
+// returns only on a power-cycle, so the copy never promises a tap.
+
+// The touch interrupt line, if the board wires it to a GPIO: FT6336U INT
+// (capacitive) or XPT2046 T_IRQ (resistive). -1 when left unconnected.
+static int touchWakePin() {
+  const auto& b = solide::board();
+  if (b.touchI2c.intr >= 0) return b.touchI2c.intr;   // FT6336U INT (Freenove CYD)
+  if (b.tft.tirq >= 0)      return b.tft.tirq;          // XPT2046 T_IRQ (resistive, if a board wires it)
+  return -1;
+}
+// ext0 deep-sleep wake needs an RTC-capable GPIO (0-21 on the ESP32-S3).
+static bool boardCanWakeOnTouch() {
+  const int p = touchWakePin();
+  return p >= 0 && p <= 21;
+}
+
+// Distinguishes a power-off wake from a low-batt wake at the next boot: both use
+// ext0, so the wakeup cause alone cannot tell them apart. Survives deep sleep in
+// RTC memory; the boot path clears it and skips the low-batt grace window.
+RTC_DATA_ATTR static bool s_rtcPowerOff = false;
+
+[[noreturn]] static void enterPowerOffSleep() {
+  persistConfig();
+  agent::memory::flushPendingEvents();   // commit any queued memory/journal writes
+
+  const bool tapWakes = boardCanWakeOnTouch();
+  hw::tft::setBacklight(nimbus::backlightPctFor(g_cfg.posture()));
+  g_askOverride = tapWakes
+      ? "Powered off.\nTap the screen to wake it."
+      : "Powered off.\nReconnect power to turn it back on.";
+  renderScreen(attn::ScreenId::Ask, -1);
+  solide::leds::clearFrame();
+  solide::leds::show(solide::leds::Pattern::Solid, 0, 0, 0);
+  delay(4800);                // let the notice + any in-flight refresh land first
+  hw::tft::setBacklight(0);   // panel dark: the point of powering off is to stop drawing
+
+  s_rtcPowerOff = true;       // tell the next boot this was a deliberate power-off
+  if (tapWakes) {
+    // The FT6336U INT idles high and pulses LOW on a touch, so wake on level 0.
+    esp_sleep_enable_ext0_wakeup(gpio_num_t(touchWakePin()), 0);
+  }
+  // No timer wake: "Power off" stays off until the owner acts (a tap where the
+  // panel can wake it, a power-cycle otherwise) - never a periodic self-wake.
+  esp_deep_sleep_start();
+  __builtin_unreachable();
+}
+
 // Pin the ring to solid white at `bright` (0 during a settle read). Same apply path the
 // `led` override uses, so RENDER?/`/api/state` stay honest. Main task only (owns the LEDs).
 static void applyHighLoadRing(uint8_t bright) {
@@ -2785,6 +2840,8 @@ void setup() {
   wc.onPreview = [](int profileId, int status) { startPreview(profileId, status); };
   wc.factoryReset = [](bool eraseSd) { g_factoryEraseSd = eraseSd; g_factoryResetPending = true; };  // main loop erases NVS (+optional /mem) + reboots, keeps identity
   wc.sdReset = [] { g_sdResetPending = true; };            // main loop erases /mem + reboots
+  wc.powerOff = [] { g_powerOffPending = true; };          // CUM-224: main loop runs clean shutdown + deep sleep
+  wc.canWakeOnTouch = [] { return boardCanWakeOnTouch(); };  // honest web interstitial copy per board
   // Full-card format (CUM-15 / CUM-132): the board-support driver now exposes a
   // low-level format primitive (solide::storage::format(): FATFS f_mkfs over the
   // mounted card, SPI + SDMMC). Wiring this lights up webui's canFormat capability
@@ -3172,7 +3229,13 @@ void setup() {
   g_power.policyRef().setT2Override(agent::store::sleepOvr());
   {
     const esp_sleep_wakeup_cause_t wc = esp_sleep_get_wakeup_cause();
-    if (wc == ESP_SLEEP_WAKEUP_TIMER || wc == ESP_SLEEP_WAKEUP_EXT0) {
+    if (s_rtcPowerOff) {
+      // A wake from a deliberate "Power off" (touch ext0 on a wake-capable board):
+      // boot normally, never into the low-batt grace path. Clear the RTC flag so a
+      // later low-batt sleep is classified correctly.
+      s_rtcPowerOff = false;
+      agent::alogf("power: woke from software power-off (cause=%d) - normal boot", int(wc));
+    } else if (wc == ESP_SLEEP_WAKEUP_TIMER || wc == ESP_SLEEP_WAKEUP_EXT0) {
       s_wokeFromLowBatt = true;
       s_lowBattGraceUntil = millis() + 90u * 1000u;   // 90 s to react
       agent::alogf("power: woke from low-batt sleep (cause=%d) - timer/charger sniff", int(wc));
@@ -3273,6 +3336,7 @@ static void openSettingsMenu() {
   // is about ghosting).
   g_menu.setScreenFlip(agent::store::tftFlip());   // Settings > Display > Display flip (TFT only)
   g_menu.setHasRing(solide::board().hasRing);      // hide ring-only Customize params on a ringless board (CUM-187)
+  g_menu.setTouchWake(boardCanWakeOnTouch());      // Power off copy: "tap to wake" only where the touch INT is wired (CUM-224)
   g_menu.setSaverMinutes(agent::store::saverMin());
   g_menu.setAutoUpdate(agent::store::otaAutoUpdate());
   g_menu.setSttProvider(agent::store::sttProvider() == "openai" ? 1 : 0);
@@ -3531,6 +3595,13 @@ static void settleMenuAfterMutation(uint32_t now) {
     g_menu.close();
     runTouchCalibration();
     g_menuNeedsPaint = false;   // the routine already restored the live screen
+  }
+  if (g_menu.powerOffRequested()) {
+    // Settings > Power off: clean shutdown + deep sleep. The FSM already closed
+    // the menu; this never returns (the chip sleeps). Opt-in and confirmed, so it
+    // can never fire from a stray tap. (CUM-224)
+    g_menu.clearPowerOffRequest();
+    enterPowerOffSleep();
   }
   // ---- Connectivity > Wi-Fi: the on-device escape hatch --------------
   // These four flags are the ONLY thing that makes that submenu real. The
@@ -3881,6 +3952,13 @@ void loop() {
 #endif  // feed the F12 watchdog every iteration
   otaupd::tick();        // OTA: mark-valid once healthy + check/auto-install cadence
   otaLoopUx();           // OTA install panel/ring UX (no-op unless installing)
+  if (g_powerOffPending) {
+    // Web "Power off" (CUM-224): the AsyncTCP task can't sleep the chip inline
+    // (mode rule) so it set this flag; enter the shared clean-shutdown + deep-sleep
+    // path here on the main task. Never returns.
+    g_powerOffPending = false;
+    enterPowerOffSleep();
+  }
   if (g_factoryResetPending) {  // web factory reset: wipe config, KEEP identity + name, reboot fresh
     // CUM-50 + CUM-15 union: factoryResetPreserveIdentity() keeps BOTH the hardware
     // identity (scrModel/tftFlip/tchCal/otaType, so a TFT board comes back on the right

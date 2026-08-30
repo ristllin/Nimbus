@@ -901,6 +901,21 @@ function loadConnect(){
       'Reconnect to its <b>&ldquo;…-setup&rdquo;</b> Wi-Fi network to run the setup wizard.</p></div>';
   }).catch(()=>toast('Reset failed - try again'));};
 })();
+// Power off (CUM-224): confirm, POST /api/poweroff, then show an honest offline
+// interstitial. The device goes to deep sleep, so the page cannot poll it back -
+// replace the whole body with a clear "it is asleep" screen instead of letting the
+// 3 s state poll turn into a connection error. The wake copy follows the response's
+// tapWakes: touch models wake on a tap, others on reconnecting power.
+(function(){const b=$('powerOff'); if(!b)return; b.onclick=()=>{
+  if(!confirm('Power the device off?\n\nIt saves everything and goes to sleep. Touch models wake when you tap the screen; others wake when you reconnect power.'))return;
+  fetch('/api/poweroff',{method:'POST'}).then(r=>r.ok?r.json():Promise.reject(r.status)).then((j)=>{
+    const wake=(j&&j.tapWakes)?'Tap its screen to wake it.':'Reconnect its power to turn it back on.';
+    _authPaused=true;   // the device is sleeping; stop the background pollers hitting a dead host
+    document.body.innerHTML='<div id=sleepScreen style="max-width:460px;margin:18vh auto;padding:0 20px;text-align:center;font-family:inherit;color:var(--ink)">'+
+      '<img src=/logo.svg style="width:52px;height:52px"><h2 style="margin:14px 0 8px">The device is off</h2>'+
+      '<p style="color:var(--ink2);line-height:1.5">The screen is off and the device is asleep. '+wake+'</p></div>';
+  }).catch((e)=>toast(e===401?'Sign in required':'Couldn\'t power off - try again'));};
+})();
 // Full-card format (CUM-15): its own typed confirm, distinct from Erase Storage.
 (function(){const b=$('sdFormat'); if(!b)return; b.onclick=()=>{
   const p=prompt('Reformat the entire SD card?\n\nThis erases the WHOLE card, not just the assistant\'s data. Use it only if the card is corrupted. The device restarts. This can take up to a minute.\n\nType FORMAT CARD to confirm:');

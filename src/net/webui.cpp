@@ -2162,6 +2162,21 @@ void beginWeb(const WebConfig& wc) {
     s_wc.sdFormat();
   });
 
+  // Power off (CUM-224): clean shutdown + ESP32-S3 deep sleep. Token-gated. The
+  // actual sleep is deferred to the main loop (the AsyncTCP task cannot sleep the
+  // chip inline - mode rule). The reply says the device is going to sleep and
+  // whether a screen touch can wake it, so the web shows the honest interstitial
+  // ("tap the screen to wake" vs "reconnect power") instead of a bare offline error.
+  s_server.on("/api/poweroff", HTTP_POST, [](AsyncWebServerRequest* r) {
+    if (authBlocked(r)) return;
+    if (!s_wc.powerOff) { r->send(501, "application/json", "{\"error\":\"unsupported\"}"); return; }
+    const bool tapWakes = s_wc.canWakeOnTouch ? s_wc.canWakeOnTouch() : false;
+    r->send(200, "application/json",
+            tapWakes ? "{\"ok\":true,\"sleeping\":true,\"tapWakes\":true}"
+                     : "{\"ok\":true,\"sleeping\":true,\"tapWakes\":false}");
+    s_wc.powerOff();   // sets the deferred flag; main loop runs the shutdown + sleep
+  });
+
   // TTS voice catalog for the picker: OpenAI static; Mistral live from its
   // /v1/audio/voices (fetched + cached on a background task, never blocks here).
   s_server.on("/api/voices", HTTP_GET, [](AsyncWebServerRequest* r) {
