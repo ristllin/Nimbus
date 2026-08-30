@@ -2989,8 +2989,9 @@ function scan(){
   // opposite of the truth.
   if(sc.error)return stop(sc.error);
   // Dedup by SSID keeping the strongest (dual-AP networks list the same name twice),
-  // like every phone's Wi-Fi picker (CUM-233). Hidden ('') SSIDs are all kept.
-  const seen={};
+  // like every phone's Wi-Fi picker (CUM-233). Hidden ('') SSIDs are all kept. seen has
+  // NO prototype so an SSID named "constructor" / "__proto__" is not spuriously seen.
+  const seen=Object.create(null);
   const list=(sc.networks||[]).sort((a,b)=>b.rssi-a.rssi).filter(n=>{const k=n.ssid||'';if(!k)return true;if(seen[k])return false;seen[k]=1;return true;});
   stop('Found '+list.length+' network(s).');
   list.forEach(n=>{
@@ -3988,7 +3989,10 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
           (dispChanged()?'<br>&bull; Display: touch screen - the device restarts when you finish to apply it':'');
       };
       paint(null);
-      fetch('/api/state').then(r=>r.json()).then(st=>{wifiOk=!!st.sta;provOk=!!st.provVerified;paint(st);}).catch(()=>{});
+      // Paint from live state only; do NOT mutate the wizard-scoped wifiOk/provOk here -
+      // a transient false would wrongly re-arm the Back-step advance gates. Finish is
+      // server-authoritative regardless.
+      fetch('/api/state').then(r=>r.json()).then(paint).catch(()=>{});
     }
   }
   function doScan(){
@@ -4001,8 +4005,9 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
       stop('');
       // Dedup by SSID keeping the strongest (dual-AP networks report the same name
       // twice at different RSSI) - like every phone's Wi-Fi list (CUM-233). Hidden
-      // ('') SSIDs are all kept.
-      const seen={};
+      // ('') SSIDs are all kept. seen has NO prototype so an SSID named "constructor"
+      // / "__proto__" / "toString" is not spuriously seen before insertion.
+      const seen=Object.create(null);
       const list=(d.networks||[]).sort((a,b)=>b.rssi-a.rssi).filter(n=>{const k=n.ssid||'';if(!k)return true;if(seen[k])return false;seen[k]=1;return true;});
       if(!list.length){nets.textContent='No networks found.';return;}
       nets.innerHTML=''; list.forEach(n=>{const e=document.createElement('div');e.className='net';
