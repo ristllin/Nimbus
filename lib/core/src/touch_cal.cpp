@@ -73,11 +73,21 @@ std::string formatCal(const Cal& c) {
 Cal boardDefaultCal(TouchKind kind) {
   Cal c;              // nominal min/max span (200..3900); unused on a capacitive panel
   // Both shipping boards mount the controller portrait-native under a landscape
-  // panel, so the canonical mapping swaps the axes and inverts Y. Held in one place
-  // so the fresh-boot default and the web "clear" fallback can never disagree.
+  // panel, so both swap the axes. They differ on the invert, MEASURED per panel -
+  // the seam that CUM-203 splits (a shared swap+invertY default mirrored one axis on
+  // the resistive Solide out of the box):
+  //   - Capacitive (Freenove FT6336U): swap + invertY. Bench-verified at CUM-189.
+  //   - Resistive  (Solide S3 XPT2046): swap ONLY. In the CANONICAL (un-flipped)
+  //     frame the Solide's landscape mount needs no invert; the 180 for an
+  //     upside-down mount is the display flip's job (orientTouch), applied once on
+  //     top and never folded in here (folding it in would double-apply). A fresh
+  //     Solide boots with tftFlip=0, so this lands taps upright out of the box; it
+  //     is exactly what a per-unit tap-the-crosses solves to once the flip is undone
+  //     (a unit calibrated with tftFlip=1 stores swap+invertX+invertY = that plus the
+  //     180). Held in one place so the fresh-boot default and the web "clear"
+  //     fallback can never disagree.
   c.swapXY = true;
-  c.invertY = true;
-  (void)kind;         // both shipping models share this default today; the seam stays per-kind
+  if (kind == TouchKind::Capacitive) c.invertY = true;
   return c;
 }
 

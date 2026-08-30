@@ -505,7 +505,7 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <b style="display:block;margin-top:14px;color:var(--crit)">Factory reset</b>
 <div class=row style="margin-top:6px"><button id=factoryReset type=button style="background:rgba(240,104,122,.12);color:var(--crit)">Factory Reset&hellip;</button></div>
 <div class=row style="margin-top:6px"><label><input type=checkbox id=factoryEraseSd> Also erase the SD card</label></div>
-<p class=hint style="color:var(--crit)">Erases <b>everything</b> (Wi-Fi, API keys, the Telegram list, Bluetooth pairings, themes, sound settings, memory, and the device sign-in code), then restarts into first-time setup. The device keeps its name. This takes a few seconds, or up to a minute when erasing the card.</p>
+<p class=hint style="color:var(--crit)">Erases <b>everything</b> (Wi-Fi, API keys, the Telegram list, Bluetooth pairings, themes, sound settings, memory, the device name, and the device sign-in code), then restarts into first-time setup as a fresh device. This takes a few seconds, or up to a minute when erasing the card.</p>
 </div>
 </details>
 
@@ -1065,16 +1065,26 @@ function showAuth(){
 })();
 // One-time migration hint for a deprecated ?t= sign-in link (CUM-45): the person
 // is already signed in on this browser; nudge them to the Sign-in QR next time.
-function showMigrationHint(){
-  if(!_signinMigrated||$('migHint'))return;
+function renderMigrationHint(){
+  if($('migHint'))return;
   const b=document.createElement('div');b.id='migHint';b.className='warnbox';
-  b.style.cssText='position:fixed;left:50%;top:12px;transform:translateX(-50%);max-width:520px;z-index:200;display:flex;gap:12px;align-items:flex-start';
+  // Own OPAQUE background + lift (CUM-233): the shared .warnbox tint is translucent,
+  // fine for in-flow banners but as a fixed overlay it let the page text bleed through
+  // into an unreadable overlap. A solid raised card sits cleanly over the content.
+  b.style.cssText='position:fixed;left:50%;top:12px;transform:translateX(-50%);max-width:520px;z-index:200;display:flex;gap:12px;align-items:flex-start;background:var(--raise2);box-shadow:0 6px 24px rgba(0,0,0,.45)';
   const s=document.createElement('span');
   s.textContent='You are signed in on this browser. That sign-in link is being retired for security; next time scan the Sign-in QR on the device.';
   const x=document.createElement('button');x.textContent='Got it';
   x.style.cssText='background:var(--raise3);color:var(--ink2);white-space:nowrap';
   x.onclick=()=>b.remove();
   b.appendChild(s);b.appendChild(x);document.body.appendChild(b);
+}
+function showMigrationHint(){
+  if(!_signinMigrated||$('migHint'))return;
+  // Suppress during first-run onboarding (CUM-233): a stale pre-reset browser token
+  // can set _signinMigrated on a factory-reset device, where this notice is the wrong
+  // audience and collides with the setup wizard. Only show it on a configured device.
+  fetch('/api/state').then(r=>r.json()).then(st=>{if(!st.needsOnboarding)renderMigrationHint();}).catch(()=>renderMigrationHint());
 }
 document.addEventListener('DOMContentLoaded',showMigrationHint);
 // No stored token -> gate immediately, before any load/poll renders data.
@@ -1836,7 +1846,7 @@ function loadConnect(){
 // Factory reset: type-to-confirm, then POST the exact confirm phrase the device requires.
 (function(){const b=$('factoryReset'); if(!b)return; b.onclick=()=>{
   const alsoSd=$('factoryEraseSd')&&$('factoryEraseSd').checked;
-  const p=prompt('Erase all content and settings?\n\nThis removes Wi-Fi, API keys, the Telegram list, Bluetooth pairings, memory, and the device sign-in code, then restarts into first-time setup. The device keeps its name.'+(alsoSd?'\n\nThe SD card will also be erased (up to a minute).':'')+'\n\nType FACTORY RESET to confirm:');
+  const p=prompt('Erase all content and settings?\n\nThis removes Wi-Fi, API keys, the Telegram list, Bluetooth pairings, memory, the device name, and the device sign-in code, then restarts into first-time setup as a fresh device.'+(alsoSd?'\n\nThe SD card will also be erased (up to a minute).':'')+'\n\nType FACTORY RESET to confirm:');
   if(p===null)return;
   if(p.trim().toUpperCase()!=='FACTORY RESET'){toast('Not reset - the phrase didn\'t match');return;}
   const fd=new FormData();fd.append('confirm','FACTORY RESET');fd.append('eraseSd',alsoSd?'1':'0');
@@ -2978,9 +2988,13 @@ function scan(){
   // surrounded by access points, which is not just unhelpful, it asserts the
   // opposite of the truth.
   if(sc.error)return stop(sc.error);
-  const list=sc.networks||[];
+  // Dedup by SSID keeping the strongest (dual-AP networks list the same name twice),
+  // like every phone's Wi-Fi picker (CUM-233). Hidden ('') SSIDs are all kept. seen has
+  // NO prototype so an SSID named "constructor" / "__proto__" is not spuriously seen.
+  const seen=Object.create(null);
+  const list=(sc.networks||[]).sort((a,b)=>b.rssi-a.rssi).filter(n=>{const k=n.ssid||'';if(!k)return true;if(seen[k])return false;seen[k]=1;return true;});
   stop('Found '+list.length+' network(s).');
-  list.sort((a,b)=>b.rssi-a.rssi).forEach(n=>{
+  list.forEach(n=>{
    const el=document.createElement('div');el.className='net';
    const nm=document.createElement('span');
    nm.textContent=(n.ssid||'(hidden)')+(n.enc?' (lock)':'')+(_wifiSaved.indexOf(n.ssid)>=0?' - saved':'');
@@ -3894,7 +3908,7 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
       '<div class=row><input id=onb_name placeholder="Nimbus"><button type=button id=onb_namesave>Save</button></div>'+
       '<span class=hint id=onb_namemsg></span>'+
       '<p class=hint>Shown on the display, the network, and the setup Wi-Fi. Applies after the next restart.</p>';
-    if(s.id==='done')return '<p class=hint>You’re ready - Wi-Fi is connected and your provider is verified. Click Finish to open the dashboard.</p>'+
+    if(s.id==='done')return '<p class=hint id=onb_done_head>Checking setup…</p>'+
       '<div class=hint id=onb_summary></div>';
     return '';
   }
@@ -3961,9 +3975,24 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
       el('onb_namesave').onclick=()=>{const v=el('onb_name').value.trim();if(!v){el('onb_namemsg').textContent='Enter a name.';return;}
         apply({devName:v}).then(ok=>{el('onb_namemsg').textContent=ok?'Saved ✓ (applies after restart)':'Rejected';});};
     } else if(s.id==='done'){
-      const mn=pendingMode!==null?pendingMode:curMode;
-      el('onb_summary').innerHTML='&bull; Wi-Fi: '+(wifiOk?'connected':'not connected')+'<br>&bull; Provider: '+(provOk?'verified':'not verified')+'<br>&bull; Mode: '+(mn?'Orchestrator':'Notifier')+
-        (dispChanged()?'<br>&bull; Display: touch screen - the device restarts when you finish to apply it':'');
+      // Derive the summary from LIVE server state, not page-load-local flags: wifiOk
+      // resets across the setup-AP -> LAN handoff (the page reloads on the new IP), so
+      // a client flag would claim "not connected" while browsing over that Wi-Fi
+      // (CUM-233). The headline is conditional on the same live truth.
+      const paint=(st)=>{
+        const wifi=st?!!st.sta:wifiOk, prov=st?!!st.provVerified:provOk;
+        const mn=pendingMode!==null?pendingMode:(st?(st.mode?1:0):curMode);
+        el('onb_done_head').textContent=(wifi&&prov)
+          ? 'You’re ready - Wi-Fi is connected and your provider is verified. Click Finish to open the dashboard.'
+          : 'Almost there - complete the Wi-Fi and provider steps, then finish.';
+        el('onb_summary').innerHTML='&bull; Wi-Fi: '+(wifi?'connected':'not connected')+'<br>&bull; Provider: '+(prov?'verified':'not verified')+'<br>&bull; Mode: '+(mn?'Orchestrator':'Notifier')+
+          (dispChanged()?'<br>&bull; Display: touch screen - the device restarts when you finish to apply it':'');
+      };
+      paint(null);
+      // Paint from live state only; do NOT mutate the wizard-scoped wifiOk/provOk here -
+      // a transient false would wrongly re-arm the Back-step advance gates. Finish is
+      // server-authoritative regardless.
+      fetch('/api/state').then(r=>r.json()).then(paint).catch(()=>{});
     }
   }
   function doScan(){
@@ -3974,7 +4003,12 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
       if(d.scanning){if(--left<=0)return stop('Scan timed out - try again.');return;}
       if(d.error)return stop(d.error);   // same gap as the Settings scan - say what happened
       stop('');
-      const list=(d.networks||[]).sort((a,b)=>b.rssi-a.rssi);
+      // Dedup by SSID keeping the strongest (dual-AP networks report the same name
+      // twice at different RSSI) - like every phone's Wi-Fi list (CUM-233). Hidden
+      // ('') SSIDs are all kept. seen has NO prototype so an SSID named "constructor"
+      // / "__proto__" / "toString" is not spuriously seen before insertion.
+      const seen=Object.create(null);
+      const list=(d.networks||[]).sort((a,b)=>b.rssi-a.rssi).filter(n=>{const k=n.ssid||'';if(!k)return true;if(seen[k])return false;seen[k]=1;return true;});
       if(!list.length){nets.textContent='No networks found.';return;}
       nets.innerHTML=''; list.forEach(n=>{const e=document.createElement('div');e.className='net';
         e.innerHTML='<span>'+esc(n.ssid||'(hidden)')+(n.enc?' 🔒':'')+'</span><span class=bars>'+n.rssi+' dBm</span>';
