@@ -330,6 +330,74 @@ static void test_cap_never_evicts_permanent() {
   TEST_ASSERT_FALSE(hasA);
 }
 
+// CUM-223 finding #4: eviction is namespace-scoped, so a full store's cap can
+// only ever drop an entry in the WRITER's own namespace - a member (chat:evil)
+// writing at the cap must not displace the owner's lower-retention memory.
+static void test_cap_eviction_is_namespace_scoped() {
+  VectorMemory m = make4();
+  m.setMaxEntries(3);
+  // Two owner memories, one with the globally-lowest retention score.
+  VecEntry o1 = mkFull("own-lo", v4(100,0,0,0), 0.1f, 720, 0); o1.ns = kOwnerNs;
+  VecEntry o2 = mkFull("own-hi", v4(0,100,0,0), 0.9f, 720, 0); o2.ns = kOwnerNs;
+  VecEntry g1 = mkFull("guest-a", v4(0,0,100,0), 0.5f, 720, 0); g1.ns = "chat:evil";
+  m.add(o1); m.add(o2); m.add(g1);
+  TEST_ASSERT_EQUAL_INT(3, m.size());
+  // A second guest write at the cap: the globally-lowest entry is "own-lo", but
+  // eviction must stay INSIDE chat:evil and drop "guest-a" instead.
+  VecEntry g2 = mkFull("guest-b", v4(0,0,0,100), 0.5f, 720, 100); g2.ns = "chat:evil";
+  m.add(g2);
+  bool hasOwnLo = false, hasGuestA = false, hasGuestB = false;
+  for (const auto& e : m.getAll()) {
+    if (e.id == "own-lo")  hasOwnLo = true;
+    if (e.id == "guest-a") hasGuestA = true;
+    if (e.id == "guest-b") hasGuestB = true;
+  }
+  TEST_ASSERT_TRUE(hasOwnLo);    // the owner's low-value memory is NOT displaced
+  TEST_ASSERT_FALSE(hasGuestA);  // the guest evicted its own oldest instead
+  TEST_ASSERT_TRUE(hasGuestB);
+}
+
+// CUM-223 finding #3: a header dims out of the sane range is a corrupt/crafted
+// blob. dims=0 is the dangerous case - it would silently poison the store (every
+// width check passes only for zero-width vecs). deserialize must refuse it and
+// leave the store empty, never adopt the broken width.
+static void test_deserialize_rejects_bad_dims() {
+  { // dims = 0
+    std::string blob; blob.append("VM1", 3); bpu16(blob, 0); bpu32(blob, 0);
+    VectorMemory m; m.configure(4);
+    TEST_ASSERT_FALSE(m.deserialize(blob));
+    TEST_ASSERT_EQUAL_INT(0, m.size());
+  }
+  { // dims above the ceiling
+    std::string blob; blob.append("VM1", 3); bpu16(blob, 5000); bpu32(blob, 0);
+    VectorMemory m;
+    TEST_ASSERT_FALSE(m.deserialize(blob));
+    TEST_ASSERT_EQUAL_INT(0, m.size());
+  }
+}
+
+// CUM-223 finding #1 (regression guard): the namespace rides the `source` field
+// behind a 0x1F separator on the wire. A model-supplied source containing 0x1F
+// must NOT be able to forge a different namespace on the persistence round-trip -
+// serialize() strips the separator from the caller-controlled source.
+static void test_source_separator_does_not_forge_ns() {
+  VectorMemory m = make4();
+  VecEntry e = mkFull("smuggle", v4(100,0,0,0), 0.5f, 720, 0);
+  e.ns = "chat:evil";
+  e.source = std::string("legit") + '\x1F' + "owner";  // attempt to smuggle owner ns
+  m.add(e);
+  std::string blob = m.serialize();
+  VectorMemory m2 = make4();
+  TEST_ASSERT_TRUE(m2.deserialize(blob));
+  auto all = m2.getAll();
+  TEST_ASSERT_EQUAL_INT(1, (int)all.size());
+  TEST_ASSERT_EQUAL_STRING("chat:evil", all[0].ns.c_str());  // ns is the writer's, not forged
+  TEST_ASSERT_TRUE(all[0].source.find('\x1F') == std::string::npos);  // separator stripped
+  // The entry stays inside chat:evil: an owner-scoped reader can't see it.
+  TEST_ASSERT_FALSE(m2.idVisible("smuggle", {std::string(kOwnerNs)}));
+  TEST_ASSERT_TRUE(m2.idVisible("smuggle", {std::string("chat:evil")}));
+}
+
 static void test_boost_accessed_bumps_and_resets_ttl() {
   VectorMemory m = make4();
   m.add(mkFull("a", v4(100,0,0,0), 0.5f, 720, 10));
@@ -520,6 +588,9 @@ int main(int, char**) {
   RUN_TEST(test_recall_relevance_threshold);
   RUN_TEST(test_cap_evicts_lowest_retention_score);
   RUN_TEST(test_cap_never_evicts_permanent);
+  RUN_TEST(test_cap_eviction_is_namespace_scoped);
+  RUN_TEST(test_deserialize_rejects_bad_dims);
+  RUN_TEST(test_source_separator_does_not_forge_ns);
   RUN_TEST(test_boost_accessed_bumps_and_resets_ttl);
   RUN_TEST(test_quantize_range);
   RUN_TEST(test_cosine_geometry);

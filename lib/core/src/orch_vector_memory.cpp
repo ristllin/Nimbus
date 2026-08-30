@@ -18,6 +18,13 @@ std::string stripSep(const std::string& v) {
 }
 }  // namespace
 
+// The effective namespace of a stored entry: an empty ns is legacy/unattributed
+// and belongs to the owner (a migration must never widen access), so it reads as
+// kOwnerNs everywhere the boundary is enforced.
+static std::string effNs(const std::string& ns) {
+  return ns.empty() ? std::string(kOwnerNs) : ns;
+}
+
 // v3.7.0: may this entry be seen by a reader allowed the given namespaces?
 // An EMPTY allow-list is unscoped (maintenance passes); an empty entry ns is
 // legacy and belongs to the owner, so it matches only a reader that lists the
@@ -46,6 +53,13 @@ struct Reader {
   std::string str() { uint16_t n = u16(); if (!need(n)) return ""; std::string v(p, n); p += n; return v; }
 };
 constexpr char kMagic[3] = {'V', 'M', '1'};
+// Sane bound on the per-store vector width read from a blob header. Real embedders
+// sit well inside this (Mistral 1024, OpenAI small/large 1536/3072); the ceiling
+// only rejects a corrupt or crafted header. dims must be >= 1 - a dims=0 store
+// silently accepts only zero-width vectors (cosineRaw treats n==0 as orthogonal),
+// so every add/search degrades to a no-op and the store is poisoned, not merely
+// empty. Reject the whole blob instead (CUM-223).
+constexpr int kMaxVecDims = 4096;
 
 // Cosine distance core over raw int8 buffers (both `n` wide). Allocator-agnostic, so
 // it works over both a std::vector<int8_t> query and a PSRAM-allocated stored vec.
@@ -159,11 +173,24 @@ bool VectorMemory::add(const VecEntry& e, bool dedup) {
   // the new entry's timestamp as "now". If every entry is exempt (all permanent),
   // no eviction happens and the store grows past the cap - user-pinned data is
   // never dropped for a new memory.
+  //
+  // CUM-223: eviction is NAMESPACE-SCOPED - only an entry in the SAME namespace as
+  // the incoming write may be dropped. The cap (max_vectors) is device-global and
+  // eviction was too: a noisy tenant that filled the store could displace another
+  // principal's memory (a member evicting the owner's low-importance facts on a
+  // full device). Scoping the victim to the writer's own namespace keeps the cap
+  // enforcement inside the data boundary. Single-tenant devices - every entry in
+  // the owner namespace - are unaffected (the scope is the whole store). If the
+  // writer's namespace holds no evictable entry, the store is allowed to grow past
+  // the cap rather than cross the boundary, the same spirit as the all-permanent
+  // overflow above; per-tenant write quotas (applyWriteQuotas) bound that growth.
   if (maxEntries_ > 0 && (int)entries_.size() >= maxEntries_) {
+    const std::string eNs = effNs(e.ns);
     int worst = -1;
     float worstScore = 1e30f;
     for (int i = 0; i < (int)entries_.size(); i++) {
       const Stored& s = entries_[i];
+      if (effNs(s.ns) != eNs) continue;   // never evict across the data boundary
       float sc = retentionOf(s.importance, s.ttlHours, s.createdAtHours, s.permanentFlag,
                              s.creatorFlag, e.createdAtHours);
       if (sc < worstScore) { worstScore = sc; worst = i; }
@@ -492,7 +519,14 @@ bool VectorMemory::deserialize(const std::string& blob) {
   Reader r(blob);
   if (!r.need(3) || std::memcmp(r.p, kMagic, 3) != 0) return false;
   r.p += 3;
-  dims_ = (int)r.u16();
+  const int dims = (int)r.u16();
+  // Range-check the width from the header BEFORE it becomes the store's invariant.
+  // dims<1 (esp. 0) poisons the store silently: every entry's width check then
+  // passes only for zero-width vecs and all similarity math collapses. dims>ceiling
+  // is a corrupt/crafted header. Either way, refuse the blob and keep the store
+  // empty rather than adopt a broken width (CUM-223).
+  if (dims < 1 || dims > kMaxVecDims) return false;
+  dims_ = dims;
   uint32_t count = r.u32();
   for (uint32_t i = 0; i < count && r.ok; i++) {
     Stored e;
