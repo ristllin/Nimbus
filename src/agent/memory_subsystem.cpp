@@ -1494,12 +1494,14 @@ int pruneRetention(int retentionDays) {
   return before - rep.keptMessages;
 }
 
-// Which tool names mutate durable state (so a read-only memory.search/view doesn't
-// trigger a full-blob rewrite - the write-amplification the audit flagged).
-static bool isMutatingTool(const std::string& name) {
+// Which tool CALLS mutate durable state (so a read-only memory.search/view doesn't
+// trigger a full-blob rewrite - the write-amplification the audit flagged). `action`
+// is the call's action argument, needed for tools where only some actions write:
+// memory.archive search/list are read-only, only restore mutates.
+static bool isMutatingTool(const std::string& name, const std::string& action) {
+  if (name == "memory.archive") return action == "restore";
   return name == "memory.write" || name == "memory.update" || name == "memory.pin" ||
-         name == "memory.delete" || name == "memory.config" || name == "memory.scratchpad" ||
-         name == "memory.archive";   // restore mutates both stores (persist to flush)
+         name == "memory.delete" || name == "memory.config" || name == "memory.scratchpad";
 }
 
 std::string handleMcp(const std::string& jsonRpcRequest,
@@ -1521,6 +1523,11 @@ std::string handleMcp(const std::string& jsonRpcRequest,
   const std::string method = parsed ? std::string(d["method"] | "") : std::string();
   const std::string name =
       (parsed && method == "tools/call") ? std::string(d["params"]["name"] | "") : std::string();
+  // The call's `action` arg (for tools where only some actions write, e.g.
+  // memory.archive restore vs search/list). MCP nests args under params.arguments.
+  const std::string action =
+      (parsed && method == "tools/call")
+          ? std::string(d["params"]["arguments"]["action"] | "") : std::string();
   if (name == "image.generate") return g_reg.handleRpc(jsonRpcRequest, who);  // self-locks briefly
   // Serialize the whole dispatch with the turn task's engine access. Recursive, so the
   // nested applyConfig/persist* below re-enter safely. (A memory.write tool embeds via
@@ -1529,7 +1536,7 @@ std::string handleMcp(const std::string& jsonRpcRequest,
   Lock g;
   std::string resp = g_reg.handleRpc(jsonRpcRequest, who);
   // Persist ONLY after a MUTATING tools/call (dirty-flag discipline).
-  if (method == "tools/call" && isMutatingTool(name)) {
+  if (method == "tools/call" && isMutatingTool(name, action)) {
     applyConfig();   // memory.config may have changed max_vectors
     persistVectors();
     persistScratchpad();
