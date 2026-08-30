@@ -86,8 +86,7 @@ def test_ring_returns_to_dark_after_a_turn(device, secrets, require_secret):
     try:
         device.expect("ORCH REPLY [serial]:", timeout=45.0)
     except ExpectTimeout:
-        pytest.fail("no ORCH REPLY within 45 s - the turn never round-tripped (F17); "
-                    "cannot assess the ring")
+        pytest.fail("no ORCH REPLY within 45 s - the turn never round-tripped (F17); cannot assess the ring")
 
     dark, last = _wait_ring_dark(device, RING_CLEAR_WINDOW_S)
     assert dark, (
