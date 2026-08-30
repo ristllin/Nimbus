@@ -96,6 +96,18 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 <div id=tOrient style="display:none"><label>Touch orientation</label>
 <p class="hint tip">This screen self-calibrates, so there is nothing to measure. If taps land in the wrong place, toggle these until a tap lands where you touch. Applies immediately.</p>
 <div class=row style="gap:16px;flex-wrap:wrap"><label class=pr><input type=checkbox id=tSwap> Swap X and Y</label><label class=pr><input type=checkbox id=tFlipX> Flip X</label><label class=pr><input type=checkbox id=tFlipY> Flip Y</label></div></div>
+<label>Theme <button class=qh type=button aria-expanded=false aria-label="About themes">?</button></label>
+<p class="hint tip">Each theme is a family of colors. A session's status picks its color role and motion - the ring's status language. The legend below shows the mapping.</p>
+<div id=themeChips></div>
+<button id=prevBtn type=button style="margin-top:6px">Demo on Device</button>
+<label>Preview <button class=qh type=button aria-expanded=false aria-label="About the preview">?</button></label>
+<p class="hint tip">Pick a status and mode to see the pattern in the selected theme. <b>Demo on Device</b> (above) plays it on the physical ring for a few seconds - nothing is saved.</p>
+<div id=ringsimwrap style="display:flex;flex-direction:column;align-items:center;gap:10px;margin:6px 0 2px">
+<canvas id=ringsim width=440 height=440 style="width:220px;height:220px"></canvas>
+<div id=ringsimStatus style="display:flex;gap:4px;flex-wrap:wrap;justify-content:center"></div>
+<div id=ringsimPosture style="display:flex;gap:4px;justify-content:center"></div>
+</div>
+<div id=statusLegend></div>
 </div>
 </details>
 
@@ -115,18 +127,6 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 <label class=pr><input type=checkbox id=battMon> Monitor the battery <button class=qh type=button aria-expanded=false aria-label="About battery monitoring">?</button></label>
 <p class="hint tip">Reads the battery pack for the charge readout, low-battery warnings, and sleep protection. On boards built with a pack it is on; on the all-in-one board a battery is optional, so it is off until you turn it on. Takes effect after restart.</p>
 <p class=hint id=effprof></p>
-<label>Theme <button class=qh type=button aria-expanded=false aria-label="About themes">?</button></label>
-<p class="hint tip">Each theme is a family of colors. A session's status picks its color role and motion - the ring's status language. The legend below shows the mapping.</p>
-<div id=themeChips></div>
-<button id=prevBtn type=button style="margin-top:6px">Demo on Device</button>
-<label>Preview <button class=qh type=button aria-expanded=false aria-label="About the preview">?</button></label>
-<p class="hint tip">Pick a status and mode to see the pattern in the selected theme. <b>Demo on Device</b> (above) plays it on the physical ring for a few seconds - nothing is saved.</p>
-<div id=ringsimwrap style="display:flex;flex-direction:column;align-items:center;gap:10px;margin:6px 0 2px">
-<canvas id=ringsim width=440 height=440 style="width:220px;height:220px"></canvas>
-<div id=ringsimStatus style="display:flex;gap:4px;flex-wrap:wrap;justify-content:center"></div>
-<div id=ringsimPosture style="display:flex;gap:4px;justify-content:center"></div>
-</div>
-<div id=statusLegend></div>
 </div>
 </details>
 

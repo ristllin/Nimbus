@@ -2301,7 +2301,7 @@ means nothing to do.**
 **Themes** (10): `teal ocean ember forest openai anthropic mistral rainbow
 gemini perplexity` - each is a four-stop color family plus a per-theme alert
 hue. Changing the theme recolors every role in both modes, live. The web
-legend (Settings → Battery mode) is generated from the same tables the
+legend (Settings → Display) is generated from the same tables the
 firmware uses, so it cannot drift from what the ring actually does.
 
 Rules the firmware enforces (and tests assert):
