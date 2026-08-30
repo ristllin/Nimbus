@@ -8,6 +8,7 @@
 #include "nimbus/orch/mem_config.h"
 #include "nimbus/orch/scratchpad.h"
 #include "nimbus/orch/tool_registry.h"
+#include "nimbus/orch/vector_archive.h"
 #include "nimbus/orch/vector_memory.h"
 
 // memory_tools - the `memory.*` MCP tool surface, wiring the portable memory
@@ -39,6 +40,13 @@ struct MemoryContext {
   Scratchpad*    scratch = nullptr;
   MemConfig*     cfg = nullptr;
   EpisodicStore* episodic = nullptr;         // optional: enables memory.episodic
+  // Cold store for TTL-expired memories (CUM-225). Bound ONLY when the archive
+  // exists, which the device does only when an SD card is present - so memory.archive
+  // is registered (exposed) only with a card. `archiveAvailable` is a live check the
+  // handler consults so a card pulled mid-run refuses cleanly (the tool stays
+  // registered, but every action reports the archive is gone).
+  VectorArchive* archive = nullptr;          // optional: enables memory.archive
+  std::function<bool()> archiveAvailable = [] { return true; };
   Embedder       embed;                      // required for write/search
   std::function<uint32_t()> nowHours = [] { return 0u; };  // clock for TTL stamping
 };
