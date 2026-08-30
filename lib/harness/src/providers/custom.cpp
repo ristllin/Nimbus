@@ -82,7 +82,16 @@ static int custRequest(const ProviderDeps& pd, const char* method, const std::st
   }
   headers.push_back({"Content-Type", "application/json"});
 
-  return exchange(pd, host.c_str(), (uint16_t)port, !http, method, path,
+  // A router with a non-default API base (Cumulo "/router/openai/v1", Z.ai
+  // "/api/paas/v4") carries it as customPathPrefix, REPLACING the leading "/v1" of
+  // the request path - parseBase above dropped any path from the base URL. So
+  // "/v1/chat/completions" becomes "<prefix>/chat/completions".
+  const std::string prefix = s(pd.customPathPrefix);
+  std::string fullPath = path;
+  if (!prefix.empty()) {
+    fullPath = (path.rfind("/v1", 0) == 0) ? prefix + path.substr(3) : prefix + path;
+  }
+  return exchange(pd, host.c_str(), (uint16_t)port, !http, method, fullPath,
                   std::move(headers), std::move(body), CUST_TIMEOUT_MS, doc, filter);
 }
 

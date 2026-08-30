@@ -32,6 +32,12 @@ struct ProviderConfig {
   std::function<bool()> anyKeyed;
 
   std::function<std::string()> orchHost;           // "" => top of priority
+  // CUM-242 / CUM-201 deterministic source: with NO BYOK head keyed, a verified
+  // router key (Cumulo, then Z.ai) is the fallback head that runs the whole
+  // assistant - "one key, one balance." Returns the router host ("cumulo"/"zai")
+  // or "" when none is keyed. Nullable: unset on host rigs (they fall to the bare
+  // priority head, unchanged). A keyed BYOK head still wins over this.
+  std::function<std::string()> routerFallbackHost;
   std::function<std::string()> providerPriority;   // orchestrator-host list
   std::function<std::string()> subPriority;        // sub-session provider list
   std::function<std::string(const std::string& host)> orchModel;

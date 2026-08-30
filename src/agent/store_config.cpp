@@ -20,6 +20,8 @@ static String keyFor(const std::string& host) {
   if (host == "anthropic") return store::anthropicKey();
   if (host == "mistral")   return store::mistralKey();
   if (host == "custom")    return store::customKey();
+  if (host == "cumulo")    return store::cumuloKey();
+  if (host == "zai")       return store::zaiKey();
   return String();
 }
 
@@ -31,9 +33,22 @@ HarnessConfig harnessConfigFromStore() {
     if (h == "anthropic") return store::hasAnthropicKey();
     if (h == "mistral")   return store::hasMistralKey();
     if (h == "custom")    return store::hasCustom();
+    // CUM-242: the router providers are first-class heads now (registered in
+    // orchestrator.cpp), so head resolution + failover must see their key.
+    if (h == "cumulo")    return store::hasCumuloKey();
+    if (h == "zai")       return store::hasZaiKey();
     return false;
   };
   p.key = [](const std::string& h) { return s(keyFor(h)); };
+  // CUM-242 / CUM-201: with no BYOK head keyed, the verified router key is the
+  // fallback SOURCE that runs the whole assistant. Cumulo first (the flagship
+  // "one key, one balance" path), then Z.ai. Consulted by the engine's head
+  // resolution only after every BYOK head misses.
+  p.routerFallbackHost = [] {
+    if (store::hasCumuloKey()) return std::string("cumulo");
+    if (store::hasZaiKey())    return std::string("zai");
+    return std::string();
+  };
   // CUM-211: device-truth "is any provider configured", INCLUDING the router
   // providers (Cumulo, Z.ai) that hasKey() above does not report. Drives only the
   // honest "no provider set up" reply, so a Cumulo-only device is never wrongly

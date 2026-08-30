@@ -187,6 +187,20 @@ static void test_cumulo_upstream_split() {
   TEST_ASSERT_TRUE(a->hasRole(RoleOrchestrator));
 }
 
+// CUM-242 leg 1: rebuild a catalog from a bare id list (the harvested CSV) when a
+// full /models body did not parse. classifyCatalogEntry honours the Cumulo
+// "<upstream>/<model>" convention and classifies a bare id like classifyModel.
+static void test_classify_catalog_entry_from_bare_ids() {
+  ModelInfo prefixed = classifyCatalogEntry("cumulo", "anthropic/claude-opus-5");
+  TEST_ASSERT_EQUAL_STRING("anthropic", prefixed.upstream.c_str());
+  TEST_ASSERT_TRUE(prefixed.hasRole(RoleOrchestrator));
+  // A bare router id (the OpenAI upstream lists undecorated ids) classifies as the
+  // openai family and stays a usable chat/orchestrator model.
+  ModelInfo bare = classifyCatalogEntry("cumulo", "gpt-4o");
+  TEST_ASSERT_TRUE(bare.hasRole(RoleOrchestrator));
+  TEST_ASSERT_TRUE(bare.hasCap(CapTools));
+}
+
 // ---- serialization to the /api/models shape --------------------------------
 static void test_models_to_json_shape_and_usable_filter() {
   std::vector<ModelInfo> v;
@@ -307,6 +321,7 @@ int main(int, char**) {
   RUN_TEST(test_zai_glm_roles_and_sizes);
   RUN_TEST(test_flagship_first_ordering);
   RUN_TEST(test_cumulo_upstream_split);
+  RUN_TEST(test_classify_catalog_entry_from_bare_ids);
   RUN_TEST(test_models_to_json_shape_and_usable_filter);
   RUN_TEST(test_parse_tolerates_http_headers);
   UNITY_END();

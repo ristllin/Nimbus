@@ -242,6 +242,13 @@ with embeddings/vision/STT/TTS available where the chosen upstream supports them
 Get the key from your Cumulo Nimbus account (see the cloud docs page); set it on
 Assistant > Models (Cumulo key).
 
+A verified Cumulo key is the default source for the whole assistant: when no other
+provider key is set, the orchestrator and its sub-agents run on the Cumulo key with
+nothing else to configure (one key, one balance). If you also set your own OpenAI,
+Anthropic, or Mistral key, that provider runs on your own key instead; the Cumulo
+key stays the source for everything you have not brought your own key for. The head
+model defaults to a proven router model until you pick one under Assistant > Models.
+
 ## Model catalog, capabilities, and fallbacks
 
 The device builds a live, capability-aware model catalog per provider by harvesting

@@ -62,6 +62,12 @@ struct ProviderDeps {
   // = plain HTTP + keyless; "https://"/bare host = TLS), key, wire convention
   // ("openai"|"mistral"|"anthropic"), model.
   std::function<std::string()> customBase, customKey, customConv, customModel;
+  // Optional API base path that REPLACES the default "/v1" segment of the request
+  // path (parseBase strips any path from customBase, so a router under a sub-path
+  // carries it here). Unset/"" = the plain "/v1/...". So the Cumulo head sets
+  // "/router/openai/v1" (-> /router/openai/v1/chat/completions) and the Z.ai head
+  // sets "/api/paas/v4" (-> /api/paas/v4/chat/completions, which has no /v1).
+  std::function<std::string()> customPathPrefix;
 
   // Provider-side connector/MCP attach (device: connectors::attach* append tool
   // entries to the request doc). Nullable = none. attachOpenAI rides the OpenAI

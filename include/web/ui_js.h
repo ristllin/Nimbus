@@ -379,12 +379,13 @@ function fillVoices(prov, sel){
 }
 // Provider priority as an ordered, checkable list -> a comma string (no free-text).
 function renderPrio(hostId, field, csv){
-  // NOTE: cumulo/zai are deliberately NOT here. They are surfaced as key slots
-  // (their key powers sub-sessions via the fabric adapter), but the orchestrator
-  // HEAD host registry + fabricSupports only run openai/anthropic/mistral/custom,
-  // so offering cumulo/zai in the head Primary-provider / fallback order would let
-  // an owner pick a head the engine cannot run (every turn -> "host unavailable").
-  // Head-host support for the router is a separate backend change (see CUM-201).
+  // NOTE: cumulo/zai are not in this explicit Primary-provider / fallback list.
+  // They ARE runnable orchestrator heads now (CUM-242 registered them), but they
+  // are the deterministic SOURCE the engine falls back to automatically: a device
+  // whose only verified key is Cumulo runs the whole assistant on it with nothing
+  // to select here. A BYOK head (openai/anthropic/mistral/custom) still wins when
+  // keyed. Exposing router providers as an explicit, reorderable head choice is a
+  // follow-up (CUM-201 routing UI); this list stays the BYOK head order.
   const ALL=['openai','anthropic','mistral','custom'], host=$(hostId); if(!host)return;
   let order=csv.split(',').map(s=>s.trim()).filter(x=>ALL.includes(x));
   let rows=order.map(p=>({p,on:true})).concat(ALL.filter(x=>!order.includes(x)).map(p=>({p,on:false})));

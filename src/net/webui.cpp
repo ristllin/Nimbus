@@ -844,19 +844,20 @@ static void buildOrchState(String& out) {
     o["orchModel"] = agent::store::orchModel(p);
     o["subModel"]  = agent::store::subModel(p);
     // Live-harvested list first (verify pass reads /v1/models), static fallback.
-    // cumulo/zai carry no static list: their choices are harvested on verify and
-    // empty until then (the model selects stay locked behind "Verify the key").
+    // cumulo/zai are first-class heads (CUM-242): they carry a small default list
+    // so a model is selectable before the first harvest, and the harvested list
+    // wins once it lands.
     String dyn = agent::store::modelChoices(p);
     o["choices"] = dyn.length() ? dyn : String(fallbackChoices);
   };
-  addProv("cumulo", agent::store::hasCumuloKey(), "");
+  addProv("cumulo", agent::store::hasCumuloKey(), CUMULO_MODEL_CHOICES);
   for (int i = 0; i < kProvCount; i++)
     addProv(kProviders[i].name,
             i == 0 ? agent::store::hasOpenaiKey()
           : i == 1 ? agent::store::hasAnthropicKey()
                    : agent::store::hasMistralKey(),
             kProviders[i].choices);
-  addProv("zai", agent::store::hasZaiKey(), "");
+  addProv("zai", agent::store::hasZaiKey(), ZAI_MODEL_CHOICES);
 
   d["hasTav"]    = agent::store::hasTavilyKey();   // web-search tool configured
   d["tavVerify"] = agent::store::verifyResult("tavily");   // 1 ok / 0 rejected / -1 unknown
@@ -1099,6 +1100,27 @@ static bool applyOrchField(const String& n, const String& v, bool& cfgDirty) {
     }
     if (n == String("subM_") + p) {
       if (modelInChoices(eff.c_str(), v)) agent::store::setSubModel(p, v);
+      return true;
+    }
+  }
+  // Router providers (Cumulo, Z.ai) are first-class heads too (CUM-242) but are
+  // not in kProviders. Validate a pick against the EFFECTIVE list (live-harvested,
+  // else the small compiled default), so orchM_cumulo=gpt-4o is accepted rather
+  // than rejected against an empty list.
+  {
+    static const struct { const char* name; const char* choices; } kRouterProv[] = {
+      { "cumulo", CUMULO_MODEL_CHOICES }, { "zai", ZAI_MODEL_CHOICES },
+    };
+    for (const auto& rp : kRouterProv) {
+      const bool isOrch = (n == String("orchM_") + rp.name);
+      const bool isSub  = (n == String("subM_")  + rp.name);
+      if (!isOrch && !isSub) continue;
+      String eff = agent::store::modelChoices(rp.name);
+      if (!eff.length()) eff = rp.choices;
+      if (modelInChoices(eff.c_str(), v)) {
+        if (isOrch) agent::store::setOrchModel(rp.name, v);
+        else        agent::store::setSubModel(rp.name, v);
+      }
       return true;
     }
   }
