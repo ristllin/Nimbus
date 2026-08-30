@@ -36,3 +36,149 @@
 .markdown h1:first-child {
   --ifm-h1-font-size: 2.2rem;
 }
+
+/* ---- Home page (intro.md) ------------------------------------------------ */
+
+/* Hero: the glowing ring video with the pitch beside it. */
+.home-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+  gap: 2rem;
+  align-items: center;
+  margin: 0.5rem 0 2.5rem;
+}
+.home-hero__media {
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.35);
+  background: #000;
+  aspect-ratio: 4 / 3;
+}
+.home-hero__media video,
+.home-hero__media img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.home-hero__lead {
+  font-size: 1.15rem;
+  line-height: 1.55;
+}
+.home-hero__cta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin-top: 1.2rem;
+}
+
+/* Two-variant showcase. */
+.variant-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1.5rem;
+  margin: 1.5rem 0 2rem;
+}
+.variant-card {
+  border: 1px solid var(--ifm-color-emphasis-200);
+  border-radius: 14px;
+  overflow: hidden;
+  background: var(--ifm-background-surface-color);
+  display: flex;
+  flex-direction: column;
+}
+.variant-card__media {
+  aspect-ratio: 4 / 3;
+  background: #000;
+}
+.variant-card__media img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.variant-card__body {
+  padding: 1.1rem 1.25rem 1.35rem;
+}
+.variant-card__body h3 {
+  margin: 0 0 0.15rem;
+}
+.variant-card__kicker {
+  font-size: 0.8rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ifm-color-primary);
+  font-weight: 600;
+  margin: 0 0 0.4rem;
+}
+.variant-card__specs {
+  list-style: none;
+  padding: 0;
+  margin: 0.75rem 0 0;
+  font-size: 0.92rem;
+}
+.variant-card__specs li {
+  padding: 0.28rem 0 0.28rem 1.35rem;
+  position: relative;
+}
+.variant-card__specs li::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0.72rem;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ifm-color-primary);
+}
+
+/* A small photo strip (build / in-use gallery). */
+.photo-strip {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1rem;
+  margin: 1.25rem 0 1.5rem;
+}
+.photo-strip figure {
+  margin: 0;
+}
+.photo-strip img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: cover;
+  border-radius: 10px;
+  border: 1px solid var(--ifm-color-emphasis-200);
+}
+.photo-strip figcaption {
+  font-size: 0.82rem;
+  color: var(--ifm-color-emphasis-600);
+  margin-top: 0.4rem;
+  text-align: center;
+}
+
+/* Cumulo Nimbus: the official companion service. */
+.cumulo-callout {
+  border: 1px solid var(--ifm-color-primary);
+  border-radius: 14px;
+  padding: 1.5rem 1.75rem;
+  margin: 1.5rem 0 2rem;
+  background: linear-gradient(
+    180deg,
+    rgba(127, 209, 200, 0.08),
+    rgba(127, 209, 200, 0.02)
+  );
+}
+.cumulo-callout h2 {
+  margin-top: 0;
+}
+
+@media (max-width: 860px) {
+  .home-hero,
+  .variant-grid {
+    grid-template-columns: 1fr;
+  }
+  .photo-strip {
+    grid-template-columns: 1fr;
+  }
+}
