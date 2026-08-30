@@ -486,6 +486,17 @@ static void buildState(String& out) {
   // First-run gate: the web UI shows the setup wizard overlay while this is true
   // (cleared when the wizard finishes, or by an NVS-wipe factory reset).
   d["needsOnboarding"] = !agent::store::onboarded();
+  // Onboarding summary truth (CUM-233): at least one provider verified - the SAME
+  // gate /api/onboard/complete enforces. Lets the wizard's Done step derive its
+  // summary from live server state instead of page-load-local flags that reset
+  // across the setup-AP -> LAN handoff (which made it claim "Wi-Fi: not connected"
+  // while the browser was talking to the device over that very Wi-Fi).
+  {
+    bool provVerified = false;
+    for (const char* p : {"openai", "anthropic", "mistral", "zai", "cumulo"})
+      if (agent::store::verifyResult(p) == 1) { provVerified = true; break; }
+    d["provVerified"] = provVerified;
+  }
   d["staIp"] = sta ? staIp() : "";
   d["apIp"]  = apIp();
   d["mdns"]  = mdnsName();
