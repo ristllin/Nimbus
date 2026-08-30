@@ -294,6 +294,22 @@ class SettingsMenu {
   bool showingSelfTest() const { return state_ == State::SelfTest; }
   bool showingBattery() const { return state_ == State::Battery; }
 
+  // Power off (CUM-224): Main "Power off" row -> ConfirmPowerOff (defaults to
+  // Cancel, same shape as ConfirmReset). Confirming raises powerOffRequested_,
+  // which the device drains to run the clean-shutdown + deep-sleep path, then the
+  // menu closes so the device owns the screen from there. Not Config state -> not
+  // dirty(), same contract as the other device-work request flags.
+  bool showingPowerOffConfirm() const { return state_ == State::ConfirmPowerOff; }
+  bool powerOffRequested() const { return powerOffRequested_; }
+  void clearPowerOffRequest() { powerOffRequested_ = false; }
+  // Whether THIS board can wake from deep sleep on a screen touch (Freenove CYD:
+  // the FT6336U INT line is wired to an RTC GPIO; Solide S3: the XPT2046 pen-IRQ
+  // is not routed, so touch cannot wake it). Seeded by the device from the board
+  // capability so the confirm copy stays honest about how to turn it back on.
+  // Default true keeps host tests that don't seed it on the touch-wake wording.
+  void setTouchWake(bool on) { touchWake_ = on; }
+  bool touchWake() const { return touchWake_; }
+
   // Cheap cursor queries. view() reports both, but building a MenuView
   // allocates a vector of strings - far too heavy for a caller that only wants
   // to know where the cursor is, and outright unsafe for one holding a
@@ -326,7 +342,7 @@ class SettingsMenu {
   enum class State : uint8_t {
     Closed, Main, ProfilePick, TuneList, Edit, ConfirmReset, Connectivity,
     ConfigQr, TokenDetail, ThemePick, SelfTest, Battery, Sound, UpdateMenu, ConfirmInstall,
-    WifiMenu, WifiPick, WifiForget, Display };
+    WifiMenu, WifiPick, WifiForget, Display, ConfirmPowerOff };
 
   // Rows on the Main screen, in display order. Sound absorbs the old
   // Sounds/Voice/Volume rows (one submenu for everything audible); Screensaver
@@ -334,10 +350,15 @@ class SettingsMenu {
   // RowDisplay (Display >) opens the Display submenu (screen flip, and touch
   // calibration once it lands); it sits before RowClose. mainRowAt() maps the
   // visible index to the logical row.
+  // RowPowerOff is inserted just before RowDisplay (owner ruling CUM-224): this
+  // keeps Display + Done as the last two rows (renderers/HIL that key off the tail
+  // via size()-relative math are unaffected) and leaves the numeric index of every
+  // row above it - Profile(1)..SdCard(11) - unchanged, so the positionally-pinned
+  // HIL taps and the host-test indices do not shift.
   enum MainRow : int {
     RowMode = 0, RowProfile, RowTune, RowConn, RowSound, RowTheme,
     RowSaver, RowUpdate, RowReset, RowSelfTest, RowBattery, RowSdCard,
-    RowDisplay, RowClose, kMainRows };
+    RowPowerOff, RowDisplay, RowClose, kMainRows };
 
   // Rows in the Sound submenu, in display order. Dictation/Spoken replies cycle
   // the STT/TTS provider (0 Mistral / 1 OpenAI - device maps string<->index).
@@ -414,6 +435,8 @@ class SettingsMenu {
   std::string updateVersion_;        // non-empty => an installable version was found
   bool    updateCheckRequested_ = false;    // Software update > Check (device drains)
   bool    updateInstallRequested_ = false;  // ConfirmInstall > Install (device drains)
+  bool    powerOffRequested_ = false;       // ConfirmPowerOff > Power off (device drains -> deep sleep)
+  bool    touchWake_ = true;                 // board can wake from sleep on a touch (device-seeded)
   State   state_ = State::Closed;
   int     sel_ = 0;        // cursor in the current list
   Param   editing_ = Param::Posture;  // valid only in State::Edit

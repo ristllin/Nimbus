@@ -122,6 +122,7 @@ int SettingsMenu::itemCount() const {
       return 3 + ((otaAllowed_ && !updateVersion_.empty()) ? 1 : 0);
     case State::ConfirmInstall: return 2;  // Cancel / Install and restart
     case State::Display:     return kDispRows;   // Display flip + Back
+    case State::ConfirmPowerOff: return 2; // Cancel / Power off
   }
   return 0;
 }
@@ -291,6 +292,9 @@ void SettingsMenu::onClick() {
           // Same action as Connectivity > Re-probe SD: reseat the card, click,
           // and the device re-inits the bus + refreshes this row's status.
           sdProbeRequested_ = true;
+          return;
+        case RowPowerOff:                // turn the device off (confirm first)
+          enter(State::ConfirmPowerOff); // defaults to Cancel (row 0)
           return;
         case RowDisplay:                 // open the Display submenu (screen flip, ...)
           enter(State::Display);
@@ -547,6 +551,16 @@ void SettingsMenu::onClick() {
       clampSel();
       return;
 
+    case State::ConfirmPowerOff:
+      if (sel_ == 1) {  // Power off
+        powerOffRequested_ = true;  // device drains -> clean shutdown + deep sleep
+        close();                    // the shutdown UX owns the screen from here
+        return;
+      }
+      enter(State::Main);           // Cancel
+      sel_ = RowPowerOff;
+      return;
+
     case State::ConfirmReset:
       if (sel_ == 1) {  // Yes, clear all
         // Only dirty (and thus persist) if there was actually something to
@@ -598,6 +612,10 @@ void SettingsMenu::onLongPress() {
     case State::ConfirmReset:
       enter(State::Main);
       sel_ = RowReset;
+      return;
+    case State::ConfirmPowerOff:
+      enter(State::Main);
+      sel_ = RowPowerOff;
       return;
     case State::Connectivity:
       enter(State::Main);
@@ -692,9 +710,24 @@ const char* SettingsMenu::helpText() const {
       case RowSdCard:
         return "Use a FAT32-formatted card (exFAT will not mount). Not "
                "detected? Reseat the card, then click this row to retry.";
+      case RowPowerOff:
+        // Honest per board: only a wired touch-INT line can wake it (Freenove);
+        // the Solide panel has no wake gesture, so say to reconnect power.
+        return touchWake_
+                 ? "Turns the screen off and sleeps to save power. Tap the "
+                   "screen to wake it."
+                 : "Turns the screen off and sleeps to save power. Reconnect "
+                   "power to turn it back on.";
       default: break;
     }
   }
+  // Power off confirm: reinforce how it comes back on before the last click.
+  if (state_ == State::ConfirmPowerOff)
+    return touchWake_
+             ? "The screen turns off and the device sleeps. Tap the screen to "
+               "wake it."
+             : "The screen turns off and the device sleeps. Reconnect power to "
+               "turn it back on.";
   // ProfilePick: spell out what each battery mode does. The mode carries its
   // light behavior (owner 2026-07-18) - no separate light level to explain.
   if (state_ == State::ProfilePick && sel_ < kProfileCount) {
@@ -820,6 +853,7 @@ void SettingsMenu::view(solide::menu::MenuView& out) const {
       out.items.push_back("Self-test >"); // '>' = opens a screen (menu convention)
       out.items.push_back("Battery >");   // live battery detail full-screen
       out.items.push_back(std::string("SD card: ") + (sdStatus_.empty() ? "?" : sdStatus_));
+      out.items.push_back("Power off");           // clean shutdown -> deep sleep (confirm first)
       out.items.push_back("Display >");          // screen flip (+ touch calibration)
       out.items.push_back("Done");
       return;
@@ -894,6 +928,12 @@ void SettingsMenu::view(solide::menu::MenuView& out) const {
       out.title = "Settings > Reset to defaults?";
       out.items.push_back("Cancel");
       out.items.push_back("Reset all");
+      return;
+
+    case State::ConfirmPowerOff:
+      out.title = "Settings > Power off?";
+      out.items.push_back("Cancel");
+      out.items.push_back("Power off");
       return;
 
     case State::Sound: {
