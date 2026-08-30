@@ -321,6 +321,14 @@ static void buildState(String& out) {
     int rsm = nimbus::relay::stackMinFree();
     if (rsm >= 0) mem["relayStackMin"] = rsm;  // cloud relay task (Orchestrator only)
   }
+  // Audio task high-water (CUM-222): the sfx task runs the sfx_sync TLS tick + MP3
+  // reply decode; the music task streams SD MP3s. Both drive the internal-SRAM floor,
+  // so surface their worst-ever free stack to confirm the reduced sfx stack (12 KB,
+  // scratch moved to PSRAM) and the 8 KB music stack keep headroom under load.
+  if (TaskHandle_t st = xTaskGetHandle("sfx"))
+    mem["sfxStackMin"] = (uint32_t)uxTaskGetStackHighWaterMark(st);    // bytes (uint8_t StackType_t)
+  if (TaskHandle_t mt = xTaskGetHandle("music"))
+    mem["musicStackMin"] = (uint32_t)uxTaskGetStackHighWaterMark(mt);  // bytes; music is Orchestrator-only
   // Cloud tunnel (cumulo-nimbus) status. Present in both modes; reports disabled in
   // Notifier (the relay task only spawns in Orchestrator).
   nimbus::relay::statusInto(d["cloud"].to<JsonObject>());
