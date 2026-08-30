@@ -86,12 +86,19 @@ Also PSRAM-backed by design: the vector-DB working set
 (`setWorkingAllocators`), ArduinoJson node pools (`ps_json.h`) - including the
 single-shot turn response docs - per-adapter request/response bodies
 (serialized into one contiguous PSRAM-spilled string and written once), the
-SFX manifest, the web audio test-tone buffers, and the Telegram poll body plus
-the poll task's staging buffers (the inbound-drain slot and the shared API
-response scratch). The last two are safe in PSRAM because `tg_poll` is their
-single consumer and its TLS work is fully serialized, so a batch never needs two
-of either live at once - moving them off internal freed ~6.7 KB of the scarce
-pool with no behavior change.
+SFX manifest, the web audio test-tone buffers, minimp3's ~15 KB per-frame decode
+scratch (via `mp3dec_decode_frame_ex`; it used to sit on the audio task stack,
+forcing the sfx task to 20 KB and leaving the 8 KB music task one MP3 track short
+of an overflow), and the Telegram poll body plus the poll task's staging buffers
+(the inbound-drain slot and the shared API response scratch). The last two are
+safe in PSRAM because `tg_poll` is their single consumer and its TLS work is
+fully serialized, so a batch never needs two of either live at once - moving them
+off internal freed ~6.7 KB of the scarce pool with no behavior change.
+
+Moving the MP3 scratch to PSRAM let the sfx task stack drop from 20 KB to 12 KB,
+returning ~8 KB to the contiguous internal block, and made the 8 KB music task
+safe. `/api/state` surfaces the audio task high-water as `mem.sfxStackMin` and
+`mem.musicStackMin` alongside `pollStackMin` / `asyncStackMin`.
 
 ### A deliberate exception: the episodic deep-history read stays internal
 
