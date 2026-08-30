@@ -62,6 +62,11 @@ struct ProviderDeps {
   // = plain HTTP + keyless; "https://"/bare host = TLS), key, wire convention
   // ("openai"|"mistral"|"anthropic"), model.
   std::function<std::string()> customBase, customKey, customConv, customModel;
+  // Optional path prefix prepended to the request path (parseBase strips any path
+  // from customBase, so a router that lives under a sub-path carries it here).
+  // Unset/"" = hit the base directly. Used by the Cumulo (/router/openai) and
+  // Z.ai (/api/paas/v4) heads, which reuse orchTurnCustom over a fixed base.
+  std::function<std::string()> customPathPrefix;
 
   // Provider-side connector/MCP attach (device: connectors::attach* append tool
   // entries to the request doc). Nullable = none. attachOpenAI rides the OpenAI

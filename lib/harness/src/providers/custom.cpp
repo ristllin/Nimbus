@@ -82,7 +82,11 @@ static int custRequest(const ProviderDeps& pd, const char* method, const std::st
   }
   headers.push_back({"Content-Type", "application/json"});
 
-  return exchange(pd, host.c_str(), (uint16_t)port, !http, method, path,
+  // A router under a sub-path (Cumulo /router/openai, Z.ai /api/paas/v4) carries
+  // it as customPathPrefix - parseBase above dropped any path from the base URL.
+  const std::string prefix = s(pd.customPathPrefix);
+  const std::string fullPath = prefix.empty() ? path : prefix + path;
+  return exchange(pd, host.c_str(), (uint16_t)port, !http, method, fullPath,
                   std::move(headers), std::move(body), CUST_TIMEOUT_MS, doc, filter);
 }
 

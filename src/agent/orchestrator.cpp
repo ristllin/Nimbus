@@ -379,6 +379,8 @@ static String modelChoicesFor(const String& p) {
   if (p == "openai")    return OPENAI_MODEL_CHOICES;
   if (p == "anthropic") return ANT_MODEL_CHOICES;
   if (p == "mistral")   return MISTRAL_MODEL_CHOICES;
+  if (p == "cumulo")    return CUMULO_MODEL_CHOICES;
+  if (p == "zai")       return ZAI_MODEL_CHOICES;
   return "";
 }
 
@@ -1121,6 +1123,40 @@ static TurnEngine::Deps buildTurnDeps() {
       return providers::orchTurnCustom(deviceProviderDeps(), cv, ins, inp, out, err,
                                        tools, usage);
     });
+  // CUM-242: the router providers as first-class orchestrator HEADS. Same
+  // single-shot chat-completions turn as the custom head (orchTurnCustom), but
+  // over a FIXED base + path prefix and the router key, so a device holding only
+  // a verified Cumulo (or Z.ai) key runs the whole assistant - the flagship "one
+  // key, one balance" path. Registered UNCONDITIONALLY (unlike custom's boot-time
+  // hasCustom() gate) so a key added AFTER boot works with no reboot: selection is
+  // gated live by routerFallbackHost()/hasKey() (both check the key at turn time),
+  // and orchTurnCustom refuses honestly if the base/key is somehow empty.
+  d.hosts.add("cumulo", [](std::string& cv, const std::string& ins, const std::string& inp,
+                           std::string& out, std::string& err, const agent::HeadTools* tools,
+                           nimbus::orch::TokenUsage* usage) {
+    providers::ProviderDeps pd = deviceProviderDeps();
+    pd.customBase       = [] { String b = store::cumuloBase();
+                               return std::string((b.length() ? b : String(CUMULO_HOST_DEFAULT)).c_str()); };
+    pd.customPathPrefix = [] { return std::string("/router/openai"); };
+    pd.customKey        = [] { return std::string(store::cumuloKey().c_str()); };
+    pd.customConv       = [] { return std::string("openai"); };
+    pd.customModel      = [] { String m = store::orchModel("cumulo");
+                               return std::string((m.length() ? m : String(CUMULO_MODEL)).c_str()); };
+    return providers::orchTurnCustom(pd, cv, ins, inp, out, err, tools, usage);
+  });
+  d.hosts.add("zai", [](std::string& cv, const std::string& ins, const std::string& inp,
+                        std::string& out, std::string& err, const agent::HeadTools* tools,
+                        nimbus::orch::TokenUsage* usage) {
+    providers::ProviderDeps pd = deviceProviderDeps();
+    pd.customBase       = [] { String b = store::zaiBase();
+                               return std::string((b.length() ? b : String(ZAI_HOST_PRIMARY)).c_str()); };
+    pd.customPathPrefix = [] { return std::string(ZAI_BASE_PATH); };
+    pd.customKey        = [] { return std::string(store::zaiKey().c_str()); };
+    pd.customConv       = [] { return std::string("openai"); };
+    pd.customModel      = [] { String m = store::orchModel("zai");
+                               return std::string((m.length() ? m : String(ZAI_MODEL)).c_str()); };
+    return providers::orchTurnCustom(pd, cv, ins, inp, out, err, tools, usage);
+  });
   return d;
 }
 

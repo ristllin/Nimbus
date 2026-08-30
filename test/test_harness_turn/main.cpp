@@ -150,7 +150,9 @@ struct Rig {
     d.apply.deliver = d.deliver;
     d.apply.stageDevice = [this](const orch::ValidatedAction& va) { staged.push_back(va); };
     d.apply.fire = [this](const char* c) { cues.push_back(c); };
-    for (const char* h : {"openai", "anthropic", "mistral", "custom"})
+    // CUM-242: cumulo/zai are first-class heads on the device now, registered the
+    // same way - the rig mirrors that so a router-fallback turn has a head to run.
+    for (const char* h : {"openai", "anthropic", "mistral", "custom", "cumulo", "zai"})
       d.hosts.add(h, providerFor(h));
     // Fabric stub (recording): only reachable when a test opts in with
     // cfg.midFail = true - the rig default keeps every legacy test on the
@@ -793,6 +795,35 @@ static void test_fabric_hostlist_filters_unsupported_hosts() {
   TEST_ASSERT_EQUAL_STRING("openai", hl[1].c_str());   // custom skipped, ladder intact
 }
 
+// ---- (12c) router-key head fallback (CUM-242) -------------------------------
+// The flagship "one key, one balance" path: a device whose ONLY verified key is
+// the Cumulo router key must run the whole assistant on it. With no BYOK head
+// keyed, the engine resolves the head to routerFallbackHost() ("cumulo") instead
+// of collapsing to the bare priority head (openai) with an empty key -> 401.
+static void test_router_key_is_the_head_when_no_byok_key() {
+  Rig r;
+  r.cfg.keyed.clear();                    // no openai/anthropic/mistral key
+  r.cfg.routerKeyed = true;               // ...but a provider IS configured (anyKeyed)
+  r.cfg.routerHost = "cumulo";            // the verified Cumulo key
+  r.scripts["cumulo"] = {{true, kGoodTurn, "", 0, "c1", 50, 10}};
+  TEST_ASSERT_TRUE(r.eng->runTurn("hello", "1001", "hello"));
+  TEST_ASSERT_EQUAL(1, (int)r.attempts.size());
+  TEST_ASSERT_EQUAL_STRING("cumulo", r.attempts[0].host.c_str());   // ran on the router
+}
+
+// A keyed BYOK head still WINS over the router key (CUM-201: BYOK-override first).
+// The router key is the SOURCE only when nothing the owner brought is keyed.
+static void test_byok_head_outranks_router_fallback() {
+  Rig r;
+  r.cfg.keyed = {"openai"};               // the owner brought an OpenAI key
+  r.cfg.priority = "anthropic,openai,mistral";
+  r.cfg.routerHost = "cumulo";            // Cumulo key also present
+  r.scripts["openai"] = {{true, kGoodTurn, "", 0, "c1", 50, 10}};
+  TEST_ASSERT_TRUE(r.eng->runTurn("hello", "1001", "hello"));
+  TEST_ASSERT_EQUAL(1, (int)r.attempts.size());
+  TEST_ASSERT_EQUAL_STRING("openai", r.attempts[0].host.c_str());   // BYOK wins
+}
+
 // ---- (13) lifecycle hooks (HookRecorder) ------------------------------------
 
 static void test_hooks_fire_on_happy_turn_with_tools() {
@@ -973,6 +1004,8 @@ int main(int, char**) {
   RUN_TEST(test_runfold_fails_over_to_the_next_keyed_host);
   RUN_TEST(test_custom_head_bypasses_fabric_and_runs);
   RUN_TEST(test_fabric_hostlist_filters_unsupported_hosts);
+  RUN_TEST(test_router_key_is_the_head_when_no_byok_key);
+  RUN_TEST(test_byok_head_outranks_router_fallback);
   RUN_TEST(test_clear_chat_conv_is_per_chat);
   RUN_TEST(test_hooks_fire_on_happy_turn_with_tools);
   RUN_TEST(test_hooks_turn_end_fires_on_failure_and_sources_track);

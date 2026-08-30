@@ -336,8 +336,8 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
         d_.cfg.provider.providerPriority ? d_.cfg.provider.providerPriority() : std::string();
     // First provider in priority order that HAS a key, so the turn runs on a
     // provider the owner configured (a bare default list heads with openai even
-    // when only mistral is keyed). Fall back to the raw head if none is keyed yet.
-    std::string head;
+    // when only mistral is keyed).
+    std::string head, keyed;
     for (size_t start = 0; start <= pr.length();) {
       size_t c = pr.find(',', start);
       const size_t end = (c == std::string::npos) ? pr.length() : c;
@@ -345,12 +345,22 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       trimInPlace(cand);
       if (cand.length()) {
         if (head.empty()) head = cand;
-        if (d_.cfg.provider.hasKey && d_.cfg.provider.hasKey(cand)) { host = cand; break; }
+        if (d_.cfg.provider.hasKey && d_.cfg.provider.hasKey(cand)) { keyed = cand; break; }
       }
       if (c == std::string::npos) break;
       start = c + 1;
     }
-    if (host.empty()) host = head;
+    if (!keyed.empty()) {
+      host = keyed;   // a keyed BYOK head wins (CUM-201: BYOK-override first)
+    } else {
+      // No BYOK head is keyed. CUM-242/CUM-201 deterministic source: a verified
+      // router key (Cumulo, then Z.ai) is the fallback head that runs the whole
+      // assistant. Only with no router key either do we fall to the bare priority
+      // head (unkeyed - it fails honestly at the wire). Nullable on host rigs.
+      std::string rf =
+          d_.cfg.provider.routerFallbackHost ? d_.cfg.provider.routerFallbackHost() : std::string();
+      host = !rf.empty() ? rf : head;
+    }
     trimInPlace(host);
   }
 

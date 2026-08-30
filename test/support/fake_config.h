@@ -40,6 +40,9 @@ struct FakeConfig {
   // verified but is NOT a single-shot head host - so `keyed` (the head hosts) is
   // empty yet the device DOES have a provider. anyKeyed reports device-truth.
   bool routerKeyed = false;
+  // CUM-242: the router head the engine falls back to when NO BYOK head is keyed
+  // (device: "cumulo" then "zai"). "" = none. A keyed BYOK head still wins.
+  std::string routerHost;
 
   agent::HarnessConfig contract() {
     agent::HarnessConfig c;
@@ -51,6 +54,7 @@ struct FakeConfig {
       return it == keys.end() ? std::string() : it->second;
     };
     p.orchHost = [this] { return orchHost; };
+    p.routerFallbackHost = [this] { return routerHost; };
     p.providerPriority = [this] { return priority; };
     p.subPriority = [this] { return subPriority; };
     p.orchModel = [this](const std::string& h) {

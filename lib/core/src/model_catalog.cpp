@@ -290,6 +290,10 @@ void sortFlagshipFirst(std::vector<ModelInfo>& v) {
 
 }  // namespace
 
+ModelInfo classifyCatalogEntry(const std::string& provider, const std::string& id) {
+  return classifyEntry(provider, id);
+}
+
 size_t parseModelsList(const std::string& provider, const std::string& body,
                        std::vector<ModelInfo>& out, ArduinoJson::Allocator* alloc) {
   // A null allocator would make ArduinoJson dereference nullptr on the first

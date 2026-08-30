@@ -77,6 +77,12 @@ char modelSizeClass(const std::string& provider, const std::string& id);
 // Provider is the slug: openai | anthropic | mistral | cumulo | zai | custom.
 ModelInfo classifyModel(const std::string& provider, const std::string& id);
 
+// Like classifyModel but honours the Cumulo "<upstream>/<id>" convention (splits
+// and classifies against the upstream, tagging ModelInfo.upstream). For any other
+// provider it is classifyModel. Lets a caller rebuild a catalog from a bare id
+// list (e.g. the harvested CSV) when a full /models body is unavailable.
+ModelInfo classifyCatalogEntry(const std::string& provider, const std::string& id);
+
 // ---- parse a provider /v1/models response into a catalog --------------------
 // `body` may carry HTTP response headers ahead of the JSON (tolerated - the JSON
 // body is located first). `alloc` backs the parse doc (device: PSRAM; host: null

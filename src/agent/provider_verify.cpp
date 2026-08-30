@@ -68,12 +68,30 @@ bool pending() { return g_pending; }
 // persist it to NVS (mcat_<provider>). Independent of the legacy CSV harvest; an
 // empty parse keeps the last good catalog. The body may still carry HTTP headers
 // (the portable parser locates the JSON). The doc rides PSRAM, not internal heap.
-static void buildAndStoreCatalog(const String& provider, const char* body, size_t len) {
+static void buildAndStoreCatalog(const String& provider, const char* body, size_t len,
+                                 const String& csvFallback) {
   using namespace nimbus::orch;
   std::vector<ModelInfo> cat;
   parseModelsList(std::string(provider.c_str()), std::string(body, len), cat,
                   &PsramJsonAllocator::instance());
-  if (cat.empty()) return;  // parse failed - keep whatever was stored
+  if (cat.empty() && csvFallback.length()) {
+    // The full /models body did not parse (a slow round truncates the JSON while
+    // the string-scan above still salvaged ids; or a router envelope the parser
+    // did not recognise), but the CSV harvest DID find chat-capable ids. Rebuild
+    // the catalog from those so GET /api/models is never empty for a verified
+    // provider that has a usable model list (CUM-242 leg 1: cumulo verified but
+    // catalog empty). The CSV already arrives flagship-first from the harvest.
+    int start = 0;
+    while (start < (int)csvFallback.length()) {
+      int comma = csvFallback.indexOf(',', start);
+      if (comma < 0) comma = csvFallback.length();
+      String id = csvFallback.substring(start, comma); id.trim();
+      if (id.length())
+        cat.push_back(classifyCatalogEntry(std::string(provider.c_str()), std::string(id.c_str())));
+      start = comma + 1;
+    }
+  }
+  if (cat.empty()) return;  // nothing to store - keep whatever was stored
   JsonDocument doc(&PsramJsonAllocator::instance());
   modelsToJson(cat, doc.to<JsonArray>(), /*includeUnusable=*/true);
   String out;
@@ -605,7 +623,7 @@ static void runOne() {
           }
           // Rich capability-aware catalog (GET /api/models): built from the SAME
           // body via the portable parser, independent of the legacy CSV above.
-          buildAndStoreCatalog(provider, buf, blen);
+          buildAndStoreCatalog(provider, buf, blen, csv);
           free(buf);
         }
       }

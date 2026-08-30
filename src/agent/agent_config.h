@@ -19,6 +19,15 @@
 #define MISTRAL_MODEL_CHOICES "mistral-large-latest,mistral-medium-latest,mistral-small-latest"
 #define OPENAI_MODEL_CHOICES  "gpt-5.5,gpt-5.4-mini,o4-mini-deep-research"
 #define ANT_MODEL_CHOICES     "claude-opus-4-8,claude-sonnet-4-6,claude-haiku-4-5"
+// Router providers (Cumulo Nimbus, Z.ai) run the assistant as first-class heads.
+// These are the fallback choice lists + default head model when the live /models
+// harvest has not landed yet; the harvested list wins when present. Cumulo speaks
+// the OpenAI-compatible router (default upstream openai), so its defaults are the
+// proven router models.
+#define CUMULO_MODEL_CHOICES  "gpt-4o,gpt-4o-mini,gpt-4-turbo"
+#define CUMULO_MODEL          "gpt-4o"
+#define ZAI_MODEL_CHOICES     "glm-4.6,glm-4.5,glm-4.5-air"
+#define ZAI_MODEL             "glm-4.6"
 
 // ---- Anthropic REST endpoints ----------------------------------------------
 #define ANTHROPIC_HOST  "api.anthropic.com"
