@@ -307,7 +307,7 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 <b style="display:block;margin-top:14px;color:var(--crit)">Factory reset</b>
 <div class=row style="margin-top:6px"><button id=factoryReset type=button style="background:rgba(240,104,122,.12);color:var(--crit)">Factory Reset&hellip;</button></div>
 <div class=row style="margin-top:6px"><label><input type=checkbox id=factoryEraseSd> Also erase the SD card</label></div>
-<p class=hint style="color:var(--crit)">Erases <b>everything</b> (Wi-Fi, API keys, the Telegram list, Bluetooth pairings, themes, sound settings, memory, and the device sign-in code), then restarts into first-time setup. The device keeps its name. This takes a few seconds, or up to a minute when erasing the card.</p>
+<p class=hint style="color:var(--crit)">Erases <b>everything</b> (Wi-Fi, API keys, the Telegram list, Bluetooth pairings, themes, sound settings, memory, the device name, and the device sign-in code), then restarts into first-time setup as a fresh device. This takes a few seconds, or up to a minute when erasing the card.</p>
 </div>
 </details>
 

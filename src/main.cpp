@@ -3804,22 +3804,26 @@ static_assert(cstreq(nimbus::config::kIdentityStrKeys[2], AKEY_OTA_TYPE), "ident
 static_assert(cstreq(nimbus::config::kIdentityIntKeyTftFlip, AKEY_TFT_FLIP), "identity drift: tftFlip");
 }  // namespace
 
-// Factory reset that KEEPS the board's hardware identity. A bare nvs_flash_erase()
+// Factory reset that KEEPS ONLY the board's PHYSICAL identity. A bare nvs_flash_erase()
 // wipes scrModel/tftFlip/tchCal/otaType too, so a TFT board reboots into the panel
 // default driver and shows a white screen it cannot correct from its own controls
-// (CUM-50). It ALSO preserves the user-visible device name (nimbus_name, CUM-15):
-// the name answers "which device is this", not a setting, so a real factory reset
-// comes back with its display working AND its name intact. Capture both via raw NVS,
-// erase every namespace (Wi-Fi, keys, token, bonds all go), re-init, then write them
-// back - so the next boot is clean onboarding on the RIGHT panel, still named.
+// (CUM-50). Everything the owner set - Wi-Fi, keys, token, bonds, config, AND the
+// user-visible device name - is scrapped (CUM-230): a reset unit comes back as a
+// clean, re-onboardable device with a fresh auto-generated name + mDNS, never carrying
+// its pre-reset identity. Capture the hardware-identity keys via raw NVS, erase every
+// namespace, re-init, then write them back plus a seeded operating mode so the next
+// boot is clean onboarding on the RIGHT panel, in the Wi-Fi setup posture.
 static void factoryResetPreserveIdentity() {
   static const char* kNs = "solide";
   constexpr int kN = nimbus::config::kIdentityStrKeyCount;
-  constexpr int kNameN = nimbus::orch::kFactoryKeepKeyCount;   // CUM-15: device-name keep-list
+  // The mode key is boot-authoritative (sys::loadMode reads "nimbus_mode"). Seeding it
+  // to Orchestrator brings the Wi-Fi setup AP up so the onboarding wizard is reachable;
+  // a merely-cleared key defaults to Notifier (radio off, no AP) - the CUM-230 bug.
+  static const char* kModeKey = "nimbus_mode";
+  static_assert(nimbus::orch::kFactoryResetSeedMode == (int)sys::Mode::Orchestrator,
+                "factory-reset seed mode must be Orchestrator (the setup-AP posture)");
   char strv[kN][64];
   bool strPresent[kN] = {false};
-  char namev[kNameN][64];
-  bool namePresent[kNameN] = {false};
   int32_t flip = 0;
   bool flipPresent = false;
   nvs_handle_t h;
@@ -3827,10 +3831,6 @@ static void factoryResetPreserveIdentity() {
     for (int i = 0; i < kN; i++) {
       size_t len = sizeof strv[i];
       strPresent[i] = nvs_get_str(h, nimbus::config::kIdentityStrKeys[i], strv[i], &len) == ESP_OK;
-    }
-    for (int i = 0; i < kNameN; i++) {   // CUM-15: capture the device name before the wipe
-      size_t len = sizeof namev[i];
-      namePresent[i] = nvs_get_str(h, nimbus::orch::kFactoryKeepKeys[i], namev[i], &len) == ESP_OK;
     }
     flipPresent = nvs_get_i32(h, nimbus::config::kIdentityIntKeyTftFlip, &flip) == ESP_OK;
     nvs_close(h);
@@ -3847,9 +3847,8 @@ static void factoryResetPreserveIdentity() {
   if (nvs_open(kNs, NVS_READWRITE, &h) == ESP_OK) {
     for (int i = 0; i < kN; i++)
       if (strPresent[i]) nvs_set_str(h, nimbus::config::kIdentityStrKeys[i], strv[i]);
-    for (int i = 0; i < kNameN; i++)   // CUM-15: restore the device name (identity, not a setting)
-      if (namePresent[i]) nvs_set_str(h, nimbus::orch::kFactoryKeepKeys[i], namev[i]);
     if (flipPresent) nvs_set_i32(h, nimbus::config::kIdentityIntKeyTftFlip, flip);
+    nvs_set_i32(h, kModeKey, nimbus::orch::kFactoryResetSeedMode);   // CUM-230: land in setup
     nvs_commit(h);
     nvs_close(h);
   }
@@ -3881,12 +3880,13 @@ void loop() {
 #endif  // feed the F12 watchdog every iteration
   otaupd::tick();        // OTA: mark-valid once healthy + check/auto-install cadence
   otaLoopUx();           // OTA install panel/ring UX (no-op unless installing)
-  if (g_factoryResetPending) {  // web factory reset: wipe config, KEEP identity + name, reboot fresh
-    // CUM-50 + CUM-15 union: factoryResetPreserveIdentity() keeps BOTH the hardware
-    // identity (scrModel/tftFlip/tchCal/otaType, so a TFT board comes back on the right
-    // driver, never a white screen) AND the user-visible device name (it answers "which
-    // device is this", not a setting). Everything else (keys/token/bonds/config) is
-    // fresh. g_factoryEraseSd additionally wipes the durable /mem store in the same flow.
+  if (g_factoryResetPending) {  // web factory reset: scrap everything, keep only the panel identity
+    // CUM-50 + CUM-230: factoryResetPreserveIdentity() keeps ONLY the hardware identity
+    // (scrModel/tftFlip/tchCal/otaType, so a TFT board comes back on the right driver,
+    // never a white screen) and seeds the setup mode so the reset device boots into the
+    // Wi-Fi onboarding wizard. Everything the owner set - keys/token/bonds/config AND the
+    // device name - is scrapped; the unit re-onboards fresh with a new name + mDNS.
+    // g_factoryEraseSd additionally wipes the durable /mem store in the same flow.
     Serial.println(g_factoryEraseSd ? "FACTORY RESET (+SD) -> keep identity, erase config + /mem, restart"
                                     : "FACTORY RESET -> keep identity, erase config, restart");
     // Progress screen with an honest duration; also buys the panel ~2.2 s to paint

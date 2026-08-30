@@ -885,7 +885,7 @@ function loadConnect(){
 // Factory reset: type-to-confirm, then POST the exact confirm phrase the device requires.
 (function(){const b=$('factoryReset'); if(!b)return; b.onclick=()=>{
   const alsoSd=$('factoryEraseSd')&&$('factoryEraseSd').checked;
-  const p=prompt('Erase all content and settings?\n\nThis removes Wi-Fi, API keys, the Telegram list, Bluetooth pairings, memory, and the device sign-in code, then restarts into first-time setup. The device keeps its name.'+(alsoSd?'\n\nThe SD card will also be erased (up to a minute).':'')+'\n\nType FACTORY RESET to confirm:');
+  const p=prompt('Erase all content and settings?\n\nThis removes Wi-Fi, API keys, the Telegram list, Bluetooth pairings, memory, the device name, and the device sign-in code, then restarts into first-time setup as a fresh device.'+(alsoSd?'\n\nThe SD card will also be erased (up to a minute).':'')+'\n\nType FACTORY RESET to confirm:');
   if(p===null)return;
   if(p.trim().toUpperCase()!=='FACTORY RESET'){toast('Not reset - the phrase didn\'t match');return;}
   const fd=new FormData();fd.append('confirm','FACTORY RESET');fd.append('eraseSd',alsoSd?'1':'0');
