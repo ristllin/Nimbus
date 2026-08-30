@@ -294,6 +294,18 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <div id=tOrient style="display:none"><label>Touch orientation</label>
 <p class="hint tip">This screen self-calibrates, so there is nothing to measure. If taps land in the wrong place, toggle these until a tap lands where you touch. Applies immediately.</p>
 <div class=row style="gap:16px;flex-wrap:wrap"><label class=pr><input type=checkbox id=tSwap> Swap X and Y</label><label class=pr><input type=checkbox id=tFlipX> Flip X</label><label class=pr><input type=checkbox id=tFlipY> Flip Y</label></div></div>
+<label>Theme <button class=qh type=button aria-expanded=false aria-label="About themes">?</button></label>
+<p class="hint tip">Each theme is a family of colors. A session's status picks its color role and motion - the ring's status language. The legend below shows the mapping.</p>
+<div id=themeChips></div>
+<button id=prevBtn type=button style="margin-top:6px">Demo on Device</button>
+<label>Preview <button class=qh type=button aria-expanded=false aria-label="About the preview">?</button></label>
+<p class="hint tip">Pick a status and mode to see the pattern in the selected theme. <b>Demo on Device</b> (above) plays it on the physical ring for a few seconds - nothing is saved.</p>
+<div id=ringsimwrap style="display:flex;flex-direction:column;align-items:center;gap:10px;margin:6px 0 2px">
+<canvas id=ringsim width=440 height=440 style="width:220px;height:220px"></canvas>
+<div id=ringsimStatus style="display:flex;gap:4px;flex-wrap:wrap;justify-content:center"></div>
+<div id=ringsimPosture style="display:flex;gap:4px;justify-content:center"></div>
+</div>
+<div id=statusLegend></div>
 </div>
 </details>
 
@@ -313,18 +325,6 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <label class=pr><input type=checkbox id=battMon> Monitor the battery <button class=qh type=button aria-expanded=false aria-label="About battery monitoring">?</button></label>
 <p class="hint tip">Reads the battery pack for the charge readout, low-battery warnings, and sleep protection. On boards built with a pack it is on; on the all-in-one board a battery is optional, so it is off until you turn it on. Takes effect after restart.</p>
 <p class=hint id=effprof></p>
-<label>Theme <button class=qh type=button aria-expanded=false aria-label="About themes">?</button></label>
-<p class="hint tip">Each theme is a family of colors. A session's status picks its color role and motion - the ring's status language. The legend below shows the mapping.</p>
-<div id=themeChips></div>
-<button id=prevBtn type=button style="margin-top:6px">Demo on Device</button>
-<label>Preview <button class=qh type=button aria-expanded=false aria-label="About the preview">?</button></label>
-<p class="hint tip">Pick a status and mode to see the pattern in the selected theme. <b>Demo on Device</b> (above) plays it on the physical ring for a few seconds - nothing is saved.</p>
-<div id=ringsimwrap style="display:flex;flex-direction:column;align-items:center;gap:10px;margin:6px 0 2px">
-<canvas id=ringsim width=440 height=440 style="width:220px;height:220px"></canvas>
-<div id=ringsimStatus style="display:flex;gap:4px;flex-wrap:wrap;justify-content:center"></div>
-<div id=ringsimPosture style="display:flex;gap:4px;justify-content:center"></div>
-</div>
-<div id=statusLegend></div>
 </div>
 </details>
 
@@ -492,6 +492,14 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <button id=cloudOff type=button style="display:none">Turn off</button>
 </div>
 <div class=hint id=cloudMsg></div>
+</div>
+</details>
+
+<details class=setgroup><summary>Power<span class=chev>&rsaquo;</span></summary>
+<div class=setbody>
+<p class=hint>Turn the device off to save power. It keeps its settings.</p>
+<div class=row style="margin-top:6px"><button id=powerOff type=button>Power Off&hellip;</button><button class=qh type=button aria-expanded=false aria-label="About power off">?</button></div>
+<p class="hint tip">Saves everything, turns the screen off, and puts the device into deep sleep. How it comes back on depends on the model: touch models wake when you tap the screen; others wake when you reconnect power.</p>
 </div>
 </details>
 
@@ -1861,6 +1869,21 @@ function loadConnect(){
       '<p style="color:var(--ink2);line-height:1.5">Everything has been erased and the device is restarting into first-time setup. '+
       'Reconnect to its <b>&ldquo;…-setup&rdquo;</b> Wi-Fi network to run the setup wizard.</p></div>';
   }).catch(()=>toast('Reset failed - try again'));};
+})();
+// Power off (CUM-224): confirm, POST /api/poweroff, then show an honest offline
+// interstitial. The device goes to deep sleep, so the page cannot poll it back -
+// replace the whole body with a clear "it is asleep" screen instead of letting the
+// 3 s state poll turn into a connection error. The wake copy follows the response's
+// tapWakes: touch models wake on a tap, others on reconnecting power.
+(function(){const b=$('powerOff'); if(!b)return; b.onclick=()=>{
+  if(!confirm('Power the device off?\n\nIt saves everything and goes to sleep. Touch models wake when you tap the screen; others wake when you reconnect power.'))return;
+  fetch('/api/poweroff',{method:'POST'}).then(r=>r.ok?r.json():Promise.reject(r.status)).then((j)=>{
+    const wake=(j&&j.tapWakes)?'Tap its screen to wake it.':'Reconnect its power to turn it back on.';
+    _authPaused=true;   // the device is sleeping; stop the background pollers hitting a dead host
+    document.body.innerHTML='<div id=sleepScreen style="max-width:460px;margin:18vh auto;padding:0 20px;text-align:center;font-family:inherit;color:var(--ink)">'+
+      '<img src=/logo.svg style="width:52px;height:52px"><h2 style="margin:14px 0 8px">The device is off</h2>'+
+      '<p style="color:var(--ink2);line-height:1.5">The screen is off and the device is asleep. '+wake+'</p></div>';
+  }).catch((e)=>toast(e===401?'Sign in required':'Couldn\'t power off - try again'));};
 })();
 // Full-card format (CUM-15): its own typed confirm, distinct from Erase Storage.
 (function(){const b=$('sdFormat'); if(!b)return; b.onclick=()=>{

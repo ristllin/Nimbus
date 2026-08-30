@@ -38,7 +38,7 @@ static void test_open_close_visibility() {
   TEST_ASSERT_TRUE(m.isOpen());
   auto v = viewOf(m);
   TEST_ASSERT_TRUE(v.visible);
-  TEST_ASSERT_EQUAL(14, int(v.items.size()));  // Mode, Profile, Tune, Connectivity, Sound, Theme, Saver, Update, Reset, Self-test, Battery, SD, Display >, Done
+  TEST_ASSERT_EQUAL(15, int(v.items.size()));  // Mode, Profile, Tune, Connectivity, Sound, Theme, Saver, Update, Reset, Self-test, Battery, SD, Power off, Display >, Done
   TEST_ASSERT_EQUAL(0, v.selected);
 
   m.close();
@@ -50,7 +50,7 @@ static void test_rotate_wraps() {
   Config c;
   SettingsMenu m(c);
   m.open();
-  const int n = 14;   // Main rows (incl. Self-test + Battery + SD + Display flip)
+  const int n = 15;   // Main rows (incl. Self-test + Battery + SD + Power off + Display flip)
 
   cw(m, n);  // full loop
   TEST_ASSERT_EQUAL(0, viewOf(m).selected);
@@ -78,7 +78,7 @@ static void test_click_descends_back_ascends() {
   // Back ascends and restores the cursor to the Tune row.
   m.onLongPress();
   v = viewOf(m);
-  TEST_ASSERT_EQUAL(14, int(v.items.size()));
+  TEST_ASSERT_EQUAL(15, int(v.items.size()));
   TEST_ASSERT_EQUAL(2, v.selected);
 
   // Long-press at Main closes.
@@ -301,7 +301,7 @@ static void test_reset_clears_all_overrides() {
   TEST_ASSERT_EQUAL(presetValue(ProfileId::Balanced, Param::RingFps),
                     c.effective(Param::RingFps));
   // Back at Main.
-  TEST_ASSERT_EQUAL(14, int(viewOf(m).items.size()));
+  TEST_ASSERT_EQUAL(15, int(viewOf(m).items.size()));
 }
 
 // The Sounds/Voice rows cycle in place (no submenu) and mark the menu dirty,
@@ -1110,7 +1110,7 @@ static void test_help_text_per_state() {
   TEST_ASSERT_EQUAL_STRING("", m.helpText());  //   no pane
   cw(m, 4);                                    // row 6 Sounds
   TEST_ASSERT_FALSE(std::string(m.helpText()).empty());  //   has help
-  cw(m, 8);                                    // wrap back to row 0 (Mode; 14 rows now)
+  cw(m, 9);                                    // wrap back to row 0 (Mode; 15 rows now)
 
   cw(m, 1); m.onClick();                       // ProfilePick (from row 1)
   TEST_ASSERT_FALSE(std::string(m.helpText()).empty());  // per-profile description
@@ -1316,6 +1316,82 @@ static void test_display_submenu_holds_the_flip() {
   TEST_ASSERT_EQUAL_STRING("< Back", d.items[2].c_str());
 }
 
+// CUM-224: the Main "Power off" row opens a confirm (defaults to Cancel), and
+// only "Power off" raises powerOffRequested_ (device drains -> deep sleep) and
+// closes the menu. Cancel / back returns to the row without raising it. The row
+// sits just before "Display >", so it never shifts the tail Display/Done pair.
+static void test_power_off_confirm_and_request() {
+  Config c;
+  SettingsMenu m(c);
+  m.open();
+  // "Power off" is the row two before Done (Power off, Display >, Done).
+  auto v = viewOf(m);
+  const int n = int(v.items.size());
+  TEST_ASSERT_EQUAL_STRING("Power off", v.items[n - 3].c_str());
+  TEST_ASSERT_EQUAL_STRING("Display >", v.items[n - 2].c_str());
+  TEST_ASSERT_EQUAL_STRING("Done", v.items[n - 1].c_str());
+
+  // Enter the confirm; it must default to Cancel (row 0), never one accidental
+  // click from powering off. No request yet, and it is not Config state.
+  while (viewOf(m).selected != n - 3) m.onRotate(+1);
+  m.onClick();
+  TEST_ASSERT_TRUE(m.showingPowerOffConfirm());
+  auto cf = viewOf(m);
+  TEST_ASSERT_EQUAL_STRING("Settings > Power off?", cf.title.c_str());
+  TEST_ASSERT_EQUAL(2, int(cf.items.size()));
+  TEST_ASSERT_EQUAL_STRING("Cancel", cf.items[0].c_str());
+  TEST_ASSERT_EQUAL_STRING("Power off", cf.items[1].c_str());
+  TEST_ASSERT_EQUAL(0, cf.selected);
+  TEST_ASSERT_FALSE(m.powerOffRequested());
+  TEST_ASSERT_FALSE(m.dirty());
+
+  // Cancel (click row 0) returns to the Power off row without raising anything.
+  m.onClick();
+  TEST_ASSERT_FALSE(m.showingPowerOffConfirm());
+  TEST_ASSERT_FALSE(m.powerOffRequested());
+  TEST_ASSERT_EQUAL_STRING("Power off", viewOf(m).items[viewOf(m).selected].c_str());
+
+  // Back gesture out of the confirm also cancels.
+  m.onClick();                 // re-enter confirm
+  TEST_ASSERT_TRUE(m.showingPowerOffConfirm());
+  m.onLongPress();
+  TEST_ASSERT_FALSE(m.showingPowerOffConfirm());
+  TEST_ASSERT_FALSE(m.powerOffRequested());
+
+  // Confirm: select "Power off" (row 1) and click -> request raised, menu closed.
+  m.onClick();                 // re-enter confirm
+  m.onRotate(+1);              // move to "Power off"
+  TEST_ASSERT_EQUAL(1, viewOf(m).selected);
+  m.onClick();
+  TEST_ASSERT_TRUE(m.powerOffRequested());
+  TEST_ASSERT_FALSE(m.isOpen());   // the shutdown UX owns the screen now
+  TEST_ASSERT_FALSE(m.dirty());    // a device action, not Config state
+  m.clearPowerOffRequest();
+  TEST_ASSERT_FALSE(m.powerOffRequested());
+}
+
+// CUM-224: the power-off copy is honest per board - a board whose touch INT wakes
+// it says "tap to wake", one that cannot says "reconnect power".
+static void test_power_off_copy_is_variant_aware() {
+  Config c;
+  // Touch-wake board (Freenove): mentions tapping the screen.
+  SettingsMenu mw(c);
+  mw.setTouchWake(true);
+  mw.open();
+  while (viewOf(mw).selected != int(viewOf(mw).items.size()) - 3) mw.onRotate(+1);
+  TEST_ASSERT_TRUE(contains(std::string(mw.helpText()), "Tap the screen"));
+  mw.onClick();                // confirm screen
+  TEST_ASSERT_TRUE(contains(std::string(mw.helpText()), "Tap the screen"));
+
+  // No-touch-wake board (Solide): tells the owner to reconnect power instead.
+  SettingsMenu mn(c);
+  mn.setTouchWake(false);
+  mn.open();
+  while (viewOf(mn).selected != int(viewOf(mn).items.size()) - 3) mn.onRotate(+1);
+  TEST_ASSERT_TRUE(contains(std::string(mn.helpText()), "Reconnect power"));
+  TEST_ASSERT_FALSE(contains(std::string(mn.helpText()), "Tap the screen"));
+}
+
 // CUM-189: the Display > Calibrate touch row raises a device-drained request
 // (not Config state, so no dirty()) instead of toggling anything itself.
 static void test_calibrate_touch_raises_a_request() {
@@ -1446,6 +1522,8 @@ int main() {
   RUN_TEST(test_main_row_says_power_profile);
   RUN_TEST(test_help_text_per_state);
   RUN_TEST(test_display_submenu_holds_the_flip);
+  RUN_TEST(test_power_off_confirm_and_request);
+  RUN_TEST(test_power_off_copy_is_variant_aware);
   RUN_TEST(test_calibrate_touch_raises_a_request);
   RUN_TEST(test_flip_toggle_dirties_and_labels);
   RUN_TEST(test_customize_shows_all_params_with_a_ring);

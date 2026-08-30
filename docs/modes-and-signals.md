@@ -143,6 +143,19 @@ under Settings → Display on the web) rotates the screen 180 degrees for an
 upside-down mount. It applies right away, and touch follows the flip so taps still
 land where you touch.
 
+### Power off
+
+**Settings > Power off** on the device (or **Power off** under Settings → Power
+on the web) saves everything, turns the screen off, and puts the device into deep
+sleep. It confirms first, so a stray tap can never turn the device off. Settings
+are kept, so it comes back exactly as you left it.
+
+How it wakes depends on the model. On a touch model whose touch controller can
+wake it, a tap on the screen turns it back on, and the copy says so ("Tap the
+screen to wake it"). On a model that cannot wake from a touch, it comes back when
+you reconnect power, and the copy says that instead. The device knows which
+applies and tells the truth on both the screen and the web page.
+
 ### Low battery
 
 Two settings under **Settings → Battery mode**, both about a low battery
@@ -205,7 +218,7 @@ means nothing to do.**
 **Themes** (10): `teal ocean ember forest openai anthropic mistral rainbow
 gemini perplexity` - each is a four-stop color family plus a per-theme alert
 hue. Changing the theme recolors every role in both modes, live. The web
-legend (Settings → Battery mode) is generated from the same tables the
+legend (Settings → Display) is generated from the same tables the
 firmware uses, so it cannot drift from what the ring actually does.
 
 Rules the firmware enforces (and tests assert):

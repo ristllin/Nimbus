@@ -816,6 +816,31 @@ void dispatch(String line) {
     }
     return;
   }
+  if (line == "POWEROFF?") {
+    // Report the power-off wake decision WITHOUT sleeping, so HIL can assert the
+    // per-variant wake wiring (Freenove touch INT vs Solide's unwired T_IRQ) on
+    // any attached board. Format: "POWEROFF tapWakes=<0|1> pin=<gpio>".
+    if (s_h.powerOffInfo) {
+      Serial.printf("POWEROFF %s\n", s_h.powerOffInfo().c_str());
+    } else {
+      reply("ERR poweroff unavailable");
+    }
+    Serial.flush();
+    return;
+  }
+  if (line == "POWEROFF") {
+    // Enter the real clean-shutdown + deep sleep NOW (mechanics test). The board
+    // goes dark and USB console dies with it: a tap wakes a touch-wake board, a
+    // power-cycle wakes one whose touch INT is unwired.
+    if (s_h.powerOffNow) {
+      Serial.println("POWEROFF entering deep sleep (tap the screen or power-cycle to wake)");
+      Serial.flush();
+      s_h.powerOffNow();
+    } else {
+      reply("ERR poweroff unavailable");
+    }
+    return;
+  }
   if (line == "BATTRESET") {
     // Throw away everything the model LEARNED by observation (rate EWMA + the
     // as-new health baselines) while keeping the owner's BATTCAL anchor. Needed

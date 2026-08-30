@@ -108,6 +108,13 @@ struct Hooks {
   // sleep screen + timer/charger wake mechanics without draining a pack.
   // ⚠ USB serial dies with the chip; the 5-min charger-sniff timer wakes it.
   std::function<void()>                                   sleepNow;
+  // Power off (CUM-224). powerOffInfo() reports the wake decision WITHOUT sleeping
+  // ("tapWakes=<0|1> pin=<gpio>") so HIL can assert the per-variant wake wiring on
+  // any board; powerOffNow() runs the real clean-shutdown + deep-sleep path (the
+  // panel goes dark, USB serial dies - a tap wakes a touch-wake board, a
+  // power-cycle wakes the rest).
+  std::function<String()>                                 powerOffInfo;
+  std::function<void()>                                   powerOffNow;
   // Battery drain/storage (battery-measurement). DRAIN is a TEST characterization tool;
   // STORAGE is the production discharge-to-storage-SoC feature (also reachable here).
   std::function<String(bool on, bool deep)>               drain;    // DRAIN on|off [deep]
