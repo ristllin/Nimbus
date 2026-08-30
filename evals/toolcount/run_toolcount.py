@@ -45,8 +45,9 @@ SYSTEM = (
 )
 
 
-def _run_one_turn(provider, task: dict[str, Any], condition: str,
-                  catalog: list[dict[str, Any]], mock: bool) -> dict[str, Any]:
+def _run_one_turn(
+    provider, task: dict[str, Any], condition: str, catalog: list[dict[str, Any]], mock: bool
+) -> dict[str, Any]:
     exposed = C.exposed_tools(condition, catalog)
     n_exposed = len(exposed)
     sys_msg = SYSTEM
@@ -89,19 +90,26 @@ def _run_one_turn(provider, task: dict[str, Any], condition: str,
                 if h["name"] not in exposed_names:
                     exposed.append(C.to_schema(h))
                     exposed_names.add(h["name"])
-            messages.append({
-                "role": "assistant", "content": None,
-                "tool_calls": [{
-                    "id": tc["id"], "type": "function",
-                    "function": {"name": "search_tools",
-                                 "arguments": json.dumps(tc["arguments"])},
-                }],
-            })
-            messages.append({
-                "role": "tool", "tool_call_id": tc["id"],
-                "content": f"Candidate tools:\n{listing}\n"
-                           f"These are now available to call.",
-            })
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": tc["id"],
+                            "type": "function",
+                            "function": {"name": "search_tools", "arguments": json.dumps(tc["arguments"])},
+                        }
+                    ],
+                }
+            )
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tc["id"],
+                    "content": f"Candidate tools:\n{listing}\nThese are now available to call.",
+                }
+            )
             continue
         # a real (non-meta) tool call: this is the selection we measure
         selected = name
@@ -109,7 +117,7 @@ def _run_one_turn(provider, task: dict[str, Any], condition: str,
 
     latency_ms = int((time.time() - t0) * 1000)
     expected = task.get("expected_tool")
-    selected_correct = (selected == expected)
+    selected_correct = selected == expected
     wrong_call = selected is not None and expected is not None and selected != expected
     if expected is None:
         # a "no tool needed" task: correct iff the model called no real tool
@@ -141,8 +149,11 @@ def _run_one_turn(provider, task: dict[str, Any], condition: str,
 
 def _judge(judge_provider, task: dict[str, Any], row: dict[str, Any]) -> dict[str, Any]:
     """Soft cross-provider quality score for the model's action on the task."""
-    action = (f"called tool `{row['selected_tool']}`" if row["selected_tool"]
-              else f"gave a direct answer: {row['final_content']!r}")
+    action = (
+        f"called tool `{row['selected_tool']}`"
+        if row["selected_tool"]
+        else f"gave a direct answer: {row['final_content']!r}"
+    )
     prompt = (
         "Score how well an assistant handled a device task. Reply as compact "
         "JSON only: {\"score\": 0..1, \"appropriate\": true/false, "
@@ -153,11 +164,10 @@ def _judge(judge_provider, task: dict[str, Any], row: dict[str, Any]) -> dict[st
         f"Search hops before acting: {row['search_hops']}.\n"
     )
     try:
-        res = judge_provider.chat(
-            [{"role": "user", "content": prompt}], tools=[])
+        res = judge_provider.chat([{"role": "user", "content": prompt}], tools=[])
         text = res.content.strip()
         start, end = text.find("{"), text.rfind("}")
-        obj = json.loads(text[start:end + 1])
+        obj = json.loads(text[start : end + 1])
         return {
             "score": float(obj.get("score", 0.0)),
             "appropriate": bool(obj.get("appropriate", False)),
@@ -168,25 +178,68 @@ def _judge(judge_provider, task: dict[str, Any], row: dict[str, Any]) -> dict[st
         return {"error": f"{type(exc).__name__}: {exc}"[:160]}
 
 
+def _make_judge_picker(args):
+    """Return a fn mapping a model label to its judge provider (or None).
+
+    "cross" judges each row with a provider from a DIFFERENT family than the one
+    under test (a model is never its own judge, mirroring the device benchmark),
+    on a fast, cheap tier so the soft signal never bottlenecks the run. Any other
+    value is a single fixed judge provider.
+    """
+    if args.mock or not args.judge:
+        return lambda _label: None
+    if args.judge != "cross":
+        fixed = P.build_provider(args.judge, temperature=0.0)
+        return lambda _label: fixed
+    judge_openai = P.build_provider("openai:gpt-4o-mini", temperature=0.0)
+    judge_zai = P.build_provider("zai:glm-4.5-air", temperature=0.0)
+    return lambda label: judge_zai if label.startswith("openai/") else judge_openai
+
+
+def _log_row(provider_label: str, cond: str, task: dict, row: dict, rep: int) -> None:
+    mark = "OK" if row["selected_correct"] else "XX"
+    print(
+        f"[{mark}] {provider_label} {cond} {task['id']} rep{rep} -> "
+        f"{row['selected_tool']} (exp {row['expected_tool']}, "
+        f"hops {row['search_hops']})",
+        file=sys.stderr,
+    )
+
+
+def _run_matrix(fh, plan: dict, args, pick_judge) -> int:
+    specs, conds, tasks, catalog = plan["specs"], plan["conds"], plan["tasks"], plan["catalog"]
+    n = 0
+    for spec in specs:
+        provider = P.build_provider("mock:mock") if args.mock else P.build_provider(spec, temperature=args.temp)
+        for cond in conds:
+            for task in tasks:
+                for rep in range(args.reps):
+                    row = _run_one_turn(provider, task, cond, catalog, args.mock)
+                    row["rep"] = rep
+                    row["temp"] = getattr(provider, "temperature", 0.0)
+                    row["ts"] = time.time()
+                    jp = pick_judge(provider.label)
+                    row["judge"] = _judge(jp, task, row) if jp else None
+                    fh.write(json.dumps(row) + "\n")
+                    fh.flush()
+                    n += 1
+                    _log_row(provider.label, cond, task, row, rep)
+    return n
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Tool-count benchmark runner")
-    ap.add_argument("--models", default="mock:mock",
-                    help="comma list of provider:model specs")
+    ap.add_argument("--models", default="mock:mock", help="comma list of provider:model specs")
     ap.add_argument("--conditions", default="full,curated,lazy")
     ap.add_argument("--reps", type=int, default=1)
     ap.add_argument("--catalog", default=str(HERE / "catalog.json"))
     ap.add_argument("--tasks", default=str(HERE / "tasks.json"))
     ap.add_argument("--out", default="")
-    ap.add_argument("--mock", action="store_true",
-                    help="use the offline mock provider regardless of --models")
-    ap.add_argument("--judge", default="",
-                    help="provider:model for the soft quality judge (optional)")
-    ap.add_argument("--temp", type=float, default=0.7,
-                    help="sampling temperature for models under test")
-    ap.add_argument("--env", default=str(HERE.parents[1] / ".env"),
-                    help="path to a .env for keys")
-    ap.add_argument("--limit-tasks", type=int, default=0,
-                    help="cap number of tasks (smoke runs)")
+    ap.add_argument("--mock", action="store_true", help="use the offline mock provider regardless of --models")
+    ap.add_argument("--judge", default="", help="provider:model for the soft quality judge (optional)")
+    ap.add_argument("--temp", type=float, default=0.7, help="sampling temperature for models under test")
+    ap.add_argument("--env", default=str(HERE.parents[1] / ".env"), help="path to a .env for keys")
+    ap.add_argument("--limit-tasks", type=int, default=0, help="cap number of tasks (smoke runs)")
     args = ap.parse_args(argv)
 
     P.load_dotenv(args.env)
@@ -195,55 +248,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.limit_tasks:
         tasks = tasks[: args.limit_tasks]
     conds = [c.strip() for c in args.conditions.split(",") if c.strip()]
-    specs = ["mock:mock"] if args.mock else \
-        [m.strip() for m in args.models.split(",") if m.strip()]
+    specs = ["mock:mock"] if args.mock else [m.strip() for m in args.models.split(",") if m.strip()]
 
-    out_path = Path(args.out) if args.out else (
-        HERE / "runs" / f"toolcount_{int(time.time())}.jsonl")
+    out_path = Path(args.out) if args.out else (HERE / "runs" / f"toolcount_{int(time.time())}.jsonl")
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Judge selection. "cross" judges each row with a provider from a DIFFERENT
-    # family than the one under test, so a model is never its own judge (mirrors
-    # the device benchmark). Otherwise a single fixed judge provider is used.
-    judge_cross = args.judge == "cross"
-    judge_provider = None
-    judge_openai = judge_zai = None
-    if not args.mock and args.judge:
-        if judge_cross:
-            judge_openai = P.build_provider("openai:gpt-4o-mini", temperature=0.0)
-            judge_zai = P.build_provider("zai:glm-4.6", temperature=0.0)
-        else:
-            judge_provider = P.build_provider(args.judge, temperature=0.0)
-
-    def pick_judge(model_label: str):
-        if not (args.judge and not args.mock):
-            return None
-        if not judge_cross:
-            return judge_provider
-        return judge_zai if model_label.startswith("openai/") else judge_openai
-
-    n = 0
+    pick_judge = _make_judge_picker(args)
+    plan = {"specs": specs, "conds": conds, "tasks": tasks, "catalog": catalog}
     with out_path.open("w") as fh:
-        for spec in specs:
-            provider = (P.build_provider("mock:mock") if args.mock
-                        else P.build_provider(spec, temperature=args.temp))
-            for cond in conds:
-                for task in tasks:
-                    for rep in range(args.reps):
-                        row = _run_one_turn(provider, task, cond, catalog, args.mock)
-                        row["rep"] = rep
-                        row["temp"] = getattr(provider, "temperature", 0.0)
-                        row["ts"] = time.time()
-                        jp = pick_judge(provider.label)
-                        row["judge"] = _judge(jp, task, row) if jp else None
-                        fh.write(json.dumps(row) + "\n")
-                        fh.flush()
-                        n += 1
-                        mark = "OK" if row["selected_correct"] else "XX"
-                        print(f"[{mark}] {provider.label} {cond} {task['id']} "
-                              f"rep{rep} -> {row['selected_tool']} "
-                              f"(exp {row['expected_tool']}, hops {row['search_hops']})",
-                              file=sys.stderr)
+        n = _run_matrix(fh, plan, args, pick_judge)
     print(f"wrote {n} rows -> {out_path}")
     return 0
 

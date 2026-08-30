@@ -28,19 +28,82 @@ _WORD = re.compile(r"[a-z0-9]+")
 # Common words carry no retrieval signal and, worse, pollute the name-substring
 # boost (e.g. "i" and "list" matching half the catalog). Drop them.
 _STOP = {
-    "the", "a", "an", "to", "of", "on", "in", "at", "by", "or", "and", "is",
-    "are", "be", "am", "it", "its", "this", "that", "these", "those", "for",
-    "you", "your", "me", "my", "mine", "i", "we", "us", "our", "do", "does",
-    "did", "how", "what", "which", "when", "where", "who", "can", "could",
-    "please", "there", "here", "some", "any", "with", "up", "down", "out",
-    "so", "if", "as", "was", "were", "will", "would", "should", "now", "later",
-    "right", "get", "got", "let", "them", "they", "he", "she", "his", "her",
+    "the",
+    "a",
+    "an",
+    "to",
+    "of",
+    "on",
+    "in",
+    "at",
+    "by",
+    "or",
+    "and",
+    "is",
+    "are",
+    "be",
+    "am",
+    "it",
+    "its",
+    "this",
+    "that",
+    "these",
+    "those",
+    "for",
+    "you",
+    "your",
+    "me",
+    "my",
+    "mine",
+    "i",
+    "we",
+    "us",
+    "our",
+    "do",
+    "does",
+    "did",
+    "how",
+    "what",
+    "which",
+    "when",
+    "where",
+    "who",
+    "can",
+    "could",
+    "please",
+    "there",
+    "here",
+    "some",
+    "any",
+    "with",
+    "up",
+    "down",
+    "out",
+    "so",
+    "if",
+    "as",
+    "was",
+    "were",
+    "will",
+    "would",
+    "should",
+    "now",
+    "later",
+    "right",
+    "get",
+    "got",
+    "let",
+    "them",
+    "they",
+    "he",
+    "she",
+    "his",
+    "her",
 }
 
 
 def _tokens(text: str) -> set[str]:
-    return {w for w in _WORD.findall(text.lower())
-            if len(w) >= 3 and w not in _STOP}
+    return {w for w in _WORD.findall(text.lower()) if len(w) >= 3 and w not in _STOP}
 
 
 def load_catalog(path: str | Path) -> list[dict[str, Any]]:
@@ -122,16 +185,21 @@ def exposed_tools(condition: str, catalog: list[dict[str, Any]]) -> list[dict[st
     raise ValueError(f"unknown condition: {condition!r}")
 
 
-def search_catalog(query: str, catalog: list[dict[str, Any]], k: int = 5
-                   ) -> list[dict[str, Any]]:
+def search_catalog(query: str, catalog: list[dict[str, Any]], k: int = 5) -> list[dict[str, Any]]:
     """Rank catalog tools against a query by lexical overlap; return the top k."""
     q = _tokens(query)
     scored: list[tuple[float, dict[str, Any]]] = []
     for t in catalog:
-        hay = _tokens(" ".join([
-            t["name"], t["description"], " ".join(t.get("keywords", [])),
-            t.get("category", ""),
-        ]))
+        hay = _tokens(
+            " ".join(
+                [
+                    t["name"],
+                    t["description"],
+                    " ".join(t.get("keywords", [])),
+                    t.get("category", ""),
+                ]
+            )
+        )
         overlap = len(q & hay)
         # small boost when a query token is a substring of the tool name
         namehit = sum(1 for tok in q if tok in t["name"].lower())

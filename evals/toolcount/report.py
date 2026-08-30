@@ -32,8 +32,10 @@ def _fmt(v, pct=False):
 def render(summary: dict) -> str:
     out: list[str] = []
     out.append("# Tool-count benchmark report")
-    out.append(f"run={summary.get('run') or '-'}  date={summary.get('date') or '-'}"
-               f"  rows={summary['rows']}  spend=${summary['usd_total']:.4f}")
+    out.append(
+        f"run={summary.get('run') or '-'}  date={summary.get('date') or '-'}"
+        f"  rows={summary['rows']}  spend=${summary['usd_total']:.4f}"
+    )
     out.append("")
     conds = [c for c in _ORDER if c in summary["conditions"]]
     for model in summary["models"]:
@@ -61,11 +63,13 @@ def render(summary: dict) -> str:
         row("spend usd", "usd_total")
         out.append("")
 
-    out.append("Legend: core = expected tool is in the curated set (fair "
-               "cross-condition compare); coverage = expected tool was cut from "
-               "curated (so curated cannot answer); overtrigger = called a tool "
-               "when none was needed. Lower is better for wrong-call, miss, "
-               "overtrigger, tokens, hops, latency, spend.")
+    out.append(
+        "Legend: core = expected tool is in the curated set (fair "
+        "cross-condition compare); coverage = expected tool was cut from "
+        "curated (so curated cannot answer); overtrigger = called a tool "
+        "when none was needed. Lower is better for wrong-call, miss, "
+        "overtrigger, tokens, hops, latency, spend."
+    )
     return "\n".join(out)
 
 

@@ -13,10 +13,9 @@ from __future__ import annotations
 import json
 import os
 import random
-import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 
 # Per-1K-token USD estimates, used only for a rough spend figure in the corpus.
@@ -73,8 +72,7 @@ class ChatResult:
 class Provider:
     """An OpenAI-compatible chat-completions provider."""
 
-    def __init__(self, name: str, model: str, base_url: str, api_key: str,
-                 temperature: float = 0.0):
+    def __init__(self, name: str, model: str, base_url: str, api_key: str, temperature: float = 0.0):
         from openai import OpenAI  # local import so the mock path needs no dep
 
         self.name = name
@@ -94,18 +92,19 @@ class Provider:
         # unconditionally is harmless and keeps one code path.
         return name.replace(".", "__")
 
-    def chat(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]],
-             seed: int | None = None) -> ChatResult:
+    def chat(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]], seed: int | None = None) -> ChatResult:
         rev: dict[str, str] = {}
         safe_tools: list[dict[str, Any]] = []
         for t in tools:
             fn = t["function"]
             safe = self._safe_name(fn["name"])
             rev[safe] = fn["name"]
-            safe_tools.append({
-                "type": "function",
-                "function": {**fn, "name": safe},
-            })
+            safe_tools.append(
+                {
+                    "type": "function",
+                    "function": {**fn, "name": safe},
+                }
+            )
         kwargs: dict[str, Any] = dict(
             model=self.model,
             messages=messages,
@@ -120,7 +119,7 @@ class Provider:
         choice = resp.choices[0]
         msg = choice.message
         tcs: list[dict[str, Any]] = []
-        for tc in (msg.tool_calls or []):
+        for tc in msg.tool_calls or []:
             try:
                 args = json.loads(tc.function.arguments or "{}")
             except (json.JSONDecodeError, TypeError):
@@ -141,17 +140,15 @@ class Provider:
 class MockProvider:
     """Deterministic offline provider for validating the harness plumbing.
 
-    It does not measure anything real: it consults the task's expected tool via a
-    caller-supplied policy so the runner can produce a well-formed corpus with no
-    network and no key. Used by tests and by `run_toolcount.py --mock`.
+    It does not measure anything real: it follows the task's expected tool, which
+    the runner embeds in the system message as `__expected__`, so the runner can
+    produce a well-formed corpus with no network and no key. Used by tests and by
+    `run_toolcount.py --mock`.
     """
 
-    def __init__(self, name: str = "mock", model: str = "mock",
-                 policy: Callable[[list[dict], list[dict]], ChatResult] | None = None,
-                 error_rate: float = 0.0, seed: int = 0):
+    def __init__(self, name: str = "mock", model: str = "mock", error_rate: float = 0.0, seed: int = 0):
         self.name = name
         self.model = model
-        self._policy = policy
         self._rng = random.Random(seed)
         self._error_rate = error_rate
 
@@ -159,12 +156,9 @@ class MockProvider:
     def label(self) -> str:
         return f"{self.name}/{self.model}"
 
-    def chat(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]],
-             seed: int | None = None) -> ChatResult:
-        if self._policy is not None:
-            return self._policy(messages, tools)
-        # Default policy: pick the tool whose name appears in the system hint the
-        # runner embeds as `__expected__`, injecting occasional wrong picks.
+    def chat(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]], seed: int | None = None) -> ChatResult:
+        # Pick the tool named by the `__expected__` hint, injecting occasional
+        # wrong picks per error_rate.
         expected = None
         for m in messages:
             if isinstance(m.get("content"), str) and "__expected__:" in m["content"]:
@@ -173,15 +167,14 @@ class MockProvider:
         if self._rng.random() < self._error_rate and len(names) > 1:
             expected = self._rng.choice(names)
         if expected and expected in names:
-            return ChatResult([{"id": "m0", "name": expected, "arguments": {}}],
-                              "", 100, 10, "tool_calls")
+            return ChatResult([{"id": "m0", "name": expected, "arguments": {}}], "", 100, 10, "tool_calls")
         if expected is None:
             return ChatResult([], "Answered directly.", 80, 12, "stop")
         # expected tool not visible (lazy pre-search): call search_tools if present
         if "search_tools" in names:
             return ChatResult(
-                [{"id": "m0", "name": "search_tools",
-                  "arguments": {"query": expected}}], "", 90, 8, "tool_calls")
+                [{"id": "m0", "name": "search_tools", "arguments": {"query": expected}}], "", 90, 8, "tool_calls"
+            )
         return ChatResult([], "No suitable tool.", 80, 10, "stop")
 
 
@@ -194,18 +187,15 @@ def build_provider(spec: str, temperature: float = 0.0) -> Provider | MockProvid
     provider, _, model = spec.partition(":")
     provider = provider.lower()
     if provider == "mock":
-        return MockProvider(model=model or "mock",
-                            error_rate=float(os.environ.get("TC_MOCK_ERR", "0")))
+        return MockProvider(model=model or "mock", error_rate=float(os.environ.get("TC_MOCK_ERR", "0")))
     if provider == "openai":
         key = os.environ.get("OPENAI_API_KEY", "")
         if not key:
             raise RuntimeError("OPENAI_API_KEY not set")
-        return Provider("openai", model or "gpt-4o-mini",
-                        "https://api.openai.com/v1", key, temperature)
+        return Provider("openai", model or "gpt-4o-mini", "https://api.openai.com/v1", key, temperature)
     if provider in ("zai", "z_ai", "z-ai", "glm"):
         key = os.environ.get("Z_AI_TOKEN", "")
         if not key:
             raise RuntimeError("Z_AI_TOKEN not set")
-        return Provider("zai", model or "glm-4.6",
-                        "https://api.z.ai/api/paas/v4", key, temperature)
+        return Provider("zai", model or "glm-4.6", "https://api.z.ai/api/paas/v4", key, temperature)
     raise ValueError(f"unknown provider in spec: {spec!r}")

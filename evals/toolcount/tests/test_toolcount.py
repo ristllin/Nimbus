@@ -9,8 +9,6 @@ import json
 import sys
 from pathlib import Path
 
-import pytest
-
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
@@ -27,6 +25,7 @@ NAMES = {t["name"] for t in CATALOG}
 
 
 # --- catalog / task integrity (guards the benchmark against silent drift) ---
+
 
 def test_catalog_has_unique_names():
     names = [t["name"] for t in CATALOG]
@@ -62,6 +61,7 @@ def test_subset_invariants():
 
 # --- conditions ---
 
+
 def test_exposed_counts():
     assert len(C.exposed_tools("full", CATALOG)) == len(CATALOG)
     assert len(C.exposed_tools("curated", CATALOG)) == len(CORE)
@@ -86,6 +86,7 @@ def test_lazy_retrieval_finds_non_always_tools():
 
 
 # --- mock end-to-end + scoring ---
+
 
 def _run_mock(reps=1):
     prov = P.build_provider("mock:mock")
@@ -128,7 +129,7 @@ def test_summary_shape_and_metrics():
     summ = S.summarize(rows, run="unit", date="2026-08-30")
     assert summ["schema_version"] == S.SCHEMA_VERSION
     assert set(summ["conditions"]) == {"full", "curated", "lazy"}
-    key = f"mock/mock|full"
+    key = "mock/mock|full"
     cell = summ["cells"][key]["overall"]
     assert cell["n"] > 0
     assert 0.0 <= cell["selection_accuracy"] <= 1.0
