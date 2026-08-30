@@ -1,0 +1,116 @@
+{
+  "schema_version": 1,
+  "run": "sample-mock",
+  "date": "2026-08-30",
+  "models": [
+    "mock/mock"
+  ],
+  "conditions": [
+    "full",
+    "curated",
+    "lazy"
+  ],
+  "subsets": [
+    "core"
+  ],
+  "rows": 18,
+  "usd_total": 0.0,
+  "cells": {
+    "mock/mock|full": {
+      "overall": {
+        "n": 6,
+        "selection_accuracy": 1.0,
+        "wrong_call_rate": 0.0,
+        "miss_rate": 0.0,
+        "overtrigger_rate": 0.0,
+        "mean_prompt_tokens": 100.0,
+        "mean_total_tokens": 110.0,
+        "mean_search_hops": 0.0,
+        "mean_latency_ms": 0.0,
+        "usd_total": 0.0,
+        "errors": 0,
+        "judge_mean_score": null,
+        "judge_appropriate_rate": null
+      },
+      "subset:core": {
+        "n": 6,
+        "selection_accuracy": 1.0,
+        "wrong_call_rate": 0.0,
+        "miss_rate": 0.0,
+        "overtrigger_rate": 0.0,
+        "mean_prompt_tokens": 100.0,
+        "mean_total_tokens": 110.0,
+        "mean_search_hops": 0.0,
+        "mean_latency_ms": 0.0,
+        "usd_total": 0.0,
+        "errors": 0,
+        "judge_mean_score": null,
+        "judge_appropriate_rate": null
+      }
+    },
+    "mock/mock|curated": {
+      "overall": {
+        "n": 6,
+        "selection_accuracy": 1.0,
+        "wrong_call_rate": 0.0,
+        "miss_rate": 0.0,
+        "overtrigger_rate": 0.0,
+        "mean_prompt_tokens": 100.0,
+        "mean_total_tokens": 110.0,
+        "mean_search_hops": 0.0,
+        "mean_latency_ms": 0.0,
+        "usd_total": 0.0,
+        "errors": 0,
+        "judge_mean_score": null,
+        "judge_appropriate_rate": null
+      },
+      "subset:core": {
+        "n": 6,
+        "selection_accuracy": 1.0,
+        "wrong_call_rate": 0.0,
+        "miss_rate": 0.0,
+        "overtrigger_rate": 0.0,
+        "mean_prompt_tokens": 100.0,
+        "mean_total_tokens": 110.0,
+        "mean_search_hops": 0.0,
+        "mean_latency_ms": 0.0,
+        "usd_total": 0.0,
+        "errors": 0,
+        "judge_mean_score": null,
+        "judge_appropriate_rate": null
+      }
+    },
+    "mock/mock|lazy": {
+      "overall": {
+        "n": 6,
+        "selection_accuracy": 1.0,
+        "wrong_call_rate": 0.0,
+        "miss_rate": 0.0,
+        "overtrigger_rate": 0.0,
+        "mean_prompt_tokens": 145.0,
+        "mean_total_tokens": 159.0,
+        "mean_search_hops": 0.5,
+        "mean_latency_ms": 0.0,
+        "usd_total": 0.0,
+        "errors": 0,
+        "judge_mean_score": null,
+        "judge_appropriate_rate": null
+      },
+      "subset:core": {
+        "n": 6,
+        "selection_accuracy": 1.0,
+        "wrong_call_rate": 0.0,
+        "miss_rate": 0.0,
+        "overtrigger_rate": 0.0,
+        "mean_prompt_tokens": 145.0,
+        "mean_total_tokens": 159.0,
+        "mean_search_hops": 0.5,
+        "mean_latency_ms": 0.0,
+        "usd_total": 0.0,
+        "errors": 0,
+        "judge_mean_score": null,
+        "judge_appropriate_rate": null
+      }
+    }
+  }
+}

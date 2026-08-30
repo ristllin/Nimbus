@@ -1,0 +1,70 @@
+{
+  "meta": {
+    "source": "device ToolRegistry (memory::registry) as advertised on an Orchestrator turn",
+    "counted_from": "lib/core + src/agent + src/main.cpp + src/sfx registration sites",
+    "note": "49 statically-registered tools with SD present and a web-search key set. 10 are admin-only (dropped from a member/guest advertisement by toolSpecsFor). The synthetic terminal tool orch_turn and dynamic mcp.<slug>.<tool> connectors are added on the wire and are NOT in this catalog. core=curated target set; always=lazy always-on base.",
+    "as_of": "2026-08-30"
+  },
+  "tools": [
+    {"name": "memory.write", "category": "memory", "core": true, "always": true, "description": "Save a durable fact or user preference to long-term memory.", "keywords": ["remember", "save", "note", "preference", "fact", "store"], "params": {"text": {"type": "string", "desc": "the fact to remember"}}},
+    {"name": "memory.search", "category": "memory", "core": true, "always": true, "description": "Search long-term memory for saved facts relevant to a query.", "keywords": ["recall", "remember", "what did", "memory", "lookup", "know about"], "params": {"query": {"type": "string"}}},
+    {"name": "memory.update", "category": "memory", "core": false, "description": "Correct or update a fact already saved in long-term memory.", "keywords": ["update", "correct", "change", "fix", "memory"], "params": {"id": {"type": "string"}, "text": {"type": "string"}}},
+    {"name": "memory.pin", "category": "memory", "core": false, "description": "Pin a memory so it is always kept and never evicted.", "keywords": ["pin", "keep", "important", "memory"], "params": {"id": {"type": "string"}}},
+    {"name": "memory.config", "category": "memory", "core": false, "description": "Read or change the memory engine configuration.", "keywords": ["config", "memory", "settings"], "params": {"key": {"type": "string", "required": false}, "value": {"type": "string", "required": false}}},
+    {"name": "memory.scratchpad", "category": "memory", "core": false, "admin": true, "description": "Read or write the working scratchpad for the current turn.", "keywords": ["scratchpad", "working", "notes", "draft"], "params": {"op": {"type": "string", "enum": ["read", "write"]}, "text": {"type": "string", "required": false}}},
+    {"name": "memory.episodic", "category": "memory", "core": false, "conditional": "episodic store bound", "description": "Search the episodic log of past turns and tool calls.", "keywords": ["episodic", "history", "past turns", "log", "earlier"], "params": {"query": {"type": "string"}}},
+
+    {"name": "session.spawn", "category": "sessions", "core": true, "always": true, "description": "Start a background sub-agent to work on a subtask in parallel.", "keywords": ["spawn", "sub-agent", "background", "delegate", "parallel", "research task", "subtask"], "params": {"prompt": {"type": "string"}}},
+    {"name": "session.tell", "category": "sessions", "core": false, "description": "Send a follow-up instruction to a running sub-agent.", "keywords": ["tell", "sub-agent", "follow up", "message agent"], "params": {"id": {"type": "string"}, "text": {"type": "string"}}},
+    {"name": "session.poll", "category": "sessions", "core": true, "description": "Check a running sub-agent for progress or its result.", "keywords": ["poll", "check", "sub-agent", "progress", "result", "status of agent"], "params": {"id": {"type": "string"}}},
+    {"name": "session.terminate", "category": "sessions", "core": false, "description": "Stop a running sub-agent.", "keywords": ["terminate", "stop", "kill", "sub-agent", "cancel agent"], "params": {"id": {"type": "string"}}},
+    {"name": "session.list", "category": "sessions", "core": false, "description": "List the active sub-agents.", "keywords": ["list", "sub-agents", "active agents", "running"], "params": {}},
+
+    {"name": "results.get", "category": "results", "core": true, "description": "Fetch the full text of an earlier tool result by its id.", "keywords": ["result", "full text", "fetch", "earlier output", "get result"], "params": {"id": {"type": "string"}}},
+    {"name": "results.list", "category": "results", "core": false, "description": "List recent tool results held in the results ring.", "keywords": ["list", "recent results", "outputs"], "params": {}},
+
+    {"name": "web.search", "category": "web", "core": true, "conditional": "web-search key set", "description": "Search the web for current, external information.", "keywords": ["web", "search", "internet", "look up", "current", "news", "weather", "who is", "latest"], "params": {"query": {"type": "string"}}},
+
+    {"name": "wakeup.set", "category": "schedule", "core": false, "admin": true, "description": "Schedule the device to wake and run a turn at a later time.", "keywords": ["wake", "schedule", "later", "remind", "alarm", "at time"], "params": {"when": {"type": "string"}, "prompt": {"type": "string"}}},
+    {"name": "loop.create", "category": "schedule", "core": false, "admin": true, "description": "Create a recurring routine that runs on a schedule.", "keywords": ["routine", "recurring", "every day", "schedule", "cron", "repeat"], "params": {"name": {"type": "string"}, "schedule": {"type": "string"}, "prompt": {"type": "string"}}},
+    {"name": "loop.list", "category": "schedule", "core": false, "admin": true, "description": "List the configured routines.", "keywords": ["list", "routines", "recurring"], "params": {}},
+    {"name": "loop.cancel", "category": "schedule", "core": false, "admin": true, "description": "Cancel a recurring routine.", "keywords": ["cancel", "routine", "stop recurring", "delete routine"], "params": {"name": {"type": "string"}}},
+
+    {"name": "reply.speak", "category": "reply", "core": true, "always": true, "description": "Speak a reply aloud through the device speaker.", "keywords": ["say", "speak", "aloud", "voice", "tell me", "read out"], "params": {"text": {"type": "string"}}},
+    {"name": "reply.telegram", "category": "reply", "core": true, "description": "Send a reply to the user over Telegram.", "keywords": ["telegram", "message me", "text me", "send message", "dm"], "params": {"text": {"type": "string"}}},
+
+    {"name": "skill.list", "category": "skills", "core": true, "description": "List available skills as one-line summaries.", "keywords": ["skills", "list skills", "what can you do", "capabilities"], "params": {}},
+    {"name": "skill.get", "category": "skills", "core": false, "description": "Fetch the full body of a named skill.", "keywords": ["skill", "get skill", "how do i", "instructions for"], "params": {"name": {"type": "string"}}},
+    {"name": "docs.list", "category": "docs", "core": false, "description": "List device documentation topics.", "keywords": ["docs", "topics", "manual", "documentation"], "params": {}},
+    {"name": "docs.search", "category": "docs", "core": true, "description": "Search the device documentation for a topic.", "keywords": ["docs", "documentation", "how to", "manual", "explain feature", "setting"], "params": {"query": {"type": "string"}}},
+    {"name": "docs.read", "category": "docs", "core": false, "description": "Read a specific documentation page.", "keywords": ["read doc", "page", "documentation"], "params": {"id": {"type": "string"}}},
+    {"name": "skill.save", "category": "skills", "core": false, "admin": true, "description": "Save a new skill for later reuse.", "keywords": ["save skill", "teach", "new skill", "remember how"], "params": {"name": {"type": "string"}, "body": {"type": "string"}}},
+    {"name": "skill.delete", "category": "skills", "core": false, "admin": true, "description": "Delete a saved skill.", "keywords": ["delete skill", "remove skill", "forget skill"], "params": {"name": {"type": "string"}}},
+
+    {"name": "system.health", "category": "system", "core": false, "description": "Report internal device health: free heap, uptime, connectivity.", "keywords": ["health", "heap", "memory usage", "uptime", "diagnostics"], "params": {}},
+
+    {"name": "tenant.list", "category": "tenant", "core": false, "admin": true, "description": "List the users on this device and their roles.", "keywords": ["users", "list users", "who has access", "roles", "members"], "params": {}},
+    {"name": "tenant.set_role", "category": "tenant", "core": false, "admin": true, "description": "Change a user's role (owner, member, guest).", "keywords": ["role", "make admin", "promote", "permission", "set role", "access"], "params": {"user": {"type": "string"}, "role": {"type": "string"}}},
+    {"name": "tenant.set_quota", "category": "tenant", "core": false, "admin": true, "description": "Set a user's usage quota.", "keywords": ["quota", "limit", "usage cap", "budget"], "params": {"user": {"type": "string"}, "quota": {"type": "number"}}},
+
+    {"name": "device.status", "category": "device", "core": true, "always": true, "description": "Report device status: mode, battery level, and network.", "keywords": ["status", "battery", "how are you", "mode", "connected", "state"], "params": {}},
+    {"name": "ota.status", "category": "device", "core": false, "description": "Report firmware version and update (OTA) status.", "keywords": ["firmware", "update", "version", "ota", "upgrade"], "params": {}},
+    {"name": "device.selftest", "category": "device", "core": false, "description": "Run a hardware self-test of the ring, audio, and display.", "keywords": ["self test", "diagnostic", "check hardware", "test ring", "test speaker"], "params": {}},
+    {"name": "device.control", "category": "device", "core": true, "description": "Perform a device action: set the LED ring, lights, display, or text-to-speech.", "keywords": ["light", "ring", "led", "brightness", "color", "display", "screen", "turn on", "turn off", "dim"], "params": {"action": {"type": "string"}}},
+
+    {"name": "media.play", "category": "media", "core": true, "description": "Play a sound or music track on the device.", "keywords": ["play", "music", "sound", "song", "track", "audio"], "params": {"track": {"type": "string"}}},
+    {"name": "media.pause", "category": "media", "core": false, "description": "Pause the current playback.", "keywords": ["pause", "hold", "music"], "params": {}},
+    {"name": "media.stop", "category": "media", "core": false, "description": "Stop the current playback.", "keywords": ["stop", "music", "silence", "quiet"], "params": {}},
+    {"name": "media.list", "category": "media", "core": false, "description": "List the available media tracks.", "keywords": ["list", "tracks", "songs", "what can you play"], "params": {}},
+
+    {"name": "files.list", "category": "files", "core": false, "description": "List files stored on the SD card.", "keywords": ["files", "list files", "sd card", "storage"], "params": {"path": {"type": "string", "required": false}}},
+    {"name": "files.stat", "category": "files", "core": false, "description": "Get metadata (size, date) for a stored file.", "keywords": ["file info", "size", "metadata", "when modified"], "params": {"path": {"type": "string"}}},
+    {"name": "files.read", "category": "files", "core": true, "description": "Read the contents of a stored file.", "keywords": ["read file", "open file", "contents", "show file"], "params": {"path": {"type": "string"}}},
+    {"name": "files.search", "category": "files", "core": true, "description": "Search stored files by name or content.", "keywords": ["search files", "find file", "grep", "look in files"], "params": {"query": {"type": "string"}}},
+    {"name": "artifact.save", "category": "files", "core": true, "description": "Save an output document or artifact to storage.", "keywords": ["save", "artifact", "write document", "save output", "store result"], "params": {"name": {"type": "string"}, "content": {"type": "string"}}},
+    {"name": "files.share", "category": "files", "core": false, "description": "Create a shareable link for a stored file.", "keywords": ["share", "link", "shareable"], "params": {"path": {"type": "string"}}},
+    {"name": "files.fetch", "category": "files", "core": false, "description": "Download a file from a URL into storage.", "keywords": ["download", "fetch url", "grab file", "save url"], "params": {"url": {"type": "string"}}},
+    {"name": "files.send", "category": "files", "core": false, "description": "Send a stored file to the user.", "keywords": ["send file", "give me the file", "attach"], "params": {"path": {"type": "string"}}},
+    {"name": "image.generate", "category": "files", "core": true, "description": "Generate an image from a text description.", "keywords": ["image", "picture", "draw", "generate image", "create art", "render"], "params": {"prompt": {"type": "string"}}}
+  ]
+}
