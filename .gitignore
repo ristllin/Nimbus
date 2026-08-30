@@ -35,6 +35,7 @@ tools/harness-lab/build/
 # Local agent/session state + private run artifacts (public-release hygiene)
 .claude/
 evals/runs/
+evals/toolcount/runs/
 *.env.local
 
 # Generated Docusaurus mirror - website/scripts/migrate-docs.mjs regenerates

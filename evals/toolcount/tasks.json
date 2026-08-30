@@ -1,0 +1,32 @@
+{
+  "meta": {
+    "note": "Fixed task set. Each task names the single ground-truth tool a correct turn should call (expected_tool), or null when the turn should answer directly with no tool. subset=core: expected tool is in the curated set, so all three conditions can answer it (isolates the distractor/count effect). subset=coverage: expected tool was cut from the curated set, so curated cannot answer it (measures the cost of over-curation). subset=none: no tool should be called (measures over-triggering).",
+    "expected_in_core_must_hold": true
+  },
+  "tasks": [
+    {"id": "t_remember", "cat": "memory", "subset": "core", "expected_tool": "memory.write", "prompt": "Remember that I take my coffee black with no sugar."},
+    {"id": "t_recall", "cat": "memory", "subset": "core", "expected_tool": "memory.search", "prompt": "What did I tell you my favorite programming language was?"},
+    {"id": "t_web", "cat": "web", "subset": "core", "expected_tool": "web.search", "prompt": "Look up the latest news on the Mars sample return mission."},
+    {"id": "t_speak", "cat": "reply", "subset": "core", "expected_tool": "reply.speak", "prompt": "Say good morning out loud through the speaker."},
+    {"id": "t_telegram", "cat": "reply", "subset": "core", "expected_tool": "reply.telegram", "prompt": "Send that summary to me as a Telegram message."},
+    {"id": "t_light", "cat": "device", "subset": "core", "expected_tool": "device.control", "prompt": "Dim the ring light down to about half brightness."},
+    {"id": "t_status", "cat": "device", "subset": "core", "expected_tool": "device.status", "prompt": "What is your battery level and are you connected to Wi-Fi right now?"},
+    {"id": "t_media", "cat": "media", "subset": "core", "expected_tool": "media.play", "prompt": "Play some focus music please."},
+    {"id": "t_image", "cat": "files", "subset": "core", "expected_tool": "image.generate", "prompt": "Generate an image of a small cabin in a snowy forest."},
+    {"id": "t_spawn", "cat": "sessions", "subset": "core", "expected_tool": "session.spawn", "prompt": "In the background, research three good mechanical keyboards while we keep talking."},
+    {"id": "t_filesearch", "cat": "files", "subset": "core", "expected_tool": "files.search", "prompt": "Find the file where I saved my trip packing list."},
+    {"id": "t_fileread", "cat": "files", "subset": "core", "expected_tool": "files.read", "prompt": "Read me the contents of the file notes.txt."},
+    {"id": "t_artifact", "cat": "files", "subset": "core", "expected_tool": "artifact.save", "prompt": "Save this meeting summary as a document I can open later."},
+    {"id": "t_docs", "cat": "docs", "subset": "core", "expected_tool": "docs.search", "prompt": "How do I change the sound theme? Check the device documentation."},
+    {"id": "t_skilllist", "cat": "skills", "subset": "core", "expected_tool": "skill.list", "prompt": "What skills do you have available?"},
+    {"id": "t_results", "cat": "results", "subset": "core", "expected_tool": "results.get", "prompt": "Show me the full text of that last search result that got cut off."},
+    {"id": "t_poll", "cat": "sessions", "subset": "core", "expected_tool": "session.poll", "prompt": "Is that background research task done yet? Check on its progress."},
+
+    {"id": "t_firmware", "cat": "device", "subset": "coverage", "expected_tool": "ota.status", "prompt": "Is there a firmware update available for you?"},
+    {"id": "t_users", "cat": "tenant", "subset": "coverage", "expected_tool": "tenant.list", "prompt": "List the users who have access to this device and their roles."},
+    {"id": "t_selftest", "cat": "device", "subset": "coverage", "expected_tool": "device.selftest", "prompt": "Run a hardware self-test on the ring, speaker, and display."},
+
+    {"id": "t_closing", "cat": "chat", "subset": "none", "expected_tool": null, "prompt": "Great, thanks. That is all for now."},
+    {"id": "t_math", "cat": "chat", "subset": "none", "expected_tool": null, "prompt": "What is 15 percent of 240?"}
+  ]
+}
