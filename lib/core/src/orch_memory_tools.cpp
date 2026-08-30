@@ -282,6 +282,105 @@ ToolResult doSearch(const MemoryContext& ctx, JsonObjectConst a, const Principal
 // normal recall/search; this is the one surface that reaches them. Everything stays
 // inside the caller's namespace boundary (readSetFor) - a member searches/restores
 // only its own archived memories.
+// Format a list of archived entries as "- [NN%] content (id ...)" bullets.
+static std::string archiveBullet(const std::string& content, float importance,
+                                 const std::string& id) {
+  return "- [" + std::to_string((int)(importance * 100)) + "%] " + content +
+         " (id " + id + ")\n";
+}
+
+ToolResult doArchiveList(const MemoryContext& ctx, JsonObjectConst a, const Principal& who) {
+  double num;
+  int limit = numArg(a, "limit", num) ? (int)std::lround(num) : 10;
+  if (limit < 1) limit = 1;
+  auto all = ctx.archive->getAll(readSetFor(who));   // FIFO: oldest first, newest last
+  if (all.empty()) return ToolResult::ok("The archive holds no memories for you yet.");
+  std::string out;
+  int shown = 0;
+  for (auto it = all.rbegin(); it != all.rend() && shown < limit; ++it, ++shown)   // newest first
+    out += archiveBullet(it->content, it->importance, it->id);
+  return ToolResult::ok("Archived memories (" + std::to_string(shown) + " of " +
+                        std::to_string((int)all.size()) + "):\n" + out);
+}
+
+ToolResult doArchiveSearch(const MemoryContext& ctx, JsonObjectConst a, const Principal& who) {
+  if (!ctx.embed) return ToolResult::fail("memory engine unavailable");
+  std::string query = strArg(a, "query");
+  if (query.empty()) return ToolResult::fail("missing 'query'");
+  double num;
+  int k = numArg(a, "n_results", num) ? (int)std::lround(num)
+        : (ctx.cfg ? ctx.cfg->retrievalCount : 5);
+  if (k < 1) k = 1;
+  std::vector<int8_t> qv = ctx.embed(query);
+  if (qv.empty()) return ToolResult::fail("embedding unavailable (provider offline?)");
+  auto hits = ctx.archive->search(qv, k, readSetFor(who));
+  float thr = ctx.cfg ? ctx.cfg->relevanceThreshold : 0.0f;
+  std::string out;
+  int n = 0;
+  for (const auto& h : hits) {
+    if ((1.0f - h.distance) < thr) continue;
+    out += archiveBullet(h.content, h.importance, h.id);
+    n++;
+  }
+  if (n == 0) return ToolResult::ok("No matching archived memories.");
+  return ToolResult::ok("Found " + std::to_string(n) + " archived memories "
+                        "(restore one with action=restore, id=...):\n" + out);
+}
+
+// Resolve the archived entry to restore: explicit id, else the nearest match to a
+// query (only if genuinely close, so a vague query can't grab an unrelated memory).
+static std::string resolveRestoreId(const MemoryContext& ctx, JsonObjectConst a,
+                                    const Principal& who) {
+  std::string id = strArg(a, "id");
+  if (!id.empty()) return id;
+  std::string q = strArg(a, "query");
+  if (q.empty() || !ctx.embed) return std::string();
+  std::vector<int8_t> qv = ctx.embed(q);
+  if (qv.empty()) return std::string();
+  auto hits = ctx.archive->search(qv, 1, readSetFor(who));
+  if (!hits.empty() && (1.0f - hits[0].distance) >= 0.55f) return hits[0].id;
+  return std::string();
+}
+
+ToolResult doArchiveRestore(const MemoryContext& ctx, JsonObjectConst a, const Principal& who) {
+  if (!who.perms().writeOwn)
+    return ToolResult::fail("this conversation isn't approved to store memories");
+  std::string id = resolveRestoreId(ctx, a, who);
+  if (id.empty()) return ToolResult::fail("identify the memory to restore by 'id' or a 'query'");
+  // Visibility BEFORE anything else - the refusal is identical to "not found" so a
+  // probe can't confirm another principal's archived id exists.
+  if (!ctx.archive->idVisible(id, readSetFor(who)))
+    return ToolResult::fail("no archived memory with id " + id);
+  // Quota gate BEFORE taking the entry out, so a refusal never strands it out of both
+  // stores. countIn is the live store's count for this namespace.
+  const Quota qta = effectiveQuota(who.role, who.quota);
+  if (qta.maxVectors && ctx.vec->countIn(who.ns) >= qta.maxVectors)
+    return ToolResult::fail("this conversation has reached its memory limit (" +
+                            std::to_string(qta.maxVectors) +
+                            ") - remove a live memory before restoring one");
+  VecEntry e;
+  if (!ctx.archive->take(id, e, readSetFor(who)))
+    return ToolResult::fail("no archived memory with id " + id);
+  // Bring it back to LIFE: reset the TTL clock to now and lift importance above the
+  // prune floor so the freshly-restored fact isn't re-expired on the next dream.
+  // Pinned/creator entries never expire, so nothing pinned is ever in the archive;
+  // a restored entry starts as an ordinary temporary memory.
+  e.createdAtHours = ctx.nowHours();
+  e.permanentFlag = false;
+  if (e.importance < 0.5f) e.importance = 0.5f;
+  e.ttlHours = ttlHoursFromName(strArg(a, "ttl", "").c_str());
+  e.ns = who.ns;   // stays inside the caller's boundary (id was already visible to it)
+  std::string note;
+  // Reuse the write rails (ttl clamp + pin budget). maxVectors was checked above,
+  // before the take, so this only clamps ttl here.
+  if (const char* refusal = applyWriteQuotas(ctx, who, e, note)) {
+    ctx.archive->archive(e, ctx.nowHours());   // never lose the entry: put it back
+    return ToolResult::fail(refusal);
+  }
+  ctx.vec->add(e, /*dedup=*/false);   // it is a known-unique restored fact
+  return ToolResult::ok("restored \"" + e.content + "\" to live memory" + note);
+}
+
 ToolResult doArchive(const MemoryContext& ctx, JsonObjectConst a, const Principal& who) {
   if (!ctx.archive) return ToolResult::fail("memory archive unavailable");
   if (!ctx.archiveAvailable())
@@ -289,99 +388,9 @@ ToolResult doArchive(const MemoryContext& ctx, JsonObjectConst a, const Principa
   if (!who.perms().readOwn)
     return ToolResult::fail("this conversation isn't approved to use memory");
   std::string action = strArg(a, "action", "search");
-
-  if (action == "list") {
-    double num;
-    int limit = numArg(a, "limit", num) ? (int)std::lround(num) : 10;
-    if (limit < 1) limit = 1;
-    auto all = ctx.archive->getAll(readSetFor(who));   // FIFO: oldest first, newest last
-    if (all.empty()) return ToolResult::ok("The archive holds no memories for you yet.");
-    std::string out;
-    int shown = 0;
-    // Newest-archived first, capped at `limit`.
-    for (auto it = all.rbegin(); it != all.rend() && shown < limit; ++it, ++shown)
-      out += "- [" + std::to_string((int)(it->importance * 100)) + "%] " + it->content +
-             " (id " + it->id + ")\n";
-    return ToolResult::ok("Archived memories (" + std::to_string(shown) + " of " +
-                          std::to_string((int)all.size()) + "):\n" + out);
-  }
-
-  if (action == "search") {
-    if (!ctx.embed) return ToolResult::fail("memory engine unavailable");
-    std::string query = strArg(a, "query");
-    if (query.empty()) return ToolResult::fail("missing 'query'");
-    double num;
-    int k = numArg(a, "n_results", num) ? (int)std::lround(num)
-          : (ctx.cfg ? ctx.cfg->retrievalCount : 5);
-    if (k < 1) k = 1;
-    std::vector<int8_t> qv = ctx.embed(query);
-    if (qv.empty()) return ToolResult::fail("embedding unavailable (provider offline?)");
-    auto hits = ctx.archive->search(qv, k, readSetFor(who));
-    float thr = ctx.cfg ? ctx.cfg->relevanceThreshold : 0.0f;
-    std::string out;
-    int n = 0;
-    for (const auto& h : hits) {
-      if ((1.0f - h.distance) < thr) continue;
-      out += "- [" + std::to_string((int)(h.importance * 100)) + "%] " + h.content +
-             " (id " + h.id + ")\n";
-      n++;
-    }
-    if (n == 0) return ToolResult::ok("No matching archived memories.");
-    return ToolResult::ok("Found " + std::to_string(n) + " archived memories "
-                          "(restore one with action=restore, id=...):\n" + out);
-  }
-
-  if (action == "restore") {
-    if (!who.perms().writeOwn)
-      return ToolResult::fail("this conversation isn't approved to store memories");
-    // Identify the entry: explicit id, else the nearest archived match to 'query'.
-    std::string id = strArg(a, "id");
-    if (id.empty()) {
-      std::string q = strArg(a, "query");
-      if (!q.empty() && ctx.embed) {
-        std::vector<int8_t> qv = ctx.embed(q);
-        if (!qv.empty()) {
-          auto hits = ctx.archive->search(qv, 1, readSetFor(who));
-          if (!hits.empty() && (1.0f - hits[0].distance) >= 0.55f) id = hits[0].id;
-        }
-      }
-    }
-    if (id.empty()) return ToolResult::fail("identify the memory to restore by 'id' or a 'query'");
-    // Visibility BEFORE anything else - the refusal is identical to "not found" so a
-    // probe can't confirm another principal's archived id exists.
-    if (!ctx.archive->idVisible(id, readSetFor(who)))
-      return ToolResult::fail("no archived memory with id " + id);
-    // Quota gate BEFORE taking the entry out, so a refusal never strands it out of both
-    // stores. countIn is the live store's count for this namespace.
-    const Quota qta = effectiveQuota(who.role, who.quota);
-    if (qta.maxVectors && ctx.vec->countIn(who.ns) >= qta.maxVectors)
-      return ToolResult::fail("this conversation has reached its memory limit (" +
-                              std::to_string(qta.maxVectors) +
-                              ") - remove a live memory before restoring one");
-    VecEntry e;
-    if (!ctx.archive->take(id, e, readSetFor(who)))
-      return ToolResult::fail("no archived memory with id " + id);
-    // Bring it back to LIFE: reset the TTL clock to now and lift importance above the
-    // prune floor so the freshly-restored fact isn't re-expired on the next dream.
-    // Pinned/creator entries never expire, so nothing pinned is ever in the archive;
-    // a restored entry starts as an ordinary temporary memory.
-    e.createdAtHours = ctx.nowHours();
-    e.permanentFlag = false;
-    if (e.importance < 0.5f) e.importance = 0.5f;
-    e.ttlHours = ttlHoursFromName(strArg(a, "ttl", "").c_str());
-    e.ns = who.ns;   // stays inside the caller's boundary (id was already visible to it)
-    std::string note;
-    // Reuse the write rails (ttl clamp + pin budget). maxVectors was checked above,
-    // before the take, so this only clamps ttl here.
-    if (const char* refusal = applyWriteQuotas(ctx, who, e, note)) {
-      // Extremely unlikely (count re-checked), but never lose the entry: put it back.
-      ctx.archive->archive(e, ctx.nowHours());
-      return ToolResult::fail(refusal);
-    }
-    ctx.vec->add(e, /*dedup=*/false);   // it is a known-unique restored fact
-    return ToolResult::ok("restored \"" + e.content + "\" to live memory" + note);
-  }
-
+  if (action == "list")    return doArchiveList(ctx, a, who);
+  if (action == "search")  return doArchiveSearch(ctx, a, who);
+  if (action == "restore") return doArchiveRestore(ctx, a, who);
   return ToolResult::fail("unknown action (use search|restore|list)");
 }
 
