@@ -1,0 +1,63 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 0a4471e..b49fb04 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -18,6 +18,27 @@ All notable changes to solide-drivers are recorded here. Format loosely follows
+   SOLIDE_HAS_EPAPER=1 to keep building the e-paper API; the public header surface is
+   unchanged either way.
+ 
++## [0.7.2] - 2026-08-30
++
++### Fixed
++- **`display_tft::healthy()`** now compares the full RDDST status byte (minus the
++  refresh scan-toggle bit0) against `madctlFor(g_flip)` with the MY/MX flip bits
++  cleared, instead of masking the flip bits out of both sides. RDDST reports MY/MX
++  as their power-on 0 regardless of the flip written, so the expected readback is
++  0x28 for both orientations: this keeps the v0.7.1 no-thrash property (a flipped
++  panel no longer reads unhealthy forever) while restoring detection of a partial
++  state loss that raises MY/MX in RDDST (got=0xE8), which the v0.7.1 0x3E mask read
++  as healthy. Reset (0x00) still fails in both orientations. Regression-tested both
++  directions on the host (nimbus `test/test_panel_health`).
++
++## [0.7.1] - 2026-08-28
++
++### Fixed
++- **`display_tft::healthy()`** masked the MY/MX flip bits out of the RDDST compare
++  so a flipped panel (`madctlFor(1)=0xE8`) no longer read unhealthy forever and
++  thrashed the panel watchdog (nimbus CUM-188). Superseded by 0.7.2, which keeps the
++  no-thrash property without dropping fault sensitivity.
++
+ ## [0.7.0] - 2026-08-25
+ 
+ ### Added
+diff --git a/src/device/display_tft.cpp b/src/device/display_tft.cpp
+index 5dcbc88..fe6cba1 100644
+--- a/src/device/display_tft.cpp
++++ b/src/device/display_tft.cpp
+@@ -349,14 +349,18 @@ void reinit() { panelInit(); }
+ // panel even when it is demonstrably working - unusable. RDDST does work.
+ bool healthy() {
+   const uint8_t got = uint8_t(readReg(0x09, 4) >> 24);
+-  // RDDST's status byte mirrors MADCTL's fixed bits (BGR/MV/refresh order) but NOT
+-  // the MY/MX 180-flip bits (0xC0), which stay at their power-on value regardless of
+-  // the flip we write (measured on hardware, F6/CUM-188). Comparing the full byte made
+-  // a flipped panel (madctlFor(1)=0xE8) read unhealthy forever, thrashing the watchdog.
+-  // Mask the flip bits out so the check is flip-independent while still catching a real
+-  // state loss (a reset reverts these bits, so 0x00 still fails).
+-  const uint8_t kMask = uint8_t(0xFE & ~0xC0);   // 0x3E: drop scan-toggle bit0 + MY/MX
+-  return (got & kMask) == (madctlFor(g_flip) & kMask);
++  // RDDST's status byte mirrors MADCTL's fixed bits (BGR / MV / refresh order) but
++  // reports the MY/MX 180-flip bits (0xC0) as their power-on 0 regardless of the flip
++  // we write (measured on hardware, F6/CUM-188). So the EXPECTED readback is
++  // madctlFor(g_flip) with the flip bits CLEARED - not the flip bits masked out of the
++  // compare. Clearing them on the expected side keeps a flipped panel from reading
++  // unhealthy forever (both sides agree on 0x28, so no watchdog thrash), while STILL
++  // checking got's MY/MX against their expected 0: a partial state loss that raises
++  // them (which masking 0xC0 out of both sides would wave through as healthy) now
++  // fails. A reset reverts the fixed bits too, so 0x00 still fails. bit0 is the
++  // refresh scan-toggle - drop it.
++  const uint8_t expected = uint8_t(madctlFor(g_flip) & ~0xC0);   // 0x28 for both flips
++  return (got & 0xFE) == expected;
+ }
+ 
+ // Write a known pixel pattern at the CURRENT clock, then read it back at a slow,
