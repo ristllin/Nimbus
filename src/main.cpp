@@ -3124,6 +3124,11 @@ void setup() {
              g_battEstimate.percent + "%";
     };
     h.sleepNow = [] { enterLowBattSleep(); };                                // SLEEP
+    h.powerOffInfo = [] () -> String {                                       // POWEROFF?
+      return String("tapWakes=") + (boardCanWakeOnTouch() ? "1" : "0") +
+             " pin=" + String(touchWakePin());
+    };
+    h.powerOffNow = [] { enterPowerOffSleep(); };                            // POWEROFF
     h.dreamNow = [] () -> String {                                           // DREAM
       if (!g_orchMode) return String("ERR dream: Orchestrator mode only");
       nimbus::orch::LoopRecord rec = agent::dream::reservedLoopRecord();
