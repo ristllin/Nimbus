@@ -26,6 +26,7 @@ struct FakeProviderDeps {
 
   std::string custBase, custKey, custModel = "mock-model";
   std::string custConv = "openai";
+  std::string custPathPrefix;   // "" = default /v1; router heads set their API base
 
   int openAiAttaches = 0, mistralAttaches = 0, anthropicAttaches = 0;
   uint32_t now = 1000;
@@ -48,6 +49,7 @@ struct FakeProviderDeps {
     pd.customKey = [this] { return custKey; };
     pd.customConv = [this] { return custConv; };
     pd.customModel = [this] { return custModel; };
+    pd.customPathPrefix = [this] { return custPathPrefix; };
     pd.attachOpenAI = [this](JsonDocument& d) {
       openAiAttaches++;
       JsonObject t = d["tools"].add<JsonObject>();

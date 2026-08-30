@@ -162,6 +162,41 @@ static void test_head_single_shot_shape_and_parse() {
   TEST_ASSERT_EQUAL(7, (int)u.completionTokens);
 }
 
+// CUM-242: the Cumulo/Z.ai heads reuse orchTurnCustom over a fixed base + a
+// customPathPrefix that REPLACES the default "/v1". Lock the exact wire path for
+// both: Cumulo keeps a /v1 under its router sub-path, Z.ai has none. The scripted
+// exchange fails the turn (transport error) if the path does not match, so ok=true
+// IS the path assertion.
+static void test_head_cumulo_path_prefix() {
+  FakeProviderDeps d;
+  d.custBase = "https://app.cumulo-nimbus.ai";
+  d.custPathPrefix = "/router/openai/v1";
+  d.custKey = "cumulo_sk_x";
+  harness_test::Exchange e; e.expectHost = "app.cumulo-nimbus.ai";
+  e.expectPathContains = "/router/openai/v1/chat/completions";
+  e.status = 200; e.body = chatBody("{\\\"reply\\\":\\\"ok\\\",\\\"memory\\\":\\\"\\\"}");
+  d.http.script.push_back(e);
+  auto pd = d.contract();
+  std::string conv, out, err;
+  TEST_ASSERT_TRUE_MESSAGE(
+      providers::orchTurnCustom(pd, conv, "S", "U", out, err, nullptr, nullptr), err.c_str());
+}
+
+static void test_head_zai_path_prefix_drops_v1() {
+  FakeProviderDeps d;
+  d.custBase = "https://api.z.ai";
+  d.custPathPrefix = "/api/paas/v4";   // no /v1 - the prefix replaces it
+  d.custKey = "zai_x";
+  harness_test::Exchange e; e.expectHost = "api.z.ai";
+  e.expectPathContains = "/api/paas/v4/chat/completions";   // NOT /api/paas/v4/v1/...
+  e.status = 200; e.body = chatBody("{\\\"reply\\\":\\\"ok\\\",\\\"memory\\\":\\\"\\\"}");
+  d.http.script.push_back(e);
+  auto pd = d.contract();
+  std::string conv, out, err;
+  TEST_ASSERT_TRUE_MESSAGE(
+      providers::orchTurnCustom(pd, conv, "S", "U", out, err, nullptr, nullptr), err.c_str());
+}
+
 // Tools are IGNORED on head-custom v1 - a HeadTools bundle must not change the
 // wire (no tool advertisement, single request).
 static void test_head_ignores_tools_v1() {
@@ -275,6 +310,8 @@ int main(int, char**) {
   RUN_TEST(test_anthropic_convention_wire);
   RUN_TEST(test_sub_error_mapping);
   RUN_TEST(test_head_single_shot_shape_and_parse);
+  RUN_TEST(test_head_cumulo_path_prefix);
+  RUN_TEST(test_head_zai_path_prefix_drops_v1);
   RUN_TEST(test_head_ignores_tools_v1);
   RUN_TEST(test_head_schema_400_fallback);
   RUN_TEST(test_head_guards_and_errors);

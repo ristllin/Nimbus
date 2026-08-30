@@ -1137,7 +1137,7 @@ static TurnEngine::Deps buildTurnDeps() {
     providers::ProviderDeps pd = deviceProviderDeps();
     pd.customBase       = [] { String b = store::cumuloBase();
                                return std::string((b.length() ? b : String(CUMULO_HOST_DEFAULT)).c_str()); };
-    pd.customPathPrefix = [] { return std::string("/router/openai"); };
+    pd.customPathPrefix = [] { return std::string("/router/openai/v1"); };
     pd.customKey        = [] { return std::string(store::cumuloKey().c_str()); };
     pd.customConv       = [] { return std::string("openai"); };
     pd.customModel      = [] { String m = store::orchModel("cumulo");
