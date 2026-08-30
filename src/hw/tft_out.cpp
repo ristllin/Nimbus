@@ -133,19 +133,25 @@ Push renderAndPush(nimbus::attn::ScreenId screen, const nimbus::render::ScreenCt
       std::memcmp(fb->data(), g_last, size_t(kFbBytes)) == 0) {
     if (uint32_t(now - g_lastPushMs) < kHealMs)
       return Push::Unchanged;   // the panel is ALREADY correct - not a drop
-    // Past the window, ASK THE PANEL rather than repainting blindly. healthy()
-    // compares its MADCTL readback against what we wrote, so a panel that is
-    // genuinely fine costs a few bytes over SPI instead of a 150 KB blit every
-    // 5 s - and a panel that has silently reset is DETECTED, not merely covered
-    // for. (The first version repainted unconditionally: correct, but it could
-    // not tell "healthy" from "broken and being papered over".)
-    if (solide::display_tft::healthy()) {
-      g_lastPushMs = now;       // re-arm the window; nothing to do
+    // Past the window, re-assert the panel mode state, then let the register read
+    // only decide whether to ALSO repaint. healthy() compares its MADCTL readback
+    // against what we wrote - but MADCTL survives SLPIN and DISPOFF (only a reset
+    // clears it), so a panel the setup-mode AP beacon has knocked to sleep reads
+    // HEALTHY while the glass is white. So rearm() runs UNCONDITIONALLY: it re-sends
+    // SLPOUT + DISPON (reset-free, microseconds, invisible on a live panel) and
+    // wakes exactly that slept-but-configured panel. Before CUM-231 this branch did
+    // NOTHING when healthy() was true; that was masked only because the flip=1
+    // watchdog thrash (driver <=v0.7.1 on a flipped panel) made healthy() read false
+    // every cycle, reasserting the panel each time. Once the driver stopped the
+    // thrash, a beacon-slept panel stayed white here until the 5 s tickHealth. The
+    // check now classifies (config lost -> also repaint), it never gates the reassert.
+    const bool configOk = solide::display_tft::healthy();
+    solide::display_tft::rearm();
+    if (configOk) {
+      g_lastPushMs = now;       // configured and awake now - no repaint needed
       return Push::Unchanged;
     }
-    // Confirmed lost: re-assert the mode state, then fall through and repaint.
-    // rearm() is reset-free, so this cannot flicker.
-    solide::display_tft::rearm();
+    // Confirmed config loss: fall through and repaint on top of the reassert.
     g_heals++;
   }
 
