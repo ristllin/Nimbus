@@ -190,6 +190,14 @@ Periodically (each N turns / daily): `vdb.decay_importance(decay_factor)` then
 `vdb.prune_expired()`; blob day-file archival monthly. Tool results worth
 keeping are written back via `memory.write` (the model decides what to keep).
 
+On a device **with an SD card**, `prune_expired()` does not delete: an expired
+memory is **moved to the archive** (`/mem/archive.bin`, embedding preserved) instead,
+so it can be found or restored later without paying to re-embed it. The model reaches
+it through `memory.archive` (`search` / `restore` / `list`), which is offered only
+when a card is present; `restore` returns the fact to the live store, counting against
+the normal memory limit. With no card, expiry deletes exactly as before. See
+[orchestrator-storage.md §2a](orchestrator-storage.md) and CUM-225.
+
 ## 3. Capability & world manifest
 
 Generated, never hand-written (so it can't drift): hardware inventory (ring,

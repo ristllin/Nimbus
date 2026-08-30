@@ -39,6 +39,10 @@ using namespace nimbus::orch;
 
 namespace {
 VectorMemory          g_vec;
+// Cold store for TTL-expired memories (CUM-225). SD-only: attached as g_vec's prune
+// sink and exposed to the model ONLY when a card is present, so a card-less device
+// drops entries at TTL exactly as before. Lives in PSRAM like the live set.
+nimbus::orch::VectorArchive g_archive;
 Scratchpad            g_scratch;
 MemConfig             g_cfg;
 // Device cap: bound the ring so the whole-blob rewrite per turn (persistEpisodic)
@@ -82,10 +86,12 @@ uint32_t              g_lastSdProbeMs = 0;
 // paths (the migration source). Resolved once in begin() from g_haveSd.
 const char* kVecSdPath  = "/mem/vectors.bin";
 const char* kEpiSdPath  = "/mem/episodic.bin";
+const char* kArcSdPath  = "/mem/archive.bin";    // TTL-expired cold store (SD-only, CUM-225)
 const char* kVecLfsPath = "/data/orchvec.bin";   // pre-SD location (migration source)
 const char* kEpiLfsPath = "/data/episodic.bin";
 std::string g_vecPath   = kVecLfsPath;   // active vector-blob path (set in begin())
 std::string g_epiPath   = kEpiLfsPath;   // active episodic-blob path (set in begin())
+std::string g_arcPath   = kArcSdPath;    // active archive-blob path (SD-only, set in begin())
 const char* kScratchNs = "orchmem";
 const char* kScratchKey = "scratch";     // legacy string key (≤4000 B) - read-only fallback
 const char* kScratchBKey = "scratchB";   // v4.1 bytes blob (no 4000 B string limit)
@@ -96,6 +102,10 @@ const char* kMemCfgKey  = "memcfg";   // persisted MemConfig blob (same NVS name
 // (g_cfg.maxVectors) applies only on the SD card. The working set itself lives in
 // PSRAM (§2), so this cap is about flash-blob size, not RAM.
 constexpr int    kDegradedMaxVectors = 400;
+// Archive (cold store) FIFO cap. The card has room to spare; this bounds the blob a
+// dream must rewrite when it archives, and the PSRAM the archive holds. Oldest-
+// archived is evicted first when full (CUM-225).
+constexpr int    kArchiveMaxEntries = 2000;
 // Keep this many bytes free on LittleFS after a degraded vector persist; below it we
 // refuse the write (the overflow guard the audit found missing).
 constexpr size_t kFlashFreeFloor = 96 * 1024;
@@ -166,6 +176,7 @@ bool eraseDurableStore() {
   // in after we release it would write EMPTY state, not resurrected data (the
   // barrier already refuses it; this is defense in depth + a consistent reload).
   g_vec.flushAll();
+  g_archive.flushAll();   // drop the cold store too (the /mem tree wipe removes its blob)
   g_scratch.clearAll();
   const char* root = g_haveSd ? "/mem" : "/data";
   bool ok = rmTree(*g_fs, root);
@@ -214,6 +225,33 @@ void begin() {
     String blob = loadBlob(kVecSdPath, kVecLfsPath);
     if (blob.length() && !g_vec.deserialize(std::string(blob.c_str(), blob.length())))
       alog("memory: vector blob partial/garbage - loaded what parsed");
+  }
+  // Cold store for TTL-expired memories (CUM-225). SD-only: on a card-less device we
+  // never attach it, so prune drops at TTL exactly as before. On the card, load the
+  // archive blob and attach it as the prune sink so expiry MOVES entries here (the
+  // embedding is preserved) instead of deleting them.
+  g_arcPath = kArcSdPath;
+  g_archive.configure(g_vec.dims());
+  g_archive.setMaxEntries(kArchiveMaxEntries);
+  if (effHaveSd()) {
+    File f = g_fs->open(kArcSdPath, FILE_READ);
+    if (f) {
+      String blob = f.readString();
+      f.close();
+      if (blob.length() && !g_archive.deserialize(std::string(blob.c_str(), blob.length())))
+        alog("memory: archive blob partial/garbage - loaded what parsed");
+    }
+    // Guard the width invariant: if the embed config changed since this archive was
+    // written (its stored dims no longer match the live store), the archived vectors
+    // are in a stale space - prune could no longer move same-width entries in, and a
+    // search would reject the query. Drop the stale archive and re-configure.
+    if (g_archive.dims() != g_vec.dims()) {
+      g_archive.flushAll();
+      g_archive.configure(g_vec.dims());
+      alog("memory: archive dims stale (embed config changed) - archive reset");
+    }
+    g_archive.setMaxEntries(kArchiveMaxEntries);
+    g_vec.setArchiveSink(&g_archive);
   }
   // Load persisted scratchpad + retrieval config (both in the orchmem namespace).
   {
@@ -294,6 +332,14 @@ void begin() {
   ctx.scratch = &g_scratch;
   ctx.cfg = &g_cfg;
   ctx.episodic = g_epiActive;
+  // memory.archive is registered ONLY when a card is present at boot (ctx.archive
+  // non-null). archiveAvailable is a LIVE check so a card pulled mid-run refuses the
+  // tool cleanly. A card-less boot never registers it (adopting a later-inserted card
+  // needs a restart, same as every other SD-resolved path here).
+  if (effHaveSd()) {
+    ctx.archive = &g_archive;
+    ctx.archiveAvailable = [] { return effHaveSd(); };
+  }
   ctx.embed = embedText;
   ctx.nowHours = [] { return nowHours(); };
   registerMemoryTools(g_reg, ctx);
@@ -751,9 +797,12 @@ void begin() {
     return ToolRegistry::Verdict::allow();
   });
 
-  alogf("memory: ready (%d vectors, dims=%d, store=%s, cap=%d, embed=%s, web=%s)",
+  alogf("memory: ready (%d vectors, dims=%d, store=%s, cap=%d, archive=%s, embed=%s, web=%s)",
         g_vec.size(), g_vec.dims(), g_haveSd ? "SD /mem" : "flash /data (no SD)",
-        g_vec.maxEntries(), embeddings::available() ? "on" : "no-key",
+        g_vec.maxEntries(),
+        effHaveSd() ? (std::to_string(g_archive.size()) + "/" +
+                       std::to_string(kArchiveMaxEntries)).c_str() : "off (no SD)",
+        embeddings::available() ? "on" : "no-key",
         agent::tavily::available() ? "on" : "off");
 }
 
@@ -862,6 +911,7 @@ bool flashFull() { return g_flashFull; }
 
 ToolRegistry&  registry()   { return g_reg; }
 VectorMemory&  vectors()    { return g_vec; }
+nimbus::orch::VectorArchive& archive() { return g_archive; }
 Scratchpad&    scratchpad() { return g_scratch; }
 MemConfig&     config()     { return g_cfg; }
 
@@ -904,9 +954,16 @@ static bool probeSdWrite() {
 static void applySdEdge(nimbus::SdHealthTracker::Event e) {
   if (e == nimbus::SdHealthTracker::Event::Demote) {
     applyConfig();   // tighten the vector cap to the flash-safe degraded limit
+    // Detach the archive sink: with no card, prune must DROP at TTL as before (a
+    // card-less device never archives). memory.archive also refuses live via
+    // archiveAvailable(). The archive's RAM contents are kept for a later promote.
+    g_vec.setArchiveSink(nullptr);
     alog("memory: SD lost mid-run - demoted to no-card tier (appends -> RAM ring)");
   } else if (e == nimbus::SdHealthTracker::Event::Promote) {
     applyConfig();   // restore the full SD-tier cap
+    // Re-attach the archive sink only if the archive existed at boot (a card-less
+    // boot never built it; adopting a freshly-inserted card needs a restart).
+    if (g_haveSd) g_vec.setArchiveSink(&g_archive);
     alog("memory: SD recovered - promoted back to the SD tier");
   }
 }
@@ -1082,6 +1139,18 @@ void persistVectors() {
   bool w = writeBlobAtomic(g_vecPath, blob);
   if (effHaveSd()) noteSdIoResult(w);   // real SD write outcome feeds the demote watchdog
   if (!w) alog("memory: vector persist failed");
+  persistArchive();   // the archive rides the same persist cadence (dirty-gated, SD-only)
+}
+
+// Persist the TTL-expired cold store (CUM-225). SD-only and dirty-gated: a dream that
+// archived nothing, or a card-less device, never rewrites the blob. Called from
+// persistVectors so every mutating path that touches the live store (dream prune,
+// restore) also flushes any archive change in the same step.
+void persistArchive() {
+  Lock g;
+  if (!effHaveSd() || !g_archive.dirty()) return;
+  if (writeBlobAtomic(g_arcPath, g_archive.serialize())) g_archive.markClean();
+  else alog("memory: archive persist failed");
 }
 
 void persistScratchpad() {
@@ -1429,7 +1498,8 @@ int pruneRetention(int retentionDays) {
 // trigger a full-blob rewrite - the write-amplification the audit flagged).
 static bool isMutatingTool(const std::string& name) {
   return name == "memory.write" || name == "memory.update" || name == "memory.pin" ||
-         name == "memory.delete" || name == "memory.config" || name == "memory.scratchpad";
+         name == "memory.delete" || name == "memory.config" || name == "memory.scratchpad" ||
+         name == "memory.archive";   // restore mutates both stores (persist to flush)
 }
 
 std::string handleMcp(const std::string& jsonRpcRequest,
@@ -1481,6 +1551,7 @@ Stats stats() {
   s.sdPresent = effHaveSd();
   s.flashFull = g_flashFull;
   s.maxVectors = g_vec.maxEntries();
+  s.archivedCount = effHaveSd() ? g_archive.size() : 0;
   if (g_epiLog) {
     s.epiHydrateTruncated = g_epiLog->hydrateTruncated();
     s.epiIndexFloorDay = (int)g_epiLog->indexFloorDay();

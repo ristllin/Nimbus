@@ -8,6 +8,7 @@
 #include "nimbus/orch/mem_config.h"
 #include "nimbus/orch/scratchpad.h"
 #include "nimbus/orch/tool_registry.h"
+#include "nimbus/orch/vector_archive.h"
 #include "nimbus/orch/vector_memory.h"
 
 // memory_subsystem - the device integration hub for the orchestrator "World"
@@ -86,6 +87,9 @@ nimbus::orch::ToolRegistry& registry();
 
 // Engine accessors (for the web dashboard's browse/edit endpoints).
 nimbus::orch::VectorMemory&  vectors();
+// The TTL-expired cold store (CUM-225). Populated + persisted only when an SD card
+// is present; empty and unused on a card-less device. Exposed for the web dashboard.
+nimbus::orch::VectorArchive& archive();
 nimbus::orch::Scratchpad&    scratchpad();
 nimbus::orch::MemConfig&     config();
 nimbus::orch::EpisodicStore& episodic();
@@ -104,6 +108,7 @@ std::vector<std::string> recall(const String& queryText, int k = 0,
 // Persist current state. persistVectors() writes the whole blob (O(n), cheap for
 // the device's scale); called automatically after a mutating MCP call.
 void persistVectors();
+void persistArchive();    // TTL-expired cold store -> SD /mem/archive.bin (dirty-gated, SD-only)
 void persistScratchpad();
 void persistMemConfig();  // retrieval knobs -> NVS (fixes silent reset-on-reboot)
 void persistEpisodic();   // whole-blob to LittleFS /data/episodic.bin
@@ -205,6 +210,7 @@ struct Stats {
   bool sdPresent = false;        // bulk store on SD (/mem) vs degraded flash (/data)
   bool flashFull = false;        // degraded vector persist paused (LittleFS floor)
   int  maxVectors = 0;           // effective capacity cap (tier-aware)
+  int  archivedCount = 0;        // TTL-expired memories held in the SD cold store (0 with no SD)
   // v4.0.0 deep history: did the boot scan stop at its budget (older rows are on
   // the card but not indexed), and the oldest day it DID index. Surfaced so
   // "where did my old history go" has an answer instead of looking like loss.
