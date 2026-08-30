@@ -137,6 +137,22 @@ class Router {
   // driven and cleared by BatteryOk; the NullMonitor stub never sets it.)
   bool forceExpireAttention(uint32_t nowMs, uint32_t maxAgeMs);
 
+  // Terminal-arc backstop (CUM-221, the recurring stuck-ring CLASS). A delivered
+  // sub-agent's Done arc lingers on the ring as a dim ember and is collapsed ONLY
+  // by JobEngine::reapDone, which runs on the tg_poll task. forceExpireAttention
+  // above deliberately ignores it: Done is not an attention status. So the ONE
+  // status whose sole terminating edge lives on tg_poll had NO always-alive
+  // main-loop backstop - and a tg_poll stall / dropped Offline stranded it lit
+  // (the "ring stays on after answering Telegram" the owner has hit 5 times).
+  // This ages out any Done slot whose dwell exceeds maxAgeMs from the watchdog-fed
+  // main loop. Done is terminal by definition, so collapsing it can never erase
+  // live work - unlike Running/Idle, which represent a live session and are left
+  // to their own reap. With this, EVERY ring status has a main-loop terminating
+  // edge: attention states + ask via forceExpireAttention, the head Running arc
+  // via the stuck-turn reaper + head-arc reconciler, Done here, Offline frees the
+  // slot. Returns true if it cleared anything.
+  bool forceExpireDoneArcs(uint32_t nowMs, uint32_t maxAgeMs);
+
   // Expiry TOMBSTONES (owner red-ring root-cause fix). The broker sends FULL-SNAPSHOT
   // frames on every event, so after forceExpireAttention() frees a stale attention
   // arc, the next neighbor-driven frame re-adds the SAME key at the SAME status with

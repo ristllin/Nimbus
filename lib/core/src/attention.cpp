@@ -189,4 +189,25 @@ bool Router::forceExpireAttention(uint32_t nowMs, uint32_t maxAgeMs) {
   return cleared;
 }
 
+bool Router::forceExpireDoneArcs(uint32_t nowMs, uint32_t maxAgeMs) {
+  // Mirror forceExpireAttention, but for the ONE non-attention status it skips:
+  // a terminal Done ember whose happy-path reap (JobEngine::reapDone) runs only on
+  // tg_poll. enteredAt is stamped on the status change (upsert), so a Done arc's
+  // dwell is exact. Snapshot first, then upsert Offline to free the slot. No
+  // tombstone: the orchestrator emits a sub-agent's Done exactly once (nothing to
+  // flap it back), and a notifier full-snapshot re-add is itself terminal and
+  // would be collapsed again on the next sweep - it can blink but never strand.
+  bool cleared = false;
+  solide::ring::Slot snap[RING_MAX_SEGMENTS];
+  const int n = jobs_.snapshot(snap, RING_MAX_SEGMENTS);
+  for (int i = 0; i < n; ++i) {
+    if (snap[i].status == Status::Done &&
+        (int32_t)(nowMs - snap[i].enteredAt) > (int32_t)maxAgeMs) {
+      jobs_.upsert(snap[i].key, Status::Offline, nowMs);  // free the slot (collapse)
+      cleared = true;
+    }
+  }
+  return cleared;
+}
+
 }  // namespace nimbus::attn
