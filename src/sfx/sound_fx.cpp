@@ -182,7 +182,9 @@ void begin(bool orchestratorMode) {
   // mp3dec_scratch_t (grbuf + syn + maindata) now lives in PSRAM via
   // mp3dec_decode_frame_ex (CUM-222) instead of on this stack, so 12 KB holds the
   // remaining TLS+playback depth with margin (was 20 KB when the scratch was on the
-  // stack; that -8 KB is returned to the scarce internal-SRAM contiguous block). If a
+  // stack; that -8 KB returns to the internal-SRAM free pool - bench-measured
+  // heapMin +~9 KB on the Solide S3. The largest contiguous block is layout-bound and
+  // did not move on that board). If a
   // board cannot spare this, xTaskCreate fails and sfx (and on-device voice) degrade
   // gracefully rather than bricking. High-water is surfaced in /api/state
   // (mem.sfxStackMin). BENCH: confirm the sfx + music stack high-water keeps >2 KB

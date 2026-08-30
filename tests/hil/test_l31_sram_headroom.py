@@ -1,11 +1,13 @@
 """§L31 - contiguous internal-SRAM headroom guardrail (CUM-222).
 
-The scarce resource on this ESP32-S3 is not total free RAM - it is the largest
-CONTIGUOUS INTERNAL block, which a TLS handshake and AsyncTCP accept need. CUM-185
-measured that block collapsing to ~7 KB at Orchestrator steady state, which starved
-the web server. CUM-222 returned ~8 KB of it by moving minimp3's ~15 KB per-frame
-decode scratch off the audio task stacks into PSRAM (mp3dec_decode_frame_ex), which
-let the sfx task drop 20 KB -> 12 KB and made the 8 KB music task safe.
+Two internal-SRAM axes matter on this ESP32-S3: total free (heapMin, the "low SRAM"
+floor) and the largest CONTIGUOUS block (intLargest, what a TLS handshake / AsyncTCP
+accept needs). CUM-185 measured intLargest collapsing to ~7 KB on the Freenove, which
+starved the web server. CUM-222 moved minimp3's ~15 KB per-frame decode scratch off the
+audio task stacks into PSRAM (mp3dec_decode_frame_ex), dropping the sfx stack 20 KB ->
+12 KB and making the 8 KB music task safe. Bench-measured on the Solide S3 (nimbus-6):
+that returned ~9 KB to total free (heapMin 49 KB -> 58 KB); intLargest was already
+healthy there (31.7 KB) and is layout-bound, so it did not move on that board.
 
 Two layers of guard, both fail a battery instead of reaching the owner:
 
@@ -31,10 +33,11 @@ _REPO = Path(__file__).resolve().parents[2]
 # deliberate *raise* (if a real crash ever needs more) goes red and forces a conscious
 # decision that also re-justifies giving back the CUM-222 internal-SRAM win.
 SFX_STACK_CEILING = 12288
-# Live largest-contiguous-internal floor under load. PROVISIONAL: set above the ~7 KB
-# CUM-185 starvation floor and below the expected post-fix steady state, so a
-# regression that loses the CUM-222 headroom goes red. Tighten to the measured bench
-# baseline once the nimbus-6 before/after run lands (see CUM-222).
+# Live largest-contiguous-internal floor under load. A board-agnostic catastrophic
+# guard: above the ~7 KB CUM-185 Freenove starvation floor, below every healthy
+# reading. Bench-measured on the Solide S3 (nimbus-6) at 31.7 KB steady and unchanged
+# under load (TFT blit + web + a real turn); left at 12288 so the guard does not
+# false-fail a lower-headroom board while still catching a return to starvation.
 INTLARGEST_FLOOR = 12288
 # Audio task worst-ever free stack danger floor (bytes). The sfx task runs a TLS tick
 # + MP3 reply decode; under ~2 KB free is the "about to overflow" zone.
