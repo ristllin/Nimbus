@@ -845,6 +845,47 @@ static void test_hooks_turn_end_fires_on_failure_and_sources_track() {
 }
 
 
+// ---- CUM-211: honest local reply when no provider is routable ---------------
+// A chat turn with no keyed provider must NEVER be silent (owner: "tried chatting
+// and it's not responding ... regardless of the channel I would expect an
+// automated response"). handleMessage answers locally, names the fix, and never
+// arms a paid turn or the head ring arc.
+static void test_no_provider_gives_honest_local_reply_not_silence() {
+  Rig r;
+  r.cfg.keyed.clear();                 // no provider has a key (custom not keyed either)
+  r.eng->handleMessage("hello?", "Roy", "1001");
+  // Exactly one delivery: the honest local message; ZERO provider attempts.
+  TEST_ASSERT_EQUAL(0, (int)r.attempts.size());
+  TEST_ASSERT_EQUAL(1, (int)r.delivered.size());
+  TEST_ASSERT_EQUAL_STRING(
+      "No AI provider is set up yet. Add a provider key in the web app under Models, "
+      "then send your message again.",
+      r.lastText().c_str());
+  // No ring arc armed (no head Running/Offline churn), turn counter untouched, and
+  // it did not read as a transient "resend in a few seconds" heap deferral.
+  TEST_ASSERT_EQUAL(0, r.headEventsWith(Status::Running));
+  TEST_ASSERT_EQUAL(0, (int)r.eng->turnCount());
+  TEST_ASSERT_FALSE(r.anyDelivered("working memory"));
+  TEST_ASSERT_TRUE(LogCapture::contains(
+      "orchestrator: turn refused - no provider configured"));
+  TEST_ASSERT_FALSE(r.eng->anyProviderConfigured());
+}
+
+// The predicate is budget-agnostic and counts a configured keyless custom head:
+// an over-budget provider is still "configured" (own reply), and a LAN endpoint
+// needs no key - neither must read as "no provider".
+static void test_any_provider_configured_predicate() {
+  Rig r;
+  TEST_ASSERT_TRUE(r.eng->anyProviderConfigured());        // default: three keyed hosts
+  r.cfg.overBudgetHosts = {"anthropic", "openai", "mistral"};
+  TEST_ASSERT_TRUE(r.eng->anyProviderConfigured());        // over budget != unconfigured
+  r.cfg.overBudgetHosts.clear();
+  r.cfg.keyed.clear();
+  TEST_ASSERT_FALSE(r.eng->anyProviderConfigured());       // truly nothing keyed
+  r.cfg.keyed.insert("custom");                            // configured LAN/custom head
+  TEST_ASSERT_TRUE(r.eng->anyProviderConfigured());
+}
+
 // ---- per-chat conversation map (Release B2) ---------------------------------
 static void test_convmap_roundtrip_and_isolation() {
   using agent::convMapGet;
@@ -891,6 +932,8 @@ int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_convmap_roundtrip_and_isolation);
   RUN_TEST(test_convmap_legacy_discarded_and_lru);
+  RUN_TEST(test_no_provider_gives_honest_local_reply_not_silence);
+  RUN_TEST(test_any_provider_configured_predicate);
   RUN_TEST(test_loop_gate_uses_entry_heap_not_the_recall_dip);
   RUN_TEST(test_loop_defers_when_entry_heap_is_genuinely_low);
   RUN_TEST(test_happy_turn_delivers_and_accounts);

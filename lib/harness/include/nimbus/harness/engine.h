@@ -262,6 +262,16 @@ class TurnEngine {
   // rationale at the top of runTurn).
   bool loopActiveAt(uint32_t heap) const;
 
+  // CUM-211: is ANY orchestrator provider actually routable right now - a
+  // registered host (openai/anthropic/mistral, or a configured custom/LAN
+  // endpoint) that also has a key? Budget-agnostic on purpose: an over-budget
+  // provider IS configured and has its own honest reply, so it must not read as
+  // "no provider". handleMessage checks this BEFORE running a paid/failing turn,
+  // so an unroutable chat gets a deterministic local "no provider set up" reply
+  // instead of a silent drop or a misleading 401 - on every channel, and
+  // precisely when nothing else works (a local message, no round-trip needed).
+  bool anyProviderConfigured() const;
+
   bool turnInFlight() const { return turnInFlight_; }
   uint32_t headJobKey() const { return keyFromTag("head"); }
   bool inScheduledTurn() const { return scheduledTurn_; }
