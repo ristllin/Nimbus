@@ -58,6 +58,10 @@ h2{color:var(--ink);font-size:14.5px;margin:0 0 8px;font-weight:650}
 a{color:var(--teal);text-decoration:none}
 label{font-size:12px;color:var(--ink3);display:block;margin-top:12px;font-weight:600;text-transform:uppercase;letter-spacing:.04em}
 input,select,textarea{width:100%;box-sizing:border-box;padding:9px 11px;margin:4px 0;border-radius:10px;border:1px solid var(--line2);background:var(--raise2);color:var(--ink);font-size:14px;font-family:inherit}
+/* Checkboxes and radios are controls, not fields: keep them at their natural size
+   so the box sits left of its label. A full-width checkbox centers its glyph and
+   drops the label to the next line, which looked broken on the Safety tab (CUM-214). */
+input[type=checkbox],input[type=radio]{width:auto;margin:0}
 input:focus,select:focus,textarea:focus{outline:2px solid var(--teal-soft);border-color:var(--teal)}
 button{padding:8px 14px;border:0;border-radius:10px;background:var(--teal);color:#052420;font-weight:650;font-size:13.5px;cursor:pointer}
 button:hover{filter:brightness(1.06)}
