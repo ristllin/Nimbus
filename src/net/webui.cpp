@@ -2012,9 +2012,13 @@ void beginWeb(const WebConfig& wc) {
       r->send(409, "application/json", "{\"error\":\"wifi not connected\"}");
       return;
     }
-    bool anyVerified = agent::store::verifyResult("openai") == 1 ||
-                       agent::store::verifyResult("anthropic") == 1 ||
-                       agent::store::verifyResult("mistral") == 1;
+    // Any provider in the catalog counts - the original three-name list predated
+    // zai/cumulo and silently blocked the RECOMMENDED Cumulo Nimbus path from
+    // ever finishing onboarding (W0-a finding, 2026-08-30).
+    bool anyVerified = false;
+    for (const char* p : {"openai", "anthropic", "mistral", "zai", "cumulo"}) {
+      if (agent::store::verifyResult(p) == 1) { anyVerified = true; break; }
+    }
     if (!anyVerified) {
       r->send(409, "application/json", "{\"error\":\"no verified provider\"}");
       return;
