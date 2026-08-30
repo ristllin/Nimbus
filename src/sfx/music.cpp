@@ -149,15 +149,20 @@ static bool streamWav(const std::string& path, uint32_t gen) {
 }
 
 // ---- the streaming MP3 player (minimp3 decode -> spkFeedBytes, watchdog-safe) --
-// The decoder state (~7 KB) plus the input + PCM buffers live in PSRAM, not on the
-// 8 KB task stack. Decode one frame at a time, downmix stereo to the mono speaker,
-// feed LE16 PCM to I2S, and poll the same stop/pause control between frames so a
-// 3-minute clip stays responsive and never blocks a watchdog-watched task.
+// The decoder state (~7 KB), the input + PCM buffers, AND minimp3's ~15 KB per-frame
+// decode scratch all live in PSRAM, not on the task stack (CUM-222). minimp3 normally
+// puts that scratch on the caller's stack, which forced the sfx task to 20 KB and left
+// the 8 KB music task one MP3 track away from a stack overflow; routing it through
+// mp3dec_decode_frame_ex(scratch) keeps the scarce internal SRAM free. Decode one
+// frame at a time, downmix stereo to the mono speaker, feed LE16 PCM to I2S, and poll
+// the same stop/pause control between frames so a 3-minute clip stays responsive and
+// never blocks a watchdog-watched task.
 struct Mp3Work {
   mp3dec_t dec;
   uint8_t  in[8192];
   mp3d_sample_t pcm[MINIMP3_MAX_SAMPLES_PER_FRAME];   // int16 interleaved
   int16_t  mono[MINIMP3_MAX_SAMPLES_PER_FRAME / 2];   // downmix scratch
+  void*    scratch;                                   // minimp3 per-frame scratch (PSRAM)
 };
 
 // Feed one decoded frame to the speaker, downmixing stereo to mono. Split out to
@@ -209,7 +214,7 @@ static bool decodeMp3Stream(File& f, Mp3Work* w, bool useSdLock, uint32_t gen, b
     if (hasGen ? !keepPlaying(gen)
                : nimbus::fault::active(nimbus::fault::SPEAKER)) { finished = false; break; }
     mp3dec_frame_info_t info;
-    const int samples = mp3dec_decode_frame(&w->dec, w->in, (int)avail, w->pcm, &info);
+    const int samples = mp3dec_decode_frame_ex(&w->dec, w->in, (int)avail, w->pcm, &info, w->scratch);
     if (info.frame_bytes <= 0) break;            // no full frame + no more input -> done
     memmove(w->in, w->in + info.frame_bytes, avail - (size_t)info.frame_bytes);
     avail -= (size_t)info.frame_bytes;
@@ -221,13 +226,25 @@ static bool decodeMp3Stream(File& f, Mp3Work* w, bool useSdLock, uint32_t gen, b
   return finished;
 }
 
-// Allocate the ~13 KB decode work buffer in PSRAM (never on the caller's task stack;
-// the sfx task stack is only 8 KB). Falls back to internal heap only if PSRAM is
-// exhausted. Caller frees with heap_caps_free.
+// Allocate the decode work buffer (~13 KB) plus minimp3's per-frame scratch (~15 KB)
+// in PSRAM (never on the caller's task stack). Falls back to internal heap only if
+// PSRAM is exhausted. Caller frees with freeMp3Work().
 static Mp3Work* allocMp3Work() {
   Mp3Work* w = (Mp3Work*)heap_caps_malloc(sizeof(Mp3Work), MALLOC_CAP_SPIRAM);
   if (!w) w = (Mp3Work*)malloc(sizeof(Mp3Work));
+  if (!w) return nullptr;
+  w->scratch = heap_caps_malloc((size_t)mp3dec_scratch_size(), MALLOC_CAP_SPIRAM);
+  if (!w->scratch) w->scratch = malloc((size_t)mp3dec_scratch_size());
+  if (!w->scratch) { heap_caps_free(w); return nullptr; }
   return w;
+}
+
+// Free a work buffer and its scratch. heap_caps_free handles both the PSRAM and the
+// internal-heap fallback allocations.
+static void freeMp3Work(Mp3Work* w) {
+  if (!w) return;
+  heap_caps_free(w->scratch);
+  heap_caps_free(w);
 }
 
 static bool streamMp3(const std::string& path, uint32_t gen) {
@@ -237,7 +254,7 @@ static bool streamMp3(const std::string& path, uint32_t gen) {
   Mp3Work* w = allocMp3Work();
   if (!w) { agent::memory::Lock sdlk; f.close(); agent::alogf("music: MP3 out of memory"); return true; }
   bool finished = decodeMp3Stream(f, w, /*useSdLock=*/true, gen, /*hasGen=*/true);
-  heap_caps_free(w);
+  freeMp3Work(w);
   { agent::memory::Lock sdlk; f.close(); }
   return finished;
 }
@@ -252,7 +269,7 @@ bool streamMp3File(fs::FS& fs, const char* path) {
   // is not a controllable track). Natural EOF returns true; a mid-clip speaker fault
   // returns false.
   bool ok = decodeMp3Stream(f, w, /*useSdLock=*/false, /*gen=*/0, /*hasGen=*/false);
-  heap_caps_free(w);
+  freeMp3Work(w);
   f.close();
   return ok;
 }

@@ -31,10 +31,12 @@ namespace {
 
 constexpr int kQueueDepth = 2;
 constexpr int kMaxVariants = 8;   // variants per (slug, pool) the resolver considers
-// sfx task stack. Sized to hold the minimp3 decoder's ~16 KB stack scratch (used by
-// a spoken MP3 reply, music::streamMp3File) plus the sync tick's TLS client, with
-// margin. See begin() for the full rationale + the bench validation note.
-constexpr uint32_t kSfxStackBytes = 20480;
+// sfx task stack. minimp3's ~15 KB per-frame decode scratch now lives in PSRAM
+// (music::streamMp3File -> mp3dec_decode_frame_ex, CUM-222), so the stack no longer
+// carries it. What remains is the sync tick's TLS client (~8 KB peak) plus playback
+// transients, so 12 KB gives comfortable margin (matches the async_tcp TLS stack).
+// See begin() for the full rationale + the bench validation note.
+constexpr uint32_t kSfxStackBytes = 12288;
 
 struct Item {
   uint8_t ev;
@@ -175,14 +177,18 @@ void begin(bool orchestratorMode) {
   }
   // Low priority, core 0 (main loop + LED render live on core 1): a sound is
   // decoration - it must never contend with rendering or the radio tasks.
-  // Stack: playback transients + the sync tick's TLS client (~8 KB) USED to fit in
-  // 8 KB, but a spoken MP3 reply now decodes on this task via music::streamMp3File,
-  // and minimp3's mp3dec_decode_frame puts a ~16 KB mp3dec_scratch_t on the STACK
-  // (grbuf + syn + maindata - it cannot be moved to PSRAM the way Mp3Work is). So
-  // the decode path peaks near 17 KB; size the stack to hold it with margin. If a
+  // Stack: playback transients + the sync tick's TLS client (~8 KB peak). A spoken
+  // MP3 reply decodes on this task via music::streamMp3File, but minimp3's ~15 KB
+  // mp3dec_scratch_t (grbuf + syn + maindata) now lives in PSRAM via
+  // mp3dec_decode_frame_ex (CUM-222) instead of on this stack, so 12 KB holds the
+  // remaining TLS+playback depth with margin (was 20 KB when the scratch was on the
+  // stack; that -8 KB returns to the internal-SRAM free pool - bench-measured
+  // heapMin +~9 KB on the Solide S3. The largest contiguous block is layout-bound and
+  // did not move on that board). If a
   // board cannot spare this, xTaskCreate fails and sfx (and on-device voice) degrade
-  // gracefully rather than bricking. BENCH: confirm the stack high-water mark keeps
-  // >2 KB free on a real MP3 reply and that free internal heap stays healthy.
+  // gracefully rather than bricking. High-water is surfaced in /api/state
+  // (mem.sfxStackMin). BENCH: confirm the sfx + music stack high-water keeps >2 KB
+  // free on a real MP3 reply / track and that free internal heap stays healthy.
   if (xTaskCreatePinnedToCore(sfxTask, "sfx", kSfxStackBytes, nullptr, 1, nullptr, 0) != pdPASS) {
     agent::alogf("sfx: task create failed - sfx disabled");
     vQueueDelete(g_q);

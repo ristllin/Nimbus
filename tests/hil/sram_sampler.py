@@ -55,10 +55,20 @@ FIELDS = [
     ("spiLargest", ["mem", "spiLargest"]),
     ("pollStackMin", ["mem", "pollStackMin"]),
     ("asyncStackMin", ["mem", "asyncStackMin"]),
+    ("sfxStackMin", ["mem", "sfxStackMin"]),  # CUM-222: sfx task (reduced 20K->12K)
+    ("musicStackMin", ["mem", "musicStackMin"]),  # CUM-222: music task (now safe at 8K)
     ("psramFree", ["psramFree"]),
 ]
 # The headroom metrics whose FLOOR (min over the run) is the acceptance number.
-FLOOR_METRICS = ["intLargest", "heapMin", "intFree", "pollStackMin", "asyncStackMin"]
+FLOOR_METRICS = [
+    "intLargest",
+    "heapMin",
+    "intFree",
+    "pollStackMin",
+    "asyncStackMin",
+    "sfxStackMin",
+    "musicStackMin",
+]
 
 
 def _dig(obj, path):
