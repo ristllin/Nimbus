@@ -200,6 +200,52 @@ static void test_ask_reask_does_not_reset_dwell_cap() {
   TEST_ASSERT_FALSE(r.forceExpireAttention(10000000 + cap, cap));   // fresh window, not yet due
 }
 
+// CUM-221 (the 5th-recurrence stuck-ring CLASS): a delivered sub-agent's Done arc
+// is collapsed only by JobEngine::reapDone on tg_poll; forceExpireAttention skips
+// it (Done is not attention). This main-loop backstop guarantees a Done ember can
+// never strand lit when that reap stalls - while leaving live Running/Idle arcs.
+static void test_force_expire_done_arcs_collapses_stranded_ember() {
+  Router r;
+  r.route(jobState(1, Status::Done), 1000);       // a delivered sub-agent, ember lit
+  r.route(jobState(2, Status::Running), 1000);    // a genuinely live sub-agent
+  r.route(jobState(3, Status::Idle), 1000);       // an open, idle session
+  TEST_ASSERT_EQUAL(3, r.jobs().count());
+
+  const uint32_t cap = 300000;  // AttnHoldMs + grace on the device
+  // At exactly the cap: not yet (> cap, strictly, mirrors forceExpireAttention).
+  TEST_ASSERT_FALSE(r.forceExpireDoneArcs(1000 + cap, cap));
+  TEST_ASSERT_EQUAL(3, r.jobs().count());
+  // Past the cap: the Done ember collapses (Offline frees its slot); the live
+  // Running and Idle arcs are untouched (they are not terminal - reaping them
+  // would erase real work, the accepted long-sub-agent trade).
+  TEST_ASSERT_TRUE(r.forceExpireDoneArcs(1000 + cap + 1, cap));
+  TEST_ASSERT_EQUAL(2, r.jobs().count());
+  solide::ring::Slot snap[RING_MAX_SEGMENTS];
+  int n = r.jobs().snapshot(snap, RING_MAX_SEGMENTS);
+  bool doneGone = true, runningAlive = false, idleAlive = false;
+  for (int i = 0; i < n; i++) {
+    if (snap[i].key == 1) doneGone = false;
+    if (snap[i].key == 2 && snap[i].status == Status::Running) runningAlive = true;
+    if (snap[i].key == 3 && snap[i].status == Status::Idle) idleAlive = true;
+  }
+  TEST_ASSERT_TRUE(doneGone);
+  TEST_ASSERT_TRUE(runningAlive);
+  TEST_ASSERT_TRUE(idleAlive);
+  // Idempotent: nothing terminal left to expire.
+  TEST_ASSERT_FALSE(r.forceExpireDoneArcs(9999999, cap));
+}
+
+// The happy path (reapDone fires on tg_poll before the backstop's cap) is
+// unaffected: a Done arc cleared to Offline in time leaves the backstop nothing.
+static void test_force_expire_done_arcs_no_op_when_reap_ran() {
+  Router r;
+  r.route(jobState(1, Status::Done), 1000);
+  r.route(jobState(1, Status::Offline), 1200);   // tg_poll reapDone collapsed it in time
+  const uint32_t cap = 300000;
+  TEST_ASSERT_FALSE(r.forceExpireDoneArcs(1000 + cap + 1, cap));
+  TEST_ASSERT_EQUAL(0, r.jobs().count());
+}
+
 static void test_voice_glyph_attention_and_none_ambient() {
   Router r;
   // Every live stage takes the immediate path (glyph can't wait 30 s)...
@@ -402,6 +448,8 @@ int main() {
   RUN_TEST(test_offline_frees_slot);
   RUN_TEST(test_incoming_ask_and_cleared);
   RUN_TEST(test_force_expire_attention_fallback);
+  RUN_TEST(test_force_expire_done_arcs_collapses_stranded_ember);
+  RUN_TEST(test_force_expire_done_arcs_no_op_when_reap_ran);
   RUN_TEST(test_voice_glyph_attention_and_none_ambient);
   RUN_TEST(test_low_battery_and_ok);
   RUN_TEST(test_network_events_flag_only);

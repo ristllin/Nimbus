@@ -900,6 +900,19 @@ void TurnEngine::maybeConsolidate(const std::string& chatId) {
 
 void TurnEngine::handleMessage(const std::string& text, const std::string& fromName,
                                const std::string& chatId) {
+  // CUM-211: fail HONEST, never silent. With no routable provider a turn would
+  // otherwise burn a keyless round-trip and deliver a misleading cause (a 401
+  // "rejected this device's key" when there IS no key), or - on a build without
+  // a keyed host wired at all - nothing. Answer LOCALLY instead, before arming a
+  // paid turn or the head ring arc, naming the real fix. This is the one turn
+  // core every channel funnels through (device screen, Telegram, web, tunnel,
+  // voice, serial), so the honest reply reaches all of them from one place.
+  if (!anyProviderConfigured()) {
+    hlog::log("orchestrator: turn refused - no provider configured (honest local reply)");
+    deliver(chatId, "No AI provider is set up yet. Add a provider key in the web app "
+                    "under Models, then send your message again.");
+    return;
+  }
   if (freeHeap() < t_.turnHardFloor) {
     hlog::logf("orchestrator: user turn deferred, heap %u < floor %u",
                (unsigned)freeHeap(), (unsigned)t_.turnHardFloor);
@@ -1027,6 +1040,29 @@ std::vector<std::string> TurnEngine::foldHostCandidates() const {
     p = c + 1;
   }
   return out;
+}
+
+// CUM-211: any registered + keyed host = a routable provider. Mirrors the host
+// pick in runTurn (orchHost first, else the priority walk) plus the keyless-OK
+// custom/LAN endpoint, but IGNORES budget - an over-budget provider is still
+// "configured" and owns its own reply, so it must not surface as "no provider".
+bool TurnEngine::anyProviderConfigured() const {
+  auto routable = [&](std::string h) {
+    trimInPlace(h);
+    if (h.empty() || !d_.hosts.has(h)) return false;                 // not registered
+    return !d_.cfg.provider.hasKey || d_.cfg.provider.hasKey(h);     // has a key
+  };
+  if (d_.cfg.provider.orchHost && routable(d_.cfg.provider.orchHost())) return true;
+  if (routable("custom")) return true;   // configured keyless LAN head (registered only when set)
+  std::string pr =
+      d_.cfg.provider.providerPriority ? d_.cfg.provider.providerPriority() : std::string();
+  for (size_t p = 0; p <= pr.size();) {
+    size_t c = pr.find(',', p);
+    if (routable(pr.substr(p, (c == std::string::npos ? pr.size() : c) - p))) return true;
+    if (c == std::string::npos) break;
+    p = c + 1;
+  }
+  return false;
 }
 
 bool TurnEngine::canFoldNow() const {

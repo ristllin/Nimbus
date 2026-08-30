@@ -202,3 +202,27 @@ reaper, an absolute working-breathe ceiling) exist purely as insurance. In a
 healthy system the primary edge always clears first, so `ringBackstopFires` in
 `/api/state` stays **0**; a nonzero value means a real wedge slipped past the
 primary path and is worth investigating.
+
+### Nothing lit outlives its job
+
+A turn's arcs are armed and cleared on the poll task (the head arc in the turn
+guard, a sub-agent's arcs as its job runs). The always-alive main loop is the
+safety net for when that task stalls, and the rule it enforces is simple: **every
+ring status has a main-loop terminating edge**, so nothing can stay lit after the
+work behind it is gone.
+
+| Ring status | What lights it | Main-loop terminating edge |
+|---|---|---|
+| Waiting / Approval / Error | a job that needs the owner, or failed | attention watchdog ages it out past the attention hold |
+| "Needs you" ask | the assistant asked a question | same attention watchdog (the ask's own dwell clock) |
+| Head "working" arc | a turn (and its sub-agents) running | the stuck-turn reaper + the head-arc reconciler |
+| Done | a finished sub-agent's fading arc | the Done reaper collapses it past the same hold |
+| Offline | (terminal) | frees the segment immediately |
+
+The Done row is the one added last (the recurring "ring stays on after it
+answers" report): a finished sub-agent's arc is a dim ember that the poll task
+normally collapses a moment after the result ripples, but it is not an attention
+status, so before this it was the one arc the main-loop net let through - a
+stalled poll task stranded it lit. It now ages out from the main loop like the
+rest. Every one of these clears count into `ringBackstopFires`, so a healthy
+device still reads **0**.

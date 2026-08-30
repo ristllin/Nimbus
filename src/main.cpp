@@ -4010,14 +4010,28 @@ void loop() {
   if ((int32_t)(now - s_attnSweepAt) >= 0) {
     s_attnSweepAt = now + 5000;
     const uint32_t cap = uint32_t(g_cfg.effective(Param::AttnHoldMs)) + 60000;
-    bool cleared;
-    { net::ConfigLockGuard lk; cleared = g_router.forceExpireAttention(now, cap); }
+    bool cleared, doneCleared;
+    {
+      net::ConfigLockGuard lk;
+      cleared = g_router.forceExpireAttention(now, cap);
+      // CUM-221 (the recurring stuck-ring class): also collapse a terminal Done
+      // ember whose tg_poll reap (JobEngine::reapDone) never fired. Done is not an
+      // attention status, so forceExpireAttention skips it - it was the one arc
+      // with no always-alive backstop, which is exactly what strands lit after a
+      // Telegram answer when the poll task stalls. Same generous cap.
+      doneCleared = g_router.forceExpireDoneArcs(now, cap);
+    }
     if (cleared) {
       agent::alogf("ring: attention watchdog force-expired a stuck arc (>%us) - reap path stalled",
                    (unsigned)(cap / 1000));
       if (g_orchMode) agent::orchestrator::noteRingBackstopFired();   // CUM-11 metric
-      if (!g_menu.isOpen() && !g_voiceWaiting) refreshRing();
     }
+    if (doneCleared) {
+      agent::alogf("ring: watchdog collapsed a stranded Done arc (>%us) - tg_poll reap stalled",
+                   (unsigned)(cap / 1000));
+      if (g_orchMode) agent::orchestrator::noteRingBackstopFired();   // CUM-11/CUM-221 metric
+    }
+    if ((cleared || doneCleared) && !g_menu.isOpen() && !g_voiceWaiting) refreshRing();
     // Head-turn reaper: the blue "processing" Running arc is NOT an attention status,
     // so forceExpireAttention above skips it. A Telegram turn whose task died leaves it
     // pulsing forever (owner bug). Free it here on the main loop.

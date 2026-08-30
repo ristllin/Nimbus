@@ -123,6 +123,18 @@ text is clipped (args 256 B, results 1 KB, thinking 1 KB); since v4.2.0 the FULL
 call + result is parked alongside as a blob when the clip bit, reachable from the
 chat's "Show full result" (or `GET /api/mem/blob?path=`).
 
+## When a turn can't run
+
+A turn always answers, even when it cannot reach a model. If no provider is set
+up (no key on any provider, and no custom endpoint), the device replies **locally,
+before spending anything**, on whatever channel the message arrived on (the device
+screen, Telegram, the web chat, the tunnel): "No AI provider is set up yet. Add a
+provider key in the web app under Models, then send your message again." This is a
+deterministic on-device message, so it works precisely when nothing else does, and
+it never leaves the ring lit for work that never started. If a provider *is* set up
+but the call fails (a rejected key, a rate limit, a network drop, a spent budget),
+the reply names that real cause instead. The device never goes silent on a chat.
+
 ## Diagnosing a confusing reply
 
 Work through the blocks above in order: open that turn's **Turn anatomy** in the
