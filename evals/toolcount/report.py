@@ -70,7 +70,7 @@ def render(summary: dict) -> str:
         "when none was needed. Lower is better for wrong-call, miss, "
         "overtrigger, tokens, hops, latency, spend."
     )
-    return "\n".join(out)
+    return "\n".join(line.rstrip() for line in out)
 
 
 def main(argv: list[str] | None = None) -> int:

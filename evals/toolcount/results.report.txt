@@ -13,7 +13,7 @@ miss rate                        10%       29%       35%
 mean prompt tokens            1271.2     520.2     319.2
 mean search hops                 0.0       0.0       0.0
 mean latency ms                790.2     746.5     782.3
-judge score                      -         -         -  
+judge score                      -         -         -
 errors                           0.0       0.0       0.0
 spend usd                        0.0       0.0       0.0
 
