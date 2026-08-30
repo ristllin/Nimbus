@@ -871,6 +871,22 @@ static void test_no_provider_gives_honest_local_reply_not_silence() {
   TEST_ASSERT_FALSE(r.eng->anyProviderConfigured());
 }
 
+// CUM-211 (bench-caught on nimbus-6): a device whose ONLY provider is a router
+// (Cumulo / Z.ai) - configured + verified, but not a single-shot head host - must
+// NOT be told "no provider is set up". anyKeyed reports device-truth, so the turn
+// proceeds normally instead of being wrongly short-circuited.
+static void test_router_only_provider_is_not_told_no_provider() {
+  Rig r;
+  r.cfg.keyed.clear();          // no head host keyed (openai/anthropic/mistral/custom)
+  r.cfg.routerKeyed = true;     // ...but a router provider (e.g. Cumulo) IS configured
+  TEST_ASSERT_TRUE(r.eng->anyProviderConfigured());
+  r.eng->handleMessage("hello?", "Roy", "1001");
+  // The honest "no provider" reply must NOT fire - the device has a provider.
+  TEST_ASSERT_FALSE(r.anyDelivered("No AI provider is set up"));
+  // The turn ran the normal path instead of being short-circuited.
+  TEST_ASSERT_EQUAL(1, (int)r.attempts.size());
+}
+
 // The predicate is budget-agnostic and counts a configured keyless custom head:
 // an over-budget provider is still "configured" (own reply), and a LAN endpoint
 // needs no key - neither must read as "no provider".
@@ -933,6 +949,7 @@ int main(int, char**) {
   RUN_TEST(test_convmap_roundtrip_and_isolation);
   RUN_TEST(test_convmap_legacy_discarded_and_lru);
   RUN_TEST(test_no_provider_gives_honest_local_reply_not_silence);
+  RUN_TEST(test_router_only_provider_is_not_told_no_provider);
   RUN_TEST(test_any_provider_configured_predicate);
   RUN_TEST(test_loop_gate_uses_entry_heap_not_the_recall_dip);
   RUN_TEST(test_loop_defers_when_entry_heap_is_genuinely_low);

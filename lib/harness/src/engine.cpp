@@ -1047,6 +1047,12 @@ std::vector<std::string> TurnEngine::foldHostCandidates() const {
 // custom/LAN endpoint, but IGNORES budget - an over-budget provider is still
 // "configured" and owns its own reply, so it must not surface as "no provider".
 bool TurnEngine::anyProviderConfigured() const {
+  // Device-truth first: this reports EVERY key slot, including the router providers
+  // (Cumulo, Z.ai) that are configured + verified but are not single-shot head
+  // hosts - so a Cumulo-only device is "configured" and is never shown the "no
+  // provider set up" reply (it falls through to the normal turn path). The head
+  // walk below is the fallback for host tests that do not wire this closure.
+  if (d_.cfg.provider.anyKeyed) return d_.cfg.provider.anyKeyed();
   auto routable = [&](std::string h) {
     trimInPlace(h);
     if (h.empty() || !d_.hosts.has(h)) return false;                 // not registered
