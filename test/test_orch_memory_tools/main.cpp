@@ -18,6 +18,8 @@ static VectorMemory g_vec;
 static Scratchpad   g_scratch;
 static MemConfig    g_cfg;
 static InMemoryEpisodicStore g_epi;
+static VectorArchive g_archive;
+static bool         g_archiveAvail;   // simulates the SD card being present
 static uint32_t     g_now;
 
 // Deterministic FAKE embedder: a tiny keyword->direction map so tests fully
@@ -31,17 +33,27 @@ static std::vector<int8_t> fakeEmbed(const std::string& text) {
   return {40, 40, 40, 40};
 }
 
-static ToolRegistry buildServer() {
+static ToolRegistry buildServer(bool withArchive = true) {
   g_vec = VectorMemory(); g_vec.configure(4);
   g_scratch = Scratchpad();
   g_cfg = MemConfig();
   g_epi = InMemoryEpisodicStore();
+  g_archive = VectorArchive(); g_archive.configure(4);
+  g_archiveAvail = true;
   g_now = 100;
   MemoryContext ctx;
   ctx.vec = &g_vec; ctx.scratch = &g_scratch; ctx.cfg = &g_cfg;
   ctx.episodic = &g_epi;
   ctx.embed = fakeEmbed;
   ctx.nowHours = [] { return g_now; };
+  // Bind the cold store like the device does only with an SD card present. The
+  // prune sink routes expired live entries here; archiveAvailable simulates the
+  // card staying present (a mid-run pull flips it false).
+  if (withArchive) {
+    ctx.archive = &g_archive;
+    ctx.archiveAvailable = [] { return g_archiveAvail; };
+    g_vec.setArchiveSink(&g_archive);
+  }
   ToolRegistry reg;
   registerMemoryTools(reg, ctx);
   return reg;
@@ -551,6 +563,111 @@ static void test_vector_quota_is_enforced_at_the_write() {
   TEST_ASSERT_TRUE(callAs(reg, admin, "memory.write", R"({"content":"coffee please"})").success);
 }
 
+// ---- memory.archive: exposure gated on the SD card being bound --------------
+static void test_archive_tool_only_registered_with_sd() {
+  ToolRegistry withSd = buildServer(true);
+  TEST_ASSERT_TRUE(withSd.has("memory.archive"));
+  ToolRegistry noSd = buildServer(false);
+  TEST_ASSERT_FALSE(noSd.has("memory.archive"));   // no card -> tool not exposed
+}
+
+// ---- full tool lifecycle: write -> expire -> archived -> search -> restore ---
+static void test_archive_search_and_restore_via_tools() {
+  ToolRegistry reg = buildServer();
+  auto admin = nimbus::orch::principalForRole("1001", nimbus::orch::Role::Admin);
+
+  // A fact is stored, then reaches its TTL and is moved to the archive by prune.
+  TEST_ASSERT_TRUE(callAs(reg, admin, "memory.write",
+                          R"({"content":"coffee please","ttl":"session"})").success);
+  g_now = 100 + 24;   // past the 12 h session TTL
+  TEST_ASSERT_EQUAL_INT(1, g_vec.pruneExpired(g_now));   // -> archived
+  TEST_ASSERT_EQUAL_INT(1, g_archive.size());
+
+  // It is gone from ordinary recall...
+  TEST_ASSERT_FALSE(has(callAs(reg, admin, "memory.search",
+                               R"({"query":"coffee","n_results":5})").output, "coffee please"));
+  // ...but the archive tool finds it.
+  ToolResult found = callAs(reg, admin, "memory.archive",
+                            R"({"action":"search","query":"coffee"})");
+  TEST_ASSERT_TRUE(found.success);
+  TEST_ASSERT_TRUE(has(found.output, "coffee please"));
+
+  // list shows it too.
+  ToolResult listed = callAs(reg, admin, "memory.archive", R"({"action":"list"})");
+  TEST_ASSERT_TRUE(has(listed.output, "coffee please"));
+
+  // restore brings it back into live memory (no re-embed) and the archive empties.
+  ToolResult restored = callAs(reg, admin, "memory.archive",
+                               R"({"action":"restore","query":"coffee"})");
+  TEST_ASSERT_TRUE(restored.success);
+  TEST_ASSERT_TRUE(has(restored.output, "restored"));
+  TEST_ASSERT_EQUAL_INT(0, g_archive.size());
+  // Live recall sees it again.
+  TEST_ASSERT_TRUE(has(callAs(reg, admin, "memory.search",
+                              R"({"query":"coffee","n_results":5})").output, "coffee please"));
+}
+
+// A pulled card (archiveAvailable=false) refuses every action, cleanly.
+static void test_archive_refuses_when_card_absent() {
+  ToolRegistry reg = buildServer();
+  auto admin = nimbus::orch::principalForRole("1001", nimbus::orch::Role::Admin);
+  g_archiveAvail = false;
+  ToolResult r = callAs(reg, admin, "memory.archive", R"({"action":"search","query":"coffee"})");
+  TEST_ASSERT_FALSE(r.success);
+  TEST_ASSERT_TRUE(has(r.error, "SD card"));
+}
+
+// The namespace boundary holds in the archive: a member can't see or restore the
+// owner's archived memory.
+static void test_archive_is_namespace_scoped() {
+  ToolRegistry reg = buildServer();
+  auto admin  = nimbus::orch::principalForRole("1001", nimbus::orch::Role::Admin);
+  auto member = nimbus::orch::principalForRole("m1", nimbus::orch::Role::User);
+
+  TEST_ASSERT_TRUE(callAs(reg, admin, "memory.write",
+                          R"({"content":"the teal one","ttl":"session"})").success);
+  g_now = 100 + 24;
+  TEST_ASSERT_EQUAL_INT(1, g_vec.pruneExpired(g_now));
+  TEST_ASSERT_EQUAL_INT(1, g_archive.size());
+
+  // Member sees nothing of the owner's archive.
+  TEST_ASSERT_FALSE(has(callAs(reg, member, "memory.archive",
+                               R"({"action":"search","query":"teal"})").output, "teal one"));
+  // ...and cannot restore it (refusal is identical to not-found - no disclosure).
+  ToolResult r = callAs(reg, member, "memory.archive",
+                        R"({"action":"restore","query":"teal"})");
+  TEST_ASSERT_FALSE(r.success);
+  TEST_ASSERT_EQUAL_INT(1, g_archive.size());   // owner's entry untouched
+}
+
+// Restore honors the live-store quota: a refusal never strands the entry out of
+// both stores.
+static void test_archive_restore_respects_quota() {
+  ToolRegistry reg = buildServer();
+  nimbus::orch::Quota tiny;
+  tiny.maxVectors = 1;
+  auto user = nimbus::orch::principalForRole("q1", nimbus::orch::Role::User);
+  user.quota = tiny;
+
+  // Store a fact, let it expire into the archive (live count back to 0).
+  TEST_ASSERT_TRUE(callAs(reg, user, "memory.write",
+                          R"({"content":"the teal one","ttl":"session"})").success);
+  g_now = 100 + 24;
+  TEST_ASSERT_EQUAL_INT(1, g_vec.pruneExpired(g_now));
+  TEST_ASSERT_EQUAL_INT(1, g_archive.size());
+
+  // Fill the (size-1) live quota with a different fact.
+  TEST_ASSERT_TRUE(callAs(reg, user, "memory.write",
+                          R"({"content":"we ship friday"})").success);
+
+  // Restoring now would exceed the cap -> refused, and the entry stays archived.
+  ToolResult r = callAs(reg, user, "memory.archive",
+                        R"({"action":"restore","query":"teal"})");
+  TEST_ASSERT_FALSE(r.success);
+  TEST_ASSERT_TRUE(has(r.error, "limit"));
+  TEST_ASSERT_EQUAL_INT(1, g_archive.size());   // not lost
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_update_replaces_matching_fact);
@@ -581,5 +698,10 @@ int main(int, char**) {
   RUN_TEST(test_search_accepts_float_encoded_n_results);
   RUN_TEST(test_scratchpad_add_view_clear);
   RUN_TEST(test_end_to_end_over_mcp_rpc);
+  RUN_TEST(test_archive_tool_only_registered_with_sd);
+  RUN_TEST(test_archive_search_and_restore_via_tools);
+  RUN_TEST(test_archive_refuses_when_card_absent);
+  RUN_TEST(test_archive_is_namespace_scoped);
+  RUN_TEST(test_archive_restore_respects_quota);
   return UNITY_END();
 }
