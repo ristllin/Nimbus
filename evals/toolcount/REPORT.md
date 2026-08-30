@@ -106,11 +106,101 @@ for the mechanics).
 
 ## 4. Results
 
-<!-- RESULTS: filled from the committed summary.json after the run. -->
-_(populated below once the run completes; the numbers, the summary.json, and the
-report table are committed alongside this file.)_
+528 turns (2 models x 3 conditions x 22 tasks x 4 reps), 0 errors, ~$0.37 total
+spend. Raw numbers are in `results.summary.json` and `results.report.txt`
+(committed); the corpus is under `runs/` (gitignored). Selection accuracy is the
+hard signal; the judge (soft) ran on the glm-4.6 rows only, scored by gpt-4o-mini.
+
+| metric (core subset = fair compare) | model | full (49) | curated (17) | lazy (5+search) |
+|---|---|---|---|---|
+| selection accuracy | gpt-4o-mini | 76% | **82%** | 35% |
+| selection accuracy | glm-4.6 | 71% | **76%** | 66% |
+| coverage-subset accuracy | gpt-4o-mini | 100% | 0% | 0% |
+| coverage-subset accuracy | glm-4.6 | 100% | 0% | 92% |
+| mean prompt tokens | gpt-4o-mini | 1271 | 520 | 319 |
+| mean prompt tokens | glm-4.6 | 2892 | 1127 | 1008 |
+| lazy rows that called search_tools | gpt-4o-mini | - | - | 4 / 88 |
+| lazy rows that called search_tools | glm-4.6 | - | - | 46 / 88 |
+
+**Four findings, in order of confidence.**
+
+1. **Curation to ~17 core tools is a clear win.** On the tasks the core set
+   covers, trimming from 49 to 17 tools *raised* selection accuracy for both models
+   (+6pp gpt-4o-mini, +5pp glm-4.6) while cutting prompt tokens ~59-61%. This is the
+   central result and it validates the owner's 15-20 instinct directly: fewer,
+   well-chosen tools selected better and cost less.
+
+2. **Full (49) is measurably worse than curated and 2-2.5x the tokens.** The extra
+   32 tools are pure distractor cost on the covered tasks - lower accuracy, higher
+   wrong-call rate (gpt-4o-mini 9% vs 1%), and a per-turn token floor of ~1.3K
+   (gpt-4o-mini) / ~2.9K (glm-4.6) before the user's words. glm-4.6 spends roughly
+   double the tokens of gpt-4o-mini for the same tool set.
+
+3. **Over-curation has a real, sharp cost.** Tasks whose ideal tool was cut from the
+   curated set collapse to 0% accuracy under `curated` for both models (100% under
+   `full`). A curated set only helps if it actually covers the task distribution;
+   anything cut needs a fallback path, not silence.
+
+4. **A tool-search / lazy tier is the right fallback, but it is model-sensitive.**
+   `lazy` had the lowest token floor and let glm-4.6 recover the cut tools to 92%
+   (it called `search_tools` in 46/88 lazy rows). But gpt-4o-mini almost never
+   triggered the meta-tool (4/88 rows) - it fell back to an always-on tool or gave
+   up, dropping to 35% core and 0% coverage. So progressive disclosure works only
+   when the model reliably invokes the search step; a weaker model needs a nudge
+   (a forced first search, or a stronger always-on set) or it silently regresses.
+   This matches the literature's caveat that the deferral gains are model-dependent.
+
+**Honest limits.** 4 reps x 22 tasks x 2 models at temperature 0.7 gives ~176
+selection points per model - enough for the large effects above (token floor,
+curation lift, the lazy split, the coverage cliff) but not for reading a 2-3pp
+difference as real. The judge covered only the glm-4.6 half and never gated. Two
+mid/upper-mid models, not the full frontier tier. The benchmark is built to be
+re-run cheaply as models and the tool set change, which is the point.
 
 ## 5. Recommendation
 
-<!-- RECOMMENDATION: filled after results, but the design is literature-anchored. -->
-_(populated below.)_
+**Target: a ~15-20 tool always-loaded core, everything else behind a tool-search
+tier, MCP connectors always deferred.** The experiment and the literature agree,
+and it maps cleanly onto patterns already in this codebase (`skill.*` / `docs.*`
+pull-on-demand, `results.*` paging).
+
+Concretely:
+
+1. **Keep an always-advertised core of the ~17 tools flagged `core` in
+   `catalog.json`** (memory.write/search, session.spawn/poll, results.get,
+   web.search, reply.speak/telegram, skill.list, docs.search, device.status/control,
+   media.play, files.read/search, artifact.save, image.generate). These selected
+   *better* than the full set, so this is a quality win, not just a token win.
+
+2. **Move the other ~32 tools behind a `tools.search` meta-tool** (the same shape
+   as the `lazy` condition and as Anthropic's Tool Search Tool). Add a per-tool
+   `deferred` flag to the registry; `toolSpecsFor(who)` advertises core + a single
+   `tools.search`, and a `tools.search` call reveals matching specs for the rest of
+   the turn (reuse the `docs.search` keyword matcher). Group the tail by namespace
+   for retrieval: memory-admin, session-mgmt, schedule, files-admin, media-transport,
+   tenant, device-diagnostics, skills-authoring, docs.
+
+3. **Always defer MCP connector tools** (`mcp.<slug>.<tool>`) through the same
+   search tier rather than advertising them all up front. This is the only
+   unbounded growth path in the surface today; it is where the tool count silently
+   climbs past 49 in the field.
+
+4. **Guard against the two failure modes the experiment exposed.** (a) Over-curation:
+   because a cut tool is unreachable without search, the core set must cover the
+   common task distribution - treat "which tools are core" as a tracked decision,
+   not an accident. (b) Weak-model search avoidance: since gpt-4o-mini rarely
+   triggered `tools.search`, keep the always-on core genuinely sufficient for the
+   frequent cases, and consider prompting the model to search when no core tool
+   fits. The device's own provider (a frontier-class model) behaves more like
+   glm-4.6 here than gpt-4o-mini, but the harness lets us verify that per model
+   rather than assume it.
+
+5. **Keep RBAC advertisement filtering as-is.** The admin-only drop composes with
+   the core/deferred split; it is orthogonal.
+
+**Tracking.** This benchmark stays in `evals/toolcount/`. A host test pins the core
+set to the 15-20 band and fails if the surface drifts; re-running `run_toolcount.py`
+after any tool-surface change reproduces the table above, so a regression in
+selection accuracy or a jump in the token floor shows up as a number, not a
+surprise in the field. New tools should be classified `core` or `deferred` at
+registration, in the spirit of the existing capability-matrix rule.

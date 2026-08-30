@@ -1,0 +1,36 @@
+# Tool-count benchmark report
+run=tf-t1-cum229  date=2026-08-30  rows=528  spend=$0.3653
+
+## openai/gpt-4o-mini
+metric                          full   curated      lazy
+--------------------------------------------------------
+selection acc (all)              82%       73%       36%
+selection acc (core)             76%       82%       35%
+selection acc (coverage)        100%        0%        0%
+overtrigger (no-tool)             0%        0%        0%
+wrong-call rate                   9%        1%       32%
+miss rate                        10%       29%       35%
+mean prompt tokens            1271.2     520.2     319.2
+mean search hops                 0.0       0.0       0.0
+mean latency ms                790.2     746.5     782.3
+judge score                      -         -         -  
+errors                           0.0       0.0       0.0
+spend usd                        0.0       0.0       0.0
+
+## zai/glm-4.6
+metric                          full   curated      lazy
+--------------------------------------------------------
+selection acc (all)              77%       68%       72%
+selection acc (core)             71%       76%       66%
+selection acc (coverage)        100%        0%       92%
+overtrigger (no-tool)             0%        0%       12%
+wrong-call rate                  14%       11%        8%
+miss rate                        10%       22%       22%
+mean prompt tokens            2892.2    1127.2    1008.0
+mean search hops                 0.0       0.0       0.5
+mean latency ms               2433.4    2618.8    3279.3
+judge score                      84%       81%       84%
+errors                           0.0       0.0       0.0
+spend usd                        0.2       0.1       0.1
+
+Legend: core = expected tool is in the curated set (fair cross-condition compare); coverage = expected tool was cut from curated (so curated cannot answer); overtrigger = called a tool when none was needed. Lower is better for wrong-call, miss, overtrigger, tokens, hops, latency, spend.
