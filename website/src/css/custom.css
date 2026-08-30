@@ -132,32 +132,7 @@
   background: var(--ifm-color-primary);
 }
 
-/* A small photo strip (build / in-use gallery). */
-.photo-strip {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 1rem;
-  margin: 1.25rem 0 1.5rem;
-}
-.photo-strip figure {
-  margin: 0;
-}
-.photo-strip img {
-  display: block;
-  width: 100%;
-  aspect-ratio: 4 / 3;
-  object-fit: cover;
-  border-radius: 10px;
-  border: 1px solid var(--ifm-color-emphasis-200);
-}
-.photo-strip figcaption {
-  font-size: 0.82rem;
-  color: var(--ifm-color-emphasis-600);
-  margin-top: 0.4rem;
-  text-align: center;
-}
-
-/* Cumulo Nimbus: the official companion service. */
+/* Cumulo Nimbus: the first-party service. */
 .cumulo-callout {
   border: 1px solid var(--ifm-color-primary);
   border-radius: 14px;
@@ -176,9 +151,6 @@
 @media (max-width: 860px) {
   .home-hero,
   .variant-grid {
-    grid-template-columns: 1fr;
-  }
-  .photo-strip {
     grid-template-columns: 1fr;
   }
 }
