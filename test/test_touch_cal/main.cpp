@@ -130,17 +130,26 @@ static void test_not_down_passes_through_even_when_flipped() {
   TEST_ASSERT_FALSE(p.down);
 }
 
-// CUM-189: the per-board-model default is a single source both the fresh-boot path
-// and the web "clear" fallback read, so they can never restore different
-// orientations. Both shipping boards mount portrait-native under landscape.
-static void test_board_default_is_swap_and_invert_y() {
-  for (nimbus::touch::TouchKind k :
-       {nimbus::touch::TouchKind::Resistive, nimbus::touch::TouchKind::Capacitive}) {
-    const Cal d = nimbus::touch::boardDefaultCal(k);
-    TEST_ASSERT_TRUE(d.swapXY);
-    TEST_ASSERT_FALSE(d.invertX);
-    TEST_ASSERT_TRUE(d.invertY);
-  }
+// CUM-189/CUM-203: the per-board-model default is a single source both the fresh-boot
+// path and the web "clear" fallback read, so they can never restore different
+// orientations. Both shipping boards swap the axes (portrait-native under landscape)
+// but differ on the invert - the per-kind split that stops a resistive Solide from
+// mirroring one axis out of the box. Neither ever sets invertX (the 180 for an
+// upside-down mount is orientTouch's job, applied on top, never folded in here).
+static void test_board_default_per_kind_orientation() {
+  // Capacitive (Freenove FT6336U): swap + invertY (bench-verified, CUM-189).
+  const Cal cap = nimbus::touch::boardDefaultCal(nimbus::touch::TouchKind::Capacitive);
+  TEST_ASSERT_TRUE(cap.swapXY);
+  TEST_ASSERT_FALSE(cap.invertX);
+  TEST_ASSERT_TRUE(cap.invertY);
+  // Resistive (Solide S3 XPT2046): swap ONLY - the CUM-203 fix. A regression pin so
+  // the `(void)kind` shared default (which mirrored one axis) can never come back.
+  const Cal res = nimbus::touch::boardDefaultCal(nimbus::touch::TouchKind::Resistive);
+  TEST_ASSERT_TRUE(res.swapXY);
+  TEST_ASSERT_FALSE(res.invertX);
+  TEST_ASSERT_FALSE(res.invertY);
+  // The two kinds must not be identical - that would mean the seam never split.
+  TEST_ASSERT_FALSE(cap == res);
 }
 
 // The default must be a valid, self-consistent calibration (a non-empty span that
@@ -291,7 +300,7 @@ int main() {
   RUN_TEST(test_flip_is_involutive_applied_once);
   RUN_TEST(test_corners_map_to_opposite_corners_when_flipped);
   RUN_TEST(test_not_down_passes_through_even_when_flipped);
-  RUN_TEST(test_board_default_is_swap_and_invert_y);
+  RUN_TEST(test_board_default_per_kind_orientation);
   RUN_TEST(test_board_default_round_trips_through_parse);
   return UNITY_END();
 }

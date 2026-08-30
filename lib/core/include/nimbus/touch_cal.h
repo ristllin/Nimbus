@@ -57,8 +57,11 @@ enum class TouchKind : uint8_t { Resistive = 0, Capacitive = 1 };
 // reports pixel coordinates, so its min/max span is unused; a resistive panel
 // (XPT2046) keeps its driver-measured min/max span and this only pins the flags it
 // already defaults to. Both shipping boards mount the controller portrait-native
-// under a landscape panel, so the canonical mapping swaps the axes and inverts Y.
-// A board that measures a different orientation changes ONLY this one function.
+// under a landscape panel, so both swap the axes - but they differ on the invert,
+// which is why this is per-kind (CUM-203): the capacitive Freenove also inverts Y,
+// while the resistive Solide S3 swaps ONLY (its 180 is the display flip's job, never
+// folded in here). A board that measures a different orientation changes ONLY this
+// one function.
 Cal boardDefaultCal(TouchKind kind);
 
 // ============================================================================
