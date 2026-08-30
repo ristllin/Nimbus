@@ -36,11 +36,16 @@ struct FakeConfig {
   bool tts = false;
   bool promptV2 = false;   // N11: select the simplified v2 system prompt
   std::string devName = "Nimbus";
+  // CUM-211: simulate a router/relay provider (Cumulo, Z.ai) that is configured +
+  // verified but is NOT a single-shot head host - so `keyed` (the head hosts) is
+  // empty yet the device DOES have a provider. anyKeyed reports device-truth.
+  bool routerKeyed = false;
 
   agent::HarnessConfig contract() {
     agent::HarnessConfig c;
     auto& p = c.provider;
     p.hasKey = [this](const std::string& h) { return keyed.count(h) > 0; };
+    p.anyKeyed = [this] { return !keyed.empty() || routerKeyed; };
     p.key = [this](const std::string& h) {
       auto it = keys.find(h);
       return it == keys.end() ? std::string() : it->second;

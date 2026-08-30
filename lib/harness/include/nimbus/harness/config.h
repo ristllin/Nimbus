@@ -23,6 +23,13 @@ struct ProviderConfig {
   // adapters must place in auth headers; it is never logged by the harness.
   std::function<bool(const std::string& host)> hasKey;
   std::function<std::string(const std::string& host)> key;
+  // CUM-211: is ANY provider configured on this device - including router/relay
+  // providers (Cumulo, Z.ai) that hasKey() above does NOT report because they are
+  // not single-shot head hosts. Device-truth over every key slot. Used only to
+  // decide the "no provider set up" honest reply, so a device with a real verified
+  // provider (e.g. Cumulo) is never told it has none. Nullable: when unset, the
+  // engine falls back to walking the head hosts (host tests without this wired).
+  std::function<bool()> anyKeyed;
 
   std::function<std::string()> orchHost;           // "" => top of priority
   std::function<std::string()> providerPriority;   // orchestrator-host list

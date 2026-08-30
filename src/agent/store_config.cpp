@@ -34,6 +34,14 @@ HarnessConfig harnessConfigFromStore() {
     return false;
   };
   p.key = [](const std::string& h) { return s(keyFor(h)); };
+  // CUM-211: device-truth "is any provider configured", INCLUDING the router
+  // providers (Cumulo, Z.ai) that hasKey() above does not report. Drives only the
+  // honest "no provider set up" reply, so a Cumulo-only device is never wrongly
+  // told it has no provider.
+  p.anyKeyed = [] {
+    return store::hasOpenaiKey() || store::hasAnthropicKey() || store::hasMistralKey() ||
+           store::hasCustom() || store::hasCumuloKey() || store::hasZaiKey();
+  };
   p.orchHost = [] { return s(store::orchHost()); };
   p.providerPriority = [] { return s(store::providerPriority()); };
   p.subPriority = [] { return s(store::subPriority()); };
