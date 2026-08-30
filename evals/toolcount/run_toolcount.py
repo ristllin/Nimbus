@@ -181,6 +181,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="use the offline mock provider regardless of --models")
     ap.add_argument("--judge", default="",
                     help="provider:model for the soft quality judge (optional)")
+    ap.add_argument("--temp", type=float, default=0.7,
+                    help="sampling temperature for models under test")
     ap.add_argument("--env", default=str(HERE.parents[1] / ".env"),
                     help="path to a .env for keys")
     ap.add_argument("--limit-tasks", type=int, default=0,
@@ -200,22 +202,40 @@ def main(argv: list[str] | None = None) -> int:
         HERE / "runs" / f"toolcount_{int(time.time())}.jsonl")
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
+    # Judge selection. "cross" judges each row with a provider from a DIFFERENT
+    # family than the one under test, so a model is never its own judge (mirrors
+    # the device benchmark). Otherwise a single fixed judge provider is used.
+    judge_cross = args.judge == "cross"
     judge_provider = None
-    if args.judge and not args.mock:
-        judge_provider = P.build_provider(args.judge)
+    judge_openai = judge_zai = None
+    if not args.mock and args.judge:
+        if judge_cross:
+            judge_openai = P.build_provider("openai:gpt-4o-mini", temperature=0.0)
+            judge_zai = P.build_provider("zai:glm-4.6", temperature=0.0)
+        else:
+            judge_provider = P.build_provider(args.judge, temperature=0.0)
+
+    def pick_judge(model_label: str):
+        if not (args.judge and not args.mock):
+            return None
+        if not judge_cross:
+            return judge_provider
+        return judge_zai if model_label.startswith("openai/") else judge_openai
 
     n = 0
     with out_path.open("w") as fh:
         for spec in specs:
-            provider = P.build_provider(spec) if not args.mock else P.build_provider("mock:mock")
+            provider = (P.build_provider("mock:mock") if args.mock
+                        else P.build_provider(spec, temperature=args.temp))
             for cond in conds:
                 for task in tasks:
                     for rep in range(args.reps):
                         row = _run_one_turn(provider, task, cond, catalog, args.mock)
                         row["rep"] = rep
+                        row["temp"] = getattr(provider, "temperature", 0.0)
                         row["ts"] = time.time()
-                        row["judge"] = (_judge(judge_provider, task, row)
-                                        if judge_provider else None)
+                        jp = pick_judge(provider.label)
+                        row["judge"] = _judge(jp, task, row) if jp else None
                         fh.write(json.dumps(row) + "\n")
                         fh.flush()
                         n += 1

@@ -86,15 +86,33 @@ class Provider:
     def label(self) -> str:
         return f"{self.name}/{self.model}"
 
+    @staticmethod
+    def _safe_name(name: str) -> str:
+        # The OpenAI function-calling API requires ^[a-zA-Z0-9_-]+$, so the
+        # device's dotted names (memory.write) must be sent as memory__write and
+        # mapped back on the way out. z.ai/Anthropic accept dots, but sanitizing
+        # unconditionally is harmless and keeps one code path.
+        return name.replace(".", "__")
+
     def chat(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]],
              seed: int | None = None) -> ChatResult:
+        rev: dict[str, str] = {}
+        safe_tools: list[dict[str, Any]] = []
+        for t in tools:
+            fn = t["function"]
+            safe = self._safe_name(fn["name"])
+            rev[safe] = fn["name"]
+            safe_tools.append({
+                "type": "function",
+                "function": {**fn, "name": safe},
+            })
         kwargs: dict[str, Any] = dict(
             model=self.model,
             messages=messages,
             temperature=self.temperature,
         )
-        if tools:
-            kwargs["tools"] = tools
+        if safe_tools:
+            kwargs["tools"] = safe_tools
             kwargs["tool_choice"] = "auto"
         if seed is not None:
             kwargs["seed"] = seed
@@ -107,7 +125,8 @@ class Provider:
                 args = json.loads(tc.function.arguments or "{}")
             except (json.JSONDecodeError, TypeError):
                 args = {"__raw__": tc.function.arguments}
-            tcs.append({"id": tc.id, "name": tc.function.name, "arguments": args})
+            name = rev.get(tc.function.name, tc.function.name.replace("__", "."))
+            tcs.append({"id": tc.id, "name": name, "arguments": args})
         usage = resp.usage
         return ChatResult(
             tool_calls=tcs,
