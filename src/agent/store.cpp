@@ -389,9 +389,11 @@ String modelCatalogJson(const String& provider) {
   String key = String("mcat_") + provider;
   return solide::memory::getString(key.c_str(), "");
 }
-void setModelCatalogJson(const String& provider, const String& json) {
+bool setModelCatalogJson(const String& provider, const String& json) {
   String key = String("mcat_") + provider;
-  solide::memory::setString(key.c_str(), json);
+  // Returns false when the write did not land (e.g. a nearly-full NVS partition
+  // rejects a large blob) so the caller can shrink and retry (CUM-242).
+  return solide::memory::setString(key.c_str(), json);
 }
 void setTelegramToken(const String& v)     { solide::memory::setString(AKEY_TG_TOKEN, v); }
 void setTelegramAllowlist(const String& v) { solide::memory::setString(AKEY_TG_ALLOWLIST, v); }

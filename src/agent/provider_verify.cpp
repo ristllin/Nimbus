@@ -107,11 +107,29 @@ static void buildAndStoreCatalog(const String& provider, const char* body, size_
     out = "";
     serializeJson(doc, out);
   }
+  // A fully provisioned device's 20 KB NVS can be nearly full, so even a
+  // size-capped blob can fail to write (setString -> putString == 0). Store, then
+  // shrink-and-retry until it FITS - the catalog then holds whatever survives
+  // rather than silently vanishing (CUM-242: cumulo verified but /api/models
+  // empty because the write no-oped). The compact CSV choice list is unaffected.
+  bool stored = store::setModelCatalogJson(provider, out);
+  while (!stored && cat.size() > 1) {
+    cat.pop_back();
+    ++dropped;
+    doc.clear();
+    modelsToJson(cat, doc.to<JsonArray>(), true);
+    out = "";
+    serializeJson(doc, out);
+    stored = store::setModelCatalogJson(provider, out);
+  }
   if (dropped)
     alogf("verify: %s catalog trimmed %d model(s) to fit NVS", provider.c_str(), dropped);
-  store::setModelCatalogJson(provider, out);
-  alogf("verify: %s catalog stored (%u models, %u B)", provider.c_str(),
-        (unsigned)cat.size(), (unsigned)out.length());
+  if (stored)
+    alogf("verify: %s catalog stored (%u models, %u B)", provider.c_str(),
+          (unsigned)cat.size(), (unsigned)out.length());
+  else
+    alogf("verify: %s catalog did not fit NVS - the choice list still drives the dropdown",
+          provider.c_str());
 }
 
 // One minimal probe call confirming a specific model is usable by this key (the
