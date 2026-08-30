@@ -60,7 +60,21 @@ carry the same host-verified labels.
    Orchestrator mode, add a provider key.
 
 That is the whole build. Touch is capacitive and self-calibrating, so there is no
-touch calibration step, and there is nothing to assemble.
+touch calibration step, and there is nothing to wire.
+
+## Enclosure (optional 3D print)
+
+A printed case for Nimbus Light is published alongside the classic one. It is two
+halves that capture the board between them, so there is nothing to fasten:
+
+- Front: [`nimbus_light_front.stl`](https://github.com/ristllin/Nimbus/blob/main/hardware/fab/nimbus_light_front.stl)
+- Back: [`nimbus_light_back.stl`](https://github.com/ristllin/Nimbus/blob/main/hardware/fab/nimbus_light_back.stl)
+- Optional desk stand: [`nimbus_light_stand.stl`](https://github.com/ristllin/Nimbus/blob/main/hardware/fab/nimbus_light_stand.stl)
+
+Print in PLA or PETG; the bodies need no supports on most printers. GitHub renders
+each STL in a 3D viewer. Print notes live in the
+[`hardware/fab/`](https://github.com/ristllin/Nimbus/tree/main/hardware/fab#3d-printing-the-enclosure)
+folder. A bare board on the desk works too; the case is optional.
 
 ## Pinout
 

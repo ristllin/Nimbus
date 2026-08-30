@@ -57,7 +57,7 @@ a physical ring or rendered on the screen.
   </div>
   <div class="variant-card">
     <div class="variant-card__media">
-      <img src="/img/hardware/light-setup.webp" alt="Nimbus Light, the Freenove all-in-one board in a printed case" />
+      <img src="/img/hardware/light-render.webp" alt="Render of Nimbus Light in its printed case on the desk stand" />
     </div>
     <div class="variant-card__body">
       <p class="variant-card__kicker">All-in-one</p>
