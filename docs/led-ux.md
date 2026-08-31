@@ -75,10 +75,11 @@ binds one as its default) decides how much of this vocabulary plays:
   and the top attention job play on that one LED (dim breathe / emphasis
   flash); the rest of the ring stays dark. Birth, death, and ripple are
   suppressed to a brief one-LED blip. Quiet by design.
-- **Calm** (Balanced default): Dark, plus a soft activity glow - the
-  Orchestrator's "working" heartbeat and sub-agent births/deaths - so an
-  idle-looking ring still shows something is happening, without the full
-  segment treatment.
+- **Calm** (Balanced default): Dark, plus a soft working glow - whenever a
+  session is working (a Notifier session running, or the Orchestrator's
+  "working" heartbeat and sub-agent births/deaths) the single LED breathes
+  softly, so an active ring dims but never goes fully dark, without the full
+  segment treatment. It returns to dark once the sessions clear.
 - **Full:** the full motion language above. When **idle** (no jobs, no voice)
   the ring goes **fully dark** - an all-day desk ring shouldn't glow with
   nothing happening. A call for your attention or a single-click reveal still
