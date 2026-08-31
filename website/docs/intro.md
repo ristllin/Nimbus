@@ -13,9 +13,9 @@ description: "Open firmware that turns an inexpensive ESP32-S3 board into a pers
   </div>
   <div class="home-hero__lead">
     <p>An open-firmware AI assistant for your desk, on a commodity ESP32-S3 board.</p>
-    <p><b>Orchestrator</b> mode: reach it over Telegram, hold-to-talk on the device, or a local web UI. It remembers across conversations, runs routines on its own clock, uses tools mid-turn.</p>
-    <p><b>Notifier</b> mode: each coding session takes a spot on the LED ring over encrypted Bluetooth, so a glance shows what finished and what needs you.</p>
-    <p>Memories and data stay on the device, not a cloud account. Only the model call leaves, to the provider you pick: a hosted lab, or an LLM you host yourself. Bring your own key (Mistral, OpenAI, Anthropic, or OpenAI-compatible). Source-available, noncommercial.</p>
+    <p><b>Orchestrator</b> mode: reach your always-on Nimbus over Telegram, hold-to-talk on the device, or use the local web UI. Nimbus remembers across conversations, runs routines, uses tools and connects to your favorite MCPs.</p>
+    <p><b>Notifier</b> mode: each coding session takes a segment on the LED ring, communicates over encrypted Bluetooth, so a glance shows which agents have finished and what needs you.</p>
+    <p>Memories and data stay on the device, not on a cloud account. Only the model calls leave, to the provider you pick: a hosted lab, or an LLM you host yourself. Bring your own key (Mistral, OpenAI, Anthropic, or OpenAI-compatible). Source-available, noncommercial.</p>
     <div class="home-hero__cta">
       <a class="button button--primary button--lg" href="/quick-start/what-you-need">Get started</a>
       <a class="button button--secondary button--lg" href="/flash">Flash from your browser</a>
