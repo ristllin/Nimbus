@@ -271,6 +271,7 @@ static volatile int     s_pendMode  = 0;
 // POST /api/onboard/restart - non-destructive restart staged to loopWeb() (the
 // main task); ESP.restart() inline on the AsyncTCP task is unsafe (mode rule).
 static volatile bool    s_onbRestartPending = false;
+static volatile bool    s_restartPending = false;  // POST /api/restart - deferred plain restart (CUM-270)
 // POST /api/preview staging - same single-writer-on-apply pattern as profile/
 // mode above, just fired through onPreview instead of mutating Config/Selector
 // (a preview never persists and never touches g_cfg).
@@ -2350,6 +2351,19 @@ void beginWeb(const WebConfig& wc) {
     s_wc.powerOff();   // sets the deferred flag; main loop runs the shutdown + sleep
   });
 
+  // POST /api/restart (CUM-270): a plain, non-destructive restart from the web app
+  // - the Home quick action and the "Takes effect after restart" hints (battery
+  // monitor and siblings). Token-gated exactly like /api/poweroff. The restart is
+  // DEFERRED to loopWeb() on the main task; calling ESP.restart() inline on this
+  // AsyncTCP task is unsafe (the concurrency/mode rule). The 202 reaches the
+  // browser first, so the web app shows its "reconnects in about a minute"
+  // interstitial and polls /api/state until the device answers. Nothing is erased.
+  s_server.on("/api/restart", HTTP_POST, [](AsyncWebServerRequest* r) {
+    if (authBlocked(r)) return;
+    r->send(202, "application/json", "{\"ok\":true,\"restarting\":true}");
+    s_restartPending = true;
+  });
+
   // TTS voice catalog for the picker: OpenAI static; Mistral live from its
   // /v1/audio/voices (fetched + cached on a background task, never blocks here).
   s_server.on("/api/voices", HTTP_GET, [](AsyncWebServerRequest* r) {
@@ -3564,9 +3578,11 @@ void loopWeb() {
     if (s_wc.onChanged) s_wc.onChanged();
   }
 
-  // Deferred wizard restart (POST /api/onboard/restart): a short grace lets the
-  // 202 response reach the browser before the device goes down.
-  if (s_onbRestartPending) {
+  // Deferred restart (POST /api/onboard/restart, or POST /api/restart from the web
+  // app): a short grace lets the 202 response reach the browser before the device
+  // goes down. Both flags share this one main-task restart point so neither ever
+  // calls ESP.restart() from its AsyncTCP handler (the concurrency/mode rule).
+  if (s_onbRestartPending || s_restartPending) {
     static uint32_t s_restartAtMs = 0;   // main-task local
     if (s_restartAtMs == 0) s_restartAtMs = millis() + 750;
     else if ((int32_t)(millis() - s_restartAtMs) >= 0) ESP.restart();

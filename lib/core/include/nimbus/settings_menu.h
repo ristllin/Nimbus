@@ -302,6 +302,14 @@ class SettingsMenu {
   bool showingPowerOffConfirm() const { return state_ == State::ConfirmPowerOff; }
   bool powerOffRequested() const { return powerOffRequested_; }
   void clearPowerOffRequest() { powerOffRequested_ = false; }
+  // Restart (CUM-270): Main "Restart" row -> ConfirmRestart (defaults to Cancel,
+  // same shape as ConfirmPowerOff). Confirming raises restartRequested_, which the
+  // device drains to run the clean deferred restart (never inline - the mode rule
+  // forbids restarting off a busy task), then the menu closes. Not Config state ->
+  // not dirty(), same contract as the other device-work request flags.
+  bool showingRestartConfirm() const { return state_ == State::ConfirmRestart; }
+  bool restartRequested() const { return restartRequested_; }
+  void clearRestartRequest() { restartRequested_ = false; }
   // Whether THIS board can wake from deep sleep on a screen touch (Freenove CYD:
   // the FT6336U INT line is wired to an RTC GPIO; Solide S3: the XPT2046 pen-IRQ
   // is not routed, so touch cannot wake it). Seeded by the device from the board
@@ -342,7 +350,7 @@ class SettingsMenu {
   enum class State : uint8_t {
     Closed, Main, ProfilePick, TuneList, Edit, ConfirmReset, Connectivity,
     ConfigQr, TokenDetail, ThemePick, SelfTest, Battery, Sound, UpdateMenu, ConfirmInstall,
-    WifiMenu, WifiPick, WifiForget, Display, ConfirmPowerOff };
+    WifiMenu, WifiPick, WifiForget, Display, ConfirmPowerOff, ConfirmRestart };
 
   // Rows on the Main screen, in display order. Sound absorbs the old
   // Sounds/Voice/Volume rows (one submenu for everything audible); Screensaver
@@ -355,10 +363,15 @@ class SettingsMenu {
   // via size()-relative math are unaffected) and leaves the numeric index of every
   // row above it - Profile(1)..SdCard(11) - unchanged, so the positionally-pinned
   // HIL taps and the host-test indices do not shift.
+  // RowRestart is inserted just BEFORE RowPowerOff (owner ruling CUM-270: a
+  // Restart row next to Power off). It keeps the same guarantees: rows above it
+  // (Mode(0)..SdCard(11)) keep their indices, and Power off stays at size()-3
+  // with Display/Done as the last two rows, so the CUM-224 tail-relative taps and
+  // host-test indices are unshifted.
   enum MainRow : int {
     RowMode = 0, RowProfile, RowTune, RowConn, RowSound, RowTheme,
     RowSaver, RowUpdate, RowReset, RowSelfTest, RowBattery, RowSdCard,
-    RowPowerOff, RowDisplay, RowClose, kMainRows };
+    RowRestart, RowPowerOff, RowDisplay, RowClose, kMainRows };
 
   // Rows in the Sound submenu, in display order. Dictation/Spoken replies cycle
   // the STT/TTS provider (0 Mistral / 1 OpenAI - device maps string<->index).
@@ -436,6 +449,7 @@ class SettingsMenu {
   bool    updateCheckRequested_ = false;    // Software update > Check (device drains)
   bool    updateInstallRequested_ = false;  // ConfirmInstall > Install (device drains)
   bool    powerOffRequested_ = false;       // ConfirmPowerOff > Power off (device drains -> deep sleep)
+  bool    restartRequested_ = false;        // ConfirmRestart > Restart (device drains -> deferred restart)
   bool    touchWake_ = true;                 // board can wake from sleep on a touch (device-seeded)
   State   state_ = State::Closed;
   int     sel_ = 0;        // cursor in the current list

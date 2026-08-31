@@ -69,7 +69,9 @@ every few seconds.
   battery (corrected voltage and time-left estimate), die temperature, and the
   current mode with its active-session count.
 - **Quick actions** - one-click jumps to the things people do most: open Chat,
-  add a file, providers and models, check for updates.
+  add a file, providers and models, check for updates, **Restart**, and
+  **Power off**. Restart confirms first, then reconnects on its own in about a
+  minute; Power off puts the device to sleep (the same flow as Settings > Power).
 - **Active sessions** - the live table of what the assistant is running right
   now, each row named by its session with its provider, model, category, and
   state.
@@ -230,8 +232,8 @@ collapsible groups:
   **Theme** picks the color family, and **Preview** shows any status pattern in
   the ring simulator; **Demo on Device** plays it on the physical ring. Full
   color and motion language: **[LED experience](../guides/led-ux.md)**.
-- **Customize this mode** - every parameter starts at the mode's default; set a
-  value to override it, or **Revert to Defaults**.
+- **Customize battery mode** - every parameter starts at the selected battery
+  mode's default; set a value to override it, or **Revert to Defaults**.
 - **Sound** - audio checks (**Mic Meter**, **Speaker Tone**, **Loopback Test**)
   and the **Sound effects** engine (**[SFX map](../guides/sfx-map.md)**): a
   per-mode level, a sound theme, a **Volume** slider, and **Play**.
@@ -252,6 +254,10 @@ collapsible groups:
   shows a dedicated card with the **Cloud link code** large and high-contrast
   beside a QR: sign in at app.cumulo-nimbus.ai, then scan the QR or enter the
   code. **Copy code** copies it. Available in Orchestrator mode.
+- **Power** - **Restart…** restarts the device and brings it back on its own in
+  about a minute (nothing is erased); use it to apply a setting that says it takes
+  effect after a restart. **Power Off…** saves everything and puts the device to
+  sleep. Both confirm first.
 - **Danger zone** - **Erase Storage…** wipes the SD card (typed confirmation) and
   **Factory Reset…** erases everything (Wi-Fi, API keys, the Telegram list,
   Bluetooth pairings, themes, sound settings, memory, and the device sign-in

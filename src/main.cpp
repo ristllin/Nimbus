@@ -3669,6 +3669,20 @@ static void settleMenuAfterMutation(uint32_t now) {
     g_menu.clearPowerOffRequest();
     enterPowerOffSleep();
   }
+  if (g_menu.restartRequested()) {
+    // Settings > Restart: a clean deferred restart. The FSM already closed the
+    // menu; show an honest "Restarting..." screen, then restart HERE on the main
+    // task (never inline on a busy web/poll task, per the mode rule). It comes
+    // back on its own in about a minute; nothing is erased. Opt-in and confirmed,
+    // so a stray tap can never fire it. (CUM-270)
+    g_menu.clearRestartRequest();
+    g_askOverride = "Restarting...";
+    g_askTransient = true;                  // restart follows: no Close button
+    renderScreen(attn::ScreenId::Ask, -1);  // panel confirmation screen
+    Serial.flush();
+    delay(50);
+    ESP.restart();
+  }
   // ---- Connectivity > Wi-Fi: the on-device escape hatch --------------
   // These four flags are the ONLY thing that makes that submenu real. The
   // menu core raises them and waits; without this drain the rows latch a

@@ -44,7 +44,7 @@ switches until you reset it.
 - **On the device:** Settings > Battery mode to pick a mode; Settings >
   Customize to change individual values; Settings > Reset to defaults to drop
   every override.
-- **On the web page:** Settings → Battery mode; Settings → Customize this mode;
+- **On the web page:** Settings → Battery mode; Settings → Customize battery mode;
   the **Revert to Defaults** button clears all overrides at once.
 
 The reference defaults:
@@ -143,12 +143,21 @@ under Settings → Display on the web) rotates the screen 180 degrees for an
 upside-down mount. It applies right away, and touch follows the flip so taps still
 land where you touch.
 
+### Restart
+
+**Settings > Restart** on the device (or **Restart** on the web, both in the Home
+quick actions and under Settings → Power) restarts the device and brings it back
+on its own in about a minute. It confirms first, so a stray tap can never restart
+it. Nothing is erased, so it comes back exactly as you left it. Use it to apply a
+setting that says it takes effect after a restart (for example, **Monitor the
+battery**), which offers a **Restart now** action right beside the setting.
+
 ### Power off
 
-**Settings > Power off** on the device (or **Power off** under Settings → Power
-on the web) saves everything, turns the screen off, and puts the device into deep
-sleep. It confirms first, so a stray tap can never turn the device off. Settings
-are kept, so it comes back exactly as you left it.
+**Settings > Power off** on the device (or **Power off** on the web, in the Home
+quick actions and under Settings → Power) saves everything, turns the screen off,
+and puts the device into deep sleep. It confirms first, so a stray tap can never
+turn the device off. Settings are kept, so it comes back exactly as you left it.
 
 How it wakes depends on the model. On a touch model whose touch controller can
 wake it, a tap on the screen turns it back on, and the copy says so ("Tap the

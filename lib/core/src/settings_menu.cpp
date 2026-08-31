@@ -123,6 +123,7 @@ int SettingsMenu::itemCount() const {
     case State::ConfirmInstall: return 2;  // Cancel / Install and restart
     case State::Display:     return kDispRows;   // Display flip + Back
     case State::ConfirmPowerOff: return 2; // Cancel / Power off
+    case State::ConfirmRestart:  return 2; // Cancel / Restart
   }
   return 0;
 }
@@ -292,6 +293,9 @@ void SettingsMenu::onClick() {
           // Same action as Connectivity > Re-probe SD: reseat the card, click,
           // and the device re-inits the bus + refreshes this row's status.
           sdProbeRequested_ = true;
+          return;
+        case RowRestart:                 // restart the device (confirm first)
+          enter(State::ConfirmRestart);  // defaults to Cancel (row 0)
           return;
         case RowPowerOff:                // turn the device off (confirm first)
           enter(State::ConfirmPowerOff); // defaults to Cancel (row 0)
@@ -561,6 +565,16 @@ void SettingsMenu::onClick() {
       sel_ = RowPowerOff;
       return;
 
+    case State::ConfirmRestart:
+      if (sel_ == 1) {  // Restart
+        restartRequested_ = true;   // device drains -> deferred restart (never inline)
+        close();                    // the restart UX owns the screen from here
+        return;
+      }
+      enter(State::Main);           // Cancel
+      sel_ = RowRestart;
+      return;
+
     case State::ConfirmReset:
       if (sel_ == 1) {  // Yes, clear all
         // Only dirty (and thus persist) if there was actually something to
@@ -616,6 +630,10 @@ void SettingsMenu::onLongPress() {
     case State::ConfirmPowerOff:
       enter(State::Main);
       sel_ = RowPowerOff;
+      return;
+    case State::ConfirmRestart:
+      enter(State::Main);
+      sel_ = RowRestart;
       return;
     case State::Connectivity:
       enter(State::Main);
@@ -728,6 +746,10 @@ const char* SettingsMenu::helpText() const {
                "wake it."
              : "The screen turns off and the device sleeps. Reconnect power to "
                "turn it back on.";
+  // Restart confirm: say plainly that it returns on its own, nothing is lost.
+  if (state_ == State::ConfirmRestart)
+    return "The device restarts and comes back on its own in about a minute. "
+           "Nothing is erased.";
   // ProfilePick: spell out what each battery mode does. The mode carries its
   // light behavior (owner 2026-07-18) - no separate light level to explain.
   if (state_ == State::ProfilePick && sel_ < kProfileCount) {
@@ -853,6 +875,7 @@ void SettingsMenu::view(solide::menu::MenuView& out) const {
       out.items.push_back("Self-test >"); // '>' = opens a screen (menu convention)
       out.items.push_back("Battery >");   // live battery detail full-screen
       out.items.push_back(std::string("SD card: ") + (sdStatus_.empty() ? "?" : sdStatus_));
+      out.items.push_back("Restart");             // deferred restart (confirm first) - sits before Power off
       out.items.push_back("Power off");           // clean shutdown -> deep sleep (confirm first)
       out.items.push_back("Display >");          // screen flip (+ touch calibration)
       out.items.push_back("Done");
@@ -934,6 +957,12 @@ void SettingsMenu::view(solide::menu::MenuView& out) const {
       out.title = "Settings > Power off?";
       out.items.push_back("Cancel");
       out.items.push_back("Power off");
+      return;
+
+    case State::ConfirmRestart:
+      out.title = "Settings > Restart?";
+      out.items.push_back("Cancel");
+      out.items.push_back("Restart");
       return;
 
     case State::Sound: {

@@ -654,7 +654,8 @@ function applyState(d){
     if(bm&&document.activeElement!==bm){bm.checked=!!d.batt.battMon;
       bm.onchange=()=>{const f=new FormData();f.append('battMon',bm.checked?'1':'0');
         fetch('/api/config',{method:'POST',body:f}).then(jok)
-          .then(()=>toast('Restart to apply')).catch(failToast);};}
+          .then(()=>{toast('Restart to apply');            // CUM-270: offer the control directly
+            var br=$('battRestartRow'); if(br)br.style.display='';}).catch(failToast);};}
   }
   // battery analytics panel (Device tab) - shown only when telemetry is valid
   var bt=d.batt;
@@ -782,11 +783,15 @@ function applyState(d){
       '<span class=hint> - memories and history'+(d.storeSD?'':' (insert an SD card for more space)')+'</span><br>'):'')+
     (d.sta?('sta <b>'+d.staIp+'</b> ('+d.rssi+' dBm) &middot; '):'')+
     'ap <b>'+d.apIp+'</b> &middot; <b>'+d.mdns+'</b>';
-  // profile radios
+  // profile radios; keep the Customize group heading naming the selected battery
+  // mode (CUM-269) so "Customize battery mode: Balanced" is never ambiguous.
+  var _profNm=['Dark','Balanced','Full'];
+  var _setCustProf=p=>{var e=$('custProfName'); if(e)e.textContent=_profNm[p]||'Balanced';};
   document.querySelectorAll('input[name=profile]').forEach(r=>{
     r.checked=(+r.value===d.profile);
-    r.onchange=()=>apply({profile:r.value});
+    r.onchange=()=>{_setCustProf(+r.value);apply({profile:r.value});};
   });
+  _setCustProf(d.profile);
   $('effprof').textContent='effective: '+d.effectiveProfileName+
     (d.effectiveProfile!==d.profile?' (adjusted automatically for power)':'');
   // mode
@@ -1021,20 +1026,48 @@ function loadConnect(){
       'Reconnect to its <b>&ldquo;…-setup&rdquo;</b> Wi-Fi network to run the setup wizard.</p></div>';
   }).catch(()=>toast('Reset failed - try again'));});};
 })();
-// Power off (CUM-224): confirm, POST /api/poweroff, then show an honest offline
-// interstitial. The device goes to deep sleep, so the page cannot poll it back -
-// replace the whole body with a clear "it is asleep" screen instead of letting the
-// 3 s state poll turn into a connection error. The wake copy follows the response's
-// tapWakes: touch models wake on a tap, others on reconnecting power.
-(function(){const b=$('powerOff'); if(!b)return; b.onclick=()=>{
-  uiConfirm('Power the device off?\n\nIt saves everything and goes to sleep. Touch models wake when you tap the screen; others wake when you reconnect power.',{ok:'Power Off',danger:true}).then(ok=>{ if(!ok)return;
-  fetch('/api/poweroff',{method:'POST'}).then(r=>r.ok?r.json():Promise.reject(r.status)).then((j)=>{
-    const wake=(j&&j.tapWakes)?'Tap its screen to wake it.':'Reconnect its power to turn it back on.';
-    _authPaused=true;   // the device is sleeping; stop the background pollers hitting a dead host
-    document.body.innerHTML='<div id=sleepScreen style="max-width:460px;margin:18vh auto;padding:0 20px;text-align:center;font-family:inherit;color:var(--ink)">'+
-      '<img src=/logo.svg style="width:52px;height:52px"><h2 style="margin:14px 0 8px">The device is off</h2>'+
-      '<p style="color:var(--ink2);line-height:1.5">The screen is off and the device is asleep. '+wake+'</p></div>';
-  }).catch((e)=>toast(e===401?'Sign in required':'Couldn\'t power off - try again'));});};
+// Restart (CUM-270): styled confirm, POST /api/restart (token-gated, deferred on
+// the device to the main task), then an honest interstitial that polls /api/state
+// until the device answers and reloads. Bound to the Home quick action, the
+// Settings > Power row, and the battery-monitor "Restart now" hint.
+function doRestart(){
+  uiConfirm('Restart the device?\n\nIt restarts and reconnects on its own in about a minute. Nothing is erased.',{ok:'Restart'}).then(go=>{
+    if(!go)return;
+    fetch('/api/restart',{method:'POST'}).then(r=>r.ok?r.json():Promise.reject(r.status)).then(()=>{
+      _authPaused=true;   // the device is going down; stop the background pollers
+      document.body.innerHTML='<div id=restartScreen style="max-width:460px;margin:18vh auto;padding:0 20px;text-align:center;font-family:inherit;color:var(--ink)">'+
+        '<img src=/logo.svg style="width:52px;height:52px"><h2 style="margin:14px 0 8px">Restarting</h2>'+
+        '<p style="color:var(--ink2);line-height:1.5">It reconnects on its own in about a minute. This page returns when it is back.</p></div>';
+      let tries=0; const ping=()=>{ tries++;
+        fetch('/api/state',{cache:'no-store'})
+          .then(r=>{ if(r.ok) location.reload(); else throw 0; })
+          .catch(()=>{ if(tries<60) setTimeout(ping,2000);
+            else{const s=$('restartScreen'); if(s)s.querySelector('p').textContent='Still reconnecting - reload the page once the device is back.'; }); };
+      setTimeout(ping,5000);   // let the restart begin before polling
+    }).catch((e)=>toast(e===401?'Sign in required':'Couldn\'t restart - try again'));
+  });
+}
+
+// Power off (CUM-224 flow, restated behind the styled modal per CUM-270): POST
+// /api/poweroff, then an honest offline interstitial. The device goes to deep
+// sleep, so the page cannot poll it back - it replaces the body with a clear "it
+// is asleep" screen. The wake copy follows the response's tapWakes. Bound to the
+// Settings > Power row and the Home quick action.
+function doPowerOff(){
+  uiConfirm('Power the device off?\n\nIt saves everything and goes to sleep. Touch models wake when you tap the screen; others wake when you reconnect power.',{ok:'Power Off',danger:true}).then(go=>{
+    if(!go)return;
+    fetch('/api/poweroff',{method:'POST'}).then(r=>r.ok?r.json():Promise.reject(r.status)).then((j)=>{
+      const wake=(j&&j.tapWakes)?'Tap its screen to wake it.':'Reconnect its power to turn it back on.';
+      _authPaused=true;   // the device is sleeping; stop the background pollers hitting a dead host
+      document.body.innerHTML='<div id=sleepScreen style="max-width:460px;margin:18vh auto;padding:0 20px;text-align:center;font-family:inherit;color:var(--ink)">'+
+        '<img src=/logo.svg style="width:52px;height:52px"><h2 style="margin:14px 0 8px">The device is off</h2>'+
+        '<p style="color:var(--ink2);line-height:1.5">The screen is off and the device is asleep. '+wake+'</p></div>';
+    }).catch((e)=>toast(e===401?'Sign in required':'Couldn\'t power off - try again'));
+  });
+}
+(function(){
+  ['powerOff','homePowerOff'].forEach(id=>{const b=$(id); if(b)b.onclick=doPowerOff;});
+  ['homeRestart','deviceRestart','battRestart'].forEach(id=>{const b=$(id); if(b)b.onclick=doRestart;});
 })();
 // Full-card format (CUM-15): its own typed confirm, distinct from Erase Storage.
 (function(){const b=$('sdFormat'); if(!b)return; b.onclick=()=>{
@@ -1263,9 +1296,9 @@ function switchMode(mv){
 // active battery mode runs on its pure reference preset. Confirmed - it
 // discards all customization in one click.
 if($('revertProf'))$('revertProf').onclick=()=>{
-  uiConfirm('Reset this mode to its defaults?\n\nEvery customized value returns to the preset.',{ok:'Reset To Defaults',danger:true}).then(go=>{ if(!go)return;
+  uiConfirm('Reset this battery mode to its defaults?\n\nEvery customized value returns to the preset.',{ok:'Reset To Defaults',danger:true}).then(go=>{ if(!go)return;
   apply({revert_overrides:1}).then(ok=>{
-    if(ok){$('revertMsg').textContent='All customizations cleared - this mode is back on its defaults.';}
+    if(ok){$('revertMsg').textContent='All customizations cleared - this battery mode is back on its defaults.';}
   });});
 };
 
