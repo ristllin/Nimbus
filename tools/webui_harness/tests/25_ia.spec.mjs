@@ -63,7 +63,9 @@ test('each destination reveals its content and hides the others', async ({ page 
 test('quick actions on Home navigate to other destinations', async ({ page }) => {
   await seedToken(page);
   await openApp(page);
-  await page.locator('#pane-dash [data-go=assistant]').click();
+  // Home may offer more than one shortcut into Assistant (a quick action plus an
+  // alert's jump); any of them must navigate there.
+  await page.locator('#pane-dash [data-go=assistant]').first().click();
   await expect(page.locator('.tab[data-p=assistant]')).toHaveClass(/on/);
   await expect(page.locator('#pane-harness')).toBeVisible();
 });

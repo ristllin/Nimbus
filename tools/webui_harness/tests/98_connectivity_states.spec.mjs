@@ -3,14 +3,17 @@
 // reference real renders (connected, disconnected/setup-AP, the saved-networks list,
 // the setup-hotspot password panel, and the cloud/tunnel card). Regenerable QA
 // artifacts, not committed. Run: npx playwright test 98_connectivity_states
-import { test } from '@playwright/test';
-import { seedToken, openApp } from './_helpers.mjs';
+import { test, expect } from '@playwright/test';
+import { seedToken, openApp, assertPane } from './_helpers.mjs';
 
 async function toDevice(page) {
   await seedToken(page);
   await openApp(page);
   await page.locator('.tab[data-p=device]').click();
-  await page.waitForTimeout(400);
+  // The Device pane must actually paint before we hunt for its groups - on a broken
+  // head this fails here instead of screenshotting the Home pane (the bug this matrix
+  // exists to catch). See AGENTS.md "a passing snapshot proves the bytes match".
+  await assertPane(page, 'device');
 }
 
 async function expand(page, name) {
@@ -19,6 +22,10 @@ async function expand(page, name) {
   });
   const open = await group.evaluate((el) => el.open);
   if (!open) await group.locator('summary').click();
+  // The group and its rendered body must be on screen before capture, so a shot of a
+  // collapsed or empty group cannot pass as if it showed the state under test.
+  await expect(group, `the "${name}" group is not visible`).toBeVisible();
+  await expect(group.locator('.setbody'), `the "${name}" body did not render`).toBeVisible();
   await page.waitForTimeout(300);
   return group;
 }

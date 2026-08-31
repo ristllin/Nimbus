@@ -1,7 +1,7 @@
 // CUM-62: global search - one palette over settings/actions, files, memory,
 // sessions, and the embedded docs pack; keyboard reachable; results grouped.
 import { test, expect } from '@playwright/test';
-import { seedToken, openApp } from './_helpers.mjs';
+import { seedToken, openApp, openSearch } from './_helpers.mjs';
 
 test('the search index (static) is pure and keyword-matches', async ({ page }) => {
   await seedToken(page);
@@ -35,7 +35,11 @@ test('"/" opens the palette when not typing in a field', async ({ page }) => {
   await expect(page.locator('#searchOverlay')).toBeVisible();
 });
 
-test('the sidebar Search button opens the palette', async ({ page }) => {
+test('the sidebar Search button opens the palette', async ({ page }, testInfo) => {
+  // The sidebar (and its search button) exists only on the wide layout; on phone the
+  // bottom tab bar replaces it and .searchbtn is display:none by design. The keyboard
+  // paths ("/" and Ctrl+K) cover phone above.
+  test.skip(testInfo.project.name === 'phone', 'sidebar search button is desktop-only');
   await seedToken(page);
   await openApp(page);
   await page.locator('#globalSearchBtn').click();
@@ -45,7 +49,7 @@ test('the sidebar Search button opens the palette', async ({ page }) => {
 test('results are grouped across sources', async ({ page }) => {
   await seedToken(page);
   await openApp(page);
-  await page.locator('#globalSearchBtn').click();
+  await openSearch(page);
   await page.locator('#searchInput').fill('update');
   // Settings & actions is synchronous; docs arrives from /api/docs/search.
   await expect(page.locator('.sgroup', { hasText: 'Settings & actions' })).toBeVisible();
@@ -57,7 +61,7 @@ test('results are grouped across sources', async ({ page }) => {
 test('memory results appear from the memory source', async ({ page }) => {
   await seedToken(page);
   await openApp(page);
-  await page.locator('#globalSearchBtn').click();
+  await openSearch(page);
   await page.locator('#searchInput').fill('ring');
   await expect(page.locator('.sgroup', { hasText: 'Memory' })).toBeVisible();
   await expect(page.locator('.sresult', { hasText: 'one arc per active session' })).toBeVisible();
@@ -66,7 +70,7 @@ test('memory results appear from the memory source', async ({ page }) => {
 test('a memory search result opens the Long-term memory section', async ({ page }) => {
   await seedToken(page);
   await openApp(page);
-  await page.locator('#globalSearchBtn').click();
+  await openSearch(page);
   await page.locator('#searchInput').fill('ring');
   await page.locator('.sresult', { hasText: 'one arc per active session' }).click();
   await expect(page.locator('.tab[data-p=memory]')).toHaveClass(/on/);
@@ -78,7 +82,7 @@ test('a memory search result opens the Long-term memory section', async ({ page 
 test('Enter on a result navigates to its destination', async ({ page }) => {
   await seedToken(page);
   await openApp(page);
-  await page.locator('#globalSearchBtn').click();
+  await openSearch(page);
   await page.locator('#searchInput').fill('memory');
   // First result is the "Memory" destination; Enter activates it.
   await page.keyboard.press('Enter');
