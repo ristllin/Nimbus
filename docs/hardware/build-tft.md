@@ -517,7 +517,7 @@ run `BATTCAL` (console) so 100 % reads as 100 %. See
 ## Enclosure and CAD
 
 A 3D-printable enclosure for this build is published:
-**[`hardware/fab/case_touch_screen.stl`](https://github.com/ristllin/Nimbus/blob/main/hardware/fab/case_touch_screen.stl)**
+**[`hardware/fab/nimbus_classic_case.stl`](https://github.com/ristllin/Nimbus/blob/main/hardware/fab/nimbus_classic_case.stl)**
 (GitHub renders it in a 3D viewer). Print in PLA or PETG; the main body needs no
 supports on most printers. The
 [`hardware/fab/`](https://github.com/ristllin/Nimbus/tree/main/hardware/fab) folder

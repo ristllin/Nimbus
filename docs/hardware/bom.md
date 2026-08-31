@@ -83,7 +83,7 @@ are approximate. The [build photos](build-photos.md) show every step.
 
 | Qty | Part | Notes | Purchase | ~Price |
 |---|---|---|---|---|
-| 1 set | **3D-printed enclosure** | Print [`case_touch_screen.stl`](https://github.com/ristllin/Nimbus/blob/main/hardware/fab/case_touch_screen.stl) (GitHub renders it in a 3D viewer) in PLA or PETG. | self-print or a print service | $0–15 |
+| 1 set | **3D-printed enclosure** | Print [`nimbus_classic_case.stl`](https://github.com/ristllin/Nimbus/blob/main/hardware/fab/nimbus_classic_case.stl) (GitHub renders it in a 3D viewer) in PLA or PETG. | self-print or a print service | $0–15 |
 | ~10 | **M3 brass heat-set inserts** | Melted into the printed case with a soldering iron; screws thread into these. | [AliExpress](https://www.aliexpress.com/w/wholesale-m3-heat-set-insert.html) | $5 |
 | assorted | **M3 machine screws** | A short-length assortment, plus a few **longer M3** screws for the microSD-module standoff. | [AliExpress](https://www.aliexpress.com/w/wholesale-m3-screw-assortment-kit.html) | $3 |
 | 1 | **Rocker power switch** (SPST) | Cuts the pack to the DC-DC. Generic, ~20 x 12 mm panel cutout. | [AliExpress](https://www.aliexpress.com/w/wholesale-kcd1-rocker-switch.html) | $1 |

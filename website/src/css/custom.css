@@ -36,3 +36,218 @@
 .markdown h1:first-child {
   --ifm-h1-font-size: 2.2rem;
 }
+
+/* ---- Home page (intro.md) ------------------------------------------------ */
+
+/* Hero: the glowing ring video with the pitch beside it. */
+.home-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr);
+  gap: 2rem;
+  align-items: center;
+  margin: 0.5rem 0 2.5rem;
+}
+.home-hero__media {
+  display: flex;
+  justify-content: center;
+}
+.home-hero__media video,
+.home-hero__media img {
+  display: block;
+  width: auto;
+  max-width: 100%;
+  height: auto;
+  max-height: min(74vh, 640px);
+  border-radius: 14px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.35);
+}
+.home-hero__lead {
+  font-size: 1.15rem;
+  line-height: 1.55;
+}
+.home-hero__cta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin-top: 1.2rem;
+}
+
+/* Two-variant showcase. */
+.variant-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1.5rem;
+  margin: 1.5rem 0 2rem;
+}
+.variant-card {
+  border: 1px solid var(--ifm-color-emphasis-200);
+  border-radius: 14px;
+  overflow: hidden;
+  background: var(--ifm-background-surface-color);
+  display: flex;
+  flex-direction: column;
+}
+.variant-card__media {
+  aspect-ratio: 4 / 3;
+  background: #000;
+}
+.variant-card__media img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.variant-card__body {
+  padding: 1.1rem 1.25rem 1.35rem;
+}
+.variant-card__body h3 {
+  margin: 0 0 0.15rem;
+}
+.variant-card__kicker {
+  font-size: 0.8rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ifm-color-primary);
+  font-weight: 600;
+  margin: 0 0 0.4rem;
+}
+.variant-card__specs {
+  list-style: none;
+  padding: 0;
+  margin: 0.75rem 0 0;
+  font-size: 0.92rem;
+}
+.variant-card__specs li {
+  padding: 0.28rem 0 0.28rem 1.35rem;
+  position: relative;
+}
+.variant-card__specs li::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0.72rem;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ifm-color-primary);
+}
+
+/* Cumulo Nimbus: the first-party service. */
+.cumulo-callout {
+  border: 1px solid var(--ifm-color-primary);
+  border-radius: 14px;
+  padding: 1.5rem 1.75rem;
+  margin: 1.5rem 0 2rem;
+  background: linear-gradient(
+    180deg,
+    rgba(127, 209, 200, 0.08),
+    rgba(127, 209, 200, 0.02)
+  );
+}
+.cumulo-callout h2 {
+  margin-top: 0;
+}
+
+/* Data-boundary diagrams: what stays local vs. what crosses out. */
+.boundary-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1.5rem;
+  margin: 1.5rem 0 2rem;
+}
+.boundary {
+  border: 1px solid var(--ifm-color-emphasis-200);
+  border-radius: 14px;
+  background: var(--ifm-background-surface-color);
+  padding: 1.1rem 1.25rem 1.35rem;
+  display: flex;
+  flex-direction: column;
+}
+.boundary__kicker {
+  font-size: 0.8rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ifm-color-primary);
+  font-weight: 600;
+  margin: 0 0 0.85rem;
+}
+.boundary__zone {
+  position: relative;
+  border: 1.5px solid var(--ifm-color-primary);
+  border-radius: 12px;
+  padding: 1.5rem 1rem 1.15rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.3rem;
+  background: linear-gradient(
+    180deg,
+    rgba(127, 209, 200, 0.08),
+    rgba(127, 209, 200, 0.02)
+  );
+}
+.boundary__label {
+  position: absolute;
+  top: -0.68rem;
+  left: 1rem;
+  padding: 0 0.5rem;
+  font-size: 0.68rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ifm-color-primary);
+  background: var(--ifm-background-surface-color);
+}
+.bnode {
+  width: 100%;
+  max-width: 16rem;
+  text-align: center;
+  border: 1px solid var(--ifm-color-emphasis-300);
+  border-radius: 10px;
+  padding: 0.5rem 0.75rem;
+  background: var(--ifm-background-color);
+}
+.bnode b {
+  display: block;
+  font-size: 0.95rem;
+}
+.bnode span {
+  display: block;
+  font-size: 0.78rem;
+  color: var(--ifm-color-emphasis-700);
+  margin-top: 0.15rem;
+}
+.boundary__wire {
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ifm-color-primary);
+  padding: 0.35rem 0;
+}
+.boundary__wire--out {
+  color: var(--ifm-color-emphasis-600);
+}
+.boundary__cross {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.3rem;
+  margin-top: 0.3rem;
+}
+.bnode--remote {
+  border-style: dashed;
+  border-color: var(--ifm-color-emphasis-400);
+  background: transparent;
+}
+.boundary__cap {
+  font-size: 0.88rem;
+  color: var(--ifm-color-emphasis-700);
+  margin: 1rem 0 0;
+}
+
+@media (max-width: 860px) {
+  .home-hero,
+  .variant-grid,
+  .boundary-grid {
+    grid-template-columns: 1fr;
+  }
+}

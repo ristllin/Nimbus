@@ -11,9 +11,13 @@ wiring and pinouts see the [hardware reference](../../docs/hardware.md) and the
 |---|---|
 | [`gerbers/`](gerbers/) | Gerber layers (copper, silkscreen, soldermask, solderpaste, profile), the drill file, and the Gerber job file |
 | [`odb/pcb3_v7.zip`](odb/pcb3_v7.zip) | ODB++ export of the same board (zipped - most fabs accept either format) |
-| [`case_touch_screen.stl`](case_touch_screen.stl) | 3D-printable enclosure for the touch TFT build |
+| [`nimbus_classic_case.stl`](nimbus_classic_case.stl) | 3D-printable enclosure for the classic (touch TFT) build |
+| [`nimbus_light_front.stl`](nimbus_light_front.stl) | Nimbus Light (Freenove CYD) enclosure, front half |
+| [`nimbus_light_back.stl`](nimbus_light_back.stl) | Nimbus Light enclosure, back half |
+| [`nimbus_light_stand.stl`](nimbus_light_stand.stl) | Desk stand for Nimbus Light (optional) |
 
-Both PCB formats describe the same board; supply whichever your fab prefers.
+Both PCB formats describe the same board; supply whichever your fab prefers. The
+STLs are for 3D printing and are not board files.
 
 ## Ordering the PCB
 
@@ -42,5 +46,14 @@ any fab works the same way.
 
 ## 3D-printing the enclosure
 
-[`case_touch_screen.stl`](case_touch_screen.stl) is the enclosure for the touch TFT
-build. PLA or PETG both work; the main body prints without supports on most machines.
+PLA or PETG both work for every part; the main bodies print without supports on most
+machines.
+
+- **Classic (touch TFT) build:** print
+  [`nimbus_classic_case.stl`](nimbus_classic_case.stl).
+- **Nimbus Light (Freenove CYD):** print both halves,
+  [`nimbus_light_front.stl`](nimbus_light_front.stl) and
+  [`nimbus_light_back.stl`](nimbus_light_back.stl). The board and its parts are captive
+  between the two halves, so there is nothing else to fasten.
+- **Desk stand (optional):** [`nimbus_light_stand.stl`](nimbus_light_stand.stl) angles
+  Nimbus Light up on a desk.
