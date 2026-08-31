@@ -4515,6 +4515,15 @@ void loop() {
     }
   }
 
+  // Keep the on-screen Sign-in QR live (CUM-209). The Sign-in QR encodes a single-
+  // use code with a TTL; the menu paints only on knob events, so a QR left on the
+  // screen would keep showing a code that silently expires (a later scan then 401s).
+  // While the ConfigQr screen is showing, ask for a repaint once the code goes stale
+  // - renderMenu() -> configUrl() -> panelSigninCode() then re-mints it, so the QR
+  // rotates ~once per TTL-window rather than per frame. Cheap poll (a millis compare).
+  if (g_menu.isOpen() && g_menu.showingConfigQr() && net::panelCodeStale())
+    g_menuNeedsPaint = true;
+
   // Flush a coalesced menu repaint once the menu's OWN refresh window elapses.
   // Gated on g_menuDoneAt so a busy/stuck status render can
   // never stall the menu: g_menuDoneAt only ever tracks the previous MENU frame,

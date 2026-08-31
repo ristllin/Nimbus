@@ -158,16 +158,31 @@ static bool redeemSigninCode(const char* code) {
 // (main task), so they need no lock of their own.
 static String   s_panelCode;
 static uint32_t s_panelCodeMintedMs = 0;
+// Re-mint the panel code once it has spent 3/4 of its TTL, so a code handed to a
+// scan always has >= 1/4 TTL (~30 s) of life left, while the QR image only changes
+// ~once a TTL-window (not per frame). panelCodeStale() lets the main loop trigger a
+// repaint on this cadence so a code never expires on a QR left on the screen.
+static constexpr uint32_t kPanelCodeRefreshMs = nimbus::SigninCodes::DEFAULT_TTL_MS * 3 / 4;
+
+static bool panelCodeExpiredBy(uint32_t now) {
+  return s_panelCode.length() == 0 ||
+         (uint32_t)(now - s_panelCodeMintedMs) >= kPanelCodeRefreshMs;
+}
 
 String panelSigninCode() {
   const uint32_t now = millis();
-  const uint32_t refreshAfter = nimbus::SigninCodes::DEFAULT_TTL_MS / 2;
-  if (s_panelCode.length() == 0 || (uint32_t)(now - s_panelCodeMintedMs) >= refreshAfter) {
+  if (panelCodeExpiredBy(now)) {
     s_panelCode = mintSigninCode();
     s_panelCodeMintedMs = now;
   }
   return s_panelCode;
 }
+
+// True when the cached panel code is due for a refresh - the main loop polls this
+// while the Sign-in QR is on screen and requests a repaint so the displayed QR is
+// re-minted before its code expires (CUM-209). Read-only: it never mints, so the
+// repaint (which calls panelSigninCode()) is what actually rotates the code.
+bool panelCodeStale() { return panelCodeExpiredBy(millis()); }
 // ================== end N1 UI endpoints (file-scope state) ==================
 
 // Per-device web auth (prism): a state-changing request must carry the device token
