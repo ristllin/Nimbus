@@ -9,7 +9,7 @@ description: "Open firmware that turns an inexpensive ESP32-S3 board into a pers
 
 <div class="home-hero">
   <div class="home-hero__media">
-    <img src="/img/hardware/hero-render-placeholder.webp" alt="Nimbus device render (placeholder)" />
+    <img src="/img/hardware/hero-render.webp" alt="Render of the assembled Nimbus device on a desk" />
   </div>
   <div class="home-hero__lead">
     <p>An open-firmware AI assistant for your desk, on a commodity ESP32-S3 board.</p>
