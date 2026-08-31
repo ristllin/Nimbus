@@ -96,6 +96,7 @@ you don't see it, it did not pass.
 | `pio run -e test` | `SUCCESS` (test-console build links) |
 | `cd website && npm run build` | `[SUCCESS] Generated static files` |
 | `pre-commit run --all-files` | every hook `Passed` or `Skipped` |
+| `make -C tools/harness-lab check` | `harness-lab compiles against the current harness` |
 
 Notes:
 
@@ -109,7 +110,13 @@ Notes:
   shrinks - don't add to it without discussion.
 - The build matrix beyond the two shown (`notifierdbg`, `bttest`, the
   `tft*`/`beep`/`provision` bring-up sketches) is compiled by
-  `tools/build_all.sh`.
+  `tools/build_all.sh`, which also runs the `make -C tools/harness-lab check`
+  row above. That row is the anti-rot gate for the host agent harness
+  (`tools/harness-lab`): it links the same `lib/core` + `lib/harness` the firmware
+  does, so a `lib/core` refactor that drops a source it needs fails the link here
+  instead of rotting silently until the next live run. It is build-only (no keys,
+  no network) and needs the native ArduinoJson libdeps that `pio test -e native`
+  populates.
 
 **"It compiles" is NOT "it works."** A clean build and a boot in the other mode
 prove nothing about the touch input, the radio, the ring, or a live turn. Device behavior
