@@ -5,6 +5,7 @@ Run: python3 -m pytest tools/release_gate
 
 import check_driver_pin as pin
 import check_elf_symbols as elf
+import check_ota_preserves_nvs as otanvs
 
 
 # --- driver-pin gate (CUM-167) ----------------------------------------------
@@ -58,3 +59,77 @@ def test_empty_elf_fails_missing_plumbing():
     ok, msgs = elf.check("00000000 T some_other_symbol\n")
     assert not ok
     assert any("plumbing" in m for m in msgs)
+
+
+# --- OTA-preserves-NVS gate (CUM-237) ---------------------------------------
+# A minimal key registry standing in for src/agent/agent_config.h: two OTA
+# bookkeeping keys and two user-data keys.
+_KEYS_HDR = "\n".join(
+    [
+        '#define AKEY_OTA_PENDING    "otaPend"',
+        '#define AKEY_OTA_TYPE       "otaType"',
+        '#define AKEY_TOUCH_CAL      "tchCal"',
+        '#define AKEY_WIFI_SSID      "wifiSsid"',
+    ]
+)
+
+
+def test_ota_writing_only_bookkeeping_passes():
+    src = (
+        'static const char* kSimCrashKey = "otaSimCrash";\n'
+        "  nvs_set_i32(h, AKEY_OTA_PENDING, 0);\n"
+        "  nvs_set_str(h, AKEY_OTA_TYPE, derived);\n"
+        "  nvs_set_i32(h, kSimCrashKey, 0);\n"
+    )
+    ok, msgs = otanvs.audit(src, _KEYS_HDR)
+    assert ok, msgs
+
+
+def test_ota_writing_a_user_key_by_macro_fails():
+    # The regression: an update path that clobbers the measured touch calibration.
+    src = "  nvs_set_str(h, AKEY_TOUCH_CAL, buf);\n"
+    ok, msgs = otanvs.audit(src, _KEYS_HDR)
+    assert not ok
+    assert any("tchCal" in m and "USER data key" in m for m in msgs)
+
+
+def test_ota_writing_a_user_key_by_literal_fails():
+    # Same regression written as a bare string literal, not the macro.
+    src = '  nvs_set_str(h, "wifiSsid", ssid);\n'
+    ok, msgs = otanvs.audit(src, _KEYS_HDR)
+    assert not ok
+    assert any("wifiSsid" in m for m in msgs)
+
+
+def test_ota_erasing_a_user_key_fails():
+    src = "  nvs_erase_key(h, AKEY_WIFI_SSID);\n"
+    ok, msgs = otanvs.audit(src, _KEYS_HDR)
+    assert not ok
+    assert any("wifiSsid" in m for m in msgs)
+
+
+def test_ota_unresolvable_key_fails_closed():
+    # A key the guard cannot resolve to a literal must fail, not be waved through.
+    src = "  nvs_set_str(h, someRuntimeKey, v);\n"
+    ok, msgs = otanvs.audit(src, _KEYS_HDR)
+    assert not ok
+    assert any("UNRESOLVABLE" in m for m in msgs)
+
+
+def test_ota_no_writes_is_a_stale_guard():
+    ok, msgs = otanvs.audit("// nothing here\n", _KEYS_HDR)
+    assert not ok
+    assert any("stale" in m for m in msgs)
+
+
+def test_ota_real_source_passes():
+    # The guard must pass against the actual shipping OTA glue.
+    import os
+
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    with open(os.path.join(root, otanvs.OTA_SRC_REL), encoding="utf-8") as fh:
+        src = fh.read()
+    with open(os.path.join(root, otanvs.KEYS_HDR_REL), encoding="utf-8") as fh:
+        hdr = fh.read()
+    ok, msgs = otanvs.audit(src, hdr)
+    assert ok, msgs

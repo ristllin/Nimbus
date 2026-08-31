@@ -51,8 +51,14 @@ classes now has a test that fails on the pre-fix build and passes on the fix.
 
 - Host checks (T0-adjacent, run in CI): `python3 tools/release_gate/run_gate.py --host-only`.
   The driver-pin check refuses a build on a known white-screen driver; the ELF check
-  keeps the e-paper footprint out of the TFT image. `python3 -m pytest tools/release_gate`
-  tests the gate logic.
+  keeps the e-paper footprint out of the TFT image; the OTA-NVS check proves the update
+  flow writes only its own bookkeeping keys, never an owner's settings (CUM-237).
+  `python3 -m pytest tools/release_gate` tests the gate logic.
+- One host verdict across every failure class: `python3 tests/release_gate/run_host_legs.py`
+  runs each host leg (the white-screen, touch, boot-loop, and settings-across-OTA unit and
+  source-guard legs) and prints a single PASS/FAIL. `tests/release_gate/MANIFEST.md` maps
+  every lose-every-customer class to its leg, says whether it runs on the host or the bench,
+  and gives the exact board, steps, and pass criteria for each bench leg.
 - On-hardware legs (T5): `tests/hil/test_l29_release_gate.py` - loopback serves the local
   page (not a 502), render reaches the glass (with a recorded human glance), touch lands
   where tapped, a wedged loop is caught by the watchdog, a bad OTA image rolls back.

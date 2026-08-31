@@ -7,6 +7,7 @@
 #include <cstring>
 
 #include "nimbus/fault.h"
+#include "nimbus/panel_heal.h"
 #include "solide/display_tft.h"
 #include "solide/touch.h"
 
@@ -145,9 +146,13 @@ Push renderAndPush(nimbus::attn::ScreenId screen, const nimbus::render::ScreenCt
     // every cycle, reasserting the panel each time. Once the driver stopped the
     // thrash, a beacon-slept panel stayed white here until the 5 s tickHealth. The
     // check now classifies (config lost -> also repaint), it never gates the reassert.
-    const bool configOk = solide::display_tft::healthy();
-    solide::display_tft::rearm();
-    if (configOk) {
+    // The re-arm/repaint decision lives in nimbus::panel (host-tested against the
+    // white-screen regression class): past the window rearm is UNCONDITIONAL, and
+    // the config readback only decides whether to ALSO repaint.
+    const auto act = nimbus::panel::unchangedFrameAction(
+        uint32_t(now - g_lastPushMs), kHealMs, solide::display_tft::healthy());
+    if (act.rearm) solide::display_tft::rearm();
+    if (!act.repaint) {
       g_lastPushMs = now;       // configured and awake now - no repaint needed
       return Push::Unchanged;
     }
@@ -242,7 +247,8 @@ bool panelConfigOk() { return g_ready && solide::display_tft::healthy(); }
 
 bool tickHealth(uint32_t now) {
   if (!g_ready || nimbus::fault::active(nimbus::fault::SCREEN)) return false;
-  if (uint32_t(now - g_lastHealthMs) < kHealMs) return false;
+  const uint32_t sinceHealth = uint32_t(now - g_lastHealthMs);
+  if (sinceHealth < kHealMs) return false;
   g_lastHealthMs = now;
 
   // ⚠ TWO failure modes, and only one of them is detectable.
@@ -293,11 +299,15 @@ bool tickHealth(uint32_t now) {
   // hypothesis is tested on the device instead of argued.
   const bool configLost  = g_probeEnabled && !solide::display_tft::healthy();
   const bool contentLost = g_probeEnabled && !panelContentOk(4);
-  solide::display_tft::rearm();
+  // Past the window (checked above) the policy is unconditional rearm + repaint;
+  // the probe results only feed the counters, they never gate the action. Driving
+  // it through the host-tested decision keeps that invariant from regressing.
+  const auto act = nimbus::panel::tickHealthAction(sinceHealth, kHealMs);
+  if (act.rearm) solide::display_tft::rearm();
   if (configLost)  g_heals++;
   if (contentLost) g_contentLost++;
   g_repaints++;
-  g_haveLast = false;   // force the push past the dirty gate
+  if (act.repaint) g_haveLast = false;   // force the push past the dirty gate
   return true;
 }
 

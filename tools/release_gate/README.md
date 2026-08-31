@@ -20,6 +20,8 @@ looking at the glass are all in scope.
 | Watchdog starvation / tunnel-slot reset (N15) | HANG must trip the task watchdog and reboot | `tests/hil/test_l29_release_gate.py::TestCrashLoopResilience` |
 | Reconnect flapping under relay restarts | reconnect-storm resilience | cumulo `e2e/release-gate-reconnect-storm.e2e.test.ts` |
 | Bad OTA image boot-loops | OTASIM bad image rolls back within the boot-guard budget | `tests/hil/test_l29_release_gate.py::TestOtaRollback` |
+| Panel-heal stops re-arming a slept panel (CUM-231) | past the trust window the panel is re-armed unconditionally; `healthy()` never gates it | `test/test_panel_heal`, `test/test_panel_health` |
+| Settings lost across an update (CUM-237) | the OTA flow writes only its own bookkeeping keys, never an owner's Wi-Fi / provider key / touch cal / theme | `check_ota_preserves_nvs.py`, plus the provision -> OTA -> power-cycle -> read-NVS bench leg |
 
 ## Running it
 
@@ -28,7 +30,13 @@ Host checks (run in CI, fast):
 ```
 python3 tools/release_gate/run_gate.py --host-only     # exit 1 blocks the release
 python3 -m pytest tools/release_gate                   # tests the gate logic itself
+python3 tests/release_gate/run_host_legs.py            # one verdict across every host leg
 ```
+
+`tests/release_gate/run_host_legs.py` aggregates the host unit legs (white-screen,
+touch, boot-loop) and the source-guard checks into a single PASS/FAIL, and
+`tests/release_gate/MANIFEST.md` maps every failure class to its host or bench leg
+with the exact bench procedure.
 
 Full battery (prints the exact hardware and cloud commands to run and paste):
 
@@ -48,6 +56,7 @@ Do not cut a release tag or flash client devices until every section printed by
 the build automatically; the hardware and cloud legs are an explicit checklist so
 they cannot be silently skipped.
 
-The driver-pin check fails today on purpose: lane T2 still pins solide-drivers
-v0.6.0 (the white-screen version). It goes green when the firmware pins v0.6.1.
-That is the gate doing its job.
+The driver-pin check passes once the firmware pins a driver off the white-screen
+denylist (the tree pins v0.7.2). If a release candidate ever regresses the pin
+back onto a denylisted version, the check fails the build - that is the gate doing
+its job.

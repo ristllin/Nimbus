@@ -51,6 +51,14 @@ jobs:
         working-directory: Nimbus
         run: python3 tools/release_gate/check_driver_pin.py
 
+      # RELEASE GATE (CUM-174 #4 / CUM-237): the OTA update flow must write only its
+      # own bookkeeping NVS keys, never an owner's settings (Wi-Fi, provider key,
+      # touch cal, screen model, theme). Source guard over src/sys/ota_update.cpp;
+      # fast, no toolchain. The full survive-an-OTA proof is a bench leg (MANIFEST).
+      - name: Release gate - OTA preserves user NVS (CUM-237)
+        working-directory: Nimbus
+        run: python3 tools/release_gate/check_ota_preserves_nvs.py
+
       - uses: actions/cache@v4
         with:
           path: ~/.platformio
