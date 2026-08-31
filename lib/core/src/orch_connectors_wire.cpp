@@ -161,27 +161,35 @@ bool parseIPv4(const std::string& h, int oct[4]) {
   return n == 4;
 }
 
-// A host a provider's CLOUD cannot dial: loopback, private/link-local IPv4, the
+bool hasSuffix(const std::string& s, const char* suf) {
+  const std::string t(suf);
+  return s.size() >= t.size() && s.compare(s.size() - t.size(), t.size(), t) == 0;
+}
+
+// RFC-1918 / loopback / link-local / unspecified IPv4.
+bool privateIPv4(const int o[4]) {
+  return o[0] == 127 || o[0] == 10 || o[0] == 0 ||
+         (o[0] == 172 && o[1] >= 16 && o[1] <= 31) ||
+         (o[0] == 192 && o[1] == 168) ||
+         (o[0] == 169 && o[1] == 254);
+}
+
+// Loopback / unique-local (fc00::/7) / link-local (fe80::/10) IPv6 literal.
+bool privateIPv6(const std::string& h) {
+  if (h.find(':') == std::string::npos) return false;   // not an IPv6 literal
+  if (h == "::1" || h == "::") return true;
+  return h.rfind("fc", 0) == 0 || h.rfind("fd", 0) == 0 || h.rfind("fe8", 0) == 0 ||
+         h.rfind("fe9", 0) == 0 || h.rfind("fea", 0) == 0 || h.rfind("feb", 0) == 0;
+}
+
+// A host a provider's CLOUD cannot dial: loopback, private/link-local IP, the
 // unspecified address, or an mDNS `.local` / localhost name.
 bool privateHost(const std::string& h) {
-  if (h.empty()) return true;
-  if (h == "localhost" || h == "::1" || h == "::") return true;
-  if (h.size() >= 6 && h.compare(h.size() - 6, 6, ".local") == 0) return true;
-  if (h.size() >= 10 && h.compare(h.size() - 10, 10, ".localhost") == 0) return true;
-  // IPv6 unique-local (fc00::/7) and link-local (fe80::/10) literals.
-  if (h.rfind("fc", 0) == 0 || h.rfind("fd", 0) == 0 || h.rfind("fe8", 0) == 0 ||
-      h.rfind("fe9", 0) == 0 || h.rfind("fea", 0) == 0 || h.rfind("feb", 0) == 0)
-    if (h.find(':') != std::string::npos) return true;
+  if (h.empty() || h == "localhost") return true;
+  if (hasSuffix(h, ".local") || hasSuffix(h, ".localhost")) return true;
+  if (privateIPv6(h)) return true;
   int o[4];
-  if (parseIPv4(h, o)) {
-    if (o[0] == 127) return true;                       // loopback 127.0.0.0/8
-    if (o[0] == 10) return true;                        // private 10.0.0.0/8
-    if (o[0] == 172 && o[1] >= 16 && o[1] <= 31) return true;  // 172.16.0.0/12
-    if (o[0] == 192 && o[1] == 168) return true;        // 192.168.0.0/16
-    if (o[0] == 169 && o[1] == 254) return true;        // link-local 169.254.0.0/16
-    if (o[0] == 0) return true;                          // 0.0.0.0
-  }
-  return false;
+  return parseIPv4(h, o) && privateIPv4(o);
 }
 
 // The provider heads an entry can be forwarded to. An unknown/future prov names
