@@ -889,8 +889,8 @@ static void test_no_provider_gives_honest_local_reply_not_silence() {
   TEST_ASSERT_EQUAL(0, (int)r.attempts.size());
   TEST_ASSERT_EQUAL(1, (int)r.delivered.size());
   TEST_ASSERT_EQUAL_STRING(
-      "No AI provider is set up yet. Add a provider key in the web app under Models, "
-      "then send your message again.",
+      "No AI provider is set up yet. Add a provider key under Providers & models in "
+      "the web app, then send your message again.",
       r.lastText().c_str());
   // No ring arc armed (no head Running/Offline churn), turn counter untouched, and
   // it did not read as a transient "resend in a few seconds" heap deferral.

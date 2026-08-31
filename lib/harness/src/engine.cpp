@@ -919,8 +919,8 @@ void TurnEngine::handleMessage(const std::string& text, const std::string& fromN
   // voice, serial), so the honest reply reaches all of them from one place.
   if (!anyProviderConfigured()) {
     hlog::log("orchestrator: turn refused - no provider configured (honest local reply)");
-    deliver(chatId, "No AI provider is set up yet. Add a provider key in the web app "
-                    "under Models, then send your message again.");
+    deliver(chatId, "No AI provider is set up yet. Add a provider key under "
+                    "Providers & models in the web app, then send your message again.");
     return;
   }
   if (freeHeap() < t_.turnHardFloor) {
