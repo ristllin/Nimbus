@@ -116,7 +116,11 @@ prove nothing about the touch input, the radio, the ring, or a live turn. Device
 is verified one of two ways only: the HIL suite (`tests/hil/`, needs a board), or a
 human running an explicit manual step and confirming the result. Anything
 user-visible must be asserted through a real seam (`RENDER?`, `STATUS`, an echoed
-reply) or handed off as a manual step - never claimed from a green host build.
+reply) or handed off as a manual step - never claimed from a green host build. A
+render in particular is confirmed by a human looking at the actual screen: a passing
+snapshot only proves the bytes match what was captured, which is worthless when the
+capture itself was never inspected (the Safety tab checkboxes shipped centered under a
+green snapshot, and the white screen was host-green while the panel was blank on glass).
 
 ```bash
 python3 -m pytest tests/hil -m "hil and not manual" --allow-hardware   # device suite
@@ -126,7 +130,35 @@ python3 -m pytest tests/hil -m "net and not manual" --allow-hardware   # LAN sui
 HIL collection must stay clean with no board attached
 (`pytest tests/hil --collect-only`); hardware tests are gated behind
 `--allow-hardware`. Secrets (provider keys, Wi-Fi, a dedicated Telegram test bot)
-are supplied at runtime through environment variables, **never committed**.
+are supplied at runtime through environment variables, **never committed**. A "no key
+/ not configured" result is a claim about the environment, not a fact: re-run the check
+in the correct working directory and env before you believe or report it - a worktree
+that never inherited the gitignored `.env` will lie that keys are missing.
+
+**Test the class, not the instance - the rules the recurring bugs paid for.** Each of
+these is here because a bug came back after a fix that pinned only its own case; a green
+suite is not enough if it never encoded the class.
+
+- **Test the invariant, not the instance.** When a bug is the Nth recurrence of a
+  class, the fix adds a property test over ALL cases (every enum value, every catalog
+  entry), not one more point test, and a new case with no guard must FAIL. The stuck
+  ring recurred five times (CUM-11 -> 134 -> 221) because every fix hardened one
+  `(ring::Status, task)` pair and none asserted the class rule "no lit arc outlives its
+  job"; the provider list was hardcoded and drifted twice the same way.
+- **Assert the absence of thrash, not just the final value.** A state-machine test
+  counts transitions and fails on oscillation. The panel flip -> `healthy()` fix
+  (CUM-188) passed a final-state test while quietly repainting every cycle, which was
+  masking a white screen underneath.
+- **Fresh device is a first-class test state.** At least one host or HIL leg runs on
+  default or absent NVS: the first boot after a new version, the exact state the owner
+  QAs. Touch shipped mirrored out of the box (CUM-203) because every touch test ran on
+  an already-calibrated unit, never a fresh pre-cal panel.
+- **A loosened mask, threshold, or timeout ships a counter-test in the dimension it
+  now ignores** (see §4, Golden files - it is the same discipline).
+- **Never mask a gate's exit status.** No `| tail` or other pipe that swallows a
+  non-zero exit on a battery command, and no suite quietly excluded from the default
+  sweep. A masked `lint | tail` and an e2e directory dropped from the sweep each hid
+  real failures behind a green run.
 
 ---
 
@@ -166,6 +198,12 @@ A golden may only be re-blessed by running the suite with
 `GOLDEN_UPDATE=1` **and visually confirming** the new render is correct. A golden
 that changed because you "just ran the updater" and didn't look is a silent
 regression.
+
+The same discipline governs any **compare mask, threshold, or timeout you loosen**: it
+ships with a counter-test proving the fault it now ignores is still caught. Widening the
+panel-health compare mask (`0xFE` -> `0x3E`, to quiet a repaint thrash) silently dropped
+MY/MX fault detection and reintroduced the white screen (CUM-231); the suite stayed
+green because no test asserted a fault in the newly-ignored bits.
 
 ### Generated files - edit the generator, never the output
 
@@ -329,10 +367,18 @@ It is done when it is verified, clean, documented, and reviewed.
    spots), simplify (lower complexity, flatten nesting), peer-review (a second,
    ideally different, model's critique), and a security pass. If you have the
    `prism` skill installed, `/prism` does exactly this; otherwise apply the four
-   lenses by hand. Fix the confirmed findings, then commit.
+   lenses by hand. Fix the confirmed findings, then commit. Do this review in-session
+   and act on it before you merge: an after-the-fact or background review is a
+   supplement, not the gate, because an in-session adversarial re-run has caught bugs a
+   background review had already rationalized away.
 7. **Hardware claims need hardware.** If your change touches device behavior and you
    have no board, say so in the PR - a maintainer runs the HIL suite. Don't dress a
    host-only result as a device result.
+8. **A known gap becomes a tracked issue, not a comment aside.** If your work leaves
+   something not true end-to-end - a DECISION note that says "X isn't wired yet" - file
+   it as a blocking issue, not a line buried in a PR comment. A deferred head-host key
+   gap noted as an aside (CUM-201) shipped and re-surfaced as a dead end for the
+   flagship one-key path (CUM-242).
 
 Licensing, the Developer Certificate of Origin, and first-contribution ideas are in
 [CONTRIBUTING.md](CONTRIBUTING.md). Security issues go through
