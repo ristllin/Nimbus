@@ -278,8 +278,98 @@ static void test_wizard_reset_restarts() {
   TEST_ASSERT_FALSE(w.done());
 }
 
+// CUM-189: the first-run calibration POLICY, as a class over EVERY TouchKind. The
+// deferred acceptance piece: a fresh resistive panel gets the guided step (its raw
+// ADC span drifts per unit); a capacitive panel skips it entirely (it reports pixels,
+// nothing per-unit to measure). This is the "calibration flow state machine" guard -
+// a new TouchKind added without a first-run policy must FAIL here, host-side.
+using nimbus::touch::FirstRunCal;
+using nimbus::touch::firstRunCalPending;
+using nimbus::touch::firstRunCalPolicy;
+using nimbus::touch::TouchKind;
+
+// The TEST-SIDE source of truth the policy must agree with. No default branch (Count
+// falls through to a failing assert), so a newly added kind is a visible gap here as
+// it is in firstRunCalPolicy - the CUM-228 "new kind ships without a policy" chokepoint.
+static FirstRunCal expectedFirstRunFor(TouchKind kind) {
+  switch (kind) {
+    case TouchKind::Resistive:  return FirstRunCal::Calibrate;  // XPT2046 drifts per unit
+    case TouchKind::Capacitive: return FirstRunCal::Skip;       // FT6336U reports pixels
+    case TouchKind::Count:      break;                           // not a kind
+  }
+  TEST_FAIL_MESSAGE("TouchKind has no first-run calibration policy - a new touch class "
+                    "must add one here AND in firstRunCalPolicy (CUM-189)");
+  return FirstRunCal::Skip;
+}
+
+// Compile-time cardinality guard: adding a controller class breaks the build until the
+// policy (firstRunCalPolicy) and this expectation both learn it. Mirrors the
+// TouchKind::Count guard in test/test_fresh_device.
+static_assert(static_cast<int>(TouchKind::Count) == 2,
+              "A TouchKind was added/removed: extend firstRunCalPolicy() and "
+              "expectedFirstRunFor() with its first-run calibration policy, then update "
+              "this count (CUM-189 first-run step).");
+
+// Property over EVERY kind: the policy matches, a FRESH board (no stored cal) pends iff
+// the policy says Calibrate, and a board that ALREADY has a stored cal never re-offers.
+static void test_first_run_policy_over_every_touchkind() {
+  for (int i = 0; i < static_cast<int>(TouchKind::Count); ++i) {
+    const TouchKind k = static_cast<TouchKind>(i);
+    const FirstRunCal want = expectedFirstRunFor(k);
+    TEST_ASSERT_EQUAL(int(want), int(firstRunCalPolicy(k)));
+    // Fresh board (empty tchCal): pending exactly when the class calls for the step.
+    TEST_ASSERT_EQUAL(want == FirstRunCal::Calibrate, firstRunCalPending(k, /*stored=*/false));
+    // Already calibrated: NEVER re-offer, whatever the class - a one-time event.
+    TEST_ASSERT_FALSE(firstRunCalPending(k, /*stored=*/true));
+  }
+}
+
+// The two named kinds, pinned explicitly so the DoD reads off the test: capacitive
+// SKIPS the step entirely; resistive gets it on a fresh board.
+static void test_capacitive_skips_resistive_offers() {
+  TEST_ASSERT_EQUAL(int(FirstRunCal::Skip), int(firstRunCalPolicy(TouchKind::Capacitive)));
+  TEST_ASSERT_FALSE(firstRunCalPending(TouchKind::Capacitive, false));  // skipped even fresh
+
+  TEST_ASSERT_EQUAL(int(FirstRunCal::Calibrate), int(firstRunCalPolicy(TouchKind::Resistive)));
+  TEST_ASSERT_TRUE(firstRunCalPending(TouchKind::Resistive, false));    // offered when fresh
+}
+
+// "Resistive completes and persists": a fresh resistive board pends the step, the
+// wizard drives to completion on realistic per-unit resistive raw readings, and the
+// solved cal survives the round trip through the wire format tchCal stores - so the
+// first-run flow leaves a persisted, re-parseable calibration (after which the board
+// no longer pends). This is the end-to-end flow the seam runs, at the pure layer.
+static void test_resistive_first_run_completes_and_persists() {
+  TEST_ASSERT_TRUE(firstRunCalPending(TouchKind::Resistive, /*stored=*/false));
+
+  CalWizard w;
+  w.begin(320, 240, 24);
+  // A real per-unit resistive panel: swapped axes (portrait-native mount), a drifted
+  // span that is NOT the nominal default - exactly why the step exists.
+  const nimbus::touch::RawSample raw[4] = {
+      {310, 3720}, {310, 360}, {3650, 3720}, {3650, 360}};
+  TEST_ASSERT_FALSE(w.done());
+  for (int i = 0; i < 4; ++i) w.recordRaw(raw[i].x, raw[i].y);
+  TEST_ASSERT_TRUE(w.done());
+
+  Cal solved;
+  TEST_ASSERT_TRUE(w.solve(solved));
+  TEST_ASSERT_TRUE(solved.swapXY);   // this mount swaps
+  // The persisted representation the seam writes to tchCal must re-parse identically.
+  const std::string persisted = formatCal(solved);
+  TEST_ASSERT_TRUE(persisted.size() > 0);
+  Cal back;
+  TEST_ASSERT_TRUE(parseCal(persisted, back));
+  TEST_ASSERT_TRUE(solved == back);
+  // Once persisted, the board is calibrated: first-run must not fire again.
+  TEST_ASSERT_FALSE(firstRunCalPending(TouchKind::Resistive, /*stored=*/true));
+}
+
 int main() {
   UNITY_BEGIN();
+  RUN_TEST(test_first_run_policy_over_every_touchkind);
+  RUN_TEST(test_capacitive_skips_resistive_offers);
+  RUN_TEST(test_resistive_first_run_completes_and_persists);
   RUN_TEST(test_wizard_targets_are_the_four_corners_inset);
   RUN_TEST(test_wizard_advances_and_solves);
   RUN_TEST(test_wizard_solve_before_done_fails);

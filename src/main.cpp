@@ -492,6 +492,12 @@ static bool          g_orchMode = false;       // resolved once at boot
 // True once it is up; flips false only in the fail-soft path when panel bring-up
 // fails, which gates rendering off so a dead panel cannot stall the device.
 static bool          g_screenIsTft = false;
+// First-run touch calibration (CUM-189): armed at boot when a freshly flashed board
+// has no stored per-unit cal AND its touch class needs the guided step (resistive
+// panels drift per unit; capacitive ones skip - firstRunCalPolicy decides). Drained
+// ONCE in loop(), post-Wi-Fi-setup so it never blocks the captive portal.
+static bool          g_firstRunCalPending = false;
+static nimbus::touch::TouchKind g_firstRunTouchKind = nimbus::touch::TouchKind::Resistive;
 // True when the stored scrModel is not "tft" (a stale "eink" unit; frozen NVS key).
 // We run the color panel regardless and hold a clear "unsupported display" notice on
 // it at the end of setup (see the boot-notice block).
@@ -2581,8 +2587,9 @@ void setup() {
         // resistive panel the driver keeps its measured min/max and this pins the
         // flags it already defaults to. A saved calibration overrides this.
         const bool cap = solide::board().touchKind == solide::TouchKind::CapacitiveI2c;
-        const nimbus::touch::Cal d = nimbus::touch::boardDefaultCal(
-            cap ? nimbus::touch::TouchKind::Capacitive : nimbus::touch::TouchKind::Resistive);
+        const nimbus::touch::TouchKind kind =
+            cap ? nimbus::touch::TouchKind::Capacitive : nimbus::touch::TouchKind::Resistive;
+        const nimbus::touch::Cal d = nimbus::touch::boardDefaultCal(kind);
         solide::touch::Calibration sc;   // driver-measured min/max; board-model flags
         sc.swapXY = d.swapXY;
         sc.invertX = d.invertX;
@@ -2590,6 +2597,12 @@ void setup() {
         solide::touch::setCalibration(sc);
         Serial.printf("[tft] touch: board-model default orientation (swap=%d invX=%d invY=%d)\n",
                       int(d.swapXY), int(d.invertX), int(d.invertY));
+        // A fresh board is usable on this default, but on a resistive panel the per-unit
+        // ADC drift means taps only land APPROXIMATELY - arm the one-time first-run
+        // guided step (capacitive reports pixels, so its policy skips). Drained in
+        // loop() once setup is done; see g_firstRunCalPending.
+        g_firstRunTouchKind = kind;
+        g_firstRunCalPending = nimbus::touch::firstRunCalPending(kind, /*hasStoredCal=*/false);
       }
       Serial.printf("[tft] colour touch panel up (%dx%d, touch=%d)\n",
                     int(solide::display_tft::kW), int(solide::display_tft::kH),
@@ -4998,6 +5011,30 @@ void loop() {
   if (g_setupReturnAtMs && !g_menu.isOpen() && !g_askSticky &&
       int32_t(now - g_setupReturnAtMs) >= 0)
     renderScreen(attn::ScreenId::SetupInfo, -1);
+
+  // First-run touch calibration (CUM-189): a freshly flashed RESISTIVE panel lands
+  // taps only approximately on the board-model default (its raw ADC span drifts per
+  // unit), so hand the owner the guided tap-the-crosses step ONCE. Gated so it never
+  // fights another owner of the panel and, crucially, never blocks the setup captive
+  // portal - it waits until Wi-Fi setup is done (deviceNeedsSetup() false), by which
+  // point the owner is present and past onboarding. Capacitive panels report pixels,
+  // so their policy skips and g_firstRunCalPending is never armed for them.
+  //
+  // Skippable: runTouchCalibration() is bounded and aborts (leaving no cal) if the
+  // owner walks away; we then persist the board-model default so the flow is offered
+  // exactly once and never nags. Always redoable from Settings > Display.
+  if (g_firstRunCalPending && !g_menu.isOpen() && !g_askSticky &&
+      !deviceNeedsSetup() && now >= 3000) {   // now == millis(): a short boot-settle grace
+    g_firstRunCalPending = false;
+    runTouchCalibration();
+    if (!agent::store::touchCal().length()) {
+      // Aborted/skipped: mark first-run handled with the board-model default (the same
+      // orientation already applied at boot), so pending stays false on the next boot.
+      agent::store::setTouchCal(String(nimbus::touch::formatCal(
+          nimbus::touch::boardDefaultCal(g_firstRunTouchKind)).c_str()));
+      agent::alog("[cal] first-run calibration skipped - board default persisted");
+    }
+  }
 
   // The render scheduler only drives the panel while the menu is closed AND no
   // reply is being held (P2.3): a sticky reply must not be overwritten by the
