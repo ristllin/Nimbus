@@ -448,6 +448,46 @@ static void test_update_view() {
   }
 }
 
+// CUM-264 #1: the "latest vs available" verdict and the status token must render
+// from the SAME state read, so they can never contradict. Both stateStr(s) (the
+// panel's Status field) and updateView(s).line (the verdict line) are pure
+// functions of ONE State - this property test fails if any State could show a
+// "latest/up to date" verdict while the status says "available" (the owner's
+// screenshot) or the reverse. The web panel enforces this by re-deriving fwMsg
+// from d.ota (== stateStr) on every render; this locks the invariant the panel
+// leans on, across EVERY enum value, so a new state cannot reintroduce the drift.
+static void test_verdict_status_consistency() {
+  const State all[] = {State::Idle, State::Checking, State::UpToDate, State::Available,
+                       State::Downloading, State::Verifying, State::ReadyToReboot,
+                       State::Error, State::Unsupported};
+  for (State s : all) {
+    const char* status = stateStr(s);
+    UpdateView v = updateView(s, -1, "v4.4.6", "", "v4.4.2");
+    std::string line = v.line;
+    bool saysAvailable = line.find("available") != std::string::npos ||
+                         line.find("Available") != std::string::npos;
+    bool saysUpToDate  = line.find("Up to date") != std::string::npos ||
+                         line.find("up to date") != std::string::npos ||
+                         line.find("latest") != std::string::npos;
+    if (!std::strcmp(status, "available")) {
+      TEST_ASSERT_TRUE_MESSAGE(saysAvailable, "available status must show an available verdict");
+      TEST_ASSERT_FALSE_MESSAGE(saysUpToDate, "available status must NOT show an up-to-date verdict");
+      TEST_ASSERT_TRUE_MESSAGE(v.showInstall, "available status must offer Install");
+    }
+    if (!std::strcmp(status, "up-to-date")) {
+      TEST_ASSERT_TRUE_MESSAGE(saysUpToDate, "up-to-date status must show an up-to-date verdict");
+      TEST_ASSERT_FALSE_MESSAGE(saysAvailable, "up-to-date status must NOT show an available verdict");
+      TEST_ASSERT_FALSE_MESSAGE(v.showInstall, "up-to-date status must NOT offer Install");
+    }
+    // No non-terminal state may claim either verdict (a stale claim next to a
+    // busy/idle status is the same class of contradiction).
+    if (std::strcmp(status, "available") && std::strcmp(status, "up-to-date")) {
+      TEST_ASSERT_FALSE_MESSAGE(saysAvailable && v.showInstall,
+                                "only the available state offers Install with an available verdict");
+    }
+  }
+}
+
 // CUM-197: a "Check for updates" 409 is always a LOCAL refusal - the copy names
 // the real cause and NEVER blames the network.
 static void test_check_refusal_copy() {
@@ -539,6 +579,7 @@ int main(int, char**) {
   RUN_TEST(test_check_result);
   RUN_TEST(test_state_from_str_roundtrips);
   RUN_TEST(test_update_view);
+  RUN_TEST(test_verdict_status_consistency);
   RUN_TEST(test_check_refusal_copy);
   RUN_TEST(test_last_result_stale);
   RUN_TEST(test_is_sim_result);

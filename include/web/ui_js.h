@@ -567,6 +567,19 @@ function applyState(d){
       fb.textContent=gated?(d.otaBattMsg||'Charge the device to install this update.'):'';}
     fi.style.display=(d.ota==='available')?'inline-block':'none';
     $('fwCheck').disabled=busy;fi.disabled=busy||((d.ota==='available')&&!battOk);
+    // Single-source the verdict line from the SAME state read as the status field
+    // (d.ota), re-derived on every 3s render, so a stale "latest"/"available" line
+    // can never sit next to a contradicting status (CUM-249/CUM-264). Only the
+    // terminal verdict states are owned here; a live action's own feedback (the
+    // spinner mid-check, or an error the owner just triggered) is left alone - it
+    // is transient and already reflects the state it came from.
+    var fm=$('fwMsg'), fmb=fm&&fm.getAttribute('data-fb');
+    if(fm&&fmb!=='pending'&&fmb!=='error'){
+      if(d.ota==='available')fbState(fm,'ok','Update available: '+(d.otaLatest||'a new version')+'.');
+      else if(d.ota==='up-to-date')fbState(fm,'none','You are on the latest version.');
+      else if(d.ota==='unsupported')fbState(fm,'none','Updates aren\'t available on this build.');
+      else if(d.ota==='idle')fbState(fm,'idle');
+    }
     if(d.autoUpd!==undefined){const au=$('autoUpd');
       if(au&&document.activeElement!==au){au.checked=!!d.autoUpd;
         au.onchange=()=>{const f=new FormData();f.append('autoUpd',au.checked?'1':'0');
