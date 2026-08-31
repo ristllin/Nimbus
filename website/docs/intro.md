@@ -2,7 +2,7 @@
 title: "Nimbus"
 sidebar_label: "Overview"
 slug: /
-description: "Open firmware for a battery-capable ESP32-S3 desk device. Two modes on one build: a Notifier that mirrors AI coding sessions on a 45-LED ring over Bluetooth, and a self-hosted Orchestrator agent with memory, voice, and Telegram. Two hardware builds: a hand-built board with a physical ring, or the Freenove all-in-one."
+description: "Open firmware that turns an inexpensive ESP32-S3 board into a personal AI assistant. Two modes on one build: an Orchestrator you reach over Telegram, voice, or a local web UI with long-term memory, and a Notifier that tracks your coding agents on an LED ring over Bluetooth. Two hardware builds: a hand-built board with a physical ring, or the Freenove all-in-one."
 ---
 
 # Nimbus
@@ -12,8 +12,9 @@ description: "Open firmware for a battery-capable ESP32-S3 desk device. Two mode
     <img src="/img/hardware/hero-render-placeholder.webp" alt="Nimbus device render (placeholder)" />
   </div>
   <div class="home-hero__lead">
-    <p>Nimbus is open firmware for a battery-capable ESP32-S3 desk device. The same build runs in two modes: a <b>Notifier</b> that mirrors your AI coding sessions on a 45-LED ring over an encrypted Bluetooth link, and an <b>Orchestrator</b> that runs a self-hosted LLM agent reachable over Telegram, voice, or a local web UI, with long-term memory on an SD card.</p>
-    <p>Bring your own provider key (Mistral, OpenAI, Anthropic, or any OpenAI-compatible endpoint). By default nothing leaves the device: your keys, your network. Source-available under noncommercial licenses.</p>
+    <p>Nimbus is an open-firmware personal assistant that lives on your desk. In <b>Orchestrator</b> mode you reach it the way you already work: over Telegram, by hold-to-talk on the device, or from a local web UI. It remembers across conversations, runs your routines on its own clock, and uses tools mid-turn to get real work done. The agent runs on the device itself, an inexpensive commodity ESP32-S3 board, and drives the model you choose: a hosted AI lab, or an LLM you host yourself.</p>
+    <p>In <b>Notifier</b> mode the same build is a visual way to track the coding agents running on your machine. Over an encrypted Bluetooth link, each session takes a spot on the LED ring, so a glance tells you what finished and what needs you, with no terminal to watch.</p>
+    <p>Your source data stays on the device: memories, routines, and raw data live locally, not in a cloud account. It is local, not offline: the model call still goes out to whichever provider you pick, but the assistant itself is a small, always-on server you can leave next to your Wi-Fi router. Bring your own provider key (Mistral, OpenAI, Anthropic, or any OpenAI-compatible endpoint). Source-available under noncommercial licenses.</p>
     <div class="home-hero__cta">
       <a class="button button--primary button--lg" href="/quick-start/what-you-need">Get started</a>
       <a class="button button--secondary button--lg" href="/flash">Flash from your browser</a>
@@ -44,10 +45,10 @@ a physical ring or rendered on the screen.
     <div class="variant-card__body">
       <p class="variant-card__kicker">Hand-built</p>
       <h3>Classic Nimbus</h3>
-      <p>An ESP32-S3-DevKitC-1 on a custom carrier PCB in a 3D-printed case, driving a discrete 45-LED WS2812B ring and a 2.8-inch touchscreen. Involves soldering and assembly.</p>
+      <p>An ESP32-S3-DevKitC-1 on a custom carrier PCB in a 3D-printed case, driving a discrete WS2812B LED ring and a 2.8-inch touchscreen. Involves soldering and assembly.</p>
       <ul class="variant-card__specs">
         <li>ESP32-S3-DevKitC-1 (N16R8) + carrier PCB</li>
-        <li>45-LED WS2812B ring</li>
+        <li>WS2812B LED ring</li>
         <li>2.8" ILI9341 240x320, resistive touch (XPT2046)</li>
         <li>Mic, speaker, microSD, optional 2S battery</li>
         <li>Around $60 to $75 in parts</li>
@@ -104,6 +105,49 @@ sub-agents, runs scheduled routines, and updates itself over the air with signed
 releases.
 
 **[What you need](quick-start/what-you-need.md)**
+
+## What stays on the device
+
+Nimbus keeps the assistant's source data local. However you run it, the memory,
+your routines, and the tool actions all happen on the device you own. Only the
+model call ever leaves, and only when you point it at a hosted provider.
+
+<div class="boundary-grid">
+  <div class="boundary">
+    <p class="boundary__kicker">Self-hosted model</p>
+    <div class="boundary__zone">
+      <span class="boundary__label">Your home network</span>
+      <div class="bnode">
+        <b>Nimbus</b>
+        <span>memory + routines</span>
+      </div>
+      <span class="boundary__wire">&#8595; model call</span>
+      <div class="bnode">
+        <b>Your computer</b>
+        <span>self-hosted LLM, MCP tools</span>
+      </div>
+    </div>
+    <p class="boundary__cap">Run a model you host yourself and even the model call stays on your network. Nothing crosses out.</p>
+  </div>
+  <div class="boundary">
+    <p class="boundary__kicker">Hosted provider</p>
+    <div class="boundary__zone">
+      <span class="boundary__label">Your device</span>
+      <div class="bnode">
+        <b>Nimbus</b>
+        <span>memory + routines + connector tools</span>
+      </div>
+    </div>
+    <div class="boundary__cross">
+      <span class="boundary__wire boundary__wire--out">&#8595; model call</span>
+      <div class="bnode bnode--remote">
+        <b>AI lab</b>
+        <span>Mistral, OpenAI, or Anthropic</span>
+      </div>
+    </div>
+    <p class="boundary__cap">Point it at a hosted provider and only the model call leaves. Your memory, routines, and actions stay on the device.</p>
+  </div>
+</div>
 
 <div class="cumulo-callout">
   <h2>Cumulo Nimbus - the first-party service</h2>
