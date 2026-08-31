@@ -134,6 +134,8 @@ std::string hostOf(const std::string& url) {
   std::string rest = url.substr(sep + 3);
   std::string::size_type slash = rest.find('/');
   std::string hostport = (slash == std::string::npos) ? rest : rest.substr(0, slash);
+  std::string::size_type at = hostport.rfind('@');       // strip user:pass@ userinfo
+  if (at != std::string::npos) hostport = hostport.substr(at + 1);
   if (!hostport.empty() && hostport[0] == '[') {         // [IPv6]:port
     std::string::size_type close = hostport.find(']');
     return close == std::string::npos ? "" : lowerStr(hostport.substr(1, close - 1));

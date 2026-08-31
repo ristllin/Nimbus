@@ -197,6 +197,7 @@ static void test_url_routable_predicate() {
   TEST_ASSERT_FALSE(urlRoutableToProviderHead("http://0.0.0.0/mcp"));
   TEST_ASSERT_FALSE(urlRoutableToProviderHead("http://[::1]:9000/mcp"));
   TEST_ASSERT_FALSE(urlRoutableToProviderHead("ftp://example.com/mcp"));    // non-http scheme
+  TEST_ASSERT_FALSE(urlRoutableToProviderHead("http://user@192.168.1.1/mcp"));  // userinfo can't hide a LAN host
   TEST_ASSERT_FALSE(urlRoutableToProviderHead(""));
 }
 
