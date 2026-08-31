@@ -2,7 +2,7 @@
 // (result states + battery-gate messaging); files card shows card size/free +
 // quota with a caption; danger zone has typed confirms.
 import { test, expect } from '@playwright/test';
-import { seedToken, openApp } from './_helpers.mjs';
+import { seedToken, openApp, confirmModal, dismissModal } from './_helpers.mjs';
 import { STATE } from '../fixtures.mjs';
 
 async function openUpdate(page) {
@@ -123,13 +123,16 @@ test('danger zone erase requires typing the exact phrase', async ({ page }) => {
   await openApp(page);
   await page.locator('.tab[data-p=device]').click();
   await page.locator('#pane-set details summary', { hasText: 'Danger zone' }).click();
-  // A wrong phrase must NOT post.
-  page.once('dialog', (d) => d.accept('nope'));
+  // A wrong phrase must NOT post: the styled prompt (CUM-266) keeps OK disabled
+  // until the exact word is typed, so filling a wrong word leaves nothing to click.
   await page.locator('#sdReset').click();
+  await page.locator('#modalInput').fill('nope');
+  await expect(page.locator('#modalOk')).toBeDisabled();
+  await dismissModal(page);
   await page.waitForTimeout(200);
   expect(posted).toBe(false);
-  // The exact phrase posts.
-  page.once('dialog', (d) => d.accept('ERASE STORAGE'));
+  // The exact phrase enables OK and posts.
   await page.locator('#sdReset').click();
+  await confirmModal(page, 'ERASE STORAGE');
   await expect.poll(() => posted).toBe(true);
 });

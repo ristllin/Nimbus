@@ -3,8 +3,8 @@
 //   npx playwright test 95_audit_shots
 // Output lands in screenshots/audit/<project>-<name>.png. A focused Safety
 // subpane shot (safety-focus) is the before/after evidence for the checkbox fix.
-import { test } from '@playwright/test';
-import { seedToken, openApp } from './_helpers.mjs';
+import { test, expect } from '@playwright/test';
+import { seedToken, openApp, assertPane } from './_helpers.mjs';
 
 const DIR = 'screenshots/audit';
 
@@ -29,12 +29,19 @@ async function expandAll(page) {
 
 const TOP = ['home', 'chat', 'memory', 'assistant', 'device'];
 
+// A subpane must actually be on screen before its shot is archived - a capture of
+// the wrong subpane asserts nothing otherwise (AGENTS.md "capture never inspected").
+async function assertSubpane(page, sp) {
+  await expect(page.locator(`#subpane-${sp}`), `${sp} subpane did not render`).toBeVisible();
+}
+
 // Top-level destinations, default (collapsed) state.
 for (const dest of TOP) {
   test(`top ${dest}`, async ({ page }, testInfo) => {
     await seedToken(page);
     await openApp(page);
     await page.locator(`.tab[data-p=${dest}]`).click();
+    await assertPane(page, dest);   // right pane, or fail before capturing
     await page.waitForTimeout(500);
     await shot(page, testInfo, `top-${dest}`);
   });
@@ -46,6 +53,7 @@ for (const dest of ['device', 'memory']) {
     await seedToken(page);
     await openApp(page);
     await page.locator(`.tab[data-p=${dest}]`).click();
+    await assertPane(page, dest);
     await page.waitForTimeout(400);
     await expandAll(page);
     await shot(page, testInfo, `expanded-${dest}`);
@@ -59,7 +67,9 @@ for (const sp of SUBTABS) {
     await seedToken(page);
     await openApp(page);
     await page.locator('.tab[data-p=assistant]').click();
+    await assertPane(page, 'assistant');
     await page.locator(`.subtab[data-sp=${sp}]`).click();
+    await assertSubpane(page, sp);   // the chosen subpane, or fail before capturing
     await page.waitForTimeout(400);
     await expandAll(page);
     await shot(page, testInfo, `assistant-${sp}`);
@@ -72,6 +82,7 @@ test('safety focus', async ({ page }, testInfo) => {
   await openApp(page);
   await page.locator('.tab[data-p=assistant]').click();
   await page.locator('.subtab[data-sp=safety]').click();
+  await assertSubpane(page, 'safety');
   await page.waitForTimeout(400);
   await shot(page, testInfo, 'safety-focus', page.locator('#subpane-safety'));
 });
@@ -81,8 +92,8 @@ test('search overlay', async ({ page }, testInfo) => {
   await seedToken(page);
   await openApp(page);
   await page.keyboard.press('Control+k');
-  await page.waitForTimeout(300);
+  await expect(page.locator('#searchOverlay')).toBeVisible();
   await page.locator('#searchInput').fill('battery');
-  await page.waitForTimeout(400);
+  await expect(page.locator('.sresult').first()).toBeVisible();
   await shot(page, testInfo, 'search-overlay');
 });

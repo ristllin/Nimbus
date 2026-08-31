@@ -2035,7 +2035,7 @@ function doRestart(){
         fetch('/api/state',{cache:'no-store'})
           .then(r=>{ if(r.ok) location.reload(); else throw 0; })
           .catch(()=>{ if(tries<60) setTimeout(ping,2000);
-            else{const s=$('restartScreen'); if(s)s.querySelector('p').textContent='Still reconnecting - reload the page once the device is back.'; }); };
+            else{const s=$('restartScreen'); if(s)s.querySelector('p').textContent='Still reconnecting - reload the page once the device is back.'; } }); };
       setTimeout(ping,5000);   // let the restart begin before polling
     }).catch((e)=>toast(e===401?'Sign in required':'Couldn\'t restart - try again'));
   });

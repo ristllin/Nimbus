@@ -47,6 +47,11 @@ run in headless CI.
 ## Spec coverage (every pane, every feedback state, desktop + phone)
 
 - `00_smoke`            - page loads clean; every destination switches with no JS errors.
+- `10_robustness`       - the white-screen floor: the concatenated page raises no thrown
+                          error (a syntax error in any fragment fails here), and every pane
+                          renders under sparse and empty `/api` payloads (a page must never
+                          die on one absent optional field, and never REQUIRE a field the
+                          fixtures do not serve - the fixture-drift guard).
 - `25_ia`              - five destinations, content per destination, Home sessions, no sideways scroll.
 - `31_feedback`        - the feedback helper state machine + button gating + upload success/error.
 - `31_sweep`           - acceptance: no async action ends without a visible result state.
@@ -59,3 +64,11 @@ run in headless CI.
 - `68_updates_storage` - OTA result states + battery gate, files quota caption, typed erase confirm.
 - `72_wakeups_safety`  - wake-ups policy + single approval card; Safety subtab downloads policy + guest moderation gates (the retired dead gates are gone).
 - `90_screenshots`     - archives {desktop,phone}-{home,chat,memory,assistant,device}.png.
+- `95_audit_shots`     - render-audit capture of every pane / subtab / state (CUM-214).
+- `98_connectivity_states` - the CUM-207 Connectivity + Cloud-access render matrix.
+
+Every capture spec (`90`, `95`, `98`) asserts a pane-distinctive element is VISIBLE before
+it screenshots (`assertPane` in `_helpers.mjs`, `#subpane-*` for subtabs, the expanded
+group body for `98`). A shot of the wrong pane - the white-screen symptom, where dead page
+JS leaves Home showing under a highlighted tab - FAILS instead of being archived as if it
+were correct. A screenshot that asserts nothing about its content is not evidence.

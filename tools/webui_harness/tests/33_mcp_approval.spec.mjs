@@ -8,6 +8,8 @@ import { seedToken, openApp } from './_helpers.mjs';
 async function openConnectors(page) {
   await openApp(page);
   await page.locator('.tab[data-p=assistant]').click();
+  // Connectors is one of the Assistant subtabs; #conncards lives in its subpane.
+  await page.locator('.subtab[data-sp=connectors]').click();
   await expect(page.locator('#conncards')).toBeVisible();
 }
 

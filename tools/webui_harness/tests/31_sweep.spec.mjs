@@ -3,7 +3,7 @@
 // check, Wi-Fi scan, wake-ups, safety) is driven and asserted to finish in a
 // visible, non-pending result - nothing just disappears.
 import { test, expect } from '@playwright/test';
-import { seedToken, openApp } from './_helpers.mjs';
+import { seedToken, openApp, confirmModal } from './_helpers.mjs';
 import { STATE } from '../fixtures.mjs';
 
 // A feedback element must settle into ok | none | error (never stuck pending).
@@ -38,8 +38,8 @@ test('calibrate ends with a visible result', async ({ page }) => {
   await page.locator('.tab[data-p=device]').click();
   await expect(page.locator('#battsec')).toBeVisible();
   await page.locator('#battsec > summary').click();
-  page.once('dialog', (d) => d.accept());
   await page.locator('#battcalBtn').click();
+  await confirmModal(page);   // CUM-266 styled confirm, not a native dialog
   await settled(page.locator('#battcalMsg'));
 });
 
@@ -55,7 +55,12 @@ test('cloud pair ends with a visible result', async ({ page }) => {
 });
 
 test('OTA check ends with a visible result', async ({ page }) => {
-  await seedToken(page); await openApp(page);
+  await seedToken(page);
+  // A real device settles otaResult shortly after the check (CUM-249); the default
+  // fixture holds 'pending', so model the settled read the panel polls for.
+  await page.route('**/api/state', (route) => route.fulfill({ status: 200, contentType: 'application/json',
+    body: JSON.stringify({ ...STATE, ota: 'up-to-date', otaResult: 'up-to-date' }) }));
+  await openApp(page);
   await page.locator('.tab[data-p=device]').click();
   await page.locator('#pane-set details summary', { hasText: 'Software update' }).click();
   await page.locator('#fwCheck').click();
