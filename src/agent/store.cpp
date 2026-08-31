@@ -15,6 +15,7 @@
 
 #include "agent_config.h"
 #include "nimbus/orch/usage_ledger.h"
+#include "nimbus/store/provider_cache.h"   // CUM-238: bounded provider-config reads
 
 // Device config accessors backed by solide::memory (NVS). Defaults mirror
 // Nuage-Solide storage.cpp: priorities default to "openai,anthropic,mistral"
@@ -24,14 +25,59 @@
 namespace agent {
 namespace store {
 
+// ---- provider-config read cache (CUM-238) -----------------------------------
+// The credentials + routing keys below are polled on hot paths (the screen
+// render resolves the active host every frame; the engine re-checks provider
+// readiness each turn). Reading NVS per call spammed hundreds of getString()
+// NOT_FOUND hits/second on a fresh device. Snapshot them once and serve reads
+// from RAM; every provider-config SETTER marks the snapshot dirty so the next
+// read refreshes. A factory reset erases NVS and reboots, so the cache is always
+// rebuilt fresh on boot - there is no live-erase path to leave it stale.
+namespace {
+using PSnap = ::nimbus::store::ProviderSnapshot;
+std::mutex g_pcMx;
+::nimbus::store::ProviderCache g_pc;
+
+// The one place that actually reads NVS for these keys. Defaults here mirror the
+// per-getter defaults exactly (custom conv "openai", the priority lists).
+void pcFill(::nimbus::store::ProviderSnapshot& s) {
+  s.openaiKey        = solide::memory::getString(AKEY_OPENAI_KEY, "").c_str();
+  s.anthropicKey     = solide::memory::getString(AKEY_ANTHROPIC_KEY, "").c_str();
+  s.mistralKey       = solide::memory::getString(AKEY_MISTRAL_KEY, "").c_str();
+  s.tavilyKey        = solide::memory::getString(AKEY_TAVILY_KEY, "").c_str();
+  s.zaiKey           = solide::memory::getString(AKEY_ZAI_KEY, "").c_str();
+  s.zaiBase          = solide::memory::getString(AKEY_ZAI_BASE, "").c_str();
+  s.cumuloKey        = solide::memory::getString(AKEY_CUMULO_KEY, "").c_str();
+  s.cumuloBase       = solide::memory::getString(AKEY_CUMULO_BASE, "").c_str();
+  s.customBase       = solide::memory::getString(AKEY_CUSTOM_BASE, "").c_str();
+  s.customKey        = solide::memory::getString(AKEY_CUSTOM_KEY, "").c_str();
+  s.customConv       = solide::memory::getString(AKEY_CUSTOM_CONV, "openai").c_str();
+  s.customModel      = solide::memory::getString(AKEY_CUSTOM_MODEL, "").c_str();
+  s.orchHost         = solide::memory::getString(AKEY_ORCH_HOST, "").c_str();
+  s.providerPriority = solide::memory::getString(AKEY_PROV_PRIORITY, "openai,anthropic,mistral").c_str();
+  s.subPriority      = solide::memory::getString(AKEY_SUB_PRIORITY, "openai,anthropic,mistral").c_str();
+  s.fallbackRules    = solide::memory::getString(AKEY_FALLBACK_RULES, "").c_str();
+}
+
+// Copy one cached field out under the store lock.
+String pcGet(std::string PSnap::* field) {
+  std::lock_guard<std::mutex> lk(g_pcMx);
+  return String((g_pc.snapshot(pcFill).*field).c_str());
+}
+void pcInvalidate() {
+  std::lock_guard<std::mutex> lk(g_pcMx);
+  g_pc.markDirty();
+}
+}  // namespace
+
 // ---- credentials ----
-String openaiKey()    { return solide::memory::getString(AKEY_OPENAI_KEY, ""); }
+String openaiKey()    { return pcGet(&PSnap::openaiKey); }
 bool   hasOpenaiKey() { return openaiKey().length() > 0; }
-String anthropicKey()    { return solide::memory::getString(AKEY_ANTHROPIC_KEY, ""); }
+String anthropicKey()    { return pcGet(&PSnap::anthropicKey); }
 bool   hasAnthropicKey() { return anthropicKey().length() > 0; }
-String mistralKey()   { return solide::memory::getString(AKEY_MISTRAL_KEY, ""); }
+String mistralKey()   { return pcGet(&PSnap::mistralKey); }
 bool   hasMistralKey(){ return mistralKey().length() > 0; }
-String tavilyKey()    { return solide::memory::getString(AKEY_TAVILY_KEY, ""); }
+String tavilyKey()    { return pcGet(&PSnap::tavilyKey); }
 String deviceTz()     { return solide::memory::getString(AKEY_DEVICE_TZ, ""); }
 void   setDeviceTz(const String& tz) { solide::memory::setString(AKEY_DEVICE_TZ, tz); }
 String dreamScratchHash() { return solide::memory::getString(AKEY_DREAM_SCRATCH, ""); }
@@ -107,24 +153,24 @@ void clearCloudPairing() {
   solide::memory::setString(AKEY_CLOUD_NAME, "");
 }
 
-String customBase()  { return solide::memory::getString(AKEY_CUSTOM_BASE, ""); }
-String customKey()   { return solide::memory::getString(AKEY_CUSTOM_KEY, ""); }
-String customConv()  { return solide::memory::getString(AKEY_CUSTOM_CONV, "openai"); }
-String customModel() { return solide::memory::getString(AKEY_CUSTOM_MODEL, ""); }
+String customBase()  { return pcGet(&PSnap::customBase); }
+String customKey()   { return pcGet(&PSnap::customKey); }
+String customConv()  { return pcGet(&PSnap::customConv); }
+String customModel() { return pcGet(&PSnap::customModel); }
 bool   hasCustom()   { return customBase().length() > 0; }
 
-String zaiKey()      { return solide::memory::getString(AKEY_ZAI_KEY, ""); }
+String zaiKey()      { return pcGet(&PSnap::zaiKey); }
 bool   hasZaiKey()   { return zaiKey().length() > 0; }
-String zaiBase()     { return solide::memory::getString(AKEY_ZAI_BASE, ""); }
-void   setZaiBase(const String& host) { solide::memory::setString(AKEY_ZAI_BASE, host); }
-String cumuloKey()   { return solide::memory::getString(AKEY_CUMULO_KEY, ""); }
+String zaiBase()     { return pcGet(&PSnap::zaiBase); }
+void   setZaiBase(const String& host) { solide::memory::setString(AKEY_ZAI_BASE, host); pcInvalidate(); }
+String cumuloKey()   { return pcGet(&PSnap::cumuloKey); }
 bool   hasCumuloKey(){ return cumuloKey().length() > 0; }
-String cumuloBase()  { return solide::memory::getString(AKEY_CUMULO_BASE, ""); }
-String   fallbackRulesJson() { return solide::memory::getString(AKEY_FALLBACK_RULES, ""); }
+String cumuloBase()  { return pcGet(&PSnap::cumuloBase); }
+String   fallbackRulesJson() { return pcGet(&PSnap::fallbackRules); }
 uint32_t fallbackSyncTs()    { return (uint32_t)solide::memory::getInt(AKEY_FALLBACK_SYNC, 0); }
 
 // ---- routing + models ----
-String orchHost() { return solide::memory::getString(AKEY_ORCH_HOST, ""); }
+String orchHost() { return pcGet(&PSnap::orchHost); }
 
 // The host a turn ACTUALLY runs on: explicit orchHost, else the head of the
 // priority list. ⚠ Use this (never raw orchHost()) wherever the model's context
@@ -165,9 +211,9 @@ String resolvedOrchHost() {
 String orchConvId() { return solide::memory::getString(AKEY_ORCH_CONVID, ""); }
 void   setOrchConvId(const String& v) { solide::memory::setString(AKEY_ORCH_CONVID, v); }
 
-String providerPriority() { return solide::memory::getString(AKEY_PROV_PRIORITY, "openai,anthropic,mistral"); }
+String providerPriority() { return pcGet(&PSnap::providerPriority); }
 String orchPriority()     { return providerPriority(); }
-String subPriority()      { return solide::memory::getString(AKEY_SUB_PRIORITY, "openai,anthropic,mistral"); }
+String subPriority()      { return pcGet(&PSnap::subPriority); }
 
 static String defaultModelFor(const String& provider) {
   if (provider == "openai")    return OPENAI_MODEL;
@@ -303,7 +349,7 @@ void     setLowBattPingEpoch(uint32_t e) { solide::memory::setInt(AKEY_LOWBATT_P
 // the orchestrator-host list (AKEY_PROV_PRIORITY / providerPriority). Keeping the
 // host list off any model-writable path preserves the "model can't redirect its own
 // brain" invariant that also blocks the orchHost/fabric protected config keys.
-void   setSubPriority(const String& v) { solide::memory::setString(AKEY_SUB_PRIORITY, v); }
+void   setSubPriority(const String& v) { solide::memory::setString(AKEY_SUB_PRIORITY, v); pcInvalidate(); }
 int    ledBright() { return solide::memory::getInt("ledBright", 128); }
 void   setLedBright(int v) { solide::memory::setInt("ledBright", v); }
 
@@ -350,21 +396,21 @@ String antOrchAgent()  { return solide::memory::getString(AKEY_ANT_ORCHAGENT, ""
 void   setAntOrchAgent(const String& v){ solide::memory::setString(AKEY_ANT_ORCHAGENT, v); }
 
 // ---- HUMAN-ONLY setters (see the credential-gate note in store.h) -----------
-void setOpenaiKey(const String& v)    { solide::memory::setString(AKEY_OPENAI_KEY, v); }
-void setAnthropicKey(const String& v) { solide::memory::setString(AKEY_ANTHROPIC_KEY, v); }
-void setMistralKey(const String& v)   { solide::memory::setString(AKEY_MISTRAL_KEY, v); }
-void setTavilyKey(const String& v)    { solide::memory::setString(AKEY_TAVILY_KEY, v); }
-void setCustomBase(const String& v)   { solide::memory::setString(AKEY_CUSTOM_BASE, v); }
-void setCustomKey(const String& v)    { solide::memory::setString(AKEY_CUSTOM_KEY, v); }
-void setCustomConv(const String& v)   { solide::memory::setString(AKEY_CUSTOM_CONV, v); }
-void setCustomModel(const String& v)  { solide::memory::setString(AKEY_CUSTOM_MODEL, v); }
-void setZaiKey(const String& v)       { solide::memory::setString(AKEY_ZAI_KEY, v); }
-void setCumuloKey(const String& v)    { solide::memory::setString(AKEY_CUMULO_KEY, v); }
-void setCumuloBase(const String& v)   { solide::memory::setString(AKEY_CUMULO_BASE, v); }
-void setFallbackRulesJson(const String& json) { solide::memory::setString(AKEY_FALLBACK_RULES, json); }
+void setOpenaiKey(const String& v)    { solide::memory::setString(AKEY_OPENAI_KEY, v); pcInvalidate(); }
+void setAnthropicKey(const String& v) { solide::memory::setString(AKEY_ANTHROPIC_KEY, v); pcInvalidate(); }
+void setMistralKey(const String& v)   { solide::memory::setString(AKEY_MISTRAL_KEY, v); pcInvalidate(); }
+void setTavilyKey(const String& v)    { solide::memory::setString(AKEY_TAVILY_KEY, v); pcInvalidate(); }
+void setCustomBase(const String& v)   { solide::memory::setString(AKEY_CUSTOM_BASE, v); pcInvalidate(); }
+void setCustomKey(const String& v)    { solide::memory::setString(AKEY_CUSTOM_KEY, v); pcInvalidate(); }
+void setCustomConv(const String& v)   { solide::memory::setString(AKEY_CUSTOM_CONV, v); pcInvalidate(); }
+void setCustomModel(const String& v)  { solide::memory::setString(AKEY_CUSTOM_MODEL, v); pcInvalidate(); }
+void setZaiKey(const String& v)       { solide::memory::setString(AKEY_ZAI_KEY, v); pcInvalidate(); }
+void setCumuloKey(const String& v)    { solide::memory::setString(AKEY_CUMULO_KEY, v); pcInvalidate(); }
+void setCumuloBase(const String& v)   { solide::memory::setString(AKEY_CUMULO_BASE, v); pcInvalidate(); }
+void setFallbackRulesJson(const String& json) { solide::memory::setString(AKEY_FALLBACK_RULES, json); pcInvalidate(); }
 void setFallbackSyncTs(uint32_t ts)   { solide::memory::setInt(AKEY_FALLBACK_SYNC, (int)ts); }
-void setOrchHost(const String& v)     { solide::memory::setString(AKEY_ORCH_HOST, v); }
-void setProviderPriority(const String& v) { solide::memory::setString(AKEY_PROV_PRIORITY, v); }
+void setOrchHost(const String& v)     { solide::memory::setString(AKEY_ORCH_HOST, v); pcInvalidate(); }
+void setProviderPriority(const String& v) { solide::memory::setString(AKEY_PROV_PRIORITY, v); pcInvalidate(); }
 void setSysPrompt(const String& v)    { solide::memory::setString(AKEY_SYS_PROMPT, v); }
 void setOrchModel(const String& provider, const String& v) {
   String key = String(AKEY_ORCH_MODEL_PFX) + provider;

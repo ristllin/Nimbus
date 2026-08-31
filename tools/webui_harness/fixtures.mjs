@@ -18,8 +18,10 @@ export const STATE = {
   // Reach info the Home info line + connectivity render.
   apSsid: 'Nimbus-setup', apIp: '192.168.4.1', ip: '192.168.1.42',
   mdns: 'nimbus.local', running: true, scrModel: 'tft',
-  // OTA (N5 contract stub): installed/latest/notes + result state
-  ota: 'idle', otaLatest: '', otaNotes: '', otaPct: -1, otaErr: '',
+  // OTA (N5 contract stub): installed/latest/notes + result state. otaResult is
+  // the definitive, poll-safe check outcome the panel + Check button read
+  // (pending/up-to-date/new-version/unreachable/failed) - CUM-249.
+  ota: 'idle', otaResult: 'pending', otaLatest: '', otaNotes: '', otaPct: -1, otaErr: '',
   lastOta: '-', autoUpd: false, otaBattOk: true, otaBattMsg: '',
   // Cloud pairing (Pairing + cloud card) - in the pairing state so the card,
   // code, and QR render for the harness + screenshots.
@@ -158,11 +160,10 @@ export const MEM_VECTOR = {
 // Generic OK for POST/action endpoints.
 export const OK = { ok: true };
 
-// N5 OTA check result stub - "installed / latest / notes / result states".
-export const OTA_CHECK = {
-  result: 'available', installed: 'v4.3.0-pre', latest: 'v4.3.0',
-  notes: 'Web app revamp + feedback states.', battOk: true,
-};
+// POST /api/ota/check only ACCEPTS the check (the device runs it async and 202s
+// {ok:true}); the verdict is read afterwards by polling /api/state's otaResult,
+// never from this accept body (CUM-249).
+export const OTA_CHECK = { ok: true };
 
 // Map endpoint path -> default response. GET-shaped; POST/actions fall back to OK.
 export const DEFAULTS = {
