@@ -272,13 +272,15 @@ static void test_passive_single_led_attention_and_voice_takeover() {
     TEST_ASSERT_FALSE(p.single.lit);
   }
 
-  // A background Running job stays ambient - Passive ring still dark (Running
-  // never lights the single attention LED).
+  // A background Running job DIMS the Calm ring to a soft working breathe - it is a
+  // live session, and Balanced must show lights, just less, never none (owner
+  // 2026-08-31, CUM-253). It is not a CTA, so it keeps the single-LED grammar (no
+  // per-session arc, segCount stays 0); only Dark would go lights-out here.
   dev.jobState(1, Status::Running, 100);
   {
     ring::Plan p = dev.plan(false, 200);
     TEST_ASSERT_EQUAL(0, p.segCount);
-    TEST_ASSERT_FALSE(p.single.lit);
+    TEST_ASSERT_TRUE(p.single.lit);
   }
   dev.run(0, 200);        // first-ever ambient StatusIdle fires
   dev.done(200 + 2214);

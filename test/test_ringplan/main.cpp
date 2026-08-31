@@ -1,5 +1,6 @@
 #include <unity.h>
 
+#include <cstdio>
 #include <initializer_list>
 
 #include "nimbus/ring_plan.h"
@@ -204,10 +205,11 @@ static void test_passive_single_follows_top_attention_auto_hue() {
   p = compose(r, cfg, cur, false, 600);
   TEST_ASSERT_EQUAL_UINT8(32, p.single.hue);  // styleFor(AwaitingApproval)
 
-  // Attention sources resolved, but a finished (Done) job now shows a lowest-
-  // precedence Calm glance cue (owner: "on balanced I can't see what finished").
-  // job3 is Done, job1 Running (ambient, not surfaced), job2 Offline (gone).
-  jobState(r, 1, Status::Running, 700);
+  // Attention sources resolved. With only a finished (Done) session left, Calm
+  // shows the lowest-precedence Done glance cue (owner: "on balanced I can't see
+  // what finished"). job1/job2 Offline (gone), job3 Done - a Done-ONLY table, so no
+  // still-working session outranks it (CUM-253 lights the working breathe first).
+  jobState(r, 1, Status::Offline, 700);
   jobState(r, 2, Status::Offline, 800);
   jobState(r, 3, Status::Done, 900);
   p = compose(r, cfg, cur, false, 1000);
@@ -748,10 +750,12 @@ static void test_fanout_split_clears_when_jobs_drain() {
   TEST_ASSERT_EQUAL(0, p.segCount);
 }
 
-static void test_notifier_calm_grammar_unchanged_without_the_flag() {
-  // The NOTIFIER never sets fanoutSegments: Calm with live jobs must stay the
-  // single-LED treatment (the all-day-peripheral contract) - this is the guard
-  // that the orchestrator feature cannot leak into notifier behavior.
+static void test_notifier_calm_dims_not_blank() {
+  // The NOTIFIER never sets fanoutSegments, so Calm keeps the single-LED grammar
+  // (no per-session arcs, segCount stays 0) - the all-day-peripheral contract that
+  // the orchestrator fan-out feature must not leak into. But a live working session
+  // must DIM the ring, not blank it: the single LED lights with a soft working
+  // breathe (owner 2026-08-31, CUM-253 - Balanced showed ZERO for a Running session).
   attn::Router r;
   jobState(r, 1, Status::Running, 100);
   jobState(r, 2, Status::Running, 110);
@@ -760,6 +764,16 @@ static void test_notifier_calm_grammar_unchanged_without_the_flag() {
   Cursor cur;
   Plan p = compose(r, cfg, cur, false, 200, {});
   TEST_ASSERT_EQUAL(int(Posture::Calm), int(p.posture));
+  TEST_ASSERT_EQUAL(0, p.segCount);                       // single-LED grammar kept
+  TEST_ASSERT_TRUE_MESSAGE(p.single.lit, "Balanced blanked a live Notifier session");
+  TEST_ASSERT_EQUAL_UINT8(uint8_t(Anim::Breathe), p.single.anim);   // a soft working breathe
+
+  // Drain the sessions: with nothing live, Calm returns to dark (idle is not "lights
+  // on for no reason" - only a working session dims the ring).
+  jobState(r, 1, Status::Offline, 300);
+  jobState(r, 2, Status::Offline, 300);
+  p = compose(r, cfg, cur, false, 400, {});
+  TEST_ASSERT_FALSE(p.single.lit);
   TEST_ASSERT_EQUAL(0, p.segCount);
 }
 
@@ -775,6 +789,61 @@ static void test_fanout_split_never_touches_dark() {
   TEST_ASSERT_EQUAL(int(Posture::Dark), int(p.posture));
   TEST_ASSERT_EQUAL(0, p.segCount);
   TEST_ASSERT_FALSE(p.single.lit);
+}
+
+// ---- CUM-253: the class guard - "ambient output is zero ONLY when lights-out" ----
+//
+// Owner (bench, 2026-08-31): Notifier + Balanced showed ZERO ring output for an
+// active session. Balanced (Calm) must DIM, never blank; only Dark is lights-out.
+// This is the property test over (battery mode x ring level x operating mode) with
+// a live working session present: ambient output is zero ONLY where the posture
+// policy says lights-out. A new ring level with no policy row FAILS here (both at
+// compile time via the static_assert and at runtime via the switch fallback),
+// rather than silently blanking the way the original single-instance fix did.
+static_assert(int(Posture::Full) + 1 == 3,
+              "new Posture: add its lights-out policy to lightsOutForRunning (CUM-253)");
+
+// With a live Running (non-attention, non-Done) session present, does this ring
+// level go lights-out? This IS the policy the invariant is checked against.
+static bool lightsOutForRunning(Posture post) {
+  switch (post) {
+    case Posture::Dark: return true;    // "disengage the LEDs" - dark unless Error
+    case Posture::Calm: return false;   // a soft working glow - dims, never blanks
+    case Posture::Full: return false;   // one color arc per session
+  }
+  TEST_FAIL_MESSAGE("CUM-253: no lights-out policy for this ring level - map it");
+  return false;  // unreachable; a live session is never silently blanked
+}
+
+static void test_ambient_zero_only_when_lights_out() {
+  // Battery mode -> ring level is 1:1 through the presets, so iterate the battery
+  // modes (the owner-facing axis) and derive the ring level each one selects.
+  const ProfileId modes[] = {ProfileId::BatterySaver, ProfileId::Balanced,
+                             ProfileId::Desk};
+  for (bool orchestrator : {false, true}) {          // operating mode
+    for (ProfileId mode : modes) {                   // battery mode
+      const Posture post = Posture(presetValue(mode, Param::Posture));  // ring level
+      attn::Router r;
+      jobState(r, 1, Status::Running, 100, /*accent=*/40);   // one live working session
+      Config cfg;
+      cfg.setProfile(mode);
+      Cursor cur;
+      ComposeOpts co;
+      co.fanoutSegments = orchestrator;   // ONLY the Orchestrator ever sets this
+      Plan p = compose(r, cfg, cur, false, 200, co);
+      const bool lit = p.single.lit || p.segCount > 0;   // any ambient ring output
+      const bool wantLightsOut = lightsOutForRunning(post);
+      char msg[128];
+      std::snprintf(msg, sizeof msg,
+                    "CUM-253 mode=%s(post=%d) orch=%d: lit=%d wantLightsOut=%d",
+                    profileName(mode), int(post), orchestrator ? 1 : 0,
+                    lit ? 1 : 0, wantLightsOut ? 1 : 0);
+      if (wantLightsOut)
+        TEST_ASSERT_FALSE_MESSAGE(lit, msg);   // dark ONLY where policy says lights-out
+      else
+        TEST_ASSERT_TRUE_MESSAGE(lit, msg);    // Balanced/Full never blank a live session
+    }
+  }
 }
 
 int main() {
@@ -804,7 +873,8 @@ int main() {
   RUN_TEST(test_voice_disarms_the_envelope);
   RUN_TEST(test_fanout_split_calm_shows_segments);
   RUN_TEST(test_fanout_split_clears_when_jobs_drain);
-  RUN_TEST(test_notifier_calm_grammar_unchanged_without_the_flag);
+  RUN_TEST(test_notifier_calm_dims_not_blank);
   RUN_TEST(test_fanout_split_never_touches_dark);
+  RUN_TEST(test_ambient_zero_only_when_lights_out);
   return UNITY_END();
 }

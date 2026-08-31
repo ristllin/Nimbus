@@ -44,6 +44,20 @@ uint8_t voiceAnim(attn::VoiceStage s) {
   }
   return uint8_t(solide::ring::Anim::Off);
 }
+
+// True when the router holds at least one live session that is still working -
+// any live job that is not finished (Done). Calm lights a soft breathe for it so a
+// Notifier's Balanced ring DIMS but never blanks while a session runs (owner
+// 2026-08-31: "balanced should still show lights, just less, not none"). Attention
+// (CTA) statuses already own the single LED earlier in compose(), and an all-Done
+// table keeps its own green glance cue, so neither is the reason this returns true.
+bool anyWorkingJob(const attn::Router& router) {
+  solide::ring::Slot snap[RING_MAX_SEGMENTS];
+  const int n = router.jobs().snapshot(snap, RING_MAX_SEGMENTS);
+  for (int i = 0; i < n; ++i)
+    if (snap[i].status != solide::ring::Status::Done) return true;
+  return false;
+}
 }  // namespace
 
 void Cursor::onDetent(int dir, int ledCount, uint32_t nowMs) {
@@ -232,7 +246,14 @@ Plan compose(const attn::Router& router, const Config& cfg, const Cursor& cursor
         // reads "something just happened" without startling).
         plan.single.anim = uint8_t(solide::ring::Anim::Breathe);
         plan.single.periodMs = 800;
-      } else if (orchWorking) {
+      } else if (orchWorking || anyWorkingJob(router)) {
+        // orchWorking = an Orchestrator turn is running (no job in the table yet).
+        // anyWorkingJob = a live session in the table is still working - this is the
+        // Notifier's path: its Calm was going FULLY DARK for a plain Running session
+        // (owner 2026-08-31, CUM-253), because only the Orchestrator flag lit here.
+        // Balanced must DIM, never blank; the single-LED grammar is kept (segCount
+        // stays 0), only Dark is lights-out. (The Orchestrator never reaches this
+        // with live jobs - fanoutSplit already promoted Calm to Full arcs above.)
         plan.single.lit = true;
         plan.single.index = attnIndex(cfg);
         plan.single.hue = themeHue;   // "thinking" breathe in the user's theme colour
