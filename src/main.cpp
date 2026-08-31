@@ -48,6 +48,7 @@
 #include "agent/loops_subsystem.h"   // Local Loops scheduler (hooks wired below)
 #include "agent/dream_subsystem.h"   // DREAMING: reserved nightly maintenance loop
 #include "agent/store.h"                      // store::theme()
+#include "agent/connectors.h"                 // MCP OAuth pump on the main loop
 #include "nimbus/theme.h"                     // themeAccent - LED colour personality
 #include "nimbus/status_style.h"              // status -> {theme role, anim} single source
 #include <LittleFS.h>
@@ -4004,6 +4005,10 @@ void loop() {
 #endif  // feed the F12 watchdog every iteration
   otaupd::tick();        // OTA: mark-valid once healthy + check/auto-install cadence
   otaLoopUx();           // OTA install panel/ring UX (no-op unless installing)
+  if (g_orchMode)
+    agent::connectors::mcp::oauth::pump();  // advance any armed MCP OAuth flow, one
+                                            // bounded TLS step (shared work arbiter)
+
   if (g_powerOffPending) {
     // Web "Power off" (CUM-224): the AsyncTCP task can't sleep the chip inline
     // (mode rule) so it set this flag; enter the shared clean-shutdown + deep-sleep

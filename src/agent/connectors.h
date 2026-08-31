@@ -122,6 +122,47 @@ void sync(nimbus::orch::ToolRegistry& reg);
 // failures - appended to catalog() so the model plans around real state.
 std::string catalogSection();
 
+// ---- OAuth 2.1 acquisition (CUM-256) -----------------------------------------
+// The FRONT half of OAuth: getting a refresh token for a hosted, OAuth-only MCP
+// server (mcp.linear.app-class) so the existing T3 broker (bearerFor/refreshAccess)
+// can mint access tokens from then on. Authorization Code + PKCE with the device
+// web UI as the registered redirect target (see docs/mcp.md). The pure decisions
+// live in nimbus::orch::mcp::oauth (host-tested); this device seam drives them
+// over the shared TLS work arbiter - NO new task, single slot (frozen invariant).
+// The flow is advanced ONE bounded network step at a time by pump() on the main
+// loop, exactly the discipline mcp::sync() uses for discovery.
+namespace oauth {
+
+// Arm an OAuth flow for the named device-dialed MCP connector. `redirectBase` is
+// the device's own base URL as the owner's browser reaches it (e.g.
+// "http://nimbus.local" or "http://192.168.1.42"); the callback is
+// redirectBase + "/oauth/cb". Returns "" when armed, or a short owner-facing
+// error (unknown connector, no URL, a flow already running). Does NO network.
+String begin(const String& name, const String& redirectBase);
+
+// Advance the armed flow by at most one bounded network step. A cheap no-op when
+// no flow is active or the per-step throttle has not elapsed. Call from the main
+// loop. Rides arbiter::acquireWork - never opens a second TLS slot.
+void pump();
+
+// The browser was redirected back with ?state=&code=. Validate the state against
+// the active flow and stash the code for the next pump(). Returns true when
+// accepted; on mismatch fills `errOut` and returns false. Safe on the web task.
+bool callback(const String& state, const String& code, String& errOut);
+
+// The long authorization URL of the active flow, for the device `/oauth/go`
+// redirect (the on-screen QR encodes the short device URL, not this). "" if none.
+String authorizeUrl();
+
+// JSON status for the web UI + device screen data path:
+// {"active":bool,"phase":"...","conn":"..","userCode":"..","verifyUrl":"..","error":".."}.
+String statusJson();
+
+// Clear any active flow (owner cancelled, or a fresh start supersedes it).
+void cancel();
+
+}  // namespace oauth
+
 }  // namespace mcp
 
 }  // namespace connectors

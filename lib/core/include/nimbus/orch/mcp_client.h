@@ -30,9 +30,14 @@ namespace mcp {
 // picks the last event whose object carries "result"/"error" (a JSON-RPC
 // response), skipping any server notifications; it does not match on this id.
 enum RpcId : int {
-  kIdInitialize = 1,
-  kIdToolsList  = 2,
-  kIdToolsCall  = 3,
+  kIdInitialize          = 1,
+  kIdToolsList           = 2,
+  kIdToolsCall           = 3,
+  kIdResourcesList       = 4,
+  kIdResourceTemplates   = 5,
+  kIdResourcesRead       = 6,
+  kIdPromptsList         = 7,
+  kIdPromptsGet          = 8,
 };
 
 // The negotiated protocol version the client advertises (MCP 2025-06-18). Sent
@@ -52,6 +57,17 @@ std::string buildToolsList(const std::string& cursor = "");
 // tools/call with a tool name and a JSON object of arguments (serialized). A
 // malformed/empty argsJson degrades to an empty object, never a broken request.
 std::string buildToolsCall(const std::string& toolName, const std::string& argsJson);
+
+// resources/list, resources/templates/list, prompts/list: paginated the same way
+// as tools/list (an opaque cursor continues a page). Empty cursor = first page.
+std::string buildResourcesList(const std::string& cursor = "");
+std::string buildResourceTemplatesList(const std::string& cursor = "");
+std::string buildPromptsList(const std::string& cursor = "");
+// resources/read for one resource URI.
+std::string buildResourcesRead(const std::string& uri);
+// prompts/get with a prompt name and a JSON object of arguments (serialized; a
+// malformed/empty argsJson degrades to an empty object, like buildToolsCall).
+std::string buildPromptsGet(const std::string& promptName, const std::string& argsJson);
 
 // ---- response parsing --------------------------------------------------------
 
@@ -84,6 +100,15 @@ struct InitializeResult {
   std::string serverName;       // serverInfo.name (informational)
   std::string serverVersion;    // serverInfo.version (informational)
   bool        hasTools = false; // capabilities.tools present -> tools/list is meaningful
+  // "Rich" capability flags parsed from the initialize result so the device
+  // seam knows which discovery calls are worth making and whether to expect
+  // list-changed pushes. Absent capability -> false (the call is skipped).
+  bool        hasResources = false;         // capabilities.resources present
+  bool        hasPrompts = false;           // capabilities.prompts present
+  bool        resourcesSubscribe = false;   // resources.subscribe advertised
+  bool        toolsListChanged = false;     // tools.listChanged advertised
+  bool        resourcesListChanged = false; // resources.listChanged advertised
+  bool        promptsListChanged = false;   // prompts.listChanged advertised
 };
 
 // One discovered remote tool, as the registry/model will see it (no execution).
@@ -125,6 +150,134 @@ ToolsListResult parseToolsList(int httpStatus, const std::string& contentType,
 // (result.isError=true) -> ok=true, isError=true, text = the error text.
 CallToolResult parseCallTool(int httpStatus, const std::string& contentType,
                              const std::string& body, const std::string& serverName);
+
+// ---- resources ---------------------------------------------------------------
+
+// One discovered resource (a readable blob the server exposes at a fixed URI).
+struct ResourceDef {
+  std::string uri;          // the resource URI (required; nameless-uri entries skipped)
+  std::string name;         // short human/model label
+  std::string description;  // one-line, surfaced to the model
+  std::string mimeType;     // "" if the server did not declare one
+};
+
+// One resource TEMPLATE: an RFC 6570 URI template the model fills in to name a
+// resource that is not enumerable up front (e.g. "file:///{path}").
+struct ResourceTemplateDef {
+  std::string uriTemplate;  // required
+  std::string name;
+  std::string description;
+  std::string mimeType;
+};
+
+struct ResourcesListResult {
+  bool                     ok = false;
+  ErrorKind                error = ErrorKind::None;
+  std::string              errorMsg;
+  std::vector<ResourceDef> resources;
+  std::string              nextCursor;  // non-empty -> more pages remain
+};
+
+struct ResourceTemplatesListResult {
+  bool                             ok = false;
+  ErrorKind                        error = ErrorKind::None;
+  std::string                      errorMsg;
+  std::vector<ResourceTemplateDef> templates;
+  std::string                      nextCursor;
+};
+
+// The result of one resources/read: the resource contents flattened to text
+// (text contents concatenated; a binary blob is named "[binary <mime>]" so a
+// non-text resource is surfaced, never silently empty).
+struct ResourceReadResult {
+  bool        ok = false;
+  ErrorKind   error = ErrorKind::None;
+  std::string errorMsg;
+  std::string text;
+};
+
+ResourcesListResult parseResourcesList(int httpStatus, const std::string& contentType,
+                                       const std::string& body, const std::string& serverName);
+ResourceTemplatesListResult parseResourceTemplatesList(int httpStatus, const std::string& contentType,
+                                                       const std::string& body,
+                                                       const std::string& serverName);
+ResourceReadResult parseResourcesRead(int httpStatus, const std::string& contentType,
+                                      const std::string& body, const std::string& serverName);
+
+// ---- prompts -----------------------------------------------------------------
+
+// One argument a prompt accepts.
+struct PromptArg {
+  std::string name;         // required
+  std::string description;
+  bool        required = false;
+};
+
+// One discovered prompt (a reusable, parameterized message template).
+struct PromptDef {
+  std::string            name;         // required
+  std::string            description;  // one-line, surfaced to the model
+  std::vector<PromptArg> arguments;
+};
+
+struct PromptsListResult {
+  bool                   ok = false;
+  ErrorKind              error = ErrorKind::None;
+  std::string            errorMsg;
+  std::vector<PromptDef> prompts;
+  std::string            nextCursor;
+};
+
+// The result of one prompts/get: the resolved messages flattened to text, each
+// prefixed with its role ("user: ...") so the model sees who says what.
+struct PromptGetResult {
+  bool        ok = false;
+  ErrorKind   error = ErrorKind::None;
+  std::string errorMsg;
+  std::string description;  // the prompt's own description, if any
+  std::string text;         // flattened "<role>: <text>" lines
+};
+
+PromptsListResult parsePromptsList(int httpStatus, const std::string& contentType,
+                                   const std::string& body, const std::string& serverName);
+PromptGetResult parsePromptsGet(int httpStatus, const std::string& contentType,
+                                const std::string& body, const std::string& serverName);
+
+// ---- server notifications ----------------------------------------------------
+
+// A server-to-client notification that may ride the SSE stream. The device does
+// one-shot request/response exchanges, so it uses this only to notice a
+// list-changed push (re-discover on the next turn) or a progress update.
+enum class NotifyKind : uint8_t {
+  None = 0,
+  ToolsListChanged,
+  ResourcesListChanged,
+  PromptsListChanged,
+  ResourceUpdated,   // notifications/resources/updated (a subscribed URI changed)
+  Progress,          // notifications/progress
+  Message,           // notifications/message (logging)
+  Cancelled,         // notifications/cancelled
+  Other,             // a recognized notification we do not act on
+};
+
+struct ServerNotification {
+  NotifyKind  kind = NotifyKind::None;
+  std::string method;         // the raw method string
+  std::string progressToken;  // Progress: the token this update is for
+  double      progress = 0;   // Progress: current value
+  double      total = 0;      // Progress: total (0 if the server omitted it)
+  std::string uri;            // ResourceUpdated: the URI that changed
+};
+
+// Scan a raw response body (application/json OR SSE) for the LAST server
+// notification it carries (a JSON-RPC object with "method" and no "id"). Returns
+// kind==None when the body carries no notification (e.g. it is a plain result).
+ServerNotification parseServerNotification(const std::string& contentType,
+                                           const std::string& body);
+
+// True if a notification means "your cached listing for this surface is stale";
+// the device re-runs discovery on its next turn when it sees one.
+bool isListChanged(NotifyKind k);
 
 // ---- namespacing -------------------------------------------------------------
 

@@ -2104,6 +2104,69 @@ void beginWeb(const WebConfig& wc) {
     r->send(200, "application/json", "{\"ok\":true}");
   });
 
+  // ---- MCP OAuth 2.1 sign-in (CUM-256) -------------------------------------
+  // Arm an OAuth acquisition flow for a device-dialed MCP connector. Token-gated.
+  // The redirect base is the exact address the owner reached the device by, so
+  // the dynamically-registered redirect_uri matches on the callback. The main-loop
+  // pump advances the flow; the client polls /api/connectors/oauth/status.
+  s_server.on("/api/connectors/oauth/start", HTTP_POST, [](AsyncWebServerRequest* r) {
+    if (authBlocked(r)) return;
+    String name = r->hasParam("name", true) ? r->getParam("name", true)->value() : "";
+    String redirectBase = String("http://") + r->host();
+    String err = agent::connectors::mcp::oauth::begin(name, redirectBase);
+    if (err.length()) {
+      JsonDocument e; e["error"] = err; String out; serializeJson(e, out);
+      r->send(400, "application/json", out);
+      return;
+    }
+    r->send(200, "application/json", "{\"ok\":true}");
+  });
+  s_server.on("/api/connectors/oauth/status", HTTP_GET, [](AsyncWebServerRequest* r) {
+    if (authBlocked(r)) return;
+    AsyncWebServerResponse* res =
+        r->beginResponse(200, "application/json", agent::connectors::mcp::oauth::statusJson());
+    res->addHeader("Cache-Control", "no-store");
+    r->send(res);
+  });
+  s_server.on("/api/connectors/oauth/cancel", HTTP_POST, [](AsyncWebServerRequest* r) {
+    if (authBlocked(r)) return;
+    agent::connectors::mcp::oauth::cancel();
+    r->send(200, "application/json", "{\"ok\":true}");
+  });
+  // The device's own short redirect: the on-screen QR / verify URL points here, and
+  // it 302s the owner's browser on to the provider's consent page. NOT token-gated
+  // (the owner opens it fresh on a phone; it exposes only a public authorize URL).
+  s_server.on("/oauth/go", HTTP_GET, [](AsyncWebServerRequest* r) {
+    String url = agent::connectors::mcp::oauth::authorizeUrl();
+    if (url.length() == 0) { r->redirect("/"); return; }
+    r->redirect(url);
+  });
+  // The provider redirects the browser back here with ?code=&state=. NOT token-
+  // gated (it carries no device token). The state is validated against the active
+  // flow before the code is used. Shows a plain next-step page.
+  s_server.on("/oauth/cb", HTTP_GET, [](AsyncWebServerRequest* r) {
+    String code = r->hasParam("code") ? r->getParam("code")->value() : "";
+    String state = r->hasParam("state") ? r->getParam("state")->value() : "";
+    String providerErr = r->hasParam("error") ? r->getParam("error")->value() : "";
+    String body;
+    if (providerErr.length()) {
+      body = "<h2>Sign-in was declined</h2><p>You can close this tab and try again from the device.</p>";
+    } else {
+      String err;
+      if (agent::connectors::mcp::oauth::callback(state, code, err))
+        body = "<h2>Almost done</h2><p>The device is finishing sign-in. You can close this tab and return to it.</p>";
+      else
+        body = "<h2>Could not complete sign-in</h2><p>" + err + "</p>";
+    }
+    AsyncWebServerResponse* res = r->beginResponse(
+        200, "text/html",
+        "<!doctype html><meta name=viewport content=\"width=device-width,initial-scale=1\">"
+        "<body style=\"font-family:system-ui;max-width:32rem;margin:3rem auto;padding:0 1rem\">" +
+            body + "</body>");
+    res->addHeader("Cache-Control", "no-store");
+    r->send(res);
+  });
+
   s_server.on("/api/verify", HTTP_POST, [](AsyncWebServerRequest* r) {
     if (authBlocked(r)) return;
     String p = r->hasParam("provider", true) ? r->getParam("provider", true)->value() : "";

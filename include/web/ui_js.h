@@ -1787,6 +1787,15 @@ function connCard(k,c,keyed,host){
   h+='<div class=row id="cc_'+id+'_cidrow" style="margin-top:6px;display:'+(showCid?'flex':'none')+'"><input id="cc_'+id+'_cid" placeholder="connector_id (Studio name / UUID)" value="'+connEsc(set&&c.cid?c.cid:connCidDefault(curProv,k))+'"></div>';
   const ph=(set&&c.hasTok)?'•••• saved - leave blank to keep':(k.cred||'Credential / token');
   h+='<div class=row id="cc_'+id+'_tokrow" style="margin-top:6px;display:'+(showTok?'flex':'none')+'"><input id="cc_'+id+'_tok" type=password placeholder="'+connEsc(ph)+'"></div>';
+  // MCP OAuth sign-in (CUM-256): for a saved MCP server that signs in through the
+  // browser (no pasted token), offer Sign in. The device runs the flow and shows a
+  // link + code here; the owner approves on their phone/laptop on the same network.
+  if(showTok&&set&&c.url){
+    h+='<div class=row id="cc_'+id+'_oauthrow" style="margin-top:6px;align-items:center;gap:8px">';
+    h+='<button type=button onclick="mcpOauthStart(\''+connEsc(c.name)+'\',\''+connEsc(id)+'\')">Sign in</button>';
+    h+='<span class=hint>For a hosted server that signs in through your browser.</span></div>';
+    h+='<div class=hint id="cc_'+id+'_oauth" style="margin-top:4px"></div>';
+  }
   // MCP device-dialed server approval (per CUM-33): a "dev" mcp server is only
   // dialed once the owner approves it. Render its approval state + Approve/Deny,
   // which flip the connectors-blob "appr" bit through the existing owner-gated
@@ -1818,6 +1827,30 @@ function mcpApprove(name,id,bit){
     ok:()=>{setTimeout(loadConnectors,300);
       return (bit?'Approved ':'Denied ')+name+'. The device applies this on its next turn.';},
     error:e=>'Couldn\'t update '+name+(e?(' ('+e+')'):'')+' - try again.'});
+}
+// MCP OAuth sign-in (CUM-256): arm the flow on the device, then poll status and
+// render the link + code + QR the owner opens on their phone/laptop.
+function mcpOauthStart(name,id){
+  var el=$('cc_'+id+'_oauth');if(el)el.textContent='Starting sign-in…';
+  fetch('/api/connectors/oauth/start',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:new URLSearchParams({name:name}).toString()})
+   .then(r=>r.json()).then(x=>{if(x.error){if(el)el.textContent=x.error;return;}mcpOauthPoll(id);})
+   .catch(()=>{if(el)el.textContent='Could not start sign-in.';});
+}
+function mcpOauthPoll(id){
+  var el=$('cc_'+id+'_oauth');if(!el)return;
+  fetch('/api/connectors/oauth/status').then(r=>r.json()).then(s=>{
+    if(!s.active){el.textContent=s.error||'';return;}
+    if(s.phase==='awaiting-consent'&&s.verifyUrl){
+      el.innerHTML='Open this on your phone or laptop to sign in:<br>'+
+        '<a href="'+connEsc(s.verifyUrl)+'" target=_blank>'+connEsc(s.verifyUrl)+'</a>'+
+        (s.userCode?(' (code '+connEsc(s.userCode)+')'):'')+
+        '<br><img alt="sign-in QR" style="width:160px;height:160px" src="/api/qr?data='+encodeURIComponent(s.verifyUrl)+'">';
+      setTimeout(()=>mcpOauthPoll(id),2000);
+    }else if(s.phase==='connected'){el.textContent='Signed in. This connector is ready.';setTimeout(loadConnectors,600);}
+    else if(s.phase==='failed'){el.textContent=s.error||'Sign-in failed.';}
+    else{el.textContent=(s.phase||'working')+'…';setTimeout(()=>mcpOauthPoll(id),1500);}
+  }).catch(()=>{el.textContent='Lost contact during sign-in.';});
 }
 function connFindKnown(id){return (window._connKnown||[]).find(k=>k.id===id)||{id:id,kind:'mcp',cid:''};}
 function connProvChange(id){

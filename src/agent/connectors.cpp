@@ -12,9 +12,13 @@
 #include "nimbus/orch/mcp_resilience.h"      // portable circuit breaker + retry policy
 #include "nimbus/orch/tool_registry.h"       // ToolRegistry (outbound tool registration)
 
+#include <WiFi.h>          // WiFi.status() - the OAuth pump waits for a link
 #include <WiFiClient.h>
 #include <WiFiClientSecure.h>
+
+#include "nimbus/orch/mcp_oauth.h"           // portable OAuth 2.1 decision layer
 #include <esp_system.h>   // esp_random - retry jitter source
+#include <cstring>        // strcmp - non-allocating state compare in the OAuth callback
 #include <memory>
 #include <new>       // std::nothrow - alloc failure degrades, never panics
 #include <vector>
@@ -913,6 +917,480 @@ std::string catalogSection() {
            ": configured but NOT yet approved - the owner must approve it before its tools can be used.\n";
   return out;
 }
+
+// ---- OAuth 2.1 acquisition driver (CUM-256) ----------------------------------
+// See connectors.h. All the pure decisions are in nimbus::orch::mcp::oauth (host-
+// tested); this driver does the bounded TLS I/O under the shared work arbiter and
+// the NVS blob write. It is a single-flight state machine advanced ONE network
+// step per pump() on the main loop - never a new task, never a second TLS slot.
+namespace oauth {
+
+namespace {
+namespace oa = nimbus::orch::mcp::oauth;
+
+// A general (non-MCP) bounded HTTP request over the work arbiter, reusing the
+// same socket/read helpers as exchange(). OAuth documents are small; the shared
+// body cap (kMaxBodyBytes) is far more than enough.
+struct HttpResp {
+  int           status = 0;
+  std::string   body;
+  std::string   ctype;
+  mc::ErrorKind kind = mc::ErrorKind::None;
+};
+
+// One general HTTP request over the arbiter. Bundled so the call stays under the
+// argument-count gate; contentType is only emitted when there is a body.
+struct HttpReq {
+  const char* method = "GET";
+  UrlParts    u;
+  const char* contentType = "application/json";
+  std::string body;
+  uint32_t    timeoutMs = 8000;
+};
+
+void httpDo(const HttpReq& q, HttpResp& r) {
+  const UrlParts& u = q.u;
+  r = HttpResp{};
+  if (!u.ok) { r.kind = mc::ErrorKind::Connect; return; }
+  if (!arbiter::acquireWork(q.timeoutMs)) { r.kind = mc::ErrorKind::Timeout; return; }
+  WiFiClientSecure tls;
+  WiFiClient plain;
+  Client* c;
+  if (u.tls) {
+    tlsSetup(tls);
+    tls.setHandshakeTimeout(12);
+    tls.setConnectionTimeout(q.timeoutMs);
+    c = &tls;
+  } else {
+    plain.setTimeout(q.timeoutMs / 1000 ? q.timeoutMs / 1000 : 1);
+    c = &plain;
+  }
+  const uint32_t deadline = millis() + q.timeoutMs;
+  if (!mcpConnect(*c, u, deadline)) {
+    c->stop(); arbiter::releaseWork();
+    r.kind = mc::ErrorKind::Connect;
+    return;
+  }
+  String req = String(q.method) + " " + u.path + " HTTP/1.1\r\n"
+             + "Host: " + u.host + "\r\n"
+             + "Accept: application/json\r\n";
+  if (!q.body.empty())
+    req += String("Content-Type: ") + q.contentType + "\r\n"
+         + "Content-Length: " + String((unsigned)q.body.size()) + "\r\n";
+  req += "Connection: close\r\n\r\n";
+  c->print(req);
+  if (!q.body.empty()) c->write((const uint8_t*)q.body.data(), q.body.size());
+  McpResp head;  // only for the header reader's out-params
+  bool chunked;
+  long clen;
+  r.status = mcpReadHead(*c, deadline, head, chunked, clen);
+  r.ctype = head.ctype;
+  if (r.status == 0) {
+    c->stop(); arbiter::releaseWork();
+    r.kind = mc::ErrorKind::Timeout;
+    return;
+  }
+  bool tooLarge = false;
+  if (chunked)        readChunked(*c, deadline, r.body, tooLarge);
+  else if (clen >= 0) readN(*c, deadline, (size_t)clen, r.body, tooLarge);
+  else                readToClose(*c, deadline, r.body, tooLarge);
+  c->stop();
+  arbiter::releaseWork();
+  if (tooLarge) r.kind = mc::ErrorKind::TooLarge;
+}
+
+// An OAuth endpoint must be a PUBLIC https URL. Requiring https protects the
+// tokens in flight; requiring a non-private host (reusing the CUM-255 routability
+// predicate) stops a malicious/compromised MCP server from steering the device's
+// discovery + token requests at an internal address (SSRF). OAuth sign-in is for
+// hosted servers; a LAN server should use a static token instead (see docs/mcp.md).
+bool publicHttps(const String& url) {
+  UrlParts u = parseUrl(url);
+  return u.ok && u.tls && nimbus::orch::urlRoutableToProviderHead(std::string(url.c_str()));
+}
+
+// scheme://host[:port] origin of a parsed URL (default ports omitted).
+String originOf(const UrlParts& u) {
+  String o = (u.tls ? "https://" : "http://") + u.host;
+  const bool defaultPort = (u.tls && u.port == 443) || (!u.tls && u.port == 80);
+  if (!defaultPort) o += ":" + String(u.port);
+  return o;
+}
+
+// A hex token of `bytes` bytes from the device RNG (for state + the cosmetic
+// user code). Never a secret - the PKCE verifier is separate and never displayed.
+String randHex(int bytes) {
+  static const char* h = "0123456789abcdef";
+  String s;
+  for (int i = 0; i < bytes; i++) {
+    uint8_t b = (uint8_t)(esp_random() & 0xFF);
+    s += h[b >> 4];
+    s += h[b & 0xf];
+  }
+  return s;
+}
+
+// The single-flight flow, OWNED by the main-loop pump (never touched off it).
+enum class Phase : uint8_t { Idle, DiscoverPR, DiscoverAS, Register, ShowConsent, HaveCode, Done, Failed };
+struct Flow {
+  bool     active = false;
+  Phase    phase = Phase::Idle;
+  String   connName;
+  String   resourceUrl;     // the MCP server URL (RFC 8707 resource)
+  String   issuer;
+  String   authorizeEndpoint, tokenEndpoint, registrationEndpoint;
+  String   scope;
+  String   clientId, clientSecret;
+  String   verifier, challenge, state, userCode;
+  String   redirectUri, authorizeUrl, code;
+  String   error;
+  uint32_t nextStepMs = 0;
+};
+Flow s_flow;  // main-loop-owned
+
+// Cross-task handoff (AsyncTCP web task <-> main-loop pump), fixed buffers only so
+// the critical section never allocates. Strings live only in s_flow / snapshot.
+portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
+volatile bool s_reqStart = false, s_reqCode = false, s_reqCancel = false;
+char s_inName[64] = {0}, s_inRedirect[128] = {0}, s_inCode[1024] = {0}, s_inState[64] = {0};
+// snapshot published for the web/screen (read on the web task).
+volatile bool s_snapActive = false;
+char s_snapPhase[16] = {0}, s_snapConn[64] = {0}, s_snapUserCode[16] = {0},
+     s_snapVerify[160] = {0}, s_snapErr[192] = {0}, s_snapAuthUrl[1024] = {0};
+// The state expected on the callback while awaiting consent, published so the
+// (unauthenticated) /oauth/cb handler can DROP a non-matching callback before it
+// touches the single handoff slot - a LAN peer cannot then clobber the real code
+// with wrong-state spam. Empty unless a flow is awaiting consent. Not a secret and
+// never returned by statusJson.
+char s_snapState[64] = {0};
+
+void setBuf(char* dst, size_t cap, const char* src) {
+  size_t n = 0;
+  if (src)
+    for (; n + 1 < cap && src[n]; n++) dst[n] = src[n];
+  dst[n] = '\0';
+}
+
+const char* phaseName(Phase p) {
+  switch (p) {
+    case Phase::Idle:        return "idle";
+    case Phase::DiscoverPR:  return "discovering";
+    case Phase::DiscoverAS:  return "discovering";
+    case Phase::Register:    return "registering";
+    case Phase::ShowConsent: return "awaiting-consent";
+    case Phase::HaveCode:    return "finishing";
+    case Phase::Done:        return "connected";
+    case Phase::Failed:      return "failed";
+  }
+  return "idle";
+}
+
+// Publish s_flow -> the snapshot buffers (called from the pump only).
+void publish() {
+  String verify = s_flow.redirectUri;  // the short device URL the QR/code points at
+  if (verify.endsWith("/oauth/cb")) verify = verify.substring(0, verify.length() - 2) + "go";
+  portENTER_CRITICAL(&s_mux);
+  s_snapActive = s_flow.active;
+  setBuf(s_snapPhase, sizeof(s_snapPhase), phaseName(s_flow.phase));
+  setBuf(s_snapConn, sizeof(s_snapConn), s_flow.connName.c_str());
+  setBuf(s_snapUserCode, sizeof(s_snapUserCode), s_flow.userCode.c_str());
+  setBuf(s_snapVerify, sizeof(s_snapVerify),
+         (s_flow.phase == Phase::ShowConsent) ? verify.c_str() : "");
+  setBuf(s_snapErr, sizeof(s_snapErr), s_flow.error.c_str());
+  setBuf(s_snapAuthUrl, sizeof(s_snapAuthUrl),
+         (s_flow.phase == Phase::ShowConsent) ? s_flow.authorizeUrl.c_str() : "");
+  setBuf(s_snapState, sizeof(s_snapState),
+         (s_flow.phase == Phase::ShowConsent) ? s_flow.state.c_str() : "");
+  portEXIT_CRITICAL(&s_mux);
+}
+
+void fail(const String& msg) {
+  s_flow.phase = Phase::Failed;
+  s_flow.error = msg;
+  s_flow.nextStepMs = millis() + 3600000;  // park; a new start/cancel resets it
+}
+
+// Find a device-dialed mcp connector by name and set up a fresh flow.
+void startFlow(const char* name, const char* redirectBase) {
+  s_flow = Flow{};
+  s_flow.connName = name;
+  std::vector<nimbus::orch::ConnectorInfo> cs;
+  nimbus::orch::parseConnectorsJson(store::connectorsJson().c_str(), cs, kMaxConnectors, nullptr);
+  for (const auto& c : cs)
+    if (c.kind == "mcp" && c.name == std::string(name) && !c.url.empty()) {
+      s_flow.resourceUrl = c.url.c_str();
+      break;
+    }
+  if (s_flow.resourceUrl.length() == 0) { s_flow.active = true; fail("This connector has no MCP server URL to connect."); return; }
+  if (!publicHttps(s_flow.resourceUrl)) {
+    s_flow.active = true;
+    fail("Browser sign-in works only with a hosted https server. Use a token for a local server.");
+    return;
+  }
+  String base = redirectBase;
+  while (base.endsWith("/")) base.remove(base.length() - 1);
+  s_flow.redirectUri = base + "/oauth/cb";
+  uint8_t rnd[32];
+  for (int i = 0; i < 32; i++) rnd[i] = (uint8_t)(esp_random() & 0xFF);
+  oa::Pkce pk = oa::makePkce(rnd);
+  s_flow.verifier = pk.verifier.c_str();
+  s_flow.challenge = pk.challenge.c_str();
+  s_flow.state = randHex(16);
+  s_flow.userCode = randHex(3);  // 6 hex chars, cosmetic
+  s_flow.userCode.toUpperCase();
+  s_flow.active = true;
+  s_flow.phase = Phase::DiscoverPR;
+  s_flow.nextStepMs = 0;
+}
+
+// --- one network step per phase ----------------------------------------------
+
+// Fetch + parse protected-resource metadata from one candidate well-known URL.
+// Fills issuer + scope from it on success; returns whether it yielded an issuer.
+bool tryProtectedResource(const String& wk) {
+  if (!publicHttps(wk)) return false;
+  HttpResp r;
+  { HttpReq q; q.method = "GET"; q.u = parseUrl(wk); q.timeoutMs = 8000; httpDo(q, r); }
+  if (r.status < 200 || r.status >= 300) return false;
+  oa::ProtectedResourceMeta m = oa::parseProtectedResourceMetadata(r.body);
+  if (!m.ok) return false;
+  String issuer = m.authorizationServers[0].c_str();
+  if (!publicHttps(issuer)) return false;  // never follow a private/non-https issuer (SSRF)
+  s_flow.issuer = issuer;
+  s_flow.scope = oa::scopeStringFor(m.scopesSupported).c_str();
+  return true;
+}
+
+void stepDiscoverPR() {
+  UrlParts ru = parseUrl(s_flow.resourceUrl);
+  if (!ru.ok) { fail("The MCP server URL is not a valid https address."); return; }
+  const std::string res = std::string(s_flow.resourceUrl.c_str());
+  // RFC 9728: try the path-suffixed metadata location first (the canonical spot,
+  // where mcp.linear.app advertises it), then the origin-level form. If neither
+  // yields an issuer, fall back to the resource's own origin as the issuer (the
+  // common same-origin case). All candidates are gated to public https.
+  if (!tryProtectedResource(oa::wellKnownProtectedResourcePath(res).c_str()) &&
+      !tryProtectedResource(oa::wellKnownProtectedResource(res).c_str())) {
+    s_flow.issuer = originOf(ru);  // resource is public https (checked at startFlow)
+  }
+  s_flow.phase = Phase::DiscoverAS;
+  s_flow.nextStepMs = millis() + 300;
+}
+
+void stepDiscoverAS() {
+  String wk = oa::wellKnownAuthServer(std::string(s_flow.issuer.c_str())).c_str();
+  HttpResp r;
+  { HttpReq q; q.method = "GET"; q.u = parseUrl(wk); q.timeoutMs = 8000; httpDo(q, r); }
+  if (r.status < 200 || r.status >= 300) { fail("Could not read the sign-in service details from the server."); return; }
+  oa::AuthServerMeta m = oa::parseAuthServerMetadata(r.body);
+  if (!m.ok) { fail("The server did not advertise an OAuth authorization service."); return; }
+  if (!oa::supportsS256(m)) { fail("The server's sign-in does not support the secure PKCE method."); return; }
+  // The authorize + token endpoints come from server-controlled metadata and the
+  // device POSTs to the token one: gate both to public https so a malicious server
+  // cannot steer the device at an internal address (SSRF).
+  if (!publicHttps(String(m.authorizationEndpoint.c_str())) ||
+      !publicHttps(String(m.tokenEndpoint.c_str()))) {
+    fail("The server's sign-in endpoints are not hosted at a public https address.");
+    return;
+  }
+  s_flow.authorizeEndpoint = m.authorizationEndpoint.c_str();
+  s_flow.tokenEndpoint = m.tokenEndpoint.c_str();
+  // Only accept a registration endpoint that is itself public https.
+  s_flow.registrationEndpoint =
+      publicHttps(String(m.registrationEndpoint.c_str())) ? String(m.registrationEndpoint.c_str()) : String("");
+  if (s_flow.scope.length() == 0) s_flow.scope = oa::scopeStringFor(m.scopesSupported).c_str();
+  if (s_flow.registrationEndpoint.length() == 0) {
+    fail("This server needs a client to be registered by hand; automatic sign-in is not available.");
+    return;
+  }
+  s_flow.phase = Phase::Register;
+  s_flow.nextStepMs = millis() + 300;
+}
+
+void buildAuthorize() {
+  oa::AuthorizeParams ap;
+  ap.authorizationEndpoint = s_flow.authorizeEndpoint.c_str();
+  ap.clientId = s_flow.clientId.c_str();
+  ap.redirectUri = s_flow.redirectUri.c_str();
+  ap.codeChallenge = s_flow.challenge.c_str();
+  ap.state = s_flow.state.c_str();
+  ap.scope = s_flow.scope.c_str();
+  ap.resource = s_flow.resourceUrl.c_str();
+  s_flow.authorizeUrl = oa::buildAuthorizeUrl(ap).c_str();
+}
+
+void stepRegister() {
+  oa::RegistrationParams p;
+  p.redirectUris = {std::string(s_flow.redirectUri.c_str())};
+  if (s_flow.scope.length()) p.scope = s_flow.scope.c_str();
+  std::string body = oa::buildRegistrationRequest(p);
+  HttpResp r;
+  { HttpReq q; q.method = "POST"; q.u = parseUrl(s_flow.registrationEndpoint); q.contentType = "application/json"; q.body = body; q.timeoutMs = 10000; httpDo(q, r); }
+  if (r.status < 200 || r.status >= 300) { fail("The server refused to register this device for sign-in."); return; }
+  oa::RegistrationResult rr = oa::parseRegistrationResponse(r.body);
+  if (!rr.ok) { fail("The server's sign-in registration did not return a client id."); return; }
+  s_flow.clientId = rr.clientId.c_str();
+  s_flow.clientSecret = rr.clientSecret.c_str();
+  buildAuthorize();
+  s_flow.phase = Phase::ShowConsent;
+  s_flow.nextStepMs = millis() + 3600000;  // wait for the owner's callback
+}
+
+// Write the minted refresh token into the connector's T3 oauth blob slot, so
+// bearerFor()/refreshAccess() mints access tokens from here on. NEVER logged.
+bool writeRefreshToBlob(const oa::TokenResponse& tok) {
+  JsonDocument d;
+  if (deserializeJson(d, store::connectorsJson()) || !d.is<JsonArray>()) return false;
+  for (JsonObject o : d.as<JsonArray>()) {
+    if (s_flow.connName != (const char*)(o["name"] | "")) continue;
+    JsonObject oauth = o["oauth"].to<JsonObject>();
+    oauth["rurl"] = s_flow.tokenEndpoint;
+    oauth["cid"] = s_flow.clientId;
+    oauth["sec"] = s_flow.clientSecret;   // "" for a public client
+    oauth["rtok"] = tok.refreshToken.c_str();
+    String out;
+    serializeJson(d, out);
+    if (out.length() > 3500) return false;   // blob cap (same as the save endpoint)
+    store::setConnectorsJson(out);
+    store::setOrchConvId("");                // connectors pin at conversation creation
+    return true;
+  }
+  return false;
+}
+
+void stepExchange() {
+  oa::CodeExchangeParams p;
+  p.code = s_flow.code.c_str();
+  p.codeVerifier = s_flow.verifier.c_str();
+  p.clientId = s_flow.clientId.c_str();
+  p.clientSecret = s_flow.clientSecret.c_str();
+  p.redirectUri = s_flow.redirectUri.c_str();
+  p.resource = s_flow.resourceUrl.c_str();
+  std::string body = oa::buildCodeExchangeForm(p);
+  HttpResp r;
+  { HttpReq q; q.method = "POST"; q.u = parseUrl(s_flow.tokenEndpoint); q.contentType = "application/x-www-form-urlencoded"; q.body = body; q.timeoutMs = 10000; httpDo(q, r); }
+  oa::TokenResponse tok = oa::parseTokenResponse(r.body);
+  if (!tok.ok) { fail("Sign-in did not complete. Start again from the connector."); return; }
+  if (tok.refreshToken.empty()) { fail("The server returned no lasting sign-in; it must allow offline access."); return; }
+  if (!writeRefreshToBlob(tok)) { fail("Signed in, but the connector set is full or unreadable. Free a slot and retry."); return; }
+  s_flow.phase = Phase::Done;
+  s_flow.error = "";
+  s_flow.nextStepMs = millis() + 3600000;
+  alogf("mcp oauth: %s connected (refresh token stored)", s_flow.connName.c_str());
+}
+
+}  // namespace
+
+String begin(const String& name, const String& redirectBase) {
+  if (name.length() == 0) return "Pick a connector to connect.";
+  if (redirectBase.length() == 0) return "The device address is unknown; reload the page and try again.";
+  portENTER_CRITICAL(&s_mux);
+  setBuf(s_inName, sizeof(s_inName), name.c_str());
+  setBuf(s_inRedirect, sizeof(s_inRedirect), redirectBase.c_str());
+  s_reqStart = true;
+  portEXIT_CRITICAL(&s_mux);
+  return "";
+}
+
+bool callback(const String& state, const String& code, String& errOut) {
+  if (code.length() == 0) { errOut = "The sign-in did not return an authorization code."; return false; }
+  // Drop a callback whose state does not match the flow awaiting consent BEFORE it
+  // touches the single handoff slot. Without this, an unauthenticated LAN peer could
+  // spam /oauth/cb with a wrong state and overwrite the real code mid-race; the
+  // pump's own state check would then discard the (now clobbered) real code. The
+  // expected state is published only while awaiting consent (empty otherwise).
+  const char* sc = state.c_str();  // no allocation inside the critical section
+  const char* cc = code.c_str();
+  portENTER_CRITICAL(&s_mux);
+  // strcmp/setBuf only - never a String op (heap alloc) inside portENTER_CRITICAL.
+  const bool match = s_snapState[0] && sc[0] && strcmp(sc, s_snapState) == 0;
+  if (match && !s_reqCode) {
+    setBuf(s_inState, sizeof(s_inState), sc);
+    setBuf(s_inCode, sizeof(s_inCode), cc);
+    s_reqCode = true;
+  }
+  portEXIT_CRITICAL(&s_mux);
+  if (!match) { errOut = "This sign-in response did not match a request in progress."; return false; }
+  return true;
+}
+
+void cancel() {
+  portENTER_CRITICAL(&s_mux);
+  s_reqCancel = true;
+  portEXIT_CRITICAL(&s_mux);
+}
+
+String authorizeUrl() {
+  char buf[1024];
+  portENTER_CRITICAL(&s_mux);
+  setBuf(buf, sizeof(buf), s_snapAuthUrl);
+  portEXIT_CRITICAL(&s_mux);
+  return String(buf);
+}
+
+String statusJson() {
+  char phase[16], conn[64], userCode[16], verify[160], err[192];
+  bool active;
+  portENTER_CRITICAL(&s_mux);
+  active = s_snapActive;
+  setBuf(phase, sizeof(phase), s_snapPhase);
+  setBuf(conn, sizeof(conn), s_snapConn);
+  setBuf(userCode, sizeof(userCode), s_snapUserCode);
+  setBuf(verify, sizeof(verify), s_snapVerify);
+  setBuf(err, sizeof(err), s_snapErr);
+  portEXIT_CRITICAL(&s_mux);
+  JsonDocument d;
+  d["active"] = active;
+  d["phase"] = phase;
+  d["conn"] = conn;
+  d["userCode"] = userCode;
+  d["verifyUrl"] = verify;
+  d["error"] = err;
+  String out;
+  serializeJson(d, out);
+  return out;
+}
+
+void pump() {
+  // Drain the cross-task requests first (cheap, always).
+  bool doStart, doCode, doCancel;
+  char name[64], redir[128], code[600], state[64];
+  portENTER_CRITICAL(&s_mux);
+  doStart = s_reqStart; doCode = s_reqCode; doCancel = s_reqCancel;
+  s_reqStart = s_reqCode = s_reqCancel = false;
+  setBuf(name, sizeof(name), s_inName);
+  setBuf(redir, sizeof(redir), s_inRedirect);
+  setBuf(code, sizeof(code), s_inCode);
+  setBuf(state, sizeof(state), s_inState);
+  portEXIT_CRITICAL(&s_mux);
+
+  if (doCancel) { s_flow = Flow{}; publish(); return; }
+  if (doStart) { startFlow(name, redir); publish(); }
+  if (doCode && s_flow.active && s_flow.phase == Phase::ShowConsent &&
+      s_flow.state.length() && s_flow.state == String(state)) {
+    // Only a callback whose state matches THIS flow advances it. A stray or
+    // spoofed callback (wrong/blank state) is ignored, never aborts the flow, so
+    // a LAN peer cannot cancel an in-progress consent by hitting /oauth/cb.
+    s_flow.code = code;
+    s_flow.phase = Phase::HaveCode;
+    s_flow.nextStepMs = 0;   // process promptly
+  }
+
+  if (!s_flow.active) return;
+  if ((int32_t)(millis() - s_flow.nextStepMs) < 0) return;   // throttle
+  if (WiFi.status() != WL_CONNECTED) { s_flow.nextStepMs = millis() + 2000; return; }
+
+  switch (s_flow.phase) {
+    case Phase::DiscoverPR: stepDiscoverPR(); break;
+    case Phase::DiscoverAS: stepDiscoverAS(); break;
+    case Phase::Register:   stepRegister();   break;
+    case Phase::HaveCode:   stepExchange();   break;
+    default: /* ShowConsent / Done / Failed / Idle: nothing to do here */ break;
+  }
+  publish();
+}
+
+}  // namespace oauth
 
 }  // namespace mcp
 
