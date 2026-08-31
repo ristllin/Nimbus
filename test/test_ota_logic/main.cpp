@@ -2,6 +2,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <string>
 
 #include "nimbus/ota/ota_logic.h"
 
@@ -488,6 +489,35 @@ static void test_last_result_stale() {
   TEST_ASSERT_FALSE(lastResultStale("aborted-preflip", "v4.4.0"));
 }
 
+// CUM-264 #2: a HIL simulation "last result" must never reach an owner. The
+// class rule (not the instance) - anything carrying kSimResultPrefix is a test
+// artifact - so a NEW sim seam that keeps the prefix is caught with no new guard,
+// while every real OTA outcome the field can hold is left untouched.
+static void test_is_sim_result() {
+  using nimbus::ota::isSimResult;
+  using nimbus::ota::kSimResultPrefix;
+  // Every string the sim seams (simArm) can write today - incl. the owner's
+  // exact residue "sim-arm crash" (OTASIM arm crash, see test_l29_release_gate).
+  TEST_ASSERT_TRUE(isSimResult("sim-arm app0"));
+  TEST_ASSERT_TRUE(isSimResult("sim-arm app1"));
+  TEST_ASSERT_TRUE(isSimResult("sim-arm crash"));
+  // The class: the prefix itself is the guard - any future "sim-*" label is
+  // caught, so a new seam needs no separate rule.
+  TEST_ASSERT_TRUE(isSimResult(kSimResultPrefix));
+  TEST_ASSERT_TRUE(isSimResult((std::string(kSimResultPrefix) + "whatever-next").c_str()));
+  // Every REAL OTA outcome the "last result" field can hold must be preserved.
+  TEST_ASSERT_FALSE(isSimResult("ok v4.4.6"));
+  TEST_ASSERT_FALSE(isSimResult("rollback v4.4.6"));
+  TEST_ASSERT_FALSE(isSimResult("rollback-lost"));
+  TEST_ASSERT_FALSE(isSimResult("dryrun ok v4.4.6"));
+  TEST_ASSERT_FALSE(isSimResult("installing v4.4.6"));
+  TEST_ASSERT_FALSE(isSimResult("download v4.4.6"));
+  TEST_ASSERT_FALSE(isSimResult("aborted-preflip"));
+  // Empty / null -> nothing to filter.
+  TEST_ASSERT_FALSE(isSimResult(""));
+  TEST_ASSERT_FALSE(isSimResult(nullptr));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_parse_version);
@@ -511,5 +541,6 @@ int main(int, char**) {
   RUN_TEST(test_update_view);
   RUN_TEST(test_check_refusal_copy);
   RUN_TEST(test_last_result_stale);
+  RUN_TEST(test_is_sim_result);
   return UNITY_END();
 }

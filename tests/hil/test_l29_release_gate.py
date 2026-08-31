@@ -242,8 +242,13 @@ class TestOtaRollback:
             device.expect("OTASIM", timeout=6.0)
         except Exception:
             pytest.skip("OTASIM drill not available on this build")
-        # The device reboots into the bad image, burns attempts, then rolls back.
-        device.wait_reboot(timeout=30.0)
-        # After rollback it must be alive and serving the console again.
-        assert device.ping(timeout=6.0), "device did not recover after an OTA rollback (boot-loop risk)"
-        device.send("OTASIM clear")
+        try:
+            # The device reboots into the bad image, burns attempts, then rolls back.
+            device.wait_reboot(timeout=30.0)
+            # After rollback it must be alive and serving the console again.
+            assert device.ping(timeout=6.0), "device did not recover after an OTA rollback (boot-loop risk)"
+        finally:
+            # Always clear the sim residue - even if an assertion above failed - so
+            # the "sim-arm ..." last-result never survives into a later flash of
+            # this bench board and surface to an owner (CUM-264).
+            device.send("OTASIM clear")

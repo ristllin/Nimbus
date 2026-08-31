@@ -405,6 +405,12 @@ bool lastResultStale(const char* lastResult, const char* runningVersion) {
   return compareVersions(tok, runningVersion) != 0;   // claims a different image
 }
 
+bool isSimResult(const char* lastResult) {
+  if (!lastResult || !lastResult[0]) return false;
+  return std::strncmp(lastResult, kSimResultPrefix,
+                      std::strlen(kSimResultPrefix)) == 0;
+}
+
 UpdateView updateView(State s, int pct, const char* latest, const char* err,
                       const char* fwVersion) {
   UpdateView v;

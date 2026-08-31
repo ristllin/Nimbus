@@ -209,7 +209,12 @@ void bootGuard() {
     // abort paths below record their own accurate outcome).
     char lr[40] = {0};
     rawGetStr(h, AKEY_OTA_LASTRES, lr, sizeof lr);
-    if (nimbus::ota::lastResultStale(lr, NIMBUS_FW_VERSION)) {
+    // Clear a stale "ok vX" record (above) AND any HIL simulation residue
+    // ("sim-arm ...") that a past test-console flash left in NVS - a production
+    // reflash keeps NVS, and the owner-facing panel would otherwise show it
+    // (CUM-264). An active drill never reaches here (it carries a pending flag).
+    if (nimbus::ota::lastResultStale(lr, NIMBUS_FW_VERSION) ||
+        nimbus::ota::isSimResult(lr)) {
       nvs_set_str(h, AKEY_OTA_LASTRES, "");
       nvs_commit(h);
     }
@@ -874,7 +879,16 @@ const char* lastError() { return g_lastError; }
 int progressPct() { return g_progressPct; }
 String latestSeen() { return g_latestVersion; }
 String latestNotes() { return g_latestNotes; }
-String lastResult() { return agent::store::otaLastResult(); }
+String lastResult() {
+  String r = agent::store::otaLastResult();
+#ifndef NIMBUS_TEST
+  // Belt-and-suspenders for the owner panel: a production build has no sim seam,
+  // so any "sim-*" residue is a stale test artifact. bootGuard clears it from NVS
+  // on the next restart; this hides it immediately, before that restart (CUM-264).
+  if (nimbus::ota::isSimResult(r.c_str())) return String();
+#endif
+  return r;
+}
 const char* runningSlot() { return runningLabel(); }  // "app0"/"app1" - flip observability
 
 // ---- HIL seams --------------------------------------------------------------
@@ -884,7 +898,7 @@ void simArm(const String& prevLabel) {
   agent::store::setOtaPending(1);
   agent::store::setOtaBootCount(0);
   agent::store::setOtaPrevSlot(prevLabel);
-  agent::store::setOtaLastResult(String("sim-arm ") + prevLabel);
+  agent::store::setOtaLastResult(String(nimbus::ota::kSimResultPrefix) + "arm " + prevLabel);
   g_markedValid = false;  // let tick() exercise the real mark-valid path
 }
 void simCrash(bool on) { solide::memory::setInt(kSimCrashKey, on ? 1 : 0); }
@@ -893,6 +907,9 @@ void simClear() {
   agent::store::setOtaBootCount(0);
   agent::store::setOtaPrevSlot("");
   solide::memory::setInt(kSimCrashKey, 0);
+  // Leave the NVS clean on teardown: the "sim-arm ..." residue is a HIL artifact
+  // that a later production reflash would otherwise show to an owner (CUM-264).
+  agent::store::setOtaLastResult("");
 }
 void setManifestUrl(const String& url) { g_urlOverride = url; }
 #endif
