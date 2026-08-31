@@ -31,6 +31,22 @@ static void test_effective_stored_overrides_default() {
   TEST_ASSERT_EQUAL_STRING("be terse", effectiveDirective("be terse").c_str());
 }
 
+// UPGRADE GATE (orchestrator merge-gate expectation): the shipped default applies
+// to a fresh / empty NVS ONLY. An existing device whose owner set a custom
+// directive keeps it BYTE-IDENTICAL after the upgrade - the default is never
+// mixed in or appended, and nothing rewrites the stored value (effectiveDirective
+// is read-only; the sole writer is the owner-only web route). A realistic
+// multi-line custom value is used so a stray default splice would show up.
+static void test_upgrade_preserves_existing_custom_directive() {
+  const std::string custom =
+      "Always answer in French.\nNever use bullet points.\nSign off as Atlas.";
+  const std::string eff = effectiveDirective(custom);
+  TEST_ASSERT_EQUAL_STRING(custom.c_str(), eff.c_str());          // untouched, byte-identical
+  TEST_ASSERT_TRUE(eff.find("Honest beats agreeable.") == std::string::npos);  // no default splice
+  // and the fresh/empty case still yields the default (the other half of the gate)
+  TEST_ASSERT_EQUAL_STRING(kOwnerDirectiveDefault, effectiveDirective("").c_str());
+}
+
 // The default must be non-empty and fit within the cap with real headroom.
 static void test_default_fits_the_cap() {
   const size_t len = std::string(kOwnerDirectiveDefault).size();
@@ -72,6 +88,7 @@ int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_effective_empty_yields_default);
   RUN_TEST(test_effective_stored_overrides_default);
+  RUN_TEST(test_upgrade_preserves_existing_custom_directive);
   RUN_TEST(test_default_fits_the_cap);
   RUN_TEST(test_default_is_copy_clean);
   RUN_TEST(test_directive_read_is_capped);
