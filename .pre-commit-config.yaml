@@ -97,3 +97,17 @@ repos:
         files: '^(tools|tests|evals)/.*\.py$'
       - id: ruff-format
         files: '^(tools|tests|evals)/.*\.py$'
+
+  - repo: local
+    hooks:
+      - id: webui-concat-check
+        # CI's static-gates job runs this; before this hook, a lane could edit
+        # include/web fragments, pass every LOCAL gate, and still turn main red
+        # in CI because the assembled-page snapshot was only checked remotely
+        # (that exact split happened on 2026-08-31: two green local batteries,
+        # red main). Local gates must equal CI gates.
+        name: webui page matches blessed snapshot
+        entry: python3 tools/webui_concat_check.py
+        language: system
+        pass_filenames: false
+        files: '^(include/web/|include/web_pages\.h|tools/webui_page\.snapshot)'

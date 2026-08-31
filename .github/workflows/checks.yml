@@ -54,11 +54,23 @@ jobs:
       - uses: actions/checkout@v4
         with:
           path: Nimbus
+      - name: Resolve solide-drivers ref from platformio.ini (single source of truth)
+        id: solide
+        run: |
+          # The device builds fetch solide-drivers at the tag platformio.ini pins.
+          # The native suite must use the SAME ref, or a pin bump silently
+          # diverges CI from every local battery (exactly what happened at
+          # v0.8.1: CI stayed on v0.5.1 and failed on a header the new driver
+          # added). Parse the pin instead of duplicating it.
+          REF=$(grep -oE 'solide-drivers\.git#v[0-9]+\.[0-9]+\.[0-9]+' Nimbus/platformio.ini | head -1 | cut -d'#' -f2)
+          test -n "$REF" || { echo "could not parse solide-drivers pin from platformio.ini" >&2; exit 1; }
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+          echo "solide-drivers ref: $REF"
       - name: Checkout solide-drivers (public sibling - native tests need its headers)
         uses: actions/checkout@v4
         with:
           repository: ristllin/solide-drivers
-          ref: fc03b8dc3fbe00e3258ffeb8e145a28308f532b5   # solide-drivers v0.5.1 (freenove CYD) - pin the SHA, a tag is mutable
+          ref: ${{ steps.solide.outputs.ref }}
           path: solide-drivers
       - uses: actions/setup-python@v5
         with:

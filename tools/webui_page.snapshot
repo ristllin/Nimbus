@@ -762,9 +762,10 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <details class=setgroup><summary>Memory<span class=chev>&rsaquo;</span></summary>
 <div class=setbody>
 <label>Directive <button class=qh type=button aria-expanded=false aria-label="About the directive">?</button></label>
-<p class="hint tip">Your standing instructions to the assistant. Only you can change them. Up to 600 characters.</p>
-<textarea id=directive rows=4></textarea>
-<div class=row><button id=savedir type=button>Save</button></div>
+<p class="hint tip">Your standing instructions to the assistant - they shape how it behaves for you. Only you can change them. Up to 1500 characters.</p>
+<textarea id=directive rows=8></textarea>
+<div class=row><button id=savedir type=button>Save</button><button id=revertdir type=button>Revert to default</button></div>
+<p class=hint id=dirmsg></p>
 <label>Assistant memory <button class=qh type=button aria-expanded=false aria-label="About assistant memory">?</button></label>
 <p class="hint tip">Working notes the assistant keeps per conversation. Shown here: the most recently active conversation&rsquo;s notes. Clear erases every conversation&rsquo;s notes.</p>
 <pre id=memview class=memv>(empty)</pre>
@@ -2648,7 +2649,11 @@ function applyOrch(d){
   if(d.sfxLvlN!==undefined){$('sfxLvlN').value=d.sfxLvlN;$('sfxLvlO').value=d.sfxLvlO;$('sfxTheme').value=d.sfxTheme;
     if(d.sfxVol!==undefined){$('sfxVol').value=d.sfxVol;$('sfxVolPct').textContent=d.sfxVol+'%';}
     $('sfxtier').textContent='tier: '+d.sfxTier+(d.sfxSync&&d.sfxSync!=='idle'?' · '+d.sfxSync:'');}
-  set('directive',d.directive||'');   // a missing field must never surface as literal "undefined" (CUM-214)
+  // Directive: stash the shipped default + cap (single source, from the server) so
+  // the box can pre-fill it and "Revert to default" restores it. An empty stored
+  // value shows the shipped default, matching what the assistant actually runs.
+  window.__dirDefault=d.directiveDefault||''; window.__dirMax=d.directiveMax||1500;
+  set('directive',(d.directive&&d.directive.length)?d.directive:window.__dirDefault);   // a missing field must never surface as literal "undefined" (CUM-214)
   $('memview').textContent=d.mem||'(empty)';
   const j=$('jobs'), dj=$('dashJobs');
   if(!d.jobs||!d.jobs.length){const t=d.running?'none running':'(Orchestrator mode is off)';
@@ -3145,8 +3150,17 @@ $('toolusesave')&&($('toolusesave').onclick=()=>{
   orchApply(_orchSavePayload()).then(ok=>{if(m){m.textContent=ok===false?'✗ Save failed - try again.':'✓ Tool use settings saved.';m.style.cssText=ok===false?'color:#e77;font-weight:bold':'color:#7fd1c8;font-weight:bold';}});
 });
 let _tgVerifyWatch=false;
-$('savedir').onclick=()=>orchApply({sysPrompt:$('directive').value})
-  .then(ok=>saveVerdict(ok,'Directive saved - applies from the next turn.'));
+$('savedir').onclick=()=>{
+  const v=$('directive').value, mx=window.__dirMax||1500, m=$('dirmsg');
+  if(v.length>mx){if(m)m.textContent='Too long - keep it under '+mx+' characters.';return;}
+  if(m)m.textContent='';
+  orchApply({sysPrompt:v}).then(ok=>saveVerdict(ok,'Directive saved - applies from the next turn.'));
+};
+// Revert clears the stored directive so the shipped default takes over (an empty
+// value means "use the default"), then shows that default in the box.
+$('revertdir')&&($('revertdir').onclick=()=>orchApply({sysPrompt:''}).then(ok=>{
+  if(ok){$('directive').value=window.__dirDefault||'';const m=$('dirmsg');if(m)m.textContent='Reverted to the default.';}
+}));
 $('clearmem').onclick=()=>{
   uiConfirm('Erase the assistant\'s memory?\n\nYour directive is kept.',{ok:'Erase Memory',danger:true}).then(ok=>{ if(ok)
     orchApply({clearMem:1}); });
@@ -4167,6 +4181,7 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
     {id:'mode',t:'Choose a mode',skip:1},
     {id:'telegram',t:'Telegram',skip:1},
     {id:'voice',t:'Voice',skip:1},
+    {id:'directive',t:'Directive',skip:1},
     {id:'name',t:'Name this device',skip:1},
     {id:'done',t:'All set'},
   ];
@@ -4211,6 +4226,10 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
       '<label>Text-to-speech provider</label>'+
       '<select id=onb_tts><option value=mistral>Mistral (Voxtral TTS)</option><option value=openai>OpenAI</option></select>'+
       '<div class=row style="margin-top:8px"><button type=button id=onb_voicesave>Save</button><span class=hint id=onb_voicemsg></span></div>';
+    if(s.id==='directive')return '<label>Directive</label>'+
+      '<p class=hint>Standing guidance that shapes how the assistant behaves for you. Keep the default or edit it - only you can change it.</p>'+
+      '<textarea id=onb_dir rows=8></textarea>'+
+      '<div class=row style="margin-top:8px"><button type=button id=onb_dirsave>Save</button><button type=button id=onb_dirreset>Revert to default</button><span class=hint id=onb_dirmsg></span></div>';
     if(s.id==='name')return '<label>Device name</label>'+
       '<div class=row><input id=onb_name placeholder="Nimbus"><button type=button id=onb_namesave>Save</button></div>'+
       '<span class=hint id=onb_namemsg></span>'+
@@ -4278,6 +4297,16 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
       el('onb_tts').innerHTML='<option value='+cap+'>'+lbl+'</option>';
       el('onb_voicesave').onclick=()=>orchApply({sttProv:cap,ttsProv:cap})
         .then(ok=>{el('onb_voicemsg').textContent=ok?'Saved ✓':'Rejected';});
+    } else if(s.id==='directive'){
+      // Pre-fill the shipped default from the server (single source); keeping it is
+      // the zero-effort path - just click Next. Editing + Save persists an override.
+      const ta=el('onb_dir'),m=el('onb_dirmsg');let def='',mx=1500;
+      fetch('/api/orch').then(r=>r.json()).then(d=>{def=d.directiveDefault||'';mx=d.directiveMax||1500;
+        ta.value=(d.directive&&d.directive.length)?d.directive:def;}).catch(()=>{});
+      el('onb_dirsave').onclick=()=>{const v=ta.value;
+        if(v.length>mx){m.textContent='Too long - keep it under '+mx+' characters.';return;}
+        orchApply({sysPrompt:v}).then(ok=>{m.textContent=ok?'Saved ✓':'Rejected';});};
+      el('onb_dirreset').onclick=()=>{ta.value=def;m.textContent='Reverted to default - Save to keep, or just continue.';};
     } else if(s.id==='name'){
       el('onb_namesave').onclick=()=>{const v=el('onb_name').value.trim();if(!v){el('onb_namemsg').textContent='Enter a name.';return;}
         apply({devName:v}).then(ok=>{el('onb_namemsg').textContent=ok?'Saved ✓ (applies after restart)':'Rejected';});};
