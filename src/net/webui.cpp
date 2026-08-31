@@ -20,6 +20,7 @@
 
 #include "version.h"  // NIMBUS_FW_VERSION/BUILD -> /api/state fw/build
 #include "wifi_portal.h"
+#include "nimbus/wifi/copy.h"   // captive-portal probe table + landing page (CUM-260)
 #include "wifi_store.h"   // /api/wifi - the known-networks list (the stored password
                           // is read here ONLY to hand it back to the radio, never out)
 #include "web_pages.h"
@@ -3341,10 +3342,24 @@ void beginWeb(const WebConfig& wc) {
     // anyone in RF range - provisioned AP peers land on the token-less identify gate.
     const bool onAp = r->client() && isApInterface(r->client()->localIP());
     const bool provisioned = solide::memory::getString(NIMBUS_KEY_STA_SSID, "").length() > 0;
-    if (onAp && !provisioned)
-      r->redirect(String("/?t=") + agent::store::webAuthToken().c_str());
-    else
+    if (onAp && !provisioned) {
+      const String openUrl = String("/?t=") + agent::store::webAuthToken().c_str();
+      // Known OS captive-detection probe (CUM-260): a bare redirect is not reliably
+      // shown, and even when it is, the OS mini-browser often cannot run the full
+      // setup app - so serve a static, JavaScript-free landing page (200) that forces
+      // the pop AND states the next step + the manual address every time. Other
+      // not-found paths keep the authenticated redirect so deep links still land in.
+      if (nimbus::wifi::isCaptiveProbePath(std::string(r->url().c_str()))) {
+        const std::string html = nimbus::wifi::captiveLandingHtml(
+            std::string(apSsid().c_str()), std::string(openUrl.c_str()),
+            std::string(apIp().c_str()));
+        r->send(200, "text/html", String(html.c_str()));
+        return;
+      }
+      r->redirect(openUrl);
+    } else {
       r->redirect("/");
+    }
   });
 
   s_server.begin();

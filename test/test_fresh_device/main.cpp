@@ -1,12 +1,19 @@
 #include <unity.h>
 
+#include <cstdio>
+
 #include <string>
 
+#include "nimbus/attention.h"           // ScreenId - the frozen screen vocabulary
 #include "nimbus/config_store.h"
 #include "nimbus/harness/config.h"
 #include "nimbus/orch/provider_slots.h"
 #include "nimbus/profile.h"
+#include "nimbus/render_context.h"      // ScreenCtx.needsSetup
+#include "nimbus/tft_render/fb565.h"    // Fb565, TapRegion
+#include "nimbus/tft_render/screens.h"  // renderScreen - the real screen selection
 #include "nimbus/touch_cal.h"
+#include "nimbus/wifi/copy.h"           // setupCtaTitle/Hint - the CTA copy contract
 #include "solide/boards/board_freenove_s3.h"
 #include "solide/boards/board_solide_s3.h"
 
@@ -278,6 +285,107 @@ static void test_zero_keys_reads_as_no_provider() {
   TEST_ASSERT_FALSE(cfg.provider.anyKeyed());
 }
 
+// ---- 6. First-run screen selection: no dead ends (CUM-259) --------------------
+//
+// The owner hit this live: a factory-fresh, credless device that TAPPED away from
+// Setup landed on the idle status screen, which looked onboarded and had no way
+// back. The class rule the fix must encode is not "StatusIdle got a button" - it is
+// "in the unprovisioned + not-onboarded state, EVERY screen the panel can draw is
+// either setup-related or carries the way back to it." A NEW screen that strands an
+// un-set-up owner must FAIL here, host-side, not on the owner's desk.
+
+using nimbus::attn::ScreenId;
+using nimbus::render::ScreenCtx;
+using nimbus::tft::Fb565;
+using nimbus::tft::Rendered;
+using nimbus::tft::renderScreen;
+using nimbus::tft::TapRegion;
+
+// The ScreenCtx a first-run device actually builds: Orchestrator, not yet set up.
+// needsSetup is the flag main.cpp's buildCtx sets from
+// (orchMode && !provisioned && !onboarded).
+static ScreenCtx firstRunCtx() {
+  ScreenCtx c;
+  c.deviceName = "Nimbus";
+  c.modeName = "orchestrator";
+  c.needsSetup = true;
+  c.apName = "Nimbus-setup";
+  c.apPass = "nimbus1234";
+  c.setupUrl = "http://192.168.4.1/";
+  c.fwVersion = "v0.0.0-test";
+  return c;
+}
+
+// A tap region that leads back toward Setup: the first-run CTA (Setup), the header
+// back chevron (Back/Home), or the gear (OpenMenu -> the always-backable settings
+// menu). Any one of these means the screen is not a dead end.
+static bool hasWayBack(const Rendered& r) {
+  for (const auto& t : r.taps)
+    if (t.action == TapRegion::Action::Setup || t.action == TapRegion::Action::Back ||
+        t.action == TapRegion::Action::Home || t.action == TapRegion::Action::OpenMenu)
+      return true;
+  return false;
+}
+
+// Screens the device DRIVES itself out of and that register no tap-region exit on
+// purpose: TouchCal is the tap-the-crosses modal (each tap advances it; it
+// self-terminates), so it is guided, not a place a first-run owner can strand. It is
+// the ONLY such screen; everything else must carry a real way back. A new screen
+// added here must be a genuine self-terminating modal, chosen consciously.
+static bool isGuidedSelfTerminating(ScreenId s) {
+  return s == ScreenId::TouchCal;
+}
+
+// The class rule. Renders every screen the enum can name with a first-run context
+// and requires each to be non-stranding. Pinned to the enum's cardinality so a NEW
+// ScreenId cannot be added without deciding, here, how a credless owner gets back.
+static void test_no_first_run_screen_strands() {
+  // Frozen, append-only enum: TouchCal is the last member today. A new screen bumps
+  // this and forces a visit to the rule below (mirror of the CUM-245 TouchKind guard).
+  static_assert(static_cast<int>(ScreenId::TouchCal) == 15,
+                "A ScreenId was added: decide in test_no_first_run_screen_strands() "
+                "whether a first-run tap can reach it and how the owner gets back to "
+                "Setup, then update this count (CUM-259 first-run dead-end guard).");
+
+  const ScreenCtx c = firstRunCtx();
+  for (int i = 0; i <= static_cast<int>(ScreenId::TouchCal); ++i) {
+    const ScreenId s = static_cast<ScreenId>(i);
+    Fb565 fb;
+    const Rendered r = renderScreen(fb, s, c);
+    char msg[128];
+    std::snprintf(msg, sizeof msg,
+                  "first-run screen %d strands the owner: no way back to Setup", i);
+    TEST_ASSERT_TRUE_MESSAGE(hasWayBack(r) || isGuidedSelfTerminating(s), msg);
+  }
+}
+
+// The specific fix, asserted at the seam: the idle status screen a credless owner
+// lands on MUST offer the Setup CTA, and a provisioned device MUST NOT (the CTA is
+// exactly the "looks onboarded" screen's replacement, never shown once set up).
+static void test_statusidle_offers_setup_only_when_unset_up() {
+  {
+    Fb565 fb;
+    const Rendered r = renderScreen(fb, ScreenId::StatusIdle, firstRunCtx());
+    int setupTaps = 0;
+    for (const auto& t : r.taps)
+      if (t.action == TapRegion::Action::Setup) ++setupTaps;
+    TEST_ASSERT_EQUAL_MESSAGE(1, setupTaps,
+        "first-run StatusIdle must offer exactly one Set up Wi-Fi tap");
+  }
+  {
+    ScreenCtx c = firstRunCtx();
+    c.needsSetup = false;   // a set-up device
+    Fb565 fb;
+    const Rendered r = renderScreen(fb, ScreenId::StatusIdle, c);
+    for (const auto& t : r.taps)
+      TEST_ASSERT_MESSAGE(t.action != TapRegion::Action::Setup,
+          "a set-up device must never show the Set up Wi-Fi CTA");
+  }
+  // The CTA copy contract (verb-led, sentence-case hint; ASCII device text).
+  TEST_ASSERT_EQUAL_STRING("Set up Wi-Fi", nimbus::wifi::setupCtaTitle().c_str());
+  TEST_ASSERT_EQUAL_STRING("Tap to open setup", nimbus::wifi::setupCtaHint().c_str());
+}
+
 int main() {
   UNITY_BEGIN();
   // 1. touch defaults - the class over all board models x TouchKind
@@ -293,5 +401,8 @@ int main() {
   RUN_TEST(test_fresh_boot_posture_is_profile_seeded);
   // 5. provider gate on zero keys
   RUN_TEST(test_zero_keys_reads_as_no_provider);
+  // 6. first-run screen selection: no dead ends
+  RUN_TEST(test_no_first_run_screen_strands);
+  RUN_TEST(test_statusidle_offers_setup_only_when_unset_up);
   return UNITY_END();
 }
