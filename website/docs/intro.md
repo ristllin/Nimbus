@@ -9,7 +9,7 @@ description: "Open firmware that turns an inexpensive ESP32-S3 board into a pers
 
 <div class="home-hero">
   <div class="home-hero__media">
-    <img src="/img/hardware/hero-render.webp" alt="Render of the assembled Nimbus device on a desk" />
+    <img src="/img/hardware/classic-hero.webp" alt="Nimbus with its LED ring lit per coding session and live session cards on screen" />
   </div>
   <div class="home-hero__lead">
     <p>An open-firmware AI assistant for your desk, on a commodity ESP32-S3 board.</p>
@@ -40,7 +40,7 @@ in whether the status ring is physical or rendered on screen.
 <div class="variant-grid">
   <div class="variant-card">
     <div class="variant-card__media">
-      <img src="/img/hardware/classic-desk.webp" alt="The hand-built Nimbus board in a 3D-printed case" />
+      <img src="/img/hardware/classic-front.webp" alt="The hand-built Classic Nimbus in its 3D-printed case" />
     </div>
     <div class="variant-card__body">
       <p class="variant-card__kicker">Hand-built</p>
