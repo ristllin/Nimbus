@@ -238,6 +238,28 @@ menu. Browsing shows position and count; adjusting a value shows the value
 itself. Dim by design; it holds about 2 s after the last change, then live status
 resumes.
 
+## 7. Wi-Fi: saved networks and failover (Orchestrator only)
+
+Orchestrator remembers up to **five** Wi-Fi networks (home, office, a phone
+hotspot, and so on), not just one, so moving the device between them no longer
+erases the credentials that got it online last time. If the current network goes
+away, the device behaves like a phone: it scans, picks the strongest saved network
+in range, and joins it on its own, with no setup step and no restart. The setup
+hotspot only comes back once **every** saved network has been tried and none is
+reachable. While it is working through the list the screen says so honestly, for
+example `Joining Office 2/3...`.
+
+Order is a light **priority** hint: the device joins by signal strength, and the
+saved order only breaks ties between equally strong networks. A network you
+actually connect to moves to the top on its own.
+
+**Where you manage it.** The saved-network list (add, forget, reorder, see which is
+connected) lives on the web page under **Settings → Connectivity** - that is its
+canonical home; a password is never shown back. The device screen's **Settings →
+Wi-Fi** is the other surface: it shows the live status and a scan-and-join picker,
+but not the full list editor. Networks save from either surface into the one shared
+list.
+
 ---
 
 ## For developers - where the logic lives
@@ -255,3 +277,8 @@ If this page ever disagrees with the code, the code's single sources win:
 | Backlight per mode + rest glow | `lib/core/include/nimbus/duty.h` |
 | Sound event ranks | `lib/core/nimbus/sfx_map.*` + `docs/sfx-map.md` |
 | Header (`ring:/sound:/power:`) | `lib/core/src/tft_screens.cpp` `drawHeader` |
+| Saved-network list + selection/failover | `lib/core/src/wifi_known_networks.cpp`, `wifi_policy.cpp` |
+| Failover wiring to the radio (the seam) | `src/net/wifi_link.cpp` |
+| Setup-AP recovery interplay | `lib/core/src/setup_ap.cpp` (`decideSetupAp`) |
+
+Full detail: [Wi-Fi resilience](./wifi-resilience.md).

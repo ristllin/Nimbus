@@ -111,6 +111,25 @@ class Secrets:
                 "set NIMBUS_TEST_STA_SSID / NIMBUS_TEST_STA_PASS (a known-good 2.4 GHz network the device can join)"
             )
 
+    # -- SECOND STA network, for the CUM-207 multi-network failover leg -------
+    # A second known-good 2.4 GHz network the device can ALSO join. The two-AP
+    # failover test seeds both, drops the first, and asserts automatic migration.
+    @property
+    def sta_ssid2(self) -> str:
+        return os.environ.get("NIMBUS_TEST_STA_SSID2", "")
+
+    @property
+    def sta_pass2(self) -> str:
+        return os.environ.get("NIMBUS_TEST_STA_PASS2", "")
+
+    def require_sta2(self) -> None:
+        self.require_sta()
+        if not self.sta_ssid2:
+            raise SecretsUnavailable(
+                "set NIMBUS_TEST_STA_SSID2 / NIMBUS_TEST_STA_PASS2 (a SECOND 2.4 GHz "
+                "network the device can join) for the multi-network failover leg"
+            )
+
     # -- Telegram: DEDICATED test bot ONLY -----------------------------------
     # Read from the environment, NOT from a production bot's token - sharing a
     # production bot's token collides on getUpdates long-poll (F18).
