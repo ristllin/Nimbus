@@ -763,11 +763,15 @@ function applyState(d){
       '<span class=hint> - memories and history'+(d.storeSD?'':' (insert an SD card for more space)')+'</span><br>'):'')+
     (d.sta?('sta <b>'+d.staIp+'</b> ('+d.rssi+' dBm) &middot; '):'')+
     'ap <b>'+d.apIp+'</b> &middot; <b>'+d.mdns+'</b>';
-  // profile radios
+  // profile radios; keep the Customize group heading naming the selected battery
+  // mode (CUM-269) so "Customize battery mode: Balanced" is never ambiguous.
+  var _profNm=['Dark','Balanced','Full'];
+  var _setCustProf=p=>{var e=$('custProfName'); if(e)e.textContent=_profNm[p]||'Balanced';};
   document.querySelectorAll('input[name=profile]').forEach(r=>{
     r.checked=(+r.value===d.profile);
-    r.onchange=()=>apply({profile:r.value});
+    r.onchange=()=>{_setCustProf(+r.value);apply({profile:r.value});};
   });
+  _setCustProf(d.profile);
   $('effprof').textContent='effective: '+d.effectiveProfileName+
     (d.effectiveProfile!==d.profile?' (adjusted automatically for power)':'');
   // mode
@@ -1174,9 +1178,9 @@ function switchMode(mv){
 // active battery mode runs on its pure reference preset. Confirmed - it
 // discards all customization in one click.
 if($('revertProf'))$('revertProf').onclick=()=>{
-  if(!confirm('Reset this mode to its defaults?\n\nEvery customized value returns to the preset.'))return;
+  if(!confirm('Reset this battery mode to its defaults?\n\nEvery customized value returns to the preset.'))return;
   apply({revert_overrides:1}).then(ok=>{
-    if(ok){$('revertMsg').textContent='All customizations cleared - this mode is back on its defaults.';}
+    if(ok){$('revertMsg').textContent='All customizations cleared - this battery mode is back on its defaults.';}
   });
 };
 

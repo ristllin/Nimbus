@@ -119,7 +119,7 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 <label class=pr><input type=radio name=profile value=2> Full</label>
 <button class=qh type=button aria-expanded=false aria-label="About battery modes">?</button>
 </div>
-<p class="hint tip">The battery mode sets the light. <b>Dark</b>: lights off - only a job error breathes red. <b>Balanced</b>: a single soft cue in the theme color, dimmer, shorter holds. <b>Full</b>: every session a color arc at full brightness. Each mode is a preset you can adjust under Customize this mode.</p>
+<p class="hint tip">The battery mode sets the light. <b>Dark</b>: lights off - only a job error breathes red. <b>Balanced</b>: a single soft cue in the theme color, dimmer, shorter holds. <b>Full</b>: every session a color arc at full brightness. Each battery mode is a preset you can adjust under Customize battery mode.</p>
 <label class=pr style="margin-top:8px"><input type=checkbox id=lbRing> Low-battery light <button class=qh type=button aria-expanded=false aria-label="About the low-battery light">?</button></label>
 <p class="hint tip">Shows a dim red pulse on the ring for a few seconds each minute while the battery is low. Off by default, because a ring lit all night uses the power it is warning about. The screen notice and the Telegram message are sent either way.</p>
 <label class=pr><input type=checkbox id=lbSaver> Save power when low <button class=qh type=button aria-expanded=false aria-label="About saving power when low">?</button></label>
@@ -130,9 +130,9 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 </div>
 </details>
 
-<details class=setgroup><summary>Customize this mode<span class=chev>&rsaquo;</span></summary>
+<details class=setgroup><summary>Customize battery mode: <span id=custProfName>Balanced</span><span class=chev>&rsaquo;</span></summary>
 <div class=setbody>
-<p class=hint>Each value starts at this mode's default. Set overrides it; Reset returns it.</p>
+<p class=hint>Each value starts at the selected battery mode's default. Set overrides it; Reset returns it.</p>
 <div id=params></div>
 <div class=row style="margin-top:10px"><button id=revertProf type=button>Revert to Defaults</button></div>
 <p class=hint id=revertMsg></p>

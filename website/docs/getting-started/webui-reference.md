@@ -230,8 +230,8 @@ collapsible groups:
   **Theme** picks the color family, and **Preview** shows any status pattern in
   the ring simulator; **Demo on Device** plays it on the physical ring. Full
   color and motion language: **[LED experience](../guides/led-ux.md)**.
-- **Customize this mode** - every parameter starts at the mode's default; set a
-  value to override it, or **Revert to Defaults**.
+- **Customize battery mode** - every parameter starts at the selected battery
+  mode's default; set a value to override it, or **Revert to Defaults**.
 - **Sound** - audio checks (**Mic Meter**, **Speaker Tone**, **Loopback Test**)
   and the **Sound effects** engine (**[SFX map](../guides/sfx-map.md)**): a
   per-mode level, a sound theme, a **Volume** slider, and **Play**.

@@ -44,7 +44,7 @@ switches until you reset it.
 - **On the device:** Settings > Battery mode to pick a mode; Settings >
   Customize to change individual values; Settings > Reset to defaults to drop
   every override.
-- **On the web page:** Settings → Battery mode; Settings → Customize this mode;
+- **On the web page:** Settings → Battery mode; Settings → Customize battery mode;
   the **Revert to Defaults** button clears all overrides at once.
 
 The reference defaults:
