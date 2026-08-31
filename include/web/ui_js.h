@@ -2158,15 +2158,17 @@ function loadWifi(){
   _wifiSaved=nets.map(n=>n.ssid);
   if($('wifiCount'))$('wifiCount').textContent=nets.length+' of '+(d.max||5);
   if(!nets.length)box.innerHTML='<span class=hint>No saved networks yet. Add one below.</span>';
-  else box.innerHTML='<table><tbody>'+nets.map(n=>
+  else box.innerHTML='<table><tbody>'+nets.map((n,i)=>
    '<tr><td><b>'+_wesc(n.ssid)+'</b>'+(n.current?' <span class=badge>in use</span>':'')+
    (n.open?' <span class=hint>open network</span>':'')+
    '</td><td style="text-align:right;white-space:nowrap">'+
+   (i>0?'<button data-wup="'+_wesc(n.ssid)+'" data-wto="'+(i-1)+'" title="Higher priority">Up</button> ':'')+
    (n.current?'':'<button data-wcon="'+_wesc(n.ssid)+'">Connect</button> ')+
    '<button data-wfor="'+_wesc(n.ssid)+'"'+(n.current?' data-wcur=1':'')+'>Forget</button></td></tr>')
    .join('')+'</tbody></table>';
   box.querySelectorAll('button[data-wcon]').forEach(b=>b.onclick=()=>wifiConnect(b.dataset.wcon));
   box.querySelectorAll('button[data-wfor]').forEach(b=>b.onclick=()=>wifiForget(b.dataset.wfor,!!b.dataset.wcur));
+  box.querySelectorAll('button[data-wup]').forEach(b=>b.onclick=()=>wifiReorder(b.dataset.wup,+b.dataset.wto));
   if($('wifiApMsg'))$('wifiApMsg').textContent=d.apUp
    ?('Temporary setup hotspot "'+(d.apSsid||'')+'" is available at '+(d.apIp||'')+'.')
    :(d.sta
@@ -2202,6 +2204,12 @@ function wifiForget(ssid,inUse){
   $('msg').textContent=d.count?'':'No saved networks left - the device starts in setup mode after a restart.';
   loadWifi();
  }).catch(e=>{$('msg').textContent=e.message;});});
+}
+// Minimal reorder wiring (CUM-207): move a saved network one slot higher. Priority is a
+// tie-break hint for equal-signal networks; a later join still promotes what worked.
+function wifiReorder(ssid,index){
+ wifiPost('reorder',{ssid:ssid,index:index}).then(()=>loadWifi())
+  .catch(e=>{$('msg').textContent=e.message;});
 }
 function scan(){
  if(timer)return;                                   // one scan at a time

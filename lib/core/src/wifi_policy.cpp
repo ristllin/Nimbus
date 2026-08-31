@@ -237,11 +237,16 @@ Action WifiPolicy::tick(const Inputs& in) {
     if (cls != JoinFail::SelfInitiated) lastFail_ = cls;
 
     if (state_ == LinkState::Joining && cls != JoinFail::SelfInitiated) {
-      if (cls == JoinFail::Transient && attempts_ + 1 < cfg_.attemptsPerCandidate) {
+      // candIdx_ < cands_.size() guards the "retry the same candidate" path: a list edit
+      // (setKnown) mid-join clears cands_ while state stays Joining, so retrying would
+      // index an empty/shrunk vector (OOB). advanceCandidate() falls safely to Unreachable
+      // when the cursor is out of range, which is exactly what a vanished candidate wants.
+      if (cls == JoinFail::Transient && attempts_ + 1 < cfg_.attemptsPerCandidate &&
+          candIdx_ < cands_.size()) {
         attempts_++;
         a = joinCandidate(now, candIdx_);   // same candidate, one more go
       } else {
-        advanceCandidate(now, a);           // wrong password or absent: move on at once
+        advanceCandidate(now, a);           // wrong password, absent, or stale cursor: move on
       }
       a.state = state_;
       a.stateChanged = (before != state_);
@@ -277,7 +282,9 @@ Action WifiPolicy::tick(const Inputs& in) {
 
     case LinkState::Joining:
       if (elapsed(now, joinStartMs_) >= cfg_.joinTimeoutMs) {
-        if (attempts_ + 1 < cfg_.attemptsPerCandidate) {
+        // Same guard as the disconnect path: never retry a candidate cursor that a
+        // mid-join list edit left dangling past the end of cands_ (F1).
+        if (attempts_ + 1 < cfg_.attemptsPerCandidate && candIdx_ < cands_.size()) {
           attempts_++;
           a = joinCandidate(now, candIdx_);
         } else {

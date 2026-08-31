@@ -163,6 +163,16 @@ bool rename(const String& from, const String& to) {
   return true;
 }
 
+bool reorder(const String& ssid, int toIndex) {
+  Lock g;
+  if (!nimbus::wifi::moveNetwork(s_nets, std::string(ssid.c_str()), toIndex)) return false;
+  // No preference argument: persistLocked() then keeps the legacy boot-slot pointed at
+  // whatever it already names. A reorder is a priority HINT, not a "switch now" - it must
+  // never re-point the boot slot at a network that is merely higher in the list.
+  persistLocked();
+  return true;
+}
+
 void noteJoined(const String& ssid, uint32_t epochDay) {
   Lock g;
   // touchNetwork returns false when the head is already this network with today's

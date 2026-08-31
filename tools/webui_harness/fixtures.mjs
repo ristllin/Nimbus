@@ -165,9 +165,28 @@ export const OK = { ok: true };
 // never from this accept body (CUM-249).
 export const OTA_CHECK = { ok: true };
 
+// Saved Wi-Fi networks (CUM-207): GET /api/wifi shape the Connectivity Wi-Fi panel
+// reads. A password is never present in this payload. `current` marks the one in use;
+// list order is priority order. Enough entries to exercise the reorder "Up" affordance.
+export const WIFI = {
+  max: 5,
+  count: 3,
+  networks: [
+    { ssid: 'Home 5th Floor', open: false, auto: true, current: true },
+    { ssid: 'Cafe-Guest', open: true, auto: true, current: false },
+    { ssid: 'Pixel Hotspot', open: false, auto: true, current: false },
+  ],
+  sta: true,
+  staIp: '192.168.1.42',
+  apUp: true,
+  apSsid: 'Nimbus-setup',
+  apIp: '192.168.4.1',
+};
+
 // Map endpoint path -> default response. GET-shaped; POST/actions fall back to OK.
 export const DEFAULTS = {
   '/api/state': STATE,
+  '/api/wifi': WIFI,
   '/api/orch': ORCH,
   '/api/models': MODELS,
   '/api/fallbacks': FALLBACKS,

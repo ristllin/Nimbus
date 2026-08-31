@@ -32,6 +32,11 @@ bool add(const String& ssid, const String& pass, const String& protectSsid,
 
 bool forget(const String& ssid);
 
+// Move a saved network to a new 0-based position (the owner's optional priority order,
+// CUM-207). Returns false if the SSID is absent or the move is a no-op (nothing to
+// persist). The index is clamped into range by the portable layer.
+bool reorder(const String& ssid, int toIndex);
+
 // Re-key an entry: same password, corrected SSID. Exists because a mistyped network
 // name is otherwise unrecoverable without the owner re-entering the password - the
 // store never hands one out, so nothing else can move it. Returns false if `from` is

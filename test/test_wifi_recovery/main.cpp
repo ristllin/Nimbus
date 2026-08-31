@@ -1,5 +1,8 @@
 #include <unity.h>
 
+#include <cstdint>
+#include <initializer_list>
+
 #include "nimbus/wifi/setup_ap.h"
 
 using nimbus::wifi::decideSetupAp;
@@ -129,9 +132,52 @@ static void test_first_boot_is_quiescent() {
   TEST_ASSERT_EQUAL(SetupApAct::None, decideSetupAp(in));
 }
 
+// CUM-207: while the multi-network failover supervisor is cycling scan -> next saved
+// network, "trying the NEXT network" is progress, not churn. failoverActive stands the
+// whole recovery down (the supervisor owns the radio); the AP only returns once failover
+// is exhausted and clears the flag. Asserted as a CLASS rule over every (sta, ap,
+// onboarded, msSinceJoin, board) combination that would otherwise act: NONE may survive.
+static void test_failover_active_suppresses_every_recovery_action() {
+  int actedWithoutFailover = 0;
+  for (int sta = 0; sta < 2; ++sta)
+    for (int ap = 0; ap < 2; ++ap)
+      for (int onb = 0; onb < 2; ++onb)
+        for (int tft = 0; tft < 2; ++tft)
+          for (uint32_t since : {0u, 5000u, 31000u}) {
+            SetupApInputs in = base();
+            in.tftBoard = tft;
+            in.staConnected = sta;
+            in.apAddressed = ap;
+            in.onboarded = onb;
+            in.msSinceJoin = since;
+            // Sanity: at least some of these DO act when failover is not running, so the
+            // suppression below is proving something (guards against a vacuous pass).
+            in.failoverActive = false;
+            if (decideSetupAp(in) != SetupApAct::None) ++actedWithoutFailover;
+            // The rule: with failover active, none of them may act.
+            in.failoverActive = true;
+            TEST_ASSERT_EQUAL(SetupApAct::None, decideSetupAp(in));
+          }
+  TEST_ASSERT_TRUE(actedWithoutFailover > 0);
+}
+
+// Once failover is EXHAUSTED (supervisor Unreachable -> clears the flag) the recovery
+// resumes: nothing reachable brings the AP straight back, so the owner is never stranded.
+static void test_recovery_resumes_when_failover_exhausted() {
+  SetupApInputs in = base();
+  in.staConnected = false;
+  in.apAddressed = false;
+  in.failoverActive = true;
+  TEST_ASSERT_EQUAL(SetupApAct::None, decideSetupAp(in));      // held while failing over
+  in.failoverActive = false;
+  TEST_ASSERT_EQUAL(SetupApAct::RestoreAp, decideSetupAp(in)); // exhausted -> AP back
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_notifier_never_touches_the_radio);
+  RUN_TEST(test_failover_active_suppresses_every_recovery_action);
+  RUN_TEST(test_recovery_resumes_when_failover_exhausted);
   RUN_TEST(test_restore_when_nothing_reachable);
   RUN_TEST(test_restore_is_not_tft_gated);
   RUN_TEST(test_drop_ap_on_tft_after_handoff);
