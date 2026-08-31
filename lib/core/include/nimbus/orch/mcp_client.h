@@ -91,6 +91,19 @@ enum class ErrorKind : uint8_t {
 std::string nextStepError(ErrorKind kind, const std::string& serverName,
                           const std::string& detail = "");
 
+// True for a transport-layer outcome the DEVICE seam detects during the socket
+// exchange itself, which the body parsers cannot reconstruct from (status, body):
+//   - TooLarge: the body was capped mid-read, so what arrived is a truncated
+//     prefix that would parse as Malformed, burying the honest size message;
+//   - Timeout / Connect: there is no usable HTTP status or body at all.
+// When the device exchange reports one of these on McpResp.kind, the seam surfaces
+// nextStepError(kind) directly instead of trusting a parse of the partial/empty
+// body. Pure + host-tested so "refused cleanly with an honest message" (docs/mcp.md
+// "Limits and safety") is a pinned invariant, not a claim asserted only in prose.
+// Every other kind is derived by the parser from a real response and is NOT a
+// transport error. Keep this in sync with the kinds exchange() sets itself.
+bool isTransportError(ErrorKind k);
+
 // The result of the initialize handshake.
 struct InitializeResult {
   bool        ok = false;
@@ -145,6 +158,16 @@ InitializeResult parseInitialize(int httpStatus, const std::string& contentType,
 // empty tool array is a valid (ok=true, tools empty) result.
 ToolsListResult parseToolsList(int httpStatus, const std::string& contentType,
                                const std::string& body, const std::string& serverName);
+
+// Append `page` tools onto `acc` up to a per-server `budget`, preserving server
+// order, and return how many tools were DROPPED because the budget was already
+// reached (0 when they all fit). Deterministic: the first `budget` tools a server
+// advertises survive, the rest are dropped as a block - never a silent or
+// order-dependent subset. The device seam calls this while paging tools/list and
+// LOG the returned drop count, so a server that advertises far more tools than the
+// context budget surfaces exactly the budget, visibly (docs/mcp.md "Tool budget").
+size_t appendToolsWithinBudget(std::vector<ToolDef>& acc,
+                               const std::vector<ToolDef>& page, size_t budget);
 
 // Parse a tools/call response. A JSON-RPC error -> ok=false; an MCP tool error
 // (result.isError=true) -> ok=true, isError=true, text = the error text.

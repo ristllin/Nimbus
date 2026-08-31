@@ -159,6 +159,13 @@ std::string nextStepError(ErrorKind kind, const std::string& serverName,
   }
 }
 
+bool isTransportError(ErrorKind k) {
+  // The three kinds exchange() sets from the socket read itself (no usable HTTP
+  // response, or a body truncated at the size cap). The rest are parser verdicts
+  // on a real body. See the header for why the seam must prefer these.
+  return k == ErrorKind::Timeout || k == ErrorKind::Connect || k == ErrorKind::TooLarge;
+}
+
 // ---- Streamable HTTP body extraction -----------------------------------------
 
 namespace {
@@ -313,6 +320,19 @@ ToolsListResult parseToolsList(int httpStatus, const std::string& contentType,
     r.tools.push_back(std::move(td));
   }
   return r;
+}
+
+size_t appendToolsWithinBudget(std::vector<ToolDef>& acc,
+                               const std::vector<ToolDef>& page, size_t budget) {
+  size_t dropped = 0;
+  for (const ToolDef& t : page) {
+    if (acc.size() >= budget) {
+      dropped++;          // budget reached: drop the rest of the page, in order
+      continue;
+    }
+    acc.push_back(t);
+  }
+  return dropped;
 }
 
 CallToolResult parseCallTool(int httpStatus, const std::string& contentType,

@@ -679,15 +679,21 @@ mc::ToolsListResult collectToolsPage(const McpReq& base, const String& session,
   lq.body = mc::buildToolsList(std::string(cursor.c_str()));
   McpResp r;
   exchangeRetry(lq, 2, r);
+  // A capped/absent body is authoritative over a parse of its truncated prefix.
+  if (mc::isTransportError(r.kind)) {
+    mc::ToolsListResult lr;
+    lr.error = r.kind;
+    lr.errorMsg = mc::nextStepError(r.kind, serverName.c_str());
+    return lr;
+  }
   mc::ToolsListResult lr = mc::parseToolsList(r.status, r.ctype, r.body, serverName.c_str());
   if (!lr.ok) return lr;
-  for (auto& t : lr.tools) {
-    if ((int)tools.size() >= kMaxToolsPerSrv) {
-      alogf("mcp: %s exposed >%d tools - the rest are dropped", serverName.c_str(), kMaxToolsPerSrv);
-      break;
-    }
-    tools.push_back(std::move(t));
-  }
+  // Per-server tool budget, deterministic (first kMaxToolsPerSrv survive). The
+  // helper returns the exact drop count so a truncated toolset is logged, never
+  // silent (AGENTS.md no-silent-drop discipline).
+  size_t dropped = mc::appendToolsWithinBudget(tools, lr.tools, (size_t)kMaxToolsPerSrv);
+  if (dropped)
+    alogf("mcp: %s exposed >%d tools - %u dropped", serverName.c_str(), kMaxToolsPerSrv, (unsigned)dropped);
   return lr;
 }
 
@@ -705,6 +711,7 @@ bool discover(const String& serverName, const UrlParts& u, const String& bearer,
   init.body = mc::buildInitialize("nimbus", "");
   McpResp r;
   exchangeRetry(init, 2, r);
+  if (mc::isTransportError(r.kind)) { kindOut = r.kind; return false; }  // capped/absent body
   mc::InitializeResult ir = mc::parseInitialize(r.status, r.ctype, r.body, serverName.c_str());
   if (!ir.ok) { kindOut = ir.error; return false; }
   sessionOut = r.session;  // capture a stateful server's session id
@@ -745,31 +752,42 @@ void registerToolsLocked(ToolRegistry& reg, const String& slug, const std::vecto
 
 }  // namespace
 
+// Pre-flight for a remote tool call, factored out to keep callTool under the
+// complexity budget: RBAC (write access), the automated-turn gate, FAIL-CLOSED
+// server resolution (only an enabled, device-dialed, APPROVED entry resolves), and
+// the URL parse. Returns "" on success - filling url/bearer/name/u - else a
+// ready-to-surface, house-style error line.
+static std::string callToolPreflight(const std::string& slug, const Principal& who,
+                                     String& url, String& bearer, String& name, UrlParts& u) {
+  // RBAC: a remote tool can have side effects; require an approved account with
+  // write access. Unknown/revoked (no perms) and Guest are refused, fail-closed.
+  if (!who.perms().writeOwn)
+    return "This tool needs an approved account with write access.";
+  // An unattended turn (a routine firing, a fan-out synthesis chewing on untrusted
+  // sub-agent text) must never reach an external server.
+  if (agent::orchestrator::inScheduledTurn())
+    return "External tools are turned off during automated turns.";
+  // resolveServer is FAIL-CLOSED: false unless the slug is an enabled, device-
+  // dialed, APPROVED mcp entry - so a revoked server whose stale tool is still
+  // registered, or a same-slug provider-only MCP, is never dialed.
+  if (!resolveServer(String(slug.c_str()), url, bearer, name))
+    return mc::nextStepError(mc::ErrorKind::Connect, slug, "server not configured or not approved");
+  u = parseUrl(url);
+  if (!u.ok)
+    return "MCP server " + std::string(name.c_str()) + " has an invalid URL. Fix it on the device web page.";
+  return "";
+}
+
 // The handler body for a discovered tool: proxy the call out to its server.
 // Runs on the turn task under the dispatch (memory) Lock, so it is bounded by a
 // short timeout + the per-server breaker (like web.search) - never a long hold.
 ToolResult callTool(const std::string& slug, const std::string& toolName,
                     ArduinoJson::JsonObjectConst args, const Principal& who) {
-  // RBAC: a remote tool can have side effects; require an approved account with
-  // write access. Unknown/revoked (no perms) and Guest are refused, fail-closed.
-  if (!who.perms().writeOwn)
-    return ToolResult::fail("This tool needs an approved account with write access.");
-  // An unattended turn (a routine firing, a fan-out synthesis chewing on
-  // untrusted sub-agent text) must never reach an external server.
-  if (agent::orchestrator::inScheduledTurn())
-    return ToolResult::fail("External tools are turned off during automated turns.");
-
-  // resolveServer is FAIL-CLOSED: it returns false unless the slug is an enabled,
-  // device-dialed, APPROVED mcp entry - so a revoked server whose stale tool is
-  // still registered, or a same-slug provider-only MCP, is never dialed.
   String url, bearer, name;
-  if (!resolveServer(String(slug.c_str()), url, bearer, name))
-    return ToolResult::fail(mc::nextStepError(mc::ErrorKind::Connect, slug,
-                                              "server not configured or not approved"));
+  UrlParts u;
+  std::string pre = callToolPreflight(slug, who, url, bearer, name, u);
+  if (!pre.empty()) return ToolResult::fail(pre);
   const std::string nameS = name.c_str();
-  UrlParts u = parseUrl(url);
-  if (!u.ok)
-    return ToolResult::fail("MCP server " + nameS + " has an invalid URL. Fix it on the device web page.");
 
   // Guard the shared s_srv slot (see the s_srv note): this handler is reachable on
   // the AsyncTCP /mcp task, so hold the same Lock sync() uses. The Lock is
@@ -799,6 +817,14 @@ ToolResult callTool(const std::string& slug, const std::string& toolName,
   McpResp resp;
   exchange(q, resp);
   if (st && resp.session.length()) st->sessionId = resp.session;
+  // A transport-detected failure (the body capped at kMaxBodyBytes, or no usable
+  // response) can't be reconstructed by parsing the partial body - the truncated
+  // prefix would read as Malformed and bury the honest reason. Surface the honest
+  // line ("sent more data than the device can hold" etc.) straight from the kind.
+  if (mc::isTransportError(resp.kind)) {
+    if (st) st->breaker.onFailure(millis());
+    return ToolResult::fail(mc::nextStepError(resp.kind, nameS));
+  }
   mc::CallToolResult r = mc::parseCallTool(resp.status, resp.ctype, resp.body, nameS);
   if (!r.ok) {
     if (st) st->breaker.onFailure(millis());
