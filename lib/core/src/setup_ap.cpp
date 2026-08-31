@@ -19,6 +19,13 @@ SetupApAct decideSetupAp(const SetupApInputs& in) {
   // softAP to reconcile - turning it back on would defeat the Wi-Fi-off design.
   if (!in.orchestrator) return SetupApAct::None;
 
+  // The multi-network failover supervisor is mid-cycle (scanning, or joining the next
+  // saved network). That is progress toward a real link, not the churn this recovery
+  // guards against, and the supervisor owns the radio while it runs - so stand down and
+  // let it finish. Once every saved network is exhausted the supervisor clears this and
+  // the checks below bring the setup/recovery AP back (CUM-207).
+  if (in.failoverActive) return SetupApAct::None;
+
   // Nothing is reachable: the station is down AND the AP never came up (or was torn
   // down). The setup/recovery network must come straight back so the owner is never
   // locked out. Board-independent - only the white-screen DROP below is TFT-specific.

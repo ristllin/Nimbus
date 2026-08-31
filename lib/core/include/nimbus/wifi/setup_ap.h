@@ -37,6 +37,13 @@ struct SetupApInputs {
   bool     handoffGrace = false;  // just-joined grace window before a white-screen drop
   uint32_t msSinceJoin  = 0;      // since the last credential test began; 0 = none pending
   uint32_t joinGraceMs  = 30000;  // allow a join this long before protecting the AP from it
+  // The multi-network failover supervisor is actively cycling scan -> next saved network
+  // (WifiPolicy in Scanning/Joining). "Trying the NEXT saved network" is PROGRESS, not
+  // churn (CUM-207): while it is true the supervisor owns the radio, so this function
+  // stands down and returns None. The setup/recovery AP only comes back once failover is
+  // EXHAUSTED (the supervisor reaches Unreachable and clears this), never mid-cycle - a
+  // bounded window, so a TFT board is never stranded with the AP down.
+  bool     failoverActive = false;
 };
 
 // Decide the single setup-AP action for this tick. See the header note for the why.

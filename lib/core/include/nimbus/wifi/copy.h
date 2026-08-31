@@ -37,6 +37,13 @@ struct LinkView {
   int         knownCount = 0;
   uint32_t    apHoldSecLeft = 0;
   uint32_t    nextRetrySec = 0;
+  // Multi-network failover progress (CUM-207). candCount is how many saved networks are
+  // in range this cycle; candIndex is the 1-based position of the one being tried now.
+  // When candCount > 1 the status reads fail-honest as "trying <ssid> 2/3..." so the
+  // owner sees the device working THROUGH its saved networks, not stuck. candCount <= 1
+  // (a lone candidate, or none) keeps the plain "Joining <ssid>..." line.
+  int         candIndex = 0;
+  int         candCount = 0;
 };
 
 // The URL encoded into the Sign-in QR / handed to a browser.

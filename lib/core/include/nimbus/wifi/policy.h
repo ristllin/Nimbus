@@ -95,6 +95,10 @@ class WifiPolicy {
   uint32_t    nextRetrySec(uint32_t nowMs) const;
   uint32_t    apHoldSecLeft(uint32_t nowMs) const;
   int         candidateCount() const { return (int)cands_.size(); }
+  // 0-based cursor into the candidate list for THIS failover cycle - which saved
+  // network is being tried right now. The device adds 1 to render "trying <ssid> 2/3"
+  // (CUM-207). Only meaningful while Scanning/Joining; 0 otherwise.
+  int         candidateIndex() const { return (int)candIdx_; }
   void        reset();
 
  private:

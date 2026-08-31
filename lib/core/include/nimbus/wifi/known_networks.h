@@ -83,6 +83,14 @@ UpsertResult upsertNetwork(std::vector<KnownNet>& nets, const KnownNet& add, int
 
 bool forgetNetwork(std::vector<KnownNet>& nets, const std::string& ssid);
 
+// Move a saved network to a new 0-based position (the owner's optional priority order).
+// The list is otherwise MRU (index 0 = most recently joined) and a successful join still
+// re-promotes to the head via touchNetwork - so a reorder is a HINT that also breaks
+// equal-signal ties in rankCandidates (stable sort keeps list order), not a hard pin.
+// `toIndex` is clamped into range. Returns true only if the order actually changed, so
+// the caller can skip the NVS write on a no-op. An absent SSID returns false.
+bool moveNetwork(std::vector<KnownNet>& nets, const std::string& ssid, int toIndex);
+
 // Record a successful join: promote to the head and stamp the day. Returns true ONLY
 // if the list actually changed, so the caller can skip the NVS write when a device
 // reconnects to the network already at the head (NVS has finite erase cycles and this

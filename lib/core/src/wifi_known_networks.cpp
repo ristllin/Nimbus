@@ -113,6 +113,22 @@ bool forgetNetwork(std::vector<KnownNet>& nets, const std::string& ssid) {
   return true;
 }
 
+bool moveNetwork(std::vector<KnownNet>& nets, const std::string& ssid, int toIndex) {
+  const int at = findNetwork(nets, ssid);
+  if (at < 0) return false;
+  if (nets.empty()) return false;
+  // Clamp into range: a UI drag or a hand-rolled request can name any index, and a
+  // moved-to-out-of-bounds slot must land at an end, never corrupt the vector.
+  int dst = toIndex;
+  if (dst < 0) dst = 0;
+  if (dst >= (int)nets.size()) dst = (int)nets.size() - 1;
+  if (dst == at) return false;   // already there - nothing to persist
+  KnownNet moved = nets[(size_t)at];
+  nets.erase(nets.begin() + at);
+  nets.insert(nets.begin() + dst, moved);
+  return true;
+}
+
 bool touchNetwork(std::vector<KnownNet>& nets, const std::string& ssid, uint32_t day) {
   const int at = findNetwork(nets, ssid);
   if (at < 0) return false;

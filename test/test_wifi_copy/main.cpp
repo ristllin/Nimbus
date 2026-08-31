@@ -181,6 +181,38 @@ static void test_wifi_row_label_per_state() {
   TEST_ASSERT_TRUE(has(wifiRowLabel(held), "setup network published"));
 }
 
+// CUM-207 fail-honest failover: joining the 2nd of 3 reachable saved networks reads
+// "Joining <ssid> 2/3..." so the owner sees the device working THROUGH the list.
+static void test_failover_progress_shows_n_of_m() {
+  LinkView v = view(LinkState::Joining);
+  v.ssid = "Office";
+  v.candIndex = 2;
+  v.candCount = 3;
+  TEST_ASSERT_TRUE(has(netStatusLine(v), "Joining Office 2/3"));
+  TEST_ASSERT_TRUE(has(wifiRowLabel(v), "joining Office 2/3"));
+}
+
+// A single reachable candidate is not a failover: no "1/1" noise, just the plain line.
+static void test_failover_progress_hidden_for_a_lone_candidate() {
+  LinkView v = view(LinkState::Joining);
+  v.ssid = "Home";
+  v.candIndex = 1;
+  v.candCount = 1;
+  const std::string s = netStatusLine(v);
+  TEST_ASSERT_TRUE(has(s, "Joining Home..."));
+  TEST_ASSERT_FALSE(has(s, "1/1"));
+}
+
+// A stale/absent count (0, or index past count) must never print a nonsense ratio.
+static void test_failover_progress_guards_bad_counts() {
+  LinkView v = view(LinkState::Joining);
+  v.ssid = "X";
+  v.candIndex = 0; v.candCount = 0;
+  TEST_ASSERT_FALSE(has(netStatusLine(v), "/"));
+  v.candIndex = 5; v.candCount = 3;   // index past the count
+  TEST_ASSERT_FALSE(has(netStatusLine(v), "5/3"));
+}
+
 // Every row is a submenu entry, so it must carry the affordance.
 static void test_wifi_row_label_always_marks_a_submenu() {
   for (LinkState st : {LinkState::Online, LinkState::Joining, LinkState::Scanning,
@@ -421,6 +453,9 @@ int main() {
   RUN_TEST(test_net_status_unset_vs_unreachable_differ);
   RUN_TEST(test_net_status_hold_reports_remaining_time);
   RUN_TEST(test_net_status_online_reports_reachable_address);
+  RUN_TEST(test_failover_progress_shows_n_of_m);
+  RUN_TEST(test_failover_progress_hidden_for_a_lone_candidate);
+  RUN_TEST(test_failover_progress_guards_bad_counts);
   RUN_TEST(test_wifi_row_label_per_state);
   RUN_TEST(test_wifi_row_label_always_marks_a_submenu);
   RUN_TEST(test_scan_row_shows_signal_and_saved_marker);

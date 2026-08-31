@@ -34,6 +34,15 @@ std::string apName(const LinkView& v) {
   return v.apSsid.empty() ? std::string("the setup network") : asciiOnly(v.apSsid);
 }
 
+// " 2/3" when the device is failing over across more than one reachable saved network,
+// "" otherwise. Fail-honest progress (CUM-207): the owner sees it work THROUGH the list
+// rather than appearing stuck on one name. Guarded so a stale/absent count never prints
+// a nonsense "1/1" or "2/1".
+std::string failoverProgress(const LinkView& v) {
+  if (v.candCount <= 1 || v.candIndex < 1 || v.candIndex > v.candCount) return std::string();
+  return " " + std::to_string(v.candIndex) + "/" + std::to_string(v.candCount);
+}
+
 }  // namespace
 
 std::string deviceUrl(const std::string& ip, const std::string& code) {
@@ -71,7 +80,7 @@ std::string netStatusLine(const LinkView& v, size_t maxChars) {
     case LinkState::Online:  // handled above
       break;
     case LinkState::Joining:
-      return fit("Joining " + asciiOnly(v.ssid) + "...", maxChars);
+      return fit("Joining " + asciiOnly(v.ssid) + failoverProgress(v) + "...", maxChars);
     case LinkState::Scanning:
       return fit("Looking for a known Wi-Fi network...", maxChars);
     case LinkState::Idle:
@@ -190,7 +199,7 @@ std::string wifiRowLabel(const LinkView& v, size_t maxChars) {
   } else {
     switch (v.state) {
       case LinkState::Online:   s = "Wi-Fi: " + asciiOnly(v.staIp); break;
-      case LinkState::Joining:  s = "Wi-Fi: joining " + asciiOnly(v.ssid); break;
+      case LinkState::Joining:  s = "Wi-Fi: joining " + asciiOnly(v.ssid) + failoverProgress(v); break;
       case LinkState::Scanning: s = "Wi-Fi: scanning"; break;
       default:
         s = v.knownCount > 0 ? "Wi-Fi: not joined - setup network on"
