@@ -132,11 +132,58 @@ background) turns, so untrusted automated text can never reach an outside server
   and a server that keeps failing is put on a brief cooldown (a circuit breaker)
   and skipped until it recovers, so one bad server does not stall your requests.
   When a call does fail, the message says what happened and the one next step.
-- **Bounded size.** Responses are read into the device's larger memory and
-  capped; a server that sends far more than the device can hold is refused
-  cleanly rather than crashing.
+- **Bounded size.** A response is capped: a server that sends far more than the
+  device can hold is refused with a clear message that says so, never a crash.
 - **Tool budget.** Up to a few dozen tools per server are surfaced, within the
-  assistant's context budget.
+  assistant's context budget. A server that offers more has the rest left off,
+  and which tools are kept is the same every time.
+
+## Servers worth connecting
+
+A short, honest starter set of remote MCP servers a Nimbus owner tends to get real
+use from, grouped by how you connect today. The endpoint is what you paste into the
+connector's **MCP endpoint URL**; verify the current URL on the server's own page
+before relying on it, since hosted endpoints move. How you sign in matters more than
+the tool list: the three groups below are the three sign-in paths the device
+supports right now.
+
+### Works now with a token or no sign-in
+
+These take a fixed token (pasted into the connector) or no sign-in at all, so they
+connect the moment you approve them.
+
+| Server | What it does for you | Endpoint | Connect with |
+|---|---|---|---|
+| GitHub | Read and triage issues, pull requests, and code across your repositories. | `https://api.githubcopilot.com/mcp/` | A personal access token in the token field. |
+| Hugging Face | Search models, datasets, and papers, and run small hosted apps from a turn. | `https://huggingface.co/mcp` | A Hugging Face access token in the token field. |
+| Context7 | Pull current, version-specific library and framework docs into an answer. | `https://mcp.context7.com/mcp` | No token needed; an optional free key raises the rate limit. |
+| DeepWiki | Ask questions about any public GitHub project's documentation. | `https://mcp.deepwiki.com/mcp` | No sign-in; public repositories only. |
+
+### On your own network (the best fit for a desk device)
+
+A server on your own network is reachable from the device but not from a provider's
+cloud, so turn on **device-dialed** for it (the default for a private address) and
+give it a fixed token. These keep your data on your network.
+
+| Server | What it does for you | Endpoint | Connect with |
+|---|---|---|---|
+| Home Assistant | Control lights, scenes, and climate, and read sensors, by voice, on your own network. | `http://homeassistant.local:8123/api/mcp` | A long-lived access token from Home Assistant. |
+| Your own server | Reach files, notes, or a database on a machine at home without sending anything to a provider. | `http://192.168.1.20:3111/mcp` (your address) | A fixed token you set on that server. |
+
+### Hosted servers that need a browser sign-in
+
+These are OAuth-only: they do not take a pasted token, so you connect them with the
+**Sign in** button (see [Signing in to a hosted server](#signing-in-to-a-hosted-server-oauth)),
+approving on a phone or laptop on the same network. Sign-in works with a server that
+offers automatic client registration; a server that needs a hand-registered client is
+not supported this way.
+
+| Server | What it does for you | Endpoint | Connect with |
+|---|---|---|---|
+| Linear | Create and update issues and projects. | `https://mcp.linear.app/mcp` | Sign in (browser). |
+| Notion | Search and update your pages and databases. | `https://mcp.notion.com/mcp` | Sign in (browser). |
+| Sentry | Look up errors and issues from your projects. | `https://mcp.sentry.dev/mcp` | Sign in (browser). |
+| Atlassian | Read and update Jira issues and Confluence pages. | `https://mcp.atlassian.com/v1/sse` | Sign in (browser). |
 
 ## Using MCP with a Cumulo key
 
