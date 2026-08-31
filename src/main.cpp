@@ -5026,13 +5026,19 @@ void loop() {
   if (g_firstRunCalPending && !g_menu.isOpen() && !g_askSticky &&
       !deviceNeedsSetup() && now >= 3000) {   // now == millis(): a short boot-settle grace
     g_firstRunCalPending = false;
-    runTouchCalibration();
-    if (!agent::store::touchCal().length()) {
-      // Aborted/skipped: mark first-run handled with the board-model default (the same
-      // orientation already applied at boot), so pending stays false on the next boot.
-      agent::store::setTouchCal(String(nimbus::touch::formatCal(
-          nimbus::touch::boardDefaultCal(g_firstRunTouchKind)).c_str()));
-      agent::alog("[cal] first-run calibration skipped - board default persisted");
+    // Re-check against the CURRENT stored cal: if the owner already calibrated during
+    // setup (Settings > Display, or the web field), tchCal is now set and the offer is
+    // moot - suppress the redundant second prompt.
+    if (nimbus::touch::firstRunCalPending(g_firstRunTouchKind,
+                                          agent::store::touchCal().length() > 0)) {
+      runTouchCalibration();
+      if (!agent::store::touchCal().length()) {
+        // Aborted/skipped: mark first-run handled with the board-model default (the
+        // same orientation already applied at boot), so pending stays false next boot.
+        agent::store::setTouchCal(String(nimbus::touch::formatCal(
+            nimbus::touch::boardDefaultCal(g_firstRunTouchKind)).c_str()));
+        agent::alog("[cal] first-run calibration skipped - board default persisted");
+      }
     }
   }
 
