@@ -77,6 +77,8 @@ static void checkStatus(ndtest::Ctx& c, DaemonHttpTransport& cl, int port, const
   c.ok(has(s.body, "\"synced\":true"), "the host clock is reported synced (routines work)");
   c.ok(has(s.body, "\"storeSD\":true"), "durable volume plays the SD role (no false 'no SD' alarm)");
   c.ok(!has(s.body, "\"ota\":"), "no ESP-OTA fields (the platform rolls the image, not device OTA)");
+  // params must be a real (empty) array, never null - the app does d.params.forEach.
+  c.ok(has(s.body, "\"params\":[]"), "params is an empty array, not null (app iterates it)");
 
   Out h = G(cl, port, "/api/health", tok);
   c.ok(h.status == 200 && has(h.body, "\"components\":["), "GET /api/health -> components list");

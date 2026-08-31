@@ -70,3 +70,28 @@ To stop remote access, use "Unpair" (keeps cloud access on, drops this pairing) 
   as soon as it is back.
 - A future hardening step pins the relay's certificate issuer in addition to the
   bundle check; see [security.md](security.md).
+
+## Virtual Nimbus (hosted instances)
+
+A Virtual Nimbus is a hosted instance of the same assistant, with no physical
+device. You reach it the same way, and it serves the **same web app** you already
+know: Home, Chat, Memory, Assistant, and Device, with your chat, memory, and
+provider settings all live. Because the relay session already signed you in, the
+page opens without a second sign-in.
+
+What is the same, and what differs, panel by panel (the parity a hosted instance
+keeps):
+
+| Panel | On a device | On a Virtual Nimbus |
+|---|---|---|
+| Chat | Real | Real (the same engine) |
+| Memory (files, long-term memory, scratchpad) | Real | Real |
+| Assistant (providers, models, tools, usage) | Real | Real |
+| Ring, display, touch | Real hardware | Not present - shown honestly, no controls that do nothing |
+| Battery | Real reading | Always on external power (hosted) |
+| Sound (mic, speaker, tones) | Real hardware | Not present |
+| Wi-Fi and network | Real radio | Managed by the platform |
+| Software update | Device firmware update | The platform rolls the instance image; there is no device update to run |
+
+The instance never shows a made-up hardware reading and never leaves a control
+that does nothing: a panel that has no hardware behind it says so plainly.

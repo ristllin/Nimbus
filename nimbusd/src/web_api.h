@@ -247,7 +247,7 @@ class WebApi {
     // Session usage (real engine counters).
     d["turnInFlight"] = s.turnInFlight;
     d["turnCount"]    = s.turnCount;
-    d["params"] = JsonArray();   // ring/hardware overrides do not apply to a VN
+    d["params"].to<JsonArray>();   // ring/hardware overrides do not apply to a VN
     // NOTE: no d.ota* fields - ESP OTA does not apply; the platform rolls the image.
     std::string out;
     serializeJson(d, out);
@@ -326,8 +326,8 @@ class WebApi {
     u["sessIn"] = s.sessionTokensIn;
     u["sessOut"] = s.sessionTokensOut;
     u["turns"] = s.turnCount;
-    u["byProvider"] = JsonArray();
-    d["jobs"] = JsonArray();
+    u["byProvider"].to<JsonArray>();
+    d["jobs"].to<JsonArray>();
     std::string out;
     serializeJson(d, out);
     return okJson(out);
@@ -715,7 +715,7 @@ class WebApi {
   ApiResp usageHistory() {
     JsonDocument d;
     d["today"] = (uint32_t)(time(nullptr) / 86400);
-    d["days"] = JsonArray();
+    d["days"].to<JsonArray>();
     std::string out; serializeJson(d, out);
     return okJson(out);
   }
