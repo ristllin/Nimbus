@@ -5,6 +5,7 @@
 #include "nimbus/device_identity.h"   // wifiQrPayload - the setup screen's join QR
 #include "nimbus/qr.h"
 #include "nimbus/text_page.h"         // TextPager - Ask-screen pagination
+#include "nimbus/wifi/copy.h"         // first-run setup copy (CTA + step sequence)
 
 // The colour touch UI. Layout language is lifted from the web interface so the
 // two surfaces read as one product: cards are the web's .sec (raised fill, 1px
@@ -269,6 +270,27 @@ static void drawRingHome(Fb565& fb, const Layout& L, Rendered& r, const ScreenCt
 
 void drawStatusHome(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx) {
   drawHeader(fb, L, r, ctx, "", false);
+
+  // First-run, credless device (CUM-259): the idle status screen must NOT look
+  // onboarded with an empty session list and no way back. Draw a "Set up Wi-Fi"
+  // call-to-action - the ONLY control on the screen - that taps back to Setup. This
+  // runs before every board-specific layout below (ring board and ringless alike),
+  // so no first-run screen can strand the owner. Default needsSetup=false leaves the
+  // provisioned renders and their goldens untouched.
+  if (ctx.needsSetup) {
+    const int cardH = std::max(L.minTap + 28, 76);
+    const int cx = L.gut(), cy = L.bodyTop();
+    const int cw = L.w - 2 * L.gut();
+    fb.fillRoundRect(cx, cy, cw, cardH, L.cardRadius, kTeal);
+    const std::string t1 = nimbus::wifi::setupCtaTitle();
+    const std::string t2 = nimbus::wifi::setupCtaHint();
+    fb.text((L.w - fb.textWidth(t1, 2)) / 2, cy + 16, t1, kBg, 2);
+    fb.text((L.w - fb.textWidth(t2, 1)) / 2, cy + 44, t2, kBg, 1);
+    push(r, cx, cy, cw, cardH, TapRegion::Action::Setup);
+    if (!ctx.fwVersion.empty())
+      fb.text(L.gut(), L.h - fb.textHeight(1) - 1, ctx.fwVersion, kInk3, 1);
+    return;
+  }
 
   // Ringless board: the ring IS the display, so use the dedicated ring-dominant
   // layout. buildCtx fills ringLeds only on a board with no physical ring, so a
@@ -676,10 +698,15 @@ int drawTextCard(Fb565& fb, const Layout& L, int y, const std::string& body,
     else { lines.push_back(cur); cur = word; }
     word.clear();
   };
-  for (char c : asciiSanitize(body)) {
+  // Honor explicit '\n' as a hard line break. asciiSanitize() drops it (u < 32), so
+  // filter inline instead: printable ASCII is byte-identical to the old path, and a
+  // newline now breaks the line the way a step list or paragraph needs (the copy that
+  // leads the Setup screen with a numbered sequence relies on it - CUM-260).
+  for (char c : body) {
+    const uint8_t u = uint8_t(c);
     if (c == '\n') { flushWord(); lines.push_back(cur); cur.clear(); }
     else if (c == ' ') flushWord();
-    else word.push_back(c);
+    else if (u >= 32 && u <= 126) word.push_back(c);
   }
   flushWord();
   if (!cur.empty()) lines.push_back(cur);
@@ -909,10 +936,12 @@ void drawSetup(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx, bo
 
   drawHeader(fb, L, r, ctx, joinScreen ? "Setup" : "Sign in", true);
   int y = L.bodyTop();
+  // SetupInfo leads with the SEQUENCE, not just the facts (CUM-260): join this
+  // network, then open the setup address. The owner who joined via the QR was left
+  // with nothing telling them the next step; step 2 is that step, and the trailing
+  // line is the no-popup safety net. Sign-in (config) keeps its one-line status.
   const std::string body = joinScreen
-      ? ("Scan to join " + (ctx.apName.empty() ? std::string("the setup hotspot")
-                                               : ctx.apName) +
-         ". Setup then opens on your phone; nothing to type.")
+      ? nimbus::wifi::setupSteps(ctx.apName, displayUrl(ctx.setupUrl))
       : (ctx.netStatus.empty() ? std::string("Scan to open settings. You are signed in automatically.")
                                : ctx.netStatus);
 

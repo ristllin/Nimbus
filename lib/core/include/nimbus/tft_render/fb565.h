@@ -56,6 +56,7 @@ struct TapRegion {
     ScrollUp,
     ScrollDown,
     ShowCode,    // Sign-in QR: reveal the full device sign-in code (TokenDetail)
+    Setup,       // first-run CTA: return to the SetupInfo screen (CUM-259)
   };
   Action  action = Action::None;
   int16_t index = -1;   // row / session index where the action needs one

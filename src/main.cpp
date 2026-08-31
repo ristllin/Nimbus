@@ -347,6 +347,14 @@ static SettingsMenu g_menu(g_cfg);
 // production needs this too. Set by renderScreen()/renderMenu().
 static volatile uint8_t g_lastScreen = uint8_t(attn::ScreenId::StatusIdle);
 
+// First-run auto-return to Setup (CUM-259). While a credless device is parked on
+// StatusIdle, this holds the millis() deadline at which the loop repaints SetupInfo;
+// 0 = disarmed. Armed in renderScreen(StatusIdle) when deviceNeedsSetup(), re-armed
+// on touch, disarmed by any other render. ~30 s: long enough not to yank the screen
+// out from under a reading owner, short enough that nobody sits stranded.
+static uint32_t g_setupReturnAtMs = 0;
+static constexpr uint32_t kSetupReturnMs = 30000;
+
 // An AMBIENT (non-attention) screen intent must NOT repaint over the long-idle
 // screensaver logo. When the logo is up, the broker's ~30 s snapshot heartbeats
 // still emit a StatusIdle screen intent; repainting it under the logo makes the
@@ -818,9 +826,21 @@ static void fillHeaderCtx(render::ScreenCtx& c) {
   }
 }
 
+// First-run posture (CUM-259): an Orchestrator device with no saved Wi-Fi that has
+// not been through onboarding. In this state the idle status screen must show the
+// "Set up Wi-Fi" CTA (and the loop auto-returns to Setup) so a credless owner can
+// never strand off the Setup screen. Notifier has no Wi-Fi step, so it is excluded -
+// its "waiting for a connection" screen is the honest resting state. The boot
+// migration (setOnboarded when already provisioned) means a working device always
+// reads false here, so the CTA never shows on a provisioned unit.
+static bool deviceNeedsSetup() {
+  return g_orchMode && !net::provisioned() && !agent::store::onboarded();
+}
+
 static render::ScreenCtx buildCtx(int cursorJob) {
   render::ScreenCtx c;
   fillHeaderCtx(c);   // mode/profile/posture + WiFi/BT/battery/net-degraded header
+  c.needsSetup = deviceNeedsSetup();   // StatusIdle -> first-run CTA (CUM-259)
   // Setup/QR context - filled on EVERY build (P2/P3): SetupInfo shows the AP
   // SSID + a scan-to-configure QR on unprovisioned boot, and a scheduler-driven
   // ConfigQr (the repeated-401 reaction) needs the URL without going through
@@ -938,6 +958,14 @@ static void renderScreen(attn::ScreenId screen, int cursorJob, bool fullClear) {
   // gates that key off g_lastScreen must see it (an Unchanged frame is a
   // SUCCESS - treating it as a drop is what latched the repaint loop).
   g_lastScreen = uint8_t(screen);
+  // First-run auto-return (CUM-259, the (a) leg): whenever a credless device lands
+  // on StatusIdle, arm a short dwell after which the loop repaints SetupInfo, so a
+  // tap that backed out of Setup can never leave the owner parked on the idle screen.
+  // Any other screen (including SetupInfo itself) disarms it. Re-armed on each touch
+  // (drainTouch) so the owner gets the full dwell from their last interaction.
+  g_setupReturnAtMs = (screen == attn::ScreenId::StatusIdle && deviceNeedsSetup())
+                          ? (tnow + kSetupReturnMs)
+                          : 0;
   // ⚠ Release the scheduler's busy latch. g_sched.tick() sets busy_ when it
   // issues a render and clears it ONLY in onRenderDone(). A frame is ~31 ms with
   // no dwell to wait out, so it is done the moment the push returns - but if this
@@ -3770,6 +3798,12 @@ static void drainTouch(uint32_t now) {
   // gives, so the screensaver clock resets before the event is handled.
   saverKick();
 
+  // Measure the first-run auto-return dwell from the last INTERACTION, not the last
+  // paint (CUM-259): a tap on the idle screen means the owner is looking at it, so
+  // give them a fresh ~30 s before Setup reclaims the panel. A tap that navigates
+  // away (the Setup CTA, the gear) re-points or disarms this via renderScreen below.
+  if (g_setupReturnAtMs) g_setupReturnAtMs = now + kSetupReturnMs;
+
   const auto* t = hw::tft::hitTest(g.x, g.y);
 
   // Hold anywhere on the mic control is push-to-talk; releasing ends it. The
@@ -3865,6 +3899,15 @@ static void drainTouch(uint32_t now) {
       g_askOverride = "";
       refreshRing();
       renderScreen(attn::ScreenId::StatusIdle, -1);
+      break;
+    case Action::Setup:
+      // First-run CTA on StatusIdle (CUM-259): the credless device's way back to
+      // the Setup screen. Same override-clear as Back/Home, then paint SetupInfo.
+      g_lightsOff = false;
+      g_ledOverrideActive = false;
+      g_askOverride = "";
+      refreshRing();
+      renderScreen(attn::ScreenId::SetupInfo, -1);
       break;
     case Action::Mic:
       break;   // a bare tap on the mic is not a hold; nothing to do
@@ -4942,6 +4985,14 @@ void loop() {
   // block and request-flag drains below all run unchanged.
   // ⚠ TOUCHPOLL 0 disables the touch pump at runtime.
   if (g_screenIsTft) drainTouch(now);
+
+  // First-run auto-return (CUM-259): the credless idle-screen dwell elapsed, so paint
+  // Setup - the owner backed out of Setup and would otherwise sit on a screen that
+  // looks onboarded with no way back. Skipped while the menu or a held reply owns the
+  // panel; both re-arm the dwell when they release it. renderScreen disarms the timer.
+  if (g_setupReturnAtMs && !g_menu.isOpen() && !g_askSticky &&
+      int32_t(now - g_setupReturnAtMs) >= 0)
+    renderScreen(attn::ScreenId::SetupInfo, -1);
 
   // The render scheduler only drives the panel while the menu is closed AND no
   // reply is being held (P2.3): a sticky reply must not be overwritten by the

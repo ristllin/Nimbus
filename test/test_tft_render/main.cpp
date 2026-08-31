@@ -257,6 +257,19 @@ static ScreenCtx ringCtx() {
 // ---- cases ------------------------------------------------------------------
 
 static void test_status_empty()   { golden("status_empty", ScreenId::StatusIdle, baseCtx()); }
+
+// CUM-259: a credless, un-onboarded device that lands on StatusIdle must show the
+// "Set up Wi-Fi" call-to-action (a tap back to Setup), never the idle session list
+// that looks onboarded. needsSetup drives it; the golden pins the CTA layout.
+static ScreenCtx setupCtaCtx() {
+  ScreenCtx c = baseCtx();
+  c.modeName = "orchestrator";
+  c.needsSetup = true;
+  return c;
+}
+static void test_status_setup_cta() {
+  golden("status_setup_cta", ScreenId::StatusIdle, setupCtaCtx());
+}
 static void test_status_jobs()    { golden("status_jobs", ScreenId::StatusIdle, jobsCtx()); }
 
 // On-screen ring: structural check only (no golden bless without eyes-on the
@@ -713,6 +726,7 @@ static void test_palette_matches_web_ui() {
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_status_empty);
+  RUN_TEST(test_status_setup_cta);
   RUN_TEST(test_status_jobs);
   RUN_TEST(test_status_ring);
   RUN_TEST(test_menu_main);
