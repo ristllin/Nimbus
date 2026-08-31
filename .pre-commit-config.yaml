@@ -53,6 +53,13 @@ repos:
         language: script
         files: '^(docs/|website/|include/web/|tools/|\.github/|hardware/|README\.md|AGENTS\.md|CONTRIBUTING\.md)'
 
+      - id: no-native-dialogs
+        name: no native browser popups in the web UI (CUM-266, use the in-app modal)
+        entry: python3 tools/check_no_native_dialogs.py
+        language: system
+        pass_filenames: false
+        files: '^(include/web/ui_.*\.h|tools/check_no_native_dialogs\.py)$'
+
       - id: lizard-complexity
         name: lizard complexity (CCN<=15, len<=120, args<=6)
         entry: lizard -C 15 -L 120 -a 6 -w -W tools/release/lizard_whitelist.txt
