@@ -2019,11 +2019,29 @@ void beginWeb(const WebConfig& wc) {
     auto param = [&](const char* n) -> String {
       return r->hasParam(n, true) ? r->getParam(n, true)->value() : String();
     };
+    // CUM-255: reject a misconfigured entry at SAVE time with a clear message
+    // (the attach guard already keeps a bad entry off the provider heads, so this
+    // is UX, not the safety boundary). Validates the FINAL serialized set.
+    auto configError = [](const String& serialized) -> std::string {
+      std::vector<nimbus::orch::ConnectorInfo> cs;
+      nimbus::orch::parseConnectorsJson(serialized.c_str(), cs, agent::connectors::kMaxConnectors);
+      for (const auto& c : cs) {
+        std::string e = nimbus::orch::connectorConfigError(c);
+        if (!e.empty()) return e;
+      }
+      return {};
+    };
     String blob = param("blob");
     if (blob.length()) {
       JsonDocument d;
       if (blob.length() > 3500 || deserializeJson(d, blob) || !d.is<JsonArray>()) {
         r->send(400, "application/json", "{\"error\":\"blob must be a JSON array (<=3500B)\"}");
+        return;
+      }
+      std::string cfgErr = configError(blob);
+      if (!cfgErr.empty()) {
+        JsonDocument e; e["error"] = cfgErr; String out; serializeJson(e, out);
+        r->send(400, "application/json", out);
         return;
       }
       agent::store::setConnectorsJson(blob);
@@ -2065,6 +2083,14 @@ void beginWeb(const WebConfig& wc) {
     }
 
     String outBlob; serializeJson(cur, outBlob);
+    {
+      std::string cfgErr = configError(outBlob);
+      if (!cfgErr.empty()) {
+        JsonDocument e; e["error"] = cfgErr; String out; serializeJson(e, out);
+        r->send(400, "application/json", out);
+        return;
+      }
+    }
     if (outBlob.length() > 3500) {
       r->send(400, "application/json", "{\"error\":\"connector set too large (<=3500B)\"}");
       return;
