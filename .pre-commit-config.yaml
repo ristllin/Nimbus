@@ -68,9 +68,11 @@ repos:
         files: '.*\.(cpp|h|py)$'
         # include/web/ui_*.h are HTML/JS fragments inside C string literals -
         # lizard "parses" the embedded JS as C++ and the numbers are meaningless.
-        # lib/minimp3 is vendored third-party (CC0); it is not our code to refactor,
-        # so it stays out of the gate (and out of the shrinking whitelist).
-        exclude: '^include/web/|^lib/minimp3/'
+        # nimbusd/src/webui_page.h is the GENERATED assembly of those same fragments
+        # (the device page Virtual Nimbus serves), so it is excluded for the same
+        # reason. lib/minimp3 is vendored third-party (CC0); it is not our code to
+        # refactor, so it stays out of the gate (and out of the shrinking whitelist).
+        exclude: '^include/web/|^lib/minimp3/|^nimbusd/src/webui_page\.h$'
         # tools/release/lizard_whitelist.txt baselines today's offenders so the
         # gate passes now but holds NEW code to the thresholds.
 

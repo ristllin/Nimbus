@@ -28,9 +28,11 @@ New code lives only in this directory:
 | `src/telegram.h` | Telegram channel over the portable `nimbus::tg::parseUpdates` + offset arithmetic; durable offset |
 | `src/rig.h` | `NimbusdRig` - the composition, rehydrating all stores on construct and flushing after each turn |
 | `src/engine_thread.h` | the concurrency layer: one engine thread + request mailbox + a snapshot for lock-free reads |
-| `src/http_control.h` | the 127.0.0.1-only control surface (the chat page, health, state, replies, message, MCP), web-token gated |
-| `src/reply_buffer.h` | the bounded, thread-safe ring of recent chat entries (seq + timestamp + role) that backs `GET /api/replies` |
-| `src/chat_page.h` | the self-contained web chat page served at `/` (inline CSS/JS, no external resources) |
+| `src/http_control.h` | the 127.0.0.1-only control surface (serves the web app + logo, health, replies, message, MCP, backup; delegates `/api/*` to `WebApi`), web-token gated |
+| `src/web_api.h` | the `/api/*` surface the web app calls, answered with honest Virtual Nimbus semantics (real chat/memory/providers; hardware panels honestly virtual) |
+| `src/web_ui.h` | assembles the served page and seeds the tunnel sign-in token ahead of the app script |
+| `src/webui_page.h` | GENERATED (`tools/gen_webui.py`): the device's web app fragments, byte-parity with `tools/webui_page.snapshot`, plus the brand logo |
+| `src/reply_buffer.h` | the bounded, thread-safe ring of recent chat entries (seq + timestamp + role) that backs `GET /api/replies` and `/api/chat` |
 | `src/main.cpp` | the daemon entrypoint (config, threads, Telegram poll, graceful shutdown) |
 
 ## Durable data layout (`/data` by default)
@@ -92,29 +94,39 @@ may also live in `<data>/config.env`. Env always wins. Nothing secret is logged
 
 ## Control surface (the seam the Phase-1 sidecar forwards to)
 
-Bound to **loopback only**. Every route requires the web token
-(`Authorization: Bearer <token>` or `?token=`) except `/healthz` and the static
-chat page (`/`, `/index.html`). The relay sidecar injects the token on every
-forwarded request, so the browser reaches all of these through the tunnel.
+Bound to **loopback only**. The data routes require the web token
+(`X-Nimbus-Token` header, `Authorization: Bearer <token>`, or `?token=`); only the
+app shell (`/`, `/index.html`), the brand logo (`/logo.svg`), `/healthz` and the
+pre-auth sign-in exchange are ungated. The relay sidecar injects the token on
+every forwarded request, so the browser reaches all of these through the tunnel.
 
 | Method + path | Purpose |
 |---|---|
-| `GET /` and `GET /index.html` | the web chat page (ungated; a static shell that carries no data) |
-| `GET /healthz` | liveness (ungated; the kubelet probe) |
-| `GET /readyz` | readiness (200 iff the engine thread is running) |
-| `GET /api/state` | JSON snapshot (turn count, vectors, tokens, provider-configured flag, uptime) - served without entering the engine |
-| `GET /api/replies?after=<seq>` | the recent chat entries newer than `<seq>` (the page polls this every ~2s) |
-| `POST /api/message` `{"chat_id","text"}` | enqueue a turn (202) |
-| `POST /mcp` | JSON-RPC to the tool registry, dispatched on the engine thread |
+| `GET /` and `GET /index.html` | the assembled Nimbus web app (ungated shell; seeds the tunnel sign-in token) |
+| `GET /logo.svg` | the brand mark (ungated; a logo is not sensitive) |
+| `GET /healthz` / `GET /readyz` | liveness (ungated) / readiness (200 iff the engine thread is running) |
+| `GET /api/state`, `/api/health`, `/api/orch` | Home / Assistant snapshots, served from the engine snapshot + immutable config (never enter the engine) |
+| `POST /api/chat` + `GET /api/chat` | send a turn, then poll for the reply (the web app's chat surface) |
+| `GET /api/replies?after=<seq>` / `POST /api/message` | the CUM-263 reply ring + enqueue-a-turn contract (kept stable) |
+| `GET/PUT /api/mem/*`, `GET /api/tools` | memory dashboard, dispatched onto the engine thread (single-context safe) |
+| `GET /api/themes`, `/api/qr`, `/api/docs/search` | pure/static surfaces (no engine, no hardware) |
+| hardware panels (`/api/audio/*`, `/api/wifi`, `/api/ota/*`, ...) | honest "not on a hosted instance" - never a faked value or a dead control |
+| `POST /mcp`, `GET /backup` | JSON-RPC to the tool registry / a consistent tar of the mem tree |
 
-**The web chat page.** `GET /` serves one self-contained HTML document (inline
-CSS and JS, no external scripts, styles, fonts, or images) so it renders over the
-tunnel, which reaches no origin but this daemon and forces `nosniff`. The composer
-POSTs `/api/message`; the page then polls `/api/replies` for new entries and
-renders them. The page itself is ungated because it holds no instance data - every
-byte it shows comes from the gated `/api/*` routes. Honest states: a keyless
-instance says so plainly (the engine returns a verbatim "no provider" reply and
-the page shows a standing notice) rather than sitting silent.
+**The web app (CUM-265).** `GET /` serves the device's own single-page app - the
+exact fragment bytes the device serves (`tools/gen_webui.py` assembles them from
+`include/web/ui_*.h`, byte-parity with `tools/webui_page.snapshot`) - so a Virtual
+Nimbus is recognizably the same product, not a bare chat page. The shell is
+ungated because it holds no instance data; every byte it shows comes from the
+gated `/api/*` routes. **Tunnel sign-in:** the app gates its views on a per-device
+token in the browser, which inside the tunnel there is no device screen to scan
+for, so the served page seeds this instance's web token ahead of the app script -
+the tunnel equivalent of the device's first-run auto sign-in. **Honest virtual
+semantics:** the assistant panels (chat, memory, providers, usage, tools) are the
+real engine; the hardware panels (ring, display, touch, battery, audio, Wi-Fi, ESP
+OTA) report their honest virtual truth and never fabricate a reading or leave a
+dead control, and software update is the platform rolling the instance image, not
+an ESP OTA. A keyless instance still says so plainly rather than sitting silent.
 
 ## Sub-agent fan-out: composed fabric-less in Phase 0 (documented decision)
 

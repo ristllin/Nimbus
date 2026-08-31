@@ -52,6 +52,16 @@ class ReplyBuffer {
     return entries_.size();
   }
 
+  // The text of the newest assistant entry with seq > afterSeq, or "" if none.
+  // A typed read under the mutex (the web chat surface uses it to fill the pending
+  // bubble) - no re-parsing of the JSON wire form.
+  std::string lastAssistantTextSince(uint64_t afterSeq) const {
+    std::lock_guard<std::mutex> lk(mu_);
+    for (auto it = entries_.rbegin(); it != entries_.rend(); ++it)
+      if (it->seq > afterSeq && it->role == "assistant") return it->text;
+    return std::string();
+  }
+
   // A JSON array of the retained entries with seq > afterSeq, oldest first.
   std::string sinceJsonArray(uint64_t afterSeq) const {
     std::lock_guard<std::mutex> lk(mu_);

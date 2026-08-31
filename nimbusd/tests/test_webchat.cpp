@@ -1,12 +1,13 @@
-// test_webchat - offline (T1) proof of the web chat surface's building blocks:
-// the reply ring buffer (bounds, sequence numbers, JSON escaping) and the static
-// chat page's self-containment (no external resources, ASCII-only, wired to the
-// right relative endpoints). No sockets, no engine, no keys.
+// test_webchat - offline (T1) proof of the web surface's building blocks: the
+// reply ring buffer (bounds, sequence numbers, JSON escaping) and the assembled
+// web app nimbusd serves (the device's real page, byte-parity with the blessed
+// fragments, plus the tunnel token seed). No sockets, no engine, no keys.
 #include <string>
 
-#include "chat_page.h"
 #include "reply_buffer.h"
 #include "test_util.h"
+#include "web_ui.h"
+#include "webui_page.h"
 
 using namespace nimbusd;
 
@@ -40,37 +41,45 @@ static void checkBuffer(ndtest::Ctx& c) {
        "text is JSON-escaped (quote, backslash, newline, tab)");
 }
 
-// The static chat page is fully self-contained: no external resources, printable
-// ASCII only, no em dash, and it carries the honest keyless state.
+// The assembled page is the device's REAL web app (the five-destination shell,
+// every pane), so a Virtual Nimbus is recognizably the same product - and it is
+// served with the tunnel token seed injected ahead of the app script, with no em
+// dash anywhere (project-wide rule).
 static void checkPage(ndtest::Ctx& c) {
-  const std::string page = kChatPageHtml;
+  const std::string page = buildWebUiPage("tok-abc-123");
   c.ok(has(page, "<!doctype html"), "the page is an HTML document");
-  c.ok(has(page, "api/message") && has(page, "api/replies"),
-       "the page talks to the relative api/message + api/replies endpoints");
-  c.ok(!has(page, "://"), "no absolute URL scheme anywhere (no http:// or https://)");
-  c.ok(!has(page, "src=\"//") && !has(page, "href=\"//"), "no protocol-relative external refs");
-  c.ok(!has(page, "<script src") && !has(page, "<link "),
-       "no external scripts or stylesheets (inline only)");
-  c.ok(!has(page, "@import"), "no CSS @import of an external sheet");
-  c.ok(has(page, "No provider key configured"),
-       "the page carries the honest keyless state (CUM-211)");
+  // Structural invariants (the same the device-side webui_concat_check asserts):
+  // the nav bar, the five destinations, and the Home pane.
+  c.ok(has(page, "class=tabs>"), "the app nav bar is present");
+  for (const char* d : {"data-p=home", "data-p=chat", "data-p=memory",
+                        "data-p=assistant", "data-p=device"})
+    c.ok(has(page, d), std::string("destination present: ") + d);
+  c.ok(has(page, "id=pane-dash") && has(page, "id=pane-chat") && has(page, "id=pane-set"),
+       "the Home / Chat / Device panes are present");
+  c.ok(has(page, "id=ringsim"), "the ring simulator markup is present (full app, not a stub)");
 
-  bool ascii = true, emdash = false;
-  for (size_t i = 0; i < page.size(); i++) {
-    unsigned char ch = (unsigned char)page[i];
-    if (ch >= 0x80) ascii = false;
-    // U+2014 EM DASH as UTF-8 (0xE2 0x80 0x94) is banned project-wide.
-    if (ch == 0xE2 && i + 2 < page.size() &&
-        (unsigned char)page[i + 1] == 0x80 && (unsigned char)page[i + 2] == 0x94)
+  // Tunnel auto sign-in: the token is seeded into localStorage ahead of the app
+  // script that reads it, so the app is signed in without a second sign-in.
+  c.ok(has(page, "setItem('nimbusTok','tok-abc-123')"),
+       "the served page seeds the given web token");
+  c.ok(page.find("setItem('nimbusTok'") < page.find("function nimbusTok"),
+       "the seed runs before the app's nimbusTok() is defined/used");
+  // An empty token (dev / ungated) still seeds a sentinel so the client gate is
+  // skipped and the ungated API accepts the request.
+  c.ok(has(buildWebUiPage(""), "setItem('nimbusTok','tunnel')"),
+       "an ungated instance seeds a sentinel token (gate still skipped)");
+
+  bool emdash = false;
+  for (size_t i = 0; i + 2 < page.size(); i++)
+    if ((unsigned char)page[i] == 0xE2 && (unsigned char)page[i + 1] == 0x80 &&
+        (unsigned char)page[i + 2] == 0x94)
       emdash = true;
-  }
-  c.ok(ascii, "the page is printable ASCII only (surface constraint)");
-  c.ok(!emdash, "the page contains no em dash");
+  c.ok(!emdash, "the served page contains no em dash");
 }
 
 int main() {
   ndtest::Ctx c;
-  std::printf("=== web chat surface (T1, offline) ===\n");
+  std::printf("=== web surface (T1, offline) ===\n");
   checkBuffer(c);
   checkPage(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);

@@ -54,6 +54,8 @@ CORE_SRCS := $(wildcard $(REPO)/lib/harness/src/*.cpp) \
              $(REPO)/lib/core/src/model_catalog.cpp \
              $(REPO)/lib/core/src/attention.cpp \
              $(REPO)/lib/core/src/status_style.cpp \
+             $(REPO)/lib/core/src/theme.cpp \
+             $(REPO)/lib/core/src/qr.cpp \
              $(REPO)/lib/core/src/docs_pack.cpp \
              $(REPO)/lib/core/src/tg_updates.cpp \
              $(REPO)/lib/core/src/tg_html.cpp \
@@ -71,9 +73,18 @@ BIN := $(BUILD)/nimbusd
 .PHONY: all test check clean daemon
 all: daemon
 
+# The web UI header is GENERATED from the device's own fragments
+# (include/web/ui_*.h) so a Virtual Nimbus serves the exact same page bytes the
+# device does; the generator asserts byte-parity with tools/webui_page.snapshot,
+# the same reference tools/webui_concat_check.py blesses. Regenerated whenever a
+# fragment changes, so nimbusd can never drift from the device page silently.
+WEBUI_HDR := $(CURDIR)/src/webui_page.h
+$(WEBUI_HDR): $(REPO)/include/web_pages.h $(wildcard $(REPO)/include/web/ui_*.h) $(CURDIR)/tools/gen_webui.py
+	python3 $(CURDIR)/tools/gen_webui.py
+
 # The daemon binary.
 daemon: $(BIN)
-$(BIN): $(CURDIR)/src/main.cpp $(CORE_OBJS) | $(BUILD)
+$(BIN): $(CURDIR)/src/main.cpp $(WEBUI_HDR) $(CORE_OBJS) | $(BUILD)
 	$(CXX) $(CXXFLAGS) $< $(CORE_OBJS) $(LDFLAGS) -o $@
 	@echo "built $@"
 
@@ -91,7 +102,7 @@ vpath %.cpp $(CORE_VPATH)
 $(BUILD)/core/%.o: %.cpp | $(BUILD)/core
 	@$(CXX) $(CXXFLAGS) -c $< -o $@
 
-$(BUILD)/%: $(CURDIR)/tests/%.cpp $(CORE_OBJS) | $(BUILD)
+$(BUILD)/%: $(CURDIR)/tests/%.cpp $(WEBUI_HDR) $(CORE_OBJS) | $(BUILD)
 	@$(CXX) $(CXXFLAGS) $< $(CORE_OBJS) $(LDFLAGS) -o $@
 
 $(BUILD) $(BUILD)/core:
