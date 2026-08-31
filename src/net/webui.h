@@ -126,6 +126,19 @@ struct WebConfig {
   std::function<bool()>              chatPending;
 };
 
+// A fresh, single-use, TTL-bounded sign-in code for the device-screen Sign-in QR
+// (CUM-209). The QR carries this as `?c=<code>` so a scan signs the browser in with
+// no typing. Callable from the MAIN task (the panel renderer): the code table is
+// spinlock-guarded and the returned code is CACHED, re-minted only near expiry, so
+// the QR image stays stable across panel repaints yet is always live when scanned.
+String panelSigninCode();
+
+// True when the cached panel sign-in code is due for a refresh. The main loop polls
+// this while the on-screen Sign-in QR is showing and requests a repaint, so the QR
+// is re-rendered with a fresh code before the displayed one expires (CUM-209): a QR
+// left on the panel past its code's TTL would otherwise fail the scan silently.
+bool panelCodeStale();
+
 // Register routes and start the server on port 80. `wc` is copied; its borrowed
 // pointers/callbacks must outlive the server.
 void beginWeb(const WebConfig& wc);

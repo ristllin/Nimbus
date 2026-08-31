@@ -25,8 +25,10 @@ server - findings are weighted by real reachability.
   AP-interface token handout on `GET /` + the captive-portal catch-all, which `302`s to
   `/?t=<token>` for a peer on the setup AP while no `staSsid` is saved (detailed under
   *Setup AP + shipped password* below). Once Wi-Fi is configured, neither fires.
-  Delivered automatically via the **Sign-in QR** (`configUrl()` embeds `?t=`); the
-  token is not a separate onboarding step. Requiring it also defeats CSRF. Verified:
+  Delivered automatically via the **Sign-in QR**: `configUrl()` embeds a single-use
+  `?c=` code (never the durable token), which the browser exchanges once over `POST
+  /api/signin/exchange` for the token (CUM-45, wired on-device by CUM-209). The token
+  is not a separate onboarding step. Requiring it also defeats CSRF. Verified:
   no/wrong token → 401, valid → 200.
   ⚠ **No auth decision is made from the request's `Host`, `Origin`, `Referer`, or client
   IP.** Reaching the device by raw IP is therefore not a way around the gate. It can
@@ -157,8 +159,9 @@ network for anything the denylist withholds, so remote use is unaffected.
 
 ### Access token out of URLs (largely implemented 2026-08-23)
 
-**Status: LAN paths fixed; device-screen QR + AP first-run redirect pending.** The
-durable token is no longer carried in any LAN-facing URL. What changed (CUM-45):
+**Status: LAN paths + device-screen QR fixed; AP first-run redirect pending.** The
+durable token is no longer carried in any LAN-facing URL, and the device-screen
+Sign-in QR now carries a single-use `?c=` code (CUM-209). What changed (CUM-45):
 
 - **One-time exchange code.** A Sign-in QR / cross-origin link / Wi-Fi-handoff link now
   carries a short, single-use, TTL-bounded code (`?c=<code>`), not the token. The page
@@ -178,13 +181,18 @@ durable token is no longer carried in any LAN-facing URL. What changed (CUM-45):
   once (existing QR codes / bookmarks), stores the token, strips it, and shows a one-time
   migration hint pointing the owner at the Sign-in QR.
 
-**Still to do (owned outside the web layer):** the on-device Sign-in QR string is built
-by `configUrl()`/`setupUrl()` in `main.cpp` (device-screen owner), and the unprovisioned
-setup-AP redirect + captive-portal redirect still emit `/?t=<token>`. These are the
-first-run paths; switching them to `/?c=<code>` (via `GET /api/signin/code` or the same
-mint) needs hardware-in-the-loop verification of first-run + the Wi-Fi handoff. Until
-then the client accepts the legacy `?t=` on those paths and shows the migration hint.
-`POST /api/token/regen` remains the revocation lever.
+**Device-screen QR (CUM-209, wired):** `configUrl()`/`setupUrl()` in `main.cpp` now
+embed a single-use `?c=` code from `net::panelSigninCode()`. It mints off the same
+`nimbus::SigninCodes` table the exchange endpoint redeems from - spinlock-guarded for
+this main-task caller - and caches the code (re-minting only near expiry) so the QR
+image stays stable across panel repaints yet is always live when scanned. So a scan
+signs the browser in with no typing; a phone-scan pass is the remaining bench check.
+
+**Still to do (owned outside the web layer):** the unprovisioned setup-AP redirect +
+captive-portal redirect still emit `/?t=<token>` (in `wifi_portal.cpp`). Switching them
+to `/?c=<code>` needs hardware-in-the-loop verification of first-run + the Wi-Fi handoff.
+Until then the client accepts the legacy `?t=` on those paths and shows the migration
+hint. `POST /api/token/regen` remains the revocation lever.
 
 The historical analysis that motivated this work is kept below.
 
