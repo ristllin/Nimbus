@@ -571,22 +571,27 @@ function applyState(d){
       if(au&&document.activeElement!==au){au.checked=!!d.autoUpd;
         au.onchange=()=>{const f=new FormData();f.append('autoUpd',au.checked?'1':'0');
           fetch('/api/config',{method:'POST',body:f}).then(()=>toast(au.checked?'Auto-update on':'Auto-update off'));};}}
-    // Check-for-updates renders a result state (found / up to date / error naming
-    // the next step) from N5's check payload, then re-syncs from /api/state.
+    // Check-for-updates: the POST only STARTS the check on the device (202
+    // {ok:true}); the verdict is not in that accept body - the check runs async.
+    // So poll /api/state until the definitive otaResult settles and read the
+    // verdict from THAT one field - the same source the panel above shows - so
+    // the copy can never say "latest" while the engine reports available (CUM-249).
     $('fwCheck').onclick=()=>run({status:'fwMsg',btn:$('fwCheck'),pending:'Checking for updates…',
       // A 409 is a LOCAL refusal (no Wi-Fi / low memory / already running), not a
       // network fault: surface the server's honest message rather than "check the
       // network" (CUM-197).
       work:()=>fetch('/api/ota/check',{method:'POST'}).then(r=>r.json().then(j=>{
-        if(!r.ok)throw ((j&&j.msg)||('Couldn\'t start the update check ('+r.status+').'));return j;})),
-      ok:o=>{setTimeout(loadState,2000);
-        var res=(o&&o.result)||'';
-        if(res==='available'||(o&&o.latest&&o.latest!==o.installed))return 'Update available: '+((o&&o.latest)||'a new version')+'.';
-        if(res==='error')throw ((o&&o.msg)||'the update check failed');   // -> error state
-        return {none:true,msg:'You are on the latest version.'};},
-      // A string here is the server's honest local reason (409 msg); anything
-      // else is a real transport failure (fetch rejected) - only THEN is the
-      // connection the thing to check (CUM-197).
+        if(!r.ok)throw ((j&&j.msg)||('Couldn\'t start the update check ('+r.status+').'));
+        return pollOtaResult();})),
+      ok:o=>{loadState();
+        if(o.result==='new-version')return 'Update available: '+(o.latest||'a new version')+'.';
+        if(o.result==='unreachable')throw 'Couldn\'t reach the release server. Check the connection and try again.';
+        if(o.result==='failed')throw 'the update check failed';   // -> error state
+        if(o.result==='pending')return {none:true,msg:'Still checking. Give it a moment, then check again.'};
+        return {none:true,msg:'You are on the latest version.'};},   // up-to-date
+      // A string here is the settled failure reason; anything else is a real
+      // transport failure (fetch rejected) - only THEN is the connection the
+      // thing to check (CUM-197).
       error:e=>(typeof e==='string'&&e)||'Couldn\'t reach the device. Check the connection and try again.'});
     fi.onclick=()=>{
       if((d.ota==='available')&&!battOk){fbState('fwMsg','error',d.otaBattMsg||'Charge the device before installing.');return;}
@@ -830,6 +835,21 @@ let _toastT;
 function toast(msg){const t=$('toast'); if(!t)return; t.textContent=msg||'Saved';
   t.classList.add('show'); clearTimeout(_toastT); _toastT=setTimeout(()=>t.classList.remove('show'),1400);}
 function loadState(){if(!canPoll())return;fetch('/api/state').then(r=>r.json()).then(applyState).catch(()=>{});}
+// Poll /api/state until an OTA check settles to a definitive otaResult, so the
+// "Check for updates" verdict is read from the SAME field the panel shows and
+// can never disagree with it (CUM-249). Resolves {result,latest}; if the check
+// is still running after the budget, resolves result:'pending' so the caller can
+// honestly say "still checking" rather than guess a verdict.
+function pollOtaResult(tries){
+  tries=(tries==null)?15:tries;
+  var again=()=>(tries<=0)?{result:'pending',latest:''}
+    :new Promise(rs=>setTimeout(rs,700)).then(()=>pollOtaResult(tries-1));
+  return fetch('/api/state').then(r=>r.json()).then(d=>{
+    var res=d.otaResult||'';
+    if(res&&res!=='pending')return {result:res,latest:d.otaLatest||''};
+    return again();                 // still checking - wait and re-read
+  }).catch(again);                  // transient blip - retry within the budget
+}
 // The setup-AP password + auth token are OFF /api/state (secrets); fetch them
 // from the token-gated /api/connect only when the Connectivity tab is opened.
 // The fetch shim attaches the token to every request, GETs included.

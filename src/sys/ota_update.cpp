@@ -547,7 +547,14 @@ bool requestCheck(const char** whyOut) {
     if (whyOut) *whyOut = "in-progress";
     return false;
   }
+  // Reflect the check the instant it is accepted, BEFORE the task is scheduled,
+  // so a client that polls /api/state right after the 202 can never read the
+  // PREVIOUS settled result (up-to-date / available) as this check's verdict
+  // (CUM-249). checkTask re-affirms Checking when it runs; both are idempotent.
+  const State prevState = g_state;
+  g_state = State::Checking;
   if (xTaskCreate(checkTask, "otacheck", 16384, nullptr, 1, nullptr) != pdPASS) {
+    g_state = prevState;   // task never started - do not strand a Checking state
     g_taskRunning = false;
     if (whyOut) *whyOut = "low-heap";
     return false;
