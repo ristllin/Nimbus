@@ -115,6 +115,39 @@ struct KnownConnector {
 // The shipped Tier-1 catalog (+ Mistral built-ins). Returned by ref; count out.
 const KnownConnector* knownConnectors(int& countOut);
 
+// --- prov routing guard (CUM-255) ---------------------------------------------
+// A LAN/private MCP URL must NEVER be forwarded to a provider's cloud head: the
+// head cannot reach a private address and the request dies HTTP 424, killing the
+// whole turn. Found live (CUM-61): a device-dialed entry with `prov` omitted
+// defaulted to "any", so attachOpenAIWire forwarded its LAN URL to OpenAI. The
+// guard is fail-closed and lives at the config/attach level: a bad entry degrades
+// THAT tool, never the turn.
+
+// True only when `url` is an address a provider's cloud could actually dial: an
+// http/https URL whose host is not loopback, a private/link-local IP literal, or
+// an mDNS `.local` name. Empty / non-http(s) / private -> false. Pure, host-tested.
+bool urlRoutableToProviderHead(const std::string& url);
+
+// The single routing predicate the three attach builders use. Returns true only
+// when connector `c` may be forwarded to the named provider head
+// ("openai"|"anthropic"|"mistral"). Fail-closed:
+//   - disabled or prov mismatch (an unknown/future prov matches NO head) -> false;
+//   - a device-dialed entry left at the default prov "any" is device-side only
+//     (the device dials it; it is never handed to a head) -> false;
+//   - any entry whose URL would ride the wire but is not cloud-routable -> false
+//     (keyed on url PRESENCE, not kind, so a connector entry that falls back to
+//     server_url cannot smuggle a private URL past the guard).
+bool forwardsToProviderHead(const ConnectorInfo& c, const char* head);
+
+// Config-time validation for one connector entry (empty = safe to save). Returns
+// a short, owner-facing error when the entry would be forwarded to a provider
+// head but carries a private/unroutable URL, so the misconfig can fail at SAVE
+// time with a clear next step, not mid-turn. Intended caller: the token-gated
+// connectors save endpoint (POST /api/connectors), which rejects the save and
+// surfaces the string. The turn path does NOT depend on it - forwardsToProviderHead
+// already keeps a bad entry off the head regardless of whether the save was gated.
+std::string connectorConfigError(const ConnectorInfo& c);
+
 // --- attach builders (append to an existing request/agent JsonDocument) -------
 void attachOpenAIWire(JsonDocument& d, const std::vector<ConnectorInfo>& cs, const BearerFn& bearer);
 void attachMistralWire(JsonDocument& d, const std::vector<ConnectorInfo>& cs);

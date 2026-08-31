@@ -115,11 +115,188 @@ static bool provMatches(const ConnectorInfo& c, const char* prov) {
   return c.enabled && (c.prov == prov || c.prov == "any");
 }
 
+// ---- prov routing guard (CUM-255) -------------------------------------------
+namespace {
+
+std::string lowerStr(std::string s) {
+  for (char& ch : s)
+    if (ch >= 'A' && ch <= 'Z') ch = char(ch - 'A' + 'a');
+  return s;
+}
+
+// Extract the lowercased host from an http/https URL. Returns "" if the scheme
+// is not http(s) or the URL has no host. Strips the port and any IPv6 brackets.
+std::string hostOf(const std::string& url) {
+  std::string::size_type sep = url.find("://");
+  if (sep == std::string::npos) return "";
+  std::string scheme = lowerStr(url.substr(0, sep));
+  if (scheme != "http" && scheme != "https") return "";
+  std::string rest = url.substr(sep + 3);
+  std::string::size_type end = rest.find_first_of("/?#");  // authority ends at path/query/fragment
+  std::string hostport = (end == std::string::npos) ? rest : rest.substr(0, end);
+  std::string::size_type at = hostport.rfind('@');       // strip user:pass@ userinfo
+  if (at != std::string::npos) hostport = hostport.substr(at + 1);
+  if (!hostport.empty() && hostport[0] == '[') {         // [IPv6]:port
+    std::string::size_type close = hostport.find(']');
+    return close == std::string::npos ? "" : lowerStr(hostport.substr(1, close - 1));
+  }
+  std::string::size_type colon = hostport.find(':');     // host:port
+  if (colon != std::string::npos) hostport = hostport.substr(0, colon);
+  std::string h = lowerStr(hostport);
+  if (h.size() > 1 && h.back() == '.') h.pop_back();     // drop a trailing FQDN dot
+  return h;
+}
+
+// Parse a dotted-quad into four octets; false if `h` is not a bare IPv4 literal.
+bool parseIPv4(const std::string& h, int oct[4]) {
+  int n = 0, val = 0, digits = 0;
+  for (std::string::size_type i = 0; i <= h.size(); i++) {
+    char ch = (i < h.size()) ? h[i] : '.';
+    if (ch == '.') {
+      if (digits == 0 || n >= 4) return false;
+      oct[n++] = val; val = 0; digits = 0;
+    } else if (ch >= '0' && ch <= '9') {
+      val = val * 10 + (ch - '0');
+      if (val > 255 || ++digits > 3) return false;
+    } else {
+      return false;   // any non-digit, non-dot char => not an IPv4 literal
+    }
+  }
+  return n == 4;
+}
+
+bool hasSuffix(const std::string& s, const char* suf) {
+  const std::string t(suf);
+  return s.size() >= t.size() && s.compare(s.size() - t.size(), t.size(), t) == 0;
+}
+
+// RFC-1918 / loopback / link-local / unspecified IPv4.
+bool privateIPv4(const int o[4]) {
+  return o[0] == 127 || o[0] == 10 || o[0] == 0 ||
+         (o[0] == 172 && o[1] >= 16 && o[1] <= 31) ||
+         (o[0] == 192 && o[1] == 168) ||
+         (o[0] == 169 && o[1] == 254);
+}
+
+int hexDigit(char c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  return -1;
+}
+
+// Parse a non-empty base-10 or base-16 digit string into v; false on any bad digit.
+bool parseUint(const std::string& s, int base, unsigned long& v) {
+  v = 0;
+  for (char c : s) {
+    int d = (base == 16) ? hexDigit(c) : ((c >= '0' && c <= '9') ? c - '0' : -1);
+    if (d < 0) return false;
+    v = v * base + d;
+  }
+  return !s.empty();
+}
+
+// A bare-integer / 0x-hex host (`3232235521`, `0x7f000001`) is an obfuscated
+// IPv4 - no legitimate hostname is all digits - so decode it to octets. Returns
+// false when `h` is not one of those numeric forms.
+bool numericHostToIPv4(const std::string& h, int oct[4]) {
+  unsigned long v = 0;
+  const bool hex = (h.rfind("0x", 0) == 0 || h.rfind("0X", 0) == 0);
+  const bool ok = hex ? (h.size() >= 3 && h.size() <= 10 && parseUint(h.substr(2), 16, v))
+                      : (h.size() <= 10 && parseUint(h, 10, v));
+  if (!ok || v > 0xFFFFFFFFul) return false;
+  oct[0] = (v >> 24) & 0xFF; oct[1] = (v >> 16) & 0xFF;
+  oct[2] = (v >> 8) & 0xFF;  oct[3] = v & 0xFF;
+  return true;
+}
+
+// The IPv4 embedded in a mapped/compat IPv6 literal (`::ffff:a.b.c.d`, `::a.b.c.d`),
+// or "" if there is none. Lets a mapped RFC-1918/loopback address be classified
+// by its IPv4 rather than slipping past the IPv6 prefix checks.
+std::string embeddedIPv4(const std::string& h) {
+  std::string::size_type dot = h.find('.');
+  if (dot == std::string::npos) return "";
+  std::string::size_type colon = h.rfind(':', dot);
+  return colon == std::string::npos ? "" : h.substr(colon + 1);
+}
+
+// True for the loopback (`::1` and any zero-run spelling like `0:0:0:0:0:0:0:1`)
+// or the unspecified `::` address. Errs closed on exotic all-but-one-zero forms.
+bool ipv6Loopbackish(const std::string& h) {
+  std::string digits;
+  for (char ch : h) if (ch != ':') digits += ch;
+  std::string::size_type nz = digits.find_first_not_of('0');
+  return nz == std::string::npos || digits.substr(nz) == "1";
+}
+
+// Loopback / unique-local (fc00::/7) / link-local (fe80::/10) IPv6 literal,
+// including IPv4-mapped forms that re-encode a private address.
+bool privateIPv6(const std::string& h) {
+  if (h.find(':') == std::string::npos) return false;   // not an IPv6 literal
+  std::string emb = embeddedIPv4(h);
+  if (!emb.empty()) { int o[4]; return parseIPv4(emb, o) && privateIPv4(o); }
+  if (h.rfind("fc", 0) == 0 || h.rfind("fd", 0) == 0) return true;         // ULA fc00::/7
+  if (h.rfind("fe", 0) == 0 && h.size() > 2 && h[2] >= '8' && h[2] <= 'b')  // fe80::/10
+    return true;
+  return ipv6Loopbackish(h);
+}
+
+// A host a provider's CLOUD cannot dial: loopback, private/link-local IP (in any
+// spelling), the unspecified address, or an mDNS `.local` / localhost name.
+bool privateHost(const std::string& h) {
+  if (h.empty() || h == "localhost") return true;
+  if (hasSuffix(h, ".local") || hasSuffix(h, ".localhost")) return true;
+  if (privateIPv6(h)) return true;
+  int o[4];
+  if (parseIPv4(h, o)) return privateIPv4(o);
+  return numericHostToIPv4(h, o) && privateIPv4(o);   // obfuscated integer/hex IPv4
+}
+
+// The provider heads an entry can be forwarded to. An unknown/future prov names
+// none of them (fail-closed) - the class rule the host test locks.
+bool provTargetsAnyHead(const std::string& prov) {
+  return prov == "openai" || prov == "anthropic" || prov == "mistral" || prov == "any";
+}
+
+}  // namespace
+
+bool urlRoutableToProviderHead(const std::string& url) {
+  std::string h = hostOf(url);
+  return !h.empty() && !privateHost(h);
+}
+
+bool forwardsToProviderHead(const ConnectorInfo& c, const char* head) {
+  if (!provMatches(c, head)) return false;              // disabled / wrong prov
+  // A device-dialed server left at the default "any" routes to the device's own
+  // MCP client - it is never handed to a cloud head (CUM-61: doing so 424'd the
+  // turn). An EXPLICIT prov still opts a public server into head-attach.
+  if (c.deviceDialed && c.prov == "any") return false;
+  // Hard invariant: ANY entry that would put a URL on the wire (a remote MCP, or a
+  // connector whose first-party connector_id is absent so its url is emitted as
+  // server_url) must carry a URL the cloud can reach. A private URL never leaves
+  // the device (CUM-61: it only 424s the head). Keyed on url PRESENCE, not kind, so
+  // the connector-with-empty-connector_id path cannot smuggle a LAN url past it.
+  if (!c.url.empty() && !urlRoutableToProviderHead(c.url)) return false;
+  return true;
+}
+
+std::string connectorConfigError(const ConnectorInfo& c) {
+  if (c.url.empty()) return "";                          // no dialed URL to validate
+  if (urlRoutableToProviderHead(c.url)) return "";       // reachable from a cloud head: fine
+  // A device-dialed server is dialed by the device itself, so a private URL is
+  // expected and safe there - not a config error. The trap is a NON-device-dialed
+  // entry aimed at a provider head (explicit prov or the default "any"): nothing
+  // can reach it, so reject the save with the exact next step.
+  if (c.deviceDialed || !provTargetsAnyHead(c.prov)) return "";
+  return "MCP server \"" + c.name + "\" has a private or local URL that a "
+         "provider's cloud can't reach. Turn on device-dialed for it (the device "
+         "connects directly), or use a public https address.";
+}
+
 // ---- attach builders ---------------------------------------------------------
 
 void attachOpenAIWire(JsonDocument& d, const std::vector<ConnectorInfo>& cs, const BearerFn& bearer) {
   for (const ConnectorInfo& c : cs) {
-    if (!provMatches(c, "openai")) continue;
+    if (!forwardsToProviderHead(c, "openai")) continue;
     // OpenAI hosted built-ins ride their own tool type, NOT the mcp shape (a
     // builtin routed through the mcp branch would 400 on the missing server_url).
     // code_interpreter is the one we attach: it can PRODUCE FILES (incl. PDF -
@@ -167,7 +344,7 @@ void attachMistralWire(JsonDocument& d, const std::vector<ConnectorInfo>& cs) {
   //     {type:"connector", connector_id:"<name-or-uuid>"} - authenticated in
   //     Studio, referenced by name/UUID; no secret on device.
   for (const ConnectorInfo& c : cs) {
-    if (!provMatches(c, "mistral")) continue;
+    if (!forwardsToProviderHead(c, "mistral")) continue;
     if (c.kind == "builtin") {
       // document_library needs a library id - bare it 422s the whole request
       // (grid-validated). Until a library id rides the blob, skip it.
@@ -199,7 +376,7 @@ void attachMistralWire(JsonDocument& d, const std::vector<ConnectorInfo>& cs) {
 void attachAnthropicWire(JsonDocument& agentBody, const std::vector<ConnectorInfo>& cs,
                          const BearerFn& bearer) {
   for (const ConnectorInfo& c : cs) {
-    if (!provMatches(c, "anthropic")) continue;
+    if (!forwardsToProviderHead(c, "anthropic")) continue;
     if (c.kind != "mcp" || c.url.empty()) continue;  // Anthropic = BYO MCP by URL
     JsonObject s = agentBody["mcp_servers"].add<JsonObject>();
     s["type"] = "url";

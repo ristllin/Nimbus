@@ -21,6 +21,9 @@ using nimbus::orch::ProviderState;
 using nimbus::orch::CapScope;
 using nimbus::orch::capScopeSlug;
 using nimbus::orch::connectorScope;
+using nimbus::orch::urlRoutableToProviderHead;
+using nimbus::orch::forwardsToProviderHead;
+using nimbus::orch::connectorConfigError;
 
 void setUp() {}
 void tearDown() {}
@@ -139,6 +142,157 @@ static void test_openai_prov_filtering() {
   TEST_ASSERT_TRUE(has(d, "https://x"));
   TEST_ASSERT_TRUE(has(d, "https://y"));
   TEST_ASSERT_FALSE(has(d, "https://z"));
+}
+
+// ---- CUM-255: prov-routing guard (LAN MCP URL must never reach a head) -------
+
+// A device-dialed MCP with a private (LAN) URL. mk() leaves deviceDialed false,
+// so set it (and appr) the way the connectors blob "dev":1/"appr":1 flags parse.
+static ConnectorInfo mkDeviceDialed(const char* name, const char* prov, const char* url) {
+  ConnectorInfo c = mk(name, prov, "mcp", url);
+  c.deviceDialed = true;
+  c.approved = true;
+  return c;
+}
+
+// THE REGRESSION (CUM-61 live validation -> CUM-255): a device-dialed MCP entry
+// with `prov` omitted parses to prov=="any"; the old provMatches() then forwarded
+// its LAN URL to the OpenAI head as server_url, which OpenAI's cloud cannot reach
+// (HTTP 424) - killing the WHOLE turn. The guard keeps a device-dialed default
+// entry device-side: zero tools attached to any head, so the turn survives and
+// only the device-side client dials it.
+static void test_cum255_device_dialed_lan_not_forwarded_to_head() {
+  ConnectorInfo lan = mkDeviceDialed("myfs", "any", "http://192.168.50.145:8765/mcp");
+  std::vector<ConnectorInfo> cs = {lan};
+  JsonDocument oa;
+  attachOpenAIWire(oa, cs, nullptr);
+  TEST_ASSERT_FALSE(oa["tools"].is<JsonArrayConst>());   // nothing forwarded -> turn survives
+  JsonDocument an;
+  attachAnthropicWire(an, cs, nullptr);
+  TEST_ASSERT_FALSE(an["mcp_servers"].is<JsonArrayConst>());
+  JsonDocument mi;
+  attachMistralWire(mi, cs);
+  TEST_ASSERT_FALSE(mi["tools"].is<JsonArrayConst>());
+  // The guard predicate agrees for every head.
+  TEST_ASSERT_FALSE(forwardsToProviderHead(lan, "openai"));
+  TEST_ASSERT_FALSE(forwardsToProviderHead(lan, "anthropic"));
+  TEST_ASSERT_FALSE(forwardsToProviderHead(lan, "mistral"));
+}
+
+// urlRoutableToProviderHead: only a public http(s) host is routable from a
+// provider's cloud. Loopback, RFC-1918, link-local, .local, non-http => false.
+static void test_url_routable_predicate() {
+  TEST_ASSERT_TRUE(urlRoutableToProviderHead("https://api.githubcopilot.com/mcp/"));
+  TEST_ASSERT_TRUE(urlRoutableToProviderHead("https://mcp.linear.app/mcp"));
+  TEST_ASSERT_TRUE(urlRoutableToProviderHead("http://93.184.216.34/mcp"));  // public IP
+  TEST_ASSERT_FALSE(urlRoutableToProviderHead("http://192.168.1.20:3111/mcp"));
+  TEST_ASSERT_FALSE(urlRoutableToProviderHead("http://10.0.0.5/mcp"));
+  TEST_ASSERT_FALSE(urlRoutableToProviderHead("http://172.16.4.4/mcp"));
+  TEST_ASSERT_FALSE(urlRoutableToProviderHead("http://172.31.255.1/mcp"));
+  TEST_ASSERT_TRUE(urlRoutableToProviderHead("http://172.15.0.1/mcp"));     // just outside 172.16/12
+  TEST_ASSERT_FALSE(urlRoutableToProviderHead("http://169.254.10.10/mcp")); // link-local
+  TEST_ASSERT_FALSE(urlRoutableToProviderHead("http://127.0.0.1:8080/mcp"));
+  TEST_ASSERT_FALSE(urlRoutableToProviderHead("http://localhost:3000/mcp"));
+  TEST_ASSERT_FALSE(urlRoutableToProviderHead("http://nimbus-6.local/mcp"));
+  TEST_ASSERT_FALSE(urlRoutableToProviderHead("http://0.0.0.0/mcp"));
+  TEST_ASSERT_FALSE(urlRoutableToProviderHead("http://[::1]:9000/mcp"));
+  TEST_ASSERT_FALSE(urlRoutableToProviderHead("ftp://example.com/mcp"));    // non-http scheme
+  TEST_ASSERT_FALSE(urlRoutableToProviderHead("http://user@192.168.1.1/mcp"));  // userinfo can't hide a LAN host
+  TEST_ASSERT_FALSE(urlRoutableToProviderHead(""));
+  // Evasion variants a review confirmed (CUM-255 hardening) - all must be caught:
+  TEST_ASSERT_FALSE(urlRoutableToProviderHead("http://127.0.0.1?x=1"));      // query, no path
+  TEST_ASSERT_FALSE(urlRoutableToProviderHead("http://10.0.0.5#frag"));      // fragment, no path
+  TEST_ASSERT_FALSE(urlRoutableToProviderHead("http://[::ffff:10.0.0.1]/mcp"));   // IPv4-mapped private
+  TEST_ASSERT_FALSE(urlRoutableToProviderHead("http://[::ffff:127.0.0.1]/mcp"));  // IPv4-mapped loopback
+  TEST_ASSERT_FALSE(urlRoutableToProviderHead("http://[0:0:0:0:0:0:0:1]/mcp"));   // non-canonical loopback
+  TEST_ASSERT_FALSE(urlRoutableToProviderHead("http://[0::1]/mcp"));
+  TEST_ASSERT_FALSE(urlRoutableToProviderHead("http://localhost./mcp"));     // trailing-dot FQDN
+  TEST_ASSERT_FALSE(urlRoutableToProviderHead("http://printer.local./mcp"));
+  TEST_ASSERT_FALSE(urlRoutableToProviderHead("http://10.0.0.1./mcp"));      // trailing-dot IPv4
+  TEST_ASSERT_FALSE(urlRoutableToProviderHead("http://2130706433/mcp"));     // decimal 127.0.0.1
+  TEST_ASSERT_FALSE(urlRoutableToProviderHead("http://0x7f000001/mcp"));     // hex 127.0.0.1
+  TEST_ASSERT_FALSE(urlRoutableToProviderHead("http://3232235521/mcp"));     // decimal 192.168.0.1
+  // A public IPv4-mapped IPv6 and a public integer host stay routable.
+  TEST_ASSERT_TRUE(urlRoutableToProviderHead("http://[::ffff:93.184.216.34]/mcp"));
+}
+
+// A kind=="connector" entry with an EMPTY connector_id falls into attachOpenAIWire's
+// server_url branch, so a private URL there must ALSO be blocked - the guard keys on
+// URL presence, not kind=="mcp". (Review-confirmed bypass; CUM-255 hardening.)
+static void test_cum255_connector_kind_empty_cid_lan_blocked() {
+  ConnectorInfo c = mk("x", "openai", "connector", "http://192.168.1.10/mcp", "");  // cid empty
+  std::vector<ConnectorInfo> cs = {c};
+  JsonDocument d;
+  attachOpenAIWire(d, cs, [](const ConnectorInfo&) { return std::string("tok"); });
+  TEST_ASSERT_FALSE(d["tools"].is<JsonArrayConst>());   // LAN url never emitted as server_url
+  TEST_ASSERT_FALSE(forwardsToProviderHead(c, "openai"));
+  // The same shape with a PUBLIC url still forwards (server_url branch works).
+  ConnectorInfo pub = mk("y", "openai", "connector", "https://api.example.com/mcp", "");
+  std::vector<ConnectorInfo> cs2 = {pub};
+  JsonDocument d2;
+  attachOpenAIWire(d2, cs2, [](const ConnectorInfo&) { return std::string("tok"); });
+  TEST_ASSERT_EQUAL(1, d2["tools"].as<JsonArrayConst>().size());
+}
+
+// CLASS GUARD (the invariant, not the instance): over the WHOLE prov-resolution
+// table, a private/LAN MCP URL is forwarded to NO head for ANY prov value, and a
+// new/unknown prov value routes to NO head (fail-closed). A public URL keeps its
+// explicit routing. If a future prov is added without an explicit routing rule,
+// this test FAILS rather than silently forwarding it.
+static void test_prov_routing_table_is_fail_closed() {
+  const char* heads[] = {"openai", "anthropic", "mistral"};
+  // Every prov value a blob might carry, including an unknown/future one.
+  const char* provs[] = {"openai", "anthropic", "mistral", "any", "device", "", "grok"};
+
+  for (const char* p : provs) {
+    // 1. A private/LAN MCP URL must NEVER be forwarded, whatever the prov says.
+    ConnectorInfo lan = mk("srv", p, "mcp", "http://192.168.1.50:3111/mcp");
+    for (const char* h : heads)
+      TEST_ASSERT_FALSE_MESSAGE(forwardsToProviderHead(lan, h),
+                                "a LAN MCP URL must never reach a provider head");
+
+    // 2. A device-dialed entry at this prov never reaches a head unless the prov
+    //    EXPLICITLY names that head (public URL, so the URL guard is not the cause).
+    ConnectorInfo dev = mkDeviceDialed("srv", p, "https://public.example.com/mcp");
+    for (const char* h : heads) {
+      bool expect = (std::string(p) == h);   // explicit head name only; never via "any"
+      TEST_ASSERT_EQUAL_MESSAGE(expect, forwardsToProviderHead(dev, h),
+                                "device-dialed routes to a head only on an explicit prov");
+    }
+
+    // 3. A plain (not device-dialed) public MCP: only the explicit head or "any".
+    ConnectorInfo pub = mk("srv", p, "mcp", "https://public.example.com/mcp");
+    for (const char* h : heads) {
+      bool expect = (std::string(p) == h) || (std::string(p) == "any");
+      TEST_ASSERT_EQUAL_MESSAGE(expect, forwardsToProviderHead(pub, h),
+                                "an unknown/future prov must route to NO head");
+    }
+  }
+}
+
+// The config-time validator: an entry that WOULD be forwarded to a head with an
+// unroutable URL is rejected with a clear error; every safe shape passes.
+static void test_connector_config_error() {
+  // A plain LAN MCP with prov omitted (parses to "any") would be forwarded -> reject.
+  TEST_ASSERT_FALSE(connectorConfigError(mk("x", "any", "mcp", "http://192.168.1.9/mcp")).empty());
+  // Explicitly routed to a head with a LAN URL -> reject (names the next step).
+  std::string e = connectorConfigError(mk("x", "openai", "mcp", "http://10.1.2.3/mcp"));
+  TEST_ASSERT_FALSE(e.empty());
+  TEST_ASSERT_TRUE(e.find("device-dialed") != std::string::npos);
+  // A device-dialed LAN entry at the default prov "any" is device-side -> OK.
+  TEST_ASSERT_TRUE(connectorConfigError(mkDeviceDialed("x", "any", "http://192.168.1.9/mcp")).empty());
+  // A device-dialed entry with an EXPLICIT head prov + LAN url is still device-side
+  // (the attach guard blocks the head path); do not flag it with "turn on
+  // device-dialed" when it already is - review-confirmed wording bug.
+  TEST_ASSERT_TRUE(connectorConfigError(mkDeviceDialed("x", "openai", "http://192.168.1.9/mcp")).empty());
+  // A public MCP URL routed to a head -> OK.
+  TEST_ASSERT_TRUE(connectorConfigError(mk("x", "openai", "mcp", "https://api.example.com/mcp")).empty());
+  // Non-mcp kinds carry no dialed URL -> never this error.
+  TEST_ASSERT_TRUE(connectorConfigError(mk("gmail", "openai", "connector", "", "connector_gmail")).empty());
+  TEST_ASSERT_TRUE(connectorConfigError(mk("web_search", "mistral", "builtin")).empty());
+  // An unknown/future prov targets no head, so a LAN URL there is not a config
+  // error (it simply attaches nowhere) - the attach guard still keeps it off heads.
+  TEST_ASSERT_TRUE(connectorConfigError(mk("x", "grok", "mcp", "http://192.168.1.9/mcp")).empty());
 }
 
 // ---- Mistral attach ---------------------------------------------------------
@@ -715,6 +869,11 @@ int main() {
   RUN_TEST(test_mistral_document_library_bare_is_skipped);
   RUN_TEST(test_openai_remote_mcp_with_bearer);
   RUN_TEST(test_openai_prov_filtering);
+  RUN_TEST(test_cum255_device_dialed_lan_not_forwarded_to_head);
+  RUN_TEST(test_cum255_connector_kind_empty_cid_lan_blocked);
+  RUN_TEST(test_url_routable_predicate);
+  RUN_TEST(test_prov_routing_table_is_fail_closed);
+  RUN_TEST(test_connector_config_error);
   RUN_TEST(test_mistral_builtin_and_studio_connector);
   RUN_TEST(test_anthropic_mcp_servers_with_token);
   RUN_TEST(test_anthropic_no_tools_key_polluted);
