@@ -7,11 +7,10 @@ description: "Every destination of the Nimbus web app: Home, Chat, Memory, Assis
 
 # Web UI Reference
 
-The device serves its own web app, reachable at `http://nimbus.local` (or the
-device's LAN IP) from any browser - nothing to install. On a desktop the five
-destinations sit in a left sidebar below the brand and the mode switch; on a
-narrower window the sidebar collapses to icons; on a phone the same destinations
-dock as a bottom bar. The content column is fluid and centers up to 1,280 px.
+The device serves its own web app at `http://nimbus.local` (or its LAN IP) from
+any browser, nothing to install. Five destinations sit in a left sidebar on
+desktop, collapse to icons in a narrow window, and dock as a bottom bar on a
+phone. The content column centers up to 1,280 px.
 
 | Destination | What it's for |
 |---|---|
@@ -40,11 +39,10 @@ next" card. Notifier intentionally keeps Wi-Fi and this web UI off. See
 
 ## Signing in
 
-The page shows nothing until the browser is signed in. Normally you just scan the
-device's **Sign-in QR** (**Device > Connectivity** on the device screen): the QR
-signs the browser in with a one-time code, so there is no code to copy or type.
-You do this once per browser - the credential is stored locally and sent as a
-request header from then on, never in the URL.
+The page shows nothing until the browser is signed in. Normally you scan the
+device's **Sign-in QR** (**Device > Connectivity** on the screen): it signs the
+browser in with a one-time code, nothing to copy or type. Once per browser; the
+credential is stored locally and sent as a request header, never in the URL.
 
 If a QR cannot be scanned, the full-screen **Sign in to Nimbus** gate also
 accepts the **Device sign-in code**, shown on the device screen. Generating a new
@@ -57,8 +55,8 @@ except the one that requested it. The model behind all this is in
 Press **Ctrl/Cmd+K** or **/** (or click **Search** in the sidebar) to open one
 search over everything: destinations and actions, files, long-term memory, active
 sessions, and the device's embedded documentation. Results are grouped by source;
-Up/Down move the selection, Enter opens it, Esc closes. It is the fastest way to
-jump to a setting or find a file or a memory without hunting through tabs.
+Up/Down move the selection, Enter opens it, Esc closes. The fastest way to a
+setting, file, or memory without hunting through tabs.
 
 ---
 
@@ -87,10 +85,10 @@ Background sessions end to end: **[Sub-sessions](../guides/sub-sessions.md)**.
 
 ## Chat
 
-Message the assistant from the browser and see its replies. Replies also go to
-your Telegram, if connected. Conversation history is re-synced from the device's
-canonical store, and reaches back months so the assistant can recall something
-you told it long ago.
+Message the assistant from the browser and see its replies; replies also go to
+your Telegram, if connected. History re-syncs from the device's canonical store
+and reaches back months, so the assistant can recall something you told it long
+ago.
 
 **Attach files** by dropping them onto the conversation or with the **Attach**
 button - images, text, Markdown, CSV, logs, JSON, and PDF. The upload shows a
@@ -127,10 +125,10 @@ Internals: **[Orchestrator World](../guides/orchestrator-world.md)** and
 
 ## Assistant
 
-One page with a single flat row of seven subtabs - **Models**, **Connectors**,
-**Tools**, **Skills**, **Routines**, **Usage**, and **Safety**. Choosing a subtab
-shows only that subtab, never a stack. Everything the assistant can reach and run,
-plus what it costs and how it is governed - keys are set by you, never by the model.
+One page, seven exclusive subtabs - **Models**, **Connectors**, **Tools**,
+**Skills**, **Routines**, **Usage**, and **Safety**. Everything the assistant can
+reach and run, plus what it costs and how it is governed. Keys are set by you,
+never by the model.
 
 ### Models
 

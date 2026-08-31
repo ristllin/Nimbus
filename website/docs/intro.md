@@ -12,9 +12,10 @@ description: "Open firmware that turns an inexpensive ESP32-S3 board into a pers
     <img src="/img/hardware/hero-render-placeholder.webp" alt="Nimbus device render (placeholder)" />
   </div>
   <div class="home-hero__lead">
-    <p>Nimbus is an open-firmware personal assistant that lives on your desk. In <b>Orchestrator</b> mode you reach it the way you already work: over Telegram, by hold-to-talk on the device, or from a local web UI. It remembers across conversations, runs your routines on its own clock, and uses tools mid-turn to get real work done. The agent runs on the device itself, an inexpensive commodity ESP32-S3 board, and drives the model you choose: a hosted AI lab, or an LLM you host yourself.</p>
-    <p>In <b>Notifier</b> mode the same build is a visual way to track the coding agents running on your machine. Over an encrypted Bluetooth link, each session takes a spot on the LED ring, so a glance tells you what finished and what needs you, with no terminal to watch.</p>
-    <p>Your source data stays on the device: memories, routines, and raw data live locally, not in a cloud account. It is local, not offline: the model call still goes out to whichever provider you pick, but the assistant itself is a small, always-on server you can leave next to your Wi-Fi router. Bring your own provider key (Mistral, OpenAI, Anthropic, or any OpenAI-compatible endpoint). Source-available under noncommercial licenses.</p>
+    <p>An open-firmware AI assistant for your desk, on a commodity ESP32-S3 board.</p>
+    <p><b>Orchestrator</b> mode: reach it over Telegram, hold-to-talk on the device, or a local web UI. It remembers across conversations, runs routines on its own clock, uses tools mid-turn.</p>
+    <p><b>Notifier</b> mode: each coding session takes a spot on the LED ring over encrypted Bluetooth, so a glance shows what finished and what needs you.</p>
+    <p>Memories and data stay on the device, not a cloud account. Only the model call leaves, to the provider you pick: a hosted lab, or an LLM you host yourself. Bring your own key (Mistral, OpenAI, Anthropic, or OpenAI-compatible). Source-available, noncommercial.</p>
     <div class="home-hero__cta">
       <a class="button button--primary button--lg" href="/quick-start/what-you-need">Get started</a>
       <a class="button button--secondary button--lg" href="/flash">Flash from your browser</a>
@@ -33,9 +34,8 @@ repository's `LICENSE`, `LICENSE-docs`, and `NOTICE`.
 
 ## Two builds, one firmware
 
-Nimbus targets two hardware builds. Both flash the same firmware and expose the
-same features. They differ in assembly effort and in whether the status ring is
-a physical ring or rendered on the screen.
+Same firmware, same features on both builds. They differ in assembly effort, and
+in whether the status ring is physical or rendered on screen.
 
 <div class="variant-grid">
   <div class="variant-card">
@@ -45,7 +45,7 @@ a physical ring or rendered on the screen.
     <div class="variant-card__body">
       <p class="variant-card__kicker">Hand-built</p>
       <h3>Classic Nimbus</h3>
-      <p>An ESP32-S3-DevKitC-1 on a custom carrier PCB in a 3D-printed case, driving a discrete WS2812B LED ring and a 2.8-inch touchscreen. Involves soldering and assembly.</p>
+      <p>An ESP32-S3-DevKitC-1 on a custom carrier PCB in a 3D-printed case, with a discrete WS2812B ring and a 2.8-inch touchscreen. Soldering and assembly required.</p>
       <ul class="variant-card__specs">
         <li>ESP32-S3-DevKitC-1 (N16R8) + carrier PCB</li>
         <li>WS2812B LED ring</li>
@@ -63,7 +63,7 @@ a physical ring or rendered on the screen.
     <div class="variant-card__body">
       <p class="variant-card__kicker">All-in-one</p>
       <h3>Nimbus Light (Freenove CYD)</h3>
-      <p>A single Freenove ESP32-S3 module with the display, capacitive touch, microSD, mic, and speaker on one board. No wiring, no soldering. There is no discrete ring; the status arcs render on the panel.</p>
+      <p>A single Freenove ESP32-S3 module: display, capacitive touch, microSD, mic, and speaker on one board. No wiring, no soldering. The status arcs render on the panel.</p>
       <ul class="variant-card__specs">
         <li>Freenove ESP32-S3 Display (FNK0104B)</li>
         <li>2.8" ILI9341 240x320, capacitive touch (FT6336U)</li>
@@ -83,33 +83,30 @@ are in the [hardware reference](guides/hardware.md); the parts list is in the
 
 ## One device, two modes
 
-The same firmware boots into one of two modes. Pick one at flash time and switch
-later from the settings menu; a switch restarts the device.
+Pick a mode at flash time; switch later from the settings menu. A switch restarts
+the device.
 
 ### Notifier
 
-A broker on your computer speaks the `nimbus-notify` protocol to the device over
-an encrypted, paired Bluetooth link. Each active coding session maps to a ring
-segment, and its color and animation encode the session state: running, waiting
-for input, done, errored. On Nimbus Light the segments render on the screen
-instead of a physical ring.
+A broker on your computer speaks the `nimbus-notify` protocol over an encrypted,
+paired Bluetooth link. Each coding session maps to a ring segment; its color and
+animation encode the state: running, waiting for input, done, errored. On Nimbus
+Light the segments render on screen.
 
 **[Notifier quick start](quick-start/notifier-quick-start.md)**
 
 ### Orchestrator
 
-A self-hosted agent backed by a hosted LLM provider and your own key. Reach it
-over Telegram, hold-to-talk on the device, or the local web UI. It keeps
-long-term memory on the SD card, runs tools mid-turn, spawns background
-sub-agents, runs scheduled routines, and updates itself over the air with signed
-releases.
+A self-hosted agent backed by a hosted LLM and your own key. Reach it over
+Telegram, hold-to-talk on the device, or the local web UI. Long-term memory on the
+SD card, tools mid-turn, background sub-agents, scheduled routines, and signed
+over-the-air updates.
 
 **[What you need](quick-start/what-you-need.md)**
 
 ## What stays on the device
 
-Nimbus keeps the assistant's source data local. However you run it, the memory,
-your routines, and the tool actions all happen on the device you own. Only the
+Memory, routines, and tool actions all happen on the device you own. Only the
 model call ever leaves, and only when you point it at a hosted provider.
 
 <div class="boundary-grid">
@@ -127,7 +124,7 @@ model call ever leaves, and only when you point it at a hosted provider.
         <span>self-hosted LLM, MCP tools</span>
       </div>
     </div>
-    <p class="boundary__cap">Run a model you host yourself and even the model call stays on your network. Nothing crosses out.</p>
+    <p class="boundary__cap">Host the model yourself and even the model call stays on your network. Nothing crosses out.</p>
   </div>
   <div class="boundary">
     <p class="boundary__kicker">Hosted provider</p>
@@ -145,18 +142,18 @@ model call ever leaves, and only when you point it at a hosted provider.
         <span>Mistral, OpenAI, or Anthropic</span>
       </div>
     </div>
-    <p class="boundary__cap">Point it at a hosted provider and only the model call leaves. Your memory, routines, and actions stay on the device.</p>
+    <p class="boundary__cap">Point at a hosted provider and only the model call leaves. Memory, routines, and actions stay on the device.</p>
   </div>
 </div>
 
 <div class="cumulo-callout">
   <h2>Cumulo Nimbus - the first-party service</h2>
-  <p>Nimbus runs entirely on your own keys and network. <a href="https://app.cumulo-nimbus.ai">Cumulo Nimbus</a> is the optional first-party service the firmware integrates with directly, when you want it. It is off by default.</p>
+  <p>Nimbus runs entirely on your own keys and network. <a href="https://app.cumulo-nimbus.ai">Cumulo Nimbus</a> is an optional first-party service the firmware integrates with directly. Off by default.</p>
   <ul>
-    <li><b>One key across providers.</b> A <a href="/cloud/cumulo-key">Cumulo key</a> draws on a single prepaid balance that routes to Mistral, OpenAI, and Anthropic. Paste it under <b>Assistant &rarr; Models</b>; it also works from your own code as an OpenAI- or Anthropic-compatible base URL.</li>
-    <li><b>Remote access without port forwarding.</b> <a href="/cloud/cloud-access">Cloud access</a> opens one outbound secure tunnel so you can reach the device's own web UI from anywhere. Pair it with a Cloud link code shown on the device.</li>
+    <li><b>One key across providers.</b> A <a href="/cloud/cumulo-key">Cumulo key</a> draws on one prepaid balance routing to Mistral, OpenAI, and Anthropic. Paste it under <b>Assistant &rarr; Models</b>, or use it from your own code as an OpenAI- or Anthropic-compatible base URL.</li>
+    <li><b>Remote access without port forwarding.</b> <a href="/cloud/cloud-access">Cloud access</a> opens one outbound secure tunnel to reach the device's web UI from anywhere. Pair it with a Cloud link code shown on the device.</li>
   </ul>
-  <p>Both are opt-in, both verify ownership before anything reaches the device, and neither replaces the local web UI.</p>
+  <p>Both opt-in, both verify ownership before anything reaches the device, and neither replaces the local web UI.</p>
 </div>
 
 ## Where to go

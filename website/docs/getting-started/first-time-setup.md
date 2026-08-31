@@ -6,11 +6,11 @@ description: "From a new board to a Nimbus you can talk to. A short, foolproof p
 
 # First-time setup
 
-From a new board to a working device you can talk to. After the one-time
-firmware install it takes about ten minutes, needs no serial console, and asks
-you for only two things: your Wi-Fi and one AI provider key.
+New board to a device you can talk to, in about ten minutes. No serial console.
+After the one-time firmware install it asks for just two things: your Wi-Fi and
+one AI provider key.
 
-Here is the whole path. Each step is spelled out below.
+The whole path, detailed below:
 
 1. **Flash the firmware** once. It seeds the display for you.
 2. **Power on.** The device shows its setup Wi-Fi network and a sign-in QR.
@@ -30,8 +30,8 @@ Notifier status light, you do not even need a provider key. See
 
 If this is an already-configured Nimbus, skip to [step 2](#2-power-on).
 
-You have two ways to install, and both seed the display so the board comes up on
-the right panel with no display question to answer:
+Two ways to install. Both seed the display, so the board comes up on the right
+panel with no display question:
 
 - **From your browser** (easiest): open [Flash Nimbus](/flash) in Chrome or Edge,
   pick your board, and click Install. Nothing to download.
@@ -41,9 +41,9 @@ the right panel with no display question to answer:
   python3 tools/setup_device.py
   ```
 
-  The installer lists the connected boards, detects the board family, and asks
-  only what it cannot know: the **operating mode**, and, on a Freenove, the
-  **panel size**. It confirms before writing and never erases saved settings.
+  The installer lists connected boards, detects the family, and asks only what it
+  cannot know: the **operating mode**, and on a Freenove the **panel size**. It
+  confirms before writing and never erases saved settings.
 
   | It asks | Options | What it sets |
   |---|---|---|
@@ -52,9 +52,9 @@ the right panel with no display question to answer:
 
 :::caution Classic Nimbus board: use the port labeled UART
 The hand-built Nimbus board (the DevKitC-1) has **two** USB-C ports. On a fresh
-board, only the one silkscreened **UART** can flash it. A board that "won't
-flash" is almost always on the wrong port, not broken. The Freenove all-in-one
-has a single USB-C port, so there is no wrong port to pick.
+board, only the one silkscreened **UART** can flash it: a board that "won't flash"
+is almost always on the wrong port, not broken. The Freenove has a single port, so
+there is no wrong one to pick.
 :::
 
 <details>
@@ -80,8 +80,8 @@ Power the board over USB-C. What you see depends on the mode you flashed:
 
 ### The device names itself
 
-A brand-new Orchestrator picks its own name by looking for other Nimbus devices
-nearby, then numbering itself:
+A brand-new Orchestrator names itself: it looks for other Nimbus devices nearby,
+then numbers itself.
 
 | Device | Setup Wi-Fi network | Address on your network |
 |---|---|---|
@@ -89,9 +89,9 @@ nearby, then numbering itself:
 | a second nearby | `Nimbus-2-setup` | `nimbus-2.local` |
 | a third | `Nimbus-3-setup` | `nimbus-3.local` |
 
-You can rename it later under **Settings > Mode & identity**. One name drives the
-setup Wi-Fi, the network address, the Bluetooth name, and what the assistant
-calls itself. A rename takes effect on the next restart.
+Rename it later under **Settings > Mode & identity**. One name drives the setup
+Wi-Fi, the network address, the Bluetooth name, and what the assistant calls
+itself; a rename takes effect on the next restart.
 
 ---
 
@@ -103,12 +103,9 @@ On your phone or laptop, join the network shown on the screen:
 - **Password:** shown on the device screen, unique to your device. Or just
   **scan the on-screen QR** to join automatically.
 
-A setup page **opens by itself**. If it does not, browse to
-**`http://192.168.4.1`**. Do not use `nimbus.local` for this first hop: it is a
-network name that can point at a different Nimbus.
-
-The page opens **already signed in**. There is no code to copy during first-time
-setup: the QR carried it for you.
+A setup page **opens by itself**, **already signed in**: the QR carried the code,
+nothing to copy. If it does not open, browse to **`http://192.168.4.1`**. Do not
+use `nimbus.local` for this first hop; it can point at a different Nimbus.
 
 ---
 
@@ -126,9 +123,8 @@ The wizard asks for two required things and lets you skip the rest.
 | Device name | Optional | Rename it now or later. |
 
 **Which provider key?** Any one verified key runs the assistant. **Mistral is the
-easiest start:** it has a free tier and is the voice default. OpenAI and Anthropic
-work too. Keys are stored write-only: a saved key shows as "set" and is never
-displayed again.
+easiest start:** free tier, and the voice default. OpenAI and Anthropic work too.
+Keys are write-only: a saved key shows as "set" and is never displayed again.
 
 :::info On a touchscreen board, keep the wizard open
 When the device joins your Wi-Fi, its setup network shuts down (to protect the
@@ -146,15 +142,15 @@ empty and there is nothing to lose.
 :::
 
 That is the whole setup. The wizard lands on the **dashboard** at the device's
-address on your network. **You are ready to talk to it.** Jump to
+address, and **you are ready to talk to it.** Jump to
 [your first turn](#your-first-turn), or add the optional pieces below.
 
 ---
 
 ## Optional: add an SD card
 
-The microSD card holds the assistant's long-term memory, media, and logs.
-Without one everything still works, just with lower limits.
+The microSD card holds long-term memory, media, and logs. Without one everything
+still works, just with lower limits.
 
 1. **Format it as FAT32** ("MS-DOS (FAT)" in macOS Disk Utility). Cards over
    32 GB ship as exFAT and **will not mount** until reformatted.
@@ -216,7 +212,7 @@ there.
   breathes red while listening, then shows a spinner while it transcribes.
   Release to send.
 
-That is it. The device is live. From here, the
+That is it, the device is live. From here, the
 [web UI reference](webui-reference.md) walks every settings tab, and
 [Orchestrator World](../guides/orchestrator-world.md) explains memory, sessions,
 and the tool loop.
@@ -225,9 +221,8 @@ and the tool loop.
 
 ## Signing in from another browser
 
-You never handle the access token during first-time setup: the wizard carried it
-to the device for you. For a **later** browser, or a device configured by older
-firmware:
+First-time setup never makes you handle the access token; the wizard carried it
+for you. For a **later** browser, or a device configured by older firmware:
 
 1. **Scan the sign-in QR** on the device screen with your phone. It opens the
    settings page already signed in.
