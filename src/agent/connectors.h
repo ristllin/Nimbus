@@ -151,8 +151,12 @@ void pump();
 bool callback(const String& state, const String& code, String& errOut);
 
 // The long authorization URL of the active flow, for the device `/oauth/go`
-// redirect (the on-screen QR encodes the short device URL, not this). "" if none.
-String authorizeUrl();
+// redirect (the on-screen QR encodes the short device URL, not this). Returns it
+// ONLY when `launchKey` matches the per-flow key minted at the authenticated flow
+// start and revealed only to the owner (CUM-274); "" otherwise (no flow, or an
+// unauthenticated caller with a missing/wrong key), so `state` cannot leak to a
+// LAN peer that hits the ungated /oauth/go.
+String authorizeUrl(const String& launchKey);
 
 // JSON status for the web UI + device screen data path:
 // {"active":bool,"phase":"...","conn":"..","userCode":"..","verifyUrl":"..","error":".."}.

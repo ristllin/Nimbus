@@ -219,6 +219,21 @@ struct FlowState {
 // The next step for a given state. Pure and total.
 Step planNextStep(const FlowState& s);
 
+// ---- launch-key gate (CUM-274) -----------------------------------------------
+
+// May a caller of the device's `/oauth/go` redirect be handed the state-bearing
+// authorization URL? Only when it presents the exact per-flow launch key the device
+// minted at the (authenticated) flow start and revealed ONLY to the owner (the
+// auth-gated status verify URL + the web-UI QR). `/oauth/go` itself is not token-
+// gated - the owner opens it fresh on a phone - so this per-flow secret is what
+// stops an unauthenticated LAN peer from reading `state` out of the redirect and
+// binding their own account (account fixation). Fail-closed: an empty expected key
+// (no flow awaiting consent) or an empty/mismatched presented key is never
+// authorized. Constant-length compare is not required - the key is a 128-bit,
+// per-flow value (valid only for the one consent window) with no oracle to iterate
+// against.
+bool launchAuthorized(const std::string& expectedKey, const std::string& providedKey);
+
 }  // namespace oauth
 }  // namespace mcp
 }  // namespace orch

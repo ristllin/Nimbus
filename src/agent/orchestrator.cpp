@@ -317,18 +317,22 @@ static nimbus::orch::ModAction moderateGate(nimbus::orch::ModGate gate, const St
 
 // ---- delivery helpers -------------------------------------------------------
 
-static void deliver(const String& chatId, const String& text) {
+// `system` marks GENUINE device-authored deterministic copy (command replies,
+// confirmations, the inbound-block notice) - an out-of-band provenance signal set by
+// the emitting call site, never inferred from the text. It is the ONLY thing that
+// exempts a reply from the outbound screen. Everything guest-steerable - a model
+// reply, a job result - is delivered with system=false (the default) and always
+// screened. (CUM-275: the old exemption keyed on text.startsWith(deviceName), which
+// a guest could prompt-inject the model into reproducing.)
+static void deliver(const String& chatId, const String& text, bool system = false) {
   // Gate 2 (outbound to guests, fail-open): when the owner turns it on, a reply to
   // a non-admin chat is screened; a flagged reply is suppressed (a classifier
   // outage fails open, so an outage never silences the assistant). Admin/web/serial
   // /voice resolve to Admin and are never screened (gateApplies returns Allow fast,
   // no classifier call). Runs on the delivering task, same TLS-slot discipline as
-  // the fetch scan. The device's own deterministic system copy (command replies,
-  // confirmations, the block notice) is self-tagged with the device name; skip it
-  // so we never pay a classifier call to screen our own known-safe strings.
-  const String selfName = String(nimbus::sys::deviceName().c_str());
-  const bool systemMsg = selfName.length() && text.startsWith(selfName);
-  if (!systemMsg &&
+  // the fetch scan. Genuine device system copy is exempt so we never pay a classifier
+  // call to screen our own known-safe strings - but only on provenance, not content.
+  if (!nimbus::orch::outboundExempt(system) &&
       moderateGate(nimbus::orch::ModGate::OutboundReply, chatId, text) == nimbus::orch::ModAction::Block) {
     alogf("moderation: outbound reply to %s suppressed (flagged)", chatId.c_str());
     return;
@@ -1271,17 +1275,21 @@ void handleMessage(const String& text, const String& fromName, const String& cha
       // device. With the tag, a mixed conversation is instantly visible.
       const String selfTag = String(nimbus::sys::deviceName().c_str()) +
                              " \xC2\xB7 " NIMBUS_FW_VERSION ": ";
+      // Deterministic command replies are the device's own copy: deliver with the
+      // system-provenance flag so the outbound screen exempts them by provenance
+      // (not by any prefix a model could reproduce - CUM-275).
+      auto say = [&](const String& body) { deliver(chatId, body, /*system=*/true); };
       if (ownerCmd && !owner) {
-        deliver(chatId, selfTag + "Only the device's owner can use that command. "
+        say(selfTag + "Only the device's owner can use that command. "
                         "You're welcome to keep chatting with me here.");
         return;
       }
       if (v == "update") {
         if (!cmd.args.empty()) {
-          deliver(chatId, selfTag + "Send /update on its own to install a pending update.");
+          say(selfTag + "Send /update on its own to install a pending update.");
           return;
         }
-        deliver(chatId, selfTag + (g_otaInstallHook ? g_otaInstallHook()
+        say(selfTag + (g_otaInstallHook ? g_otaInstallHook()
                                                     : String("Updates aren't available on this build.")));
         return;
       }
@@ -1290,20 +1298,20 @@ void handleMessage(const String& text, const String& fromName, const String& cha
         // track, "/play stop|pause". WAV plays today; MP3 needs the decoder build.
         String arg = String(cmd.args.c_str()); arg.trim();
         String low = arg; low.toLowerCase();
-        if (low == "stop")      { music::stop();  deliver(chatId, selfTag + "Stopped music."); return; }
-        if (low == "pause")     { music::pause(); deliver(chatId, selfTag + "Paused music."); return; }
+        if (low == "stop")      { music::stop();  say(selfTag + "Stopped music."); return; }
+        if (low == "pause")     { music::pause(); say(selfTag + "Paused music."); return; }
         if (arg.length() == 0) {
           int n = music::playAll();
-          deliver(chatId, selfTag + (n ? ("Playing " + String(n) + " track" + (n == 1 ? "" : "s") + " from the music folder.")
+          say(selfTag + (n ? ("Playing " + String(n) + " track" + (n == 1 ? "" : "s") + " from the music folder.")
                                         : String("No tracks in the music folder (SD /music).")));
           return;
         }
         if (!nimbus::orch::validMusicName(arg.c_str())) {
-          deliver(chatId, selfTag + "That is not a valid track name. Use a .wav or .mp3 file in the music folder.");
+          say(selfTag + "That is not a valid track name. Use a .wav or .mp3 file in the music folder.");
           return;
         }
         music::playNow({std::string(arg.c_str())});
-        deliver(chatId, selfTag + "Playing " + arg + ".");
+        say(selfTag + "Playing " + arg + ".");
         return;
       }
       if (v == "clear") {
@@ -1313,10 +1321,10 @@ void handleMessage(const String& text, const String& fromName, const String& cha
         String arg = String(cmd.args.c_str()); arg.trim(); arg.toLowerCase();
         if (arg == "yes" || arg == "confirm") {
           requestConvClear();
-          deliver(chatId, selfTag + "Cleared this conversation and its active task. "
+          say(selfTag + "Cleared this conversation and its active task. "
                           "Long-term memory and files are kept.");
         } else {
-          deliver(chatId, selfTag + "Clear this conversation and the current active task? "
+          say(selfTag + "Clear this conversation and the current active task? "
                           "Long-term memory and files are kept. Send /clear yes to confirm.");
         }
         return;
@@ -1331,7 +1339,7 @@ void handleMessage(const String& text, const String& fromName, const String& cha
         String action = (sp < 0) ? rest : rest.substring(0, sp); action.toLowerCase();
         String name = (sp < 0) ? String("") : rest.substring(sp + 1); name.trim();
         if ((action != "approve" && action != "deny") || name.length() == 0) {
-          deliver(chatId, selfTag + "Usage: /mcp approve <name>  |  /mcp deny <name>");
+          say(selfTag + "Usage: /mcp approve <name>  |  /mcp deny <name>");
           return;
         }
         JsonDocument blob;
@@ -1348,12 +1356,12 @@ void handleMessage(const String& text, const String& fromName, const String& cha
           }
         }
         if (!found) {
-          deliver(chatId, selfTag + "No MCP server named \"" + name + "\". Add it on the web page first.");
+          say(selfTag + "No MCP server named \"" + name + "\". Add it on the web page first.");
           return;
         }
         String out; serializeJson(blob, out);
         store::setConnectorsJson(out);
-        deliver(chatId, selfTag + (action == "approve"
+        say(selfTag + (action == "approve"
                   ? ("Approved MCP server \"" + name + "\". Its tools will be discovered shortly.")
                   : ("Removed approval for MCP server \"" + name + "\". Its tools are retracted.")));
         return;
@@ -1362,7 +1370,7 @@ void handleMessage(const String& text, const String& fromName, const String& cha
         // Async by design: the fold runs on the next pollJobs pass (~1 s), off
         // the command path - the same staged pattern as every heavy owner op.
         stageManualFold(chatId.c_str());
-        deliver(chatId, selfTag + "Compacting this conversation in the background \xE2\x80\x94 I'll confirm shortly.");
+        say(selfTag + "Compacting this conversation in the background \xE2\x80\x94 I'll confirm shortly.");
         return;
       }
       if (v == "remind") {
@@ -1376,7 +1384,7 @@ void handleMessage(const String& text, const String& fromName, const String& cha
         String note = (sp < 0) ? String("") : rest.substring(sp + 1); note.trim();
         const long secs = nimbus::orch::parseDurationSecs(std::string(durStr.c_str()));
         if (secs < 0 || note.length() == 0) {
-          deliver(chatId, selfTag + "Usage: /remind <when> <what> \xE2\x80\x94 e.g. "
+          say(selfTag + "Usage: /remind <when> <what> \xE2\x80\x94 e.g. "
                           "/remind 30m take the cake out. Time is a span like 45s, 30m, "
                           "2h, or 1d.");
           return;
@@ -1392,7 +1400,7 @@ void handleMessage(const String& text, const String& fromName, const String& cha
           String em = String(rr.err.c_str());
           if (em.indexOf("in_seconds") >= 0)
             em = "that time is out of range \xE2\x80\x94 pick between 2 minutes and 7 days";
-          deliver(chatId, selfTag + "Couldn't set that reminder: " + em);
+          say(selfTag + "Couldn't set that reminder: " + em);
           return;
         }
         const long mins = secs / 60;
@@ -1400,17 +1408,17 @@ void handleMessage(const String& text, const String& fromName, const String& cha
                     : (secs < 86400) ? (String(secs / 3600) + "h" +
                                         (secs % 3600 ? " " + String((secs % 3600) / 60) + "m" : ""))
                     : (String(secs / 86400) + "d");
-        deliver(chatId, selfTag + "Reminder set \xE2\x80\x94 in " + when + " I'll remind you: " +
+        say(selfTag + "Reminder set \xE2\x80\x94 in " + when + " I'll remind you: " +
                         note + "  (cancel with /loop deny " + String(rr.id.c_str()) + ")");
         return;
       }
-      if (v == "loops") { deliver(chatId, selfTag + loops::loopsText()); return; }
+      if (v == "loops") { say(selfTag + loops::loopsText()); return; }
       if (v == "loop") {
         String rest = String(cmd.args.c_str());   // "action [id]"
         int sp = rest.indexOf(' ');
         String action = (sp < 0) ? rest : rest.substring(0, sp);
         String id = (sp < 0) ? String("") : rest.substring(sp + 1); id.trim();
-        if (action.length() == 0) { deliver(chatId, selfTag + "Usage: /loops \xC2\xB7 /loop approve|deny|off|on <id>"); return; }
+        if (action.length() == 0) { say(selfTag + "Usage: /loops \xC2\xB7 /loop approve|deny|off|on <id>"); return; }
         String msg;
         if      (action == "approve") msg = loops::approveLoop(id) ? "Approved \xE2\x80\x94 it will run on schedule." : "No routine with that ID.";
         else if (action == "deny" || action == "kill" || action == "delete")
@@ -1419,8 +1427,8 @@ void handleMessage(const String& text, const String& fromName, const String& cha
                     : (loops::cancelLoop(id) ? "Removed." : "No routine with that ID.");
         else if (action == "off"  || action == "pause")  msg = loops::setEnabled(id, false) ? "Paused." : "No routine with that ID.";
         else if (action == "on"   || action == "resume") msg = loops::setEnabled(id, true)  ? "Resumed." : "No routine with that ID.";
-        else { deliver(chatId, selfTag + "Usage: /loops  |  /loop approve|deny|off|on <id>"); return; }
-        deliver(chatId, selfTag + "Routine " + id + ": " + msg);
+        else { say(selfTag + "Usage: /loops  |  /loop approve|deny|off|on <id>"); return; }
+        say(selfTag + "Routine " + id + ": " + msg);
         return;
       }
       if (v == "fetch") {
@@ -1433,15 +1441,15 @@ void handleMessage(const String& text, const String& fromName, const String& cha
         String id = (sp < 0) ? String("") : rest.substring(sp + 1); id.trim();
         uint32_t n = (uint32_t)id.toInt();
         if (action == "approve" && n) {
-          deliver(chatId, selfTag + (files::fetchApprove(n)
+          say(selfTag + (files::fetchApprove(n)
               ? "Approved - downloading in the background; I'll confirm when it lands."
               : "No pending download with that ID."));
         } else if (action == "deny" && n) {
-          deliver(chatId, selfTag + (files::fetchDeny(n)
+          say(selfTag + (files::fetchDeny(n)
               ? "Denied - it will not be downloaded."
               : "No pending download with that ID."));
         } else {
-          deliver(chatId, selfTag + "Usage: /fetch approve|deny <id>");
+          say(selfTag + "Usage: /fetch approve|deny <id>");
         }
         return;
       }
@@ -1454,7 +1462,7 @@ void handleMessage(const String& text, const String& fromName, const String& cha
         String action = (sp < 0) ? rest : rest.substring(0, sp);
         String id = (sp < 0) ? String("") : rest.substring(sp + 1); id.trim();
         if (action.length() == 0 || id.length() == 0) {
-          deliver(chatId, selfTag + "Usage: /skill approve|deny <id>");
+          say(selfTag + "Usage: /skill approve|deny <id>");
           return;
         }
         std::string err;
@@ -1464,12 +1472,12 @@ void handleMessage(const String& text, const String& fromName, const String& cha
                                                   : String(err.c_str());
         else if (action == "deny" || action == "delete")
           msg = skills::remove(id.c_str(), err) ? "Removed." : String(err.c_str());
-        else { deliver(chatId, selfTag + "Usage: /skill approve|deny <id>"); return; }
-        deliver(chatId, selfTag + "Skill " + id + ": " + msg);
+        else { say(selfTag + "Usage: /skill approve|deny <id>"); return; }
+        say(selfTag + "Skill " + id + ": " + msg);
         return;
       }
       if (v == "help" || v == "start") {
-        deliver(chatId, "Hi \xE2\x80\x94 I'm " + String(nimbus::sys::deviceName().c_str()) +
+        say("Hi \xE2\x80\x94 I'm " + String(nimbus::sys::deviceName().c_str()) +
                         " (firmware " NIMBUS_FW_VERSION
                         "). Send a message and I'll reply here.\n\nOwner commands:\n"
                         "/update \xE2\x80\x94 install a pending firmware update\n"
@@ -1484,7 +1492,7 @@ void handleMessage(const String& text, const String& fromName, const String& cha
         return;
       }
       // Any other slash command: deterministic reply, never a paid LLM turn.
-      deliver(chatId, selfTag + "I don't recognize /" + String(v.c_str()) +
+      say(selfTag + "I don't recognize /" + String(v.c_str()) +
                       " \xE2\x80\x94 try /help. To chat, just write without the slash.");
       return;
     }
@@ -1496,7 +1504,7 @@ void handleMessage(const String& text, const String& fromName, const String& cha
   if (moderateGate(nimbus::orch::ModGate::InboundText, chatId, text) == nimbus::orch::ModAction::Block) {
     alogf("moderation: inbound blocked (chat=%s)", chatId.c_str());
     deliver(chatId, String(nimbus::sys::deviceName().c_str()) + " \xC2\xB7 " NIMBUS_FW_VERSION
-                    ": That message couldn't be processed here.");
+                    ": That message couldn't be processed here.", /*system=*/true);
     return;
   }
   g_engine->handleMessage(std::string(text.c_str()), std::string(fromName.c_str()),
@@ -1856,7 +1864,8 @@ static void compactTick() {
       if (!pseudo)
         deliver(String(chat.c_str()),
                 String("\xE2\x9A\xA0 Conversation compaction paused for this chat \xE2\x80\x94 it "
-                       "kept refilling immediately. Send /compact to run it manually."));
+                       "kept refilling immediately. Send /compact to run it manually."),
+                /*system=*/true);
       return;
     }
     if (due != FoldDue::Yes) return;
@@ -1864,7 +1873,7 @@ static void compactTick() {
 
   nimbus::orch::ChatFold prev = g_folds.get(chat);
   if (manual && prev.msgsSinceFold == 0 && prev.summary.empty()) {
-    if (!pseudo) deliver(String(chat.c_str()), String("Nothing to compact yet."));
+    if (!pseudo) deliver(String(chat.c_str()), String("Nothing to compact yet."), /*system=*/true);
     return;
   }
   // No pre-notice (field 2026-08-11: "triple message on Compaction then
@@ -1930,7 +1939,7 @@ static void compactTick() {
     // Success confirmation only for MANUAL /compact (the owner asked and was
     // promised a result). Auto folds complete silently - the ev:compact history
     // row + publishFoldStatus are their record.
-    if (!pseudo && manual) deliver(String(chat.c_str()), String("\xE2\x9C\x93 Compacted."));
+    if (!pseudo && manual) deliver(String(chat.c_str()), String("\xE2\x9C\x93 Compacted."), /*system=*/true);
   } else if (manual) {
     // Manual attempts reset the breaker (resume() above), so the 3-fail alert
     // edge can never fire for them - report the failure directly instead of
@@ -1940,12 +1949,14 @@ static void compactTick() {
     if (!pseudo)
       deliver(String(chat.c_str()),
               String("\xE2\x9A\xA0 Couldn't compact this conversation just now. "
-                     "Try /compact again in a moment."));
+                     "Try /compact again in a moment."),
+              /*system=*/true);
   } else if (g_folds.noteFoldFailed(chat)) {
     publishFoldStatus(chat);
     if (!pseudo) deliver(String(chat.c_str()),
             String("\xE2\x9A\xA0 Conversation compaction keeps failing for this "
-                   "chat \xE2\x80\x94 automatic compaction is paused. /compact retries manually."));
+                   "chat \xE2\x80\x94 automatic compaction is paused. /compact retries manually."),
+            /*system=*/true);
   }
 }
 

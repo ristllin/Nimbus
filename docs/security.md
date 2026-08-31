@@ -157,6 +157,36 @@ containment now lives in one portable, host-tested place
 The remote owner is already authenticated by the service and reaches the device on its own
 network for anything the denylist withholds, so remote use is unaffected.
 
+### DONE(security): connector OAuth /oauth/go requires a per-flow launch key (CUM-274)
+
+The MCP connector OAuth 2.1 flow (see the connector sign-in in the outbound MCP docs)
+parks at consent for up to an hour with a state-bearing authorize URL ready to hand out.
+`/oauth/go` cannot be token-gated - the owner opens it fresh on a phone - so an
+unauthenticated caller used to read the CSRF `state` straight out of its 302 `Location`.
+A LAN peer could then race the callback with their OWN provider account and bind their
+refresh token to the owner's connector (account fixation).
+
+Now the device mints a per-flow, 128-bit **launch key** at the authenticated flow start
+and carries it ONLY on the owner's verify URL / web-UI QR (both owner-only paths).
+`/oauth/go` returns the authorize URL only for a caller that presents that exact key
+(`?k=`); a keyless or wrong-key request - any unauthenticated LAN peer - is sent to the
+home page and never sees `state`. The gate decision is the pure, host-tested
+`nimbus::orch::mcp::oauth::launchAuthorized` (fail-closed on an empty published or
+presented key; `test_mcp_oauth` tables the caller classes). With `state` no longer
+leakable, the callback's existing state-equality check is a real gate again.
+
+### DONE(security): outbound moderation exemption is provenance-based (CUM-275)
+
+The outbound-reply screen ("Check replies sent to guests") skips the device's own
+deterministic system copy so it never pays a classifier call on known-safe strings. That
+exemption used to key on the reply TEXT (`startsWith(deviceName)`), which a guest could
+prompt-inject the model into reproducing - beginning its reply with the device name turned
+the screen off for that reply. The exemption is now an out-of-band provenance flag set by
+the code path that emits genuine device copy, never inferred from the text; guest-steerable
+content (a model reply, a job result) is always screened. The rule lives in the pure
+`nimbus::orch::outboundExempt` (no text argument by construction, so no content can satisfy
+it; host-tested in `test_orch_moderation`).
+
 ### Access token out of URLs (largely implemented 2026-08-23)
 
 **Status: LAN paths + device-screen QR fixed; AP first-run redirect pending.** The

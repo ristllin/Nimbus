@@ -2135,11 +2135,15 @@ void beginWeb(const WebConfig& wc) {
     agent::connectors::mcp::oauth::cancel();
     r->send(200, "application/json", "{\"ok\":true}");
   });
-  // The device's own short redirect: the on-screen QR / verify URL points here, and
+  // The device's own short redirect: the owner's verify URL / web QR points here, and
   // it 302s the owner's browser on to the provider's consent page. NOT token-gated
-  // (the owner opens it fresh on a phone; it exposes only a public authorize URL).
+  // (the owner opens it fresh on a phone), so it instead requires the per-flow launch
+  // key `k` the device minted at the authenticated flow start and revealed only to the
+  // owner (CUM-274). A keyless / wrong-key caller - any unauthenticated LAN peer - gets
+  // sent to the home page and never sees the state-bearing authorize URL.
   s_server.on("/oauth/go", HTTP_GET, [](AsyncWebServerRequest* r) {
-    String url = agent::connectors::mcp::oauth::authorizeUrl();
+    String key = r->hasParam("k") ? r->getParam("k")->value() : "";
+    String url = agent::connectors::mcp::oauth::authorizeUrl(key);
     if (url.length() == 0) { r->redirect("/"); return; }
     r->redirect(url);
   });
