@@ -132,6 +132,25 @@ The ESP32-S3's native USB port is fragile in specific, documented ways:
 - A silent board is almost never bricked - see
   [recovery](quick-start/flash.md#recovery).
 
+### Soak observability over LAN (`GET /api/state`)
+
+Long soak legs read device liveness over HTTP so a serial open never resets the
+board mid-run. `GET /api/state` carries these fields for that purpose (all are
+read-only and present in both modes):
+
+- `uptimeMs` - milliseconds since boot. Monotonic until the ~49.7-day wrap; a
+  drop to a small value between polls means the device restarted.
+- `ringBackstopFires` - times the belt-and-braces ring backstop had to clear a
+  stuck arc (CUM-11). Stays `0` on a healthy device; the wake-up soak asserts it
+  never moves.
+- `touch` - capacitive touch controller liveness (CUM-248), all zero on a
+  resistive board: `failures`, `recoveries`, `busClears`, `hardResets` (monotonic
+  counters), `consecFailures` (the current live failure streak, `0` when comms is
+  healthy), `lastRecoveryMs`, and `degraded` (true while comms is not confirmed
+  alive). The sleep/wake soak watches `recoveries` climb while `degraded` returns
+  to false, proving the controller self-heals instead of going dead until a
+  power-cycle.
+
 ## Docs follow every commit
 
 Renamed or moved anything user-visible? Grep for the old wording and fix every

@@ -56,7 +56,8 @@
 #include <solide/display_tft.h>                 // ...and the panel geometry it advertises
 #include <solide/board.h>                       // board identity + panel-fixed capability
 #include "nimbus/touch_cal.h"                 // tchCal validation (shared with the console)
-#include "solide/touch.h"                     // live-apply a new calibration
+#include "solide/touch.h"                     // live-apply a new calibration + touch::health()
+#include "nimbus/net/soak_state.h"            // CUM-257: uptime + soak counters onto /api/state
 #include "../sys/ota_update.h"          // /api/ota/* + /api/state ota fields
 #include "../agent/health.h"            // /api/health - device self-diagnosis (P5)
 #include "../agent/telegram.h"          // /api/telegram - allowlist + approval (P8)
@@ -426,10 +427,13 @@ static void buildState(String& out) {
   for (uint8_t i = 0; i < nimbus::fault::COUNT; i++)
     fj[nimbus::fault::name(nimbus::fault::Cap(i))] = (fmask & (1u << i)) != 0;
 
-  // CUM-11: how many times a belt-and-braces ring backstop had to clear a stuck
-  // arc. The primary edge clears a healthy wake-up's arc, so this stays 0; a
-  // nonzero value flags a real wedge. The 24 h wake-up soak asserts it stays flat.
-  d["ringBackstopFires"] = agent::orchestrator::ringBackstopFires();
+  // CUM-257: soak-observability fields (uptimeMs, ringBackstopFires, touch health)
+  // in one place so the LAN-driven soak legs (CUM-243 ring backstop, CUM-248 touch
+  // liveness) can read them over HTTP without a serial open that would reset the
+  // board mid-run. Shape + monotonicity are host-tested via the helper directly.
+  nimbus::net::soakStateInto(d.as<JsonObject>(), (uint32_t)millis(),
+                             agent::orchestrator::ringBackstopFires(),
+                             solide::touch::health());
 
   power::Sample b = s_wc.power ? s_wc.power->sample() : power::Sample{};
   JsonObject batt = d["batt"].to<JsonObject>();
