@@ -1297,15 +1297,14 @@ void pump() {
 
   if (doCancel) { s_flow = Flow{}; publish(); return; }
   if (doStart) { startFlow(name, redir); publish(); }
-  if (doCode && s_flow.active && s_flow.phase == Phase::ShowConsent) {
-    if (s_flow.state == String(state) && s_flow.state.length()) {
-      s_flow.code = code;
-      s_flow.phase = Phase::HaveCode;
-      s_flow.nextStepMs = 0;   // process promptly
-    } else {
-      fail("The sign-in response did not match this request. Start again.");
-      publish();
-    }
+  if (doCode && s_flow.active && s_flow.phase == Phase::ShowConsent &&
+      s_flow.state.length() && s_flow.state == String(state)) {
+    // Only a callback whose state matches THIS flow advances it. A stray or
+    // spoofed callback (wrong/blank state) is ignored, never aborts the flow, so
+    // a LAN peer cannot cancel an in-progress consent by hitting /oauth/cb.
+    s_flow.code = code;
+    s_flow.phase = Phase::HaveCode;
+    s_flow.nextStepMs = 0;   // process promptly
   }
 
   if (!s_flow.active) return;
