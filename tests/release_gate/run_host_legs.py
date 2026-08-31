@@ -34,33 +34,53 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 # The native legs are grouped into ONE `pio test` call (below) so the toolchain
 # spins up once; the python legs run directly.
 NATIVE_SUITES = [
-    ("white-screen (CUM-167/231)", "test_panel_health",
-     "flip-aware MADCTL healthy() compare: catches the partial MY/MX loss the "
-     "v0.7.1 mask waved through, no thrash at flip=1"),
-    ("white-screen (CUM-167/231)", "test_panel_heal",
-     "the rearm guard: past the trust window the panel is re-armed "
-     "UNCONDITIONALLY; healthy() never gates it (the pre-CUM-231 white screen)"),
-    ("touch breakage (CUM-203/189)", "test_touch_cal",
-     "boardDefaultCal per TouchKind (resistive Solide swap-only vs capacitive "
-     "Freenove swap+invertY); the single-source 180 reconciliation"),
-    ("crash/boot loop (CUM-174 #4)", "test_ota_logic",
-     "shouldRollback(pending, bootCount) rolls back after kOtaMaxBootAttempts; "
-     "bootHealthy() self-validates - the boot-loop rollback decision"),
-    ("crash/boot loop (CUM-174 #4)", "test_fault",
-     "the runtime capability-fault registry the resilience suite drives degraded "
-     "paths with"),
+    (
+        "white-screen (CUM-167/231)",
+        "test_panel_health",
+        "flip-aware MADCTL healthy() compare: catches the partial MY/MX loss the "
+        "v0.7.1 mask waved through, no thrash at flip=1",
+    ),
+    (
+        "white-screen (CUM-167/231)",
+        "test_panel_heal",
+        "the rearm guard: past the trust window the panel is re-armed "
+        "UNCONDITIONALLY; healthy() never gates it (the pre-CUM-231 white screen)",
+    ),
+    (
+        "touch breakage (CUM-203/189)",
+        "test_touch_cal",
+        "boardDefaultCal per TouchKind (resistive Solide swap-only vs capacitive "
+        "Freenove swap+invertY); the single-source 180 reconciliation",
+    ),
+    (
+        "crash/boot loop (CUM-174 #4)",
+        "test_ota_logic",
+        "shouldRollback(pending, bootCount) rolls back after kOtaMaxBootAttempts; "
+        "bootHealthy() self-validates - the boot-loop rollback decision",
+    ),
+    (
+        "crash/boot loop (CUM-174 #4)",
+        "test_fault",
+        "the runtime capability-fault registry the resilience suite drives degraded paths with",
+    ),
 ]
 
 # (class, id, argv, what it pins) - the python host gates.
 PYTHON_LEGS = [
-    ("settings-lost-across-OTA (CUM-237)", "check_ota_preserves_nvs",
-     [sys.executable, "tools/release_gate/check_ota_preserves_nvs.py"],
-     "source guard: the OTA flow writes only AKEY_OTA_* / otaSimCrash bookkeeping "
-     "keys - never a user key (Wi-Fi, provider, tchCal, scrModel, theme, ...)"),
-    ("gate logic (CUM-167/237 #6)", "gate_selftest",
-     [sys.executable, "-m", "pytest", "tools/release_gate", "-q"],
-     "the release-gate checks are themselves tested: each goes RED on its "
-     "pre-fix input and GREEN on the fix (retroactive proof)"),
+    (
+        "settings-lost-across-OTA (CUM-237)",
+        "check_ota_preserves_nvs",
+        [sys.executable, "tools/release_gate/check_ota_preserves_nvs.py"],
+        "source guard: the OTA flow writes only AKEY_OTA_* / otaSimCrash bookkeeping "
+        "keys - never a user key (Wi-Fi, provider, tchCal, scrModel, theme, ...)",
+    ),
+    (
+        "gate logic (CUM-167/237 #6)",
+        "gate_selftest",
+        [sys.executable, "-m", "pytest", "tools/release_gate", "-q"],
+        "the release-gate checks are themselves tested: each goes RED on its "
+        "pre-fix input and GREEN on the fix (retroactive proof)",
+    ),
 ]
 
 
@@ -109,8 +129,10 @@ def run_all() -> int:
     all_ok = all(ok for _cls, _name, ok in results)
     print("-" * 72)
     if all_ok:
-        print("HOST GATE GREEN. The hardware + cloud legs still apply - see "
-              "tests/release_gate/MANIFEST.md and tools/release_gate/run_gate.py.")
+        print(
+            "HOST GATE GREEN. The hardware + cloud legs still apply - see "
+            "tests/release_gate/MANIFEST.md and tools/release_gate/run_gate.py."
+        )
         return 0
     print("HOST GATE FAILED - release blocked. Fix the FAILing leg above.")
     return 1

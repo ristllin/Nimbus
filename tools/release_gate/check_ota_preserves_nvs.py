@@ -47,9 +47,7 @@ WRITE_RE = re.compile(
 # `#define AKEY_FOO  "literal"` in the key registry.
 DEFINE_RE = re.compile(r'#define\s+(AKEY_[A-Za-z0-9_]+)\s+"([^"]*)"')
 # `static const char* kName = "literal";` local key vars inside the OTA glue.
-LOCAL_STR_RE = re.compile(
-    r'\bconst\s+char\s*\*\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"([^"]*)"'
-)
+LOCAL_STR_RE = re.compile(r'\bconst\s+char\s*\*\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"([^"]*)"')
 
 
 def load_defines(hdr_text: str) -> "dict[str, str]":
@@ -102,33 +100,34 @@ def audit(src_text: str, hdr_text: str) -> "tuple[bool, list[str]]":
     ok = True
     writes = WRITE_RE.findall(src_text)
     if not writes:
-        return False, ["no NVS writes found in the OTA glue - the guard's assumption "
-                       "about src/sys/ota_update.cpp is stale; re-point it"]
+        return False, [
+            "no NVS writes found in the OTA glue - the guard's assumption "
+            "about src/sys/ota_update.cpp is stale; re-point it"
+        ]
 
     seen: "set[str]" = set()
     for token in writes:
         lit = resolve_key(token, defines, locals_)
         if lit is None:
             ok = False
-            msgs.append(f"OTA writes an UNRESOLVABLE key `{token}` (cannot prove it "
-                        f"is not a user key)")
+            msgs.append(f"OTA writes an UNRESOLVABLE key `{token}` (cannot prove it is not a user key)")
             continue
         if lit in allowed:
             seen.add(lit)
             continue
         ok = False
         tag = " (a USER data key)" if lit in user_literals else ""
-        msgs.append(f"OTA writes NVS key \"{lit}\"{tag} - the update flow must only "
-                    f"write its own bookkeeping (AKEY_OTA_* / otaSimCrash)")
+        msgs.append(
+            f"OTA writes NVS key \"{lit}\"{tag} - the update flow must only "
+            f"write its own bookkeeping (AKEY_OTA_* / otaSimCrash)"
+        )
     if ok:
-        msgs.append("OTA writes only bookkeeping keys: "
-                    + ", ".join(f'"{k}"' for k in sorted(seen)))
+        msgs.append("OTA writes only bookkeeping keys: " + ", ".join(f'"{k}"' for k in sorted(seen)))
     return ok, msgs
 
 
 def main(argv: "list[str] | None" = None) -> int:
-    ap = argparse.ArgumentParser(
-        description="Release gate: OTA preserves user NVS keys (CUM-237)")
+    ap = argparse.ArgumentParser(description="Release gate: OTA preserves user NVS keys (CUM-237)")
     default_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     ap.add_argument("--root", default=default_root, help="repo root")
     args = ap.parse_args(argv)
