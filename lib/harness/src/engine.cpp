@@ -926,7 +926,7 @@ void TurnEngine::handleMessage(const std::string& text, const std::string& fromN
   if (freeHeap() < t_.turnHardFloor) {
     hlog::logf("orchestrator: user turn deferred, heap %u < floor %u",
                (unsigned)freeHeap(), (unsigned)t_.turnHardFloor);
-    deliver(chatId, "One moment \xE2\x80\x94 I'm finishing some background work and low on "
+    deliver(chatId, "One moment, I'm finishing some background work and low on "
                     "working memory. Please resend in a few seconds.");
     return;
   }
