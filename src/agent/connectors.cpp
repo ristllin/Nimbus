@@ -937,39 +937,48 @@ struct HttpResp {
   mc::ErrorKind kind = mc::ErrorKind::None;
 };
 
-void httpDo(const char* method, const UrlParts& u, const char* contentType,
-            const std::string& body, const String& bearer, uint32_t timeoutMs, HttpResp& r) {
+// One general HTTP request over the arbiter. Bundled so the call stays under the
+// argument-count gate; contentType is only emitted when there is a body.
+struct HttpReq {
+  const char* method = "GET";
+  UrlParts    u;
+  const char* contentType = "application/json";
+  std::string body;
+  uint32_t    timeoutMs = 8000;
+};
+
+void httpDo(const HttpReq& q, HttpResp& r) {
+  const UrlParts& u = q.u;
   r = HttpResp{};
   if (!u.ok) { r.kind = mc::ErrorKind::Connect; return; }
-  if (!arbiter::acquireWork(timeoutMs)) { r.kind = mc::ErrorKind::Timeout; return; }
+  if (!arbiter::acquireWork(q.timeoutMs)) { r.kind = mc::ErrorKind::Timeout; return; }
   WiFiClientSecure tls;
   WiFiClient plain;
   Client* c;
   if (u.tls) {
     tlsSetup(tls);
     tls.setHandshakeTimeout(12);
-    tls.setConnectionTimeout(timeoutMs);
+    tls.setConnectionTimeout(q.timeoutMs);
     c = &tls;
   } else {
-    plain.setTimeout(timeoutMs / 1000 ? timeoutMs / 1000 : 1);
+    plain.setTimeout(q.timeoutMs / 1000 ? q.timeoutMs / 1000 : 1);
     c = &plain;
   }
-  const uint32_t deadline = millis() + timeoutMs;
+  const uint32_t deadline = millis() + q.timeoutMs;
   if (!mcpConnect(*c, u, deadline)) {
     c->stop(); arbiter::releaseWork();
     r.kind = mc::ErrorKind::Connect;
     return;
   }
-  String req = String(method) + " " + u.path + " HTTP/1.1\r\n"
+  String req = String(q.method) + " " + u.path + " HTTP/1.1\r\n"
              + "Host: " + u.host + "\r\n"
              + "Accept: application/json\r\n";
-  if (bearer.length()) req += "Authorization: Bearer " + bearer + "\r\n";
-  if (!body.empty())
-    req += String("Content-Type: ") + contentType + "\r\n"
-         + "Content-Length: " + String((unsigned)body.size()) + "\r\n";
+  if (!q.body.empty())
+    req += String("Content-Type: ") + q.contentType + "\r\n"
+         + "Content-Length: " + String((unsigned)q.body.size()) + "\r\n";
   req += "Connection: close\r\n\r\n";
   c->print(req);
-  if (!body.empty()) c->write((const uint8_t*)body.data(), body.size());
+  if (!q.body.empty()) c->write((const uint8_t*)q.body.data(), q.body.size());
   McpResp head;  // only for the header reader's out-params
   bool chunked;
   long clen;
@@ -1117,7 +1126,7 @@ void stepDiscoverPR() {
   if (!ru.ok) { fail("The MCP server URL is not a valid https address."); return; }
   String wk = oa::wellKnownProtectedResource(std::string(s_flow.resourceUrl.c_str())).c_str();
   HttpResp r;
-  httpDo("GET", parseUrl(wk), "", "", "", 8000, r);
+  { HttpReq q; q.method = "GET"; q.u = parseUrl(wk); q.timeoutMs = 8000; httpDo(q, r); }
   if (r.status >= 200 && r.status < 300) {
     oa::ProtectedResourceMeta m = oa::parseProtectedResourceMetadata(r.body);
     if (m.ok) {
@@ -1133,7 +1142,7 @@ void stepDiscoverPR() {
 void stepDiscoverAS() {
   String wk = oa::wellKnownAuthServer(std::string(s_flow.issuer.c_str())).c_str();
   HttpResp r;
-  httpDo("GET", parseUrl(wk), "", "", "", 8000, r);
+  { HttpReq q; q.method = "GET"; q.u = parseUrl(wk); q.timeoutMs = 8000; httpDo(q, r); }
   if (r.status < 200 || r.status >= 300) { fail("Could not read the sign-in service details from the server."); return; }
   oa::AuthServerMeta m = oa::parseAuthServerMetadata(r.body);
   if (!m.ok) { fail("The server did not advertise an OAuth authorization service."); return; }
@@ -1168,7 +1177,7 @@ void stepRegister() {
   if (s_flow.scope.length()) p.scope = s_flow.scope.c_str();
   std::string body = oa::buildRegistrationRequest(p);
   HttpResp r;
-  httpDo("POST", parseUrl(s_flow.registrationEndpoint), "application/json", body, "", 10000, r);
+  { HttpReq q; q.method = "POST"; q.u = parseUrl(s_flow.registrationEndpoint); q.contentType = "application/json"; q.body = body; q.timeoutMs = 10000; httpDo(q, r); }
   if (r.status < 200 || r.status >= 300) { fail("The server refused to register this device for sign-in."); return; }
   oa::RegistrationResult rr = oa::parseRegistrationResponse(r.body);
   if (!rr.ok) { fail("The server's sign-in registration did not return a client id."); return; }
@@ -1211,7 +1220,7 @@ void stepExchange() {
   p.resource = s_flow.resourceUrl.c_str();
   std::string body = oa::buildCodeExchangeForm(p);
   HttpResp r;
-  httpDo("POST", parseUrl(s_flow.tokenEndpoint), "application/x-www-form-urlencoded", body, "", 10000, r);
+  { HttpReq q; q.method = "POST"; q.u = parseUrl(s_flow.tokenEndpoint); q.contentType = "application/x-www-form-urlencoded"; q.body = body; q.timeoutMs = 10000; httpDo(q, r); }
   oa::TokenResponse tok = oa::parseTokenResponse(r.body);
   if (!tok.ok) { fail("Sign-in did not complete. Start again from the connector."); return; }
   if (tok.refreshToken.empty()) { fail("The server returned no lasting sign-in; it must allow offline access."); return; }
