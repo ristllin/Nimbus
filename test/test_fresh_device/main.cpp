@@ -253,12 +253,16 @@ static void test_fresh_boot_posture_is_profile_seeded() {
 // the engine-level reply; here we pin the fresh-boot INPUT it depends on so a new
 // provider slot can't ship reading as keyed-by-default.)
 static void test_zero_keys_reads_as_no_provider() {
-  // A no-keys config, exactly as store_config wires it on a device with empty NVS.
+  // A no-keys config, exactly as store_config wires it on a device with empty NVS:
+  // hasKey false for every slot, and anyKeyed COMPUTED as the device does it (an OR
+  // over every slot + custom), not hardcoded - so a slot that ever ships
+  // keyed-by-default would flip anyKeyed and fail here.
   agent::HarnessConfig cfg;
   cfg.provider.hasKey = [](const std::string&) { return false; };
-  cfg.provider.anyKeyed = [] {
-    // device-truth: OR over every key slot, all empty on a fresh device
-    return false;
+  cfg.provider.anyKeyed = [&cfg] {
+    for (size_t i = 0; i < nimbus::orch::kProviderSlotCount; ++i)
+      if (cfg.provider.hasKey(nimbus::orch::kProviderSlots[i].slug)) return true;
+    return cfg.provider.hasKey("custom");
   };
 
   TEST_ASSERT_FALSE(cfg.provider.anyKeyed());
