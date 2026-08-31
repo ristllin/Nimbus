@@ -34,6 +34,17 @@ INCLUDES  := -I$(CURDIR)/src \
 CXXFLAGS  := -std=gnu++17 -O1 -g -Wall -Wno-unused-function -DNIMBUS_NATIVE -MMD -MP $(INCLUDES)
 LDFLAGS   := -lcurl
 
+# The lib/core portion cannot glob the whole directory: most of lib/core is
+# firmware-facing (tft, ring, wifi, cloud relay) and pulls in driver/Arduino
+# symbols this host link cannot resolve. So it is a curated set - the orchestrator
+# core plus the handful of portable helpers the harness engine references.
+#
+# A curated list drifts silently: when lib/core grows a new source the engine
+# needs (e.g. fallback_rules.cpp, the CUM-41 fallback engine, which is orchestrator
+# code that does NOT carry the orch_ prefix), the link breaks with an undefined
+# reference and nothing catches it - the lab is in no default sweep. The `check`
+# target below is wired into tools/build_all.sh (AGENTS.md section 3) exactly so
+# that drift fails loudly in the matrix instead of rotting until the next live run.
 SRCS      := $(wildcard $(CURDIR)/src/*.cpp) \
              $(wildcard $(REPO)/lib/harness/src/*.cpp) \
              $(wildcard $(REPO)/lib/harness/src/providers/*.cpp) \
@@ -41,6 +52,8 @@ SRCS      := $(wildcard $(CURDIR)/src/*.cpp) \
              $(REPO)/lib/core/src/attention.cpp \
              $(REPO)/lib/core/src/status_style.cpp \
              $(REPO)/lib/core/src/docs_pack.cpp \
+             $(REPO)/lib/core/src/fallback_rules.cpp \
+             $(REPO)/lib/core/src/model_catalog.cpp \
              $(wildcard $(REPO)/../solide-drivers/src/portable/ring.cpp)
 
 OBJS      := $(patsubst %,$(BUILD)/%.o,$(notdir $(basename $(SRCS))))

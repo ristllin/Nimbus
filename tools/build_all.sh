@@ -94,6 +94,30 @@ for row in "${MATRIX[@]}"; do
   fi
 done
 
+# harness-lab: the agent harness built as a host executable. It links the same
+# lib/core + lib/harness the firmware compiles, so a lib/core refactor that drops
+# a source it needs breaks its link - and nothing else builds it, so that rot
+# stays silent until the next live run (CUM-268). Build-only: `make check` never
+# opens a socket or reads a key. It needs the native ArduinoJson libdeps, which the
+# 'native' matrix row above has just populated.
+printf '  [ .. ] %-20s (make check)\n' "harness-lab"
+if [ "$VERBOSE" -eq 1 ]; then
+  make -C tools/harness-lab check
+  rc=$?
+else
+  log="$(make -C tools/harness-lab check 2>&1)"
+  rc=$?
+  [ $rc -ne 0 ] && printf '%s\n' "$log"
+fi
+if [ $rc -eq 0 ]; then
+  printf '  [ OK ] %-20s\n' "harness-lab"
+  pass=$((pass + 1))
+else
+  printf '  [FAIL] %-20s (exit %d)\n' "harness-lab" "$rc"
+  fail=$((fail + 1))
+  failed_labels+=("harness-lab")
+fi
+
 echo "== matrix: $pass passed, $fail failed =="
 if [ $fail -ne 0 ]; then
   echo "failed: ${failed_labels[*]}" >&2

@@ -278,7 +278,6 @@ class LabRig {
                  o["id"] = hits[i]->id;
                  o["title"] = hits[i]->title;
                  o["snippet"] = nimbus::docs::snippet(*hits[i], q);
-                 if (hits[i]->dev) o["audience"] = "maker";
                }
                std::string s; serializeJson(d, s);
                return orch::ToolResult::ok(s);
@@ -293,10 +292,6 @@ class LabRig {
                const nimbus::docs::DocSection* s = nimbus::docs::find(id);
                if (!s) return orch::ToolResult::fail("unknown doc id '" + id + "'");
                std::string out;
-               if (s->dev)
-                 out += "(maker docs - firmware development and bench workflows, not "
-                        "everyday device use; owners configure everything from the "
-                        "device's web page)\n\n";
                out += "## ";
                out += s->title;
                out += "\n\n";
