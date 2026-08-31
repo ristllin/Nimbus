@@ -20,8 +20,7 @@
 // rendered with textContent, never innerHTML, so a reply can never inject markup.
 namespace nimbusd {
 
-inline const char* chatPageHtml() {
-  return R"NIMBUS(<!doctype html>
+inline constexpr char kChatPageHtml[] = R"NIMBUS(<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -199,6 +198,5 @@ inline const char* chatPageHtml() {
 </body>
 </html>
 )NIMBUS";
-}
 
 }  // namespace nimbusd

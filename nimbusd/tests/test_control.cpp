@@ -59,6 +59,45 @@ static bool httpPost(DaemonHttpTransport& c, int port, const std::string& path,
   return true;
 }
 
+// The web chat surface: the static page (ungated) plus the gated replies route.
+// Assumes an owner prompt ("hi") was already posted, so the ring holds one user
+// entry to read back. Kept out of main() so each stays within the complexity gate.
+static void checkWebChat(ndtest::Ctx& c, DaemonHttpTransport& client, int port,
+                         const std::string& token) {
+  int status = 0;
+  std::string body;
+  c.ok(httpGet(client, port, "/", "", status, body) && status == 200,
+       "GET / -> 200 without a token (static page is ungated)");
+  c.ok(body.find("<!doctype html") != std::string::npos, "/ serves an HTML document");
+  c.ok(body.find("api/replies") != std::string::npos && body.find("api/message") != std::string::npos,
+       "the page wires the relative api/replies + api/message endpoints");
+  c.ok(body.find("http://") == std::string::npos && body.find("https://") == std::string::npos &&
+           body.find("src=\"//") == std::string::npos,
+       "the page pulls in no external resources (self-contained)");
+  c.ok(httpGet(client, port, "/index.html", "", status, body) && status == 200 &&
+           body.find("<!doctype html") != std::string::npos,
+       "GET /index.html -> 200 HTML (alias of /)");
+
+  // /api/replies is a DATA route: gated exactly like /api/state.
+  c.ok(httpGet(client, port, "/api/replies?after=0", "", status, body) && status == 401,
+       "GET /api/replies without a token -> 401 (gated)");
+  // The owner prompt posted earlier ("hi") was recorded as a user entry.
+  c.ok(httpGet(client, port, "/api/replies?after=0", token, status, body) && status == 200,
+       "GET /api/replies with token -> 200");
+  c.ok(body.find("\"role\":\"user\"") != std::string::npos &&
+           body.find("\"text\":\"hi\"") != std::string::npos,
+       "the recorded owner prompt is returned (role user, text hi)");
+  c.ok(body.find("\"providerConfigured\":false") != std::string::npos,
+       "keyless instance reports providerConfigured:false (CUM-211 honest state)");
+  size_t p = body.find("\"lastSeq\":");
+  long last = p == std::string::npos ? -1 : std::atol(body.c_str() + p + 10);
+  c.ok(last >= 1, "lastSeq advanced past the owner prompt");
+  const std::string after = "/api/replies?after=" + std::to_string(last);
+  c.ok(httpGet(client, port, after, token, status, body) && status == 200 &&
+           body.find("\"replies\":[]") != std::string::npos,
+       "after=<lastSeq> returns an empty replies set (seq filter works)");
+}
+
 int main() {
   ndtest::Ctx c;
   std::printf("=== daemon control surface (T2, offline, loopback) ===\n");
@@ -128,38 +167,7 @@ int main() {
        "state reports providerConfigured:false (keyless instance)");
 
   // ---- the web chat surface: static page (ungated) + replies (gated) --------
-  c.ok(httpGet(client, port, "/", "", status, body) && status == 200,
-       "GET / -> 200 without a token (static page is ungated)");
-  c.ok(body.find("<!doctype html") != std::string::npos, "/ serves an HTML document");
-  c.ok(body.find("api/replies") != std::string::npos && body.find("api/message") != std::string::npos,
-       "the page wires the relative api/replies + api/message endpoints");
-  c.ok(body.find("http://") == std::string::npos && body.find("https://") == std::string::npos &&
-           body.find("src=\"//") == std::string::npos,
-       "the page pulls in no external resources (self-contained)");
-  c.ok(httpGet(client, port, "/index.html", "", status, body) && status == 200 &&
-           body.find("<!doctype html") != std::string::npos,
-       "GET /index.html -> 200 HTML (alias of /)");
-
-  // /api/replies is a DATA route: gated exactly like /api/state.
-  c.ok(httpGet(client, port, "/api/replies?after=0", "", status, body) && status == 401,
-       "GET /api/replies without a token -> 401 (gated)");
-  // The owner prompt posted above ("hi") was recorded as a user entry.
-  c.ok(httpGet(client, port, "/api/replies?after=0", token, status, body) && status == 200,
-       "GET /api/replies with token -> 200");
-  c.ok(body.find("\"role\":\"user\"") != std::string::npos &&
-           body.find("\"text\":\"hi\"") != std::string::npos,
-       "the recorded owner prompt is returned (role user, text hi)");
-  c.ok(body.find("\"providerConfigured\":false") != std::string::npos,
-       "keyless instance reports providerConfigured:false (CUM-211 honest state)");
-  {
-    size_t p = body.find("\"lastSeq\":");
-    long last = p == std::string::npos ? -1 : std::atol(body.c_str() + p + 10);
-    c.ok(last >= 1, "lastSeq advanced past the owner prompt");
-    const std::string after = "/api/replies?after=" + std::to_string(last);
-    c.ok(httpGet(client, port, after, token, status, body) && status == 200 &&
-             body.find("\"replies\":[]") != std::string::npos,
-         "after=<lastSeq> returns an empty replies set (seq filter works)");
-  }
+  checkWebChat(c, client, port, token);
 
   // ---- backup: flush-and-stream a consistent tar of the mem tree -----------
   // Seed a vector so the flushed vectors.bin has content, then pull /backup.

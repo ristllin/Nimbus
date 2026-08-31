@@ -170,7 +170,7 @@ class HttpControl {
   }
 
   void handleIndex(int fd, const std::string&, const std::string&) {
-    respond(fd, 200, "text/html; charset=utf-8", chatPageHtml());
+    respond(fd, 200, "text/html; charset=utf-8", kChatPageHtml);
   }
 
   void handleHealthz(int fd, const std::string&, const std::string&) { respond(fd, 200, "text/plain", "ok"); }

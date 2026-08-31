@@ -75,6 +75,18 @@ int cmdGetMe(nimbusd::Config& cfg) {
   return 0;
 }
 
+// Wire the engine's reply delivery: record every reply in the ring that backs
+// the web chat page, and forward it to Telegram when a bot sender is configured.
+// `sender` is a pointer-to-pointer so the daemon can fill it in after the bot is
+// validated, without re-installing the hook.
+void installReplyDelivery(nimbusd::NimbusdRig& rig, nimbusd::ReplyBuffer& replies,
+                          nimbusd::TelegramChannel** sender) {
+  rig.setDeliver([&replies, sender](const std::string& chat, const std::string& text) {
+    replies.push("assistant", text);
+    if (*sender) { std::string e; (*sender)->sendMessage(chat, text, e); }
+  });
+}
+
 // Run one turn and print the reply (a keyed smoke check).
 int cmdOnce(nimbusd::Config& cfg, const std::string& text) {
   nimbusd::NimbusdRig rig(cfg, buildOptions(cfg));
@@ -102,10 +114,7 @@ int runDaemon(nimbusd::Config& cfg) {
   // so no reply is lost; `sender` is filled in below if a bot token is present.
   nimbusd::ReplyBuffer replies(/*cap=*/50);
   nimbusd::TelegramChannel* sender = nullptr;
-  rig.setDeliver([&replies, &sender](const std::string& chat, const std::string& text) {
-    replies.push("assistant", text);
-    if (sender) { std::string e; sender->sendMessage(chat, text, e); }
-  });
+  installReplyDelivery(rig, replies, &sender);
 
   // Control surface (loopback), token-gated.
   const std::string webToken = cfg.get("NIMBUSD_WEB_TOKEN");
