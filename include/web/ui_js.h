@@ -2287,7 +2287,11 @@ function renderMemList(d){
     const lx=left(); if(lx)bits.push(lx);
     if(e.lastRecallHours!==undefined)
       bits.push(e.lastRecallHours?('last used '+(ago(e.lastRecallHours)||'-')):'never used');
-    t.innerHTML='<div>'+(e.content||'').replace(/</g,'&lt;')+'</div>'+
+    // Which conversation owns this memory (CUM-232). Browse rows carry nsLabel;
+    // search hits don't, so the chip only shows where it's known.
+    const esc=s=>(s||'').replace(/</g,'&lt;');
+    const nsChip=e.nsLabel?'<span class=badge title="Conversation this memory belongs to">'+esc(e.nsLabel)+'</span> ':'';
+    t.innerHTML='<div>'+nsChip+esc(e.content)+'</div>'+
       '<div class=hint>'+bits.join(' · ')+'</div>';
     const del=document.createElement('button'); del.textContent='x'; del.title='delete';
     del.onclick=()=>memVecOp('delete',e.id);
@@ -2324,10 +2328,28 @@ function loadMemList(){
     })
     .catch(()=>{$('memvmsg').textContent='Search failed - try again.';});
 }
+// Per-namespace usage rollup (CUM-232): entries + pins per conversation vs quota.
+function loadNsUsage(){
+  const host=$('nsUsage'); if(!host)return;
+  fetch('/api/mem/nsusage').then(r=>r.json()).then(d=>{
+    const ns=d.namespaces||[];
+    if(!ns.length){host.textContent='No memories yet.';return;}
+    const esc=s=>(s||'').replace(/</g,'&lt;');
+    // "8 / 50" when a limit is set, plain "8" when unlimited (0 = no limit).
+    const vs=(n,max,word)=>n+(max>0?(' / '+max):'')+' '+word;
+    host.innerHTML=ns.map(u=>{
+      const mem=vs(u.count,u.maxVectors,u.count===1?'memory':'memories');
+      const pins=u.pins||u.maxPins?(', '+vs(u.pins,u.maxPins,'pinned')):'';
+      return '<div class=row style="justify-content:space-between;gap:8px">'+
+        '<span>'+esc(u.label)+'</span>'+
+        '<span class=hint>'+mem+pins+'</span></div>';
+    }).join('');
+  }).catch(()=>{host.textContent='Usage unavailable - try again.';});
+}
 function memPage(dir){_memOffset=Math.max(0,_memOffset+dir*_memPageN);loadMemList();}
 function memVecOp(op,id,confirm){
   fetch('/api/mem/vector?op='+op+(id?('&id='+encodeURIComponent(id)):'')+(confirm?('&confirm='+encodeURIComponent(confirm)):''),{method:'POST'})
-    .then(()=>{loadMemList();loadMemStats();});
+    .then(()=>{loadMemList();loadMemStats();loadNsUsage();});
 }
 function loadScratch(){
   if(!canPoll())return;
@@ -2397,7 +2419,7 @@ $('embsave').onclick=()=>{
     })
     .catch(e=>{btn.disabled=false;failToast(e);msg.textContent='Couldn\'t verify - try again.';});
 };
-function loadMemDash(){loadMemStats();loadMemList();loadScratch();loadMemCfg();}
+function loadMemDash(){loadMemStats();loadMemList();loadNsUsage();loadScratch();loadMemCfg();}
 
 // ---- Files (E1 artifact store): browse /mem/files, download, delete, upload ----
 function _fbytes(n){n=n||0;return n<1024?n+' B':n<1048576?(n/1024).toFixed(1)+' KB':(n/1048576).toFixed(1)+' MB';}

@@ -404,6 +404,24 @@ uint32_t VectorMemory::pinsIn(const std::string& ns) const {
   return n;
 }
 
+std::vector<NsUsage> VectorMemory::usageByNamespace() const {
+  std::vector<NsUsage> out;
+  for (const auto& e : entries_) {
+    const std::string key = e.ns.empty() ? std::string(kOwnerNs) : e.ns;
+    NsUsage* row = nullptr;
+    for (auto& u : out)
+      if (u.ns == key) { row = &u; break; }
+    if (!row) { out.push_back(NsUsage{key, 0, 0}); row = &out.back(); }
+    row->count++;
+    if (e.permanentFlag) row->pins++;
+  }
+  std::stable_sort(out.begin(), out.end(), [](const NsUsage& a, const NsUsage& b) {
+    if (a.count != b.count) return a.count > b.count;
+    return a.ns < b.ns;
+  });
+  return out;
+}
+
 bool VectorMemory::idVisible(const std::string& id,
                              const std::vector<std::string>& nsAllow) const {
   const int i = indexOf(id);

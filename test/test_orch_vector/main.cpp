@@ -398,6 +398,64 @@ static void test_source_separator_does_not_forge_ns() {
   TEST_ASSERT_TRUE(m2.idVisible("smuggle", {std::string("chat:evil")}));
 }
 
+// CUM-232: the per-namespace usage rollup the memory dashboard shows. The class
+// invariant (not one instance): whatever the store holds, the rollup's per-ns
+// counts equal countIn()/pinsIn() exactly and the counts sum to size() - every
+// entry lands in exactly one namespace, including a legacy empty-ns entry, which
+// canonicalizes to the owner just as countIn() does.
+static void test_usage_by_namespace_totals_add_up() {
+  VectorMemory m = make4();
+  // A deliberately mixed store: owner (one pinned + one legacy empty-ns), a member
+  // chat with two entries one of which is pinned, a second member, and the LAN MCP
+  // namespace. dedup off so near-identical 4-dim vectors all land.
+  auto pin = [](VecEntry e) { e.permanentFlag = true; return e; };
+  VecEntry ownPin = pin(mkFull("own-pin", v4(100,0,0,0), 0.9f, 720, 0)); ownPin.ns = kOwnerNs;
+  VecEntry ownLeg = mkFull("own-legacy", v4(0,100,0,0), 0.5f, 720, 0);   // ns left empty
+  VecEntry a1 = mkFull("a1", v4(0,0,100,0), 0.5f, 720, 0); a1.ns = "chat:alice";
+  VecEntry a2 = pin(mkFull("a2", v4(0,0,0,100), 0.5f, 720, 0)); a2.ns = "chat:alice";
+  VecEntry b1 = mkFull("b1", v4(100,100,0,0), 0.5f, 720, 0); b1.ns = "chat:bob";
+  VecEntry mc = mkFull("mc", v4(0,0,100,100), 0.5f, 720, 0); mc.ns = kMcpNs;
+  for (const auto& e : {ownPin, ownLeg, a1, a2, b1, mc}) m.add(e, false);
+  TEST_ASSERT_EQUAL_INT(6, m.size());
+
+  const auto rows = m.usageByNamespace();
+  // Owner (2, incl the empty-ns legacy), chat:alice (2), chat:bob (1), mcp (1).
+  TEST_ASSERT_EQUAL_INT(4, (int)rows.size());
+  uint32_t sumCount = 0, sumPins = 0;
+  for (const auto& r : rows) {
+    sumCount += r.count;
+    sumPins  += r.pins;
+    // Every row agrees with the write-seam counters the quota uses.
+    TEST_ASSERT_EQUAL_UINT32(m.countIn(r.ns), r.count);
+    TEST_ASSERT_EQUAL_UINT32(m.pinsIn(r.ns),  r.pins);
+  }
+  TEST_ASSERT_EQUAL_UINT32((uint32_t)m.size(), sumCount);  // totals add up
+  TEST_ASSERT_EQUAL_UINT32(2u, sumPins);                   // own-pin + a2
+
+  // The legacy empty-ns entry rolled into the owner, not a phantom namespace.
+  bool sawOwner = false;
+  for (const auto& r : rows)
+    if (r.ns == kOwnerNs) { sawOwner = true; TEST_ASSERT_EQUAL_UINT32(2u, r.count); }
+  TEST_ASSERT_TRUE(sawOwner);
+
+  // Sorted by count descending (owner and alice both 2, tie broken by ns asc).
+  for (size_t i = 1; i < rows.size(); i++)
+    TEST_ASSERT_TRUE(rows[i - 1].count > rows[i].count ||
+                     (rows[i - 1].count == rows[i].count && rows[i - 1].ns < rows[i].ns));
+}
+
+// CUM-232: the owner-facing namespace label. Reserved namespaces get a plain
+// word; a member chat shows the tenant label when known, else the bare chat id;
+// empty canonicalizes to the owner (same rule as the rollup).
+static void test_ns_friendly_label() {
+  TEST_ASSERT_EQUAL_STRING("Owner",  nsFriendlyLabel(kOwnerNs).c_str());
+  TEST_ASSERT_EQUAL_STRING("Owner",  nsFriendlyLabel("").c_str());   // legacy -> owner
+  TEST_ASSERT_EQUAL_STRING("Shared", nsFriendlyLabel(kSharedNs).c_str());
+  TEST_ASSERT_EQUAL_STRING("MCP",    nsFriendlyLabel(kMcpNs).c_str());
+  TEST_ASSERT_EQUAL_STRING("Alice",  nsFriendlyLabel("chat:12345", "Alice").c_str());
+  TEST_ASSERT_EQUAL_STRING("12345",  nsFriendlyLabel("chat:12345").c_str());  // no label
+}
+
 static void test_boost_accessed_bumps_and_resets_ttl() {
   VectorMemory m = make4();
   m.add(mkFull("a", v4(100,0,0,0), 0.5f, 720, 10));
@@ -591,6 +649,8 @@ int main(int, char**) {
   RUN_TEST(test_cap_eviction_is_namespace_scoped);
   RUN_TEST(test_deserialize_rejects_bad_dims);
   RUN_TEST(test_source_separator_does_not_forge_ns);
+  RUN_TEST(test_usage_by_namespace_totals_add_up);
+  RUN_TEST(test_ns_friendly_label);
   RUN_TEST(test_boost_accessed_bumps_and_resets_ttl);
   RUN_TEST(test_quantize_range);
   RUN_TEST(test_cosine_geometry);

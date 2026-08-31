@@ -22,6 +22,7 @@
 #include "nimbus/orch/episodic_log.h"   // civilDate + EpiQueryInfo (deep history)
 #include "nimbus/orch/scratchpad.h"
 #include "nimbus/orch/vector_memory.h"
+#include "nimbus/orch/rbac.h"              // Role/Quota - per-namespace usage vs quota (CUM-232)
 
 namespace nimbus::net {
 
@@ -49,6 +50,49 @@ String qparam(AsyncWebServerRequest* r, const char* name, const char* def = "") 
   if (r->hasParam(name)) return r->getParam(name)->value();
   if (r->hasParam(name, true)) return r->getParam(name, true)->value();
   return def;
+}
+
+// CUM-232 dashboard: resolve a vector namespace to an owner-facing label. A member
+// chat ("chat:<id>") shows the tenant's channel label when the device still knows
+// it; reserved namespaces (owner/shared/mcp) and an unlabeled/forgotten chat fall
+// back to nsFriendlyLabel's plain wording. The tenant snapshot is taken once by the
+// caller so a page of rows costs one lock, not one per entry.
+std::string nsLabelFrom(const std::vector<nimbus::orch::Tenant>& tenants,
+                        const std::string& ns) {
+  if (ns.rfind("chat:", 0) == 0) {
+    const std::string chatId = ns.substr(sizeof("chat:") - 1);
+    for (const auto& t : tenants)
+      if (t.chatId == chatId && !t.label.empty())
+        return nimbus::orch::nsFriendlyLabel(ns, t.label);
+  }
+  return nimbus::orch::nsFriendlyLabel(ns);
+}
+
+// The role + effective quota that apply to a namespace, so the usage summary can
+// show each tenant's footprint against its ceiling. Owner and shared are the
+// admin's own store (unquotaed); the LAN MCP endpoint acts as a User; a member
+// chat uses its tenant row's role and any per-tenant override, defaulting to the
+// role's quota (0 = no limit). A forgotten chat (memories linger past removal)
+// reports Unknown with the Unknown default.
+void nsRoleQuota(const std::vector<nimbus::orch::Tenant>& tenants, const std::string& ns,
+                 nimbus::orch::Role& roleOut, nimbus::orch::Quota& quotaOut) {
+  using namespace nimbus::orch;
+  if (ns == kOwnerNs || ns == kSharedNs) { roleOut = Role::Admin; quotaOut = Quota{}; return; }
+  if (ns == kMcpNs) { roleOut = Role::User; quotaOut = effectiveQuota(Role::User, Quota{}); return; }
+  if (ns.rfind("chat:", 0) == 0) {
+    const std::string chatId = ns.substr(sizeof("chat:") - 1);
+    for (const auto& t : tenants)
+      if (t.chatId == chatId) {
+        roleOut = t.role;
+        quotaOut = effectiveQuota(t.role, t.quota);
+        return;
+      }
+    roleOut = Role::Unknown;
+    quotaOut = effectiveQuota(Role::Unknown, Quota{});
+    return;
+  }
+  roleOut = Role::Unknown;
+  quotaOut = Quota{};
 }
 
 // ---- GET /api/mem/stats ----
@@ -101,6 +145,13 @@ void handleVectorGet(AsyncWebServerRequest* r) {
   String err;
   if (query.length()) qv = agent::embeddings::embed(query, err);
 
+  // Tenant labels for the per-entry namespace column (CUM-232). Snapshot BEFORE the
+  // memory lock - tenantSnapshot takes its own tenant lock; keeping the two locks
+  // un-nested avoids any ordering question.
+  const auto tenants = query.length()
+                           ? std::vector<nimbus::orch::Tenant>{}
+                           : agent::orchestrator::tenantSnapshot();
+
   {
     mem::Lock lk;   // guard all VectorMemory access (shared with the turn task)
     if (query.length()) {
@@ -127,6 +178,10 @@ void handleVectorGet(AsyncWebServerRequest* r) {
         o["source"] = e.source; o["ttlHours"] = e.ttlHours;
         o["tsHours"] = e.createdAtHours;          // wall-hours (epoch/3600 once synced)
         o["lastRecallHours"] = e.lastRecallHours; // 0 = never recalled
+        // Which conversation this memory belongs to (CUM-232). The raw ns is the
+        // stable key; nsLabel is the owner-friendly name shown in the browse row.
+        o["ns"] = e.ns.empty() ? std::string(nimbus::orch::kOwnerNs) : e.ns;
+        o["nsLabel"] = nsLabelFrom(tenants, e.ns);
       }
       d["mode"] = "browse";
       d["offset"] = offset;
@@ -134,6 +189,40 @@ void handleVectorGet(AsyncWebServerRequest* r) {
     }
     d["total"] = mem::vectors().size();
   }
+  String out; serializeJson(d, out);
+  sendJson(r, 200, out);
+}
+
+// ---- GET /api/mem/nsusage ----
+// Per-namespace usage rollup (CUM-232): one row per namespace the vector store
+// holds, with the entry count and permanent-pin count (from the same seams the
+// write quota uses) against that namespace's effective quota. Read-only - it never
+// touches engine state. Recall stays strictly per-principal (vector memory is never
+// shared), so this owner-only view is the one place the isolation is made visible.
+void handleNsUsageGet(AsyncWebServerRequest* r) {
+  if (authBlocked(r)) return;  // strict gate (owner R2)
+  // Snapshot tenants BEFORE the memory lock (its own lock; keep them un-nested).
+  const auto tenants = agent::orchestrator::tenantSnapshot();
+  JsonDocument d;
+  JsonArray arr = d["namespaces"].to<JsonArray>();
+  int total = 0;
+  {
+    mem::Lock lk;   // usageByNamespace reads the shared VectorMemory
+    for (const auto& u : mem::vectors().usageByNamespace()) {
+      nimbus::orch::Role role; nimbus::orch::Quota q;
+      nsRoleQuota(tenants, u.ns, role, q);
+      JsonObject o = arr.add<JsonObject>();
+      o["ns"]        = u.ns;
+      o["label"]     = nsLabelFrom(tenants, u.ns);
+      o["role"]      = nimbus::orch::roleName(role);
+      o["count"]     = u.count;
+      o["pins"]      = u.pins;
+      o["maxVectors"] = q.maxVectors;   // 0 = no limit
+      o["maxPins"]    = q.maxPins;      // 0 = no limit
+    }
+    total = mem::vectors().size();
+  }
+  d["total"] = total;
   String out; serializeJson(d, out);
   sendJson(r, 200, out);
 }
@@ -475,6 +564,7 @@ void handleEmbedCfgPost(AsyncWebServerRequest* r) {
 void registerMemoryRoutes(AsyncWebServer& server) {
   server.on("/api/mem/stats",      HTTP_GET,  handleStats);
   server.on("/api/mem/vector",     HTTP_GET,  handleVectorGet);
+  server.on("/api/mem/nsusage",    HTTP_GET,  handleNsUsageGet);
   server.on("/api/mem/vector",     HTTP_POST, handleVectorPost);
   server.on("/api/mem/scratchpad", HTTP_GET,  handleScratchGet);
   server.on("/api/mem/scratchpad", HTTP_POST, handleScratchPost);
