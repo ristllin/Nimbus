@@ -25,6 +25,10 @@ WifiPolicy s_policy;
 
 bool     s_engaged      = false;
 bool     s_manualHold   = false;
+// Set from any task (the web server re-seeds after a list edit); consumed on the main
+// loop so s_policy is only ever mutated there. volatile is enough: one flag, set-only
+// off-task, cleared on-task, and a missed edit is re-picked the next tick.
+volatile bool s_knownDirty = false;
 uint32_t s_downSinceMs  = 0;      // first tick the link was seen down; 0 = up / unknown
 bool     s_scanInFlight = false;
 uint32_t s_scanStartMs  = 0;
@@ -169,6 +173,8 @@ void execute(const Action& a, uint32_t now) {
 
 }  // namespace
 
+void markKnownDirty() { s_knownDirty = true; }
+
 void refreshKnown() {
   std::vector<KnownNet> nets;
   nimbus::net::wifistore::all(nets);
@@ -216,6 +222,10 @@ void tick(uint32_t nowMs, bool orchMode, bool onboarded) {
 
   // Notifier keeps the radio off; nothing to supervise.
   if (!orchMode) { disengage(); s_downSinceMs = 0; return; }
+
+  // Re-seed the policy on the MAIN task if the list changed off-task. Doing it here (not
+  // in the web handler) keeps s_policy single-task, honoring the no-concurrency rule.
+  if (s_knownDirty) { s_knownDirty = false; refreshKnown(); }
 
   // Drain the latched radio events for this tick.
   const bool gotIp    = s_evGotIp;    s_evGotIp = false;

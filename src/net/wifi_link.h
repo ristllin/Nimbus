@@ -40,8 +40,14 @@ struct Status {
 // Register the WiFi event latch + configure the policy. Call once, after net::begin().
 void begin();
 
-// Re-seed the policy from the known-networks store. Call after any list change (add /
-// forget / reorder / connect) so a failover cycle uses the current credentials + order.
+// Mark the saved-network list changed (add / forget / reorder / connect). SAFE from any
+// task, including the AsyncTCP web server: it only sets a flag, and the main-loop tick()
+// re-seeds the policy from it. The policy itself is therefore only ever mutated on the
+// main task, so there is no cross-task race on its vectors.
+void markKnownDirty();
+
+// Re-seed the policy from the known-networks store NOW. MAIN TASK ONLY (begin() and the
+// loop). Web/menu callers use markKnownDirty() instead.
 void refreshKnown();
 
 // Drive one tick from loop(). `orchMode` and `onboarded` are the live gates; the rest is

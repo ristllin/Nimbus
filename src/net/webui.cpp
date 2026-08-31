@@ -3345,7 +3345,7 @@ void beginWeb(const WebConfig& wc) {
         return;
       }
       wifistore::reorder(ssid, idx);   // a no-op (already there) is still a success
-      nimbus::net::link::refreshKnown();
+      nimbus::net::link::markKnownDirty();
       JsonDocument d;
       d["count"] = knownCount();
       ok(d);

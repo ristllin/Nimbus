@@ -225,7 +225,7 @@ bool saveAndConnect(const String& ssid, const String& pass) {
   // The network currently in use is protected from eviction, so adding one can never
   // cost you the connection you are adding it over.
   wifistore::add(ssid, pass, staConnected() ? WiFi.SSID() : String(""));
-  link::refreshKnown();   // the failover policy joins from this list - keep it current
+  link::markKnownDirty();   // the failover policy joins from this list - keep it current
   WiFi.disconnect();
   WiFi.begin(ssid.c_str(), pass.c_str());
   s_lastJoinMs = millis() ? millis() : 1;   // watch this attempt; 0 is the "none" sentinel
@@ -273,7 +273,7 @@ uint32_t msSinceJoinAttempt() {
 int  knownCount() { return wifistore::count(); }
 bool forgetNetwork(const String& ssid) {
   const bool ok = wifistore::forget(ssid);
-  if (ok) link::refreshKnown();   // keep the failover policy's list in step
+  if (ok) link::markKnownDirty();   // keep the failover policy's list in step
   return ok;
 }
 String knownNetworksJson() {
@@ -281,7 +281,7 @@ String knownNetworksJson() {
 }
 bool addNetwork(const String& ssid, const String& pass, String* evicted) {
   const bool ok = wifistore::add(ssid, pass, staConnected() ? WiFi.SSID() : String(""), evicted);
-  if (ok) link::refreshKnown();
+  if (ok) link::markKnownDirty();
   return ok;
 }
 
