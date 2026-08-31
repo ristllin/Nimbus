@@ -36,8 +36,13 @@ The **directive** (§1.1) sits above all four: human-owned, the model cannot wri
 
 ### 1.1 Directive (exists)
 User-owned, immutable to the model. `OrchMemory::directive` from
-`agent::store::sysPrompt` (600 B cap).
-Editable only by the human (web UI / provisioning).
+`agent::store::sysPrompt` (1500 B cap). Ships with an owner-authored default
+(`kOwnerDirectiveDefault`, the single compiled-in source); an empty stored value
+uses that default, so a fresh device still carries the owner's baseline persona.
+Set it during setup (the wizard Directive step) or any time on the web Directive
+box, with a "Revert to default" affordance. Injected below the platform rules and
+identity, delimited as owner preferences (it shapes style, never overrides
+safety/moderation/access). Editable only by the human (web UI / provisioning).
 
 ### 1.2 Scratchpad - model-owned working goals
 A set of goal tiers (short-term / mid-term / long-term goals plus an

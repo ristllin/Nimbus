@@ -50,6 +50,8 @@
 #include "nimbus_board_power.h"               // explicit per-board battMon default (CUM-202)
 #include "nimbus/orch/danger_zone.h"          // CUM-15 confirm phrases (one source of truth)
 #include "nimbus/orch/provider_slots.h"       // CUM-213: canonical provider registry (one source)
+#include "nimbus/orch/caps.h"                  // kMemDirectiveMax - owner-directive byte cap
+#include "nimbus/orch/directive.h"             // kOwnerDirectiveDefault - shipped default (single source)
 
 #include "../agent/agent_config.h"
 #include "../agent/memory_subsystem.h"
@@ -895,6 +897,10 @@ static void buildOrchState(String& out) {
   d["scrModel"] = agent::store::screenModel();
   d["scrFlip"]  = agent::store::tftFlip();   // display mounted 180 deg (TFT only)
   d["directive"]= agent::store::sysPrompt();
+  // Shipped default + cap, so the web UI and setup wizard pre-fill and bound the
+  // Directive box from the SAME source the prompt injector uses (never duplicated).
+  d["directiveDefault"] = nimbus::orch::kOwnerDirectiveDefault;
+  d["directiveMax"] = nimbus::orch::kMemDirectiveMax;
   d["verifyPending"] = agent::provider_verify::pending();
 
   JsonObject cust = d["cust"].to<JsonObject>();
@@ -1928,6 +1934,16 @@ void beginWeb(const WebConfig& wc) {
 
   s_server.on("/api/orch", HTTP_POST, [](AsyncWebServerRequest* r) {
     if (authBlocked(r)) return;
+    // The owner directive is user text entering the system prompt: enforce the
+    // byte cap HERE with an honest error, rather than silently truncating what
+    // the owner typed (the store setter clamps too, as defense-in-depth).
+    if (r->hasParam("sysPrompt", true) &&
+        r->getParam("sysPrompt", true)->value().length() >
+            (unsigned)nimbus::orch::kMemDirectiveMax) {
+      r->send(400, "application/json",
+              "{\"error\":\"Directive is too long. Keep it under 1500 characters.\"}");
+      return;
+    }
     bool touched = false, cfgDirty = false;
     const size_t np = r->params();
     for (size_t i = 0; i < np; i++) {

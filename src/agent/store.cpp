@@ -1,4 +1,5 @@
 #include "nimbus/orch/budget.h"    // deriveBudget - the effective tool-result cap
+#include "nimbus/orch/caps.h"      // kMemDirectiveMax - owner-directive byte cap
 #include "nimbus/orch/compact.h"   // modelCtxTokens
 #include "store.h"
 #include "nimbus/device_identity.h"   // makeSetupPass - the setup-AP passphrase generator
@@ -411,7 +412,16 @@ void setFallbackRulesJson(const String& json) { solide::memory::setString(AKEY_F
 void setFallbackSyncTs(uint32_t ts)   { solide::memory::setInt(AKEY_FALLBACK_SYNC, (int)ts); }
 void setOrchHost(const String& v)     { solide::memory::setString(AKEY_ORCH_HOST, v); pcInvalidate(); }
 void setProviderPriority(const String& v) { solide::memory::setString(AKEY_PROV_PRIORITY, v); pcInvalidate(); }
-void setSysPrompt(const String& v)    { solide::memory::setString(AKEY_SYS_PROMPT, v); }
+void setSysPrompt(const String& v)    {
+  // Clamp to the owner-directive cap at the store layer (defense-in-depth: the
+  // web route rejects oversize with an honest error first, and OrchMemory
+  // re-caps UTF-8-safely on read - this just guarantees no path persists past
+  // the cap). A byte substring is safe here because it is a backstop behind the
+  // route guard, never the primary enforcement.
+  const int cap = nimbus::orch::kMemDirectiveMax;
+  solide::memory::setString(AKEY_SYS_PROMPT,
+                            v.length() > (unsigned)cap ? v.substring(0, cap) : v);
+}
 void setOrchModel(const String& provider, const String& v) {
   String key = String(AKEY_ORCH_MODEL_PFX) + provider;
   solide::memory::setString(key.c_str(), v);

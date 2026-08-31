@@ -37,9 +37,10 @@ static const char UI_MEMORY[] PROGMEM = R"=====(<div class=pane id=pane-chat sty
 <details class=setgroup><summary>Memory<span class=chev>&rsaquo;</span></summary>
 <div class=setbody>
 <label>Directive <button class=qh type=button aria-expanded=false aria-label="About the directive">?</button></label>
-<p class="hint tip">Your standing instructions to the assistant. Only you can change them. Up to 600 characters.</p>
-<textarea id=directive rows=4></textarea>
-<div class=row><button id=savedir type=button>Save</button></div>
+<p class="hint tip">Your standing instructions to the assistant - they shape how it behaves for you. Only you can change them. Up to 1500 characters.</p>
+<textarea id=directive rows=8></textarea>
+<div class=row><button id=savedir type=button>Save</button><button id=revertdir type=button>Revert to default</button></div>
+<p class=hint id=dirmsg></p>
 <label>Assistant memory <button class=qh type=button aria-expanded=false aria-label="About assistant memory">?</button></label>
 <p class="hint tip">Working notes the assistant keeps per conversation. Shown here: the most recently active conversation&rsquo;s notes. Clear erases every conversation&rsquo;s notes.</p>
 <pre id=memview class=memv>(empty)</pre>

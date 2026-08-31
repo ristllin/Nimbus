@@ -11,8 +11,11 @@ namespace nimbus {
 namespace orch {
 
 // --- Memory caps (bytes, UTF-8-safe; the device enforces them, never the model) ---
-// User directive: user-owned, immutable by the model. Always injected first.
-constexpr int kMemDirectiveMax = 600;
+// Owner directive: user-owned, immutable by the model, injected below the
+// platform rules (never above them). Raised 600 -> 1500 so the shipped default
+// (~700 B) leaves the owner real editing headroom; enforced on every write path
+// (web route honest error + store-layer clamp) and re-capped UTF-8-safely on read.
+constexpr int kMemDirectiveMax = 1500;
 // Model running memory: the model maintains it via the `memory` turn field. It
 // is the ONLY cross-turn / cross-provider state, so the cap must be UTF-8-safe.
 constexpr int kMemModelMax = 1200;
