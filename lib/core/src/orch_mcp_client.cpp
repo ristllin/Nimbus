@@ -76,6 +76,54 @@ std::string buildToolsCall(const std::string& toolName, const std::string& argsJ
   return serializeDoc(d);
 }
 
+namespace {
+// A paginated list request (tools/resources/prompts share this shape).
+std::string buildListRequest(int id, const char* method, const std::string& cursor) {
+  JsonDocument d;
+  d["jsonrpc"] = "2.0";
+  d["id"] = id;
+  d["method"] = method;
+  if (!cursor.empty()) d["params"]["cursor"] = cursor;
+  return serializeDoc(d);
+}
+// A request that carries a single named params object (name+arguments, or uri).
+std::string buildNamedCall(int id, const char* method, const char* key,
+                           const std::string& value, const std::string* argsJson) {
+  JsonDocument d;
+  d["jsonrpc"] = "2.0";
+  d["id"] = id;
+  d["method"] = method;
+  JsonObject p = d["params"].to<JsonObject>();
+  p[key] = value;
+  if (argsJson) {
+    JsonDocument ad;
+    if (!argsJson->empty() && deserializeJson(ad, *argsJson) == DeserializationError::Ok &&
+        ad.is<JsonObjectConst>()) {
+      p["arguments"] = ad;
+    } else {
+      p["arguments"].to<JsonObject>();
+    }
+  }
+  return serializeDoc(d);
+}
+}  // namespace
+
+std::string buildResourcesList(const std::string& cursor) {
+  return buildListRequest(kIdResourcesList, "resources/list", cursor);
+}
+std::string buildResourceTemplatesList(const std::string& cursor) {
+  return buildListRequest(kIdResourceTemplates, "resources/templates/list", cursor);
+}
+std::string buildPromptsList(const std::string& cursor) {
+  return buildListRequest(kIdPromptsList, "prompts/list", cursor);
+}
+std::string buildResourcesRead(const std::string& uri) {
+  return buildNamedCall(kIdResourcesRead, "resources/read", "uri", uri, nullptr);
+}
+std::string buildPromptsGet(const std::string& promptName, const std::string& argsJson) {
+  return buildNamedCall(kIdPromptsGet, "prompts/get", "name", promptName, &argsJson);
+}
+
 // ---- error copy --------------------------------------------------------------
 
 std::string nextStepError(ErrorKind kind, const std::string& serverName,
@@ -227,7 +275,14 @@ InitializeResult parseInitialize(int httpStatus, const std::string& contentType,
   JsonObjectConst si = result["serverInfo"].as<JsonObjectConst>();
   r.serverName = (const char*)(si["name"] | "");
   r.serverVersion = (const char*)(si["version"] | "");
-  r.hasTools = !result["capabilities"]["tools"].isNull();
+  JsonVariantConst caps = result["capabilities"];
+  r.hasTools = !caps["tools"].isNull();
+  r.hasResources = !caps["resources"].isNull();
+  r.hasPrompts = !caps["prompts"].isNull();
+  r.resourcesSubscribe = (caps["resources"]["subscribe"] | false);
+  r.toolsListChanged = (caps["tools"]["listChanged"] | false);
+  r.resourcesListChanged = (caps["resources"]["listChanged"] | false);
+  r.promptsListChanged = (caps["prompts"]["listChanged"] | false);
   return r;
 }
 
@@ -293,6 +348,236 @@ CallToolResult parseCallTool(int httpStatus, const std::string& contentType,
   }
   r.text = text;
   return r;
+}
+
+// ---- resources / prompts parsers ---------------------------------------------
+
+namespace {
+// Shared front-end: run extractResult and, on failure, stamp error+errorMsg on
+// any result struct that has those three fields. Returns true when a result
+// object was obtained (out is filled), false when the caller should return early.
+template <class R>
+bool beginParse(int httpStatus, const std::string& contentType, const std::string& body,
+                const std::string& serverName, JsonDocument& out, R& r) {
+  std::string detail;
+  ErrorKind k = extractResult(httpStatus, contentType, body, out, detail);
+  if (k != ErrorKind::None) {
+    r.error = k;
+    r.errorMsg = nextStepError(k, serverName, detail);
+    return false;
+  }
+  r.ok = true;
+  return true;
+}
+}  // namespace
+
+ResourcesListResult parseResourcesList(int httpStatus, const std::string& contentType,
+                                       const std::string& body, const std::string& serverName) {
+  ResourcesListResult r;
+  JsonDocument result;
+  if (!beginParse(httpStatus, contentType, body, serverName, result, r)) return r;
+  r.nextCursor = (const char*)(result["nextCursor"] | "");
+  for (JsonObjectConst e : result["resources"].as<JsonArrayConst>()) {
+    ResourceDef d;
+    d.uri = (const char*)(e["uri"] | "");
+    if (d.uri.empty()) continue;  // a resource with no URI is not readable; skip it
+    d.name = (const char*)(e["name"] | "");
+    d.description = (const char*)(e["description"] | "");
+    d.mimeType = (const char*)(e["mimeType"] | "");
+    r.resources.push_back(std::move(d));
+  }
+  return r;
+}
+
+ResourceTemplatesListResult parseResourceTemplatesList(int httpStatus, const std::string& contentType,
+                                                       const std::string& body,
+                                                       const std::string& serverName) {
+  ResourceTemplatesListResult r;
+  JsonDocument result;
+  if (!beginParse(httpStatus, contentType, body, serverName, result, r)) return r;
+  r.nextCursor = (const char*)(result["nextCursor"] | "");
+  for (JsonObjectConst e : result["resourceTemplates"].as<JsonArrayConst>()) {
+    ResourceTemplateDef d;
+    d.uriTemplate = (const char*)(e["uriTemplate"] | "");
+    if (d.uriTemplate.empty()) continue;  // no template is not usable; skip it
+    d.name = (const char*)(e["name"] | "");
+    d.description = (const char*)(e["description"] | "");
+    d.mimeType = (const char*)(e["mimeType"] | "");
+    r.templates.push_back(std::move(d));
+  }
+  return r;
+}
+
+ResourceReadResult parseResourcesRead(int httpStatus, const std::string& contentType,
+                                      const std::string& body, const std::string& serverName) {
+  ResourceReadResult r;
+  JsonDocument result;
+  if (!beginParse(httpStatus, contentType, body, serverName, result, r)) return r;
+  std::string text;
+  for (JsonObjectConst c : result["contents"].as<JsonArrayConst>()) {
+    JsonVariantConst t = c["text"];
+    if (t.is<const char*>() && t.as<const char*>()) {
+      if (!text.empty()) text += "\n";
+      text += t.as<const char*>();
+    } else if (!c["blob"].isNull()) {
+      const char* mime = c["mimeType"] | "binary";
+      if (!text.empty()) text += "\n";
+      text += "[binary " + std::string(mime) + "]";
+    }
+  }
+  r.text = text;
+  return r;
+}
+
+PromptsListResult parsePromptsList(int httpStatus, const std::string& contentType,
+                                   const std::string& body, const std::string& serverName) {
+  PromptsListResult r;
+  JsonDocument result;
+  if (!beginParse(httpStatus, contentType, body, serverName, result, r)) return r;
+  r.nextCursor = (const char*)(result["nextCursor"] | "");
+  for (JsonObjectConst e : result["prompts"].as<JsonArrayConst>()) {
+    PromptDef d;
+    d.name = (const char*)(e["name"] | "");
+    if (d.name.empty()) continue;  // a nameless prompt is not gettable; skip it
+    d.description = (const char*)(e["description"] | "");
+    for (JsonObjectConst a : e["arguments"].as<JsonArrayConst>()) {
+      PromptArg pa;
+      pa.name = (const char*)(a["name"] | "");
+      if (pa.name.empty()) continue;
+      pa.description = (const char*)(a["description"] | "");
+      pa.required = (a["required"] | false);
+      d.arguments.push_back(std::move(pa));
+    }
+    r.prompts.push_back(std::move(d));
+  }
+  return r;
+}
+
+PromptGetResult parsePromptsGet(int httpStatus, const std::string& contentType,
+                                const std::string& body, const std::string& serverName) {
+  PromptGetResult r;
+  JsonDocument result;
+  if (!beginParse(httpStatus, contentType, body, serverName, result, r)) return r;
+  r.description = (const char*)(result["description"] | "");
+  std::string text;
+  for (JsonObjectConst m : result["messages"].as<JsonArrayConst>()) {
+    const char* role = m["role"] | "";
+    JsonVariantConst content = m["content"];
+    std::string line;
+    // content may be a single typed block {type,text} or an array of them.
+    auto appendBlock = [&](JsonObjectConst block) {
+      const char* type = block["type"] | "";
+      if (std::string(type) == "text") {
+        if (!line.empty()) line += " ";
+        line += (const char*)(block["text"] | "");
+      } else if (type[0]) {
+        if (!line.empty()) line += " ";
+        line += "[" + std::string(type) + " content]";
+      }
+    };
+    if (content.is<JsonArrayConst>()) {
+      for (JsonObjectConst block : content.as<JsonArrayConst>()) appendBlock(block);
+    } else if (content.is<JsonObjectConst>()) {
+      appendBlock(content.as<JsonObjectConst>());
+    }
+    if (!text.empty()) text += "\n";
+    text += (role[0] ? std::string(role) + ": " : "") + line;
+  }
+  r.text = text;
+  return r;
+}
+
+// ---- server notifications ----------------------------------------------------
+
+namespace {
+NotifyKind classifyMethod(const std::string& m) {
+  if (m == "notifications/tools/list_changed") return NotifyKind::ToolsListChanged;
+  if (m == "notifications/resources/list_changed") return NotifyKind::ResourcesListChanged;
+  if (m == "notifications/prompts/list_changed") return NotifyKind::PromptsListChanged;
+  if (m == "notifications/resources/updated") return NotifyKind::ResourceUpdated;
+  if (m == "notifications/progress") return NotifyKind::Progress;
+  if (m == "notifications/message") return NotifyKind::Message;
+  if (m == "notifications/cancelled") return NotifyKind::Cancelled;
+  return NotifyKind::Other;
+}
+
+// A JSON-RPC notification is an object with "method" and NO "id".
+bool isNotification(const JsonDocument& doc) {
+  if (!doc.is<JsonObjectConst>()) return false;
+  return !doc["method"].isNull() && doc["id"].isNull();
+}
+
+void fillNotification(const JsonDocument& doc, ServerNotification& out) {
+  out.method = (const char*)(doc["method"] | "");
+  out.kind = classifyMethod(out.method);
+  JsonVariantConst p = doc["params"];
+  if (out.kind == NotifyKind::Progress) {
+    JsonVariantConst tok = p["progressToken"];
+    if (tok.is<const char*>() && tok.as<const char*>()) out.progressToken = tok.as<const char*>();
+    else if (tok.is<long long>()) out.progressToken = std::to_string(tok.as<long long>());
+    out.progress = p["progress"] | 0.0;
+    out.total = p["total"] | 0.0;
+  } else if (out.kind == NotifyKind::ResourceUpdated) {
+    out.uri = (const char*)(p["uri"] | "");
+  }
+}
+
+// Scan an SSE body for the LAST event object that is a notification.
+bool lastNotificationFromSse(const std::string& body, JsonDocument& out) {
+  std::string data;
+  bool found = false;
+  size_t i = 0;
+  const size_t n = body.size();
+  auto flush = [&]() {
+    if (!data.empty()) {
+      JsonDocument tmp;
+      if (deserializeJson(tmp, data) == DeserializationError::Ok && isNotification(tmp)) {
+        out = tmp;
+        found = true;
+      }
+      data.clear();
+    }
+  };
+  while (i <= n) {
+    size_t nl = body.find('\n', i);
+    std::string line = (nl == std::string::npos) ? body.substr(i) : body.substr(i, nl - i);
+    if (!line.empty() && line.back() == '\r') line.pop_back();
+    if (line.empty()) {
+      flush();
+    } else if (line.rfind("data:", 0) == 0) {
+      std::string payload = line.substr(5);
+      if (!payload.empty() && payload.front() == ' ') payload.erase(0, 1);
+      if (!data.empty()) data += "\n";
+      data += payload;
+    }
+    if (nl == std::string::npos) break;
+    i = nl + 1;
+  }
+  flush();
+  return found;
+}
+}  // namespace
+
+ServerNotification parseServerNotification(const std::string& contentType,
+                                           const std::string& body) {
+  ServerNotification out;
+  if (body.empty()) return out;
+  JsonDocument doc;
+  if (containsCI(contentType, "text/event-stream")) {
+    if (!lastNotificationFromSse(body, doc)) return out;
+  } else {
+    if (deserializeJson(doc, body) != DeserializationError::Ok || !isNotification(doc)) {
+      // Fall back to an SSE scan in case the content-type was mislabeled.
+      if (!lastNotificationFromSse(body, doc)) return out;
+    }
+  }
+  fillNotification(doc, out);
+  return out;
+}
+
+bool isListChanged(NotifyKind k) {
+  return k == NotifyKind::ToolsListChanged || k == NotifyKind::ResourcesListChanged ||
+         k == NotifyKind::PromptsListChanged;
 }
 
 // ---- namespacing -------------------------------------------------------------

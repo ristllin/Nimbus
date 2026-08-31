@@ -364,6 +364,153 @@ static void test_real_linear_tools_slice() {
   TEST_ASSERT_TRUE(sawAttachment);
 }
 
+// ---- rich surfaces: capability flags, resources, prompts, notifications -----
+
+// The everything-server initialize (real fixture) advertises tools/resources/
+// prompts with listChanged and resources.subscribe. parseInitialize must surface
+// each flag so the device knows which discovery calls to make.
+static void test_rich_capability_flags_everything() {
+  InitializeResult r = parseInitialize(200, kSse, mcpfix::kInitBody, "everything");
+  TEST_ASSERT_TRUE(r.ok);
+  TEST_ASSERT_TRUE(r.hasTools);
+  TEST_ASSERT_TRUE(r.hasResources);
+  TEST_ASSERT_TRUE(r.hasPrompts);
+  TEST_ASSERT_TRUE(r.resourcesSubscribe);
+  TEST_ASSERT_TRUE(r.toolsListChanged);
+  TEST_ASSERT_TRUE(r.resourcesListChanged);
+  TEST_ASSERT_TRUE(r.promptsListChanged);
+}
+
+// The real Linear initialize advertises ONLY tools.listChanged - so the resource
+// and prompt flags must be false (the device skips those discovery calls).
+static void test_rich_capability_flags_linear() {
+  InitializeResult r = parseInitialize(200, kSse, mcpfix::kLinearInitBody, "Linear");
+  TEST_ASSERT_TRUE(r.ok);
+  TEST_ASSERT_TRUE(r.hasTools);
+  TEST_ASSERT_TRUE(r.toolsListChanged);
+  TEST_ASSERT_FALSE(r.hasResources);
+  TEST_ASSERT_FALSE(r.hasPrompts);
+  TEST_ASSERT_FALSE(r.resourcesSubscribe);
+}
+
+static void test_build_paginated_requests() {
+  JsonDocument d;
+  deserializeJson(d, buildResourcesList("cur1"));
+  TEST_ASSERT_EQUAL_STRING("resources/list", d["method"]);
+  TEST_ASSERT_EQUAL(kIdResourcesList, d["id"].as<int>());
+  TEST_ASSERT_EQUAL_STRING("cur1", d["params"]["cursor"]);
+  deserializeJson(d, buildResourceTemplatesList());
+  TEST_ASSERT_EQUAL_STRING("resources/templates/list", d["method"]);
+  TEST_ASSERT_TRUE(d["params"].isNull());  // no cursor -> no params
+  deserializeJson(d, buildPromptsList("p2"));
+  TEST_ASSERT_EQUAL_STRING("prompts/list", d["method"]);
+  TEST_ASSERT_EQUAL_STRING("p2", d["params"]["cursor"]);
+}
+
+static void test_build_resources_read_and_prompts_get() {
+  JsonDocument d;
+  deserializeJson(d, buildResourcesRead("file:///a.txt"));
+  TEST_ASSERT_EQUAL_STRING("resources/read", d["method"]);
+  TEST_ASSERT_EQUAL_STRING("file:///a.txt", d["params"]["uri"]);
+  deserializeJson(d, buildPromptsGet("summarize", "{\"topic\":\"x\"}"));
+  TEST_ASSERT_EQUAL_STRING("prompts/get", d["method"]);
+  TEST_ASSERT_EQUAL_STRING("summarize", d["params"]["name"]);
+  TEST_ASSERT_EQUAL_STRING("x", d["params"]["arguments"]["topic"]);
+  // malformed args degrade to an empty object, never a broken request
+  deserializeJson(d, buildPromptsGet("p", "not json"));
+  TEST_ASSERT_TRUE(d["params"]["arguments"].is<JsonObjectConst>());
+  TEST_ASSERT_EQUAL(0u, d["params"]["arguments"].as<JsonObjectConst>().size());
+}
+
+static void test_parse_resources_list_and_pagination() {
+  const char* body =
+      R"({"jsonrpc":"2.0","id":4,"result":{"resources":[)"
+      R"({"uri":"file:///readme.md","name":"README","description":"the readme","mimeType":"text/markdown"},)"
+      R"({"name":"no uri, skipped"},)"
+      R"({"uri":"file:///data.bin","name":"data"}],"nextCursor":"page2"}})";
+  ResourcesListResult r = parseResourcesList(200, kJson, body, "srv");
+  TEST_ASSERT_TRUE(r.ok);
+  TEST_ASSERT_EQUAL(2u, r.resources.size());  // nameless-URI entry skipped
+  TEST_ASSERT_EQUAL_STRING("file:///readme.md", r.resources[0].uri.c_str());
+  TEST_ASSERT_EQUAL_STRING("text/markdown", r.resources[0].mimeType.c_str());
+  TEST_ASSERT_EQUAL_STRING("", r.resources[1].mimeType.c_str());
+  TEST_ASSERT_EQUAL_STRING("page2", r.nextCursor.c_str());
+}
+
+static void test_parse_resource_templates() {
+  const char* body =
+      R"({"result":{"resourceTemplates":[{"uriTemplate":"file:///{path}","name":"files","mimeType":"text/plain"},{"name":"skipme"}]}})";
+  ResourceTemplatesListResult r = parseResourceTemplatesList(200, kJson, body, "srv");
+  TEST_ASSERT_TRUE(r.ok);
+  TEST_ASSERT_EQUAL(1u, r.templates.size());  // no-uriTemplate entry skipped
+  TEST_ASSERT_EQUAL_STRING("file:///{path}", r.templates[0].uriTemplate.c_str());
+}
+
+static void test_parse_resources_read_text_and_blob() {
+  const char* body =
+      R"({"result":{"contents":[{"uri":"file:///a","mimeType":"text/plain","text":"hello"},{"uri":"file:///b","mimeType":"image/png","blob":"AAAA"}]}})";
+  ResourceReadResult r = parseResourcesRead(200, kJson, body, "srv");
+  TEST_ASSERT_TRUE(r.ok);
+  TEST_ASSERT_EQUAL_STRING("hello\n[binary image/png]", r.text.c_str());
+}
+
+static void test_parse_prompts_list() {
+  const char* body =
+      R"({"result":{"prompts":[{"name":"review","description":"code review","arguments":[{"name":"lang","description":"language","required":true},{"name":"style"}]},{"description":"nameless, skipped"}]}})";
+  PromptsListResult r = parsePromptsList(200, kJson, body, "srv");
+  TEST_ASSERT_TRUE(r.ok);
+  TEST_ASSERT_EQUAL(1u, r.prompts.size());
+  TEST_ASSERT_EQUAL_STRING("review", r.prompts[0].name.c_str());
+  TEST_ASSERT_EQUAL(2u, r.prompts[0].arguments.size());
+  TEST_ASSERT_TRUE(r.prompts[0].arguments[0].required);
+  TEST_ASSERT_FALSE(r.prompts[0].arguments[1].required);
+}
+
+static void test_parse_prompts_get_flattens_roles() {
+  // messages carry content as a single block OR an array of blocks.
+  const char* body =
+      R"({"result":{"description":"d","messages":[{"role":"user","content":{"type":"text","text":"hi"}},{"role":"assistant","content":[{"type":"text","text":"hello"},{"type":"image","data":"x"}]}]}})";
+  PromptGetResult r = parsePromptsGet(200, kJson, body, "srv");
+  TEST_ASSERT_TRUE(r.ok);
+  TEST_ASSERT_EQUAL_STRING("d", r.description.c_str());
+  TEST_ASSERT_EQUAL_STRING("user: hi\nassistant: hello [image content]", r.text.c_str());
+}
+
+// A tools/list error still routes through the shared front-end (Unauthorized etc).
+static void test_rich_parsers_share_error_frontend() {
+  ResourcesListResult r = parseResourcesList(401, kJson, "", "srv");
+  TEST_ASSERT_FALSE(r.ok);
+  TEST_ASSERT_EQUAL(ErrorKind::Unauthorized, r.error);
+  PromptsListResult p = parsePromptsList(500, kJson, "oops", "srv");
+  TEST_ASSERT_FALSE(p.ok);
+  TEST_ASSERT_EQUAL(ErrorKind::Http, p.error);
+}
+
+static void test_parse_notification_kinds() {
+  // list_changed over SSE
+  ServerNotification n1 =
+      parseServerNotification(kSse, sse(R"({"jsonrpc":"2.0","method":"notifications/tools/list_changed"})"));
+  TEST_ASSERT_EQUAL((int)NotifyKind::ToolsListChanged, (int)n1.kind);
+  TEST_ASSERT_TRUE(isListChanged(n1.kind));
+  // progress over JSON, numeric token
+  ServerNotification n2 = parseServerNotification(
+      kJson,
+      R"({"jsonrpc":"2.0","method":"notifications/progress","params":{"progressToken":7,"progress":3,"total":10}})");
+  TEST_ASSERT_EQUAL((int)NotifyKind::Progress, (int)n2.kind);
+  TEST_ASSERT_EQUAL_STRING("7", n2.progressToken.c_str());
+  TEST_ASSERT_EQUAL(3.0, n2.progress);
+  TEST_ASSERT_EQUAL(10.0, n2.total);
+  TEST_ASSERT_FALSE(isListChanged(n2.kind));
+  // resources/updated carries the uri
+  ServerNotification n3 = parseServerNotification(
+      kJson, R"({"jsonrpc":"2.0","method":"notifications/resources/updated","params":{"uri":"file:///a"}})");
+  TEST_ASSERT_EQUAL((int)NotifyKind::ResourceUpdated, (int)n3.kind);
+  TEST_ASSERT_EQUAL_STRING("file:///a", n3.uri.c_str());
+  // a plain RESULT is not a notification
+  ServerNotification n4 = parseServerNotification(kJson, R"({"jsonrpc":"2.0","id":2,"result":{"tools":[]}})");
+  TEST_ASSERT_EQUAL((int)NotifyKind::None, (int)n4.kind);
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_real_server_initialize);
@@ -400,5 +547,16 @@ int main() {
   RUN_TEST(test_slugify_server);
   RUN_TEST(test_namespaced_tool_is_wire_safe);
   RUN_TEST(test_namespace_helpers);
+  RUN_TEST(test_rich_capability_flags_everything);
+  RUN_TEST(test_rich_capability_flags_linear);
+  RUN_TEST(test_build_paginated_requests);
+  RUN_TEST(test_build_resources_read_and_prompts_get);
+  RUN_TEST(test_parse_resources_list_and_pagination);
+  RUN_TEST(test_parse_resource_templates);
+  RUN_TEST(test_parse_resources_read_text_and_blob);
+  RUN_TEST(test_parse_prompts_list);
+  RUN_TEST(test_parse_prompts_get_flattens_roles);
+  RUN_TEST(test_rich_parsers_share_error_frontend);
+  RUN_TEST(test_parse_notification_kinds);
   return UNITY_END();
 }
