@@ -547,9 +547,10 @@ static void buildState(String& out) {
   // across the setup-AP -> LAN handoff (which made it claim "Wi-Fi: not connected"
   // while the browser was talking to the device over that very Wi-Fi).
   {
-    bool provVerified = false;
-    for (const char* p : {"openai", "anthropic", "mistral", "zai", "cumulo"})
-      if (agent::store::verifyResult(p) == 1) { provVerified = true; break; }
+    // CUM-246: any registry provider verified - enumerate the canonical registry, never
+    // a hand-listed subset (the SAME gate /api/onboard/complete enforces).
+    bool provVerified = nimbus::orch::anySlotWhere(
+        [](const char* p) { return agent::store::verifyResult(p) == 1; });
     d["provVerified"] = provVerified;
   }
   d["staIp"] = sta ? staIp() : "";
@@ -960,8 +961,9 @@ static void buildModelsCatalog(String& out, const String& only, bool includeUnus
   for (int i = 0; i < rc; i++) roles.add(rt[i]);
 
   JsonObject provs = d["providers"].to<JsonObject>();
-  static const char* const kCatProviders[] = {"openai", "anthropic", "mistral", "zai", "cumulo"};
-  for (const char* p : kCatProviders) {
+  // CUM-246: one row per canonical registry slot - no separate provider array to drift.
+  for (const auto& slot : nimbus::orch::kProviderSlots) {
+    const char* p = slot.slug;
     if (only.length() && only != p) continue;
     JsonObject o = provs[p].to<JsonObject>();
     o["keyed"] = providerKeyed(p);
@@ -2098,12 +2100,11 @@ void beginWeb(const WebConfig& wc) {
       return;
     }
     // Any provider in the catalog counts - the original three-name list predated
-    // zai/cumulo and silently blocked the RECOMMENDED Cumulo Nimbus path from
-    // ever finishing onboarding (W0-a finding, 2026-08-30).
-    bool anyVerified = false;
-    for (const char* p : {"openai", "anthropic", "mistral", "zai", "cumulo"}) {
-      if (agent::store::verifyResult(p) == 1) { anyVerified = true; break; }
-    }
+    // zai/cumulo and silently blocked the RECOMMENDED Cumulo Nimbus path from ever
+    // finishing onboarding (W0-a finding, 2026-08-30). CUM-246: enumerate the canonical
+    // registry (anySlotWhere) so no future slot can be left out of this gate.
+    bool anyVerified = nimbus::orch::anySlotWhere(
+        [](const char* p) { return agent::store::verifyResult(p) == 1; });
     if (!anyVerified) {
       r->send(409, "application/json", "{\"error\":\"no verified provider\"}");
       return;

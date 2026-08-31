@@ -147,9 +147,45 @@ static void test_every_catalog_provider_is_model_covered() {
   }
 }
 
+// CUM-246 (hand-off #2): the fanout guard. store_config's `anyKeyed` and webui's
+// onboarding-finish + provider-verified gates now enumerate the registry through
+// nimbus::orch::anySlotWhere(pred) - the ONE portable walk both device surfaces share
+// (native links no src/, so this shared seam is what a host test can reach). These two
+// legs drive that exact walk with a FAKE store (a set of keyed/verified slugs) and pin
+// the class rule the recurring bug kept breaking: no registry slot is skipped by the
+// fanout, and any single provider - INCLUDING the recommended cumulo and zai, the exact
+// b2f4930 (anyKeyed) and 5069ab3 (onboarding gate) misses - is enough to open the gate.
+// A slot added to kProviderSlots is covered here with no new code; a fanout that reverts
+// to a hand-listed subset (dropping a registry slot) FAILS.
+
+// With an empty fake store the fanout is closed AND must still have visited every slot -
+// so a loop that stops short (the "provider missing from the gate" failure) is caught.
+static void test_fanout_visits_every_registry_slot() {
+  std::set<std::string> visited;
+  bool any = anySlotWhere([&](const char* slug) { visited.insert(slug); return false; });
+  TEST_ASSERT_FALSE(any);   // nothing keyed -> gate closed
+  TEST_ASSERT_EQUAL_size_t(kProviderSlotCount, visited.size());
+  for (const ProviderSlot& slot : kProviderSlots)
+    TEST_ASSERT_TRUE_MESSAGE(visited.count(slot.slug), slot.slug);   // a slot the fanout skipped
+}
+
+// A fake store keyed/verified for exactly ONE provider must open the gate - for EVERY
+// provider in turn. This is the direct regression for anyKeyed missing cumulo/zai and
+// the onboarding gate missing the recommended cumulo: a device with only that provider
+// could not be recognized / could not finish setup.
+static void test_each_provider_alone_opens_the_gate() {
+  for (const ProviderSlot& target : kProviderSlots) {
+    const std::string keyed = target.slug;
+    bool open = anySlotWhere([&](const char* slug) { return keyed == slug; });
+    TEST_ASSERT_TRUE_MESSAGE(open, target.slug);   // this provider alone did not open the gate
+  }
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_registry_is_exactly_the_expected_set);
+  RUN_TEST(test_fanout_visits_every_registry_slot);
+  RUN_TEST(test_each_provider_alone_opens_the_gate);
   RUN_TEST(test_every_catalog_provider_is_model_covered);
   RUN_TEST(test_cumulo_is_recommended_and_first);
   RUN_TEST(test_slots_well_formed_and_unique);
