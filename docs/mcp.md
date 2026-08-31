@@ -37,6 +37,26 @@ What happens once you add and approve one:
 3. On a turn, the assistant can call those tools like any other. The result
    comes back and is used in the reply.
 
+Beyond tools, the device reads the other things a modern MCP server offers, so a
+real server works fully rather than partially:
+
+- **Resources and resource templates** - readable items the server exposes (a
+  file, a record, a report), including ones named by a fill-in-the-blank pattern.
+- **Prompts** - reusable, named request templates the server publishes.
+- **Pagination** - a large tool, resource, or prompt list is read across pages.
+- **Change signals** - when a server announces its tools, resources, or prompts
+  changed, the device picks up the new set on the next turn.
+- **Progress** - progress updates during a long call are understood rather than
+  read as an error.
+
+Two parts of the MCP spec are deliberately left out, because the device cannot
+serve them in a way that helps you: **sampling** (a server asking the device to
+run its own model mid-call) and **elicitation** (a server prompting you for input
+mid-call). The device runs one request at a time with no room to answer a model
+question inside another call, and it has no way to put an interactive form in front
+of you during a tool call. The device tells servers up front that it does not offer
+these, so a well-behaved server simply does not ask.
+
 ### Setting one up
 
 In the web UI under **Assistant -> Connectors**, add a server with:
@@ -44,12 +64,35 @@ In the web UI under **Assistant -> Connectors**, add a server with:
 - a **name** (for example `linear`),
 - its **MCP endpoint URL** (for example `https://mcp.linear.app/mcp`, or a
   server on your own network like `http://192.168.1.20:3111/mcp`),
-- a **token** if the server needs one (sent as `Authorization: Bearer`),
+- a **token** if the server needs a fixed one (sent as `Authorization: Bearer`),
 - **device-dialed** turned on (this is the client path, not provider-attach),
 - **approved** turned on (see below).
 
 The assistant is told, every turn, which device MCP servers are ready, which are
 waiting for your approval, and which are temporarily unreachable.
+
+### Signing in to a hosted server (OAuth)
+
+Some hosted servers, such as `https://mcp.linear.app/mcp`, do not take a pasted
+token at all: they use a sign-in you complete in your browser. The device handles
+this without a browser of its own. On the connector, choose **Sign in**, and the
+device does the rest:
+
+1. It looks up the server's sign-in details and registers itself as a client.
+2. It shows a short link, code, and QR on the Connectors page.
+3. You open the link on your phone or laptop, on the same network as the device,
+   and approve access. The server sends you back to the device.
+4. The device finishes sign-in and stores a lasting sign-in so it can keep access
+   fresh on its own. Your login and password never touch the device.
+
+The stored sign-in lives only on the device, is never shown or logged, and is used
+the same way a token is: sent as `Authorization: Bearer` on each call, refreshed
+quietly before it expires. To disconnect, remove the connector.
+
+The phone or laptop you approve on must be able to reach the device by the address
+shown (a home network address or `nimbus.local`). A server that requires a hand
+registered client, rather than offering automatic registration, is not supported
+this way; use a fixed token instead if the server provides one.
 
 ### A local server stays on the device
 
@@ -113,3 +156,6 @@ request, so the token never leaves the device. See
 - **No tools appear after approval** - confirm the URL is reachable *from the
   device* (a server on `localhost` of another machine is not), and that it is a
   Streamable HTTP MCP endpoint.
+- **Sign-in does not finish** - open the link on a device on the same network as
+  the Nimbus, and finish approving within a couple of minutes. If it still stalls,
+  start the sign-in again from the connector.
