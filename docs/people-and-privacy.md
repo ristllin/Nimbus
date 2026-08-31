@@ -73,6 +73,12 @@ so - the fact still lands. The exception is permanent pins, which are counted
 rather than clamped, because a pin is exempt from both eviction and cleanup:
 unbounded pins are storage a quota can never reclaim.
 
+The web memory dashboard shows this at a glance. Under Long-term memory, "Usage
+by conversation" lists each conversation with how many memories and pins it
+holds against its limit, and every memory in the browse list is tagged with the
+conversation it belongs to. Only an admin sees this view, and it stays read-only
+- one conversation's memories are still never visible to another.
+
 ## What is private, and what can be shared
 
 | | Crosses between people? |

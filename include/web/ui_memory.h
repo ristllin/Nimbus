@@ -71,6 +71,9 @@ static const char UI_MEMORY[] PROGMEM = R"=====(<div class=pane id=pane-chat sty
 <button id=memflushnp type=button>Delete Temporary</button>
 <button id=memflushall type=button style="color:#f0687a">Delete All</button>
 </div>
+<b style="display:block;margin-top:14px">Usage by conversation <button class=qh type=button aria-expanded=false aria-label="About usage by conversation">?</button></b>
+<p class="hint tip">Each conversation keeps its own memories, kept apart from the others. This shows how many each has stored, and how many are pinned, against its limit.</p>
+<div id=nsUsage class=hint>loading&hellip;</div>
 <b style="display:block;margin-top:14px">Scratchpad <button class=qh type=button aria-expanded=false aria-label="About the scratchpad">?</button></b>
 <p class="hint tip">The assistant's working notes for its current goals.</p>
 <pre id=scratchview class=memv>(empty)</pre>
