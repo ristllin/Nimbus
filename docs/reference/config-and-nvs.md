@@ -161,7 +161,7 @@ roll back if it fails. See [OTA updates](../ota.md).
 | `scrModel` | string | `"eink"` (legacy) | Display type (`eink\|tft`), boot-applied. Exempt from Revert to Defaults (hardware identity). `"tft"` is the only supported value; `"eink"` is a frozen legacy value that boots an unsupported-display notice, so setup writes `tft`. On all-in-one boards it is **fixed to `tft`** and the selector is locked - see the note below. | Yes |
 | `devTz` | string | `""` (= UTC) | POSIX timezone for daily/weekly routines + the device clock display (Settings → Mode & identity). Applies immediately; wall-clock routines rebase budget-neutrally. | Yes |
 | `dreamScrHash` | string | `""` | fnv64-hex of the scratchpad after the last dream - the quiet-night skip baseline. Device-managed. | Yes |
-| `tchCal` | string | `""` | Touch-panel calibration (XPT2046); `""` = identity/default | Yes |
+| `tchCal` | string | `""` | Touch-panel calibration (XPT2046); `""` = the board-model default (also the fresh-boot state, which arms the one-time first-run calibration on a resistive panel). Set by the first-run step, Settings > Display > Calibrate touch, or the web/console field; clearing it restores the board-model default. | Yes |
 | `lbRing` | bool | `false` | Low-battery ring cue (owner opt-in; off by default) | Yes |
 | `lbSaver` | bool | `true` | Auto-drop to a lower battery mode on low battery | Yes |
 | `battMon` | bool | board-derived | Battery monitoring on/off. Default is on for hand-built boards (a pack is part of the build) and off for the all-in-one board (a battery is optional, so it is opt-in). Off means the sense pin is never read, the glyph is hidden, and low-battery sleep never fires. Applied at boot. | Yes |

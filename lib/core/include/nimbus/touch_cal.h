@@ -72,6 +72,33 @@ enum class TouchKind : uint8_t { Resistive = 0, Capacitive = 1, Count = 2 };
 Cal boardDefaultCal(TouchKind kind);
 
 // ============================================================================
+// First-run calibration policy (CUM-189).
+//
+// The board-model default (boardDefaultCal) is enough to OPERATE a fresh device, but
+// how good "operate" is depends on the touch class:
+//   - Resistive (XPT2046): the raw ADC span drifts unit to unit, so the default only
+//     lands taps APPROXIMATELY - a per-unit tap-the-crosses pass is what makes them
+//     land true. A freshly flashed resistive board therefore gets the guided step.
+//   - Capacitive (FT6336U): the controller reports pixel coordinates directly, so
+//     there is nothing per-unit to measure - the orientation-only default is exact.
+//     It SKIPS the step entirely; prompting would be a pointless chore.
+//
+// This is the SINGLE source the boot seam reads to decide whether to offer the
+// first-run step (src/main.cpp). The switch has NO default branch and the host class
+// guard pins TouchKind::Count, so a new touch class that ships without a declared
+// first-run policy fails the build rather than silently defaulting to "skip" (the
+// recurring "new kind ships without a policy" class, CUM-228).
+enum class FirstRunCal : uint8_t { Skip, Calibrate };
+FirstRunCal firstRunCalPolicy(TouchKind kind);
+
+// The decision the boot seam actually makes: a freshly flashed board (no stored
+// per-unit calibration) runs the guided step ONLY when its touch class calls for it.
+// A device that already has a stored calibration - a per-unit solve, or the owner's
+// accepted default written on a prior first run - never re-offers, so the step is a
+// one-time event, not a nag on every boot.
+bool firstRunCalPending(TouchKind kind, bool hasStoredCal);
+
+// ============================================================================
 // On-device calibration (CUM-189): solve a Cal from four corner presses.
 //
 // A raw touch reading (12-bit ADC on a resistive panel; pixels on a capacitive

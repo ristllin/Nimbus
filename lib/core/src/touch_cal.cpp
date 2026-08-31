@@ -91,6 +91,26 @@ Cal boardDefaultCal(TouchKind kind) {
   return c;
 }
 
+FirstRunCal firstRunCalPolicy(TouchKind kind) {
+  // No default branch on purpose: a new TouchKind must land its first-run policy here
+  // (and the host class guard's TouchKind::Count static_assert breaks the build until
+  // it does). Resistive drifts per unit -> guided step; capacitive reports pixels ->
+  // the orientation default is exact, so it skips.
+  switch (kind) {
+    case TouchKind::Resistive:  return FirstRunCal::Calibrate;
+    case TouchKind::Capacitive: return FirstRunCal::Skip;
+    case TouchKind::Count:      break;  // not a kind; fall through
+  }
+  return FirstRunCal::Skip;  // unreachable for a real kind (guarded above + host test)
+}
+
+bool firstRunCalPending(TouchKind kind, bool hasStoredCal) {
+  // A stored cal (a per-unit solve, or the accepted default persisted on a prior first
+  // run) means calibration already happened - never re-offer. Otherwise defer to the
+  // per-class policy, so a capacitive board never enters the step.
+  return !hasStoredCal && firstRunCalPolicy(kind) == FirstRunCal::Calibrate;
+}
+
 bool solveCornerCal(const RawSample c[4], Cal& out, uint16_t minSpan) {
   const RawSample& tl = c[0];
   const RawSample& tr = c[1];
