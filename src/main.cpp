@@ -44,6 +44,7 @@
 #include "agent/memory_subsystem.h"           // setDataFs(SD) - route orch data to the card
 #include "agent/files_subsystem.h"            // E1: /mem/files artifact store
 #include "agent/orchestrator.h"
+#include "nimbus/harness/jobs.h"   // agent::keyFromTag - ring keys derive from session tags (CUM-243 reaper)
 #include "agent/loops_subsystem.h"   // Local Loops scheduler (hooks wired below)
 #include "agent/dream_subsystem.h"   // DREAMING: reserved nightly maintenance loop
 #include "agent/store.h"                      // store::theme()
@@ -4130,7 +4131,7 @@ void loop() {
       std::vector<uint32_t> liveKeys;
       liveKeys.reserve(sessions.size());
       for (const auto& si : sessions)
-        liveKeys.push_back(nimbus::harness::keyFromTag(si.id.c_str()));
+        liveKeys.push_back(agent::keyFromTag(si.id.c_str()));
       bool orphanCleared;
       {
         net::ConfigLockGuard lk;
