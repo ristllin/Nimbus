@@ -100,6 +100,47 @@ void pollScan(uint32_t now) {
   s_policy.noteScanResults(hits, now);
 }
 
+void execute(const Action& a, uint32_t now);   // defined below; driveEngaged uses it
+
+// We drove this join to success: record it so the list promotes the network that
+// actually worked, then hand steady-state reconnection back to the core.
+void recordJoinAndStepAside() {
+  const std::string joined = s_policy.joiningSsid().empty() ? s_policy.onlineSsid()
+                                                            : s_policy.joiningSsid();
+  if (!joined.empty()) {
+    const time_t t = time(nullptr);
+    const uint32_t day = t > 0 ? (uint32_t)(t / 86400) : 0u;
+    nimbus::net::wifistore::noteJoined(String(joined.c_str()), day);
+  }
+  disengage();
+}
+
+// True when the "carried to a new location / link dropped, nobody is touching it" case
+// holds and the supervisor may take over from the core. A manual join or setup-AP client
+// always wins, and a lone saved network has nothing to fail over TO.
+bool eligible(bool onboarded, int known) {
+  const uint32_t mj = nimbus::net::msSinceJoinAttempt();
+  const bool manualPending = mj != 0 && mj < 20000u;   // a bounded window for a manual try
+  return onboarded && known >= 2 && !s_manualHold && !manualPending &&
+         WiFi.softAPgetStationNum() == 0;
+}
+
+// One driven tick while engaged: deliver any scan, snapshot the world, run the policy.
+void driveEngaged(uint32_t now, int known, bool gotIp, bool disc, int discReas) {
+  pollScan(now);
+  Inputs in;
+  in.nowMs        = now;
+  in.staLinked    = false;
+  in.apUp         = (uint32_t)WiFi.softAPIP() != 0u;
+  in.apStations   = WiFi.softAPgetStationNum();
+  in.scanBusy     = s_scanInFlight;
+  in.knownCount   = known;
+  in.gotIp        = gotIp;
+  in.disconnected = disc;
+  in.lastReason   = discReas;
+  execute(s_policy.tick(in), now);
+}
+
 void execute(const Action& a, uint32_t now) {
   switch (a.kind) {
     case Act::StartScan:
@@ -183,54 +224,24 @@ void tick(uint32_t nowMs, bool orchMode, bool onboarded) {
 
   const bool staLinked = WiFi.status() == WL_CONNECTED && (uint32_t)WiFi.localIP() != 0u;
   if (staLinked) {
-    // Connected: steady state belongs to the core. If we drove this join, record it so
-    // the list promotes the network that actually worked, then step aside.
-    if (s_engaged) {
-      const std::string joined = s_policy.joiningSsid().empty() ? s_policy.onlineSsid()
-                                                                : s_policy.joiningSsid();
-      if (!joined.empty()) {
-        const time_t t = time(nullptr);
-        const uint32_t day = t > 0 ? (uint32_t)(t / 86400) : 0u;
-        nimbus::net::wifistore::noteJoined(String(joined.c_str()), day);
-      }
-      disengage();
-    }
+    // Connected: steady state belongs to the core. If we drove this join, record it.
+    if (s_engaged) recordJoinAndStepAside();
     s_downSinceMs = 0;
     return;
   }
 
-  // Link is down. Remember since when, so we give the core its usual fast reconnect
-  // window before taking over.
+  // Link is down. Remember since when, so the core gets its usual fast reconnect window
+  // before we take over.
   if (s_downSinceMs == 0) s_downSinceMs = now;
 
   const int known = nimbus::net::wifistore::count();
-  // A manual credential test (Add / Connect) gets its own bounded window before failover
-  // may override it; after that a join to a now-gone network is exactly what we take over.
-  const uint32_t mj = nimbus::net::msSinceJoinAttempt();
-  const bool manualPending = mj != 0 && mj < 20000u;
-
-  const bool eligible = onboarded && known >= 2 && !s_manualHold && !manualPending &&
-                        WiFi.softAPgetStationNum() == 0;
-  if (!eligible) { disengage(); return; }
+  if (!eligible(onboarded, known)) { disengage(); return; }
 
   if (!s_engaged) {
     if ((uint32_t)(now - s_downSinceMs) < 8000u) return;   // let the core try first
     engage(now);
   }
-
-  pollScan(now);
-
-  Inputs in;
-  in.nowMs        = now;
-  in.staLinked    = false;
-  in.apUp         = (uint32_t)WiFi.softAPIP() != 0u;
-  in.apStations   = WiFi.softAPgetStationNum();
-  in.scanBusy     = s_scanInFlight;
-  in.knownCount   = known;
-  in.gotIp        = gotIp;
-  in.disconnected = disc;
-  in.lastReason   = discReas;
-  execute(s_policy.tick(in), now);
+  driveEngaged(now, known, gotIp, disc, discReas);
 }
 
 }  // namespace nimbus::net::link

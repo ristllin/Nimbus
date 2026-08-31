@@ -18,7 +18,7 @@ no result here is claimed as a device pass.
 Operator setup (both 2.4 GHz, both reachable from the bench):
     export NIMBUS_TEST_STA_SSID=<AP1>   NIMBUS_TEST_STA_PASS=<pw1>
     export NIMBUS_TEST_STA_SSID2=<AP2>  NIMBUS_TEST_STA_PASS2=<pw2>
-    python3 -m pytest tests/hil/test_l31_multi_network_failover.py \
+    python3 -m pytest tests/hil/test_l33_multi_network_failover.py \
         -m "hil and manual" --allow-hardware --manual   # (a real TTY; no --manual-yes)
 
 Run it on the FRESH-device / default-NVS board too (the fleet rule): a device that
@@ -27,8 +27,6 @@ path the owner QAs.
 """
 
 from __future__ import annotations
-
-import time
 
 import pytest
 
@@ -57,7 +55,7 @@ def _wifiap(device, timeout: float = 5.0):
 def test_two_ap_failover_without_reset(device, net, secrets, require_secret, require_manual):
     """Drop AP1; the device migrates to AP2 by itself, no reboot, no setup-AP detour."""
     require_secret(secrets.require_sta2)  # loud-skip unless BOTH networks are configured
-    device.ensure_mode(1)                 # Wi-Fi is Orchestrator-only
+    device.ensure_mode(1)  # Wi-Fi is Orchestrator-only
     assert device.ping(), "console must be alive before the test"
 
     ap1, pw1 = secrets.sta_ssid, secrets.sta_pass
@@ -77,8 +75,7 @@ def test_two_ap_failover_without_reset(device, net, secrets, require_secret, req
     # THE human step: power AP1 down (or move the device out of its range) while AP2
     # stays up. The device must NOT be touched otherwise.
     require_manual.confirm(
-        f"Power DOWN access point '{ap1}' now (keep '{ap2}' up). "
-        "Do not touch the device.",
+        f"Power DOWN access point '{ap1}' now (keep '{ap2}' up). Do not touch the device.",
         timeout=120.0,
     )
 
