@@ -12,7 +12,7 @@
 # persists memory under /data (mount a PVC there). See nimbusd/README.md.
 FROM debian:12-slim AS build
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        g++ make git ca-certificates libcurl4-openssl-dev \
+        g++ make git ca-certificates libcurl4-openssl-dev python3 \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 # The engine sources + the daemon.
