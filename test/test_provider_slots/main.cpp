@@ -1,15 +1,31 @@
 #include <unity.h>
 
+#include <cstdio>
 #include <cstring>
 #include <set>
 #include <string>
+#include <vector>
 
+#include "nimbus/orch/model_catalog.h"
 #include "nimbus/orch/provider_slots.h"
 
 using namespace nimbus::orch;
 
 void setUp() {}
 void tearDown() {}
+
+static const char* kModelFixDir = "test/support/fixtures/models";
+
+static bool readFile(const char* path, std::string& out) {
+  FILE* f = std::fopen(path, "rb");
+  if (!f) return false;
+  char buf[4096];
+  size_t n;
+  out.clear();
+  while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) out.append(buf, n);
+  std::fclose(f);
+  return true;
+}
 
 // The gating surface (the /api/orch `providers` emitter in webui.cpp and the model-
 // pick validator beside it) is built by looping kProviderSlots. This suite is the
@@ -94,9 +110,47 @@ static void test_custom_and_unknown_are_not_slots() {
   TEST_ASSERT_NULL(findProviderSlot(nullptr));
 }
 
+// CUM-246: the CLASS guard over the model-pick / verify-harvest surface. The
+// per-provider tests in test_model_catalog are INSTANCE tests (one leg each for
+// openai / anthropic / mistral / zai / cumulo); this iterates the WHOLE registry
+// and asserts every provider is actually KNOWN to the model catalog, so a slot
+// added to kProviderSlots without wiring the surface that harvests + classifies
+// its models FAILS here rather than shipping a provider whose Models list is empty
+// (the CUM-201 / CUM-213 class: a catalog-recommended provider silently unhandled).
+static void test_every_catalog_provider_is_model_covered() {
+  for (const ProviderSlot& slot : kProviderSlots) {
+    if (slot.recommended) {
+      // The router (Cumulo): no /v1/models fixture of its own - it inherits its
+      // upstream's classification via the "<upstream>/<id>" convention. Assert that
+      // path is honored, so the flagship one-key slot is never left unclassified.
+      ModelInfo up = classifyCatalogEntry(slot.slug, "openai/gpt-4o-mini");
+      TEST_ASSERT_NOT_EQUAL_MESSAGE(0, up.roles, slot.slug);          // classified as a chat model
+      TEST_ASSERT_EQUAL_STRING_MESSAGE("openai", up.upstream.c_str(), slot.slug);  // upstream tagged
+      continue;
+    }
+    // A first-class BYOK provider: its recorded /v1/models fixture (the same body
+    // the device's verify harvest parses) must classify to a non-empty, role-bearing
+    // catalog. A provider the catalog cannot parse or classifies to nothing would
+    // present an empty Models list on the device - the exact silent failure.
+    std::string body;
+    const std::string path = std::string(kModelFixDir) + "/" + slot.slug + ".json";
+    TEST_ASSERT_TRUE_MESSAGE(readFile(path.c_str(), body), slot.slug);  // fixture missing
+    std::vector<ModelInfo> models;
+    const size_t n = parseModelsList(slot.slug, body, models);
+    TEST_ASSERT_GREATER_THAN_size_t_MESSAGE(0, n, slot.slug);           // no models parsed
+    uint16_t roleUnion = 0;
+    for (const ModelInfo& m : models) {
+      TEST_ASSERT_TRUE_MESSAGE(!m.id.empty(), slot.slug);              // a nameless model
+      roleUnion |= m.roles;
+    }
+    TEST_ASSERT_NOT_EQUAL_MESSAGE(0, roleUnion, slot.slug);            // catalog knows no role for it
+  }
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_registry_is_exactly_the_expected_set);
+  RUN_TEST(test_every_catalog_provider_is_model_covered);
   RUN_TEST(test_cumulo_is_recommended_and_first);
   RUN_TEST(test_slots_well_formed_and_unique);
   RUN_TEST(test_keyfields_are_frozen);

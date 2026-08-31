@@ -210,4 +210,26 @@ bool Router::forceExpireDoneArcs(uint32_t nowMs, uint32_t maxAgeMs) {
   return cleared;
 }
 
+bool Router::forceExpireOrphanArcs(const uint32_t* liveKeys, int nLive,
+                                   uint32_t headKey, uint32_t nowMs,
+                                   uint32_t maxAgeMs) {
+  // The status-agnostic class rule: collapse any slot whose owning job the engine
+  // no longer tracks. See attention.h for why this - not another per-status cap -
+  // is what finally guards "no lit arc outlives its job" for EVERY ring::Status.
+  bool cleared = false;
+  solide::ring::Slot snap[RING_MAX_SEGMENTS];
+  const int n = jobs_.snapshot(snap, RING_MAX_SEGMENTS);
+  for (int i = 0; i < n; ++i) {
+    if (snap[i].key == headKey) continue;   // the orchestrator's own head arc
+    bool live = false;
+    for (int j = 0; j < nLive; ++j)
+      if (liveKeys[j] == snap[i].key) { live = true; break; }
+    if (live) continue;                      // a tracked session - never reaped
+    if ((int32_t)(nowMs - snap[i].enteredAt) <= (int32_t)maxAgeMs) continue;  // grace
+    jobs_.upsert(snap[i].key, Status::Offline, nowMs);  // orphan -> free the slot
+    cleared = true;
+  }
+  return cleared;
+}
+
 }  // namespace nimbus::attn

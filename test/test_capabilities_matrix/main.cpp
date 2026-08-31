@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "nimbus/orch/model_catalog.h"
+#include "nimbus/orch/provider_slots.h"
 
 using namespace nimbus::orch;
 
@@ -56,17 +57,22 @@ static void aggregate(const std::string& provider, const char* fixture, uint16_t
 
 static const char* yn(bool b) { return b ? "yes" : "no"; }
 
+static bool fileExists(const char* path) {
+  FILE* f = std::fopen(path, "rb");
+  if (!f) return false;
+  std::fclose(f);
+  return true;
+}
+
+// CUM-246: the matrix is driven by the canonical provider registry, NOT a list
+// hand-copied beside it. The old rows[] = {openai, anthropic, mistral, zai} was
+// exactly the "provider-list hardcode" anti-pattern this issue guards: a provider
+// added to kProviderSlots would be silently absent from the matrix (and its
+// capability doc) with every test still green. Now each BYOK slot in the registry
+// renders a fixture-driven row (in registry order), the recommended flagship
+// (Cumulo) renders the router row, and a BYOK slot whose `<slug>.json` fixture is
+// missing FAILS here - so adding a provider forces adding its capability coverage.
 static std::string buildMatrix() {
-  struct Row {
-    const char* provider;
-    const char* fixture;
-  };
-  const Row rows[] = {
-      {"openai", "openai.json"},
-      {"anthropic", "anthropic.json"},
-      {"mistral", "mistral.json"},
-      {"zai", "zai.json"},
-  };
   std::string md;
   md += "# Provider capability matrix\n\n";
   md += "Generated from the model catalog code (`lib/core/src/model_catalog.cpp`) over\n";
@@ -79,17 +85,29 @@ static std::string buildMatrix() {
   md += "model id family.\n\n";
   md += "| Provider | Orchestrator | Sub-agent | Embedding | Vision | STT | TTS | Image | Tools | Streaming | Source |\n";
   md += "|---|---|---|---|---|---|---|---|---|---|---|\n";
-  for (const Row& r : rows) {
+  const ProviderSlot* router = nullptr;   // the recommended flagship (Cumulo) row
+  for (const ProviderSlot& slot : kProviderSlots) {
+    if (slot.recommended) {   // the router: its capabilities are per-upstream, no fixture
+      router = &slot;
+      continue;
+    }
+    // A first-class BYOK provider must ship a recorded /v1/models fixture, or its
+    // capability row cannot be generated - fail loudly rather than emit a blank row.
+    const std::string fixture = std::string(slot.slug) + ".json";
+    TEST_ASSERT_TRUE_MESSAGE(fileExists((std::string(kFixDir) + "/" + fixture).c_str()),
+                             slot.slug);   // missing test/support/fixtures/models/<slug>.json
     uint16_t roles, caps;
     bool apiCaps;
-    aggregate(r.provider, r.fixture, roles, caps, apiCaps);
-    md += std::string("| ") + r.provider + " | " + yn(roles & RoleOrchestrator) + " | " +
+    aggregate(slot.slug, fixture.c_str(), roles, caps, apiCaps);
+    md += std::string("| ") + slot.slug + " | " + yn(roles & RoleOrchestrator) + " | " +
           yn(roles & RoleSubAgent) + " | " + yn(roles & RoleEmbedding) + " | " +
           yn(roles & RoleVision) + " | " + yn(roles & RoleStt) + " | " + yn(roles & RoleTts) +
           " | " + yn(roles & RoleImage) + " | " + yn(caps & CapTools) + " | " +
           yn(caps & CapStreaming) + " | " + (apiCaps ? "api" : "heuristic") + " |\n";
   }
-  md += "| cumulo | per upstream | per upstream | per upstream | per upstream | per upstream | "
+  TEST_ASSERT_NOT_NULL_MESSAGE(router, "no recommended (router) provider in kProviderSlots");
+  md += std::string("| ") + router->slug +
+        " | per upstream | per upstream | per upstream | per upstream | per upstream | "
         "per upstream | per upstream | per upstream | per upstream | router |\n";
   md += "\nCumulo Nimbus is a router: each role inherits the capabilities of the upstream\n";
   md += "chosen for it (the model id is `<upstream>/<model>`), so its row is the union of\n";

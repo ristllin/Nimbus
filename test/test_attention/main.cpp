@@ -54,6 +54,19 @@ static solide::ring::Slot slotFor(const Router& r, uint32_t key) {
   return {};
 }
 
+// The exact battery the always-alive main-loop watchdog runs each sweep, in order
+// (src/main.cpp ring attention watchdog): the two dwell-capped force-expires plus
+// the status-agnostic orphan reaper. A test that models the class invariant must
+// run the WHOLE battery, not one leg - that is the point of CUM-243.
+static bool mainLoopReap(Router& r, const uint32_t* liveKeys, int nLive,
+                         uint32_t headKey, uint32_t now, uint32_t cap) {
+  bool c = false;
+  c |= r.forceExpireAttention(now, cap);
+  c |= r.forceExpireDoneArcs(now, cap);
+  c |= r.forceExpireOrphanArcs(liveKeys, nLive, headKey, now, cap);
+  return c;
+}
+
 // Every route() sets epd.render, so a Decision is fully pinned by four values.
 // Macro (not function) so Unity failure lines point at the call site.
 #define ASSERT_DECISION(d, wantScreen, wantAttn, wantNotify, wantRingDirty) \
@@ -435,8 +448,105 @@ static void test_tombstone_cleared_by_state_change_and_ttl() {
   TEST_ASSERT_TRUE(d.ringDirty);                              // never suppressed forever
 }
 
+// ---- CUM-243: the CLASS invariant over the WHOLE ring::Status space -----------
+
+// "No lit arc outlives its job." This is a PROPERTY test over every ring::Status,
+// not a point test on one (status, task) pair - the exact failure that let the
+// stuck ring recur five times (CUM-11 -> 134 -> 221), each fix hardening a single
+// pair while no test asserted the class. For EVERY status the wire admits, an arc
+// left lit after its owning job is gone MUST be driven to Offline by the main-loop
+// backstop battery within a bound, with the tg_poll reap (the task that stalled in
+// all five recurrences) never running. A new Status added to the enum with no
+// main-loop terminating edge fails HERE, before it can ship and recur.
+static void test_every_status_has_a_mainloop_terminating_edge() {
+  const uint32_t cap = 300000;   // AttnHoldMs + grace, the backstop window
+  for (uint8_t s = 0; s <= uint8_t(Status::Offline); ++s) {
+    const Status st = Status(s);
+    Router r;
+    const uint32_t key = 100 + s;
+    r.route(jobState(key, st), 1000);
+    if (st == Status::Offline) {
+      // Offline is the terminal itself - it frees the slot on arrival and can
+      // never be a stranded arc, so it occupies nothing to reap.
+      TEST_ASSERT_EQUAL_MESSAGE(0, r.jobs().count(), solide::ring::statusName(st));
+      continue;
+    }
+    TEST_ASSERT_EQUAL_MESSAGE(1, r.jobs().count(), solide::ring::statusName(st));
+    // The job is GONE: empty live set, no head. Run the full main-loop battery
+    // past the cap; nothing on tg_poll helps. The arc MUST collapse to Offline.
+    const bool cleared =
+        mainLoopReap(r, /*liveKeys=*/nullptr, /*nLive=*/0, /*headKey=*/0,
+                     1000 + cap + 1, cap);
+    TEST_ASSERT_TRUE_MESSAGE(cleared, solide::ring::statusName(st));
+    TEST_ASSERT_EQUAL_MESSAGE(0, r.jobs().count(), solide::ring::statusName(st));
+    TEST_ASSERT_FALSE_MESSAGE(slotFor(r, key).used, solide::ring::statusName(st));
+  }
+}
+
+// The orphan reaper collapses a dropped-job arc REGARDLESS of the status it froze
+// in - the general form of the Telegram-reply stuck ring (CUM-221), which stranded
+// arcs the dwell-capped backstops do not cover on their own (a Running/Idle arc has
+// no time cap). Every non-terminal status is exercised; a still-live sibling proves
+// the reaper collapses only the orphan, never the tracked job beside it.
+static void test_orphan_reaper_collapses_dropped_job_every_status() {
+  const uint32_t cap = 300000;
+  for (uint8_t s = 0; s < uint8_t(Status::Offline); ++s) {
+    const Status st = Status(s);
+    Router r;
+    r.route(jobState(1, st), 1000);                 // arc whose job will vanish
+    r.route(jobState(2, Status::Running), 1000);    // a genuinely live sibling
+    const uint32_t live[] = {2};                    // key 1 is gone from the engine
+    const bool cleared =
+        r.forceExpireOrphanArcs(live, 1, /*headKey=*/0, 1000 + cap + 1, cap);
+    TEST_ASSERT_TRUE_MESSAGE(cleared, solide::ring::statusName(st));
+    TEST_ASSERT_FALSE_MESSAGE(slotFor(r, 1).used, solide::ring::statusName(st));
+    TEST_ASSERT_TRUE_MESSAGE(slotFor(r, 2).used, solide::ring::statusName(st));
+  }
+}
+
+// The counter-test that keeps the class rule honest: it is "outlives its JOB", not
+// "outlives a timer". A LIVE arc - key still in the engine's session set, or the
+// orchestrator's own head - is NEVER collapsed, however long it has run. Reaping a
+// live Running/Idle session would erase real work (the accepted long-sub-agent
+// trade); this asserts the reaper does not.
+static void test_orphan_reaper_never_collapses_live_arcs() {
+  Router r;
+  r.route(jobState(1, Status::Running), 1000);   // a live sub-agent
+  r.route(jobState(2, Status::Idle), 1000);      // an open, idle session
+  r.route(jobState(3, Status::Running), 1000);   // the orchestrator head
+  const uint32_t live[] = {1, 2};
+  const uint32_t head = 3;
+  // Far past any cap, but every arc's owner is still tracked -> nothing collapses.
+  TEST_ASSERT_FALSE(r.forceExpireOrphanArcs(live, 2, head, 10000000, 300000));
+  TEST_ASSERT_EQUAL(3, r.jobs().count());
+  TEST_ASSERT_TRUE(slotFor(r, 1).used);
+  TEST_ASSERT_TRUE(slotFor(r, 2).used);
+  TEST_ASSERT_TRUE(slotFor(r, 3).used);
+}
+
+// The grace cap is load-bearing: it stops the reaper racing a just-spawned arc
+// whose live-set entry lands a tick later, or a Done arc mid-teardown ripple. An
+// orphan younger than maxAgeMs is left alone; once its dwell passes, it collapses.
+static void test_orphan_reaper_respects_grace() {
+  Router r;
+  const uint32_t cap = 300000;
+  r.route(jobState(1, Status::Running), 1000);
+  // Within grace: an unknown key is not yet an orphan (its registration may be a
+  // tick behind), so it survives.
+  TEST_ASSERT_FALSE(r.forceExpireOrphanArcs(nullptr, 0, 0, 1000 + cap, cap));  // == cap, not > cap
+  TEST_ASSERT_EQUAL(1, r.jobs().count());
+  // Past grace: the orphan collapses. Idempotent afterwards.
+  TEST_ASSERT_TRUE(r.forceExpireOrphanArcs(nullptr, 0, 0, 1000 + cap + 1, cap));
+  TEST_ASSERT_EQUAL(0, r.jobs().count());
+  TEST_ASSERT_FALSE(r.forceExpireOrphanArcs(nullptr, 0, 0, 9999999, cap));
+}
+
 int main() {
   UNITY_BEGIN();
+  RUN_TEST(test_every_status_has_a_mainloop_terminating_edge);
+  RUN_TEST(test_orphan_reaper_collapses_dropped_job_every_status);
+  RUN_TEST(test_orphan_reaper_never_collapses_live_arcs);
+  RUN_TEST(test_orphan_reaper_respects_grace);
   RUN_TEST(test_tombstone_blocks_stale_error_flapback);
   RUN_TEST(test_tombstone_cleared_by_state_change_and_ttl);
   RUN_TEST(test_ask_reask_does_not_reset_dwell_cap);
