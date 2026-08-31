@@ -242,6 +242,57 @@ static void test_candidates_exhausted_goes_unreachable() {
   TEST_ASSERT_EQUAL((int)Act::EnterUnreachable, (int)a.kind);
 }
 
+// ---- mid-cycle known-list edit must not dereference stale candidates --------
+
+// CUM-207 / F1: a Forget (or any list edit) while a join is in flight calls setKnown(),
+// which clears the candidate list WITHOUT leaving Joining. A retry that then indexed the
+// now-empty cands_ was an out-of-bounds read -> a stale Candidate whose knownIndex points
+// past the shorter known list -> panic or a garbage-credential join, mid-recovery. The
+// retry must fall to Unreachable when the candidate cursor is no longer in range. Asserted
+// for BOTH retry paths: a Transient disconnect and a join timeout.
+static void test_setknown_midjoin_then_transient_disconnect_is_safe() {
+  WifiPolicy p;
+  p.setKnown({mk("A"), mk("B")});
+  Inputs in;
+  in.nowMs = 0;
+  in.knownCount = 2;
+  p.tick(in);
+  p.noteScanResults({hit("A", -30), hit("B", -60)}, 0);
+  in.nowMs = 10;
+  Action a = p.tick(in);
+  TEST_ASSERT_EQUAL((int)Act::Join, (int)a.kind);   // Joining A, candIdx 0, cands has 2
+
+  p.setKnown({mk("A")});                             // list edited mid-join -> cands_ cleared
+
+  in.nowMs = 50;
+  in.knownCount = 1;
+  in.disconnected = true;
+  in.lastReason = 200;                               // Transient: would retry the same candidate
+  a = p.tick(in);
+  TEST_ASSERT_EQUAL((int)Act::EnterUnreachable, (int)a.kind);   // NOT a stale joinCandidate
+  TEST_ASSERT_EQUAL((int)LinkState::Unreachable, (int)p.state());
+}
+
+static void test_setknown_midjoin_then_join_timeout_is_safe() {
+  WifiPolicy p;
+  p.setKnown({mk("A"), mk("B")});
+  Inputs in;
+  in.nowMs = 0;
+  in.knownCount = 2;
+  p.tick(in);
+  p.noteScanResults({hit("A", -30), hit("B", -60)}, 0);
+  in.nowMs = 10;
+  TEST_ASSERT_EQUAL((int)Act::Join, (int)p.tick(in).kind);
+
+  p.setKnown({mk("A")});                             // list edited mid-join
+
+  in.nowMs = 10 + 12001;                             // past the join timeout -> retry path
+  in.knownCount = 1;
+  const Action a = p.tick(in);
+  TEST_ASSERT_EQUAL((int)Act::EnterUnreachable, (int)a.kind);
+  TEST_ASSERT_EQUAL((int)LinkState::Unreachable, (int)p.state());
+}
+
 // ---- THE invariant: Unreachable must not starve the AP ----------------------
 
 // Named so it can never be quietly deleted. Back-to-back scanning in Unreachable is
@@ -581,6 +632,8 @@ int main() {
   RUN_TEST(test_transient_retries_once_then_advances);
   RUN_TEST(test_reason_8_is_never_a_failure);
   RUN_TEST(test_candidates_exhausted_goes_unreachable);
+  RUN_TEST(test_setknown_midjoin_then_transient_disconnect_is_safe);
+  RUN_TEST(test_setknown_midjoin_then_join_timeout_is_safe);
   RUN_TEST(test_unreachable_never_scans_back_to_back);
   RUN_TEST(test_unreachable_backoff_schedule_exact);
   RUN_TEST(test_unreachable_defers_while_ap_client_present);

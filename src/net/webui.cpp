@@ -3338,8 +3338,15 @@ void beginWeb(const WebConfig& wc) {
       // still promotes the network that worked to the head.
       if (!ssid.length()) { fail(400, "Select a network first."); return; }
       if (!r->hasParam("index", true)) { fail(400, "Give a position for the network."); return; }
-      const int idx = (int)r->getParam("index", true)->value().toInt();
-      if (idx < 0) { fail(400, "Give a position for the network."); return; }
+      // Validate the index is a non-negative integer STRING. toInt() silently maps any
+      // non-numeric value ("", "abc", "1x") to 0, which would move the network to the head
+      // on a malformed request instead of rejecting it (F4).
+      const String idxStr = r->getParam("index", true)->value();
+      bool numeric = idxStr.length() > 0;
+      for (size_t i = 0; numeric && i < idxStr.length(); i++)
+        if (idxStr[i] < '0' || idxStr[i] > '9') numeric = false;
+      if (!numeric) { fail(400, "Give a position for the network."); return; }
+      const int idx = (int)idxStr.toInt();
       if (wifistore::indexOf(ssid) < 0) {
         fail(404, "That network isn't saved. Refresh the list.");
         return;

@@ -6,8 +6,11 @@
 
 #include <vector>
 
-#include "wifi_portal.h"   // msSinceJoinAttempt() - is a manual credential test in flight
-#include "wifi_store.h"    // the known-networks list (count / snapshot / note a join)
+#include <solide/memory.h>
+
+#include "nimbus_config.h"   // NIMBUS_KEY_STA_SSID / _PASS - the boot-slot re-begin
+#include "wifi_portal.h"     // msSinceJoinAttempt() - is a manual credential test in flight
+#include "wifi_store.h"      // the known-networks list (count / snapshot / note a join)
 
 namespace nimbus::net::link {
 
@@ -66,6 +69,19 @@ void disengage() {
   s_engaged = false;
 }
 
+// Re-begin the boot-slot network. When we engaged we issued WiFi.disconnect() (raising
+// ASSOC_LEAVE), and the Arduino core short-circuits that reason BEFORE auto-reconnect - so
+// setAutoReconnect(true) alone does NOT bring the station back (documented trap). If we
+// bow out of an engaged failover with the link still down and a network to try, the STA
+// would otherwise sit idle until reboot (F2). Kicking the boot slot hands a live retry back
+// to the core, which then maintains it.
+void rebeginBootSlot() {
+  const String ssid = solide::memory::getString(NIMBUS_KEY_STA_SSID, "");
+  if (!ssid.length()) return;
+  const String pass = solide::memory::getString(NIMBUS_KEY_STA_PASS, "");
+  WiFi.begin(ssid.c_str(), pass.c_str());
+}
+
 // Start an async scan for the policy. Never competes with an already-running scan (the
 // web UI owns one too); a busy radio is reported to the policy as a failed scan, which it
 // absorbs into its slow-retry schedule rather than starving the AP.
@@ -112,6 +128,20 @@ void pollScan(uint32_t now) {
 }
 
 void execute(const Action& a, uint32_t now);   // defined below; driveEngaged uses it
+
+// Step aside (ineligible now). If we HAD taken the radio and are bowing out with the link
+// still down and a network to try, re-hand a live retry to the core once - the wasEngaged
+// edge fires a single tick, so this never storms. Skip it when the owner wants the station
+// down (publishap hold) or someone else is driving the radio (a manual join, or a client on
+// the setup AP): a boot-slot begin would fight them (F2).
+void bowOut(int known) {
+  const bool wasEngaged = s_engaged;
+  disengage();
+  if (wasEngaged && known >= 1 && !s_manualHold &&
+      nimbus::net::msSinceJoinAttempt() == 0 && WiFi.softAPgetStationNum() == 0) {
+    rebeginBootSlot();
+  }
+}
 
 // We drove this join to success: record it so the list promotes the network that
 // actually worked, then hand steady-state reconnection back to the core.
@@ -260,7 +290,7 @@ void tick(uint32_t nowMs, bool orchMode, bool onboarded) {
   if (s_downSinceMs == 0) s_downSinceMs = now;
 
   const int known = nimbus::net::wifistore::count();
-  if (!eligible(onboarded, known)) { disengage(); return; }
+  if (!eligible(onboarded, known)) { bowOut(known); return; }
 
   if (!s_engaged) {
     if ((uint32_t)(now - s_downSinceMs) < 8000u) return;   // let the core try first
