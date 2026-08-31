@@ -45,6 +45,26 @@ inline std::string nsForChat(const std::string& chatId, bool isOwner) {
   return chatId.empty() ? std::string() : ("chat:" + chatId);
 }
 
+// Owner-facing label for a data namespace (CUM-232 dashboard surfacing). The
+// reserved namespaces get a plain word; a member chat namespace ("chat:<id>")
+// shows the tenant's channel label when the caller can supply one (the web layer
+// looks it up in the tenant table), else the bare chat id. Empty ns canonicalizes
+// to the owner - the same rule countIn/pinsIn/usageByNamespace apply, so a legacy
+// unattributed entry reads as the owner's rather than as a phantom namespace.
+// Pure (no device deps) so it is host-tested alongside the rollup.
+inline std::string nsFriendlyLabel(const std::string& ns,
+                                   const std::string& tenantLabel = "") {
+  if (ns.empty() || ns == kOwnerNs) return "Owner";
+  if (ns == kSharedNs) return "Shared";
+  if (ns == kMcpNs)    return "MCP";
+  const char* kChat = "chat:";
+  if (ns.rfind(kChat, 0) == 0) {
+    if (!tenantLabel.empty()) return tenantLabel;
+    return ns.substr(sizeof("chat:") - 1);   // the bare chat id
+  }
+  return ns;
+}
+
 // A stored memory entry. `vec` is the int8-quantized embedding (see quantize()).
 // Times are in HOURS since an arbitrary epoch, supplied by the caller (the
 // device uses wall-clock hours; host tests pass explicit values).
@@ -81,6 +101,17 @@ struct VecHit {
   float       importance = 0.5f;
   float       distance = 1.0f;
   float       score = 0.0f;
+};
+
+// Per-namespace usage rollup (CUM-232). One row per distinct namespace the store
+// holds, with the entry count and how many of those are permanent pins - the same
+// two numbers countIn()/pinsIn() report, gathered in a single pass so the web
+// dashboard can show every tenant's footprint without a query per namespace. Empty
+// namespaces canonicalize to the owner (matching countIn/pinsIn).
+struct NsUsage {
+  std::string ns;
+  uint32_t    count = 0;
+  uint32_t    pins  = 0;
 };
 
 // Tunables for composite-ranked recall (recall()). Relevance x recency x
@@ -203,6 +234,12 @@ class VectorMemory {
   // later prune lets a tenant win the race and keep what it grabbed.
   uint32_t countIn(const std::string& ns) const;
   uint32_t pinsIn(const std::string& ns) const;
+
+  // Read-only rollup of every namespace's footprint (CUM-232 dashboard), sorted
+  // by count descending then namespace ascending for a stable display order. The
+  // per-namespace count/pins match countIn()/pinsIn() exactly and the counts sum
+  // to size() (each entry lands in exactly one namespace). No engine state changes.
+  std::vector<NsUsage> usageByNamespace() const;
 
   bool idVisible(const std::string& id, const std::vector<std::string>& nsAllow) const;
 
