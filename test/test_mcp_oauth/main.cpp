@@ -77,6 +77,14 @@ void test_parse_protected_resource_real() {
   TEST_ASSERT_EQUAL_STRING("https://mcp.linear.app/mcp", m.resource.c_str());
   TEST_ASSERT_EQUAL(1u, (unsigned)m.authorizationServers.size());
   TEST_ASSERT_EQUAL_STRING("https://mcp.linear.app", m.authorizationServers[0].c_str());
+  // scopes_supported -> a space-joined scope string, OIDC scopes dropped.
+  TEST_ASSERT_EQUAL_STRING("read write", o::scopeStringFor(m.scopesSupported).c_str());
+}
+
+void test_scope_string_drops_oidc() {
+  TEST_ASSERT_EQUAL_STRING("read write", o::scopeStringFor({"read", "openid", "write", "email", "profile"}).c_str());
+  TEST_ASSERT_EQUAL_STRING("", o::scopeStringFor({}).c_str());
+  TEST_ASSERT_EQUAL_STRING("", o::scopeStringFor({"openid"}).c_str());
 }
 
 void test_parse_auth_server_real() {
@@ -232,6 +240,7 @@ int main(int, char**) {
   RUN_TEST(test_www_authenticate_hint);
   RUN_TEST(test_well_known_derivation);
   RUN_TEST(test_parse_protected_resource_real);
+  RUN_TEST(test_scope_string_drops_oidc);
   RUN_TEST(test_parse_auth_server_real);
   RUN_TEST(test_auth_server_missing_endpoints_not_ok);
   RUN_TEST(test_build_registration_request);

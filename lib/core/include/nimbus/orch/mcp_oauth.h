@@ -77,7 +77,13 @@ struct ProtectedResourceMeta {
   bool                     ok = false;
   std::string              resource;            // the canonical resource id
   std::vector<std::string> authorizationServers;  // issuer URLs, in server order
+  std::vector<std::string> scopesSupported;     // the scopes to request at authorize
 };
+
+// Join scopes into a single space-delimited `scope` string, dropping OpenID
+// Connect scopes (openid/profile/email) the device does not use - it wants API
+// access, not an id token. "" when there is nothing to request.
+std::string scopeStringFor(const std::vector<std::string>& scopesSupported);
 // Parse an RFC 9728 protected-resource metadata document.
 ProtectedResourceMeta parseProtectedResourceMetadata(const std::string& json);
 

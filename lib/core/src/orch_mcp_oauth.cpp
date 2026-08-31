@@ -131,9 +131,20 @@ ProtectedResourceMeta parseProtectedResourceMetadata(const std::string& json) {
   if (deserializeJson(d, json) != DeserializationError::Ok || !d.is<JsonObjectConst>()) return r;
   r.resource = (const char*)(d["resource"] | "");
   collectStrings(d["authorization_servers"].as<JsonArrayConst>(), r.authorizationServers);
+  collectStrings(d["scopes_supported"].as<JsonArrayConst>(), r.scopesSupported);
   // A doc with no authorization_servers is not useful for the flow.
   r.ok = !r.authorizationServers.empty();
   return r;
+}
+
+std::string scopeStringFor(const std::vector<std::string>& scopesSupported) {
+  std::string out;
+  for (const auto& s : scopesSupported) {
+    if (s == "openid" || s == "profile" || s == "email") continue;  // OIDC, not needed
+    if (!out.empty()) out += ' ';
+    out += s;
+  }
+  return out;
 }
 
 AuthServerMeta parseAuthServerMetadata(const std::string& json) {
