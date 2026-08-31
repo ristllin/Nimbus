@@ -77,14 +77,22 @@ function showAuth(){
   if($('authgate'))return;
   const b=document.createElement('div');b.id='authgate';
   b.style.cssText='position:fixed;inset:0;background:#14181c;color:#dde;z-index:9999;display:flex;align-items:center;justify-content:center;text-align:center;padding:24px';
+  // Scan-first, with an explicit text fallback (CUM-208): a QR-only flow strands
+  // anyone who can't scan (no second device, camera trouble, or they ARE the phone).
+  // "Enter the code instead" reveals the code field + how to read the code as text on
+  // the device, so the manual path is discoverable rather than buried.
   b.innerHTML='<div style="max-width:420px">'+
     '<img src=/logo.svg alt="" style="width:96px;height:96px;display:block;margin:0 auto 14px;background:#fff;border-radius:50%;padding:6px">'+
     '<h2 style="margin:0 0 8px">Sign in to Nimbus</h2>'+
-    '<p style="color:#9ab">Scan the Sign-in QR on the device (Settings &gt; Connectivity). The QR signs this browser in, so there is no code to copy during normal setup.</p>'+
+    '<p style="color:#9ab">Scan the Sign-in QR on the device to sign in with no typing. Find it under Settings &gt; Connectivity &gt; Sign-in QR.</p>'+
+    '<button id=authshow type=button style="background:none;border:none;color:#7fd1c8;text-decoration:underline;cursor:pointer;font-size:14px;padding:4px">Enter the code instead</button>'+
+    '<div id=authcode style="display:none;margin-top:10px">'+
+    '<p style="color:#9ab;font-size:13px">Can\'t scan? On the device, tap Show code under Settings &gt; Connectivity &gt; Sign-in QR, then enter the device sign-in code here.</p>'+
     '<input id=authtok placeholder="device sign-in code" style="width:240px;padding:8px;font-size:15px"> '+
-    '<button id=authuse style="padding:8px 16px;font-size:15px">Continue</button>'+
-    '<p style="color:#678;font-size:12px">New device? Open 192.168.4.1 on its setup hotspot. First-time setup signs you in automatically.</p></div>';
+    '<button id=authuse style="padding:8px 16px;font-size:15px">Continue</button></div>'+
+    '<p style="color:#678;font-size:12px;margin-top:14px">New device? Open 192.168.4.1 on its setup hotspot. First-time setup signs you in automatically.</p></div>';
   document.body.appendChild(b);
+  $('authshow').onclick=()=>{$('authcode').style.display='block';$('authshow').style.display='none';$('authtok').focus();};
   $('authuse').onclick=()=>{const t=$('authtok').value.trim();if(!t)return;
     // Durably stored -> reload clean so every poller restarts signed in.
     if(setTok(t)){location.reload();return;}
@@ -1306,8 +1314,8 @@ function modelSel(id,cur,choices,verified){
 }
 // Provider row header markup. Shared by provRow (build) and provSync (in-place
 // poll update) so the Recommended badge + verify badge never drift between them.
-function provHeadHtml(name,p){return '<b>'+(PROVLBL[name]||name)+'</b>'+
-  (name==='cumulo'?' <span class="badge" style="background:#12312e;color:#7fd1c8;border:1px solid #2b6b63">Recommended</span>':'')+
+function provHeadHtml(name,p){return '<b>'+(p.label||PROVLBL[name]||name)+'</b>'+
+  ((p.recommended!==undefined?p.recommended:name==='cumulo')?' <span class="badge" style="background:#12312e;color:#7fd1c8;border:1px solid #2b6b63">Recommended</span>':'')+
   vfyBadge(p.verify,p.vts);}
 // Key-field placeholder. Shared by provRow + provSync so the cumulo_sk_ hint on the
 // Cumulo row is not stomped back to the generic "API key" by the in-place poll.
@@ -1352,7 +1360,11 @@ function provRow(name,p){
 // store slots and router/probed-host verify routing; the old two-way ternary sent
 // everything else to mistKey, which silently wrote a cumulo_sk_ key into Mistral.
 const KEYFIELD={openai:'oaiKey',anthropic:'antKey',mistral:'mistKey',cumulo:'cumuloKey',zai:'zaiKey'};
-function keyField(p){return KEYFIELD[p]||'mistKey';}
+// Fallback is the slug's own field, NEVER another provider's: the old ||'mistKey'
+// silently wrote an unknown provider's key into Mistral. The server now emits keyField
+// per provider (merged into KEYFIELD in applyOrch), so this only bites truly-unknown
+// slugs from a mismatched firmware, and even then routes to the provider's own field.
+function keyField(p){return KEYFIELD[p]||(p+'Key');}
 
 // In-place sync of a provider row on the 5s poll - the old unconditional rebuild of
 // #provs destroyed the API-key input mid-typing (the field-QA "key deletes itself
@@ -1384,6 +1396,11 @@ function applyOrch(d){
   if($('modOutbound')&&d.modOutbound!=null)$('modOutbound').checked=!!d.modOutbound;
   if($('modInjection')&&d.modInjection!=null)$('modInjection').checked=!!d.modInjection;
   ORCH=d;
+  // Inherit each provider's label + key-field from the server's canonical registry
+  // (CUM-213) so a new provider needs no front-end edit; the hardcoded maps above are
+  // only a fallback for firmware that predates these fields.
+  Object.keys(d.providers||{}).forEach(function(n){var pp=d.providers[n];if(!pp)return;
+    if(pp.label)PROVLBL[n]=pp.label; if(pp.keyField)KEYFIELD[n]=pp.keyField;});
   $('orchoff').style.display=d.running?'none':'inline-block';
   const host=$('provs');
   const sig=Object.keys(d.providers).join();

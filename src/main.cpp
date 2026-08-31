@@ -1471,15 +1471,19 @@ static nimbus::wifi::LinkView liveLinkView() {
   return v;
 }
 
-// The single-use sign-in code carried in the Sign-in QR / setup QR as `?c=` (CUM-45).
-// A bearer token in a URL is logged, cached, and shared by accident, so the web side
-// stopped accepting `?t=<token>`; the browser now exchanges a short single-use code
-// (served by GET /api/signin/code) for a session. That endpoint lands with lane N1;
-// until the orchestrator wires it at integration this returns "" (the QR opens the
-// config page and the owner signs in there), which is the safe direction - it never
-// puts the long-lived token in a QR. INTEGRATION: source this from /api/signin/code.
+// The single-use sign-in code carried in the Sign-in QR / setup QR as `?c=` (CUM-45,
+// wired for CUM-209). A bearer token in a URL is logged, cached, and shared by
+// accident, so the web side never accepts `?t=<token>`; the browser exchanges a short
+// single-use code for a session over POST /api/signin/exchange. The device-screen QR
+// now carries a real code so a scan signs the browser in with no typing (before this
+// the code was empty, so the landing page still asked for it by hand). The code comes
+// from the web layer's own table (net::panelSigninCode() mints + caches it, spinlock-
+// guarded for this main-task caller), so the exact code encoded here is the one the
+// exchange endpoint will redeem. It is never the durable token, so a code in a URL is
+// inert once used or expired. When there is no reachable address (Notifier mode has no
+// web surface / Wi-Fi), deviceUrl() drops the query entirely and the QR is a bare URL.
 static std::string signinCode() {
-  return std::string();   // stub to the CUM-45 contract; filled at integration
+  return std::string(net::panelSigninCode().c_str());
 }
 
 static std::string configUrl() {

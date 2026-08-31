@@ -32,6 +32,7 @@ VECTOR_TEXTS = [
     "http://192.168.4.1/",
     "http://nimbus.local/",
     "http://192.0.2.26/",  # a representative STA-IP config URL (configUrl(): http://<ip>/)
+    "http://192.0.2.26/?c=0123456789ab",  # the Sign-in QR payload: URL + single-use ?c= code (CUM-209)
     "a" * 14,  # last payload that fits v1-M
     "a" * 15,  # first payload that needs v2-M
     "a" * 106,  # v6-M exactly full

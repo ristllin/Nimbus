@@ -47,6 +47,7 @@
 #include "nimbus/power/power_monitor.h"       // battery chemistry + custom curve parse (config)
 #include "nimbus_board_power.h"               // explicit per-board battMon default (CUM-202)
 #include "nimbus/orch/danger_zone.h"          // CUM-15 confirm phrases (one source of truth)
+#include "nimbus/orch/provider_slots.h"       // CUM-213: canonical provider registry (one source)
 
 #include "../agent/agent_config.h"
 #include "../agent/memory_subsystem.h"
@@ -115,18 +116,57 @@ static volatile uint32_t s_authFirstFailMs = 0;
 // Owned by lane N1 (CUM-45 and the web-app revamp). One-time sign-in codes keep
 // the durable access token out of every URL: a Sign-in QR / cross-origin link /
 // Wi-Fi-handoff link carries a short single-use code, and the page exchanges it
-// once for the token over POST /api/signin/exchange. Runs on the single web-server
-// task (no on-device concurrency), so the code table needs no lock.
+// once for the token over POST /api/signin/exchange. The HTTP endpoints run on the
+// AsyncTCP task, but the device-screen Sign-in QR (CUM-209) mints from the MAIN
+// task, so the table is guarded by a short spinlock - the same cross-task pattern
+// as the config lock. The critical sections only wrap the O(CAP) table op, never
+// the RNG / String work.
 static nimbus::SigninCodes s_signinCodes;
+static portMUX_TYPE s_signinMux = portMUX_INITIALIZER_UNLOCKED;
 
 // Mint a fresh single-use code (12 hex chars from the hardware RNG) and register
-// it. Returns the code by value.
+// it. Returns the code by value. Safe to call from either task (spinlock-guarded).
 static String mintSigninCode() {
   char buf[13];
   snprintf(buf, sizeof buf, "%08x%04x",
            (unsigned)esp_random(), (unsigned)(esp_random() & 0xFFFF));
-  s_signinCodes.mint(buf, millis());
+  const uint32_t now = millis();
+  portENTER_CRITICAL(&s_signinMux);
+  s_signinCodes.mint(buf, now);
+  portEXIT_CRITICAL(&s_signinMux);
   return String(buf);
+}
+
+// Redeem a code once (spinlock-guarded, callable from the AsyncTCP handler).
+static bool redeemSigninCode(const char* code) {
+  const uint32_t now = millis();
+  portENTER_CRITICAL(&s_signinMux);
+  const bool ok = s_signinCodes.redeem(code, now);
+  portEXIT_CRITICAL(&s_signinMux);
+  return ok;
+}
+
+// CUM-209: the device-screen Sign-in QR must carry a real single-use ?c= code so a
+// scan signs the browser in with no typing (the QR used to encode a bare URL, so the
+// landing page still asked for the code by hand). Rendered on the MAIN task, off the
+// same code table the /api/signin/exchange handler redeems from - hence the spinlock
+// in mintSigninCode() above. The code is CACHED and re-minted only when it nears
+// expiry: the ConfigQr screen repaints on every knob event, and a code that changed
+// every frame would produce a QR image that never settles long enough to scan. A
+// cached code held for half its TTL keeps the QR image stable while still handing out
+// a code with >= ~1 min of life on every scan. These two fields are touched only here
+// (main task), so they need no lock of their own.
+static String   s_panelCode;
+static uint32_t s_panelCodeMintedMs = 0;
+
+String panelSigninCode() {
+  const uint32_t now = millis();
+  const uint32_t refreshAfter = nimbus::SigninCodes::DEFAULT_TTL_MS / 2;
+  if (s_panelCode.length() == 0 || (uint32_t)(now - s_panelCodeMintedMs) >= refreshAfter) {
+    s_panelCode = mintSigninCode();
+    s_panelCodeMintedMs = now;
+  }
+  return s_panelCode;
 }
 // ================== end N1 UI endpoints (file-scope state) ==================
 
@@ -684,20 +724,30 @@ static bool applyParam(const String& name, const String& value) {
 
 // ---- orchestrator control surface (plan ROUND 3 Part A) ----------------------
 
-// The three verifiable providers and their model choice lists (agent_config.h).
-struct ProvMeta { const char* name; const char* choices; };
-static const ProvMeta kProviders[] = {
-  { "openai",    OPENAI_MODEL_CHOICES  },
-  { "anthropic", ANT_MODEL_CHOICES     },
-  { "mistral",   MISTRAL_MODEL_CHOICES },
-};
-static constexpr int kProvCount = sizeof(kProviders) / sizeof(kProviders[0]);
-
-static bool isKnownProvider(const String& p) {
-  for (int i = 0; i < kProvCount; i++)
-    if (p == kProviders[i].name) return true;
-  return p == "custom" || p == "zai" || p == "cumulo";
+// The compiled default model-choice list for a provider (agent_config.h). This is a
+// LEAF map (slug -> compile-time constant), not a provider LIST: the canonical list
+// is nimbus::orch::kProviderSlots. A provider with no static default returns "" and
+// relies on the live verify harvest to fill its choices. The macros live in the
+// firmware layer (agent_config.h), which is why this stays here and not in the
+// portable registry header.
+static const char* providerFallbackChoices(const char* slug) {
+  if (!strcmp(slug, "openai"))    return OPENAI_MODEL_CHOICES;
+  if (!strcmp(slug, "anthropic")) return ANT_MODEL_CHOICES;
+  if (!strcmp(slug, "mistral"))   return MISTRAL_MODEL_CHOICES;
+  if (!strcmp(slug, "cumulo"))    return CUMULO_MODEL_CHOICES;
+  if (!strcmp(slug, "zai"))       return ZAI_MODEL_CHOICES;
+  return "";
 }
+
+// A provider token is "known" for routing if it is a canonical slot OR the free-form
+// custom endpoint (which has its own UI + verify path, so it is not in the registry).
+static bool isKnownProvider(const String& p) {
+  return nimbus::orch::isProviderSlug(p.c_str()) || p == "custom";
+}
+
+// True when the provider's API key is set (leaf map over the per-provider store
+// accessors; defined below, forward-declared for the registry-driven emitter).
+static bool providerKeyed(const char* p);
 
 // Sanitize a comma-separated priority list: keep only known provider tokens,
 // drop duplicates/whitespace. Returns "" if nothing valid survives (caller
@@ -830,34 +880,31 @@ static void buildOrchState(String& out) {
   cust["model"]  = agent::store::customModel();
   cust["hasKey"] = agent::store::customKey().length() > 0;
 
-  // The provider ROWS the Models UI renders come from this object, in insertion
-  // order. Cumulo Nimbus is emitted FIRST (the recommended path: one key, one
-  // balance, verified against the router - see CUM-201), then the three direct
-  // providers, then Z.ai. Backend verify/routing for cumulo + zai already lives in
-  // provider_verify.cpp; this just surfaces them so the rows exist.
+  // The provider ROWS the Models UI renders come from this object. Derived from the
+  // canonical registry (nimbus::orch::kProviderSlots) so every provider - present and
+  // future - is emitted here with the SAME verify/vts fields the UI unlocks on, in one
+  // canonical order (recommended flagship first). CUM-213 closed the split where
+  // cumulo/zai were emitted by hand beside a three-provider table: a provider missed
+  // from one of those hand-lists showed its settings ungated, which is the exact bug.
+  // label/keyField/recommended are emitted too so the front end inherits them for a
+  // new provider instead of carrying its own hardcoded maps.
   JsonObject provs = d["providers"].to<JsonObject>();
-  auto addProv = [&](const char* p, bool hasKey, const char* fallbackChoices) {
-    JsonObject o = provs[p].to<JsonObject>();
-    o["hasKey"]    = hasKey;
-    o["verify"]    = agent::store::verifyResult(p);
-    o["vts"]       = agent::store::verifyTs(p);
-    o["orchModel"] = agent::store::orchModel(p);
-    o["subModel"]  = agent::store::subModel(p);
-    // Live-harvested list first (verify pass reads /v1/models), static fallback.
-    // cumulo/zai are first-class heads (CUM-242): they carry a small default list
-    // so a model is selectable before the first harvest, and the harvested list
-    // wins once it lands.
-    String dyn = agent::store::modelChoices(p);
-    o["choices"] = dyn.length() ? dyn : String(fallbackChoices);
-  };
-  addProv("cumulo", agent::store::hasCumuloKey(), CUMULO_MODEL_CHOICES);
-  for (int i = 0; i < kProvCount; i++)
-    addProv(kProviders[i].name,
-            i == 0 ? agent::store::hasOpenaiKey()
-          : i == 1 ? agent::store::hasAnthropicKey()
-                   : agent::store::hasMistralKey(),
-            kProviders[i].choices);
-  addProv("zai", agent::store::hasZaiKey(), ZAI_MODEL_CHOICES);
+  for (const auto& slot : nimbus::orch::kProviderSlots) {
+    JsonObject o = provs[slot.slug].to<JsonObject>();
+    o["label"]       = slot.label;
+    o["keyField"]    = slot.keyField;
+    o["recommended"] = slot.recommended;
+    o["hasKey"]      = providerKeyed(slot.slug);
+    o["verify"]      = agent::store::verifyResult(slot.slug);
+    o["vts"]         = agent::store::verifyTs(slot.slug);
+    o["orchModel"]   = agent::store::orchModel(slot.slug);
+    o["subModel"]    = agent::store::subModel(slot.slug);
+    // Live-harvested list first (the verify pass reads /v1/models), static fallback
+    // second. cumulo/zai carry a small compiled default so a model is selectable
+    // before the first harvest; the harvested list wins once it lands.
+    String dyn = agent::store::modelChoices(slot.slug);
+    o["choices"] = dyn.length() ? dyn : String(providerFallbackChoices(slot.slug));
+  }
 
   d["hasTav"]    = agent::store::hasTavilyKey();   // web-search tool configured
   d["tavVerify"] = agent::store::verifyResult("tavily");   // 1 ok / 0 rejected / -1 unknown
@@ -1087,42 +1134,24 @@ static bool applyOrchField(const String& n, const String& v, bool& cfgDirty) {
     return true;
   }
 
-  // per-provider model picks - accepted only from the verified choice list
-  for (int i = 0; i < kProvCount; i++) {
-    const char* p = kProviders[i].name;
-    // Validate against the EFFECTIVE list (live-harvested first, static fallback)
-    // so a freshly-released model the harvest surfaced is actually selectable.
+  // Per-provider model picks - accepted only from the verified choice list. One loop
+  // over the canonical registry (CUM-213): cumulo/zai are first-class heads (CUM-242),
+  // so they validate exactly like the BYOK providers instead of through a second
+  // hand-maintained table (the old split silently rejected a router-head pick against
+  // an empty list). Validate against the EFFECTIVE list - live-harvested first, the
+  // small compiled default second - so a freshly-released model is selectable.
+  for (const auto& slot : nimbus::orch::kProviderSlots) {
+    const char* p = slot.slug;
+    const bool isOrch = (n == String("orchM_") + p);
+    const bool isSub  = (n == String("subM_")  + p);
+    if (!isOrch && !isSub) continue;
     String eff = agent::store::modelChoices(p);
-    if (!eff.length()) eff = kProviders[i].choices;
-    if (n == String("orchM_") + p) {
-      if (modelInChoices(eff.c_str(), v)) agent::store::setOrchModel(p, v);
-      return true;
+    if (!eff.length()) eff = providerFallbackChoices(p);
+    if (modelInChoices(eff.c_str(), v)) {
+      if (isOrch) agent::store::setOrchModel(p, v);
+      else        agent::store::setSubModel(p, v);
     }
-    if (n == String("subM_") + p) {
-      if (modelInChoices(eff.c_str(), v)) agent::store::setSubModel(p, v);
-      return true;
-    }
-  }
-  // Router providers (Cumulo, Z.ai) are first-class heads too (CUM-242) but are
-  // not in kProviders. Validate a pick against the EFFECTIVE list (live-harvested,
-  // else the small compiled default), so orchM_cumulo=gpt-4o is accepted rather
-  // than rejected against an empty list.
-  {
-    static const struct { const char* name; const char* choices; } kRouterProv[] = {
-      { "cumulo", CUMULO_MODEL_CHOICES }, { "zai", ZAI_MODEL_CHOICES },
-    };
-    for (const auto& rp : kRouterProv) {
-      const bool isOrch = (n == String("orchM_") + rp.name);
-      const bool isSub  = (n == String("subM_")  + rp.name);
-      if (!isOrch && !isSub) continue;
-      String eff = agent::store::modelChoices(rp.name);
-      if (!eff.length()) eff = rp.choices;
-      if (modelInChoices(eff.c_str(), v)) {
-        if (isOrch) agent::store::setOrchModel(rp.name, v);
-        else        agent::store::setSubModel(rp.name, v);
-      }
-      return true;
-    }
+    return true;
   }
 
   // directive + memory + telegram + tts
@@ -1378,7 +1407,7 @@ void beginWeb(const WebConfig& wc) {
   // code table is single-use, so a leaked link cannot be replayed.
   s_server.on("/api/signin/exchange", HTTP_POST, [](AsyncWebServerRequest* r) {
     String code = r->hasParam("code", true) ? r->getParam("code", true)->value() : "";
-    if (code.length() == 0 || !s_signinCodes.redeem(code.c_str(), millis())) {
+    if (code.length() == 0 || !redeemSigninCode(code.c_str())) {
       r->send(401, "application/json", "{\"error\":\"invalid or expired code\"}");
       return;
     }
