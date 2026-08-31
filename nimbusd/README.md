@@ -28,7 +28,9 @@ New code lives only in this directory:
 | `src/telegram.h` | Telegram channel over the portable `nimbus::tg::parseUpdates` + offset arithmetic; durable offset |
 | `src/rig.h` | `NimbusdRig` - the composition, rehydrating all stores on construct and flushing after each turn |
 | `src/engine_thread.h` | the concurrency layer: one engine thread + request mailbox + a snapshot for lock-free reads |
-| `src/http_control.h` | the 127.0.0.1-only control surface (health, state, message, MCP), web-token gated |
+| `src/http_control.h` | the 127.0.0.1-only control surface (the chat page, health, state, replies, message, MCP), web-token gated |
+| `src/reply_buffer.h` | the bounded, thread-safe ring of recent chat entries (seq + timestamp + role) that backs `GET /api/replies` |
+| `src/chat_page.h` | the self-contained web chat page served at `/` (inline CSS/JS, no external resources) |
 | `src/main.cpp` | the daemon entrypoint (config, threads, Telegram poll, graceful shutdown) |
 
 ## Durable data layout (`/data` by default)
@@ -90,16 +92,29 @@ may also live in `<data>/config.env`. Env always wins. Nothing secret is logged
 
 ## Control surface (the seam the Phase-1 sidecar forwards to)
 
-Bound to **loopback only**. Everything but `/healthz` requires the web token
-(`Authorization: Bearer <token>` or `?token=`).
+Bound to **loopback only**. Every route requires the web token
+(`Authorization: Bearer <token>` or `?token=`) except `/healthz` and the static
+chat page (`/`, `/index.html`). The relay sidecar injects the token on every
+forwarded request, so the browser reaches all of these through the tunnel.
 
 | Method + path | Purpose |
 |---|---|
+| `GET /` and `GET /index.html` | the web chat page (ungated; a static shell that carries no data) |
 | `GET /healthz` | liveness (ungated; the kubelet probe) |
 | `GET /readyz` | readiness (200 iff the engine thread is running) |
-| `GET /api/state` | JSON snapshot (turn count, vectors, tokens, uptime) - served without entering the engine |
+| `GET /api/state` | JSON snapshot (turn count, vectors, tokens, provider-configured flag, uptime) - served without entering the engine |
+| `GET /api/replies?after=<seq>` | the recent chat entries newer than `<seq>` (the page polls this every ~2s) |
 | `POST /api/message` `{"chat_id","text"}` | enqueue a turn (202) |
 | `POST /mcp` | JSON-RPC to the tool registry, dispatched on the engine thread |
+
+**The web chat page.** `GET /` serves one self-contained HTML document (inline
+CSS and JS, no external scripts, styles, fonts, or images) so it renders over the
+tunnel, which reaches no origin but this daemon and forces `nosniff`. The composer
+POSTs `/api/message`; the page then polls `/api/replies` for new entries and
+renders them. The page itself is ungated because it holds no instance data - every
+byte it shows comes from the gated `/api/*` routes. Honest states: a keyless
+instance says so plainly (the engine returns a verbatim "no provider" reply and
+the page shows a standing notice) rather than sitting silent.
 
 ## Sub-agent fan-out: composed fabric-less in Phase 0 (documented decision)
 

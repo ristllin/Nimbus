@@ -23,6 +23,7 @@
 //   NIMBUSD_WEB_TOKEN, NIMBUSD_TG_CHAT_ID, NIMBUSD_DEVICE_NAME, NIMBUSD_PRIORITY,
 //   TELEGRAM_BOT_TOKEN, OPENAI_API_KEY / ANTHROPIC_API_KEY / MISTRAL_API_KEY,
 //   TAVILY_API_KEY, TZ.
+#include <atomic>
 #include <csignal>
 #include <cstdio>
 #include <cstring>
@@ -33,6 +34,7 @@
 #include "daemon_http.h"
 #include "engine_thread.h"
 #include "http_control.h"
+#include "reply_buffer.h"
 #include "rig.h"
 #include "telegram.h"
 
@@ -74,6 +76,21 @@ int cmdGetMe(nimbusd::Config& cfg) {
   return 0;
 }
 
+// Wire the engine's reply delivery: record every reply in the ring that backs
+// the web chat page, and forward it to Telegram when a bot sender is configured.
+// `sender` is a pointer-to-pointer so the daemon can fill it in after the bot is
+// validated, without re-installing the hook.
+void installReplyDelivery(nimbusd::NimbusdRig& rig, nimbusd::ReplyBuffer& replies,
+                          std::atomic<nimbusd::TelegramChannel*>* sender) {
+  // Runs on the engine thread. `sender` is atomic because the main thread fills
+  // it in (below) after the bot is validated, concurrently with the first turns.
+  rig.setDeliver([&replies, sender](const std::string& chat, const std::string& text) {
+    replies.push("assistant", text);
+    nimbusd::TelegramChannel* s = sender->load(std::memory_order_acquire);
+    if (s) { std::string e; s->sendMessage(chat, text, e); }
+  });
+}
+
 // Run one turn and print the reply (a keyed smoke check).
 int cmdOnce(nimbusd::Config& cfg, const std::string& text) {
   nimbusd::NimbusdRig rig(cfg, buildOptions(cfg));
@@ -95,10 +112,19 @@ int runDaemon(nimbusd::Config& cfg) {
   nimbusd::EngineThread eng(&rig);
   eng.start();
 
+  // The reply ring that backs the web chat page (GET /api/replies). Every reply
+  // the engine produces is recorded here and, when a bot is configured, also
+  // forwarded to Telegram. The delivery hook is set once, before any turn runs,
+  // so no reply is lost; `sender` is filled in below if a bot token is present.
+  nimbusd::ReplyBuffer replies(/*cap=*/50);
+  std::atomic<nimbusd::TelegramChannel*> sender{nullptr};
+  installReplyDelivery(rig, replies, &sender);
+
   // Control surface (loopback), token-gated.
   const std::string webToken = cfg.get("NIMBUSD_WEB_TOKEN");
   nimbusd::HttpControl http(&eng, cfg.get("NIMBUSD_CONTROL_ADDR", "127.0.0.1"),
-                           cfg.getInt("NIMBUSD_CONTROL_PORT", 8787), webToken, opt.dataDir);
+                           cfg.getInt("NIMBUSD_CONTROL_PORT", 8787), webToken, opt.dataDir,
+                           &replies);
   const int port = http.start();
   if (port < 0) { logLine("FAILED to bind the control surface"); eng.stop(); return 1; }
   logLine("control surface on " + cfg.get("NIMBUSD_CONTROL_ADDR", "127.0.0.1") + ":" +
@@ -123,11 +149,8 @@ int runDaemon(nimbusd::Config& cfg) {
     if (tgPoll->getMe(user, err)) logLine("telegram: bot @" + user + " validated");
     else logLine("telegram: getMe failed (" + err + ") - poll loop will still retry");
 
-    nimbusd::TelegramChannel* sender = tgSend.get();
-    rig.setDeliver([sender](const std::string& chat, const std::string& text) {
-      std::string e;
-      sender->sendMessage(chat, text, e);  // best-effort; the reply is also recorded
-    });
+    // Route replies to this bot too (the delivery hook above forwards to it).
+    sender.store(tgSend.get(), std::memory_order_release);
 
     pollThread = std::thread([&] {
       logLine("telegram long-poll started");

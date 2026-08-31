@@ -37,6 +37,7 @@ struct StateSnapshot {
   int      episodicMessages = 0;
   uint32_t sessionTokensIn = 0;
   uint32_t sessionTokensOut = 0;
+  bool     providerConfigured = false;  // any provider key present (CUM-211 honest state)
   std::string lastHost;
   std::string devName;
   uint64_t startedEpoch = 0;
@@ -153,6 +154,7 @@ class EngineThread {
     s.episodicMessages = rig_->episodic().messageCount();
     s.sessionTokensIn = rig_->engine().sessionUsage().promptTokens;
     s.sessionTokensOut = rig_->engine().sessionUsage().completionTokens;
+    s.providerConfigured = rig_->anyProviderConfigured();
     s.devName = rig_->options().devName;
     {
       std::lock_guard<std::mutex> lk(snapMu_);

@@ -152,6 +152,16 @@ class NimbusdRig {
   uint32_t totalOut() const { uint32_t n = 0; for (auto& t : turns_) n += t.tokensOut; return n; }
 
   bool hostAvailable(const std::string& h) const { return !cfg_.providerKey(h).empty(); }
+
+  // True iff at least one chat provider key is present. Drives the web chat
+  // page's honest "no provider key configured" state (CUM-211): a keyless
+  // instance produces no reply, so the surface must say so rather than hang.
+  bool anyProviderConfigured() const {
+    for (const char* h : {"openai", "anthropic", "mistral"})
+      if (!cfg_.providerKey(h).empty()) return true;
+    return false;
+  }
+
   const Options& options() const { return opt_; }
 
   orch::Role role() const {
