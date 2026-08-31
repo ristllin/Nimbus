@@ -2073,13 +2073,13 @@ function loadWifi(){
    '<tr><td><b>'+_wesc(n.ssid)+'</b>'+(n.current?' <span class=badge>in use</span>':'')+
    (n.open?' <span class=hint>open network</span>':'')+
    '</td><td style="text-align:right;white-space:nowrap">'+
-   (i>0?'<button data-wup="'+_wesc(n.ssid)+'" title="Higher priority">Up</button> ':'')+
+   (i>0?'<button data-wup="'+_wesc(n.ssid)+'" data-wto="'+(i-1)+'" title="Higher priority">Up</button> ':'')+
    (n.current?'':'<button data-wcon="'+_wesc(n.ssid)+'">Connect</button> ')+
    '<button data-wfor="'+_wesc(n.ssid)+'"'+(n.current?' data-wcur=1':'')+'>Forget</button></td></tr>')
    .join('')+'</tbody></table>';
   box.querySelectorAll('button[data-wcon]').forEach(b=>b.onclick=()=>wifiConnect(b.dataset.wcon));
   box.querySelectorAll('button[data-wfor]').forEach(b=>b.onclick=()=>wifiForget(b.dataset.wfor,!!b.dataset.wcur));
-  box.querySelectorAll('button[data-wup]').forEach((b,i)=>b.onclick=()=>wifiReorder(b.dataset.wup,i));
+  box.querySelectorAll('button[data-wup]').forEach(b=>b.onclick=()=>wifiReorder(b.dataset.wup,+b.dataset.wto));
   if($('wifiApMsg'))$('wifiApMsg').textContent=d.apUp
    ?('Temporary setup hotspot "'+(d.apSsid||'')+'" is available at '+(d.apIp||'')+'.')
    :(d.sta

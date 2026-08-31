@@ -29,6 +29,10 @@ bool     s_manualHold   = false;
 // loop so s_policy is only ever mutated there. volatile is enough: one flag, set-only
 // off-task, cleared on-task, and a missed edit is re-picked the next tick.
 volatile bool s_knownDirty = false;
+// Same off-task-set / main-task-apply pattern for releasing the manual hold: an explicit
+// join through the wizard (saveAndConnect) runs on the AsyncTCP task and must clear the
+// hold that publishap set, without touching s_manualHold or the radio off the main task.
+volatile bool s_manualHoldClearReq = false;
 uint32_t s_downSinceMs  = 0;      // first tick the link was seen down; 0 = up / unknown
 bool     s_scanInFlight = false;
 uint32_t s_scanStartMs  = 0;
@@ -78,7 +82,10 @@ void pollScan(uint32_t now) {
   if (!s_scanInFlight) return;
   const int n = WiFi.scanComplete();
   if (n == WIFI_SCAN_RUNNING) {
-    if ((uint32_t)(now - s_scanStartMs) > 15000u) {   // wedge guard
+    // Deliver a failure BEFORE the policy's own 12s scanTimeout (policy.h) fires, so the
+    // seam and the policy stay ordered: the policy never times out a scan the seam still
+    // thinks is in flight (which would block the next Unreachable retry on scanBusy).
+    if ((uint32_t)(now - s_scanStartMs) > 10000u) {   // wedge guard (< policy scanTimeoutMs)
       WiFi.scanDelete();
       s_scanInFlight = false;
       s_policy.noteScanFailed(now);
@@ -201,6 +208,8 @@ void setManualHold(bool held) {
   if (held) disengage();   // the owner wants the setup AP; get off the radio at once
 }
 
+void markManualHoldClear() { s_manualHoldClearReq = true; }
+
 bool failoverActive() {
   return s_engaged && (s_policy.state() == LinkState::Scanning ||
                        s_policy.state() == LinkState::Joining);
@@ -211,9 +220,14 @@ Status status() {
   s.state          = s_policy.state();
   s.engaged        = s_engaged;
   s.failoverActive = failoverActive();
-  s.candIndex      = s_policy.candidateIndex() + 1;   // 1-based for "2/3"
-  s.candCount      = s_policy.candidateCount();
   s.joiningSsid    = s_policy.joiningSsid();
+  // Only report candidate progress while actively scanning/joining. The policy keeps the
+  // last cycle's candidate list after falling to Unreachable, so surfacing it there would
+  // render a stale "trying N/M" for a network that is no longer being tried.
+  if (s.failoverActive) {
+    s.candIndex = s_policy.candidateIndex() + 1;   // 1-based for "2/3"
+    s.candCount = s_policy.candidateCount();
+  }
   return s;
 }
 
@@ -223,9 +237,10 @@ void tick(uint32_t nowMs, bool orchMode, bool onboarded) {
   // Notifier keeps the radio off; nothing to supervise.
   if (!orchMode) { disengage(); s_downSinceMs = 0; return; }
 
-  // Re-seed the policy on the MAIN task if the list changed off-task. Doing it here (not
-  // in the web handler) keeps s_policy single-task, honoring the no-concurrency rule.
+  // Apply off-task requests on the MAIN task, keeping s_policy + s_manualHold + the radio
+  // single-task (the no-concurrency rule). A wizard join clears any leftover manual hold.
   if (s_knownDirty) { s_knownDirty = false; refreshKnown(); }
+  if (s_manualHoldClearReq) { s_manualHoldClearReq = false; s_manualHold = false; }
 
   // Drain the latched radio events for this tick.
   const bool gotIp    = s_evGotIp;    s_evGotIp = false;

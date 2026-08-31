@@ -225,7 +225,8 @@ bool saveAndConnect(const String& ssid, const String& pass) {
   // The network currently in use is protected from eviction, so adding one can never
   // cost you the connection you are adding it over.
   wifistore::add(ssid, pass, staConnected() ? WiFi.SSID() : String(""));
-  link::markKnownDirty();   // the failover policy joins from this list - keep it current
+  link::markKnownDirty();        // the failover policy joins from this list - keep it current
+  link::markManualHoldClear();   // an explicit join ends any escape-hatch hold (re-enable failover)
   WiFi.disconnect();
   WiFi.begin(ssid.c_str(), pass.c_str());
   s_lastJoinMs = millis() ? millis() : 1;   // watch this attempt; 0 is the "none" sentinel

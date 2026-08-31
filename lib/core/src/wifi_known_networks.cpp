@@ -115,8 +115,7 @@ bool forgetNetwork(std::vector<KnownNet>& nets, const std::string& ssid) {
 
 bool moveNetwork(std::vector<KnownNet>& nets, const std::string& ssid, int toIndex) {
   const int at = findNetwork(nets, ssid);
-  if (at < 0) return false;
-  if (nets.empty()) return false;
+  if (at < 0) return false;   // absent (this also implies the list is non-empty)
   // Clamp into range: a UI drag or a hand-rolled request can name any index, and a
   // moved-to-out-of-bounds slot must land at an end, never corrupt the vector.
   int dst = toIndex;

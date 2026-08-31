@@ -63,8 +63,15 @@ bool failoverActive();
 Status status();
 
 // The owner explicitly published the setup AP (or resumed): while held, the supervisor
-// stays out of the way so it can never scan the setup network off the air. wifi_portal's
-// publishSetupNetwork()/cancelSetupHold() call these.
+// stays out of the way so it can never scan the setup network off the air.
+// publishSetupNetwork()/cancelSetupHold() run on the MAIN task and call this directly.
 void setManualHold(bool held);
+
+// Release the manual hold from ANY task (safe): an explicit join through the wizard
+// (saveAndConnect, on the AsyncTCP task) is the common continuation of the escape hatch,
+// so it must clear the hold - otherwise failover stays silently disabled for the rest of
+// uptime. Only sets a flag; the main-loop tick() applies it, keeping s_manualHold and the
+// radio single-task.
+void markManualHoldClear();
 
 }  // namespace nimbus::net::link

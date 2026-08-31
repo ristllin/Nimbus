@@ -236,6 +236,13 @@ static void test_move_clamps_out_of_range_index() {
   TEST_ASSERT_EQUAL_STRING("A", nets[0].ssid.c_str());
 }
 
+// The last entry moved to a past-the-end index clamps back onto itself -> no-op, false.
+static void test_move_last_to_past_end_is_a_no_op() {
+  std::vector<KnownNet> nets = {mk("A"), mk("B"), mk("C")};
+  TEST_ASSERT_FALSE(moveNetwork(nets, "C", 99));   // already last; clamp lands on itself
+  TEST_ASSERT_EQUAL_STRING("C", nets[2].ssid.c_str());
+}
+
 static void test_move_absent_ssid_is_false() {
   std::vector<KnownNet> nets = {mk("A")};
   TEST_ASSERT_FALSE(moveNetwork(nets, "nope", 0));
@@ -402,6 +409,7 @@ int main() {
   RUN_TEST(test_move_carries_the_password_and_history);
   RUN_TEST(test_move_to_same_index_is_a_no_op);
   RUN_TEST(test_move_clamps_out_of_range_index);
+  RUN_TEST(test_move_last_to_past_end_is_a_no_op);
   RUN_TEST(test_move_absent_ssid_is_false);
   RUN_TEST(test_pick_best_is_strongest_known);
   RUN_TEST(test_pick_best_empty_scan_is_minus_one);
