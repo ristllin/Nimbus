@@ -84,6 +84,14 @@ struct ScreenCtx {
   bool badgeActive = false;            // Badge: something needs attention
   std::string badgeText;               // short, e.g. "INPUT?" / "APPROVE?"
 
+  // First-run posture (CUM-259). True when this device has not finished setup
+  // (Orchestrator, no Wi-Fi saved, not onboarded). StatusIdle then renders a
+  // "Set up Wi-Fi" call-to-action with a tap back to Setup INSTEAD of the empty
+  // session list, so a credless device can never sit on a screen that looks
+  // onboarded with no way back. Default false keeps every provisioned render and
+  // every golden fixture byte-identical.
+  bool needsSetup = false;
+
   // setup info
   std::string apName, apPass, portalUrl;
   std::string fwVersion;  // firmware version string, shown small on the Setup screen

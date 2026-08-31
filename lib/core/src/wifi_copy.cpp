@@ -86,6 +86,103 @@ std::string netStatusLine(const LinkView& v, size_t maxChars) {
   return std::string();  // exhaustive switch guard
 }
 
+// ---- first-run setup instructions (CUM-259 / CUM-260) -----------------------
+
+std::string setupSteps(const std::string& apSsid, const std::string& apUrl) {
+  // Lead with the sequence, not the facts. Step 1 is the join (the QR beside this
+  // text does it, or the printed password); step 2 is the address to open once
+  // joined - the step the owner said was missing. Kept to two short lines plus a
+  // one-line safety net; the panel renderer word-wraps each within its column.
+  const std::string name = apSsid.empty() ? std::string("this network") : asciiOnly(apSsid);
+  const std::string url = apUrl.empty() ? std::string("http://192.168.4.1") : asciiOnly(apUrl);
+  return "1. Join " + name + " (scan the code)\n"
+         "2. Open " + url + "\n"
+         "If nothing opens, go to that address.";
+}
+
+std::string setupFallbackLine(const std::string& apUrl, size_t maxChars) {
+  const std::string url = apUrl.empty() ? std::string("http://192.168.4.1") : apUrl;
+  return fit("If nothing opens, visit " + url, maxChars);
+}
+
+std::string setupCtaTitle() { return "Set up Wi-Fi"; }
+std::string setupCtaHint() { return "Tap to open setup"; }
+
+// ---- captive-portal probe table (CUM-260 leg 1) -----------------------------
+
+bool isCaptiveProbePath(const std::string& path) {
+  // The fixed URLs the major platforms fetch to detect a captive portal. The device
+  // must answer each with the captive page so the OS pops it; a path missing here
+  // falls through to the generic AP redirect (still pops today), but naming them
+  // makes the guarantee explicit and testable. Compared case-insensitively - the OS
+  // uses fixed casing, but a lowercase-normalized compare costs nothing and is safer.
+  static const char* const kProbes[] = {
+      "/hotspot-detect.html",        // iOS / macOS (captive.apple.com)
+      "/library/test/success.html",  // iOS / macOS (older path)
+      "/generate_204",               // Android / ChromeOS
+      "/gen_204",                     // Android (short form)
+      "/ncsi.txt",                    // Windows NCSI
+      "/connecttest.txt",            // Windows 10+ connectivity test
+      "/canonical.html",             // Firefox (detectportal.firefox.com)
+      "/success.txt",                // Firefox / NetworkManager
+      "/check_network_status.txt",   // NetworkManager
+      "/kindle-wifi/wifistub.html",  // Kindle
+  };
+  std::string p;
+  p.reserve(path.size());
+  for (char c : path) {
+    if (c == '?' || c == '#') break;  // ignore any query / fragment
+    p += (c >= 'A' && c <= 'Z') ? char(c - 'A' + 'a') : c;
+  }
+  for (const char* probe : kProbes)
+    if (p == probe) return true;
+  return false;
+}
+
+// Escape the five HTML-significant characters. The AP SSID is the owner-set device
+// name; without this an ampersand breaks the markup and a '<' could inject a tag on
+// the page served to a client on the setup AP. Applied to every interpolated value.
+static std::string htmlEscape(const std::string& s) {
+  std::string o;
+  o.reserve(s.size());
+  for (char c : s) {
+    switch (c) {
+      case '&':  o += "&amp;";  break;
+      case '<':  o += "&lt;";   break;
+      case '>':  o += "&gt;";   break;
+      case '"':  o += "&quot;"; break;
+      case '\'': o += "&#39;";  break;
+      default:   o += c;        break;
+    }
+  }
+  return o;
+}
+
+std::string captiveLandingHtml(const std::string& apSsid, const std::string& openUrl,
+                               const std::string& apAddr) {
+  const std::string name = htmlEscape(apSsid.empty() ? std::string("the setup network")
+                                                     : asciiOnly(apSsid));
+  const std::string open = htmlEscape(openUrl.empty() ? std::string("/") : openUrl);
+  const std::string addr = htmlEscape(apAddr.empty() ? std::string("192.168.4.1")
+                                                     : asciiOnly(apAddr));
+  // Static, JavaScript-free page: a captive-network mini-browser often cannot run the
+  // full setup app, so this always renders and always states the next step. Inline
+  // style only. Sentence case, US spelling, no em dash (user-facing copy).
+  return
+      "<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
+      "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+      "<title>Nimbus setup</title></head>"
+      "<body style=\"font-family:system-ui,sans-serif;max-width:24rem;margin:2rem auto;"
+      "padding:0 1rem;line-height:1.5\">"
+      "<h1 style=\"font-size:1.3rem\">Nimbus setup</h1>"
+      "<p>You are connected to " + name + ".</p>"
+      "<p><a href=\"" + open + "\" style=\"display:inline-block;padding:.7rem 1.2rem;"
+      "background:#0b7;color:#fff;border-radius:.4rem;text-decoration:none\">Open setup</a></p>"
+      "<p style=\"color:#555\">If that button does nothing, open "
+      "<b>http://" + addr + "</b> in your browser.</p>"
+      "</body></html>";
+}
+
 std::string wifiRowLabel(const LinkView& v, size_t maxChars) {
   std::string s;
   if (v.apHoldSecLeft > 0) {

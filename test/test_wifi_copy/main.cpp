@@ -1,5 +1,7 @@
 #include <unity.h>
 
+#include <cstdio>
+
 #include <string>
 
 #include "nimbus/wifi/copy.h"
@@ -318,6 +320,92 @@ static void test_scan_rows_empty_scan_is_empty_list() {
   TEST_ASSERT_EQUAL_INT(0, (int)buildScanRows({}, {}).size());
 }
 
+// ---- first-run setup instructions (CUM-259 / CUM-260) -----------------------
+// printableAscii() (above) doubles as the em-dash guard: U+2014's UTF-8 bytes are
+// all >= 0x80, so any em dash in user copy fails the ASCII check. setupSteps is
+// multi-line on purpose (the panel renderer breaks on '\n'), so it is checked with
+// a newline-tolerant variant that still catches any non-ASCII byte (em dash included).
+static bool asciiAllowNewline(const std::string& s) {
+  for (char c : s)
+    if (c != '\n' && (c < 0x20 || c >= 0x7F)) return false;
+  return true;
+}
+
+// The SetupInfo screen must LEAD WITH THE SEQUENCE, not just the facts: the owner who
+// joined the hotspot was left with no idea what to do next. Steps 1 and 2, the join
+// method, and the exact address must all be present, and it must be device-safe ASCII.
+static void test_setup_steps_lead_with_the_sequence() {
+  const std::string s =
+      nimbus::wifi::setupSteps("Nimbus-4-setup", "http://192.168.4.1");
+  TEST_ASSERT_TRUE(has(s, "1. Join"));
+  TEST_ASSERT_TRUE(has(s, "Nimbus-4-setup"));
+  TEST_ASSERT_TRUE(has(s, "scan"));                 // names the join method (the QR)
+  TEST_ASSERT_TRUE(has(s, "2. Open"));
+  TEST_ASSERT_TRUE(has(s, "http://192.168.4.1"));   // the next step - the missing piece
+  TEST_ASSERT_TRUE(asciiAllowNewline(s));
+  // An empty address must still name the AP default, never print an empty step.
+  TEST_ASSERT_TRUE(has(nimbus::wifi::setupSteps("", ""), "192.168.4.1"));
+}
+
+static void test_setup_fallback_names_the_manual_address() {
+  const std::string s = nimbus::wifi::setupFallbackLine("http://192.168.4.1");
+  TEST_ASSERT_TRUE(has(s, "If nothing opens"));
+  TEST_ASSERT_TRUE(has(s, "http://192.168.4.1"));
+  TEST_ASSERT_TRUE(printableAscii(s));
+}
+
+// The class rule for CUM-260 leg 1: the OS captive-detection probe paths the device
+// must answer with the portal. A 404 (or the OS's expected success response) on any
+// of these tells the OS there is NO portal and nothing pops. So the table over the
+// KNOWN probes must all classify as captive; a genuine app path must not; and the
+// match ignores case and any query string. A new OS probe left out of the table is a
+// silent miss - this iterates the whole set so adding one here is deliberate.
+static void test_captive_probe_table_covers_every_known_os() {
+  const char* probes[] = {
+      "/hotspot-detect.html",        // iOS / macOS
+      "/library/test/success.html",  // iOS / macOS (older)
+      "/generate_204",               // Android / ChromeOS
+      "/gen_204",                    // Android (short)
+      "/ncsi.txt",                   // Windows NCSI
+      "/connecttest.txt",            // Windows 10+
+      "/canonical.html",             // Firefox
+      "/success.txt",                // Firefox / NetworkManager
+      "/check_network_status.txt",   // NetworkManager
+      "/kindle-wifi/wifistub.html",  // Kindle
+  };
+  for (const char* p : probes) {
+    char msg[96];
+    std::snprintf(msg, sizeof msg, "probe %s must be served the captive page", p);
+    TEST_ASSERT_TRUE_MESSAGE(nimbus::wifi::isCaptiveProbePath(p), msg);
+  }
+  // Case-insensitive and query-tolerant (an OS may append cache-busters).
+  TEST_ASSERT_TRUE(nimbus::wifi::isCaptiveProbePath("/Generate_204"));
+  TEST_ASSERT_TRUE(nimbus::wifi::isCaptiveProbePath("/generate_204?t=123"));
+  // A real application path is NOT a probe - it must reach its own handler.
+  TEST_ASSERT_FALSE(nimbus::wifi::isCaptiveProbePath("/api/state"));
+  TEST_ASSERT_FALSE(nimbus::wifi::isCaptiveProbePath("/"));
+}
+
+// The captive landing page must always state the next step (a mini-browser cannot run
+// the setup app), name the manual address, carry the authenticated link, and never
+// accidentally emit Apple's "Success" page (which would tell iOS there is NO portal).
+static void test_captive_landing_states_next_step() {
+  const std::string html =
+      nimbus::wifi::captiveLandingHtml("Nimbus-setup", "/?t=abcd", "192.168.4.1");
+  TEST_ASSERT_TRUE(has(html, "Nimbus-setup"));
+  TEST_ASSERT_TRUE(has(html, "192.168.4.1"));       // the manual fallback address
+  TEST_ASSERT_TRUE(has(html, "href=\"/?t=abcd\""));  // the way in, authenticated
+  TEST_ASSERT_TRUE(printableAscii(html));
+  TEST_ASSERT_FALSE(has(html, "<TITLE>Success</TITLE>"));  // never the Apple success page
+
+  // The AP SSID is the owner-set device name: it must be HTML-escaped, never able to
+  // inject a tag into the page served on the setup AP.
+  const std::string evil =
+      nimbus::wifi::captiveLandingHtml("Ni<script>x", "/?t=x", "192.168.4.1");
+  TEST_ASSERT_FALSE(has(evil, "<script>"));            // the injected tag never survives raw
+  TEST_ASSERT_TRUE(has(evil, "Ni&lt;script&gt;x"));    // it is escaped instead
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_row_label_is_complete_not_a_fragment);
@@ -344,5 +432,9 @@ int main() {
   RUN_TEST(test_scan_rows_dedup_never_downgrades_lock);
   RUN_TEST(test_scan_rows_mark_hidden_networks);
   RUN_TEST(test_scan_rows_empty_scan_is_empty_list);
+  RUN_TEST(test_setup_steps_lead_with_the_sequence);
+  RUN_TEST(test_setup_fallback_names_the_manual_address);
+  RUN_TEST(test_captive_probe_table_covers_every_known_os);
+  RUN_TEST(test_captive_landing_states_next_step);
   return UNITY_END();
 }

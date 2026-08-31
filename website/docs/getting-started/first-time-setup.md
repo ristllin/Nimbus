@@ -104,18 +104,19 @@ calls itself. A rename **applies on the next restart**.
 Skip this section in Notifier mode; there is no Nimbus Wi-Fi network in that
 mode.
 
-On your phone or laptop, join the Wi-Fi network shown on the panel:
+Two steps, in order - the same two the device screen shows:
 
-- **Network:** `Nimbus-setup` (or the name your panel shows)
-- **Password:** shown on the device screen (unique to your device) - or scan
-  the on-screen QR to join automatically
+1. **Join the setup network** shown on the panel:
+   - **Network:** `Nimbus-setup` (or the name your panel shows)
+   - **Password:** shown on the device screen (unique to your device) - or scan
+     the on-screen QR to join automatically
+2. **Open `http://192.168.4.1`.** A setup page usually opens on its own once you
+   join. **If nothing opens, visit `http://192.168.4.1`** in your browser.
 
-Once you join, a **captive page opens automatically** (if it doesn't, browse to
-the setup AP address **`http://192.168.4.1`**). Do not use `nimbus.local` for
-this first hop: it is a LAN name, and with multiple devices it may resolve to a
-different Nimbus.
+Do not use `nimbus.local` for this first hop: it is a LAN name, and with multiple
+devices it may resolve to a different Nimbus.
 
-The captive page opens setup **already signed in**. There is no access token or
+The setup page opens **already signed in**. There is no access token or
 sign-in code to copy during first-time setup.
 
 On that page, in the setup wizard's **Connect to Wi-Fi** step (or, on an

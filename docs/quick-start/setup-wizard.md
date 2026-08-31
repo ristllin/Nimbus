@@ -41,16 +41,19 @@ flashing:
 
 ## 2. Join the setup network
 
-On your phone or laptop, join the Wi-Fi network shown on the panel:
+Two steps, in order - the same two the device screen shows:
 
-- **Network:** `Nimbus-setup` (a second device numbers itself
-  `Nimbus-2-setup`, and so on)
-- **Password:** shown on the device screen (unique to your device) - or just scan the QR to join automatically
+1. **Join the setup network** shown on the panel:
+   - **Network:** `Nimbus-setup` (a second device numbers itself
+     `Nimbus-2-setup`, and so on)
+   - **Password:** shown on the device screen (unique to your device) - or just
+     scan the QR to join automatically
+2. **Open `http://192.168.4.1`.** A setup page usually opens on its own once you
+   join. **If nothing opens, visit `http://192.168.4.1`** in your browser.
 
-A **captive page opens automatically**; if it doesn't, browse to
-**`http://192.168.4.1`**. Don't use `nimbus.local` for this first hop - it is
-a LAN name and can resolve to a different Nimbus. The captive page opens the
-wizard **already signed in**; there is no token to copy.
+Don't use `nimbus.local` for this first hop - it is a LAN name and can resolve to
+a different Nimbus. The setup page opens the wizard **already signed in**; there is
+no token to copy.
 
 ## 3. Walk the wizard
 
