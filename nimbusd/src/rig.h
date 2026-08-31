@@ -217,6 +217,23 @@ class NimbusdRig {
 
   const Options& options() const { return opt_; }
 
+  // The model a head requests: an operator override (opt.models[h]) else the
+  // provider default. Wired into the provider deps as orchModel/subModel, so the
+  // engine's budget derivation reads through here for the resolved head. Public so
+  // the one-key path test can assert the router head resolves a model (CUM-288).
+  std::string modelFor(const std::string& h) const {
+    auto it = opt_.models.find(h);
+    if (it != opt_.models.end()) return it->second;
+    if (h == "openai")    return "gpt-5.5";
+    if (h == "anthropic") return "claude-sonnet-4-6";
+    if (h == "mistral")   return "mistral-large-latest";
+    // CUM-288: the Cumulo router head resolves to the router default model, not ""
+    // - an empty model made budgeting fall to the conservative default window and
+    // (with the fold path fixed) the fold request would carry no model at all.
+    if (h == kCumuloSlug) return std::string(kCumuloModel);
+    return std::string();
+  }
+
   orch::Role role() const {
     orch::Role r = orch::Role::Admin;
     orch::roleFromName(opt_.role, r);
@@ -431,15 +448,6 @@ class NimbusdRig {
     c.ttsEnabled = [] { return false; };
     c.deviceName = [this] { return opt_.devName; };
     return c;
-  }
-
-  std::string modelFor(const std::string& h) const {
-    auto it = opt_.models.find(h);
-    if (it != opt_.models.end()) return it->second;
-    if (h == "openai")    return "gpt-5.5";
-    if (h == "anthropic") return "claude-sonnet-4-6";
-    if (h == "mistral")   return "mistral-large-latest";
-    return std::string();
   }
 
   agent::providers::ProviderDeps providerDeps() {

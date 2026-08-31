@@ -221,6 +221,13 @@ static String defaultModelFor(const String& provider) {
   if (provider == "anthropic") return ANT_MODEL;
   if (provider == "mistral")   return MISTRAL_MODEL;
   if (provider == "custom")    return customModel();
+  // CUM-288: a router fallback head resolves to its default model, not "". An
+  // empty model let budgeting fall to the conservative default window on a
+  // router-only device (Cumulo or Z.ai); the resolved default lets the budget
+  // derive from the real window. Fixed for the whole router class, not just
+  // Cumulo, so a Z.ai-only device does not re-hit the same gap.
+  if (provider == "cumulo")    return CUMULO_MODEL;
+  if (provider == "zai")       return ZAI_MODEL;
   return "";
 }
 
