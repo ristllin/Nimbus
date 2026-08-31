@@ -6,11 +6,14 @@
 
 #include <atomic>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <thread>
 
+#include "chat_page.h"
 #include "engine_thread.h"
+#include "reply_buffer.h"
 
 // http_control - the daemon's LOCAL control surface, bound 127.0.0.1 ONLY.
 //
@@ -26,11 +29,22 @@
 // they never queue behind a turn; /mcp is dispatched onto the engine thread and
 // awaited.
 //
-//   GET  /healthz    liveness  (never gated - the kubelet probe)
-//   GET  /readyz     readiness (200 iff the engine thread is running)
-//   GET  /api/state  the state snapshot as JSON (gated)
-//   POST /api/message {"chat_id","text"} -> 202, enqueues a turn (gated)
-//   POST /mcp        JSON-RPC to the tool registry, run on the engine (gated)
+//   GET  /              the web chat page (UNGATED - static HTML, zero data)
+//   GET  /index.html    alias of "/"
+//   GET  /healthz       liveness  (never gated - the kubelet probe)
+//   GET  /readyz        readiness (200 iff the engine thread is running)
+//   GET  /api/state     the state snapshot as JSON (gated)
+//   GET  /api/replies?after=<seq>  last-N chat entries newer than <seq> (gated)
+//   POST /api/message   {"chat_id","text"} -> 202, enqueues a turn (gated)
+//   POST /mcp           JSON-RPC to the tool registry, run on the engine (gated)
+//
+// Auth decision (CUM-263): "/" and "/index.html" are served UNGATED. The page is
+// a static shell that carries no instance data - every byte of data it shows is
+// fetched from the gated /api/* routes, which stay gated exactly as before. The
+// relay sidecar injects the web token on every forwarded request, so ungating the
+// shell only affects first paint (it renders before the API answers), never data
+// exposure. The DATA routes (/api/replies, /api/message, /api/state, /mcp,
+// /backup) require the token as they always have.
 namespace nimbusd {
 
 class HttpControl {
@@ -38,9 +52,10 @@ class HttpControl {
   // `token` empty = no gate (dev). Non-empty = require Authorization: Bearer or
   // ?token= on every path except /healthz.
   HttpControl(EngineThread* eng, const std::string& bindAddr, int port,
-              std::string token, std::string dataDir = "/data")
+              std::string token, std::string dataDir = "/data",
+              ReplyBuffer* replies = nullptr)
       : eng_(eng), bindAddr_(bindAddr), port_(port), token_(std::move(token)),
-        dataDir_(std::move(dataDir)) {}
+        dataDir_(std::move(dataDir)), replies_(replies) {}
   ~HttpControl() { stop(); }
 
   // Bind + listen synchronously (so a caller/test knows the port is ready), then
@@ -121,20 +136,23 @@ class HttpControl {
     route(fd, method, path, head, body);
   }
 
-  // One route: method + path -> handler (fd, body). Gated iff !ungated.
+  // One route: method + path -> handler (fd, path, body). Gated iff !ungated.
   struct Route {
     const char* method;
     const char* path;
-    void (HttpControl::*fn)(int, const std::string&);
-    bool ungated;  // true = served without the token gate (health only)
+    void (HttpControl::*fn)(int, const std::string&, const std::string&);
+    bool ungated;  // true = served without the token gate (health + static page)
   };
 
   void route(int fd, const std::string& method, const std::string& path,
              const std::string& head, const std::string& body) {
     static const Route kRoutes[] = {
+        {"GET", "/", &HttpControl::handleIndex, true},
+        {"GET", "/index.html", &HttpControl::handleIndex, true},
         {"GET", "/healthz", &HttpControl::handleHealthz, true},
         {"GET", "/readyz", &HttpControl::handleReadyz, false},
         {"GET", "/api/state", &HttpControl::handleState, false},
+        {"GET", "/api/replies", &HttpControl::handleReplies, false},
         {"GET", "/backup", &HttpControl::handleBackup, false},
         {"POST", "/api/message", &HttpControl::handleMessage, false},
         {"POST", "/mcp", &HttpControl::handleMcp, false},
@@ -145,32 +163,58 @@ class HttpControl {
         respond(fd, 401, "application/json", R"({"error":"unauthorized"})");
         return;
       }
-      (this->*r.fn)(fd, body);
+      (this->*r.fn)(fd, path, body);
       return;
     }
     respond(fd, 404, "application/json", R"({"error":"not found"})");
   }
 
-  void handleHealthz(int fd, const std::string&) { respond(fd, 200, "text/plain", "ok"); }
+  void handleIndex(int fd, const std::string&, const std::string&) {
+    respond(fd, 200, "text/html; charset=utf-8", chatPageHtml());
+  }
 
-  void handleReadyz(int fd, const std::string&) {
+  void handleHealthz(int fd, const std::string&, const std::string&) { respond(fd, 200, "text/plain", "ok"); }
+
+  void handleReadyz(int fd, const std::string&, const std::string&) {
     const bool ready = eng_ && eng_->running();
     respond(fd, ready ? 200 : 503, "text/plain", ready ? "ready" : "not ready");
   }
 
-  void handleState(int fd, const std::string&) {
+  void handleState(int fd, const std::string&, const std::string&) {
     respond(fd, 200, "application/json", stateJson());
   }
 
-  void handleMessage(int fd, const std::string& body) {
+  // Read-only poll of the recent chat ring. `after` filters to entries with a
+  // higher sequence; the response also carries the live turn/provider state the
+  // page needs for its honest indicators. Never clears on read (multi-tab safe).
+  void handleReplies(int fd, const std::string& path, const std::string&) {
+    uint64_t after = queryU64(path, "after");
+    const StateSnapshot s = eng_ ? eng_->snapshot() : StateSnapshot{};
+    std::string arr = replies_ ? replies_->sinceJsonArray(after) : std::string("[]");
+    uint64_t last = replies_ ? replies_->lastSeq() : 0;
+    std::string j = "{";
+    j += "\"replies\":" + arr + ",";
+    j += "\"lastSeq\":" + std::to_string(last) + ",";
+    j += "\"turnInFlight\":" + std::string(s.turnInFlight ? "true" : "false") + ",";
+    j += "\"turnCount\":" + std::to_string(s.turnCount) + ",";
+    j += "\"providerConfigured\":" + std::string(s.providerConfigured ? "true" : "false");
+    j += "}";
+    respond(fd, 200, "application/json", j);
+  }
+
+  void handleMessage(int fd, const std::string&, const std::string& body) {
     const std::string chat = jsonField(body, "chat_id");
     const std::string text = jsonField(body, "text");
     if (text.empty()) { respond(fd, 400, "application/json", R"({"error":"missing text"})"); return; }
-    eng_->postMessage(chat.empty() ? "owner" : chat, text);
+    const std::string chatId = chat.empty() ? "owner" : chat;
+    // Record the owner's prompt synchronously so every polling tab renders it
+    // (the assistant reply is recorded later by the engine delivery hook).
+    if (replies_) replies_->push("user", text);
+    eng_->postMessage(chatId, text);
     respond(fd, 202, "application/json", R"({"queued":true})");
   }
 
-  void handleBackup(int fd, const std::string&) {
+  void handleBackup(int fd, const std::string&, const std::string&) {
     // Flush to a consistent on-disk state, then stream a tar of the mem tree.
     // nimbusd owns the write discipline, so only it can produce a consistent
     // archive (plan §3.4); a CronJob drives this to GCS nightly.
@@ -180,7 +224,7 @@ class HttpControl {
     respond(fd, 200, "application/x-tar", tar);
   }
 
-  void handleMcp(int fd, const std::string& body) {
+  void handleMcp(int fd, const std::string&, const std::string& body) {
     auto fut = eng_->dispatchMcp(body, nimbus::orch::principalForRole("owner", nimbus::orch::Role::Admin));
     if (fut.wait_for(std::chrono::seconds(30)) != std::future_status::ready) {
       respond(fd, 503, "application/json", R"({"error":"engine busy"})");
@@ -231,9 +275,29 @@ class HttpControl {
     j += "\"episodicMessages\":" + std::to_string(s.episodicMessages) + ",";
     j += "\"tokensIn\":" + std::to_string(s.sessionTokensIn) + ",";
     j += "\"tokensOut\":" + std::to_string(s.sessionTokensOut) + ",";
+    j += "\"providerConfigured\":" + std::string(s.providerConfigured ? "true" : "false") + ",";
     j += "\"uptimeSeconds\":" + std::to_string(up);
     j += "}";
     return j;
+  }
+
+  // Parse an unsigned integer query parameter (?key=<n>) from a request path.
+  // Returns 0 when absent or non-numeric.
+  static uint64_t queryU64(const std::string& path, const std::string& key) {
+    size_t qs = path.find('?');
+    if (qs == std::string::npos) return 0;
+    const std::string query = path.substr(qs + 1);
+    const std::string needle = key + "=";
+    size_t at = 0;
+    while (at < query.size()) {
+      size_t amp = query.find('&', at);
+      const std::string kv = query.substr(at, (amp == std::string::npos ? query.size() : amp) - at);
+      if (kv.rfind(needle, 0) == 0)
+        return (uint64_t)std::strtoull(kv.c_str() + needle.size(), nullptr, 10);
+      if (amp == std::string::npos) break;
+      at = amp + 1;
+    }
+    return 0;
   }
 
   // ---- tiny helpers ---------------------------------------------------------
@@ -328,6 +392,7 @@ class HttpControl {
   int port_;
   std::string token_;
   std::string dataDir_;
+  ReplyBuffer* replies_ = nullptr;
   int listenFd_ = -1;
   std::atomic<bool> running_{false};
   std::thread thread_;

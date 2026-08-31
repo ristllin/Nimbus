@@ -33,6 +33,7 @@
 #include "daemon_http.h"
 #include "engine_thread.h"
 #include "http_control.h"
+#include "reply_buffer.h"
 #include "rig.h"
 #include "telegram.h"
 
@@ -95,10 +96,22 @@ int runDaemon(nimbusd::Config& cfg) {
   nimbusd::EngineThread eng(&rig);
   eng.start();
 
+  // The reply ring that backs the web chat page (GET /api/replies). Every reply
+  // the engine produces is recorded here and, when a bot is configured, also
+  // forwarded to Telegram. The delivery hook is set once, before any turn runs,
+  // so no reply is lost; `sender` is filled in below if a bot token is present.
+  nimbusd::ReplyBuffer replies(/*cap=*/50);
+  nimbusd::TelegramChannel* sender = nullptr;
+  rig.setDeliver([&replies, &sender](const std::string& chat, const std::string& text) {
+    replies.push("assistant", text);
+    if (sender) { std::string e; sender->sendMessage(chat, text, e); }
+  });
+
   // Control surface (loopback), token-gated.
   const std::string webToken = cfg.get("NIMBUSD_WEB_TOKEN");
   nimbusd::HttpControl http(&eng, cfg.get("NIMBUSD_CONTROL_ADDR", "127.0.0.1"),
-                           cfg.getInt("NIMBUSD_CONTROL_PORT", 8787), webToken, opt.dataDir);
+                           cfg.getInt("NIMBUSD_CONTROL_PORT", 8787), webToken, opt.dataDir,
+                           &replies);
   const int port = http.start();
   if (port < 0) { logLine("FAILED to bind the control surface"); eng.stop(); return 1; }
   logLine("control surface on " + cfg.get("NIMBUSD_CONTROL_ADDR", "127.0.0.1") + ":" +
@@ -123,11 +136,8 @@ int runDaemon(nimbusd::Config& cfg) {
     if (tgPoll->getMe(user, err)) logLine("telegram: bot @" + user + " validated");
     else logLine("telegram: getMe failed (" + err + ") - poll loop will still retry");
 
-    nimbusd::TelegramChannel* sender = tgSend.get();
-    rig.setDeliver([sender](const std::string& chat, const std::string& text) {
-      std::string e;
-      sender->sendMessage(chat, text, e);  // best-effort; the reply is also recorded
-    });
+    // Route replies to this bot too (the delivery hook above forwards to it).
+    sender = tgSend.get();
 
     pollThread = std::thread([&] {
       logLine("telegram long-poll started");
