@@ -2,6 +2,7 @@
 
 #include "store.h"
 #include "../sys/config_nvs.h"   // nimbus::sys::deviceName - prompt identity
+#include "nimbus/orch/provider_slots.h"   // CUM-246: canonical registry + anySlotWhere fanout
 
 // HarnessConfig over agent::store:: (NVS). String<->std::string conversion
 // happens exactly here - the harness side is std::string throughout.
@@ -15,6 +16,11 @@ namespace agent {
 
 static std::string s(const String& v) { return std::string(v.c_str()); }
 
+// The single slug->stored-key router. Every "is this provider keyed?" answer below
+// derives from this one switch (CUM-246), so the keyed predicates can never drift
+// from the key that actually runs a turn. The per-provider store accessors live in
+// store.cpp (this lane does not own it); a generic store::key(slug) would let even
+// this switch fall away - see the DECISION on CUM-246.
 static String keyFor(const std::string& host) {
   if (host == "openai")    return store::openaiKey();
   if (host == "anthropic") return store::anthropicKey();
@@ -28,16 +34,15 @@ static String keyFor(const std::string& host) {
 HarnessConfig harnessConfigFromStore() {
   HarnessConfig c;
   auto& p = c.provider;
+  // Keyed-ness derives from the ONE slug->store router (keyFor), so it can never drift
+  // from key(): for a registry slot, keyed == a stored key (each has*Key() is exactly
+  // its keyField().length() > 0). CUM-242: the router heads (cumulo/zai) are first-class
+  // now, so head resolution + failover see their key - the registry carries them, so no
+  // per-head line here. "custom" is the free-form endpoint (not a registry slot) and its
+  // presence is the base URL, not the key, so it keeps its own accessor.
   p.hasKey = [](const std::string& h) {
-    if (h == "openai")    return store::hasOpenaiKey();
-    if (h == "anthropic") return store::hasAnthropicKey();
-    if (h == "mistral")   return store::hasMistralKey();
-    if (h == "custom")    return store::hasCustom();
-    // CUM-242: the router providers are first-class heads now (registered in
-    // orchestrator.cpp), so head resolution + failover must see their key.
-    if (h == "cumulo")    return store::hasCumuloKey();
-    if (h == "zai")       return store::hasZaiKey();
-    return false;
+    if (h == "custom") return store::hasCustom();
+    return keyFor(h).length() > 0;
   };
   p.key = [](const std::string& h) { return s(keyFor(h)); };
   // CUM-242 / CUM-201: with no BYOK head keyed, the verified router key is the
@@ -49,13 +54,15 @@ HarnessConfig harnessConfigFromStore() {
     if (store::hasZaiKey())    return std::string("zai");
     return std::string();
   };
-  // CUM-211: device-truth "is any provider configured", INCLUDING the router
-  // providers (Cumulo, Z.ai) that hasKey() above does not report. Drives only the
-  // honest "no provider set up" reply, so a Cumulo-only device is never wrongly
-  // told it has no provider.
+  // CUM-211 / CUM-246: device-truth "is any provider configured", enumerated over the
+  // canonical registry (anySlotWhere) so a new slot counts automatically - the b2f4930
+  // miss (cumulo/zai absent from a hand-listed OR) cannot recur. Drives only the honest
+  // "no provider set up" reply, so a Cumulo-only device is never wrongly told it has no
+  // provider. Plus the free-form custom endpoint, which is not a registry slot.
   p.anyKeyed = [] {
-    return store::hasOpenaiKey() || store::hasAnthropicKey() || store::hasMistralKey() ||
-           store::hasCustom() || store::hasCumuloKey() || store::hasZaiKey();
+    return nimbus::orch::anySlotWhere(
+               [](const char* slug) { return keyFor(slug).length() > 0; }) ||
+           store::hasCustom();
   };
   p.orchHost = [] { return s(store::orchHost()); };
   p.providerPriority = [] { return s(store::providerPriority()); };

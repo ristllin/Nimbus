@@ -59,5 +59,22 @@ inline const ProviderSlot* findProviderSlot(const char* slug) {
 // custom OR it in explicitly.
 inline bool isProviderSlug(const char* slug) { return findProviderSlot(slug) != nullptr; }
 
+// Provider fanout over the registry (CUM-246). Every device surface that asks "is
+// any first-class provider keyed / verified?" walks the registry through this, never
+// a hand-listed provider array - a copied list was the recurring CUM-242 drift
+// (`anyKeyed` missed cumulo/zai; the onboarding-finish gate missed the recommended
+// cumulo, so the flagship path could never complete setup). `pred(slug)` is applied
+// to each slot in registry order and the walk short-circuits on the first true.
+// Host-tested in test/test_provider_slots with a fake store, so a slot added to
+// kProviderSlots is covered with no new code and a fanout that stops enumerating the
+// registry FAILS. Callers that also accept "custom" OR it in explicitly (it is a
+// free-form endpoint, not a registry slot).
+template <typename SlotPred>
+inline bool anySlotWhere(SlotPred pred) {
+  for (size_t i = 0; i < kProviderSlotCount; i++)
+    if (pred(kProviderSlots[i].slug)) return true;
+  return false;
+}
+
 }  // namespace orch
 }  // namespace nimbus
