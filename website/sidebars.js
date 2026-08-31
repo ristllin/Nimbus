@@ -19,6 +19,7 @@ const sidebars = {
         'quick-start/what-you-need',
         'quick-start/computer-setup',
         'quick-start/flash',
+        'quick-start/provider-keys',
         'quick-start/setup-wizard',
         'quick-start/first-conversation',
         'quick-start/notifier-quick-start',
