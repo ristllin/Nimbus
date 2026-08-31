@@ -71,6 +71,16 @@ FailMode failModeFor(ModGate g);
 // point is that the fail-open/fail-closed contract lives in one testable place.
 ModAction decide(ModGate g, ClassifierVerdict v);
 
+// May an outbound reply skip the OutboundReply screen? ONLY genuine device-authored
+// system copy is exempt, and provenance is signalled OUT-OF-BAND by the emitting
+// code path (`systemProvenance`), NEVER by anything in the reply text. A guest or a
+// model steers the text but not this flag, so no message content - not even one that
+// reproduces the device name or the full self-tag - can buy the exemption. The reply
+// text is deliberately NOT a parameter here: content cannot influence the decision by
+// construction. (CUM-275: the old text.startsWith(deviceName) exemption was satisfied
+// by model free-text, letting a guest prompt-inject past the screen.)
+bool outboundExempt(bool systemProvenance);
+
 // --- provider selection -----------------------------------------------------
 enum class ModProvider : uint8_t { None = 0, Cumulo, Mistral };
 const char* modProviderName(ModProvider p);

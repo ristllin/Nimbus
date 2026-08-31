@@ -62,6 +62,13 @@ ModAction decide(ModGate g, ClassifierVerdict v) {
   return ModAction::Allow;
 }
 
+bool outboundExempt(bool systemProvenance) {
+  // Provenance-only, fail-closed: the exemption is the flag and nothing else. There
+  // is no text argument on purpose - a reply's bytes can never satisfy this, so a
+  // guest-steered model reply (systemProvenance == false) is always screened.
+  return systemProvenance;
+}
+
 ModProvider pickProvider(bool hasCumuloKey, bool hasMistralKey) {
   if (hasCumuloKey) return ModProvider::Cumulo;
   if (hasMistralKey) return ModProvider::Mistral;

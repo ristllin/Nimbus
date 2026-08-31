@@ -325,6 +325,14 @@ Step planNextStep(const FlowState& s) {
   return Step::Exchange;
 }
 
+bool launchAuthorized(const std::string& expectedKey, const std::string& providedKey) {
+  // Fail-closed on both sides: no key published (no flow parked at consent) or no key
+  // presented means never authorized, so an unauthenticated caller of /oauth/go can
+  // never be handed the authorize URL - and thus never reads `state`.
+  if (expectedKey.empty() || providedKey.empty()) return false;
+  return expectedKey == providedKey;
+}
+
 }  // namespace oauth
 }  // namespace mcp
 }  // namespace orch

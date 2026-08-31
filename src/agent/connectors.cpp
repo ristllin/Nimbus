@@ -1068,6 +1068,11 @@ struct Flow {
   String   scope;
   String   clientId, clientSecret;
   String   verifier, challenge, state, userCode;
+  // Per-flow launch key (CUM-274): minted at the authenticated flow start, revealed
+  // ONLY to the owner (the auth-gated status verify URL + web-UI QR), and REQUIRED on
+  // the otherwise-ungated /oauth/go redirect. Without it a LAN peer cannot obtain the
+  // state-bearing authorize URL, so cannot leak `state` and bind their own account.
+  String   launchKey;
   String   redirectUri, authorizeUrl, code;
   String   error;
   uint32_t nextStepMs = 0;
@@ -1089,6 +1094,11 @@ char s_snapPhase[16] = {0}, s_snapConn[64] = {0}, s_snapUserCode[16] = {0},
 // with wrong-state spam. Empty unless a flow is awaiting consent. Not a secret and
 // never returned by statusJson.
 char s_snapState[64] = {0};
+// The per-flow launch key required to read the authorize URL via /oauth/go (CUM-274).
+// Published only while awaiting consent (empty otherwise). It reaches the owner only
+// through the auth-gated verify URL / web QR, never through an unauthenticated path,
+// and is compared by authorizeUrl() before any state-bearing URL is returned.
+char s_snapLaunchKey[64] = {0};
 
 void setBuf(char* dst, size_t cap, const char* src) {
   size_t n = 0;
@@ -1115,6 +1125,9 @@ const char* phaseName(Phase p) {
 void publish() {
   String verify = s_flow.redirectUri;  // the short device URL the QR/code points at
   if (verify.endsWith("/oauth/cb")) verify = verify.substring(0, verify.length() - 2) + "go";
+  // Carry the per-flow launch key on the verify URL (CUM-274): the owner's QR / link
+  // authorizes /oauth/go, while a keyless LAN request to it is turned away.
+  if (s_flow.launchKey.length()) verify += "?k=" + s_flow.launchKey;
   portENTER_CRITICAL(&s_mux);
   s_snapActive = s_flow.active;
   setBuf(s_snapPhase, sizeof(s_snapPhase), phaseName(s_flow.phase));
@@ -1127,6 +1140,8 @@ void publish() {
          (s_flow.phase == Phase::ShowConsent) ? s_flow.authorizeUrl.c_str() : "");
   setBuf(s_snapState, sizeof(s_snapState),
          (s_flow.phase == Phase::ShowConsent) ? s_flow.state.c_str() : "");
+  setBuf(s_snapLaunchKey, sizeof(s_snapLaunchKey),
+         (s_flow.phase == Phase::ShowConsent) ? s_flow.launchKey.c_str() : "");
   portEXIT_CRITICAL(&s_mux);
 }
 
@@ -1162,6 +1177,7 @@ void startFlow(const char* name, const char* redirectBase) {
   s_flow.verifier = pk.verifier.c_str();
   s_flow.challenge = pk.challenge.c_str();
   s_flow.state = randHex(16);
+  s_flow.launchKey = randHex(16);   // 128-bit /oauth/go capability (CUM-274)
   s_flow.userCode = randHex(3);  // 6 hex chars, cosmetic
   s_flow.userCode.toUpperCase();
   s_flow.active = true;
@@ -1346,11 +1362,16 @@ void cancel() {
   portEXIT_CRITICAL(&s_mux);
 }
 
-String authorizeUrl() {
-  char buf[1024];
+String authorizeUrl(const String& launchKey) {
+  char buf[1024], key[64];
   portENTER_CRITICAL(&s_mux);
   setBuf(buf, sizeof(buf), s_snapAuthUrl);
+  setBuf(key, sizeof(key), s_snapLaunchKey);   // copy out; compare off the critical section
   portEXIT_CRITICAL(&s_mux);
+  // CUM-274: only hand back the state-bearing authorize URL to a caller that presents
+  // the owner-only launch key. A keyless / wrong-key request (any unauthenticated LAN
+  // peer) gets "" and is redirected to the home page, so `state` never leaks.
+  if (!oa::launchAuthorized(std::string(key), std::string(launchKey.c_str()))) return String();
   return String(buf);
 }
 

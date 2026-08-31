@@ -249,6 +249,45 @@ void test_plan_next_step_table() {
     TEST_ASSERT_EQUAL((int)r.want, (int)o::planNextStep(r.s));
 }
 
+// ---- launch-key gate (CUM-274) -----------------------------------------------
+
+// The /oauth/go capability check: the only thing that lets a caller read the
+// state-bearing authorize URL is presenting the exact per-flow launch key. This is
+// the linchpin of the account-fixation fix, so it is tested as a table over the
+// classes of caller, not one happy path. The rule: authorized IFF a key is actually
+// published (a flow is parked at consent) AND the caller presents that same key.
+void test_launch_key_gate_table() {
+  const std::string kKey = "0f1e2d3c4b5a69788796a5b4c3d2e1f0";  // a real 128-bit hex key
+  struct Row { std::string expected; std::string provided; bool want; const char* why; };
+  const Row rows[] = {
+      // No flow parked at consent (expected empty): nothing is ever authorized, so an
+      // unauthenticated caller cannot even reach a live state.
+      {"", "", false, "no flow, no key"},
+      {"", kKey, false, "no flow, stray key presented"},
+      {"", "anything", false, "no flow, guessed key"},
+      // Flow parked, but the caller (LAN peer) presents nothing or the wrong key.
+      {kKey, "", false, "owner key set, keyless caller"},
+      {kKey, "wrong", false, "wrong key"},
+      {kKey, kKey.substr(0, kKey.size() - 1), false, "truncated key"},
+      {kKey, kKey + "0", false, "over-long key"},
+      {kKey, "0F1E2D3C4B5A69788796A5B4C3D2E1F0", false, "case-different key"},
+      // Only the exact key authorizes - the owner, who alone was shown it.
+      {kKey, kKey, true, "exact owner key"},
+  };
+  for (const auto& r : rows) {
+    const bool got = o::launchAuthorized(r.expected, r.provided);
+    TEST_ASSERT_EQUAL_MESSAGE(r.want, got, r.why);
+  }
+}
+
+// A guessing LAN peer with no key cannot flip the gate for ANY published key value:
+// the empty presented key is refused whatever the (secret) expected key is.
+void test_launch_key_keyless_never_authorized() {
+  const std::string keys[] = {"a", "abcdef", "0f1e2d3c4b5a69788796a5b4c3d2e1f0", "ZZZ"};
+  for (const auto& k : keys)
+    TEST_ASSERT_FALSE(o::launchAuthorized(k, ""));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_pkce_all_zero_bytes);
@@ -270,5 +309,7 @@ int main(int, char**) {
   RUN_TEST(test_build_refresh_form);
   RUN_TEST(test_parse_token_ok_and_error);
   RUN_TEST(test_plan_next_step_table);
+  RUN_TEST(test_launch_key_gate_table);
+  RUN_TEST(test_launch_key_keyless_never_authorized);
   return UNITY_END();
 }
