@@ -4119,6 +4119,31 @@ void loop() {
       if (g_orchMode) agent::orchestrator::noteRingBackstopFired();   // CUM-11/CUM-221 metric
     }
     if ((cleared || doneCleared) && !g_menu.isOpen() && !g_voiceWaiting) refreshRing();
+    // CUM-243: the status-agnostic orphan reaper - collapses any ring slot whose
+    // owning job the engine no longer tracks (key not in the live session set and
+    // not the head), which closes the stuck-Idle / dropped-job gap the per-status
+    // backstops above cannot see. Live-key snapshot is built OUTSIDE the config
+    // lock: sessionInfosSnapshot() takes its own mutex and must not nest under
+    // ConfigLockGuard.
+    if (g_orchMode) {
+      auto sessions = agent::orchestrator::sessionInfosSnapshot();
+      std::vector<uint32_t> liveKeys;
+      liveKeys.reserve(sessions.size());
+      for (const auto& si : sessions)
+        liveKeys.push_back(nimbus::harness::keyFromTag(si.id.c_str()));
+      bool orphanCleared;
+      {
+        net::ConfigLockGuard lk;
+        orphanCleared = g_router.forceExpireOrphanArcs(
+            liveKeys.data(), (int)liveKeys.size(),
+            agent::orchestrator::headJobKey(), now, cap);
+      }
+      if (orphanCleared) {
+        agent::alog("ring: orphan reaper collapsed an arc for a job the engine no longer tracks");
+        agent::orchestrator::noteRingBackstopFired();   // CUM-243 metric
+        if (!g_menu.isOpen() && !g_voiceWaiting) refreshRing();
+      }
+    }
     // Head-turn reaper: the blue "processing" Running arc is NOT an attention status,
     // so forceExpireAttention above skips it. A Telegram turn whose task died leaves it
     // pulsing forever (owner bug). Free it here on the main loop.
