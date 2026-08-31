@@ -11,9 +11,11 @@
 #include <string>
 #include <thread>
 
-#include "chat_page.h"
 #include "engine_thread.h"
 #include "reply_buffer.h"
+#include "rig.h"
+#include "web_api.h"
+#include "web_ui.h"
 
 // http_control - the daemon's LOCAL control surface, bound 127.0.0.1 ONLY.
 //
@@ -29,8 +31,9 @@
 // they never queue behind a turn; /mcp is dispatched onto the engine thread and
 // awaited.
 //
-//   GET  /              the web chat page (UNGATED - static HTML, zero data)
+//   GET  /              the assembled Nimbus web app (UNGATED - static shell)
 //   GET  /index.html    alias of "/"
+//   GET  /logo.svg      the brand mark (UNGATED - a logo is not sensitive)
 //   GET  /healthz       liveness  (never gated - the kubelet probe)
 //   GET  /readyz        readiness (200 iff the engine thread is running)
 //   GET  /api/state     the state snapshot as JSON (gated)
@@ -38,13 +41,15 @@
 //   POST /api/message   {"chat_id","text"} -> 202, enqueues a turn (gated)
 //   POST /mcp           JSON-RPC to the tool registry, run on the engine (gated)
 //
-// Auth decision (CUM-263): "/" and "/index.html" are served UNGATED. The page is
-// a static shell that carries no instance data - every byte of data it shows is
-// fetched from the gated /api/* routes, which stay gated exactly as before. The
-// relay sidecar injects the web token on every forwarded request, so ungating the
-// shell only affects first paint (it renders before the API answers), never data
-// exposure. The DATA routes (/api/replies, /api/message, /api/state, /mcp,
-// /backup) require the token as they always have.
+// Auth decision (CUM-263 / CUM-265): "/", "/index.html" and "/logo.svg" are
+// served UNGATED. The page is a static shell that carries no instance data -
+// every byte of data it shows is fetched from the gated /api/* routes, which stay
+// gated exactly as before. The relay sidecar injects the web token on every
+// forwarded request, so ungating the shell only affects first paint (it renders
+// before the API answers), never data exposure. The served shell also seeds the
+// browser with this instance's web token (web_ui.h) so the app's client-side
+// sign-in gate is satisfied inside the tunnel without a second sign-in; the DATA
+// routes still require the token (X-Nimbus-Token header, ?t=, or Bearer).
 namespace nimbusd {
 
 class HttpControl {
@@ -53,9 +58,12 @@ class HttpControl {
   // ?token= on every path except /healthz.
   HttpControl(EngineThread* eng, const std::string& bindAddr, int port,
               std::string token, std::string dataDir = "/data",
-              ReplyBuffer* replies = nullptr)
+              ReplyBuffer* replies = nullptr, NimbusdRig* rig = nullptr)
       : eng_(eng), bindAddr_(bindAddr), port_(port), token_(std::move(token)),
-        dataDir_(std::move(dataDir)), replies_(replies) {}
+        dataDir_(std::move(dataDir)), replies_(replies),
+        page_(buildWebUiPage(token_)), api_(rig, eng, replies) {
+    api_.setWebToken(token_);
+  }
   ~HttpControl() { stop(); }
 
   // Bind + listen synchronously (so a caller/test knows the port is ready), then
@@ -149,9 +157,9 @@ class HttpControl {
     static const Route kRoutes[] = {
         {"GET", "/", &HttpControl::handleIndex, true},
         {"GET", "/index.html", &HttpControl::handleIndex, true},
+        {"GET", "/logo.svg", &HttpControl::handleLogo, true},
         {"GET", "/healthz", &HttpControl::handleHealthz, true},
         {"GET", "/readyz", &HttpControl::handleReadyz, false},
-        {"GET", "/api/state", &HttpControl::handleState, false},
         {"GET", "/api/replies", &HttpControl::handleReplies, false},
         {"GET", "/backup", &HttpControl::handleBackup, false},
         {"POST", "/api/message", &HttpControl::handleMessage, false},
@@ -166,11 +174,30 @@ class HttpControl {
       (this->*r.fn)(fd, path, body);
       return;
     }
+    // The web API surface (all token-gated data, except the pre-auth sign-in code
+    // exchange). Handled by WebApi with honest Virtual Nimbus semantics.
+    const std::string apiBase = path.substr(0, path.find('?'));
+    if (apiBase.rfind("/api/", 0) == 0) {
+      const bool preAuth = apiBase == "/api/signin/exchange";
+      if (!preAuth && !authorized(path, head)) {
+        respond(fd, 401, "application/json", R"({"error":"unauthorized"})");
+        return;
+      }
+      ApiResp r;
+      if (api_.handle(method, path, body, r)) {
+        respond(fd, r.status, r.ctype.c_str(), r.body);
+        return;
+      }
+    }
     respond(fd, 404, "application/json", R"({"error":"not found"})");
   }
 
   void handleIndex(int fd, const std::string&, const std::string&) {
-    respond(fd, 200, "text/html; charset=utf-8", kChatPageHtml);
+    respond(fd, 200, "text/html; charset=utf-8", page_);
+  }
+
+  void handleLogo(int fd, const std::string&, const std::string&) {
+    respond(fd, 200, "image/svg+xml", kLogoSvg);
   }
 
   void handleHealthz(int fd, const std::string&, const std::string&) { respond(fd, 200, "text/plain", "ok"); }
@@ -178,10 +205,6 @@ class HttpControl {
   void handleReadyz(int fd, const std::string&, const std::string&) {
     const bool ready = eng_ && eng_->running();
     respond(fd, ready ? 200 : 503, "text/plain", ready ? "ready" : "not ready");
-  }
-
-  void handleState(int fd, const std::string&, const std::string&) {
-    respond(fd, 200, "application/json", stateJson());
   }
 
   // Read-only poll of the recent chat ring. `after` filters to entries with a
@@ -245,6 +268,10 @@ class HttpControl {
       val = trim(val);
       if (val == "Bearer " + token_) return true;
     }
+    // X-Nimbus-Token: <token> - the header the device web app's fetch shim sends
+    // on every request (CUM-45). Kept compatible so the same page authenticates
+    // against a hosted instance exactly as against the device. Exact value match.
+    if (headerValueIs(head, "x-nimbus-token:", token_)) return true;
     // ?token=<token> as an exact query parameter value (the sidecar may inject
     // either; both are the same secret). Match "token=<tok>" bounded by ? & or end.
     const std::string needle = "token=" + token_;
@@ -261,24 +288,6 @@ class HttpControl {
       }
     }
     return false;
-  }
-
-  std::string stateJson() const {
-    StateSnapshot s = eng_->snapshot();
-    const uint64_t up = (uint64_t)time(nullptr) - s.startedEpoch;
-    std::string j = "{";
-    j += "\"name\":" + quote(s.devName) + ",";
-    j += "\"running\":" + std::string(s.running ? "true" : "false") + ",";
-    j += "\"turnInFlight\":" + std::string(s.turnInFlight ? "true" : "false") + ",";
-    j += "\"turnCount\":" + std::to_string(s.turnCount) + ",";
-    j += "\"vectors\":" + std::to_string(s.vectors) + ",";
-    j += "\"episodicMessages\":" + std::to_string(s.episodicMessages) + ",";
-    j += "\"tokensIn\":" + std::to_string(s.sessionTokensIn) + ",";
-    j += "\"tokensOut\":" + std::to_string(s.sessionTokensOut) + ",";
-    j += "\"providerConfigured\":" + std::string(s.providerConfigured ? "true" : "false") + ",";
-    j += "\"uptimeSeconds\":" + std::to_string(up);
-    j += "}";
-    return j;
   }
 
   // Parse an unsigned integer query parameter (?key=<n>) from a request path.
@@ -305,6 +314,17 @@ class HttpControl {
     const std::string base = path.substr(0, path.find('?'));
     return base == p;
   }
+  // True iff the request carries header `headerLower` (case-insensitive) whose
+  // trimmed value equals `want` exactly.
+  static bool headerValueIs(const std::string& head, const std::string& headerLower,
+                            const std::string& want) {
+    size_t p = ciFind(head, headerLower);
+    if (p == std::string::npos) return false;
+    size_t vs = p + headerLower.size();
+    size_t eol = head.find("\r\n", vs);
+    std::string val = head.substr(vs, (eol == std::string::npos ? head.size() : eol) - vs);
+    return trim(val) == want;
+  }
   static size_t ciFind(const std::string& hay, const std::string& needleLower) {
     std::string low = hay;
     for (auto& c : low) c = (char)tolower((unsigned char)c);
@@ -315,11 +335,6 @@ class HttpControl {
     if (b == std::string::npos) return std::string();
     size_t e = s.find_last_not_of(" \t\r\n");
     return s.substr(b, e - b + 1);
-  }
-  static std::string quote(const std::string& s) {
-    std::string o = "\"";
-    for (char ch : s) { if (ch == '"' || ch == '\\') o += '\\'; o += ch; }
-    return o + "\"";
   }
   // Minimal "\"key\":\"value\"" or "\"key\":value" extractor for tiny bodies.
   static std::string jsonField(const std::string& body, const std::string& key) {
@@ -393,6 +408,8 @@ class HttpControl {
   std::string token_;
   std::string dataDir_;
   ReplyBuffer* replies_ = nullptr;
+  std::string page_;  // the assembled web app, token seeded, built once
+  WebApi api_;        // the /api/* surface (honest Virtual Nimbus semantics)
   int listenFd_ = -1;
   std::atomic<bool> running_{false};
   std::thread thread_;

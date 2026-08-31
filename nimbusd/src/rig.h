@@ -143,7 +143,18 @@ class NimbusdRig {
   agent::TurnEngine& engine() { return *eng_; }
   orch::ToolRegistry& registry() { return reg_; }
   orch::VectorMemory& vectors() { return vec_; }
+  orch::Scratchpad& scratchpad() { return scratch_; }
+  orch::MemConfig& memConfig() { return memCfg_; }
   orch::EpisodicStore& episodic() { return *epi_; }
+  const Config& cfg() const { return cfg_; }
+  // The instance's honest memory picture (the container's free/cap heap), for the
+  // web app's "Free RAM" tile - a real hosted-process figure, never faked HW SRAM.
+  uint32_t freeHeapBytes() const { return mem_.freeBytes(); }
+  uint32_t heapCapBytes() const { return mem_.capBytes(); }
+  bool embeddingsOn() const { return opt_.embeddings; }
+  // Persist the whole-file stores after a web mutation (config/vector edit). Same
+  // atomic writer flush() uses; safe to call on the engine thread.
+  void persist() { flush(); }
   DaemonHttpTransport& http() { return http_; }
   PosixFiles& files() { return *files_; }
   const std::vector<TurnRecord>& turns() const { return turns_; }

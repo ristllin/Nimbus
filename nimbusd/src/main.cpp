@@ -124,7 +124,7 @@ int runDaemon(nimbusd::Config& cfg) {
   const std::string webToken = cfg.get("NIMBUSD_WEB_TOKEN");
   nimbusd::HttpControl http(&eng, cfg.get("NIMBUSD_CONTROL_ADDR", "127.0.0.1"),
                            cfg.getInt("NIMBUSD_CONTROL_PORT", 8787), webToken, opt.dataDir,
-                           &replies);
+                           &replies, &rig);
   const int port = http.start();
   if (port < 0) { logLine("FAILED to bind the control surface"); eng.stop(); return 1; }
   logLine("control surface on " + cfg.get("NIMBUSD_CONTROL_ADDR", "127.0.0.1") + ":" +

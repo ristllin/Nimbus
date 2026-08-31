@@ -49,6 +49,10 @@ class CgroupMemory {
     cap_ = cap;
   }
 
+  // The reported memory cap in bytes (the "total" the web tile shows against the
+  // free figure). Honest for a hosted instance: the container's memory ceiling.
+  uint32_t capBytes() const { return (uint32_t)cap_; }
+
   // Reported "free heap" in bytes for the engine gates. Never throws; on any
   // read failure or an unlimited cgroup it returns the cap (no gating).
   uint32_t freeBytes() const {

@@ -67,13 +67,18 @@ static void checkWebChat(ndtest::Ctx& c, DaemonHttpTransport& client, int port,
   int status = 0;
   std::string body;
   c.ok(httpGet(client, port, "/", "", status, body) && status == 200,
-       "GET / -> 200 without a token (static page is ungated)");
+       "GET / -> 200 without a token (the app shell is ungated)");
   c.ok(body.find("<!doctype html") != std::string::npos, "/ serves an HTML document");
-  c.ok(body.find("api/replies") != std::string::npos && body.find("api/message") != std::string::npos,
-       "the page wires the relative api/replies + api/message endpoints");
-  c.ok(body.find("http://") == std::string::npos && body.find("https://") == std::string::npos &&
-           body.find("src=\"//") == std::string::npos,
-       "the page pulls in no external resources (self-contained)");
+  c.ok(body.find("class=tabs>") != std::string::npos && body.find("id=pane-dash") != std::string::npos,
+       "/ serves the REAL Nimbus web app (nav + Home pane), not the bare chat page");
+  c.ok(body.find("nimbusTok','" + token + "'") != std::string::npos,
+       "the served page seeds this instance's web token (tunnel auto sign-in)");
+  // Ordering: the token seed must run BEFORE the app script reads nimbusTok().
+  c.ok(body.find("setItem('nimbusTok'") < body.find("function nimbusTok"),
+       "the token seed is injected ahead of the app script");
+  c.ok(httpGet(client, port, "/logo.svg", "", status, body) && status == 200 &&
+           body.find("<svg") != std::string::npos,
+       "GET /logo.svg -> 200 SVG (ungated brand mark)");
   c.ok(httpGet(client, port, "/index.html", "", status, body) && status == 200 &&
            body.find("<!doctype html") != std::string::npos,
        "GET /index.html -> 200 HTML (alias of /)");
@@ -120,7 +125,7 @@ int main() {
 
   const std::string token = "s3kret-web-token";
   ReplyBuffer replies;
-  HttpControl http(&eng, "127.0.0.1", 0, token, dataDir, &replies);
+  HttpControl http(&eng, "127.0.0.1", 0, token, dataDir, &replies, &rig);
   const int port = http.start();
   c.ok(port > 0, "control surface bound a loopback port");
 
@@ -163,8 +168,10 @@ int main() {
        "POST /api/message -> 202 (enqueued, not blocked on)");
   c.ok(httpGet(client, port, "/api/state", token, status, body) && status == 200,
        "GET /api/state still answers immediately (snapshot read)");
-  c.ok(body.find("\"providerConfigured\":false") != std::string::npos,
-       "state reports providerConfigured:false (keyless instance)");
+  c.ok(body.find("\"provVerified\":false") != std::string::npos,
+       "state reports provVerified:false (keyless instance, honest)");
+  c.ok(body.find("\"virtual\":true") != std::string::npos,
+       "state carries the honest Virtual Nimbus marker");
 
   // ---- the web chat surface: static page (ungated) + replies (gated) --------
   checkWebChat(c, client, port, token);

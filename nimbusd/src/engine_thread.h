@@ -89,6 +89,19 @@ class EngineThread {
     return fut;
   }
 
+  // Run a READ on the engine thread and return its result through a future. The
+  // memory stores (vectors, episodic, scratchpad, files) are single-context, so a
+  // web panel that reads them must not touch them from the HTTP thread while a
+  // turn mutates them. The caller awaits with a short timeout and reports an
+  // honest "busy" (503) if a turn is holding the engine - the web UI's pollers
+  // skip that cycle and retry, never blocking the relay's 30 s tunnel budget.
+  std::future<std::string> dispatchRead(std::function<std::string()> fn) {
+    auto prom = std::make_shared<std::promise<std::string>>();
+    auto fut = prom->get_future();
+    post([fn, prom] { prom->set_value(fn()); });
+    return fut;
+  }
+
   // Flush all durable stores ON the engine thread and wait. Used by the backup
   // endpoint so it captures a CONSISTENT on-disk state (nimbusd owns the
   // tmp->rename + append discipline; a naive tar of a live volume races it).
