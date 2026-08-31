@@ -78,6 +78,22 @@ std::string originOf(const std::string& url) {
   return scheme + "://" + authority;
 }
 
+// The path component of an absolute http(s) URL (from the first '/' after the
+// authority up to a '?' or '#'). "" or "/" for a root URL. Used for the RFC 9728
+// path-suffixed metadata location and RFC 8414 issuer-path insertion.
+std::string pathOf(const std::string& url) {
+  size_t sep = url.find("://");
+  if (sep == std::string::npos) return "";
+  size_t hostStart = sep + 3;
+  size_t slash = url.find('/', hostStart);
+  if (slash == std::string::npos) return "";
+  size_t end = url.find_first_of("?#", slash);
+  std::string p = (end == std::string::npos) ? url.substr(slash) : url.substr(slash, end - slash);
+  // trim a trailing slash so we do not emit a double slash on join
+  while (p.size() > 1 && p.back() == '/') p.pop_back();
+  return p;
+}
+
 // Collect a JSON string array field into a vector (skips non-strings).
 void collectStrings(JsonArrayConst arr, std::vector<std::string>& out) {
   for (JsonArrayConst::iterator it = arr.begin(); it != arr.end(); ++it) {
@@ -95,10 +111,22 @@ std::string wellKnownProtectedResource(const std::string& resourceUrl) {
   return o + "/.well-known/oauth-protected-resource";
 }
 
+std::string wellKnownProtectedResourcePath(const std::string& resourceUrl) {
+  std::string o = originOf(resourceUrl);
+  if (o.empty()) return "";
+  std::string base = o + "/.well-known/oauth-protected-resource";
+  std::string p = pathOf(resourceUrl);
+  return (p.empty() || p == "/") ? base : base + p;
+}
+
 std::string wellKnownAuthServer(const std::string& issuer) {
   std::string o = originOf(issuer);
   if (o.empty()) return "";
-  return o + "/.well-known/oauth-authorization-server";
+  // RFC 8414 inserts a path-bearing issuer's path AFTER the well-known segment
+  // (issuer https://h/tenant -> https://h/.well-known/oauth-authorization-server/tenant).
+  std::string base = o + "/.well-known/oauth-authorization-server";
+  std::string p = pathOf(issuer);
+  return (p.empty() || p == "/") ? base : base + p;
 }
 
 std::string resourceMetadataFromWwwAuth(const std::string& wwwAuthenticate) {

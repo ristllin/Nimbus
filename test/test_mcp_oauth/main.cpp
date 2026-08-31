@@ -71,6 +71,24 @@ void test_well_known_derivation() {
   TEST_ASSERT_EQUAL_STRING("", o::wellKnownProtectedResource("not a url").c_str());
 }
 
+void test_well_known_path_suffixed_rfc9728() {
+  // RFC 9728: a path-scoped resource's metadata lives at the path-suffixed URL -
+  // exactly where mcp.linear.app advertises it via WWW-Authenticate.
+  TEST_ASSERT_EQUAL_STRING("https://mcp.linear.app/.well-known/oauth-protected-resource/mcp",
+                           o::wellKnownProtectedResourcePath("https://mcp.linear.app/mcp").c_str());
+  // matches the real captured WWW-Authenticate hint
+  TEST_ASSERT_EQUAL_STRING(o::resourceMetadataFromWwwAuth(oauthfix::kLinearWwwAuthenticate).c_str(),
+                           o::wellKnownProtectedResourcePath("https://mcp.linear.app/mcp").c_str());
+  // nested path preserved; trailing slash trimmed; root resource == origin form
+  TEST_ASSERT_EQUAL_STRING("https://ex.com/.well-known/oauth-protected-resource/mcp/v1",
+                           o::wellKnownProtectedResourcePath("https://ex.com/mcp/v1/").c_str());
+  TEST_ASSERT_EQUAL_STRING("https://ex.com/.well-known/oauth-protected-resource",
+                           o::wellKnownProtectedResourcePath("https://ex.com").c_str());
+  // RFC 8414 issuer-path insertion for a multi-tenant issuer
+  TEST_ASSERT_EQUAL_STRING("https://as.example/.well-known/oauth-authorization-server/tenant1",
+                           o::wellKnownAuthServer("https://as.example/tenant1").c_str());
+}
+
 void test_parse_protected_resource_real() {
   o::ProtectedResourceMeta m = o::parseProtectedResourceMetadata(oauthfix::kLinearProtectedResource);
   TEST_ASSERT_TRUE(m.ok);
@@ -239,6 +257,7 @@ int main(int, char**) {
   RUN_TEST(test_form_encode_omits_empty);
   RUN_TEST(test_www_authenticate_hint);
   RUN_TEST(test_well_known_derivation);
+  RUN_TEST(test_well_known_path_suffixed_rfc9728);
   RUN_TEST(test_parse_protected_resource_real);
   RUN_TEST(test_scope_string_drops_oidc);
   RUN_TEST(test_parse_auth_server_real);

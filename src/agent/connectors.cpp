@@ -18,6 +18,7 @@
 
 #include "nimbus/orch/mcp_oauth.h"           // portable OAuth 2.1 decision layer
 #include <esp_system.h>   // esp_random - retry jitter source
+#include <cstring>        // strcmp - non-allocating state compare in the OAuth callback
 #include <memory>
 #include <new>       // std::nothrow - alloc failure degrades, never panics
 #include <vector>
@@ -998,6 +999,16 @@ void httpDo(const HttpReq& q, HttpResp& r) {
   if (tooLarge) r.kind = mc::ErrorKind::TooLarge;
 }
 
+// An OAuth endpoint must be a PUBLIC https URL. Requiring https protects the
+// tokens in flight; requiring a non-private host (reusing the CUM-255 routability
+// predicate) stops a malicious/compromised MCP server from steering the device's
+// discovery + token requests at an internal address (SSRF). OAuth sign-in is for
+// hosted servers; a LAN server should use a static token instead (see docs/mcp.md).
+bool publicHttps(const String& url) {
+  UrlParts u = parseUrl(url);
+  return u.ok && u.tls && nimbus::orch::urlRoutableToProviderHead(std::string(url.c_str()));
+}
+
 // scheme://host[:port] origin of a parsed URL (default ports omitted).
 String originOf(const UrlParts& u) {
   String o = (u.tls ? "https://" : "http://") + u.host;
@@ -1041,11 +1052,17 @@ Flow s_flow;  // main-loop-owned
 // the critical section never allocates. Strings live only in s_flow / snapshot.
 portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
 volatile bool s_reqStart = false, s_reqCode = false, s_reqCancel = false;
-char s_inName[64] = {0}, s_inRedirect[128] = {0}, s_inCode[600] = {0}, s_inState[64] = {0};
+char s_inName[64] = {0}, s_inRedirect[128] = {0}, s_inCode[1024] = {0}, s_inState[64] = {0};
 // snapshot published for the web/screen (read on the web task).
 volatile bool s_snapActive = false;
 char s_snapPhase[16] = {0}, s_snapConn[64] = {0}, s_snapUserCode[16] = {0},
      s_snapVerify[160] = {0}, s_snapErr[192] = {0}, s_snapAuthUrl[1024] = {0};
+// The state expected on the callback while awaiting consent, published so the
+// (unauthenticated) /oauth/cb handler can DROP a non-matching callback before it
+// touches the single handoff slot - a LAN peer cannot then clobber the real code
+// with wrong-state spam. Empty unless a flow is awaiting consent. Not a secret and
+// never returned by statusJson.
+char s_snapState[64] = {0};
 
 void setBuf(char* dst, size_t cap, const char* src) {
   size_t n = 0;
@@ -1082,6 +1099,8 @@ void publish() {
   setBuf(s_snapErr, sizeof(s_snapErr), s_flow.error.c_str());
   setBuf(s_snapAuthUrl, sizeof(s_snapAuthUrl),
          (s_flow.phase == Phase::ShowConsent) ? s_flow.authorizeUrl.c_str() : "");
+  setBuf(s_snapState, sizeof(s_snapState),
+         (s_flow.phase == Phase::ShowConsent) ? s_flow.state.c_str() : "");
   portEXIT_CRITICAL(&s_mux);
 }
 
@@ -1103,6 +1122,11 @@ void startFlow(const char* name, const char* redirectBase) {
       break;
     }
   if (s_flow.resourceUrl.length() == 0) { s_flow.active = true; fail("This connector has no MCP server URL to connect."); return; }
+  if (!publicHttps(s_flow.resourceUrl)) {
+    s_flow.active = true;
+    fail("Browser sign-in works only with a hosted https server. Use a token for a local server.");
+    return;
+  }
   String base = redirectBase;
   while (base.endsWith("/")) base.remove(base.length() - 1);
   s_flow.redirectUri = base + "/oauth/cb";
@@ -1121,20 +1145,34 @@ void startFlow(const char* name, const char* redirectBase) {
 
 // --- one network step per phase ----------------------------------------------
 
+// Fetch + parse protected-resource metadata from one candidate well-known URL.
+// Fills issuer + scope from it on success; returns whether it yielded an issuer.
+bool tryProtectedResource(const String& wk) {
+  if (!publicHttps(wk)) return false;
+  HttpResp r;
+  { HttpReq q; q.method = "GET"; q.u = parseUrl(wk); q.timeoutMs = 8000; httpDo(q, r); }
+  if (r.status < 200 || r.status >= 300) return false;
+  oa::ProtectedResourceMeta m = oa::parseProtectedResourceMetadata(r.body);
+  if (!m.ok) return false;
+  String issuer = m.authorizationServers[0].c_str();
+  if (!publicHttps(issuer)) return false;  // never follow a private/non-https issuer (SSRF)
+  s_flow.issuer = issuer;
+  s_flow.scope = oa::scopeStringFor(m.scopesSupported).c_str();
+  return true;
+}
+
 void stepDiscoverPR() {
   UrlParts ru = parseUrl(s_flow.resourceUrl);
   if (!ru.ok) { fail("The MCP server URL is not a valid https address."); return; }
-  String wk = oa::wellKnownProtectedResource(std::string(s_flow.resourceUrl.c_str())).c_str();
-  HttpResp r;
-  { HttpReq q; q.method = "GET"; q.u = parseUrl(wk); q.timeoutMs = 8000; httpDo(q, r); }
-  if (r.status >= 200 && r.status < 300) {
-    oa::ProtectedResourceMeta m = oa::parseProtectedResourceMetadata(r.body);
-    if (m.ok) {
-      s_flow.issuer = m.authorizationServers[0].c_str();
-      s_flow.scope = oa::scopeStringFor(m.scopesSupported).c_str();
-    }
+  const std::string res = std::string(s_flow.resourceUrl.c_str());
+  // RFC 9728: try the path-suffixed metadata location first (the canonical spot,
+  // where mcp.linear.app advertises it), then the origin-level form. If neither
+  // yields an issuer, fall back to the resource's own origin as the issuer (the
+  // common same-origin case). All candidates are gated to public https.
+  if (!tryProtectedResource(oa::wellKnownProtectedResourcePath(res).c_str()) &&
+      !tryProtectedResource(oa::wellKnownProtectedResource(res).c_str())) {
+    s_flow.issuer = originOf(ru);  // resource is public https (checked at startFlow)
   }
-  if (s_flow.issuer.length() == 0) s_flow.issuer = originOf(ru);  // fall back to same origin
   s_flow.phase = Phase::DiscoverAS;
   s_flow.nextStepMs = millis() + 300;
 }
@@ -1147,9 +1185,19 @@ void stepDiscoverAS() {
   oa::AuthServerMeta m = oa::parseAuthServerMetadata(r.body);
   if (!m.ok) { fail("The server did not advertise an OAuth authorization service."); return; }
   if (!oa::supportsS256(m)) { fail("The server's sign-in does not support the secure PKCE method."); return; }
+  // The authorize + token endpoints come from server-controlled metadata and the
+  // device POSTs to the token one: gate both to public https so a malicious server
+  // cannot steer the device at an internal address (SSRF).
+  if (!publicHttps(String(m.authorizationEndpoint.c_str())) ||
+      !publicHttps(String(m.tokenEndpoint.c_str()))) {
+    fail("The server's sign-in endpoints are not hosted at a public https address.");
+    return;
+  }
   s_flow.authorizeEndpoint = m.authorizationEndpoint.c_str();
   s_flow.tokenEndpoint = m.tokenEndpoint.c_str();
-  s_flow.registrationEndpoint = m.registrationEndpoint.c_str();
+  // Only accept a registration endpoint that is itself public https.
+  s_flow.registrationEndpoint =
+      publicHttps(String(m.registrationEndpoint.c_str())) ? String(m.registrationEndpoint.c_str()) : String("");
   if (s_flow.scope.length() == 0) s_flow.scope = oa::scopeStringFor(m.scopesSupported).c_str();
   if (s_flow.registrationEndpoint.length() == 0) {
     fail("This server needs a client to be registered by hand; automatic sign-in is not available.");
@@ -1246,11 +1294,23 @@ String begin(const String& name, const String& redirectBase) {
 
 bool callback(const String& state, const String& code, String& errOut) {
   if (code.length() == 0) { errOut = "The sign-in did not return an authorization code."; return false; }
+  // Drop a callback whose state does not match the flow awaiting consent BEFORE it
+  // touches the single handoff slot. Without this, an unauthenticated LAN peer could
+  // spam /oauth/cb with a wrong state and overwrite the real code mid-race; the
+  // pump's own state check would then discard the (now clobbered) real code. The
+  // expected state is published only while awaiting consent (empty otherwise).
+  const char* sc = state.c_str();  // no allocation inside the critical section
+  const char* cc = code.c_str();
   portENTER_CRITICAL(&s_mux);
-  setBuf(s_inState, sizeof(s_inState), state.c_str());
-  setBuf(s_inCode, sizeof(s_inCode), code.c_str());
-  s_reqCode = true;
+  // strcmp/setBuf only - never a String op (heap alloc) inside portENTER_CRITICAL.
+  const bool match = s_snapState[0] && sc[0] && strcmp(sc, s_snapState) == 0;
+  if (match && !s_reqCode) {
+    setBuf(s_inState, sizeof(s_inState), sc);
+    setBuf(s_inCode, sizeof(s_inCode), cc);
+    s_reqCode = true;
+  }
   portEXIT_CRITICAL(&s_mux);
+  if (!match) { errOut = "This sign-in response did not match a request in progress."; return false; }
   return true;
 }
 

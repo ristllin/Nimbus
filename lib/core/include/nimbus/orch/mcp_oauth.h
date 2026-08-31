@@ -60,9 +60,16 @@ Pkce makePkce(const uint8_t rand[32]);
 // ---- metadata discovery ------------------------------------------------------
 
 // The .well-known/oauth-protected-resource URL for a resource server URL
-// (RFC 9728): scheme+host(+port) origin, then the well-known path. "" if `url`
-// is not a valid absolute http(s) URL.
+// (RFC 9728), ORIGIN-level form: scheme+host(+port) origin, then the well-known
+// path. "" if `url` is not a valid absolute http(s) URL.
 std::string wellKnownProtectedResource(const std::string& resourceUrl);
+
+// The RFC 9728 PATH-SUFFIXED metadata URL for a path-scoped resource: the
+// resource's own path is appended after the well-known segment (resource
+// `https://h/mcp` -> `https://h/.well-known/oauth-protected-resource/mcp`). This
+// is the canonical location; a root resource yields the same as the origin form.
+// The device tries this first, then the origin form, so both server styles work.
+std::string wellKnownProtectedResourcePath(const std::string& resourceUrl);
 
 // The .well-known/oauth-authorization-server URL for an issuer URL (RFC 8414),
 // derived from the issuer's origin. "" if `issuer` is not a valid http(s) URL.
