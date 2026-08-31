@@ -23,6 +23,7 @@
 //   NIMBUSD_WEB_TOKEN, NIMBUSD_TG_CHAT_ID, NIMBUSD_DEVICE_NAME, NIMBUSD_PRIORITY,
 //   TELEGRAM_BOT_TOKEN, OPENAI_API_KEY / ANTHROPIC_API_KEY / MISTRAL_API_KEY,
 //   TAVILY_API_KEY, TZ.
+#include <atomic>
 #include <csignal>
 #include <cstdio>
 #include <cstring>
@@ -80,10 +81,13 @@ int cmdGetMe(nimbusd::Config& cfg) {
 // `sender` is a pointer-to-pointer so the daemon can fill it in after the bot is
 // validated, without re-installing the hook.
 void installReplyDelivery(nimbusd::NimbusdRig& rig, nimbusd::ReplyBuffer& replies,
-                          nimbusd::TelegramChannel** sender) {
+                          std::atomic<nimbusd::TelegramChannel*>* sender) {
+  // Runs on the engine thread. `sender` is atomic because the main thread fills
+  // it in (below) after the bot is validated, concurrently with the first turns.
   rig.setDeliver([&replies, sender](const std::string& chat, const std::string& text) {
     replies.push("assistant", text);
-    if (*sender) { std::string e; (*sender)->sendMessage(chat, text, e); }
+    nimbusd::TelegramChannel* s = sender->load(std::memory_order_acquire);
+    if (s) { std::string e; s->sendMessage(chat, text, e); }
   });
 }
 
@@ -113,7 +117,7 @@ int runDaemon(nimbusd::Config& cfg) {
   // forwarded to Telegram. The delivery hook is set once, before any turn runs,
   // so no reply is lost; `sender` is filled in below if a bot token is present.
   nimbusd::ReplyBuffer replies(/*cap=*/50);
-  nimbusd::TelegramChannel* sender = nullptr;
+  std::atomic<nimbusd::TelegramChannel*> sender{nullptr};
   installReplyDelivery(rig, replies, &sender);
 
   // Control surface (loopback), token-gated.
@@ -146,7 +150,7 @@ int runDaemon(nimbusd::Config& cfg) {
     else logLine("telegram: getMe failed (" + err + ") - poll loop will still retry");
 
     // Route replies to this bot too (the delivery hook above forwards to it).
-    sender = tgSend.get();
+    sender.store(tgSend.get(), std::memory_order_release);
 
     pollThread = std::thread([&] {
       logLine("telegram long-poll started");

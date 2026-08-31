@@ -61,9 +61,12 @@ class ReplyBuffer {
       if (e.seq <= afterSeq) continue;
       if (!first) j += ",";
       first = false;
+      // role is a fixed literal ("user"/"assistant") today; encode it through the
+      // same escaper as text anyway, so a future non-literal role can never break
+      // out of the JSON string (defense in depth).
       j += "{\"seq\":" + std::to_string(e.seq) +
            ",\"ts\":" + std::to_string(e.tsEpoch) +
-           ",\"role\":\"" + e.role + "\"" +
+           ",\"role\":" + jsonString(e.role) +
            ",\"text\":" + jsonString(e.text) + "}";
     }
     j += "]";
