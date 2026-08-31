@@ -77,6 +77,20 @@ def main() -> None:
     if bad:
         sys.exit(f"FAIL: page invariants broken: {bad}")
 
+    # No native browser dialogs on the web surface - they block the page and look
+    # nothing like the app; the whole UI uses the styled in-app modal (CUM-266).
+    # Shares the scanner with tools/check_no_native_dialogs.py (the empty-allowlist
+    # gate) so the two can never drift.
+    from check_no_native_dialogs import find_native_dialogs
+
+    native = find_native_dialogs(page)
+    if native:
+        where = ", ".join(f"{call!r}@page-line {ln}" for ln, call in native[:5])
+        sys.exit(
+            f"FAIL: {len(native)} native dialog call(s) in the assembled page "
+            f"({where}) - use uiConfirm/uiPrompt/uiAlert (CUM-266)"
+        )
+
     if "--bless" in sys.argv:
         SNAPSHOT.write_text(page)
         print(f"blessed snapshot ({len(page)} bytes)")

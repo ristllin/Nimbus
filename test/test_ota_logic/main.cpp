@@ -2,6 +2,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <string>
 
 #include "nimbus/ota/ota_logic.h"
 
@@ -447,6 +448,46 @@ static void test_update_view() {
   }
 }
 
+// CUM-264 #1: the "latest vs available" verdict and the status token must render
+// from the SAME state read, so they can never contradict. Both stateStr(s) (the
+// panel's Status field) and updateView(s).line (the verdict line) are pure
+// functions of ONE State - this property test fails if any State could show a
+// "latest/up to date" verdict while the status says "available" (the owner's
+// screenshot) or the reverse. The web panel enforces this by re-deriving fwMsg
+// from d.ota (== stateStr) on every render; this locks the invariant the panel
+// leans on, across EVERY enum value, so a new state cannot reintroduce the drift.
+static void test_verdict_status_consistency() {
+  const State all[] = {State::Idle, State::Checking, State::UpToDate, State::Available,
+                       State::Downloading, State::Verifying, State::ReadyToReboot,
+                       State::Error, State::Unsupported};
+  for (State s : all) {
+    const char* status = stateStr(s);
+    UpdateView v = updateView(s, -1, "v4.4.6", "", "v4.4.2");
+    std::string line = v.line;
+    bool saysAvailable = line.find("available") != std::string::npos ||
+                         line.find("Available") != std::string::npos;
+    bool saysUpToDate  = line.find("Up to date") != std::string::npos ||
+                         line.find("up to date") != std::string::npos ||
+                         line.find("latest") != std::string::npos;
+    if (!std::strcmp(status, "available")) {
+      TEST_ASSERT_TRUE_MESSAGE(saysAvailable, "available status must show an available verdict");
+      TEST_ASSERT_FALSE_MESSAGE(saysUpToDate, "available status must NOT show an up-to-date verdict");
+      TEST_ASSERT_TRUE_MESSAGE(v.showInstall, "available status must offer Install");
+    }
+    if (!std::strcmp(status, "up-to-date")) {
+      TEST_ASSERT_TRUE_MESSAGE(saysUpToDate, "up-to-date status must show an up-to-date verdict");
+      TEST_ASSERT_FALSE_MESSAGE(saysAvailable, "up-to-date status must NOT show an available verdict");
+      TEST_ASSERT_FALSE_MESSAGE(v.showInstall, "up-to-date status must NOT offer Install");
+    }
+    // No non-terminal state may claim either verdict (a stale claim next to a
+    // busy/idle status is the same class of contradiction).
+    if (std::strcmp(status, "available") && std::strcmp(status, "up-to-date")) {
+      TEST_ASSERT_FALSE_MESSAGE(saysAvailable && v.showInstall,
+                                "only the available state offers Install with an available verdict");
+    }
+  }
+}
+
 // CUM-197: a "Check for updates" 409 is always a LOCAL refusal - the copy names
 // the real cause and NEVER blames the network.
 static void test_check_refusal_copy() {
@@ -488,6 +529,35 @@ static void test_last_result_stale() {
   TEST_ASSERT_FALSE(lastResultStale("aborted-preflip", "v4.4.0"));
 }
 
+// CUM-264 #2: a HIL simulation "last result" must never reach an owner. The
+// class rule (not the instance) - anything carrying kSimResultPrefix is a test
+// artifact - so a NEW sim seam that keeps the prefix is caught with no new guard,
+// while every real OTA outcome the field can hold is left untouched.
+static void test_is_sim_result() {
+  using nimbus::ota::isSimResult;
+  using nimbus::ota::kSimResultPrefix;
+  // Every string the sim seams (simArm) can write today - incl. the owner's
+  // exact residue "sim-arm crash" (OTASIM arm crash, see test_l29_release_gate).
+  TEST_ASSERT_TRUE(isSimResult("sim-arm app0"));
+  TEST_ASSERT_TRUE(isSimResult("sim-arm app1"));
+  TEST_ASSERT_TRUE(isSimResult("sim-arm crash"));
+  // The class: the prefix itself is the guard - any future "sim-*" label is
+  // caught, so a new seam needs no separate rule.
+  TEST_ASSERT_TRUE(isSimResult(kSimResultPrefix));
+  TEST_ASSERT_TRUE(isSimResult((std::string(kSimResultPrefix) + "whatever-next").c_str()));
+  // Every REAL OTA outcome the "last result" field can hold must be preserved.
+  TEST_ASSERT_FALSE(isSimResult("ok v4.4.6"));
+  TEST_ASSERT_FALSE(isSimResult("rollback v4.4.6"));
+  TEST_ASSERT_FALSE(isSimResult("rollback-lost"));
+  TEST_ASSERT_FALSE(isSimResult("dryrun ok v4.4.6"));
+  TEST_ASSERT_FALSE(isSimResult("installing v4.4.6"));
+  TEST_ASSERT_FALSE(isSimResult("download v4.4.6"));
+  TEST_ASSERT_FALSE(isSimResult("aborted-preflip"));
+  // Empty / null -> nothing to filter.
+  TEST_ASSERT_FALSE(isSimResult(""));
+  TEST_ASSERT_FALSE(isSimResult(nullptr));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_parse_version);
@@ -509,7 +579,9 @@ int main(int, char**) {
   RUN_TEST(test_check_result);
   RUN_TEST(test_state_from_str_roundtrips);
   RUN_TEST(test_update_view);
+  RUN_TEST(test_verdict_status_consistency);
   RUN_TEST(test_check_refusal_copy);
   RUN_TEST(test_last_result_stale);
+  RUN_TEST(test_is_sim_result);
   return UNITY_END();
 }

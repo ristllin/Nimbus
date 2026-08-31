@@ -178,6 +178,22 @@ padding:16px 12px;display:flex;flex-direction:column;gap:3px;z-index:50}
 .tab .tl{flex:1}
 #toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%) translateY(20px);background:var(--teal);color:#052420;font-weight:650;padding:9px 18px;border-radius:20px;opacity:0;transition:opacity .2s,transform .2s;pointer-events:none;z-index:99}
 #toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+/* Shared confirm/prompt modal (CUM-266): replaces the native browser popups so
+   every destructive step gets the app's own styled dialog. One element, reused;
+   ui_js.h drives it through uiConfirm/uiPrompt/uiAlert. */
+#modalOv{position:fixed;inset:0;z-index:400;background:rgba(0,0,0,.5);display:none;align-items:center;justify-content:center;padding:16px}
+#modalOv.show{display:flex}
+#modalOv .modal{background:var(--raise);border:1px solid var(--line2);border-radius:14px;box-shadow:var(--shadow);width:min(440px,100%);max-height:90vh;overflow:auto;padding:20px 20px 18px}
+#modalOv h3{margin:0 0 10px;font-size:16px;font-weight:650;color:var(--ink)}
+#modalOv .mbody{color:var(--ink2);font-size:13.5px;line-height:1.5}
+#modalOv .mbody p{margin:0 0 9px}
+#modalOv .mbody p:last-child{margin:0}
+#modalOv input.minput{width:100%;margin-top:13px;padding:9px 11px;border-radius:10px;border:1px solid var(--line2);background:var(--raise2);color:var(--ink);font-size:13.5px;font-family:inherit}
+#modalOv input.minput:focus{outline:0;border-color:var(--teal)}
+#modalOv .mact{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}
+#modalOv .mact button.ghost{background:var(--raise3);color:var(--ink2);font-weight:550}
+#modalOv .mact button.danger{background:var(--crit);color:#2a0710}
+#modalOv .mact button[disabled]{opacity:.45;cursor:not-allowed;filter:none}
 /* Icon rail (CUM-25): on narrower desktops/tablets the sidebar collapses to
    icons only, reclaiming width for the content. Labels return above 1080 px.
    The full nav is still keyboard-reachable; each button keeps its title tooltip. */
@@ -224,5 +240,11 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 </nav>
 </aside>
 <div id=toast></div>
+<div id=modalOv><div class=modal role=dialog aria-modal=true aria-labelledby=modalTitle>
+<h3 id=modalTitle></h3>
+<div class=mbody id=modalBody></div>
+<input class=minput id=modalInput type=text autocomplete=off autocapitalize=off spellcheck=false style="display:none">
+<div class=mact><button class=ghost id=modalCancel type=button>Cancel</button><button id=modalOk type=button>Confirm</button></div>
+</div></div>
 
 )=====";

@@ -238,5 +238,19 @@ const char* checkRefusalCopy(const char* why);
 // version (mid-operation or non-version labels) are left alone. (CUM-197)
 bool lastResultStale(const char* lastResult, const char* runningVersion);
 
+// The prefix every HIL simulation seam stamps onto the persisted "last result"
+// (simArm writes "sim-arm <slot>"). A production build has no way to WRITE one -
+// the seams are #ifdef NIMBUS_TEST - but a unit that ran a test-console build in
+// the past can carry the residue in NVS across a later production reflash, and
+// then the owner-facing update panel shows a meaningless "sim-arm ..." line
+// (CUM-264). Anything carrying this prefix is a test artifact, never a real OTA
+// outcome, so it must never reach an owner surface.
+constexpr const char* kSimResultPrefix = "sim-";
+
+// True when a persisted "last result" is a HIL simulation artifact (see above) -
+// the class rule for the boot-clear and the production render filter, so a NEW
+// sim seam that keeps the prefix is caught with no extra guard.
+bool isSimResult(const char* lastResult);
+
 }  // namespace ota
 }  // namespace nimbus

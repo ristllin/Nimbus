@@ -70,7 +70,7 @@ static const char UI_AGENT[] PROGMEM = R"=====(<div class=pane id=pane-harness s
 <div class=row>
 <input id=tavKey type=password placeholder="Tavily API key">
 <button type=button onclick="orchApply({tavKey:$('tavKey').value})">Save</button>
-<button type=button onclick="if(confirm('Remove the Tavily key?'))orchApply({clr_tavKey:1})">Clear</button>
+<button type=button onclick="uiConfirm('Remove the Tavily key?',{ok:'Remove Key',danger:true}).then(ok=>{if(ok)orchApply({clr_tavKey:1})})">Clear</button>
 </div>
 <p class=hint id=tavstat></p>
 </div>

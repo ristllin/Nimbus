@@ -166,6 +166,22 @@ padding:16px 12px;display:flex;flex-direction:column;gap:3px;z-index:50}
 .tab .tl{flex:1}
 #toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%) translateY(20px);background:var(--teal);color:#052420;font-weight:650;padding:9px 18px;border-radius:20px;opacity:0;transition:opacity .2s,transform .2s;pointer-events:none;z-index:99}
 #toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+/* Shared confirm/prompt modal (CUM-266): replaces the native browser popups so
+   every destructive step gets the app's own styled dialog. One element, reused;
+   ui_js.h drives it through uiConfirm/uiPrompt/uiAlert. */
+#modalOv{position:fixed;inset:0;z-index:400;background:rgba(0,0,0,.5);display:none;align-items:center;justify-content:center;padding:16px}
+#modalOv.show{display:flex}
+#modalOv .modal{background:var(--raise);border:1px solid var(--line2);border-radius:14px;box-shadow:var(--shadow);width:min(440px,100%);max-height:90vh;overflow:auto;padding:20px 20px 18px}
+#modalOv h3{margin:0 0 10px;font-size:16px;font-weight:650;color:var(--ink)}
+#modalOv .mbody{color:var(--ink2);font-size:13.5px;line-height:1.5}
+#modalOv .mbody p{margin:0 0 9px}
+#modalOv .mbody p:last-child{margin:0}
+#modalOv input.minput{width:100%;margin-top:13px;padding:9px 11px;border-radius:10px;border:1px solid var(--line2);background:var(--raise2);color:var(--ink);font-size:13.5px;font-family:inherit}
+#modalOv input.minput:focus{outline:0;border-color:var(--teal)}
+#modalOv .mact{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}
+#modalOv .mact button.ghost{background:var(--raise3);color:var(--ink2);font-weight:550}
+#modalOv .mact button.danger{background:var(--crit);color:#2a0710}
+#modalOv .mact button[disabled]{opacity:.45;cursor:not-allowed;filter:none}
 /* Icon rail (CUM-25): on narrower desktops/tablets the sidebar collapses to
    icons only, reclaiming width for the content. Labels return above 1080 px.
    The full nav is still keyboard-reachable; each button keeps its title tooltip. */
@@ -212,6 +228,12 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 </nav>
 </aside>
 <div id=toast></div>
+<div id=modalOv><div class=modal role=dialog aria-modal=true aria-labelledby=modalTitle>
+<h3 id=modalTitle></h3>
+<div class=mbody id=modalBody></div>
+<input class=minput id=modalInput type=text autocomplete=off autocapitalize=off spellcheck=false style="display:none">
+<div class=mact><button class=ghost id=modalCancel type=button>Cancel</button><button id=modalOk type=button>Confirm</button></div>
+</div></div>
 
 <div class=pane id=pane-dash>
 <div class=eyebrow>Overview</div>
@@ -579,7 +601,7 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <div class=row>
 <input id=tavKey type=password placeholder="Tavily API key">
 <button type=button onclick="orchApply({tavKey:$('tavKey').value})">Save</button>
-<button type=button onclick="if(confirm('Remove the Tavily key?'))orchApply({clr_tavKey:1})">Clear</button>
+<button type=button onclick="uiConfirm('Remove the Tavily key?',{ok:'Remove Key',danger:true}).then(ok=>{if(ok)orchApply({clr_tavKey:1})})">Clear</button>
 </div>
 <p class=hint id=tavstat></p>
 </div>
@@ -1533,6 +1555,22 @@ function applyState(d){
       fb.textContent=gated?(d.otaBattMsg||'Charge the device to install this update.'):'';}
     fi.style.display=(d.ota==='available')?'inline-block':'none';
     $('fwCheck').disabled=busy;fi.disabled=busy||((d.ota==='available')&&!battOk);
+    // Single-source the verdict line from the SAME state read as the status field
+    // (d.ota), re-derived on every 3s render, so a stale "latest"/"available" line
+    // can never sit next to a contradicting status (CUM-249/CUM-264). Only the
+    // terminal verdict states are owned here; a live action's own feedback (the
+    // spinner mid-check, or an error the owner just triggered) is left alone - it
+    // is transient and already reflects the state it came from.
+    var fm=$('fwMsg'), fmb=fm&&fm.getAttribute('data-fb');
+    if(fm&&fmb!=='pending'&&fmb!=='error'){
+      if(d.ota==='available')fbState(fm,'ok','Update available: '+(d.otaLatest||'a new version')+'.');
+      else if(d.ota==='up-to-date')fbState(fm,'none','You are on the latest version.');
+      else if(d.ota==='downloading'||d.ota==='verifying'||d.ota==='rebooting')fbState(fm,'ok','Updating. Keep the device powered on; it restarts when done.');
+      else if(d.ota==='unsupported')fbState(fm,'none','Updates aren\'t available on this build.');
+      else if(d.ota==='idle')fbState(fm,'idle');
+      // 'checking'/'error' are left to the action's own pending/error feedback
+      // (which this block never writes, so it can never deadlock itself).
+    }
     if(d.autoUpd!==undefined){const au=$('autoUpd');
       if(au&&document.activeElement!==au){au.checked=!!d.autoUpd;
         au.onchange=()=>{const f=new FormData();f.append('autoUpd',au.checked?'1':'0');
@@ -1561,26 +1599,26 @@ function applyState(d){
       error:e=>(typeof e==='string'&&e)||'Couldn\'t reach the device. Check the connection and try again.'});
     fi.onclick=()=>{
       if((d.ota==='available')&&!battOk){fbState('fwMsg','error',d.otaBattMsg||'Charge the device before installing.');return;}
-      if(!confirm('Install firmware '+(d.otaLatest||'')+'?\n\nThe device will download, verify the signature, and restart - about two minutes. Keep it powered on.'))return;
-      // CUM-58 battery gate expressed THROUGH the run() feedback helper (N1): doApply
-      // POSTs (with force on a retry); a {ok:false} gate answer either confirms and
-      // retries with force (need-power/need-recalibrate = "install anyway, I'm charging")
-      // or throws so run() renders the error state; success resolves to the run() ok copy.
-      var doApply=function(force){var f=new FormData();if(force)f.append('force','1');
+      uiConfirm('Install firmware '+(d.otaLatest||'')+'?\n\nThe device will download, verify the signature, and restart - about two minutes. Keep it powered on.',{ok:'Install Update'}).then(go=>{
+       if(!go)return;
+       // CUM-58 battery gate expressed THROUGH the run() feedback helper (N1): doApply
+       // POSTs (with force on a retry); a {ok:false} gate answer either confirms and
+       // retries with force (need-power/need-recalibrate = "install anyway, I'm charging")
+       // or throws so run() renders the error state; success resolves to the run() ok copy.
+       var doApply=function(force){var f=new FormData();if(force)f.append('force','1');
         return fetch('/api/ota/apply',{method:'POST',body:f}).then(r=>r.json()).then(j=>{
           if(j&&j.ok===false){
             if(j.err==='need-power'){
-              if(confirm('Battery is low. Connect power and try again, or install anyway (I am charging)?'))return doApply(true);
-              throw 'need-power';}
+              return uiConfirm('Battery is low. Connect power and try again, or install anyway (I am charging)?',{ok:'Install Anyway'}).then(ok=>{if(ok)return doApply(true);throw 'need-power';});}
             if(j.err==='need-recalibrate'){
-              if(confirm('Battery health reads low, so the level may be wrong. Charge to full and recalibrate to 100% (Battery, then Calibrate), or install anyway (I am charging)?'))return doApply(true);
-              throw 'need-recalibrate';}
+              return uiConfirm('Battery health reads low, so the level may be wrong. Charge to full and recalibrate to 100% (Battery, then Calibrate), or install anyway (I am charging)?',{ok:'Install Anyway'}).then(ok=>{if(ok)return doApply(true);throw 'need-recalibrate';});}
             throw (j.err||'busy');}
           return j;});};
-      run({status:'fwMsg',btn:fi,pending:'Starting the update…',
+       run({status:'fwMsg',btn:fi,pending:'Starting the update…',
         work:()=>doApply(false),
         ok:()=>{setTimeout(loadState,2000);return 'Updating. Keep the device powered on; it restarts when done.';},
-        error:e=>'Couldn\'t start the update'+(e?(' ('+e+')'):'')+' - try again.'});};
+        error:e=>'Couldn\'t start the update'+(e?(' ('+e+')'):'')+' - try again.'});
+      });};
   }
   renderDevTiles(d);
   if(d.fw){const fv=$('fwver'); if(fv)fv.textContent=d.fw+(d.build&&d.build!==d.fw?(' ('+d.build+')'):''); fv&&(fv.title='firmware version (build id)');}
@@ -1645,8 +1683,6 @@ function applyState(d){
     f.append('wakeMv',$('wakeMv').value||'6500');
     f.append('sleepOvr',$('sleepOvr').checked?'1':'0');
     f.append('brightOvr',$('brightOvr').checked?'1':'0');
-    if($('brightOvr').checked&&!confirm('Allow full LED brightness?\n\nSustained full brightness can overheat the device and damage it permanently. The thermal guard stays active. This resets at restart.'))return;
-    if($('sleepOvr').checked&&!confirm('Skip low-battery protection?\n\nThe battery can discharge to a point where it no longer recharges and must be replaced. This applies to measurement runs only and resets at restart.'))return;
     // battery hardware (divider resistors + capacity) - send only if present + changed
     if($('battCapMah'))f.append('battCapMah',$('battCapMah').value||'3500');
     if($('battChem'))f.append('battChem',$('battChem').value||'liion');
@@ -1655,14 +1691,19 @@ function applyState(d){
     if($('battRtop'))f.append('battRtop',$('battRtop').value||'220000');
     if($('battRbot'))f.append('battRbot',$('battRbot').value||'100000');
     var dividerChanged=$('battRtop')&&$('battRbot')&&window._battState&&(+$('battRtop').value!==window._battState.rtop||+$('battRbot').value!==window._battState.rbot);
-    if(dividerChanged&&!confirm('Changed the sense resistors?\n\nThis re-scales every voltage reading, so the full-charge calibration is now stale. Re-run Calibrate on a fully charged pack afterward.'))return;
-    fetch('/api/config',{method:'POST',body:f}).then(function(){pb.textContent='Saved';setTimeout(function(){pb.textContent='Save';},1200);});
+    uiConfirmAll([
+      {cond:$('brightOvr').checked, msg:'Allow full LED brightness?\n\nSustained full brightness can overheat the device and damage it permanently. The thermal guard stays active. This resets at restart.', opts:{ok:'Allow Full Brightness',danger:true}},
+      {cond:$('sleepOvr').checked, msg:'Skip low-battery protection?\n\nThe battery can discharge to a point where it no longer recharges and must be replaced. This applies to measurement runs only and resets at restart.', opts:{ok:'Skip Protection',danger:true}},
+      {cond:dividerChanged, msg:'Changed the sense resistors?\n\nThis re-scales every voltage reading, so the full-charge calibration is now stale. Re-run Calibrate on a fully charged pack afterward.', opts:{ok:'Save Changes'}}
+    ]).then(function(ok){ if(!ok)return;
+      fetch('/api/config',{method:'POST',body:f}).then(function(){pb.textContent='Saved';setTimeout(function(){pb.textContent='Save';},1200);});
+    });
   };
-      if(!confirm('Set the battery to 100%?\n\nOnly do this with the pack fully charged - the reading becomes this device\'s 100% anchor.')) return;
-      run({status:'battcalMsg',btn:bcb,pending:'Calibrating…',
-        work:()=>fetch('/api/battcal',{method:'POST'}).then(jok),
-        ok:()=>{setTimeout(loadState,1200);return 'Calibrated - this reading is now the 100% anchor.';},
-        error:e=>'Couldn\'t calibrate'+(e?(' ('+e+')'):'')+' - try again.'});};
+      uiConfirm('Set the battery to 100%?\n\nOnly do this with the pack fully charged - the reading becomes this device\'s 100% anchor.',{ok:'Set To 100%'}).then(function(ok){ if(!ok)return;
+        run({status:'battcalMsg',btn:bcb,pending:'Calibrating…',
+          work:()=>fetch('/api/battcal',{method:'POST'}).then(jok),
+          ok:()=>{setTimeout(loadState,1200);return 'Calibrated - this reading is now the 100% anchor.';},
+          error:e=>'Couldn\'t calibrate'+(e?(' ('+e+')'):'')+' - try again.'});});};
   } else { $('battsec').style.display='none'; }
   // Device identity readouts (P2): live SSID/mDNS; the input is only synced when
   // the user isn't mid-edit (3 s poll would stomp their typing otherwise).
@@ -1738,7 +1779,7 @@ function applyState(d){
     (d.effectiveProfile!==d.profile?' (adjusted automatically for power)':'');
   // mode
   $('mode').value=d.mode;
-  $('mode').onchange=()=>{ if(!switchMode(+$('mode').value)) $('mode').value=d.mode; };
+  $('mode').onchange=()=>{ const want=+$('mode').value; switchMode(want).then(ok=>{ if(!ok)$('mode').value=d.mode; }); };
   // Prominent header mode switch (same effect as the Device-tab selector) - the owner
   // couldn't find how to switch modes; it now lives at the top of every tab.
   const mh=$('modehdr'); if(mh){[...mh.children].forEach(b=>{
@@ -1800,6 +1841,74 @@ function applyState(d){
 let _toastT;
 function toast(msg){const t=$('toast'); if(!t)return; t.textContent=msg||'Saved';
   t.classList.add('show'); clearTimeout(_toastT); _toastT=setTimeout(()=>t.classList.remove('show'),1400);}
+
+// ---- Shared confirm/prompt modal (CUM-266) ---------------------------------
+// The app's own styled dialog, replacing the native browser popups. A styled
+// modal cannot block the thread the way the native calls do, so this is async:
+// callers chain .then(). uiConfirm/uiAlert resolve to true/false; uiPrompt
+// resolves to the typed string, or null when dismissed. One modal element is
+// reused. If the modal DOM is somehow absent, it fails closed (the destructive
+// path is cancelled) rather than silently proceeding.
+function _openModal(o){
+  var ov=$('modalOv');
+  if(!ov)return Promise.resolve(o.kind==='alert'?true:(o.kind==='prompt'?null:false));
+  return new Promise(function(res){
+    $('modalTitle').textContent=o.title||'';
+    var body=$('modalBody'); body.innerHTML='';
+    String(o.body||'').split('\n\n').forEach(function(para){
+      var p=document.createElement('p');
+      para.split('\n').forEach(function(ln,i){ if(i)p.appendChild(document.createElement('br')); p.appendChild(document.createTextNode(ln)); });
+      body.appendChild(p);
+    });
+    var isPrompt=(o.kind==='prompt'), isAlert=(o.kind==='alert');
+    var inp=$('modalInput'); inp.style.display=isPrompt?'':'none'; inp.value=o.value||'';
+    if(isPrompt&&o.placeholder)inp.placeholder=o.placeholder; else inp.removeAttribute('placeholder');
+    var ok=$('modalOk'), cancel=$('modalCancel');
+    ok.textContent=o.ok||'Confirm'; ok.className=o.danger?'danger':'';
+    cancel.textContent=o.cancel||'Cancel'; cancel.style.display=isAlert?'none':'';
+    // Type-to-confirm: OK stays disabled until the input matches the word,
+    // case-insensitively (the caller re-checks the same way), so a lowercase
+    // entry is accepted just as the native prompt used to accept it.
+    var gate=function(){ if(o.confirmWord)ok.disabled=(inp.value.trim().toUpperCase()!==o.confirmWord.toUpperCase()); };
+    var done=false;
+    var finish=function(val){ if(done)return; done=true;
+      ov.classList.remove('show'); document.removeEventListener('keydown',onKey,true);
+      ok.onclick=cancel.onclick=inp.oninput=null; res(val); };
+    var okVal=function(){ return isPrompt?inp.value:true; };
+    var cancelVal=function(){ return isPrompt?null:false; };
+    function onKey(e){
+      if(e.key==='Escape'){ e.preventDefault(); finish(cancelVal()); }
+      else if(e.key==='Enter'){ if(!ok.disabled){ e.preventDefault(); finish(okVal()); } }
+      else if(e.key==='Tab'){
+        // Keep focus inside the dialog (native confirm/prompt did), so Tab can't
+        // reach the controls behind the dimmed overlay.
+        var f=[inp,cancel,ok].filter(function(el){return el&&el.offsetParent!==null&&!el.disabled;});
+        if(!f.length)return;
+        var first=f[0], last=f[f.length-1], a=document.activeElement;
+        if(e.shiftKey&&a===first){ e.preventDefault(); last.focus(); }
+        else if(!e.shiftKey&&a===last){ e.preventDefault(); first.focus(); }
+      }
+    }
+    ok.onclick=function(){ if(!ok.disabled)finish(okVal()); };
+    cancel.onclick=function(){ finish(cancelVal()); };
+    inp.oninput=gate; ok.disabled=!!o.confirmWord;
+    document.addEventListener('keydown',onKey,true);
+    ov.classList.add('show');
+    (isPrompt?inp:ok).focus();
+  });
+}
+// body first, then an options object: {title, ok, cancel, danger, confirmWord,
+// value, placeholder}. uiConfirm/uiAlert -> Promise<bool>; uiPrompt -> Promise<string|null>.
+function uiConfirm(body,o){o=o||{};return _openModal({kind:'confirm',body:body,title:o.title,ok:o.ok||'Confirm',cancel:o.cancel,danger:o.danger});}
+function uiAlert(body,o){o=o||{};return _openModal({kind:'alert',body:body,title:o.title,ok:o.ok||'OK'});}
+function uiPrompt(body,o){o=o||{};return _openModal({kind:'prompt',body:body,title:o.title,ok:o.ok||'Confirm',cancel:o.cancel,danger:o.danger,value:o.value,placeholder:o.placeholder,confirmWord:o.confirmWord});}
+// Sequential gate: run each step's confirm only when its cond is true, aborting
+// on the first decline. Resolves true only if every needed confirm was accepted.
+function uiConfirmAll(steps){
+  return steps.reduce(function(p,s){ return p.then(function(ok){
+    if(!ok)return false; if(!s.cond)return true; return uiConfirm(s.msg,s.opts||{}); }); },
+    Promise.resolve(true));
+}
 function loadState(){if(!canPoll())return;fetch('/api/state').then(r=>r.json()).then(applyState).catch(()=>{});}
 // Poll /api/state until an OTA check settles to a definitive otaResult, so the
 // "Check for updates" verdict is read from the SAME field the panel shows and
@@ -1854,37 +1963,37 @@ function loadConnect(){
 }
 // Forget all BLE bonds (Connectivity → Bluetooth) - every paired device must re-pair.
 (function(){const b=$('btForget'); if(!b)return; b.onclick=()=>{
-  if(!confirm('Forget all paired devices?\n\nEach computer pairs again automatically the next time its broker connects.'))return;
+  uiConfirm('Forget all paired devices?\n\nEach computer pairs again automatically the next time its broker connects.',{ok:'Forget Devices',danger:true}).then(ok=>{ if(!ok)return;
   fetch('/api/ble/forget',{method:'POST'}).then(r=>r.ok?r.json():Promise.reject(r.status)).then(()=>{
     toast('Bluetooth pairings cleared'); if(typeof loadConnect==='function')loadConnect();
-  }).catch(()=>toast('Couldn\'t forget pairings - try again'));};
+  }).catch(()=>toast('Couldn\'t forget pairings - try again'));});};
 })();
 // Rotate the auth token: POST /api/token/regen (authenticated with the current token),
 // then persist the NEW token locally so THIS browser stays in; every other browser 401s
 // on its next call and gets the identify gate.
 (function(){const b=$('regenTok'); if(!b)return; b.onclick=()=>{
-  if(!confirm('Generate a new device sign-in code?\n\nEvery browser is signed out except this one. Scan the new Sign-in QR on each other device.'))return;
+  uiConfirm('Generate a new device sign-in code?\n\nEvery browser is signed out except this one. Scan the new Sign-in QR on each other device.',{ok:'Generate Code'}).then(ok=>{ if(!ok)return;
   fetch('/api/token/regen',{method:'POST'}).then(r=>r.ok?r.json():Promise.reject(r.status)).then(o=>{
     if(o&&o.token){setTok(o.token);
       if($('cxToken'))$('cxToken').textContent=o.token;
       toast('New token set');}
-  }).catch(()=>toast('Couldn\'t generate a token - try again'));};
+  }).catch(()=>toast('Couldn\'t generate a token - try again'));});};
 })();
 // Erase storage: type-to-confirm SD wipe (keeps config, keeps the token, so no
 // localStorage cleanup needed - the device reboots on the same network).
 (function(){const b=$('sdReset'); if(!b)return; b.onclick=()=>{
-  const p=prompt('Erase all stored data on the SD card?\n\nThis deletes every memory, all conversation history, saved files, and media. Wi-Fi, keys, and settings are kept. The device restarts.\n\nType ERASE STORAGE to confirm:');
+  uiPrompt('Erase all stored data on the SD card?\n\nThis deletes every memory, all conversation history, saved files, and media. Wi-Fi, keys, and settings are kept. The device restarts.\n\nType ERASE STORAGE to confirm:',{ok:'Erase Storage',danger:true,confirmWord:'ERASE STORAGE',placeholder:'ERASE STORAGE'}).then(p=>{
   if(p===null)return;
   if(p.trim().toUpperCase()!=='ERASE STORAGE'){toast('Not erased - the phrase didn\'t match');return;}
   const fd=new FormData();fd.append('confirm','ERASE STORAGE');
   fetch('/api/sdreset',{method:'POST',body:fd}).then(r=>r.ok?r.json():Promise.reject(r.status))
     .then(()=>toast('Erasing storage - the device is restarting'))
-    .catch(()=>toast('Couldn\'t erase - try again'));};
+    .catch(()=>toast('Couldn\'t erase - try again'));});};
 })();
 // Factory reset: type-to-confirm, then POST the exact confirm phrase the device requires.
 (function(){const b=$('factoryReset'); if(!b)return; b.onclick=()=>{
   const alsoSd=$('factoryEraseSd')&&$('factoryEraseSd').checked;
-  const p=prompt('Erase all content and settings?\n\nThis removes Wi-Fi, API keys, the Telegram list, Bluetooth pairings, memory, the device name, and the device sign-in code, then restarts into first-time setup as a fresh device.'+(alsoSd?'\n\nThe SD card will also be erased (up to a minute).':'')+'\n\nType FACTORY RESET to confirm:');
+  uiPrompt('Erase all content and settings?\n\nThis removes Wi-Fi, API keys, the Telegram list, Bluetooth pairings, memory, the device name, and the device sign-in code, then restarts into first-time setup as a fresh device.'+(alsoSd?'\n\nThe SD card will also be erased (up to a minute).':'')+'\n\nType FACTORY RESET to confirm:',{ok:'Factory Reset',danger:true,confirmWord:'FACTORY RESET',placeholder:'FACTORY RESET'}).then(p=>{
   if(p===null)return;
   if(p.trim().toUpperCase()!=='FACTORY RESET'){toast('Not reset - the phrase didn\'t match');return;}
   const fd=new FormData();fd.append('confirm','FACTORY RESET');fd.append('eraseSd',alsoSd?'1':'0');
@@ -1898,7 +2007,7 @@ function loadConnect(){
       '<img src=/logo.svg style="width:52px;height:52px"><h2 style="margin:14px 0 8px">Device is resetting…</h2>'+
       '<p style="color:var(--ink2);line-height:1.5">Everything has been erased and the device is restarting into first-time setup. '+
       'Reconnect to its <b>&ldquo;…-setup&rdquo;</b> Wi-Fi network to run the setup wizard.</p></div>';
-  }).catch(()=>toast('Reset failed - try again'));};
+  }).catch(()=>toast('Reset failed - try again'));});};
 })();
 // Power off (CUM-224): confirm, POST /api/poweroff, then show an honest offline
 // interstitial. The device goes to deep sleep, so the page cannot poll it back -
@@ -1906,25 +2015,25 @@ function loadConnect(){
 // 3 s state poll turn into a connection error. The wake copy follows the response's
 // tapWakes: touch models wake on a tap, others on reconnecting power.
 (function(){const b=$('powerOff'); if(!b)return; b.onclick=()=>{
-  if(!confirm('Power the device off?\n\nIt saves everything and goes to sleep. Touch models wake when you tap the screen; others wake when you reconnect power.'))return;
+  uiConfirm('Power the device off?\n\nIt saves everything and goes to sleep. Touch models wake when you tap the screen; others wake when you reconnect power.',{ok:'Power Off',danger:true}).then(ok=>{ if(!ok)return;
   fetch('/api/poweroff',{method:'POST'}).then(r=>r.ok?r.json():Promise.reject(r.status)).then((j)=>{
     const wake=(j&&j.tapWakes)?'Tap its screen to wake it.':'Reconnect its power to turn it back on.';
     _authPaused=true;   // the device is sleeping; stop the background pollers hitting a dead host
     document.body.innerHTML='<div id=sleepScreen style="max-width:460px;margin:18vh auto;padding:0 20px;text-align:center;font-family:inherit;color:var(--ink)">'+
       '<img src=/logo.svg style="width:52px;height:52px"><h2 style="margin:14px 0 8px">The device is off</h2>'+
       '<p style="color:var(--ink2);line-height:1.5">The screen is off and the device is asleep. '+wake+'</p></div>';
-  }).catch((e)=>toast(e===401?'Sign in required':'Couldn\'t power off - try again'));};
+  }).catch((e)=>toast(e===401?'Sign in required':'Couldn\'t power off - try again'));});};
 })();
 // Full-card format (CUM-15): its own typed confirm, distinct from Erase Storage.
 (function(){const b=$('sdFormat'); if(!b)return; b.onclick=()=>{
-  const p=prompt('Reformat the entire SD card?\n\nThis erases the WHOLE card, not just the assistant\'s data. Use it only if the card is corrupted. The device restarts. This can take up to a minute.\n\nType FORMAT CARD to confirm:');
+  uiPrompt('Reformat the entire SD card?\n\nThis erases the WHOLE card, not just the assistant\'s data. Use it only if the card is corrupted. The device restarts. This can take up to a minute.\n\nType FORMAT CARD to confirm:',{ok:'Format Card',danger:true,confirmWord:'FORMAT CARD',placeholder:'FORMAT CARD'}).then(p=>{
   if(p===null)return;
   if(p.trim().toUpperCase()!=='FORMAT CARD'){toast('Not formatted - the phrase didn\'t match');return;}
   const fd=new FormData();fd.append('confirm','FORMAT CARD');
   fetch('/api/sdformat',{method:'POST',body:fd}).then(r=>r.json().then(j=>({ok:r.ok,j})))
     .then(({ok,j})=>{ if(ok){toast('Formatting the card - the device is restarting');}
       else{toast(j&&j.error?j.error:'Couldn\'t format the card');} })
-    .catch(()=>toast('Couldn\'t format - try again'));};
+    .catch(()=>toast('Couldn\'t format - try again'));});};
 })();
 // --- Local Loops ---
 function loadLoops(){
@@ -2110,40 +2219,42 @@ function apply(body){
 // different subsystems), so the config POST's connection drops mid-flight. Don't
 // surface that as a save error the way apply() would: fire the change, tell the
 // owner it is restarting, then (Orchestrator direction only) poll until the device
-// answers again and reload into the new mode. Returns false if the owner cancels (so
-// the caller can revert a dropdown). This is why the mode controls do NOT go
-// through apply().
+// answers again and reload into the new mode. Resolves false if the owner cancels
+// (so the caller can revert a dropdown - the styled modal is async, so this returns
+// a Promise now). This is why the mode controls do NOT go through apply().
 //
 // Notifier mode runs with NO WiFi radio at all (main.cpp: WiFi.mode(WIFI_OFF),
 // frees SRAM for BLE) - the web server never starts there. So switching TO Notifier
 // can never be followed by a reconnect: polling /api/state would just spin until it
 // gives up. Tell the owner that plainly instead of pretending a reconnect is coming.
 function switchMode(mv){
-  if(!confirm('Switch to '+(mv?'Orchestrator':'Notifier')+'?\n\nThe device restarts to change modes. This takes a few seconds.'))return false;
-  fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
-    body:new URLSearchParams({mode:mv}).toString()}).catch(()=>{});
-  if(!mv){   // -> Notifier: no WiFi in that mode, so the web app cannot reconnect
-    toast('Restarting into Notifier - the web app won\'t be reachable there');
+  return uiConfirm('Switch to '+(mv?'Orchestrator':'Notifier')+'?\n\nThe device restarts to change modes. This takes a few seconds.',{ok:mv?'Switch To Orchestrator':'Switch To Notifier'}).then(go=>{
+    if(!go)return false;
+    fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
+      body:new URLSearchParams({mode:mv}).toString()}).catch(()=>{});
+    if(!mv){   // -> Notifier: no WiFi in that mode, so the web app cannot reconnect
+      toast('Restarting into Notifier - the web app won\'t be reachable there');
+      return true;
+    }
+    toast('Restarting to switch');
+    let tries=0;
+    const ping=()=>{ tries++;
+      fetch('/api/state',{cache:'no-store'})
+        .then(r=>{ if(r.ok) location.reload(); else throw 0; })
+        .catch(()=>{ if(tries<40) setTimeout(ping,1500); else toast('Reload the page'); }); };
+    setTimeout(ping,4000);   // let the reboot begin before polling
     return true;
-  }
-  toast('Restarting to switch');
-  let tries=0;
-  const ping=()=>{ tries++;
-    fetch('/api/state',{cache:'no-store'})
-      .then(r=>{ if(r.ok) location.reload(); else throw 0; })
-      .catch(()=>{ if(tries<40) setTimeout(ping,1500); else toast('Reload the page'); }); };
-  setTimeout(ping,4000);   // let the reboot begin before polling
-  return true;
+  });
 }
 
 // Revert-to-defaults (owner 2026-07-18): drop EVERY per-param override so the
 // active battery mode runs on its pure reference preset. Confirmed - it
 // discards all customization in one click.
 if($('revertProf'))$('revertProf').onclick=()=>{
-  if(!confirm('Reset this mode to its defaults?\n\nEvery customized value returns to the preset.'))return;
+  uiConfirm('Reset this mode to its defaults?\n\nEvery customized value returns to the preset.',{ok:'Reset To Defaults',danger:true}).then(go=>{ if(!go)return;
   apply({revert_overrides:1}).then(ok=>{
     if(ok){$('revertMsg').textContent='All customizations cleared - this mode is back on its defaults.';}
-  });
+  });});
 };
 
 // ---- Orchestrator control surface (ROUND 3 Part A) ----
@@ -2324,7 +2435,7 @@ function provRow(name,p){
   vb.onclick=()=>saveAndVerify(name);
   row.appendChild(vb);
   const cb=document.createElement('button'); cb.type='button'; cb.textContent='Clear';
-  cb.onclick=()=>{if(confirm('Remove the '+(PROVLBL[name]||name)+' key?'))orchApply({['clr_'+keyField(name)]:1});};
+  cb.onclick=()=>{uiConfirm('Remove the '+(PROVLBL[name]||name)+' key?',{ok:'Remove Key',danger:true}).then(ok=>{if(ok)orchApply({['clr_'+keyField(name)]:1});});};
   row.appendChild(cb); w.appendChild(row);
   const pm=document.createElement('div'); pm.className='hint'; pm.id='pmsg_'+name; w.appendChild(pm);
   const mrow=document.createElement('div'); mrow.className='row';
@@ -2855,9 +2966,9 @@ function saveConnCard(id){
   fetch('/api/connectors',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({patch:JSON.stringify(patch)}).toString()})
    .then(jok).then(x=>{toast(x.ok?'Saved':'Rejected');loadConnectors();}).catch(failToast);
 }
-function delConn(name){if(!confirm('Remove the '+name+' connector?'))return;
+function delConn(name){uiConfirm('Remove the '+name+' connector?',{ok:'Remove Connector',danger:true}).then(ok=>{ if(!ok)return;
   fetch('/api/connectors',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({del:name}).toString()})
-   .then(jok).then(x=>{toast('Removed');loadConnectors();}).catch(failToast);
+   .then(jok).then(x=>{toast('Removed');loadConnectors();}).catch(failToast);});
 }
 function saveConnectors(){
   const v=$('connBlob').value.trim(); if(!v){toast('Paste a JSON array first');return;}
@@ -2999,12 +3110,12 @@ let _tgVerifyWatch=false;
 $('savedir').onclick=()=>orchApply({sysPrompt:$('directive').value})
   .then(ok=>saveVerdict(ok,'Directive saved - applies from the next turn.'));
 $('clearmem').onclick=()=>{
-  if(confirm('Erase the assistant\'s memory?\n\nYour directive is kept.'))
-    orchApply({clearMem:1});
+  uiConfirm('Erase the assistant\'s memory?\n\nYour directive is kept.',{ok:'Erase Memory',danger:true}).then(ok=>{ if(ok)
+    orchApply({clearMem:1}); });
 };
 $('clearconv')&&($('clearconv').onclick=()=>{
-  if(confirm('Clear this conversation and its active task?\n\nLong-term memory and files are kept.'))
-    orchApply({clearConv:1}).then(()=>toast('Conversation cleared'));
+  uiConfirm('Clear this conversation and its active task?\n\nLong-term memory and files are kept.',{ok:'Clear Conversation',danger:true}).then(ok=>{ if(ok)
+    orchApply({clearConv:1}).then(()=>toast('Conversation cleared')); });
 });
 
 // ---- Wi-Fi: saved networks, scan, join (P3: BOUNDED, visible timeout, explicit verdicts) ----
@@ -3072,13 +3183,13 @@ function wifiConnect(ssid){
   .catch(e=>{$('savewifi').disabled=false;$('msg').textContent=e.message;});
 }
 function wifiForget(ssid,inUse){
- if(!confirm('Forget "'+ssid+'"?\n\nIts password is erased. You\'ll need it again to rejoin.'+
-   (inUse?'\n\nThis is the network in use, so the device won\'t rejoin it after a restart.':'')))return;
+ uiConfirm('Forget "'+ssid+'"?\n\nIts password is erased. You\'ll need it again to rejoin.'+
+   (inUse?'\n\nThis is the network in use, so the device won\'t rejoin it after a restart.':''),{ok:'Forget Network',danger:true}).then(ok=>{ if(!ok)return;
  wifiPost('forget',{ssid:ssid}).then(d=>{
   toast('Network forgotten');
   $('msg').textContent=d.count?'':'No saved networks left - the device starts in setup mode after a restart.';
   loadWifi();
- }).catch(e=>{$('msg').textContent=e.message;});
+ }).catch(e=>{$('msg').textContent=e.message;});});
 }
 function scan(){
  if(timer)return;                                   // one scan at a time
@@ -3146,11 +3257,11 @@ $('savewifi').onclick=()=>{
 // stays reachable however wrong the saved credentials are.
 (function(){
  const b=$('wifiAp'); if(b)b.onclick=()=>{
-  if(!confirm('Publish the setup network?\n\nThe device stops trying to join Wi-Fi until you resume, so this page stays reachable over its own network.'))return;
+  uiConfirm('Publish the setup network?\n\nThe device stops trying to join Wi-Fi until you resume, so this page stays reachable over its own network.',{ok:'Publish Network'}).then(ok=>{ if(!ok)return;
   wifiPost('publishap').then(d=>{toast('Setup network published');
    if($('wifiApMsg'))$('wifiApMsg').textContent='Setup network "'+(d.apSsid||'')+'" is coming up. Joining is paused until you resume.';
    setTimeout(loadWifi,1500);
-  }).catch(e=>{if($('wifiApMsg'))$('wifiApMsg').textContent=e.message;});};
+  }).catch(e=>{if($('wifiApMsg'))$('wifiApMsg').textContent=e.message;});});};
  const c=$('wifiResume'); if(c)c.onclick=()=>{
   wifiPost('resume').then(()=>{toast('Joining resumed');
    if($('wifiApMsg'))$('wifiApMsg').textContent='Joining resumed. The device is trying its saved networks again.';
@@ -3356,12 +3467,12 @@ function loadMemCfg(){
 $('memsearch').onclick=loadMemList;
 $('memq').addEventListener('keydown',e=>{if(e.key==='Enter')loadMemList();});
 $('memdedupe').onclick=()=>memVecOp('dedupe');
-$('memflushnp').onclick=()=>{if(confirm('Delete all temporary memories?\n\nMemories marked permanent are kept.'))memVecOp('flushnp');};
+$('memflushnp').onclick=()=>{uiConfirm('Delete all temporary memories?\n\nMemories marked permanent are kept.',{ok:'Delete Temporary',danger:true}).then(ok=>{if(ok)memVecOp('flushnp');});};
 if($('memprev'))$('memprev').onclick=()=>memPage(-1);
 if($('memnext'))$('memnext').onclick=()=>memPage(1);
 if($('memflushall'))$('memflushall').onclick=()=>{
   const n=(window._memTotal||0);
-  if(prompt('Delete ALL '+n+' memories, permanent ones included? This cannot be undone.\n\nType DELETE to confirm.')==='DELETE')memVecOp('flush',null,'DELETE');};
+  uiPrompt('Delete ALL '+n+' memories, permanent ones included? This cannot be undone.\n\nType DELETE to confirm.',{ok:'Delete All',danger:true,confirmWord:'DELETE',placeholder:'DELETE'}).then(p=>{if(p&&p.trim().toUpperCase()==='DELETE')memVecOp('flush',null,'DELETE');});};
 $('cfgsave').onclick=()=>{
   fetch('/api/mem/config',{method:'PUT',headers:{'Content-Type':'application/x-www-form-urlencoded'},
     body:'retrieval_count='+(+$('cfg_rc').value)+'&relevance_threshold='+(+$('cfg_rt').value)+
@@ -3398,9 +3509,10 @@ $('embsave').onclick=()=>{
       msg.textContent='✓ Verified ('+j.dims+'-d). ';
       // Step 2: if this invalidates existing vectors, make the destruction explicit.
       if(changed){
-        if(!confirm('Verified ✓\n\nSwitch the embedding model?\n\nYour '+_embState.vectors+' stored memories become incomparable and must be erased and re-learned from scratch.')){
-          msg.textContent='Cancelled - current model kept.';return;}
-        save(true);
+        uiConfirm('Switch the embedding model?\n\nYour '+_embState.vectors+' stored memories become incomparable and must be erased and re-learned from scratch.',{ok:'Switch Model',danger:true}).then(go=>{
+          if(!go){msg.textContent='Cancelled - current model kept.';return;}
+          save(true);
+        });
       } else { save(false); }
     })
     .catch(e=>{btn.disabled=false;failToast(e);msg.textContent='Couldn\'t verify - try again.';});
@@ -3512,9 +3624,9 @@ function loadFiles(){
     box.querySelectorAll('a[data-dlp]').forEach(a=>a.onclick=e=>{e.preventDefault();
       dlFile(a.dataset.dlp,a.dataset.dln).catch(()=>toast('Couldn\'t download - try again'));});
     box.querySelectorAll('a[data-rmp]').forEach(a=>a.onclick=e=>{e.preventDefault();
-      if(!confirm('Delete '+a.dataset.rmp+'/'+a.dataset.rmn+'?'))return;
+      uiConfirm('Delete '+a.dataset.rmp+'/'+a.dataset.rmn+'?',{ok:'Delete',danger:true}).then(ok=>{ if(!ok)return;
       const fd=new FormData();fd.append('project',a.dataset.rmp);fd.append('name',a.dataset.rmn);
-      fetch('/api/files/rm',{method:'POST',body:fd}).then(r=>r.ok?loadFiles():Promise.reject(r.status)).catch(()=>toast('Couldn\'t delete - try again'));});
+      fetch('/api/files/rm',{method:'POST',body:fd}).then(r=>r.ok?loadFiles():Promise.reject(r.status)).catch(()=>toast('Couldn\'t delete - try again'));});});
   }).catch(()=>{box.innerHTML='<span class=hint>Files unavailable</span>';});
 }
 $('filesRefresh')&&($('filesRefresh').onclick=loadFiles);
@@ -3523,11 +3635,11 @@ $('filesProj')&&$('filesProj').addEventListener('keydown',e=>{if(e.key==='Enter'
 $('filesRmProj')&&($('filesRmProj').onclick=()=>{
   const p=($('filesProj').value||'').trim();
   if(!p){toast('Type a project name in the filter first');return;}
-  if(!confirm('Delete the entire "'+p+'" folder and all its files? This cannot be undone.'))return;
+  uiConfirm('Delete the entire "'+p+'" folder and all its files? This cannot be undone.',{ok:'Delete Folder',danger:true}).then(ok=>{ if(!ok)return;
   const fd=new FormData();fd.append('project',p);fd.append('confirm','DELETE');
   fetch('/api/files/rmproject',{method:'POST',body:fd}).then(r=>r.ok?r.json():Promise.reject(r.status))
     .then(o=>{toast('Deleted '+((o&&o.removed)||0)+' files');loadFiles();})
-    .catch(s=>toast(s===404?'No such folder':'Couldn\'t delete - try again'));});
+    .catch(s=>toast(s===404?'No such folder':'Couldn\'t delete - try again'));});});
 // Upload one file with a determinate progress bar (duration is knowable).
 // Uses XHR so upload progress events drive the feedback bar; the token rides the
 // X-Nimbus-Token header like every request. onPct(0..100) is called as it climbs.
@@ -3600,12 +3712,12 @@ $('skSave')&&($('skSave').onclick=()=>{
 });
 $('skDel')&&($('skDel').onclick=()=>{
   const id=$('skId').value.trim(); if(!id){toast('Enter a skill id first');return;}
-  if(!confirm('Delete the skill "'+id+'" from the SD card?'))return;
+  uiConfirm('Delete the skill "'+id+'" from the SD card?',{ok:'Delete Skill',danger:true}).then(ok=>{ if(!ok)return;
   const fd=new FormData();fd.append('id',id);
   fetch('/api/skills/delete',{method:'POST',body:fd})
     .then(r=>r.json().then(j=>{if(!r.ok)throw (j.error||r.status);return j;}))
     .then(()=>{$('skMsg').textContent='Deleted';$('skMd').value='';loadSkills();})
-    .catch(e=>{$('skMsg').textContent='✗ '+e;});
+    .catch(e=>{$('skMsg').textContent='✗ '+e;});});
 });
 const GRPLBL={registry:'Available now',device:'Device actions',
   skill:'Knowledge',connector:'Connectors'};
@@ -3723,8 +3835,8 @@ function loadTelegram(){
       nm.style.cssText='color:inherit;text-decoration:underline dotted';
       nm.textContent=(a.name||'unnamed');
       nm.onclick=e=>{e.preventDefault();
-        const v=prompt('Display name for chat '+a.id+' (shown in Chat and to the assistant):',a.name||'');
-        if(v!==null)tgPost('/api/telegram/rename',{id:a.id,name:v.trim()}).then(()=>{if(typeof loadChatHistory==='function')loadChatHistory();});};
+        uiPrompt('Display name for chat '+a.id+' (shown in Chat and to the assistant):',{ok:'Save Name',value:a.name||''}).then(v=>{
+        if(v!==null)tgPost('/api/telegram/rename',{id:a.id,name:v.trim()}).then(()=>{if(typeof loadChatHistory==='function')loadChatHistory();});});};
       chip.appendChild(nm);
       chip.appendChild(document.createTextNode(' ('+a.id+') '));
       const role=document.createElement('a');role.href='#';
@@ -3766,8 +3878,11 @@ function loadTelegram(){
 }
 $('tgAddBtn').onclick=()=>{const id=$('tgAddId').value.trim();if(id){tgPost('/api/telegram/add',{id:id,name:$('tgAddName').value.trim()});$('tgAddId').value='';$('tgAddName').value='';}};
 $('tgPublic').onchange=()=>{
-  if($('tgPublic').checked && !confirm('Allow anyone to message this device?\n\nAnyone who finds your bot on Telegram can give it instructions and spend your API credits.')){$('tgPublic').checked=false;return;}
-  tgPost('/api/telegram/public',{on:$('tgPublic').checked?1:0});
+  if(!$('tgPublic').checked){tgPost('/api/telegram/public',{on:0});return;}
+  uiConfirm('Allow anyone to message this device?\n\nAnyone who finds your bot on Telegram can give it instructions and spend your API credits.',{ok:'Allow Public Access',danger:true}).then(ok=>{
+    if(!ok){$('tgPublic').checked=false;return;}
+    tgPost('/api/telegram/public',{on:1});
+  });
 };
 loadTenants().then(loadTelegram);
 setInterval(()=>loadTenants().then(loadTelegram),7000);
