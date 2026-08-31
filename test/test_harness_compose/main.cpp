@@ -446,8 +446,71 @@ static void test_prompt_tells_the_model_history_goes_deep() {
   TEST_ASSERT_TRUE(p.find("before`") != std::string::npos);   // the paging token
 }
 
+// --- owner directive (TF-N9) -------------------------------------------------
+// The owner directive is USER-controlled text. These pin the two properties the
+// injection must never lose: (1) it lands BELOW the platform rules + identity so
+// it can never precede or shadow them, and (2) it is framed as subordinate owner
+// preferences, so the model can never treat it as system authority.
+
+// The directive section must appear AFTER the immutable rules AND the identity.
+// This FAILS if the directive is ever moved above the platform rules.
+static void test_directive_below_platform_rules() {
+  ComposeInputs in = cannedInputs();   // directive = "Serve the owner. Be terse."
+  std::string p = agent::composeInstructions(in);
+  size_t rules = p.find("the always-on head orchestrator");   // immutableRules (role line)
+  size_t ident = p.find("an always-on personal assistant");   // identity block
+  size_t pref  = p.find("[OWNER PREFERENCES");                 // the delimited directive
+  size_t text  = p.find("Serve the owner. Be terse.");         // the owner's text itself
+  TEST_ASSERT_TRUE(rules != std::string::npos);
+  TEST_ASSERT_TRUE(ident != std::string::npos);
+  TEST_ASSERT_TRUE_MESSAGE(pref != std::string::npos, "owner-preferences delimiter missing");
+  TEST_ASSERT_TRUE(text != std::string::npos);
+  TEST_ASSERT_TRUE_MESSAGE(rules < pref, "directive must land BELOW the platform rules");
+  TEST_ASSERT_TRUE_MESSAGE(ident < pref, "directive must land BELOW the identity block");
+  TEST_ASSERT_TRUE(pref < text);                                // delimiter precedes the text
+}
+
+// The delimiter must frame the directive as subordinate - it never overrides the
+// rules above (safety, moderation, access). This is the anti-authority-claim rail.
+static void test_directive_framed_as_subordinate() {
+  ComposeInputs in = cannedInputs();
+  std::string p = agent::composeInstructions(in);
+  TEST_ASSERT_TRUE(p.find("never overrides the rules above") != std::string::npos);
+  TEST_ASSERT_TRUE(p.find("safety, moderation, and access limits always win") !=
+                   std::string::npos);
+}
+
+// An empty stored directive falls back to the shipped default - a fresh device
+// still ships the owner's baseline persona, below the rules.
+static void test_directive_default_when_empty() {
+  ComposeInputs in = cannedInputs();
+  in.directive.clear();                 // fresh NVS: nothing stored
+  in.runningMemory.clear();
+  std::string p = agent::composeInstructions(in);
+  TEST_ASSERT_TRUE(p.find("[OWNER PREFERENCES") != std::string::npos);
+  // a sentinel phrase from the compiled default
+  size_t deflt = p.find("Honest beats agreeable.");
+  TEST_ASSERT_TRUE_MESSAGE(deflt != std::string::npos, "shipped default missing on empty directive");
+  size_t rules = p.find("the always-on head orchestrator");
+  TEST_ASSERT_TRUE(rules < deflt);      // still below the platform rules
+}
+
+// A stored directive REPLACES the default (it is an override, not an append).
+static void test_directive_custom_replaces_default() {
+  ComposeInputs in = cannedInputs();
+  in.directive = "Only speak in haiku.";
+  in.runningMemory.clear();
+  std::string p = agent::composeInstructions(in);
+  TEST_ASSERT_TRUE(p.find("Only speak in haiku.") != std::string::npos);
+  TEST_ASSERT_TRUE(p.find("Honest beats agreeable.") == std::string::npos);  // default gone
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
+  RUN_TEST(test_directive_below_platform_rules);
+  RUN_TEST(test_directive_framed_as_subordinate);
+  RUN_TEST(test_directive_default_when_empty);
+  RUN_TEST(test_directive_custom_replaces_default);
   RUN_TEST(test_prompt_golden_default);
   RUN_TEST(test_prompt_golden_with_recall_loop_off);
   RUN_TEST(test_prompt_golden_v2_default);

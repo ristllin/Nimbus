@@ -76,7 +76,7 @@ Writing or clearing a provider key **resets that provider's verify cache** to
 | `orchM_<provider>` | string | `""` → provider flagship | Per-provider orchestrator model override (prefix `orchM_` + provider) | Yes |
 | `subM_<provider>` | string | `""` → provider flagship | Per-provider sub-session model override (prefix `subM_`) | Yes |
 | `agFabric` | string | `"code:openai,research:openai,ops:anthropic"` | Legacy category→provider bindings | Yes |
-| `sysPrompt` | string | `""` | The user directive - **immutable by the model** | Yes |
+| `sysPrompt` | string | `""` (empty uses the shipped default directive) | The owner directive - **immutable by the model**, owner-only. Bounded to 1500 bytes (honest error on the web route + store-layer clamp). Empty = the compiled-in default (`kOwnerDirectiveDefault`); set in the setup wizard or the web Directive box, with "Revert to default" | Yes |
 
 All three hosts (OpenAI, Anthropic, Mistral) are in the default `provPrio` /
 `subPrio` lists; list order is the failover order, and an explicit `orchHost`

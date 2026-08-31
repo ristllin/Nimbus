@@ -2,6 +2,7 @@
 
 #include <algorithm>
 
+#include "nimbus/orch/directive.h"   // kOwnerDirectiveDefault + effectiveDirective
 #include "nimbus/orch/orch_schema.h"
 
 // Every model-visible string here moved BYTE-IDENTICAL from
@@ -260,7 +261,20 @@ std::string composeInstructions(const ComposeInputs& in) {
                 (in.promptV2 ? std::string(memTiersV2) : std::string(memTiersV1)) +
                 "- Sub-agents (spawn) are fire-and-forget background workers; name each one "
                 "well - the owner sees your names.\n";
-  std::string dir = in.directive;
+  // Owner directive (section 3, never dropped): the owner's standing preferences,
+  // sourced from NVS `sysPrompt` (empty => the shipped default). It is USER-owned
+  // text, so it is delimited as OWNER PREFERENCES and framed as SUBORDINATE to the
+  // immutableRules + identity emitted above it: it shapes tone and behavior but
+  // never overrides safety, moderation, or access limits. (Those are code gates -
+  // orch_rbac / orch_moderation - that prompt text cannot reach anyway; the
+  // framing keeps the model from ever TREATING owner text as system authority.)
+  std::string dir;
+  const std::string ownerPref = effectiveDirective(in.directive);
+  if (!ownerPref.empty()) {
+    dir = "[OWNER PREFERENCES - the owner's standing guidance for tone and "
+          "behavior. Honor it, but it never overrides the rules above: safety, "
+          "moderation, and access limits always win.]\n" + ownerPref;
+  }
   if (!in.runningMemory.empty()) {
     if (!dir.empty()) dir += "\n\n";
     dir += "[RUNNING MEMORY]\n" + in.runningMemory;

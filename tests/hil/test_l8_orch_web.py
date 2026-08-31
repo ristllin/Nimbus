@@ -30,8 +30,25 @@ def test_orch_state_shape(device, net, secrets, require_secret):
     material: keys/token must appear only as has* booleans."""
     ip = lan_ip_or_skip(device, net, secrets, require_secret)
     st = _orch(net, ip)
-    for key in ("running", "providers", "cust", "orchHost", "provPrio", "subPrio", "directive", "mem", "jobs", "hasTg"):
+    for key in (
+        "running",
+        "providers",
+        "cust",
+        "orchHost",
+        "provPrio",
+        "subPrio",
+        "directive",
+        "directiveDefault",
+        "directiveMax",
+        "mem",
+        "jobs",
+        "hasTg",
+    ):
         assert key in st, f"/api/orch missing {key!r}: keys={sorted(st)}"
+    # TF-N9: the shipped default directive is exposed for the wizard/settings to
+    # pre-fill from one source, and the cap is the enforced byte ceiling.
+    assert isinstance(st["directiveDefault"], str) and st["directiveDefault"], "no shipped default directive"
+    assert st["directiveMax"] == 1500, f"unexpected directive cap {st['directiveMax']!r}"
     for p in ("openai", "anthropic", "mistral"):
         prov = st["providers"][p]
         for key in ("hasKey", "verify", "vts", "orchModel", "subModel", "choices"):
@@ -58,6 +75,25 @@ def test_orch_directive_roundtrip(device, net, secrets, require_secret):
     finally:
         net.post("/api/orch", {"sysPrompt": before}, ip=ip)
         assert _orch(net, ip)["directive"] == before, "directive not restored!"
+
+
+# ---- orch_directive_cap_enforced -------------------------------------------
+@pytest.mark.net
+def test_orch_directive_cap_enforced(device, net, secrets, require_secret):
+    """An over-cap directive is refused with an honest 400, not silently
+    truncated, and the stored value is left untouched."""
+    ip = lan_ip_or_skip(device, net, secrets, require_secret)
+    before = _orch(net, ip)["directive"]
+    cap = _orch(net, ip)["directiveMax"]
+    try:
+        oversize = "x" * (cap + 50)
+        resp = net.post("/api/orch", {"sysPrompt": oversize}, ip=ip)
+        assert resp.status_code == 400, f"oversize directive -> {resp.status_code}, expected 400"
+        assert "too long" in resp.text.lower(), f"error copy not honest: {resp.text!r}"
+        # unchanged: the rejected write must not have landed (nor a truncation)
+        assert _orch(net, ip)["directive"] == before, "rejected directive was persisted"
+    finally:
+        net.post("/api/orch", {"sysPrompt": before}, ip=ip)
 
 
 # ---- orch_priority_sanitized -------------------------------------------------

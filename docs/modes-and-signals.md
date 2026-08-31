@@ -210,6 +210,19 @@ Switch modes from Settings > Mode on the device (selecting it restarts the
 device), Settings → Mode & identity on the web page, or the `MODE` console
 command. Everything in §1–§3 applies to both modes.
 
+### The directive (Orchestrator)
+
+The **directive** is your standing guidance for how the assistant behaves for you
+- tone, how much it says, when to volunteer suggestions. It ships with an
+owner-authored default, so the assistant has a sensible personality out of the box;
+you can edit it or restore the default at any time. Only you can change it, and it
+shapes style without ever overriding the device's safety, moderation, or access
+rules.
+
+| Setting | Canonical home | Other surface |
+|---|---|---|
+| **Directive** | Web app: setup wizard (Directive step) and the Directive box under Memory | Device menu: not editable there (free text; web-only) |
+
 ## 5. The status language - colors, motion, themes
 
 One rule to remember: **movement means it needs you or it is working; still

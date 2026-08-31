@@ -318,7 +318,9 @@ AssembledContext assembleContext(const ContextInputs& in, int budgetBytes) {
       (budgetBytes > explainerBytes + 1024) ? budgetBytes - explainerBytes : budgetBytes;
 
   // 1-3: never dropped (highest priority - safety, identity, directive). They
-  // are byte-bounded upstream (rules are static; directive is capped to 600 B).
+  // are byte-bounded upstream (rules are static; the directive is capped to
+  // kMemDirectiveMax and always emitted BELOW rules + identity, so owner text can
+  // never precede or shadow the platform rules).
   if (!in.immutableRules.empty()) out += in.immutableRules;
   if (!in.identity.empty())       out += in.identity;
   if (!in.directive.empty()) {
