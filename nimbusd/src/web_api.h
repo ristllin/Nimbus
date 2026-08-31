@@ -54,85 +54,137 @@ class WebApi {
       : rig_(rig), eng_(eng), replies_(replies) {}
 
   // Handle one gated /api/* request. Returns false if the path is not part of the
-  // web surface (the caller then 404s). `path` includes any query string.
+  // web surface (the caller then 404s). `path` includes any query string. The work
+  // is split across grouped dispatchers so each stays within the complexity gate.
   bool handle(const std::string& method, const std::string& path,
               const std::string& body, ApiResp& out) {
     const std::string base = path.substr(0, path.find('?'));
+    return tryStatus(method, base, out) ||
+           tryChat(method, base, body, out) ||
+           tryMemory(method, base, path, body, out) ||
+           tryStatic(method, base, path, out) ||
+           tryStubs(method, base, out) ||
+           tryHardware(base, out);
+  }
 
-    // ---- Home / status (instant: snapshot + immutable config) ----
-    if (base == "/api/state" && method == "GET")    { out = stateResp();  return true; }
-    if (base == "/api/health" && method == "GET")   { out = healthResp(); return true; }
-    if (base == "/api/orch" && method == "GET")     { out = orchResp();   return true; }
-    if (base == "/api/orch" && method == "POST")    { out = okJson(R"({"ok":true})"); return true; }
-    if (base == "/api/connect" && method == "GET")  { out = connectResp(); return true; }
+ private:
+  // Home + Assistant snapshots (instant: engine snapshot + immutable config).
+  bool tryStatus(const std::string& m, const std::string& base, ApiResp& out) {
+    if (base == "/api/state" && m == "GET")   { out = stateResp();  return true; }
+    if (base == "/api/health" && m == "GET")  { out = healthResp(); return true; }
+    if (base == "/api/orch" && m == "GET")    { out = orchResp();   return true; }
+    if (base == "/api/orch" && m == "POST")   { out = okJson(R"({"ok":true})"); return true; }
+    if (base == "/api/connect" && m == "GET") { out = connectResp(); return true; }
+    return false;
+  }
 
-    // ---- Chat (REAL: the engine turn + the reply ring) ----
-    if (base == "/api/chat" && method == "POST")    { out = chatPost(body); return true; }
-    if (base == "/api/chat" && method == "GET")     { out = chatGet();      return true; }
+  // Chat (REAL: the engine turn + the reply ring).
+  bool tryChat(const std::string& m, const std::string& base, const std::string& body, ApiResp& out) {
+    if (base != "/api/chat") return false;
+    out = m == "POST" ? chatPost(body) : chatGet();
+    return true;
+  }
 
-    // ---- Memory (REAL: dispatched onto the engine thread) ----
-    if (base == "/api/mem/stats" && method == "GET")      { out = memStats();          return true; }
-    if (base == "/api/mem/scratchpad" && method == "GET") { out = memScratch();        return true; }
-    if (base == "/api/mem/config" && method == "GET")     { out = memConfigGet();      return true; }
-    if (base == "/api/mem/config" && method == "PUT")     { out = memConfigPut(body);  return true; }
-    if (base == "/api/mem/vector" && method == "GET")     { out = memVectorGet(path);  return true; }
-    if (base == "/api/mem/vector" && method == "POST")    { out = memVectorPost(path); return true; }
-    if (base == "/api/mem/episodic" && method == "GET")   { out = memEpisodic(path);   return true; }
-    if (base == "/api/mem/nsusage" && method == "GET")    { out = memNsUsage();        return true; }
-    if (base == "/api/tools" && method == "GET")          { out = toolsResp();         return true; }
+  // Memory + tools (REAL: dispatched onto the engine thread). Split across two
+  // dispatchers so each stays within the complexity gate.
+  bool tryMemory(const std::string& m, const std::string& base, const std::string& path,
+                 const std::string& body, ApiResp& out) {
+    return tryMemReads(m, base, out) || tryMemData(m, base, path, body, out);
+  }
+  bool tryMemReads(const std::string& m, const std::string& base, ApiResp& out) {
+    if (m != "GET") return false;
+    if (base == "/api/mem/stats")      { out = memStats();     return true; }
+    if (base == "/api/mem/scratchpad") { out = memScratch();   return true; }
+    if (base == "/api/mem/config")     { out = memConfigGet(); return true; }
+    if (base == "/api/mem/nsusage")    { out = memNsUsage();   return true; }
+    if (base == "/api/tools")          { out = toolsResp();    return true; }
+    return false;
+  }
+  bool tryMemData(const std::string& m, const std::string& base, const std::string& path,
+                  const std::string& body, ApiResp& out) {
+    if (base == "/api/mem/config" && m == "PUT")   { out = memConfigPut(body);  return true; }
+    if (base == "/api/mem/vector" && m == "GET")   { out = memVectorGet(path);  return true; }
+    if (base == "/api/mem/vector" && m == "POST")  { out = memVectorPost(path); return true; }
+    if (base == "/api/mem/episodic" && m == "GET") { out = memEpisodic(path);   return true; }
+    return false;
+  }
 
-    // ---- Static / pure (no engine, no hardware) ----
-    if (base == "/api/themes" && method == "GET")     { out = themesResp();       return true; }
-    if (base == "/api/qr" && method == "GET")         { out = qrResp(path);       return true; }
-    if (base == "/api/docs/search" && method == "GET"){ out = docsSearch(path);   return true; }
-    if (base == "/api/voices" && method == "GET")     { out = okJson("[]");       return true; }
+  // Pure/static surfaces (no engine, no hardware).
+  bool tryStatic(const std::string& m, const std::string& base, const std::string& path, ApiResp& out) {
+    if (base == "/api/themes" && m == "GET")      { out = themesResp();     return true; }
+    if (base == "/api/qr" && m == "GET")          { out = qrResp(path);     return true; }
+    if (base == "/api/docs/search" && m == "GET") { out = docsSearch(path); return true; }
+    if (base == "/api/voices" && m == "GET")      { out = okJson("[]");     return true; }
+    if (base == "/api/token/regen" && m == "POST"){ out = tokenRegen();     return true; }
+    if (base == "/api/usage/history" && m == "GET") { out = usageHistory(); return true; }
+    return false;
+  }
 
-    // ---- Sign-in seam (the tunnel already authenticated; hand back the token) ----
-    if (base == "/api/signin/exchange" && method == "POST") { out = signinExchange(); return true; }
-    if (base == "/api/token/regen" && method == "POST")     { out = tokenRegen();     return true; }
+  // Well-formed-empty honest surfaces (nothing to lie about yet) - each returns a
+  // truthful, correctly-shaped body so the app renders and no control is dead. The
+  // constant surfaces are a table; a GET returns the empty-but-shaped body, a write
+  // acks. `prefix` covers the sub-routes (/api/telegram/add, /api/files/rm, ...).
+  bool tryStubs(const std::string& m, const std::string& base, ApiResp& out) {
+    const bool get = m == "GET";
+    struct Stub { const char* base; bool prefix; const char* getBody; };
+    static const Stub kStubs[] = {
+        {"/api/loops", false, "[]"},
+        {"/api/fetchq", false, "[]"},
+        {"/api/tenant", false, R"({"tenants":[]})"},
+        {"/api/wakeups", false, R"({"policy":"silent-allow","pending":null,"items":[]})"},
+        {"/api/telegram", true, R"({"public":false,"pending":[],"allow":[]})"},
+        {"/api/skills", true, R"({"sd":true,"skills":[]})"},
+        {"/api/files", true, R"({"present":true,"count":0,"bytes":0,"files":[]})"},
+    };
+    for (const Stub& s : kStubs) {
+      const bool hit = s.prefix ? base.rfind(s.base, 0) == 0 : base == s.base;
+      if (hit) { out = get ? okJson(s.getBody) : okJson(R"({"ok":true})"); return true; }
+    }
+    return tryStubsExtra(get, base, out);
+  }
 
-    // ---- Well-formed-empty honest surfaces (no data to lie about yet) ----
-    if (base == "/api/usage/history" && method == "GET") { out = usageHistory(); return true; }
-    if (base == "/api/loops")       { out = method == "GET" ? okJson("[]") : okJson(R"({"ok":true})"); return true; }
-    if (base == "/api/wakeups")     { out = method == "GET" ? okJson(R"({"policy":"silent-allow","pending":null,"items":[]})") : okJson(R"({"ok":true})"); return true; }
-    if (base == "/api/fetchq")      { out = method == "GET" ? okJson("[]") : okJson(R"({"ok":true})"); return true; }
-    if (base == "/api/tenant")      { out = method == "GET" ? okJson(R"({"tenants":[]})") : okJson(R"({"ok":true})"); return true; }
-    if (base == "/api/telegram" || base.rfind("/api/telegram/", 0) == 0)
-      { out = method == "GET" ? okJson(R"({"public":false,"pending":[],"allow":[]})") : okJson(R"({"ok":true})"); return true; }
+  bool tryStubsExtra(bool get, const std::string& base, ApiResp& out) {
     if (base == "/api/connectors" || base.rfind("/api/connectors/", 0) == 0) {
-      if (base == "/api/connectors/oauth/status") { out = okJson(R"({"active":false})"); return true; }
-      out = method == "GET" ? okJson(R"({"configured":[],"known":[],"keyed":{},"host":""})") : okJson(R"({"ok":true})");
+      out = base == "/api/connectors/oauth/status" ? okJson(R"({"active":false})")
+            : get ? okJson(R"({"configured":[],"known":[],"keyed":{},"host":""})") : okJson(R"({"ok":true})");
       return true;
     }
-    if (base == "/api/skills/list" && method == "GET") { out = okJson(R"({"sd":true,"skills":[]})"); return true; }
-    if (base.rfind("/api/skills/", 0) == 0) { out = okJson(R"({"ok":true})"); return true; }
-    if (base == "/api/trace" && method == "GET")     { out = {200, "text/plain; charset=utf-8", "Turn tracing is off on this instance."}; return true; }
-    if (base == "/api/mem/blob" && method == "GET")  { out = {404, "text/plain; charset=utf-8", "reason: no blob store on a hosted instance"}; return true; }
-    if (base == "/api/mem/embedverify" && method == "POST") { out = okJson(R"({"ok":true,"dims":0})"); return true; }
-    if (base == "/api/mem/embedcfg" && method == "POST")    { out = okJson(R"({"ok":true})"); return true; }
-    if (base == "/api/verify" && method == "POST")   { out = okJson(R"({"ok":true})"); return true; }
-    if (base == "/api/preview" && method == "POST")  { out = okJson(R"({"ok":true})"); return true; }
-    if (base == "/api/files/list" && method == "GET"){ out = filesList(path); return true; }
-    if (base.rfind("/api/files/", 0) == 0)           { out = okJson(R"({"ok":true,"files":[],"present":false,"count":0})"); return true; }
-
-    // ---- Hardware-only: honest "not on a hosted instance" (never faked) ----
-    if (isHardwarePath(base)) { out = hardwareResp(base); return true; }
-
+    if (base == "/api/trace" && get)    { out = {200, "text/plain; charset=utf-8", "Turn tracing is off on this instance."}; return true; }
+    if (base == "/api/mem/blob" && get) { out = {404, "text/plain; charset=utf-8", "reason: no blob store on a hosted instance"}; return true; }
+    if (base == "/api/mem/embedverify") { out = okJson(R"({"ok":true,"dims":0})"); return true; }
+    if (base == "/api/mem/embedcfg" || base == "/api/verify" || base == "/api/preview")
+      { out = okJson(R"({"ok":true})"); return true; }
     return false;
+  }
+
+  // Hardware-only: honest "not on a hosted instance" (never faked, never dead).
+  bool tryHardware(const std::string& base, ApiResp& out) {
+    if (!isHardwarePath(base)) return false;
+    out = hardwareResp(base);
+    return true;
   }
 
  private:
   // ------------------------------------------------------------------ helpers
   static ApiResp okJson(const std::string& j) { return ApiResp{200, "application/json", j}; }
 
+  static ApiResp busy() {
+    return ApiResp{503, "application/json", R"({"error":"instance busy - try again"})"};
+  }
+
   ApiResp engineRead(std::function<std::string()> fn) {
+    // Never stall the single HTTP thread behind a turn: a turn can hold the engine
+    // for a long time, and this thread also serves /healthz, /readyz and the
+    // snapshot routes. If a turn is in flight, tell the poller to retry (503) at
+    // once rather than blocking every other request behind a 2 s wait. Only when
+    // the engine is idle do we dispatch and await (it answers in milliseconds).
+    if (eng_->snapshot().turnInFlight) return busy();
     auto fut = eng_->dispatchRead(std::move(fn));
-    if (fut.wait_for(std::chrono::seconds(5)) != std::future_status::ready)
-      return okJson(R"({"error":"instance busy - try again"})");
+    if (fut.wait_for(std::chrono::seconds(2)) != std::future_status::ready) return busy();
     try {
       return okJson(fut.get());
     } catch (...) {
-      return okJson(R"({"error":"instance stopping"})");
+      return busy();
     }
   }
 
@@ -358,7 +410,7 @@ class WebApi {
     std::string text = formValue(body, "text");
     if (text.empty()) return ApiResp{400, "application/json", R"({"error":"missing text"})"};
     awaitFromSeq_ = replies_->lastSeq();
-    awaitTurnCount_ = eng_->snapshot().turnCount;
+    awaitDeadline_ = time(nullptr) + 900;  // hard backstop (matches the app's poll cap)
     awaiting_ = true;
     replies_->push("user", text);
     eng_->postMessage("owner", text);
@@ -366,62 +418,30 @@ class WebApi {
   }
 
   ApiResp chatGet() {
-    const StateSnapshot s = eng_->snapshot();
-    // Latest assistant reply newer than the last posted turn.
-    std::string reply = latestAssistantSince(awaitFromSeq_);
     JsonDocument d;
-    if (!reply.empty()) {
+    // Only surface a reply while WE are awaiting one, and only one newer than our
+    // own prompt: this keeps a Telegram or routine reply that lands between web
+    // turns from bleeding into the web chat, and stops a settled turn's reply from
+    // being re-returned on every later poll.
+    std::string reply = awaiting_ ? replies_->lastAssistantTextSince(awaitFromSeq_) : std::string();
+    if (awaiting_ && !reply.empty()) {
+      awaiting_ = false;
+      awaitFromSeq_ = replies_->lastSeq();  // consumed; do not re-return it
       d["reply"] = reply;
       d["pending"] = false;
+    } else if (awaiting_ && time(nullptr) > awaitDeadline_) {
+      // Backstop: a turn that ran to completion with no delivery (rare) must not
+      // leave the bubble spinning forever - resolve honestly after the deadline.
       awaiting_ = false;
-    } else if (awaiting_ && s.turnCount > awaitTurnCount_) {
-      // The turn ran but delivered nothing (e.g. no provider key) - stop honestly.
       d["reply"] = "";
       d["pending"] = false;
-      awaiting_ = false;
     } else {
       d["reply"] = "";
-      d["pending"] = awaiting_ && (s.turnInFlight || s.turnCount == awaitTurnCount_);
+      d["pending"] = awaiting_;
     }
     std::string out;
     serializeJson(d, out);
     return okJson(out);
-  }
-
-  std::string latestAssistantSince(uint64_t afterSeq) {
-    // The reply ring is small; scan its JSON for the newest assistant entry.
-    // (ReplyBuffer has no typed accessor; parse its since-array minimally.)
-    // Simpler: ask the buffer for entries after `afterSeq` and take the last
-    // assistant one. We reuse sinceJsonArray + a tiny scan.
-    std::string arr = replies_->sinceJsonArray(afterSeq);
-    // Find the last "role":"assistant" ... "text":"..." pair.
-    std::string reply;
-    size_t pos = 0;
-    while (true) {
-      size_t r = arr.find("\"role\":\"assistant\"", pos);
-      if (r == std::string::npos) break;
-      size_t t = arr.find("\"text\":", r);
-      if (t == std::string::npos) break;
-      size_t q1 = arr.find('"', t + 7);
-      if (q1 == std::string::npos) break;
-      // Extract the JSON string value (respecting escapes).
-      std::string val;
-      for (size_t i = q1 + 1; i < arr.size(); i++) {
-        char c = arr[i];
-        if (c == '\\' && i + 1 < arr.size()) {
-          char n = arr[++i];
-          if (n == 'n') val += '\n';
-          else if (n == 't') val += '\t';
-          else val += n;
-          continue;
-        }
-        if (c == '"') break;
-        val += c;
-      }
-      reply = val;
-      pos = r + 1;
-    }
-    return reply;
   }
 
   // ------------------------------------------------------------------ memory
@@ -491,19 +511,23 @@ class WebApi {
   ApiResp memVectorGet(const std::string& path) {
     const std::string query = queryParam(path, "query");
     int limit = atoiOr(queryParam(path, "limit"), 50);
-    int offset = atoiOr(queryParam(path, "offset"), 0);
+    if (limit < 0) limit = 0;
+    int offset = std::max(0, atoiOr(queryParam(path, "offset"), 0));
     return engineRead([this, query, limit, offset] {
       auto all = rig_->vectors().getAll();   // importance-desc
+      // Filter to the matches FIRST, then paginate the matches: total, offset and
+      // limit all refer to the same (filtered) set the client is browsing.
+      std::vector<const orch::VecEntry*> match;
+      for (const auto& e : all)
+        if (query.empty() || e.content.find(query) != std::string::npos) match.push_back(&e);
       JsonDocument d;
-      d["total"] = (int)all.size();
+      d["total"] = (int)match.size();
       d["mode"] = query.empty() ? "browse" : "search";
       d["offset"] = offset;
       d["limit"] = limit;
       JsonArray arr = d["entries"].to<JsonArray>();
-      int emitted = 0;
-      for (size_t i = (size_t)std::max(0, offset); i < all.size() && emitted < limit; i++) {
-        const auto& e = all[i];
-        if (!query.empty() && e.content.find(query) == std::string::npos) continue;
+      for (size_t i = (size_t)offset; i < match.size() && (int)(i - offset) < limit; i++) {
+        const auto& e = *match[i];
         JsonObject o = arr.add<JsonObject>();
         o["id"] = e.id;
         o["content"] = e.content;
@@ -512,7 +536,6 @@ class WebApi {
         o["ttlHours"] = e.ttlHours;
         o["lastRecallHours"] = e.lastRecallHours;
         o["nsLabel"] = e.ns;
-        emitted++;
       }
       std::string out; serializeJson(d, out); return out;
     });
@@ -590,14 +613,6 @@ class WebApi {
       d["count"] = count;
       std::string out; serializeJson(d, out); return out;
     });
-  }
-
-  ApiResp filesList(const std::string&) {
-    // The instance keeps a real file store, but the web Files panel wants a
-    // structured listing the file tools do not expose directly; report an honest
-    // empty-but-present store rather than a fabricated file list. (A structured
-    // listing is a clean follow-up once the store exposes one.)
-    return okJson(R"({"present":true,"count":0,"bytes":0,"files":[]})");
   }
 
   // ------------------------------------------------------------------ static
@@ -695,15 +710,6 @@ class WebApi {
   }
 
   // ------------------------------------------------------------------ sign-in
-  ApiResp signinExchange() {
-    // The tunnel already authenticated the owner; hand back this instance's token
-    // so a ?c= flow (or a token-less browser) signs in without a second step.
-    JsonDocument d;
-    d["token"] = webToken_;
-    std::string out; serializeJson(d, out);
-    return okJson(out);
-  }
-
   ApiResp tokenRegen() {
     // A hosted instance's token is platform-managed; do not rotate it here.
     JsonDocument d;
@@ -774,9 +780,10 @@ class WebApi {
   ReplyBuffer* replies_;
   std::string webToken_;
 
-  // Single-owner chat poll state (one pending web turn at a time).
+  // Single-owner chat poll state (one pending web turn at a time; touched only on
+  // the single HTTP thread, so no synchronization is needed).
   uint64_t awaitFromSeq_ = 0;
-  uint64_t awaitTurnCount_ = 0;
+  time_t awaitDeadline_ = 0;
   bool awaiting_ = false;
 };
 

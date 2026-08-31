@@ -98,7 +98,17 @@ class EngineThread {
   std::future<std::string> dispatchRead(std::function<std::string()> fn) {
     auto prom = std::make_shared<std::promise<std::string>>();
     auto fut = prom->get_future();
-    post([fn, prom] { prom->set_value(fn()); });
+    // The task runs on the engine thread with NO try/catch around it (run()), so a
+    // throw from fn() (e.g. bad_alloc mid-serialize) would take the whole daemon
+    // down via std::terminate. Contain it here: on any exception the promise still
+    // resolves (empty), and the awaiting handler reports an honest 503.
+    post([fn, prom] {
+      try {
+        prom->set_value(fn());
+      } catch (...) {
+        try { prom->set_exception(std::current_exception()); } catch (...) {}
+      }
+    });
     return fut;
   }
 

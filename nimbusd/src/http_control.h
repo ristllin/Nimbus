@@ -57,11 +57,11 @@ class HttpControl {
   // `token` empty = no gate (dev). Non-empty = require Authorization: Bearer or
   // ?token= on every path except /healthz.
   HttpControl(EngineThread* eng, const std::string& bindAddr, int port,
-              std::string token, std::string dataDir = "/data",
-              ReplyBuffer* replies = nullptr, NimbusdRig* rig = nullptr)
+              std::string token, ReplyBuffer* replies = nullptr,
+              NimbusdRig* rig = nullptr)
       : eng_(eng), bindAddr_(bindAddr), port_(port), token_(std::move(token)),
-        dataDir_(std::move(dataDir)), replies_(replies),
-        page_(buildWebUiPage(token_)), api_(rig, eng, replies) {
+        dataDir_(rig ? rig->options().dataDir : std::string("/data")),
+        replies_(replies), page_(buildWebUiPage(token_)), api_(rig, eng, replies) {
     api_.setWebToken(token_);
   }
   ~HttpControl() { stop(); }
@@ -124,9 +124,19 @@ class HttpControl {
     if (headerEnd == std::string::npos) { respond(fd, 400, "text/plain", "bad request"); return; }
 
     const std::string head = req.substr(0, headerEnd);
-    size_t contentLen = 0;
+    // Content-Length is read BEFORE the auth gate, so an unauthenticated peer must
+    // not be able to make the daemon buffer an unbounded body. Cap it: a negative
+    // or oversized length (atol -> huge size_t) is rejected with 413 rather than
+    // read into memory. The web surface's bodies are tiny (a chat line, a form).
+    static constexpr size_t kMaxBody = 1u * 1024 * 1024;
+    long clRaw = 0;
     { size_t p = ciFind(head, "content-length:");
-      if (p != std::string::npos) contentLen = (size_t)std::atol(head.c_str() + p + 15); }
+      if (p != std::string::npos) clRaw = std::atol(head.c_str() + p + 15); }
+    if (clRaw < 0 || (size_t)clRaw > kMaxBody) {
+      respond(fd, 413, "text/plain", "request body too large");
+      return;
+    }
+    const size_t contentLen = (size_t)clRaw;
     std::string body = req.substr(headerEnd + 4);
     while (body.size() < contentLen) {
       ssize_t n = ::recv(fd, buf, sizeof(buf), 0);
@@ -174,12 +184,11 @@ class HttpControl {
       (this->*r.fn)(fd, path, body);
       return;
     }
-    // The web API surface (all token-gated data, except the pre-auth sign-in code
-    // exchange). Handled by WebApi with honest Virtual Nimbus semantics.
-    const std::string apiBase = path.substr(0, path.find('?'));
-    if (apiBase.rfind("/api/", 0) == 0) {
-      const bool preAuth = apiBase == "/api/signin/exchange";
-      if (!preAuth && !authorized(path, head)) {
+    // The web API surface: all token-gated data, handled by WebApi with honest
+    // Virtual Nimbus semantics. Nothing here is ungated - the served page already
+    // seeds the token, so there is no pre-auth endpoint to disclose the secret.
+    if (path.rfind("/api/", 0) == 0) {
+      if (!authorized(path, head)) {
         respond(fd, 401, "application/json", R"({"error":"unauthorized"})");
         return;
       }
@@ -392,7 +401,8 @@ class HttpControl {
   void respond(int fd, int status, const char* ctype, const std::string& body) {
     const char* reason = status == 200 ? "OK" : status == 202 ? "Accepted"
                          : status == 400 ? "Bad Request" : status == 401 ? "Unauthorized"
-                         : status == 404 ? "Not Found" : status == 503 ? "Service Unavailable"
+                         : status == 404 ? "Not Found" : status == 413 ? "Payload Too Large"
+                         : status == 500 ? "Internal Server Error" : status == 503 ? "Service Unavailable"
                          : "OK";
     std::string h = "HTTP/1.0 " + std::to_string(status) + " " + reason + "\r\n";
     h += "Content-Type: " + std::string(ctype) + "\r\n";

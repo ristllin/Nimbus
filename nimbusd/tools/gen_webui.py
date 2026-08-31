@@ -53,7 +53,13 @@ def logo_literal() -> str:
     m = re.search(r'UI_LOGO_SVG\[\]\s*PROGMEM\s*=\s*(".*")\s*;', LOGO.read_text(), re.S)
     if not m:
         sys.exit("FAIL: could not extract UI_LOGO_SVG from ui_logo.h")
-    return m.group(1)
+    lit = m.group(1)
+    # Sanity-guard the greedy extraction: the literal must be exactly the SVG
+    # string (starts and ends where an <svg>...</svg> C string does), so a stray
+    # match can never ship malformed bytes into kLogoSvg.
+    if not lit.startswith('"<svg') or not lit.rstrip().endswith('svg>"'):
+        sys.exit("FAIL: extracted UI_LOGO_SVG is not a single <svg> string literal")
+    return lit
 
 
 def main() -> None:

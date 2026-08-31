@@ -29,37 +29,37 @@ static bool has(const std::string& hay, const std::string& needle) {
 
 struct Out { int status = 0; std::string body; };
 
-// One request over the daemon's own curl transport, authenticated the way the web
-// app does: the X-Nimbus-Token header. `tokenHdr` empty = send no token.
-static bool req(DaemonHttpTransport& c, int port, const std::string& method,
-                const std::string& path, const std::string& tokenHdr,
-                const std::string& reqBody, Out& out) {
+// One request, authenticated the way the web app is - the X-Nimbus-Token header
+// (empty tok = send none). Grouped into a struct so the helper stays within the
+// argument-count gate.
+struct Call { std::string method, path, tok, body; };
+
+static Out doReq(DaemonHttpTransport& c, int port, const Call& k) {
   agent::HttpRequest r;
-  r.method = method;
+  r.method = k.method;
   r.host = "127.0.0.1";
   r.port = port;
   r.tls = false;
-  r.path = path;
+  r.path = k.path;
   r.timeoutMs = 8000;
-  if (!tokenHdr.empty()) r.headers.push_back({"X-Nimbus-Token", tokenHdr});
-  if (method != "GET") {
+  if (!k.tok.empty()) r.headers.push_back({"X-Nimbus-Token", k.tok});
+  if (k.method != "GET") {
     r.headers.push_back({"Content-Type", "application/x-www-form-urlencoded"});
-    r.body = reqBody;
+    r.body = k.body;
   }
   agent::HttpResponse resp;
   std::string err;
-  if (!c.exec(r, resp, err)) return false;
-  out.status = resp.status;
-  out.body = resp.body;
-  return true;
+  Out out;
+  if (c.exec(r, resp, err)) { out.status = resp.status; out.body = resp.body; }
+  return out;
 }
 
 static Out G(DaemonHttpTransport& c, int port, const std::string& path, const std::string& tok) {
-  Out o; req(c, port, "GET", path, tok, "", o); return o;
+  return doReq(c, port, {"GET", path, tok, ""});
 }
 static Out P(DaemonHttpTransport& c, int port, const std::string& path, const std::string& tok,
              const std::string& body = "") {
-  Out o; req(c, port, "POST", path, tok, body, o); return o;
+  return doReq(c, port, {"POST", path, tok, body});
 }
 
 // Home + Assistant snapshots: honest virtual state, real health/orch shapes.
@@ -108,8 +108,7 @@ static void checkMemory(ndtest::Ctx& c, DaemonHttpTransport& cl, int port, const
   Out cfgGet = G(cl, port, "/api/mem/config", tok);
   c.ok(cfgGet.status == 200 && has(cfgGet.body, "\"retrieval_count\""),
        "mem/config GET returns the retrieval knobs");
-  Out cfgPut;
-  req(cl, port, "PUT", "/api/mem/config", tok, "retrieval_count=7&max_vectors=1234", cfgPut);
+  Out cfgPut = doReq(cl, port, {"PUT", "/api/mem/config", tok, "retrieval_count=7&max_vectors=1234"});
   c.ok(cfgPut.status == 200, "mem/config PUT -> 200");
   c.ok(has(G(cl, port, "/api/mem/config", tok).body, "\"retrieval_count\":7"),
        "the PUT persisted (retrieval_count is now 7)");
@@ -200,7 +199,7 @@ int main() {
   // Wire reply delivery into the ring exactly as the daemon does, so the web chat
   // surface sees every reply the engine produces (including the honest keyless one).
   rig.setDeliver([&replies](const std::string&, const std::string& t) { replies.push("assistant", t); });
-  HttpControl http(&eng, "127.0.0.1", 0, token, dataDir, &replies, &rig);
+  HttpControl http(&eng, "127.0.0.1", 0, token, &replies, &rig);
   const int port = http.start();
   c.ok(port > 0, "control surface bound a loopback port");
 

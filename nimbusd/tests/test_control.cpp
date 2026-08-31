@@ -125,7 +125,7 @@ int main() {
 
   const std::string token = "s3kret-web-token";
   ReplyBuffer replies;
-  HttpControl http(&eng, "127.0.0.1", 0, token, dataDir, &replies, &rig);
+  HttpControl http(&eng, "127.0.0.1", 0, token, &replies, &rig);
   const int port = http.start();
   c.ok(port > 0, "control surface bound a loopback port");
 
