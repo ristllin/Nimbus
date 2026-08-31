@@ -134,14 +134,18 @@ bool urlRoutableToProviderHead(const std::string& url);
 //   - disabled or prov mismatch (an unknown/future prov matches NO head) -> false;
 //   - a device-dialed entry left at the default prov "any" is device-side only
 //     (the device dials it; it is never handed to a head) -> false;
-//   - a kind=="mcp" entry whose URL is not cloud-routable -> false.
+//   - any entry whose URL would ride the wire but is not cloud-routable -> false
+//     (keyed on url PRESENCE, not kind, so a connector entry that falls back to
+//     server_url cannot smuggle a private URL past the guard).
 bool forwardsToProviderHead(const ConnectorInfo& c, const char* head);
 
 // Config-time validation for one connector entry (empty = safe to save). Returns
 // a short, owner-facing error when the entry would be forwarded to a provider
-// head but carries a private/unroutable URL, so the misconfig fails at SAVE time
-// with a clear next step, not mid-turn. Callers (the token-gated connectors save
-// endpoint) reject the save and surface the string.
+// head but carries a private/unroutable URL, so the misconfig can fail at SAVE
+// time with a clear next step, not mid-turn. Intended caller: the token-gated
+// connectors save endpoint (POST /api/connectors), which rejects the save and
+// surfaces the string. The turn path does NOT depend on it - forwardsToProviderHead
+// already keeps a bad entry off the head regardless of whether the save was gated.
 std::string connectorConfigError(const ConnectorInfo& c);
 
 // --- attach builders (append to an existing request/agent JsonDocument) -------

@@ -199,6 +199,39 @@ static void test_url_routable_predicate() {
   TEST_ASSERT_FALSE(urlRoutableToProviderHead("ftp://example.com/mcp"));    // non-http scheme
   TEST_ASSERT_FALSE(urlRoutableToProviderHead("http://user@192.168.1.1/mcp"));  // userinfo can't hide a LAN host
   TEST_ASSERT_FALSE(urlRoutableToProviderHead(""));
+  // Evasion variants a review confirmed (CUM-255 hardening) - all must be caught:
+  TEST_ASSERT_FALSE(urlRoutableToProviderHead("http://127.0.0.1?x=1"));      // query, no path
+  TEST_ASSERT_FALSE(urlRoutableToProviderHead("http://10.0.0.5#frag"));      // fragment, no path
+  TEST_ASSERT_FALSE(urlRoutableToProviderHead("http://[::ffff:10.0.0.1]/mcp"));   // IPv4-mapped private
+  TEST_ASSERT_FALSE(urlRoutableToProviderHead("http://[::ffff:127.0.0.1]/mcp"));  // IPv4-mapped loopback
+  TEST_ASSERT_FALSE(urlRoutableToProviderHead("http://[0:0:0:0:0:0:0:1]/mcp"));   // non-canonical loopback
+  TEST_ASSERT_FALSE(urlRoutableToProviderHead("http://[0::1]/mcp"));
+  TEST_ASSERT_FALSE(urlRoutableToProviderHead("http://localhost./mcp"));     // trailing-dot FQDN
+  TEST_ASSERT_FALSE(urlRoutableToProviderHead("http://printer.local./mcp"));
+  TEST_ASSERT_FALSE(urlRoutableToProviderHead("http://10.0.0.1./mcp"));      // trailing-dot IPv4
+  TEST_ASSERT_FALSE(urlRoutableToProviderHead("http://2130706433/mcp"));     // decimal 127.0.0.1
+  TEST_ASSERT_FALSE(urlRoutableToProviderHead("http://0x7f000001/mcp"));     // hex 127.0.0.1
+  TEST_ASSERT_FALSE(urlRoutableToProviderHead("http://3232235521/mcp"));     // decimal 192.168.0.1
+  // A public IPv4-mapped IPv6 and a public integer host stay routable.
+  TEST_ASSERT_TRUE(urlRoutableToProviderHead("http://[::ffff:93.184.216.34]/mcp"));
+}
+
+// A kind=="connector" entry with an EMPTY connector_id falls into attachOpenAIWire's
+// server_url branch, so a private URL there must ALSO be blocked - the guard keys on
+// URL presence, not kind=="mcp". (Review-confirmed bypass; CUM-255 hardening.)
+static void test_cum255_connector_kind_empty_cid_lan_blocked() {
+  ConnectorInfo c = mk("x", "openai", "connector", "http://192.168.1.10/mcp", "");  // cid empty
+  std::vector<ConnectorInfo> cs = {c};
+  JsonDocument d;
+  attachOpenAIWire(d, cs, [](const ConnectorInfo&) { return std::string("tok"); });
+  TEST_ASSERT_FALSE(d["tools"].is<JsonArrayConst>());   // LAN url never emitted as server_url
+  TEST_ASSERT_FALSE(forwardsToProviderHead(c, "openai"));
+  // The same shape with a PUBLIC url still forwards (server_url branch works).
+  ConnectorInfo pub = mk("y", "openai", "connector", "https://api.example.com/mcp", "");
+  std::vector<ConnectorInfo> cs2 = {pub};
+  JsonDocument d2;
+  attachOpenAIWire(d2, cs2, [](const ConnectorInfo&) { return std::string("tok"); });
+  TEST_ASSERT_EQUAL(1, d2["tools"].as<JsonArrayConst>().size());
 }
 
 // CLASS GUARD (the invariant, not the instance): over the WHOLE prov-resolution
@@ -248,6 +281,10 @@ static void test_connector_config_error() {
   TEST_ASSERT_TRUE(e.find("device-dialed") != std::string::npos);
   // A device-dialed LAN entry at the default prov "any" is device-side -> OK.
   TEST_ASSERT_TRUE(connectorConfigError(mkDeviceDialed("x", "any", "http://192.168.1.9/mcp")).empty());
+  // A device-dialed entry with an EXPLICIT head prov + LAN url is still device-side
+  // (the attach guard blocks the head path); do not flag it with "turn on
+  // device-dialed" when it already is - review-confirmed wording bug.
+  TEST_ASSERT_TRUE(connectorConfigError(mkDeviceDialed("x", "openai", "http://192.168.1.9/mcp")).empty());
   // A public MCP URL routed to a head -> OK.
   TEST_ASSERT_TRUE(connectorConfigError(mk("x", "openai", "mcp", "https://api.example.com/mcp")).empty());
   // Non-mcp kinds carry no dialed URL -> never this error.
@@ -833,6 +870,7 @@ int main() {
   RUN_TEST(test_openai_remote_mcp_with_bearer);
   RUN_TEST(test_openai_prov_filtering);
   RUN_TEST(test_cum255_device_dialed_lan_not_forwarded_to_head);
+  RUN_TEST(test_cum255_connector_kind_empty_cid_lan_blocked);
   RUN_TEST(test_url_routable_predicate);
   RUN_TEST(test_prov_routing_table_is_fail_closed);
   RUN_TEST(test_connector_config_error);

@@ -132,8 +132,8 @@ std::string hostOf(const std::string& url) {
   std::string scheme = lowerStr(url.substr(0, sep));
   if (scheme != "http" && scheme != "https") return "";
   std::string rest = url.substr(sep + 3);
-  std::string::size_type slash = rest.find('/');
-  std::string hostport = (slash == std::string::npos) ? rest : rest.substr(0, slash);
+  std::string::size_type end = rest.find_first_of("/?#");  // authority ends at path/query/fragment
+  std::string hostport = (end == std::string::npos) ? rest : rest.substr(0, end);
   std::string::size_type at = hostport.rfind('@');       // strip user:pass@ userinfo
   if (at != std::string::npos) hostport = hostport.substr(at + 1);
   if (!hostport.empty() && hostport[0] == '[') {         // [IPv6]:port
@@ -142,7 +142,9 @@ std::string hostOf(const std::string& url) {
   }
   std::string::size_type colon = hostport.find(':');     // host:port
   if (colon != std::string::npos) hostport = hostport.substr(0, colon);
-  return lowerStr(hostport);
+  std::string h = lowerStr(hostport);
+  if (h.size() > 1 && h.back() == '.') h.pop_back();     // drop a trailing FQDN dot
+  return h;
 }
 
 // Parse a dotted-quad into four octets; false if `h` is not a bare IPv4 literal.
@@ -176,22 +178,77 @@ bool privateIPv4(const int o[4]) {
          (o[0] == 169 && o[1] == 254);
 }
 
-// Loopback / unique-local (fc00::/7) / link-local (fe80::/10) IPv6 literal.
-bool privateIPv6(const std::string& h) {
-  if (h.find(':') == std::string::npos) return false;   // not an IPv6 literal
-  if (h == "::1" || h == "::") return true;
-  return h.rfind("fc", 0) == 0 || h.rfind("fd", 0) == 0 || h.rfind("fe8", 0) == 0 ||
-         h.rfind("fe9", 0) == 0 || h.rfind("fea", 0) == 0 || h.rfind("feb", 0) == 0;
+int hexDigit(char c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  return -1;
 }
 
-// A host a provider's CLOUD cannot dial: loopback, private/link-local IP, the
-// unspecified address, or an mDNS `.local` / localhost name.
+// Parse a non-empty base-10 or base-16 digit string into v; false on any bad digit.
+bool parseUint(const std::string& s, int base, unsigned long& v) {
+  v = 0;
+  for (char c : s) {
+    int d = (base == 16) ? hexDigit(c) : ((c >= '0' && c <= '9') ? c - '0' : -1);
+    if (d < 0) return false;
+    v = v * base + d;
+  }
+  return !s.empty();
+}
+
+// A bare-integer / 0x-hex host (`3232235521`, `0x7f000001`) is an obfuscated
+// IPv4 - no legitimate hostname is all digits - so decode it to octets. Returns
+// false when `h` is not one of those numeric forms.
+bool numericHostToIPv4(const std::string& h, int oct[4]) {
+  unsigned long v = 0;
+  const bool hex = (h.rfind("0x", 0) == 0 || h.rfind("0X", 0) == 0);
+  const bool ok = hex ? (h.size() >= 3 && h.size() <= 10 && parseUint(h.substr(2), 16, v))
+                      : (h.size() <= 10 && parseUint(h, 10, v));
+  if (!ok || v > 0xFFFFFFFFul) return false;
+  oct[0] = (v >> 24) & 0xFF; oct[1] = (v >> 16) & 0xFF;
+  oct[2] = (v >> 8) & 0xFF;  oct[3] = v & 0xFF;
+  return true;
+}
+
+// The IPv4 embedded in a mapped/compat IPv6 literal (`::ffff:a.b.c.d`, `::a.b.c.d`),
+// or "" if there is none. Lets a mapped RFC-1918/loopback address be classified
+// by its IPv4 rather than slipping past the IPv6 prefix checks.
+std::string embeddedIPv4(const std::string& h) {
+  std::string::size_type dot = h.find('.');
+  if (dot == std::string::npos) return "";
+  std::string::size_type colon = h.rfind(':', dot);
+  return colon == std::string::npos ? "" : h.substr(colon + 1);
+}
+
+// True for the loopback (`::1` and any zero-run spelling like `0:0:0:0:0:0:0:1`)
+// or the unspecified `::` address. Errs closed on exotic all-but-one-zero forms.
+bool ipv6Loopbackish(const std::string& h) {
+  std::string digits;
+  for (char ch : h) if (ch != ':') digits += ch;
+  std::string::size_type nz = digits.find_first_not_of('0');
+  return nz == std::string::npos || digits.substr(nz) == "1";
+}
+
+// Loopback / unique-local (fc00::/7) / link-local (fe80::/10) IPv6 literal,
+// including IPv4-mapped forms that re-encode a private address.
+bool privateIPv6(const std::string& h) {
+  if (h.find(':') == std::string::npos) return false;   // not an IPv6 literal
+  std::string emb = embeddedIPv4(h);
+  if (!emb.empty()) { int o[4]; return parseIPv4(emb, o) && privateIPv4(o); }
+  if (h.rfind("fc", 0) == 0 || h.rfind("fd", 0) == 0) return true;         // ULA fc00::/7
+  if (h.rfind("fe", 0) == 0 && h.size() > 2 && h[2] >= '8' && h[2] <= 'b')  // fe80::/10
+    return true;
+  return ipv6Loopbackish(h);
+}
+
+// A host a provider's CLOUD cannot dial: loopback, private/link-local IP (in any
+// spelling), the unspecified address, or an mDNS `.local` / localhost name.
 bool privateHost(const std::string& h) {
   if (h.empty() || h == "localhost") return true;
   if (hasSuffix(h, ".local") || hasSuffix(h, ".localhost")) return true;
   if (privateIPv6(h)) return true;
   int o[4];
-  return parseIPv4(h, o) && privateIPv4(o);
+  if (parseIPv4(h, o)) return privateIPv4(o);
+  return numericHostToIPv4(h, o) && privateIPv4(o);   // obfuscated integer/hex IPv4
 }
 
 // The provider heads an entry can be forwarded to. An unknown/future prov names
@@ -213,19 +270,23 @@ bool forwardsToProviderHead(const ConnectorInfo& c, const char* head) {
   // MCP client - it is never handed to a cloud head (CUM-61: doing so 424'd the
   // turn). An EXPLICIT prov still opts a public server into head-attach.
   if (c.deviceDialed && c.prov == "any") return false;
-  // Hard invariant: a remote MCP whose URL the cloud cannot reach never leaves
-  // the device. The device dials it instead; the head would only 424.
-  if (c.kind == "mcp" && !urlRoutableToProviderHead(c.url)) return false;
+  // Hard invariant: ANY entry that would put a URL on the wire (a remote MCP, or a
+  // connector whose first-party connector_id is absent so its url is emitted as
+  // server_url) must carry a URL the cloud can reach. A private URL never leaves
+  // the device (CUM-61: it only 424s the head). Keyed on url PRESENCE, not kind, so
+  // the connector-with-empty-connector_id path cannot smuggle a LAN url past it.
+  if (!c.url.empty() && !urlRoutableToProviderHead(c.url)) return false;
   return true;
 }
 
 std::string connectorConfigError(const ConnectorInfo& c) {
-  if (c.kind != "mcp" || c.url.empty()) return "";       // only remote MCP carries a dialed URL
+  if (c.url.empty()) return "";                          // no dialed URL to validate
   if (urlRoutableToProviderHead(c.url)) return "";       // reachable from a cloud head: fine
-  // Unroutable URL. Safe only when it never reaches a head: a device-dialed entry
-  // at the default prov "any" is dialed by the device itself.
-  const bool headBound = !(c.deviceDialed && c.prov == "any") && provTargetsAnyHead(c.prov);
-  if (!headBound) return "";
+  // A device-dialed server is dialed by the device itself, so a private URL is
+  // expected and safe there - not a config error. The trap is a NON-device-dialed
+  // entry aimed at a provider head (explicit prov or the default "any"): nothing
+  // can reach it, so reject the save with the exact next step.
+  if (c.deviceDialed || !provTargetsAnyHead(c.prov)) return "";
   return "MCP server \"" + c.name + "\" has a private or local URL that a "
          "provider's cloud can't reach. Turn on device-dialed for it (the device "
          "connects directly), or use a public https address.";
