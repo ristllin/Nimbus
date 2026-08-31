@@ -63,6 +63,15 @@ NATIVE_SUITES = [
         "test_fault",
         "the runtime capability-fault registry the resilience suite drives degraded paths with",
     ),
+    (
+        "fresh device / default-NVS (CUM-245/203/189)",
+        "test_fresh_device",
+        "the DEFAULT/ABSENT-NVS device as a first-class STATE: touch defaults as a "
+        "class over ALL board models x TouchKind (a new board without a measured "
+        "default fails, at runtime and at compile time), a stored cal surviving a "
+        "display flip, fresh config == presets (no override leak), the fresh-boot "
+        "posture, and zero-keys reading as no-provider (CUM-211)",
+    ),
 ]
 
 # (class, id, argv, what it pins) - the python host gates.

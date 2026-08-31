@@ -44,7 +44,14 @@ std::string formatCal(const Cal& c);
 
 // Which touch controller a board carries. A portable mirror of solide::TouchKind
 // so lib/core stays driver-free and this default is host-testable.
-enum class TouchKind : uint8_t { Resistive = 0, Capacitive = 1 };
+//
+// `Count` is the enumerator total, NOT a real kind - never pass it to
+// boardDefaultCal(). It is the single place a new board's touch class must
+// register (the seam that maps a controller to its fresh-boot orientation), so
+// the fresh-device property test (test/test_fresh_device) can pin the cardinality
+// at compile time: adding a kind here without a measured default + expectation
+// there fails the build. Keep Count last.
+enum class TouchKind : uint8_t { Resistive = 0, Capacitive = 1, Count = 2 };
 
 // The per-board-model DEFAULT touch calibration (CUM-189). Applied when NVS has no
 // per-unit calibration (a freshly flashed board) AND when the owner clears the

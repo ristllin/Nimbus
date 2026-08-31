@@ -147,7 +147,46 @@ that a real update preserves the flash needs a board:
 
 ---
 
-## 5. Tunnel 502 - device serves 502 for every request (CUM-173) - NOT here
+## 5. Fresh device - the first boot after a flash (CUM-245, CUM-203, CUM-189, CUM-230, CUM-211)
+
+Every other leg runs on a PROVISIONED unit (cal solved, NVS good, a provider
+keyed). The owner hits the FIRST boot after a new version - the exact state that
+shipped touch mirrored (CUM-203) and uncalibrated (CUM-189) out of the box. AGENTS.md
+section 3 makes that STATE a first-class test target; this class pins it.
+
+| Leg | Where | What it pins |
+|---|---|---|
+| `test/test_fresh_device::test_every_touchkind_has_a_measured_default` | HOST | The per-kind default-cal table as a CLASS: EVERY `TouchKind` has a measured, valid, non-mirrored default, and no two kinds share one. A new controller class without a default fails - at runtime (`expectedFlagsFor`) and at COMPILE time (a `static_assert` on the `TouchKind::Count` sentinel). Verified RED against the `(void)kind` leak and against a new kind added with no default. |
+| `test/test_fresh_device::test_all_board_models_resolve_a_correct_default` | HOST | Reads the driver's own board constants (`kBoardSolideS3`, `kBoardFreenoveS3`), maps each board's `touchKind` to the portable mirror (the same collapse `src/main.cpp` / `src/net/webui.cpp` make), and asserts each ships a correct default - so a mis-declared board `touchKind`, or a new `board_*.h`, is caught here. |
+| `test/test_fresh_device::test_default_cal_flags_are_flip_independent` + `..._flip_compose_is_a_bijection_over_the_panel` | HOST | A stored cal stays valid across a display flip: the 180 is `orientTouch`'s job, composed on top, never folded into the cal (CUM-160). Every kind's default flags are flip-independent (never `invertX`), and the flip point-reflects the whole panel with no dead zone. |
+| `test/test_fresh_device::test_fresh_config_is_all_presets_no_overrides` + `..._absent_blob_leaves_defaults_untouched` | HOST | First-boot config resolution: a fresh `Config` is EXACTLY the Balanced presets over every param, no override leaking from uninitialized storage; an absent blob leaves defaults untouched (all-or-nothing). |
+| `test/test_fresh_device::test_fresh_boot_posture_is_profile_seeded` | HOST | Onboarding posture (CUM-230): the fresh-boot ring level is the one the profile seeds (Balanced -> Calm), never an uninitialized Dark (invisible) or Full (drain). |
+| `test/test_fresh_device::test_zero_keys_reads_as_no_provider` | HOST | Provider gate on zero keys (CUM-211): a fresh device with no key on any slot reads as no-provider - the input the engine's honest "set up a provider" reply is built on. The engine-level reply itself is `test/test_harness_turn` (not duplicated). |
+
+### BENCH leg - first boot on real glass (CUM-245 leg 3; owed to the bench)
+
+The host legs prove the fresh-boot DECISIONS are pure and correct. The out-of-box
+experience on glass needs a board and is NOT host-provable - it is the bench half,
+coordinated with the CUM-174 render/touch legs above (run their default-NVS pass):
+
+- **Board:** both families, flashed CLEAN (erase flash, no NVS) so cal is absent.
+- **Steps:**
+  1. `pio run -e esp32s3 -t erase` then upload the candidate (freenove: `esp32s3-cyd`).
+  2. Boot to first-run; BEFORE any calibration, inject the standard corner taps
+     (`test_l29_release_gate.py::TestTouchCorrectness`) and assert they map within
+     tolerance on the fresh default cal.
+  3. Confirm render reaches the glass (section 1 bench leg) and the onboarding
+     wizard can be completed - `store::onboarded()` is false out of the box.
+- **NVS-adversarial variant:** boot once with an adversarial persisted `tchCal` /
+  `tftFlip` (frozen keys survive a reflash) - the nimbus-4 touch-180-across-firmware
+  case. Restore NVS after.
+- **Pass:** on the fresh default the injected taps land correct on BOTH families and
+  the UI is drawn (not white, not mirrored); the pre-CUM-203 build FAILS the resistive
+  tap. Shares the render/tap bench harness with sections 1-2 (default-NVS pass).
+
+---
+
+## 6. Tunnel 502 - device serves 502 for every request (CUM-173) - NOT here
 
 Covered by the cloud repo's lifecycle e2e (the connected-device 5xx interstitial)
 and the device-side CloudLoop HIL leg
@@ -165,4 +204,5 @@ cumulo e2e's (CUM-228 routing note); the CloudLoop bench leg is the device half.
 | Touch | touch_cal (per-kind default, solve, orientTouch) | injected + physical tap (TouchCorrectness) |
 | Crash/boot loop | ota_logic (shouldRollback, bootHealthy), fault | watchdog reboot, N-reboot, OTA rollback (CrashLoop/OtaRollback) |
 | Settings-across-OTA | check_ota_preserves_nvs | provision -> OTA -> power-cycle -> read-NVS diff |
+| Fresh device / default-NVS | fresh_device (touch class, flip compose, fresh config/posture, zero-key gate) | clean-flash first-boot tap + render + onboarding, NVS-adversarial |
 | Tunnel 502 | (cloud repo) | CloudLoop (TunnelLoopback) |
