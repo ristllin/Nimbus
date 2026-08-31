@@ -5,6 +5,12 @@ hand-built classic with a real LED ring (about **$60-75** and an afternoon), or
 the **all-in-one** Freenove board (about **$20-25** and minutes, nothing to
 wire).
 
+:::tip Get your provider key before you start
+Setup puts your phone or laptop on the device's own Wi-Fi, which has no internet,
+so you cannot fetch a key partway through. Create it first and keep it pasteable on
+the device you will set up from. See [Get your provider key](provider-keys.md).
+:::
+
 ## Choose your build
 
 | | Classic Nimbus board | All-in-one (Freenove CYD) |
@@ -42,6 +48,7 @@ one board, plug in USB-C, flash.
    device speaker, are OpenAI-only). The setup wizard needs one verified key. Skip
    this if you only want the Notifier status light. Prefer one prepaid balance
    across every provider? Use a [Cumulo key](../cloud/cumulo-key.md).
+   Step-by-step for each provider: **[Get your provider key](provider-keys.md)**.
 6. **Optional, recommended:** a microSD card (formatted FAT32) for long-term
    memory and media, and a Telegram account to chat with the assistant.
 

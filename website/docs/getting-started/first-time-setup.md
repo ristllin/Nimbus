@@ -17,6 +17,13 @@ The whole path, detailed below:
 3. **Join that Wi-Fi.** A setup page opens by itself, already signed in.
 4. **Walk the wizard:** pick your Wi-Fi, add one provider key. Done.
 
+:::danger Get your provider key before step 1
+Setup puts your phone or laptop on the device's own Wi-Fi, which has **no
+internet**, so you cannot fetch a key partway through. Create it first and keep it
+pasteable on the same device you will set up from. Step-by-step for each provider:
+[Get your provider key](../quick-start/provider-keys.md).
+:::
+
 :::tip The two things you cannot skip
 Your **home Wi-Fi** and **one verified provider key**. Everything else (SD card,
 Telegram, voice, device name) is optional and can wait. If you only want the
@@ -139,7 +146,9 @@ The wizard asks for two required things and lets you skip the rest.
 
 **Which provider key?** Any one verified key runs the assistant. **Mistral is the
 easiest start:** free tier, and the voice default. OpenAI and Anthropic work too.
-Keys are write-only: a saved key shows as "set" and is never displayed again.
+Not sure how to create one? [Get your provider key](../quick-start/provider-keys.md)
+walks each provider step by step. Keys are write-only: a saved key shows as "set"
+and is never displayed again.
 
 :::info On a touchscreen board, keep the wizard open
 When the device joins your Wi-Fi, its setup network shuts down (to protect the

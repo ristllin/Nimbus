@@ -33,6 +33,7 @@ const PAGES = [
   ['quick-start/what-you-need.md', 'quick-start/what-you-need.md', 'What you need', 'What you need'],
   ['quick-start/computer-setup.md', 'quick-start/computer-setup.md', 'Set up your computer', 'Set up your computer'],
   ['quick-start/flash.md', 'quick-start/flash.md', 'Flash the firmware', 'Flash the firmware'],
+  ['quick-start/provider-keys.md', 'quick-start/provider-keys.md', 'Get your provider key', 'Provider keys'],
   ['quick-start/setup-wizard.md', 'quick-start/setup-wizard.md', 'Set up the device', 'Set up the device'],
   ['quick-start/first-conversation.md', 'quick-start/first-conversation.md', 'Your first conversation', 'First conversation'],
   ['quick-start/notifier-quick-start.md', 'quick-start/notifier-quick-start.md', 'Notifier quick start', 'Notifier quick start'],
