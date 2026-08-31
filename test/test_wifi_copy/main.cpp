@@ -397,6 +397,13 @@ static void test_captive_landing_states_next_step() {
   TEST_ASSERT_TRUE(has(html, "href=\"/?t=abcd\""));  // the way in, authenticated
   TEST_ASSERT_TRUE(printableAscii(html));
   TEST_ASSERT_FALSE(has(html, "<TITLE>Success</TITLE>"));  // never the Apple success page
+
+  // The AP SSID is the owner-set device name: it must be HTML-escaped, never able to
+  // inject a tag into the page served on the setup AP.
+  const std::string evil =
+      nimbus::wifi::captiveLandingHtml("Ni<script>x", "/?t=x", "192.168.4.1");
+  TEST_ASSERT_FALSE(has(evil, "<script>"));            // the injected tag never survives raw
+  TEST_ASSERT_TRUE(has(evil, "Ni&lt;script&gt;x"));    // it is escaped instead
 }
 
 int main() {

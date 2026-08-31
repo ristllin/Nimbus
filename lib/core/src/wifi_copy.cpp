@@ -139,11 +139,32 @@ bool isCaptiveProbePath(const std::string& path) {
   return false;
 }
 
+// Escape the five HTML-significant characters. The AP SSID is the owner-set device
+// name; without this an ampersand breaks the markup and a '<' could inject a tag on
+// the page served to a client on the setup AP. Applied to every interpolated value.
+static std::string htmlEscape(const std::string& s) {
+  std::string o;
+  o.reserve(s.size());
+  for (char c : s) {
+    switch (c) {
+      case '&':  o += "&amp;";  break;
+      case '<':  o += "&lt;";   break;
+      case '>':  o += "&gt;";   break;
+      case '"':  o += "&quot;"; break;
+      case '\'': o += "&#39;";  break;
+      default:   o += c;        break;
+    }
+  }
+  return o;
+}
+
 std::string captiveLandingHtml(const std::string& apSsid, const std::string& openUrl,
                                const std::string& apAddr) {
-  const std::string name = apSsid.empty() ? std::string("the setup network") : asciiOnly(apSsid);
-  const std::string open = openUrl.empty() ? std::string("/") : openUrl;
-  const std::string addr = apAddr.empty() ? std::string("192.168.4.1") : asciiOnly(apAddr);
+  const std::string name = htmlEscape(apSsid.empty() ? std::string("the setup network")
+                                                     : asciiOnly(apSsid));
+  const std::string open = htmlEscape(openUrl.empty() ? std::string("/") : openUrl);
+  const std::string addr = htmlEscape(apAddr.empty() ? std::string("192.168.4.1")
+                                                     : asciiOnly(apAddr));
   // Static, JavaScript-free page: a captive-network mini-browser often cannot run the
   // full setup app, so this always renders and always states the next step. Inline
   // style only. Sentence case, US spelling, no em dash (user-facing copy).
