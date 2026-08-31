@@ -147,32 +147,23 @@ static const int16_t W = 320, H = 240;
 // change), the SAME stored cal must still land taps: the 180 is composed ON TOP by
 // orientTouch, never folded into the cal. This pins that a flip does not invalidate
 // a stored calibration - the regression that put taps 180 out in the field.
-static void test_stored_cal_survives_a_flip_via_compose() {
-  // The default flags are flip-INDEPENDENT: flipping the display never rewrites the
-  // stored cal (in particular it never sets invertX - that would double-apply).
-  const Cal res = boardDefaultCal(TouchKind::Resistive);
-  TEST_ASSERT_FALSE(res.invertX);
-
-  // A calibrated point in the canonical frame. Unflipped it is identity; flipped it
-  // rotates 180 WITH the display, and flipping twice returns to canonical (proof the
-  // compose is exactly the 180 and nothing more).
-  const Point cal{47, 96, true};
-  const Point up = orientTouch(cal, /*displayFlipped=*/false, W, H);
-  TEST_ASSERT_EQUAL_INT16(47, up.x);
-  TEST_ASSERT_EQUAL_INT16(96, up.y);
-
-  const Point flipped = orientTouch(cal, /*displayFlipped=*/true, W, H);
-  TEST_ASSERT_EQUAL_INT16(W - 1 - 47, flipped.x);
-  TEST_ASSERT_EQUAL_INT16(H - 1 - 96, flipped.y);
-
-  const Point round = orientTouch(flipped, /*displayFlipped=*/true, W, H);
-  TEST_ASSERT_EQUAL_INT16(47, round.x);
-  TEST_ASSERT_EQUAL_INT16(96, round.y);
+// The fresh-device claim (distinct from test_touch_cal's orientTouch point tests):
+// a board default's flags are FLIP-INDEPENDENT. flipping the display never rewrites
+// the stored cal - in particular it never sets invertX, which would double-apply
+// against orientTouch and put taps 180 out. Asserted for EVERY kind's default, so a
+// kind whose default folded the flip into the cal would fail.
+static void test_default_cal_flags_are_flip_independent() {
+  for (int i = 0; i < static_cast<int>(TouchKind::Count); ++i) {
+    const Cal d = boardDefaultCal(static_cast<TouchKind>(i));
+    TEST_ASSERT_FALSE(d.invertX);  // the 180 is orientTouch's job, never baked in
+  }
 }
 
 // Property across the whole panel: for every point, the flipped mapping is the exact
-// point-reflection through the center, so a stored cal + a flip covers the panel
-// with no dead zone and no double-mapped pixel.
+// point-reflection through the center, and flipping twice returns to canonical - so a
+// stored cal stays valid across a flip, covering the panel with no dead zone and no
+// double-mapped pixel. (test_touch_cal point-tests orientTouch at fixed corners; this
+// is the panel-wide bijection, the fresh-device "cal survives a flip" property.)
 static void test_flip_compose_is_a_bijection_over_the_panel() {
   for (int16_t y = 0; y < H; y += 37) {
     for (int16_t x = 0; x < W; x += 41) {
@@ -253,10 +244,30 @@ static void test_fresh_boot_posture_is_profile_seeded() {
 // the engine-level reply; here we pin the fresh-boot INPUT it depends on so a new
 // provider slot can't ship reading as keyed-by-default.)
 static void test_zero_keys_reads_as_no_provider() {
-  // A no-keys config, exactly as store_config wires it on a device with empty NVS:
-  // hasKey false for every slot, and anyKeyed COMPUTED as the device does it (an OR
-  // over every slot + custom), not hardcoded - so a slot that ever ships
-  // keyed-by-default would flip anyKeyed and fail here.
+  // The engine-level honest reply is driven and asserted in test/test_harness_turn
+  // (CUM-211); NOT duplicated. What the fresh-device tier owns is the REGISTRY the
+  // gate iterates - the recurring CUM-242 bug was a provider that some surface did
+  // not enumerate, so it shipped ungated. Pin the canonical registry so a new
+  // provider is a first-class slot the gate cannot miss, and that "custom" is routed
+  // separately (never a first-class slot).
+  TEST_ASSERT_TRUE(nimbus::orch::kProviderSlotCount > 0);
+  int recommended = 0;
+  for (size_t i = 0; i < nimbus::orch::kProviderSlotCount; ++i) {
+    const nimbus::orch::ProviderSlot& s = nimbus::orch::kProviderSlots[i];
+    TEST_ASSERT_NOT_NULL(s.slug);
+    TEST_ASSERT_TRUE(s.slug[0] != '\0');       // a real machine key
+    TEST_ASSERT_NOT_NULL(s.keyField);          // a web key-write field to gate on
+    TEST_ASSERT_TRUE(nimbus::orch::isProviderSlug(s.slug));
+    TEST_ASSERT_EQUAL_PTR(&s, nimbus::orch::findProviderSlot(s.slug));
+    if (s.recommended) ++recommended;
+  }
+  TEST_ASSERT_EQUAL_MESSAGE(1, recommended, "exactly one recommended flagship slot");
+  TEST_ASSERT_FALSE(nimbus::orch::isProviderSlug("custom"));  // routed separately
+  TEST_ASSERT_NULL(nimbus::orch::findProviderSlot(""));
+
+  // The fresh-boot INPUT the honest reply depends on: a device with a key on NO slot
+  // reads as unconfigured. anyKeyed is the device-truth OR over exactly this registry
+  // (plus custom); with no key on any slot it must be false.
   agent::HarnessConfig cfg;
   cfg.provider.hasKey = [](const std::string&) { return false; };
   cfg.provider.anyKeyed = [&cfg] {
@@ -264,13 +275,7 @@ static void test_zero_keys_reads_as_no_provider() {
       if (cfg.provider.hasKey(nimbus::orch::kProviderSlots[i].slug)) return true;
     return cfg.provider.hasKey("custom");
   };
-
   TEST_ASSERT_FALSE(cfg.provider.anyKeyed());
-  for (size_t i = 0; i < nimbus::orch::kProviderSlotCount; ++i) {
-    TEST_ASSERT_FALSE_MESSAGE(cfg.provider.hasKey(nimbus::orch::kProviderSlots[i].slug),
-                              nimbus::orch::kProviderSlots[i].slug);
-  }
-  TEST_ASSERT_FALSE(cfg.provider.hasKey("custom"));
 }
 
 int main() {
@@ -279,7 +284,7 @@ int main() {
   RUN_TEST(test_every_touchkind_has_a_measured_default);
   RUN_TEST(test_all_board_models_resolve_a_correct_default);
   // 2. flip compose - a stored cal survives a display flip
-  RUN_TEST(test_stored_cal_survives_a_flip_via_compose);
+  RUN_TEST(test_default_cal_flags_are_flip_independent);
   RUN_TEST(test_flip_compose_is_a_bijection_over_the_panel);
   // 3. first-boot config resolution
   RUN_TEST(test_fresh_config_is_all_presets_no_overrides);
