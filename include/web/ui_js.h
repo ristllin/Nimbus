@@ -577,8 +577,11 @@ function applyState(d){
     if(fm&&fmb!=='pending'&&fmb!=='error'){
       if(d.ota==='available')fbState(fm,'ok','Update available: '+(d.otaLatest||'a new version')+'.');
       else if(d.ota==='up-to-date')fbState(fm,'none','You are on the latest version.');
+      else if(d.ota==='downloading'||d.ota==='verifying'||d.ota==='rebooting')fbState(fm,'ok','Updating. Keep the device powered on; it restarts when done.');
       else if(d.ota==='unsupported')fbState(fm,'none','Updates aren\'t available on this build.');
       else if(d.ota==='idle')fbState(fm,'idle');
+      // 'checking'/'error' are left to the action's own pending/error feedback
+      // (which this block never writes, so it can never deadlock itself).
     }
     if(d.autoUpd!==undefined){const au=$('autoUpd');
       if(au&&document.activeElement!==au){au.checked=!!d.autoUpd;
@@ -875,8 +878,10 @@ function _openModal(o){
     var ok=$('modalOk'), cancel=$('modalCancel');
     ok.textContent=o.ok||'Confirm'; ok.className=o.danger?'danger':'';
     cancel.textContent=o.cancel||'Cancel'; cancel.style.display=isAlert?'none':'';
-    // Type-to-confirm: OK stays disabled until the input matches the exact word.
-    var gate=function(){ if(o.confirmWord)ok.disabled=(inp.value.trim()!==o.confirmWord); };
+    // Type-to-confirm: OK stays disabled until the input matches the word,
+    // case-insensitively (the caller re-checks the same way), so a lowercase
+    // entry is accepted just as the native prompt used to accept it.
+    var gate=function(){ if(o.confirmWord)ok.disabled=(inp.value.trim().toUpperCase()!==o.confirmWord.toUpperCase()); };
     var done=false;
     var finish=function(val){ if(done)return; done=true;
       ov.classList.remove('show'); document.removeEventListener('keydown',onKey,true);
@@ -886,6 +891,15 @@ function _openModal(o){
     function onKey(e){
       if(e.key==='Escape'){ e.preventDefault(); finish(cancelVal()); }
       else if(e.key==='Enter'){ if(!ok.disabled){ e.preventDefault(); finish(okVal()); } }
+      else if(e.key==='Tab'){
+        // Keep focus inside the dialog (native confirm/prompt did), so Tab can't
+        // reach the controls behind the dimmed overlay.
+        var f=[inp,cancel,ok].filter(function(el){return el&&el.offsetParent!==null&&!el.disabled;});
+        if(!f.length)return;
+        var first=f[0], last=f[f.length-1], a=document.activeElement;
+        if(e.shiftKey&&a===first){ e.preventDefault(); last.focus(); }
+        else if(!e.shiftKey&&a===last){ e.preventDefault(); first.focus(); }
+      }
     }
     ok.onclick=function(){ if(!ok.disabled)finish(okVal()); };
     cancel.onclick=function(){ finish(cancelVal()); };
@@ -2470,7 +2484,7 @@ if($('memprev'))$('memprev').onclick=()=>memPage(-1);
 if($('memnext'))$('memnext').onclick=()=>memPage(1);
 if($('memflushall'))$('memflushall').onclick=()=>{
   const n=(window._memTotal||0);
-  uiPrompt('Delete ALL '+n+' memories, permanent ones included? This cannot be undone.\n\nType DELETE to confirm.',{ok:'Delete All',danger:true,confirmWord:'DELETE',placeholder:'DELETE'}).then(p=>{if(p==='DELETE')memVecOp('flush',null,'DELETE');});};
+  uiPrompt('Delete ALL '+n+' memories, permanent ones included? This cannot be undone.\n\nType DELETE to confirm.',{ok:'Delete All',danger:true,confirmWord:'DELETE',placeholder:'DELETE'}).then(p=>{if(p&&p.trim().toUpperCase()==='DELETE')memVecOp('flush',null,'DELETE');});};
 $('cfgsave').onclick=()=>{
   fetch('/api/mem/config',{method:'PUT',headers:{'Content-Type':'application/x-www-form-urlencoded'},
     body:'retrieval_count='+(+$('cfg_rc').value)+'&relevance_threshold='+(+$('cfg_rt').value)+

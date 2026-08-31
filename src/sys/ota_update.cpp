@@ -209,12 +209,17 @@ void bootGuard() {
     // abort paths below record their own accurate outcome).
     char lr[40] = {0};
     rawGetStr(h, AKEY_OTA_LASTRES, lr, sizeof lr);
-    // Clear a stale "ok vX" record (above) AND any HIL simulation residue
-    // ("sim-arm ...") that a past test-console flash left in NVS - a production
-    // reflash keeps NVS, and the owner-facing panel would otherwise show it
-    // (CUM-264). An active drill never reaches here (it carries a pending flag).
-    if (nimbus::ota::lastResultStale(lr, NIMBUS_FW_VERSION) ||
-        nimbus::ota::isSimResult(lr)) {
+    bool clear = nimbus::ota::lastResultStale(lr, NIMBUS_FW_VERSION);
+#ifndef NIMBUS_TEST
+    // A production build has no sim seam, so any HIL simulation residue
+    // ("sim-arm ...") a past test-console flash left in NVS is stale and would
+    // otherwise show on the owner panel (CUM-264). Cleared only in a production
+    // build: a test build leaves the seam in full control of the HIL suite, which
+    // clears it on teardown (simClear). An active drill never reaches here anyway
+    // (it carries a pending flag and takes the branch below).
+    clear = clear || nimbus::ota::isSimResult(lr);
+#endif
+    if (clear) {
       nvs_set_str(h, AKEY_OTA_LASTRES, "");
       nvs_commit(h);
     }
