@@ -1712,19 +1712,13 @@ function applyState(d){
   const kb=x=>Math.round((x||0)/1024)+' KB', mb=x=>((x||0)/1048576).toFixed(1)+' MB';
   // Adaptive size: KB < 1 MB, MB < 1 GB, else GB.
   const sz=x=>{x=x||0; return x<1048576?kb(x):(x<1073741824?mb(x):(x/1073741824).toFixed(1)+' GB');};
+  // Free RAM, PSRAM, and battery each already have their own tile above; the info
+  // line carries only what the tiles do not show (data store and network), so
+  // nothing is repeated on the Home page (CUM-214).
   $('info').innerHTML=
     'mode <b>'+(d.mode==1?'Orchestrator':'Notifier')+'</b> &middot; sessions <b>'+d.jobs+'</b><br>'+
-    // Device-WIDE figures (not per-orchestrator). Internal RAM is the scarce pool.
-    'RAM (internal): <b>'+kb(d.heap)+'</b> free of '+kb(d.heapTotal)+
-      (d.heapMin!==undefined?(' &middot; low-water '+kb(d.heapMin)):'')+
-      '<span class=hint> - shared by all tasks; brief dips are normal</span><br>'+
-    (d.psramTotal?('PSRAM (external): <b>'+mb(d.psramFree)+'</b> free of '+mb(d.psramTotal)+
-      '<span class=hint> - used for large tasks</span><br>'):'')+
     (d.storeTotal?('Data store ('+(d.storeLabel||'flash')+'): <b>'+sz(d.storeFree)+'</b> free of '+sz(d.storeTotal)+
       '<span class=hint> - memories and history'+(d.storeSD?'':' (insert an SD card for more space)')+'</span><br>'):'')+
-    'battery '+(d.batt&&d.batt.valid
-      ? '<b>'+d.batt.percent+'%</b>'+(d.batt.charging?' (V rising)':'')
-      : '<span class="badge ext">no battery telemetry</span>')+'<br>'+
     (d.sta?('sta <b>'+d.staIp+'</b> ('+d.rssi+' dBm) &middot; '):'')+
     'ap <b>'+d.apIp+'</b> &middot; <b>'+d.mdns+'</b>';
   // profile radios
@@ -2131,6 +2125,7 @@ if($('revertProf'))$('revertProf').onclick=()=>{
 
 // ---- Orchestrator control surface (ROUND 3 Part A) ----
 const PROVLBL={cumulo:'Cumulo Nimbus',openai:'OpenAI',anthropic:'Anthropic',mistral:'Mistral',zai:'Z.ai'};
+let _provOpenDone=false;   // one-shot guard for auto-opening "Providers & keys" (CUM-214)
 let ORCH=null, VPOLL={};   // verify polls PER PROVIDER (review: a single global let a
                            // second provider's verify kill the first's completion poll,
                            // stranding its button disabled at "checking..." forever)
@@ -2371,9 +2366,19 @@ function applyOrch(d){
     host.dataset.sig=sig; host.innerHTML='';
     Object.keys(d.providers).forEach(n=>host.appendChild(provRow(n,d.providers[n])));
   } else Object.keys(d.providers).forEach(n=>provSync(n,d.providers[n]));
+  // A new user needs the key field first, but "Providers & keys" is collapsed by
+  // default. Open it once, on first load, when no provider is verified yet - so
+  // setup is visible without a hunt. Runs exactly once so it never fights a toggle
+  // or re-opens on later polls (CUM-214).
+  if(!_provOpenDone){
+    _provOpenDone=true;
+    const anyVerified=Object.keys(d.providers||{}).some(n=>d.providers[n]&&d.providers[n].verify===1);
+    const grp=host.closest&&host.closest('details.setgroup');
+    if(grp&&!anyVerified)grp.open=true;
+  }
   // only fill inputs the user is not editing right now
   const set=(id,v)=>{const e=$(id);if(e&&document.activeElement!==e)e.value=v;};
-  set('custBase',d.cust.base); set('custConv',d.cust.conv); set('custModel',d.cust.model);
+  set('custBase',d.cust.base||''); set('custConv',d.cust.conv); set('custModel',d.cust.model||'');
   $('custKey').placeholder=d.cust.hasKey?'Key set - type to replace':'API key';
   set('orchHost',d.orchHost);
   renderPrio('provPrioList','provPrio',d.provPrio||'');
@@ -2402,7 +2407,7 @@ function applyOrch(d){
   // Telegram READINESS (P2.6): every gate that silently eats a reply, made visible.
   {const r=$('tgReady');
    if(r){const parts=[];
-    if(!d.hasTg)parts.push('✗ No bot token - Telegram is off (create one with @BotFather)');
+    if(!d.hasTg)parts.push('• No bot token yet - Telegram is off (create one with @BotFather)');
     else if(!d.tgLive)parts.push(d.running
       ?'⚠ Token saved - restart the device to start Telegram'
       :'⚠ Token saved - Telegram runs in Orchestrator mode (switch modes to start it)');
@@ -2428,12 +2433,16 @@ function applyOrch(d){
     }
     const ids=(d.tgAllow||'').split(',').filter(x=>x.trim());
     parts.push(ids.length?('✓ '+ids.length+' allowed chat'+(ids.length>1?'s':'')) :
-      '✗ No one approved yet - message the bot once, then approve it below');
+      '• No one approved yet - message the bot once, then approve it below');
     const sp=d.sttProv&&d.providers&&d.providers[d.sttProv];
     parts.push(sp&&sp.hasKey?('✓ voice notes ('+d.sttProv+' STT)') :
       '⚠ No '+(d.sttProv||'dictation')+' key - voice notes can’t be transcribed');
     r.textContent=parts.join('  ·  ');
-    r.style.color=parts.some(p=>p[0]==='✗')?'#e77':(parts.some(p=>p[0]==='⚠')?'#e0b870':'#7fd1c8');}}
+    // Red is reserved for a genuine failure (a token Telegram rejected). Normal
+    // not-set-up states use a neutral marker and neutral color, so a fresh device
+    // does not read as a wall of errors (CUM-214).
+    const bad=parts.some(p=>p[0]==='✗'),warn=parts.some(p=>p[0]==='⚠'||p[0]==='⏳'),setup=parts.some(p=>p[0]==='•');
+    r.style.color=bad?'#e77':warn?'#e0b870':setup?'#a7adba':'#7fd1c8';}}
   $('orchLoop').checked=!!d.orchLoop;
   if($('midFail'))$('midFail').checked=!!d.midFail;
   if($('codeSbx'))$('codeSbx').checked=!!d.codeSbx;
@@ -2467,7 +2476,7 @@ function applyOrch(d){
   if(d.sfxLvlN!==undefined){$('sfxLvlN').value=d.sfxLvlN;$('sfxLvlO').value=d.sfxLvlO;$('sfxTheme').value=d.sfxTheme;
     if(d.sfxVol!==undefined){$('sfxVol').value=d.sfxVol;$('sfxVolPct').textContent=d.sfxVol+'%';}
     $('sfxtier').textContent='tier: '+d.sfxTier+(d.sfxSync&&d.sfxSync!=='idle'?' · '+d.sfxSync:'');}
-  set('directive',d.directive);
+  set('directive',d.directive||'');   // a missing field must never surface as literal "undefined" (CUM-214)
   $('memview').textContent=d.mem||'(empty)';
   const j=$('jobs'), dj=$('dashJobs');
   if(!d.jobs||!d.jobs.length){const t=d.running?'none running':'(Orchestrator mode is off)';
@@ -2606,11 +2615,16 @@ function loadUsageHistory(){
   fetch('/api/usage/history').then(jok).then(d=>{_usageHist=d;renderUsageSummary();renderUsageChart();}).catch(()=>{});
 }
 function renderUsageChart(){
-  const cv=$('usageChart'); if(!cv||!_usageHist)return;
+  const cv=$('usageChart'); if(!cv)return;
+  // Hide the tall canvas (and its legend) whenever there is nothing to draw, so a
+  // new device shows a slim empty-state line instead of a large empty panel (CUM-214).
+  const msg=$('usageChartMsg'),lg=$('usageLegend');
+  const showChart=on=>{cv.style.display=on?'':'none';if(lg)lg.style.display=on?'':'none';};
+  if(!_usageHist){showChart(false);if(msg)msg.textContent='No usage recorded yet - run a chat or Telegram turn and it will appear here.';return;}
   const ctx=cv.getContext('2d'),W=cv.width,H=cv.height,padL=52,padB=22,padT=10;
   ctx.clearRect(0,0,W,H);
   const today=_usageHist.today||0,days=_chartDays;
-  if(!today){$('usageChartMsg').textContent='Device clock not set yet - daily history starts once it syncs.';return;}
+  if(!today){showChart(false);if(msg)msg.textContent='Device clock not set yet - daily history starts once it syncs.';return;}
   // day -> {prov: value}; value = tokens or est cents per the unit toggle.
   const perDay={},provs=new Set();
   _usageHist.days.forEach(b=>{const off=today-b.d;
@@ -2623,10 +2637,9 @@ function renderUsageChart(){
   let maxV=0;
   for(let i=0;i<days;i++){const d=today-days+1+i,row=perDay[d];if(!row)continue;
     maxV=Math.max(maxV,Object.values(row).reduce((a,b)=>a+b,0));}
-  const msg=$('usageChartMsg');
-  if(!maxV){msg.textContent='No usage recorded in this window yet - run a chat/Telegram turn and it will appear here.';}
-  else msg.textContent='';
-  const scale=maxV?(H-padT-padB)/maxV:0;
+  if(!maxV){showChart(false);if(msg)msg.textContent='No usage recorded in this window yet - run a chat or Telegram turn and it will appear here.';return;}
+  showChart(true);if(msg)msg.textContent='';
+  const scale=(H-padT-padB)/maxV;
   // gridlines + y labels
   ctx.font='11px system-ui';ctx.fillStyle='rgba(160,170,185,.8)';ctx.strokeStyle='rgba(255,255,255,.06)';
   for(let g=0;g<=3;g++){const v=maxV*g/3,y=H-padB-v*scale;
@@ -2645,8 +2658,7 @@ function renderUsageChart(){
       const dt=new Date(d*86400000);ctx.fillStyle='rgba(160,170,185,.8)';
       ctx.fillText((dt.getUTCMonth()+1)+'/'+dt.getUTCDate(),x-2,H-6);}
   }
-  // legend
-  const lg=$('usageLegend');
+  // legend (lg captured at the top of this function, next to the show/hide toggle)
   if(lg)lg.innerHTML=plist.map(p=>'<span class=hint><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:'+(PROVCOL[p]||'#888')+';margin-right:4px"></span>'+(BUDLBL[p]||p)+'</span>').join('');
 }
 document.querySelectorAll('.rangeBtn').forEach(b=>b.onclick=()=>{_chartDays=+b.dataset.days;_syncChartBtns();renderUsageChart();});
@@ -3472,7 +3484,18 @@ function loadSkills(){
     $('skStat').textContent=d.sd?'SD ready - your skills load into new sessions automatically':'No SD card - built-in skills only (read-only)';
     const sk=d.skills||[];
     if(!sk.length){box.innerHTML='<span class=hint>No skills yet</span>';return;}
-    box.innerHTML=sk.map(s=>'<a href="#" data-skid="'+_fesc(s.id)+'" style="margin-right:10px">'+_fesc(s.id)+'</a><span class=hint>'+_fesc(s.title||'')+(s.version?(' · v'+_fesc(s.version)):'')+' · '+_fesc(s.origin||s.source)+(s.pending?' · <b style="color:#e0a349">pending approval</b>':'')+'</span>'+(s.pending?' <a href="#" data-skapprove="'+_fesc(s.id)+'">Approve</a>':'')+'<br>').join('');
+    // Join only the metadata a skill actually carries, so a skill with no title/
+    // origin never renders a lone "·" separator with nothing around it (CUM-214).
+    box.innerHTML=sk.map(s=>{
+      const meta=[];
+      if(s.title)meta.push(_fesc(s.title));
+      if(s.version)meta.push('v'+_fesc(s.version));
+      const org=s.origin||s.source; if(org)meta.push(_fesc(org));
+      if(s.pending)meta.push('<b style="color:#e0a349">pending approval</b>');
+      return '<a href="#" data-skid="'+_fesc(s.id)+'" style="margin-right:10px">'+_fesc(s.id)+'</a>'+
+        (meta.length?('<span class=hint>'+meta.join(' · ')+'</span>'):'')+
+        (s.pending?' <a href="#" data-skapprove="'+_fesc(s.id)+'">Approve</a>':'')+'<br>';
+    }).join('');
     box.querySelectorAll('a[data-skid]').forEach(a=>a.onclick=e=>{e.preventDefault();$('skId').value=a.dataset.skid;loadSkillMd();});
     box.querySelectorAll('a[data-skapprove]').forEach(a=>a.onclick=e=>{e.preventDefault();
       const fd=new FormData();fd.append('id',a.dataset.skapprove);
