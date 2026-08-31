@@ -24,6 +24,10 @@ paths = [
   # so it embeds fabricated key=value / token fixtures (e.g. "api_key=live_9f8e...",
   # "token":"t0p-s3cr3t-value") on purpose. Fake by construction, never real.
   '''test/test_logring/.*''',
+  # CUM-286: the daemon one-key-path test seeds obviously-fake provider/router
+  # keys (e.g. "cumulo_sk_test_...") to assert the router bearer and BYOK
+  # precedence. Fabricated by construction, never real.
+  '''nimbusd/tests/test_cumulo_key\.cpp''',
 ]
 regexes = [
   # The documented, intentional fleet-wide setup-AP password (docs/security.md).

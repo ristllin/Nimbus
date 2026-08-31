@@ -99,14 +99,25 @@ int cmdOnce(nimbusd::Config& cfg, const std::string& text) {
   return t.reply.empty() ? 1 : 0;
 }
 
-int runDaemon(nimbusd::Config& cfg) {
-  auto opt = buildOptions(cfg);
+// Boot log: the data layout plus each provider's key presence (masked). The
+// Cumulo router key (CUM-286, the flagship one-key path) is reported like any
+// other provider so a keyed instance's boot log tells the honest story.
+void logStartupConfig(const nimbusd::Config& cfg, const nimbusd::NimbusdRig::Options& opt) {
   logLine("starting nimbusd: data=" + opt.dataDir + " name=" + opt.devName +
           " priority=" + opt.priority);
   for (const char* h : {"openai", "anthropic", "mistral"})
     logLine(std::string("provider ") + h + ": " +
             (cfg.providerKey(h).empty() ? "no key" : nimbusd::Config::mask(cfg.providerKey(h))));
-  logLine(std::string("embeddings: ") + (opt.embeddings ? ("on (" + opt.embedHost + ")") : "off (no key)"));
+  const std::string ck = cfg.get(nimbusd::kCumuloEnvKey);
+  logLine(std::string("provider cumulo (router): ") +
+          (ck.empty() ? "no key" : nimbusd::Config::mask(ck)));
+  logLine(std::string("embeddings: ") +
+          (opt.embeddings ? ("on (" + opt.embedHost + ")") : "off (no key)"));
+}
+
+int runDaemon(nimbusd::Config& cfg) {
+  auto opt = buildOptions(cfg);
+  logStartupConfig(cfg, opt);
 
   nimbusd::NimbusdRig rig(cfg, opt);
   nimbusd::EngineThread eng(&rig);

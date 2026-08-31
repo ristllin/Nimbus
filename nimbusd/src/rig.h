@@ -40,6 +40,20 @@ namespace nimbusd {
 
 namespace orch = nimbus::orch;
 
+// The Cumulo router seam the DEVICE consumes (src/agent/orchestrator.cpp cumulo
+// head, over agent_config.h's CUMULO_HOST_DEFAULT / CUMULO_MODEL): a keyed
+// instance runs the WHOLE assistant over the fixed router base + path prefix and
+// the router key - the flagship "one key, one balance" path. Mirrored here (the
+// daemon cannot include the firmware header) so a keyed Virtual Nimbus routes
+// identically to a keyed device (CUM-286). Values are the router's external
+// contract; the device's agent_config.h stays the source of truth.
+constexpr const char* kCumuloEnvKey     = "CUMULO_API_KEY";      // canonical env name
+constexpr const char* kCumuloHost       = "app.cumulo-nimbus.ai";  // CUMULO_HOST_DEFAULT
+constexpr const char* kCumuloPathPrefix = "/router/openai/v1";     // replaces the default /v1
+constexpr const char* kCumuloConv       = "openai";                // wire convention
+constexpr const char* kCumuloModel      = "gpt-4o";                // CUMULO_MODEL default
+constexpr const char* kCumuloSlug       = "cumulo";               // head + routing slug
+
 struct TurnRecord {
   std::string chatId, userText, reply;
   std::vector<std::string> toolCalls;
@@ -68,7 +82,17 @@ class NimbusdRig {
     std::map<std::string, std::string> models;
   };
 
-  NimbusdRig(Config cfg, Options opt) : cfg_(std::move(cfg)), opt_(std::move(opt)) {
+  // `httpOverride` lets a host test inject a FakeHttpTransport in place of the
+  // libcurl transport, so the router wire (base/path/bearer) can be asserted
+  // offline. Production passes nullptr and gets the owned DaemonHttpTransport.
+  NimbusdRig(Config cfg, Options opt, agent::HttpTransport* httpOverride = nullptr)
+      : cfg_(std::move(cfg)), opt_(std::move(opt)) {
+    if (httpOverride) {
+      http_ = httpOverride;
+    } else {
+      ownedHttp_.reset(new DaemonHttpTransport());
+      http_ = ownedHttp_.get();
+    }
     installLog(opt_.verboseHttp);
     fsutil::mkdirs(memDir());
     buildMemory();
@@ -155,7 +179,7 @@ class NimbusdRig {
   // Persist the whole-file stores after a web mutation (config/vector edit). Same
   // atomic writer flush() uses; safe to call on the engine thread.
   void persist() { flush(); }
-  DaemonHttpTransport& http() { return http_; }
+  agent::HttpTransport& http() { return *http_; }
   PosixFiles& files() { return *files_; }
   const std::vector<TurnRecord>& turns() const { return turns_; }
 
@@ -164,10 +188,28 @@ class NimbusdRig {
 
   bool hostAvailable(const std::string& h) const { return !cfg_.providerKey(h).empty(); }
 
-  // True iff at least one chat provider key is present. Drives the web chat
-  // page's honest "no provider key configured" state (CUM-211): a keyless
-  // instance produces no reply, so the surface must say so rather than hang.
+  // The Cumulo router key from the canonical env (CUM-286). This is the daemon's
+  // equivalent of the device's store::cumuloKey() - the material the "cumulo"
+  // head places in its bearer, and the source that makes the router the fallback
+  // head when no direct provider key is set.
+  std::string cumuloKey() const { return cfg_.get(kCumuloEnvKey); }
+  bool hasCumulo() const { return !cumuloKey().empty(); }
+
+  // The model the cumulo head requests: an operator override (opt.models
+  // ["cumulo"]) or the router default. Mirrors the device's orchModel("cumulo").
+  std::string cumuloModel() const {
+    auto it = opt_.models.find(kCumuloSlug);
+    return (it != opt_.models.end() && !it->second.empty()) ? it->second
+                                                            : std::string(kCumuloModel);
+  }
+
+  // True iff at least one chat provider is configured - a direct BYOK key OR the
+  // Cumulo router key. Drives the web chat page's honest "no provider key
+  // configured" state (CUM-211/CUM-286): a keyless instance produces no reply,
+  // so the surface must say so, but a Cumulo-only instance DOES reply (via the
+  // router head) and must read healthy, never degraded.
   bool anyProviderConfigured() const {
+    if (hasCumulo()) return true;
     for (const char* h : {"openai", "anthropic", "mistral"})
       if (!cfg_.providerKey(h).empty()) return true;
     return false;
@@ -258,7 +300,7 @@ class NimbusdRig {
                                    ? std::string(a["query"].as<const char*>()) : std::string();
                if (q.empty()) return orch::ToolResult::fail("missing 'query'");
                int k = a["max_results"].is<int>() ? a["max_results"].as<int>() : 5;
-               auto r = agent::websearch::search(http_, tavilyKey_, q, k);
+               auto r = agent::websearch::search(*http_, tavilyKey_, q, k);
                if (!r.ok) return orch::ToolResult::fail("web search failed: " + r.err);
                return orch::ToolResult::ok(r.digest);
              },
@@ -334,7 +376,7 @@ class NimbusdRig {
                                            opt_.embedHost == "mistral" ? 0 : opt_.embedDims);
     agent::HttpResponse resp;
     std::string err;
-    if (!http_.exec(req, resp, err) || resp.status < 200 || resp.status >= 300) return {};
+    if (!http_->exec(req, resp, err) || resp.status < 200 || resp.status >= 300) return {};
     std::vector<float> f;
     if (!orch::parseEmbeddingResponse(resp.body.c_str(), 0, f, err)) return {};
     return orch::VectorMemory::quantize(f);
@@ -346,6 +388,19 @@ class NimbusdRig {
     auto& p = c.provider;
     p.hasKey = [this](const std::string& h) { return !cfg_.providerKey(h).empty(); };
     p.key = [this](const std::string& h) { return cfg_.providerKey(h); };
+    // CUM-286 / CUM-242 mirror: with NO direct BYOK head keyed, the verified
+    // Cumulo router key is the fallback head that runs the whole assistant - the
+    // engine consults this only after every BYOK head in the priority list
+    // misses (a keyed BYOK head still wins), exactly as the device does
+    // (src/agent/store_config.cpp routerFallbackHost).
+    p.routerFallbackHost = [this] {
+      return hasCumulo() ? std::string(kCumuloSlug) : std::string();
+    };
+    // Device-truth "is any provider configured", INCLUDING the router key that
+    // hasKey() above does not report (cumulo is not a canonical-env BYOK slot).
+    // Keeps the engine's honest "no provider set up" reply from firing on a
+    // Cumulo-only instance (CUM-211).
+    p.anyKeyed = [this] { return anyProviderConfigured(); };
     p.orchHost = [] { return std::string(); };
     p.providerPriority = [this] { return opt_.priority; };
     p.subPriority = [this] { return opt_.priority; };
@@ -389,7 +444,7 @@ class NimbusdRig {
 
   agent::providers::ProviderDeps providerDeps() {
     agent::providers::ProviderDeps pd;
-    pd.http = &http_;
+    pd.http = http_;
     pd.key = [this](const char* h) { return cfg_.providerKey(h); };
     pd.orchModel = [this](const char* h) { return modelFor(h); };
     pd.toolLoopOn = [this] { return opt_.toolLoop; };
@@ -406,6 +461,21 @@ class NimbusdRig {
                  std::chrono::steady_clock::now().time_since_epoch()).count();
     };
     pd.freeHeap = [this] { return mem_.freeBytes(); };
+    return pd;
+  }
+
+  // The provider deps for the Cumulo router head: the base ProviderDeps with the
+  // custom/proxy fields pointed at the fixed router base + path prefix and the
+  // router key. Byte-for-byte the seam the device's cumulo head fills in
+  // (src/agent/orchestrator.cpp:1138-1150) - orchTurnCustom over
+  // app.cumulo-nimbus.ai + /router/openai/v1, bearer = the Cumulo key.
+  agent::providers::ProviderDeps cumuloProviderDeps() {
+    auto pd = providerDeps();
+    pd.customBase       = [] { return std::string(kCumuloHost); };
+    pd.customPathPrefix = [] { return std::string(kCumuloPathPrefix); };
+    pd.customKey        = [this] { return cumuloKey(); };
+    pd.customConv       = [] { return std::string(kCumuloConv); };
+    pd.customModel      = [this] { return cumuloModel(); };
     return pd;
   }
 
@@ -480,6 +550,21 @@ class NimbusdRig {
         return agent::providers::orchTurnMistral(pd, conv, ins, inp, out, err, tools, usage);
       });
     }
+    // CUM-286: the Cumulo router as a first-class head, so a keyed VN with NO
+    // direct provider key still runs the whole assistant - the "one key, one
+    // balance" path. Registered when the key is present (the pod restarts to pick
+    // up the env, so no after-boot add is needed here); head resolution reaches
+    // it via routerFallbackHost() above once every BYOK head misses.
+    if (hasCumulo()) {
+      d.hosts.add(kCumuloSlug,
+                  [this](std::string& conv, const std::string& ins, const std::string& inp,
+                         std::string& out, std::string& err, const agent::HeadTools* tools,
+                         orch::TokenUsage* usage) -> bool {
+                    auto pd = cumuloProviderDeps();
+                    return agent::providers::orchTurnCustom(pd, conv, ins, inp, out, err,
+                                                            tools, usage);
+                  });
+    }
     eng_.reset(new agent::TurnEngine(std::move(d)));
   }
 
@@ -521,7 +606,8 @@ class NimbusdRig {
   Config cfg_;
   Options opt_;
   CgroupMemory mem_;
-  DaemonHttpTransport http_;
+  std::unique_ptr<DaemonHttpTransport> ownedHttp_;  // owned unless a test injects one
+  agent::HttpTransport* http_ = nullptr;            // the live transport (owned or injected)
 
   PosixEpiFs         epiFs_;
   orch::VectorMemory vec_;
