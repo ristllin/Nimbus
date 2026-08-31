@@ -42,7 +42,7 @@
 /* Hero: the glowing ring video with the pitch beside it. */
 .home-hero {
   display: grid;
-  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr);
   gap: 2rem;
   align-items: center;
   margin: 0.5rem 0 2.5rem;
