@@ -153,6 +153,28 @@ class Router {
   // slot. Returns true if it cleared anything.
   bool forceExpireDoneArcs(uint32_t nowMs, uint32_t maxAgeMs);
 
+  // Orphan-arc reaper (CUM-243, the recurring stuck-ring CLASS). The two force-
+  // expire backstops above are keyed on a STATUS + a dwell cap: they catch an arc
+  // stuck in one known lingering status. But the class invariant the ring has
+  // broken five times (CUM-11 -> 134 -> 221) is not per-status - it is "no lit arc
+  // outlives its JOB." A sub-agent whose owning job the engine no longer tracks
+  // (its clearing Offline was dropped, or the reap that would send it stalled on
+  // tg_poll) strands lit REGARDLESS of the status it is frozen in - including
+  // Running/Idle, which carry no time cap because a blind timer there would erase
+  // live work. This is the ONE main-loop rule that closes that gap for every
+  // status at once: it is status-AGNOSTIC and instead cross-checks each slot's
+  // key against the engine's live set. Any slot whose key is neither in
+  // liveKeys[0..nLive) nor == headKey, and whose dwell exceeds maxAgeMs, is an
+  // orphan and is collapsed to Offline. A LIVE arc (key present, or the head) is
+  // ALWAYS kept, so a genuinely long-running session is never reaped - the rule
+  // keys on "the job is gone", not on a clock. maxAgeMs is a generous grace (a
+  // backstop cap, not the primary path): it keeps a just-spawned arc whose live-
+  // set entry lands a tick later, and a Done arc mid-teardown ripple, from being
+  // collapsed early. liveKeys may be null when nLive==0 (no live jobs -> every arc
+  // is an orphan). Returns true if it cleared anything.
+  bool forceExpireOrphanArcs(const uint32_t* liveKeys, int nLive, uint32_t headKey,
+                             uint32_t nowMs, uint32_t maxAgeMs);
+
   // Expiry TOMBSTONES (owner red-ring root-cause fix). The broker sends FULL-SNAPSHOT
   // frames on every event, so after forceExpireAttention() frees a stale attention
   // arc, the next neighbor-driven frame re-adds the SAME key at the SAME status with
