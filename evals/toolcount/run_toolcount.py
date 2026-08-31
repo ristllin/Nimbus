@@ -45,6 +45,44 @@ SYSTEM = (
 )
 
 
+def _handle_search_hop(
+    tc: dict[str, Any],
+    catalog: list[dict[str, Any]],
+    exposed: list[dict[str, Any]],
+    exposed_names: set[str],
+    messages: list[dict[str, Any]],
+) -> None:
+    # search_tools meta-hop (lazy condition): reveal the matched tools for
+    # subsequent turns and feed the listing back as the tool result.
+    query = str(tc["arguments"].get("query", ""))
+    hits = C.search_catalog(query, catalog, k=5)
+    listing = "\n".join(f"- {h['name']}: {h['description']}" for h in hits)
+    for h in hits:
+        if h["name"] not in exposed_names:
+            exposed.append(C.to_schema(h))
+            exposed_names.add(h["name"])
+    messages.append(
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": tc["id"],
+                    "type": "function",
+                    "function": {"name": "search_tools", "arguments": json.dumps(tc["arguments"])},
+                }
+            ],
+        }
+    )
+    messages.append(
+        {
+            "role": "tool",
+            "tool_call_id": tc["id"],
+            "content": f"Candidate tools:\n{listing}\nThese are now available to call.",
+        }
+    )
+
+
 def _run_one_turn(
     provider, task: dict[str, Any], condition: str, catalog: list[dict[str, Any]], mock: bool
 ) -> dict[str, Any]:
@@ -82,34 +120,7 @@ def _run_one_turn(
         called.append(name)
         if name == "search_tools" and condition == "lazy":
             search_hops += 1
-            query = str(tc["arguments"].get("query", ""))
-            hits = C.search_catalog(query, catalog, k=5)
-            listing = "\n".join(f"- {h['name']}: {h['description']}" for h in hits)
-            # reveal the matched tools for subsequent turns
-            for h in hits:
-                if h["name"] not in exposed_names:
-                    exposed.append(C.to_schema(h))
-                    exposed_names.add(h["name"])
-            messages.append(
-                {
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": [
-                        {
-                            "id": tc["id"],
-                            "type": "function",
-                            "function": {"name": "search_tools", "arguments": json.dumps(tc["arguments"])},
-                        }
-                    ],
-                }
-            )
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": tc["id"],
-                    "content": f"Candidate tools:\n{listing}\nThese are now available to call.",
-                }
-            )
+            _handle_search_hop(tc, catalog, exposed, exposed_names, messages)
             continue
         # a real (non-meta) tool call: this is the selection we measure
         selected = name

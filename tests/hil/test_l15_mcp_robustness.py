@@ -126,7 +126,7 @@ def test_multi_connector_sram_and_big_payload(device, net, secrets, require_secr
         # arrive through the inbound /mcp body limit, so if it did not cross the cap
         # here we WARN + point at the deterministic host proof rather than false-fail.
         over = _mcp_call_text(net, ip, "mcp.hilrobust_b.echo", {"message": "o" * _OVER_CAP_CHARS})
-        _assert_internal_headroom(net, ip, "after-over-cap-call")   # HARD: SRAM floor held
+        _assert_internal_headroom(net, ip, "after-over-cap-call")  # HARD: SRAM floor held
         if "more data than the device can hold" in over:
             pass  # SOFT check reproduced: the honest cap line surfaced on glass
         else:
