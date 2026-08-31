@@ -178,6 +178,14 @@ padding:16px 12px;display:flex;flex-direction:column;gap:3px;z-index:50}
 .tab .tl{flex:1}
 #toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%) translateY(20px);background:var(--teal);color:#052420;font-weight:650;padding:9px 18px;border-radius:20px;opacity:0;transition:opacity .2s,transform .2s;pointer-events:none;z-index:99}
 #toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+/* Local styled-confirm modal (CUM-270 seam; unify with the CUM-266 shared modal at merge) */
+.nbmodal{position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:200;padding:20px}
+.nbdlg{background:var(--raise);border:1px solid var(--line2);border-radius:16px;padding:20px;max-width:380px;width:100%;box-shadow:var(--shadow)}
+.nbdlg h3{color:var(--ink);font-size:15px;margin:0 0 8px;font-weight:650}
+.nbdlg p{color:var(--ink2);font-size:13px;line-height:1.55;margin:0 0 16px}
+.nbbtns{display:flex;gap:8px;justify-content:flex-end}
+.nbbtns .nbcancel{background:var(--raise3);color:var(--ink2)}
+.nbbtns .nbok.nbdanger{background:var(--crit);color:#2a0d12}
 /* Icon rail (CUM-25): on narrower desktops/tablets the sidebar collapses to
    icons only, reclaiming width for the content. Labels return above 1080 px.
    The full nav is still keyboard-reachable; each button keeps its title tooltip. */

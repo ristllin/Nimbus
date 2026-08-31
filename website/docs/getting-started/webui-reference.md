@@ -69,7 +69,9 @@ every few seconds.
   battery (corrected voltage and time-left estimate), die temperature, and the
   current mode with its active-session count.
 - **Quick actions** - one-click jumps to the things people do most: open Chat,
-  add a file, providers and models, check for updates.
+  add a file, providers and models, check for updates, **Restart**, and
+  **Power off**. Restart confirms first, then reconnects on its own in about a
+  minute; Power off puts the device to sleep (the same flow as Settings > Power).
 - **Active sessions** - the live table of what the assistant is running right
   now, each row named by its session with its provider, model, category, and
   state.
@@ -252,6 +254,10 @@ collapsible groups:
   shows a dedicated card with the **Cloud link code** large and high-contrast
   beside a QR: sign in at app.cumulo-nimbus.ai, then scan the QR or enter the
   code. **Copy code** copies it. Available in Orchestrator mode.
+- **Power** - **Restart…** restarts the device and brings it back on its own in
+  about a minute (nothing is erased); use it to apply a setting that says it takes
+  effect after a restart. **Power Off…** saves everything and puts the device to
+  sleep. Both confirm first.
 - **Danger zone** - **Erase Storage…** wipes the SD card (typed confirmation) and
   **Factory Reset…** erases everything (Wi-Fi, API keys, the Telegram list,
   Bluetooth pairings, themes, sound settings, memory, and the device sign-in

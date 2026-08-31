@@ -38,7 +38,7 @@ static void test_open_close_visibility() {
   TEST_ASSERT_TRUE(m.isOpen());
   auto v = viewOf(m);
   TEST_ASSERT_TRUE(v.visible);
-  TEST_ASSERT_EQUAL(15, int(v.items.size()));  // Mode, Profile, Tune, Connectivity, Sound, Theme, Saver, Update, Reset, Self-test, Battery, SD, Power off, Display >, Done
+  TEST_ASSERT_EQUAL(16, int(v.items.size()));  // Mode, Profile, Tune, Connectivity, Sound, Theme, Saver, Update, Reset, Self-test, Battery, SD, Restart, Power off, Display >, Done
   TEST_ASSERT_EQUAL(0, v.selected);
 
   m.close();
@@ -50,7 +50,7 @@ static void test_rotate_wraps() {
   Config c;
   SettingsMenu m(c);
   m.open();
-  const int n = 15;   // Main rows (incl. Self-test + Battery + SD + Power off + Display flip)
+  const int n = 16;   // Main rows (incl. Self-test + Battery + SD + Restart + Power off + Display flip)
 
   cw(m, n);  // full loop
   TEST_ASSERT_EQUAL(0, viewOf(m).selected);
@@ -78,7 +78,7 @@ static void test_click_descends_back_ascends() {
   // Back ascends and restores the cursor to the Tune row.
   m.onLongPress();
   v = viewOf(m);
-  TEST_ASSERT_EQUAL(15, int(v.items.size()));
+  TEST_ASSERT_EQUAL(16, int(v.items.size()));
   TEST_ASSERT_EQUAL(2, v.selected);
 
   // Long-press at Main closes.
@@ -301,7 +301,7 @@ static void test_reset_clears_all_overrides() {
   TEST_ASSERT_EQUAL(presetValue(ProfileId::Balanced, Param::RingFps),
                     c.effective(Param::RingFps));
   // Back at Main.
-  TEST_ASSERT_EQUAL(15, int(viewOf(m).items.size()));
+  TEST_ASSERT_EQUAL(16, int(viewOf(m).items.size()));
 }
 
 // The Sounds/Voice rows cycle in place (no submenu) and mark the menu dirty,
@@ -1110,7 +1110,7 @@ static void test_help_text_per_state() {
   TEST_ASSERT_EQUAL_STRING("", m.helpText());  //   no pane
   cw(m, 4);                                    // row 6 Sounds
   TEST_ASSERT_FALSE(std::string(m.helpText()).empty());  //   has help
-  cw(m, 9);                                    // wrap back to row 0 (Mode; 15 rows now)
+  cw(m, 10);                                   // wrap back to row 0 (Mode; 16 rows now)
 
   cw(m, 1); m.onClick();                       // ProfilePick (from row 1)
   TEST_ASSERT_FALSE(std::string(m.helpText()).empty());  // per-profile description
@@ -1392,6 +1392,63 @@ static void test_power_off_copy_is_variant_aware() {
   TEST_ASSERT_FALSE(contains(std::string(mn.helpText()), "Tap the screen"));
 }
 
+// CUM-270: the Main "Restart" row sits just before "Power off" and opens a
+// confirm (defaults to Cancel); only "Restart" raises restartRequested_ (device
+// runs the deferred restart) and closes the menu. This pins the CLASS rule, not
+// one point: (1) the tail order Restart / Power off / Display / Done is exact, so
+// the CUM-224 size()-relative taps still land (Power off stays at size()-3);
+// (2) a confirm row raises ONLY its own device action - restart never trips
+// power-off; (3) enter/cancel cycles never drift the cursor or latch a request
+// (no thrash), and the confirm is never one accidental click from restarting.
+static void test_restart_row_confirm_and_class_isolation() {
+  Config c;
+  SettingsMenu m(c);
+  m.open();
+  auto v = viewOf(m);
+  const int n = int(v.items.size());
+  // Tail is exact: the new row is adjacent to Power off and leaves Display/Done last.
+  TEST_ASSERT_EQUAL_STRING("Restart", v.items[n - 4].c_str());
+  TEST_ASSERT_EQUAL_STRING("Power off", v.items[n - 3].c_str());
+  TEST_ASSERT_EQUAL_STRING("Display >", v.items[n - 2].c_str());
+  TEST_ASSERT_EQUAL_STRING("Done", v.items[n - 1].c_str());
+  const int restartIdx = n - 4;
+
+  // No-thrash: entering and cancelling the confirm (both ways out) always returns
+  // to the SAME Restart row and never latches a request or dirties Config.
+  for (int i = 0; i < 3; ++i) {
+    while (viewOf(m).selected != restartIdx) m.onRotate(+1);
+    m.onClick();                              // enter confirm
+    TEST_ASSERT_TRUE(m.showingRestartConfirm());
+    auto cf = viewOf(m);
+    TEST_ASSERT_EQUAL_STRING("Settings > Restart?", cf.title.c_str());
+    TEST_ASSERT_EQUAL(2, int(cf.items.size()));
+    TEST_ASSERT_EQUAL_STRING("Cancel", cf.items[0].c_str());
+    TEST_ASSERT_EQUAL_STRING("Restart", cf.items[1].c_str());
+    TEST_ASSERT_EQUAL(0, cf.selected);        // never one accidental click from restarting
+    TEST_ASSERT_FALSE(m.restartRequested());
+    TEST_ASSERT_FALSE(m.dirty());
+    TEST_ASSERT_TRUE(contains(std::string(m.helpText()), "on its own"));
+    if (i == 0) { m.onClick(); }              // Cancel via row 0
+    else        { m.onLongPress(); }          // Cancel via the back gesture
+    TEST_ASSERT_FALSE(m.showingRestartConfirm());
+    TEST_ASSERT_FALSE(m.restartRequested());
+    TEST_ASSERT_EQUAL(restartIdx, viewOf(m).selected);   // no cursor drift
+  }
+
+  // Confirm: select "Restart" (row 1) and click -> ONLY restartRequested_ rises,
+  // menu closes, nothing dirtied, and power-off is untouched (class isolation).
+  m.onClick();                 // re-enter confirm
+  m.onRotate(+1);              // -> "Restart"
+  TEST_ASSERT_EQUAL(1, viewOf(m).selected);
+  m.onClick();
+  TEST_ASSERT_TRUE(m.restartRequested());
+  TEST_ASSERT_FALSE(m.powerOffRequested());   // restart is not power-off
+  TEST_ASSERT_FALSE(m.isOpen());              // the restart UX owns the screen now
+  TEST_ASSERT_FALSE(m.dirty());               // a device action, not Config state
+  m.clearRestartRequest();
+  TEST_ASSERT_FALSE(m.restartRequested());
+}
+
 // CUM-189: the Display > Calibrate touch row raises a device-drained request
 // (not Config state, so no dirty()) instead of toggling anything itself.
 static void test_calibrate_touch_raises_a_request() {
@@ -1524,6 +1581,7 @@ int main() {
   RUN_TEST(test_display_submenu_holds_the_flip);
   RUN_TEST(test_power_off_confirm_and_request);
   RUN_TEST(test_power_off_copy_is_variant_aware);
+  RUN_TEST(test_restart_row_confirm_and_class_isolation);
   RUN_TEST(test_calibrate_touch_raises_a_request);
   RUN_TEST(test_flip_toggle_dirties_and_labels);
   RUN_TEST(test_customize_shows_all_params_with_a_ring);

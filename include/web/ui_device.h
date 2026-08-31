@@ -23,6 +23,8 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 <button type=button data-go=memory>Add a file</button>
 <button type=button data-go=assistant>Providers &amp; models</button>
 <button type=button data-go=device>Check for updates</button>
+<button type=button id=homeRestart>Restart</button>
+<button type=button id=homePowerOff>Power off</button>
 </div>
 </div>
 <div class=sec id=whatNext style="display:none;border-color:var(--teal)">
@@ -125,7 +127,8 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 <label class=pr><input type=checkbox id=lbSaver> Save power when low <button class=qh type=button aria-expanded=false aria-label="About saving power when low">?</button></label>
 <p class="hint tip">Switches to the Dark battery mode while the battery is low, then returns to the chosen mode once it recovers. On by default.</p>
 <label class=pr><input type=checkbox id=battMon> Monitor the battery <button class=qh type=button aria-expanded=false aria-label="About battery monitoring">?</button></label>
-<p class="hint tip">Reads the battery pack for the charge readout, low-battery warnings, and sleep protection. On boards built with a pack it is on; on the all-in-one board a battery is optional, so it is off until you turn it on. Takes effect after restart.</p>
+<p class="hint tip">Reads the battery pack for the charge readout, low-battery warnings, and sleep protection. On boards built with a pack it is on; on the all-in-one board a battery is optional, so it is off until you turn it on. Takes effect after a restart.</p>
+<div class=row id=battRestartRow style="display:none;margin-top:6px"><button type=button id=battRestart>Restart now</button><span class=hint style="align-self:center">Applies the battery monitor change.</span></div>
 <p class=hint id=effprof></p>
 </div>
 </details>
@@ -299,7 +302,9 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 
 <details class=setgroup><summary>Power<span class=chev>&rsaquo;</span></summary>
 <div class=setbody>
-<p class=hint>Turn the device off to save power. It keeps its settings.</p>
+<p class=hint>Restart the device, or turn it off to save power. Either way it keeps its settings.</p>
+<div class=row style="margin-top:6px"><button id=deviceRestart type=button>Restart&hellip;</button><button class=qh type=button aria-expanded=false aria-label="About restart">?</button></div>
+<p class="hint tip">Restarts the device and brings it back on its own in about a minute. Use it to apply a setting that says it takes effect after a restart. Nothing is erased.</p>
 <div class=row style="margin-top:6px"><button id=powerOff type=button>Power Off&hellip;</button><button class=qh type=button aria-expanded=false aria-label="About power off">?</button></div>
 <p class="hint tip">Saves everything, turns the screen off, and puts the device into deep sleep. How it comes back on depends on the model: touch models wake when you tap the screen; others wake when you reconnect power.</p>
 </div>
