@@ -51,6 +51,21 @@ In the web UI under **Assistant -> Connectors**, add a server with:
 The assistant is told, every turn, which device MCP servers are ready, which are
 waiting for your approval, and which are temporarily unreachable.
 
+### A local server stays on the device
+
+A server on your own network (a `192.168.x.x`, `10.x`, `172.16-31.x`, `.local`,
+or `localhost` address) is reachable from the device but not from a provider's
+cloud. Turning on **device-dialed** keeps that server on the device's own client,
+where it belongs: the device connects to it directly and never hands the URL to a
+provider. This is the default for a device-dialed server, so you do not have to
+pick a provider for it.
+
+A provider only ever receives a connector whose URL its cloud can actually dial.
+If a local URL is pointed at a provider by mistake, the device leaves it off that
+provider's request rather than letting one bad entry fail the whole turn: that one
+tool is simply skipped, and the fix is to turn on device-dialed for it, or to use
+a public `https` address.
+
 ### Approval - you decide before it connects
 
 A device-dialed server is **never contacted until you approve it**. An

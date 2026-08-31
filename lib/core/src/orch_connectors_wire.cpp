@@ -115,11 +115,117 @@ static bool provMatches(const ConnectorInfo& c, const char* prov) {
   return c.enabled && (c.prov == prov || c.prov == "any");
 }
 
+// ---- prov routing guard (CUM-255) -------------------------------------------
+namespace {
+
+std::string lowerStr(std::string s) {
+  for (char& ch : s)
+    if (ch >= 'A' && ch <= 'Z') ch = char(ch - 'A' + 'a');
+  return s;
+}
+
+// Extract the lowercased host from an http/https URL. Returns "" if the scheme
+// is not http(s) or the URL has no host. Strips the port and any IPv6 brackets.
+std::string hostOf(const std::string& url) {
+  std::string::size_type sep = url.find("://");
+  if (sep == std::string::npos) return "";
+  std::string scheme = lowerStr(url.substr(0, sep));
+  if (scheme != "http" && scheme != "https") return "";
+  std::string rest = url.substr(sep + 3);
+  std::string::size_type slash = rest.find('/');
+  std::string hostport = (slash == std::string::npos) ? rest : rest.substr(0, slash);
+  if (!hostport.empty() && hostport[0] == '[') {         // [IPv6]:port
+    std::string::size_type close = hostport.find(']');
+    return close == std::string::npos ? "" : lowerStr(hostport.substr(1, close - 1));
+  }
+  std::string::size_type colon = hostport.find(':');     // host:port
+  if (colon != std::string::npos) hostport = hostport.substr(0, colon);
+  return lowerStr(hostport);
+}
+
+// Parse a dotted-quad into four octets; false if `h` is not a bare IPv4 literal.
+bool parseIPv4(const std::string& h, int oct[4]) {
+  int n = 0, val = 0, digits = 0;
+  for (std::string::size_type i = 0; i <= h.size(); i++) {
+    char ch = (i < h.size()) ? h[i] : '.';
+    if (ch == '.') {
+      if (digits == 0 || n >= 4) return false;
+      oct[n++] = val; val = 0; digits = 0;
+    } else if (ch >= '0' && ch <= '9') {
+      val = val * 10 + (ch - '0');
+      if (val > 255 || ++digits > 3) return false;
+    } else {
+      return false;   // any non-digit, non-dot char => not an IPv4 literal
+    }
+  }
+  return n == 4;
+}
+
+// A host a provider's CLOUD cannot dial: loopback, private/link-local IPv4, the
+// unspecified address, or an mDNS `.local` / localhost name.
+bool privateHost(const std::string& h) {
+  if (h.empty()) return true;
+  if (h == "localhost" || h == "::1" || h == "::") return true;
+  if (h.size() >= 6 && h.compare(h.size() - 6, 6, ".local") == 0) return true;
+  if (h.size() >= 10 && h.compare(h.size() - 10, 10, ".localhost") == 0) return true;
+  // IPv6 unique-local (fc00::/7) and link-local (fe80::/10) literals.
+  if (h.rfind("fc", 0) == 0 || h.rfind("fd", 0) == 0 || h.rfind("fe8", 0) == 0 ||
+      h.rfind("fe9", 0) == 0 || h.rfind("fea", 0) == 0 || h.rfind("feb", 0) == 0)
+    if (h.find(':') != std::string::npos) return true;
+  int o[4];
+  if (parseIPv4(h, o)) {
+    if (o[0] == 127) return true;                       // loopback 127.0.0.0/8
+    if (o[0] == 10) return true;                        // private 10.0.0.0/8
+    if (o[0] == 172 && o[1] >= 16 && o[1] <= 31) return true;  // 172.16.0.0/12
+    if (o[0] == 192 && o[1] == 168) return true;        // 192.168.0.0/16
+    if (o[0] == 169 && o[1] == 254) return true;        // link-local 169.254.0.0/16
+    if (o[0] == 0) return true;                          // 0.0.0.0
+  }
+  return false;
+}
+
+// The provider heads an entry can be forwarded to. An unknown/future prov names
+// none of them (fail-closed) - the class rule the host test locks.
+bool provTargetsAnyHead(const std::string& prov) {
+  return prov == "openai" || prov == "anthropic" || prov == "mistral" || prov == "any";
+}
+
+}  // namespace
+
+bool urlRoutableToProviderHead(const std::string& url) {
+  std::string h = hostOf(url);
+  return !h.empty() && !privateHost(h);
+}
+
+bool forwardsToProviderHead(const ConnectorInfo& c, const char* head) {
+  if (!provMatches(c, head)) return false;              // disabled / wrong prov
+  // A device-dialed server left at the default "any" routes to the device's own
+  // MCP client - it is never handed to a cloud head (CUM-61: doing so 424'd the
+  // turn). An EXPLICIT prov still opts a public server into head-attach.
+  if (c.deviceDialed && c.prov == "any") return false;
+  // Hard invariant: a remote MCP whose URL the cloud cannot reach never leaves
+  // the device. The device dials it instead; the head would only 424.
+  if (c.kind == "mcp" && !urlRoutableToProviderHead(c.url)) return false;
+  return true;
+}
+
+std::string connectorConfigError(const ConnectorInfo& c) {
+  if (c.kind != "mcp" || c.url.empty()) return "";       // only remote MCP carries a dialed URL
+  if (urlRoutableToProviderHead(c.url)) return "";       // reachable from a cloud head: fine
+  // Unroutable URL. Safe only when it never reaches a head: a device-dialed entry
+  // at the default prov "any" is dialed by the device itself.
+  const bool headBound = !(c.deviceDialed && c.prov == "any") && provTargetsAnyHead(c.prov);
+  if (!headBound) return "";
+  return "MCP server \"" + c.name + "\" has a private or local URL that a "
+         "provider's cloud can't reach. Turn on device-dialed for it (the device "
+         "connects directly), or use a public https address.";
+}
+
 // ---- attach builders ---------------------------------------------------------
 
 void attachOpenAIWire(JsonDocument& d, const std::vector<ConnectorInfo>& cs, const BearerFn& bearer) {
   for (const ConnectorInfo& c : cs) {
-    if (!provMatches(c, "openai")) continue;
+    if (!forwardsToProviderHead(c, "openai")) continue;
     // OpenAI hosted built-ins ride their own tool type, NOT the mcp shape (a
     // builtin routed through the mcp branch would 400 on the missing server_url).
     // code_interpreter is the one we attach: it can PRODUCE FILES (incl. PDF -
@@ -167,7 +273,7 @@ void attachMistralWire(JsonDocument& d, const std::vector<ConnectorInfo>& cs) {
   //     {type:"connector", connector_id:"<name-or-uuid>"} - authenticated in
   //     Studio, referenced by name/UUID; no secret on device.
   for (const ConnectorInfo& c : cs) {
-    if (!provMatches(c, "mistral")) continue;
+    if (!forwardsToProviderHead(c, "mistral")) continue;
     if (c.kind == "builtin") {
       // document_library needs a library id - bare it 422s the whole request
       // (grid-validated). Until a library id rides the blob, skip it.
@@ -199,7 +305,7 @@ void attachMistralWire(JsonDocument& d, const std::vector<ConnectorInfo>& cs) {
 void attachAnthropicWire(JsonDocument& agentBody, const std::vector<ConnectorInfo>& cs,
                          const BearerFn& bearer) {
   for (const ConnectorInfo& c : cs) {
-    if (!provMatches(c, "anthropic")) continue;
+    if (!forwardsToProviderHead(c, "anthropic")) continue;
     if (c.kind != "mcp" || c.url.empty()) continue;  // Anthropic = BYO MCP by URL
     JsonObject s = agentBody["mcp_servers"].add<JsonObject>();
     s["type"] = "url";
