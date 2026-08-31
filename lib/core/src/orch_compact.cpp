@@ -27,6 +27,7 @@ uint32_t modelCtxTokens(const std::string& provider, const std::string& model) {
   // early on the conservative default, never late.
   if (p == "anthropic" || startsWith(m, "claude-")) return 200000;
   if (startsWith(m, "gpt-5")) return 272000;
+  if (startsWith(m, "gpt-4o")) return 128000;   // gpt-4o / gpt-4o-mini (the Cumulo router default)
   if (m.size() >= 2 && m[0] == 'o' && m[1] >= '1' && m[1] <= '9') return 200000;
   if (p == "mistral" || startsWith(m, "mistral-")) return 128000;
   return kCtxDefaultTokens;

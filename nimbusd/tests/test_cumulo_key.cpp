@@ -173,6 +173,68 @@ static void testByokBeatsRouter(ndtest::Ctx& c) {
   clearProviderEnv();
 }
 
+// (d) CUM-288: a Cumulo-only instance must FOLD (compact its context) via the
+// router wire, not just chat. The fold host ladder used to consult only the keyed
+// BYOK heads, so a router-only instance could never fold - context grew unbounded
+// until turns failed. The fold must reach the SAME router seam a turn does (fixed
+// base + /router/openai/v1 path + bearer of the key), and modelFor("cumulo") must
+// resolve the router default model (not "") so the fold budget derives honestly.
+static void testCumuloOnlyFoldsViaRouter(ndtest::Ctx& c) {
+  std::printf("  -- (d) CUMULO_API_KEY set: the fold rides the router wire --\n");
+  clearProviderEnv();
+  const char* kKey = "cumulo_sk_test_ABCD1234";
+  setenv("CUMULO_API_KEY", kKey, 1);
+
+  FakeHttpTransport tx;
+  Exchange e;
+  e.expectHost = kCumuloHost;
+  e.expectPathContains = "/router/openai/v1/chat/completions";
+  e.status = 200;
+  // The fold reply IS the anchored summary. The router head still returns the
+  // full strict orch_turn shape (response_format json_schema); the fold keeps
+  // only reply and ignores every other field.
+  e.body = chatBody("{\\\"reply\\\":\\\"1. Owner intent: testing the fold\\\","
+                    "\\\"ask\\\":\\\"\\\",\\\"memory\\\":\\\"\\\",\\\"device\\\":[],"
+                    "\\\"mem_write\\\":[],\\\"mem_query\\\":[],\\\"session_ops\\\":[]}");
+  tx.script.push_back(e);
+
+  Config cfg;
+  NimbusdRig rig(cfg, baseOpt("cumkey-d"), &tx);
+  c.ok(rig.hasCumulo(), "the rig sees the Cumulo router key from env");
+
+  // modelFor("cumulo") (wired into the provider deps as orchModel, the seam the
+  // engine's budget derivation reads) resolves the router default, not "".
+  c.eq(rig.modelFor("cumulo"), std::string(kCumuloModel),
+       "modelFor(cumulo) resolves the router default model, not empty");
+
+  auto& eng = rig.engine();
+  // The pre-notice gate opens and the candidate ladder is the router head.
+  c.ok(eng.canFoldNow(), "canFoldNow() is true for a Cumulo-only instance");
+  const auto cands = eng.foldHostCandidates();
+  c.eqi((long)cands.size(), 1, "the fold ladder has exactly the router head");
+  if (!cands.empty())
+    c.eq(cands[0], std::string(kCumuloSlug), "the fold candidate is the Cumulo router");
+
+  std::string sum;
+  auto fr = eng.runFold("owner", "prev summary", "- user: hi\n", sum);
+  c.ok(fr == agent::TurnEngine::FoldResult::Ok, "runFold succeeded on the router head");
+  c.ok(sum.find("Owner intent") != std::string::npos,
+       "the router's compaction reply became the summary");
+
+  c.ok(!tx.seen.empty(), "the fold dispatched an HTTP request");
+  if (!tx.seen.empty()) {
+    const agent::HttpRequest& r = tx.seen[0];
+    c.eq(r.host, kCumuloHost, "fold dispatch host is the fixed router base");
+    c.ok(r.path.find("/router/openai/v1/chat/completions") != std::string::npos,
+         "fold dispatch path carries the router prefix (/router/openai/v1)");
+    c.eq(headerOf(r, "Authorization"), std::string("Bearer ") + kKey,
+         "the fold's router bearer is the Cumulo key");
+    c.ok(r.tls, "the fold exchange is TLS");
+  }
+
+  clearProviderEnv();
+}
+
 int main() {
   ndtest::Ctx c;
   std::printf("=== nimbusd Cumulo one-key path (CUM-286, offline) ===\n");
@@ -180,6 +242,7 @@ int main() {
   testKeyedRoutesToRouter(c);
   testUnkeyedDegradedHonest(c);
   testByokBeatsRouter(c);
+  testCumuloOnlyFoldsViaRouter(c);
 
   clearProviderEnv();
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);

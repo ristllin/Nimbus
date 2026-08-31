@@ -824,6 +824,68 @@ static void test_byok_head_outranks_router_fallback() {
   TEST_ASSERT_EQUAL_STRING("openai", r.attempts[0].host.c_str());   // BYOK wins
 }
 
+// CUM-288: a Cumulo-only instance (only the router key, no BYOK head) chatted
+// fine but NEVER folded - foldHostCandidates() consulted orchHost + the keyed
+// BYOK priority walk, but never routerFallbackHost(), so the candidate list was
+// empty and canFoldNow()/runFold could not run. Context grew unbounded until
+// turns failed. The fold ladder must fall back to the router head exactly as the
+// turn head does.
+static void test_cumulo_only_instance_folds_via_router_host() {
+  Rig r;
+  r.cfg.keyed.clear();                    // no BYOK head keyed
+  r.cfg.routerKeyed = true;               // ...but the Cumulo router key IS configured
+  r.cfg.routerHost = "cumulo";
+  // The candidate ladder is exactly the router head (the failover list runFold walks).
+  const auto cands = r.eng->foldHostCandidates();
+  TEST_ASSERT_EQUAL(1, (int)cands.size());
+  TEST_ASSERT_EQUAL_STRING("cumulo", cands[0].c_str());
+  // The PRE-notice gate opens (heap ok, a candidate exists) - previously false.
+  TEST_ASSERT_TRUE(r.eng->canFoldNow());
+  // And the fold actually dispatches to the router head and succeeds.
+  r.scripts["cumulo"] = {{true,
+      "{\"reply\":\"1. Owner intent: testing\",\"ask\":\"\",\"memory\":\"\","
+      "\"device\":[],\"mem_write\":[],\"mem_query\":[],\"session_ops\":[]}",
+      "", 0, "c1", 50, 10}};
+  std::string sum;
+  TEST_ASSERT_TRUE(r.eng->runFold("1001", "prev", "- user: hi\n", sum) ==
+                   TurnEngine::FoldResult::Ok);
+  TEST_ASSERT_EQUAL(1, (int)r.attempts.size());
+  TEST_ASSERT_EQUAL_STRING("cumulo", r.attempts[0].host.c_str());   // ran on the router
+  TEST_ASSERT_EQUAL_STRING("1. Owner intent: testing", sum.c_str());
+  // Ledgered as compact spend against the router host.
+  TEST_ASSERT_EQUAL(1, (int)r.cfg.recorded.size());
+  TEST_ASSERT_EQUAL_STRING("cumulo", r.cfg.recorded[0].host.c_str());
+  TEST_ASSERT_EQUAL_STRING("compact", r.cfg.recorded[0].tag.c_str());
+}
+
+// CUM-288 counter-test (pin the class boundary): the router head is a LAST resort
+// consulted ONLY when the BYOK ladder is empty, mirroring runTurn's head pick (a
+// keyed BYOK head still wins). BYOK-only and mixed (BYOK + router) configs must
+// fold on their BYOK heads exactly as before - the router must NOT sneak into the
+// ladder while a BYOK head is keyed.
+static void test_fold_router_fallback_only_when_no_byok_keyed() {
+  // BYOK-only (no router configured): the priority walk, unchanged.
+  {
+    Rig r;                                 // keyed {openai,anthropic,mistral}, no routerHost
+    const auto cands = r.eng->foldHostCandidates();
+    TEST_ASSERT_EQUAL(3, (int)cands.size());
+    TEST_ASSERT_EQUAL_STRING("anthropic", cands[0].c_str());
+    TEST_ASSERT_EQUAL_STRING("openai", cands[1].c_str());
+    TEST_ASSERT_EQUAL_STRING("mistral", cands[2].c_str());
+  }
+  // Mixed (a BYOK head keyed AND the router key present): the router is NOT
+  // appended - the keyed BYOK heads own the ladder, byte-identical to before.
+  {
+    Rig r;
+    r.cfg.keyed = {"openai"};              // one BYOK head keyed
+    r.cfg.routerKeyed = true;             // ...and the Cumulo router key too
+    r.cfg.routerHost = "cumulo";
+    const auto cands = r.eng->foldHostCandidates();
+    TEST_ASSERT_EQUAL(1, (int)cands.size());
+    TEST_ASSERT_EQUAL_STRING("openai", cands[0].c_str());
+  }
+}
+
 // ---- (13) lifecycle hooks (HookRecorder) ------------------------------------
 
 static void test_hooks_fire_on_happy_turn_with_tools() {
@@ -1006,6 +1068,8 @@ int main(int, char**) {
   RUN_TEST(test_fabric_hostlist_filters_unsupported_hosts);
   RUN_TEST(test_router_key_is_the_head_when_no_byok_key);
   RUN_TEST(test_byok_head_outranks_router_fallback);
+  RUN_TEST(test_cumulo_only_instance_folds_via_router_host);
+  RUN_TEST(test_fold_router_fallback_only_when_no_byok_keyed);
   RUN_TEST(test_clear_chat_conv_is_per_chat);
   RUN_TEST(test_hooks_fire_on_happy_turn_with_tools);
   RUN_TEST(test_hooks_turn_end_fires_on_failure_and_sources_track);

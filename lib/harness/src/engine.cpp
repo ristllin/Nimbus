@@ -1049,6 +1049,21 @@ std::vector<std::string> TurnEngine::foldHostCandidates() const {
     if (c == std::string::npos) break;
     p = c + 1;
   }
+  // CUM-288: with NO keyed BYOK head in the ladder, the verified router key
+  // (Cumulo, then Z.ai) is the fallback head that runs the whole assistant -
+  // exactly as runTurn resolves its head (a keyed BYOK head still wins, so this
+  // only fires when the walk above found none). The router key is not a BYOK
+  // slot (hasKey() does not report it), so it is gated by routerFallbackHost()
+  // returning non-empty (its own key check) plus registered + in budget, NOT by
+  // hasKey. Without this a Cumulo-only instance chats fine but never folds:
+  // context grows unbounded until turns fail.
+  if (out.empty() && d_.cfg.provider.routerFallbackHost) {
+    std::string rf = d_.cfg.provider.routerFallbackHost();
+    trimInPlace(rf);
+    if (!rf.empty() && d_.hosts.has(rf) &&
+        !(d_.cfg.budget.overBudget && d_.cfg.budget.overBudget(rf)))
+      out.push_back(std::move(rf));
+  }
   return out;
 }
 
