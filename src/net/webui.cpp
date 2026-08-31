@@ -21,6 +21,7 @@
 #include "version.h"  // NIMBUS_FW_VERSION/BUILD -> /api/state fw/build
 #include "wifi_portal.h"
 #include "nimbus/wifi/copy.h"   // captive-portal probe table + landing page (CUM-260)
+#include "wifi_link.h"    // /api/wifi reorder - re-seed the failover policy after a change
 #include "wifi_store.h"   // /api/wifi - the known-networks list (the stored password
                           // is read here ONLY to hand it back to the radio, never out)
 #include "web_pages.h"
@@ -3223,6 +3224,7 @@ void beginWeb(const WebConfig& wc) {
   //   add       ssid + pass  remember it, then join it
   //   connect   ssid         join a remembered network with its STORED password
   //   forget    ssid         drop it (and its password)
+  //   reorder   ssid + index move it to a 0-based priority slot (optional user order)
   //   publishap              stop joining and bring the setup network up
   //   resume                 resume joining
   //   scan                   start a radio scan (read the result with ?scan=1)
@@ -3324,6 +3326,26 @@ void beginWeb(const WebConfig& wc) {
         fail(404, "That network isn't saved. Refresh the list.");
         return;
       }
+      JsonDocument d;
+      d["count"] = knownCount();
+      ok(d);
+      return;
+    }
+
+    if (action == "reorder") {
+      // Optional user priority (CUM-207): move a saved network to a new 0-based slot.
+      // A priority HINT that breaks equal-signal ties, not a hard pin - a later join
+      // still promotes the network that worked to the head.
+      if (!ssid.length()) { fail(400, "Select a network first."); return; }
+      if (!r->hasParam("index", true)) { fail(400, "Give a position for the network."); return; }
+      const int idx = (int)r->getParam("index", true)->value().toInt();
+      if (idx < 0) { fail(400, "Give a position for the network."); return; }
+      if (wifistore::indexOf(ssid) < 0) {
+        fail(404, "That network isn't saved. Refresh the list.");
+        return;
+      }
+      wifistore::reorder(ssid, idx);   // a no-op (already there) is still a success
+      nimbus::net::link::refreshKnown();
       JsonDocument d;
       d["count"] = knownCount();
       ok(d);

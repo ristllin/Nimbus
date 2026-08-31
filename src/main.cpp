@@ -94,6 +94,7 @@
 #include "net/webui.h"
 #include "net/wifi_portal.h"
 #include "net/wifi_store.h"   // the Wi-Fi menu reads saved networks by name
+#include "net/wifi_link.h"    // CUM-207: multi-network failover supervisor (step 8)
 #include "sfx/sound_fx.h"
 #include "sfx/sfx_sync.h"            // sfxsync::statusStr -> device.status sfxSync (W11)
 #include "sfx/music.h"              // CUM-40 music player (media.* tools + /play)
@@ -1504,6 +1505,18 @@ static nimbus::wifi::LinkView liveLinkView() {
   // reports: a failed AP reports 0.0.0.0. Conservative - never claims an AP is up.
   v.apUp       = !v.apIp.empty() && v.apIp != "0.0.0.0";
   v.knownCount = net::provisioned() ? 1 : 0;
+  // CUM-207: while the failover supervisor is actively driving the radio (not yet
+  // online), it owns the real link state - surface "Scanning" / "Joining <ssid> 2/3..."
+  // instead of the flat "Unreachable" the association bit alone would show.
+  if (!up) {
+    const net::link::Status ls = net::link::status();
+    if (ls.engaged) {
+      v.state     = ls.state;
+      v.ssid      = ls.joiningSsid;
+      v.candIndex = ls.candIndex;
+      v.candCount = ls.candCount;
+    }
+  }
   return v;
 }
 
@@ -2772,6 +2785,7 @@ void setup() {
   // to Orchestrator; the web UI is an Orchestrator surface by design.
   if (g_orchMode) {
     net::begin();  // AP "<name>-setup" + STA + captive DNS (identity resolved inside)
+    net::link::begin();   // CUM-207: arm the multi-network failover supervisor
   } else {
     // Notifier skips net::begin(), so load the saved-network store here (it reads
     // NVS, no radio) - otherwise provisioned() and the Settings > Wi-Fi picker would
@@ -4297,6 +4311,9 @@ void loop() {
   if (g_orchMode) {
     net::process();
     net::loopWeb();
+    // CUM-207: drive the multi-network failover supervisor inline (no task). It stays
+    // passive unless the link is genuinely lost with a second saved network to try.
+    net::link::tick(now, g_orchMode, agent::store::onboarded());
   }
 #ifdef NIMBUS_TEST
   // ── HOST DEAD-MAN CHECK (battlab) ─────────────────────────────────────────
@@ -5167,6 +5184,10 @@ void loop() {
     si.handoffGrace = g_apHandoffArmed ||
                       (g_dropApAfterMs != 0 && int32_t(now - g_dropApAfterMs) < 0);
     si.msSinceJoin  = net::msSinceJoinAttempt();
+    // CUM-207: while the failover supervisor is cycling scan -> next saved network,
+    // trying the NEXT network is progress, not churn - hold the setup AP until it is
+    // exhausted (the supervisor clears this on reaching Unreachable).
+    si.failoverActive = net::link::failoverActive();
     switch (nimbus::wifi::decideSetupAp(si)) {
       case nimbus::wifi::SetupApAct::DropAp:
         net::dropSoftAP();

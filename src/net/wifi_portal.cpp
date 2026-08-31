@@ -1,6 +1,7 @@
 // wifi_portal - see wifi_portal.h. Adapted from Nuage-Solide src/wifi_portal.cpp.
 #include "wifi_portal.h"
 #include "wifi_store.h"   // known-networks list (NVS glue)
+#include "wifi_link.h"    // CUM-207: failover supervisor - keep it seeded + off the AP
 #include "nimbus_config.h"
 
 #include <WiFi.h>
@@ -224,6 +225,7 @@ bool saveAndConnect(const String& ssid, const String& pass) {
   // The network currently in use is protected from eviction, so adding one can never
   // cost you the connection you are adding it over.
   wifistore::add(ssid, pass, staConnected() ? WiFi.SSID() : String(""));
+  link::refreshKnown();   // the failover policy joins from this list - keep it current
   WiFi.disconnect();
   WiFi.begin(ssid.c_str(), pass.c_str());
   s_lastJoinMs = millis() ? millis() : 1;   // watch this attempt; 0 is the "none" sentinel
@@ -237,6 +239,7 @@ bool saveAndConnect(const String& ssid, const String& pass) {
 // association attempts starve the AP's beacons on the shared 2.4 GHz radio.
 void publishSetupNetwork() {
   s_lastJoinMs = 0;   // the station is being stood down; no join is in flight to watch
+  link::setManualHold(true);   // owner wants the setup AP - hold the failover supervisor off
   WiFi.setAutoReconnect(false);
   WiFi.disconnect(/*wifioff=*/false, /*eraseap=*/false);
   // Re-assert the AP if it never came up (or was dragged off-channel by the STA).
@@ -250,6 +253,7 @@ void publishSetupNetwork() {
 
 // Resume normal joining (the owner fixed the credentials, or wants another go).
 void cancelSetupHold() {
+  link::setManualHold(false);   // resume normal joining - the supervisor may act again
   WiFi.setAutoReconnect(true);
   const String sta = solide::memory::getString(NIMBUS_KEY_STA_SSID, "");
   if (sta.length()) {
@@ -267,12 +271,18 @@ uint32_t msSinceJoinAttempt() {
 
 // --- known networks (thin pass-throughs; the store owns locking + persistence) ---
 int  knownCount() { return wifistore::count(); }
-bool forgetNetwork(const String& ssid) { return wifistore::forget(ssid); }
+bool forgetNetwork(const String& ssid) {
+  const bool ok = wifistore::forget(ssid);
+  if (ok) link::refreshKnown();   // keep the failover policy's list in step
+  return ok;
+}
 String knownNetworksJson() {
   return wifistore::json(staConnected() ? WiFi.SSID() : String(""));
 }
 bool addNetwork(const String& ssid, const String& pass, String* evicted) {
-  return wifistore::add(ssid, pass, staConnected() ? WiFi.SSID() : String(""), evicted);
+  const bool ok = wifistore::add(ssid, pass, staConnected() ? WiFi.SSID() : String(""), evicted);
+  if (ok) link::refreshKnown();
+  return ok;
 }
 
 // Scan bookkeeping. WIFI_SCAN_FAILED (-2) means BOTH "no scan has been started" and
