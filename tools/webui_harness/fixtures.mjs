@@ -15,7 +15,9 @@ export const STATE = {
     minsToEmpty: 240, onExtPower: false, charging: false, dieTempC: 41,
   },
   storeSD: true, sdLost: false,
-  // Reach info the Home info line + connectivity render.
+  // Reach info the Home info line + connectivity render. rssi is the current station
+  // signal the Wi-Fi panel badges on the in-use saved network (proposal §3).
+  sta: true, rssi: -58,
   apSsid: 'Nimbus-setup', apIp: '192.168.4.1', ip: '192.168.1.42',
   mdns: 'nimbus.local', running: true, scrModel: 'tft',
   // OTA (N5 contract stub): installed/latest/notes + result state. otaResult is
@@ -91,6 +93,10 @@ export const HEALTH = { ok: true, checks: [{ name: 'wifi', ok: true }, { name: '
 export const CONNECT = {
   // token is what the sign-in QR encodes; masked-safe fake for the harness
   token: 'HARNESSTOKEN123456',
+  // Reach identity for the "On your network" row (proposal §1): the mDNS name and IP
+  // each link to themselves with a one-time sign-in code, and Copy grabs the plain name.
+  name: 'Nimbus', mdns: 'nimbus.local', apSsid: 'Nimbus-setup',
+  mdnsUrl: 'http://nimbus.local/?c=HARNESSSIGNCODE', url: 'http://192.168.1.42/?c=HARNESSSIGNCODE',
   ip: '192.168.1.42', apPass: 'setup-pass',
   cloudCode: 'CN-4821', // "Cloud link code" (code 2)
   deviceCode: '82 41 07', // "Device sign-in code" (code 1)

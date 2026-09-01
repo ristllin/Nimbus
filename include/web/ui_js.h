@@ -529,6 +529,9 @@ function renderDevTiles(d){
 // Last LAN address seen, so a changed one can refresh the sign-in links (below).
 // null = nothing seen yet, which must NOT count as a change.
 let _lastStaIp=null;
+// Last station up/down seen, so a join/drop transition re-renders the saved-network
+// list (signal + connection line). null = nothing seen yet, not a change.
+let _lastSta=null;
 // Glass-box availability, cached off the polls the UI already runs (no extra
 // requests). Turn details are SD-gated AND gated on the Activity recording knob,
 // so the chat says which one is missing instead of just showing nothing.
@@ -550,7 +553,11 @@ function applyState(d){
   // ---- Cloud access (cumulo-nimbus tunnel) ----
   if(d.cloud&&$('cloudLine')){
     var c=d.cloud;
-    $('cloudLine').textContent=c.line||'';
+    // Live tunnel reachability (proposal §4): once paired, state the one fact the tab never
+    // did - reachable vs paired-but-not-connecting. Otherwise the server's own status line.
+    $('cloudLine').textContent=c.paired
+     ?(c.online?'Cloud access is on and reachable.':'Paired, but the tunnel is not connecting.')
+     :(c.line||'');
     var pairing=(c.state==='pairing'&&!!c.code);
     var card=$('cloudPairCard'); if(card)card.style.display=pairing?'block':'none';
     if(pairing){
@@ -841,6 +848,23 @@ function applyState(d){
     const mv=+b.dataset.m; b.classList.toggle('on',mv===d.mode); b.classList.toggle('nf',mv===0);
     b.onclick=()=>{ if(mv!==d.mode) switchMode(mv); };
   });}
+  // Connectivity → Bluetooth adapts to the mode (proposal §2): a dead three-row table in
+  // Orchestrator (radio off, no bonds) collapses to one honest line; the table shows only
+  // in Notifier, where the BLE link is the whole point.
+  if(d.mode!==undefined){
+    const notifier=(d.mode===0);
+    const bl=$('btOrchLine'); if(bl)bl.style.display=notifier?'none':'';
+    const bt=$('btTable'); if(bt)bt.style.display=notifier?'':'none';
+  }
+  // Wi-Fi live signal + connection line (proposal §3). rssi is a station fact from
+  // /api/state; cache it so loadWifi() can badge the in-use row, and refresh the live
+  // figure each poll without a full list reload. A sta transition re-renders the list.
+  if(d.rssi!==undefined)window._rssi=d.rssi;
+  if(d.sta&&d.rssi!==undefined&&$('wifiRssi'))$('wifiRssi').textContent=d.rssi+' dBm';
+  if(d.sta!==undefined){
+    if(_lastSta!==null&&d.sta!==_lastSta&&typeof loadWifi==='function')loadWifi();
+    _lastSta=d.sta;
+  }
   // The display is a color touch panel; the panel selector was retired, so only
   // the 180-degree flip remains a runtime choice.
   const sf=$('scrFlip');
@@ -1006,6 +1030,11 @@ function loadConnect(){
        if(c.mdnsUrl&&c.mdns)parts.push(link(c.mdnsUrl,c.mdns));
        if(c.url)parts.push(link(c.url,c.ip||c.apIp||'this device'));
        $('cxLan').innerHTML=parts.join(' &middot; ');
+       // Copy affordance for the reach address (proposal §1): the plain mDNS name, else
+       // the IP - what an owner types to get back, without the sign-in query string.
+       const cb=$('cxLanCopy'), addr=c.mdns||c.ip||c.apIp||'';
+       if(cb&&addr&&navigator.clipboard){cb.style.display='';
+         cb.onclick=()=>navigator.clipboard.writeText(addr).then(()=>toast('Address copied'));}
      }
      // Bluetooth (Notifier link) state
      if($('btState'))$('btState').textContent=c.bleOn?(c.bleConn?'on · a device is connected':'on · advertising'):'off (Notifier mode only)';
@@ -2252,18 +2281,32 @@ function loadWifi(){
   const nets=d.networks||[];
   _wifiSaved=nets.map(n=>n.ssid);
   if($('wifiCount'))$('wifiCount').textContent=nets.length+' of '+(d.max||5);
+  // Signal is a station fact from /api/state, cached each poll; badge it on the in-use
+  // row (proposal §3). The live figure is refreshed by applyState between reloads.
+  const rssi=(window._rssi!==undefined)?(window._rssi+' dBm'):'';
   if(!nets.length)box.innerHTML='<span class=hint>No saved networks yet. Add one below.</span>';
   else box.innerHTML='<table><tbody>'+nets.map((n,i)=>
-   '<tr><td><b>'+_wesc(n.ssid)+'</b>'+(n.current?' <span class=badge>in use</span>':'')+
+   '<tr><td><b>'+_wesc(n.ssid)+'</b>'+(n.current?' <span class=badge>in use</span> <span id=wifiRssi class=hint>'+_wesc(rssi)+'</span>':'')+
    (n.open?' <span class=hint>open network</span>':'')+
-   '</td><td style="text-align:right;white-space:nowrap">'+
-   (i>0?'<button data-wup="'+_wesc(n.ssid)+'" data-wto="'+(i-1)+'" title="Higher priority">Up</button> ':'')+
+   '</td><td style="text-align:right">'+
+   (i>0?'<button data-wup="'+_wesc(n.ssid)+'" data-wto="'+(i-1)+'" title="Higher priority" aria-label="Higher priority">&uarr;</button> ':'')+
+   (i<nets.length-1?'<button data-wup="'+_wesc(n.ssid)+'" data-wto="'+(i+1)+'" title="Lower priority" aria-label="Lower priority">&darr;</button> ':'')+
    (n.current?'':'<button data-wcon="'+_wesc(n.ssid)+'">Connect</button> ')+
    '<button data-wfor="'+_wesc(n.ssid)+'"'+(n.current?' data-wcur=1':'')+'>Forget</button></td></tr>')
    .join('')+'</tbody></table>';
   box.querySelectorAll('button[data-wcon]').forEach(b=>b.onclick=()=>wifiConnect(b.dataset.wcon));
   box.querySelectorAll('button[data-wfor]').forEach(b=>b.onclick=()=>wifiForget(b.dataset.wfor,!!b.dataset.wcur));
   box.querySelectorAll('button[data-wup]').forEach(b=>b.onclick=()=>wifiReorder(b.dataset.wup,+b.dataset.wto));
+  // The honest connection line: named current network + address + signal when up, else
+  // whether the setup hotspot is the way in. All from the existing /api/wifi shape.
+  const cur=nets.find(n=>n.current);
+  const cline=d.sta
+   ?('Connected'+(cur?(' to "'+cur.ssid+'"'):'')+(d.staIp?(' at '+d.staIp):'')+(rssi?(' ('+rssi+')'):''))
+   :(d.apUp?'Not connected. The setup hotspot is up for recovery.':'Not connected. Trying saved networks.');
+  if($('wifiConnState'))$('wifiConnState').textContent=cline;
+  // Setup Wi-Fi network + password are shown ONLY when the hotspot is the way in - up and
+  // the station is down (CUM-200). A connected device hides them as clutter (proposal §1).
+  if($('cxSetupAp'))$('cxSetupAp').style.display=(d.apUp&&!d.sta)?'':'none';
   if($('wifiApMsg'))$('wifiApMsg').textContent=d.apUp
    ?('Temporary setup hotspot "'+(d.apSsid||'')+'" is available at '+(d.apIp||'')+'.')
    :(d.sta
@@ -2339,7 +2382,9 @@ function scan(){
    nm.textContent=(n.ssid||'(hidden)')+(n.enc?' (lock)':'')+(_wifiSaved.indexOf(n.ssid)>=0?' - saved':'');
    const bars=document.createElement('span');bars.className='bars';bars.textContent=n.rssi+' dBm';
    el.appendChild(nm);el.appendChild(bars);
-   el.onclick=()=>{$('ssid').value=n.ssid;$('pass').focus();};
+   // Manual name/password live in the "Add a hidden network" disclosure now; picking a
+   // scanned network opens it and prefills the name so the password field is ready.
+   el.onclick=()=>{const s=$('ssid');if(s){const dt=s.closest('details');if(dt)dt.open=true;s.value=n.ssid;}$('pass').focus();};
    $('nets').appendChild(el);});
   if(!list.length)$('nets').textContent='No networks found.';
  }).catch(()=>{if(--left<=0)stop('Scan failed - device unreachable.');});
