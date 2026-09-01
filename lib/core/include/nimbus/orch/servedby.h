@@ -26,5 +26,21 @@ struct ServedBy {
 ServedBy servedByDisclosure(const std::string& reqHost, const std::string& reqModel,
                             const std::string& servedHost, const std::string& servedModel);
 
+// The device turn-chip disclosure (CUM-236 device leg). The device writes one
+// per-turn `ev:turnend` row; its turn view (_turnChip) reads {model, fallback} to
+// annotate a substituted turn "served by <host> <model> (fallback)". This decides
+// those two fields from the turn's requested/served identity, sharing the ONE rule
+// above so a new fallback path the rule flags discloses on the device too - it does
+// not re-implement the comparison. `configuredModel` is the head's configured model
+// (the normal-turn label); on a real substitution the served model that ACTUALLY
+// answered is shown instead, so the chip never names a model that did not reply.
+struct TurnChipDisclosure {
+  std::string model;         // model to show in the chip (served model on a fallback)
+  bool        fallback = false;
+};
+TurnChipDisclosure turnChipDisclosure(const std::string& reqHost, const std::string& reqModel,
+                                      const std::string& servedHost, const std::string& servedModel,
+                                      const std::string& configuredModel);
+
 }  // namespace orch
 }  // namespace nimbus
