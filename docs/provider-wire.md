@@ -272,6 +272,11 @@ ladder both consult it), never falls embeddings back cross-provider, and records
 each switch as a context note the assistant can mention if relevant. The active set
 is served at `GET /api/fallbacks`. See [harness.md](harness.md) for the turn flow.
 
+When a turn is answered by a fallback provider or model, that substitution is
+disclosed honestly rather than hidden: the reply carries a small "served by
+&lt;provider&gt; &lt;model&gt;" note so you always know which model actually
+answered. A working direct call shows nothing.
+
 ## Local model as the custom endpoint (Ollama and friends)
 
 The device can run against any OpenAI-compatible server on your own network -

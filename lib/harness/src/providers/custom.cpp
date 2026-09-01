@@ -203,6 +203,7 @@ bool orchTurnCustom(const ProviderDeps& pd, std::string& convId,
   filter["error"]["message"] = true;   // OpenAI-style error envelope
   filter["message"] = true;            // Mistral-style error envelope
   filter["usage"] = true;              // token accounting (when the backend reports it)
+  filter["model"] = true;   // served model echo -> fallback disclosure (CUM-236)
 
   JsonDocument doc = wire::makeDoc(pd);  // response doc -> PSRAM (retained turn content)
   int code = 0;
@@ -254,6 +255,7 @@ bool orchTurnCustom(const ProviderDeps& pd, std::string& convId,
     return false;
   }
   if (usage) *usage += nimbus::orch::tokenUsageFromJson(doc["usage"].as<ArduinoJson::JsonObjectConst>());
+  nimbus::orch::captureServedModel(usage, doc.as<ArduinoJson::JsonVariantConst>());
 
   outJson = (const char*)(doc["choices"][0]["message"]["content"] | "");
   if (outJson.empty()) { err = "no message content"; return false; }

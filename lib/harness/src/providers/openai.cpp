@@ -436,6 +436,7 @@ nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
     JsonObject si = oi["summary"].add<JsonObject>();
     si["type"] = true; si["text"] = true;
     filter["usage"] = true;   // whole usage object -> per-round token accounting
+    filter["model"] = true;   // served model echo -> fallback disclosure (CUM-236)
 
     JsonDocument resp = makeDoc(pd);
     int code = exchange(pd, kOpenAIHost, 443, true, "POST", "/v1/responses",
@@ -450,6 +451,7 @@ nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
       return out;
     }
     if (usage) *usage += nimbus::orch::tokenUsageFromJson(resp["usage"].as<ArduinoJson::JsonObjectConst>());
+    nimbus::orch::captureServedModel(usage, resp.as<ArduinoJson::JsonVariantConst>());
 
     // Walk EVERY function_call before deciding: the model may batch registry calls
     // WITH the terminal orch_turn in one response (tool_choice:"required" invites
@@ -585,6 +587,7 @@ bool orchTurnOpenAI(const ProviderDeps& pd, std::string& convId,
   JsonObject ci = oi["content"].add<JsonObject>();
   ci["type"] = true; ci["text"] = true;
   filter["usage"] = true;   // whole usage object -> token accounting
+  filter["model"] = true;   // served model echo -> fallback disclosure (CUM-236)
 
   JsonDocument doc = makeDoc(pd);   // response doc -> PSRAM (retained turn content)
   int code = exchange(pd, kOpenAIHost, 443, true, "POST", "/v1/responses",
@@ -598,6 +601,7 @@ bool orchTurnOpenAI(const ProviderDeps& pd, std::string& convId,
     return false;
   }
   if (usage) *usage += nimbus::orch::tokenUsageFromJson(doc["usage"].as<ArduinoJson::JsonObjectConst>());
+  nimbus::orch::captureServedModel(usage, doc.as<ArduinoJson::JsonVariantConst>());
 
   // No cross-turn chain head, matching the loop path. The server-side chain is a
   // DUPLICATE of history this device already sends: the system prompt carries the

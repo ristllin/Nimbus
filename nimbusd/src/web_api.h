@@ -8,6 +8,7 @@
 #include <functional>
 #include <future>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "engine_thread.h"
@@ -59,7 +60,7 @@ class WebApi {
   bool handle(const std::string& method, const std::string& path,
               const std::string& body, ApiResp& out) {
     const std::string base = path.substr(0, path.find('?'));
-    return tryStatus(method, base, out) ||
+    return tryStatus(method, base, body, out) ||
            tryChat(method, base, body, out) ||
            tryMemory(method, base, path, body, out) ||
            tryStatic(method, base, path, out) ||
@@ -69,11 +70,12 @@ class WebApi {
 
  private:
   // Home + Assistant snapshots (instant: engine snapshot + immutable config).
-  bool tryStatus(const std::string& m, const std::string& base, ApiResp& out) {
+  bool tryStatus(const std::string& m, const std::string& base, const std::string& body,
+                 ApiResp& out) {
     if (base == "/api/state" && m == "GET")   { out = stateResp();  return true; }
     if (base == "/api/health" && m == "GET")  { out = healthResp(); return true; }
     if (base == "/api/orch" && m == "GET")    { out = orchResp();   return true; }
-    if (base == "/api/orch" && m == "POST")   { out = okJson(R"({"ok":true})"); return true; }
+    if (base == "/api/orch" && m == "POST")   { out = orchPost(body); return true; }
     if (base == "/api/connect" && m == "GET") { out = connectResp(); return true; }
     return false;
   }
@@ -358,13 +360,23 @@ class WebApi {
     d["running"] = true;
     JsonObject provs = d["providers"].to<JsonObject>();
     struct P { const char* slug; const char* label; };
-    static const P kP[] = {{"mistral", "Mistral"}, {"openai", "OpenAI"}, {"anthropic", "Anthropic"}};
+    // Cumulo Nimbus first (the flagship one-key path for a VN), then the BYOK heads.
+    // The key FIELD the web form posts is `<slug>Key` - orchPost consumes the same.
+    static const P kP[] = {{"cumulo", "Cumulo Nimbus"}, {"mistral", "Mistral"},
+                           {"openai", "OpenAI"}, {"anthropic", "Anthropic"}};
     for (const P& p : kP) {
-      JsonObject o = provs[p.slug].to<JsonObject>();
+      const std::string slug = p.slug;
+      JsonObject o = provs[slug].to<JsonObject>();
       o["label"] = p.label;
-      o["keyField"] = std::string(p.slug) + "Key";
-      o["hasKey"] = rig_->hostAvailable(p.slug);
-      o["verify"] = -1;   // not verified from the UI (honest unknown)
+      o["keyField"] = slug + "Key";
+      // cumulo is a router key, not a canonical-env BYOK slot, so hostAvailable()
+      // does not see it - report it from hasCumulo() (CUM-286).
+      o["hasKey"] = (slug == kCumuloSlug) ? rig_->hasCumulo() : rig_->hostAvailable(slug);
+      if (slug == kCumuloSlug) o["recommended"] = true;
+      // A hosted instance has no cheap UI key-verify path; the badge stays an honest
+      // "unverified" (vts 0 + verify -1). The page's hosted save-flow does not spin on
+      // a verify poll - it saves and reports "applied" directly (CUM-279).
+      o["verify"] = -1;
       o["vts"] = 0;
     }
     d["provPrio"] = rig_->options().priority;
@@ -383,6 +395,42 @@ class WebApi {
     std::string out;
     serializeJson(d, out);
     return okJson(out);
+  }
+
+  // ------------------------------------------------------------------ /api/orch POST
+  // In-app provider keys, device parity (CUM-279): the SAME fields the device's
+  // Providers & keys form posts (`<slug>Key`, and `clr_<slug>Key` to remove), applied
+  // through the rig seam so a key set in the UI takes effect - no external attach.
+  // Non-key orch settings are acked honestly (a VN's model/priority knobs default).
+  // The apply runs on the engine thread (serialized; refused mid-turn with a 503
+  // retry) because it rebuilds the engine to register the newly-keyed head.
+  ApiResp orchPost(const std::string& body) {
+    static const char* kFields[] = {"cumuloKey", "mistralKey", "openaiKey", "anthropicKey"};
+    std::vector<std::pair<std::string, std::string>> writes;  // (host, key); empty key clears
+    for (const char* f : kFields) {
+      const std::string host = NimbusdRig::hostForKeyField(f);
+      if (host.empty()) continue;
+      const std::string v = formValue(body, f);
+      if (!v.empty()) writes.push_back({host, v});
+      else if (!formValue(body, std::string("clr_") + f).empty())
+        writes.push_back({host, std::string()});
+    }
+    if (writes.empty()) return okJson(R"({"ok":true})");   // non-key settings: honest ack
+    if (eng_->snapshot().turnInFlight) return busy();
+    auto fut = eng_->dispatchRead([this, writes]() -> std::string {
+      int applied = 0;
+      for (const auto& w : writes)
+        if (rig_->applyProviderKey(w.first, w.second)) applied++;
+      JsonDocument d;
+      d["ok"] = true;
+      d["applied"] = applied;
+      d["note"] = "Key saved and applied.";
+      std::string out;
+      serializeJson(d, out);
+      return out;
+    });
+    if (fut.wait_for(std::chrono::seconds(5)) != std::future_status::ready) return busy();
+    try { return okJson(fut.get()); } catch (...) { return busy(); }
   }
 
   // ------------------------------------------------------------------ /api/connect
@@ -429,6 +477,14 @@ class WebApi {
       awaitFromSeq_ = replies_->lastSeq();  // consumed; do not re-return it
       d["reply"] = reply;
       d["pending"] = false;
+      // Served-by disclosure (CUM-236): if this turn was served by a fallback
+      // provider/model, tell the web chat so it can show an honest footer. Read from
+      // the mutex-guarded snapshot (never the raw rig members on this HTTP thread).
+      const StateSnapshot ss = eng_->snapshot();
+      if (ss.lastFallback) {
+        d["fallback"] = true;
+        d["servedBy"] = ss.lastServedBy;
+      }
     } else if (awaiting_ && time(nullptr) > awaitDeadline_) {
       // Backstop: a turn that ran to completion with no delivery (rare) must not
       // leave the bubble spinning forever - resolve honestly after the deadline.

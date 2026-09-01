@@ -39,6 +39,8 @@ struct StateSnapshot {
   uint32_t sessionTokensOut = 0;
   bool     providerConfigured = false;  // any provider key present (CUM-211 honest state)
   std::string lastHost;
+  bool        lastFallback = false;     // served-by of the most recent turn (CUM-236)
+  std::string lastServedBy;
   std::string devName;
   uint64_t startedEpoch = 0;
 };
@@ -178,6 +180,11 @@ class EngineThread {
     s.sessionTokensIn = rig_->engine().sessionUsage().promptTokens;
     s.sessionTokensOut = rig_->engine().sessionUsage().completionTokens;
     s.providerConfigured = rig_->anyProviderConfigured();
+    // Served-by of the most recent turn (CUM-236). Read on the engine thread (the
+    // only writer, via the onTurnEnd hook) and published under snapMu_, so the HTTP
+    // thread never races a std::string mid-reassignment.
+    s.lastFallback = rig_->lastFallback();
+    s.lastServedBy = rig_->lastServedBy();
     s.devName = rig_->options().devName;
     {
       std::lock_guard<std::mutex> lk(snapMu_);

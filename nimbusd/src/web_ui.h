@@ -39,11 +39,16 @@ inline std::string buildWebUiPage(const std::string& webToken) {
     tok += c;
   }
   // Runs before the app script (injected right after the page <title>): seed the
-  // token so the client-side gate is already satisfied inside the tunnel.
+  // token so the client-side gate is already satisfied inside the tunnel, and set
+  // the honest-UI flag (CUM-279) so the shared page hides device-only chrome (ring,
+  // screen, mic, AP, ESP OTA) that is faked or dead on a hosted instance. The flag
+  // is set synchronously before the app script, so no dead control ever flashes.
   const std::string bootstrap =
-      "<script>/* Virtual Nimbus tunnel sign-in (CUM-265): the relay session has "
-      "already authenticated the owner, so sign this browser in as the device's "
-      "first-run setup does. */\n"
+      "<script>/* Virtual Nimbus tunnel sign-in (CUM-265) + honest-UI flag "
+      "(CUM-279): the relay session has already authenticated the owner, so sign "
+      "this browser in as the device's first-run setup does, and mark this a hosted "
+      "instance. */\n"
+      "window.NIMBUS_HOSTED=true;\n"
       "try{localStorage.setItem('nimbusTok','" + tok + "');}catch(e){}</script>";
 
   std::string page;

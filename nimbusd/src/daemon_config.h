@@ -60,8 +60,22 @@ class Config {
 
  public:
 
-  // Environment wins over the file.
+  // In-app override (CUM-279): a value set through the running UI (a provider key
+  // the owner typed on the Providers & keys page). It is the AUTHORITATIVE source -
+  // it wins over both the environment and the file, exactly as a device treats the
+  // key you set in its own UI as the one it uses. An empty value ERASES the override
+  // so the env/file value shows through again (a "Clear key" from the page). The rig
+  // persists these to a durable secrets file so they survive a process restart.
+  void setOverride(const std::string& name, const std::string& value) {
+    if (value.empty()) override_.erase(name);
+    else override_[name] = value;
+  }
+  const std::map<std::string, std::string>& overrides() const { return override_; }
+
+  // Override wins, then environment, then the file.
   std::string get(const std::string& name, const std::string& dflt = "") const {
+    auto ov = override_.find(name);
+    if (ov != override_.end() && !ov->second.empty()) return ov->second;
     if (const char* e = std::getenv(name.c_str()))
       if (*e) return e;
     auto it = file_.find(name);
@@ -74,12 +88,23 @@ class Config {
     return v.empty() ? dflt : std::atoi(v.c_str());
   }
 
-  // Provider host -> key, from the canonical env names.
-  std::string providerKey(const std::string& host) const {
-    if (host == "openai")    return get("OPENAI_API_KEY");
-    if (host == "anthropic") return get("ANTHROPIC_API_KEY");
-    if (host == "mistral")   return get("MISTRAL_API_KEY");
+  // Canonical env name for a provider slug - the SINGLE source of the host->env
+  // mapping (AGENTS.md: the provider list drifted twice when it was hardcoded in
+  // several places). Includes the Cumulo router key; empty for an unknown slug.
+  static std::string providerEnvName(const std::string& host) {
+    if (host == "openai")    return "OPENAI_API_KEY";
+    if (host == "anthropic") return "ANTHROPIC_API_KEY";
+    if (host == "mistral")   return "MISTRAL_API_KEY";
+    if (host == "cumulo")    return "CUMULO_API_KEY";
     return std::string();
+  }
+
+  // Provider host -> BYOK key. Cumulo is a router key, NOT a BYOK slot, so it is not
+  // returned here (callers read it via CUMULO_API_KEY directly - see rig cumuloKey()).
+  std::string providerKey(const std::string& host) const {
+    if (host == "cumulo") return std::string();
+    const std::string env = providerEnvName(host);
+    return env.empty() ? std::string() : get(env);
   }
 
   // Mask a secret to its first 4 chars for safe logging ("sk-a...(28)").
@@ -91,6 +116,7 @@ class Config {
 
  private:
   std::map<std::string, std::string> file_;
+  std::map<std::string, std::string> override_;  // in-app, authoritative (CUM-279)
 };
 
 }  // namespace nimbusd

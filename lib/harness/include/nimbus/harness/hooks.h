@@ -30,6 +30,13 @@ struct TurnEndEv {
   std::string chatId;        // the turn's routing chat (v3.6.0 fold accounting)
   std::string error;         // provider/parse error text when !ok ("" on success) -
                              // the device classifies context-overflow here (reactive fold)
+  // Served-by disclosure (CUM-236): what actually answered vs what was asked for.
+  // `host` above is the failover-final (served) provider; these carry the model
+  // detail and the requested head so a display can say "served by <p> <m>" honestly.
+  std::string requestedHost;   // the head chosen before any failover
+  std::string requestedModel;  // orchModel(requestedHost) (may be empty)
+  std::string servedModel;     // the "model" echoed in the provider response ("" if unknown)
+  bool fallback = false;        // served host != requested, or served model differs from requested
 };
 struct SpawnEv  {
   std::string tag, backend, category, model;

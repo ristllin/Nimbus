@@ -307,6 +307,7 @@ nimbus::orch::HeadStepFn misLoopStep(const ProviderDeps& pd,
     filter["message"] = true;                        // error envelope (some errors)
     filter["detail"].add<JsonObject>()["msg"] = true; // 422 validation detail
     filter["usage"] = true;   // whole usage object -> per-round token accounting
+    filter["model"] = true;   // served model echo -> fallback disclosure (CUM-236)
 
     JsonDocument resp = makeDoc(pd);
     int code = mistralRequest(pd, "POST", "/v1/chat/completions", serializeBody(req),
@@ -322,6 +323,7 @@ nimbus::orch::HeadStepFn misLoopStep(const ProviderDeps& pd,
       return out;
     }
     if (usage) *usage += nimbus::orch::tokenUsageFromJson(resp["usage"].as<ArduinoJson::JsonObjectConst>());
+    nimbus::orch::captureServedModel(usage, resp.as<ArduinoJson::JsonVariantConst>());
 
     JsonObjectConst m = resp["choices"][0]["message"].as<JsonObjectConst>();
     const char* prose = m["content"] | "";
@@ -430,6 +432,7 @@ bool orchTurnMistral(const ProviderDeps& pd, std::string& convId,
   oi["type"] = true; oi["content"] = true;
   filter["message"] = true;            // error envelope
   filter["usage"] = true;              // whole usage object -> token accounting
+  filter["model"] = true;   // served model echo -> fallback disclosure (CUM-236)
 
   const std::string path = convId.length()
       ? std::string("/v1/conversations/") + convId
@@ -446,6 +449,7 @@ bool orchTurnMistral(const ProviderDeps& pd, std::string& convId,
     return false;
   }
   if (usage) *usage += nimbus::orch::tokenUsageFromJson(doc["usage"].as<ArduinoJson::JsonObjectConst>());
+  nimbus::orch::captureServedModel(usage, doc.as<ArduinoJson::JsonVariantConst>());
 
   const char* cid = doc["conversation_id"] | "";
   if (cid[0]) convId = cid;

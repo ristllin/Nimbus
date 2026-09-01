@@ -11,6 +11,7 @@
 
 #include "nimbus/orch/fallback_rules.h"  // CUM-41 unified fallback engine
 #include "nimbus/orch/model_catalog.h"   // modelSizeClass for the size-class predicate
+#include "nimbus/orch/servedby.h"        // CUM-236 served-by fallback disclosure
 
 #include "nimbus/harness/log.h"
 #include "nimbus/orch/turn.h"
@@ -363,6 +364,12 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     }
     trimInPlace(host);
   }
+  // The head chosen BEFORE any failover - the "requested" side of served-by
+  // disclosure (CUM-236). `host` mutates below on budget/error failover; this and
+  // its model stay fixed so a substitution can be reported honestly at turn end.
+  const std::string requestedHost = host;
+  const std::string requestedModel =
+      d_.cfg.provider.orchModel ? d_.cfg.provider.orchModel(host) : std::string();
 
   ComposeInputs ci = d_.composeInputs ? d_.composeInputs(curChat_) : ComposeInputs{};
   // W10 (prism): the speaker line is for a REAL human message only. The device
@@ -555,6 +562,14 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     ev.replyBytes = replyBytes;
     ev.chatId = chatId;
     if (!okFlag) ev.error = err;   // last provider/parse error (reactive-fold seam)
+    // Served-by disclosure (CUM-236): ev.host is the failover-final (served) head;
+    // turnUsage.servedModel is the model the provider echoed. Compare to the head
+    // requested before failover so a display can say "served by <p> <m>" honestly.
+    ev.requestedHost = requestedHost;
+    ev.requestedModel = requestedModel;
+    ev.servedModel = turnUsage.servedModel;
+    ev.fallback = orch::servedByDisclosure(requestedHost, requestedModel, host,
+                                           turnUsage.servedModel).fallback;
     d_.hooks.onTurnEnd(ev);
   };
   // runTurnHost: OpenAI / Anthropic / Mistral through the ProviderHosts registry.

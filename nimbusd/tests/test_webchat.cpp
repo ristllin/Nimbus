@@ -64,6 +64,13 @@ static void checkPage(ndtest::Ctx& c) {
        "the served page seeds the given web token");
   c.ok(page.find("setItem('nimbusTok'") < page.find("function nimbusTok"),
        "the seed runs before the app's nimbusTok() is defined/used");
+  // Honest-UI flag (CUM-279): the served page marks itself hosted, synchronously
+  // before the app script, so device-only chrome is hidden with no flash. The shared
+  // page reads window.NIMBUS_HOSTED; the device page never sets it (so it is falsy).
+  c.ok(has(page, "window.NIMBUS_HOSTED=true"),
+       "the served page sets the hosted honest-UI flag");
+  c.ok(page.find("window.NIMBUS_HOSTED=true") < page.find("let HOSTED="),
+       "the hosted flag is set before the app script reads it");
   // An empty token (dev / ungated) still seeds a sentinel so the client gate is
   // skipped and the ungated API accepts the request.
   c.ok(has(buildWebUiPage(""), "setItem('nimbusTok','tunnel')"),

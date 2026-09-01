@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <string>
 
 // The single cost-accounting seam for the orchestrator. Before this, no adapter
 // or turn path surfaced provider token usage anywhere (prism-review finding):
@@ -24,6 +25,11 @@ struct TokenUsage {
   // pre-cache ledger on each provider rather than silently changing scale.
   uint32_t cacheReadTokens  = 0;
   uint32_t cacheWriteTokens = 0;
+  // Served model (CUM-236): the "model" the provider echoed in its response. Rides
+  // out on the turn's usage so the engine can disclose a fallback substitution. Not
+  // a count - merged as "last non-empty wins" so the FINAL served host's model
+  // survives an accumulation across tool-loop rounds and failover attempts.
+  std::string servedModel;
 
   uint32_t total() const { return promptTokens + completionTokens; }
   bool     empty() const { return promptTokens == 0 && completionTokens == 0; }
@@ -37,6 +43,7 @@ struct TokenUsage {
     completionTokens += o.completionTokens;
     cacheReadTokens  += o.cacheReadTokens;
     cacheWriteTokens += o.cacheWriteTokens;
+    if (!o.servedModel.empty()) servedModel = o.servedModel;
     return *this;
   }
 };
