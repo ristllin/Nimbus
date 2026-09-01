@@ -115,7 +115,7 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 </div>
 </details>
 
-<details class=setgroup><summary>Battery mode<span class=chev>&rsaquo;</span></summary>
+<details class=setgroup id=battModeGroup><summary>Battery mode<span class=chev>&rsaquo;</span></summary>
 <div class=setbody>
 <div id=profiles>
 <label class=pr><input type=radio name=profile value=0> Dark</label>
@@ -135,7 +135,7 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 </div>
 </details>
 
-<details class=setgroup><summary>Customize battery mode: <span id=custProfName>Balanced</span><span class=chev>&rsaquo;</span></summary>
+<details class=setgroup id=custProfGroup><summary>Customize battery mode: <span id=custProfName>Balanced</span><span class=chev>&rsaquo;</span></summary>
 <div class=setbody>
 <p class=hint>Each value starts at the selected battery mode's default. Set overrides it; Reset returns it.</p>
 <div id=params></div>
