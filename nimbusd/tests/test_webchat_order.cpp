@@ -73,6 +73,42 @@ static std::string jsonStr(const std::string& body, const std::string& key) {
   return end == std::string::npos ? "" : body.substr(start, end - start);
 }
 
+// Poll a turn to completion (or give up after ~4 s) and return its reply text.
+static std::string pollTurn(DaemonHttpTransport& cl, int port, const std::string& token,
+                            long turnId) {
+  for (int tries = 0; tries < 80; tries++) {
+    Out g = req(cl, port, "GET", "/api/chat?turn=" + std::to_string(turnId), token, "");
+    if (has(g.body, "\"pending\":false")) return jsonStr(g.body, "reply");
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+  return "";
+}
+
+// True if every non-empty reply in the vector is distinct (no reply handed twice).
+static bool allRepliesUnique(const std::vector<std::string>& got) {
+  for (size_t i = 0; i < got.size(); i++)
+    for (size_t j = i + 1; j < got.size(); j++)
+      if (!got[i].empty() && got[i] == got[j]) return false;
+  return true;
+}
+
+// Rapid-fire N POSTs with no waiting between them, returning their turn ids.
+// `allAccepted` is set false if any POST was rejected or not queued; `idsDistinct`
+// false if two POSTs coalesced onto one id.
+static std::vector<long> rapidFire(DaemonHttpTransport& cl, int port, const std::string& token,
+                                   int n, bool& allAccepted, bool& idsDistinct) {
+  std::vector<long> turnIds;
+  allAccepted = idsDistinct = true;
+  for (int i = 1; i <= n; i++) {
+    Out p = req(cl, port, "POST", "/api/chat", token, "text=msg" + std::to_string(i));
+    if (p.status != 200 || !has(p.body, "\"pending\":true")) allAccepted = false;
+    long t = jsonInt(p.body, "turn");
+    for (long prev : turnIds) if (prev == t) idsDistinct = false;
+    turnIds.push_back(t);
+  }
+  return turnIds;
+}
+
 int main() {
   ndtest::Ctx c;
   std::printf("=== virtual nimbus mid-turn chat contract (T2, offline, CUM-218) ===\n");
@@ -99,8 +135,10 @@ int main() {
   // hook once per turn, in completion order (its one thread runs turns FIFO), so
   // "reply#k" is the answer the k-th posted turn must receive - and no other.
   std::atomic<int> nDelivered{0};
-  rig.setDeliver([&replies, &nDelivered](const std::string& chat, const std::string&) {
-    replies.push("assistant", "reply#" + std::to_string(++nDelivered), chat);
+  rig.setDeliver([&replies, &eng, &nDelivered](const std::string& chat, const std::string&) {
+    // Tag the reply with the web turn it answers, exactly as the daemon does
+    // (main.cpp reads eng.currentWebTurn()), so the id-matched web surface pairs it.
+    replies.push("assistant", "reply#" + std::to_string(++nDelivered), chat, eng.currentWebTurn());
   });
   HttpControl http(&eng, "127.0.0.1", 0, token, &replies, &rig);
   const int port = http.start();
@@ -110,17 +148,10 @@ int main() {
 
   // ---- rapid-fire N messages with NO waiting between them ----
   const int N = 8;
-  std::vector<long> turnIds;
-  bool allAccepted = true, allDistinct = true;
-  for (int i = 1; i <= N; i++) {
-    Out p = req(cl, port, "POST", "/api/chat", token, "text=msg" + std::to_string(i));
-    if (p.status != 200 || !has(p.body, "\"pending\":true")) allAccepted = false;
-    long t = jsonInt(p.body, "turn");
-    for (long prev : turnIds) if (prev == t) allDistinct = false;
-    turnIds.push_back(t);
-  }
+  bool allAccepted = false, idsDistinct = false;
+  std::vector<long> turnIds = rapidFire(cl, port, token, N, allAccepted, idsDistinct);
   c.ok(allAccepted, "every rapid POST was accepted and queued (none rejected mid-turn)");
-  c.ok((int)turnIds.size() == N && allDistinct && turnIds[0] > 0,
+  c.ok((int)turnIds.size() == N && idsDistinct && turnIds[0] > 0,
        "each turn got its own id (no coalescing of concurrent turns)");
 
   // ---- each turn resolves to ITS OWN reply, in order ----
@@ -129,25 +160,15 @@ int main() {
   bool orderOk = true, noneDropped = true;
   std::vector<std::string> got(N);
   for (int i = 0; i < N; i++) {
-    std::string reply;
-    for (int tries = 0; tries < 80; tries++) {
-      Out g = req(cl, port, "GET", "/api/chat?turn=" + std::to_string(turnIds[i]), token, "");
-      if (has(g.body, "\"pending\":false")) { reply = jsonStr(g.body, "reply"); break; }
-      std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    }
-    got[i] = reply;
-    if (reply.empty()) noneDropped = false;
-    if (reply != "reply#" + std::to_string(i + 1)) orderOk = false;
+    got[i] = pollTurn(cl, port, token, turnIds[i]);
+    if (got[i].empty()) noneDropped = false;
+    if (got[i] != "reply#" + std::to_string(i + 1)) orderOk = false;
   }
   c.ok(noneDropped, "every turn produced a reply (no silent drop)");
   c.ok(orderOk, "each turn got its OWN reply in order (no stale replay of a prior turn)");
 
   // ---- no duplication: the N replies are all distinct ----
-  bool allUnique = true;
-  for (int i = 0; i < N; i++)
-    for (int j = i + 1; j < N; j++)
-      if (got[i] == got[j] && !got[i].empty()) allUnique = false;
-  c.ok(allUnique, "the N replies are all distinct (no reply handed to two turns)");
+  c.ok(allRepliesUnique(got), "the N replies are all distinct (no reply handed to two turns)");
 
   // ---- idempotent pickup: re-polling a settled turn does NOT replay its reply ----
   Out again = req(cl, port, "GET", "/api/chat?turn=" + std::to_string(turnIds[0]), token, "");
@@ -165,12 +186,7 @@ int main() {
     Out p = req(cl, port, "POST", "/api/chat", token, "text=web-q");
     long tw = jsonInt(p.body, "turn");
     replies.push("assistant", "telegram-answer", "tg-123");   // a reply on another channel
-    std::string reply;
-    for (int tries = 0; tries < 80; tries++) {
-      Out g = req(cl, port, "GET", "/api/chat?turn=" + std::to_string(tw), token, "");
-      if (has(g.body, "\"pending\":false")) { reply = jsonStr(g.body, "reply"); break; }
-      std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    }
+    const std::string reply = pollTurn(cl, port, token, tw);
     c.ok(reply != "telegram-answer" && !reply.empty(),
          "a mid-turn Telegram reply is not claimed by the web turn (channel-matched)");
   }

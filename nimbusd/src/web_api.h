@@ -463,15 +463,17 @@ class WebApi {
     if (text.empty()) return ApiResp{400, "application/json", R"({"error":"missing text"})"};
     // A mid-turn message is QUEUED, never rejected: the prompt row is recorded and
     // the turn is posted to the engine mailbox (which runs turns strictly in order).
-    // The turn id IS this prompt row's seq, so the fence for matching its reply is
-    // exactly one-past its own prompt - a prior in-flight turn's later reply can
-    // never satisfy it (that was the "6" stale replay, CUM-218).
+    // The turn id IS this prompt row's seq, and it rides the postMessage so every
+    // reply the engine delivers for this turn is tagged with it. The web matcher then
+    // pairs each turn to its OWN reply by id, never by ring position - so a turn that
+    // delivers zero or several messages can no longer shift or drop a neighbour's
+    // reply (CUM-218 stale-replay -> CUM-293 the burst residual).
     const uint64_t turn = replies_->push("user", text, kWebChat);
     pending_.push_back(PendingTurn{turn, time(nullptr) + 900});
     // Flood backstop (symmetry with resolved_'s cap): an authenticated owner hammering
     // POSTs faster than the single engine thread replies cannot grow this without bound.
     while (pending_.size() > 256) pending_.pop_front();
-    eng_->postMessage(kWebChat, text);
+    eng_->postMessage(kWebChat, text, turn);
     JsonDocument d;
     d["pending"] = true;
     d["turn"] = turn;   // the client polls GET /api/chat?turn=<turn> for THIS reply
@@ -853,9 +855,10 @@ class WebApi {
   // turn's reply. Now every web turn is tracked by id (its prompt row's seq) and
   // resolved in the order posted. `pending_` is the FIFO of turns still awaiting a
   // reply; `resolved_` holds ready replies (keyed by turn id) until the client
-  // polls for them; `webConsumedSeq_` is the highest assistant ring seq already
-  // handed to a web turn, so no reply is ever handed to two turns. Touched only on
-  // the single HTTP thread, so no synchronization is needed.
+  // polls for them. Each turn is matched to its reply by the turn id carried on the
+  // assistant ring entries (CUM-293), so no reply is ever handed to the wrong turn
+  // even when a turn delivers zero or several messages. Touched only on the single
+  // HTTP thread, so no synchronization is needed.
   // The web channel's delivery chat id (a web turn is posted as, and its reply is
   // delivered to, this chat). The reply matcher consumes only assistant replies on
   // this channel, so a Telegram/routine reply cannot surface in the web bubble.
@@ -863,26 +866,29 @@ class WebApi {
   struct PendingTurn { uint64_t userSeq; time_t deadline; };
   std::deque<PendingTurn> pending_;
   std::map<uint64_t, std::string> resolved_;
-  uint64_t webConsumedSeq_ = 0;
 
-  // Advance FIFO resolution: match each waiting turn, oldest first, to the first
-  // unconsumed assistant reply after its own prompt row. Stops at the first turn
-  // with no reply yet - nothing behind it can be ready before it (turns run in
-  // order). A turn past its backstop deadline resolves to an empty reply so the
-  // bubble stops spinning honestly.
+  // Advance FIFO resolution: match each waiting turn, oldest first, to the reply(ies)
+  // tagged with its OWN id (the last, when a turn delivered several). Stops at the
+  // first turn not yet resolvable - nothing behind it can settle before it (turns run
+  // in order). A turn that delivered nothing resolves to an honest empty as soon as a
+  // LATER web turn has delivered (proof this turn already ran), or at its backstop
+  // deadline - so a silent turn never spins forever and never steals a later turn's
+  // reply (CUM-293).
   void resolveWebTurns() {
     while (!pending_.empty()) {
       PendingTurn& t = pending_.front();
-      const uint64_t fence = t.userSeq > webConsumedSeq_ ? t.userSeq : webConsumedSeq_;
-      uint64_t rseq = 0;
       std::string text;
-      if (replies_->firstAssistantSince(fence, kWebChat, rseq, text)) {
-        webConsumedSeq_ = rseq;   // consumed; never handed to another turn
+      const ReplyBuffer::TurnMatch m = replies_->matchWebTurn(t.userSeq, kWebChat, text);
+      if (m == ReplyBuffer::TurnMatch::Own) {
         stashResolved(t.userSeq, text);
         pending_.pop_front();
         continue;
       }
-      if (time(nullptr) > t.deadline) { stashResolved(t.userSeq, ""); pending_.pop_front(); continue; }
+      if (m == ReplyBuffer::TurnMatch::Later || time(nullptr) > t.deadline) {
+        stashResolved(t.userSeq, "");   // this turn ran and produced no reply of its own
+        pending_.pop_front();
+        continue;
+      }
       break;
     }
   }
