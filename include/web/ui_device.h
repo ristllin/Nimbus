@@ -236,7 +236,7 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 <p class="hint tip">To return later, open the <b>On your network</b> address, or scan the Sign-in QR on the device's screen (Settings &gt; Connectivity &gt; Sign-in QR). The sign-in code appears only after you've signed in. Full walk-through: <a href="https://ristllin.github.io/Nimbus/docs/getting-started/first-time-setup" target=_blank rel=noopener>First-time setup</a>.</p>
 <table><tbody>
 <tr><td>Device name</td><td id=cxName>-</td></tr>
-<tr><td>On your network</td><td><span id=cxLan>-</span> <button id=cxLanCopy type=button style="display:none;padding:2px 8px;font-size:12px">Copy</button></td></tr>
+<tr id=cxLanRow><td>On your network</td><td><span id=cxLan>-</span> <button id=cxLanCopy type=button style="display:none;padding:2px 8px;font-size:12px">Copy</button></td></tr>
 <tr><td>Device sign-in code</td><td id=cxToken style="word-break:break-all">-</td></tr>
 </tbody></table>
 <div id=cxSetupAp style="display:none">
@@ -248,6 +248,7 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 </div>
 <div class=row style="margin-top:6px"><button id=regenTok type=button style="background:rgba(240,104,122,.12);color:var(--crit)">Generate New Code</button></div>
 
+<div id=wifiGroup>
 <b style="display:block;margin-top:14px">Wi-Fi <button class=qh type=button aria-expanded=false aria-label="About Wi-Fi">?</button></b>
 <p class="hint tip">Connects the device to your network - required for Orchestrator mode. Notifier over Bluetooth works without it. 2.4 GHz networks only.</p>
 <div id=wifiConnState class=hint style="margin:4px 0 8px">-</div>
@@ -272,7 +273,9 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 <p class=hint id=wifiApMsg></p>
 </div>
 </details>
+</div>
 
+<div id=btGroup>
 <b style="display:block;margin-top:14px">Bluetooth <button class=qh type=button aria-expanded=false aria-label="About Bluetooth">?</button></b>
 <p class="hint tip">In Notifier mode, the ring and screen are driven over an encrypted Bluetooth link from the nimbus-notify broker on your computer. Pairing happens automatically on the broker's first connect - Nimbus won't appear in your computer's Bluetooth list. Bluetooth is off in Orchestrator mode.</p>
 <div id=btOrchLine class=hint style="display:none">Bluetooth is off in Orchestrator mode.</div>
@@ -289,6 +292,7 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 </tbody></table>
 </div>
 </details>
+</div>
 </div>
 </div>
 </details>

@@ -210,6 +210,28 @@ function applyHostedChrome(){
   }catch(e){}
 }
 applyHostedChrome();
+// Honest hosted networking (CUM-207/CUM-279): a hosted instance has no radio, so the
+// whole Wi-Fi group ("Trying saved networks", the saved list, Scan, Add a hidden
+// network, Recovery) and the Bluetooth group are false there - the same "ap undefined"
+// honesty class the memory tile and network line already fixed. Collapse both to one
+// platform line and drop the LAN "On your network" row (a hosted instance has no LAN
+// address); Cloud access stays as the real way in.
+function applyHostedConnectivity(){
+  if(!HOSTED)return;
+  try{
+    const wg=$('wifiGroup'), bg=$('btGroup'), row=$('cxLanRow');
+    if(wg)wg.style.display='none';
+    if(bg)bg.style.display='none';
+    if(row)row.style.display='none';
+    if(wg&&wg.parentNode&&!$('hostedNetLine')){
+      const n=document.createElement('div'); n.id='hostedNetLine'; n.className='hint';
+      n.style.margin='14px 0';
+      n.textContent='Networking is managed by the platform; this instance is reachable through its cloud link.';
+      wg.parentNode.insertBefore(n,wg);
+    }
+  }catch(e){}
+}
+applyHostedConnectivity();
 // "What next" card on Home, shown once right after onboarding finishes (CUM-66).
 (function(){try{if(localStorage.getItem('nimbusJustOnboarded')==='1'){
   localStorage.removeItem('nimbusJustOnboarded');

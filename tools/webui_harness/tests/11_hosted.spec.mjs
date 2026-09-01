@@ -129,6 +129,43 @@ test('hosted: ESP OTA card and audio probe buttons are hidden', async ({ page })
   await expect(page.locator('#hpBeep')).toHaveCount(0);      // no Speaker Tone button
 });
 
+// (7) Honest Connectivity (CUM-207/CUM-279 follow-up): a hosted instance has no radio,
+//     so the whole Wi-Fi group ("Trying saved networks", the saved list, Scan, Add a
+//     hidden network, Recovery) and the Bluetooth group must be gone, replaced by one
+//     honest platform line. The LAN "On your network" row is dropped too. Cloud access
+//     stays. Fails on the pre-fix page (the false Wi-Fi/Bluetooth groups render on a VM).
+test('hosted: Wi-Fi and Bluetooth groups collapse to one honest platform line', async ({ page }) => {
+  await markHosted(page);
+  await routeHosted(page);
+  await seedToken(page);
+  await openApp(page);
+  await page.locator('.tab[data-p=device]').click();
+  await page.waitForTimeout(200);
+  // Open the Connectivity group so its (visible) contents can be asserted - it is a
+  // collapsed <details> by default, like every setgroup.
+  const conn = page.locator('#pane-set > details.setgroup', {
+    has: page.locator('> summary', { hasText: 'Connectivity' }),
+  });
+  if (!(await conn.evaluate((el) => el.open))) await conn.locator('> summary').click();
+  await expect(conn.locator('> .setbody')).toBeVisible();
+  await page.waitForTimeout(200);
+  // Both radio groups gone; the "Trying saved networks" false line cannot show.
+  await expect(page.locator('#wifiGroup')).toBeHidden();
+  await expect(page.locator('#btGroup')).toBeHidden();
+  await expect(page.locator('#wifiConnState')).toBeHidden();
+  // The LAN address row is dropped (a hosted instance has no LAN address).
+  await expect(page.locator('#cxLanRow')).toBeHidden();
+  // One honest platform line stands in for both groups.
+  const line = page.locator('#hostedNetLine');
+  await expect(line).toBeVisible();
+  await expect(line).toContainText('managed by the platform');
+  await expect(line).toContainText('cloud link');
+  // Cloud access is untouched - still the real way in.
+  await expect(page.locator('#pane-set > details.setgroup', {
+    has: page.locator('> summary', { hasText: 'Cloud access' }),
+  })).toHaveCount(1);
+});
+
 // (6) Provider-degraded resolve link (item 2): the Health row links to Providers.
 test('hosted: a degraded provider row offers a resolve link', async ({ page }) => {
   await markHosted(page);
