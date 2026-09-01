@@ -70,4 +70,26 @@ constexpr uint8_t backlightPctFor(Posture p) {
                             : 100;      // desk display, full brightness
 }
 
+// Deep-dim (CUM-292): the extra idle time AFTER the screensaver threshold before
+// the backlight goes FULLY OFF, in ms, per battery mode. The rest glow above
+// keeps almost all of the saving already, but the last few percent is real over
+// a long idle - and a fully dark panel with the touch controller still armed is
+// instantly wakeable, so it costs the owner nothing but a tap.
+//
+//   Dark  - the disengaged mode: reach full-off soonest.
+//   Calm  - a middle wait.
+//   Full  - the desk display: wait longest before going dark.
+//
+// External power returns 0 = DEEP-DIM DISABLED: there is no battery to save, and
+// a fully black panel on a powered desk device reads as "broken" (the same
+// confusion the rest glow exists to avoid). On external power the screensaver
+// holds at the rest glow, following the existing mode rules. 0 anywhere disables
+// deep-dim (SaverTimer::deepDimDue treats it as "never").
+constexpr uint32_t deepDimExtraMs(Posture p, bool onExternalPower) {
+  if (onExternalPower) return 0;
+  return p == Posture::Dark ? 30u * 1000u       // 30 s after rest
+       : p == Posture::Calm ? 2u * 60000u       // 2 min after rest
+                            : 5u * 60000u;       // 5 min after rest
+}
+
 }  // namespace nimbus

@@ -101,6 +101,39 @@ static void test_backlight_follows_the_battery_mode() {
   TEST_ASSERT_TRUE_MESSAGE(full <= 100, "percent, not a raw duty value");
 }
 
+// Deep-dim delay (CUM-292): the extra idle past the screensaver before the
+// backlight goes fully off, per battery mode. As an ORDERING + gate, not exact
+// numbers, so the waits can be re-tuned by eye - but the class rules hold: the
+// disengaged mode reaches full-off soonest, the desk mode latest, and external
+// power disables it entirely (0). Iterated over EVERY Posture so a new mode with
+// no deep-dim delay of its own cannot slip in silently.
+static void test_deepdim_delay_ordering_on_battery() {
+  const uint32_t dark = deepDimExtraMs(Posture::Dark, false);
+  const uint32_t calm = deepDimExtraMs(Posture::Calm, false);
+  const uint32_t full = deepDimExtraMs(Posture::Full, false);
+  TEST_ASSERT_TRUE_MESSAGE(dark < calm, "Dark must reach deep-dim sooner than Balanced");
+  TEST_ASSERT_TRUE_MESSAGE(calm < full, "Balanced must reach deep-dim sooner than Full");
+}
+
+// External power disables deep-dim for EVERY mode: no battery to save, and a
+// black powered panel reads as broken. The panel holds at the rest glow instead.
+static void test_deepdim_disabled_on_external_power() {
+  for (int p = 0; p <= int(Posture::Full); ++p) {
+    const uint32_t ms = deepDimExtraMs(Posture(p), true);
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(0, ms, "external power must disable deep-dim");
+  }
+}
+
+// On battery, every mode must actually arm deep-dim (a nonzero wait) - a mode
+// that returned 0 on battery would silently never go fully dark, defeating the
+// feature for that mode with no test catching it.
+static void test_deepdim_armed_on_battery_for_every_mode() {
+  for (int p = 0; p <= int(Posture::Full); ++p) {
+    const uint32_t ms = deepDimExtraMs(Posture(p), false);
+    TEST_ASSERT_TRUE_MESSAGE(ms > 0, "each battery mode must arm deep-dim");
+  }
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_lit_inside_the_window);
@@ -110,5 +143,8 @@ int main() {
   RUN_TEST(test_survives_the_clock_wrap);
   RUN_TEST(test_shipped_constants_are_a_brief_pulse);
   RUN_TEST(test_backlight_follows_the_battery_mode);
+  RUN_TEST(test_deepdim_delay_ordering_on_battery);
+  RUN_TEST(test_deepdim_disabled_on_external_power);
+  RUN_TEST(test_deepdim_armed_on_battery_for_every_mode);
   return UNITY_END();
 }

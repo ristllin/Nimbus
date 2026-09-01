@@ -103,11 +103,20 @@ bigger than the ring - so the battery mode reaches it too:
 | Balanced | 65% |
 | Full | 100% |
 
-When the screen rests (screensaver), it dims to a faint glow rather than going
-fully dark - a black color panel is indistinguishable from a broken one, and at
-this level the backlight draws a few percent of its lit value, so nearly all of
-the saving is kept. Any touch or activity brings it straight back to the
-current mode's level.
+When the screen rests (screensaver), it first dims to a faint glow rather than
+going straight to black - a black color panel is indistinguishable from a broken
+one, and at this glow the backlight draws a few percent of its lit value, so
+nearly all of the saving is kept. Any touch or activity brings it straight back
+to the current mode's level.
+
+On battery, if the desk stays empty longer, the screen goes one step further and
+turns the **backlight fully off**. The touch layer stays awake, so a single tap
+lights the screen again instantly. That first tap only wakes the screen: it never
+also presses whatever was under your finger, so waking a dark panel can never
+trigger a button by accident. How long the screen waits before going fully dark
+follows the battery mode - Dark turns it off soonest, Full waits longest - and on
+external power it stays at the faint glow instead, since there is no battery to
+save and a black panel on a powered desk just looks broken.
 
 The screen also **rests after a short idle**: the default idle delay is
 **5 minutes**, because an hour of backlight at an empty desk is the most wasteful
@@ -296,7 +305,8 @@ If this page ever disagrees with the code, the code's single sources win:
 | Palettes + alert hues | `lib/core/src/theme.cpp` |
 | Arc animation envelopes + dividers | `lib/core/src/ring_animator.cpp` |
 | Ambient/needs-you holds + tombstones | `lib/core/src/notifier_map.cpp`, `attention.cpp` |
-| Backlight per mode + rest glow | `lib/core/include/nimbus/duty.h` |
+| Backlight per mode + rest glow + deep-dim delay | `lib/core/include/nimbus/duty.h` |
+| Screensaver idle clock + stages (rest, deep-dim) | `lib/core/include/nimbus/saver.h` |
 | Sound event ranks | `lib/core/nimbus/sfx_map.*` + `docs/sfx-map.md` |
 | Header (`ring:/sound:/power:`) | `lib/core/src/tft_screens.cpp` `drawHeader` |
 | Saved-network list + selection/failover | `lib/core/src/wifi_known_networks.cpp`, `wifi_policy.cpp` |

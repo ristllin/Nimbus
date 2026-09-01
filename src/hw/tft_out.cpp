@@ -320,5 +320,6 @@ const TapRegion* hitTest(int x, int y) {
 
 void setBacklight(uint8_t pct) { solide::display_tft::setBacklight(pct); }
 uint8_t backlight() { return solide::display_tft::backlight(); }
+bool backlightAttached() { return solide::display_tft::backlightAttached(); }
 
 }  // namespace nimbus::hw::tft
