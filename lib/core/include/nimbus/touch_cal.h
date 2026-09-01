@@ -99,6 +99,85 @@ FirstRunCal firstRunCalPolicy(TouchKind kind);
 bool firstRunCalPending(TouchKind kind, bool hasStoredCal);
 
 // ============================================================================
+// First-run calibration GATE (CUM-245).
+//
+// The board-model default is enough to OPERATE a fresh device, but on a resistive
+// panel the raw ADC span drifts per unit, so uncalibrated taps land only
+// APPROXIMATELY - and worse, a fresh or floating XPT2046 can DRIFT ABOVE the
+// driver's low pressure threshold and STREAM phantom presses at a fixed point.
+// Fed straight into normal UI dispatch, that made a factory-fresh board
+// deterministically self-navigate (into Settings > Sound) within seconds of every
+// boot, with no way for the owner to stop it.
+//
+// The gate closes that: while a fresh resistive panel is uncalibrated, the guided
+// TouchCal flow is the ONLY surface that consumes touch. No tap reaches menu or
+// cursor navigation until a calibration is stored - either a completed tap-the-
+// crosses solve, or a DELIBERATE skip (a long press-and-hold, never a stray tap).
+//
+// It is exactly firstRunCalPending re-read against the LIVE stored-cal state, so it
+// opens the instant tchCal is written and can never be a nag: a capacitive panel
+// (which reports pixels and needs no per-unit cal) is never gated, and a resistive
+// panel that already has any stored cal is never gated.
+enum class TouchRoute : uint8_t {
+  Navigate,  // normal dispatch: the tap drives the UI
+  Gate,      // uncalibrated fresh resistive panel: the tap belongs to TouchCal only
+};
+
+inline TouchRoute routeTouch(TouchKind kind, bool hasStoredCal) {
+  return firstRunCalPending(kind, hasStoredCal) ? TouchRoute::Gate : TouchRoute::Navigate;
+}
+
+// Deliberate SKIP of the first-run calibration (CUM-245). Skipping the gate must be a
+// conscious act - a long, sustained press-and-hold with a visible countdown - never a
+// stray tap or a phantom blip, which is exactly what the gate exists to stop. This is
+// a PURE recognizer (no Arduino, host-tested): it accumulates hold time only while the
+// panel stays continuously down; ANY release resets it to zero, so a tap (press then
+// release) can never accumulate toward a skip, and only an unbroken hold of holdMs
+// confirms it. The uncalibrated pressure floor (below) keeps a floating panel from
+// reporting a sustained down, so drift cannot trip the skip either.
+class SkipHold {
+ public:
+  static constexpr uint32_t kHoldMs = 3000;  // 3 s of unbroken hold = a deliberate skip
+
+  // Feed the live down-state and a monotonic millisecond clock each poll. Returns true
+  // the moment the hold has been sustained for kHoldMs (the skip is confirmed); stays
+  // false until then and on every release.
+  bool update(bool down, uint32_t nowMs);
+  void reset() { holding_ = false; }
+  bool holding() const { return holding_; }
+
+  // Elapsed unbroken hold, clamped to kHoldMs - drives the on-screen countdown. Zero
+  // when not holding.
+  uint32_t heldMs(uint32_t nowMs) const;
+
+  // Whole seconds remaining before the skip confirms (kHoldMs..0), for the countdown
+  // label. kHoldMs/1000 when not holding.
+  int secondsLeft(uint32_t nowMs) const;
+
+ private:
+  bool holding_ = false;
+  uint32_t startMs_ = 0;
+};
+
+// Pressure floor for the fresh, UNCALIBRATED resistive panel (CUM-245), the belt to
+// the gate's suspenders. The XPT2046 driver admits a touch just above its own low
+// noise-floor threshold (raw Z ~350) so a light finger still registers; but a fresh or
+// floating panel can drift ABOVE that and stream phantom presses. Until a per-unit
+// calibration is stored, demand a FIRMER press so drifting noise cannot masquerade as a
+// tap. A deliberate press clears this comfortably; once calibrated, the panel drops back
+// to the driver's own sensitive threshold, so a set-up device loses no sensitivity. The
+// value is intentionally conservative and the on-glass tune is the bench leg's to
+// confirm - the gate, not this floor, is the primary defense.
+constexpr uint16_t kUncalPressureFloor = 900;
+
+// True when a raw resistive read must be REJECTED as below the uncalibrated floor. Only
+// bites while uncalibrated AND resistive: a calibrated panel and a capacitive one (which
+// reports a fixed pressure flag) are never floored.
+inline bool belowUncalFloor(bool uncalibrated, bool resistive, uint16_t pressure) {
+  return uncalibrated && resistive && pressure < kUncalPressureFloor;
+}
+
+// ============================================================================
 // On-device calibration (CUM-189): solve a Cal from four corner presses.
 //
 // A raw touch reading (12-bit ADC on a resistive panel; pixels on a capacitive

@@ -493,12 +493,27 @@ static bool          g_orchMode = false;       // resolved once at boot
 // True once it is up; flips false only in the fail-soft path when panel bring-up
 // fails, which gates rendering off so a dead panel cannot stall the device.
 static bool          g_screenIsTft = false;
-// First-run touch calibration (CUM-189): armed at boot when a freshly flashed board
-// has no stored per-unit cal AND its touch class needs the guided step (resistive
-// panels drift per unit; capacitive ones skip - firstRunCalPolicy decides). Drained
-// ONCE in loop(), post-Wi-Fi-setup so it never blocks the captive portal.
-static bool          g_firstRunCalPending = false;
+// First-run touch calibration GATE (CUM-189 / CUM-245): armed at boot when a freshly
+// flashed board has no stored per-unit cal AND its touch class needs the guided step
+// (resistive panels drift per unit; capacitive ones skip - firstRunCalPolicy decides).
+// While the gate is active the guided TouchCal flow (serviceCalGate) is the ONLY
+// surface that consumes touch - no tap reaches UI navigation - so a fresh resistive
+// panel's approximate/phantom uncalibrated taps can never self-navigate. Cal FIRST,
+// then the normal first-run flow. The gate opens the instant a cal is stored (a
+// completed solve, or a deliberate long-press skip); a capacitive panel is never gated.
+static bool          g_calGateActive = false;
 static nimbus::touch::TouchKind g_firstRunTouchKind = nimbus::touch::TouchKind::Resistive;
+// The gated flow's state: the pure four-corner wizard, the deliberate-skip recognizer,
+// and the raw press-edge tracking that feeds them (uncalibrated, so read raw ADC, not
+// the calibrated poll()). g_calGateSig is the last-painted (step, countdown) signature,
+// so the TouchCal surface repaints only when it actually changes.
+static nimbus::touch::CalWizard g_calWiz;
+static nimbus::touch::SkipHold  g_calSkip;
+static bool          g_calGateWasDown = false;   // debounced down-state last poll (edge detect)
+static uint8_t       g_calGateDownRun = 0, g_calGateUpRun = 0;  // raw-chatter debounce runs
+static uint16_t      g_calGateLastX = 0, g_calGateLastY = 0;    // last VALID raw press coords
+static uint32_t      g_calGateLastPollMs = 0;    // ~50 Hz raw-read rate limit (bus-friendly)
+static int32_t       g_calGateSig = INT32_MIN;
 // True when the stored scrModel is not "tft" (a stale "eink" unit; frozen NVS key).
 // We run the color panel regardless and hold a clear "unsupported display" notice on
 // it at the end of setup (see the boot-notice block).
@@ -2578,6 +2593,13 @@ void setup() {
       // the driver's defaults are only a starting point - without this a
       // measured calibration could not survive a reboot, and every tap landing
       // in the wrong place looks exactly like broken hardware.
+      // The board's touch class, mirrored to the portable enum once (both the stored
+      // and fresh paths need it: the gate's routeTouch reads g_firstRunTouchKind).
+      const bool cap = solide::board().touchKind == solide::TouchKind::CapacitiveI2c;
+      const nimbus::touch::TouchKind kind =
+          cap ? nimbus::touch::TouchKind::Capacitive : nimbus::touch::TouchKind::Resistive;
+      g_firstRunTouchKind = kind;
+
       const String cal = agent::store::touchCal();
       if (cal.length()) {
         nimbus::touch::Cal c;
@@ -2599,9 +2621,6 @@ void setup() {
         // panel (FT6336U) only the orientation flags matter (it reports pixels); on a
         // resistive panel the driver keeps its measured min/max and this pins the
         // flags it already defaults to. A saved calibration overrides this.
-        const bool cap = solide::board().touchKind == solide::TouchKind::CapacitiveI2c;
-        const nimbus::touch::TouchKind kind =
-            cap ? nimbus::touch::TouchKind::Capacitive : nimbus::touch::TouchKind::Resistive;
         const nimbus::touch::Cal d = nimbus::touch::boardDefaultCal(kind);
         solide::touch::Calibration sc;   // driver-measured min/max; board-model flags
         sc.swapXY = d.swapXY;
@@ -2611,11 +2630,17 @@ void setup() {
         Serial.printf("[tft] touch: board-model default orientation (swap=%d invX=%d invY=%d)\n",
                       int(d.swapXY), int(d.invertX), int(d.invertY));
         // A fresh board is usable on this default, but on a resistive panel the per-unit
-        // ADC drift means taps only land APPROXIMATELY - arm the one-time first-run
-        // guided step (capacitive reports pixels, so its policy skips). Drained in
-        // loop() once setup is done; see g_firstRunCalPending.
-        g_firstRunTouchKind = kind;
-        g_firstRunCalPending = nimbus::touch::firstRunCalPending(kind, /*hasStoredCal=*/false);
+        // ADC drift lands taps only APPROXIMATELY and a floating XPT2046 can even stream
+        // phantom presses - so CLOSE THE GATE (CUM-245): arm the guided TouchCal flow as
+        // the only surface that consumes touch until a cal is stored, and demand a firmer
+        // press (the uncalibrated pressure floor) so drift cannot masquerade as a tap.
+        // Capacitive reports pixels, so its policy skips and the gate never arms.
+        g_calGateActive = (nimbus::touch::routeTouch(kind, /*hasStoredCal=*/false) ==
+                           nimbus::touch::TouchRoute::Gate);
+        if (g_calGateActive) {
+          g_calWiz.begin(int16_t(solide::display_tft::kW), int16_t(solide::display_tft::kH), 24);
+          nimbus::hw::touch::setUncalibratedFloor(true);
+        }
       }
       Serial.printf("[tft] colour touch panel up (%dx%d, touch=%d)\n",
                     int(solide::display_tft::kW), int(solide::display_tft::kH),
@@ -3493,6 +3518,123 @@ static void runTouchCalibration() {
   renderScreen(attn::ScreenId::StatusIdle, -1, true);   // hand the screen back
 }
 
+// ---- First-run calibration GATE (CUM-245) ----------------------------------------
+// A NON-BLOCKING variant of the calibration flow, driven one poll per loop iteration.
+// The blocking runTouchCalibration() above is the opt-in Settings > Display flow; this
+// is the first-run GATE: on a fresh resistive panel it is the ONLY surface that
+// consumes touch (drainTouch is not even called while g_calGateActive), so a phantom or
+// approximate uncalibrated tap can never reach navigation. It never blocks the loop, so
+// the captive portal / web keep running throughout. It opens the gate the instant a cal
+// is stored: a completed four-corner solve, or a DELIBERATE long press-and-hold skip.
+
+// Apply a solved/default calibration, persist it to tchCal (which opens the gate on this
+// and every future boot), drop the uncalibrated pressure floor, and hand the panel back
+// to live status.
+static void persistCalAndReleaseGate(const nimbus::touch::Cal& cal, const char* logLine) {
+  agent::store::setTouchCal(String(nimbus::touch::formatCal(cal).c_str()));
+  solide::touch::Calibration sc;
+  sc.minX = cal.minX; sc.maxX = cal.maxX; sc.minY = cal.minY; sc.maxY = cal.maxY;
+  sc.swapXY = cal.swapXY; sc.invertX = cal.invertX; sc.invertY = cal.invertY;
+  solide::touch::setCalibration(sc);
+  nimbus::hw::touch::setUncalibratedFloor(false);   // calibrated: back to the driver's floor
+  g_calGateActive = false;
+  g_calSkip.reset();
+  g_calGateWasDown = false;
+  g_calGateDownRun = g_calGateUpRun = 0;
+  g_calGateSig = INT32_MIN;
+  agent::alog(logLine);
+  hw::tft::forceRepaint();
+  renderScreen(attn::ScreenId::StatusIdle, -1, true);
+}
+
+// Repaint the TouchCal surface only when the target step or the skip countdown changes,
+// so the gate is quiet on the bus between events (a full renderAndPush is a ~expensive
+// SPI blit). The signature packs the wizard step and the whole-second countdown.
+static void renderCalGateIfChanged(uint32_t now) {
+  const int secs = g_calSkip.holding() ? g_calSkip.secondsLeft(now) : -1;
+  const int32_t sig = int32_t(g_calWiz.step()) * 16 + int32_t(secs + 1);
+  if (sig == g_calGateSig) return;
+  g_calGateSig = sig;
+  render::ScreenCtx c;
+  c.calTotal   = g_calWiz.count();
+  c.calStep    = g_calWiz.step();
+  c.calTargetX = g_calWiz.targetX();
+  c.calTargetY = g_calWiz.targetY();
+  // Default instruction matches the golden; during a deliberate hold, show the
+  // countdown so the skip is visible and never a surprise (ASCII, <= 48 cols).
+  c.calMessage = g_calSkip.holding()
+                     ? (std::string("Hold to skip: ") + std::to_string(secs))
+                     : std::string("Tap each corner target");
+  hw::tft::renderAndPush(attn::ScreenId::TouchCal, c);
+}
+
+// One poll of the gated flow: read RAW uncalibrated ADC (the wizard derives its mapping
+// in raw space, so it must not go through the default cal it is replacing), advance the
+// four-corner wizard on each clean tap, and confirm a deliberate skip on a long hold.
+// Non-blocking: the raw reads are rate-limited to the driver's own ~50 Hz cadence so the
+// gate never starves the display bus (the blocking modal used delay(15) between reads).
+static void serviceCalGate(uint32_t now) {
+  // Rate-limit the raw SPI sampling; the countdown repaint below still runs every loop
+  // (it is a cheap no-op unless the signature changed).
+  if (uint32_t(now - g_calGateLastPollMs) >= 15) {
+    g_calGateLastPollMs = now;
+
+    uint16_t rx = 0, ry = 0, rz = 0;
+    bool rawDown = solide::touch::readRaw(rx, ry, rz);
+    // The SAME uncalibrated pressure floor the gesture path enforces: a floating panel
+    // must not stream presses into the wizard, nor hold the skip countdown down.
+    if (nimbus::touch::belowUncalFloor(/*uncalibrated=*/true, /*resistive=*/true, rz))
+      rawDown = false;
+
+    // Debounce the raw signal exactly as the driver's read() does (readRaw is
+    // undebounced): a resistive Z flickers at contact and release, so a SINGLE
+    // sub-floor sample mid-hold must not manufacture a false release edge that records
+    // a phantom corner or resets the skip hold. Flip the debounced state only after
+    // kCalDebounce consecutive same-direction samples.
+    constexpr uint8_t kCalDebounce = 2;
+    if (rawDown) { if (g_calGateDownRun < kCalDebounce) ++g_calGateDownRun; g_calGateUpRun = 0; }
+    else         { if (g_calGateUpRun   < kCalDebounce) ++g_calGateUpRun;   g_calGateDownRun = 0; }
+    bool down = g_calGateWasDown;   // hold the state through a single flicker
+    if (g_calGateDownRun >= kCalDebounce)    down = true;
+    else if (g_calGateUpRun >= kCalDebounce) down = false;
+
+    // Deliberate skip: an unbroken debounced hold for SkipHold::kHoldMs. Any real
+    // release resets it, so a tap (or a phantom blip) can never accumulate one.
+    // Confirmed -> persist the board default (the same orientation already applied at
+    // boot) and open the gate; it will not re-arm because tchCal is now set.
+    if (g_calSkip.update(down, now)) {
+      persistCalAndReleaseGate(nimbus::touch::boardDefaultCal(g_firstRunTouchKind),
+                               "[cal] first-run calibration skipped (held) - board default persisted");
+      return;
+    }
+
+    // Corner capture on the debounced release edge (like the blocking modal): a press
+    // records the corner where the finger lifted. Track the last VALID coords only
+    // while the raw sample is down (readRaw returns 0,0 when up, so a flicker must not
+    // overwrite the real press point). A hold that reached the skip threshold already
+    // returned above.
+    if (down) {
+      if (rawDown) { g_calGateLastX = rx; g_calGateLastY = ry; }
+    } else if (g_calGateWasDown) {   // release edge: record this corner
+      g_calWiz.recordRaw(g_calGateLastX, g_calGateLastY);
+      if (g_calWiz.done()) {
+        nimbus::touch::Cal solved;
+        if (g_calWiz.solve(solved)) {
+          persistCalAndReleaseGate(solved, "[cal] first-run calibration solved on device");
+          return;
+        }
+        // Degenerate presses (all one spot / a shorted line): restart the four corners
+        // rather than persist a cal that looks deliberate and lands every tap wrong.
+        g_calWiz.begin(int16_t(solide::display_tft::kW), int16_t(solide::display_tft::kH), 24);
+        agent::alog("[cal] first-run presses were degenerate - restarting the corners");
+      }
+    }
+    g_calGateWasDown = down;
+  }
+
+  renderCalGateIfChanged(now);
+}
+
 // Everything that must happen AFTER the settings-menu FSM mutates: the ring
 // echo, the dirty()->persist+applyConfig block, and every request-flag drain
 // (bonds, SD probe, Wi-Fi, OTA install).
@@ -3833,6 +3975,13 @@ static void pageAskReply(int dir) {
 // the dirty-persist + request-flag drains in loop() run exactly as they do for
 // the same gestures. That is the whole reason a second input device needed no FSM change.
 static void drainTouch(uint32_t now) {
+  // First-run calibration GATE (CUM-245): while a fresh resistive panel is
+  // uncalibrated, NO tap may drive navigation - the guided TouchCal flow
+  // (serviceCalGate) is the only surface that consumes touch. The loop already routes
+  // to serviceCalGate while gated, so this is belt-and-suspenders against any future
+  // caller that reaches drainTouch directly. g_calGateActive is armed at boot from the
+  // tested routeTouch policy and cleared the instant a cal is stored.
+  if (g_calGateActive) return;
   const auto g = hw::touch::poll();
   if (g.kind == hw::touch::Gesture::Kind::None) return;
 
@@ -5046,50 +5195,32 @@ void loop() {
   // on the panel and dispatched into the menu FSM and cursor, so its dirty-persist
   // block and request-flag drains below all run unchanged.
   // ⚠ TOUCHPOLL 0 disables the touch pump at runtime.
-  if (g_screenIsTft) drainTouch(now);
+  //
+  // First-run calibration GATE (CUM-245): on a fresh resistive panel the guided
+  // TouchCal flow is the ONLY surface that consumes touch until a cal is stored, so a
+  // phantom/approximate uncalibrated tap can never self-navigate. serviceCalGate is
+  // non-blocking (one poll per loop), so the captive portal and web keep running; it
+  // OWNS the panel while active, so the setup-return and render-scheduler blocks below
+  // are suppressed. Cal FIRST, then the normal first-run flow resumes when the gate
+  // opens. Capacitive panels are never gated and take the normal drainTouch path.
+  if (g_screenIsTft) {
+    if (g_calGateActive) serviceCalGate(now);
+    else                 drainTouch(now);
+  }
 
   // First-run auto-return (CUM-259): the credless idle-screen dwell elapsed, so paint
   // Setup - the owner backed out of Setup and would otherwise sit on a screen that
   // looks onboarded with no way back. Skipped while the menu or a held reply owns the
   // panel; both re-arm the dwell when they release it. renderScreen disarms the timer.
-  if (g_setupReturnAtMs && !g_menu.isOpen() && !g_askSticky &&
+  if (!g_calGateActive && g_setupReturnAtMs && !g_menu.isOpen() && !g_askSticky &&
       int32_t(now - g_setupReturnAtMs) >= 0)
     renderScreen(attn::ScreenId::SetupInfo, -1);
 
-  // First-run touch calibration (CUM-189): a freshly flashed RESISTIVE panel lands
-  // taps only approximately on the board-model default (its raw ADC span drifts per
-  // unit), so hand the owner the guided tap-the-crosses step ONCE. Gated so it never
-  // fights another owner of the panel and, crucially, never blocks the setup captive
-  // portal - it waits until Wi-Fi setup is done (deviceNeedsSetup() false), by which
-  // point the owner is present and past onboarding. Capacitive panels report pixels,
-  // so their policy skips and g_firstRunCalPending is never armed for them.
-  //
-  // Skippable: runTouchCalibration() is bounded and aborts (leaving no cal) if the
-  // owner walks away; we then persist the board-model default so the flow is offered
-  // exactly once and never nags. Always redoable from Settings > Display.
-  if (g_firstRunCalPending && !g_menu.isOpen() && !g_askSticky &&
-      !deviceNeedsSetup() && now >= 3000) {   // now == millis(): a short boot-settle grace
-    g_firstRunCalPending = false;
-    // Re-check against the CURRENT stored cal: if the owner already calibrated during
-    // setup (Settings > Display, or the web field), tchCal is now set and the offer is
-    // moot - suppress the redundant second prompt.
-    if (nimbus::touch::firstRunCalPending(g_firstRunTouchKind,
-                                          agent::store::touchCal().length() > 0)) {
-      runTouchCalibration();
-      if (!agent::store::touchCal().length()) {
-        // Aborted/skipped: mark first-run handled with the board-model default (the
-        // same orientation already applied at boot), so pending stays false next boot.
-        agent::store::setTouchCal(String(nimbus::touch::formatCal(
-            nimbus::touch::boardDefaultCal(g_firstRunTouchKind)).c_str()));
-        agent::alog("[cal] first-run calibration skipped - board default persisted");
-      }
-    }
-  }
-
   // The render scheduler only drives the panel while the menu is closed AND no
   // reply is being held (P2.3): a sticky reply must not be overwritten by the
-  // next scheduled render - it dismisses on tap, like the menu's own gating.
-  if (!g_menu.isOpen() && !g_askSticky) {
+  // next scheduled render - it dismisses on tap, like the menu's own gating. It is
+  // also suppressed while the calibration gate owns the panel (CUM-245).
+  if (!g_calGateActive && !g_menu.isOpen() && !g_askSticky) {
     render::RenderCommand cmd = g_sched.tick(now);
     if (cmd.render) {
       const attn::ScreenId screen = attn::ScreenId(cmd.screenId);
@@ -5249,8 +5380,15 @@ void loop() {
     // Back chevron survived and every row vanished, five seconds after opening
     // any menu (owner-observed). renderMenu() also owns Sign-in, Self-test and
     // Battery, so those had the same hole.
-    if (g_menu.isOpen()) renderMenu();
-    else                 renderScreen(attn::ScreenId(g_lastScreen), -1);
+    //
+    // While the first-run cal gate owns the panel (CUM-245), repaint the CAL
+    // surface, not g_lastScreen: serviceCalGate paints via renderAndPush directly and
+    // never updates g_lastScreen, so a plain g_lastScreen repaint here would blit
+    // StatusIdle over the corner targets every 5 s and the signature-gated cal repaint
+    // would not restore them. Force the cal surface so the watchdog still guards it.
+    if (g_calGateActive)      { g_calGateSig = INT32_MIN; renderCalGateIfChanged(now); }
+    else if (g_menu.isOpen()) renderMenu();
+    else                      renderScreen(attn::ScreenId(g_lastScreen), -1);
   }
 
   // Screensaver entry: long-idle on the ambient screen -> the dotted-ring logo.
@@ -5260,8 +5398,13 @@ void loop() {
   // A ringless Notifier board draws the status ring on the panel, so the ring IS
   // the point - never blank it there. (Orchestrator still saves power by blanking;
   // the demo/a session wakes it via saverKick.)
+  // ...and never while the first-run cal gate owns the panel (CUM-245): swapping in the
+  // screensaver logo would blit over the corner targets, and the signature-gated cal
+  // repaint would not bring them back. The gate holds the cal surface lit until it is
+  // resolved (a solve or a deliberate hold-to-skip); a fresh unit is an owner-present
+  // event, so the gate does not idle-dim.
   const bool ringIsTheScreen = g_screenIsTft && !solide::board().hasRing && !g_orchMode;
-  if (!g_menu.isOpen() && !ringIsTheScreen && g_saver.due(now) &&
+  if (!g_calGateActive && !g_menu.isOpen() && !ringIsTheScreen && g_saver.due(now) &&
       g_lastScreen == uint8_t(attn::ScreenId::StatusIdle)) {
 #ifdef NIMBUS_TEST
     Serial.printf("SAVERDBG fire now=%lu last=%lu thr=%u\n",

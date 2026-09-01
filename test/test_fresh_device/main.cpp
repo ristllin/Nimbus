@@ -386,6 +386,79 @@ static void test_statusidle_offers_setup_only_when_unset_up() {
   TEST_ASSERT_EQUAL_STRING("Tap to open setup", nimbus::wifi::setupCtaHint().c_str());
 }
 
+// ---- 7. First-run calibration GATE (CUM-245): uncalibrated touch cannot navigate ----
+//
+// The owner hit this live: a factory-fresh (erased NVS) resistive board
+// deterministically self-navigated into Settings > Sound within seconds of every boot,
+// because raw uncalibrated / phantom taps were dispatched straight into UI navigation.
+// The class rule the fix encodes: in the fresh + uncalibrated + resistive state, touch
+// is GATED to the calibration flow ONLY - no synthetic tap can reach navigation - and
+// the gate opens the instant a calibration is stored. Capacitive panels report pixels,
+// need no per-unit cal, and are never gated. Pinned here as the fresh-device state,
+// composed end to end (route + wizard-unlock) over every kind so a new board that ships
+// reaching navigation while uncalibrated FAILS here, host-side, not on the owner's desk.
+
+using nimbus::touch::CalWizard;
+using nimbus::touch::routeTouch;
+using nimbus::touch::TouchRoute;
+
+// The INDEPENDENT expectation the routing must agree with - derived from the physics of
+// each touch class, NOT from firstRunCalPending (routeTouch's own definition), so a
+// regression that made firstRunCalPending return "no cal needed" for resistive - the
+// exact root of the self-navigation bug - is caught here instead of flipping both sides
+// of the assert together. No default branch: a new kind is a visible gap (Count falls
+// through to a failing assert), pinned by the static_assert in expectedFlagsFor above.
+static bool expectedGatedFresh(TouchKind kind) {
+  switch (kind) {
+    case TouchKind::Resistive:  return true;   // XPT2046 drifts per unit: gate until measured
+    case TouchKind::Capacitive: return false;  // FT6336U reports pixels: never gated
+    case TouchKind::Count:      break;
+  }
+  TEST_FAIL_MESSAGE("TouchKind has no fresh-boot gate expectation - a new touch class must "
+                    "add one here AND to routeTouch/firstRunCalPolicy (CUM-245)");
+  return false;
+}
+
+// A fresh device (no stored cal) gates navigation exactly for the classes that need the
+// guided step, and NEVER for those that report pixels - over EVERY TouchKind, against the
+// independent expectation.
+static void test_fresh_gate_blocks_navigation_per_kind() {
+  for (int i = 0; i < static_cast<int>(TouchKind::Count); ++i) {
+    const TouchKind k = static_cast<TouchKind>(i);
+    const TouchRoute want = expectedGatedFresh(k) ? TouchRoute::Gate : TouchRoute::Navigate;
+    TEST_ASSERT_EQUAL_MESSAGE(int(want), int(routeTouch(k, /*hasStoredCal=*/false)),
+                              "fresh device: touch must be gated iff the class needs cal");
+  }
+  // The specific field bug: a fresh RESISTIVE board must gate (it self-navigated), a
+  // fresh CAPACITIVE board must not (nothing per-unit to measure).
+  TEST_ASSERT_EQUAL(int(TouchRoute::Gate), int(routeTouch(TouchKind::Resistive, false)));
+  TEST_ASSERT_EQUAL(int(TouchRoute::Navigate), int(routeTouch(TouchKind::Capacitive, false)));
+}
+
+// Completing the guided wizard stores a cal, and a stored cal OPENS the gate: navigation
+// resumes for every kind. This is the end-to-end "cal completion unlocks" the seam runs -
+// the wizard solves a real per-unit resistive panel, and the routing that gated its taps
+// now lets them through.
+static void test_gate_opens_when_calibration_completes() {
+  // Before: a fresh resistive board is gated.
+  TEST_ASSERT_EQUAL(int(TouchRoute::Gate), int(routeTouch(TouchKind::Resistive, false)));
+
+  CalWizard w;
+  w.begin(320, 240, 24);
+  const nimbus::touch::RawSample raw[4] = {
+      {310, 3720}, {310, 360}, {3650, 3720}, {3650, 360}};  // a real per-unit resistive mount
+  for (int i = 0; i < 4; ++i) w.recordRaw(raw[i].x, raw[i].y);
+  Cal solved;
+  TEST_ASSERT_TRUE(w.solve(solved));
+  // The solved cal round-trips through the wire format tchCal persists (so hasStoredCal
+  // is now true on this and every future boot)...
+  Cal back;
+  TEST_ASSERT_TRUE(parseCal(formatCal(solved), back));
+  TEST_ASSERT_TRUE(solved == back);
+  // ...and with a cal stored, the gate is open: taps reach navigation again.
+  TEST_ASSERT_EQUAL(int(TouchRoute::Navigate), int(routeTouch(TouchKind::Resistive, true)));
+}
+
 int main() {
   UNITY_BEGIN();
   // 1. touch defaults - the class over all board models x TouchKind
@@ -404,5 +477,8 @@ int main() {
   // 6. first-run screen selection: no dead ends
   RUN_TEST(test_no_first_run_screen_strands);
   RUN_TEST(test_statusidle_offers_setup_only_when_unset_up);
+  // 7. first-run calibration gate: uncalibrated resistive touch cannot navigate
+  RUN_TEST(test_fresh_gate_blocks_navigation_per_kind);
+  RUN_TEST(test_gate_opens_when_calibration_completes);
   return UNITY_END();
 }

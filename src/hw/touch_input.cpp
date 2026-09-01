@@ -4,9 +4,10 @@
 
 #include <cstdlib>
 
+#include "solide/board.h"         // board().touchKind - resistive vs capacitive
 #include "solide/touch.h"
 #include "solide/display_tft.h"   // kW/kH + flipped() - the 180 source of truth
-#include "nimbus/touch_cal.h"     // orientTouch - single-source 180 reconciliation (CUM-160)
+#include "nimbus/touch_cal.h"     // orientTouch + belowUncalFloor (CUM-160/CUM-245)
 
 namespace nimbus::hw::touch {
 
@@ -22,6 +23,19 @@ constexpr int kSlopPx = 18;
 // Vertical travel before a drag counts as a scroll. Comfortably larger than the
 // tap slop so the two can never be confused on a panel this size.
 constexpr int kSwipeMinPx = 40;
+
+// True while a fresh resistive panel is still uncalibrated: poll() then rejects any
+// read whose raw pressure is below the uncalibrated floor, so a drifting/floating
+// XPT2046 cannot stream phantom presses (CUM-245). Cleared once a cal is stored; the
+// calibrated panel keeps the driver's own sensitive threshold.
+bool     s_uncalFloor = false;
+
+// The panel this build carries: only a RESISTIVE controller drifts per unit and needs
+// the uncalibrated pressure floor. A capacitive panel reports a fixed pressure flag, so
+// the floor never bites there anyway - this just makes that explicit and driver-true.
+inline bool resistivePanel() {
+  return solide::board().touchKind == solide::TouchKind::ResistiveSpi;
+}
 
 bool     s_down = false;
 bool     s_holdFired = false;
@@ -64,6 +78,8 @@ void injectTap(int16_t x, int16_t y, int downPolls) {
 void injectUp() { s_injHold = false; s_injTicks = 0; }
 #endif
 
+void setUncalibratedFloor(bool on) { s_uncalFloor = on; }
+
 Gesture poll() {
   bool    down = false;
   int16_t x = -1, y = -1;
@@ -76,7 +92,14 @@ Gesture poll() {
     if (!s_injHold && --s_injTicks <= 0) s_injActive = false;
   } else {
 #endif
-    const solide::touch::Point p = solide::touch::read();
+    solide::touch::Point p = solide::touch::read();
+    // Uncalibrated pressure floor (CUM-245): on a fresh resistive panel, reject a read
+    // whose raw pressure is below the firmer uncalibrated floor, so a drifting/floating
+    // XPT2046 cannot stream phantom presses into the UI. Applied here (not in the byte-
+    // pinned driver) and only while uncalibrated; a calibrated or capacitive panel is
+    // untouched. Demote to not-down so the rest of the gesture machine sees a clean up.
+    if (nimbus::touch::belowUncalFloor(s_uncalFloor, resistivePanel(), p.pressure))
+      p.down = false;
     // The display flip is the SINGLE source of truth for the 180 (nimbus::touch::
     // orientTouch, host-tested): the calibration maps to the un-flipped landscape,
     // and the flip is applied there exactly once, so taps can never double-apply or
