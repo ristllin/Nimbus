@@ -79,9 +79,11 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 <label>Device clock</label>
 <p class="hint tip">Set automatically from the internet once Wi-Fi connects - there is no manual clock. Until it syncs, daily and weekly routines wait.</p>
 <div class=row><b id=devClock>&hellip;</b><span class=hint id=clockBadge>&hellip;</span><button id=clockSyncBtn type=button>Sync now</button></div>
+<div id=idTokenRow>
 <label>Device sign-in code <button class=qh type=button aria-expanded=false aria-label="About the device sign-in code">?</button></label>
 <p class="hint tip">The Sign-in QR carries this automatically; normal setup never asks you to type it. Use this value only to recover a browser that cannot scan the QR. Tap to copy. Generate a new one under <b>Connectivity</b> below.</p>
 <div class="memv" id=idToken style="cursor:pointer" title="tap to copy">&hellip;</div>
+</div>
 </div>
 </details>
 
@@ -237,7 +239,7 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 <table><tbody>
 <tr><td>Device name</td><td id=cxName>-</td></tr>
 <tr id=cxLanRow><td>On your network</td><td><span id=cxLan>-</span> <button id=cxLanCopy type=button style="display:none;padding:2px 8px;font-size:12px">Copy</button></td></tr>
-<tr><td>Device sign-in code</td><td id=cxToken style="word-break:break-all">-</td></tr>
+<tr id=cxTokenRow><td>Device sign-in code</td><td id=cxToken style="word-break:break-all">-</td></tr>
 </tbody></table>
 <div id=cxSetupAp style="display:none">
 <p class=hint>Setting up a new device? Join its setup Wi-Fi network with this password and the setup page opens automatically.</p>
@@ -299,7 +301,7 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 
 <details class=setgroup><summary>Cloud access<span class=chev>&rsaquo;</span></summary>
 <div class=setbody>
-<p class="hint tip">Reach this device from anywhere through CumuloNimbus. Available in Orchestrator mode. Pairing shows a Cloud link code to enter at app.cumulo-nimbus.ai while signed in.</p>
+<p class="hint tip" id=cloudTip>Reach this device from anywhere through CumuloNimbus. Available in Orchestrator mode. Pairing shows a Cloud link code to enter at app.cumulo-nimbus.ai while signed in.</p>
 <div id=cloudLine class=hint>Cloud access is off.</div>
 <div id=cloudPairCard style="display:none;margin:10px 0;padding:14px;border:1px solid var(--line);border-radius:14px;background:var(--raise2)">
 <div style="display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start">

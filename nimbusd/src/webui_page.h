@@ -316,9 +316,11 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <label>Device clock</label>
 <p class="hint tip">Set automatically from the internet once Wi-Fi connects - there is no manual clock. Until it syncs, daily and weekly routines wait.</p>
 <div class=row><b id=devClock>&hellip;</b><span class=hint id=clockBadge>&hellip;</span><button id=clockSyncBtn type=button>Sync now</button></div>
+<div id=idTokenRow>
 <label>Device sign-in code <button class=qh type=button aria-expanded=false aria-label="About the device sign-in code">?</button></label>
 <p class="hint tip">The Sign-in QR carries this automatically; normal setup never asks you to type it. Use this value only to recover a browser that cannot scan the QR. Tap to copy. Generate a new one under <b>Connectivity</b> below.</p>
 <div class="memv" id=idToken style="cursor:pointer" title="tap to copy">&hellip;</div>
+</div>
 </div>
 </details>
 
@@ -474,7 +476,7 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <table><tbody>
 <tr><td>Device name</td><td id=cxName>-</td></tr>
 <tr id=cxLanRow><td>On your network</td><td><span id=cxLan>-</span> <button id=cxLanCopy type=button style="display:none;padding:2px 8px;font-size:12px">Copy</button></td></tr>
-<tr><td>Device sign-in code</td><td id=cxToken style="word-break:break-all">-</td></tr>
+<tr id=cxTokenRow><td>Device sign-in code</td><td id=cxToken style="word-break:break-all">-</td></tr>
 </tbody></table>
 <div id=cxSetupAp style="display:none">
 <p class=hint>Setting up a new device? Join its setup Wi-Fi network with this password and the setup page opens automatically.</p>
@@ -536,7 +538,7 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 
 <details class=setgroup><summary>Cloud access<span class=chev>&rsaquo;</span></summary>
 <div class=setbody>
-<p class="hint tip">Reach this device from anywhere through CumuloNimbus. Available in Orchestrator mode. Pairing shows a Cloud link code to enter at app.cumulo-nimbus.ai while signed in.</p>
+<p class="hint tip" id=cloudTip>Reach this device from anywhere through CumuloNimbus. Available in Orchestrator mode. Pairing shows a Cloud link code to enter at app.cumulo-nimbus.ai while signed in.</p>
 <div id=cloudLine class=hint>Cloud access is off.</div>
 <div id=cloudPairCard style="display:none;margin:10px 0;padding:14px;border:1px solid var(--line);border-radius:14px;background:var(--raise2)">
 <div style="display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start">
@@ -1238,16 +1240,43 @@ goDest('home');   // default destination
 function applyHostedChrome(){
   if(!HOSTED)return;
   try{
-    const f=$('fwsec');
-    if(f){f.style.display='none';
-      const n=document.createElement('p'); n.className='hint'; n.style.margin='10px 0';
+    // Software update: a VN updates by image roll, not ESP OTA. Keep the titled
+    // "Software update" group in its normal place (no floating orphan between Sound
+    // and Connectivity, CUM-218) and replace its body with the honest platform line.
+    const f=$('fwsec'), body=f&&f.querySelector('.setbody');
+    if(body){body.innerHTML='';
+      const n=document.createElement('p'); n.className='hint'; n.style.margin='6px 0';
       n.textContent='Software updates are managed by the platform; this instance updates when its image is rolled.';
-      if(f.parentNode)f.parentNode.insertBefore(n,f);}
+      body.appendChild(n);}
     document.querySelectorAll('[data-go=device]').forEach(b=>{
       if((b.textContent||'').indexOf('Check for updates')===0)b.style.display='none';});
   }catch(e){}
 }
 applyHostedChrome();
+// Honest hosted cloud + sign-in (CUM-218). A hosted instance is DEFINED by its
+// cloud link, so the device-firmware pairing UI ("Cloud access is off. Pair with
+// the cloud") is a lie there. State the one true fact - this instance is reached
+// through its cloud link - and drop the pairing controls. The device sign-in code
+// is a LAN recovery aid (recover a browser that cannot scan the device's QR); a
+// hosted instance has no screen and no LAN, so hide it rather than show a bare "-".
+function applyHostedCloudChrome(){
+  if(!HOSTED)return;
+  try{
+    const tip=$('cloudTip'); if(tip)tip.style.display='none';
+    ['cloudPair','cloudUnpair','cloudOff','cloudPairCard','cloudMsg'].forEach(id=>{
+      const el=$(id); if(el)el.style.display='none';});
+    const line=$('cloudLine');
+    if(line){line.textContent='This instance is reached through its cloud link.';
+      const u=document.createElement('div');
+      u.style.cssText='font-family:var(--mono);word-break:break-all;margin-top:6px;color:var(--ink2)';
+      u.textContent=location.origin+location.pathname.replace(/\/[^/]*$/,'');   // the tunnel URL
+      line.appendChild(u);}
+    // Device sign-in code (identity group + Connectivity row + regen button).
+    ['idTokenRow','cxTokenRow'].forEach(id=>{const el=$(id); if(el)el.style.display='none';});
+    const rg=$('regenTok'); if(rg&&rg.parentNode)rg.parentNode.style.display='none';
+  }catch(e){}
+}
+applyHostedCloudChrome();
 // Honest hosted networking (CUM-207/CUM-279): a hosted instance has no radio, so the
 // whole Wi-Fi group ("Trying saved networks", the saved list, Scan, Add a hidden
 // network, Recovery) and the Bluetooth group are false there - the same "ap undefined"
@@ -4270,36 +4299,54 @@ function loadChatHistory(){
     log.scrollTop=log.scrollHeight;
   }).catch(()=>{});
 }
-let _chatBusy=false;
-function sendChatTurn(){
-  const t=$('chatInput'),v=(t.value||'').trim(); if(!v||_chatBusy)return;
-  _chatBubble('u',v,'web'); t.value='';
-  _chatBusy=true; const pend=_chatBubble('a','…'); pend.style.opacity=.6;
-  $('chatMsg').textContent='Thinking… a reply can take 5–30 s';
-  fetch('/api/chat',{method:'POST',body:new URLSearchParams({text:v})})
+// Rapid taps must never be lost or mismatched (CUM-218). Every send gets its own
+// user bubble + dim pending bubble IMMEDIATELY - even mid-turn - and is queued.
+// The pump POSTs one turn at a time and polls GET /api/chat?turn=<id> so each reply
+// fills ITS OWN bubble; a prior turn's reply can never render under a newer message.
+let _chatQ=[];        // FIFO of {text,pend} awaiting their POST + poll cycle
+let _chatBusy=false;  // a turn is mid POST+poll (one outstanding at a time)
+function _chatIdle(){$('chatMsg').textContent='';}
+function _chatPump(){
+  if(_chatBusy)return;
+  if(!_chatQ.length){_chatIdle();return;}
+  _chatBusy=true;
+  const job=_chatQ.shift(),pend=job.pend;
+  $('chatMsg').textContent=_chatQ.length?('Thinking… '+(_chatQ.length+1)+' queued'):'Thinking… a reply can take 5–30 s';
+  // Done with this turn: free the slot, re-sync from the canonical store only when
+  // nothing is queued behind us (so a still-pending bubble is never wiped), pump next.
+  const done=resync=>{_chatBusy=false; if(resync&&!_chatQ.length)setTimeout(loadChatHistory,900); _chatPump();};
+  fetch('/api/chat',{method:'POST',body:new URLSearchParams({text:job.text})})
     .then(r=>r.ok?r.json():r.json().then(e=>Promise.reject(e.error||r.status)))
-    .then(()=>{
+    .then(p=>{
+      const turn=p&&p.turn;   // match this turn's own reply by id (never "latest")
+      const url=turn!==undefined&&turn!==null?('/api/chat?turn='+encodeURIComponent(turn)):'/api/chat';
       let tries=0; const poll=()=>{tries++;
-        fetch('/api/chat').then(r=>r.json()).then(d=>{
-          if(d.reply){pend.textContent=d.reply;pend.style.opacity=1;_chatBusy=false;$('chatMsg').textContent='';
+        fetch(url).then(r=>r.json()).then(d=>{
+          if(d.reply){pend.textContent=d.reply;pend.style.opacity=1;
             // Served-by disclosure (CUM-236): a fallback reply says so under the bubble.
             if(d.fallback&&d.servedBy){const f=document.createElement('div');
               f.style.cssText='font-size:9.5px;color:var(--ink3);margin-top:4px;opacity:.85';
               f.textContent='served by '+d.servedBy+' (fallback)';pend.appendChild(f);}
-            setTimeout(loadChatHistory,900);}   // re-sync from the canonical store
-          // Keep polling while a turn is IN FLIGHT (d.pending). A turn that uses
-          // tools can legitimately run for minutes, so a fixed 60 s cap dropped
-          // real replies; poll up to the ~13 min turn budget, with a 40-try floor
-          // for quick turns even if pending flips off in a race.
-          else if((d.pending||tries<40)&&tries<520){$('chatMsg').textContent='Working…';setTimeout(poll,1500);}
-          // Gave up waiting: re-sync from the canonical store so a reply that
-          // staged after we stopped polling still appears, rather than a frozen pane.
-          else{pend.style.opacity=1;_chatBusy=false;$('chatMsg').textContent='';loadChatHistory();
-            pend.textContent='(Still working - reloading the conversation. If nothing appears, check the provider key.)';}
-        }).catch(()=>{pend.textContent='(Couldn\'t fetch the reply - try again)';_chatBusy=false;});};
+            done(true);}
+          // Keep polling while IN FLIGHT (d.pending). A tool-using turn can run for
+          // minutes, so poll up to the ~13 min budget with a 40-try floor for quick
+          // turns even if pending flips off in a race.
+          else if((d.pending||tries<40)&&tries<520){setTimeout(poll,1500);}
+          // Gave up: re-sync from the store so a late reply still appears.
+          else{pend.style.opacity=1;
+            pend.textContent='(Still working - reloading the conversation. If nothing appears, check the provider key.)';
+            done(true);}
+        }).catch(()=>{pend.textContent='(Couldn\'t fetch the reply - try again)';pend.style.opacity=1;done(false);});};
       setTimeout(poll,1500);
     })
-    .catch(err=>{pend.textContent='✗ '+err;pend.style.opacity=1;_chatBusy=false;$('chatMsg').textContent='';});
+    .catch(err=>{pend.textContent='✗ '+err;pend.style.opacity=1;done(false);});
+}
+function sendChatTurn(){
+  const t=$('chatInput'),v=(t.value||'').trim(); if(!v)return;
+  _chatBubble('u',v,'web'); t.value='';
+  const pend=_chatBubble('a','…'); pend.style.opacity=.6;   // honest pending, even mid-turn
+  _chatQ.push({text:v,pend:pend});
+  _chatPump();
 }
 $('chatSend')&&($('chatSend').onclick=sendChatTurn);
 loadChatHistory();

@@ -93,7 +93,9 @@ keeps):
 | Battery | Real reading | Always on external power (hosted) |
 | Sound (mic, speaker, tones) | Real hardware | Not present (no mic/speaker test buttons) |
 | Wi-Fi and network | Real radio | Managed by the platform (no AP or station line shown) |
-| Software update | Device firmware update | The platform rolls the instance image; the device update card is not shown |
+| Software update | Device firmware update | The platform rolls the instance image; the update panel says so plainly (no device OTA controls) |
+| Cloud access | Pair to reach it remotely | Already reached through its cloud link; the panel states that and shows the link, with no pairing step |
+| Device sign-in code | A LAN recovery aid | Not shown (a hosted instance is reached through its cloud link, not a LAN sign-in) |
 
 The instance never shows a made-up hardware reading and never leaves a control
 that does nothing: a panel that has no hardware behind it says so plainly. A

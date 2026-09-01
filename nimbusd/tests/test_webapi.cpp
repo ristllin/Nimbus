@@ -198,7 +198,7 @@ int main() {
   ReplyBuffer replies;
   // Wire reply delivery into the ring exactly as the daemon does, so the web chat
   // surface sees every reply the engine produces (including the honest keyless one).
-  rig.setDeliver([&replies](const std::string&, const std::string& t) { replies.push("assistant", t); });
+  rig.setDeliver([&replies](const std::string& chat, const std::string& t) { replies.push("assistant", t, chat); });
   HttpControl http(&eng, "127.0.0.1", 0, token, &replies, &rig);
   const int port = http.start();
   c.ok(port > 0, "control surface bound a loopback port");
