@@ -232,43 +232,64 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 
 <details class=setgroup><summary>Connectivity<span class=chev>&rsaquo;</span></summary>
 <div class=setbody>
-<b style="display:block;margin-top:10px">Connect to this device <button class=qh type=button aria-expanded=false aria-label="About connecting">?</button></b>
-<p class="hint tip">You're connected now. To return later, open the <b>On your network</b> address, or scan the Sign-in QR on the device's screen (Settings &gt; Connectivity &gt; Sign-in QR). Setting up a new device? Join its setup Wi-Fi network with the password below and the setup page opens automatically. The password and token appear only after you've signed in. Full walk-through: <a href="https://ristllin.github.io/Nimbus/docs/getting-started/first-time-setup" target=_blank rel=noopener>First-time setup</a>.</p>
+<b style="display:block;margin-top:10px">This device <button class=qh type=button aria-expanded=false aria-label="About connecting">?</button></b>
+<p class="hint tip">To return later, open the <b>On your network</b> address, or scan the Sign-in QR on the device's screen (Settings &gt; Connectivity &gt; Sign-in QR). The sign-in code appears only after you've signed in. Full walk-through: <a href="https://ristllin.github.io/Nimbus/docs/getting-started/first-time-setup" target=_blank rel=noopener>First-time setup</a>.</p>
 <table><tbody>
 <tr><td>Device name</td><td id=cxName>-</td></tr>
-<tr><td>On your network</td><td id=cxLan>-</td></tr>
-<tr><td>Setup Wi-Fi network</td><td id=cxApSsid>-</td></tr>
-<tr><td>Setup Wi-Fi password</td><td id=cxApPass>-</td></tr>
+<tr><td>On your network</td><td><span id=cxLan>-</span> <button id=cxLanCopy type=button style="display:none;padding:2px 8px;font-size:12px">Copy</button></td></tr>
 <tr><td>Device sign-in code</td><td id=cxToken style="word-break:break-all">-</td></tr>
 </tbody></table>
-<div class=row style="margin-top:6px"><button id=regenTok type=button style="background:rgba(240,104,122,.12);color:var(--crit)">Generate New Code</button></div>
-<p class=hint>Signs out every browser except this one.</p>
-
-<b style="display:block;margin-top:14px">Bluetooth <button class=qh type=button aria-expanded=false aria-label="About Bluetooth">?</button></b>
-<p class="hint tip">In Notifier mode, the ring and screen are driven over an encrypted Bluetooth link from the nimbus-notify broker on your computer. Pairing happens automatically on the broker's first connect - Nimbus won't appear in your computer's Bluetooth list. Bluetooth is off in Orchestrator mode.</p>
+<div id=cxSetupAp style="display:none">
+<p class=hint>Setting up a new device? Join its setup Wi-Fi network with this password and the setup page opens automatically.</p>
 <table><tbody>
-<tr><td>Status</td><td id=btState>-</td></tr>
-<tr><td>Paired devices</td><td id=btBonds>-</td></tr>
-<tr><td>Bluetooth address</td><td id=btMac style="word-break:break-all">-</td></tr>
+<tr><td>Setup Wi-Fi network</td><td id=cxApSsid>-</td></tr>
+<tr><td>Setup Wi-Fi password</td><td id=cxApPass>-</td></tr>
 </tbody></table>
-<div class=row style="margin-top:6px"><button id=btForget type=button style="background:rgba(240,104,122,.12);color:var(--crit)">Forget Paired Devices</button></div>
+</div>
+<div class=row style="margin-top:6px"><button id=regenTok type=button style="background:rgba(240,104,122,.12);color:var(--crit)">Generate New Code</button></div>
 
 <b style="display:block;margin-top:14px">Wi-Fi <button class=qh type=button aria-expanded=false aria-label="About Wi-Fi">?</button></b>
 <p class="hint tip">Connects the device to your network - required for Orchestrator mode. Notifier over Bluetooth works without it. 2.4 GHz networks only.</p>
+<div id=wifiConnState class=hint style="margin:4px 0 8px">-</div>
 <label>Saved Wi-Fi networks <span id=wifiCount class=hint style="font-weight:normal"></span></label>
 <p class=hint>The device remembers several networks and joins whichever one it can see, so carrying it between places keeps it online.</p>
 <div id=wifiKnown></div>
-<label>Add a network</label>
-<button id=scan type=button>Scan Networks</button>
+<div class=row style="margin-top:6px"><button id=scan type=button>Scan Networks</button></div>
 <div id=nets></div>
+<p id=msg></p>
+<details class=setgroup><summary>Add a hidden network<span class=chev>&rsaquo;</span></summary>
+<div class=setbody>
+<p class=hint>A visible network is added from the scan list above. Enter the name and password only for a network that does not broadcast its name.</p>
 <input id=ssid placeholder="Network name">
 <input id=pass type=password placeholder="Password">
 <button id=savewifi type=button>Save</button>
-<p id=msg></p>
-<label>Temporary setup hotspot <button class=qh type=button aria-expanded=false aria-label="About the setup network">?</button></label>
-<p class="hint tip">This is a recovery network, separate from the home Wi-Fi connection above. Touch/TFT devices normally turn it off after joining home Wi-Fi. Publishing it pauses joining and makes the recovery network available; resume joining once the password is corrected.</p>
+</div>
+</details>
+<details class=setgroup id=wifiRecovery><summary>Recovery<span class=chev>&rsaquo;</span></summary>
+<div class=setbody>
+<p class="hint tip">The setup hotspot is a recovery network, separate from your home Wi-Fi. Touch/TFT devices normally turn it off after joining home Wi-Fi. Publishing it pauses joining and makes the recovery network available; resume joining once the password is corrected.</p>
 <div class=row><button id=wifiAp type=button>Publish Setup Network</button><button id=wifiResume type=button>Resume Joining</button></div>
 <p class=hint id=wifiApMsg></p>
+</div>
+</details>
+
+<b style="display:block;margin-top:14px">Bluetooth <button class=qh type=button aria-expanded=false aria-label="About Bluetooth">?</button></b>
+<p class="hint tip">In Notifier mode, the ring and screen are driven over an encrypted Bluetooth link from the nimbus-notify broker on your computer. Pairing happens automatically on the broker's first connect - Nimbus won't appear in your computer's Bluetooth list. Bluetooth is off in Orchestrator mode.</p>
+<div id=btOrchLine class=hint style="display:none">Bluetooth is off in Orchestrator mode.</div>
+<div id=btTable style="display:none">
+<table><tbody>
+<tr><td>Status</td><td id=btState>-</td></tr>
+<tr><td>Paired devices</td><td id=btBonds>-</td></tr>
+</tbody></table>
+<div class=row style="margin-top:6px"><button id=btForget type=button style="background:rgba(240,104,122,.12);color:var(--crit)">Forget Paired Devices</button></div>
+<details class=setgroup><summary>Advanced<span class=chev>&rsaquo;</span></summary>
+<div class=setbody>
+<table><tbody>
+<tr><td>Bluetooth address</td><td id=btMac style="word-break:break-all">-</td></tr>
+</tbody></table>
+</div>
+</details>
+</div>
 </div>
 </details>
 

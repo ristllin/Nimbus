@@ -456,43 +456,64 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 
 <details class=setgroup><summary>Connectivity<span class=chev>&rsaquo;</span></summary>
 <div class=setbody>
-<b style="display:block;margin-top:10px">Connect to this device <button class=qh type=button aria-expanded=false aria-label="About connecting">?</button></b>
-<p class="hint tip">You're connected now. To return later, open the <b>On your network</b> address, or scan the Sign-in QR on the device's screen (Settings &gt; Connectivity &gt; Sign-in QR). Setting up a new device? Join its setup Wi-Fi network with the password below and the setup page opens automatically. The password and token appear only after you've signed in. Full walk-through: <a href="https://ristllin.github.io/Nimbus/docs/getting-started/first-time-setup" target=_blank rel=noopener>First-time setup</a>.</p>
+<b style="display:block;margin-top:10px">This device <button class=qh type=button aria-expanded=false aria-label="About connecting">?</button></b>
+<p class="hint tip">To return later, open the <b>On your network</b> address, or scan the Sign-in QR on the device's screen (Settings &gt; Connectivity &gt; Sign-in QR). The sign-in code appears only after you've signed in. Full walk-through: <a href="https://ristllin.github.io/Nimbus/docs/getting-started/first-time-setup" target=_blank rel=noopener>First-time setup</a>.</p>
 <table><tbody>
 <tr><td>Device name</td><td id=cxName>-</td></tr>
-<tr><td>On your network</td><td id=cxLan>-</td></tr>
-<tr><td>Setup Wi-Fi network</td><td id=cxApSsid>-</td></tr>
-<tr><td>Setup Wi-Fi password</td><td id=cxApPass>-</td></tr>
+<tr><td>On your network</td><td><span id=cxLan>-</span> <button id=cxLanCopy type=button style="display:none;padding:2px 8px;font-size:12px">Copy</button></td></tr>
 <tr><td>Device sign-in code</td><td id=cxToken style="word-break:break-all">-</td></tr>
 </tbody></table>
-<div class=row style="margin-top:6px"><button id=regenTok type=button style="background:rgba(240,104,122,.12);color:var(--crit)">Generate New Code</button></div>
-<p class=hint>Signs out every browser except this one.</p>
-
-<b style="display:block;margin-top:14px">Bluetooth <button class=qh type=button aria-expanded=false aria-label="About Bluetooth">?</button></b>
-<p class="hint tip">In Notifier mode, the ring and screen are driven over an encrypted Bluetooth link from the nimbus-notify broker on your computer. Pairing happens automatically on the broker's first connect - Nimbus won't appear in your computer's Bluetooth list. Bluetooth is off in Orchestrator mode.</p>
+<div id=cxSetupAp style="display:none">
+<p class=hint>Setting up a new device? Join its setup Wi-Fi network with this password and the setup page opens automatically.</p>
 <table><tbody>
-<tr><td>Status</td><td id=btState>-</td></tr>
-<tr><td>Paired devices</td><td id=btBonds>-</td></tr>
-<tr><td>Bluetooth address</td><td id=btMac style="word-break:break-all">-</td></tr>
+<tr><td>Setup Wi-Fi network</td><td id=cxApSsid>-</td></tr>
+<tr><td>Setup Wi-Fi password</td><td id=cxApPass>-</td></tr>
 </tbody></table>
-<div class=row style="margin-top:6px"><button id=btForget type=button style="background:rgba(240,104,122,.12);color:var(--crit)">Forget Paired Devices</button></div>
+</div>
+<div class=row style="margin-top:6px"><button id=regenTok type=button style="background:rgba(240,104,122,.12);color:var(--crit)">Generate New Code</button></div>
 
 <b style="display:block;margin-top:14px">Wi-Fi <button class=qh type=button aria-expanded=false aria-label="About Wi-Fi">?</button></b>
 <p class="hint tip">Connects the device to your network - required for Orchestrator mode. Notifier over Bluetooth works without it. 2.4 GHz networks only.</p>
+<div id=wifiConnState class=hint style="margin:4px 0 8px">-</div>
 <label>Saved Wi-Fi networks <span id=wifiCount class=hint style="font-weight:normal"></span></label>
 <p class=hint>The device remembers several networks and joins whichever one it can see, so carrying it between places keeps it online.</p>
 <div id=wifiKnown></div>
-<label>Add a network</label>
-<button id=scan type=button>Scan Networks</button>
+<div class=row style="margin-top:6px"><button id=scan type=button>Scan Networks</button></div>
 <div id=nets></div>
+<p id=msg></p>
+<details class=setgroup><summary>Add a hidden network<span class=chev>&rsaquo;</span></summary>
+<div class=setbody>
+<p class=hint>A visible network is added from the scan list above. Enter the name and password only for a network that does not broadcast its name.</p>
 <input id=ssid placeholder="Network name">
 <input id=pass type=password placeholder="Password">
 <button id=savewifi type=button>Save</button>
-<p id=msg></p>
-<label>Temporary setup hotspot <button class=qh type=button aria-expanded=false aria-label="About the setup network">?</button></label>
-<p class="hint tip">This is a recovery network, separate from the home Wi-Fi connection above. Touch/TFT devices normally turn it off after joining home Wi-Fi. Publishing it pauses joining and makes the recovery network available; resume joining once the password is corrected.</p>
+</div>
+</details>
+<details class=setgroup id=wifiRecovery><summary>Recovery<span class=chev>&rsaquo;</span></summary>
+<div class=setbody>
+<p class="hint tip">The setup hotspot is a recovery network, separate from your home Wi-Fi. Touch/TFT devices normally turn it off after joining home Wi-Fi. Publishing it pauses joining and makes the recovery network available; resume joining once the password is corrected.</p>
 <div class=row><button id=wifiAp type=button>Publish Setup Network</button><button id=wifiResume type=button>Resume Joining</button></div>
 <p class=hint id=wifiApMsg></p>
+</div>
+</details>
+
+<b style="display:block;margin-top:14px">Bluetooth <button class=qh type=button aria-expanded=false aria-label="About Bluetooth">?</button></b>
+<p class="hint tip">In Notifier mode, the ring and screen are driven over an encrypted Bluetooth link from the nimbus-notify broker on your computer. Pairing happens automatically on the broker's first connect - Nimbus won't appear in your computer's Bluetooth list. Bluetooth is off in Orchestrator mode.</p>
+<div id=btOrchLine class=hint style="display:none">Bluetooth is off in Orchestrator mode.</div>
+<div id=btTable style="display:none">
+<table><tbody>
+<tr><td>Status</td><td id=btState>-</td></tr>
+<tr><td>Paired devices</td><td id=btBonds>-</td></tr>
+</tbody></table>
+<div class=row style="margin-top:6px"><button id=btForget type=button style="background:rgba(240,104,122,.12);color:var(--crit)">Forget Paired Devices</button></div>
+<details class=setgroup><summary>Advanced<span class=chev>&rsaquo;</span></summary>
+<div class=setbody>
+<table><tbody>
+<tr><td>Bluetooth address</td><td id=btMac style="word-break:break-all">-</td></tr>
+</tbody></table>
+</div>
+</details>
+</div>
 </div>
 </details>
 
@@ -1523,6 +1544,9 @@ function renderDevTiles(d){
 // Last LAN address seen, so a changed one can refresh the sign-in links (below).
 // null = nothing seen yet, which must NOT count as a change.
 let _lastStaIp=null;
+// Last station up/down seen, so a join/drop transition re-renders the saved-network
+// list (signal + connection line). null = nothing seen yet, not a change.
+let _lastSta=null;
 // Glass-box availability, cached off the polls the UI already runs (no extra
 // requests). Turn details are SD-gated AND gated on the Activity recording knob,
 // so the chat says which one is missing instead of just showing nothing.
@@ -1544,7 +1568,11 @@ function applyState(d){
   // ---- Cloud access (cumulo-nimbus tunnel) ----
   if(d.cloud&&$('cloudLine')){
     var c=d.cloud;
-    $('cloudLine').textContent=c.line||'';
+    // Live tunnel reachability (proposal §4): once paired, state the one fact the tab never
+    // did - reachable vs paired-but-not-connecting. Otherwise the server's own status line.
+    $('cloudLine').textContent=c.paired
+     ?(c.online?'Cloud access is on and reachable.':'Paired, but the tunnel is not connecting.')
+     :(c.line||'');
     var pairing=(c.state==='pairing'&&!!c.code);
     var card=$('cloudPairCard'); if(card)card.style.display=pairing?'block':'none';
     if(pairing){
@@ -1835,6 +1863,23 @@ function applyState(d){
     const mv=+b.dataset.m; b.classList.toggle('on',mv===d.mode); b.classList.toggle('nf',mv===0);
     b.onclick=()=>{ if(mv!==d.mode) switchMode(mv); };
   });}
+  // Connectivity → Bluetooth adapts to the mode (proposal §2): a dead three-row table in
+  // Orchestrator (radio off, no bonds) collapses to one honest line; the table shows only
+  // in Notifier, where the BLE link is the whole point.
+  if(d.mode!==undefined){
+    const notifier=(d.mode===0);
+    const bl=$('btOrchLine'); if(bl)bl.style.display=notifier?'none':'';
+    const bt=$('btTable'); if(bt)bt.style.display=notifier?'':'none';
+  }
+  // Wi-Fi live signal + connection line (proposal §3). rssi is a station fact from
+  // /api/state; cache it so loadWifi() can badge the in-use row, and refresh the live
+  // figure each poll without a full list reload. A sta transition re-renders the list.
+  if(d.rssi!==undefined)window._rssi=d.rssi;
+  if(d.sta&&d.rssi!==undefined&&$('wifiRssi'))$('wifiRssi').textContent=d.rssi+' dBm';
+  if(d.sta!==undefined){
+    if(_lastSta!==null&&d.sta!==_lastSta&&typeof loadWifi==='function')loadWifi();
+    _lastSta=d.sta;
+  }
   // The display is a color touch panel; the panel selector was retired, so only
   // the 180-degree flip remains a runtime choice.
   const sf=$('scrFlip');
@@ -2000,6 +2045,11 @@ function loadConnect(){
        if(c.mdnsUrl&&c.mdns)parts.push(link(c.mdnsUrl,c.mdns));
        if(c.url)parts.push(link(c.url,c.ip||c.apIp||'this device'));
        $('cxLan').innerHTML=parts.join(' &middot; ');
+       // Copy affordance for the reach address (proposal §1): the plain mDNS name, else
+       // the IP - what an owner types to get back, without the sign-in query string.
+       const cb=$('cxLanCopy'), addr=c.mdns||c.ip||c.apIp||'';
+       if(cb&&addr&&navigator.clipboard){cb.style.display='';
+         cb.onclick=()=>navigator.clipboard.writeText(addr).then(()=>toast('Address copied'));}
      }
      // Bluetooth (Notifier link) state
      if($('btState'))$('btState').textContent=c.bleOn?(c.bleConn?'on · a device is connected':'on · advertising'):'off (Notifier mode only)';
@@ -3246,18 +3296,32 @@ function loadWifi(){
   const nets=d.networks||[];
   _wifiSaved=nets.map(n=>n.ssid);
   if($('wifiCount'))$('wifiCount').textContent=nets.length+' of '+(d.max||5);
+  // Signal is a station fact from /api/state, cached each poll; badge it on the in-use
+  // row (proposal §3). The live figure is refreshed by applyState between reloads.
+  const rssi=(window._rssi!==undefined)?(window._rssi+' dBm'):'';
   if(!nets.length)box.innerHTML='<span class=hint>No saved networks yet. Add one below.</span>';
   else box.innerHTML='<table><tbody>'+nets.map((n,i)=>
-   '<tr><td><b>'+_wesc(n.ssid)+'</b>'+(n.current?' <span class=badge>in use</span>':'')+
+   '<tr><td><b>'+_wesc(n.ssid)+'</b>'+(n.current?' <span class=badge>in use</span> <span id=wifiRssi class=hint>'+_wesc(rssi)+'</span>':'')+
    (n.open?' <span class=hint>open network</span>':'')+
-   '</td><td style="text-align:right;white-space:nowrap">'+
-   (i>0?'<button data-wup="'+_wesc(n.ssid)+'" data-wto="'+(i-1)+'" title="Higher priority">Up</button> ':'')+
+   '</td><td style="text-align:right">'+
+   (i>0?'<button data-wup="'+_wesc(n.ssid)+'" data-wto="'+(i-1)+'" title="Higher priority" aria-label="Higher priority">&uarr;</button> ':'')+
+   (i<nets.length-1?'<button data-wup="'+_wesc(n.ssid)+'" data-wto="'+(i+1)+'" title="Lower priority" aria-label="Lower priority">&darr;</button> ':'')+
    (n.current?'':'<button data-wcon="'+_wesc(n.ssid)+'">Connect</button> ')+
    '<button data-wfor="'+_wesc(n.ssid)+'"'+(n.current?' data-wcur=1':'')+'>Forget</button></td></tr>')
    .join('')+'</tbody></table>';
   box.querySelectorAll('button[data-wcon]').forEach(b=>b.onclick=()=>wifiConnect(b.dataset.wcon));
   box.querySelectorAll('button[data-wfor]').forEach(b=>b.onclick=()=>wifiForget(b.dataset.wfor,!!b.dataset.wcur));
   box.querySelectorAll('button[data-wup]').forEach(b=>b.onclick=()=>wifiReorder(b.dataset.wup,+b.dataset.wto));
+  // The honest connection line: named current network + address + signal when up, else
+  // whether the setup hotspot is the way in. All from the existing /api/wifi shape.
+  const cur=nets.find(n=>n.current);
+  const cline=d.sta
+   ?('Connected'+(cur?(' to "'+cur.ssid+'"'):'')+(d.staIp?(' at '+d.staIp):'')+(rssi?(' ('+rssi+')'):''))
+   :(d.apUp?'Not connected. The setup hotspot is up for recovery.':'Not connected. Trying saved networks.');
+  if($('wifiConnState'))$('wifiConnState').textContent=cline;
+  // Setup Wi-Fi network + password are shown ONLY when the hotspot is the way in - up and
+  // the station is down (CUM-200). A connected device hides them as clutter (proposal §1).
+  if($('cxSetupAp'))$('cxSetupAp').style.display=(d.apUp&&!d.sta)?'':'none';
   if($('wifiApMsg'))$('wifiApMsg').textContent=d.apUp
    ?('Temporary setup hotspot "'+(d.apSsid||'')+'" is available at '+(d.apIp||'')+'.')
    :(d.sta
@@ -3333,7 +3397,9 @@ function scan(){
    nm.textContent=(n.ssid||'(hidden)')+(n.enc?' (lock)':'')+(_wifiSaved.indexOf(n.ssid)>=0?' - saved':'');
    const bars=document.createElement('span');bars.className='bars';bars.textContent=n.rssi+' dBm';
    el.appendChild(nm);el.appendChild(bars);
-   el.onclick=()=>{$('ssid').value=n.ssid;$('pass').focus();};
+   // Manual name/password live in the "Add a hidden network" disclosure now; picking a
+   // scanned network opens it and prefills the name so the password field is ready.
+   el.onclick=()=>{const s=$('ssid');if(s){const dt=s.closest('details');if(dt)dt.open=true;s.value=n.ssid;}$('pass').focus();};
    $('nets').appendChild(el);});
   if(!list.length)$('nets').textContent='No networks found.';
  }).catch(()=>{if(--left<=0)stop('Scan failed - device unreachable.');});

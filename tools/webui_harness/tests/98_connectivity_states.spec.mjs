@@ -17,15 +17,18 @@ async function toDevice(page) {
 }
 
 async function expand(page, name) {
-  const group = page.locator('details.setgroup', {
-    has: page.locator('summary', { hasText: name }),
+  const group = page.locator('#pane-set > details.setgroup', {
+    has: page.locator('> summary', { hasText: name }),
   });
   const open = await group.evaluate((el) => el.open);
-  if (!open) await group.locator('summary').click();
+  // The redesigned Connectivity group nests sub-disclosures (Add a hidden network,
+  // Recovery, Advanced), so target the group's OWN summary/body - a direct child - and
+  // not a descendant one, or a strict-mode locator matches several.
+  if (!open) await group.locator('> summary').click();
   // The group and its rendered body must be on screen before capture, so a shot of a
   // collapsed or empty group cannot pass as if it showed the state under test.
   await expect(group, `the "${name}" group is not visible`).toBeVisible();
-  await expect(group.locator('.setbody'), `the "${name}" body did not render`).toBeVisible();
+  await expect(group.locator('> .setbody'), `the "${name}" body did not render`).toBeVisible();
   await page.waitForTimeout(300);
   return group;
 }
