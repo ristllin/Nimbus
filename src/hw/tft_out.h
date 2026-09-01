@@ -94,6 +94,11 @@ const nimbus::tft::TapRegion* hitTest(int x, int y);
 // blanks it instead of drawing a screensaver (that would cost MORE power).
 void setBacklight(uint8_t pct);
 uint8_t backlight();
+// True when the backlight is genuinely driveable (a real PWM pin that attached).
+// backlight() alone reports the REQUESTED level, which a panel with the backlight
+// tied to 3V3 still echoes back - so deep-dim (backlight fully off) only arms
+// where this is true, or a wake-tap could be swallowed on a still-lit screen.
+bool backlightAttached();
 
 bool begin();     // bring up the panel + touch; false if either fails
 bool ready();

@@ -3836,9 +3836,22 @@ static void drainTouch(uint32_t now) {
   const auto g = hw::touch::poll();
   if (g.kind == hw::touch::Gesture::Kind::None) return;
 
+  // Deep-dim wake (CUM-292): the deep-dim screensaver drops the backlight fully
+  // OFF while the touch controller stays armed. If the panel was dark when this
+  // gesture arrived, the owner tapped BLIND - so it is a WAKE ONLY: saverKick()
+  // below restores the backlight and live screen, and the gesture is SWALLOWED
+  // (returned before hitTest/dispatch) so a blind tap can never press whatever
+  // sits under the finger, e.g. a Danger-zone button. Gated on backlightAttached
+  // so a panel with the backlight tied on (backlight() echoes 0 but the screen
+  // stays lit) never swallows a real, visible tap.
+  const bool wokeFromDeepDim =
+      hw::tft::backlightAttached() && hw::tft::backlight() == 0;
+
   // A finger on the panel is the owner being present - same signal a step
   // gives, so the screensaver clock resets before the event is handled.
   saverKick();
+
+  if (nimbus::wakeTapIsSwallowed(wokeFromDeepDim)) return;   // wake only, not a press
 
   // Measure the first-run auto-return dwell from the last INTERACTION, not the last
   // paint (CUM-259): a tap on the idle screen means the owner is looking at it, so
@@ -5267,6 +5280,37 @@ void loop() {
     // (Previously only the TEST-only SAVER command blanked, so a production
     // device lit the logo indefinitely.)
     if (g_screenIsTft) hw::tft::setBacklight(nimbus::kBacklightRestPct);
+  }
+
+  // Deep-dim (CUM-292): after an additional per-mode idle past the screensaver,
+  // drop the backlight FULLY off - the panel's dominant draw - while the touch
+  // controller stays armed (a tap wakes it, and that waking tap is swallowed in
+  // drainTouch). Reached only from Rest (the logo already showing) and only where
+  // the backlight is genuinely driveable; disabled on external power via
+  // deepDimExtraMs()==0. The `backlight() > 0` guard makes the transition fire
+  // exactly once (no repaint/blank thrash), and drawing nothing new keeps the
+  // logo underneath ready for an instant, re-init-free wake.
+  if (g_screenIsTft && !g_menu.isOpen() &&
+      g_lastScreen == uint8_t(attn::ScreenId::Screensaver) &&
+      hw::tft::backlightAttached() && hw::tft::backlight() > 0 &&
+      g_saver.deepDimDue(now, nimbus::deepDimExtraMs(
+                                  g_cfg.posture(), g_battEstimate.onExternalPower))) {
+    hw::tft::setBacklight(0);
+  }
+
+  // External power connected WHILE deep-dimmed: lift the panel back to the rest
+  // glow. Deep-dim is a battery-only state (deepDimExtraMs()==0 on external
+  // power), and that must hold as an EXIT invariant too, not just an entry gate -
+  // otherwise a charger that auto-connects while the screen is dark leaves a
+  // powered device looking broken (the "and now it's black" confusion the rest
+  // glow exists to prevent). Fires once (backlight then > 0); a tap still wakes
+  // it fully. Mutually exclusive with the deep-dim entry above (that needs
+  // backlight > 0 and returns early on external power).
+  if (g_screenIsTft && !g_menu.isOpen() &&
+      g_lastScreen == uint8_t(attn::ScreenId::Screensaver) &&
+      hw::tft::backlightAttached() && hw::tft::backlight() == 0 &&
+      g_battEstimate.onExternalPower) {
+    hw::tft::setBacklight(nimbus::kBacklightRestPct);
   }
 
   // Boot breathe-flourish window elapsed: recompose to the normal status ring.
