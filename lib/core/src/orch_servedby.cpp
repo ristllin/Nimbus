@@ -29,5 +29,15 @@ ServedBy servedByDisclosure(const std::string& reqHost, const std::string& reqMo
   return s;
 }
 
+TurnChipDisclosure turnChipDisclosure(const std::string& reqHost, const std::string& reqModel,
+                                      const std::string& servedHost, const std::string& servedModel,
+                                      const std::string& configuredModel) {
+  TurnChipDisclosure d;
+  d.fallback = servedByDisclosure(reqHost, reqModel, servedHost, servedModel).fallback;
+  // Show what actually answered on a substitution; otherwise the head's own label.
+  d.model = (d.fallback && !servedModel.empty()) ? servedModel : configuredModel;
+  return d;
+}
+
 }  // namespace orch
 }  // namespace nimbus

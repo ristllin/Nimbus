@@ -10,6 +10,8 @@ using nimbus::orch::captureServedModel;
 using nimbus::orch::servedByDisclosure;
 using nimbus::orch::ServedBy;
 using nimbus::orch::TokenUsage;
+using nimbus::orch::turnChipDisclosure;
+using nimbus::orch::TurnChipDisclosure;
 
 void setUp() {}
 void tearDown() {}
@@ -120,6 +122,47 @@ static void test_usage_merge_keeps_last_served_model() {
   TEST_ASSERT_EQUAL_STRING("second", a.servedModel.c_str());
 }
 
+// ---- the DEVICE turn-chip leg (CUM-236 device display) --------------------
+// The device writes one `ev:turnend` row per turn; its turn view (_turnChip)
+// annotates a substituted turn "served by <host> <model> (fallback)". The row must
+// carry fallback=true AND the model that actually answered when the turn substituted,
+// and must NOT flag a plain direct turn. This is the seam the on-glass render reads;
+// the pixels themselves are the bench leg.
+
+static void test_chip_plain_turn_no_fallback_shows_configured_model() {
+  // Direct openai turn, provider echoed the resolved snapshot of the SAME model.
+  TurnChipDisclosure d = turnChipDisclosure("openai", "gpt-5.5", "openai",
+                                            "gpt-5.5-2026-01", "gpt-5.5");
+  TEST_ASSERT_FALSE(d.fallback);                     // no "(fallback)" on the chip
+  TEST_ASSERT_EQUAL_STRING("gpt-5.5", d.model.c_str());  // the head's own label
+}
+
+static void test_chip_provider_fallback_discloses_served_model() {
+  // Requested openai, failed over to mistral: chip must say so and name mistral's model.
+  TurnChipDisclosure d = turnChipDisclosure("openai", "gpt-5.5", "mistral",
+                                            "mistral-large-latest", "mistral-large-latest");
+  TEST_ASSERT_TRUE(d.fallback);
+  TEST_ASSERT_EQUAL_STRING("mistral-large-latest", d.model.c_str());
+}
+
+static void test_chip_model_fallback_same_provider_shows_served_model() {
+  // Same host, a DIFFERENT family answered - show the model that actually replied,
+  // not the head's configured one.
+  TurnChipDisclosure d = turnChipDisclosure("anthropic", "claude-opus-4-8", "anthropic",
+                                            "claude-haiku-4-5", "claude-opus-4-8");
+  TEST_ASSERT_TRUE(d.fallback);
+  TEST_ASSERT_EQUAL_STRING("claude-haiku-4-5", d.model.c_str());
+}
+
+static void test_chip_fallback_unknown_served_model_falls_back_to_configured() {
+  // A provider swap with no echoed model still discloses; the chip labels it with the
+  // served head's configured model rather than an empty string.
+  TurnChipDisclosure d = turnChipDisclosure("openai", "gpt-5.5", "mistral", "",
+                                            "mistral-large-latest");
+  TEST_ASSERT_TRUE(d.fallback);
+  TEST_ASSERT_EQUAL_STRING("mistral-large-latest", d.model.c_str());
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_no_fallback_same_host_same_model);
@@ -133,5 +176,9 @@ int main() {
   RUN_TEST(test_capture_absent_model_is_noop);
   RUN_TEST(test_capture_null_target_is_safe);
   RUN_TEST(test_usage_merge_keeps_last_served_model);
+  RUN_TEST(test_chip_plain_turn_no_fallback_shows_configured_model);
+  RUN_TEST(test_chip_provider_fallback_discloses_served_model);
+  RUN_TEST(test_chip_model_fallback_same_provider_shows_served_model);
+  RUN_TEST(test_chip_fallback_unknown_served_model_falls_back_to_configured);
   return UNITY_END();
 }

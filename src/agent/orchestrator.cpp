@@ -48,6 +48,7 @@
 #include "nimbus/orch/result_store.h"   // recent-results ring (results.get/list)
 #include "nimbus/orch/caps.h"
 #include "nimbus/orch/compact.h"        // modelCtxTokens (window table)
+#include "nimbus/orch/servedby.h"       // CUM-236 turn-chip served-by disclosure
 #include "nimbus/orch/command.h"
 #include "nimbus/orch/memory.h"
 #include "nimbus/orch/journal.h"
@@ -1035,7 +1036,16 @@ static TurnEngine::Deps buildTurnDeps() {
       }
       JsonDocument doc;
       doc["host"]  = ev.host;
-      doc["model"] = std::string(agent::store::orchModel(String(ev.host.c_str())).c_str());
+      // Served-by disclosure (CUM-236 device leg): the turn view (_turnChip) reads
+      // model+fallback off this row. On a provider/model substitution show the model
+      // that actually answered and flag the fallback; a plain turn is unchanged. The
+      // shared servedByDisclosure rule decides it, so a new fallback path discloses
+      // here without a device-side re-implementation.
+      const nimbus::orch::TurnChipDisclosure disc = nimbus::orch::turnChipDisclosure(
+          ev.requestedHost, ev.requestedModel, ev.host, ev.servedModel,
+          std::string(agent::store::orchModel(String(ev.host.c_str())).c_str()));
+      doc["model"] = disc.model;
+      if (disc.fallback) doc["fallback"] = true;
       doc["tools"] = ev.rounds;
       doc["ok"]    = ev.ok;
       doc["in"]    = (unsigned)ev.usage.promptTokens;
