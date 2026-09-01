@@ -18,8 +18,19 @@ export const STATE = {
   // Reach info the Home info line + connectivity render. rssi is the current station
   // signal the Wi-Fi panel badges on the in-use saved network (proposal §3).
   sta: true, rssi: -58,
-  apSsid: 'Nimbus-setup', apIp: '192.168.4.1', ip: '192.168.1.42',
+  // The device /api/state emits the station address as `staIp` (webui.cpp), which the
+  // Home info line renders ("sta <staIp> (<rssi> dBm)"). A prior fixture named it `ip`,
+  // a field /api/state never sends, so the info line read "sta undefined" - a rendered
+  // lie the audit must not show. Match the device contract.
+  apSsid: 'Nimbus-setup', apIp: '192.168.4.1', staIp: '192.168.1.42',
   mdns: 'nimbus.local', running: true, scrModel: 'tft',
+  // Battery mode: the device /api/state sends profile / effectiveProfile (ints) and
+  // effectiveProfileName (webui.cpp). Omitting them left the Device pane reading
+  // "effective: undefined" and no battery-mode radio checked. 1 = Balanced.
+  profile: 1, effectiveProfile: 1, effectiveProfileName: 'Balanced',
+  // A configured device reports a synced clock; without it the Usage spend chart and
+  // routine schedules render their "clock not set yet" placeholder. Mirror the device.
+  clock: { synced: true, epoch: Math.floor(Date.now() / 1000), local: '2026-09-01 12:00', tz: 'UTC' },
   // OTA (N5 contract stub): installed/latest/notes + result state. otaResult is
   // the definitive, poll-safe check outcome the panel + Check button read
   // (pending/up-to-date/new-version/unreachable/failed) - CUM-249.
@@ -45,20 +56,33 @@ export const ORCH = {
     cumulo: provider(true, 'ok', 'nimbus-1'),
     zai: provider(false, 'unk', ''),
   },
-  cust: { base: '', conv: '', model: '', hasKey: false },
+  // The custom-endpoint wire selector defaults to "openai" on the device (store.cpp),
+  // never empty; an empty conv left the <select> blank in the audit render.
+  cust: { base: '', conv: 'openai', model: '', hasKey: false },
   orchHost: 'anthropic',
   provPrio: 'anthropic,cumulo,zai', subPrio: 'cumulo,anthropic',
   sttProv: 'openai', ttsOn: false, ttsProv: 'openai', ttsVoice: 'alloy',
   theme: 'nimbus', hasTav: false, hasTg: false,
   tgAllow: '', tgBot: '', tgLive: false, tgVerify: 'unk', tgVts: 0,
   tavVerify: 'unk', tavVts: 0,
-  fetchPol: 'ask', compactKB: 0, loopRounds: 0, loopDeadline: '', orchLoop: false,
+  fetchPol: 1, compactKB: 0, loopRounds: 0, loopDeadline: '', orchLoop: false,
   orchTrace: false, midFail: 0, tlsSlots: 1, tlsVerify: 'unk',
   modInbound: 0, modOutbound: 0, modInjection: 0,
   sfxLvlN: 2, sfxLvlO: 2, sfxTheme: 'terran', sfxVol: 60, sfxTier: 'basic', sfxSync: 'idle',
   usage: {
     sessIn: 12000, sessOut: 4300, turns: 8, lastIn: 900, lastOut: 300,
-    byProvider: [{ provider: 'anthropic', in: 12000, out: 4300, calls: 8, limit: 0 }],
+    // Per-provider ledger row. Field names mirror the device's providerUsageJson()
+    // (store.cpp): prov / tokens / calls / tok(In|Out) / tot(In|Out|Calls) / rate*
+    // / (token|call|cents)Limit / estCents. A prior fixture used provider/in/out/limit,
+    // which the Budgets renderer does not read - it printed the provider as "undefined".
+    byProvider: [{
+      prov: 'anthropic', tokens: 16300, calls: 8,
+      tokenLimit: 0, callLimit: 0, resetDay: 1, over: false,
+      tokIn: 12000, tokOut: 4300, totIn: 12000, totOut: 4300, totCalls: 8,
+      // estCents is server-computed from tok(In|Out) x rate(In|Out): 12000/1e6*300 +
+      // 4300/1e6*1500 = 10 cents, kept consistent with the All-time tile's own estimate.
+      rateIn: 300, rateOut: 1500, rateCall: 0, centsLimit: 0, estCents: 10, tags: [],
+    }],
   },
   budget: { dailyUsd: 5, spentUsd: 1.24, cap: 'auto', effective: 5 },
   // Session rows as applyOrch renders them.
@@ -111,10 +135,33 @@ export const THEMES = {
   themes: [{ id: 'nimbus', name: 'Nimbus' }, { id: 'dusk', name: 'Dusk' }],
 };
 
-export const MEM_STATS = { blobs: 12, vectors: 340, episodic: 88, scratchpadBytes: 2048 };
-export const MEM_SCRATCHPAD = { text: 'remember: ring shows amber only for money/attention' };
-export const MEM_CONFIG = { longTerm: true, embedProvider: 'anthropic' };
-export const MEM_EMBEDCFG = { provider: 'anthropic', model: 'text-embed-3', present: true };
+// Memory-pane payloads mirror the device handlers in web_memory.cpp. Prior fixtures
+// used invented field names (blobs/episodic/scratchpadBytes, text, embedProvider), none
+// of which the pane reads - so the badge printed "undefined scratch (cap 0)", a false
+// "No SD card" banner showed over a present card, the recall-tuning inputs stayed blank,
+// and the scratchpad read "(empty)". These match the real /api/mem/* contracts.
+// GET /api/mem/stats (handleStats): counts + storage tier + embed object.
+export const MEM_STATS = {
+  vectors: 340, scratchItems: 1, episodicMsgs: 88, epiTruncated: false, epiFloor: '',
+  embedAvailable: true, embedLocked: false,
+  sdPresent: true, flashFull: false, maxVectors: 5000, store: 'SD /mem',
+  embed: { provider: 'openai', model: 'text-embedding-3-small', dims: 1536 },
+};
+// GET /api/mem/scratchpad (handleScratchGet): active task + short/mid/long item lists.
+export const MEM_SCRATCHPAD = {
+  active: 'Draft the weekly status note',
+  short: ['ring shows amber only for money/attention'], mid: [], long: [],
+};
+// GET /api/mem/config (handleConfigGet): recall-tuning knobs.
+export const MEM_CONFIG = {
+  retrieval_count: 8, relevance_threshold: 0.35, decay_factor: 0.98,
+  max_context_bytes: 4096, max_vectors: 5000,
+  recency_half_life_hours: 168, mmr_lambda: 0.5,
+};
+// GET /api/mem/embedcfg (handleEmbedCfgGet): embed provider must be openai|mistral.
+export const MEM_EMBEDCFG = {
+  provider: 'openai', model: 'text-embedding-3-small', dims: 1536, locked: false, vectors: 340,
+};
 
 export const FILES_LIST = {
   present: true, count: 2, bytes: 221640, freeBytes: 29478158336,
@@ -140,10 +187,31 @@ export const CONNECTORS = {
   ],
 };
 export const TOOLS = { tools: [{ id: 'web', name: 'Web fetch', enabled: true }], sandbox: { enabled: false } };
-export const SKILLS = { skills: [{ id: 'summarize', name: 'Summarize', enabled: true }] };
+// GET /api/skills/list (web_skills.cpp): {sd, skills:[{id,title,version?,source,origin,pending?}]}.
+// A prior fixture used {name,enabled}, neither of which the pane reads, and omitted `sd`,
+// so the pane always claimed "No SD card - built-in skills only" and dropped the title.
+export const SKILLS = {
+  sd: true,
+  skills: [{ id: 'summarize', title: 'Summarize', source: 'builtin', origin: 'builtin' }],
+};
 export const LOOPS = { loops: [] };
 export const FETCHQ = { queue: [], downloads: [] };
-export const USAGE_HISTORY = { buckets: [{ t: '2026-08-20', usd: 0.8 }, { t: '2026-08-21', usd: 1.1 }] };
+// Daily usage buckets for the Usage spend chart. The device serves
+// {today:<dayKey>,days:[{d,prov,in,out,calls}]} (store.cpp usageHistoryJsonPs), where
+// a dayKey is whole days since the Unix epoch. A prior fixture served {buckets:[{t,usd}]},
+// a shape the chart does not read, so it always fell back to "clock not set yet" and no
+// chart ever rendered in the audit. Match the device contract.
+const _dayKey = Math.floor(Date.now() / 86400000);
+export const USAGE_HISTORY = {
+  today: _dayKey,
+  days: [
+    { d: _dayKey - 3, prov: 'anthropic', in: 2600, out: 800, calls: 2 },
+    { d: _dayKey - 2, prov: 'anthropic', in: 3200, out: 900, calls: 2 },
+    { d: _dayKey - 1, prov: 'anthropic', in: 5100, out: 1600, calls: 3 },
+    { d: _dayKey - 1, prov: 'cumulo', in: 2000, out: 700, calls: 2 },
+    { d: _dayKey, prov: 'anthropic', in: 1100, out: 1000, calls: 1 },
+  ],
+};
 export const TELEGRAM = { enabled: false, allowlist: [], pending: [], public: false };
 export const TENANT = { name: 'default', tenants: ['default'] };
 export const TRACE = { turns: [] };
