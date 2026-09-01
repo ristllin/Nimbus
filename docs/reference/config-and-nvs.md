@@ -143,7 +143,7 @@ roll back if it fails. See [OTA updates](../ota.md).
 | `sttProv` | string | `"mistral"` (Voxtral) | STT provider (`mistral\|openai`). **Freely changeable.** | Yes |
 | `ttsProv` | string | `"mistral"` | TTS provider (`mistral\|openai`). **Freely changeable.** | Yes |
 | `ttsVoice` | string | `""` | TTS voice id/slug; `""` = provider default | Yes |
-| `tftFlip` | bool | `false` | Display flip: rotate the color panel 180 degrees (touch panel only). Applies live; touch mapping follows. | Yes |
+| `tftFlip` | bool | `false` | Display flip: rotate the color panel 180 degrees for an upside-down mount (touch panel only). Applies live; touch mapping follows. The stored value is a delta from the board's correct orientation, which the firmware sets per board, so a fresh unit is upright out of the box on every board (the all-in-one panel is mounted 180 from the hand-built board). | Yes |
 | `ttsEnabled` | bool | `false` | Spoken-reply enable | Yes |
 | `theme` | string | `"teal"` | LED color theme slug | Yes |
 | `ledBright` | int | `128` | LED brightness (`ledBright` NVS key) | Yes |
@@ -158,7 +158,7 @@ roll back if it fails. See [OTA updates](../ota.md).
 | `orchPromptV2` | bool | `false` | Use the simplified v2 system prompt (A/B flag). | Yes |
 | `fetchPol` | int | `1` (ask) | Download trust for `files.fetch`: `0` off / `1` ask per link / `2` scan then keep / `3` full trust (Assistant > Safety > Downloads). | Yes |
 | `onbrded` | bool | `false` | First-run onboarding completed. Plain NVS bool (survives a reboot with no SD), not the profile override blob. | Yes |
-| `scrModel` | string | `"eink"` (legacy) | Display type (`eink\|tft`), boot-applied. Exempt from Revert to Defaults (hardware identity). `"tft"` is the only supported value; `"eink"` is a frozen legacy value that boots an unsupported-display notice, so setup writes `tft`. On all-in-one boards it is **fixed to `tft`** and the selector is locked - see the note below. | Yes |
+| `scrModel` | string | `"tft"` | Display type (`eink\|tft`), boot-applied. Exempt from Revert to Defaults (hardware identity). `"tft"` is the only supported value and the default: a fresh or NVS-erased device comes up on the color panel silently. Only an **explicit** stored `"eink"` (a real e-ink migration) boots the unsupported-display notice - an absent key never does. On all-in-one boards it is **fixed to `tft`** and the selector is locked - see the note below. | Yes |
 | `devTz` | string | `""` (= UTC) | POSIX timezone for daily/weekly routines + the device clock display (Settings → Mode & identity). Applies immediately; wall-clock routines rebase budget-neutrally. | Yes |
 | `dreamScrHash` | string | `""` | fnv64-hex of the scratchpad after the last dream - the quiet-night skip baseline. Device-managed. | Yes |
 | `tchCal` | string | `""` | Touch-panel calibration (XPT2046); `""` = the board-model default (also the fresh-boot state, which arms the one-time first-run calibration on a resistive panel). Set by the first-run step, Settings > Display > Calibrate touch, or the web/console field; clearing it restores the board-model default. | Yes |

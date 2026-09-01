@@ -13,6 +13,8 @@
 #include "nimbus/tft_render/fb565.h"    // Fb565, TapRegion
 #include "nimbus/tft_render/screens.h"  // renderScreen - the real screen selection
 #include "nimbus/touch_cal.h"
+#include "nimbus/display/board_flip.h"    // per-board display-flip base (CUM-189)
+#include "nimbus/display/screen_model.h"  // absent-vs-explicit scrModel notice (CUM-189)
 #include "nimbus/wifi/copy.h"           // setupCtaTitle/Hint - the CTA copy contract
 #include "solide/boards/board_freenove_s3.h"
 #include "solide/boards/board_solide_s3.h"
@@ -459,6 +461,76 @@ static void test_gate_opens_when_calibration_completes() {
   TEST_ASSERT_EQUAL(int(TouchRoute::Navigate), int(routeTouch(TouchKind::Resistive, true)));
 }
 
+// ---- 6. Display orientation: the per-board flip base (CUM-189) ----------------
+//
+// The colour panel driver is board-agnostic (setFlip(false) = its default landscape;
+// the mount "cannot be detected in software"), so which end is up is the firmware's
+// to supply per board. A fresh Freenove rendered 180 UPSIDE-DOWN while a fresh Solide
+// was upright, both at the same stored tftFlip=0. This pins the per-board BASE and its
+// composition with the owner's tftFlip, the CLASS the bench evidence is one instance
+// of - so a new board that ships without a measured base (or a base that drifts back
+// to "both false") FAILS here, not on glass.
+
+static void test_per_board_flip_base_is_explicit_and_correct() {
+  using nimbus::display::baseFlipForBoard;
+  // The Solide's landscape mount is upright at the driver default; the Freenove panel
+  // is mounted 180 from it, so it needs the base flip to come up right-side-up.
+  TEST_ASSERT_FALSE(baseFlipForBoard("solide_s3"));
+  TEST_ASSERT_TRUE(baseFlipForBoard("freenove_s3"));
+  // Unknown / missing slug -> the driver's default landscape (a new board opts in by
+  // adding a measured row; it never silently inherits the wrong end-up).
+  TEST_ASSERT_FALSE(baseFlipForBoard("some_future_board"));
+  TEST_ASSERT_FALSE(baseFlipForBoard(nullptr));
+  // Fixed at compile time too, so a build for either board bakes in the right base.
+  static_assert(!nimbus::display::baseFlipForBoard("solide_s3"), "Solide base upright");
+  static_assert(nimbus::display::baseFlipForBoard("freenove_s3"), "Freenove base flipped");
+
+  // Both shipped boards MUST carry an explicit row (the class guard: a table that
+  // quietly dropped a board would leave it on the unknown default and could reintroduce
+  // the upside-down boot).
+  bool haveSolide = false, haveFreenove = false;
+  for (const auto& e : nimbus::display::kBoardFlipBases) {
+    if (nimbus::display::flipSlugEq(e.boardSlug, "solide_s3")) haveSolide = true;
+    if (nimbus::display::flipSlugEq(e.boardSlug, "freenove_s3")) haveFreenove = true;
+  }
+  TEST_ASSERT_TRUE_MESSAGE(haveSolide, "solide_s3 must have an explicit flip-base row");
+  TEST_ASSERT_TRUE_MESSAGE(haveFreenove, "freenove_s3 must have an explicit flip-base row");
+}
+
+// The owner's tftFlip is a "flip 180 for an upside-down mount" DELTA composed on top
+// of the base: effective = base XOR tftFlip. So a fresh unit (tftFlip=0) is upright on
+// BOTH boards, and toggling the delta turns each 180 from its own correct orientation.
+static void test_effective_flip_composes_base_with_owner_delta() {
+  using nimbus::display::effectiveFlipForBoard;
+  // Fresh (delta 0): upright per board - Solide at the driver default, Freenove flipped.
+  TEST_ASSERT_FALSE(effectiveFlipForBoard("solide_s3", false));
+  TEST_ASSERT_TRUE(effectiveFlipForBoard("freenove_s3", false));
+  // Owner flips the mount (delta 1): 180 from each board's correct orientation.
+  TEST_ASSERT_TRUE(effectiveFlipForBoard("solide_s3", true));
+  TEST_ASSERT_FALSE(effectiveFlipForBoard("freenove_s3", true));
+}
+
+// ---- 7. scrModel resolution: absent is silent, explicit legacy migrates (CUM-189) --
+//
+// A fresh / NVS-erased board set no scrModel, so it must come up on the colour panel
+// with NO "unsupported display setting" page - the exact out-of-box state that shipped
+// the spurious e-ink notice. The honest migration notice is for an EXPLICIT stored
+// legacy value only (a real e-ink unit moving to the colour panel). This pins the
+// absent-vs-explicit distinction the plain screenModel() getter cannot make.
+static void test_scrmodel_notice_only_for_explicit_legacy_value() {
+  using nimbus::display::showsUnsupportedNotice;
+  TEST_ASSERT_FALSE(showsUnsupportedNotice(""));       // absent/erased -> silent colour panel
+  TEST_ASSERT_FALSE(showsUnsupportedNotice(nullptr));  // absent (null read) -> silent
+  TEST_ASSERT_FALSE(showsUnsupportedNotice("tft"));    // the supported value -> silent
+  TEST_ASSERT_TRUE(showsUnsupportedNotice("eink"));    // explicit legacy -> honest notice
+  // Any other explicit non-"tft" value is likewise unsupported (a corrupt/unknown
+  // stored string is a real misconfiguration, not a fresh device).
+  TEST_ASSERT_TRUE(showsUnsupportedNotice("epaper"));
+  // Fixed at compile time as well.
+  static_assert(!nimbus::display::showsUnsupportedNotice(""), "absent is silent");
+  static_assert(nimbus::display::showsUnsupportedNotice("eink"), "explicit eink migrates");
+}
+
 int main() {
   UNITY_BEGIN();
   // 1. touch defaults - the class over all board models x TouchKind
@@ -480,5 +552,9 @@ int main() {
   // 7. first-run calibration gate: uncalibrated resistive touch cannot navigate
   RUN_TEST(test_fresh_gate_blocks_navigation_per_kind);
   RUN_TEST(test_gate_opens_when_calibration_completes);
+
+  RUN_TEST(test_per_board_flip_base_is_explicit_and_correct);
+  RUN_TEST(test_effective_flip_composes_base_with_owner_delta);
+  RUN_TEST(test_scrmodel_notice_only_for_explicit_legacy_value);
   return UNITY_END();
 }

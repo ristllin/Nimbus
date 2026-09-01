@@ -48,6 +48,7 @@
 #include "nimbus/power/bright_cap.h"          // resilience: simulated mic/speaker faults
 #include "nimbus/power/power_monitor.h"       // battery chemistry + custom curve parse (config)
 #include "nimbus_board_power.h"               // explicit per-board battMon default (CUM-202)
+#include "nimbus_board_flip.h"                // explicit per-board display-flip base (CUM-189)
 #include "nimbus/orch/danger_zone.h"          // CUM-15 confirm phrases (one source of truth)
 #include "nimbus/orch/provider_slots.h"       // CUM-213: canonical provider registry (one source)
 #include "nimbus/orch/caps.h"                  // kMemDirectiveMax - owner-directive byte cap
@@ -1751,7 +1752,7 @@ void beginWeb(const WebConfig& wc) {
       const bool on = r->getParam("scrFlip", true)->value().toInt() != 0;
       agent::store::setTftFlip(on);
       if (agent::store::screenModel() == "tft") {
-        solide::display_tft::setFlip(on);
+        solide::display_tft::setFlip(nimbus::effectiveTftFlip(on));
         hw::tft::forceRepaint();
       }
       touched = true;

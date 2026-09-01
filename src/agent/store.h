@@ -240,6 +240,9 @@ String theme();          // LED colour theme slug (default "teal")
 // identity - selects the display AND input driver at boot, so a change needs a
 // restart. Exempt from "Revert to Defaults" (not a Config override).
 String screenModel();
+// RAW stored scrModel ("" when the key is absent) - the boot seam tells a fresh
+// device from an explicit legacy value with it (nimbus::display::showsUnsupportedNotice).
+String screenModelStored();
 // Touch calibration blob ("" = the driver's defaults); see nimbus/touch_cal.h.
 String touchCal();
 void   setTouchCal(const String& v);

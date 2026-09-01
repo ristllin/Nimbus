@@ -491,12 +491,19 @@ String sttProvider() { return solide::memory::getString(AKEY_STT_PROVIDER, STT_D
 String ttsProvider() { return solide::memory::getString(AKEY_TTS_PROVIDER, TTS_DEFAULT_PROVIDER); }
 String ttsVoice()    { return solide::memory::getString(AKEY_TTS_VOICE, ""); }
 String theme()       { return solide::memory::getString(AKEY_THEME, "teal"); }
-// Default "eink": a fresh or NVS-erased device must come up on the shipped,
-// proven panel, never on a driver its hardware may not have.
+// Default "tft": the colour panel is the only supported display (e-ink removed in
+// v4.4), so a fresh or NVS-erased device comes up on it with no misconfiguration
+// notice. Only an EXPLICIT stored non-"tft" value (a real e-ink migration) reads
+// back as such - see nimbus::display::showsUnsupportedNotice, which the boot seam
+// uses on the RAW value to tell an absent key from an explicit "eink" (CUM-189).
 String screenModel() {
-  const String v = solide::memory::getString(AKEY_SCREEN_MODEL, "eink");
+  const String v = solide::memory::getString(AKEY_SCREEN_MODEL, "tft");
   return v == "tft" ? v : String("eink");
 }
+// The RAW stored value ("" when the key is absent). Lets the boot seam distinguish
+// a fresh/erased device (silent colour panel) from an explicit legacy value (the
+// honest migration notice); screenModel() above collapses that distinction away.
+String screenModelStored() { return solide::memory::getString(AKEY_SCREEN_MODEL, ""); }
 bool   screenIsTft() { return screenModel() == "tft"; }
 // The display/input drivers bind ONCE at boot, so the stored screenModel can
 // diverge from what is actually driving the panel after the wizard changes it
