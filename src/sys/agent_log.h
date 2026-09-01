@@ -6,15 +6,18 @@
 #include <string>
 #include <vector>
 
-#include "nimbus/logring.h"   // core::LogRing::redact (portable, host-tested)
+#include "nimbus/logring.h"     // core::LogRing::redact (portable, host-tested)
+#include "nimbus/log_sinks.h"   // core::emitRedacted (portable, host-tested two-sink seam)
 
 // agent_log - the device-side logging seam for the Orchestrator subsystem.
 //
 // Agent code logs through alog()/alogf() here. Both the ring-visible surface
 // (GET /api/log, an auth-gated HTTP endpoint) and Serial are fed from the ONE
-// choke point logring::put(), which redacts every line through
-// core::LogRing::redact before it is stored. Provider error bodies echoed into a
-// log line can carry the device's own keys or an Authorization header, so:
+// choke point core::emitRedacted(), which redacts every line ONCE through
+// core::LogRing::redact and hands that same masked line to both sinks - so serial
+// can never print a value the ring redacted away (the F4 serial-bypass, CUM-281).
+// Provider error bodies echoed into a log line can carry the device's own keys or
+// an Authorization header, so:
 //   - Layer 1 (reliable): the provider keys + Telegram bot token are registered
 //     as exact secrets at boot via logring::addSecret() (see main.cpp), so a
 //     known key is masked wherever it appears.
@@ -45,11 +48,11 @@ inline std::vector<std::string> g_secrets;
 inline void addSecret(const char* s) { if (s && s[0]) g_secrets.emplace_back(s); }
 inline void clearSecrets() { g_secrets.clear(); }
 
-inline void put(const char* s) {
-  // Redact BEFORE the spinlock: redact() allocates, and no heap may run under
-  // the critical section. This is the choke point for the ring-visible /api/log
-  // surface, so a provider error body echoing a key never reaches the ring raw.
-  std::string red = core::LogRing::redact(s ? s : "", g_secrets);
+// Append an ALREADY-redacted line to the ring. Only byte copies run here, so this is safe
+// inside the no-heap portMUX critical section (core::emitRedacted does the allocating
+// redaction before calling this). The ring-visible /api/log surface therefore never holds
+// a raw provider key or echoed Bearer value.
+inline void store(const std::string& red) {
   const char* r = red.c_str();
   portENTER_CRITICAL(&g_mux);
   for (; *r; ++r) { g_buf[g_total % kCap] = *r; ++g_total; }
@@ -60,7 +63,7 @@ inline void put(const char* s) {
 
 // Snapshot the ring (oldest->newest) into a String. Copies under the lock into a
 // static buffer, then builds the String outside the critical section (no heap under
-// the spinlock). Lines were already redacted at the source (logring::put), so the
+// the spinlock). Lines were already redacted at the source (core::emitRedacted), so the
 // ring never holds a registered key or an echoed Bearer/api_key value; /api/log is
 // additionally token-gated.
 inline String agentLogTail() {
@@ -82,10 +85,18 @@ inline String agentLogTail() {
   return out;
 }
 
-inline void alog(const char* msg) {
+// Both sinks are fed by core::emitRedacted, which redacts ONCE and hands the same masked
+// line to the Serial writer and the ring. Serial therefore prints the redacted line, never
+// the raw msg - printing `msg` would leak a sign-in/pairing code or an echoed key over USB
+// serial while the ring stayed clean (the F4 serial-bypass, CUM-281).
+inline void logSerial(const std::string& red) {
   Serial.print("[agent] ");
-  Serial.println(msg);
-  logring::put(msg);
+  Serial.println(red.c_str());
+}
+
+inline void alog(const char* msg) {
+  core::emitRedacted(msg, logring::g_secrets, logSerial,
+                     [](const std::string& red) { logring::store(red); });
 }
 
 inline void alogf(const char* fmt, ...) {
@@ -94,9 +105,8 @@ inline void alogf(const char* fmt, ...) {
   va_start(ap, fmt);
   vsnprintf(buf, sizeof(buf), fmt, ap);
   va_end(ap);
-  Serial.print("[agent] ");
-  Serial.println(buf);
-  logring::put(buf);
+  core::emitRedacted(buf, logring::g_secrets, logSerial,
+                     [](const std::string& red) { logring::store(red); });
 }
 
 }  // namespace agent

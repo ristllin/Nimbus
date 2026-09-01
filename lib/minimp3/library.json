@@ -5,5 +5,15 @@
   "license": "CC0-1.0",
   "keywords": ["mp3", "decoder", "audio"],
   "frameworks": "*",
-  "platforms": "*"
+  "platforms": "*",
+  "upstream": {
+    "repository": "https://github.com/lieff/minimp3",
+    "commit": "ea99364f61c14656440e8d77e9c233ccf3124633",
+    "vendoredFrom": "upstream master @ 2022-06-25; the base minimp3.h matched upstream blob 9fbd4d2cc50c06cc3e63dcafdd506dc6512b2103 byte-for-byte at vendor time",
+    "localPatches": "CUM-222: added mp3dec_scratch_size() and mp3dec_decode_frame_ex() so the ~15 KB decode scratch can be caller-provided (PSRAM) instead of on the calling task's stack. mp3dec_decode_frame() is preserved byte-identical, so any other caller is unchanged.",
+    "sha256": {
+      "minimp3.h": "d8938a9524d178bf660de5ca94fa661ebee6729ad0867696d3edbc1bfa49831d",
+      "minimp3_impl.cpp": "5699c35654d7a68f0b7a4aa6700d49214c2559ecdd9d254b3478553c7f1c9921"
+    }
+  }
 }
