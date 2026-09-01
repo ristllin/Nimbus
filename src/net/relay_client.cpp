@@ -665,7 +665,10 @@ bool runPairing() {
   setState(State::Pairing);
   setPairing(code.c_str(), claimUrl.c_str());
   setErr("");
-  agent::alog((String("relay: pairing code ") + code).c_str());
+  // Do not log the code value: it is a claim credential (whoever has it can claim the
+  // device). It reaches the owner through setPairing() (the screen / Sign-in QR), not the
+  // diagnostic log, which is served over /api/log and echoed to USB serial (CUM-281).
+  agent::alog("relay: pairing code issued (shown on device)");
 
   // Poll for the claim.
   uint32_t deadline = millis() + (uint32_t)expiresSec * 1000;

@@ -3650,7 +3650,7 @@ function embWarn(){const w=$('embwarn'),d=_embState; if(!w||!d)return;
 function renderMemList(d){
   const host=$('memlist'); host.innerHTML='';
   const es=d.entries||[];
-  if(!es.length){host.innerHTML='<p class=hint>'+(d.error?('Error: '+d.error):'No memories yet')+'</p>';return;}
+  if(!es.length){host.innerHTML='<p class=hint>'+(d.error?('Error: '+_wesc(d.error)):'No memories yet')+'</p>';return;}
   es.forEach(e=>{
     const row=document.createElement('div'); row.className='row'; row.style.alignItems='flex-start';
     const t=document.createElement('div'); t.style.flex='1';

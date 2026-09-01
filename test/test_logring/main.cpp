@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "nimbus/logring.h"
+#include "nimbus/log_sinks.h"
 
 using core::LogRing;
 
@@ -74,6 +75,44 @@ static void test_ring_push_redacts_and_bounds() {
   for (const auto& l : lines) TEST_ASSERT_EQUAL_INT(std::string::npos, (int)l.find("leakme12345"));
 }
 
+// CUM-281 (F4): the agent-log seam (src/sys/agent_log.h) used to print the RAW message to
+// USB serial while only the ring got redact() - a sign-in/pairing code or echoed key went
+// out cleartext over serial. alog()/alogf() now feed BOTH their serial writer and their ring
+// writer through core::emitRedacted, the portable two-sink seam under test here. This exercises
+// the SAME function the device uses: emitRedacted must hand every sink the one redacted line,
+// so whatever the serial sink receives is the masked line, never the raw message. A regression
+// that fed serial the raw msg would have to stop calling emitRedacted (a visible rewrite) - it
+// cannot slip an un-redacted string past this seam.
+static void test_emit_feeds_both_sinks_one_redaction() {
+  const std::string key = "sk-livedeadbeefcafe01";
+  std::vector<std::string> secrets = {key};
+  std::string serialGot, ringGot;
+  core::emitRedacted("provider 401: Authorization: Bearer sk-livedeadbeefcafe01 rejected",
+                     secrets,
+                     [&](const std::string& r) { serialGot = r; },   // stands in for Serial
+                     [&](const std::string& r) { ringGot = r; });    // stands in for the ring
+  // Both sinks received the identical redacted line...
+  TEST_ASSERT_EQUAL_STRING(ringGot.c_str(), serialGot.c_str());
+  // ...and the line the serial sink got carries no secret (the F4 leak would leave it here).
+  TEST_ASSERT_EQUAL_INT(std::string::npos, (int)serialGot.find(key.c_str()));
+  TEST_ASSERT_TRUE(serialGot.find("***") != std::string::npos);
+}
+
+// CUM-281 (F4), cold-start dimension: a secret NOT registered via addSecret (e.g. a key set
+// after boot, or an Authorization header echoed from a provider error) must still be masked on
+// the serial sink by the Layer-2 heuristic. Empty secrets on purpose - this is the state the
+// old code leaked from. The serial writer never sees the raw token.
+static void test_emit_serial_masks_unregistered_secret() {
+  std::vector<std::string> none;
+  std::string serialGot;
+  core::emitRedacted("vision: HTTP 403: Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.body.sig",
+                     none,
+                     [&](const std::string& r) { serialGot = r; },
+                     [](const std::string&) {});
+  TEST_ASSERT_EQUAL_INT(std::string::npos, (int)serialGot.find("eyJhbGciOiJIUzI1NiJ9.body.sig"));
+  TEST_ASSERT_TRUE(serialGot.find("Bearer ***") != std::string::npos);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_registered_secret_masked);
@@ -82,5 +121,7 @@ int main(int, char**) {
   RUN_TEST(test_key_value_backstop);
   RUN_TEST(test_url_creds_backstop);
   RUN_TEST(test_ring_push_redacts_and_bounds);
+  RUN_TEST(test_emit_feeds_both_sinks_one_redaction);
+  RUN_TEST(test_emit_serial_masks_unregistered_secret);
   return UNITY_END();
 }
