@@ -615,6 +615,7 @@ nimbus::orch::HeadStepFn antLoopStep(const ProviderDeps& pd,
     filter["usage"]["output_tokens"] = true;
     filter["usage"]["cache_read_input_tokens"]     = true;   // prompt-cache hits
     filter["usage"]["cache_creation_input_tokens"] = true;   // prompt-cache writes
+    filter["model"] = true;   // served model echo -> fallback disclosure (CUM-236)
 
     JsonDocument resp = makeDoc(pd);
     int code = antRequest(pd, "POST", "/v1/messages", serializeBody(req), resp, filter,
@@ -628,6 +629,7 @@ nimbus::orch::HeadStepFn antLoopStep(const ProviderDeps& pd,
       return out;
     }
     if (usage) *usage += orch::tokenUsageFromJson(resp["usage"].as<ArduinoJson::JsonObjectConst>());
+    orch::captureServedModel(usage, resp.as<ArduinoJson::JsonVariantConst>());
 
     JsonArrayConst content = resp["content"].as<JsonArrayConst>();
     if (content.isNull() || content.size() == 0) {
@@ -809,6 +811,7 @@ bool orchTurnAnthropic(const ProviderDeps& pd, std::string& convId,
   filter["usage"]["output_tokens"] = true;
   filter["usage"]["cache_read_input_tokens"]     = true;   // prompt-cache hits
   filter["usage"]["cache_creation_input_tokens"] = true;   // prompt-cache writes
+  filter["model"] = true;   // served model echo -> fallback disclosure (CUM-236)
 
   JsonDocument doc = makeDoc(pd);   // response doc -> PSRAM (retained turn content)
   int code = antRequest(pd, "POST", "/v1/messages", std::move(body), doc, filter);
@@ -821,6 +824,7 @@ bool orchTurnAnthropic(const ProviderDeps& pd, std::string& convId,
     return false;
   }
   if (usage) *usage += nimbus::orch::tokenUsageFromJson(doc["usage"].as<ArduinoJson::JsonObjectConst>());
+  nimbus::orch::captureServedModel(usage, doc.as<ArduinoJson::JsonVariantConst>());
 
   for (JsonObjectConst c : doc["content"].as<JsonArrayConst>()) {
     if (strcmp(c["type"] | "", "tool_use") != 0) continue;

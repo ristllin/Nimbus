@@ -1,6 +1,10 @@
 #pragma once
+#include <fcntl.h>
+#include <unistd.h>
+
 #include <chrono>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -96,6 +100,7 @@ class NimbusdRig {
     installLog(opt_.verboseHttp);
     fsutil::mkdirs(memDir());
     buildMemory();
+    loadSecrets();   // in-app provider keys persisted from a prior session (CUM-279)
     buildEngine();
   }
 
@@ -108,6 +113,9 @@ class NimbusdRig {
   std::string memConfigPath() const { return memDir() + "/memconfig.txt"; }
   std::string episodicDir() const { return memDir() + "/episodic"; }
   std::string filesDir() const { return memDir() + "/files"; }
+  // In-app provider keys (CUM-279): durable, owner-only. The instance disk plays the
+  // device's NVS role, so a key set in the UI survives a process/pod restart.
+  std::string secretsPath() const { return memDir() + "/secrets.env"; }
 
   // Persist every whole-file store with the atomic tmp->rename writer. The
   // episodic append-log is already durable per-message; this flushes the RAM
@@ -215,6 +223,46 @@ class NimbusdRig {
     return false;
   }
 
+  // ---- in-app provider keys (CUM-279, device parity) ------------------------
+  // Canonical env name for a provider slug - delegates to the single source in
+  // Config (daemon_config.h). Empty for an unknown slug (the caller rejects it).
+  static std::string keyEnvFor(const std::string& host) {
+    return Config::providerEnvName(host);
+  }
+  // Map a web /api/orch key FIELD (the daemon emits `<slug>Key`) back to its slug: a
+  // plain suffix strip, valid iff the slug is one keyEnvFor knows - so a new provider
+  // added to the single env map works here with no edit.
+  static std::string hostForKeyField(const std::string& field) {
+    const size_t n = field.size();
+    if (n <= 3 || field.compare(n - 3, 3, "Key") != 0) return std::string();
+    const std::string slug = field.substr(0, n - 3);
+    return keyEnvFor(slug).empty() ? std::string() : slug;
+  }
+
+  // Set (or clear, when `key` is empty) a provider key from the running UI and make
+  // it take effect. Device parity (owner ruling, CUM-279): the key you set in the UI
+  // is the one the instance uses. Persisted to a durable, owner-only secrets file
+  // (survives a pod restart) and applied WITHOUT a restart by rebuilding the engine
+  // in place - a head for a newly keyed provider is registered at build time, so a
+  // rebuild is how it takes effect. MUST run on the engine thread (serialized, never
+  // mid-turn - the web layer dispatches it there and refuses mid-turn with a 503).
+  bool applyProviderKey(const std::string& host, const std::string& key) {
+    const std::string env = keyEnvFor(host);
+    if (env.empty()) return false;
+    cfg_.setOverride(env, key);   // authoritative; an empty key erases the override
+    saveSecrets();
+    buildEngine();                // re-register heads for the new key set
+    ++keyGen_;
+    return true;
+  }
+  // Monotonic key-change counter, surfaced as the providers' verify timestamp so the
+  // web save-flow's poll observes the change (a hosted instance has no cheap verify).
+  uint32_t keyGen() const { return keyGen_; }
+
+  // Served-by of the most recent turn (CUM-236), for the web chat's honest footer.
+  bool lastFallback() const { return lastFallback_; }
+  std::string lastServedBy() const { return lastServedBy_; }
+
   const Options& options() const { return opt_; }
 
   // The model a head requests: an operator override (opt.models[h]) else the
@@ -271,6 +319,40 @@ class NimbusdRig {
   static uint32_t nowHours() {
     return (uint32_t)std::chrono::duration_cast<std::chrono::hours>(
                std::chrono::system_clock::now().time_since_epoch()).count();
+  }
+
+  // ---- in-app provider keys: durable secrets (CUM-279) ----------------------
+  // Load previously-set in-app keys as config OVERRIDES (authoritative), so a key
+  // the owner set in the UI persists across restarts. Tolerant of an absent/torn
+  // file (KEY=VALUE lines, trailing CR/LF trimmed). Never logs a value.
+  void loadSecrets() {
+    std::string blob;
+    if (!fsutil::readFile(secretsPath(), blob)) return;
+    std::istringstream is(blob);
+    std::string line;
+    while (std::getline(is, line)) {
+      const size_t eq = line.find('=');
+      if (eq == std::string::npos) continue;
+      std::string k = line.substr(0, eq), v = line.substr(eq + 1);
+      while (!v.empty() && (v.back() == '\r' || v.back() == '\n')) v.pop_back();
+      if (!k.empty() && !v.empty()) cfg_.setOverride(k, v);
+    }
+  }
+  // Persist the current in-app overrides to the owner-only secrets file. Written
+  // 0600 from creation (never a world-readable window - the general atomic writer
+  // creates 0644 then chmods, which leaves a race and a 0644 file if the process
+  // dies between rename and chmod), then atomically renamed into place. Never logs a
+  // value.
+  void saveSecrets() {
+    std::string blob;
+    for (const auto& kv : cfg_.overrides()) blob += kv.first + "=" + kv.second + "\n";
+    const std::string tmp = secretsPath() + ".tmp";
+    const int fd = ::open(tmp.c_str(), O_CREAT | O_WRONLY | O_TRUNC, 0600);
+    if (fd < 0) return;
+    const ssize_t n = ::write(fd, blob.data(), blob.size());
+    ::close(fd);
+    if (n != (ssize_t)blob.size()) { ::unlink(tmp.c_str()); return; }
+    if (::rename(tmp.c_str(), secretsPath().c_str()) != 0) ::unlink(tmp.c_str());
   }
 
   // ---- memory + tools -------------------------------------------------------
@@ -531,7 +613,13 @@ class NimbusdRig {
     d.hooks.onToolResult = [this](const orch::HeadToolResult& r) {
       cur_.toolResults.push_back(trunc(r.output, 300));
     };
-    d.hooks.onTurnEnd = [this](const agent::TurnEndEv& ev) { lastHost_ = ev.host; };
+    d.hooks.onTurnEnd = [this](const agent::TurnEndEv& ev) {
+      lastHost_ = ev.host;
+      // Served-by disclosure (CUM-236): remember whether this turn was served by a
+      // fallback provider/model and how to say it, so the web chat can surface it.
+      lastFallback_ = ev.fallback;
+      lastServedBy_ = ev.host + (ev.servedModel.empty() ? std::string() : (" " + ev.servedModel));
+    };
 
     d.apply.deliver = d.deliver;
     d.apply.stageDevice = [](const orch::ValidatedAction&) {};  // hosted: no device actions
@@ -630,11 +718,13 @@ class NimbusdRig {
   std::unique_ptr<agent::JobEngine>  jobs_;
   std::unique_ptr<agent::TurnEngine> eng_;
 
-  std::string convId_, antEnv_, antAgents_, memory_, lastHost_;
+  std::string convId_, antEnv_, antAgents_, memory_, lastHost_, lastServedBy_;
+  bool lastFallback_ = false;   // CUM-236 served-by of the most recent turn
   std::function<void(const std::string&, const std::string&)> onDeliver_;
 
   TurnRecord cur_;
   std::vector<TurnRecord> turns_;
+  uint32_t keyGen_ = 0;   // bumps on each in-app key change (CUM-279 verify-ts seam)
 };
 
 }  // namespace nimbusd

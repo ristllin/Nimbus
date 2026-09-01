@@ -36,5 +36,18 @@ inline TokenUsage tokenUsageFromJson(ArduinoJson::JsonObjectConst usage) {
   return t;
 }
 
+// Capture the top-level served "model" a provider echoes in its response body into
+// a TokenUsage (CUM-236 served-by). Both OpenAI-compatible and Anthropic responses
+// carry a top-level "model" string, so one reader serves every adapter. No-op when
+// the field is absent or the target is null.
+inline void captureServedModel(TokenUsage* u, ArduinoJson::JsonVariantConst doc) {
+  if (!u) return;
+  auto m = doc["model"];
+  if (m.is<const char*>()) {
+    const char* s = m.as<const char*>();
+    if (s && *s) u->servedModel = s;
+  }
+}
+
 }  // namespace orch
 }  // namespace nimbus

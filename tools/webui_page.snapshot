@@ -1003,6 +1003,10 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 
 <script>
 const $=id=>document.getElementById(id);
+// Hosted (Virtual Nimbus) honest-UI flag (CUM-279): nimbusd's bootstrap sets
+// window.NIMBUS_HOSTED before this runs; hides device-only chrome that is faked or
+// dead on a hosted instance (no ring, screen, mic, AP, or ESP OTA).
+let HOSTED=false;try{HOSTED=(window.NIMBUS_HOSTED===true);}catch(e){}
 // --- Per-device auth (owner R2: identify ONCE per browser, then forever) ---
 // The token persists in localStorage (NOT per-tab sessionStorage - that was the
 // "QR is a dead end" bug: phones open QR links in an ephemeral webview, the token
@@ -1150,7 +1154,10 @@ if(!nimbusTok())document.addEventListener('DOMContentLoaded',showAuth);
 //   Device (display, sound, battery, network, updates, cloud, advanced, danger).
 const DEST={home:['dash'],chat:['chat'],memory:['mem'],assistant:['harness','usage','gov'],device:['set']};
 // Per-pane lazy loaders, run when a destination containing that pane opens.
+// Defensive (CUM-279): a loader that throws on one absent/hosted-only field must
+// never break navigation - the body is guarded so a bad pane still switches.
 function loadPane(p){
+ try{
   if(p==='dash'){   // Home: active sessions + health load immediately, not on the next poll
     if(typeof loadOrch==='function')loadOrch();
     if(typeof loadHealth==='function')loadHealth();
@@ -1164,20 +1171,39 @@ function loadPane(p){
   if(p==='usage'){if(typeof loadOrch==='function')loadOrch();if(typeof loadFetchQ==='function')loadFetchQ();if(typeof loadUsageHistory==='function')loadUsageHistory();}
   if(p==='chat'&&typeof loadChatHistory==='function')loadChatHistory();
   if(p==='set'){if(typeof loadThemes==='function')loadThemes();if(typeof loadConnect==='function')loadConnect();if(typeof loadWifi==='function')loadWifi();}
+ }catch(e){/* one pane's lazy load must never kill navigation */}
 }
 // Switch to a destination: show its pane group, hide the rest, mark the tab, run
-// the group's loaders. Exposed as goDest() so quick actions can navigate too.
+// the group's loaders. Guarded so a tab click always completes (never strands on
+// Home) even if a loader or a stray field would throw. Exposed for quick actions.
 function goDest(dest){
   const panes=DEST[dest]; if(!panes)return;
-  document.querySelectorAll('.pane').forEach(p=>p.style.display='none');
-  document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('on',t.dataset.p===dest));
-  panes.forEach(id=>{const el=$('pane-'+id); if(el)el.style.display='';loadPane(id);});
+  try{
+    document.querySelectorAll('.pane').forEach(p=>p.style.display='none');
+    document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('on',t.dataset.p===dest));
+    panes.forEach(id=>{const el=$('pane-'+id); if(el)el.style.display='';loadPane(id);});
+  }catch(e){/* navigation must never throw out of a tab click */}
   try{window.scrollTo(0,0);}catch(e){}
 }
 document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>goDest(b.dataset.p));
 // Quick actions (Home) and any in-page link that jumps to a destination.
 document.querySelectorAll('[data-go]').forEach(b=>b.onclick=()=>goDest(b.dataset.go));
 goDest('home');   // default destination
+// Honest hosted chrome (CUM-279): hide the ESP OTA "Software update" card (a VN
+// updates by image roll, not firmware OTA) and the Home action that jumps to it.
+function applyHostedChrome(){
+  if(!HOSTED)return;
+  try{
+    const f=$('fwsec');
+    if(f){f.style.display='none';
+      const n=document.createElement('p'); n.className='hint'; n.style.margin='10px 0';
+      n.textContent='Software updates are managed by the platform; this instance updates when its image is rolled.';
+      if(f.parentNode)f.parentNode.insertBefore(n,f);}
+    document.querySelectorAll('[data-go=device]').forEach(b=>{
+      if((b.textContent||'').indexOf('Check for updates')===0)b.style.display='none';});
+  }catch(e){}
+}
+applyHostedChrome();
 // "What next" card on Home, shown once right after onboarding finishes (CUM-66).
 (function(){try{if(localStorage.getItem('nimbusJustOnboarded')==='1'){
   localStorage.removeItem('nimbusJustOnboarded');
@@ -1463,10 +1489,18 @@ function _tile(k,v,cx,pct,col,mark){
 function renderDevTiles(d){
   const box=$('devtiles'); if(!box)return;
   const kb=x=>Math.round((x||0)/1024), mb=x=>((x||0)/1048576).toFixed(1);
-  const heapK=kb(d.heap), heapTotK=kb(d.heapTotal)||300;
-  const heapCol=heapK<26?'#c55':(heapK<34?'#e0b870':'#5c5');
-  let t=_tile('Free RAM',heapK+'<small>K</small>','of '+heapTotK+'K · floor 34K'+(d.heapMin!==undefined?' · low '+kb(d.heapMin)+'K':''),
-              heapK/heapTotK*100,heapCol,34/heapTotK*100);
+  let t;
+  if(HOSTED){
+    // Hosted (CUM-279): the real container free/cap heap in MB, no ESP 34K floor.
+    const mFree=mb(d.heap), mTot=d.heapTotal?mb(d.heapTotal):'64';
+    t=_tile('Memory',mFree+'<small>/'+mTot+' MB</small>','container',
+            d.heapTotal?d.heap/d.heapTotal*100:100,'#7fd1c8');
+  }else{
+    const heapK=kb(d.heap), heapTotK=kb(d.heapTotal)||300;
+    const heapCol=heapK<26?'#c55':(heapK<34?'#e0b870':'#5c5');
+    t=_tile('Free RAM',heapK+'<small>K</small>','of '+heapTotK+'K · floor 34K'+(d.heapMin!==undefined?' · low '+kb(d.heapMin)+'K':''),
+            heapK/heapTotK*100,heapCol,34/heapTotK*100);
+  }
   if(d.psramTotal)t+=_tile('PSRAM',mb(d.psramFree)+'<small>/'+mb(d.psramTotal)+' MB</small>','for large tasks',
               d.psramFree/d.psramTotal*100,'#7fd1c8');
   const bt=d.batt;
@@ -1771,12 +1805,16 @@ function applyState(d){
   // Free RAM, PSRAM, and battery each already have their own tile above; the info
   // line carries only what the tiles do not show (data store and network), so
   // nothing is repeated on the Home page (CUM-214).
+  // Network line (sta/ap/mDNS) is a device LAN concept; on a hosted instance it
+  // rendered "ap undefined - undefined" (CUM-279), so hide it there.
+  const netLine=HOSTED?'':(
+    (d.sta?('sta <b>'+d.staIp+'</b> ('+d.rssi+' dBm) &middot; '):'')+
+    'ap <b>'+d.apIp+'</b> &middot; <b>'+d.mdns+'</b>');
   $('info').innerHTML=
     'mode <b>'+(d.mode==1?'Orchestrator':'Notifier')+'</b> &middot; sessions <b>'+d.jobs+'</b><br>'+
     (d.storeTotal?('Data store ('+(d.storeLabel||'flash')+'): <b>'+sz(d.storeFree)+'</b> free of '+sz(d.storeTotal)+
       '<span class=hint> - memories and history'+(d.storeSD?'':' (insert an SD card for more space)')+'</span><br>'):'')+
-    (d.sta?('sta <b>'+d.staIp+'</b> ('+d.rssi+' dBm) &middot; '):'')+
-    'ap <b>'+d.apIp+'</b> &middot; <b>'+d.mdns+'</b>';
+    netLine;
   // profile radios; keep the Customize group heading naming the selected battery
   // mode (CUM-269) so "Customize battery mode: Balanced" is never ambiguous.
   var _profNm=['Dark','Balanced','Full'];
@@ -2468,9 +2506,11 @@ function provRow(name,p){
   k.placeholder=keyPlaceholder(name,p);
   row.appendChild(k);
   const vb=document.createElement('button'); vb.type='button'; vb.id='vfy_'+name;
-  const canV=!ORCH||ORCH.running;   // verify needs Orchestrator-mode heap (lexical ORCH - window.ORCH was always undefined)
+  // verify needs Orchestrator-mode heap; a hosted instance has no cheap verify path
+  // so it just saves (the key applies in-app immediately - CUM-279).
+  const canV=(!ORCH||ORCH.running)&&!HOSTED;
   vb.textContent=canV?(p.hasKey?'Verify':'Save & Verify'):'Save Key';
-  vb.title=canV?'check the key against the provider':'The key is saved now; to verify it, switch to Orchestrator mode';
+  vb.title=canV?'check the key against the provider':(HOSTED?'The key is saved and applied on this instance':'The key is saved now; to verify it, switch to Orchestrator mode');
   vb.onclick=()=>saveAndVerify(name);
   row.appendChild(vb);
   const cb=document.createElement('button'); cb.type='button'; cb.textContent='Clear';
@@ -2510,7 +2550,7 @@ function provSync(name,p){
   if(k&&document.activeElement!==k&&!k.value)
     k.placeholder=keyPlaceholder(name,p);
   const vb=$('vfy_'+name);
-  if(vb&&!vb.disabled){const canV=!ORCH||ORCH.running;
+  if(vb&&!vb.disabled){const canV=(!ORCH||ORCH.running)&&!HOSTED;
     vb.textContent=canV?(p.hasKey?'Verify':'Save & Verify'):'Save Key';}
   syncModelSel('orchM_'+name,p.orchModel,p.choices,p.verify===1);
   syncModelSel('subM_'+name,p.subModel,p.choices,p.verify===1);
@@ -3043,6 +3083,15 @@ function saveAndVerify(p){
     return;
   }
   if(inp&&inp.value) body[keyField(p)]=inp.value;
+  // Hosted (CUM-279): no cheap verify path, but the key applies in-app immediately
+  // (device parity, via the same /api/orch seam). Save and report; no dead spinner.
+  if(HOSTED){
+    const had=Object.keys(body).length;
+    (had?orchApply(body):Promise.resolve()).then(()=>{
+      setProvMsg(p,had?'Key saved and applied.':'Type a key, then save.');
+      if(inp)inp.value=''; loadOrch();});
+    return;
+  }
   // In Notifier mode the live TLS verify can't get enough free RAM, so just SAVE the
   // key (writing NVS works in any mode) and tell the user to verify from Orchestrator.
   // (Lexical ORCH, not window.ORCH - a top-level `let` never creates a window
@@ -3341,11 +3390,15 @@ const HFG ={ok:'#5c5',degraded:'#e0b870',absent:'#c55',unknown:'#8cf'};
 // nothing really changes") - and the 8 s poll wiped it again anyway.
 function healthSkeleton(box){
  if($('healthlist'))return;
- box.innerHTML='<h2>Health <span id=hphead class=hint style="font-weight:normal"></span></h2>'+
-  '<div id=healthlist></div>'+
+ // Audio/SD probe buttons are dead on a hosted instance (no mic, speaker, or SD),
+ // so omit them and their wiring; the honest "absent" rows still say why (CUM-279).
+ const probes=HOSTED?'':(
   '<div class=row style="margin-top:8px"><button id=hpMic type=button>Mic Test</button>'+
   '<button id=hpBeep type=button>Speaker Tone</button><button id=hpLb type=button>Loopback Test</button>'+
-  '<button id=hpSd type=button>Probe SD</button></div><p id=hpmsg class=hint></p>';
+  '<button id=hpSd type=button>Probe SD</button></div>');
+ box.innerHTML='<h2>Health <span id=hphead class=hint style="font-weight:normal"></span></h2>'+
+  '<div id=healthlist></div>'+probes+'<p id=hpmsg class=hint></p>';
+ if(HOSTED)return;   // no probe buttons to wire on a hosted instance
  const m=$('hpmsg'), P=(u,l)=>{m.textContent=l+' running…';
    fetch(u,{method:'POST'}).then(r=>r.json()).then(x=>{m.textContent=l+': '+JSON.stringify(x);loadHealth();}).catch(()=>m.textContent=l+' failed - try again');};
  $('hpMic').onclick=()=>P('/api/audio/mic','Mic test');
@@ -3363,12 +3416,18 @@ function loadHealth(){
     ' degraded &middot; '+(d.absent||0)+' absent';
   let h='';
   (d.components||[]).forEach(c=>{
+   // Provider degraded (no key) gets a resolve link to Models, not just a red badge
+   // (CUM-279 item 2). Wired after render; harmless on a device.
+   const fix=(c.label==='Provider'&&c.state==='degraded')
+     ?' <a href="#" data-fix=llm style="color:#7fd1c8;text-decoration:underline">Set up a provider &rsaquo;</a>':'';
    h+='<div class=row style="margin:4px 0"><span style="min-width:130px;color:'+(HFG[c.state]||'#ccc')+
       '">'+c.label+'</span><span class=badge style="background:'+(HCLR[c.state]||'#333')+';color:'+
       (HFG[c.state]||'#ccc')+'">'+c.state+'</span><span class=hint style="flex:1">'+
-      (c.detail||'').replace(/</g,'&lt;')+'</span></div>';
+      (c.detail||'').replace(/</g,'&lt;')+fix+'</span></div>';
   });
   $('healthlist').innerHTML=h;
+  $('healthlist').querySelectorAll('[data-fix]').forEach(a=>{a.onclick=e=>{
+    e.preventDefault();try{_goSub(a.dataset.fix);}catch(_){}};});
  }).catch(()=>{if(!$('healthlist'))box.innerHTML='<p class=hint>Health unavailable</p>';});
 }
 loadHealth();
@@ -3995,7 +4054,9 @@ function _tok(n){n=+n||0;return n>=1000?(n/1000).toFixed(1)+'k':String(n);}
 function _turnChip(bubble,row){
   let d={};try{d=JSON.parse(row.text)||{};}catch(e){return;}
   const bits=[];
-  if(d.host)bits.push(d.host+(d.model?' · '+d.model:''));
+  // Served-by disclosure (CUM-236): d.host/d.model are the failover-final head, so
+  // annotate them "served by ... (fallback)" when the turn substituted.
+  if(d.host)bits.push((d.fallback?'served by ':'')+d.host+(d.model?' · '+d.model:'')+(d.fallback?' (fallback)':''));
   if(d.tools)bits.push(d.tools+' tool call'+(d.tools>1?'s':''));
   if(d.in||d.out)bits.push(_tok(d.in)+' in / '+_tok(d.out)+' out');
   if(d.ok===false)bits.push('failed'+(d.err?': '+d.err:''));
@@ -4110,6 +4171,10 @@ function sendChatTurn(){
       let tries=0; const poll=()=>{tries++;
         fetch('/api/chat').then(r=>r.json()).then(d=>{
           if(d.reply){pend.textContent=d.reply;pend.style.opacity=1;_chatBusy=false;$('chatMsg').textContent='';
+            // Served-by disclosure (CUM-236): a fallback reply says so under the bubble.
+            if(d.fallback&&d.servedBy){const f=document.createElement('div');
+              f.style.cssText='font-size:9.5px;color:var(--ink3);margin-top:4px;opacity:.85';
+              f.textContent='served by '+d.servedBy+' (fallback)';pend.appendChild(f);}
             setTimeout(loadChatHistory,900);}   // re-sync from the canonical store
           // Keep polling while a turn is IN FLIGHT (d.pending). A turn that uses
           // tools can legitimately run for minutes, so a fixed 60 s cap dropped

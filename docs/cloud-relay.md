@@ -87,11 +87,16 @@ keeps):
 | Chat | Real | Real (the same engine) |
 | Memory (files, long-term memory, scratchpad) | Real | Real |
 | Assistant (providers, models, tools, usage) | Real | Real |
+| Provider keys | Set in the app, applied on the device | Set in the app, applied on the instance (the same page; no external step) |
+| Memory tile | Device free heap | The container's memory, in MB (not device SRAM) |
 | Ring, display, touch | Real hardware | Not present - shown honestly, no controls that do nothing |
 | Battery | Real reading | Always on external power (hosted) |
-| Sound (mic, speaker, tones) | Real hardware | Not present |
-| Wi-Fi and network | Real radio | Managed by the platform |
-| Software update | Device firmware update | The platform rolls the instance image; there is no device update to run |
+| Sound (mic, speaker, tones) | Real hardware | Not present (no mic/speaker test buttons) |
+| Wi-Fi and network | Real radio | Managed by the platform (no AP or station line shown) |
+| Software update | Device firmware update | The platform rolls the instance image; the device update card is not shown |
 
 The instance never shows a made-up hardware reading and never leaves a control
-that does nothing: a panel that has no hardware behind it says so plainly.
+that does nothing: a panel that has no hardware behind it says so plainly. A
+provider key you set on the Providers & keys page applies to the instance right
+away, the same way it does on a device: you set your key in the app, not
+externally.

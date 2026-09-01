@@ -6,6 +6,7 @@
 
 using nimbus::cloud::kLoopbackMaxRespBody;
 using nimbus::cloud::kLoopbackRespHeadroom;
+using nimbus::cloud::kRelayResFrameMax;
 
 void setUp() {}
 void tearDown() {}
@@ -36,8 +37,21 @@ static void test_config_page_fits_loopback_cap() {
       "base64) or shrink the page.");
 }
 
+// Counter-test for the cap raise (CUM-279): whenever kLoopbackMaxRespBody grows, the
+// base64-expanded frame it permits MUST still fit the relay's res-frame protocol max,
+// or a full page would be truncated/rejected at the wire (the fault the cap guards).
+static void test_cap_stays_base64_safe() {
+  const unsigned long expanded =
+      (unsigned long)kLoopbackMaxRespBody + kLoopbackMaxRespBody / 3u;  // ~4/3 base64
+  TEST_ASSERT_TRUE_MESSAGE(
+      expanded < kRelayResFrameMax,
+      "kLoopbackMaxRespBody base64-expands past the relay res-frame max: a full page "
+      "would be truncated. Lower the cap or raise the protocol frame.");
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_config_page_fits_loopback_cap);
+  RUN_TEST(test_cap_stays_base64_safe);
   return UNITY_END();
 }
