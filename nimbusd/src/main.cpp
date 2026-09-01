@@ -81,11 +81,15 @@ int cmdGetMe(nimbusd::Config& cfg) {
 // `sender` is a pointer-to-pointer so the daemon can fill it in after the bot is
 // validated, without re-installing the hook.
 void installReplyDelivery(nimbusd::NimbusdRig& rig, nimbusd::ReplyBuffer& replies,
+                          nimbusd::EngineThread& eng,
                           std::atomic<nimbusd::TelegramChannel*>* sender) {
   // Runs on the engine thread. `sender` is atomic because the main thread fills
   // it in (below) after the bot is validated, concurrently with the first turns.
-  rig.setDeliver([&replies, sender](const std::string& chat, const std::string& text) {
-    replies.push("assistant", text, chat);   // tag the channel so web matches only its own
+  rig.setDeliver([&replies, &eng, sender](const std::string& chat, const std::string& text) {
+    // Tag the channel (so web matches only its own) AND the web turn this reply
+    // answers (currentWebTurn, 0 for Telegram/non-web) so the web chat surface
+    // pairs each turn to its own reply by id, not ring position (CUM-293).
+    replies.push("assistant", text, chat, eng.currentWebTurn());
     nimbusd::TelegramChannel* s = sender->load(std::memory_order_acquire);
     if (s) { std::string e; s->sendMessage(chat, text, e); }
   });
@@ -129,7 +133,7 @@ int runDaemon(nimbusd::Config& cfg) {
   // so no reply is lost; `sender` is filled in below if a bot token is present.
   nimbusd::ReplyBuffer replies(/*cap=*/50);
   std::atomic<nimbusd::TelegramChannel*> sender{nullptr};
-  installReplyDelivery(rig, replies, &sender);
+  installReplyDelivery(rig, replies, eng, &sender);
 
   // Control surface (loopback), token-gated.
   const std::string webToken = cfg.get("NIMBUSD_WEB_TOKEN");

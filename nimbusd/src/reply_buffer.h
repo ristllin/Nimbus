@@ -28,17 +28,22 @@ class ReplyBuffer {
     std::string text;
     std::string chat;     // delivery channel of an assistant reply ("owner" for web,
                           // a Telegram chat id otherwise); "" for untagged/user rows
+    uint64_t    turnId;   // the web turn this assistant reply answers (its prompt-row
+                          // seq); 0 for user rows and non-web deliveries (CUM-293)
   };
 
   explicit ReplyBuffer(size_t cap = 50) : cap_(cap ? cap : 1) {}
 
   // Append an entry, assign the next sequence number, evict past the cap.
   // Returns the assigned sequence. `chat` tags an assistant reply's delivery channel
-  // so the web chat surface can match only its own turns' replies (CUM-218). Thread-safe.
-  uint64_t push(const std::string& role, const std::string& text, const std::string& chat = "") {
+  // so the web chat surface can match only its own turns' replies (CUM-218); `turnId`
+  // tags WHICH web turn it answers so the match is by id, not ring position (CUM-293).
+  // Thread-safe.
+  uint64_t push(const std::string& role, const std::string& text,
+                const std::string& chat = "", uint64_t turnId = 0) {
     std::lock_guard<std::mutex> lk(mu_);
     const uint64_t seq = ++lastSeq_;
-    entries_.push_back(Entry{seq, (uint64_t)time(nullptr), role, text, chat});
+    entries_.push_back(Entry{seq, (uint64_t)time(nullptr), role, text, chat, turnId});
     while (entries_.size() > cap_) entries_.pop_front();
     return seq;
   }
@@ -55,22 +60,30 @@ class ReplyBuffer {
     return entries_.size();
   }
 
-  // The OLDEST assistant entry with seq > afterSeq on the `chat` channel (forward
-  // scan). Returns true and fills outSeq/outText when found. The web chat surface
-  // matches a turn to the FIRST reply after its own prompt row, not the newest:
-  // turns run strictly in order (one engine thread), so consuming replies oldest-
-  // first, each assistant seq to exactly one turn, keeps a still-in-flight prior
-  // turn's later reply from ever being handed to a newer turn (CUM-218 stale-replay
-  // class). Filtering by channel additionally keeps a Telegram/routine reply that
-  // lands mid-web-turn from being claimed by the web bubble.
-  bool firstAssistantSince(uint64_t afterSeq, const std::string& chat,
-                           uint64_t& outSeq, std::string& outText) const {
+  // Outcome of matching a web turn against the ring (CUM-293):
+  //   Own   - this turn delivered at least one reply; outText is its LAST (final) one.
+  //   Later - this turn delivered nothing, but a LATER web turn already has, which (by
+  //           the strict-FIFO one-turn-at-a-time engine) proves this turn ran and
+  //           produced nothing; its bubble resolves to an honest empty.
+  //   None  - neither yet; this turn is still in flight.
+  enum class TurnMatch { None, Own, Later };
+
+  // Match web turn `turnId` on the `chat` channel in ONE locked pass over the ring.
+  // Matching by turn id (not ring position) is what makes the web reply matcher robust
+  // to a turn that delivers zero or several messages: no earlier turn's spillover and
+  // no later turn's reply can ever satisfy a different turn's id. A single scan (vs two
+  // separate locked queries) also closes the window where this turn's own reply could
+  // land between two calls and be skipped in favour of a later turn's. turnId 0 never
+  // matches as "own", so user rows and non-web deliveries are excluded.
+  TurnMatch matchWebTurn(uint64_t turnId, const std::string& chat, std::string& outText) const {
     std::lock_guard<std::mutex> lk(mu_);
-    for (const auto& e : entries_)
-      if (e.seq > afterSeq && e.role == "assistant" && e.chat == chat) {
-        outSeq = e.seq; outText = e.text; return true;
-      }
-    return false;
+    bool own = false, later = false;
+    for (const auto& e : entries_) {
+      if (e.role != "assistant" || e.chat != chat) continue;
+      if (turnId != 0 && e.turnId == turnId) { outText = e.text; own = true; }  // last wins
+      else if (e.turnId > turnId) later = true;
+    }
+    return own ? TurnMatch::Own : (later ? TurnMatch::Later : TurnMatch::None);
   }
 
   // A JSON array of the retained entries with seq > afterSeq, oldest first.

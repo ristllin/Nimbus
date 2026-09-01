@@ -66,9 +66,23 @@ class EngineThread {
 
   // Fire-and-forget: enqueue an owner message to be run as a turn. Producers
   // (Telegram) use this - the reply is delivered through the rig's deliver hook.
-  void postMessage(const std::string& chatId, const std::string& text) {
-    post([this, chatId, text] { rig_->say(chatId, text); });
+  // `webTurn` is the web chat surface's per-turn correlation id (its prompt-row
+  // seq); it is published as currentWebTurn() for the duration of the turn so the
+  // delivery hook can tag each reply with the turn it answers (CUM-293). It is 0
+  // for non-web producers (Telegram, the /message control path).
+  void postMessage(const std::string& chatId, const std::string& text, uint64_t webTurn = 0) {
+    post([this, chatId, text, webTurn] {
+      curWebTurn_.store(webTurn, std::memory_order_release);
+      rig_->say(chatId, text);
+      curWebTurn_.store(0, std::memory_order_release);
+    });
   }
+
+  // The web turn id currently being run, or 0 when the running task is not a web
+  // turn. Read by the reply delivery hook (main.cpp) to tag each reply with its
+  // turn, so the web chat surface matches replies to turns by id, not by ring
+  // position - robust to a turn that delivers zero or several messages (CUM-293).
+  uint64_t currentWebTurn() const { return curWebTurn_.load(std::memory_order_acquire); }
 
   // Enqueue a scheduled/routine turn.
   void postScheduled(const std::string& chatId, const std::string& prompt,
@@ -201,6 +215,7 @@ class EngineThread {
   std::mutex mu_;
   std::condition_variable cv_;
   std::deque<std::function<void()>> queue_;
+  std::atomic<uint64_t> curWebTurn_{0};   // web turn id of the running task (0 = none)
 
   mutable std::mutex snapMu_;
   StateSnapshot snap_;
