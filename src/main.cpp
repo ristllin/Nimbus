@@ -66,6 +66,8 @@
 #include "hw/touch_input.h"  // taps -> the same gestures the encoder makes
 #include "solide/touch.h"     // hold-to-talk release detection on a touch board
 #include "nimbus/touch_cal.h"  // persisted resistive-touch calibration
+#include "nimbus/display/screen_model.h"  // absent-vs-explicit scrModel notice rule (CUM-189)
+#include "nimbus_board_flip.h"            // per-board display-flip base (CUM-189)
 #include "nimbus/tft_render/menu_tap.h"  // portable tap -> menu-FSM mapping
 #include "hw/ring_out.h"
 #include "hw/selftest.h"   // device health-check engine + device.* tools + SELFTEST
@@ -2571,7 +2573,12 @@ void setup() {
   // memory::begin() normally runs inside solide::begin(), i.e. after this point.
   // memory::begin() is idempotent, so solide::begin()'s own call below is safe.
   solide::memory::begin();
-  g_unsupportedScreenModel = !agent::store::screenIsTft();  // stale "eink" flag
+  // Only an EXPLICIT stored non-"tft" value flags unsupported; an absent / erased
+  // key is a fresh device and comes up silently on the colour panel (CUM-189). The
+  // raw stored value is read here so "absent" and "eink" can be told apart - the
+  // plain screenModel() getter collapses them.
+  g_unsupportedScreenModel =
+      nimbus::display::showsUnsupportedNotice(agent::store::screenModelStored().c_str());
   if (g_unsupportedScreenModel)
     Serial.println("[disp] scrModel=eink is unsupported (e-ink removed) - running the color panel");
   g_screenIsTft = true;   // the only supported display
@@ -2587,8 +2594,10 @@ void setup() {
     if (hw::tft::begin()) {
       // Which end of the landscape panel is up. Applied BEFORE the first frame so
       // the boot screen is already the right way round; MADCTL-only, so it costs
-      // nothing and cannot blank the panel.
-      solide::display_tft::setFlip(agent::store::tftFlip());
+      // nothing and cannot blank the panel. The owner's tftFlip is composed with
+      // this board's base orientation (a Freenove panel is mounted 180 from the
+      // Solide), so a fresh unit is upright per board (CUM-189).
+      solide::display_tft::setFlip(nimbus::effectiveTftFlip(agent::store::tftFlip()));
       // Apply the stored touch calibration. Resistive panels vary per unit, so
       // the driver's defaults are only a starting point - without this a
       // measured calibration could not survive a reboot, and every tap landing
@@ -3123,7 +3132,7 @@ void setup() {
     // frame, so what renders is what a broker would produce.
     h.jobCount = [] { return jobCount(); };
     h.tftFlip = [](bool on) {
-      if (g_screenIsTft) solide::display_tft::setFlip(on);
+      if (g_screenIsTft) solide::display_tft::setFlip(nimbus::effectiveTftFlip(on));
     };
     // The RING/RADIO/TOUCHPOLL bisect toggles that used to live here are GONE -
     // they were instruments for the white-screen hunt (root cause found: the
@@ -3715,7 +3724,7 @@ static void settleMenuAfterMutation(uint32_t now) {
     if (g_menu.screenFlip() != agent::store::tftFlip()) {
       agent::store::setTftFlip(g_menu.screenFlip());
       if (g_screenIsTft) {
-        solide::display_tft::setFlip(g_menu.screenFlip());
+        solide::display_tft::setFlip(nimbus::effectiveTftFlip(g_menu.screenFlip()));
         hw::tft::forceRepaint();
       }
     }

@@ -21,6 +21,7 @@
 #include "agent/orchestrator.h"  // PROMPT? - dump the last composed World system prompt
 #include "agent/telegram.h"      // TGSEND - media-send smoke test
 #include "agent/store.h"
+#include "nimbus_board_flip.h"    // per-board display-flip base (CUM-189)
 #include "version.h"
 #include "agent/memory_subsystem.h"    // STATUS - storage tier + vector stats
 #include "sys/agent_log.h"           // alogf - MEDIATEST result to /api/log
@@ -983,7 +984,7 @@ void dispatch(String line) {
     const bool during = solide::touch::readRaw(bx, by, bz);
     solide::display_tft::holdReset(false);
     solide::display_tft::reinit();
-    solide::display_tft::setFlip(agent::store::tftFlip());
+    solide::display_tft::setFlip(nimbus::effectiveTftFlip(agent::store::tftFlip()));
     Serial.printf("TOUCHISO normal=%d,%d,%u(%d) panelInReset=%d,%d,%u(%d)\n",
                   ax, ay, az, int(before), bx, by, bz, int(during));
     return;
