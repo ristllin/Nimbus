@@ -74,25 +74,63 @@ waiting for your approval, and which are temporarily unreachable.
 ### Signing in to a hosted server (OAuth)
 
 Some hosted servers, such as `https://mcp.linear.app/mcp`, do not take a pasted
-token at all: they use a sign-in you complete in your browser. The device handles
-this without a browser of its own. On the connector, choose **Sign in**, and the
-device does the rest:
+token at all: they use a sign-in you complete in your browser. The device has no
+browser of its own, so it borrows one you already have. It shows a link on the
+Connectors page; you open that link on a phone or laptop on the same network,
+approve access there, and the browser hands the result back to the device. The
+device keeps the resulting access on its own from then on. Your login and password
+never touch the device.
 
-1. It looks up the server's sign-in details and registers itself as a client.
-2. It shows a short link, code, and QR on the Connectors page.
-3. You open the link on your phone or laptop, on the same network as the device,
-   and approve access. The server sends you back to the device.
-4. The device finishes sign-in and stores a lasting sign-in so it can keep access
-   fresh on its own. Your login and password never touch the device.
+#### Connecting Linear, step by step
+
+Linear's hosted server (`https://mcp.linear.app/mcp`) is the worked example; Notion,
+Sentry, and Atlassian connect the same way.
+
+1. In the web UI under **Assistant -> Connectors**, add a server with the name
+   `linear` and the endpoint `https://mcp.linear.app/mcp`. Leave the token field
+   empty (this server does not use one). Turn on **device-dialed**.
+2. On the new connector, choose **Sign in**. The device now shows a short link, a
+   short code, and a QR code on the Connectors page.
+3. On your phone or laptop, open the link (or scan the QR). It takes you to Linear's
+   own sign-in page. Sign in and approve access for the device.
+4. Linear sends the browser back to the device, which finishes the exchange and
+   stores a lasting sign-in. The connector flips to connected, and Linear's tools
+   appear on your next turn.
+
+To disconnect, remove the connector.
+
+#### What is headless, and the one step that is not
+
+Everything except step 3 happens on the device with no help:
+
+- **Headless (the device, on its own):** finding the server's sign-in details,
+  registering itself as a client, minting the sign-in link and code, completing the
+  token exchange when the browser returns, storing the result, and refreshing access
+  quietly before it expires on every turn after that.
+- **Needs your browser (once):** approving access at the server's sign-in page in
+  step 3. This is a deliberate consent, so it is your call, not the model's, and it
+  cannot be automated away. It happens one time; the device handles the refreshes
+  after that without asking again.
 
 The stored sign-in lives only on the device, is never shown or logged, and is used
-the same way a token is: sent as `Authorization: Bearer` on each call, refreshed
-quietly before it expires. To disconnect, remove the connector.
+the same way a token is: sent as `Authorization: Bearer` on each call.
 
-The phone or laptop you approve on must be able to reach the device by the address
-shown (a home network address or `nimbus.local`). A server that requires a hand
-registered client, rather than offering automatic registration, is not supported
-this way; use a fixed token instead if the server provides one.
+#### What has to be true for it to work
+
+- The phone or laptop you approve on must be able to reach the device by the address
+  shown (a home network address or `nimbus.local`). The device registers that same
+  address as where the server should return the browser, so a server that cannot be
+  handed a private-network return address, or that only registers clients by hand
+  rather than automatically, is not supported this way. Use a fixed token instead if
+  that server offers one.
+- The device must be on your Wi-Fi with a reachable address before you start; the
+  sign-in link points at the device itself.
+
+> Confirming a live end-to-end sign-in against a hosted server is a bench step. The
+> sign-in machinery is verified on the host against recorded sign-in details from a
+> real server, and the on-device sign-in screen and web flow are built; the live
+> "approve on a phone, tools appear" round trip against `mcp.linear.app` is checked on
+> real hardware, not claimed from a host build.
 
 ### A local server stays on the device
 

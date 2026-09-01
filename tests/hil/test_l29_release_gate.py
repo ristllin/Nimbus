@@ -225,6 +225,35 @@ class TestCrashLoopResilience:
         m = device.status()
         assert int(m.group("up")) >= 0  # a parseable STATUS after one clean boot
 
+    def test_survives_n_reboots_without_a_loop(self, device):
+        # Boot-loop DETECTION across N reboots (MANIFEST section 3). One clean boot
+        # (the test above) is not the same claim: a device can survive a single
+        # restart yet cascade into a reset storm under repeated reboots (a flapping
+        # power rail, a boot-time init that occasionally faults). This drives N
+        # consecutive reboots and asserts every one lands settled, never a loop.
+        #
+        # N is bounded so the bench leg stays quick; override for a longer soak.
+        n = int(os.environ.get("NIMBUS_GATE_REBOOT_CYCLES", "5"))
+        prev_up = int(device.status().group("up"))
+        for cycle in range(1, n + 1):
+            # reset() self-heals and raises if the console never answers again - a
+            # board wedged in a reset storm can never confirm the soft REBOOT, so a
+            # true boot loop surfaces here as a failure, not a hang.
+            device.reset()
+            m = device.status(timeout=6.0)
+            up = int(m.group("up"))
+            # A real reboot resets uptime: it must come back SMALL, and below the
+            # last reading, or the "reboot" was a no-op / the device never restarted.
+            assert up < 15, (
+                f"cycle {cycle}/{n}: uptime={up}s after a reboot is not a fresh boot "
+                "(the device did not actually restart, or is stuck past the boot window)"
+            )
+            assert up <= prev_up or prev_up < 5, f"cycle {cycle}/{n}: uptime did not reset (prev={prev_up}s now={up}s)"
+            prev_up = up
+        # After the last cycle the device must still be serving the console - a
+        # settled, non-looping state, not a board that only answers between resets.
+        assert device.ping(timeout=6.0), f"device did not settle after {n} reboots (boot-loop / reset storm)"
+
 
 # ============================================================================
 # OTA: a bad image must roll back after the boot-guard's attempts, never
