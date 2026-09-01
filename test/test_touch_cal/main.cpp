@@ -365,8 +365,122 @@ static void test_resistive_first_run_completes_and_persists() {
   TEST_ASSERT_FALSE(firstRunCalPending(TouchKind::Resistive, /*stored=*/true));
 }
 
+// ---- CUM-245: the first-run GATE, the deliberate skip, and the pressure floor ----
+//
+// The gate is the fix for the fresh-resistive self-navigation bug: while a fresh
+// resistive panel is uncalibrated, touch is routed to the calibration flow ONLY, never
+// to UI navigation, and the gate opens the instant a cal is stored. These pin that
+// routing as a class over EVERY TouchKind, plus the deliberate-skip recognizer and the
+// uncalibrated pressure floor - the pure seams the device seam is built on.
+using nimbus::touch::belowUncalFloor;
+using nimbus::touch::kUncalPressureFloor;
+using nimbus::touch::routeTouch;
+using nimbus::touch::SkipHold;
+using nimbus::touch::TouchRoute;
+
+// The class rule: touch is GATED (never reaches navigation) exactly when a fresh board's
+// class needs the guided step and no cal is stored yet - i.e. exactly firstRunCalPending.
+// Asserted over EVERY kind, so a new touch class cannot ship reaching navigation while
+// uncalibrated (nor gating a class that reports pixels and needs no cal).
+static void test_route_gates_uncalibrated_resistive_only() {
+  for (int i = 0; i < static_cast<int>(TouchKind::Count); ++i) {
+    const TouchKind k = static_cast<TouchKind>(i);
+    // Fresh (no stored cal): gated iff the class calls for the guided step.
+    const bool wantGate = (expectedFirstRunFor(k) == FirstRunCal::Calibrate);
+    TEST_ASSERT_EQUAL(wantGate ? int(TouchRoute::Gate) : int(TouchRoute::Navigate),
+                      int(routeTouch(k, /*hasStoredCal=*/false)));
+    // A stored cal ALWAYS opens the gate, whatever the class - navigation resumes.
+    TEST_ASSERT_EQUAL(int(TouchRoute::Navigate), int(routeTouch(k, /*hasStoredCal=*/true)));
+  }
+}
+
+// The two named kinds, read off explicitly: a fresh resistive panel is gated and a
+// completed cal unlocks it; a capacitive panel is NEVER gated (fresh or not).
+static void test_route_named_kinds() {
+  TEST_ASSERT_EQUAL(int(TouchRoute::Gate),
+                    int(routeTouch(TouchKind::Resistive, false)));   // fresh resistive: gated
+  TEST_ASSERT_EQUAL(int(TouchRoute::Navigate),
+                    int(routeTouch(TouchKind::Resistive, true)));    // calibrated: unlocked
+  TEST_ASSERT_EQUAL(int(TouchRoute::Navigate),
+                    int(routeTouch(TouchKind::Capacitive, false)));  // fresh capacitive: never gated
+  TEST_ASSERT_EQUAL(int(TouchRoute::Navigate),
+                    int(routeTouch(TouchKind::Capacitive, true)));
+}
+
+// The deliberate skip is a long, UNBROKEN press-and-hold. A tap (press then release) can
+// never accumulate one, no matter how many taps.
+static void test_skip_requires_unbroken_hold() {
+  SkipHold s;
+  // A held press that has not reached the threshold does not fire.
+  TEST_ASSERT_FALSE(s.update(true, 1000));            // press begins
+  TEST_ASSERT_FALSE(s.update(true, 1000 + SkipHold::kHoldMs - 1));  // 1 ms short
+  TEST_ASSERT_TRUE(s.holding());
+  // Cross the threshold on a continuous hold: confirmed.
+  TEST_ASSERT_TRUE(s.update(true, 1000 + SkipHold::kHoldMs));
+}
+
+static void test_skip_release_resets_no_skip() {
+  SkipHold s;
+  // A stream of quick taps, each far longer apart than the hold window, never skips
+  // because each release resets the accumulator.
+  for (uint32_t t = 0; t < 10; ++t) {
+    TEST_ASSERT_FALSE(s.update(true, t * 10000));         // press
+    TEST_ASSERT_FALSE(s.update(false, t * 10000 + 50));   // release 50 ms later
+    TEST_ASSERT_FALSE(s.holding());
+  }
+  // Even a long hold that is interrupted just before the threshold must not fire: the
+  // release zeroes it and the next press starts a fresh window.
+  TEST_ASSERT_FALSE(s.update(true, 100000));
+  TEST_ASSERT_FALSE(s.update(true, 100000 + SkipHold::kHoldMs - 1));
+  TEST_ASSERT_FALSE(s.update(false, 100000 + SkipHold::kHoldMs));   // released: reset
+  TEST_ASSERT_FALSE(s.update(true, 200000));                        // new press
+  TEST_ASSERT_FALSE(s.update(true, 200000 + 10));                   // only 10 ms in
+}
+
+// The countdown the on-screen label reads off: full when idle, counting down under a
+// hold, and never showing 0 while still waiting.
+static void test_skip_countdown() {
+  SkipHold s;
+  const int full = int(SkipHold::kHoldMs / 1000);
+  TEST_ASSERT_EQUAL_UINT32(0, s.heldMs(12345));          // idle: nothing held
+  TEST_ASSERT_EQUAL(full, s.secondsLeft(12345));         // idle: full countdown
+  s.update(true, 1000);                                  // hold begins
+  TEST_ASSERT_EQUAL_UINT32(0, s.heldMs(1000));
+  TEST_ASSERT_EQUAL(full, s.secondsLeft(1000));          // 3 s left at t0
+  s.update(true, 1000 + 1500);
+  TEST_ASSERT_EQUAL_UINT32(1500, s.heldMs(1000 + 1500)); // half way
+  TEST_ASSERT_EQUAL(2, s.secondsLeft(1000 + 1500));      // ceil(1.5) = 2 left
+  // heldMs never exceeds the window even if the finger stays down past it.
+  s.update(true, 1000 + SkipHold::kHoldMs + 5000);
+  TEST_ASSERT_EQUAL_UINT32(SkipHold::kHoldMs, s.heldMs(1000 + SkipHold::kHoldMs + 5000));
+}
+
+// The uncalibrated pressure floor: it rejects a light/drifting read ONLY while
+// uncalibrated AND resistive; a calibrated panel and a capacitive one are never floored.
+static void test_uncal_pressure_floor() {
+  // Below the floor while fresh + resistive: rejected (a floating panel cannot stream).
+  TEST_ASSERT_TRUE(belowUncalFloor(true, true, kUncalPressureFloor - 1));
+  TEST_ASSERT_TRUE(belowUncalFloor(true, true, 0));
+  // At or above the floor: a deliberate press passes.
+  TEST_ASSERT_FALSE(belowUncalFloor(true, true, kUncalPressureFloor));
+  TEST_ASSERT_FALSE(belowUncalFloor(true, true, kUncalPressureFloor + 500));
+  // Calibrated resistive: never floored, even a light touch (driver's own threshold owns).
+  TEST_ASSERT_FALSE(belowUncalFloor(false, true, 0));
+  // Capacitive: never floored (it reports a fixed pressure flag, not a resistive Z).
+  TEST_ASSERT_FALSE(belowUncalFloor(true, false, 0));
+  // The floor must be strictly firmer than the driver's own low noise-floor threshold
+  // (raw Z ~350), or it would add nothing over the driver.
+  TEST_ASSERT_TRUE(kUncalPressureFloor > 350);
+}
+
 int main() {
   UNITY_BEGIN();
+  RUN_TEST(test_route_gates_uncalibrated_resistive_only);
+  RUN_TEST(test_route_named_kinds);
+  RUN_TEST(test_skip_requires_unbroken_hold);
+  RUN_TEST(test_skip_release_resets_no_skip);
+  RUN_TEST(test_skip_countdown);
+  RUN_TEST(test_uncal_pressure_floor);
   RUN_TEST(test_first_run_policy_over_every_touchkind);
   RUN_TEST(test_capacitive_skips_resistive_offers);
   RUN_TEST(test_resistive_first_run_completes_and_persists);

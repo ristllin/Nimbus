@@ -36,6 +36,15 @@ struct Gesture {
 // every loop. Returns Kind::None when nothing happened.
 Gesture poll();
 
+// First-run pressure floor (CUM-245). While a fresh resistive panel is still
+// uncalibrated, a firmer press is demanded than the driver's own low noise-floor
+// threshold, so a floating/drifting XPT2046 cannot stream phantom presses (belt to
+// the calibration gate's suspenders). Set true at boot for a fresh resistive board;
+// cleared once a per-unit calibration is stored. A calibrated panel and a capacitive
+// one are never floored. No effect on the TEST inject path (it carries logical
+// coordinates with no pressure).
+void setUncalibratedFloor(bool on);
+
 // TEST-only injection, mirroring the ENC/SW console seam: lets the HIL suites
 // drive the UI with no finger. A queued point is consumed by the next poll().
 #ifdef NIMBUS_TEST

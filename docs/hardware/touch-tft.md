@@ -125,11 +125,14 @@ Every resistive panel reads slightly differently, so the raw-count-to-pixel
 mapping is **measured per unit**, not assumed. Until it is set, a wrong guess is
 indistinguishable from broken touch - taps simply land somewhere else.
 
-**First run does it for you.** A freshly flashed Touch TFT is usable right away on
-the board's default mapping, but because a resistive panel drifts unit to unit that
-default only lands taps approximately. So once Wi-Fi setup is done, the device offers
-the calibration once on its own: the four corner targets appear, you tap them, and it
-stores the result. Walk away and it keeps the default (you can always redo it below).
+**First run does it for you, first.** Because a resistive panel drifts unit to unit,
+a freshly flashed Touch TFT lands taps only approximately on the board's default
+mapping, so on first boot the device goes straight to calibration: the four corner
+targets appear and are the only thing the screen responds to until you finish. Tap the
+four corners and it stores the result and moves on to the normal setup. This comes
+first on purpose, so uncalibrated taps can never drive the menus by mistake. If you
+would rather skip it for now, press and hold anywhere for a few seconds (a short
+countdown confirms it); a stray tap never skips. You can always redo or clear it below.
 The all-in-one (Freenove CYD) is capacitive and reports pixel coordinates directly,
 so it needs no calibration and skips this step entirely.
 

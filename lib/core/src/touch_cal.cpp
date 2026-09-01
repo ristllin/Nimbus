@@ -111,6 +111,25 @@ bool firstRunCalPending(TouchKind kind, bool hasStoredCal) {
   return !hasStoredCal && firstRunCalPolicy(kind) == FirstRunCal::Calibrate;
 }
 
+bool SkipHold::update(bool down, uint32_t nowMs) {
+  if (!down) { holding_ = false; return false; }   // any release resets the hold
+  if (!holding_) { holding_ = true; startMs_ = nowMs; return false; }  // hold begins now
+  return uint32_t(nowMs - startMs_) >= kHoldMs;     // sustained long enough = confirmed
+}
+
+uint32_t SkipHold::heldMs(uint32_t nowMs) const {
+  if (!holding_) return 0;
+  const uint32_t held = nowMs - startMs_;
+  return held > kHoldMs ? kHoldMs : held;
+}
+
+int SkipHold::secondsLeft(uint32_t nowMs) const {
+  // Ceil of the remaining hold so the label counts 3, 2, 1 and never shows 0 while
+  // still waiting. Not holding reads as the full countdown.
+  const uint32_t left = kHoldMs - heldMs(nowMs);
+  return int((left + 999) / 1000);
+}
+
 bool solveCornerCal(const RawSample c[4], Cal& out, uint16_t minSpan) {
   const RawSample& tl = c[0];
   const RawSample& tr = c[1];
