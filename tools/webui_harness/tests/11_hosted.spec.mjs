@@ -117,16 +117,45 @@ test('hosted: no "ap undefined" network line', async ({ page }) => {
   expect(info).not.toContain('undefined');
 });
 
-// (5) Hardware controls hidden: the ESP OTA card and the audio probe buttons.
-test('hosted: ESP OTA card and audio probe buttons are hidden', async ({ page }) => {
+// (5) Hardware controls hidden: the audio probe buttons; and the ESP OTA controls
+//     replaced by an honest note. The "Software update" group STAYS a titled group in
+//     its normal place (no floating orphan between Sound and Connectivity, CUM-218) but
+//     its ESP-OTA controls are gone and its body states the platform manages updates.
+test('hosted: ESP OTA controls become an honest platform note, audio probes hidden', async ({ page }) => {
   await markHosted(page);
   await routeHosted(page);
   await seedToken(page);
   await openApp(page);
+  await page.locator('.tab[data-p=device]').click();
   await page.waitForTimeout(300);
-  await expect(page.locator('#fwsec')).toBeHidden();        // ESP OTA card
+  await expect(page.locator('#fwCheck')).toHaveCount(0);     // no "Check for Updates" control
+  await expect(page.locator('#fwsec')).toContainText('managed by the platform');
+  await expect(page.locator('#fwsec')).toContainText('image is rolled');
   await expect(page.locator('#hpMic')).toHaveCount(0);       // no Mic Test button
   await expect(page.locator('#hpBeep')).toHaveCount(0);      // no Speaker Tone button
+});
+
+// (8) Honest Cloud access + sign-in (CUM-218). A hosted instance is DEFINED by its
+//     cloud link, so the device-firmware pairing UI ("Cloud access is off. Pair with
+//     the cloud") is a lie there. It must state the one true fact - reached through its
+//     cloud link, with the tunnel URL - and drop the Pair button. The device sign-in
+//     code is a LAN recovery aid that does not apply, so it is hidden, never a bare "-".
+test('hosted: Cloud access states the cloud link and drops pairing + sign-in code', async ({ page }) => {
+  await markHosted(page);
+  await routeHosted(page);   // hosted /api/state carries no d.cloud, as nimbusd serves
+  await seedToken(page);
+  await openApp(page);
+  await page.locator('.tab[data-p=device]').click();
+  await page.waitForTimeout(200);
+  // Honest cloud line + tunnel URL, and no pairing controls.
+  const line = page.locator('#cloudLine');
+  await expect(line).toContainText('reached through its cloud link');
+  await expect(line).toContainText(page.url().replace(/\/[^/]*$/, ''));   // the tunnel URL
+  await expect(page.locator('#cloudPair')).toBeHidden();
+  await expect(page.locator('#cloudTip')).toBeHidden();
+  // Device sign-in code (a LAN aid) is hidden in both homes, never shown as "-".
+  await expect(page.locator('#idTokenRow')).toBeHidden();
+  await expect(page.locator('#cxTokenRow')).toBeHidden();
 });
 
 // (7) Honest Connectivity (CUM-207/CUM-279 follow-up): a hosted instance has no radio,

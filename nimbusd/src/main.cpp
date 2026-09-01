@@ -85,7 +85,7 @@ void installReplyDelivery(nimbusd::NimbusdRig& rig, nimbusd::ReplyBuffer& replie
   // Runs on the engine thread. `sender` is atomic because the main thread fills
   // it in (below) after the bot is validated, concurrently with the first turns.
   rig.setDeliver([&replies, sender](const std::string& chat, const std::string& text) {
-    replies.push("assistant", text);
+    replies.push("assistant", text, chat);   // tag the channel so web matches only its own
     nimbusd::TelegramChannel* s = sender->load(std::memory_order_acquire);
     if (s) { std::string e; s->sendMessage(chat, text, e); }
   });

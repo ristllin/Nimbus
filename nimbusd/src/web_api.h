@@ -5,8 +5,10 @@
 #include <cmath>
 #include <cstdlib>
 #include <ctime>
+#include <deque>
 #include <functional>
 #include <future>
+#include <map>
 #include <string>
 #include <utility>
 #include <vector>
@@ -61,7 +63,7 @@ class WebApi {
               const std::string& body, ApiResp& out) {
     const std::string base = path.substr(0, path.find('?'));
     return tryStatus(method, base, body, out) ||
-           tryChat(method, base, body, out) ||
+           tryChat(method, base, path, body, out) ||
            tryMemory(method, base, path, body, out) ||
            tryStatic(method, base, path, out) ||
            tryStubs(method, base, out) ||
@@ -80,10 +82,12 @@ class WebApi {
     return false;
   }
 
-  // Chat (REAL: the engine turn + the reply ring).
-  bool tryChat(const std::string& m, const std::string& base, const std::string& body, ApiResp& out) {
+  // Chat (REAL: the engine turn + the reply ring). GET gets the full path so it can
+  // read the ?turn=<id> the client polls its own turn's reply with.
+  bool tryChat(const std::string& m, const std::string& base, const std::string& path,
+               const std::string& body, ApiResp& out) {
     if (base != "/api/chat") return false;
-    out = m == "POST" ? chatPost(body) : chatGet();
+    out = m == "POST" ? chatPost(body) : chatGet(path);
     return true;
   }
 
@@ -457,43 +461,51 @@ class WebApi {
   ApiResp chatPost(const std::string& body) {
     std::string text = formValue(body, "text");
     if (text.empty()) return ApiResp{400, "application/json", R"({"error":"missing text"})"};
-    awaitFromSeq_ = replies_->lastSeq();
-    awaitDeadline_ = time(nullptr) + 900;  // hard backstop (matches the app's poll cap)
-    awaiting_ = true;
-    replies_->push("user", text);
-    eng_->postMessage("owner", text);
-    return okJson(R"({"pending":true})");
+    // A mid-turn message is QUEUED, never rejected: the prompt row is recorded and
+    // the turn is posted to the engine mailbox (which runs turns strictly in order).
+    // The turn id IS this prompt row's seq, so the fence for matching its reply is
+    // exactly one-past its own prompt - a prior in-flight turn's later reply can
+    // never satisfy it (that was the "6" stale replay, CUM-218).
+    const uint64_t turn = replies_->push("user", text, kWebChat);
+    pending_.push_back(PendingTurn{turn, time(nullptr) + 900});
+    // Flood backstop (symmetry with resolved_'s cap): an authenticated owner hammering
+    // POSTs faster than the single engine thread replies cannot grow this without bound.
+    while (pending_.size() > 256) pending_.pop_front();
+    eng_->postMessage(kWebChat, text);
+    JsonDocument d;
+    d["pending"] = true;
+    d["turn"] = turn;   // the client polls GET /api/chat?turn=<turn> for THIS reply
+    std::string out;
+    serializeJson(d, out);
+    return okJson(out);
   }
 
-  ApiResp chatGet() {
+  ApiResp chatGet(const std::string& path) {
+    resolveWebTurns();
     JsonDocument d;
-    // Only surface a reply while WE are awaiting one, and only one newer than our
-    // own prompt: this keeps a Telegram or routine reply that lands between web
-    // turns from bleeding into the web chat, and stops a settled turn's reply from
-    // being re-returned on every later poll.
-    std::string reply = awaiting_ ? replies_->lastAssistantTextSince(awaitFromSeq_) : std::string();
-    if (awaiting_ && !reply.empty()) {
-      awaiting_ = false;
-      awaitFromSeq_ = replies_->lastSeq();  // consumed; do not re-return it
-      d["reply"] = reply;
-      d["pending"] = false;
-      // Served-by disclosure (CUM-236): if this turn was served by a fallback
-      // provider/model, tell the web chat so it can show an honest footer. Read from
-      // the mutex-guarded snapshot (never the raw rig members on this HTTP thread).
-      const StateSnapshot ss = eng_->snapshot();
-      if (ss.lastFallback) {
-        d["fallback"] = true;
-        d["servedBy"] = ss.lastServedBy;
+    const std::string tp = queryParam(path, "turn");
+    if (!tp.empty()) {
+      // Turn-matched poll: hand back only THIS turn's own reply.
+      const uint64_t turn = std::strtoull(tp.c_str(), nullptr, 10);
+      auto it = resolved_.find(turn);
+      if (it != resolved_.end()) {
+        fillChatReply(d, it->second);
+        resolved_.erase(it);   // delivered; a repeat poll must not replay it
+      } else {
+        d["reply"] = "";
+        d["pending"] = turnPending(turn);   // unknown/old id -> not pending, empty
       }
-    } else if (awaiting_ && time(nullptr) > awaitDeadline_) {
-      // Backstop: a turn that ran to completion with no delivery (rare) must not
-      // leave the bubble spinning forever - resolve honestly after the deadline.
-      awaiting_ = false;
-      d["reply"] = "";
-      d["pending"] = false;
     } else {
-      d["reply"] = "";
-      d["pending"] = awaiting_;
+      // Param-less poll (legacy clients / HIL): hand back the oldest ready reply,
+      // FIFO. Kept so the single-turn contract still works without a turn id.
+      if (!resolved_.empty()) {
+        auto it = resolved_.begin();   // map ordered by turn id ascending = FIFO
+        fillChatReply(d, it->second);
+        resolved_.erase(it);
+      } else {
+        d["reply"] = "";
+        d["pending"] = !pending_.empty();
+      }
     }
     std::string out;
     serializeJson(d, out);
@@ -836,11 +848,65 @@ class WebApi {
   ReplyBuffer* replies_;
   std::string webToken_;
 
-  // Single-owner chat poll state (one pending web turn at a time; touched only on
-  // the single HTTP thread, so no synchronization is needed).
-  uint64_t awaitFromSeq_ = 0;
-  time_t awaitDeadline_ = 0;
-  bool awaiting_ = false;
+  // Web chat reply matching (CUM-218). A single slot could track only ONE pending
+  // web turn, so a mid-turn rapid tap either dropped a turn or replayed a prior
+  // turn's reply. Now every web turn is tracked by id (its prompt row's seq) and
+  // resolved in the order posted. `pending_` is the FIFO of turns still awaiting a
+  // reply; `resolved_` holds ready replies (keyed by turn id) until the client
+  // polls for them; `webConsumedSeq_` is the highest assistant ring seq already
+  // handed to a web turn, so no reply is ever handed to two turns. Touched only on
+  // the single HTTP thread, so no synchronization is needed.
+  // The web channel's delivery chat id (a web turn is posted as, and its reply is
+  // delivered to, this chat). The reply matcher consumes only assistant replies on
+  // this channel, so a Telegram/routine reply cannot surface in the web bubble.
+  static constexpr const char* kWebChat = "owner";
+  struct PendingTurn { uint64_t userSeq; time_t deadline; };
+  std::deque<PendingTurn> pending_;
+  std::map<uint64_t, std::string> resolved_;
+  uint64_t webConsumedSeq_ = 0;
+
+  // Advance FIFO resolution: match each waiting turn, oldest first, to the first
+  // unconsumed assistant reply after its own prompt row. Stops at the first turn
+  // with no reply yet - nothing behind it can be ready before it (turns run in
+  // order). A turn past its backstop deadline resolves to an empty reply so the
+  // bubble stops spinning honestly.
+  void resolveWebTurns() {
+    while (!pending_.empty()) {
+      PendingTurn& t = pending_.front();
+      const uint64_t fence = t.userSeq > webConsumedSeq_ ? t.userSeq : webConsumedSeq_;
+      uint64_t rseq = 0;
+      std::string text;
+      if (replies_->firstAssistantSince(fence, kWebChat, rseq, text)) {
+        webConsumedSeq_ = rseq;   // consumed; never handed to another turn
+        stashResolved(t.userSeq, text);
+        pending_.pop_front();
+        continue;
+      }
+      if (time(nullptr) > t.deadline) { stashResolved(t.userSeq, ""); pending_.pop_front(); continue; }
+      break;
+    }
+  }
+
+  // Record a ready reply for pickup, bounding the map so an abandoned page (a turn
+  // whose client never polls back) cannot grow it without limit.
+  void stashResolved(uint64_t turn, const std::string& text) {
+    resolved_[turn] = text;
+    while (resolved_.size() > 64) resolved_.erase(resolved_.begin());
+  }
+
+  bool turnPending(uint64_t turn) const {
+    for (const auto& t : pending_) if (t.userSeq == turn) return true;
+    return false;
+  }
+
+  // Fill a reply payload (reply + fallback disclosure) into the response document.
+  void fillChatReply(JsonDocument& d, const std::string& reply) {
+    d["reply"] = reply;
+    d["pending"] = false;
+    // Served-by disclosure (CUM-236): best-effort from the latest snapshot.
+    const StateSnapshot ss = eng_->snapshot();
+    if (ss.lastFallback) { d["fallback"] = true; d["servedBy"] = ss.lastServedBy; }
+  }
 };
 
 }  // namespace nimbusd
