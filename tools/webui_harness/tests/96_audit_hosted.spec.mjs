@@ -21,7 +21,11 @@ async function expandAll(page) {
   await page.evaluate(() => {
     document.querySelectorAll('details').forEach((d) => { d.open = true; });
     document.querySelectorAll('.hint.tip').forEach((h) => h.classList.add('open'));
-    ['battsec', 'whatNext'].forEach((id) => { const e = document.getElementById(id); if (e) e.style.display = ''; });
+    // A hosted instance honestly hides the whole battery group (CUM-214); do NOT force it
+    // back on for the audit capture, or the archived shot would show a panel the real
+    // hosted page never paints. Only whatNext is force-shown on hosted.
+    const ids = window.NIMBUS_HOSTED ? ['whatNext'] : ['battsec', 'whatNext'];
+    ids.forEach((id) => { const e = document.getElementById(id); if (e) e.style.display = ''; });
   });
   await page.waitForTimeout(250);
 }
@@ -68,7 +72,15 @@ for (const dest of ['home', 'memory', 'device']) {
     await page.locator(`.tab[data-p=${dest}]`).click();
     await assertPane(page, dest);
     await page.waitForTimeout(400);
-    if (dest === 'device') await expandAll(page);
+    if (dest === 'device') {
+      await expandAll(page);
+      // The captured hosted Device pane must show the honest battery line, not the three
+      // hardware battery groups (CUM-214) - assert it here so the archive cannot drift back.
+      await expect(page.locator('#battModeGroup')).toBeHidden();
+      await expect(page.locator('#custProfGroup')).toBeHidden();
+      await expect(page.locator('#battsec')).toBeHidden();
+      await expect(page.locator('#hostedBattLine')).toContainText('managed by the platform');
+    }
     await shot(page, testInfo, `top-${dest}`);
   });
 }

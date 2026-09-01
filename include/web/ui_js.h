@@ -259,6 +259,29 @@ function applyHostedConnectivity(){
   }catch(e){}
 }
 applyHostedConnectivity();
+// Honest hosted battery/power (CUM-214 ruling): a hosted instance has no pack, no LED
+// ring, and no sense hardware, so all three battery groups are false there - the Battery
+// hardware readout (#battsec), the Battery mode preset (#battModeGroup, which sets LED
+// brightness/animation), and Customize battery mode (#custProfGroup). On a VN the profile
+// is a no-op (nimbusd omits it from /api/state and /api/config ignores hardware keys), the
+// ring is absent, and no telemetry is valid. Collapse all three to one honest platform line.
+function applyHostedBattery(){
+  if(!HOSTED)return;
+  try{
+    const bs=$('battsec'), bm=$('battModeGroup'), cp=$('custProfGroup');
+    if(bs)bs.style.display='none';
+    if(bm)bm.style.display='none';
+    if(cp)cp.style.display='none';
+    const anchor=bm||cp||bs;
+    if(anchor&&anchor.parentNode&&!$('hostedBattLine')){
+      const n=document.createElement('div'); n.id='hostedBattLine'; n.className='hint';
+      n.style.margin='14px 0';
+      n.textContent='Battery and power are managed by the platform; this instance runs on external power.';
+      anchor.parentNode.insertBefore(n,anchor);
+    }
+  }catch(e){}
+}
+applyHostedBattery();
 // "What next" card on Home, shown once right after onboarding finishes (CUM-66).
 (function(){try{if(localStorage.getItem('nimbusJustOnboarded')==='1'){
   localStorage.removeItem('nimbusJustOnboarded');

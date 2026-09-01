@@ -220,6 +220,13 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 .tab{flex-direction:column;gap:3px;font-size:9.5px;padding:5px 7px;border-radius:9px;text-align:center;width:auto}
 .tab svg{width:19px;height:19px}
 .mobmode{display:flex !important}
+/* Active-sessions table (Home): on a phone the five columns cannot wrap cleanly, and
+   overflow-wrap:anywhere broke provider/model names mid-word ("anthropi/c"). Scroll the
+   table sideways inside its own box instead, so whole words stay whole and the page body
+   never scrolls. Desktop keeps the global fixed-width layout unchanged. */
+#dashJobs{overflow-x:auto;-webkit-overflow-scrolling:touch}
+#dashJobs table{table-layout:auto;width:auto}
+#dashJobs th,#dashJobs td{overflow-wrap:normal;word-break:normal;white-space:nowrap}
 }
 .mobmode{display:none;position:fixed;top:10px;right:12px;z-index:60}
 </style>

@@ -42,7 +42,11 @@ const MUST_FILL_SELECTS = {
 async function expandAll(page) {
   await page.evaluate(() => {
     document.querySelectorAll('details').forEach((d) => { d.open = true; });
-    ['battsec', 'whatNext'].forEach((id) => { const e = document.getElementById(id); if (e) e.style.display = ''; });
+    // Force-show the conditional battery panel so its dynamic text is checked too - but
+    // NOT on a hosted instance, where the whole battery group is honestly hidden (CUM-214);
+    // re-showing it there would render a group the real hosted page never paints.
+    const ids = window.NIMBUS_HOSTED ? ['whatNext'] : ['battsec', 'whatNext'];
+    ids.forEach((id) => { const e = document.getElementById(id); if (e) e.style.display = ''; });
   });
   await page.waitForTimeout(200);
 }
