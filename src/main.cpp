@@ -5298,6 +5298,21 @@ void loop() {
     hw::tft::setBacklight(0);
   }
 
+  // External power connected WHILE deep-dimmed: lift the panel back to the rest
+  // glow. Deep-dim is a battery-only state (deepDimExtraMs()==0 on external
+  // power), and that must hold as an EXIT invariant too, not just an entry gate -
+  // otherwise a charger that auto-connects while the screen is dark leaves a
+  // powered device looking broken (the "and now it's black" confusion the rest
+  // glow exists to prevent). Fires once (backlight then > 0); a tap still wakes
+  // it fully. Mutually exclusive with the deep-dim entry above (that needs
+  // backlight > 0 and returns early on external power).
+  if (g_screenIsTft && !g_menu.isOpen() &&
+      g_lastScreen == uint8_t(attn::ScreenId::Screensaver) &&
+      hw::tft::backlightAttached() && hw::tft::backlight() == 0 &&
+      g_battEstimate.onExternalPower) {
+    hw::tft::setBacklight(nimbus::kBacklightRestPct);
+  }
+
   // Boot breathe-flourish window elapsed: recompose to the normal status ring.
   if (g_bootBreatheUntilMs && int32_t(now - g_bootBreatheUntilMs) >= 0) {
     g_bootBreatheUntilMs = 0;
