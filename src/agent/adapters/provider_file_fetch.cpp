@@ -11,6 +11,7 @@
 #include "../../sys/tls_arbiter.h"   // single-TLS work slot
 #include "../store.h"                // store::mistralKey
 #include "../files_subsystem.h"      // binaryWriteBegin / writeChunk / finishWrite
+#include "nimbus/orch/capture.h"     // captureFitsCap + captureVerdict (host-tested)
 #include "nimbus/orch/file_store.h"  // FileStore::validSegment + Limits
 
 namespace agent {
@@ -20,9 +21,9 @@ constexpr const char* kMistralHost = "api.mistral.ai";
 constexpr const char* kOpenAIHost  = "api.openai.com";
 constexpr const char* kAnthropicHost = "api.anthropic.com";
 constexpr uint16_t    kTlsPort     = 443;
-// Bound the fetch: mirror the FileStore per-file cap so a runaway/hostile file
-// can't stream forever, and give a slow WiFi link a generous but finite window.
-constexpr size_t      kMaxFetchBytes = 8u * 1024 * 1024;   // == FileStore maxFileBytes
+// Bound the fetch: the per-file cap (host-tested in nimbus::orch) so a runaway or
+// hostile file can't stream forever, plus a generous-but-finite WiFi window.
+constexpr size_t      kMaxFetchBytes = nimbus::orch::kProviderFileCapBytes;
 constexpr uint32_t    kFetchTimeoutMs = 120000;
 
 static bool before(uint32_t deadline) { return (int32_t)(millis() - deadline) < 0; }
@@ -82,7 +83,7 @@ std::string safeName(const std::string& nameHint, const std::string& fileName,
 struct SinkCtx { size_t bytes = 0; bool writeErr = false; };
 bool chunkSink(const uint8_t* d, size_t n, void* ctx) {
   SinkCtx* c = (SinkCtx*)ctx;
-  if (c->bytes + n > kMaxFetchBytes) { c->writeErr = true; return false; }
+  if (!nimbus::orch::captureFitsCap(c->bytes, n, kMaxFetchBytes)) { c->writeErr = true; return false; }
   if (!agent::files::writeChunk(d, n)) { c->writeErr = true; return false; }
   c->bytes += n;
   return true;
@@ -252,18 +253,13 @@ std::string captureProviderFile(const std::string& backend, const std::string& f
   arbiter::releaseWork();
 
   // A partial file registered as saved is a LIE the head then repeats to the
-  // owner (prism v4.1 #9): require a clean EOF (not the deadline) AND, when the
-  // server declared a Content-Length, an exact byte match.
-  const bool complete = eof && (expected == SIZE_MAX || sc.bytes == expected);
-  const bool ok = (code == 200 && !sc.writeErr && sc.bytes > 0 && complete);
-  if (!files::finishWrite(ok, err)) {
-    std::string why = ok ? err
-                     : sc.writeErr ? std::string("write error / too large")
-                     : (code == 200 && !complete)
-                         ? ("download truncated (" + std::to_string(sc.bytes) + " of " +
-                            (expected == SIZE_MAX ? std::string("?") : std::to_string(expected)) +
-                            " bytes)")
-                     : (code ? ("HTTP " + std::to_string(code)) : std::string("no response"));
+  // owner (prism v4.1 #9): the portable, host-tested verdict requires a clean EOF
+  // (not the deadline) AND, when the server declared a Content-Length, an exact
+  // byte match - plus HTTP 200, no write error, and a non-empty body.
+  const nimbus::orch::CaptureVerdict v =
+      nimbus::orch::captureVerdict(code, sc.bytes, expected, eof, sc.writeErr);
+  if (!files::finishWrite(v.ok, err)) {
+    std::string why = v.ok ? err : v.reason;
     return "[file FAILED: " + why + "]";
   }
   alogf("files: captured %s/%s (%u B) from %s file %s", prj.c_str(), name.c_str(),
