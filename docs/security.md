@@ -205,6 +205,13 @@ Sign-in QR now carries a single-use `?c=` code (CUM-209). What changed (CUM-45):
   and expires (default 2 min), so a copy of the link in synced history is inert once
   used or expired. `/api/connect` returns `?c=` links; `GET /api/signin/code` mints a
   fresh code for a caller that renders a QR.
+- **Longer window for hand entry (CUM-295).** The scan path keeps the 2-minute TTL (a
+  scan is instant), but the "Show code" fallback, for anyone who cannot scan, mints its
+  own single-use code with a 10-minute TTL and shows a live mm:ss countdown, re-minting
+  and repainting the moment it expires. So a code being read off the screen and typed
+  into another machine has time to be entered, and a stale code never sits on screen as
+  if valid. The web sign-in gate exchanges the typed code the same way the `?c=` link
+  does, so the durable token is never entered by hand.
 - **Header-only downloads.** `/api/files/dl` is fetched as a Blob and handed to the
   browser via `URL.createObjectURL`, so the token rides the `X-Nimbus-Token` header and
   no `?t=`/`&t=` appears in a download link or the image preview.

@@ -410,7 +410,10 @@ static void test_config_qr() {
 static void test_token_detail() {
   ScreenCtx c = baseCtx();
   c.modeName = "orchestrator";
-  c.webToken = "0123456789abcdef01234567";  // obviously fake, full 24-char shape
+  // Single-use, short-lived hand-entry code + a live countdown (CUM-295). Fixed
+  // values so the golden is deterministic: 12-char code shape, 9:07 remaining.
+  c.webToken = "0123456789ab";
+  c.signinSecsLeft = 547;   // renders "Valid for 09:07"
   golden("token_detail", ScreenId::TokenDetail, c);
 }
 

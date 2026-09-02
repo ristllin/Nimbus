@@ -189,6 +189,44 @@ String panelSigninCode() {
 // re-minted before its code expires (CUM-209). Read-only: it never mints, so the
 // repaint (which calls panelSigninCode()) is what actually rotates the code.
 bool panelCodeStale() { return panelCodeExpiredBy(millis()); }
+
+// CUM-295: the hand-entry "Show code" (TokenDetail) path. A person reading this code
+// off the screen and typing it into another machine routinely needs more than the
+// 2-minute scan window, so the DISPLAYED code is minted with the long display TTL
+// and only re-minted when it actually expires (never mid-read). It is a distinct
+// slot in the SAME table the QR uses, so /api/signin/exchange redeems it unchanged.
+// These fields are touched only from the main task (the panel renderer), so they
+// need no lock of their own; only the table op takes the spinlock (in mintShowCode).
+static String                    s_showCode;      // the code bytes shown on screen
+static nimbus::SigninDisplayCode  s_showDisp;      // its expiry (host-tested lifecycle)
+
+static String mintShowCode() {
+  char buf[13];
+  snprintf(buf, sizeof buf, "%08x%04x",
+           (unsigned)esp_random(), (unsigned)(esp_random() & 0xFFFF));
+  const uint32_t now = millis();
+  portENTER_CRITICAL(&s_signinMux);
+  s_signinCodes.mint(buf, now, nimbus::SigninCodes::DISPLAY_TTL_MS);
+  portEXIT_CRITICAL(&s_signinMux);
+  s_showCode = String(buf);
+  s_showDisp.set(now, nimbus::SigninCodes::DISPLAY_TTL_MS);
+  return s_showCode;
+}
+
+String showCodeRemint() { return mintShowCode(); }
+
+// True once the shown code has expired (or none minted yet), so the loop repaints and
+// showCode() re-mints - a dead code never sits on screen as if valid.
+bool showCodeStale() {
+  return s_showCode.length() == 0 || s_showDisp.expired(millis());
+}
+
+String showCode() {
+  if (showCodeStale()) return mintShowCode();
+  return s_showCode;
+}
+
+uint32_t showCodeSecsLeft() { return s_showDisp.secsLeft(millis()); }
 // ================== end N1 UI endpoints (file-scope state) ==================
 
 // Per-device web auth (prism): a state-changing request must carry the device token

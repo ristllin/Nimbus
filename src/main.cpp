@@ -877,7 +877,6 @@ static render::ScreenCtx buildCtx(int cursorJob) {
   c.configUrl = configUrl();
   c.setupUrl = setupUrl();   // SetupInfo QR: always the AP address (P1.2)
   c.fwVersion = NIMBUS_FW_VERSION;   // shown small on the Setup screen
-  c.webToken = std::string(agent::store::webAuthToken().c_str());
   c.netStatus = netStatusLine();
   c.cursorJob = cursorJob;
   // SessionDetail (Orchestrator): the focused agent under the encoder cursor. Index 0
@@ -1629,11 +1628,14 @@ static void renderMenu() {
     c.apPass = std::string(net::apPass().c_str());   // per-device stored passphrase
     c.apUp = ((uint32_t)WiFi.softAPIP() != 0u);
     c.staConnected = net::staConnected();   // locked-out ConfigQr shows AP creds (CUM-200)
-    c.webToken = std::string(agent::store::webAuthToken().c_str());
     c.netStatus = netStatusLine();
     c.showCodeAffordance = true;   // menu state: the ShowCode tap routes to TokenDetail
   } else if (tokenDetail) {
-    c.webToken = std::string(agent::store::webAuthToken().c_str());
+    // "Show code" hand-entry fallback (CUM-295): a SINGLE-USE, 10-minute code the
+    // owner reads and types (the web gate exchanges it), never the durable token.
+    // The mm:ss countdown makes staleness honest; the loop re-mints on expiry.
+    c.webToken = std::string(net::showCode().c_str());
+    c.signinSecsLeft = int(net::showCodeSecsLeft());
   } else if (stScreen) {
     // Menu-triggered self-test: SILENT set only - the panel must never blare a tone.
     auto items = nimbus::hw::runNow(false);
@@ -4813,6 +4815,29 @@ void loop() {
   // rotates ~once per TTL-window rather than per frame. Cheap poll (a millis compare).
   if (g_menu.isOpen() && g_menu.showingConfigQr() && net::panelCodeStale())
     g_menuNeedsPaint = true;
+
+  // Keep the on-screen "Show code" sign-in code honest (CUM-295). The hand-entry
+  // code carries a 10-minute display TTL; while TokenDetail is open we (a) mint a
+  // fresh full window on ENTRY, (b) repaint ~1 Hz so the mm:ss countdown ticks, and
+  // (c) re-mint + repaint the moment it expires, so a dead code never sits on screen
+  // as if valid. renderMenu() reads net::showCode()/showCodeSecsLeft(), so a repaint
+  // is what actually re-mints and re-ticks.
+  {
+    static bool     s_tokenDetailWasOpen = false;
+    static uint32_t s_tokenDetailTickMs = 0;
+    const bool tdOpen = g_menu.isOpen() && g_menu.showingTokenDetail();
+    // Re-mint on ENTRY (a fresh full-TTL window each time the screen opens) and when
+    // the shown code EXPIRES; otherwise just tick the countdown ~1 Hz.
+    if (tdOpen && (!s_tokenDetailWasOpen || net::showCodeStale())) {
+      net::showCodeRemint();
+      g_menuNeedsPaint = true;
+      s_tokenDetailTickMs = now;
+    } else if (tdOpen && int32_t(now - s_tokenDetailTickMs) >= 1000) {  // ~1 Hz tick
+      g_menuNeedsPaint = true;
+      s_tokenDetailTickMs = now;
+    }
+    s_tokenDetailWasOpen = tdOpen;
+  }
 
   // Flush a coalesced menu repaint once the menu's OWN refresh window elapses.
   // Gated on g_menuDoneAt so a busy/stuck status render can
