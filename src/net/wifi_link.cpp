@@ -8,6 +8,8 @@
 
 #include <solide/memory.h>
 
+#include "nimbus/wifi/supervise.h"   // decideSupervise() - the pure link-down decision
+
 #include "nimbus_config.h"   // NIMBUS_KEY_STA_SSID / _PASS - the boot-slot re-begin
 #include "wifi_portal.h"     // msSinceJoinAttempt() - is a manual credential test in flight
 #include "wifi_store.h"      // the known-networks list (count / snapshot / note a join)
@@ -37,6 +39,11 @@ volatile bool s_knownDirty = false;
 // hold that publishap set, without touching s_manualHold or the radio off the main task.
 volatile bool s_manualHoldClearReq = false;
 uint32_t s_downSinceMs  = 0;      // first tick the link was seen down; 0 = up / unknown
+// An engaged->disengaged re-begin kick that a blocker (manual join, setup-AP client, or
+// any ineligibility) made us skip. Remembered here so it is fired from the ineligible
+// branch once the blocker clears with the link still down, instead of being consumed
+// forever (CUM-294). Cleared on recovery (link up) and whenever we take the radio ourselves.
+bool     s_kickOwed     = false;
 bool     s_scanInFlight = false;
 uint32_t s_scanStartMs  = 0;
 
@@ -129,20 +136,6 @@ void pollScan(uint32_t now) {
 
 void execute(const Action& a, uint32_t now);   // defined below; driveEngaged uses it
 
-// Step aside (ineligible now). If we HAD taken the radio and are bowing out with the link
-// still down and a network to try, re-hand a live retry to the core once - the wasEngaged
-// edge fires a single tick, so this never storms. Skip it when the owner wants the station
-// down (publishap hold) or someone else is driving the radio (a manual join, or a client on
-// the setup AP): a boot-slot begin would fight them (F2).
-void bowOut(int known) {
-  const bool wasEngaged = s_engaged;
-  disengage();
-  if (wasEngaged && known >= 1 && !s_manualHold &&
-      nimbus::net::msSinceJoinAttempt() == 0 && WiFi.softAPgetStationNum() == 0) {
-    rebeginBootSlot();
-  }
-}
-
 // We drove this join to success: record it so the list promotes the network that
 // actually worked, then hand steady-state reconnection back to the core.
 void recordJoinAndStepAside() {
@@ -154,16 +147,6 @@ void recordJoinAndStepAside() {
     nimbus::net::wifistore::noteJoined(String(joined.c_str()), day);
   }
   disengage();
-}
-
-// True when the "carried to a new location / link dropped, nobody is touching it" case
-// holds and the supervisor may take over from the core. A manual join or setup-AP client
-// always wins, and a lone saved network has nothing to fail over TO.
-bool eligible(bool onboarded, int known) {
-  const uint32_t mj = nimbus::net::msSinceJoinAttempt();
-  const bool manualPending = mj != 0 && mj < 20000u;   // a bounded window for a manual try
-  return onboarded && known >= 2 && !s_manualHold && !manualPending &&
-         WiFi.softAPgetStationNum() == 0;
 }
 
 // One driven tick while engaged: deliver any scan, snapshot the world, run the policy.
@@ -265,7 +248,7 @@ void tick(uint32_t nowMs, bool orchMode, bool onboarded) {
   const uint32_t now = nowMs ? nowMs : 1;   // 0 is the "link up / unknown" sentinel below
 
   // Notifier keeps the radio off; nothing to supervise.
-  if (!orchMode) { disengage(); s_downSinceMs = 0; return; }
+  if (!orchMode) { disengage(); s_downSinceMs = 0; s_kickOwed = false; return; }
 
   // Apply off-task requests on the MAIN task, keeping s_policy + s_manualHold + the radio
   // single-task (the no-concurrency rule). A wizard join clears any leftover manual hold.
@@ -282,6 +265,7 @@ void tick(uint32_t nowMs, bool orchMode, bool onboarded) {
     // Connected: steady state belongs to the core. If we drove this join, record it.
     if (s_engaged) recordJoinAndStepAside();
     s_downSinceMs = 0;
+    s_kickOwed    = false;   // recovered; a future edge starts fresh
     return;
   }
 
@@ -289,14 +273,40 @@ void tick(uint32_t nowMs, bool orchMode, bool onboarded) {
   // before we take over.
   if (s_downSinceMs == 0) s_downSinceMs = now;
 
+  // The engage / bow-out / re-begin-kick decision is pure and host-tested - see
+  // nimbus/wifi/supervise.h. This seam only reads the live radio + store into the snapshot
+  // and runs the one returned action; the owed-kick flag is threaded back for next tick.
   const int known = nimbus::net::wifistore::count();
-  if (!eligible(onboarded, known)) { bowOut(known); return; }
+  nimbus::wifi::SuperviseInputs si;
+  si.onboarded   = onboarded;
+  si.engaged     = s_engaged;
+  si.knownCount  = known;
+  si.manualHold  = s_manualHold;
+  si.msSinceJoin = nimbus::net::msSinceJoinAttempt();
+  si.apStations  = WiFi.softAPgetStationNum();
+  si.nowMs       = now;
+  si.downSinceMs = s_downSinceMs;
+  si.kickOwed    = s_kickOwed;
+  const nimbus::wifi::SuperviseDecision d = nimbus::wifi::decideSupervise(si);
+  s_kickOwed = d.kickOwed;
 
-  if (!s_engaged) {
-    if ((uint32_t)(now - s_downSinceMs) < 8000u) return;   // let the core try first
-    engage(now);
+  switch (d.act) {
+    case nimbus::wifi::SuperviseAct::WaitGrace:
+      return;   // inside the core's fast-reconnect grace
+    case nimbus::wifi::SuperviseAct::BowOut:
+      // Step aside; hand a live retry back to the core if one is due (the wasEngaged edge,
+      // or an owed kick whose blocker just cleared).
+      disengage();
+      if (d.fireRebegin) rebeginBootSlot();
+      return;
+    case nimbus::wifi::SuperviseAct::Engage:
+      engage(now);
+      driveEngaged(now, known, gotIp, disc, discReas);
+      return;
+    case nimbus::wifi::SuperviseAct::Drive:
+      driveEngaged(now, known, gotIp, disc, discReas);
+      return;
   }
-  driveEngaged(now, known, gotIp, disc, discReas);
 }
 
 }  // namespace nimbus::net::link
