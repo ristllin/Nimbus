@@ -76,6 +76,26 @@ each STL in a 3D viewer. Print notes live in the
 [`hardware/fab/`](https://github.com/ristllin/Nimbus/tree/main/hardware/fab#3d-printing-the-enclosure)
 folder. A bare board on the desk works too; the case is optional.
 
+<!--
+CUM-117 photo drop-in point. This build ships bare-board until case photos exist.
+When they do, this is a ONE-STEP drop-in: save each photo as a .webp into
+docs/hardware/photos/ under the exact name below, then uncomment the matching line.
+No other edit is needed; the captions are already written. Keep them commented until
+the files exist, or the Docusaurus build fails on the missing asset.
+
+Masters go to hardware-photo-masters/ (repo root sibling) as the original .jpg, then
+convert to web-sized .webp with:
+    cwebp -q 82 -resize 1600 0 "hardware-photo-masters/<name>.jpg" \
+      -o docs/hardware/photos/freenove-light-<name>.webp
+
+Planned set (front-and-back two-half case, optional stand):
+![The two printed Nimbus Light case halves and the optional desk stand laid out](photos/freenove-light-parts.webp)
+![The Freenove ESP32-S3 Display board seated in the back half of the case](photos/freenove-light-board-seated.webp)
+![The assembled Nimbus Light, front view, screen showing through the case opening](photos/freenove-light-assembled.webp)
+![The assembled Nimbus Light standing on the optional printed desk stand](photos/freenove-light-stand.webp)
+-->
+
+
 ## Pinout
 
 This pinout is fixed in firmware (`SOLIDE_BOARD=freenove_s3`). It is here for

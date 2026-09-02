@@ -24,6 +24,12 @@ research/
 # WiFi. Device-identifying secrets - kept local, never committed.
 ops/
 
+# Internal ops runbooks (DNS/email/cloud routing, release-gate ledgers). Same
+# public-release hygiene as ops/: this is a public repo, so internal operator
+# docs stay local. Their canonical committed home is the private cumulo-nimbus
+# repo's docs-internal/.
+docs-internal/
+
 # Pre-OTA QA run corpora: per-turn transcripts of LIVE connector runs (content
 # read from the owner's real Gmail/Drive/Notion/GitHub). Same privacy quarantine
 # as ops/ - recorded locally by tests/hil/qa_recorder.py, never committed.
