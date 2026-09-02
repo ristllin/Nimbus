@@ -73,6 +73,14 @@ while someone is connected to the setup hotspot or a manual join is in flight, t
 common cases (a brief router blip, a normal single-network reconnect, first-run
 setup) behave exactly as before.
 
+That hold on failover is always temporary. If you join a network by hand (say a phone
+hotspot) and it then disappears, the device does not stay silent waiting for a network
+that is gone: once that hand-picked attempt has had its short window to connect and has
+not, the hold releases and the device goes back to trying your other saved networks on
+its own, with no restart. The same is true if a person was on the setup hotspot during
+the outage and then leaves. You asked for that network, not for the radio to go quiet
+until the next power cycle.
+
 ## What you see
 
 The device screen tells the truth about what the radio is doing. When it is failing
@@ -99,6 +107,7 @@ If this page disagrees with the code, the code wins.
 |---|---|
 | Saved-network model (store, dump/load, ranking, migration) | `lib/core/src/wifi_known_networks.cpp` |
 | Selection / failover state machine | `lib/core/src/wifi_policy.cpp` |
+| Supervisor engage / bow-out / re-begin decision | `lib/core/src/wifi_supervise.cpp` (`decideSupervise`) |
 | Setup-AP recovery decision | `lib/core/src/setup_ap.cpp` (`decideSetupAp`) |
 | Status copy ("Joining X 2/3...") | `lib/core/src/wifi_copy.cpp` |
 | Device seam wiring the machine to the radio | `src/net/wifi_link.cpp` |
@@ -106,6 +115,7 @@ If this page disagrees with the code, the code wins.
 | Web management endpoints (`/api/wifi`) | `src/net/webui.cpp` |
 
 Host tests: `test/test_wifi_known`, `test/test_wifi_policy`, `test/test_wifi_recovery`,
-`test/test_wifi_copy`. The two-access-point migration is a bench (hardware) test,
+`test/test_wifi_supervise`, `test/test_wifi_copy`. The two-access-point migration is a
+bench (hardware) test,
 `tests/hil/test_l33_multi_network_failover.py`, marked manual because it needs a
 person to power one access point down.
