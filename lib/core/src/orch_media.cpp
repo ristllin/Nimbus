@@ -72,6 +72,16 @@ bool validMusicName(const char* name) {
   return true;
 }
 
+bool musicUploadAllowed(const char* name, bool sdPresent, std::string& err) {
+  // No card, no /music: the player reads the SD card, so an upload with no card
+  // would land nowhere the player can see. Say so plainly (the web UI shows this).
+  if (!sdPresent) { err = "No SD card. Add a card to the device to store music."; return false; }
+  // Same gate the player and the media tools use, so an accepted upload is always
+  // a track the player will list and play.
+  if (!validMusicName(name)) { err = "Use a .wav or .mp3 file name (no folders)."; return false; }
+  return true;
+}
+
 // ---- queue -----------------------------------------------------------------
 
 static const std::string kEmpty;

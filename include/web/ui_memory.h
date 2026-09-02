@@ -115,6 +115,18 @@ static const char UI_MEMORY[] PROGMEM = R"=====(<div class=pane id=pane-chat sty
 <div class=hint id=upMsg></div>
 </div>
 </details>
+
+<details class=setgroup><summary>Music<span class=chev>&rsaquo;</span></summary>
+<div class=setbody>
+<p class=hint id=musicStat>-</p>
+<div id=musicList class=hint>loading&hellip;</div>
+<div class=row><button id=musicPlayAll type=button>Play all</button><button id=musicPause type=button>Pause</button><button id=musicStop type=button>Stop</button></div>
+<label style="margin-top:10px">Add music</label>
+<div class=row><input id=musicFile type=file accept=".mp3,.wav"><button id=musicUpBtn type=button>Add</button></div>
+<p class="hint tip">Add a .wav or .mp3 to play it on the speaker. Play tracks here, with <span class=badge>/play</span> over Telegram, or by asking the assistant.</p>
+<div class=hint id=musicUpMsg></div>
+</div>
+</details>
 </div>
 
 <div class=pane id=pane-usage style="display:none">

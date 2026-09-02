@@ -5,6 +5,8 @@
 
 #include "../agent/files_subsystem.h"
 #include "../agent/memory_subsystem.h"   // memory::Lock, dataFs()
+#include "../sfx/music.h"                 // CUM-40: /music player control + listing
+#include "../sfx/music_store.h"           // CUM-40: streaming write into SD /music
 #include "webui.h"                        // webAuthOk() - token gate
 
 namespace nimbus::net {
@@ -85,6 +87,8 @@ bool inlineViewable(const char* mime) {
 }
 
 }  // namespace
+
+void registerMusicRoutes(AsyncWebServer& server);   // CUM-40: SD /music routes (below)
 
 void registerFileRoutes(AsyncWebServer& server) {
   // ---- GET /api/files/list[?project=] - index listing --------------------------
@@ -261,6 +265,113 @@ void registerFileRoutes(AsyncWebServer& server) {
     char body[48];
     snprintf(body, sizeof body, "{\"ok\":true,\"removed\":%d}", n);
     sendJson(r, 200, body);
+  });
+
+  registerMusicRoutes(server);
+}
+
+// ---- CUM-40: the SD /music surface -------------------------------------------
+// The artifact store (/api/files/*) writes /mem/files; the music player reads
+// /music. These are separate trees on purpose (the player scans a raw folder, not
+// the indexed store), so music gets its own small route set: upload a validated
+// track INTO /music, list what is there, play/stop it, and remove one. This is the
+// user path that was missing - before it, /music could only be populated over the
+// serial console, so /play always reported an empty folder. Handlers are split into
+// file-scope helpers so each stays under the complexity gate.
+namespace {
+
+// The final verdict once the upload finished (or refused). Mirrors the files route.
+void musicUploadReply(AsyncWebServerRequest* r) {
+  UpState* st = static_cast<UpState*>(r->_tempObject);
+  if (!st) { sendJson(r, 400, "{\"error\":\"no file part (multipart form-data required)\"}"); return; }
+  if (st->refused) {
+    const bool auth = strncmp(st->reason, "auth", 4) == 0;
+    const bool busy = strstr(st->reason, "in progress") != nullptr;
+    sendJson(r, auth ? 401 : (busy ? 429 : 400), String("{\"error\":\"") + st->reason + "\"}");
+    return;
+  }
+  if (!st->finished || !st->ok) { sendJson(r, 500, "{\"error\":\"upload incomplete\"}"); return; }
+  sendJson(r, 200, "{\"ok\":true}");
+}
+
+// First-chunk gate: authorize, then open the streaming /music write session.
+void musicUploadOpen(AsyncWebServerRequest* r, const String& filename, UpState* st) {
+  if (!webAuthOk(r)) { refuse(st, "auth required"); return; }
+  String nm = qparam(r, "name");
+  if (nm.length() == 0) nm = filename;              // multipart filename fallback
+  std::string err;
+  if (!music::store::uploadBegin(std::string(nm.c_str()), err)) { refuse(st, err); return; }
+  const uint32_t gen = music::store::uploadGen();
+  r->onDisconnect([gen]() { music::store::uploadAbortGen(gen); });
+}
+
+// Per-chunk streaming body: open on the first chunk, stream, commit on the last.
+void musicUploadChunk(AsyncWebServerRequest* r, const String& filename, size_t,
+                      uint8_t* data, size_t len, bool final) {
+  UpState* st = static_cast<UpState*>(r->_tempObject);
+  if (!st) {
+    st = static_cast<UpState*>(calloc(1, sizeof(UpState)));
+    r->_tempObject = st;
+    if (!st) return;
+    musicUploadOpen(r, filename, st);
+  }
+  if (st->refused) return;
+  if (len && !music::store::uploadChunk(data, len)) {
+    refuse(st, "SD write failed (or file too large)");
+    music::store::uploadAbort();
+    return;
+  }
+  if (final) {
+    std::string err;
+    st->ok = music::store::uploadFinish(true, err);
+    st->finished = true;
+    if (!st->ok) refuse(st, err);
+  }
+}
+
+// Apply a playback control verb (or a bare/`all` play-everything).
+void musicApplyPlay(const String& action, const String& name) {
+  if (action == "stop")        music::stop();
+  else if (action == "pause")  music::pause();
+  else if (action == "resume") music::resume();
+  else if (action == "next")   music::next();
+  else if (name.length())      music::playNow({std::string(name.c_str())});
+  else                         music::playAll();     // bare / action=all
+}
+
+}  // namespace
+
+void registerMusicRoutes(AsyncWebServer& server) {
+  // POST /api/music/upload?name= - multipart streamed straight to SD /music.
+  server.on("/api/music/upload", HTTP_POST, musicUploadReply, musicUploadChunk);
+
+  // GET /api/music/list - tracks in /music + the current player state.
+  server.on("/api/music/list", HTTP_GET, [](AsyncWebServerRequest* r) {
+    if (authBlocked(r)) return;
+    if (!agent::memory::haveSd()) { sendJson(r, 200, "{\"present\":false,\"tracks\":[]}"); return; }
+    String body = "{\"present\":true,\"tracks\":[";
+    auto tracks = music::listMusicDir();
+    for (size_t i = 0; i < tracks.size(); i++) { if (i) body += ","; body += "\""; body += tracks[i].c_str(); body += "\""; }
+    body += "],\"player\":"; body += music::statusJson(); body += "}";
+    sendJson(r, 200, body);
+  });
+
+  // POST /api/music/play  action=all|stop|pause|resume|next  OR  name=.
+  server.on("/api/music/play", HTTP_POST, [](AsyncWebServerRequest* r) {
+    if (authBlocked(r)) return;
+    musicApplyPlay(qparam(r, "action"), qparam(r, "name"));
+    sendJson(r, 200, String("{\"ok\":true,\"player\":") + music::statusJson() + "}");
+  });
+
+  // POST /api/music/rm  name= - delete one track from /music.
+  server.on("/api/music/rm", HTTP_POST, [](AsyncWebServerRequest* r) {
+    if (authBlocked(r)) return;
+    std::string err;
+    if (!music::store::removeTrack(std::string(qparam(r, "name").c_str()), err)) {
+      sendJson(r, 404, String("{\"error\":\"") + err.c_str() + "\"}");
+      return;
+    }
+    sendJson(r, 200, "{\"ok\":true}");
   });
 }
 

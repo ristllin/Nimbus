@@ -33,6 +33,13 @@ MediaFormat sniffFormat(const uint8_t* head, size_t n, const char* filename);
 // traversal gate for the media tools (mirrors the sfx/file path rules).
 bool validMusicName(const char* name);
 
+// The one gate for putting a track INTO /music (the web upload route and the host
+// test share it, so "what a user can add" and "what the player reads back" can
+// never drift). Refuses with `err` set to user-facing copy when there is no SD
+// card, or the name is not an acceptable track (validMusicName). Returns true and
+// leaves `err` untouched when the upload may proceed.
+bool musicUploadAllowed(const char* name, bool sdPresent, std::string& err);
+
 // ---- playback queue --------------------------------------------------------
 enum class MediaState : uint8_t { Stopped = 0, Playing, Paused };
 const char* mediaStateName(MediaState s);

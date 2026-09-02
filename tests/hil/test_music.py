@@ -13,9 +13,33 @@ Markers: ``@pytest.mark.hil`` (serial console). The 3-min MP3 adds ``audio`` +
 
 from __future__ import annotations
 
+import struct
 import time
 
 import pytest
+
+try:
+    import requests
+except ImportError:  # pragma: no cover
+    requests = None
+
+from test_l4_network import lan_ip_or_skip
+from test_l9_resilience import _webtok
+
+
+def _hdr(tok: str) -> dict:
+    return {"X-Nimbus-Token": tok}
+
+
+def _tiny_wav(seconds: float = 0.05, rate: int = 16000) -> bytes:
+    """A minimal valid 16-bit mono PCM WAV so the upload lands a real, playable track."""
+    n = int(rate * seconds)
+    data = b"\x00\x00" * n
+    return (
+        b"RIFF" + struct.pack("<I", 36 + len(data)) + b"WAVE"
+        b"fmt " + struct.pack("<IHHIIHH", 16, 1, 1, rate, rate * 2, 2, 16)
+        + b"data" + struct.pack("<I", len(data)) + data
+    )
 
 
 def _play(device, arg: str = "", timeout: float = 8.0) -> str:
@@ -63,3 +87,66 @@ def test_three_minute_mp3_completes_no_watchdog(device):
         time.sleep(15)
     # Still alive after the full clip duration = no watchdog reset.
     device.cmd_re("PING", r"PONG|PING", timeout=8.0)
+
+
+# ---- CUM-40: the web upload path (put a track into /music, then play it) -----
+# The gap this closed: before, /music could only be filled over the serial console,
+# so /play always found an empty folder. These prove the USER path end to end over
+# the LAN web API. Markers: ``@pytest.mark.net`` (needs a board on the LAN + token).
+
+
+@pytest.mark.net
+def test_music_upload_requires_token(device, net, secrets, require_secret):
+    """Every /api/music route needs the token; an unauthenticated upload writes no byte."""
+    if requests is None:
+        pytest.skip("requests not installed")
+    ip = lan_ip_or_skip(device, net, secrets, require_secret)
+    assert net.get("/api/music/list", ip=ip, auth=False).status_code == 401
+    r = requests.post(
+        f"http://{ip}/api/music/upload?name=x.wav", files={"file": ("x.wav", _tiny_wav())}, timeout=10
+    )
+    assert r.status_code == 401, f"unauthenticated music upload -> {r.status_code}, want 401"
+
+
+@pytest.mark.net
+def test_music_upload_lists_and_plays(device, net, secrets, require_secret):
+    """Upload a valid WAV -> it appears in /api/music/list -> it plays -> delete it."""
+    if requests is None:
+        pytest.skip("requests not installed")
+    ip = lan_ip_or_skip(device, net, secrets, require_secret)
+    tok = _webtok(device)
+    name = "hiltest-clip.wav"
+    up = requests.post(
+        f"http://{ip}/api/music/upload?name={name}", files={"file": (name, _tiny_wav())},
+        headers=_hdr(tok), timeout=20,
+    )
+    if up.status_code != 200 and not net.get_json("/api/music/list", ip=ip).get("present", False):
+        pytest.skip("no SD card mounted")
+    assert up.status_code == 200, f"music upload -> {up.status_code}: {up.text}"
+    try:
+        listing = net.get_json("/api/music/list", ip=ip, timeout=8.0)
+        assert name in (listing.get("tracks") or []), f"uploaded track not listed: {listing}"
+        # Play it, then stop - the device must accept both and stay responsive.
+        assert net.post("/api/music/play", {"name": name, "t": tok}, ip=ip).status_code == 200
+        assert net.post("/api/music/play", {"action": "stop", "t": tok}, ip=ip).status_code == 200
+        device.cmd_re("PING", r"PONG|PING", timeout=6.0)
+    finally:
+        net.post("/api/music/rm", {"name": name, "t": tok}, ip=ip)
+    gone = net.get_json("/api/music/list", ip=ip, timeout=8.0)
+    assert name not in (gone.get("tracks") or []), "track still listed after delete"
+
+
+@pytest.mark.net
+def test_music_upload_rejects_bad_extension(device, net, secrets, require_secret):
+    """A non-audio name is refused (400) and never lands in /music."""
+    if requests is None:
+        pytest.skip("requests not installed")
+    ip = lan_ip_or_skip(device, net, secrets, require_secret)
+    tok = _webtok(device)
+    r = requests.post(
+        f"http://{ip}/api/music/upload?name=notes.txt", files={"file": ("notes.txt", b"nope")},
+        headers=_hdr(tok), timeout=10,
+    )
+    assert r.status_code == 400, f"bad-extension upload -> {r.status_code}, want 400"
+    listing = net.get_json("/api/music/list", ip=ip, timeout=8.0)
+    assert "notes.txt" not in (listing.get("tracks") or [])

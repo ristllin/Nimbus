@@ -172,7 +172,7 @@ function loadPane(p){
     if(typeof loadWakeups==='function')loadWakeups();}
   // Safety (fetchpol + moderation) loads with pane-usage's loadOrch/loadFetchQ,
   // which run in the same DEST.assistant group; no separate load needed here.
-  if(p==='mem'){if(typeof loadMemDash==='function')loadMemDash();if(typeof loadFiles==='function')loadFiles();}
+  if(p==='mem'){if(typeof loadMemDash==='function')loadMemDash();if(typeof loadFiles==='function')loadFiles();if(typeof loadMusic==='function')loadMusic();}
   if(p==='harness'){if(typeof loadOrch==='function')loadOrch();if(typeof loadConnectors==='function')loadConnectors();if(typeof loadTools==='function')loadTools();if(typeof loadSkills==='function')loadSkills();}
   if(p==='usage'){if(typeof loadOrch==='function')loadOrch();if(typeof loadFetchQ==='function')loadFetchQ();if(typeof loadUsageHistory==='function')loadUsageHistory();}
   if(p==='chat'&&typeof loadChatHistory==='function')loadChatHistory();
@@ -2908,6 +2908,40 @@ $('upBtn')&&($('upBtn').onclick=()=>{
     work:()=>uploadFile(f,proj,pct=>fbState('upMsg','pending','Uploading '+f.name+'… '+pct+'%',pct)),
     ok:()=>{inp.value='';loadFiles();return 'Uploaded '+f.name+'.';},
     error:s=>'Upload failed'+(s?(' ('+s+')'):'')+' - check the file and try again.'});
+});
+// ---- Music: the SD /music folder (CUM-40) ----
+function _mpost(u,k,v,ok){const f=new FormData();if(k)f.append(k,v);
+  return fetch(u,{method:'POST',body:f}).then(r=>r.ok?(ok?ok():loadMusic()):Promise.reject(r.status)).catch(()=>toast('Couldn\'t do that - try again'));}
+function loadMusic(){
+  const box=$('musicList'); if(!box)return;
+  fetch('/api/music/list').then(r=>r.ok?r.json():Promise.reject(r.status)).then(d=>{
+    const p=d.player||{},t=d.tracks||[];
+    if($('musicStat'))$('musicStat').textContent=!d.present?'No SD card'
+      :(t.length+' track(s)'+(p.state&&p.state!=='stopped'?(' · '+p.state+(p.current?(': '+p.current):'')):''));
+    if(!t.length){box.innerHTML='<span class=hint>No music yet - add one below</span>';return;}
+    box.innerHTML='<table><tbody>'+t.map(n=>'<tr><td style="word-break:break-all">'+_fesc(n)+
+      '</td><td style="white-space:nowrap"><a href="#" data-mpl="'+_fesc(n)+'">play</a> &middot; <a href="#" data-mrm="'+_fesc(n)+'">delete</a></td></tr>').join('')+'</tbody></table>';
+    box.querySelectorAll('a[data-mpl]').forEach(a=>a.onclick=e=>{e.preventDefault();_mpost('/api/music/play','name',a.dataset.mpl);});
+    box.querySelectorAll('a[data-mrm]').forEach(a=>a.onclick=e=>{e.preventDefault();
+      uiConfirm('Delete '+a.dataset.mrm+'?',{ok:'Delete',danger:true}).then(ok=>{if(ok)_mpost('/api/music/rm','name',a.dataset.mrm);});});
+  }).catch(()=>{box.innerHTML='<span class=hint>Music unavailable</span>';});
+}
+$('musicPlayAll')&&($('musicPlayAll').onclick=()=>_mpost('/api/music/play','action','all'));
+$('musicPause')&&($('musicPause').onclick=()=>_mpost('/api/music/play','action','pause'));
+$('musicStop')&&($('musicStop').onclick=()=>_mpost('/api/music/play','action','stop'));
+$('musicUpBtn')&&($('musicUpBtn').onclick=()=>{
+  const inp=$('musicFile'),f=inp&&inp.files[0];
+  if(!f){fbState('musicUpMsg','error','Choose a .wav or .mp3 first.');return;}
+  run({status:'musicUpMsg',btn:$('musicUpBtn'),pending:'Adding '+f.name+'…',
+    work:()=>new Promise((res,rej)=>{const x=new XMLHttpRequest();
+      x.open('POST','/api/music/upload?name='+encodeURIComponent(f.name));
+      try{x.setRequestHeader('X-Nimbus-Token',nimbusTok());}catch(e){}
+      x.upload.onprogress=e=>{if(e.lengthComputable){const pc=Math.round(e.loaded/e.total*100);fbState('musicUpMsg','pending','Adding '+f.name+'… '+pc+'%',pc);}};
+      x.onload=()=>{if(x.status>=200&&x.status<300)res({});else rej(x.status);};
+      x.onerror=()=>rej(0);
+      const fd=new FormData();fd.append('file',f,f.name);x.send(fd);}),
+    ok:()=>{inp.value='';loadMusic();return 'Added '+f.name+'.';},
+    error:s=>'Couldn\'t add'+(s?(' ('+s+')'):'')+' - use a .wav or .mp3 and try again.'});
 });
 // ---- Skills (P2 dynamic capsules): list + load/save/delete on the SD card ----
 function loadSkills(){

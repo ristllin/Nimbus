@@ -231,6 +231,7 @@ rules.
 | Setting | Canonical home | Other surface |
 |---|---|---|
 | **Directive** | Web app: setup wizard (Directive step) and the Directive box under Memory | Device menu: not editable there (free text; web-only) |
+| **Music tracks** | Web app: Memory & Files, Music (add, play, remove tracks on the card's music folder) | Device menu: not managed there; play from Telegram `/play` or the assistant. |
 
 ## 5. The status language - colors, motion, themes
 

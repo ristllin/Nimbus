@@ -262,8 +262,15 @@ Commands grouped by purpose, one line each. Arguments in angle brackets.
 The device plays music from the SD card's `/music` folder over the speaker, on top
 of the same volume control as sound effects (Settings, Sound). Reach it from the
 `media.play` / `media.pause` / `media.stop` / `media.list` tools (the assistant), the
-`/play` Telegram command, or the `PLAY` console command.
+`/play` Telegram command, the `PLAY` console command, or the Music section of the web
+page (Memory & Files, Music).
 
+- **Adding tracks.** Open the web page, go to Memory & Files, Music, and use Add
+  music to put a `.wav` or `.mp3` file onto the card's music folder. The track then
+  appears in the list, ready to play here, over Telegram with `/play`, or by asking
+  the assistant. A file that is not a `.wav` or `.mp3` is refused with a note; if
+  there is no card, Music says so instead of failing quietly. (Tracks copied onto
+  the card's `/music` folder by hand work too.)
 - **Formats.** 16-bit PCM **WAV** and **MP3** both play (MP3 decode uses the
   bundled public-domain minimp3 decoder). A file whose format is not recognized is
   skipped, never played as noise.

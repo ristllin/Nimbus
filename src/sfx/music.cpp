@@ -351,6 +351,21 @@ void pause()  { Lock lk; g_q.pause(); }              // holds position; NOT an i
 void resume() { Lock lk; g_q.play(); }
 void stop()   { Lock lk; g_q.stop(); g_gen++; }       // interrupt + halt
 bool next()   { Lock lk; bool r = g_q.next(); g_gen++; return r; }   // interrupt + skip
+
+bool stopIfCurrent(const std::string& name) {
+  Lock lk;
+  // Bump g_gen + Stopped so the streaming loop bails at its NEXT keepPlaying (which
+  // it checks before every read), before the caller removes/renames the file under
+  // its open handle. The caller holds the SD-bus lock across the destructive op, so
+  // the player is fenced out of the card until then; this just makes sure it stops
+  // reading rather than streaming into a reused cluster.
+  if (g_q.state() != MediaState::Stopped && g_q.current() == name) {
+    g_q.stop();
+    g_gen++;
+    return true;
+  }
+  return false;
+}
 void setRepeat(bool on) { Lock lk; g_q.setRepeat(on); }
 
 String statusJson() {
