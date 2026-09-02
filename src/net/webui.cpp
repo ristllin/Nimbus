@@ -540,10 +540,13 @@ static void buildState(String& out) {
     fl["bytes"]       = (unsigned long long)t.used;
     fl["quota"]       = (unsigned long long)t.quota;       // card - 512 MB reserve
     fl["cardFree"]    = (unsigned long long)t.cardFree;    // free-on-card
-    // CUM-15: only advertise full-card format when the board-support driver actually
-    // has the primitive (the hook is set). A Format control that can only 501 is a
-    // lying knob, so the UI renders it only when this is true.
-    fl["canFormat"]   = (bool)s_wc.sdFormat;
+    // CUM-15 v2: advertise full-card format only when the firmware has the primitive
+    // wired AND a card is physically present. Once the driver gained format() the hook
+    // is always set, so a bare (bool)s_wc.sdFormat is always true and the control would
+    // show on a device with no card - a knob that can only fail (CUM-290 lying-knob).
+    // cardTotal is the raw card capacity, nonzero even for a corrupt or too-small card,
+    // which is exactly what Format is for; it is 0 only when no card is detected.
+    fl["canFormat"]   = nimbus::orch::offerFormatCard((bool)s_wc.sdFormat, t.cardTotal > 0);
   }
 
   bool sta = staConnected();
