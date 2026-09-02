@@ -62,12 +62,16 @@ server - findings are weighted by real reachability.
   (`ERASE STORAGE`), Factory Reset (`FACTORY RESET`), and full-card Format
   (`FORMAT CARD`) each require their OWN exact phrase, so one confirmation can never
   trigger a heavier action than the owner meant (`nimbus::orch::confirmOk`, one
-  source of truth, host-tested). All three are token-gated POSTs and are deferred to
-  the main loop (never erased on the web task). **Factory Reset preserves the device
-  identity** (the user-visible name) across the wipe and can optionally erase the SD
-  card in the same flow; everything else (keys, token, bonds, config) is fresh.
-  Full-card format needs a board-support driver primitive that does not exist yet,
-  so `/api/sdformat` reports that honestly until it lands.
+  source of truth, host-tested as a matrix so a new destructive action cannot ship
+  ungated). All three are token-gated POSTs and are deferred to the main loop (never
+  erased on the web task). **Factory Reset preserves only the board's physical
+  identity** (panel model, mount orientation, touch calibration, update slug) so a
+  reset device reboots on the right driver instead of a screen it cannot recover; it
+  scraps everything the owner set, including the device name, and the unit re-onboards
+  fresh with a new name. It can optionally erase the SD card in the same flow.
+  Full-card Format rewrites the whole card and is offered only when a card is
+  physically present, so the control is never a knob that can only fail; with no card
+  the action refuses honestly.
 - **Telegram allowlist fails CLOSED.** An empty allowlist rejects all chats (was
   fail-open = allow-all); the poll task warns loudly if a token is set with no allowlist.
 - **Shared-engine mutex.** `memory::Lock` (recursive) serializes VectorMemory /

@@ -2937,12 +2937,13 @@ void setup() {
   wc.sdReset = [] { g_sdResetPending = true; };            // main loop erases /mem + reboots
   wc.powerOff = [] { g_powerOffPending = true; };          // CUM-224: main loop runs clean shutdown + deep sleep
   wc.canWakeOnTouch = [] { return boardCanWakeOnTouch(); };  // honest web interstitial copy per board
-  // Full-card format (CUM-15 / CUM-132): the board-support driver now exposes a
-  // low-level format primitive (solide::storage::format(): FATFS f_mkfs over the
-  // mounted card, SPI + SDMMC). Wiring this lights up webui's canFormat capability
-  // (webui.cpp: canFormat = (bool)s_wc.sdFormat). Deferred to the main loop like
-  // the other destructive SD actions - reformatting blocks and must not run on the
-  // AsyncTCP task. The on-card destructive acceptance stays deferred pending a
+  // Full-card format (CUM-15 / CUM-132): the board-support driver exposes a low-level
+  // format primitive (solide::storage::format(): FATFS f_mkfs over the mounted card,
+  // SPI + SDMMC). Wiring this hook lets webui advertise the Format control, but only
+  // when a card is actually present (webui.cpp: canFormat = offerFormatCard(hook,
+  // cardTotal>0)) so it is never a knob that can only fail. Deferred to the main loop
+  // like the other destructive SD actions - reformatting blocks and must not run on
+  // the AsyncTCP task. The on-card destructive acceptance stays deferred pending a
   // scratch card (CUM-131); the driver's host tests cover the guards/state machine.
   wc.sdFormat = [] { g_sdFormatPending = true; };          // main loop reformats the whole card + reboots
   wc.chatSend = [](const String& t) {   // -> tg_poll turn
