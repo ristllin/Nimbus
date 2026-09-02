@@ -22,6 +22,7 @@ looking at the glass are all in scope.
 | Bad OTA image boot-loops | OTASIM bad image rolls back within the boot-guard budget | `tests/hil/test_l29_release_gate.py::TestOtaRollback` |
 | Panel-heal stops re-arming a slept panel (CUM-231) | past the trust window the panel is re-armed unconditionally; `healthy()` never gates it | `test/test_panel_heal`, `test/test_panel_health` |
 | Settings lost across an update (CUM-237) | the OTA flow writes only its own bookkeeping keys, never an owner's Wi-Fi / provider key / touch cal / theme | `check_ota_preserves_nvs.py`, plus the provision -> OTA -> power-cycle -> read-NVS bench leg |
+| N7 internal-SRAM win regressed (CUM-24) | the Telegram `tg_poll` TLS staging buffers stay PSRAM pointer handles, not inline internal `.bss` (the ~6.7 KB win merged as 2598499) | `check_sram_staging.py`, `test_sram_staging.py` |
 
 ## Running it
 
