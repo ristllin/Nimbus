@@ -21,6 +21,7 @@ import sys
 import check_driver_pin
 import check_elf_symbols
 import check_ota_preserves_nvs
+import check_sram_staging
 
 HARDWARE_BATTERY = """\
 HARDWARE (bench, --allow-hardware; paste the real output):
@@ -57,6 +58,7 @@ def run_host_checks() -> bool:
     for name, fn in (
         ("driver-pin (CUM-167)", check_driver_pin.main),
         ("elf-symbols (CUM-167)", check_elf_symbols.main),
+        ("sram-staging (CUM-24)", check_sram_staging.main),
         ("ota-nvs (CUM-237)", check_ota_preserves_nvs.main),
     ):
         rc = fn([])
