@@ -34,6 +34,12 @@ void pause();      // hold at the current position
 void resume();     // resume from pause / start a stopped-but-loaded queue
 void stop();       // halt and clear the queue
 bool next();       // skip to the next track
+
+// Stop playback ONLY if `name` is the track currently playing. The upload/delete
+// path calls this before it overwrites or removes a /music file, so a track can't
+// be replaced or deleted out from under the player's open file handle. Returns
+// true if it stopped something.
+bool stopIfCurrent(const std::string& name);
 void setRepeat(bool on);
 
 // A JSON snapshot for media.list / the web UI: {state,current,index,count,repeat,
