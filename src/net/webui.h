@@ -139,6 +139,24 @@ String panelSigninCode();
 // left on the panel past its code's TTL would otherwise fail the scan silently.
 bool panelCodeStale();
 
+// Hand-entry "Show code" (TokenDetail) sign-in code (CUM-295). Distinct from the QR
+// path: a person reads THIS code and types it, so it is minted with the longer
+// display TTL (SigninCodes::DISPLAY_TTL_MS, 10 min) and only re-minted when it
+// actually expires - never mid-read - so the characters hold still long enough to
+// transcribe. Same shared code table, so /api/signin/exchange redeems it. All main
+// task (the panel renderer); the table op is spinlock-guarded.
+//
+// showCodeRemint(): mint a fresh display code now (call on entry to the screen).
+// showCode():       current display code, minting one if none/expired.
+// showCodeSecsLeft(): whole seconds until it expires (0 once expired) - drives the
+//                   on-screen mm:ss countdown.
+// showCodeStale():  true once it has expired, so the loop can repaint (re-mint) and
+//                   a dead code never sits on screen as if valid.
+String   showCodeRemint();
+String   showCode();
+uint32_t showCodeSecsLeft();
+bool     showCodeStale();
+
 // Register routes and start the server on port 80. `wc` is copied; its borrowed
 // pointers/callbacks must outlive the server.
 void beginWeb(const WebConfig& wc);

@@ -1138,38 +1138,44 @@ function showAuth(){
     '<p style="color:#9ab">Scan the Sign-in QR on the device to sign in with no typing. Find it under Settings &gt; Connectivity &gt; Sign-in QR.</p>'+
     '<button id=authshow type=button style="background:none;border:none;color:#7fd1c8;text-decoration:underline;cursor:pointer;font-size:14px;padding:4px">Enter the code instead</button>'+
     '<div id=authcode style="display:none;margin-top:10px">'+
-    '<p style="color:#9ab;font-size:13px">Can\'t scan? On the device, tap Show code under Settings &gt; Connectivity &gt; Sign-in QR, then enter the device sign-in code here.</p>'+
+    '<p style="color:#9ab;font-size:13px">Can\'t scan? On the device, tap Show code under Settings &gt; Connectivity &gt; Sign-in QR, then enter the device sign-in code here. It is valid for about 10 minutes.</p>'+
     '<input id=authtok placeholder="device sign-in code" style="width:240px;padding:8px;font-size:15px"> '+
-    '<button id=authuse style="padding:8px 16px;font-size:15px">Continue</button></div>'+
+    '<button id=authuse style="padding:8px 16px;font-size:15px">Continue</button>'+
+    '<p id=autherr style="color:#e88;font-size:13px;margin-top:8px"></p></div>'+
     '<p style="color:#678;font-size:12px;margin-top:14px">New device? Open 192.168.4.1 on its setup hotspot. First-time setup signs you in automatically.</p></div>';
   document.body.appendChild(b);
   $('authshow').onclick=()=>{$('authcode').style.display='block';$('authshow').style.display='none';$('authtok').focus();};
-  $('authuse').onclick=()=>{const t=$('authtok').value.trim();if(!t)return;
-    // Durably stored -> reload clean so every poller restarts signed in.
-    if(setTok(t)){location.reload();return;}
-    // Storage blocked (private browsing): keep the code in memory only, never in
-    // the URL (CUM-45). Drop the gate and resume; the interval pollers pick it up.
-    _authPaused=false;b.remove();if(typeof loadState==='function')loadState();};
+  // Hand-entry fallback (CUM-208, CUM-295): the typed value is a SINGLE-USE,
+  // short-lived sign-in code, exchanged for the durable token exactly like the ?c=
+  // link - never stored as the token itself (a single-use code is not the token).
+  $('authuse').onclick=()=>{const c=$('authtok').value.trim();if(!c)return;
+    const btn=$('authuse');btn.disabled=true;
+    signinExchange(c,()=>{btn.disabled=false;
+      $('autherr').textContent='That code is invalid or has expired. Tap Show code on the device for a fresh one.';});};
 }
-// One-time sign-in code (CUM-45): the Sign-in QR can carry a short-lived,
-// single-use ?c=<code> instead of the durable token. Exchange it for the token,
-// store it client-side, strip the URL, and reload clean. Nothing durable ever
-// appears in a URL, so a synced-history copy of the link is inert once used.
-(function(){
-  const c=new URLSearchParams(location.search).get('c'); if(!c)return;
-  const q=new URLSearchParams(location.search);q.delete('c');
-  const clean=location.pathname+(q.toString()?'?'+q.toString():'');
-  const fd=new FormData();fd.append('code',c);
+// One-time sign-in code exchange (CUM-45): a short-lived, single-use code is
+// exchanged for the durable token, stored client-side, and the page reloads clean.
+// Nothing durable ever appears in a URL, so a synced-history copy of a ?c= link is
+// inert once used. Shared by the ?c= link handler and the hand-entry fallback.
+// onFail runs on a bad/expired code (the gate then handles sign-in).
+function signinExchange(code,onFail){
+  const fd=new FormData();fd.append('code',code);
   fetch('/api/signin/exchange',{method:'POST',body:fd}).then(r=>r.ok?r.json():Promise.reject(r.status))
-    .then(o=>{history.replaceState(null,'',clean);
-      if(!o||!o.token)return;
+    .then(o=>{if(!o||!o.token){if(onFail)onFail();return;}
       if(setTok(o.token)){location.reload();return;}
       // Storage blocked (private browsing): the token lives in memory only, so a
       // reload would drop it and the single-use code is already spent. Instead
       // dismiss any sign-in gate and resume with the in-memory token.
       _authPaused=false;const g=$('authgate');if(g)g.remove();
       if(typeof loadState==='function')loadState();})
-    .catch(()=>{history.replaceState(null,'',clean);});   // bad/expired code -> the gate handles sign-in
+    .catch(()=>{if(onFail)onFail();});
+}
+(function(){
+  const c=new URLSearchParams(location.search).get('c'); if(!c)return;
+  const q=new URLSearchParams(location.search);q.delete('c');
+  // Strip the code from the address bar immediately (single-use, keep it out of history).
+  history.replaceState(null,'',location.pathname+(q.toString()?'?'+q.toString():''));
+  signinExchange(c);   // bad/expired -> the gate handles sign-in
 })();
 // One-time migration hint for a deprecated ?t= sign-in link (CUM-45): the person
 // is already signed in on this browser; nudge them to the Sign-in QR next time.

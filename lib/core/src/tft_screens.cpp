@@ -1016,19 +1016,27 @@ void drawTokenDetail(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& c
   fb.card(L.gut(), cardY, L.w - 2 * L.gut(), cardH);
   fb.label(L.gut() + 14, cardY + 12, "sign-in code", kInk3);
 
-  std::string token = asciiSanitize(ctx.webToken.empty() ? std::string("-")
-                                                          : ctx.webToken);
-  // A real token is 24 hex characters. Two exact 12-character lines are large
-  // enough to transcribe and cannot clip. Keep the loop general so a future
-  // token-length change still shows every character (up to the card's 3 lines).
+  std::string code = asciiSanitize(ctx.webToken.empty() ? std::string("-")
+                                                        : ctx.webToken);
+  // The hand-entry code is a SINGLE-USE, short-lived sign-in code (CUM-295), large
+  // enough to transcribe on one line and cannot clip. Keep the loop general so a
+  // longer code still shows every character across up to the card's 3 lines.
   constexpr size_t kCharsPerLine = 12;
   int line = 0;
-  for (size_t at = 0; at < token.size() && line < 3; at += kCharsPerLine, ++line) {
-    const std::string part = token.substr(at, kCharsPerLine);
+  for (size_t at = 0; at < code.size() && line < 3; at += kCharsPerLine, ++line) {
+    const std::string part = code.substr(at, kCharsPerLine);
     const int tx = (L.w - fb.textWidth(part, 2)) / 2;
     fb.text(tx, cardY + 38 + line * 24, part, kTeal, 2);
   }
-  fb.text(L.gut() + 14, cardY + cardH - 18, "Join the lines exactly.", kInk3, 1);
+  // Honest staleness (CUM-295): a live mm:ss countdown so a code near expiry is
+  // never mistaken for a fresh one. The device re-mints + repaints on expiry, so a
+  // dead code never sits here as if valid.
+  if (ctx.signinSecsLeft >= 0) {
+    char cd[28];
+    std::snprintf(cd, sizeof cd, "Valid for %02d:%02d", ctx.signinSecsLeft / 60,
+                  ctx.signinSecsLeft % 60);
+    fb.text(L.gut() + 14, cardY + cardH - 18, cd, kInk3, 1);
+  }
 }
 
 void drawPairing(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx) {

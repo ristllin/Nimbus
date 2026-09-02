@@ -107,8 +107,13 @@ struct ScreenCtx {
                           // (the scanning phone is on the setup AP; a LAN IP is
                           // unroutable from there - audit P1.2). "" -> configUrl.
   std::string netStatus;  // one-line live connectivity status under the ConfigQr QR
-  std::string webToken;   // recovery-only device auth token. Normal setup/sign-in QRs
-                          // carry it automatically; setup screens never require typing it.
+  std::string webToken;   // TokenDetail ("Show code") body: the SINGLE-USE, short-lived
+                          // sign-in code to read and type by hand (CUM-295). Not the
+                          // durable token - the web gate exchanges this code for the token.
+                          // Normal setup/sign-in QRs carry a code automatically; setup
+                          // screens never require typing anything.
+  int signinSecsLeft = -1;  // TokenDetail countdown: whole seconds until webToken expires,
+                          // rendered as mm:ss so staleness is honest (CUM-295). -1 hides it.
   bool showCodeAffordance = false;  // draw the tappable "Show code" button on the Sign-in
                           // QR. Set ONLY when ConfigQr is rendered as a MENU state, whose
                           // tap layer routes ShowCode -> TokenDetail. The repeated-401
