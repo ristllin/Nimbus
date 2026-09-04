@@ -37,8 +37,11 @@ def _tiny_wav(seconds: float = 0.05, rate: int = 16000) -> bytes:
     data = b"\x00\x00" * n
     return (
         b"RIFF" + struct.pack("<I", 36 + len(data)) + b"WAVE"
-        b"fmt " + struct.pack("<IHHIIHH", 16, 1, 1, rate, rate * 2, 2, 16)
-        + b"data" + struct.pack("<I", len(data)) + data
+        b"fmt "
+        + struct.pack("<IHHIIHH", 16, 1, 1, rate, rate * 2, 2, 16)
+        + b"data"
+        + struct.pack("<I", len(data))
+        + data
     )
 
 
@@ -102,9 +105,7 @@ def test_music_upload_requires_token(device, net, secrets, require_secret):
         pytest.skip("requests not installed")
     ip = lan_ip_or_skip(device, net, secrets, require_secret)
     assert net.get("/api/music/list", ip=ip, auth=False).status_code == 401
-    r = requests.post(
-        f"http://{ip}/api/music/upload?name=x.wav", files={"file": ("x.wav", _tiny_wav())}, timeout=10
-    )
+    r = requests.post(f"http://{ip}/api/music/upload?name=x.wav", files={"file": ("x.wav", _tiny_wav())}, timeout=10)
     assert r.status_code == 401, f"unauthenticated music upload -> {r.status_code}, want 401"
 
 
@@ -117,8 +118,10 @@ def test_music_upload_lists_and_plays(device, net, secrets, require_secret):
     tok = _webtok(device)
     name = "hiltest-clip.wav"
     up = requests.post(
-        f"http://{ip}/api/music/upload?name={name}", files={"file": (name, _tiny_wav())},
-        headers=_hdr(tok), timeout=20,
+        f"http://{ip}/api/music/upload?name={name}",
+        files={"file": (name, _tiny_wav())},
+        headers=_hdr(tok),
+        timeout=20,
     )
     if up.status_code != 200 and not net.get_json("/api/music/list", ip=ip).get("present", False):
         pytest.skip("no SD card mounted")
@@ -144,8 +147,10 @@ def test_music_upload_rejects_bad_extension(device, net, secrets, require_secret
     ip = lan_ip_or_skip(device, net, secrets, require_secret)
     tok = _webtok(device)
     r = requests.post(
-        f"http://{ip}/api/music/upload?name=notes.txt", files={"file": ("notes.txt", b"nope")},
-        headers=_hdr(tok), timeout=10,
+        f"http://{ip}/api/music/upload?name=notes.txt",
+        files={"file": ("notes.txt", b"nope")},
+        headers=_hdr(tok),
+        timeout=10,
     )
     assert r.status_code == 400, f"bad-extension upload -> {r.status_code}, want 400"
     listing = net.get_json("/api/music/list", ip=ip, timeout=8.0)
