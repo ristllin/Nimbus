@@ -63,6 +63,13 @@ The needs-you hold scales with the mode like everything else: a desk display
 can insist for five minutes, a dim room clears sooner - and every value here
 is tunable per mode in Customize.
 
+The device sometimes runs a lower mode than the one you picked: while the
+battery is low and **Save power when low** is on, it switches to Dark, then
+returns once the battery recovers. While that is happening, the web Battery
+mode section shows one extra line, "Effective battery mode: Dark (adjusted
+automatically for power)", using the same Dark / Balanced / Full vocabulary as
+the mode picker. No line means the mode you picked is the one running.
+
 <details>
 <summary>For developers - machine keys and source</summary>
 
@@ -192,6 +199,14 @@ mode, so it reads as information rather than an alarm.
 Neither setting weakens protection. The screen notice, the Telegram message,
 and the low-battery deep sleep all happen either way; a **job** error still
 breathes red at full brightness in every mode, including Dark.
+
+Everything in this section needs a battery the device can actually read. With
+**Monitor the battery** on but no valid reading (no pack fitted, or a sense
+line the board cannot read), the low-battery light, the power saving switch,
+the Telegram low-battery message, and the low-battery deep sleep are all
+inactive - there is no reading to go low. The Battery mode section says so
+inline, and Health shows the battery as absent ("no gauge (desk-powered)").
+The two toggles still save; they apply once a pack is fitted and monitored.
 
 ## 3. Sound - independent of everything above
 

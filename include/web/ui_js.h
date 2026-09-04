@@ -757,16 +757,24 @@ function applyState(d){
   // live in the always-open Battery mode group, so a board with no pack fitted
   // must still be able to see and change them.
   if(d.batt){
+    // CUM-15 class (lying-knob): batt.settingsLive is the SERVER's verdict on
+    // whether these two preferences can act right now (rationale: power_policy.h
+    // battSettingsLive). When they cannot, the section says so once and the
+    // toasts tell the deferred truth, naming the actual blocker; the toggles
+    // stay interactive on purpose (pre-configuration is legitimate).
+    const bLive=!!d.batt.settingsLive;
+    const np=$('battNoRead'); if(np)np.style.display=(d.batt.battMon&&!bLive)?'':'none';
+    const bMsg=(on,y,n)=>bLive?(on?y:n):(d.batt.battMon?'Saved, waiting for a battery':'Applies when monitoring is on');
     const lr=$('lbRing');
     if(lr&&document.activeElement!==lr){lr.checked=!!d.batt.lbRing;
       lr.onchange=()=>{const f=new FormData();f.append('lbRing',lr.checked?'1':'0');
         fetch('/api/config',{method:'POST',body:f}).then(jok)
-          .then(()=>toast(lr.checked?'Low-battery light on':'Low-battery light off')).catch(failToast);};}
+          .then(()=>toast(bMsg(lr.checked,'Low-battery light on','Low-battery light off'))).catch(failToast);};}
     const ls=$('lbSaver');
     if(ls&&document.activeElement!==ls){ls.checked=!!d.batt.lbSaver;
       ls.onchange=()=>{const f=new FormData();f.append('lbSaver',ls.checked?'1':'0');
         fetch('/api/config',{method:'POST',body:f}).then(jok)
-          .then(()=>toast(ls.checked?'Power saving on':'Power saving off')).catch(failToast);};}
+          .then(()=>toast(bMsg(ls.checked,'Power saving on','Power saving off'))).catch(failToast);};}
     // Battery monitoring opt-in (populated even when telemetry is invalid, so an
     // all-in-one owner can turn it on before a pack is ever read). Boot-applied.
     const bm=$('battMon');
@@ -909,14 +917,21 @@ function applyState(d){
   // profile radios; keep the Customize group heading naming the selected battery
   // mode (CUM-269) so "Customize battery mode: Balanced" is never ambiguous.
   var _profNm=['Dark','Balanced','Full'];
-  var _setCustProf=p=>{var e=$('custProfName'); if(e)e.textContent=_profNm[p]||'Balanced';};
+  var _pn=p=>_profNm[p]||'Balanced';
+  var _setCustProf=p=>{var e=$('custProfName'); if(e)e.textContent=_pn(p);};
   document.querySelectorAll('input[name=profile]').forEach(r=>{
     r.checked=(+r.value===d.profile);
     r.onchange=()=>{_setCustProf(+r.value);apply({profile:r.value});};
   });
   _setCustProf(d.profile);
-  $('effprof').textContent='effective: '+d.effectiveProfileName+
-    (d.effectiveProfile!==d.profile?' (adjusted automatically for power)':'');
+  // Effective-mode line: rendered ONLY while an automatic adjustment holds a
+  // different mode than the picked one, in the user vocabulary via _pn - the
+  // machine slug in d.effectiveProfileName reads as a different mode next to
+  // the radios (CUM-15 class: the panel must not lie; that wire field stays for
+  // API consumers). The undefined guards keep a partial state rendering blank.
+  $('effprof').textContent=(d.effectiveProfile!==undefined&&d.profile!==undefined&&d.effectiveProfile!==d.profile)
+    ?('Effective battery mode: '+_pn(d.effectiveProfile)+' (adjusted automatically for power)')
+    :'';
   // mode
   $('mode').value=d.mode;
   $('mode').onchange=()=>{ const want=+$('mode').value; switchMode(want).then(ok=>{ if(!ok)$('mode').value=d.mode; }); };

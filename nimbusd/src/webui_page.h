@@ -368,12 +368,13 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <button class=qh type=button aria-expanded=false aria-label="About battery modes">?</button>
 </div>
 <p class="hint tip">The battery mode sets the light. <b>Dark</b>: lights off - only a job error breathes red. <b>Balanced</b>: a single soft cue in the theme color, dimmer, shorter holds. <b>Full</b>: every session a color arc at full brightness. Each battery mode is a preset you can adjust under Customize battery mode.</p>
+<p class=hint id=battNoRead style="display:none">No battery reading. The charge readout, low-battery warnings, and power saving stay inactive until the device can read a pack.</p>
 <label class=pr style="margin-top:8px"><input type=checkbox id=lbRing> Low-battery light <button class=qh type=button aria-expanded=false aria-label="About the low-battery light">?</button></label>
 <p class="hint tip">Shows a dim red pulse on the ring for a few seconds each minute while the battery is low. Off by default, because a ring lit all night uses the power it is warning about. The screen notice and the Telegram message are sent either way.</p>
 <label class=pr><input type=checkbox id=lbSaver> Save power when low <button class=qh type=button aria-expanded=false aria-label="About saving power when low">?</button></label>
 <p class="hint tip">Switches to the Dark battery mode while the battery is low, then returns to the chosen mode once it recovers. On by default.</p>
 <label class=pr><input type=checkbox id=battMon> Monitor the battery <button class=qh type=button aria-expanded=false aria-label="About battery monitoring">?</button></label>
-<p class="hint tip">Reads the battery pack for the charge readout, low-battery warnings, and sleep protection. On boards built with a pack it is on; on the all-in-one board a battery is optional, so it is off until you turn it on. Takes effect after a restart.</p>
+<p class="hint tip">Reads the battery pack for the charge readout, low-battery warnings, and sleep protection. Turn it on when the device has a battery, or before fitting one. Takes effect after a restart.</p>
 <div class=row id=battRestartRow style="display:none;margin-top:6px"><button type=button id=battRestart>Restart now</button><span class=hint style="align-self:center">Applies the battery monitor change.</span></div>
 <p class=hint id=effprof></p>
 </div>
@@ -1816,16 +1817,24 @@ function applyState(d){
   // live in the always-open Battery mode group, so a board with no pack fitted
   // must still be able to see and change them.
   if(d.batt){
+    // CUM-15 class (lying-knob): batt.settingsLive is the SERVER's verdict on
+    // whether these two preferences can act right now (rationale: power_policy.h
+    // battSettingsLive). When they cannot, the section says so once and the
+    // toasts tell the deferred truth, naming the actual blocker; the toggles
+    // stay interactive on purpose (pre-configuration is legitimate).
+    const bLive=!!d.batt.settingsLive;
+    const np=$('battNoRead'); if(np)np.style.display=(d.batt.battMon&&!bLive)?'':'none';
+    const bMsg=(on,y,n)=>bLive?(on?y:n):(d.batt.battMon?'Saved, waiting for a battery':'Applies when monitoring is on');
     const lr=$('lbRing');
     if(lr&&document.activeElement!==lr){lr.checked=!!d.batt.lbRing;
       lr.onchange=()=>{const f=new FormData();f.append('lbRing',lr.checked?'1':'0');
         fetch('/api/config',{method:'POST',body:f}).then(jok)
-          .then(()=>toast(lr.checked?'Low-battery light on':'Low-battery light off')).catch(failToast);};}
+          .then(()=>toast(bMsg(lr.checked,'Low-battery light on','Low-battery light off'))).catch(failToast);};}
     const ls=$('lbSaver');
     if(ls&&document.activeElement!==ls){ls.checked=!!d.batt.lbSaver;
       ls.onchange=()=>{const f=new FormData();f.append('lbSaver',ls.checked?'1':'0');
         fetch('/api/config',{method:'POST',body:f}).then(jok)
-          .then(()=>toast(ls.checked?'Power saving on':'Power saving off')).catch(failToast);};}
+          .then(()=>toast(bMsg(ls.checked,'Power saving on','Power saving off'))).catch(failToast);};}
     // Battery monitoring opt-in (populated even when telemetry is invalid, so an
     // all-in-one owner can turn it on before a pack is ever read). Boot-applied.
     const bm=$('battMon');
@@ -1968,14 +1977,21 @@ function applyState(d){
   // profile radios; keep the Customize group heading naming the selected battery
   // mode (CUM-269) so "Customize battery mode: Balanced" is never ambiguous.
   var _profNm=['Dark','Balanced','Full'];
-  var _setCustProf=p=>{var e=$('custProfName'); if(e)e.textContent=_profNm[p]||'Balanced';};
+  var _pn=p=>_profNm[p]||'Balanced';
+  var _setCustProf=p=>{var e=$('custProfName'); if(e)e.textContent=_pn(p);};
   document.querySelectorAll('input[name=profile]').forEach(r=>{
     r.checked=(+r.value===d.profile);
     r.onchange=()=>{_setCustProf(+r.value);apply({profile:r.value});};
   });
   _setCustProf(d.profile);
-  $('effprof').textContent='effective: '+d.effectiveProfileName+
-    (d.effectiveProfile!==d.profile?' (adjusted automatically for power)':'');
+  // Effective-mode line: rendered ONLY while an automatic adjustment holds a
+  // different mode than the picked one, in the user vocabulary via _pn - the
+  // machine slug in d.effectiveProfileName reads as a different mode next to
+  // the radios (CUM-15 class: the panel must not lie; that wire field stays for
+  // API consumers). The undefined guards keep a partial state rendering blank.
+  $('effprof').textContent=(d.effectiveProfile!==undefined&&d.profile!==undefined&&d.effectiveProfile!==d.profile)
+    ?('Effective battery mode: '+_pn(d.effectiveProfile)+' (adjusted automatically for power)')
+    :'';
   // mode
   $('mode').value=d.mode;
   $('mode').onchange=()=>{ const want=+$('mode').value; switchMode(want).then(ok=>{ if(!ok)$('mode').value=d.mode; }); };

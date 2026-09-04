@@ -43,6 +43,17 @@ static void test_liion_pack_plausibility_rejects_a_floating_divider() {
   TEST_ASSERT_FALSE(plausibleLiIonPackMv(3700, 0));
 }
 
+// CUM-15 lying-knob class: the low-battery preferences (lbRing / lbSaver) are
+// live exactly when monitoring is on AND the sample reads valid - all four
+// combos asserted, so a regression in either input fails by name instead of
+// re-shipping toggles that toast success with zero effect.
+static void test_batt_settings_live_all_four_combos() {
+  TEST_ASSERT_FALSE(battSettingsLive(false, false));  // opted out, nothing sensed
+  TEST_ASSERT_FALSE(battSettingsLive(false, true));   // opted out: user intent wins
+  TEST_ASSERT_FALSE(battSettingsLive(true, false));   // promised, but no readable pack
+  TEST_ASSERT_TRUE(battSettingsLive(true, true));     // monitoring a real pack
+}
+
 static void test_invalid_samples_change_nothing() {
   Policy p;
   Sample s;  // valid=false, onExternalPower=true
@@ -476,6 +487,7 @@ int main() {
   RUN_TEST(test_2s_default_would_have_slept_a_full_1s_pack);
   RUN_TEST(test_null_monitor_is_desk_powered);
   RUN_TEST(test_liion_pack_plausibility_rejects_a_floating_divider);
+  RUN_TEST(test_batt_settings_live_all_four_combos);
   RUN_TEST(test_invalid_samples_change_nothing);
   RUN_TEST(test_discharge_through_thresholds_with_hysteresis);
   RUN_TEST(test_t2_implies_t1);

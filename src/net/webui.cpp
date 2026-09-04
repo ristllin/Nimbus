@@ -47,6 +47,7 @@
 #include "nimbus/orch/compact.h"   // modelCtxTokens (window table)
 #include "nimbus/power/bright_cap.h"          // resilience: simulated mic/speaker faults
 #include "nimbus/power/power_monitor.h"       // battery chemistry + custom curve parse (config)
+#include "nimbus/power/power_policy.h"        // battSettingsLive - CUM-15 class predicate for batt.settingsLive
 #include "nimbus_board_power.h"               // explicit per-board battMon default (CUM-202)
 #include "nimbus_board_flip.h"                // explicit per-board display-flip base (CUM-189)
 #include "nimbus/orch/danger_zone.h"          // CUM-15 confirm phrases (one source of truth)
@@ -565,7 +566,11 @@ static void buildState(String& out) {
   batt["lbSaver"] = agent::store::lowBattSaver();
   // Battery monitoring on/off; default is board-derived (all-in-one boards, which
   // are fixed-panel boards, treat a battery as opt-in and default this OFF).
-  batt["battMon"] = agent::store::battMon(nimbus::battMonDefaultForThisBoard());
+  const bool battMonOn = agent::store::battMon(nimbus::battMonDefaultForThisBoard());
+  batt["battMon"] = battMonOn;
+  // CUM-15 class (lying-knob): can lbRing/lbSaver act right now? Rationale at
+  // power_policy.h battSettingsLive; the client only renders this verdict.
+  batt["settingsLive"] = nimbus::power::battSettingsLive(battMonOn, b.valid);
 
   // E1 artifact store presence (SD /mem/files): the web UI's Files section +
   // the campaign harness read this.

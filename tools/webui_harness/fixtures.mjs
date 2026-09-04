@@ -13,6 +13,10 @@ export const STATE = {
   batt: {
     valid: true, percent: 82, millivolts: 8040, mvTrue: 8040,
     minsToEmpty: 240, onExtPower: false, charging: false, dieTempC: 41,
+    // Monitored, readable pack (matches valid:true above): without these the
+    // low-battery toggles render the deferred "waiting for a battery" toast
+    // against a battery this fixture says is healthy - a rendered lie.
+    battMon: true, settingsLive: true,
   },
   storeSD: true, sdLost: false,
   // Reach info the Home info line + connectivity render. rssi is the current station
@@ -25,8 +29,8 @@ export const STATE = {
   apSsid: 'Nimbus-setup', apIp: '192.168.4.1', staIp: '192.168.1.42',
   mdns: 'nimbus.local', running: true, scrModel: 'tft',
   // Battery mode: the device /api/state sends profile / effectiveProfile (ints) and
-  // effectiveProfileName (webui.cpp). Omitting them left the Device pane reading
-  // "effective: undefined" and no battery-mode radio checked. 1 = Balanced.
+  // effectiveProfileName (webui.cpp). Omitting them left no battery-mode radio
+  // checked (the effective line renders only when the two differ). 1 = Balanced.
   profile: 1, effectiveProfile: 1, effectiveProfileName: 'Balanced',
   // A configured device reports a synced clock; without it the Usage spend chart and
   // routine schedules render their "clock not set yet" placeholder. Mirror the device.

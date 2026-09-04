@@ -166,4 +166,17 @@ inline bool stayAwakeAfterSleep(uint16_t packMv, uint16_t sleepMv, uint16_t wake
   return packMv >= bar;
 }
 
+// ── are the low-battery preferences live? (CUM-15 lying-knob class) ─────────
+// Every effect of the two Battery mode preferences (the low-battery light and
+// "Save power when low") hangs off the policy's T1 edge, and T1 never fires
+// without valid samples (Policy::update: invalid samples change nothing). So on
+// a board with monitoring on but no readable pack (unfitted or floating sense
+// divider) the toggles store fine yet can have no effect until a pack is
+// fitted. The web UI must therefore present them as saved-for-later, not live.
+// Server-computed like orch::offerFormatCard - the client renders the verdict,
+// it never re-derives it.
+inline bool battSettingsLive(bool battMonOn, bool sampleValid) {
+  return battMonOn && sampleValid;
+}
+
 }  // namespace nimbus::power
