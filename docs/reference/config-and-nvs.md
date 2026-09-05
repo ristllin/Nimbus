@@ -151,7 +151,7 @@ roll back if it fails. See [OTA updates](../ota.md).
 | `sfxLvlO` | int | `2` (Medium) | Sound-effect level in Orchestrator mode (same scale). | Yes |
 | `sfxTheme` | string | `"pulse"` | Sound theme slug. `pulse` is the only shipping theme; an unknown value is coerced back to `pulse` on write. | Yes |
 | `sfxVol` | int | `50` | Master speaker volume, `0..100`. | Yes |
-| `saverMin` | int | `-1` (mode default) | Screensaver idle threshold in minutes; `0` = off, unset (`-1`) uses the battery-mode default (5 min). | Yes |
+| `saverMin` | int | `-1` (mode default) | Screensaver idle threshold in minutes; `0` = off, unset (`-1`) uses the battery-mode default (5 min). Set from Settings > Display on the web (the Screen rest field) or the Screensaver row on the device menu; the web control applies live. | Yes |
 | `webTok` | string | gen on first use | Per-device web/MCP auth token behind the LAN surface. | No - printed only over UART (`WEBTOK?`) |
 | `apPass` | string | gen on first use | Per-device setup-network passphrase, shown on the setup screen. | Yes (on-device only) |
 | `codeSbx` | bool | `false` | Code sandbox toggle (Assistant > Tools). | Yes |

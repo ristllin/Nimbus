@@ -29,6 +29,10 @@ power::Sample AdcBatteryMonitor::sample() {
   for (int i = 0; i < kReads; i++) acc += analogReadMilliVolts(adcPin_);
   const uint32_t nodeMv = acc / kReads;
   const uint32_t packMv = nodeMv * uint32_t(dividerX100_) / 100;  // undo the divider
+  // Latch the computed pack mV for HTTP diagnostics BEFORE the plausibility gate
+  // rejects it (an open sense line reads ~0, a real pack ~7000). This is never a
+  // policy input - the gate below still owns whether the Sample is valid.
+  lastRawPackMv_ = uint16_t(packMv > 65535 ? 65535 : packMv);
   // A carrier without the optional divider leaves GPIO4 floating. It produced a
   // repeatable-looking 3020 mV *pack* reading on a fresh USB-powered TFT board,
   // which the policy correctly interpreted as a dead 2S pack and deep-slept nine

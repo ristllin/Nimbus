@@ -82,6 +82,8 @@
 #include "hw/power_battery_adc.h"
 #include "nimbus/power/power_manager.h"
 #include "nimbus/power/battery_model.h"   // battery analytics (time-left, health)
+#include "nimbus/power/battery_sense.h"   // honest open-sense-line detector (FIX 3)
+#include "nimbus/display/resistive_touch.h"  // resistive touch liveness detector (FIX 4)
 #include "nimbus/power/thermal_guard.h"   // LED-load thermal breaker (fried-panel fix)
 #include "nimbus/profile.h"
 #include "nimbus/ring_plan.h"
@@ -412,6 +414,15 @@ static uint32_t g_lastPowerTick = 0;
 // safe to read here at static-init time.
 static nimbus::power::BatteryModel   g_battModel(solide::board().batt.cells);
 static nimbus::power::BatteryEstimate g_battEstimate;
+// Honest open-sense-line detector (FIX 3): fed (monitoringOn, sample.valid) on each
+// telemetry tick; its debounced verdict is surfaced as batt.senseMissing + a health
+// row so an open sense divider is not silently shown as "desk-powered".
+static nimbus::power::SenseMissingDetector g_senseMissing;
+// Resistive (XPT2046) touch liveness (FIX 4): fed one solide::touch::readRaw per
+// low-cadence poll; trips only on the persistent stuck-high (all-4095) dead
+// signature so touch{} and the health row stop reporting a dead panel as "ok".
+static nimbus::display::ResistiveTouchLiveness g_touchLiveness;
+static uint32_t g_lastTouchLivenessMs = 0;
 
 // Battery hardware from the board map. cells never 0 (both boards set it); the
 // divider is owner-tuned on hand-built boards (resistors vary) but fixed on an
@@ -2886,6 +2897,11 @@ void setup() {
                  double(agent::store::battDividerX100()) / 100.0,
                  unsigned(agent::store::battCapMah()));
   };
+  // Honest open-sense-line + resistive-touch verdicts (FIX 3 / FIX 4): the debounced
+  // detectors are driven on the main task; expose their current state so /api/state
+  // and /api/health tell the truth about a dead sense divider or a dead touch panel.
+  wc.batterySenseMissing   = [] { return g_senseMissing.missing(); };
+  wc.touchResistiveDegraded = [] { return g_touchLiveness.degraded(); };
   // Battery drain/storage (battery-measurement). setStorage is production; setDrain is
   // TEST-only (the endpoint is compiled out of production, so the callback is never set).
   wc.setStorage  = [](int pct) { storageSet(pct); };
@@ -2913,6 +2929,14 @@ void setup() {
   wc.halMask     = [] {
     return uint8_t((g_hal.display ? 1 : 0) | (g_hal.leds ? 2 : 0) | (g_hal.storage ? 4 : 0) |
                    (g_hal.memory ? 8 : 0) | (g_hal.input ? 16 : 0));
+  };
+  // Screen-rest delay changed on the web (POST /api/config saverMin): re-arm the
+  // screensaver timer live and note activity, exactly as the device menu does, so
+  // the owner's remote change takes effect without a restart. The NVS write already
+  // happened in the handler; this reads it back and applies it on the main task.
+  wc.applySaverMinutes = [] {
+    g_saver.setThresholdMin(agent::store::saverMin());
+    g_saver.noteActivity(millis());
   };
   wc.onChanged   = [] {
     // Web mutations route the user's profile pick through the selector
@@ -3528,6 +3552,25 @@ static void runTouchCalibration() {
   }
   hw::tft::forceRepaint();
   renderScreen(attn::ScreenId::StatusIdle, -1, true);   // hand the screen back
+}
+
+// FIX 4: resistive (XPT2046) touch liveness poll. A controller that dies after boot
+// (SPI MISO stuck high) reads every raw axis pegged at 4095, yet begin()'s "touch
+// up" still claims health - the lie that shipped on the owner's nimbus-light. Sample
+// readRaw at a low cadence and feed the debounced detector; a normal idle (readRaw
+// reports nothing) and any real press (plausible x/y) are signs of life, so only the
+// persistent all-4095 signature trips it. Capacitive boards keep the driver's own
+// Health ladder and are skipped here. The extra raw read is a stateless hardware
+// probe - it does not disturb the debounced read() the input path uses.
+static void serviceTouchLiveness(uint32_t now) {
+  if (!g_screenIsTft) return;
+  if (solide::board().touchKind == solide::TouchKind::CapacitiveI2c) return;
+  if (!solide::touch::present()) return;
+  if (uint32_t(now - g_lastTouchLivenessMs) < 2000) return;   // ~2 s cadence
+  g_lastTouchLivenessMs = now;
+  uint16_t rx = 0, ry = 0, rz = 0;
+  const bool gotRaw = solide::touch::readRaw(rx, ry, rz);
+  g_touchLiveness.update(gotRaw, rx, ry, rz);
 }
 
 // ---- First-run calibration GATE (CUM-245) ----------------------------------------
@@ -4572,6 +4615,9 @@ void loop() {
       renderScreen(attn::ScreenId::StatusIdle, -1);
   }
 
+  // Resistive touch liveness (FIX 4): self-rate-limited (~2 s), resistive-only.
+  serviceTouchLiveness(now);
+
   // Battery: sample + two-threshold policy at a low cadence. Inert with
   // NullMonitor (no hardware). T1 raises a low-battery badge through the SAME
   // attention Router as job attention and forces the Battery Saver profile;
@@ -4630,6 +4676,11 @@ void loop() {
       const bool artificialLoad = g_highLoadActive || g_storageTargetMv != 0;
       g_battModel.update(now, g_power.last(), artificialLoad);
       g_battEstimate = g_battModel.estimate();
+      // FIX 3: honest open-sense-line telemetry. Fold this reading into the debounced
+      // detector - monitoring ON with the sample invalid across the window means the
+      // sense line is not detected (an open divider), which the safety policy would
+      // otherwise show as desk-powered. A valid sample clears it at once.
+      g_senseMissing.update(battMonOn(), g_power.last().valid);
       // Persist when a discharge segment completed OR the full-charge anchor moved
       // (an owner BATTCAL/api-battcal or an auto-learned plateau) - else an auto-
       // learned anchor never closing a segment is lost on reboot and two identical

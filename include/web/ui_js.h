@@ -965,6 +965,14 @@ function applyState(d){
     sf.onchange=()=>{const f=new FormData();f.append('scrFlip',sf.checked?'1':'0');
       fetch('/api/config',{method:'POST',body:f}).then(jok)
         .then(()=>toast(sf.checked?'Display flipped':'Display normal')).catch(failToast);};}
+  // Screen rest (idle minutes before the screen rests; 0 = always on). The remote
+  // setter for an owner whose touch panel is dead. Clamp 0..1440 client-side too.
+  const sm=$('saverMin');
+  if(sm&&document.activeElement!==sm&&d.saverMin!==undefined){sm.value=d.saverMin;
+    sm.onchange=()=>{let v=parseInt(sm.value,10);if(isNaN(v))v=5;if(v<0)v=0;if(v>1440)v=1440;sm.value=v;
+      const f=new FormData();f.append('saverMin',String(v));
+      fetch('/api/config',{method:'POST',body:f}).then(jok)
+        .then(()=>toast(v===0?'Screen stays on':'Screen rest saved')).catch(failToast);};}
   const tc=$('tchCal'); if(tc&&d.tchCal!==undefined&&tc!==document.activeElement)tc.value=d.tchCal||'';
   // Capacitive touch self-calibrates (pixel coordinates), so the resistive
   // min/max field does nothing - hide it and its label, and show the 3-flag

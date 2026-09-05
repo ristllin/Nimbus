@@ -143,13 +143,26 @@ read-only and present in both modes):
 - `ringBackstopFires` - times the belt-and-braces ring backstop had to clear a
   stuck arc (CUM-11). Stays `0` on a healthy device; the wake-up soak asserts it
   never moves.
-- `touch` - capacitive touch controller liveness (CUM-248), all zero on a
-  resistive board: `failures`, `recoveries`, `busClears`, `hardResets` (monotonic
-  counters), `consecFailures` (the current live failure streak, `0` when comms is
-  healthy), `lastRecoveryMs`, and `degraded` (true while comms is not confirmed
-  alive). The sleep/wake soak watches `recoveries` climb while `degraded` returns
-  to false, proving the controller self-heals instead of going dead until a
-  power-cycle.
+- `touch` - touch controller liveness: `failures`, `recoveries`, `busClears`,
+  `hardResets` (monotonic counters), `consecFailures` (the current live failure
+  streak, `0` when comms is healthy), `lastRecoveryMs`, and `degraded` (true while
+  the controller is not confirmed alive). On a capacitive (FT6336U) board the
+  counters track the I2C recovery ladder (CUM-248); the sleep/wake soak watches
+  `recoveries` climb while `degraded` returns to false, proving the controller
+  self-heals instead of going dead until a power-cycle. On a resistive (XPT2046)
+  board those counters stay zero (no I2C ladder), but a firmware-side liveness poll
+  reads the raw controller and sets `degraded` plus `resistiveDead` when it sees the
+  persistent stuck-high (all-`4095`) signature of a dead controller - the honest
+  signal that a boot-time "touch up" cannot give.
+- `batt.rawPackMv` - the computed pack millivolts latched before the plausibility
+  gate rejects it (diagnostics only, never a policy input). An open sense line reads
+  near `0` here while a real pack reads ~`7000`, so the two can be told apart over
+  HTTP even though both drive `batt.valid` to false. `0` on a board with no voltage
+  sense.
+- `batt.senseMissing` - true when battery monitoring is on but the reading has been
+  invalid across a debounce window (an open sense divider). It stays false on a
+  genuinely desk-powered board (monitoring off) and clears the instant a valid
+  sample arrives; the Health panel turns it into a "battery sense not detected" row.
 
 ## Docs follow every commit
 

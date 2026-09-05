@@ -129,7 +129,9 @@ The screen also **rests after a short idle**: the default idle delay is
 **5 minutes**, because an hour of backlight at an empty desk is the most wasteful
 thing the device can do.
 Setting the delay yourself (Settings > Screensaver on the device, Settings →
-Mode & identity on the web) always wins over either default.
+Display on the web) always wins over either default. Set it to 0 to keep the
+screen always on. The web control is also the way to change the delay when the
+touch panel cannot be reached from the device menu.
 
 ### The screen on a board with no ring
 
@@ -205,8 +207,12 @@ Everything in this section needs a battery the device can actually read. With
 line the board cannot read), the low-battery light, the power saving switch,
 the Telegram low-battery message, and the low-battery deep sleep are all
 inactive - there is no reading to go low. The Battery mode section says so
-inline, and Health shows the battery as absent ("no gauge (desk-powered)").
-The two toggles still save; they apply once a pack is fitted and monitored.
+inline. Health distinguishes the two cases: with monitoring off it shows the
+battery as absent ("no gauge (desk-powered)"), while monitoring on with a
+reading that stays invalid shows a degraded fault ("battery sense not detected")
+rather than pretending the board is desk-powered - so an open sense line can be
+told apart from a board that simply has no pack. The two toggles still save;
+they apply once a pack is fitted and monitored.
 
 ## 3. Sound - independent of everything above
 

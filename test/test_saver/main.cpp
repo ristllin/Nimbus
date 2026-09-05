@@ -180,6 +180,22 @@ static void test_wake_tap_swallow_invariant() {
   TEST_ASSERT_FALSE(nimbus::wakeTapIsSwallowed(false));  // screen was lit -> actuate
 }
 
+// FIX 1: the remote screen-rest setter (POST /api/config saverMin) parses a signed
+// value, so the clamp must fold both ends of the range. The critical case is a
+// NEGATIVE input: it must land at 0 (screen always on), NOT wrap through the
+// uint16 store to the 1440 ceiling (the owner asking for "always on" and getting
+// "rest at a full day" is the honesty bug this closes).
+static void test_clamp_saver_minutes() {
+  using nimbus::clampSaverMinutes;
+  TEST_ASSERT_EQUAL_INT(0, clampSaverMinutes(0));         // 0 = always on, kept
+  TEST_ASSERT_EQUAL_INT(5, clampSaverMinutes(5));         // in-range passthrough
+  TEST_ASSERT_EQUAL_INT(1440, clampSaverMinutes(1440));   // ceiling kept exactly
+  TEST_ASSERT_EQUAL_INT(1440, clampSaverMinutes(1441));   // above ceiling -> clamp
+  TEST_ASSERT_EQUAL_INT(1440, clampSaverMinutes(100000)); // far above -> clamp
+  TEST_ASSERT_EQUAL_INT(0, clampSaverMinutes(-1));        // negative -> 0, NOT 1440
+  TEST_ASSERT_EQUAL_INT(0, clampSaverMinutes(-9999));     // deep negative -> 0
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_disabled_never_due);
@@ -196,5 +212,6 @@ int main(int, char**) {
   RUN_TEST(test_stage_transitions);
   RUN_TEST(test_stage_is_monotonic_no_thrash);
   RUN_TEST(test_wake_tap_swallow_invariant);
+  RUN_TEST(test_clamp_saver_minutes);
   return UNITY_END();
 }

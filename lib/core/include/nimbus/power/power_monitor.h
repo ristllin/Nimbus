@@ -22,6 +22,13 @@ class Monitor {
  public:
   virtual ~Monitor() = default;
   virtual Sample sample() = 0;
+  // The most recent COMPUTED pack millivolts, latched before any plausibility
+  // gate rejects it - diagnostics only, never a policy input. A voltage monitor
+  // whose sense line is open reads ~0 here while a real pack reads ~7000, so an
+  // open sense line and a low battery can be told apart over the wire (they both
+  // otherwise collapse to an invalid Sample). 0 = no reading / not a voltage
+  // monitor; the base default suits NullMonitor and SimMonitor.
+  virtual uint16_t lastRawPackMv() const { return 0; }
 };
 
 // No battery hardware: behaves as permanently desk-powered.

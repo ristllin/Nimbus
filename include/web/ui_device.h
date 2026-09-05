@@ -92,6 +92,9 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 <p class=hint>This device uses a touch screen.</p>
 <label class=pr><input type=checkbox id=scrFlip> Display flip <button class=qh type=button aria-expanded=false aria-label="About display flip">?</button></label>
 <p class="hint tip">Turns the screen 180 degrees for an upside-down mount. Touch display only; takes effect right away.</p>
+<label>Screen rest <button class=qh type=button aria-expanded=false aria-label="About screen rest">?</button></label>
+<p class="hint tip">Minutes of no activity before the screen rests to save power. A tap wakes it. 0 keeps the screen always on. Applies right away.</p>
+<div class=row><input id=saverMin type=number min=0 max=1440 step=1 style="width:90px"> minutes</div>
 <div id=tchCalWrap>
 <label>Touch calibration <button class=qh type=button aria-expanded=false aria-label="About touch calibration">?</button></label>
 <p class="hint tip">Only for the touch display. Each panel reads slightly differently, so if taps land off-target, enter the corner readings as <b>minX,maxX,minY,maxY</b> - optionally a fifth number to flip axes (1 swaps X and Y, 2 flips X, 4 flips Y; add them together). Leave blank for the defaults. Applies immediately.</p>

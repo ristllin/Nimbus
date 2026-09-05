@@ -25,6 +25,12 @@ struct Env {
   int  wifiRssi = 0;
   bool battValid = false, battExt = false;
   int  battPct = 0;
+  // Debounced honest faults the HAL begin-result cannot see (filled by webui): an
+  // open battery sense divider (monitoring on, readings persistently invalid) and a
+  // dead resistive touch controller (stuck-high signature). Default false = the
+  // contexts that cannot see them (the turn-task tool) report nothing new.
+  bool battSenseMissing = false;
+  bool touchDegraded = false;
 };
 
 // Record the outcome of an acoustic loopback probe so the passive report can say

@@ -85,9 +85,14 @@ std::string reportJson(const Env& env) {
   rows[n++] = {"screen", "Display (color touch)",
                active(Cap::SCREEN) ? kAbsent : (hal.display ? kOk : kDegraded),
                active(Cap::SCREEN) ? "fault-injected (test)" : (hal.display ? "up" : "init failed")};
+  // Touch: "up" from a begin() that succeeded at boot is not proof the controller
+  // is still alive. On a resistive board a dead controller (MISO stuck high) reads
+  // as degraded via env.touchDegraded even though hal.touch was true at boot - the
+  // honest signal that used to be a hardwired "ok" (FIX 4).
   rows[n++] = {"touch", "Touch panel",
-               hal.touch ? kOk : kDegraded,
-               hal.touch ? "touch up" : "touch init failed"};
+               !hal.touch ? kDegraded : (env.touchDegraded ? kDegraded : kOk),
+               !hal.touch ? "touch init failed"
+                          : (env.touchDegraded ? "touch not responding" : "touch up")};
 
   // Audio (active-probe capabilities).
   rows[n++] = audioRow("mic", "Microphone (I²S)", active(Cap::MIC), /*isMic=*/true);
@@ -127,13 +132,19 @@ std::string reportJson(const Env& env) {
     rows[n++] = {"ble", "Bluetooth LE",
                  env.bleConnected ? kOk : (env.bleOn ? kDegraded : kAbsent),
                  env.bleConnected ? "linked" : (env.bleOn ? "advertising" : "off")};
+  // Battery: a valid gauge shows percent. An INVALID reading has two honest cases
+  // the old row conflated as "desk-powered": monitoring off (genuinely no pack) is
+  // absent, but monitoring ON with a persistently invalid reading is an open sense
+  // line - a degraded fault, not a desk (FIX 3). battSenseMissing is the debounced
+  // (monitoring-on AND invalid) verdict, so it is false on a real desk board.
   rows[n++] = {"battery", "Battery",
-               env.battValid ? kOk : kAbsent,
+               env.battValid ? kOk : (env.battSenseMissing ? kDegraded : kAbsent),
                // Percent only - no "(ext power)" claim: that flag is a voltage-trend
                // inference with no charge-detect hardware behind it, and the model
                // was repeating it to the owner as fact (2026-07-16).
                env.battValid ? (String(env.battPct) + "%")
-                             : String("no gauge (desk-powered)")};
+                             : (env.battSenseMissing ? String("battery sense not detected")
+                                                     : String("no gauge (desk-powered)"))};
   rows[n++] = {"telegram", "Telegram",
                agent::telegram::enabled() ? kOk : kAbsent,
                agent::telegram::enabled() ? "configured" : "no token/allowlist"};

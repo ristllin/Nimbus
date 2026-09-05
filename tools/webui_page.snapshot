@@ -323,6 +323,9 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <p class=hint>This device uses a touch screen.</p>
 <label class=pr><input type=checkbox id=scrFlip> Display flip <button class=qh type=button aria-expanded=false aria-label="About display flip">?</button></label>
 <p class="hint tip">Turns the screen 180 degrees for an upside-down mount. Touch display only; takes effect right away.</p>
+<label>Screen rest <button class=qh type=button aria-expanded=false aria-label="About screen rest">?</button></label>
+<p class="hint tip">Minutes of no activity before the screen rests to save power. A tap wakes it. 0 keeps the screen always on. Applies right away.</p>
+<div class=row><input id=saverMin type=number min=0 max=1440 step=1 style="width:90px"> minutes</div>
 <div id=tchCalWrap>
 <label>Touch calibration <button class=qh type=button aria-expanded=false aria-label="About touch calibration">?</button></label>
 <p class="hint tip">Only for the touch display. Each panel reads slightly differently, so if taps land off-target, enter the corner readings as <b>minX,maxX,minY,maxY</b> - optionally a fifth number to flip axes (1 swaps X and Y, 2 flips X, 4 flips Y; add them together). Leave blank for the defaults. Applies immediately.</p>
@@ -2006,6 +2009,14 @@ function applyState(d){
     sf.onchange=()=>{const f=new FormData();f.append('scrFlip',sf.checked?'1':'0');
       fetch('/api/config',{method:'POST',body:f}).then(jok)
         .then(()=>toast(sf.checked?'Display flipped':'Display normal')).catch(failToast);};}
+  // Screen rest (idle minutes before the screen rests; 0 = always on). The remote
+  // setter for an owner whose touch panel is dead. Clamp 0..1440 client-side too.
+  const sm=$('saverMin');
+  if(sm&&document.activeElement!==sm&&d.saverMin!==undefined){sm.value=d.saverMin;
+    sm.onchange=()=>{let v=parseInt(sm.value,10);if(isNaN(v))v=5;if(v<0)v=0;if(v>1440)v=1440;sm.value=v;
+      const f=new FormData();f.append('saverMin',String(v));
+      fetch('/api/config',{method:'POST',body:f}).then(jok)
+        .then(()=>toast(v===0?'Screen stays on':'Screen rest saved')).catch(failToast);};}
   const tc=$('tchCal'); if(tc&&d.tchCal!==undefined&&tc!==document.activeElement)tc.value=d.tchCal||'';
   // Capacitive touch self-calibrates (pixel coordinates), so the resistive
   // min/max field does nothing - hide it and its label, and show the 3-flag

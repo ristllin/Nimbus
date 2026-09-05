@@ -60,6 +60,16 @@ struct WebConfig {
   std::function<void()> resetBatteryLearning;
   // Re-arm the ADC + model after a battery HARDWARE config change (divider/capacity).
   std::function<void()> reconfigureBattery;
+  // Debounced honest "the battery sense line is not detected" verdict, computed on
+  // the main task (monitoring ON AND samples invalid across a debounce window).
+  // Surfaced as batt.senseMissing and in the health report so an open sense divider
+  // is distinguishable from a genuinely desk-powered board. Null => reported false.
+  std::function<bool()> batterySenseMissing;
+  // Debounced resistive (XPT2046) touch liveness: true when the controller reads
+  // the persistent stuck-high (all-4095) dead signature. Lets touch{} and the
+  // health row tell the truth on a resistive board, where the driver's own Health
+  // ladder (capacitive only) stays all-zero. Null / capacitive board => false.
+  std::function<bool()> touchResistiveDegraded;
   // Battery drain/storage (battery-measurement). setDrain = campaign (TEST); setStorage =
   // discharge-to-storage-SoC (production); drainState fills the /api/state batt fields.
   // bright: -1 = firmware default. ttlS: -1 = default host dead-man, 0 = DISARMED
@@ -85,6 +95,12 @@ struct WebConfig {
   // bit2 storage, bit3 memory, bit4 input. Null => reported unknown (all-up).
   std::function<uint8_t()> halMask;
 
+  // Apply a just-changed screen-rest delay live on the MAIN task (POST /api/config
+  // saverMin). The NVS write happens in the handler; this re-arms the screensaver
+  // timer and notes activity the same way the device menu does, so the change
+  // takes effect without a restart. Staged from the AsyncTCP handler, fired here in
+  // loopWeb(). Null => the setting still persists, it just waits for the next boot.
+  std::function<void()>       applySaverMinutes;
   // Applied from webui::loop() after any /api/config mutation (main task):
   //   onChanged(cfg, sel) -> serializeConfig + persist blob + re-resolve.
   std::function<void()>       onChanged;

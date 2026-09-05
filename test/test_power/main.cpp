@@ -4,6 +4,7 @@
 #include "nimbus/power/power_policy.h"
 #include "nimbus/power/bright_cap.h"
 #include "nimbus/power/board_power.h"
+#include "nimbus/power/battery_sense.h"
 
 using namespace nimbus::power;
 
@@ -478,6 +479,62 @@ void test_board_battmon_defaults(void) {
   TEST_ASSERT_TRUE_MESSAGE(haveFreenove, "freenove_s3 must have an explicit battMon default row");
 }
 
+// FIX 3: a battery board whose sense line has failed OPEN reads persistently
+// invalid, which the SAFETY policy treats as desk-powered - so an open sense line
+// and a genuinely absent pack look identical over the wire. These pin the honest
+// predicate (monitoringOn AND debounced-invalid) that lets them be told apart.
+
+// The pure predicate: missing only when monitoring is on and the streak has
+// reached the threshold.
+static void test_sense_missing_predicate() {
+  using nimbus::power::senseMissing;
+  TEST_ASSERT_FALSE(senseMissing(false, 99, 3));  // monitoring off: never
+  TEST_ASSERT_FALSE(senseMissing(true, 2, 3));    // streak below threshold
+  TEST_ASSERT_TRUE(senseMissing(true, 3, 3));     // streak at threshold
+  TEST_ASSERT_TRUE(senseMissing(true, 9, 3));     // streak past threshold
+  TEST_ASSERT_FALSE(senseMissing(true, 9, 0));    // zero threshold disables
+}
+
+// The critical false-positive guard: a genuinely desk-powered board (monitoring
+// OFF) reads invalid forever and must NEVER be reported as a sense fault.
+static void test_sense_missing_never_trips_when_monitoring_off() {
+  nimbus::power::SenseMissingDetector d(3);
+  for (int i = 0; i < 50; i++) TEST_ASSERT_FALSE(d.update(/*monOn=*/false, /*valid=*/false));
+  TEST_ASSERT_FALSE(d.missing());
+}
+
+// It does not flip on a single invalid sample; it trips only after the debounce
+// window of consecutive invalid samples while monitoring is on.
+static void test_sense_missing_needs_debounce_then_trips() {
+  nimbus::power::SenseMissingDetector d(3);
+  TEST_ASSERT_FALSE(d.update(true, false));  // 1
+  TEST_ASSERT_FALSE(d.update(true, false));  // 2
+  TEST_ASSERT_TRUE(d.update(true, false));   // 3 -> tripped
+  TEST_ASSERT_TRUE(d.update(true, false));   // stays tripped
+}
+
+// It clears IMMEDIATELY when a valid sample arrives (a pack plugged in / sense
+// recovered) - no lingering false fault.
+static void test_sense_missing_clears_immediately_on_valid() {
+  nimbus::power::SenseMissingDetector d(3);
+  d.update(true, false);
+  d.update(true, false);
+  TEST_ASSERT_TRUE(d.update(true, false));   // tripped
+  TEST_ASSERT_FALSE(d.update(true, true));   // one valid sample clears it at once
+  TEST_ASSERT_EQUAL_UINT16(0, d.invalidStreak());
+  // And turning monitoring off also clears immediately.
+  d.update(true, false); d.update(true, false); d.update(true, false);
+  TEST_ASSERT_TRUE(d.missing());
+  TEST_ASSERT_FALSE(d.update(false, false));
+}
+
+// The default threshold debounces more than one tick (no single-sample trip).
+static void test_sense_missing_default_threshold() {
+  nimbus::power::SenseMissingDetector d;   // default threshold
+  TEST_ASSERT_TRUE(d.threshold() >= 2);
+  TEST_ASSERT_FALSE(d.update(true, false));  // first invalid never trips
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_liion_percent_curve);
@@ -509,5 +566,10 @@ int main() {
   RUN_TEST(test_alert_gate_rearms_on_external_power);
   RUN_TEST(test_alert_gate_cooldown_expiry_repings);
   RUN_TEST(test_alert_gate_unsynced_clock);
+  RUN_TEST(test_sense_missing_predicate);
+  RUN_TEST(test_sense_missing_never_trips_when_monitoring_off);
+  RUN_TEST(test_sense_missing_needs_debounce_then_trips);
+  RUN_TEST(test_sense_missing_clears_immediately_on_valid);
+  RUN_TEST(test_sense_missing_default_threshold);
   return UNITY_END();
 }

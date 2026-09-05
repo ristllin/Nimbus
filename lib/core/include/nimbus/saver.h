@@ -83,6 +83,16 @@ class SaverTimer {
   uint16_t thrMin_ = 60;   // owner default: 1 h
 };
 
+// Clamp an owner-supplied screen-rest delay to the stored range: 0..1440 minutes,
+// where 0 means the screen never rests (always on). A remote setter (POST
+// /api/config) parses a signed value, so this must fold a negative back to 0
+// rather than let it wrap through the uint16 store (where -1 would land at the
+// 1440 ceiling, the opposite of what the owner asked for). Pure + host-tested; the
+// web handler and the store's setSaverMin() share this one range.
+constexpr int clampSaverMinutes(long v) {
+  return v < 0 ? 0 : (v > 1440 ? 1440 : int(v));
+}
+
 // A touch that arrives while the panel is deep-dimmed (backlight fully off) is a
 // WAKE ONLY: it must restore the screen and be SWALLOWED, never actuating what
 // sits under the finger - a blind tap must not press a Danger-zone button. This

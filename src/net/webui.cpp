@@ -81,6 +81,7 @@
 #include "../sys/ps_json.h"                // PsramJsonAllocator - keep /api/models off internal heap
 #include "nimbus/orch/model_catalog.h"    // role tokens for the catalog response
 #include "nimbus/orch/fallback_rules.h"   // device fallback rule engine (GET/POST /api/fallbacks)
+#include "nimbus/saver.h"                 // clampSaverMinutes (POST /api/config saverMin)
 #include "relay_client.h"                // cloud tunnel status + control
 #include "../agent/connectors.h"           // /api/connectors - known catalog + host
 #include "web_memory.h"
@@ -326,6 +327,7 @@ static volatile int     s_pendPreviewStatus = -1;
 static volatile bool    s_battCalPending = false;
 static volatile bool    s_battResetPending = false;  // POST /api/battreset -> main task
 static volatile bool    s_battHwPending = false;     // battery hardware (divider/capacity) -> main task
+static volatile bool    s_saverPending  = false;     // screen-rest delay changed -> re-arm timer on main task
 // Battery drain/storage staging (battery-measurement) - same main-task-apply pattern.
 static volatile bool    s_storagePending = false;
 static volatile int     s_storagePct     = 0;
@@ -479,11 +481,30 @@ static void buildState(String& out) {
   nimbus::net::soakStateInto(d.as<JsonObject>(), (uint32_t)millis(),
                              agent::orchestrator::ringBackstopFires(),
                              solide::touch::health());
+  // solide::touch::health() only tracks the capacitive (FT6336U) ladder, so on a
+  // resistive (XPT2046) board it stays all-zero and touch{} would read healthy even
+  // when the controller is dead (MISO stuck high). Fold the nimbus-side resistive
+  // liveness verdict in here so the wire tells the truth on both panels.
+  if (s_wc.touchResistiveDegraded && s_wc.touchResistiveDegraded()) {
+    JsonObject th = d["touch"];
+    th["degraded"]      = true;
+    th["resistiveDead"] = true;   // the stuck-high (all-4095) dead signature
+  }
 
   power::Sample b = s_wc.power ? s_wc.power->sample() : power::Sample{};
   JsonObject batt = d["batt"].to<JsonObject>();
   batt["valid"]       = b.valid;
   batt["millivolts"]  = b.millivolts;   // pack mV (the analytics/history feed)
+  // Raw computed pack mV, latched by the monitor BEFORE its plausibility gate. An
+  // open sense line reads ~0 here while a real pack reads ~7000, so the two can be
+  // told apart remotely even when both collapse `valid` to false. 0 on a monitor
+  // with no voltage sense (NullMonitor). Diagnostics only, never a policy input.
+  if (s_wc.power) batt["rawPackMv"] = s_wc.power->lastRawPackMv();
+  // Honest sense-line telemetry: true when monitoring is ON but the reading has
+  // been invalid across a debounce window (an open sense divider), which the
+  // safety policy otherwise shows as desk-powered. Always present (false when
+  // healthy / off) so a poller can rely on the field.
+  batt["senseMissing"] = s_wc.batterySenseMissing ? s_wc.batterySenseMissing() : false;
   // Charge state, corrected SoC and charge flags all come from the BatteryModel:
   // it owns the time series, so it infers charging/full/discharging from the
   // voltage trend and calibrates the ADC's under-read top band. The raw driver
@@ -1803,6 +1824,19 @@ void beginWeb(const WebConfig& wc) {
       }
       touched = true;
     }
+    // Screen-rest delay in minutes (0 = never rests / always on). The remote setter
+    // an owner needs when the touch panel is dead and they cannot reach the device
+    // menu. Parsed signed then clamped 0..1440 (a negative must fold to 0, not wrap
+    // to the ceiling), persisted here, and applied live on the main task via
+    // s_saverPending so it takes effect without a restart - the same re-arm the
+    // device menu does.
+    if (r->hasParam("saverMin", true)) {
+      const int mins = nimbus::clampSaverMinutes(
+          r->getParam("saverMin", true)->value().toInt());
+      agent::store::setSaverMin(uint16_t(mins));
+      s_saverPending = true;
+      touched = true;
+    }
     // Low-battery light (default OFF). s_ringRefresh is REQUIRED: compose() only
     // re-runs on some other trigger otherwise, so the toggle would appear to do
     // nothing until an unrelated event repainted the ring.
@@ -2758,6 +2792,11 @@ void beginWeb(const WebConfig& wc) {
     }
     power::Sample b = s_wc.power ? s_wc.power->sample() : power::Sample{};
     env.battValid = b.valid; env.battPct = b.percent; env.battExt = b.onExternalPower;
+    // Honest hardware faults the HAL begin-result cannot see: an open battery sense
+    // divider (monitoring on but readings persistently invalid) and a dead resistive
+    // touch controller (stuck-high signature) - both debounced on the main task.
+    if (s_wc.batterySenseMissing) env.battSenseMissing = s_wc.batterySenseMissing();
+    if (s_wc.touchResistiveDegraded) env.touchDegraded = s_wc.touchResistiveDegraded();
     AsyncWebServerResponse* res =
       r->beginResponse(200, "application/json", agent::health::reportJson(env).c_str());
     res->addHeader("Cache-Control", "no-store");
@@ -3601,6 +3640,10 @@ void loopWeb() {
   if (s_battHwPending) {
     s_battHwPending = false;
     if (s_wc.reconfigureBattery) s_wc.reconfigureBattery();
+  }
+  if (s_saverPending) {
+    s_saverPending = false;
+    if (s_wc.applySaverMinutes) s_wc.applySaverMinutes();
   }
   if (s_storagePending) {
     s_storagePending = false;

@@ -26,13 +26,18 @@ class AdcBatteryMonitor : public power::Monitor {
   // vbusPin:     digital pin HIGH when USB present, or -1 to infer from voltage.
   bool begin(int adcPin, int dividerX100, int cells, int vbusPin = -1);
   power::Sample sample() override;
+  // The last computed PACK mV, latched in sample() BEFORE the plausibility gate -
+  // so an open sense line (reads ~0) is distinguishable from a low pack (~7000)
+  // over HTTP even though both return an invalid Sample. Diagnostics only.
+  uint16_t lastRawPackMv() const override { return lastRawPackMv_; }
 
  private:
-  int  adcPin_ = -1;
-  int  dividerX100_ = 320;
-  int  cells_ = 1;
-  int  vbusPin_ = -1;
-  bool ready_ = false;
+  int      adcPin_ = -1;
+  int      dividerX100_ = 320;
+  int      cells_ = 1;
+  int      vbusPin_ = -1;
+  bool     ready_ = false;
+  uint16_t lastRawPackMv_ = 0;
 };
 
 }  // namespace nimbus::hw
