@@ -70,6 +70,13 @@ struct WebConfig {
   // health row tell the truth on a resistive board, where the driver's own Health
   // ladder (capacitive only) stays all-zero. Null / capacitive board => false.
   std::function<bool()> touchResistiveDegraded;
+  // Honest display verdict: debounced "the panel controller is not answering"
+  // (its id register reads the all-ones off-bus signature - the owner's black
+  // glass). Lets the Display health row and /api/state report a dead/disconnected
+  // panel as a fault instead of the boot begin() result's hardwired "up", and it
+  // is independent of the register/pixel probe (off by default). Null => reported
+  // false (a context that cannot read the controller claims no new fault).
+  std::function<bool()> panelControllerDead;
   // Battery drain/storage (battery-measurement). setDrain = campaign (TEST); setStorage =
   // discharge-to-storage-SoC (production); drainState fills the /api/state batt fields.
   // bright: -1 = firmware default. ttlS: -1 = default host dead-man, 0 = DISARMED

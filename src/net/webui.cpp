@@ -689,12 +689,39 @@ static void buildState(String& out) {
   // Panel watchdog counters, on HTTP because reading them over the console
   // RESETS this board (DTR/RTS drive EN) and so destroys the very fault being
   // measured. A white screen could not be diagnosed live without this.
-  //   panelOk   - do the panel's registers still hold what we wrote?
+  //   panelResponding - the LIVE controller readback (id register), always
+  //               meaningful and independent of the probe below. false = not
+  //               answering (the all-ones off-bus signature); this is what
+  //               catches the owner's black glass, and did not exist before.
+  //   panelMeasured - whether the register/pixel probe actually measured content
+  //               this poll. When false, panelOk/panelPixOk are null (not measured)
+  //               rather than a fabricated true, so "not measured" can never render
+  //               as "healthy" here, in a poller, or in a fleet agent's telemetry.
+  //   panelOk   - do the panel's registers still hold what we wrote? (measured)
   //   panelHeal - times the registers were found wrong and re-asserted
   //   panelPaint- unconditional watchdog repaints (covers the pixel-loss mode
   //               that no register reveals)
   if (agent::store::screenIsTft()) {
-    d["panelOk"]    = nimbus::hw::tft::probeEnabled() ? nimbus::hw::tft::panelConfigOk() : true;
+    // Honest display verdict. The old code emitted a literal `true` for panelOk /
+    // panelPixOk whenever the probe was OFF (the shipped default), so these read
+    // "ok" with ZERO live measurement even while the controller was entirely off
+    // the bus - the lie behind the owner's black glass.
+    const bool panelDead  = s_wc.panelControllerDead && s_wc.panelControllerDead();
+    const bool panelProbe = nimbus::hw::tft::probeEnabled();
+    d["panelResponding"] = !panelDead;
+    d["panelMeasured"]   = panelProbe;
+    if (panelDead) {
+      // A confirmed not-answering controller is a fault every consumer must see,
+      // even one that reads only the old booleans.
+      d["panelOk"]    = false;
+      d["panelPixOk"] = false;
+    } else if (panelProbe) {
+      d["panelOk"]    = nimbus::hw::tft::panelConfigOk();
+      d["panelPixOk"] = nimbus::hw::tft::panelContentOk(4);
+    } else {
+      d["panelOk"]    = nullptr;   // not measured - never a fabricated true
+      d["panelPixOk"] = nullptr;
+    }
     d["panelHeal"]  = nimbus::hw::tft::healCount();
     d["panelPaint"] = nimbus::hw::tft::repaintCount();
     // The backlight is the difference between "black screen" and "white screen":
@@ -708,9 +735,9 @@ static void buildState(String& out) {
     d["panelBlOk"] = solide::display_tft::backlightAttached();
     // Content, not configuration: does the panel still hold the pixels we sent?
     // ⚠ Only probe when explicitly enabled - /api/state must not be able to
-    // provoke the fault just by being polled.
+    // provoke the fault just by being polled. panelPixOk is emitted above with
+    // panelOk (real bool when measured, null when the probe is off).
     d["panelProbe"]   = nimbus::hw::tft::probeEnabled();
-    d["panelPixOk"]   = nimbus::hw::tft::probeEnabled() ? nimbus::hw::tft::panelContentOk(4) : true;
     d["panelPixLost"] = nimbus::hw::tft::contentLostCount();
     // ⚠ The two that separate "we asked" from "it happened". repaintCount only
     // counts watchdog TRIGGERS; renderAndPush then drops the push if the driver
@@ -2797,6 +2824,7 @@ void beginWeb(const WebConfig& wc) {
     // touch controller (stuck-high signature) - both debounced on the main task.
     if (s_wc.batterySenseMissing) env.battSenseMissing = s_wc.batterySenseMissing();
     if (s_wc.touchResistiveDegraded) env.touchDegraded = s_wc.touchResistiveDegraded();
+    if (s_wc.panelControllerDead) env.panelNotResponding = s_wc.panelControllerDead();
     AsyncWebServerResponse* res =
       r->beginResponse(200, "application/json", agent::health::reportJson(env).c_str());
     res->addHeader("Cache-Control", "no-store");

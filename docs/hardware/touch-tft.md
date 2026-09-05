@@ -69,6 +69,18 @@ not fail loudly - it returns plausible-looking garbage coordinates.
 *blanks* it rather than drawing a screensaver - on a TFT, drawing a screensaver costs
 more power than showing nothing.
 
+⚠ **`panelBacklight` is the requested duty, not proof of a lit glass.** The
+backlight LED is powered from the module's own VCC through an on-module low-side
+switch driven by an active-high ~2.6 mA GPIO2 base drive, so the firmware only
+ever sets and reads back the *requested* duty (`panelBacklight`); it has no pad
+readback of the actual LED current. `panelBlOk` says the PWM attached, not that
+the glass is lit. A genuinely lit screen is confirmed only by a human looking at
+it or, for "is the controller even there", by the controller readback
+(`panelResponding` / `TFTID?`). Likewise the boot line
+`[tft] colour touch panel up` is an init-sent message printed after `begin()`
+returned, not a readback of the live panel - it says the driver started, nothing
+about the glass.
+
 ⚠ **The microSD is not on this SPI bus.** It uses dedicated SPI2 GPIOs
 `CS 10 · MOSI 11 · SCK 12 · MISO 13`; TFT + touch use SPI3 above. The two
 peripherals share only 3.3 V and ground. A hot SD card is nevertheless relevant
@@ -208,13 +220,26 @@ reading them over the console RESETS this board and destroys the fault:
 |---|---|---|
 | `panelTask` | alive | the render task is running |
 | `panelBusy` | false | blits COMPLETE, not stalled |
-| `panelOk` | true | MADCTL still holds what we wrote |
+| `panelResponding` | true | the controller answers register reads (its id is sane) |
+| `panelMeasured` | false | the register/pixel probe is off (the shipped default) |
+| `panelOk` | null | not measured while the probe is off; a real bool only with it on |
 | `panelBlOk` | true | the backlight PWM genuinely attached |
 | `panelBacklight` | 100 | requested level (see `panelBlOk` - alone it can lie) |
 | `panelPaint` | climbing | the watchdog is repainting every 5 s |
 | framebuffer | correct UI | via `GET /api/screenshot` |
-| `panelPixOk` | true | the panel's OWN pixels match the frame we pushed |
-| `panelPixLost` | 0 | times they were ever found to disagree |
+| `panelPixOk` | null | not measured while the probe is off; a real bool only with it on |
+| `panelPixLost` | 0 | times the pixels were ever found to disagree |
+
+⚠ **`panelResponding` is the one live signal that does not need the probe.** It
+comes from a low-cadence readback of the controller's id register (the same RDDID
+the `TFTID?` console command reads) and is `false` when the controller is off the
+SPI bus - a disconnected FPC, a dead module, a collapsed rail. That is a
+different fault from the white screen this table describes: here the controller
+still answers (`panelResponding` true) while the glass stays blank. A `false`
+here is the owner's **black-glass** case, and the Display health row reports it as
+"display not responding" without a serial open (which would reset the board and
+erase the fault). `panelOk` / `panelPixOk` are **null** while the probe is off,
+never a fabricated `true`: "not measured" must not read as "healthy".
 
 ⚠ **The panel's display/power state is NOT observable.** `RDDPM` (0x0A) reads
 `0x00` at every dummy-width on this panel - it simply is not implemented - and

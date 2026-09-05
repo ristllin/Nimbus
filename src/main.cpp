@@ -2902,6 +2902,10 @@ void setup() {
   // and /api/health tell the truth about a dead sense divider or a dead touch panel.
   wc.batterySenseMissing   = [] { return g_senseMissing.missing(); };
   wc.touchResistiveDegraded = [] { return g_touchLiveness.degraded(); };
+  // Honest display verdict: the debounced controller-not-answering verdict (id
+  // reads the all-ones off-bus signature) so /api/state and /api/health report a
+  // disconnected/dead panel as a fault instead of the boot begin() result's "up".
+  wc.panelControllerDead = [] { return hw::tft::controllerNotResponding(); };
   // Battery drain/storage (battery-measurement). setStorage is production; setDrain is
   // TEST-only (the endpoint is compiled out of production, so the callback is never set).
   wc.setStorage  = [](int pct) { storageSet(pct); };
@@ -4617,6 +4621,12 @@ void loop() {
 
   // Resistive touch liveness (FIX 4): self-rate-limited (~2 s), resistive-only.
   serviceTouchLiveness(now);
+
+  // Colour-panel controller liveness (honest display verdict): self-rate-limited
+  // (~2 s) and idle-bus-gated inside. Reads the controller id so the health row
+  // and /api/state report a panel that has gone off the SPI bus as a fault
+  // instead of the boot begin() result's hardwired "up" (the owner's black glass).
+  if (g_screenIsTft) hw::tft::pollControllerLiveness(now);
 
   // Battery: sample + two-threshold policy at a low cadence. Inert with
   // NullMonitor (no hardware). T1 raises a low-battery badge through the SAME

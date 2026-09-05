@@ -82,9 +82,17 @@ std::string reportJson(const Env& env) {
   rows[n++] = {"led", "LED ring",
                active(Cap::LED) ? kAbsent : (hal.leds ? kOk : kDegraded),
                active(Cap::LED) ? "fault-injected (test)" : (hal.leds ? "up" : "init failed")};
+  // Display: "up" from a begin() that succeeded at boot is not proof the
+  // controller is still on the SPI bus. env.panelNotResponding is the debounced
+  // live verdict (the controller id reads the all-ones off-bus signature) - the
+  // honest signal that replaces the hardwired "up" that shipped on the owner's
+  // nimbus-light, whose black glass read "ok" with zero live measurement.
   rows[n++] = {"screen", "Display (color touch)",
-               active(Cap::SCREEN) ? kAbsent : (hal.display ? kOk : kDegraded),
-               active(Cap::SCREEN) ? "fault-injected (test)" : (hal.display ? "up" : "init failed")};
+               active(Cap::SCREEN) ? kAbsent
+                   : (!hal.display ? kDegraded : (env.panelNotResponding ? kDegraded : kOk)),
+               active(Cap::SCREEN) ? "fault-injected (test)"
+                   : (!hal.display ? "init failed"
+                      : (env.panelNotResponding ? "display not responding" : "up"))};
   // Touch: "up" from a begin() that succeeded at boot is not proof the controller
   // is still alive. On a resistive board a dead controller (MISO stuck high) reads
   // as degraded via env.touchDegraded even though hal.touch was true at boot - the

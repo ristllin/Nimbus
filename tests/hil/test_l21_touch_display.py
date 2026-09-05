@@ -502,6 +502,10 @@ def test_panel_content_loss_is_detected_and_repaired(device, net, secrets, requi
     ⚠ Asserts the COUNTER, not the instantaneous flag. The watchdog repaints
     within ~5 s, so by the time the state is read pixOk is true again - sampling
     the flag would pass whether or not detection ever happened.
+
+    ⚠ Needs the register/pixel probe ON. panelPixLost only advances while the
+    probe runs, and panelPixOk is null (not a fabricated true) while it is off -
+    the shipped default - so this enables it for the window and restores it after.
     """
     _require_tft(device)
     ip = lan_ip_or_skip(device, net, secrets, require_secret)
@@ -511,34 +515,38 @@ def test_panel_content_loss_is_detected_and_repaired(device, net, secrets, requi
         assert r.status_code == 200, f"GET /api/state -> {r.status_code}"
         return r.json()
 
-    before = st()
-    assert before.get("panelPixOk") is True, "panel content already diverged before the test"
-    lost0 = before.get("panelPixLost", 0)
+    device.cmd("PANELPROBE 1", "PANELPROBE", timeout=5.0)  # probe is off by default
+    try:
+        before = st()
+        assert before.get("panelPixOk") is True, "panel content already diverged before the test"
+        lost0 = before.get("panelPixLost", 0)
 
-    device.cmd("TFTFILL?", "TFTFILL", timeout=15.0)  # corrupt GRAM behind our back
-    time.sleep(4.0)
+        device.cmd("TFTFILL?", "TFTFILL", timeout=15.0)  # corrupt GRAM behind our back
+        time.sleep(4.0)
 
-    detected = False
-    for _ in range(6):
-        cur = st()
-        if cur.get("panelPixLost", 0) > lost0:
-            detected = True
-            break
-        time.sleep(3.0)
-    assert detected, (
-        "the panel's pixels were overwritten and nothing noticed - content "
-        "verification is the only signal that observes this, so if it stops "
-        "working a blank panel becomes undetectable again"
-    )
+        detected = False
+        for _ in range(6):
+            cur = st()
+            if cur.get("panelPixLost", 0) > lost0:
+                detected = True
+                break
+            time.sleep(3.0)
+        assert detected, (
+            "the panel's pixels were overwritten and nothing noticed - content "
+            "verification is the only signal that observes this, so if it stops "
+            "working a blank panel becomes undetectable again"
+        )
 
-    # ...and it must recover, not just notice.
-    ok = False
-    for _ in range(6):
-        time.sleep(3.0)
-        if st().get("panelPixOk") is True:
-            ok = True
-            break
-    assert ok, "content diverged and was never repainted back"
+        # ...and it must recover, not just notice.
+        ok = False
+        for _ in range(6):
+            time.sleep(3.0)
+            if st().get("panelPixOk") is True:
+                ok = True
+                break
+        assert ok, "content diverged and was never repainted back"
+    finally:
+        device.cmd("PANELPROBE 0", "PANELPROBE", timeout=5.0)  # restore shipped default
 
 
 @pytest.mark.hil

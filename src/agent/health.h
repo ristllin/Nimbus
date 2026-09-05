@@ -31,6 +31,12 @@ struct Env {
   // contexts that cannot see them (the turn-task tool) report nothing new.
   bool battSenseMissing = false;
   bool touchDegraded = false;
+  // Debounced honest "the display controller is not answering" verdict (filled by
+  // webui): its id register reads the all-ones off-bus signature - the owner's
+  // black glass, where the boot begin() result still claimed the panel was "up".
+  // Independent of the register/pixel probe (off by default). Default false = the
+  // contexts that cannot read the controller (the turn-task tool) report nothing new.
+  bool panelNotResponding = false;
 };
 
 // Record the outcome of an acoustic loopback probe so the passive report can say

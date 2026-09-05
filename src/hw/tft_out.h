@@ -74,6 +74,20 @@ bool panelConfigOk();
 // Returns true when the caller should repaint the current screen.
 bool tickHealth(uint32_t now);
 
+// Honest controller liveness - the display's counterpart to the resistive-touch
+// liveness. Polls the controller id register (RDDID, the same one TFTID? reads)
+// at a low ~2 s cadence and feeds a debounced not-answering detector, so the
+// health row and /api/state can report a dead/disconnected panel as a fault
+// instead of the boot-time begin() result's hardwired "up". Cheap: one id read
+// per cadence, and skipped while the render task blits (a concurrent read returns
+// noise). MUST be called from loop() on a TFT board, like tickHealth.
+void pollControllerLiveness(uint32_t now);
+// True once the controller has read the persistent not-answering signature (id
+// all-ones / off the bus - the owner's black glass) across the debounce window.
+// Independent of the register/pixel probe, so it catches the fault in the shipped
+// default. False on a live panel and before the first poll completes a window.
+bool controllerNotResponding();
+
 // Drop the identical-frame cache so the NEXT renderAndPush always blits, even if
 // the composed pixels are byte-identical to the last frame. Used after a 180
 // degree flip: setFlip re-maps MADCTL but the on-screen GRAM only rotates when a
