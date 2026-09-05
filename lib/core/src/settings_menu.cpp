@@ -577,6 +577,9 @@ void SettingsMenu::onClick() {
 
     case State::ConfirmReset:
       if (sel_ == 1) {  // Yes, clear all
+        // The owner pressed a real action - signal it so the device confirms it
+        // (sound + ring + line), even when there is nothing to clear.
+        resetRequested_ = true;
         // Only dirty (and thus persist) if there was actually something to
         // clear; confirming Reset with no overrides is a no-op.
         bool hadOverrides = false;

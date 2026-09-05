@@ -100,6 +100,7 @@
 #include "net/wifi_store.h"   // the Wi-Fi menu reads saved networks by name
 #include "net/wifi_link.h"    // CUM-207: multi-network failover supervisor (step 8)
 #include "sfx/sound_fx.h"
+#include "nimbus/action_feedback.h"  // menu-action outcome -> feedback cue mapping (host-tested)
 #include "sfx/sfx_sync.h"            // sfxsync::statusStr -> device.status sfxSync (W11)
 #include "sfx/music.h"              // CUM-40 music player (media.* tools + /play)
 #include "nimbus/orch/caps.h"        // spawn capacity constants -> device.status (W11)
@@ -229,6 +230,13 @@ static uint8_t   g_lastPosture = 0;
 // Set when a save/scan confirm blips the ring; the loop restores the composed
 // ring (refreshRing) when it expires.
 static uint32_t      g_ledConfirmUntilMs = 0;
+
+// A transient one-line action confirmation shown in the menu help pane (the
+// "when the panel is alive" channel for a menu-action outcome). Empty/expired =
+// the pane shows its normal help text. The ring swell + sound carry the same
+// outcome on the channels that survive a dead panel.
+static std::string   g_menuToast;
+static uint32_t      g_menuToastUntilMs = 0;
 
 // Orchestrator device-action overrides (DeviceSink; staged on the poll task under
 // the config lock, applied by the main loop). "lights off" darkens the ring until
@@ -1664,7 +1672,14 @@ static void renderMenu() {
     c.menuItems = v.items;
     c.menuSelected = v.selected;
     c.menuTitle = v.title;             // breadcrumb path band
-    c.menuHelp = g_menu.helpText();    // param help pane ("" = hidden)
+    // A transient action toast borrows the help pane to name the last action's
+    // outcome (forget / rescan / reset / ...). Empty or expired falls back to the
+    // normal help text. It only ever holds a line for ~kActionToastMs right after
+    // a press, so golden menu renders (captured with no action in flight) are
+    // untouched.
+    const bool toastLive =
+        g_menuToastUntilMs != 0 && int32_t(millis() - g_menuToastUntilMs) < 0;
+    c.menuHelp = toastLive ? g_menuToast : g_menu.helpText();  // param help pane ("" = hidden)
     if (g_menu.showingUpdateMenu()) {  // Software update status band (CUM-193;
                                        // not the install-confirm sub-screen)
       const nimbus::ota::UpdateView uv = otaViewNow();
@@ -3694,6 +3709,69 @@ static void serviceCalGate(uint32_t now) {
   renderCalGateIfChanged(now);
 }
 
+// How long a menu-action confirmation holds: the ring swell (matches the web
+// confirm) and the slightly longer on-screen line so it stays readable.
+static constexpr uint32_t kActionConfirmMs = 1200;
+static constexpr uint32_t kActionToastMs = 1800;
+
+// Consistent feedback for an actionable device-menu control (the owner's fix:
+// every "forget / rescan / reset / re-pair" button must confirm on success and
+// flag a failure, on channels that survive a DEAD PANEL). The pure outcome->cue
+// mapping is host-tested in lib/core (nimbus::action); this seam emits it:
+//   - sound : the mapped tone, played bypassing the per-event verbosity rank (a
+//     button press is a direct interaction, not ambient job chatter) but still
+//     honouring the hard mute (sound Off / speaker fault / voice-capture mute),
+//   - ring  : a brief green/red/accent Pulse SWELL, reusing the confirm window the
+//     loop already restores; suppressed only where the ring is deliberately dark
+//     (lights-off, Dark battery mode, a model-painted override, an OTA install),
+//   - screen: the action's one-line outcome copy in the menu help pane, when the
+//     panel is alive and the catalog carries a line (many actions already name
+//     the result on their own row / status band / Ask screen and pass none).
+static void emitMenuActionFeedback(nimbus::action::MenuAction action,
+                                   nimbus::action::Outcome outcome) {
+  using nimbus::action::RingCue;
+  const nimbus::action::Cues cues = nimbus::action::cuesFor(outcome);
+
+  // 1) Sound - survives a dead panel. play() bypasses the level+rate gates; gate
+  // it on isSilent() so an owner who set sound Off (or a faulted speaker, or a
+  // live mic capture) still gets silence.
+  if (!::sfx::isSilent()) {
+    if (const char* s = nimbus::sfx::slug(cues.sfx)) ::sfx::play(s);
+  }
+
+  // 2) Ring swell - also survives a dead panel. Respect every ring silence the
+  // web-action confirm respects; never strobe (Pulse, not Flash).
+  if (!g_lightsOff && !g_ledOverrideActive && !otaupd::installing() &&
+      g_cfg.posture() != Posture::Dark) {
+    uint8_t r = 0, g = 0, b = 0;
+    switch (cues.ring) {
+      case RingCue::Success: r = 0;   g = 180; b = 0; break;   // green
+      case RingCue::Failure: r = 200; g = 0;   b = 0; break;   // red
+      case RingCue::Ack: {                                      // theme accent
+        const nimbus::ThemeColor th =
+            nimbus::themeAccent(std::string(agent::store::theme().c_str()));
+        r = th.r; g = th.g; b = th.b;
+        break;
+      }
+    }
+    solide::leds::clearFrame();   // exit any raw frame so the Pulse shows
+    solide::leds::show(solide::leds::Pattern::Pulse, r, g, b);
+    g_ledConfirmUntilMs = millis() + kActionConfirmMs;
+  }
+
+  // 3) Screen line - the "panel is alive" channel. Only while the menu owns the
+  // panel, and only when the catalog carries a line for this outcome (nullptr =
+  // the action's own row/band/Ask already names it).
+  if (g_menu.isOpen()) {
+    if (const char* line =
+            nimbus::action::lineFor(nimbus::action::copyFor(action), outcome)) {
+      g_menuToast = line;
+      g_menuToastUntilMs = millis() + kActionToastMs;
+      g_menuNeedsPaint = true;
+    }
+  }
+}
+
 // Everything that must happen AFTER the settings-menu FSM mutates: the ring
 // echo, the dirty()->persist+applyConfig block, and every request-flag drain
 // (bonds, SD probe, Wi-Fi, OTA install).
@@ -3801,6 +3879,11 @@ static void settleMenuAfterMutation(uint32_t now) {
     if (g_menu.bleEnabled() != g_bleEnabled) {
       g_bleEnabled = g_menu.bleEnabled();
       if (!g_orchMode) net::ble::setEnabled(g_bleEnabled);
+      // Confirm the toggle. This runs after applyConfig() above, so nothing
+      // recomposes the ring out from under the swell while the menu stays open.
+      emitMenuActionFeedback(g_bleEnabled ? nimbus::action::MenuAction::BluetoothOn
+                                          : nimbus::action::MenuAction::BluetoothOff,
+                             nimbus::action::Outcome::Ok);
     }
     // Operating mode is resolved ONCE at boot (g_orchMode gates which
     // subsystems run: BLE/nsn for Notifier, telegram/fabric for Orchestrator).
@@ -3827,10 +3910,17 @@ static void settleMenuAfterMutation(uint32_t now) {
   // requests would have inherited the same starvation).
   if (g_menu.forgetBondsRequested()) {
     // Forget paired devices (Connectivity): wipe all BLE bonds so every Mac
-    // must re-pair (enter a fresh passkey). Applied live; no reboot.
+    // must re-pair (enter a fresh passkey). Applied live; no reboot. Derive a
+    // REAL outcome from the bond count after the wipe (forgetBonds() is void):
+    // Ok when no bonds remain (there were none, or they are gone), Failed if any
+    // survive.
     net::ble::forgetBonds();
+    const bool cleared = (net::ble::numBonds() == 0);
     g_menu.clearForgetRequest();
     g_menuNeedsPaint = true;
+    emitMenuActionFeedback(nimbus::action::MenuAction::ForgetBonds,
+                           cleared ? nimbus::action::Outcome::Ok
+                                   : nimbus::action::Outcome::Failed);
   }
   if (g_menu.cloudPairRequested()) {
     // Cloud link code (Connectivity): initiate cumulo-nimbus pairing FROM the
@@ -3843,6 +3933,10 @@ static void settleMenuAfterMutation(uint32_t now) {
     nimbus::relay::requestPair();
     g_menu.clearCloudPairRequest();
     g_menuNeedsPaint = true;
+    // Fire-and-forget: the claim code arrives later on the Pairing screen, so the
+    // honest cue here is an acknowledgement, not a success.
+    emitMenuActionFeedback(nimbus::action::MenuAction::CloudPair,
+                           nimbus::action::Outcome::Acknowledged);
   }
   if (g_menu.sdProbeRequested()) {
     // Rescan SD card: force a real SD bus re-init (end()+begin()) so a card
@@ -3854,11 +3948,20 @@ static void settleMenuAfterMutation(uint32_t now) {
     g_menu.clearSdProbeRequest();
     g_menu.setSdStatus(std::string(sdStatusLine().c_str()));  // refresh the Main row
     g_menuNeedsPaint = true;
+    // The bool result used to be swallowed into a serial line only; feed it in so
+    // the owner hears/sees whether the card actually came back.
+    emitMenuActionFeedback(nimbus::action::MenuAction::RescanSd,
+                           sdUp ? nimbus::action::Outcome::Ok
+                                : nimbus::action::Outcome::Failed);
   }
   if (g_menu.calibrateRequested()) {
     // Settings > Display > Calibrate touch: hand the screen to the on-device
     // tap-the-crosses flow, then restore the normal UI. Blocking + opt-in (CUM-189).
     g_menu.clearCalibrateRequest();
+    // Acknowledge the press before the blocking full-screen flow takes over (the
+    // confirm sound is the main cue; the guided flow needs a live panel anyway).
+    emitMenuActionFeedback(nimbus::action::MenuAction::Calibrate,
+                           nimbus::action::Outcome::Acknowledged);
     g_menu.close();
     runTouchCalibration();
     g_menuNeedsPaint = false;   // the routine already restored the live screen
@@ -3868,6 +3971,10 @@ static void settleMenuAfterMutation(uint32_t now) {
     // the menu; this never returns (the chip sleeps). Opt-in and confirmed, so it
     // can never fire from a stray tap. (CUM-224)
     g_menu.clearPowerOffRequest();
+    // Acknowledge before sleeping. The sound is best-effort here (deep sleep can
+    // cut a clip short); the shutdown screen carries the visible confirmation.
+    emitMenuActionFeedback(nimbus::action::MenuAction::PowerOff,
+                           nimbus::action::Outcome::Acknowledged);
     enterPowerOffSleep();
   }
   if (g_menu.restartRequested()) {
@@ -3880,6 +3987,10 @@ static void settleMenuAfterMutation(uint32_t now) {
     g_askOverride = "Restarting...";
     g_askTransient = true;                  // restart follows: no Close button
     renderScreen(attn::ScreenId::Ask, -1);  // panel confirmation screen
+    // Acknowledge on the survives-a-dead-panel channels too (the sound starts
+    // before the restart cuts it; the ring swells green under the Ask screen).
+    emitMenuActionFeedback(nimbus::action::MenuAction::Restart,
+                           nimbus::action::Outcome::Acknowledged);
     Serial.flush();
     delay(50);
     ESP.restart();
@@ -3899,6 +4010,9 @@ static void settleMenuAfterMutation(uint32_t now) {
     net::publishSetupNetwork();
     g_menu.clearPublishApRequest();
     g_menuNeedsPaint = true;
+    // Fire-and-forget: the AP comes up asynchronously, so acknowledge the press.
+    emitMenuActionFeedback(nimbus::action::MenuAction::PublishAp,
+                           nimbus::action::Outcome::Acknowledged);
   }
   if (g_menu.wifiScanRequested()) {
     // Kick the scan and seed whatever is already available. The rows refresh
@@ -3944,11 +4058,31 @@ static void settleMenuAfterMutation(uint32_t now) {
     if (!joined) Serial.printf("menu: no saved network '%s'\n", picked.c_str());
     g_menu.clearWifiJoinRequest();
     g_menuNeedsPaint = true;
+    // The join is a begin(), not a wait: acknowledge that it started (the real
+    // connect result lands later as a Wi-Fi cue). A missing saved network is a
+    // knowable failure - name it so the owner can pick again.
+    emitMenuActionFeedback(nimbus::action::MenuAction::WifiJoin,
+                           joined ? nimbus::action::Outcome::Acknowledged
+                                  : nimbus::action::Outcome::Failed);
   }
   if (g_menu.wifiForgetRequested()) {
-    net::forgetNetwork(String(g_menu.wifiPickedSsid().c_str()));
+    // forgetNetwork() returns whether the SSID was actually removed; that result
+    // used to be discarded. Feed it in so a stale pick can't look like it worked.
+    const bool forgot = net::forgetNetwork(String(g_menu.wifiPickedSsid().c_str()));
     g_menu.clearWifiForgetRequest();
     g_menuNeedsPaint = true;
+    emitMenuActionFeedback(nimbus::action::MenuAction::WifiForget,
+                           forgot ? nimbus::action::Outcome::Ok
+                                  : nimbus::action::Outcome::Failed);
+  }
+  if (g_menu.resetRequested()) {
+    // Reset to defaults already applied above via the dirty() drain (or was a
+    // no-op with nothing to clear). Either way the owner pressed a real action:
+    // confirm it. It always succeeds locally, so the outcome is Ok.
+    g_menu.clearResetRequest();
+    g_menuNeedsPaint = true;
+    emitMenuActionFeedback(nimbus::action::MenuAction::Reset,
+                           nimbus::action::Outcome::Ok);
   }
   // Keep the saved-network picker in step with the store whenever the menu
   // is open, so "Forget network" never lists something already gone.
@@ -3971,10 +4105,16 @@ static void settleMenuAfterMutation(uint32_t now) {
     if (otaupd::requestCheck(&why)) {
       g_menu.setUpdateStatus("Checking for updates...");
       g_updCheckKickMs = now;   // grace: don't let a stale state overwrite this
+      // The status band carries the words; add the sound + ring so the press is
+      // felt even when the panel is dead.
+      emitMenuActionFeedback(nimbus::action::MenuAction::UpdateCheck,
+                             nimbus::action::Outcome::Acknowledged);
     } else {
       // Name the real cause (no-wifi/low-heap/unsupported/busy), not "the
       // network" - a refusal is always local (CUM-197).
       g_menu.setUpdateStatus(nimbus::ota::checkRefusalCopy(why));
+      emitMenuActionFeedback(nimbus::action::MenuAction::UpdateCheck,
+                             nimbus::action::Outcome::Failed);
     }
     g_menuNeedsPaint = true;
   }
@@ -3992,6 +4132,11 @@ static void settleMenuAfterMutation(uint32_t now) {
       g_askSticky = true; g_askPage = 0;
       installRefusedAsk = true;
       renderScreen(attn::ScreenId::Ask, -1);
+      // The Ask screen names the refusal; add the error tone (survives a dead
+      // panel). The red ring is best-effort here - the menu-close recompose below
+      // owns the ring - so the sound + Ask carry this one.
+      emitMenuActionFeedback(nimbus::action::MenuAction::UpdateInstall,
+                             nimbus::action::Outcome::Failed);
     }
     // On success the menu is already closed and otaLoopUx() owns the screen.
   }
@@ -4596,7 +4741,24 @@ void loop() {
   }
   if (g_ledConfirmUntilMs != 0 && int32_t(now - g_ledConfirmUntilMs) >= 0) {
     g_ledConfirmUntilMs = 0;
-    if (!g_menu.isOpen()) refreshRing();   // menu/override may have taken the ring mid-window
+    // Restore the ring the confirm swell borrowed. A menu-action confirm can fire
+    // while the menu is OPEN (the whole point - the ring must speak on a dead
+    // panel), so restore the menu's own ring baseline there (dim echo on the
+    // encoder, dark on a touch panel) instead of leaving the Pulse lit forever;
+    // otherwise recompose the composed status ring.
+    if (g_menu.isOpen()) {
+      if (!g_screenIsTft || g_menu.adjustingValue()) menuRingRepaint(true);
+      else                                           solide::leds::off();
+    } else {
+      refreshRing();   // menu/override may have taken the ring mid-window
+    }
+  }
+  // The menu-action toast line is transient: once its window elapses, repaint the
+  // menu so the help pane returns to its normal text.
+  if (g_menuToastUntilMs != 0 && int32_t(now - g_menuToastUntilMs) >= 0) {
+    g_menuToastUntilMs = 0;
+    g_menuToast.clear();
+    if (g_menu.isOpen()) g_menuNeedsPaint = true;
   }
 
   // P3: repeated web-auth failures (3 x 401 / 60 s) - someone is on a token-less

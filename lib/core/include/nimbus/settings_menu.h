@@ -155,6 +155,13 @@ class SettingsMenu {
   bool forgetBondsRequested() const { return forgetRequested_; }
   void clearForgetRequest() { forgetRequested_ = false; }
 
+  // Set true when the user confirms "Reset to defaults" (ConfirmReset > Reset
+  // all); the device drains it to sound + flash the reset confirmation. Kept
+  // separate from dirty(): a reset with no overrides to clear persists nothing,
+  // but it is still a real action the owner pressed and must be confirmed.
+  bool resetRequested() const { return resetRequested_; }
+  void clearResetRequest() { resetRequested_ = false; }
+
   // Cursor on the "Cloud link code" row - lets the device show mode-aware help.
   bool onCloudRow() const {
     return state_ == State::Connectivity && connRowAt(sel_) == ConnCloud;
@@ -450,6 +457,7 @@ class SettingsMenu {
   bool    updateInstallRequested_ = false;  // ConfirmInstall > Install (device drains)
   bool    powerOffRequested_ = false;       // ConfirmPowerOff > Power off (device drains -> deep sleep)
   bool    restartRequested_ = false;        // ConfirmRestart > Restart (device drains -> deferred restart)
+  bool    resetRequested_ = false;          // ConfirmReset > Reset all (device drains for feedback)
   bool    touchWake_ = true;                 // board can wake from sleep on a touch (device-seeded)
   State   state_ = State::Closed;
   int     sel_ = 0;        // cursor in the current list

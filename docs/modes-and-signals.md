@@ -225,6 +225,27 @@ never changes what the ring or screen do.
 
 The full event → clip map is [docs/sfx-map.md](./sfx-map.md).
 
+### Action feedback - you always know a button worked
+
+Every device-menu button that *does* something - forget paired devices, rescan
+for the SD card, forget a network, reset to defaults, re-pair to the cloud,
+restart - answers the press on the spot, across three channels so the answer
+reaches you even if one is unavailable:
+
+- a short **sound**: a settled tone on success, a distinct tone on failure (it
+  plays whenever the sound level is above Off),
+- a brief **ring** swell: green for success, red for failure, a soft accent for
+  "started" when the real result lands later,
+- an on-screen **line** naming the outcome, when the display is alive.
+
+The sound and the ring do not depend on the screen, so the confirmation still
+reaches you on a unit whose display has failed. A failure always names the next
+step ("No SD card found. Reseat it and rescan."). Actions whose result only
+arrives later - joining a network, requesting a cloud link code - acknowledge the
+press at once and let the later Wi-Fi or pairing cue carry the real result. The
+ring swell follows the same battery-mode and lights-off rules as every other
+cue, so in Dark mode or with the ring silenced the sound and the screen carry it.
+
 ## 4. Notifier vs Orchestrator
 
 | | Notifier | Orchestrator |
