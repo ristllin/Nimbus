@@ -12,6 +12,7 @@ wiring and pinouts see the [hardware reference](../../docs/hardware.md) and the
 | [`gerbers/`](gerbers/) | Gerber layers (copper, silkscreen, soldermask, solderpaste, profile), the drill file, and the Gerber job file |
 | [`odb/pcb3_v7.zip`](odb/pcb3_v7.zip) | ODB++ export of the same board (zipped - most fabs accept either format) |
 | [`nimbus_classic_case.stl`](nimbus_classic_case.stl) | 3D-printable enclosure for the classic (touch TFT) build |
+| [`nimbus_classic_case.3mf`](nimbus_classic_case.3mf) | Bambu Studio print project for the classic case: the case split into its two-color parts with print settings already set (Bambu Lab X1 Carbon, 0.4 mm nozzle, 0.2 mm layers) |
 | [`nimbus_light_front.stl`](nimbus_light_front.stl) | Nimbus Light (Freenove CYD) enclosure, front half |
 | [`nimbus_light_back.stl`](nimbus_light_back.stl) | Nimbus Light enclosure, back half |
 | [`nimbus_light_stand.stl`](nimbus_light_stand.stl) | Desk stand for Nimbus Light (optional) |
@@ -50,7 +51,10 @@ PLA or PETG both work for every part; the main bodies print without supports on 
 machines.
 
 - **Classic (touch TFT) build:** print
-  [`nimbus_classic_case.stl`](nimbus_classic_case.stl).
+  [`nimbus_classic_case.stl`](nimbus_classic_case.stl). On a Bambu printer, open
+  [`nimbus_classic_case.3mf`](nimbus_classic_case.3mf) in Bambu Studio instead: it
+  carries the two-color part split and the print settings, so nothing needs
+  configuring.
 - **Nimbus Light (Freenove CYD):** print both halves,
   [`nimbus_light_front.stl`](nimbus_light_front.stl) and
   [`nimbus_light_back.stl`](nimbus_light_back.stl). The board and its parts are captive
