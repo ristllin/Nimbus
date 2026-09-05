@@ -82,8 +82,8 @@ All three hosts (OpenAI, Anthropic, Mistral) are in the default `provPrio` /
 `subPrio` lists; list order is the failover order, and an explicit `orchHost`
 overrides it.
 
-Default per-provider models: `OPENAI_MODEL` = `gpt-5.5`, `ANT_MODEL` =
-`claude-sonnet-4-6`, `MISTRAL_MODEL` = `mistral-large-latest`; custom →
+Default per-provider models: `OPENAI_MODEL` = `gpt-5.6`, `ANT_MODEL` =
+`claude-sonnet-5`, `MISTRAL_MODEL` = `mistral-large-latest`; custom →
 `custModel`.
 
 ### Turn behavior + TLS transport (`src/agent/store.cpp`)

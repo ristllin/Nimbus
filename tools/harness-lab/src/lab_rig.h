@@ -389,8 +389,8 @@ class LabRig {
     p.orchModel = [this](const std::string& h) { return modelFor(h); };
     p.subModel = [this](const std::string& h) { return modelFor(h); };
     p.modelChoices = [](const std::string& h) {
-      if (h == "openai")    return std::string("gpt-6-astra,gpt-5.5,gpt-5.4-mini");
-      if (h == "anthropic") return std::string("claude-opus-4-8,claude-sonnet-4-6,claude-haiku-4-5");
+      if (h == "openai")    return std::string("gpt-6-astra,gpt-5.6,gpt-5.6-luna");
+      if (h == "anthropic") return std::string("claude-opus-5,claude-sonnet-5,claude-haiku-4-5");
       if (h == "mistral")   return std::string("mistral-large-latest,mistral-medium-latest,mistral-small-latest");
       return std::string();
     };
@@ -420,7 +420,7 @@ class LabRig {
   std::string modelFor(const std::string& h) const {
     auto it = opt_.models.find(h);
     if (it != opt_.models.end()) return it->second;
-    if (h == "openai")    return "gpt-5.5";
+    if (h == "openai")    return "gpt-5.6";
     if (h == "anthropic") return "claude-sonnet-4-6";
     if (h == "mistral")   return "mistral-large-latest";
     return std::string();

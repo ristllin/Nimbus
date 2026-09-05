@@ -21,11 +21,12 @@ static void test_ctx_table_families() {
   TEST_ASSERT_EQUAL_UINT32(922000, modelCtxTokens("openai", "gpt-7-x"));
   TEST_ASSERT_EQUAL_UINT32(200000, modelCtxTokens("openai", "o4-mini-deep-research"));
   TEST_ASSERT_EQUAL_UINT32(128000, modelCtxTokens("mistral", "mistral-large-latest"));
-  // CUM-288: the Cumulo router head resolves to gpt-4o by default. Its real 128K
-  // window must drive budgeting, not the conservative 100K default a "" model or
-  // an unknown family would produce (which compacted the router head early).
+  // CUM-288 class rule: whatever model the Cumulo router head resolves to must
+  // get its real family window, never the conservative 100K default a "" model
+  // or an unknown family would produce (which compacted the router head early).
   TEST_ASSERT_EQUAL_UINT32(128000, modelCtxTokens("cumulo", "gpt-4o"));
   TEST_ASSERT_EQUAL_UINT32(128000, modelCtxTokens("cumulo", "gpt-4o-mini"));
+  TEST_ASSERT_EQUAL_UINT32(272000, modelCtxTokens("cumulo", "gpt-5.6"));  // the 2026-09 default
 }
 
 // Class rule: no gpt-5-or-newer generation may fall through to the conservative

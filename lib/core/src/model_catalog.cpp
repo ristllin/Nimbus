@@ -82,11 +82,15 @@ std::string claudeFamily(const std::string& m) {
 }
 // Size word ('S'|'M'|'L') from a generic tier name, 0 if none.
 char sizeFromWord(const std::string& m) {
-  static const char* kSmall[] = {"nano", "tiny", "-air", "flash", "lite", "small", "mini", nullptr};
+  // OpenAI's gpt-5.6+ capability tiers (2026-07): Sol = flagship, Terra =
+  // balanced, Luna = fastest/cheapest. Durable tier names per the announcement,
+  // so they rank with the generic size words (hyphenated to avoid substrings).
+  static const char* kSmall[] = {"nano", "tiny", "-air", "flash", "lite", "small", "mini",
+                                 "-luna", nullptr};
   for (int i = 0; kSmall[i]; ++i)
     if (has(m, kSmall[i])) return 'S';
-  if (has(m, "medium") || has(m, "turbo")) return 'M';
-  static const char* kLarge[] = {"large", "opus", "-max", nullptr};
+  if (has(m, "medium") || has(m, "turbo") || has(m, "-terra")) return 'M';
+  static const char* kLarge[] = {"large", "opus", "-max", "-sol", nullptr};
   for (int i = 0; kLarge[i]; ++i)
     if (has(m, kLarge[i])) return 'L';
   return 0;

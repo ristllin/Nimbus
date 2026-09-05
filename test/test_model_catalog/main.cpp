@@ -45,7 +45,11 @@ static void test_size_class_by_family() {
   TEST_ASSERT_EQUAL_CHAR('L', modelSizeClass("mistral", "mistral-large-latest"));
   TEST_ASSERT_EQUAL_CHAR('M', modelSizeClass("mistral", "mistral-medium-latest"));
   TEST_ASSERT_EQUAL_CHAR('S', modelSizeClass("mistral", "mistral-small-latest"));
-  TEST_ASSERT_EQUAL_CHAR('L', modelSizeClass("openai", "gpt-5.6-luna"));
+  // gpt-5.6 tier words (Sol/Terra/Luna) rank like the generic size words.
+  TEST_ASSERT_EQUAL_CHAR('S', modelSizeClass("openai", "gpt-5.6-luna"));
+  TEST_ASSERT_EQUAL_CHAR('M', modelSizeClass("openai", "gpt-5.6-terra"));
+  TEST_ASSERT_EQUAL_CHAR('L', modelSizeClass("openai", "gpt-5.6-sol"));
+  TEST_ASSERT_EQUAL_CHAR('L', modelSizeClass("openai", "gpt-5.6"));  // bare id = flagship default
   TEST_ASSERT_EQUAL_CHAR('S', modelSizeClass("openai", "o3-mini"));
   TEST_ASSERT_EQUAL_CHAR('S', modelSizeClass("zai", "glm-4.5-air"));
   TEST_ASSERT_EQUAL_CHAR('M', modelSizeClass("zai", "glm-5-turbo"));
@@ -183,7 +187,7 @@ static void test_openai_heuristics_and_roles() {
   TEST_ASSERT_TRUE(luna->hasRole(RoleOrchestrator));
   TEST_ASSERT_TRUE(luna->hasCap(CapTools));
   TEST_ASSERT_TRUE(luna->hasRole(RoleVision));       // gpt-5 multimodal heuristic
-  TEST_ASSERT_EQUAL_CHAR('L', luna->size);
+  TEST_ASSERT_EQUAL_CHAR('S', luna->size);  // Luna = the fastest/cheapest 5.6 tier
   // embedding / audio / image models land under their own roles...
   TEST_ASSERT_TRUE(find(v, "text-embedding-3-large")->hasRole(RoleEmbedding));
   TEST_ASSERT_TRUE(find(v, "gpt-4o-transcribe")->hasRole(RoleStt));

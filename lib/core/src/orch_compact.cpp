@@ -35,7 +35,7 @@ uint32_t modelCtxTokens(const std::string& provider, const std::string& model) {
   const int gen = gptGeneration(m);
   if (gen >= 6) return 922000;
   if (gen == 5) return 272000;
-  if (startsWith(m, "gpt-4o")) return 128000;   // gpt-4o / gpt-4o-mini (the Cumulo router default)
+  if (startsWith(m, "gpt-4o")) return 128000;   // gpt-4o / gpt-4o-mini (the pre-2026-09 Cumulo default)
   if (m.size() >= 2 && m[0] == 'o' && m[1] >= '1' && m[1] <= '9') return 200000;
   if (p == "mistral" || startsWith(m, "mistral-")) return 128000;
   return kCtxDefaultTokens;
