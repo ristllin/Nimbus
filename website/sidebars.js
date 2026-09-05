@@ -100,7 +100,6 @@ const sidebars = {
         'contributing/development',
         'contributing/self-hosted-ota',
         'guides/ota',
-        'guides/ota-operations',
       ],
     },
   ],

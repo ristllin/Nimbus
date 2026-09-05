@@ -87,7 +87,6 @@ Three other generators read this tree - keep them in sync when you edit:
 |---|---|
 | `development.md` | Build environments, the test ladder, golden-test flow, constraints |
 | `ota.md` | Over-the-air firmware updates |
-| `ota-operations.md` | OTA operations and maintenance |
 | `self-hosted-ota.md` | Running your own OTA release channel |
 
 ## Page types (Divio)
@@ -100,7 +99,7 @@ they are not "fixed" into fragments (coherency over richness).
 | Type (learning mode) | Sidebar group(s) | Pages |
 |---|---|---|
 | **Tutorial** (learning by doing) | Quick Start | `what-you-need`, `computer-setup`, `flash`, `setup-wizard`, `first-conversation`, `notifier-quick-start` |
-| **How-to** (task recipes) | Hardware Build, Using Nimbus, Cloud, Forking & Contributing | `hardware/*`, `modes-and-signals`, `connectors`, `mcp`, `people-and-privacy`, `cloud-relay`, `cloud/cumulo-key`, `ota`, `ota-operations`, `self-hosted-ota`, `development` |
+| **How-to** (task recipes) | Hardware Build, Using Nimbus, Cloud, Forking & Contributing | `hardware/*`, `modes-and-signals`, `connectors`, `mcp`, `people-and-privacy`, `cloud-relay`, `cloud/cumulo-key`, `ota`, `self-hosted-ota`, `development` |
 | **Reference** (look it up) | Reference | `reference/*`, `tools-and-commands`, `changelog`, `notifier-status-language`, `sfx-map`, `hardware/bom` |
 | **Explanation** (understand why) | How It Works | `architecture`, `turn-anatomy`, `architecture/orchestrator-live-turn`, `orchestrator-world`, `memory`, `orchestrator-storage`, `sub-sessions`, `harness`, `provider-wire`, `security`, `led-ux` |
 

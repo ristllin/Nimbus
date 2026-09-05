@@ -1,8 +1,9 @@
 # OTA firmware updates
 
-> **Operators:** for the runbook - how to cut a release, and which tokens
-> expire where + how to renew them - see [`ota-operations.md`](ota-operations.md).
-> This page is the design/reference.
+> This page is the OTA design and device-behavior reference. The operator
+> runbook - how to cut a release, which tokens expire where and how to renew
+> them, and how to rotate the signing key - is maintainer-internal and is not
+> part of the public docs.
 
 Nimbus updates itself over Wi-Fi from GitHub Releases. The flash layout was
 already A/B (stock `default_16MB.csv`: `otadata` + two 6.5 MB app slots), so OTA
@@ -92,44 +93,13 @@ own type.
 The repo-layout decision (reuse `nimbus-fw-releases`, one manifest per release) is
 recorded in [`adr/0001-ota-releases-repo.md`](adr/0001-ota-releases-repo.md).
 
-## CI secrets (two)
+## Cutting a release
 
-- **`OTA_SIGNING_KEY`** - the ECDSA private key (PEM) CI signs manifests with.
-  Backed up in the owner's password manager; **if lost, fielded devices can never
-  update again**. Rotation: append the new PEM to `kOtaPubKeys`, ship a release
-  signed with the OLD key (fielded devices learn the new anchor), then re-key the
-  secret; drop the old entry a release later.
-- **`RELEASE_PAT`** - a fine-grained PAT the release workflow uses to (a) check
-  out the [`solide-drivers`](https://github.com/ristllin/solide-drivers) sibling
-  (`Contents: read`) and (b) publish the release to the `nimbus-fw-releases`
-  repo (`Contents: read/write`). The default `GITHUB_TOKEN` is scoped to the
-  source repo only, so it cannot publish to a second repository. Create it at
-  github.com/settings/personal-access-tokens with those two repos + permissions,
-  then `gh secret set RELEASE_PAT -R ristllin/Nimbus`.
-
-## Release checklist
-
-1. Bump `NIMBUS_FW_VERSION` in `include/version.h`; commit.
-2. `git tag vX.Y.Z && git push origin main vX.Y.Z`.
-3. Watch the `release` workflow: it gates tag==version.h, builds the `esp32s3`
-   (nimbus-tft) and `esp32s3-cyd` (freenove) images, signs the typed manifest,
-   and publishes `firmware-nimbus-tft.bin`, `firmware-freenove.bin`, and
-   `manifest.json` (plus per-variant web-flash images on the `webflash` branch).
-   `-rcN` tags publish as pre-releases - note `releases/latest` (what devices
-   poll) only tracks FULL releases, so rc testing uses `OTAURL`/a draft URL, not
-   the daily check.
-   - **Transition release (one-time, for existing fielded devices):** also cut a
-     schema-1 manifest so devices still on the old build tag can install it and
-     cross into the typed scheme. Build the images, then
-     `tools/make_manifest.py --schema 1 --version vX.Y.Z --key ... esp32s3=firmware-nimbus-tft.bin cyd=firmware-freenove.bin`
-     and publish it under the tag those devices poll. New devices are seeded with
-     their type by the flasher and never need this.
-4. Devices see it on their daily check (or the **Check for Updates** button,
-   Settings → Software update on the web page); Orchestrator-mode devices
-   Telegram the owner once per version - the notice ends "Reply /update to
-   install it now, or open Settings → Software update on the device's web
-   page." (an already-current device answers `/update` with "Nimbus is up to
-   date (vX).").
+Publishing a signed release to the fleet - the version bump and tag, the CI
+signing step, the one-time schema-1 transition manifest, the two CI secrets
+(`OTA_SIGNING_KEY` and `RELEASE_PAT`), and token/key renewal and rotation - is an
+operator task. That runbook is maintainer-internal and is not part of the public
+docs. What a device does with a release once it is published is described below.
 
 ## Device behavior
 

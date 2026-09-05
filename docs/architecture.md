@@ -146,8 +146,8 @@ a clean, assets-only repository.
 
 Firmware updates are signed, published to the public releases repository, and
 installed over the air with one click - with an automatic safety net if a bad
-image ships. The full design is in [OTA updates](./ota.md); the operator's
-runbook is [OTA operations](./ota-operations.md).
+image ships. The full design is in [OTA updates](./ota.md); the operator
+runbook is maintainer-internal.
 
 ```mermaid
 sequenceDiagram

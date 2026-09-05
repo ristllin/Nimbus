@@ -1082,8 +1082,8 @@ page (Memory & Files, Music).
 | `OTAURL <url>` | Point the updater at a different manifest URL. |
 | `OTASIM arm <ver>` | Drill: simulate an available update to exercise the whole approval-and-install flow. |
 
-For the full OTA story, see [ota.md](ota.md) and the operations runbook
-[ota-operations.md](ota-operations.md).
+For the full OTA story, see [ota.md](ota.md); the operations runbook is
+maintainer-internal.
 
 #### Cloud access
 
@@ -1092,11 +1092,11 @@ For the full OTA story, see [ota.md](ota.md) and the operations runbook
 | `CLOUD?` | Cloud-relay status as JSON (opt-in, pairing state, pairing code and claim URL when pairing). |
 | `CLOUDPAIR` | Opt in and start pairing; poll `CLOUD?` for the code (also shown on the panel), then claim it at app.cumulo-nimbus.ai. |
 | `CLOUDOFF` | Unpair and disable cloud access. |
-| `CLOUDLOOP [path]` | Loopback self-test of the tunnel replay path against a local route (default `/api/state`); no cloud dependency. |)NIMBUSDOC"},
-  {"tools-and-commands#contributor-tools-console-commands-4", "Contributor tools - Console commands (4/4)",
-   R"NIMBUSDOC(For the pairing flow and security model, see [cloud-relay.md](cloud-relay.md).
+| `CLOUDLOOP [path]` | Loopback self-test of the tunnel replay path against a local route (default `/api/state`); no cloud dependency. |
 
-The device also answers a few fixed owner commands over Telegram - see
+For the pairing flow and security model, see [cloud-relay.md](cloud-relay.md).)NIMBUSDOC"},
+  {"tools-and-commands#contributor-tools-console-commands-4", "Contributor tools - Console commands (4/4)",
+   R"NIMBUSDOC(The device also answers a few fixed owner commands over Telegram - see
 [Telegram owner commands](#telegram-owner-commands) under User tools above.)NIMBUSDOC"},
   // ---- hardware ----
   {"hardware#intro", "Nimbus Hardware Reference",

@@ -90,9 +90,9 @@ git tag vX.Y.Z && git push origin main vX.Y.Z
 
 CI gates tag == version, builds `esp32s3` + `test`, signs the manifest, and
 publishes. Devices already running your firmware see it on their next daily
-check. The full runbook - rc tags, token renewal, key rotation,
-troubleshooting - is [OTA operations](ota-operations.md); mentally substitute
-your repositories for the upstream names there.
+check. Your fork's ongoing release chores - rc tags, token renewal, key
+rotation, and troubleshooting - mirror the upstream process, with your own
+repositories in place of the upstream names.
 
 ## What you inherit for free
 

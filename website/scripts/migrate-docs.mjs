@@ -76,7 +76,6 @@ const PAGES = [
   ['development.md', 'contributing/development.md', 'Development guide', 'Development'],
   ['self-hosted-ota.md', 'contributing/self-hosted-ota.md', 'Self-hosted OTA', 'Self-hosted OTA'],
   ['ota.md', 'guides/ota.md', 'OTA Firmware Updates', 'OTA updates'],
-  ['ota-operations.md', 'guides/ota-operations.md', 'OTA Operations & Maintenance', 'OTA operations'],
 ];
 
 // absolute source path -> output path (relative to website/docs/)

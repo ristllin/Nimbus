@@ -305,8 +305,8 @@ page (Memory & Files, Music).
 | `OTAURL <url>` | Point the updater at a different manifest URL. |
 | `OTASIM arm <ver>` | Drill: simulate an available update to exercise the whole approval-and-install flow. |
 
-For the full OTA story, see [ota.md](ota.md) and the operations runbook
-[ota-operations.md](ota-operations.md).
+For the full OTA story, see [ota.md](ota.md); the operations runbook is
+maintainer-internal.
 
 #### Cloud access
 
