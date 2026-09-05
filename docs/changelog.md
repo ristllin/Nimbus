@@ -8,6 +8,11 @@ installs on your say-so ([how updates work](ota.md)).
 
 ## Unreleased
 
+- **GPT-6 Astra can be selected.** OpenAI's `gpt-6-astra` (released 2026-09-03) is
+  offered as the Orchestrator model and as the sub-session model under Assistant >
+  Models, with its full context window and reasoning support. The OpenAI model list
+  now keeps the newest GPT generation first instead of only the GPT-5 family, so
+  the next generation shows up on its own. Cumulo Nimbus prices it from day one.
 - **Cumulo Nimbus provider slot in the device Models UI.** Assistant > Models >
   Providers & keys now lists **Cumulo Nimbus** first, the recommended one-key path:
   paste your device key, and Verify checks it against the router (not a third-party

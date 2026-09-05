@@ -4,6 +4,7 @@
 #include <cctype>
 
 #include "nimbus/mem_cap.h"   // utf8CapLen - every re-injected cap must be UTF-8-safe
+#include "nimbus/orch/model_catalog.h"  // gptGeneration - the one gpt-<N> parser
 
 namespace nimbus {
 namespace orch {
@@ -26,7 +27,14 @@ uint32_t modelCtxTokens(const std::string& provider, const std::string& model) {
   // family's window without a table edit; a genuinely unknown family compacts
   // early on the conservative default, never late.
   if (p == "anthropic" || startsWith(m, "claude-")) return 200000;
-  if (startsWith(m, "gpt-5")) return 272000;
+  // OpenAI generations: the INPUT window (published context minus the max output
+  // reserve, the same convention LiteLLM's max_input_tokens uses). gpt-5.x is
+  // 400K - 128K; gpt-6-astra (2026-09) is 1,050,000 - 128,000. A later generation
+  // inherits the gpt-6 figure: windows have only grown, and the owner cap
+  // (compactAtK) bounds the tail long before either window matters.
+  const int gen = gptGeneration(m);
+  if (gen >= 6) return 922000;
+  if (gen == 5) return 272000;
   if (startsWith(m, "gpt-4o")) return 128000;   // gpt-4o / gpt-4o-mini (the Cumulo router default)
   if (m.size() >= 2 && m[0] == 'o' && m[1] >= '1' && m[1] <= '9') return 200000;
   if (p == "mistral" || startsWith(m, "mistral-")) return 128000;

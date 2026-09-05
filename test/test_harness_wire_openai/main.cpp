@@ -292,6 +292,40 @@ static void test_loop_no_reasoning_param_on_gpt5_chat_variant() {
   TEST_ASSERT_FALSE(bodyHas(d, 0, "\"reasoning\""));
 }
 
+// gpt-6-astra (2026-09) is a reasoning model like gpt-5.x: under the stateless
+// store:false replay it needs the encrypted reasoning items included with its
+// function calls, so the gate must recognise the NEW generation (the old literal
+// "gpt-5" prefix left it ungated - a 400 on round 2 of every tool-calling turn).
+// The class rule (every gpt-<N>, N >= 5) is what is asserted; the -chat carve-out
+// still applies to the new generation.
+static void test_loop_reasoning_param_on_every_gpt_generation() {
+  for (int gen = 5; gen <= 9; ++gen) {
+    const std::string model = "gpt-" + std::to_string(gen) + (gen == 6 ? "-astra" : "-x");
+    FakeProviderDeps d;
+    d.http.script.push_back({"", "", 200, finalCallBody("resp_1")});
+    auto pd = d.contract();
+    pd.orchModel = [model](const char*) { return model; };
+    FakeProviderDeps::ToolRig rig;
+    d.fillTools(rig);
+    std::string conv, out, err;
+    bool ok = providers::orchTurnOpenAI(pd, conv, "S", "U", out, err, &rig.ht, nullptr);
+    TEST_ASSERT_TRUE_MESSAGE(ok, model.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(bodyHas(d, 0, "\"reasoning\":{\"summary\":\"auto\"}"), model.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(bodyHas(d, 0, "reasoning.encrypted_content"), model.c_str());
+  }
+  // The non-reasoning -chat snapshot of the new generation must stay ungated.
+  FakeProviderDeps d;
+  d.http.script.push_back({"", "", 200, finalCallBody("resp_1")});
+  auto pd = d.contract();
+  pd.orchModel = [](const char*) { return std::string("gpt-6-chat-latest"); };
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  std::string conv, out, err;
+  bool ok = providers::orchTurnOpenAI(pd, conv, "S", "U", out, err, &rig.ht, nullptr);
+  TEST_ASSERT_TRUE(ok);
+  TEST_ASSERT_FALSE(bodyHas(d, 0, "\"reasoning\""));
+}
+
 // Stage 2 phase 3: the loop is STATELESS - no previous_response_id ever, no
 // store:true, and a stale chain id passed in as convId is simply ignored. The
 // entire F20 chain-poisoning class (every successful turn used to poison the
@@ -542,6 +576,7 @@ int main(int, char**) {
   RUN_TEST(test_loop_reasoning_summary_capture);
   RUN_TEST(test_loop_no_reasoning_param_on_chat_model);
   RUN_TEST(test_loop_no_reasoning_param_on_gpt5_chat_variant);
+  RUN_TEST(test_loop_reasoning_param_on_every_gpt_generation);
   RUN_TEST(test_loop_is_stateless);
   RUN_TEST(test_loop_round2_replays_full_transcript);
   RUN_TEST(test_batched_sibling_with_orch_turn_dropped);

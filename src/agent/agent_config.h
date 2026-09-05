@@ -17,7 +17,7 @@
 
 // ---- Provider model choice lists (comma-separated) --------------------------
 #define MISTRAL_MODEL_CHOICES "mistral-large-latest,mistral-medium-latest,mistral-small-latest"
-#define OPENAI_MODEL_CHOICES  "gpt-5.5,gpt-5.4-mini,o4-mini-deep-research"
+#define OPENAI_MODEL_CHOICES  "gpt-6-astra,gpt-5.5,gpt-5.4-mini,o4-mini-deep-research"
 #define ANT_MODEL_CHOICES     "claude-opus-4-8,claude-sonnet-4-6,claude-haiku-4-5"
 // Router providers (Cumulo Nimbus, Z.ai) run the assistant as first-class heads.
 // These are the fallback choice lists + default head model when the live /models

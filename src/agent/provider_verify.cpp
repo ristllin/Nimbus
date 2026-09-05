@@ -516,10 +516,15 @@ static void runOne() {
             if (provider == "mistral")
               return id.indexOf("large") >= 0 || id.indexOf("medium") >= 0 ||
                      id.indexOf("small") >= 0 || id.indexOf("magistral") >= 0;
-            // gpt-5 family first - the o-series ids precede gpt-5* in the body and
-            // were filling every slot before the flagship (live-caught).
-            if (provider == "openai")    return id.startsWith("gpt-5");
-            if (provider == "zai")       return id.startsWith("glm-5");
+            // Flagship generations first (openai: gpt-5 and newer, zai: glm-5 and
+            // newer) - the o-series ids precede gpt-5* in the body and were filling
+            // every slot before the flagship (live-caught). The predicate is the
+            // catalog's isFlagshipFamily so a new generation (gpt-6-astra) lands in
+            // the dropdown without a hardcoded prefix edit here: the openai ring
+            // below keeps ONLY preferred ids, so a generation this missed was
+            // unselectable as orchestrator or sub-session model.
+            if (provider == "openai" || provider == "zai")
+              return nimbus::orch::isFlagshipFamily(provider.c_str(), id.c_str());
             return true;   // anthropic's list arrives newest-first already
           };
           // Mistral: METADATA-driven filter. Unlike OpenAI's id-only /v1/models,

@@ -15,6 +15,10 @@ static void test_ctx_table_families() {
   TEST_ASSERT_EQUAL_UINT32(200000, modelCtxTokens("anthropic", "claude-sonnet-4-7"));  // unseen snapshot, family match
   TEST_ASSERT_EQUAL_UINT32(272000, modelCtxTokens("openai", "gpt-5.5"));
   TEST_ASSERT_EQUAL_UINT32(272000, modelCtxTokens("openai", "gpt-5.4-mini"));
+  // gpt-6-astra (2026-09): 1,050,000 published context minus the 128,000 max
+  // output = the 922K INPUT window LiteLLM reports. Later generations inherit it.
+  TEST_ASSERT_EQUAL_UINT32(922000, modelCtxTokens("openai", "gpt-6-astra"));
+  TEST_ASSERT_EQUAL_UINT32(922000, modelCtxTokens("openai", "gpt-7-x"));
   TEST_ASSERT_EQUAL_UINT32(200000, modelCtxTokens("openai", "o4-mini-deep-research"));
   TEST_ASSERT_EQUAL_UINT32(128000, modelCtxTokens("mistral", "mistral-large-latest"));
   // CUM-288: the Cumulo router head resolves to gpt-4o by default. Its real 128K
@@ -22,6 +26,16 @@ static void test_ctx_table_families() {
   // an unknown family would produce (which compacted the router head early).
   TEST_ASSERT_EQUAL_UINT32(128000, modelCtxTokens("cumulo", "gpt-4o"));
   TEST_ASSERT_EQUAL_UINT32(128000, modelCtxTokens("cumulo", "gpt-4o-mini"));
+}
+
+// Class rule: no gpt-5-or-newer generation may fall through to the conservative
+// default. gpt-6-astra did (it was keyed on the literal "gpt-5" prefix), which
+// would have compacted a 922K-window model at 100K.
+static void test_ctx_table_every_gpt_generation_is_known() {
+  for (int gen = 5; gen <= 9; ++gen) {
+    const std::string id = "gpt-" + std::to_string(gen) + "-x";
+    TEST_ASSERT_TRUE_MESSAGE(modelCtxTokens("openai", id) >= 272000, id.c_str());
+  }
 }
 
 static void test_ctx_table_unknown_is_conservative() {
@@ -296,6 +310,7 @@ static void test_foldstore_summary_separators_stripped() {
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_ctx_table_families);
+  RUN_TEST(test_ctx_table_every_gpt_generation_is_known);
   RUN_TEST(test_ctx_table_unknown_is_conservative);
   RUN_TEST(test_threshold_window_math);
   RUN_TEST(test_threshold_floors);
