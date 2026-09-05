@@ -62,3 +62,6 @@ TASK.md
 PROGRESS.md
 BLOCKERS.md
 .dev_assets/
+
+# local credential scratch (never commit)
+.raw_env
