@@ -45,7 +45,11 @@ static void test_size_class_by_family() {
   TEST_ASSERT_EQUAL_CHAR('L', modelSizeClass("mistral", "mistral-large-latest"));
   TEST_ASSERT_EQUAL_CHAR('M', modelSizeClass("mistral", "mistral-medium-latest"));
   TEST_ASSERT_EQUAL_CHAR('S', modelSizeClass("mistral", "mistral-small-latest"));
-  TEST_ASSERT_EQUAL_CHAR('L', modelSizeClass("openai", "gpt-5.6-luna"));
+  // gpt-5.6 tier words (Sol/Terra/Luna) rank like the generic size words.
+  TEST_ASSERT_EQUAL_CHAR('S', modelSizeClass("openai", "gpt-5.6-luna"));
+  TEST_ASSERT_EQUAL_CHAR('M', modelSizeClass("openai", "gpt-5.6-terra"));
+  TEST_ASSERT_EQUAL_CHAR('L', modelSizeClass("openai", "gpt-5.6-sol"));
+  TEST_ASSERT_EQUAL_CHAR('L', modelSizeClass("openai", "gpt-5.6"));  // bare id = flagship default
   TEST_ASSERT_EQUAL_CHAR('S', modelSizeClass("openai", "o3-mini"));
   TEST_ASSERT_EQUAL_CHAR('S', modelSizeClass("zai", "glm-4.5-air"));
   TEST_ASSERT_EQUAL_CHAR('M', modelSizeClass("zai", "glm-5-turbo"));
@@ -69,6 +73,87 @@ static void test_role_classification_by_id() {
   TEST_ASSERT_FALSE(emb.hasRole(RoleOrchestrator));
   ModelInfo instruct = classifyModel("openai", "gpt-3.5-turbo-instruct");
   TEST_ASSERT_EQUAL_UINT16(0, instruct.roles);  // non-agentic: no role
+}
+
+// ---- GPT generation class (the invariant, not the instance) -----------------
+// gpt-6-astra (OpenAI, 2026-09-03) shipped while every heuristic was keyed on the
+// literal "gpt-5" prefix: no size class, no family, no vision role, the default
+// context window, and - because the device harvest lists only preferred ids -
+// absent from the orchestrator / sub-session dropdowns entirely. Encode the class
+// rule: EVERY "gpt-<N>" generation from 5 up is a flagship-family, L-class,
+// vision-capable chat model bucketed "gpt-<N>", so the next generation cannot
+// silently regress to "unclassified" the way gpt-6 did.
+static void test_gpt_generation_parse() {
+  TEST_ASSERT_EQUAL_INT(6, gptGeneration("gpt-6-astra"));
+  TEST_ASSERT_EQUAL_INT(5, gptGeneration("gpt-5.5"));
+  TEST_ASSERT_EQUAL_INT(5, gptGeneration("GPT-5-chat-latest"));  // case-insensitive
+  TEST_ASSERT_EQUAL_INT(4, gptGeneration("gpt-4o-mini"));
+  TEST_ASSERT_EQUAL_INT(4, gptGeneration("gpt-4.1"));
+  TEST_ASSERT_EQUAL_INT(3, gptGeneration("gpt-3.5-turbo"));
+  TEST_ASSERT_EQUAL_INT(0, gptGeneration("gpt-realtime"));   // no generation digit
+  TEST_ASSERT_EQUAL_INT(0, gptGeneration("gpt-image-1"));
+  TEST_ASSERT_EQUAL_INT(0, gptGeneration("o4-mini"));
+  TEST_ASSERT_EQUAL_INT(0, gptGeneration("claude-opus-5"));
+  TEST_ASSERT_EQUAL_INT(0, gptGeneration(""));
+  TEST_ASSERT_EQUAL_INT(0, gptGeneration("gpt-20260903"));  // a date run is not a generation
+}
+
+static void test_gpt_generation_class_rule() {
+  for (int gen = 5; gen <= 9; ++gen) {
+    const std::string id = "gpt-" + std::to_string(gen) + "-x";
+    const std::string fam = "gpt-" + std::to_string(gen);
+    TEST_ASSERT_TRUE_MESSAGE(isFlagshipFamily("openai", id), id.c_str());
+    TEST_ASSERT_EQUAL_CHAR_MESSAGE('L', modelSizeClass("openai", id), id.c_str());
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(fam.c_str(), modelFamily("openai", id).c_str(), id.c_str());
+    ModelInfo mi = classifyModel("openai", id);
+    TEST_ASSERT_TRUE_MESSAGE(mi.hasRole(RoleOrchestrator), id.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(mi.hasRole(RoleSubAgent), id.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(mi.hasRole(RoleVision), id.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(mi.hasCap(CapTools), id.c_str());
+    // A tier word still wins over the flagship default within the generation.
+    TEST_ASSERT_EQUAL_CHAR('S', modelSizeClass("openai", fam + "-mini"));
+  }
+  // Pre-5 and non-gpt ids stay non-flagship (usable, just not preferred).
+  TEST_ASSERT_FALSE(isFlagshipFamily("openai", "gpt-4o"));
+  TEST_ASSERT_FALSE(isFlagshipFamily("openai", "gpt-4.1"));
+  TEST_ASSERT_FALSE(isFlagshipFamily("openai", "o4-mini"));
+  TEST_ASSERT_FALSE(isFlagshipFamily("openai", "gpt-realtime"));
+  TEST_ASSERT_TRUE(isFlagshipFamily("zai", "glm-5-turbo"));
+  TEST_ASSERT_FALSE(isFlagshipFamily("zai", "glm-4.6"));
+  TEST_ASSERT_FALSE(isFlagshipFamily("anthropic", "claude-opus-5"));
+}
+
+// The instance: gpt-6-astra classifies as a fully usable flagship and sorts
+// AHEAD of the gpt-5.x and gpt-4o ids in a harvested list, so the newest
+// generation is the first orchestrator / sub-session candidate offered.
+static void test_gpt6_astra_is_a_selectable_flagship() {
+  const std::string body =
+      "{\"data\":[{\"id\":\"gpt-4o\"},{\"id\":\"gpt-5.5\"},{\"id\":\"gpt-6-astra\"},"
+      "{\"id\":\"gpt-4o-mini\"}]}";
+  std::vector<ModelInfo> v;
+  TEST_ASSERT_EQUAL_UINT(4, parseModelsList("openai", body, v));
+  const ModelInfo* astra = find(v, "gpt-6-astra");
+  TEST_ASSERT_NOT_NULL(astra);
+  TEST_ASSERT_TRUE(astra->hasRole(RoleOrchestrator));
+  TEST_ASSERT_TRUE(astra->hasRole(RoleSubAgent));
+  TEST_ASSERT_TRUE(astra->hasRole(RoleVision));
+  TEST_ASSERT_TRUE(astra->hasCap(CapTools));
+  TEST_ASSERT_TRUE(astra->hasCap(CapJson));
+  TEST_ASSERT_TRUE(astra->usable);
+  TEST_ASSERT_EQUAL_CHAR('L', astra->size);
+  TEST_ASSERT_EQUAL_STRING("gpt-6", astra->family.c_str());
+  TEST_ASSERT_EQUAL_UINT32(922000, astra->ctxTokens);
+  // Flagship-first: an L model leads, and gpt-6-astra precedes every non-L id
+  // (gpt-4o-mini is S; bare gpt-4o carries no size signal and ranks last).
+  TEST_ASSERT_EQUAL_CHAR('L', v.front().size);
+  size_t iAstra = 0, iMini = 0, i4o = 0;
+  for (size_t i = 0; i < v.size(); ++i) {
+    if (v[i].id == "gpt-6-astra") iAstra = i;
+    if (v[i].id == "gpt-4o-mini") iMini = i;
+    if (v[i].id == "gpt-4o") i4o = i;
+  }
+  TEST_ASSERT_TRUE(iAstra < iMini);
+  TEST_ASSERT_TRUE(iAstra < i4o);
 }
 
 // ---- Anthropic fixture: API-supplied capability fields ----------------------
@@ -102,7 +187,7 @@ static void test_openai_heuristics_and_roles() {
   TEST_ASSERT_TRUE(luna->hasRole(RoleOrchestrator));
   TEST_ASSERT_TRUE(luna->hasCap(CapTools));
   TEST_ASSERT_TRUE(luna->hasRole(RoleVision));       // gpt-5 multimodal heuristic
-  TEST_ASSERT_EQUAL_CHAR('L', luna->size);
+  TEST_ASSERT_EQUAL_CHAR('S', luna->size);  // Luna = the fastest/cheapest 5.6 tier
   // embedding / audio / image models land under their own roles...
   TEST_ASSERT_TRUE(find(v, "text-embedding-3-large")->hasRole(RoleEmbedding));
   TEST_ASSERT_TRUE(find(v, "gpt-4o-transcribe")->hasRole(RoleStt));
@@ -314,6 +399,9 @@ int main(int, char**) {
   RUN_TEST(test_models_json_round_trip);
   RUN_TEST(test_size_class_by_family);
   RUN_TEST(test_family_bucket);
+  RUN_TEST(test_gpt_generation_parse);
+  RUN_TEST(test_gpt_generation_class_rule);
+  RUN_TEST(test_gpt6_astra_is_a_selectable_flagship);
   RUN_TEST(test_role_classification_by_id);
   RUN_TEST(test_anthropic_reads_api_capabilities);
   RUN_TEST(test_openai_heuristics_and_roles);

@@ -8,6 +8,19 @@ installs on your say-so ([how updates work](ota.md)).
 
 ## Unreleased
 
+- **Current models across every provider.** The built-in model lists now lead
+  with each provider's September 2026 lineup: OpenAI `gpt-6-astra` plus the
+  `gpt-5.6` Sol / Terra / Luna tiers, Anthropic `claude-opus-5` /
+  `claude-sonnet-5` / `claude-haiku-4-5`, Z.ai `glm-5.3` / `glm-5.2` /
+  `glm-5.3-flash`. Defaults move up with them (OpenAI `gpt-5.6`, Anthropic
+  `claude-sonnet-5`, Z.ai `glm-5.3`, Cumulo Nimbus `gpt-5.6`), and the 5.6
+  tier names now carry their size, so fallback rules by size match them. The
+  Cumulo Nimbus model list also lists newest models first instead of oldest.
+- **GPT-6 Astra can be selected.** OpenAI's `gpt-6-astra` (released 2026-09-03) is
+  offered as the Orchestrator model and as the sub-session model under Assistant >
+  Models, with its full context window and reasoning support. The OpenAI model list
+  now keeps the newest GPT generation first instead of only the GPT-5 family, so
+  the next generation shows up on its own. Cumulo Nimbus prices it from day one.
 - **Cumulo Nimbus provider slot in the device Models UI.** Assistant > Models >
   Providers & keys now lists **Cumulo Nimbus** first, the recommended one-key path:
   paste your device key, and Verify checks it against the router (not a third-party

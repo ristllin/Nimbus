@@ -495,7 +495,11 @@ static void runOne() {
           // Per-provider chat-capable filter (the legacy id string-scan path).
           auto rejected = [&](const String& id) -> bool {
             if (neverFamily(id)) return true;
-            if (provider == "openai") {
+            // Cumulo verifies against /router/openai/v1/models, so its body is
+            // OpenAI-shaped: apply the same snapshot/id filter (the old blanket
+            // "already curated" pass-through kept the OLDEST 8 ids - gpt-3.5/4
+            // era - because OpenAI lists oldest-first; live-caught 2026-09).
+            if (provider == "openai" || provider == "cumulo") {
               // Dated snapshots (…-2025-04-16) duplicate their undated alias and
               // waste dropdown slots - openai-only (anthropic's haiku ids are
               // dated-ONLY, rejecting there would lose the model entirely).
@@ -505,7 +509,6 @@ static void runOne() {
             if (provider == "anthropic") return !id.startsWith("claude-");
             if (provider == "mistral")   return !id.endsWith("-latest");
             if (provider == "zai")       return !id.startsWith("glm");
-            if (provider == "cumulo")    return false;   // router ids are already curated
             return true;
           };
           // Flagship-family ids first: the provider's list order is arbitrary, and a
@@ -516,10 +519,16 @@ static void runOne() {
             if (provider == "mistral")
               return id.indexOf("large") >= 0 || id.indexOf("medium") >= 0 ||
                      id.indexOf("small") >= 0 || id.indexOf("magistral") >= 0;
-            // gpt-5 family first - the o-series ids precede gpt-5* in the body and
-            // were filling every slot before the flagship (live-caught).
-            if (provider == "openai")    return id.startsWith("gpt-5");
-            if (provider == "zai")       return id.startsWith("glm-5");
+            // Flagship generations first (openai: gpt-5 and newer, zai: glm-5 and
+            // newer) - the o-series ids precede gpt-5* in the body and were filling
+            // every slot before the flagship (live-caught). The predicate is the
+            // catalog's isFlagshipFamily so a new generation (gpt-6-astra) lands in
+            // the dropdown without a hardcoded prefix edit here: the openai ring
+            // below keeps ONLY preferred ids, so a generation this missed was
+            // unselectable as orchestrator or sub-session model.
+            if (provider == "openai" || provider == "zai" || provider == "cumulo")
+              return nimbus::orch::isFlagshipFamily(
+                  provider == "cumulo" ? "openai" : provider.c_str(), id.c_str());
             return true;   // anthropic's list arrives newest-first already
           };
           // Mistral: METADATA-driven filter. Unlike OpenAI's id-only /v1/models,
@@ -584,7 +593,7 @@ static void runOne() {
           // A ring of the LAST 8 matches fixes it; anthropic arrives newest-first
           // and mistral uses -latest aliases, so first-8 is right for them.
           if (!handled) {   // openai/anthropic (+ Mistral parse-failure fallback): id string-scan
-          const bool keepNewestLast = (provider == "openai");
+          const bool keepNewestLast = (provider == "openai" || provider == "cumulo");
           String ring[8];
           int ringN = 0;
           for (int pass = 0; pass < 2 && kept < 8; ++pass) {

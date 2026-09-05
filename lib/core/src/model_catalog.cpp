@@ -59,7 +59,7 @@ bool visionHeuristic(const std::string& provider, const std::string& id) {
   const std::string m = lower(id);
   if (provider == "anthropic") return startsWith(m, "claude-");  // all modern Claude take images
   if (provider == "openai")
-    return has(m, "gpt-4o") || startsWith(m, "gpt-5") || has(m, "-vision") || has(m, "omni");
+    return has(m, "gpt-4o") || gptGeneration(m) >= 5 || has(m, "-vision") || has(m, "omni");
   if (provider == "mistral") return has(m, "pixtral") || has(m, "medium") || has(m, "large");
   if (provider == "zai") return has(m, "-v") || has(m, "vision") || has(m, "glm-4.5v");
   return has(m, "vision") || has(m, "-v-") || has(m, "multimodal");
@@ -82,35 +82,71 @@ std::string claudeFamily(const std::string& m) {
 }
 // Size word ('S'|'M'|'L') from a generic tier name, 0 if none.
 char sizeFromWord(const std::string& m) {
-  static const char* kSmall[] = {"nano", "tiny", "-air", "flash", "lite", "small", "mini", nullptr};
+  // OpenAI's gpt-5.6+ capability tiers (2026-07): Sol = flagship, Terra =
+  // balanced, Luna = fastest/cheapest. Durable tier names per the announcement,
+  // so they rank with the generic size words (hyphenated to avoid substrings).
+  static const char* kSmall[] = {"nano", "tiny", "-air", "flash", "lite", "small", "mini",
+                                 "-luna", nullptr};
   for (int i = 0; kSmall[i]; ++i)
     if (has(m, kSmall[i])) return 'S';
-  if (has(m, "medium") || has(m, "turbo")) return 'M';
-  static const char* kLarge[] = {"large", "opus", "-max", nullptr};
+  if (has(m, "medium") || has(m, "turbo") || has(m, "-terra")) return 'M';
+  static const char* kLarge[] = {"large", "opus", "-max", "-sol", nullptr};
   for (int i = 0; kLarge[i]; ++i)
     if (has(m, kLarge[i])) return 'L';
   return 0;
 }
 // Flagship id-family default size when no tier word is present.
 char sizeFromFlagship(const std::string& m) {
-  if (startsWith(m, "gpt-5") || startsWith(m, "glm-5") || startsWith(m, "glm-4")) return 'L';
+  if (gptGeneration(m) >= 5 || startsWith(m, "glm-5") || startsWith(m, "glm-4")) return 'L';
   if (isOSeries(m)) return 'L';
   return 0;
 }
+// Leading decimal run of `s` as a bounded int: "6-astra" -> 6, "5.5" -> 5,
+// "realtime" -> 0. Capped at three digits so a date-like run ("2024...") never
+// reads as a generation.
+int leadingInt(const char* s) {
+  int v = 0, digits = 0;
+  for (; *s >= '0' && *s <= '9'; ++s, ++digits) {
+    if (digits == 3) return 0;
+    v = v * 10 + (*s - '0');
+  }
+  return v;
+}
+// Major version after a "glm-" prefix (glm-4.5-air -> 4, glm-5 -> 5); 0 otherwise.
+int glmGeneration(const std::string& m) {
+  return startsWith(m, "glm-") ? leadingInt(m.c_str() + 4) : 0;
+}
 }  // namespace
+
+int gptGeneration(const std::string& id) {
+  const std::string m = lower(id);
+  // gpt-realtime / gpt-audio / gpt-image carry no generation digit -> 0.
+  return startsWith(m, "gpt-") ? leadingInt(m.c_str() + 4) : 0;
+}
+
+bool isFlagshipFamily(const std::string& provider, const std::string& id) {
+  const std::string m = lower(id);
+  if (provider == "openai") return gptGeneration(m) >= 5;
+  if (provider == "zai") return glmGeneration(m) >= 5;
+  return false;
+}
 
 std::string modelFamily(const std::string& provider, const std::string& id) {
   const std::string m = lower(id);
   if (isClaude(provider, m)) return claudeFamily(m);
   if (isOSeries(m)) return "o-series";
+  // gpt-4 and newer bucket by generation ("gpt-4", "gpt-5", "gpt-6", ...); the
+  // pre-4 chat ids (gpt-3.5-turbo) stay unbucketed as before.
+  const int gen = gptGeneration(m);
+  if (gen >= 4) return "gpt-" + std::to_string(gen);
   struct Fam {
     const char* s;
     const char* f;
     bool prefix;
   };
   static const Fam kFams[] = {
-      {"gpt-5", "gpt-5", true},     {"gpt-4", "gpt-4", true}, {"magistral", "magistral", false},
-      {"mistral", "mistral", false}, {"pixtral", "pixtral", false}, {"glm-", "glm", true},
+      {"magistral", "magistral", false}, {"mistral", "mistral", false},
+      {"pixtral", "pixtral", false},     {"glm-", "glm", true},
       {"embed", "embedding", false},
   };
   for (const Fam& f : kFams)

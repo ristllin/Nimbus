@@ -10,37 +10,41 @@
 // values; keep as-is for P5 and relax behind a flag after on-hardware heap-watch
 // (plan §3.7).
 //
-// VERIFY(2026-06): the model lists + endpoints below are copied from Nuage-Solide
+// VERIFY(2026-09): model lists + defaults refreshed against the providers'
+// September 2026 catalogs (OpenAI gpt-6-astra + the gpt-5.6 Sol/Terra/Luna
+// tiers, Anthropic Claude 5, Z.ai GLM-5.3). These are the COLD-START fallback
+// only: the live /v1/models harvest replaces them on the first verify.
+// Endpoints below are copied from Nuage-Solide
 // verified live 2026-06-25. Re-verify at implementation: OpenAI has no "-latest"
 // flagship alias (needs a periodic bump), Anthropic managed-agents beta header +
 // endpoints, model overview pages.
 
 // ---- Provider model choice lists (comma-separated) --------------------------
 #define MISTRAL_MODEL_CHOICES "mistral-large-latest,mistral-medium-latest,mistral-small-latest"
-#define OPENAI_MODEL_CHOICES  "gpt-5.5,gpt-5.4-mini,o4-mini-deep-research"
-#define ANT_MODEL_CHOICES     "claude-opus-4-8,claude-sonnet-4-6,claude-haiku-4-5"
+#define OPENAI_MODEL_CHOICES  "gpt-6-astra,gpt-5.6,gpt-5.6-terra,gpt-5.6-luna,o4-mini-deep-research"
+#define ANT_MODEL_CHOICES     "claude-opus-5,claude-sonnet-5,claude-haiku-4-5"
 // Router providers (Cumulo Nimbus, Z.ai) run the assistant as first-class heads.
 // These are the fallback choice lists + default head model when the live /models
 // harvest has not landed yet; the harvested list wins when present. Cumulo speaks
 // the OpenAI-compatible router (default upstream openai), so its defaults are the
 // proven router models.
-#define CUMULO_MODEL_CHOICES  "gpt-4o,gpt-4o-mini,gpt-4-turbo"
-#define CUMULO_MODEL          "gpt-4o"
-#define ZAI_MODEL_CHOICES     "glm-4.6,glm-4.5,glm-4.5-air"
-#define ZAI_MODEL             "glm-4.6"
+#define CUMULO_MODEL_CHOICES  "gpt-5.6,gpt-5.6-terra,gpt-5.6-luna"
+#define CUMULO_MODEL          "gpt-5.6"
+#define ZAI_MODEL_CHOICES     "glm-5.3,glm-5.2,glm-5.3-flash"
+#define ZAI_MODEL             "glm-5.3"
 
 // ---- Anthropic REST endpoints ----------------------------------------------
 #define ANTHROPIC_HOST  "api.anthropic.com"
 #define ANTHROPIC_PORT  443
 #define ANTHROPIC_VER   "2023-06-01"
 // Default Anthropic model (orchestrator + sub-session fallback).
-#define ANT_MODEL       "claude-sonnet-4-6"
+#define ANT_MODEL       "claude-sonnet-5"
 
 // ---- OpenAI REST endpoints -------------------------------------------------
 #define OPENAI_HOST  "api.openai.com"
 #define OPENAI_PORT  443
 // No "-latest" flagship alias exists for OpenAI, so this needs a periodic bump.
-#define OPENAI_MODEL "gpt-5.5"
+#define OPENAI_MODEL "gpt-5.6"
 
 // ---- Mistral REST endpoints (host ported 2026-07 - Conversations API) -------
 #define MISTRAL_HOST "api.mistral.ai"
