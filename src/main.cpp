@@ -4630,6 +4630,13 @@ void loop() {
     // must not appear inert for minutes).
     g_power.setAutoSaverOnLow(agent::store::lowBattSaver());
     power::ManagerActions pa = g_power.tick(now);
+    // Honest open-sense-line telemetry: fold this reading into the debounced
+    // detector on its OWN validity-independent cadence. It must NOT live inside
+    // the telemetryDue block below - that fires only on VALID samples, which
+    // starved the detector on the one board it was built for (open divider =
+    // invalid every tick, so "desk-powered" was shown forever). A valid sample
+    // still clears it at once.
+    if (pa.senseTelemetryDue) g_senseMissing.update(battMonOn(), g_power.last().valid);
     // Re-resolve the ACTIVE profile (forced > VBUS > user) into g_cfg so the
     // presets take effect live. The user's authoritative pick lives in the
     // selector (g_selector.user()) and is what persistConfig() stores - this
@@ -4676,11 +4683,6 @@ void loop() {
       const bool artificialLoad = g_highLoadActive || g_storageTargetMv != 0;
       g_battModel.update(now, g_power.last(), artificialLoad);
       g_battEstimate = g_battModel.estimate();
-      // FIX 3: honest open-sense-line telemetry. Fold this reading into the debounced
-      // detector - monitoring ON with the sample invalid across the window means the
-      // sense line is not detected (an open divider), which the safety policy would
-      // otherwise show as desk-powered. A valid sample clears it at once.
-      g_senseMissing.update(battMonOn(), g_power.last().valid);
       // Persist when a discharge segment completed OR the full-charge anchor moved
       // (an owner BATTCAL/api-battcal or an auto-learned plateau) - else an auto-
       // learned anchor never closing a segment is lost on reboot and two identical

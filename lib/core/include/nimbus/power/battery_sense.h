@@ -28,9 +28,11 @@ constexpr bool senseMissing(bool monitoringOn, uint16_t invalidStreak, uint16_t 
 // Stateful debouncer, driven one sample per telemetry tick.
 class SenseMissingDetector {
  public:
-  // Default 3 ticks: at the ~30 s telemetry cadence that is ~90 s of confirmed-dead
-  // sense before the fault is claimed - long past any single glitched read, short
-  // enough that a remote owner sees the truth in the same session.
+  // Default 3 ticks: fed on Manager's fixed 30 s sense cadence (senseTelemetryDue,
+  // which fires regardless of sample validity - never the valid-gated
+  // telemetryDue): three checks 30 s apart, so the fault is claimed about a
+  // minute after boot - long past any single glitched read, short enough that a
+  // remote owner sees the truth in the same session.
   static constexpr uint16_t kDefaultThreshold = 3;
 
   SenseMissingDetector() = default;

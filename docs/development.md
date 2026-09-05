@@ -160,9 +160,12 @@ read-only and present in both modes):
   HTTP even though both drive `batt.valid` to false. `0` on a board with no voltage
   sense.
 - `batt.senseMissing` - true when battery monitoring is on but the reading has been
-  invalid across a debounce window (an open sense divider). It stays false on a
-  genuinely desk-powered board (monitoring off) and clears the instant a valid
-  sample arrives; the Health panel turns it into a "battery sense not detected" row.
+  invalid across a debounce window (an open sense divider). The detector is fed
+  every 30 s regardless of whether the sample is valid (three consecutive invalid
+  checks claim the fault, about a minute after boot), so a fault cannot hide
+  behind the valid-only telemetry refresh. It stays false on a genuinely desk-powered board
+  (monitoring off) and clears the instant a valid sample arrives; the Health panel
+  turns it into a "battery sense not detected" row.
 
 ## Docs follow every commit
 

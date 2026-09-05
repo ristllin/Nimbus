@@ -37,6 +37,20 @@ ManagerActions Manager::tick(uint32_t nowMs) {
       a.telemetryDue = true;
     }
   }
+
+  // Open-sense-line detector cadence - deliberately NOT behind last_.valid and
+  // NOT tied to the (owner-configurable, 60-300 s) telemetry period: the
+  // detector counts invalid samples, and a fault must not be silenced by a
+  // UI-refresh setting. Fixed 30 s => the detector's 3-check debounce claims an
+  // open sense line on the third check, about a minute after boot (battery_sense.h).
+  if (!senseInit_) {
+    senseInit_ = true;
+    lastSenseMs_ = nowMs;
+    a.senseTelemetryDue = true;
+  } else if (uint32_t(nowMs - lastSenseMs_) >= kSenseCadenceMs) {
+    lastSenseMs_ = nowMs;
+    a.senseTelemetryDue = true;
+  }
   return a;
 }
 

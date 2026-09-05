@@ -5,6 +5,7 @@
 #include "nimbus/power/bright_cap.h"
 #include "nimbus/power/board_power.h"
 #include "nimbus/power/battery_sense.h"
+#include "nimbus/power/power_manager.h"
 
 using namespace nimbus::power;
 
@@ -486,6 +487,44 @@ void test_board_battmon_defaults(void) {
 
 // The pure predicate: missing only when monitoring is on and the streak has
 // reached the threshold.
+// The CLASS rule the first wiring broke: the open-sense detector must be FED ON
+// INVALID SAMPLES. It was placed behind telemetryDue, which Manager raises only
+// on VALID samples - so on an open-divider board (invalid every tick) it never
+// counted and "desk-powered" showed forever. Drive Manager::tick with an
+// always-invalid monitor at the device's 2 s power cadence and pin all three
+// facts: telemetryDue stays silent (its contract), senseTelemetryDue keeps
+// firing on its fixed 30 s cadence, and a detector fed from it claims the fault
+// on the third check (~1 min after boot). Monitoring off never trips.
+static void test_sense_detector_is_fed_on_invalid_samples_via_manager() {
+  NullMonitor inv;  // valid=false on every sample, exactly like an open divider
+  Manager m(&inv, nullptr);
+  m.setTelemetryPeriodMs(120000);
+  SenseMissingDetector det;  // default 3-check threshold
+  uint32_t senseFires = 0, telemetryFires = 0, claimedAt = 0xFFFFFFFFu;
+  for (uint32_t t = 0; t <= 100000; t += 2000) {
+    ManagerActions a = m.tick(t);
+    if (a.telemetryDue) telemetryFires++;
+    if (a.senseTelemetryDue) {
+      senseFires++;
+      if (det.update(true, m.last().valid) && claimedAt == 0xFFFFFFFFu) claimedAt = t;
+    }
+  }
+  TEST_ASSERT_EQUAL_UINT32(0, telemetryFires);  // valid-gated: never fires on invalid
+  TEST_ASSERT_EQUAL_UINT32(4, senseFires);      // t = 0, 30, 60, 90 s
+  TEST_ASSERT_TRUE(det.missing());
+  TEST_ASSERT_EQUAL_UINT32(60000, claimedAt);   // third check claims it
+
+  // Same invalid stream with monitoring OFF (a genuinely desk-powered board):
+  // the cadence still ticks but the detector must never trip.
+  SenseMissingDetector off;
+  Manager m2(&inv, nullptr);
+  for (uint32_t t = 0; t <= 100000; t += 2000) {
+    ManagerActions a = m2.tick(t);
+    if (a.senseTelemetryDue) off.update(false, m2.last().valid);
+  }
+  TEST_ASSERT_FALSE(off.missing());
+}
+
 static void test_sense_missing_predicate() {
   using nimbus::power::senseMissing;
   TEST_ASSERT_FALSE(senseMissing(false, 99, 3));  // monitoring off: never
@@ -571,5 +610,6 @@ int main() {
   RUN_TEST(test_sense_missing_needs_debounce_then_trips);
   RUN_TEST(test_sense_missing_clears_immediately_on_valid);
   RUN_TEST(test_sense_missing_default_threshold);
+  RUN_TEST(test_sense_detector_is_fed_on_invalid_samples_via_manager);
   return UNITY_END();
 }

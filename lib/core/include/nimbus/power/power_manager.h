@@ -22,6 +22,11 @@ struct ManagerActions {
   bool clearedT1 = false;       // left T1 (recovered / external power)
   bool shutdownT2 = false;      // entered T2: flush journals + clean deep sleep
   bool telemetryDue = false;    // time to refresh on-screen/web telemetry
+  // Time to feed the open-sense-line detector. Unlike telemetryDue this fires
+  // on a fixed cadence REGARDLESS of sample validity: the detector exists to
+  // count invalid samples, so gating it on a valid one starved it forever on the
+  // very board it was built for (an open divider reads invalid every tick).
+  bool senseTelemetryDue = false;
 };
 
 class Manager {
@@ -68,6 +73,10 @@ class Manager {
   uint32_t  telemetryMs_ = 120000;
   uint32_t  lastTelemetryMs_ = 0;
   bool      telemetryInit_ = false;
+  // Open-sense-line detector cadence (see ManagerActions::senseTelemetryDue).
+  static constexpr uint32_t kSenseCadenceMs = 30000;
+  uint32_t  lastSenseMs_ = 0;
+  bool      senseInit_ = false;
   bool      vbusAuto_ = true;   // VBUS auto-Desk (off without battery hardware)
   bool      autoSaver_ = true;  // T1 forces the Battery Saver mode (shipped default)
 };
