@@ -8,6 +8,11 @@ installs on your say-so ([how updates work](ota.md)).
 
 ## Unreleased
 
+- **The Cumulo Nimbus model list now comes from the router itself.** The device
+  reads the router's routable catalog (models with a confirmed price, across
+  every upstream), so the Cumulo dropdown offers exactly what your Cumulo key
+  can route, newest flagships first, including Anthropic and Mistral models
+  through the one key. Size classes ride along from the router.
 - **Current models across every provider.** The built-in model lists now lead
   with each provider's September 2026 lineup: OpenAI `gpt-6-astra` plus the
   `gpt-5.6` Sol / Terra / Luna tiers, Anthropic `claude-opus-5` /

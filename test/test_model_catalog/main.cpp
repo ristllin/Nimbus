@@ -272,6 +272,27 @@ static void test_cumulo_upstream_split() {
   TEST_ASSERT_TRUE(a->hasRole(RoleOrchestrator));
 }
 
+// GET /router/models (the router's routable catalog) rides a size_class
+// metadata field per model; API-supplied size overrides the id heuristic.
+static void test_cumulo_size_class_metadata_overrides_heuristic() {
+  std::string body =
+      "{\"data\":["
+      "{\"id\":\"openai/experimental-chat-x\",\"size_class\":\"medium\"},"
+      "{\"id\":\"openai/gpt-5.6-luna\",\"size_class\":\"small\"},"
+      "{\"id\":\"anthropic/claude-opus-5\"}]}";
+  std::vector<ModelInfo> v;
+  TEST_ASSERT_EQUAL_UINT(3, parseModelsList("cumulo", body, v));
+  const ModelInfo* x = find(v, "experimental-chat-x");
+  TEST_ASSERT_NOT_NULL(x);
+  TEST_ASSERT_EQUAL_CHAR('M', x->size);  // the heuristic alone gives no size here
+  TEST_ASSERT_TRUE(x->apiCaps);
+  TEST_ASSERT_EQUAL_CHAR('S', find(v, "gpt-5.6-luna")->size);
+  // No metadata -> the id heuristic still classifies (opus = L, not api-tagged).
+  const ModelInfo* opus = find(v, "claude-opus-5");
+  TEST_ASSERT_EQUAL_CHAR('L', opus->size);
+  TEST_ASSERT_FALSE(opus->apiCaps);
+}
+
 // CUM-242 leg 1: rebuild a catalog from a bare id list (the harvested CSV) when a
 // full /models body did not parse. classifyCatalogEntry honours the Cumulo
 // "<upstream>/<model>" convention and classifies a bare id like classifyModel.
@@ -409,6 +430,7 @@ int main(int, char**) {
   RUN_TEST(test_zai_glm_roles_and_sizes);
   RUN_TEST(test_flagship_first_ordering);
   RUN_TEST(test_cumulo_upstream_split);
+  RUN_TEST(test_cumulo_size_class_metadata_overrides_heuristic);
   RUN_TEST(test_classify_catalog_entry_from_bare_ids);
   RUN_TEST(test_models_to_json_shape_and_usable_filter);
   RUN_TEST(test_parse_tolerates_http_headers);

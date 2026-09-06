@@ -351,7 +351,7 @@ static void runOne() {
                                       int sl = hostBuf.indexOf('/');
                                       if (sl >= 0) hostBuf = hostBuf.substring(0, sl);
                                       host = hostBuf.c_str();
-                                      path = "/router/openai/v1/models"; }
+                                      path = "/router/models"; }
   else if (isTg)                    { host = "api.telegram.org"; key = store::telegramToken();
                                       path = String("/bot") + key + "/getMe"; }
   else if (isTav)                   { host = "api.tavily.com"; key = store::tavilyKey();
@@ -495,16 +495,25 @@ static void runOne() {
           // Per-provider chat-capable filter (the legacy id string-scan path).
           auto rejected = [&](const String& id) -> bool {
             if (neverFamily(id)) return true;
-            // Cumulo verifies against /router/openai/v1/models, so its body is
-            // OpenAI-shaped: apply the same snapshot/id filter (the old blanket
-            // "already curated" pass-through kept the OLDEST 8 ids - gpt-3.5/4
-            // era - because OpenAI lists oldest-first; live-caught 2026-09).
+            // Cumulo verifies against the router's own GET /router/models: only
+            // ROUTABLE (priced + enabled) models, ids "<upstream>/<model>",
+            // flagship-first order. Strip the upstream so the id filters below
+            // see the bare model, and skip the snapshot filter's openai-only
+            // parts for non-openai upstreams (their ids never start gpt-/o<N>).
+            String bare = id;
+            String up = "openai";
+            if (provider == "cumulo") {
+              int sl = id.indexOf('/');
+              if (sl > 0) { up = id.substring(0, sl); bare = id.substring(sl + 1); }
+            }
+            if (provider == "cumulo" && up != "openai") return false;   // curated by the router
             if (provider == "openai" || provider == "cumulo") {
+              const String& mid = (provider == "cumulo") ? bare : id;
               // Dated snapshots (…-2025-04-16) duplicate their undated alias and
               // waste dropdown slots - openai-only (anthropic's haiku ids are
               // dated-ONLY, rejecting there would lose the model entirely).
-              if (id.indexOf("-202") >= 0) return true;
-              return !(id.startsWith("gpt-") || (id[0] == 'o' && id[1] >= '1' && id[1] <= '9'));
+              if (mid.indexOf("-202") >= 0) return true;
+              return !(mid.startsWith("gpt-") || (mid[0] == 'o' && mid[1] >= '1' && mid[1] <= '9'));
             }
             if (provider == "anthropic") return !id.startsWith("claude-");
             if (provider == "mistral")   return !id.endsWith("-latest");
@@ -526,9 +535,20 @@ static void runOne() {
             // the dropdown without a hardcoded prefix edit here: the openai ring
             // below keeps ONLY preferred ids, so a generation this missed was
             // unselectable as orchestrator or sub-session model.
-            if (provider == "openai" || provider == "zai" || provider == "cumulo")
-              return nimbus::orch::isFlagshipFamily(
-                  provider == "cumulo" ? "openai" : provider.c_str(), id.c_str());
+            if (provider == "cumulo") {
+              // The router's list is curated (routable-only) and flagship-first;
+              // prefer each upstream's CURRENT generation so rows priced only for
+              // back-compat billing (claude-3-5-*, gpt-4o) fill leftover slots.
+              int sl = id.indexOf('/');
+              String up = sl > 0 ? id.substring(0, sl) : String("openai");
+              String bare = sl > 0 ? id.substring(sl + 1) : id;
+              if (up == "openai" || up == "zai")
+                return nimbus::orch::isFlagshipFamily(up.c_str(), bare.c_str());
+              if (up == "anthropic") return !bare.startsWith("claude-3");  // 3.x retired upstream
+              return true;   // mistral rows are current family aliases
+            }
+            if (provider == "openai" || provider == "zai")
+              return nimbus::orch::isFlagshipFamily(provider.c_str(), id.c_str());
             return true;   // anthropic's list arrives newest-first already
           };
           // Mistral: METADATA-driven filter. Unlike OpenAI's id-only /v1/models,
@@ -593,7 +613,9 @@ static void runOne() {
           // A ring of the LAST 8 matches fixes it; anthropic arrives newest-first
           // and mistral uses -latest aliases, so first-8 is right for them.
           if (!handled) {   // openai/anthropic (+ Mistral parse-failure fallback): id string-scan
-          const bool keepNewestLast = (provider == "openai" || provider == "cumulo");
+          // openai only: the router's /router/models already arrives curated and
+          // flagship-first, so cumulo keeps the plain preferred-first two-pass.
+          const bool keepNewestLast = (provider == "openai");
           String ring[8];
           int ringN = 0;
           for (int pass = 0; pass < 2 && kept < 8; ++pass) {

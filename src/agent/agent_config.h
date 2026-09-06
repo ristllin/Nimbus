@@ -56,7 +56,10 @@
 #define ZAI_BASE_PATH     "/api/paas/v4"
 
 // Cumulo Nimbus router - one key, upstream selectable per role. OpenAI-compatible
-// wire under /router/<upstream>/v1/...; verify hits /router/<upstream>/v1/models.
+// wire under /router/<upstream>/v1/...; verify + the model harvest hit the
+// router's own GET /router/models (the routable catalog: "<upstream>/<model>"
+// ids with size_class + billed-rate metadata), so the Cumulo dropdown tracks
+// what the router can actually route.
 #define CUMULO_HOST_DEFAULT "app.cumulo-nimbus.ai"
 #define MISTRAL_PORT 443
 // Default Mistral model (orchestrator + sub-session fallback); the "-latest"

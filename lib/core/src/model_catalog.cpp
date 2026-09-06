@@ -271,6 +271,16 @@ void overlayMistral(JsonObjectConst m, ModelInfo& mi, bool& keep) {
   keep = mi.roles != 0 && !mi.deprecated;
 }
 
+// Cumulo GET /router/models metadata: the router's own size class (the cloud's
+// shared name-tier predicate) overrides the id heuristic - API-supplied beats
+// guessed, same as the Anthropic/Mistral overlays.
+void overlayCumulo(JsonObjectConst m, ModelInfo& mi) {
+  const char sc = ((const char*)(m["size_class"] | ""))[0];
+  if (sc != 's' && sc != 'm' && sc != 'l') return;
+  mi.size = sc == 's' ? 'S' : (sc == 'm' ? 'M' : 'L');
+  mi.apiCaps = true;
+}
+
 // Mistral: prefer the canonical "-latest" alias id when the API lists one.
 std::string mistralCanonicalId(JsonObjectConst m) {
   std::string id = (const char*)(m["id"] | "");
@@ -354,6 +364,8 @@ size_t parseModelsList(const std::string& provider, const std::string& body,
       overlayAnthropic(m, mi);
     } else if (provider == "mistral") {
       overlayMistral(m, mi, keep);  // Mistral drops models the API marks deprecated
+    } else if (provider == "cumulo") {
+      overlayCumulo(m, mi);
     } else if (!m["shutdown_date"].isNull() || !m["deprecation"].isNull()) {
       // A future shutdown date still leaves the model usable: flag it, keep it,
       // and let the usability probe / UI decide. (Mistral is stricter above.)

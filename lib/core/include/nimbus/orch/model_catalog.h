@@ -103,7 +103,9 @@ ModelInfo classifyCatalogEntry(const std::string& provider, const std::string& i
 //                      / capabilities when the API returns them (apiCaps=true).
 //   mistral          - capabilities + deprecation + aliases metadata.
 //   cumulo/zai       - OpenAI-compatible id list (cumulo tags each model's upstream
-//                      when the id is prefixed "<upstream>/<id>" or upstreamHint set).
+//                      when the id is prefixed "<upstream>/<id>" or upstreamHint set;
+//                      the router's GET /router/models also carries a size_class
+//                      metadata field, which overrides the size heuristic).
 // Non-chat families are still returned, classified under their own role; nothing
 // is capped. Flagships sort first. Returns the number of models parsed.
 size_t parseModelsList(const std::string& provider, const std::string& body,
