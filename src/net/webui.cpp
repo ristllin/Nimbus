@@ -689,10 +689,12 @@ static void buildState(String& out) {
   // Panel watchdog counters, on HTTP because reading them over the console
   // RESETS this board (DTR/RTS drive EN) and so destroys the very fault being
   // measured. A white screen could not be diagnosed live without this.
-  //   panelResponding - the LIVE controller readback (id register), always
-  //               meaningful and independent of the probe below. false = not
-  //               answering (the all-ones off-bus signature); this is what
-  //               catches the owner's black glass, and did not exist before.
+  //   panelResponding - the LIVE controller readback (the driver's RDDST-based
+  //               healthy() read), always meaningful and independent of the probe
+  //               below. false = not answering (RDDST no longer mirrors the mode we
+  //               wrote); this is what catches the owner's black glass, and did not
+  //               exist before. RDDID is not used: it reads 0x000000 on a healthy
+  //               Freenove panel and would report a working panel as dead.
   //   panelMeasured - whether the register/pixel probe actually measured content
   //               this poll. When false, panelOk/panelPixOk are null (not measured)
   //               rather than a fabricated true, so "not measured" can never render

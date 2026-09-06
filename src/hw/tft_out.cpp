@@ -42,10 +42,12 @@ uint32_t g_repaints = 0;     // unconditional watchdog repaints (covers the
 // Honest controller liveness (the display's counterpart to the resistive-touch
 // liveness). The health/status surface reported the panel "up" from the boot
 // begin() result alone, which LIED when the controller went off the SPI bus - the
-// owner's black glass, where the id register pegged all-ones (TFTID id=0xFFFFFF).
-// This polls that id at a low cadence and feeds the debounced detector, so the
-// verdict is a LIVE reading independent of the register/pixel probe (off by
-// default). ~2 s cadence matches the touch-liveness poll.
+// owner's black glass, where healthy() read false (TFTHEALTH healthy=0). This
+// polls the driver's RDDST-based healthy() read at a low cadence and feeds the
+// debounced detector, so the verdict is a LIVE reading independent of the
+// register/pixel probe (off by default). ~2 s cadence matches the touch-liveness
+// poll. healthy() (RDDST) is used rather than RDDID because a healthy Freenove /
+// CYD panel reads RDDID 0x000000 while fully working - see panel_controller.h.
 constexpr uint32_t kControllerPollMs = 2000;
 nimbus::display::PanelControllerLiveness g_controllerLive;
 uint32_t g_lastControllerPollMs = 0;
@@ -329,17 +331,19 @@ void pollControllerLiveness(uint32_t now) {
   if (!g_ready || nimbus::fault::active(nimbus::fault::SCREEN)) return;
   if (uint32_t(now - g_lastControllerPollMs) < kControllerPollMs) return;
   g_lastControllerPollMs = now;
-  // ⚠ Read the id register ONLY when the render task is idle. A register read
+  // ⚠ Read the health register ONLY when the render task is idle. A register read
   // concurrent with a 150 KB blit returns noise (measured: MADCTL walked at
   // random), so a read during busy() is not a verdict - skip it and let the last
-  // verdict stand rather than trip on contention. A genuinely off-bus panel pegs
-  // the id all-ones on EVERY idle read, so the debounce still catches it fast
-  // while transient contention never trips it. This is the same cheap RDDID the
-  // TFTID? console command reads (readReg(0x04, 3)); no driver change.
+  // verdict stand rather than trip on contention. A genuinely off-bus/reset panel
+  // reads healthy() false on EVERY idle read, so the debounce still catches it fast
+  // while transient contention never trips it. healthy() is the driver's reliable
+  // RDDST (0x09) read - the SAME signal panelConfigOk() and tickHealth() use - not
+  // RDDID (0x04), which reads 0x000000 on a healthy Freenove / CYD panel and would
+  // report a working panel as dead (see panel_controller.h); no driver change.
   const bool canRead = !solide::display_tft::busy();
-  uint32_t id = 0;
-  if (canRead) id = solide::display_tft::readReg(0x04, 3);
-  g_controllerLive.update(canRead, id, 3);
+  bool healthy = false;
+  if (canRead) healthy = solide::display_tft::healthy();
+  g_controllerLive.update(canRead, healthy);
 }
 
 const Rendered* current() { return g_ready ? &g_taps : nullptr; }

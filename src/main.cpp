@@ -2917,9 +2917,10 @@ void setup() {
   // and /api/health tell the truth about a dead sense divider or a dead touch panel.
   wc.batterySenseMissing   = [] { return g_senseMissing.missing(); };
   wc.touchResistiveDegraded = [] { return g_touchLiveness.degraded(); };
-  // Honest display verdict: the debounced controller-not-answering verdict (id
-  // reads the all-ones off-bus signature) so /api/state and /api/health report a
-  // disconnected/dead panel as a fault instead of the boot begin() result's "up".
+  // Honest display verdict: the debounced controller-not-answering verdict (the
+  // driver's RDDST-based healthy() read stops matching the mode we wrote) so
+  // /api/state and /api/health report a disconnected/dead panel as a fault instead
+  // of the boot begin() result's "up".
   wc.panelControllerDead = [] { return hw::tft::controllerNotResponding(); };
   // Battery drain/storage (battery-measurement). setStorage is production; setDrain is
   // TEST-only (the endpoint is compiled out of production, so the callback is never set).

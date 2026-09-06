@@ -84,9 +84,9 @@ std::string reportJson(const Env& env) {
                active(Cap::LED) ? "fault-injected (test)" : (hal.leds ? "up" : "init failed")};
   // Display: "up" from a begin() that succeeded at boot is not proof the
   // controller is still on the SPI bus. env.panelNotResponding is the debounced
-  // live verdict (the controller id reads the all-ones off-bus signature) - the
-  // honest signal that replaces the hardwired "up" that shipped on the owner's
-  // nimbus-light, whose black glass read "ok" with zero live measurement.
+  // live verdict (the driver's RDDST-based healthy() read stops matching the mode
+  // we wrote) - the honest signal that replaces the hardwired "up" that shipped on
+  // the owner's nimbus-light, whose black glass read "ok" with zero live measurement.
   rows[n++] = {"screen", "Display (color touch)",
                active(Cap::SCREEN) ? kAbsent
                    : (!hal.display ? kDegraded : (env.panelNotResponding ? kDegraded : kOk)),

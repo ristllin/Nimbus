@@ -76,7 +76,7 @@ ever sets and reads back the *requested* duty (`panelBacklight`); it has no pad
 readback of the actual LED current. `panelBlOk` says the PWM attached, not that
 the glass is lit. A genuinely lit screen is confirmed only by a human looking at
 it or, for "is the controller even there", by the controller readback
-(`panelResponding` / `TFTID?`). Likewise the boot line
+(`panelResponding` / `TFTHEALTH?`). Likewise the boot line
 `[tft] colour touch panel up` is an init-sent message printed after `begin()`
 returned, not a readback of the live panel - it says the driver started, nothing
 about the glass.
@@ -220,7 +220,7 @@ reading them over the console RESETS this board and destroys the fault:
 |---|---|---|
 | `panelTask` | alive | the render task is running |
 | `panelBusy` | false | blits COMPLETE, not stalled |
-| `panelResponding` | true | the controller answers register reads (its id is sane) |
+| `panelResponding` | true | the controller answers its RDDST status read and still holds the mode we wrote (`healthy()`) |
 | `panelMeasured` | false | the register/pixel probe is off (the shipped default) |
 | `panelOk` | null | not measured while the probe is off; a real bool only with it on |
 | `panelBlOk` | true | the backlight PWM genuinely attached |
@@ -231,15 +231,20 @@ reading them over the console RESETS this board and destroys the fault:
 | `panelPixLost` | 0 | times the pixels were ever found to disagree |
 
 ⚠ **`panelResponding` is the one live signal that does not need the probe.** It
-comes from a low-cadence readback of the controller's id register (the same RDDID
-the `TFTID?` console command reads) and is `false` when the controller is off the
-SPI bus - a disconnected FPC, a dead module, a collapsed rail. That is a
-different fault from the white screen this table describes: here the controller
-still answers (`panelResponding` true) while the glass stays blank. A `false`
-here is the owner's **black-glass** case, and the Display health row reports it as
-"display not responding" without a serial open (which would reset the board and
-erase the fault). `panelOk` / `panelPixOk` are **null** while the probe is off,
-never a fabricated `true`: "not measured" must not read as "healthy".
+comes from a low-cadence readback of the driver's RDDST-based `healthy()` (the
+same reliable status read `TFTHEALTH?` reports), debounced over a ~2 s cadence,
+and is `false` when the controller is off the SPI bus - a disconnected FPC, a
+dead module, a collapsed rail - or has silently reset. It is **not** keyed on the
+controller id (RDDID, `TFTID?`): a healthy Freenove / CYD panel reads RDDID
+`0x000000` while fully working, so an id-based verdict reported a working panel as
+"not responding". RDDST mirrors the MADCTL we wrote and answers reliably across
+ILI9341 variants, which is why `healthy()` reads it and this verdict follows it.
+That is a different fault from the white screen this table describes: here the
+controller still answers (`panelResponding` true) while the glass stays blank. A
+`false` here is the owner's **black-glass** case, and the Display health row
+reports it as "display not responding" without a serial open (which would reset
+the board and erase the fault). `panelOk` / `panelPixOk` are **null** while the
+probe is off, never a fabricated `true`: "not measured" must not read as "healthy".
 
 ⚠ **The panel's display/power state is NOT observable.** `RDDPM` (0x0A) reads
 `0x00` at every dummy-width on this panel - it simply is not implemented - and
