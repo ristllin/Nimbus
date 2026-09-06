@@ -6,7 +6,7 @@ ships as a signed image on the public
 repository; a device on Orchestrator mode sees it on its daily check and
 installs on your say-so ([how updates work](ota.md)).
 
-## Unreleased
+## v4.4.8 - GPT-6 Astra, current model lineups, router-driven Cumulo catalog
 
 - **The Cumulo Nimbus model list now comes from the router itself.** The device
   reads the router's routable catalog (models with a confirmed price, across
