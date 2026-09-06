@@ -69,6 +69,18 @@ struct ModelInfo {
 };
 
 // ---- pure classification (also used by the fallback rule engine) -------------
+// OpenAI generation number of a "gpt-<N>..." id (gpt-4o -> 4, gpt-5.5 -> 5,
+// gpt-6-astra -> 6); 0 for anything else (o-series, gpt-realtime, other vendors).
+// The ONE place the "gpt-5 and newer" rule lives: the size class, the vision
+// heuristic, the family bucket, the context table, the Responses reasoning gate
+// and the device harvest ordering all key on it, so a new generation (gpt-6-astra,
+// 2026-09) is classified the day it appears instead of drifting per call site.
+int gptGeneration(const std::string& id);
+// True when `id` is in the provider's current flagship family - the ids the
+// device lists first in the model dropdown (openai: gpt-5 and newer generations;
+// zai: glm-5 and newer). Non-flagship families (gpt-4o, o-series, glm-4.x) are
+// still usable, just not preferred.
+bool isFlagshipFamily(const std::string& provider, const std::string& id);
 // Coarse family bucket for an id (lowercased matching). "" if unrecognizable.
 std::string modelFamily(const std::string& provider, const std::string& id);
 // Size class 'S' | 'M' | 'L', or 0 when the id gives no signal.
@@ -91,7 +103,9 @@ ModelInfo classifyCatalogEntry(const std::string& provider, const std::string& i
 //                      / capabilities when the API returns them (apiCaps=true).
 //   mistral          - capabilities + deprecation + aliases metadata.
 //   cumulo/zai       - OpenAI-compatible id list (cumulo tags each model's upstream
-//                      when the id is prefixed "<upstream>/<id>" or upstreamHint set).
+//                      when the id is prefixed "<upstream>/<id>" or upstreamHint set;
+//                      the router's GET /router/models also carries a size_class
+//                      metadata field, which overrides the size heuristic).
 // Non-chat families are still returned, classified under their own role; nothing
 // is capped. Flagships sort first. Returns the number of models parsed.
 size_t parseModelsList(const std::string& provider, const std::string& body,

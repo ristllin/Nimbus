@@ -256,7 +256,11 @@ each key's own `/v1/models` (dropping the old 8-id cap) and classifying every mo
 into roles (orchestrator, sub-agent, embedding, vision, STT, TTS, image), a size
 class (S/M/L), and capability flags. It reads capability fields where the API
 supplies them (Anthropic `max_input_tokens`/`max_tokens`/`capabilities`, Mistral
-`capabilities`) and id-family heuristics otherwise. A one-shot cheap usability probe
+`capabilities`) and id-family heuristics otherwise. The Cumulo Nimbus head is
+special: it harvests the router's own `GET /router/models`, which lists exactly
+the models the router can route (priced and enabled), as `<upstream>/<model>`
+ids with a size class and the billed rates as metadata, so the Cumulo model list
+tracks the router's catalog rather than one upstream's `/v1/models`. A one-shot cheap usability probe
 per selected model means a model your key cannot actually use never appears. The
 catalog is served at `GET /api/models` (add `?all=1` to include probe-hidden models)
 and cached in PSRAM with a 24 h refresh. The generated

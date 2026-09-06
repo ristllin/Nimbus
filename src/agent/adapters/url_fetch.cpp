@@ -165,7 +165,7 @@ int scanVerdict(const std::string& headText, const std::string& url,
   struct Prov { const char* host; const char* path; const char* model; String key; bool anthropic; };
   Prov p{};
   if (store::openaiKey().length())
-    p = {"api.openai.com", "/v1/chat/completions", "gpt-5.4-mini", store::openaiKey(), false};
+    p = {"api.openai.com", "/v1/chat/completions", "gpt-5.6-luna", store::openaiKey(), false};
   else if (store::mistralKey().length())
     p = {"api.mistral.ai", "/v1/chat/completions", "mistral-small-latest", store::mistralKey(), false};
   else if (store::anthropicKey().length())

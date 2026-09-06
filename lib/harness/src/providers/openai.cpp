@@ -5,6 +5,7 @@
 
 #include "nimbus/harness/providers.h"
 #include "nimbus/orch/head_loop.h"    // runHeadLoop - the portable ReAct controller
+#include "nimbus/orch/model_catalog.h" // gptGeneration - the reasoning-family gate
 #include "nimbus/orch/orch_schema.h"  // ORCH_SCHEMA_BODY - the wire contract
 #include "nimbus/orch/token_usage_json.h"  // tokenUsageFromJson - per-round usage
 #include "nimbus/orch/transcript.h"   // Transcript - the canonical turn record (Stage 2)
@@ -45,16 +46,18 @@ static std::vector<std::pair<std::string, std::string>> oaiHeaders(const std::st
 
 // Glass Box A4 (OpenAI reasoning capture): the Responses `reasoning` parameter and
 // the reasoning-summary output items are ONLY valid on the reasoning families
-// (o-series, gpt-5) - sending `reasoning` to a chat model (gpt-4o/gpt-4.1) is a hard
-// 400 that would fail EVERY turn. Gate the request on the model name so a non-
-// reasoning model behaves exactly as before. Matches "o1"/"o3"/"o4"/"o5"(-*) and
-// "gpt-5"(*); deliberately conservative - a new reasoning family just doesn't get
-// summaries captured until this list grows (never a 400).
+// (o-series, gpt-5 and newer) - sending `reasoning` to a chat model (gpt-4o/gpt-4.1)
+// is a hard 400 that would fail EVERY turn. Gate the request on the model name so
+// a non-reasoning model behaves exactly as before. Matches "o1"/"o3"/"o4"/"o5"(-*)
+// and every "gpt-<N>" generation from 5 up (gpt-5.x, gpt-6-astra, ...): a
+// reasoning model under store:false also NEEDS the encrypted reasoning items
+// replayed with its function calls, so a new generation left out of this gate
+// would 400 on round 2 of every tool-calling turn rather than merely lose its
+// summaries. The generation parse is the shared nimbus::orch::gptGeneration.
 static bool oaiIsReasoningModel(const std::string& model) {
-  auto starts = [&](const char* p) { return model.rfind(p, 0) == 0; };
-  // gpt-5* EXCEPT the -chat variants (gpt-5-chat-latest etc.) - those are the
+  // gpt-5+ EXCEPT the -chat variants (gpt-5-chat-latest etc.) - those are the
   // non-reasoning ChatGPT snapshots and hard-400 on the reasoning parameter.
-  if (starts("gpt-5")) return model.find("chat") == std::string::npos;
+  if (nimbus::orch::gptGeneration(model) >= 5) return model.find("chat") == std::string::npos;
   // o<N> or o<N>-...  (o1, o3-mini, o4-mini, ...). Require a digit after 'o' so
   // "openai"/"omni"-style names never match.
   if (model.size() >= 2 && model[0] == 'o' && model[1] >= '1' && model[1] <= '9') return true;

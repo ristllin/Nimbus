@@ -55,7 +55,7 @@ constexpr const char* kCumuloEnvKey     = "CUMULO_API_KEY";      // canonical en
 constexpr const char* kCumuloHost       = "app.cumulo-nimbus.ai";  // CUMULO_HOST_DEFAULT
 constexpr const char* kCumuloPathPrefix = "/router/openai/v1";     // replaces the default /v1
 constexpr const char* kCumuloConv       = "openai";                // wire convention
-constexpr const char* kCumuloModel      = "gpt-4o";                // CUMULO_MODEL default
+constexpr const char* kCumuloModel      = "gpt-5.6";               // CUMULO_MODEL default
 constexpr const char* kCumuloSlug       = "cumulo";               // head + routing slug
 
 struct TurnRecord {
@@ -272,7 +272,7 @@ class NimbusdRig {
   std::string modelFor(const std::string& h) const {
     auto it = opt_.models.find(h);
     if (it != opt_.models.end()) return it->second;
-    if (h == "openai")    return "gpt-5.5";
+    if (h == "openai")    return "gpt-5.6";
     if (h == "anthropic") return "claude-sonnet-4-6";
     if (h == "mistral")   return "mistral-large-latest";
     // CUM-288: the Cumulo router head resolves to the router default model, not ""
@@ -506,8 +506,8 @@ class NimbusdRig {
     p.orchModel = [this](const std::string& h) { return modelFor(h); };
     p.subModel = [this](const std::string& h) { return modelFor(h); };
     p.modelChoices = [](const std::string& h) {
-      if (h == "openai")    return std::string("gpt-5.5,gpt-5.4-mini");
-      if (h == "anthropic") return std::string("claude-opus-4-8,claude-sonnet-4-6,claude-haiku-4-5");
+      if (h == "openai")    return std::string("gpt-6-astra,gpt-5.6,gpt-5.6-luna");
+      if (h == "anthropic") return std::string("claude-opus-5,claude-sonnet-5,claude-haiku-4-5");
       if (h == "mistral")   return std::string("mistral-large-latest,mistral-medium-latest,mistral-small-latest");
       return std::string();
     };
