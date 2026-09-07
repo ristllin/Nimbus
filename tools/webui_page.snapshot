@@ -1928,7 +1928,7 @@ function applyState(d){
     if(gc){
       if(!d.clock.synced){
         // Build ONCE, then just toggle visibility - rewriting innerHTML every
-        // 3 s poll would destroy the Sync-now button mid-click (prism).
+        // 3 s poll would destroy the Sync-now button mid-click (review).
         if(!gc.firstChild){
           gc.innerHTML='<p class="hint tip">The device clock hasn\'t synced, so daily and weekly routines '+
             '- including nightly memory upkeep - can\'t run yet. It sets itself from the '+
