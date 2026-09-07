@@ -31,15 +31,24 @@ static char          g_provider[16] = {};
 // installs a PSRAM-backed mbedTLS allocator), so the handshake's remaining INTERNAL
 // need is much smaller than the pre-PSRAM 50 KB - mostly lwIP/socket + cert-parse
 // transients. Gated on the largest CONTIGUOUS internal block (not total free) because
-// the handshake still wants one modest contiguous buffer. 16 KB: measured live on
-// v2.0.0 the largest CONTIGUOUS internal block rests ~19 KB (fragmentation caps it
-// well below the ~78 KB total free), and the PSRAM-routed mbedTLS means the real
-// contiguous internal need is only lwIP/cert transients - so the old 30 KB floor
-// (a copy of the total-heap-era value) perpetually DEFERRED verify even with the
-// key present (proven on-device: max8=19444 -> deferred). Below 16 KB we record -1
-// ("couldn't verify - low memory") without a doomed attempt; a genuine OOM
-// handshake still fails soft. See docs/memory-model.md.
-static const size_t VERIFY_MIN_MAX8 = 16000;
+// the handshake still wants one modest contiguous buffer.
+//
+// 8 KB (CUM-77 x1 item 6, was 16 KB, was 30 KB). The 30 KB floor perpetually
+// deferred (proven on-device: max8=19444 -> deferred); 16 KB STILL did. Measured
+// live on .61 (v4.4.8): the largest CONTIGUOUS internal block is heavily
+// fragmentation-capped and swings ~11.7-25 KB (intFree stays ~34 KB the whole
+// time), and the web UI's verify keeps landing in the low end - so at 16 KB EVERY
+// provider deferred in one window ("mistral/zai/openai/cumulo deferred
+// (max8=15348)"; later max8=11764), while anthropic, which happened to run at a
+// higher moment, verified fine. That is the uniform "couldn't verify - retry" the
+// owner saw: NOT a per-provider fault, just the gate parked above the device's own
+// fragmented floor. The REAL contiguous need is small now that mbedTLS RX/TX ride
+// PSRAM: a live TLS embed on this board PEAKS at 6,536 B contiguous (measured, see
+// the AsyncTCP note in platformio.ini). 8 KB sits just above that measured peak, so
+// a verify attempts whenever the handshake can actually fit and still refuses a
+// genuine severe OOM (records -1 "deferred"; a real OOM past the gate fails soft).
+// Verified on-device: all four direct verifies go green at this floor. docs/memory-model.md.
+static const size_t VERIFY_MIN_MAX8 = 8000;
 
 static void verifyTask(void*);   // spawned per request(); self-deletes
 
