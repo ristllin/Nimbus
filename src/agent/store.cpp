@@ -35,30 +35,49 @@ namespace store {
 // from RAM; every provider-config SETTER marks the snapshot dirty so the next
 // read refreshes. A factory reset erases NVS and reboots, so the cache is always
 // rebuilt fresh on boot - there is no live-erase path to leave it stale.
+// The fill itself reads each key through has() (see pcRead) so an unset key on a
+// fresh/wiped device does not even emit the one-per-fill getString NOT_FOUND [E]
+// line - the cache bounds the read COUNT, has() keeps that bounded read QUIET
+// (CUM-299).
 namespace {
 using PSnap = ::nimbus::store::ProviderSnapshot;
 std::mutex g_pcMx;
 ::nimbus::store::ProviderCache g_pc;
 
+// Read a provider-config key WITHOUT the Preferences [E] log that a bare
+// getString() emits on every read of a MISSING key. Arduino Preferences::getString
+// calls log_e("nvs_get_str len fail: <key> NOT_FOUND") whenever the key is absent
+// (Preferences.cpp:506); has() routes through isKey()/getType(), which probes the
+// value types silently and returns false for an absent key, so we return the
+// default without ever entering getString's error path. On a fresh or wiped device
+// every provider key is unset, so the plain reads spat a burst of NOT_FOUND [E]
+// lines on each cache fill - the console flood (orchHost + siblings) during exactly
+// the first-run diagnosis that matters most (CUM-299). The cache already bounds
+// this to one fill per config write; this makes that one fill quiet too. Same
+// has()-then-getString idiom the OTA keys further down already use.
+String pcRead(const char* key, const char* def) {
+  return solide::memory::has(key) ? solide::memory::getString(key, def) : String(def);
+}
+
 // The one place that actually reads NVS for these keys. Defaults here mirror the
 // per-getter defaults exactly (custom conv "openai", the priority lists).
 void pcFill(::nimbus::store::ProviderSnapshot& s) {
-  s.openaiKey        = solide::memory::getString(AKEY_OPENAI_KEY, "").c_str();
-  s.anthropicKey     = solide::memory::getString(AKEY_ANTHROPIC_KEY, "").c_str();
-  s.mistralKey       = solide::memory::getString(AKEY_MISTRAL_KEY, "").c_str();
-  s.tavilyKey        = solide::memory::getString(AKEY_TAVILY_KEY, "").c_str();
-  s.zaiKey           = solide::memory::getString(AKEY_ZAI_KEY, "").c_str();
-  s.zaiBase          = solide::memory::getString(AKEY_ZAI_BASE, "").c_str();
-  s.cumuloKey        = solide::memory::getString(AKEY_CUMULO_KEY, "").c_str();
-  s.cumuloBase       = solide::memory::getString(AKEY_CUMULO_BASE, "").c_str();
-  s.customBase       = solide::memory::getString(AKEY_CUSTOM_BASE, "").c_str();
-  s.customKey        = solide::memory::getString(AKEY_CUSTOM_KEY, "").c_str();
-  s.customConv       = solide::memory::getString(AKEY_CUSTOM_CONV, "openai").c_str();
-  s.customModel      = solide::memory::getString(AKEY_CUSTOM_MODEL, "").c_str();
-  s.orchHost         = solide::memory::getString(AKEY_ORCH_HOST, "").c_str();
-  s.providerPriority = solide::memory::getString(AKEY_PROV_PRIORITY, "openai,anthropic,mistral").c_str();
-  s.subPriority      = solide::memory::getString(AKEY_SUB_PRIORITY, "openai,anthropic,mistral").c_str();
-  s.fallbackRules    = solide::memory::getString(AKEY_FALLBACK_RULES, "").c_str();
+  s.openaiKey        = pcRead(AKEY_OPENAI_KEY, "").c_str();
+  s.anthropicKey     = pcRead(AKEY_ANTHROPIC_KEY, "").c_str();
+  s.mistralKey       = pcRead(AKEY_MISTRAL_KEY, "").c_str();
+  s.tavilyKey        = pcRead(AKEY_TAVILY_KEY, "").c_str();
+  s.zaiKey           = pcRead(AKEY_ZAI_KEY, "").c_str();
+  s.zaiBase          = pcRead(AKEY_ZAI_BASE, "").c_str();
+  s.cumuloKey        = pcRead(AKEY_CUMULO_KEY, "").c_str();
+  s.cumuloBase       = pcRead(AKEY_CUMULO_BASE, "").c_str();
+  s.customBase       = pcRead(AKEY_CUSTOM_BASE, "").c_str();
+  s.customKey        = pcRead(AKEY_CUSTOM_KEY, "").c_str();
+  s.customConv       = pcRead(AKEY_CUSTOM_CONV, "openai").c_str();
+  s.customModel      = pcRead(AKEY_CUSTOM_MODEL, "").c_str();
+  s.orchHost         = pcRead(AKEY_ORCH_HOST, "").c_str();
+  s.providerPriority = pcRead(AKEY_PROV_PRIORITY, "openai,anthropic,mistral").c_str();
+  s.subPriority      = pcRead(AKEY_SUB_PRIORITY, "openai,anthropic,mistral").c_str();
+  s.fallbackRules    = pcRead(AKEY_FALLBACK_RULES, "").c_str();
 }
 
 // Copy one cached field out under the store lock.
