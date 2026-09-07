@@ -96,13 +96,49 @@ export const ORCH = {
   ],
 };
 
-// N3 contract stubs
+// GET /api/models (CUM-26 contract): the uncapped, capability-aware catalog the
+// full-catalog picker renders. Providers keyed by slug; each model carries id,
+// roles[], size ('L'|'M'|'S'|''), family, deprecated, and (cumulo only) upstream.
+// Flagship-first order is preserved as-is by the picker. Chat picker filters to
+// models whose roles include orchestrator / sub-agent, so the embedding model
+// below is correctly dropped from the dropdown.
+const cm = (id, size, roles = ['orchestrator', 'sub-agent'], extra = {}) =>
+  ({ id, roles, usable: true, probed: true, size, family: '', source: 'api', deprecated: false, ...extra });
 export const MODELS = {
-  providers: [
-    { id: 'anthropic', models: ['claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5'] },
-    { id: 'cumulo', models: ['nimbus-1'] },
-    { id: 'zai', models: ['glm-4'] },
-  ],
+  generatedAt: Math.floor(Date.now() / 1000),
+  ttlSec: 86400,
+  roles: ['orchestrator', 'sub-agent', 'embedding', 'vision', 'stt', 'tts', 'image'],
+  providers: {
+    openai: {
+      keyed: true, verified: 1, probe: 1, refreshedAt: 1700000000, stale: false,
+      models: [
+        cm('gpt-6-astra', 'L'), cm('gpt-5.5', 'L'), cm('gpt-5.4-mini', 'S'),
+        cm('gpt-4o', 'M', ['orchestrator', 'sub-agent'], { deprecated: true }),
+        cm('text-embedding-3-large', '', ['embedding']),
+      ],
+    },
+    anthropic: {
+      keyed: true, verified: 1, probe: 1, refreshedAt: 1700000000, stale: false,
+      models: [
+        cm('claude-opus-5', 'L'), cm('claude-sonnet-5', 'M'), cm('claude-haiku-4-5', 'S'),
+        cm('claude-sonnet-4-6', 'M', ['orchestrator', 'sub-agent'], { deprecated: true }),
+      ],
+    },
+    cumulo: {
+      keyed: true, verified: 1, probe: 1, refreshedAt: 1700000000, stale: false,
+      models: [
+        cm('openai/gpt-5.5', 'L', ['orchestrator', 'sub-agent'], { upstream: 'openai' }),
+        cm('openai/gpt-5.4-mini', 'S', ['orchestrator', 'sub-agent'], { upstream: 'openai' }),
+        cm('anthropic/claude-opus-5', 'L', ['orchestrator', 'sub-agent'], { upstream: 'anthropic' }),
+        cm('anthropic/claude-haiku-4-5', 'S', ['orchestrator', 'sub-agent'], { upstream: 'anthropic' }),
+        cm('zai/glm-4.6', 'M', ['orchestrator', 'sub-agent'], { upstream: 'zai' }),
+      ],
+    },
+    zai: {
+      keyed: false, verified: -1, probe: 1, refreshedAt: 0, stale: true,
+      models: [cm('glm-4.6', 'M'), cm('glm-4.5-air', 'S')],
+    },
+  },
 };
 export const FALLBACKS = { chain: ['anthropic', 'cumulo', 'zai'] };
 

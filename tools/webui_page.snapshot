@@ -54,7 +54,7 @@ input:focus,select:focus,textarea:focus{outline:2px solid var(--teal-soft);borde
 button{padding:8px 14px;border:0;border-radius:10px;background:var(--teal);color:#052420;font-weight:650;font-size:13.5px;cursor:pointer}
 button:hover{filter:brightness(1.06)}
 .memv{background:var(--raise2);border:1px solid var(--line);border-radius:10px;padding:10px;font-size:12px;white-space:pre-wrap;word-break:break-word;color:var(--ink2);min-height:2em;font-family:var(--mono)}
-.vfy{margin-left:8px}.vfy.ok{background:rgba(99,209,154,.14);color:var(--ok)}.vfy.bad{background:rgba(240,104,122,.14);color:var(--crit)}.vfy.unk{background:var(--raise3);color:var(--ink2)}
+.vfy{margin-left:8px}.vfy.ok{background:rgba(99,209,154,.14);color:var(--ok)}.vfy.bad{background:rgba(240,104,122,.14);color:var(--crit)}.vfy.unk{background:var(--raise3);color:var(--ink2)}.vfy.warn{background:rgba(224,184,112,.14);color:#e0b870}
 .provrow{border-top:1px solid var(--line);padding-top:12px;margin-top:12px}
 .provhead{display:flex;align-items:center;gap:8px}
 table{width:100%;border-collapse:collapse;font-size:12.5px}td,th{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);color:var(--ink2)}th{color:var(--ink3);font-size:10.5px;text-transform:uppercase;letter-spacing:.06em}
@@ -878,18 +878,6 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <div class=hint id=upMsg></div>
 </div>
 </details>
-
-<details class=setgroup><summary>Music<span class=chev>&rsaquo;</span></summary>
-<div class=setbody>
-<p class=hint id=musicStat>-</p>
-<div id=musicList class=hint>loading&hellip;</div>
-<div class=row><button id=musicPlayAll type=button>Play all</button><button id=musicPause type=button>Pause</button><button id=musicStop type=button>Stop</button></div>
-<label style="margin-top:10px">Add music</label>
-<div class=row><input id=musicFile type=file accept=".mp3,.wav"><button id=musicUpBtn type=button>Add</button></div>
-<p class="hint tip">Add a .wav or .mp3 to play it on the speaker. Play tracks here, with <span class=badge>/play</span> over Telegram, or by asking the assistant.</p>
-<div class=hint id=musicUpMsg></div>
-</div>
-</details>
 </div>
 
 <div class=pane id=pane-usage style="display:none">
@@ -1222,8 +1210,8 @@ function loadPane(p){
     if(typeof loadWakeups==='function')loadWakeups();}
   // Safety (fetchpol + moderation) loads with pane-usage's loadOrch/loadFetchQ,
   // which run in the same DEST.assistant group; no separate load needed here.
-  if(p==='mem'){if(typeof loadMemDash==='function')loadMemDash();if(typeof loadFiles==='function')loadFiles();if(typeof loadMusic==='function')loadMusic();}
-  if(p==='harness'){if(typeof loadOrch==='function')loadOrch();if(typeof loadConnectors==='function')loadConnectors();if(typeof loadTools==='function')loadTools();if(typeof loadSkills==='function')loadSkills();}
+  if(p==='mem'){if(typeof loadMemDash==='function')loadMemDash();if(typeof loadFiles==='function')loadFiles();}
+  if(p==='harness'){if(typeof loadOrch==='function')loadOrch();if(typeof loadModels==='function')loadModels();if(typeof loadConnectors==='function')loadConnectors();if(typeof loadTools==='function')loadTools();if(typeof loadSkills==='function')loadSkills();}
   if(p==='usage'){if(typeof loadOrch==='function')loadOrch();if(typeof loadFetchQ==='function')loadFetchQ();if(typeof loadUsageHistory==='function')loadUsageHistory();}
   if(p==='chat'&&typeof loadChatHistory==='function')loadChatHistory();
   if(p==='set'){if(typeof loadThemes==='function')loadThemes();if(typeof loadConnect==='function')loadConnect();if(typeof loadWifi==='function')loadWifi();}
@@ -1538,14 +1526,15 @@ function fillVoices(prov, sel){
 }
 // Provider priority as an ordered, checkable list -> a comma string (no free-text).
 function renderPrio(hostId, field, csv){
-  // NOTE: cumulo/zai are not in this explicit Primary-provider / fallback list.
-  // They ARE runnable orchestrator heads now (CUM-242 registered them), but they
-  // are the deterministic SOURCE the engine falls back to automatically: a device
-  // whose only verified key is Cumulo runs the whole assistant on it with nothing
-  // to select here. A BYOK head (openai/anthropic/mistral/custom) still wins when
-  // keyed. Exposing router providers as an explicit, reorderable head choice is a
-  // follow-up (CUM-201 routing UI); this list stays the BYOK head order.
-  const ALL=['openai','anthropic','mistral','custom'], host=$(hostId); if(!host)return;
+  // cumulo/zai are first-class, reorderable rows here alongside the BYOK heads:
+  // both are runnable orchestrator heads (CUM-242 registered them), so a router
+  // key belongs in the fallback order like any other provider. A stored priority
+  // is NEVER auto-reordered - the saved order is honored as-is and any provider it
+  // omits is appended (off) in ALL's order, so this only ADDS choices, it never
+  // moves what the owner set. Primary-provider (orchHost) still lists only the
+  // BYOK heads, since the router is the deterministic fallback source, not the
+  // one head that "runs the assistant".
+  const ALL=['openai','anthropic','mistral','cumulo','zai','custom'], host=$(hostId); if(!host)return;
   let order=csv.split(',').map(s=>s.trim()).filter(x=>ALL.includes(x));
   let rows=order.map(p=>({p,on:true})).concat(ALL.filter(x=>!order.includes(x)).map(p=>({p,on:false})));
   const save=()=>orchApply({[field]:rows.filter(r=>r.on).map(r=>r.p).join(',')});
@@ -2649,26 +2638,100 @@ function ringSimStart(){
   requestAnimationFrame(frame);
 }
 
-function vfyBadge(v,ts){
+// Distinct, honest copy per verify-reason (L1's /api/orch reason contract). Each
+// tells the owner WHAT is wrong and the one next step, instead of a bare "key
+// rejected"/"couldn't verify". Class picks the color: bad (red) = a key problem,
+// warn (amber) = a router/environment problem, unk (neutral) = transient/unknown.
+const VFYREASON={
+  nocredits:      {cls:'bad', txt:'Needs credits or subscription'},
+  router_outdated:{cls:'warn',txt:'Router needs an update'},
+  deferred:       {cls:'unk', txt:'Verification deferred'},
+  connectfail:    {cls:'unk', txt:'Couldn\'t reach the provider'},
+  tlsbusy:        {cls:'unk', txt:'Busy now. Retry in a moment.'},
+};
+function vfyBadge(v,ts,reason){
+  if(v===1) return '<span class="badge vfy ok">verified</span>';   // a real pass always wins
+  // An honest reason from the verify surface renders whenever present (item 4).
+  const r=reason&&VFYREASON[reason];
+  if(r) return '<span class="badge vfy '+r.cls+'">'+r.txt+'</span>';
   if(ts===0) return '<span class="badge vfy unk">unverified</span>';
-  if(v===1)  return '<span class="badge vfy ok">verified</span>';
   if(v===0)  return '<span class="badge vfy bad">key rejected</span>';
   // v===-1: couldn't verify. In Notifier mode the TLS handshake can't get enough
   // free memory - guide the user to verify from Orchestrator mode.
   const hint=(ORCH && !ORCH.running) ? 'verify from Orchestrator mode' : 'Couldn\'t verify - retry';
   return '<span class="badge vfy unk">'+hint+'</span>';
 }
+// ---- Full model catalog (GET /api/models, CUM-26) --------------------------
+// The uncapped, capability-aware catalog per provider (loadModels fills it). The
+// picker renders THIS when present - grouped, flagship-first, with size badges -
+// and falls back to the 8-cap `choices` CSV before the first harvest lands. Keyed
+// by provider slug -> array of model objects {id,roles[],size,upstream,deprecated}.
+let MODELCAT={};
+let MODELCAT_SIG='';   // bumped when the catalog changes, part of each select's sig
+const SIZELBL={L:'Large',M:'Medium',S:'Small'};   // size class -> group name
+// Option label: the id plus a size-class badge and a deprecated marker when known.
+function modelLabel(id,m){
+  if(!m)return id;
+  let t=id;
+  if(m.size&&SIZELBL[m.size])t+=' · '+m.size;
+  if(m.deprecated)t+=' · deprecated';
+  return t;
+}
+// Pretty name for a cumulo upstream group header (reuses the provider label map).
+function upstreamLabel(up){return PROVLBL[up]||(up.charAt(0).toUpperCase()+up.slice(1));}
+// Group a provider's catalog for the dropdown: cumulo by upstream provider (its
+// router shape is <upstream>/<model>); every other provider by size class, Large
+// first. API order is preserved inside each group (the catalog is flagship-first).
+function groupModels(prov,cat){
+  const order=[],byKey={};
+  const push=(key,label,m)=>{if(!byKey[key]){byKey[key]={label:label,items:[]};order.push(key);}byKey[key].items.push(m);};
+  if(prov==='cumulo'){
+    cat.forEach(m=>{const up=m.upstream||'other';push('up:'+up,upstreamLabel(up),m);});
+  }else{
+    cat.forEach(m=>{const sz=(m.size&&SIZELBL[m.size])?m.size:'X';push('sz:'+sz,sz==='X'?'Other':SIZELBL[sz],m);});
+    // Rank by size letter, Large first. Note: L's rank is 0, so a `||` fallback would
+    // treat it as missing - use an explicit undefined check.
+    const rank={L:0,M:1,S:2,X:3},rk=k=>{const r=rank[k.slice(3)];return r===undefined?9:r;};
+    order.sort((a,b)=>rk(a)-rk(b));
+  }
+  return order.map(k=>byKey[k]);
+}
+// Build the model <select>. `id` is orchM_<prov> / subM_<prov>; the provider slug
+// and the role (orchestrator vs sub-agent) are derived from it so the same call
+// site keeps working. With a catalog: a "Recommended" group (from `choices`) on
+// top, then the full grouped list. Without one: the flat `choices` list, so cold
+// start behaves exactly as before.
 function modelSel(id,cur,choices,verified){
   const s=document.createElement('select'); s.id=id; s.disabled=!verified;
+  const prov=id.substring(id.indexOf('_')+1);
+  const role=(id.indexOf('subM_')===0)?'sub-agent':'orchestrator';
   const d=document.createElement('option'); d.value=''; d.textContent='(default)';
   s.appendChild(d);
+  const seen={};
+  const opt=(parent,val,label)=>{const o=document.createElement('option');
+    o.value=val;o.textContent=label;if(val===cur)o.selected=true;parent.appendChild(o);seen[val]=1;};
   // filter(Boolean): cumulo/zai have no static choice list, so choices is "" until a
   // verify harvest fills it - without this that produced one stray blank <option>.
-  choices.split(',').filter(Boolean).forEach(m=>{const o=document.createElement('option');
-    o.value=m;o.textContent=m;if(m===cur)o.selected=true;s.appendChild(o);});
+  const recIds=(choices||'').split(',').map(x=>x.trim()).filter(Boolean);
+  const cat=(MODELCAT[prov]||[]).filter(m=>m&&m.id&&(m.roles||[]).indexOf(role)>=0);
+  if(cat.length){
+    // Recommended is a curated shortcut on top (from choices); the grouped list below
+    // holds the REST - a model shown in Recommended is not repeated in its group, so
+    // the dropdown never lists the same id twice on a small panel.
+    if(recIds.length){const g=document.createElement('optgroup');g.label='Recommended';
+      recIds.forEach(rid=>{if(seen[rid])return;const m=cat.find(x=>x.id===rid);opt(g,rid,modelLabel(rid,m));});
+      if(g.children.length)s.appendChild(g);}
+    groupModels(prov,cat).forEach(gr=>{const items=gr.items.filter(m=>!seen[m.id]);if(!items.length)return;
+      const g=document.createElement('optgroup');g.label=gr.label;
+      items.forEach(m=>opt(g,m.id,modelLabel(m.id,m)));s.appendChild(g);});
+  }else{
+    recIds.forEach(m=>opt(s,m,m));
+  }
+  // Never silently drop a model the owner already set that the list does not carry.
+  if(cur&&!seen[cur])opt(s,cur,cur);
   if(!verified){const t=document.createElement('option');
     t.value='';t.textContent='Verify the key to unlock';t.selected=!cur;s.appendChild(t);}
-  s.dataset.sig=choices+'|'+(verified?1:0);   // rebuild-only-on-change signature (P1.1)
+  s.dataset.sig=(choices||'')+'|'+(verified?1:0)+'|'+MODELCAT_SIG;   // rebuild-only-on-change signature (P1.1)
   s.onchange=()=>orchApply({[id]:s.value});
   return s;
 }
@@ -2676,7 +2739,7 @@ function modelSel(id,cur,choices,verified){
 // poll update) so the Recommended badge + verify badge never drift between them.
 function provHeadHtml(name,p){return '<b>'+(p.label||PROVLBL[name]||name)+'</b>'+
   ((p.recommended!==undefined?p.recommended:name==='cumulo')?' <span class="badge" style="background:#12312e;color:#7fd1c8;border:1px solid #2b6b63">Recommended</span>':'')+
-  vfyBadge(p.verify,p.vts);}
+  vfyBadge(p.verify,p.vts,p.vfyReason);}
 // Key-field placeholder. Shared by provRow + provSync so the cumulo_sk_ hint on the
 // Cumulo row is not stomped back to the generic "API key" by the in-place poll.
 function keyPlaceholder(name,p){return p.hasKey?'Key set - type to replace'
@@ -2748,9 +2811,26 @@ function provSync(name,p){
 }
 function syncModelSel(id,cur,choices,verified){
   const s=$(id); if(!s||document.activeElement===s)return;   // mid-pick: hands off
-  const sig=choices+'|'+(verified?1:0);
+  const sig=(choices||'')+'|'+(verified?1:0)+'|'+MODELCAT_SIG;
   if(s.dataset.sig!==sig){s.replaceWith(modelSel(id,cur,choices,verified));return;}
   if(s.value!==(cur||''))s.value=cur||'';
+}
+// Fetch the uncapped catalog (GET /api/models) into MODELCAT, then re-sync any
+// open provider selects so they upgrade from the CSV fallback to the grouped list.
+// Not on the 5s poll (the PSRAM-built payload is multi-KB): called when the Models
+// pane opens and after a verify harvest, which is when the catalog can change.
+function loadModels(){
+  if(!canPoll())return;
+  fetch('/api/models').then(r=>r.json()).then(d=>{
+    const provs=(d&&d.providers)||{};
+    const next={};
+    Object.keys(provs).forEach(p=>{next[p]=(provs[p]&&provs[p].models)||[];});
+    MODELCAT=next;
+    MODELCAT_SIG=String((d&&d.generatedAt)||'')+':'+Object.keys(next).map(p=>p+next[p].length).join(',');
+    if(ORCH&&ORCH.providers)Object.keys(ORCH.providers).forEach(n=>{const pp=ORCH.providers[n];if(!pp)return;
+      syncModelSel('orchM_'+n,pp.orchModel,pp.choices,pp.verify===1);
+      syncModelSel('subM_'+n,pp.subModel,pp.choices,pp.verify===1);});
+  }).catch(()=>{});
 }
 function applyOrch(d){
   if($('fetchpol')&&d.fetchPol!=null)$('fetchpol').value=d.fetchPol;
@@ -3314,6 +3394,7 @@ function saveAndVerify(p){
             const vb=$('vfy_'+p); if(vb)vb.disabled=false;
             if(inp)inp.value='';
             applyOrch(d);
+            loadModels();   // the verify harvested this provider's full catalog - pull it
           }
         }).catch(()=>{});
       },2000);
@@ -3993,40 +4074,6 @@ $('upBtn')&&($('upBtn').onclick=()=>{
     work:()=>uploadFile(f,proj,pct=>fbState('upMsg','pending','Uploading '+f.name+'… '+pct+'%',pct)),
     ok:()=>{inp.value='';loadFiles();return 'Uploaded '+f.name+'.';},
     error:s=>'Upload failed'+(s?(' ('+s+')'):'')+' - check the file and try again.'});
-});
-// ---- Music: the SD /music folder (CUM-40) ----
-function _mpost(u,k,v,ok){const f=new FormData();if(k)f.append(k,v);
-  return fetch(u,{method:'POST',body:f}).then(r=>r.ok?(ok?ok():loadMusic()):Promise.reject(r.status)).catch(()=>toast('Couldn\'t do that - try again'));}
-function loadMusic(){
-  const box=$('musicList'); if(!box)return;
-  fetch('/api/music/list').then(r=>r.ok?r.json():Promise.reject(r.status)).then(d=>{
-    const p=d.player||{},t=d.tracks||[];
-    if($('musicStat'))$('musicStat').textContent=!d.present?'No SD card'
-      :(t.length+' track(s)'+(p.state&&p.state!=='stopped'?(' · '+p.state+(p.current?(': '+p.current):'')):''));
-    if(!t.length){box.innerHTML='<span class=hint>No music yet - add one below</span>';return;}
-    box.innerHTML='<table><tbody>'+t.map(n=>'<tr><td style="word-break:break-all">'+_fesc(n)+
-      '</td><td style="white-space:nowrap"><a href="#" data-mpl="'+_fesc(n)+'">play</a> &middot; <a href="#" data-mrm="'+_fesc(n)+'">delete</a></td></tr>').join('')+'</tbody></table>';
-    box.querySelectorAll('a[data-mpl]').forEach(a=>a.onclick=e=>{e.preventDefault();_mpost('/api/music/play','name',a.dataset.mpl);});
-    box.querySelectorAll('a[data-mrm]').forEach(a=>a.onclick=e=>{e.preventDefault();
-      uiConfirm('Delete '+a.dataset.mrm+'?',{ok:'Delete',danger:true}).then(ok=>{if(ok)_mpost('/api/music/rm','name',a.dataset.mrm);});});
-  }).catch(()=>{box.innerHTML='<span class=hint>Music unavailable</span>';});
-}
-$('musicPlayAll')&&($('musicPlayAll').onclick=()=>_mpost('/api/music/play','action','all'));
-$('musicPause')&&($('musicPause').onclick=()=>_mpost('/api/music/play','action','pause'));
-$('musicStop')&&($('musicStop').onclick=()=>_mpost('/api/music/play','action','stop'));
-$('musicUpBtn')&&($('musicUpBtn').onclick=()=>{
-  const inp=$('musicFile'),f=inp&&inp.files[0];
-  if(!f){fbState('musicUpMsg','error','Choose a .wav or .mp3 first.');return;}
-  run({status:'musicUpMsg',btn:$('musicUpBtn'),pending:'Adding '+f.name+'…',
-    work:()=>new Promise((res,rej)=>{const x=new XMLHttpRequest();
-      x.open('POST','/api/music/upload?name='+encodeURIComponent(f.name));
-      try{x.setRequestHeader('X-Nimbus-Token',nimbusTok());}catch(e){}
-      x.upload.onprogress=e=>{if(e.lengthComputable){const pc=Math.round(e.loaded/e.total*100);fbState('musicUpMsg','pending','Adding '+f.name+'… '+pc+'%',pc);}};
-      x.onload=()=>{if(x.status>=200&&x.status<300)res({});else rej(x.status);};
-      x.onerror=()=>rej(0);
-      const fd=new FormData();fd.append('file',f,f.name);x.send(fd);}),
-    ok:()=>{inp.value='';loadMusic();return 'Added '+f.name+'.';},
-    error:s=>'Couldn\'t add'+(s?(' ('+s+')'):'')+' - use a .wav or .mp3 and try again.'});
 });
 // ---- Skills (P2 dynamic capsules): list + load/save/delete on the SD card ----
 function loadSkills(){

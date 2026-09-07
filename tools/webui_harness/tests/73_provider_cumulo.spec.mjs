@@ -86,6 +86,19 @@ test('Cumulo Nimbus is the first provider row, marked recommended, with Z.ai pre
   await page.screenshot({ path: `screenshots/cum201-models-${testInfo.project.name}.png`, fullPage: true });
 });
 
+test('Cumulo (and Z.ai) are first-class rows in the fallback-order UI, honoring stored order', async ({ page }) => {
+  await routeOrch(page, orchPayload());
+  await openModels(page);
+  // Open the Routing group (holds the fallback-order lists).
+  await page.locator('#subpane-llm details.setgroup summary', { hasText: 'Routing' }).click();
+  const list = page.locator('#provPrioList');
+  // Stored provPrio is 'cumulo,anthropic': Cumulo Nimbus is row 1 (order honored, not reordered).
+  await expect(list.locator('.row').first()).toContainText('Cumulo Nimbus');
+  await expect(list.locator('.row').nth(1)).toContainText('Anthropic');
+  // Z.ai is present too (appended off, since the stored order omits it) - never dropped.
+  await expect(list).toContainText('Z.ai');
+});
+
 test('a Cumulo key routes to cumuloKey, never the Mistral slot', async ({ page }) => {
   let posted = null;
   await routeOrch(page, orchPayload(), (body) => { posted = body; });
