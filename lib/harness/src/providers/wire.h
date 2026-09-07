@@ -72,24 +72,20 @@ inline int exchange(const ProviderDeps& pd, const char* host, uint16_t port, boo
 // wire (so a device with no Cumulo head, and every existing wire test, is
 // untouched). Kept here, next to exchange(), so all three provider files share
 // ONE rewrite and it cannot drift between them.
-inline bool applyRouter(const ProviderDeps& pd, const char* upstream,
-                        std::string& host, uint16_t& port, bool& tls, std::string& path,
-                        std::vector<std::pair<std::string, std::string>>& headers) {
-  std::string base = pd.routerBase ? pd.routerBase() : std::string();
-  if (base.empty()) return false;
-  const bool http = base.rfind("http://", 0) == 0;   // plain HTTP only when explicit
-  tls  = !http;
-  port = http ? 80 : 443;
-  size_t sch = base.find("://"); if (sch != std::string::npos) base = base.substr(sch + 3);
-  size_t sl  = base.find('/');   if (sl  != std::string::npos) base = base.substr(0, sl);
-  size_t colon = base.find(':');
-  if (colon != std::string::npos) {
-    port = (uint16_t)atoi(base.c_str() + colon + 1);
-    base = base.substr(0, colon);
-  }
-  host = base;
-  path = std::string("/router/") + upstream + path;
-  // Drop the client's upstream-specific auth; the router sets the real one.
+// The mutable request coordinates applyRouter rewrites in place. Bundled into one
+// struct so callers build it once and hand it straight to exchange() (and so the
+// helper stays under the args<=6 complexity gate).
+struct UpstreamReq {
+  std::string host;
+  uint16_t port = 443;
+  bool tls = true;
+  std::string path;
+  std::vector<std::pair<std::string, std::string>> headers;
+};
+// Drop the client's own upstream auth headers in place (case-insensitive). The
+// router sets the real provider auth itself, so Authorization / x-api-key from the
+// device must not ride the request. Split out to keep applyRouter under the gate.
+inline void dropClientAuth(std::vector<std::pair<std::string, std::string>>& headers) {
   std::vector<std::pair<std::string, std::string>> kept;
   kept.reserve(headers.size() + 1);
   for (auto& h : headers) {
@@ -98,9 +94,35 @@ inline bool applyRouter(const ProviderDeps& pd, const char* upstream,
     if (k == "authorization" || k == "x-api-key") continue;
     kept.push_back(std::move(h));
   }
-  std::string rk = pd.routerKey ? pd.routerKey() : std::string();
-  if (!rk.empty()) kept.push_back({"Authorization", "Bearer " + rk});
   headers.swap(kept);
+}
+inline bool applyRouter(const ProviderDeps& pd, const char* upstream, UpstreamReq& r) {
+  std::string base = pd.routerBase ? pd.routerBase() : std::string();
+  if (base.empty()) return false;
+  const bool http = base.rfind("http://", 0) == 0;   // plain HTTP only when explicit
+  r.tls  = !http;
+  r.port = http ? 80 : 443;
+  size_t sch = base.find("://"); if (sch != std::string::npos) base = base.substr(sch + 3);
+  size_t sl  = base.find('/');   if (sl  != std::string::npos) base = base.substr(0, sl);
+  size_t colon = base.find(':');
+  if (colon != std::string::npos) {
+    r.port = (uint16_t)atoi(base.c_str() + colon + 1);
+    base = base.substr(0, colon);
+  }
+  r.host = base;
+  r.path = std::string("/router/") + upstream + r.path;
+  dropClientAuth(r.headers);
+  std::string rk = pd.routerKey ? pd.routerKey() : std::string();
+  // SECURITY (mirror custom.cpp's keyless-http contract): the Cumulo key is the
+  // master "one key, all upstreams" credential - NEVER put it on a cleartext
+  // socket. A plain-http base (a LAN rig) gets NO Authorization header rather than
+  // leaking cumulo_sk_ to a passive sniffer; the router requires auth, so an http
+  // base then fails honestly (use https). A missing routerKey also adds nothing.
+  if (rk.empty()) return true;
+  if (http)
+    hlog::logf("router: base is http:// - NOT sending the Cumulo key in cleartext (use https)");
+  else
+    r.headers.push_back({"Authorization", "Bearer " + rk});
   return true;
 }
 

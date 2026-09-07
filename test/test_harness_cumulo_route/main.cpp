@@ -163,6 +163,11 @@ static void test_http_base_uses_plain_http_and_port() {
   TEST_ASSERT_FALSE(r.tls);
   TEST_ASSERT_EQUAL_UINT16(8080, r.port);
   TEST_ASSERT_EQUAL_STRING("/router/anthropic/v1/messages", r.path.c_str());
+  // SECURITY (mirror custom.cpp): the master Cumulo key must NEVER ride a cleartext
+  // http socket. Over an http:// base, applyRouter drops the key entirely - no
+  // Authorization and no x-api-key leave the device.
+  TEST_ASSERT_EQUAL_STRING("", headerOf(r, "Authorization").c_str());
+  TEST_ASSERT_EQUAL_STRING("", headerOf(r, "x-api-key").c_str());
 }
 
 // ---- no override => direct wire is byte-identical ---------------------------

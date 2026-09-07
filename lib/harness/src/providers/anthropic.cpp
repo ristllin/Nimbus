@@ -59,12 +59,10 @@ static int antRequest(const ProviderDeps& pd, const char* method, const std::str
   };
   // Cumulo head: reroute through /router/anthropic with the cumulo key (no-op on
   // a direct pd, so the direct wire and its tests are unchanged).
-  std::string host = kAnthropicHost;
-  uint16_t port = 443; bool tls = true;
-  std::string routedPath = path;
-  wire::applyRouter(pd, "anthropic", host, port, tls, routedPath, headers);
-  return exchange(pd, host.c_str(), port, tls, method, routedPath, std::move(headers),
-                  std::move(body), timeoutMs, doc, filter);
+  wire::UpstreamReq req{kAnthropicHost, 443, true, path, std::move(headers)};
+  wire::applyRouter(pd, "anthropic", req);
+  return exchange(pd, req.host.c_str(), req.port, req.tls, method, req.path,
+                  std::move(req.headers), std::move(body), timeoutMs, doc, filter);
 }
 
 // F25: clamp a per-round socket timeout to the turn's remaining wall-clock budget

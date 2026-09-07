@@ -49,13 +49,10 @@ static std::vector<std::pair<std::string, std::string>> oaiHeaders(const std::st
 // applyRouter rewrite so the head loop and the single-shot head share ONE path.
 static int oaiResponses(const ProviderDeps& pd, const std::string& key, std::string body,
                         uint32_t timeoutMs, JsonDocument& resp, const JsonDocument& filter) {
-  std::string host = kOpenAIHost;
-  uint16_t port = 443; bool tls = true;
-  std::string path = "/v1/responses";
-  auto headers = oaiHeaders(key);
-  wire::applyRouter(pd, "openai", host, port, tls, path, headers);
-  return exchange(pd, host.c_str(), port, tls, "POST", path, std::move(headers),
-                  std::move(body), timeoutMs, resp, filter);
+  wire::UpstreamReq req{kOpenAIHost, 443, true, "/v1/responses", oaiHeaders(key)};
+  wire::applyRouter(pd, "openai", req);
+  return exchange(pd, req.host.c_str(), req.port, req.tls, "POST", req.path,
+                  std::move(req.headers), std::move(body), timeoutMs, resp, filter);
 }
 
 // Glass Box A4 (OpenAI reasoning capture): the Responses `reasoning` parameter and
