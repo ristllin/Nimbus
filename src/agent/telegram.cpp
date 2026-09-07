@@ -27,6 +27,7 @@
 
 #include "nimbus/telegram_offset.h"   // nimbus::core::nextTelegramOffset (host-tested)
 #include "nimbus/tg_updates.h"        // nimbus::tg::parseUpdates (host-tested filtered parse)
+#include "nimbus/net/telegram_auth.h" // nimbus::net::TelegramAuthFailDetector (host-tested)
 #include "adapters/http_multipart.h"  // media send (sendDocument/Photo/Voice)
 
 #include <WiFi.h>
@@ -143,6 +144,14 @@ SttSink         g_stt   = nullptr;
 TaskHandle_t    g_task  = nullptr;
 bool            g_polledOk = false;
 uint32_t        g_pollFails = 0;
+// CUM-308: a token verified once (getMe) can be REVOKED later while the poll loop
+// keeps running - Telegram then 401s every getUpdates while the cached verdict
+// still reads "verified". This debounces consecutive poll auth failures (401/403,
+// NOT a 409 conflict or a transient network error) into an honest "token rejected"
+// verdict, cleared immediately by the next successful poll. Poll-task-owned; the
+// verdict is published to g_authRejected for the web/health surface to read.
+nimbus::net::TelegramAuthFailDetector g_authDetect;
+volatile bool   g_authRejected = false;
 volatile int    g_activeJobs = 0;
 volatile bool   g_running = false;
 QueueHandle_t   g_replyQ   = nullptr;
@@ -404,13 +413,15 @@ bool jsonStr(const char* json, const char* key, char* val, int valLen) {
 // escape mangling), and advance the offset ACK only for updates we actually
 // accepted. The allowlist gates on message.chat.id (the authorized conversation),
 // NEVER message.from.id (sender-controlled).
-static int processUpdatesBody(const char* body, size_t len, int32_t offset) {
+static int processUpdatesBody(const char* body, size_t len, int32_t offset, bool& parsedOk) {
   std::vector<nimbus::tg::Update> updates;
   bool ok = false, truncatedTail = false;
+  parsedOk = false;
   if (!nimbus::tg::parseUpdates(body, len, updates, ok, truncatedTail) || !ok) {
     alogf("telegram: poll parse failed (ok=%d trunc=%d): %.60s", ok, truncatedTail, body);
     return 0;
   }
+  parsedOk = true;   // a well-formed ok:true body - this poll cycle authenticated
   int count = 0;
   for (const auto& u : updates) {
     if (u.updateId <= 0) continue;
@@ -528,7 +539,23 @@ static int readBodyN(WiFiClientSecure& sc, char* buf, int bufLen, long want, uin
   return (got >= want) ? stored : -1;
 }
 
-int doGetUpdates(int32_t offset, int longPollS) {
+// Numeric HTTP status from a "HTTP/1.1 NNN reason" line (0 if not found). Used to
+// tell an auth failure (401/403) from a conflict (409) or a normal 200.
+static int httpStatusCode(const char* statusLine) {
+  const char* sp = strchr(statusLine, ' ');
+  return sp ? atoi(sp + 1) : 0;
+}
+
+// Poll one getUpdates cycle. `outcome` (optional) receives this cycle's auth
+// classification for the CUM-308 debounce - exactly one value per call, set at
+// every return: AuthFail on 401/403, Conflict on 409, Ok on a clean ok:true body,
+// Transient for a connect/socket/parse hiccup (which proves nothing about the
+// token). The int return keeps its existing meaning (count, or -1 on a poll error
+// that drives the backoff).
+int doGetUpdates(int32_t offset, int longPollS,
+                 nimbus::net::TgPollOutcome* outcome = nullptr) {
+  auto setOutcome = [&](nimbus::net::TgPollOutcome o) { if (outcome) *outcome = o; };
+  setOutcome(nimbus::net::TgPollOutcome::Transient);   // default until classified
   if (!g_pollScOpen) {
     if (!tlsConnect(g_pollSc)) { alog("telegram: poll connect fail"); return -1; }
     g_pollScOpen = true;
@@ -547,12 +574,16 @@ int doGetUpdates(int32_t offset, int longPollS) {
 
   char line[MAX_LINE];
   if (readLine(g_pollSc, line, sizeof(line), deadline) == 0) { closePollSocket(); return -1; }
+  const int status = httpStatusCode(line);
   // 409 Conflict = ANOTHER client is long-polling this same bot token (a second
   // Nimbus, or a stray broker). The two then take turns stealing updates - the
   // owner sees replies from alternating devices and commands that "don't work"
   // (live 2026-07-24: /update answered by a different board than the one that
   // sent the update notice). Surface it ONCE per boot instead of failing silently.
-  if (strstr(line, " 409")) {
+  // A conflict means the token is VALID (Telegram authenticated it), so it is NOT
+  // an auth failure - a different, existing condition (CUM-308 keeps them apart).
+  if (status == 409) {
+    setOutcome(nimbus::net::TgPollOutcome::Conflict);
     static bool s_conflictAlerted = false;
     alog("telegram: getUpdates 409 - another device/client polls this bot token");
     if (!s_conflictAlerted) {
@@ -567,6 +598,17 @@ int doGetUpdates(int32_t offset, int longPollS) {
                     "device its own bot (web UI \xE2\x86\x92 Capabilities \xE2\x86\x92 Connectors "
                     "\xE2\x86\x92 Telegram).", /*block=*/false);
     }
+    closePollSocket();
+    return -1;
+  }
+  // 401 Unauthorized / 403 Forbidden = the BOT TOKEN was rejected. This is the
+  // revoked-token case (CUM-308): getMe verified once at save time, then the token
+  // was rotated away and every poll now 401s while the cached verdict still reads
+  // "verified". Classify it as an auth failure so the debounce can flip the honest
+  // "token rejected" verdict; the poll still backs off like any error (return -1).
+  if (status == 401 || status == 403) {
+    setOutcome(nimbus::net::TgPollOutcome::AuthFail);
+    alogf("telegram: getUpdates %d - bot token rejected (revoked or invalid)", status);
     closePollSocket();
     return -1;
   }
@@ -610,7 +652,13 @@ int doGetUpdates(int32_t offset, int longPollS) {
   // or honor a server close. Idle keeps the socket open (zero re-handshake churn).
   bool hasUpdate = strstr(body, "\"update_id\"") != nullptr;
   if (serverClose || hasUpdate) closePollSocket();
-  return processUpdatesBody(body, (size_t)stored, offset);
+  bool parsedOk = false;
+  int count = processUpdatesBody(body, (size_t)stored, offset, parsedOk);
+  // A clean ok:true body (empty batch or real updates) is proof the token works;
+  // an unparseable/ok:false body on a non-error status stays neutral (Transient),
+  // never counted as an auth failure.
+  setOutcome(parsedOk ? nimbus::net::TgPollOutcome::Ok : nimbus::net::TgPollOutcome::Transient);
+  return count;
 }
 
 // ---- sendMessage ------------------------------------------------------------
@@ -1099,6 +1147,10 @@ void pollTask(void*) {
       offset = 0;
       g_polledOk = false;
       g_pollFails = 0;
+      // The new token is unproven: the old bot's auth-fail streak must not carry
+      // over (nor claim the new token rejected before it has even been polled).
+      g_authDetect.reset();
+      g_authRejected = false;
       alogf("telegram: token swapped live - %s (offset reset)",
             haveToken ? "polling the new bot" : "token cleared, poll idle");
     }
@@ -1110,7 +1162,17 @@ void pollTask(void*) {
       // Shorten the long-poll while jobs run so the loop cycles + delivers results,
       // but not too short (each cycle's TLS churn drains heap on the no-PSRAM board).
       int longPollS = (activeJobs > 0) ? 18 : TELEGRAM_LONG_POLL_TIMEOUT_S;
-      int n = doGetUpdates(offset, longPollS);
+      nimbus::net::TgPollOutcome outcome = nimbus::net::TgPollOutcome::Transient;
+      int n = doGetUpdates(offset, longPollS, &outcome);
+      // CUM-308: fold this cycle's auth classification into the debounce and
+      // publish the honest verdict. A revoked token (repeated 401/403) flips
+      // g_authRejected within a few cycles; a 409 conflict or a transient network
+      // error never does; the next successful poll clears it immediately.
+      const bool wasRejected = g_authRejected;
+      g_authRejected = g_authDetect.update(outcome);
+      if (g_authRejected != wasRejected)
+        alogf("telegram: token %s", g_authRejected ? "REJECTED (auth failing) - set a new bot token"
+                                                   : "auth recovered - token accepted again");
       if (n < 0) {
         g_pollFails++;
         uint32_t backoff = TG_BACKOFF_STEP_MS *
@@ -1425,6 +1487,12 @@ void stop() {
 
 uint32_t consecutiveFails() { return g_pollFails; }
 int      activeJobCount()   { return g_activeJobs; }
+
+// CUM-308: the debounced "the bot token was rejected" verdict. True only after a
+// run of consecutive poll auth failures (401/403); a 409 conflict or a transient
+// network error never sets it, and a successful poll clears it. The web/health
+// surface reads this so a revoked token no longer reports "verified/live".
+bool authRejected() { return g_authRejected; }
 
 }  // namespace telegram
 }  // namespace agent

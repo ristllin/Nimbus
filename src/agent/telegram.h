@@ -102,5 +102,15 @@ void stop();
 uint32_t consecutiveFails();
 int      activeJobCount();
 
+// CUM-308: the debounced "the bot token was rejected" verdict. A token verified
+// once (getMe) can be revoked later while the poll loop keeps running - Telegram
+// then 401s every getUpdates while the cached verify result still reads
+// "verified". This returns true only after a run of consecutive poll auth
+// failures (401/403); a 409 conflict (another poller) and transient network
+// errors never set it, and the next successful poll clears it. The web
+// (/api/orch tgAuthFail, and tgVerify) and Health surfaces read this so a
+// revoked token stops reporting "verified/live".
+bool authRejected();
+
 }  // namespace telegram
 }  // namespace agent

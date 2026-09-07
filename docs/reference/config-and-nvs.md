@@ -261,6 +261,14 @@ the ≤ 15-char NVS limit). Value is `"R:TS"` where:
 `TS` = `millis()` when the result landed. An **absent** key reads `R = -1`,
 `TS = 0`, which distinguishes "never verified" from a real verdict.
 
+For Telegram there is also a **live** signal that does not live in this cache: the
+poll loop debounces consecutive getUpdates auth failures (401/403) into a "token
+rejected" verdict (`agent::telegram::authRejected()`, RAM-only, not persisted).
+When it trips, `/api/orch` reports `tgAuthFail = true` and overrides `tgVerify` to
+`0` so a token revoked after it was verified (a key rotation) stops reading
+"verified" (CUM-308). A successful poll clears it; a 409 conflict or a transient
+network error never trips it.
+
 ### Capability validation (`src/agent/store.cpp`)
 
 Controls whether the device claims a provider capability is "verified" and how

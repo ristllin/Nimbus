@@ -103,6 +103,17 @@ key presence)**. That block is built in `catalogText`
 (`lib/core/src/orch_connectors_wire.cpp`), fed the verify cache and the mode by
 `connectors.cpp` `catalog()`.
 
+**The Telegram bot token is watched live, not just at save time.** The token is
+verified once (a `getMe` call) when you save it, and that verdict is cached. If
+the token is later revoked - a key rotation, say - the device keeps long-polling
+and Telegram answers every request with an authorization failure. Rather than
+keep reporting the bot as verified and live, Nimbus watches the poll: a short run
+of consecutive auth failures flips the token to rejected on the Home tab health
+panel ("Telegram token rejected - set a new bot token") and in the status the web
+app reads, and the next successful poll clears it. A one-off blip does not trip
+it, and a conflict with another device using the same token (a different
+condition) is not treated as a rejected token.
+
 ---
 
 ## GitHub {#github}

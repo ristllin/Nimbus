@@ -913,7 +913,13 @@ static void buildOrchState(String& out) {
                                     : (int)solide::memory::getInt("mode", 0);
   d["running"]  = (mode == 1);
   d["hasTg"]    = agent::store::telegramToken().length() > 0;
-  d["tgVerify"] = agent::store::verifyResult("telegram");   // 1 ok / 0 rejected / -1 unknown
+  // CUM-308: a token verified once (getMe) can be revoked later while the poll
+  // loop keeps 401ing. authRejected() is the live debounced verdict; when it trips
+  // it OVERRIDES the stale cached verify result to 0 (rejected) so this surface and
+  // the Health row never disagree, and tgAuthFail carries the same signal explicitly.
+  const bool tgAuthFail = agent::telegram::authRejected();
+  d["tgVerify"] = tgAuthFail ? (int8_t)0 : agent::store::verifyResult("telegram");   // 1 ok / 0 rejected / -1 unknown
+  d["tgAuthFail"] = tgAuthFail;                            // live poll auth failure (revoked token)
   d["tgVts"]    = agent::store::verifyTs("telegram");       // 0 => never verified
   d["tgBot"]    = agent::store::tgBotName();                // @username from getMe ("" = unknown)
   d["tgAllow"]  = agent::store::telegramAllowlist();

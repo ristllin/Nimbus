@@ -157,9 +157,21 @@ std::string reportJson(const Env& env) {
                env.battValid ? (String(env.battPct) + "%")
                              : (env.battSenseMissing ? String("battery sense not detected")
                                                      : String("no gauge (desk-powered)"))};
-  rows[n++] = {"telegram", "Telegram",
-               agent::telegram::enabled() ? kOk : kAbsent,
-               agent::telegram::enabled() ? "configured" : "no token/allowlist"};
+  // Telegram: "configured" from a token that verified ONCE (getMe) is not proof
+  // the token still works. authRejected() is the debounced live verdict - repeated
+  // poll auth failures (401/403) after the token was revoked - and it reads
+  // degraded here with the fix-it copy, matching /api/orch (tgAuthFail / tgVerify=0)
+  // so the two never disagree (CUM-308, the same honest-status class as the panel
+  // and touch rows above).
+  {
+    const bool tgOn = agent::telegram::enabled();
+    const bool tgRejected = tgOn && agent::telegram::authRejected();
+    rows[n++] = {"telegram", "Telegram",
+                 !tgOn ? kAbsent : (tgRejected ? kDegraded : kOk),
+                 !tgOn ? "no token/allowlist"
+                       : (tgRejected ? "Telegram token rejected - set a new bot token"
+                                     : "configured")};
+  }
 
   JsonDocument d;
   JsonArray arr = d["components"].to<JsonArray>();
