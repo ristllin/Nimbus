@@ -2626,6 +2626,7 @@ function loadMemStats(){
 // Supported embedding providers/models (owner: dropdown, not free text - only show
 // what the device can actually call). Curated; the live verify on save is the real gate.
 const EMB_MODELS={
+  cumulo:[{id:'text-embedding-3-small',note:'1536-d · fast, cheap'},{id:'text-embedding-3-large',note:'3072-d · most accurate'}],
   openai:[{id:'text-embedding-3-small',note:'1536-d · fast, cheap'},{id:'text-embedding-3-large',note:'3072-d · most accurate'}],
   mistral:[{id:'mistral-embed',note:'1024-d'}]
 };

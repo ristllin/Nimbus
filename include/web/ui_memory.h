@@ -90,7 +90,7 @@ static const char UI_MEMORY[] PROGMEM = R"=====(<div class=pane id=pane-chat sty
 <b style="display:block;margin-top:14px">Embedding model <span class="badge" id=emblock style="display:none">locked</span> <button class=qh type=button aria-expanded=false aria-label="About the embedding model">?</button></b>
 <p class="hint tip">How memories become vectors for semantic search. Saving runs a real embedding call to verify the model works before the choice is stored.</p>
 <label for=emb_provider>Provider</label>
-<select id=emb_provider><option value=openai>OpenAI</option><option value=mistral>Mistral</option></select>
+<select id=emb_provider><option value=cumulo>Cumulo Nimbus</option><option value=openai>OpenAI</option><option value=mistral>Mistral</option></select>
 <label for=emb_model>Model</label>
 <select id=emb_model></select>
 <label for=emb_dims>Dimensions <span class=hint>(0 = provider default)</span></label>

@@ -287,7 +287,7 @@ are read back into the web UI.
 
 | Key | Type | Default | Holds |
 |---|---|---|---|
-| `embProv` | string | `"openai"` | Embedding provider (`openai\|mistral`) |
+| `embProv` | string | `"openai"` | Embedding provider (`openai\|mistral\|cumulo`). `cumulo` routes the OpenAI embed models through the Cumulo Nimbus router with the one router key, metered on credits like every other router call, so a device that carries only a Cumulo key still has working memory. |
 | `embModel` | string | `"text-embedding-3-small"` | Embedding model |
 | `embDims` | int | `256` | Embedding width; `0` = provider-native |
 | `embLocked` | bool | `false` | Flips `true` the first time a vector is embedded |

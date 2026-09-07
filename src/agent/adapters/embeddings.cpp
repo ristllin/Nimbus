@@ -16,18 +16,42 @@ namespace embeddings {
 namespace {
 static const unsigned long EMBED_TIMEOUT_MS = 20000;
 
-// Resolve the configured provider's host + key. Returns false if unknown/no key.
-bool resolveProvider(const String& provider, const char*& host, String& key) {
-  if (provider == "openai")  { host = OPENAI_HOST;  key = store::openaiKey();  return key.length() > 0; }
-  if (provider == "mistral") { host = MISTRAL_HOST; key = store::mistralKey(); return key.length() > 0; }
-  return false;  // anthropic has no public embeddings API; custom is future work
+// Strip scheme + any path from a stored base, leaving a bare host for connect().
+// (Same shape as cumulo_adapter's bareHost; a stored cumuloBase may be a full URL.)
+String bareEmbedHost(String h) {
+  int s = h.indexOf("://");
+  if (s >= 0) h = h.substring(s + 3);
+  int slash = h.indexOf('/');
+  if (slash >= 0) h = h.substring(0, slash);
+  return h;
+}
+
+// Resolve the configured provider's host + path + key. Returns false if unknown or
+// no key. The per-provider PATH is the host-tested nimbus::orch::embedRouteFor
+// (openai/mistral -> /v1/embeddings direct; cumulo -> /router/openai/v1/embeddings
+// on the router with the one router key - vectors stay byte-compatible).
+bool resolveProvider(const String& provider, String& host, String& path, String& key) {
+  const nimbus::orch::EmbedRoute route =
+      nimbus::orch::embedRouteFor(std::string(provider.c_str()));
+  if (!route.known) return false;
+  path = route.path;
+  if (route.viaCumuloRouter) {
+    String base = store::cumuloBase();
+    if (!base.length()) base = CUMULO_HOST_DEFAULT;
+    host = bareEmbedHost(base);
+    key = store::cumuloKey();
+  } else if (provider == "openai") {
+    host = OPENAI_HOST;  key = store::openaiKey();
+  } else {  // mistral
+    host = MISTRAL_HOST; key = store::mistralKey();
+  }
+  return key.length() > 0;
 }
 }  // namespace
 
 bool available() {
-  const char* host = nullptr;
-  String key;
-  return resolveProvider(store::embedProvider(), host, key);
+  String host, path, key;
+  return resolveProvider(store::embedProvider(), host, path, key);
 }
 
 std::vector<int8_t> embed(const String& text, String& err) {
@@ -37,9 +61,8 @@ std::vector<int8_t> embed(const String& text, String& err) {
 std::vector<int8_t> embedWith(const String& text, String& err, const String& provider,
                               const String& model, int dims) {
   err = "";
-  const char* host = nullptr;
-  String key;
-  if (!resolveProvider(provider, host, key)) { err = "no embeddings key for " + provider; return {}; }
+  String host, path, key;
+  if (!resolveProvider(provider, host, path, key)) { err = "no embeddings key for " + provider; return {}; }
   if (text.length() == 0) { err = "empty text"; return {}; }
   if (model.length() == 0) { err = "no model"; return {}; }
 
@@ -64,18 +87,18 @@ std::vector<int8_t> embedWith(const String& text, String& err, const String& pro
     // 3-attempt + fresh-socket + 400 ms settle pattern as openai_adapter.
     bool connected = false;
     for (int attempt = 0; attempt < 3 && !connected; attempt++) {
-      if (client.connect(host, 443)) { connected = true; break; }
+      if (client.connect(host.c_str(), 443)) { connected = true; break; }
       tlsClose(client);
       if (attempt < 2) vTaskDelay(pdMS_TO_TICKS(400));
     }
     if (!connected) {
       arbiter::releaseWork();
       err = "connect failed";
-      alogf("embed: connect %s failed x3 heap=%u", host, ESP.getFreeHeap());
+      alogf("embed: connect %s failed x3 heap=%u", host.c_str(), ESP.getFreeHeap());
       return {};
     }
 
-    String req = String("POST ") + OPENAI_EMBED_PATH + " HTTP/1.0\r\n"
+    String req = String("POST ") + path + " HTTP/1.0\r\n"
                + "Host: " + host + "\r\n"
                + "Authorization: Bearer " + key + "\r\n"
                + "Content-Type: application/json\r\n"

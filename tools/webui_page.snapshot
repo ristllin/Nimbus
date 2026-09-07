@@ -853,7 +853,7 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <b style="display:block;margin-top:14px">Embedding model <span class="badge" id=emblock style="display:none">locked</span> <button class=qh type=button aria-expanded=false aria-label="About the embedding model">?</button></b>
 <p class="hint tip">How memories become vectors for semantic search. Saving runs a real embedding call to verify the model works before the choice is stored.</p>
 <label for=emb_provider>Provider</label>
-<select id=emb_provider><option value=openai>OpenAI</option><option value=mistral>Mistral</option></select>
+<select id=emb_provider><option value=cumulo>Cumulo Nimbus</option><option value=openai>OpenAI</option><option value=mistral>Mistral</option></select>
 <label for=emb_model>Model</label>
 <select id=emb_model></select>
 <label for=emb_dims>Dimensions <span class=hint>(0 = provider default)</span></label>
@@ -3670,6 +3670,7 @@ function loadMemStats(){
 // Supported embedding providers/models (owner: dropdown, not free text - only show
 // what the device can actually call). Curated; the live verify on save is the real gate.
 const EMB_MODELS={
+  cumulo:[{id:'text-embedding-3-small',note:'1536-d · fast, cheap'},{id:'text-embedding-3-large',note:'3072-d · most accurate'}],
   openai:[{id:'text-embedding-3-small',note:'1536-d · fast, cheap'},{id:'text-embedding-3-large',note:'3072-d · most accurate'}],
   mistral:[{id:'mistral-embed',note:'1024-d'}]
 };

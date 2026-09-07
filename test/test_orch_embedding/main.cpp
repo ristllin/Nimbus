@@ -94,8 +94,38 @@ static void test_parse_feeds_quantize_shape() {
   for (float f : out) TEST_ASSERT_TRUE(f >= -1.0f && f <= 1.0f);
 }
 
+// CUM-302: the embed endpoint routing per provider is a class rule, not one
+// point. A prefixed / cumulo pick must go to the router, never a direct provider,
+// and every known provider must resolve to a real path; an unknown one must fail
+// (not silently fall through to openai). If a new embed provider is added without
+// a route, `known` stays false and this test forces the coverage.
+static void test_embed_route_per_provider() {
+  using nimbus::orch::embedRouteFor;
+  // openai + mistral: direct provider, OpenAI-compatible /v1/embeddings.
+  for (const char* p : {"openai", "mistral"}) {
+    auto r = embedRouteFor(p);
+    TEST_ASSERT_TRUE(r.known);
+    TEST_ASSERT_FALSE(r.viaCumuloRouter);
+    TEST_ASSERT_EQUAL_STRING("/v1/embeddings", r.path);
+  }
+  // cumulo: the one-key router path, proxying OpenAI's embed models. Must NEVER be
+  // a bare /v1/embeddings (that would hit a direct provider) and must route via
+  // the router so the cumulo key + host are used.
+  auto c = embedRouteFor("cumulo");
+  TEST_ASSERT_TRUE(c.known);
+  TEST_ASSERT_TRUE(c.viaCumuloRouter);
+  TEST_ASSERT_EQUAL_STRING("/router/openai/v1/embeddings", c.path);
+  // unknown providers: refused, never a silent fallback.
+  for (const char* p : {"anthropic", "zai", "", "openai/gpt-4o"}) {
+    auto r = embedRouteFor(p);
+    TEST_ASSERT_FALSE(r.known);
+    TEST_ASSERT_FALSE(r.viaCumuloRouter);
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
+  RUN_TEST(test_embed_route_per_provider);
   RUN_TEST(test_build_request_with_dims);
   RUN_TEST(test_build_request_omits_dims_when_zero);
   RUN_TEST(test_build_request_escapes_special_input);

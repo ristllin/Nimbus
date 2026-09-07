@@ -518,7 +518,7 @@ void handleEmbedVerify(AsyncWebServerRequest* r) {
   String provider = qparam(r, "provider", "openai");
   String model    = qparam(r, "model");
   int dims        = qparam(r, "dims", "0").toInt();
-  if (provider != "openai" && provider != "mistral") { sendJson(r, 400, "{\"ok\":false,\"error\":\"provider must be openai|mistral\"}"); return; }
+  if (provider != "openai" && provider != "mistral" && provider != "cumulo") { sendJson(r, 400, "{\"ok\":false,\"error\":\"provider must be openai|mistral|cumulo\"}"); return; }
   if (!model.length()) { sendJson(r, 400, "{\"ok\":false,\"error\":\"model required\"}"); return; }
   String err;
   auto v = agent::embeddings::embedWith("nimbus embedding check", err, provider, model, dims);
@@ -539,7 +539,7 @@ void handleEmbedCfgPost(AsyncWebServerRequest* r) {
   String model    = qparam(r, "model");
   int dims        = qparam(r, "dims", "256").toInt();
   bool reset      = qparam(r, "reset") == "1";
-  if (provider != "openai" && provider != "mistral") { sendJson(r, 400, "{\"error\":\"provider must be openai|mistral\"}"); return; }
+  if (provider != "openai" && provider != "mistral" && provider != "cumulo") { sendJson(r, 400, "{\"error\":\"provider must be openai|mistral|cumulo\"}"); return; }
   if (!model.length()) { sendJson(r, 400, "{\"error\":\"model required\"}"); return; }
 
   if (agent::store::embedLocked() && !reset) {
