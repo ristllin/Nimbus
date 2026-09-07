@@ -486,6 +486,16 @@ static void runOne() {
         if (code == 402)                             rsn = "nocredits";
         else if (code == 404 && provider == "cumulo") rsn = "router_outdated";
       }
+      // NVS-priority (CUM-77 item 6 follow-on): a definitive verdict is tiny and
+      // load-bearing; the catalog blob written below is large and rebuildable. On a
+      // heavily provisioned device the catalog write can EXHAUST NVS, silently
+      // starving the verdict write that otherwise runs only at the END of runOne -
+      // so a real HTTP 200 persisted as a stuck -1 (live-caught on .61: zai/cumulo
+      // verified 200 yet stored -1 while their catalogs "did not fit NVS", and the
+      // three providers verified before them ate the free pages). Persist the
+      // definitive verdict FIRST so it always survives; the catalog stays
+      // best-effort. The recordVerify at the end is then idempotent.
+      if (result != -1) recordVerify(provider, result, rsn);
       // LLM providers: the verify already fetched /v1/models - HARVEST it (owner
       // 2026-07-16: the static model dropdowns were stale, missing current-gen
       // models). Stream the body into a bounded PSRAM buffer, pull every "id" that
@@ -753,6 +763,26 @@ static void runOne() {
   if (result == 1 && provider == "cumulo" && host) syncCumuloFallbacks(host, key);
   arbiter::releaseWork();
   recordVerify(provider, result, rsn);
+  // A verify verdict is tiny and load-bearing; the mcat_ catalog caches are large
+  // and REBUILDABLE. On a maxed NVS the verdict write above can silently fail (the
+  // other providers' catalog blobs left no free page), leaving a real HTTP 200
+  // stuck at -1 (live-caught on .61: 5 provisioned providers overflowed the ~20 KB
+  // NVS). A verdict must never be lost to a cache: if a DEFINITIVE verdict did not
+  // persist, evict the OTHER providers' catalog caches (each rebuilds on its next
+  // verify / GET /api/models refresh) and retry the verdict once. Only fires under
+  // genuine NVS exhaustion; a transient -1 is left for a later retry.
+  if (result != -1 && store::verifyResult(provider) != result) {
+    static const char* kProv[] = {"openai", "anthropic", "mistral", "zai",
+                                  "cumulo", "custom", nullptr};
+    int freed = 0;
+    for (int i = 0; kProv[i]; ++i) {
+      if (provider == kProv[i]) continue;
+      if (solide::memory::eraseKey((String("mcat_") + kProv[i]).c_str())) freed++;
+    }
+    recordVerify(provider, result, rsn);
+    alogf("verify: %s verdict was NVS-starved - evicted %d catalog cache(s), verdict now %d",
+          provider.c_str(), freed, (int)store::verifyResult(provider));
+  }
   g_pending = false;  // clear LAST so pending() covers the whole run
 }
 
