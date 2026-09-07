@@ -269,6 +269,17 @@ When it trips, `/api/orch` reports `tgAuthFail = true` and overrides `tgVerify` 
 "verified" (CUM-308). A successful poll clears it; a 409 conflict or a transient
 network error never trips it.
 
+A companion key `vrs_<provider>` (e.g. `vrs_anthropic` = 13 chars, written by
+`provider_verify` alongside the verdict) holds a short machine token explaining a
+non-verified outcome, surfaced in the web JSON as `vfyReason` for the badge copy:
+`nocredits` (HTTP 402: needs credits or subscription), `router_outdated` (HTTP 404
+from the Cumulo `/router/models` probe), `deferred` (skipped: the largest
+contiguous internal block was below the handshake floor), `connectfail` (TCP/TLS
+connect failed), `tlsbusy` (could not take the work TLS slot), or `""` when the
+verdict carries its own copy (verified, or a plain rejection) or is a generic
+transient. It is cleared to `""` whenever the verdict is `1`, so a stale reason
+never lingers after a provider comes good.
+
 ### Capability validation (`src/agent/store.cpp`)
 
 Controls whether the device claims a provider capability is "verified" and how
