@@ -198,6 +198,18 @@ export const SKILLS = {
   sd: true,
   skills: [{ id: 'summarize', title: 'Summarize', source: 'builtin', origin: 'builtin' }],
 };
+// GET /api/music/list (music.cpp): {present, tracks:[name], player:{state,current}}.
+// The pane's status line reads d.present and claims "No SD card" when it is falsy.
+// CUM-40 added the Memory-pane music section without a fixture, so the default
+// card-present fixture rendered "No SD card" in the music row and failed the
+// 12_render_fidelity No-SD spec from that merge on (masked in batteries whose
+// harness step piped a nonexistent runner). Same class as the SKILLS note above:
+// every SD-dependent pane widget must carry a card-consistent fixture.
+export const MUSIC = {
+  present: true,
+  tracks: ['morning-chime.mp3'],
+  player: { state: 'stopped', current: '' },
+};
 export const LOOPS = { loops: [] };
 export const FETCHQ = { queue: [], downloads: [] };
 // Daily usage buckets for the Usage spend chart. The device serves
@@ -277,6 +289,7 @@ export const DEFAULTS = {
   '/api/mem/config': MEM_CONFIG,
   '/api/mem/embedcfg': MEM_EMBEDCFG,
   '/api/files/list': FILES_LIST,
+  '/api/music/list': MUSIC,
   '/api/connectors': CONNECTORS,
   '/api/tools': TOOLS,
   '/api/skills/list': SKILLS,
