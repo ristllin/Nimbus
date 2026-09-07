@@ -33,6 +33,7 @@
 #include "nimbus/tts_catalog.h"        // SPKSAY - provider -> speaker format routing
 #include "nimbus/orch/media.h"         // validMusicName
 #include "sfx/sfx_sync.h"              // sfxsync - sync status in STATUS
+#include "nimbus/power/power_policy.h" // SLEEPMV range/default derived per cell count (CUM-372)
 #include <LittleFS.h>
 #include <esp_task_wdt.h>
 #include <solide/audio.h>
@@ -789,7 +790,15 @@ void dispatch(String line) {
     // seconds and cannot be worked on at all. Setting it to 0 disarms the
     // protection PERMANENTLY (it is NVS-backed, not reset at reboot) - with a
     // real pack fitted that risks a deep discharge the pack may not recover
-    // from. Restore it (default 6000) the moment a battery is connected.
+    // from. Restore it (the per-cell default: 6000 on 2S, 3000 on 1S) the moment a
+    // battery is connected.
+    //
+    // The range and default are PACK voltages, so they scale with the effective
+    // series-cell count (CUM-372): a 1S board's ceiling is 3400, not the 2S 6800.
+    // Derive them so the help text matches what the store actually accepts.
+    const uint8_t cells = agent::store::battCellsEff();
+    const uint16_t ceilMv = nimbus::power::sleepMvCeilFor(cells);
+    const uint16_t dfltMv = nimbus::power::sleepMvDefaultFor(cells);
     String a = line.substring(7); a.trim();
     if (a.length() == 0) {
       Serial.printf("SLEEPMV %u%s\n", unsigned(agent::store::sleepMv()),
@@ -798,10 +807,14 @@ void dispatch(String line) {
       return;
     }
     const long mv = a.toInt();
-    if (mv < 0 || mv > 6800) { reply("ERR sleepmv 0-6800 (0 = off)"); return; }
+    if (mv < 0 || mv > ceilMv) {
+      reply(String("ERR sleepmv 0-") + ceilMv + " (0 = off)");
+      return;
+    }
     agent::store::setSleepMv(uint16_t(mv));
-    Serial.printf("SLEEPMV -> %ld%s\n", mv,
-                  mv == 0 ? " (OFF - restore to 6000 when a pack is fitted)" : "");
+    String note;
+    if (mv == 0) { note = " (OFF - restore to "; note += dfltMv; note += " when a pack is fitted)"; }
+    Serial.printf("SLEEPMV -> %ld%s\n", mv, note.c_str());
     Serial.flush();
     return;
   }

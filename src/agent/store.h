@@ -271,6 +271,7 @@ uint16_t battDividerX100();  // (Rtop+Rbot)/Rbot * 100, clamped 100-2000 - what 
 uint16_t battCapMah();   // pack capacity mAh, 100-20000 (default 3500)
 String   battChem();     // chemistry slug "liion" (default) | "lifepo4" - picks the SoC curve
 uint8_t  battCellsOvr(); // owner series-cell override (1/2); 0 = board-derived default
+uint8_t  battCellsEff(); // effective series-cell count: override, else board default (guard to 1)
 String   battCurve();    // optional custom SoC curve "mv:pct,..." (high-mV first); "" = chemistry default
 void     setBattChem(const String& slug);
 void     setBattCells(uint8_t cells);

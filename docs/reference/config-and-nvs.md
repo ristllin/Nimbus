@@ -180,7 +180,7 @@ reproduce the shipped behavior exactly.
 | `battRbot` | int (ohms) | `100000` | Voltage-divider bottom resistor. | Yes |
 | `battCapMah` | int | `3500` | Pack capacity in mAh. Drives the measured-load time-to-empty and the capacity = health x capacity readout. Clamped `100..20000`. | Yes |
 | `battChem` | string | `liion` | Battery chemistry: `liion` (Li-ion / LiPo) or `lifepo4` (lithium iron phosphate). Picks the per-cell voltage to state-of-charge curve. | Yes |
-| `battCells` | int | `0` (board) | Series-cell count override (`1` or `2`); `0`/absent uses the board default (1S Freenove, 2S Solide). Pack mV / cells = per-cell mV. | Yes |
+| `battCells` | int | `0` (board) | Series-cell count override (`1` or `2`); `0`/absent uses the board default (1S Freenove, 2S Solide). Pack mV / cells = per-cell mV. Clamped to the board's physical cell count: a 1S board cannot be set to 2S (that would read a real 1S pack as an implausible 2S one and reject every sample), so the override is capped and the web tile shows a toast. | Yes |
 | `battCurve` | string | `""` | Optional custom per-cell curve, `"mv:pct,mv:pct,..."` high-mV first, strictly descending in mV. Empty uses the chemistry curve. A malformed string is rejected, never stored. | Yes |
 | `sleepMv` | int | `3000` x cells (2S `6000`, 1S `3000`) | Low-battery deep-sleep threshold in pack mV; `0` disarms the protection. The default and the clamp ceiling scale with the series-cell count, so a full 1S pack (~4200 mV) is not judged against a 2S floor and slept immediately. | Yes |
 | `wakeMv` | int | `3250` x cells (2S `6500`, 1S `3250`) | Stay-awake bar after a low-battery sleep (rested-empty packs read a bit higher than the sleep mark). Scales per cell like `sleepMv`. | Yes |

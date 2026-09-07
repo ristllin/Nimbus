@@ -46,4 +46,35 @@ constexpr bool battMonDefaultForBoard(const char* slug) {
   return false;
 }
 
+// The battery divider the ADC actually applies (CUM-370). A fixed-divider board
+// (an all-in-one carrier with an ONBOARD resistor divider) uses the board map's
+// fixed value; a hand-built board's divider resistors vary per unit, so the
+// owner-set NVS value is authoritative. Pure so the /api/state report and the ADC
+// begin() share ONE selection and can never disagree about which divider is in
+// use - the field is documented as self-describing for host-side correction, so a
+// mismatch mis-scales voltages. The device binds boardHasFixedDivider to the board
+// map (include/nimbus_board_batt.h).
+constexpr uint16_t effectiveDividerX100(bool boardHasFixedDivider,
+                                        uint16_t boardDividerX100,
+                                        uint16_t storeDividerX100) {
+  return boardHasFixedDivider ? boardDividerX100 : storeDividerX100;
+}
+
+// Clamp an owner battery cell-count override to what the board physically
+// supports (CUM-371). A board's series-cell count is fixed by its pack wiring and
+// sense divider; telling a 1S board it is 2S makes the effective cell count 2, and
+// the ADC plausibility gate then reads a real 1S ~4200 mV pack as an implausible
+// ~2100 mV/cell "2S" and rejects EVERY sample: monitoring on, yet every reading
+// invalid.
+//   requested  : 0 = board default, else the desired series-cell count.
+//   boardCells : the board's physical series-cell count (its ceiling).
+// Returns the override to persist: 0 (board default) or 1..boardCells. A request
+// above the board ceiling is clamped down (a 1S board cannot be told it is 2S); a
+// genuine 2S board still accepts 2.
+constexpr uint8_t clampBattCellsOverride(int requested, int boardCells) {
+  const int ceil = boardCells > 0 ? boardCells : 1;
+  if (requested <= 0) return 0;
+  return uint8_t(requested > ceil ? ceil : requested);
+}
+
 }  // namespace nimbus::power

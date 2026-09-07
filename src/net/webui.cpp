@@ -49,6 +49,7 @@
 #include "nimbus/power/power_monitor.h"       // battery chemistry + custom curve parse (config)
 #include "nimbus/power/power_policy.h"        // battSettingsLive - CUM-15 class predicate for batt.settingsLive
 #include "nimbus_board_power.h"               // explicit per-board battMon default (CUM-202)
+#include "nimbus_board_batt.h"                 // effective battery divider selection (CUM-370)
 #include "nimbus_board_flip.h"                // explicit per-board display-flip base (CUM-189)
 #include "nimbus/orch/danger_zone.h"          // CUM-15 confirm phrases (one source of truth)
 #include "nimbus/orch/provider_slots.h"       // CUM-213: canonical provider registry (one source)
@@ -573,12 +574,19 @@ static void buildState(String& out) {
     batt["thermalTrips"]  = trips;
     batt["thermalAbort"]  = abrt;
   }
-  // battlab: the active per-run LED load + the firmware's compile-time divider
-  // assumption, so the host tool's resistor correction is self-describing
+  // battlab: the active per-run LED load + the divider the ADC actually applies,
+  // so the host tool's resistor correction is self-describing
   // (mv_true = mv_reported * ratio_device / (dividerX100/100)).
   if (s_wc.drainBright) batt["drainBright"] = s_wc.drainBright();
   if (s_wc.drainTtlLeftS) batt["drainTtlLeftS"] = s_wc.drainTtlLeftS();
-  batt["dividerX100"] = agent::store::battDividerX100();   // CONFIGURED, not the compile default
+  // EFFECTIVE divider, not the raw NVS value: a fixed-divider board (all-in-one)
+  // uses its onboard resistor value, so reporting the store default here would
+  // mis-scale every voltage a host tool derives (CUM-370). Same selection the ADC
+  // makes in main.cpp battDivX100().
+  batt["dividerX100"] = nimbus::effectiveBattDivX100(agent::store::battDividerX100());
+  // divFixed: the board carries a fixed onboard divider, so the rtop/rbot sense-
+  // resistor inputs are a dead knob - the web tile hides them (CUM-370 / CUM-15).
+  batt["divFixed"] = nimbus::boardHasFixedDivider();
   // ⚠ UNCONDITIONAL, unlike the protection knobs nested in `if (batteryEstimate)`
   // above: these are preferences, and a board with no pack fitted must still be
   // able to see and set them (the web UI hides the whole battery TELEMETRY section
@@ -1750,6 +1758,7 @@ void beginWeb(const WebConfig& wc) {
   s_server.on("/api/config", HTTP_POST, [](AsyncWebServerRequest* r) {
     if (authBlocked(r)) return;
     bool touched = false;
+    String battWarn;   // set when a battery param is clamped, surfaced as a toast
 
     if (r->hasParam("profile", true)) {
       int p = r->getParam("profile", true)->value().toInt();
@@ -1827,7 +1836,16 @@ void beginWeb(const WebConfig& wc) {
       battHw = true;
     }
     if (r->hasParam("battCells", true)) {
-      agent::store::setBattCells(uint8_t(r->getParam("battCells", true)->value().toInt()));  // 1/2, 0=board
+      // Clamp the override to what the board physically supports: a 1S board told
+      // it is 2S makes battCellsEff 2 and the ADC plausibility gate then rejects a
+      // real 1S pack as an implausible 2S one (CUM-371). setBattCells re-clamps as
+      // defense in depth (the AI config path shares it); we clamp here too so the
+      // owner sees a toast when their choice could not be honored.
+      const int reqCells = r->getParam("battCells", true)->value().toInt();
+      const uint8_t okCells = nimbus::power::clampBattCellsOverride(reqCells, solide::board().batt.cells);
+      agent::store::setBattCells(okCells);   // 1/2, 0=board
+      if (reqCells > 0 && okCells != uint8_t(reqCells))
+        battWarn = "Kept " + String(int(solide::board().batt.cells)) + "S (board limit)";
       battHw = true;
     }
     if (r->hasParam("battCurve", true)) {
@@ -1909,7 +1927,14 @@ void beginWeb(const WebConfig& wc) {
     }
 
     if (touched) s_dirty = true;
-    r->send(200, "application/json", "{\"ok\":true}");
+    if (battWarn.length()) {
+      String body = "{\"ok\":true,\"warn\":\"";
+      body += battWarn;
+      body += "\"}";
+      r->send(200, "application/json", body);
+    } else {
+      r->send(200, "application/json", "{\"ok\":true}");
+    }
   });
 
   // ---- orchestrator control surface (ROUND 3 Part A) ----

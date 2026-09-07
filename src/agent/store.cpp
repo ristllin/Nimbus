@@ -4,6 +4,7 @@
 #include "store.h"
 #include "nimbus/device_identity.h"   // makeSetupPass - the setup-AP passphrase generator
 #include "nimbus/power/power_policy.h"
+#include "nimbus/power/board_power.h"   // clampBattCellsOverride - guard 1S/2S override (CUM-371)
 
 #include <esp_random.h>
 #include <esp_heap_caps.h>   // PSRAM buffer for the usage-history JSON payload
@@ -555,7 +556,7 @@ String   battCurve()    { return solide::memory::getString(AKEY_BATT_CURVE, "");
 // wake mV are PACK voltages, so their defaults AND clamp ceilings must scale with
 // cells - a 2S 6000 mV floor is above the whole 1S range and would insta-sleep a
 // full 1S board the moment it left USB (CUM-202).
-static uint8_t battCellsEff() { uint8_t o = battCellsOvr(); if (o) return o; uint8_t c = solide::board().batt.cells; return c ? c : 1; }
+uint8_t battCellsEff() { uint8_t o = battCellsOvr(); if (o) return o; uint8_t c = solide::board().batt.cells; return c ? c : 1; }
 uint16_t sleepMv()      { const uint8_t n = battCellsEff(); const uint16_t ceil = nimbus::power::sleepMvCeilFor(n);
                           int v = solide::memory::getInt(AKEY_SLEEP_MV, nimbus::power::sleepMvDefaultFor(n)); return v < 0 ? 0 : (v > ceil ? ceil : (uint16_t)v); }
 uint16_t wakeMv()       { const uint8_t n = battCellsEff(); const uint16_t ceil = nimbus::power::wakeMvCeilFor(n);
@@ -591,7 +592,13 @@ void setBattRtop(uint32_t o) { solide::memory::setInt(AKEY_BATT_RTOP, int(o < 10
 void setBattRbot(uint32_t o) { solide::memory::setInt(AKEY_BATT_RBOT, int(o < 1000 ? 1000 : (o > 10000000 ? 10000000 : o))); }
 void setBattCapMah(uint16_t m) { solide::memory::setInt(AKEY_BATT_CAPMAH, m < 100 ? 100 : (m > 20000 ? 20000 : m)); }
 void setBattChem(const String& slug) { solide::memory::setString(AKEY_BATT_CHEM, slug == "lifepo4" ? "lifepo4" : "liion"); }
-void setBattCells(uint8_t cells) { solide::memory::setInt(AKEY_BATT_CELLS, (cells == 1 || cells == 2) ? cells : 0); }
+// Clamp the override to the board's physical cell count so a 1S board can never be
+// told it is 2S (CUM-371): the web handler clamps + toasts, this guards the AI
+// config path and any other caller so an impossible value never lands in NVS.
+void setBattCells(uint8_t cells) {
+  const uint8_t ok = nimbus::power::clampBattCellsOverride(cells, solide::board().batt.cells);
+  solide::memory::setInt(AKEY_BATT_CELLS, (ok == 1 || ok == 2) ? ok : 0);
+}
 void setBattCurve(const String& csv) { solide::memory::setString(AKEY_BATT_CURVE, csv); }
 void setSleepMv(uint16_t v)  { const uint16_t ceil = nimbus::power::sleepMvCeilFor(battCellsEff()); solide::memory::setInt(AKEY_SLEEP_MV, v > ceil ? ceil : v); }
 void setWakeMv(uint16_t v)   { const uint16_t ceil = nimbus::power::wakeMvCeilFor(battCellsEff());  solide::memory::setInt(AKEY_WAKE_MV,  v > ceil ? ceil : v); }

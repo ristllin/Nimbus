@@ -235,8 +235,10 @@ constants, so an un-set board is unchanged.
 ⚠ This fixed a real on-device bug: the firmware baked in **÷3.20** while the fitted
 resistors are **270k/120k = ÷3.25**, so voltage read **~1.6% low** across the range (BATTCAL
 masked only the top). Set the true resistors and the raw reading is correct end-to-end; the
-`/api/state` `dividerX100` now reports the CONFIGURED ratio, so the Battery Lab's host-side
-correction tracks it (no double-correction). ⚠ A divider change re-scales every mV, so the
+`/api/state` `dividerX100` reports the EFFECTIVE ratio the ADC applies (the configured
+resistors on a hand-built board, the board's fixed onboard divider on an all-in-one board
+whose sense-resistor inputs the web tile hides), so the Battery Lab's host-side correction
+tracks it (no double-correction). ⚠ A divider change re-scales every mV, so the
 BATTCAL full-anchor goes stale - **re-run Calibrate on a full pack** after changing resistors
 (the web UI prompts for this).
 

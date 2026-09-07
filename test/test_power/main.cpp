@@ -7,6 +7,12 @@
 #include "nimbus/power/battery_sense.h"
 #include "nimbus/power/power_manager.h"
 
+// The two shipped board constants (header-only inline constexpr) so the effective-
+// divider and cell-clamp tests can pin the REAL board data (CUM-370 / CUM-371),
+// not just hand-fed values - a board-table edit that flipped the predicate fails.
+#include "solide/boards/board_freenove_s3.h"
+#include "solide/boards/board_solide_s3.h"
+
 using namespace nimbus::power;
 
 // A valid on-battery sample by PACK mV (the voltage-T2 world's step()).
@@ -336,6 +342,69 @@ void test_divider_x100_for_both_real_boards(void) {
   TEST_ASSERT_INT_WITHIN(5, 8401, int(nodeMv * dividerX100(270000,120000) / 100));
   TEST_ASSERT_INT_WITHIN(5, 8272, int(nodeMv * 320 / 100));     // the on-device bug
 }
+
+// CUM-370: /api/state must report the EFFECTIVE divider the ADC applies, not the
+// raw NVS store value. A fixed-divider board (an all-in-one carrier whose onboard
+// divider is soldered down, epd.sck < 0) uses its board-map value; a hand-built
+// board's resistors vary per unit, so the owner-set store value wins. Pinning the
+// two REAL board constants catches a board-table edit that flips the predicate.
+void test_effective_divider_reports_what_the_adc_uses(void) {
+  // Selection logic, both directions.
+  TEST_ASSERT_EQUAL_UINT16(200, effectiveDividerX100(true,  200, 320));  // fixed -> board
+  TEST_ASSERT_EQUAL_UINT16(200, effectiveDividerX100(true,  200, 999));  // store ignored
+  TEST_ASSERT_EQUAL_UINT16(320, effectiveDividerX100(false, 200, 320));  // tunable -> store
+  TEST_ASSERT_EQUAL_UINT16(325, effectiveDividerX100(false, 200, 325));  // 270k/120k fitted
+  static_assert(effectiveDividerX100(true,  200, 320) == 200, "fixed board uses board divider");
+  static_assert(effectiveDividerX100(false, 200, 320) == 320, "tunable board uses store divider");
+  // The real boards: Freenove is fixed (÷2.00 onboard), Solide is tunable (÷3.20).
+  const bool freenoveFixed = solide::kBoardFreenoveS3.epd.sck < 0;
+  const bool solideFixed   = solide::kBoardSolideS3.epd.sck   < 0;
+  TEST_ASSERT_TRUE(freenoveFixed);
+  TEST_ASSERT_FALSE(solideFixed);
+  TEST_ASSERT_EQUAL_UINT16(200, solide::kBoardFreenoveS3.batt.dividerX100);
+  TEST_ASSERT_EQUAL_UINT16(320, solide::kBoardSolideS3.batt.dividerX100);
+  // A fixed board reports its board divider even when the store default (320) differs;
+  // Solide reports the store value.
+  TEST_ASSERT_EQUAL_UINT16(200, effectiveDividerX100(freenoveFixed,
+      solide::kBoardFreenoveS3.batt.dividerX100, /*store default*/320));
+  TEST_ASSERT_EQUAL_UINT16(320, effectiveDividerX100(solideFixed,
+      solide::kBoardSolideS3.batt.dividerX100,   /*store default*/320));
+  // And a Solide owner who tuned 270k/120k (÷3.25) sees that, not the board default.
+  TEST_ASSERT_EQUAL_UINT16(325, effectiveDividerX100(solideFixed,
+      solide::kBoardSolideS3.batt.dividerX100,   /*store tuned*/325));
+}
+
+// CUM-371: the cell-count override must be clamped to what the board physically
+// supports. On a 1S board a 2S override makes battCellsEff 2, and the ADC
+// plausibility gate then reads a real 1S ~4200 mV pack as an implausible ~2100
+// mV/cell "2S" and rejects EVERY sample (monitoring on, yet nothing valid).
+void test_batt_cells_override_clamped_to_board(void) {
+  const int freenoveCells = solide::kBoardFreenoveS3.batt.cells;  // 1S
+  const int solideCells   = solide::kBoardSolideS3.batt.cells;    // 2S
+  TEST_ASSERT_EQUAL_INT(1, freenoveCells);
+  TEST_ASSERT_EQUAL_INT(2, solideCells);
+  // 1S board: a 2S override is clamped down; 1 and 0 pass through.
+  TEST_ASSERT_EQUAL_UINT8(1, clampBattCellsOverride(2, freenoveCells));
+  TEST_ASSERT_EQUAL_UINT8(1, clampBattCellsOverride(1, freenoveCells));
+  TEST_ASSERT_EQUAL_UINT8(0, clampBattCellsOverride(0, freenoveCells));  // board default
+  // 2S Solide still accepts a genuine 2S override (must not break).
+  TEST_ASSERT_EQUAL_UINT8(2, clampBattCellsOverride(2, solideCells));
+  TEST_ASSERT_EQUAL_UINT8(1, clampBattCellsOverride(1, solideCells));
+  TEST_ASSERT_EQUAL_UINT8(0, clampBattCellsOverride(0, solideCells));
+  // Class invariant: a clamped override never exceeds the board's cell count, so it
+  // can never push the plausibility gate to reject a real pack.
+  for (int req = 0; req <= 3; ++req) {
+    TEST_ASSERT_TRUE(clampBattCellsOverride(req, freenoveCells) <= freenoveCells);
+    TEST_ASSERT_TRUE(clampBattCellsOverride(req, solideCells)   <= solideCells);
+  }
+  static_assert(clampBattCellsOverride(2, 1) == 1, "1S board cannot be told it is 2S");
+  static_assert(clampBattCellsOverride(2, 2) == 2, "2S board accepts a 2S override");
+  // End-to-end with the real gate: the bug was a real 1S 4200 mV pack judged as 2S.
+  TEST_ASSERT_FALSE(plausibleLiIonPackMv(4200, 2));  // the reported failure
+  int effCells = clampBattCellsOverride(2, freenoveCells);
+  if (effCells == 0) effCells = freenoveCells;       // 0 = board default resolves to 1
+  TEST_ASSERT_TRUE(plausibleLiIonPackMv(4200, effCells));  // clamp keeps it plausible
+}
 // ── AlertGate (field bug 2026-08-11: "spamming 0% non stop") ─────────────────
 // The Policy's enterT1 edge legitimately re-fires - these tests pin that the
 // owner PING has its own memory regardless of how many edges arrive.
@@ -660,6 +729,8 @@ int main() {
   RUN_TEST(test_wake_bar_never_below_sleep_threshold);
   RUN_TEST(test_wake_default_is_the_owners_6500);
   RUN_TEST(test_divider_x100_for_both_real_boards);
+  RUN_TEST(test_effective_divider_reports_what_the_adc_uses);
+  RUN_TEST(test_batt_cells_override_clamped_to_board);
   RUN_TEST(test_alert_gate_pings_once_per_episode);
   RUN_TEST(test_alert_gate_charging_at_low_pct_never_pings);
   RUN_TEST(test_alert_gate_survives_the_wake_sniff_reboot_loop);

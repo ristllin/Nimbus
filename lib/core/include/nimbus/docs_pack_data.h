@@ -1318,8 +1318,10 @@ constants, so an un-set board is unchanged.
 ⚠ This fixed a real on-device bug: the firmware baked in **÷3.20** while the fitted
 resistors are **270k/120k = ÷3.25**, so voltage read **~1.6% low** across the range (BATTCAL
 masked only the top). Set the true resistors and the raw reading is correct end-to-end; the
-`/api/state` `dividerX100` now reports the CONFIGURED ratio, so the Battery Lab's host-side
-correction tracks it (no double-correction). ⚠ A divider change re-scales every mV, so the
+`/api/state` `dividerX100` reports the EFFECTIVE ratio the ADC applies (the configured
+resistors on a hand-built board, the board's fixed onboard divider on an all-in-one board
+whose sense-resistor inputs the web tile hides), so the Battery Lab's host-side correction
+tracks it (no double-correction). ⚠ A divider change re-scales every mV, so the
 BATTCAL full-anchor goes stale - **re-run Calibrate on a full pack** after changing resistors
 (the web UI prompts for this).)NIMBUSDOC"},
   {"hardware#measured-battery-reality-curve-run-4-board-2-2026-07-16", "Measured battery reality (curve run #4, Board 2, 2026-07-16)",
@@ -2339,12 +2341,15 @@ Everything in this section needs a battery the device can actually read. With
 line the board cannot read), the low-battery light, the power saving switch,
 the Telegram low-battery message, and the low-battery deep sleep are all
 inactive - there is no reading to go low. The Battery mode section says so
-inline. Health distinguishes the two cases: with monitoring off it shows the
-battery as absent ("no gauge (desk-powered)"), while monitoring on with a
-reading that stays invalid shows a degraded fault ("battery sense not detected")
-rather than pretending the board is desk-powered - so an open sense line can be
-told apart from a board that simply has no pack. The two toggles still save;
-they apply once a pack is fitted and monitored.)NIMBUSDOC"},
+inline. Health distinguishes the cases honestly: with monitoring off it shows
+the battery as absent ("no gauge (desk-powered)"). With monitoring on and a
+reading that stays invalid, it shows a degraded fault ("battery sense not
+detected") only when a pack is known to have worked before - a valid reading
+since the last restart, or saved battery history - so an open sense line on a
+board that had a pack is reported as the fault it is. A board that never had a
+readable pack (for example a Solide board run desk-powered with nothing fitted)
+keeps the absent "no gauge (desk-powered)" row instead of a false alarm. The
+two toggles still save; they apply once a pack is fitted and monitored.)NIMBUSDOC"},
   {"modes-and-signals#3-sound-independent-of-everything-above", "3. Sound - independent of everything above",
    R"NIMBUSDOC(Set under Settings > Sound (device) or Settings → Sound (web): a level per
 **operating mode**, a sound theme (**Pulse**), and a master

@@ -90,6 +90,7 @@
 #include "nimbus/saver.h"                 // screensaver idle clock (logo after 1 h idle)
 #include "nimbus/settings_menu.h"
 #include "nimbus_board_power.h"           // explicit per-board battMon default (CUM-202)
+#include "nimbus_board_batt.h"            // effective battery divider selection (CUM-370)
 #include "nimbus_config.h"
 #include "version.h"
 #include "net/ble_notifier.h"
@@ -438,10 +439,11 @@ static uint32_t g_lastTouchLivenessMs = 0;
 
 // Battery hardware from the board map. cells never 0 (both boards set it); the
 // divider is owner-tuned on hand-built boards (resistors vary) but fixed on an
-// all-in-one (no separate panel option -> board().epd.sck < 0).
+// all-in-one. The fixed-vs-tunable choice lives in nimbus_board_batt.h so the ADC
+// begin() here and /api/state in webui.cpp report the SAME divider (CUM-370).
 static uint8_t  battCells()  { if (uint8_t o = agent::store::battCellsOvr()) return o; const uint8_t c = solide::board().batt.cells; return c ? c : uint8_t(NIMBUS_BATT_CELLS); }
 static int      battAdcPin() { return solide::board().batt.sense >= 0 ? int(solide::board().batt.sense) : int(NIMBUS_BATT_SENSE_PIN); }
-static uint16_t battDivX100() { return solide::board().epd.sck < 0 ? solide::board().batt.dividerX100 : agent::store::battDividerX100(); }
+static uint16_t battDivX100() { return nimbus::effectiveBattDivX100(agent::store::battDividerX100()); }
 // Battery monitoring on/off. A hand-built board (Solide S3) ships WITH a pack, so
 // monitoring defaults ON; an all-in-one desk board (Freenove CYD) treats a battery as
 // an add-on, so it defaults OFF (opt-in) - otherwise the floating ADC reads "empty"

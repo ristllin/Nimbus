@@ -803,6 +803,12 @@ function applyState(d){
     if(document.activeElement!==$('battCells')&&$('battCells'))$('battCells').value=(bt.cells!==undefined?bt.cells:0);
     if(document.activeElement!==$('battCurve')&&$('battCurve'))$('battCurve').value=(bt.curve||'');
     window._battState={rtop:bt.rtop,rbot:bt.rbot};   // for the divider-change confirm
+    // A fixed-divider board (all-in-one) uses its onboard divider, so the sense-
+    // resistor inputs do nothing - hide them rather than show a dead knob (CUM-370).
+    window._battDivFixed=!!bt.divFixed;
+    var _rtr=$('battRtopRow'),_rbr=$('battRbotRow');
+    if(_rtr)_rtr.style.display=bt.divFixed?'none':'';
+    if(_rbr)_rbr.style.display=bt.divFixed?'none':'';
     // never hide the measurement behind the correction: raw stays one hover away
     $('battmv').title=(bt.mvTrue&&bt.mvTrue!==bt.millivolts)
       ?('ADC-corrected (BATTCAL anchor). Raw reading: '+bt.millivolts+' mV - the S3 ADC under-reads a full 2S pack.')
@@ -828,15 +834,17 @@ function applyState(d){
     if($('battChem'))f.append('battChem',$('battChem').value||'liion');
     if($('battCells'))f.append('battCells',$('battCells').value||'0');
     if($('battCurve'))f.append('battCurve',$('battCurve').value||'');
-    if($('battRtop'))f.append('battRtop',$('battRtop').value||'220000');
-    if($('battRbot'))f.append('battRbot',$('battRbot').value||'100000');
-    var dividerChanged=$('battRtop')&&$('battRbot')&&window._battState&&(+$('battRtop').value!==window._battState.rtop||+$('battRbot').value!==window._battState.rbot);
+    // On a fixed-divider board the sense resistors are a dead knob (hidden), so
+    // don't send them - the ADC uses the board's onboard divider regardless.
+    if($('battRtop')&&!window._battDivFixed)f.append('battRtop',$('battRtop').value||'220000');
+    if($('battRbot')&&!window._battDivFixed)f.append('battRbot',$('battRbot').value||'100000');
+    var dividerChanged=!window._battDivFixed&&$('battRtop')&&$('battRbot')&&window._battState&&(+$('battRtop').value!==window._battState.rtop||+$('battRbot').value!==window._battState.rbot);
     uiConfirmAll([
       {cond:$('brightOvr').checked, msg:'Allow full LED brightness?\n\nSustained full brightness can overheat the device and damage it permanently. The thermal guard stays active. This resets at restart.', opts:{ok:'Allow Full Brightness',danger:true}},
       {cond:$('sleepOvr').checked, msg:'Skip low-battery protection?\n\nThe battery can discharge to a point where it no longer recharges and must be replaced. This applies to measurement runs only and resets at restart.', opts:{ok:'Skip Protection',danger:true}},
       {cond:dividerChanged, msg:'Changed the sense resistors?\n\nThis re-scales every voltage reading, so the full-charge calibration is now stale. Re-run Calibrate on a fully charged pack afterward.', opts:{ok:'Save Changes'}}
     ]).then(function(ok){ if(!ok)return;
-      fetch('/api/config',{method:'POST',body:f}).then(function(){pb.textContent='Saved';setTimeout(function(){pb.textContent='Save';},1200);});
+      fetch('/api/config',{method:'POST',body:f}).then(function(rs){return rs.json().catch(function(){return{};});}).then(function(j){pb.textContent='Saved';setTimeout(function(){pb.textContent='Save';},1200);if(j&&j.warn){toast(j.warn);loadState();}});
     });
   };
       uiConfirm('Set the battery to 100%?\n\nOnly do this with the pack fully charged - the reading becomes this device\'s 100% anchor.',{ok:'Set To 100%'}).then(function(ok){ if(!ok)return;
