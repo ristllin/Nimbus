@@ -211,6 +211,9 @@ function applyHostedChrome(){
     // and Connectivity, CUM-218) and replace its body with the honest platform line.
     const f=$('fwsec'), body=f&&f.querySelector('.setbody');
     if(body){body.innerHTML='';
+      const v=document.createElement('p'); v.style.margin='6px 0';
+      v.innerHTML='Software version <span id=hostedFwVer></span>';
+      body.appendChild(v);
       const n=document.createElement('p'); n.className='hint'; n.style.margin='6px 0';
       n.textContent='Software updates are managed by the platform; this instance updates when its image is rolled.';
       body.appendChild(n);}
@@ -752,7 +755,7 @@ function applyState(d){
       });};
   }
   renderDevTiles(d);
-  if(d.fw){const fv=$('fwver'); if(fv)fv.textContent=d.fw+(d.build&&d.build!==d.fw?(' ('+d.build+')'):''); fv&&(fv.title='firmware version (build id)');}
+  if(d.fw){const fv=$('fwver'); if(fv)fv.textContent=d.fw+(d.build&&d.build!==d.fw?(' ('+d.build+')'):''); fv&&(fv.title='firmware version (build id)'); const hv=$('hostedFwVer'); if(hv)hv.textContent=d.fw+(d.build&&d.build!==d.fw?(' ('+d.build+')'):'');}
   // Low-battery preferences. OUTSIDE the telemetry gate below on purpose: they
   // live in the always-open Battery mode group, so a board with no pack fitted
   // must still be able to see and change them.

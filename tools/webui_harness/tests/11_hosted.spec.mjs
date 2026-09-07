@@ -131,6 +131,8 @@ test('hosted: ESP OTA controls become an honest platform note, audio probes hidd
   await expect(page.locator('#fwCheck')).toHaveCount(0);     // no "Check for Updates" control
   await expect(page.locator('#fwsec')).toContainText('managed by the platform');
   await expect(page.locator('#fwsec')).toContainText('image is rolled');
+  await expect(page.locator('#fwsec')).toContainText('Software version'); // the running version is surfaced, not hidden (see-version parity)
+  await expect(page.locator('#hostedFwVer')).toHaveText('v0');         // filled from d.fw on the state poll
   await expect(page.locator('#hpMic')).toHaveCount(0);       // no Mic Test button
   await expect(page.locator('#hpBeep')).toHaveCount(0);      // no Speaker Tone button
 });
