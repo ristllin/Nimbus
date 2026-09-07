@@ -46,6 +46,48 @@ bool parseByeFrame(const JsonDocument& doc, RelayFrame& out) {
   return true;
 }
 
+// ubegin: id/method/path required; totalLen defaults 0. A malformed begin is rejected so
+// the device never opens a streamed request it cannot describe.
+bool parseUploadBeginFrame(const JsonDocument& doc, RelayFrame& out) {
+  if (!doc["id"].is<const char*>() || !doc["method"].is<const char*>() ||
+      !doc["path"].is<const char*>()) {
+    return false;
+  }
+  out.type = FrameType::UploadBegin;
+  out.upload.id = doc["id"].as<const char*>();
+  out.upload.method = doc["method"].as<const char*>();
+  out.upload.path = doc["path"].as<const char*>();
+  if (doc["headers"].is<JsonObjectConst>()) out.upload.headers = doc["headers"].as<JsonObjectConst>();
+  out.upload.totalLen = doc["totalLen"].is<uint32_t>() ? doc["totalLen"].as<uint32_t>() : 0;
+  return true;
+}
+
+// uchunk: id + bodyB64 required; seq/off default 0 (a 0-offset first chunk is legal).
+bool parseUploadChunkFrame(const JsonDocument& doc, RelayFrame& out) {
+  if (!doc["id"].is<const char*>() || !doc["bodyB64"].is<const char*>()) return false;
+  out.type = FrameType::UploadChunk;
+  out.upload.id = doc["id"].as<const char*>();
+  out.upload.seq = doc["seq"].is<uint32_t>() ? doc["seq"].as<uint32_t>() : 0;
+  out.upload.off = doc["off"].is<uint32_t>() ? doc["off"].as<uint32_t>() : 0;
+  out.upload.bodyB64 = doc["bodyB64"].as<const char*>();
+  return true;
+}
+
+bool parseUploadEndFrame(const JsonDocument& doc, RelayFrame& out) {
+  if (!doc["id"].is<const char*>()) return false;
+  out.type = FrameType::UploadEnd;
+  out.upload.id = doc["id"].as<const char*>();
+  return true;
+}
+
+bool parseUploadAbortFrame(const JsonDocument& doc, RelayFrame& out) {
+  if (!doc["id"].is<const char*>()) return false;
+  out.type = FrameType::UploadAbort;
+  out.upload.id = doc["id"].as<const char*>();
+  out.upload.reason = doc["reason"].is<const char*>() ? doc["reason"].as<const char*>() : "";
+  return true;
+}
+
 }  // namespace
 
 bool parseRelayFrame(const JsonDocument& doc, RelayFrame& out) {
@@ -58,6 +100,10 @@ bool parseRelayFrame(const JsonDocument& doc, RelayFrame& out) {
   if (std::string(t) == "req")     return parseReqFrame(doc, out);
   if (std::string(t) == "pong")    return parsePongFrame(doc, out);
   if (std::string(t) == "bye")     return parseByeFrame(doc, out);
+  if (std::string(t) == "ubegin")  return parseUploadBeginFrame(doc, out);
+  if (std::string(t) == "uchunk")  return parseUploadChunkFrame(doc, out);
+  if (std::string(t) == "uend")    return parseUploadEndFrame(doc, out);
+  if (std::string(t) == "uabort")  return parseUploadAbortFrame(doc, out);
   return false;
 }
 
@@ -75,6 +121,13 @@ void buildPing(JsonDocument& doc, int64_t ts) {
   doc.clear();
   doc["t"] = "ping";
   doc["ts"] = ts;
+}
+
+void buildUploadAck(JsonDocument& doc, const char* id, uint32_t off) {
+  doc.clear();
+  doc["t"] = "uack";
+  doc["id"] = id;
+  doc["off"] = off;
 }
 
 JsonObject startRes(JsonDocument& doc, const char* id, int status) {

@@ -31,6 +31,7 @@
 #include "nimbus/cloud/relay_ws.h"
 #include "nimbus/cloud/ws_write.h"            // CUM-182: host-tested whole-frame write driver
 #include "nimbus/cloud/tunnel_guard.h"   // canonicalize+deny secret paths, scrub secret bodies
+#include "nimbus/cloud/upload_reassembly.h"   // chunked tunnel upload state machine (host-tested)
 #include "version.h"
 
 namespace nimbus {
@@ -59,6 +60,12 @@ constexpr size_t kMaxRespBody = nimbus::cloud::kLoopbackMaxRespBody;
 // oversized frame is rejected from its length header before any payload is buffered.
 constexpr size_t kMaxInboundFrame = 16 * 1024;
 constexpr size_t kMaxReqBody = 16 * 1024;
+// Chunked tunnel upload (protocol 2): a large body arrives as ordered uchunk frames the
+// device pipes straight into its local server over the loopback, never buffering the
+// whole thing. The hard ceiling matches the device music store (64 MB); the cloud
+// refuses anything larger before it streams. Each uchunk's decoded slice is bounded by
+// the inbound frame cap, so it lands in a small internal-SRAM buffer.
+constexpr uint32_t kMaxUploadBytes = 64u * 1024 * 1024;
 constexpr uint32_t kLoopbackTimeoutMs = 15000;
 // Deadline for writing ONE outbound WS frame in full (CUM-182). The largest res
 // frame is the config/login page: ~277 KB body -> a ~370 KB masked frame. A
@@ -431,6 +438,210 @@ void handleReq(const ReqFrame& req) {
   emitResFrame(req.id, status, outHdrs, obody, obodyLen);
 }
 
+// --- chunked tunnel upload (protocol 2) --------------------------------------
+// A large body (an mp3, a firmware image) can't ride one `req` frame: it would blow the
+// 16 KB inbound cap. Instead the relay streams it as ubegin -> uchunk... -> uend, and the
+// device pipes each slice straight into its own web server over a PERSISTENT loopback
+// socket (the same handler a direct LAN upload uses, which already streams to SD). The
+// device acks the durable offset after each slice, giving the cloud real progress and
+// backpressure. Ordering/caps live in the host-tested UploadReassembly; this seam owns
+// the socket. Uploads are serialized like every other tunneled request (one at a time).
+struct UploadSession {
+  bool active = false;
+  bool failed = false;          // a connect/write/cap failure: answer an error at uend
+  bool denied = false;          // a tunnel-denied path: answer 403 at uend
+  int failStatus = 502;         // the status to answer if failed
+  WiFiClient loop;              // the persistent loopback connection (open across chunks)
+  nimbus::cloud::UploadReassembly reasm;
+  std::string id;
+};
+UploadSession g_up;
+
+// Connect the loopback to the device's own web server (mirrors doLoopback's target
+// policy: 127.0.0.1 primary, the STA self-IP only when it is a real address).
+bool connectUploadLoopback(WiFiClient& c) {
+  if (c.connect(IPAddress(127, 0, 0, 1), 80, kLoopbackConnectMs)) return true;
+  IPAddress self = WiFi.localIP();
+  const uint32_t ipABCD = (uint32_t(self[0]) << 24) | (uint32_t(self[1]) << 16) |
+                          (uint32_t(self[2]) << 8) | uint32_t(self[3]);
+  if (nimbus::cloud::loopbackFallbackUsable(ipABCD)) return c.connect(self, 80, kLoopbackConnectMs);
+  return false;
+}
+
+// Tear down any in-flight upload (a drop, an abort, or the start of a new one).
+void resetUpload() {
+  if (g_up.loop.connected()) g_up.loop.stop();
+  g_up.reasm.abort();
+  g_up = UploadSession{};
+}
+
+// Emit a small plain-text error `res` for an upload that cannot be served, then reset.
+void emitUploadError(const char* id, int status, const char* reason) {
+  http_replay::Headers h;
+  h.emplace_back("content-type", "text/plain");
+  emitResFrame(id, status, h, reinterpret_cast<const uint8_t*>(reason), strlen(reason));
+  resetUpload();
+}
+
+// ubegin: open the loopback, write the request head with Content-Length=totalLen, and
+// arm the reassembler. Failures are latched (answered at uend) so the cloud's ack-gated
+// stream still terminates honestly rather than hanging.
+void handleUploadBegin(const UploadFrame& u) {
+  if (g_up.active) resetUpload();  // a new upload supersedes a stale one (should not happen)
+  g_up = UploadSession{};
+  g_up.active = true;
+  g_up.id = u.id ? u.id : "";
+  g_up.reasm.begin(g_up.id, u.totalLen, kMaxUploadBytes);
+
+  if (tunnel::isTunnelDenied(u.path ? u.path : "")) {
+    g_up.denied = true;  // ack chunks to a discard sink, answer 403 at uend
+    return;
+  }
+  if (u.totalLen > kMaxUploadBytes) {
+    g_up.failed = true;
+    g_up.failStatus = 413;
+    return;
+  }
+  // Rebuild the request head into the loopback with the declared body length. Header
+  // forwarding + token injection + hop-by-hop/Content-Length handling are the same
+  // host-tested path a small request uses.
+  http_replay::Headers hdrs;
+  if (!u.headers.isNull()) {
+    for (JsonPairConst kv : u.headers) {
+      if (kv.value().is<const char*>())
+        hdrs.emplace_back(std::string(kv.key().c_str()), std::string(kv.value().as<const char*>()));
+    }
+  }
+  if (!connectUploadLoopback(g_up.loop)) {
+    agent::alog("relay: upload loopback REFUSED (tunnel 502)");
+    g_up.failed = true;
+    g_up.failStatus = 502;
+    return;
+  }
+  std::string head = http_replay::buildRequestHead(
+      u.method ? u.method : "POST", u.path ? u.path : "/", hdrs, u.totalLen,
+      agent::store::webAuthToken().c_str());
+  if (head.empty()) {  // rejected (CRLF/control in the request line)
+    g_up.failed = true;
+    g_up.failStatus = 400;
+    g_up.loop.stop();
+    return;
+  }
+  g_up.loop.write(reinterpret_cast<const uint8_t*>(head.data()), head.size());
+  agent::alogf("relay: upload begin id=%s total=%u", g_up.id.c_str(), (unsigned)u.totalLen);
+}
+
+// uchunk: decode the slice and stream it into the loopback socket, then ack the durable
+// offset. A denied/failed session still acks (to a discard sink) so the cloud completes
+// and gets the honest error at uend, rather than hanging on a stalled window.
+void handleUploadChunk(const UploadFrame& u) {
+  if (!g_up.active || g_up.id != (u.id ? u.id : "")) return;  // stale / wrong id
+  std::vector<uint8_t> slice;
+  if (u.bodyB64 && u.bodyB64[0]) {
+    if (strlen(u.bodyB64) > kMaxInboundFrame ||
+        !b64Decode(u.bodyB64, strlen(u.bodyB64), slice)) {
+      emitUploadError(u.id, 400, "bad chunk");
+      return;
+    }
+  }
+  // The sink writes into the loopback socket, unless the session is denied/failed, in
+  // which case it discards (we still advance the offset so the cloud's stream drains).
+  auto sink = [&](const uint8_t* d, size_t n) -> bool {
+    if (g_up.denied || g_up.failed) return true;
+    return g_up.loop.write(d, n) == n;
+  };
+  auto outcome = g_up.reasm.chunk(g_up.id, u.seq, u.off, slice.data(), slice.size(), sink);
+  if (outcome != nimbus::cloud::UploadReassembly::ChunkOutcome::Accepted) {
+    // Out-of-order, over-cap, or a socket write failure: the body is unrecoverable.
+    agent::alogf("relay: upload chunk rejected id=%s (outcome=%d)", g_up.id.c_str(), (int)outcome);
+    emitUploadError(u.id, 502, "upload failed");
+    return;
+  }
+  JsonDocument ack;
+  buildUploadAck(ack, g_up.id.c_str(), g_up.reasm.acked());
+  std::string s;
+  serializeJson(ack, s);
+  wsSendSmall(ws::Opcode::Text, reinterpret_cast<const uint8_t*>(s.data()), s.size());
+}
+
+// Read the local server's response off the loopback (the body is already fully written)
+// and frame it back as the ordinary `res`, then reset the session. Split out of
+// handleUploadEnd to keep each function inside the complexity gate.
+void streamUploadResponse(const char* id) {
+  http_replay::ResponseParser rp(kMaxRespBody);
+  const size_t kBuf = 1460;
+  uint8_t* buf = (uint8_t*)heap_caps_malloc(kBuf, MALLOC_CAP_SPIRAM);
+  if (!buf) buf = (uint8_t*)heap_caps_malloc(kBuf, MALLOC_CAP_8BIT);
+  if (!buf) { emitUploadError(id, 500, "no memory"); return; }
+  uint32_t deadline = millis() + kLoopbackTimeoutMs;
+  while (millis() < deadline && !rp.complete() && !rp.error()) {
+    int n = readSome(g_up.loop, buf, kBuf, 200);
+    if (n > 0) rp.feed(buf, (size_t)n);
+    else if (n < 0) { rp.endOfStream(); break; }
+  }
+  if (!rp.complete()) rp.endOfStream();
+  heap_caps_free(buf);
+  const int status = rp.complete() ? rp.status() : 504;
+  agent::alogf("relay: upload end id=%s status=%d bytes=%u", g_up.id.c_str(), status,
+               (unsigned)g_up.reasm.acked());
+  http_replay::Headers outHdrs = rp.headers();
+  const uint8_t* obody = rp.body().empty() ? nullptr : rp.body().data();
+  size_t obodyLen = rp.body().size();
+  // Same small-JSON secret backstop the req path applies (an upload answer is tiny JSON).
+  std::string scrubbed;
+  if (obodyLen && obodyLen <= kMaxScrubBody) {
+    std::string ct = headerValue(outHdrs, "content-type");
+    scrubbed.assign(reinterpret_cast<const char*>(obody), obodyLen);
+    if (tunnel::scrubJsonSecrets(ct, scrubbed)) {
+      obody = reinterpret_cast<const uint8_t*>(scrubbed.data());
+      obodyLen = scrubbed.size();
+    }
+  }
+  emitResFrame(id, status, outHdrs, obody, obodyLen);
+  resetUpload();
+}
+
+// uend: finalize. A denied/failed/incomplete session answers its error; otherwise the
+// local server has the whole body, so read its response and frame it back.
+void handleUploadEnd(const UploadFrame& u) {
+  if (!g_up.active || g_up.id != (u.id ? u.id : "")) return;
+  if (g_up.denied) {
+    emitUploadError(u.id, 403, "Not available over the cloud; use this device on its network.");
+    return;
+  }
+  if (g_up.failed) {
+    emitUploadError(u.id, g_up.failStatus,
+                    g_up.failStatus == 413 ? "That file is too large."
+                                           : "The upload could not be saved.");
+    return;
+  }
+  if (!g_up.reasm.end(g_up.id)) {  // incomplete body (declared length not met)
+    emitUploadError(u.id, 400, "upload incomplete");
+    return;
+  }
+  streamUploadResponse(u.id);
+}
+
+void handleUploadAbort(const UploadFrame& u) {
+  if (g_up.active && g_up.id == (u.id ? u.id : "")) {
+    agent::alogf("relay: upload abort id=%s reason=%s", g_up.id.c_str(),
+                 u.reason ? u.reason : "");
+    resetUpload();
+  }
+}
+
+// Dispatch a chunked-upload frame. Returns true if `f` was one (so handleFrame's chain
+// stays flat and inside the complexity gate), false for any non-upload frame.
+bool handleUploadFrame(const RelayFrame& f) {
+  switch (f.type) {
+    case FrameType::UploadBegin: handleUploadBegin(f.upload); return true;
+    case FrameType::UploadChunk: handleUploadChunk(f.upload); return true;
+    case FrameType::UploadEnd:   handleUploadEnd(f.upload);   return true;
+    case FrameType::UploadAbort: handleUploadAbort(f.upload); return true;
+    default: return false;
+  }
+}
+
 // --- pairing -----------------------------------------------------------------
 // One-shot HTTPS POST of a JSON body to the relay host; returns status, body in out.
 int httpsPostJson(const String& host, const char* path, const String& reqBody, String& out) {
@@ -753,6 +964,8 @@ bool handleFrame(const ws::Message& m, bool& welcomed, uint16_t& closeOut,
       if (!handleWelcome(f, welcomed, closeOut, ourDeviceId)) return false;
     } else if (f.type == FrameType::Req) {
       handleReq(f.req);
+    } else if (handleUploadFrame(f)) {
+      // an ubegin/uchunk/uend/uabort was dispatched
     } else if (f.type == FrameType::Pong) {
       gotPong = true;  // CUM-191: matched heartbeat ack - relay->device direction is live
     } else if (f.type == FrameType::Bye) {
@@ -965,6 +1178,7 @@ uint16_t runSession() {
   agent::alogf("relay: hello sent id=%s fw=%s", deviceId.c_str(), NIMBUS_FW_VERSION);
 
   uint16_t closeCode = runOnlineLoop(parser, deviceId.c_str());
+  resetUpload();  // drop any in-flight upload's loopback socket with the session
   tlsClose(*g_ws);
   setOnline(false, "session-end");
   return closeCode;

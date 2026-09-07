@@ -42,8 +42,69 @@ static void test_relay_vectors_decode() {
       }
     } else if (v.type == 4) {
       TEST_ASSERT_EQUAL_STRING(v.byeReason, f.byeReason);
+    } else if (v.type == 5) {  // ubegin
+      TEST_ASSERT_EQUAL_STRING(v.id, f.upload.id);
+      TEST_ASSERT_EQUAL_STRING(v.method, f.upload.method);
+      TEST_ASSERT_EQUAL_STRING(v.path, f.upload.path);
+      TEST_ASSERT_EQUAL_UINT32(v.totalLen, f.upload.totalLen);
+      if (v.hdrKey) {
+        TEST_ASSERT_FALSE(f.upload.headers.isNull());
+        TEST_ASSERT_EQUAL_STRING(v.hdrVal, f.upload.headers[v.hdrKey].as<const char*>());
+      }
+    } else if (v.type == 6) {  // uchunk
+      TEST_ASSERT_EQUAL_STRING(v.id, f.upload.id);
+      TEST_ASSERT_EQUAL_STRING(v.bodyB64, f.upload.bodyB64);
+      TEST_ASSERT_EQUAL_UINT32(v.seq, f.upload.seq);
+      TEST_ASSERT_EQUAL_UINT32(v.off, f.upload.off);
+    } else if (v.type == 7) {  // uend
+      TEST_ASSERT_EQUAL_STRING(v.id, f.upload.id);
+    } else if (v.type == 8) {  // uabort
+      TEST_ASSERT_EQUAL_STRING(v.id, f.upload.id);
+      TEST_ASSERT_EQUAL_STRING(v.byeReason, f.upload.reason);
     }
   }
+}
+
+// The upload frames each parse to their own FrameType and reject a missing id.
+static void test_upload_frames() {
+  struct {
+    const char* json;
+    int type;
+  } ok[] = {
+      {"{\"t\":\"ubegin\",\"id\":\"u\",\"method\":\"POST\",\"path\":\"/x\",\"totalLen\":9}", 5},
+      {"{\"t\":\"uchunk\",\"id\":\"u\",\"seq\":3,\"off\":24,\"bodyB64\":\"AAAA\"}", 6},
+      {"{\"t\":\"uend\",\"id\":\"u\"}", 7},
+      {"{\"t\":\"uabort\",\"id\":\"u\",\"reason\":\"gone\"}", 8},
+  };
+  for (auto& c : ok) {
+    JsonDocument doc;
+    TEST_ASSERT_FALSE(deserializeJson(doc, c.json));
+    RelayFrame f;
+    TEST_ASSERT_TRUE_MESSAGE(parseRelayFrame(doc, f), c.json);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(c.type, (int)f.type, c.json);
+  }
+  // Malformed: missing id (ubegin/uchunk/uend/uabort) or missing bodyB64 (uchunk).
+  const char* bad[] = {
+      "{\"t\":\"ubegin\",\"method\":\"POST\",\"path\":\"/x\"}",
+      "{\"t\":\"uchunk\",\"id\":\"u\",\"seq\":0,\"off\":0}",
+      "{\"t\":\"uend\"}",
+      "{\"t\":\"uabort\"}",
+  };
+  for (const char* b : bad) {
+    JsonDocument doc;
+    TEST_ASSERT_FALSE(deserializeJson(doc, b));
+    RelayFrame f;
+    TEST_ASSERT_FALSE_MESSAGE(parseRelayFrame(doc, f), b);
+  }
+}
+
+// buildUploadAck emits the exact device->relay shape the relay's zod expects.
+static void test_build_upload_ack() {
+  JsonDocument doc;
+  buildUploadAck(doc, "u1", 8192);
+  TEST_ASSERT_EQUAL_STRING("uack", doc["t"]);
+  TEST_ASSERT_EQUAL_STRING("u1", doc["id"]);
+  TEST_ASSERT_EQUAL_UINT32(8192, doc["off"].as<uint32_t>());
 }
 
 // Malformed / unknown frames never parse as trusted.
@@ -153,6 +214,8 @@ static void test_welcome_device_id() {
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_relay_vectors_decode);
+  RUN_TEST(test_upload_frames);
+  RUN_TEST(test_build_upload_ack);
   RUN_TEST(test_rejects_malformed);
   RUN_TEST(test_welcome_device_id);
   RUN_TEST(test_build_hello);

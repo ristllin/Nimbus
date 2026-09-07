@@ -4048,20 +4048,37 @@ $('filesRmProj')&&($('filesRmProj').onclick=()=>{
   fetch('/api/files/rmproject',{method:'POST',body:fd}).then(r=>r.ok?r.json():Promise.reject(r.status))
     .then(o=>{toast('Deleted '+((o&&o.removed)||0)+' files');loadFiles();})
     .catch(s=>toast(s===404?'No such folder':'Couldn\'t delete - try again'));});});
-// Upload one file with a determinate progress bar (duration is knowable).
-// Uses XHR so upload progress events drive the feedback bar; the token rides the
-// X-Nimbus-Token header like every request. onPct(0..100) is called as it climbs.
-// Returns a promise that resolves to the parsed JSON (or {}), rejects with the
-// HTTP status (or 0 on a network error). Reused by the chat drag-and-drop (CUM-57).
+// Upload one file with a real progress bar. Over the cloud tunnel the API streams the
+// body to the device in chunks and reports the DEVICE-acked offset, so the bar reflects
+// bytes actually saved, not bytes optimistically pushed. XHR upload events drive the bar
+// on the local network (and until the first server ack); over the tunnel a poll of the
+// server-acked offset takes over. An .mp3 is routed to the music store so it plays.
+// onPct(0..100) is called as it climbs. Resolves to the parsed JSON (or {}), rejects with
+// the HTTP status (or 0 on a network error). Reused by the chat drag-and-drop (CUM-57).
 function uploadFile(file, proj, onPct){
+  // The page is served under "/d/<id>/" over the tunnel and "/" on the local network;
+  // XHR is not wrapped by the fetch base-rewriter, so prefix the app base by hand.
+  const base=location.pathname.replace(/\/[^/]*$/,'');
+  const isMp3=/\.mp3$/i.test(file.name);
+  const uploadId='u'+Date.now().toString(36)+Math.random().toString(36).slice(2,8);
+  const url=(isMp3
+    ? base+'/api/music/upload?name='+encodeURIComponent(file.name)
+    : base+'/api/files/upload?project='+encodeURIComponent(proj)+'&name='+encodeURIComponent(file.name))
+    +'&__uploadId='+uploadId;
   return new Promise((resolve,reject)=>{
-    const url='/api/files/upload?project='+encodeURIComponent(proj)+'&name='+encodeURIComponent(file.name);
     const x=new XMLHttpRequest();
     x.open('POST',url);
     try{x.setRequestHeader('X-Nimbus-Token',nimbusTok());}catch(e){}
     x.upload.onprogress=e=>{if(onPct&&e.lengthComputable)onPct(Math.round(e.loaded/e.total*100));};
-    x.onload=()=>{if(x.status>=200&&x.status<300){try{resolve(JSON.parse(x.responseText||'{}'));}catch(e){resolve({});}}else reject(x.status);};
-    x.onerror=()=>reject(0);
+    // Over the tunnel, poll the server-acked offset for honest progress. Harmless on the
+    // local network (no such route there -> the poll just stops). fetch() adds the base +
+    // token; the session cookie authorizes it.
+    let poll=null;
+    if(base){poll=setInterval(()=>{fetch('/__upload_status?u='+uploadId).then(r=>r.ok?r.json():null)
+      .then(p=>{if(p&&p.known&&p.total>0&&onPct)onPct(Math.min(100,Math.round(p.acked/p.total*100)));}).catch(()=>{});},400);}
+    const done=()=>{if(poll){clearInterval(poll);poll=null;}};
+    x.onload=()=>{done();if(x.status>=200&&x.status<300){try{resolve(JSON.parse(x.responseText||'{}'));}catch(e){resolve({});}}else reject(x.status);};
+    x.onerror=()=>{done();reject(0);};
     const fd=new FormData();fd.append('file',file,file.name);
     x.send(fd);
   });

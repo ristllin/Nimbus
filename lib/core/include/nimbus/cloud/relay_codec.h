@@ -19,7 +19,12 @@
 namespace nimbus {
 namespace cloud {
 
-constexpr int kProtocolVersion = 1;
+// Protocol 2 (2026-09) adds the chunked tunnel-upload frames (ubegin/uchunk/uend/
+// uabort relay->device, uack device->relay). A large body streams as ordered chunks
+// the device pipes into its local server, never a full-body buffer. The device
+// advertises this version in its Hello; a cloud that sees v1 refuses a large upload
+// with an honest error instead of hanging. Keep in lockstep with protocol.ts.
+constexpr int kProtocolVersion = 2;
 constexpr uint32_t kDefaultHeartbeatMs = 30000;
 // Max control-frame size the relay accepts from a device (protocol.ts MAX_FRAME_BYTES).
 constexpr size_t kMaxFrameBytes = 512u * 1024u;
@@ -34,7 +39,17 @@ enum class CloseCode : uint16_t {
   PayloadTooLarge = 4006,
 };
 
-enum class FrameType { Unknown, Welcome, Req, Pong, Bye };
+enum class FrameType {
+  Unknown,
+  Welcome,
+  Req,
+  Pong,
+  Bye,
+  UploadBegin,   // ubegin: start a streamed-body request
+  UploadChunk,   // uchunk: one ordered body slice
+  UploadEnd,     // uend: body complete, finalize + answer with a `res`
+  UploadAbort,   // uabort: abandon the in-flight upload
+};
 
 // A relay -> device "req": forward this HTTP request to the local web server.
 // Pointers reference the parsed JsonDocument (valid while it is alive). `headers`
@@ -47,12 +62,29 @@ struct ReqFrame {
   const char* bodyB64 = nullptr;  // nullptr when the request has no body
 };
 
+// A relay -> device chunked-upload frame. Which fields are meaningful depends on the
+// FrameType: UploadBegin uses id/method/path/headers/totalLen; UploadChunk uses
+// id/seq/off/bodyB64; UploadEnd uses id; UploadAbort uses id/reason. Pointers reference
+// the parsed JsonDocument (valid only while it is alive).
+struct UploadFrame {
+  const char* id = "";
+  const char* method = "";        // UploadBegin
+  const char* path = "";          // UploadBegin
+  JsonObjectConst headers;         // UploadBegin (may be null)
+  uint32_t totalLen = 0;          // UploadBegin: declared total body length
+  uint32_t seq = 0;               // UploadChunk: 0-based, strictly increasing
+  uint32_t off = 0;               // UploadChunk: byte offset of this slice
+  const char* bodyB64 = nullptr;  // UploadChunk: base64 body slice
+  const char* reason = "";        // UploadAbort
+};
+
 struct RelayFrame {
   FrameType type = FrameType::Unknown;
   uint32_t heartbeatMs = 0;       // Welcome
   const char* deviceId = "";      // Welcome: the device id the relay echoes back
                                    // (identity-bound hello-ack; "" on a legacy relay)
   ReqFrame req;                    // Req
+  UploadFrame upload;              // UploadBegin/Chunk/End/Abort
   const char* byeReason = "";     // Bye
   int64_t pongTs = 0;              // Pong
 };
@@ -67,6 +99,9 @@ bool parseRelayFrame(const JsonDocument& doc, RelayFrame& out);
 void buildHello(JsonDocument& doc, const char* deviceId, const char* connectToken,
                 const char* fw);
 void buildPing(JsonDocument& doc, int64_t ts);
+// device -> relay: acknowledge that `off` total body bytes have been durably accepted
+// (written into the local server). Drives the cloud's real progress + backpressure.
+void buildUploadAck(JsonDocument& doc, const char* id, uint32_t off);
 
 // Start a "res" frame in `doc` and return its (empty) headers object for the caller
 // to populate. Call setResBody() afterwards if there is a body.
