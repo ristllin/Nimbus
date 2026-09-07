@@ -235,8 +235,10 @@ The device speaks the OpenAI chat-completions dialect to
 overridable), and the router forwards to the chosen upstream (Anthropic, OpenAI,
 Mistral, Z.ai) and normalizes the reply. The key verifies against
 `/router/<upstream>/v1/models`. A model is selected as `<upstream>/<model>` (for
-example `anthropic/claude-sonnet-5`); the adapter splits the upstream off, routes
-to `/router/<upstream>/v1/chat/completions`, and sends the bare model id. This
+example `anthropic/claude-sonnet-5`); the orchestrator head and its sub-agents
+resolve the selector the same way, splitting the upstream off, routing to
+`/router/<upstream>/v1/chat/completions`, and sending only the bare model id (the
+id the router prices). This
 lets one key drive the orchestrator on one upstream and sub-agents on another,
 with embeddings/vision/STT/TTS available where the chosen upstream supports them.
 Get the key from your Cumulo Nimbus account (see the cloud docs page); set it on

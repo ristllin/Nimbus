@@ -43,6 +43,7 @@
 #include <solide/storage.h>             // SD mount -> hw.sd
 #include <solide/boards/board_solide_s3.h>  // board pixel count -> hw.ledCount (W10)
 #include "nimbus/orch/world.h"          // SessionInfo / Hardware (composeInputs closure)
+#include "nimbus/orch/router_route.h"   // CUM-369: shared router "<upstream>/<model>" resolution
 
 #include "nimbus/orch/budget.h"         // deriveBudget - brief/fold-slice bytes from the head window
 #include "nimbus/orch/result_store.h"   // recent-results ring (results.get/list)
@@ -724,6 +725,18 @@ static agent::ApplyDeps buildApplyDeps() {
   return d;
 }
 
+// CUM-369: the Cumulo head's live route. Resolved fresh every turn (the selected
+// model can change via NVS after boot) through the SAME rule the sub-session
+// CumuloAdapter uses, so head and sub-session address the router identically:
+// base /router/<upstream>/v1 and the bare model the router prices. A bare id (no
+// '/') keeps the openai upstream. store::orchModel already defaults an empty
+// selector to CUMULO_MODEL; the belt-and-suspenders default keeps it non-empty.
+static nimbus::orch::RouterRoute cumuloHeadRoute() {
+  String m = store::orchModel("cumulo");
+  return nimbus::orch::resolveRouterRoute(
+      std::string((m.length() ? m : String(CUMULO_MODEL)).c_str()));
+}
+
 // Execution-only closures for the portable turn orchestration - every decision
 // (recall gate, host pick, budget/retry/failover ladder, salvage, scheduled-turn
 // rails) lives in lib/harness engine.cpp and is host-tested (test_harness_turn).
@@ -1151,11 +1164,15 @@ static TurnEngine::Deps buildTurnDeps() {
     providers::ProviderDeps pd = deviceProviderDeps();
     pd.customBase       = [] { String b = store::cumuloBase();
                                return std::string((b.length() ? b : String(CUMULO_HOST_DEFAULT)).c_str()); };
-    pd.customPathPrefix = [] { return std::string("/router/openai/v1"); };
+    // CUM-369: derive base path, wire convention, and the priced model from the
+    // ONE resolution the sub-session also uses. A prefixed pick (e.g.
+    // "anthropic/claude-...") routes to /router/anthropic/v1 with conv "anthropic",
+    // which the chat-completions-only head refuses honestly and fails over - never
+    // a prefixed model sent to a hardcoded openai base (403 model_not_priced).
+    pd.customPathPrefix = [] { return cumuloHeadRoute().basePath; };
     pd.customKey        = [] { return std::string(store::cumuloKey().c_str()); };
-    pd.customConv       = [] { return std::string("openai"); };
-    pd.customModel      = [] { String m = store::orchModel("cumulo");
-                               return std::string((m.length() ? m : String(CUMULO_MODEL)).c_str()); };
+    pd.customConv       = [] { return cumuloHeadRoute().upstream; };
+    pd.customModel      = [] { return cumuloHeadRoute().model; };
     return providers::orchTurnCustom(pd, cv, ins, inp, out, err, tools, usage);
   });
   d.hosts.add("zai", [](std::string& cv, const std::string& ins, const std::string& inp,
