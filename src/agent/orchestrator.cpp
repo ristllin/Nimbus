@@ -20,6 +20,7 @@
 #include "loops_subsystem.h"            // loops::checkDue - Local Loops tick (on tg_poll)
 #include "dream_subsystem.h"            // DREAMING: noteTurnEnd (idle-gate quiet clock)
 #include "connectors.h"                 // per-provider connector catalog + attach
+#include "nimbus/orch/connectors_wire.h" // portable attach*Wire (builtinsOnly cumulo route)
 #include "files_subsystem.h"            // files::available - E1 capability manifest
 #include "skills.h"                     // skills::spawnCapsule - per-spawn injection (P2)
 #include "memory_subsystem.h"           // memory::registry/scratchpad/vectors (live World)
@@ -737,6 +738,33 @@ static nimbus::orch::RouterRoute cumuloHeadRoute() {
       std::string((m.length() ? m : String(CUMULO_MODEL)).c_str()));
 }
 
+// CUM-242 x1 item 2: the connector list a CUMULO-routed head advertises. It runs
+// under the shared router org key, so the owner's PRIVATE connectors (remote MCP,
+// first-party) must NOT ride the request - only the generic provider built-ins.
+// The attach builders filter with builtinsOnly=true; this rebuilds the same
+// portable list connectors.cpp feeds them (blob parse + the code-sandbox builtin
+// injection) so an enabled built-in still attaches over the router. No secrets
+// (built-ins authenticate provider-side, so no bearer is resolved).
+static std::vector<nimbus::orch::ConnectorInfo> cumuloRouteConnectors() {
+  std::vector<nimbus::orch::ConnectorInfo> cs;
+  nimbus::orch::parseConnectorsJson(store::connectorsJson().c_str(), cs,
+                                    connectors::kMaxConnectors, nullptr);
+  if (store::codeSandbox()) {
+    bool have = false;
+    for (const auto& e : cs)
+      if ((e.type.empty() ? e.name : e.type) == "code_interpreter" && e.kind == "builtin")
+        have = true;
+    if (!have)
+      for (const char* prov : {"openai", "mistral"}) {
+        nimbus::orch::ConnectorInfo sb;
+        sb.name = "code_interpreter"; sb.type = "code_interpreter";
+        sb.prov = prov; sb.kind = "builtin"; sb.enabled = true; sb.auth = -1;
+        cs.push_back(std::move(sb));
+      }
+  }
+  return cs;
+}
+
 // Execution-only closures for the portable turn orchestration - every decision
 // (recall gate, host pick, budget/retry/failover ladder, salvage, scheduled-turn
 // rails) lives in lib/harness engine.cpp and is host-tested (test_harness_turn).
@@ -1161,18 +1189,57 @@ static TurnEngine::Deps buildTurnDeps() {
   d.hosts.add("cumulo", [](std::string& cv, const std::string& ins, const std::string& inp,
                            std::string& out, std::string& err, const agent::HeadTools* tools,
                            nimbus::orch::TokenUsage* usage) {
+    // CUM-242 tool loop, built ON CUM-369's shared route resolution: a Cumulo head
+    // runs the SELECTED upstream's NATIVE head (its real mid-turn tool loop for
+    // anthropic/openai/mistral) over the router, instead of the old single-shot
+    // chat-completions that ignored `tools`. The "<upstream>/<model>" selector is
+    // split by the SAME cumuloHeadRoute()/resolveRouterRoute the sub-session uses,
+    // so head and sub-session never drift. Then a router-override pd (base =
+    // cumuloBase, key = cumuloKey, orchModel = the bare model) dispatches to that
+    // upstream's orchTurn*, which picks the tool loop vs a single shot from `tools`
+    // + the loop toggle; wire::applyRouter reroutes every request through
+    // /router/<upstream>. This EXTENDS CUM-369: where the single-shot head had to
+    // REFUSE an anthropic pick, the native Messages wire now serves it over the
+    // router. zai (and any name the native fabric does not drive) stays the
+    // single-shot chat-completions path (orchTurnCustom over /router/<upstream>).
+    const nimbus::orch::RouterRoute rr = cumuloHeadRoute();
+    const std::string upstream = rr.upstream;
+    const std::string model = rr.model;
     providers::ProviderDeps pd = deviceProviderDeps();
-    pd.customBase       = [] { String b = store::cumuloBase();
-                               return std::string((b.length() ? b : String(CUMULO_HOST_DEFAULT)).c_str()); };
-    // CUM-369: derive base path, wire convention, and the priced model from the
-    // ONE resolution the sub-session also uses. A prefixed pick (e.g.
-    // "anthropic/claude-...") routes to /router/anthropic/v1 with conv "anthropic",
-    // which the chat-completions-only head refuses honestly and fails over - never
-    // a prefixed model sent to a hardcoded openai base (403 model_not_priced).
-    pd.customPathPrefix = [] { return cumuloHeadRoute().basePath; };
+    pd.routerBase = [] { String b = store::cumuloBase();
+                         return std::string((b.length() ? b : String(CUMULO_HOST_DEFAULT)).c_str()); };
+    pd.routerKey  = [] { return std::string(store::cumuloKey().c_str()); };
+    // The upstream loop steps read pd.key(<upstream>) / pd.orchModel(<upstream>);
+    // over the router BOTH resolve to the router credential + the selected model
+    // regardless of the host arg (applyRouter then swaps in Bearer cumuloKey).
+    pd.key       = [](const char*) { return std::string(store::cumuloKey().c_str()); };
+    pd.orchModel = [model](const char*) { return model; };
+    // Per-route tool advertisement (item 2): a cumulo head advertises provider
+    // BUILT-IN tools only - the account's private connectors stay off the shared
+    // router key. attach*Wire with builtinsOnly=true does the filtering.
+    pd.attachOpenAI = [](JsonDocument& doc) {
+      nimbus::orch::attachOpenAIWire(doc, cumuloRouteConnectors(), nullptr, /*builtinsOnly=*/true);
+    };
+    pd.attachMistral = [](JsonDocument& doc) {
+      nimbus::orch::attachMistralWire(doc, cumuloRouteConnectors(), /*builtinsOnly=*/true);
+    };
+    pd.attachAnthropic = [](JsonDocument& doc) {
+      nimbus::orch::attachAnthropicWire(doc, cumuloRouteConnectors(), nullptr, /*builtinsOnly=*/true);
+    };
+    if (upstream == "anthropic")
+      return providers::orchTurnAnthropic(pd, cv, ins, inp, out, err, tools, usage);
+    if (upstream == "mistral")
+      return providers::orchTurnMistral(pd, cv, ins, inp, out, err, tools, usage);
+    if (upstream == "openai")
+      return providers::orchTurnOpenAI(pd, cv, ins, inp, out, err, tools, usage);
+    // zai / unknown upstream: single-shot chat-completions over /router/<upstream>
+    // (NOT rr.basePath - the zai upstream path carries no /v1, unlike the fabric
+    // upstreams; custRequest maps "/v1/chat/completions" to prefix + "/chat/...").
+    pd.customBase       = pd.routerBase;
+    pd.customPathPrefix = [upstream] { return std::string("/router/") + upstream; };
     pd.customKey        = [] { return std::string(store::cumuloKey().c_str()); };
-    pd.customConv       = [] { return cumuloHeadRoute().upstream; };
-    pd.customModel      = [] { return cumuloHeadRoute().model; };
+    pd.customConv       = [] { return std::string("openai"); };
+    pd.customModel      = [model] { return model; };
     return providers::orchTurnCustom(pd, cv, ins, inp, out, err, tools, usage);
   });
   d.hosts.add("zai", [](std::string& cv, const std::string& ins, const std::string& inp,

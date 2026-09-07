@@ -9,6 +9,7 @@
 #include <time.h>
 
 #include "esp_heap_caps.h"
+#include <solide/memory.h>        // NVS side channel for the verify-reason token
 #include "agent_config.h"
 #include "../sys/agent_log.h"
 #include "../sys/net_util.h"      // tlsClose - RST-close on every path
@@ -41,6 +42,21 @@ static char          g_provider[16] = {};
 static const size_t VERIFY_MIN_MAX8 = 16000;
 
 static void verifyTask(void*);   // spawned per request(); self-deletes
+
+// ---- verify-reason side channel (CUM-77 x1 §4) ------------------------------
+// A short machine token explaining the LAST verify's non-verified outcome, read
+// by the web UI badge as `vfyReason`. Persisted in its OWN NVS key (vrs_<prov>)
+// so the "R:TS" verify slot in store.cpp is untouched (that file is another
+// lane's). See the contract in lanes/L1/PROGRESS.md.
+static String reasonKey(const String& provider) {
+  return String(AKEY_VERIFY_REASON_PFX) + provider;
+}
+static void setReason(const String& provider, const char* rsn) {
+  solide::memory::setString(reasonKey(provider).c_str(), rsn ? rsn : "");
+}
+String reason(const String& provider) {
+  return solide::memory::getString(reasonKey(provider).c_str(), "");
+}
 
 bool request(const String& provider) {
   if (g_pending) return false;  // slot busy - one verify at a time
@@ -360,6 +376,7 @@ static void runOne() {
 
   if (!key.length()) {  // nothing to verify - rejected, no TLS spent
     store::setVerify(provider, 0, (uint32_t)millis());
+    setReason(provider, "");   // rejected carries its own copy; no badge reason
     alogf("verify: %s no key -> rejected", provider.c_str());
     g_pending = false;
     return;
@@ -368,12 +385,17 @@ static void runOne() {
   // the capProbe=2 tick re-verifies unattended (WiFi still rejoining, TLS slot
   // busy behind a turn), and one blip was erasing the catalog's VERIFIED marking
   // until the next success. Definitive verdicts (1 / 0) always overwrite.
-  auto recordVerify = [&](const String& prov, int8_t result) {
+  auto recordVerify = [&](const String& prov, int8_t result, const char* rsn = "") {
     if (result == -1 && store::verifyResult(prov) == 1) {
       alogf("verify: %s transient failure - keeping cached verified", prov.c_str());
+      setReason(prov, "");   // displayed state is still verified: no badge reason
       return;
     }
     store::setVerify(prov, result, (uint32_t)millis());
+    // verify===1 (and a plain rejection) carry their own UI copy, so the reason
+    // token only rides a couldn't-verify (-1). Clearing it on 1/0 stops a stale
+    // "nocredits" from lingering after the account is funded.
+    setReason(prov, result == 1 ? "" : rsn);
   };
   // MUST include MALLOC_CAP_INTERNAL: plain MALLOC_CAP_8BIT counts PSRAM too, so on
   // this 8 MB-PSRAM board the block is always ~megabytes and the guard never fires -
@@ -381,7 +403,7 @@ static void runOne() {
   // 2-slot arbiter lets verify run beside another work-TLS session).
   size_t max8 = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
   if (max8 < VERIFY_MIN_MAX8) {
-    recordVerify(provider, -1);
+    recordVerify(provider, -1, "deferred");
     alogf("verify: %s deferred (max8=%u)", provider.c_str(), (unsigned)max8);
     g_pending = false;
     return;
@@ -389,7 +411,7 @@ static void runOne() {
   // Outlast one full Telegram long-poll cycle (30 s) so a verify queued behind
   // an orchestrator turn still lands instead of bouncing "tls busy".
   if (!arbiter::acquireWork(35000)) {
-    recordVerify(provider, -1);
+    recordVerify(provider, -1, "tlsbusy");
     alogf("verify: %s tls busy", provider.c_str());
     g_pending = false;
     return;
@@ -400,6 +422,7 @@ static void runOne() {
   if (isZai) { hostBuf = zaiPickHost(key); host = hostBuf.c_str(); }
 
   int8_t result = -1;  // couldn't verify; 1 on HTTP 200, 0 on 401/403
+  const char* rsn = "";  // vfyReason token for the couldn't-verify (-1) cases
   {
     WiFiClientSecure client;
     tlsSetup(client);
@@ -446,6 +469,14 @@ static void runOne() {
       result = (code == 200) ? 1
              : (code == 401 || code == 403 || (isTg && code == 404)) ? 0
              : -1;
+      // vfyReason for the -1 cases (contract in lanes/L1/PROGRESS.md). 402 from the
+      // router probe = no credits/subscription; 404 from the cumulo /router/models
+      // probe = a router that predates the wave-2 deploy. Any other non-2xx/4xx
+      // (5xx/timeout) stays a generic couldn't-verify (empty reason).
+      if (result == -1) {
+        if (code == 402)                             rsn = "nocredits";
+        else if (code == 404 && provider == "cumulo") rsn = "router_outdated";
+      }
       // LLM providers: the verify already fetched /v1/models - HARVEST it (owner
       // 2026-07-16: the static model dropdowns were stale, missing current-gen
       // models). Stream the body into a bounded PSRAM buffer, pull every "id" that
@@ -700,6 +731,7 @@ static void runOne() {
       alogf("verify: %s HTTP %d -> %s", provider.c_str(), code,
             result == 1 ? "verified" : result == 0 ? "rejected" : "couldn't verify");
     } else {
+      rsn = "connectfail";
       alogf("verify: %s connect failed -> couldn't verify", provider.c_str());
     }
     tlsClose(client);  // RST-close on EVERY path (connected or not)
@@ -711,7 +743,7 @@ static void runOne() {
   // On a Cumulo key, pull the admin master fallback rule set (provisional; CUM-41).
   if (result == 1 && provider == "cumulo" && host) syncCumuloFallbacks(host, key);
   arbiter::releaseWork();
-  recordVerify(provider, result);
+  recordVerify(provider, result, rsn);
   g_pending = false;  // clear LAST so pending() covers the whole run
 }
 

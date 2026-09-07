@@ -1,6 +1,8 @@
 #pragma once
 #include <ArduinoJson.h>
 
+#include <cctype>
+#include <cstdlib>
 #include <string>
 #include <utility>
 #include <vector>
@@ -55,6 +57,51 @@ inline int exchange(const ProviderDeps& pd, const char* host, uint16_t port, boo
     doc.clear();
   }
   return status;
+}
+
+// Cumulo router HEAD rewrite (CUM-242). When `pd` carries a router override
+// (routerBase() non-empty), rewrite an upstream head request IN PLACE to travel
+// through the router: host <- bare routerBase() (scheme/port honoured: an
+// "http://" base is plain HTTP on port 80, anything else is TLS on 443, an
+// explicit ":port" wins), path <- "/router/<upstream>" + path, and the client's
+// own auth (Authorization / x-api-key) is dropped and replaced by a single
+// "Authorization: Bearer routerKey()" - the router validates that cumulo key and
+// injects the upstream's real provider key server-side. `upstream` is the wire's
+// own provider ("anthropic" | "openai" | "mistral"). Returns true when it
+// rewrote; a no-op returning false leaves everything byte-identical to the direct
+// wire (so a device with no Cumulo head, and every existing wire test, is
+// untouched). Kept here, next to exchange(), so all three provider files share
+// ONE rewrite and it cannot drift between them.
+inline bool applyRouter(const ProviderDeps& pd, const char* upstream,
+                        std::string& host, uint16_t& port, bool& tls, std::string& path,
+                        std::vector<std::pair<std::string, std::string>>& headers) {
+  std::string base = pd.routerBase ? pd.routerBase() : std::string();
+  if (base.empty()) return false;
+  const bool http = base.rfind("http://", 0) == 0;   // plain HTTP only when explicit
+  tls  = !http;
+  port = http ? 80 : 443;
+  size_t sch = base.find("://"); if (sch != std::string::npos) base = base.substr(sch + 3);
+  size_t sl  = base.find('/');   if (sl  != std::string::npos) base = base.substr(0, sl);
+  size_t colon = base.find(':');
+  if (colon != std::string::npos) {
+    port = (uint16_t)atoi(base.c_str() + colon + 1);
+    base = base.substr(0, colon);
+  }
+  host = base;
+  path = std::string("/router/") + upstream + path;
+  // Drop the client's upstream-specific auth; the router sets the real one.
+  std::vector<std::pair<std::string, std::string>> kept;
+  kept.reserve(headers.size() + 1);
+  for (auto& h : headers) {
+    std::string k = h.first;
+    for (char& c : k) c = (char)tolower((unsigned char)c);
+    if (k == "authorization" || k == "x-api-key") continue;
+    kept.push_back(std::move(h));
+  }
+  std::string rk = pd.routerKey ? pd.routerKey() : std::string();
+  if (!rk.empty()) kept.push_back({"Authorization", "Bearer " + rk});
+  headers.swap(kept);
+  return true;
 }
 
 // Serialize a request document into ONE contiguous string (the transport then

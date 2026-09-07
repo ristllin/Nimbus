@@ -294,8 +294,10 @@ std::string connectorConfigError(const ConnectorInfo& c) {
 
 // ---- attach builders ---------------------------------------------------------
 
-void attachOpenAIWire(JsonDocument& d, const std::vector<ConnectorInfo>& cs, const BearerFn& bearer) {
+void attachOpenAIWire(JsonDocument& d, const std::vector<ConnectorInfo>& cs, const BearerFn& bearer,
+                      bool builtinsOnly) {
   for (const ConnectorInfo& c : cs) {
+    if (builtinsOnly && c.kind != "builtin") continue;  // cumulo route: built-ins only
     if (!forwardsToProviderHead(c, "openai")) continue;
     // OpenAI hosted built-ins ride their own tool type, NOT the mcp shape (a
     // builtin routed through the mcp branch would 400 on the missing server_url).
@@ -336,7 +338,7 @@ void attachOpenAIWire(JsonDocument& d, const std::vector<ConnectorInfo>& cs, con
   }
 }
 
-void attachMistralWire(JsonDocument& d, const std::vector<ConnectorInfo>& cs) {
+void attachMistralWire(JsonDocument& d, const std::vector<ConnectorInfo>& cs, bool builtinsOnly) {
   // Two shapes, per the Mistral Conversations API (docs.mistral.ai):
   //   hosted built-in TOOL (web_search, code_interpreter, image_generation,
   //     document_library): {type:"<name>"} - the name IS the tool type.
@@ -344,6 +346,7 @@ void attachMistralWire(JsonDocument& d, const std::vector<ConnectorInfo>& cs) {
   //     {type:"connector", connector_id:"<name-or-uuid>"} - authenticated in
   //     Studio, referenced by name/UUID; no secret on device.
   for (const ConnectorInfo& c : cs) {
+    if (builtinsOnly && c.kind != "builtin") continue;  // cumulo route: built-ins only
     if (!forwardsToProviderHead(c, "mistral")) continue;
     if (c.kind == "builtin") {
       // document_library needs a library id - bare it 422s the whole request
@@ -374,8 +377,11 @@ void attachMistralWire(JsonDocument& d, const std::vector<ConnectorInfo>& cs) {
 }
 
 void attachAnthropicWire(JsonDocument& agentBody, const std::vector<ConnectorInfo>& cs,
-                         const BearerFn& bearer) {
+                         const BearerFn& bearer, bool builtinsOnly) {
   for (const ConnectorInfo& c : cs) {
+    // Anthropic has no built-in connector kind here, so a cumulo route (built-ins
+    // only) attaches NOTHING - the owner's BYO MCP servers stay off the shared key.
+    if (builtinsOnly) continue;
     if (!forwardsToProviderHead(c, "anthropic")) continue;
     if (c.kind != "mcp" || c.url.empty()) continue;  // Anthropic = BYO MCP by URL
     JsonObject s = agentBody["mcp_servers"].add<JsonObject>();

@@ -9,6 +9,7 @@
 #include "../../sys/agent_log.h"
 #include "../../sys/net_util.h"      // tlsClose, tlsSetup
 #include "../../sys/tls_arbiter.h"   // single-TLS arena
+#include "../agent_config.h"         // CUMULO_HOST_DEFAULT (x1 §1b router rewrite)
 #include "../store.h"
 
 namespace agent {
@@ -25,7 +26,40 @@ struct Provider {
   const char* model = nullptr;
   String      key;
   bool        anthropic = false;   // different body shape + auth header
+  // x1 §1b (CUM-77): when set, the call travels through the Cumulo router -
+  // hostBuf/pathBuf back the dynamic host+path, and auth is ALWAYS Bearer (the
+  // router injects the upstream's real key server-side), even for the anthropic
+  // body shape. `anthropic` still selects the body shape (messages vs chat).
+  bool        routed = false;
+  String      hostBuf;
+  String      pathBuf;
 };
+
+// x1 §1b: a Cumulo-only device has no direct vision key, so route the vision
+// chat/messages call through /router/<upstream>. The upstream comes from the
+// cumulo model selection ("<upstream>/<model>", default openai); each upstream
+// keeps its own vision-capable default model. zai has no vision path here.
+bool resolveCumulo(Provider& p) {
+  if (!store::cumuloKey().length()) return false;
+  String sel = store::orchModel("cumulo");
+  int ms = sel.indexOf('/');
+  String up = ms > 0 ? sel.substring(0, ms) : String("openai");
+  const char* vpath = "/v1/chat/completions";
+  if (up == "openai")         { p.model = "gpt-4o-mini";            p.anthropic = false; }
+  else if (up == "mistral")   { p.model = "pixtral-12b-latest";     p.anthropic = false; }
+  else if (up == "anthropic") { p.model = "claude-3-5-haiku-latest"; p.anthropic = true; vpath = "/v1/messages"; }
+  else return false;   // zai / unknown: no router vision path
+  String base = store::cumuloBase(); if (!base.length()) base = CUMULO_HOST_DEFAULT;
+  int sch = base.indexOf("://"); if (sch >= 0) base = base.substring(sch + 3);
+  int sl = base.indexOf('/');    if (sl >= 0) base = base.substring(0, sl);
+  p.hostBuf = base;
+  p.pathBuf = String("/router/") + up + vpath;
+  p.host = p.hostBuf.c_str();
+  p.path = p.pathBuf.c_str();
+  p.key = store::cumuloKey();
+  p.routed = true;
+  return true;
+}
 
 bool resolve(Provider& p) {
   // Follow the configured priority so the device uses the key the owner
@@ -52,8 +86,12 @@ bool resolve(Provider& p) {
            store::anthropicKey(), true};
       return true;
     }
+    if (name == "cumulo" && resolveCumulo(p)) return true;
   }
-  return false;
+  // No direct (or priority-listed cumulo) key matched: fall back to the router if
+  // a Cumulo key is present, so a Cumulo-only device whose priority omits cumulo
+  // still gets vision instead of a silent nothing.
+  return resolveCumulo(p);
 }
 
 const char kB64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -211,11 +249,14 @@ String describeImage(const char* path, const char* mime, ::fs::FS* sourceFs,
 
   c.printf("POST %s HTTP/1.0\r\n", prov.path);
   c.printf("Host: %s\r\n", prov.host);
-  if (prov.anthropic) {
+  if (prov.anthropic && !prov.routed) {
     c.printf("x-api-key: %s\r\n", prov.key.c_str());
     c.print("anthropic-version: 2023-06-01\r\n");
   } else {
+    // Routed (Cumulo) calls always use Bearer with the router key - the router
+    // injects the upstream's real auth - even for the anthropic body shape.
     c.printf("Authorization: Bearer %s\r\n", prov.key.c_str());
+    if (prov.anthropic) c.print("anthropic-version: 2023-06-01\r\n");
   }
   c.print("Content-Type: application/json\r\n");
   c.printf("Content-Length: %u\r\n", (unsigned)bodyLen);

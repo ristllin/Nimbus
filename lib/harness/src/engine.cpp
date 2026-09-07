@@ -224,7 +224,12 @@ std::string TurnEngine::buildDynamicContext() {
   }
   ctx += "[AVAILABLE MODELS] (yours + sub-agents')";
   bool any = false;
-  static const char* kProviders[] = {"openai", "anthropic", "mistral"};
+  // The router heads (cumulo/zai) are first-class keyed hosts now (CUM-242), so a
+  // Cumulo-only device advertises its routable choices here instead of tripping
+  // "(none configured)" and the spawn honesty rails. Each is gated on hasKey() -
+  // a default fleet with no router key is byte-identical to the pre-CUM-242 line.
+  // cumulo choices are the "<upstream>/<model>" ids the router harvests.
+  static const char* kProviders[] = {"openai", "anthropic", "mistral", "cumulo", "zai"};
   for (const char* p : kProviders) {
     if (!d_.cfg.provider.hasKey || !d_.cfg.provider.hasKey(p)) continue;
     ctx += std::string(" ") + p + ": " + (d_.modelChoices ? d_.modelChoices(p) : std::string()) + ";";

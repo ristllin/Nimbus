@@ -333,6 +333,12 @@
 // millis() when the result landed. "vfy_" + provider stays <=15 chars for every
 // provider name we use ("vfy_anthropic" = 13).
 #define AKEY_VERIFY_PFX     "vfy_"
+// Verify-reason side channel (CUM-77 x1 §4): a short machine token explaining the
+// LAST verify's non-verified outcome (nocredits|router_outdated|deferred|
+// connectfail|tlsbusy, "" = none), for the web UI badge. Kept in its OWN key so
+// the "R:TS" verify slot (store.cpp) stays byte-identical. "vrs_" + provider
+// stays <=15 chars ("vrs_anthropic" = 13).
+#define AKEY_VERIFY_REASON_PFX  "vrs_"
 
 // ---- Embedding config for the vector memory (Part B Ph3) --------------------
 // SET-ONCE: vectors from different provider/model/dims are incomparable, so

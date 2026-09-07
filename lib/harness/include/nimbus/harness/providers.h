@@ -69,6 +69,24 @@ struct ProviderDeps {
   // sets "/api/paas/v4" (-> /api/paas/v4/chat/completions, which has no /v1).
   std::function<std::string()> customPathPrefix;
 
+  // Cumulo router HEAD override (CUM-242 tool loop). When routerBase() is
+  // non-empty, the three native head-turn wire helpers (antRequest / the OpenAI
+  // Responses exchange / mistralRequest) rewrite their request to travel THROUGH
+  // the router instead of the direct provider host: host = bare routerBase(),
+  // scheme/port taken from routerBase (http:// = plain 80, else TLS 443), path =
+  // "/router/<upstream>" + path, and the client auth (x-api-key / Bearer) is
+  // replaced by a single "Authorization: Bearer routerKey()" (the router injects
+  // the upstream's real key server-side and drops the client's). This lets a
+  // Cumulo-only device run the SELECTED upstream's native tool loop over the
+  // router with no per-provider loop duplication. Unset/"" = direct provider
+  // hosts, byte-identical to the pre-router wire (so every existing wire test and
+  // every direct-key turn is untouched). Only the cumulo head closure sets these,
+  // on a pd it builds per turn - deviceProviderDeps() leaves them null, so a
+  // direct anthropic/openai/mistral turn on a device that ALSO holds a Cumulo key
+  // is never silently rerouted.
+  std::function<std::string()> routerBase;
+  std::function<std::string()> routerKey;
+
   // Provider-side connector/MCP attach (device: connectors::attach* append tool
   // entries to the request doc). Nullable = none. attachOpenAI rides the OpenAI
   // Responses head + sub-agent dispatch; attachMistral the Conversations

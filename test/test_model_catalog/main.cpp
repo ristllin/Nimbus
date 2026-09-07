@@ -293,6 +293,40 @@ static void test_cumulo_size_class_metadata_overrides_heuristic() {
   TEST_ASSERT_FALSE(opus->apiCaps);
 }
 
+// CUM-242 x1 item 5: the harvest cap (8) is an ORDERING for the choices CSV, NOT
+// a truncation of the routable catalog. parseModelsList (which feeds mcat_<prov>
+// / GET /api/models) keeps EVERY routable id - here a 14-model multi-upstream
+// Cumulo list comes back whole, flagship-first, with each upstream tag intact.
+static void test_cumulo_catalog_is_uncapped_not_truncated() {
+  std::string body =
+      "{\"data\":["
+      "{\"id\":\"openai/gpt-5.6\",\"size_class\":\"large\"},"
+      "{\"id\":\"openai/gpt-5.6-terra\",\"size_class\":\"medium\"},"
+      "{\"id\":\"openai/gpt-5.6-luna\",\"size_class\":\"small\"},"
+      "{\"id\":\"openai/gpt-4o\",\"size_class\":\"medium\"},"
+      "{\"id\":\"anthropic/claude-opus-5\",\"size_class\":\"large\"},"
+      "{\"id\":\"anthropic/claude-sonnet-5\",\"size_class\":\"medium\"},"
+      "{\"id\":\"anthropic/claude-haiku-4-5\",\"size_class\":\"small\"},"
+      "{\"id\":\"mistral/mistral-large-latest\",\"size_class\":\"large\"},"
+      "{\"id\":\"mistral/mistral-small-latest\",\"size_class\":\"small\"},"
+      "{\"id\":\"mistral/codestral-latest\",\"size_class\":\"medium\"},"
+      "{\"id\":\"zai/glm-5.3\",\"size_class\":\"large\"},"
+      "{\"id\":\"zai/glm-5.2\",\"size_class\":\"medium\"},"
+      "{\"id\":\"zai/glm-5.3-flash\",\"size_class\":\"small\"},"
+      "{\"id\":\"openai/gpt-5.5\",\"size_class\":\"large\"}]}";
+  std::vector<ModelInfo> v;
+  size_t n = parseModelsList("cumulo", body, v);
+  // All 14 survive - well past the 8-id choices cap.
+  TEST_ASSERT_EQUAL_UINT(14, n);
+  TEST_ASSERT_TRUE(v.size() > 8);
+  // A late-listed row (past index 8) is still present and correctly tagged.
+  const ModelInfo* glm = find(v, "glm-5.3-flash");
+  TEST_ASSERT_NOT_NULL(glm);
+  TEST_ASSERT_EQUAL_STRING("zai", glm->upstream.c_str());
+  // Flagship-first ordering holds across the whole (uncapped) list.
+  TEST_ASSERT_EQUAL_CHAR('L', v.front().size);
+}
+
 // CUM-242 leg 1: rebuild a catalog from a bare id list (the harvested CSV) when a
 // full /models body did not parse. classifyCatalogEntry honours the Cumulo
 // "<upstream>/<model>" convention and classifies a bare id like classifyModel.
@@ -430,6 +464,7 @@ int main(int, char**) {
   RUN_TEST(test_zai_glm_roles_and_sizes);
   RUN_TEST(test_flagship_first_ordering);
   RUN_TEST(test_cumulo_upstream_split);
+  RUN_TEST(test_cumulo_catalog_is_uncapped_not_truncated);
   RUN_TEST(test_cumulo_size_class_metadata_overrides_heuristic);
   RUN_TEST(test_classify_catalog_entry_from_bare_ids);
   RUN_TEST(test_models_to_json_shape_and_usable_filter);

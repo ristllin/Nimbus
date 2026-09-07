@@ -118,7 +118,13 @@ static int mistralRequest(const ProviderDeps& pd, const char* method, const std:
       {"Authorization", "Bearer " + (pd.key ? pd.key("mistral") : std::string())},
       {"Content-Type", "application/json"},
   };
-  return exchange(pd, kMistralHost, 443, true, method, path, std::move(headers),
+  // Cumulo head: reroute through /router/mistral with the cumulo key (no-op on a
+  // direct pd).
+  std::string host = kMistralHost;
+  uint16_t port = 443; bool tls = true;
+  std::string routedPath = path;
+  wire::applyRouter(pd, "mistral", host, port, tls, routedPath, headers);
+  return exchange(pd, host.c_str(), port, tls, method, routedPath, std::move(headers),
                   std::move(body), timeoutMs, doc, filter);
 }
 

@@ -6,6 +6,7 @@
 #include <esp_heap_caps.h>
 
 #include "../store.h"
+#include "../agent_config.h"   // CUMULO_HOST_DEFAULT (x1 §1b router rewrite)
 #include "version.h"   // NIMBUS_FW_VERSION - the fetch User-Agent
 #include "../../sys/agent_log.h"
 #include "../../sys/net_util.h"
@@ -162,14 +163,34 @@ uint64_t httpsGetStream(const std::string& url,
 // same wire shape, different host/model). Cheap models on purpose.
 int scanVerdict(const std::string& headText, const std::string& url,
                 const std::string& name, std::string& reason) {
-  struct Prov { const char* host; const char* path; const char* model; String key; bool anthropic; };
+  // `routed` (x1 §1b): when set the scan travels through the Cumulo router -
+  // hostBuf/pathBuf back the dynamic host+path, and auth is Bearer with the router
+  // key even for the anthropic body shape (the router injects the real key).
+  struct Prov { const char* host; const char* path; const char* model; String key;
+                bool anthropic; bool routed; String hostBuf; String pathBuf; };
   Prov p{};
   if (store::openaiKey().length())
-    p = {"api.openai.com", "/v1/chat/completions", "gpt-5.6-luna", store::openaiKey(), false};
+    p = {"api.openai.com", "/v1/chat/completions", "gpt-5.6-luna", store::openaiKey(), false, false, {}, {}};
   else if (store::mistralKey().length())
-    p = {"api.mistral.ai", "/v1/chat/completions", "mistral-small-latest", store::mistralKey(), false};
+    p = {"api.mistral.ai", "/v1/chat/completions", "mistral-small-latest", store::mistralKey(), false, false, {}, {}};
   else if (store::anthropicKey().length())
-    p = {"api.anthropic.com", "/v1/messages", "claude-haiku-4-5-20251001", store::anthropicKey(), true};
+    p = {"api.anthropic.com", "/v1/messages", "claude-haiku-4-5-20251001", store::anthropicKey(), true, false, {}, {}};
+  else if (store::cumuloKey().length()) {
+    // Cumulo-only device: route the scan through /router/<upstream>. Upstream from
+    // the cumulo model selection (default/unknown -> openai, which the router
+    // always carries); each upstream keeps a cheap scan model.
+    String sel = store::orchModel("cumulo");
+    int ms = sel.indexOf('/');
+    String up = ms > 0 ? sel.substring(0, ms) : String("openai");
+    if (up == "mistral")        { p.model = "mistral-small-latest";      p.anthropic = false; p.pathBuf = "/router/mistral/v1/chat/completions"; }
+    else if (up == "anthropic") { p.model = "claude-haiku-4-5-20251001"; p.anthropic = true;  p.pathBuf = "/router/anthropic/v1/messages"; }
+    else                        { up = "openai"; p.model = "gpt-5.6-luna"; p.anthropic = false; p.pathBuf = "/router/openai/v1/chat/completions"; }
+    String base = store::cumuloBase(); if (!base.length()) base = CUMULO_HOST_DEFAULT;
+    int sch = base.indexOf("://"); if (sch >= 0) base = base.substring(sch + 3);
+    int sl = base.indexOf('/');    if (sl >= 0) base = base.substring(0, sl);
+    p.hostBuf = base; p.host = p.hostBuf.c_str(); p.path = p.pathBuf.c_str();
+    p.key = store::cumuloKey(); p.routed = true;
+  }
   else { reason = "no provider key for the scan"; return -1; }
 
   std::string prompt =
@@ -191,7 +212,11 @@ int scanVerdict(const std::string& headText, const std::string& url,
   // max_completion_tokens; Mistral and Anthropic keep max_tokens.
   JsonDocument d;
   d["model"] = p.model;
-  if (strcmp(p.host, "api.openai.com") == 0) d["max_completion_tokens"] = 60;
+  // New OpenAI chat models reject max_tokens ("Unsupported parameter") and take
+  // max_completion_tokens; Mistral/Anthropic keep max_tokens. Gate on the MODEL
+  // (gpt-*) not the host, so a Cumulo-routed openai scan (host = router) is
+  // classified correctly.
+  if (String(p.model).startsWith("gpt-")) d["max_completion_tokens"] = 60;
   else d["max_tokens"] = 60;
   JsonObject m = d["messages"].add<JsonObject>();
   m["role"] = "user"; m["content"] = prompt;
@@ -204,10 +229,13 @@ int scanVerdict(const std::string& headText, const std::string& url,
   c.setConnectionTimeout(15000);
   if (!c.connect(p.host, 443)) { arbiter::releaseWork(); reason = "scan connect failed"; return -1; }
   c.printf("POST %s HTTP/1.0\r\nHost: %s\r\n", p.path, p.host);
-  if (p.anthropic) {
+  if (p.anthropic && !p.routed) {
     c.printf("x-api-key: %s\r\nanthropic-version: 2023-06-01\r\n", p.key.c_str());
   } else {
+    // Routed (Cumulo) scans use Bearer with the router key even for the anthropic
+    // body shape - the router injects the upstream's real auth server-side.
     c.printf("Authorization: Bearer %s\r\n", p.key.c_str());
+    if (p.anthropic) c.print("anthropic-version: 2023-06-01\r\n");
   }
   c.printf("Content-Type: application/json\r\nContent-Length: %u\r\nConnection: close\r\n\r\n",
            (unsigned)body.length());

@@ -32,5 +32,13 @@ bool request(const String& provider);
 // True while a verify is queued or running.
 bool pending();
 
+// The machine-readable reason for `provider`'s LAST verify outcome, for the web
+// UI badge (CUM-77 x1 §4; contract in lanes/L1/PROGRESS.md). One of:
+//   nocredits | router_outdated | deferred | connectfail | tlsbusy | "" (none)
+// Empty when verified (result 1), plainly rejected (0), or a generic transient.
+// Emitted into the provider objects of /api/state, /api/orch and /api/models as
+// `vfyReason`. verify===1 overrides it (the badge shows verified regardless).
+String reason(const String& provider);
+
 }  // namespace provider_verify
 }  // namespace agent

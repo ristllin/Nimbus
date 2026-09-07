@@ -1037,6 +1037,7 @@ static void buildOrchState(String& out) {
     o["hasKey"]      = providerKeyed(slot.slug);
     o["verify"]      = agent::store::verifyResult(slot.slug);
     o["vts"]         = agent::store::verifyTs(slot.slug);
+    o["vfyReason"]   = agent::provider_verify::reason(slot.slug);  // CUM-77 x1 §4 badge (L1 contract)
     o["orchModel"]   = agent::store::orchModel(slot.slug);
     o["subModel"]    = agent::store::subModel(slot.slug);
     // Live-harvested list first (the verify pass reads /v1/models), static fallback
@@ -1092,6 +1093,7 @@ static void buildModelsCatalog(String& out, const String& only, bool includeUnus
     JsonObject o = provs[p].to<JsonObject>();
     o["keyed"] = providerKeyed(p);
     o["verified"] = agent::store::verifyResult(p);
+    o["vfyReason"] = agent::provider_verify::reason(p);  // CUM-77 x1 §4 badge (L1 contract)
     o["probe"] = agent::store::capProbe();
     const uint32_t rts = agent::store::verifyTs(p);
     o["refreshedAt"] = rts;

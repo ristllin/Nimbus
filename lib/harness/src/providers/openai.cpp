@@ -44,6 +44,20 @@ static std::vector<std::pair<std::string, std::string>> oaiHeaders(const std::st
   return {{"Authorization", "Bearer " + key}, {"Content-Type", "application/json"}};
 }
 
+// One OpenAI Responses (POST /v1/responses) exchange, rerouted through the Cumulo
+// router when `pd` carries the override (no-op otherwise). Centralizes the
+// applyRouter rewrite so the head loop and the single-shot head share ONE path.
+static int oaiResponses(const ProviderDeps& pd, const std::string& key, std::string body,
+                        uint32_t timeoutMs, JsonDocument& resp, const JsonDocument& filter) {
+  std::string host = kOpenAIHost;
+  uint16_t port = 443; bool tls = true;
+  std::string path = "/v1/responses";
+  auto headers = oaiHeaders(key);
+  wire::applyRouter(pd, "openai", host, port, tls, path, headers);
+  return exchange(pd, host.c_str(), port, tls, "POST", path, std::move(headers),
+                  std::move(body), timeoutMs, resp, filter);
+}
+
 // Glass Box A4 (OpenAI reasoning capture): the Responses `reasoning` parameter and
 // the reasoning-summary output items are ONLY valid on the reasoning families
 // (o-series, gpt-5 and newer) - sending `reasoning` to a chat model (gpt-4o/gpt-4.1)
@@ -442,8 +456,7 @@ nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
     filter["model"] = true;   // served model echo -> fallback disclosure (CUM-236)
 
     JsonDocument resp = makeDoc(pd);
-    int code = exchange(pd, kOpenAIHost, 443, true, "POST", "/v1/responses",
-                        oaiHeaders(key), serializeBody(req), roundMs, resp, filter);
+    int code = oaiResponses(pd, key, serializeBody(req), roundMs, resp, filter);
     if (code <= 0) { out.ok = false; out.error = "network"; return out; }
     if (code != 200) {
       std::string e = "resp HTTP " + std::to_string(code);
@@ -593,8 +606,7 @@ bool orchTurnOpenAI(const ProviderDeps& pd, std::string& convId,
   filter["model"] = true;   // served model echo -> fallback disclosure (CUM-236)
 
   JsonDocument doc = makeDoc(pd);   // response doc -> PSRAM (retained turn content)
-  int code = exchange(pd, kOpenAIHost, 443, true, "POST", "/v1/responses",
-                      oaiHeaders(key), std::move(body), OAI_TIMEOUT_MS, doc, filter);
+  int code = oaiResponses(pd, key, std::move(body), OAI_TIMEOUT_MS, doc, filter);
   if (code <= 0)   { err = "network"; return false; }
   if (code != 200) {
     err = "resp HTTP " + std::to_string(code);

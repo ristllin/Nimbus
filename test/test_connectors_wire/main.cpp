@@ -852,6 +852,58 @@ static void test_capscope_any_provider_rides_the_host() {
   TEST_ASSERT_EQUAL(int(CapScope::OrchestratorDirect), int(connectorScope(c, ps)));
 }
 
+// CUM-242 x1 item 2: a Cumulo-routed session (builtinsOnly=true) advertises the
+// provider BUILT-IN tools only; a direct-key session (false) advertises built-ins
+// PLUS the account's private connectors. The advertised sets must provably differ,
+// so the orchestrator can distinguish cumulo/<model> from direct <model>.
+static void test_cumulo_route_advertises_builtins_only_openai() {
+  std::vector<ConnectorInfo> cs = {
+      mk("code_interpreter", "openai", "builtin"),
+      mk("github", "openai", "mcp", "https://api.githubcopilot.com/mcp/"),
+  };
+  auto bearer = fixedBearer("github", "ghp_secret");
+  // Direct: built-in + private MCP = 2 tools.
+  JsonDocument direct;
+  attachOpenAIWire(direct, cs, bearer, /*builtinsOnly=*/false);
+  TEST_ASSERT_EQUAL(2, direct["tools"].as<JsonArrayConst>().size());
+  // Cumulo route: only the code_interpreter built-in survives.
+  JsonDocument routed;
+  attachOpenAIWire(routed, cs, bearer, /*builtinsOnly=*/true);
+  TEST_ASSERT_EQUAL(1, routed["tools"].as<JsonArrayConst>().size());
+  TEST_ASSERT_EQUAL_STRING("code_interpreter", routed["tools"][0]["type"]);
+  // The sets provably DIFFER.
+  TEST_ASSERT_NOT_EQUAL(direct["tools"].as<JsonArrayConst>().size(),
+                        routed["tools"].as<JsonArrayConst>().size());
+}
+
+static void test_cumulo_route_advertises_builtins_only_mistral() {
+  std::vector<ConnectorInfo> cs = {
+      mk("web_search", "mistral", "builtin"),
+      mk("github", "mistral", "connector", "", "github_app"),
+  };
+  JsonDocument direct;
+  attachMistralWire(direct, cs, /*builtinsOnly=*/false);
+  TEST_ASSERT_EQUAL(2, direct["tools"].as<JsonArrayConst>().size());
+  JsonDocument routed;
+  attachMistralWire(routed, cs, /*builtinsOnly=*/true);
+  TEST_ASSERT_EQUAL(1, routed["tools"].as<JsonArrayConst>().size());
+  TEST_ASSERT_EQUAL_STRING("web_search", routed["tools"][0]["type"]);
+}
+
+static void test_cumulo_route_anthropic_drops_private_mcp() {
+  std::vector<ConnectorInfo> cs = {
+      mk("github", "anthropic", "mcp", "https://api.githubcopilot.com/mcp/"),
+  };
+  auto bearer = fixedBearer("github", "ghp_secret");
+  JsonDocument direct;
+  attachAnthropicWire(direct, cs, bearer, /*builtinsOnly=*/false);
+  TEST_ASSERT_EQUAL(1, direct["mcp_servers"].as<JsonArrayConst>().size());
+  // Anthropic has no built-in kind, so a cumulo route attaches nothing at all.
+  JsonDocument routed;
+  attachAnthropicWire(routed, cs, bearer, /*builtinsOnly=*/true);
+  TEST_ASSERT_FALSE(routed["mcp_servers"].is<JsonArrayConst>());
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_parse_connectors_reads_past_eight);
@@ -897,5 +949,8 @@ int main() {
   RUN_TEST(test_capscope_disabled_is_unavailable);
   RUN_TEST(test_capscope_auth_failed_is_unavailable);
   RUN_TEST(test_capscope_any_provider_rides_the_host);
+  RUN_TEST(test_cumulo_route_advertises_builtins_only_openai);
+  RUN_TEST(test_cumulo_route_advertises_builtins_only_mistral);
+  RUN_TEST(test_cumulo_route_anthropic_drops_private_mcp);
   return UNITY_END();
 }

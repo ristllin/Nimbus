@@ -57,7 +57,13 @@ static int antRequest(const ProviderDeps& pd, const char* method, const std::str
       {"anthropic-beta", "managed-agents-2026-04-01"},
       {"Content-Type", "application/json"},
   };
-  return exchange(pd, kAnthropicHost, 443, true, method, path, std::move(headers),
+  // Cumulo head: reroute through /router/anthropic with the cumulo key (no-op on
+  // a direct pd, so the direct wire and its tests are unchanged).
+  std::string host = kAnthropicHost;
+  uint16_t port = 443; bool tls = true;
+  std::string routedPath = path;
+  wire::applyRouter(pd, "anthropic", host, port, tls, routedPath, headers);
+  return exchange(pd, host.c_str(), port, tls, method, routedPath, std::move(headers),
                   std::move(body), timeoutMs, doc, filter);
 }
 

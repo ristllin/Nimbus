@@ -149,10 +149,21 @@ bool forwardsToProviderHead(const ConnectorInfo& c, const char* head);
 std::string connectorConfigError(const ConnectorInfo& c);
 
 // --- attach builders (append to an existing request/agent JsonDocument) -------
-void attachOpenAIWire(JsonDocument& d, const std::vector<ConnectorInfo>& cs, const BearerFn& bearer);
-void attachMistralWire(JsonDocument& d, const std::vector<ConnectorInfo>& cs);
+// `builtinsOnly` (CUM-242 x1 item 2): when true, ONLY provider built-in tools are
+// advertised (kind=="builtin"); the account's PRIVATE connectors (remote MCP +
+// first-party) are skipped. A Cumulo-routed session sets this - it runs under the
+// shared router org key, so the owner's private MCP servers / first-party
+// connectors (authenticated against the owner's OWN provider account) must not
+// ride the request; only the generic built-ins do. A direct-key session leaves it
+// false and advertises built-ins + the account's private connectors. This is the
+// per-route advertisement split that lets the orchestrator distinguish what a
+// cumulo/<model> head brings vs a direct <model> head.
+void attachOpenAIWire(JsonDocument& d, const std::vector<ConnectorInfo>& cs, const BearerFn& bearer,
+                      bool builtinsOnly = false);
+void attachMistralWire(JsonDocument& d, const std::vector<ConnectorInfo>& cs,
+                       bool builtinsOnly = false);
 void attachAnthropicWire(JsonDocument& agentBody, const std::vector<ConnectorInfo>& cs,
-                         const BearerFn& bearer);
+                         const BearerFn& bearer, bool builtinsOnly = false);
 
 // --- model + UI text ----------------------------------------------------------
 // The "[PROVIDERS & CONNECTORS]" block injected into every turn's context,
