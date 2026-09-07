@@ -111,3 +111,16 @@ repos:
         language: system
         pass_filenames: false
         files: '^(include/web/|include/web_pages\.h|tools/webui_page\.snapshot)'
+      - id: webui-nimbusd-check
+        # The device snapshot (above) and the Virtual Nimbus header are TWO
+        # generated outputs of the same include/web fragments. webui-concat-check
+        # only gates the device snapshot; a fragment change that re-blessed the
+        # snapshot but never regenerated nimbusd/src/webui_page.h shipped a stale
+        # VN page silently (nimbusd's Makefile regenerates it at build time, so
+        # `make test` passed while the committed header drifted - live on
+        # 2026-09-07). This gate fails the commit when that header is stale.
+        name: nimbusd VN webui header is regenerated
+        entry: python3 nimbusd/tools/gen_webui.py --check
+        language: system
+        pass_filenames: false
+        files: '^(include/web/|include/web_pages\.h|tools/webui_page\.snapshot|nimbusd/tools/gen_webui\.py|nimbusd/src/webui_page\.h)'

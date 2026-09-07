@@ -14,6 +14,11 @@ tools/webui_page.snapshot byte-for-byte, so drift from the device's blessed page
 fails the build (the same discipline webui_concat_check.py enforces device-side).
 
 Run from the repo root:  python3 nimbusd/tools/gen_webui.py
+
+With --check it writes nothing and instead exits non-zero when the committed
+nimbusd/src/webui_page.h differs from what it would generate, so a stale VN header
+(a fragment change that never regenerated this file) fails a gate instead of
+silently serving the old page. The pre-commit hook webui-nimbusd-check runs it.
 """
 
 from __future__ import annotations
@@ -105,7 +110,21 @@ def main() -> None:
     lines.append("}  // namespace nimbusd")
     lines.append("")
 
-    OUT.write_text("\n".join(lines))
+    out_text = "\n".join(lines)
+    check = "--check" in sys.argv[1:]
+    if check:
+        current = OUT.read_text() if OUT.exists() else ""
+        if current != out_text:
+            sys.exit(
+                f"FAIL: {OUT.relative_to(ROOT)} is stale - a fragment changed but this "
+                "generated VN header was not regenerated. Run "
+                "'python3 nimbusd/tools/gen_webui.py' and commit the result."
+            )
+        print(f"OK: {OUT.relative_to(ROOT)} is up to date "
+              f"({len(order)} parts, {len(page.encode('utf-8'))} bytes)")
+        return
+
+    OUT.write_text(out_text)
     print(f"OK: wrote {OUT.relative_to(ROOT)} "
           f"({len(order)} parts, {len(page.encode('utf-8'))} bytes)")
 
