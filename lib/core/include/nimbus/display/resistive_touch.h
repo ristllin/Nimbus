@@ -21,7 +21,12 @@
 //   - ONLY every axis pegged at the all-ones sentinel across a debounce window
 //     (the MISO-stuck-high pattern) is treated as a dead controller.
 //
-// Pure + host-tested (no Arduino). The device feeds one raw read per liveness poll.
+// Pure + host-tested (no Arduino). The device feeds one raw read per liveness poll,
+// and SKIPS the poll entirely while the display render task owns the shared SPI bus
+// (serviceTouchLiveness in main.cpp, mirroring the panel poll's rule): a readRaw
+// concurrent with a blit returns noise that can mimic the stuck-4095 signature. A
+// skipped poll feeds nothing, so the verdict and the dead streak both hold - bus
+// contention is never evidence, in either direction.
 
 namespace nimbus::display {
 

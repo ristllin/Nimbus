@@ -153,19 +153,28 @@ read-only and present in both modes):
   board those counters stay zero (no I2C ladder), but a firmware-side liveness poll
   reads the raw controller and sets `degraded` plus `resistiveDead` when it sees the
   persistent stuck-high (all-`4095`) signature of a dead controller - the honest
-  signal that a boot-time "touch up" cannot give.
+  signal that a boot-time "touch up" cannot give. The poll is skipped while the
+  display is mid-frame (touch shares the SPI bus with the render task on solide
+  boards, and a read during a blit returns noise that can mimic the dead
+  signature); a skipped poll holds the last verdict, exactly like the panel
+  liveness poll.
 - `batt.rawPackMv` - the computed pack millivolts latched before the plausibility
   gate rejects it (diagnostics only, never a policy input). An open sense line reads
   near `0` here while a real pack reads ~`7000`, so the two can be told apart over
   HTTP even though both drive `batt.valid` to false. `0` on a board with no voltage
   sense.
-- `batt.senseMissing` - true when battery monitoring is on but the reading has been
-  invalid across a debounce window (an open sense divider). The detector is fed
-  every 30 s regardless of whether the sample is valid (three consecutive invalid
-  checks claim the fault, about a minute after boot), so a fault cannot hide
-  behind the valid-only telemetry refresh. It stays false on a genuinely desk-powered board
-  (monitoring off) and clears the instant a valid sample arrives; the Health panel
-  turns it into a "battery sense not detected" row.
+- `batt.senseMissing` - true when battery monitoring is on, the reading has been
+  invalid across a debounce window (an open sense divider), and a pack is known to
+  have once worked: a valid sample since boot, or the persisted battery model's
+  full-charge anchor / completed discharge segment (both reachable only through
+  valid samples). The detector is fed every 30 s regardless of whether the sample
+  is valid (three consecutive invalid checks claim the fault, about a minute into
+  the invalid streak), so a fault cannot hide behind the valid-only telemetry
+  refresh. It stays false on a genuinely desk-powered board - monitoring off, or a
+  board that never had a readable pack, such as a Solide S3 run desk-powered with
+  no pack fitted (monitoring defaults on there) - and clears the instant a valid
+  sample arrives; the Health panel turns it into a "battery sense not detected"
+  row.
 
 ## Docs follow every commit
 

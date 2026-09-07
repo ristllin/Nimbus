@@ -424,7 +424,11 @@ static nimbus::power::BatteryModel   g_battModel(solide::board().batt.cells);
 static nimbus::power::BatteryEstimate g_battEstimate;
 // Honest open-sense-line detector (FIX 3): fed (monitoringOn, sample.valid) on each
 // telemetry tick; its debounced verdict is surfaced as batt.senseMissing + a health
-// row so an open sense divider is not silently shown as "desk-powered".
+// row so an open sense divider is not silently shown as "desk-powered". The claim
+// is evidence-gated (battery_sense.h): it needs proof a pack once worked - a valid
+// sample this boot, or the persisted anchor loadBattModel() seeds - so a solide
+// board legitimately used desk-powered with no pack (monitoring defaults ON there)
+// keeps its honest "no gauge (desk-powered)" row instead of a false alarm.
 static nimbus::power::SenseMissingDetector g_senseMissing;
 // Resistive (XPT2046) touch liveness (FIX 4): fed one solide::touch::readRaw per
 // low-cadence poll; trips only on the persistent stuck-high (all-4095) dead
@@ -488,6 +492,14 @@ static void loadBattModel() {
   g_battModel.load(st);
   g_battSavedSegments = st.segments;
   g_battSavedAnchor   = st.fullAnchorCellMv;
+  // Durable pack evidence for the open-sense claim (battery_sense.h): a persisted
+  // full-charge anchor or completed discharge segment is reachable ONLY through
+  // valid samples (classifyTrend and the segment path both gate on Sample.valid),
+  // so either one proves a pack once worked on this unit. Seed the detector so an
+  // invalid streak after such history is reported as the fault it is; a unit with
+  // no such history keeps the honest "no gauge (desk-powered)" row. baselineRuntimeSec
+  // is deliberately NOT evidence - the drain-campaign tooling can seed it.
+  if (st.fullAnchorCellMv != 0 || st.segments != 0) g_senseMissing.seedEverSawValid();
 }
 static void saveBattModel() {
   nimbus::power::BatteryModelState st = g_battModel.save();
@@ -3588,6 +3600,17 @@ static void serviceTouchLiveness(uint32_t now) {
   if (!solide::touch::present()) return;
   if (uint32_t(now - g_lastTouchLivenessMs) < 2000) return;   // ~2 s cadence
   g_lastTouchLivenessMs = now;
+  // ⚠ Probe the controller ONLY when the render task is idle - the same rule the
+  // panel-liveness poll enforces (tft_out.cpp pollControllerLiveness). On solide
+  // boards touch shares the SPI bus with the render task, and a readRaw concurrent
+  // with a blit returns noise that can peg every axis and mimic the stuck-4095
+  // dead signature; four colliding polls under sustained animation would false-flag
+  // a live controller as "touch not responding". A skipped poll is NO EVIDENCE,
+  // not a verdict: the detector is not fed, so the last verdict and the dead
+  // streak both hold (the pure class has no skip input; this call-site gate IS the
+  // hold-on-skip). A genuinely dead controller still reads stuck on every idle
+  // poll, so the debounce catches it exactly as before.
+  if (solide::display_tft::busy()) return;
   uint16_t rx = 0, ry = 0, rz = 0;
   const bool gotRaw = solide::touch::readRaw(rx, ry, rz);
   g_touchLiveness.update(gotRaw, rx, ry, rz);

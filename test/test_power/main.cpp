@@ -500,6 +500,7 @@ static void test_sense_detector_is_fed_on_invalid_samples_via_manager() {
   Manager m(&inv, nullptr);
   m.setTelemetryPeriodMs(120000);
   SenseMissingDetector det;  // default 3-check threshold
+  det.seedEverSawValid();    // durable anchor: this unit's pack once read valid
   uint32_t senseFires = 0, telemetryFires = 0, claimedAt = 0xFFFFFFFFu;
   for (uint32_t t = 0; t <= 100000; t += 2000) {
     ManagerActions a = m.tick(t);
@@ -517,35 +518,94 @@ static void test_sense_detector_is_fed_on_invalid_samples_via_manager() {
   // Same invalid stream with monitoring OFF (a genuinely desk-powered board):
   // the cadence still ticks but the detector must never trip.
   SenseMissingDetector off;
+  off.seedEverSawValid();
   Manager m2(&inv, nullptr);
   for (uint32_t t = 0; t <= 100000; t += 2000) {
     ManagerActions a = m2.tick(t);
     if (a.senseTelemetryDue) off.update(false, m2.last().valid);
   }
   TEST_ASSERT_FALSE(off.missing());
+
+  // Same invalid stream, monitoring ON, but NO evidence a pack ever worked: the
+  // desk-powered solide_s3 (pack expected by default, none fitted, floating
+  // sense pin). The v4.4.8 false alarm - must never trip, at any duration.
+  SenseMissingDetector desk;
+  Manager m3(&inv, nullptr);
+  for (uint32_t t = 0; t <= 100000; t += 2000) {
+    ManagerActions a = m3.tick(t);
+    if (a.senseTelemetryDue) TEST_ASSERT_FALSE(desk.update(true, m3.last().valid));
+  }
+  TEST_ASSERT_FALSE(desk.missing());
+  TEST_ASSERT_FALSE(desk.everSawValid());
 }
 
 static void test_sense_missing_predicate() {
   using nimbus::power::senseMissing;
-  TEST_ASSERT_FALSE(senseMissing(false, 99, 3));  // monitoring off: never
-  TEST_ASSERT_FALSE(senseMissing(true, 2, 3));    // streak below threshold
-  TEST_ASSERT_TRUE(senseMissing(true, 3, 3));     // streak at threshold
-  TEST_ASSERT_TRUE(senseMissing(true, 9, 3));     // streak past threshold
-  TEST_ASSERT_FALSE(senseMissing(true, 9, 0));    // zero threshold disables
+  TEST_ASSERT_FALSE(senseMissing(false, true, 99, 3));  // monitoring off: never
+  TEST_ASSERT_FALSE(senseMissing(true, false, 99, 3));  // no pack evidence: never
+  TEST_ASSERT_FALSE(senseMissing(true, true, 2, 3));    // streak below threshold
+  TEST_ASSERT_TRUE(senseMissing(true, true, 3, 3));     // streak at threshold
+  TEST_ASSERT_TRUE(senseMissing(true, true, 9, 3));     // streak past threshold
+  TEST_ASSERT_FALSE(senseMissing(true, true, 9, 0));    // zero threshold disables
 }
 
-// The critical false-positive guard: a genuinely desk-powered board (monitoring
-// OFF) reads invalid forever and must NEVER be reported as a sense fault.
+// The first false-positive guard: a genuinely desk-powered board (monitoring
+// OFF) reads invalid forever and must NEVER be reported as a sense fault - even
+// with pack evidence on record (the owner unfitted the pack and turned
+// monitoring off: honest absent, not a fault).
 static void test_sense_missing_never_trips_when_monitoring_off() {
   nimbus::power::SenseMissingDetector d(3);
+  d.seedEverSawValid();
   for (int i = 0; i < 50; i++) TEST_ASSERT_FALSE(d.update(/*monOn=*/false, /*valid=*/false));
   TEST_ASSERT_FALSE(d.missing());
 }
 
+// The second false-positive guard - the one v4.4.8 shipped without: a solide
+// board used desk-powered with NO pack ever fitted has monitoring on by default
+// and a floating sense pin that reads invalid forever. With no evidence a pack
+// once worked, the detector must never claim "sense not detected"; the health
+// row stays the honest "no gauge (desk-powered)" absent row.
+static void test_sense_missing_desk_solide_without_pack_never_trips() {
+  nimbus::power::SenseMissingDetector d(3);
+  for (int i = 0; i < 200; i++) TEST_ASSERT_FALSE(d.update(/*monOn=*/true, /*valid=*/false));
+  TEST_ASSERT_FALSE(d.missing());
+  TEST_ASSERT_FALSE(d.everSawValid());
+  TEST_ASSERT_TRUE(d.invalidStreak() >= 3);  // the streak alone must not be the verdict
+}
+
+// A pack that WORKED and then went open-sense (the owner's nimbus-light) is the
+// fault this detector exists for: valid samples establish evidence in-session,
+// then the invalid streak trips at the debounce threshold. The valid phase also
+// pins the healthy-pack case (freenove or solide with a real pack): never trips.
+static void test_sense_missing_trips_after_pack_once_worked() {
+  nimbus::power::SenseMissingDetector d(3);
+  for (int i = 0; i < 10; i++) TEST_ASSERT_FALSE(d.update(true, true));  // healthy pack
+  TEST_ASSERT_TRUE(d.everSawValid());
+  TEST_ASSERT_FALSE(d.update(true, false));  // 1
+  TEST_ASSERT_FALSE(d.update(true, false));  // 2
+  TEST_ASSERT_TRUE(d.update(true, false));   // 3 -> tripped
+  TEST_ASSERT_TRUE(d.update(true, false));   // stays tripped
+}
+
+// A unit whose pack history survives in NVS (full-charge anchor / discharge
+// segments) but boots with the sense line already open: the device seeds the
+// evidence at load, so the fault is claimed after the normal debounce - the
+// open-divider-at-boot case must not hide behind the evidence gate.
+static void test_sense_missing_seeded_anchor_trips_from_boot() {
+  nimbus::power::SenseMissingDetector d(3);
+  d.seedEverSawValid();
+  TEST_ASSERT_TRUE(d.everSawValid());
+  TEST_ASSERT_FALSE(d.update(true, false));  // 1
+  TEST_ASSERT_FALSE(d.update(true, false));  // 2
+  TEST_ASSERT_TRUE(d.update(true, false));   // 3 -> tripped
+}
+
 // It does not flip on a single invalid sample; it trips only after the debounce
-// window of consecutive invalid samples while monitoring is on.
+// window of consecutive invalid samples while monitoring is on (evidence via a
+// prior valid sample, the boot-session path).
 static void test_sense_missing_needs_debounce_then_trips() {
   nimbus::power::SenseMissingDetector d(3);
+  TEST_ASSERT_FALSE(d.update(true, true));   // pack works: evidence, no streak
   TEST_ASSERT_FALSE(d.update(true, false));  // 1
   TEST_ASSERT_FALSE(d.update(true, false));  // 2
   TEST_ASSERT_TRUE(d.update(true, false));   // 3 -> tripped
@@ -556,6 +616,7 @@ static void test_sense_missing_needs_debounce_then_trips() {
 // recovered) - no lingering false fault.
 static void test_sense_missing_clears_immediately_on_valid() {
   nimbus::power::SenseMissingDetector d(3);
+  d.seedEverSawValid();
   d.update(true, false);
   d.update(true, false);
   TEST_ASSERT_TRUE(d.update(true, false));   // tripped
@@ -607,6 +668,9 @@ int main() {
   RUN_TEST(test_alert_gate_unsynced_clock);
   RUN_TEST(test_sense_missing_predicate);
   RUN_TEST(test_sense_missing_never_trips_when_monitoring_off);
+  RUN_TEST(test_sense_missing_desk_solide_without_pack_never_trips);
+  RUN_TEST(test_sense_missing_trips_after_pack_once_worked);
+  RUN_TEST(test_sense_missing_seeded_anchor_trips_from_boot);
   RUN_TEST(test_sense_missing_needs_debounce_then_trips);
   RUN_TEST(test_sense_missing_clears_immediately_on_valid);
   RUN_TEST(test_sense_missing_default_threshold);

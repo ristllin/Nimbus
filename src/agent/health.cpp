@@ -142,9 +142,13 @@ std::string reportJson(const Env& env) {
                  env.bleConnected ? "linked" : (env.bleOn ? "advertising" : "off")};
   // Battery: a valid gauge shows percent. An INVALID reading has two honest cases
   // the old row conflated as "desk-powered": monitoring off (genuinely no pack) is
-  // absent, but monitoring ON with a persistently invalid reading is an open sense
-  // line - a degraded fault, not a desk (FIX 3). battSenseMissing is the debounced
-  // (monitoring-on AND invalid) verdict, so it is false on a real desk board.
+  // absent, and monitoring ON with a persistently invalid reading is degraded ONLY
+  // when a pack is known to have once worked (FIX 3, evidence-gated: v4.4.8
+  // shipped the gate-less version and false-alarmed on solide boards used
+  // desk-powered with no pack, where monitoring defaults ON and the floating
+  // sense pin reads invalid forever). battSenseMissing is the debounced
+  // (monitoring-on AND invalid AND everSawValid) verdict from battery_sense.h,
+  // so a desk board - monitoring off OR no pack history - stays absent.
   rows[n++] = {"battery", "Battery",
                env.battValid ? kOk : (env.battSenseMissing ? kDegraded : kAbsent),
                // Percent only - no "(ext power)" claim: that flag is a voltage-trend

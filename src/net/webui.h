@@ -61,9 +61,11 @@ struct WebConfig {
   // Re-arm the ADC + model after a battery HARDWARE config change (divider/capacity).
   std::function<void()> reconfigureBattery;
   // Debounced honest "the battery sense line is not detected" verdict, computed on
-  // the main task (monitoring ON AND samples invalid across a debounce window).
-  // Surfaced as batt.senseMissing and in the health report so an open sense divider
-  // is distinguishable from a genuinely desk-powered board. Null => reported false.
+  // the main task (monitoring ON AND samples invalid across a debounce window AND
+  // evidence a pack once worked - see battery_sense.h). Surfaced as
+  // batt.senseMissing and in the health report so an open sense divider is
+  // distinguishable from a genuinely desk-powered board, without false-alarming on
+  // a solide board that never had a pack fitted. Null => reported false.
   std::function<bool()> batterySenseMissing;
   // Debounced resistive (XPT2046) touch liveness: true when the controller reads
   // the persistent stuck-high (all-4095) dead signature. Lets touch{} and the
