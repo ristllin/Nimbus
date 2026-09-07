@@ -16,10 +16,11 @@ the rest, run in the AI provider's cloud), see [Connectors](connectors.md).
 ## The device as a server
 
 The device serves MCP over your LAN at `POST /mcp` (JSON-RPC 2.0), behind the
-per-device access token (`/mcp?t=<token>`). `tools/list` returns the device's
-tool catalog; `tools/call` runs one. This is the same registry the Orchestrator
-uses on its own turns, so what a LAN client can call and what the assistant can
-call never drift apart.
+per-device access token sent as the `X-Nimbus-Token` request header (the body is
+raw JSON-RPC, so the header is the only place the token goes). `tools/list`
+returns the device's tool catalog; `tools/call` runs one. This is the same
+registry the Orchestrator uses on its own turns, so what a LAN client can call and
+what the assistant can call never drift apart.
 
 ## The device as a client
 
