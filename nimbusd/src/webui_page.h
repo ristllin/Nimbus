@@ -431,6 +431,7 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <div style="height:20px;background:var(--raise2);border:1px solid var(--line2);border-radius:6px;margin:10px 0 6px;overflow:hidden;position:relative">
 <div id=battbar style="height:100%;width:0;background:linear-gradient(90deg,#3a7,#7fd1c8);transition:width .3s"></div>
 <span id=battpct style="position:absolute;left:8px;top:2px;font-size:12px;color:#eee">-</span></div>
+<p class=hint id=battWait style="display:none"></p>
 <table><tbody>
 <tr><td>Voltage</td><td id=battmv>-</td></tr>
 <tr><td>Estimated time left</td><td id=batttime>-</td></tr>
@@ -1139,10 +1140,14 @@ function showAuth(){
   b.innerHTML='<div style="max-width:420px">'+
     '<img src=/logo.svg alt="" style="width:96px;height:96px;display:block;margin:0 auto 14px;background:#fff;border-radius:50%;padding:6px">'+
     '<h2 style="margin:0 0 8px">Sign in to Nimbus</h2>'+
-    '<p style="color:#9ab">Scan the Sign-in QR on the device to sign in with no typing. Find it under Settings &gt; Connectivity &gt; Sign-in QR.</p>'+
-    '<button id=authshow type=button style="background:none;border:none;color:#7fd1c8;text-decoration:underline;cursor:pointer;font-size:14px;padding:4px">Enter the code instead</button>'+
-    '<div id=authcode style="display:none;margin-top:10px">'+
-    '<p style="color:#9ab;font-size:13px">Can\'t scan? On the device, tap Show code under Settings &gt; Connectivity &gt; Sign-in QR, then enter the device sign-in code here. It is valid for about 10 minutes.</p>'+
+    '<p style="color:#9ab">Scan the Sign-in QR on the device screen to sign in with no typing.</p>'+
+    // Can't scan (this same phone, no camera, an ephemeral webview)? The code path is
+    // a first-class control right here, not a menu safari (CUM-384): a real button
+    // reveals the field, and the reveal says exactly where to read the code on the
+    // device - the Show code affordance on its own Sign-in QR screen.
+    '<button id=authshow type=button style="background:none;border:1px solid #2ea394;color:#7fd1c8;cursor:pointer;font-size:14px;padding:8px 16px;border-radius:9px;margin-top:4px">Enter the code instead</button>'+
+    '<div id=authcode style="display:none;margin-top:12px">'+
+    '<p style="color:#9ab;font-size:13px">On the device screen, open the Sign-in QR (Settings &gt; Connectivity) and tap Show code, then type the device sign-in code here. It lasts about 10 minutes.</p>'+
     '<input id=authtok placeholder="device sign-in code" style="width:240px;padding:8px;font-size:15px"> '+
     '<button id=authuse style="padding:8px 16px;font-size:15px">Continue</button>'+
     '<p id=autherr style="color:#e88;font-size:13px;margin-top:8px"></p></div>'+
@@ -1760,7 +1765,7 @@ function applyState(d){
     if(d.autoUpd!==undefined){const au=$('autoUpd');
       if(au&&document.activeElement!==au){au.checked=!!d.autoUpd;
         au.onchange=()=>{const f=new FormData();f.append('autoUpd',au.checked?'1':'0');
-          fetch('/api/config',{method:'POST',body:f}).then(()=>toast(au.checked?'Auto-update on':'Auto-update off'));};}}
+          fetch('/api/config',{method:'POST',body:f}).then(jok).then(()=>toast(au.checked?'Auto-update on':'Auto-update off')).catch(failToast);};}}
     // Check-for-updates: the POST only STARTS the check on the device (202
     // {ok:true}); the verdict is not in that accept body - the check runs async.
     // So poll /api/state until the definitive otaResult settles and read the
@@ -1839,14 +1844,18 @@ function applyState(d){
           .then(()=>{toast('Restart to apply');            // CUM-270: offer the control directly
             var br=$('battRestartRow'); if(br)br.style.display='';}).catch(failToast);};}
   }
-  // battery analytics panel (Device tab) - shown only when telemetry is valid
+  // Battery hardware section (Device tab). The pack config (thresholds, capacity,
+  // chemistry, dividers) is reachable whenever a battery object is present, even
+  // before a valid reading, so a freenove / all-in-one can be set up before a pack
+  // is fitted (CUM-386). Only the LIVE readout below waits for bt.valid; the config
+  // and its Save button are always populated and wired.
   var bt=d.batt;
-  if(bt&&bt.valid){
+  // HOSTED (Virtual Nimbus) has no pack/sense hardware, so applyHostedBattery()
+  // collapses #battsec to one honest platform line - never re-show it here.
+  if(bt&&!HOSTED){
     $('battsec').style.display='';
-    $('battbar').style.width=Math.max(0,Math.min(100,bt.percent))+'%';
-    $('battpct').textContent=bt.percent+'%';
-    var _bmv=bt.mvTrue||bt.millivolts;
-    $('battmv').textContent=(_bmv?_bmv+' mV':'-');
+    // --- pack config: populated + wired in both the valid and no-reading states
+    // (webui.cpp always emits these fields regardless of bt.valid) ---
     if(document.activeElement!==$('sleepMv')&&$('sleepMv'))$('sleepMv').value=(bt.sleepMv!==undefined?bt.sleepMv:6000);
     if(document.activeElement!==$('wakeMv')&&$('wakeMv'))$('wakeMv').value=(bt.wakeMv!==undefined?bt.wakeMv:6500);
     if($('sleepOvr'))$('sleepOvr').checked=!!bt.sleepOvr;
@@ -1864,49 +1873,80 @@ function applyState(d){
     var _rtr=$('battRtopRow'),_rbr=$('battRbotRow');
     if(_rtr)_rtr.style.display=bt.divFixed?'none':'';
     if(_rbr)_rbr.style.display=bt.divFixed?'none':'';
-    // never hide the measurement behind the correction: raw stays one hover away
-    $('battmv').title=(bt.mvTrue&&bt.mvTrue!==bt.millivolts)
-      ?('ADC-corrected (BATTCAL anchor). Raw reading: '+bt.millivolts+' mV - the S3 ADC under-reads a full 2S pack.')
-      :'raw ADC reading (uncalibrated - run BATTCAL on a full pack to correct the top band)';
-    var m=bt.minsToEmpty;
-    $('batttime').textContent=(m===undefined||m<0)?(bt.onExtPower?'voltage stable - no drain':'estimating…')
-      :(m>=60?(Math.floor(m/60)+'h '+(m%60)+'m'):(m+'m'));
-    $('battrate').textContent=(bt.ratePctHr!==undefined&&bt.ratePctHr>0)?(bt.ratePctHr.toFixed(1)+' %/hr'):'-';
-    $('batthealth').textContent=(bt.health!==undefined)?(bt.health+'%'+(bt.segments?(' ('+bt.segments+' cycles learned)'):' (baseline pending)')):'-';
-    // Voltage-trend wording only: charging/onExtPower are inferences from the ADC
-    // trend - there is no charge-detect hardware, so never state them as fact.
-    $('battsrc').textContent=bt.charging?'voltage rising (inferred)':bt.onExtPower?'voltage stable (inferred)':'draining';
-    $('battcal').textContent=bt.calibrated?'calibrated ✓':'not calibrated (reads low near full)';
-    var bcb=$('battcalBtn'); if(bcb) bcb.onclick=()=>{
-  var pb=$('protSave'); if(pb)pb.onclick=function(){
-    var f=new FormData();
-    f.append('sleepMv',$('sleepMv').value||'6000');
-    f.append('wakeMv',$('wakeMv').value||'6500');
-    f.append('sleepOvr',$('sleepOvr').checked?'1':'0');
-    f.append('brightOvr',$('brightOvr').checked?'1':'0');
-    // battery hardware (divider resistors + capacity) - send only if present + changed
-    if($('battCapMah'))f.append('battCapMah',$('battCapMah').value||'3500');
-    if($('battChem'))f.append('battChem',$('battChem').value||'liion');
-    if($('battCells'))f.append('battCells',$('battCells').value||'0');
-    if($('battCurve'))f.append('battCurve',$('battCurve').value||'');
-    // On a fixed-divider board the sense resistors are a dead knob (hidden), so
-    // don't send them - the ADC uses the board's onboard divider regardless.
-    if($('battRtop')&&!window._battDivFixed)f.append('battRtop',$('battRtop').value||'220000');
-    if($('battRbot')&&!window._battDivFixed)f.append('battRbot',$('battRbot').value||'100000');
-    var dividerChanged=!window._battDivFixed&&$('battRtop')&&$('battRbot')&&window._battState&&(+$('battRtop').value!==window._battState.rtop||+$('battRbot').value!==window._battState.rbot);
-    uiConfirmAll([
-      {cond:$('brightOvr').checked, msg:'Allow full LED brightness?\n\nSustained full brightness can overheat the device and damage it permanently. The thermal guard stays active. This resets at restart.', opts:{ok:'Allow Full Brightness',danger:true}},
-      {cond:$('sleepOvr').checked, msg:'Skip low-battery protection?\n\nThe battery can discharge to a point where it no longer recharges and must be replaced. This applies to measurement runs only and resets at restart.', opts:{ok:'Skip Protection',danger:true}},
-      {cond:dividerChanged, msg:'Changed the sense resistors?\n\nThis re-scales every voltage reading, so the full-charge calibration is now stale. Re-run Calibrate on a fully charged pack afterward.', opts:{ok:'Save Changes'}}
-    ]).then(function(ok){ if(!ok)return;
-      fetch('/api/config',{method:'POST',body:f}).then(function(rs){return rs.json().catch(function(){return{};});}).then(function(j){pb.textContent='Saved';setTimeout(function(){pb.textContent='Save';},1200);if(j&&j.warn){toast(j.warn);loadState();}});
-    });
-  };
-      uiConfirm('Set the battery to 100%?\n\nOnly do this with the pack fully charged - the reading becomes this device\'s 100% anchor.',{ok:'Set To 100%'}).then(function(ok){ if(!ok)return;
-        run({status:'battcalMsg',btn:bcb,pending:'Calibrating…',
-          work:()=>fetch('/api/battcal',{method:'POST'}).then(jok),
-          ok:()=>{setTimeout(loadState,1200);return 'Calibrated - this reading is now the 100% anchor.';},
-          error:e=>'Couldn\'t calibrate'+(e?(' ('+e+')'):'')+' - try again.'});});};
+    // Save the pack config. Wired UNCONDITIONALLY (a prior refactor nested this
+    // inside the Calibrate handler, so Save did nothing until Calibrate was pressed
+    // first, and the whole block only ran on a valid reading - CUM-386).
+    var pb=$('protSave'); if(pb)pb.onclick=function(){
+      var f=new FormData();
+      f.append('sleepMv',$('sleepMv').value||'6000');
+      f.append('wakeMv',$('wakeMv').value||'6500');
+      f.append('sleepOvr',$('sleepOvr').checked?'1':'0');
+      f.append('brightOvr',$('brightOvr').checked?'1':'0');
+      // battery hardware (divider resistors + capacity) - send only if present + changed
+      if($('battCapMah'))f.append('battCapMah',$('battCapMah').value||'3500');
+      if($('battChem'))f.append('battChem',$('battChem').value||'liion');
+      if($('battCells'))f.append('battCells',$('battCells').value||'0');
+      if($('battCurve'))f.append('battCurve',$('battCurve').value||'');
+      // On a fixed-divider board the sense resistors are a dead knob (hidden), so
+      // don't send them - the ADC uses the board's onboard divider regardless.
+      if($('battRtop')&&!window._battDivFixed)f.append('battRtop',$('battRtop').value||'220000');
+      if($('battRbot')&&!window._battDivFixed)f.append('battRbot',$('battRbot').value||'100000');
+      var dividerChanged=!window._battDivFixed&&$('battRtop')&&$('battRbot')&&window._battState&&(+$('battRtop').value!==window._battState.rtop||+$('battRbot').value!==window._battState.rbot);
+      uiConfirmAll([
+        {cond:$('brightOvr').checked, msg:'Allow full LED brightness?\n\nSustained full brightness can overheat the device and damage it permanently. The thermal guard stays active. This resets at restart.', opts:{ok:'Allow Full Brightness',danger:true}},
+        {cond:$('sleepOvr').checked, msg:'Skip low-battery protection?\n\nThe battery can discharge to a point where it no longer recharges and must be replaced. This applies to measurement runs only and resets at restart.', opts:{ok:'Skip Protection',danger:true}},
+        {cond:dividerChanged, msg:'Changed the sense resistors?\n\nThis re-scales every voltage reading, so the full-charge calibration is now stale. Re-run Calibrate on a fully charged pack afterward.', opts:{ok:'Save Changes'}}
+      ]).then(function(ok){ if(!ok)return;
+        var pbtn=$('protSave');
+        fetch('/api/config',{method:'POST',body:f}).then(function(rs){return rs.json().catch(function(){return{};});}).then(function(j){if(pbtn){pbtn.textContent='Saved';setTimeout(function(){pbtn.textContent='Save';},1200);}toast((j&&j.warn)?j.warn:'Battery settings saved');if(j&&j.warn)loadState();}).catch(failToast);
+      });
+    };
+    // --- live readout: real values when a reading is valid, honest 'waiting' copy
+    // otherwise (never hide the whole section behind the reading - CUM-386) ---
+    var bcb=$('battcalBtn'),bw=$('battWait');
+    if(bt.valid){
+      if(bw)bw.style.display='none';
+      $('battbar').style.width=Math.max(0,Math.min(100,bt.percent))+'%';
+      $('battpct').textContent=bt.percent+'%';
+      var _bmv=bt.mvTrue||bt.millivolts;
+      $('battmv').textContent=(_bmv?_bmv+' mV':'-');
+      // never hide the measurement behind the correction: raw stays one hover away
+      $('battmv').title=(bt.mvTrue&&bt.mvTrue!==bt.millivolts)
+        ?('ADC-corrected (BATTCAL anchor). Raw reading: '+bt.millivolts+' mV - the S3 ADC under-reads a full 2S pack.')
+        :'raw ADC reading (uncalibrated - run BATTCAL on a full pack to correct the top band)';
+      var m=bt.minsToEmpty;
+      $('batttime').textContent=(m===undefined||m<0)?(bt.onExtPower?'voltage stable - no drain':'estimating…')
+        :(m>=60?(Math.floor(m/60)+'h '+(m%60)+'m'):(m+'m'));
+      $('battrate').textContent=(bt.ratePctHr!==undefined&&bt.ratePctHr>0)?(bt.ratePctHr.toFixed(1)+' %/hr'):'-';
+      $('batthealth').textContent=(bt.health!==undefined)?(bt.health+'%'+(bt.segments?(' ('+bt.segments+' cycles learned)'):' (baseline pending)')):'-';
+      // Voltage-trend wording only: charging/onExtPower are inferences from the ADC
+      // trend - there is no charge-detect hardware, so never state them as fact.
+      $('battsrc').textContent=bt.charging?'voltage rising (inferred)':bt.onExtPower?'voltage stable (inferred)':'draining';
+      $('battcal').textContent=bt.calibrated?'calibrated ✓':'not calibrated (reads low near full)';
+      if(bcb){bcb.disabled=false;bcb.title='';bcb.onclick=()=>{
+        uiConfirm('Set the battery to 100%?\n\nOnly do this with the pack fully charged - the reading becomes this device\'s 100% anchor.',{ok:'Set To 100%'}).then(function(ok){ if(!ok)return;
+          run({status:'battcalMsg',btn:bcb,pending:'Calibrating…',
+            work:()=>fetch('/api/battcal',{method:'POST'}).then(jok),
+            ok:()=>{setTimeout(loadState,1200);return 'Calibrated - this reading is now the 100% anchor.';},
+            error:e=>'Couldn\'t calibrate'+(e?(' ('+e+')'):'')+' - try again.'});});};}
+    } else {
+      // No valid reading yet (freenove with no pack fitted, or monitoring off). The
+      // pack config above stays usable; keep the live rows honest.
+      var waiting=!!bt.battMon;
+      if(bw){bw.style.display='';
+        bw.textContent=waiting
+          ?'Monitoring is on, waiting for a reading. Set the pack details below; calibrate once it reads.'
+          :'Turn on Monitor the battery under Battery mode to read the pack. You can set the pack details below now.';}
+      $('battbar').style.width='0%';
+      $('battpct').textContent='-';
+      $('battmv').textContent=waiting?'waiting':'-';$('battmv').title='';
+      $('batttime').textContent='-';
+      $('battrate').textContent='-';
+      $('batthealth').textContent='-';
+      $('battsrc').textContent=waiting?'no reading yet':'monitoring off';
+      $('battcal').textContent='-';
+      if(bcb){bcb.disabled=true;bcb.title='Calibration needs a battery reading.';bcb.onclick=null;}
+    }
   } else { $('battsec').style.display='none'; }
   // Device identity readouts (P2): live SSID/mDNS; the input is only synced when
   // the user isn't mid-edit (3 s poll would stomp their typing otherwise).
@@ -3818,11 +3858,11 @@ function renderMemList(d){
     t.innerHTML='<div>'+nsChip+esc(e.content)+'</div>'+
       '<div class=hint>'+bits.join(' · ')+'</div>';
     const del=document.createElement('button'); del.textContent='x'; del.title='delete';
-    del.onclick=()=>memVecOp('delete',e.id);
+    del.onclick=()=>memVecOp('delete',e.id,null,'Memory deleted');
     const pin=document.createElement('button');
     pin.textContent=e.permanent?'unpin':'pin';
     pin.title=e.permanent?'let it decay/expire again':'pin (never forgotten)';
-    pin.onclick=()=>memVecOp(e.permanent?'temporary':'permanent',e.id);
+    pin.onclick=()=>memVecOp(e.permanent?'temporary':'permanent',e.id,null,e.permanent?'Memory unpinned':'Memory pinned');
     row.appendChild(t); row.appendChild(pin); row.appendChild(del); host.appendChild(row);
   });
 }
@@ -3871,9 +3911,11 @@ function loadNsUsage(){
   }).catch(()=>{host.textContent='Usage unavailable - try again.';});
 }
 function memPage(dir){_memOffset=Math.max(0,_memOffset+dir*_memPageN);loadMemList();}
-function memVecOp(op,id,confirm){
+function memVecOp(op,id,confirm,okMsg){
   fetch('/api/mem/vector?op='+op+(id?('&id='+encodeURIComponent(id)):'')+(confirm?('&confirm='+encodeURIComponent(confirm)):''),{method:'POST'})
-    .then(()=>{loadMemList();loadMemStats();loadNsUsage();});
+    .then(jok)
+    .then(()=>{loadMemList();loadMemStats();loadNsUsage();if(okMsg)toast(okMsg);})
+    .catch(failToast);   // was silent on both success and failure (CUM-385)
 }
 function loadScratch(){
   if(!canPoll())return;
@@ -3893,13 +3935,13 @@ function loadMemCfg(){
 }
 $('memsearch').onclick=loadMemList;
 $('memq').addEventListener('keydown',e=>{if(e.key==='Enter')loadMemList();});
-$('memdedupe').onclick=()=>memVecOp('dedupe');
-$('memflushnp').onclick=()=>{uiConfirm('Delete all temporary memories?\n\nMemories marked permanent are kept.',{ok:'Delete Temporary',danger:true}).then(ok=>{if(ok)memVecOp('flushnp');});};
+$('memdedupe').onclick=()=>memVecOp('dedupe',null,null,'Duplicates removed');
+$('memflushnp').onclick=()=>{uiConfirm('Delete all temporary memories?\n\nMemories marked permanent are kept.',{ok:'Delete Temporary',danger:true}).then(ok=>{if(ok)memVecOp('flushnp',null,null,'Temporary memories deleted');});};
 if($('memprev'))$('memprev').onclick=()=>memPage(-1);
 if($('memnext'))$('memnext').onclick=()=>memPage(1);
 if($('memflushall'))$('memflushall').onclick=()=>{
   const n=(window._memTotal||0);
-  uiPrompt('Delete ALL '+n+' memories, permanent ones included? This cannot be undone.\n\nType DELETE to confirm.',{ok:'Delete All',danger:true,confirmWord:'DELETE',placeholder:'DELETE'}).then(p=>{if(p&&p.trim().toUpperCase()==='DELETE')memVecOp('flush',null,'DELETE');});};
+  uiPrompt('Delete ALL '+n+' memories, permanent ones included? This cannot be undone.\n\nType DELETE to confirm.',{ok:'Delete All',danger:true,confirmWord:'DELETE',placeholder:'DELETE'}).then(p=>{if(p&&p.trim().toUpperCase()==='DELETE')memVecOp('flush',null,'DELETE','All memories deleted');});};
 $('cfgsave').onclick=()=>{
   fetch('/api/mem/config',{method:'PUT',headers:{'Content-Type':'application/x-www-form-urlencoded'},
     body:'retrieval_count='+(+$('cfg_rc').value)+'&relevance_threshold='+(+$('cfg_rt').value)+
@@ -4216,7 +4258,9 @@ function loadTools(){
     if(!d.ok){bar.style.width='0';msg.textContent='No signal from the microphone.';console.log('mic: no data - check I2S wiring (BCLK 15 / WS 18 / SD 16)');return;}
     bar.style.width=Math.min(100,Math.round(d.rms/40))+'%';      // ~same scale as the on-ring VU
     msg.textContent='Mic level: rms '+d.rms+' · peak '+d.peak;
-  }).catch(()=>{});
+  }).catch(()=>{   // stop the runaway poll and say so, rather than metering in silence
+    if(micTimer){clearInterval(micTimer);micTimer=null;$('micBtn').textContent='Mic Meter';}
+    bar.style.width='0';msg.textContent='Mic meter stopped - device unreachable.';});
   $('micBtn').onclick=()=>{
     if(micTimer){clearInterval(micTimer);micTimer=null;$('micBtn').textContent='Mic Meter';bar.style.width='0';msg.textContent='Idle.';return;}
     $('micBtn').textContent='Stop Mic Meter';micTimer=setInterval(poll,250);poll();
@@ -4231,8 +4275,8 @@ function loadTools(){
     }).catch(()=>msg.textContent='Loopback test failed - try again.');};
 })();
 // ---- Telegram access (P8): chips + first-message approval + public mode ----
-function tgPost(u,b){return fetch(u,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
-  body:new URLSearchParams(b).toString()}).then(jok).then(loadTelegram).catch(failToast);}
+function tgPost(u,b,okMsg){return fetch(u,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
+  body:new URLSearchParams(b).toString()}).then(jok).then(()=>{if(okMsg)toast(okMsg);loadTelegram();}).catch(failToast);}
 // v3.7.0 people: role + limits per chat, fetched alongside the allowlist.
 // These three were REFERENCED by the panel below and never defined - the
 // ReferenceError threw inside the forEach, rejected the enclosing promise, and
@@ -4320,12 +4364,12 @@ function loadTelegram(){
     if(!(d.allow||[]).length&&!d.public)cb.innerHTML='<p class=hint>No one allowed yet - anyone who messages the bot will appear above for approval.</p>';
   }).catch(()=>{if($('tgChips'))$('tgChips').innerHTML='<p class=hint>Telegram unavailable</p>';});
 }
-$('tgAddBtn').onclick=()=>{const id=$('tgAddId').value.trim();if(id){tgPost('/api/telegram/add',{id:id,name:$('tgAddName').value.trim()});$('tgAddId').value='';$('tgAddName').value='';}};
+$('tgAddBtn').onclick=()=>{const id=$('tgAddId').value.trim();if(id){tgPost('/api/telegram/add',{id:id,name:$('tgAddName').value.trim()},'Member added');$('tgAddId').value='';$('tgAddName').value='';}};
 $('tgPublic').onchange=()=>{
-  if(!$('tgPublic').checked){tgPost('/api/telegram/public',{on:0});return;}
+  if(!$('tgPublic').checked){tgPost('/api/telegram/public',{on:0},'Open access off');return;}
   uiConfirm('Allow anyone to message this device?\n\nAnyone who finds your bot on Telegram can give it instructions and spend your API credits.',{ok:'Allow Public Access',danger:true}).then(ok=>{
     if(!ok){$('tgPublic').checked=false;return;}
-    tgPost('/api/telegram/public',{on:1});
+    tgPost('/api/telegram/public',{on:1},'Open access on');
   });
 };
 loadTenants().then(loadTelegram);

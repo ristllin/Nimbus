@@ -187,6 +187,7 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 <div style="height:20px;background:var(--raise2);border:1px solid var(--line2);border-radius:6px;margin:10px 0 6px;overflow:hidden;position:relative">
 <div id=battbar style="height:100%;width:0;background:linear-gradient(90deg,#3a7,#7fd1c8);transition:width .3s"></div>
 <span id=battpct style="position:absolute;left:8px;top:2px;font-size:12px;color:#eee">-</span></div>
+<p class=hint id=battWait style="display:none"></p>
 <table><tbody>
 <tr><td>Voltage</td><td id=battmv>-</td></tr>
 <tr><td>Estimated time left</td><td id=batttime>-</td></tr>
