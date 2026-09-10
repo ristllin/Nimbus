@@ -7,7 +7,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <type_traits>
 #include <vector>
+
+#include "nimbus/cloud/psram_vector.h"  // PsVector: staging on PSRAM on device (CUM-387)
 
 namespace nimbus {
 namespace cloud {
@@ -59,9 +62,9 @@ void encodeClose(uint16_t code, const uint8_t mask[4], std::string& out);
 // --- inbound parser -----------------------------------------------------------
 
 struct Message {
-  Opcode op = Opcode::Text;         // Text/Binary (reassembled) or a control frame
-  std::vector<uint8_t> payload;     // application data, or control payload
-  uint16_t closeCode = 0;           // set when op == Close (0 if none supplied)
+  Opcode op = Opcode::Text;              // Text/Binary (reassembled) or a control frame
+  nimbus::cloud::PsVector<uint8_t> payload;  // application data (PSRAM on device, CUM-387)
+  uint16_t closeCode = 0;                // set when op == Close (0 if none supplied)
 };
 
 // Incremental server->device frame parser. Feed raw bytes as they arrive; pull
@@ -77,8 +80,8 @@ class Parser {
   bool protocolError() const { return error_; }
 
  private:
-  std::vector<uint8_t> buf_;         // unparsed bytes
-  std::vector<uint8_t> frag_;        // reassembly of a fragmented data message
+  nimbus::cloud::PsVector<uint8_t> buf_;   // unparsed inbound bytes (PSRAM on device, CUM-387)
+  nimbus::cloud::PsVector<uint8_t> frag_;  // reassembly of a fragmented data message (PSRAM)
   Opcode fragOp_ = Opcode::Text;     // opcode of the in-progress data message
   bool inFragment_ = false;
   bool error_ = false;
@@ -91,6 +94,15 @@ class Parser {
   Scan scanHeader_(size_t off, size_t& hdr, uint64_t& plen, Opcode& op, bool& fin) const;
   bool emitFrame_(Opcode op, bool fin, const uint8_t* pl, uint64_t plen);
 };
+
+#if defined(NIMBUS_RELAY_PSRAM_BODY)
+// Anti-regrowth guard (CUM-387), enforced by every firmware build: the inbound WS frame
+// staging + reassembly + the decoded message payload must stay PSRAM-backed. An inbound
+// `req` can reach the 16 KB frame cap; on internal SRAM that was a top low-water sink.
+static_assert(std::is_same<decltype(Message::payload)::allocator_type,
+                           nimbus::cloud::PsramAlloc<uint8_t>>::value,
+              "relay inbound WS message payload must stay PSRAM-backed (CUM-387)");
+#endif
 
 }  // namespace ws
 }  // namespace cloud

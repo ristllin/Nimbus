@@ -8,46 +8,30 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
 // The decoded response body can be a full device UI page, larger than the scarce
 // internal SRAM. On device (NIMBUS_RELAY_PSRAM_BODY, set as a build flag for every
-// firmware env so the type is identical across TUs) the body lives in PSRAM; on host
-// it is a plain std::vector. Only the allocator differs; the API is unchanged.
-#if defined(NIMBUS_RELAY_PSRAM_BODY)
-#include <esp_heap_caps.h>
-namespace nimbus {
-namespace cloud {
-template <class T>
-struct PsramAlloc {
-  using value_type = T;
-  PsramAlloc() = default;
-  template <class U>
-  PsramAlloc(const PsramAlloc<U>&) {}
-  T* allocate(std::size_t n) {
-    void* p = heap_caps_malloc(n * sizeof(T), MALLOC_CAP_SPIRAM);
-    if (!p) p = heap_caps_malloc(n * sizeof(T), MALLOC_CAP_8BIT);  // fall back to internal
-    return static_cast<T*>(p);
-  }
-  void deallocate(T* p, std::size_t) { heap_caps_free(p); }
-};
-template <class A, class B>
-bool operator==(const PsramAlloc<A>&, const PsramAlloc<B>&) { return true; }
-template <class A, class B>
-bool operator!=(const PsramAlloc<A>&, const PsramAlloc<B>&) { return false; }
-}  // namespace cloud
-}  // namespace nimbus
-#endif
+// firmware env so the type is identical across TUs) the body - and the unparsed staging
+// buffer - live in PSRAM; on host they are plain std::vectors. Only the allocator
+// differs; the API is unchanged. The allocator now lives in psram_vector.h so the WS
+// frame parser shares one definition (CUM-387).
+#include "nimbus/cloud/psram_vector.h"
 
 namespace nimbus {
 namespace cloud {
 namespace http_replay {
 
+using BodyBuf = nimbus::cloud::PsVector<uint8_t>;
+
 #if defined(NIMBUS_RELAY_PSRAM_BODY)
-using BodyBuf = std::vector<uint8_t, nimbus::cloud::PsramAlloc<uint8_t>>;
-#else
-using BodyBuf = std::vector<uint8_t>;
+// Anti-regrowth guard (CUM-387), enforced by every firmware build: the relay response
+// body and its unparsed staging must stay PSRAM-backed. Reverting either to a plain
+// internal-SRAM vector fails the device compile, not the field.
+static_assert(std::is_same<BodyBuf::allocator_type, nimbus::cloud::PsramAlloc<uint8_t>>::value,
+              "relay response body/staging must stay PSRAM-backed (CUM-387)");
 #endif
 
 using Headers = std::vector<std::pair<std::string, std::string>>;
@@ -96,7 +80,7 @@ class ResponseParser {
   void feedBodyLength_();
   void feedBodyUntilClose_();
 
-  std::vector<uint8_t> buf_;   // unparsed bytes (bounded by framing; small)
+  BodyBuf buf_;                // unparsed staging bytes (PSRAM on device, CUM-387)
   BodyBuf body_;               // decoded body (PSRAM on device)
   Headers outHeaders_;
   State state_ = State::Head;
