@@ -117,8 +117,48 @@ size_t b64EncodedLen(size_t rawLen);
 void b64EncodeRaw(const uint8_t* data, size_t len, char* out);
 // Standard base64 (RFC 4648, '+'/'/', '=' padding). Appends to `out`.
 void b64Encode(const uint8_t* data, size_t len, std::string& out);
-// Returns false on invalid input. Tolerates missing padding and internal whitespace.
-bool b64Decode(const char* b64, size_t len, std::vector<uint8_t>& out);
+
+// Decode base64 into any byte container exposing clear()/reserve()/push_back(uint8_t) -
+// a std::vector<uint8_t> (host, JWT segments) or a PSRAM-backed PsVector<uint8_t> so the
+// device decodes a tunneled body straight into PSRAM, off the scarce internal heap
+// (CUM-387). Returns false on invalid input. Tolerates missing padding and whitespace.
+// Header-inline (was a .cpp definition) so the container type is a template parameter.
+inline int b64SextetValue(char c) {
+  if (c >= 'A' && c <= 'Z') return c - 'A';
+  if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+  if (c >= '0' && c <= '9') return c - '0' + 52;
+  if (c == '+') return 62;
+  if (c == '/') return 63;
+  return -1;  // '=' and whitespace handled by the caller
+}
+template <class ByteVec>
+bool b64Decode(const char* b64, size_t len, ByteVec& out) {
+  out.clear();
+  out.reserve((len / 4) * 3 + 3);
+  int quad[4];
+  int q = 0;
+  for (size_t i = 0; i < len; i++) {
+    char c = b64[i];
+    if (c == '=' || c == '\r' || c == '\n' || c == ' ' || c == '\t') continue;
+    int v = b64SextetValue(c);
+    if (v < 0) return false;
+    quad[q++] = v;
+    if (q == 4) {
+      out.push_back((uint8_t)((quad[0] << 2) | (quad[1] >> 4)));
+      out.push_back((uint8_t)((quad[1] << 4) | (quad[2] >> 2)));
+      out.push_back((uint8_t)((quad[2] << 6) | quad[3]));
+      q = 0;
+    }
+  }
+  if (q == 1) return false;  // a single leftover sextet is impossible
+  if (q == 2) {
+    out.push_back((uint8_t)((quad[0] << 2) | (quad[1] >> 4)));
+  } else if (q == 3) {
+    out.push_back((uint8_t)((quad[0] << 2) | (quad[1] >> 4)));
+    out.push_back((uint8_t)((quad[1] << 4) | (quad[2] >> 2)));
+  }
+  return true;
+}
 
 }  // namespace cloud
 }  // namespace nimbus

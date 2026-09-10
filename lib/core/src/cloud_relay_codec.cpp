@@ -181,42 +181,8 @@ void b64Encode(const uint8_t* data, size_t len, std::string& out) {
   b64EncodeRaw(data, len, &out[start]);
 }
 
-static inline int b64Val(char c) {
-  if (c >= 'A' && c <= 'Z') return c - 'A';
-  if (c >= 'a' && c <= 'z') return c - 'a' + 26;
-  if (c >= '0' && c <= '9') return c - '0' + 52;
-  if (c == '+') return 62;
-  if (c == '/') return 63;
-  return -1;  // '=' and whitespace handled by the caller
-}
-
-bool b64Decode(const char* b64, size_t len, std::vector<uint8_t>& out) {
-  out.clear();
-  out.reserve((len / 4) * 3 + 3);
-  int quad[4];
-  int q = 0;
-  for (size_t i = 0; i < len; i++) {
-    char c = b64[i];
-    if (c == '=' || c == '\r' || c == '\n' || c == ' ' || c == '\t') continue;
-    int v = b64Val(c);
-    if (v < 0) return false;
-    quad[q++] = v;
-    if (q == 4) {
-      out.push_back((uint8_t)((quad[0] << 2) | (quad[1] >> 4)));
-      out.push_back((uint8_t)((quad[1] << 4) | (quad[2] >> 2)));
-      out.push_back((uint8_t)((quad[2] << 6) | quad[3]));
-      q = 0;
-    }
-  }
-  if (q == 1) return false;  // a single leftover sextet is impossible
-  if (q == 2) {
-    out.push_back((uint8_t)((quad[0] << 2) | (quad[1] >> 4)));
-  } else if (q == 3) {
-    out.push_back((uint8_t)((quad[0] << 2) | (quad[1] >> 4)));
-    out.push_back((uint8_t)((quad[1] << 4) | (quad[2] >> 2)));
-  }
-  return true;
-}
+// b64Decode moved to relay_codec.h as a container-templated inline (CUM-387): the device
+// decodes a tunneled body straight into a PSRAM vector, off the scarce internal heap.
 
 }  // namespace cloud
 }  // namespace nimbus

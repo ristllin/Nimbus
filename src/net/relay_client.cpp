@@ -230,11 +230,18 @@ bool doLoopback(const std::string& method, const std::string& path,
   uint8_t* buf = (uint8_t*)heap_caps_malloc(kBuf, MALLOC_CAP_SPIRAM);
   if (!buf) buf = (uint8_t*)heap_caps_malloc(kBuf, MALLOC_CAP_8BIT);
   if (!buf) { c.stop(); return false; }
+  // CUM-387 diagnostic: track the INTERNAL-SRAM low-water reached while the response
+  // streams in. The staging (ws frame, response body, and the parser's unparsed bytes)
+  // is PSRAM-backed, so this shows the relay's real per-serve internal footprint and
+  // proves the buffers stay OFF the scarce internal heap (docs/memory-model.md ethos).
+  size_t intMin = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
   uint32_t deadline = millis() + kLoopbackTimeoutMs;
   while (millis() < deadline && !rp.complete() && !rp.error()) {
     int n = readSome(c, buf, kBuf, 200);
     if (n > 0) {
       rp.feed(buf, (size_t)n);
+      size_t f = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+      if (f < intMin) intMin = f;
     } else if (n < 0) {
       rp.endOfStream();
       break;
@@ -244,9 +251,10 @@ bool doLoopback(const std::string& method, const std::string& path,
   heap_caps_free(buf);
   c.stop();
   // Permanent instrumentation (device evidence; the CUM-174 release gate asserts on
-  // this line): which target served, connect latency, status, and body size.
-  agent::alogf("relay: loopback via=%s conn=%ums status=%d bytes=%u", via, connMs,
-               rp.status(), (unsigned)rp.body().size());
+  // this line): which target served, connect latency, status, body size, and the
+  // internal-SRAM low-water during the serve (intMin, CUM-387).
+  agent::alogf("relay: loopback via=%s conn=%ums status=%d bytes=%u intMin=%u", via, connMs,
+               rp.status(), (unsigned)rp.body().size(), (unsigned)intMin);
   return rp.complete();
 }
 
@@ -305,7 +313,7 @@ std::string headerValue(const http_replay::Headers& headers, const char* nameLow
 // bodyB64 can't blow the scarce internal-SRAM decode.
 bool replayReq(const ReqFrame& req, http_replay::ResponseParser& rp) {
   http_replay::Headers hdrs;
-  std::vector<uint8_t> body;
+  http_replay::BodyBuf body;  // decoded request body: PSRAM on device (CUM-387)
   // Collect headers into the portable vector.
   if (!req.headers.isNull()) {
     for (JsonPairConst kv : req.headers) {
@@ -536,7 +544,7 @@ void handleUploadBegin(const UploadFrame& u) {
 // and gets the honest error at uend, rather than hanging on a stalled window.
 void handleUploadChunk(const UploadFrame& u) {
   if (!g_up.active || g_up.id != (u.id ? u.id : "")) return;  // stale / wrong id
-  std::vector<uint8_t> slice;
+  http_replay::BodyBuf slice;  // decoded upload chunk: PSRAM on device (CUM-387)
   if (u.bodyB64 && u.bodyB64[0]) {
     if (strlen(u.bodyB64) > kMaxInboundFrame ||
         !b64Decode(u.bodyB64, strlen(u.bodyB64), slice)) {
