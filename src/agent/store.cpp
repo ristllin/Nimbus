@@ -161,12 +161,30 @@ String cloudCred() { return solide::memory::getString(AKEY_CLOUD_CRED, ""); }
 String cloudHost() { return solide::memory::getString(AKEY_CLOUD_HOST, "app.cumulo-nimbus.ai"); }
 String cloudName() { return solide::memory::getString(AKEY_CLOUD_NAME, ""); }
 bool cloudPaired() { return cloudDeviceId().length() > 0 && cloudCred().length() > 0; }
-void setCloudPairing(const String& deviceId, const String& cred, const String& host,
+bool setCloudPairing(const String& deviceId, const String& cred, const String& host,
                      const String& name) {
-  solide::memory::setString(AKEY_CLOUD_DEVID, deviceId);
-  solide::memory::setString(AKEY_CLOUD_CRED, cred);
-  if (host.length()) solide::memory::setString(AKEY_CLOUD_HOST, host);
-  solide::memory::setString(AKEY_CLOUD_NAME, name);
+  auto writeAll = [&]() -> bool {
+    solide::memory::setString(AKEY_CLOUD_DEVID, deviceId);
+    solide::memory::setString(AKEY_CLOUD_CRED, cred);
+    if (host.length()) solide::memory::setString(AKEY_CLOUD_HOST, host);
+    solide::memory::setString(AKEY_CLOUD_NAME, name);
+    // The pairing is usable iff BOTH the id and the credential read back (cloudPaired()).
+    // A void write on a full NVS no-ops silently, so verify against the store.
+    return cloudDeviceId() == deviceId && cloudCred() == cred;
+  };
+  if (writeAll()) return true;
+  // NVS-starved. The credential is critical and load-bearing; the mcat_ catalog
+  // caches are large and REBUILDABLE (each re-harvests on its next verify / GET
+  // /api/models). Evict them and retry so a claimed device never logs "paired" yet
+  // silently fails to save its credential and reverts to idle - the failure that
+  // read as a permanent portal "Never connected" (mirrors provider_verify's
+  // verdict-vs-catalog reclaim; same 20 KB starvation, live-caught with 5 keyed
+  // providers).
+  static const char* kCatProv[] = {"openai", "anthropic", "mistral", "zai",
+                                    "cumulo", "custom", nullptr};
+  for (int i = 0; kCatProv[i]; ++i)
+    solide::memory::eraseKey((String("mcat_") + kCatProv[i]).c_str());
+  return writeAll();
 }
 void clearCloudPairing() {
   solide::memory::setString(AKEY_CLOUD_DEVID, "");
