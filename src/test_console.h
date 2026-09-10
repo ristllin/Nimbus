@@ -40,6 +40,13 @@ struct Hooks {
   // exactly the case a test must be able to see - a board that silently fell
   // back to a legacy value looks identical to a working one if STATUS echoes the setting.
   std::function<bool()>    screenIsTft;
+  // scrok - is the colour panel confirmed up and answering RIGHT NOW (CUM-388).
+  // The machine-readable form of the health "screen" row: true only when the panel
+  // bound at boot, is not fault-injected absent, and the debounced liveness verdict
+  // is not "not responding". A wrong-variant flash binds the panel blindly but the
+  // controller never answers, so this reads 0 - the field tools/setup_device.py and
+  // HIL read instead of trusting "the board is online".
+  std::function<bool()>    panelResponding;
   // Feed ONE byte of a synthetic nsn frame through the same decoder/mapper/
   // router path a real BLE frame takes. Backs NSNFEED: it lets the notifier UI
   // (session cards, status colours) be driven with no broker and no BLE - which

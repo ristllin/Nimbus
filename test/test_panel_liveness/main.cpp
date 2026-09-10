@@ -154,6 +154,63 @@ static void test_probed_mapping_reflects_content() {
   TEST_ASSERT_EQUAL(PanelStatus::NotResponding, panelStatus(true, true, true));
 }
 
+// scrok (CUM-388): the machine-readable "screen confirmed up and answering" bit
+// that the STATUS field and the boot signal both report. Its truth table must
+// match the health "screen" row exactly (kOk == bound && !fault && !notResponding),
+// so the flasher's guard and the health row cannot ever disagree.
+static void test_screen_responding_matches_health_ok() {
+  using nimbus::display::screenResponding;
+  // The one healthy case: bound at boot, not fault-injected, controller answering.
+  TEST_ASSERT_TRUE(screenResponding(/*boundOk=*/true, /*fault=*/false, /*notResp=*/false));
+  // A wrong-variant flash: bound blindly, but the controller never answers -> 0.
+  TEST_ASSERT_FALSE(screenResponding(true, false, /*notResp=*/true));
+  // Boot bring-up failed (dead panel / wrong scrModel) -> not confirmed up.
+  TEST_ASSERT_FALSE(screenResponding(/*boundOk=*/false, false, false));
+  // Fault-injected absent (test FAULT screen on): simulated-absent is never "up",
+  // which is exactly how the on-device negative path drives scrok=0.
+  TEST_ASSERT_FALSE(screenResponding(true, /*fault=*/true, false));
+  // notResponding can never be masked by boundOk, and fault can never be masked by
+  // a stale not-responding=false: any one disqualifier forces 0.
+  TEST_ASSERT_FALSE(screenResponding(false, true, true));
+}
+
+// The boot one-shot signal classifies the same signals into the three outcomes,
+// so a genuinely-dead panel is surfaced without a false variant claim.
+static void test_boot_panel_signal_classifies_three_outcomes() {
+  using nimbus::display::BootPanelSignal;
+  using nimbus::display::bootPanelSignal;
+  // Bound + answering -> the normal healthy boot (PANEL scrok=1).
+  TEST_ASSERT_EQUAL(int(BootPanelSignal::Responding),
+                    int(bootPanelSignal(/*boundOk=*/true, /*notResp=*/false)));
+  // Bound but silent -> the wrong-variant signature (loud line + scrok=0).
+  TEST_ASSERT_EQUAL(int(BootPanelSignal::NotResponding),
+                    int(bootPanelSignal(true, /*notResp=*/true)));
+  // begin() failed -> surfaced as a hint, distinct from the variant claim. A dead
+  // panel that never bound reads InitFailed even if the (unmeasured) liveness bit
+  // has not latched, so the honest hint always wins over a hard variant claim.
+  TEST_ASSERT_EQUAL(int(BootPanelSignal::InitFailed),
+                    int(bootPanelSignal(/*boundOk=*/false, /*notResp=*/false)));
+  TEST_ASSERT_EQUAL(int(BootPanelSignal::InitFailed),
+                    int(bootPanelSignal(false, true)));
+}
+
+// End to end from the debounced detector: a not-responding stream drives scrok to
+// 0, and a healthy stream keeps it 1 - the same PanelControllerLiveness the device
+// feeds, so the pure predicates are exercised against the real verdict source.
+static void test_scrok_follows_the_debounced_verdict() {
+  using nimbus::display::screenResponding;
+  PanelControllerLiveness live(3);
+  // Healthy stream: never trips, scrok stays 1.
+  for (int i = 0; i < 10; i++) live.update(/*didRead=*/true, /*healthy=*/true);
+  TEST_ASSERT_TRUE(screenResponding(true, false, live.notResponding()));
+  // Controller goes silent: below threshold scrok holds 1, at threshold it drops.
+  live.update(true, false);
+  live.update(true, false);
+  TEST_ASSERT_TRUE(screenResponding(true, false, live.notResponding()));  // streak 2 < 3
+  live.update(true, false);
+  TEST_ASSERT_FALSE(screenResponding(true, false, live.notResponding())); // streak 3 -> 0
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_freenove_rddid_zero_reads_responding);
@@ -165,5 +222,8 @@ int main() {
   RUN_TEST(test_threshold_one_and_zero_floor);
   RUN_TEST(test_unprobed_mapping_never_false_healthy);
   RUN_TEST(test_probed_mapping_reflects_content);
+  RUN_TEST(test_screen_responding_matches_health_ok);
+  RUN_TEST(test_boot_panel_signal_classifies_three_outcomes);
+  RUN_TEST(test_scrok_follows_the_debounced_verdict);
   return UNITY_END();
 }

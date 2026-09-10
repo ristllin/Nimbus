@@ -245,6 +245,14 @@ void dispatch(String line) {
     // when the fail-soft path trips they differ, and that is precisely the case
     // a test has to be able to see.
     const char* scr = (s_h.screenIsTft && s_h.screenIsTft()) ? "tft" : "eink";
+    // scrok= is the honest "panel is up AND answering" bit (CUM-388), NOT the
+    // stored driver preference scr= reports: a wrong-variant flash (Solide image on
+    // a Freenove) reads scr=tft while the controller is dead. It reuses the same
+    // debounced verdict the health "screen" row does, so a flasher / HIL can catch
+    // the black-glass-but-online case instead of trusting scr= alone. Absent hook
+    // (never in a wired console build) defaults to 1 so a missing seam is not read
+    // as a false fault. Sits after heap= (the tolerant zone), like scr=.
+    const int scrok = (s_h.panelResponding ? (s_h.panelResponding() ? 1 : 0) : 1);
     // board= is the compile-time SOLIDE_BOARD slug (pinout identity, distinct from
     // the runtime scr=). Appended at the very END so nothing before heap= shifts.
 #ifndef SOLIDE_BOARD
@@ -252,11 +260,11 @@ void dispatch(String line) {
 #endif
 #define NIMBUS_STR2(x) #x
 #define NIMBUS_STR(x) NIMBUS_STR2(x)
-    Serial.printf("STATUS fw=" NIMBUS_FW_VERSION " build=" NIMBUS_FW_BUILD " mode=%d wifi=%d ip=%s rssi=%d heap=%u scr=%s want=%s minheap=%u psram=%u "
+    Serial.printf("STATUS fw=" NIMBUS_FW_VERSION " build=" NIMBUS_FW_BUILD " mode=%d wifi=%d ip=%s rssi=%d heap=%u scr=%s scrok=%d want=%s minheap=%u psram=%u "
                   "nvsdeg=%d sd=%s sdlost=%d vec=%d/%d flashfull=%d faults=0x%02x jobs=%d sfx=%s/%u/%s vol=%u sync=%s drain=%d/%d restmv=%u ota=%s lastOta=%s uptime=%lu board=%s\n",
                   mode,
                   int(wifi), ip.c_str(), rssi, unsigned(ESP.getFreeHeap()),
-                  scr, agent::store::screenModel().c_str(),
+                  scr, scrok, agent::store::screenModel().c_str(),
                   unsigned(ESP.getMinFreeHeap()), unsigned(ESP.getPsramSize()),
                   int(nimbus::sys::nvsDegraded()),
                   ms.sdPresent ? "present" : "absent", int(agent::memory::sdLost()),

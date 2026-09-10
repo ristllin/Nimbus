@@ -67,6 +67,8 @@
 #include "solide/touch.h"     // hold-to-talk release detection on a touch board
 #include "nimbus/touch_cal.h"  // persisted resistive-touch calibration
 #include "nimbus/display/screen_model.h"  // absent-vs-explicit scrModel notice rule (CUM-189)
+#include "nimbus/display/panel_controller.h"  // scrok / boot panel signal (CUM-388)
+#include "nimbus/fault.h"                  // SCREEN fault injection -> scrok=0 (CUM-388)
 #include "nimbus_board_flip.h"            // per-board display-flip base (CUM-189)
 #include "nimbus/tft_render/menu_tap.h"  // portable tap -> menu-FSM mapping
 #include "hw/ring_out.h"
@@ -567,6 +569,65 @@ static volatile bool g_apHandoffArmed = false;
 static volatile uint32_t g_dropApAfterMs = 0;
 static uint32_t      g_lastApReconcileMs = 0;  // periodic AP<->STA reconcile (self-heal)
 static solide::BeginResult g_hal{};            // per-subsystem HAL health from solide::begin()
+static bool          g_bootPanelSignaled = false;  // one-shot boot panel signal fired (CUM-388)
+
+// The live "screen confirmed up and answering" verdict (CUM-388): the ONE source
+// the STATUS scrok field and the boot panel signal both read. It mirrors the
+// health "screen" row through the pure screenResponding() predicate so the two can
+// never drift: the panel bound at boot AND is not fault-injected absent AND the
+// debounced controller-liveness verdict is not "not responding". A wrong-variant
+// flash binds the panel blindly but the controller never answers, so this is false.
+static bool panelResponding() {
+  return nimbus::display::screenResponding(
+      /*boundOk=*/g_hal.display,
+      /*faultInjected=*/nimbus::fault::active(nimbus::fault::SCREEN),
+      /*notResponding=*/g_screenIsTft && hw::tft::controllerNotResponding());
+}
+
+// One-shot boot panel signal (CUM-388). Twice a Freenove got the Solide image
+// (wrong display pinout): it boots network-healthy with a black screen and nobody
+// notices ("it's online"). The firmware already knows (the debounced
+// controllerNotResponding() verdict), but that lived only in the health payload,
+// which a flasher checking "network online" never sees. So emit it to serial ONCE
+// at boot: a loud, unmissable line a human watching the port cannot miss, plus a
+// machine token (PANEL scrok=<0|1>) tools/setup_device.py greps to fail a dead-
+// panel flash instead of printing "installed" over black glass. Production path
+// (not NIMBUS_TEST-gated): this is the device's own boot beacon, not a test hook.
+static void emitBootPanelSignalOnce(uint32_t now) {
+  if (g_bootPanelSignaled) return;
+  using nimbus::display::BootPanelSignal;
+  const BootPanelSignal sig = nimbus::display::bootPanelSignal(
+      /*boundOk=*/g_hal.display,
+      /*notResponding=*/g_screenIsTft && hw::tft::controllerNotResponding());
+  switch (sig) {
+    case BootPanelSignal::Responding:
+      // Give the debounced verdict (~6 s: threshold 3 at the 2 s cadence) time to
+      // latch before making a POSITIVE claim, so a dead panel that has not tripped
+      // yet is never labelled up. A dead panel latches first and takes the branch
+      // below well before this window.
+      if (now < 12000) return;
+      Serial.println("PANEL scrok=1");
+      break;
+    case BootPanelSignal::NotResponding:
+      // Bound at boot but the controller never answers: the wrong-variant-flash
+      // signature. Reachable only after the debounce latches, so no time gate.
+      Serial.println("!! DISPLAY NOT RESPONDING - likely the WRONG board variant "
+                     "was flashed; reflash via tools/setup_device.py");
+      Serial.println("PANEL scrok=0");
+      break;
+    case BootPanelSignal::InitFailed:
+      // begin() failed outright: surfaced honestly, but as a hint (a dead panel OR
+      // a wrong variant), never a hard variant claim. Known at boot; wait a moment
+      // so a freshly-attached serial monitor catches the line.
+      if (now < 2000) return;
+      Serial.println("!! DISPLAY DID NOT COME UP - panel init failed; check the "
+                     "display or reflash via tools/setup_device.py");
+      Serial.println("PANEL scrok=0");
+      break;
+  }
+  Serial.flush();
+  g_bootPanelSignaled = true;
+}
 static bool          g_bleEnabled = true;       // Connectivity > Bluetooth (NVS, runtime)
 static volatile bool g_orchRingDirty = false;  // set by the sink, drained by loop()
 static volatile bool g_orchScreenRender = false;  // an attention event wants the panel
@@ -3188,6 +3249,9 @@ void setup() {
     // The driver that actually bound, so STATUS can report reality rather than
     // the stored preference (they differ whenever the fail-soft path trips).
     h.screenIsTft = [] { return g_screenIsTft; };
+    // scrok= in STATUS: the honest "panel up AND answering" bit, so HIL and the
+    // installer can catch a wrong-variant flash (scr=tft over black glass).
+    h.panelResponding = [] { return panelResponding(); };
     // NSNFEED: drive the notifier UI without a broker or BLE (blocked by macOS
     // BLE permissions on the bench). Same decoder/mapper/router path as a real
     // frame, so what renders is what a broker would produce.
@@ -4815,6 +4879,12 @@ void loop() {
   // and /api/state report a panel that has gone off the SPI bus as a fault
   // instead of the boot begin() result's hardwired "up" (the owner's black glass).
   if (g_screenIsTft) hw::tft::pollControllerLiveness(now);
+
+  // One-shot boot panel beacon (CUM-388): once the liveness verdict has settled,
+  // emit the loud "wrong variant / dead panel" line + machine token, or confirm
+  // the panel is up. Runs unconditionally (an init-failed panel leaves g_screenIsTft
+  // false, and that case must still be surfaced).
+  emitBootPanelSignalOnce(now);
 
   // Battery: sample + two-threshold policy at a low cadence. Inert with
   // NullMonitor (no hardware). T1 raises a low-battery badge through the SAME

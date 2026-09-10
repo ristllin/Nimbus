@@ -104,4 +104,37 @@ constexpr PanelStatus panelStatus(bool notResponding, bool probed, bool contentO
   return PanelStatus::Unverified;
 }
 
+// scrok - the single "is the colour panel confirmed up and answering right now"
+// bit (CUM-388). It is the machine-readable form of the health "screen" row
+// (agent::health): that row is kOk exactly when the panel bound at boot, is not
+// fault-injected absent, and the debounced liveness verdict is not "not
+// responding". Keeping the STATUS `scrok` field and the boot signal on this ONE
+// pure predicate stops them from drifting away from the health row.
+//
+// A wrong-variant flash (a Solide image on a Freenove, or vice versa) binds the
+// panel blindly at boot but the controller never answers its RDDST health read,
+// so notResponding latches and scrok is false - the honest signal a flasher and
+// tools/setup_device.py read instead of trusting "the board is online".
+//   boundOk       - the panel bind at boot succeeded (g_hal.display / g_screenIsTft).
+//   faultInjected - the SCREEN capability is simulated-absent (test FAULT hook).
+//   notResponding - the debounced PanelControllerLiveness verdict.
+constexpr bool screenResponding(bool boundOk, bool faultInjected, bool notResponding) {
+  return boundOk && !faultInjected && !notResponding;
+}
+
+// The three boot-time panel outcomes the one-shot serial signal distinguishes, so
+// a genuinely-dead panel is surfaced honestly without falsely blaming a variant.
+//   Responding   - bound and answering: the normal, healthy boot.
+//   NotResponding - bound at boot but the controller never answers (the
+//                   wrong-variant-flash signature): the loud, strong-hint line.
+//   InitFailed   - the boot bring-up itself failed (begin() false): surfaced too,
+//                   but worded as a hint - it could be dead hardware OR a variant.
+enum class BootPanelSignal : uint8_t { Responding, NotResponding, InitFailed };
+
+constexpr BootPanelSignal bootPanelSignal(bool boundOk, bool notResponding) {
+  if (!boundOk) return BootPanelSignal::InitFailed;
+  if (notResponding) return BootPanelSignal::NotResponding;
+  return BootPanelSignal::Responding;
+}
+
 }  // namespace nimbus::display

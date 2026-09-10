@@ -509,6 +509,83 @@ def serial_bootstrap(
             connection.close()
 
 
+# --- post-flash panel-responds verification (CUM-388) ---------------------------
+#
+# A wrong-variant flash (a Solide image on a Freenove, or vice versa) boots the
+# board network-healthy with a DEAD screen: the display config verifies (scrModel
+# matches) while the panel controller never answers, so the old flow printed
+# "production firmware is installed" over black glass and nobody noticed. The
+# restored production firmware now emits a one-shot boot signal over serial: a
+# machine token "PANEL scrok=1" once the colour panel answers its controller health
+# read, or a loud "DISPLAY NOT RESPONDING" line plus "PANEL scrok=0" when it does
+# not. Reading that signal lets a dead-panel flash fail loudly and non-zero here
+# instead of reporting success over a screen that never came up.
+
+PANEL_DEAD_MESSAGE = (
+    "\nThe screen did not come up. This is very likely the WRONG board variant\n"
+    "(for example a Solide image flashed onto a Freenove): the board boots and\n"
+    "joins the network, but the display controller never answers, so the glass\n"
+    "stays black. Verify the board and reflash with tools/setup_device.py\n"
+    "(never a raw 'pio -e <env> -t upload' - it cannot tell the pinouts apart)."
+)
+
+
+def read_panel_signal(connection, timeout: float = 20.0) -> str | None:
+    """Watch a freshly-booted board's serial for the one-shot panel-health signal.
+
+    Returns 'ok' (the panel answered), 'dead' (it did not - a wrong-variant or
+    dead-panel flash), or None (nothing decisive within ``timeout``). ``connection``
+    is anything with a pyserial-style ``readline()`` returning bytes (b'' when
+    idle), which keeps the decision unit-testable with a fake serial."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        raw = connection.readline()
+        if not raw:
+            continue
+        text = raw.decode("utf-8", "replace").strip()
+        if not text:
+            continue
+        # A dead panel is decisive the moment either the machine token or the loud
+        # human line appears; do not wait out the rest of the window.
+        if "scrok=0" in text or "DISPLAY NOT RESPONDING" in text or "DISPLAY DID NOT COME UP" in text:
+            return "dead"
+        if "scrok=1" in text:
+            return "ok"
+    return None
+
+
+def verify_panel_after_flash(port: str, timeout: float = 20.0) -> str:
+    """Open ``port`` after the production flash and read the boot panel signal.
+
+    Returns 'ok', 'dead', or 'unknown'. Never raises: a serial hiccup (no pyserial,
+    the port busy, USB re-enumeration) yields 'unknown' so a healthy board is never
+    failed on a read problem - only a decisive not-responding signal fails."""
+    try:
+        import serial  # type: ignore
+    except ImportError:
+        print("Note: pyserial is unavailable, so the screen could not be verified.", file=sys.stderr)
+        return "unknown"
+    connection = serial.Serial()
+    connection.port = port
+    connection.baudrate = 115200
+    connection.dtr = False
+    connection.rts = False
+    connection.timeout = 0.25
+    try:
+        connection.open()
+        # The board reboots into production after the upload; give it a moment to
+        # start, then let the ~12 s liveness debounce settle before the token lands.
+        time.sleep(3.0)
+        connection.reset_input_buffer()
+        return read_panel_signal(connection, timeout=timeout) or "unknown"
+    except (OSError, RuntimeError) as exc:
+        print(f"Note: could not read the screen-health signal ({exc}); verify the display by eye.", file=sys.stderr)
+        return "unknown"
+    finally:
+        if connection.is_open:
+            connection.close()
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Safely install production Nimbus firmware.")
     parser.add_argument(
@@ -550,6 +627,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=(
             "recover an existing Nimbus web access token over physical UART; "
             "temporarily installs the diagnostic, then restores production firmware"
+        ),
+    )
+    parser.add_argument(
+        "--skip-panel-check",
+        action="store_true",
+        help=(
+            "skip the post-flash screen-responds check (CUM-388). By default the "
+            "installer reads the booted firmware's serial and fails if the display "
+            "controller does not answer (a wrong-variant flash over black glass)"
         ),
     )
     parser.add_argument("--_bootstrap-port", help=argparse.SUPPRESS)
@@ -695,6 +781,22 @@ def main(argv: list[str] | None = None) -> int:
     except (RuntimeError, subprocess.CalledProcessError, KeyboardInterrupt) as exc:
         print(f"\nStopped: {exc}", file=sys.stderr)
         return 1
+
+    # Verify the screen actually came up before declaring success (CUM-388). A
+    # wrong-variant flash boots network-healthy with a dead panel; the restored
+    # firmware says so over serial, so read it and fail loudly instead of printing
+    # "installed" over black glass. 'unknown' (serial unreadable) stays a soft
+    # caution so a healthy board is never failed on a read hiccup.
+    if not args.skip_panel_check:
+        print("\nChecking the screen came up...")
+        panel = verify_panel_after_flash(port)
+        if panel == "dead":
+            print(PANEL_DEAD_MESSAGE, file=sys.stderr)
+            return 1
+        if panel == "ok":
+            print("Screen check passed: the display is responding.")
+        else:
+            print("Screen check could not confirm the display; look at the screen to be sure.")
 
     print("\nNimbus production firmware is installed. NVS was not erased.")
     if mode == "orchestrator":

@@ -242,6 +242,79 @@ def test_confirm_install_yes_and_decline():
         del SETUP.input
 
 
+# ---- post-flash panel-responds check (CUM-388) ----------------------------
+#
+# A wrong-variant flash (a Solide image on a Freenove) boots network-healthy with a
+# dead screen: scrModel verifies while the panel controller never answers. The
+# restored firmware emits a one-shot boot signal (PANEL scrok=0/1 + a loud human
+# line); these pin the parser that fails the install instead of printing "installed"
+# over black glass. A fake serial stands in for the board so no hardware is needed.
+
+
+class _FakeSerial:
+    """A pyserial-shaped stub: readline() pops scripted byte lines, b'' when done."""
+
+    def __init__(self, *lines):
+        self.lines = [ln if isinstance(ln, bytes) else ln.encode() for ln in lines]
+
+    def readline(self):
+        return self.lines.pop(0) if self.lines else b""
+
+
+def test_read_panel_signal_dead_on_scrok_zero_token():
+    # scrok=0 is decisive the moment it appears - a later lying "scrok=1" cannot undo it.
+    conn = _FakeSerial("[boot] wifi up", "PANEL scrok=0", "PANEL scrok=1")
+    assert SETUP.read_panel_signal(conn, timeout=5.0) == "dead"
+
+
+def test_read_panel_signal_dead_on_loud_human_line():
+    conn = _FakeSerial(
+        "!! DISPLAY NOT RESPONDING - likely the WRONG board variant was flashed; reflash via tools/setup_device.py",
+        "PANEL scrok=0",
+    )
+    assert SETUP.read_panel_signal(conn, timeout=5.0) == "dead"
+
+
+def test_read_panel_signal_dead_on_init_failed_line():
+    conn = _FakeSerial(
+        "!! DISPLAY DID NOT COME UP - panel init failed; check the display or reflash via tools/setup_device.py"
+    )
+    assert SETUP.read_panel_signal(conn, timeout=5.0) == "dead"
+
+
+def test_read_panel_signal_ok_on_scrok_one():
+    conn = _FakeSerial("[disp] colour touch panel up", "PANEL scrok=1")
+    assert SETUP.read_panel_signal(conn, timeout=5.0) == "ok"
+
+
+def test_read_panel_signal_ok_from_full_status_line():
+    # The console-build STATUS line carries scrok=1 too; the same parser reads it,
+    # and the neighbouring scr=tft must NOT be misread as the panel token.
+    status = "STATUS fw=x mode=1 wifi=1 ip=192.168.50.61 rssi=-50 heap=1000 scr=tft scrok=1 want=tft board=freenove_s3"
+    assert SETUP.read_panel_signal(_FakeSerial(status), timeout=5.0) == "ok"
+
+
+def test_read_panel_signal_undetermined_is_none():
+    # Non-decisive boot chatter then silence -> None (the installer treats it as a
+    # soft 'unknown', never a false failure). Exercises the read-then-timeout path.
+    conn = _FakeSerial("[boot] wifi up", "READY mode=1 ip=192.168.50.61")
+    assert SETUP.read_panel_signal(conn, timeout=0.3) is None
+    # An empty stream within the window is likewise undetermined, not dead.
+    assert SETUP.read_panel_signal(_FakeSerial(), timeout=0.0) is None
+
+
+def test_panel_dead_message_points_at_the_guarded_installer():
+    msg = SETUP.PANEL_DEAD_MESSAGE
+    assert "tools/setup_device.py" in msg
+    # It steers the operator away from a raw pio upload (the way the incident happened).
+    assert "raw" in msg and "pio" in msg
+
+
+def test_skip_panel_check_flag_parses():
+    assert SETUP.parse_args(["--port", "/dev/cu.x", "--skip-panel-check"]).skip_panel_check is True
+    assert SETUP.parse_args(["--port", "/dev/cu.x"]).skip_panel_check is False
+
+
 def test_show_token_and_ota_type_args_plumb_through():
     args = SETUP.parse_args(["--port", "/dev/cu.usbserial-test", "--show-token"])
     assert args.show_token is True and args._show_token is False
