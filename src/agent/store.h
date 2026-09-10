@@ -37,7 +37,11 @@ String cloudCred();
 String cloudHost();          // relay host (default "app.cumulo-nimbus.ai")
 String cloudName();          // paired device display name ("" = none)
 bool   cloudPaired();        // has both a device id and a credential
-void   setCloudPairing(const String& deviceId, const String& cred, const String& host,
+// Persist the pairing. Returns false if the credential did NOT land (a fully
+// provisioned 20 KB NVS can be starved by the mcat_ catalog caches). On a starved
+// write it first evicts those rebuildable caches and retries, so a real pairing is
+// never silently lost to a cache; false means even that did not free enough room.
+bool   setCloudPairing(const String& deviceId, const String& cred, const String& host,
                        const String& name);
 void   clearCloudPairing();  // wipe id + credential + name (keeps the opt-in flag)
 

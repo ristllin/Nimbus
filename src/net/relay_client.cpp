@@ -722,7 +722,16 @@ bool persistClaimed(JsonDocument& pd, const String& host, const String& deviceId
     rHost = relayUrl.substring(hs + 3, he > 0 ? he : relayUrl.length());
   }
   if (cred.isEmpty()) { setErr("Pairing service error."); setPairing("", ""); return false; }
-  agent::store::setCloudPairing(deviceId, cred, rHost, name);
+  if (!agent::store::setCloudPairing(deviceId, cred, rHost, name)) {
+    // The credential did not persist even after evicting the rebuildable caches:
+    // device storage is genuinely full. Surface it honestly instead of logging
+    // "paired" and silently reverting to idle (which read as a permanent portal
+    // "Never connected"), so the owner gets an actionable line, not a black hole.
+    setErr("Couldn't save the cloud sign-in. Device storage is full.");
+    setPairing("", "");
+    agent::alog("relay: pairing SAVE FAILED (NVS full) - not paired");
+    return false;
+  }
   setPairing("", "");
   agent::alog("relay: paired");
   return true;
@@ -788,7 +797,13 @@ RemintResult remintCredential() {
       rHost = relayUrl.substring(hs + 3, he > 0 ? he : relayUrl.length());
     }
     // Atomic swap: setCloudPairing writes NVS, then future reads see the new cred.
-    agent::store::setCloudPairing(deviceId, newCred, rHost, agent::store::cloudName());
+    // If the write is NVS-starved (setCloudPairing evicts caches + retries, then
+    // returns false), keep serving on the still-valid OLD credential and retry the
+    // re-mint later - never claim a re-mint that did not land.
+    if (!agent::store::setCloudPairing(deviceId, newCred, rHost, agent::store::cloudName())) {
+      agent::alog("relay: re-mint SAVE FAILED (NVS full) - keeping current credential");
+      return RemintResult::Transient;
+    }
     agent::alog("relay: credential re-minted");
     return RemintResult::Ok;
   }
