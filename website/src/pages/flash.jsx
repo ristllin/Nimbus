@@ -45,7 +45,11 @@ const styles = {
 
 export default function FlashPage() {
   const moduleUrl = useBaseUrl('/vendor/esp-web-tools/install-button.js');
-  const [variant, setVariant] = useState(VARIANTS[0].slug);
+  // No pre-selected board: a Freenove owner who left a Solide default and clicked
+  // Install would flash the wrong image and boot to a black screen (the exact
+  // wrong-pinout failure this page exists to prevent). Force an explicit choice.
+  const [variant, setVariant] = useState('');
+  const chosen = VARIANTS.find((v) => v.slug === variant);
 
   useEffect(() => {
     // The web component ships as an ES module with hashed sibling chunks it
@@ -85,7 +89,7 @@ export default function FlashPage() {
           </ul>
         </div>
 
-        {variant === 'nimbus-tft' ? (
+        {variant === '' ? null : variant === 'nimbus-tft' ? (
           <div style={styles.warn}>
             <strong>Nimbus board: use the port labeled UART.</strong> The
             DevKitC-1 has two USB-C ports and only one can flash a fresh board.
@@ -113,6 +117,9 @@ export default function FlashPage() {
             value={variant}
             onChange={(e) => setVariant(e.target.value)}
             style={{padding: '0.4rem 0.6rem', fontSize: '1rem', width: '100%', maxWidth: 420}}>
+            <option value="" disabled>
+              &mdash; Select your board &mdash;
+            </option>
             {VARIANTS.map((v) => (
               <option key={v.slug} value={v.slug}>
                 {v.label}
@@ -128,29 +135,53 @@ export default function FlashPage() {
         </div>
 
         <div style={styles.installRow}>
-          {/* key by variant so the button re-mounts with the new manifest */}
-          <esp-web-install-button key={variant} manifest={manifestUrlFor(variant)}>
-            <button
-              slot="activate"
-              className="button button--primary button--lg">
-              Install Nimbus
-            </button>
-            <span slot="unsupported">
-              This browser can&apos;t flash devices - use Chrome or Edge on a
-              computer.
-            </span>
-            <span slot="not-allowed">
-              Flashing needs a secure (HTTPS) page - reload this page over
-              HTTPS.
-            </span>
-          </esp-web-install-button>
-          <p style={{marginTop: '0.75rem'}}>
-            <small>
-              Pick the board&apos;s serial port when the browser asks. Choosing
-              &quot;Erase device&quot; is fine on a new board; on a board
-              already running Nimbus it wipes its saved settings.
-            </small>
-          </p>
+          {variant === '' ? (
+            <>
+              {/* No board chosen: never offer a default image. Flashing the wrong
+                  variant boots to a blank screen, so require an explicit pick. */}
+              <button
+                className="button button--primary button--lg"
+                disabled
+                title="Choose your board above first">
+                Install Nimbus
+              </button>
+              <p style={{marginTop: '0.75rem'}}>
+                <small>
+                  <strong>Choose your board above</strong> to enable the
+                  installer. The image is matched to your exact board and screen
+                  so it comes up on the right display - the wrong image leaves the
+                  screen blank.
+                </small>
+              </p>
+            </>
+          ) : (
+            <>
+              {/* key by variant so the button re-mounts with the new manifest */}
+              <esp-web-install-button key={variant} manifest={manifestUrlFor(variant)}>
+                <button
+                  slot="activate"
+                  className="button button--primary button--lg">
+                  Install Nimbus &mdash; {chosen.label}
+                </button>
+                <span slot="unsupported">
+                  This browser can&apos;t flash devices - use Chrome or Edge on a
+                  computer.
+                </span>
+                <span slot="not-allowed">
+                  Flashing needs a secure (HTTPS) page - reload this page over
+                  HTTPS.
+                </span>
+              </esp-web-install-button>
+              <p style={{marginTop: '0.75rem'}}>
+                <small>
+                  Installing the <strong>{chosen.label}</strong> image. Pick the
+                  board&apos;s serial port when the browser asks. Choosing
+                  &quot;Erase device&quot; is fine on a new board; on a board
+                  already running Nimbus it wipes its saved settings.
+                </small>
+              </p>
+            </>
+          )}
         </div>
 
         <h2>After flashing</h2>
