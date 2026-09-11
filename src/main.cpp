@@ -74,6 +74,7 @@
 #include "hw/ring_out.h"
 #include "hw/selftest.h"   // device health-check engine + device.* tools + SELFTEST
 #include "sys/ota_update.h"   // OTA firmware update (boot guard + check/install)
+#include "sys/usb_updater.h"  // USB serial firmware update listener (production-only pump)
 #include "modes/notifier_mode.h"
 #include "nimbus/attention.h"
 #include "nimbus/wifi/copy.h"                  // portable, tested Wi-Fi copy + deviceUrl
@@ -2663,6 +2664,12 @@ void setup() {
 #if ARDUINO_USB_CDC_ON_BOOT
   Serial.setTxTimeoutMs(20);
 #endif
+#if !defined(NIMBUS_TEST) && !defined(NIMBUS_NOTIFIER_DEBUG)
+  // USB serial firmware-update listener (CUM-390). Production only: the test
+  // console and the nsn debug channel own Serial in their own builds, so the
+  // reader is wired here where nothing else reads Serial.
+  usbupd::begin();
+#endif
   // The color touch panel is the only supported display: panel was removed in
   // v4.4. The stored scrModel is still read (frozen NVS key), but a unit that
   // still reads "eink" is a stale/unsupported configuration - bring the panel up
@@ -4502,6 +4509,9 @@ void loop() {
 #endif  // feed the F12 watchdog every iteration
   otaupd::tick();        // OTA: mark-valid once healthy + check/auto-install cadence
   otaLoopUx();           // OTA install panel/ring UX (no-op unless installing)
+#if !defined(NIMBUS_TEST) && !defined(NIMBUS_NOTIFIER_DEBUG)
+  usbupd::pump();        // USB serial firmware update (CUM-390): inert until the marker
+#endif
   if (g_orchMode)
     agent::connectors::mcp::oauth::pump();  // advance any armed MCP OAuth flow, one
                                             // bounded TLS step (shared work arbiter)

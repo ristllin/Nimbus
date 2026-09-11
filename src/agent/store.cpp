@@ -383,6 +383,8 @@ String otaLastResult(){ return solide::memory::has(AKEY_OTA_LASTRES) ? solide::m
 void   setOtaLastResult(const String& v) { solide::memory::setString(AKEY_OTA_LASTRES, v); }
 bool   otaAutoUpdate(){ return solide::memory::getBool(AKEY_OTA_AUTO, false); }  // default OFF
 void   setOtaAutoUpdate(bool v) { solide::memory::setBool(AKEY_OTA_AUTO, v); }
+bool   usbUpdateConfirm(){ return solide::memory::getBool(AKEY_OTA_USBCFM, false); }  // default OFF
+void   setUsbUpdateConfirm(bool v) { solide::memory::setBool(AKEY_OTA_USBCFM, v); }
 String otaNotifiedVersion() { return solide::memory::has(AKEY_OTA_NOTIF) ? solide::memory::getString(AKEY_OTA_NOTIF, "") : String(); }
 String otaPendingNotes() { return solide::memory::has(AKEY_OTA_NOTES) ? solide::memory::getString(AKEY_OTA_NOTES, "") : String(); }
 void   setOtaPendingNotes(const String& v) { solide::memory::setString(AKEY_OTA_NOTES, v); }

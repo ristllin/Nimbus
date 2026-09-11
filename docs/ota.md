@@ -170,12 +170,50 @@ internal), then the post-install restart restores it.
   marked valid. Power loss mid-download touches only the inactive slot;
   between guard-arm and flip → disarmed as `aborted-preflip`.
 
+## Update over the USB cable (local, unsigned, cable-gated)
+
+Cloud OTA needs a published signed release, and a fresh ROM esptool flash needs
+the physical BOOT button (unreachable over native USB on some units). The USB
+serial update is a third path: the **running** firmware accepts a locally-built
+`.bin` over the USB cable and installs it through the **same** esp_ota A/B engine,
+rollback guard, and deferred reboot as cloud OTA. It skips only the HTTPS fetch and
+the ECDSA signature check, because the physical cable is the trust boundary, the
+same trust model esptool and the ROM flash already rely on. A peer on Wi-Fi cannot
+reach the serial stream, and a device that is never cabled has the same trust
+surface as before.
+
+```
+python3 tools/push_firmware.py --port /dev/cu.usbmodemXXXX firmware.bin
+```
+
+The host tool opens the port, sends the image size and its sha256, streams the
+image in 4 KB chunks each protected by a crc32 (with a per-chunk resend), then
+sends the full-image sha256. The device verifies the streamed hash, arms the
+rollback guard, flips the boot pointer, and restarts. A corrupt or interrupted
+transfer leaves the spare slot untouched and the current firmware running, exactly
+like cloud OTA. The device replies are single lines prefixed `NFWU ` so they are
+easy to read amid ordinary log output.
+
+- **No auth by default.** The cable is the trust boundary. For anyone who wants to
+  close the "plugged into an untrusted host" case, the store flag
+  `usbUpdateConfirm` (default OFF) makes the device refuse a USB update until an
+  on-device confirm gesture arms a short window.
+- **Reuse, not a second engine.** The listener calls the same single-flight guard
+  as cloud OTA (a USB push refuses `busy` while a background check is running, and
+  vice versa) and the same arm-before-flip commit order, so the rollback guarantee
+  is identical.
+- The listener is compiled into production builds only; the `test` and
+  notifier-debug builds keep their own Serial readers.
+
 ## Testing
 
 - Host: `pio test -e native -f test_ota_logic` (version/manifest/policy core +
   the signed-message golden, cross-checked against `tools/make_manifest.py
   --print-message`; the battery/health `installGate` branches; the definitive
   `checkResult` mapping incl. reachable-vs-unreachable).
+- Host (USB path): `pio test -e native -f test_usbfw_proto` (crc32 vectors, the
+  START-header and chunk framing round-trips, and the arm-before-flip commit-order
+  sequence, incl. that a failed flip disarms the pending guard).
 - HIL: `python3 -m pytest tests/hil/test_ota.py -m net --allow-hardware` -
   local self-signed TLS server (flips `tlsVerify` off/on), test-key-signed
   manifest, real dry-run E2E, sha-fail + sig-fail negatives, 302 redirect hop.

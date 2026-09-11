@@ -149,6 +149,7 @@ int    otaBootCount();           void setOtaBootCount(int v);      // attempts s
 String otaPrevSlot();            void setOtaPrevSlot(const String& v);  // "app0"/"app1"
 String otaLastResult();          void setOtaLastResult(const String& v);
 bool   otaAutoUpdate();          void setOtaAutoUpdate(bool v);    // idle-window auto-install (default OFF)
+bool   usbUpdateConfirm();       void setUsbUpdateConfirm(bool v); // require on-device confirm for a USB update (default OFF)
 String otaNotifiedVersion();     void setOtaNotifiedVersion(const String& v);  // Telegram no-re-nag
 String otaPendingNotes();        void setOtaPendingNotes(const String& v);     // "ver|notes" across the install reboot
 String batteryModelState();  // battery analytics learned state (CSV; "" if none)

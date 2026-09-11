@@ -20,6 +20,7 @@
 #include "tls_arbiter.h"
 #include "nimbus/ota/ota_logic.h"
 #include "ota_pubkey.h"
+#include "usb_updater.h"          // nimbus::usbfw wire protocol + commit-order sequencer
 #include "version.h"
 
 // Device glue over the portable nimbus::ota core. IO + wiring only - every
@@ -805,6 +806,156 @@ bool requestInstall(bool dryRun, bool force, const char** whyOut) {
   if (whyOut) *whyOut = "";
   return true;
 }
+
+// ---- local (USB serial) firmware write --------------------------------------
+// Reuses the cloud engine's single-flight guard + Update writer + rollback
+// commit order; skips ONLY the HTTPS fetch + ECDSA verify (the cable is the trust
+// boundary). Driven synchronously from the main-loop pump in usb_updater.cpp, so
+// there is no task here and no second concurrent OTA slot writer (the atomic
+// g_taskRunning claim keeps a background check from racing it).
+
+static bool   g_localActive = false;
+static mbedtls_sha256_context g_localSha;
+static size_t g_localExpected = 0;
+static size_t g_localWritten  = 0;
+static uint32_t g_localConfirmUntil = 0;     // millis deadline of an armed confirm window
+static const uint32_t kConfirmWindowMs = 60 * 1000;
+
+static State localSettledState() {
+  return NIMBUS_OTA_VARIANT[0] ? State::Idle : State::Unsupported;
+}
+
+void localArmConfirm() { g_localConfirmUntil = millis() + kConfirmWindowMs; }
+
+bool localBegin(size_t size, const char** whyOut) {
+  auto refuse = [&](const char* w) { if (whyOut) *whyOut = w; return false; };
+  if (size == 0) return refuse("size");
+  // Optional confirm gate (default OFF). When ON, an on-device gesture must have
+  // armed a short window via localArmConfirm() first.
+  if (agent::store::usbUpdateConfirm() &&
+      (g_localConfirmUntil == 0 || (int32_t)(millis() - g_localConfirmUntil) >= 0))
+    return refuse("confirm");
+  // The SAME atomic single-flight claim the cloud check/install use: a USB push
+  // and a background check can never both drive the OTA slot.
+  bool expected = false;
+  if (!g_taskRunning.compare_exchange_strong(expected, true))
+    return refuse("busy");
+  if (!Update.begin(size, U_FLASH)) {
+    g_taskRunning = false;
+    setLastError("slot");
+    return refuse("slot");
+  }
+  mbedtls_sha256_init(&g_localSha);
+  mbedtls_sha256_starts(&g_localSha, 0);
+  g_localExpected = size;
+  g_localWritten = 0;
+  g_localActive = true;
+  g_localConfirmUntil = 0;      // consume the confirm window
+  g_progressPct = 0;
+  g_state = State::Downloading;
+  fireEvent(EvInstallStart, "usb", "");
+  if (whyOut) *whyOut = "";
+  return true;
+}
+
+bool localWrite(const uint8_t* d, size_t n) {
+  if (!g_localActive) return false;
+  if (n == 0) return true;
+  if (g_localWritten + n > g_localExpected) { localAbort(); return false; }
+  if (Update.write((uint8_t*)d, n) != n) {
+    setLastError("flash-write");
+    localAbort();
+    return false;
+  }
+  mbedtls_sha256_update(&g_localSha, d, n);
+  g_localWritten += n;
+  if (g_localExpected) {
+    int pct = (int)((uint64_t)g_localWritten * 100 / g_localExpected);
+    g_progressPct = pct > 100 ? 100 : pct;
+  }
+  return true;
+}
+
+void localAbort() {
+  if (!g_localActive) return;
+  mbedtls_sha256_free(&g_localSha);
+  if (Update.isRunning()) Update.abort();
+  g_localActive = false;
+  g_progressPct = -1;
+  g_localExpected = g_localWritten = 0;
+  g_taskRunning = false;
+  if (g_state == State::Downloading || g_state == State::Verifying)
+    g_state = localSettledState();
+}
+
+bool localFinish(const char* sha256hex, const char** whyOut) {
+  if (!g_localActive) { if (whyOut) *whyOut = "inactive"; return false; }
+
+  // From here the sha context is finished/owned locally; cleanup must NOT re-enter
+  // localAbort (which would double-free it), so fail() does its own teardown.
+  bool shaFreed = false;
+  auto fail = [&](const char* w) -> bool {
+    if (!shaFreed) { mbedtls_sha256_free(&g_localSha); shaFreed = true; }
+    if (Update.isRunning()) Update.abort();
+    g_localActive = false;
+    g_progressPct = -1;
+    g_localExpected = g_localWritten = 0;
+    g_taskRunning = false;
+    g_state = State::Error;
+    setLastError(w);
+    agent::store::setOtaLastResult(String(w) + " usb");
+    fireEvent(EvInstallFail, w, "usb");
+    if (whyOut) *whyOut = w;
+    return false;
+  };
+
+  if (g_localWritten != g_localExpected) return fail("short");
+
+  g_state = State::Verifying;
+  uint8_t digest[32];
+  mbedtls_sha256_finish(&g_localSha, digest);
+  mbedtls_sha256_free(&g_localSha);
+  shaFreed = true;
+
+  uint8_t want[32];
+  if (!nimbus::usbfw::hexToBytes(sha256hex, want, 32)) return fail("badsha");
+  if (memcmp(digest, want, 32) != 0) return fail("sha-fail");
+
+  // Clear any stale "ver|notes" a prior cloud install left pending: the USB path
+  // carries no manifest notes, so the post-reboot "what changed" must not show a
+  // wrong version.
+  agent::store::setOtaPendingNotes("");
+
+  // Commit via the portable arm-before-flip sequencer (host-tested).
+  nimbus::usbfw::CommitHooks h;
+  h.setPrevSlot     = [](void*, const char* v) { agent::store::setOtaPrevSlot(v); };
+  h.setBootCount    = [](void*, int v)         { agent::store::setOtaBootCount(v); };
+  h.setPending      = [](void*, int v)         { agent::store::setOtaPending(v); };
+  h.setLastResult   = [](void*, const char* v) { agent::store::setOtaLastResult(v); };
+  h.setPendingNotes = nullptr;   // handled above (no notes on the local path)
+  h.endFlip         = [](void*) -> bool { return Update.end(); };
+  bool flipped =
+      nimbus::usbfw::commitInstall(h, runningLabel(), "installing usb", nullptr);
+
+  g_localActive = false;
+  g_taskRunning = false;
+  if (!flipped) {
+    g_progressPct = -1;
+    g_state = State::Error;
+    setLastError("commit");
+    agent::store::setOtaLastResult("commit usb");
+    fireEvent(EvInstallFail, "commit", "usb");
+    if (whyOut) *whyOut = "commit";
+    return false;
+  }
+  g_state = State::ReadyToReboot;
+  g_progressPct = 100;
+  fireEvent(EvRebooting, "usb", "");
+  if (whyOut) *whyOut = "";
+  return true;
+}
+
+bool localActive() { return g_localActive; }
 
 // ---- mark-valid + scheduling ------------------------------------------------
 

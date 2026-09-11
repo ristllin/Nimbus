@@ -52,6 +52,36 @@ bool requestCheck(const char** whyOut = nullptr);
 // *whyOut (optional) gets a static reason string.
 bool requestInstall(bool dryRun, bool force, const char** whyOut = nullptr);
 
+// ---- local (USB serial) firmware write --------------------------------------
+// A third update path beside the signed cloud OTA above: the running firmware
+// accepts a locally-built image over the USB serial cable (src/sys/usb_updater.*)
+// and installs it through the SAME esp_ota engine, rollback guard, and deferred
+// reboot. It claims the SAME single-flight guard (refuses "busy" while a cloud
+// check/install holds it) and runs the EXACT arm-before-flip commit order; it
+// SKIPS only the HTTPS fetch + ECDSA verify of the cloud path, because the cable
+// is the trust boundary. It is NOT gated on the OTA variant: a locally-built
+// image is what strands-a-device (an untyped unit with no cloud image) needs.
+//
+//   localBegin(size): claim the engine + open the inactive slot for a size-byte
+//     image. Refuses via *whyOut ("busy"/"size"/"slot"/"confirm").
+//   localWrite(d,n):  stream bytes to the slot (running sha256). False on overrun
+//     or a flash-write fault (which also aborts the session).
+//   localFinish(hex): verify the streamed sha256 against the host-declared hex,
+//     run the commit order, flip, and arm the deferred reboot. Refuses via *whyOut
+//     ("inactive"/"short"/"badsha"/"sha-fail"/"commit").
+//   localAbort():     release the engine + guard, discard the spare slot.
+//   localActive():    true between a successful begin and finish/abort.
+bool localBegin(size_t size, const char** whyOut = nullptr);
+bool localWrite(const uint8_t* d, size_t n);
+bool localFinish(const char* sha256hex, const char** whyOut = nullptr);
+void localAbort();
+bool localActive();
+
+// Confirm-gate arming. When the store's usbUpdateConfirm flag is ON, localBegin
+// refuses with "confirm" until this arms a short window (an on-device gesture
+// calls it). Default flag OFF = no prompt (cable == trust). No-op when OFF.
+void localArmConfirm();
+
 // True while the install task runs - main loop refuses voice capture / new
 // turns and paints the ring progress arc from progressPct().
 bool installing();

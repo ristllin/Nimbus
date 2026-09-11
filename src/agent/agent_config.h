@@ -225,6 +225,9 @@
 #define AKEY_OTA_PREV       "otaPrev"        // previous app slot label ("app0"/"app1")
 #define AKEY_OTA_LASTRES    "otaLast"        // last OTA outcome ("ok vX"/"rollback vX"/...)
 #define AKEY_OTA_AUTO       "autoUpd"        // auto-install in an idle window (default OFF)
+#define AKEY_OTA_USBCFM     "usbCfm"         // require an on-device confirm before a USB
+                                             // serial firmware update installs (default OFF:
+                                             // cable == trust, no prompt)
 #define AKEY_OTA_NOTIF      "otaNotif"       // last version Telegram-notified (no re-nag)
 #define AKEY_OTA_TYPE       "otaType"        // typed-OTA device slug: "nimbus-tft" |
                                              // "freenove-28|35|40" | "" (untyped legacy device:
