@@ -36,15 +36,18 @@ constexpr uint32_t kRebootDelayMs = 1500;        // let "ok" flush before restar
 constexpr uint32_t kMaxWorkPerPump = 32;         // chunk events before yielding the loop
 constexpr uint32_t kMaxPumpMs      = 8;          // wall-clock ceiling per pump pass
 
-// High-frequency ack/resend replies do NOT flush: a blocking Serial.flush() on the
-// HWCDC TX per chunk stalls the main loop / watchdog under a chunk (or bad-crc
-// resend) flood. The bytes drain on their own; only the terminal replies (ready /
-// ok / err / timeout) flush, so the host's final verdict is never left buffered.
+// ack/resend replies flush: the HWCDC TX task does NOT drain a small buffered line
+// promptly, so a lock-step host (push_firmware.py sends a chunk, waits for its ack)
+// would time out if the ack sat unflushed. For the honest host the flush returns at
+// once (it is draining TX); a malicious flood that never drains is bounded instead
+// by the per-pass work cap (kMaxWorkPerPump) + the esp_task_wdt_reset in pump(), so
+// the flush can no longer starve the loop into a watchdog reset.
 void replyNum(const char* verb, uint32_t n) {
   Serial.print(kReplyPrefix);
   Serial.print(verb);
   Serial.print(' ');
   Serial.println(n);
+  Serial.flush();
 }
 void reply(const char* tail) {
   Serial.print(kReplyPrefix);

@@ -37,7 +37,7 @@ MAGIC = b"NIMBUSFW1"
 CHUNK_TAG = b"CHNK"
 DONE_TAG = b"DONE"
 REPLY_PREFIX = "NFWU "
-CHUNK_SIZE = 4096  # must stay <= kMaxChunk in usb_updater.h
+CHUNK_SIZE = 1024  # must stay <= kMaxChunk in usb_updater.h (device RX buffer holds one frame)
 ACK_TIMEOUT_S = 15.0  # per-chunk / per-reply wait
 MAX_RESENDS = 5  # bounded retries per chunk before giving up
 

@@ -2651,6 +2651,13 @@ void setup() {
     if (st == "checking") return "Still checking for updates, send /update again in a minute.";
     return String("Nimbus is up to date (") + NIMBUS_FW_VERSION + ").";
   });
+  // The default HWCDC RX buffer is 256 B, far too small for a USB-update chunk
+  // frame arriving as a burst - it overflows and drops bytes so the reader never
+  // completes a chunk (bench-caught). Size it to hold one full frame (usbfw is
+  // lock-step, one chunk in flight). Must be set BEFORE begin().
+#if ARDUINO_USB_CDC_ON_BOOT
+  Serial.setRxBufferSize(nimbus::usbfw::kMaxChunk + 512);
+#endif
   Serial.begin(115200);
   // HWCDC (USB-serial-JTAG) TX must never block indefinitely: with no host
   // reading, buffered writes stall the writer - with our debug/heartbeat prints

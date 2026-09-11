@@ -45,7 +45,12 @@ inline constexpr size_t  kTagLen      = 4;
 inline constexpr size_t  kSha256Len   = 32;
 inline constexpr size_t  kStartHdrLen = 4 + kSha256Len;              // size + sha, after magic
 inline constexpr size_t  kStartFrameLen = kMagicLen + kStartHdrLen;  // 45
-inline constexpr size_t  kMaxChunk    = 4096;                        // host chunk payload ceiling
+// Host chunk payload ceiling. The transfer is lock-step (one chunk in flight), so
+// the device's Serial RX buffer only has to hold ONE full chunk frame (tag 4 + len
+// 2 + payload + crc 4). main.cpp sizes the HWCDC RX buffer for this via
+// setRxBufferSize; keep that buffer >= kMaxChunk + 10 or big chunks overflow the
+// 256-byte HWCDC default and drop bytes (bench-caught: the reader never completes).
+inline constexpr size_t  kMaxChunk    = 1024;
 inline constexpr char    kReplyPrefix[] = "NFWU ";
 
 // ---- little-endian helpers --------------------------------------------------
