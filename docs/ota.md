@@ -176,11 +176,14 @@ Cloud OTA needs a published signed release, and a fresh ROM esptool flash needs
 the physical BOOT button (unreachable over native USB on some units). The USB
 serial update is a third path: the **running** firmware accepts a locally-built
 `.bin` over the USB cable and installs it through the **same** esp_ota A/B engine,
-rollback guard, and deferred reboot as cloud OTA. It skips only the HTTPS fetch and
-the ECDSA signature check, because the physical cable is the trust boundary, the
-same trust model esptool and the ROM flash already rely on. A peer on Wi-Fi cannot
-reach the serial stream, and a device that is never cabled has the same trust
-surface as before.
+rollback guard, and deferred reboot as cloud OTA. Compared to cloud OTA it drops
+everything that only makes sense for a remotely-fetched signed release: the HTTPS
+fetch, the ECDSA signature check, the version-eligibility check, and the
+battery/health install gate. It keeps the streamed-sha256 integrity check. The
+physical cable is the trust boundary (the same trust model esptool and the ROM
+flash rely on), and the operator at the cable owns the power and version decision.
+A peer on Wi-Fi cannot reach the serial stream, and a device that is never cabled
+has the same trust surface as before.
 
 ```
 python3 tools/push_firmware.py --port /dev/cu.usbmodemXXXX firmware.bin
@@ -194,10 +197,14 @@ transfer leaves the spare slot untouched and the current firmware running, exact
 like cloud OTA. The device replies are single lines prefixed `NFWU ` so they are
 easy to read amid ordinary log output.
 
-- **No auth by default.** The cable is the trust boundary. For anyone who wants to
-  close the "plugged into an untrusted host" case, the store flag
-  `usbUpdateConfirm` (default OFF) makes the device refuse a USB update until an
-  on-device confirm gesture arms a short window.
+- **No auth by default.** The cable is the trust boundary. A backend confirm gate
+  exists for anyone who wants to close the "plugged into an untrusted host" case:
+  the store flag `usbUpdateConfirm` (default OFF), when ON, makes the device refuse
+  a USB update (`err confirm`) until `otaupd::localArmConfirm()` opens a short 60 s
+  window. The gate defaults OFF so it never affects the common path. Its on-device
+  toggle and arm control are a tracked follow-up (they live on the settings/web
+  surface, owned separately); the flag, the refuse path, and the arm window are
+  implemented and host-tested here.
 - **Reuse, not a second engine.** The listener calls the same single-flight guard
   as cloud OTA (a USB push refuses `busy` while a background check is running, and
   vice versa) and the same arm-before-flip commit order, so the rollback guarantee

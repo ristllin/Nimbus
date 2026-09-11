@@ -201,6 +201,49 @@ static void test_commit_writes_notes_when_hook_present() {
   TEST_ASSERT_TRUE(indexOf(r.calls, "notes:v1|fixed things") >= 0);
 }
 
+// ---- confirm gate + local-begin precheck + mark-valid guard (review fixes) --
+
+static void test_confirm_gate_default_off_never_blocks() {
+  // Default OFF (flagOn=false) never blocks, whatever the arm state.
+  TEST_ASSERT_FALSE(confirmGateBlocks(false, 1000, 0));
+  TEST_ASSERT_FALSE(confirmGateBlocks(false, 1000, 5000));
+}
+
+static void test_confirm_gate_on_blocks_until_armed() {
+  // ON but never armed -> blocked.
+  TEST_ASSERT_TRUE(confirmGateBlocks(true, 1000, 0));
+  // ON and armed with the window still open (now < armUntil) -> allowed.
+  TEST_ASSERT_FALSE(confirmGateBlocks(true, 1000, 2000));
+  // ON but the armed window has expired (now >= armUntil) -> blocked again.
+  TEST_ASSERT_TRUE(confirmGateBlocks(true, 3000, 2000));
+  TEST_ASSERT_TRUE(confirmGateBlocks(true, 2000, 2000));   // exactly at expiry
+}
+
+static void test_local_begin_precheck_order_and_reasons() {
+  // All clear -> proceed (nullptr).
+  TEST_ASSERT_NULL(localBeginPrecheck(false, false, false));
+  // Zero size wins first.
+  TEST_ASSERT_EQUAL_STRING("size", localBeginPrecheck(true, true, true));
+  // A committed image awaiting reboot refuses "busy" (FIX 2 defense in depth).
+  TEST_ASSERT_EQUAL_STRING("busy", localBeginPrecheck(false, true, true));
+  // Otherwise the confirm gate.
+  TEST_ASSERT_EQUAL_STRING("confirm", localBeginPrecheck(false, false, true));
+}
+
+static void test_mark_valid_suppressed_while_installing() {
+  // The healthy+pending image is normally marked valid...
+  TEST_ASSERT_TRUE(markValidAllowed(/*alreadyValid=*/false, /*installing=*/false,
+                                    /*pending=*/true, /*bootHealthy=*/true));
+  // ...but NOT while an install is in flight (FIX 1): a local install arms the NEXT
+  // image's pending flag and stays "installing" through its deferred reboot, so
+  // marking the current image valid in that window would clear the fresh flag.
+  TEST_ASSERT_FALSE(markValidAllowed(false, /*installing=*/true, true, true));
+  // Already valid, nothing pending, or not yet healthy: no mark-valid.
+  TEST_ASSERT_FALSE(markValidAllowed(/*alreadyValid=*/true, false, true, true));
+  TEST_ASSERT_FALSE(markValidAllowed(false, false, /*pending=*/false, true));
+  TEST_ASSERT_FALSE(markValidAllowed(false, false, true, /*bootHealthy=*/false));
+}
+
 // ---- framing reader (the device receive state machine) ----------------------
 
 struct RSink {
@@ -389,6 +432,41 @@ static void test_reader_write_failure_aborts() {
   TEST_ASSERT_EQUAL_STRING("chunk:0:16", r.events.back().c_str());
 }
 
+static void test_reader_resend_flood_is_consistent() {
+  // A flood of bad-crc chunks each yields exactly one resend for the SAME index
+  // (the transfer never advances on corruption), and a good chunk afterwards is
+  // still accepted at that index - the reader stays consistent under the flood the
+  // pump's per-pass bound protects the loop from (FIX 3).
+  RSink r;
+  FrameReader fr;
+  fr.sink = readerSink(r);
+  uint8_t sha[32] = {0};
+  uint8_t payload[128];
+  for (int i = 0; i < 128; ++i) payload[i] = (uint8_t)(i * 5 + 3);
+  feedAll(fr, makeStart(128, sha));
+  int resends = 0;
+  for (int k = 0; k < 200; ++k) {
+    auto bad = makeChunk(payload, 128);
+    bad[20] ^= 0xFF;      // corrupt -> crc mismatch
+    feedAll(fr, bad);
+    ++resends;
+  }
+  feedAll(fr, makeChunk(payload, 128));   // finally a clean copy of index 0
+  feedAll(fr, makeDone(sha));
+  TEST_ASSERT_TRUE(fr.done());
+  // 200 resends (all for index 0), then one accepted chunk:0, then done.
+  int resendCount = 0, chunkCount = 0;
+  for (const auto& e : r.events) {
+    if (e == "resend:0") ++resendCount;
+    if (e == "chunk:0:128") ++chunkCount;
+    // no resend/chunk should ever reference an index past 0 in this stream
+    TEST_ASSERT_TRUE(e.find("resend:1") == std::string::npos);
+    TEST_ASSERT_TRUE(e.find("chunk:1:") == std::string::npos);
+  }
+  TEST_ASSERT_EQUAL_INT(200, resendCount);
+  TEST_ASSERT_EQUAL_INT(1, chunkCount);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_crc32_known_vectors);
@@ -402,6 +480,11 @@ int main(int, char**) {
   RUN_TEST(test_commit_arms_guard_before_flip);
   RUN_TEST(test_commit_disarms_guard_on_flip_failure);
   RUN_TEST(test_commit_writes_notes_when_hook_present);
+  RUN_TEST(test_confirm_gate_default_off_never_blocks);
+  RUN_TEST(test_confirm_gate_on_blocks_until_armed);
+  RUN_TEST(test_local_begin_precheck_order_and_reasons);
+  RUN_TEST(test_mark_valid_suppressed_while_installing);
+  RUN_TEST(test_reader_resend_flood_is_consistent);
   RUN_TEST(test_reader_happy_path);
   RUN_TEST(test_reader_finds_magic_in_noise);
   RUN_TEST(test_reader_resends_on_bad_crc_then_recovers);

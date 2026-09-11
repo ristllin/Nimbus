@@ -15,6 +15,7 @@
 #include "usb_updater.h"
 
 #include <esp_system.h>
+#include <esp_task_wdt.h>
 
 #include "ota_update.h"
 
@@ -27,21 +28,27 @@ FrameReader s_reader;
 uint32_t    s_lastByteMs = 0;      // for the mid-transfer stall timeout
 bool        s_rebootPending = false;
 uint32_t    s_rebootAtMs = 0;
+uint32_t    s_pumpWork = 0;        // sink events (chunk ack/resend) this pump pass
 
 constexpr int      kByteBudget    = kMaxChunk;   // bytes drained per pump pass
 constexpr uint32_t kStallMs       = 20 * 1000;   // abort a wedged transfer
 constexpr uint32_t kRebootDelayMs = 1500;        // let "ok" flush before restart
+constexpr uint32_t kMaxWorkPerPump = 32;         // chunk events before yielding the loop
+constexpr uint32_t kMaxPumpMs      = 8;          // wall-clock ceiling per pump pass
 
-void reply(const char* tail) {
-  Serial.print(kReplyPrefix);
-  Serial.println(tail);
-  Serial.flush();
-}
+// High-frequency ack/resend replies do NOT flush: a blocking Serial.flush() on the
+// HWCDC TX per chunk stalls the main loop / watchdog under a chunk (or bad-crc
+// resend) flood. The bytes drain on their own; only the terminal replies (ready /
+// ok / err / timeout) flush, so the host's final verdict is never left buffered.
 void replyNum(const char* verb, uint32_t n) {
   Serial.print(kReplyPrefix);
   Serial.print(verb);
   Serial.print(' ');
   Serial.println(n);
+}
+void reply(const char* tail) {
+  Serial.print(kReplyPrefix);
+  Serial.println(tail);
   Serial.flush();
 }
 void replyWhy(const char* verb, const char* why) {
@@ -65,6 +72,7 @@ bool onStart(void*, uint32_t size, const uint8_t*) {
 }
 
 bool onChunkOk(void*, uint32_t seq, const uint8_t* data, uint16_t len) {
+  ++s_pumpWork;
   if (!otaupd::localWrite(data, len)) {
     reply("err flash-write");   // localWrite already aborted the session
     return false;
@@ -73,7 +81,7 @@ bool onChunkOk(void*, uint32_t seq, const uint8_t* data, uint16_t len) {
   return true;
 }
 
-void onResend(void*, uint32_t seq) { replyNum("resend", seq); }
+void onResend(void*, uint32_t seq) { ++s_pumpWork; replyNum("resend", seq); }
 
 bool onDone(void*, const uint8_t* sha256) {
   char hex[kSha256Len * 2 + 1];
@@ -109,6 +117,8 @@ void begin() {
 }
 
 void pump() {
+  esp_task_wdt_reset();   // this pass may do bounded flash work; keep the WDT fed
+
   // Fire a staged reboot once the "ok" reply has had time to flush.
   if (s_rebootPending && (int32_t)(millis() - s_rebootAtMs) >= 0) {
     Serial.flush();
@@ -124,6 +134,11 @@ void pump() {
     s_reader.reset();
   }
 
+  // Bound BOTH bytes read AND work done (chunk ack/resend events) per pass, and cap
+  // wall-clock time, so a chunk flood or a bad-crc resend flood can never monopolize
+  // loop() / starve the watchdog. Remaining bytes wait for the next pump.
+  const uint32_t entry = millis();
+  s_pumpWork = 0;
   int budget = kByteBudget;
   while (budget-- > 0 && Serial.available() > 0) {
     const int c = Serial.read();
@@ -135,6 +150,9 @@ void pump() {
       s_rebootAtMs = millis() + kRebootDelayMs;
       break;   // image committed; stop reading and let the reboot fire
     }
+    if (s_pumpWork >= kMaxWorkPerPump ||
+        (uint32_t)(millis() - entry) >= kMaxPumpMs)
+      break;   // yield the loop; the rest drains next pass
   }
 }
 

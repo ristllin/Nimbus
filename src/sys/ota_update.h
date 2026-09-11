@@ -57,10 +57,14 @@ bool requestInstall(bool dryRun, bool force, const char** whyOut = nullptr);
 // accepts a locally-built image over the USB serial cable (src/sys/usb_updater.*)
 // and installs it through the SAME esp_ota engine, rollback guard, and deferred
 // reboot. It claims the SAME single-flight guard (refuses "busy" while a cloud
-// check/install holds it) and runs the EXACT arm-before-flip commit order; it
-// SKIPS only the HTTPS fetch + ECDSA verify of the cloud path, because the cable
-// is the trust boundary. It is NOT gated on the OTA variant: a locally-built
-// image is what strands-a-device (an untyped unit with no cloud image) needs.
+// check/install holds it) and runs the EXACT arm-before-flip commit order.
+// Compared to the cloud path it drops everything that only makes sense for a
+// remotely-fetched, signed release: the HTTPS fetch + ECDSA signature verify, the
+// version-eligibility check, and the battery/health install gate. It keeps the
+// streamed-sha256 integrity check. The physical cable is the trust boundary, and
+// the operator at the cable owns the power/version decision (matching esptool). It
+// is NOT gated on the OTA variant: a locally-built image is exactly what a
+// stranded device (an untyped unit with no cloud image) needs.
 //
 //   localBegin(size): claim the engine + open the inactive slot for a size-byte
 //     image. Refuses via *whyOut ("busy"/"size"/"slot"/"confirm").

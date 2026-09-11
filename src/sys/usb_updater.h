@@ -32,8 +32,10 @@ namespace nimbus::usbfw {
 //
 // Device replies are single newline-terminated lines prefixed "NFWU " so the host
 // filters them out of ordinary firmware log noise on the same TX line:
-//   NFWU ready | NFWU busy <why> | NFWU ack <n> | NFWU resend <n>
-//   NFWU ok    | NFWU err <reason>
+//   NFWU ready | NFWU ack <n> | NFWU resend <n> | NFWU ok | NFWU err <reason>
+// Every refusal or fault is "NFWU err <reason>" (reasons: size / confirm / busy /
+// slot / short / badsha / sha-fail / commit / badframe / chunklen / shamismatch /
+// flash-write / timeout).
 
 inline constexpr char    kMagic[]     = "NIMBUSFW1";  // sent WITHOUT the trailing NUL
 inline constexpr size_t  kMagicLen    = 9;
@@ -141,6 +143,43 @@ inline bool hexToBytes(const char* hex, uint8_t* out, size_t n) {
     out[i] = (uint8_t)((hi << 4) | lo);
   }
   return true;
+}
+
+// ---- confirm gate -----------------------------------------------------------
+// Whether the optional on-device confirm gate should refuse a USB update START
+// right now. Default OFF (flagOn == false) never blocks. When ON it blocks unless
+// an arm window is open: armUntilMs is a millis() deadline (0 = never armed), and
+// the gate opens only while nowMs is strictly before it. Portable + host-tested so
+// the OFF / on-but-unarmed / armed / armed-then-expired branches are covered
+// without a device.
+inline bool confirmGateBlocks(bool flagOn, uint32_t nowMs, uint32_t armUntilMs) {
+  if (!flagOn) return false;             // gate off: cable == trust
+  if (armUntilMs == 0) return true;      // on but never armed
+  return (int32_t)(nowMs - armUntilMs) >= 0;   // armed window has expired
+}
+
+// ---- local-update decision helpers (pure, host-tested) ----------------------
+// The mark-valid trigger must stay suppressed while an install is in flight. A
+// local (USB) install arms the NEXT image's pending flag and stays "installing"
+// through its deferred reboot; marking the CURRENT image valid in that window would
+// clear the fresh flag and defeat rollback (CUM-390 review FIX 1). Factored out so
+// the guard is host-tested, not just correct by inspection.
+inline bool markValidAllowed(bool alreadyValid, bool installing, bool pending,
+                             bool bootHealthy) {
+  return !alreadyValid && !installing && pending && bootHealthy;
+}
+
+// The refusals localBegin makes BEFORE it claims the single-flight guard, in order.
+// Returns nullptr to proceed to the atomic claim, else a machine reason. rebootArmed
+// (state == ReadyToReboot) can never reopen the slot while an install is committed
+// and a reboot is pending (CUM-390 review FIX 2, defense in depth atop the held
+// guard). confirmBlocks is the confirmGateBlocks() verdict.
+inline const char* localBeginPrecheck(bool sizeZero, bool rebootArmed,
+                                      bool confirmBlocks) {
+  if (sizeZero) return "size";
+  if (rebootArmed) return "busy";
+  if (confirmBlocks) return "confirm";
+  return nullptr;
 }
 
 // ---- commit-order sequencer -------------------------------------------------

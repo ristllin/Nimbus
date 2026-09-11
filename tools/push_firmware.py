@@ -88,9 +88,13 @@ def _send_start(ser, size, sha):
 
 def _send_chunk(ser, index, payload):
     frame = CHUNK_TAG + struct.pack("<H", len(payload)) + payload + struct.pack("<I", zlib.crc32(payload) & 0xFFFFFFFF)
-    for attempt in range(MAX_RESENDS + 1):
-        ser.write(frame)
-        ser.flush()
+    ser.write(frame)
+    ser.flush()
+    resends = 0
+    # Wait for a verdict on THIS index. A stale reply for another index (or any
+    # other NFWU line) is ignored WITHOUT re-writing, so a stale ack never causes a
+    # chunk to be written twice; only an explicit "resend <index>" rewrites it.
+    while True:
         reply = _wait_reply(ser, ACK_TIMEOUT_S)
         if reply is None:
             sys.exit(f"push_firmware: timed out waiting for chunk {index} ack")
@@ -99,11 +103,16 @@ def _send_chunk(ser, index, payload):
         if verb == "ack" and num == str(index):
             return
         if verb == "resend" and num == str(index):
-            continue  # crc mismatch on the wire: resend the same chunk
+            if resends >= MAX_RESENDS:
+                sys.exit(f"push_firmware: chunk {index} failed after {MAX_RESENDS} resends")
+            resends += 1
+            ser.write(frame)
+            ser.flush()
+            continue
         if verb == "err":
             sys.exit(f"push_firmware: device error on chunk {index}: {' '.join(reply[1:])}")
-        # An unexpected reply (stale ack/resend for another index): retry.
-    sys.exit(f"push_firmware: chunk {index} failed after {MAX_RESENDS} resends")
+        # Stale ack/resend for another index, or an unrelated NFWU line: keep
+        # waiting, do NOT rewrite the frame.
 
 
 def _send_done(ser, sha):

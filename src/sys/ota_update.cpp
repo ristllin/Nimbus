@@ -829,12 +829,15 @@ void localArmConfirm() { g_localConfirmUntil = millis() + kConfirmWindowMs; }
 
 bool localBegin(size_t size, const char** whyOut) {
   auto refuse = [&](const char* w) { if (whyOut) *whyOut = w; return false; };
-  if (size == 0) return refuse("size");
-  // Optional confirm gate (default OFF). When ON, an on-device gesture must have
-  // armed a short window via localArmConfirm() first.
-  if (agent::store::usbUpdateConfirm() &&
-      (g_localConfirmUntil == 0 || (int32_t)(millis() - g_localConfirmUntil) >= 0))
-    return refuse("confirm");
+  // Pre-claim refusals (order + reasons are host-tested): zero size; never reopen
+  // the slot once an install is committed and a reboot is armed (defense in depth
+  // atop the guard held through the reboot window); and the optional confirm gate
+  // (default OFF; when ON an on-device gesture must have armed a window first).
+  const char* pre = nimbus::usbfw::localBeginPrecheck(
+      size == 0, g_state == State::ReadyToReboot,
+      nimbus::usbfw::confirmGateBlocks(agent::store::usbUpdateConfirm(), millis(),
+                                       g_localConfirmUntil));
+  if (pre) return refuse(pre);
   // The SAME atomic single-flight claim the cloud check/install use: a USB push
   // and a background check can never both drive the OTA slot.
   bool expected = false;
@@ -938,8 +941,8 @@ bool localFinish(const char* sha256hex, const char** whyOut) {
       nimbus::usbfw::commitInstall(h, runningLabel(), "installing usb", nullptr);
 
   g_localActive = false;
-  g_taskRunning = false;
   if (!flipped) {
+    g_taskRunning = false;   // release only on failure; keep running the old image
     g_progressPct = -1;
     g_state = State::Error;
     setLastError("commit");
@@ -948,6 +951,10 @@ bool localFinish(const char* sha256hex, const char** whyOut) {
     if (whyOut) *whyOut = "commit";
     return false;
   }
+  // SUCCESS: hold the single-flight guard through the deferred pump() reboot, so a
+  // second START cannot reopen the OTA slot and erase the just-armed rollback image
+  // in the ~1.5 s window before restart (the cloud installTask likewise holds it
+  // through esp_restart). bootGuard/the reboot releases it implicitly.
   g_state = State::ReadyToReboot;
   g_progressPct = 100;
   fireEvent(EvRebooting, "usb", "");
@@ -980,8 +987,16 @@ void tick() {
 
   if (WiFi.status() == WL_CONNECTED) g_wifiEverUp = true;
 
-  if (!g_markedValid && agent::store::otaPending() &&
-      nimbus::ota::bootHealthy(now / 1000, g_wifiEverUp)) {
+  // The !installing() guard is load-bearing for the USB path: a local install
+  // arms a FRESH pending flag for the NEXT image and stays "installing" through the
+  // deferred-reboot window. Without this guard, mark-valid for the CURRENT (old)
+  // image could fire in that window and clear the just-armed pending flag, so a
+  // crash-looping new image would never roll back. (Cloud installs reboot from
+  // their own task and never re-enter tick() between arm and restart, but the guard
+  // is correct for both.) The decision is a host-tested pure predicate.
+  if (nimbus::usbfw::markValidAllowed(g_markedValid, installing(),
+                                      agent::store::otaPending(),
+                                      nimbus::ota::bootHealthy(now / 1000, g_wifiEverUp))) {
     markValid();
   }
 
