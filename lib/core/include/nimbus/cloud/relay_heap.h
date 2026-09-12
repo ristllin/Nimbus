@@ -35,11 +35,33 @@
 // already guards. Holding a 16 KB TOTAL reserve on top of that blocked a device whose
 // internal SRAM was healthy but fragmented: the field low-water was ~9 KB while PSRAM
 // sat ~7.7 MB empty, so the gate fired "Not enough memory right now" on a normal sync
-// even though the largest block was ample. 8000 is the honest genuine-starvation
-// backstop (below it, the lwIP/socket internal allocations for a new TLS connection
-// genuinely cannot run); it matches the largest-block-centric model provider_verify.cpp
-// already uses on this exact board for the same mbedTLS handshake. The on-device
-// before/after low-water during a real sync is captured separately (see PR_BODY).
+// even though the largest block was ample.
+//
+// What 8000 is, stated honestly: a CONSERVATIVE genuine-starvation backstop, NOT a
+// measured cliff. Nothing has established the total-free level below which the
+// lwIP/socket internal allocations for a new TLS connection actually fail, and
+// docs/memory.md:66-68 puts the real internal red line for a network call much higher
+// (the ~24 KB lwIP-pbuf + TLS-record "danger zone"), with :133-134 siting the other
+// floors just above it (about 28 KB). Note also that the ~9 KB field low-water above
+// was observed on v4.4.8, BEFORE this PSRAM staging landed, so the refusal that
+// motivated the change may not reproduce on v4.5.0 at all. Read 8000 as "low enough
+// to stop blocking a healthy but fragmented device, high enough to still refuse an
+// obviously starved one" - not as a proven limit.
+//
+// It is also NOT the same gate provider_verify.cpp applies on this board: that one
+// gates a single largest-block threshold (largest >= 8000), while this one gates
+// largest >= 5000 AND free >= 8000. Same largest-block-centric spirit, different
+// numbers; they are not interchangeable and neither validates the other.
+//
+// TODO(CUM-387): the on-device before/after internal low-water during a real cloud
+// sync on v4.5.0 is still OUTSTANDING (the target unit has been off Wi-Fi since the
+// release), so this floor is unvalidated on hardware. That measurement is what turns
+// it from conservative to justified. While measuring, also check that a dial at
+// 8-16 KB does not overlap a concurrent turn or Telegram TLS session: runSession
+// takes no TLS arbiter, so the two can coexist. And note the user-visible
+// consequence of moving the refusal off the memory path: a memory-caused dial
+// failure now surfaces as "Couldn't reach the cloud. Retrying." rather than the
+// memory copy, which hides the real cause from the owner.
 
 namespace nimbus {
 namespace cloud {

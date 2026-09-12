@@ -42,12 +42,20 @@ static char          g_provider[16] = {};
 // (max8=15348)"; later max8=11764), while anthropic, which happened to run at a
 // higher moment, verified fine. That is the uniform "couldn't verify - retry" the
 // owner saw: NOT a per-provider fault, just the gate parked above the device's own
-// fragmented floor. The REAL contiguous need is small now that mbedTLS RX/TX ride
-// PSRAM: a live TLS embed on this board PEAKS at 6,536 B contiguous (measured, see
-// the AsyncTCP note in platformio.ini). 8 KB sits just above that measured peak, so
-// a verify attempts whenever the handshake can actually fit and still refuses a
-// genuine severe OOM (records -1 "deferred"; a real OOM past the gate fails soft).
-// Verified on-device: all four direct verifies go green at this floor. docs/memory-model.md.
+// fragmented floor. The REAL contiguous need is smaller now that mbedTLS RX/TX ride
+// PSRAM, but it has NOT been measured directly. Do NOT cite the 6,536 B from
+// platformio.ini's AsyncTCP note as that peak: that figure is a service-task STACK
+// high-water (surfaced as mem.asyncStackMin), not a contiguous heap block, so it
+// cannot size this gate. 8 KB is therefore justified EMPIRICALLY, not analytically:
+// it sits below the device's observed fragmented floor swing where 16 KB did not,
+// and on-device all four direct verifies go green at it, while a genuine severe OOM
+// is still refused (records -1 "deferred"; a real OOM past the gate fails soft).
+// TODO(CUM-387): measure the true contiguous high-water of a live TLS embed on
+// v4.5.0 (PSRAM staging in) and restate this floor against that number; the same
+// measurement settles relay_heap.h's unmeasured "below 8000 lwIP genuinely cannot
+// run" claim and its stated agreement with this gate (the two gate different
+// things: here largest>=8000, there largest>=5000 plus free>=8000).
+// docs/memory-model.md.
 static const size_t VERIFY_MIN_MAX8 = 8000;
 
 static void verifyTask(void*);   // spawned per request(); self-deletes
