@@ -105,7 +105,7 @@ policy all key off the two constants and the key list above.
 
 `tools/make_manifest.py` and the device's `nimbus::ota::buildSigMessage()`
 must produce byte-identical canonical messages
-(`nimbus-ota-v1\n<version>\n<variant>\n<sha256-hex>\n`) - the pairing is
+(`nimbus-ota-v2\n<version>\n<type>\n<sha256-hex>\n`) - the pairing is
 golden-tested. Change both together or never.
 
 ---

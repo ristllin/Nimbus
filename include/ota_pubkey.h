@@ -2,7 +2,7 @@
 
 // OTA release-signing TRUST ANCHORS. The device accepts a firmware update only
 // when the release's ECDSA P-256 signature (over the canonical message
-// "nimbus-ota-v1\n<version>\n<variant>\n<sha256-hex>\n" - nimbus::ota::
+// "nimbus-ota-v2\n<version>\n<type>\n<sha256-hex>\n" - nimbus::ota::
 // buildSigMessage) verifies against one of these public keys. The private key
 // lives ONLY in the GitHub Actions secret OTA_SIGNING_KEY + the owner's offline
 // backup - never in this repo.

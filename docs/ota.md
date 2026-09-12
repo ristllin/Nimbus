@@ -42,8 +42,9 @@ flowchart TD
   actually downloaded and verifies against the public keys baked into
   [`include/ota_pubkey.h`](../include/ota_pubkey.h) **before** the boot flag
   flips. Binding version+type kills mix-and-match and cross-version replay. (The
-  transition release still signs the legacy `nimbus-ota-v1\n...\n<variant>\n...`
-  message so existing fielded firmware can verify it - see Typed manifests.)
+  schema-1 transition is over: `release.yml` publishes only the typed schema-2
+  manifest and `parseManifest()` rejects anything else, so the legacy
+  `nimbus-ota-v1` message is no longer signed - see Typed manifests.)
 - **TLS**: downloads ride `tlsSetup()` (CA-bundle validation, `tlsVerify`
   default ON), so the transport is also authenticated on default settings.
 - **Residual**: a MITM against a `tlsVerify=0` device can only replay an old
