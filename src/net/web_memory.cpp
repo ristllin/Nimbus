@@ -616,9 +616,17 @@ void registerMemoryRoutes(AsyncWebServer& server) {
     r->send(res);
   });
 
-  // GET /api/log - the agent RAM log ring (last ~2.5 KB), plain text. Lets a
-  // network-dependent failure (STT "didn't catch that", turn errors) be diagnosed
-  // over HTTP without opening serial (which would drop the WiFi being diagnosed).
+  // GET /api/log - the agent RAM log ring, plain text. Lets a network-dependent
+  // failure (STT "didn't catch that", turn errors) be diagnosed over HTTP without
+  // opening serial (which would drop the WiFi being diagnosed).
+  // SIZE: the ring is logring::kCap = 1280 BYTES (agent_log.h), roughly a dozen
+  // lines - not the "~2.5 KB" this comment used to claim. That matters to anyone
+  // diagnosing over this endpoint: at a couple of log lines per second the whole
+  // window turns over in seconds, so poll continuously and reassemble rather than
+  // acting once after the fact, or the evidence is already evicted. It is also a
+  // BYTE ring with no line alignment (store() copies bytes and wraps mid-line), so
+  // the OLDEST line in a tail is usually a fragment; anchor any parsing on a full
+  // line prefix rather than on a trailing field, which a fragment can still carry.
   server.on("/api/log", HTTP_GET, [](AsyncWebServerRequest* r) {
     if (authBlocked(r)) return;  // strict gate (owner R2)
     AsyncWebServerResponse* res = r->beginResponse(200, "text/plain", agent::agentLogTail());
