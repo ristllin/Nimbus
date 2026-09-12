@@ -33,10 +33,16 @@ class AsyncWebServerRequest;
 
 namespace nimbus::net {
 
-// Per-device web auth (prism security fix). A state-changing request must carry the
-// device token (X-Nimbus-Token header OR ?t= param) matching store::webAuthToken();
-// constant-time compared. The owner gets the token via the Config QR. Shared by the
-// /api/* POST handlers (webui) and the /mcp endpoint (web_memory). GETs stay open.
+// Per-device web auth (prism security fix). A request must carry the device token
+// (X-Nimbus-Token header, or a "t" FORM field) matching store::webAuthToken();
+// constant-time compared. Shared by the /api/* handlers (webui) and the /mcp endpoint
+// (web_memory).
+//
+// Three claims here were stale after CUM-45 and are corrected: a QUERY ?t= param is
+// NOT accepted (a URL lands in history and syncs across machines); GETs do NOT stay
+// open (every /api route including /api/health is gated - "no data before
+// identification"); and the owner does NOT get the token from the Config QR, which
+// carries a single-use ?c= sign-in code exchanged at POST /api/signin/exchange.
 bool webAuthOk(::AsyncWebServerRequest* r);
 
 // Everything the config page needs to read/write. Pointers are borrowed and

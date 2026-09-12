@@ -158,7 +158,11 @@
 #define AKEY_ANTHROPIC_KEY  "antKey"
 #define AKEY_MISTRAL_KEY    "mistralKey"
 #define AKEY_TAVILY_KEY     "tavilyKey"     // Tavily web-search API key (orchestrator web.search tool)
-#define AKEY_WEB_TOKEN      "webTok"        // per-device web/MCP auth token (gen on first use, shown via Config QR)
+// Per-device web/MCP auth token (generated on first use). NOT shown in the Config QR:
+// CUM-45 took the durable token out of every URL and QR, so the panel shows a
+// single-use ?c= sign-in code instead, traded for this token at POST
+// /api/signin/exchange. The token never leaves the device by any other route.
+#define AKEY_WEB_TOKEN      "webTok"
 #define AKEY_AP_PASS        "apPass"        // per-device setup-AP passphrase (gen on first use, shown on the setup screen)
 #define AKEY_DEVICE_TZ      "devTz"         // POSIX TZ for Local Loops wall-clock schedules (default UTC0)
 #define AKEY_CLOUD_OPTIN    "cloudOptIn"    // u8: 1 = cloud relay enabled (Orchestrator-only; default 0, ships dark)

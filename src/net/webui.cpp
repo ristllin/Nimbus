@@ -232,10 +232,18 @@ String showCode() {
 uint32_t showCodeSecsLeft() { return s_showDisp.secsLeft(millis()); }
 // ================== end N1 UI endpoints (file-scope state) ==================
 
-// Per-device web auth (prism): a state-changing request must carry the device token
-// (X-Nimbus-Token header OR ?t= param), constant-time compared vs store::webAuthToken().
-// The owner obtains it via the Config QR. Closes the unauthenticated config/CSRF surface
-// - a cross-site form can't know the per-device token, so this doubles as CSRF defence.
+// Per-device web auth (prism): a request must carry the device token (X-Nimbus-Token
+// header, or a "t" FORM field), constant-time compared vs store::webAuthToken().
+// Closes the unauthenticated config/CSRF surface - a cross-site form can't know the
+// per-device token, so this doubles as CSRF defence.
+//
+// This header used to say "or ?t= param" and "the owner obtains it via the Config QR".
+// Both were left behind by CUM-45 and both are wrong, which is worth spelling out
+// because they contradicted the function body four lines below and cost real time:
+// a QUERY ?t= is no longer accepted at all (see the body), and the Config QR carries
+// a single-use ?c= sign-in code, never the durable token. The durable token reaches a
+// caller by exactly ONE route, POST /api/signin/exchange, and is otherwise never
+// emitted over the LAN. Anyone who needs it holds a code and exchanges it.
 bool webAuthOk(::AsyncWebServerRequest* r) {
   String want = agent::store::webAuthToken();
   String got;

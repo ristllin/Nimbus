@@ -414,7 +414,9 @@ void dispatch(String line) {
   }
   if (line == "WEBTOK?") {
     // Print the per-device web/MCP auth token (TEST build only) so the HIL harness can
-    // exercise the authenticated path; on a real device the owner reads it off the QR.
+    // exercise the authenticated path. On a real device the owner does NOT read this
+    // token off the QR (CUM-45): the QR carries a single-use ?c= code, exchanged for
+    // the token at POST /api/signin/exchange.
     Serial.printf("WEBTOK %s\n", agent::store::webAuthToken().c_str());
     return;
   }
