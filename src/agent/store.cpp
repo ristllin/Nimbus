@@ -107,8 +107,21 @@ bool   hasTavilyKey() { return tavilyKey().length() > 0; }
 
 // Per-device web/MCP auth token. Generated (96-bit hardware-random) on FIRST use and
 // persisted, so it is stable across reboots + unique per device - never a shipped
-// constant. Shown to the owner via the Config QR; required on state-changing web POSTs
-// + /mcp. Read-only surface: there is no setter (the device owns it).
+// constant. Required on state-changing web POSTs + /mcp. Read-only surface: there is
+// no setter (the device owns it).
+//
+// This value is NEVER shown to the owner and never travels in a URL or a QR: CUM-45
+// took it out of both, because a URL is committed to browser history before any
+// script runs and browsers sync history across machines. The Config QR and the panel
+// "Show code" screen carry a SINGLE-USE, TTL-bounded sign-in code instead
+// (signin_codes.h); a caller trades that code for this token exactly once, at
+// POST /api/signin/exchange (webui.cpp), which is the only route by which it ever
+// leaves the device. The comment here used to say "Shown to the owner via the Config
+// QR" - the pre-CUM-45 behaviour. Wake-run #17 corrected four other sites that made
+// the same stale claim (webui.h, webui.cpp, agent_config.h, test_console.cpp) but not
+// this one, the token's own definition and so the most authoritative of them; six
+// consecutive wake-runs read claims of this shape and told the owner to read a
+// durable token off a QR that has not carried one since CUM-45.
 String webAuthToken() {
   String t = solide::memory::getString(AKEY_WEB_TOKEN, "");
   if (t.length() == 0) {
