@@ -38,7 +38,6 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 #include <esp_heap_caps.h>   // MALLOC_CAP_SPIRAM - queue storage on PSRAM (docs/memory-model.md)
-#include <utility>           // std::move (classifyBody builds ClassifiedUpdate entries)
 #include "nimbus/tg_html.h"   // v4.1.1: markdown -> Telegram HTML (plain fallback below)
 
 #define TG_HOST "api.telegram.org"
@@ -519,37 +518,43 @@ static void classifyText(const nimbus::tg::Update& u, const String& chatId,
   }
 }
 
-static void classifyBody(const char* body, size_t len, nimbus::orch::DrainPage& pg) {
-  using Kind = nimbus::tg::Attachment::Kind;
-  std::vector<nimbus::tg::Update> updates;
+// Parse a getUpdates page body into whole updates (NO side effects - a truncated
+// tail update the parser drops is simply re-served next poll). Returns whether the
+// body was a well-formed ok:true response (the device folds this into the CUM-308
+// auth-fail debounce).
+static bool parsePageBody(const char* body, size_t len, std::vector<nimbus::tg::Update>& out) {
+  out.clear();
   bool ok = false, truncatedTail = false;
-  pg.parsedOk = false;
-  if (!nimbus::tg::parseUpdates(body, len, updates, ok, truncatedTail) || !ok) {
+  if (!nimbus::tg::parseUpdates(body, len, out, ok, truncatedTail) || !ok) {
     alogf("telegram: poll parse failed (ok=%d trunc=%d): %.60s", ok, truncatedTail, body);
-    return;
+    return false;
   }
-  pg.parsedOk = true;   // a well-formed ok:true body - this poll cycle authenticated
-  for (const auto& u : updates) {
-    if (u.updateId <= 0) continue;
-    pg.rawCount++;   // a WHOLE update the parser returned (drives drain-to-empty)
-    const String chatId(u.chatId.c_str());
-    const String from(u.from.c_str());
-    const bool isAllowed = chatId.length() && allowed(chatId);
-    nimbus::orch::ClassifiedUpdate cu;
-    cu.updateId = u.updateId;
-    cu.action   = nimbus::orch::ClassifiedUpdate::Action::AckOnly;   // default: handled/ignored
+  return true;   // a well-formed ok:true body - this poll cycle authenticated
+}
 
-    bool stop = false;
-    if (u.attachment.kind == Kind::Voice)
-      stop = classifyVoice(u, chatId, from, isAllowed, cu);
-    else if (u.attachment.kind == Kind::Document || u.attachment.kind == Kind::Photo)
-      stop = classifyFile(u, chatId, from, isAllowed, cu);
-    else if (u.text.size())
-      classifyText(u, chatId, from, isAllowed, cu);
+// Classify ONE update and run its inline side effect (queue a voice note / hand a
+// file to the files lane / push an unlisted sender for approval / route a caption as
+// text). Returns the drain action. drainPages calls this LAZILY, in order, and only
+// for updates it actually reaches - so a side effect never runs for an update that is
+// then left un-acked and re-served (which would run it twice). Text from an allowed
+// chat is batched into one turn per chat; a busy voice/file slot yields StopNoAck.
+static nimbus::orch::ClassifiedUpdate handleUpdate(const nimbus::tg::Update& u) {
+  using Kind = nimbus::tg::Attachment::Kind;
+  nimbus::orch::ClassifiedUpdate cu;
+  cu.updateId = u.updateId;
+  cu.action   = nimbus::orch::ClassifiedUpdate::Action::AckOnly;   // default: handled/ignored
+  if (u.updateId <= 0) return cu;   // defensive: never side-effect on a bogus id
 
-    pg.updates.push_back(std::move(cu));
-    if (stop) return;   // a busy deferred slot: this update stays un-acked, re-served
-  }
+  const String chatId(u.chatId.c_str());
+  const String from(u.from.c_str());
+  const bool isAllowed = chatId.length() && allowed(chatId);
+  if (u.attachment.kind == Kind::Voice)
+    classifyVoice(u, chatId, from, isAllowed, cu);
+  else if (u.attachment.kind == Kind::Document || u.attachment.kind == Kind::Photo)
+    classifyFile(u, chatId, from, isAllowed, cu);
+  else if (u.text.size())
+    classifyText(u, chatId, from, isAllowed, cu);
+  return cu;
 }
 
 // ---- getUpdates (persistent keep-alive poll socket) -------------------------
@@ -634,7 +639,7 @@ static void readPollHeaders(uint32_t deadline, long& contentLen, bool& serverClo
 // pg.rawCount left 0 so the drain ends this cycle - nothing lost); -1 on an alloc or
 // socket error. The poll socket is closed on 1 and -1.
 static int readPollBodyOrDefer(long contentLen, uint32_t deadline, bool& serverClose,
-                               char*& body, int& stored, nimbus::orch::DrainPage& pg) {
+                               char*& body, int& stored, nimbus::orch::RawPage& rp) {
   body = ensurePollBody();
   if (!body) {   // PSRAM exhausted (should never happen) - drop this cycle and retry.
     alog("telegram: poll body alloc failed; skipping cycle");
@@ -647,7 +652,7 @@ static int readPollBodyOrDefer(long contentLen, uint32_t deadline, bool& serverC
     alogf("telegram: getUpdates body %ld B > %d cap - re-polling limit=1", contentLen, kPollBodyCap);
     g_limitOne = true;
     closePollSocket();
-    pg.rawCount = 0;   // rawCount(0) < limit -> drainPages stops this cycle
+    rp.count = 0;   // count(0) < limit -> drainPages stops this cycle
     return 1;
   }
   if (contentLen >= 0) {
@@ -662,21 +667,23 @@ static int readPollBodyOrDefer(long contentLen, uint32_t deadline, bool& serverC
   return 0;
 }
 
-// Fetch ONE getUpdates page at `offset` and classify it into `pg` (see classifyBody
-// / drainPages). Does NOT commit the offset - the drain driver advances it and the
-// caller (drainAndDispatch) commits AFTER the turns run (CUM-398 crash-safety).
-// `outcome` (optional) receives this fetch's auth classification for the CUM-308
-// debounce - exactly one value per call: AuthFail on 401/403, Conflict on 409, Ok on
-// a clean ok:true body, Transient for a connect/socket/parse hiccup (which proves
-// nothing about the token). pg.fetchError marks a poll error that drives the backoff.
-static void fetchOnePage(int32_t offset, int longPollS, nimbus::orch::DrainPage& pg,
+// Fetch ONE getUpdates page at `offset`: HTTP + parse the whole updates into `out`
+// and fill `rp` (count/limit/fetchError) for the drain driver. Runs NO per-update
+// side effects - the driver calls handleUpdate lazily per reached update. Does NOT
+// commit the offset (drainAndDispatch commits AFTER the turns run, CUM-398 crash-
+// safety). `outcome` (optional) receives this fetch's auth classification for the
+// CUM-308 debounce: AuthFail on 401/403, Conflict on 409, Ok on a clean ok:true body,
+// Transient for a connect/socket/parse hiccup. rp.fetchError marks a poll error that
+// drives the backoff; an oversized batch leaves rp.count 0 (re-polled limit=1 next).
+static void fetchOnePage(int32_t offset, int longPollS, std::vector<nimbus::tg::Update>& out,
+                         nimbus::orch::RawPage& rp,
                          nimbus::net::TgPollOutcome* outcome = nullptr) {
   auto setOutcome = [&](nimbus::net::TgPollOutcome o) { if (outcome) *outcome = o; };
   setOutcome(nimbus::net::TgPollOutcome::Transient);   // default until classified
   const int usedLimit = g_limitOne ? 1 : 10;   // the getUpdates limit for THIS fetch
-  pg.limit = usedLimit;
+  rp.limit = usedLimit;
   if (!g_pollScOpen) {
-    if (!tlsConnect(g_pollSc)) { alog("telegram: poll connect fail"); pg.fetchError = true; return; }
+    if (!tlsConnect(g_pollSc)) { alog("telegram: poll connect fail"); rp.fetchError = true; return; }
     g_pollScOpen = true;
   }
 
@@ -687,36 +694,37 @@ static void fetchOnePage(int32_t offset, int longPollS, nimbus::orch::DrainPage&
     "Host: " TG_HOST "\r\n"
     "Connection: keep-alive\r\n\r\n",
     g_token.c_str(), (long)offset, usedLimit, longPollS);
-  if (g_pollSc.print(req) == 0) { closePollSocket(); pg.fetchError = true; return; }
+  if (g_pollSc.print(req) == 0) { closePollSocket(); rp.fetchError = true; return; }
 
   uint32_t deadline = millis() + (longPollS + 10) * 1000UL;
 
   char line[MAX_LINE];
-  if (readLine(g_pollSc, line, sizeof(line), deadline) == 0) { closePollSocket(); pg.fetchError = true; return; }
+  if (readLine(g_pollSc, line, sizeof(line), deadline) == 0) { closePollSocket(); rp.fetchError = true; return; }
   const int status = httpStatusCode(line);
   // A conflict (409) means the token is VALID (Telegram authenticated it), so it is
   // NOT an auth failure; 401/403 is (CUM-308 keeps them apart). pollStatusIsError
   // sets the outcome and returns true for any non-200 the caller must back off from.
-  if (pollStatusIsError(status, outcome)) { closePollSocket(); pg.fetchError = true; return; }
+  if (pollStatusIsError(status, outcome)) { closePollSocket(); rp.fetchError = true; return; }
 
   long contentLen = -1; bool serverClose = false;
   readPollHeaders(deadline, contentLen, serverClose);
 
   char* body = nullptr;
   int stored = 0;
-  const int br = readPollBodyOrDefer(contentLen, deadline, serverClose, body, stored, pg);
-  if (br < 0) { pg.fetchError = true; return; }   // alloc/socket error (socket closed inside)
+  const int br = readPollBodyOrDefer(contentLen, deadline, serverClose, body, stored, rp);
+  if (br < 0) { rp.fetchError = true; return; }   // alloc/socket error (socket closed inside)
   if (br == 1) return;                            // oversized: deferred to a limit=1 re-poll
 
   // Free the single arena before the orchestrator turn runs (in drainAndDispatch) -
   // or honor a server close. Idle keeps the socket open (zero re-handshake churn).
   bool hasUpdate = strstr(body, "\"update_id\"") != nullptr;
   if (serverClose || hasUpdate) closePollSocket();
-  classifyBody(body, (size_t)stored, pg);
+  const bool parsedOk = parsePageBody(body, (size_t)stored, out);
+  rp.count = (int)out.size();
   // A clean ok:true body (empty batch or real updates) is proof the token works;
   // an unparseable/ok:false body on a non-error status stays neutral (Transient),
   // never counted as an auth failure.
-  setOutcome(pg.parsedOk ? nimbus::net::TgPollOutcome::Ok : nimbus::net::TgPollOutcome::Transient);
+  setOutcome(parsedOk ? nimbus::net::TgPollOutcome::Ok : nimbus::net::TgPollOutcome::Transient);
 }
 
 // CUM-398: drain rapidly-arriving Telegram messages into ONE turn per chat. Text is
@@ -727,23 +735,45 @@ static void fetchOnePage(int32_t offset, int longPollS, nimbus::orch::DrainPage&
 // the message count handled this cycle, or -1 on a page-0 poll error (backoff).
 static int drainAndDispatch(int32_t startOffset, int longPollS,
                             nimbus::net::TgPollOutcome* outcome) {
-  std::vector<nimbus::orch::DrainTurn> turns;
-  auto fetch = [&](int32_t off, bool first) -> nimbus::orch::DrainPage {
-    nimbus::orch::DrainPage pg;
+  // The current page's parsed updates; fetch (below) refills it each page and handle
+  // reads it. One page is resident at a time (drainPages finishes a page's handle
+  // calls before fetching the next), so this holds at most one getUpdates page.
+  std::vector<nimbus::tg::Update> pageUpdates;
+  // Fold the per-page auth classification into one verdict for the whole cycle (a
+  // drain can fetch several pages). Ok is sticky: any page that came back a clean
+  // ok:true proves the token works this cycle, so a later transient/conflict page
+  // must not erase it (that would fail to reset the CUM-308 debounce). Absent an Ok,
+  // keep the latest real signal (AuthFail/Conflict) over the Transient default.
+  bool sawOk = false;
+  nimbus::net::TgPollOutcome cycleOutcome = nimbus::net::TgPollOutcome::Transient;
+  auto fetch = [&](int32_t off, bool first) -> nimbus::orch::RawPage {
+    nimbus::orch::RawPage rp;
+    nimbus::net::TgPollOutcome po = nimbus::net::TgPollOutcome::Transient;
     // Page 0 uses the caller's long-poll (block for the first message); later pages
     // short-poll (timeout 0) to drain an existing backlog fast.
-    fetchOnePage(off, first ? longPollS : 0, pg, outcome);
-    return pg;
+    fetchOnePage(off, first ? longPollS : 0, pageUpdates, rp, &po);
+    if (po == nimbus::net::TgPollOutcome::Ok) sawOk = true;
+    else if (!sawOk) cycleOutcome = po;
+    return rp;
   };
-  nimbus::orch::DrainResult r = nimbus::orch::drainPages(g_batch, startOffset, fetch, turns);
+  auto handle = [&](int i) -> nimbus::orch::ClassifiedUpdate {
+    return handleUpdate(pageUpdates[(size_t)i]);
+  };
+  nimbus::orch::DrainResult r = nimbus::orch::drainPages(g_batch, startOffset, fetch, handle);
+  if (outcome) *outcome = sawOk ? nimbus::net::TgPollOutcome::Ok : cycleOutcome;
   if (r.fetchError) { g_batch.clear(); return -1; }   // page-0 error: nothing accumulated
 
-  // Emit one turn per chat (the Telegram TLS is already closed by fetchOnePage). The
-  // turn runs the whole tool loop synchronously on this task, exactly as before -
-  // only now a burst is one turn instead of one per message.
-  for (const auto& t : turns) {
-    if (!g_cb) break;
-    g_cb(String(t.from.c_str()), String(t.chatId.c_str()), String(t.text.c_str()));
+  // Emit one turn per chat. Close the poll socket first so only one TLS session is
+  // ever resident (a drain that ended on an empty last page can leave it open). Each
+  // render() is materialized one at a time (in PSRAM), so a burst never holds a pile
+  // of rendered turns on the scarce internal heap; the turn then runs the whole tool
+  // loop synchronously on this task, exactly as before - just once per chat, not once
+  // per message.
+  if (g_batch.chatCount() && g_cb) {
+    closePollSocket();
+    for (size_t i = 0; i < g_batch.chatCount(); ++i)
+      g_cb(String(g_batch.turnFromAt(i)), String(g_batch.chatIdAt(i)),
+           String(g_batch.render(i).c_str()));
   }
   // Commit the offset AFTER the turns: a single-page burst is fully re-served on a
   // mid-turn crash (never lost); a multi-page backlog is at-least-once (pagination

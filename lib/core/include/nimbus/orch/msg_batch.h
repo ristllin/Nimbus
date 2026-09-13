@@ -115,40 +115,47 @@ struct ClassifiedUpdate {
   std::string text;     // BatchText only
 };
 
-// One page returned by the device's fetchPage.
-struct DrainPage {
-  std::vector<ClassifiedUpdate> updates;
-  int  rawCount   = 0;      // updates the parser returned (rawCount < limit => drained)
+// A fetched page, before its updates are classified. The count/limit drive the
+// drain-to-empty decision (count < limit means the server is drained). It carries NO
+// update contents: the driver reads each update lazily through handle(i), so update
+// bodies (and their inline side effects) never need to exist all at once.
+struct RawPage {
+  int  count      = 0;      // whole updates the page holds (count < limit => drained)
   int  limit      = 10;     // the getUpdates limit used for THIS fetch (1 in fallback)
   bool fetchError = false;  // an HTTP/parse error on this page
-  bool parsedOk   = false;  // the body was a well-formed ok:true response (device uses
-                            // this for the CUM-308 auth-fail debounce; unused by the driver)
-};
-
-// A turn to run: one per chat, in first-seen order.
-struct DrainTurn {
-  std::string from;
-  std::string chatId;
-  std::string text;
 };
 
 struct DrainResult {
   int32_t ackOffset       = 0;  // commit this AFTER the turns run (crash-safety)
-  int     turnsEmitted    = 0;
+  int     turnsEmitted    = 0;  // == chat buckets left in the batcher (one turn each)
   int     messagesBatched = 0;
   int     pagesFetched    = 0;
   bool    stopped         = false;  // stopped on a cap / busy slot (rest re-served)
   bool    fetchError      = false;  // page 0 failed: nothing accumulated (caller backs off)
 };
 
-// Drive the drain. fetchPage(offset, firstPage) fetches one getUpdates page at the
-// given offset. Text is batched by chat (bounded); the loop advances the offset and
-// paginates while a page is full, and stops on a cap, a busy slot, server-drained,
-// or the page ceiling. Turns to emit are appended to `turns`; the offset to commit
-// is DrainResult::ackOffset. The batcher is cleared on entry.
-template <class FetchFn>
+// Drive the drain.
+//   fetchPage(offset, firstPage) -> RawPage : fetch one getUpdates page at `offset`
+//     and make its updates addressable by handle(i) for i in [0, RawPage::count).
+//   handle(i) -> ClassifiedUpdate : classify the i-th update of the CURRENT page and
+//     run any inline side effect (queue a voice note, push a pending sender, ...).
+//
+// handle(i) is called LAZILY and IN ORDER, and ONLY for updates the drain actually
+// reaches: the moment a text update trips a cap or a deferred slot is busy, the loop
+// stops and never calls handle for the rest. That is what keeps a side effect from
+// running for an update that then goes un-acked and is re-served (which would run the
+// side effect twice) - side effect and ack advance together, update by update.
+//
+// Text is batched by chat (bounded); the loop advances the offset and paginates while
+// a page is full, stopping on a cap, a busy slot, server-drained, or the page ceiling.
+// On return the batcher holds one bucket per chat (the caller emits one turn each,
+// reading render(i) one at a time so a single rendered text is alive at once, in
+// PSRAM, never a vector of them on internal SRAM); the offset to commit is
+// DrainResult::ackOffset. The batcher is cleared on ENTRY and left populated on exit
+// (the caller clears it after emitting).
+template <class FetchFn, class HandleFn>
 DrainResult drainPages(MessageBatcher& batch, int32_t startOffset, FetchFn fetchPage,
-                       std::vector<DrainTurn>& turns) {
+                       HandleFn handle) {
   batch.clear();
   DrainResult r;
   r.ackOffset = startOffset;
@@ -156,7 +163,7 @@ DrainResult drainPages(MessageBatcher& batch, int32_t startOffset, FetchFn fetch
   bool stop = false;
 
   for (int page = 0; page < kBatchMaxPages && !stop; ++page) {
-    DrainPage p = fetchPage(offset, page == 0);
+    RawPage p = fetchPage(offset, page == 0);
     r.pagesFetched++;
     if (p.fetchError) {
       // Page 0 error: nothing accumulated, tell the caller to back off. A later page
@@ -165,7 +172,8 @@ DrainResult drainPages(MessageBatcher& batch, int32_t startOffset, FetchFn fetch
       if (page == 0) r.fetchError = true;
       break;
     }
-    for (const auto& u : p.updates) {
+    for (int i = 0; i < p.count; ++i) {
+      ClassifiedUpdate u = handle(i);   // side effect (if any) runs HERE, in order
       if (u.updateId <= 0) continue;
       if (u.action == ClassifiedUpdate::Action::StopNoAck) { stop = true; break; }
       if (u.action == ClassifiedUpdate::Action::BatchText) {
@@ -180,19 +188,12 @@ DrainResult drainPages(MessageBatcher& batch, int32_t startOffset, FetchFn fetch
       r.ackOffset = offset;
     }
     if (stop) break;
-    if (p.rawCount < p.limit) break;   // fewer than the limit: the server is drained
+    if (p.count < p.limit) break;   // fewer than the limit: the server is drained
     // A full page: loop. The next fetch at the advanced offset confirms this page
     // server-side (the documented at-least-once window for a >1-page backlog).
   }
 
-  for (size_t i = 0; i < batch.chatCount(); ++i) {
-    DrainTurn t;
-    t.from   = batch.turnFromAt(i);
-    t.chatId = batch.chatIdAt(i);
-    t.text   = batch.render(i).c_str();
-    turns.push_back(std::move(t));
-  }
-  r.turnsEmitted = static_cast<int>(turns.size());
+  r.turnsEmitted = static_cast<int>(batch.chatCount());
   r.stopped = stop;
   return r;
 }

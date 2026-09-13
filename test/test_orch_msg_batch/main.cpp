@@ -1,7 +1,6 @@
 #include <unity.h>
 
 #include <cstring>
-#include <functional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -206,10 +205,16 @@ static void test_fresh_accepts_first_message_always() {
 // ---- drain driver ----------------------------------------------------------
 
 using nimbus::orch::ClassifiedUpdate;
-using nimbus::orch::DrainPage;
 using nimbus::orch::DrainResult;
-using nimbus::orch::DrainTurn;
 using nimbus::orch::drainPages;
+using nimbus::orch::RawPage;
+
+// drainPages leaves the emitted turns in the batcher (one bucket per chat); the
+// caller reads render(i) one at a time. This copies a chat's rendered turn text into
+// a std::string for the assertions.
+static std::string rendered(const MessageBatcher& b, size_t i) {
+  return std::string(b.render(i).c_str());
+}
 
 static ClassifiedUpdate txt(int32_t id, const char* chat, const char* from, const char* text) {
   ClassifiedUpdate u;
@@ -221,28 +226,49 @@ static ClassifiedUpdate txt(int32_t id, const char* chat, const char* from, cons
   return u;
 }
 
-// A canned getUpdates server: replays pre-loaded pages in order and records the
-// offset each fetch asked for (so a test can prove pagination advanced correctly).
+// A canned getUpdates server: replays pre-loaded pages in order, records the offset
+// each fetch asked for (so a test can prove pagination advanced), and exposes the
+// current page's updates through handle(i) - the same lazy fetch/handle split the
+// device uses, so the test drives drainPages exactly as production does.
 struct FakeServer {
-  std::vector<DrainPage> pages;
-  std::vector<int32_t> offsetsSeen;
+  std::vector<std::vector<ClassifiedUpdate>> pages;
+  std::vector<int>                           limits;
+  std::vector<bool>                          errors;
+  std::vector<int32_t>                       offsetsSeen;
+  std::vector<int>                           handledIdx;   // which updates handle() was called for
+  std::vector<ClassifiedUpdate>              current;   // the page handle() indexes
   size_t next = 0;
-  DrainPage operator()(int32_t offset, bool /*first*/) {
+
+  nimbus::orch::RawPage fetch(int32_t offset, bool /*first*/) {
     offsetsSeen.push_back(offset);
-    if (next < pages.size()) return pages[next++];
-    DrainPage empty;
-    empty.rawCount = 0;
-    empty.limit = 10;
-    return empty;
+    nimbus::orch::RawPage rp;
+    if (next >= pages.size()) { current.clear(); rp.count = 0; rp.limit = 10; return rp; }
+    if (errors[next]) { rp.fetchError = true; ++next; return rp; }
+    current = pages[next];
+    rp.count = static_cast<int>(current.size());
+    rp.limit = limits[next];
+    ++next;
+    return rp;
   }
+  ClassifiedUpdate handle(int i) { handledIdx.push_back(i); return current[static_cast<size_t>(i)]; }
 };
 
-static DrainPage page(std::vector<ClassifiedUpdate> us, int limit = 10) {
-  DrainPage p;
-  p.rawCount = static_cast<int>(us.size());
-  p.limit = limit;
-  p.updates = std::move(us);
-  return p;
+static void addPage(FakeServer& srv, std::vector<ClassifiedUpdate> us, int limit = 10) {
+  srv.pages.push_back(std::move(us));
+  srv.limits.push_back(limit);
+  srv.errors.push_back(false);
+}
+
+static void addErrorPage(FakeServer& srv) {
+  srv.pages.emplace_back();
+  srv.limits.push_back(10);
+  srv.errors.push_back(true);
+}
+
+static DrainResult runDrain(MessageBatcher& b, int32_t off, FakeServer& srv) {
+  return drainPages(b, off,
+                    [&](int32_t o, bool f) { return srv.fetch(o, f); },
+                    [&](int i) { return srv.handle(i); });
 }
 
 // A backlog that spans more than one full getUpdates page is drained fully before
@@ -252,19 +278,18 @@ static DrainPage page(std::vector<ClassifiedUpdate> us, int limit = 10) {
 static void test_drain_paginates_until_empty() {
   MessageBatcher b;
   FakeServer srv;
-  // Page 1: a full page (rawCount == limit) so the driver must paginate; alternate
-  // two chats so neither reaches the per-chat cap while draining across pages.
+  // Page 1: a full page (count == limit) so the driver must paginate; alternate two
+  // chats so neither reaches the per-chat cap while draining across pages.
   std::vector<ClassifiedUpdate> p1;
   for (int i = 0; i < 10; ++i) {
     const char* chat = (i % 2 == 0) ? "A" : "B";
     p1.push_back(txt(100 + i, chat, "u", ("m" + std::to_string(i)).c_str()));
   }
-  srv.pages.push_back(page(std::move(p1), 10));
-  // Page 2: partial (rawCount < limit) -> server drained.
-  srv.pages.push_back(page({txt(110, "A", "u", "m10"), txt(111, "B", "u", "m11")}, 10));
+  addPage(srv, std::move(p1), 10);
+  // Page 2: partial (count < limit) -> server drained.
+  addPage(srv, {txt(110, "A", "u", "m10"), txt(111, "B", "u", "m11")}, 10);
 
-  std::vector<DrainTurn> turns;
-  DrainResult r = drainPages(b, 100, std::ref(srv), turns);
+  DrainResult r = runDrain(b, 100, srv);
 
   TEST_ASSERT_EQUAL_INT(2, r.pagesFetched);
   TEST_ASSERT_EQUAL_INT(2, r.turnsEmitted);       // one turn PER chat
@@ -276,19 +301,19 @@ static void test_drain_paginates_until_empty() {
   TEST_ASSERT_EQUAL_INT32(100, srv.offsetsSeen[0]);
   TEST_ASSERT_EQUAL_INT32(110, srv.offsetsSeen[1]);
   // Chat A's turn carries its own messages across BOTH pages, in arrival order.
-  TEST_ASSERT_EQUAL_STRING("A", turns[0].chatId.c_str());
-  TEST_ASSERT_TRUE(has(turns[0].text, "m0"));
-  TEST_ASSERT_TRUE(has(turns[0].text, "m10"));
-  TEST_ASSERT_TRUE(turns[0].text.find("m0") < turns[0].text.find("m10"));
+  TEST_ASSERT_EQUAL_STRING("A", b.chatIdAt(0));
+  std::string ta = rendered(b, 0);
+  TEST_ASSERT_TRUE(has(ta, "m0"));
+  TEST_ASSERT_TRUE(has(ta, "m10"));
+  TEST_ASSERT_TRUE(ta.find("m0") < ta.find("m10"));
 }
 
 // A first partial page stops immediately (no needless extra fetch).
 static void test_drain_stops_when_server_drained() {
   MessageBatcher b;
   FakeServer srv;
-  srv.pages.push_back(page({txt(5, "9", "A", "hi")}, 10));  // 1 < limit -> drained
-  std::vector<DrainTurn> turns;
-  DrainResult r = drainPages(b, 5, std::ref(srv), turns);
+  addPage(srv, {txt(5, "9", "A", "hi")}, 10);  // 1 < limit -> drained
+  DrainResult r = runDrain(b, 5, srv);
   TEST_ASSERT_EQUAL_INT(1, r.pagesFetched);
   TEST_ASSERT_EQUAL_INT(1, r.turnsEmitted);
   TEST_ASSERT_EQUAL_INT32(6, r.ackOffset);
@@ -302,10 +327,9 @@ static void test_drain_busy_slot_reserves_from_that_update() {
   ClassifiedUpdate busy;
   busy.updateId = 52;
   busy.action = ClassifiedUpdate::Action::StopNoAck;
-  srv.pages.push_back(page({txt(50, "9", "A", "a"), txt(51, "9", "A", "b"), busy,
-                            txt(53, "9", "A", "c")}, 10));
-  std::vector<DrainTurn> turns;
-  DrainResult r = drainPages(b, 50, std::ref(srv), turns);
+  addPage(srv, {txt(50, "9", "A", "a"), txt(51, "9", "A", "b"), busy,
+               txt(53, "9", "A", "c")}, 10);
+  DrainResult r = runDrain(b, 50, srv);
   TEST_ASSERT_TRUE(r.stopped);
   TEST_ASSERT_EQUAL_INT32(52, r.ackOffset);   // acked 50,51; NOT 52 -> re-served
   TEST_ASSERT_EQUAL_INT(1, r.turnsEmitted);
@@ -322,14 +346,13 @@ static void test_drain_cap_reserves_deferred_update() {
   for (size_t i = 0; i <= cap::kBatchMaxMsgsPerChat; ++i)
     us.push_back(txt(200 + static_cast<int32_t>(i), "77", "B", "x"));
   const int32_t deferredId = 200 + static_cast<int32_t>(cap::kBatchMaxMsgsPerChat);
-  srv.pages.push_back(page(std::move(us), 10));
-  std::vector<DrainTurn> turns;
-  DrainResult r = drainPages(b, 200, std::ref(srv), turns);
+  addPage(srv, std::move(us), 10);
+  DrainResult r = runDrain(b, 200, srv);
   TEST_ASSERT_TRUE(r.stopped);
   TEST_ASSERT_EQUAL_INT32(deferredId, r.ackOffset);   // deferred update NOT acked
   TEST_ASSERT_EQUAL_INT(1, r.turnsEmitted);
   TEST_ASSERT_EQUAL_UINT(cap::kBatchMaxMsgsPerChat, (size_t)r.messagesBatched);
-  TEST_ASSERT_TRUE(has(turns[0].text, "waiting"));    // honest "more waiting" note
+  TEST_ASSERT_TRUE(has(rendered(b, 0), "waiting"));   // honest "more waiting" note
 }
 
 // A page-0 fetch error accumulates nothing and reports fetchError with the offset
@@ -337,11 +360,8 @@ static void test_drain_cap_reserves_deferred_update() {
 static void test_drain_page0_error_backs_off() {
   MessageBatcher b;
   FakeServer srv;
-  DrainPage err;
-  err.fetchError = true;
-  srv.pages.push_back(err);
-  std::vector<DrainTurn> turns;
-  DrainResult r = drainPages(b, 42, std::ref(srv), turns);
+  addErrorPage(srv);
+  DrainResult r = runDrain(b, 42, srv);
   TEST_ASSERT_TRUE(r.fetchError);
   TEST_ASSERT_EQUAL_INT(0, r.turnsEmitted);
   TEST_ASSERT_EQUAL_INT32(42, r.ackOffset);   // unmoved
@@ -351,13 +371,12 @@ static void test_drain_page0_error_backs_off() {
 static void test_drain_multi_chat_one_turn_each() {
   MessageBatcher b;
   FakeServer srv;
-  srv.pages.push_back(page({txt(1, "A", "ua", "a1"), txt(2, "B", "ub", "b1"),
-                            txt(3, "A", "ua", "a2")}, 10));
-  std::vector<DrainTurn> turns;
-  DrainResult r = drainPages(b, 1, std::ref(srv), turns);
+  addPage(srv, {txt(1, "A", "ua", "a1"), txt(2, "B", "ub", "b1"),
+               txt(3, "A", "ua", "a2")}, 10);
+  DrainResult r = runDrain(b, 1, srv);
   TEST_ASSERT_EQUAL_INT(2, r.turnsEmitted);
-  TEST_ASSERT_EQUAL_STRING("A", turns[0].chatId.c_str());
-  TEST_ASSERT_EQUAL_STRING("B", turns[1].chatId.c_str());
+  TEST_ASSERT_EQUAL_STRING("A", b.chatIdAt(0));
+  TEST_ASSERT_EQUAL_STRING("B", b.chatIdAt(1));
   TEST_ASSERT_EQUAL_INT32(4, r.ackOffset);
 }
 
@@ -369,12 +388,40 @@ static void test_drain_ackonly_advances_without_turn() {
   ClassifiedUpdate a;
   a.updateId = 70;
   a.action = ClassifiedUpdate::Action::AckOnly;
-  srv.pages.push_back(page({a, txt(71, "9", "A", "hi")}, 10));
-  std::vector<DrainTurn> turns;
-  DrainResult r = drainPages(b, 70, std::ref(srv), turns);
+  addPage(srv, {a, txt(71, "9", "A", "hi")}, 10);
+  DrainResult r = runDrain(b, 70, srv);
   TEST_ASSERT_EQUAL_INT(1, r.turnsEmitted);        // only the text update
   TEST_ASSERT_EQUAL_INT(1, r.messagesBatched);
   TEST_ASSERT_EQUAL_INT32(72, r.ackOffset);        // advanced past both
+}
+
+// Regression guard (a reviewer-found HIGH): when a text update trips a cap the drain
+// stops and NEVER classifies (handle) the updates after it - so a side-effecting
+// update (voice / file / pending) sitting after the cap-trip does not run its side
+// effect for an update that is then re-served, which would run it twice. This is why
+// handle() is called lazily by the driver rather than the whole page classified up
+// front. The side effects live in handle(); asserting handle is never invoked past
+// the stop point is asserting the side effect never fires there.
+static void test_drain_no_side_effect_past_cap_stop() {
+  MessageBatcher b;
+  FakeServer srv;
+  std::vector<ClassifiedUpdate> us;
+  for (size_t i = 0; i <= cap::kBatchMaxMsgsPerChat; ++i)   // cap+1 texts, one chat
+    us.push_back(txt(300 + static_cast<int32_t>(i), "Z", "u", "x"));
+  ClassifiedUpdate after;   // a side-effecting update positioned AFTER the cap-trip
+  after.updateId = 400;
+  after.action = ClassifiedUpdate::Action::StopNoAck;
+  us.push_back(after);
+  const int afterIdx = static_cast<int>(us.size()) - 1;
+  addPage(srv, std::move(us), 10);
+
+  DrainResult r = runDrain(b, 300, srv);
+  TEST_ASSERT_TRUE(r.stopped);
+  // Stopped at the deferred (cap+1)th text; its update is NOT acked, and the update
+  // after it was never even classified (no handle call -> no side effect).
+  TEST_ASSERT_EQUAL_INT32(300 + static_cast<int32_t>(cap::kBatchMaxMsgsPerChat), r.ackOffset);
+  for (int idx : srv.handledIdx)
+    TEST_ASSERT_TRUE(idx < afterIdx);
 }
 
 // The pagination is bounded: a server that always returns a full page stops at the
@@ -383,12 +430,11 @@ static void test_drain_page_ceiling_bounds_pagination() {
   MessageBatcher b;
   FakeServer srv;
   for (int pg = 0; pg < cap::kBatchMaxPages + 5; ++pg) {
-    // Each page is "full" (rawCount == limit) but only 1 update to keep it under the
-    // per-chat cap across pages: spread across many chats so nothing defers.
-    srv.pages.push_back(page({txt(1000 + pg, ("c" + std::to_string(pg % 4)).c_str(), "u", "x")}, 1));
+    // Each page is "full" (count == limit == 1) but only 1 update to keep it under the
+    // per-chat cap across pages: spread across a few chats so nothing defers.
+    addPage(srv, {txt(1000 + pg, ("c" + std::to_string(pg % 4)).c_str(), "u", "x")}, 1);
   }
-  std::vector<DrainTurn> turns;
-  DrainResult r = drainPages(b, 1000, std::ref(srv), turns);
+  DrainResult r = runDrain(b, 1000, srv);
   TEST_ASSERT_EQUAL_INT(cap::kBatchMaxPages, r.pagesFetched);  // bounded, not infinite
 }
 
@@ -414,6 +460,7 @@ int main(int, char**) {
   RUN_TEST(test_drain_page0_error_backs_off);
   RUN_TEST(test_drain_multi_chat_one_turn_each);
   RUN_TEST(test_drain_ackonly_advances_without_turn);
+  RUN_TEST(test_drain_no_side_effect_past_cap_stop);
   RUN_TEST(test_drain_page_ceiling_bounds_pagination);
   return UNITY_END();
 }
