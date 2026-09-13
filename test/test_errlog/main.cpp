@@ -118,6 +118,19 @@ static void test_plan_retrieval() {
   TEST_ASSERT_EQUAL(RetrievalKind::Reject, bad.kind);
 }
 
+// Tier-correct caps (the retrieval route passes capsFor(onSdTier()).maxFiles): on the
+// flash tier (2 files) only nimbus.log.1 is valid; .2/.3 are rejected as bad names, not
+// served as 404s. On the SD tier (4 files) .1..3 are valid.
+static void test_plan_retrieval_respects_active_tier() {
+  const size_t flash = capsFor(false).maxFiles;   // 2 -> valid rotated index is just 1
+  const size_t sd    = capsFor(true).maxFiles;     // 4 -> valid rotated indices 1..3
+  TEST_ASSERT_EQUAL(RetrievalKind::File,   planRetrieval(false, "nimbus.log.1", flash).kind);
+  TEST_ASSERT_EQUAL(RetrievalKind::Reject, planRetrieval(false, "nimbus.log.2", flash).kind);
+  TEST_ASSERT_EQUAL(RetrievalKind::Reject, planRetrieval(false, "nimbus.log.3", flash).kind);
+  TEST_ASSERT_EQUAL(RetrievalKind::File,   planRetrieval(false, "nimbus.log.2", sd).kind);
+  TEST_ASSERT_EQUAL(RetrievalKind::File,   planRetrieval(false, "nimbus.log.3", sd).kind);
+}
+
 // ---- the load-bearing one: no secret can reach the durable log --------------
 //
 // Reproduce EXACTLY the sink composition agent_log.h uses: one redaction pass via
@@ -271,6 +284,7 @@ int main(int, char**) {
   RUN_TEST(test_known_log_names);
   RUN_TEST(test_path_traversal_rejected);
   RUN_TEST(test_plan_retrieval);
+  RUN_TEST(test_plan_retrieval_respects_active_tier);
   RUN_TEST(test_durable_sink_never_sees_a_secret);
   RUN_TEST(test_selfheal_on_late_mount);
   RUN_TEST(test_fresh_fs_creates_dir_and_persists);

@@ -99,8 +99,11 @@ inline void logSerial(const std::string& red) {
 }
 
 // The RAM-ring + durable-sink writer. logring::store() copies bytes under its own no-heap
-// portMUX critical section and RETURNS before errlog::append() runs, so the durable write
-// (which does filesystem I/O under agent::memory::Lock) never happens inside the spinlock.
+// portMUX critical section and RETURNS before errlog::append() runs, so nothing below runs
+// inside that spinlock. errlog::append() is non-blocking by contract: it records to its own
+// RAM tail under a leaf spinlock and only best-effort-persists to the card under a SHORT
+// timed lock (skipping, never stalling, if the card is contended), so a log call from the
+// WDT-guarded loop or an AsyncTCP handler is always cheap.
 inline void logPersist(const std::string& red, const char* cat) {
   logring::store(red);
   nimbus::errlog::append(red, cat);

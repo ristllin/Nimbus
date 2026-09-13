@@ -4,44 +4,70 @@
 #include <FS.h>
 #include <LittleFS.h>
 
+#include <atomic>
+
 #include "errlog.h"
-#include "../agent/memory_subsystem.h"   // dataFs()/haveSd() tier seam + Lock (read-only use)
+#include "../agent/memory_subsystem.h"   // dataFs()/haveSd() tier seam + tryLock (read-only use)
 
 // Durable error-log filesystem sink. See errlog_fs.h and errlog.h for the design.
-// Every entry point takes agent::memory::Lock (recursive) so card I/O is serialized
-// with the memory subsystem and every other task; no handle is held across a send.
+//
+// Hot-path contract (CUM-401 ruling): a log call must NEVER block the caller (the
+// WDT-guarded loop task, or an AsyncTCP handler) waiting on a slow/contended card.
+// So append() formats + pushes to the RAM tail with only a leaf spinlock, then takes
+// the shared card lock with a SHORT timed acquire; if the card is busy it SKIPS the
+// durable write (the RAM ring + Serial still captured the line) and bumps a counter.
+// The read/retrieval paths (readRecent/listJson/activeFs) are request-driven and keep
+// the blocking Lock, like every other on-demand card read in this firmware.
 
 namespace nimbus::errlog {
 namespace {
+
+// Longest the durable write may wait for the shared card lock before giving up. A few
+// ms covers the common uncontended case; under a big concurrent memory persist we skip
+// rather than stall the loop (best-effort durability is correct for a diagnostic log).
+constexpr uint32_t kDurableLockMs = 8;
 
 bool      g_inited    = false;
 bool      g_haveSd    = false;  // tier for reporting (listJson/onSdTier); engine tracks its own
 ::fs::FS* g_fs        = nullptr;
 bool      g_tierNoted = false;  // the storage-tier decision line has landed on disk
-uint32_t  g_seq       = 0;      // monotonic per-boot line sequence
+std::atomic<uint32_t> g_seq{0};           // monotonic per-boot line sequence (any task)
+std::atomic<uint32_t> g_durableSkipped{0};// lines dropped from the DURABLE log under lock contention
 std::string g_pendingTier;      // tier line built once, re-attempted until it lands (no seq churn)
 
 // RAM fallback tail: a fixed byte ring so readRecent() still returns recent lines
-// when the card/flash is unavailable (the exact moment the log matters most). Not
-// the durable store - just a last-resort mirror. Static internal RAM is scarce on
-// the S3, so this stays small.
+// when the card/flash is unavailable (the exact moment the log matters most). Not the
+// durable store - just a last-resort mirror. Guarded by a leaf spinlock (NOT the card
+// lock) so a log call can record into it without ever touching the card, on any task.
+// Static internal RAM is scarce on the S3, so this stays small.
 constexpr size_t kRamTail = 2048;
 char             g_ram[kRamTail];
 size_t           g_ramTotal = 0;
+portMUX_TYPE     g_ramMux = portMUX_INITIALIZER_UNLOCKED;
 
 TierCaps caps() { return capsFor(g_haveSd); }
 
+// Copy bytes into the RAM ring under the spinlock. Only byte copies here (no heap),
+// so it is safe inside the no-heap critical section and never blocks on the card.
 void ramPush(const std::string& line) {
-  for (char c : line) { g_ram[g_ramTotal % kRamTail] = c; ++g_ramTotal; }
+  const char* p = line.c_str();
+  portENTER_CRITICAL(&g_ramMux);
+  for (; *p; ++p) { g_ram[g_ramTotal % kRamTail] = *p; ++g_ramTotal; }
+  portEXIT_CRITICAL(&g_ramMux);
 }
 
 std::string ramTail() {
-  const size_t n     = g_ramTotal < kRamTail ? g_ramTotal : kRamTail;
+  // Snapshot under the spinlock into a stack buffer, then build the String OUTSIDE the
+  // critical section (the no-heap-under-spinlock rule).
+  static_assert(kRamTail <= 4096, "ramTail snapshot lives on the stack");
+  char   snap[kRamTail];
+  size_t n;
+  portENTER_CRITICAL(&g_ramMux);
+  n = g_ramTotal < kRamTail ? g_ramTotal : kRamTail;
   const size_t start = g_ramTotal - n;
-  std::string out;
-  out.reserve(n);
-  for (size_t i = 0; i < n; ++i) out.push_back(g_ram[(start + i) % kRamTail]);
-  return tailOf(out, kRamTail);   // line-align
+  for (size_t i = 0; i < n; ++i) snap[i] = g_ram[(start + i) % kRamTail];
+  portEXIT_CRITICAL(&g_ramMux);
+  return tailOf(std::string(snap, n), kRamTail);   // line-align
 }
 
 // Read the last <= want bytes of a log file (empty if absent / FS down). Caller
@@ -115,7 +141,7 @@ std::string tierMsg() {
 void noteTierIfNeeded() {
   if (g_tierNoted) return;
   if (g_pendingTier.empty()) {
-    g_pendingTier = formatLine(g_seq++, millis(), cat::kStorage, tierMsg());
+    g_pendingTier = formatLine(g_seq.fetch_add(1), millis(), cat::kStorage, tierMsg());
     ramPush(g_pendingTier);   // visible in the RAM tail immediately, even before it persists
   }
   if (g_writer.write(g_pendingTier)) { g_tierNoted = true; g_pendingTier.clear(); }
@@ -145,7 +171,7 @@ void maybeRetier() {
   resolveTier();
   g_tierNoted = false;   // re-announce the tier on the new store
   g_pendingTier.clear();
-  std::string line = formatLine(g_seq++, millis(), cat::kStorage,
+  std::string line = formatLine(g_seq.fetch_add(1), millis(), cat::kStorage,
                        wasSd ? std::string("SD lost: durable log now on flash fallback")
                              : std::string("SD available: durable log now on SD"));
   ramPush(line);
@@ -160,13 +186,23 @@ void begin() {
 }
 
 void append(const std::string& redacted, const char* cat) {
-  agent::memory::Lock g;
+  // Non-blocking phase: format + RAM tail, guarded only by a leaf spinlock. This part
+  // never touches the card, so a log call is cheap even while the card is busy.
+  std::string line = formatLine(g_seq.fetch_add(1), millis(), cat, redacted);
+  ramPush(line);        // RAM tail always gets it (the readRecent() fallback + /api/log ring)
+
+  // Durable phase: best-effort. Take the shared card lock only briefly; if the card is
+  // contended (e.g. a big memory persist in flight) SKIP rather than stall the caller
+  // (loop/AsyncTCP) and risk a WDT reset. The line is already captured in RAM + Serial.
+  if (!agent::memory::tryLock(kDurableLockMs)) {
+    g_durableSkipped.fetch_add(1);
+    return;
+  }
   ensureInit();
   maybeRetier();
   noteTierIfNeeded();   // lands the tier line first once the FS is writable
-  std::string line = formatLine(g_seq++, millis(), cat, redacted);
-  ramPush(line);        // RAM tail always gets it (the readRecent() fallback)
-  g_writer.write(line); // durable; degrades to RAM-only if the FS is not ready
+  g_writer.write(line); // one bounded append; degrades to RAM-only if the FS is not ready
+  agent::memory::unlock();
 }
 
 std::string readRecent(size_t maxBytes) {
@@ -206,7 +242,9 @@ std::string listJson() {
     out += std::to_string(bytes);
     out += '}';
   }
-  out += "]}";
+  out += "],\"skipped\":";
+  out += std::to_string(g_durableSkipped.load());   // durable lines dropped under card contention
+  out += '}';
   return out;
 }
 

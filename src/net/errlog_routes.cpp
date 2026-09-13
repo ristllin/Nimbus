@@ -69,8 +69,11 @@ void handleErrlog(AsyncWebServerRequest* r) {
   if (authBlocked(r)) return;
   const bool wantList = r->hasParam("list");
   const std::string fileParam = qparam(r, "file");
+  // Validate against the ACTIVE tier's retention count, so a flash-tier device rejects
+  // ?file=nimbus.log.2/.3 as a 400 bad name (those indices only exist on the SD tier).
+  const size_t maxFiles = nimbus::errlog::capsFor(nimbus::errlog::onSdTier()).maxFiles;
   const nimbus::errlog::RetrievalPlan plan =
-      nimbus::errlog::planRetrieval(wantList, fileParam, nimbus::errlog::kSdCaps.maxFiles);
+      nimbus::errlog::planRetrieval(wantList, fileParam, maxFiles);
   switch (plan.kind) {
     case nimbus::errlog::RetrievalKind::List:
       r->send(200, "application/json", String(nimbus::errlog::listJson().c_str()));

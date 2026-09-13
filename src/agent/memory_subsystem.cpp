@@ -188,6 +188,14 @@ bool eraseDurableStore() {
 void lock()   { if (g_memMux) xSemaphoreTakeRecursive(g_memMux, portMAX_DELAY); }
 void unlock() { if (g_memMux) xSemaphoreGiveRecursive(g_memMux); }
 
+// Timed, non-blocking acquire (CUM-401): before begin() the mutex does not exist yet
+// and boot is single-task, so mirror lock()'s null-handle contract and report success
+// (unlock() is then a matching no-op). Otherwise wait at most timeoutMs.
+bool tryLock(uint32_t timeoutMs) {
+  if (!g_memMux) return true;
+  return xSemaphoreTakeRecursive(g_memMux, pdMS_TO_TICKS(timeoutMs)) == pdTRUE;
+}
+
 void begin() {
   if (g_begun) return;
   g_begun = true;

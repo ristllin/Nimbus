@@ -55,6 +55,15 @@ struct Lock {
   Lock& operator=(const Lock&) = delete;
 };
 
+// Non-blocking variant of lock() for latency-sensitive callers (CUM-401 ruling): try
+// to take the recursive card lock, waiting at most timeoutMs. Returns true if acquired
+// (the caller MUST pair it with unlock()); false if the lock was busy that long (the
+// caller then SKIPS the guarded card work instead of stalling). This keeps SD access
+// single-threaded through the ONE shared lock while letting the durable error-log
+// writer degrade to best-effort under card contention rather than block the loop/
+// AsyncTCP task and risk a watchdog reset.
+bool tryLock(uint32_t timeoutMs);
+
 // Storage-tier status (docs/orchestrator-storage.md). haveSd(): bulk blobs are on
 // the SD card (/mem); false = degraded on internal flash (/data), vectors capped.
 // flashFull(): a degraded vector persist hit the LittleFS free floor and paused
