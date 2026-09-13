@@ -3691,6 +3691,14 @@ void loopWeb() {
   if (s_haveProf) {
     s_haveProf = false;
     if (s_wc.selector) s_wc.selector->setUser((ProfileId)s_pendProf);
+    // CUM-395: the battery mode is a behavior profile, so selecting it also seeds the
+    // screen-rest and sound-level defaults for any key the owner has NOT set (an
+    // explicit owner value always wins and is left untouched). Ring brightness and
+    // effects already follow the profile through the Config presets. Re-arm the saver
+    // timer and refresh sound so a freshly seeded default applies without a restart.
+    agent::store::applyProfileDefaults((ProfileId)s_pendProf);
+    if (s_wc.applySaverMinutes) s_wc.applySaverMinutes();
+    ::sfx::refreshConfig();
   }
   if (s_haveMode) {
     s_haveMode = false;

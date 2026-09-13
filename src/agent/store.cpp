@@ -628,8 +628,40 @@ bool     lowBattSaver() { return solide::memory::getInt(AKEY_LOWBATT_SAVER, 1) !
 // boards ON; all-in-one desk boards OFF/opt-in) - passed in by main so the store
 // layer stays board-agnostic.
 bool     battMon(bool def) { return solide::memory::getInt(AKEY_BATT_MON, def ? 1 : 0) != 0; }
-void setSfxLevelNotif(uint8_t v) { solide::memory::setInt(AKEY_SFX_LVL_NOTIF, v > 3 ? 3 : v); }
-void setSfxLevelOrch(uint8_t v)  { solide::memory::setInt(AKEY_SFX_LVL_ORCH, v > 3 ? 3 : v); }
+// The set*() paths are the OWNER's explicit choice (web UI, device menu, or the AI
+// config action), so they latch the "was set" flag: from now on this value wins over
+// any battery-mode default (CUM-395).
+void setSfxLevelNotif(uint8_t v) { solide::memory::setInt(AKEY_SFX_LVL_NOTIF, v > 3 ? 3 : v); solide::memory::setInt(AKEY_SFX_LVL_N_SET, 1); }
+void setSfxLevelOrch(uint8_t v)  { solide::memory::setInt(AKEY_SFX_LVL_ORCH, v > 3 ? 3 : v);  solide::memory::setInt(AKEY_SFX_LVL_O_SET, 1); }
+bool hasSaverMin()      { return solide::memory::getInt(AKEY_SAVER_MIN_SET, 0) != 0; }
+bool hasSfxLevelNotif() { return solide::memory::getInt(AKEY_SFX_LVL_N_SET, 0) != 0; }
+bool hasSfxLevelOrch()  { return solide::memory::getInt(AKEY_SFX_LVL_O_SET, 0) != 0; }
+// One-time migration: a device updated to this firmware may already hold an owner's
+// screen-rest / sound-level value from BEFORE battery modes seeded them (those values
+// carry no "was set" flag). The first time a mode seeds defaults, adopt any already-
+// stored value as an explicit owner choice so the seed never overwrites it. After this
+// runs once, only applyProfileDefaults writes unflagged values, so re-seeding an
+// untouched key on later switches stays correct (CUM-395).
+static void adoptPreFeatureValuesAsOwnerSet() {
+  if (solide::memory::getInt(AKEY_PROF_SEED_INIT, 0) != 0) return;
+  if (solide::memory::getInt(AKEY_SAVER_MIN, -1)     >= 0) solide::memory::setInt(AKEY_SAVER_MIN_SET, 1);
+  if (solide::memory::getInt(AKEY_SFX_LVL_NOTIF, -1) >= 0) solide::memory::setInt(AKEY_SFX_LVL_N_SET, 1);
+  if (solide::memory::getInt(AKEY_SFX_LVL_ORCH, -1)  >= 0) solide::memory::setInt(AKEY_SFX_LVL_O_SET, 1);
+  solide::memory::setInt(AKEY_PROF_SEED_INIT, 1);
+}
+// Seed a battery mode's screen-rest + sound-level defaults, but only into keys the
+// owner has not explicitly set (their value always wins). Writing the seed WITHOUT
+// the "was set" flag means a later profile switch re-seeds the same untouched key,
+// while an owner-set key is skipped forever after (CUM-395).
+void applyProfileDefaults(nimbus::ProfileId id) {
+  adoptPreFeatureValuesAsOwnerSet();
+  if (!hasSaverMin())
+    solide::memory::setInt(AKEY_SAVER_MIN, nimbus::profileSaverMinutes(id));
+  if (!hasSfxLevelNotif())
+    solide::memory::setInt(AKEY_SFX_LVL_NOTIF, nimbus::profileSfxLevel(id, /*notifier=*/true));
+  if (!hasSfxLevelOrch())
+    solide::memory::setInt(AKEY_SFX_LVL_ORCH, nimbus::profileSfxLevel(id, /*notifier=*/false));
+}
 void setSfxTheme(const String& v) {
   // Clamp at the store layer: g_theme feeds an SD path (`/sfx/<theme>/...`).
   // The web UI already allowlists, but a provision/NVS/test path must not be
@@ -639,7 +671,9 @@ void setSfxTheme(const String& v) {
   solide::memory::setString(AKEY_SFX_THEME, known ? v.c_str() : "pulse");
 }
 void setSfxVolume(uint8_t v) { solide::memory::setInt(AKEY_SFX_VOL, v > 100 ? 100 : v); }
-void setSaverMin(uint16_t v) { solide::memory::setInt(AKEY_SAVER_MIN, v > 1440 ? 1440 : v); }
+// Owner's explicit screen-rest choice: latch the "was set" flag so a battery-mode
+// switch never overwrites it (CUM-395 - same rule as the two sound levels above).
+void setSaverMin(uint16_t v) { solide::memory::setInt(AKEY_SAVER_MIN, v > 1440 ? 1440 : v); solide::memory::setInt(AKEY_SAVER_MIN_SET, 1); }
 void setBattRtop(uint32_t o) { solide::memory::setInt(AKEY_BATT_RTOP, int(o < 1000 ? 1000 : (o > 10000000 ? 10000000 : o))); }
 void setBattRbot(uint32_t o) { solide::memory::setInt(AKEY_BATT_RBOT, int(o < 1000 ? 1000 : (o > 10000000 ? 10000000 : o))); }
 void setBattCapMah(uint16_t m) { solide::memory::setInt(AKEY_BATT_CAPMAH, m < 100 ? 100 : (m > 20000 ? 20000 : m)); }

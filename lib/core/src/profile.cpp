@@ -135,6 +135,31 @@ int32_t presetValue(ProfileId id, Param p) {
   return kPresets[int(p)].v[int(id)];
 }
 
+namespace {
+// Screen-rest idle minutes per battery mode (CUM-395). Battery Saver rests the
+// backlight fast (it is the device's largest idle draw); Balanced keeps the shipped
+// 5-minute default; Desk runs on external power, so the screen can stay on.
+constexpr uint16_t kProfileSaverMin[kProfileCount] = {2, 5, 0};
+// Sound-effect level per battery mode, indexed [profile][0=Orchestrator,1=Notifier].
+// Balanced matches the shipped hard defaults (Notifier Off, Orchestrator Medium);
+// Battery Saver is quieter, Desk louder. Range 0..3 (Off/Low/Medium/High).
+constexpr uint8_t kProfileSfx[kProfileCount][2] = {
+    /* BatterySaver */ {1, 0},
+    /* Balanced     */ {2, 0},
+    /* Desk         */ {3, 1},
+};
+}  // namespace
+
+uint16_t profileSaverMinutes(ProfileId id) { return kProfileSaverMin[int(id)]; }
+uint8_t  profileSfxLevel(ProfileId id, bool notifier) {
+  return kProfileSfx[int(id)][notifier ? 1 : 0];
+}
+
+int32_t effectiveWithProfileDefault(bool ownerSet, int32_t ownerValue,
+                                    int32_t profileDefault) {
+  return ownerSet ? ownerValue : profileDefault;
+}
+
 int32_t Config::effective(Param p) const {
   return has_[int(p)] ? val_[int(p)] : presetValue(profile_, p);
 }

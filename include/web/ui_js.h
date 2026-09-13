@@ -273,19 +273,18 @@ function applyHostedConnectivity(){
 }
 applyHostedConnectivity();
 // Honest hosted battery/power (CUM-214 ruling): a hosted instance has no pack, no LED
-// ring, and no sense hardware, so all three battery groups are false there - the Battery
-// hardware readout (#battsec), the Battery mode preset (#battModeGroup, which sets LED
-// brightness/animation), and Customize battery mode (#custProfGroup). On a VN the profile
-// is a no-op (nimbusd omits it from /api/state and /api/config ignores hardware keys), the
-// ring is absent, and no telemetry is valid. Collapse all three to one honest platform line.
+// ring, and no sense hardware, so the whole unified Battery area is moot there - the one
+// #battsec section now carries the battery mode preset, the customization (nested
+// #custProfGroup), the monitor toggle, the readout, protection, and hardware (CUM-395).
+// On a VN the profile is a no-op (nimbusd omits it from /api/state and /api/config ignores
+// hardware keys), the ring is absent, and no telemetry is valid. Collapse it to one honest
+// platform line.
 function applyHostedBattery(){
   if(!HOSTED)return;
   try{
-    const bs=$('battsec'), bm=$('battModeGroup'), cp=$('custProfGroup');
+    const bs=$('battsec');
     if(bs)bs.style.display='none';
-    if(bm)bm.style.display='none';
-    if(cp)cp.style.display='none';
-    const anchor=bm||cp||bs;
+    const anchor=bs;
     if(anchor&&anchor.parentNode&&!$('hostedBattLine')){
       const n=document.createElement('div'); n.id='hostedBattLine'; n.className='hint';
       n.style.margin='14px 0';
@@ -307,7 +306,7 @@ const dz=$('whatNextDismiss'); if(dz)dz.onclick=()=>{const w=$('whatNext'); if(w
 // sessions, and the embedded docs pack. Keyboard: Ctrl/Cmd+K or "/" opens, Esc
 // closes, Up/Down move, Enter activates. Results are grouped by source.
 const SEARCH_INDEX=[
-  {group:'Go to',label:'Home',kw:'dashboard status tiles sessions alerts health',act:()=>goDest('home')},
+  {group:'Go to',label:'Home',kw:'dashboard status tiles sessions alerts health device name rename identity',act:()=>goDest('home')},
   {group:'Go to',label:'Chat',kw:'message assistant talk conversation',act:()=>goDest('chat')},
   {group:'Go to',label:'Memory',kw:'files long-term scratchpad directive storage',act:()=>goDest('memory')},
   {group:'Go to',label:'Assistant',kw:'assistant providers models tools connectors mcp skills usage budget routines wake-ups safety moderation downloads',act:()=>goDest('assistant')},
@@ -323,7 +322,10 @@ const SEARCH_INDEX=[
   {group:'Action',label:'Check for updates',kw:'ota firmware software update install',act:()=>{goDest('device');_openGroup('Software update');var b=$('fwCheck');b&&b.focus();}},
   {group:'Action',label:'Pair with the cloud',kw:'cloud link code pairing qr',act:()=>{goDest('device');_openGroup('Cloud access');var b=$('cloudPair');b&&b.focus();}},
   {group:'Action',label:'Add a provider key',kw:'api key anthropic openai model verify provider',act:()=>_goSub('llm')},
-  {group:'Action',label:'Display and touch',kw:'screen display flip touch calibration orientation rotate',act:()=>{goDest('device');_openGroup('Display');}},
+  {group:'Action',label:'Rename the device',kw:'device name rename identity id ssid mdns bluetooth',act:()=>{goDest('home');var b=$('devName');b&&b.focus();}},
+  {group:'Action',label:'Display and touch',kw:'screen display flip touch calibration orientation rotate backlight',act:()=>{goDest('device');_openGroup('Display');}},
+  {group:'Action',label:'Ring theme and demo',kw:'ring led theme color colour demo preview effects brightness legend status light',act:()=>{goDest('device');_openGroup('Ring');}},
+  {group:'Action',label:'Battery and battery mode',kw:'battery mode dark balanced full monitor charge readout calibrate protection capacity chemistry pack profile',act:()=>{goDest('device');_openGroup('Battery');}},
   {group:'Action',label:'Sign-in code and connectivity',kw:'device sign-in token qr wifi network recovery',act:()=>{goDest('device');_openGroup('Connectivity');}},
   {group:'Action',label:'Erase / factory reset',kw:'erase reset wipe factory sd danger',act:()=>{goDest('device');_openGroup('Danger zone');}}
 ];
@@ -634,8 +636,12 @@ function applyState(d){
   // CUM-15: reveal the full-card Format control only when the driver supports it.
   if($('sdFormatRow'))$('sdFormatRow').style.display=(d.files&&d.files.canFormat)?'block':'none';
   // CUM-187: hide the ring simulator on a board with no physical LED ring (the
-  // ring-only params are already omitted from d.params server-side).
+  // ring-only params are already omitted from d.params server-side). CUM-394: the
+  // whole dedicated Ring section (theme + demo + preview) is meaningless without a
+  // ring, so collapse it too rather than show an empty section.
   if(d.hasRing!==undefined&&$('ringsimwrap'))$('ringsimwrap').style.display=d.hasRing?'':'none';
+  if(d.hasRing===false&&$('ringGroup'))$('ringGroup').style.display='none';
+  else if(d.hasRing===true&&$('ringGroup'))$('ringGroup').style.display='';
   // ---- Cloud access (cumulo-nimbus tunnel) ----
   if(d.cloud&&$('cloudLine')){
     var c=d.cloud;
@@ -761,9 +767,9 @@ function applyState(d){
   }
   renderDevTiles(d);
   if(d.fw){const fv=$('fwver'); if(fv)fv.textContent=d.fw+(d.build&&d.build!==d.fw?(' ('+d.build+')'):''); fv&&(fv.title='firmware version (build id)'); const hv=$('hostedFwVer'); if(hv)hv.textContent=d.fw+(d.build&&d.build!==d.fw?(' ('+d.build+')'):'');}
-  // Low-battery preferences. OUTSIDE the telemetry gate below on purpose: they
-  // live in the always-open Battery mode group, so a board with no pack fitted
-  // must still be able to see and change them.
+  // Low-battery preferences + the battery-mode monitor toggle. Wired whenever a
+  // batt object is present (CUM-395 folded these in with the pack), so a board with
+  // no pack fitted can still see and change them before one is read (CUM-386).
   if(d.batt){
     // CUM-15 class (lying-knob): batt.settingsLive is the SERVER's verdict on
     // whether these two preferences can act right now (rationale: power_policy.h
@@ -884,7 +890,7 @@ function applyState(d){
       if(bw){bw.style.display='';
         bw.textContent=waiting
           ?'Monitoring is on, waiting for a reading. Set the pack details below; calibrate once it reads.'
-          :'Turn on Monitor the battery under Battery mode to read the pack. You can set the pack details below now.';}
+          :'Turn on Monitor the battery above to read the pack. You can set the pack details below now.';}
       $('battbar').style.width='0%';
       $('battpct').textContent='-';
       $('battmv').textContent=waiting?'waiting':'-';$('battmv').title='';
