@@ -73,38 +73,50 @@
 // INTERNAL heap ONLY. They are NOT a whole-device memory budget: a turn's heavy
 // buffers (mbedTLS, request/response bodies, ArduinoJson, the VDB) are already routed
 // to PSRAM, so a turn's true INTERNAL cost is just small HTTP/JSON transients + the
-// lwIP/TLS stack. The real internal red line is the ~24 KB lwIP/TLS danger zone; the
-// floors sit just above it with margin. Do NOT re-raise these to "survive with no
+// lwIP/TLS stack. What actually fails a turn's mbedTLS handshake under pressure is
+// FRAGMENTATION - the largest contiguous internal block, NOT total free - so the real
+// gate is ORCH_TURN_MIN_LARGEST_BLOCK below (CUM-404); the total-free floors are only a
+// conservative genuine-starvation backstop. Do NOT re-raise these to "survive with no
 // PSRAM" - PSRAM is present and carries the churn (main.cpp routes it; the spill
 // threshold heap_caps_malloc_extmem_enable governs how much).
 #define AGENT_POLL_INTERVAL_MS  15000  // baseline running-job poll interval
-// A turn's heavy TLS buffers (mbedTLS RX/TX ~16 KB each + session/cert) are routed
-// to PSRAM (main.cpp installs a PSRAM-backed mbedTLS allocator), so a turn now costs
-// only its small JSON/HTTP transients out of INTERNAL heap. The old 52 KB floor was
-// tuned for the pre-PSRAM era (~68 KB resting); the richer round-4/5 firmware sits
-// ~46 KB internal at rest (measured live: /api/state heap=45956, heapMin=13056 - it
-// has safely dipped to 13 KB during work), so the 52 KB floor perpetually DEFERRED
-// real turns ("finishing background work") even with nothing running. Floors lowered
-// to the true internal-heap need + margin; PSRAM (8+ MB free) carries the TLS. (A turn
-// that still OOMs fails soft - the orchestrator returns an error reply, no reboot.)
-#define ORCH_AUTO_TURN_MIN_HEAP 30000U  // defer the SYNTHESIS turn below this (internal; TLS is PSRAM)
-// Measured live 2026-07-06 (post Phase-C firmware): resting internal heap sits
-// ~37-40 KB and a turn's heavy TLS is PSRAM-backed, so the old 38 KB floor
-// deferred REAL user turns at rest. Aligned with the dispatch floor: the turn's
-// internal-heap transients are the same small HTTP/JSON buffers.
-// 28 KB = the same ~24 KB lwIP/TLS internal danger zone + ~4 KB margin the loop
-// re-gate uses (ORCH_LOOP_MIN_HEAP). The turn's big buffers are PSRAM-routed, so this
-// is the honest internal floor; the old 34 KB deferred real turns while PSRAM sat
-// ~98% empty (proven live: at 16 KB internal turns deferred; freeing internal to
-// ~48 KB via the PSRAM spill made them run at heap=51 KB).
-#define ORCH_TURN_HARD_FLOOR    28000U  // user turn: reply "busy" below this (INTERNAL heap)
-#define ORCH_DISPATCH_MIN_HEAP  28000U  // defer a single spawn dispatch below this
+// ---- CUM-404: total-free floors recalibrated + a largest-block guard ---------
+// The largest CONTIGUOUS internal block is the real turn need: mbedTLS RX/TX (~16 KB
+// each), request/response bodies, ArduinoJson and the VDB all ride PSRAM (main.cpp
+// installs a PSRAM-backed mbedTLS allocator + spills mallocs >=128 B), so a turn's
+// only mandatory INTERNAL allocation is one modest contiguous block for the
+// lwIP/socket handshake. That is the SAME handshake the relay dial (relay_heap.h) and
+// a provider verify (provider_verify.cpp, VERIFY_MIN_MAX8 = 8000) make on THIS board,
+// both proven green at largest >= 8000 while a genuine OOM is still refused. The
+// chat/turn path was the last one never recalibrated: it kept pre-PSRAM 28-30 KB
+// TOTAL-free floors and NO largest-block guard, so it spuriously DEFERRED real turns
+// ("finishing background work") when internal was fragmented-but-ample, and when a
+// turn did hit fragmentation the handshake alloc failed and surfaced as a transport
+// error (connect failed / response parse failed) that read as a wrong-provider
+// fallback instead of an honest low-memory reply (the "subpar harness convos"
+// CUM-404 tracks). Now: the total-free floors drop to a conservative starvation
+// backstop, and the largest-block guard carries the real admission decision.
+//
+// The total-free floors are NOT a measured cliff (relay_heap.h states the same
+// honestly): they are "low enough to stop blocking a healthy but fragmented device,
+// high enough to still refuse an obviously starved one." 12000 = the relay's 8000
+// starvation backstop + ~4 KB headroom for the recall embed's transient internal dip
+// (~10-11 KB lwIP pbufs, recovering) that a user turn additionally pays. The
+// before/after on-device measurement is the bench step (PR_BODY plan). (A turn that
+// still OOMs fails soft: the honest low-memory reply, no reboot.)
+#define ORCH_TURN_MIN_LARGEST_BLOCK 8000U  // largest CONTIGUOUS internal block a turn's
+                                           // mbedTLS handshake needs (== provider_verify's
+                                           // proven VERIFY_MIN_MAX8; the real admission gate)
+#define ORCH_AUTO_TURN_MIN_HEAP 14000U  // defer the SYNTHESIS turn below this (internal; total-free
+                                        // backstop). Kept +2000 above the interactive floor so
+                                        // background work yields to and never starves a live turn.
+#define ORCH_TURN_HARD_FLOOR    12000U  // user turn: honest low-memory reply below this (total-free backstop)
+#define ORCH_DISPATCH_MIN_HEAP  12000U  // defer a single spawn dispatch below this (same handshake demand as a turn)
 // In-turn associative recall does a SECOND TLS handshake (the embed) BEFORE the
-// LLM call. With mbedTLS now backed by PSRAM (see main.cpp) the two handshakes no
-// longer contend for internal heap - the embed's only internal cost is its small
-// HTTP/JSON transient, which fits the ~64 KB the turn runs at. So recall runs at
-// the normal turn floor. (Kept as a named floor so a future heavier build can
-// raise it; the recall engine also stays reachable over /mcp regardless.)
+// LLM call, but mbedTLS is PSRAM-backed so the two no longer contend for internal
+// heap - the embed's only internal cost is its small HTTP/JSON transient. Recall
+// runs at the normal turn floor. (Kept as a named floor so a future heavier build
+// can raise it; the recall engine also stays reachable over /mcp regardless.)
 #define ORCH_RECALL_MIN_HEAP    ORCH_TURN_HARD_FLOOR  // embed for recall above the turn floor
 
 // ---- Head multi-turn tool-use loop (ReAct) bounds ---------------------------
@@ -131,11 +143,31 @@
 // by the caller's turn floor). Measured live 2026-07-11: with the request body
 // serialized to a PSRAM buffer (one TLS write) a full tool round at 30.6 KB ended at
 // 30.0 KB - a round's internal cost is a few hundred bytes of HTTP/JSON transients,
-// not a handshake (mbedTLS is PSRAM-backed). The old 34 KB floor (== the turn hard
-// floor) made every round-1 re-gate fire on this SD-mounted firmware (~30 KB at
-// turn time), capping the loop at one tool round. 28 KB keeps real margin above the
-// ~24 KB TLS/lwIP danger zone while letting multi-round loops actually run.
-#define ORCH_LOOP_MIN_HEAP        28000U
+// not a handshake (mbedTLS is PSRAM-backed). The old 34 KB, then 28 KB, floors made
+// the round-1 re-gate fire on this SD-mounted firmware (~30 KB at turn time), capping
+// the loop at one tool round. 12 KB (CUM-404, == the turn hard floor) is the
+// conservative total-free starvation backstop; the largest-block re-gate
+// (ORCH_TURN_MIN_LARGEST_BLOCK, wired as roundMinLargest) is the real per-round guard,
+// so multi-round loops actually run while a fragmented round is still cut honestly.
+#define ORCH_LOOP_MIN_HEAP        12000U
+
+// CUM-404 static assertion: the recalibrated-floor invariant, checked at every device
+// build (esp32s3 / esp32s3-cyd). A careless future bump that re-raises a floor into
+// the pre-PSRAM danger zone, inverts the background/interactive ordering, or drops the
+// largest-block guard fails the firmware build here. (The harness mirror + the pure
+// predicate are asserted host-side in test_harness_turn.)
+static_assert(ORCH_TURN_HARD_FLOOR < 28000U,
+              "CUM-404: the turn floor must stay recalibrated below the pre-PSRAM danger zone");
+static_assert(ORCH_TURN_HARD_FLOOR >= ORCH_TURN_MIN_LARGEST_BLOCK,
+              "the largest-block guard must not exceed the total-free floor it complements");
+static_assert(ORCH_AUTO_TURN_MIN_HEAP > ORCH_TURN_HARD_FLOOR,
+              "background synthesis/fold must stay above the interactive turn floor (it yields)");
+static_assert(ORCH_DISPATCH_MIN_HEAP == ORCH_TURN_HARD_FLOOR &&
+                  ORCH_LOOP_MIN_HEAP == ORCH_TURN_HARD_FLOOR &&
+                  ORCH_RECALL_MIN_HEAP == ORCH_TURN_HARD_FLOOR,
+              "turn / dispatch / loop-round / recall all make the same one mbedTLS handshake");
+static_assert(ORCH_TURN_MIN_LARGEST_BLOCK == 8000U,
+              "CUM-404: matches provider_verify's proven per-board handshake floor (VERIFY_MIN_MAX8)");
 
 // Max simultaneously-dispatched heavy jobs (one dispatched per poll cycle while
 // active count < this). Mirrors nimbus::orch::kMaxActiveInflight; declared here so

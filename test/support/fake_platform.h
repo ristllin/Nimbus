@@ -25,6 +25,12 @@ struct FakePlatform {
   // moment (turn entry, not the transient trough).
   std::vector<uint32_t> heapScript;
   mutable size_t heapIdx = 0;
+  // Largest contiguous free INTERNAL block (CUM-404). Ample by default so existing
+  // tests are unaffected; set `largest` low (or script it) to trip the fragmentation
+  // guard while total free stays high. Same per-read-script shape as heapScript.
+  uint32_t largest = 100000;
+  std::vector<uint32_t> largestScript;
+  mutable size_t largestIdx = 0;
 
   agent::Platform contract() {
     agent::Platform p;
@@ -33,6 +39,13 @@ struct FakePlatform {
       if (heapScript.empty()) return heap;
       uint32_t v = heapScript[heapIdx < heapScript.size() ? heapIdx : heapScript.size() - 1];
       ++heapIdx;
+      return v;
+    };
+    p.largestFreeBlock = [this] {
+      if (largestScript.empty()) return largest;
+      uint32_t v = largestScript[largestIdx < largestScript.size() ? largestIdx
+                                                                   : largestScript.size() - 1];
+      ++largestIdx;
       return v;
     };
     p.delayMs  = [this](uint32_t d) { delays.push_back(d); ms += d; };

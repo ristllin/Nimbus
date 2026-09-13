@@ -116,6 +116,9 @@ struct HeadLoopConfig {
   uint32_t deadlineMs = 90000;       // wall-clock budget (0 => no deadline). Checked between rounds.
   uint32_t roundMinHeap = 28000;     // re-gate free internal heap before rounds AFTER the first
                                      // (round 0 is admitted by the caller's turn floor; 0 => skip)
+  uint32_t roundMinLargest = 0;      // CUM-404: also re-gate on the largest CONTIGUOUS internal
+                                     // block (fragmentation, not total free, fails the round's
+                                     // alloc). Needs the largestBlock hook set; 0 => skip.
   size_t   maxToolResultBytes = 2048;   // clamp each tool result fed back (0 => no clamp)
   size_t   maxTotalToolBytes = 12288;   // cumulative tool-output budget; exceeded => force the final round (0 => no limit)
 };

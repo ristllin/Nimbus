@@ -535,7 +535,8 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     headTools.cfg.maxRounds          = d_.cfg.loop.rounds ? d_.cfg.loop.rounds() : 8;  // user-tunable (P6); default 8
     headTools.cfg.deadlineMs         =
         (uint32_t)(d_.cfg.loop.deadlineS ? d_.cfg.loop.deadlineS() : 600) * 1000U;
-    headTools.cfg.roundMinHeap       = t_.loopMinHeap;                 // measured floor - not tunable
+    headTools.cfg.roundMinHeap       = t_.loopMinHeap;                 // total-free backstop - not tunable
+    headTools.cfg.roundMinLargest    = t_.turnMinLargestBlock;         // CUM-404: per-round fragmentation guard
     // Derived (or owner-overridden) caps - deriveBudget already folded the NVS
     // overrides in. Null hooks (host tests without a loop config) keep the
     // legacy constants so their pins stay meaningful.
@@ -737,15 +738,27 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // loop, duplicating side effects (memory writes, spawns). Once tools ran, a failed
   // turn fails soft to the error reply instead. (Fabric turns handled all of this
   // inside the loop - never re-enter here.)
+  // CUM-404: a memory-pressure failure ("low memory" from the transport) will fail
+  // IDENTICALLY on a same-host retry or on any alternate provider - the internal-heap
+  // starvation is device-wide, not provider-specific - so retrying/failing over just
+  // burns round-trips and, worse, makes an OOM read as a wrong-provider fallback (the
+  // exact symptom CUM-404 tracks). Skip the ladder on OOM and let the honest
+  // low-memory reply below fire.
+  auto isLowMem = [](const std::string& e) {
+    return e.find("low memory") != std::string::npos ||
+           e.find("out of memory") != std::string::npos;
+  };
   if (!ok && *loopDispatched > 0)
     hlog::logf("orchestrator: loop ran %d tool(s) before failing - skipping retry/failover",
                *loopDispatched);
-  if (!ok && !fabricOn && *loopDispatched == 0) {   // one same-host retry on a fresh conversation
+  if (!ok && isLowMem(err))
+    hlog::logf("orchestrator: low-memory turn failure - skipping retry/failover (%s)", err.c_str());
+  if (!ok && !fabricOn && *loopDispatched == 0 && !isLowMem(err)) {   // one same-host retry on a fresh conversation
     hlog::logf("orchestrator: turn err (%s) -> fresh conv retry", err.c_str());
     if (d_.platform.delayMs) d_.platform.delayMs(400);
     convId = ""; ok = runTurnHost(host, convId);
   }
-  if (!ok && !fabricOn && *loopDispatched == 0) {   // unified fallback ladder (CUM-41): up to 2 alternates
+  if (!ok && !fabricOn && *loopDispatched == 0 && !isLowMem(err)) {   // unified fallback ladder (CUM-41): up to 2 alternates
     const orch::ErrorClass ec = classifyErr(err);
     int tried = 0;
     for (const std::string& fb : fallbackOrder(ec, /*needFabric=*/false)) {
@@ -782,6 +795,15 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     // running, so a failed turn can't imply phantom background work.
     std::string cause;
     auto has = [&](const char* s) { return err.find(s) != std::string::npos; };
+    // CUM-404: a memory-pressure failure is NOT a provider fault. Degrade with an
+    // honest low-memory reply instead of a transport-error cause that reads as a
+    // wrong-provider fallback. (Device copy: no em dash, no space-hyphen-space.)
+    if (isLowMem(err)) {
+      deliver(chatId, "Low on working memory right now, so that couldn't finish. "
+                      "Nothing is still running; try again in a few seconds.");
+      fireTurnEnd(false, 0);
+      return false;
+    }
     if (err.empty())                              cause = "the provider gave no response";
     else if (has("key"))                          cause = "no working provider key (check Capabilities in the web app)";
     else if (has("network"))                      cause = "the provider could not be reached (check the connection)";
@@ -943,9 +965,15 @@ void TurnEngine::handleMessage(const std::string& text, const std::string& fromN
                     "Providers & models in the web app, then send your message again.");
     return;
   }
-  if (freeHeap() < t_.turnHardFloor) {
-    hlog::logf("orchestrator: user turn deferred, heap %u < floor %u",
-               (unsigned)freeHeap(), (unsigned)t_.turnHardFloor);
+  // CUM-404: admit on BOTH the total-free backstop AND the largest-contiguous-block
+  // guard. Fragmentation (a low largest block while total free is ample) is what
+  // actually fails the turn's mbedTLS handshake alloc, so gate on it here rather than
+  // let the turn run into a transport error that reads as a provider fault. The reply
+  // is the same honest low-memory defer either way (no em dash, no space-hyphen-space).
+  if (!turnHeapOk(freeHeap(), largestFreeBlock(), t_.turnHardFloor, t_.turnMinLargestBlock)) {
+    hlog::logf("orchestrator: user turn deferred, heap %u/floor %u largest %u/floor %u",
+               (unsigned)freeHeap(), (unsigned)t_.turnHardFloor,
+               (unsigned)largestFreeBlock(), (unsigned)t_.turnMinLargestBlock);
     deliver(chatId, "One moment, I'm finishing some background work and low on "
                     "working memory. Please resend in a few seconds.");
     return;

@@ -244,10 +244,10 @@ void tearDown() { agent::hlog::setSink(nullptr); }
 static void test_loop_gate_uses_entry_heap_not_the_recall_dip() {
   Rig r;
   // runTurn captures its entry heap FIRST; the gate uses that. Entry clears the
-  // gate (loopMinHeap 28000 + 2000), every later read is in the trough below it.
+  // gate (loopMinHeap 12000 + 2000), every later read is in the trough below it.
   // The loop MUST still be advertised + wired. (handleMessage would consume one
   // read for its own entry floor, so drive runTurn directly to isolate the gate.)
-  r.plat.heapScript = {41000, 25000, 25000, 25000, 25000};
+  r.plat.heapScript = {41000, 13000, 13000, 13000, 13000};
   r.eng->runTurn("inputs", "1001", "user text");
   TEST_ASSERT_EQUAL(1, (int)r.attempts.size());
   TEST_ASSERT_TRUE_MESSAGE(r.attempts[0].hadTools,
@@ -257,12 +257,87 @@ static void test_loop_gate_uses_entry_heap_not_the_recall_dip() {
 static void test_loop_defers_when_entry_heap_is_genuinely_low() {
   Rig r;
   // Entry itself is under the gate: a real low-memory turn still falls back to
-  // single-shot - the fix must not defeat the genuine guard.
-  r.plat.heapScript = {25000, 25000, 25000};
+  // single-shot - the fix must not defeat the genuine guard. 13000 < loopMinHeap
+  // (12000) + 2000 = 14000, but > recallMinHeap (12000) so recall still runs.
+  r.plat.heapScript = {13000, 13000, 13000};
   r.eng->runTurn("inputs", "1001", "user text");
   TEST_ASSERT_EQUAL(1, (int)r.attempts.size());
   TEST_ASSERT_FALSE_MESSAGE(r.attempts[0].hadTools,
                             "a genuinely low-heap turn must fall back to single-shot");
+}
+
+// ---- CUM-404: recalibrated floors + the largest-block fragmentation guard ----
+
+// The native ASSERTION for the recalibrated floors: the invariant, not one point.
+// A careless future bump that re-raises the floor into the pre-PSRAM danger zone,
+// inverts the background/interactive ordering, or drops the largest-block guard
+// FAILS here. (The device-side authoritative macros carry matching static_asserts
+// in agent_config.h, checked by the esp32s3/esp32s3-cyd builds.)
+static void test_recalibrated_floor_invariants() {
+  TurnEngine::Tuning t;   // the shipped defaults, mirroring agent_config.h
+  // Recalibrated DOWN from the pre-PSRAM 28-30 KB floors now that turn buffers ride PSRAM.
+  TEST_ASSERT_TRUE(t.turnHardFloor   < 28000);
+  TEST_ASSERT_TRUE(t.autoTurnMinHeap < 30000);
+  TEST_ASSERT_TRUE(t.loopMinHeap     < 28000);
+  // In the calibrated ~10-12 KB band, above the genuine-starvation backstop (relay's 8000).
+  TEST_ASSERT_TRUE(t.turnHardFloor >= 8000 && t.turnHardFloor <= 12000);
+  // Background work stays the most conservative total-free floor: it yields to a live turn.
+  TEST_ASSERT_TRUE(t.autoTurnMinHeap > t.turnHardFloor);
+  // Turn / recall / loop-round all make the SAME single mbedTLS handshake: one floor.
+  TEST_ASSERT_EQUAL(t.turnHardFloor, t.recallMinHeap);
+  TEST_ASSERT_EQUAL(t.turnHardFloor, t.loopMinHeap);
+  // The largest-block guard is the real gate: == provider_verify's proven 8000 handshake
+  // floor on this board, and never above the total-free floor it complements.
+  TEST_ASSERT_EQUAL(8000, (int)t.turnMinLargestBlock);
+  TEST_ASSERT_TRUE(t.turnMinLargestBlock <= t.turnHardFloor);
+  // The pure predicate: fragmented-but-ample refused; healthy-but-low-total admitted;
+  // genuinely starved refused.
+  TEST_ASSERT_FALSE(agent::turnHeapOk(100000, 7999, t.turnHardFloor, t.turnMinLargestBlock));
+  TEST_ASSERT_TRUE (agent::turnHeapOk(12000, 8000, t.turnHardFloor, t.turnMinLargestBlock));
+  TEST_ASSERT_FALSE(agent::turnHeapOk(11999, 100000, t.turnHardFloor, t.turnMinLargestBlock));
+}
+
+// The chat gate defers on FRAGMENTATION (largest block below the handshake need)
+// even when total free is ample - the case the old total-free-only gate missed, and
+// the one that used to run a turn straight into a "connect failed" transport error.
+static void test_chat_gate_defers_on_fragmentation_not_total_free() {
+  Rig r;
+  r.plat.heap = 100000;   // total internal free is ample...
+  r.plat.largest = 7999;  // ...but the largest contiguous block is below the 8000 guard
+  r.eng->handleMessage("hi there", "Roy", "1001");
+  TEST_ASSERT_EQUAL(0, (int)r.attempts.size());        // no paid provider round-trip
+  TEST_ASSERT_EQUAL(0, (int)r.eng->turnCount());
+  TEST_ASSERT_TRUE(r.anyDelivered("low on working memory"));   // the honest defer reply
+  TEST_ASSERT_FALSE(r.anyDelivered("unavailable"));            // NOT a provider-fault message
+}
+
+// At the recalibrated floor (12000 free / 8000 largest) the turn RUNS - the old
+// 28000 floor deferred it here while PSRAM sat ~98% empty (the CUM-404 bug).
+static void test_chat_gate_admits_at_the_recalibrated_floor() {
+  Rig r;
+  r.plat.heap = 12000;    // == ORCH_TURN_HARD_FLOOR
+  r.plat.largest = 8000;  // == ORCH_TURN_MIN_LARGEST_BLOCK
+  r.eng->handleMessage("hi there", "Roy", "1001");
+  TEST_ASSERT_EQUAL(1, (int)r.attempts.size());
+  TEST_ASSERT_EQUAL_STRING("hello there", r.lastText().c_str());
+}
+
+// A memory-pressure transport failure ("low memory" from transport_tls) degrades
+// with the honest low-memory reply and does NOT walk the failover ladder to a
+// healthy provider (which would read as a wrong-provider fallback - the symptom).
+static void test_oom_transport_error_yields_low_memory_reply_no_failover() {
+  Rig r;
+  Rig::Script oom; oom.ok = false; oom.err = "connect failed: low memory";
+  r.scripts["anthropic"] = {oom};   // the head host OOMs; openai/mistral stay healthy
+  r.eng->handleMessage("hi there", "Roy", "1001");
+  // Exactly ONE attempt: no same-host retry, no failover to a healthy provider.
+  TEST_ASSERT_EQUAL(1, (int)r.attempts.size());
+  TEST_ASSERT_EQUAL_STRING("anthropic", r.attempts[0].host.c_str());
+  // Honest low-memory reply, not a transport-error "That didn't finish" cause, and
+  // no "switching to <provider>" failover notice.
+  TEST_ASSERT_TRUE(r.anyDelivered("Low on working memory right now"));
+  TEST_ASSERT_FALSE(r.anyDelivered("That didn't finish"));
+  TEST_ASSERT_FALSE(r.anyDelivered("switching to"));
 }
 
 // ---- (1) happy turn ---------------------------------------------------------
@@ -333,7 +408,7 @@ static void test_recall_injected_for_user_text_skipped_for_synthesis() {
   TEST_ASSERT_EQUAL(1, (int)r.recallQueries.size());   // ...without recall
 
   // Heap below the recall floor skips recall but still runs the turn.
-  r.plat.heap = 27999;   // < recallMinHeap (28000) but engine floor only gates recall here
+  r.plat.heap = 11999;   // < recallMinHeap (12000) but engine floor only gates recall here
   r.eng->runTurn("inputs", "1001", "user text");
   TEST_ASSERT_EQUAL(1, (int)r.recallQueries.size());
 }
@@ -471,9 +546,9 @@ static void test_scheduled_turn_rails_and_fire_outcome() {
   TEST_ASSERT_EQUAL(1, (int)r.recallQueries.size());
   TEST_ASSERT_EQUAL_STRING("check the weather", r.recallQueries[0].c_str());
 
-  // Low heap: deferred without a provider attempt.
+  // Low heap: deferred without a provider attempt (< turnHardFloor 12000).
   Rig r2;
-  r2.plat.heap = 27999;
+  r2.plat.heap = 11999;
   orch::FireOutcome o2 = r2.eng->injectScheduledTurn("1001", "p", "n");
   TEST_ASSERT_FALSE(o2.ok);
   TEST_ASSERT_EQUAL_STRING("deferred: low heap", o2.detail.c_str());
@@ -556,11 +631,11 @@ static void test_synthesis_consolidation_and_raw_fallback() {
   // Heap gate: deferral leaves the fresh results parked (the 60 s fallback's case).
   Rig r3;
   r3.jobs->addFreshResult("job0002", "modelZ", "kept");
-  r3.plat.heap = 29999;   // < autoTurnMinHeap (30000)
+  r3.plat.heap = 13999;   // < autoTurnMinHeap (14000)
   r3.eng->maybeConsolidate("1001");
   TEST_ASSERT_EQUAL(0, (int)r3.attempts.size());
   TEST_ASSERT_TRUE(r3.jobs->hasFreshResults());
-  TEST_ASSERT_TRUE(LogCapture::contains("orchestrator: defer auto-synthesis (heap 29999 < 30000)"));
+  TEST_ASSERT_TRUE(LogCapture::contains("orchestrator: defer auto-synthesis (heap 13999 < 14000)"));
 }
 
 // ---- (10) turn-debug hook on success AND failure ----------------------------
@@ -672,7 +747,7 @@ static void test_runfold_gates_and_failure() {
   // Heap gate: below autoTurnMinHeap -> DEFERRED (retry later, NO breaker burn -
   // the L15 degraded-fold row live-caught a deferral counted as a failure), and
   // no provider call.
-  r.plat.heap = 20000;
+  r.plat.heap = 13000;   // below autoTurnMinHeap (14000)
   TEST_ASSERT_TRUE(r.eng->runFold("1001", "", "d", sum) == FR::Deferred);
   TEST_ASSERT_EQUAL(0, (int)r.attempts.size());
   r.plat.heap = 100000;
@@ -710,7 +785,7 @@ static void test_runfold_gates_and_failure() {
 static void test_can_fold_now_matches_the_gates() {
   Rig r;
   TEST_ASSERT_TRUE(r.eng->canFoldNow());
-  r.plat.heap = 20000;                       // below autoTurnMinHeap
+  r.plat.heap = 13000;                       // below autoTurnMinHeap (14000)
   TEST_ASSERT_FALSE(r.eng->canFoldNow());
   r.plat.heap = 100000;
   // One capped host no longer blocks the fold (the ladder has alternates)...
@@ -1046,6 +1121,10 @@ int main(int, char**) {
   RUN_TEST(test_any_provider_configured_predicate);
   RUN_TEST(test_loop_gate_uses_entry_heap_not_the_recall_dip);
   RUN_TEST(test_loop_defers_when_entry_heap_is_genuinely_low);
+  RUN_TEST(test_recalibrated_floor_invariants);
+  RUN_TEST(test_chat_gate_defers_on_fragmentation_not_total_free);
+  RUN_TEST(test_chat_gate_admits_at_the_recalibrated_floor);
+  RUN_TEST(test_oom_transport_error_yields_low_memory_reply_no_failover);
   RUN_TEST(test_happy_turn_delivers_and_accounts);
   RUN_TEST(test_recall_injected_for_user_text_skipped_for_synthesis);
   RUN_TEST(test_same_host_fresh_conv_retry);

@@ -127,6 +127,17 @@ class TlsTransport : public HttpTransport {
     const HeapSample hsPre = sampleHeap();
     HeapSample hsConn{0, 0}, hsWrote{0, 0};
 
+    // CUM-404: is the failure we're about to report a MEMORY-pressure failure rather
+    // than a network one? A connect / write / parse alloc fails when the largest
+    // contiguous INTERNAL block is below the mbedTLS handshake need - the same floor
+    // provider_verify + the chat gate use. Tagging the error "low memory" lets the
+    // turn error path degrade with an honest low-memory reply instead of a transport
+    // error that reads as a wrong-provider fallback (and skip the pointless failover).
+    auto lowMem = [] {
+      return (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) <
+             (uint32_t)ORCH_TURN_MIN_LARGEST_BLOCK;
+    };
+
     WiFiClient plain;
     WiFiClientSecure tls;
     Client* client;
@@ -159,10 +170,11 @@ class TlsTransport : public HttpTransport {
     hsConn = sampleHeap();  // post-connect: handshake + socket internal cost
     if (!connected) {
       arbiter::releaseWork();
-      alogf("transport: connect %s://%s:%u failed (3x) heap=%u",
+      alogf("transport: connect %s://%s:%u failed (3x) heap=%u largest=%u",
             req.tls ? "https" : "http", req.host.c_str(), (unsigned)req.port,
-            ESP.getFreeHeap());
-      err = "connect failed";
+            ESP.getFreeHeap(),
+            (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+      err = lowMem() ? "connect failed: low memory" : "connect failed";
       return 0;
     }
 
@@ -184,7 +196,7 @@ class TlsTransport : public HttpTransport {
       arbiter::releaseWork();
       alogf("transport: short head write %s%s heap=%u", req.host.c_str(),
             req.path.c_str(), ESP.getFreeHeap());
-      err = "request head write failed";
+      err = lowMem() ? "request head write failed: low memory" : "request head write failed";
       return 0;
     }
     // ONE write of the complete (PSRAM-spilled) body - never chunked serialization.
@@ -200,7 +212,8 @@ class TlsTransport : public HttpTransport {
         // Naming the truncation matters: the caller previously saw "no response"
         // and blamed the network for a request the device never finished sending.
         err = "request body truncated (" + std::to_string(n) + "/" +
-              std::to_string(req.body.size()) + " bytes written)";
+              std::to_string(req.body.size()) + " bytes written)" +
+              (lowMem() ? ": low memory" : "");
         return 0;
       }
     }
@@ -248,7 +261,8 @@ class TlsTransport : public HttpTransport {
         // EmptyInput is excluded so an empty 200/204 behaves like the host path,
         // which skips the parse entirely rather than calling it an error.
         if (derr && derr.code() != DeserializationError::EmptyInput) {
-          err = std::string("response parse failed: ") + derr.c_str();
+          err = std::string("response parse failed: ") + derr.c_str() +
+                (lowMem() ? " (low memory)" : "");
           alogf("transport: stream-parse %s (heap %u->%u)", derr.c_str(),
                 (unsigned)heapBefore, (unsigned)ESP.getFreeHeap());
         }
