@@ -27,6 +27,7 @@
 
 #include "nimbus/telegram_offset.h"   // nimbus::core::nextTelegramOffset (host-tested)
 #include "nimbus/tg_updates.h"        // nimbus::tg::parseUpdates (host-tested filtered parse)
+#include "nimbus/orch/msg_batch.h"    // CUM-398 rapid-message batcher + drainPages (host-tested)
 #include "nimbus/net/telegram_auth.h" // nimbus::net::TelegramAuthFailDetector (host-tested)
 #include "adapters/http_multipart.h"  // media send (sendDocument/Photo/Voice)
 
@@ -237,6 +238,13 @@ static InboundMsg* ensureInboundStage() {
   return g_inboundStage;
 }
 
+// CUM-398 rapid-message batcher (portable, host-tested). Reused across drains;
+// cleared between them. Its accumulated payload rides the WorkingAllocator, which
+// main.cpp routes to PSRAM at boot, so a batch never touches internal SRAM. Only
+// ever touched on the tg_poll task (both the Telegram drain and the inbound-queue
+// drain run there, sequentially - no new task, no second TLS slot).
+static nimbus::orch::MessageBatcher g_batch;
+
 // One shared response scratch for the mutually-exclusive Telegram API helpers
 // that parse a small JSON body: doSendMessageRaw and the two getFile calls (voice
 // + attachment). Each reads its HTTP body here then extracts what it needs before
@@ -413,103 +421,140 @@ bool jsonStr(const char* json, const char* key, char* val, int valLen) {
 // escape mangling), and advance the offset ACK only for updates we actually
 // accepted. The allowlist gates on message.chat.id (the authorized conversation),
 // NEVER message.from.id (sender-controlled).
-static int processUpdatesBody(const char* body, size_t len, int32_t offset, bool& parsedOk) {
-  std::vector<nimbus::tg::Update> updates;
-  bool ok = false, truncatedTail = false;
-  parsedOk = false;
-  if (!nimbus::tg::parseUpdates(body, len, updates, ok, truncatedTail) || !ok) {
-    alogf("telegram: poll parse failed (ok=%d trunc=%d): %.60s", ok, truncatedTail, body);
-    return 0;
-  }
-  parsedOk = true;   // a well-formed ok:true body - this poll cycle authenticated
-  int count = 0;
-  for (const auto& u : updates) {
-    if (u.updateId <= 0) continue;
-    const String chatId(u.chatId.c_str());
-    const String from(u.from.c_str());
-    const bool isAllowed = chatId.length() && allowed(chatId);
+// CUM-398: classify one getUpdates page into the drain driver's per-update actions.
+// Text from an allowed chat is BATCHED (grouped into one turn per chat by
+// drainPages); voice/photo/document keep their existing one-slot-per-cycle deferral
+// (a busy slot yields StopNoAck, which stops the drain WITHOUT acking that update so
+// it is re-served); pending-approval / disallowed / handled-inline updates are
+// AckOnly (the offset advances past them but they do not join a turn). All the
+// inline side effects (queue a voice note, hand a file to the files lane, push a
+// sender for approval, answer "can't take that file") are unchanged - only the
+// text dispatch moved from an inline g_cb turn to the batcher.
+// Copy an inbound file's metadata into the single deferred-attachment slot (the
+// download + describe/store happen later, after the poll socket closes). Caller has
+// already checked the slot is free. Straight-line; utf8CapLen never severs a UTF-8
+// character in the caption (a split multi-byte would 400 the later vision request).
+static void queueAttachment(const nimbus::tg::Update& u, const String& chatId,
+                            const String& from, int kind) {
+  memset(&g_attach, 0, sizeof(g_attach));
+  strncpy(g_attach.fileId,   u.attachment.fileId.c_str(),   sizeof(g_attach.fileId) - 1);
+  strncpy(g_attach.chatId,   chatId.c_str(),                sizeof(g_attach.chatId) - 1);
+  strncpy(g_attach.from,     from.c_str(),                  sizeof(g_attach.from) - 1);
+  strncpy(g_attach.fileName, u.attachment.fileName.c_str(), sizeof(g_attach.fileName) - 1);
+  strncpy(g_attach.mime,     u.attachment.mime.c_str(),     sizeof(g_attach.mime) - 1);
+  const int keep = nimbus::utf8CapLen(u.text.c_str(), (int)u.text.length(),
+                                      (int)sizeof(g_attach.caption) - 1);
+  memcpy(g_attach.caption, u.text.c_str(), (size_t)keep);
+  g_attach.caption[keep] = 0;
+  g_attach.size  = u.attachment.fileSize;
+  g_attach.photo = (kind == 2);
+  g_attach.set   = true;
+}
 
-    if (u.attachment.kind == nimbus::tg::Attachment::Kind::Voice) {
-      // Voice note: queue for STT (downloaded after the poll socket closes). One
-      // slot per cycle. If the slot is already taken by an earlier voice in THIS
-      // batch, STOP here WITHOUT acking this update - leave it (and everything after
-      // it) for the next poll so it is re-served, never lost. The slot drains on this
-      // poll cycle, so the next poll queues it.
-      if (isAllowed && u.attachment.fileId.size()) {
-        if (g_voice.set) break;   // slot busy -> defer this + the rest (ack-after-accept)
-        strncpy(g_voice.fileId, u.attachment.fileId.c_str(), sizeof(g_voice.fileId) - 1);
-        strncpy(g_voice.chatId, chatId.c_str(),               sizeof(g_voice.chatId) - 1);
-        strncpy(g_voice.from,   from.c_str(),                 sizeof(g_voice.from)   - 1);
-        g_voice.set = true;
-        alogf("telegram: voice note from %s queued for STT", chatId.c_str());
-      }
-    } else if (u.attachment.kind == nimbus::tg::Attachment::Kind::Document ||
-               u.attachment.kind == nimbus::tg::Attachment::Kind::Photo) {
-      // Inbound file: hand to the files lane if installed, else answer honestly
-      // (never a silent drop). The caption, if any, is passed along.
-      const int kind = (u.attachment.kind == nimbus::tg::Attachment::Kind::Document) ? 1 : 2;
-      bool handled = false;
-      if (isAllowed && g_attachSink)
-        handled = g_attachSink(chatId, from, String(u.attachment.fileId.c_str()),
-                               String(u.attachment.fileName.c_str()),
-                               String(u.attachment.mime.c_str()), u.attachment.fileSize,
-                               kind, String(u.text.c_str()));
-      if (isAllowed && !handled && u.attachment.fileId.size()) {
-        // Queue it for the deferred lane (download + describe/store happen after
-        // the poll socket closes). Slot busy = leave this and everything after it
-        // un-acked, so it is re-served next poll rather than lost.
-        if (g_attach.set) break;
-        memset(&g_attach, 0, sizeof(g_attach));
-        strncpy(g_attach.fileId,   u.attachment.fileId.c_str(),   sizeof(g_attach.fileId) - 1);
-        strncpy(g_attach.chatId,   chatId.c_str(),                sizeof(g_attach.chatId) - 1);
-        strncpy(g_attach.from,     from.c_str(),                  sizeof(g_attach.from) - 1);
-        strncpy(g_attach.fileName, u.attachment.fileName.c_str(), sizeof(g_attach.fileName) - 1);
-        strncpy(g_attach.mime,     u.attachment.mime.c_str(),     sizeof(g_attach.mime) - 1);
-        // Byte-truncating a caption can split a multi-byte character, and the
-        // orphaned continuation byte then rides into the vision request's JSON
-        // body and 400s it - and into the captured turn text, where it persists.
-        // utf8CapLen is the helper this codebase already uses in a dozen other
-        // caps for exactly this; the new lane was the one that skipped it.
-        {
-          const int keep = nimbus::utf8CapLen(u.text.c_str(), (int)u.text.length(),
-                                              (int)sizeof(g_attach.caption) - 1);
-          memcpy(g_attach.caption, u.text.c_str(), (size_t)keep);
-          g_attach.caption[keep] = 0;
-        }
-        g_attach.size  = u.attachment.fileSize;
-        g_attach.photo = (kind == 2);
-        g_attach.set   = true;
-        handled = true;
-      }
-      if (isAllowed && !handled && g_cb) {
-        // Nothing could take it: acknowledge, and still route any caption as text
-        // so the owner's words are never lost.
-        if (u.text.size())
-          g_cb(from, chatId, String(u.text.c_str()));
-        else
-          send(chatId, "I couldn't take that file. Send the details as a text message instead.", false);
-      } else if (!isAllowed) {
-        pendingPush(chatId.c_str(), from.c_str(), u.text.c_str());
-      }
-    } else if (u.text.size()) {
-      // Plain text message - the full length reaches the model now.
-      if (isAllowed && g_cb) {
-        alogf("telegram: msg from %s (chat %s): %.40s", from.c_str(), chatId.c_str(), u.text.c_str());
-        g_cb(from, chatId, String(u.text.c_str()));
-      } else if (!isAllowed && chatId.length()) {
-        // P8: queue the sender for owner approval instead of silently dropping.
-        alogf("telegram: unlisted chat %s (%s) -> pending approval", chatId.c_str(), from.c_str());
-        pendingPush(chatId.c_str(), from.c_str(), u.text.c_str());
-      }
-    }
-    // ACK-after-accept: advance the offset only for updates we handled here. A
-    // truncated tail (partial update the parser did NOT return) is simply not in
-    // this list, so Telegram re-serves it next poll - never lost.
-    int32_t nextOffset = nimbus::core::nextTelegramOffset(offset, u.updateId);
-    if (nextOffset > offset) { store::setTelegramOffset(nextOffset); offset = nextOffset; }
-    count++;
+// Route a text field into cu as a batched turn segment (grouped into one turn per
+// chat by the drain driver). Model sees the full length.
+static void batchTextInto(const nimbus::tg::Update& u, nimbus::orch::ClassifiedUpdate& cu) {
+  cu.action = nimbus::orch::ClassifiedUpdate::Action::BatchText;
+  cu.chatId = u.chatId;
+  cu.from   = u.from;
+  cu.text   = u.text;
+}
+
+// Voice note: queue for STT (one slot per cycle). A busy slot returns true
+// (StopNoAck) so this update and the rest are re-served next poll rather than lost.
+static bool classifyVoice(const nimbus::tg::Update& u, const String& chatId,
+                          const String& from, bool isAllowed,
+                          nimbus::orch::ClassifiedUpdate& cu) {
+  if (!(isAllowed && u.attachment.fileId.size())) return false;
+  if (g_voice.set) { cu.action = nimbus::orch::ClassifiedUpdate::Action::StopNoAck; return true; }
+  strncpy(g_voice.fileId, u.attachment.fileId.c_str(), sizeof(g_voice.fileId) - 1);
+  strncpy(g_voice.chatId, chatId.c_str(),               sizeof(g_voice.chatId) - 1);
+  strncpy(g_voice.from,   from.c_str(),                 sizeof(g_voice.from)   - 1);
+  g_voice.set = true;
+  alogf("telegram: voice note from %s queued for STT", chatId.c_str());
+  return false;
+}
+
+// Inbound file (document/photo): hand to the files lane if installed, else queue it
+// for the deferred download, else route any caption as text - never a silent drop.
+// A busy deferred slot returns true (StopNoAck).
+static bool classifyFile(const nimbus::tg::Update& u, const String& chatId,
+                         const String& from, bool isAllowed,
+                         nimbus::orch::ClassifiedUpdate& cu) {
+  const int kind = (u.attachment.kind == nimbus::tg::Attachment::Kind::Document) ? 1 : 2;
+  bool handled = false;
+  if (isAllowed && g_attachSink)
+    handled = g_attachSink(chatId, from, String(u.attachment.fileId.c_str()),
+                           String(u.attachment.fileName.c_str()),
+                           String(u.attachment.mime.c_str()), u.attachment.fileSize,
+                           kind, String(u.text.c_str()));
+  if (isAllowed && !handled && u.attachment.fileId.size()) {
+    if (g_attach.set) { cu.action = nimbus::orch::ClassifiedUpdate::Action::StopNoAck; return true; }
+    queueAttachment(u, chatId, from, kind);
+    handled = true;
   }
-  return count;
+  if (isAllowed && !handled && g_cb) {
+    // Nothing could take it: still route any caption as text (batched with this
+    // chat's other messages), else say so - the owner's words are never lost.
+    if (u.text.size()) batchTextInto(u, cu);
+    else send(chatId, "I couldn't take that file. Send the details as a text message instead.", false);
+  } else if (!isAllowed) {
+    pendingPush(chatId.c_str(), from.c_str(), u.text.c_str());
+  }
+  return false;
+}
+
+// Plain text message: batch it (a burst becomes ONE turn per chat), or queue an
+// unlisted sender for owner approval instead of silently dropping.
+static void classifyText(const nimbus::tg::Update& u, const String& chatId,
+                         const String& from, bool isAllowed,
+                         nimbus::orch::ClassifiedUpdate& cu) {
+  if (isAllowed && g_cb) {
+    alogf("telegram: msg from %s (chat %s): %.40s", from.c_str(), chatId.c_str(), u.text.c_str());
+    batchTextInto(u, cu);
+  } else if (!isAllowed && chatId.length()) {
+    alogf("telegram: unlisted chat %s (%s) -> pending approval", chatId.c_str(), from.c_str());
+    pendingPush(chatId.c_str(), from.c_str(), u.text.c_str());
+  }
+}
+
+// Parse a getUpdates page body into whole updates (NO side effects - a truncated
+// tail update the parser drops is simply re-served next poll). Returns whether the
+// body was a well-formed ok:true response (the device folds this into the CUM-308
+// auth-fail debounce).
+static bool parsePageBody(const char* body, size_t len, std::vector<nimbus::tg::Update>& out) {
+  out.clear();
+  bool ok = false, truncatedTail = false;
+  if (!nimbus::tg::parseUpdates(body, len, out, ok, truncatedTail) || !ok) {
+    alogf("telegram: poll parse failed (ok=%d trunc=%d): %.60s", ok, truncatedTail, body);
+    return false;
+  }
+  return true;   // a well-formed ok:true body - this poll cycle authenticated
+}
+
+// Classify ONE update and run its inline side effect (queue a voice note / hand a
+// file to the files lane / push an unlisted sender for approval / route a caption as
+// text). Returns the drain action. drainPages calls this LAZILY, in order, and only
+// for updates it actually reaches - so a side effect never runs for an update that is
+// then left un-acked and re-served (which would run it twice). Text from an allowed
+// chat is batched into one turn per chat; a busy voice/file slot yields StopNoAck.
+static nimbus::orch::ClassifiedUpdate handleUpdate(const nimbus::tg::Update& u) {
+  using Kind = nimbus::tg::Attachment::Kind;
+  nimbus::orch::ClassifiedUpdate cu;
+  cu.updateId = u.updateId;
+  cu.action   = nimbus::orch::ClassifiedUpdate::Action::AckOnly;   // default: handled/ignored
+  if (u.updateId <= 0) return cu;   // defensive: never side-effect on a bogus id
+
+  const String chatId(u.chatId.c_str());
+  const String from(u.from.c_str());
+  const bool isAllowed = chatId.length() && allowed(chatId);
+  if (u.attachment.kind == Kind::Voice)
+    classifyVoice(u, chatId, from, isAllowed, cu);
+  else if (u.attachment.kind == Kind::Document || u.attachment.kind == Kind::Photo)
+    classifyFile(u, chatId, from, isAllowed, cu);
+  else if (u.text.size())
+    classifyText(u, chatId, from, isAllowed, cu);
+  return cu;
 }
 
 // ---- getUpdates (persistent keep-alive poll socket) -------------------------
@@ -546,42 +591,12 @@ static int httpStatusCode(const char* statusLine) {
   return sp ? atoi(sp + 1) : 0;
 }
 
-// Poll one getUpdates cycle. `outcome` (optional) receives this cycle's auth
-// classification for the CUM-308 debounce - exactly one value per call, set at
-// every return: AuthFail on 401/403, Conflict on 409, Ok on a clean ok:true body,
-// Transient for a connect/socket/parse hiccup (which proves nothing about the
-// token). The int return keeps its existing meaning (count, or -1 on a poll error
-// that drives the backoff).
-int doGetUpdates(int32_t offset, int longPollS,
-                 nimbus::net::TgPollOutcome* outcome = nullptr) {
+// Handle a getUpdates HTTP status that is not 200. 409 = another client polls this
+// same bot token (surface it once; the token is still valid); 401/403 = the token
+// was rejected (CUM-308 revoked-token case). Sets *outcome and returns true when the
+// status is an error the caller must back off from.
+static bool pollStatusIsError(int status, nimbus::net::TgPollOutcome* outcome) {
   auto setOutcome = [&](nimbus::net::TgPollOutcome o) { if (outcome) *outcome = o; };
-  setOutcome(nimbus::net::TgPollOutcome::Transient);   // default until classified
-  if (!g_pollScOpen) {
-    if (!tlsConnect(g_pollSc)) { alog("telegram: poll connect fail"); return -1; }
-    g_pollScOpen = true;
-  }
-
-  char req[256];
-  snprintf(req, sizeof(req),
-    "GET /bot%s/getUpdates?offset=%ld&limit=%d&timeout=%d"
-    "&allowed_updates=%%5B%%22message%%22%%5D HTTP/1.1\r\n"
-    "Host: " TG_HOST "\r\n"
-    "Connection: keep-alive\r\n\r\n",
-    g_token.c_str(), (long)offset, g_limitOne ? 1 : 10, longPollS);
-  if (g_pollSc.print(req) == 0) { closePollSocket(); return -1; }
-
-  uint32_t deadline = millis() + (longPollS + 10) * 1000UL;
-
-  char line[MAX_LINE];
-  if (readLine(g_pollSc, line, sizeof(line), deadline) == 0) { closePollSocket(); return -1; }
-  const int status = httpStatusCode(line);
-  // 409 Conflict = ANOTHER client is long-polling this same bot token (a second
-  // Nimbus, or a stray broker). The two then take turns stealing updates - the
-  // owner sees replies from alternating devices and commands that "don't work"
-  // (live 2026-07-24: /update answered by a different board than the one that
-  // sent the update notice). Surface it ONCE per boot instead of failing silently.
-  // A conflict means the token is VALID (Telegram authenticated it), so it is NOT
-  // an auth failure - a different, existing condition (CUM-308 keeps them apart).
   if (status == 409) {
     setOutcome(nimbus::net::TgPollOutcome::Conflict);
     static bool s_conflictAlerted = false;
@@ -598,33 +613,35 @@ int doGetUpdates(int32_t offset, int longPollS,
                     "device its own bot (web UI \xE2\x86\x92 Capabilities \xE2\x86\x92 Connectors "
                     "\xE2\x86\x92 Telegram).", /*block=*/false);
     }
-    closePollSocket();
-    return -1;
+    return true;
   }
-  // 401 Unauthorized / 403 Forbidden = the BOT TOKEN was rejected. This is the
-  // revoked-token case (CUM-308): getMe verified once at save time, then the token
-  // was rotated away and every poll now 401s while the cached verdict still reads
-  // "verified". Classify it as an auth failure so the debounce can flip the honest
-  // "token rejected" verdict; the poll still backs off like any error (return -1).
   if (status == 401 || status == 403) {
     setOutcome(nimbus::net::TgPollOutcome::AuthFail);
     alogf("telegram: getUpdates %d - bot token rejected (revoked or invalid)", status);
-    closePollSocket();
-    return -1;
+    return true;
   }
+  return false;
+}
 
-  long contentLen = -1; bool serverClose = false;
+// Read the response header block: Content-Length and a Connection: close hint.
+static void readPollHeaders(uint32_t deadline, long& contentLen, bool& serverClose) {
+  char line[MAX_LINE];
   for (int i = 0; i < 64; i++) {
     int n = readLine(g_pollSc, line, sizeof(line), deadline);
     if (n == 0) break;
     if (!strncasecmp(line, "Content-Length:", 15)) contentLen = atol(line + 15);
     else if (!strncasecmp(line, "Connection:", 11) && strstr(line, "close")) serverClose = true;
   }
+}
 
-  char* body = ensurePollBody();
-  if (!body) {   // PSRAM exhausted (should never happen) - drop this poll cycle and
-    // retry. No static fallback: the 4 KB internal-SRAM buffer this replaced cost
-    // memory permanently for a path that never runs (SRAM reclaim).
+// Read the response body into the PSRAM arena. Returns 0 with `body`/`stored` set on
+// success; 1 when the batch is larger than the arena (re-poll limit=1 next cycle,
+// pg.rawCount left 0 so the drain ends this cycle - nothing lost); -1 on an alloc or
+// socket error. The poll socket is closed on 1 and -1.
+static int readPollBodyOrDefer(long contentLen, uint32_t deadline, bool& serverClose,
+                               char*& body, int& stored, nimbus::orch::RawPage& rp) {
+  body = ensurePollBody();
+  if (!body) {   // PSRAM exhausted (should never happen) - drop this cycle and retry.
     alog("telegram: poll body alloc failed; skipping cycle");
     closePollSocket();
     return -1;
@@ -635,9 +652,9 @@ int doGetUpdates(int32_t offset, int longPollS,
     alogf("telegram: getUpdates body %ld B > %d cap - re-polling limit=1", contentLen, kPollBodyCap);
     g_limitOne = true;
     closePollSocket();
-    return 0;
+    rp.count = 0;   // count(0) < limit -> drainPages stops this cycle
+    return 1;
   }
-  int stored;
   if (contentLen >= 0) {
     stored = readBodyN(g_pollSc, body, kPollBodyCap, contentLen, deadline);
     if (stored < 0) { closePollSocket(); return -1; }
@@ -647,18 +664,110 @@ int doGetUpdates(int32_t offset, int longPollS,
     serverClose = true;
   }
   g_limitOne = false;   // the body fit - resume normal batching
+  return 0;
+}
 
-  // Free the single arena before the orchestrator turn runs (via the callback) -
+// Fetch ONE getUpdates page at `offset`: HTTP + parse the whole updates into `out`
+// and fill `rp` (count/limit/fetchError) for the drain driver. Runs NO per-update
+// side effects - the driver calls handleUpdate lazily per reached update. Does NOT
+// commit the offset (drainAndDispatch commits AFTER the turns run, CUM-398 crash-
+// safety). `outcome` (optional) receives this fetch's auth classification for the
+// CUM-308 debounce: AuthFail on 401/403, Conflict on 409, Ok on a clean ok:true body,
+// Transient for a connect/socket/parse hiccup. rp.fetchError marks a poll error that
+// drives the backoff; an oversized batch leaves rp.count 0 (re-polled limit=1 next).
+static void fetchOnePage(int32_t offset, int longPollS, std::vector<nimbus::tg::Update>& out,
+                         nimbus::orch::RawPage& rp,
+                         nimbus::net::TgPollOutcome* outcome = nullptr) {
+  auto setOutcome = [&](nimbus::net::TgPollOutcome o) { if (outcome) *outcome = o; };
+  setOutcome(nimbus::net::TgPollOutcome::Transient);   // default until classified
+  const int usedLimit = g_limitOne ? 1 : 10;   // the getUpdates limit for THIS fetch
+  rp.limit = usedLimit;
+  if (!g_pollScOpen) {
+    if (!tlsConnect(g_pollSc)) { alog("telegram: poll connect fail"); rp.fetchError = true; return; }
+    g_pollScOpen = true;
+  }
+
+  char req[256];
+  snprintf(req, sizeof(req),
+    "GET /bot%s/getUpdates?offset=%ld&limit=%d&timeout=%d"
+    "&allowed_updates=%%5B%%22message%%22%%5D HTTP/1.1\r\n"
+    "Host: " TG_HOST "\r\n"
+    "Connection: keep-alive\r\n\r\n",
+    g_token.c_str(), (long)offset, usedLimit, longPollS);
+  if (g_pollSc.print(req) == 0) { closePollSocket(); rp.fetchError = true; return; }
+
+  uint32_t deadline = millis() + (longPollS + 10) * 1000UL;
+
+  char line[MAX_LINE];
+  if (readLine(g_pollSc, line, sizeof(line), deadline) == 0) { closePollSocket(); rp.fetchError = true; return; }
+  const int status = httpStatusCode(line);
+  // A conflict (409) means the token is VALID (Telegram authenticated it), so it is
+  // NOT an auth failure; 401/403 is (CUM-308 keeps them apart). pollStatusIsError
+  // sets the outcome and returns true for any non-200 the caller must back off from.
+  if (pollStatusIsError(status, outcome)) { closePollSocket(); rp.fetchError = true; return; }
+
+  long contentLen = -1; bool serverClose = false;
+  readPollHeaders(deadline, contentLen, serverClose);
+
+  char* body = nullptr;
+  int stored = 0;
+  const int br = readPollBodyOrDefer(contentLen, deadline, serverClose, body, stored, rp);
+  if (br < 0) { rp.fetchError = true; return; }   // alloc/socket error (socket closed inside)
+  if (br == 1) return;                            // oversized: deferred to a limit=1 re-poll
+
+  // Free the single arena before the orchestrator turn runs (in drainAndDispatch) -
   // or honor a server close. Idle keeps the socket open (zero re-handshake churn).
   bool hasUpdate = strstr(body, "\"update_id\"") != nullptr;
   if (serverClose || hasUpdate) closePollSocket();
-  bool parsedOk = false;
-  int count = processUpdatesBody(body, (size_t)stored, offset, parsedOk);
+  const bool parsedOk = parsePageBody(body, (size_t)stored, out);
+  rp.count = (int)out.size();
   // A clean ok:true body (empty batch or real updates) is proof the token works;
   // an unparseable/ok:false body on a non-error status stays neutral (Transient),
   // never counted as an auth failure.
   setOutcome(parsedOk ? nimbus::net::TgPollOutcome::Ok : nimbus::net::TgPollOutcome::Transient);
-  return count;
+}
+
+// CUM-398: drain ONE getUpdates page of rapidly-arriving messages into ONE turn per
+// chat. Text is batched by chat (bounded); one turn per chat is emitted, then the
+// offset for THIS page is committed. The next page is fetched on the NEXT poll cycle,
+// so the offset is durably committed before getUpdates confirms this page server-side
+// - a mid-drain reset re-serves the whole un-committed page (at-least-once per page,
+// no loss). A rapid burst fits one page = one turn; a backlog drains a page per cycle.
+// Still fully serial on tg_poll - no new task, one TLS session at a time. Returns the
+// message count handled this cycle, or -1 on a poll error (backoff).
+static int drainAndDispatch(int32_t startOffset, int longPollS,
+                            nimbus::net::TgPollOutcome* outcome) {
+  // This page's parsed updates; fetch (below) fills it and handle reads it. Exactly
+  // one page is fetched per call, so this holds at most one getUpdates page.
+  std::vector<nimbus::tg::Update> pageUpdates;
+  auto fetch = [&](int32_t off) -> nimbus::orch::RawPage {
+    nimbus::orch::RawPage rp;
+    fetchOnePage(off, longPollS, pageUpdates, rp, outcome);
+    return rp;
+  };
+  auto handle = [&](int i) -> nimbus::orch::ClassifiedUpdate {
+    return handleUpdate(pageUpdates[(size_t)i]);
+  };
+  nimbus::orch::DrainResult r = nimbus::orch::drainOnePage(g_batch, startOffset, fetch, handle);
+  if (r.fetchError) { g_batch.clear(); return -1; }   // poll error: nothing accumulated
+
+  // Emit one turn per chat. Close the poll socket first so only one TLS session is
+  // ever resident (an empty/partial page can leave it open). Each render() is
+  // materialized one at a time (in PSRAM), so a burst never holds a pile of rendered
+  // turns on the scarce internal heap; the turn then runs the whole tool loop
+  // synchronously on this task - just once per chat, not once per message.
+  if (g_batch.chatCount() && g_cb) {
+    closePollSocket();
+    for (size_t i = 0; i < g_batch.chatCount(); ++i)
+      g_cb(String(g_batch.turnFromAt(i)), String(g_batch.chatIdAt(i)),
+           String(g_batch.render(i).c_str()));
+  }
+  // Commit the offset AFTER this page's turns: a reset before this line re-serves the
+  // whole page (nothing lost); getUpdates only confirms this page server-side when the
+  // NEXT poll cycle fetches the next page, which happens after this durable commit.
+  if (r.ackOffset > startOffset) store::setTelegramOffset(r.ackOffset);
+  g_batch.clear();
+  return r.messagesBatched;
 }
 
 // ---- sendMessage ------------------------------------------------------------
@@ -1163,7 +1272,7 @@ void pollTask(void*) {
       // but not too short (each cycle's TLS churn drains heap on the no-PSRAM board).
       int longPollS = (activeJobs > 0) ? 18 : TELEGRAM_LONG_POLL_TIMEOUT_S;
       nimbus::net::TgPollOutcome outcome = nimbus::net::TgPollOutcome::Transient;
-      int n = doGetUpdates(offset, longPollS, &outcome);
+      int n = drainAndDispatch(offset, longPollS, &outcome);
       // CUM-308: fold this cycle's auth classification into the debounce and
       // publish the honest verdict. A revoked token (repeated 401/403) flips
       // g_authRejected within a few cycles; a 409 conflict or a transient network
@@ -1194,15 +1303,41 @@ void pollTask(void*) {
     }
 
     // Dispatch injected inbound messages (console TURN / web / voice) - ALWAYS.
+    // CUM-398: batch them the same way as Telegram - a burst of injects for one chat
+    // becomes ONE turn per chat. The staging slot is single-consumer (tg_poll only)
+    // and lives in PSRAM (N7), off the scarce internal heap; a null (no PSRAM) leaves
+    // messages queued for the next cycle. The accumulated batch also rides PSRAM
+    // (g_batch / WorkingAllocator), so this adds no internal-SRAM pressure.
     if (g_inboundQ && g_cb) {
-      // The 4 KB text buffer (grew from 1 KB with the full-length inbound fix) must
-      // not sit on the tg_poll stack across the whole synchronous turn that g_cb
-      // runs. This drain is single-consumer (tg_poll only), so ONE staging slot is
-      // safe - and it lives in PSRAM (N7), off the scarce internal heap, not on the
-      // stack. A null (no PSRAM) leaves messages queued for the next cycle.
       InboundMsg* im = ensureInboundStage();
-      while (im && xQueueReceive(g_inboundQ, im, 0) == pdTRUE)
-        g_cb(String(im->from[0] ? im->from : im->chatId), String(im->chatId), String(im->text));
+      if (im) {
+        g_batch.clear();
+        bool runStagedDirectly = false;   // the deferred message could not be re-queued
+        while (xQueueReceive(g_inboundQ, im, 0) == pdTRUE) {
+          const char* from = im->from[0] ? im->from : im->chatId;
+          if (g_batch.add(im->chatId, from, im->text) == nimbus::orch::BatchAdd::Deferred) {
+            // A cap fired: put this message back at the FRONT (order preserved) to
+            // handle next cycle. This usually has room (we just received a slot), but a
+            // concurrent producer (injectMessage from web/serial/voice) can refill the
+            // queue in between, so the send CAN fail - do NOT ignore it and drop the
+            // message. On a full queue, run this staged message as its own turn below
+            // (after the batch's turns), so it is never silently lost.
+            if (xQueueSendToFront(g_inboundQ, im, 0) != pdTRUE) {
+              alog("telegram: inbound queue full on re-serve; running the staged message now");
+              runStagedDirectly = true;
+            }
+            break;
+          }
+        }
+        for (size_t i = 0; i < g_batch.chatCount(); ++i)
+          g_cb(String(g_batch.turnFromAt(i)), String(g_batch.chatIdAt(i)),
+               String(g_batch.render(i).c_str()));
+        g_batch.clear();
+        // im still holds the un-requeued message (the loop broke without overwriting
+        // it); run it as its own turn now that the batch's turns have freed the caps.
+        if (runStagedDirectly)
+          g_cb(String(im->from[0] ? im->from : im->chatId), String(im->chatId), String(im->text));
+      }
     }
 
     if (haveToken) handleVoice();   // voice notes arrive via Telegram; own TLS

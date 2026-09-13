@@ -70,6 +70,30 @@ constexpr int kSpawnNameMax = 24;   // short display name (mirrors JobRecord.nam
 // the "## RECENT CONVERSATION" prompt section. Zero flash reads (PSRAM ring).
 constexpr int    kRecentTurnsMax  = 12;
 constexpr size_t kRecentConvBytes = 3000;
+
+// --- Rapid-message batching (CUM-398) ---------------------------------------
+// Several messages arriving in quick succession in one chat are drained into ONE
+// turn (one reply), bucketed by chat so different principals never merge. The
+// accumulator is hard-bounded so it can never overflow internal SRAM (it lives in
+// PSRAM via the WorkingAllocator, like the poll body and the inbound queue). This
+// only GROUPS already-fetched updates; it adds no task and no second TLS session
+// (the frozen no-concurrency invariant, AGENTS.md 4).
+//  - per-chat message count: mirrors the getUpdates limit (one full page of one
+//    chat) so a normal burst fits in a single turn.
+constexpr size_t kBatchMaxMsgsPerChat  = 10;
+//  - per-chat payload bytes: holds one full 4096-char message plus real headroom
+//    for several short ones; the concatenated text becomes ONE turn's user message,
+//    well within the kContextBudgetMax assembly budget above.
+constexpr size_t kBatchMaxBytesPerChat = 8192;
+//  - distinct chats buffered in one drain: a single getUpdates batch can carry
+//    many principals (the multi-principal path); bound the bucket count too.
+constexpr size_t kBatchMaxChats        = 8;
+//  - total accumulator payload across all chats in one drain (PSRAM ceiling).
+constexpr size_t kBatchMaxTotalBytes   = 32768;
+// One getUpdates page is drained per cycle (the offset for that page is committed
+// before the next page is fetched, so no page can be lost on a mid-drain reset - see
+// drainOnePage). A rapid burst fits one page = one turn; a backlog drains a page per
+// cycle. There is deliberately no multi-page-per-drain accumulation.
 constexpr int kSpawnProviderMax = 16;   // usable 15 + NUL device-side
 constexpr int kSpawnModelMax = 40;      // usable 39
 constexpr int kSpawnCategoryMax = 16;   // usable 15
