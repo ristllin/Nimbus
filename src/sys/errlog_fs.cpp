@@ -14,11 +14,12 @@
 namespace nimbus::errlog {
 namespace {
 
-bool      g_inited  = false;
-bool      g_haveSd  = false;
-::fs::FS* g_fs      = nullptr;
-size_t    g_curSize = 0;      // bytes in the active file (tracked in RAM, seeded on init)
-uint32_t  g_seq     = 0;      // monotonic per-boot line sequence
+bool      g_inited    = false;
+bool      g_haveSd    = false;  // tier for reporting (listJson/onSdTier); engine tracks its own
+::fs::FS* g_fs        = nullptr;
+bool      g_tierNoted = false;  // the storage-tier decision line has landed on disk
+uint32_t  g_seq       = 0;      // monotonic per-boot line sequence
+std::string g_pendingTier;      // tier line built once, re-attempted until it lands (no seq churn)
 
 // RAM fallback tail: a fixed byte ring so readRecent() still returns recent lines
 // when the card/flash is unavailable (the exact moment the log matters most). Not
@@ -73,50 +74,67 @@ size_t fileBytes(const std::string& name) {
   return n;
 }
 
-// Shift files down and clear the active file: base -> .1 -> .2 ... dropping the
-// oldest. Caller holds the Lock.
-void rotate() {
-  if (!g_fs) return;
-  const size_t maxFiles = caps().maxFiles;
-  g_fs->remove(pathFor(rotatedName(maxFiles - 1)).c_str());   // drop oldest (no-op if absent)
-  for (size_t i = maxFiles - 1; i >= 2; --i)
-    g_fs->rename(pathFor(rotatedName(i - 1)).c_str(), pathFor(rotatedName(i)).c_str());
-  g_fs->rename(pathFor(kBaseName).c_str(), pathFor(rotatedName(1)).c_str());
-  g_curSize = 0;
+// Arduino filesystem adapter for the portable LogWriter engine. All card I/O goes
+// through g_fs (SD or LittleFS); the engine holds the rotation + self-heal logic and
+// is host-tested against a fake adapter (test_errlog).
+struct ArduinoLogFs {
+  long fileSize(const std::string& path) {
+    if (!g_fs) return -1;
+    ::File f = g_fs->open(path.c_str(), FILE_READ);
+    if (!f) return -1;                    // absent or FS not mounted
+    const long n = (long)f.size();
+    f.close();
+    return n;
+  }
+  size_t appendFile(const std::string& path, const char* data, size_t len) {
+    if (!g_fs) return 0;
+    ::File f = g_fs->open(path.c_str(), FILE_APPEND);
+    if (!f) return 0;                     // dir missing / FS not mounted / full
+    const size_t n = f.write((const uint8_t*)data, len);
+    f.close();
+    return n;
+  }
+  void makeDir(const std::string& path)   { if (g_fs) g_fs->mkdir(path.c_str()); }
+  void removeFile(const std::string& path){ if (g_fs) g_fs->remove(path.c_str()); }
+  void renameFile(const std::string& from, const std::string& to) {
+    if (g_fs) g_fs->rename(from.c_str(), to.c_str());
+  }
+};
+
+ArduinoLogFs          g_adapter;
+LogWriter<ArduinoLogFs> g_writer;
+
+std::string tierMsg() {
+  return g_haveSd ? std::string("durable log on SD ") + kDir
+                  : std::string("no SD: durable log on flash fallback ") + kDir;
 }
 
-// Append a fully-formatted line (already ending in '\n') to FS + the RAM tail.
-// Caller holds the Lock and has run ensureInit(). FS failure degrades to RAM only.
-void writeToFs(const std::string& line) {
-  ramPush(line);
-  if (!g_fs) return;
-  if (shouldRotate(g_curSize, line.size(), caps())) rotate();
-  ::File f = g_fs->open(pathFor(kBaseName).c_str(), FILE_APPEND);
-  if (!f) return;   // FS full/unmounted: RAM tail already has it; never crash the logger
-  const size_t n = f.write((const uint8_t*)line.data(), line.size());
-  f.close();
-  g_curSize += n;
+// Ensure the storage-tier decision is the first durable line, once the FS is writable.
+// The line is built ONCE (cached) and re-attempted every append until it lands, so a
+// long not-yet-mounted window costs no sequence churn and no duplicate RAM lines.
+void noteTierIfNeeded() {
+  if (g_tierNoted) return;
+  if (g_pendingTier.empty()) {
+    g_pendingTier = formatLine(g_seq++, millis(), cat::kStorage, tierMsg());
+    ramPush(g_pendingTier);   // visible in the RAM tail immediately, even before it persists
+  }
+  if (g_writer.write(g_pendingTier)) { g_tierNoted = true; g_pendingTier.clear(); }
 }
 
 // Resolve the storage tier from the memory subsystem's canonical decision. Caller
-// holds the Lock. Re-reads the active file size for the new tier.
+// holds the Lock. Points the engine at the tier's FS (which re-syncs size on the
+// next write and self-heals if the FS mounts later).
 void resolveTier() {
   g_haveSd = agent::memory::haveSd();
   g_fs     = g_haveSd ? &agent::memory::dataFs() : (::fs::FS*)&LittleFS;
-  if (g_fs) g_fs->mkdir(kDir);
-  g_curSize = fileBytes(kBaseName);
+  if (g_fs) g_fs->mkdir(kDir);   // best-effort; the engine retries if the FS mounts later
+  g_writer.setTier(&g_adapter, g_haveSd);
 }
 
 void ensureInit() {
   if (g_inited) return;
   resolveTier();
   g_inited = true;
-  // Record the tier decision directly (not via alog) to avoid re-entering append()
-  // through the shared log seam. This is the "storage-tier decision" CUM-401 wants
-  // captured, and it ties into the CUM-405 SD-absent story.
-  writeToFs(formatLine(g_seq++, millis(), cat::kStorage,
-                       g_haveSd ? std::string("durable log on SD ") + kDir
-                                : std::string("no SD: durable log on flash fallback ") + kDir));
 }
 
 // If the memory subsystem's tier flipped since we resolved (card mounted late, or
@@ -125,9 +143,13 @@ void maybeRetier() {
   if (agent::memory::haveSd() == g_haveSd) return;
   const bool wasSd = g_haveSd;
   resolveTier();
-  writeToFs(formatLine(g_seq++, millis(), cat::kStorage,
+  g_tierNoted = false;   // re-announce the tier on the new store
+  g_pendingTier.clear();
+  std::string line = formatLine(g_seq++, millis(), cat::kStorage,
                        wasSd ? std::string("SD lost: durable log now on flash fallback")
-                             : std::string("SD available: durable log now on SD")));
+                             : std::string("SD available: durable log now on SD"));
+  ramPush(line);
+  g_writer.write(line);
 }
 
 }  // namespace
@@ -141,7 +163,10 @@ void append(const std::string& redacted, const char* cat) {
   agent::memory::Lock g;
   ensureInit();
   maybeRetier();
-  writeToFs(formatLine(g_seq++, millis(), cat, redacted));
+  noteTierIfNeeded();   // lands the tier line first once the FS is writable
+  std::string line = formatLine(g_seq++, millis(), cat, redacted);
+  ramPush(line);        // RAM tail always gets it (the readRecent() fallback)
+  g_writer.write(line); // durable; degrades to RAM-only if the FS is not ready
 }
 
 std::string readRecent(size_t maxBytes) {

@@ -170,6 +170,72 @@ inline RetrievalPlan planRetrieval(bool wantList, const std::string& fileParam,
   return {RetrievalKind::File, fileParam, ""};
 }
 
+// ---- self-healing rotating write engine -------------------------------------
+//
+// Templated on a filesystem adapter so the EXACT rotation + late-mount self-heal
+// logic runs unchanged on device (Arduino File) and is host-tested (test_errlog)
+// against a fake FS. This is where the boot-order trap is handled: the first log
+// line is emitted long before LittleFS/SD is mounted (mounting happens later in
+// memory::begin(), inside beginWeb), so early writes must fail soft and the engine
+// must persist automatically once the FS becomes ready, with no re-init and no lost
+// size accounting.
+//
+// FsT must provide (all take/return std::string paths, bytes):
+//   long   fileSize(const std::string& path);                 // bytes, or -1 if unreadable/unmounted
+//   size_t appendFile(const std::string& path, const char* d, size_t n);  // bytes written (0 = not writable)
+//   void   makeDir(const std::string& path);
+//   void   removeFile(const std::string& path);
+//   void   renameFile(const std::string& from, const std::string& to);
+template <class FsT>
+class LogWriter {
+ public:
+  // Point the engine at a filesystem for the given tier. Forces a size re-sync so
+  // the next write reads the real on-disk size (a late mount, or a tier switch).
+  void setTier(FsT* fs, bool haveSd) { fs_ = fs; haveSd_ = haveSd; sizeSynced_ = false; }
+
+  bool haveSd() const { return haveSd_; }
+  TierCaps caps() const { return capsFor(haveSd_); }
+
+  // Append one already-formatted line (already ending in '\n'). Returns true iff it
+  // reached the filesystem. On failure the caller keeps the line in its RAM tail.
+  bool write(const std::string& line) {
+    if (!fs_) return false;
+    const TierCaps c = capsFor(haveSd_);
+    if (!sizeSynced_) {
+      const long sz = fs_->fileSize(pathFor(kBaseName));   // -1 if absent/unmounted
+      curSize_ = sz > 0 ? (size_t)sz : 0;                  // absent -> 0 (a fresh file)
+    }
+    if (shouldRotate(curSize_, line.size(), c)) rotate(c);
+    size_t w = fs_->appendFile(pathFor(kBaseName), line.data(), line.size());
+    if (w == 0) {
+      // Open/write failed: the FS may have just mounted, or /log may not exist yet
+      // (neither FS auto-creates it). Create the dir and retry ONCE.
+      fs_->makeDir(kDir);
+      w = fs_->appendFile(pathFor(kBaseName), line.data(), line.size());
+    }
+    if (w == 0) { sizeSynced_ = false; return false; }     // still not ready: re-sync next time
+    sizeSynced_ = true;                                     // a real write happened; size now tracked
+    curSize_ += w;
+    return true;
+  }
+
+ private:
+  // Shift files down and clear the active file: base -> .1 -> .2 ..., dropping the
+  // oldest (index maxFiles-1). Bounds total on-disk bytes to maxFileBytes*maxFiles.
+  void rotate(const TierCaps& c) {
+    fs_->removeFile(pathFor(rotatedName(c.maxFiles - 1)));          // drop oldest (no-op if absent)
+    for (size_t i = c.maxFiles - 1; i >= 2; --i)
+      fs_->renameFile(pathFor(rotatedName(i - 1)), pathFor(rotatedName(i)));
+    fs_->renameFile(pathFor(kBaseName), pathFor(rotatedName(1)));
+    curSize_ = 0;
+  }
+
+  FsT*   fs_         = nullptr;
+  bool   haveSd_     = false;
+  size_t curSize_    = 0;
+  bool   sizeSynced_ = false;
+};
+
 // ---- class tags for the "classes we keep missing" ---------------------------
 //
 // Short, stable, lowercase machine tags (frozen strings: a retrieval reader/grep

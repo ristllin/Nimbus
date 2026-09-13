@@ -1,6 +1,8 @@
 #include <unity.h>
 
 #include <algorithm>
+#include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -149,6 +151,112 @@ static void test_durable_sink_never_sees_a_secret() {
   TEST_ASSERT_TRUE(durableLine.find("***") != std::string::npos);
 }
 
+// ---- the write engine: self-heal, rotation/retention, size-sync -------------
+//
+// A fake filesystem that models the two boot-order traps the device hits: it starts
+// UNMOUNTED (every op fails, like LittleFS before memory::begin()), and it refuses
+// to create files under /log until the dir exists (like LittleFS/SD, which do not
+// auto-create parent dirs). These are exactly the conditions that made the flash
+// fallback silently never persist (the review's Finding 1).
+struct FakeFs {
+  bool mounted = false;
+  std::map<std::string, std::string> files;
+  std::set<std::string> dirs;
+
+  long fileSize(const std::string& p) {
+    if (!mounted) return -1;
+    auto it = files.find(p);
+    return it == files.end() ? -1 : (long)it->second.size();
+  }
+  size_t appendFile(const std::string& p, const char* d, size_t n) {
+    if (!mounted) return 0;
+    if (dirs.find(kDir) == dirs.end()) return 0;   // parent dir must exist first
+    files[p].append(d, n);
+    return n;
+  }
+  void makeDir(const std::string& p)    { if (mounted) dirs.insert(p); }
+  void removeFile(const std::string& p) { files.erase(p); }
+  void renameFile(const std::string& a, const std::string& b) {
+    auto it = files.find(a);
+    if (it != files.end()) { files[b] = it->second; files.erase(it); }
+  }
+};
+
+static size_t totalBytes(const FakeFs& fs) {
+  size_t t = 0;
+  for (auto& kv : fs.files) t += kv.second.size();
+  return t;
+}
+
+// Finding-1 regression: on the flash tier, an FS that is not mounted at the first
+// write must NOT lose durability once it mounts. Early writes fail soft (RAM only);
+// the first write after mount self-heals (creates /log, then the file).
+static void test_selfheal_on_late_mount() {
+  FakeFs fs;                       // starts unmounted
+  LogWriter<FakeFs> w;
+  w.setTier(&fs, false);           // flash tier
+  TEST_ASSERT_FALSE(w.write("1 0 - before-mount\n"));   // FS down -> not persisted
+  TEST_ASSERT_TRUE(fs.files.empty());
+  fs.mounted = true;                                    // memory::begin() mounts LittleFS later
+  TEST_ASSERT_TRUE(w.write("2 0 - after-mount\n"));     // self-heals with no re-init
+  TEST_ASSERT_EQUAL_INT(1, (int)fs.dirs.count(kDir));   // /log was created on retry
+  TEST_ASSERT_EQUAL_STRING("2 0 - after-mount\n",
+                           fs.files[pathFor(kBaseName)].c_str());
+}
+
+// Fresh mounted FS with no /log yet (first-ever boot): the mkdir-then-retry path
+// must create the dir and persist.
+static void test_fresh_fs_creates_dir_and_persists() {
+  FakeFs fs; fs.mounted = true;    // mounted, but /log absent
+  LogWriter<FakeFs> w;
+  w.setTier(&fs, false);
+  TEST_ASSERT_TRUE(w.write("1 0 - x\n"));
+  TEST_ASSERT_EQUAL_INT(1, (int)fs.dirs.count(kDir));
+  TEST_ASSERT_EQUAL_STRING("1 0 - x\n", fs.files[pathFor(kBaseName)].c_str());
+}
+
+// Rotation + retention on the flash tier (24 KB x 2): total on-disk bytes stay
+// bounded and no file beyond the retention count is ever created.
+static void test_rotation_retention_flash() {
+  FakeFs fs; fs.mounted = true; fs.dirs.insert(kDir);
+  LogWriter<FakeFs> w;
+  w.setTier(&fs, false);
+  std::string line(1000, 'x'); line.back() = '\n';
+  for (int i = 0; i < 60; ++i) w.write(line);           // 60 KB >> 24 KB cap
+  TEST_ASSERT_EQUAL_INT(1, (int)fs.files.count(pathFor(kBaseName)));      // active
+  TEST_ASSERT_EQUAL_INT(1, (int)fs.files.count(pathFor(rotatedName(1)))); // one rotated
+  TEST_ASSERT_EQUAL_INT(0, (int)fs.files.count(pathFor(rotatedName(2)))); // retention = 2 files
+  TEST_ASSERT_TRUE(totalBytes(fs) <=
+                   kFlashCaps.maxFileBytes * kFlashCaps.maxFiles + 1000);
+}
+
+// SD tier keeps 4 files (active + .1 + .2 + .3); .4 is never kept.
+static void test_rotation_retention_sd() {
+  FakeFs fs; fs.mounted = true; fs.dirs.insert(kDir);
+  LogWriter<FakeFs> w;
+  w.setTier(&fs, true);
+  std::string line(4096, 'q'); line.back() = '\n';
+  for (int i = 0; i < 64 * 5; ++i) w.write(line);       // ~1.25 MB, several rotations
+  TEST_ASSERT_EQUAL_INT(1, (int)fs.files.count(pathFor(rotatedName(3))));
+  TEST_ASSERT_EQUAL_INT(0, (int)fs.files.count(pathFor(rotatedName(4))));
+  TEST_ASSERT_TRUE(totalBytes(fs) <=
+                   kSdCaps.maxFileBytes * kSdCaps.maxFiles + 4096);
+}
+
+// Size-sync: a file left over from a PRIOR boot must be counted, so the first write
+// after boot rotates against the real size (not a stale 0). If size were 0, 20 KB +
+// 6 KB would not rotate on the 24 KB flash cap; it must.
+static void test_size_sync_from_existing_file() {
+  FakeFs fs; fs.mounted = true; fs.dirs.insert(kDir);
+  fs.files[pathFor(kBaseName)] = std::string(20000, 'y');   // prior-boot contents
+  LogWriter<FakeFs> w;
+  w.setTier(&fs, false);                                    // flash: 24 KB cap
+  std::string line(6000, 'z'); line.back() = '\n';
+  TEST_ASSERT_TRUE(w.write(line));
+  TEST_ASSERT_EQUAL_UINT(20000, (unsigned)fs.files[pathFor(rotatedName(1))].size());
+  TEST_ASSERT_EQUAL_UINT(6000,  (unsigned)fs.files[pathFor(kBaseName)].size());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_format_line_shape);
@@ -164,5 +272,10 @@ int main(int, char**) {
   RUN_TEST(test_path_traversal_rejected);
   RUN_TEST(test_plan_retrieval);
   RUN_TEST(test_durable_sink_never_sees_a_secret);
+  RUN_TEST(test_selfheal_on_late_mount);
+  RUN_TEST(test_fresh_fs_creates_dir_and_persists);
+  RUN_TEST(test_rotation_retention_flash);
+  RUN_TEST(test_rotation_retention_sd);
+  RUN_TEST(test_size_sync_from_existing_file);
   return UNITY_END();
 }
