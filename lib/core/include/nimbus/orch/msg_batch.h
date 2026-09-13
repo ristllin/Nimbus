@@ -121,6 +121,8 @@ struct DrainPage {
   int  rawCount   = 0;      // updates the parser returned (rawCount < limit => drained)
   int  limit      = 10;     // the getUpdates limit used for THIS fetch (1 in fallback)
   bool fetchError = false;  // an HTTP/parse error on this page
+  bool parsedOk   = false;  // the body was a well-formed ok:true response (device uses
+                            // this for the CUM-308 auth-fail debounce; unused by the driver)
 };
 
 // A turn to run: one per chat, in first-seen order.
