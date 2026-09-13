@@ -63,6 +63,20 @@ struct SchedSpec {
 enum class LastResult : uint8_t { None = 0, Ok, Fail, Skipped, Paused };
 enum class CreatedBy  : uint8_t { Owner = 0, Agent = 1 };
 
+// Why a loop is paused (enabled=false). Persisted so the Routines pane and /loops
+// can state the reason for a routine that is not firing, not just a bare "paused":
+// the auto-pause paths only sent a one-time Telegram alert, which the pane never saw.
+// Owner = a deliberate pause from the web/Telegram surface (no fault). The order is
+// frozen (serialized as an int); append new reasons, never renumber.
+enum class PauseReason : uint8_t {
+  None = 0,        // running (or paused before this field existed - shown as generic)
+  Owner,           // owner paused it (Pause button / /loop off)
+  ConsecFails,     // auto-paused after N consecutive failed turns
+  LoopTokens,      // auto-paused: hit its per-loop daily token ceiling
+  ChatRevoked,     // auto-paused: its target chat left the allow-list
+  Repeated,        // auto-paused: it kept returning the same result
+};
+
 struct LoopRecord {
   std::string id;       // "lp" + 6 hex - stable, owner/model-facing
   std::string name;     // <= kLoopNameMax
@@ -72,6 +86,7 @@ struct LoopRecord {
   CreatedBy   createdBy = CreatedBy::Owner;
   bool        enabled   = true;
   bool        approved  = true;    // agent-created loops start false (owner must approve)
+  PauseReason pauseReason = PauseReason::None;   // why enabled==false (surfaced in the UI)
 
   // runtime state (persisted; survives reboot)
   uint64_t    nextRun     = 0;     // UTC epoch s; 0 => (re)compute at begin/boot
@@ -147,6 +162,19 @@ enum class FireDecision : uint8_t {
 FireDecision evaluate(const LoopRecord& l, const DeviceCounters& dev,
                       const LoopCaps& caps, uint64_t nowEpoch,
                       bool clockValid, bool chatAllowed);
+
+// --- why a routine is / isn't firing (the visible-deferral surface) ----------
+// One place maps a decision to a STABLE machine slug (read by the web pane + HIL)
+// and a copy-compliant human sentence (US English, no em dash, no space-hyphen-
+// space; benefit-first; names the next step). Both are host-tested over every enum
+// value so a new FireDecision/PauseReason with no reason FAILS the suite (test the
+// class - AGENTS.md). `Fire` and `SkipNotDue` have empty text (nothing is wrong;
+// the pane shows the next-run countdown instead). Pointers are static string
+// literals, valid for the program's lifetime.
+const char* fireReasonSlug(FireDecision d);
+const char* fireReasonText(FireDecision d);
+const char* pauseReasonSlug(PauseReason p);
+const char* pauseReasonText(PauseReason p);
 
 // --- executor seam (Local now; Remote deployment later drops in here) ------
 struct LoopFireRequest {

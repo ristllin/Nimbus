@@ -1,5 +1,8 @@
 #include <unity.h>
 
+#include <cstring>
+#include <string>
+
 #include <ArduinoJson.h>
 
 #include "nimbus/orch/loops.h"
@@ -126,6 +129,12 @@ static void test_evaluate_decisions() {
     TEST_ASSERT_EQUAL_INT(FireDecision::BlockedConsecFails, (int)evaluate(l, dev, caps, now, true, true)); }
   { LoopRecord l = dueLoop(); l.sched.kind = SchedKind::Daily;   // needs a clock
     TEST_ASSERT_EQUAL_INT(FireDecision::BlockedNoClock, (int)evaluate(l, dev, caps, now, false, true)); }
+  { LoopRecord l = dueLoop(); l.sched.kind = SchedKind::Weekly;  // also needs a clock
+    TEST_ASSERT_EQUAL_INT(FireDecision::BlockedNoClock, (int)evaluate(l, dev, caps, now, false, true)); }
+  { LoopRecord l = dueLoop(); l.sched.kind = SchedKind::Once;    // epoch-relative: fires w/o a clock
+    TEST_ASSERT_EQUAL_INT(FireDecision::Fire, (int)evaluate(l, dev, caps, now, false, true)); }
+  // Interval likewise fires with no clock (unchanged; guards the class both ways).
+  TEST_ASSERT_EQUAL_INT(FireDecision::Fire, (int)evaluate(dueLoop(), dev, caps, now, false, true));
   { LoopRecord l = dueLoop(); l.nextRun = 500;                   // not yet due
     TEST_ASSERT_EQUAL_INT(FireDecision::SkipNotDue, (int)evaluate(l, dev, caps, now, true, true)); }
   { LoopRecord l = dueLoop();                                    // chat revoked
@@ -244,6 +253,7 @@ static void test_persistence_roundtrip() {
   LoopRecord a; a.id = "lpaaaa01"; a.name = "digest"; a.prompt = "summarize my day";
   a.chatId = "12345"; a.sched.kind = SchedKind::Daily; a.sched.minuteOfDay = 1290;  // 21:30
   a.createdBy = CreatedBy::Agent; a.approved = false; a.enabled = true;
+  a.pauseReason = PauseReason::ChatRevoked;   // survives a reboot -> the pane can still say why
   a.nextRun = 1800000000ULL; a.firesToday = 2; a.tokensToday = 5000; a.consecFails = 1;
   a.lastReplyHash = 0xDEADBEEFCAFEULL; a.repeatRun = 1; a.lastSyncedDay = 20650;
   LoopRecord b; b.id = "lpbbbb02"; b.name = "watch"; b.prompt = "check the build";
@@ -262,6 +272,7 @@ static void test_persistence_roundtrip() {
   TEST_ASSERT_EQUAL_UINT16(1290, r.sched.minuteOfDay);
   TEST_ASSERT_EQUAL_INT(CreatedBy::Agent, (int)r.createdBy);
   TEST_ASSERT_FALSE(r.approved);
+  TEST_ASSERT_EQUAL_INT(PauseReason::ChatRevoked, (int)r.pauseReason);
   TEST_ASSERT_EQUAL_UINT64(1800000000ULL, r.nextRun);
   TEST_ASSERT_EQUAL_UINT32(5000, r.tokensToday);
   TEST_ASSERT_EQUAL_UINT64(0xDEADBEEFCAFEULL, r.lastReplyHash);
@@ -449,6 +460,118 @@ static void test_clamp_loop_caps() {
   TEST_ASSERT_EQUAL_INT(def.maxFiresPerDay, m.maxFiresPerDay);
 }
 
+// --- CUM-403: the scheduler gates the Routines pane must make visible ---------
+
+// A wall-clock routine created while the clock is unsynced defers (BlockedNoClock,
+// never silently "idle"), then recomputes its next fire and runs once time lands.
+static void test_wallclock_defers_unsynced_then_recovers() {
+  LoopCaps caps; DeviceCounters dev;
+  LoopRecord l; l.id = "lpwc0001"; l.enabled = true; l.approved = true;
+  l.sched.kind = SchedKind::Daily; l.sched.minuteOfDay = 8 * 60 + 30;  // 08:30 local
+  l.nextRun = 0;   // exactly what createLoop stores when clockValid() is false
+
+  const uint64_t someNow = 1700000000ULL;
+  TEST_ASSERT_EQUAL_INT(FireDecision::BlockedNoClock,
+                        (int)evaluate(l, dev, caps, someNow, /*clockValid=*/false, true));
+
+  // Clock lands: the device recomputes nextRun from the next local 08:30. Reproduce
+  // that pure step in UTC civil space (the device uses libc; the math is identical).
+  CivilTime nowC = civilFromDays((uint32_t)(someNow / 86400));
+  const uint32_t rem = (uint32_t)(someNow % 86400);
+  nowC.hour = rem / 3600; nowC.min = (rem % 3600) / 60; nowC.sec = rem % 60;
+  CivilTime fire = nextWallClockLocal(l.sched, nowC);
+  const uint64_t fireEpoch =
+      (uint64_t)daysFromCivil(fire.year, (unsigned)fire.month, (unsigned)fire.day) * 86400ULL +
+      (uint64_t)fire.hour * 3600ULL + (uint64_t)fire.min * 60ULL;
+  TEST_ASSERT_TRUE(fireEpoch > someNow);   // strictly future - no backfill burst on sync
+  l.nextRun = fireEpoch;
+
+  // Clock valid, before the fire time: scheduled (not blocked). At the fire time: fires.
+  TEST_ASSERT_EQUAL_INT(FireDecision::SkipNotDue,
+                        (int)evaluate(l, dev, caps, someNow, true, true));
+  TEST_ASSERT_EQUAL_INT(FireDecision::Fire,
+                        (int)evaluate(l, dev, caps, fireEpoch, true, true));
+}
+
+// Each governor cap blocks a fire, then its daily/window rollover resets and the
+// routine fires again - the "silently exhausted governor" path, now testable.
+static void test_caps_block_then_reset() {
+  LoopCaps caps;
+
+  { DeviceCounters dev; LoopRecord l = dueLoop();     // per-loop daily fire ceiling
+    l.firesToday = (uint16_t)caps.maxFiresPerDay; l.lastSyncedDay = 20649;
+    TEST_ASSERT_EQUAL_INT(FireDecision::BlockedLoopFires,
+                          (int)evaluate(l, dev, caps, 200, true, true));
+    rollDayIfNeeded(l, 20650, true);                  // next real wall-day
+    TEST_ASSERT_EQUAL_UINT16(0, l.firesToday);
+    TEST_ASSERT_EQUAL_INT(FireDecision::Fire,
+                          (int)evaluate(l, dev, caps, 200, true, true)); }
+
+  { DeviceCounters dev; dev.firesInWindow = (uint16_t)caps.devFiresWindow;  // rate window
+    dev.windowStart = 1000;
+    TEST_ASSERT_EQUAL_INT(FireDecision::BlockedRateWindow,
+                          (int)evaluate(dueLoop(), dev, caps, 1100, true, true));
+    rollDeviceDayIfNeeded(dev, caps, 0, 1000 + caps.windowSec, false);  // window elapsed
+    TEST_ASSERT_EQUAL_UINT16(0, dev.firesInWindow);
+    TEST_ASSERT_EQUAL_INT(FireDecision::Fire,
+                          (int)evaluate(dueLoop(), dev, caps, 1000 + caps.windowSec, true, true)); }
+
+  { DeviceCounters dev; dev.tokensToday = caps.devTokensPerDay; dev.dayNumber = 20649;  // device tokens
+    TEST_ASSERT_EQUAL_INT(FireDecision::BlockedDeviceTokens,
+                          (int)evaluate(dueLoop(), dev, caps, 200, true, true));
+    rollDeviceDayIfNeeded(dev, caps, 20650, 200, true);
+    TEST_ASSERT_EQUAL_UINT32(0, dev.tokensToday);
+    TEST_ASSERT_EQUAL_INT(FireDecision::Fire,
+                          (int)evaluate(dueLoop(), dev, caps, 200, true, true)); }
+}
+
+// An agent-created recurring routine is blocked until the owner approves it.
+static void test_approval_gate() {
+  LoopCaps caps; DeviceCounters dev;
+  LoopRecord l = dueLoop(); l.createdBy = CreatedBy::Agent; l.approved = false;
+  TEST_ASSERT_EQUAL_INT(FireDecision::BlockedUnapproved,
+                        (int)evaluate(l, dev, caps, 200, true, true));
+  l.approved = true;   // owner approves -> it can fire
+  TEST_ASSERT_EQUAL_INT(FireDecision::Fire,
+                        (int)evaluate(l, dev, caps, 200, true, true));
+}
+
+// Every FireDecision and PauseReason maps to a real slug + a copy-clean sentence.
+// A new enum value with no mapping FAILS here (test the class, not the instance).
+static void test_reason_mappings_cover_every_case() {
+  auto clean = [](const char* c) {
+    std::string s(c);
+    TEST_ASSERT_TRUE(s.find(" - ") == std::string::npos);            // no space-hyphen-space
+    TEST_ASSERT_TRUE(s.find("\xE2\x80\x94") == std::string::npos);   // no em dash (U+2014)
+  };
+  const FireDecision all[] = {
+    FireDecision::Fire, FireDecision::SkipNotDue, FireDecision::BlockedDisabled,
+    FireDecision::BlockedUnapproved, FireDecision::BlockedChatRevoked,
+    FireDecision::BlockedConsecFails, FireDecision::BlockedLoopFires,
+    FireDecision::BlockedLoopTokens, FireDecision::BlockedDeviceTokens,
+    FireDecision::BlockedRateWindow, FireDecision::BlockedNoClock,
+  };
+  for (FireDecision d : all) {
+    const char* slug = fireReasonSlug(d);
+    const char* text = fireReasonText(d);
+    TEST_ASSERT_TRUE(std::strlen(slug) > 0);
+    TEST_ASSERT_TRUE(std::strcmp(slug, "unknown") != 0);   // every value has a real slug
+    clean(text);
+    if (d == FireDecision::Fire || d == FireDecision::SkipNotDue)
+      TEST_ASSERT_EQUAL_UINT(0, (unsigned)std::strlen(text));   // nothing wrong -> no text
+    else
+      TEST_ASSERT_TRUE(std::strlen(text) > 0);                 // a block always explains itself
+  }
+  const PauseReason ps[] = { PauseReason::None, PauseReason::Owner,
+    PauseReason::ConsecFails, PauseReason::LoopTokens, PauseReason::ChatRevoked,
+    PauseReason::Repeated };
+  for (PauseReason p : ps) {
+    TEST_ASSERT_TRUE(std::strlen(pauseReasonSlug(p)) > 0);
+    TEST_ASSERT_TRUE(std::strlen(pauseReasonText(p)) > 0);
+    clean(pauseReasonText(p));
+  }
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_civil_roundtrip);
@@ -471,5 +594,9 @@ int main() {
   RUN_TEST(test_once_after_fire_retires_with_one_retry);
   RUN_TEST(test_parse_duration_secs);
   RUN_TEST(test_clamp_loop_caps);
+  RUN_TEST(test_wallclock_defers_unsynced_then_recovers);
+  RUN_TEST(test_caps_block_then_reset);
+  RUN_TEST(test_approval_gate);
+  RUN_TEST(test_reason_mappings_cover_every_case);
   return UNITY_END();
 }

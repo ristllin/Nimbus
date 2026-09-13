@@ -2343,14 +2343,13 @@ function loadLoops(){
     el.innerHTML='<table><tbody>'+list.map(l=>{
       let sched=l.kind==='interval'?('every '+Math.round(l.everySec/60)+'m'):
         (l.kind==='once'?'one-time wakeup':(l.kind+' '+(l.at||'')));
-      // Next-run: wall-clock routines can't fire before the clock syncs - say so
-      // instead of showing nothing (the silent-BlockedNoClock gap). A one-time
-      // wakeup is epoch-based like interval and never waits on the civil clock.
+      // why (from the device) is the authoritative block reason (no clock synced,
+      // a governor cap, rate limit, or a paused-with-reason); empty = firing or
+      // simply scheduled, so we show the next-run countdown instead.
       const CK=window.CLOCK;
-      if(l.kind!=='interval'&&l.kind!=='once'&&CK&&!CK.synced)sched+='<br><span class=hint>waiting for clock sync</span>';
-      else if(l.enabled&&l.nextRun>0&&CK&&CK.synced)sched+='<br><span class=hint>'+fmtIn(l.nextRun-CK.epoch)+'</span>';
+      if(l.enabled&&!l.why&&l.nextRun>0&&CK&&CK.synced)sched+='<br><span class=hint>'+fmtIn(l.nextRun-CK.epoch)+'</span>';
       const pend=l.byAgent&&!l.approved;
-      const status=pend?'<b style="color:#e5a">pending approval</b>':(l.enabled?esc(l.lastResult||'ok'):'<span class=hint>paused</span>');
+      const status=pend?'<b style="color:#e5a">pending approval</b>':(l.why?'<span class=hint>'+esc(l.why)+'</span>':esc(l.lastResult||'ok'));
       const btns=pend
         ?'<button data-act=approve data-id="'+l.id+'">Approve</button> <button data-act=delete data-id="'+l.id+'">Deny</button>'
         :(l.enabled?'<button data-act=pause data-id="'+l.id+'">Pause</button>':'<button data-act=resume data-id="'+l.id+'">Resume</button>')+(l.reserved?'':' <button data-act=delete data-id="'+l.id+'">Delete</button>');

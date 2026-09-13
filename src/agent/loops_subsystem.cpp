@@ -293,16 +293,19 @@ void checkDue(uint64_t nowEpoch, bool turnInFlight, uint32_t heap) {
           break;
         case orch::FireDecision::BlockedConsecFails:
           if (l.enabled) { l.enabled = false; l.lastResult = orch::LastResult::Paused;
+            l.pauseReason = orch::PauseReason::ConsecFails;
             if (g_alert) g_alert(AlertLevel::Warn, l.id, "loop '" + l.name + "' disabled after repeated failures");
             persist(); }
           break;
         case orch::FireDecision::BlockedLoopTokens:
           if (l.enabled) { l.enabled = false; l.lastResult = orch::LastResult::Paused;
+            l.pauseReason = orch::PauseReason::LoopTokens;
             if (g_alert) g_alert(AlertLevel::Warn, l.id, "loop '" + l.name + "' paused: hit its daily token limit");
             persist(); }
           break;
         case orch::FireDecision::BlockedChatRevoked:
           if (l.enabled) { l.enabled = false; l.lastResult = orch::LastResult::Paused;
+            l.pauseReason = orch::PauseReason::ChatRevoked;
             if (g_alert) g_alert(AlertLevel::Warn, l.id, "loop '" + l.name + "' paused: its target chat is no longer allow-listed");
             persist(); }
           break;
@@ -394,9 +397,11 @@ void checkDue(uint64_t nowEpoch, bool turnInFlight, uint32_t heap) {
     }
     if (orch::isSemanticRepeat(*l, g_caps.maxRepeats)) {
       l->enabled = false; l->lastResult = orch::LastResult::Paused;
+      l->pauseReason = orch::PauseReason::Repeated;
       if (g_alert) g_alert(AlertLevel::Warn, l->id, "loop '" + l->name + "' paused: it kept returning the same result");
     } else if (!o.ok && l->consecFails >= (uint8_t)g_caps.maxConsecFails) {
       l->enabled = false; l->lastResult = orch::LastResult::Paused;
+      l->pauseReason = orch::PauseReason::ConsecFails;
       if (g_alert) g_alert(AlertLevel::Warn, l->id, "loop '" + l->name + "' disabled after repeated failures");
     }
     persist();
@@ -489,7 +494,9 @@ bool setEnabled(const String& id, bool on) {
   LoopRecord* l = findById(std::string(id.c_str()));
   if (!l) return false;
   l->enabled = on;
-  if (on) l->consecFails = 0;   // resume clears the breaker
+  if (on) { l->consecFails = 0;                         // resume clears the breaker
+            l->pauseReason = orch::PauseReason::None; }  // ... and the paused-reason badge
+  else      l->pauseReason = orch::PauseReason::Owner;   // a deliberate owner pause (no fault)
   persist();
   return true;
 }
@@ -504,8 +511,28 @@ bool cancelLoop(const String& id) {
 
 int count() { Lock lk; return (int)g_loops.size(); }
 
+// Authoritative "why is this routine (not) firing" for the read surfaces
+// (loopsJson + loopsText). An enabled+approved loop is evaluated live against the
+// current clock + governor; a paused loop reports its persisted PauseReason so the
+// pane can state WHY, not a bare "paused". chatAllowed is passed true here: a
+// revoked chat auto-pauses the loop within a tick, so it surfaces via PauseReason
+// rather than a cross-task allow-list call on the web reader. Call with the lock held.
+static void loopReason(const LoopRecord& l, uint64_t now, bool clk,
+                       const char*& slug, const char*& text) {
+  if (!l.enabled) {
+    slug = orch::pauseReasonSlug(l.pauseReason);
+    text = orch::pauseReasonText(l.pauseReason);
+    return;
+  }
+  orch::FireDecision d = orch::evaluate(l, g_dev, g_caps, now, clk, /*chatAllowed=*/true);
+  slug = orch::fireReasonSlug(d);
+  text = orch::fireReasonText(d);
+}
+
 String loopsJson() {
   Lock lk;
+  const uint64_t now = (uint64_t)time(nullptr);
+  const bool clk = clockValid();
   ArduinoJson::JsonDocument d;
   ArduinoJson::JsonArray arr = d.to<ArduinoJson::JsonArray>();
   static const char* kSched[] = {"interval", "daily", "weekly", "once"};
@@ -528,6 +555,12 @@ String loopsJson() {
     o["firesToday"]  = l.firesToday;
     o["tokensToday"] = l.tokensToday;
     o["consecFails"] = l.consecFails;
+    // Why it is / isn't firing right now (empty text = firing or simply scheduled;
+    // the pane shows the next-run countdown for those). whyCode is the stable slug.
+    const char* rslug; const char* rtext;
+    loopReason(l, now, clk, rslug, rtext);
+    o["why"]     = rtext;
+    o["whyCode"] = rslug;
   }
   String out; ArduinoJson::serializeJson(d, out);
   return out;
@@ -551,6 +584,8 @@ void setWakeupsAskFirst(bool on) {
 String loopsText() {
   Lock lk;
   if (g_loops.empty()) return "No scheduled loops. Ask me to set one up, e.g. \"every morning at 8, summarize my overnight sessions\".";
+  const uint64_t now = (uint64_t)time(nullptr);
+  const bool clk = clockValid();
   String s = "Scheduled loops:\n";
   for (const LoopRecord& l : g_loops) {
     s += "\xE2\x80\xA2 " + String(l.name.c_str()) + "  [" + String(l.id.c_str()) + "]  ";
@@ -564,9 +599,18 @@ String loopsText() {
       char at[6]; snprintf(at, sizeof at, "%02u:%02u", l.sched.minuteOfDay / 60, l.sched.minuteOfDay % 60);
       s += String(l.sched.kind == orch::SchedKind::Daily ? "daily " : "weekly ") + at;
     }
-    if (l.createdBy == orch::CreatedBy::Agent && !l.approved)
+    if (l.createdBy == orch::CreatedBy::Agent && !l.approved) {
       s += "  \xE2\x9A\xA0 PENDING approval \xE2\x86\x92 /loop approve " + String(l.id.c_str());
-    else if (!l.enabled) s += "  (paused \xE2\x86\x92 /loop on " + String(l.id.c_str()) + ")";
+    } else if (!l.enabled) {
+      s += "  " + String(orch::pauseReasonText(l.pauseReason)) +
+           " (/loop on " + String(l.id.c_str()) + ")";
+    } else {
+      // Enabled + approved: surface a live block reason (no clock, rate window,
+      // caps) so a routine that is not firing never looks simply idle.
+      const char* rslug; const char* rtext;
+      loopReason(l, now, clk, rslug, rtext);
+      if (rtext[0]) s += "  " + String(rtext);
+    }
     s += "\n";
   }
   return s;

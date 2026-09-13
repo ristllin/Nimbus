@@ -81,7 +81,11 @@ FireDecision evaluate(const LoopRecord& l, const DeviceCounters& dev,
   if (!l.enabled)                              return FireDecision::BlockedDisabled;
   if (!l.approved)                             return FireDecision::BlockedUnapproved;
   if (l.consecFails >= caps.maxConsecFails)    return FireDecision::BlockedConsecFails;
-  if (l.sched.kind != SchedKind::Interval && !clockValid)
+  // Only wall-clock schedules (Daily/Weekly) need a synced clock. Interval AND
+  // Once are epoch/uptime-relative (advanceNextRun computes both off nowEpoch), so
+  // a one-shot wakeup must fire on its timer even before NTP lands - the earlier
+  // `!= Interval` test wrongly parked every armed wakeup behind BlockedNoClock.
+  if ((l.sched.kind == SchedKind::Daily || l.sched.kind == SchedKind::Weekly) && !clockValid)
                                                return FireDecision::BlockedNoClock;
   // Cheapest "nothing to do" - before any cost/rate gate.
   if (!isDue(l.nextRun, nowEpoch))             return FireDecision::SkipNotDue;
@@ -94,6 +98,67 @@ FireDecision evaluate(const LoopRecord& l, const DeviceCounters& dev,
                                                return FireDecision::BlockedRateWindow;
   if (dev.tokensToday >= caps.devTokensPerDay) return FireDecision::BlockedDeviceTokens;
   return FireDecision::Fire;
+}
+
+// --- why a routine is / isn't firing ---------------------------------------
+// No `default:` on purpose: a new FireDecision then trips -Wswitch at build time,
+// and the host suite asserts every value maps (belt and suspenders).
+const char* fireReasonSlug(FireDecision d) {
+  switch (d) {
+    case FireDecision::Fire:                return "ok";
+    case FireDecision::SkipNotDue:          return "scheduled";
+    case FireDecision::BlockedDisabled:     return "paused";
+    case FireDecision::BlockedUnapproved:   return "awaiting-approval";
+    case FireDecision::BlockedChatRevoked:  return "chat-revoked";
+    case FireDecision::BlockedConsecFails:  return "failing";
+    case FireDecision::BlockedLoopFires:    return "daily-run-cap";
+    case FireDecision::BlockedLoopTokens:   return "daily-token-cap";
+    case FireDecision::BlockedDeviceTokens: return "device-token-cap";
+    case FireDecision::BlockedRateWindow:   return "rate-limited";
+    case FireDecision::BlockedNoClock:      return "no-clock";
+  }
+  return "unknown";
+}
+
+const char* fireReasonText(FireDecision d) {
+  switch (d) {
+    case FireDecision::Fire:                return "";
+    case FireDecision::SkipNotDue:          return "";
+    case FireDecision::BlockedDisabled:     return "Paused.";
+    case FireDecision::BlockedUnapproved:   return "Waiting for your approval.";
+    case FireDecision::BlockedChatRevoked:  return "Its chat is no longer allowed.";
+    case FireDecision::BlockedConsecFails:  return "Paused after repeated failures. Resume to try again.";
+    case FireDecision::BlockedLoopFires:    return "Reached today's run limit. It runs again tomorrow.";
+    case FireDecision::BlockedLoopTokens:   return "Reached today's token limit. It runs again tomorrow.";
+    case FireDecision::BlockedDeviceTokens: return "The device reached its daily token limit. Routines resume tomorrow.";
+    case FireDecision::BlockedRateWindow:   return "Too many routines ran just now. It runs again shortly.";
+    case FireDecision::BlockedNoClock:      return "Waiting for internet time. Daily and weekly routines run once the clock syncs.";
+  }
+  return "";
+}
+
+const char* pauseReasonSlug(PauseReason p) {
+  switch (p) {
+    case PauseReason::None:        return "paused";
+    case PauseReason::Owner:       return "paused";
+    case PauseReason::ConsecFails: return "failing";
+    case PauseReason::LoopTokens:  return "daily-token-cap";
+    case PauseReason::ChatRevoked: return "chat-revoked";
+    case PauseReason::Repeated:    return "repeating";
+  }
+  return "paused";
+}
+
+const char* pauseReasonText(PauseReason p) {
+  switch (p) {
+    case PauseReason::None:        return "Paused.";
+    case PauseReason::Owner:       return "Paused.";
+    case PauseReason::ConsecFails: return "Paused after repeated failures. Resume to try again.";
+    case PauseReason::LoopTokens:  return "Paused: it hit its daily token limit. Resume to run it again.";
+    case PauseReason::ChatRevoked: return "Paused: its chat is no longer allowed.";
+    case PauseReason::Repeated:    return "Paused: it kept returning the same result. Resume to run it again.";
+  }
+  return "Paused.";
 }
 
 // ---- validation ------------------------------------------------------------
@@ -265,6 +330,7 @@ std::string dumpLoops(const std::vector<LoopRecord>& loops) {
     o["createdBy"] = (int)l.createdBy;
     o["enabled"]   = l.enabled;
     o["approved"]  = l.approved;
+    o["pauseReason"] = (int)l.pauseReason;
     o["nextRun"]   = l.nextRun;
     o["lastRun"]   = l.lastRun;
     o["lastResult"]  = (int)l.lastResult;
@@ -334,6 +400,7 @@ bool loadLoops(const std::string& json, std::vector<LoopRecord>& out) {
     l.createdBy   = (CreatedBy)(int)(o["createdBy"] | 0);
     l.enabled     = o["enabled"]  | true;
     l.approved    = o["approved"] | true;
+    l.pauseReason = (PauseReason)(int)(o["pauseReason"] | 0);   // absent (old file) => None
     l.nextRun     = o["nextRun"]  | 0ULL;
     l.lastRun     = o["lastRun"]  | 0ULL;
     l.lastResult  = (LastResult)(int)(o["lastResult"] | 0);
