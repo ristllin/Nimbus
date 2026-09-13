@@ -88,6 +88,7 @@
 #include "web_memory.h"
 #include "web_files.h"                   // E1: /api/files* artifact-store routes
 #include "web_skills.h"                  // P2: /api/skills* dynamic-skill CRUD
+#include "errlog_routes.h"               // CUM-401: /api/errlog via the deferred-route registry
 #include "../agent/files_subsystem.h"      // E1: files::stats for /api/state
 
 using nimbus::Param;
@@ -3608,6 +3609,10 @@ void beginWeb(const WebConfig& wc) {
   // Dynamic skills (roadmap P2): /api/skills/list /get /save /delete - token-
   // gated owner CRUD over the SD capsules (the model can read, never write).
   registerSkillRoutes(s_server);
+
+  // CUM-401: bind /api/errlog (and any future self-registered route) from the
+  // deferred-route registry, so lanes that must not touch this file still ship a route.
+  nimbus::net::drainDeferredWebRoutes(s_server);
 
   // Captive-portal catch-all: unknown paths land on the config page.
   s_server.onNotFound([](AsyncWebServerRequest* r) {
