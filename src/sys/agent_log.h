@@ -8,6 +8,7 @@
 
 #include "nimbus/logring.h"     // core::LogRing::redact (portable, host-tested)
 #include "nimbus/log_sinks.h"   // core::emitRedacted (portable, host-tested two-sink seam)
+#include "errlog_fs.h"          // durable SD/flash sink (CUM-401) - fed the SAME redacted line
 
 // agent_log - the device-side logging seam for the Orchestrator subsystem.
 //
@@ -85,18 +86,29 @@ inline String agentLogTail() {
   return out;
 }
 
-// Both sinks are fed by core::emitRedacted, which redacts ONCE and hands the same masked
-// line to the Serial writer and the ring. Serial therefore prints the redacted line, never
-// the raw msg - printing `msg` would leak a sign-in/pairing code or an echoed key over USB
-// serial while the ring stayed clean (the F4 serial-bypass, CUM-281).
+// All sinks are fed by core::emitRedacted, which redacts ONCE and hands the same masked
+// line to the Serial writer, the RAM ring AND the durable sink. Serial therefore prints
+// the redacted line, never the raw msg - printing `msg` would leak a sign-in/pairing code
+// or an echoed key over USB serial while the ring stayed clean (the F4 serial-bypass,
+// CUM-281). By the same single-redaction property, the durable SD/flash log (errlog,
+// CUM-401) can only ever store the identical masked line - there is no second, un-redacted
+// path into it.
 inline void logSerial(const std::string& red) {
   Serial.print("[agent] ");
   Serial.println(red.c_str());
 }
 
+// The RAM-ring + durable-sink writer. logring::store() copies bytes under its own no-heap
+// portMUX critical section and RETURNS before errlog::append() runs, so the durable write
+// (which does filesystem I/O under agent::memory::Lock) never happens inside the spinlock.
+inline void logPersist(const std::string& red, const char* cat) {
+  logring::store(red);
+  nimbus::errlog::append(red, cat);
+}
+
 inline void alog(const char* msg) {
   core::emitRedacted(msg, logring::g_secrets, logSerial,
-                     [](const std::string& red) { logring::store(red); });
+                     [](const std::string& red) { logPersist(red, nullptr); });
 }
 
 inline void alogf(const char* fmt, ...) {
@@ -105,8 +117,27 @@ inline void alogf(const char* fmt, ...) {
   va_start(ap, fmt);
   vsnprintf(buf, sizeof(buf), fmt, ap);
   va_end(ap);
+  core::emitRedacted(buf, logring::g_secrets,
+                     logSerial, [](const std::string& red) { logPersist(red, nullptr); });
+}
+
+// Category-tagged variants: same three sinks, but the durable log line carries a short
+// class tag (nimbus::errlog::cat::*) so a retrieval reader can grep the failure classes
+// CUM-401 targets (mem/provider/relay/ota/panel/nvs/storage/net). The RAM ring + Serial
+// are unchanged (the tag is a durable-log concept), so /api/log stays byte-for-byte as is.
+inline void alogc(const char* cat, const char* msg) {
+  core::emitRedacted(msg, logring::g_secrets, logSerial,
+                     [cat](const std::string& red) { logPersist(red, cat); });
+}
+
+inline void alogcf(const char* cat, const char* fmt, ...) {
+  char buf[256];
+  va_list ap;
+  va_start(ap, fmt);
+  vsnprintf(buf, sizeof(buf), fmt, ap);
+  va_end(ap);
   core::emitRedacted(buf, logring::g_secrets, logSerial,
-                     [](const std::string& red) { logring::store(red); });
+                     [cat](const std::string& red) { logPersist(red, cat); });
 }
 
 }  // namespace agent
