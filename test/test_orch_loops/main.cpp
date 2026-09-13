@@ -572,6 +572,29 @@ static void test_reason_mappings_cover_every_case() {
   }
 }
 
+// A one-shot Once that fired pre-clock-sync and FAILED holds a 5-minute retry.
+// When the clock lands, onceRebaseNextRun must KEEP that ~300s retry, not reset it
+// to the full interval (which could push it up to 7 days out).
+static void test_once_rebase_preserves_retry_across_sync() {
+  const uint64_t realNow = 1700000000ULL;
+
+  // Failed pre-sync fire: RetryShort set nextRun = bootNow + kWakeupRetrySec.
+  LoopRecord l; l.sched.kind = SchedKind::Once; l.sched.intervalSec = 7 * 24 * 3600;
+  l.enabled = true; l.approved = true; l.consecFails = 1;
+  const uint64_t bootNow = 95;                       // boot-relative seconds
+  l.nextRun = bootNow + kWakeupRetrySec;             // 395 (the RetryShort deadline)
+  const uint64_t nr = onceRebaseNextRun(l, realNow, bootNow);
+  TEST_ASSERT_EQUAL_UINT64(realNow + kWakeupRetrySec, nr);   // ~300s out, NOT +7d
+  TEST_ASSERT_EQUAL_UINT64(kWakeupRetrySec, nr - realNow);
+
+  // Armed-but-not-yet-fired Once (consecFails 0): preserve the remaining delay.
+  LoopRecord a; a.sched.kind = SchedKind::Once; a.sched.intervalSec = 600;
+  a.consecFails = 0; a.nextRun = 200;                        // armed at boot for t=200
+  TEST_ASSERT_EQUAL_UINT64(realNow + 50, onceRebaseNextRun(a, realNow, 150));  // 50s remained
+  // Deadline already passed on the old clock -> fire on the next tick (floored at 1s).
+  TEST_ASSERT_EQUAL_UINT64(realNow + 1, onceRebaseNextRun(a, realNow, 500));
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_civil_roundtrip);
@@ -598,5 +621,6 @@ int main() {
   RUN_TEST(test_caps_block_then_reset);
   RUN_TEST(test_approval_gate);
   RUN_TEST(test_reason_mappings_cover_every_case);
+  RUN_TEST(test_once_rebase_preserves_retry_across_sync);
   return UNITY_END();
 }

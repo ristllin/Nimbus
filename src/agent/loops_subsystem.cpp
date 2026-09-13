@@ -142,13 +142,16 @@ static bool fireChatAllowed(const LoopRecord& l) {
 
 // ---- SNTP-landed rebase (prism correctness fix: no 0->epoch burst) ---------
 static bool s_wasClockValid = false;
+static uint64_t s_prevTickNow = 0;    // last pre-sync now() - the boot-relative base for the rebase
 static uint32_t s_critAlertDay = 0;   // "device ceiling" alert de-dupe (once/day)
 
-static void onClockSynced(uint64_t realNow) {
+static void onClockSynced(uint64_t realNow, uint64_t oldNow) {
   const uint32_t day = curLocalDay(realNow);
   for (auto& l : g_loops) {
     if (l.sched.kind == orch::SchedKind::Interval)
       l.nextRun = realNow + l.sched.intervalSec;      // restart, no retro burst
+    else if (l.sched.kind == orch::SchedKind::Once)
+      l.nextRun = orch::onceRebaseNextRun(l, realNow, oldNow);   // keep the remaining/retry delay
     else
       advanceNextRun(l, realNow, true);               // compute the real next occurrence
     if (l.lastSyncedDay == 0) l.lastSyncedDay = day;   // adopt, don't wipe
@@ -263,9 +266,10 @@ void checkDue(uint64_t nowEpoch, bool turnInFlight, uint32_t heap) {
 
   const bool clk = clockValid();
   { Lock lk;   // rebase on the 0->epoch SNTP jump (touches g_loops)
-    if (clk && !s_wasClockValid) onClockSynced(nowEpoch);
+    if (clk && !s_wasClockValid) onClockSynced(nowEpoch, s_prevTickNow);
     s_wasClockValid = clk;
   }
+  s_prevTickNow = nowEpoch;   // remember this tick's clock as the next rebase's oldNow
 
   if (turnInFlight) return;
   if (heap < (uint32_t)ORCH_AUTO_TURN_MIN_HEAP) return;
@@ -494,7 +498,11 @@ bool setEnabled(const String& id, bool on) {
   LoopRecord* l = findById(std::string(id.c_str()));
   if (!l) return false;
   l->enabled = on;
-  if (on) { l->consecFails = 0;                         // resume clears the breaker
+  if (on) { l->consecFails = 0;                         // resume clears the breaker,
+            l->tokensToday = 0;                          // ... the daily token budget (so a
+                                                         // token-capped resume actually runs, not
+                                                         // re-pause+re-alert - the "Resume to run it
+                                                         // again" copy is now true),
             l->pauseReason = orch::PauseReason::None; }  // ... and the paused-reason badge
   else      l->pauseReason = orch::PauseReason::Owner;   // a deliberate owner pause (no fault)
   persist();

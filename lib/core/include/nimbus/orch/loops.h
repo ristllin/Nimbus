@@ -253,6 +253,14 @@ void onFireResult(LoopRecord& l, bool ok, const TokenUsage& used, uint64_t reply
 // deferred tick never consumes any daily ceiling. Clock-rollover-safe by
 // construction: it only ever moves nextRun forward from `nowEpoch`.
 void deferLoop(LoopRecord& l, uint64_t nowEpoch, uint32_t deferSec);
+// The clock just landed (boot-relative `oldNow` -> real `realNow`): the nextRun for
+// an armed one-shot Once that PRESERVES its remaining delay across the jump, instead
+// of resetting to the full interval. A Once that already failed a pre-sync fire
+// (consecFails > 0) keeps its short retry (realNow + kWakeupRetrySec); otherwise it
+// keeps whatever delay remained (realNow + (nextRun - oldNow), floored at 1s). Both
+// `nextRun` and `oldNow` are in the same boot-relative base, so their difference is
+// the true remaining delay regardless of the absolute epoch jump.
+uint64_t onceRebaseNextRun(const LoopRecord& l, uint64_t realNow, uint64_t oldNow);
 bool isSemanticRepeat(const LoopRecord& l, int maxRepeats);
 uint64_t fnv64(const std::string& s);
 

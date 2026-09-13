@@ -302,6 +302,14 @@ void deferLoop(LoopRecord& l, uint64_t nowEpoch, uint32_t deferSec) {
   l.nextRun = nowEpoch + (deferSec ? deferSec : 1);
 }
 
+uint64_t onceRebaseNextRun(const LoopRecord& l, uint64_t realNow, uint64_t oldNow) {
+  // A failed pre-sync fire is mid-retry: keep the SHORT retry, not the full interval.
+  if (l.consecFails > 0) return realNow + kWakeupRetrySec;
+  // Otherwise preserve the remaining delay (computed in the old boot-relative base).
+  const uint64_t remaining = (l.nextRun > oldNow) ? (l.nextRun - oldNow) : 1;
+  return realNow + remaining;
+}
+
 bool isSemanticRepeat(const LoopRecord& l, int maxRepeats) {
   return maxRepeats > 0 && l.repeatRun >= maxRepeats;
 }
