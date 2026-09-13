@@ -126,75 +126,67 @@ struct RawPage {
 };
 
 struct DrainResult {
-  int32_t ackOffset       = 0;  // commit this AFTER the turns run (crash-safety)
+  int32_t ackOffset       = 0;  // commit this AFTER the turns run (per-page crash-safety)
   int     turnsEmitted    = 0;  // == chat buckets left in the batcher (one turn each)
   int     messagesBatched = 0;
-  int     pagesFetched    = 0;
   bool    stopped         = false;  // stopped on a cap / busy slot (rest re-served)
-  bool    fetchError      = false;  // page 0 failed: nothing accumulated (caller backs off)
+  bool    fetchError      = false;  // the fetch failed: nothing accumulated (caller backs off)
 };
 
-// Drive the drain.
-//   fetchPage(offset, firstPage) -> RawPage : fetch one getUpdates page at `offset`
-//     and make its updates addressable by handle(i) for i in [0, RawPage::count).
-//   handle(i) -> ClassifiedUpdate : classify the i-th update of the CURRENT page and
-//     run any inline side effect (queue a voice note, push a pending sender, ...).
+// Drain ONE getUpdates page into the batcher.
+//   fetchPage(offset) -> RawPage : fetch the page at `offset` and make its updates
+//     addressable by handle(i) for i in [0, RawPage::count).
+//   handle(i) -> ClassifiedUpdate : classify the i-th update of that page and run any
+//     inline side effect (queue a voice note, push a pending sender, ...).
 //
-// handle(i) is called LAZILY and IN ORDER, and ONLY for updates the drain actually
-// reaches: the moment a text update trips a cap or a deferred slot is busy, the loop
-// stops and never calls handle for the rest. That is what keeps a side effect from
-// running for an update that then goes un-acked and is re-served (which would run the
-// side effect twice) - side effect and ack advance together, update by update.
+// ONE page per call is deliberate and load-bearing for crash-safety. getUpdates
+// confirms a page server-side only when the NEXT page is fetched, so the caller must
+// run this page's turns AND durably commit DrainResult::ackOffset BEFORE the next
+// drain fetches the next page. Then each page is at-least-once with NO loss: a reset
+// (brownout / WDT / panic / OTA) mid-drain leaves the offset unmoved, so the whole
+// current page is re-served; a committed page is never re-run. Draining several pages
+// in one call (committing once at the end) would make earlier pages at-most-once - the
+// data-loss bug this shape exists to avoid. A rapid burst still fits one page = one
+// turn; a multi-page backlog drains one page per cycle.
 //
-// Text is batched by chat (bounded); the loop advances the offset and paginates while
-// a page is full, stopping on a cap, a busy slot, server-drained, or the page ceiling.
+// handle(i) is called LAZILY and IN ORDER, and ONLY for updates the drain reaches: the
+// moment a text update trips a cap or a deferred slot is busy, the loop stops and never
+// calls handle for the rest, so a side effect never runs for an update that then goes
+// un-acked and is re-served (which would run it twice). Side effect and ack advance
+// together, update by update.
+//
 // On return the batcher holds one bucket per chat (the caller emits one turn each,
-// reading render(i) one at a time so a single rendered text is alive at once, in
-// PSRAM, never a vector of them on internal SRAM); the offset to commit is
-// DrainResult::ackOffset. The batcher is cleared on ENTRY and left populated on exit
-// (the caller clears it after emitting).
+// reading render(i) one at a time so a single rendered text is alive at once, in PSRAM,
+// never a vector of them on internal SRAM). The batcher is cleared on ENTRY and left
+// populated on exit (the caller clears it after emitting).
 template <class FetchFn, class HandleFn>
-DrainResult drainPages(MessageBatcher& batch, int32_t startOffset, FetchFn fetchPage,
-                       HandleFn handle) {
+DrainResult drainOnePage(MessageBatcher& batch, int32_t startOffset, FetchFn fetchPage,
+                         HandleFn handle) {
   batch.clear();
   DrainResult r;
   r.ackOffset = startOffset;
   int32_t offset = startOffset;
-  bool stop = false;
 
-  for (int page = 0; page < kBatchMaxPages && !stop; ++page) {
-    RawPage p = fetchPage(offset, page == 0);
-    r.pagesFetched++;
-    if (p.fetchError) {
-      // Page 0 error: nothing accumulated, tell the caller to back off. A later page
-      // error keeps what earlier pages accumulated (already server-confirmed by
-      // pagination) and just stops draining.
-      if (page == 0) r.fetchError = true;
-      break;
-    }
-    for (int i = 0; i < p.count; ++i) {
-      ClassifiedUpdate u = handle(i);   // side effect (if any) runs HERE, in order
-      if (u.updateId <= 0) continue;
-      if (u.action == ClassifiedUpdate::Action::StopNoAck) { stop = true; break; }
-      if (u.action == ClassifiedUpdate::Action::BatchText) {
-        if (batch.add(u.chatId, u.from, u.text) == BatchAdd::Deferred) {
-          stop = true;   // a cap fired: do NOT ack this update, re-serve it next cycle
-          break;
-        }
-        r.messagesBatched++;
+  RawPage p = fetchPage(offset);
+  if (p.fetchError) { r.fetchError = true; return r; }   // nothing accumulated; back off
+
+  for (int i = 0; i < p.count; ++i) {
+    ClassifiedUpdate u = handle(i);   // side effect (if any) runs HERE, in order
+    if (u.updateId <= 0) continue;
+    if (u.action == ClassifiedUpdate::Action::StopNoAck) { r.stopped = true; break; }
+    if (u.action == ClassifiedUpdate::Action::BatchText) {
+      if (batch.add(u.chatId, u.from, u.text) == BatchAdd::Deferred) {
+        r.stopped = true;   // a cap fired: do NOT ack this update, re-serve it next drain
+        break;
       }
-      // BatchText(accepted/full) or AckOnly: this update is handled, advance the ack.
-      offset = nimbus::core::nextTelegramOffset(offset, u.updateId);
-      r.ackOffset = offset;
+      r.messagesBatched++;
     }
-    if (stop) break;
-    if (p.count < p.limit) break;   // fewer than the limit: the server is drained
-    // A full page: loop. The next fetch at the advanced offset confirms this page
-    // server-side (the documented at-least-once window for a >1-page backlog).
+    // BatchText(accepted/full) or AckOnly: this update is handled, advance the ack.
+    offset = nimbus::core::nextTelegramOffset(offset, u.updateId);
+    r.ackOffset = offset;
   }
 
   r.turnsEmitted = static_cast<int>(batch.chatCount());
-  r.stopped = stop;
   return r;
 }
 

@@ -223,20 +223,22 @@ queue). Key properties (CUM-398):
   in PSRAM, so it can never overflow. If a burst exceeds a cap, the device runs
   what it has as one turn and handles the rest on the next cycle; a message is
   never silently dropped, and the turn's context notes that more are still waiting.
-- **Drains to empty.** If a poll comes back full there may be more waiting, so the
-  device keeps fetching (paginating) until the server is drained or a cap trips,
-  then runs the batch.
+- **Drains a page at a time.** Each poll cycle handles one fetch of messages: it
+  batches them, runs the turns, and records how far it got before fetching the next
+  page on the next cycle. A rapid burst fits one fetch, so it is still one turn; a
+  larger backlog drains one page per cycle.
 - **Ordering preserved; no reentrancy.** A message that arrives while a turn is
   running joins the next batch, never the one in flight.
 - **Still fully serial.** Batching only groups already-fetched messages; it adds
   no background task and no second network session (the single-task, single-TLS
   rule in `AGENTS.md` §4 is unchanged).
 
-Crash-safety: a burst that fits one fetch is re-served intact if the device
-restarts mid-turn (nothing lost). A backlog large enough to need pagination is
-at-least-once (fetching a later page confirms the earlier one, so a restart in
-that window could repeat the last delivered batch rather than lose it). Voice
-notes, photos, and documents are not batched: each still runs its own turn.
+Crash-safety: nothing is lost. The device advances its saved position only after a
+page's turns have run and that position is written down, and it never confirms a
+page with the server until the next fetch. So a restart (brownout, watchdog, panic,
+update) mid-turn re-serves the whole page it was working on, and a message can at
+worst be answered again, never dropped. Voice notes, photos, and documents are not
+batched: each still runs its own turn.
 
 ## 3. Capability & world manifest
 

@@ -206,7 +206,7 @@ static void test_fresh_accepts_first_message_always() {
 
 using nimbus::orch::ClassifiedUpdate;
 using nimbus::orch::DrainResult;
-using nimbus::orch::drainPages;
+using nimbus::orch::drainOnePage;
 using nimbus::orch::RawPage;
 
 // drainPages leaves the emitted turns in the batcher (one bucket per chat); the
@@ -229,7 +229,8 @@ static ClassifiedUpdate txt(int32_t id, const char* chat, const char* from, cons
 // A canned getUpdates server: replays pre-loaded pages in order, records the offset
 // each fetch asked for (so a test can prove pagination advanced), and exposes the
 // current page's updates through handle(i) - the same lazy fetch/handle split the
-// device uses, so the test drives drainPages exactly as production does.
+// device uses, so the test drives drainOnePage exactly as production does. Each
+// drainOnePage call fetches ONE page (the next queued one).
 struct FakeServer {
   std::vector<std::vector<ClassifiedUpdate>> pages;
   std::vector<int>                           limits;
@@ -239,7 +240,7 @@ struct FakeServer {
   std::vector<ClassifiedUpdate>              current;   // the page handle() indexes
   size_t next = 0;
 
-  nimbus::orch::RawPage fetch(int32_t offset, bool /*first*/) {
+  nimbus::orch::RawPage fetch(int32_t offset) {
     offsetsSeen.push_back(offset);
     nimbus::orch::RawPage rp;
     if (next >= pages.size()) { current.clear(); rp.count = 0; rp.limit = 10; return rp; }
@@ -266,57 +267,110 @@ static void addErrorPage(FakeServer& srv) {
 }
 
 static DrainResult runDrain(MessageBatcher& b, int32_t off, FakeServer& srv) {
-  return drainPages(b, off,
-                    [&](int32_t o, bool f) { return srv.fetch(o, f); },
-                    [&](int i) { return srv.handle(i); });
+  return drainOnePage(b, off,
+                      [&](int32_t o) { return srv.fetch(o); },
+                      [&](int i) { return srv.handle(i); });
 }
 
-// A backlog that spans more than one full getUpdates page is drained fully before
-// any turn runs, then emitted as one turn PER chat (bounded so a single chat never
-// exceeds its cap: the page is split across two chats), in arrival order, with the
-// committed offset past the last update.
-static void test_drain_paginates_until_empty() {
-  MessageBatcher b;
-  FakeServer srv;
-  // Page 1: a full page (count == limit) so the driver must paginate; alternate two
-  // chats so neither reaches the per-chat cap while draining across pages.
-  std::vector<ClassifiedUpdate> p1;
-  for (int i = 0; i < 10; ++i) {
-    const char* chat = (i % 2 == 0) ? "A" : "B";
-    p1.push_back(txt(100 + i, chat, "u", ("m" + std::to_string(i)).c_str()));
+// An offset-aware server that models real getUpdates window semantics: fetch(offset)
+// returns up to `limit` updates with updateId >= offset. Fetching a higher offset is
+// what confirms lower updates server-side. Used to prove the per-page no-loss
+// guarantee across a simulated mid-drain reset (re-fetch at an un-committed offset
+// returns the SAME page; a committed offset returns the NEXT page).
+struct OffsetServer {
+  std::vector<ClassifiedUpdate> all;   // master list, ascending updateId
+  int limit = 10;
+  std::vector<ClassifiedUpdate> current;
+
+  nimbus::orch::RawPage fetch(int32_t offset) {
+    current.clear();
+    nimbus::orch::RawPage rp;
+    rp.limit = limit;
+    for (const auto& u : all) {
+      if (u.updateId >= offset) {
+        current.push_back(u);
+        if (static_cast<int>(current.size()) >= limit) break;
+      }
+    }
+    rp.count = static_cast<int>(current.size());
+    return rp;
   }
-  addPage(srv, std::move(p1), 10);
-  // Page 2: partial (count < limit) -> server drained.
-  addPage(srv, {txt(110, "A", "u", "m10"), txt(111, "B", "u", "m11")}, 10);
+  ClassifiedUpdate handle(int i) { return current[static_cast<size_t>(i)]; }
+};
 
-  DrainResult r = runDrain(b, 100, srv);
-
-  TEST_ASSERT_EQUAL_INT(2, r.pagesFetched);
-  TEST_ASSERT_EQUAL_INT(2, r.turnsEmitted);       // one turn PER chat
-  TEST_ASSERT_EQUAL_INT(12, r.messagesBatched);   // whole backlog drained
-  TEST_ASSERT_FALSE(r.stopped);
-  TEST_ASSERT_EQUAL_INT32(112, r.ackOffset);      // 111 + 1
-  // Pagination advanced the offset for page 2 (100, then past page 1's last id 109).
-  TEST_ASSERT_EQUAL_UINT(2, srv.offsetsSeen.size());
-  TEST_ASSERT_EQUAL_INT32(100, srv.offsetsSeen[0]);
-  TEST_ASSERT_EQUAL_INT32(110, srv.offsetsSeen[1]);
-  // Chat A's turn carries its own messages across BOTH pages, in arrival order.
-  TEST_ASSERT_EQUAL_STRING("A", b.chatIdAt(0));
-  std::string ta = rendered(b, 0);
-  TEST_ASSERT_TRUE(has(ta, "m0"));
-  TEST_ASSERT_TRUE(has(ta, "m10"));
-  TEST_ASSERT_TRUE(ta.find("m0") < ta.find("m10"));
+static DrainResult runDrainOffset(MessageBatcher& b, int32_t off, OffsetServer& srv) {
+  return drainOnePage(b, off,
+                      [&](int32_t o) { return srv.fetch(o); },
+                      [&](int i) { return srv.handle(i); });
 }
 
-// A first partial page stops immediately (no needless extra fetch).
-static void test_drain_stops_when_server_drained() {
+// ONE drain fetches exactly ONE getUpdates page - even a full page (count == limit,
+// so a backlog remains). It does NOT paginate on within a single drain: draining
+// several pages before committing the offset once would make earlier pages losable on
+// a reset. A rapid burst that fits one page is still one turn; the backlog's next page
+// is drained on the NEXT call.
+static void test_drain_one_page_per_call() {
+  MessageBatcher b;
+  OffsetServer srv;
+  srv.limit = 10;
+  // 12 updates waiting, split across two chats (so neither hits the per-chat cap).
+  for (int i = 0; i < 12; ++i) {
+    const char* chat = (i % 2 == 0) ? "A" : "B";
+    srv.all.push_back(txt(100 + i, chat, "u", ("m" + std::to_string(i)).c_str()));
+  }
+  DrainResult r = runDrainOffset(b, 100, srv);
+  // Only the first 10 (one page) are drained this call, not all 12.
+  TEST_ASSERT_EQUAL_INT(10, r.messagesBatched);
+  TEST_ASSERT_EQUAL_INT(2, r.turnsEmitted);       // one turn per chat
+  TEST_ASSERT_FALSE(r.stopped);                    // stopped because the page ended, not a cap
+  TEST_ASSERT_EQUAL_INT32(110, r.ackOffset);      // 109 + 1: this page only
+}
+
+// A partial page (fewer than a full window) drains what is there; the offset advances
+// past the last update so the next drain fetches only new messages.
+static void test_drain_partial_page() {
   MessageBatcher b;
   FakeServer srv;
-  addPage(srv, {txt(5, "9", "A", "hi")}, 10);  // 1 < limit -> drained
+  addPage(srv, {txt(5, "9", "A", "hi")}, 10);  // 1 update
   DrainResult r = runDrain(b, 5, srv);
-  TEST_ASSERT_EQUAL_INT(1, r.pagesFetched);
   TEST_ASSERT_EQUAL_INT(1, r.turnsEmitted);
   TEST_ASSERT_EQUAL_INT32(6, r.ackOffset);
+}
+
+// The per-page no-loss guarantee: if a reset happens after this page's turns ran but
+// BEFORE the offset is committed, the persisted offset is unmoved, so re-draining at
+// that offset re-serves the WHOLE page (nothing lost). Once the offset is committed,
+// re-draining at the committed offset returns only the NEXT page (the page is not
+// re-run). This is why the drain is one page at a time with a commit in between.
+static void test_drain_uncommitted_page_is_reserved() {
+  OffsetServer srv;
+  srv.limit = 10;
+  for (int i = 0; i < 12; ++i) {   // two pages' worth, two chats so no per-chat cap
+    const char* chat = (i % 2 == 0) ? "A" : "B";
+    srv.all.push_back(txt(500 + i, chat, "u", ("m" + std::to_string(i)).c_str()));
+  }
+
+  // Drain 1 at the persisted offset. Turns run; ackOffset is what WOULD be committed.
+  MessageBatcher b1;
+  DrainResult r1 = runDrainOffset(b1, 500, srv);
+  TEST_ASSERT_EQUAL_INT(10, r1.messagesBatched);
+  TEST_ASSERT_EQUAL_INT32(510, r1.ackOffset);
+
+  // Simulate a reset BEFORE the commit: the persisted offset is still 500. Re-draining
+  // there must re-serve the exact same page - no message from it is lost.
+  MessageBatcher b2;
+  DrainResult r2 = runDrainOffset(b2, 500, srv);
+  TEST_ASSERT_EQUAL_INT(10, r2.messagesBatched);
+  TEST_ASSERT_EQUAL_INT32(510, r2.ackOffset);
+  TEST_ASSERT_TRUE(has(rendered(b2, 0), "m0"));   // page 1's first message is back
+
+  // Now the commit succeeds (offset = 510). The next drain returns ONLY the next page;
+  // the committed page is never re-run.
+  MessageBatcher b3;
+  DrainResult r3 = runDrainOffset(b3, r1.ackOffset, srv);
+  TEST_ASSERT_EQUAL_INT(2, r3.messagesBatched);   // the remaining 2 (ids 510, 511)
+  TEST_ASSERT_EQUAL_INT32(512, r3.ackOffset);
+  TEST_ASSERT_FALSE(has(rendered(b3, 0), "m0"));  // page 1 not re-served
 }
 
 // A busy deferred slot (voice/attachment) stops the drain WITHOUT acking that update,
@@ -424,20 +478,6 @@ static void test_drain_no_side_effect_past_cap_stop() {
     TEST_ASSERT_TRUE(idx < afterIdx);
 }
 
-// The pagination is bounded: a server that always returns a full page stops at the
-// page ceiling instead of looping forever.
-static void test_drain_page_ceiling_bounds_pagination() {
-  MessageBatcher b;
-  FakeServer srv;
-  for (int pg = 0; pg < cap::kBatchMaxPages + 5; ++pg) {
-    // Each page is "full" (count == limit == 1) but only 1 update to keep it under the
-    // per-chat cap across pages: spread across a few chats so nothing defers.
-    addPage(srv, {txt(1000 + pg, ("c" + std::to_string(pg % 4)).c_str(), "u", "x")}, 1);
-  }
-  DrainResult r = runDrain(b, 1000, srv);
-  TEST_ASSERT_EQUAL_INT(cap::kBatchMaxPages, r.pagesFetched);  // bounded, not infinite
-}
-
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_single_message_is_raw_text);
@@ -453,14 +493,14 @@ int main(int, char**) {
   RUN_TEST(test_empty_from_no_clause);
   RUN_TEST(test_clear_resets_budget);
   RUN_TEST(test_fresh_accepts_first_message_always);
-  RUN_TEST(test_drain_paginates_until_empty);
-  RUN_TEST(test_drain_stops_when_server_drained);
+  RUN_TEST(test_drain_one_page_per_call);
+  RUN_TEST(test_drain_partial_page);
+  RUN_TEST(test_drain_uncommitted_page_is_reserved);
   RUN_TEST(test_drain_busy_slot_reserves_from_that_update);
   RUN_TEST(test_drain_cap_reserves_deferred_update);
   RUN_TEST(test_drain_page0_error_backs_off);
   RUN_TEST(test_drain_multi_chat_one_turn_each);
   RUN_TEST(test_drain_ackonly_advances_without_turn);
   RUN_TEST(test_drain_no_side_effect_past_cap_stop);
-  RUN_TEST(test_drain_page_ceiling_bounds_pagination);
   return UNITY_END();
 }

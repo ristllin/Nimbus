@@ -90,9 +90,10 @@ constexpr size_t kBatchMaxBytesPerChat = 8192;
 constexpr size_t kBatchMaxChats        = 8;
 //  - total accumulator payload across all chats in one drain (PSRAM ceiling).
 constexpr size_t kBatchMaxTotalBytes   = 32768;
-//  - getUpdates pages drained per cycle before yielding (<= 80 updates); bounds a
-//    pathological unbounded backlog so the poll task never starves other work.
-constexpr int    kBatchMaxPages        = 8;
+// One getUpdates page is drained per cycle (the offset for that page is committed
+// before the next page is fetched, so no page can be lost on a mid-drain reset - see
+// drainOnePage). A rapid burst fits one page = one turn; a backlog drains a page per
+// cycle. There is deliberately no multi-page-per-drain accumulation.
 constexpr int kSpawnProviderMax = 16;   // usable 15 + NUL device-side
 constexpr int kSpawnModelMax = 40;      // usable 39
 constexpr int kSpawnCategoryMax = 16;   // usable 15

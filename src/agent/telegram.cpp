@@ -727,57 +727,44 @@ static void fetchOnePage(int32_t offset, int longPollS, std::vector<nimbus::tg::
   setOutcome(parsedOk ? nimbus::net::TgPollOutcome::Ok : nimbus::net::TgPollOutcome::Transient);
 }
 
-// CUM-398: drain rapidly-arriving Telegram messages into ONE turn per chat. Text is
-// batched by chat (bounded); when a page comes back full the driver paginates until
-// the server is drained or a cap trips, then one turn per chat is emitted and the
-// offset is committed AFTER the turns. Still fully serial on tg_poll - no new task,
-// one TLS session at a time (batching only groups already-fetched updates). Returns
-// the message count handled this cycle, or -1 on a page-0 poll error (backoff).
+// CUM-398: drain ONE getUpdates page of rapidly-arriving messages into ONE turn per
+// chat. Text is batched by chat (bounded); one turn per chat is emitted, then the
+// offset for THIS page is committed. The next page is fetched on the NEXT poll cycle,
+// so the offset is durably committed before getUpdates confirms this page server-side
+// - a mid-drain reset re-serves the whole un-committed page (at-least-once per page,
+// no loss). A rapid burst fits one page = one turn; a backlog drains a page per cycle.
+// Still fully serial on tg_poll - no new task, one TLS session at a time. Returns the
+// message count handled this cycle, or -1 on a poll error (backoff).
 static int drainAndDispatch(int32_t startOffset, int longPollS,
                             nimbus::net::TgPollOutcome* outcome) {
-  // The current page's parsed updates; fetch (below) refills it each page and handle
-  // reads it. One page is resident at a time (drainPages finishes a page's handle
-  // calls before fetching the next), so this holds at most one getUpdates page.
+  // This page's parsed updates; fetch (below) fills it and handle reads it. Exactly
+  // one page is fetched per call, so this holds at most one getUpdates page.
   std::vector<nimbus::tg::Update> pageUpdates;
-  // Fold the per-page auth classification into one verdict for the whole cycle (a
-  // drain can fetch several pages). Ok is sticky: any page that came back a clean
-  // ok:true proves the token works this cycle, so a later transient/conflict page
-  // must not erase it (that would fail to reset the CUM-308 debounce). Absent an Ok,
-  // keep the latest real signal (AuthFail/Conflict) over the Transient default.
-  bool sawOk = false;
-  nimbus::net::TgPollOutcome cycleOutcome = nimbus::net::TgPollOutcome::Transient;
-  auto fetch = [&](int32_t off, bool first) -> nimbus::orch::RawPage {
+  auto fetch = [&](int32_t off) -> nimbus::orch::RawPage {
     nimbus::orch::RawPage rp;
-    nimbus::net::TgPollOutcome po = nimbus::net::TgPollOutcome::Transient;
-    // Page 0 uses the caller's long-poll (block for the first message); later pages
-    // short-poll (timeout 0) to drain an existing backlog fast.
-    fetchOnePage(off, first ? longPollS : 0, pageUpdates, rp, &po);
-    if (po == nimbus::net::TgPollOutcome::Ok) sawOk = true;
-    else if (!sawOk) cycleOutcome = po;
+    fetchOnePage(off, longPollS, pageUpdates, rp, outcome);
     return rp;
   };
   auto handle = [&](int i) -> nimbus::orch::ClassifiedUpdate {
     return handleUpdate(pageUpdates[(size_t)i]);
   };
-  nimbus::orch::DrainResult r = nimbus::orch::drainPages(g_batch, startOffset, fetch, handle);
-  if (outcome) *outcome = sawOk ? nimbus::net::TgPollOutcome::Ok : cycleOutcome;
-  if (r.fetchError) { g_batch.clear(); return -1; }   // page-0 error: nothing accumulated
+  nimbus::orch::DrainResult r = nimbus::orch::drainOnePage(g_batch, startOffset, fetch, handle);
+  if (r.fetchError) { g_batch.clear(); return -1; }   // poll error: nothing accumulated
 
   // Emit one turn per chat. Close the poll socket first so only one TLS session is
-  // ever resident (a drain that ended on an empty last page can leave it open). Each
-  // render() is materialized one at a time (in PSRAM), so a burst never holds a pile
-  // of rendered turns on the scarce internal heap; the turn then runs the whole tool
-  // loop synchronously on this task, exactly as before - just once per chat, not once
-  // per message.
+  // ever resident (an empty/partial page can leave it open). Each render() is
+  // materialized one at a time (in PSRAM), so a burst never holds a pile of rendered
+  // turns on the scarce internal heap; the turn then runs the whole tool loop
+  // synchronously on this task - just once per chat, not once per message.
   if (g_batch.chatCount() && g_cb) {
     closePollSocket();
     for (size_t i = 0; i < g_batch.chatCount(); ++i)
       g_cb(String(g_batch.turnFromAt(i)), String(g_batch.chatIdAt(i)),
            String(g_batch.render(i).c_str()));
   }
-  // Commit the offset AFTER the turns: a single-page burst is fully re-served on a
-  // mid-turn crash (never lost); a multi-page backlog is at-least-once (pagination
-  // confirms earlier pages server-side before their turn runs - documented tradeoff).
+  // Commit the offset AFTER this page's turns: a reset before this line re-serves the
+  // whole page (nothing lost); getUpdates only confirms this page server-side when the
+  // NEXT poll cycle fetches the next page, which happens after this durable commit.
   if (r.ackOffset > startOffset) store::setTelegramOffset(r.ackOffset);
   g_batch.clear();
   return r.messagesBatched;
@@ -1325,13 +1312,20 @@ void pollTask(void*) {
       InboundMsg* im = ensureInboundStage();
       if (im) {
         g_batch.clear();
+        bool runStagedDirectly = false;   // the deferred message could not be re-queued
         while (xQueueReceive(g_inboundQ, im, 0) == pdTRUE) {
           const char* from = im->from[0] ? im->from : im->chatId;
           if (g_batch.add(im->chatId, from, im->text) == nimbus::orch::BatchAdd::Deferred) {
-            // A cap fired: put this message back at the FRONT (order preserved) and
-            // stop draining - it and the rest are handled next cycle, never dropped.
-            // The queue just yielded a slot, so this cannot fail.
-            xQueueSendToFront(g_inboundQ, im, 0);
+            // A cap fired: put this message back at the FRONT (order preserved) to
+            // handle next cycle. This usually has room (we just received a slot), but a
+            // concurrent producer (injectMessage from web/serial/voice) can refill the
+            // queue in between, so the send CAN fail - do NOT ignore it and drop the
+            // message. On a full queue, run this staged message as its own turn below
+            // (after the batch's turns), so it is never silently lost.
+            if (xQueueSendToFront(g_inboundQ, im, 0) != pdTRUE) {
+              alog("telegram: inbound queue full on re-serve; running the staged message now");
+              runStagedDirectly = true;
+            }
             break;
           }
         }
@@ -1339,6 +1333,10 @@ void pollTask(void*) {
           g_cb(String(g_batch.turnFromAt(i)), String(g_batch.chatIdAt(i)),
                String(g_batch.render(i).c_str()));
         g_batch.clear();
+        // im still holds the un-requeued message (the loop broke without overwriting
+        // it); run it as its own turn now that the batch's turns have freed the caps.
+        if (runStagedDirectly)
+          g_cb(String(im->from[0] ? im->from : im->chatId), String(im->chatId), String(im->text));
       }
     }
 
