@@ -61,6 +61,12 @@ struct Lock {
 // (surfaced in STATUS / the dashboard banner). Both resolve after begin().
 bool haveSd();
 bool flashFull();
+// sdMissingWithData() (CUM-405): no SD card mounted this boot, yet evidence says a
+// card holds the owner's memories (a card was present the previous boot, or a
+// non-empty /mem/vectors.bin is still readable off the card). Drives the loud
+// "SD not detected, memories are on the card" Memory-panel banner so a flaky /
+// undetected card never reads as a silent empty store. Resolved once in begin().
+bool sdMissingWithData();
 
 // SD graceful degradation (the HIL test spec). A card present at boot can
 // vanish mid-run; the subsystem degrades to no-card behaviour WITHOUT a reboot and
@@ -208,6 +214,7 @@ struct Stats {
   bool embedAvailable = false;   // configured provider has a key
   bool embedLocked = false;      // a vector has been embedded (config is frozen)
   bool sdPresent = false;        // bulk store on SD (/mem) vs degraded flash (/data)
+  bool sdMissingWithData = false;// CUM-405: no card mounted, but a card likely holds memories
   bool flashFull = false;        // degraded vector persist paused (LittleFS floor)
   int  maxVectors = 0;           // effective capacity cap (tier-aware)
   int  archivedCount = 0;        // TTL-expired memories held in the SD cold store (0 with no SD)

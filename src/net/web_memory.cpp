@@ -113,9 +113,15 @@ void handleStats(AsyncWebServerRequest* r) {
   // Storage tier (docs/orchestrator-storage.md): where the bulk lives + the effective
   // cap, so the dashboard can show a "degraded - no SD" banner and the real ceiling.
   d["sdPresent"]      = s.sdPresent;
+  // CUM-405: no card mounted this boot, but a card likely holds the owner's
+  // memories. The panel raises a loud banner and reports sd=absent from this flag
+  // rather than rendering the empty flash tier as if it were the real store.
+  d["sdMissing"]      = s.sdMissingWithData;
   d["flashFull"]      = s.flashFull;
   d["maxVectors"]     = s.maxVectors;
-  d["store"]          = s.sdPresent ? "SD /mem" : "flash /data (no SD)";
+  d["store"]          = s.sdMissingWithData ? "SD not detected (card holds memories)"
+                        : s.sdPresent        ? "SD /mem"
+                                             : "flash /data (no SD)";
   JsonObject e = d["embed"].to<JsonObject>();
   e["provider"] = agent::store::embedProvider();
   e["model"]    = agent::store::embedModel();
@@ -137,6 +143,10 @@ void handleVectorGet(AsyncWebServerRequest* r) {
 
   JsonDocument d;
   JsonArray arr = d["entries"].to<JsonArray>();
+  // CUM-405: so an empty browse page reads as "card not detected", not "no
+  // memories yet", when a card likely holds the real store (lightweight accessor,
+  // no engine lock).
+  d["sdMissing"] = mem::sdMissingWithData();
 
   // Embed the query FIRST, BEFORE taking the engine lock: embed() is a BLOCKING TLS
   // round-trip on the AsyncTCP task (~1-3 s, 20 s worst case) and must never be held

@@ -3,6 +3,7 @@
 
 #include <LittleFS.h>
 #include <Preferences.h>
+#include <SD.h>                            // CUM-405: read-only probe of the raw SD card
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <esp_task_wdt.h>                  // feed the WDT during a long durable-store wipe
@@ -23,6 +24,7 @@
 #include "nimbus/docs_pack.h"             // docs.list/search/read - embedded device docs (W13)
 #include "nimbus/fault.h"                 // resilience: simulated SD/memory faults
 #include "nimbus/sd_health.h"             // SD demote/promote debounce (graceful degradation)
+#include "storage_tier.h"                 // CUM-405: pure storage-tier decision (host-tested)
 #include <solide/storage.h>               // re-probe the SD card on recovery
 #include "nimbus/orch/blob_store.h"
 #include "nimbus/orch/episodic_log.h"
@@ -64,6 +66,11 @@ bool                  g_begun = false;
 fs::FS*               g_fs = &LittleFS;   // data store: SD when mounted, else LittleFS
 SemaphoreHandle_t     g_memMux = nullptr; // recursive: guards g_vec/g_epi/g_scratch across tasks
 bool                  g_haveSd = false;   // resolved in begin(): is the store the SD card?
+// CUM-405: no card mounted this boot, yet evidence (a card seen last boot, or a
+// non-empty /mem/vectors.bin still readable off the card) says memories are on the
+// card. Resolved once in begin() and surfaced as the loud Memory-panel banner so a
+// flaky/undetected card never reads as a silent empty store (looks like data loss).
+bool                  g_sdMissing = false;
 bool                  g_flashFull = false;// degraded LittleFS persist hit the free-space floor
 // Set true just before wiping the durable store (Erase Storage). EVERY SD writer
 // checks it and refuses, so the media lane and any raced persist can't write a
@@ -96,6 +103,7 @@ const char* kScratchNs = "orchmem";
 const char* kScratchKey = "scratch";     // legacy string key (≤4000 B) - read-only fallback
 const char* kScratchBKey = "scratchB";   // v4.1 bytes blob (no 4000 B string limit)
 const char* kMemCfgKey  = "memcfg";   // persisted MemConfig blob (same NVS namespace)
+const char* kSdSeenKey  = "sdSeen";   // CUM-405: was an SD card mounted the previous boot?
 
 // Degraded (no-SD) VDB cap: bound the durable LittleFS blob (~400 * ~297 B ~= 120 KB)
 // so the working set + persist can't exhaust the few-MB internal flash. The full cap
@@ -188,6 +196,21 @@ bool eraseDurableStore() {
 void lock()   { if (g_memMux) xSemaphoreTakeRecursive(g_memMux, portMAX_DELAY); }
 void unlock() { if (g_memMux) xSemaphoreGiveRecursive(g_memMux); }
 
+// CUM-405 evidence #1: is a non-empty vector blob still readable off the RAW SD
+// card even though it did not mount into our data FS this boot? READ-ONLY and fully
+// guarded: with no reachable card SD.cardType() is CARD_NONE / SD.open() returns a
+// null handle, so this returns false and never re-mounts, adopts, or writes to the
+// card (the "no destructive card writes" rule). It only ever strengthens the "a card
+// holds memories" evidence; it can never move the resolved tier.
+static bool cardHoldsVectorData() {
+  if (SD.cardType() == CARD_NONE) return false;
+  File f = SD.open(kVecSdPath, FILE_READ);
+  if (!f) return false;
+  bool has = f.size() > 0;
+  f.close();
+  return has;
+}
+
 void begin() {
   if (g_begun) return;
   g_begun = true;
@@ -204,6 +227,34 @@ void begin() {
   g_fs->mkdir(g_haveSd ? "/mem" : "/data");  // parent dir for the blobs; neither FS
                          // auto-creates it, so an absent dir made every persist fopen
                          // fail silently (state lost across reboot). Idempotent.
+
+  // CUM-405: decide whether a card is "missing with data" this boot. Read the
+  // previous-boot flag BEFORE overwriting it with the current state, then feed both
+  // it and the read-only raw-card probe into the pure decision (host-tested in
+  // test/test_storage_tier). We persist the current mounted state so the NEXT boot
+  // can look back. On a mounted boot this writes true; on a card-less boot it writes
+  // false (literal "previous boot" semantics) - the raw-card probe is what keeps the
+  // banner up across repeated flaky boots while the card is still physically present.
+  {
+    bool prevSdSeen = false;
+    {
+      Preferences p;
+      if (p.begin(kScratchNs, true)) { prevSdSeen = p.getBool(kSdSeenKey, false); p.end(); }
+    }
+    TierInputs ti;
+    ti.mountedSd = g_haveSd;
+    ti.prevSdSeen = prevSdSeen;
+    ti.cardHoldsData = g_haveSd ? false : cardHoldsVectorData();
+    g_sdMissing = decideStorageTier(ti).sdMissingWithData;
+    if (g_haveSd != prevSdSeen) {   // only touch flash when the state actually flipped
+      Preferences p;
+      if (p.begin(kScratchNs, false)) { p.putBool(kSdSeenKey, g_haveSd); p.end(); }
+    }
+    // Storage-tier decision at boot (the existing agent_log seam; lane L owns errlog).
+    alogf("memory: storage tier=%s sd_mounted=%d prev_sd_seen=%d card_has_data=%d banner=%d",
+          g_haveSd ? "SD /mem" : "flash /data (no SD)", (int)g_haveSd, (int)prevSdSeen,
+          (int)ti.cardHoldsData, (int)g_sdMissing);
+  }
 
   g_vec.configure(store::embedDims() > 0 ? store::embedDims() : EMBED_DEFAULT_DIMS);
 
@@ -908,6 +959,7 @@ static inline bool effHaveSd() {
 
 bool haveSd()    { return effHaveSd(); }
 bool flashFull() { return g_flashFull; }
+bool sdMissingWithData() { return g_sdMissing; }
 
 ToolRegistry&  registry()   { return g_reg; }
 VectorMemory&  vectors()    { return g_vec; }
@@ -1556,6 +1608,7 @@ Stats stats() {
   s.embedAvailable = embeddings::available();
   s.embedLocked = store::embedLocked();
   s.sdPresent = effHaveSd();
+  s.sdMissingWithData = g_sdMissing;
   s.flashFull = g_flashFull;
   s.maxVectors = g_vec.maxEntries();
   s.archivedCount = effHaveSd() ? g_archive.size() : 0;
