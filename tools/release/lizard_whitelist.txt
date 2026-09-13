@@ -60,7 +60,6 @@ src/net/web_files.cpp:nimbus::net::registerFileRoutes
 lib/harness/src/providers/openai.cpp:agent::providers::oaiPoll
 src/hw/selftest.cpp:nimbus::hw::runSelfTest
 lib/core/src/orch_vector_memory.cpp:nimbus::orch::VectorMemory::recall
-src/agent/telegram.cpp:agent::telegram::processUpdatesBody
 lib/harness/src/providers/anthropic.cpp:agent::providers::antFoldOldRounds
 tests/hil/analyze_corpus.py:main
 src/net/webui.cpp:nimbus::net::buildState
@@ -88,7 +87,6 @@ tools/tcal_wizard.py:main
 src/main.cpp:otaEventHook
 lib/core/src/orch_device_actions.cpp:nimbus::orch::validateAction
 src/main.cpp:drainTouch
-src/agent/telegram.cpp:agent::telegram::doGetUpdates
 lib/core/src/orch_gradient.cpp:nimbus::orch::gradientTrim
 lib/core/src/power_policy.cpp:nimbus::power::Policy::update
 lib/harness/src/providers/mistral.cpp:agent::providers::orchTurnMistral

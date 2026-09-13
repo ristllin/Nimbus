@@ -203,6 +203,41 @@ when a card is present; `restore` returns the fact to the live store, counting a
 the normal memory limit. With no card, expiry deletes exactly as before. See
 [orchestrator-storage.md §2a](orchestrator-storage.md) and CUM-225.
 
+### 2.3 Rapid-message batching (one turn per burst)
+
+When several messages arrive in one chat in quick succession (a thought split
+across a few quick sends, or messages that pile up while a turn is running), the
+device drains them into **one turn with one reply** instead of answering each
+separately. The model still sees them as distinct, ordered messages (each rendered
+as its own delimited block that keeps its sender), so nothing is lost or merged
+into a run-on; it is simply one coherent answer rather than several disjoint ones,
+at one turn's cost instead of N.
+
+This applies uniformly across channels (Telegram, and the web/serial/voice inject
+queue). Key properties (CUM-398):
+
+- **Grouped by chat.** Messages from different chats that arrive together stay
+  separate: one turn per chat, never merged across principals.
+- **Bounded.** The accumulator is hard-capped by messages per chat, bytes per
+  chat, distinct chats, and total bytes (`orch::kBatch*` in `caps.h`), and lives
+  in PSRAM, so it can never overflow. If a burst exceeds a cap, the device runs
+  what it has as one turn and handles the rest on the next cycle; a message is
+  never silently dropped, and the turn's context notes that more are still waiting.
+- **Drains to empty.** If a poll comes back full there may be more waiting, so the
+  device keeps fetching (paginating) until the server is drained or a cap trips,
+  then runs the batch.
+- **Ordering preserved; no reentrancy.** A message that arrives while a turn is
+  running joins the next batch, never the one in flight.
+- **Still fully serial.** Batching only groups already-fetched messages; it adds
+  no background task and no second network session (the single-task, single-TLS
+  rule in `AGENTS.md` §4 is unchanged).
+
+Crash-safety: a burst that fits one fetch is re-served intact if the device
+restarts mid-turn (nothing lost). A backlog large enough to need pagination is
+at-least-once (fetching a later page confirms the earlier one, so a restart in
+that window could repeat the last delivered batch rather than lose it). Voice
+notes, photos, and documents are not batched: each still runs its own turn.
+
 ## 3. Capability & world manifest
 
 Generated, never hand-written (so it can't drift): hardware inventory (ring,
