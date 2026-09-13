@@ -1,4 +1,7 @@
 #pragma once
+#include "nimbus/cloud/relay_heap.h"  // CUM-404 v2: reuse the relay-proven per-connection
+                                      // largest-block floor (kRelayHeapFloorLargest) for the
+                                      // chat hot path - same handshake, CYD-safe (pure lib/core)
 // agent_config - device-side constants for the Orchestrator subsystem, ported
 // from Nuage-Solide include/config.h (the Head-Orchestrator / heavy-fabric block).
 //
@@ -85,9 +88,16 @@
 // each), request/response bodies, ArduinoJson and the VDB all ride PSRAM (main.cpp
 // installs a PSRAM-backed mbedTLS allocator + spills mallocs >=128 B), so a turn's
 // only mandatory INTERNAL allocation is one modest contiguous block for the
-// lwIP/socket handshake. That is the SAME handshake the relay dial (relay_heap.h) and
-// a provider verify (provider_verify.cpp, VERIFY_MIN_MAX8 = 8000) make on THIS board,
-// both proven green at largest >= 8000 while a genuine OOM is still refused. The
+// lwIP/socket handshake (the relay measures its true need at ~4 KB). That is the SAME
+// per-connection handshake the relay dial makes, so the chat hot path REUSES the
+// relay's proven per-connection floor (relay_heap.h, kRelayHeapFloorLargest = 5000),
+// NOT provider_verify's 8000. provider_verify is a ONE-SHOT setup path (a human clicks
+// "verify" a handful of times in a device's life), so its more conservative 8000 is
+// fine there; on the PER-MESSAGE chat path 8000 spuriously DEFERS every turn on the
+// CYD/freenove display board, whose persistent ~5 KB internal DMA bounce buffer
+// (solide-drivers, the CUM-167 white-screen fix) pins the largest INTERNAL free block
+// near 5 KB even with ~26 KB total free. relay_heap.h already solved this exact CYD
+// case and warns the two floors are NOT interchangeable (CUM-404 v2). The
 // chat/turn path was the last one never recalibrated: it kept pre-PSRAM 28-30 KB
 // TOTAL-free floors and NO largest-block guard, so it spuriously DEFERRED real turns
 // ("finishing background work") when internal was fragmented-but-ample, and when a
@@ -104,9 +114,12 @@
 // (~10-11 KB lwIP pbufs, recovering) that a user turn additionally pays. The
 // before/after on-device measurement is the bench step (PR_BODY plan). (A turn that
 // still OOMs fails soft: the honest low-memory reply, no reboot.)
-#define ORCH_TURN_MIN_LARGEST_BLOCK 8000U  // largest CONTIGUOUS internal block a turn's
-                                           // mbedTLS handshake needs (== provider_verify's
-                                           // proven VERIFY_MIN_MAX8; the real admission gate)
+#define ORCH_TURN_MIN_LARGEST_BLOCK 5000U  // largest CONTIGUOUS internal block a turn's
+                                           // mbedTLS handshake needs (CUM-404 v2: REUSES
+                                           // relay_heap.h's kRelayHeapFloorLargest, the
+                                           // relay-proven per-connection floor that coexists
+                                           // with the CYD ~5 KB DMA bounce buffer; the real
+                                           // admission gate. NOT provider_verify's one-shot 8000)
 #define ORCH_AUTO_TURN_MIN_HEAP 14000U  // defer the SYNTHESIS turn below this (internal; total-free
                                         // backstop). Kept +2000 above the interactive floor so
                                         // background work yields to and never starves a live turn.
@@ -166,8 +179,13 @@ static_assert(ORCH_DISPATCH_MIN_HEAP == ORCH_TURN_HARD_FLOOR &&
                   ORCH_LOOP_MIN_HEAP == ORCH_TURN_HARD_FLOOR &&
                   ORCH_RECALL_MIN_HEAP == ORCH_TURN_HARD_FLOOR,
               "turn / dispatch / loop-round / recall all make the same one mbedTLS handshake");
-static_assert(ORCH_TURN_MIN_LARGEST_BLOCK == 8000U,
-              "CUM-404: matches provider_verify's proven per-board handshake floor (VERIFY_MIN_MAX8)");
+static_assert(ORCH_TURN_MIN_LARGEST_BLOCK == 5000U,
+              "CUM-404 v2: the chat largest-block floor is the relay-proven per-connection 5000, "
+              "NOT provider_verify's one-shot 8000 (8000 spuriously defers every turn on the CYD, "
+              "whose ~5 KB DMA bounce buffer pins largest-internal near the floor)");
+static_assert(ORCH_TURN_MIN_LARGEST_BLOCK == nimbus::cloud::kRelayHeapFloorLargest,
+              "CUM-404 v2: keep the chat largest-block floor in lockstep with relay_heap.h's "
+              "proven per-connection floor - do NOT re-derive it");
 
 // Max simultaneously-dispatched heavy jobs (one dispatched per poll cycle while
 // active count < this). Mirrors nimbus::orch::kMaxActiveInflight; declared here so

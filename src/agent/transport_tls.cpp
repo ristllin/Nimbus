@@ -127,16 +127,17 @@ class TlsTransport : public HttpTransport {
     const HeapSample hsPre = sampleHeap();
     HeapSample hsConn{0, 0}, hsWrote{0, 0};
 
-    // CUM-404: is the failure we're about to report a MEMORY-pressure failure rather
-    // than a network one? A connect / write / parse alloc fails when the largest
-    // contiguous INTERNAL block is below the mbedTLS handshake need - the same floor
-    // provider_verify + the chat gate use. Tagging the error "low memory" lets the
-    // turn error path degrade with an honest low-memory reply instead of a transport
-    // error that reads as a wrong-provider fallback (and skip the pointless failover).
-    auto lowMem = [] {
-      return (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) <
-             (uint32_t)ORCH_TURN_MIN_LARGEST_BLOCK;
-    };
+    // CUM-404 v2: classify a failure as MEMORY-pressure ONLY when this exchange BEGAN
+    // below the handshake's largest-block need (hsPre, the pre-attempt state - the same
+    // floor the chat gate uses). If there was enough contiguous internal memory to
+    // start, then a connect / write / parse failure is a genuine network or provider
+    // error and MUST still fail over (CUM-41 ladder) and be reported honestly - never
+    // relabeled OOM. The earlier version sampled largest AT the failure and tagged
+    // ANY failure below 8000 as OOM, which on the CYD/freenove (whose persistent ~5 KB
+    // DMA bounce buffer keeps largest-internal near the floor) turned every provider
+    // outage into a fake "low memory" and silently skipped the whole failover ladder.
+    // Only when the turn truly started starved does "low memory" degrade honestly.
+    const bool startedStarved = hsPre.largest < (uint32_t)ORCH_TURN_MIN_LARGEST_BLOCK;
 
     WiFiClient plain;
     WiFiClientSecure tls;
@@ -174,7 +175,7 @@ class TlsTransport : public HttpTransport {
             req.tls ? "https" : "http", req.host.c_str(), (unsigned)req.port,
             ESP.getFreeHeap(),
             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
-      err = lowMem() ? "connect failed: low memory" : "connect failed";
+      err = startedStarved ? "connect failed: low memory" : "connect failed";
       return 0;
     }
 
@@ -196,7 +197,7 @@ class TlsTransport : public HttpTransport {
       arbiter::releaseWork();
       alogf("transport: short head write %s%s heap=%u", req.host.c_str(),
             req.path.c_str(), ESP.getFreeHeap());
-      err = lowMem() ? "request head write failed: low memory" : "request head write failed";
+      err = startedStarved ? "request head write failed: low memory" : "request head write failed";
       return 0;
     }
     // ONE write of the complete (PSRAM-spilled) body - never chunked serialization.
@@ -213,7 +214,7 @@ class TlsTransport : public HttpTransport {
         // and blamed the network for a request the device never finished sending.
         err = "request body truncated (" + std::to_string(n) + "/" +
               std::to_string(req.body.size()) + " bytes written)" +
-              (lowMem() ? ": low memory" : "");
+              (startedStarved ? ": low memory" : "");
         return 0;
       }
     }
@@ -262,7 +263,7 @@ class TlsTransport : public HttpTransport {
         // which skips the parse entirely rather than calling it an error.
         if (derr && derr.code() != DeserializationError::EmptyInput) {
           err = std::string("response parse failed: ") + derr.c_str() +
-                (lowMem() ? " (low memory)" : "");
+                (startedStarved ? " (low memory)" : "");
           alogf("transport: stream-parse %s (heap %u->%u)", derr.c_str(),
                 (unsigned)heapBefore, (unsigned)ESP.getFreeHeap());
         }

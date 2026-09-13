@@ -251,16 +251,26 @@ static void test_round_gate_cuts_on_fragmentation() {
   {   // fragmented: free ample, largest below the guard -> cut with "heap"
     Fake f;
     f.heap = 100000;   // total free is fine...
-    f.largest = 5000;  // ...but the largest block is below the round guard
+    f.largest = 4000;  // ...but the largest block is below the round guard (5000, CUM-404 v2)
     f.script = {stepCall("x"), stepFinished("{\"reply\":\"a\"}")};
-    HeadLoopConfig cfg; cfg.roundMinHeap = 12000; cfg.roundMinLargest = 8000;
+    HeadLoopConfig cfg; cfg.roundMinHeap = 12000; cfg.roundMinLargest = 5000;
     runHeadLoop(cfg, f.hooks());
     TEST_ASSERT_EQUAL_STRING("heap", f.capReasonSeen.back().c_str());
+  }
+  {   // CYD-healthy: largest ~5 KB (>= the 5000 guard) does NOT cut the round
+    Fake f;
+    f.heap = 26000;
+    f.largest = 5100;   // pinned near 5 KB by the DMA bounce buffer, but >= the guard
+    f.script = {stepCall("x"), stepFinished("{\"reply\":\"a\"}")};
+    HeadLoopConfig cfg; cfg.roundMinHeap = 12000; cfg.roundMinLargest = 5000;
+    runHeadLoop(cfg, f.hooks());
+    TEST_ASSERT_EQUAL_STRING("", f.capReasonSeen[0].c_str());   // round ran, no heap cut
+    TEST_ASSERT_EQUAL(1, (int)f.dispatched.size());
   }
   {   // guard unset (default 0): a low largest block does NOT cut the round
     Fake f;
     f.heap = 100000;
-    f.largest = 5000;
+    f.largest = 4000;
     f.script = {stepCall("x"), stepFinished("{\"reply\":\"a\"}")};
     HeadLoopConfig cfg; cfg.roundMinHeap = 12000;   // roundMinLargest left 0
     runHeadLoop(cfg, f.hooks());

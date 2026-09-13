@@ -286,14 +286,20 @@ static void test_recalibrated_floor_invariants() {
   // Turn / recall / loop-round all make the SAME single mbedTLS handshake: one floor.
   TEST_ASSERT_EQUAL(t.turnHardFloor, t.recallMinHeap);
   TEST_ASSERT_EQUAL(t.turnHardFloor, t.loopMinHeap);
-  // The largest-block guard is the real gate: == provider_verify's proven 8000 handshake
-  // floor on this board, and never above the total-free floor it complements.
-  TEST_ASSERT_EQUAL(8000, (int)t.turnMinLargestBlock);
+  // The largest-block guard is the real gate. CUM-404 v2: it REUSES relay_heap.h's
+  // relay-proven per-connection floor (5000), NOT provider_verify's one-shot 8000 -
+  // 8000 spuriously deferred every turn on the CYD/freenove, whose ~5 KB DMA bounce
+  // buffer pins the largest internal block near the floor. Never above the total-free
+  // floor it complements, and <= 5000 so it stays CYD-safe.
+  TEST_ASSERT_EQUAL(5000, (int)t.turnMinLargestBlock);
   TEST_ASSERT_TRUE(t.turnMinLargestBlock <= t.turnHardFloor);
-  // The pure predicate: fragmented-but-ample refused; healthy-but-low-total admitted;
-  // genuinely starved refused.
-  TEST_ASSERT_FALSE(agent::turnHeapOk(100000, 7999, t.turnHardFloor, t.turnMinLargestBlock));
-  TEST_ASSERT_TRUE (agent::turnHeapOk(12000, 8000, t.turnHardFloor, t.turnMinLargestBlock));
+  TEST_ASSERT_TRUE(t.turnMinLargestBlock <= 5000);   // must not exceed the CYD-safe value
+  // The pure predicate: genuinely fragmented (below the handshake need) refused;
+  // the CYD healthy-but-fragmented case (largest ~5 KB, ample total) ADMITTED;
+  // healthy-but-low-total admitted; genuinely starved-total refused.
+  TEST_ASSERT_FALSE(agent::turnHeapOk(100000, 4999, t.turnHardFloor, t.turnMinLargestBlock));
+  TEST_ASSERT_TRUE (agent::turnHeapOk(26000, 5000, t.turnHardFloor, t.turnMinLargestBlock));
+  TEST_ASSERT_TRUE (agent::turnHeapOk(12000, 5000, t.turnHardFloor, t.turnMinLargestBlock));
   TEST_ASSERT_FALSE(agent::turnHeapOk(11999, 100000, t.turnHardFloor, t.turnMinLargestBlock));
 }
 
@@ -303,7 +309,7 @@ static void test_recalibrated_floor_invariants() {
 static void test_chat_gate_defers_on_fragmentation_not_total_free() {
   Rig r;
   r.plat.heap = 100000;   // total internal free is ample...
-  r.plat.largest = 7999;  // ...but the largest contiguous block is below the 8000 guard
+  r.plat.largest = 4999;  // ...but the largest contiguous block is below the 5000 guard
   r.eng->handleMessage("hi there", "Roy", "1001");
   TEST_ASSERT_EQUAL(0, (int)r.attempts.size());        // no paid provider round-trip
   TEST_ASSERT_EQUAL(0, (int)r.eng->turnCount());
@@ -311,15 +317,30 @@ static void test_chat_gate_defers_on_fragmentation_not_total_free() {
   TEST_ASSERT_FALSE(r.anyDelivered("unavailable"));            // NOT a provider-fault message
 }
 
-// At the recalibrated floor (12000 free / 8000 largest) the turn RUNS - the old
+// At the recalibrated floor (12000 free / 5000 largest) the turn RUNS - the old
 // 28000 floor deferred it here while PSRAM sat ~98% empty (the CUM-404 bug).
 static void test_chat_gate_admits_at_the_recalibrated_floor() {
   Rig r;
   r.plat.heap = 12000;    // == ORCH_TURN_HARD_FLOOR
-  r.plat.largest = 8000;  // == ORCH_TURN_MIN_LARGEST_BLOCK
+  r.plat.largest = 5000;  // == ORCH_TURN_MIN_LARGEST_BLOCK
   r.eng->handleMessage("hi there", "Roy", "1001");
   TEST_ASSERT_EQUAL(1, (int)r.attempts.size());
   TEST_ASSERT_EQUAL_STRING("hello there", r.lastText().c_str());
+}
+
+// CUM-404 v2 regression: the CYD/freenove healthy state - ~26 KB total free but the
+// largest INTERNAL block pinned near 5 KB by the persistent DMA bounce buffer - must
+// NOT be deferred. The imported 8000 floor (provider_verify's one-shot value) failed
+// here at ~5 KB even though the turn's real handshake need is ~4 KB; the relay-proven
+// 5000 floor admits it.
+static void test_chat_gate_admits_fragmented_cyd_is_not_deferred() {
+  Rig r;
+  r.plat.heap = 26000;    // ample total free (the CYD at rest)
+  r.plat.largest = 5100;  // largest block pinned near 5 KB by the DMA bounce buffer
+  r.eng->handleMessage("hi there", "Roy", "1001");
+  TEST_ASSERT_EQUAL(1, (int)r.attempts.size());   // admitted, not deferred
+  TEST_ASSERT_EQUAL_STRING("hello there", r.lastText().c_str());
+  TEST_ASSERT_FALSE(r.anyDelivered("working memory"));   // no spurious low-memory defer
 }
 
 // A memory-pressure transport failure ("low memory" from transport_tls) degrades
@@ -338,6 +359,28 @@ static void test_oom_transport_error_yields_low_memory_reply_no_failover() {
   TEST_ASSERT_TRUE(r.anyDelivered("Low on working memory right now"));
   TEST_ASSERT_FALSE(r.anyDelivered("That didn't finish"));
   TEST_ASSERT_FALSE(r.anyDelivered("switching to"));
+}
+
+// CUM-404 v2 regression: a GENUINE network error must still fail over, even on a
+// fragmented board. transport_tls tags a failure "low memory" ONLY when the exchange
+// began starved (startedStarved from the pre-attempt largest block); a real outage
+// begins with adequate memory, so it emits a plain "connect failed" (no low-memory
+// tag) and the engine walks the CUM-41 failover ladder to a healthy provider. The
+// earlier version tagged every sub-8000 failure OOM and silently skipped failover.
+static void test_network_error_still_fails_over_not_misclassified_oom() {
+  Rig r;
+  // Plain network failure on the head host (NOT the "low memory" token), repeats so
+  // the same-host retry fails too; a fragmented board is represented by a low largest.
+  r.plat.largest = 5100;   // CYD-style fragmented but healthy (>= the 5000 floor)
+  r.scripts["anthropic"] = {{false, "", "connect failed", 0, "", 0, 0}};
+  r.eng->runTurn("inputs", "1001", "");
+  // The ladder walked: anthropic (initial + retry) then openai serves the turn.
+  TEST_ASSERT_EQUAL(3, (int)r.attempts.size());
+  TEST_ASSERT_EQUAL_STRING("openai", r.attempts[2].host.c_str());
+  TEST_ASSERT_TRUE(r.anyDelivered("switching to openai"));
+  TEST_ASSERT_EQUAL_STRING("hello there", r.lastText().c_str());
+  // NOT misreported as a low-memory failure.
+  TEST_ASSERT_FALSE(r.anyDelivered("Low on working memory"));
 }
 
 // ---- (1) happy turn ---------------------------------------------------------
@@ -1124,7 +1167,9 @@ int main(int, char**) {
   RUN_TEST(test_recalibrated_floor_invariants);
   RUN_TEST(test_chat_gate_defers_on_fragmentation_not_total_free);
   RUN_TEST(test_chat_gate_admits_at_the_recalibrated_floor);
+  RUN_TEST(test_chat_gate_admits_fragmented_cyd_is_not_deferred);
   RUN_TEST(test_oom_transport_error_yields_low_memory_reply_no_failover);
+  RUN_TEST(test_network_error_still_fails_over_not_misclassified_oom);
   RUN_TEST(test_happy_turn_delivers_and_accounts);
   RUN_TEST(test_recall_injected_for_user_text_skipped_for_synthesis);
   RUN_TEST(test_same_host_fresh_conv_retry);

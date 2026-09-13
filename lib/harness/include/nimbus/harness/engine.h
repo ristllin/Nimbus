@@ -186,8 +186,10 @@ class TurnEngine {
     uint32_t recallMinHeap      = 12000;  // ORCH_RECALL_MIN_HEAP (== the turn hard floor)
     uint32_t autoTurnMinHeap    = 14000;  // ORCH_AUTO_TURN_MIN_HEAP (+2000 above the interactive floor)
     uint32_t loopMinHeap        = 12000;  // ORCH_LOOP_MIN_HEAP
-    uint32_t turnMinLargestBlock = 8000;  // ORCH_TURN_MIN_LARGEST_BLOCK (largest contiguous
-                                          // internal block a turn's mbedTLS handshake needs)
+    uint32_t turnMinLargestBlock = 5000;  // ORCH_TURN_MIN_LARGEST_BLOCK (largest contiguous
+                                          // internal block a turn's mbedTLS handshake needs;
+                                          // CUM-404 v2 == relay_heap.h kRelayHeapFloorLargest,
+                                          // CYD-safe. NOT provider_verify's one-shot 8000)
   };
 
   TurnEngine(Deps d, Tuning t);
