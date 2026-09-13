@@ -2736,12 +2736,19 @@ setInterval(loadHealth,8000);
 function loadMemStats(){
   if(!canPoll())return;
   fetch('/api/mem/stats').then(r=>r.json()).then(d=>{
-    $('memstat').textContent=d.vectors+' memories · '+d.scratchItems+' scratch · '+
-      (d.store||'')+' (cap '+(d.maxVectors||0)+') · embed '+(d.embedAvailable?'ready':'no key');
-    // Storage-tier banner: bulk should live on the SD card. No card -> degraded
-    // (vectors capped on internal flash); flashFull -> persist paused.
+    window._sdMissing=!!d.sdMissing;
+    // CUM-405: when a card likely holds the real store but was not detected, report
+    // sd=absent, not "0 memories" (which reads as data loss).
+    $('memstat').textContent=d.sdMissing
+      ? 'SD not detected: memories are on the card'
+      : d.vectors+' memories · '+d.scratchItems+' scratch · '+
+        (d.store||'')+' (cap '+(d.maxVectors||0)+') · embed '+(d.embedAvailable?'ready':'no key');
+    // Storage-tier banner: sdMissing -> loud "card not detected, data is on it";
+    // no card at all -> degraded on flash; flashFull -> persist paused.
     const tb=$('tierbanner');
-    if(tb){ if(!d.sdPresent){tb.style.display='block';tb.className='warnbox';
+    if(tb){ if(d.sdMissing){tb.style.display='block';tb.className='warnbox';
+        tb.textContent='SD card not detected. Your saved memories are safe on the card, not lost. Reseat the card and restart the device to see them again.';}
+      else if(!d.sdPresent){tb.style.display='block';tb.className='warnbox';
         tb.textContent='⚠ No SD card - memory is limited to '+(d.maxVectors||0)+
           ' entries on internal storage, with no durable media or history. Insert a FAT32 SD card for full storage.'
           +(d.flashFull?' Internal storage is full - new memories are not being saved.':'');}
@@ -2781,7 +2788,7 @@ function embWarn(){const w=$('embwarn'),d=_embState; if(!w||!d)return;
 function renderMemList(d){
   const host=$('memlist'); host.innerHTML='';
   const es=d.entries||[];
-  if(!es.length){host.innerHTML='<p class=hint>'+(d.error?('Error: '+_wesc(d.error)):'No memories yet')+'</p>';return;}
+  if(!es.length){host.innerHTML='<p class=hint>'+(d.error?('Error: '+_wesc(d.error)):((d.sdMissing||window._sdMissing)?'SD card not detected. Your memories are on the card, not shown here.':'No memories yet'))+'</p>';return;}
   es.forEach(e=>{
     const row=document.createElement('div'); row.className='row'; row.style.alignItems='flex-start';
     const t=document.createElement('div'); t.style.flex='1';

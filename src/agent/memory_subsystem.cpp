@@ -23,6 +23,7 @@
 #include "nimbus/docs_pack.h"             // docs.list/search/read - embedded device docs (W13)
 #include "nimbus/fault.h"                 // resilience: simulated SD/memory faults
 #include "nimbus/sd_health.h"             // SD demote/promote debounce (graceful degradation)
+#include "storage_tier.h"                 // CUM-405: pure storage-tier decision (host-tested)
 #include <solide/storage.h>               // re-probe the SD card on recovery
 #include "nimbus/orch/blob_store.h"
 #include "nimbus/orch/episodic_log.h"
@@ -64,6 +65,11 @@ bool                  g_begun = false;
 fs::FS*               g_fs = &LittleFS;   // data store: SD when mounted, else LittleFS
 SemaphoreHandle_t     g_memMux = nullptr; // recursive: guards g_vec/g_epi/g_scratch across tasks
 bool                  g_haveSd = false;   // resolved in begin(): is the store the SD card?
+// CUM-405: no card mounted this boot, yet evidence (a card seen last boot, or a
+// non-empty /mem/vectors.bin still readable off the card) says memories are on the
+// card. Resolved once in begin() and surfaced as the loud Memory-panel banner so a
+// flaky/undetected card never reads as a silent empty store (looks like data loss).
+bool                  g_sdMissing = false;
 bool                  g_flashFull = false;// degraded LittleFS persist hit the free-space floor
 // Set true just before wiping the durable store (Erase Storage). EVERY SD writer
 // checks it and refuses, so the media lane and any raced persist can't write a
@@ -96,6 +102,7 @@ const char* kScratchNs = "orchmem";
 const char* kScratchKey = "scratch";     // legacy string key (≤4000 B) - read-only fallback
 const char* kScratchBKey = "scratchB";   // v4.1 bytes blob (no 4000 B string limit)
 const char* kMemCfgKey  = "memcfg";   // persisted MemConfig blob (same NVS namespace)
+const char* kSdSeenKey  = "sdSeen";   // CUM-405: was an SD card mounted the previous boot?
 
 // Degraded (no-SD) VDB cap: bound the durable LittleFS blob (~400 * ~297 B ~= 120 KB)
 // so the working set + persist can't exhaust the few-MB internal flash. The full cap
@@ -196,6 +203,38 @@ bool tryLock(uint32_t timeoutMs) {
   return xSemaphoreTakeRecursive(g_memMux, pdMS_TO_TICKS(timeoutMs)) == pdTRUE;
 }
 
+// CUM-405 primary evidence: is a non-empty vector blob still readable off the card,
+// even though it did not mount into our data FS this boot? This is the signal the
+// banner leans on - it needs NO NVS write, so it fires on a full-NVS device (Lumi,
+// CUM-389) where the sdSeen flag write silently drops.
+//
+// It routes through solide::storage, NEVER the raw Arduino SPI `SD` global: on an
+// SDMMC board (Freenove/CYD, sdKind=Sdmmc) the card mounts via SD_MMC and `SD` is
+// never begun, so SD.cardType() is ALWAYS CARD_NONE and the old SPI probe was dead
+// in every reachable state (main.cpp:~3125 warns of exactly this). When the card is
+// not currently mounted (the case whenever g_haveSd is false), do ONE non-destructive
+// re-probe (end() then begin(), the same path /api/sdprobe uses) so a card that
+// flaked on the first boot mount gets a second detection chance. Strictly READ-ONLY:
+// we never format, write, or adopt the card (g_fs stays the resolved tier - the whole
+// point of the banner). If we mounted it here, we end() again to leave storage in the
+// exact card-less state main.cpp resolved, so nothing downstream sees a half-adopted
+// card. Safe when the card is genuinely unreachable: begin() fails -> returns false.
+static bool cardHoldsVectorData() {
+  bool weMounted = false;
+  if (!solide::storage::available()) {
+    solide::storage::end();              // no-op if nothing is mounted; clears the latch
+    weMounted = solide::storage::begin();// one re-probe; false again if truly no card
+    if (!weMounted) return false;
+  }
+  bool has = false;
+  if (solide::storage::cardType() != 0) {
+    File f = solide::storage::activeFs().open(kVecSdPath, FILE_READ);
+    if (f) { has = f.size() > 0; f.close(); }
+  }
+  if (weMounted) solide::storage::end();  // restore the card-less state we found
+  return has;
+}
+
 void begin() {
   if (g_begun) return;
   g_begun = true;
@@ -212,6 +251,36 @@ void begin() {
   g_fs->mkdir(g_haveSd ? "/mem" : "/data");  // parent dir for the blobs; neither FS
                          // auto-creates it, so an absent dir made every persist fopen
                          // fail silently (state lost across reboot). Idempotent.
+
+  // CUM-405: decide whether a card is "missing with data" this boot. The PRIMARY
+  // signal is the read-only solide::storage probe (card present + non-empty
+  // /mem/vectors.bin): it needs no NVS write, so it fires even on a full-NVS device
+  // (Lumi, CUM-389) where the sdSeen flag below silently drops. The sdSeen flag is a
+  // best-effort SECONDARY hint for the case where the card is momentarily unreachable
+  // at probe time but was present the previous boot. Read the flag BEFORE overwriting
+  // it, feed both into the pure decision (host-tested in test/test_storage_tier), then
+  // persist the current mounted state (literal "previous boot" semantics) only when it
+  // flipped - a write we do NOT depend on succeeding.
+  {
+    bool prevSdSeen = false;
+    {
+      Preferences p;
+      if (p.begin(kScratchNs, true)) { prevSdSeen = p.getBool(kSdSeenKey, false); p.end(); }
+    }
+    TierInputs ti;
+    ti.mountedSd = g_haveSd;
+    ti.prevSdSeen = prevSdSeen;
+    ti.cardHoldsData = g_haveSd ? false : cardHoldsVectorData();
+    g_sdMissing = decideStorageTier(ti).sdMissingWithData;
+    if (g_haveSd != prevSdSeen) {   // only touch flash when the state actually flipped
+      Preferences p;
+      if (p.begin(kScratchNs, false)) { p.putBool(kSdSeenKey, g_haveSd); p.end(); }
+    }
+    // Storage-tier decision at boot (the existing agent_log seam; lane L owns errlog).
+    alogf("memory: storage tier=%s sd_mounted=%d prev_sd_seen=%d card_has_data=%d banner=%d",
+          g_haveSd ? "SD /mem" : "flash /data (no SD)", (int)g_haveSd, (int)prevSdSeen,
+          (int)ti.cardHoldsData, (int)g_sdMissing);
+  }
 
   g_vec.configure(store::embedDims() > 0 ? store::embedDims() : EMBED_DEFAULT_DIMS);
 
@@ -916,6 +985,7 @@ static inline bool effHaveSd() {
 
 bool haveSd()    { return effHaveSd(); }
 bool flashFull() { return g_flashFull; }
+bool sdMissingWithData() { return g_sdMissing; }
 
 ToolRegistry&  registry()   { return g_reg; }
 VectorMemory&  vectors()    { return g_vec; }
@@ -1564,6 +1634,7 @@ Stats stats() {
   s.embedAvailable = embeddings::available();
   s.embedLocked = store::embedLocked();
   s.sdPresent = effHaveSd();
+  s.sdMissingWithData = g_sdMissing;
   s.flashFull = g_flashFull;
   s.maxVectors = g_vec.maxEntries();
   s.archivedCount = effHaveSd() ? g_archive.size() : 0;
