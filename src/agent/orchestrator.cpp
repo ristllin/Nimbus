@@ -773,6 +773,13 @@ static TurnEngine::Deps buildTurnDeps() {
   d.cfg = g_cfg;
   d.platform.nowMs    = [] { return (uint32_t)millis(); };
   d.platform.freeHeap = [] { return (uint32_t)ESP.getFreeHeap(); };
+  // CUM-404: the real turn-admission signal - the largest contiguous INTERNAL block
+  // (fragmentation, not total free, fails the mbedTLS handshake alloc). Same read the
+  // relay dial + provider verify use. Without this the chat gate's largest-block guard
+  // is a no-op on device (the harness treats an unwired closure as ample).
+  d.platform.largestFreeBlock = [] {
+    return (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  };
   d.platform.delayMs  = [](uint32_t ms) { vTaskDelay(pdMS_TO_TICKS(ms)); };
   d.jobs  = g_jobs;
   d.apply = buildApplyDeps();
@@ -1287,7 +1294,8 @@ void begin(HeavyFabric* fabric, const Sinks& sinks) {
   g_cfg = harnessConfigFromStore();
   static TurnEngine turnEngine(buildTurnDeps(),
       TurnEngine::Tuning{ORCH_TURN_HARD_FLOOR, ORCH_RECALL_MIN_HEAP,
-                         ORCH_AUTO_TURN_MIN_HEAP, ORCH_LOOP_MIN_HEAP});
+                         ORCH_AUTO_TURN_MIN_HEAP, ORCH_LOOP_MIN_HEAP,
+                         ORCH_TURN_MIN_LARGEST_BLOCK});
   g_engine = &turnEngine;
   g_mem.begin(&g_memStore, std::string(store::sysPrompt().c_str()));
   g_folds.begin(&g_foldIO);   // v3.6.0 per-chat fold state (/data/chatsum.txt)

@@ -100,6 +100,19 @@ std::string convMapGet(const std::string& raw, const std::string& chat,
 std::string convMapSet(std::string raw, const std::string& chat,
                        const std::string& host, const std::string& convId);
 
+// CUM-404: may a chat/turn be admitted, given the internal-heap facts? BOTH the
+// total-free starvation backstop AND the largest-contiguous-block guard must clear -
+// fragmentation, not total free, is what fails a turn's mbedTLS handshake allocation,
+// so a device that is fragmented-but-ample (free high, largest low) is correctly
+// refused while a healthy-but-low-total device is admitted. Pure + host-tested; a
+// largestBlock of 0xFFFFFFFF (the harness sentinel for an unwired closure) makes the
+// largest-block half a no-op, so a test or host build with no largest hook behaves as
+// a total-free gate only. Mirrors nimbus::cloud::relayCanDial's two-floor shape.
+inline bool turnHeapOk(uint32_t freeInternal, uint32_t largestBlock,
+                       uint32_t freeFloor, uint32_t largestFloor) {
+  return freeInternal >= freeFloor && largestBlock >= largestFloor;
+}
+
 class TurnEngine {
  public:
   struct Deps {
@@ -166,12 +179,17 @@ class TurnEngine {
   };
 
   // Heap floors, defaulted to src/agent/agent_config.h's values so the
-  // portable lib never includes that header.
+  // portable lib never includes that header. (CUM-404: total-free floors are a
+  // conservative starvation backstop; turnMinLargestBlock is the real gate.)
   struct Tuning {
-    uint32_t turnHardFloor   = 28000;  // ORCH_TURN_HARD_FLOOR
-    uint32_t recallMinHeap   = 28000;  // ORCH_RECALL_MIN_HEAP (== the turn hard floor)
-    uint32_t autoTurnMinHeap = 30000;  // ORCH_AUTO_TURN_MIN_HEAP
-    uint32_t loopMinHeap     = 28000;  // ORCH_LOOP_MIN_HEAP
+    uint32_t turnHardFloor      = 12000;  // ORCH_TURN_HARD_FLOOR (total-free backstop)
+    uint32_t recallMinHeap      = 12000;  // ORCH_RECALL_MIN_HEAP (== the turn hard floor)
+    uint32_t autoTurnMinHeap    = 14000;  // ORCH_AUTO_TURN_MIN_HEAP (+2000 above the interactive floor)
+    uint32_t loopMinHeap        = 12000;  // ORCH_LOOP_MIN_HEAP
+    uint32_t turnMinLargestBlock = 5000;  // ORCH_TURN_MIN_LARGEST_BLOCK (largest contiguous
+                                          // internal block a turn's mbedTLS handshake needs;
+                                          // CUM-404 v2 == relay_heap.h kRelayHeapFloorLargest,
+                                          // CYD-safe. NOT provider_verify's one-shot 8000)
   };
 
   TurnEngine(Deps d, Tuning t);
@@ -300,6 +318,11 @@ class TurnEngine {
   void deliver(const std::string& chatId, const std::string& text);
   uint32_t nowMs() const { return d_.platform.nowMs ? d_.platform.nowMs() : 0; }
   uint32_t freeHeap() const { return d_.platform.freeHeap ? d_.platform.freeHeap() : 0xFFFFFFFFu; }
+  // Largest contiguous free INTERNAL block (CUM-404). Unwired => 0xFFFFFFFF, so the
+  // largest-block guard is a no-op on a host/test build that does not script it.
+  uint32_t largestFreeBlock() const {
+    return d_.platform.largestFreeBlock ? d_.platform.largestFreeBlock() : 0xFFFFFFFFu;
+  }
 
   Deps   d_;
   Tuning t_;

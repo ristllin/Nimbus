@@ -31,6 +31,7 @@ struct FakeProviderDeps {
   int openAiAttaches = 0, mistralAttaches = 0, anthropicAttaches = 0;
   uint32_t now = 1000;
   uint32_t heap = 100000;
+  uint32_t largest = 100000;   // largest contiguous free INTERNAL block (CUM-404)
 
   agent::providers::ProviderDeps contract() {
     agent::providers::ProviderDeps pd;
@@ -69,6 +70,7 @@ struct FakeProviderDeps {
     };
     pd.nowMs = [this] { now += 10; return now; };
     pd.freeHeap = [this] { return heap; };
+    pd.largestBlock = [this] { return largest; };
     return pd;
   }
 

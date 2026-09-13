@@ -24,6 +24,7 @@ struct Fake {
   size_t stepIdx = 0;
   uint32_t clock = 0;              // fake millis
   uint32_t heap = 100000;         // fake free heap
+  uint32_t largest = 100000;      // fake largest contiguous free INTERNAL block (CUM-404)
   // record of what the controller passed us each step / dispatched:
   std::vector<bool> allowToolsSeen;
   std::vector<std::vector<HeadToolResult>> priorSeen;
@@ -58,6 +59,7 @@ struct Fake {
     };
     h.nowMs = [this]() { return clock; };
     h.freeHeap = [this]() { return heap; };
+    h.largestBlock = [this]() { return largest; };
     return h;
   }
 };
@@ -237,6 +239,44 @@ static void test_each_cap_reason_reaches_the_step() {
     HeadLoopConfig cfg;
     runHeadLoop(cfg, f.hooks());
     TEST_ASSERT_EQUAL_STRING("stalled", f.capReasonSeen.back().c_str());
+  }
+}
+
+// CUM-404: the per-round re-gate also cuts on FRAGMENTATION - the largest
+// contiguous internal block below roundMinLargest, even when total free is ample -
+// because that is what fails a round's mbedTLS handshake alloc. Same "heap" cap
+// reason (the owner-visible "low on memory" notice). Off by default (roundMinLargest
+// 0 => skip), so a build that does not set it is byte-identical.
+static void test_round_gate_cuts_on_fragmentation() {
+  {   // fragmented: free ample, largest below the guard -> cut with "heap"
+    Fake f;
+    f.heap = 100000;   // total free is fine...
+    f.largest = 4000;  // ...but the largest block is below the round guard (5000, CUM-404 v2)
+    f.script = {stepCall("x"), stepFinished("{\"reply\":\"a\"}")};
+    HeadLoopConfig cfg; cfg.roundMinHeap = 12000; cfg.roundMinLargest = 5000;
+    runHeadLoop(cfg, f.hooks());
+    TEST_ASSERT_EQUAL_STRING("heap", f.capReasonSeen.back().c_str());
+  }
+  {   // CYD-healthy: largest ~5 KB (>= the 5000 guard) does NOT cut the round
+    Fake f;
+    f.heap = 26000;
+    f.largest = 5100;   // pinned near 5 KB by the DMA bounce buffer, but >= the guard
+    f.script = {stepCall("x"), stepFinished("{\"reply\":\"a\"}")};
+    HeadLoopConfig cfg; cfg.roundMinHeap = 12000; cfg.roundMinLargest = 5000;
+    runHeadLoop(cfg, f.hooks());
+    TEST_ASSERT_EQUAL_STRING("", f.capReasonSeen[0].c_str());   // round ran, no heap cut
+    TEST_ASSERT_EQUAL(1, (int)f.dispatched.size());
+  }
+  {   // guard unset (default 0): a low largest block does NOT cut the round
+    Fake f;
+    f.heap = 100000;
+    f.largest = 4000;
+    f.script = {stepCall("x"), stepFinished("{\"reply\":\"a\"}")};
+    HeadLoopConfig cfg; cfg.roundMinHeap = 12000;   // roundMinLargest left 0
+    runHeadLoop(cfg, f.hooks());
+    // The tool round ran (no heap cut); the loop ended on the model finishing.
+    TEST_ASSERT_EQUAL_STRING("", f.capReasonSeen[0].c_str());
+    TEST_ASSERT_EQUAL(1, (int)f.dispatched.size());
   }
 }
 
@@ -526,6 +566,7 @@ int main(int, char**) {
   RUN_TEST(test_rounds_cap_default_eight_is_graceful);
   RUN_TEST(test_forced_final_round_carries_the_cap_reason);
   RUN_TEST(test_each_cap_reason_reaches_the_step);
+  RUN_TEST(test_round_gate_cuts_on_fragmentation);
   RUN_TEST(test_cap_reason_text_is_readable);
   RUN_TEST(test_final_round_notice_bans_promising_future_work);
   RUN_TEST(test_rounds_cap_failsoft_when_model_wont_stop);

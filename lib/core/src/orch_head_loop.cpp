@@ -52,6 +52,12 @@ HeadOutcome runHeadLoop(const HeadLoopConfig& cfg, const HeadLoopHooks& hooks) {
     } else if (round > 0 && cfg.roundMinHeap && hooks.freeHeap &&
                hooks.freeHeap() < cfg.roundMinHeap) {
       reason = "heap";
+    } else if (round > 0 && cfg.roundMinLargest && hooks.largestBlock &&
+               hooks.largestBlock() < cfg.roundMinLargest) {
+      // CUM-404: fragmentation, not total free, is what fails a round's mbedTLS
+      // handshake alloc - cut the loop honestly (same "heap" cap reason -> the
+      // owner-visible "the device is low on memory" notice) before it OOMs.
+      reason = "heap";
     } else if (forceFinal) {
       reason = forceReason;
     }
