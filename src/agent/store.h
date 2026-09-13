@@ -1,6 +1,8 @@
 #pragma once
 #include <Arduino.h>
 
+#include "nimbus/profile.h"   // nimbus::ProfileId for applyProfileDefaults (CUM-395)
+
 // store - device configuration accessors for the Orchestrator subsystem, backed
 // by solide::memory (NVS). Mirrors the subset of Nuage-Solide's storage.h that
 // the ported agent code (adapters + orchestrator + telegram) depends on, so the
@@ -260,6 +262,18 @@ uint8_t sfxLevelOrch();  // default 2 (medium)
 String  sfxTheme();      // "pulse" (default) | legacy themes fall back to the general pool
 uint8_t sfxVolume();     // master speaker volume 0-100 (default 50 - the amp+speaker overdrive hot)
 uint16_t saverMin();     // screensaver idle minutes, 0 = off (default 5)
+// CUM-395: did the OWNER explicitly set this key (vs. it holding a shipped or a
+// profile-seeded default)? An explicit owner value always wins over a battery-mode
+// default, so applyProfileDefaults() only seeds a key whose has*() is false.
+bool     hasSaverMin();
+bool     hasSfxLevelNotif();
+bool     hasSfxLevelOrch();
+// Seed the screen-rest + sound-level defaults for a battery mode (CUM-395). Writes a
+// profile default ONLY into a key the owner has not set explicitly, so an owner value
+// is never clobbered and a re-selected profile re-seeds the untouched keys. Called on
+// a battery-mode switch. Precedence: explicit owner value > profile default > hard
+// default (see nimbus::effectiveWithProfileDefault).
+void     applyProfileDefaults(nimbus::ProfileId id);
 uint16_t compactAtKB();  // fold trigger: KB of chat since last fold, 0 = off (default 48, clamp 8..512)
 void     setCompactAtKB(uint16_t v);
 // ---- battery/LED protection (owner feature 2026-07-17; study-grounded) -------

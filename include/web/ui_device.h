@@ -1,15 +1,18 @@
 #pragma once
 #include <Arduino.h>
 
-// ui_device - Dashboard pane + the full Settings pane (Phase 3 C1 IA).
-// Settings carries EVERY device control (no-regression rail, PRD §4a): mode,
-// identity + access token, battery mode + themes + the live ring simulator,
-// customization, audio diagnostics + sound effects (incl. the Notifier level),
-// battery, and Connectivity (folded in from the retired ui_wifi.h: reach info,
-// Bluetooth bonds, Wi-Fi join, token rotation, factory reset). All element IDs
-// are unchanged so ui_js.h's wiring works as-is. Copy follows the AGENTS.md
-// copy style guide: labels are plain nouns, rationale lives in .hint.tip
-// blocks behind the tap-? affordance, danger warnings stay visible.
+// ui_device - Dashboard pane + the full Settings pane (Phase 3 C1 IA + the
+// 2026-09 settings-menu IA cleanup, CUM-393/394/395/386).
+// Home carries the device name (its identity is the first thing an owner sets).
+// Settings carries EVERY device control (no-regression rail, PRD 4a): mode,
+// identity + access token, Display (screen only), Ring (themes + demo + preview),
+// sound, one unified Battery area (battery mode preset + monitor + readout +
+// protection + hardware + customization), and Connectivity (folded in from the
+// retired ui_wifi.h: reach info, Bluetooth bonds, Wi-Fi join, token rotation,
+// factory reset). All element IDs are unchanged so ui_js.h's wiring works as-is.
+// Copy follows the AGENTS.md copy style guide: labels are plain nouns, rationale
+// lives in .hint.tip blocks behind the tap-? affordance, danger warnings stay
+// visible.
 
 static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 <div class=eyebrow>Overview</div>
@@ -26,6 +29,11 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 <button type=button id=homeRestart>Restart</button>
 <button type=button id=homePowerOff>Power off</button>
 </div>
+</div>
+<div class=sec>
+<h2>Device name <button class=qh type=button aria-expanded=false aria-label="About the device name">?</button></h2>
+<p class="hint tip">Sets the device ID: the setup Wi-Fi network (<b><span id=idApSsid>&hellip;</span></b>), the network address (<b><span id=idMdns>&hellip;</span></b>), the Bluetooth name, and what the assistant calls itself. A memory directive can override the identity the assistant uses for itself. Leave blank to name it automatically. Takes effect after restart.</p>
+<div class=row><input id=devName placeholder="Nimbus" maxlength=24><button id=devNameSave type=button>Save</button></div>
 </div>
 <div class=sec id=whatNext style="display:none;border-color:var(--teal)">
 <h2>What next</h2>
@@ -48,21 +56,18 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 <div class=pane id=pane-set style="display:none">
 <div class=eyebrow>Device</div>
 <div class=ptitle>Settings</div>
-<p class=plede>Mode, light, sound, power, and connectivity - all in one place.</p>
+<p class=plede>Mode, light, sound, power, and connectivity, all in one place.</p>
 
 <details class=setgroup><summary>Mode &amp; identity<span class=chev>&rsaquo;</span></summary>
 <div class=setbody>
 <label>Mode <button class=qh type=button aria-expanded=false aria-label="About modes">?</button></label>
-<p class="hint tip"><b>Notifier</b> turns the ring into a status light for your coding sessions, connected over Bluetooth. <b>Orchestrator</b> runs the AI assistant - Telegram, voice, and memory. Switching modes restarts the device.</p>
+<p class="hint tip"><b>Notifier</b> turns the ring into a status light for your coding sessions, connected over Bluetooth. <b>Orchestrator</b> runs the AI assistant: Telegram, voice, and memory. Switching modes restarts the device.</p>
 <select id=mode>
-<option value=0>Notifier - status light</option>
-<option value=1>Orchestrator - AI assistant</option>
+<option value=0>Notifier: status light</option>
+<option value=1>Orchestrator: AI assistant</option>
 </select>
-<label>Device name <button class=qh type=button aria-expanded=false aria-label="About the device name">?</button></label>
-<p class="hint tip">Used for the setup Wi-Fi network (<b><span id=idApSsid>&hellip;</span></b>), the network address (<b><span id=idMdns>&hellip;</span></b>), Bluetooth, and what the assistant calls itself. Leave blank to name it automatically. Takes effect after restart.</p>
-<div class=row><input id=devName placeholder="Nimbus" maxlength=24><button id=devNameSave type=button>Save</button></div>
 <label>Timezone <button class=qh type=button aria-expanded=false aria-label="About the timezone">?</button></label>
-<p class="hint tip">Sets when daily and weekly routines - including nightly memory upkeep - fire. POSIX format: pick a suggestion or type one, e.g. <b>GMT0BST,M3.5.0/1,M10.5.0/2</b> for the UK. Blank = UTC. Applies immediately - check the clock below after saving.</p>
+<p class="hint tip">Sets when daily and weekly routines, including nightly memory upkeep, fire. POSIX format: pick a suggestion or type one, e.g. <b>GMT0BST,M3.5.0/1,M10.5.0/2</b> for the UK. Blank = UTC. Applies immediately: check the clock below after saving.</p>
 <div class=row><input id=devTz list=tzlist placeholder="UTC0" maxlength=48><button id=devTzSave type=button>Save</button></div>
 <datalist id=tzlist>
 <option value="UTC0">UTC</option>
@@ -77,7 +82,7 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 <option value="AEST-10AEDT,M10.1.0,M4.1.0/3">Sydney</option>
 </datalist>
 <label>Device clock</label>
-<p class="hint tip">Set automatically from the internet once Wi-Fi connects - there is no manual clock. Until it syncs, daily and weekly routines wait.</p>
+<p class="hint tip">Set automatically from the internet once Wi-Fi connects: there is no manual clock. Until it syncs, daily and weekly routines wait.</p>
 <div class=row><b id=devClock>&hellip;</b><span class=hint id=clockBadge>&hellip;</span><button id=clockSyncBtn type=button>Sync now</button></div>
 <div id=idTokenRow>
 <label>Device sign-in code <button class=qh type=button aria-expanded=false aria-label="About the device sign-in code">?</button></label>
@@ -97,54 +102,30 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 <div class=row><input id=saverMin type=number min=0 max=1440 step=1 style="width:90px"> minutes</div>
 <div id=tchCalWrap>
 <label>Touch calibration <button class=qh type=button aria-expanded=false aria-label="About touch calibration">?</button></label>
-<p class="hint tip">Only for the touch display. Each panel reads slightly differently, so if taps land off-target, enter the corner readings as <b>minX,maxX,minY,maxY</b> - optionally a fifth number to flip axes (1 swaps X and Y, 2 flips X, 4 flips Y; add them together). Leave blank for the defaults. Applies immediately.</p>
+<p class="hint tip">Only for the touch display. Each panel reads slightly differently, so if taps land off-target, enter the corner readings as <b>minX,maxX,minY,maxY</b>, optionally a fifth number to flip axes (1 swaps X and Y, 2 flips X, 4 flips Y; add them together). Leave blank for the defaults. Applies immediately.</p>
 <div class=row><input id=tchCal placeholder="200,3900,240,3850" maxlength=32><button id=tchCalSave type=button>Save</button></div>
 </div>
 <div id=tOrient style="display:none"><label>Touch orientation</label>
 <p class="hint tip">This screen self-calibrates, so there is nothing to measure. If taps land in the wrong place, toggle these until a tap lands where you touch. Applies immediately.</p>
 <div class=row style="gap:16px;flex-wrap:wrap"><label class=pr><input type=checkbox id=tSwap> Swap X and Y</label><label class=pr><input type=checkbox id=tFlipX> Flip X</label><label class=pr><input type=checkbox id=tFlipY> Flip Y</label></div></div>
+</div>
+</details>
+
+<details class=setgroup id=ringGroup><summary>Ring<span class=chev>&rsaquo;</span></summary>
+<div class=setbody>
 <label>Theme <button class=qh type=button aria-expanded=false aria-label="About themes">?</button></label>
-<p class="hint tip">Each theme is a family of colors. A session's status picks its color role and motion - the ring's status language. The legend below shows the mapping.</p>
+<p class="hint tip">Each theme is a family of colors. A session's status picks its color role and motion, the ring's status language. The legend below shows the mapping.</p>
 <div id=themeChips></div>
 <button id=prevBtn type=button style="margin-top:6px">Demo on Device</button>
 <label>Preview <button class=qh type=button aria-expanded=false aria-label="About the preview">?</button></label>
-<p class="hint tip">Pick a status and mode to see the pattern in the selected theme. <b>Demo on Device</b> (above) plays it on the physical ring for a few seconds - nothing is saved.</p>
+<p class="hint tip">Pick a status and mode to see the pattern in the selected theme. <b>Demo on Device</b> (above) plays it on the physical ring for a few seconds; nothing is saved.</p>
 <div id=ringsimwrap style="display:flex;flex-direction:column;align-items:center;gap:10px;margin:6px 0 2px">
 <canvas id=ringsim width=440 height=440 style="width:220px;height:220px"></canvas>
 <div id=ringsimStatus style="display:flex;gap:4px;flex-wrap:wrap;justify-content:center"></div>
 <div id=ringsimPosture style="display:flex;gap:4px;justify-content:center"></div>
 </div>
 <div id=statusLegend></div>
-</div>
-</details>
-
-<details class=setgroup id=battModeGroup><summary>Battery mode<span class=chev>&rsaquo;</span></summary>
-<div class=setbody>
-<div id=profiles>
-<label class=pr><input type=radio name=profile value=0> Dark</label>
-<label class=pr><input type=radio name=profile value=1> Balanced</label>
-<label class=pr><input type=radio name=profile value=2> Full</label>
-<button class=qh type=button aria-expanded=false aria-label="About battery modes">?</button>
-</div>
-<p class="hint tip">The battery mode sets the light. <b>Dark</b>: lights off - only a job error breathes red. <b>Balanced</b>: a single soft cue in the theme color, dimmer, shorter holds. <b>Full</b>: every session a color arc at full brightness. Each battery mode is a preset you can adjust under Customize battery mode.</p>
-<p class=hint id=battNoRead style="display:none">No battery reading. The charge readout, low-battery warnings, and power saving stay inactive until the device can read a pack.</p>
-<label class=pr style="margin-top:8px"><input type=checkbox id=lbRing> Low-battery light <button class=qh type=button aria-expanded=false aria-label="About the low-battery light">?</button></label>
-<p class="hint tip">Shows a dim red pulse on the ring for a few seconds each minute while the battery is low. Off by default, because a ring lit all night uses the power it is warning about. The screen notice and the Telegram message are sent either way.</p>
-<label class=pr><input type=checkbox id=lbSaver> Save power when low <button class=qh type=button aria-expanded=false aria-label="About saving power when low">?</button></label>
-<p class="hint tip">Switches to the Dark battery mode while the battery is low, then returns to the chosen mode once it recovers. On by default.</p>
-<label class=pr><input type=checkbox id=battMon> Monitor the battery <button class=qh type=button aria-expanded=false aria-label="About battery monitoring">?</button></label>
-<p class="hint tip">Reads the battery pack for the charge readout, low-battery warnings, and sleep protection. Turn it on when the device has a battery, or before fitting one. Takes effect after a restart.</p>
-<div class=row id=battRestartRow style="display:none;margin-top:6px"><button type=button id=battRestart>Restart now</button><span class=hint style="align-self:center">Applies the battery monitor change.</span></div>
-<p class=hint id=effprof></p>
-</div>
-</details>
-
-<details class=setgroup id=custProfGroup><summary>Customize battery mode: <span id=custProfName>Balanced</span><span class=chev>&rsaquo;</span></summary>
-<div class=setbody>
-<p class=hint>Each value starts at the selected battery mode's default. Set overrides it; Reset returns it.</p>
-<div id=params></div>
-<div class=row style="margin-top:10px"><button id=revertProf type=button>Revert to Defaults</button></div>
-<p class=hint id=revertMsg></p>
+<p class=hint>Ring brightness and effects are part of each battery mode, set under Battery.</p>
 </div>
 </details>
 
@@ -184,6 +165,18 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 
 <details class=setgroup id=battsec style="display:none"><summary>Battery<span class=chev>&rsaquo;</span></summary>
 <div class=setbody>
+<label>Battery mode <button class=qh type=button aria-expanded=false aria-label="About battery modes">?</button></label>
+<div id=profiles>
+<label class=pr><input type=radio name=profile value=0> Dark</label>
+<label class=pr><input type=radio name=profile value=1> Balanced</label>
+<label class=pr><input type=radio name=profile value=2> Full</label>
+</div>
+<p class="hint tip">The battery mode is a behavior profile: it sets the ring light and how much power the device spends. <b>Dark</b>: lights off, only a job error breathes red. <b>Balanced</b>: a single soft cue in the theme color, dimmer, shorter holds. <b>Full</b>: every session a color arc at full brightness. Choosing a mode also sets a starting screen rest and sound level; any value you set yourself always stays. Each battery mode is a preset you can adjust under Customize below.</p>
+<p class=hint id=effprof></p>
+<label class=pr style="margin-top:8px"><input type=checkbox id=battMon> Monitor the battery <button class=qh type=button aria-expanded=false aria-label="About battery monitoring">?</button></label>
+<p class="hint tip">Reads the battery pack for the charge readout, low-battery warnings, and sleep protection. Turn it on when the device has a battery, or before fitting one. Takes effect after a restart.</p>
+<div class=row id=battRestartRow style="display:none;margin-top:6px"><button type=button id=battRestart>Restart now</button><span class=hint style="align-self:center">Applies the battery monitor change.</span></div>
+<p class=hint id=battNoRead style="display:none">No battery reading. The charge readout, low-battery warnings, and power saving stay inactive until the device can read a pack.</p>
 <div style="height:20px;background:var(--raise2);border:1px solid var(--line2);border-radius:6px;margin:10px 0 6px;overflow:hidden;position:relative">
 <div id=battbar style="height:100%;width:0;background:linear-gradient(90deg,#3a7,#7fd1c8);transition:width .3s"></div>
 <span id=battpct style="position:absolute;left:8px;top:2px;font-size:12px;color:#eee">-</span></div>
@@ -198,14 +191,18 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 </tbody></table>
 <div class=row><button id=battcalBtn type=button>Calibrate Full Charge</button><button class=qh type=button aria-expanded=false aria-label="About calibration">?</button></div>
 <div class=hint id=battcalMsg></div>
-<p class="hint tip">The voltage sensor reads a full pack low. With the battery fully charged, calibrate to anchor 100% to the current reading - stored per device.</p>
+<p class="hint tip">The voltage sensor reads a full pack low. With the battery fully charged, calibrate to anchor 100% to the current reading, stored per device.</p>
+<label class=pr style="margin-top:8px"><input type=checkbox id=lbRing> Low-battery light <button class=qh type=button aria-expanded=false aria-label="About the low-battery light">?</button></label>
+<p class="hint tip">Shows a dim red pulse on the ring for a few seconds each minute while the battery is low. Off by default, because a ring lit all night uses the power it is warning about. The screen notice and the Telegram message are sent either way.</p>
+<label class=pr><input type=checkbox id=lbSaver> Save power when low <button class=qh type=button aria-expanded=false aria-label="About saving power when low">?</button></label>
+<p class="hint tip">Switches to the Dark battery mode while the battery is low, then returns to the chosen mode once it recovers. On by default.</p>
 <table><tbody>
 <tr><td>Low-battery sleep</td><td><input id=sleepMv type=number min=0 max=6800 step=50 style="width:90px"> mV <button class=qh type=button aria-expanded=false aria-label="About low-battery sleep">?</button><p class="hint tip">Below this pack voltage the device sleeps to protect the battery. Default 6000 mV, about 10% charge. 0 turns protection off.</p></td></tr>
 <tr><td>Stay awake above</td><td><input id=wakeMv type=number min=0 max=7600 step=50 style="width:90px"> mV <button class=qh type=button aria-expanded=false aria-label="About the wake threshold">?</button><p class="hint tip">After waking, the device stays on only above this voltage. Lower values allow deeper drain cycles; 7200 mV stops strictly at 10%.</p></td></tr>
 <tr><td>Skip low-battery sleep</td><td><label><input id=sleepOvr type=checkbox> override</label> <span class=hint>&#9888; Allows discharge below the safe floor, which can permanently damage the battery. Resets at restart.</span></td></tr>
 <tr><td>Full brightness</td><td><label><input id=brightOvr type=checkbox> allow 100%</label> <span class=hint>&#9888; Can overheat and damage the device. The thermal guard stays active. Resets at restart.</span></td></tr>
 </tbody></table>
-<p class=hint style="margin-top:12px"><b>Battery hardware</b> - match these to the pack and sense resistors actually fitted, so voltage and estimates are correct.</p>
+<p class=hint style="margin-top:12px"><b>Battery hardware</b>: match these to the pack and sense resistors actually fitted, so voltage and estimates are correct.</p>
 <table><tbody>
 <tr><td>Pack capacity</td><td><input id=battCapMah type=number min=100 max=20000 step=50 style="width:90px"> mAh <button class=qh type=button aria-expanded=false aria-label="About pack capacity">?</button><p class="hint tip">The fitted pack: LiitoKala 3500, a reclaimed ~500 mAh cell, and so on. Drives time-left and the capacity readout.</p></td></tr>
 <tr><td>Chemistry</td><td><select id=battChem style="width:150px"><option value=liion>Li-ion / LiPo</option><option value=lifepo4>LiFePO4</option></select> <button class=qh type=button aria-expanded=false aria-label="About battery chemistry">?</button><p class="hint tip">Which discharge curve to use. Li-ion runs about 4.2 to 3.0 V per cell; LiFePO4 sits near 3.2 to 3.3 V for most of its life, so its percent is coarser. Pick the one printed on your cell.</p></td></tr>
@@ -216,6 +213,14 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 </tbody></table>
 <div class=row><button id=protSave type=button>Save</button></div>
 <p class=hint id=batthint>Estimates improve over the first few charge cycles.</p>
+<details class=setgroup id=custProfGroup><summary>Customize battery mode: <span id=custProfName>Balanced</span><span class=chev>&rsaquo;</span></summary>
+<div class=setbody>
+<p class=hint>Each value starts at the selected battery mode's default. Set overrides it; Reset returns it.</p>
+<div id=params></div>
+<div class=row style="margin-top:10px"><button id=revertProf type=button>Revert to Defaults</button></div>
+<p class=hint id=revertMsg></p>
+</div>
+</details>
 </div>
 </details>
 
@@ -231,7 +236,7 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 <div id=fwBarWrap style="display:none;height:14px;background:var(--raise2);border:1px solid var(--line2);border-radius:6px;margin:8px 0;overflow:hidden"><div id=fwBar style="height:100%;width:0;background:linear-gradient(90deg,#3a7,#7fd1c8);transition:width .5s"></div></div>
 <div class=row><button id=fwCheck type=button>Check for Updates</button><button id=fwInstall type=button style="display:none">Install Update</button><button class=qh type=button aria-expanded=false aria-label="About updates">?</button></div>
 <div class=hint id=fwMsg></div>
-<p class="hint tip">Updates download from this project's GitHub releases over TLS and are cryptographically signed - the device verifies each one and reverts on its own if the new version fails to start. Keep the device powered during an install.</p>
+<p class="hint tip">Updates download from this project's GitHub releases over TLS and are cryptographically signed: the device verifies each one and reverts on its own if the new version fails to start. Keep the device powered during an install.</p>
 <label class=pr style="margin-top:8px"><input type=checkbox id=autoUpd> Automatic updates <button class=qh type=button aria-expanded=false aria-label="About automatic updates">?</button></label>
 <p class="hint tip">Installs new firmware when the device is idle and charged, then restarts.</p>
 </div>
@@ -257,7 +262,7 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 
 <div id=wifiGroup>
 <b style="display:block;margin-top:14px">Wi-Fi <button class=qh type=button aria-expanded=false aria-label="About Wi-Fi">?</button></b>
-<p class="hint tip">Connects the device to your network - required for Orchestrator mode. Notifier over Bluetooth works without it. 2.4 GHz networks only.</p>
+<p class="hint tip">Connects the device to your network, required for Orchestrator mode. Notifier over Bluetooth works without it. 2.4 GHz networks only.</p>
 <div id=wifiConnState class=hint style="margin:4px 0 8px">-</div>
 <label>Saved Wi-Fi networks <span id=wifiCount class=hint style="font-weight:normal"></span></label>
 <p class=hint>The device remembers several networks and joins whichever one it can see, so carrying it between places keeps it online.</p>
@@ -284,7 +289,7 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 
 <div id=btGroup>
 <b style="display:block;margin-top:14px">Bluetooth <button class=qh type=button aria-expanded=false aria-label="About Bluetooth">?</button></b>
-<p class="hint tip">In Notifier mode, the ring and screen are driven over an encrypted Bluetooth link from the nimbus-notify broker on your computer. Pairing happens automatically on the broker's first connect - Nimbus won't appear in your computer's Bluetooth list. Bluetooth is off in Orchestrator mode.</p>
+<p class="hint tip">In Notifier mode, the ring and screen are driven over an encrypted Bluetooth link from the nimbus-notify broker on your computer. Pairing happens automatically on the broker's first connect: Nimbus won't appear in your computer's Bluetooth list. Bluetooth is off in Orchestrator mode.</p>
 <div id=btOrchLine class=hint style="display:none">Bluetooth is off in Orchestrator mode.</div>
 <div id=btTable style="display:none">
 <table><tbody>

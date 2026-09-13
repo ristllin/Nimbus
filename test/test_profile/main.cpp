@@ -172,9 +172,67 @@ static void test_is_ring_param_classifies_the_led_controls() {
   TEST_ASSERT_EQUAL(7, ringCount);   // the two sets partition every param (7 + 5 == 12)
 }
 
+// CUM-395: a battery mode is also a behavior profile, seeding screen-rest and
+// sound-level defaults (a NON-Param mapping - no device-menu row). Balanced returns
+// the shipped hard defaults so a fresh Balanced device is unchanged; Battery Saver
+// rests fast + quiet, Desk stays on + louder.
+static void test_profile_screensaver_and_sound_defaults() {
+  // Screen-rest minutes: Battery Saver rests fast, Balanced = shipped 5, Desk stays on.
+  TEST_ASSERT_EQUAL(2, profileSaverMinutes(ProfileId::BatterySaver));
+  TEST_ASSERT_EQUAL(5, profileSaverMinutes(ProfileId::Balanced));
+  TEST_ASSERT_EQUAL(0, profileSaverMinutes(ProfileId::Desk));
+  // Sound level, Orchestrator mode (notifier=false): quieter on battery, louder on desk.
+  TEST_ASSERT_EQUAL(1, profileSfxLevel(ProfileId::BatterySaver, false));
+  TEST_ASSERT_EQUAL(2, profileSfxLevel(ProfileId::Balanced, false));   // shipped Orch default
+  TEST_ASSERT_EQUAL(3, profileSfxLevel(ProfileId::Desk, false));
+  // Sound level, Notifier mode (notifier=true): silent out of the box except on desk.
+  TEST_ASSERT_EQUAL(0, profileSfxLevel(ProfileId::BatterySaver, true));
+  TEST_ASSERT_EQUAL(0, profileSfxLevel(ProfileId::Balanced, true));    // shipped Notifier default
+  TEST_ASSERT_EQUAL(1, profileSfxLevel(ProfileId::Desk, true));
+}
+
+// The precedence rule agent::store::applyProfileDefaults() enforces on device: an
+// explicit owner value ALWAYS wins; otherwise the selected battery mode's default
+// applies and a re-selected mode re-seeds the untouched key. The store's "was set"
+// flags are device/NVS-only, so the rule itself is exercised here in portable code.
+static void test_profile_default_precedence_owner_value_wins() {
+  const int32_t hard = 5;   // caller's hard default (store's saverMin fallback)
+  // Owner has NOT set the key: effective follows the profile default, and switching
+  // the battery mode changes that effective default.
+  TEST_ASSERT_EQUAL(profileSaverMinutes(ProfileId::Desk),
+                    effectiveWithProfileDefault(false, hard, profileSaverMinutes(ProfileId::Desk)));
+  TEST_ASSERT_EQUAL(profileSaverMinutes(ProfileId::BatterySaver),
+                    effectiveWithProfileDefault(false, hard, profileSaverMinutes(ProfileId::BatterySaver)));
+  // Owner HAS set the key to 30: it survives every profile switch, ignoring the default.
+  const int32_t owner = 30;
+  TEST_ASSERT_EQUAL(owner, effectiveWithProfileDefault(true, owner, profileSaverMinutes(ProfileId::Desk)));
+  TEST_ASSERT_EQUAL(owner, effectiveWithProfileDefault(true, owner, profileSaverMinutes(ProfileId::BatterySaver)));
+  TEST_ASSERT_EQUAL(owner, effectiveWithProfileDefault(true, owner, profileSaverMinutes(ProfileId::Balanced)));
+}
+
+// CUM-395 one-time migration: an updated device may hold a persisted pre-feature
+// screen-rest / sound value. Adopt it as an explicit owner override only when it
+// DIFFERS from the shipped hard default; a value EQUAL to the default (the old device
+// menu wrote sfx unconditionally, so equal-to-default is almost never a real choice)
+// stays unset so a battery mode can still seed it. A never-persisted key is never adopted.
+static void test_adopt_pre_feature_value_only_when_it_differs() {
+  // Orchestrator sound hard default 2.
+  TEST_ASSERT_FALSE(adoptAsOwnerSet(false, 0, 2));   // never persisted -> not adopted
+  TEST_ASSERT_FALSE(adoptAsOwnerSet(true, 2, 2));    // persisted == default -> treated as unset
+  TEST_ASSERT_TRUE(adoptAsOwnerSet(true, 3, 2));     // persisted != default -> owner override
+  TEST_ASSERT_TRUE(adoptAsOwnerSet(true, 0, 2));     // an explicit Off differs -> owner override
+  // Screen-rest hard default 5.
+  TEST_ASSERT_FALSE(adoptAsOwnerSet(true, 5, 5));
+  TEST_ASSERT_TRUE(adoptAsOwnerSet(true, 0, 5));     // always-on, owner chose it
+  TEST_ASSERT_TRUE(adoptAsOwnerSet(true, 15, 5));
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_is_ring_param_classifies_the_led_controls);
+  RUN_TEST(test_profile_screensaver_and_sound_defaults);
+  RUN_TEST(test_profile_default_precedence_owner_value_wins);
+  RUN_TEST(test_adopt_pre_feature_value_only_when_it_differs);
   RUN_TEST(test_presets_match_plan_table);
   RUN_TEST(test_param_meta_shapes);
   RUN_TEST(test_attn_hold_default_and_range);

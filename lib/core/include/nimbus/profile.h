@@ -96,6 +96,34 @@ int32_t stepParam(Param p, int32_t cur, int dir);
 // storage; enum-typed params hold the enum's integer value.
 int32_t presetValue(ProfileId id, Param p);
 
+// Behavior-profile defaults for the two cross-cutting settings that are NOT ring
+// Params but whose sensible default tracks the battery mode (CUM-395). These are
+// suggested DEFAULTS a profile seeds, not sparse-override slots: they carry no
+// device-menu row and never appear in the Config param list. Selecting a battery
+// mode seeds these unless the owner has set the key explicitly (see the precedence
+// helper below and agent::store::applyProfileDefaults, which persists the seed).
+//   profileSaverMinutes - screen-rest idle minutes (0 = never rests / always on).
+//   profileSfxLevel      - sound-effect level 0..3, per operating mode.
+// Balanced returns the shipped hard defaults (screen rest 5 min, Notifier sound
+// Off, Orchestrator sound Medium), so a fresh Balanced device is unchanged.
+uint16_t profileSaverMinutes(ProfileId id);
+uint8_t  profileSfxLevel(ProfileId id, bool notifier);
+
+// Precedence for a profile-seeded setting: an explicit owner value ALWAYS wins over
+// the profile default (which in turn wins over the caller's hard default). Pure and
+// side-effect free so both the device glue and its host tests share one rule.
+//   effective = ownerSet ? ownerValue : profileDefault
+int32_t effectiveWithProfileDefault(bool ownerSet, int32_t ownerValue,
+                                    int32_t profileDefault);
+
+// One-time migration rule (CUM-395): should a persisted pre-feature value be adopted
+// as an explicit owner choice, so a battery-mode default never overwrites it? Yes only
+// when the value is present AND differs from the shipped hard default. A persisted
+// value EQUAL to the default is treated as untouched: the old on-device menu wrote some
+// of these keys unconditionally, so an equal-to-default value is almost certainly a
+// stale default, not a deliberate choice, and a battery mode may still drive it.
+bool adoptAsOwnerSet(bool present, int32_t value, int32_t hardDefault);
+
 // Sparse user overrides on top of the active profile.
 class Config {
  public:

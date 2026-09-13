@@ -293,6 +293,14 @@
 #define AKEY_SFX_THEME      "sfxTheme"       // sound theme slug; "pulse" is the only shipping theme
 #define AKEY_SFX_VOL        "sfxVol"         // master speaker volume 0-100 (%)
 #define AKEY_SAVER_MIN      "saverMin"       // screensaver idle minutes (0 = off)
+// CUM-395 behavior-profile defaults: a battery-mode switch may seed screen-rest +
+// sound-level defaults, but only for a key the owner has NOT explicitly set. These
+// u8 "was set by the owner" flags separate an owner override (always wins) from a
+// profile-seeded default (re-seeded on the next profile switch). Additive keys.
+#define AKEY_SAVER_MIN_SET  "saverMinSet"    // u8: owner explicitly set the screen rest
+#define AKEY_SFX_LVL_N_SET  "sfxLvlNSet"     // u8: owner explicitly set the Notifier sound level
+#define AKEY_SFX_LVL_O_SET  "sfxLvlOSet"     // u8: owner explicitly set the Orchestrator sound level
+#define AKEY_PROF_SEED_INIT "profSeedInit"   // u8: the one-time "adopt pre-feature values as owner-set" migration has run
 #define AKEY_COMPACT_KB     "compactKB"      // fold trigger: chat KB since last fold (0 = off)
 #define AKEY_SLEEP_MV       "sleepMv"        // low-batt deep-sleep threshold, pack mV (0 = off; default/clamp scale per cell: 2S 6000 = ~10% real SoC, 1S 3000)
 #define AKEY_BATT_RTOP      "battRtop"       // divider R_top (ohms); default 220000
