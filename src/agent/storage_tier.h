@@ -14,8 +14,13 @@ namespace memory {
 
 struct TierInputs {
   bool mountedSd = false;       // g_haveSd: a card was mounted into the data FS this boot
-  bool prevSdSeen = false;      // persisted flag: a card was present the previous boot
-  bool cardHoldsData = false;   // best-effort: a non-empty /mem/vectors.bin is readable off the card
+  // PRIMARY evidence: a non-empty /mem/vectors.bin is readable off the card (via the
+  // read-only solide::storage probe). Needs NO NVS write, so the banner fires even on
+  // a full-NVS device where prevSdSeen could not be written.
+  bool cardHoldsData = false;
+  // SECONDARY best-effort hint: a card was present the previous boot (persisted NVS
+  // flag). May be false on a full NVS; the decision must not depend on it alone.
+  bool prevSdSeen = false;
 };
 
 struct TierDecision {
@@ -23,14 +28,15 @@ struct TierDecision {
   bool sdMissingWithData = false; // LOUD banner: no card mounted, but evidence a card holds memories
 };
 
-// A card is "missing with data" when it is NOT mounted this boot yet either the
-// previous boot saw one OR the card is physically readable with a non-empty
-// vector blob. Never fires while the card is mounted (haveSd true) - the store is
-// live then, so there is nothing to warn about.
+// A card is "missing with data" when it is NOT mounted this boot yet the card is
+// physically readable with a non-empty vector blob (primary, NVS-independent) OR the
+// previous boot saw a card (secondary hint). Either evidence alone raises the banner,
+// so it fires from the probe even when the NVS flag write dropped. Never fires while
+// the card is mounted (haveSd true) - the store is live then, nothing to warn about.
 inline TierDecision decideStorageTier(const TierInputs& in) {
   TierDecision d;
   d.haveSd = in.mountedSd;
-  d.sdMissingWithData = !in.mountedSd && (in.prevSdSeen || in.cardHoldsData);
+  d.sdMissingWithData = !in.mountedSd && (in.cardHoldsData || in.prevSdSeen);
   return d;
 }
 

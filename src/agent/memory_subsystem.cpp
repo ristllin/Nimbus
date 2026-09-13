@@ -3,7 +3,6 @@
 
 #include <LittleFS.h>
 #include <Preferences.h>
-#include <SD.h>                            // CUM-405: read-only probe of the raw SD card
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <esp_task_wdt.h>                  // feed the WDT during a long durable-store wipe
@@ -196,18 +195,35 @@ bool eraseDurableStore() {
 void lock()   { if (g_memMux) xSemaphoreTakeRecursive(g_memMux, portMAX_DELAY); }
 void unlock() { if (g_memMux) xSemaphoreGiveRecursive(g_memMux); }
 
-// CUM-405 evidence #1: is a non-empty vector blob still readable off the RAW SD
-// card even though it did not mount into our data FS this boot? READ-ONLY and fully
-// guarded: with no reachable card SD.cardType() is CARD_NONE / SD.open() returns a
-// null handle, so this returns false and never re-mounts, adopts, or writes to the
-// card (the "no destructive card writes" rule). It only ever strengthens the "a card
-// holds memories" evidence; it can never move the resolved tier.
+// CUM-405 primary evidence: is a non-empty vector blob still readable off the card,
+// even though it did not mount into our data FS this boot? This is the signal the
+// banner leans on - it needs NO NVS write, so it fires on a full-NVS device (Lumi,
+// CUM-389) where the sdSeen flag write silently drops.
+//
+// It routes through solide::storage, NEVER the raw Arduino SPI `SD` global: on an
+// SDMMC board (Freenove/CYD, sdKind=Sdmmc) the card mounts via SD_MMC and `SD` is
+// never begun, so SD.cardType() is ALWAYS CARD_NONE and the old SPI probe was dead
+// in every reachable state (main.cpp:~3125 warns of exactly this). When the card is
+// not currently mounted (the case whenever g_haveSd is false), do ONE non-destructive
+// re-probe (end() then begin(), the same path /api/sdprobe uses) so a card that
+// flaked on the first boot mount gets a second detection chance. Strictly READ-ONLY:
+// we never format, write, or adopt the card (g_fs stays the resolved tier - the whole
+// point of the banner). If we mounted it here, we end() again to leave storage in the
+// exact card-less state main.cpp resolved, so nothing downstream sees a half-adopted
+// card. Safe when the card is genuinely unreachable: begin() fails -> returns false.
 static bool cardHoldsVectorData() {
-  if (SD.cardType() == CARD_NONE) return false;
-  File f = SD.open(kVecSdPath, FILE_READ);
-  if (!f) return false;
-  bool has = f.size() > 0;
-  f.close();
+  bool weMounted = false;
+  if (!solide::storage::available()) {
+    solide::storage::end();              // no-op if nothing is mounted; clears the latch
+    weMounted = solide::storage::begin();// one re-probe; false again if truly no card
+    if (!weMounted) return false;
+  }
+  bool has = false;
+  if (solide::storage::cardType() != 0) {
+    File f = solide::storage::activeFs().open(kVecSdPath, FILE_READ);
+    if (f) { has = f.size() > 0; f.close(); }
+  }
+  if (weMounted) solide::storage::end();  // restore the card-less state we found
   return has;
 }
 
@@ -228,13 +244,15 @@ void begin() {
                          // auto-creates it, so an absent dir made every persist fopen
                          // fail silently (state lost across reboot). Idempotent.
 
-  // CUM-405: decide whether a card is "missing with data" this boot. Read the
-  // previous-boot flag BEFORE overwriting it with the current state, then feed both
-  // it and the read-only raw-card probe into the pure decision (host-tested in
-  // test/test_storage_tier). We persist the current mounted state so the NEXT boot
-  // can look back. On a mounted boot this writes true; on a card-less boot it writes
-  // false (literal "previous boot" semantics) - the raw-card probe is what keeps the
-  // banner up across repeated flaky boots while the card is still physically present.
+  // CUM-405: decide whether a card is "missing with data" this boot. The PRIMARY
+  // signal is the read-only solide::storage probe (card present + non-empty
+  // /mem/vectors.bin): it needs no NVS write, so it fires even on a full-NVS device
+  // (Lumi, CUM-389) where the sdSeen flag below silently drops. The sdSeen flag is a
+  // best-effort SECONDARY hint for the case where the card is momentarily unreachable
+  // at probe time but was present the previous boot. Read the flag BEFORE overwriting
+  // it, feed both into the pure decision (host-tested in test/test_storage_tier), then
+  // persist the current mounted state (literal "previous boot" semantics) only when it
+  // flipped - a write we do NOT depend on succeeding.
   {
     bool prevSdSeen = false;
     {

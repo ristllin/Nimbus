@@ -54,6 +54,24 @@ static void test_truly_cardless_quiet() {
   TEST_ASSERT_FALSE(decide(false, false, false).sdMissingWithData);
 }
 
+// RULING 2026-09-14: the Lumi failure mode. An SDMMC board where the sdSeen NVS
+// write DROPPED (full NVS, CUM-389) so prevSdSeen=false, but the read-only probe now
+// works (routed through solide::storage, not the dead SPI SD global) and finds the
+// card + a non-empty /mem/vectors.bin. The banner MUST still fire from the probe alone
+// - it cannot depend on a write a full-NVS device cannot make.
+static void test_sdmmc_failed_nvs_still_banners() {
+  // mounted=false (card not adopted this boot), prevSdSeen=false (NVS write dropped),
+  // cardHoldsData=true (working probe). Banner fires.
+  TEST_ASSERT_TRUE(decide(false, false, true).sdMissingWithData);
+}
+
+// RULING 2026-09-14: the fresh-device guard. A brand-new device that never had a card
+// and holds an empty store: probe finds nothing (false) and no prior flag. There must
+// be NO false-positive banner nagging an honest card-less device.
+static void test_fresh_device_no_false_banner() {
+  TEST_ASSERT_FALSE(decide(false, false, false).sdMissingWithData);
+}
+
 // Test the invariant, not the instance (AGENTS.md §3): assert the exact rule across
 // ALL 8 input combinations. A new evidence source or a flipped condition that breaks
 // "banner == not mounted AND (prev seen OR card has data)" fails here.
@@ -76,6 +94,8 @@ int main() {
   RUN_TEST(test_prev_seen_banners);
   RUN_TEST(test_card_data_banners);
   RUN_TEST(test_truly_cardless_quiet);
+  RUN_TEST(test_sdmmc_failed_nvs_still_banners);
+  RUN_TEST(test_fresh_device_no_false_banner);
   RUN_TEST(test_full_truth_table);
   return UNITY_END();
 }
