@@ -116,6 +116,14 @@ uint8_t  profileSfxLevel(ProfileId id, bool notifier);
 int32_t effectiveWithProfileDefault(bool ownerSet, int32_t ownerValue,
                                     int32_t profileDefault);
 
+// One-time migration rule (CUM-395): should a persisted pre-feature value be adopted
+// as an explicit owner choice, so a battery-mode default never overwrites it? Yes only
+// when the value is present AND differs from the shipped hard default. A persisted
+// value EQUAL to the default is treated as untouched: the old on-device menu wrote some
+// of these keys unconditionally, so an equal-to-default value is almost certainly a
+// stale default, not a deliberate choice, and a battery mode may still drive it.
+bool adoptAsOwnerSet(bool present, int32_t value, int32_t hardDefault);
+
 // Sparse user overrides on top of the active profile.
 class Config {
  public:

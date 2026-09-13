@@ -160,6 +160,10 @@ int32_t effectiveWithProfileDefault(bool ownerSet, int32_t ownerValue,
   return ownerSet ? ownerValue : profileDefault;
 }
 
+bool adoptAsOwnerSet(bool present, int32_t value, int32_t hardDefault) {
+  return present && value != hardDefault;
+}
+
 int32_t Config::effective(Param p) const {
   return has_[int(p)] ? val_[int(p)] : presetValue(profile_, p);
 }

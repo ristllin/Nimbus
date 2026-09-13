@@ -3938,9 +3938,18 @@ static void settleMenuAfterMutation(uint32_t now) {
     if (newTheme != agent::store::theme()) g_themeFlourishPending = true;   // armed on menu close
     agent::store::setTheme(newTheme);
     // SFX rows: persist the ACTIVE mode's level + the voice theme, then let
-    // the engine re-read (and recount SD variants on a theme change).
-    if (g_orchMode) agent::store::setSfxLevelOrch((uint8_t)g_menu.sfxLevel());
-    else            agent::store::setSfxLevelNotif((uint8_t)g_menu.sfxLevel());
+    // the engine re-read (and recount SD variants on a theme change). Persist the
+    // level only on a REAL change (mirrors the saver guard below): the menu seeds the
+    // sfx row from the mode's stored level, so rewriting an untouched value would latch
+    // the owner-set flag and stop a battery mode from ever seeding the sound default
+    // (CUM-395).
+    if (g_orchMode) {
+      if ((uint8_t)g_menu.sfxLevel() != agent::store::sfxLevelOrch())
+        agent::store::setSfxLevelOrch((uint8_t)g_menu.sfxLevel());
+    } else {
+      if ((uint8_t)g_menu.sfxLevel() != agent::store::sfxLevelNotif())
+        agent::store::setSfxLevelNotif((uint8_t)g_menu.sfxLevel());
+    }
     agent::store::setSfxTheme("pulse");
     agent::store::setSfxVolume((uint8_t)g_menu.sfxVolume());
     ::sfx::refreshConfig();

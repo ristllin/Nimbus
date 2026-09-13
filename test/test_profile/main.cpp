@@ -210,11 +210,29 @@ static void test_profile_default_precedence_owner_value_wins() {
   TEST_ASSERT_EQUAL(owner, effectiveWithProfileDefault(true, owner, profileSaverMinutes(ProfileId::Balanced)));
 }
 
+// CUM-395 one-time migration: an updated device may hold a persisted pre-feature
+// screen-rest / sound value. Adopt it as an explicit owner override only when it
+// DIFFERS from the shipped hard default; a value EQUAL to the default (the old device
+// menu wrote sfx unconditionally, so equal-to-default is almost never a real choice)
+// stays unset so a battery mode can still seed it. A never-persisted key is never adopted.
+static void test_adopt_pre_feature_value_only_when_it_differs() {
+  // Orchestrator sound hard default 2.
+  TEST_ASSERT_FALSE(adoptAsOwnerSet(false, 0, 2));   // never persisted -> not adopted
+  TEST_ASSERT_FALSE(adoptAsOwnerSet(true, 2, 2));    // persisted == default -> treated as unset
+  TEST_ASSERT_TRUE(adoptAsOwnerSet(true, 3, 2));     // persisted != default -> owner override
+  TEST_ASSERT_TRUE(adoptAsOwnerSet(true, 0, 2));     // an explicit Off differs -> owner override
+  // Screen-rest hard default 5.
+  TEST_ASSERT_FALSE(adoptAsOwnerSet(true, 5, 5));
+  TEST_ASSERT_TRUE(adoptAsOwnerSet(true, 0, 5));     // always-on, owner chose it
+  TEST_ASSERT_TRUE(adoptAsOwnerSet(true, 15, 5));
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_is_ring_param_classifies_the_led_controls);
   RUN_TEST(test_profile_screensaver_and_sound_defaults);
   RUN_TEST(test_profile_default_precedence_owner_value_wins);
+  RUN_TEST(test_adopt_pre_feature_value_only_when_it_differs);
   RUN_TEST(test_presets_match_plan_table);
   RUN_TEST(test_param_meta_shapes);
   RUN_TEST(test_attn_hold_default_and_range);

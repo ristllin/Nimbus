@@ -644,9 +644,17 @@ bool hasSfxLevelOrch()  { return solide::memory::getInt(AKEY_SFX_LVL_O_SET, 0) !
 // untouched key on later switches stays correct (CUM-395).
 static void adoptPreFeatureValuesAsOwnerSet() {
   if (solide::memory::getInt(AKEY_PROF_SEED_INIT, 0) != 0) return;
-  if (solide::memory::getInt(AKEY_SAVER_MIN, -1)     >= 0) solide::memory::setInt(AKEY_SAVER_MIN_SET, 1);
-  if (solide::memory::getInt(AKEY_SFX_LVL_NOTIF, -1) >= 0) solide::memory::setInt(AKEY_SFX_LVL_N_SET, 1);
-  if (solide::memory::getInt(AKEY_SFX_LVL_ORCH, -1)  >= 0) solide::memory::setInt(AKEY_SFX_LVL_O_SET, 1);
+  // Adopt a persisted value as an explicit owner choice ONLY when it differs from the
+  // shipped hard default (these mirror the getters above: saverMin 5, sfxLevelNotif 0,
+  // sfxLevelOrch 2). The OLD device menu wrote the sfx levels UNCONDITIONALLY on any
+  // menu change, so a great many updated devices hold the plain default with no real
+  // owner intent - treat those as unset so battery modes can still seed them.
+  const int sv = solide::memory::getInt(AKEY_SAVER_MIN, -1);
+  const int sn = solide::memory::getInt(AKEY_SFX_LVL_NOTIF, -1);
+  const int so = solide::memory::getInt(AKEY_SFX_LVL_ORCH, -1);
+  if (nimbus::adoptAsOwnerSet(sv >= 0, sv, 5)) solide::memory::setInt(AKEY_SAVER_MIN_SET, 1);
+  if (nimbus::adoptAsOwnerSet(sn >= 0, sn, 0)) solide::memory::setInt(AKEY_SFX_LVL_N_SET, 1);
+  if (nimbus::adoptAsOwnerSet(so >= 0, so, 2)) solide::memory::setInt(AKEY_SFX_LVL_O_SET, 1);
   solide::memory::setInt(AKEY_PROF_SEED_INIT, 1);
 }
 // Seed a battery mode's screen-rest + sound-level defaults, but only into keys the
