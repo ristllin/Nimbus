@@ -336,6 +336,12 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 <button id=cloudOff type=button style="display:none">Turn off</button>
 </div>
 <div class=hint id=cloudMsg></div>
+<div id=cloudMintCard style="display:none;margin:10px 0;padding:14px;border:1px solid var(--line);border-radius:14px;background:var(--raise2)">
+<div class=eyebrow>Mint a key for this device</div>
+<p class=hint style="margin:6px 0 8px">A Cumulo Nimbus key will be created for this device with the spend cap you set. You can revoke it anytime in the app.</p>
+<div class=row style="align-items:center"><label for=cloudMintCap>Capacity (credits)</label><input type=number id=cloudMintCap min=1 step=1 value=1000 style="width:110px"><button id=cloudMintSave type=button>Save</button></div>
+<div class=hint id=cloudMintMsg></div>
+</div>
 </div>
 </details>
 

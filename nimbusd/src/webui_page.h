@@ -577,6 +577,12 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <button id=cloudOff type=button style="display:none">Turn off</button>
 </div>
 <div class=hint id=cloudMsg></div>
+<div id=cloudMintCard style="display:none;margin:10px 0;padding:14px;border:1px solid var(--line);border-radius:14px;background:var(--raise2)">
+<div class=eyebrow>Mint a key for this device</div>
+<p class=hint style="margin:6px 0 8px">A Cumulo Nimbus key will be created for this device with the spend cap you set. You can revoke it anytime in the app.</p>
+<div class=row style="align-items:center"><label for=cloudMintCap>Capacity (credits)</label><input type=number id=cloudMintCap min=1 step=1 value=1000 style="width:110px"><button id=cloudMintSave type=button>Save</button></div>
+<div class=hint id=cloudMintMsg></div>
+</div>
 </div>
 </details>
 
@@ -1292,7 +1298,7 @@ function applyHostedCloudChrome(){
   if(!HOSTED)return;
   try{
     const tip=$('cloudTip'); if(tip)tip.style.display='none';
-    ['cloudPair','cloudUnpair','cloudOff','cloudPairCard','cloudMsg'].forEach(id=>{
+    ['cloudPair','cloudUnpair','cloudOff','cloudPairCard','cloudMsg','cloudMintCard'].forEach(id=>{
       const el=$(id); if(el)el.style.display='none';});
     const line=$('cloudLine');
     if(line){line.textContent='This instance is reached through its cloud link.';
@@ -1687,6 +1693,28 @@ function _chatTraceHint(){
   else if(!GB.sd)m='No SD card, so turn details can’t be stored.';
   el.textContent=m; el.style.display=m?'':'none';
 }
+// CUM-397: the mint affordance. Save posts the capacity, then we poll for the
+// honest outcome (the device message is the single source of truth) and refresh.
+function setMintMsg(t,err){var m=$('cloudMintMsg');if(m){m.textContent=t||'';m.style.color=t?(err?'#e0b870':'#7fd1c8'):'';}}
+function doMint(){
+  var capEl=$('cloudMintCap'),cap=capEl?parseInt(capEl.value,10):0;
+  if(!(cap>=1)){setMintMsg('Enter a capacity of at least 1 credit.',true);return;}
+  var btn=$('cloudMintSave');if(btn)btn.disabled=true;
+  setMintMsg('Minting a key…',false);
+  var f=new FormData();f.append('capacity',String(cap));
+  fetch('/api/cloud/mintkey',{method:'POST',body:f}).then(r=>r.json().catch(()=>({})).then(j=>({s:r.status,j:j}))).then(x=>{
+    if(x.s>=400){setMintMsg((x.j&&x.j.message)||'Couldn\'t mint a key. Try again.',true);if(btn)btn.disabled=false;return;}
+    pollMint(btn,40);
+  }).catch(()=>{setMintMsg('Couldn\'t reach the device. Try again.',true);if(btn)btn.disabled=false;});
+}
+function pollMint(btn,left){
+  if(left<=0){setMintMsg('Still working. Check the Providers section in a moment.',true);if(btn)btn.disabled=false;return;}
+  fetch('/api/cloud/mintkey').then(r=>r.json()).then(m=>{
+    if(m.state==='pending'){setTimeout(()=>pollMint(btn,left-1),1500);return;}
+    if(m.ok){setMintMsg(m.message||'Key minted.',false);loadState();}
+    else{setMintMsg(m.message||'Couldn\'t mint a key. Try again.',true);if(btn)btn.disabled=false;}
+  }).catch(()=>setTimeout(()=>pollMint(btn,left-1),1500));
+}
 function applyState(d){
   if(d.storeSD!==undefined){GB.sd=!!d.storeSD&&!d.sdLost;_chatTraceHint();}
   // CUM-15: reveal the full-card Format control only when the driver supports it.
@@ -1734,6 +1762,16 @@ function applyState(d){
     $('cloudPair').onclick=()=>cpost('pair',$('cloudPair'),'Starting pairing…','Pairing started - scan the QR or enter the code.');
     $('cloudUnpair').onclick=()=>cpost('unpair',$('cloudUnpair'),'Unpairing…','Unpaired.');
     $('cloudOff').onclick=()=>cpost('optout',$('cloudOff'),'Turning off…','Cloud access off.');
+    // CUM-397: inline mint affordance, same screen. Shown only when paired AND no
+    // cumulo key yet (a hardware device, never a hosted instance). Nothing mints on
+    // its own: only the Save button calls /api/cloud/mintkey.
+    var mc=$('cloudMintCard');
+    if(mc){
+      var hasCk=!!(d.providers&&d.providers.cumulo&&d.providers.cumulo.hasKey);
+      mc.style.display=(c.paired&&!hasCk&&!HOSTED)?'block':'none';
+      var mbtn=$('cloudMintSave');
+      if(mbtn&&!mbtn._wired){mbtn._wired=1;mbtn.onclick=doMint;}
+    }
   }
   // ---- Firmware update (OTA) ----
   if(d.ota!==undefined&&$('fwState')){
@@ -2825,7 +2863,7 @@ function provRow(name,p){
   // under the hood (no URL to type, unlike Custom endpoint) and Verify checks the key
   // against the router, not a third party (CUM-201 items 1-2).
   if(name==='cumulo'){const ch=document.createElement('div'); ch.className='hint';
-    ch.textContent='One key, one balance. Verified against the router - no URL to type.';
+    ch.textContent='One key, one balance. Mint one from Cloud access, or paste your own.';
     w.appendChild(ch);}
   const row=document.createElement('div'); row.className='row';
   const k=document.createElement('input'); k.type='password'; k.id='key_'+name;

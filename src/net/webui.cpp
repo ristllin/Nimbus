@@ -84,6 +84,8 @@
 #include "nimbus/orch/fallback_rules.h"   // device fallback rule engine (GET/POST /api/fallbacks)
 #include "nimbus/saver.h"                 // clampSaverMinutes (POST /api/config saverMin)
 #include "relay_client.h"                // cloud tunnel status + control
+#include "cloud_mint.h"                  // CUM-397: user-triggered device-key mint
+#include "nimbus/cloud/device_key.h"     // CUM-397: capacity validation (one source of truth)
 #include "../agent/connectors.h"           // /api/connectors - known catalog + host
 #include "web_memory.h"
 #include "web_files.h"                   // E1: /api/files* artifact-store routes
@@ -1493,6 +1495,61 @@ void beginWeb(const WebConfig& wc) {
       return;
     }
     r->send(200, "application/json", "{\"ok\":true}");
+  });
+
+  // CUM-397: mint a Cumulo Nimbus spend key for THIS device. This is the ONLY code
+  // path that mints; it fires solely from the user's Save click on the Cloud access
+  // card (owner ruling 2026-09-14: nothing mints under the hood - not on pairing,
+  // not on boot, not when the key is empty). POST validates the capacity and
+  // enqueues the mint (the blocking TLS call runs on cloud_mint's own worker, never
+  // this AsyncTCP task); the page polls GET for the honest outcome.
+  s_server.on("/api/cloud/mintkey", HTTP_POST, [](AsyncWebServerRequest* r) {
+    if (authBlocked(r)) return;
+    const long capacity = r->hasParam("capacity", true)
+                              ? r->getParam("capacity", true)->value().toInt()
+                              : 0;
+    if (!nimbus::cloud::validMintCapacity(capacity)) {
+      r->send(400, "application/json",
+              "{\"error\":\"capacity_required\",\"message\":\"Enter a capacity of at "
+              "least 1 credit.\"}");
+      return;
+    }
+    if (!agent::store::cloudPaired()) {
+      r->send(409, "application/json",
+              "{\"error\":\"not_paired\",\"message\":\"This device is not paired with "
+              "the cloud. Pair it first.\"}");
+      return;
+    }
+    agent::cloud_mint::request(capacity);   // false only when already pending: still "pending" to the UI
+    r->send(200, "application/json", "{\"ok\":true,\"pending\":true}");
+  });
+  s_server.on("/api/cloud/mintkey", HTTP_GET, [](AsyncWebServerRequest* r) {
+    if (authBlocked(r)) return;
+    agent::cloud_mint::Status st = agent::cloud_mint::status();
+    // Kick the cumulo verify exactly once when a mint first reports Done, from HERE
+    // (the AsyncTCP task, like the manual paste path) rather than the mint worker,
+    // so two TLS task stacks never coexist. Re-armed while the next mint is pending.
+    static bool verifyKicked = false;
+    if (st.state == agent::cloud_mint::State::Pending) verifyKicked = false;
+    if (st.state == agent::cloud_mint::State::Done && st.ok && !verifyKicked) {
+      verifyKicked = true;
+      agent::provider_verify::request("cumulo");
+    }
+    const char* state =
+        st.state == agent::cloud_mint::State::Pending ? "pending"
+        : st.state == agent::cloud_mint::State::Done  ? "done"
+        : st.state == agent::cloud_mint::State::Error ? "error"
+                                                      : "idle";
+    JsonDocument d;
+    d["state"]    = state;
+    d["ok"]       = st.ok;
+    d["capacity"] = st.capacity;
+    if (st.max) d["max"] = st.max;
+    if (st.label.length()) d["label"] = st.label;
+    d["message"] = st.message;
+    String out;
+    serializeJson(d, out);
+    r->send(200, "application/json", out);
   });
 
   s_server.on("/logo.svg", HTTP_GET, [](AsyncWebServerRequest* r) {

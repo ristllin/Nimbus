@@ -35,6 +35,12 @@ models without any other provider account.
 The device routes its turns through your balance. For a firm ceiling, set a
 per-key spending limit when you create the key.
 
+You can also mint a key straight from the device instead of pasting one. Once the
+device is paired with the cloud, open **Cloud access** in the device web UI, set a
+capacity under **Mint a key for this device**, and press **Save**. The device creates
+a key for itself with that spend cap and stores it the same way. You can revoke it
+anytime in the app.
+
 ## Use it from your own code
 
 The router speaks the OpenAI and Anthropic APIs, so most tools work by changing
