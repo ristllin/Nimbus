@@ -259,6 +259,95 @@ static void test_scratchpad_dryrun_writes_nothing() {
   TEST_ASSERT_EQUAL_UINT(0, sp.items(Tier::Short).size());
 }
 
+// ---- v2 hardening: honesty + no-half-apply + bounded body -------------------
+
+// Over the vector cap, add() silently evicts; the endpoint must reconcile added vs
+// actually-stored and report the eviction (a restore over cap is NOT lossless).
+static void test_vectors_over_cap_reconciliation() {
+  VectorMemory vm;
+  vm.configure(4);
+  vm.setMaxEntries(2);
+  JsonDocument d;
+  JsonArray arr = d["entries"].to<JsonArray>();
+  const int8_t vecs[3][4] = {{1, 2, 3, 4}, {5, 6, 7, 8}, {9, 10, 11, 12}};
+  for (int i = 0; i < 3; i++) {
+    JsonObject o = arr.add<JsonObject>();
+    o["id"] = std::string("c") + char('1' + i);
+    o["content"] = "x";
+    o["importance"] = 0.2f + 0.1f * i;   // ascending, so eviction order is defined
+    o["ns"] = "owner";
+    o["vec"] = restore::b64EncodeVec({vecs[i][0], vecs[i][1], vecs[i][2], vecs[i][3]});
+  }
+  const int before = vm.size();
+  restore::VecReport rep = restore::applyVectors(vm, d["entries"].as<JsonArrayConst>(), 4, false);
+  TEST_ASSERT_EQUAL_INT(3, rep.added);          // all three add() calls "succeeded"
+  TEST_ASSERT_EQUAL_INT(2, vm.size());          // but the cap holds only two
+  TEST_ASSERT_EQUAL_INT(1, restore::evictedCount(before, rep.added, vm.size()));  // 1 displaced
+}
+
+// The bounded body accumulator: a straddling chunk must never overshoot the buffer.
+static void test_byteaccum_hard_cap() {
+  char buf[8];
+  restore::ByteAccum a;
+  a.init(buf, sizeof(buf));
+  TEST_ASSERT_EQUAL_UINT(4, a.append("abcd", 4));
+  TEST_ASSERT_FALSE(a.over);
+  TEST_ASSERT_EQUAL_UINT(4, a.append("efghij", 6));   // room 4, takes 4, drops the rest
+  TEST_ASSERT_TRUE(a.over);
+  TEST_ASSERT_EQUAL_UINT(8, a.len);
+  TEST_ASSERT_EQUAL_INT(0, memcmp(buf, "abcdefgh", 8));
+  TEST_ASSERT_EQUAL_UINT(0, a.append("z", 1));        // full: nothing more lands
+}
+
+// A count that disagrees with the array length (a truncated body) is rejected, and a
+// non-array payload is rejected - the caller applies nothing.
+static void test_array_envelope_rejects_mismatch() {
+  JsonDocument d;
+  JsonArray a = d["entries"].to<JsonArray>();
+  a.add<JsonObject>();
+  a.add<JsonObject>();
+  d["count"] = 2;
+  TEST_ASSERT_NULL(restore::arrayEnvelopeError(d.as<JsonObjectConst>(), "entries"));
+  d["count"] = 3;   // says 3, only 2 present -> truncated
+  TEST_ASSERT_NOT_NULL(restore::arrayEnvelopeError(d.as<JsonObjectConst>(), "entries"));
+
+  JsonDocument d2;
+  d2["entries"] = "not an array";
+  TEST_ASSERT_NOT_NULL(restore::arrayEnvelopeError(d2.as<JsonObjectConst>(), "entries"));
+}
+
+// A null/absent/empty scratchpad object is rejected (never applied), and a tier the
+// backup does NOT carry is left untouched (a restore must not silently wipe it).
+static void test_scratchpad_reject_and_no_wipe() {
+  JsonDocument absent;   // no "scratchpad" key
+  TEST_ASSERT_FALSE(restore::scratchpadEnvelopeValid(absent.as<JsonObjectConst>()));
+  JsonDocument notObj;
+  notObj["scratchpad"] = "oops";
+  TEST_ASSERT_FALSE(restore::scratchpadEnvelopeValid(notObj.as<JsonObjectConst>()));
+  JsonDocument emptyObj;
+  emptyObj["scratchpad"].to<JsonObject>();   // object, but no recognized fields
+  TEST_ASSERT_FALSE(restore::scratchpadEnvelopeValid(emptyObj.as<JsonObjectConst>()));
+
+  // A backup that carries ONLY the short tier must not clear mid/long.
+  Scratchpad sp;
+  sp.add(Tier::Mid, "keep me");
+  sp.setActiveTask("keep active");
+  JsonDocument root;
+  JsonObject o = root["scratchpad"].to<JsonObject>();
+  o["short"].to<JsonArray>().add("new short");
+  TEST_ASSERT_TRUE(restore::scratchpadEnvelopeValid(root.as<JsonObjectConst>()));
+  restore::ScratchReport rep =
+      restore::applyScratchpad(sp, root["scratchpad"].as<JsonObjectConst>(), false);
+  TEST_ASSERT_EQUAL_INT(1, rep.shortN);
+  TEST_ASSERT_EQUAL_INT(-1, rep.midN);    // absent: untouched
+  TEST_ASSERT_EQUAL_INT(-1, rep.active);  // absent: untouched
+  TEST_ASSERT_EQUAL_UINT(1, sp.items(Tier::Short).size());
+  TEST_ASSERT_EQUAL_STRING("new short", sp.items(Tier::Short)[0].c_str());
+  TEST_ASSERT_EQUAL_UINT(1, sp.items(Tier::Mid).size());          // NOT wiped
+  TEST_ASSERT_EQUAL_STRING("keep me", sp.items(Tier::Mid)[0].c_str());
+  TEST_ASSERT_EQUAL_STRING("keep active", sp.activeTask().c_str());  // NOT wiped
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_b64_int8_roundtrip);
@@ -266,9 +355,13 @@ int main(int, char**) {
   RUN_TEST(test_vectors_idempotent_replace_by_id);
   RUN_TEST(test_vectors_dryrun_writes_nothing);
   RUN_TEST(test_vectors_missing_vec_and_width_mismatch_reported);
+  RUN_TEST(test_vectors_over_cap_reconciliation);
   RUN_TEST(test_episodic_roundtrip_and_dedup);
   RUN_TEST(test_episodic_dryrun_writes_nothing);
   RUN_TEST(test_scratchpad_roundtrip_replaces);
   RUN_TEST(test_scratchpad_dryrun_writes_nothing);
+  RUN_TEST(test_scratchpad_reject_and_no_wipe);
+  RUN_TEST(test_byteaccum_hard_cap);
+  RUN_TEST(test_array_envelope_rejects_mismatch);
   return UNITY_END();
 }

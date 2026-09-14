@@ -220,7 +220,11 @@ int pruneRetention(int retentionDays = 30);
 // guards a non-empty store), scratchpad REPLACES. Secrets are never touched. Driven
 // by POST /api/mem/import (web_memory) + tools/restore_device.py. The portable
 // parse/apply core (memory_restore.h) is what the native round-trip test exercises.
-std::string restoreImport(const std::string& body);
+// The body is parsed straight from the caller's (PSRAM) buffer - no internal-heap copy.
+// A malformed/truncated shape (or a "count" mismatch) is rejected with NO write; a
+// null/absent scratchpad is rejected rather than applied (which would wipe it). The
+// reply reconciles honestly (vectors: stored/evicted; episodic: stored/truncated).
+std::string restoreImport(const char* body, size_t len);
 
 // Handle one MCP JSON-RPC request (the LAN endpoint + the web bridge both call
 // this); auto-persists after a mutating tools/call. Returns the response string.

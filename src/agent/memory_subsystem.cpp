@@ -1282,6 +1282,12 @@ void persistEpisodic() {
 // (id-deduped within the call - restore_device.py guards a non-empty store);
 // scratchpad REPLACES.
 
+static std::string importErr(const char* msg) {
+  JsonDocument d;
+  d["ok"] = false; d["error"] = msg;
+  std::string out; serializeJson(d, out); return out;
+}
+
 static std::string importVectors(JsonArrayConst entries, bool dryRun) {
   Lock g;
   // Vectors must match the store's embedding width. On the common path the width is
@@ -1289,32 +1295,44 @@ static std::string importVectors(JsonArrayConst entries, bool dryRun) {
   // the SAME embed config as the source BEFORE restore (which sets the width) - see the
   // runbook. A row whose width still doesn't match is reported (widthErrors), never a
   // silent drop, so the mismatch is visible rather than looking like an empty restore.
+  const int before = g_vec.size();
   restore::VecReport rep = restore::applyVectors(g_vec, entries, g_vec.dims(), dryRun);
+  const int after = g_vec.size();
   if (!dryRun && (rep.added || rep.replaced)) {
     persistVectors();
     // Restored vectors freeze the embed config: a later change must go through the
     // explicit reset-and-wipe path rather than silently orphan them.
     if (!store::embedLocked()) store::setEmbedLocked(true);
   }
+  // Over-cap honesty: add() evicts silently at the cap, so reconcile added vs actually
+  // stored. A restore that exceeds the device vector cap is NOT lossless; report how
+  // many rows this call displaced rather than claiming they all landed.
+  const int evicted = dryRun ? 0 : restore::evictedCount(before, rep.added, after);
   JsonDocument d;
   d["ok"] = true; d["kind"] = "vectors"; d["dryRun"] = dryRun;
   d["added"] = rep.added; d["replaced"] = rep.replaced;
   d["skippedNoVec"] = rep.skippedNoVec; d["widthErrors"] = rep.widthErrors;
-  d["badRows"] = rep.badRows; d["total"] = dryRun ? g_vec.size() : rep.total;
+  d["badRows"] = rep.badRows; d["stored"] = g_vec.size(); d["evicted"] = evicted;
   d["dims"] = g_vec.dims();
   std::string out; serializeJson(d, out); return out;
 }
 
 static std::string importEpisodic(JsonArrayConst msgs, bool dryRun) {
   Lock g;
+  // Truncation honesty: the no-SD store is a bounded ring (oldest evicted), so count
+  // how many messages actually landed, not just how many we tried to append.
+  const int before = g_epiActive->messageCount();
   restore::EpiReport rep = restore::applyEpisodic(*g_epiActive, msgs, dryRun);
+  const int after = g_epiActive->messageCount();
   // The SD append-log self-persists on each addMessage; the no-SD in-memory store
   // needs an explicit whole-blob flush.
   if (!dryRun && rep.added && !g_epiLog) persistEpisodic();
+  const int stored = dryRun ? 0 : (after - before);
+  const int truncated = (!dryRun && rep.added > stored) ? rep.added - stored : 0;
   JsonDocument d;
   d["ok"] = true; d["kind"] = "episodic"; d["dryRun"] = dryRun;
   d["added"] = rep.added; d["dupSkipped"] = rep.dupSkipped; d["badRows"] = rep.badRows;
-  d["total"] = g_epiActive->messageCount();
+  d["stored"] = stored; d["truncated"] = truncated; d["total"] = after;
   std::string out; serializeJson(d, out); return out;
 }
 
@@ -1328,19 +1346,29 @@ static std::string importScratchpad(JsonObjectConst obj, bool dryRun) {
   std::string out; serializeJson(d, out); return out;
 }
 
-std::string restoreImport(const std::string& body) {
+std::string restoreImport(const char* body, size_t len) {
+  // Parse straight from the (PSRAM) body buffer - no internal-heap copy of a large blob.
   JsonDocument doc(&agent::PsramJsonAllocator::instance());
-  if (deserializeJson(doc, body))
-    return "{\"ok\":false,\"error\":\"invalid JSON body\"}";
-  const char* kind = doc["kind"] | "";
-  const bool dryRun = doc["dryRun"] | false;
-  if (!strcmp(kind, "vectors"))    return importVectors(doc["entries"].as<JsonArrayConst>(), dryRun);
-  if (!strcmp(kind, "episodic"))   return importEpisodic(doc["messages"].as<JsonArrayConst>(), dryRun);
-  if (!strcmp(kind, "scratchpad")) {
-    JsonObjectConst sp = doc["scratchpad"].as<JsonObjectConst>();
-    return importScratchpad(sp, dryRun);
+  if (deserializeJson(doc, body, len)) return importErr("invalid JSON body");
+  JsonObjectConst root = doc.as<JsonObjectConst>();
+  const char* kind = root["kind"] | "";
+  const bool dryRun = root["dryRun"] | false;
+  // Validate the top-level shape BEFORE any write, so a malformed or truncated body is
+  // rejected outright and can never half-apply (or, for scratchpad, wipe a live tier).
+  if (!strcmp(kind, "vectors")) {
+    if (const char* e = restore::arrayEnvelopeError(root, "entries")) return importErr(e);
+    return importVectors(root["entries"].as<JsonArrayConst>(), dryRun);
   }
-  return "{\"ok\":false,\"error\":\"kind must be vectors|episodic|scratchpad\"}";
+  if (!strcmp(kind, "episodic")) {
+    if (const char* e = restore::arrayEnvelopeError(root, "messages")) return importErr(e);
+    return importEpisodic(root["messages"].as<JsonArrayConst>(), dryRun);
+  }
+  if (!strcmp(kind, "scratchpad")) {
+    if (!restore::scratchpadEnvelopeValid(root))
+      return importErr("scratchpad must be an object with active/short/mid/long");
+    return importScratchpad(root["scratchpad"].as<JsonObjectConst>(), dryRun);
+  }
+  return importErr("kind must be vectors|episodic|scratchpad");
 }
 
 // Durable media sidecar (docs/orchestrator-storage.md §4). Content-address `bytes`

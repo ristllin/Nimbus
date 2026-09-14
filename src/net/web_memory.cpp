@@ -32,8 +32,19 @@ using namespace nimbus::orch;
 namespace {
 
 // POST /api/mem/import body cap: restore_device.py pages large sets under this, and a
-// body past it is truncated into a safe parse error (CUM-406).
+// body past it is refused (413), never silently truncated (CUM-406).
 constexpr size_t kImportMaxBody = 512u * 1024;
+
+// Import body accumulator, stored in the request's _tempObject as ONE allocation: this
+// header immediately followed by the payload bytes (data()). Auth is decided on the
+// first chunk before the payload buffer is sized, so an unauthenticated caller only
+// ever costs this tiny header. The framework's raw free() reclaims the whole block on
+// teardown (including a mid-body abort) - no owned pointer to leak.
+struct ImportAcc {
+  bool authed;
+  agent::memory::restore::ByteAccum bytes;   // buf = data(), hard-capped append
+  char* data() { return reinterpret_cast<char*>(this) + sizeof(ImportAcc); }
+};
 
 void sendJson(AsyncWebServerRequest* r, int code, const String& body) {
   AsyncWebServerResponse* res = r->beginResponse(code, "application/json", body);
@@ -712,33 +723,51 @@ void registerMemoryRoutes(AsyncWebServer& server) {
   });
 
   // POST /api/mem/import - the memory RESTORE path (CUM-406). A JSON body
-  // ({"kind":"vectors|episodic|scratchpad","dryRun":bool,...}, one artifact per
-  // call) is accumulated across chunks in the request's own _tempObject (per-request,
-  // no shared state), token-gated, then handed to memory::restoreImport which applies
-  // it under the memory Lock and persists. restore_device.py pages large sets so each
-  // call stays small; the accumulator hard-caps at kImportMaxBody and a body past that
-  // is simply truncated into a parse error (a safe, honest refusal). Secrets are never
-  // in this path - it writes only the memory engines, never NVS/keys. Mirrors the /mcp
-  // buffering (delete + null _tempObject before responding so the framework's raw
-  // free() never double-frees the std::string).
+  // ({"kind":"vectors|episodic|scratchpad","dryRun":bool,...}, one artifact per call)
+  // is streamed in chunks and handed to memory::restoreImport, which applies it under
+  // the memory Lock and persists. Secrets are never in this path - it writes only the
+  // memory engines, never NVS/keys.
+  //
+  // DoS hardening (prism/ruling): auth is checked on the FIRST body chunk, BEFORE any
+  // large buffer exists - an unauthenticated caller gets only a tiny header allocated
+  // and every byte dropped (no unauth heap growth). The body accumulates into PSRAM
+  // (heap_caps_calloc, MALLOC_CAP_SPIRAM) so a legitimate import never grows the scarce
+  // internal heap, with a HARD pre-append cap so a straddling chunk can't overshoot.
+  // The header + payload are ONE allocation stored in _tempObject, so the framework's
+  // raw free() on request teardown reclaims everything (no leak on a mid-body abort),
+  // mirroring the src/net/web_files.cpp upload's first-chunk gate.
   server.on("/api/mem/import", HTTP_POST,
             [](AsyncWebServerRequest* r) {
-              std::string* acc = static_cast<std::string*>(r->_tempObject);
-              std::string body = acc ? *acc : std::string();
-              if (acc) { delete acc; r->_tempObject = nullptr; }   // free before any early return
-              if (!webAuthOk(r)) {
-                sendJson(r, 401, "{\"error\":\"auth required - X-Nimbus-Token\"}");
+              ImportAcc* acc = static_cast<ImportAcc*>(r->_tempObject);
+              if (!acc) {   // no body chunk ran (empty POST): decide by auth
+                if (!webAuthOk(r)) { sendJson(r, 401, "{\"ok\":false,\"error\":\"auth required - X-Nimbus-Token\"}"); return; }
+                sendJson(r, 400, "{\"ok\":false,\"error\":\"empty body\"}");
                 return;
               }
-              std::string resp = mem::restoreImport(body);
+              if (!acc->authed)      { sendJson(r, 401, "{\"ok\":false,\"error\":\"auth required - X-Nimbus-Token\"}"); return; }
+              if (acc->bytes.over)   { sendJson(r, 413, "{\"ok\":false,\"error\":\"import body too large\"}"); return; }
+              std::string resp = mem::restoreImport(acc->data(), acc->bytes.len);
               sendJson(r, 200, String(resp.c_str()));
+              // acc (header + PSRAM payload, one block) is freed by the framework with
+              // the request - do not free it here.
             },
             nullptr,
             [](AsyncWebServerRequest* r, uint8_t* data, size_t len, size_t, size_t) {
-              if (!r->_tempObject) r->_tempObject = new std::string();
-              std::string* acc = static_cast<std::string*>(r->_tempObject);
-              if (acc->size() < kImportMaxBody)
-                acc->append((const char*)data, len);   // past the cap: truncate -> parse error
+              ImportAcc* acc = static_cast<ImportAcc*>(r->_tempObject);
+              if (!acc) {
+                // First chunk: authorize BEFORE allocating the big buffer. Unauthenticated
+                // -> a header-only block (cap 0), and every byte is dropped below.
+                const bool ok = webAuthOk(r);
+                const size_t cap = ok ? kImportMaxBody : 0;
+                acc = static_cast<ImportAcc*>(heap_caps_calloc(1, sizeof(ImportAcc) + cap, MALLOC_CAP_SPIRAM));
+                if (!acc) acc = static_cast<ImportAcc*>(calloc(1, sizeof(ImportAcc) + cap));
+                r->_tempObject = acc;
+                if (!acc) return;   // OOM: onRequest sees null -> 400/401
+                acc->authed = ok;
+                acc->bytes.init(acc->data(), cap);
+              }
+              if (!acc->authed) return;   // refuse + drop: nothing buffered for an unauth caller
+              acc->bytes.append((const char*)data, len);   // hard-capped; sets over on overflow
             });
 
   // LAN MCP endpoint: raw JSON-RPC 2.0 body -> memory::handleMcp. The body is a

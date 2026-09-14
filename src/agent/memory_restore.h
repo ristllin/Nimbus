@@ -82,6 +82,52 @@ inline std::vector<int8_t> b64DecodeInt8(const char* s, size_t n) {
   return out;
 }
 
+// ---- bounded body accumulator ----------------------------------------------
+// The import body is streamed in chunks; this buffers it with a HARD cap so a
+// straddling chunk can never overshoot the buffer (append keeps only what fits and
+// sets `over`). Portable so the cap logic behind POST /api/mem/import is host-tested;
+// the on-device auth gate (webAuthOk on the first chunk, before the buffer is even
+// allocated) + PSRAM backing live in web_memory and are HIL-verified.
+struct ByteAccum {
+  char*  buf = nullptr;
+  size_t cap = 0;
+  size_t len = 0;
+  bool   over = false;
+  void init(char* b, size_t c) { buf = b; cap = c; len = 0; over = false; }
+  size_t append(const char* data, size_t n) {
+    const size_t room = cap > len ? cap - len : 0;
+    const size_t take = n < room ? n : room;
+    if (take < n) over = true;                       // body exceeds the cap
+    if (take && buf) { memcpy(buf + len, data, take); len += take; }
+    return take;
+  }
+};
+
+// Reconcile how many entries were added against how many the store actually holds:
+// with a capacity cap set, add() silently evicts, so `before + added` can exceed the
+// final size. The difference is the eviction count - a restore over the cap is NOT
+// lossless, and the endpoint reports this rather than claiming every row landed.
+inline int evictedCount(int before, int added, int after) {
+  const int expected = before + added;
+  return expected > after ? expected - after : 0;
+}
+
+// ---- import-envelope validation (reject, never half-apply) ------------------
+// A batch may declare "count" = the number of rows it carries; a mismatch means the
+// body was truncated (e.g. it hit the size cap) or the client is buggy. The payload
+// array must actually be an array. Returns nullptr when the shape is safe to apply,
+// else a short error - the caller rejects with NO write, so a malformed or truncated
+// body can never half-apply.
+inline const char* arrayEnvelopeError(JsonObjectConst root, const char* field) {
+  if (!root[field].is<JsonArrayConst>()) return "payload array missing or not an array";
+  JsonVariantConst c = root["count"];
+  if (c.is<long>() || c.is<int>() || c.is<unsigned>()) {
+    if ((long)root[field].as<JsonArrayConst>().size() != c.as<long>())
+      return "count mismatch (body truncated?)";
+  }
+  return nullptr;
+}
+
 // ---- vectors ----------------------------------------------------------------
 struct VecReport {
   int added = 0;         // ids not previously present, inserted
@@ -198,30 +244,50 @@ inline EpiReport applyEpisodic(nimbus::orch::EpisodicStore& es, JsonArrayConst m
 }
 
 // ---- scratchpad -------------------------------------------------------------
-struct ScratchReport { int active = 0; int shortN = 0; int midN = 0; int longN = 0; };
+// -1 in a field means "not carried by the backup" - that part was left untouched, as
+// opposed to 0 ("carried, and empty"). A restore must never clear a tier the backup
+// did not include (that would be a silent wipe, not a restore).
+struct ScratchReport { int active = -1; int shortN = -1; int midN = -1; int longN = -1; };
 
+// Load one tier ONLY if its key is present as an array; absent -> -1 and the tier is
+// left exactly as it was (never destructively cleared).
 inline int loadTier(nimbus::orch::Scratchpad& sp, nimbus::orch::Tier t,
-                    JsonArrayConst arr, bool dryRun) {
+                    JsonVariantConst v, bool dryRun) {
+  if (!v.is<JsonArrayConst>()) return -1;   // absent: do not wipe
   std::vector<std::string> items;
-  for (JsonVariantConst v : arr) {
-    const char* s = v.as<const char*>();
+  for (JsonVariantConst e : v.as<JsonArrayConst>()) {
+    const char* s = e.as<const char*>();
     if (s && s[0]) items.push_back(s);
   }
   if (dryRun) return (int)items.size();
   return sp.replace(t, items);
 }
 
-// Replace the scratchpad's active line + three tiers from scratchpad.json.
+// True if `root.scratchpad` is a usable scratchpad object: present, an object, with at
+// least one recognized field. restoreImport rejects anything else rather than run
+// replace-semantics over a null/absent object - which would WIPE the live scratchpad.
+inline bool scratchpadEnvelopeValid(JsonObjectConst root) {
+  JsonVariantConst sp = root["scratchpad"];
+  if (!sp.is<JsonObjectConst>()) return false;
+  JsonObjectConst o = sp.as<JsonObjectConst>();
+  return o["active"].is<const char*>() || o["short"].is<JsonArrayConst>() ||
+         o["mid"].is<JsonArrayConst>() || o["long"].is<JsonArrayConst>();
+}
+
+// Replace only the parts the object actually carries (presence-aware). The caller must
+// have validated the envelope first (scratchpadEnvelopeValid).
 inline ScratchReport applyScratchpad(nimbus::orch::Scratchpad& sp, JsonObjectConst obj,
                                      bool dryRun) {
   using nimbus::orch::Tier;
   ScratchReport r;
-  const char* active = obj["active"] | "";
-  if (!dryRun) sp.setActiveTask(active);
-  r.active = active[0] ? 1 : 0;
-  r.shortN = loadTier(sp, Tier::Short, obj["short"].as<JsonArrayConst>(), dryRun);
-  r.midN = loadTier(sp, Tier::Mid, obj["mid"].as<JsonArrayConst>(), dryRun);
-  r.longN = loadTier(sp, Tier::Long, obj["long"].as<JsonArrayConst>(), dryRun);
+  if (obj["active"].is<const char*>()) {
+    const char* active = obj["active"];
+    if (!dryRun) sp.setActiveTask(active);
+    r.active = active[0] ? 1 : 0;
+  }
+  r.shortN = loadTier(sp, Tier::Short, obj["short"], dryRun);
+  r.midN = loadTier(sp, Tier::Mid, obj["mid"], dryRun);
+  r.longN = loadTier(sp, Tier::Long, obj["long"], dryRun);
   return r;
 }
 

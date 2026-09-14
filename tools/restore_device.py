@@ -8,21 +8,36 @@ memory onto a device over the token-gated HTTP API, idempotently.
   <src>/
     vectors.json      -> POST /api/mem/import  kind=vectors    (replace-by-id)
     episodic.jsonl    -> POST /api/mem/import  kind=episodic   (append)
-    scratchpad.json   -> POST /api/mem/import  kind=scratchpad (replace)
+    scratchpad.json   -> POST /api/mem/import  kind=scratchpad (replace present tiers)
     files/<proj>/<nm> -> POST /api/files/upload                (overwrite; identical skipped)
-    MANIFEST.json     -> verified before and after (counts + file sizes)
+    MANIFEST.json     -> VERIFIED against the folder before restore; reconciled after
 
 Idempotency:
   * vectors    - exact replace-by-id on the device, so re-running (or a retried
                  page) converges to the same set. Always safe.
-  * scratchpad - replace. Always safe.
+  * scratchpad - replace of the tiers the backup carries. Always safe.
   * episodic   - the append-log store has no cross-call id index, so this tool
                  REFUSES to push episodic to a device that already has episodic
                  rows unless --force (a fresh-device restore never duplicates).
   * files      - a file already present with the same size is skipped.
 
+Honesty (the tool never reports success it did not get):
+  * Every import batch is checked for the device's "ok" flag AND its per-row
+    accounting; an ok:false, an HTTP error, a body-cap refusal, or a row count that
+    does not reconcile is a HARD ERROR (exit 2), never silently counted as success.
+  * MANIFEST is really verified: entry/line counts + file sizes must match the
+    folder before anything is pushed (exit 2 on mismatch, nothing applied).
+  * A lossy outcome the device reports honestly - vectors evicted over the device
+    cap, episodic truncated by the no-SD ring, rows skipped for a missing embedding,
+    or width mismatches - is a loud WARNING and a non-zero exit (3), because the
+    restore did not land in full.
+
+Exit codes: 0 clean, 2 hard error / refused, 3 completed but lossy/incomplete.
+
 Auth: the per-device access token travels ONLY on the "X-Nimbus-Token" header,
-never a ?t= query (CUM-45), exactly like backup_device.py.
+never a ?t= query (CUM-45). Note: the device LAN HTTP API has no on-device TLS, so
+the token (like backup_device.py's) crosses the LAN in plaintext - use it on a
+trusted network only. See PR_BODY / docs for this known LAN-only constraint.
 
 Secrets (provider keys, tokens) are NEVER restored - they are not in a backup
 folder, and this tool touches only the memory engines + the artifact store.
@@ -35,10 +50,6 @@ Usage:
   # then apply:
   python3 tools/restore_device.py --ip 192.0.2.10 --token <ACCESS_TOKEN> \
       --src ~/NimbusBackups/Lumi/2026-09-13_1042
-
-  # locate the newest backup for a device automatically:
-  python3 tools/restore_device.py --ip 192.0.2.10 --token <ACCESS_TOKEN> \
-      --dest ~/NimbusBackups --dev Lumi --date latest
 """
 
 import argparse
@@ -49,6 +60,34 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+
+# The device caps an import body at 512 KB; keep a batch comfortably under that so a
+# straddling row never trips the device's refusal. A single row larger than this is
+# sent alone and the device's 413 becomes a hard error (honest: it cannot be restored).
+SAFE_BODY = 400 * 1024
+
+
+class RestoreError(Exception):
+    """A hard failure (HTTP error, ok:false, or a reconcile mismatch)."""
+
+
+class Outcome:
+    """Collects hard errors + lossy warnings so the final exit code is honest."""
+
+    def __init__(self):
+        self.errors = []
+        self.warnings = []
+
+    def fail(self, msg):
+        self.errors.append(msg)
+        print(f"  ERROR: {msg}", file=sys.stderr)
+
+    def warn(self, msg):
+        self.warnings.append(msg)
+        print(f"  WARNING: {msg}", file=sys.stderr)
+
+    def exit_code(self):
+        return 2 if self.errors else (3 if self.warnings else 0)
 
 
 def _req(base, tok, path, data=None, ctype=None, timeout=60):
@@ -65,9 +104,32 @@ def get_json(base, tok, path):
     return json.loads(_req(base, tok, path))
 
 
-def post_import(base, tok, payload, timeout=120):
+def post_import(base, tok, kind, key, rows, dry_run):
+    """POST one import batch and return the device reply dict.
+
+    Raises RestoreError on ANY failure the caller must not paper over: an HTTP error
+    (incl. 401 auth / 413 body-too-large), a non-JSON reply, or ok:false.
+    """
+    payload = {"kind": kind, "dryRun": dry_run, "count": len(rows), key: rows}
     body = json.dumps(payload).encode()
-    return json.loads(_req(base, tok, "/api/mem/import", body, "application/json", timeout))
+    try:
+        raw = _req(base, tok, "/api/mem/import", body, "application/json", timeout=120)
+    except urllib.error.HTTPError as e:
+        detail = ""
+        try:
+            detail = ": " + json.loads(e.read()).get("error", "")
+        except Exception:
+            pass
+        raise RestoreError(f"{kind} batch HTTP {e.code}{detail}") from e
+    except urllib.error.URLError as e:
+        raise RestoreError(f"{kind} batch transport error: {e}") from e
+    try:
+        rep = json.loads(raw)
+    except ValueError as e:
+        raise RestoreError(f"{kind} batch: non-JSON reply") from e
+    if not rep.get("ok"):
+        raise RestoreError(f"{kind} batch rejected: {rep.get('error', 'ok:false')}")
+    return rep
 
 
 def resolve_src(a):
@@ -91,44 +153,91 @@ def load_manifest(src):
     return json.loads(mf.read_bytes())
 
 
-def chunks(seq, n):
-    for i in range(0, len(seq), n):
-        yield seq[i : i + n]
+def verify_manifest(src, manifest):
+    """Check the folder matches its MANIFEST (counts + file sizes). Returns a list of
+    problems; a non-empty list means the backup is inconsistent and must NOT be pushed."""
+    probs = []
+    vf = src / "vectors.json"
+    if vf.exists() and manifest.get("vectorCount") is not None:
+        n = len(json.loads(vf.read_bytes()).get("entries", []))
+        if n != manifest["vectorCount"]:
+            probs.append(f"vectors.json has {n} entries, MANIFEST says {manifest['vectorCount']}")
+    ef = src / "episodic.jsonl"
+    if ef.exists() and manifest.get("episodicCount") is not None:
+        n = sum(1 for line in ef.read_text().splitlines() if line.strip())
+        if n != manifest["episodicCount"]:
+            probs.append(f"episodic.jsonl has {n} lines, MANIFEST says {manifest['episodicCount']}")
+    for f in manifest.get("files", []):
+        fp = src / "files" / f["project"] / f["name"]
+        exp = f.get("bytes")
+        if not fp.exists():
+            probs.append(f"file missing: {f['project']}/{f['name']}")
+        elif exp is not None and fp.stat().st_size != exp:
+            probs.append(f"file size mismatch {f['project']}/{f['name']}: {fp.stat().st_size} != {exp}")
+    return probs
 
 
-def restore_vectors(base, tok, src, a):
+def size_batches(rows, key, max_rows):
+    """Yield sublists of `rows` whose serialized body stays under SAFE_BODY (and under
+    max_rows), so a batch can never trip the device body cap mid-array."""
+    envelope = 64 + len(key)
+    batch, size = [], envelope
+    for row in rows:
+        rs = len(json.dumps(row)) + 1
+        if batch and (size + rs > SAFE_BODY or len(batch) >= max_rows):
+            yield batch
+            batch, size = [], envelope
+        batch.append(row)
+        size += rs
+    if batch:
+        yield batch
+
+
+def restore_vectors(base, tok, src, a, out):
     p = src / "vectors.json"
     if not p.exists():
         print("  vectors: (none in backup)")
         return
     entries = json.loads(p.read_bytes()).get("entries", [])
-    have_vec = sum(1 for e in entries if e.get("vec"))
-    if entries and not have_vec:
-        print(
-            f"  vectors: {len(entries)} rows but NONE carry an embedding "
-            "(pre-CUM-406 backup) - they cannot be restored losslessly; skipping."
+    if not entries:
+        print("  vectors: (empty)")
+        return
+    if not any(e.get("vec") for e in entries):
+        out.warn(
+            f"vectors: {len(entries)} rows carry NO embedding (pre-CUM-406 backup); "
+            "not restoring - they cannot be reconstructed losslessly."
         )
         return
-    tot = {"added": 0, "replaced": 0, "skippedNoVec": 0, "widthErrors": 0, "badRows": 0}
-    for batch in chunks(entries, a.batch):
-        rep = post_import(base, tok, {"kind": "vectors", "dryRun": a.dry_run, "entries": batch})
+    tot = {"added": 0, "replaced": 0, "skippedNoVec": 0, "widthErrors": 0, "badRows": 0, "evicted": 0}
+    sent = 0
+    for batch in size_batches(entries, "entries", a.batch):
+        rep = post_import(base, tok, "vectors", "entries", batch, a.dry_run)
+        accounted = sum(int(rep.get(k, 0)) for k in ("added", "replaced", "skippedNoVec", "widthErrors", "badRows"))
+        if accounted != len(batch):
+            raise RestoreError(f"vectors batch: device accounted {accounted} of {len(batch)} rows")
         for k in tot:
             tot[k] += int(rep.get(k, 0))
+        sent += len(batch)
     print(
-        f"  vectors: {'(dry-run) ' if a.dry_run else ''}"
-        f"added={tot['added']} replaced={tot['replaced']} "
-        f"skippedNoVec={tot['skippedNoVec']} widthErrors={tot['widthErrors']} "
-        f"badRows={tot['badRows']} (of {len(entries)})"
+        f"  vectors: {'(dry-run) ' if a.dry_run else ''}sent={sent} added={tot['added']} "
+        f"replaced={tot['replaced']} skippedNoVec={tot['skippedNoVec']} "
+        f"widthErrors={tot['widthErrors']} badRows={tot['badRows']} evicted={tot['evicted']}"
     )
     if tot["widthErrors"]:
-        print(
-            "  WARNING: some vectors did not match the device embedding width. Set the "
-            "SAME embed config (provider/model/dims) on the device before restore.",
-            file=sys.stderr,
+        out.warn(
+            "vectors: some rows did not match the device embedding width. Set the SAME "
+            "embed config (provider/model/dims) on the device before restore."
+        )
+    if tot["skippedNoVec"]:
+        out.warn(f"vectors: {tot['skippedNoVec']} rows had no embedding and were skipped.")
+    if tot["evicted"]:
+        out.warn(
+            f"vectors: {tot['evicted']} restored rows were evicted over the device cap "
+            "(restore is NOT lossless - raise max_vectors or free space)."
         )
 
 
-def restore_episodic(base, tok, src, a):
+def restore_episodic(base, tok, src, a, out):
     p = src / "episodic.jsonl"
     if not p.exists():
         print("  episodic: (none in backup)")
@@ -140,36 +249,44 @@ def restore_episodic(base, tok, src, a):
     if not a.dry_run and not a.force:
         stats = get_json(base, tok, "/api/mem/stats")
         if int(stats.get("episodicMsgs", 0)) > 0:
-            print(
-                f"  episodic: device already has {stats['episodicMsgs']} messages - "
-                "SKIPPING (append would duplicate). Re-run with --force to append anyway.",
-                file=sys.stderr,
+            out.warn(
+                f"episodic: device already has {stats['episodicMsgs']} messages - SKIPPING "
+                "(append would duplicate). Re-run with --force to append anyway."
             )
             return
-    added = 0
-    for batch in chunks(msgs, a.batch):
-        rep = post_import(base, tok, {"kind": "episodic", "dryRun": a.dry_run, "messages": batch})
+    added = truncated = 0
+    for batch in size_batches(msgs, "messages", a.batch):
+        rep = post_import(base, tok, "episodic", "messages", batch, a.dry_run)
+        accounted = sum(int(rep.get(k, 0)) for k in ("added", "dupSkipped", "badRows"))
+        if accounted != len(batch):
+            raise RestoreError(f"episodic batch: device accounted {accounted} of {len(batch)} rows")
         added += int(rep.get("added", 0))
-    print(f"  episodic: {'(dry-run) ' if a.dry_run else ''}added={added} (of {len(msgs)})")
+        truncated += int(rep.get("truncated", 0))
+    print(f"  episodic: {'(dry-run) ' if a.dry_run else ''}added={added} of {len(msgs)} (truncated={truncated})")
+    if truncated:
+        out.warn(
+            f"episodic: {truncated} messages dropped by the no-SD ring cap "
+            "(restore is NOT complete - a card is needed for full history)."
+        )
 
 
-def restore_scratchpad(base, tok, src, a):
+def restore_scratchpad(base, tok, src, a, out):
     p = src / "scratchpad.json"
     if not p.exists():
         print("  scratchpad: (none in backup)")
         return
     sp = json.loads(p.read_bytes())
-    rep = post_import(base, tok, {"kind": "scratchpad", "dryRun": a.dry_run, "scratchpad": sp})
+    rep = post_import(base, tok, "scratchpad", "scratchpad", sp, a.dry_run)
     print(
         f"  scratchpad: {'(dry-run) ' if a.dry_run else ''}active={rep.get('active')} "
-        f"short={rep.get('short')} mid={rep.get('mid')} long={rep.get('long')}"
+        f"short={rep.get('short')} mid={rep.get('mid')} long={rep.get('long')} (-1 = not in backup)"
     )
 
 
 def upload_file(base, tok, project, name, data, timeout=120):
-    # Minimal multipart/form-data body: one file part is all the device reads
-    # (the project + name ride the query string; name falls back to the part's
-    # filename). Boundary is random so it can never appear in the payload.
+    # Minimal multipart/form-data body: one file part is all the device reads (project
+    # + name ride the query string; name falls back to the part's filename). Boundary is
+    # random so it can never appear in the payload.
     boundary = "----nimbusrestore" + uuid.uuid4().hex
     pre = (
         f"--{boundary}\r\n"
@@ -203,19 +320,19 @@ def split_project_name(rel):
     return "uploads", parts[0]
 
 
-def push_one_file(base, tok, project, name, data):
-    """Upload one file; return 'up' or 'fail' (printing the reason on failure)."""
+def push_one_file(base, tok, project, name, data, out):
+    """Upload one file; return 'up' or 'fail' (recording the reason on failure)."""
     try:
         r = upload_file(base, tok, project, name, data)
         if r.get("ok"):
             return "up"
-        print(f"    FAIL {project}/{name}: {r.get('error')}", file=sys.stderr)
+        out.fail(f"file {project}/{name}: {r.get('error')}")
     except Exception as e:  # keep going - one hole beats aborting the rest
-        print(f"    FAIL {project}/{name}: {e}", file=sys.stderr)
+        out.fail(f"file {project}/{name}: {e}")
     return "fail"
 
 
-def restore_files(base, tok, src, a):
+def restore_files(base, tok, src, a, out):
     fdir = src / "files"
     if a.no_files or not fdir.exists():
         print("  files: (skipped)" if a.no_files else "  files: (none in backup)")
@@ -230,7 +347,7 @@ def restore_files(base, tok, src, a):
         elif a.dry_run:
             tally["up"] += 1
         else:
-            tally[push_one_file(base, tok, project, name, data)] += 1
+            tally[push_one_file(base, tok, project, name, data, out)] += 1
     print(
         f"  files: {'(dry-run) would upload ' if a.dry_run else 'uploaded '}{tally['up']}, "
         f"skipped {tally['skip']} identical, {tally['fail']} failed"
@@ -248,7 +365,7 @@ def main():
     ap.add_argument("--dry-run", action="store_true", help="validate + count; write nothing")
     ap.add_argument("--force", action="store_true", help="append episodic even if the device is non-empty")
     ap.add_argument("--no-files", action="store_true", help="skip the artifact files")
-    ap.add_argument("--batch", type=int, default=64, help="rows per import request (default 64)")
+    ap.add_argument("--batch", type=int, default=64, help="max rows per import request (default 64)")
     a = ap.parse_args()
     base = f"http://{a.ip}"
     tok = a.token
@@ -258,33 +375,56 @@ def main():
         sys.exit(f"not a folder: {src}")
     manifest = load_manifest(src)
 
-    # Confirm we are pointed at the intended device (name is advisory - a restore to a
-    # differently-named scratch device is legitimate, so warn, never block).
+    # MANIFEST verify FIRST: an inconsistent backup is never pushed (no partial apply).
+    probs = verify_manifest(src, manifest)
+    if probs:
+        print("MANIFEST verification FAILED - refusing to restore:", file=sys.stderr)
+        for p in probs:
+            print(f"  - {p}", file=sys.stderr)
+        sys.exit(2)
+    if manifest.get("errors"):
+        print(
+            f"NOTE: the backup's own MANIFEST recorded {len(manifest['errors'])} error(s) at "
+            "capture time; the restore can only be as complete as the backup."
+        )
+
     try:
         state = get_json(base, tok, "/api/state")
-        dev_now = state.get("devName", "?")
-        if manifest.get("device") and dev_now != manifest["device"]:
-            print(f"NOTE: backup is from '{manifest['device']}', device reports '{dev_now}'.")
     except Exception as e:
         sys.exit(f"cannot reach device /api/state: {e}")
+    dev_now = state.get("devName", "?")
+    if manifest.get("device") and dev_now != manifest["device"]:
+        print(f"NOTE: backup is from '{manifest['device']}', device reports '{dev_now}'.")
 
     print(f"restore {'(DRY RUN) ' if a.dry_run else ''}{src} -> {a.ip} ({dev_now})")
     print(
         f"  manifest: {manifest.get('vectorCount', '?')} vectors, "
-        f"{manifest.get('episodicCount', '?')} episodic, "
-        f"{len(manifest.get('files', []))} files"
+        f"{manifest.get('episodicCount', '?')} episodic, {len(manifest.get('files', []))} files (verified)"
     )
-    restore_vectors(base, tok, src, a)
-    restore_episodic(base, tok, src, a)
-    restore_scratchpad(base, tok, src, a)
-    restore_files(base, tok, src, a)
 
-    if not a.dry_run:
+    out = Outcome()
+    try:
+        restore_vectors(base, tok, src, a, out)
+        restore_episodic(base, tok, src, a, out)
+        restore_scratchpad(base, tok, src, a, out)
+        restore_files(base, tok, src, a, out)
+    except RestoreError as e:
+        out.fail(str(e))
+
+    if not a.dry_run and not out.errors:
         after = get_json(base, tok, "/api/mem/stats")
         print(
             f"verify: device now holds {after.get('vectors')} vectors, {after.get('episodicMsgs')} episodic messages."
         )
-    print("done." if not a.dry_run else "dry run complete - nothing was written.")
+
+    code = out.exit_code()
+    if code == 0:
+        print("done." if not a.dry_run else "dry run complete - nothing was written.")
+    elif code == 3:
+        print(f"COMPLETED WITH WARNINGS ({len(out.warnings)}) - the restore was not fully lossless.", file=sys.stderr)
+    else:
+        print(f"FAILED ({len(out.errors)} error(s)) - restore did not complete.", file=sys.stderr)
+    sys.exit(code)
 
 
 if __name__ == "__main__":
