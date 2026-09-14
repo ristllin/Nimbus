@@ -204,7 +204,7 @@ easy to read amid ordinary log output.
   a USB update (`err confirm`) until a 60 s window is armed. The gate defaults OFF so
   it never affects the common path. It is controlled from both surfaces: a "Confirm
   USB updates" toggle in the device menu (Settings > Software update) and on the web
-  Firmware panel, plus an "Allow USB update (60s)" action row in that device menu
+  page's Software update panel, plus an "Allow USB update (60s)" action row in that device menu
   (shown only when the toggle is on) that arms the window.
 - **Reuse, not a second engine.** The listener calls the same single-flight guard
   as cloud OTA (a USB push refuses `busy` while a background check is running, and
