@@ -924,9 +924,15 @@ void TurnEngine::maybeConsolidate(const std::string& chatId) {
       e->turnSource_ = prevSrc;
     }
   } unattendedGuard(this);
-  if (freeHeap() < t_.autoTurnMinHeap) {
-    hlog::logf("orchestrator: defer auto-synthesis (heap %u < %u)",
-               (unsigned)freeHeap(), (unsigned)t_.autoTurnMinHeap);
+  // CUM-404: the synthesis turn dials a provider too, so it must clear the SAME
+  // two-floor guard - the largest-contiguous-block floor, not just total free. A
+  // fragmented CYD (largest block below the mbedTLS floor) would otherwise admit an
+  // unattended turn that OOMs mid-handshake. Defer (never squeeze) under pressure;
+  // the fresh results stay parked and the 60 s fallback delivers them raw if needed.
+  if (!turnHeapOk(freeHeap(), largestFreeBlock(), t_.autoTurnMinHeap, t_.turnMinLargestBlock)) {
+    hlog::logf("orchestrator: defer auto-synthesis (heap %u/floor %u largest %u/floor %u)",
+               (unsigned)freeHeap(), (unsigned)t_.autoTurnMinHeap,
+               (unsigned)largestFreeBlock(), (unsigned)t_.turnMinLargestBlock);
     return;
   }
   // Snapshot the fresh block BEFORE consumption: if the synthesis turn fails
@@ -1017,9 +1023,18 @@ nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& cha
                                                           bool quietOk, bool once,
                                                           bool ownerReminder) {
   nimbus::orch::FireOutcome o;
-  if (freeHeap() < t_.turnHardFloor) {
-    o.detail = "deferred: low heap";
-    hlog::logf("loops: scheduled turn deferred (heap %u)", (unsigned)freeHeap());
+  // CUM-404: gate a scheduled fire BEFORE the handshake alloc (round 0) on BOTH the
+  // total-free backstop AND the largest-contiguous-block guard - fragmentation (a low
+  // largest block while total free is ample) is what actually fails the turn's mbedTLS
+  // handshake, so a fragmented CYD must be deferred here rather than admitted into an
+  // OOM mid-handshake. CUM-403: a memory defer is NOT a failure - mark it deferred so
+  // the tick reschedules and retries instead of burning a daily fire or the breaker.
+  if (!turnHeapOk(freeHeap(), largestFreeBlock(), t_.turnHardFloor, t_.turnMinLargestBlock)) {
+    o.deferred = true;
+    o.detail = "deferred: low memory";
+    hlog::logf("loops: scheduled turn deferred, heap %u/floor %u largest %u/floor %u",
+               (unsigned)freeHeap(), (unsigned)t_.turnHardFloor,
+               (unsigned)largestFreeBlock(), (unsigned)t_.turnMinLargestBlock);
     return o;
   }
   lastReply_.clear();
@@ -1146,7 +1161,10 @@ bool TurnEngine::anyProviderConfigured() const {
 
 bool TurnEngine::canFoldNow() const {
   if (turnInFlight_) return false;
-  if (d_.platform.freeHeap && d_.platform.freeHeap() < t_.autoTurnMinHeap) return false;
+  // CUM-404: the fold dials a provider, so it needs the largest-block floor too, not
+  // just total free. Unwired closures read 0xFFFFFFFF => the guard is a host-test no-op.
+  if (!turnHeapOk(freeHeap(), largestFreeBlock(), t_.autoTurnMinHeap, t_.turnMinLargestBlock))
+    return false;
   return !foldHostCandidates().empty();
 }
 
@@ -1158,8 +1176,10 @@ TurnEngine::FoldResult TurnEngine::runFold(const std::string& chatId,
   outSummary.clear();
   // Gate like an unattended turn: the fold is background work - defer, never
   // squeeze, under memory pressure. Defers are NOT failures (no breaker burn).
-  if (d_.platform.freeHeap && d_.platform.freeHeap() < t_.autoTurnMinHeap) {
-    hlog::logf("fold(%s): deferred - low heap", chatId.c_str());
+  if (!turnHeapOk(freeHeap(), largestFreeBlock(), t_.autoTurnMinHeap, t_.turnMinLargestBlock)) {
+    hlog::logf("fold(%s): deferred, heap %u/floor %u largest %u/floor %u", chatId.c_str(),
+               (unsigned)freeHeap(), (unsigned)t_.autoTurnMinHeap,
+               (unsigned)largestFreeBlock(), (unsigned)t_.turnMinLargestBlock);
     return FoldResult::Deferred;
   }
   if (turnInFlight_) return FoldResult::Deferred;   // never interleave with a live turn

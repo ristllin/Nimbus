@@ -246,6 +246,30 @@ static void test_on_fire_result() {
   TEST_ASSERT_FALSE(isSemanticRepeat(r, 6));
 }
 
+// CUM-404/403: a memory DEFER is not a fire attempt - it must not roll the outcome
+// (consecFails / daily fire / semantic-repeat). Prove the class rule at the seam:
+// fireWasAttempted decides whether the tick counts the outcome at all. It is FALSE
+// only for a deferred outcome (whatever ok is) and TRUE for every real attempt, so
+// the tick routes a defer AWAY from onFireResult and a real failure INTO it.
+static void test_memory_defer_is_not_a_fire_attempt() {
+  FireOutcome deferred; deferred.deferred = true; deferred.ok = false;
+  FireOutcome failed;   failed.deferred = false; failed.ok = false;
+  FireOutcome okRun;    okRun.deferred = false; okRun.ok = true;
+  TEST_ASSERT_FALSE(fireWasAttempted(deferred));   // defer: retry, count nothing
+  TEST_ASSERT_TRUE(fireWasAttempted(failed));      // real failure: rolls the breaker
+  TEST_ASSERT_TRUE(fireWasAttempted(okRun));       // success: counts
+
+  // The counting primitive the tick reaches ONLY for a real attempt: a genuine fire
+  // failure rolls consecFails (so chronic real failures still auto-pause), while an
+  // ok run resets it. The tick never calls this on a defer (fireWasAttempted==false).
+  LoopRecord l; l.consecFails = 1; l.firesToday = 3;
+  TokenUsage u;
+  onFireResult(l, /*ok=*/false, u, 0, 700);
+  TEST_ASSERT_EQUAL_UINT8(2, l.consecFails);        // real failure advanced the breaker
+  onFireResult(l, /*ok=*/true, u, 0x99, 800);
+  TEST_ASSERT_EQUAL_UINT8(0, l.consecFails);        // a real success reset it
+}
+
 // --- persistence round-trip -------------------------------------------------
 
 static void test_persistence_roundtrip() {
@@ -609,6 +633,7 @@ int main() {
   RUN_TEST(test_adopt_eastward_keeps_counters);
   RUN_TEST(test_westward_without_adopt_stalls);
   RUN_TEST(test_on_fire_result);
+  RUN_TEST(test_memory_defer_is_not_a_fire_attempt);
   RUN_TEST(test_persistence_roundtrip);
   RUN_TEST(test_once_spec_parses_with_own_bounds);
   RUN_TEST(test_once_wakeups_skip_owner_approval);

@@ -589,13 +589,38 @@ static void test_scheduled_turn_rails_and_fire_outcome() {
   TEST_ASSERT_EQUAL(1, (int)r.recallQueries.size());
   TEST_ASSERT_EQUAL_STRING("check the weather", r.recallQueries[0].c_str());
 
-  // Low heap: deferred without a provider attempt (< turnHardFloor 12000).
+  // Low total-free heap: deferred without a provider attempt (< turnHardFloor 12000).
+  // CUM-403: a memory defer is a DEFERRAL, not a failure (o.deferred, not counted).
   Rig r2;
-  r2.plat.heap = 11999;
+  r2.plat.heap = 11999;   // largest stays ample (100000) - the total-free floor trips
   orch::FireOutcome o2 = r2.eng->injectScheduledTurn("1001", "p", "n");
   TEST_ASSERT_FALSE(o2.ok);
-  TEST_ASSERT_EQUAL_STRING("deferred: low heap", o2.detail.c_str());
+  TEST_ASSERT_TRUE(o2.deferred);
+  TEST_ASSERT_FALSE(orch::fireWasAttempted(o2));
+  TEST_ASSERT_EQUAL_STRING("deferred: low memory", o2.detail.c_str());
   TEST_ASSERT_EQUAL(0, (int)r2.attempts.size());
+
+  // CUM-404: a FRAGMENTED board - total free ample, largest contiguous block below
+  // the 5000 mbedTLS floor - is deferred at round 0, BEFORE the handshake alloc, not
+  // admitted into an OOM mid-handshake. This is the exact CYD case the bug describes.
+  Rig r3;
+  r3.plat.heap = 100000;   // ample total free
+  r3.plat.largest = 4500;  // ~4.5 KB largest block (fragmented CYD)
+  orch::FireOutcome o3 = r3.eng->injectScheduledTurn("1001", "p", "n");
+  TEST_ASSERT_FALSE(o3.ok);
+  TEST_ASSERT_TRUE(o3.deferred);
+  TEST_ASSERT_EQUAL(0, (int)r3.attempts.size());   // no provider dialed
+
+  // A genuine fire FAILURE (provider outage, heap healthy) is NOT a defer: it was
+  // attempted and must still roll the breaker. deferred stays false so the tick counts it.
+  Rig r4;
+  r4.cfg.keyed = {"anthropic"};
+  r4.scripts["anthropic"] = {{false, "", "outage", 0, "", 0, 0}};
+  orch::FireOutcome o4 = r4.eng->injectScheduledTurn("1001", "p", "n");
+  TEST_ASSERT_FALSE(o4.ok);
+  TEST_ASSERT_FALSE(o4.deferred);
+  TEST_ASSERT_TRUE(orch::fireWasAttempted(o4));
+  TEST_ASSERT_TRUE(r4.attempts.size() >= 1);   // provider WAS dialed (retry may add more)
 }
 
 // W20: a Once wakeup gets the honest [WAKEUP] preamble - "recurring task" would
@@ -674,11 +699,25 @@ static void test_synthesis_consolidation_and_raw_fallback() {
   // Heap gate: deferral leaves the fresh results parked (the 60 s fallback's case).
   Rig r3;
   r3.jobs->addFreshResult("job0002", "modelZ", "kept");
-  r3.plat.heap = 13999;   // < autoTurnMinHeap (14000)
+  r3.plat.heap = 13999;   // < autoTurnMinHeap (14000); largest ample
   r3.eng->maybeConsolidate("1001");
   TEST_ASSERT_EQUAL(0, (int)r3.attempts.size());
   TEST_ASSERT_TRUE(r3.jobs->hasFreshResults());
-  TEST_ASSERT_TRUE(LogCapture::contains("orchestrator: defer auto-synthesis (heap 13999 < 14000)"));
+  TEST_ASSERT_TRUE(LogCapture::contains(
+      "orchestrator: defer auto-synthesis (heap 13999/floor 14000 largest 100000/floor 5000)"));
+
+  // CUM-404: the synthesis turn dials a provider too, so a fragmented board (total
+  // free ample, largest block below the mbedTLS floor) must defer here as well - the
+  // fresh results stay parked, no unattended turn OOMs mid-handshake.
+  Rig r4;
+  r4.jobs->addFreshResult("job0003", "modelW", "still kept");
+  r4.plat.heap = 100000;   // ample total free
+  r4.plat.largest = 4000;  // fragmented: below ORCH_TURN_MIN_LARGEST_BLOCK (5000)
+  r4.eng->maybeConsolidate("1001");
+  TEST_ASSERT_EQUAL(0, (int)r4.attempts.size());
+  TEST_ASSERT_TRUE(r4.jobs->hasFreshResults());
+  TEST_ASSERT_TRUE(LogCapture::contains(
+      "orchestrator: defer auto-synthesis (heap 100000/floor 14000 largest 4000/floor 5000)"));
 }
 
 // ---- (10) turn-debug hook on success AND failure ----------------------------
@@ -794,6 +833,12 @@ static void test_runfold_gates_and_failure() {
   TEST_ASSERT_TRUE(r.eng->runFold("1001", "", "d", sum) == FR::Deferred);
   TEST_ASSERT_EQUAL(0, (int)r.attempts.size());
   r.plat.heap = 100000;
+  // CUM-404: the fold dials a provider too - a fragmented board (total free ample,
+  // largest block below 5000) DEFERS on the largest-block floor, no provider call.
+  r.plat.largest = 4200;
+  TEST_ASSERT_TRUE(r.eng->runFold("1001", "", "d", sum) == FR::Deferred);
+  TEST_ASSERT_EQUAL(0, (int)r.attempts.size());
+  r.plat.largest = 100000;
   // Budget gate -> Deferred only when EVERY candidate host is capped (the
   // ladder means one capped provider no longer blocks the fold).
   for (const char* h : {"anthropic", "openai", "mistral"}) r.cfg.overBudgetHosts.insert(h);
@@ -831,6 +876,9 @@ static void test_can_fold_now_matches_the_gates() {
   r.plat.heap = 13000;                       // below autoTurnMinHeap (14000)
   TEST_ASSERT_FALSE(r.eng->canFoldNow());
   r.plat.heap = 100000;
+  r.plat.largest = 4800;                     // CUM-404: fragmented (largest < 5000) also blocks
+  TEST_ASSERT_FALSE(r.eng->canFoldNow());
+  r.plat.largest = 100000;
   // One capped host no longer blocks the fold (the ladder has alternates)...
   r.cfg.overBudgetHosts.insert("anthropic");
   TEST_ASSERT_TRUE(r.eng->canFoldNow());
