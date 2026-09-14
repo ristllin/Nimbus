@@ -10,6 +10,8 @@
 
 #include "adapters/embeddings.h"
 #include "adapters/tavily.h"
+#include "memory_restore.h"               // CUM-406: portable restore parse/apply core
+#include "../sys/ps_json.h"               // CUM-406: PSRAM JsonDocument for a large restore body
 #include "health.h"                       // system.health tool (P5)
 #include "skills.h"                        // skill.list/get/save/delete tools (P7 + v4)
 #include "telegram.h"                      // owner alert on agent skill.save
@@ -1264,6 +1266,124 @@ void persistEpisodic() {
   if (g_epiLog) return;
   Lock g;
   if (!writeBlobAtomic(g_epiPath, g_epi.serialize())) alog("memory: episodic persist failed");
+}
+
+// ---- CUM-406: memory restore write path --------------------------------------
+// restoreImport() parses ONE backup artifact's JSON (the exact shapes
+// backup_device.py writes), applies it under the shared memory Lock, persists, and
+// returns the JSON reply POST /api/mem/import sends back. dryRun validates + counts
+// and writes nothing. The parse/apply core is portable (memory_restore.h) and shares
+// its code path with the native round-trip test; the device seam here adds only the
+// Lock, the persist, and (for vectors) the tier/embed bookkeeping.
+// SECRETS: never touches NVS keys/tokens - only the in-RAM memory engines.
+// AUTHORITATIVE: nothing on the device re-clobbers a restore (there is no sync); the
+// backed-up ids/timestamps are preserved so recall/decay/TTL behave as on the source.
+// Idempotent: vectors REPLACE-BY-ID (safe to re-run/page); episodic APPENDS
+// (id-deduped within the call - restore_device.py guards a non-empty store);
+// scratchpad REPLACES.
+
+static std::string importErr(const char* msg) {
+  JsonDocument d;
+  d["ok"] = false; d["error"] = msg;
+  std::string out; serializeJson(d, out); return out;
+}
+
+static std::string importVectors(JsonArrayConst entries, bool dryRun) {
+  Lock g;
+  // Vectors must match the store's embedding width. On the common path the width is
+  // the 256-dim default; for a device configured with a wider model the operator sets
+  // the SAME embed config as the source BEFORE restore (which sets the width) - see the
+  // runbook. A row whose width still doesn't match is reported (widthErrors), never a
+  // silent drop, so the mismatch is visible rather than looking like an empty restore.
+  const int before = g_vec.size();
+  restore::VecReport rep = restore::applyVectors(g_vec, entries, g_vec.dims(), dryRun);
+  const int after = g_vec.size();
+  if (!dryRun && (rep.added || rep.replaced)) {
+    persistVectors();
+    // Restored vectors freeze the embed config: a later change must go through the
+    // explicit reset-and-wipe path rather than silently orphan them.
+    if (!store::embedLocked()) store::setEmbedLocked(true);
+  }
+  // Over-cap honesty: add() evicts silently at the cap, so reconcile added vs actually
+  // stored. A restore that exceeds the device vector cap is NOT lossless; report how
+  // many rows this call displaced rather than claiming they all landed.
+  const int evicted = dryRun ? 0 : restore::evictedCount(before, rep.added, after);
+  JsonDocument d;
+  d["ok"] = true; d["kind"] = "vectors"; d["dryRun"] = dryRun;
+  d["added"] = rep.added; d["replaced"] = rep.replaced;
+  d["skippedNoVec"] = rep.skippedNoVec; d["widthErrors"] = rep.widthErrors;
+  d["badRows"] = rep.badRows; d["stored"] = g_vec.size(); d["evicted"] = evicted;
+  d["dims"] = g_vec.dims();
+  std::string out; serializeJson(d, out); return out;
+}
+
+// Defense in depth: reject an oversized episodic array outright (no partial apply) so
+// one giant body cannot monopolize the recursive memory mutex regardless of dedup cost.
+// The restore tool pages episodic in 64-row batches; this cap sits comfortably above
+// that while bounding the per-call work done under the held Lock.
+static constexpr int kMaxEpisodicRowsPerImport = 512;
+
+static std::string importEpisodic(JsonArrayConst msgs, bool dryRun) {
+  // Cap check happens before the Lock so an oversized body is rejected without ever
+  // taking the mutex, and never half-applies.
+  if ((int)msgs.size() > kMaxEpisodicRowsPerImport)
+    return importErr("episodic batch too large (max 512 rows per import)");
+  Lock g;
+  // Truncation honesty: the no-SD store is a bounded ring (oldest evicted), so count
+  // how many messages actually landed, not just how many we tried to append.
+  const int before = g_epiActive->messageCount();
+  restore::EpiReport rep = restore::applyEpisodic(*g_epiActive, msgs, dryRun);
+  const int after = g_epiActive->messageCount();
+  // The SD append-log self-persists on each addMessage; the no-SD in-memory store
+  // needs an explicit whole-blob flush.
+  if (!dryRun && rep.added && !g_epiLog) persistEpisodic();
+  const int stored = dryRun ? 0 : (after - before);
+  // Genuine restore truncation is when the ring could not hold all the rows we
+  // restored, i.e. added exceeds the FINAL size. Pre-existing rows displaced by a
+  // --force append to a near-cap store are not restore truncation, so compare added
+  // against `after` (not `stored`). Cases: fresh before=0/added=2500/after=2000 -> 500;
+  // force before=1990/added=20/after=2000 -> 0; force before=1990/added=2500/after=2000 -> 500.
+  const int truncated = (!dryRun && rep.added > after) ? rep.added - after : 0;
+  JsonDocument d;
+  d["ok"] = true; d["kind"] = "episodic"; d["dryRun"] = dryRun;
+  d["added"] = rep.added; d["dupSkipped"] = rep.dupSkipped; d["badRows"] = rep.badRows;
+  d["stored"] = stored; d["truncated"] = truncated; d["total"] = after;
+  std::string out; serializeJson(d, out); return out;
+}
+
+static std::string importScratchpad(JsonObjectConst obj, bool dryRun) {
+  Lock g;
+  restore::ScratchReport rep = restore::applyScratchpad(g_scratch, obj, dryRun);
+  if (!dryRun) persistScratchpad();
+  JsonDocument d;
+  d["ok"] = true; d["kind"] = "scratchpad"; d["dryRun"] = dryRun;
+  d["active"] = rep.active; d["short"] = rep.shortN; d["mid"] = rep.midN; d["long"] = rep.longN;
+  std::string out; serializeJson(d, out); return out;
+}
+
+std::string restoreImport(const char* body, size_t len) {
+  // Parse straight from the (PSRAM) body buffer - no internal-heap copy of a large blob.
+  JsonDocument doc(&agent::PsramJsonAllocator::instance());
+  if (deserializeJson(doc, body, len)) return importErr("invalid JSON body");
+  JsonObjectConst root = doc.as<JsonObjectConst>();
+  const char* kind = root["kind"] | "";
+  const bool dryRun = root["dryRun"] | false;
+  // Validate the top-level shape BEFORE any write, so a malformed or truncated body is
+  // rejected outright and can never half-apply (or, for scratchpad, wipe a live tier).
+  if (!strcmp(kind, "vectors")) {
+    if (const char* e = restore::arrayEnvelopeError(root, "entries")) return importErr(e);
+    return importVectors(root["entries"].as<JsonArrayConst>(), dryRun);
+  }
+  if (!strcmp(kind, "episodic")) {
+    if (const char* e = restore::arrayEnvelopeError(root, "messages")) return importErr(e);
+    return importEpisodic(root["messages"].as<JsonArrayConst>(), dryRun);
+  }
+  if (!strcmp(kind, "scratchpad")) {
+    if (!restore::scratchpadEnvelopeValid(root))
+      return importErr("scratchpad must be an object with active/short/mid/long");
+    return importScratchpad(root["scratchpad"].as<JsonObjectConst>(), dryRun);
+  }
+  return importErr("kind must be vectors|episodic|scratchpad");
 }
 
 // Durable media sidecar (docs/orchestrator-storage.md §4). Content-address `bytes`

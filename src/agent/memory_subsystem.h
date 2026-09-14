@@ -10,6 +10,7 @@
 #include "nimbus/orch/tool_registry.h"
 #include "nimbus/orch/vector_archive.h"
 #include "nimbus/orch/vector_memory.h"
+#include "memory_restore.h"   // CUM-406: restore report types (portable, Arduino-free)
 
 // memory_subsystem - the device integration hub for the orchestrator "World"
 // memory (Part B). It owns the portable engines (VectorMemory + Scratchpad +
@@ -209,6 +210,21 @@ bool captureMediaFile(const char* sessionId, const char* role, nimbus::orch::Msg
 // `retentionDays` and reference-count-scan away unreferenced blob sidecars. Returns
 // the number of messages pruned (0 with no SD append-log). Safe to call periodically.
 int pruneRetention(int retentionDays = 30);
+
+// ---- CUM-406: memory restore write path -------------------------------------
+// Parse ONE backup artifact's JSON body (the shapes backup_device.py writes; a
+// {"kind":"vectors|episodic|scratchpad","dryRun":bool,...} envelope), apply it to
+// the live engines under the shared Lock, persist, and return the JSON reply string.
+// dryRun validates + counts without writing. Idempotent: vectors REPLACE-BY-ID (safe
+// to re-run/page), episodic APPENDS (id-deduped within the call; restore_device.py
+// guards a non-empty store), scratchpad REPLACES. Secrets are never touched. Driven
+// by POST /api/mem/import (web_memory) + tools/restore_device.py. The portable
+// parse/apply core (memory_restore.h) is what the native round-trip test exercises.
+// The body is parsed straight from the caller's (PSRAM) buffer - no internal-heap copy.
+// A malformed/truncated shape (or a "count" mismatch) is rejected with NO write; a
+// null/absent scratchpad is rejected rather than applied (which would wipe it). The
+// reply reconciles honestly (vectors: stored/evicted; episodic: stored/truncated).
+std::string restoreImport(const char* body, size_t len);
 
 // Handle one MCP JSON-RPC request (the LAN endpoint + the web bridge both call
 // this); auto-persists after a mutating tools/call. Returns the response string.
