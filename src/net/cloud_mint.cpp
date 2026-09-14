@@ -22,6 +22,7 @@ namespace cloud_mint {
 // g_pending is false and read only after it flips true.
 static volatile bool g_pending = false;
 static long          g_capacity = 0;
+static nimbus::cloud::MintTrigger g_trigger = nimbus::cloud::MintTrigger::UserSave;
 
 // Result snapshot. Written by the worker under a brief critical section and copied
 // out the same way, so the AsyncTCP reader never sees a torn multi-field state.
@@ -85,9 +86,9 @@ static void readResponse(WiFiClientSecure& client, String& resp) {
 static void runOne() {
   const long capacity = g_capacity;
 
-  // Re-assert the gate on the worker side too (defense in depth): only a valid
-  // user-Save capacity may proceed. Never mints from any other trigger.
-  if (!nimbus::cloud::mintAllowed(nimbus::cloud::MintTrigger::UserSave, capacity)) {
+  // Re-assert the gate on the worker side too (defense in depth), on the trigger
+  // the caller declared: only a user Save with a valid capacity may proceed.
+  if (!nimbus::cloud::mintAllowed(g_trigger, capacity)) {
     setResult(State::Error, false, 0, 0, "",
               "Enter a capacity of at least 1 credit.");
     g_pending = false;
@@ -99,7 +100,7 @@ static void runOne() {
   if (!deviceId.length() || !cred.length()) {
     setResult(State::Error, false, 0, 0, "",
               "This device is not paired with the cloud. Pair it first.");
-    alog("mint: not paired - refused");
+    alog("mint: refused (not paired)");
     g_pending = false;
     return;
   }
@@ -127,7 +128,12 @@ static void runOne() {
   String respBody;
   {
     WiFiClientSecure client;
-    tlsSetup(client);
+    // The device pairing credential rides this POST. ALWAYS validate the server
+    // against the embedded CA bundle, exactly like relayTlsSetup(): never
+    // tlsSetup(), whose owner tlsVerify escape hatch would send the credential over
+    // an unvalidated connection.
+    client.setCACertBundle(_nimbusCrtBundleStart,
+                           (size_t)(_nimbusCrtBundleEnd - _nimbusCrtBundleStart));
     client.setHandshakeTimeout(12);
     client.setConnectionTimeout(15000);
     if (client.connect(host.c_str(), 443)) {
@@ -159,7 +165,19 @@ static void runOne() {
   alogf("mint: HTTP %d -> %s", code, r.ok() ? "minted" : "not minted");
 
   if (r.ok()) {
-    store::setCumuloKey(String(r.key.c_str()));
+    const String minted(r.key.c_str());
+    store::setCumuloKey(minted);
+    // Confirm the NVS write actually landed before claiming success: on a full NVS
+    // (the documented Lumi failure) the router has issued a live key that this
+    // device would otherwise silently drop. Say so honestly; the user can revoke it.
+    if (store::cumuloKey() != minted) {
+      alog("mint: key not persisted (nvs write failed)");
+      setResult(State::Error, false, r.capacity, 0, "",
+                "The key was minted but this device could not save it. Free device "
+                "storage, then revoke that key in the app and mint again.");
+      g_pending = false;
+      return;
+    }
     // Mark the key unverified so the Providers card shows it as pending. The verify
     // itself is kicked by the web status readback once it observes Done, NOT here:
     // spawning the verify task from this still-live worker would briefly hold two
@@ -179,12 +197,14 @@ static void mintTask(void*) {
   vTaskDelete(nullptr);
 }
 
-bool request(long capacity) {
-  if (!nimbus::cloud::mintAllowed(nimbus::cloud::MintTrigger::UserSave, capacity))
-    return false;
+bool request(nimbus::cloud::MintTrigger trigger, long capacity) {
+  // The gate is on the DECLARED trigger: anything but a user Save is refused here
+  // and again on the worker, so no new call site can mint silently.
+  if (!nimbus::cloud::mintAllowed(trigger, capacity)) return false;
   if (!store::cloudPaired()) return false;
   if (g_pending) return false;   // one mint at a time
   g_capacity = capacity;
+  g_trigger  = trigger;
   g_pending = true;
   setResult(State::Pending, false, capacity, 0, "", "Minting a key.");
   // 8 KB stack, matching the proven provider_verify TLS task: one small TLS POST +

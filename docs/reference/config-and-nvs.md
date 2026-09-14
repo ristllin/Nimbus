@@ -60,7 +60,7 @@ gracefully instead of firing a doomed TLS call.
 | `zaiKey` | string | `""` | Z.ai (GLM) API key | No - write-only |
 | `zaiBase` | string | `""` | Z.ai probed working host (`api.z.ai \| open.bigmodel.cn`) | Yes |
 | `cumuloKey` | string | `""` | Cumulo router key (one key, every upstream); see [Use your Cumulo key](../cloud/cumulo-key.md) | No - write-only |
-| `cumuloBase` | string | `""` | Cumulo router host or full base URL; `""` uses the built-in default host (`app.cumulo-nimbus.ai`) | Yes |
+| `cumuloBase` | string | `""` | Cumulo router host or full base URL; `""` uses the built-in default host (`app.cumulo-nimbus.ai`). Minting a key from the Cloud access card also sends the device pairing credential to this host, so an override must point only at a trusted router | Yes |
 
 Writing or clearing a provider key **resets that provider's verify cache** to
 `-1, 0` (couldn't-verify / never), so a swapped key can't ride the old verdict.

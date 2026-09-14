@@ -635,8 +635,8 @@ function _chatTraceHint(){
 // honest outcome (the device message is the single source of truth) and refresh.
 function setMintMsg(t,err){var m=$('cloudMintMsg');if(m){m.textContent=t||'';m.style.color=t?(err?'#e0b870':'#7fd1c8'):'';}}
 function doMint(){
-  var capEl=$('cloudMintCap'),cap=capEl?parseInt(capEl.value,10):0;
-  if(!(cap>=1)){setMintMsg('Enter a capacity of at least 1 credit.',true);return;}
+  var capEl=$('cloudMintCap'),cap=capEl?capEl.valueAsNumber:NaN;
+  if(!(Number.isInteger(cap)&&cap>=1)){setMintMsg('Enter a capacity of at least 1 credit.',true);return;}
   var btn=$('cloudMintSave');if(btn)btn.disabled=true;
   setMintMsg('Minting a key…',false);
   var f=new FormData();f.append('capacity',String(cap));
@@ -649,7 +649,7 @@ function pollMint(btn,left){
   if(left<=0){setMintMsg('Still working. Check the Providers section in a moment.',true);if(btn)btn.disabled=false;return;}
   fetch('/api/cloud/mintkey').then(r=>r.json()).then(m=>{
     if(m.state==='pending'){setTimeout(()=>pollMint(btn,left-1),1500);return;}
-    if(m.ok){setMintMsg(m.message||'Key minted.',false);loadState();}
+    if(m.ok){setMintMsg('',false);fbState('cloudMsg','ok',m.message||'Key minted.');if(btn)btn.disabled=false;loadState();}
     else{setMintMsg(m.message||'Couldn\'t mint a key. Try again.',true);if(btn)btn.disabled=false;}
   }).catch(()=>setTimeout(()=>pollMint(btn,left-1),1500));
 }
@@ -705,8 +705,9 @@ function applyState(d){
     // its own: only the Save button calls /api/cloud/mintkey.
     var mc=$('cloudMintCard');
     if(mc){
-      var hasCk=!!(d.providers&&d.providers.cumulo&&d.providers.cumulo.hasKey);
-      mc.style.display=(c.paired&&!hasCk&&!HOSTED)?'block':'none';
+      var hasCk=!!c.hasCumuloKey,show=!!(c.paired&&!hasCk&&!HOSTED);
+      if(show&&mc.style.display==='none'){setMintMsg('',false);var mb0=$('cloudMintSave');if(mb0)mb0.disabled=false;}
+      mc.style.display=show?'block':'none';
       var mbtn=$('cloudMintSave');
       if(mbtn&&!mbtn._wired){mbtn._wired=1;mbtn.onclick=doMint;}
     }
@@ -1801,7 +1802,7 @@ function provRow(name,p){
   // under the hood (no URL to type, unlike Custom endpoint) and Verify checks the key
   // against the router, not a third party (CUM-201 items 1-2).
   if(name==='cumulo'){const ch=document.createElement('div'); ch.className='hint';
-    ch.textContent='One key, one balance. Mint one from Cloud access, or paste your own.';
+    ch.textContent=HOSTED?'One key, one balance. Paste your Cumulo Nimbus key.':'One key, one balance. Mint one from Cloud access, or paste your own.';
     w.appendChild(ch);}
   const row=document.createElement('div'); row.className='row';
   const k=document.createElement('input'); k.type='password'; k.id='key_'+name;

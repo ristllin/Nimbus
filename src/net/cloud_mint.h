@@ -1,6 +1,8 @@
 #pragma once
 #include <Arduino.h>
 
+#include "nimbus/cloud/device_key.h"  // MintTrigger: the caller names its trigger
+
 // cloud_mint - the device seam for minting a Cumulo Nimbus SPEND key for THIS
 // device (CUM-397). It performs POST /router/device-key with the stored device
 // credential and the user's capacity, then persists the returned cumulo_sk_ key.
@@ -23,10 +25,14 @@ namespace cloud_mint {
 // A mint's lifecycle, polled by the web UI (GET /api/cloud/mintkey).
 enum class State : uint8_t { Idle, Pending, Done, Error };
 
-// Start a mint of `capacity` credits. Returns false (and does nothing) when the
-// capacity is invalid, the device is not cloud-paired, or a mint is already
-// pending. On true, the caller reports "pending" and polls status().
-bool request(long capacity);
+// Start a mint of `capacity` credits. The caller must name its trigger; ONLY
+// MintTrigger::UserSave is ever allowed (nimbus::cloud::mintAllowed), so a new
+// caller cannot mint without declaring itself and failing the property test.
+// Returns false (and does nothing) when the trigger is not UserSave, the capacity
+// is invalid, the device is not cloud-paired, a mint is already pending, or the
+// worker task could not be created. On true, the caller reports "pending" and
+// polls status().
+bool request(nimbus::cloud::MintTrigger trigger, long capacity);
 
 // True while a mint is queued or running.
 bool pending();

@@ -54,6 +54,9 @@ enum class MintStatus : uint8_t {
   TermsRequired,       // 403 terms_acceptance_required
   InvalidCredential,   // 401
   RateLimited,         // 429
+  KeyLimitReached,     // 400 key_limit_reached (limit carried)
+  Unpaired,            // 404 unpaired (no live pairing for this device)
+  BadRequest,          // 400 missing_fields / invalid_json (a device-side request bug, not a user field)
   NetworkError,        // no HTTP response (transport failure)
   Unknown,             // any other status / unparseable body
 };
@@ -64,6 +67,7 @@ struct MintResult {
   long        capacity = 0;  // echoed capacity, on Ok
   std::string label;    // key label, on Ok
   long        max      = 0;  // account maximum, on CapacityExceedsMax
+  long        limit    = 0;  // live-key limit, on KeyLimitReached
   std::string message;  // honest, user-facing (copy rules apply)
   bool ok() const { return status == MintStatus::Ok; }
 };

@@ -54,7 +54,7 @@ static void test_build_request_rejects_bad_capacity() {
 }
 
 // --- response parsing: success --------------------------------------------------
-static void test_success_persists_key() {
+static void test_success_yields_key_to_persist() {
   MintResult r = parseMintResponse(
       200, "{\"key\":\"cumulo_sk_live_xyz\",\"capacity\":750,\"label\":\"Desk Nimbus\"}");
   TEST_ASSERT_TRUE(r.ok());
@@ -121,6 +121,35 @@ static void test_unknown_status() {
   TEST_ASSERT_FALSE(r.ok());
 }
 
+// The cloud's other pre-mint refusals (contract addendum 2026-09-14) map to honest,
+// specific messages, never to the capacity message or the generic failure.
+static void test_key_limit_reached_carries_the_limit() {
+  MintResult r = parseMintResponse(400, "{\"error\":\"key_limit_reached\",\"limit\":20}");
+  TEST_ASSERT_FALSE(r.ok());
+  TEST_ASSERT_EQUAL(MintStatus::KeyLimitReached, r.status);
+  TEST_ASSERT_EQUAL_INT(20, r.limit);
+  TEST_ASSERT_EQUAL_STRING(
+      "Your account already has 20 keys. Revoke one in the portal first.",
+      r.message.c_str());
+}
+
+static void test_unpaired_404() {
+  MintResult r = parseMintResponse(404, "{\"error\":\"unpaired\"}");
+  TEST_ASSERT_FALSE(r.ok());
+  TEST_ASSERT_EQUAL(MintStatus::Unpaired, r.status);
+  TEST_ASSERT_EQUAL_STRING("This device is not paired with the cloud. Pair it first.",
+                           r.message.c_str());
+}
+
+static void test_bad_request_codes_never_blame_the_capacity() {
+  MintResult a = parseMintResponse(400, "{\"error\":\"missing_fields\"}");
+  TEST_ASSERT_EQUAL(MintStatus::BadRequest, a.status);
+  TEST_ASSERT_TRUE(a.message.find("capacity") == std::string::npos);
+  MintResult b = parseMintResponse(400, "{\"error\":\"invalid_json\"}");
+  TEST_ASSERT_EQUAL(MintStatus::BadRequest, b.status);
+  TEST_ASSERT_TRUE(b.message.find("capacity") == std::string::npos);
+}
+
 // No message is ever an em dash or a " - " (project copy rule), across every path.
 static void test_messages_obey_copy_rules() {
   const std::string bodies[] = {
@@ -128,9 +157,12 @@ static void test_messages_obey_copy_rules() {
       "{\"error\":\"capacity_required\"}",
       "{\"error\":\"capacity_exceeds_account_max\",\"max\":9}",
       "{\"error\":\"terms_acceptance_required\"}",
-      "{\"error\":\"x\"}"};
-  const int codes[] = {200, 400, 400, 403, 401};
-  for (int i = 0; i < 5; ++i) {
+      "{\"error\":\"x\"}",
+      "{\"error\":\"key_limit_reached\",\"limit\":3}",
+      "{\"error\":\"unpaired\"}",
+      "{\"error\":\"missing_fields\"}"};
+  const int codes[] = {200, 400, 400, 403, 401, 400, 404, 400};
+  for (int i = 0; i < 8; ++i) {
     std::string m = parseMintResponse(codes[i], bodies[i]).message;
     TEST_ASSERT_TRUE(m.find(" - ") == std::string::npos);
     TEST_ASSERT_TRUE(m.find("\xe2\x80\x94") == std::string::npos);  // U+2014 em dash
@@ -144,7 +176,7 @@ int main() {
   RUN_TEST(test_pairing_and_auto_paths_do_not_mint);
   RUN_TEST(test_build_request_valid);
   RUN_TEST(test_build_request_rejects_bad_capacity);
-  RUN_TEST(test_success_persists_key);
+  RUN_TEST(test_success_yields_key_to_persist);
   RUN_TEST(test_success_without_key_is_not_a_mint);
   RUN_TEST(test_capacity_required);
   RUN_TEST(test_capacity_exceeds_max_carries_the_max);
@@ -153,6 +185,9 @@ int main() {
   RUN_TEST(test_rate_limited);
   RUN_TEST(test_network_error_when_no_response);
   RUN_TEST(test_unknown_status);
+  RUN_TEST(test_key_limit_reached_carries_the_limit);
+  RUN_TEST(test_unpaired_404);
+  RUN_TEST(test_bad_request_codes_never_blame_the_capacity);
   RUN_TEST(test_messages_obey_copy_rules);
   return UNITY_END();
 }

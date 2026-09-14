@@ -447,6 +447,10 @@ static void buildState(String& out) {
   // Cloud tunnel (cumulo-nimbus) status. Present in both modes; reports disabled in
   // Notifier (the relay task only spawns in Orchestrator).
   nimbus::relay::statusInto(d["cloud"].to<JsonObject>());
+  // CUM-397: whether this device already holds a Cumulo spend key, so the Cloud
+  // access card can hide the mint affordance once a key exists (/api/state carries
+  // no providers object; the key presence lives here next to the pairing state).
+  d["cloud"]["hasCumuloKey"] = agent::store::hasCumuloKey();
   // Data store for orchestrator vectors/episodic: the SD card (16 GB+) when mounted,
   // else internal LittleFS flash. Reported as doubles (bytes) - a 16 GB card overflows
   // uint32 - with a label so the UI shows the right device + adaptive units.
@@ -1505,10 +1509,15 @@ void beginWeb(const WebConfig& wc) {
   // this AsyncTCP task); the page polls GET for the honest outcome.
   s_server.on("/api/cloud/mintkey", HTTP_POST, [](AsyncWebServerRequest* r) {
     if (authBlocked(r)) return;
-    const long capacity = r->hasParam("capacity", true)
-                              ? r->getParam("capacity", true)->value().toInt()
-                              : 0;
-    if (!nimbus::cloud::validMintCapacity(capacity)) {
+    // Strict "whole number of credits >= 1": every character a digit, no
+    // truncation of "1.9" or "12abc" into an accepted value.
+    const String v = r->hasParam("capacity", true)
+                         ? r->getParam("capacity", true)->value()
+                         : String();
+    char* end = nullptr;
+    const long capacity = v.length() ? strtol(v.c_str(), &end, 10) : 0;
+    if (!v.length() || !end || *end != '\0' ||
+        !nimbus::cloud::validMintCapacity(capacity)) {
       r->send(400, "application/json",
               "{\"error\":\"capacity_required\",\"message\":\"Enter a capacity of at "
               "least 1 credit.\"}");
@@ -1520,7 +1529,19 @@ void beginWeb(const WebConfig& wc) {
               "the cloud. Pair it first.\"}");
       return;
     }
-    agent::cloud_mint::request(capacity);   // false only when already pending: still "pending" to the UI
+    if (agent::cloud_mint::pending()) {
+      // Never silently drop a second Save's capacity behind an in-flight mint.
+      r->send(409, "application/json",
+              "{\"error\":\"mint_in_progress\",\"message\":\"A key is already being "
+              "minted. Wait for it to finish.\"}");
+      return;
+    }
+    // The ONLY mint call site, and it declares its trigger: the user's Save.
+    if (!agent::cloud_mint::request(nimbus::cloud::MintTrigger::UserSave, capacity)) {
+      r->send(503, "application/json",
+              "{\"error\":\"busy\",\"message\":\"Device is busy. Try again.\"}");
+      return;
+    }
     r->send(200, "application/json", "{\"ok\":true,\"pending\":true}");
   });
   s_server.on("/api/cloud/mintkey", HTTP_GET, [](AsyncWebServerRequest* r) {
@@ -1532,8 +1553,9 @@ void beginWeb(const WebConfig& wc) {
     static bool verifyKicked = false;
     if (st.state == agent::cloud_mint::State::Pending) verifyKicked = false;
     if (st.state == agent::cloud_mint::State::Done && st.ok && !verifyKicked) {
-      verifyKicked = true;
-      agent::provider_verify::request("cumulo");
+      // Latch only on a successful enqueue: request() returns false while the
+      // verify slot is busy, so the next poll retries instead of losing the verify.
+      verifyKicked = agent::provider_verify::request("cumulo");
     }
     const char* state =
         st.state == agent::cloud_mint::State::Pending ? "pending"
