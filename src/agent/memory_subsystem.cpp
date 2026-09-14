@@ -10,6 +10,8 @@
 
 #include "adapters/embeddings.h"
 #include "adapters/tavily.h"
+#include "memory_restore.h"               // CUM-406: portable restore parse/apply core
+#include "../sys/ps_json.h"               // CUM-406: PSRAM JsonDocument for a large restore body
 #include "health.h"                       // system.health tool (P5)
 #include "skills.h"                        // skill.list/get/save/delete tools (P7 + v4)
 #include "telegram.h"                      // owner alert on agent skill.save
@@ -1264,6 +1266,81 @@ void persistEpisodic() {
   if (g_epiLog) return;
   Lock g;
   if (!writeBlobAtomic(g_epiPath, g_epi.serialize())) alog("memory: episodic persist failed");
+}
+
+// ---- CUM-406: memory restore write path --------------------------------------
+// restoreImport() parses ONE backup artifact's JSON (the exact shapes
+// backup_device.py writes), applies it under the shared memory Lock, persists, and
+// returns the JSON reply POST /api/mem/import sends back. dryRun validates + counts
+// and writes nothing. The parse/apply core is portable (memory_restore.h) and shares
+// its code path with the native round-trip test; the device seam here adds only the
+// Lock, the persist, and (for vectors) the tier/embed bookkeeping.
+// SECRETS: never touches NVS keys/tokens - only the in-RAM memory engines.
+// AUTHORITATIVE: nothing on the device re-clobbers a restore (there is no sync); the
+// backed-up ids/timestamps are preserved so recall/decay/TTL behave as on the source.
+// Idempotent: vectors REPLACE-BY-ID (safe to re-run/page); episodic APPENDS
+// (id-deduped within the call - restore_device.py guards a non-empty store);
+// scratchpad REPLACES.
+
+static std::string importVectors(JsonArrayConst entries, bool dryRun) {
+  Lock g;
+  // Vectors must match the store's embedding width. On the common path the width is
+  // the 256-dim default; for a device configured with a wider model the operator sets
+  // the SAME embed config as the source BEFORE restore (which sets the width) - see the
+  // runbook. A row whose width still doesn't match is reported (widthErrors), never a
+  // silent drop, so the mismatch is visible rather than looking like an empty restore.
+  restore::VecReport rep = restore::applyVectors(g_vec, entries, g_vec.dims(), dryRun);
+  if (!dryRun && (rep.added || rep.replaced)) {
+    persistVectors();
+    // Restored vectors freeze the embed config: a later change must go through the
+    // explicit reset-and-wipe path rather than silently orphan them.
+    if (!store::embedLocked()) store::setEmbedLocked(true);
+  }
+  JsonDocument d;
+  d["ok"] = true; d["kind"] = "vectors"; d["dryRun"] = dryRun;
+  d["added"] = rep.added; d["replaced"] = rep.replaced;
+  d["skippedNoVec"] = rep.skippedNoVec; d["widthErrors"] = rep.widthErrors;
+  d["badRows"] = rep.badRows; d["total"] = dryRun ? g_vec.size() : rep.total;
+  d["dims"] = g_vec.dims();
+  std::string out; serializeJson(d, out); return out;
+}
+
+static std::string importEpisodic(JsonArrayConst msgs, bool dryRun) {
+  Lock g;
+  restore::EpiReport rep = restore::applyEpisodic(*g_epiActive, msgs, dryRun);
+  // The SD append-log self-persists on each addMessage; the no-SD in-memory store
+  // needs an explicit whole-blob flush.
+  if (!dryRun && rep.added && !g_epiLog) persistEpisodic();
+  JsonDocument d;
+  d["ok"] = true; d["kind"] = "episodic"; d["dryRun"] = dryRun;
+  d["added"] = rep.added; d["dupSkipped"] = rep.dupSkipped; d["badRows"] = rep.badRows;
+  d["total"] = g_epiActive->messageCount();
+  std::string out; serializeJson(d, out); return out;
+}
+
+static std::string importScratchpad(JsonObjectConst obj, bool dryRun) {
+  Lock g;
+  restore::ScratchReport rep = restore::applyScratchpad(g_scratch, obj, dryRun);
+  if (!dryRun) persistScratchpad();
+  JsonDocument d;
+  d["ok"] = true; d["kind"] = "scratchpad"; d["dryRun"] = dryRun;
+  d["active"] = rep.active; d["short"] = rep.shortN; d["mid"] = rep.midN; d["long"] = rep.longN;
+  std::string out; serializeJson(d, out); return out;
+}
+
+std::string restoreImport(const std::string& body) {
+  JsonDocument doc(&agent::PsramJsonAllocator::instance());
+  if (deserializeJson(doc, body))
+    return "{\"ok\":false,\"error\":\"invalid JSON body\"}";
+  const char* kind = doc["kind"] | "";
+  const bool dryRun = doc["dryRun"] | false;
+  if (!strcmp(kind, "vectors"))    return importVectors(doc["entries"].as<JsonArrayConst>(), dryRun);
+  if (!strcmp(kind, "episodic"))   return importEpisodic(doc["messages"].as<JsonArrayConst>(), dryRun);
+  if (!strcmp(kind, "scratchpad")) {
+    JsonObjectConst sp = doc["scratchpad"].as<JsonObjectConst>();
+    return importScratchpad(sp, dryRun);
+  }
+  return "{\"ok\":false,\"error\":\"kind must be vectors|episodic|scratchpad\"}";
 }
 
 // Durable media sidecar (docs/orchestrator-storage.md §4). Content-address `bytes`

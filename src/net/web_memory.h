@@ -9,6 +9,8 @@
 //   GET  /api/mem/stats                 vector/scratch/episodic counts + embed cfg
 //   GET  /api/mem/vector?query=&limit=  browse (importance-desc) or semantic search
 //   POST /api/mem/vector  op=delete|flush|flushnp|dedupe|permanent [&id=]
+//   POST /api/mem/import                restore one backup artifact (vectors/episodic/
+//                                       scratchpad) back into the store (CUM-406)
 //   GET  /api/mem/scratchpad            rendered scratchpad
 //   POST /api/mem/scratchpad            edit (proxied to the memory.scratchpad tool)
 //   GET  /api/mem/config  · PUT /api/mem/config    retrieval/decay knobs
