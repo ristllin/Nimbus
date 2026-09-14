@@ -76,6 +76,38 @@ std::string valueLabel(Param p, int32_t v) {
       return toStr(v);
   }
 }
+
+// Software update (UpdateMenu) rows in DISPLAY order. The list is conditional:
+// the "Allow USB update (60s)" arm row shows only when the confirm gate is ON
+// (CUM-391), and "Install <ver>" only when a version is available. A single
+// builder maps a visible index to a logical row for every consumer (itemCount,
+// onClick, the back handler, view, helpText), so the index math lives in ONE
+// place and a new conditional row can never make a click land on the wrong
+// action - the class of bug the frozen ConnRow ordering guards against.
+enum UpdRow : int { UAuto, UUsbConfirm, UUsbArm, UCheck, UInstall, UBack };
+constexpr int kUpdRowsMax = 6;
+
+// Fill `out` (capacity >= kUpdRowsMax) with the visible rows in order; return
+// the count. hasInstall already folds in otaAllowed (Install is Orchestrator-only).
+int updRowList(bool hasInstall, bool usbConfirm, UpdRow* out) {
+  int n = 0;
+  out[n++] = UAuto;
+  out[n++] = UUsbConfirm;
+  if (usbConfirm) out[n++] = UUsbArm;
+  out[n++] = UCheck;
+  if (hasInstall) out[n++] = UInstall;
+  out[n++] = UBack;
+  return n;
+}
+
+// Visible index of a logical row (or the last row, Back, when it is not shown).
+int updVisibleIndexOf(UpdRow want, bool hasInstall, bool usbConfirm) {
+  UpdRow rows[kUpdRowsMax];
+  const int n = updRowList(hasInstall, usbConfirm, rows);
+  for (int i = 0; i < n; i++)
+    if (rows[i] == want) return i;
+  return n - 1;
+}
 }  // namespace
 
 const char* modeName(Mode m) { return m == Mode::Orchestrator ? "orchestrator" : "notifier"; }
@@ -118,8 +150,10 @@ int SettingsMenu::itemCount() const {
     case State::SelfTest:    return 0;   // full-screen results (device-filled), any event exits
     case State::Battery:     return 0;   // full-screen detail (device-filled), any event exits
     case State::Sound:       return kSoundRows;
-    case State::UpdateMenu:  // Auto + Check + [Install] + Back
-      return 3 + ((otaAllowed_ && !updateVersion_.empty()) ? 1 : 0);
+    case State::UpdateMenu: {  // Auto + USB confirm [+ Arm] + Check [+ Install] + Back
+      UpdRow rows[kUpdRowsMax];
+      return updRowList(otaAllowed_ && !updateVersion_.empty(), usbConfirm_, rows);
+    }
     case State::ConfirmInstall: return 2;  // Cancel / Install and restart
     case State::Display:     return kDispRows;   // Display flip + Back
     case State::ConfirmPowerOff: return 2; // Cancel / Power off
@@ -525,22 +559,34 @@ void SettingsMenu::onClick() {
       }
 
     case State::UpdateMenu: {
-      const bool hasInstall = otaAllowed_ && !updateVersion_.empty();
-      if (sel_ == 0) {                  // Automatic updates toggle
-        autoUpdate_ = !autoUpdate_;
-        dirty_ = true;
-        return;
+      UpdRow rows[kUpdRowsMax];
+      const int n = updRowList(otaAllowed_ && !updateVersion_.empty(),
+                               usbConfirm_, rows);
+      const int i = sel_ < 0 ? 0 : (sel_ >= n ? n - 1 : sel_);
+      switch (rows[i]) {
+        case UAuto:                      // Automatic updates toggle
+          autoUpdate_ = !autoUpdate_;
+          dirty_ = true;
+          return;
+        case UUsbConfirm:                // Confirm USB updates toggle
+          usbConfirm_ = !usbConfirm_;
+          dirty_ = true;
+          clampSel();                    // turning it OFF drops the arm row
+          return;
+        case UUsbArm:                    // Allow USB update (60s)
+          usbArmRequested_ = true;       // device drains -> localArmConfirm(); NOT dirty
+          return;                        // stay on the row; the cue is the confirmation
+        case UCheck:                     // Check for updates (no-op when unavailable)
+          if (otaAllowed_) updateCheckRequested_ = true;  // device drains; NOT dirty
+          return;                        // stay on the row; status reseeds live
+        case UInstall:                   // Install <ver> -> confirm screen
+          enter(State::ConfirmInstall);  // defaults to Cancel (row 0)
+          return;
+        case UBack:
+          enter(State::Main);
+          sel_ = RowUpdate;
+          return;
       }
-      if (sel_ == 1) {                  // Check for updates (no-op when unavailable)
-        if (otaAllowed_) updateCheckRequested_ = true;   // device drains; NOT dirty
-        return;                          // stay on the row; status reseeds live
-      }
-      if (hasInstall && sel_ == 2) {    // Install <ver> -> confirm screen
-        enter(State::ConfirmInstall);   // defaults to Cancel (row 0)
-        return;
-      }
-      enter(State::Main);               // Back
-      sel_ = RowUpdate;
       return;
     }
 
@@ -551,7 +597,7 @@ void SettingsMenu::onClick() {
         return;
       }
       enter(State::UpdateMenu);         // Cancel
-      sel_ = 2;                          // back on the Install row
+      sel_ = updVisibleIndexOf(UInstall, true, usbConfirm_);  // back on the Install row
       clampSel();
       return;
 
@@ -684,8 +730,8 @@ void SettingsMenu::onLongPress() {
       return;
     case State::ConfirmInstall:
       enter(State::UpdateMenu);
-      sel_ = 2;      // back on the Install row (clamped if it vanished)
-      clampSel();
+      sel_ = updVisibleIndexOf(UInstall, true, usbConfirm_);  // back on the Install row
+      clampSel();                                             // (clamped if it vanished)
       return;
   }
 }
@@ -792,11 +838,20 @@ const char* SettingsMenu::helpText() const {
   // Software update rows: live status while it exists; the Notifier-mode
   // explanation on the disabled Check row.
   if (state_ == State::UpdateMenu) {
-    if (sel_ == 1 && !otaAllowed_)
+    UpdRow rows[kUpdRowsMax];
+    const int n = updRowList(otaAllowed_ && !updateVersion_.empty(),
+                             usbConfirm_, rows);
+    const UpdRow row = rows[sel_ < 0 ? 0 : (sel_ >= n ? n - 1 : sel_)];
+    if (row == UCheck && !otaAllowed_)
       return "Updating needs memory that Bluetooth is using. Switch to "
              "Orchestrator mode, then check again.";
+    if (row == UUsbConfirm)
+      return "Requires a tap on the device before an update over the USB "
+             "cable. Leave off if the cable is trusted.";
+    if (row == UUsbArm)
+      return "Allows one USB update in the next 60 seconds.";
     if (!updateStatus_.empty()) return updateStatus_.c_str();
-    if (sel_ == 0)
+    if (row == UAuto)
       return "Installs new firmware when the device is idle and charged, "
              "then restarts.";
     return "";
@@ -985,15 +1040,38 @@ void SettingsMenu::view(solide::menu::MenuView& out) const {
       return;
     }
 
-    case State::UpdateMenu:
+    case State::UpdateMenu: {
       out.title = "Settings > Software update";
-      out.items.push_back(std::string("Automatic updates: ") + (autoUpdate_ ? "On" : "Off"));
-      out.items.push_back(otaAllowed_ ? "Check for updates"
-                                      : "Check for updates (unavailable)");
-      if (otaAllowed_ && !updateVersion_.empty())
-        out.items.push_back("Install " + updateVersion_);
-      out.items.push_back("< Back");
+      UpdRow rows[kUpdRowsMax];
+      const int n = updRowList(otaAllowed_ && !updateVersion_.empty(),
+                               usbConfirm_, rows);
+      for (int i = 0; i < n; i++) {
+        switch (rows[i]) {
+          case UAuto:
+            out.items.push_back(std::string("Automatic updates: ") +
+                                (autoUpdate_ ? "On" : "Off"));
+            break;
+          case UUsbConfirm:
+            out.items.push_back(std::string("Confirm USB updates: ") +
+                                (usbConfirm_ ? "On" : "Off"));
+            break;
+          case UUsbArm:
+            out.items.push_back("Allow USB update (60s)");
+            break;
+          case UCheck:
+            out.items.push_back(otaAllowed_ ? "Check for updates"
+                                            : "Check for updates (unavailable)");
+            break;
+          case UInstall:
+            out.items.push_back("Install " + updateVersion_);
+            break;
+          case UBack:
+            out.items.push_back("< Back");
+            break;
+        }
+      }
       return;
+    }
 
     case State::ConfirmInstall:
       out.title = "Settings > Install " + updateVersion_ + "?";

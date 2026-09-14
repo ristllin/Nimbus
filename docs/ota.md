@@ -201,11 +201,11 @@ easy to read amid ordinary log output.
 - **No auth by default.** The cable is the trust boundary. A backend confirm gate
   exists for anyone who wants to close the "plugged into an untrusted host" case:
   the store flag `usbUpdateConfirm` (default OFF), when ON, makes the device refuse
-  a USB update (`err confirm`) until `otaupd::localArmConfirm()` opens a short 60 s
-  window. The gate defaults OFF so it never affects the common path. Its on-device
-  toggle and arm control are a tracked follow-up (they live on the settings/web
-  surface, owned separately); the flag, the refuse path, and the arm window are
-  implemented and host-tested here.
+  a USB update (`err confirm`) until a 60 s window is armed. The gate defaults OFF so
+  it never affects the common path. It is controlled from both surfaces: a "Confirm
+  USB updates" toggle in the device menu (Settings > Software update) and on the web
+  Firmware panel, plus an "Allow USB update (60s)" action row in that device menu
+  (shown only when the toggle is on) that arms the window.
 - **Reuse, not a second engine.** The listener calls the same single-flight guard
   as cloud OTA (a USB push refuses `busy` while a background check is running, and
   vice versa) and the same arm-before-flip commit order, so the rollback guarantee

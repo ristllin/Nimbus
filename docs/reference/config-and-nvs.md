@@ -132,6 +132,7 @@ roll back if it fails. See [OTA updates](../ota.md).
 | `otaPrev` | string | `""` | Previous app slot label (`app0`/`app1`) for rollback. | Yes (internal) |
 | `otaLast` | string | `""` | Last OTA outcome (`ok vX` / `rollback vX` / ...). | Yes |
 | `autoUpd` | bool | `false` | Auto-install a pending update in an idle window. | Yes |
+| `usbCfm` | bool | `false` | Require an on-device confirm before a USB-cable update. | Yes |
 | `otaNotif` | string | `""` | Last version already Telegram-notified (no re-nag). | Yes (internal) |
 | `otaType` | string | board-derived | Typed-OTA device slug (`nimbus-tft`, `freenove-28`, ...) so a board is only offered a matching image. | Yes |
 | `otaNotes` | string | `""` | `"ver\|notes"` carried across the install reboot. | Yes (internal) |

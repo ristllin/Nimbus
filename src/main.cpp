@@ -3578,6 +3578,7 @@ static void openSettingsMenu() {
   g_menu.setTouchWake(boardCanWakeOnTouch());      // Power off copy: "tap to wake" only where the touch INT is wired (CUM-224)
   g_menu.setSaverMinutes(agent::store::saverMin());
   g_menu.setAutoUpdate(agent::store::otaAutoUpdate());
+  g_menu.setUsbConfirm(agent::store::usbUpdateConfirm());  // Confirm USB updates (CUM-391)
   g_menu.setSttProvider(agent::store::sttProvider() == "openai" ? 1 : 0);
   g_menu.setTtsProvider(agent::store::ttsProvider() == "openai" ? 1 : 0);
   // OTA is Orchestrator-mode-only (Notifier's BLE owns the update RAM): the
@@ -3971,6 +3972,8 @@ static void settleMenuAfterMutation(uint32_t now) {
     }
     if (g_menu.autoUpdate() != agent::store::otaAutoUpdate())
       agent::store::setOtaAutoUpdate(g_menu.autoUpdate());
+    if (g_menu.usbConfirm() != agent::store::usbUpdateConfirm())
+      agent::store::setUsbUpdateConfirm(g_menu.usbConfirm());  // Confirm USB updates (CUM-391)
     {
       const String stt = g_menu.sttProvider() ? "openai" : "mistral";
       const String tts = g_menu.ttsProvider() ? "openai" : "mistral";
@@ -4207,6 +4210,18 @@ static void settleMenuAfterMutation(uint32_t now) {
     g_menu.setWifiKnown(known);
   }
 
+  if (g_menu.usbArmRequested()) {
+    // Software update > Allow USB update (60s): open the confirm-gate window so
+    // the NEXT USB push within 60 s is accepted (otaupd::localBegin refuses with
+    // "confirm" until this arms it, when the usbUpdateConfirm flag is ON). Arming
+    // always succeeds - it just sets a millis deadline - so the press gets the
+    // PP (CUM-385) Ok cue and its confirmation line. (CUM-391)
+    g_menu.clearUsbArmRequest();
+    otaupd::localArmConfirm();
+    emitMenuActionFeedback(nimbus::action::MenuAction::UsbArm,
+                           nimbus::action::Outcome::Ok);
+    g_menuNeedsPaint = true;
+  }
   if (g_menu.updateCheckRequested()) {
     // Software update > Check: kick the real OTA check; the ~1 Hz loop-body
     // reseed (see loop(), next to the menu-repaint flush) tracks it live.

@@ -64,6 +64,8 @@ constexpr MenuActionCopy kCopy[] = {
     {nullptr, nullptr, nullptr},
     // UpdateInstall (the update band / Ask screen carries the words)
     {nullptr, nullptr, nullptr},
+    // UsbArm (arming always succeeds; the line is the on-press confirmation)
+    {"USB update allowed for 60 seconds.", nullptr, nullptr},
 };
 static_assert(sizeof(kCopy) / sizeof(kCopy[0]) == static_cast<size_t>(MenuAction::COUNT),
               "one copy row per MenuAction, in enum order");

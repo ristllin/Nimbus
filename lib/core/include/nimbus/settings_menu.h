@@ -122,6 +122,19 @@ class SettingsMenu {
   bool updateInstallRequested() const { return updateInstallRequested_; }
   void clearUpdateInstallRequest() { updateInstallRequested_ = false; }
 
+  // USB-update confirm gate (CUM-391). Same device-seeded NVS-sync contract as
+  // autoUpdate: seed before opening (setUsbConfirm(store::usbUpdateConfirm())),
+  // read back on dirty() and persist (store::setUsbUpdateConfirm). Default OFF -
+  // a USB push is trusted on cable alone. When ON, the "Allow USB update (60s)"
+  // action row appears in the Software update submenu; clicking it raises
+  // usbArmRequested_, which the device drains (otaupd::localArmConfirm()). The arm
+  // is a device-work request (millis-based window), not Config state, so it does
+  // NOT dirty(), mirroring the other request flags.
+  void setUsbConfirm(bool on) { usbConfirm_ = on; }
+  bool usbConfirm() const { return usbConfirm_; }
+  bool usbArmRequested() const { return usbArmRequested_; }
+  void clearUsbArmRequest() { usbArmRequested_ = false; }
+
   // Voice providers (Sound submenu cycles; 0 Mistral / 1 OpenAI).
   void setSttProvider(int v) { sttProv_ = v ? 1 : 0; }
   int  sttProvider() const { return sttProv_; }
@@ -448,6 +461,8 @@ class SettingsMenu {
   bool hasRing_ = true;              // board has a physical LED ring (CUM-187 hide gate)
   bool calibrateRequested_ = false;  // Settings > Display > Calibrate touch (device drains)
   bool    autoUpdate_ = false;       // Software update > Automatic updates (NVS-synced)
+  bool    usbConfirm_ = false;       // Software update > Confirm USB updates (NVS-synced, default OFF)
+  bool    usbArmRequested_ = false;  // Software update > Allow USB update (60s) (device drains -> localArmConfirm)
   int     sttProv_ = 0;              // Sound > Dictation (0 Mistral / 1 OpenAI, NVS-synced)
   int     ttsProv_ = 0;              // Sound > Spoken replies (0 Mistral / 1 OpenAI, NVS-synced)
   bool    otaAllowed_ = true;        // false in Notifier mode (BLE owns the update RAM)

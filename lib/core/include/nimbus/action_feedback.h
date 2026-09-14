@@ -88,6 +88,7 @@ enum class MenuAction : uint8_t {
   Calibrate,        // Display > Calibrate touch
   UpdateCheck,      // Software update > Check for updates
   UpdateInstall,    // Software update > Install
+  UsbArm,           // Software update > Allow USB update (60s) (CUM-391)
   COUNT
 };
 
