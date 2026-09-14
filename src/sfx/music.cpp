@@ -15,6 +15,7 @@
 #include "../agent/store.h"                 // sfxVolume (shared master)
 #include "../sys/agent_log.h"
 #include "minimp3.h"                        // vendored CC0 MP3 decoder (lib/minimp3)
+#include "nimbus/audio_cue.h"               // CUM-296 low-volume honesty cue (host-tested)
 #include "nimbus/fault.h"
 #include "nimbus/orch/media.h"
 #include "nimbus/orch/tool_registry.h"
@@ -387,6 +388,21 @@ String statusJson() {
   return j;
 }
 
+// CUM-296: when playback starts with the master volume below the audible floor,
+// sustained music is effectively silent on the small speaker while the player still
+// reports "playing". Ride an honest low-volume note on the media.play result so the
+// assistant tells the user it is a volume setting, not a fault. The cue is spliced into
+// the status JSON object (a JSON consumer ignores the extra fields); a no-op when the
+// volume is audible. The floor and the exact copy live in nimbus::audio_cue (host-tested).
+static std::string withVolumeCue(std::string status) {
+  const uint8_t vol = agent::store::sfxVolume();
+  const std::string cue = nimbus::lowVolumeCue(vol);
+  if (cue.empty() || status.empty() || status.back() != '}') return status;
+  status.pop_back();   // reopen the object to append fields (cue is ASCII, no JSON escaping needed)
+  status += ",\"volumePct\":" + std::to_string(vol) + ",\"note\":\"" + cue + "\"}";
+  return status;
+}
+
 // ---- media.* tools ---------------------------------------------------------
 
 static std::string argStr(ArduinoJson::JsonObjectConst a, const char* k) {
@@ -406,14 +422,15 @@ void registerTools() {
             const bool queue = a["queue"] | false;
             if (path.empty()) {
               int n = playAll();
-              return nimbus::orch::ToolResult::ok(n ? statusJson().c_str()
-                                                    : std::string("{\"error\":\"no tracks in /music\"}"));
+              return nimbus::orch::ToolResult::ok(
+                  n ? withVolumeCue(std::string(statusJson().c_str()))
+                    : std::string("{\"error\":\"no tracks in /music\"}"));
             }
             if (!nimbus::orch::validMusicName(path.c_str()))
               return nimbus::orch::ToolResult::fail("invalid track name (SD /music, .wav or .mp3)");
             if (queue) { enqueue(path); resume(); }
             else       { playNow({path}); }
-            return nimbus::orch::ToolResult::ok(std::string(statusJson().c_str()));
+            return nimbus::orch::ToolResult::ok(withVolumeCue(std::string(statusJson().c_str())));
           },
           R"({"type":"object","properties":{"path":{"type":"string"},"queue":{"type":"boolean"}}})");
 
