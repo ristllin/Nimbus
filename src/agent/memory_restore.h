@@ -24,6 +24,7 @@
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include <ArduinoJson.h>
@@ -223,20 +224,20 @@ inline bool parseEpisodicRow(JsonObjectConst o, nimbus::orch::EpisodicMessage& m
 }
 
 // Append episodic.jsonl rows to `es`, de-duplicating ids seen within this call
-// (so a fixture or a retried page can't double-add). dryRun writes nothing.
+// (so a fixture or a retried page can't double-add). dryRun writes nothing. The id
+// set is an unordered_set for O(1) membership: importEpisodic runs this under the
+// held recursive memory mutex, so an O(n^2) linear scan over a large batch could
+// stall the memory task and risk a watchdog. Insertion order is not needed here.
 inline EpiReport applyEpisodic(nimbus::orch::EpisodicStore& es, JsonArrayConst msgs,
-                               bool dryRun, std::vector<std::string>* seenIds = nullptr) {
+                               bool dryRun, std::unordered_set<std::string>* seenIds = nullptr) {
   EpiReport r;
-  std::vector<std::string> localSeen;
-  std::vector<std::string>& seen = seenIds ? *seenIds : localSeen;
+  std::unordered_set<std::string> localSeen;
+  std::unordered_set<std::string>& seen = seenIds ? *seenIds : localSeen;
   for (JsonObjectConst o : msgs) {
     if (o.isNull()) { r.badRows++; continue; }
     nimbus::orch::EpisodicMessage m;
     if (!parseEpisodicRow(o, m)) { r.badRows++; continue; }
-    bool dup = false;
-    for (const auto& s : seen) if (s == m.id) { dup = true; break; }
-    if (dup) { r.dupSkipped++; continue; }
-    seen.push_back(m.id);
+    if (!seen.insert(m.id).second) { r.dupSkipped++; continue; }  // O(1) in-call id-dedup
     if (!dryRun) es.addMessage(m);
     r.added++;
   }

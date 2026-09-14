@@ -41,10 +41,10 @@ def _import(ip, tok, payload, timeout=20):
     )
 
 
-def test_import_unauth_refused(request):
+def test_import_unauth_refused(device, net, secrets, require_secret):
     """No token -> 401, and (the DoS fix) the body is never buffered before that gate."""
     _need_requests()
-    ip = lan_ip_or_skip(request)
+    ip = lan_ip_or_skip(device, net, secrets, require_secret)
     # A deliberately large-ish body: an unauth caller must be refused without the
     # device buffering it. We only assert the 401 here; the no-heap-growth property is
     # structural (auth is checked on the first chunk before the buffer is allocated).
@@ -54,11 +54,11 @@ def test_import_unauth_refused(request):
     assert r.json().get("ok") is False
 
 
-def test_import_dryrun_roundtrip(request):
+def test_import_dryrun_roundtrip(device, net, secrets, require_secret):
     """A token-gated dry-run parses + reports and writes nothing."""
     _need_requests()
-    ip = lan_ip_or_skip(request)
-    tok = _webtok(request)
+    ip = lan_ip_or_skip(device, net, secrets, require_secret)
+    tok = _webtok(device)
     payload = {
         "kind": "vectors",
         "dryRun": True,
@@ -73,11 +73,11 @@ def test_import_dryrun_roundtrip(request):
     assert body.get("dryRun") is True
 
 
-def test_import_count_mismatch_rejected(request):
+def test_import_count_mismatch_rejected(device, net, secrets, require_secret):
     """A declared count that disagrees with the array (a truncated body) is rejected."""
     _need_requests()
-    ip = lan_ip_or_skip(request)
-    tok = _webtok(request)
+    ip = lan_ip_or_skip(device, net, secrets, require_secret)
+    tok = _webtok(device)
     payload = {
         "kind": "vectors",
         "dryRun": True,
@@ -89,11 +89,11 @@ def test_import_count_mismatch_rejected(request):
     assert r.json().get("ok") is False
 
 
-def test_import_malformed_scratchpad_rejected(request):
+def test_import_malformed_scratchpad_rejected(device, net, secrets, require_secret):
     """A null/absent scratchpad is rejected, never applied (which would wipe it)."""
     _need_requests()
-    ip = lan_ip_or_skip(request)
-    tok = _webtok(request)
+    ip = lan_ip_or_skip(device, net, secrets, require_secret)
+    tok = _webtok(device)
     r = _import(ip, tok, {"kind": "scratchpad", "dryRun": True, "scratchpad": None})
     assert r.status_code == 200, r.text
     assert r.json().get("ok") is False

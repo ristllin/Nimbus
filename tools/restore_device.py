@@ -157,16 +157,29 @@ def verify_manifest(src, manifest):
     """Check the folder matches its MANIFEST (counts + file sizes). Returns a list of
     problems; a non-empty list means the backup is inconsistent and must NOT be pushed."""
     probs = []
+    # A declared nonzero count with the tier file ABSENT is a verification FAILURE: the
+    # tier would otherwise restore empty and still exit 0. Mirror the files tier's
+    # missing-file handling below (a declared-but-missing file is always a problem).
     vf = src / "vectors.json"
-    if vf.exists() and manifest.get("vectorCount") is not None:
-        n = len(json.loads(vf.read_bytes()).get("entries", []))
-        if n != manifest["vectorCount"]:
-            probs.append(f"vectors.json has {n} entries, MANIFEST says {manifest['vectorCount']}")
+    vc = manifest.get("vectorCount")
+    if vc is not None:
+        if not vf.exists():
+            if vc:
+                probs.append(f"vectors.json missing but MANIFEST declares {vc} entries")
+        else:
+            n = len(json.loads(vf.read_bytes()).get("entries", []))
+            if n != vc:
+                probs.append(f"vectors.json has {n} entries, MANIFEST says {vc}")
     ef = src / "episodic.jsonl"
-    if ef.exists() and manifest.get("episodicCount") is not None:
-        n = sum(1 for line in ef.read_text().splitlines() if line.strip())
-        if n != manifest["episodicCount"]:
-            probs.append(f"episodic.jsonl has {n} lines, MANIFEST says {manifest['episodicCount']}")
+    ec = manifest.get("episodicCount")
+    if ec is not None:
+        if not ef.exists():
+            if ec:
+                probs.append(f"episodic.jsonl missing but MANIFEST declares {ec} entries")
+        else:
+            n = sum(1 for line in ef.read_text().splitlines() if line.strip())
+            if n != ec:
+                probs.append(f"episodic.jsonl has {n} lines, MANIFEST says {ec}")
     for f in manifest.get("files", []):
         fp = src / "files" / f["project"] / f["name"]
         exp = f.get("bytes")
@@ -246,14 +259,21 @@ def restore_episodic(base, tok, src, a, out):
     if not msgs:
         print("  episodic: (empty)")
         return
-    if not a.dry_run and not a.force:
-        stats = get_json(base, tok, "/api/mem/stats")
-        if int(stats.get("episodicMsgs", 0)) > 0:
-            out.warn(
-                f"episodic: device already has {stats['episodicMsgs']} messages - SKIPPING "
-                "(append would duplicate). Re-run with --force to append anyway."
-            )
-            return
+    # Query the device's current episodic count once, up front. It serves two honesty
+    # checks: the non-empty SKIP guard below, and (under --force) knowing the store
+    # started non-empty so the ring-eviction warning does not over-claim.
+    have_n = int(get_json(base, tok, "/api/mem/stats").get("episodicMsgs", 0))
+    # Gate on --force only so --dry-run runs this check too and its preview is honest:
+    # a real (non --force) apply SKIPS episodic on a non-empty store, so the dry-run must
+    # project that skip rather than print a misleading added=N.
+    if not a.force and have_n > 0:
+        verb = "would SKIP" if a.dry_run else "SKIPPING"
+        out.warn(
+            f"episodic: device already has {have_n} messages: {verb} "
+            "(append would duplicate). Re-run with --force to append anyway."
+        )
+        return
+    started_nonempty = have_n > 0  # reachable here only under --force (else we returned)
     added = truncated = 0
     for batch in size_batches(msgs, "messages", a.batch):
         rep = post_import(base, tok, "episodic", "messages", batch, a.dry_run)
@@ -264,10 +284,18 @@ def restore_episodic(base, tok, src, a, out):
         truncated += int(rep.get("truncated", 0))
     print(f"  episodic: {'(dry-run) ' if a.dry_run else ''}added={added} of {len(msgs)} (truncated={truncated})")
     if truncated:
-        out.warn(
-            f"episodic: {truncated} messages dropped by the no-SD ring cap "
-            "(restore is NOT complete - a card is needed for full history)."
-        )
+        if started_nonempty:
+            out.warn(
+                f"episodic: the no-SD ring evicted {truncated} messages during a --force append to a "
+                "non-empty store. That count can include PRE-EXISTING history displaced to make room, "
+                "not only restored rows, so it does not by itself mean the restore is incomplete. A card "
+                "is needed to hold full history."
+            )
+        else:
+            out.warn(
+                f"episodic: {truncated} messages dropped by the no-SD ring cap "
+                "(restore is NOT complete: a card is needed for full history)."
+            )
 
 
 def restore_scratchpad(base, tok, src, a, out):

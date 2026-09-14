@@ -1317,7 +1317,17 @@ static std::string importVectors(JsonArrayConst entries, bool dryRun) {
   std::string out; serializeJson(d, out); return out;
 }
 
+// Defense in depth: reject an oversized episodic array outright (no partial apply) so
+// one giant body cannot monopolize the recursive memory mutex regardless of dedup cost.
+// The restore tool pages episodic in 64-row batches; this cap sits comfortably above
+// that while bounding the per-call work done under the held Lock.
+static constexpr int kMaxEpisodicRowsPerImport = 512;
+
 static std::string importEpisodic(JsonArrayConst msgs, bool dryRun) {
+  // Cap check happens before the Lock so an oversized body is rejected without ever
+  // taking the mutex, and never half-applies.
+  if ((int)msgs.size() > kMaxEpisodicRowsPerImport)
+    return importErr("episodic batch too large (max 512 rows per import)");
   Lock g;
   // Truncation honesty: the no-SD store is a bounded ring (oldest evicted), so count
   // how many messages actually landed, not just how many we tried to append.
@@ -1328,7 +1338,12 @@ static std::string importEpisodic(JsonArrayConst msgs, bool dryRun) {
   // needs an explicit whole-blob flush.
   if (!dryRun && rep.added && !g_epiLog) persistEpisodic();
   const int stored = dryRun ? 0 : (after - before);
-  const int truncated = (!dryRun && rep.added > stored) ? rep.added - stored : 0;
+  // Genuine restore truncation is when the ring could not hold all the rows we
+  // restored, i.e. added exceeds the FINAL size. Pre-existing rows displaced by a
+  // --force append to a near-cap store are not restore truncation, so compare added
+  // against `after` (not `stored`). Cases: fresh before=0/added=2500/after=2000 -> 500;
+  // force before=1990/added=20/after=2000 -> 0; force before=1990/added=2500/after=2000 -> 500.
+  const int truncated = (!dryRun && rep.added > after) ? rep.added - after : 0;
   JsonDocument d;
   d["ok"] = true; d["kind"] = "episodic"; d["dryRun"] = dryRun;
   d["added"] = rep.added; d["dupSkipped"] = rep.dupSkipped; d["badRows"] = rep.badRows;
