@@ -2,6 +2,7 @@
 
 #include <LittleFS.h>
 #include <time.h>
+#include <esp_heap_caps.h>       // heap_caps_get_largest_free_block (CUM-404 fragmentation gate)
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 
@@ -144,6 +145,12 @@ static bool fireChatAllowed(const LoopRecord& l) {
 static bool s_wasClockValid = false;
 static uint64_t s_prevTickNow = 0;    // last pre-sync now() - the boot-relative base for the rebase
 static uint32_t s_critAlertDay = 0;   // "device ceiling" alert de-dupe (once/day)
+// CUM-404/403: the last tick deferred all fires for memory pressure (low total-free
+// OR a low largest contiguous internal block). Transient, not persisted: it reflects
+// the most recent tick's heap so the Routines pane can honestly say a due routine is
+// "waiting for working memory" instead of a bare next-run countdown. Cleared the tick
+// the device clears both floors.
+static bool s_memDefer = false;
 
 static void onClockSynced(uint64_t realNow, uint64_t oldNow) {
   const uint32_t day = curLocalDay(realNow);
@@ -272,7 +279,23 @@ void checkDue(uint64_t nowEpoch, bool turnInFlight, uint32_t heap) {
   s_prevTickNow = nowEpoch;   // remember this tick's clock as the next rebase's oldNow
 
   if (turnInFlight) return;
-  if (heap < (uint32_t)ORCH_AUTO_TURN_MIN_HEAP) return;
+  // CUM-404/403: defer BEFORE selecting/advancing (round 0) on BOTH floors, so a
+  // memory defer never advances nextRun, bumps firesToday, or burns the breaker - it
+  // simply retries next tick. Total-free is the conservative backstop; the largest
+  // contiguous internal block is the real gate (fragmentation, not total free, is
+  // what fails the scheduled turn's mbedTLS handshake on a fragmented CYD).
+  const uint32_t largest =
+      (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  if (heap < (uint32_t)ORCH_AUTO_TURN_MIN_HEAP ||
+      largest < (uint32_t)ORCH_TURN_MIN_LARGEST_BLOCK) {
+    if (!s_memDefer)
+      alogf("loops: fires deferred (low memory: heap %u/%u largest %u/%u)",
+            (unsigned)heap, (unsigned)ORCH_AUTO_TURN_MIN_HEAP,
+            (unsigned)largest, (unsigned)ORCH_TURN_MIN_LARGEST_BLOCK);
+    s_memDefer = true;
+    return;
+  }
+  s_memDefer = false;   // both floors clear this tick
   if (!nimbus::net::staConnected()) return;   // no network => can't fire or deliver
 
   const uint32_t day = clk ? curLocalDay(nowEpoch) : 0;
@@ -280,6 +303,7 @@ void checkDue(uint64_t nowEpoch, bool turnInFlight, uint32_t heap) {
   // --- SELECT + advance + persist, all under the lock (fast); release before firing.
   LoopFireRequest req;
   bool haveFire = false;
+  uint64_t prevLastRun = 0;   // restored if the fire turns out to be a memory defer
   {
     Lock lk;
     if (g_loops.empty()) return;
@@ -352,6 +376,7 @@ void checkDue(uint64_t nowEpoch, bool turnInFlight, uint32_t heap) {
     // yourself". createdBy distinguishes the two (both are Once loops).
     req.ownerReminder = (req.once && due->createdBy == orch::CreatedBy::Owner);
     req.scheduledFor = nowEpoch;
+    prevLastRun = due->lastRun;   // so a memory defer can un-claim this "run"
     due->lastRun = nowEpoch;
     advanceNextRun(*due, nowEpoch, clk);
     due->firesToday++;
@@ -369,6 +394,26 @@ void checkDue(uint64_t nowEpoch, bool turnInFlight, uint32_t heap) {
   Lock lk;
   LoopRecord* l = findById(id);
   if (l) {
+    // CUM-404/403: the executor refused this fire for memory pressure (the largest
+    // block dropped between the pre-fire gate above and the fire - e.g. the dream
+    // loop's phase-1 maintenance itself consumed the heap before its phase-2 turn).
+    // A defer is NOT a fire: undo the pre-fire counter bump and un-claim the run, so
+    // it never rolls the consec-fail breaker or burns a daily fire.
+    // Deliberately leave nextRun at its advanced slot rather than pulling it back to a
+    // short retry: a fire's pre-work is not always idempotent (the dream loop decays,
+    // prunes, dedups + persists BEFORE its turn), so a 20 s re-fire would re-run that
+    // maintenance every tick on a fragmented board. Prompt, pre-work-free retry is the
+    // PRIMARY tick gate's job (it defers before selecting any loop while memory is low).
+    if (!orch::fireWasAttempted(o)) {
+      if (l->firesToday > 0) l->firesToday--;
+      if (g_dev.firesInWindow > 0) g_dev.firesInWindow--;
+      l->lastRun = prevLastRun;   // the fire did not happen; do not claim it did
+      s_memDefer = true;
+      persist();
+      alogf("loops: '%s' fire deferred (low memory) - not counted, retries next slot",
+            l->name.c_str());
+      return;
+    }
     // NOTE (prism finding #2, partial): o.tokens is the scheduled turn's REAL
     // spend incl. all its tool-loop rounds (Phase 0). Sub-agents the turn spawns
     // dispatch on later ticks and their synthesis turn runs outside this path, so
@@ -533,6 +578,16 @@ static void loopReason(const LoopRecord& l, uint64_t now, bool clk,
     return;
   }
   orch::FireDecision d = orch::evaluate(l, g_dev, g_caps, now, clk, /*chatAllowed=*/true);
+  // CUM-404/403: a routine that WOULD fire but is held back this tick by device
+  // memory pressure (a fragmented heap) is not "scheduled" and not "failing" - say so
+  // honestly. Transient (s_memDefer reflects the last tick), so it clears on its own
+  // when memory frees. Only overrides the would-fire case; a not-due loop keeps its
+  // countdown. (Copy: US English, no em dash, no space-hyphen-space.)
+  if (d == orch::FireDecision::Fire && s_memDefer) {
+    slug = "low-memory";
+    text = "Waiting for working memory. It runs when memory frees up.";
+    return;
+  }
   slug = orch::fireReasonSlug(d);
   text = orch::fireReasonText(d);
 }

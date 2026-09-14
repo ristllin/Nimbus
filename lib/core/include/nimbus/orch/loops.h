@@ -193,9 +193,20 @@ struct LoopFireRequest {
 long parseDurationSecs(const std::string& s);
 struct FireOutcome {
   bool        ok = false;
+  bool        deferred = false;  // CUM-404/403: the executor refused to run this fire
+                                 // for memory pressure (a low largest block or a
+                                 // low total-free floor), BEFORE any provider call. A
+                                 // defer is NOT a failure: the tick must not count it
+                                 // as a fire, roll the consec-fail breaker, or burn a
+                                 // daily fire; it retries on the next tick.
   TokenUsage  tokens;    // real provider spend for the fire (Phase 0)
   std::string detail;    // reply text / error - feeds the semantic-repeat hash
 };
+// A fire was ATTEMPTED (reached a provider) unless it was deferred for memory. Only
+// an attempt rolls the outcome (consecFails / daily fire / semantic-repeat); a memory
+// defer reschedules and retries, exactly like the pre-fire idle-gate defer. Pure +
+// host-tested so "a defer is not a failure" is a class rule, not a call-site habit.
+inline bool fireWasAttempted(const FireOutcome& o) { return !o.deferred; }
 struct LoopExecutor {
   virtual ~LoopExecutor() = default;
   virtual FireOutcome fire(const LoopFireRequest&) = 0;
