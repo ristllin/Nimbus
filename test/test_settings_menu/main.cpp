@@ -1042,13 +1042,16 @@ static void test_update_menu_flow() {
   m.open();
   while (viewOf(m).selected != 7) m.onRotate(+1);
   m.onClick();                                     // -> Software update
-  TEST_ASSERT_EQUAL(3, int(viewOf(m).items.size()));  // Auto, Check, Back (no Install)
+  // Default usbConfirm OFF: Auto, Confirm USB updates, Check, Back (no arm/Install).
+  TEST_ASSERT_EQUAL(4, int(viewOf(m).items.size()));
   TEST_ASSERT_TRUE(contains(viewOf(m).items[0], "Automatic updates: Off"));
+  TEST_ASSERT_TRUE(contains(viewOf(m).items[1], "Confirm USB updates: Off"));
   m.clearDirty();
-  m.onClick();                                     // toggle auto
+  m.onClick();                                     // toggle auto (cursor on row 0)
   TEST_ASSERT_TRUE(m.autoUpdate());
   TEST_ASSERT_TRUE(m.dirty());
   m.clearDirty();
+  m.onRotate(+1);                                  // -> Confirm USB updates
   m.onRotate(+1);                                  // -> Check for updates
   TEST_ASSERT_FALSE(m.updateCheckRequested());
   m.onClick();
@@ -1057,16 +1060,18 @@ static void test_update_menu_flow() {
   m.clearUpdateCheckRequest();
 
   m.setUpdateAvailable("v9.9.9");                  // a check found one
-  TEST_ASSERT_EQUAL(4, int(viewOf(m).items.size()));
-  TEST_ASSERT_TRUE(contains(viewOf(m).items[2], "Install v9.9.9"));
-  m.onRotate(+1);                                  // -> Install row
+  // Now: Auto, Confirm USB updates, Check, Install, Back.
+  TEST_ASSERT_EQUAL(5, int(viewOf(m).items.size()));
+  TEST_ASSERT_TRUE(contains(viewOf(m).items[3], "Install v9.9.9"));
+  m.onRotate(+1);                                  // Check -> Install row (index 3)
+  TEST_ASSERT_EQUAL(3, viewOf(m).selected);
   m.onClick();                                     // -> ConfirmInstall
   TEST_ASSERT_TRUE(contains(viewOf(m).title, "Install v9.9.9?"));
   TEST_ASSERT_EQUAL(0, viewOf(m).selected);        // defaults to Cancel
   m.onClick();                                     // Cancel -> back to UpdateMenu
   TEST_ASSERT_TRUE(contains(viewOf(m).title, "Software update"));
   TEST_ASSERT_FALSE(m.updateInstallRequested());
-  TEST_ASSERT_EQUAL(2, viewOf(m).selected);        // cursor restored to Install
+  TEST_ASSERT_EQUAL(3, viewOf(m).selected);        // cursor restored to Install
   m.onClick();                                     // -> ConfirmInstall again
   m.onRotate(+1); m.onClick();                     // "Install and restart"
   TEST_ASSERT_TRUE(m.updateInstallRequested());
@@ -1083,13 +1088,88 @@ static void test_update_unavailable_in_notifier() {
   m.open();
   while (viewOf(m).selected != 7) m.onRotate(+1);
   m.onClick();
-  TEST_ASSERT_EQUAL(3, int(viewOf(m).items.size()));  // no Install row
-  TEST_ASSERT_TRUE(contains(viewOf(m).items[1], "(unavailable)"));
+  // Auto, Confirm USB updates, Check, Back - no Install (OTA disabled).
+  TEST_ASSERT_EQUAL(4, int(viewOf(m).items.size()));
+  TEST_ASSERT_TRUE(contains(viewOf(m).items[2], "(unavailable)"));
+  m.onRotate(+1);                                  // -> Confirm USB updates
   m.onRotate(+1);                                  // -> Check row
   m.onClick();                                     // no-op
   TEST_ASSERT_FALSE(m.updateCheckRequested());
   TEST_ASSERT_TRUE(contains(viewOf(m).title, "Software update"));  // still here
   TEST_ASSERT_TRUE(contains(m.helpText(), "Orchestrator"));
+}
+
+// Confirm USB updates (CUM-391): the toggle dirties + syncs like autoUpdate; the
+// "Allow USB update (60s)" arm row appears ONLY when the flag is ON; clicking it
+// raises usbArmRequested (a device-work request, not config state -> not dirty)
+// and stays on the row; toggling the flag OFF removes the arm row and clamps.
+static void test_usb_confirm_toggle_and_arm() {
+  Config c;
+  SettingsMenu m(c);
+  m.setOtaAllowed(true);
+  m.open();
+  while (viewOf(m).selected != 7) m.onRotate(+1);
+  m.onClick();                                     // -> Software update
+  // Flag OFF by default: no arm row. Rows = Auto, Confirm USB updates, Check, Back.
+  TEST_ASSERT_FALSE(m.usbConfirm());
+  TEST_ASSERT_EQUAL(4, int(viewOf(m).items.size()));
+  for (const std::string& it : viewOf(m).items)
+    TEST_ASSERT_FALSE(contains(it, "Allow USB update"));
+  // Toggle the flag ON (cursor -> Confirm USB updates row, index 1).
+  m.onRotate(+1);
+  TEST_ASSERT_TRUE(contains(viewOf(m).items[1], "Confirm USB updates: Off"));
+  m.clearDirty();
+  m.onClick();
+  TEST_ASSERT_TRUE(m.usbConfirm());
+  TEST_ASSERT_TRUE(m.dirty());                     // it IS config state
+  TEST_ASSERT_TRUE(contains(viewOf(m).items[1], "Confirm USB updates: On"));
+  // The arm row now appears right after the toggle: Auto, Confirm, Arm, Check, Back.
+  TEST_ASSERT_EQUAL(5, int(viewOf(m).items.size()));
+  TEST_ASSERT_TRUE(contains(viewOf(m).items[2], "Allow USB update (60s)"));
+  // Move onto the arm row and press it.
+  m.clearDirty();
+  m.onRotate(+1);                                  // -> Allow USB update (index 2)
+  TEST_ASSERT_EQUAL(2, viewOf(m).selected);
+  TEST_ASSERT_TRUE(contains(m.helpText(), "60 seconds"));
+  TEST_ASSERT_FALSE(m.usbArmRequested());
+  m.onClick();
+  TEST_ASSERT_TRUE(m.usbArmRequested());           // device drains -> localArmConfirm()
+  TEST_ASSERT_FALSE(m.dirty());                    // arming is not config state
+  TEST_ASSERT_TRUE(m.isOpen());                    // stays open on the row
+  TEST_ASSERT_EQUAL(2, viewOf(m).selected);
+  m.clearUsbArmRequest();
+  // Toggle the flag back OFF from the toggle row: the arm row disappears.
+  m.onRotate(-1);                                  // -> Confirm USB updates (index 1)
+  m.onClick();                                     // OFF
+  TEST_ASSERT_FALSE(m.usbConfirm());
+  TEST_ASSERT_EQUAL(4, int(viewOf(m).items.size()));
+  for (const std::string& it : viewOf(m).items)
+    TEST_ASSERT_FALSE(contains(it, "Allow USB update"));
+}
+
+// The arm row is UNREACHABLE while the flag is OFF: rotating through every row of
+// the Software update submenu never lands on "Allow USB update" and never raises
+// the request. Guards the "shown only when ON" contract as a class, not a point.
+static void test_usb_arm_unreachable_when_off() {
+  Config c;
+  SettingsMenu m(c);
+  m.setOtaAllowed(true);
+  m.setUpdateAvailable("v9.9.9");                  // include the Install row too
+  m.open();
+  while (viewOf(m).selected != 7) m.onRotate(+1);
+  m.onClick();                                     // -> Software update
+  TEST_ASSERT_FALSE(m.usbConfirm());
+  const int n = int(viewOf(m).items.size());       // Auto,Confirm,Check,Install,Back
+  TEST_ASSERT_EQUAL(5, n);
+  // Rotate over every row (no clicks, so the flag stays OFF): the arm row is never
+  // rendered and the arm request is never raised.
+  for (int i = 0; i < n; i++) {
+    for (const std::string& it : viewOf(m).items)
+      TEST_ASSERT_FALSE(contains(it, "Allow USB update"));
+    TEST_ASSERT_FALSE(m.usbArmRequested());
+    m.onRotate(+1);
+  }
+  TEST_ASSERT_FALSE(m.usbArmRequested());
 }
 
 // --- help pane ---------------------------------------------------------------
@@ -1258,7 +1338,7 @@ static void test_all_views_are_printable_ascii() {
   m.setUpdateAvailable("v9.9.9");
   m.onClick();                  // Software update (main row 7)
   assertAsciiView(m, "update-menu");
-  cw(m, 2); m.onClick();        // Install row -> ConfirmInstall
+  cw(m, 3); m.onClick();        // Install row (Auto,Confirm USB,Check,Install) -> ConfirmInstall
   assertAsciiView(m, "confirm-install");
   m.onLongPress();              // back to UpdateMenu
   m.onLongPress();              // back to main, cursor on Software update (7)
@@ -1558,6 +1638,8 @@ int main() {
   RUN_TEST(test_provider_rows_cycle);
   RUN_TEST(test_update_menu_flow);
   RUN_TEST(test_update_unavailable_in_notifier);
+  RUN_TEST(test_usb_confirm_toggle_and_arm);
+  RUN_TEST(test_usb_arm_unreachable_when_off);
   RUN_TEST(test_theme_picker);
   RUN_TEST(test_reset_no_keeps_overrides);
   RUN_TEST(test_connectivity_and_config_qr);

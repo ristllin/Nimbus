@@ -219,6 +219,41 @@ static void test_confirm_gate_on_blocks_until_armed() {
   TEST_ASSERT_TRUE(confirmGateBlocks(true, 2000, 2000));   // exactly at expiry
 }
 
+// CUM-391 acceptance, end to end through the pure gate: the three ticket cases,
+// modeled with the real 60 s arm window (kConfirmWindowMs) that localArmConfirm()
+// opens (armUntil = now + 60000) and localBegin consumes (armUntil -> 0). The
+// device seam is otaupd::localArmConfirm/localBegin; here we prove the decision
+// the seam delegates to.
+static void test_usb_confirm_acceptance_cases() {
+  constexpr uint32_t kWindowMs = 60u * 1000u;   // matches ota_update kConfirmWindowMs
+  const uint32_t now = 1'000'000u;
+
+  // Case 1: flag OFF (default) -> no prompt, localBegin proceeds.
+  TEST_ASSERT_FALSE(confirmGateBlocks(false, now, 0));
+  TEST_ASSERT_NULL(localBeginPrecheck(/*sizeZero=*/false, /*rebootArmed=*/false,
+                                      confirmGateBlocks(false, now, 0)));
+
+  // Case 2: flag ON + not armed -> localBegin refuses "confirm".
+  TEST_ASSERT_TRUE(confirmGateBlocks(true, now, 0));
+  TEST_ASSERT_EQUAL_STRING(
+      "confirm",
+      localBeginPrecheck(false, false, confirmGateBlocks(true, now, 0)));
+
+  // Case 3: flag ON + armed within 60 s -> accepted.
+  const uint32_t armUntil = now + kWindowMs;      // localArmConfirm() at `now`
+  TEST_ASSERT_FALSE(confirmGateBlocks(true, now + 30'000u, armUntil));  // 30 s in
+  TEST_ASSERT_NULL(localBeginPrecheck(
+      false, false, confirmGateBlocks(true, now + 30'000u, armUntil)));
+
+  // Window consumed on begin (localBegin sets g_localConfirmUntil = 0): a second
+  // push with the flag still ON is blocked again until re-armed.
+  TEST_ASSERT_TRUE(confirmGateBlocks(true, now + 31'000u, 0));
+
+  // And a window left to expire (>= 60 s later, never consumed) blocks too.
+  TEST_ASSERT_TRUE(confirmGateBlocks(true, armUntil, armUntil));        // exactly at expiry
+  TEST_ASSERT_TRUE(confirmGateBlocks(true, now + kWindowMs + 1u, armUntil));
+}
+
 static void test_local_begin_precheck_order_and_reasons() {
   // All clear -> proceed (nullptr).
   TEST_ASSERT_NULL(localBeginPrecheck(false, false, false));
@@ -482,6 +517,7 @@ int main(int, char**) {
   RUN_TEST(test_commit_writes_notes_when_hook_present);
   RUN_TEST(test_confirm_gate_default_off_never_blocks);
   RUN_TEST(test_confirm_gate_on_blocks_until_armed);
+  RUN_TEST(test_usb_confirm_acceptance_cases);
   RUN_TEST(test_local_begin_precheck_order_and_reasons);
   RUN_TEST(test_mark_valid_suppressed_while_installing);
   RUN_TEST(test_reader_resend_flood_is_consistent);

@@ -826,6 +826,7 @@ static void buildState(String& out) {
   d["otaErr"]   = otaupd::lastError();
   d["lastOta"]  = otaupd::lastResult();    // persisted outcome (ok/rollback/...)
   d["autoUpd"]  = agent::store::otaAutoUpdate();
+  d["usbCfm"]   = agent::store::usbUpdateConfirm();  // require an on-device confirm before a USB update (CUM-391)
   d["otaSlot"]  = otaupd::runningSlot();    // running app slot (app0/app1) - install flip proof
   serializeJson(d, out);
 }
@@ -1927,6 +1928,12 @@ void beginWeb(const WebConfig& wc) {
     // not orchestrator-gated. Default OFF; the idle-window gate still applies.
     if (r->hasParam("autoUpd", true)) {
       agent::store::setOtaAutoUpdate(r->getParam("autoUpd", true)->value().toInt() != 0);
+      touched = true;
+    }
+    // Confirm USB updates (CUM-391): require an on-device "Allow USB update" tap
+    // before a USB-cable push is accepted. Device-level, both modes; default OFF.
+    if (r->hasParam("usbCfm", true)) {
+      agent::store::setUsbUpdateConfirm(r->getParam("usbCfm", true)->value().toInt() != 0);
       touched = true;
     }
     // Every remaining param is a p_<n>/clr_<n> override field.

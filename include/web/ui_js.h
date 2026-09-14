@@ -720,6 +720,10 @@ function applyState(d){
       if(au&&document.activeElement!==au){au.checked=!!d.autoUpd;
         au.onchange=()=>{const f=new FormData();f.append('autoUpd',au.checked?'1':'0');
           fetch('/api/config',{method:'POST',body:f}).then(jok).then(()=>toast(au.checked?'Auto-update on':'Auto-update off')).catch(failToast);};}}
+    if(d.usbCfm!==undefined){const uc=$('usbCfm');
+      if(uc&&document.activeElement!==uc){uc.checked=!!d.usbCfm;
+        uc.onchange=()=>{const f=new FormData();f.append('usbCfm',uc.checked?'1':'0');
+          fetch('/api/config',{method:'POST',body:f}).then(jok).then(()=>toast(uc.checked?'USB confirm on':'USB confirm off')).catch(failToast);};}}
     // Check-for-updates: the POST only STARTS the check on the device (202
     // {ok:true}); the verdict is not in that accept body - the check runs async.
     // So poll /api/state until the definitive otaResult settles and read the

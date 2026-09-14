@@ -239,6 +239,8 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 <p class="hint tip">Updates download from this project's GitHub releases over TLS and are cryptographically signed: the device verifies each one and reverts on its own if the new version fails to start. Keep the device powered during an install.</p>
 <label class=pr style="margin-top:8px"><input type=checkbox id=autoUpd> Automatic updates <button class=qh type=button aria-expanded=false aria-label="About automatic updates">?</button></label>
 <p class="hint tip">Installs new firmware when the device is idle and charged, then restarts.</p>
+<label class=pr style="margin-top:8px"><input type=checkbox id=usbCfm> Confirm USB updates <button class=qh type=button aria-expanded=false aria-label="About USB update confirm">?</button></label>
+<p class="hint tip">Requires a tap on the device to allow a firmware update over the USB cable. On the device: Settings, Software update, Allow USB update.</p>
 </div>
 </details>
 

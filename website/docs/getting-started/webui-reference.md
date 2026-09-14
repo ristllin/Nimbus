@@ -242,9 +242,10 @@ collapsible groups:
   Charge** (anchors 100% to a fully charged pack, with a visible result).
 - **Software update** - installed and latest versions, **Check for Updates**
   (which reports whether an update was found, you are up to date, or the check
-  failed), **Install Update**, and **Automatic updates**. When an update needs
-  more charge than the pack has, a battery-gate message names the threshold and
-  Install stays disabled. Updates are cryptographically signed and the device
+  failed), **Install Update**, **Automatic updates**, and **Confirm USB updates**
+  (require an on-device tap before a firmware update over the USB cable). When an
+  update needs more charge than the pack has, a battery-gate message names the
+  threshold and Install stays disabled. Updates are cryptographically signed and the device
   reverts on its own if a new version fails to start.
 - **Connectivity** - the home-network address; the temporary setup hotspot and
   password; the **Device sign-in code** and **Generate New Code**; **Bluetooth**
