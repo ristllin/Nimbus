@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import sys
 
+import check_config_mapping
 import check_driver_pin
 import check_elf_symbols
 import check_ota_preserves_nvs
@@ -60,6 +61,7 @@ def run_host_checks() -> bool:
         ("elf-symbols (CUM-167)", check_elf_symbols.main),
         ("sram-staging (CUM-24)", check_sram_staging.main),
         ("ota-nvs (CUM-237)", check_ota_preserves_nvs.main),
+        ("config-mapping (CUM-388)", check_config_mapping.main),
     ):
         rc = fn([])
         results.append((name, rc == 0))
