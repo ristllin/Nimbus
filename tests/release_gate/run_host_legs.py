@@ -90,6 +90,14 @@ PYTHON_LEGS = [
         "the release-gate checks are themselves tested: each goes RED on its "
         "pre-fix input and GREEN on the fix (retroactive proof)",
     ),
+    (
+        "wrong-image-for-config (CUM-388/392)",
+        "check_config_mapping",
+        [sys.executable, "tools/release_gate/check_config_mapping.py"],
+        "every supported hardware config maps to exactly one correct image across "
+        "the web installer, the release workflow, the web-flash builder, the typed "
+        "OTA slugs, and the platformio envs - any drift fails the release",
+    ),
 ]
 
 

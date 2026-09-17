@@ -59,6 +59,14 @@ jobs:
         working-directory: Nimbus
         run: python3 tools/release_gate/check_ota_preserves_nvs.py
 
+      # RELEASE GATE (CUM-388 / CUM-392): every supported hardware config maps to
+      # exactly one correct image across the installer, the workflow, the web-flash
+      # builder, the typed device-type slugs, and the platformio envs. Fails on any
+      # drift (a new/renamed config, a wrong board/panel/offset). Fast, no toolchain.
+      - name: Release gate - config-to-image mapping (CUM-388)
+        working-directory: Nimbus
+        run: python3 tools/release_gate/check_config_mapping.py
+
       - uses: actions/cache@v4
         with:
           path: ~/.platformio
