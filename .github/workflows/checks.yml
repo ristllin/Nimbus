@@ -105,6 +105,11 @@ jobs:
         run: python3 -m pytest tests/hil
       - name: Release-gate host-check logic (CUM-167 / CUM-174)
         run: python3 -m pytest tools/release_gate
+      - name: Installer decision logic (CUM-388 setup_device.py)
+        # The installer's family/transport env selection and its failure-path
+        # screen check are pure host logic; without this line the suite would
+        # never be collected by CI and an uncollected test is worth nothing.
+        run: python3 -m pytest tools/test_setup_device.py
 
   # HIL suite must stay importable/collectable on a device-less box (the repo's
   # own contract: `pytest tests/hil --collect-only` clean with no hardware).

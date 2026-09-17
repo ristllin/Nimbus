@@ -22,6 +22,7 @@ import argparse
 import fnmatch
 import glob
 import os
+from dataclasses import dataclass
 from pathlib import Path
 import re
 import shlex
@@ -507,6 +508,17 @@ class NoReplyError(RuntimeError):
         self.port = port
 
 
+def _verify_bootstrap_status(status: str, display: str | None, mode: str | None, ota_type: str | None) -> None:
+    """Confirm the diagnostic's STATUS line reflects each setting we just wrote."""
+    if display and f"screen='{display}'" not in status:
+        raise RuntimeError(f"Display setting did not verify: {status}")
+    expected_mode = 1 if mode == "orchestrator" else 0
+    if mode and f"mode={expected_mode}" not in status:
+        raise RuntimeError(f"Operating mode did not verify: {status}")
+    if ota_type and f"type='{ota_type}'" not in status:
+        raise RuntimeError(f"OTA type did not verify: {status}")
+
+
 def serial_bootstrap(
     port: str,
     display: str | None,
@@ -560,13 +572,7 @@ def serial_bootstrap(
         for line, expected in bootstrap_commands(display, mode, board, ota_type):
             print(f"  {command(line, expected)}")
         status = command("STATUS", "STATUS ")
-        if display and f"screen='{display}'" not in status:
-            raise RuntimeError(f"Display setting did not verify: {status}")
-        expected_mode = 1 if mode == "orchestrator" else 0
-        if mode and f"mode={expected_mode}" not in status:
-            raise RuntimeError(f"Operating mode did not verify: {status}")
-        if ota_type and f"type='{ota_type}'" not in status:
-            raise RuntimeError(f"OTA type did not verify: {status}")
+        _verify_bootstrap_status(status, display, mode, ota_type)
         print(f"  {status}")
         if show_token:
             token_line = command("TOKEN", "TOKEN ")
@@ -724,6 +730,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+@dataclass
+class InstallPlan:
+    """The resolved flashing context: which tools, which envs, which board and port.
+
+    Bundled so the flash helpers take one plan instead of a long argument list."""
+
+    pio: str
+    esptool: list[str]
+    prod_env: str
+    prov_env: str
+    port: str
+    family: str
+    name: str
+    nvs_state: str
+
+
 class InstallOutcome:
     """What the flash sequence achieved, so the caller can message and exit right.
 
@@ -768,17 +790,20 @@ def _bootstrap_ack(
     )
 
 
-def flash_production(
-    pio: str,
-    esptool: list[str],
-    prod_env: str,
-    prov_env: str,
-    port: str,
-    family: str,
-    display: str | None,
-    mode: str | None,
-    ota_type: str | None,
-) -> InstallOutcome:
+def _restore_production(plan: InstallPlan, outcome: InstallOutcome) -> None:
+    """Put production firmware back, recording any failure or interrupt on outcome."""
+    print("\nRestoring production firmware...")
+    try:
+        _upload(plan.pio, plan.prod_env, plan.port)
+        outcome.production_on_board = True
+    except KeyboardInterrupt:
+        outcome.interrupted = True
+        outcome.restore_error = KeyboardInterrupt()
+    except (RuntimeError, subprocess.CalledProcessError) as exc:
+        outcome.restore_error = exc
+
+
+def flash_production(plan: InstallPlan, display: str | None, mode: str | None, ota_type: str | None) -> InstallOutcome:
     """Seed the selected settings, then always leave production firmware on the board.
 
     The provisioning sketch is only ever a means to seed NVS; whatever happens to it
@@ -788,7 +813,7 @@ def flash_production(
     if not (display or mode or ota_type):
         # Nothing to seed: a straight production flash.
         try:
-            _upload(pio, prod_env, port)
+            _upload(plan.pio, plan.prod_env, plan.port)
             outcome.production_on_board = True
         except KeyboardInterrupt:
             outcome.interrupted = True
@@ -798,8 +823,8 @@ def flash_production(
 
     print("\nApplying the selected settings without erasing NVS...")
     try:
-        _upload(pio, prov_env, port)
-        _bootstrap_ack(esptool, port, family, display, mode, ota_type)
+        _upload(plan.pio, plan.prov_env, plan.port)
+        _bootstrap_ack(plan.esptool, plan.port, plan.family, display, mode, ota_type)
     except KeyboardInterrupt:
         outcome.interrupted = True
     except (RuntimeError, subprocess.CalledProcessError) as exc:
@@ -807,15 +832,7 @@ def flash_production(
     finally:
         # Never strand the board on the temporary diagnostic, even after a failure
         # or an interrupt.
-        print("\nRestoring production firmware...")
-        try:
-            _upload(pio, prod_env, port)
-            outcome.production_on_board = True
-        except KeyboardInterrupt:
-            outcome.interrupted = True
-            outcome.restore_error = KeyboardInterrupt()
-        except (RuntimeError, subprocess.CalledProcessError) as exc:
-            outcome.restore_error = exc
+        _restore_production(plan, outcome)
     return outcome
 
 
@@ -889,28 +906,18 @@ def finish_install(outcome: InstallOutcome, panel: str, mode: str | None, skip_p
     return 0
 
 
-def run_show_token(
-    pio: str,
-    esptool: list[str],
-    prod_env: str,
-    prov_env: str,
-    port: str,
-    name: str,
-    family: str,
-    nvs_state: str,
-    assume_yes: bool,
-) -> int:
+def run_show_token(plan: InstallPlan, assume_yes: bool) -> int:
     """Recover an existing Nimbus access token over serial, then restore production."""
-    if nvs_state != "nimbus":
+    if plan.nvs_state != "nimbus":
         raise RuntimeError("Access-token recovery is only allowed when existing Nimbus settings are detected.")
-    confirm_install(name, family, nvs_state == "nimbus", port, assume_yes)
+    confirm_install(plan.name, plan.family, True, plan.port, assume_yes)
     print("\nReading the access token without erasing NVS...")
     try:
-        _upload(pio, prov_env, port)
-        run_checked([esptool[0], str(Path(__file__).resolve()), "--_bootstrap-port", port, "--_show-token"])
+        _upload(plan.pio, plan.prov_env, plan.port)
+        run_checked([plan.esptool[0], str(Path(__file__).resolve()), "--_bootstrap-port", plan.port, "--_show-token"])
     finally:
         print("\nRestoring production firmware...")
-        _upload(pio, prod_env, port)
+        _upload(plan.pio, plan.prod_env, plan.port)
     print("\nNimbus production firmware is restored. NVS was not erased.")
     return 0
 
@@ -945,12 +952,20 @@ def main(argv: list[str] | None = None) -> int:
         # Serial can answer on the very port in use - a Solide on native USB gets
         # the native-USB provision sketch, not the UART one that can never reply.
         family = resolve_family(args.board, usb_vid, nvs_family) or prompt_family(port, args.yes)
-        prod_env = production_env(family)
-        prov_env = provision_env(family, usb_vid, port)
         name = friendly_name(family, product)
+        plan = InstallPlan(
+            pio=pio,
+            esptool=esptool,
+            prod_env=production_env(family),
+            prov_env=provision_env(family, usb_vid, port),
+            port=port,
+            family=family,
+            name=name,
+            nvs_state=nvs_state,
+        )
         print(f"\nDetected: {name} ({FAMILY_NAME.get(family, family)}) on {port}  MAC {mac}")
         if args.show_token:
-            return run_show_token(pio, esptool, prod_env, prov_env, port, name, family, nvs_state, args.yes)
+            return run_show_token(plan, args.yes)
         display, mode, ota_type = prompt_bootstrap(args, nvs_state, family)
         confirm_install(name, family, nvs_state == "nimbus", port, args.yes)
     except (RuntimeError, subprocess.CalledProcessError, KeyboardInterrupt) as exc:
@@ -963,7 +978,7 @@ def main(argv: list[str] | None = None) -> int:
     # only a bootstrap error (CUM-388 D1). The screen read is skipped when there is
     # nothing safe to read: a Ctrl-C (no 20 s wait tacked onto an interrupt) or a
     # failed restore (no trustworthy production image to signal).
-    outcome = flash_production(pio, esptool, prod_env, prov_env, port, family, display, mode, ota_type)
+    outcome = flash_production(plan, display, mode, ota_type)
     panel = "unknown"
     if (
         not args.skip_panel_check

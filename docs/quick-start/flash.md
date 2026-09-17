@@ -97,6 +97,16 @@ autodetect), `--size 28|35|40` (Freenove panel), `--mode notifier|orchestrator`
 (skip the mode prompt), `--yes` (skip the confirm prompt for CI; needs a single
 connected board or an explicit `--port`, plus `--mode` for a blank board).
 
+After it writes, the installer reads the board's serial to confirm the screen
+came up, then exits. If the screen does not respond it stops with a non-zero
+exit and says the wrong board variant was very likely flashed (for example a
+Nimbus board image on a Freenove); the board still boots and joins the network,
+so nothing else catches this. Check that the `--board` matches the hardware and
+run the installer again. If a setup step fails part way, the installer restores
+the production firmware first, so the board is never left on the temporary setup
+image. Add `--skip-panel-check` only when you are flashing a board with no screen
+attached on purpose.
+
 ### The Freenove CYD all-in-one
 
 The [all-in-one board](../hardware/all-in-one-cyd.md) uses the **same**
@@ -232,7 +242,7 @@ settings.
 |---|---|---|
 | `esp32s3` | `python3 tools/setup_device.py` | **Production firmware.** Silent serial; what a finished device runs. The installer flashes this for you. |
 | `test` | `pio run -e test -t upload` | Production firmware **plus a serial test console** (`STATUS`, `REBOOT`, `RENDER?`, …) for bench work and the HIL harness. Never the flash target for a finished device. |
-| `provision` | `pio run -e provision -t upload --upload-port …` | A standalone serial **network diagnostic** - not the product firmware; it has no display UI, setup network, or web settings. Its `provision-uart` variant is what `setup_device.py` uses internally to seed a new board's settings. |
+| `provision` | `pio run -e provision -t upload --upload-port …` | A standalone serial **network diagnostic** - not the product firmware; it has no display UI, setup network, or web settings. `setup_device.py` uses a provisioning variant of it to seed a new board's settings, choosing the one that matches the board and the port (`provision` or `provision-uart` for a Nimbus board, `provision-cyd` for a Freenove) so its serial reply reaches the same cable. |
 | `tftbringup` | `pio run -e tftbringup -t upload` | **Diagnostic only**: a bare TFT panel test (color bars, backlight fade, touch paint). It replaces the Nimbus firmware entirely - restore with `python3 tools/setup_device.py`. |
 
 If any diagnostic environment was flashed by accident, running

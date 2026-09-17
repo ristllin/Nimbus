@@ -155,8 +155,8 @@ Firmware variants are PlatformIO environments in `platformio.ini`. Build with
 | `tftmin` / `tftmin-uart` | The smallest program that puts anything on the TFT panel: init, one solid fill, nothing else. Exists to take every variable out of a blank-screen fault. |
 | `tfttouch` / `tfttouch-uart` | Five on-screen buttons that prove display, touch, and calibration together - a swapped or mirrored axis is obvious with five buttons and invisible with one. |
 | `tftbringup` / `tftbringup-uart` | Full TFT + touch bring-up: panel init, color order, backlight PWM, and raw touch coordinates, decoupled from the full firmware. |
-| `provision` | Standalone serial network diagnostic (not first-time setup - it has no setup network or web UI). |
-| `provision-uart` | UART-console variant used internally by `setup_device.py` to seed a new board's display and operating mode. |
+| `provision` | Standalone serial network diagnostic (not first-time setup - it has no setup network or web UI). The Nimbus board on its native USB port uses this variant when `setup_device.py` seeds a new board. |
+| `provision-uart` | UART-console variant `setup_device.py` uses to seed a Nimbus board that is on its UART bridge port; the Freenove uses `provision-cyd`. The installer picks the variant that matches the board and the port on its own, so its serial reply always reaches the same cable. |
 
 The `-uart` variants exist because the DevKit has two USB-C ports: the native
 USB port and the UART port. A factory-fresh board can only be flashed through

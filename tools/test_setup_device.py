@@ -12,6 +12,7 @@ import contextlib
 import importlib.util
 import io
 import subprocess
+import sys
 from pathlib import Path
 
 
@@ -19,6 +20,10 @@ def _load():
     path = Path(__file__).with_name("setup_device.py")
     spec = importlib.util.spec_from_file_location("setup_device", path)
     module = importlib.util.module_from_spec(spec)
+    # Register before exec so a @dataclass in the module can resolve its own module
+    # namespace (under `from __future__ import annotations` the decorator looks the
+    # module up in sys.modules); without this the load fails at collection time.
+    sys.modules["setup_device"] = module
     spec.loader.exec_module(module)
     return module
 
@@ -364,21 +369,18 @@ class _RecordingRunner:
         return subprocess.CompletedProcess(command, 0, "", "")
 
 
-def _run_main(
-    argv,
-    *,
-    port="/dev/cu.usbmodem101",
-    vid=None,
-    product="",
-    nvs_state="blank",
-    nvs_family=None,
-    panel="unknown",
-    runner=None,
-):
+def _board(port="/dev/cu.usbmodem101", vid=None, product="", nvs_state="blank", nvs_family=None):
+    """A discovered-board description for _run_main (what resolve_port/inspect_board
+    would report)."""
+    return dict(port=port, vid=vid, product=product, nvs_state=nvs_state, nvs_family=nvs_family)
+
+
+def _run_main(argv, board=None, panel="unknown", runner=None):
     """Drive SETUP.main(argv) fully host-side: stub discovery, flashing, and the
     serial screen read so no hardware or PlatformIO is touched. Returns
     (rc, stdout, stderr, runner). The runner records which envs were uploaded and
     runner.panel_calls records whether the screen was actually read."""
+    board = board if board is not None else _board()
     runner = runner if runner is not None else _RecordingRunner()
     saved: dict[str, object] = {}
 
@@ -390,10 +392,10 @@ def _run_main(
         runner.panel_calls.append(p)
         return panel
 
-    _patch("resolve_port", lambda args: (port, vid, product))
+    _patch("resolve_port", lambda args: (board["port"], board["vid"], board["product"]))
     _patch("platformio_executable", lambda: (Path("/tmp/core"), "pio"))
     _patch("esptool_command", lambda core: ["python", "esptool.py"])
-    _patch("inspect_board", lambda esptool, p: ("aa:bb:cc:dd:ee:ff", nvs_state, nvs_family))
+    _patch("inspect_board", lambda esptool, p: ("aa:bb:cc:dd:ee:ff", board["nvs_state"], board["nvs_family"]))
     _patch("run_checked", runner)
     _patch("verify_panel_after_flash", _fake_verify)
     out, err = io.StringIO(), io.StringIO()
@@ -498,8 +500,7 @@ def test_main_blank_solide_native_usb_uploads_native_provision_sketch():
     # below fails (non-tautological).
     rc, out, err, runner = _run_main(
         ["--yes", "--port", "/dev/cu.usbmodem101", "--board", "solide_s3", "--mode", "orchestrator"],
-        vid=SETUP.VID_ESP32S3_NATIVE,
-        nvs_state="blank",
+        board=_board(vid=SETUP.VID_ESP32S3_NATIVE),
         panel="ok",
     )
     assert rc == 0, (rc, err)
@@ -515,33 +516,38 @@ def test_finish_install_decision_matrix():
     dead = "WRONG board variant"  # the loud line inside PANEL_DEAD_MESSAGE
     success = "installed. NVS was not erased"
 
-    def run(outcome, panel, skip=False, mode="orchestrator"):
+    def run(outcome, panel):
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            rc = SETUP.finish_install(outcome, panel, mode, skip)
-        return rc, out.getvalue(), err.getvalue()
+            rc = SETUP.finish_install(outcome, panel, "orchestrator", False)
+        return rc, (out.getvalue() + err.getvalue())
 
-    # Clean success, screen ok -> 0, success line, no dead message.
-    rc, out, err = run(_outcome(production_on_board=True), "ok")
-    assert rc == 0 and success in out and dead not in err
-    # Clean success, screen unknown -> 0, soft caution, still success.
-    rc, out, err = run(_outcome(production_on_board=True), "unknown")
-    assert rc == 0 and success in out and "look at the screen" in out.lower()
-    # Clean success, screen DEAD -> 1, dead message, and the success line NEVER prints.
-    rc, out, err = run(_outcome(production_on_board=True), "dead")
-    assert rc == 1 and dead in err and success not in out
-    # Bootstrap failed, screen DEAD -> 1, dead message, no success line.
-    rc, out, err = run(_outcome(production_on_board=True, bootstrap_error=RuntimeError("x")), "dead")
-    assert rc == 1 and dead in err and success not in out
-    # Bootstrap failed, screen OK -> 1, "variant is correct", no dead message, no success.
-    rc, out, err = run(_outcome(production_on_board=True, bootstrap_error=RuntimeError("x")), "ok")
-    assert rc == 1 and dead not in err and success not in out and "variant is correct" in err
-    # Restore failed -> 1, no success line, and never a dead message (screen not read).
-    rc, out, err = run(_outcome(restore_error=RuntimeError("x")), "dead")
-    assert rc == 1 and success not in out and "could not be restored" in err
-    # Interrupted -> 1, no success line, safe-to-use wording.
-    rc, out, err = run(_outcome(interrupted=True, production_on_board=True), "unknown")
-    assert rc == 1 and success not in out and "interrupted" in err
+    # (outcome kwargs, panel signal, expected rc, must-appear, must-NOT-appear).
+    # The success line must appear only on a clean install; the wrong-variant
+    # message must appear exactly when the screen reads dead.
+    cases = [
+        (dict(production_on_board=True), "ok", 0, [success], [dead]),
+        (dict(production_on_board=True), "unknown", 0, [success, "look at the screen"], []),
+        (dict(production_on_board=True), "dead", 1, [dead], [success]),
+        (dict(production_on_board=True, bootstrap_error=RuntimeError("x")), "dead", 1, [dead], [success]),
+        (
+            dict(production_on_board=True, bootstrap_error=RuntimeError("x")),
+            "ok",
+            1,
+            ["variant is correct"],
+            [success, dead],
+        ),
+        (dict(restore_error=RuntimeError("x")), "dead", 1, ["could not be restored"], [success, dead]),
+        (dict(interrupted=True, production_on_board=True), "unknown", 1, ["interrupted"], [success]),
+    ]
+    for kwargs, panel, want_rc, must, forbid in cases:
+        rc, text = run(_outcome(**kwargs), panel)
+        low = text.lower()
+        assert rc == want_rc, (kwargs, panel, rc)
+        for needle in must:
+            assert needle.lower() in low, (kwargs, needle)
+        for needle in forbid:
+            assert needle.lower() not in low, (kwargs, needle)
 
 
 def test_main_bootstrap_no_reply_with_dead_screen_shows_wrong_variant():
@@ -552,8 +558,7 @@ def test_main_bootstrap_no_reply_with_dead_screen_shows_wrong_variant():
     runner = _RecordingRunner(fail_ack=subprocess.CalledProcessError(1, "ack"))
     rc, out, err, runner = _run_main(
         ["--yes", "--port", "/dev/cu.usbmodem101", "--board", "solide_s3", "--mode", "orchestrator"],
-        vid=SETUP.VID_ESP32S3_NATIVE,
-        nvs_state="blank",
+        board=_board(vid=SETUP.VID_ESP32S3_NATIVE),
         panel="dead",
         runner=runner,
     )
@@ -570,8 +575,7 @@ def test_main_bootstrap_upload_failure_still_checks_screen():
     runner = _RecordingRunner(fail_env="provision")
     rc, out, err, runner = _run_main(
         ["--yes", "--port", "/dev/cu.usbmodem101", "--board", "solide_s3", "--mode", "orchestrator"],
-        vid=SETUP.VID_ESP32S3_NATIVE,
-        nvs_state="blank",
+        board=_board(vid=SETUP.VID_ESP32S3_NATIVE),
         panel="dead",
         runner=runner,
     )
@@ -586,8 +590,7 @@ def test_main_ctrl_c_during_bootstrap_does_not_wait_on_serial():
     runner = _RecordingRunner(fail_ack=KeyboardInterrupt())
     rc, out, err, runner = _run_main(
         ["--yes", "--port", "/dev/cu.usbmodem101", "--board", "solide_s3", "--mode", "orchestrator"],
-        vid=SETUP.VID_ESP32S3_NATIVE,
-        nvs_state="blank",
+        board=_board(vid=SETUP.VID_ESP32S3_NATIVE),
         panel="dead",
         runner=runner,
     )
@@ -603,8 +606,7 @@ def test_main_restore_failure_reports_and_skips_screen_read():
     runner = _RecordingRunner(fail_env="esp32s3")
     rc, out, err, runner = _run_main(
         ["--yes", "--port", "/dev/cu.usbmodem101", "--board", "solide_s3", "--mode", "orchestrator"],
-        vid=SETUP.VID_ESP32S3_NATIVE,
-        nvs_state="blank",
+        board=_board(vid=SETUP.VID_ESP32S3_NATIVE),
         panel="ok",
         runner=runner,
     )
@@ -622,8 +624,7 @@ def test_main_wrong_variant_freenove_given_solide_board_caught_by_screen():
     runner = _RecordingRunner()
     rc, out, err, runner = _run_main(
         ["--yes", "--port", "/dev/cu.usbmodem101", "--board", "solide_s3", "--mode", "orchestrator"],
-        vid=SETUP.VID_ESP32S3_NATIVE,
-        nvs_state="blank",
+        board=_board(vid=SETUP.VID_ESP32S3_NATIVE),
         panel="dead",
         runner=runner,
     )
@@ -637,8 +638,7 @@ def test_main_happy_path_solide_native_installs_and_reports_success():
     # flashes, the screen check passes, exit 0 with the success line.
     rc, out, err, runner = _run_main(
         ["--yes", "--port", "/dev/cu.usbmodem101", "--board", "solide_s3", "--mode", "orchestrator"],
-        vid=SETUP.VID_ESP32S3_NATIVE,
-        nvs_state="blank",
+        board=_board(vid=SETUP.VID_ESP32S3_NATIVE),
         panel="ok",
     )
     assert rc == 0
