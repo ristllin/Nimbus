@@ -198,12 +198,12 @@ test('hosted: Wi-Fi and Bluetooth groups collapse to one honest platform line', 
 });
 
 // (9) Honest hosted battery/power (CUM-214 ruling): a hosted instance has no pack, no LED
-//     ring, and no sense hardware, so all three battery groups are false there - the Battery
-//     hardware readout (#battsec), the Battery mode preset (#battModeGroup, which drives LED
-//     brightness/animation), and Customize battery mode (#custProfGroup). They collapse to
-//     one honest platform line. On a VN the profile is a no-op: nimbusd omits it from
-//     /api/state and /api/config ignores hardware-only keys, so hiding the control hides no
-//     real knob. Fails on the pre-fix page (all three battery groups render on a VM).
+//     ring, and no sense hardware, so the battery controls are false there. Since the
+//     Settings IA rework (ba0b0c4) they live in ONE Battery area (#battsec, which now
+//     carries the mode preset + readout) plus Customize battery mode (#custProfGroup).
+//     They collapse to one honest platform line. On a VN the profile is a no-op: nimbusd
+//     omits it from /api/state and /api/config ignores hardware-only keys, so hiding the
+//     control hides no real knob. Fails on the pre-fix page (battery groups render on a VM).
 test('hosted: battery groups collapse to one honest platform line', async ({ page }) => {
   await markHosted(page);
   await routeHosted(page);
@@ -211,8 +211,7 @@ test('hosted: battery groups collapse to one honest platform line', async ({ pag
   await openApp(page);
   await page.locator('.tab[data-p=device]').click();
   await page.waitForTimeout(200);
-  // All three battery groups are hidden (never a dead/empty control on a VN).
-  await expect(page.locator('#battModeGroup')).toBeHidden();
+  // Both battery groups are hidden (never a dead/empty control on a VN).
   await expect(page.locator('#custProfGroup')).toBeHidden();
   await expect(page.locator('#battsec')).toBeHidden();
   // The profile radios (Dark/Balanced/Full) go with them - no dead battery-mode control.
@@ -225,15 +224,20 @@ test('hosted: battery groups collapse to one honest platform line', async ({ pag
 });
 
 // (9b) Counter-test: the hide is HOSTED-gated, not a blanket removal. On a normal device
-//      (no hosted flag) the Battery mode + Customize groups still render and no platform
+//      (no hosted flag) the Battery area (#battsec, carrying the Dark/Balanced/Full mode
+//      radios since the Settings IA rework) + Customize group still render and no platform
 //      line appears - so the class rule is "hosted hides these", not "these are gone".
 test('device mode still shows the battery-mode groups (hide is hosted-gated)', async ({ page }) => {
   await seedToken(page);
   await openApp(page);
   await page.locator('.tab[data-p=device]').click();
   await page.waitForTimeout(200);
-  await expect(page.locator('#battModeGroup')).toBeVisible();
+  await expect(page.locator('#battsec')).toBeVisible();
+  // Customize now nests INSIDE the collapsed Battery area (Settings IA rework):
+  // open it and the group is really there, radios and all.
+  await page.locator('#battsec > summary').click();
   await expect(page.locator('#custProfGroup')).toBeVisible();
+  await expect(page.locator('input[name=profile]').first()).toBeVisible();
   await expect(page.locator('#hostedBattLine')).toHaveCount(0);
 });
 

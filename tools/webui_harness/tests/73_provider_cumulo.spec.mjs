@@ -72,7 +72,10 @@ test('Cumulo Nimbus is the first provider row, marked recommended, with Z.ai pre
   const first = page.locator('#provs .provrow').first();
   await expect(first.locator('.provhead b')).toHaveText('Cumulo Nimbus');
   await expect(first).toContainText('Recommended');
-  await expect(first).toContainText('no URL to type'); // carries the router wiring, no URL (item 2)
+  // Copy changed with the in-card mint affordance (CUM-397): one key, one balance,
+  // mint from Cloud access or paste - still no URL to type anywhere in the card.
+  await expect(first).toContainText('One key, one balance');
+  await expect(first).toContainText('Mint one from Cloud access');
   await expect(page.locator('#key_cumulo')).toHaveAttribute('placeholder', /cumulo_sk_/);
   await expect(page.locator('#prov_zai')).toBeVisible(); // Z.ai surfaced too (item 4)
   await expect(page.locator('#prov_zai .provhead b')).toHaveText('Z.ai');
