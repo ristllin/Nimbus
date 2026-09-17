@@ -239,6 +239,53 @@ static void test_manifest_rejects() {
   TEST_ASSERT_FALSE(parseManifest("{", 1, "nimbus-tft", m, &err));  // truncated json
 }
 
+// CUM-388: the device-side typed lookup REFUSES a manifest entry of another type. A board
+// looks up only its OWN type key, so a manifest that carries only other types yields
+// "variant" (settled "no update"), never a wrong-pinout image. Iterated over EVERY
+// (device type x present-entry) pair so a new type added without its own guard fails here,
+// not one hand-picked case - the class rule behind the release mapping gate.
+static void test_cross_type_manifest_refused() {
+  const char* kAll[] = {kTypeNimbusTft, kTypeFreenove28, kTypeFreenove35, kTypeFreenove40};
+  for (const char* present : kAll) {
+    char json[400];
+    snprintf(json, sizeof json,
+             "{\"schema\":2,\"version\":\"v9.9.9\",\"variants\":{"
+             "\"%s\":{\"url\":\"https://x/y.bin\",\"size\":3000000,"
+             "\"sha256\":\"%s\",\"sig\":\"TWFuTWFuTWFu\"}}}",
+             present, kSha64);
+    for (const char* device : kAll) {
+      ManifestInfo m;
+      const char* err = nullptr;
+      bool ok = parseManifest(json, strlen(json), device, m, &err);
+      if (strcmp(device, present) == 0) {
+        TEST_ASSERT_TRUE_MESSAGE(ok, "a device must accept its OWN type's entry");
+      } else {
+        TEST_ASSERT_FALSE_MESSAGE(ok, "a device must refuse a manifest of ANOTHER type");
+        TEST_ASSERT_EQUAL_STRING("variant", err);
+      }
+    }
+  }
+}
+
+// CUM-388: typeAllowedForBoard must partition ALL four types into EXACTLY one board family,
+// disjointly - so a misseeded NVS type from the wrong family resolves to "" and pulls no
+// image (the runtime twin of the compile-time board<->variant static_assert). Class rule
+// over every type: a new slug that no board (or both boards) accepts fails this test.
+static void test_type_family_partition_total_and_disjoint() {
+  const char* kAll[] = {kTypeNimbusTft, kTypeFreenove28, kTypeFreenove35, kTypeFreenove40};
+  for (const char* t : kAll) {
+    bool solide = typeAllowedForBoard(t, false);
+    bool freenove = typeAllowedForBoard(t, true);
+    TEST_ASSERT_TRUE_MESSAGE(solide != freenove,
+                             "each type must be owned by EXACTLY one board family");
+  }
+  // The families themselves: the TFT board owns only nimbus-tft; the Freenove owns the sizes.
+  TEST_ASSERT_TRUE(typeAllowedForBoard(kTypeNimbusTft, false));
+  TEST_ASSERT_TRUE(typeAllowedForBoard(kTypeFreenove28, true));
+  TEST_ASSERT_TRUE(typeAllowedForBoard(kTypeFreenove35, true));
+  TEST_ASSERT_TRUE(typeAllowedForBoard(kTypeFreenove40, true));
+}
+
 // --- state machine ----------------------------------------------------------
 
 static void test_state_machine() {
@@ -570,6 +617,8 @@ int main(int, char**) {
   RUN_TEST(test_manifest_valid);
   RUN_TEST(test_manifest_uppercase_sha_canonicalized);
   RUN_TEST(test_manifest_rejects);
+  RUN_TEST(test_cross_type_manifest_refused);
+  RUN_TEST(test_type_family_partition_total_and_disjoint);
   RUN_TEST(test_state_machine);
   RUN_TEST(test_eligibility);
   RUN_TEST(test_rollback_policy);

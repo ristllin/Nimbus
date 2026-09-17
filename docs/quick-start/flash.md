@@ -17,11 +17,14 @@ installed:
 
 1. Connect the board's **UART** port to your computer with a **data-capable
    USB cable** (many cables are charge-only and never show a serial port).
-2. Open the **[Nimbus web flasher](https://docs.cumulo-nimbus.ai/flash)**
-   and click **Install Nimbus**.
-3. Pick the serial port when prompted (a CP210x / `usbserial` entry). On a new
-   board, choosing "Erase device" is fine; on a board already running Nimbus
-   it wipes the saved settings.
+2. Open the **[Nimbus web flasher](https://docs.cumulo-nimbus.ai/flash)** and
+   **choose your board** from the list: **Nimbus board (TFT + ring)**, or the
+   **Freenove CYD** at your panel size (2.8, 3.5, or 4.0 inch). This is the one
+   choice you must get right (see "Picking the right image" below); the Install
+   button stays disabled until you pick, so there is no wrong default to flash.
+3. Click **Install Nimbus** and pick the serial port when prompted (a CP210x /
+   `usbserial` entry). On a new board, choosing "Erase device" is fine; on a
+   board already running Nimbus it wipes the saved settings.
 4. **Ignore any Wi-Fi prompt the flasher shows afterwards** - Nimbus provisions
    through its own `Nimbus-setup` network, not through the flasher.
 
@@ -34,9 +37,34 @@ installed:
 > - compare it against the file the flasher downloads.
 
 When it finishes, the board restarts into Nimbus: join the `Nimbus-setup`
-Wi-Fi network and continue in the **[setup wizard](setup-wizard.md)**. On a
-touchscreen board the panel stays blank/white until the wizard's display step
-is answered - expected, not a fault.
+Wi-Fi network and continue in the **[setup wizard](setup-wizard.md)**. The
+image you picked already carries the display it belongs to, so **the screen
+comes up right away on the correct panel**: there is no blank-screen step and
+no display question in the wizard.
+
+### Picking the right image (and what a wrong pick looks like)
+
+The board variant is baked into the image at build time; the device does not
+detect its own hardware. Each board and panel size has its **own** image, so the
+one thing you must get right is the board you choose in step 2. The installer
+lists exactly four:
+
+| Choose | For | Update type it seeds |
+|---|---|---|
+| Nimbus board (TFT + ring) | the Solide S3 board with the 2.8" panel and LED ring | `nimbus-tft` |
+| Freenove CYD - 2.8 inch | the Freenove all-in-one, 2.8" panel | `freenove-28` |
+| Freenove CYD - 3.5 inch | the Freenove all-in-one, 3.5" panel | `freenove-35` |
+| Freenove CYD - 4.0 inch | the Freenove all-in-one, 4.0" panel | `freenove-40` |
+
+**What a wrong pick looks like:** an image built for the *other* board boots and
+comes online normally over Wi-Fi, but its display driver talks to pins that are
+not wired to this board's panel, so **the screen stays black even though the
+device looks healthy**. A wrong Freenove *panel size* is subtler: the screen
+lights up but the picture is sized for the wrong glass (clipped or shifted).
+Either way the fix is the same, and it is safe: reflash from this page with the
+**correct** board selected. Picking the right image is also what makes future
+over-the-air updates safe, because that choice sets the update type the device
+will only ever accept a matching image for.
 
 ## Path 2 - command-line installer
 
