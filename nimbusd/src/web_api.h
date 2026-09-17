@@ -18,6 +18,7 @@
 #include "rig.h"
 
 #include "nimbus/docs_pack.h"
+#include "nimbus/orch/connectors_wire.h"
 #include "nimbus/qr.h"
 #include "nimbus/status_style.h"
 #include "nimbus/theme.h"
@@ -65,6 +66,7 @@ class WebApi {
     return tryStatus(method, base, body, out) ||
            tryChat(method, base, path, body, out) ||
            tryMemory(method, base, path, body, out) ||
+           tryConnectors(method, base, body, out) ||
            tryStatic(method, base, path, out) ||
            tryStubs(method, base, out) ||
            tryHardware(base, out);
@@ -149,12 +151,69 @@ class WebApi {
     return tryStubsExtra(get, base, out);
   }
 
-  bool tryStubsExtra(bool get, const std::string& base, ApiResp& out) {
-    if (base == "/api/connectors" || base.rfind("/api/connectors/", 0) == 0) {
-      out = base == "/api/connectors/oauth/status" ? okJson(R"({"active":false})")
-            : get ? okJson(R"({"configured":[],"known":[],"keyed":{},"host":""})") : okJson(R"({"ok":true})");
+  // ---- connectors (CUM-424) - the REAL registry, device-contract-compatible.
+  // GET returns the sanitized {configured,known,keyed,host} view (secrets never
+  // echoed - tok/oauth become has-flags); POST takes exactly one of
+  // blob=<array> | del=<name> | patch=<object> (form-encoded, token-gated at the
+  // http layer like every /api/* route) and mirrors the device semantics:
+  // patch preserves stored secrets when omitted, the final set is validated at
+  // save time (CUM-255), and every successful write resets the conversation so
+  // the new set rides the next turn. OAuth device-flow sign-in (CUM-256) is not
+  // available on a hosted instance yet: /oauth/start says so honestly instead of
+  // acking a flow that never runs; /oauth/status stays {"active":false}.
+  bool tryConnectors(const std::string& m, const std::string& base,
+                     const std::string& body, ApiResp& out) {
+    const bool get = (m == "GET");
+    if (base == "/api/connectors/oauth/status") {
+      out = okJson(R"({"active":false})");
       return true;
     }
+    if (base == "/api/connectors/oauth/start" || base == "/api/connectors/oauth/cancel") {
+      out = base.rfind("cancel") != std::string::npos
+                ? okJson(R"({"ok":true})")
+                : ApiResp{400, "application/json",
+                          R"({"error":"OAuth sign-in is not available on a hosted instance yet. Use a pasted token or a Studio connector."})"};
+      return true;
+    }
+    if (base != "/api/connectors") return false;
+    if (get) {
+      JsonDocument outDoc;
+      rig_->connectors().sanitizedConfigured(outDoc["configured"].to<JsonArray>());
+      JsonDocument known;
+      if (!deserializeJson(known, nimbus::orch::knownCatalogJson())) outDoc["known"] = known;
+      JsonObject keyed = outDoc["keyed"].to<JsonObject>();
+      keyed["openai"] = rig_->providerKeyed("openai");
+      keyed["anthropic"] = rig_->providerKeyed("anthropic");
+      keyed["mistral"] = rig_->providerKeyed("mistral");
+      outDoc["host"] = rig_->hostBadge();
+      std::string s;
+      serializeJson(outDoc, s);
+      out = okJson(s);
+      return true;
+    }
+    // POST: exactly one mode, device-identical error strings.
+    const std::string blob = formValue(body, "blob");
+    const std::string del = formValue(body, "del");
+    const std::string patch = formValue(body, "patch");
+    std::string err;
+    if (!blob.empty())      err = rig_->connectors().replaceBlob(blob);
+    else if (!del.empty())  err = rig_->connectors().removeByName(del);
+    else                    err = rig_->connectors().patchUpsert(patch);
+    if (!err.empty()) {
+      JsonDocument e;
+      e["error"] = err;
+      std::string s;
+      serializeJson(e, s);
+      out = ApiResp{400, "application/json", s};
+      return true;
+    }
+    rig_->noteConnectorsWrite();
+    rig_->persist();
+    out = okJson(R"({"ok":true})");
+    return true;
+  }
+
+  bool tryStubsExtra(bool get, const std::string& base, ApiResp& out) {
     if (base == "/api/trace" && get)    { out = {200, "text/plain; charset=utf-8", "Turn tracing is off on this instance."}; return true; }
     if (base == "/api/mem/blob" && get) { out = {404, "text/plain; charset=utf-8", "reason: no blob store on a hosted instance"}; return true; }
     if (base == "/api/mem/embedverify") { out = okJson(R"({"ok":true,"dims":0})"); return true; }

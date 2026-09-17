@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "connectors_store.h"
 #include "daemon_config.h"
 #include "daemon_http.h"
 #include "nimbus/docs_pack.h"
@@ -19,6 +20,7 @@
 #include "nimbus/orch/episodic_log.h"
 #include "nimbus/orch/mem_config.h"
 #include "nimbus/orch/memory_tools.h"
+#include "nimbus/orch/router_route.h"
 #include "nimbus/orch/scratchpad.h"
 #include "nimbus/orch/tool_registry.h"
 #include "nimbus/orch/vector_memory.h"
@@ -101,6 +103,8 @@ class NimbusdRig {
     fsutil::mkdirs(memDir());
     buildMemory();
     loadSecrets();   // in-app provider keys persisted from a prior session (CUM-279)
+    conns_.setPath(memDir() + "/connectors.json");
+    conns_.load();   // connector registry (CUM-424); tolerant of absent/torn
     buildEngine();
   }
 
@@ -209,6 +213,23 @@ class NimbusdRig {
     auto it = opt_.models.find(kCumuloSlug);
     return (it != opt_.models.end() && !it->second.empty()) ? it->second
                                                             : std::string(kCumuloModel);
+  }
+
+  // ---- connectors (CUM-424) -------------------------------------------------
+  ConnectorsStore& connectors() { return conns_; }
+  const ConnectorsStore& connectors() const { return conns_; }
+  // Every successful connectors write drops the stored conversation id: Mistral
+  // pins connectors at conversation creation, so the next turn must start a
+  // fresh conversation carrying the new set (device parity: setOrchConvId("")).
+  void noteConnectorsWrite() { convId_.clear(); }
+  bool providerKeyed(const char* h) const { return !cfg_.providerKey(h).empty(); }
+  // The host the UI badges connectors against: nimbusd pins no orch host, so the
+  // first alpha token of the priority list (the device's fallback rule).
+  std::string hostBadge() const {
+    const std::string& pri = opt_.priority;
+    size_t e = 0;
+    while (e < pri.size() && isalpha((unsigned char)pri[e])) e++;
+    return pri.substr(0, e);
   }
 
   // True iff at least one chat provider is configured - a direct BYOK key OR the
@@ -551,6 +572,21 @@ class NimbusdRig {
                  std::chrono::steady_clock::now().time_since_epoch()).count();
     };
     pd.freeHeap = [this] { return mem_.freeBytes(); };
+    // Connector attach seams (CUM-424): BYOK heads advertise the instance's
+    // configured connectors exactly as a device with direct keys does
+    // (builtinsOnly=false; the portable guard already keeps disabled, wrong-prov
+    // and private-URL entries off the wire). The cumulo router head runs through
+    // orchTurnCustom, which has no attach seam - router lanes carry no private
+    // connectors, the same boundary the device draws on shared keys.
+    pd.attachOpenAI = [this](JsonDocument& doc) {
+      nimbus::orch::attachOpenAIWire(doc, conns_.parsed(), bearerFn(), false);
+    };
+    pd.attachMistral = [this](JsonDocument& doc) {
+      nimbus::orch::attachMistralWire(doc, conns_.parsed(), false);
+    };
+    pd.attachAnthropic = [this](JsonDocument& doc) {
+      nimbus::orch::attachAnthropicWire(doc, conns_.parsed(), bearerFn(), false);
+    };
     return pd;
   }
 
@@ -561,11 +597,18 @@ class NimbusdRig {
   // app.cumulo-nimbus.ai + /router/openai/v1, bearer = the Cumulo key.
   agent::providers::ProviderDeps cumuloProviderDeps() {
     auto pd = providerDeps();
+    // CUM-425: resolve the router coordinates from the model selector through the
+    // SAME portable rule the device head and the sub-session adapter share, so a
+    // "zai/glm-4.5-flash" selector reaches /router/zai/v1 with the bare model id
+    // the router prices, instead of 403ing model_not_priced on the openai
+    // upstream. A bare id (no '/') keeps the openai upstream - byte-identical to
+    // the old constant behavior for every previously-working selector.
+    const nimbus::orch::RouterRoute rr = nimbus::orch::resolveRouterRoute(cumuloModel());
     pd.customBase       = [] { return std::string(kCumuloHost); };
-    pd.customPathPrefix = [] { return std::string(kCumuloPathPrefix); };
+    pd.customPathPrefix = [rr] { return rr.basePath; };
     pd.customKey        = [this] { return cumuloKey(); };
     pd.customConv       = [] { return std::string(kCumuloConv); };
-    pd.customModel      = [this] { return cumuloModel(); };
+    pd.customModel      = [rr] { return rr.model; };
     return pd;
   }
 
@@ -600,7 +643,21 @@ class NimbusdRig {
     d.mcpDispatch = [this](const std::string& req, const orch::Principal& who) {
       return reg_.handleRpc(req, who);
     };
-    d.connectorsCatalog = [] { return std::string(); };
+    // Connector catalog (CUM-424): the "[PROVIDERS & CONNECTORS]" context block,
+    // rendered by the same portable composer the device uses. capProbe=0: nimbusd
+    // has no verify cache yet, so the catalog reports key PRESENCE and never
+    // claims "verified" (the honest mode the composer defines for exactly this).
+    d.connectorsCatalog = [this] {
+      auto cs = conns_.parsed();
+      if (cs.empty()) return std::string();
+      nimbus::orch::ProviderState ps;
+      ps.openaiKeyed = providerKeyed("openai");
+      ps.anthropicKeyed = providerKeyed("anthropic");
+      ps.mistralKeyed = providerKeyed("mistral");
+      ps.capProbe = 0;
+      ps.currentHost = hostBadge();
+      return nimbus::orch::catalogText(cs, ps);
+    };
     d.modelChoices = [this](const std::string& p) { return config().provider.modelChoices(p); };
     d.episodicCaptureUser = [this](const std::string& c, const std::string& t,
                                    const std::string& tag) { capture(c, "user", t, tag); };
@@ -718,6 +775,15 @@ class NimbusdRig {
   std::unique_ptr<agent::JobEngine>  jobs_;
   std::unique_ptr<agent::TurnEngine> eng_;
 
+  // Bearer resolution for the connector attach seams (CUM-424): the stored
+  // static token by name; "" for T1 (none needed) and unminted T3 (skipped).
+  nimbus::orch::BearerFn bearerFn() {
+    return [this](const nimbus::orch::ConnectorInfo& c) {
+      return conns_.bearerForName(c.name);
+    };
+  }
+
+  ConnectorsStore conns_;   // connector registry (CUM-424), file-backed
   std::string convId_, antEnv_, antAgents_, memory_, lastHost_, lastServedBy_;
   bool lastFallback_ = false;   // CUM-236 served-by of the most recent turn
   std::function<void(const std::string&, const std::string&)> onDeliver_;
