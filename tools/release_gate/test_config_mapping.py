@@ -136,6 +136,17 @@ def test_wrong_offsets_flagged():
     assert any("PARTS" in e or "offset" in e for e in errs)
 
 
+def test_missing_chipfamily_fails_closed():
+    # If the web-flash builder ever lost its chipFamily, the gate must fail, not pass
+    # vacuously (ESP Web Tools cannot flash without one).
+    real = m.read_sources()
+    real["web"] = dict(real["web"])
+    real["web"]["chips"] = []
+    ok, errs = m.judge(m.CONFIG_TABLE, real)
+    assert not ok
+    assert any("chipFamily" in e for e in errs)
+
+
 # --- helpers ------------------------------------------------------------------
 def _table_with(idx, **changes):
     row = dataclasses.replace(m.CONFIG_TABLE[idx], **changes)

@@ -272,12 +272,17 @@ def _check_layout(web, errs):
 
 def _check_chips(table, web, errs):
     """Every chipFamily the builder writes must be a chip in the table, and vice versa."""
+    if not web["chips"]:
+        # Fail closed: no chipFamily parsed means the builder changed shape or lost it,
+        # and ESP Web Tools cannot flash without one. Never wave the chip check through.
+        errs.append("web-flash builder declares no chipFamily (ESP Web Tools needs one)")
+        return
     table_chips = {c.chip for c in table}
     for chip in set(web["chips"]):
         if chip not in table_chips:
             errs.append(f"web-flash manifest chipFamily {chip!r} is not a chip in the config table")
     for c in table:
-        if web["chips"] and c.chip not in web["chips"]:
+        if c.chip not in web["chips"]:
             errs.append(f"{c.type_slug}: table chip {c.chip!r} never appears in the web-flash manifest chipFamily")
 
 
