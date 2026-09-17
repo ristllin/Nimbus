@@ -8,7 +8,10 @@ flashing is hardware and is not exercised here."""
 from __future__ import annotations
 
 import argparse
+import contextlib
 import importlib.util
+import io
+import subprocess
 from pathlib import Path
 
 
@@ -323,8 +326,404 @@ def test_show_token_and_ota_type_args_plumb_through():
     assert sub._ota_type == "freenove-28" and sub.board == "freenove_s3"
 
 
+# ---- CUM-388 (lane I): prov-env by family+transport (D2) + failure-path check (D1) ----
+#
+# D2: the provisioning sketch must be chosen by board family AND transport, because
+# its Serial has to answer over the same wire the tool reads. A Solide on native USB
+# given provision-uart (CDC off, Serial=UART0) can never reply, which is what made a
+# blank Solide unsetupable over native USB and made the wrong-variant Freenove case
+# fail at bootstrap instead of at the screen check. D1: a failed bootstrap must still
+# read the boot screen signal and show the wrong-variant message when the screen is
+# dead, on every failure path, without stranding the board or waiting 20 s on a Ctrl-C.
+
+
+class _RecordingRunner:
+    """Stand in for run_checked: record the env of every `pio run -e <env> ... upload`
+    and optionally raise, so a full main() run needs no PlatformIO and no board.
+
+    fail_env: raise CalledProcessError from the upload of this env (a failed flash).
+    fail_ack: an exception to raise from the esptool bootstrap-acknowledge call (a
+    silent board / a Ctrl-C during bootstrap)."""
+
+    def __init__(self, fail_env=None, fail_ack=None):
+        self.calls: list[list[str]] = []
+        self.envs: list[str] = []
+        self.panel_calls: list[str] = []
+        self.fail_env = fail_env
+        self.fail_ack = fail_ack
+
+    def __call__(self, command, capture=False):
+        self.calls.append(list(command))
+        if "--_bootstrap-port" in command and self.fail_ack is not None:
+            raise self.fail_ack
+        if "run" in command and "-e" in command and "upload" in command:
+            env = command[command.index("-e") + 1]
+            self.envs.append(env)
+            if env == self.fail_env:
+                raise subprocess.CalledProcessError(1, command)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+
+def _run_main(
+    argv,
+    *,
+    port="/dev/cu.usbmodem101",
+    vid=None,
+    product="",
+    nvs_state="blank",
+    nvs_family=None,
+    panel="unknown",
+    runner=None,
+):
+    """Drive SETUP.main(argv) fully host-side: stub discovery, flashing, and the
+    serial screen read so no hardware or PlatformIO is touched. Returns
+    (rc, stdout, stderr, runner). The runner records which envs were uploaded and
+    runner.panel_calls records whether the screen was actually read."""
+    runner = runner if runner is not None else _RecordingRunner()
+    saved: dict[str, object] = {}
+
+    def _patch(name, value):
+        saved[name] = getattr(SETUP, name)
+        setattr(SETUP, name, value)
+
+    def _fake_verify(p, timeout=20.0):
+        runner.panel_calls.append(p)
+        return panel
+
+    _patch("resolve_port", lambda args: (port, vid, product))
+    _patch("platformio_executable", lambda: (Path("/tmp/core"), "pio"))
+    _patch("esptool_command", lambda core: ["python", "esptool.py"])
+    _patch("inspect_board", lambda esptool, p: ("aa:bb:cc:dd:ee:ff", nvs_state, nvs_family))
+    _patch("run_checked", runner)
+    _patch("verify_panel_after_flash", _fake_verify)
+    out, err = io.StringIO(), io.StringIO()
+    try:
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = SETUP.main(argv)
+    finally:
+        for name, value in saved.items():
+            setattr(SETUP, name, value)
+    return rc, out.getvalue(), err.getvalue(), runner
+
+
+def _outcome(**kw):
+    o = SETUP.InstallOutcome()
+    for key, value in kw.items():
+        setattr(o, key, value)
+    return o
+
+
+# ---- D2: transport-aware provisioning-env selection ------------------------
+
+
+def test_transport_of_uses_vid_then_port_name_then_fails_closed():
+    assert SETUP.transport_of(SETUP.VID_CP210X) == "bridge"
+    assert SETUP.transport_of(SETUP.VID_CH34X) == "bridge"
+    assert SETUP.transport_of(SETUP.VID_ESP32S3_NATIVE) == "native"
+    # No descriptor (an explicit --port): the device-node name still carries it.
+    assert SETUP.transport_of(None, "/dev/cu.usbmodem2101") == "native"
+    assert SETUP.transport_of(None, "/dev/ttyACM0") == "native"
+    assert SETUP.transport_of(None, "/dev/cu.usbserial-1420") == "bridge"
+    assert SETUP.transport_of(None, "/dev/ttyUSB0") == "bridge"
+    # Neither a VID nor a transport-bearing name -> None, so the caller fails closed.
+    assert SETUP.transport_of(None, "/dev/cu.mystery") is None
+    assert SETUP.transport_of(None, "") is None
+
+
+def test_provision_env_solide_native_usb_is_not_the_uart_sketch():
+    # The D2 defect in one line: a Solide on native USB must NOT get provision-uart.
+    assert SETUP.provision_env(SETUP.FAMILY_SOLIDE, SETUP.VID_ESP32S3_NATIVE) == "provision"
+    assert SETUP.provision_env(SETUP.FAMILY_SOLIDE, SETUP.VID_CP210X) == "provision-uart"
+    assert SETUP.provision_env(SETUP.FAMILY_FREENOVE, SETUP.VID_ESP32S3_NATIVE) == "provision-cyd"
+    # Unknown VID falls back to the transport the device-node name implies.
+    assert SETUP.provision_env(SETUP.FAMILY_SOLIDE, None, "/dev/cu.usbmodem9") == "provision"
+
+
+def test_prov_and_prod_env_table_over_family_x_transport_x_nvs():
+    # Class table (charter: test the class, not the instance). Every family in
+    # FAMILY_NAME and every transport must have a row; a new family or transport
+    # added with no row FAILS here rather than picking a sketch unnoticed.
+    FAIL = object()
+    transports = {
+        "bridge": SETUP.VID_CP210X,
+        "native": SETUP.VID_ESP32S3_NATIVE,
+        "unknown": None,  # explicit --port, no descriptor, non-transport-bearing name
+    }
+    nvs_states = ("blank", "nimbus", "other")
+    expected = {
+        (SETUP.FAMILY_FREENOVE, "bridge"): ("provision-cyd", "esp32s3-cyd"),
+        (SETUP.FAMILY_FREENOVE, "native"): ("provision-cyd", "esp32s3-cyd"),
+        (SETUP.FAMILY_FREENOVE, "unknown"): ("provision-cyd", "esp32s3-cyd"),
+        (SETUP.FAMILY_SOLIDE, "bridge"): ("provision-uart", "esp32s3"),
+        (SETUP.FAMILY_SOLIDE, "native"): ("provision", "esp32s3"),
+        (SETUP.FAMILY_SOLIDE, "unknown"): (FAIL, "esp32s3"),
+    }
+    # A new family with no row must fail this test (not silently pass uncovered).
+    for family in SETUP.FAMILY_NAME:
+        assert any(fam == family for (fam, _t) in expected), f"no prov-env rows for family {family!r}"
+    # A new transport with no row must fail this test too.
+    for transport in transports:
+        assert any(tr == transport for (_f, tr) in expected), f"no prov-env rows for transport {transport!r}"
+
+    for (family, transport), (want_prov, want_prod) in expected.items():
+        vid = transports[transport]
+        node = "/dev/cu.mystery" if transport == "unknown" else "/dev/cu.usbX"
+        for nvs in nvs_states:  # transport is independent of NVS; assert it holds for all
+            assert SETUP.production_env(family) == want_prod, (family, transport, nvs)
+            if want_prov is FAIL:
+                try:
+                    SETUP.provision_env(family, vid, node)
+                except RuntimeError as exc:
+                    assert "Could not tell how" in str(exc)
+                else:
+                    raise AssertionError(f"unknown transport must fail closed for {family!r}")
+            else:
+                assert SETUP.provision_env(family, vid, node) == want_prov, (family, transport, nvs)
+
+
+def test_production_and_provision_env_reject_unknown_family():
+    for fn in (SETUP.production_env, lambda f: SETUP.provision_env(f, SETUP.VID_CP210X)):
+        try:
+            fn("mystery_board")
+        except RuntimeError as exc:
+            assert "mystery_board" in str(exc)
+        else:
+            raise AssertionError("an unknown family must raise, never default to a sketch")
+
+
+def test_main_blank_solide_native_usb_uploads_native_provision_sketch():
+    # End-to-end wiring (D2): a blank Solide on native USB, given --board solide_s3,
+    # must upload the native-USB provision sketch so the bootstrap can be
+    # acknowledged. On base 0bdb3cb this uploads provision-uart and the assertion
+    # below fails (non-tautological).
+    rc, out, err, runner = _run_main(
+        ["--yes", "--port", "/dev/cu.usbmodem101", "--board", "solide_s3", "--mode", "orchestrator"],
+        vid=SETUP.VID_ESP32S3_NATIVE,
+        nvs_state="blank",
+        panel="ok",
+    )
+    assert rc == 0, (rc, err)
+    assert runner.envs[0] == "provision"  # the setup sketch uploaded first
+    assert "provision-uart" not in runner.envs
+    assert "esp32s3" in runner.envs  # production installed
+
+
+# ---- D1: the failure path still reads the screen ---------------------------
+
+
+def test_finish_install_decision_matrix():
+    dead = "WRONG board variant"  # the loud line inside PANEL_DEAD_MESSAGE
+    success = "installed. NVS was not erased"
+
+    def run(outcome, panel, skip=False, mode="orchestrator"):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = SETUP.finish_install(outcome, panel, mode, skip)
+        return rc, out.getvalue(), err.getvalue()
+
+    # Clean success, screen ok -> 0, success line, no dead message.
+    rc, out, err = run(_outcome(production_on_board=True), "ok")
+    assert rc == 0 and success in out and dead not in err
+    # Clean success, screen unknown -> 0, soft caution, still success.
+    rc, out, err = run(_outcome(production_on_board=True), "unknown")
+    assert rc == 0 and success in out and "look at the screen" in out.lower()
+    # Clean success, screen DEAD -> 1, dead message, and the success line NEVER prints.
+    rc, out, err = run(_outcome(production_on_board=True), "dead")
+    assert rc == 1 and dead in err and success not in out
+    # Bootstrap failed, screen DEAD -> 1, dead message, no success line.
+    rc, out, err = run(_outcome(production_on_board=True, bootstrap_error=RuntimeError("x")), "dead")
+    assert rc == 1 and dead in err and success not in out
+    # Bootstrap failed, screen OK -> 1, "variant is correct", no dead message, no success.
+    rc, out, err = run(_outcome(production_on_board=True, bootstrap_error=RuntimeError("x")), "ok")
+    assert rc == 1 and dead not in err and success not in out and "variant is correct" in err
+    # Restore failed -> 1, no success line, and never a dead message (screen not read).
+    rc, out, err = run(_outcome(restore_error=RuntimeError("x")), "dead")
+    assert rc == 1 and success not in out and "could not be restored" in err
+    # Interrupted -> 1, no success line, safe-to-use wording.
+    rc, out, err = run(_outcome(interrupted=True, production_on_board=True), "unknown")
+    assert rc == 1 and success not in out and "interrupted" in err
+
+
+def test_main_bootstrap_no_reply_with_dead_screen_shows_wrong_variant():
+    # CUM-388 D1 core: the setup step fails (a silent board) AND the restored image
+    # reports a dead screen -> the operator gets the wrong-variant message and a
+    # non-zero exit. On base 0bdb3cb main() returns 1 before the panel check runs,
+    # so PANEL_DEAD_MESSAGE never appears and this fails.
+    runner = _RecordingRunner(fail_ack=subprocess.CalledProcessError(1, "ack"))
+    rc, out, err, runner = _run_main(
+        ["--yes", "--port", "/dev/cu.usbmodem101", "--board", "solide_s3", "--mode", "orchestrator"],
+        vid=SETUP.VID_ESP32S3_NATIVE,
+        nvs_state="blank",
+        panel="dead",
+        runner=runner,
+    )
+    assert rc == 1, (rc, out, err)
+    assert "WRONG board variant" in err
+    assert "installed. NVS was not erased" not in out  # success line must NOT print
+    assert runner.envs[-1] == "esp32s3"  # production restored, board not stranded
+    assert runner.panel_calls == ["/dev/cu.usbmodem101"]  # the screen was actually read
+
+
+def test_main_bootstrap_upload_failure_still_checks_screen():
+    # The prov upload itself failing is a bootstrap failure too: restore runs, the
+    # screen is read, a dead screen yields the wrong-variant message and exit 1.
+    runner = _RecordingRunner(fail_env="provision")
+    rc, out, err, runner = _run_main(
+        ["--yes", "--port", "/dev/cu.usbmodem101", "--board", "solide_s3", "--mode", "orchestrator"],
+        vid=SETUP.VID_ESP32S3_NATIVE,
+        nvs_state="blank",
+        panel="dead",
+        runner=runner,
+    )
+    assert rc == 1 and "WRONG board variant" in err
+    assert runner.envs[-1] == "esp32s3"
+    assert runner.panel_calls == ["/dev/cu.usbmodem101"]
+
+
+def test_main_ctrl_c_during_bootstrap_does_not_wait_on_serial():
+    # A Ctrl-C must not tack a 20 s screen read onto the interrupt: the panel check
+    # is skipped, production is restored, exit is non-zero.
+    runner = _RecordingRunner(fail_ack=KeyboardInterrupt())
+    rc, out, err, runner = _run_main(
+        ["--yes", "--port", "/dev/cu.usbmodem101", "--board", "solide_s3", "--mode", "orchestrator"],
+        vid=SETUP.VID_ESP32S3_NATIVE,
+        nvs_state="blank",
+        panel="dead",
+        runner=runner,
+    )
+    assert rc == 1
+    assert runner.panel_calls == []  # the screen was NOT read on a Ctrl-C
+    assert runner.envs[-1] == "esp32s3"  # production restored anyway
+    assert "installed. NVS was not erased" not in out
+
+
+def test_main_restore_failure_reports_and_skips_screen_read():
+    # If production firmware cannot be put back, say so and do not read the screen
+    # (there is no trustworthy production image to signal); exit non-zero.
+    runner = _RecordingRunner(fail_env="esp32s3")
+    rc, out, err, runner = _run_main(
+        ["--yes", "--port", "/dev/cu.usbmodem101", "--board", "solide_s3", "--mode", "orchestrator"],
+        vid=SETUP.VID_ESP32S3_NATIVE,
+        nvs_state="blank",
+        panel="ok",
+        runner=runner,
+    )
+    assert rc == 1
+    assert runner.panel_calls == []
+    assert "could not be restored" in err
+
+
+def test_main_wrong_variant_freenove_given_solide_board_caught_by_screen():
+    # The exact incident: a blank Freenove flashed with --board solide_s3. With the
+    # transport fix the setup sketch answers over native USB, so the run reaches the
+    # production flash; the dead screen from the wrong pinout is then caught by the
+    # post-flash screen check with the wrong-variant message and a non-zero exit. The
+    # env assertion below is non-tautological (base uploads provision-uart).
+    runner = _RecordingRunner()
+    rc, out, err, runner = _run_main(
+        ["--yes", "--port", "/dev/cu.usbmodem101", "--board", "solide_s3", "--mode", "orchestrator"],
+        vid=SETUP.VID_ESP32S3_NATIVE,
+        nvs_state="blank",
+        panel="dead",
+        runner=runner,
+    )
+    assert rc == 1 and "WRONG board variant" in err
+    assert "installed. NVS was not erased" not in out
+    assert runner.envs == ["provision", "esp32s3"]
+
+
+def test_main_happy_path_solide_native_installs_and_reports_success():
+    # A correct install on a Solide over native USB: setup sketch answers, production
+    # flashes, the screen check passes, exit 0 with the success line.
+    rc, out, err, runner = _run_main(
+        ["--yes", "--port", "/dev/cu.usbmodem101", "--board", "solide_s3", "--mode", "orchestrator"],
+        vid=SETUP.VID_ESP32S3_NATIVE,
+        nvs_state="blank",
+        panel="ok",
+    )
+    assert rc == 0
+    assert runner.envs == ["provision", "esp32s3"]
+    assert "installed. NVS was not erased" in out
+    assert "Screen check passed" in out
+
+
+def test_serial_bootstrap_no_reply_message_is_operator_language():
+    # Point 4: a truly silent board says so in operator terms, not by quoting the
+    # wire token. A fake pyserial that never returns a matching line drives the
+    # no-reply path; the NoReplyError message names the port and the likely cause.
+    import types
+
+    class _SilentSerial:
+        def __init__(self):
+            self.port = None
+            self.baudrate = None
+            self.dtr = None
+            self.rts = None
+            self.timeout = None
+            self.write_timeout = None
+            self.is_open = False
+
+        def open(self):
+            self.is_open = True
+
+        def close(self):
+            self.is_open = False
+
+        def reset_input_buffer(self):
+            pass
+
+        def write(self, _data):
+            pass
+
+        def flush(self):
+            pass
+
+        def readline(self):
+            return b""  # never answers
+
+    fake_serial = types.ModuleType("serial")
+    fake_serial.Serial = lambda *a, **k: _SilentSerial()
+    import sys as _sys
+
+    class _FastClock:
+        # Skip the real 3 s boot wait and jump the command deadline so a silent
+        # board resolves instantly instead of spinning out the real 4 s timeout.
+        def __init__(self):
+            self._t = 0.0
+
+        def monotonic(self):
+            self._t += 0.5
+            return self._t
+
+        def sleep(self, _s):
+            pass
+
+    saved = _sys.modules.get("serial")
+    saved_time = SETUP.time
+    _sys.modules["serial"] = fake_serial
+    SETUP.time = _FastClock()
+    err = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            rc = SETUP.serial_bootstrap(
+                "/dev/cu.usbmodem7", "tft", "orchestrator", board="solide_s3", ota_type="nimbus-tft"
+            )
+    finally:
+        SETUP.time = saved_time
+        if saved is None:
+            del _sys.modules["serial"]
+        else:
+            _sys.modules["serial"] = saved
+    assert rc == 1
+    text = err.getvalue()
+    assert "/dev/cu.usbmodem7" in text
+    assert "wrong board choice" in text or "other USB port" in text
+    assert "SET scrModel" not in text  # never quotes the wire token to the operator
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
             fn()
     print("setup_device: family autodetect, otaType seed, identify-and-confirm, native-USB all passed")
+    print("setup_device: CUM-388 D1 failure-path screen check + D2 transport env selection passed")

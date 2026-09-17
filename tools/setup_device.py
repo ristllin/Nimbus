@@ -19,6 +19,7 @@ flashed. --yes --port keeps the CI path.
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import glob
 import os
 from pathlib import Path
@@ -143,6 +144,61 @@ def resolve_family(explicit: str | None, usb_vid: int | None, nvs_family: str | 
     if nvs_family:
         return nvs_family
     return family_from_usb(usb_vid)
+
+
+def transport_of(usb_vid: int | None, port: str = "") -> str | None:
+    """Report how the board reaches the host: 'bridge' (a CP210x/CH34x UART bridge)
+    or 'native' (the ESP32-S3's own USB-CDC).
+
+    The USB vendor id decides it. When that is unknown - an explicit --port whose
+    descriptor never enumerated - the device-node name is the fallback, since it
+    still carries the transport (a usbmodem/ttyACM node is native, a usbserial/
+    ttyUSB node is a bridge). Returns None when neither is decisive, so the caller
+    can fail closed instead of guessing."""
+    if usb_vid is not None:
+        return "bridge" if usb_is_bridge(usb_vid) else "native"
+    if any(fnmatch.fnmatch(port, pattern) for pattern in NATIVE_USB_GLOBS):
+        return "native"
+    if any(fnmatch.fnmatch(port, pattern) for pattern in UART_GLOBS):
+        return "bridge"
+    return None
+
+
+def production_env(family: str) -> str:
+    """The PlatformIO env holding the production firmware for a board family."""
+    if family == FAMILY_FREENOVE:
+        return "esp32s3-cyd"
+    if family == FAMILY_SOLIDE:
+        return "esp32s3"
+    raise RuntimeError(f"No production firmware env is defined for board family {family!r}.")
+
+
+def provision_env(family: str, usb_vid: int | None, port: str = "") -> str:
+    """Pick the temporary provisioning sketch by board family AND transport.
+
+    The sketch's Serial has to reach the host over the very wire the tool reads, so
+    transport matters as much as the pinout:
+      - Freenove CYD -> provision-cyd (freenove pins, native USB-CDC; it has no UART
+        bridge, so its transport never varies).
+      - Solide over a UART bridge -> provision-uart (Serial on UART0).
+      - Solide over native USB -> provision (Serial on USB-CDC, solide pins).
+    A Solide whose transport cannot be determined (an explicit --port with no USB
+    descriptor and a device node that names neither transport) fails closed rather
+    than pick a sketch whose Serial could never answer on that port."""
+    if family == FAMILY_FREENOVE:
+        return "provision-cyd"
+    if family != FAMILY_SOLIDE:
+        raise RuntimeError(f"No provisioning sketch is defined for board family {family!r}.")
+    transport = transport_of(usb_vid, port)
+    if transport == "bridge":
+        return "provision-uart"
+    if transport == "native":
+        return "provision"
+    raise RuntimeError(
+        f"Could not tell how {port} is connected (a USB bridge or native USB), so the setup "
+        "step cannot be prepared. Reconnect the board so it lists its USB details, or run it "
+        "again on the port it enumerates as."
+    )
 
 
 def prompt_family(port: str, assume_yes: bool) -> str:
@@ -439,6 +495,18 @@ def inspect_board(esptool: list[str], port: str) -> tuple[str, str]:
         return mac, classify_nvs(data), family_from_nvs(data)
 
 
+class NoReplyError(RuntimeError):
+    """The setup sketch never answered at all on the port (no lines read).
+
+    Distinct from a wrong or partial reply so the operator hears the likely cause
+    (wrong board choice, or the board is on its other USB port) instead of a raw
+    wire token like 'SET scrModel ok=1'."""
+
+    def __init__(self, port: str):
+        super().__init__(f"no reply on {port}")
+        self.port = port
+
+
 def serial_bootstrap(
     port: str,
     display: str | None,
@@ -447,7 +515,7 @@ def serial_bootstrap(
     board: str = "solide_s3",
     ota_type: str | None = None,
 ) -> int:
-    """Apply bootstrap settings using the UART-only provision firmware."""
+    """Apply bootstrap settings using the provisioning firmware for this board."""
     try:
         import serial  # type: ignore
     except ImportError:
@@ -482,6 +550,11 @@ def serial_bootstrap(
                     seen.append(text)
                 if expected in text:
                     return text
+            # No lines at all means the setup sketch never answered on this port -
+            # almost always the wrong board choice, or the board is on its other USB
+            # port. Say that in operator language rather than quote the wire token.
+            if not seen:
+                raise NoReplyError(port)
             raise RuntimeError(f"No reply containing {expected!r} to {line!r}; last lines: {seen[-3:]}")
 
         for line, expected in bootstrap_commands(display, mode, board, ota_type):
@@ -501,6 +574,13 @@ def serial_bootstrap(
                 raise RuntimeError("This Nimbus has not generated an access token yet.")
             print(f"\nAccess {token_line.lower().replace('token ', 'token: ', 1)}")
         return 0
+    except NoReplyError as exc:
+        print(
+            f"Stopped: the setup sketch did not answer on {exc.port}. This is usually the wrong "
+            "board choice, or the board is on its other USB port. Nothing was changed.",
+            file=sys.stderr,
+        )
+        return 1
     except (OSError, RuntimeError) as exc:
         print(f"Stopped: could not apply bootstrap settings: {exc}", file=sys.stderr)
         return 1
@@ -644,161 +724,102 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = parse_args(argv)
-    if args._bootstrap_port:
-        return serial_bootstrap(
-            args._bootstrap_port,
-            args.display,
-            args.mode,
-            args._show_token,
-            board=args.board or "solide_s3",
-            ota_type=args._ota_type,
-        )
+class InstallOutcome:
+    """What the flash sequence achieved, so the caller can message and exit right.
+
+    - bootstrap_error: the setup upload or its acknowledgement failed.
+    - restore_error: production firmware could not be (re)placed on the board.
+    - interrupted: the operator pressed Ctrl-C; the post-flash serial wait is
+      skipped so an interrupt never pays a 20 s read.
+    - production_on_board: a production image is believed flashed.
+    """
+
+    def __init__(self):
+        self.bootstrap_error: BaseException | None = None
+        self.restore_error: BaseException | None = None
+        self.interrupted = False
+        self.production_on_board = False
+
+
+def _upload(pio: str, env: str, port: str) -> None:
+    run_checked([pio, "run", "-e", env, "-t", "upload", "--upload-port", port])
+
+
+def _bootstrap_ack(
+    esptool: list[str],
+    port: str,
+    family: str,
+    display: str | None,
+    mode: str | None,
+    ota_type: str | None,
+) -> None:
+    run_checked(
+        [
+            esptool[0],
+            str(Path(__file__).resolve()),
+            "--_bootstrap-port",
+            port,
+            "--board",
+            family,
+            *(["--display", display] if display else []),
+            *(["--mode", mode] if mode else []),
+            *(["--_ota-type", ota_type] if ota_type else []),
+        ]
+    )
+
+
+def flash_production(
+    pio: str,
+    esptool: list[str],
+    prod_env: str,
+    prov_env: str,
+    port: str,
+    family: str,
+    display: str | None,
+    mode: str | None,
+    ota_type: str | None,
+) -> InstallOutcome:
+    """Seed the selected settings, then always leave production firmware on the board.
+
+    The provisioning sketch is only ever a means to seed NVS; whatever happens to it
+    (a failed upload, a silent board, a Ctrl-C) the finally clause puts production
+    firmware back so no board is ever stranded on the temporary diagnostic."""
+    outcome = InstallOutcome()
+    if not (display or mode or ota_type):
+        # Nothing to seed: a straight production flash.
+        try:
+            _upload(pio, prod_env, port)
+            outcome.production_on_board = True
+        except KeyboardInterrupt:
+            outcome.interrupted = True
+        except (RuntimeError, subprocess.CalledProcessError) as exc:
+            outcome.restore_error = exc
+        return outcome
+
+    print("\nApplying the selected settings without erasing NVS...")
     try:
-        port, usb_vid, product = resolve_port(args)
-        core, pio = platformio_executable()
-        esptool = esptool_command(core)
-        if esptool is None:
-            print("PlatformIO needs to install the ESP32 build tools first.")
-            run_checked([pio, "run", "-e", "esp32s3"])  # neutral env just for the tools
-            esptool = esptool_command(core)
-        if esptool is None:
-            raise RuntimeError("PlatformIO did not install its esptool package.")
-        mac, nvs_state, nvs_family = inspect_board(esptool, port)
-        # Board pinout is compile-time: auto-detect the family (explicit --board >
-        # NVS marker > USB descriptor), then pick the matching firmware + prov env.
-        # A native-USB board with no family marker is ambiguous - ask rather than
-        # risk flashing the wrong pinout.
-        family = resolve_family(args.board, usb_vid, nvs_family) or prompt_family(port, args.yes)
-        is_cyd = family == FAMILY_FREENOVE
-        prod_env = "esp32s3-cyd" if is_cyd else "esp32s3"
-        prov_env = "provision-cyd" if is_cyd else "provision-uart"
-        name = friendly_name(family, product)
-        print(f"\nDetected: {name} ({FAMILY_NAME.get(family, family)}) on {port}  MAC {mac}")
-        if args.show_token:
-            if nvs_state != "nimbus":
-                raise RuntimeError("Access-token recovery is only allowed when existing Nimbus settings are detected.")
-            confirm_install(name, family, nvs_state == "nimbus", port, args.yes)
-            print("\nReading the access token without erasing NVS...")
-            try:
-                run_checked(
-                    [
-                        pio,
-                        "run",
-                        "-e",
-                        prov_env,
-                        "-t",
-                        "upload",
-                        "--upload-port",
-                        port,
-                    ]
-                )
-                run_checked(
-                    [
-                        esptool[0],
-                        str(Path(__file__).resolve()),
-                        "--_bootstrap-port",
-                        port,
-                        "--_show-token",
-                    ]
-                )
-            finally:
-                print("\nRestoring production firmware...")
-                run_checked(
-                    [
-                        pio,
-                        "run",
-                        "-e",
-                        prod_env,
-                        "-t",
-                        "upload",
-                        "--upload-port",
-                        port,
-                    ]
-                )
-            print("\nNimbus production firmware is restored. NVS was not erased.")
-            return 0
-        display, mode, ota_type = prompt_bootstrap(args, nvs_state, family)
-        confirm_install(name, family, nvs_state == "nimbus", port, args.yes)
-        if display or mode or ota_type:
-            print("\nApplying the selected settings without erasing NVS...")
-            try:
-                run_checked(
-                    [
-                        pio,
-                        "run",
-                        "-e",
-                        prov_env,
-                        "-t",
-                        "upload",
-                        "--upload-port",
-                        port,
-                    ]
-                )
-                run_checked(
-                    [
-                        esptool[0],
-                        str(Path(__file__).resolve()),
-                        "--_bootstrap-port",
-                        port,
-                        "--board",
-                        family,
-                        *(["--display", display] if display else []),
-                        *(["--mode", mode] if mode else []),
-                        *(["--_ota-type", ota_type] if ota_type else []),
-                    ]
-                )
-            finally:
-                # Never strand a board in a partial/temporary diagnostic if its
-                # upload or acknowledgement fails, or the operator interrupts.
-                print("\nRestoring production firmware...")
-                run_checked(
-                    [
-                        pio,
-                        "run",
-                        "-e",
-                        prod_env,
-                        "-t",
-                        "upload",
-                        "--upload-port",
-                        port,
-                    ]
-                )
-        else:
-            run_checked(
-                [
-                    pio,
-                    "run",
-                    "-e",
-                    prod_env,
-                    "-t",
-                    "upload",
-                    "--upload-port",
-                    port,
-                ]
-            )
-    except (RuntimeError, subprocess.CalledProcessError, KeyboardInterrupt) as exc:
-        print(f"\nStopped: {exc}", file=sys.stderr)
-        return 1
+        _upload(pio, prov_env, port)
+        _bootstrap_ack(esptool, port, family, display, mode, ota_type)
+    except KeyboardInterrupt:
+        outcome.interrupted = True
+    except (RuntimeError, subprocess.CalledProcessError) as exc:
+        outcome.bootstrap_error = exc
+    finally:
+        # Never strand the board on the temporary diagnostic, even after a failure
+        # or an interrupt.
+        print("\nRestoring production firmware...")
+        try:
+            _upload(pio, prod_env, port)
+            outcome.production_on_board = True
+        except KeyboardInterrupt:
+            outcome.interrupted = True
+            outcome.restore_error = KeyboardInterrupt()
+        except (RuntimeError, subprocess.CalledProcessError) as exc:
+            outcome.restore_error = exc
+    return outcome
 
-    # Verify the screen actually came up before declaring success (CUM-388). A
-    # wrong-variant flash boots network-healthy with a dead panel; the restored
-    # firmware says so over serial, so read it and fail loudly instead of printing
-    # "installed" over black glass. 'unknown' (serial unreadable) stays a soft
-    # caution so a healthy board is never failed on a read hiccup.
-    if not args.skip_panel_check:
-        print("\nChecking the screen came up...")
-        panel = verify_panel_after_flash(port)
-        if panel == "dead":
-            print(PANEL_DEAD_MESSAGE, file=sys.stderr)
-            return 1
-        if panel == "ok":
-            print("Screen check passed: the display is responding.")
-        else:
-            print("Screen check could not confirm the display; look at the screen to be sure.")
 
-    print("\nNimbus production firmware is installed. NVS was not erased.")
+def _print_mode_guidance(mode: str | None) -> None:
     if mode == "orchestrator":
         print(
             "Wait for the selected display to show first-time setup, then join the\n"
@@ -813,7 +834,146 @@ def main(argv: list[str] | None = None) -> int:
         )
     else:
         print("Existing display and operating-mode settings were preserved.")
+
+
+def finish_install(outcome: InstallOutcome, panel: str, mode: str | None, skip_panel_check: bool) -> int:
+    """Turn the flash outcome and screen signal into the operator result + exit code.
+
+    Pure decision and messaging (no serial, no flashing) so every failure path is
+    host-testable. The success line prints only on a clean install whose screen did
+    not report dead; the wrong-variant message prints exactly when the screen is
+    dead, on both the success and the setup-failed paths (CUM-388 D1)."""
+    if outcome.restore_error is not None:
+        print(
+            "\nStopped: production firmware could not be restored (the step above failed).\n"
+            "The board may still hold the temporary setup firmware. Reconnect it and run\n"
+            "tools/setup_device.py again to finish the install.",
+            file=sys.stderr,
+        )
+        return 1
+    if outcome.interrupted:
+        print(
+            "\nStopped: setup was interrupted. Production firmware was restored, so the\n"
+            "board is safe to use, but the setup settings were not applied. Run\n"
+            "tools/setup_device.py again to finish.",
+            file=sys.stderr,
+        )
+        return 1
+    if outcome.bootstrap_error is not None:
+        print("\nStopped: the setup settings could not be applied (the step above failed).", file=sys.stderr)
+        if panel == "dead":
+            print(PANEL_DEAD_MESSAGE, file=sys.stderr)
+        elif panel == "ok":
+            print(
+                "\nThe screen is responding, so the board variant is correct. The setup\n"
+                "settings were not applied. Run tools/setup_device.py again to retry.",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                "\nProduction firmware was restored. Look at the screen, then run\n"
+                "tools/setup_device.py again to retry the settings.",
+                file=sys.stderr,
+            )
+        return 1
+    # Clean success: production firmware is on the board with no error.
+    if panel == "dead":
+        print(PANEL_DEAD_MESSAGE, file=sys.stderr)
+        return 1
+    if panel == "ok":
+        print("Screen check passed: the display is responding.")
+    elif not skip_panel_check:
+        print("Screen check could not confirm the display; look at the screen to be sure.")
+    print("\nNimbus production firmware is installed. NVS was not erased.")
+    _print_mode_guidance(mode)
     return 0
+
+
+def run_show_token(
+    pio: str,
+    esptool: list[str],
+    prod_env: str,
+    prov_env: str,
+    port: str,
+    name: str,
+    family: str,
+    nvs_state: str,
+    assume_yes: bool,
+) -> int:
+    """Recover an existing Nimbus access token over serial, then restore production."""
+    if nvs_state != "nimbus":
+        raise RuntimeError("Access-token recovery is only allowed when existing Nimbus settings are detected.")
+    confirm_install(name, family, nvs_state == "nimbus", port, assume_yes)
+    print("\nReading the access token without erasing NVS...")
+    try:
+        _upload(pio, prov_env, port)
+        run_checked([esptool[0], str(Path(__file__).resolve()), "--_bootstrap-port", port, "--_show-token"])
+    finally:
+        print("\nRestoring production firmware...")
+        _upload(pio, prod_env, port)
+    print("\nNimbus production firmware is restored. NVS was not erased.")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    if args._bootstrap_port:
+        return serial_bootstrap(
+            args._bootstrap_port,
+            args.display,
+            args.mode,
+            args._show_token,
+            board=args.board or "solide_s3",
+            ota_type=args._ota_type,
+        )
+    # Phase 1: discover the board and decide what to flash. Nothing is written yet,
+    # so a failure here changed nothing on the board and no screen check applies.
+    try:
+        port, usb_vid, product = resolve_port(args)
+        core, pio = platformio_executable()
+        esptool = esptool_command(core)
+        if esptool is None:
+            print("PlatformIO needs to install the ESP32 build tools first.")
+            run_checked([pio, "run", "-e", "esp32s3"])  # neutral env just for the tools
+            esptool = esptool_command(core)
+        if esptool is None:
+            raise RuntimeError("PlatformIO did not install its esptool package.")
+        mac, nvs_state, nvs_family = inspect_board(esptool, port)
+        # Board pinout is compile-time: auto-detect the family (explicit --board >
+        # NVS marker > USB descriptor), then pick the matching firmware env. The
+        # provisioning env is chosen by family AND transport (CUM-388 D2) so its
+        # Serial can answer on the very port in use - a Solide on native USB gets
+        # the native-USB provision sketch, not the UART one that can never reply.
+        family = resolve_family(args.board, usb_vid, nvs_family) or prompt_family(port, args.yes)
+        prod_env = production_env(family)
+        prov_env = provision_env(family, usb_vid, port)
+        name = friendly_name(family, product)
+        print(f"\nDetected: {name} ({FAMILY_NAME.get(family, family)}) on {port}  MAC {mac}")
+        if args.show_token:
+            return run_show_token(pio, esptool, prod_env, prov_env, port, name, family, nvs_state, args.yes)
+        display, mode, ota_type = prompt_bootstrap(args, nvs_state, family)
+        confirm_install(name, family, nvs_state == "nimbus", port, args.yes)
+    except (RuntimeError, subprocess.CalledProcessError, KeyboardInterrupt) as exc:
+        print(f"\nStopped: {exc}", file=sys.stderr)
+        return 1
+
+    # Phase 2: flash. From here a production image may be, or may fail to be, on the
+    # board, so a setup failure still reads the boot screen signal and fails loudly
+    # with the wrong-variant message instead of stranding a dead-screen board with
+    # only a bootstrap error (CUM-388 D1). The screen read is skipped when there is
+    # nothing safe to read: a Ctrl-C (no 20 s wait tacked onto an interrupt) or a
+    # failed restore (no trustworthy production image to signal).
+    outcome = flash_production(pio, esptool, prod_env, prov_env, port, family, display, mode, ota_type)
+    panel = "unknown"
+    if (
+        not args.skip_panel_check
+        and outcome.production_on_board
+        and outcome.restore_error is None
+        and not outcome.interrupted
+    ):
+        print("\nChecking the screen came up...")
+        panel = verify_panel_after_flash(port)
+    return finish_install(outcome, panel, mode, args.skip_panel_check)
 
 
 if __name__ == "__main__":
