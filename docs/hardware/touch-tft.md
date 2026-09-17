@@ -246,6 +246,15 @@ reports it as "display not responding" without a serial open (which would reset
 the board and erase the fault). `panelOk` / `panelPixOk` are **null** while the
 probe is off, never a fabricated `true`: "not measured" must not read as "healthy".
 
+⚠ **On the classic solide_s3 board, `panelResponding` is suppressed on purpose
+(CUM-392).** That board shares its touch MISO with the panel, and the RDDST read
+behind this signal was pinning every touch channel (see the next section). Panel
+readbacks are therefore gated off there, so `panelResponding` holds and never
+performs a live read: black-glass detection on solide_s3 falls back to the boot
+`begin()` result. On the capacitive Freenove / CYD board nothing is shared, so the
+live signal is unchanged. Restoring an honest live signal on solide_s3 needs a
+write-only liveness path or an isolated read, which is left as a follow-up.
+
 ⚠ **The panel's display/power state is NOT observable.** `RDDPM` (0x0A) reads
 `0x00` at every dummy-width on this panel - it simply is not implemented - and
 `rearm()` changes nothing in `RDDST` beyond the scan bit. So sleep, display-off
@@ -287,3 +296,50 @@ configuration and how often; a count that stays at zero means the fault is
 somewhere else entirely. The watchdog bounds the visible symptom to ~5 s either
 way, so a recurrence should now look like a brief flicker rather than a dead
 screen.
+
+## Dead touch on v4.5.x (CUM-392)
+
+A distinct fault from the white screen above: on classic (solide_s3) boards
+flashed with v4.5.0, touch stops responding entirely while the display works.
+v4.4.6 on the same board is fine.
+
+**Mechanism.** With the owner tapping four corners plus center, raw reads came
+back the same on every sample: pressure present, but the X and Y position channels
+pinned near mid-scale (X ~2100, Y ~2100, z ~4237) no matter where the tap landed,
+so every touch mapped to screen center and nothing off-center could be hit. That
+is not a dead controller (a dead XPT2046 reads a flat 4095) and not a calibration
+error (position is never actually read): it is the shared MISO being held.
+
+On solide_s3 the ILI9341 SDO and the XPT2046 T_DO are bridged onto one line,
+GPIO 1 (see the jumper table above). The panel is write-only in normal use, so
+before v4.5.0 its SDO stayed released and touch was clean. v4.5.0 added periodic
+panel READS over that line - the controller-liveness poll (`healthy()` / RDDST
+every ~2 s), the unchanged-frame health check, the register/pixel probe, and the
+`/api/state` panel fields. A module whose SDO does not cleanly tri-state after a
+read then contends the line the XPT2046 drives, and every touch channel settles
+near mid-scale. Those reads were only ever validated on a Freenove, whose
+capacitive touch is on a separate I2C bus and shares nothing with the panel.
+
+**Fix.** A board capability - a resistive touch controller on a shared panel
+MISO - gates every panel readback OFF on such a board. The write-only panel
+`rearm()` and the unconditional watchdog repaint still recover a lost panel, so
+white-screen recovery is unaffected. The gate is provably inert on the capacitive
+Freenove / CYD board, where the reads never shared a line. The portable decision
+is host-tested and iterated over every board definition, so a future resistive
+board on a shared MISO is covered by construction.
+
+**Finger-free diagnostics** (test / test-cyd console builds only - they reset the
+board on a serial open, so use a `[env:test]`-family image):
+
+| Command | What it does |
+|---|---|
+| `TOUCHDIAG? [n]` | Reads the XPT2046 single-ended channels that need no touch (`TEMP0`, `TEMP1`, `VBAT`, `AUX`) `n` times (default 50) through the same 2 MHz transaction path a touch read uses, and prints per-channel min/max/mean/stddev plus the count of all-zero and all-ones frames. A healthy link gives stable, **distinct** `TEMP0` vs `TEMP1`; a contended MISO gives every channel pinned near one value, or all-zero / all-ones. |
+| `PROBES ON\|OFF\|?` | A/B the suspect pollers on one image. `ON` forces the panel liveness read, the content probe and the resistive touch-liveness poll back on (reproduces dead touch on a shared-MISO board); `OFF` silences them (the fixed baseline); `?` reports `sharedMiso` / `panelReadsGated` / `probe` / `fix4`. |
+| `BUSLOAD ON\|OFF` | Forces a full repaint every loop so `TOUCHDIAG?` can be run under worst-case shared-bus traffic. |
+
+The A/B that proves the mechanism on glass: on a solide_s3 `test` image, run
+`PROBES OFF` then `TOUCHDIAG? 100` (channels distinct and stable) and confirm
+`TOUCH?` X/Y swing across the full 0..4095 range as the corners are tapped; then
+`PROBES ON` and repeat - the channels collapse toward one value and `TOUCH?` X/Y
+pin near mid-scale. On a Freenove `test-cyd` image the two runs are identical
+(nothing is shared), which is the inertness check.
