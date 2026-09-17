@@ -136,6 +136,28 @@ def test_wrong_offsets_flagged():
     assert any("PARTS" in e or "offset" in e for e in errs)
 
 
+def test_dropped_publish_asset_fails():
+    # An image built + in the manifest but dropped from the release `files:` block would
+    # OTA-404 on the device; the gate must catch it.
+    real = m.read_sources()
+    real["rel"] = dict(real["rel"])
+    real["rel"]["published_assets"] = [a for a in real["rel"]["published_assets"] if a != "firmware-freenove-40.bin"]
+    ok, errs = m.judge(m.CONFIG_TABLE, real)
+    assert not ok
+    assert any("freenove-40" in e and "publish list" in e for e in errs)
+
+
+def test_empty_webflash_loop_fails_closed():
+    # If the `for v in ...` loop parser matched nothing (a reformat), that dimension must
+    # fail closed, not be skipped silently.
+    real = m.read_sources()
+    real["rel"] = dict(real["rel"])
+    real["rel"]["webflash_lists"] = []
+    ok, errs = m.judge(m.CONFIG_TABLE, real)
+    assert not ok
+    assert any("for v in" in e for e in errs)
+
+
 def test_missing_chipfamily_fails_closed():
     # If the web-flash builder ever lost its chipFamily, the gate must fail, not pass
     # vacuously (ESP Web Tools cannot flash without one).

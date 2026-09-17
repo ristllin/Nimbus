@@ -141,12 +141,19 @@ def parse_release_yml(yml: str) -> dict:
 
     webflash_lists = [m.split() for m in re.findall(r"for v in ([\w\s-]+?);\s*do", yml)]
 
+    # The `files:` publish block lists the OTA assets uploaded to the releases repo as
+    # `Nimbus/firmware-*.bin` (the `cp` targets above are bare names, so the `Nimbus/`
+    # prefix uniquely identifies the publish list). A device fetches these by URL from
+    # the manifest, so a config whose image is not uploaded here OTA-404s.
+    published_assets = re.findall(r"Nimbus/(firmware-[\w.\-]+\.bin)", yml)
+
     return {
         "built_envs": built_envs,
         "image_of_env": image_of_env,
         "manifest_pairs": manifest_pairs,
         "webflash_dir_of_type": webflash_dir_of_type,
         "webflash_lists": webflash_lists,
+        "published_assets": published_assets,
     }
 
 
@@ -303,6 +310,11 @@ def _check_slug_sets(table, flash_variants, rel, web, hdr_slugs, errs):
     cmp("ota_logic.h kType slugs", hdr_slugs)
     cmp("release.yml manifest pairs", list(rel["manifest_pairs"].keys()))
     cmp("release.yml webflash case arms", list(rel["webflash_dir_of_type"].keys()))
+    if not rel["webflash_lists"]:
+        # Fail closed: the `for v in ...` loops drive which per-variant web-flash images
+        # are built and pushed to the webflash branch. If the parser matched none (a
+        # reformat), do not skip the check silently.
+        errs.append("release.yml: no `for v in ...` web-flash variant loop parsed (reformatted?)")
     for lst in rel["webflash_lists"]:
         cmp("release.yml `for v in` list", lst)
 
@@ -323,6 +335,10 @@ def _check_one_config(c, rel, envs, errs):
         )
     if c.env not in rel["built_envs"]:
         errs.append(f"{c.type_slug}: env {c.env} is not built by the release `pio run -e` step")
+    if c.ota_image not in rel["published_assets"]:
+        errs.append(
+            f"{c.type_slug}: image {c.ota_image!r} is not in the release `files:` publish list (device OTA would 404)"
+        )
     e = envs.get(c.env)
     if e is None:
         errs.append(f"{c.type_slug}: env {c.env} not found in platformio.ini")
