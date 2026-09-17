@@ -14,7 +14,10 @@
 #include "hw/ring_out.h"       // RINGANIM - select the working-ring animation variant
 #include "hw/touch_input.h"    // TAP/TAPUP - synthetic taps (the ENC seam's counterpart)
 #include "solide/touch.h"
+#include "solide/board.h"         // TOUCHDIAG? - XPT2046 chip-select + touch bus (CUM-392)
 #include "solide/display_tft.h"   // TFTID? - shared-MISO readback diagnostic       // TOUCH? - raw XPT2046 state for calibration
+#include "nimbus_board_touch_bus.h"  // TOUCHDIAG?/PROBES - shared-MISO hazard predicate (CUM-392)
+#include <SPI.h>                  // TOUCHDIAG? - replicate the readRaw transaction path
 #include "nimbus/touch_cal.h"   // TCAL - shared parser with the web field
 #include <WiFi.h>              // WIFISCAN - what the radio can see
 
@@ -1148,6 +1151,106 @@ void dispatch(String line) {
     Serial.printf("TOUCH present=%d raw=%u,%u z=%u down=%d px=%d,%d\n",
                   int(solide::touch::present()), rx, ry, rz, int(p.down), p.x, p.y);
     (void)hit;
+    Serial.flush();
+    return;
+  }
+  if (line.startsWith("TOUCHDIAG")) {
+    // Finger-free XPT2046 link check (CUM-392). Reads the single-ended channels
+    // that need NO touch (TEMP0, TEMP1, VBAT, AUX) through the SAME bus, settings
+    // (2 MHz, MODE0) and chip select the driver's readRaw uses, so it exercises
+    // exactly the path a touch read takes. A healthy link returns stable, DISTINCT
+    // TEMP0 vs TEMP1; a MISO contended by a panel that will not tri-state its SDO
+    // returns every channel pinned near one value (or all-zero / all-ones). This is
+    // the finger-free A/B: run it with PROBES OFF, then PROBES ON, on one image.
+    String a = line.substring(9); a.trim();
+    if (a.startsWith("?")) { a = a.substring(1); a.trim(); }
+    int n = a.length() ? a.toInt() : 50;
+    if (n < 1) n = 1;
+    if (n > 1000) n = 1000;
+    const int8_t tcs = solide::board().tft.tcs;
+    if (solide::board().touchKind != solide::TouchKind::ResistiveSpi || tcs < 0) {
+      reply("TOUCHDIAG resistive-only (no XPT2046 on this board)");
+      return;
+    }
+    // Single-ended control bytes: START | A2..A0 | MODE=0 (12-bit) | SER/DFR=1 |
+    // PD=11 (reference + ADC on, so the internal channels read stable values).
+    const uint8_t kCmd[4]  = {0x87 /*TEMP0*/, 0xF7 /*TEMP1*/, 0xA7 /*VBAT*/, 0xE7 /*AUX*/};
+    const char*   kName[4] = {"TEMP0", "TEMP1", "VBAT ", "AUX  "};
+    uint16_t mn[4] = {0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF}, mx[4] = {0, 0, 0, 0};
+    double sum[4] = {0, 0, 0, 0}, sumsq[4] = {0, 0, 0, 0};
+    int allZero = 0, allOnes = 0;
+    SPIClass& bus = *solide::display_tft::bus();
+    const SPISettings touchSPI(2000000, MSBFIRST, SPI_MODE0);   // the driver's kTouchSPI
+    pinMode(tcs, OUTPUT);
+    for (int i = 0; i < n; i++) {
+      while (solide::display_tft::busy()) delay(1);   // read on an idle bus, like the driver
+      uint16_t v[4] = {0, 0, 0, 0};
+      bus.beginTransaction(touchSPI);
+      digitalWrite(tcs, LOW);
+      for (int c = 0; c < 4; c++) {
+        // Two conversions, keep the second: the first settles after the channel
+        // switch, exactly as the driver's X/Y read does (touch.cpp sampleRaw).
+        for (int rep = 0; rep < 2; rep++) {
+          bus.transfer(kCmd[c]);
+          const uint8_t hi = bus.transfer(0x00);
+          const uint8_t lo = bus.transfer(0x00);
+          v[c] = uint16_t((((hi << 8) | lo) >> 3) & 0x0FFF);
+        }
+      }
+      digitalWrite(tcs, HIGH);
+      bus.endTransaction();
+      bool z = true, o = true;
+      for (int c = 0; c < 4; c++) {
+        if (v[c] < mn[c]) mn[c] = v[c];
+        if (v[c] > mx[c]) mx[c] = v[c];
+        sum[c] += v[c];
+        sumsq[c] += double(v[c]) * double(v[c]);
+        if (v[c] != 0)      z = false;
+        if (v[c] != 0x0FFF) o = false;
+      }
+      if (z) allZero++;
+      if (o) allOnes++;
+    }
+    Serial.printf("TOUCHDIAG n=%d tcs=%d sharedMiso=%d gated=%d\n", n, int(tcs),
+                  int(nimbus::boardSharedMisoResistiveTouch()),
+                  int(nimbus::hw::tft::panelReadbackGated()));
+    for (int c = 0; c < 4; c++) {
+      const double mean = sum[c] / double(n);
+      const double var  = sumsq[c] / double(n) - mean * mean;
+      const double sd   = var > 0.0 ? sqrt(var) : 0.0;
+      Serial.printf("TOUCHDIAG %s min=%u max=%u mean=%.1f sd=%.1f\n", kName[c],
+                    unsigned(mn[c]), unsigned(mx[c]), mean, sd);
+    }
+    Serial.printf("TOUCHDIAG frames allzero=%d allones=%d\n", allZero, allOnes);
+    Serial.flush();
+    return;
+  }
+  if (line.startsWith("PROBES")) {
+    // Master A/B for the shared-MISO touch regression (CUM-392). ON forces every
+    // v4.5.0-added poller back on to reproduce dead touch; OFF is the fixed
+    // baseline; ? reports. See tft_out setPanelReadOverride / main.cpp h.probes.
+    String a = line.substring(6); a.trim();
+    int mode = 2;   // query
+    if (a == "ON" || a == "on" || a == "1")       mode = 1;
+    else if (a == "OFF" || a == "off" || a == "0") mode = 0;
+    else if (a.length() && a != "?") { reply("ERR probes want ON|OFF|?"); return; }
+    const String st = s_h.probes ? s_h.probes(mode) : String("unavailable");
+    Serial.printf("PROBES %s -> %s\n",
+                  mode == 1 ? "ON" : mode == 0 ? "OFF" : "?", st.c_str());
+    Serial.flush();
+    return;
+  }
+  if (line.startsWith("BUSLOAD")) {
+    // Force a full repaint every loop so TOUCHDIAG? runs under worst-case shared-bus
+    // traffic (CUM-392). See main.cpp h.busLoad.
+    String a = line.substring(7); a.trim();
+    int mode = 2;   // query
+    if (a == "ON" || a == "on" || a == "1")       mode = 1;
+    else if (a == "OFF" || a == "off" || a == "0") mode = 0;
+    else if (a.length() && a != "?") { reply("ERR busload want ON|OFF"); return; }
+    const String st = s_h.busLoad ? s_h.busLoad(mode) : String("unavailable");
+    Serial.printf("BUSLOAD %s -> %s\n",
+                  mode == 1 ? "ON" : mode == 0 ? "OFF" : "?", st.c_str());
     Serial.flush();
     return;
   }

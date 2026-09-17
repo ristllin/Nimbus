@@ -7,8 +7,10 @@
 #include <cstring>
 
 #include "nimbus/display/panel_controller.h"
+#include "nimbus/display/panel_read_policy.h"   // shared-MISO panel-read gate (CUM-392)
 #include "nimbus/fault.h"
 #include "nimbus/panel_heal.h"
+#include "solide/board.h"
 #include "solide/display_tft.h"
 #include "solide/touch.h"
 
@@ -17,6 +19,25 @@ namespace nimbus::hw::tft {
 namespace {
 
 using namespace nimbus::tft;
+
+// Shared-MISO panel-read gate (CUM-392). On solide_s3 the ILI9341 and the XPT2046
+// share MISO, so a panel register/pixel read (RDDST healthy() / RAMRD readPixel)
+// drives the panel SDO onto the line touch reports on and pins every touch channel
+// mid-scale - the v4.5.x classic-board regression. So on a shared-MISO resistive
+// board NO panel readback runs (the write-only rearm + the unconditional repaint
+// still cover the white-screen fault). g_readOverride is the PROBES A/B knob (test
+// consoles only): Default keeps the capability gate, ForceOn re-enables the reads
+// to reproduce the fault on one image, ForceOff silences them for a clean baseline.
+// Production only ever sees Default, so production == panelReadbackSafe().
+nimbus::display::PanelReadOverride g_readOverride =
+    nimbus::display::PanelReadOverride::Default;
+
+bool panelReadsAllowed() {
+  const solide::Board& b = solide::board();
+  return nimbus::display::panelReadAllowed(
+      b.touchKind == solide::TouchKind::ResistiveSpi, b.tft.miso, b.tft.tcs,
+      g_readOverride);
+}
 
 // TWO framebuffers in PSRAM, alternated. The driver blits asynchronously off a
 // task, so composing into the buffer it is still reading would tear the frame;
@@ -163,8 +184,15 @@ Push renderAndPush(nimbus::attn::ScreenId screen, const nimbus::render::ScreenCt
     // The re-arm/repaint decision lives in nimbus::panel (host-tested against the
     // white-screen regression class): past the window rearm is UNCONDITIONAL, and
     // the config readback only decides whether to ALSO repaint.
+    // ⚠ Reading healthy() here drives the panel SDO onto a shared touch MISO
+    // (CUM-392). When the read is gated off (shared-MISO resistive board), assume
+    // the config is intact: rearm() below is write-only and still runs, and
+    // tickHealth's unconditional repaint still covers the undetectable pixel-loss
+    // mode. On a capacitive / separate-bus board this reads healthy() as before.
+    const bool cfgHealthy =
+        panelReadsAllowed() ? solide::display_tft::healthy() : true;
     const auto act = nimbus::panel::unchangedFrameAction(
-        uint32_t(now - g_lastPushMs), kHealMs, solide::display_tft::healthy());
+        uint32_t(now - g_lastPushMs), kHealMs, cfgHealthy);
     if (act.rearm) solide::display_tft::rearm();
     if (!act.repaint) {
       g_lastPushMs = now;       // configured and awake now - no repaint needed
@@ -234,6 +262,9 @@ void forceRepaint() { g_haveLast = false; }  // next push always lands (post-fli
 // drive a repaint loop.
 bool panelContentOk(int samples) {
   if (!g_ready || !g_haveLast || !g_last) return true;
+  // Shared-MISO resistive board: readPixel would contend the touch MISO (CUM-392).
+  // "unknown" must not read as "broken", so report content OK when we cannot look.
+  if (!panelReadsAllowed()) return true;
   if (samples < 1) samples = 1;
   const int pts[8][2] = {
     {4, 4}, {kW / 2, 4}, {kW - 5, 4}, {4, kH / 2},
@@ -257,7 +288,23 @@ uint32_t repaintCount() { return g_repaints; }
 uint32_t contentLostCount() { return g_contentLost; }
 void setProbeEnabled(bool on) { g_probeEnabled = on; }
 bool probeEnabled() { return g_probeEnabled; }
-bool panelConfigOk() { return g_ready && solide::display_tft::healthy(); }
+// Shared-MISO board: cannot read the panel without corrupting touch (CUM-392), so
+// report configured (not a fault we can never observe). Reads healthy() elsewhere.
+bool panelConfigOk() {
+  return g_ready && (!panelReadsAllowed() || solide::display_tft::healthy());
+}
+
+// PROBES A/B override (test consoles only, CUM-392). v > 0 forces reads ON (repro
+// the fault on a shared-MISO board), v == 0 forces them OFF (clean baseline),
+// v < 0 restores the capability gate. Never called in production.
+void setPanelReadOverride(int v) {
+  g_readOverride = v > 0    ? nimbus::display::PanelReadOverride::ForceOn
+                   : v == 0 ? nimbus::display::PanelReadOverride::ForceOff
+                            : nimbus::display::PanelReadOverride::Default;
+}
+// True when panel readbacks are currently suppressed on this board (the shipped
+// state on a shared-MISO resistive board). Drives the PROBES? report.
+bool panelReadbackGated() { return !panelReadsAllowed(); }
 
 bool tickHealth(uint32_t now) {
   if (!g_ready || nimbus::fault::active(nimbus::fault::SCREEN)) return false;
@@ -311,8 +358,12 @@ bool tickHealth(uint32_t now) {
   // The repaint below does NOT depend on these, so switching them off costs
   // nothing but the counters. g_probeEnabled flips at runtime (PANELPROBE) so the
   // hypothesis is tested on the device instead of argued.
-  const bool configLost  = g_probeEnabled && !solide::display_tft::healthy();
-  const bool contentLost = g_probeEnabled && !panelContentOk(4);
+  // ⚠ Never read the panel on a shared-MISO resistive board (CUM-392): the probe
+  // is disabled by default anyway, but PANELPROBE/PROBES ON must not corrupt touch
+  // unless the operator is deliberately reproducing the fault (ForceOn).
+  const bool mayRead     = g_probeEnabled && panelReadsAllowed();
+  const bool configLost  = mayRead && !solide::display_tft::healthy();
+  const bool contentLost = mayRead && !panelContentOk(4);
   // Past the window (checked above) the policy is unconditional rearm + repaint;
   // the probe results only feed the counters, they never gate the action. Driving
   // it through the host-tested decision keeps that invariant from regressing.
@@ -340,7 +391,13 @@ void pollControllerLiveness(uint32_t now) {
   // RDDST (0x09) read - the SAME signal panelConfigOk() and tickHealth() use - not
   // RDDID (0x04), which reads 0x000000 on a healthy Freenove / CYD panel and would
   // report a working panel as dead (see panel_controller.h); no driver change.
-  const bool canRead = !solide::display_tft::busy();
+  // ⚠ On a shared-MISO resistive board this read would pin every touch channel
+  // (CUM-392), so it is gated OFF there: canRead stays false, which HOLDS the last
+  // verdict (never trips a false "not responding" and never touches MISO). The
+  // honest-liveness signal is therefore unavailable on solide_s3 by design - see
+  // PR_BODY for the keep/drop recommendation. On capacitive/separate-bus boards it
+  // reads exactly as before.
+  const bool canRead = !solide::display_tft::busy() && panelReadsAllowed();
   bool healthy = false;
   if (canRead) healthy = solide::display_tft::healthy();
   g_controllerLive.update(canRead, healthy);

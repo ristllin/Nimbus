@@ -63,6 +63,15 @@ struct Hooks {
   // PANELPROBE <0|1> - the panel watchdog's register probe, togglable live.
   // (The RING/RADIO/TOUCHPOLL bisect toggles are gone - white-screen solved.)
   std::function<bool(bool)> panelProbe;
+  // PROBES <0|1|?> - master A/B for the shared-MISO touch regression (CUM-392).
+  // mode 1 forces every v4.5.0-added poller ON (panel liveness read, content
+  // probe, FIX-4 poll) to REPRODUCE dead touch on one image; 0 forces them OFF for
+  // the fixed baseline; 2 only reports. Returns a one-line status the orchestrator
+  // A/Bs on (sharedMiso / panelReadsGated / probe / fix4).
+  std::function<String(int mode)> probes;
+  // BUSLOAD <0|1|?> - force a full repaint every loop so TOUCHDIAG? can measure
+  // the touch link under worst-case shared-bus traffic (CUM-392). Returns on|off.
+  std::function<String(int mode)> busLoad;
   // Jobs currently in the attention router. The ONLY unambiguous read of
   // whether a fed frame landed: bright=/seg= in RENDER? are posture-scaled, so
   // on a pack-less board (forced passive posture) they stay flat whether the

@@ -63,6 +63,18 @@ void setProbeEnabled(bool on);
 bool probeEnabled();
 bool panelConfigOk();
 
+// Shared-MISO panel-read gate (CUM-392). On a board where a resistive touch
+// controller reports on the panel's readback MISO (solide_s3), every panel
+// register/pixel read is suppressed so it cannot pin the touch channels; the
+// write-only rearm + unconditional repaint still recover a lost panel. These two
+// exist for the PROBES diagnostic (test consoles only): setPanelReadOverride(1)
+// forces the reads back ON to REPRODUCE the fault on one image, (0) forces them
+// OFF for a clean baseline, (-1) restores the capability gate. panelReadbackGated()
+// reports whether reads are currently suppressed on this board. Production never
+// calls the setter, so its behavior is exactly the capability gate.
+void setPanelReadOverride(int v);
+bool panelReadbackGated();
+
 // Periodic panel watchdog - MUST be called from loop() on a TFT board.
 //
 // ⚠ Without it the panel can never recover. The health check used to live only

@@ -94,6 +94,7 @@
 #include "nimbus/settings_menu.h"
 #include "nimbus_board_power.h"           // explicit per-board battMon default (CUM-202)
 #include "nimbus_board_batt.h"            // effective battery divider selection (CUM-370)
+#include "nimbus_board_touch_bus.h"       // shared-MISO panel-read hazard (CUM-392)
 #include "nimbus_config.h"
 #include "version.h"
 #include "net/ble_notifier.h"
@@ -439,6 +440,14 @@ static nimbus::power::SenseMissingDetector g_senseMissing;
 // signature so touch{} and the health row stop reporting a dead panel as "ok".
 static nimbus::display::ResistiveTouchLiveness g_touchLiveness;
 static uint32_t g_lastTouchLivenessMs = 0;
+
+// Diagnostic toggles for the CUM-392 A/B (driven only by the test-console PROBES /
+// BUSLOAD hooks; those hooks compile to nothing in production, so these stay at
+// their defaults there). g_fix4Enabled gates the resistive touch-liveness poll so
+// PROBES can silence every v4.5.0-added poller for a clean baseline; g_busLoad
+// forces a repaint every loop so a diagnostic can run under worst-case bus traffic.
+static bool g_fix4Enabled = true;
+static bool g_busLoad = false;
 
 // Battery hardware from the board map. cells never 0 (both boards set it); the
 // divider is owner-tuned on hand-built boards (resistors vary) but fixed on an
@@ -3280,6 +3289,35 @@ void setup() {
     // ("lights at boot, no live control"), the exact failure they were built to
     // diagnose. Stale dbg* NVS keys are simply never read again.
     h.panelProbe = [](bool on) { hw::tft::setProbeEnabled(on); return true; };
+    // PROBES A/B for the shared-MISO touch regression (CUM-392). Mode 1 forces
+    // every v4.5.0-added poller ON (panel liveness read + content probe + FIX-4
+    // poll) to REPRODUCE dead touch on one image; mode 0 forces them OFF for the
+    // fixed baseline; mode 2 only reports. On a capacitive board this is inert
+    // (the reads never contended anything), which the status line makes visible.
+    h.probes = [](int mode) -> String {
+      if (mode == 1) {
+        hw::tft::setPanelReadOverride(1);
+        hw::tft::setProbeEnabled(true);
+        g_fix4Enabled = true;
+      } else if (mode == 0) {
+        hw::tft::setPanelReadOverride(0);
+        hw::tft::setProbeEnabled(false);
+        g_fix4Enabled = false;
+      }
+      char b[128];
+      snprintf(b, sizeof(b), "sharedMiso=%d panelReadsGated=%d probe=%d fix4=%d",
+               int(nimbus::boardSharedMisoResistiveTouch()),
+               int(hw::tft::panelReadbackGated()),
+               int(hw::tft::probeEnabled()), int(g_fix4Enabled));
+      return String(b);
+    };
+    // BUSLOAD - force a full repaint every loop so TOUCHDIAG? can measure the touch
+    // link under worst-case shared-bus traffic (CUM-392).
+    h.busLoad = [](int mode) -> String {
+      if (mode == 1) g_busLoad = true;
+      else if (mode == 0) g_busLoad = false;
+      return String(g_busLoad ? "on" : "off");
+    };
     h.setProfile = [](int p) {
       if (p < 0 || p > 2) return false;
       g_selector.setUser(ProfileId(p));
@@ -3677,6 +3715,7 @@ static void runTouchCalibration() {
 // probe - it does not disturb the debounced read() the input path uses.
 static void serviceTouchLiveness(uint32_t now) {
   if (!g_screenIsTft) return;
+  if (!g_fix4Enabled) return;   // PROBES OFF: silence this poll for a clean baseline (CUM-392)
   if (solide::board().touchKind == solide::TouchKind::CapacitiveI2c) return;
   if (!solide::touch::present()) return;
   if (uint32_t(now - g_lastTouchLivenessMs) < 2000) return;   // ~2 s cadence
@@ -5786,6 +5825,16 @@ void loop() {
     if (g_calGateActive)      { g_calGateSig = INT32_MIN; renderCalGateIfChanged(now); }
     else if (g_menu.isOpen()) renderMenu();
     else                      renderScreen(attn::ScreenId(g_lastScreen), -1);
+  }
+
+  // BUSLOAD (CUM-392 diagnostic, test consoles only): force a full repaint every
+  // loop so a finger-free touch diagnostic can be exercised under worst-case bus
+  // traffic (the case where a concurrent blit could contend the shared bus). Inert
+  // unless the operator turned it on; g_busLoad only ever flips from the test hook.
+  if (g_busLoad && g_screenIsTft && !g_calGateActive) {
+    hw::tft::forceRepaint();
+    if (g_menu.isOpen()) renderMenu();
+    else                 renderScreen(attn::ScreenId(g_lastScreen), -1);
   }
 
   // Screensaver entry: long-idle on the ambient screen -> the dotted-ring logo.
