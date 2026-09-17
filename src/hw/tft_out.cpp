@@ -191,11 +191,17 @@ Push renderAndPush(nimbus::attn::ScreenId screen, const nimbus::render::ScreenCt
     // wrong-variant verdict. What CUM-392 gates off is the NEW render-independent
     // idle poll (pollControllerLiveness), not this.
     const bool cfgHealthy = solide::display_tft::healthy();
-    // On a shared-MISO board the independent liveness poll is gated off, so feed the
-    // honest-liveness detector from THIS field-safe read instead: that keeps CUM-388's
-    // notResponding verdict (the loud wrong-variant line + scrok=0) latching in both
-    // cross-flash directions without any read v4.4.6 did not also make. On a
-    // capacitive / separate-bus board pollControllerLiveness feeds it, so skip here.
+    // ⚠ CUM-423: this substitute feed does NOT actually maintain the liveness
+    // verdict on a shared-MISO board. It only runs on an UNCHANGED frame past the
+    // kHealMs window, but the 5 s tickHealth watchdog forces g_haveLast=false and a
+    // fresh repaint every kHealMs, so on an idle device this branch is not reached
+    // in steady state and g_controllerLive is never updated after boot. The result
+    // is that a bound-but-dead solide panel is NOT detected (scrok stays 1). The
+    // honest fix (report liveness UNKNOWN on shared-MISO boards, never a false
+    // positive) is tracked in CUM-423 and needs on-glass validation. Left in place
+    // (a harmless no-op when reached) until that fix lands so the diff there is
+    // self-contained. On a capacitive / separate-bus board pollControllerLiveness
+    // feeds the verdict normally, so this is skipped.
     if (!panelReadsAllowed())
       g_controllerLive.update(/*canRead=*/true, cfgHealthy);
     const auto act = nimbus::panel::unchangedFrameAction(
@@ -394,9 +400,12 @@ void pollControllerLiveness(uint32_t now) {
   // ⚠ This is the read CUM-392 gates. It is the NEW-since-v4.4.6 render-independent
   // RDDST poll (added by e23c0bf/143e98c): unlike the per-push healthy() in
   // renderAndPush, it drives the shared MISO at idle moments v4.4.6 never touched.
-  // On a shared-MISO resistive board it is skipped; the honest-liveness verdict is
-  // instead fed from the retained per-push read (see renderAndPush), so CUM-388
-  // still latches without an idle-time read v4.4.6 did not make. On a
+  // On a shared-MISO resistive board it is skipped to protect touch. NOTE (CUM-423):
+  // this poll was the ONLY thing that kept g_controllerLive fed at a render-
+  // independent cadence; the per-push substitute in renderAndPush does NOT reach in
+  // steady state (tickHealth preempts it), so with this poll gated the liveness
+  // verdict is not maintained on a solide board and a bound-but-dead panel is not
+  // detected (scrok stays 1). The honest fix is tracked in CUM-423. On a
   // capacitive/separate-bus board it runs exactly as before. PROBES ForceOn
   // re-enables it on one image for the A/B.
   if (!panelReadsAllowed()) return;

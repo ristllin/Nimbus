@@ -246,14 +246,21 @@ reports it as "display not responding" without a serial open (which would reset
 the board and erase the fault). `panelOk` / `panelPixOk` are **null** while the
 probe is off, never a fabricated `true`: "not measured" must not read as "healthy".
 
-⚠ **On the classic solide_s3 board, `panelResponding` is fed differently
-(CUM-392), not disabled.** That board shares its touch MISO with the panel, so the
-NEW render-independent RDDST poll (`pollControllerLiveness`) is gated off there.
-The verdict is instead fed from the per-push `healthy()` read `renderAndPush`
-already makes (the read v4.4.6 made and field touch survived), so
-`panelResponding` still latches false on a dead / wrong-variant panel and the
-CUM-388 guardrail still fires. On the capacitive Freenove / CYD board nothing is
-shared, so the independent poll runs unchanged. See the next section.
+⚠ **On the classic solide_s3 board the live panel-liveness verdict is NOT
+maintained (CUM-392 / CUM-423), so `panelResponding` cannot be trusted as a
+positive there.** That board shares its touch MISO with the panel, so the
+render-independent RDDST poll (`pollControllerLiveness`) is gated off to protect
+touch. The per-push `healthy()` read in `renderAndPush` was intended to feed the
+verdict instead, but on an idle device that read site is not reached in steady
+state (the 5 s `tickHealth` watchdog forces a fresh repaint every `kHealMs`, so
+the unchanged-frame-past-window branch that holds the read never runs), so the
+debounced verdict is never updated after boot. The consequence: a solide panel
+whose bind SUCCEEDS but is then dead reads `scrok=1` today, which is wrong. A
+wrong-variant flash whose bind FAILS is still caught (`InitFailed` -> `scrok=0`).
+On the capacitive Freenove / CYD board nothing is shared, so the poll runs
+unchanged and the verdict is honest. Tracked in CUM-423: on shared-MISO boards
+the honest report is "liveness unknown" (look at the screen), never a false
+positive. See the next section.
 
 ⚠ **The panel's display/power state is NOT observable.** `RDDPM` (0x0A) reads
 `0x00` at every dummy-width on this panel - it simply is not implemented - and
@@ -337,14 +344,18 @@ running. The portable decision is host-tested and iterated over every board
 definition, so a future resistive board on a shared MISO is covered by
 construction.
 
-**The wrong-variant / black-glass guardrail (CUM-388) is preserved.** The honest
-panel-liveness verdict (`panelResponding` / `scrok` / the loud boot beacon) is fed
-on a shared-MISO board from the retained per-push `healthy()` read instead of the
-gated-off idle poll, so it still latches "not responding" on a dead or wrong panel.
-Both cross-flash directions still trip: a **Freenove image on Solide hardware** (the
-Freenove build's poll runs and reads the wrong pin map dead) and a **Solide image on
-Freenove hardware** (the Solide build's per-push read feeds the verdict, which
-latches on the dead panel). CUM-388 coverage does not regress in either direction.
+**The wrong-variant / black-glass guardrail (CUM-388) is PARTIALLY reduced on
+shared-MISO boards (CUM-423).** A wrong-variant flash whose panel bind FAILS is
+still caught in both directions: a **Freenove image on Solide hardware** and a
+**Solide image on Freenove hardware** both fail `begin()` on the wrong pin map and
+emit `InitFailed` -> `scrok=0`. What is NOT caught on a solide_s3 board is a panel
+that BINDS but is dead: the live liveness verdict is not maintained there (the
+gated-off poll protects touch, and the intended per-push substitute is not reached
+in steady state), so a bound-but-dead solide panel currently reports `scrok=1`.
+The honest fix (report "liveness unknown" on shared-MISO boards, never a false
+positive, so the operator looks at the screen) is tracked in CUM-423 and needs
+on-glass validation before it ships. On the capacitive Freenove the verdict is
+unaffected.
 
 **Finger-free diagnostics** (test / test-cyd console builds only - they reset the
 board on a serial open, so use a `[env:test]`-family image):
