@@ -10,7 +10,6 @@ one dimension at a time and assert the gate catches it, so a real future drift c
 slip through green.
 """
 
-import copy
 import dataclasses
 
 import check_config_mapping as m
@@ -50,7 +49,9 @@ def test_release_yml_wiring():
 
 
 # --- the class rule: an unmapped / mis-mapped config FAILS --------------------
-_EXTRA = m.Config("freenove-50", "esp32s3-cyd-50", "freenove_s3", "cyd-50", (800, 480), "ESP32-S3", "firmware-freenove-50.bin", True)
+_EXTRA = m.Config(
+    "freenove-50", "esp32s3-cyd-50", "freenove_s3", "cyd-50", (800, 480), "ESP32-S3", "firmware-freenove-50.bin", True
+)
 
 
 def test_new_config_in_table_but_no_source_fails():
@@ -63,10 +64,10 @@ def test_new_config_in_table_but_no_source_fails():
 def test_new_config_in_a_source_but_not_table_fails():
     # A 5th variant wired into the web installer + slugs but absent from the table:
     # the gate must reject the extra, not wave it through.
-    real = _real_inputs()
+    real = m.read_sources()
     real["flash_variants"] = real["flash_variants"] + ["freenove-50"]
     real["hdr_slugs"] = real["hdr_slugs"] + ["freenove-50"]
-    ok, errs = m.judge(m.CONFIG_TABLE, **real)
+    ok, errs = m.judge(m.CONFIG_TABLE, real)
     assert not ok
     assert any("freenove-50" in e and "extra" in e for e in errs)
 
@@ -122,12 +123,15 @@ def test_device_side_family_flip_fails():
 
 def test_wrong_offsets_flagged():
     # If the web-flash builder ever moved the app offset, the gate must catch it.
-    web = m.parse_webflash_builder(m._read(m.WEBFLASH_REL))
-    web = dict(web)
-    web["parts"] = ((0x0, "bootloader.bin"), (0x8000, "partitions.bin"), (0xE000, "boot_app0.bin"), (0x20000, "firmware.bin"))
-    real = _real_inputs()
-    real["web"] = web
-    ok, errs = m.judge(m.CONFIG_TABLE, **real)
+    real = m.read_sources()
+    real["web"] = dict(real["web"])
+    real["web"]["parts"] = (
+        (0x0, "bootloader.bin"),
+        (0x8000, "partitions.bin"),
+        (0xE000, "boot_app0.bin"),
+        (0x20000, "firmware.bin"),
+    )
+    ok, errs = m.judge(m.CONFIG_TABLE, real)
     assert not ok
     assert any("PARTS" in e or "offset" in e for e in errs)
 
@@ -136,14 +140,3 @@ def test_wrong_offsets_flagged():
 def _table_with(idx, **changes):
     row = dataclasses.replace(m.CONFIG_TABLE[idx], **changes)
     return m.CONFIG_TABLE[:idx] + (row,) + m.CONFIG_TABLE[idx + 1 :]
-
-
-def _real_inputs():
-    return {
-        "flash_variants": m.parse_flash_variants(m._read(m.FLASH_JSX_REL)),
-        "rel": m.parse_release_yml(m._read(m.RELEASE_YML_REL)),
-        "web": m.parse_webflash_builder(m._read(m.WEBFLASH_REL)),
-        "hdr_slugs": m.parse_ota_header_slugs(m._read(m.OTA_HDR_REL)),
-        "fam": m.parse_type_allowed_families(m._read(m.OTA_CPP_REL)),
-        "envs": m.parse_pio_envs(m._read(m.PIO_INI_REL)),
-    }

@@ -61,13 +61,36 @@ class Config:
 CONFIG_TABLE: "tuple[Config, ...]" = (
     Config("nimbus-tft", "esp32s3", "solide_s3", "esp32s3", None, "ESP32-S3", "firmware-nimbus-tft.bin", False),
     Config("freenove-28", "esp32s3-cyd", "freenove_s3", "cyd", None, "ESP32-S3", "firmware-freenove.bin", True),
-    Config("freenove-35", "esp32s3-cyd-35", "freenove_s3", "cyd-35", (480, 320), "ESP32-S3", "firmware-freenove-35.bin", True),
-    Config("freenove-40", "esp32s3-cyd-40", "freenove_s3", "cyd-40", (480, 480), "ESP32-S3", "firmware-freenove-40.bin", True),
+    Config(
+        "freenove-35",
+        "esp32s3-cyd-35",
+        "freenove_s3",
+        "cyd-35",
+        (480, 320),
+        "ESP32-S3",
+        "firmware-freenove-35.bin",
+        True,
+    ),
+    Config(
+        "freenove-40",
+        "esp32s3-cyd-40",
+        "freenove_s3",
+        "cyd-40",
+        (480, 480),
+        "ESP32-S3",
+        "firmware-freenove-40.bin",
+        True,
+    ),
 )
 
 # The merged web-flash image layout (default_16MB.csv), asserted against the
 # builder's own constants. Every config uses this identical layout.
-EXPECTED_PARTS = ((0x0, "bootloader.bin"), (0x8000, "partitions.bin"), (0xE000, "boot_app0.bin"), (0x10000, "firmware.bin"))
+EXPECTED_PARTS = (
+    (0x0, "bootloader.bin"),
+    (0x8000, "partitions.bin"),
+    (0xE000, "boot_app0.bin"),
+    (0x10000, "firmware.bin"),
+)
 EXPECTED_NVS_OFFSET = 0x9000
 EXPECTED_NVS_SIZE = 0x5000
 
@@ -223,24 +246,20 @@ def parse_pio_envs(ini: str) -> dict:
 # --- the judgment (pure: takes all parsed inputs, returns ok + messages) -----
 
 
-def judge(
-    table: "tuple[Config, ...]",
-    flash_variants: "list[str]",
-    rel: dict,
-    web: dict,
-    hdr_slugs: "list[str]",
-    fam: dict,
-    envs: dict,
-) -> "tuple[bool, list[str]]":
-    errs: "list[str]" = []
+def _check_unique_keys(table, errs):
+    """A device-TYPE key, and an OTA image name, must each be unique across configs."""
     types = [c.type_slug for c in table]
-
-    # 1. unique device-TYPE key.
-    dupes = {t for t in types if types.count(t) > 1}
+    dupes = sorted({t for t in types if types.count(t) > 1})
     if dupes:
-        errs.append(f"duplicate device-type key(s): {sorted(dupes)}")
+        errs.append(f"duplicate device-type key(s): {dupes}")
+    images = [c.ota_image for c in table]
+    img_dupes = sorted({i for i in images if images.count(i) > 1})
+    if img_dupes:
+        errs.append(f"duplicate OTA image name(s) across configs: {img_dupes}")
 
-    # 2. web-flash image layout: offsets + NVS window + it seeds otaType.
+
+def _check_layout(web, errs):
+    """The merged web-flash image layout: offsets, NVS window, and the otaType seed."""
     if web["parts"] != EXPECTED_PARTS:
         errs.append(f"web-flash PARTS {web['parts']} != expected {EXPECTED_PARTS} (wrong flash offsets)")
     if web["nvs_offset"] != EXPECTED_NVS_OFFSET:
@@ -250,16 +269,23 @@ def judge(
     if not web["seeds_ota_type"]:
         errs.append("web-flash builder no longer seeds otaType into NVS (board would boot untyped)")
 
-    # 3. chip family: every config's chip is the one the builder writes into every manifest.
+
+def _check_chips(table, web, errs):
+    """Every chipFamily the builder writes must be a chip in the table, and vice versa."""
+    table_chips = {c.chip for c in table}
     for chip in set(web["chips"]):
-        if chip not in {c.chip for c in table}:
+        if chip not in table_chips:
             errs.append(f"web-flash manifest chipFamily {chip!r} is not a chip in the config table")
     for c in table:
         if web["chips"] and c.chip not in web["chips"]:
             errs.append(f"{c.type_slug}: table chip {c.chip!r} never appears in the web-flash manifest chipFamily")
 
-    # 4. the four sources' type/slug sets must equal the table exactly (no extra, none missing).
-    def _cmp(label: str, got: "list[str]") -> None:
+
+def _check_slug_sets(table, flash_variants, rel, web, hdr_slugs, errs):
+    """Each source's slug set must equal the table exactly (nothing missing, nothing extra)."""
+    types = [c.type_slug for c in table]
+
+    def cmp(label, got):
         missing = [t for t in types if t not in got]
         extra = [g for g in got if g not in types]
         if missing:
@@ -267,54 +293,65 @@ def judge(
         if extra:
             errs.append(f"{label}: unmapped extra config(s) {extra} (wired here but not in the canonical table)")
 
-    _cmp("flash.jsx VARIANTS", flash_variants)
-    _cmp("make_webflash_manifest KNOWN_VARIANTS", web["known"])
-    _cmp("ota_logic.h kType slugs", hdr_slugs)
-    _cmp("release.yml manifest pairs", list(rel["manifest_pairs"].keys()))
-    _cmp("release.yml webflash case arms", list(rel["webflash_dir_of_type"].keys()))
+    cmp("flash.jsx VARIANTS", flash_variants)
+    cmp("make_webflash_manifest KNOWN_VARIANTS", web["known"])
+    cmp("ota_logic.h kType slugs", hdr_slugs)
+    cmp("release.yml manifest pairs", list(rel["manifest_pairs"].keys()))
+    cmp("release.yml webflash case arms", list(rel["webflash_dir_of_type"].keys()))
     for lst in rel["webflash_lists"]:
-        _cmp("release.yml `for v in` list", lst)
+        cmp("release.yml `for v in` list", lst)
 
-    # 5. per-config: exactly one image, correct env, correct board+panel, device-side family.
-    images = [c.ota_image for c in table]
-    img_dupes = {i for i in images if images.count(i) > 1}
-    if img_dupes:
-        errs.append(f"duplicate OTA image name(s) across configs: {sorted(img_dupes)}")
 
+def _check_one_config(c, rel, envs, errs):
+    """Per config: exactly one image, correct env (two independent paths), board, panel."""
+    if rel["manifest_pairs"].get(c.type_slug) != c.ota_image:
+        errs.append(
+            f"{c.type_slug}: release manifest pair image {rel['manifest_pairs'].get(c.type_slug)!r} != table {c.ota_image!r}"
+        )
+    if rel["webflash_dir_of_type"].get(c.type_slug) != c.env:
+        errs.append(
+            f"{c.type_slug}: webflash case build dir env {rel['webflash_dir_of_type'].get(c.type_slug)!r} != table env {c.env!r}"
+        )
+    if rel["image_of_env"].get(c.env) != c.ota_image:
+        errs.append(
+            f"{c.type_slug}: release `cp` for env {c.env} produces {rel['image_of_env'].get(c.env)!r} != table image {c.ota_image!r}"
+        )
+    if c.env not in rel["built_envs"]:
+        errs.append(f"{c.type_slug}: env {c.env} is not built by the release `pio run -e` step")
+    e = envs.get(c.env)
+    if e is None:
+        errs.append(f"{c.type_slug}: env {c.env} not found in platformio.ini")
+        return
+    if e["board"] != c.board:
+        errs.append(
+            f"{c.type_slug}: env {c.env} SOLIDE_BOARD {e['board']!r} != table {c.board!r} (wrong pinout / fell through to default)"
+        )
+    if e["panel"] != c.panel:
+        errs.append(f"{c.type_slug}: env {c.env} panel {e['panel']} != table {c.panel} (renderer geometry mismatch)")
+    if e["ota_variant"] != c.ota_variant:
+        errs.append(f"{c.type_slug}: env {c.env} NIMBUS_OTA_VARIANT {e['ota_variant']!r} != table {c.ota_variant!r}")
+
+
+def judge(table: "tuple[Config, ...]", src: dict) -> "tuple[bool, list[str]]":
+    """Compare the canonical table against every parsed source (from parse_* / run()).
+
+    `src` bundles the parsed inputs: flash_variants, rel, web, hdr_slugs, fam, envs.
+    """
+    rel, web, envs = src["rel"], src["web"], src["envs"]
+    errs: "list[str]" = []
+    _check_unique_keys(table, errs)
+    _check_layout(web, errs)
+    _check_chips(table, web, errs)
+    _check_slug_sets(table, src["flash_variants"], rel, web, src["hdr_slugs"], errs)
     for c in table:
-        # 5a. type -> image (make_manifest pair)
-        pair_img = rel["manifest_pairs"].get(c.type_slug)
-        if pair_img != c.ota_image:
-            errs.append(f"{c.type_slug}: release manifest pair image {pair_img!r} != table {c.ota_image!r}")
-        # 5b. type -> env via the webflash case arm
-        wf_env = rel["webflash_dir_of_type"].get(c.type_slug)
-        if wf_env != c.env:
-            errs.append(f"{c.type_slug}: webflash case build dir env {wf_env!r} != table env {c.env!r}")
-        # 5c. image -> env via the cp line, and it must be built
-        cp_image = rel["image_of_env"].get(c.env)
-        if cp_image != c.ota_image:
-            errs.append(f"{c.type_slug}: release `cp` for env {c.env} produces {cp_image!r} != table image {c.ota_image!r}")
-        if c.env not in rel["built_envs"]:
-            errs.append(f"{c.type_slug}: env {c.env} is not built by the release `pio run -e` step")
-        # 5d. env board + panel from platformio.ini
-        e = envs.get(c.env)
-        if e is None:
-            errs.append(f"{c.type_slug}: env {c.env} not found in platformio.ini")
-        else:
-            if e["board"] != c.board:
-                errs.append(f"{c.type_slug}: env {c.env} SOLIDE_BOARD {e['board']!r} != table {c.board!r} (wrong pinout / fell through to default)")
-            if e["panel"] != c.panel:
-                errs.append(f"{c.type_slug}: env {c.env} panel {e['panel']} != table {c.panel} (renderer geometry mismatch)")
-            if e["ota_variant"] != c.ota_variant:
-                errs.append(f"{c.type_slug}: env {c.env} NIMBUS_OTA_VARIANT {e['ota_variant']!r} != table {c.ota_variant!r}")
-
-    # 6. device-side OTA refuses a manifest entry of ANOTHER type: the family partition
-    #    (typeAllowedForBoard) must place each slug in exactly its board's family, and the
-    #    two families must be disjoint. A slug a board does not own is refused at runtime.
-    return _judge_families(table, fam, errs)
+        _check_one_config(c, rel, envs, errs)
+    # Device-side OTA refuses a manifest entry of ANOTHER type: typeAllowedForBoard must
+    # place each slug in exactly its board's family, disjointly.
+    _check_families(table, src["fam"], errs)
+    return (not errs, errs)
 
 
-def _judge_families(table, fam, errs):
+def _check_families(table, fam, errs):
     # Resolve kType* constant -> family (from cpp) into slug -> family using the known
     # constant->slug identities (frozen in ota_logic.h). Kept explicit so a renamed
     # constant is caught rather than silently skipped.
@@ -335,10 +372,13 @@ def _judge_families(table, fam, errs):
         want = "freenove" if c.is_freenove else "solide"
         got = slug_family.get(c.type_slug)
         if got is None:
-            errs.append(f"{c.type_slug}: not accepted by typeAllowedForBoard for any board (device would refuse its own image)")
+            errs.append(
+                f"{c.type_slug}: not accepted by typeAllowedForBoard for any board (device would refuse its own image)"
+            )
         elif got != want:
-            errs.append(f"{c.type_slug}: device-side family {got!r} != table family {want!r} (wrong board would accept it)")
-    return (not errs, errs)
+            errs.append(
+                f"{c.type_slug}: device-side family {got!r} != table family {want!r} (wrong board would accept it)"
+            )
 
 
 # --- driver ------------------------------------------------------------------
@@ -349,14 +389,20 @@ def _read(rel_path: str) -> str:
         return fh.read()
 
 
+def read_sources() -> dict:
+    """Parse every mapping source from the repo into the dict `judge` consumes."""
+    return {
+        "flash_variants": parse_flash_variants(_read(FLASH_JSX_REL)),
+        "rel": parse_release_yml(_read(RELEASE_YML_REL)),
+        "web": parse_webflash_builder(_read(WEBFLASH_REL)),
+        "hdr_slugs": parse_ota_header_slugs(_read(OTA_HDR_REL)),
+        "fam": parse_type_allowed_families(_read(OTA_CPP_REL)),
+        "envs": parse_pio_envs(_read(PIO_INI_REL)),
+    }
+
+
 def run(table: "tuple[Config, ...]" = CONFIG_TABLE) -> "tuple[bool, list[str]]":
-    flash_variants = parse_flash_variants(_read(FLASH_JSX_REL))
-    rel = parse_release_yml(_read(RELEASE_YML_REL))
-    web = parse_webflash_builder(_read(WEBFLASH_REL))
-    hdr_slugs = parse_ota_header_slugs(_read(OTA_HDR_REL))
-    fam = parse_type_allowed_families(_read(OTA_CPP_REL))
-    envs = parse_pio_envs(_read(PIO_INI_REL))
-    return judge(table, flash_variants, rel, web, hdr_slugs, fam, envs)
+    return judge(table, read_sources())
 
 
 def main(argv: "list[str] | None" = None) -> int:
