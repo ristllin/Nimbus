@@ -1,26 +1,37 @@
 // test_panel_read_policy - the shared-MISO panel-read gate that fixes the classic
 // (resistive) touch regression (CUM-392).
 //
-// The regression: v4.5.x added periodic PANEL register/pixel reads over the SPI
-// bus. On solide_s3 the ILI9341 and the XPT2046 share MISO, so a panel read drives
-// the panel SDO onto the line touch reports on and pins every touch channel
-// mid-scale (X ~2100, Y ~2100, z ~4237). freenove_s3 is capacitive on a separate
-// I2C bus, so those same reads were inert there - which is why they only ever got
-// validated on a Freenove.
+// The regression: v4.5.0 ADDED a render-independent panel RDDST poll
+// (pollControllerLiveness, ~2 s) on top of the per-push healthy() read v4.4.6
+// already made. On solide_s3 the ILI9341 and the XPT2046 share MISO, so a panel
+// read drives the panel SDO onto the line touch reports on; on a module that does
+// not release SDO every touch channel pins mid-scale (X ~2100, Y ~2100, z ~4237).
+// freenove_s3 is capacitive on a separate I2C bus, so the poll is inert there -
+// which is why it only ever got validated on a Freenove.
+//
+// The fix (per the orchestrator's binding ruling) restores v4.4.6's read SET: it
+// gates OFF only the new render-independent poll on a shared-MISO resistive board
+// and KEEPS the per-push read, so it is v4.4.6 parity (not zero reads) and CUM-388
+// still latches. panelReadAllowed() here is that gate decision for the poll.
 //
 // This suite guards the CLASS, not the instance (AGENTS.md "test the class"):
 //   1. It iterates EVERY compiled board definition and asserts that ANY board with
-//      a resistive controller on a shared MISO has its panel readbacks gated OFF by
+//      a resistive controller on a shared MISO has the independent poll gated OFF by
 //      DEFAULT. A future board added with that hazard and no guard makes the class
 //      case below FAIL - it is a synthetic board the gate must already cover by
 //      construction, so a name-based or per-board special-case fix would not pass.
 //   2. It pins the two real boards' verdicts (solide_s3 gated, freenove_s3 not).
-//   3. It pins the PROBES override semantics used for the on-glass A/B.
+//   3. It pins the PROBES override semantics used for the on-bench A/B.
 //
 // This is NOT the tautological pin the earlier lane shipped: it does not restate
-// byte-identical header values, it asserts the read-gate DECISION the firmware
-// actually consults (tft_out.cpp panelReadsAllowed -> panelReadAllowed), so a
-// change that let a panel read run on a shared-MISO resistive board fails here.
+// byte-identical header values, it asserts the read-gate DECISION FUNCTION the
+// firmware consults (tft_out.cpp panelReadsAllowed -> boardPanelReadAllowed ->
+// panelReadAllowed), anchored to concrete per-board expectations, so a predicate
+// narrowed to a name-match or a board map mis-marked safe fails here. What it
+// CANNOT check on the host is the wiring - that pollControllerLiveness actually
+// consults panelReadsAllowed() and that the per-push read still feeds the verdict;
+// tft_out is device code (not in the native build), so that half is covered by the
+// device build plus the on-bench PROBES A/B.
 #include <unity.h>
 
 #include "nimbus/display/panel_read_policy.h"
@@ -61,9 +72,29 @@ static const BoardCase kBoards[] = {
     {"freenove_s3", &solide::kBoardFreenoveS3},
 };
 
-// The invariant: a board is gated OFF by default IFF it carries the shared-MISO
-// resistive hazard. No board may read the panel while a resistive controller can
-// contend the MISO, and no safe board is needlessly gated.
+// The two real boards, pinned to CONCRETE verdicts (not the predicate restated
+// against itself). solide_s3 MUST be gated and freenove_s3 MUST NOT be - so a board
+// map mis-defined as safe (e.g. touchKind flipped, or miso cleared) fails HERE, and
+// the invariant below (gated IFF hazard) is checked against absolute expectations
+// rather than the same function on both sides.
+static void test_real_boards_pinned() {
+  const Facts solide = factsOf(solide::kBoardSolideS3);
+  TEST_ASSERT_TRUE_MESSAGE(sharedMisoResistiveTouch(solide.resistive, solide.miso,
+                                                    solide.tcs),
+                           "solide_s3 must carry the shared-MISO hazard");
+  TEST_ASSERT_TRUE_MESSAGE(gatedByDefault(solide), "solide_s3 must be gated OFF");
+
+  const Facts free = factsOf(solide::kBoardFreenoveS3);
+  TEST_ASSERT_FALSE_MESSAGE(sharedMisoResistiveTouch(free.resistive, free.miso,
+                                                     free.tcs),
+                            "freenove_s3 must NOT carry the hazard");
+  TEST_ASSERT_FALSE_MESSAGE(gatedByDefault(free), "freenove_s3 must NOT be gated");
+}
+
+// The class rule over every compiled board: gated OFF by default IFF it carries the
+// shared-MISO resistive hazard. A new board header added to kBoards is covered the
+// moment it is listed. (This is the class check; test_real_boards_pinned above is
+// what makes it non-tautological by anchoring the two real maps to absolutes.)
 static void test_every_board_obeys_the_class_rule() {
   for (const auto& bc : kBoards) {
     const Facts f = factsOf(*bc.board);
@@ -130,6 +161,7 @@ static void test_override_semantics() {
 
 int main() {
   UNITY_BEGIN();
+  RUN_TEST(test_real_boards_pinned);
   RUN_TEST(test_every_board_obeys_the_class_rule);
   RUN_TEST(test_future_resistive_shared_miso_board_is_gated);
   RUN_TEST(test_capacitive_and_separate_bus_never_gated);

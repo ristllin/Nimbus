@@ -64,14 +64,15 @@ bool probeEnabled();
 bool panelConfigOk();
 
 // Shared-MISO panel-read gate (CUM-392). On a board where a resistive touch
-// controller reports on the panel's readback MISO (solide_s3), every panel
-// register/pixel read is suppressed so it cannot pin the touch channels; the
-// write-only rearm + unconditional repaint still recover a lost panel. These two
-// exist for the PROBES diagnostic (test consoles only): setPanelReadOverride(1)
-// forces the reads back ON to REPRODUCE the fault on one image, (0) forces them
-// OFF for a clean baseline, (-1) restores the capability gate. panelReadbackGated()
-// reports whether reads are currently suppressed on this board. Production never
-// calls the setter, so its behavior is exactly the capability gate.
+// controller reports on the panel's readback MISO (solide_s3), the NEW-since-v4.4.6
+// render-independent liveness poll (pollControllerLiveness) is suppressed so it
+// cannot pin the touch channels at idle; the per-push healthy() read v4.4.6 already
+// made is retained and feeds the liveness verdict instead, so CUM-388 still latches.
+// These two exist for the PROBES diagnostic (test consoles only):
+// setPanelReadOverride(1) forces the idle poll back ON to try to REPRODUCE the fault
+// on one image, (0) forces it OFF for a clean baseline, (-1) restores the capability
+// gate. panelReadbackGated() reports whether the idle poll is currently suppressed on
+// this board. Production never calls the setter, so its behavior is the capability gate.
 void setPanelReadOverride(int v);
 bool panelReadbackGated();
 

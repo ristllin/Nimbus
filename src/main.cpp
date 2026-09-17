@@ -3289,11 +3289,15 @@ void setup() {
     // ("lights at boot, no live control"), the exact failure they were built to
     // diagnose. Stale dbg* NVS keys are simply never read again.
     h.panelProbe = [](bool on) { hw::tft::setProbeEnabled(on); return true; };
-    // PROBES A/B for the shared-MISO touch regression (CUM-392). Mode 1 forces
-    // every v4.5.0-added poller ON (panel liveness read + content probe + FIX-4
-    // poll) to REPRODUCE dead touch on one image; mode 0 forces them OFF for the
-    // fixed baseline; mode 2 only reports. On a capacitive board this is inert
-    // (the reads never contended anything), which the status line makes visible.
+    // PROBES A/B for the shared-MISO touch regression (CUM-392). Mode 1 forces the
+    // panel-liveness read + content probe back ON (the reads that can contend the
+    // shared MISO) to try to reproduce dead touch on one image, and re-enables the
+    // FIX-4 XPT2046 poll so all the v4.5.0-added pollers are on together; mode 0
+    // forces them OFF for the fixed baseline; mode 2 only reports. ⚠ FIX-4 reads
+    // TOUCH's own bus, not the panel, so it is a VICTIM of the contention, not a
+    // cause - it is bundled here only so the baseline can silence every added poll.
+    // On a capacitive board this is inert (the reads never contended anything),
+    // which the status line makes visible.
     h.probes = [](int mode) -> String {
       if (mode == 1) {
         hw::tft::setPanelReadOverride(1);

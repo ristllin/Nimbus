@@ -1226,9 +1226,11 @@ void dispatch(String line) {
     return;
   }
   if (line.startsWith("PROBES")) {
-    // Master A/B for the shared-MISO touch regression (CUM-392). ON forces every
-    // v4.5.0-added poller back on to reproduce dead touch; OFF is the fixed
-    // baseline; ? reports. See tft_out setPanelReadOverride / main.cpp h.probes.
+    // Master A/B for the shared-MISO touch regression (CUM-392). ON forces the
+    // panel readbacks (+ the FIX-4 touch poll) back on to try to reproduce dead
+    // touch on a susceptible unit; OFF is the fixed baseline; ? reports. A unit
+    // whose panel releases MISO cleanly will read clean in both phases. See
+    // tft_out setPanelReadOverride / main.cpp h.probes.
     String a = line.substring(6); a.trim();
     int mode = 2;   // query
     if (a == "ON" || a == "on" || a == "1")       mode = 1;

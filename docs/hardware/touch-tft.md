@@ -246,14 +246,14 @@ reports it as "display not responding" without a serial open (which would reset
 the board and erase the fault). `panelOk` / `panelPixOk` are **null** while the
 probe is off, never a fabricated `true`: "not measured" must not read as "healthy".
 
-⚠ **On the classic solide_s3 board, `panelResponding` is suppressed on purpose
-(CUM-392).** That board shares its touch MISO with the panel, and the RDDST read
-behind this signal was pinning every touch channel (see the next section). Panel
-readbacks are therefore gated off there, so `panelResponding` holds and never
-performs a live read: black-glass detection on solide_s3 falls back to the boot
-`begin()` result. On the capacitive Freenove / CYD board nothing is shared, so the
-live signal is unchanged. Restoring an honest live signal on solide_s3 needs a
-write-only liveness path or an isolated read, which is left as a follow-up.
+⚠ **On the classic solide_s3 board, `panelResponding` is fed differently
+(CUM-392), not disabled.** That board shares its touch MISO with the panel, so the
+NEW render-independent RDDST poll (`pollControllerLiveness`) is gated off there.
+The verdict is instead fed from the per-push `healthy()` read `renderAndPush`
+already makes (the read v4.4.6 made and field touch survived), so
+`panelResponding` still latches false on a dead / wrong-variant panel and the
+CUM-388 guardrail still fires. On the capacitive Freenove / CYD board nothing is
+shared, so the independent poll runs unchanged. See the next section.
 
 ⚠ **The panel's display/power state is NOT observable.** `RDDPM` (0x0A) reads
 `0x00` at every dummy-width on this panel - it simply is not implemented - and
@@ -311,22 +311,40 @@ is not a dead controller (a dead XPT2046 reads a flat 4095) and not a calibratio
 error (position is never actually read): it is the shared MISO being held.
 
 On solide_s3 the ILI9341 SDO and the XPT2046 T_DO are bridged onto one line,
-GPIO 1 (see the jumper table above). The panel is write-only in normal use, so
-before v4.5.0 its SDO stayed released and touch was clean. v4.5.0 added periodic
-panel READS over that line - the controller-liveness poll (`healthy()` / RDDST
-every ~2 s), the unchanged-frame health check, the register/pixel probe, and the
-`/api/state` panel fields. A module whose SDO does not cleanly tri-state after a
-read then contends the line the XPT2046 drives, and every touch channel settles
-near mid-scale. Those reads were only ever validated on a Freenove, whose
-capacitive touch is on a separate I2C bus and shares nothing with the panel.
+GPIO 1 (see the jumper table above). A panel register/pixel read drives the panel
+SDO onto that line; a module whose SDO does not cleanly tri-state afterward then
+contends the line the XPT2046 drives, and every touch channel settles near
+mid-scale. This is **unit-dependent**: a module that releases SDO cleanly reads the
+panel all day with no effect, so a given bench board may never show the fault.
 
-**Fix.** A board capability - a resistive touch controller on a shared panel
-MISO - gates every panel readback OFF on such a board. The write-only panel
-`rearm()` and the unconditional watchdog repaint still recover a lost panel, so
-white-screen recovery is unaffected. The gate is provably inert on the capacitive
-Freenove / CYD board, where the reads never shared a line. The portable decision
-is host-tested and iterated over every board definition, so a future resistive
-board on a shared MISO is covered by construction.
+**What actually changed v4.4.6 -> v4.5.0.** Panel reads are not new: v4.4.6 already
+evaluated `healthy()` in `renderAndPush`'s unchanged-frame branch (at most every
+~5 s, and only while something is rendering) and read on demand through
+`panelConfigOk` / `panelContentOk` from `/api/state`. What v4.5.0 **added** is
+`pollControllerLiveness` - a panel RDDST read every ~2 s from `loop()` that runs
+**independent of rendering**, so the shared MISO is now driven more often and at
+idle moments v4.4.6 never touched it (the FIX-4 XPT2046 poll was added beside it).
+Those additions were only ever validated on a Freenove, whose capacitive touch is
+on a separate I2C bus and shares nothing with the panel.
+
+**Fix (restore v4.4.6's read set).** A board capability - a resistive touch
+controller on a shared panel MISO - gates OFF **only the new render-independent
+poll** (`pollControllerLiveness`) on such a board. The per-push `healthy()` read
+v4.4.6 already made stays, so the fix restores v4.4.6's exact panel-read set (the
+field-proven-safe behavior), not zero reads. The gate is provably inert on the
+capacitive Freenove / CYD board, where the poll never shared a line and keeps
+running. The portable decision is host-tested and iterated over every board
+definition, so a future resistive board on a shared MISO is covered by
+construction.
+
+**The wrong-variant / black-glass guardrail (CUM-388) is preserved.** The honest
+panel-liveness verdict (`panelResponding` / `scrok` / the loud boot beacon) is fed
+on a shared-MISO board from the retained per-push `healthy()` read instead of the
+gated-off idle poll, so it still latches "not responding" on a dead or wrong panel.
+Both cross-flash directions still trip: a **Freenove image on Solide hardware** (the
+Freenove build's poll runs and reads the wrong pin map dead) and a **Solide image on
+Freenove hardware** (the Solide build's per-push read feeds the verdict, which
+latches on the dead panel). CUM-388 coverage does not regress in either direction.
 
 **Finger-free diagnostics** (test / test-cyd console builds only - they reset the
 board on a serial open, so use a `[env:test]`-family image):
@@ -337,9 +355,11 @@ board on a serial open, so use a `[env:test]`-family image):
 | `PROBES ON\|OFF\|?` | A/B the suspect pollers on one image. `ON` forces the panel liveness read, the content probe and the resistive touch-liveness poll back on (reproduces dead touch on a shared-MISO board); `OFF` silences them (the fixed baseline); `?` reports `sharedMiso` / `panelReadsGated` / `probe` / `fix4`. |
 | `BUSLOAD ON\|OFF` | Forces a full repaint every loop so `TOUCHDIAG?` can be run under worst-case shared-bus traffic. |
 
-The A/B that proves the mechanism on glass: on a solide_s3 `test` image, run
-`PROBES OFF` then `TOUCHDIAG? 100` (channels distinct and stable) and confirm
-`TOUCH?` X/Y swing across the full 0..4095 range as the corners are tapped; then
-`PROBES ON` and repeat - the channels collapse toward one value and `TOUCH?` X/Y
-pin near mid-scale. On a Freenove `test-cyd` image the two runs are identical
-(nothing is shared), which is the inertness check.
+The A/B (serial only - no eyes on glass are needed or implied): on a solide_s3
+`test` image, run `PROBES OFF` then `TOUCHDIAG? 100` and read the channel stats;
+then `PROBES ON` and repeat. On a **susceptible** unit the channels collapse toward
+one value (and `TOUCH?` raw X/Y pin near mid-scale) with reads on, and are stable
+and distinct with reads off. On a unit whose panel releases MISO cleanly both
+phases read clean - that is expected and simply means this board does not exhibit
+the fault. On a Freenove `test-cyd` image the two runs are identical (nothing is
+shared): that is the inertness check, and it holds on any unit.

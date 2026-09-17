@@ -21,11 +21,13 @@ inline bool boardSharedMisoResistiveTouch() {
       b.touchKind == solide::TouchKind::ResistiveSpi, b.tft.miso, b.tft.tcs);
 }
 
-// True when panel readbacks are electrically safe on THIS board (capacitive /
-// separate-bus). The fix's inertness on freenove_s3 / Lumi rests on this reading
-// true there, so the read sites behave exactly as before on those boards.
-inline bool boardPanelReadbackSafe() {
-  return !boardSharedMisoResistiveTouch();
+// The single read-gate decision every panel-read site consults, bound to this
+// board's map and the runtime override. This is the ONE place solide::board() is
+// mapped to the policy facts, so no read site re-derives them (see tft_out.cpp).
+inline bool boardPanelReadAllowed(display::PanelReadOverride ov) {
+  const solide::Board& b = solide::board();
+  return display::panelReadAllowed(
+      b.touchKind == solide::TouchKind::ResistiveSpi, b.tft.miso, b.tft.tcs, ov);
 }
 
 }  // namespace nimbus
