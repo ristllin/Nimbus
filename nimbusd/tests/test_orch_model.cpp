@@ -127,7 +127,7 @@ static void testWebSeam(ndtest::Ctx& c) {
 
 // (d) The class rule that matters on the wire: the pick re-routes the turn.
 static void testPickChangesTheWire(ndtest::Ctx& c) {
-  std::printf("  -- (d) cumulo pick zai/<m> routes the turn to /router/zai/v1 --\n");
+  std::printf("  -- (d) cumulo pick zai/<m> routes the turn to /router/zai --\n");
   clearProviderEnv();
   setenv("CUMULO_API_KEY", "cumulo_sk_test_ORCHM", 1);
 
@@ -145,11 +145,15 @@ static void testPickChangesTheWire(ndtest::Ctx& c) {
   c.ok(!tx.seen.empty(), "the turn dispatched a request");
   if (!tx.seen.empty()) {
     const agent::HttpRequest& r = tx.seen[0];
-    c.ok(r.path.find("/router/zai/v1/chat/completions") != std::string::npos,
-         "the dispatch path rides the zai upstream");
+    c.ok(r.path.find("/router/zai/chat/completions") != std::string::npos,
+         "the dispatch path rides the zai upstream (no /v1 - Z.ai base carries its prefix)");
     c.ok(r.body.find("\"model\":\"glm-4.5-flash\"") != std::string::npos,
          "the request body carries the BARE model id (router prices it)");
-    c.ok(r.body.find("zai/") == std::string::npos,
+    // The upstream prefix must never ride the model FIELD (the router would price
+    // "zai/glm-4.5-flash" as unknown -> 403). It DOES appear elsewhere in the body,
+    // in the [YOUR MODEL] context line that now honestly names the cumulo head's
+    // selector - so the check is scoped to the model field, not the whole body.
+    c.ok(r.body.find("\"model\":\"zai/") == std::string::npos,
          "the upstream prefix never leaks into the model field");
   }
   clearProviderEnv();

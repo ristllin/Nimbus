@@ -69,6 +69,19 @@ static void test_prefixed_mistral_routes_to_mistral_base() {
   TEST_ASSERT_EQUAL_STRING("/router/mistral/v1", r.basePath.c_str());
 }
 
+// Z.ai's base already carries its API prefix, so its router paths have NO /v1 -
+// the router's zai allowlist admits /chat/completions, and /router/zai/v1/...
+// 403s as endpoint_not_allowed (found live: a hosted zai/glm pick could never
+// route, CUM-374 e2e 2026-09-18). The upstream's path SHAPE is part of the
+// route class, so this suite pins one no-/v1 upstream alongside the /v1 ones.
+static void test_prefixed_zai_routes_without_v1() {
+  RouterRoute r = resolveRouterRoute("zai/glm-4.5-flash");
+  TEST_ASSERT_EQUAL_STRING("zai", r.upstream.c_str());
+  TEST_ASSERT_EQUAL_STRING("glm-4.5-flash", r.model.c_str());
+  TEST_ASSERT_EQUAL_STRING("/router/zai", r.basePath.c_str());
+  TEST_ASSERT_TRUE(r.basePath.find("/v1") == std::string::npos);
+}
+
 // Only the FIRST '/' splits; a nested slash (a fine-tune / namespaced id) stays in
 // the model so the router receives it intact.
 static void test_nested_slash_stays_in_model() {
@@ -145,6 +158,7 @@ int main() {
   RUN_TEST(test_prefixed_openai_strips_to_bare_model);
   RUN_TEST(test_prefixed_anthropic_routes_to_anthropic_base);
   RUN_TEST(test_prefixed_mistral_routes_to_mistral_base);
+  RUN_TEST(test_prefixed_zai_routes_without_v1);
   RUN_TEST(test_nested_slash_stays_in_model);
   RUN_TEST(test_leading_slash_is_not_an_upstream);
   RUN_TEST(test_empty_selector_yields_empty_model);

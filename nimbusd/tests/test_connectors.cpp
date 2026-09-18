@@ -139,7 +139,7 @@ static void checkRouterRoute(ndtest::Ctx& c) {
   // CUM-425: the cumulo head resolves the router path from the model selector
   // through the SAME portable rule as the device head and sub-session adapter.
   auto zai = nimbus::orch::resolveRouterRoute("zai/glm-4.5-flash");
-  c.eq(zai.basePath, "/router/zai/v1", "zai selector routes to the zai upstream");
+  c.eq(zai.basePath, "/router/zai", "zai selector routes to the zai upstream (no /v1)");
   c.eq(zai.model, "glm-4.5-flash", "the router prices the bare model id");
   auto bare = nimbus::orch::resolveRouterRoute("gpt-5.6");
   c.eq(bare.basePath, "/router/openai/v1", "a bare id keeps the openai upstream");

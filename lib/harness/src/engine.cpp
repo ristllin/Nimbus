@@ -29,6 +29,46 @@ namespace orch = nimbus::orch;
 namespace attn = nimbus::attn;
 using solide::ring::Status;
 
+static void trimInPlace(std::string& s);
+
+// The head the next turn will ACTUALLY run on - the one resolution both the
+// turn core and the [YOUR MODEL] context line read. Explicit orchHost wins;
+// else the first KEYED provider in priority order (CUM-201: BYOK-override
+// first); else the verified router fallback head (Cumulo, then Z.ai - CUM-242);
+// else the bare first priority token (unkeyed - it fails honestly at the wire).
+// One rule on purpose: when the context line read the raw first token instead,
+// a hosted anthropic-only instance INTRODUCED ITSELF as "mistral /
+// mistral-large-latest" - the model parrots this line, so it must name the
+// real head (CUM-374 e2e, 2026-09-18).
+static std::string resolveTurnHost(const TurnEngine::Deps& d) {
+  std::string host = d.cfg.provider.orchHost ? d.cfg.provider.orchHost() : std::string();
+  if (!host.empty()) return host;
+  std::string pr =
+      d.cfg.provider.providerPriority ? d.cfg.provider.providerPriority() : std::string();
+  std::string head, keyed;
+  for (size_t start = 0; start <= pr.length();) {
+    size_t c = pr.find(',', start);
+    const size_t end = (c == std::string::npos) ? pr.length() : c;
+    std::string cand = pr.substr(start, end - start);
+    trimInPlace(cand);
+    if (cand.length()) {
+      if (head.empty()) head = cand;
+      if (d.cfg.provider.hasKey && d.cfg.provider.hasKey(cand)) { keyed = cand; break; }
+    }
+    if (c == std::string::npos) break;
+    start = c + 1;
+  }
+  if (!keyed.empty()) {
+    host = keyed;
+  } else {
+    std::string rf =
+        d.cfg.provider.routerFallbackHost ? d.cfg.provider.routerFallbackHost() : std::string();
+    host = !rf.empty() ? rf : head;
+  }
+  trimInPlace(host);
+  return host;
+}
+
 static void trimInPlace(std::string& s) {
   const char* ws = " \t\r\n";
   size_t b = s.find_first_not_of(ws);
@@ -207,17 +247,12 @@ std::string TurnEngine::buildDynamicContext() {
   ctx += "[AVAILABLE PROVIDERS] sub-session priority: " +
          (d_.cfg.provider.subPriority ? d_.cfg.provider.subPriority() : std::string()) + "\n";
   // Name the CURRENT model so the agent knows its own identity (owner: "asking the
-  // orchestrator which model it is, it has no idea"). Host = explicit orchHost else the
-  // top of providerPriority; the adapter runs store::orchModel(host).
+  // orchestrator which model it is, it has no idea"). The host is the SAME
+  // resolution the turn core dispatches on (resolveTurnHost) - naming the raw
+  // priority head here made an anthropic-only instance introduce itself as
+  // mistral, because the model parrots this line (CUM-374 e2e).
   {
-    std::string host = d_.cfg.provider.orchHost ? d_.cfg.provider.orchHost() : std::string();
-    if (host.empty()) {
-      std::string pr =
-          d_.cfg.provider.providerPriority ? d_.cfg.provider.providerPriority() : std::string();
-      const size_t comma = pr.find(',');
-      host = comma == std::string::npos ? pr : pr.substr(0, comma);
-      trimInPlace(host);
-    }
+    const std::string host = resolveTurnHost(d_);
     if (!host.empty())
       ctx += "[YOUR MODEL] you are currently running on " + host + " / " +
              (d_.cfg.provider.orchModel ? d_.cfg.provider.orchModel(host) : std::string()) + "\n";
@@ -336,39 +371,9 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // Pick the host BEFORE composing: the context budget is derived from the head
   // model's window (owner ask 2026-08-05 - caps derive from the context length
   // allowed for the task), so the model must be known when the prompt is sized.
-  std::string host = d_.cfg.provider.orchHost ? d_.cfg.provider.orchHost() : std::string();
-  if (host.empty()) {
-    std::string pr =
-        d_.cfg.provider.providerPriority ? d_.cfg.provider.providerPriority() : std::string();
-    // First provider in priority order that HAS a key, so the turn runs on a
-    // provider the owner configured (a bare default list heads with openai even
-    // when only mistral is keyed).
-    std::string head, keyed;
-    for (size_t start = 0; start <= pr.length();) {
-      size_t c = pr.find(',', start);
-      const size_t end = (c == std::string::npos) ? pr.length() : c;
-      std::string cand = pr.substr(start, end - start);
-      trimInPlace(cand);
-      if (cand.length()) {
-        if (head.empty()) head = cand;
-        if (d_.cfg.provider.hasKey && d_.cfg.provider.hasKey(cand)) { keyed = cand; break; }
-      }
-      if (c == std::string::npos) break;
-      start = c + 1;
-    }
-    if (!keyed.empty()) {
-      host = keyed;   // a keyed BYOK head wins (CUM-201: BYOK-override first)
-    } else {
-      // No BYOK head is keyed. CUM-242/CUM-201 deterministic source: a verified
-      // router key (Cumulo, then Z.ai) is the fallback head that runs the whole
-      // assistant. Only with no router key either do we fall to the bare priority
-      // head (unkeyed - it fails honestly at the wire). Nullable on host rigs.
-      std::string rf =
-          d_.cfg.provider.routerFallbackHost ? d_.cfg.provider.routerFallbackHost() : std::string();
-      host = !rf.empty() ? rf : head;
-    }
-    trimInPlace(host);
-  }
+  // The resolution is the ONE shared rule (resolveTurnHost) the [YOUR MODEL]
+  // context line also reads - they must never diverge (see the helper's comment).
+  std::string host = resolveTurnHost(d_);
   // The head chosen BEFORE any failover - the "requested" side of served-by
   // disclosure (CUM-236). `host` mutates below on budget/error failover; this and
   // its model stay fixed so a substitution can be reported honestly at turn end.
