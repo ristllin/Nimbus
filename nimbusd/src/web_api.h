@@ -441,6 +441,9 @@ class WebApi {
       // a verify poll - it saves and reports "applied" directly (CUM-279).
       o["verify"] = -1;
       o["vts"] = 0;
+      // The resolved model this head requests (an in-app pick or the provider
+      // default), same field the device page reads (CUM-425).
+      o["orchModel"] = rig_->modelFor(slug);
     }
     d["provPrio"] = rig_->options().priority;
     d["subPrio"] = rig_->options().priority;
@@ -461,33 +464,51 @@ class WebApi {
   }
 
   // ------------------------------------------------------------------ /api/orch POST
-  // In-app provider keys, device parity (CUM-279): the SAME fields the device's
-  // Providers & keys form posts (`<slug>Key`, and `clr_<slug>Key` to remove), applied
-  // through the rig seam so a key set in the UI takes effect - no external attach.
-  // Non-key orch settings are acked honestly (a VN's model/priority knobs default).
+  // In-app provider keys + model picks, device parity (CUM-279, CUM-425): the SAME
+  // fields the device's Providers & keys form posts (`<slug>Key` / `clr_<slug>Key`
+  // for keys, `orchM_<slug>` / `clr_orchM_<slug>` for the per-head model), applied
+  // through the rig seams so a value set in the UI takes effect - no external
+  // attach. Other orch settings are acked honestly (a VN's priority knob defaults).
   // The apply runs on the engine thread (serialized; refused mid-turn with a 503
-  // retry) because it rebuilds the engine to register the newly-keyed head.
+  // retry) because it rebuilds the engine to register the newly-keyed head or the
+  // re-routed model.
+  // One field pair per write surface: `<name>` sets, `clr_<name>` clears. Returns
+  // true when either form field was present (a set beats a clear in one post).
+  static bool formWrite(const std::string& body, const std::string& name,
+                        const std::string& host,
+                        std::vector<std::pair<std::string, std::string>>& out) {
+    const std::string v = formValue(body, name);
+    if (!v.empty()) { out.push_back({host, v}); return true; }
+    if (!formValue(body, "clr_" + name).empty()) {
+      out.push_back({host, std::string()});
+      return true;
+    }
+    return false;
+  }
+
   ApiResp orchPost(const std::string& body) {
     static const char* kFields[] = {"cumuloKey", "mistralKey", "openaiKey", "anthropicKey"};
-    std::vector<std::pair<std::string, std::string>> writes;  // (host, key); empty key clears
+    std::vector<std::pair<std::string, std::string>> keyWrites;    // (host, key); "" clears
+    std::vector<std::pair<std::string, std::string>> modelWrites;  // (host, model); "" clears
     for (const char* f : kFields) {
       const std::string host = NimbusdRig::hostForKeyField(f);
       if (host.empty()) continue;
-      const std::string v = formValue(body, f);
-      if (!v.empty()) writes.push_back({host, v});
-      else if (!formValue(body, std::string("clr_") + f).empty())
-        writes.push_back({host, std::string()});
+      formWrite(body, f, host, keyWrites);
+      formWrite(body, "orchM_" + host, host, modelWrites);
     }
-    if (writes.empty()) return okJson(R"({"ok":true})");   // non-key settings: honest ack
+    if (keyWrites.empty() && modelWrites.empty())
+      return okJson(R"({"ok":true})");   // non-key settings: honest ack
     if (eng_->snapshot().turnInFlight) return busy();
-    auto fut = eng_->dispatchRead([this, writes]() -> std::string {
+    auto fut = eng_->dispatchRead([this, keyWrites, modelWrites]() -> std::string {
       int applied = 0;
-      for (const auto& w : writes)
+      for (const auto& w : keyWrites)
         if (rig_->applyProviderKey(w.first, w.second)) applied++;
+      for (const auto& w : modelWrites)
+        if (rig_->applyOrchModel(w.first, w.second)) applied++;
       JsonDocument d;
       d["ok"] = true;
       d["applied"] = applied;
-      d["note"] = "Key saved and applied.";
+      d["note"] = keyWrites.empty() ? "Model saved and applied." : "Key saved and applied.";
       std::string out;
       serializeJson(d, out);
       return out;

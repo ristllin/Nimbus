@@ -103,6 +103,7 @@ class NimbusdRig {
     fsutil::mkdirs(memDir());
     buildMemory();
     loadSecrets();   // in-app provider keys persisted from a prior session (CUM-279)
+    loadModels();    // in-app model picks persisted from a prior session (CUM-425)
     conns_.setPath(memDir() + "/connectors.json");
     conns_.load();   // connector registry (CUM-424); tolerant of absent/torn
     buildEngine();
@@ -120,6 +121,9 @@ class NimbusdRig {
   // In-app provider keys (CUM-279): durable, owner-only. The instance disk plays the
   // device's NVS role, so a key set in the UI survives a process/pod restart.
   std::string secretsPath() const { return memDir() + "/secrets.env"; }
+  // In-app model picks (CUM-425): durable like the keys, but not secret material,
+  // so they live in their own plain file (slug=model lines).
+  std::string modelsPath() const { return memDir() + "/models.txt"; }
 
   // Persist every whole-file store with the atomic tmp->rename writer. The
   // episodic append-log is already durable per-message; this flushes the RAM
@@ -276,6 +280,27 @@ class NimbusdRig {
     ++keyGen_;
     return true;
   }
+  // Set (or clear, when `model` is empty) a per-head model pick from the running UI
+  // (device parity: store::setOrchModel, "" -> provider default). The hosted head
+  // has no live-harvested choice list to validate against, so the gate is shape,
+  // not membership: a bounded selector token ("glm-4.5-flash", "zai/glm-4.5-flash").
+  // The cumulo head resolves its router route from this at engine build (CUM-425),
+  // so the same rebuild-on-the-engine-thread discipline as applyProviderKey applies.
+  bool applyOrchModel(const std::string& host, const std::string& model) {
+    if (keyEnvFor(host).empty()) return false;   // unknown provider slug
+    if (model.size() > 64) return false;
+    for (char ch : model)
+      if (!isalnum((unsigned char)ch) && ch != '.' && ch != '_' && ch != '-' &&
+          ch != '/' && ch != ':')
+        return false;
+    if (model.empty()) opt_.models.erase(host);
+    else opt_.models[host] = model;
+    saveModels();
+    buildEngine();                // the head captures its model/route at build time
+    ++keyGen_;                    // the web save-flow polls this counter
+    return true;
+  }
+
   // Monotonic key-change counter, surfaced as the providers' verify timestamp so the
   // web save-flow's poll observes the change (a hosted instance has no cheap verify).
   uint32_t keyGen() const { return keyGen_; }
@@ -374,6 +399,28 @@ class NimbusdRig {
     ::close(fd);
     if (n != (ssize_t)blob.size()) { ::unlink(tmp.c_str()); return; }
     if (::rename(tmp.c_str(), secretsPath().c_str()) != 0) ::unlink(tmp.c_str());
+  }
+
+  // ---- in-app model picks: durable overrides (CUM-425) ----------------------
+  // slug=model lines, tolerant of an absent/torn file. Only slugs the daemon
+  // knows are loaded (a stale line for a removed provider is dropped on read).
+  void loadModels() {
+    std::string blob;
+    if (!fsutil::readFile(modelsPath(), blob)) return;
+    std::istringstream is(blob);
+    std::string line;
+    while (std::getline(is, line)) {
+      const size_t eq = line.find('=');
+      if (eq == std::string::npos) continue;
+      std::string k = line.substr(0, eq), v = line.substr(eq + 1);
+      while (!v.empty() && (v.back() == '\r' || v.back() == '\n')) v.pop_back();
+      if (!k.empty() && !v.empty() && !keyEnvFor(k).empty()) opt_.models[k] = v;
+    }
+  }
+  void saveModels() {
+    std::string blob;
+    for (const auto& kv : opt_.models) blob += kv.first + "=" + kv.second + "\n";
+    fsutil::writeFileAtomic(modelsPath(), blob);
   }
 
   // ---- memory + tools -------------------------------------------------------
