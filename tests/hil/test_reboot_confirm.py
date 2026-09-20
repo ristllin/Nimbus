@@ -17,12 +17,12 @@ pytestmark = pytest.mark.host
 
 # --- the pure decision function ---------------------------------------------
 def test_is_fresh_boot_pure():
-    assert is_fresh_boot(3254, 4) is True       # dropped AND small -> real reboot
-    assert is_fresh_boot(None, 2) is True        # small, no baseline -> real reboot
-    assert is_fresh_boot(3254, 3254) is False    # no-op soft reboot (the bench bug)
-    assert is_fresh_boot(3254, 3260) is False    # uptime climbed -> never restarted
-    assert is_fresh_boot(100, None) is False     # console never settled
-    assert is_fresh_boot(20, FRESH_BOOT_UPTIME_S - 1) is True   # below the fresh bar
+    assert is_fresh_boot(3254, 4) is True  # dropped AND small -> real reboot
+    assert is_fresh_boot(None, 2) is True  # small, no baseline -> real reboot
+    assert is_fresh_boot(3254, 3254) is False  # no-op soft reboot (the bench bug)
+    assert is_fresh_boot(3254, 3260) is False  # uptime climbed -> never restarted
+    assert is_fresh_boot(100, None) is False  # console never settled
+    assert is_fresh_boot(20, FRESH_BOOT_UPTIME_S - 1) is True  # below the fresh bar
     # Above the bar and NOT below the pre-reboot reading -> no restart happened.
     assert is_fresh_boot(FRESH_BOOT_UPTIME_S - 5, FRESH_BOOT_UPTIME_S + 1) is False
 

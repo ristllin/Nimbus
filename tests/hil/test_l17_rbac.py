@@ -104,14 +104,10 @@ def test_tenant_lifecycle_create_update_downgrade_remove(rig):
     assert tenants[TEST_CHAT]["vectors"] == 3
 
     # DOWNGRADE back to guest, then REVOKE
-    assert (
-        _S.post(_url(ip, tok, "/api/tenant"), data={"id": TEST_CHAT, "role": "guest"}, timeout=10).status_code
-        == 200
-    )
+    assert _S.post(_url(ip, tok, "/api/tenant"), data={"id": TEST_CHAT, "role": "guest"}, timeout=10).status_code == 200
     assert _tenants(ip, tok)[0][TEST_CHAT]["role"] == "guest"
     assert (
-        _S.post(_url(ip, tok, "/api/tenant"), data={"id": TEST_CHAT, "role": "unknown"}, timeout=10).status_code
-        == 200
+        _S.post(_url(ip, tok, "/api/tenant"), data={"id": TEST_CHAT, "role": "unknown"}, timeout=10).status_code == 200
     )
     tenants, _ = _tenants(ip, tok)
     # Revoked means no access - the row may remain (the admin can still see

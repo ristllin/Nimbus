@@ -287,9 +287,7 @@ def test_revoked_tenant_loses_reads_not_just_writes(cast):
 def test_episodic_history_is_scoped_to_the_asking_chat(cast):
     """One chat must not read another's transcript."""
     marker = f"HERON-{uuid.uuid4().hex[:10].upper()}"
-    _S.post(
-        _u(cast, "/api/test/inject"), data={"chat": ALICE, "text": f"remember this word: {marker}"}, timeout=10
-    )
+    _S.post(_u(cast, "/api/test/inject"), data={"chat": ALICE, "text": f"remember this word: {marker}"}, timeout=10)
     # No wait on a real turn - the inbound capture writes the user row itself.
     for chat in (BOB, CARLA):
         got = _text(_call(cast, chat, "memory.episodic", {"limit": 50}))

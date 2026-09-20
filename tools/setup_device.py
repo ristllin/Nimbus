@@ -365,8 +365,10 @@ def freenove_ota_type(args: argparse.Namespace) -> str:
     if args.size:
         return {"28": "freenove-28", "35": "freenove-35", "40": "freenove-40"}[args.size]
     if args.yes:
-        print("Note: no --size given; seeding the Freenove OTA type as freenove-28 (2.8\"). "
-              "Pass --size 35/40 for a larger panel - the firmware does not guess it later.")
+        print(
+            "Note: no --size given; seeding the Freenove OTA type as freenove-28 (2.8\"). "
+            "Pass --size 35/40 for a larger panel - the firmware does not guess it later."
+        )
         return "freenove-28"
     print("\nFreenove panel size:")
     for key, (label, slug) in FREENOVE_SIZES.items():

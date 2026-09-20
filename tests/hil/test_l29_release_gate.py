@@ -135,9 +135,7 @@ class TestRenderToGlass:
         # Read past the expected-MADCTL line to the post-rearm power readback (which
         # carries BOTH the power register and the status register).
         device.expect_re(r"madctl_expect=0x([0-9A-Fa-f]+)", timeout=6.0)
-        pm = device.expect_re(
-            r"after-rearm rddpm=0x([0-9A-Fa-f]+)\s+rddst=0x([0-9A-Fa-f]+)", timeout=6.0
-        )
+        pm = device.expect_re(r"after-rearm rddpm=0x([0-9A-Fa-f]+)\s+rddst=0x([0-9A-Fa-f]+)", timeout=6.0)
         rddpm = int(pm.group(1), 16)
         rddst = int(pm.group(2), 16)
         if gated:
@@ -149,8 +147,7 @@ class TestRenderToGlass:
             # and scrok='0', so this still fails on the fault the strict check
             # guarded). The definitive pixel proof is the human glance below.
             assert rddst != 0, (
-                f"gated board: RDDST read back all zero (panel not answering): "
-                f"rddpm=0x{rddpm:08x} rddst=0x{rddst:08x}"
+                f"gated board: RDDST read back all zero (panel not answering): rddpm=0x{rddpm:08x} rddst=0x{rddst:08x}"
             )
             assert _scrok(device) == "unknown", (
                 "gated board did not report scrok=unknown - liveness classification "
@@ -184,8 +181,7 @@ class TestRenderToGlass:
             assert device.ping(timeout=6.0), "console wedged after TFTBREAK (no in-place recovery)"
             h1 = device.cmd_re("TFTHEALTH?", r"healthy=(\d+)\s+heals=(\d+)", timeout=6.0)
             assert int(h1.group(1)) == 1, (
-                "panel latched unhealthy after TFTBREAK - the repaint watchdog did "
-                "not rearm the panel on a gated board"
+                "panel latched unhealthy after TFTBREAK - the repaint watchdog did not rearm the panel on a gated board"
             )
             st = device.cmd_re("TFTPWR?", r"rddst=0x([0-9A-Fa-f]+)", timeout=6.0)
             assert int(st.group(1), 16) != 0, "RDDST read back zero (panel not answering) after the break"

@@ -715,8 +715,7 @@ class Device:
         if not port:
             return False
         self.close()
-        base = ["--chip", "esp32s3", "--port", port, "--before", "default-reset",
-                "--after", "hard-reset", "chip_id"]
+        base = ["--chip", "esp32s3", "--port", port, "--before", "default-reset", "--after", "hard-reset", "chip_id"]
         for prefix in (["esptool.py"], [sys.executable, "-m", "esptool"], ["esptool"]):
             try:
                 r = subprocess.run(prefix + base, capture_output=True, text=True, timeout=40)

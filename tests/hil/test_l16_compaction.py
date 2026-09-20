@@ -182,9 +182,7 @@ def test_fold_failure_is_bounded_and_recovers(board):
         ]
 
     def fault(on):
-        r = _S.post(
-            f"http://{ip}/api/fault", data={"cap": "provider", "on": "1" if on else "0"}, timeout=10
-        )
+        r = _S.post(f"http://{ip}/api/fault", data={"cap": "provider", "on": "1" if on else "0"}, timeout=10)
         assert r.status_code == 200, "FAULT provider needs an [env:test] build"
 
     # Seed the test chat with real history BEFORE the fault - an empty chat's
