@@ -99,7 +99,7 @@ def test_degraded_fold_completes_from_ram_ring(rig):
     def _compact_row_ids():
         r = _S.get(
             _url(ip, tok, "/api/mem/episodic"),
-            params={"t": tok, "session": "web", "kind": "log", "limit": 20},
+            params={"session": "web", "kind": "log", "limit": 20},
             timeout=15,
         )
         rows = r.json().get("messages", []) if r.status_code == 200 else []
@@ -185,7 +185,7 @@ def test_episodic_past_ring_still_queryable_from_sd(rig):
     assert n1 - n0 >= 600, f"store grew only {n1 - n0} (ring-evicted rows lost?)"
     # Ring-window read stays fast and full:
     r = _S.get(
-        _url(ip, tok, "/api/mem/episodic"), params={"t": tok, "session": "hiltest-epi", "limit": 100}, timeout=30
+        _url(ip, tok, "/api/mem/episodic"), params={"session": "hiltest-epi", "limit": 100}, timeout=30
     )
     assert r.status_code == 200
     msgs = r.json().get("messages", [])
