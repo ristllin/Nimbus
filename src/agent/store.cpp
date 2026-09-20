@@ -18,6 +18,7 @@
 #include "agent_config.h"
 #include "nimbus/orch/usage_ledger.h"
 #include "nimbus/store/provider_cache.h"   // CUM-238: bounded provider-config reads
+#include "../sys/agent_log.h"              // alogc + errlog::cat - loud NVS-full seed hint (CUM-408)
 
 // Device config accessors backed by solide::memory (NVS). Defaults mirror
 // Nuage-Solide storage.cpp: priorities default to "openai,anthropic,mistral"
@@ -642,8 +643,19 @@ bool hasSfxLevelOrch()  { return solide::memory::getInt(AKEY_SFX_LVL_O_SET, 0) !
 // stored value as an explicit owner choice so the seed never overwrites it. After this
 // runs once, only applyProfileDefaults writes unflagged values, so re-seeding an
 // untouched key on later switches stays correct (CUM-395).
+// CUM-408: RAM latch so a full-NVS device fails loud ONCE per boot and then stops
+// retrying the migration (and re-logging) on every battery-mode switch. It clears on a
+// reboot, which retries once more in case the reboot freed NVS headroom.
+static bool s_profSeedNvsFull = false;
+bool profileSeedDeferredNvsFull() { return s_profSeedNvsFull; }
+
 static void adoptPreFeatureValuesAsOwnerSet() {
-  if (solide::memory::getInt(AKEY_PROF_SEED_INIT, 0) != 0) return;
+  if (solide::memory::getInt(AKEY_PROF_SEED_INIT, 0) != 0) return;   // steady state: done
+  // CUM-408: on a full NVS the marker write below silently drops (putInt -> 0), so
+  // without this latch the whole migration - and its loud log line - re-runs on every
+  // battery-mode switch and never completes. Once we have detected a full NVS this boot,
+  // stop retrying until a reboot.
+  if (s_profSeedNvsFull) return;
   // Adopt a persisted value as an explicit owner choice ONLY when it differs from the
   // shipped hard default (these mirror the getters above: saverMin 5, sfxLevelNotif 0,
   // sfxLevelOrch 2). The OLD device menu wrote the sfx levels UNCONDITIONALLY on any
@@ -655,7 +667,18 @@ static void adoptPreFeatureValuesAsOwnerSet() {
   if (nimbus::adoptAsOwnerSet(sv >= 0, sv, 5)) solide::memory::setInt(AKEY_SAVER_MIN_SET, 1);
   if (nimbus::adoptAsOwnerSet(sn >= 0, sn, 0)) solide::memory::setInt(AKEY_SFX_LVL_N_SET, 1);
   if (nimbus::adoptAsOwnerSet(so >= 0, so, 2)) solide::memory::setInt(AKEY_SFX_LVL_O_SET, 1);
-  solide::memory::setInt(AKEY_PROF_SEED_INIT, 1);
+  // Verify-after-write: the marker must actually PERSIST for the one-time migration to be
+  // done. A full NVS drops the write (putInt returns 0 -> setInt false); read it back to
+  // be sure, then decide via the portable state machine (host-tested over {fresh, seeded,
+  // full}).
+  const bool wrote = solide::memory::setInt(AKEY_PROF_SEED_INIT, 1);
+  const bool persisted = wrote && solide::memory::getInt(AKEY_PROF_SEED_INIT, 0) == 1;
+  if (nimbus::planSeedAttempt(/*markerPresent=*/false, persisted) ==
+      nimbus::SeedAttempt::DeferredNvsFull) {
+    s_profSeedNvsFull = true;   // latch: no more retries or logging this boot
+    agent::alogc(nimbus::errlog::cat::kNvs,
+                 "NVS full: profile-default seed migration deferred; free NVS space to apply it");
+  }
 }
 // Seed a battery mode's screen-rest + sound-level defaults, but only into keys the
 // owner has not explicitly set (their value always wins). Writing the seed WITHOUT

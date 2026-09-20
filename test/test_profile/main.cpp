@@ -1,6 +1,8 @@
 #include <unity.h>
 
 #include <cstring>
+#include <map>
+#include <string>
 
 #include "nimbus/profile.h"
 
@@ -227,8 +229,88 @@ static void test_adopt_pre_feature_value_only_when_it_differs() {
   TEST_ASSERT_TRUE(adoptAsOwnerSet(true, 15, 5));
 }
 
+// ---- CUM-408: full-NVS seed migration - the {fresh, seeded, full} class -------
+//
+// A fake NVS that drops a NEW key once it is full (mirrors Preferences::putInt
+// returning 0 -> solide::memory::setInt false on a full 'orchmem' partition), and a
+// SeedSim that mirrors store.cpp's adoptPreFeatureValuesAsOwnerSet() using the portable
+// planSeedAttempt() + the RAM latch. This exercises the whole class on the host: a
+// device is switched between battery modes repeatedly, and we assert the migration runs
+// AT MOST ONCE and never thrashes.
+namespace {
+struct FakeNvs {
+  std::map<std::string, int32_t> kv;
+  size_t cap;   // max distinct keys; a new key beyond cap is dropped (NVS full)
+  explicit FakeNvs(size_t c) : cap(c) {}
+  int32_t getInt(const std::string& k, int32_t d) const {
+    auto it = kv.find(k);
+    return it == kv.end() ? d : it->second;
+  }
+  bool setInt(const std::string& k, int32_t v) {
+    if (!kv.count(k) && kv.size() >= cap) return false;   // full: a new key silently drops
+    kv[k] = v;
+    return true;
+  }
+};
+
+struct SeedSim {
+  FakeNvs nvs;
+  bool latch = false;   // s_profSeedNvsFull
+  int warns = 0;        // loud NVS-full log lines emitted
+  int seeds = 0;        // completed migrations
+  explicit SeedSim(size_t cap) : nvs(cap) {}
+  void batteryModeSwitch() {   // == one adoptPreFeatureValuesAsOwnerSet() call
+    if (nvs.getInt("profSeedInit", 0) != 0) return;   // steady state: already done
+    if (latch) return;                                 // full this boot: no retry, no re-log
+    const bool wrote = nvs.setInt("profSeedInit", 1);
+    const bool persisted = wrote && nvs.getInt("profSeedInit", 0) == 1;
+    switch (planSeedAttempt(/*markerPresent=*/false, persisted)) {
+      case SeedAttempt::Seeded: ++seeds; break;
+      case SeedAttempt::DeferredNvsFull: latch = true; ++warns; break;
+      case SeedAttempt::AlreadyDone: break;   // unreachable here (marker was absent)
+    }
+  }
+};
+}  // namespace
+
+static void test_plan_seed_attempt_predicate() {
+  TEST_ASSERT_EQUAL(int(SeedAttempt::AlreadyDone), int(planSeedAttempt(true, true)));
+  TEST_ASSERT_EQUAL(int(SeedAttempt::AlreadyDone), int(planSeedAttempt(true, false)));
+  TEST_ASSERT_EQUAL(int(SeedAttempt::Seeded), int(planSeedAttempt(false, true)));
+  TEST_ASSERT_EQUAL(int(SeedAttempt::DeferredNvsFull), int(planSeedAttempt(false, false)));
+}
+
+static void test_seed_fresh_applies_once_and_never_reruns() {
+  SeedSim s(/*cap=*/8);   // plenty of headroom
+  for (int i = 0; i < 5; ++i) s.batteryModeSwitch();
+  TEST_ASSERT_EQUAL_INT(1, s.seeds);   // seeded exactly once across 5 switches
+  TEST_ASSERT_EQUAL_INT(0, s.warns);
+  TEST_ASSERT_EQUAL_INT32(1, s.nvs.getInt("profSeedInit", 0));   // marker latched in NVS
+}
+
+static void test_seed_already_seeded_is_noop() {
+  SeedSim s(8);
+  s.nvs.kv["profSeedInit"] = 1;   // a prior boot completed the migration
+  for (int i = 0; i < 5; ++i) s.batteryModeSwitch();
+  TEST_ASSERT_EQUAL_INT(0, s.seeds);   // never re-seeds
+  TEST_ASSERT_EQUAL_INT(0, s.warns);
+}
+
+static void test_seed_full_nvs_defers_once_and_stops_rerunning() {
+  SeedSim s(/*cap=*/0);   // NVS full: no new key can ever be written
+  for (int i = 0; i < 5; ++i) s.batteryModeSwitch();
+  TEST_ASSERT_EQUAL_INT(0, s.seeds);                          // never completes
+  TEST_ASSERT_EQUAL_INT(1, s.warns);                          // loud EXACTLY once, not per switch
+  TEST_ASSERT_EQUAL_INT32(0, s.nvs.getInt("profSeedInit", 0));// marker never persisted
+  TEST_ASSERT_TRUE(s.latch);                                  // latched off for the boot
+}
+
 int main() {
   UNITY_BEGIN();
+  RUN_TEST(test_plan_seed_attempt_predicate);
+  RUN_TEST(test_seed_fresh_applies_once_and_never_reruns);
+  RUN_TEST(test_seed_already_seeded_is_noop);
+  RUN_TEST(test_seed_full_nvs_defers_once_and_stops_rerunning);
   RUN_TEST(test_is_ring_param_classifies_the_led_controls);
   RUN_TEST(test_profile_screensaver_and_sound_defaults);
   RUN_TEST(test_profile_default_precedence_owner_value_wins);
