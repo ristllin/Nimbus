@@ -744,7 +744,7 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <details class=setgroup><summary>Voice<span class=chev>&rsaquo;</span></summary>
 <div class=setbody>
 <label>Dictation <button class=qh type=button aria-expanded=false aria-label="About dictation">?</button></label>
-<p class="hint tip">Turns your voice - from the microphone or Telegram voice notes - into text. Works as soon as the provider's key is set, independent of chat verification.</p>
+<p class="hint tip">Turns your voice, from the microphone or Telegram voice notes, into text. Works as soon as the provider's key is set, independent of chat verification. A Cumulo Nimbus key also covers voice, so a one-key device needs no separate OpenAI or Mistral key.</p>
 <select id=sttProv><option value=mistral>Mistral (Voxtral)</option><option value=openai>OpenAI</option></select>
 <label>Spoken replies</label>
 <select id=ttsProv><option value=mistral>Mistral (Voxtral)</option><option value=openai>OpenAI</option></select>
@@ -3011,7 +3011,9 @@ function applyOrch(d){
     parts.push(ids.length?('✓ '+ids.length+' allowed chat'+(ids.length>1?'s':'')) :
       '• No one approved yet - message the bot once, then approve it below');
     const sp=d.sttProv&&d.providers&&d.providers[d.sttProv];
+    const ck=d.providers&&d.providers.cumulo&&d.providers.cumulo.hasKey;
     parts.push(sp&&sp.hasKey?('✓ voice notes ('+d.sttProv+' STT)') :
+      ck?'✓ voice notes (Cumulo Nimbus STT)' :
       '⚠ No '+(d.sttProv||'dictation')+' key - voice notes can’t be transcribed');
     r.textContent=parts.join('  ·  ');
     // Red is reserved for a genuine failure (a token Telegram rejected). Normal
