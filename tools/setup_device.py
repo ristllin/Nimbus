@@ -689,6 +689,82 @@ def verify_panel_after_flash(port: str, timeout: float = 20.0) -> str:
             connection.close()
 
 
+# --- board-family probe (CUM-422) ----------------------------------------------
+#
+# CUM-388 fixed the wrong-variant flash for a BLANK NVS, but once the installer seeds
+# scrModel=tft the Solide image's panel-liveness read answers "healthy" on the Freenove
+# wiring, so a `--board solide_s3` flash onto a Freenove passed the post-flash screen
+# check (scrok=1, exit 0) and installed over the wrong board. The fix probes the physical
+# board directly: the provision sketch's PROBE command scans the Freenove's FT6336U
+# capacitive touch at I2C 0x38 (SDA16/SCL15). Its presence proves a Freenove regardless
+# of the seeded NVS or the --board flag, so a Solide flash is refused before it can seed
+# the NVS that fakes the healthy read.
+
+PROBE_WRONG_VARIANT_MESSAGE = (
+    "\nRefusing to install the Solide image: a Freenove capacitive touch controller\n"
+    "(FT6336U at I2C 0x38) answered on this board, so it is a Freenove CYD, not a Solide\n"
+    "board. The Solide image drives the wrong display pinout here and would boot to a\n"
+    "dead screen that a seeded NVS can make read as healthy. Nothing was seeded and no\n"
+    "production image was flashed. Re-run with --board freenove_s3 to install correctly."
+)
+
+
+def read_probe_signal(connection, timeout: float = 8.0) -> str | None:
+    """Read the provision sketch's PROBE reply for the board-family probe (CUM-422).
+
+    Returns 'freenove' (the FT6336U capacitive touch answered at I2C 0x38, so the board
+    is a Freenove), 'clear' (the probe ran and nothing answered, so it is not a Freenove),
+    or None (no PROBE reply within the window - an old provision sketch with no PROBE
+    support). ``connection`` is anything with a pyserial-style ``readline()`` returning
+    bytes (b'' when idle), which keeps the decision unit-testable with a fake serial."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        raw = connection.readline()
+        if not raw:
+            continue
+        text = raw.decode("utf-8", "replace").strip()
+        if "PROBE ft6336=1" in text:
+            return "freenove"
+        if "PROBE ft6336=0" in text:
+            return "clear"
+    return None
+
+
+def probe_for_freenove(port: str, timeout: float = 8.0) -> str:
+    """Ask the running provision sketch whether the board is a Freenove (CUM-422).
+
+    Returns 'freenove', 'clear', 'unsupported' (no PROBE reply - an old setup firmware),
+    or 'unknown' (a serial problem, e.g. no pyserial). Never raises: a read hiccup must
+    not fail an install, only a decisive 'freenove' refuses one; an 'unsupported'/'unknown'
+    result proceeds (the post-flash screen check remains the backstop)."""
+    try:
+        import serial  # type: ignore
+    except ImportError:
+        print("Note: pyserial is unavailable, so the board-family probe was skipped.", file=sys.stderr)
+        return "unknown"
+    connection = serial.Serial()
+    connection.port = port
+    connection.baudrate = 115200
+    connection.dtr = False
+    connection.rts = False
+    connection.timeout = 0.25
+    connection.write_timeout = 2
+    try:
+        connection.open()
+        time.sleep(3.0)   # let the provision sketch boot once before it can answer
+        connection.reset_input_buffer()
+        connection.write(b"PROBE\n")
+        connection.flush()
+        result = read_probe_signal(connection, timeout=timeout)
+        return result if result is not None else "unsupported"
+    except (OSError, RuntimeError) as exc:
+        print(f"Note: could not run the board-family probe ({exc}); the screen check still applies.", file=sys.stderr)
+        return "unknown"
+    finally:
+        if connection.is_open:
+            connection.close()
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Safely install production Nimbus firmware.")
     parser.add_argument(
@@ -778,6 +854,10 @@ class InstallOutcome:
         self.restore_error: BaseException | None = None
         self.interrupted = False
         self.production_on_board = False
+        # CUM-422: the board-family probe proved a Freenove under a solide flash, so the
+        # solide image was refused - nothing seeded, no production image restored.
+        self.wrong_variant = False
+        self.probe = "unknown"   # 'freenove' | 'clear' | 'unsupported' | 'unknown'
 
 
 def _upload(pio: str, env: str, port: str) -> None:
@@ -841,15 +921,26 @@ def flash_production(plan: InstallPlan, display: str | None, mode: str | None, o
     print("\nApplying the selected settings without erasing NVS...")
     try:
         _upload(plan.pio, plan.prov_env, plan.port)
+        # CUM-422: with the provision sketch running, probe the FT6336U touch bus before
+        # trusting a Solide flash. A Freenove answers at I2C 0x38 -> refuse the Solide
+        # image regardless of --board, and do NOT seed the NVS (which would fake a healthy
+        # panel) or restore the wrong production image.
+        if plan.family == FAMILY_SOLIDE:
+            outcome.probe = probe_for_freenove(plan.port)
+            if outcome.probe == "freenove":
+                outcome.wrong_variant = True
+                return outcome
         _bootstrap_ack(plan.esptool, plan.port, plan.family, display, mode, ota_type)
     except KeyboardInterrupt:
         outcome.interrupted = True
     except (RuntimeError, subprocess.CalledProcessError) as exc:
         outcome.bootstrap_error = exc
     finally:
-        # Never strand the board on the temporary diagnostic, even after a failure
-        # or an interrupt.
-        _restore_production(plan, outcome)
+        # Never strand the board on the temporary diagnostic, even after a failure or an
+        # interrupt - EXCEPT when the probe refused a wrong-variant flash, where restoring
+        # the Solide image is exactly what must not happen.
+        if not outcome.wrong_variant:
+            _restore_production(plan, outcome)
     return outcome
 
 
@@ -876,7 +967,12 @@ def finish_install(outcome: InstallOutcome, panel: str, mode: str | None, skip_p
     Pure decision and messaging (no serial, no flashing) so every failure path is
     host-testable. The success line prints only on a clean install whose screen did
     not report dead; the wrong-variant message prints exactly when the screen is
-    dead, on both the success and the setup-failed paths (CUM-388 D1)."""
+    dead, on both the success and the setup-failed paths (CUM-388 D1). The board-family
+    probe (CUM-422) is decisive first: a Freenove under a solide flash is refused before
+    any seed or production write."""
+    if outcome.wrong_variant:
+        print(PROBE_WRONG_VARIANT_MESSAGE, file=sys.stderr)
+        return 1
     if outcome.restore_error is not None:
         print(
             "\nStopped: production firmware could not be restored (the step above failed).\n"
@@ -927,6 +1023,15 @@ def finish_install(outcome: InstallOutcome, panel: str, mode: str | None, skip_p
         )
     elif not skip_panel_check:
         print("Screen check could not confirm the display; look at the screen to be sure.")
+    if outcome.probe == "unsupported":
+        # CUM-422: an old provision sketch with no PROBE support could not confirm the
+        # board family, so a Freenove could not be ruled out by the probe. Proceed with a
+        # caution; the screen check above is the backstop.
+        print(
+            "Note: this board's setup firmware is too old to confirm the board family\n"
+            "(no PROBE support), so the board-family probe was skipped. Look at the screen\n"
+            "to be sure the correct variant was installed."
+        )
     print("\nNimbus production firmware is installed. NVS was not erased.")
     _print_mode_guidance(mode)
     return 0

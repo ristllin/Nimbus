@@ -385,6 +385,7 @@ class _RecordingRunner:
         self.calls: list[list[str]] = []
         self.envs: list[str] = []
         self.panel_calls: list[str] = []
+        self.probe_calls: list[str] = []
         self.fail_env = fail_env
         self.fail_ack = fail_ack
 
@@ -406,11 +407,13 @@ def _board(port="/dev/cu.usbmodem101", vid=None, product="", nvs_state="blank", 
     return dict(port=port, vid=vid, product=product, nvs_state=nvs_state, nvs_family=nvs_family)
 
 
-def _run_main(argv, board=None, panel="unknown", runner=None):
-    """Drive SETUP.main(argv) fully host-side: stub discovery, flashing, and the
-    serial screen read so no hardware or PlatformIO is touched. Returns
-    (rc, stdout, stderr, runner). The runner records which envs were uploaded and
-    runner.panel_calls records whether the screen was actually read."""
+def _run_main(argv, board=None, panel="unknown", runner=None, probe="clear"):
+    """Drive SETUP.main(argv) fully host-side: stub discovery, flashing, the serial
+    screen read, and the board-family probe so no hardware or PlatformIO is touched.
+    Returns (rc, stdout, stderr, runner). The runner records which envs were uploaded,
+    runner.panel_calls records whether the screen was read, and runner.probe_calls
+    records whether the board-family probe ran. ``probe`` defaults to 'clear' (a genuine
+    solide) so existing installs proceed; set 'freenove' to exercise the CUM-422 refusal."""
     board = board if board is not None else _board()
     runner = runner if runner is not None else _RecordingRunner()
     saved: dict[str, object] = {}
@@ -423,12 +426,17 @@ def _run_main(argv, board=None, panel="unknown", runner=None):
         runner.panel_calls.append(p)
         return panel
 
+    def _fake_probe(p, timeout=8.0):
+        runner.probe_calls.append(p)
+        return probe
+
     _patch("resolve_port", lambda args: (board["port"], board["vid"], board["product"]))
     _patch("platformio_executable", lambda: (Path("/tmp/core"), "pio"))
     _patch("esptool_command", lambda core: ["python", "esptool.py"])
     _patch("inspect_board", lambda esptool, p: ("aa:bb:cc:dd:ee:ff", board["nvs_state"], board["nvs_family"]))
     _patch("run_checked", runner)
     _patch("verify_panel_after_flash", _fake_verify)
+    _patch("probe_for_freenove", _fake_probe)
     out, err = io.StringIO(), io.StringIO()
     try:
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
@@ -574,6 +582,10 @@ def test_finish_install_decision_matrix():
         ),
         (dict(restore_error=RuntimeError("x")), "dead", 1, ["could not be restored"], [success, dead]),
         (dict(interrupted=True, production_on_board=True), "unknown", 1, ["interrupted"], [success]),
+        # CUM-422: a probe-refused Freenove is decisive first - non-zero, the wrong-variant
+        # message, and never the success line, whatever the (unused) screen signal says.
+        (dict(wrong_variant=True), "unknown", 1, ["Freenove capacitive touch"], [success, dead]),
+        (dict(wrong_variant=True), "ok", 1, ["Freenove capacitive touch"], [success]),
     ]
     for kwargs, panel, want_rc, must, forbid in cases:
         rc, text = run(_outcome(**kwargs), panel)
@@ -754,6 +766,104 @@ def test_serial_bootstrap_no_reply_message_is_operator_language():
     assert "/dev/cu.usbmodem7" in text
     assert "wrong board choice" in text or "other USB port" in text
     assert "SET scrModel" not in text  # never quotes the wire token to the operator
+
+
+# ---- CUM-422: board-family probe (FT6336U) refuses a wrong-variant flash ----
+#
+# CUM-388 caught a wrong-variant flash only on a BLANK NVS; once the installer seeded
+# scrModel=tft the Solide image read the panel as healthy on the Freenove and passed.
+# The probe asks the physical board: the provision sketch's PROBE scans the Freenove
+# FT6336U at I2C 0x38, and a Freenove is refused a Solide flash regardless of --board or
+# NVS. A fake serial stands in for the board.
+
+
+def test_read_probe_signal_freenove_when_ft6336_present():
+    conn = _FakeSerial("[boot] provision ready", "PROBE ft6336=1 addr=0x38")
+    assert SETUP.read_probe_signal(conn, timeout=5.0) == "freenove"
+
+
+def test_read_probe_signal_clear_when_ft6336_absent():
+    # A genuine Solide: nothing answers at 0x38 on those pins -> proceed.
+    conn = _FakeSerial("[boot] provision ready", "PROBE ft6336=0 addr=0x38")
+    assert SETUP.read_probe_signal(conn, timeout=5.0) == "clear"
+
+
+def test_read_probe_signal_none_on_old_sketch_without_probe():
+    # An old provision sketch never answers PROBE -> None (installer treats as unsupported).
+    conn = _FakeSerial("[boot] provision ready", "PROVISION READY")
+    assert SETUP.read_probe_signal(conn, timeout=0.3) is None
+    assert SETUP.read_probe_signal(_FakeSerial(), timeout=0.0) is None
+
+
+def test_probe_wrong_variant_message_names_the_board_and_next_step():
+    msg = SETUP.PROBE_WRONG_VARIANT_MESSAGE
+    assert "Freenove" in msg
+    assert "--board freenove_s3" in msg   # the corrected command
+    assert "Refusing" in msg
+
+
+def test_main_freenove_under_solide_board_refused_by_probe():
+    # The exact CUM-422 incident: --board solide_s3 on a Freenove. The probe answers
+    # ft6336=1 -> the solide flash is REFUSED before seeding or any production write:
+    # non-zero exit, wrong-variant message, and ONLY the provision sketch was uploaded
+    # (no esp32s3), so the NVS that fakes a healthy panel is never seeded.
+    rc, out, err, runner = _run_main(
+        ["--yes", "--port", "/dev/cu.usbmodem101", "--board", "solide_s3", "--mode", "orchestrator"],
+        board=_board(vid=SETUP.VID_ESP32S3_NATIVE),
+        probe="freenove",
+    )
+    assert rc == 1, (rc, out, err)
+    assert "Freenove capacitive touch" in err
+    assert "installed. NVS was not erased" not in out   # nothing installed
+    assert runner.envs == ["provision"]                 # only the setup sketch; no esp32s3
+    assert runner.probe_calls == ["/dev/cu.usbmodem101"]  # the probe actually ran
+    assert runner.panel_calls == []                     # no production image to screen-check
+
+
+def test_main_solide_probe_clear_proceeds_and_installs():
+    # A genuine Solide on native USB: the probe answers ft6336=0 (clear) -> the install
+    # proceeds through seeding and the production flash exactly as before.
+    rc, out, err, runner = _run_main(
+        ["--yes", "--port", "/dev/cu.usbmodem101", "--board", "solide_s3", "--mode", "orchestrator"],
+        board=_board(vid=SETUP.VID_ESP32S3_NATIVE),
+        panel="ok",
+        probe="clear",
+    )
+    assert rc == 0, (rc, err)
+    assert runner.envs == ["provision", "esp32s3"]
+    assert runner.probe_calls == ["/dev/cu.usbmodem101"]
+    assert "installed. NVS was not erased" in out
+
+
+def test_main_old_sketch_unsupported_probe_proceeds_with_caution():
+    # An old provision sketch with no PROBE support -> the probe cannot rule out a
+    # Freenove, so the install proceeds (the screen check remains the backstop) with a
+    # caution line, not a refusal.
+    rc, out, err, runner = _run_main(
+        ["--yes", "--port", "/dev/cu.usbmodem101", "--board", "solide_s3", "--mode", "orchestrator"],
+        board=_board(vid=SETUP.VID_ESP32S3_NATIVE),
+        panel="ok",
+        probe="unsupported",
+    )
+    assert rc == 0, (rc, err)
+    assert runner.envs == ["provision", "esp32s3"]
+    assert "too old to confirm the board family" in out
+    assert "installed. NVS was not erased" in out
+
+
+def test_freenove_install_does_not_probe():
+    # A --board freenove_s3 install wants a Freenove, so detecting the FT6336U is expected,
+    # not a refusal: the probe is scoped to solide flashes only and must not run here.
+    rc, out, err, runner = _run_main(
+        ["--yes", "--port", "/dev/cu.usbmodem101", "--board", "freenove_s3", "--mode", "notifier", "--size", "28"],
+        board=_board(vid=SETUP.VID_ESP32S3_NATIVE),
+        panel="ok",
+        probe="freenove",   # even if the fake would answer freenove, it must not be consulted
+    )
+    assert rc == 0, (rc, err)
+    assert runner.probe_calls == []                       # never probed on a freenove install
+    assert runner.envs == ["provision-cyd", "esp32s3-cyd"]
+    assert "installed. NVS was not erased" in out
 
 
 if __name__ == "__main__":
