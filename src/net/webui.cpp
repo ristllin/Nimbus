@@ -733,7 +733,15 @@ static void buildState(String& out) {
     // the bus - the lie behind the owner's black glass.
     const bool panelDead  = s_wc.panelControllerDead && s_wc.panelControllerDead();
     const bool panelProbe = nimbus::hw::tft::probeEnabled();
-    d["panelResponding"] = !panelDead;
+    // On a shared-MISO solide board the render-independent liveness poll is gated off
+    // to protect touch (CUM-392), so the controller verdict is never maintained:
+    // report panelResponding as null (not measured), never a fabricated true - the
+    // same honesty as the null panelPixOk below (CUM-423). A confirmed-dead controller
+    // still reads false; a self-checkable board that is answering reads true.
+    const bool livenessKnown = !nimbus::hw::tft::panelReadbackGated();
+    if (panelDead)           d["panelResponding"] = false;
+    else if (!livenessKnown) d["panelResponding"] = nullptr;
+    else                     d["panelResponding"] = true;
     d["panelMeasured"]   = panelProbe;
     if (panelDead) {
       // A confirmed not-answering controller is a fault every consumer must see,
@@ -2955,6 +2963,7 @@ void beginWeb(const WebConfig& wc) {
     if (s_wc.batterySenseMissing) env.battSenseMissing = s_wc.batterySenseMissing();
     if (s_wc.touchResistiveDegraded) env.touchDegraded = s_wc.touchResistiveDegraded();
     if (s_wc.panelControllerDead) env.panelNotResponding = s_wc.panelControllerDead();
+    if (s_wc.panelLivenessKnown) env.panelLivenessKnown = s_wc.panelLivenessKnown();
     AsyncWebServerResponse* res =
       r->beginResponse(200, "application/json", agent::health::reportJson(env).c_str());
     res->addHeader("Cache-Control", "no-store");

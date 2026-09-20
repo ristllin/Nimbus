@@ -37,6 +37,13 @@ struct Env {
   // Independent of the register/pixel probe (off by default). Default false = the
   // contexts that cannot read the controller (the turn-task tool) report nothing new.
   bool panelNotResponding = false;
+  // Whether the display's liveness can be self-checked on this board (CUM-423).
+  // False on a shared-MISO solide board, where the render-independent RDDST poll is
+  // gated off to keep touch alive: the panel binds but the firmware has no honest
+  // feed to confirm it is answering, so the "screen" row must read "unverified", not
+  // "ok". Default true = contexts that cannot tell (the turn-task tool) assume the
+  // usual self-checkable board and report as before; webui fills the real value.
+  bool panelLivenessKnown = true;
 };
 
 // Record the outcome of an acoustic loopback probe so the passive report can say

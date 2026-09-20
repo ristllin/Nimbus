@@ -107,33 +107,69 @@ constexpr PanelStatus panelStatus(bool notResponding, bool probed, bool contentO
 // scrok - the single "is the colour panel confirmed up and answering right now"
 // bit (CUM-388). It is the machine-readable form of the health "screen" row
 // (agent::health): that row is kOk exactly when the panel bound at boot, is not
-// fault-injected absent, and the debounced liveness verdict is not "not
-// responding". Keeping the STATUS `scrok` field and the boot signal on this ONE
-// pure predicate stops them from drifting away from the health row.
+// fault-injected absent, the debounced liveness verdict is not "not responding",
+// AND liveness is knowable on this board; when liveness is unverifiable the row is
+// "unverified", never "ok" (CUM-423). Keeping the STATUS `scrok` field, the boot
+// signal, and the health row on this ONE pure predicate stops them from drifting.
 //
 // A wrong-variant flash (a Solide image on a Freenove, or vice versa) binds the
 // panel blindly at boot but the controller never answers its RDDST health read,
 // so notResponding latches and scrok is false - the honest signal a flasher and
 // tools/setup_device.py read instead of trusting "the board is online".
+//
+// The bit is a TRI-STATE (CUM-423). On a shared-MISO solide board the continuous
+// RDDST liveness poll is gated off to keep touch alive (CUM-392), so the device
+// has NO render-independent feed for the verdict: it can never honestly claim the
+// panel is answering. The read that detects a dead panel is the same read that
+// pins touch, so you cannot have both. The honest answer there is UNKNOWN, never a
+// false positive: a bound-but-dead solide panel must not print scrok=1.
+//   No      - a disqualifier holds: the panel did not bind, the SCREEN capability
+//             is fault-injected absent, or the debounced liveness verdict latched
+//             not-responding. The wrong-variant / dead-panel signal (scrok=0).
+//   Yes     - bound, not faulted, and liveness is knowable AND answering (scrok=1).
+//   Unknown - bound and not faulted, but liveness is UNVERIFIABLE on this board
+//             (readback gated on shared MISO). Not a pass and not a fault: honest
+//             "cannot self-check" (scrok=unknown). Never emitted as a positive.
+enum class Scrok : uint8_t { No, Yes, Unknown };
+
 //   boundOk       - the panel bind at boot succeeded (g_hal.display / g_screenIsTft).
 //   faultInjected - the SCREEN capability is simulated-absent (test FAULT hook).
 //   notResponding - the debounced PanelControllerLiveness verdict.
-constexpr bool screenResponding(bool boundOk, bool faultInjected, bool notResponding) {
-  return boundOk && !faultInjected && !notResponding;
+//   livenessKnown - the device can actually maintain the verdict on this board
+//                   (false when panelReadbackGated(): the render-independent poll
+//                   is suppressed on shared MISO, so there is no honest feed).
+constexpr Scrok screenScrok(bool boundOk, bool faultInjected, bool notResponding,
+                            bool livenessKnown) {
+  if (!boundOk || faultInjected || notResponding) return Scrok::No;
+  if (!livenessKnown) return Scrok::Unknown;
+  return Scrok::Yes;
 }
 
-// The three boot-time panel outcomes the one-shot serial signal distinguishes, so
-// a genuinely-dead panel is surfaced honestly without falsely blaming a variant.
-//   Responding   - bound and answering: the normal, healthy boot.
+// The machine token printed for each verdict: STATUS `scrok=` and the boot beacon
+// `PANEL scrok=` both use it, so the two can never spell the tri-state differently.
+// tools/setup_device.py::read_panel_signal greps these exact tokens.
+constexpr const char* scrokToken(Scrok s) {
+  return s == Scrok::Yes ? "1" : (s == Scrok::No ? "0" : "unknown");
+}
+
+// The four boot-time panel outcomes the one-shot serial signal distinguishes, so
+// a genuinely-dead panel is surfaced honestly without falsely blaming a variant,
+// and a board that cannot self-check its panel says so instead of lying.
+//   Responding    - bound and answering: the normal, healthy boot.
 //   NotResponding - bound at boot but the controller never answers (the
 //                   wrong-variant-flash signature): the loud, strong-hint line.
-//   InitFailed   - the boot bring-up itself failed (begin() false): surfaced too,
+//   InitFailed    - the boot bring-up itself failed (begin() false): surfaced too,
 //                   but worded as a hint - it could be dead hardware OR a variant.
-enum class BootPanelSignal : uint8_t { Responding, NotResponding, InitFailed };
+//   Unverifiable  - bound and not (yet) known dead, but liveness is unverifiable on
+//                   this board (shared-MISO readback gated): emit scrok=unknown plus
+//                   an honest human line, NEVER a false scrok=1 (CUM-423).
+enum class BootPanelSignal : uint8_t { Responding, NotResponding, InitFailed, Unverifiable };
 
-constexpr BootPanelSignal bootPanelSignal(bool boundOk, bool notResponding) {
+constexpr BootPanelSignal bootPanelSignal(bool boundOk, bool notResponding,
+                                          bool livenessKnown) {
   if (!boundOk) return BootPanelSignal::InitFailed;
   if (notResponding) return BootPanelSignal::NotResponding;
+  if (!livenessKnown) return BootPanelSignal::Unverifiable;
   return BootPanelSignal::Responding;
 }
 

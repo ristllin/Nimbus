@@ -620,7 +620,8 @@ def read_panel_signal(connection, timeout: float = 20.0) -> str | None:
     """Watch a freshly-booted board's serial for the one-shot panel-health signal.
 
     Returns 'ok' (the panel answered), 'dead' (it did not - a wrong-variant or
-    dead-panel flash), or None (nothing decisive within ``timeout``). ``connection``
+    dead-panel flash), 'unverified' (a shared-MISO board that cannot self-check its
+    panel; CUM-423), or None (nothing decisive within ``timeout``). ``connection``
     is anything with a pyserial-style ``readline()`` returning bytes (b'' when
     idle), which keeps the decision unit-testable with a fake serial."""
     deadline = time.monotonic() + timeout
@@ -632,9 +633,15 @@ def read_panel_signal(connection, timeout: float = 20.0) -> str | None:
         if not text:
             continue
         # A dead panel is decisive the moment either the machine token or the loud
-        # human line appears; do not wait out the rest of the window.
+        # human line appears; do not wait out the rest of the window. Checked first so
+        # a real fault always wins over the softer "unknown".
         if "scrok=0" in text or "DISPLAY NOT RESPONDING" in text or "DISPLAY DID NOT COME UP" in text:
             return "dead"
+        # A shared-MISO board honestly reports its liveness as unknown (it cannot read
+        # the panel without pinning touch). Not a pass and not a failure: a soft
+        # caution to look at the screen, so a legitimate solide install still proceeds.
+        if "scrok=unknown" in text or "DISPLAY LIVENESS UNKNOWN" in text:
+            return "unverified"
         if "scrok=1" in text:
             return "ok"
     return None
@@ -643,9 +650,11 @@ def read_panel_signal(connection, timeout: float = 20.0) -> str | None:
 def verify_panel_after_flash(port: str, timeout: float = 20.0) -> str:
     """Open ``port`` after the production flash and read the boot panel signal.
 
-    Returns 'ok', 'dead', or 'unknown'. Never raises: a serial hiccup (no pyserial,
-    the port busy, USB re-enumeration) yields 'unknown' so a healthy board is never
-    failed on a read problem - only a decisive not-responding signal fails."""
+    Returns 'ok', 'dead', 'unverified', or 'unknown'. Never raises: a serial hiccup
+    (no pyserial, the port busy, USB re-enumeration) yields 'unknown' so a healthy
+    board is never failed on a read problem - only a decisive not-responding signal
+    fails. 'unverified' (a shared-MISO board that cannot self-check) is a soft
+    caution, never a hard failure, so a legitimate solide install still proceeds."""
     try:
         import serial  # type: ignore
     except ImportError:
@@ -899,6 +908,15 @@ def finish_install(outcome: InstallOutcome, panel: str, mode: str | None, skip_p
         return 1
     if panel == "ok":
         print("Screen check passed: the display is responding.")
+    elif panel == "unverified":
+        # A shared-MISO board cannot self-check its panel without pinning touch
+        # (CUM-423), so the firmware reports liveness as unknown. That is expected on
+        # this board, not a fault: install proceeds, with a nudge to glance at the glass.
+        print(
+            "Screen check: this board cannot self-check the display (touch shares the\n"
+            "panel bus). The install is fine; look at the screen to confirm it shows\n"
+            "the Nimbus UI."
+        )
     elif not skip_panel_check:
         print("Screen check could not confirm the display; look at the screen to be sure.")
     print("\nNimbus production firmware is installed. NVS was not erased.")

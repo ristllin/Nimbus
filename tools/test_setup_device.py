@@ -302,6 +302,37 @@ def test_read_panel_signal_ok_from_full_status_line():
     assert SETUP.read_panel_signal(_FakeSerial(status), timeout=5.0) == "ok"
 
 
+def test_read_panel_signal_unverified_on_scrok_unknown_token():
+    # CUM-423: a shared-MISO board honestly reports liveness as unknown. That is a
+    # soft caution ("unverified"), never a pass ("ok") and never a failure ("dead").
+    conn = _FakeSerial("[boot] wifi up", "PANEL scrok=unknown")
+    assert SETUP.read_panel_signal(conn, timeout=5.0) == "unverified"
+
+
+def test_read_panel_signal_unverified_on_loud_unknown_line():
+    conn = _FakeSerial(
+        "?? DISPLAY LIVENESS UNKNOWN on this board; touch shares the panel bus, so it cannot self-check. Look at the screen.",
+        "PANEL scrok=unknown",
+    )
+    assert SETUP.read_panel_signal(conn, timeout=5.0) == "unverified"
+
+
+def test_read_panel_signal_dead_wins_over_unknown():
+    # A real not-responding fault is decisive even if an "unknown" line follows: the
+    # softer caution must never override a genuine dead-panel signal.
+    conn = _FakeSerial("PANEL scrok=0", "PANEL scrok=unknown")
+    assert SETUP.read_panel_signal(conn, timeout=5.0) == "dead"
+
+
+def test_read_panel_signal_unverified_from_full_status_line():
+    # The shared-MISO console STATUS line carries scrok=unknown; the same parser reads
+    # it, and neighbouring scr=tft is not misread as the panel token.
+    status = (
+        "STATUS fw=x mode=1 wifi=1 ip=192.168.50.61 rssi=-50 heap=1000 scr=tft scrok=unknown want=tft board=solide_s3"
+    )
+    assert SETUP.read_panel_signal(_FakeSerial(status), timeout=5.0) == "unverified"
+
+
 def test_read_panel_signal_undetermined_is_none():
     # Non-decisive boot chatter then silence -> None (the installer treats it as a
     # soft 'unknown', never a false failure). Exercises the read-then-timeout path.
@@ -528,6 +559,10 @@ def test_finish_install_decision_matrix():
     cases = [
         (dict(production_on_board=True), "ok", 0, [success], [dead]),
         (dict(production_on_board=True), "unknown", 0, [success, "look at the screen"], []),
+        # CUM-423: a shared-MISO board that cannot self-check its panel is a SOFT
+        # caution, never a hard failure - install proceeds (rc 0) with the success line
+        # and a nudge to look at the glass, and never the wrong-variant message.
+        (dict(production_on_board=True), "unverified", 0, [success, "look at the screen"], [dead]),
         (dict(production_on_board=True), "dead", 1, [dead], [success]),
         (dict(production_on_board=True, bootstrap_error=RuntimeError("x")), "dead", 1, [dead], [success]),
         (

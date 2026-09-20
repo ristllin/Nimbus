@@ -87,12 +87,24 @@ std::string reportJson(const Env& env) {
   // live verdict (the driver's RDDST-based healthy() read stops matching the mode
   // we wrote) - the honest signal that replaces the hardwired "up" that shipped on
   // the owner's nimbus-light, whose black glass read "ok" with zero live measurement.
-  rows[n++] = {"screen", "Display (color touch)",
-               active(Cap::SCREEN) ? kAbsent
-                   : (!hal.display ? kDegraded : (env.panelNotResponding ? kDegraded : kOk)),
-               active(Cap::SCREEN) ? "fault-injected (test)"
-                   : (!hal.display ? "init failed"
-                      : (env.panelNotResponding ? "display not responding" : "up"))};
+  // On a shared-MISO solide board that verdict cannot be maintained (the poll is
+  // gated to keep touch alive), so env.panelLivenessKnown is false and the row reads
+  // "unverified" (kUnknown), never "ok" - the same honesty as a null panelPixOk: a
+  // signal that is not measured must never render as a healthy pass (CUM-423).
+  const char* screenState =
+      active(Cap::SCREEN) ? kAbsent
+      : !hal.display      ? kDegraded
+      : env.panelNotResponding ? kDegraded
+      : !env.panelLivenessKnown ? kUnknown
+                                : kOk;
+  const char* screenDetail =
+      active(Cap::SCREEN) ? "fault-injected (test)"
+      : !hal.display      ? "init failed"
+      : env.panelNotResponding ? "display not responding"
+      : !env.panelLivenessKnown
+          ? "bound; cannot self-check on this board, look at the screen"
+          : "up";
+  rows[n++] = {"screen", "Display (color touch)", screenState, screenDetail};
   // Touch: "up" from a begin() that succeeded at boot is not proof the controller
   // is still alive. On a resistive board a dead controller (MISO stuck high) reads
   // as degraded via env.touchDegraded even though hal.touch was true at boot - the
