@@ -270,8 +270,77 @@ static void test_size_sync_from_existing_file() {
   TEST_ASSERT_EQUAL_UINT(6000,  (unsigned)fs.files[pathFor(kBaseName)].size());
 }
 
+// ---- CUM-409: durable persistence is scoped to warn/error + key events ------
+//
+// The predicate agent_log.h's logPersist() gates the durable write on. Info stays
+// RAM-only; warn/error persist; a category tag is a key event that persists even at
+// info level.
+static void test_persists_durably_scopes_to_warn_error_and_tags() {
+  TEST_ASSERT_FALSE(persistsDurably(Level::Info, nullptr));   // routine info -> RAM only
+  TEST_ASSERT_FALSE(persistsDurably(Level::Info, ""));        // empty tag is no tag
+  TEST_ASSERT_TRUE(persistsDurably(Level::Info, cat::kNvs));  // info + key-event tag -> durable
+  TEST_ASSERT_TRUE(persistsDurably(Level::Warn, nullptr));    // warn -> durable
+  TEST_ASSERT_TRUE(persistsDurably(Level::Error, nullptr));   // error -> durable
+}
+
+// The class test TASK.md names: a BURST of info lines produces ZERO durable writes;
+// a warn line produces EXACTLY ONE. Routed through the same predicate the device uses,
+// against the fake FS, so the count is real (not a point assertion on one call).
+static void test_info_burst_zero_durable_warn_one() {
+  FakeFs fs; fs.mounted = true; fs.dirs.insert(kDir);
+  LogWriter<FakeFs> w; w.setTier(&fs, false);
+  int durableWrites = 0;
+  auto route = [&](Level lvl, const char* cat, const std::string& msg) {
+    if (persistsDurably(lvl, cat) && w.write(formatLine(0, 0, cat, msg))) ++durableWrites;
+  };
+  for (int i = 0; i < 64; ++i) route(Level::Info, nullptr, "routine info line");
+  TEST_ASSERT_EQUAL_INT(0, durableWrites);              // burst of info -> nothing durable
+  TEST_ASSERT_EQUAL_UINT(0, (unsigned)w.bytesWritten());// and zero flash wear
+  route(Level::Warn, nullptr, "a warning");
+  TEST_ASSERT_EQUAL_INT(1, durableWrites);              // one warn -> exactly one durable write
+  TEST_ASSERT_TRUE(w.bytesWritten() > 0);
+  route(Level::Error, nullptr, "an error");
+  route(Level::Info, cat::kProvider, "provider fell back");  // key event, durable even at info
+  TEST_ASSERT_EQUAL_INT(3, durableWrites);
+}
+
+// CUM-409 flash-wear counter: bytes written to durable equals the sum of the lines
+// actually persisted (a rotation renames, it never re-appends).
+static void test_wear_counter_tracks_bytes_written() {
+  FakeFs fs; fs.mounted = true; fs.dirs.insert(kDir);
+  LogWriter<FakeFs> w; w.setTier(&fs, false);
+  const std::string a = "1 0 - alpha\n", b = "2 0 - bravo\n";
+  TEST_ASSERT_TRUE(w.write(a));
+  TEST_ASSERT_TRUE(w.write(b));
+  TEST_ASSERT_EQUAL_UINT((unsigned)(a.size() + b.size()), (unsigned)w.bytesWritten());
+  // A failed write (FS down) adds nothing to the wear count.
+  FakeFs down;  // unmounted
+  LogWriter<FakeFs> w2; w2.setTier(&down, false);
+  TEST_ASSERT_FALSE(w2.write("3 0 - charlie\n"));
+  TEST_ASSERT_EQUAL_UINT(0, (unsigned)w2.bytesWritten());
+}
+
+// CUM-407: the drop is never silent - the count is persisted in a bounded marker line
+// at the next successful write, and no marker is emitted when nothing was dropped (so an
+// ordinary write leaves no seq gap a reader would misread as a drop).
+static void test_drop_marker_only_when_dropped() {
+  TEST_ASSERT_TRUE(dropMarkerLine(5, 100, 0).empty());   // nothing dropped -> no marker
+  std::string m = dropMarkerLine(5, 100, 3);
+  TEST_ASSERT_FALSE(m.empty());
+  TEST_ASSERT_TRUE(m.find("dropped 3 line(s)") != std::string::npos);
+  TEST_ASSERT_TRUE(m.find("storage") != std::string::npos);   // tagged storage-class
+  TEST_ASSERT_EQUAL_CHAR('\n', m.back());
+  // The marker is itself a well-formed, capped, single line.
+  TEST_ASSERT_TRUE(dropMarkerLine(1, 1, 4294967295u).size() <= kMaxLineBytes);
+  TEST_ASSERT_EQUAL_INT(1, (int)std::count(m.begin(), m.end(), '\n'));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
+  RUN_TEST(test_persists_durably_scopes_to_warn_error_and_tags);
+  RUN_TEST(test_info_burst_zero_durable_warn_one);
+  RUN_TEST(test_wear_counter_tracks_bytes_written);
+  RUN_TEST(test_drop_marker_only_when_dropped);
   RUN_TEST(test_format_line_shape);
   RUN_TEST(test_format_line_null_cat_is_dash);
   RUN_TEST(test_sanitize_strips_control_and_newlines);

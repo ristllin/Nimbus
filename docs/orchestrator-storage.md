@@ -68,11 +68,31 @@ Rule of thumb:
 | Journal | NVS (6 slots `agjournal/j0..j5`) - the SD day-stream was PLANNED, never built | - | same NVS |
 | Provider keys / routing / config | **NVS** | `solide::memory` keys | unchanged |
 | Verify cache | **NVS** | `vfy_*` | unchanged |
-| Logs / diagnostics | RAM ring (1280 B, `GET /api/log`) + serial - the SD log stream was PLANNED, never built. Device EVENTS are durable via the episodic `system` timeline (kind=log) | - | same ring |
+| Logs / diagnostics | Durable error log (`GET /api/errlog`) on SD `/log/nimbus.log` (rotated 4x256 KB), plus the 1280 B RAM ring (`GET /api/log`) + serial. Device EVENTS are also durable via the episodic `system` timeline (kind=log) | - | flash fallback `/log` on LittleFS (2x24 KB) + RAM ring |
 
 Two things **do not move**: NVS config/keys/scratchpad/verify are already at the
 right tier and are card-independent - the "critical info" the directive keeps off
 SD. Everything bulk targets SD with a **bounded** LittleFS/RAM degraded mode.
+
+### Durable log: what persists, and its best-effort limit
+
+The durable error log does not persist every line. Persistence is scoped by
+severity: warnings, errors, and tagged key events (memory, provider, relay, OTA,
+panel, NVS, storage, network, boot) are written to the log; routine info-level
+lines stay in the RAM ring and serial only. This bounds internal-flash write wear
+over the device's lifetime rather than writing every diagnostic line to flash.
+
+A durable write is **best-effort**. Each log call takes the shared card lock with a
+short timed try-acquire; if a large memory persist is holding the card, the write is
+skipped so the log call never stalls the watchdog-guarded loop. A contention skip is
+never a silent loss: the RAM ring and serial still hold the line, a dropped-line count
+is recorded into the durable log itself at the next successful write, and the running
+totals (`X-Log-Durable-Skipped`, `X-Log-Durable-Bytes`) are returned as headers on
+`GET /api/log`, in `GET /api/errlog?list=1`, and on the device health row. One case is
+not back-filled: a line emitted before the filesystem has mounted (early boot, before
+`memory::begin()`) is kept in the RAM ring and serial but is not written to the durable
+log retroactively. If you need every line during a heavy-churn incident, read the RAM
+ring (`GET /api/log`) continuously rather than relying on the durable log alone.
 
 ## 2. VDB - working set in PSRAM, durable on SD
 

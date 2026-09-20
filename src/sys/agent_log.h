@@ -8,6 +8,7 @@
 
 #include "nimbus/logring.h"     // core::LogRing::redact (portable, host-tested)
 #include "nimbus/log_sinks.h"   // core::emitRedacted (portable, host-tested two-sink seam)
+#include "errlog.h"             // nimbus::errlog::Level + persistsDurably (durable routing, CUM-409)
 #include "errlog_fs.h"          // durable SD/flash sink (CUM-401) - fed the SAME redacted line
 
 // agent_log - the device-side logging seam for the Orchestrator subsystem.
@@ -104,14 +105,23 @@ inline void logSerial(const std::string& red) {
 // RAM tail under a leaf spinlock and only best-effort-persists to the card under a SHORT
 // timed lock (skipping, never stalling, if the card is contended), so a log call from the
 // WDT-guarded loop or an AsyncTCP handler is always cheap.
-inline void logPersist(const std::string& red, const char* cat) {
+//
+// Durable routing (CUM-409): the RAM ring + Serial always get the line; the durable FS
+// sink gets it only when errlog::persistsDurably(lvl, cat) says so - warn/error and
+// category-tagged key events persist, routine info stays RAM-only. This bounds the
+// internal-flash write wear CUM-401 caused by persisting EVERY line on the caller task.
+inline void logPersist(const std::string& red, const char* cat, nimbus::errlog::Level lvl) {
   logring::store(red);
-  nimbus::errlog::append(red, cat);
+  if (nimbus::errlog::persistsDurably(lvl, cat))
+    nimbus::errlog::append(red, cat);
 }
 
+// Level of a bare alog()/alogf(): durable, so no existing call site loses durable capture
+// when CUM-409 lands (bare alog was durable under CUM-401). Use alogi()/alogif() for the
+// routine info stream that should stay in the RAM ring + Serial only.
 inline void alog(const char* msg) {
   core::emitRedacted(msg, logring::g_secrets, logSerial,
-                     [](const std::string& red) { logPersist(red, nullptr); });
+                     [](const std::string& red) { logPersist(red, nullptr, nimbus::errlog::Level::Warn); });
 }
 
 inline void alogf(const char* fmt, ...) {
@@ -121,7 +131,58 @@ inline void alogf(const char* fmt, ...) {
   vsnprintf(buf, sizeof(buf), fmt, ap);
   va_end(ap);
   core::emitRedacted(buf, logring::g_secrets,
-                     logSerial, [](const std::string& red) { logPersist(red, nullptr); });
+                     logSerial, [](const std::string& red) { logPersist(red, nullptr, nimbus::errlog::Level::Warn); });
+}
+
+// Info level: the full verbose stream stays in the RAM ring (GET /api/log) + Serial, but
+// is NOT written to the durable FS log (CUM-409). Use this for routine, high-frequency
+// diagnostics whose durability would only add flash wear.
+inline void alogi(const char* msg) {
+  core::emitRedacted(msg, logring::g_secrets, logSerial,
+                     [](const std::string& red) { logPersist(red, nullptr, nimbus::errlog::Level::Info); });
+}
+
+inline void alogif(const char* fmt, ...) {
+  char buf[256];
+  va_list ap;
+  va_start(ap, fmt);
+  vsnprintf(buf, sizeof(buf), fmt, ap);
+  va_end(ap);
+  core::emitRedacted(buf, logring::g_secrets, logSerial,
+                     [](const std::string& red) { logPersist(red, nullptr, nimbus::errlog::Level::Info); });
+}
+
+// Explicit warn/error: same three sinks, durable. Semantic aliases of the durable default
+// so a caller can state severity at the site (and so an info-defaulted future never drops
+// a genuine error from the durable log).
+inline void alogw(const char* msg) {
+  core::emitRedacted(msg, logring::g_secrets, logSerial,
+                     [](const std::string& red) { logPersist(red, nullptr, nimbus::errlog::Level::Warn); });
+}
+
+inline void alogwf(const char* fmt, ...) {
+  char buf[256];
+  va_list ap;
+  va_start(ap, fmt);
+  vsnprintf(buf, sizeof(buf), fmt, ap);
+  va_end(ap);
+  core::emitRedacted(buf, logring::g_secrets, logSerial,
+                     [](const std::string& red) { logPersist(red, nullptr, nimbus::errlog::Level::Warn); });
+}
+
+inline void aloge(const char* msg) {
+  core::emitRedacted(msg, logring::g_secrets, logSerial,
+                     [](const std::string& red) { logPersist(red, nullptr, nimbus::errlog::Level::Error); });
+}
+
+inline void alogef(const char* fmt, ...) {
+  char buf[256];
+  va_list ap;
+  va_start(ap, fmt);
+  vsnprintf(buf, sizeof(buf), fmt, ap);
+  va_end(ap);
+  core::emitRedacted(buf, logring::g_secrets, logSerial,
+                     [](const std::string& red) { logPersist(red, nullptr, nimbus::errlog::Level::Error); });
 }
 
 // Category-tagged variants: same three sinks, but the durable log line carries a short
@@ -130,7 +191,7 @@ inline void alogf(const char* fmt, ...) {
 // are unchanged (the tag is a durable-log concept), so /api/log stays byte-for-byte as is.
 inline void alogc(const char* cat, const char* msg) {
   core::emitRedacted(msg, logring::g_secrets, logSerial,
-                     [cat](const std::string& red) { logPersist(red, cat); });
+                     [cat](const std::string& red) { logPersist(red, cat, nimbus::errlog::Level::Warn); });
 }
 
 inline void alogcf(const char* cat, const char* fmt, ...) {
@@ -140,7 +201,7 @@ inline void alogcf(const char* cat, const char* fmt, ...) {
   vsnprintf(buf, sizeof(buf), fmt, ap);
   va_end(ap);
   core::emitRedacted(buf, logring::g_secrets, logSerial,
-                     [cat](const std::string& red) { logPersist(red, cat); });
+                     [cat](const std::string& red) { logPersist(red, cat, nimbus::errlog::Level::Warn); });
 }
 
 }  // namespace agent

@@ -7,6 +7,8 @@
 
 #include "memory_subsystem.h"
 #include "telegram.h"
+#include "store.h"                    // profileSeedDeferredNvsFull() - NVS-full hint (CUM-408)
+#include "../sys/errlog_fs.h"         // durableSkipped()/durableBytes() - durable log row (CUM-407/409)
 #include "hw/hal_status.h"
 #include "nimbus/fault.h"
 
@@ -75,7 +77,7 @@ std::string reportJson(const Env& env) {
   using nimbus::fault::Cap;
   const nimbus::hw::HalHealth& hal = nimbus::hw::halHealth();
 
-  Row rows[12];
+  Row rows[16];
   int n = 0;
 
   // LED ring + color panel: HAL begin-result AND not fault-injected.
@@ -184,6 +186,23 @@ std::string reportJson(const Env& env) {
                        : (tgRejected ? "Telegram token rejected - set a new bot token"
                                      : "configured")};
   }
+
+  // Durable error log (CUM-407/CUM-409): surface the flash-wear byte count and any
+  // lines the durable log dropped under card-lock contention. Degraded only when lines
+  // were dropped (a best-effort limitation, never a silent loss - the count is also
+  // recorded in the log itself), never a hard fault.
+  {
+    const uint32_t dropped = nimbus::errlog::durableSkipped();
+    String d = String((unsigned)(nimbus::errlog::durableBytes() / 1024)) + " KB written this boot";
+    if (dropped) d += String(", ") + dropped + " line(s) dropped under contention";
+    rows[n++] = {"log", "Durable log", dropped ? kDegraded : kOk, d};
+  }
+  // Settings storage (CUM-408): only appears when the one-time profile-seed migration
+  // could not persist because NVS is full, so it deferred rather than re-running on every
+  // battery-mode switch. A hint to free NVS space; clears on a reboot with headroom.
+  if (agent::store::profileSeedDeferredNvsFull())
+    rows[n++] = {"nvs", "Settings storage", kDegraded,
+                 "NVS full: profile defaults deferred, free space to apply them"};
 
   JsonDocument d;
   JsonArray arr = d["components"].to<JsonArray>();

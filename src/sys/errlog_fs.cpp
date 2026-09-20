@@ -32,7 +32,8 @@ bool      g_haveSd    = false;  // tier for reporting (listJson/onSdTier); engin
 ::fs::FS* g_fs        = nullptr;
 bool      g_tierNoted = false;  // the storage-tier decision line has landed on disk
 std::atomic<uint32_t> g_seq{0};           // monotonic per-boot line sequence (any task)
-std::atomic<uint32_t> g_durableSkipped{0};// lines dropped from the DURABLE log under lock contention
+std::atomic<uint32_t> g_durableSkipped{0};// TOTAL lines dropped from the DURABLE log under lock contention (reporting)
+std::atomic<uint32_t> g_skipUnpersisted{0};// dropped lines not yet recorded to the durable log (CUM-407 marker delta)
 std::string g_pendingTier;      // tier line built once, re-attempted until it lands (no seq churn)
 
 // RAM fallback tail: a fixed byte ring so readRecent() still returns recent lines
@@ -195,13 +196,27 @@ void append(const std::string& redacted, const char* cat) {
   // contended (e.g. a big memory persist in flight) SKIP rather than stall the caller
   // (loop/AsyncTCP) and risk a WDT reset. The line is already captured in RAM + Serial.
   if (!agent::memory::tryLock(kDurableLockMs)) {
-    g_durableSkipped.fetch_add(1);
+    g_durableSkipped.fetch_add(1);    // total, for reporting
+    g_skipUnpersisted.fetch_add(1);   // delta, recorded to disk at the next successful write
     return;
   }
   ensureInit();
   maybeRetier();
   noteTierIfNeeded();   // lands the tier line first once the FS is writable
-  g_writer.write(line); // one bounded append; degrades to RAM-only if the FS is not ready
+  if (g_writer.write(line)) {   // one bounded append; degrades to RAM-only if the FS is not ready
+    // CUM-407: a durable write just succeeded, so record any lines that were dropped
+    // under card-lock contention since the last one. Bounded: one marker per success.
+    // If the marker itself does not land (FS not ready), put the count back so the next
+    // success retries it - a contention drop is never silently lost.
+    if (g_skipUnpersisted.load() != 0) {
+      // Consume the delta and the seq number only when there is something to record, so
+      // an ordinary write never leaves a seq gap that a reader would read as a drop.
+      const uint32_t dropped = g_skipUnpersisted.exchange(0);
+      const std::string mark = dropMarkerLine(g_seq.fetch_add(1), millis(), dropped);
+      ramPush(mark);                                    // visible in the RAM tail too, like the tier lines
+      if (!g_writer.write(mark)) g_skipUnpersisted.fetch_add(dropped);
+    }
+  }
   agent::memory::unlock();
 }
 
@@ -243,10 +258,21 @@ std::string listJson() {
     out += '}';
   }
   out += "],\"skipped\":";
-  out += std::to_string(g_durableSkipped.load());   // durable lines dropped under card contention
+  out += std::to_string(g_durableSkipped.load());   // durable lines dropped under card contention (CUM-407)
+  out += ",\"bytesWritten\":";
+  out += std::to_string(g_writer.bytesWritten());    // bytes written to durable this boot (CUM-409 wear)
   out += '}';
   return out;
 }
+
+// Durable lines skipped under card-lock contention: a lock-free atomic (it is bumped
+// from the tryLock-FAILED path, i.e. when the card lock is NOT held), so it is read
+// without the lock.
+uint32_t durableSkipped() { return g_durableSkipped.load(); }
+// Bytes written to the durable log this boot: the single source of truth is the engine's
+// own counter (host-tested), read under the card lock that serializes every write, so the
+// value reported here is exactly the value the tests pin.
+size_t   durableBytes()   { agent::memory::Lock g; ensureInit(); return g_writer.bytesWritten(); }
 
 bool onSdTier() {
   agent::memory::Lock g;

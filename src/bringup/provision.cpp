@@ -9,8 +9,9 @@
 // Install the product with: python3 tools/setup_device.py
 //
 // Commands (newline-terminated): SCAN | SET key=value | SETI key=int |
-//   CONNECT ssid|pass | CONNECTNVS | STATUS | TOKEN
+//   CONNECT ssid|pass | CONNECTNVS | STATUS | TOKEN | PROBE
 #include <Arduino.h>
+#include <Wire.h>
 #include <WiFi.h>
 #include <solide/memory.h>
 
@@ -78,6 +79,18 @@ static void handle(const String& cmd) {
         solide::memory::getString("staPass", "").length(),
         solide::memory::getString("oaiKey", "").length(),
         solide::memory::getString("antKey", "").length());
+  } else if (cmd == "PROBE") {
+    // CUM-422: report the FT6336U capacitive-touch controller on the Freenove CYD's
+    // I2C bus (SDA=16, SCL=15). Its presence proves the physical board is a Freenove,
+    // regardless of which board image this sketch was built for, so the installer can
+    // REFUSE a Solide flash on a Freenove even when the seeded NVS would otherwise let
+    // the Solide panel read a liveness false-positive. Fixed pins on purpose: this scans
+    // the Freenove touch bus even when built with the Solide pinmap. A genuine Solide has
+    // nothing at 0x38 on these pins, so it answers ft6336=0 and the install proceeds.
+    Wire.begin(16, 15);
+    Wire.beginTransmission(0x38);
+    const bool present = (Wire.endTransmission() == 0);
+    Serial.printf("PROBE ft6336=%d addr=0x38\n", present ? 1 : 0);
   } else if (cmd == "TOKEN") {
     // Physical-UART recovery for a device whose display cannot show the sign-in
     // QR. Deliberately narrow: no generic NVS read command and no other secret.

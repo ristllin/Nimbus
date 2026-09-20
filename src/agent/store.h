@@ -274,6 +274,11 @@ bool     hasSfxLevelOrch();
 // a battery-mode switch. Precedence: explicit owner value > profile default > hard
 // default (see nimbus::effectiveWithProfileDefault).
 void     applyProfileDefaults(nimbus::ProfileId id);
+// CUM-408: true when the one-time profile-seed migration could not persist its "done"
+// marker because NVS is full, so it has been deferred (latched off for this boot rather
+// than re-running on every battery-mode switch). Surfaced as a health hint; clears on a
+// reboot that finds NVS headroom. Lock-free RAM read.
+bool     profileSeedDeferredNvsFull();
 uint16_t compactAtKB();  // fold trigger: KB of chat since last fold, 0 = off (default 48, clamp 8..512)
 void     setCompactAtKB(uint16_t v);
 // ---- battery/LED protection (owner feature 2026-07-17; study-grounded) -------

@@ -78,6 +78,14 @@ Source of truth: `lib/core/src/profile.cpp` (`kPresets`). Machine keys stay
 only the user-facing labels changed. "Revert to Defaults" is
 `revert_overrides` on `POST /api/config`.
 
+Selecting a mode also seeds two cross-cutting defaults (screen-rest minutes and
+sound level) into any key the owner has not set explicitly, via a one-time
+migration that marks itself done in NVS. On a device whose NVS is full the marker
+cannot persist, so the migration is deferred rather than re-run on every mode
+switch: it fails loud once (a log line and a "Settings storage" health hint that
+NVS is full), stops retrying for that boot, and applies cleanly once a reboot finds
+NVS headroom. Freeing NVS space, then rebooting, lets the profile defaults land.
+
 </details>
 
 ## 2. Ring level - what the ring shows in each mode

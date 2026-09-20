@@ -124,6 +124,22 @@ int32_t effectiveWithProfileDefault(bool ownerSet, int32_t ownerValue,
 // stale default, not a deliberate choice, and a battery mode may still drive it.
 bool adoptAsOwnerSet(bool present, int32_t value, int32_t hardDefault);
 
+// CUM-408: the one-time seed migration writes a "done" marker to NVS. On a full-NVS
+// device (the CUM-389 condition) that marker write silently drops, so without a guard
+// the migration - and its logging - re-runs on every battery-mode switch and never
+// completes. This models the decision the device makes each attempt from two observable
+// facts: whether the marker is already persisted, and whether NVS accepted the marker
+// write on this attempt. Pure, so the {fresh, seeded, full} class test runs on the host.
+enum class SeedAttempt : uint8_t {
+  AlreadyDone,      // marker present -> skip (steady state, no writes)
+  Seeded,           // fresh + marker persisted -> defaults applied, migration complete
+  DeferredNvsFull,  // fresh + marker write dropped -> NVS full: defer, latch, warn once
+};
+inline SeedAttempt planSeedAttempt(bool markerPresent, bool markerWritePersisted) {
+  if (markerPresent) return SeedAttempt::AlreadyDone;
+  return markerWritePersisted ? SeedAttempt::Seeded : SeedAttempt::DeferredNvsFull;
+}
+
 // Sparse user overrides on top of the active profile.
 class Config {
  public:
