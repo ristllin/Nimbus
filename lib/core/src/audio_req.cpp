@@ -158,4 +158,27 @@ std::string parseTranscription(const char* json, bool* ok) {
   return s.substr(a, b - a + 1);
 }
 
+std::string parseErrorCode(const char* json, bool* ok) {
+  if (ok) *ok = false;
+  if (!json || !*json) return {};
+  JsonDocument doc;
+  if (deserializeJson(doc, json)) return {};  // truncated/garbage -> ok stays false
+  if (ok) *ok = true;
+  ArduinoJson::JsonVariantConst err = doc["error"];
+  if (err.isNull()) return {};
+  // The router's refusal contract is {"error":"<code>"} (a bare string). Providers
+  // may instead nest {"error":{"code":..,"type":..,"message":..}}; prefer the
+  // machine code fields there, since those feed a code->status map.
+  if (err.is<const char*>()) return std::string(err.as<const char*>());
+  if (err.is<ArduinoJson::JsonObjectConst>()) {
+    const char* code = err["code"] | "";
+    if (code[0]) return std::string(code);
+    const char* type = err["type"] | "";
+    if (type[0]) return std::string(type);
+    const char* msg = err["message"] | "";
+    if (msg[0]) return std::string(msg);
+  }
+  return {};
+}
+
 }  // namespace core

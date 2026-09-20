@@ -4,6 +4,8 @@
 
 #include <cctype>
 
+#include "nimbus/orch/voice_route.h"   // voiceActiveProvider (3-way, cumulo-aware)
+
 namespace core {
 
 // "en_us" -> "US", "en_gb" -> "UK" (kept as the familiar label), "fr_fr" -> "FR",
@@ -96,20 +98,21 @@ int mergeMistralVoicesPage(const char* pageJson, std::set<std::string>& seen,
 }
 
 const char* speakerTtsFormat(const std::string& provider, bool* playAsMp3) {
-  // OpenAI is the one provider whose /v1/audio/speech emits WAV the speaker plays
-  // directly; every other provider (Mistral/Voxtral today) emits MP3, which the
-  // vendored minimp3 decoder plays. Default unknown providers to the MP3 path.
-  const bool wav = (provider == "openai");
+  // OpenAI's /v1/audio/speech emits WAV the speaker plays directly; a Cumulo call
+  // routes through the OpenAI upstream (/router/openai/v1/audio/speech), so it is the
+  // same WAV-capable shape. Every other provider (Mistral/Voxtral today) emits MP3,
+  // which the vendored minimp3 decoder plays. Default unknown providers to MP3.
+  const bool wav = (provider == "openai" || provider == "cumulo");
   if (playAsMp3) *playAsMp3 = !wav;
   return wav ? "wav" : "mp3";
 }
 
 std::string ttsActiveProvider(const std::string& configured,
                               bool hasOpenaiKey, bool hasMistralKey) {
-  if (configured == "openai")
-    return (hasOpenaiKey || !hasMistralKey) ? "openai" : "mistral";
-  // Any non-"openai" slug is treated as Mistral (the default).
-  return (hasMistralKey || !hasOpenaiKey) ? "mistral" : "openai";
+  // The 2-provider form (no cumulo key) - one source of truth with the cumulo-aware
+  // voiceActiveProvider so the two can never drift.
+  return nimbus::orch::voiceActiveProvider(configured, hasOpenaiKey, hasMistralKey,
+                                           /*hasCumuloKey=*/false);
 }
 
 void downmixStereoToMono(const int16_t* interleaved, int frames, int16_t* out) {

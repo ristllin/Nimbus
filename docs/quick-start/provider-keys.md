@@ -27,7 +27,9 @@ Any one verified key runs the assistant. If you are not sure:
 - **Easiest and free to try: Mistral.** Its free tier is enough to set up and use
   Nimbus, and no card is required to start. It is also the voice default.
 - **One key for everything: a Cumulo key.** Prepay once and it works across
-  Mistral, OpenAI, and Anthropic, with no per-provider accounts to manage.
+  Mistral, OpenAI, and Anthropic, with no per-provider accounts to manage. It also
+  covers voice, both dictation and spoken replies, so a one-key device needs no
+  separate voice provider.
 - **OpenAI** adds a few extras (image generation, and spoken replies on the device
   speaker). **Anthropic** is great for conversation. Both need a paid balance to
   start.

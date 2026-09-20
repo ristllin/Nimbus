@@ -180,8 +180,52 @@ static void test_empty_and_garbage() {
   TEST_ASSERT_EQUAL_UINT(0, parseTranscription(nullptr).size());
 }
 
+// ---- CUM-376: refusal error-code parse (feeds the honest voice status) ---------
+
+// The router's refusal contract is {"error":"<code>"} - a BARE string code.
+static void test_error_code_bare_string() {
+  bool ok = false;
+  TEST_ASSERT_EQUAL_STRING("funding_cap_reached",
+      core::parseErrorCode("{\"error\":\"funding_cap_reached\"}", &ok).c_str());
+  TEST_ASSERT_TRUE(ok);
+  TEST_ASSERT_EQUAL_STRING("rate_limited",
+      core::parseErrorCode("{\"error\":\"rate_limited\"}").c_str());
+}
+
+// A provider may nest the error; prefer the machine code/type over the message.
+static void test_error_code_nested_object() {
+  TEST_ASSERT_EQUAL_STRING("unsupported_media_type",
+      core::parseErrorCode("{\"error\":{\"message\":\"bad file\",\"code\":\"unsupported_media_type\"}}").c_str());
+  TEST_ASSERT_EQUAL_STRING("invalid_request_error",
+      core::parseErrorCode("{\"error\":{\"type\":\"invalid_request_error\",\"message\":\"x\"}}").c_str());
+  // Message-only object: fall back to the message text (better than nothing).
+  TEST_ASSERT_EQUAL_STRING("nope",
+      core::parseErrorCode("{\"error\":{\"message\":\"nope\"}}").c_str());
+}
+
+// A success body (or one with no error) -> ok=true, empty code (no false refusal).
+static void test_error_code_no_error_is_empty() {
+  bool ok = false;
+  TEST_ASSERT_EQUAL_UINT(0, core::parseErrorCode("{\"text\":\"hello\"}", &ok).size());
+  TEST_ASSERT_TRUE(ok);
+}
+
+// Truncated/garbage -> ok=false, empty (fail-closed, never a crash or bogus code).
+static void test_error_code_fails_closed() {
+  bool ok = true;
+  TEST_ASSERT_EQUAL_UINT(0, core::parseErrorCode("{\"error\":\"trunc", &ok).size());
+  TEST_ASSERT_FALSE(ok);
+  TEST_ASSERT_EQUAL_UINT(0, core::parseErrorCode("", &ok).size());
+  TEST_ASSERT_FALSE(ok);
+  TEST_ASSERT_EQUAL_UINT(0, core::parseErrorCode(nullptr).size());
+}
+
 int main() {
   UNITY_BEGIN();
+  RUN_TEST(test_error_code_bare_string);
+  RUN_TEST(test_error_code_nested_object);
+  RUN_TEST(test_error_code_no_error_is_empty);
+  RUN_TEST(test_error_code_fails_closed);
   RUN_TEST(test_body_over_2048_read_in_full);
   RUN_TEST(test_content_length_honored);
   RUN_TEST(test_cap_bounds_runaway);
