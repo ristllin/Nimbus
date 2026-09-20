@@ -6,56 +6,88 @@
 
 #include "../../sys/net_util.h"      // tlsClose
 #include "../../sys/tls_arbiter.h"   // single-TLS arena
+#include "../agent_config.h"         // CUMULO_HOST_DEFAULT
 #include "../store.h"
 #include "../../sys/agent_log.h"
 #include "b64_stream.h"              // shared base64 socket->file stream decoder
-#include "nimbus/tts_catalog.h"     // core::ttsActiveProvider (host-tested key fallback)
+#include "nimbus/tts_catalog.h"     // core::speakerTtsFormat (host-tested playback format)
+#include "nimbus/orch/voice_route.h" // voiceActiveProvider / voiceRouteFor (host-tested routing)
+#include "nimbus/audio_req.h"       // core::parseErrorCode (host-tested refusal parse)
 
 namespace agent {
 namespace tts {
 
 namespace {
-// Resolve the configured TTS provider. Mistral (Voxtral) is the default; both use
-// POST /v1/audio/speech but the response shapes differ (see below).
-struct TtsProvider { bool mistral; const char* host; const char* model; String key; String voice; };
+// Strip scheme + any path from a stored base, leaving a bare host for connect().
+// (A stored cumuloBase may be a full URL; same shape as embeddings::bareEmbedHost.)
+String bareHost(String h) {
+  int s = h.indexOf("://");
+  if (s >= 0) h = h.substring(s + 3);
+  int slash = h.indexOf('/');
+  if (slash >= 0) h = h.substring(0, slash);
+  return h;
+}
+
+// Resolve the EFFECTIVE TTS provider to host / path / model / key / voice. openai +
+// mistral (Voxtral) hit the provider's own /v1/audio/speech; a Cumulo-only device
+// (no BYOK key, a cumulo key) routes through the router at
+// /router/openai/v1/audio/speech with the single router key (mirrors the embeddings
+// viaCumuloRouter pattern, CUM-302). `mistral` is the WIRE shape: a direct Mistral
+// call emits base64 MP3 and ignores response_format; openai AND cumulo (openai
+// upstream) are raw-binary + response_format-honoring, so cumulo has mistral=false.
+struct TtsProvider { bool mistral; String host; const char* path; const char* model; String key; String voice; };
 TtsProvider resolve(const char* voice) {
   const String cfg = store::ttsProvider();
   const String eff = activeProvider();
+  const nimbus::orch::VoiceRouteInfo r =
+      nimbus::orch::voiceRouteFor(std::string(eff.c_str()), nimbus::orch::VoiceKind::Tts);
   // Voice precedence: explicit arg > stored voice (ONLY when the effective provider
-  // matches the configured one) > provider default. A stored MISTRAL voice slug would
-  // 400 on OpenAI (and vice versa), so on a key-driven fallback to the OTHER provider
-  // we drop the stored voice and use the fallback provider's default.
-  const bool storedApplies = ((eff == "openai") == (cfg == "openai"));
+  // IS the configured one) > route default. A stored voice slug is provider-specific
+  // (a Mistral slug 400s on OpenAI, and vice versa), so on any key-driven fallback to
+  // a different provider we drop it and use that route's default voice.
+  const bool storedApplies = (eff == cfg);
   const String stored = storedApplies ? store::ttsVoice() : String();
   auto pick = [&](const char* dflt) -> String {
     if (voice && voice[0]) return String(voice);
     return stored.length() ? stored : String(dflt);
   };
-  if (eff == "openai")
-    return {false, "api.openai.com", "gpt-4o-mini-tts", store::openaiKey(), pick("alloy")};
-  return {true, "api.mistral.ai", "voxtral-mini-tts-latest", store::mistralKey(),
-          pick("en_paul_neutral")};
+  TtsProvider p;
+  p.mistral = r.mistralShape;
+  p.path = r.path;
+  p.model = r.model;
+  p.voice = pick(r.voiceDefault);
+  if (r.viaCumuloRouter) {
+    String base = store::cumuloBase(); if (!base.length()) base = CUMULO_HOST_DEFAULT;
+    p.host = bareHost(base);
+    p.key = store::cumuloKey();
+  } else if (eff == "openai") {
+    p.host = "api.openai.com"; p.key = store::openaiKey();
+  } else {  // mistral
+    p.host = "api.mistral.ai"; p.key = store::mistralKey();
+  }
+  return p;
 }
 
 }  // namespace
 
 String activeProvider() {
-  // The provider that will actually voice this request: the configured one, or the
-  // OTHER provider when the configured one has no key but the other does, so the
-  // device still speaks instead of going silent (the old code force-rerouted a WAV
-  // request to OpenAI for the same reason; this restores that graceful fallback for
-  // any missing-key case, in both directions). speakOnDevice derives the playback
-  // format from THIS, so the format always matches the provider that synthesizes.
-  // The decision itself is the host-tested core::ttsActiveProvider.
-  std::string eff = core::ttsActiveProvider(std::string(store::ttsProvider().c_str()),
-                                            store::openaiKey().length() > 0,
-                                            store::mistralKey().length() > 0);
+  // The provider that will actually voice this request: the configured one, or a
+  // fallback when it has no key but another provider does, so the device still speaks
+  // instead of going silent. Adds cumulo as a valid effective provider - a one-key
+  // device (no BYOK key, a cumulo key) voices through the router (CUM-376).
+  // speakOnDevice derives the playback format from THIS (core::speakerTtsFormat), so
+  // the format always matches the synthesizing provider. The decision is the
+  // host-tested nimbus::orch::voiceActiveProvider.
+  std::string eff = nimbus::orch::voiceActiveProvider(
+      std::string(store::ttsProvider().c_str()), store::openaiKey().length() > 0,
+      store::mistralKey().length() > 0, store::cumuloKey().length() > 0);
   return String(eff.c_str());
 }
 
 bool available() {
-  String p = store::ttsProvider();
-  return (p == "openai") ? store::hasOpenaiKey() : store::hasMistralKey();
+  // True when the effective provider has a usable key - a direct openai/mistral key
+  // or the Cumulo router key (the one-key device voices through the router).
+  return resolve(nullptr).key.length() > 0;
 }
 
 size_t synthesizeToFile(const String& text, const char* outPath,
@@ -95,14 +127,14 @@ size_t synthesizeToFile(const String& text, const char* outPath,
   c.setConnectionTimeout(25000);
   bool connected = false;
   for (int a = 0; a < 3 && !connected && (int32_t)(millis() - deadline) < 0; a++) {
-    if (c.connect(prov.host, 443)) { connected = true; break; }
+    if (c.connect(prov.host.c_str(), 443)) { connected = true; break; }
     tlsClose(c);
     if (a < 2) vTaskDelay(pdMS_TO_TICKS(400));
   }
-  if (!connected) { arbiter::releaseWork(); alogf("tts: connect %s failed heap=%u", prov.host, ESP.getFreeHeap()); return 0; }
+  if (!connected) { arbiter::releaseWork(); alogf("tts: connect %s failed heap=%u", prov.host.c_str(), ESP.getFreeHeap()); return 0; }
 
-  c.printf("POST /v1/audio/speech HTTP/1.0\r\n");
-  c.printf("Host: %s\r\n", prov.host);
+  c.printf("POST %s HTTP/1.0\r\n", prov.path);
+  c.printf("Host: %s\r\n", prov.host.c_str());
   c.printf("Authorization: Bearer %s\r\n", prov.key.c_str());
   c.print("Content-Type: application/json\r\n");
   c.printf("Content-Length: %u\r\n", (unsigned)body.length());
@@ -128,7 +160,15 @@ size_t synthesizeToFile(const String& text, const char* outPath,
       if (c.available()) errb[n++] = c.read(); else vTaskDelay(1);
     }
     tlsClose(c); arbiter::releaseWork();
-    alogf("tts: %s HTTP %d: %.100s", store::ttsProvider().c_str(), status, errb);
+    // Log the refusal honestly (a router 4xx is {"error":<code>}); the spoken reply
+    // is supplementary, so the turn's TEXT reply still reaches the owner - no silence.
+    bool jok = false;
+    std::string code = core::parseErrorCode(errb, &jok);
+    if (jok && !code.empty())
+      alogf("tts: %s HTTP %d refused (%s): %s", store::ttsProvider().c_str(), status,
+            code.c_str(), nimbus::orch::voiceRefusalStatus(code).c_str());
+    else
+      alogf("tts: %s HTTP %d: %.100s", store::ttsProvider().c_str(), status, errb);
     return 0;
   }
 

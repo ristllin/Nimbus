@@ -5,7 +5,9 @@
 #include <string>
 
 #include "nimbus/audio_req.h"   // core::parseTranscription (shared, host-tested parse)
+#include "nimbus/orch/voice_route.h"   // voiceActiveProvider / voiceRouteFor / voiceRefusalStatus
 #include "http_multipart.h"
+#include "../agent_config.h"           // CUMULO_HOST_DEFAULT
 #include "../store.h"
 #include "../../sys/agent_log.h"
 
@@ -17,20 +19,55 @@
 namespace agent {
 namespace stt {
 
-// Resolve the configured STT provider to its host / transcription model / key.
-// Both OpenAI and Mistral (Voxtral) expose /v1/audio/transcriptions as multipart
-// and return {"text":...}, so only these three fields differ.
-struct SttProvider { const char* host; const char* model; String key; };
+// Strip scheme + any path from a stored base, leaving a bare host for connect().
+// (A stored cumuloBase may be a full URL; same shape as embeddings::bareEmbedHost.)
+static String bareHost(String h) {
+  int s = h.indexOf("://");
+  if (s >= 0) h = h.substring(s + 3);
+  int slash = h.indexOf('/');
+  if (slash >= 0) h = h.substring(0, slash);
+  return h;
+}
+
+// The honest one-line status of the LAST transcribe attempt when it failed with a
+// router/provider refusal (JSON {error:<code>}); "" when the last attempt succeeded
+// or failed some other way. The mic path reads this to surface an honest line
+// instead of the generic "Didn't catch that" - never silence (CUM-376).
+static String s_lastStatus;
+
+// Resolve the EFFECTIVE STT provider to its host / path / transcription model / key.
+// openai + mistral (Voxtral) hit the provider's own /v1/audio/transcriptions; a
+// Cumulo-only device (no BYOK key, a cumulo key) routes through the router at
+// /router/openai/v1/audio/transcriptions with the single router key, mirroring the
+// embeddings viaCumuloRouter pattern (CUM-302). All three POST multipart and return
+// {"text":...}, so only host/path/model/key differ.
+struct SttProvider { String host; const char* path; const char* model; String key; };
 static SttProvider resolve() {
-  String p = store::sttProvider();
-  if (p == "openai") return {"api.openai.com", "gpt-4o-mini-transcribe", store::openaiKey()};
-  return {"api.mistral.ai", "voxtral-mini-latest", store::mistralKey()};  // default
+  const std::string eff = nimbus::orch::voiceActiveProvider(
+      std::string(store::sttProvider().c_str()), store::hasOpenaiKey(),
+      store::hasMistralKey(), store::hasCumuloKey());
+  const nimbus::orch::VoiceRouteInfo r =
+      nimbus::orch::voiceRouteFor(eff, nimbus::orch::VoiceKind::Stt);
+  SttProvider p{String(), r.path, r.model, String()};
+  if (r.viaCumuloRouter) {
+    String base = store::cumuloBase(); if (!base.length()) base = CUMULO_HOST_DEFAULT;
+    p.host = bareHost(base);
+    p.key = store::cumuloKey();
+  } else if (eff == "openai") {
+    p.host = "api.openai.com"; p.key = store::openaiKey();
+  } else {  // mistral
+    p.host = "api.mistral.ai"; p.key = store::mistralKey();
+  }
+  return p;
 }
 
 bool available() {
-  String p = store::sttProvider();
-  return (p == "openai") ? store::hasOpenaiKey() : store::hasMistralKey();
+  // The mic gate keys off this: a cumulo-keyed device resolves to the router and is
+  // available, so "Voice needs a speech-to-text key" does not fire (CUM-376).
+  return resolve().key.length() > 0;
 }
+
+String lastStatus() { return s_lastStatus; }
 
 // The 44-byte canonical RIFF/WAVE header for 16-bit mono PCM. Streamed INLINE as
 // the multipart filePrefix (transcribePcm) - the old pcmToWav wrote a second full
@@ -53,24 +90,37 @@ static void wavHeader(uint8_t h[44], uint32_t dataBytes, uint32_t sampleRate) {
 static String transcribeCommon(const char* localPath, const char* fname, const char* mime,
                                const uint8_t* prefix, size_t prefixLen) {
   if (!localPath || !localPath[0]) return String();
+  s_lastStatus = String();   // fresh attempt: clear any prior refusal status
   SttProvider prov = resolve();
   if (prov.key.length() == 0) { alogf("stt: no key for provider %s", store::sttProvider().c_str()); return String(); }
 
   size_t fsz = 0;
   { File f = LittleFS.open(localPath, FILE_READ); if (f) { fsz = f.size(); f.close(); } }
-  STTDIAG("provider=%s model=%s file=%s size=%u (+%u prefix) mime=%s",
-          store::sttProvider().c_str(), prov.model, fname,
+  STTDIAG("host=%s path=%s model=%s file=%s size=%u (+%u prefix) mime=%s",
+          prov.host.c_str(), prov.path, prov.model, fname,
           (unsigned)fsz, (unsigned)prefixLen, mime ? mime : "");
 
   std::vector<httpmp::Field> fields = { {"model", prov.model} };  // Voxtral rejects response_format; text is default
   String resp, err;
-  bool ok = httpmp::post(prov.host, 443, "/v1/audio/transcriptions",
+  bool ok = httpmp::post(prov.host.c_str(), 443, prov.path,
                          prov.key, fields, "file", fname,
                          mime && mime[0] ? mime : "audio/ogg", localPath, resp, err,
                          /*srcFs=*/nullptr, /*lockSrc=*/false, prefix, prefixLen);
   STTDIAG("http ok=%d err='%s' respLen=%u resp='%.160s'",
           ok ? 1 : 0, err.c_str(), (unsigned)resp.length(), resp.c_str());
-  if (!ok) { alogf("stt: transcribe failed (%s): %s", store::sttProvider().c_str(), err.c_str()); return String(); }
+  if (!ok) {
+    // A refusal is JSON {error:<code>} with 4xx (funding_cap_reached, rate_limited,
+    // audio_duration_unknown, unsupported_media_type - the router's contract until
+    // the audio route is live, and per-call after). Surface the code as an honest
+    // one-line status for the owner instead of a silent generic miss.
+    bool jok = false;
+    std::string code = core::parseErrorCode(resp.c_str(), &jok);
+    if (jok && !code.empty())
+      s_lastStatus = String(nimbus::orch::voiceRefusalStatus(code).c_str());
+    alogf("stt: transcribe failed (%s): %s%s", store::sttProvider().c_str(), err.c_str(),
+          s_lastStatus.length() ? (String(" [") + s_lastStatus + "]").c_str() : "");
+    return String();
+  }
 
   // Response: {"text":"..."}. Parse via the shared, host-tested core parser (same
   // code path the regression test exercises). It uses a real JSON decoder so ALL

@@ -23,8 +23,15 @@
 #include <string>
 
 #include "nimbus/tts_catalog.h"
+#include "nimbus/orch/voice_route.h"   // CUM-376: cumulo voice routing helpers
 #include "minimp3.h"
 #include "mp3_fixture.h"   // kToneMp3 / kToneMp3Len - a real 16 kHz mono MP3
+
+using nimbus::orch::VoiceKind;
+using nimbus::orch::VoiceRouteInfo;
+using nimbus::orch::voiceActiveProvider;
+using nimbus::orch::voiceRefusalStatus;
+using nimbus::orch::voiceRouteFor;
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -52,6 +59,149 @@ static void test_unknown_provider_defaults_to_mp3(void) {
   TEST_ASSERT_EQUAL_STRING("mp3", core::speakerTtsFormat("", &mp3));
   TEST_ASSERT_TRUE(mp3);
   TEST_ASSERT_EQUAL_STRING("mp3", core::speakerTtsFormat("some-future-tts", nullptr));
+}
+
+static void test_cumulo_routes_to_wav(void) {
+  // CUM-376: cumulo TTS routes through the OpenAI upstream (/router/openai/...), so
+  // its response is the same WAV-capable shape as a direct OpenAI call - not MP3.
+  bool mp3 = true;
+  const char* fmt = core::speakerTtsFormat("cumulo", &mp3);
+  TEST_ASSERT_EQUAL_STRING("wav", fmt);
+  TEST_ASSERT_FALSE(mp3);
+}
+
+// ---- CUM-376: the pure voice route table (provider x route x key state) --------
+
+// Direct BYOK routes are unchanged: the provider's own /v1/audio/* path, direct
+// host+key (not the router), and the Mistral wire shape only for Mistral.
+static void test_route_openai_direct(void) {
+  VoiceRouteInfo s = voiceRouteFor("openai", VoiceKind::Stt);
+  TEST_ASSERT_TRUE(s.known);
+  TEST_ASSERT_FALSE(s.viaCumuloRouter);
+  TEST_ASSERT_FALSE(s.mistralShape);
+  TEST_ASSERT_EQUAL_STRING("/v1/audio/transcriptions", s.path);
+  TEST_ASSERT_EQUAL_STRING("gpt-4o-mini-transcribe", s.model);
+  VoiceRouteInfo t = voiceRouteFor("openai", VoiceKind::Tts);
+  TEST_ASSERT_FALSE(t.viaCumuloRouter);
+  TEST_ASSERT_FALSE(t.mistralShape);
+  TEST_ASSERT_EQUAL_STRING("/v1/audio/speech", t.path);
+  TEST_ASSERT_EQUAL_STRING("gpt-4o-mini-tts", t.model);
+  TEST_ASSERT_EQUAL_STRING("alloy", t.voiceDefault);
+}
+
+static void test_route_mistral_direct(void) {
+  VoiceRouteInfo s = voiceRouteFor("mistral", VoiceKind::Stt);
+  TEST_ASSERT_TRUE(s.known);
+  TEST_ASSERT_FALSE(s.viaCumuloRouter);
+  TEST_ASSERT_TRUE(s.mistralShape);   // base64 MP3 body, ignores response_format
+  TEST_ASSERT_EQUAL_STRING("/v1/audio/transcriptions", s.path);
+  TEST_ASSERT_EQUAL_STRING("voxtral-mini-latest", s.model);
+  VoiceRouteInfo t = voiceRouteFor("mistral", VoiceKind::Tts);
+  TEST_ASSERT_TRUE(t.mistralShape);
+  TEST_ASSERT_EQUAL_STRING("/v1/audio/speech", t.path);
+  TEST_ASSERT_EQUAL_STRING("voxtral-mini-tts-latest", t.model);
+  TEST_ASSERT_EQUAL_STRING("en_paul_neutral", t.voiceDefault);
+}
+
+// The cumulo route: through the router at /router/openai/v1/audio/*, openai-shaped
+// (mistralShape=false) so the same parse/synthesis code path serves it, host+key
+// come from the router (viaCumuloRouter=true).
+static void test_route_cumulo_via_router(void) {
+  VoiceRouteInfo s = voiceRouteFor("cumulo", VoiceKind::Stt);
+  TEST_ASSERT_TRUE(s.known);
+  TEST_ASSERT_TRUE(s.viaCumuloRouter);
+  TEST_ASSERT_FALSE(s.mistralShape);
+  TEST_ASSERT_EQUAL_STRING("/router/openai/v1/audio/transcriptions", s.path);
+  TEST_ASSERT_EQUAL_STRING("gpt-4o-mini-transcribe", s.model);
+  VoiceRouteInfo t = voiceRouteFor("cumulo", VoiceKind::Tts);
+  TEST_ASSERT_TRUE(t.viaCumuloRouter);
+  TEST_ASSERT_FALSE(t.mistralShape);   // openai upstream: raw binary, honors response_format
+  TEST_ASSERT_EQUAL_STRING("/router/openai/v1/audio/speech", t.path);
+  TEST_ASSERT_EQUAL_STRING("gpt-4o-mini-tts", t.model);
+  TEST_ASSERT_EQUAL_STRING("alloy", t.voiceDefault);
+}
+
+static void test_route_unknown_provider_is_not_known(void) {
+  VoiceRouteInfo s = voiceRouteFor("zai", VoiceKind::Stt);
+  TEST_ASSERT_FALSE(s.known);
+  TEST_ASSERT_FALSE(s.viaCumuloRouter);
+}
+
+// ---- CUM-376: effective provider is cumulo-aware (the one-key fallback) --------
+
+static void test_voice_active_backcompat_2provider(void) {
+  // With no cumulo key, voiceActiveProvider must match the old 2-provider behavior
+  // exactly (ttsActiveProvider delegates to it - they can never drift).
+  TEST_ASSERT_EQUAL_STRING("mistral", voiceActiveProvider("mistral", true, true, false).c_str());
+  TEST_ASSERT_EQUAL_STRING("openai",  voiceActiveProvider("openai", true, true, false).c_str());
+  TEST_ASSERT_EQUAL_STRING("openai",  voiceActiveProvider("mistral", true, false, false).c_str());
+  TEST_ASSERT_EQUAL_STRING("mistral", voiceActiveProvider("openai", false, true, false).c_str());
+  TEST_ASSERT_EQUAL_STRING("mistral", voiceActiveProvider("", false, false, false).c_str());
+}
+
+static void test_voice_active_one_key_device_falls_to_cumulo(void) {
+  // THE one-key device (CUM-376): the shipped voice default is "mistral" with NO
+  // mistral or openai key, but a cumulo key is present -> route through the router.
+  TEST_ASSERT_EQUAL_STRING("cumulo", voiceActiveProvider("mistral", false, false, true).c_str());
+  // Same for an openai-configured device that only holds a cumulo key.
+  TEST_ASSERT_EQUAL_STRING("cumulo", voiceActiveProvider("openai", false, false, true).c_str());
+}
+
+static void test_voice_active_byok_wins_over_cumulo(void) {
+  // A direct key for the configured provider is spent first - cumulo is the LAST
+  // fallback, never a silent override of the key the owner chose.
+  TEST_ASSERT_EQUAL_STRING("mistral", voiceActiveProvider("mistral", false, true, true).c_str());
+  TEST_ASSERT_EQUAL_STRING("openai",  voiceActiveProvider("openai", true, false, true).c_str());
+  // Configured provider unkeyed, the OTHER BYOK provider keyed -> that one, not cumulo.
+  TEST_ASSERT_EQUAL_STRING("openai",  voiceActiveProvider("mistral", true, false, true).c_str());
+}
+
+static void test_voice_active_explicit_cumulo_selection(void) {
+  // An explicit cumulo selection routes through the router when keyed; if the cumulo
+  // key is somehow absent it falls back to a keyed BYOK provider rather than dying.
+  TEST_ASSERT_EQUAL_STRING("cumulo",  voiceActiveProvider("cumulo", false, false, true).c_str());
+  TEST_ASSERT_EQUAL_STRING("cumulo",  voiceActiveProvider("cumulo", true, true, true).c_str());
+  TEST_ASSERT_EQUAL_STRING("openai",  voiceActiveProvider("cumulo", true, false, false).c_str());
+  TEST_ASSERT_EQUAL_STRING("mistral", voiceActiveProvider("cumulo", false, true, false).c_str());
+  // No keys at all: return the configured slug (caller fails at the key check).
+  TEST_ASSERT_EQUAL_STRING("cumulo",  voiceActiveProvider("cumulo", false, false, false).c_str());
+}
+
+// ---- CUM-376: refusal code -> honest one-line status (never silence) -----------
+
+static void test_refusal_status_known_codes(void) {
+  // Each contract code maps to a distinct, honest, non-empty line.
+  const std::string funding = voiceRefusalStatus("funding_cap_reached");
+  const std::string rate    = voiceRefusalStatus("rate_limited");
+  const std::string dur     = voiceRefusalStatus("audio_duration_unknown");
+  const std::string media   = voiceRefusalStatus("unsupported_media_type");
+  TEST_ASSERT_TRUE(funding.size() > 0);
+  TEST_ASSERT_TRUE(rate.size() > 0);
+  TEST_ASSERT_TRUE(dur.size() > 0);
+  TEST_ASSERT_TRUE(media.size() > 0);
+  // They are genuinely different lines, not one catch-all.
+  TEST_ASSERT_TRUE(funding != rate);
+  TEST_ASSERT_TRUE(dur != media);
+  TEST_ASSERT_TRUE(funding != dur);
+}
+
+static void test_refusal_status_unknown_code_has_safe_default(void) {
+  // An unknown or empty code must still yield an honest line, never "" (silence).
+  TEST_ASSERT_TRUE(voiceRefusalStatus("").size() > 0);
+  TEST_ASSERT_TRUE(voiceRefusalStatus("some_new_code").size() > 0);
+}
+
+static void test_refusal_status_copy_hygiene(void) {
+  // Public-repo copy rules (AGENTS s6): no em dash, no exclamation shouting.
+  const char* codes[] = {"funding_cap_reached", "rate_limited", "audio_duration_unknown",
+                         "unsupported_media_type", "", "unknown"};
+  for (const char* c : codes) {
+    const std::string s = voiceRefusalStatus(c);
+    TEST_ASSERT_TRUE(s.find("\xe2\x80\x94") == std::string::npos);  // U+2014 em dash
+    TEST_ASSERT_TRUE(s.find('!') == std::string::npos);
+    // ASCII only (device panel + serial are printable ASCII).
+    for (unsigned char ch : s) TEST_ASSERT_TRUE(ch >= 0x20 && ch < 0x7f);
+  }
 }
 
 // ---- provider key fallback (the regression this lane must not reintroduce) --
@@ -147,6 +297,18 @@ int main(int, char**) {
   RUN_TEST(test_openai_routes_to_wav);
   RUN_TEST(test_mistral_routes_to_mp3);
   RUN_TEST(test_unknown_provider_defaults_to_mp3);
+  RUN_TEST(test_cumulo_routes_to_wav);
+  RUN_TEST(test_route_openai_direct);
+  RUN_TEST(test_route_mistral_direct);
+  RUN_TEST(test_route_cumulo_via_router);
+  RUN_TEST(test_route_unknown_provider_is_not_known);
+  RUN_TEST(test_voice_active_backcompat_2provider);
+  RUN_TEST(test_voice_active_one_key_device_falls_to_cumulo);
+  RUN_TEST(test_voice_active_byok_wins_over_cumulo);
+  RUN_TEST(test_voice_active_explicit_cumulo_selection);
+  RUN_TEST(test_refusal_status_known_codes);
+  RUN_TEST(test_refusal_status_unknown_code_has_safe_default);
+  RUN_TEST(test_refusal_status_copy_hygiene);
   RUN_TEST(test_active_provider_prefers_configured);
   RUN_TEST(test_active_provider_falls_back_when_configured_key_missing);
   RUN_TEST(test_active_provider_keeps_configured_when_it_has_the_key);

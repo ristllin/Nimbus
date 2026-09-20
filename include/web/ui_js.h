@@ -1968,7 +1968,9 @@ function applyOrch(d){
     parts.push(ids.length?('✓ '+ids.length+' allowed chat'+(ids.length>1?'s':'')) :
       '• No one approved yet - message the bot once, then approve it below');
     const sp=d.sttProv&&d.providers&&d.providers[d.sttProv];
+    const ck=d.providers&&d.providers.cumulo&&d.providers.cumulo.hasKey;
     parts.push(sp&&sp.hasKey?('✓ voice notes ('+d.sttProv+' STT)') :
+      ck?'✓ voice notes (Cumulo Nimbus STT)' :
       '⚠ No '+(d.sttProv||'dictation')+' key - voice notes can’t be transcribed');
     r.textContent=parts.join('  ·  ');
     // Red is reserved for a genuine failure (a token Telegram rejected). Normal

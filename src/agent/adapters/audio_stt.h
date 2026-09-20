@@ -10,8 +10,17 @@
 namespace agent {
 namespace stt {
 
-// True if a transcription provider key is configured (OpenAI).
+// True if a transcription provider key is configured: a direct openai/mistral key,
+// OR a Cumulo router key (the one-key device routes STT through the router). Backs
+// the mic gate, so "Voice needs a speech-to-text key" does not fire on a cumulo
+// device (CUM-376).
 bool available();
+
+// The honest one-line status of the LAST transcribe attempt when it failed with a
+// router/provider refusal (e.g. funding_cap_reached, rate_limited); "" otherwise.
+// The mic path surfaces this instead of the generic "Didn't catch that" so a
+// refusal is never silent. Reset at the start of each transcribe call.
+String lastStatus();
 
 // Transcribe the audio at `localPath` (LittleFS) with the given mime type. Returns
 // the transcript text ("" on failure). Signature matches telegram::SttSink so it

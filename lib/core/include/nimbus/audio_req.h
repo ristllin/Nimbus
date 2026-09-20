@@ -70,4 +70,13 @@ bool dechunkHttpBody(std::string& body);
 // (accents/emoji) decode correctly.
 std::string parseTranscription(const char* json, bool* ok = nullptr);
 
+// Parse a refusal/error response body into its machine error CODE. Handles the
+// router's contract shape {"error":"<code>"} (a bare string) and the nested
+// provider shape {"error":{"code"|"type"|"message":...}}. Returns "" when there is
+// no error object. `ok` (if non-null) is set false ONLY when the JSON failed to
+// parse (truncated/garbage), true otherwise - so a valid body with no error is
+// (ok=true, ""). The device maps the code to an honest owner status via
+// nimbus::orch::voiceRefusalStatus.
+std::string parseErrorCode(const char* json, bool* ok = nullptr);
+
 }  // namespace core

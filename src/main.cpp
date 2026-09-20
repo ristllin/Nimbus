@@ -1252,13 +1252,17 @@ static void voiceReleaseFeedback() {
   renderScreen(attn::ScreenId::StatusIdle, -1);
 }
 
-// Nothing usable was heard: LEDs off, ring back to idle, and a panel-aware retry
-// hint held until the owner clicks.
+// Nothing usable was heard: LEDs off, ring back to idle, and a panel-aware hint held
+// until the owner clicks. When STT failed on a router/provider REFUSAL (out of
+// credit, rate limited, bad audio), surface that honest one-line status instead of
+// the generic retry hint - a refusal must never masquerade as a missed word (CUM-376).
 static void voiceEmptyTranscript() {
   solide::leds::off();
   refreshRing();
+  const String refusal = agent::stt::lastStatus();
   // Hold-to-talk is the mic button on the touch panel.
-  g_askOverride = "Didn't catch that - hold the mic button and speak.";
+  g_askOverride = refusal.length() ? refusal
+                                   : String("Didn't catch that - hold the mic button and speak.");
   g_askSticky = true; g_askPage = 0;   // hold until click (P2.3)
   renderScreen(attn::ScreenId::Ask, -1);
 }
