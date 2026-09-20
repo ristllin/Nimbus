@@ -581,6 +581,15 @@ static uint32_t      g_lastApReconcileMs = 0;  // periodic AP<->STA reconcile (s
 static solide::BeginResult g_hal{};            // per-subsystem HAL health from solide::begin()
 static bool          g_bootPanelSignaled = false;  // one-shot boot panel signal fired (CUM-388)
 
+// Can this board maintain a real panel-liveness verdict (CUM-423)? False on a
+// shared-MISO solide board, where the render-independent RDDST poll is gated off to
+// keep touch alive (CUM-392): the panel binds but nothing feeds the verdict. The
+// ONE definition, so panelScrok(), the boot beacon, and the health-row hook can
+// never disagree about which boards are self-checkable.
+static bool panelLivenessKnown() {
+  return !(g_screenIsTft && hw::tft::panelReadbackGated());
+}
+
 // The live tri-state "screen confirmed up and answering" verdict (CUM-388/423):
 // the ONE source the STATUS scrok field and the boot panel signal both read, so
 // they can never drift from each other or from the health "screen" row. Yes only
@@ -595,7 +604,7 @@ static nimbus::display::Scrok panelScrok() {
       /*boundOk=*/g_hal.display,
       /*faultInjected=*/nimbus::fault::active(nimbus::fault::SCREEN),
       /*notResponding=*/g_screenIsTft && hw::tft::controllerNotResponding(),
-      /*livenessKnown=*/!(g_screenIsTft && hw::tft::panelReadbackGated()));
+      /*livenessKnown=*/panelLivenessKnown());
 }
 
 // One-shot boot panel signal (CUM-388). Twice a Freenove got the Solide image
@@ -613,7 +622,7 @@ static void emitBootPanelSignalOnce(uint32_t now) {
   const BootPanelSignal sig = nimbus::display::bootPanelSignal(
       /*boundOk=*/g_hal.display,
       /*notResponding=*/g_screenIsTft && hw::tft::controllerNotResponding(),
-      /*livenessKnown=*/!(g_screenIsTft && hw::tft::panelReadbackGated()));
+      /*livenessKnown=*/panelLivenessKnown());
   switch (sig) {
     case BootPanelSignal::Responding:
       // Give the debounced verdict (~6 s: threshold 3 at the 2 s cadence) time to
@@ -3040,7 +3049,7 @@ void setup() {
   // shared-MISO solide board the render-independent RDDST poll is gated off to keep
   // touch alive, so there is no honest feed for the verdict: the health "screen" row
   // reads "unverified" rather than a false "ok". Mirrors panelScrok()'s livenessKnown.
-  wc.panelLivenessKnown = [] { return !(g_screenIsTft && hw::tft::panelReadbackGated()); };
+  wc.panelLivenessKnown = [] { return panelLivenessKnown(); };
   // Battery drain/storage (battery-measurement). setStorage is production; setDrain is
   // TEST-only (the endpoint is compiled out of production, so the callback is never set).
   wc.setStorage  = [](int pct) { storageSet(pct); };
