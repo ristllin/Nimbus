@@ -184,9 +184,7 @@ def test_episodic_past_ring_still_queryable_from_sd(rig):
     n1 = int(st1.get("episodicMsgs", 0))
     assert n1 - n0 >= 600, f"store grew only {n1 - n0} (ring-evicted rows lost?)"
     # Ring-window read stays fast and full:
-    r = _S.get(
-        _url(ip, tok, "/api/mem/episodic"), params={"session": "hiltest-epi", "limit": 100}, timeout=30
-    )
+    r = _S.get(_url(ip, tok, "/api/mem/episodic"), params={"session": "hiltest-epi", "limit": 100}, timeout=30)
     assert r.status_code == 200
     msgs = r.json().get("messages", [])
     assert len(msgs) >= 100, f"only {len(msgs)} rows came back"
