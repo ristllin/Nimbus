@@ -15,54 +15,49 @@ serial, because repeated console opens wedge the host CDC driver.
 
 from __future__ import annotations
 
-import os
 import time
 
 import pytest
 
-try:
-    import requests
-except ImportError:  # pragma: no cover
-    requests = None
+from webrig import ip_tok_or_skip, make_session, require_orchestrator
 
 pytestmark = [pytest.mark.hil, pytest.mark.net]
 
 TEST_CHAT = "999000777"  # synthetic; never a real Telegram chat
 
+# The shared header-authed session for this tier, built by the ``rig`` fixture.
+_S = None
+
 
 def _url(ip, tok, path):
-    return f"http://{ip}{path}?t={tok}"
+    # Token rides the X-Nimbus-Token header on _S, never a ?t= query.
+    return f"http://{ip}{path}"
 
 
 @pytest.fixture
 def rig():
-    if requests is None:
-        pytest.skip("requests not installed")
-    ip = os.environ.get("NIMBUS_TEST_IP")
-    tok = os.environ.get("NIMBUS_TEST_TOKEN")
-    if not ip or not tok:
-        pytest.skip("set NIMBUS_TEST_IP + NIMBUS_TEST_TOKEN to run L17")
-    st = requests.get(_url(ip, tok, "/api/state"), timeout=10)
-    if st.status_code != 200 or st.json().get("mode") != 1:
-        pytest.skip("Orchestrator mode required (MODE 1)")
-    if requests.get(_url(ip, tok, "/api/tenant"), timeout=10).status_code != 200:
+    global _S
+    ip, tok = ip_tok_or_skip("L17")
+    _S = make_session(tok)
+    require_orchestrator(_S, ip, "L17")
+    if _S.get(_url(ip, tok, "/api/tenant"), timeout=10).status_code != 200:
         pytest.skip("board predates the RBAC build - flash current main first")
     # A role can only be given to someone already approved - the device refuses
     # to pre-seed a role on a chat nobody has admitted. So the fixture performs
     # the real first step.
-    requests.post(_url(ip, tok, "/api/telegram/add"), data={"id": TEST_CHAT, "name": "l17"}, timeout=10)
+    _S.post(_url(ip, tok, "/api/telegram/add"), data={"id": TEST_CHAT, "name": "l17"}, timeout=10)
     yield ip, tok
     # RESTORE: the synthetic tenant must never outlive the run - revoked AND
     # off the allowlist.
-    requests.post(_url(ip, tok, "/api/tenant"), data={"id": TEST_CHAT, "role": "unknown"}, timeout=10)
-    requests.post(_url(ip, tok, "/api/telegram/remove"), data={"id": TEST_CHAT}, timeout=10)
+    _S.post(_url(ip, tok, "/api/tenant"), data={"id": TEST_CHAT, "role": "unknown"}, timeout=10)
+    _S.post(_url(ip, tok, "/api/telegram/remove"), data={"id": TEST_CHAT}, timeout=10)
     # ...and drop the row itself. setRole UPSERTS, so a bare "revoke" leaves a
     # dead tenant occupying one of 32 slots on the owner's device forever.
-    requests.post(_url(ip, tok, "/api/tenant"), data={"id": TEST_CHAT, "remove": "1"}, timeout=10)
+    _S.post(_url(ip, tok, "/api/tenant"), data={"id": TEST_CHAT, "remove": "1"}, timeout=10)
 
 
 def _tenants(ip, tok) -> dict:
-    j = requests.get(_url(ip, tok, "/api/tenant"), timeout=10).json()
+    j = _S.get(_url(ip, tok, "/api/tenant"), timeout=10).json()
     return {t["id"]: t for t in j.get("tenants", [])}, j.get("admins", 0)
 
 
@@ -79,7 +74,7 @@ def test_tenant_lifecycle_create_update_downgrade_remove(rig):
     ip, tok = rig
 
     # CREATE as guest
-    r = requests.post(_url(ip, tok, "/api/tenant"), data={"id": TEST_CHAT, "role": "guest"}, timeout=10)
+    r = _S.post(_url(ip, tok, "/api/tenant"), data={"id": TEST_CHAT, "role": "guest"}, timeout=10)
     assert r.status_code == 200, r.text
     tenants, _ = _tenants(ip, tok)
     assert tenants[TEST_CHAT]["role"] == "guest"
@@ -89,7 +84,7 @@ def test_tenant_lifecycle_create_update_downgrade_remove(rig):
     guest_ttl = tenants[TEST_CHAT]["ttl"]
 
     # UPDATE the quota
-    r = requests.post(
+    r = _S.post(
         _url(ip, tok, "/api/tenant"),
         data={"id": TEST_CHAT, "vectors": "3", "bytes": "65536", "ttl": "48", "pins": "0"},
         timeout=10,
@@ -102,21 +97,17 @@ def test_tenant_lifecycle_create_update_downgrade_remove(rig):
 
     # UPGRADE to user - the role changes and the explicit quota is retained
     # (an admin's deliberate setting is not silently reset by a promotion).
-    r = requests.post(_url(ip, tok, "/api/tenant"), data={"id": TEST_CHAT, "role": "user"}, timeout=10)
+    r = _S.post(_url(ip, tok, "/api/tenant"), data={"id": TEST_CHAT, "role": "user"}, timeout=10)
     assert r.status_code == 200
     tenants, _ = _tenants(ip, tok)
     assert tenants[TEST_CHAT]["role"] == "user"
     assert tenants[TEST_CHAT]["vectors"] == 3
 
     # DOWNGRADE back to guest, then REVOKE
-    assert (
-        requests.post(_url(ip, tok, "/api/tenant"), data={"id": TEST_CHAT, "role": "guest"}, timeout=10).status_code
-        == 200
-    )
+    assert _S.post(_url(ip, tok, "/api/tenant"), data={"id": TEST_CHAT, "role": "guest"}, timeout=10).status_code == 200
     assert _tenants(ip, tok)[0][TEST_CHAT]["role"] == "guest"
     assert (
-        requests.post(_url(ip, tok, "/api/tenant"), data={"id": TEST_CHAT, "role": "unknown"}, timeout=10).status_code
-        == 200
+        _S.post(_url(ip, tok, "/api/tenant"), data={"id": TEST_CHAT, "role": "unknown"}, timeout=10).status_code == 200
     )
     tenants, _ = _tenants(ip, tok)
     # Revoked means no access - the row may remain (the admin can still see
@@ -132,7 +123,7 @@ def test_last_admin_cannot_be_demoted_on_hardware(rig):
     if admins != 1:
         pytest.skip(f"{admins} admins configured - this asserts the single-admin guard")
     admin_id = next(i for i, t in tenants.items() if t["role"] == "admin")
-    r = requests.post(_url(ip, tok, "/api/tenant"), data={"id": admin_id, "role": "user"}, timeout=10)
+    r = _S.post(_url(ip, tok, "/api/tenant"), data={"id": admin_id, "role": "user"}, timeout=10)
     assert r.status_code == 409, f"demoting the only admin returned {r.status_code}"
     assert "only admin" in r.json().get("error", "")
     # ...and it really did NOT change.
@@ -143,17 +134,17 @@ def test_last_admin_cannot_be_demoted_on_hardware(rig):
 def test_roles_and_quotas_survive_a_restart(rig):
     """Roles live on flash, not in RAM: prove it with a real reboot."""
     ip, tok = rig
-    requests.post(_url(ip, tok, "/api/tenant"), data={"id": TEST_CHAT, "role": "guest"}, timeout=10)
-    requests.post(_url(ip, tok, "/api/tenant"), data={"id": TEST_CHAT, "vectors": "7", "ttl": "24"}, timeout=10)
+    _S.post(_url(ip, tok, "/api/tenant"), data={"id": TEST_CHAT, "role": "guest"}, timeout=10)
+    _S.post(_url(ip, tok, "/api/tenant"), data={"id": TEST_CHAT, "vectors": "7", "ttl": "24"}, timeout=10)
 
-    r = requests.post(_url(ip, tok, "/api/test/reboot"), timeout=10)
+    r = _S.post(_url(ip, tok, "/api/test/reboot"), timeout=10)
     assert r.status_code == 202, "no non-destructive reboot seam on this build"
 
     time.sleep(5)
     deadline = time.time() + 120
     while time.time() < deadline:
         try:
-            if requests.get(_url(ip, tok, "/api/state"), timeout=4).status_code == 200:
+            if _S.get(_url(ip, tok, "/api/state"), timeout=4).status_code == 200:
                 break
         except Exception:  # noqa: BLE001 - still rebooting
             pass

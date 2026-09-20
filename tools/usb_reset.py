@@ -26,9 +26,9 @@ import argparse
 import sys
 import time
 
-import usb.backend.libusb1
-import usb.core
-import usb.util
+# pyusb (usb.*) is imported lazily inside the functions that touch the bus, so the
+# pure select_targets() below - and the host test that covers its MAC-safety - can
+# import this module on a box without pyusb / libusb installed.
 
 LIBUSB = "/opt/homebrew/lib/libusb-1.0.dylib"
 VID, PID = 0x303A, 0x1001  # Espressif USB-serial-JTAG (the ROM / a silent-serial app)
@@ -48,10 +48,51 @@ VID, PID = 0x303A, 0x1001  # Espressif USB-serial-JTAG (the ROM / a silent-seria
 
 
 def _serial(dev) -> str:
+    import usb.util
+
     try:
         return usb.util.get_string(dev, dev.iSerialNumber) or ""
     except Exception:  # noqa: BLE001 - a wedged board has no readable serial
         return ""
+
+
+def _norm(s: str) -> str:
+    return (s or "").upper().replace(":", "")
+
+
+def select_targets(serials, *, all_=False, serial=None, skip=None):
+    """MAC-safe target selection (pure, host-tested). ``serials`` is the serial
+    string of each attached S3, in order (a WEDGED board reports '' - no readable
+    serial). Returns ``(indices, error)``: ``indices`` are the positions to reset;
+    ``error`` is a message when selection refuses.
+
+    The safety rule (two boards attached, same VID:PID): NEVER touch the board that
+    is not the target. A bare reset with >1 board refuses rather than hitting the
+    first match (which used to be the WRONG, healthy board). Because a wedged board
+    has no serial, the target is usually chosen by SKIPPING the healthy board's MAC:
+    ``skip`` returns every board whose serial does not contain it, so the healthy
+    board is never in the result; ``serial`` returns only boards whose serial
+    matches it."""
+    idxs = list(range(len(serials)))
+    if not serials:
+        return [], "no S3 on the bus"
+    if all_:
+        return idxs, None
+    if serial is not None:
+        want = _norm(serial)
+        sel = [i for i in idxs if want and want in _norm(serials[i])]
+        return (sel, None) if sel else ([], f"no S3 serial contains {serial!r}")
+    if skip is not None:
+        s = _norm(skip)
+        # An empty --skip would match nothing to skip (and reset everything), which
+        # is the opposite of safe - refuse it.
+        if not s:
+            return [], "empty --skip would not protect any board"
+        sel = [i for i in idxs if s not in _norm(serials[i])]
+        return (sel, None) if sel else ([], f"every S3 serial contains {skip!r} (nothing to reset)")
+    if len(serials) == 1:
+        return [0], None
+    return [], (f"{len(serials)} S3 boards on the bus - disambiguate with --serial/--skip/--all")
 
 
 def main() -> int:
@@ -66,6 +107,9 @@ def main() -> int:
         "(an app's own USB CDC) - re-enumerates it, does NOT reboot it",
     )
     args = ap.parse_args()
+
+    import usb.backend.libusb1
+    import usb.core
 
     be = usb.backend.libusb1.get_backend(find_library=lambda x: LIBUSB)
     every = list(usb.core.find(find_all=True, idVendor=VID, backend=be))
@@ -85,25 +129,16 @@ def main() -> int:
                 print(f"no device {VID:04x}:* on the bus")
             return 1
 
-    if args.all:
-        targets = devs
-    elif args.serial:
-        want = args.serial.upper().replace(":", "")
-        targets = [d for d in devs if want in _serial(d).upper().replace(":", "")]
-    elif args.skip:
-        skip = args.skip.upper().replace(":", "")
-        targets = [d for d in devs if skip not in _serial(d).upper().replace(":", "")]
-    elif len(devs) == 1:
-        targets = devs
-    else:
-        print(f"{len(devs)} S3 boards on the bus - disambiguate with --serial/--skip/--all:")
-        for d in devs:
-            print(f"  bus={d.bus} addr={d.address} serial={_serial(d)!r}")
-        return 2
-
-    if not targets:
-        print("no S3 matched the filter")
+    serials = [_serial(d) for d in devs]
+    sel, err = select_targets(serials, all_=args.all, serial=args.serial, skip=args.skip)
+    if err:
+        print(err)
+        if len(devs) > 1 and not (args.serial or args.skip or args.all):
+            for d in devs:
+                print(f"  bus={d.bus} addr={d.address} serial={_serial(d)!r}")
+            return 2
         return 1
+    targets = [devs[i] for i in sel]
     rc = 0
     for d in targets:
         try:

@@ -26,29 +26,35 @@ import time
 import pytest
 
 try:
-    import requests
+    import requests  # still used for the external Telegram API (never the device token)
 except ImportError:  # pragma: no cover
     requests = None
+
+from webrig import ip_tok_or_skip, make_session, require_orchestrator
 
 pytestmark = [pytest.mark.hil, pytest.mark.net, pytest.mark.agent]
 
 MARKER = f"Quokka-{int(time.time()) % 100000}"  # unique per run - reruns can't alias
 
+# The shared header-authed session for the DEVICE (not Telegram), built by `board`.
+_S = None
+
 
 def _api(ip: str, tok: str, path: str, **kw):
-    sep = "&" if "?" in path else "?"
-    return f"http://{ip}{path}{sep}t={tok}", kw
+    # Device URL only. The token rides the X-Nimbus-Token header on _S, never a
+    # ?t= query (rejected since CUM-45); this keeps `path`'s own query intact.
+    return f"http://{ip}{path}", kw
 
 
 def _chat(ip: str, tok: str, text: str, timeout_s: int = 90) -> str:
     """Send one web-chat message and poll its reply (the single-slot pairing)."""
     url, _ = _api(ip, tok, "/api/chat")
-    r = requests.post(url, data={"text": text}, timeout=10)
+    r = _S.post(url, data={"text": text}, timeout=10)
     assert r.status_code == 200, f"chat send {r.status_code}: {r.text[:200]}"
     deadline = time.time() + timeout_s
     while time.time() < deadline:
         time.sleep(3)
-        j = requests.get(url, timeout=10).json()
+        j = _S.get(url, timeout=10).json()
         if not j.get("pending", True) and j.get("reply"):
             return j["reply"]
     pytest.fail(f"no chat reply within {timeout_s}s for: {text[:60]}")
@@ -56,25 +62,21 @@ def _chat(ip: str, tok: str, text: str, timeout_s: int = 90) -> str:
 
 def _episodic(ip: str, tok: str, **params) -> list:
     url, _ = _api(ip, tok, "/api/mem/episodic")
-    r = requests.get(url, params=params, timeout=10)
+    r = _S.get(url, params=params, timeout=10)
     assert r.status_code == 200
     return r.json().get("messages", [])
 
 
 @pytest.fixture(scope="module")
 def board():
-    if requests is None:
-        pytest.skip("requests not installed")
     # Env-driven (the serial-open reset races WiFi rejoin - reuse a joined board):
     #   NIMBUS_TEST_IP=<lan ip>  NIMBUS_TEST_TOKEN=<webtok>
-    ip = os.environ.get("NIMBUS_TEST_IP")
-    tok = os.environ.get("NIMBUS_TEST_TOKEN")
-    if not ip or not tok:
-        pytest.skip("set NIMBUS_TEST_IP + NIMBUS_TEST_TOKEN (WEBTOK?) to run L16")
-    # Orchestrator mode + a keyed provider are prerequisites - skip LOUDLY.
-    st = requests.get(f"http://{ip}/api/state?t={tok}", timeout=10).json()
-    if st.get("mode") != 1:
-        pytest.skip("board is not in Orchestrator mode - flash/MODE 1 first")
+    global _S
+    ip, tok = ip_tok_or_skip("L16")
+    _S = make_session(tok)
+    # Orchestrator mode + a keyed provider are prerequisites; a rejected token is a
+    # loud failure, not a "not MODE 1" skip (CUM-418 item 1).
+    require_orchestrator(_S, ip, "L16")
     return ip, tok
 
 
@@ -113,7 +115,7 @@ def test_fold_cycle_end_to_end(board):
     # 5. The §5a proof off the live prompt dump: summary present and carrying the
     #    marker; the verbatim window does NOT contain it.
     url, _ = _api(ip, tok, "/api/lastturn")
-    dump = requests.get(url, timeout=15).text
+    dump = _S.get(url, timeout=15).text
     assert "## CONVERSATION SUMMARY" in dump, "§5a section missing from the live prompt"
     idx_sum = dump.find("## CONVERSATION SUMMARY")
     idx_win = dump.find("## RECENT CONVERSATION")
@@ -180,17 +182,15 @@ def test_fold_failure_is_bounded_and_recovers(board):
         ]
 
     def fault(on):
-        r = requests.post(
-            f"http://{ip}/api/fault", data={"t": tok, "cap": "provider", "on": "1" if on else "0"}, timeout=10
-        )
+        r = _S.post(f"http://{ip}/api/fault", data={"cap": "provider", "on": "1" if on else "0"}, timeout=10)
         assert r.status_code == 200, "FAULT provider needs an [env:test] build"
 
     # Seed the test chat with real history BEFORE the fault - an empty chat's
     # manual fold answers "Nothing to compact yet." and never reaches the
     # failure path (the bound would pass vacuously).
-    r = requests.post(
+    r = _S.post(
         f"http://{ip}/api/test/inject",
-        data={"t": tok, "chat": chat, "text": f"Fold-failure seed {MARKER}: reply briefly."},
+        data={"chat": chat, "text": f"Fold-failure seed {MARKER}: reply briefly."},
         timeout=10,
     )
     assert r.status_code == 202
@@ -202,7 +202,7 @@ def test_fold_failure_is_bounded_and_recovers(board):
 
     try:
         fault(True)
-        r = requests.post(f"http://{ip}/api/test/compact", data={"t": tok, "chat": chat}, timeout=10)
+        r = _S.post(f"http://{ip}/api/test/compact", data={"chat": chat}, timeout=10)
         assert r.status_code == 202
         time.sleep(45)  # a few pump passes - retries must stay silent
         updates = tg_updates(offset)
@@ -217,7 +217,7 @@ def test_fold_failure_is_bounded_and_recovers(board):
 
     # Recovery: the same staged fold now folds (ladder + healthy providers) and
     # confirms exactly once.
-    r = requests.post(f"http://{ip}/api/test/compact", data={"t": tok, "chat": chat}, timeout=10)
+    r = _S.post(f"http://{ip}/api/test/compact", data={"chat": chat}, timeout=10)
     assert r.status_code == 202
     time.sleep(60)
     texts = msgs_for_chat(tg_updates(offset))

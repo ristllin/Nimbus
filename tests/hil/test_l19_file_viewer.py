@@ -16,20 +16,19 @@ Markers: ``hil`` + ``net`` - pure LAN.
 
 from __future__ import annotations
 
-import os
 import re
 import uuid
 
 import pytest
 
-try:
-    import requests
-except ImportError:  # pragma: no cover
-    requests = None
+from webrig import ip_tok_or_skip, make_session, require_orchestrator
 
 pytestmark = [pytest.mark.hil, pytest.mark.net]
 
 PROJECT = "l19"
+
+# The shared header-authed session for this tier, built by the ``rig`` fixture.
+_S = None
 
 # (filename, may it render inline?)
 CASES = [
@@ -48,21 +47,20 @@ CASES = [
 
 
 def _u(rig, path):
-    ip, tok = rig
-    sep = "&" if "?" in path else "?"
-    return f"http://{ip}{path}{sep}t={tok}"
+    # rig is the (ip, tok) handle; the token rides the X-Nimbus-Token header on
+    # _S, never a ?t= query, so this keeps `path`'s own query intact and adds none.
+    ip, _tok = rig
+    return f"http://{ip}{path}"
 
 
 @pytest.fixture(scope="module")
 def rig():
-    if requests is None:
-        pytest.skip("requests not installed")
-    ip = os.environ.get("NIMBUS_TEST_IP")
-    tok = os.environ.get("NIMBUS_TEST_TOKEN")
-    if not ip or not tok:
-        pytest.skip("set NIMBUS_TEST_IP + NIMBUS_TEST_TOKEN to run L19")
+    global _S
+    ip, tok = ip_tok_or_skip("L19")
+    _S = make_session(tok)
     handle = (ip, tok)
-    lst = requests.get(_u(handle, "/api/files/list"), timeout=10)
+    require_orchestrator(_S, ip, "L19")
+    lst = _S.get(_u(handle, "/api/files/list"), timeout=10)
     if lst.status_code != 200:
         pytest.skip("file routes unavailable")
     if not lst.json().get("present"):
@@ -70,7 +68,7 @@ def rig():
     yield handle
     for name, _ in CASES:
         try:
-            requests.post(_u(handle, "/api/files/rm"), data={"project": PROJECT, "name": name}, timeout=10)
+            _S.post(_u(handle, "/api/files/rm"), data={"project": PROJECT, "name": name}, timeout=10)
         except Exception:  # noqa: BLE001 - best effort cleanup
             pass
 
@@ -86,7 +84,7 @@ def _save(rig, name, text):
             "params": {"name": "artifact.save", "arguments": {"project": PROJECT, "name": name, "text": text}},
         }
     )
-    r = requests.post(_u(rig, "/api/test/astool"), data={"chat": "web", "body": body}, timeout=20)
+    r = _S.post(_u(rig, "/api/test/astool"), data={"chat": "web", "body": body}, timeout=20)
     assert r.status_code == 200, r.text
     return "saved" in r.text
 
@@ -98,7 +96,7 @@ def test_only_non_executing_types_render_inline(rig, name, viewable):
     if not _save(rig, name, f"content {marker}"):
         pytest.skip(f"could not stage {name}")
 
-    r = requests.get(_u(rig, f"/api/files/dl?inline=1&project={PROJECT}&name={name}"), timeout=15)
+    r = _S.get(_u(rig, f"/api/files/dl?inline=1&project={PROJECT}&name={name}"), timeout=15)
     assert r.status_code == 200, r.text
     disp = r.headers.get("Content-Disposition", "")
     if viewable:
@@ -115,7 +113,7 @@ def test_a_plain_download_is_never_inline(rig):
     """Without ?inline=1 everything keeps the download disposition."""
     if not _save(rig, "notes.txt", "hello"):
         pytest.skip("could not stage the file")
-    r = requests.get(_u(rig, f"/api/files/dl?project={PROJECT}&name=notes.txt"), timeout=15)
+    r = _S.get(_u(rig, f"/api/files/dl?project={PROJECT}&name=notes.txt"), timeout=15)
     assert r.headers.get("Content-Disposition", "").startswith("attachment")
 
 
@@ -123,7 +121,7 @@ def test_preview_response_carries_a_locked_down_csp(rig):
     """Defence in depth: whatever renders gets none of the page's privileges."""
     if not _save(rig, "notes.txt", "hello"):
         pytest.skip("could not stage the file")
-    r = requests.get(_u(rig, f"/api/files/dl?inline=1&project={PROJECT}&name=notes.txt"), timeout=15)
+    r = _S.get(_u(rig, f"/api/files/dl?inline=1&project={PROJECT}&name=notes.txt"), timeout=15)
     csp = r.headers.get("Content-Security-Policy", "")
     assert "sandbox" in csp, f"no sandbox in the preview CSP: {csp!r}"
     assert "default-src 'none'" in csp, csp
@@ -141,8 +139,8 @@ def test_client_view_links_match_the_server_allowlist(rig):
     (This caught a real one: the UI offered a preview for .json, which the
     server sends as application/json and refuses to render inline.)
     """
-    ip, tok = rig
-    page = requests.get(f"http://{ip}/?t={tok}", timeout=30).text
+    ip, _tok = rig
+    page = _S.get(f"http://{ip}/", timeout=30).text  # token via the _S header
     m = re.search(r"function _fviewable\(name\)\{(.*?)\n\}", page, re.S)
     assert m, "the file explorer's _fviewable() is not in the served page"
 

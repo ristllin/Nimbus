@@ -22,17 +22,16 @@ Run:
 from __future__ import annotations
 
 import json
-import os
 import uuid
 
 import pytest
 
-try:
-    import requests
-except ImportError:  # pragma: no cover
-    requests = None
+from webrig import ip_tok_or_skip, make_session, require_orchestrator
 
 pytestmark = [pytest.mark.hil, pytest.mark.net]
+
+# The shared header-authed session for this tier, built by the ``rig`` fixture.
+_S = None
 
 # Three synthetic principals. ALICE and BOB are ordinary users who must never see
 # each other; CARLA is a guest (tightest quotas, no sharing, no pins).
@@ -43,14 +42,16 @@ ALL_TEST_CHATS = (ALICE, BOB, CARLA)
 
 
 def _u(rig, path):
-    ip, tok = rig
-    return f"http://{ip}{path}?t={tok}"
+    # rig is the (ip, tok) handle; the token rides the X-Nimbus-Token header on
+    # _S, never a ?t= query (rejected since CUM-45), so this builds the base URL.
+    ip, _tok = rig
+    return f"http://{ip}{path}"
 
 
 def _rpc(rig, chat, method, params=None, _id=1):
     """One JSON-RPC tool call AS `chat`, through the real dispatcher."""
     body = json.dumps({"jsonrpc": "2.0", "id": _id, "method": method, "params": params or {}})
-    r = requests.post(_u(rig, "/api/test/astool"), data={"chat": chat, "body": body}, timeout=20)
+    r = _S.post(_u(rig, "/api/test/astool"), data={"chat": chat, "body": body}, timeout=20)
     assert r.status_code == 200, f"{method} as {chat}: HTTP {r.status_code} {r.text}"
     return r.json()
 
@@ -149,31 +150,26 @@ def _approve(rig, chat, name="l18"):
     to pre-seed a role on a chat nobody has admitted, because the normal
     approval flow would later hand them rights no one granted.
     """
-    requests.post(_u(rig, "/api/telegram/add"), data={"id": chat, "name": name}, timeout=10)
+    _S.post(_u(rig, "/api/telegram/add"), data={"id": chat, "name": name}, timeout=10)
 
 
 def _unapprove(rig, chat):
-    requests.post(_u(rig, "/api/telegram/remove"), data={"id": chat}, timeout=10)
+    _S.post(_u(rig, "/api/telegram/remove"), data={"id": chat}, timeout=10)
 
 
 def _set_role(rig, chat, role):
-    r = requests.post(_u(rig, "/api/tenant"), data={"id": chat, "role": role}, timeout=10)
+    r = _S.post(_u(rig, "/api/tenant"), data={"id": chat, "role": role}, timeout=10)
     assert r.status_code == 200, f"set {chat}->{role}: {r.status_code} {r.text}"
 
 
 @pytest.fixture(scope="module")
 def rig():
-    if requests is None:
-        pytest.skip("requests not installed")
-    ip = os.environ.get("NIMBUS_TEST_IP")
-    tok = os.environ.get("NIMBUS_TEST_TOKEN")
-    if not ip or not tok:
-        pytest.skip("set NIMBUS_TEST_IP + NIMBUS_TEST_TOKEN to run L18")
+    global _S
+    ip, tok = ip_tok_or_skip("L18")
+    _S = make_session(tok)
     handle = (ip, tok)
-    st = requests.get(_u(handle, "/api/state"), timeout=10)
-    if st.status_code != 200 or st.json().get("mode") != 1:
-        pytest.skip("Orchestrator mode required (MODE 1)")
-    probe = requests.post(
+    require_orchestrator(_S, ip, "L18")
+    probe = _S.post(
         _u(handle, "/api/test/astool"),
         data={"chat": "probe", "body": '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'},
         timeout=10,
@@ -191,8 +187,8 @@ def rig():
     # rows on the board.
     for c in ALL_TEST_CHATS:
         try:
-            requests.post(_u(handle, "/api/telegram/remove"), data={"id": c}, timeout=10)
-            requests.post(_u(handle, "/api/tenant"), data={"id": c, "remove": "1"}, timeout=10)
+            _S.post(_u(handle, "/api/telegram/remove"), data={"id": c}, timeout=10)
+            _S.post(_u(handle, "/api/tenant"), data={"id": c, "remove": "1"}, timeout=10)
         except Exception:  # noqa: BLE001 - best effort
             pass
 
@@ -291,9 +287,7 @@ def test_revoked_tenant_loses_reads_not_just_writes(cast):
 def test_episodic_history_is_scoped_to_the_asking_chat(cast):
     """One chat must not read another's transcript."""
     marker = f"HERON-{uuid.uuid4().hex[:10].upper()}"
-    requests.post(
-        _u(cast, "/api/test/inject"), data={"chat": ALICE, "text": f"remember this word: {marker}"}, timeout=10
-    )
+    _S.post(_u(cast, "/api/test/inject"), data={"chat": ALICE, "text": f"remember this word: {marker}"}, timeout=10)
     # No wait on a real turn - the inbound capture writes the user row itself.
     for chat in (BOB, CARLA):
         got = _text(_call(cast, chat, "memory.episodic", {"limit": 50}))
@@ -382,7 +376,7 @@ def test_non_admins_cannot_manage_people(cast):
         assert "error" in esc.lower() or "only an admin" in esc.lower(), f"PRIVILEGE ESCALATION: {chat} promoted itself"
 
         # And it really did not take effect.
-        roles = {t["id"]: t["role"] for t in requests.get(_u(cast, "/api/tenant"), timeout=10).json()["tenants"]}
+        roles = {t["id"]: t["role"] for t in _S.get(_u(cast, "/api/tenant"), timeout=10).json()["tenants"]}
         assert roles.get(chat) != "admin", f"{chat} is now an admin"
 
         quota = _text(_call(cast, chat, "tenant.set_quota", {"chat": chat, "vectors": 999999}))
@@ -401,7 +395,7 @@ def test_the_prompt_itself_carries_no_other_tenants_data(cast):
     secret, marker = _store_secret(cast, ALICE)
 
     def bullets(chat, q):
-        r = requests.post(_u(cast, "/api/test/recall"), data={"chat": chat, "q": q}, timeout=25)
+        r = _S.post(_u(cast, "/api/test/recall"), data={"chat": chat, "q": q}, timeout=25)
         assert r.status_code == 200, r.text
         return json.dumps(r.json())
 

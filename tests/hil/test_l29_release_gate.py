@@ -28,8 +28,29 @@ import time
 
 import pytest
 
+from device import ExpectTimeout
+
 
 # --- helpers -----------------------------------------------------------------
+def _panel_reads_gated(device) -> bool:
+    """True on a readback-gated (shared-MISO) board where panel register reads are
+    not a trustworthy liveness signal (CUM-392/423). Keyed on the firmware's own
+    ``PROBES ? panelReadsGated=1`` report. A board that does not answer PROBES (an
+    older build) is treated as non-gated so the strict assertions still apply."""
+    try:
+        m = device.cmd_re("PROBES ?", r"panelReadsGated=(\d)", timeout=6.0)
+    except ExpectTimeout:
+        return False
+    return m.group(1) == "1"
+
+
+def _scrok(device) -> str:
+    """STATUS scrok= tri-state: '1' (answering), '0' (a disqualifier held), or
+    'unknown' (a shared-MISO board that cannot self-check)."""
+    m = re.search(r"scrok=(\w+)", device.status().string)
+    return m.group(1) if m else ""
+
+
 def _require_wifi(device) -> None:
     """Skip loudly if the board is not on Wi-Fi (the tunnel/loopback legs need the
     local web server reachable at its STA IP)."""
@@ -108,36 +129,109 @@ class TestRenderToGlass:
 
     def test_panel_reports_display_on(self, device):
         # RDDPM (0x0A) bit 2 = display on; the driver also prints the expected MADCTL.
+        gated = _panel_reads_gated(device)
         device.drain(quiet=0.2)
         device.send("TFTPWR?")
-        # Read past the expected-MADCTL line to the post-rearm power readback.
+        # Read past the expected-MADCTL line to the post-rearm power readback (which
+        # carries BOTH the power register and the status register).
         device.expect_re(r"madctl_expect=0x([0-9A-Fa-f]+)", timeout=6.0)
-        # A readable, non-zero power register is the minimum; the value itself is
-        # panel-specific, so we assert it is not the all-zero 'nothing answered'.
-        pm = device.expect_re(r"after-rearm rddpm=0x([0-9A-Fa-f]+)", timeout=6.0)
-        assert int(pm.group(1), 16) != 0, "panel power register read back all zero (panel not answering)"
+        pm = device.expect_re(r"after-rearm rddpm=0x([0-9A-Fa-f]+)\s+rddst=0x([0-9A-Fa-f]+)", timeout=6.0)
+        rddpm = int(pm.group(1), 16)
+        rddst = int(pm.group(2), 16)
+        if gated:
+            # Shared-MISO board (CUM-392/423): RDDPM is NOT panel-specific-readable
+            # here (this Solide reads 0x00 at every width), so rddpm!=0 is not a
+            # liveness signal. The honest tri-state instead: RDDST still answers with
+            # its status signature (non-zero), and scrok reports 'unknown' - not '0',
+            # which would be a hard disqualifier (a genuinely dead panel reads rddst=0
+            # and scrok='0', so this still fails on the fault the strict check
+            # guarded). The definitive pixel proof is the human glance below.
+            assert rddst != 0, (
+                f"gated board: RDDST read back all zero (panel not answering): rddpm=0x{rddpm:08x} rddst=0x{rddst:08x}"
+            )
+            assert _scrok(device) == "unknown", (
+                "gated board did not report scrok=unknown - liveness classification "
+                "drifted (a shared-MISO board cannot self-check pixels)"
+            )
+            return
+        # Non-gated board: RDDPM IS a real display-on signal - keep the strict check,
+        # and its value is panel-specific so we only assert it is not the all-zero
+        # 'nothing answered'.
+        assert rddpm != 0, "panel power register read back all zero (panel not answering)"
 
     def test_panel_recovers_from_a_silent_reset(self, device):
         # TFTBREAK resets the panel behind the driver (white-screen on demand);
         # the health watchdog must notice and repaint WITHOUT a restart.
-        h0 = device.cmd_re("TFTHEALTH?", r"heals=(\d+)", timeout=6.0)
-        heals0 = int(h0.group(1))
-        device.cmd("TFTBREAK", "TFTBREAK", timeout=6.0)
-        # Poll until the heal counter increments and health returns.
-        deadline = time.time() + 12.0
-        healed = False
-        while time.time() < deadline:
-            time.sleep(1.0)
-            m = device.cmd_re("TFTHEALTH?", r"healthy=(\d+)\s+heals=(\d+)", timeout=6.0)
-            if int(m.group(2)) > heals0 and int(m.group(1)) == 1:
-                healed = True
-                break
-        assert healed, "panel did not self-heal after TFTBREAK (white-screen recovery is broken)"
+        if _panel_reads_gated(device):
+            # Shared-MISO board (CUM-392/423): no register read can OBSERVE the
+            # TFTBREAK, so the heal-counter drill cannot run honestly here (the
+            # counter only advances while the register probe is on, and this board
+            # gates that off). The repaint path is still driven - the watchdog
+            # rearm()s unconditionally - and L21's own test_panel_recovers_from_a_
+            # silent_reset exercises it with the probe explicitly enabled. What this
+            # gate proves on a gated board is the honest tri-state: the firmware
+            # stays alive and self-reports healthy across the break (a wedge or a
+            # latched-unhealthy state IS a real fault), RDDST still answers, and
+            # scrok reports 'unknown'. The definitive pixel proof is the human
+            # glance in test_human_confirms_pixels_reach_the_glass.
+            h0 = device.cmd_re("TFTHEALTH?", r"healthy=(\d+)\s+heals=(\d+)", timeout=6.0)
+            assert int(h0.group(1)) == 1, "panel already unhealthy before the drill"
+            device.cmd("TFTBREAK", "TFTBREAK", timeout=8.0)
+            time.sleep(3.0)
+            assert device.ping(timeout=6.0), "console wedged after TFTBREAK (no in-place recovery)"
+            h1 = device.cmd_re("TFTHEALTH?", r"healthy=(\d+)\s+heals=(\d+)", timeout=6.0)
+            assert int(h1.group(1)) == 1, (
+                "panel latched unhealthy after TFTBREAK - the repaint watchdog did not rearm the panel on a gated board"
+            )
+            st = device.cmd_re("TFTPWR?", r"rddst=0x([0-9A-Fa-f]+)", timeout=6.0)
+            assert int(st.group(1), 16) != 0, "RDDST read back zero (panel not answering) after the break"
+            assert _scrok(device) == "unknown", "gated board did not report scrok=unknown after the break"
+            return
+
+        # Non-gated board: the strict heal-counter drill. heals only counts while
+        # the register probe is on (the shipped default is off, so the watchdog
+        # rearm()s without classifying), so enable it for the window and restore it.
+        device.cmd("PANELPROBE 1", "PANELPROBE", timeout=5.0)
+        try:
+            h0 = device.cmd_re("TFTHEALTH?", r"healthy=(\d+)\s+heals=(\d+)", timeout=6.0)
+            assert int(h0.group(1)) == 1, "panel already unhealthy before the drill"
+            heals0 = int(h0.group(2))
+            brk = device.cmd("TFTBREAK", "TFTBREAK", timeout=8.0)
+            m = re.search(r"healthy=(\d)", brk)
+            if m and m.group(1) == "1":
+                # TFTBREAK could not inject a reset: this board's TFT_RST is not
+                # wired to a GPIO (Freenove CYD, tft.rst=-1), so holdReset() is a
+                # no-op. The heal counter is honest (it ticks only on a real
+                # classified reset), so skip loudly rather than assert a heal that
+                # had no cause to happen. This leg needs a board with TFT_RST wired.
+                pytest.skip(
+                    "TFTBREAK did not induce a silent reset (healthy=1 right after): "
+                    "this board's TFT panel RST is not wired to a GPIO, so the "
+                    "register-probe heal path cannot be exercised here."
+                )
+            # Poll until the heal counter increments and health returns.
+            deadline = time.time() + 12.0
+            healed = False
+            while time.time() < deadline:
+                time.sleep(1.0)
+                m = device.cmd_re("TFTHEALTH?", r"healthy=(\d+)\s+heals=(\d+)", timeout=6.0)
+                if int(m.group(2)) > heals0 and int(m.group(1)) == 1:
+                    healed = True
+                    break
+            assert healed, "panel did not self-heal after TFTBREAK (white-screen recovery is broken)"
+        finally:
+            device.cmd("PANELPROBE 0", "PANELPROBE", timeout=5.0)  # shipped default
 
     @pytest.mark.hil
+    @pytest.mark.manual
     def test_human_confirms_pixels_reach_the_glass(self, device, require_manual):
         # THE definitive CUM-167 catch. Registers and readback can all look healthy
         # while the glass is blank white (field-proven). A human must look.
+        #
+        # This is a require_manual step, so it MUST carry @pytest.mark.manual: an
+        # automated `-m "hil and not manual"` run has no operator, and without the
+        # marker this collected under that run and failed (stdin is not a TTY). It
+        # is the pixel-truth oracle for the gated-board panel tests above.
         device.send("TFTFILL?")  # leave a solid color on the panel to judge against
         time.sleep(0.5)
         require_manual.confirm(
@@ -160,11 +254,21 @@ class TestTouchCorrectness:
     def test_injected_tap_opens_and_closes_the_menu(self, device):
         # Tap the gear (top-right) to open the menu, Back to leave. Proves the
         # tap coordinate resolves to the right on-screen target.
+        #
+        # The oracle is MENU? open=1/0, NOT a RENDER? screen NAME: the console emits
+        # a numeric screen id (RENDER screen=%d) and ScreenId wire numbers are frozen
+        # and positionally mirrored, so a name is not on the wire. MENU? open=1 is
+        # what actually proves the gear tap landed on the menu (it is the same oracle
+        # L21's passing test_tap_opens_and_closes_the_menu uses).
         device.ensure_status_idle()
         device.cmd("TAP 300 22", "TAP<", timeout=4.0)  # gear target
-        m = device.cmd_re("RENDER?", r"screen=(\w+)", timeout=4.0)
-        assert m.group(1).lower().startswith("menu"), f"gear tap did not open the menu (screen={m.group(1)})"
+        time.sleep(0.6)
+        opened = device.cmd("MENU?", "MENU ", timeout=4.0)
+        assert "open=1" in opened, f"gear tap did not open the menu: {opened!r}"
         device.cmd("TAP 20 22", "TAP<", timeout=4.0)  # Back
+        time.sleep(0.6)
+        closed = device.cmd("MENU?", "MENU ", timeout=4.0)
+        assert "open=0" in closed, f"Back did not close the menu: {closed!r}"
         device.ensure_status_idle()
 
     @pytest.mark.manual
@@ -220,10 +324,12 @@ class TestCrashLoopResilience:
 
     def test_boots_without_a_crash_loop(self, device):
         # A clean reboot must come up READY without repeated rst:/panic markers
-        # (wait_ready raises BootError on >=2 resets or any panic signature).
-        device.reset()  # in-place self-healing reboot
-        m = device.status()
-        assert int(m.group("up")) >= 0  # a parseable STATUS after one clean boot
+        # (reboot_and_confirm's wait_ready raises BootError on >=2 resets or any
+        # panic signature). reboot_and_confirm PROVES the restart took on native
+        # USB-CDC (a soft REBOOT that the chip ignores is escalated to a hard reset)
+        # and returns the fresh uptime - so this no longer races the boot stream.
+        up = device.reboot_and_confirm()
+        assert up >= 0  # a parseable, settled STATUS after one confirmed clean boot
 
     def test_survives_n_reboots_without_a_loop(self, device):
         # Boot-loop DETECTION across N reboots (MANIFEST section 3). One clean boot
@@ -234,16 +340,15 @@ class TestCrashLoopResilience:
         #
         # N is bounded so the bench leg stays quick; override for a longer soak.
         n = int(os.environ.get("NIMBUS_GATE_REBOOT_CYCLES", "5"))
-        prev_up = int(device.status().group("up"))
+        prev_up = device._uptime_or_none() or 0
         for cycle in range(1, n + 1):
-            # reset() self-heals and raises if the console never answers again - a
-            # board wedged in a reset storm can never confirm the soft REBOOT, so a
-            # true boot loop surfaces here as a failure, not a hang.
-            device.reset()
-            m = device.status(timeout=6.0)
-            up = int(m.group("up"))
-            # A real reboot resets uptime: it must come back SMALL, and below the
-            # last reading, or the "reboot" was a no-op / the device never restarted.
+            # reboot_and_confirm PROVES each restart took (escalating a no-op soft
+            # REBOOT to an esptool hard reset) and raises if the board never comes
+            # back - so a true boot loop surfaces here as a failure, not a hang, and
+            # a reboot the chip ignored is caught rather than passing as "fresh".
+            up = device.reboot_and_confirm(timeout=25.0)
+            # A real reboot resets uptime: it comes back SMALL (reboot_and_confirm
+            # guarantees a fresh boot or raises), and below the last reading.
             assert up < 15, (
                 f"cycle {cycle}/{n}: uptime={up}s after a reboot is not a fresh boot "
                 "(the device did not actually restart, or is stuck past the boot window)"

@@ -90,6 +90,13 @@ own type.
   from `scrModel` + board and persists `otaType`, then uses the schema-2 manifest
   thereafter. Generate it with `tools/make_manifest.py --schema 1`; the typed
   releases use the default `--schema 2`.
+- **Derivation only guesses a single-type family.** A Solide + TFT board derives
+  `nimbus-tft` (the Solide family has exactly one type). A Freenove has three sizes
+  (`freenove-28` / `-35` / `-40`) that board identity cannot tell apart, so an
+  UNSEEDED Freenove derives no type and is offered no update: it must be reflashed
+  with its explicit size rather than guessing one. The flasher seeds the exact size
+  on every real install, so this only ever refuses a Freenove that reached the typed
+  scheme with no seed.
 
 The repo-layout decision (reuse `nimbus-fw-releases`, one manifest per release) is
 recorded in [`adr/0001-ota-releases-repo.md`](adr/0001-ota-releases-repo.md).

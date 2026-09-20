@@ -20,6 +20,19 @@ import pytest
 from device import BootError, DeviceLostError, ExpectTimeout
 
 
+@pytest.fixture(autouse=True)
+def _restore_orchestrator_mode(device):
+    """The malformed-frame leg switches to Notifier mode (nsn frames need it).
+    Restore Orchestrator mode on teardown so a full run does not leave the board in
+    MODE 0, which silently breaks every later web-seam / menu tier (CUM-418 item 5).
+    No-op when already in mode 1; never masks the test's own failure."""
+    yield
+    try:
+        device.ensure_mode(1)
+    except Exception:  # noqa: BLE001 - a wedged console must not hide the real result
+        pass
+
+
 # ---- watchdog_reboot (F12) - the 8 s task WDT landed; hard PASS gate ---------
 @pytest.mark.hil
 def test_watchdog_reboot(device):

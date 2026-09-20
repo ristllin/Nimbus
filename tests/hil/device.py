@@ -29,6 +29,7 @@ import glob
 import os
 import re
 import subprocess
+import sys
 import time
 from typing import List, Optional, Pattern
 
@@ -133,6 +134,27 @@ def list_ports() -> List[str]:
     return sorted(set(out))
 
 
+# Below this uptime a reading is a fresh boot regardless of what it was before -
+# the READY beacon plus the board's own bring-up spend a few seconds, so anything
+# under ~15 s is post-reset. (Pure so the reboot decision is host-testable.)
+FRESH_BOOT_UPTIME_S = 15
+
+
+def is_fresh_boot(before: Optional[int], after: Optional[int]) -> bool:
+    """Did a reboot actually take? True when the post-reboot uptime is small, or
+    dropped below the pre-reboot reading. A soft REBOOT that is a no-op on native
+    USB-CDC leaves uptime climbing (the CUM-418 bench symptom: uptime=3254s after a
+    reboot), which this returns False for so the caller can escalate to a hard
+    reset. ``after`` None (console never settled) is never a fresh boot."""
+    if after is None:
+        return False
+    if after < FRESH_BOOT_UPTIME_S:
+        return True
+    if before is not None and after < before:
+        return True
+    return False
+
+
 class Device:
     """Serial link to one Nimbus device.
 
@@ -185,13 +207,28 @@ class Device:
 
     # -- open / close --------------------------------------------------------
     @staticmethod
-    def bus_reset() -> bool:
+    def bus_reset(skip_serial: "Optional[str]" = None, target_serial: "Optional[str]" = None) -> bool:
         """Programmatic unplug/replug: libusb bus reset of the S3 (tools/
-        usb_reset.py). Clears the stale host-side CDC state behind every
-        'wedged' episode (verified live 2026-07-02). ~2 s; device reboots."""
+        usb_reset.py). Clears the stale host-side CDC state behind every 'wedged'
+        episode (verified live 2026-07-02). ~2 s; clears the USB link WITHOUT
+        rebooting the chip.
+
+        MAC-safe with TWO boards attached (CUM-418 item 6): a wedged S3 reports NO
+        serial, so the target is chosen by SKIPPING the healthy board's MAC
+        (``--skip``) or by naming the target's MAC (``--serial``); the board that is
+        not the target is never touched. The MACs come from the args or the env
+        (NIMBUS_HIL_OTHER_SERIAL = the board to skip, NIMBUS_HIL_TARGET_SERIAL = the
+        target); with a single board attached, no filter is needed (sole match)."""
         script = os.path.join(os.path.dirname(__file__), "..", "..", "tools", "usb_reset.py")
+        skip_serial = skip_serial or os.environ.get("NIMBUS_HIL_OTHER_SERIAL")
+        target_serial = target_serial or os.environ.get("NIMBUS_HIL_TARGET_SERIAL")
+        argv = ["python3", script]
+        if target_serial:
+            argv += ["--serial", target_serial]
+        elif skip_serial:
+            argv += ["--skip", skip_serial]
         try:
-            r = subprocess.run(["python3", script], capture_output=True, text=True, timeout=20)
+            r = subprocess.run(argv, capture_output=True, text=True, timeout=25)
             return r.returncode == 0
         except (OSError, subprocess.SubprocessError):
             return False
@@ -643,6 +680,88 @@ class Device:
         # A watchdog reset re-enumerates the CDC endpoint just like a manual reset.
         self.reopen_after_reenumerate()
         return self.wait_ready(timeout=timeout)
+
+    # -- confirmed reboot (native USB-CDC) ----------------------------------
+    def _uptime_or_none(self, timeout: float = 4.0) -> "Optional[int]":
+        """Read STATUS uptime, or None if the console does not answer in time."""
+        try:
+            return int(self.status(timeout=timeout).group("up"))
+        except (ExpectTimeout, DeviceError):
+            return None
+
+    def _settled_uptime(self, timeout: float = 25.0) -> "Optional[int]":
+        """Poll STATUS until the console answers (the board may still be booting -
+        a bare status() right after a reset RACES the boot stream, the CUM-418
+        test_boots symptom) and return that uptime, else None on the deadline."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            up = self._uptime_or_none(timeout=4.0)
+            if up is not None:
+                return up
+            time.sleep(0.5)
+        return None
+
+    def esptool_hard_reset(self) -> bool:
+        """Hard-reset the chip with esptool over native USB-CDC. Used two ways: as
+        the escalation when a soft console REBOOT is a no-op (reboot_and_confirm),
+        and as the second rung of the wedge recovery when a libusb bus reset alone
+        does not bring the console back (wedge_guard). A DTR/RTS pulse would risk
+        wedging the S3 (see _open_quiet), so esptool drives the chip's reset line
+        instead. ``chip_id`` just drives a connect + the reset sequence (--before
+        default-reset to enter, --after hard-reset to leave). Targets THIS device's
+        own port (never the other board when two are attached), closes it first
+        (esptool needs it), and reports whether any invocation succeeded."""
+        port = self.port or self._pinned_port
+        if not port:
+            return False
+        self.close()
+        base = ["--chip", "esp32s3", "--port", port, "--before", "default-reset", "--after", "hard-reset", "chip_id"]
+        for prefix in (["esptool.py"], [sys.executable, "-m", "esptool"], ["esptool"]):
+            try:
+                r = subprocess.run(prefix + base, capture_output=True, text=True, timeout=40)
+            except (OSError, subprocess.SubprocessError):
+                continue
+            if r.returncode == 0:
+                return True
+        return False
+
+    def _confirm_boot(self, before: "Optional[int]", timeout: float) -> "Optional[int]":
+        """Consume the boot stream (raising BootError on a panic / reboot-loop),
+        then return a fresh uptime, or None if the device did not actually restart."""
+        try:
+            self.wait_ready(timeout=timeout)
+        except ExpectTimeout:
+            pass  # the beacon can be eaten by the reopen; uptime is the real oracle
+        up = self._settled_uptime(timeout)
+        return up if is_fresh_boot(before, up) else None
+
+    def reboot_and_confirm(self, timeout: float = 25.0) -> int:
+        """Reboot and PROVE a fresh boot on native USB-CDC, escalating if the soft
+        path is a no-op.
+
+        A plain reset()+status() cannot tell a real restart from a REBOOT the chip
+        ignored (uptime keeps climbing) - the CUM-418 bench saw uptime=3254s "after
+        a reboot". This does the soft console REBOOT (reset(), which also self-heals
+        a wedged console with a bus reset), confirms the boot actually happened via
+        uptime, and if it did not, escalates to an esptool hard reset and confirms
+        again. Returns the fresh uptime; raises DeviceError if the board would not
+        restart either way, and propagates BootError on a panic / reboot-loop."""
+        before = self._uptime_or_none()
+        self.reset()
+        up = self._confirm_boot(before, timeout)
+        if up is not None:
+            return up
+        # The soft REBOOT did not take (native USB-CDC no-op). Escalate to a hard
+        # reset via esptool, which drives the chip's reset line, then re-confirm.
+        if self.esptool_hard_reset():
+            self.reopen_after_reenumerate(drain_boot=False)
+            up = self._confirm_boot(before, timeout)
+            if up is not None:
+                return up
+        raise DeviceError(
+            f"reboot did not take a fresh boot: uptime {before}s -> {up}s after a "
+            "console REBOOT and an esptool hard reset (device may need BOOT+RST)."
+        )
 
     # -- flashing (DOUBLE-INTERLOCKED; dormant while board is single-owner) --
     def flash_env(self, env: str, allow_hardware: bool = False) -> None:

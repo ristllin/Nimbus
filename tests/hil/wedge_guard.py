@@ -69,11 +69,14 @@ class WedgeSentinel:
             return False
 
     def try_recover(self) -> bool:
-        """Confirm the console is actually dead, then (if so) do a one-shot libusb
-        bus reset + reopen - no chip reboot. Returns True if the console is or comes
-        back alive. A bare candidate signature (usually an ordinary ExpectTimeout on
-        a LIVE console) is NOT treated as a wedge: the confirming ping short-circuits
-        it, so no gratuitous USB reset happens on a normal test failure."""
+        """Confirm the console is actually dead, then recover it with a two-rung
+        ladder: first a one-shot libusb bus reset + reopen (no chip reboot, uptime
+        preserved); if that does not bring the console back, an esptool hard reset
+        (which drives the chip's reset line - this DOES reboot, so it is the last
+        resort). Returns True if the console is or comes back alive. A bare candidate
+        signature (usually an ordinary ExpectTimeout on a LIVE console) is NOT
+        treated as a wedge: the confirming ping short-circuits it, so no gratuitous
+        USB reset happens on a normal test failure."""
         if self.device is None or self.recovery_attempted:
             return self.recovered
         # Confirm death before the disruptive reset. If the console answers, this was
@@ -84,18 +87,53 @@ class WedgeSentinel:
         self._log(
             "\n[wedge_guard] CUM-141: console confirmed unresponsive - attempting one in-place USB bus reset (no reboot)"
         )
+        alive = self._bus_reset_recover()
+        if not alive:
+            alive = self._esptool_recover()
+        self.recovered = alive
+        self.wedged = not alive
+        if alive:
+            marker = "RECOVERED (console back)"
+        else:
+            marker = "STILL WEDGED (needs physical BOOT+RST / power cycle)"
+        self._log(f"[wedge_guard] CUM-141: recovery result -> {marker}")
+        return alive
+
+    def _bus_reset_recover(self) -> bool:
+        """Rung 1: a libusb bus reset clears the stalled endpoint without rebooting
+        the chip (uptime preserved). MAC-safe: Device.bus_reset() skips the other
+        board by its serial (a wedged S3 has none)."""
         try:
             if not self.device.bus_reset():
                 self._log("[wedge_guard] CUM-141: bus reset reported no matching device")
             self.device.close()
             self._sleep(2.0)  # endpoint re-enumerates
             self.device.open()  # open() probes link-liveness itself (no REBOOT)
-            alive = bool(self.device.ping(timeout=3.0))
+            return bool(self.device.ping(timeout=3.0))
         except Exception as exc:  # noqa: BLE001 - recovery must never raise into the run
-            self._log(f"[wedge_guard] CUM-141: recovery raised {exc!r}")
-            alive = False
-        self.recovered = alive
-        self.wedged = not alive
-        marker = "RECOVERED (console back, uptime preserved)" if alive else "STILL WEDGED"
-        self._log(f"[wedge_guard] CUM-141: recovery result -> {marker}")
-        return alive
+            self._log(f"[wedge_guard] CUM-141: bus-reset recovery raised {exc!r}")
+            return False
+
+    def _esptool_recover(self) -> bool:
+        """Rung 2: a wedge a bus reset cannot clear needs a hard reset. esptool
+        drives the chip's reset line (this REBOOTS the chip - uptime is not
+        preserved), then reopen and confirm. Targets this board's own port, never
+        the other one. Absent the hook (an older Device), this rung is a no-op."""
+        fn = getattr(self.device, "esptool_hard_reset", None)
+        if fn is None:
+            return False
+        self._log(
+            "[wedge_guard] CUM-418: bus reset did not recover the console - escalating "
+            "to an esptool hard reset (reboots the chip)"
+        )
+        try:
+            if not fn():
+                self._log("[wedge_guard] CUM-418: esptool hard reset did not run")
+                return False
+            self.device.close()
+            self._sleep(2.0)
+            self.device.open()
+            return bool(self.device.ping(timeout=3.0))
+        except Exception as exc:  # noqa: BLE001 - recovery must never raise into the run
+            self._log(f"[wedge_guard] CUM-418: esptool recovery raised {exc!r}")
+            return False

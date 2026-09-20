@@ -28,6 +28,20 @@ POSTURE_PASSIVE = 0
 POSTURE_ACTIVE = 1  # "Desk" in the plan's UX vocabulary
 
 
+@pytest.fixture(autouse=True)
+def _restore_orchestrator_mode(device):
+    """The notifier legs here switch the board into Notifier mode (nsn frames need
+    it). Restore Orchestrator mode on teardown so a full run does not LEAVE the
+    board in MODE 0 - which is what silently broke every later web-seam / menu tier
+    (CUM-418 item 5). No-op when already in mode 1; never masks the test's own
+    failure if the console is wedged."""
+    yield
+    try:
+        device.ensure_mode(1)
+    except Exception:  # noqa: BLE001 - a wedged console must not hide the real result
+        pass
+
+
 # ---- boot_ok (F11, F14) ----------------------------------------------------
 @pytest.mark.hil
 def test_boot_ok(device):
