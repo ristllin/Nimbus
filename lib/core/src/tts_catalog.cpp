@@ -111,7 +111,8 @@ std::string ttsActiveProvider(const std::string& configured,
                               bool hasOpenaiKey, bool hasMistralKey) {
   // The 2-provider form (no cumulo key) - one source of truth with the cumulo-aware
   // voiceActiveProvider so the two can never drift.
-  return voiceActiveProvider(configured, hasOpenaiKey, hasMistralKey, /*hasCumuloKey=*/false);
+  return nimbus::orch::voiceActiveProvider(configured, hasOpenaiKey, hasMistralKey,
+                                           /*hasCumuloKey=*/false);
 }
 
 void downmixStereoToMono(const int16_t* interleaved, int frames, int16_t* out) {
