@@ -207,13 +207,28 @@ class Device:
 
     # -- open / close --------------------------------------------------------
     @staticmethod
-    def bus_reset() -> bool:
+    def bus_reset(skip_serial: "Optional[str]" = None, target_serial: "Optional[str]" = None) -> bool:
         """Programmatic unplug/replug: libusb bus reset of the S3 (tools/
-        usb_reset.py). Clears the stale host-side CDC state behind every
-        'wedged' episode (verified live 2026-07-02). ~2 s; device reboots."""
+        usb_reset.py). Clears the stale host-side CDC state behind every 'wedged'
+        episode (verified live 2026-07-02). ~2 s; clears the USB link WITHOUT
+        rebooting the chip.
+
+        MAC-safe with TWO boards attached (CUM-418 item 6): a wedged S3 reports NO
+        serial, so the target is chosen by SKIPPING the healthy board's MAC
+        (``--skip``) or by naming the target's MAC (``--serial``); the board that is
+        not the target is never touched. The MACs come from the args or the env
+        (NIMBUS_HIL_OTHER_SERIAL = the board to skip, NIMBUS_HIL_TARGET_SERIAL = the
+        target); with a single board attached, no filter is needed (sole match)."""
         script = os.path.join(os.path.dirname(__file__), "..", "..", "tools", "usb_reset.py")
+        skip_serial = skip_serial or os.environ.get("NIMBUS_HIL_OTHER_SERIAL")
+        target_serial = target_serial or os.environ.get("NIMBUS_HIL_TARGET_SERIAL")
+        argv = ["python3", script]
+        if target_serial:
+            argv += ["--serial", target_serial]
+        elif skip_serial:
+            argv += ["--skip", skip_serial]
         try:
-            r = subprocess.run(["python3", script], capture_output=True, text=True, timeout=20)
+            r = subprocess.run(argv, capture_output=True, text=True, timeout=25)
             return r.returncode == 0
         except (OSError, subprocess.SubprocessError):
             return False
@@ -686,12 +701,16 @@ class Device:
             time.sleep(0.5)
         return None
 
-    def _esptool_hard_reset(self) -> bool:
-        """Hard-reset the chip with esptool over native USB-CDC (the escalation when
-        a soft console REBOOT is a no-op; a DTR/RTS pulse would risk wedging the S3,
-        see _open_quiet). ``chip_id`` just drives a connect + the reset sequence
-        (--before default-reset to enter, --after hard-reset to leave). Closes the
-        port first (esptool needs it) and reports whether any invocation succeeded."""
+    def esptool_hard_reset(self) -> bool:
+        """Hard-reset the chip with esptool over native USB-CDC. Used two ways: as
+        the escalation when a soft console REBOOT is a no-op (reboot_and_confirm),
+        and as the second rung of the wedge recovery when a libusb bus reset alone
+        does not bring the console back (wedge_guard). A DTR/RTS pulse would risk
+        wedging the S3 (see _open_quiet), so esptool drives the chip's reset line
+        instead. ``chip_id`` just drives a connect + the reset sequence (--before
+        default-reset to enter, --after hard-reset to leave). Targets THIS device's
+        own port (never the other board when two are attached), closes it first
+        (esptool needs it), and reports whether any invocation succeeded."""
         port = self.port or self._pinned_port
         if not port:
             return False
@@ -735,7 +754,7 @@ class Device:
             return up
         # The soft REBOOT did not take (native USB-CDC no-op). Escalate to a hard
         # reset via esptool, which drives the chip's reset line, then re-confirm.
-        if self._esptool_hard_reset():
+        if self.esptool_hard_reset():
             self.reopen_after_reenumerate(drain_boot=False)
             up = self._confirm_boot(before, timeout)
             if up is not None:

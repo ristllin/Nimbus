@@ -7,11 +7,21 @@ known wedge) is verified separately on hardware, but the decision logic it
 depends on is proven here.
 """
 
+import importlib.util
+import pathlib
+
 import pytest
 
 from wedge_guard import WedgeSentinel, is_wedge_candidate
 
 pytestmark = pytest.mark.host
+
+# tools/usb_reset.py is not on the test path; load it by file. Its usb.* imports
+# are lazy, so this succeeds on a box without pyusb and select_targets is pure.
+_USB_RESET_PATH = pathlib.Path(__file__).resolve().parents[2] / "tools" / "usb_reset.py"
+_spec = importlib.util.spec_from_file_location("usb_reset", _USB_RESET_PATH)
+usb_reset = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(usb_reset)
 
 
 # --- fake exception types matching device.py's hierarchy by NAME -------------
@@ -139,3 +149,98 @@ def test_recovery_survives_a_raising_device():
     # Recovery must never raise into the run; a throw means "still wedged".
     assert s.try_recover() is False
     assert s.wedged
+
+
+# --- CUM-418 item 6: esptool escalation when the bus reset is not enough ------
+class _LadderDevice:
+    """A device whose console is dead until a given recovery rung runs, so the
+    two-rung ladder (bus reset -> esptool hard reset) can be driven host-side."""
+
+    def __init__(self, *, bus_ok, esptool_ok, alive_after_bus, alive_after_esptool):
+        self.bus_ok = bus_ok
+        self.esptool_ok = esptool_ok
+        self.alive_after_bus = alive_after_bus
+        self.alive_after_esptool = alive_after_esptool
+        self.stage = "start"  # start -> bus -> esptool
+        self.calls = []
+
+    def ping(self, timeout: float = 3.0) -> bool:
+        self.calls.append("ping")
+        if self.stage == "start":
+            return False  # confirmed wedge (the pre-recovery probe)
+        if self.stage == "bus":
+            return self.alive_after_bus
+        return self.alive_after_esptool
+
+    def bus_reset(self, skip_serial=None, target_serial=None) -> bool:
+        self.calls.append("bus_reset")
+        self.stage = "bus"
+        return self.bus_ok
+
+    def esptool_hard_reset(self) -> bool:
+        self.calls.append("esptool")
+        self.stage = "esptool"
+        return self.esptool_ok
+
+    def close(self) -> None:
+        self.calls.append("close")
+
+    def open(self) -> "_LadderDevice":
+        self.calls.append("open")
+        return self
+
+
+def test_bus_reset_alone_recovers_without_esptool():
+    dev = _LadderDevice(bus_ok=True, esptool_ok=True, alive_after_bus=True, alive_after_esptool=True)
+    s = make_sentinel(dev)
+    assert s.try_recover() is True
+    assert s.recovered and "esptool" not in dev.calls  # rung 1 was enough
+
+
+def test_escalates_to_esptool_when_bus_reset_does_not_bring_the_console_back():
+    dev = _LadderDevice(bus_ok=True, esptool_ok=True, alive_after_bus=False, alive_after_esptool=True)
+    s = make_sentinel(dev)
+    assert s.try_recover() is True
+    assert s.recovered and "esptool" in dev.calls  # rung 2 recovered it
+
+
+def test_stays_wedged_when_both_rungs_fail():
+    dev = _LadderDevice(bus_ok=True, esptool_ok=True, alive_after_bus=False, alive_after_esptool=False)
+    s = make_sentinel(dev)
+    assert s.try_recover() is False
+    assert s.wedged and "esptool" in dev.calls
+
+
+# --- CUM-418 item 6: MAC-safe target selection (never touch the other board) --
+def test_select_targets_skips_the_healthy_board_by_mac():
+    # A wedged S3 reports no serial; the healthy one does. --skip the healthy MAC
+    # selects ONLY the wedged board and NEVER the healthy one.
+    serials = ["28:84:85:9D:78:70", ""]
+    sel, err = usb_reset.select_targets(serials, skip="28:84:85:9D:78:70")
+    assert err is None and sel == [1]
+
+
+def test_select_targets_by_serial_matches_only_the_target():
+    sel, err = usb_reset.select_targets(["28:84:85:AA", "28:84:85:BB"], serial="bb")
+    assert err is None and sel == [1]
+
+
+def test_select_targets_refuses_a_bare_reset_with_two_boards():
+    sel, err = usb_reset.select_targets(["AAAA", "BBBB"])
+    assert sel == [] and err  # refuses to guess the WRONG board
+
+
+def test_select_targets_sole_board_needs_no_filter():
+    sel, err = usb_reset.select_targets(["AAAA"])
+    assert err is None and sel == [0]
+
+
+def test_select_targets_all_resets_every_board():
+    sel, err = usb_reset.select_targets(["AAAA", "BBBB"], all_=True)
+    assert err is None and sel == [0, 1]
+
+
+def test_select_targets_empty_skip_is_refused():
+    # An empty --skip would protect nothing and reset both boards - refuse it.
+    sel, err = usb_reset.select_targets(["AAAA", "BBBB"], skip="")
+    assert sel == [] and err

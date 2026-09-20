@@ -58,7 +58,7 @@ class _Rig(Device):
         pool = self._hard if self._esptooled else self._soft
         return pool.pop(0) if pool else None
 
-    def _esptool_hard_reset(self):
+    def esptool_hard_reset(self):
         self.calls.append("esptool")
         self._esptooled = True
         return self._esptool_ok
