@@ -255,6 +255,15 @@ bool doLoopback(const std::string& method, const std::string& path,
   // internal-SRAM low-water during the serve (intMin, CUM-387).
   agent::alogf("relay: loopback via=%s conn=%ums status=%d bytes=%u intMin=%u", via, connMs,
                rp.status(), (unsigned)rp.body().size(), (unsigned)intMin);
+  // CUM-387 bench probe: a serve is the relay/cloud-sync memory event, so emit a line in
+  // the same `[sram]` family as the boot snapshots (main.cpp sramSnap) - intFree is the
+  // internal free right after the serve, heapMin is the all-time internal low-water
+  // (ESP.getMinFreeHeap, same metric as the boot lines). The supervisor's before/after
+  // capture is then one `grep '[sram]'`: boot heapMin vs post-sync heapMin should barely
+  // move now the staging rides PSRAM. Serial/log only, never the device screen.
+  agent::alogf("[sram] relay-sync intFree=%u heapMin=%u",
+               (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+               (unsigned)ESP.getMinFreeHeap());
   return rp.complete();
 }
 
