@@ -11,6 +11,7 @@
 #include "../agent/adapters/embeddings.h"
 #include "../sfx/sound_fx.h"            // ::sfx::refreshConfig() after an SD promote
 #include "../sys/agent_log.h"          // agentLogTail() for GET /api/log
+#include "../sys/errlog_fs.h"          // durableSkipped()/durableBytes() - /api/log meta (CUM-407/409)
 #include "../agent/memory_subsystem.h"
 #include "../agent/orchestrator.h"        // toolRidesLoop - /api/tools rides_loop flag (P7)
 #include "../agent/connectors.h"          // provider connector catalog for /api/tools (P7)
@@ -671,6 +672,12 @@ void registerMemoryRoutes(AsyncWebServer& server) {
     if (authBlocked(r)) return;  // strict gate (owner R2)
     AsyncWebServerResponse* res = r->beginResponse(200, "text/plain", agent::agentLogTail());
     res->addHeader("Cache-Control", "no-store");
+    // Durable-log meta (CUM-407/CUM-409): lines the durable log dropped under card-lock
+    // contention (never a silent loss - also recorded in the log itself), and bytes written
+    // to the durable log this boot (flash-wear watch). Headers, so the body stays the RAM
+    // ring byte-for-byte. Both reads are lock-free atomics.
+    res->addHeader("X-Log-Durable-Skipped", String(nimbus::errlog::durableSkipped()));
+    res->addHeader("X-Log-Durable-Bytes", String((unsigned long)nimbus::errlog::durableBytes()));
     r->send(res);
   });
 

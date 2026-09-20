@@ -49,6 +49,18 @@ std::string listJson();
 // True when the durable log is currently on the SD card (vs the flash fallback).
 bool onSdTier();
 
+// Durable lines dropped since boot because the shared card lock was contended when
+// the line was emitted (CUM-407). Lock-free (an atomic read), so any task - a web
+// handler, the health builder - can read it cheaply. The count is also persisted
+// into the durable log itself at the next successful write, so it is never a silent
+// loss. Reported on /api/log (meta) and the health row.
+uint32_t durableSkipped();
+
+// Bytes written to the durable log since boot (CUM-409 flash-wear watch). Lock-free.
+// Reported on /api/log (meta) and the health row so the fleet can see the wear a
+// device's logging actually incurs.
+size_t durableBytes();
+
 // The resolved active filesystem (SD card, else LittleFS). The retrieval route
 // opens and chunk-streams log files directly against this (under agent::memory::Lock)
 // so a full pull never buffers the whole file in RAM. Initializes the tier lazily.

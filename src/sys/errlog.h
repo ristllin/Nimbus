@@ -47,6 +47,24 @@ inline TierCaps capsFor(bool haveSd) { return haveSd ? kSdCaps : kFlashCaps; }
 // timestamp/sequence prefix.
 inline constexpr size_t kMaxLineBytes = 320;
 
+// ---- severity level + durable-persistence policy (CUM-409) ------------------
+//
+// Every log line carries a severity. Durable (on-disk) persistence is scoped to
+// warn/error and to category-tagged key events; a routine info line stays in the
+// RAM ring + Serial only, to bound internal-flash write wear over the fleet
+// lifetime (CUM-401 wrote EVERY line to the durable FS on the caller task, adding
+// per-line flash writes and GC/wear-levelling stalls for info-level chatter). The
+// predicate is portable so the routing is host-tested (test_errlog).
+enum class Level : uint8_t { Info = 0, Warn = 1, Error = 2 };
+
+// True when a line at `lvl` tagged `cat` should be written to the durable log.
+// Warn/Error always persist; a non-empty category tag marks a key event that
+// persists even at info level; a plain info line does not (the RAM ring + Serial
+// keep the full verbose stream).
+inline bool persistsDurably(Level lvl, const char* cat) {
+  return lvl != Level::Info || (cat && cat[0]);
+}
+
 // ---- rotated-file naming ----------------------------------------------------
 //
 // The active file is always kBaseName. On rotation it becomes ".1", the old ".1"
@@ -216,8 +234,14 @@ class LogWriter {
     if (w == 0) { sizeSynced_ = false; return false; }     // still not ready: re-sync next time
     sizeSynced_ = true;                                     // a real write happened; size now tracked
     curSize_ += w;
+    bytesWritten_ += w;                                     // flash-wear watch (CUM-409)
     return true;
   }
+
+  // Total bytes appended to the durable log since boot (a rotation renames, it does
+  // not re-append, so this is the true flash-write volume). Exposed as the CUM-409
+  // wear counter; host-tested against the fake FS.
+  size_t bytesWritten() const { return bytesWritten_; }
 
  private:
   // Shift files down and clear the active file: base -> .1 -> .2 ..., dropping the
@@ -230,10 +254,11 @@ class LogWriter {
     curSize_ = 0;
   }
 
-  FsT*   fs_         = nullptr;
-  bool   haveSd_     = false;
-  size_t curSize_    = 0;
-  bool   sizeSynced_ = false;
+  FsT*   fs_          = nullptr;
+  bool   haveSd_      = false;
+  size_t curSize_     = 0;
+  size_t bytesWritten_ = 0;
+  bool   sizeSynced_  = false;
 };
 
 // ---- class tags for the "classes we keep missing" ---------------------------
@@ -252,5 +277,17 @@ inline constexpr char kStorage[] = "storage";  // storage-tier decision (SD abse
 inline constexpr char kNet[]     = "net";      // wifi / network
 inline constexpr char kBoot[]    = "boot";     // boot / lifecycle
 }  // namespace cat
+
+// CUM-407: the bounded marker line that records how many durable lines were skipped
+// under card-lock contention since the last successful write. Returns empty when none
+// were dropped (so no marker is emitted). errlog_fs writes it at the next successful
+// durable write, so a drop is never a silent loss - it survives reboot in the log
+// itself, bounded to at most one marker per successful write.
+inline std::string dropMarkerLine(uint32_t seq, uint32_t ms, uint32_t dropped) {
+  if (dropped == 0) return {};
+  return formatLine(seq, ms, cat::kStorage,
+                    std::string("durable log dropped ") + std::to_string(dropped) +
+                    " line(s) under card-lock contention (best-effort)");
+}
 
 }  // namespace nimbus::errlog
