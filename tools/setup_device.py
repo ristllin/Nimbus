@@ -355,12 +355,18 @@ def bootstrap_commands(
 
 def freenove_ota_type(args: argparse.Namespace) -> str:
     """The typed-OTA slug for a Freenove, from its panel size. --size wins; under
-    --yes with no size we default to the 2.8\" panel (all sizes share one image, so
-    this only labels the OTA type) with a note; otherwise we prompt."""
+    --yes with no size we fall back to the 2.8\" slug with a note; otherwise we
+    prompt.
+
+    The seeded size is load-bearing: it is the OTA type the device keeps, and the
+    firmware will NOT guess a size later (an unseeded Freenove is offered no update,
+    CUM-417), so a wrong seed here means a mis-sized image on a 3.5\"/4.0\" board.
+    Pass --size (or answer the prompt) with the fitted panel."""
     if args.size:
         return {"28": "freenove-28", "35": "freenove-35", "40": "freenove-40"}[args.size]
     if args.yes:
-        print("Note: no --size given; seeding the Freenove OTA type as freenove-28 (2.8\").")
+        print("Note: no --size given; seeding the Freenove OTA type as freenove-28 (2.8\"). "
+              "Pass --size 35/40 for a larger panel - the firmware does not guess it later.")
         return "freenove-28"
     print("\nFreenove panel size:")
     for key, (label, slug) in FREENOVE_SIZES.items():

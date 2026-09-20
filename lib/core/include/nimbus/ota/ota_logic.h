@@ -73,12 +73,15 @@ bool typeAllowedForBoard(const char* type, bool isFreenove);
 
 // Derive the OTA device type from hardware identity during the transition boot
 // (existing devices that carry no otaType yet). isFreenove = SOLIDE_BOARD==
-// freenove_s3; screenIsTft = stored scrModel=="tft". Solide+tft -> "nimbus-tft";
-// Solide+eink -> "" (frozen: e-ink gets no more updates); Freenove -> the base
-// "freenove-28" size (the flasher seeds the exact size on fresh installs, so this
-// default only ever applies to a Freenove reaching the typed scheme by transition
-// without a seeded size - the smallest safe panel). Writes buf, returns its
-// length (0 for the untyped e-ink case, which the glue leaves unset).
+// freenove_s3; screenIsTft = stored scrModel=="tft". Solide+tft -> "nimbus-tft"
+// (the Solide family has exactly one type, so hardware identity fixes it);
+// Solide+eink -> "" (frozen: e-ink gets no more updates); Freenove -> "" as well,
+// because the Freenove family has three sizes (28/35/40) that identity cannot
+// tell apart, and guessing one could push a mis-sized image (CUM-417). A real
+// Freenove is seeded with its exact size by the flasher, so an "" here only ever
+// refuses an UNSEEDED Freenove, which reflashes with an explicit size rather than
+// being guessed. Writes buf, returns its length (0 for every untyped case, which
+// the glue leaves unset -> no update offered).
 size_t deriveDeviceType(char* buf, size_t cap, bool isFreenove, bool screenIsTft);
 
 // --- signed message ---------------------------------------------------------

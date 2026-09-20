@@ -199,7 +199,14 @@ bool typeAllowedForBoard(const char* type, bool isFreenove) {
 
 size_t deriveDeviceType(char* buf, size_t cap, bool isFreenove,
                         bool screenIsTft) {
-  const char* t = isFreenove ? kTypeFreenove28
+  // A Freenove family has THREE sizes (28/35/40) and hardware identity alone
+  // cannot tell them apart, so an unseeded Freenove derives "" (untyped -> no
+  // update offered): guessing a size could push a mis-sized image. The flasher
+  // seeds the exact size on every real install, so this only ever refuses a
+  // Freenove that reached the typed scheme with no seed - which reflashes with
+  // an explicit size rather than being guessed (CUM-417). The Solide family has
+  // exactly one type, so a Solide+tft board can still be derived unambiguously.
+  const char* t = isFreenove ? ""
                              : (screenIsTft ? kTypeNimbusTft : "");
   size_t n = strlen(t);
   if (cap < n + 1) { if (cap) buf[0] = '\0'; return 0; }

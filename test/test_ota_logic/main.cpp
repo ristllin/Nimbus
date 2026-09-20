@@ -108,23 +108,59 @@ static void test_type_allowed_for_board() {
 
 static void test_derive_device_type() {
   char b[24];
-  // Solide + TFT -> nimbus-tft.
+  // Solide + TFT -> nimbus-tft (the Solide family has exactly one type).
   TEST_ASSERT_EQUAL_UINT(10, deriveDeviceType(b, sizeof b, false, true));
   TEST_ASSERT_EQUAL_STRING("nimbus-tft", b);
   // Solide + e-ink -> untyped (frozen, no updates).
   TEST_ASSERT_EQUAL_UINT(0, deriveDeviceType(b, sizeof b, false, false));
   TEST_ASSERT_EQUAL_STRING("", b);
-  // Freenove -> base size default.
-  TEST_ASSERT_EQUAL_UINT(11, deriveDeviceType(b, sizeof b, true, true));
-  TEST_ASSERT_EQUAL_STRING("freenove-28", b);
-  // Whatever a derived type is, it must be one this board is allowed to run.
+  // CUM-417: an unseeded Freenove must NOT guess a size - it derives "" so no
+  // update is offered and the board reflashes with an explicit size. Guessing
+  // freenove-28 could push a mis-sized image onto a 3.5in/4.0in Freenove.
+  TEST_ASSERT_EQUAL_UINT(0, deriveDeviceType(b, sizeof b, true, true));
+  TEST_ASSERT_EQUAL_STRING("", b);
+  // The Solide derivation must still be one this board is allowed to run.
   deriveDeviceType(b, sizeof b, false, true);
   TEST_ASSERT_TRUE(typeAllowedForBoard(b, false));
-  deriveDeviceType(b, sizeof b, true, true);
-  TEST_ASSERT_TRUE(typeAllowedForBoard(b, true));
   // Too-small buffer refuses cleanly.
   TEST_ASSERT_EQUAL_UINT(0, deriveDeviceType(b, 4, false, true));
   TEST_ASSERT_EQUAL_STRING("", b);
+}
+
+// CUM-417 class rule: hardware identity may derive a type ONLY when the board
+// family has exactly one valid type. Enumerate every (family, screen) with no
+// seed and assert the invariant - a family with more than one size (Freenove:
+// 28/35/40) always derives "" (refuse, don't guess); a single-type family
+// (Solide: nimbus-tft) may derive that one type. Whatever is derived must pass
+// typeAllowedForBoard, and a non-empty derivation implies a single-type family.
+static void test_derive_only_when_family_is_unambiguous() {
+  struct Case { bool isFreenove; bool screenIsTft; };
+  const Case kCases[] = {
+      {false, true},   // Solide + tft
+      {false, false},  // Solide + eink
+      {true, true},    // Freenove + tft (unseeded - three sizes, ambiguous)
+      {true, false},   // Freenove + eink
+  };
+  for (const auto& c : kCases) {
+    // How many of the four frozen slugs this board family accepts.
+    const char* kAll[] = {kTypeNimbusTft, kTypeFreenove28, kTypeFreenove35,
+                          kTypeFreenove40};
+    int familyTypes = 0;
+    for (const char* t : kAll)
+      if (typeAllowedForBoard(t, c.isFreenove)) familyTypes++;
+
+    char b[24];
+    size_t n = deriveDeviceType(b, sizeof b, c.isFreenove, c.screenIsTft);
+    if (n > 0) {
+      // A derivation only happens for a single-type family, and it is valid.
+      TEST_ASSERT_EQUAL_UINT(1, familyTypes);
+      TEST_ASSERT_TRUE(typeAllowedForBoard(b, c.isFreenove));
+    } else {
+      // Refused: either a multi-size family (never guess) or a non-tft screen.
+      TEST_ASSERT_EQUAL_STRING("", b);
+      TEST_ASSERT_TRUE(familyTypes != 1 || !c.screenIsTft);
+    }
+  }
 }
 
 // --- manifest ---------------------------------------------------------------
@@ -614,6 +650,7 @@ int main(int, char**) {
   RUN_TEST(test_sig_message_golden);
   RUN_TEST(test_type_allowed_for_board);
   RUN_TEST(test_derive_device_type);
+  RUN_TEST(test_derive_only_when_family_is_unambiguous);
   RUN_TEST(test_manifest_valid);
   RUN_TEST(test_manifest_uppercase_sha_canonicalized);
   RUN_TEST(test_manifest_rejects);

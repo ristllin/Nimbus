@@ -183,7 +183,9 @@ static const char* otaVariant() {
       }
       snprintf(t, sizeof t, "%s", derived);
     }
-    // e-ink derives to "" -> left unset -> untyped -> no update (correct).
+    // e-ink AND an unseeded Freenove derive to "" -> left unset -> untyped ->
+    // no update (correct: an unseeded Freenove reflashes with an explicit size
+    // rather than guessing one, CUM-417).
   }
 #endif
   if (t[0] && nimbus::ota::typeAllowedForBoard(t, kBoardIsFreenove))
