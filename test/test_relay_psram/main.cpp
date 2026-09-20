@@ -28,6 +28,11 @@ extern "C" void* heap_caps_malloc(size_t n, uint32_t caps) {
 extern "C" void heap_caps_free(void* p) { std::free(p); }
 
 #include "nimbus/cloud/psram_vector.h"
+// The ACTUAL relay staging types (not just the generic alias): the HTTP response
+// body/parser staging and the inbound WS message payload. Asserting on these is
+// what catches a revert of one specific relay buffer back onto the internal heap.
+#include "nimbus/cloud/http_replay.h"
+#include "nimbus/cloud/relay_ws.h"
 
 using nimbus::cloud::PsVector;
 using nimbus::cloud::PsramAlloc;
@@ -59,10 +64,42 @@ static void test_body_buffer_type_is_psram() {
   TEST_ASSERT_FALSE((std::is_same<PsVector<uint8_t>, std::vector<uint8_t>>::value));
 }
 
+// The ACTUAL type the HTTP response parser stages into (ResponseParser buf_/body_).
+// A revert of `using BodyBuf = ...` to a plain std::vector<uint8_t> fails here, not
+// just at the generic alias - this is the buffer that reached ~278 KB on a sync.
+static void test_http_body_buf_is_psram_backed() {
+  using nimbus::cloud::http_replay::BodyBuf;
+  TEST_ASSERT_TRUE((std::is_same<BodyBuf::allocator_type, PsramAlloc<uint8_t>>::value));
+  {
+    BodyBuf b;
+    b.resize(4096);
+    b.push_back(1);  // force a growth
+  }
+  TEST_ASSERT_GREATER_THAN(0, g_spiramReq);
+  TEST_ASSERT_EQUAL_INT(0, g_internalReq);
+}
+
+// The ACTUAL inbound WS message payload type (ws::Message::payload) - the decoded
+// tunneled request body that can reach the 16 KB frame cap on the internal heap.
+static void test_ws_message_payload_is_psram_backed() {
+  using nimbus::cloud::ws::Message;
+  TEST_ASSERT_TRUE((std::is_same<decltype(Message::payload)::allocator_type,
+                                 PsramAlloc<uint8_t>>::value));
+  {
+    Message m;
+    m.payload.resize(4096);
+    m.payload.push_back(1);
+  }
+  TEST_ASSERT_GREATER_THAN(0, g_spiramReq);
+  TEST_ASSERT_EQUAL_INT(0, g_internalReq);
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_alias_is_psram_allocated);
   RUN_TEST(test_psvector_routes_to_spiram);
   RUN_TEST(test_body_buffer_type_is_psram);
+  RUN_TEST(test_http_body_buf_is_psram_backed);
+  RUN_TEST(test_ws_message_payload_is_psram_backed);
   return UNITY_END();
 }

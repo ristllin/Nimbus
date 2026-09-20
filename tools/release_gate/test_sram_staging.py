@@ -7,6 +7,7 @@ Run: python3 -m pytest tools/release_gate
 """
 
 import os
+import re
 import subprocess
 
 import check_sram_staging as st
@@ -96,3 +97,108 @@ def test_real_elf_when_built():
         cwd=st.REPO,
     ).returncode
     assert rc == 0, "the shipped esp32s3 ELF must pass the staging gate"
+
+
+# --- relay / cloud-sync staging (CUM-387, source leg) -------------------------
+# Minimal shipped-shape sources: the relay staging containers are the PSRAM alias
+# and each header keeps its PSRAM static_assert. Each mutation below reverts one
+# relay buffer to the internal heap (or drops a guard) and must turn the leg RED,
+# so the guard is proven non-tautological - the same discipline as the ELF leg.
+GOOD_HTTP = """
+using BodyBuf = nimbus::cloud::PsVector<uint8_t>;
+#if defined(NIMBUS_RELAY_PSRAM_BODY)
+static_assert(std::is_same<BodyBuf::allocator_type, nimbus::cloud::PsramAlloc<uint8_t>>::value,
+              "relay response body/staging must stay PSRAM-backed (CUM-387)");
+#endif
+  BodyBuf buf_;
+  BodyBuf body_;
+"""
+
+GOOD_WS = """
+struct Message {
+  nimbus::cloud::PsVector<uint8_t> payload;
+};
+  nimbus::cloud::PsVector<uint8_t> buf_;
+  nimbus::cloud::PsVector<uint8_t> frag_;
+  std::vector<Message> ready_;   // legit: a vector of messages, not a byte buffer
+#if defined(NIMBUS_RELAY_PSRAM_BODY)
+static_assert(std::is_same<decltype(Message::payload)::allocator_type,
+                           nimbus::cloud::PsramAlloc<uint8_t>>::value,
+              "relay inbound WS message payload must stay PSRAM-backed (CUM-387)");
+#endif
+"""
+
+HTTP_REL = os.path.join("lib", "core", "include", "nimbus", "cloud", "http_replay.h")
+WS_REL = os.path.join("lib", "core", "include", "nimbus", "cloud", "relay_ws.h")
+
+
+def _good_sources():
+    return {HTTP_REL: GOOD_HTTP, WS_REL: GOOD_WS}
+
+
+def test_relay_shipped_shape_passes():
+    ok, msgs = st.judge_relay(_good_sources())
+    assert ok, msgs
+    assert any("BodyBuf is the PSRAM alias" in m for m in msgs)
+    assert all("win intact" in m or "guard intact" in m for m in msgs)
+
+
+def test_relay_bodybuf_reverted_to_internal_fails():
+    # `using BodyBuf = std::vector<uint8_t>;` puts the ~278 KB response body back on
+    # the scarce internal heap - exactly the CUM-387 regression the gate must catch.
+    src = _good_sources()
+    src[HTTP_REL] = GOOD_HTTP.replace(
+        "using BodyBuf = nimbus::cloud::PsVector<uint8_t>;",
+        "using BodyBuf = std::vector<uint8_t>;",
+    )
+    ok, msgs = st.judge_relay(src)
+    assert not ok
+    assert any("BodyBuf reverted to std::vector<uint8_t>" in m for m in msgs)
+
+
+def test_relay_ws_member_reverted_to_internal_fails():
+    # Revert just the WS unparsed-frame staging (buf_) to the internal heap.
+    src = _good_sources()
+    src[WS_REL] = GOOD_WS.replace(
+        "nimbus::cloud::PsVector<uint8_t> buf_;",
+        "std::vector<uint8_t> buf_;",
+    )
+    ok, msgs = st.judge_relay(src)
+    assert not ok
+    assert any("buf_ reverted to std::vector<uint8_t>" in m for m in msgs)
+
+
+def test_relay_static_assert_removal_fails():
+    # Dropping the compile-time guard is itself a regression (it is the first line of
+    # defense); the gate refuses a header that no longer carries it. Strip the whole
+    # `static_assert(...);` statement, as a real deletion would.
+    src = _good_sources()
+    src[WS_REL] = re.sub(r"static_assert\s*\([^;]*;", "", GOOD_WS, flags=re.S)
+    ok, msgs = st.judge_relay(src)
+    assert not ok
+    assert any("missing inbound WS payload PSRAM static_assert" in m for m in msgs)
+
+
+def test_relay_missing_header_fails_not_silently_passes():
+    # A renamed/removed header must FAIL, never pass by absence (deliberate stop).
+    src = _good_sources()
+    del src[HTTP_REL]
+    ok, msgs = st.judge_relay(src)
+    assert not ok
+    assert any("missing relay staging header" in m and "http_replay.h" in m for m in msgs)
+
+
+def test_relay_ready_vector_of_messages_does_not_false_positive():
+    # `std::vector<Message> ready_;` is a legit internal vector of messages (not a
+    # uint8_t byte buffer); the gate names only the uint8_t staging members, so it
+    # never trips on it.
+    ok, _ = st.judge_relay(_good_sources())
+    assert ok
+
+
+def test_relay_real_headers_pass():
+    # Integration leg: the actual shipped headers must pass with no board and no build.
+    sources = st.read_relay_sources()
+    assert HTTP_REL in sources and WS_REL in sources, "relay staging headers not found"
+    ok, msgs = st.judge_relay(sources)
+    assert ok, msgs
