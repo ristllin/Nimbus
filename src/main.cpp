@@ -581,17 +581,21 @@ static uint32_t      g_lastApReconcileMs = 0;  // periodic AP<->STA reconcile (s
 static solide::BeginResult g_hal{};            // per-subsystem HAL health from solide::begin()
 static bool          g_bootPanelSignaled = false;  // one-shot boot panel signal fired (CUM-388)
 
-// The live "screen confirmed up and answering" verdict (CUM-388): the ONE source
-// the STATUS scrok field and the boot panel signal both read. It mirrors the
-// health "screen" row through the pure screenResponding() predicate so the two can
-// never drift: the panel bound at boot AND is not fault-injected absent AND the
-// debounced controller-liveness verdict is not "not responding". A wrong-variant
-// flash binds the panel blindly but the controller never answers, so this is false.
-static bool panelResponding() {
-  return nimbus::display::screenResponding(
+// The live tri-state "screen confirmed up and answering" verdict (CUM-388/423):
+// the ONE source the STATUS scrok field and the boot panel signal both read, so
+// they can never drift from each other or from the health "screen" row. Yes only
+// when the panel bound at boot AND is not fault-injected absent AND the debounced
+// controller-liveness verdict is not "not responding" AND liveness is knowable on
+// this board. A wrong-variant flash binds the panel blindly but the controller
+// never answers, so this reads No. On a shared-MISO solide board the liveness poll
+// is gated off to protect touch (CUM-392), so there is no render-independent feed:
+// the verdict is Unknown (honest "cannot self-check"), never a false Yes.
+static nimbus::display::Scrok panelScrok() {
+  return nimbus::display::screenScrok(
       /*boundOk=*/g_hal.display,
       /*faultInjected=*/nimbus::fault::active(nimbus::fault::SCREEN),
-      /*notResponding=*/g_screenIsTft && hw::tft::controllerNotResponding());
+      /*notResponding=*/g_screenIsTft && hw::tft::controllerNotResponding(),
+      /*livenessKnown=*/!(g_screenIsTft && hw::tft::panelReadbackGated()));
 }
 
 // One-shot boot panel signal (CUM-388). Twice a Freenove got the Solide image
@@ -608,7 +612,8 @@ static void emitBootPanelSignalOnce(uint32_t now) {
   using nimbus::display::BootPanelSignal;
   const BootPanelSignal sig = nimbus::display::bootPanelSignal(
       /*boundOk=*/g_hal.display,
-      /*notResponding=*/g_screenIsTft && hw::tft::controllerNotResponding());
+      /*notResponding=*/g_screenIsTft && hw::tft::controllerNotResponding(),
+      /*livenessKnown=*/!(g_screenIsTft && hw::tft::panelReadbackGated()));
   switch (sig) {
     case BootPanelSignal::Responding:
       // Give the debounced verdict (~6 s: threshold 3 at the 2 s cadence) time to
@@ -617,6 +622,17 @@ static void emitBootPanelSignalOnce(uint32_t now) {
       // below well before this window.
       if (now < 12000) return;
       Serial.println("PANEL scrok=1");
+      break;
+    case BootPanelSignal::Unverifiable:
+      // Shared-MISO solide board (CUM-423): the render-independent liveness poll is
+      // gated off to keep touch alive, so the panel's liveness cannot be self-checked.
+      // Report it honestly as unknown, never a false scrok=1, and tell the operator
+      // the one thing that settles it: look at the glass. Wait the same settle window
+      // as the healthy beacon so a freshly-attached monitor and the installer catch it.
+      if (now < 12000) return;
+      Serial.println("?? DISPLAY LIVENESS UNKNOWN on this board; touch shares the "
+                     "panel bus, so it cannot self-check. Look at the screen.");
+      Serial.println("PANEL scrok=unknown");
       break;
     case BootPanelSignal::NotResponding:
       // Bound at boot but the controller never answers: the wrong-variant-flash
@@ -3020,6 +3036,11 @@ void setup() {
   // /api/state and /api/health report a disconnected/dead panel as a fault instead
   // of the boot begin() result's "up".
   wc.panelControllerDead = [] { return hw::tft::controllerNotResponding(); };
+  // Whether the panel's liveness is self-checkable on this board (CUM-423). On a
+  // shared-MISO solide board the render-independent RDDST poll is gated off to keep
+  // touch alive, so there is no honest feed for the verdict: the health "screen" row
+  // reads "unverified" rather than a false "ok". Mirrors panelScrok()'s livenessKnown.
+  wc.panelLivenessKnown = [] { return !(g_screenIsTft && hw::tft::panelReadbackGated()); };
   // Battery drain/storage (battery-measurement). setStorage is production; setDrain is
   // TEST-only (the endpoint is compiled out of production, so the callback is never set).
   wc.setStorage  = [](int pct) { storageSet(pct); };
@@ -3272,9 +3293,10 @@ void setup() {
     // The driver that actually bound, so STATUS can report reality rather than
     // the stored preference (they differ whenever the fail-soft path trips).
     h.screenIsTft = [] { return g_screenIsTft; };
-    // scrok= in STATUS: the honest "panel up AND answering" bit, so HIL and the
-    // installer can catch a wrong-variant flash (scr=tft over black glass).
-    h.panelResponding = [] { return panelResponding(); };
+    // scrok= in STATUS: the honest tri-state "panel up AND answering" verdict, so
+    // HIL and the installer can catch a wrong-variant flash (scr=tft over black
+    // glass) and can tell a real "answering" from an unverifiable shared-MISO board.
+    h.panelResponding = [] { return panelScrok(); };
     // NSNFEED: drive the notifier UI without a broker or BLE (blocked by macOS
     // BLE permissions on the bench). Same decoder/mapper/router path as a real
     // frame, so what renders is what a broker would produce.

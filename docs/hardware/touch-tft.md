@@ -220,7 +220,7 @@ reading them over the console RESETS this board and destroys the fault:
 |---|---|---|
 | `panelTask` | alive | the render task is running |
 | `panelBusy` | false | blits COMPLETE, not stalled |
-| `panelResponding` | true | the controller answers its RDDST status read and still holds the mode we wrote (`healthy()`) |
+| `panelResponding` | true | the controller answers its RDDST status read and still holds the mode we wrote (`healthy()`); **null** on a shared-MISO board that cannot self-check, see below |
 | `panelMeasured` | false | the register/pixel probe is off (the shipped default) |
 | `panelOk` | null | not measured while the probe is off; a real bool only with it on |
 | `panelBlOk` | true | the backlight PWM genuinely attached |
@@ -230,10 +230,11 @@ reading them over the console RESETS this board and destroys the fault:
 | `panelPixOk` | null | not measured while the probe is off; a real bool only with it on |
 | `panelPixLost` | 0 | times the pixels were ever found to disagree |
 
-⚠ **`panelResponding` is the one live signal that does not need the probe.** It
-comes from a low-cadence readback of the driver's RDDST-based `healthy()` (the
-same reliable status read `TFTHEALTH?` reports), debounced over a ~2 s cadence,
-and is `false` when the controller is off the SPI bus - a disconnected FPC, a
+⚠ **`panelResponding` is the one live signal that does not need the probe (on a
+board that can self-check).** It comes from a low-cadence readback of the driver's
+RDDST-based `healthy()` (the same reliable status read `TFTHEALTH?` reports),
+debounced over a ~2 s cadence, and is `false` when the controller is off the SPI
+bus - a disconnected FPC, a
 dead module, a collapsed rail - or has silently reset. It is **not** keyed on the
 controller id (RDDID, `TFTID?`): a healthy Freenove / CYD panel reads RDDID
 `0x000000` while fully working, so an id-based verdict reported a working panel as
@@ -246,21 +247,24 @@ reports it as "display not responding" without a serial open (which would reset
 the board and erase the fault). `panelOk` / `panelPixOk` are **null** while the
 probe is off, never a fabricated `true`: "not measured" must not read as "healthy".
 
-⚠ **On the classic solide_s3 board the live panel-liveness verdict is NOT
-maintained (CUM-392 / CUM-423), so `panelResponding` cannot be trusted as a
-positive there.** That board shares its touch MISO with the panel, so the
+⚠ **On the classic solide_s3 board the live panel-liveness verdict cannot be
+maintained (CUM-392 / CUM-423), so the firmware reports it as UNKNOWN, never a
+false positive.** That board shares its touch MISO with the panel, so the
 render-independent RDDST poll (`pollControllerLiveness`) is gated off to protect
 touch. The per-push `healthy()` read in `renderAndPush` was intended to feed the
 verdict instead, but on an idle device that read site is not reached in steady
 state (the 5 s `tickHealth` watchdog forces a fresh repaint every `kHealMs`, so
 the unchanged-frame-past-window branch that holds the read never runs), so the
-debounced verdict is never updated after boot. The consequence: a solide panel
-whose bind SUCCEEDS but is then dead reads `scrok=1` today, which is wrong. A
-wrong-variant flash whose bind FAILS is still caught (`InitFailed` -> `scrok=0`).
-On the capacitive Freenove / CYD board nothing is shared, so the poll runs
-unchanged and the verdict is honest. Tracked in CUM-423: on shared-MISO boards
-the honest report is "liveness unknown" (look at the screen), never a false
-positive. See the next section.
+debounced verdict is never updated after boot. The read that would detect a dead
+panel is the same read that pins touch, so you cannot have both. The honest answer
+is therefore "unknown": on a shared-MISO board `panelResponding` reads **null**
+(not measured, like `panelPixOk` while the probe is off), `scrok` reads
+**`unknown`** (never a false `1`), and the Display health row reads
+**"unverified"**, not "ok" (CUM-423). A wrong-variant flash whose bind FAILS is
+still caught (`InitFailed` -> `scrok=0`), and a controller that is read as dead
+still reads `scrok=0`. On the capacitive Freenove / CYD board nothing is shared,
+so the poll runs unchanged and the verdict is a real `true`/`false`. The one thing
+that settles "unknown" is a human looking at the glass. See the next section.
 
 ⚠ **The panel's display/power state is NOT observable.** `RDDPM` (0x0A) reads
 `0x00` at every dummy-width on this panel - it simply is not implemented - and
@@ -344,18 +348,24 @@ running. The portable decision is host-tested and iterated over every board
 definition, so a future resistive board on a shared MISO is covered by
 construction.
 
-**The wrong-variant / black-glass guardrail (CUM-388) is PARTIALLY reduced on
-shared-MISO boards (CUM-423).** A wrong-variant flash whose panel bind FAILS is
-still caught in both directions: a **Freenove image on Solide hardware** and a
-**Solide image on Freenove hardware** both fail `begin()` on the wrong pin map and
-emit `InitFailed` -> `scrok=0`. What is NOT caught on a solide_s3 board is a panel
-that BINDS but is dead: the live liveness verdict is not maintained there (the
-gated-off poll protects touch, and the intended per-push substitute is not reached
-in steady state), so a bound-but-dead solide panel currently reports `scrok=1`.
-The honest fix (report "liveness unknown" on shared-MISO boards, never a false
-positive, so the operator looks at the screen) is tracked in CUM-423 and needs
-on-glass validation before it ships. On the capacitive Freenove the verdict is
-unaffected.
+**The wrong-variant / black-glass guardrail (CUM-388) is honest on shared-MISO
+boards: it reports "unknown", never a false pass (CUM-423).** A wrong-variant
+flash whose panel bind FAILS is caught in both directions: a **Freenove image on
+Solide hardware** and a **Solide image on Freenove hardware** both fail `begin()`
+on the wrong pin map and emit `InitFailed` -> `scrok=0`. What the shared-MISO board
+cannot detect on its own is a panel that BINDS but is then dead: the live liveness
+verdict is not maintained there (the gated-off poll protects touch, and the
+intended per-push substitute is not reached in steady state). Rather than emit a
+false `scrok=1` over that unmeasured state, the firmware now reports it honestly as
+UNKNOWN: the boot beacon prints `PANEL scrok=unknown` plus a line telling the
+operator to look at the screen, `panelResponding` reads null, and the Display
+health row reads "unverified". `tools/setup_device.py` treats `scrok=unknown` as a
+soft caution ("look at the screen"), not a pass and not a hard failure, so a
+legitimate solide install still proceeds. The stronger detector (a one-shot
+boot-time RDDST read before the touch loop scans, which could give a real verdict
+without the continuous contention) is a possible follow-up that needs finger-and-
+eyes validation first. On the capacitive Freenove the verdict is a real
+`true`/`false`, unaffected.
 
 **Finger-free diagnostics** (test / test-cyd console builds only - they reset the
 board on a serial open, so use a `[env:test]`-family image):

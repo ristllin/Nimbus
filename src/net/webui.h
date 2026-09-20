@@ -85,6 +85,12 @@ struct WebConfig {
   // is independent of the register/pixel probe (off by default). Null => reported
   // false (a context that cannot read the controller claims no new fault).
   std::function<bool()> panelControllerDead;
+  // Whether the panel's liveness can be self-checked on this board (CUM-423). False
+  // on a shared-MISO solide board, where the render-independent RDDST poll is gated
+  // off to keep touch alive: the panel binds but nothing feeds the liveness verdict,
+  // so the Display health row must read "unverified", not "ok". Null => reported true
+  // (a context that cannot tell assumes the usual self-checkable board).
+  std::function<bool()> panelLivenessKnown;
   // Battery drain/storage (battery-measurement). setDrain = campaign (TEST); setStorage =
   // discharge-to-storage-SoC (production); drainState fills the /api/state batt fields.
   // bright: -1 = firmware default. ttlS: -1 = default host dead-man, 0 = DISARMED
