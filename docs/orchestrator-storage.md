@@ -84,13 +84,15 @@ over the device's lifetime rather than writing every diagnostic line to flash.
 
 A durable write is **best-effort**. Each log call takes the shared card lock with a
 short timed try-acquire; if a large memory persist is holding the card, the write is
-skipped so the log call never stalls the watchdog-guarded loop. A skip is never a
-silent loss: the RAM ring and serial still hold the line, a dropped-line count is
-recorded into the durable log itself at the next successful write, and the running
+skipped so the log call never stalls the watchdog-guarded loop. A contention skip is
+never a silent loss: the RAM ring and serial still hold the line, a dropped-line count
+is recorded into the durable log itself at the next successful write, and the running
 totals (`X-Log-Durable-Skipped`, `X-Log-Durable-Bytes`) are returned as headers on
-`GET /api/log`, in `GET /api/errlog?list=1`, and on the device health row. If you
-need every line during a heavy-churn incident, read the RAM ring (`GET /api/log`)
-continuously rather than relying on the durable log alone.
+`GET /api/log`, in `GET /api/errlog?list=1`, and on the device health row. One case is
+not back-filled: a line emitted before the filesystem has mounted (early boot, before
+`memory::begin()`) is kept in the RAM ring and serial but is not written to the durable
+log retroactively. If you need every line during a heavy-churn incident, read the RAM
+ring (`GET /api/log`) continuously rather than relying on the durable log alone.
 
 ## 2. VDB - working set in PSRAM, durable on SD
 
