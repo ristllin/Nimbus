@@ -714,10 +714,17 @@ class Device:
             if step == "restart" or stall >= 3:
                 if rebooted:
                     break  # restarted once already and still not idle -> loud timeout
+                # A confirmed restart lands a provisioned board on StatusIdle. It can
+                # run longer than the outer deadline (esptool escalation), so check
+                # the post-reboot screen here and return if idle - do NOT let the
+                # while-deadline expire mid-recovery and raise on an idle board.
                 self.reboot_and_confirm(timeout=max(30.0, timeout))
                 rebooted = True
                 last_sig = None
                 stall = 0
+                if idle_nav_step(self.render().screen) == "idle":
+                    return
+                deadline = time.time() + timeout  # fresh budget to clear a post-boot screen
                 continue
             x, y = IDLE_HEADER_TAP
             self.cmd(f"TAP {x} {y}", "TAP<", timeout=5.0)
