@@ -751,7 +751,7 @@ def probe_for_freenove(port: str, timeout: float = 8.0) -> str:
     connection.write_timeout = 2
     try:
         connection.open()
-        time.sleep(3.0)   # let the provision sketch boot once before it can answer
+        time.sleep(3.0)  # let the provision sketch boot once before it can answer
         connection.reset_input_buffer()
         connection.write(b"PROBE\n")
         connection.flush()
@@ -857,7 +857,7 @@ class InstallOutcome:
         # CUM-422: the board-family probe proved a Freenove under a solide flash, so the
         # solide image was refused - nothing seeded, no production image restored.
         self.wrong_variant = False
-        self.probe = "unknown"   # 'freenove' | 'clear' | 'unsupported' | 'unknown'
+        self.probe = "unknown"  # 'freenove' | 'clear' | 'unsupported' | 'unknown'
 
 
 def _upload(pio: str, env: str, port: str) -> None:

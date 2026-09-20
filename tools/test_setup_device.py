@@ -798,7 +798,7 @@ def test_read_probe_signal_none_on_old_sketch_without_probe():
 def test_probe_wrong_variant_message_names_the_board_and_next_step():
     msg = SETUP.PROBE_WRONG_VARIANT_MESSAGE
     assert "Freenove" in msg
-    assert "--board freenove_s3" in msg   # the corrected command
+    assert "--board freenove_s3" in msg  # the corrected command
     assert "Refusing" in msg
 
 
@@ -814,10 +814,10 @@ def test_main_freenove_under_solide_board_refused_by_probe():
     )
     assert rc == 1, (rc, out, err)
     assert "Freenove capacitive touch" in err
-    assert "installed. NVS was not erased" not in out   # nothing installed
-    assert runner.envs == ["provision"]                 # only the setup sketch; no esp32s3
+    assert "installed. NVS was not erased" not in out  # nothing installed
+    assert runner.envs == ["provision"]  # only the setup sketch; no esp32s3
     assert runner.probe_calls == ["/dev/cu.usbmodem101"]  # the probe actually ran
-    assert runner.panel_calls == []                     # no production image to screen-check
+    assert runner.panel_calls == []  # no production image to screen-check
 
 
 def test_main_solide_probe_clear_proceeds_and_installs():
@@ -858,10 +858,10 @@ def test_freenove_install_does_not_probe():
         ["--yes", "--port", "/dev/cu.usbmodem101", "--board", "freenove_s3", "--mode", "notifier", "--size", "28"],
         board=_board(vid=SETUP.VID_ESP32S3_NATIVE),
         panel="ok",
-        probe="freenove",   # even if the fake would answer freenove, it must not be consulted
+        probe="freenove",  # even if the fake would answer freenove, it must not be consulted
     )
     assert rc == 0, (rc, err)
-    assert runner.probe_calls == []                       # never probed on a freenove install
+    assert runner.probe_calls == []  # never probed on a freenove install
     assert runner.envs == ["provision-cyd", "esp32s3-cyd"]
     assert "installed. NVS was not erased" in out
 

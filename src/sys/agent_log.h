@@ -8,6 +8,7 @@
 
 #include "nimbus/logring.h"     // core::LogRing::redact (portable, host-tested)
 #include "nimbus/log_sinks.h"   // core::emitRedacted (portable, host-tested two-sink seam)
+#include "errlog.h"             // nimbus::errlog::Level + persistsDurably (durable routing, CUM-409)
 #include "errlog_fs.h"          // durable SD/flash sink (CUM-401) - fed the SAME redacted line
 
 // agent_log - the device-side logging seam for the Orchestrator subsystem.
