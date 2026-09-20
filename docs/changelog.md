@@ -6,6 +6,47 @@ ships as a signed image on the public
 repository; a device on Orchestrator mode sees it on its daily check and
 installs on your say-so ([how updates work](ota.md)).
 
+## v4.5.4 - Touch works again on classic boards, honest display check, cloud-sync headroom
+
+- **Touch responds again on the classic (TFT + ring) board.** v4.5.0 introduced a
+  background display-health poll that shares the panel bus with the resistive
+  touch controller on the classic board and could pin touch. That poll is now
+  off on those boards; the display and touch reads the board shipped with in
+  v4.4.6 are back as they were.
+- **The display check tells the truth on the classic board.** Because that
+  board cannot read its display controller without disturbing touch, the
+  installer, the boot log, the health panel and the device status now say the
+  display "cannot self-check on this board, look at the screen" instead of
+  reporting it healthy. A display that fails to start is still reported as
+  such. The Freenove board keeps its full self-check.
+- **Cloud sync no longer runs out of memory.** The relay staging buffers behind
+  "Not enough memory right now" live in the large PSRAM, and the memory floor
+  the cloud dial checks is sized for that; a serve of the full device page now
+  leaves the scarce internal memory almost untouched. A release check keeps
+  those buffers from creeping back.
+- **An unseeded Freenove is offered no update rather than the wrong size.** The
+  three Freenove panel sizes cannot be told apart by the hardware, so a board
+  with no seeded type no longer guesses 2.8" and is skipped by typed updates
+  until it is set up with the installer.
+- Installer and bench tooling: `tools/board_info.py` reads a board over USB
+  without resetting it; the installer picks the provisioning image by board and
+  cable; the on-device test suite measures the classic board honestly instead
+  of skipping.
+
+## v4.4.9 to v4.5.3 - stability under low memory, honest routines and storage
+
+Cut without notes; the user-visible changes across those four releases:
+
+- Turns wait honestly under low memory instead of failing over to a different
+  provider, and routines that could not run say why.
+- A message the device already handled is never replayed after a restart, and
+  rapid messages are batched into one turn.
+- A durable error log on the card or flash, readable from the device page.
+- A loud "SD not detected, memories are on the card" banner when the card
+  drops, instead of an empty Memory panel.
+- A first-class memory restore over HTTP from a device backup.
+- The Cloud access card can mint a Cumulo key for the device.
+
 ## v4.4.8 - GPT-6 Astra, current model lineups, router-driven Cumulo catalog
 
 - **The Cumulo Nimbus model list now comes from the router itself.** The device
