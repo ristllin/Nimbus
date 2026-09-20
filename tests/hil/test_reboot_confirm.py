@@ -10,7 +10,14 @@ REBOOT the S3 ignored over native USB-CDC: uptime kept climbing (uptime=3254s
 
 import pytest
 
-from device import BootError, Device, DeviceError, FRESH_BOOT_UPTIME_S, is_fresh_boot
+from device import (
+    FRESH_BOOT_CEILING_S,
+    FRESH_BOOT_UPTIME_S,
+    BootError,
+    Device,
+    DeviceError,
+    is_fresh_boot,
+)
 
 pytestmark = pytest.mark.host
 
@@ -25,6 +32,20 @@ def test_is_fresh_boot_pure():
     assert is_fresh_boot(20, FRESH_BOOT_UPTIME_S - 1) is True  # below the fresh bar
     # Above the bar and NOT below the pre-reboot reading -> no restart happened.
     assert is_fresh_boot(FRESH_BOOT_UPTIME_S - 5, FRESH_BOOT_UPTIME_S + 1) is False
+
+
+def test_is_fresh_boot_rejects_a_large_uptime_that_merely_dropped():
+    """The bench-rerun-1 false-positive (SUPERVISOR ADDENDUM #2): a ~6 s dip from a
+    ~42-min uptime was accepted as fresh by the old decrease-only test, so
+    reboot_and_confirm returned uptime=2494s instead of escalating to a hard reset.
+    A fresh boot is a small ABSOLUTE uptime, never tens of minutes in."""
+    assert is_fresh_boot(2500, 2494) is False  # dropped 6 s but still ~42 min in
+    assert is_fresh_boot(5000, FRESH_BOOT_CEILING_S) is False  # exactly at the ceiling
+    assert is_fresh_boot(5000, FRESH_BOOT_CEILING_S + 1) is False  # past the ceiling
+    # A slow SD-scan boot: past the fast bar but a small absolute uptime that
+    # dropped from a large before -> still a genuine fresh boot (must not escalate).
+    assert is_fresh_boot(5000, FRESH_BOOT_UPTIME_S + 10) is True
+    assert is_fresh_boot(5000, FRESH_BOOT_CEILING_S - 1) is True
 
 
 # --- the escalation flow -----------------------------------------------------
