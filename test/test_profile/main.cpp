@@ -231,12 +231,14 @@ static void test_adopt_pre_feature_value_only_when_it_differs() {
 
 // ---- CUM-408: full-NVS seed migration - the {fresh, seeded, full} class -------
 //
-// A fake NVS that drops a NEW key once it is full (mirrors Preferences::putInt
-// returning 0 -> solide::memory::setInt false on a full 'orchmem' partition), and a
-// SeedSim that mirrors store.cpp's adoptPreFeatureValuesAsOwnerSet() using the portable
-// planSeedAttempt() + the RAM latch. This exercises the whole class on the host: a
-// device is switched between battery modes repeatedly, and we assert the migration runs
-// AT MOST ONCE and never thrashes.
+// planSeedAttempt() (above) is the SHIPPED decision point; store.cpp is device-only and
+// not host-linkable, so the RAM latch + early-return ordering + verify-after-write glue
+// in adoptPreFeatureValuesAsOwnerSet() is exercised by the device build and the bench leg,
+// not here. To pin the DECISION class on the host, a fake NVS drops a NEW key once it is
+// full (mirrors Preferences::putInt returning 0 -> solide::memory::setInt false on a full
+// 'orchmem' partition), and a SeedSim wires planSeedAttempt() to a latch exactly as the
+// store glue does. Switching battery modes repeatedly must run the migration AT MOST ONCE
+// and never thrash - the property store.cpp is built to hold.
 namespace {
 struct FakeNvs {
   std::map<std::string, int32_t> kv;

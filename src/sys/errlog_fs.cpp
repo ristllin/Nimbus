@@ -34,7 +34,6 @@ bool      g_tierNoted = false;  // the storage-tier decision line has landed on 
 std::atomic<uint32_t> g_seq{0};           // monotonic per-boot line sequence (any task)
 std::atomic<uint32_t> g_durableSkipped{0};// TOTAL lines dropped from the DURABLE log under lock contention (reporting)
 std::atomic<uint32_t> g_skipUnpersisted{0};// dropped lines not yet recorded to the durable log (CUM-407 marker delta)
-std::atomic<uint32_t> g_durableBytes{0};  // bytes written to the durable log this boot (CUM-409 flash-wear watch)
 std::string g_pendingTier;      // tier line built once, re-attempted until it lands (no seq churn)
 
 // RAM fallback tail: a fixed byte ring so readRecent() still returns recent lines
@@ -146,11 +145,7 @@ void noteTierIfNeeded() {
     g_pendingTier = formatLine(g_seq.fetch_add(1), millis(), cat::kStorage, tierMsg());
     ramPush(g_pendingTier);   // visible in the RAM tail immediately, even before it persists
   }
-  if (g_writer.write(g_pendingTier)) {
-    g_durableBytes.fetch_add(g_pendingTier.size());
-    g_tierNoted = true;
-    g_pendingTier.clear();
-  }
+  if (g_writer.write(g_pendingTier)) { g_tierNoted = true; g_pendingTier.clear(); }
 }
 
 // Resolve the storage tier from the memory subsystem's canonical decision. Caller
@@ -181,7 +176,7 @@ void maybeRetier() {
                        wasSd ? std::string("SD lost: durable log now on flash fallback")
                              : std::string("SD available: durable log now on SD"));
   ramPush(line);
-  if (g_writer.write(line)) g_durableBytes.fetch_add(line.size());
+  g_writer.write(line);
 }
 
 }  // namespace
@@ -209,18 +204,17 @@ void append(const std::string& redacted, const char* cat) {
   maybeRetier();
   noteTierIfNeeded();   // lands the tier line first once the FS is writable
   if (g_writer.write(line)) {   // one bounded append; degrades to RAM-only if the FS is not ready
-    g_durableBytes.fetch_add(line.size());
     // CUM-407: a durable write just succeeded, so record any lines that were dropped
     // under card-lock contention since the last one. Bounded: one marker per success.
     // If the marker itself does not land (FS not ready), put the count back so the next
-    // success retries it - the drop is never silently lost.
+    // success retries it - a contention drop is never silently lost.
     if (g_skipUnpersisted.load() != 0) {
       // Consume the delta and the seq number only when there is something to record, so
       // an ordinary write never leaves a seq gap that a reader would read as a drop.
       const uint32_t dropped = g_skipUnpersisted.exchange(0);
       const std::string mark = dropMarkerLine(g_seq.fetch_add(1), millis(), dropped);
-      if (g_writer.write(mark)) g_durableBytes.fetch_add(mark.size());
-      else                      g_skipUnpersisted.fetch_add(dropped);
+      ramPush(mark);                                    // visible in the RAM tail too, like the tier lines
+      if (!g_writer.write(mark)) g_skipUnpersisted.fetch_add(dropped);
     }
   }
   agent::memory::unlock();
@@ -266,13 +260,19 @@ std::string listJson() {
   out += "],\"skipped\":";
   out += std::to_string(g_durableSkipped.load());   // durable lines dropped under card contention (CUM-407)
   out += ",\"bytesWritten\":";
-  out += std::to_string(g_durableBytes.load());      // bytes written to durable this boot (CUM-409 wear)
+  out += std::to_string(g_writer.bytesWritten());    // bytes written to durable this boot (CUM-409 wear)
   out += '}';
   return out;
 }
 
+// Durable lines skipped under card-lock contention: a lock-free atomic (it is bumped
+// from the tryLock-FAILED path, i.e. when the card lock is NOT held), so it is read
+// without the lock.
 uint32_t durableSkipped() { return g_durableSkipped.load(); }
-size_t   durableBytes()   { return g_durableBytes.load(); }
+// Bytes written to the durable log this boot: the single source of truth is the engine's
+// own counter (host-tested), read under the card lock that serializes every write, so the
+// value reported here is exactly the value the tests pin.
+size_t   durableBytes()   { agent::memory::Lock g; ensureInit(); return g_writer.bytesWritten(); }
 
 bool onSdTier() {
   agent::memory::Lock g;

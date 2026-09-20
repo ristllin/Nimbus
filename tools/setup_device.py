@@ -857,7 +857,7 @@ class InstallOutcome:
         # CUM-422: the board-family probe proved a Freenove under a solide flash, so the
         # solide image was refused - nothing seeded, no production image restored.
         self.wrong_variant = False
-        self.probe = "unknown"  # 'freenove' | 'clear' | 'unsupported' | 'unknown'
+        self.probe = "skipped"  # 'skipped' (not a solide flash) | 'freenove' | 'clear' | 'unsupported' | 'unknown'
 
 
 def _upload(pio: str, env: str, port: str) -> None:
@@ -924,7 +924,10 @@ def flash_production(plan: InstallPlan, display: str | None, mode: str | None, o
         # CUM-422: with the provision sketch running, probe the FT6336U touch bus before
         # trusting a Solide flash. A Freenove answers at I2C 0x38 -> refuse the Solide
         # image regardless of --board, and do NOT seed the NVS (which would fake a healthy
-        # panel) or restore the wrong production image.
+        # panel) or restore the wrong production image. Only a decisive 'freenove' refuses;
+        # 'unsupported' (old sketch) and 'unknown' (a serial hiccup) proceed but carry a
+        # caution in finish_install, because the post-flash screen check is NOT a reliable
+        # backstop here - a seeded Freenove is exactly the case CUM-388's check passes.
         if plan.family == FAMILY_SOLIDE:
             outcome.probe = probe_for_freenove(plan.port)
             if outcome.probe == "freenove":
@@ -1023,14 +1026,15 @@ def finish_install(outcome: InstallOutcome, panel: str, mode: str | None, skip_p
         )
     elif not skip_panel_check:
         print("Screen check could not confirm the display; look at the screen to be sure.")
-    if outcome.probe == "unsupported":
-        # CUM-422: an old provision sketch with no PROBE support could not confirm the
-        # board family, so a Freenove could not be ruled out by the probe. Proceed with a
-        # caution; the screen check above is the backstop.
+    if outcome.probe in ("unsupported", "unknown"):
+        # CUM-422: the board-family probe could not confirm this is a Nimbus board - an old
+        # provision sketch with no PROBE support ('unsupported'), or a serial hiccup
+        # ('unknown'). A Freenove could not be ruled out, and the screen check is NOT a
+        # reliable backstop for a seeded Freenove, so proceed with a loud caution.
         print(
-            "Note: this board's setup firmware is too old to confirm the board family\n"
-            "(no PROBE support), so the board-family probe was skipped. Look at the screen\n"
-            "to be sure the correct variant was installed."
+            "Note: the board-family probe could not confirm this is a Nimbus board\n"
+            "(no PROBE support, or the probe could not be read). A Freenove could not be\n"
+            "ruled out, so look at the screen to be sure the correct variant was installed."
         )
     print("\nNimbus production firmware is installed. NVS was not erased.")
     _print_mode_guidance(mode)

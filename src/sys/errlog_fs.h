@@ -56,7 +56,9 @@ bool onSdTier();
 // loss. Reported on /api/log (meta) and the health row.
 uint32_t durableSkipped();
 
-// Bytes written to the durable log since boot (CUM-409 flash-wear watch). Lock-free.
+// Bytes written to the durable log since boot (CUM-409 flash-wear watch). The single
+// source of truth is the write engine's own counter (host-tested), read under the card
+// lock that serializes every write, so the reported value is exactly the tested one.
 // Reported on /api/log (meta) and the health row so the fleet can see the wear a
 // device's logging actually incurs.
 size_t durableBytes();

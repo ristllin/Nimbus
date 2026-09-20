@@ -837,8 +837,7 @@ def test_main_solide_probe_clear_proceeds_and_installs():
 
 def test_main_old_sketch_unsupported_probe_proceeds_with_caution():
     # An old provision sketch with no PROBE support -> the probe cannot rule out a
-    # Freenove, so the install proceeds (the screen check remains the backstop) with a
-    # caution line, not a refusal.
+    # Freenove, so the install proceeds (with a caution), not a refusal.
     rc, out, err, runner = _run_main(
         ["--yes", "--port", "/dev/cu.usbmodem101", "--board", "solide_s3", "--mode", "orchestrator"],
         board=_board(vid=SETUP.VID_ESP32S3_NATIVE),
@@ -847,8 +846,36 @@ def test_main_old_sketch_unsupported_probe_proceeds_with_caution():
     )
     assert rc == 0, (rc, err)
     assert runner.envs == ["provision", "esp32s3"]
-    assert "too old to confirm the board family" in out
+    assert "could not confirm this is a Nimbus board" in out
     assert "installed. NVS was not erased" in out
+
+
+def test_main_probe_unknown_serial_error_proceeds_with_caution():
+    # A serial hiccup during the probe -> 'unknown'. The install still proceeds (never
+    # fail a legitimate solide install on a read glitch), but carries the same caution,
+    # because the screen check is not a reliable backstop for a seeded Freenove.
+    rc, out, err, runner = _run_main(
+        ["--yes", "--port", "/dev/cu.usbmodem101", "--board", "solide_s3", "--mode", "orchestrator"],
+        board=_board(vid=SETUP.VID_ESP32S3_NATIVE),
+        panel="ok",
+        probe="unknown",
+    )
+    assert rc == 0, (rc, err)
+    assert runner.envs == ["provision", "esp32s3"]
+    assert "could not confirm this is a Nimbus board" in out
+    assert "installed. NVS was not erased" in out
+
+
+def test_freenove_install_leaves_probe_skipped_no_caution():
+    # A freenove install never probes, so outcome.probe stays 'skipped' and NO board-family
+    # caution prints (the caution is only for an inconclusive probe on a solide flash).
+    rc, out, err, runner = _run_main(
+        ["--yes", "--port", "/dev/cu.usbmodem101", "--board", "freenove_s3", "--mode", "notifier", "--size", "28"],
+        board=_board(vid=SETUP.VID_ESP32S3_NATIVE),
+        panel="ok",
+    )
+    assert rc == 0, (rc, err)
+    assert "could not confirm this is a Nimbus board" not in out
 
 
 def test_freenove_install_does_not_probe():
