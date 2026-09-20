@@ -270,9 +270,7 @@ def run_relay_leg() -> bool:
 
 
 def main(argv: "list[str] | None" = None) -> int:
-    ap = argparse.ArgumentParser(
-        description="Release gate: Telegram (CUM-24) + relay (CUM-387) PSRAM staging check"
-    )
+    ap = argparse.ArgumentParser(description="Release gate: Telegram (CUM-24) + relay (CUM-387) PSRAM staging check")
     ap.add_argument("--elf", default=DEFAULT_ELF, help="path to the built esp32s3 firmware.elf")
     ap.add_argument(
         "--relay-only",

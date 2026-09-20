@@ -7,6 +7,7 @@ Run: python3 -m pytest tools/release_gate
 """
 
 import os
+import re
 import subprocess
 
 import check_sram_staging as st
@@ -171,8 +172,6 @@ def test_relay_static_assert_removal_fails():
     # Dropping the compile-time guard is itself a regression (it is the first line of
     # defense); the gate refuses a header that no longer carries it. Strip the whole
     # `static_assert(...);` statement, as a real deletion would.
-    import re
-
     src = _good_sources()
     src[WS_REL] = re.sub(r"static_assert\s*\([^;]*;", "", GOOD_WS, flags=re.S)
     ok, msgs = st.judge_relay(src)
