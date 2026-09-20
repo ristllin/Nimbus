@@ -31,41 +31,37 @@ prune; synthetic vectors carry ttl 720 h and are swept by dream maintenance.
 
 from __future__ import annotations
 
-import os
 import time
 
 import pytest
 
-try:
-    import requests
-except ImportError:  # pragma: no cover
-    requests = None
+from webrig import ip_tok_or_skip, make_session, require_orchestrator
 
 pytestmark = [pytest.mark.hil, pytest.mark.net]
 
+# The shared header-authed session for this tier, built by the ``rig`` fixture.
+_S = None
 
-def _url(ip, tok, path, sep="?"):
-    return f"http://{ip}{path}{sep}t={tok}"
+
+def _url(ip, tok, path):
+    # The token rides the X-Nimbus-Token header on _S, never a ?t= query (which
+    # the device rejects since CUM-45); this only builds the base URL.
+    return f"http://{ip}{path}"
 
 
 @pytest.fixture
 def rig(allow_hardware):
-    if requests is None:
-        pytest.skip("requests not installed")
-    ip = os.environ.get("NIMBUS_TEST_IP")
-    tok = os.environ.get("NIMBUS_TEST_TOKEN")
-    if not ip or not tok:
-        pytest.skip("set NIMBUS_TEST_IP + NIMBUS_TEST_TOKEN (WEBTOK?) to run L15")
-    st = requests.get(_url(ip, tok, "/api/state"), timeout=10).json()
-    if st.get("mode") != 1:
-        pytest.skip("Orchestrator mode required (MODE 1)")
+    global _S
+    ip, tok = ip_tok_or_skip("L15")
+    _S = make_session(tok)
+    require_orchestrator(_S, ip, "L15")
     return None, ip, tok
 
 
 def _memfill(rig_ip_tok, kind: str, n: int, bytes_per=64) -> int:
     """One chunked fill over the LAN seam; returns rows added."""
     ip, tok = rig_ip_tok
-    r = requests.post(
+    r = _S.post(
         _url(ip, tok, "/api/test/memfill"), data={"kind": kind, "n": str(n), "bytes": str(bytes_per)}, timeout=60
     )
     assert r.status_code == 200, f"memfill -> {r.status_code}: {r.text[:120]}"
@@ -73,14 +69,14 @@ def _memfill(rig_ip_tok, kind: str, n: int, bytes_per=64) -> int:
 
 
 def _vec_stats(ip, tok):
-    r = requests.get(_url(ip, tok, "/api/mem/config"), timeout=10).json()
+    r = _S.get(_url(ip, tok, "/api/mem/config"), timeout=10).json()
     return r
 
 
 def test_degraded_fold_completes_from_ram_ring(rig):
     device, ip, tok = rig
     # Needs a keyed provider (the fold is an LLM call) - probe via /api/orch.
-    orch = requests.get(_url(ip, tok, "/api/connectors"), timeout=10).json()
+    orch = _S.get(_url(ip, tok, "/api/connectors"), timeout=10).json()
     keyed = orch.get("keyed", {})
     if not any(keyed.get(k) for k in ("openai", "anthropic", "mistral")):
         pytest.skip("no provider key on the board - degraded fold needs one")
@@ -101,7 +97,7 @@ def test_degraded_fold_completes_from_ram_ring(rig):
     # to prove. Row ids are a monotonic counter, so "a new one appeared" is
     # unambiguous; the ts field is hour-granular and boot-relative, so it is not.
     def _compact_row_ids():
-        r = requests.get(
+        r = _S.get(
             _url(ip, tok, "/api/mem/episodic"),
             params={"t": tok, "session": "web", "kind": "log", "limit": 20},
             timeout=15,
@@ -110,17 +106,17 @@ def test_degraded_fold_completes_from_ram_ring(rig):
         return {m.get("id") for m in rows if "ev:compact" in (m.get("tags") or "")}
 
     try:
-        r = requests.post(_url(ip, tok, "/api/fault"), data={"cap": "sd", "on": "1"}, timeout=10)
+        r = _S.post(_url(ip, tok, "/api/fault"), data={"cap": "sd", "on": "1"}, timeout=10)
         assert r.status_code == 200, "FAULT sd on failed"
         before = _compact_row_ids()
 
-        requests.post(_url(ip, tok, "/api/chat"), data={"text": "Reply OK only: degraded fold marker."}, timeout=10)
+        _S.post(_url(ip, tok, "/api/chat"), data={"text": "Reply OK only: degraded fold marker."}, timeout=10)
         time.sleep(25)  # let the turn land on tg_poll
         # Nudge past the byte threshold. The stage bypasses thresholds; if the
         # automatic pass already folded, this is a harmless no-op and the
         # assertion below is satisfied by that pass - either way a fold
         # COMPLETED with no card, which is the claim.
-        r = requests.post(_url(ip, tok, "/api/test/compact"), data={"chat": "web"}, timeout=10)
+        r = _S.post(_url(ip, tok, "/api/test/compact"), data={"chat": "web"}, timeout=10)
         assert r.status_code == 202, f"compact stage -> {r.status_code}"
 
         deadline = time.time() + 120
@@ -130,15 +126,15 @@ def test_degraded_fold_completes_from_ram_ring(rig):
             folded = bool(_compact_row_ids() - before)
         assert folded, "no fold completed from the RAM ring with the card faulted out (no new ev:compact row in 120 s)"
         # The device must still be serving over LAN throughout.
-        assert requests.get(_url(ip, tok, "/api/state"), timeout=10).status_code == 200
+        assert _S.get(_url(ip, tok, "/api/state"), timeout=10).status_code == 200
     finally:
-        requests.post(_url(ip, tok, "/api/fault"), data={"cap": "all", "t": tok}, timeout=10)
+        _S.post(_url(ip, tok, "/api/fault"), data={"cap": "all", "t": tok}, timeout=10)
         # Force the SD re-promote NOW (the health tracker's debounce otherwise
         # leaves sdLost latched for its probe window, skipping the next SD row).
-        requests.post(_url(ip, tok, "/api/sdprobe"), data={"t": tok}, timeout=20)
+        _S.post(_url(ip, tok, "/api/sdprobe"), data={"t": tok}, timeout=20)
         deadline = time.time() + 30
         while time.time() < deadline:
-            st = requests.get(_url(ip, tok, "/api/state"), timeout=10).json()
+            st = _S.get(_url(ip, tok, "/api/state"), timeout=10).json()
             if not st.get("sdLost"):
                 break
             time.sleep(3)
@@ -148,16 +144,16 @@ def test_vector_cap_clamps_and_evicts_synthetic_only(rig):
     device, ip, tok = rig
     cfg = _vec_stats(ip, tok)
     orig_cap = int(cfg.get("max_vectors", 5000) or 5000)
-    st0 = requests.get(_url(ip, tok, "/api/mem/stats"), timeout=10).json()
+    st0 = _S.get(_url(ip, tok, "/api/mem/stats"), timeout=10).json()
     owner_rows = int(st0.get("vectors", 0))
     test_cap = owner_rows + 120  # synthetic-only headroom above the owner's rows
     try:
-        r = requests.put(_url(ip, tok, "/api/mem/config"), data={"max_vectors": str(test_cap)}, timeout=10)
+        r = _S.put(_url(ip, tok, "/api/mem/config"), data={"max_vectors": str(test_cap)}, timeout=10)
         assert r.status_code in (200, 204), f"config put -> {r.status_code}"
         # Fill PAST the lowered cap: 2 chunks of 100 (>120 headroom).
         added = _memfill((ip, tok), "vec", 100) + _memfill((ip, tok), "vec", 100)
         assert added >= 120, f"memfill added only {added}"
-        st1 = requests.get(_url(ip, tok, "/api/mem/stats"), timeout=10).json()
+        st1 = _S.get(_url(ip, tok, "/api/mem/stats"), timeout=10).json()
         size = int(st1.get("vectors", 0))
         assert size <= test_cap, f"store exceeded the cap: {size} > {test_cap}"
         # Owner rows must all survive: eviction at the cap picks the LOWEST
@@ -166,15 +162,15 @@ def test_vector_cap_clamps_and_evicts_synthetic_only(rig):
         # nothing real was evicted.
         assert size >= owner_rows, "owner vectors evicted - E2E bar violation"
     finally:
-        requests.put(_url(ip, tok, "/api/mem/config"), data={"max_vectors": str(orig_cap)}, timeout=10)
+        _S.put(_url(ip, tok, "/api/mem/config"), data={"max_vectors": str(orig_cap)}, timeout=10)
 
 
 def test_episodic_past_ring_still_queryable_from_sd(rig):
     device, ip, tok = rig
-    st = requests.get(_url(ip, tok, "/api/state"), timeout=10).json()
+    st = _S.get(_url(ip, tok, "/api/state"), timeout=10).json()
     if st.get("sdLost") or st.get("sd") == "absent":
         pytest.skip("SD required for the past-ring day-stream row")
-    st0 = requests.get(_url(ip, tok, "/api/mem/stats"), timeout=30).json()
+    st0 = _S.get(_url(ip, tok, "/api/mem/stats"), timeout=30).json()
     n0 = int(st0.get("episodicMsgs", 0))
     # 600 rows (3 chunks) - the PSRAM ring holds 512; the oldest fall to the
     # SD-only path. Each chunk is 200 SD appends under the memory Lock, so give
@@ -184,11 +180,11 @@ def test_episodic_past_ring_still_queryable_from_sd(rig):
         total += _memfill((ip, tok), "epi", 200, 48)
         time.sleep(2)
     assert total == 600, f"memfill epi added {total}"
-    st1 = requests.get(_url(ip, tok, "/api/mem/stats"), timeout=30).json()
+    st1 = _S.get(_url(ip, tok, "/api/mem/stats"), timeout=30).json()
     n1 = int(st1.get("episodicMsgs", 0))
     assert n1 - n0 >= 600, f"store grew only {n1 - n0} (ring-evicted rows lost?)"
     # Ring-window read stays fast and full:
-    r = requests.get(
+    r = _S.get(
         _url(ip, tok, "/api/mem/episodic"), params={"t": tok, "session": "hiltest-epi", "limit": 100}, timeout=30
     )
     assert r.status_code == 200

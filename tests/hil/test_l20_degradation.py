@@ -20,67 +20,62 @@ Markers: ``hil`` + ``net`` - pure LAN.
 from __future__ import annotations
 
 import json
-import os
 import uuid
 
 import pytest
 
-try:
-    import requests
-except ImportError:  # pragma: no cover
-    requests = None
+from webrig import ip_tok_or_skip, make_session, require_orchestrator
 
 pytestmark = [pytest.mark.hil, pytest.mark.net]
 
 CHAT = "920001"
 
+# The shared header-authed session for this tier, built by the ``rig`` fixture.
+_S = None
+
 
 def _u(rig, path):
-    ip, tok = rig
-    sep = "&" if "?" in path else "?"
-    return f"http://{ip}{path}{sep}t={tok}"
+    # rig is the (ip, tok) handle; the token rides the X-Nimbus-Token header on
+    # _S, never a ?t= query (rejected since CUM-45), so keep `path`'s own query.
+    ip, _tok = rig
+    return f"http://{ip}{path}"
 
 
 def _fault(rig, cap, on):
-    r = requests.post(_u(rig, "/api/fault"), data={"cap": cap, "on": "1" if on else "0"}, timeout=10)
+    r = _S.post(_u(rig, "/api/fault"), data={"cap": cap, "on": "1" if on else "0"}, timeout=10)
     assert r.status_code == 200, f"fault {cap}={on}: {r.status_code} {r.text}"
 
 
 def _state(rig):
-    return requests.get(_u(rig, "/api/state"), timeout=10).json()
+    return _S.get(_u(rig, "/api/state"), timeout=10).json()
 
 
 def _call(rig, chat, tool, args=None):
     body = json.dumps(
         {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": tool, "arguments": args or {}}}
     )
-    r = requests.post(_u(rig, "/api/test/astool"), data={"chat": chat, "body": body}, timeout=25)
+    r = _S.post(_u(rig, "/api/test/astool"), data={"chat": chat, "body": body}, timeout=25)
     assert r.status_code == 200, r.text
     return json.dumps(r.json())
 
 
 @pytest.fixture(scope="module")
 def rig():
-    if requests is None:
-        pytest.skip("requests not installed")
-    ip = os.environ.get("NIMBUS_TEST_IP")
-    tok = os.environ.get("NIMBUS_TEST_TOKEN")
-    if not ip or not tok:
-        pytest.skip("set NIMBUS_TEST_IP + NIMBUS_TEST_TOKEN to run L20")
+    global _S
+    ip, tok = ip_tok_or_skip("L20")
+    _S = make_session(tok)
     handle = (ip, tok)
-    st = requests.get(_u(handle, "/api/state"), timeout=10)
-    if st.status_code != 200 or st.json().get("mode") != 1:
-        pytest.skip("Orchestrator mode required (MODE 1)")
-    if requests.post(_u(handle, "/api/fault"), data={"cap": "all", "on": "0"}, timeout=10).status_code != 200:
+    require_orchestrator(_S, ip, "L20")
+    if _S.post(_u(handle, "/api/fault"), data={"cap": "all", "on": "0"}, timeout=10).status_code != 200:
         pytest.skip("no fault registry - flash the [env:test] build")
     yield handle
     # RESTORE, always: a leaked fault mask outlives this run.
     try:
-        requests.post(_u(handle, "/api/fault"), data={"cap": "all", "on": "0"}, timeout=10)
+        _S.post(_u(handle, "/api/fault"), data={"cap": "all", "on": "0"}, timeout=10)
         # REMOVE, not set-unknown: setRole upserts, so revoking an already-removed
         # row recreates it and the board accumulates dead tenants.
-        requests.post(_u(handle, "/api/telegram/remove"), data={"id": CHAT}, timeout=10)
-        requests.post(_u(handle, "/api/tenant"), data={"id": CHAT, "remove": "1"}, timeout=10)
+        _S.post(_u(handle, "/api/telegram/remove"), data={"id": CHAT}, timeout=10)
+        _S.post(_u(handle, "/api/tenant"), data={"id": CHAT, "remove": "1"}, timeout=10)
     except Exception:  # noqa: BLE001
         pass
 
@@ -98,11 +93,11 @@ def sd_lost(rig):
 @pytest.fixture
 def tenant(rig):
     # Approve first: a role can only be given to someone already allow-listed.
-    requests.post(_u(rig, "/api/telegram/add"), data={"id": CHAT, "name": "l20"}, timeout=10)
-    requests.post(_u(rig, "/api/tenant"), data={"id": CHAT, "role": "user"}, timeout=10)
+    _S.post(_u(rig, "/api/telegram/add"), data={"id": CHAT, "name": "l20"}, timeout=10)
+    _S.post(_u(rig, "/api/tenant"), data={"id": CHAT, "role": "user"}, timeout=10)
     yield rig
-    requests.post(_u(rig, "/api/tenant"), data={"id": CHAT, "role": "unknown"}, timeout=10)
-    requests.post(_u(rig, "/api/telegram/remove"), data={"id": CHAT}, timeout=10)
+    _S.post(_u(rig, "/api/tenant"), data={"id": CHAT, "role": "unknown"}, timeout=10)
+    _S.post(_u(rig, "/api/telegram/remove"), data={"id": CHAT}, timeout=10)
 
 
 # ---------------------------------------------------------------------------
@@ -120,7 +115,7 @@ def test_losing_the_card_is_reported_not_hidden(sd_lost):
 def test_the_device_keeps_serving_with_no_card(sd_lost):
     """Degrade, never die: every surface answers."""
     for path in ("/api/state", "/api/orch", "/api/tenant", "/api/files/list"):
-        r = requests.get(_u(sd_lost, path), timeout=15)
+        r = _S.get(_u(sd_lost, path), timeout=15)
         assert r.status_code == 200, f"{path} returned {r.status_code} with no card"
 
 
@@ -131,7 +126,7 @@ def test_files_are_refused_clearly_rather_than_half_accepted(sd_lost, tenant):
     # The refusal must be legible, not a bare code.
     assert any(w in out.lower() for w in ("sd", "card", "storage")), out
 
-    listing = requests.get(_u(sd_lost, "/api/files/list"), timeout=15).json()
+    listing = _S.get(_u(sd_lost, "/api/files/list"), timeout=15).json()
     assert listing.get("present") is False
     assert listing.get("files") == []
 
@@ -151,7 +146,7 @@ def test_roles_survive_a_missing_card(sd_lost, tenant):
     """Tenancy lives on internal flash, NOT the card - losing the card must not
     silently drop everyone's role, which would either lock the owner out or open
     the device up. Both are worse than the missing card."""
-    tenants = requests.get(_u(sd_lost, "/api/tenant"), timeout=15).json()
+    tenants = _S.get(_u(sd_lost, "/api/tenant"), timeout=15).json()
     assert tenants.get("admins", 0) >= 1, "no admin while the card is gone"
     roles = {t["id"]: t["role"] for t in tenants.get("tenants", [])}
     assert roles.get(CHAT) == "user", "a tenant's role vanished with the card"
@@ -164,8 +159,8 @@ def test_privacy_still_holds_with_no_card(sd_lost, tenant):
     only, losing the card would silently make everything readable by everyone.
     """
     other = "920002"
-    requests.post(_u(sd_lost, "/api/telegram/add"), data={"id": other, "name": "l20b"}, timeout=10)
-    requests.post(_u(sd_lost, "/api/tenant"), data={"id": other, "role": "user"}, timeout=10)
+    _S.post(_u(sd_lost, "/api/telegram/add"), data={"id": other, "name": "l20b"}, timeout=10)
+    _S.post(_u(sd_lost, "/api/tenant"), data={"id": other, "role": "user"}, timeout=10)
     try:
         secret = f"L20 degraded vault code is ZULU-{uuid.uuid4().hex[:8].upper()}"
         marker = secret.rsplit(" ", 1)[1]
@@ -173,8 +168,8 @@ def test_privacy_still_holds_with_no_card(sd_lost, tenant):
         got = _call(sd_lost, other, "memory.search", {"query": secret, "n_results": 20})
         assert marker not in got, "LEAK: the privacy boundary depends on the SD card"
     finally:
-        requests.post(_u(sd_lost, "/api/tenant"), data={"id": other, "role": "unknown"}, timeout=10)
-        requests.post(_u(sd_lost, "/api/telegram/remove"), data={"id": other}, timeout=10)
+        _S.post(_u(sd_lost, "/api/tenant"), data={"id": other, "role": "unknown"}, timeout=10)
+        _S.post(_u(sd_lost, "/api/telegram/remove"), data={"id": other}, timeout=10)
 
 
 def test_recovery_restores_the_card_and_the_files(rig, tenant):
@@ -188,16 +183,16 @@ def test_recovery_restores_the_card_and_the_files(rig, tenant):
         _fault(rig, "sd", True)
         assert _state(rig).get("memSd") is False
         # Invisible while the card is away...
-        assert name not in json.dumps(requests.get(_u(rig, "/api/files/list"), timeout=15).json())
+        assert name not in json.dumps(_S.get(_u(rig, "/api/files/list"), timeout=15).json())
     finally:
         _fault(rig, "all", False)
 
     # ...and back afterwards, with its contents intact.
-    listing = json.dumps(requests.get(_u(rig, "/api/files/list?project=l20"), timeout=15).json())
+    listing = json.dumps(_S.get(_u(rig, "/api/files/list?project=l20"), timeout=15).json())
     assert name in listing, "a file did not come back after the card returned"
-    body = requests.get(_u(rig, f"/api/files/dl?project=l20&name={name}"), timeout=15).text
+    body = _S.get(_u(rig, f"/api/files/dl?project=l20&name={name}"), timeout=15).text
     assert marker in body, "the file came back empty or corrupted"
-    requests.post(_u(rig, "/api/files/rm"), data={"project": "l20", "name": name}, timeout=10)
+    _S.post(_u(rig, "/api/files/rm"), data={"project": "l20", "name": name}, timeout=10)
 
 
 # ---------------------------------------------------------------------------
@@ -210,14 +205,14 @@ def test_each_capability_can_vanish_without_taking_the_device_down(rig, cap):
     """One missing part must never take the whole device with it."""
     _fault(rig, cap, True)
     try:
-        st = requests.get(_u(rig, "/api/state"), timeout=15)
+        st = _S.get(_u(rig, "/api/state"), timeout=15)
         assert st.status_code == 200, f"the device stopped serving with {cap} faulted"
         # And it reports the fault rather than pretending to be healthy.
         faults = st.json().get("faults") or {}
         assert faults.get(cap) is True, f"/api/state does not report {cap} as faulted"
     finally:
         _fault(rig, "all", False)
-    assert requests.get(_u(rig, "/api/state"), timeout=15).status_code == 200
+    assert _S.get(_u(rig, "/api/state"), timeout=15).status_code == 200
 
 
 def test_a_turn_survives_losing_the_memory_subsystem(rig, tenant):
@@ -226,7 +221,7 @@ def test_a_turn_survives_losing_the_memory_subsystem(rig, tenant):
     try:
         out = _call(rig, CHAT, "memory.search", {"query": "anything", "n_results": 5})
         assert out, "memory.search returned nothing at all (hang or crash)"
-        assert requests.get(_u(rig, "/api/state"), timeout=15).status_code == 200
+        assert _S.get(_u(rig, "/api/state"), timeout=15).status_code == 200
     finally:
         _fault(rig, "all", False)
 
