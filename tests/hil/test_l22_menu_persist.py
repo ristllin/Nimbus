@@ -86,6 +86,19 @@ _BM_ROW_TAP = (GUT + 144 // 2, 52 + 1 * (46 + 4) + 23)
 _BM_LABEL = "Battery mode"
 
 
+@pytest.fixture(autouse=True)
+def _stable_start(device):
+    """Independent of run order: pin Orchestrator mode and drive to StatusIdle on
+    both sides. A prior test (here or in another file) can leave the board in
+    Notifier mode or parked on a submenu / picker / detail screen, which would make
+    the gear tap below land nothing (CUM-418 item 5). ensure_status_idle backs out
+    of any screen, not just ScreenId::Menu."""
+    device.ensure_mode(1)
+    device.ensure_status_idle()
+    yield
+    device.ensure_status_idle()
+
+
 @pytest.mark.hil
 def test_menu_edit_persists_and_applies_tap(device):
     """Touch path: tap the "Battery mode" row (page 1 - Screensaver sits on

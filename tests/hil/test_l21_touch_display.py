@@ -105,15 +105,23 @@ def _require_tft(device):
 def _menu_closed(device):
     """Start every test from a KNOWN state, and leave one behind.
 
-    The settings menu is shared device state. A test that leaves it open changes
-    what the NEXT test measures - that is how test_tap_opens_and_closes_the_menu
-    began failing in a full run while passing alone, and how
-    test_hold_does_not_fire_as_a_tap became vacuously false. Closing on both
-    sides makes each test independent of run order.
+    The operating mode AND the current screen are shared device state. A test that
+    leaves the menu open, or parks the board on a detail screen (TokenDetail /
+    ConfigQr) that a menu-only close does not back out of, or that another file's
+    notifier test left in Notifier mode, changes what the NEXT test measures - that
+    is how test_cloud_link_code_row_is_present_before_back failed in a full run
+    (gear tap landed nothing) while passing alone, and how
+    test_tap_opens_and_closes_the_menu / test_hold_does_not_fire_as_a_tap drifted.
+
+    ensure_mode(1) pins Orchestrator mode (the menu tests here need it), and
+    ensure_status_idle() drives ANY leftover screen - menu, detail, or screensaver -
+    back to StatusIdle (a stricter reset than _close_menu, which only backs out of
+    ScreenId::Menu). Both sides, so each test is independent of run order.
     """
-    _close_menu(device)
+    device.ensure_mode(1)
+    device.ensure_status_idle()
     yield
-    _close_menu(device)
+    device.ensure_status_idle()
 
 
 # ---- identity + boot --------------------------------------------------------
