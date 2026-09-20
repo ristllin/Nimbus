@@ -328,10 +328,12 @@ class TestCrashLoopResilience:
 
     def test_boots_without_a_crash_loop(self, device):
         # A clean reboot must come up READY without repeated rst:/panic markers
-        # (wait_ready raises BootError on >=2 resets or any panic signature).
-        device.reset()  # in-place self-healing reboot
-        m = device.status()
-        assert int(m.group("up")) >= 0  # a parseable STATUS after one clean boot
+        # (reboot_and_confirm's wait_ready raises BootError on >=2 resets or any
+        # panic signature). reboot_and_confirm PROVES the restart took on native
+        # USB-CDC (a soft REBOOT that the chip ignores is escalated to a hard reset)
+        # and returns the fresh uptime - so this no longer races the boot stream.
+        up = device.reboot_and_confirm()
+        assert up >= 0  # a parseable, settled STATUS after one confirmed clean boot
 
     def test_survives_n_reboots_without_a_loop(self, device):
         # Boot-loop DETECTION across N reboots (MANIFEST section 3). One clean boot
@@ -342,16 +344,15 @@ class TestCrashLoopResilience:
         #
         # N is bounded so the bench leg stays quick; override for a longer soak.
         n = int(os.environ.get("NIMBUS_GATE_REBOOT_CYCLES", "5"))
-        prev_up = int(device.status().group("up"))
+        prev_up = device._uptime_or_none() or 0
         for cycle in range(1, n + 1):
-            # reset() self-heals and raises if the console never answers again - a
-            # board wedged in a reset storm can never confirm the soft REBOOT, so a
-            # true boot loop surfaces here as a failure, not a hang.
-            device.reset()
-            m = device.status(timeout=6.0)
-            up = int(m.group("up"))
-            # A real reboot resets uptime: it must come back SMALL, and below the
-            # last reading, or the "reboot" was a no-op / the device never restarted.
+            # reboot_and_confirm PROVES each restart took (escalating a no-op soft
+            # REBOOT to an esptool hard reset) and raises if the board never comes
+            # back - so a true boot loop surfaces here as a failure, not a hang, and
+            # a reboot the chip ignored is caught rather than passing as "fresh".
+            up = device.reboot_and_confirm(timeout=25.0)
+            # A real reboot resets uptime: it comes back SMALL (reboot_and_confirm
+            # guarantees a fresh boot or raises), and below the last reading.
             assert up < 15, (
                 f"cycle {cycle}/{n}: uptime={up}s after a reboot is not a fresh boot "
                 "(the device did not actually restart, or is stuck past the boot window)"
