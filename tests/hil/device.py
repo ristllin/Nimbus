@@ -75,6 +75,37 @@ SCREEN_NAMES = (
 )
 
 
+# The one input that backs any header screen toward StatusIdle. drawHeader
+# (lib/core/src/tft_screens.cpp) draws a Back tap region at (0,0,96,44) on every
+# backable screen and a Home region at (0,0,110,44) on the status/voice/pairing
+# screens; drawScreensaver makes the WHOLE screen a Home region. So a tap at the
+# top-left of the header lands a Back or Home on ANY screen that draws one. Menu-
+# closed it routes Action::Back/Home -> clear override + StatusIdle (src/main.cpp);
+# menu-open it routes onLongPress -> back out one level (lib/core/src/tft_menu_tap
+# .cpp), which repeated closes the menu. A blind CENTRE tap (the old code) is dead
+# space on Ask (Close is bottom-centre) and on the Sign-in/Config QR, which is why
+# it hung on screen=5/9 on the bench.
+IDLE_HEADER_TAP = (20, 22)
+
+
+def idle_nav_step(screen: int) -> str:
+    """Pure navigation policy for ensure_status_idle: the kind of input that drives
+    ONE step from ``screen`` toward StatusIdle. Total over every ScreenId the
+    firmware enum defines (host-tested) so there is never a blind fallback tap that
+    loops on a screen it does not understand.
+
+    "idle"    - already StatusIdle, nothing to do.
+    "restart" - NO tap region exists on this screen, so a confirmed restart is the
+                only escape. TouchCal is the sole case: it consumes the touch
+                surface for calibration (drawTouchCal registers no TapRegion).
+    "tap"     - tap the header Back/Home target (IDLE_HEADER_TAP)."""
+    if screen == SCREEN_NAMES.index("StatusIdle"):
+        return "idle"
+    if screen == SCREEN_NAMES.index("TouchCal"):
+        return "restart"
+    return "tap"
+
+
 class RenderState:
     """Parsed ``RENDER ...`` line: what the panel + ring currently show."""
 
@@ -139,20 +170,72 @@ def list_ports() -> List[str]:
 # under ~15 s is post-reset. (Pure so the reboot decision is host-testable.)
 FRESH_BOOT_UPTIME_S = 15
 
+# The widest plausible fresh-boot uptime once the console first answers. A board
+# with an SD card and a large episodic scan can take tens of seconds to reach its
+# console (the L7 watchdog symptom), so the first settled STATUS after a genuine
+# restart may read past the fast bar - but it is still a small ABSOLUTE number. A
+# fresh boot is never tens of MINUTES in. This ceiling is the fix for the bench
+# false-positive (reboot_and_confirm returned uptime=2494s "after a reboot"):
+# is_fresh_boot used to accept ANY drop below the pre-reboot reading, so a ~6 s
+# dip from a ~42-min uptime read as fresh instead of escalating to a hard reset.
+FRESH_BOOT_CEILING_S = 120
+
 
 def is_fresh_boot(before: Optional[int], after: Optional[int]) -> bool:
-    """Did a reboot actually take? True when the post-reboot uptime is small, or
-    dropped below the pre-reboot reading. A soft REBOOT that is a no-op on native
-    USB-CDC leaves uptime climbing (the CUM-418 bench symptom: uptime=3254s after a
-    reboot), which this returns False for so the caller can escalate to a hard
-    reset. ``after`` None (console never settled) is never a fresh boot."""
+    """Did a reboot actually take? True when the post-reboot uptime is small
+    ABSOLUTELY - either under the fast bar, or (for a slow SD-scan boot) dropped
+    below the pre-reboot reading AND still within a plausible boot window. A soft
+    REBOOT that is a no-op on native USB-CDC leaves uptime climbing (the CUM-418
+    bench symptom: uptime=3254s after a reboot), which this returns False for so the
+    caller can escalate to a hard reset. ``after`` None (console never settled) is
+    never a fresh boot.
+
+    The ceiling is load-bearing: a mere DROP is not enough. On the bench a ~6 s dip
+    from a ~42-min uptime (before>2494, after=2494) satisfied the old decrease-only
+    test and was wrongly returned as fresh - so reboot_and_confirm handed back a
+    stale 2494 s instead of escalating. A real fresh boot is a small absolute
+    number, never tens of minutes in."""
     if after is None:
         return False
     if after < FRESH_BOOT_UPTIME_S:
         return True
-    if before is not None and after < before:
+    if before is not None and after < before and after < FRESH_BOOT_CEILING_S:
         return True
     return False
+
+
+class _BootScan:
+    """Pure boot-stream classifier for wait_ready. Fed one line at a time, it
+    recognizes the READY beacon and the legacy markers, flags a panic, and detects a
+    reboot LOOP - defined as >= 2 ``rst:`` lines with NO app-level progress between
+    them. That definition is what lets wait_ready size its wait from the stream
+    without false-tripping on the harness's own double reset (reset() plus a
+    CDC-reopen USB_UART_CHIP_RESET), where the board reaches app lines between the
+    two resets. Host-tested so the sizing logic is covered with no board."""
+
+    # Lines that prove the app actually came up this boot (so a following rst: is a
+    # fresh cycle, not the continuation of a loop that never got off the ground).
+    _APP_PROGRESS = ("orch:", "[agent]", "READY", "NSN ready", "PROVISION READY", "PONG")
+
+    def __init__(self) -> None:
+        self.rst_since_progress = 0
+
+    def feed(self, line: str):
+        """Classify one line: ``("ready", mode, ip)`` / ``("legacy", None, None)``
+        / ``"panic"`` / ``"loop"`` / ``"progress"``."""
+        if any(marker in line for marker in PANIC_MARKERS):
+            return "panic"
+        if line.startswith("rst:"):
+            self.rst_since_progress += 1
+            return "loop" if self.rst_since_progress >= 2 else "progress"
+        m = re.search(r"READY\s+mode=(?P<mode>\d+)\s+ip=(?P<ip>\S+)", line)
+        if m:
+            return ("ready", int(m.group("mode")), m.group("ip"))
+        if "NSN ready" in line or "PROVISION READY" in line:
+            return ("legacy", None, None)
+        if any(p in line for p in self._APP_PROGRESS):
+            self.rst_since_progress = 0
+        return "progress"
 
 
 class Device:
@@ -598,23 +681,49 @@ class Device:
         m = self.cmd_re("BLE?", r"BLE\s+enabled=(\d)\s+connected=(\d)", timeout=timeout)
         return int(m.group(1)), int(m.group(2))
 
-    def ensure_status_idle(self, timeout: float = 25.0) -> None:
+    def ensure_status_idle(self, timeout: float = 30.0) -> None:
         """Soft precondition for menu tests: get the panel to StatusIdle WITHOUT a
-        reset (consecutive resets race the CDC reopen + WiFi rejoin - the
-        documented flake). Taps Back (top-left header) to back out of an open
-        menu, taps the panel center to dismiss the screensaver/other screens,
-        then waits for screen 0."""
+        reset where possible (consecutive resets race the CDC reopen + WiFi rejoin -
+        the documented flake), by tapping the header Back/Home target - the
+        deliberate exit the firmware draws on EVERY screen that has a header
+        (idle_nav_step / IDLE_HEADER_TAP). This replaces the old blind centre tap,
+        which was dead space on Ask (screen=5, Close is bottom-centre) and the
+        Config/Sign-in QR (screen=9) and so looped forever on the bench.
+
+        A menu backs out one breadcrumb level per tap, so the screen id stays Menu
+        while the MENU? view changes - that is progress, not a stall. A true stall
+        (same screen AND same menu view across taps) or a no-tap screen (TouchCal)
+        escalates to ONE confirmed restart, which lands a provisioned board on
+        StatusIdle; a board that then still is not idle raises loudly."""
+        menu_id = SCREEN_NAMES.index("Menu")
         deadline = time.time() + timeout
+        rebooted = False
+        last_sig = None
+        stall = 0
         while time.time() < deadline:
             r = self.render()
-            if r.screen == 0:
+            step = idle_nav_step(r.screen)
+            if step == "idle":
                 return
-            if r.screen == 3:  # Menu: a Back tap (top-left header) backs out
-                self.cmd("TAP 20 22", "TAP<", timeout=5.0)
-            else:  # Screensaver/detail/...: a tap wakes to status
-                self.cmd("TAP 160 120", "TAP<", timeout=5.0)
+            # Signature for stall detection: the screen id, plus the menu view when
+            # on the Menu screen (backing out changes the view, not the id).
+            menu_view = self.cmd("MENU?", "MENU ", timeout=4.0) if r.screen == menu_id else ""
+            sig = (r.screen, menu_view)
+            stall = stall + 1 if sig == last_sig else 0
+            last_sig = sig
+            if step == "restart" or stall >= 3:
+                if rebooted:
+                    break  # restarted once already and still not idle -> loud timeout
+                self.reboot_and_confirm(timeout=max(30.0, timeout))
+                rebooted = True
+                last_sig = None
+                stall = 0
+                continue
+            x, y = IDLE_HEADER_TAP
+            self.cmd(f"TAP {x} {y}", "TAP<", timeout=5.0)
             time.sleep(self.MENU_SETTLE)
-        raise ExpectTimeout("StatusIdle precondition", self._transcript)
+        stuck = SCREEN_NAMES[last_sig[0]] if last_sig and 0 <= last_sig[0] < len(SCREEN_NAMES) else "?"
+        raise ExpectTimeout(f"StatusIdle precondition (stuck on {stuck})", self._transcript)
 
     def menu_wait_screen(self, screen: int, timeout: float = 8.0) -> "RenderState":
         """Poll RENDER? until the panel reports ``screen``; return that state.
@@ -637,37 +746,47 @@ class Device:
         self.send(f"WIFI {ssid}|{password}")
 
     # -- boot capture + beacon ----------------------------------------------
-    def wait_ready(self, timeout: float = 20.0):
-        """Read the boot stream after a reset; FAIL on a panic or reboot-loop,
+    def wait_ready(self, timeout: float = 20.0, max_total: "Optional[float]" = None):
+        """Read the boot stream after a reset; FAIL on a panic or reboot loop,
         SUCCEED on the ``READY mode=<n> ip=<..>`` beacon (or the older
         ``NSN ready`` / ``PROVISION READY`` markers). Returns (mode, ip) - mode is
         None for the legacy markers.
 
-        Reboot-loop detector: >= 2 ``rst:`` lines within the window is a loop."""
-        deadline = time.time() + timeout
-        rst_count = 0
+        SIZED FROM THE BOOT STREAM, not a fixed number: each boot line that arrives
+        re-arms an idle window of ``timeout`` seconds, so a slow boot (an SD card
+        plus a 500+ row episodic scan pushes 'orch: done' well past a flat 20 s -
+        the L7 watchdog symptom on the bench) is not clipped mid-boot, while a
+        SILENT board still fails after ``timeout`` of no output and a reboot LOOP
+        (>= 2 rst: with no progress between) still fails fast. ``max_total`` bounds
+        the absolute wait (default 6x the idle window, min 120 s) so even a chatty
+        loop cannot hang the suite.
+
+        Reboot-loop detector: see _BootScan (>= 2 ``rst:`` with no app progress)."""
+        if max_total is None:
+            max_total = max(timeout * 6, 120.0)
+        hard_deadline = time.time() + max_total
+        scan = _BootScan()
         while True:
-            line = self._readline(deadline)
+            line = self._readline(min(time.time() + timeout, hard_deadline))
             if line is None:
-                # The beacon can be CONSUMED before this expect starts (the CDC
-                # reopen races the boot stream on consecutive resets - torn
-                # serial is the documented reality). A device that already
-                # answers PING is ready regardless of who read the beacon.
+                # No output within the idle window: either the beacon was already
+                # CONSUMED by the reopen (the CDC reopen races the boot stream on
+                # consecutive resets - a board that answers PING is ready regardless
+                # of who read the beacon), or the board is silent/bricked.
                 if self.ping():
                     return (None, None)
+                if time.time() >= hard_deadline:
+                    raise ExpectTimeout("READY beacon (boot did not settle within the ceiling)", self._transcript)
                 raise ExpectTimeout("READY beacon", self._transcript)
-            if any(marker in line for marker in PANIC_MARKERS):
+            verdict = scan.feed(line)
+            if verdict == "panic":
                 raise BootError(f"panic during boot: {line!r}")
-            if line.startswith("rst:"):
-                rst_count += 1
-                if rst_count >= 2:
-                    raise BootError(f"reboot loop: >= {rst_count} 'rst:' lines in boot window")
-            m = re.search(r"READY\s+mode=(?P<mode>\d+)\s+ip=(?P<ip>\S+)", line)
-            if m:
-                return int(m.group("mode")), m.group("ip")
-            # Legacy beacons (builds without NIMBUS_TEST): mode unknown.
-            if "NSN ready" in line or "PROVISION READY" in line:
-                return None, None
+            if verdict == "loop":
+                raise BootError("reboot loop: >= 2 'rst:' lines with no boot progress between")
+            if isinstance(verdict, tuple):  # ("ready"|"legacy", mode, ip)
+                return verdict[1], verdict[2]
+            # "progress": a boot line arrived; the top of the loop re-arms the idle
+            # window from now, so an actively-booting board keeps its wait alive.
 
     # -- watchdog / reboot hooks --------------------------------------------
     def hang(self) -> None:

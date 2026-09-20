@@ -28,7 +28,7 @@ import time
 
 import pytest
 
-from device import ExpectTimeout
+from device import FRESH_BOOT_CEILING_S, ExpectTimeout
 
 
 # --- helpers -----------------------------------------------------------------
@@ -329,7 +329,11 @@ class TestCrashLoopResilience:
         # USB-CDC (a soft REBOOT that the chip ignores is escalated to a hard reset)
         # and returns the fresh uptime - so this no longer races the boot stream.
         up = device.reboot_and_confirm()
-        assert up >= 0  # a parseable, settled STATUS after one confirmed clean boot
+        # A REAL fresh boot, not merely a settled STATUS: reboot_and_confirm already
+        # gates on is_fresh_boot, but assert the small absolute uptime here too so
+        # this leg cannot pass vacuously on a no-op reboot (the bench returned
+        # uptime=2494s "after a reboot" while an `up >= 0` assertion stayed green).
+        assert 0 <= up < FRESH_BOOT_CEILING_S, f"uptime={up}s is not a fresh boot"
 
     def test_survives_n_reboots_without_a_loop(self, device):
         # Boot-loop DETECTION across N reboots (MANIFEST section 3). One clean boot
