@@ -127,6 +127,24 @@ static void test_route_unknown_provider_is_not_known(void) {
   TEST_ASSERT_FALSE(s.viaCumuloRouter);
 }
 
+// CUM-439: the valid-voice-provider TABLE. The selectable set is exactly
+// {mistral, openai, cumulo} on BOTH routes; everything else has no voice route.
+// This is the canonical source the web validation (webui.cpp voiceProviderKeyed),
+// the web/device pickers, and the device menu cycle must all agree with - a new
+// provider slug offered anywhere without a route here fails as a class.
+static void test_voice_provider_value_table(void) {
+  const char* valid[]   = {"mistral", "openai", "cumulo"};
+  const char* invalid[] = {"anthropic", "zai", "custom", "", "COMULO", "openai "};
+  for (VoiceKind k : {VoiceKind::Stt, VoiceKind::Tts}) {
+    for (const char* p : valid)   TEST_ASSERT_TRUE(voiceRouteFor(p, k).known);
+    for (const char* p : invalid) TEST_ASSERT_FALSE(voiceRouteFor(p, k).known);
+  }
+  // Only cumulo routes through the metered router; the BYOK pair go direct.
+  TEST_ASSERT_TRUE(voiceRouteFor("cumulo", VoiceKind::Tts).viaCumuloRouter);
+  TEST_ASSERT_FALSE(voiceRouteFor("openai", VoiceKind::Tts).viaCumuloRouter);
+  TEST_ASSERT_FALSE(voiceRouteFor("mistral", VoiceKind::Tts).viaCumuloRouter);
+}
+
 // ---- CUM-376: effective provider is cumulo-aware (the one-key fallback) --------
 
 static void test_voice_active_backcompat_2provider(void) {
@@ -312,6 +330,7 @@ int main(int, char**) {
   RUN_TEST(test_route_mistral_direct);
   RUN_TEST(test_route_cumulo_via_router);
   RUN_TEST(test_route_unknown_provider_is_not_known);
+  RUN_TEST(test_voice_provider_value_table);
   RUN_TEST(test_voice_active_backcompat_2provider);
   RUN_TEST(test_voice_active_one_key_device_falls_to_cumulo);
   RUN_TEST(test_voice_active_byok_wins_over_cumulo);
