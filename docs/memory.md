@@ -58,9 +58,15 @@ device is NOT out of memory - it has ~8 MB of PSRAM free. It is out of the
 
 ### What MUST live in internal SRAM (do not try to move these)
 
-- **FreeRTOS task stacks** - every `xTaskCreate*` stack is internal. A task
-  that does TLS (`tg_poll`'s deep mbedTLS handshake call chain), touches
-  flash, or runs in an ISR cannot use a PSRAM stack.
+- **FreeRTOS task stacks** - every `xTaskCreate*` stack is internal *by default*.
+  A task that touches flash (NVS / LittleFS / `esp_partition` reads) or runs in an
+  ISR cannot use a PSRAM stack. TLS itself does **not** force an internal stack: the
+  prebuilt Arduino core already enables ext-mem stacks
+  (`CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM`) and the mbedTLS record buffers already
+  live in PSRAM, so `tg_poll`'s stack is internal because it reads NVS/config, not
+  because it runs the handshake. (CUM-448 measured this from scratch: the gate is
+  flash access, not TLS. The earlier "does TLS -> must be internal" note was wrong and
+  steered prior headroom work at the wrong lever.)
 - **DMA buffers** - Wi-Fi, I²S, SPI (display/SD), LED RMT. These request
   `MALLOC_CAP_DMA` explicitly and bypass the PSRAM spill entirely.
 - **lwIP pbufs + the TLS record working set** - the ~24 KB "danger zone." A

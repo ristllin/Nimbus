@@ -181,8 +181,11 @@ serialized by design.** Do **not** add a dispatch or worker task, a second
 concurrent TLS session, or any on-device parallelism.
 
 This is hardware-proven, not a preference. The chip has very little
-largest-contiguous internal SRAM free, and a TLS-capable task stack cannot live in
-PSRAM. A second concurrent TLS work slot measurably collapsed the head's contiguous
+largest-contiguous internal SRAM free, and a flash-accessing task stack cannot live
+in PSRAM (the gate is flash access - NVS/LittleFS reads - not TLS: CUM-448 confirmed
+the prebuilt core already permits ext-mem stacks and the mbedTLS buffers ride PSRAM;
+the no-concurrency rule below stands on the contiguous-heap and watchdog evidence,
+not on the old TLS-stack claim). A second concurrent TLS work slot measurably collapsed the head's contiguous
 internal heap and failed real turns; a second poll/worker task overflowed its stack
 and panicked; contending inline work starved the watchdog and reset the device.
 Providers parallelize **remotely** - the device still polls them one at a time - and
