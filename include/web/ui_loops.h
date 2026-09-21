@@ -66,7 +66,17 @@ static const char UI_LOOPS[] PROGMEM = R"=====(<div class=pane id=pane-gov style
 </div>
 
 <div class=subpane id=subpane-safety style="display:none">
-<p class=plede>Download trust and guest screening. Your own messages and the web page are always exempt.</p>
+<p class=plede>What the scanner blocked or suspected, download trust, and guest screening. Your own messages and the web page are always exempt.</p>
+<div class=sec>
+<h2>Activity <button class=qh type=button aria-expanded=false aria-label="About activity">?</button></h2>
+<p class="hint tip">Items the scanner blocked or flagged as suspected, newest first. Approve one to allow that sender, type, or exact content from now on, dismiss it to clear it, or report it to Cumulo if you subscribe. Approving is always scoped, never a blanket off switch, and you can revoke it below.</p>
+<div id=safetyList>loading&hellip;</div>
+</div>
+<div class=sec>
+<h2>Allowed items <button class=qh type=button aria-expanded=false aria-label="About allowed items">?</button></h2>
+<p class="hint tip">The senders, types, and content patterns you approved. The scanner lets these through. Revoke any to screen it again.</p>
+<div id=safetyAllow class=hint>none yet</div>
+</div>
 <div class=sec>
 <h2>Downloads <button class=qh type=button aria-expanded=false aria-label="About downloads">?</button></h2>
 <p class="hint tip">How much trust the assistant gets when it wants to download a file from the web. Approve asks you for each link; Scan checks the file with AI before keeping it; Full trust downloads immediately.</p>

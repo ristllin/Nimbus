@@ -179,9 +179,10 @@ function loadPane(p){
     if(typeof loadHealth==='function')loadHealth();
   }
   if(p==='gov'){if(typeof loadLoops==='function')loadLoops();
-    if(typeof loadWakeups==='function')loadWakeups();}
-  // Safety (fetchpol + moderation) loads with pane-usage's loadOrch/loadFetchQ,
-  // which run in the same DEST.assistant group; no separate load needed here.
+    if(typeof loadWakeups==='function')loadWakeups();
+    if(typeof loadSafety==='function')loadSafety();}
+  // Safety fetchpol + moderation load with pane-usage's loadOrch/loadFetchQ (same
+  // DEST.assistant group); the Activity list + allowlist load via loadSafety above.
   if(p==='mem'){if(typeof loadMemDash==='function')loadMemDash();if(typeof loadFiles==='function')loadFiles();}
   if(p==='harness'){if(typeof loadOrch==='function')loadOrch();if(typeof loadModels==='function')loadModels();if(typeof loadConnectors==='function')loadConnectors();if(typeof loadTools==='function')loadTools();if(typeof loadSkills==='function')loadSkills();}
   if(p==='usage'){if(typeof loadOrch==='function')loadOrch();if(typeof loadFetchQ==='function')loadFetchQ();if(typeof loadUsageHistory==='function')loadUsageHistory();}
@@ -2059,6 +2060,97 @@ function renderFetchQ(rows){
 function fetchQAct(id,op){
   fetch('/api/fetchq',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
     body:'id='+id+'&op='+op}).then(()=>loadFetchQ());
+}
+// Safety ACTIVITY surface (CUM-215): the scanner's blocked/suspected log, per-entry
+// owner actions (approve scoped / dismiss / report), and the scoped allowlist.
+var _safetyReport={available:false,copy:''};
+function loadSafety(){fetch('/api/safety').then(r=>r.json()).then(renderSafety).catch(function(){var b=$('safetyList');if(b&&/loading/i.test(b.textContent))b.innerHTML='<p class=hint>Could not load activity. Try again.</p>';});}
+function _sfxEsc(t){return (t||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+function renderSafety(d){
+  d=d||{};_safetyReport=d.report||{available:false,copy:''};
+  var box=$('safetyList');
+  if(box){
+    var ents=d.entries||[];
+    if(!ents.length){box.innerHTML='<p class=hint>Nothing flagged. The scanner has not blocked or suspected anything.</p>';}
+    else{
+      var h='';
+      ents.forEach(function(e){
+        var vbad=e.verdict==='blocked'?'<span class="badge vfy bad">blocked</span>':'<span class="badge vfy warn">suspected</span>';
+        var sbad=e.status==='dismissed'?' <span class="badge vfy">dismissed</span>':e.status==='approved'?' <span class="badge vfy ok">approved</span>':'';
+        var opts='<option value=pattern>this content</option>';
+        if(e.sender)opts+='<option value=sender>this sender</option>';
+        // "this type" (content-class) only for a genuine narrow category; a coarse
+        // moderation rule would allow the whole gate, so it is not offered there.
+        if(e.rule&&e.rule!=='moderation')opts+='<option value=content-class>this type</option>';
+        var when=e.ts?new Date(e.ts*1000).toLocaleString():'';
+        var rep=_safetyReport||{};var repNote='';
+        if(rep.pending&&rep.pendingId===e.id)repNote='<div class=hint>Reporting&hellip;</div>';
+        else if(rep.last&&rep.last.id===e.id)repNote='<div class=hint>'+_sfxEsc(rep.last.message||'')+'</div>';
+        h+='<div class=provrow style="border-top:0;padding-top:8px;margin-top:8px"><div style="min-width:0">'+
+           '<b>'+vbad+'</b>'+sbad+' <span class=hint>'+_sfxEsc(e.rule)+' &middot; '+_sfxEsc(e.channel)+(e.sender?' &middot; '+_sfxEsc(e.sender):'')+'</span>'+
+           '<div class=hint style="overflow-wrap:anywhere">'+_sfxEsc(e.excerpt)+'</div>'+
+           (when?'<div class=hint>'+_sfxEsc(when)+'</div>':'')+
+           '<div class=row style="gap:6px;flex-wrap:wrap;margin-top:6px">'+
+           '<select id=asc_'+e.id+' aria-label="Approve scope">'+opts+'</select>'+
+           '<button type=button onclick="safetyApprove(\''+e.id+'\')">Approve</button>'+
+           '<button type=button class=warn onclick="safetyDismiss(\''+e.id+'\')">Dismiss</button>'+
+           '<button type=button onclick="safetyReport(\''+e.id+'\')">Report</button>'+
+           '</div>'+repNote+'</div></div>';
+      });
+      box.innerHTML=h;
+    }
+  }
+  var abox=$('safetyAllow');
+  if(abox){
+    var al=d.allow||[];
+    if(!al.length){abox.innerHTML='none yet';}
+    else{
+      var scopeLabel={sender:'sender',"content-class":'type',pattern:'content'};
+      var ah='';
+      al.forEach(function(r){
+        ah+='<div class=row style="justify-content:space-between;gap:8px;border-top:1px solid var(--raise3);padding:6px 0">'+
+            '<div style="min-width:0;overflow-wrap:anywhere"><b>'+_sfxEsc(scopeLabel[r.scope]||r.scope)+'</b>: '+_sfxEsc(r.value)+'</div>'+
+            '<button type=button class=warn style="flex:0 0 auto" onclick="safetyRevoke(\''+r.id+'\')">Revoke</button></div>';
+      });
+      abox.innerHTML=ah;
+    }
+  }
+}
+function safetyApprove(id){
+  var sel=$('asc_'+id);var scope=sel?sel.value:'pattern';
+  fetch('/api/safety/approve',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:'id='+encodeURIComponent(id)+'&scope='+encodeURIComponent(scope)})
+    .then(r=>r.json().catch(()=>({})).then(j=>({s:r.status,j:j})))
+    .then(x=>{toast(x.s===200?'Approved':(x.j.error||'Approve failed'));loadSafety();}).catch(failToast);
+}
+function safetyDismiss(id){
+  fetch('/api/safety/dismiss',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:'id='+encodeURIComponent(id)}).then(()=>{toast('Dismissed');loadSafety();}).catch(failToast);
+}
+function safetyRevoke(id){
+  fetch('/api/safety/allow/revoke',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:'id='+encodeURIComponent(id)}).then(()=>{toast('Revoked');loadSafety();}).catch(failToast);
+}
+function safetyReport(id){
+  // The device queues the report on a worker task and returns 202 immediately; poll
+  // GET /api/safety a few times to pick up the outcome (report.last) it records.
+  fetch('/api/safety/report',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:'id='+encodeURIComponent(id)})
+    .then(r=>r.json().catch(()=>({})).then(j=>({s:r.status,j:j})))
+    .then(x=>{
+      if(x.s===202){toast('Reporting');_safetyPoll(6);}
+      else toast(x.j.error||'Report failed');
+      loadSafety();
+    }).catch(failToast);
+}
+function _safetyPoll(n){
+  if(n<=0)return;
+  setTimeout(function(){
+    fetch('/api/safety').then(r=>r.json()).then(function(d){
+      renderSafety(d);
+      if(d&&d.report&&d.report.pending)_safetyPoll(n-1);   // still in flight: keep polling
+    }).catch(function(){});
+  },1500);
 }
 if($('fetchpolsave'))$('fetchpolsave').onclick=()=>{
   orchApply({fetchPol:$('fetchpol').value}).then(ok=>{

@@ -96,5 +96,12 @@ ModProvider pickProvider(bool hasCumuloKey, bool hasMistralKey);
 // positive only adds a "treat as data" note. Returns true when suspicious.
 bool looksLikeInjection(const std::string& text);
 
+// The SPECIFIC injection pattern `text` tripped, or "" if none. looksLikeInjection is
+// exactly `!injectionPatternHit(text).empty()`. The Safety activity surface records
+// this granular pattern as the entry's rule (not the coarse "prompt-injection"
+// class), so an owner "approve this type" (content-class) unblock is scoped to one
+// pattern instead of silencing the whole injection scan (CUM-215).
+std::string injectionPatternHit(const std::string& text);
+
 }  // namespace orch
 }  // namespace nimbus
