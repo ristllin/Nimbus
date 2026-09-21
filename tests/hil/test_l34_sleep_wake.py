@@ -47,7 +47,7 @@ import time
 
 import pytest
 
-from device import BootError, ExpectTimeout
+from device import BootError, DeviceError, ExpectTimeout
 
 # Default cycle count; override with NIMBUS_SOAK_N. CUM-248 asks for N=20+.
 SOAK_N = int(os.environ.get("NIMBUS_SOAK_N", "20"))
@@ -57,7 +57,7 @@ SOAK_N = int(os.environ.get("NIMBUS_SOAK_N", "20"))
 WAKE_TIMER_S = int(os.environ.get("NIMBUS_SOAK_TIMER_S", "4"))
 
 
-def _lan_wake_facts(timeout_s: float = 90.0):
+def _lan_wake_facts(timeout_s: float = 90.0, expect_deep_wakes=None):
     """Read the test image's ``testWake`` facts from ``/api/state`` over the LAN.
 
     Why the LAN: on the ESP32-S3 the host's USB-CDC reopen after a sleep cycle resets the
@@ -82,7 +82,11 @@ def _lan_wake_facts(timeout_s: float = 90.0):
             d = requests.get(f"http://{ip}/api/state", headers={"X-Nimbus-Token": tok}, timeout=5).json()
             raw = d.get("testWake")
             if raw:
-                return parse_wake_info("WAKE " + raw)
+                info = parse_wake_info("WAKE " + raw)
+                # While the shutdown notice is still on screen the board answers with the
+                # PRE-sleep facts; only the post-wake counter proves the cycle happened.
+                if expect_deep_wakes is None or info["deepWakes"] == expect_deep_wakes:
+                    return info
         except Exception:  # noqa: BLE001 - still rebooting / rejoining
             pass
         time.sleep(1.5)
@@ -240,9 +244,13 @@ def test_sleep_wake_soak(device):
         device.expect("POWEROFF entering deep sleep", timeout=5.0)
         t_off = time.time()
         device.close()
-        lan = _lan_wake_facts(timeout_s=float(WAKE_TIMER_S) + 90.0)
+        time.sleep(5.0)  # the shutdown notice (~4.8 s) before esp_deep_sleep_start
+        lan = _lan_wake_facts(timeout_s=float(WAKE_TIMER_S) + 90.0, expect_deep_wakes=deep_before + 1)
         t_back = time.time()
-        assert lan is not None, f"cycle {cycle}: the board never came back on the LAN after the timer wake"
+        assert lan is not None, (
+            f"cycle {cycle}: no LAN answer with deepWakes={deep_before + 1} after the timer wake "
+            "(the board never woke, never rejoined, or the counter did not advance)"
+        )
         assert lan["reset"] == "deep-sleep", f"cycle {cycle}: LAN reset reason {lan['reset']!r}, expected deep-sleep"
         assert lan["cause"] == "timer", f"cycle {cycle}: LAN wake cause {lan['cause']!r}, expected timer"
         assert lan["poweroff"], f"cycle {cycle}: LAN poweroff=0, this was not a power-off wake"
@@ -250,13 +258,25 @@ def test_sleep_wake_soak(device):
             assert lan["deepWakes"] == deep_before + 1, (
                 f"cycle {cycle}: deepWakes {deep_before} -> {lan['deepWakes']}, expected +1"
             )
-        # Now re-establish the console (this may reset the chip once more: expected).
+        # Now re-establish the console for the plan + state checks. The device wake is
+        # ALREADY proven over the LAN above, so a console reopen that wedges (the host
+        # USB-CDC hazard after many rapid reopens: a silent port, no chip fault) is a
+        # RECOVERABLE infra event, not a device failure: bus-reset the link (usb_reset,
+        # MAC-safe via NIMBUS_HIL_OTHER_SERIAL) and reopen once more before giving up.
         try:
             device.reopen_after_reenumerate(drain_boot=False)
             device.wait_ready(timeout=40.0)
             device.drain(quiet=0.3)
         except BootError as exc:
             pytest.fail(f"cycle {cycle}: panic/reboot-loop after the wake: {exc}")
+        except (ExpectTimeout, DeviceError) as exc:
+            print(f"[soak] cycle {cycle}: console reopen wedged ({exc}); bus-resetting the USB link and retrying")
+            device.close()
+            device.bus_reset()
+            time.sleep(3.0)
+            device.reopen_after_reenumerate(drain_boot=False)
+            device.wait_ready(timeout=40.0)
+            device.drain(quiet=0.3)
 
         class _W:  # the fields the rest of the leg logs
             saw_reset = True
