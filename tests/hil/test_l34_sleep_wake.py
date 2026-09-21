@@ -174,12 +174,8 @@ def test_sleep_wake_soak(device):
 
         # 3b) It must have come back FROM deep sleep, via the timer we armed.
         info = parse_wake_info(device.cmd("WAKE?", "WAKE ", timeout=10.0))
-        assert info["reset"] == "deep-sleep", (
-            f"cycle {cycle}: reset reason {info['reset']!r}, expected deep-sleep"
-        )
-        assert info["cause"] == "timer", (
-            f"cycle {cycle}: wake cause {info['cause']!r}, expected timer"
-        )
+        assert info["reset"] == "deep-sleep", f"cycle {cycle}: reset reason {info['reset']!r}, expected deep-sleep"
+        assert info["cause"] == "timer", f"cycle {cycle}: wake cause {info['cause']!r}, expected timer"
         assert info["poweroff"], f"cycle {cycle}: WAKE? poweroff=0, this was not a power-off wake"
 
         # 4) Persisted state intact across the power-off.

@@ -16,7 +16,9 @@ pytestmark = pytest.mark.host
 
 
 def test_parse_feedback_success():
-    fb = parse_feedback("FEEDBACK seen=1 action=6 outcome=0 sfx=agent_done ring=success toast=Settings reset to defaults.")
+    fb = parse_feedback(
+        "FEEDBACK seen=1 action=6 outcome=0 sfx=agent_done ring=success toast=Settings reset to defaults."
+    )
     assert fb == {
         "seen": True,
         "action": 6,
@@ -28,7 +30,9 @@ def test_parse_feedback_success():
 
 
 def test_parse_feedback_failure_multiword_toast():
-    fb = parse_feedback("FEEDBACK seen=1 action=1 outcome=2 sfx=error ring=failure toast=No SD card found. Reseat it and rescan.")
+    fb = parse_feedback(
+        "FEEDBACK seen=1 action=1 outcome=2 sfx=error ring=failure toast=No SD card found. Reseat it and rescan."
+    )
     assert fb["sfx"] == "error"
     assert fb["ring"] == "failure"
     # The whole sentence, spaces and trailing period intact.

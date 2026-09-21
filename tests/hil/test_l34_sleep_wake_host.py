@@ -54,37 +54,43 @@ def test_parse_sleep_plan_missing_field_is_loud():
 
 # --- coherence rule (mirrors boardCanWakeOnTouch) ----------------------------
 def test_coherence_accepts_freenove_and_solide():
-    ok, _ = sleep_plan_is_coherent(parse_sleep_plan(
-        "SLEEP tapWakes=1 pin=17 level=0 ctrl=ft6336u timer=0 canWakeOnTouch=1"))
+    ok, _ = sleep_plan_is_coherent(
+        parse_sleep_plan("SLEEP tapWakes=1 pin=17 level=0 ctrl=ft6336u timer=0 canWakeOnTouch=1")
+    )
     assert ok
-    ok, _ = sleep_plan_is_coherent(parse_sleep_plan(
-        "SLEEP tapWakes=0 pin=-1 level=- ctrl=xpt2046 timer=4 canWakeOnTouch=0"))
+    ok, _ = sleep_plan_is_coherent(
+        parse_sleep_plan("SLEEP tapWakes=0 pin=-1 level=- ctrl=xpt2046 timer=4 canWakeOnTouch=0")
+    )
     assert ok
 
 
 def test_coherence_rejects_tap_on_non_rtc_pin():
     # Claims a tap wakes it while pointing at a non-RTC GPIO (>21): incoherent.
-    ok, why = sleep_plan_is_coherent(parse_sleep_plan(
-        "SLEEP tapWakes=1 pin=45 level=0 ctrl=ft6336u timer=0 canWakeOnTouch=1"))
+    ok, why = sleep_plan_is_coherent(
+        parse_sleep_plan("SLEEP tapWakes=1 pin=45 level=0 ctrl=ft6336u timer=0 canWakeOnTouch=1")
+    )
     assert not ok and "RTC" in why
 
 
 def test_coherence_rejects_tap_with_no_level_armed():
-    ok, why = sleep_plan_is_coherent(parse_sleep_plan(
-        "SLEEP tapWakes=1 pin=17 level=- ctrl=ft6336u timer=0 canWakeOnTouch=1"))
+    ok, why = sleep_plan_is_coherent(
+        parse_sleep_plan("SLEEP tapWakes=1 pin=17 level=- ctrl=ft6336u timer=0 canWakeOnTouch=1")
+    )
     assert not ok and "level" in why
 
 
 def test_coherence_rejects_level_armed_with_no_tap_wake():
     # A level armed on a board that reports no tap wake is a contradiction.
-    ok, why = sleep_plan_is_coherent(parse_sleep_plan(
-        "SLEEP tapWakes=0 pin=-1 level=0 ctrl=xpt2046 timer=4 canWakeOnTouch=0"))
+    ok, why = sleep_plan_is_coherent(
+        parse_sleep_plan("SLEEP tapWakes=0 pin=-1 level=0 ctrl=xpt2046 timer=4 canWakeOnTouch=0")
+    )
     assert not ok and "level" in why
 
 
 def test_coherence_rejects_tapwakes_canwake_disagreement():
-    ok, why = sleep_plan_is_coherent(parse_sleep_plan(
-        "SLEEP tapWakes=1 pin=17 level=0 ctrl=ft6336u timer=0 canWakeOnTouch=0"))
+    ok, why = sleep_plan_is_coherent(
+        parse_sleep_plan("SLEEP tapWakes=1 pin=17 level=0 ctrl=ft6336u timer=0 canWakeOnTouch=0")
+    )
     assert not ok and "canWakeOnTouch" in why
 
 

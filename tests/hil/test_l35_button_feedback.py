@@ -131,7 +131,9 @@ def test_failure_row_flags(device, wake_home):
     assert fb["toast"] == "No SD card found. Reseat it and rescan.", f"unexpected toast {fb['toast']!r}"
     ended_dark, ever_lit = _ring_ends_dark(device)
     assert ended_dark, "ring did not return to dark after the flag swell (a lit arc outlived its window)"
-    print(f"[feedback] RescanSd->Failed: cue ok; ring swell {'observed then cleared' if ever_lit else 'suppressed (posture)'}")
+    print(
+        f"[feedback] RescanSd->Failed: cue ok; ring swell {'observed then cleared' if ever_lit else 'suppressed (posture)'}"
+    )
 
 
 @pytest.mark.hil

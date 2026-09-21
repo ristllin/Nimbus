@@ -1080,9 +1080,7 @@ class Device:
         self.reopen_after_reenumerate()
 
     # -- F10 (CUM-248) sleep/wake soak helper (appended; keep small) ---------
-    def power_off_and_wake(
-        self, timer_s: int, notice_s: float = 6.0, ready_timeout: float = 30.0
-    ) -> "WakeResult":
+    def power_off_and_wake(self, timer_s: int, notice_s: float = 6.0, ready_timeout: float = 30.0) -> "WakeResult":
         """Drive ONE clean power-off -> timer-wake -> fresh-boot cycle and prove it.
 
         Sends ``POWEROFF <timer_s>`` (the test-only timed deep sleep), lets the chip
