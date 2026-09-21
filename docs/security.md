@@ -77,13 +77,20 @@ server - findings are weighted by real reachability.
     specific sender, content class, or content pattern. There is no global off
     switch: the allow scope has no "everything" value, and an empty target is
     refused, so an approval can never become a blanket disable (host-tested as the
-    class). The scanner then honors the rule as a real unblock. The allowlist is
-    inspectable and revocable from the same tab (Allowed items).
+    class). "This type" (content class) is offered only for a genuine narrow category:
+    an injection entry records the specific pattern it tripped, so trusting the type
+    trusts that one pattern, not the whole scan. A moderation-classifier block carries
+    no sub-category, so it can only be approved by sender or by exact content, never
+    by type (which would silence the gate). The scanner then honors the rule as a real
+    unblock. The allowlist is inspectable and revocable from the same tab (Allowed items).
   - **Dismiss.** Clear an entry without changing what the scanner does next time.
   - **Report to Cumulo, subscription-gated, never automatic.** Nothing is ever
     auto-reported. A report is possible only when the device holds a Cumulo key and
     the account is entitled; without a key the action states "Reporting needs a
-    Cumulo subscription." and spends no network. The payload carries exactly the
+    Cumulo subscription." and spends no network. The send never runs on the web
+    request: the tab queues it and a short-lived worker task performs the one TLS
+    POST (the cloud_mint pattern), so a report can never stall the web surface or the
+    loop watchdog; the tab polls for the outcome. The payload carries exactly the
     flagged item, its rule, channel, timestamp, and the device id, and nothing else
     (host-tested to that exact field set). The decision policy, the allowlist, and
     the report payload builder are the pure `nimbus::orch` safety-activity core; the

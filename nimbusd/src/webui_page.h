@@ -3136,7 +3136,7 @@ function fetchQAct(id,op){
 // Safety ACTIVITY surface (CUM-215): the scanner's blocked/suspected log, per-entry
 // owner actions (approve scoped / dismiss / report), and the scoped allowlist.
 var _safetyReport={available:false,copy:''};
-function loadSafety(){fetch('/api/safety').then(r=>r.json()).then(renderSafety).catch(()=>{});}
+function loadSafety(){fetch('/api/safety').then(r=>r.json()).then(renderSafety).catch(function(){var b=$('safetyList');if(b&&/loading/i.test(b.textContent))b.innerHTML='<p class=hint>Could not load activity. Try again.</p>';});}
 function _sfxEsc(t){return (t||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
 function renderSafety(d){
   d=d||{};_safetyReport=d.report||{available:false,copy:''};
@@ -3151,8 +3151,13 @@ function renderSafety(d){
         var sbad=e.status==='dismissed'?' <span class="badge vfy">dismissed</span>':e.status==='approved'?' <span class="badge vfy ok">approved</span>':'';
         var opts='<option value=pattern>this content</option>';
         if(e.sender)opts+='<option value=sender>this sender</option>';
-        if(e.rule)opts+='<option value=content-class>this type</option>';
+        // "this type" (content-class) only for a genuine narrow category; a coarse
+        // moderation rule would allow the whole gate, so it is not offered there.
+        if(e.rule&&e.rule!=='moderation')opts+='<option value=content-class>this type</option>';
         var when=e.ts?new Date(e.ts*1000).toLocaleString():'';
+        var rep=_safetyReport||{};var repNote='';
+        if(rep.pending&&rep.pendingId===e.id)repNote='<div class=hint>Reporting&hellip;</div>';
+        else if(rep.last&&rep.last.id===e.id)repNote='<div class=hint>'+_sfxEsc(rep.last.message||'')+'</div>';
         h+='<div class=provrow style="border-top:0;padding-top:8px;margin-top:8px"><div style="min-width:0">'+
            '<b>'+vbad+'</b>'+sbad+' <span class=hint>'+_sfxEsc(e.rule)+' &middot; '+_sfxEsc(e.channel)+(e.sender?' &middot; '+_sfxEsc(e.sender):'')+'</span>'+
            '<div class=hint style="overflow-wrap:anywhere">'+_sfxEsc(e.excerpt)+'</div>'+
@@ -3162,7 +3167,7 @@ function renderSafety(d){
            '<button type=button onclick="safetyApprove(\''+e.id+'\')">Approve</button>'+
            '<button type=button class=warn onclick="safetyDismiss(\''+e.id+'\')">Dismiss</button>'+
            '<button type=button onclick="safetyReport(\''+e.id+'\')">Report</button>'+
-           '</div></div></div>';
+           '</div>'+repNote+'</div></div>';
       });
       box.innerHTML=h;
     }
@@ -3199,10 +3204,25 @@ function safetyRevoke(id){
     body:'id='+encodeURIComponent(id)}).then(()=>{toast('Revoked');loadSafety();}).catch(failToast);
 }
 function safetyReport(id){
+  // The device queues the report on a worker task and returns 202 immediately; poll
+  // GET /api/safety a few times to pick up the outcome (report.last) it records.
   fetch('/api/safety/report',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
     body:'id='+encodeURIComponent(id)})
     .then(r=>r.json().catch(()=>({})).then(j=>({s:r.status,j:j})))
-    .then(x=>{toast(x.s===202?'Reported to Cumulo':(x.j.error||'Report failed'));loadSafety();}).catch(failToast);
+    .then(x=>{
+      if(x.s===202){toast('Reporting');_safetyPoll(6);}
+      else toast(x.j.error||'Report failed');
+      loadSafety();
+    }).catch(failToast);
+}
+function _safetyPoll(n){
+  if(n<=0)return;
+  setTimeout(function(){
+    fetch('/api/safety').then(r=>r.json()).then(function(d){
+      renderSafety(d);
+      if(d&&d.report&&d.report.pending)_safetyPoll(n-1);   // still in flight: keep polling
+    }).catch(function(){});
+  },1500);
 }
 if($('fetchpolsave'))$('fetchpolsave').onclick=()=>{
   orchApply({fetchPol:$('fetchpol').value}).then(ok=>{

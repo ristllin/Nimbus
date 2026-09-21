@@ -1,5 +1,6 @@
 #include "safety_activity_store.h"
 
+#include <Arduino.h>   // xTaskCreate / vTaskDelete / pdPASS (deferred report worker)
 #include <FS.h>
 
 #include <ArduinoJson.h>
@@ -38,6 +39,15 @@ SafetyActivityLog g_log;
 SafetyAllowlist   g_allow;
 bool              g_loaded  = false;
 uint32_t          g_nextId  = 1;
+
+// Deferred-report state (see the report section below). Declared here so listJson()
+// can surface the snapshot for the tab to poll.
+volatile bool g_reportPending = false;
+std::string   g_reportPendingId;
+std::string   g_reportLastId;
+ReportOutcome g_reportLastOutcome = ReportOutcome::Failed;
+std::string   g_reportLastMsg;
+bool          g_reportHaveLast = false;
 
 std::string redact(const std::string& raw) {
   return nimbus::orch::clampExcerpt(core::LogRing::redact(raw, agent::logring::g_secrets));
@@ -182,6 +192,14 @@ std::string listJson(bool hasCumuloKey) {
   JsonObject rep = d["report"].to<JsonObject>();
   rep["available"] = nimbus::orch::reportAvailable(hasCumuloKey);
   rep["copy"]      = nimbus::orch::reportUnavailableCopy();
+  rep["pending"]   = (bool)g_reportPending;
+  rep["pendingId"] = g_reportPending ? g_reportPendingId : std::string();
+  if (g_reportHaveLast) {
+    JsonObject last = rep["last"].to<JsonObject>();
+    last["id"]      = g_reportLastId;
+    last["outcome"] = nimbus::orch::reportOutcomeName(g_reportLastOutcome);
+    last["message"] = g_reportLastMsg;
+  }
   std::string out;
   serializeJson(d, out);
   return out;
@@ -200,6 +218,14 @@ bool approve(const std::string& id, AllowScope scope, std::string& msgOut) {
   ensureLoaded();
   const SafetyEntry* e = g_log.find(id);
   if (!e) { msgOut = "Entry not found."; return false; }
+  // ContentClass is a real scope ONLY for a genuine narrow category. A coarse rule
+  // (the moderation-classifier block, which carries no sub-category) would make the
+  // allow match every future block on that gate: a global off switch, which the whole
+  // surface forbids. Refuse it and steer the owner to sender/pattern (CUM-215).
+  if (scope == AllowScope::ContentClass && !nimbus::orch::contentClassApprovable(e->rule)) {
+    msgOut = "That kind has no specific category. Approve this sender or this exact content instead.";
+    return false;
+  }
   std::string value;
   switch (scope) {
     case AllowScope::Sender:       value = e->sender;  break;
@@ -227,43 +253,83 @@ bool revokeAllow(const std::string& id) {
   return true;
 }
 
-ReportOutcome report(const std::string& id, std::string& msgOut) {
-  // Copy the entry out UNDER the lock, then release it before any network I/O -
-  // never hold the card lock across a TLS send.
+// ---- deferred report (web task queues; a worker task does the TLS POST) --------
+//
+// Single-slot handoff mirroring cloud_mint/provider_verify: the AsyncTCP web task
+// must NEVER run a TLS acquire+handshake inline (it would stall every web request
+// and can trip the loop watchdog). requestReport() validates + spawns a short-lived
+// worker; the worker builds the frozen-contract payload and POSTs it; the tab polls
+// listJson for the outcome snapshot (the g_report* state is declared at the top).
+namespace {
+void reportRunOne(const std::string& id) {
   SafetyEntry e;
+  bool found = false;
   {
     memory::Lock g;
     ensureLoaded();
     const SafetyEntry* p = g_log.find(id);
-    if (!p) { msgOut = "Entry not found."; return ReportOutcome::Failed; }
-    e = *p;
+    if (p) { e = *p; found = true; }
+  }
+  ReportOutcome oc = ReportOutcome::Failed;
+  if (!found) {
+    // The entry vanished (evicted/dismissed) between request and run.
+    g_reportLastMsg = "Entry not found.";
+  } else {
+    nimbus::orch::SafetyReportInput in =
+        nimbus::orch::reportInputFromEntry(e, std::string(store::cloudDeviceId().c_str()),
+                                           isoNow(), NIMBUS_FW_VERSION);
+    HttpRequest req;
+    req.method = "POST";
+    req.host   = nimbus::orch::cumuloHostFromBase(std::string(store::cumuloBase().c_str()),
+                                                  CUMULO_HOST_DEFAULT);
+    req.port   = 443;
+    req.tls    = true;
+    req.path   = nimbus::orch::kSafetyReportPath;
+    req.headers.push_back({"Authorization", std::string("Bearer ") + store::cumuloKey().c_str()});
+    req.headers.push_back({"Content-Type", "application/json"});
+    req.body   = nimbus::orch::buildSafetyReportJson(in);
+    HttpResponse res;
+    std::string err;
+    const bool ok = agent::deviceTransport().exec(req, res, err);
+    oc = ok ? nimbus::orch::reportOutcomeFromHttp(res.status) : ReportOutcome::Failed;
+    g_reportLastMsg = nimbus::orch::reportOutcomeCopy(oc);
+    alogf("safety: report %s -> %s (http=%d)", id.c_str(), nimbus::orch::reportOutcomeName(oc),
+          ok ? res.status : 0);
+  }
+  g_reportLastOutcome = oc;
+  g_reportLastId = id;
+  g_reportHaveLast = true;
+}
+
+void reportTask(void*) {
+  reportRunOne(g_reportPendingId);
+  g_reportPending = false;
+  vTaskDelete(nullptr);
+}
+}  // namespace
+
+ReportRequest requestReport(const std::string& id, std::string& msgOut) {
+  {
+    memory::Lock g;
+    ensureLoaded();
+    if (!g_log.find(id)) { msgOut = "Entry not found."; return ReportRequest::NotFound; }
   }
   if (!nimbus::orch::reportAvailable(store::hasCumuloKey())) {
-    msgOut = nimbus::orch::reportUnavailableCopy();
-    return ReportOutcome::NoEntitlement;
+    msgOut = nimbus::orch::reportUnavailableCopy();     // no key: no TLS, no task
+    return ReportRequest::NoEntitlement;
   }
-  nimbus::orch::SafetyReportInput in =
-      nimbus::orch::reportInputFromEntry(e, std::string(store::cloudDeviceId().c_str()),
-                                         isoNow(), NIMBUS_FW_VERSION);
-  HttpRequest req;
-  req.method = "POST";
-  req.host   = nimbus::orch::cumuloHostFromBase(std::string(store::cumuloBase().c_str()),
-                                                CUMULO_HOST_DEFAULT);
-  req.port   = 443;
-  req.tls    = true;
-  req.path   = nimbus::orch::kSafetyReportPath;
-  req.headers.push_back({"Authorization", std::string("Bearer ") + store::cumuloKey().c_str()});
-  req.headers.push_back({"Content-Type", "application/json"});
-  req.body   = nimbus::orch::buildSafetyReportJson(in);
-
-  HttpResponse res;
-  std::string err;
-  const bool ok = agent::deviceTransport().exec(req, res, err);
-  const ReportOutcome oc = ok ? nimbus::orch::reportOutcomeFromHttp(res.status) : ReportOutcome::Failed;
-  msgOut = nimbus::orch::reportOutcomeCopy(oc);
-  alogf("safety: report %s -> %s (http=%d)", id.c_str(), nimbus::orch::reportOutcomeName(oc),
-        ok ? res.status : 0);
-  return oc;
+  if (g_reportPending) { msgOut = "A report is already in progress."; return ReportRequest::Busy; }
+  g_reportPending   = true;
+  g_reportPendingId = id;
+  // 8 KB stack, matching cloud_mint's proven TLS worker (mbedTLS buffers ride PSRAM);
+  // watchdog-free so the up-to-10 s slot acquire + handshake can't trip the loop watchdog.
+  if (xTaskCreate(reportTask, "safetyrep", 8192, nullptr, 1, nullptr) != pdPASS) {
+    g_reportPending = false;
+    msgOut = "Device is busy. Try again.";
+    return ReportRequest::Busy;
+  }
+  msgOut = "Reporting to Cumulo.";
+  return ReportRequest::Started;
 }
 
 std::string consoleSummary() {

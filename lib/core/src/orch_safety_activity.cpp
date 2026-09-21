@@ -194,6 +194,10 @@ bool isConcreteAllowValue(const std::string& value) {
   return !trimmed(value).empty();
 }
 
+bool contentClassApprovable(const std::string& rule) {
+  return isConcreteAllowValue(rule) && trimmed(rule) != kCoarseModerationRule;
+}
+
 bool ruleMatches(const AllowRule& r, const SafetyEntry& e) {
   // A rule can only match on its ONE concrete field. An empty target never
   // matches (defense: it should never be stored, but a hand-edited file might).

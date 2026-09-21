@@ -167,6 +167,21 @@ struct AllowRule {
 // the guard that makes a global/catch-all rule unrepresentable.
 bool isConcreteAllowValue(const std::string& value);
 
+// The coarse rule the device records for a moderation-classifier block: the
+// classifier returns a flag with NO granular category, so every moderation block
+// shares this one rule. That makes it unsafe as a ContentClass allow target - a
+// single "approve this type" would match EVERY future moderation block and silence
+// the whole gate (a global off switch). Injection entries, by contrast, record the
+// SPECIFIC matched pattern (nimbus::orch::injectionPatternHit), so their rule is a
+// genuine narrow category. Frozen string (persisted in the activity log).
+inline constexpr char kCoarseModerationRule[] = "moderation";
+
+// May an entry with this rule be approved by ContentClass scope? Only when the rule
+// is a genuine, narrow category: non-empty AND not the coarse moderation class. This
+// is what keeps ContentClass a scoped unblock instead of a per-gate off switch
+// (CUM-215). Sender and Pattern scopes are always narrow and need no such guard.
+bool contentClassApprovable(const std::string& rule);
+
 // Does a single scoped rule match a given entry? Pure, and scope-specific: each
 // scope compares ONE concrete field, so a rule can only ever match entries that
 // share that field value. No scope matches unconditionally.

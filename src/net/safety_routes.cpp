@@ -72,21 +72,21 @@ void handleReport(AsyncWebServerRequest* r) {
   if (authBlocked(r)) return;
   const std::string id = postParam(r, "id");
   if (id.empty()) { r->send(400, "application/json", "{\"error\":\"id required\"}"); return; }
+  // The actual Cumulo POST runs on a worker task (never inline on the AsyncTCP task):
+  // this only queues it. The tab polls GET /api/safety report.last for the outcome.
   std::string msg;
-  const nimbus::orch::ReportOutcome oc = agent::safety::report(id, msg);
-  // Mirror the wire contract's own status codes back to the browser.
+  const agent::safety::ReportRequest rq = agent::safety::requestReport(id, msg);
   int code;
-  switch (oc) {
-    case nimbus::orch::ReportOutcome::Sent:          code = 202; break;
-    case nimbus::orch::ReportOutcome::NoEntitlement: code = 403; break;
-    case nimbus::orch::ReportOutcome::TooLarge:      code = 413; break;
-    case nimbus::orch::ReportOutcome::RateLimited:   code = 429; break;
-    case nimbus::orch::ReportOutcome::Failed:
-    default:                                         code = 502; break;
+  const char* key = "error";
+  switch (rq) {
+    case agent::safety::ReportRequest::Started:       code = 202; key = "message"; break;
+    case agent::safety::ReportRequest::NoEntitlement: code = 403; break;   // subscription gate
+    case agent::safety::ReportRequest::NotFound:      code = 404; break;
+    case agent::safety::ReportRequest::Busy:
+    default:                                          code = 409; break;
   }
   JsonDocument d;
-  d[(oc == nimbus::orch::ReportOutcome::Sent) ? "message" : "error"] = msg;
-  d["outcome"] = nimbus::orch::reportOutcomeName(oc);
+  d[key] = msg;
   String body; serializeJson(d, body);
   r->send(code, "application/json", body);
 }

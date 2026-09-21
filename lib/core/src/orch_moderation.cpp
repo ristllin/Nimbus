@@ -91,34 +91,39 @@ static bool ciContains(const std::string& hay, const char* needle) {
   return false;
 }
 
+// The load-bearing shapes of a prompt-injection payload smuggled inside fetched or
+// summarized world content (a web page, a document, a sub-agent result). Lowercase
+// needles; the scan lowercases the haystack char-by-char.
+static const char* const kInjectionPatterns[] = {
+    "ignore previous instructions",
+    "ignore all previous",
+    "ignore the above",
+    "disregard previous",
+    "disregard the above",
+    "ignore your instructions",
+    "forget your instructions",
+    "forget all previous",
+    "you are now",
+    "new instructions:",
+    "system prompt",
+    "system:",
+    "assistant:",
+    "<|im_start|>",
+    "<|system|>",
+    "[system]",
+    "reveal your prompt",
+    "print your instructions",
+    "override your",
+};
+
+std::string injectionPatternHit(const std::string& text) {
+  for (const char* p : kInjectionPatterns)
+    if (ciContains(text, p)) return std::string(p);
+  return std::string();
+}
+
 bool looksLikeInjection(const std::string& text) {
-  // Lowercase needles; the scan lowercases the haystack char-by-char. These are the
-  // load-bearing shapes of a prompt-injection payload smuggled inside fetched or
-  // summarized world content (a web page, a document, a sub-agent result).
-  static const char* kPatterns[] = {
-      "ignore previous instructions",
-      "ignore all previous",
-      "ignore the above",
-      "disregard previous",
-      "disregard the above",
-      "ignore your instructions",
-      "forget your instructions",
-      "forget all previous",
-      "you are now",
-      "new instructions:",
-      "system prompt",
-      "system:",
-      "assistant:",
-      "<|im_start|>",
-      "<|system|>",
-      "[system]",
-      "reveal your prompt",
-      "print your instructions",
-      "override your",
-  };
-  for (const char* p : kPatterns)
-    if (ciContains(text, p)) return true;
-  return false;
+  return !injectionPatternHit(text).empty();
 }
 
 }  // namespace orch

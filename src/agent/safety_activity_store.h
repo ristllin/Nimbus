@@ -43,8 +43,9 @@ bool allowed(const std::string& rule, const std::string& sender, const std::stri
 
 // ---- web-route + console surface (all take the Lock) ----
 
-// {entries:[...newest-first...], allow:[...], report:{available,copy}} for GET
-// /api/safety. `hasCumuloKey` gates the report availability flag + copy.
+// {entries:[...newest-first...], allow:[...], report:{available,copy,pending,last:{...}}}
+// for GET /api/safety. `hasCumuloKey` gates the report availability flag + copy; the
+// `pending`/`last` fields let the tab poll a deferred report's outcome.
 std::string listJson(bool hasCumuloKey);
 
 // Mark an entry dismissed. false when the id is unknown. Persists.
@@ -59,12 +60,21 @@ bool approve(const std::string& id, nimbus::orch::AllowScope scope, std::string&
 // Revoke an allow-rule by id. false when unknown. Persists.
 bool revokeAllow(const std::string& id);
 
-// Build the report payload for an entry and POST it to Cumulo per the frozen wire
-// contract, subscription-gated. When the device holds no Cumulo key the send is
-// skipped and NoEntitlement is returned with the frozen copy (no TLS spent).
-// `msgOut` carries owner copy for the outcome. Runs on the calling task using the
-// shared TLS work-slot arbiter (single-slot discipline).
-nimbus::orch::ReportOutcome report(const std::string& id, std::string& msgOut);
+// Outcome of a report REQUEST from the web task (the actual POST runs later on a
+// worker task, never on the AsyncTCP task - a TLS acquire+handshake there could
+// stall every web request and trip the loop watchdog, the cloud_mint precedent).
+enum class ReportRequest : uint8_t {
+  Started = 0,     // queued on the worker; poll listJson for report.last
+  NoEntitlement,   // no Cumulo key: refused here, no TLS, no task
+  NotFound,        // unknown entry id
+  Busy,            // a report is already in flight (one at a time)
+};
+
+// Queue a subscription-gated report of `id` to Cumulo. Returns immediately: it
+// validates the id + the local Cumulo-key gate, then spawns a short-lived worker
+// task that builds the frozen-contract payload and POSTs it via the TLS work-slot
+// arbiter, recording the outcome for the tab to poll. `msgOut` carries owner copy.
+ReportRequest requestReport(const std::string& id, std::string& msgOut);
 
 // One-line-per-metric summary for the SAFETY? console command.
 std::string consoleSummary();

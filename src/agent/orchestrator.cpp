@@ -323,8 +323,12 @@ static nimbus::orch::ModAction moderateGate(nimbus::orch::ModGate gate, const St
   // otherwise the verdict is recorded to the bounded activity log for the Safety tab.
   if (a == ModAction::Block) {
     const std::string s(chatId.c_str()), tx(text.c_str());
-    if (agent::safety::allowed("moderation", s, tx)) return ModAction::Allow;
-    agent::safety::record(SafetyVerdict::Blocked, "moderation", "telegram", s,
+    // The classifier returns no sub-category, so the rule is the coarse moderation
+    // class (kCoarseModerationRule); the granular gate name goes to `source`. The
+    // owner can unblock this sender or this exact content, but not "this type" (that
+    // would be the whole gate - forbidden by contentClassApprovable).
+    if (agent::safety::allowed(kCoarseModerationRule, s, tx)) return ModAction::Allow;
+    agent::safety::record(SafetyVerdict::Blocked, kCoarseModerationRule, "telegram", s,
                           modGateName(gate), tx);
   }
   return a;
