@@ -90,9 +90,10 @@ server - findings are weighted by real reachability.
     Cumulo subscription." and spends no network. The send never runs on the web
     request: the tab queues it and a short-lived worker task performs the one TLS
     POST (the cloud_mint pattern), so a report can never stall the web surface or the
-    loop watchdog; the tab polls for the outcome. The payload carries exactly the
-    flagged item, its rule, channel, timestamp, and the device id, and nothing else
-    (host-tested to that exact field set). The decision policy, the allowlist, and
+    loop watchdog; the tab polls for the outcome. The payload carries exactly these
+    fields and nothing else (host-tested to that exact set): the device id, the report
+    time, the verdict, the rule, the channel, the redacted excerpt (at most 512 bytes),
+    and a meta object with the firmware version and the source gate. The decision policy, the allowlist, and
     the report payload builder are the pure `nimbus::orch` safety-activity core; the
     device seam is `src/agent/safety_activity_store` and the web surface is
     `src/net/safety_routes` (`/api/safety*`, token-gated).

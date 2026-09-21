@@ -833,8 +833,10 @@ class Device:
     def tap(self, x: int, y: int, hold: bool = False, timeout: float = 5.0) -> str:
         """``TAP <x> <y> [HOLD]`` -> the ``TAP<`` ack. A synthetic press-release (or, with
         ``hold``, a press held until ``TAPUP``) at a panel coordinate. Injected taps take the
-        ``drainTouch`` path, so a tap issued while the first-run cal GATE owns the panel is
-        (correctly) inert - which is exactly the "taps do not navigate while gated" assertion."""
+        ``drainTouch`` path, which the cal GATE bypasses: a tap issued while the gate owns the
+        panel does NOT navigate while gated, but it is QUEUED, not discarded, so it fires as the
+        first gesture once the gate releases. Tests that inject taps under the gate must open the
+        gate (or drain the queue) before asserting a later navigation state."""
         return self.cmd(f"TAP {x} {y}{' HOLD' if hold else ''}", "TAP<", timeout=timeout)
 
     def tftfill_ok(self, timeout: float = 8.0) -> bool:
