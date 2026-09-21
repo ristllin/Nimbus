@@ -96,6 +96,9 @@ class Config {
     if (host == "anthropic") return "ANTHROPIC_API_KEY";
     if (host == "mistral")   return "MISTRAL_API_KEY";
     if (host == "cumulo")    return "CUMULO_API_KEY";
+    // Z.ai (GLM), OpenAI-compatible direct BYOK head (CUM-445). The device stores this
+    // under the NVS key `zaiKey`; the canonical env name here is Z_AI_TOKEN.
+    if (host == "zai")       return "Z_AI_TOKEN";
     return std::string();
   }
 

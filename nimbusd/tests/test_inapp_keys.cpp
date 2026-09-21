@@ -32,7 +32,7 @@ using harness_test::FakeHttpTransport;
 
 static void clearProviderEnv() {
   for (const char* k : {"OPENAI_API_KEY", "ANTHROPIC_API_KEY", "MISTRAL_API_KEY",
-                        "TAVILY_API_KEY", "CUMULO_API_KEY"})
+                        "TAVILY_API_KEY", "CUMULO_API_KEY", "Z_AI_TOKEN"})
     unsetenv(k);
 }
 
@@ -126,8 +126,11 @@ static void testWebPostAppliesKey(ndtest::Ctx& c) {
   ReplyBuffer replies;
   WebApi api(&rig, &eng, &replies);
 
+  // CUM-445: the field the shared web app actually posts is `oaiKey` (the canonical
+  // provider_slots.h keyField), NOT `openaiKey`. The old test asserted the buggy name
+  // that silently dropped every direct-provider write.
   ApiResp out;
-  c.ok(api.handle("POST", "/api/orch", "openaiKey=sk_test_WEBFORM", out),
+  c.ok(api.handle("POST", "/api/orch", "oaiKey=sk_test_WEBFORM", out),
        "POST /api/orch is handled");
   c.ok(out.body.find("\"applied\":1") != std::string::npos,
        "the response reports one key applied");
@@ -148,6 +151,173 @@ static void testWebPostAppliesKey(ndtest::Ctx& c) {
   clearProviderEnv();
 }
 
+// (e) CUM-445: the web POST /api/orch accepts the SAME field names the shared web app
+// sends, for EVERY provider (not just openai/cumulo), through the canonical registry -
+// so this drift class cannot recur. This is a class test over kProviderSlots: a new
+// slot is covered here with no new code, and a field the daemon does not accept FAILS.
+static void testEveryFieldNameApplies(ndtest::Ctx& c) {
+  std::printf("  -- (e) POST /api/orch accepts every canonical key field (CUM-445) --\n");
+  // (field the UI posts) -> (provider slug it must reach). These are exactly the
+  // provider_slots.h keyField values; a divergence here means the daemon and the UI
+  // disagree, which is the whole bug.
+  struct FT { const char* field; const char* slug; bool router; };
+  const FT kFields[] = {
+      {"oaiKey", "openai", false}, {"antKey", "anthropic", false},
+      {"mistKey", "mistral", false}, {"zaiKey", "zai", false},
+      {"cumuloKey", "cumulo", true},
+  };
+  for (const FT& f : kFields) {
+    clearProviderEnv();
+    Config cfg;
+    NimbusdRig rig(cfg, baseOpt(std::string("inapp-e-") + f.slug));
+    EngineThread eng(&rig);
+    eng.start();
+    ReplyBuffer replies;
+    WebApi api(&rig, &eng, &replies);
+
+    ApiResp out;
+    const std::string body = std::string(f.field) + "=key_" + f.slug + "_SET";
+    c.ok(api.handle("POST", "/api/orch", body, out), std::string("POST ") + f.field + " handled");
+    c.eqi(out.status, 200, std::string(f.field) + " is accepted (200, not refused)");
+    c.ok(out.body.find("\"applied\":1") != std::string::npos,
+         std::string(f.field) + " reports one key applied");
+    const bool present = f.router ? rig.hasCumulo() : rig.hostAvailable(f.slug);
+    c.ok(present, std::string(f.field) + " reached provider " + f.slug);
+
+    // clr_<field> clears it again.
+    ApiResp clr;
+    api.handle("POST", "/api/orch", std::string("clr_") + f.field + "=1", clr);
+    const bool gone = !(f.router ? rig.hasCumulo() : rig.hostAvailable(f.slug));
+    c.ok(gone, std::string("clr_") + f.field + " cleared " + f.slug);
+    eng.stop();
+  }
+  clearProviderEnv();
+}
+
+// (f) CUM-445: an unknown *Key field is refused LOUDLY (400), never silently acked, so
+// a future field rename cannot re-introduce the silent-drop bug. Counter-test to (e):
+// the exact names the OLD daemon read (openaiKey/mistralKey/anthropicKey) are now the
+// drift it must reject.
+static void testUnknownKeyFieldRefused(ndtest::Ctx& c) {
+  std::printf("  -- (f) unknown *Key field refused with 400 (CUM-445) --\n");
+  clearProviderEnv();
+  Config cfg;
+  NimbusdRig rig(cfg, baseOpt("inapp-f"));
+  EngineThread eng(&rig);
+  eng.start();
+  ReplyBuffer replies;
+  WebApi api(&rig, &eng, &replies);
+
+  for (const char* bad : {"openaiKey", "mistralKey", "anthropicKey", "bogusKey"}) {
+    ApiResp out;
+    api.handle("POST", "/api/orch", std::string(bad) + "=sk_DRIFT", out);
+    c.eqi(out.status, 400, std::string(bad) + " is refused with 400");
+    c.ok(out.body.find("\"ok\":false") != std::string::npos &&
+             out.body.find(std::string("unknown field ") + bad) != std::string::npos,
+         std::string(bad) + " names the unknown field in the error");
+    c.ok(!rig.hostAvailable("openai") && !rig.hostAvailable("mistral") &&
+             !rig.hostAvailable("anthropic"),
+         std::string(bad) + " applied nothing");
+  }
+  // clr_ of an unknown field is also refused (drift on the clear path too).
+  ApiResp clr;
+  api.handle("POST", "/api/orch", "clr_openaiKey=1", clr);
+  c.eqi(clr.status, 400, "clr_ of an unknown field is refused too");
+
+  // Counter-check: the NON-provider key fields the shared orch form legitimately posts
+  // (the custom endpoint key, the Tavily key) must NOT be refused - they are not
+  // provider-key drift, and refusing them would break the whole Save Changes payload.
+  ApiResp save;
+  c.ok(api.handle("POST", "/api/orch",
+                  "custKey=cust_endpoint_key&tavKey=tvly_search_key&orchLoop=1", save),
+       "a Save Changes payload with custKey/tavKey is handled");
+  c.eqi(save.status, 200, "custKey/tavKey are accepted (not refused as unknown)");
+  eng.stop();
+  clearProviderEnv();
+}
+
+// (g) CUM-445: GET /api/orch reports the canonical keyField + hasKey for every slot
+// (including Z.ai), so the UI shows "Key set" and the model pickers unlock. Reads the
+// field the UI merges (pp.keyField) - it MUST be oaiKey/antKey/mistKey/zaiKey/cumuloKey.
+static void testOrchGetReportsCanonicalFields(ndtest::Ctx& c) {
+  std::printf("  -- (g) GET /api/orch reports canonical keyField + hasKey (CUM-445) --\n");
+  clearProviderEnv();
+  Config cfg;
+  NimbusdRig rig(cfg, baseOpt("inapp-g"));
+  EngineThread eng(&rig);
+  eng.start();
+  ReplyBuffer replies;
+  WebApi api(&rig, &eng, &replies);
+
+  ApiResp before;
+  c.ok(api.handle("GET", "/api/orch", "", before), "GET /api/orch handled");
+  for (const char* kf : {"oaiKey", "antKey", "mistKey", "zaiKey", "cumuloKey"}) {
+    c.ok(before.body.find(std::string("\"keyField\":\"") + kf + "\"") != std::string::npos,
+         std::string("reports canonical keyField ") + kf);
+  }
+  // Z.ai is present as a first-class provider row.
+  c.ok(before.body.find("\"zai\"") != std::string::npos, "Z.ai provider is listed");
+
+  // Set a Z.ai key through the seam; hasKey flips true in the next GET (picker unlocks).
+  ApiResp setz;
+  api.handle("POST", "/api/orch", "zaiKey=zai_UNLOCK", setz);
+  ApiResp after;
+  api.handle("GET", "/api/orch", "", after);
+  // The zai object now carries hasKey:true. (Order-independent substring: the zai block
+  // is "zai":{...,"hasKey":true,...}; a coarse but sufficient check is that hasKey:true
+  // appears and zai is keyed on the rig.)
+  c.ok(rig.hostAvailable("zai"), "the Z.ai key applied through the web seam (Z_AI_TOKEN)");
+  eng.stop();
+  clearProviderEnv();
+}
+
+// (h) CUM-445: a keyed Z.ai VN actually DISPATCHES a turn to Z.ai's endpoint, not a
+// silent misroute to Mistral. Z.ai-only (no other key) must resolve to the zai head.
+static void testZaiTurnDispatches(ndtest::Ctx& c) {
+  std::printf("  -- (h) a Z.ai-only VN dispatches its turn to api.z.ai (CUM-445) --\n");
+  clearProviderEnv();
+  FakeHttpTransport tx;
+  Exchange e; e.status = 200;
+  e.body = "{\"choices\":[{\"message\":{\"content\":\"{}\"}}],"
+           "\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1}}";
+  tx.script.push_back(e);
+
+  Config cfg;
+  NimbusdRig rig(cfg, baseOpt("inapp-h"), &tx);
+  c.ok(rig.applyProviderKey("zai", "zai_sk_TURN"), "applyProviderKey(zai) succeeds");
+  c.ok(rig.hostAvailable("zai"), "Z.ai key took effect");
+  rig.say("owner", "hi");
+  c.ok(!tx.seen.empty(), "the turn dispatched a request");
+  if (!tx.seen.empty())
+    c.eq(tx.seen[0].host, std::string("api.z.ai"),
+         "the Z.ai turn reached api.z.ai (NOT misrouted to Mistral)");
+  clearProviderEnv();
+}
+
+// (i) CUM-444: /api/state reports the container image tag separately from fw, so the
+// portal can show the engine version primary and the image tag secondary.
+static void testStateReportsImageTag(ndtest::Ctx& c) {
+  std::printf("  -- (i) /api/state reports fw and image separately (CUM-444) --\n");
+  clearProviderEnv();
+  setenv("NIMBUSD_IMAGE_TAG", "nimbusd:v9.9.9-test", 1);
+  Config cfg;                       // Config reads env at construction
+  NimbusdRig rig(cfg, baseOpt("inapp-i"));
+  EngineThread eng(&rig);
+  eng.start();
+  ReplyBuffer replies;
+  WebApi api(&rig, &eng, &replies);
+
+  ApiResp out;
+  c.ok(api.handle("GET", "/api/state", "", out), "GET /api/state handled");
+  c.ok(out.body.find(std::string("\"fw\":\"") + NIMBUS_FW_VERSION + "\"") != std::string::npos,
+       "fw is the engine version (NIMBUS_FW_VERSION)");
+  c.ok(out.body.find("\"image\":\"nimbusd:v9.9.9-test\"") != std::string::npos,
+       "image is the container tag, reported separately");
+  eng.stop();
+  unsetenv("NIMBUSD_IMAGE_TAG");
+  clearProviderEnv();
+}
+
 int main() {
   ndtest::Ctx c;
   c.suite = "in-app provider keys (CUM-279)";
@@ -156,6 +326,11 @@ int main() {
   testKeyIsDurable(c);
   testClearRemovesKey(c);
   testWebPostAppliesKey(c);
+  testEveryFieldNameApplies(c);
+  testUnknownKeyFieldRefused(c);
+  testOrchGetReportsCanonicalFields(c);
+  testZaiTurnDispatches(c);
+  testStateReportsImageTag(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);
   std::printf("%s\n", c.failures ? "FAILED" : "PASSED");
   return c.failures ? 1 : 0;

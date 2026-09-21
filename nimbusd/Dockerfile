@@ -25,7 +25,11 @@ COPY test/support ./test/support
 # Header-only deps the Makefile expects: ArduinoJson (pinned v7) as the native
 # libdep, and the solide-drivers portable headers as a sibling checkout.
 ARG ARDUINOJSON_REF=v7.4.3
-ARG SOLIDE_DRIVERS_REF=v0.5.1
+# Pin the solide-drivers headers to the SAME tag platformio.ini consumes for the
+# device build (currently v0.8.1). A stale pin here compiled the daemon against
+# older portable headers than the firmware, so a header the engine now needs was
+# missing and the image build failed (or, worse, drifted).
+ARG SOLIDE_DRIVERS_REF=v0.8.1
 # The Makefile resolves ArduinoJson from .pio/libdeps/native and solide-drivers
 # as the sibling $(REPO)/../solide-drivers; REPO is /src, so the sibling is
 # exactly /solide-drivers.
@@ -39,17 +43,24 @@ WORKDIR /src/nimbusd
 RUN make clean && make daemon && make test
 
 FROM debian:12-slim AS runtime
+# curl (not just libcurl4) is required by the HEALTHCHECK below and by the release
+# smoke test: libcurl4 is only the shared library, so the `curl` CLI must be present.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        libcurl4 ca-certificates tzdata \
+        curl libcurl4 ca-certificates tzdata \
     && rm -rf /var/lib/apt/lists/* \
     && useradd -r -u 10001 -m -d /home/nimbus nimbus \
     && mkdir -p /data && chown nimbus:nimbus /data
 COPY --from=build /src/nimbusd/build/nimbusd /usr/local/bin/nimbusd
+# The image tag this build carries, surfaced by /api/state as `image` (CUM-444) so
+# the portal can show the engine version (`fw`) primary and the image tag secondary.
+# The release workflow passes the pushed tag; unset in a local/dev build (honestly "").
+ARG NIMBUSD_IMAGE_TAG=""
 USER nimbus
 VOLUME ["/data"]
 ENV NIMBUSD_DATA_DIR=/data \
     NIMBUSD_CONTROL_ADDR=127.0.0.1 \
-    NIMBUSD_CONTROL_PORT=8787
+    NIMBUSD_CONTROL_PORT=8787 \
+    NIMBUSD_IMAGE_TAG=${NIMBUSD_IMAGE_TAG}
 EXPOSE 8787
 # Liveness: the ungated health endpoint. Readiness (/readyz) is gated and probed
 # by the sidecar/relay, not the kubelet, since it needs the web token.

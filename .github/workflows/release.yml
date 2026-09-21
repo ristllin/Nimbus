@@ -194,3 +194,104 @@ jobs:
           git push --force \
             "https://x-access-token:${RELEASE_PAT}@github.com/ristllin/nimbus-fw-releases.git" \
             webflash:webflash
+
+  # nimbusd (Virtual Nimbus) container image, built + pushed on the SAME firmware tag
+  # (CUM-444). The cloud deploy pins NIMBUSD to nimbusd:<tag>, but nothing built that
+  # image, so a VN ran whatever was last pushed by hand as :latest - stale by several
+  # releases. This job makes the image real per release, so a VN reports the same
+  # v4.5.x a physical device does. Independent of the firmware release job (a VN image
+  # failure must not block the OTA release, and vice versa).
+  nimbusd-image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write   # required for Workload Identity Federation to GCP
+    env:
+      # The prod Artifact Registry the cloud deploy pulls NIMBUSD from (cumulo-nimbus
+      # deploy.yml). image name `nimbusd`.
+      REGISTRY: us-central1-docker.pkg.dev
+      IMAGE: us-central1-docker.pkg.dev/cumulo-nimbus-prod/cumulo-nimbus/nimbusd
+    steps:
+      - uses: actions/checkout@v4
+
+      # Same tag/version.h coherence gate the firmware job uses: the image `fw` comes
+      # from include/version.h, so refuse to build an image whose tag disagrees with it.
+      - name: Tag / version.h coherence gate
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VER=$(sed -n 's/#define NIMBUS_FW_VERSION "\(.*\)"/\1/p' include/version.h)
+          echo "tag=$TAG version.h=$VER"
+          case "$TAG" in
+            "$VER"|"$VER"-rc*) ;;
+            *) echo "::error::tag $TAG != NIMBUS_FW_VERSION $VER"; exit 1 ;;
+          esac
+
+      # WIF auth. The firmware release has no GCP auth today, so this adds the standard
+      # keyless Workload Identity Federation step. The owner MUST set two repo secrets
+      # (documented in the lane PR body) - this workflow invents no credentials:
+      #   GCP_WIF_PROVIDER  the Workload Identity Provider resource name
+      #                     (projects/<n>/locations/global/workloadIdentityPools/<pool>/providers/<prov>)
+      #   GCP_DEPLOY_SA     the service account email with Artifact Registry writer on
+      #                     cumulo-nimbus-prod
+      - name: Authenticate to Google Cloud (WIF)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SA }}
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker "${REGISTRY}" --quiet
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Build once for linux/amd64 and LOAD into the local daemon (not push yet) so the
+      # smoke runs against the exact image before it reaches the registry. Context is
+      # the repo root (the Dockerfile needs lib/, include/, nimbusd/); the Dockerfile's
+      # own build stage runs `make test`, so a broken engine never produces an image.
+      - name: Build nimbusd image (linux/amd64)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: nimbusd/Dockerfile
+          platforms: linux/amd64
+          load: true
+          build-args: |
+            NIMBUSD_IMAGE_TAG=nimbusd:${{ github.ref_name }}
+          tags: ${{ env.IMAGE }}:${{ github.ref_name }}
+
+      # Smoke: run the just-built image and prove it answers /api/state with the ENGINE
+      # version (fw == NIMBUS_FW_VERSION), the exact drift CUM-444 is about. Bind the
+      # control surface to 0.0.0.0 for this run only so the published port is reachable
+      # from the runner (production keeps the loopback default). /api/state is gated, so
+      # supply the web token.
+      - name: Smoke - image answers /api/state with fw == NIMBUS_FW_VERSION
+        run: |
+          set -e
+          VER=$(sed -n 's/#define NIMBUS_FW_VERSION "\(.*\)"/\1/p' include/version.h)
+          docker run -d --name nimbusd-smoke -p 8787:8787 \
+            -e NIMBUSD_WEB_TOKEN=smoke-token \
+            -e NIMBUSD_CONTROL_ADDR=0.0.0.0 \
+            "${IMAGE}:${GITHUB_REF_NAME}"
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8787/healthz >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          STATE=$(curl -fsS -H "X-Nimbus-Token: smoke-token" http://127.0.0.1:8787/api/state)
+          echo "state: $STATE"
+          echo "$STATE" | grep -q "\"fw\":\"${VER}\"" || {
+            echo "::error::/api/state fw != ${VER}"; docker logs nimbusd-smoke; docker rm -f nimbusd-smoke; exit 1;
+          }
+          docker rm -f nimbusd-smoke
+
+      # Push the version tag on every firmware tag; move :latest only on a stable tag
+      # (never an -rc), the SAME discipline the web-flash "latest" publish uses above -
+      # so a prerelease never rolls production VNs.
+      - name: Push nimbusd:<tag>
+        run: docker push "${IMAGE}:${GITHUB_REF_NAME}"
+
+      - name: Push nimbusd:latest (stable only)
+        if: ${{ !contains(github.ref_name, '-rc') }}
+        run: |
+          docker tag "${IMAGE}:${GITHUB_REF_NAME}" "${IMAGE}:latest"
+          docker push "${IMAGE}:latest"

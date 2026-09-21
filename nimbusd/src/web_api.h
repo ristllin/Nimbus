@@ -297,6 +297,33 @@ class WebApi {
     return body.substr(start, end - start);
   }
 
+  // Every form field NAME present in a request body, across both encodings the web
+  // app uses: urlencoded (`k=v&...`, name is the part before `=`, URL-decoded) and
+  // multipart (`name="k"` headers). Values are ignored - this exists so orchPost can
+  // refuse an unknown key field rather than silently drop it (CUM-445).
+  static std::vector<std::string> formFieldNames(const std::string& body) {
+    std::vector<std::string> names;
+    for (size_t start = 0; start < body.size();) {
+      const size_t amp = body.find('&', start);
+      const size_t end = (amp == std::string::npos) ? body.size() : amp;
+      const std::string tok = body.substr(start, end - start);
+      const size_t eq = tok.find('=');
+      const std::string name = urlDecode(eq == std::string::npos ? tok : tok.substr(0, eq));
+      if (!name.empty()) names.push_back(name);
+      if (amp == std::string::npos) break;
+      start = amp + 1;
+    }
+    const std::string marker = "name=\"";
+    for (size_t p = body.find(marker); p != std::string::npos; p = body.find(marker, p)) {
+      p += marker.size();
+      const size_t q = body.find('"', p);
+      if (q == std::string::npos) break;
+      names.push_back(body.substr(p, q - p));
+      p = q + 1;
+    }
+    return names;
+  }
+
   static std::string kvLookup(const std::string& q, const std::string& key,
                               char sep, bool decode) {
     const std::string needle = key + "=";
@@ -330,6 +357,13 @@ class WebApi {
     d["host"]    = "nimbusd";
     d["fw"]      = NIMBUS_FW_VERSION;   // the engine version this instance runs
     d["build"]   = NIMBUS_FW_BUILD;
+    // The container image tag this instance runs, REPORTED SEPARATELY from the engine
+    // version (CUM-444): the portal showed "fw nimbusd:latest" because the image tag
+    // was all it had. `fw` is the real version (v4.5.x, shown like a physical device);
+    // `image` is the secondary detail the platform bakes in (NIMBUSD_IMAGE_TAG, set by
+    // the release build). Empty when unknown - the portal then says so honestly rather
+    // than faking a version.
+    d["image"]   = rig_->cfg().get("NIMBUSD_IMAGE_TAG");
     d["mode"]    = 1;                    // Orchestrator (a VN is an assistant)
     d["jobs"]    = s.turnInFlight ? 1 : 0;
     d["needsOnboarding"] = false;        // provisioned by the platform
@@ -422,20 +456,23 @@ class WebApi {
     JsonDocument d;
     d["running"] = true;
     JsonObject provs = d["providers"].to<JsonObject>();
-    struct P { const char* slug; const char* label; };
-    // Cumulo Nimbus first (the flagship one-key path for a VN), then the BYOK heads.
-    // The key FIELD the web form posts is `<slug>Key` - orchPost consumes the same.
-    static const P kP[] = {{"cumulo", "Cumulo Nimbus"}, {"mistral", "Mistral"},
-                           {"openai", "OpenAI"}, {"anthropic", "Anthropic"}};
-    for (const P& p : kP) {
-      const std::string slug = p.slug;
+    // Walk the CANONICAL provider registry (lib/core provider_slots.h) so this GET,
+    // the device UI, and orchPost all read the SAME slug/label/keyField table. The
+    // reported keyField is the exact field the UI posts back (`oaiKey`/`antKey`/
+    // `mistKey`/`zaiKey`/`cumuloKey`), which is what unlocks "Key set" and the model
+    // pickers; the old `<slug>Key` drifted from the UI and dropped every write
+    // (CUM-445). A slot added to the registry appears here already gated, no edit.
+    for (size_t i = 0; i < nimbus::orch::kProviderSlotCount; i++) {
+      const auto& slot = nimbus::orch::kProviderSlots[i];
+      const std::string slug = slot.slug;
       JsonObject o = provs[slug].to<JsonObject>();
-      o["label"] = p.label;
-      o["keyField"] = slug + "Key";
+      o["label"] = slot.label;
+      o["keyField"] = slot.keyField;
       // cumulo is a router key, not a canonical-env BYOK slot, so hostAvailable()
-      // does not see it - report it from hasCumulo() (CUM-286).
+      // does not see it - report it from hasCumulo() (CUM-286). Every other slot
+      // (including Z.ai's Z_AI_TOKEN) is a real env key hostAvailable() reads.
       o["hasKey"] = (slug == kCumuloSlug) ? rig_->hasCumulo() : rig_->hostAvailable(slug);
-      if (slug == kCumuloSlug) o["recommended"] = true;
+      if (slot.recommended) o["recommended"] = true;
       // A hosted instance has no cheap UI key-verify path; the badge stays an honest
       // "unverified" (vts 0 + verify -1). The page's hosted save-flow does not spin on
       // a verify poll - it saves and reports "applied" directly (CUM-279).
@@ -486,14 +523,58 @@ class WebApi {
     return false;
   }
 
+  // A posted field name is a key write iff it is `<x>Key` (or `clr_<x>Key`).
+  static bool looksLikeKeyField(std::string name, std::string& baseOut) {
+    if (name.rfind("clr_", 0) == 0) name = name.substr(4);
+    const size_t n = name.size();
+    if (n <= 3 || name.compare(n - 3, 3, "Key") != 0) return false;
+    baseOut = name;
+    return true;
+  }
+
+  // Whether a `<x>Key` base is a key field the orch surface legitimately handles: a
+  // canonical PROVIDER keyField (oaiKey/antKey/mistKey/zaiKey/cumuloKey), OR one of the
+  // non-provider key fields the shared orch form also posts - the custom endpoint key
+  // and the Tavily key. Anything else is provider-key drift (openaiKey/mistralKey/a
+  // typo) that must be refused (CUM-445), NOT the custom/Tavily fields the Save Changes
+  // payload carries (refusing those would break saving the orch settings).
+  static bool isRecognizedKeyField(const std::string& base) {
+    if (!NimbusdRig::hostForKeyField(base).empty()) return true;
+    return base == "custKey" || base == "tavKey";
+  }
+
+  // A 400 ApiResp naming the first unknown key field in the body, or status 0 when
+  // every key field is one the canonical registry owns. Refusing an unknown key field
+  // LOUDLY (instead of the old silent {"ok":true}) is what keeps the CUM-445 field-name
+  // drift that dropped every direct-provider write from hiding again.
+  ApiResp unknownKeyFieldError(const std::string& body) {
+    for (const std::string& name : formFieldNames(body)) {
+      std::string base;
+      if (looksLikeKeyField(name, base) && !isRecognizedKeyField(base)) {
+        JsonDocument e;
+        e["ok"] = false;
+        e["error"] = "unknown field " + base;
+        std::string out;
+        serializeJson(e, out);
+        return ApiResp{400, "application/json", out};
+      }
+    }
+    return ApiResp{0, "", ""};
+  }
+
   ApiResp orchPost(const std::string& body) {
-    static const char* kFields[] = {"cumuloKey", "mistralKey", "openaiKey", "anthropicKey"};
+    const ApiResp unknown = unknownKeyFieldError(body);
+    if (unknown.status != 0) return unknown;
     std::vector<std::pair<std::string, std::string>> keyWrites;    // (host, key); "" clears
     std::vector<std::pair<std::string, std::string>> modelWrites;  // (host, model); "" clears
-    for (const char* f : kFields) {
-      const std::string host = NimbusdRig::hostForKeyField(f);
+    // The key FIELD names come from the canonical registry (provider_slots.h keyField),
+    // the SAME table hostForKeyField and /api/orch read, so what the UI posts and what
+    // this consumes cannot drift.
+    for (size_t i = 0; i < nimbus::orch::kProviderSlotCount; i++) {
+      const std::string field = nimbus::orch::kProviderSlots[i].keyField;
+      const std::string host = NimbusdRig::hostForKeyField(field);
       if (host.empty()) continue;
-      formWrite(body, f, host, keyWrites);
+      formWrite(body, field, host, keyWrites);
       formWrite(body, "orchM_" + host, host, modelWrites);
     }
     if (keyWrites.empty() && modelWrites.empty())
