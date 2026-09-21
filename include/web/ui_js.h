@@ -1702,15 +1702,26 @@ function ringSimStart(){
 const VFYREASON={
   nocredits:      {cls:'bad', txt:'Needs credits or subscription'},
   router_outdated:{cls:'warn',txt:'Router needs an update'},
-  deferred:       {cls:'unk', txt:'Verification deferred'},
+  'low-memory':   {cls:'unk', txt:'Verification deferred'},
   connectfail:    {cls:'unk', txt:'Couldn\'t reach the provider'},
   tlsbusy:        {cls:'unk', txt:'Busy now. Retry in a moment.'},
 };
-function vfyBadge(v,ts,reason){
+// CUM-447: the full "what happened, what happens next" line for a low-memory
+// deferral, shared by the pill hover and the hint under the key field.
+const DEFER_MSG='Verification deferred: the device is low on working memory right now. Your key is saved; it is checked again automatically when memory frees up, or tap Verify to retry.';
+// The measured number for the hover, when the device reported it: "Largest free
+// block 11 KB, needs 8 KB." (max8/floor are bytes; 0 when not reported).
+function deferNum(p){
+  const need=p&&p.vfyFloor?Math.round(p.vfyFloor/1024):8;
+  if(!p||!p.vfyMax8)return '';
+  return ' Largest free block '+Math.round(p.vfyMax8/1024)+' KB, needs '+need+' KB.';
+}
+function vfyBadge(v,ts,reason,p){
   if(v===1) return '<span class="badge vfy ok">verified</span>';   // a real pass always wins
   // An honest reason from the verify surface renders whenever present (item 4).
   const r=reason&&VFYREASON[reason];
-  if(r) return '<span class="badge vfy '+r.cls+'">'+r.txt+'</span>';
+  if(r){const tip=reason==='low-memory'?' title="'+(DEFER_MSG+deferNum(p)).replace(/"/g,'&quot;')+'"':'';
+    return '<span class="badge vfy '+r.cls+'"'+tip+'>'+r.txt+'</span>';}
   if(ts===0) return '<span class="badge vfy unk">unverified</span>';
   if(v===0)  return '<span class="badge vfy bad">key rejected</span>';
   // v===-1: couldn't verify. In Notifier mode the TLS handshake can't get enough
@@ -1796,11 +1807,19 @@ function modelSel(id,cur,choices,verified){
 // poll update) so the Recommended badge + verify badge never drift between them.
 function provHeadHtml(name,p){return '<b>'+(p.label||PROVLBL[name]||name)+'</b>'+
   ((p.recommended!==undefined?p.recommended:name==='cumulo')?' <span class="badge" style="background:#12312e;color:#7fd1c8;border:1px solid #2b6b63">Recommended</span>':'')+
-  vfyBadge(p.verify,p.vts,p.vfyReason);}
+  vfyBadge(p.verify,p.vts,p.vfyReason,p);}
 // Key-field placeholder. Shared by provRow + provSync so the cumulo_sk_ hint on the
 // Cumulo row is not stomped back to the generic "API key" by the in-place poll.
 function keyPlaceholder(name,p){return p.hasKey?'Key set - type to replace'
   :(name==='cumulo'?'cumulo_sk_ key':'API key');}
+// CUM-447: reflect a live low-memory deferral in the hint under the key field. The
+// full sentence is shown; the measured number rides the hover (title) with the pill.
+function setDeferHint(name,p){
+  const e=$('dhint_'+name); if(!e)return;
+  if(p&&p.verify===-1&&p.vfyReason==='low-memory'){
+    e.textContent=DEFER_MSG; e.title=DEFER_MSG+deferNum(p);
+  }else{e.textContent=''; e.title='';}
+}
 function provRow(name,p){
   const w=document.createElement('div'); w.className='provrow'; w.id='prov_'+name;
   const h=document.createElement('div'); h.className='provhead';
@@ -1828,6 +1847,10 @@ function provRow(name,p){
   cb.onclick=()=>{uiConfirm('Remove the '+(PROVLBL[name]||name)+' key?',{ok:'Remove Key',danger:true}).then(ok=>{if(ok)orchApply({['clr_'+keyField(name)]:1});});};
   row.appendChild(cb); w.appendChild(row);
   const pm=document.createElement('div'); pm.className='hint'; pm.id='pmsg_'+name; w.appendChild(pm);
+  // CUM-447: a persistent one-line hint under the field for a low-memory deferral,
+  // separate from the transient pmsg so the 5s poll can keep it in sync with state.
+  const dh=document.createElement('div'); dh.className='hint'; dh.id='dhint_'+name; w.appendChild(dh);
+  setDeferHint(name,p);
   const mrow=document.createElement('div'); mrow.className='row';
   const l1=document.createElement('div'); l1.style.flex='1';
   l1.innerHTML='<label>Orchestrator model</label>';
@@ -1863,6 +1886,7 @@ function provSync(name,p){
   const vb=$('vfy_'+name);
   if(vb&&!vb.disabled){const canV=(!ORCH||ORCH.running)&&!HOSTED;
     vb.textContent=canV?(p.hasKey?'Verify':'Save & Verify'):'Save Key';}
+  setDeferHint(name,p);
   syncModelSel('orchM_'+name,p.orchModel,p.choices,p.verify===1);
   syncModelSel('subM_'+name,p.subModel,p.choices,p.verify===1);
 }

@@ -15,6 +15,8 @@
 #include "../sys/net_util.h"      // tlsClose - RST-close on every path
 #include "store.h"
 #include "../sys/tls_arbiter.h"   // one work TLS at a time (coexists with Telegram's)
+#include "orchestrator.h"         // turnInFlight - never re-verify beside a live turn
+#include "provider_verify_retry.h" // pure backoff policy (host-tested)
 
 namespace agent {
 namespace provider_verify {
@@ -49,7 +51,7 @@ static char          g_provider[16] = {};
 // cannot size this gate. 8 KB is therefore justified EMPIRICALLY, not analytically:
 // it sits below the device's observed fragmented floor swing where 16 KB did not,
 // and on-device all four direct verifies go green at it, while a genuine severe OOM
-// is still refused (records -1 "deferred"; a real OOM past the gate fails soft).
+// is still refused (records -1 "low-memory"; a real OOM past the gate fails soft).
 // TODO(CUM-387): measure the true contiguous high-water of a live TLS embed on
 // v4.5.0 (PSRAM staging in) and restate this floor against that number; the same
 // measurement settles relay_heap.h's unmeasured "below 8000 lwIP genuinely cannot
@@ -57,6 +59,8 @@ static char          g_provider[16] = {};
 // things: here largest>=8000, there largest>=5000 plus free>=8000).
 // docs/memory-model.md.
 static const size_t VERIFY_MIN_MAX8 = 8000;
+
+uint32_t deferFloor() { return (uint32_t)VERIFY_MIN_MAX8; }
 
 static void verifyTask(void*);   // spawned per request(); self-deletes
 
@@ -74,6 +78,37 @@ static void setReason(const String& provider, const char* rsn) {
 String reason(const String& provider) {
   return solide::memory::getString(reasonKey(provider).c_str(), "");
 }
+
+// ---- low-memory deferral: measured number + self-retry (CUM-447) -------------
+// The measured largest-contiguous-internal block at the last deferral, persisted
+// in its OWN NVS key (vrm_<prov>, <=15 chars) so the pill's hover can show the real
+// number after a reboot too. Only read when reason(prov)=="low-memory", so a stale
+// value on a since-verified provider is never surfaced.
+static const char* const kVerifyMax8Pfx = "vrm_";
+static String max8Key(const String& provider) { return String(kVerifyMax8Pfx) + provider; }
+static void setDeferMax8(const String& provider, uint32_t v) {
+  solide::memory::setInt(max8Key(provider).c_str(), (int32_t)v);
+}
+uint32_t deferMax8(const String& provider) {
+  return (uint32_t)solide::memory::getInt(max8Key(provider).c_str(), 0);
+}
+
+// One backoff clock per provider that can defer. A fixed table (no reallocation)
+// keeps the RAM state stable across the two tasks that touch it: the verify task
+// writes it (onDeferred/clear), the main-loop pump reads it (due). Providers absent
+// here simply never auto-retry (none defer that aren't listed).
+static const char* const kRetryProv[] = {"openai", "anthropic", "mistral", "zai",
+                                         "cumulo", "telegram", "tavily"};
+static const int kNRetry = (int)(sizeof(kRetryProv) / sizeof(kRetryProv[0]));
+static DeferralRetry g_retry[kNRetry];
+static int retryIdx(const String& provider) {
+  for (int i = 0; i < kNRetry; ++i)
+    if (provider == kRetryProv[i]) return i;
+  return -1;
+}
+// A provider stuck deferred this long has cycled the backoff several times without
+// clearing: the Memory health row calls it out (past the retry window, item 4).
+static const uint32_t kStuckWindowMs = 1200000u;   // 20 min
 
 bool request(const String& provider) {
   if (g_pending) return false;  // slot busy - one verify at a time
@@ -419,12 +454,25 @@ static void runOne() {
   // defeating the intended INTERNAL-heap check (which matters more now that the
   // 2-slot arbiter lets verify run beside another work-TLS session).
   size_t max8 = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-  if (max8 < VERIFY_MIN_MAX8) {
-    recordVerify(provider, -1, "deferred");
-    alogf("verify: %s deferred (max8=%u)", provider.c_str(), (unsigned)max8);
+  if (deferReason((uint32_t)max8, (uint32_t)VERIFY_MIN_MAX8)[0]) {   // below the gate
+    // Persist the measured number so the pill's hover can name it, then record the
+    // deferral. recordVerify keeps a cached VERIFIED as-is (a transient blip must not
+    // demote it), so only arm the self-retry when the provider is NOT already verified.
+    const bool wasVerified = (store::verifyResult(provider) == 1);
+    setDeferMax8(provider, (uint32_t)max8);
+    recordVerify(provider, -1, deferReason((uint32_t)max8, (uint32_t)VERIFY_MIN_MAX8));
+    if (!wasVerified) {
+      int ri = retryIdx(provider);
+      if (ri >= 0) g_retry[ri].onDeferred((uint32_t)millis());
+    }
+    alogf("verify: %s deferred low-memory (max8=%u, need %u)", provider.c_str(),
+          (unsigned)max8, (unsigned)VERIFY_MIN_MAX8);
     g_pending = false;
     return;
   }
+  // Memory was sufficient this attempt: resolve any outstanding low-memory retry so
+  // the pump stops re-arming (a definitive verdict below also stands on its own).
+  { int ri = retryIdx(provider); if (ri >= 0) g_retry[ri].clear(); }
   // Outlast one full Telegram long-poll cycle (30 s) so a verify queued behind
   // an orchestrator turn still lands instead of bouncing "tls busy".
   if (!arbiter::acquireWork(35000)) {
@@ -801,6 +849,36 @@ static void verifyTask(void*) {
   runOne();                 // clears g_pending on every exit path
   g_pending = false;        // belt-and-braces: never leave the slot stuck busy
   vTaskDelete(nullptr);     // self-delete; frees the stack
+}
+
+// Re-arm a low-memory-deferred verify when its backoff comes due and the device is
+// free (CUM-447). Called from the main loop; enqueues at most one verify per pass
+// through the SAME self-deleting, TLS-arbited task the Verify button uses. The task
+// re-measures memory and re-arms via onDeferred if it is still low, so the backoff
+// walks itself forward with no scheduling state kept here.
+void pumpRetry() {
+  if (g_pending) return;   // one slot; a verify is already queued/running
+  // The loop calls this thousands of times a second; the backoff is minutes wide,
+  // so a 1 s gate keeps the common (nothing-armed) path free without changing when a
+  // retry actually fires. now-relative, so it survives the millis() wrap.
+  static uint32_t s_nextPump = 0;
+  const uint32_t nowGate = (uint32_t)millis();
+  if ((int32_t)(nowGate - s_nextPump) < 0) return;
+  s_nextPump = nowGate + 1000;
+  const uint32_t now    = (uint32_t)millis();
+  const bool     inTurn = orchestrator::turnInFlight();
+  const bool     online = (WiFi.status() == WL_CONNECTED);
+  for (int i = 0; i < kNRetry; ++i) {
+    if (!g_retry[i].due(now, inTurn, online, /*busy=*/false)) continue;
+    if (request(kRetryProv[i])) return;   // one retry per pass; the slot is now busy
+  }
+}
+
+bool anyDeferredStuck() {
+  const uint32_t now = (uint32_t)millis();
+  for (int i = 0; i < kNRetry; ++i)
+    if (g_retry[i].stuckFor(now, kStuckWindowMs)) return true;
+  return false;
 }
 
 void begin() {

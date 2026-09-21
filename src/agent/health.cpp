@@ -8,6 +8,7 @@
 #include "memory_subsystem.h"
 #include "telegram.h"
 #include "store.h"                    // profileSeedDeferredNvsFull() - NVS-full hint (CUM-408)
+#include "provider_verify.h"          // anyDeferredStuck() - low-memory verify hint (CUM-447)
 #include "../sys/errlog_fs.h"         // durableSkipped()/durableBytes() - durable log row (CUM-407/409)
 #include "hw/hal_status.h"
 #include "nimbus/fault.h"
@@ -134,6 +135,11 @@ std::string reportJson(const Env& env) {
                      : (ms.flashFull ? kDegraded : (hal.memory ? kOk : kDegraded));
     String d = String(ms.vectorCount) + "/" + ms.maxVectors + " vectors, " +
                (ms.sdPresent ? "SD /mem" : "flash /data") + (ms.flashFull ? ", FLASH FULL" : "");
+    // CUM-447: a provider key verify skipped for low working memory and still stuck
+    // past the retry window - one honest line so the owner knows it is memory, not the
+    // key, and that it clears on its own when memory frees up.
+    if (agent::provider_verify::anyDeferredStuck())
+      d += ", provider key check waiting on free memory";
     rows[n++] = {"memory", "Memory subsystem", st, d};
   }
 

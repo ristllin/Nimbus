@@ -1063,6 +1063,10 @@ static void buildOrchState(String& out) {
     o["verify"]      = agent::store::verifyResult(slot.slug);
     o["vts"]         = agent::store::verifyTs(slot.slug);
     o["vfyReason"]   = agent::provider_verify::reason(slot.slug);  // CUM-77 x1 §4 badge (L1 contract)
+    // CUM-447: the measured largest free internal block and the gate it must clear,
+    // so a low-memory deferral's pill hover names the real number instead of guessing.
+    o["vfyMax8"]     = agent::provider_verify::deferMax8(slot.slug);
+    o["vfyFloor"]    = agent::provider_verify::deferFloor();
     o["orchModel"]   = agent::store::orchModel(slot.slug);
     o["subModel"]    = agent::store::subModel(slot.slug);
     // Live-harvested list first (the verify pass reads /v1/models), static fallback
@@ -1119,6 +1123,8 @@ static void buildModelsCatalog(String& out, const String& only, bool includeUnus
     o["keyed"] = providerKeyed(p);
     o["verified"] = agent::store::verifyResult(p);
     o["vfyReason"] = agent::provider_verify::reason(p);  // CUM-77 x1 §4 badge (L1 contract)
+    o["vfyMax8"] = agent::provider_verify::deferMax8(p);   // CUM-447: deferral number + gate
+    o["vfyFloor"] = agent::provider_verify::deferFloor();
     o["probe"] = agent::store::capProbe();
     const uint32_t rts = agent::store::verifyTs(p);
     o["refreshedAt"] = rts;
