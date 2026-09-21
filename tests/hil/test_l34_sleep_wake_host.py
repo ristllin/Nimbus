@@ -97,7 +97,21 @@ def test_coherence_rejects_tapwakes_canwake_disagreement():
 # --- WAKE? parsing -----------------------------------------------------------
 def test_parse_wake_info_deep_sleep_timer():
     info = parse_wake_info("WAKE reset=deep-sleep cause=timer poweroff=1")
-    assert info == {"reset": "deep-sleep", "cause": "timer", "poweroff": True}
+    assert {k: info[k] for k in ("reset", "cause", "poweroff")} == {
+        "reset": "deep-sleep",
+        "cause": "timer",
+        "poweroff": True,
+    }
+    # An older image without the RTC-latched fields parses with them absent (None).
+    assert info["deepWakes"] is None and info["lastCause"] is None and info["lastPoweroff"] is None
+
+
+def test_parse_wake_info_rtc_latched_fields():
+    # After the host's USB-CDC reopen reset the chip (rst:0x15 on the S3) the this-boot
+    # reason is no longer deep-sleep, but the RTC-latched last-wake facts still prove it.
+    info = parse_wake_info("WAKE reset=unknown cause=none poweroff=0 deepWakes=7 lastCause=timer lastPoweroff=1")
+    assert info["reset"] == "unknown" and info["deepWakes"] == 7
+    assert info["lastCause"] == "timer" and info["lastPoweroff"] is True
 
 
 def test_parse_wake_info_power_on():

@@ -1922,6 +1922,13 @@ static void emitMenuActionFeedback(nimbus::action::MenuAction action,
 static esp_reset_reason_t     s_bootResetReason = ESP_RST_UNKNOWN;
 static esp_sleep_wakeup_cause_t s_bootWakeCause  = ESP_SLEEP_WAKEUP_UNDEFINED;
 static bool                   s_bootWasPowerOff = false;
+// The LAST deep-sleep wake, kept in RTC slow memory so it survives the chip reset the
+// host's USB-CDC reopen triggers on the S3 (rst:0x15 USB_UART_CHIP_RESET). Without
+// this the bench soak reads the wake facts one boot too late and sees "unknown".
+// Bench proof 2026-09-21: every reopen after a sleep cycle produced that reset.
+RTC_DATA_ATTR static uint32_t s_rtcDeepWakes     = 0;   // count of deep-sleep wakes since power-on
+RTC_DATA_ATTR static uint8_t  s_rtcLastWakeCause = 0;   // esp_sleep_wakeup_cause_t of the last one
+RTC_DATA_ATTR static uint8_t  s_rtcLastWasPowerOff = 0; // it was a deliberate power-off
 #endif
 
 [[noreturn]] static void enterLowBattSleep() {
@@ -3529,8 +3536,18 @@ void setup() {
         case ESP_SLEEP_WAKEUP_GPIO:  cause = "gpio"; break;
         default: break;
       }
+      const char* lastCause = "none";
+      switch (esp_sleep_wakeup_cause_t(s_rtcLastWakeCause)) {
+        case ESP_SLEEP_WAKEUP_TIMER: lastCause = "timer"; break;
+        case ESP_SLEEP_WAKEUP_EXT0:  lastCause = "ext0"; break;
+        case ESP_SLEEP_WAKEUP_EXT1:  lastCause = "ext1"; break;
+        case ESP_SLEEP_WAKEUP_GPIO:  lastCause = "gpio"; break;
+        default: break;
+      }
       return String("reset=") + rr + " cause=" + cause +
-             " poweroff=" + (s_bootWasPowerOff ? "1" : "0");
+             " poweroff=" + (s_bootWasPowerOff ? "1" : "0") +
+             " deepWakes=" + String(s_rtcDeepWakes) + " lastCause=" + lastCause +
+             " lastPoweroff=" + (s_rtcLastWasPowerOff ? "1" : "0");
     };
     // ACTFB <action> <outcome> - CUM-309: fire the REAL menu-action feedback seam
     // (sound + ring swell + toast) for a named MenuAction and Outcome, so the bench
@@ -3653,6 +3670,11 @@ void setup() {
     s_bootResetReason = esp_reset_reason();
     s_bootWakeCause   = wc;
     s_bootWasPowerOff = s_rtcPowerOff;
+    if (s_bootResetReason == ESP_RST_DEEPSLEEP) {
+      s_rtcDeepWakes++;
+      s_rtcLastWakeCause   = uint8_t(wc);
+      s_rtcLastWasPowerOff = s_rtcPowerOff ? 1 : 0;
+    }
 #endif
     if (s_rtcPowerOff) {
       // A wake from a deliberate "Power off" (touch ext0 on a wake-capable board):

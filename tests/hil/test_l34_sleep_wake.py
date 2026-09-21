@@ -103,7 +103,17 @@ def parse_wake_info(raw: str) -> dict:
     po = re.search(r"poweroff=(?P<po>\d)", line)
     if not (reset and cause and po):
         raise ValueError(f"WAKE? unparseable: {line!r}")
-    return {"reset": reset.group("reset"), "cause": cause.group("cause"), "poweroff": po.group("po") == "1"}
+    out = {"reset": reset.group("reset"), "cause": cause.group("cause"), "poweroff": po.group("po") == "1"}
+    # RTC-latched facts about the LAST deep-sleep wake (survive the USB-CDC reopen reset
+    # the host causes on the S3; the bench proved every reopen after a sleep cycle
+    # arrives as rst:0x15 USB_UART_CHIP_RESET, which wipes the this-boot fields above).
+    dw = re.search(r"deepWakes=(?P<n>\d+)", line)
+    lc = re.search(r"lastCause=(?P<lc>\S+)", line)
+    lp = re.search(r"lastPoweroff=(?P<lp>\d)", line)
+    out["deepWakes"] = int(dw.group("n")) if dw else None
+    out["lastCause"] = lc.group("lc") if lc else None
+    out["lastPoweroff"] = (lp.group("lp") == "1") if lp else None
+    return out
 
 
 def sleep_plan_is_coherent(plan: dict) -> "tuple[bool, str]":
@@ -166,6 +176,8 @@ def test_sleep_wake_soak(device):
     before_stored = device.cal_gate("?")[2]  # (active, kind, stored) -> stored bool
 
     latencies = []
+    first = parse_wake_info(device.cmd("WAKE?", "WAKE ", timeout=10.0))
+    deep_wakes_before = first["deepWakes"] if first["deepWakes"] is not None else 0
     for cycle in range(1, SOAK_N + 1):
         # 1) The wake-arming plan must be present + coherent EVERY cycle.
         plan = parse_sleep_plan(device.cmd("SLEEP?", "SLEEP ", timeout=8.0))
@@ -195,9 +207,25 @@ def test_sleep_wake_soak(device):
         # raw rst: marker is often eaten by the reopen race, so it is logged, not
         # asserted - wake.saw_reset below.)
         info = parse_wake_info(_retry(lambda: device.cmd("WAKE?", "WAKE ", timeout=10.0)))
-        assert info["reset"] == "deep-sleep", f"cycle {cycle}: reset reason {info['reset']!r}, expected deep-sleep"
-        assert info["cause"] == "timer", f"cycle {cycle}: wake cause {info['cause']!r}, expected timer"
-        assert info["poweroff"], f"cycle {cycle}: WAKE? poweroff=0, this was not a power-off wake"
+        if info["reset"] == "deep-sleep":
+            # The console reopen did not reset the chip: the this-boot facts are direct.
+            assert info["cause"] == "timer", f"cycle {cycle}: wake cause {info['cause']!r}, expected timer"
+            assert info["poweroff"], f"cycle {cycle}: WAKE? poweroff=0, this was not a power-off wake"
+        else:
+            # The reopen reset the chip after the wake (rst:0x15 on the S3), so prove the
+            # cycle from the RTC-latched facts: exactly one more deep-sleep wake than
+            # before, caused by the timer, from a deliberate power-off.
+            assert info["deepWakes"] is not None, (
+                f"cycle {cycle}: reset reason {info['reset']!r} and WAKE? carries no RTC-latched "
+                "deepWakes counter (old test image?)"
+            )
+            assert info["deepWakes"] == deep_wakes_before + 1, (
+                f"cycle {cycle}: deepWakes {deep_wakes_before} -> {info['deepWakes']}, expected +1 "
+                f"(reset reason this boot was {info['reset']!r})"
+            )
+            assert info["lastCause"] == "timer", f"cycle {cycle}: last wake cause {info['lastCause']!r}, expected timer"
+            assert info["lastPoweroff"], f"cycle {cycle}: last deep-sleep wake was not a power-off wake"
+        deep_wakes_before = info["deepWakes"] if info["deepWakes"] is not None else deep_wakes_before
 
         # 4) Persisted state intact across the power-off (all read with settle-retries).
         assert _status_field(device, "mode") == before_mode, f"cycle {cycle}: mode changed"
