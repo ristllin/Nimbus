@@ -668,6 +668,21 @@ void dispatch(String line) {
     if (s_h.factoryReset) s_h.factoryReset();
     return;
   }
+  if (line.startsWith("CALGATE")) {
+    // First-run touch-calibration GATE (CUM-245). "CALGATE" / "CALGATE?" reports the live
+    // gate state; "CALGATE skip" drives the deliberate long-hold skip the same way an
+    // on-glass hold does (serviceCalGate reads the RAW panel, not the injectable TAP
+    // buffer, so the skip is otherwise undriveable from the console). The four-corner
+    // SOLVE stays a finger-on-glass leg. Reports: active=<0|1> kind=<res|cap> stored=<0|1>.
+    String a = line.substring(7); a.trim();
+    if (a.startsWith("?")) { a = a.substring(1); a.trim(); }
+    if (a.length() && a != "skip") { reply("ERR calgate want ?|skip"); return; }
+    const int op = (a == "skip") ? 1 : 0;
+    const String st = s_h.calGate ? s_h.calGate(op) : String("unavailable");
+    Serial.printf("CALGATE %s\n", st.c_str());
+    Serial.flush();
+    return;
+  }
   if (line == "HANG") {
     reply("HANGING");                                      // F12 - proves the WDT once added
     if (s_h.hang) s_h.hang();
