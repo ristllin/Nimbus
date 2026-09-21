@@ -6,6 +6,21 @@ ships as a signed image on the public
 repository; a device on Orchestrator mode sees it on its daily check and
 installs on your say-so ([how updates work](ota.md)).
 
+## v4.5.6 - Stuck key checks clear themselves, clearer Mistral connector setup
+
+- **A key check stuck on "Verification deferred" now recovers, and Verify works for
+  every provider.** The Cumulo Nimbus and Z.ai keys were missing from the manual
+  re-check, so their Verify button did nothing, and a check deferred during a
+  low-memory moment could be abandoned and never retried, leaving the key stuck
+  "deferred" for good. The check now retries itself once memory frees, and Verify
+  re-runs it on demand for every provider.
+- **Mistral connectors tell you where to finish setup.** Turning on a Mistral
+  connector (Google Calendar, Notion, Slack, or a hosted tool) now says plainly that
+  it is authorized in your Mistral account (La Plateforme > Connectors), not on the
+  device: add your Mistral key here, then turn the connector on in Mistral. Before,
+  an enabled-but-unauthorized connector looked on but did nothing, and the hint
+  pointed at the wrong place.
+
 ## v4.5.5 - More free memory on the Freenove, clearer key and memory checks, a Safety activity view
 
 - **More free working memory on the Freenove board.** The audio parts now release
