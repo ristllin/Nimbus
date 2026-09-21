@@ -54,7 +54,8 @@ hits the FIRST boot after a new version. The fresh device is therefore a first-c
   first-run screen selection). A new board or touch class without a measured default fails at
   compile time (a `static_assert` on `TouchKind::Count`).
 - Bench (T5): `tests/hil/test_l33_fresh_device.py` drives the board to the out-of-box state
-  through the product factory-reset path, then on a fresh resistive panel asserts the guided cal
+  through the product factory-reset path plus the test-only `CALGATE clear` (a factory reset
+  keeps the touch cal as hardware identity), then on a fresh resistive panel asserts the guided cal
   gate owns the panel (no self-navigation for 30 s), injected taps do not navigate while gated,
   the deliberate long-hold skip hands off to first-run setup, and render reaches the frame
   (`TFTFILL?` GRAM readback). An NVS-adversarial variant persists a hostile `tchCal`/`tftFlip`

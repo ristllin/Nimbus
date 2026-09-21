@@ -3905,6 +3905,18 @@ static void serviceCalGate(uint32_t now) {
 // the leg proves the on-device gate release + handoff to first-run setup. The four-corner
 // SOLVE stays a finger-on-glass leg (real per-corner raw ADC). op: 0 = query, 1 = skip.
 static String firstRunCalGateConsole(int op) {
+  if (op == 2) {
+    // "CALGATE clear": drop the stored per-unit cal and restart, so the NEXT boot is the
+    // genuine out-of-box state for the touch path (gate armed on a resistive panel). A
+    // factory reset deliberately KEEPS tchCal as hardware identity (CUM-50/CUM-230), so
+    // without this seam a once-calibrated bench board can never reach the fresh-device
+    // state the CUM-245 leg exists to exercise. Test image only.
+    agent::store::setTouchCal("");
+    Serial.println("CALGATE cleared=1 restarting");
+    Serial.flush();
+    delay(50);
+    ESP.restart();
+  }
   if (op == 1 && g_calGateActive) {
     const uint32_t now = millis();
     g_calSkip.reset();

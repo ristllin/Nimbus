@@ -782,13 +782,25 @@ class Device:
         config namespace (KEEPING only the board's physical identity) and reboots. Returns
         ``(mode, ip)`` from the fresh ``READY`` beacon.
 
-        ⚠ DESTRUCTIVE: wipes the stored touch calibration (tchCal), the display flip
-        (tftFlip), Wi-Fi creds, the onboarded flag, and provider keys - exactly the first
-        boot the owner QAs. The board comes back OFF its LAN; re-provision Wi-Fi in teardown
-        (``device.wifi(ssid, pass)``). The reboot re-enumerates the USB-CDC endpoint, so this
-        reopens across it (keeping the boot stream) and asserts the beacon like ``reset()``."""
+        ⚠ DESTRUCTIVE: wipes Wi-Fi creds, the onboarded flag, provider keys, the token and
+        every owner setting. It KEEPS the hardware identity (scrModel, tftFlip, tchCal,
+        otaType; CUM-50/CUM-230) so a reset board never comes back on the wrong driver. A
+        once-calibrated board therefore still has its touch cal after this; use
+        ``clear_touch_cal()`` for the out-of-box TOUCH state. The board comes back OFF its
+        LAN; re-provision Wi-Fi in teardown (``device.wifi(ssid, pass)``). The reboot
+        re-enumerates the USB-CDC endpoint, so this reopens across it (keeping the boot
+        stream) and asserts the beacon like ``reset()``."""
         self.cmd("FACTRESET", "FACTRESET", timeout=8.0)  # ack; main loop erases + reboots
         # Do NOT drain: the erase-and-restart reaches READY quickly, so keep the beacon.
+        self.reopen_after_reenumerate(drain_boot=False)
+        return self.wait_ready(timeout=timeout)
+
+    def clear_touch_cal(self, timeout: float = 45.0):
+        """``CALGATE clear`` (NIMBUS_TEST) -> erase the stored touch cal and restart, so the
+        next boot is the genuine out-of-box TOUCH state (gate armed on a resistive panel).
+        Needed because ``factory_reset()`` keeps tchCal as hardware identity. Returns
+        ``(mode, ip)`` from the fresh ``READY`` beacon, like ``factory_reset()``."""
+        self.cmd("CALGATE clear", "CALGATE cleared=1", timeout=8.0)
         self.reopen_after_reenumerate(drain_boot=False)
         return self.wait_ready(timeout=timeout)
 
@@ -804,7 +816,7 @@ class Device:
 
         Returns ``(active: bool, kind: str, stored: bool)``: whether the gate owns the panel,
         the touch class ("res"|"cap"), and whether a calibration is persisted."""
-        arg = " skip" if op == "skip" else "?"
+        arg = " skip" if op == "skip" else "?"  # "clear" has its own helper (it restarts)
         m = self.cmd_re("CALGATE" + arg, self._CALGATE_RE, timeout=timeout)
         return (m.group("active") == "1", m.group("kind"), m.group("stored") == "1")
 

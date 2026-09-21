@@ -97,7 +97,7 @@ struct Hooks {
   // the gate). Needed because serviceCalGate reads the RAW panel, not the injectable TAP
   // buffer, so the skip is otherwise undriveable from the console. The four-corner SOLVE
   // stays a finger-on-glass leg. Returns "active=<0|1> kind=<res|cap> stored=<0|1>".
-  std::function<String(int op)>                           calGate;  // CALGATE?/skip (HIL)
+  std::function<String(int op)>                           calGate;  // CALGATE?/skip/clear (HIL)
   std::function<void()>                                   hang;    // HANG (spin)
   // MODE <0|1>: persist the operating mode and restart so it takes effect (mode
   // is resolved once at boot). Lets HIL tests drive Notifier-path assertions on

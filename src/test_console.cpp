@@ -672,12 +672,15 @@ void dispatch(String line) {
     // First-run touch-calibration GATE (CUM-245). "CALGATE" / "CALGATE?" reports the live
     // gate state; "CALGATE skip" drives the deliberate long-hold skip the same way an
     // on-glass hold does (serviceCalGate reads the RAW panel, not the injectable TAP
-    // buffer, so the skip is otherwise undriveable from the console). The four-corner
-    // SOLVE stays a finger-on-glass leg. Reports: active=<0|1> kind=<res|cap> stored=<0|1>.
+    // buffer, so the skip is otherwise undriveable from the console). "CALGATE clear"
+    // erases the stored cal and restarts into the out-of-box touch state (a factory
+    // reset keeps tchCal as hardware identity, so this is the only way a calibrated
+    // bench board reaches it). The four-corner SOLVE stays a finger-on-glass leg.
+    // Reports: active=<0|1> kind=<res|cap> stored=<0|1>.
     String a = line.substring(7); a.trim();
     if (a.startsWith("?")) { a = a.substring(1); a.trim(); }
-    if (a.length() && a != "skip") { reply("ERR calgate want ?|skip"); return; }
-    const int op = (a == "skip") ? 1 : 0;
+    if (a.length() && a != "skip" && a != "clear") { reply("ERR calgate want ?|skip|clear"); return; }
+    const int op = (a == "skip") ? 1 : (a == "clear" ? 2 : 0);
     const String st = s_h.calGate ? s_h.calGate(op) : String("unavailable");
     Serial.printf("CALGATE %s\n", st.c_str());
     Serial.flush();

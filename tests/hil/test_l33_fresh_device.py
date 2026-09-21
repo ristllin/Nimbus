@@ -17,9 +17,11 @@ so the gate never shows in RENDER? screen. The reliable oracle is the CALGATE se
 (device.cal_gate()); RENDER? is used only to catch the self-NAVIGATION the bug produced (a
 gated panel that reaches the Menu).
 
-⚠ DESTRUCTIVE: this leg FACTORY-RESETS the board (erases tchCal, tftFlip, Wi-Fi creds, the
-onboarded flag, provider keys - the exact first-boot state). The `fresh_bench` fixture requires
-STA creds up front and ALWAYS re-provisions Wi-Fi on teardown, so the board is left on its LAN.
+⚠ DESTRUCTIVE: this leg FACTORY-RESETS the board (erases Wi-Fi creds, the onboarded flag,
+provider keys, the token and every owner setting) and then CLEARS the stored touch cal
+(`CALGATE clear`; a factory reset keeps tchCal as hardware identity, so this second step is
+what makes the touch path genuinely first-boot). The `fresh_bench` fixture requires STA creds
+up front and ALWAYS re-provisions Wi-Fi on teardown, so the board is left on its LAN.
 
 Still owned by a finger on glass (NOT automatable, documented in PR_BODY.md): the four-corner
 SOLVE itself (real per-corner raw ADC), and "a tap lands where you touch" under a flip - the
@@ -185,8 +187,12 @@ def test_fresh_resistive_gate_first_skip_and_handoff(fresh_bench):
     (c) the deliberate skip opens the gate and hands off to first-run setup;
     (d) render reaches the frame (GRAM readback) and the setup surface comes up."""
     device = fresh_bench
-    device.factory_reset()  # -> out-of-box; asserts a clean fresh boot (no panic / reboot loop)
+    device.factory_reset()  # -> out-of-box config; asserts a clean fresh boot (no panic / reboot loop)
     assert device.ping(), "console must answer after the factory-reset reboot"
+    # A factory reset KEEPS tchCal (hardware identity, CUM-50/CUM-230), so a once-calibrated
+    # bench board is not yet touch-fresh: drop the cal and reboot into the true first boot.
+    device.clear_touch_cal()
+    assert device.ping(), "console must answer after the cal-clear reboot"
 
     active, kind, stored = device.cal_gate()
     if kind != "res":
@@ -289,6 +295,8 @@ def test_fresh_capacitive_never_gates(fresh_bench):
     device = fresh_bench
     device.factory_reset()
     assert device.ping(), "console must answer after the factory-reset reboot"
+    device.clear_touch_cal()  # tchCal survives a factory reset; make the touch state fresh too
+    assert device.ping(), "console must answer after the cal-clear reboot"
 
     active, kind, stored = device.cal_gate()
     if kind != "cap":
