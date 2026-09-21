@@ -160,9 +160,9 @@ static const char UI_AGENT[] PROGMEM = R"=====(<div class=pane id=pane-harness s
 <div class=setbody>
 <label>Dictation <button class=qh type=button aria-expanded=false aria-label="About dictation">?</button></label>
 <p class="hint tip">Turns your voice, from the microphone or Telegram voice notes, into text. Works as soon as the provider's key is set, independent of chat verification. A Cumulo Nimbus key also covers voice, so a one-key device needs no separate OpenAI or Mistral key.</p>
-<select id=sttProv><option value=mistral>Mistral (Voxtral)</option><option value=openai>OpenAI</option></select>
+<select id=sttProv><option value=mistral>Mistral (Voxtral)</option><option value=openai>OpenAI</option><option value=cumulo>Cumulo Nimbus</option></select>
 <label>Spoken replies</label>
-<select id=ttsProv><option value=mistral>Mistral (Voxtral)</option><option value=openai>OpenAI</option></select>
+<select id=ttsProv><option value=mistral>Mistral (Voxtral)</option><option value=openai>OpenAI</option><option value=cumulo>Cumulo Nimbus</option></select>
 <label>Voice</label>
 <select id=ttsVoice></select>
 <div class=row id=vcascade>
