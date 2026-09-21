@@ -1,5 +1,6 @@
 #include "provider_verify.h"
 
+#include <WiFi.h>                 // WiFi.status()/WL_CONNECTED - retry pump gate
 #include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
 
