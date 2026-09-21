@@ -212,11 +212,29 @@ jobs:
       REGISTRY: us-central1-docker.pkg.dev
       IMAGE: us-central1-docker.pkg.dev/cumulo-nimbus-prod/cumulo-nimbus/nimbusd
     steps:
-      - uses: actions/checkout@v4
+      # Preflight: this job needs two owner-set repo secrets for keyless GCP auth. Until
+      # they exist it CANNOT build/push, and a hard failure here would red the whole
+      # release run even though the firmware OTA job (independent) published fine. So
+      # detect the secrets and, when absent, skip the rest of the job with a loud notice
+      # instead of failing. Once the owner sets GCP_WIF_PROVIDER + GCP_DEPLOY_SA the job
+      # runs and fails loudly on any REAL build/push error, as it should.
+      - name: Preflight - GCP secrets present?
+        id: preflight
+        run: |
+          if [ -n "${{ secrets.GCP_WIF_PROVIDER }}" ] && [ -n "${{ secrets.GCP_DEPLOY_SA }}" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::nimbusd image skipped: set repo secrets GCP_WIF_PROVIDER and GCP_DEPLOY_SA to build+push nimbusd:${GITHUB_REF_NAME}. The firmware OTA release is unaffected."
+          fi
+
+      - if: steps.preflight.outputs.enabled == 'true'
+        uses: actions/checkout@v4
 
       # Same tag/version.h coherence gate the firmware job uses: the image `fw` comes
       # from include/version.h, so refuse to build an image whose tag disagrees with it.
       - name: Tag / version.h coherence gate
+        if: steps.preflight.outputs.enabled == 'true'
         run: |
           TAG="${GITHUB_REF_NAME}"
           VER=$(sed -n 's/#define NIMBUS_FW_VERSION "\(.*\)"/\1/p' include/version.h)
@@ -234,15 +252,18 @@ jobs:
       #   GCP_DEPLOY_SA     the service account email with Artifact Registry writer on
       #                     cumulo-nimbus-prod
       - name: Authenticate to Google Cloud (WIF)
+        if: steps.preflight.outputs.enabled == 'true'
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
           service_account: ${{ secrets.GCP_DEPLOY_SA }}
 
       - name: Configure Docker for Artifact Registry
+        if: steps.preflight.outputs.enabled == 'true'
         run: gcloud auth configure-docker "${REGISTRY}" --quiet
 
       - name: Set up Docker Buildx
+        if: steps.preflight.outputs.enabled == 'true'
         uses: docker/setup-buildx-action@v3
 
       # Build once for linux/amd64 and LOAD into the local daemon (not push yet) so the
@@ -250,6 +271,7 @@ jobs:
       # the repo root (the Dockerfile needs lib/, include/, nimbusd/); the Dockerfile's
       # own build stage runs `make test`, so a broken engine never produces an image.
       - name: Build nimbusd image (linux/amd64)
+        if: steps.preflight.outputs.enabled == 'true'
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -266,6 +288,7 @@ jobs:
       # from the runner (production keeps the loopback default). /api/state is gated, so
       # supply the web token.
       - name: Smoke - image answers /api/state with fw == NIMBUS_FW_VERSION
+        if: steps.preflight.outputs.enabled == 'true'
         run: |
           set -e
           VER=$(sed -n 's/#define NIMBUS_FW_VERSION "\(.*\)"/\1/p' include/version.h)
@@ -288,10 +311,11 @@ jobs:
       # (never an -rc), the SAME discipline the web-flash "latest" publish uses above -
       # so a prerelease never rolls production VNs.
       - name: Push nimbusd:<tag>
+        if: steps.preflight.outputs.enabled == 'true'
         run: docker push "${IMAGE}:${GITHUB_REF_NAME}"
 
       - name: Push nimbusd:latest (stable only)
-        if: ${{ !contains(github.ref_name, '-rc') }}
+        if: ${{ steps.preflight.outputs.enabled == 'true' && !contains(github.ref_name, '-rc') }}
         run: |
           docker tag "${IMAGE}:${GITHUB_REF_NAME}" "${IMAGE}:latest"
           docker push "${IMAGE}:latest"
