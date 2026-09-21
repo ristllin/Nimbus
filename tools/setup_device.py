@@ -1026,6 +1026,10 @@ def finish_install(outcome: InstallOutcome, panel: str, mode: str | None, skip_p
         )
     elif not skip_panel_check:
         print("Screen check could not confirm the display; look at the screen to be sure.")
+    if outcome.probe == "clear":
+        # CUM-422: say so when the probe DID rule a Freenove out, so an install log carries
+        # the evidence instead of only the silence of a refusal that did not happen.
+        print("Board check: no Freenove touch controller found, so this is a Nimbus board.")
     if outcome.probe in ("unsupported", "unknown"):
         # CUM-422: the board-family probe could not confirm this is a Nimbus board - an old
         # provision sketch with no PROBE support ('unsupported'), or a serial hiccup

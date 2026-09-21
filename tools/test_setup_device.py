@@ -832,6 +832,9 @@ def test_main_solide_probe_clear_proceeds_and_installs():
     assert rc == 0, (rc, err)
     assert runner.envs == ["provision", "esp32s3"]
     assert runner.probe_calls == ["/dev/cu.usbmodem101"]
+    # The clear verdict is said out loud, so an install log carries the evidence.
+    assert "no Freenove touch controller found" in out
+    assert "could not confirm this is a Nimbus board" not in out
     assert "installed. NVS was not erased" in out
 
 
