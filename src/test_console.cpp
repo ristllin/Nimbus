@@ -36,6 +36,9 @@
 #include "sfx/music.h"                 // PLAY - music player drill (CUM-40); SPKSAY MP3 play
 #include "nimbus/tts_catalog.h"        // SPKSAY - provider -> speaker format routing
 #include "nimbus/orch/media.h"         // validMusicName
+#include <esp_heap_caps.h>            // HEAPINFO? - per-capability heap picture (CUM-448)
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>             // TASKS? - task stack high-water map (CUM-448)
 #include "sfx/sfx_sync.h"              // sfxsync - sync status in STATUS
 #include "nimbus/power/power_policy.h" // SLEEPMV range/default derived per cell count (CUM-372)
 #include "nimbus/action_feedback.h"   // FEEDBACK? - outcome->cue mapping for ACTFB (CUM-309)
@@ -724,6 +727,56 @@ void dispatch(String line) {
     const int op = (a == "skip") ? 1 : (a == "clear" ? 2 : 0);
     const String st = s_h.calGate ? s_h.calGate(op) : String("unavailable");
     Serial.printf("CALGATE %s\n", st.c_str());
+    Serial.flush();
+    return;
+  }
+  if (line == "HEAPINFO?" || line == "HEAPINFO") {
+    // CUM-448 SRAM investigation: the per-capability heap picture the web /api/state
+    // mem block only summarizes. One line per region class, then the free-block size
+    // histogram of the INTERNAL heap (fragmentation shape), so a headroom lever can be
+    // judged on numbers instead of on a single "free" figure.
+    struct Cap { const char* name; uint32_t caps; } caps[] = {
+        {"internal", MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT},
+        {"dma",      MALLOC_CAP_DMA},
+        {"spiram",   MALLOC_CAP_SPIRAM},
+        {"exec",     MALLOC_CAP_EXEC},
+    };
+    for (const Cap& c : caps) {
+      multi_heap_info_t i{};
+      heap_caps_get_info(&i, c.caps);
+      Serial.printf("HEAPINFO %s free=%u alloc=%u largest=%u minfree=%u blocks_alloc=%u blocks_free=%u total_blocks=%u\n",
+                    c.name, (unsigned)i.total_free_bytes, (unsigned)i.total_allocated_bytes,
+                    (unsigned)i.largest_free_block, (unsigned)i.minimum_free_bytes,
+                    (unsigned)i.allocated_blocks, (unsigned)i.free_blocks, (unsigned)i.total_blocks);
+    }
+    Serial.println("HEAPINFO end");
+    Serial.flush();
+    return;
+  }
+  if (line == "HEAPREGIONS?" || line == "HEAPREGIONS") {
+    // The IDF's own region print (per heap: caps, size, free, largest, alloc/free blocks).
+    heap_caps_print_heap_info(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    Serial.println("HEAPREGIONS end");
+    Serial.flush();
+    return;
+  }
+  if (line == "TASKS?" || line == "TASKS") {
+    // Every FreeRTOS task with its stack high-water mark (bytes still unused at its
+    // lowest point) and priority: stack sizes are internal SRAM, so an oversized stack
+    // is headroom sitting idle. configUSE_TRACE_FACILITY is on in the Arduino core.
+    const UBaseType_t n = uxTaskGetNumberOfTasks();
+    TaskStatus_t* st = (TaskStatus_t*)heap_caps_malloc(n * sizeof(TaskStatus_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!st) st = (TaskStatus_t*)malloc(n * sizeof(TaskStatus_t));
+    if (!st) { reply("TASKS err=oom"); return; }
+    uint32_t total = 0;
+    const UBaseType_t got = uxTaskGetSystemState(st, n, &total);
+    for (UBaseType_t i = 0; i < got; i++) {
+      Serial.printf("TASK name=%s prio=%u hwm=%u state=%d core=%d\n", st[i].pcTaskName,
+                    (unsigned)st[i].uxCurrentPriority, (unsigned)st[i].usStackHighWaterMark * sizeof(StackType_t),
+                    (int)st[i].eCurrentState, (int)st[i].xCoreID);
+    }
+    free(st);
+    Serial.printf("TASKS n=%u end\n", (unsigned)got);
     Serial.flush();
     return;
   }
