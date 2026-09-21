@@ -24,14 +24,16 @@ namespace cloud {
 // kLoopbackRespHeadroom fits here) read, so the NEXT page growth fails the battery
 // instead of the field. It must stay under the relay's 512 KB res-frame protocol max
 // even after base64 (the static_assert below is the counter-test for that bound).
-// History: 256 KB -> 320 KB -> 336 KB -> 352 KB, raised as the web UI gained features;
-// the buffer is PSRAM-backed (not the scarce internal SRAM the 16 KB inbound cap guards).
-// The CUM-279 honest-UI additions (hosted-flag branches + resolve links) crossed the
-// old 320 KB line (-> 336 KB). The danger-zone v2 offer predicate (CUM-15), the sign-in
-// countdown UI (CUM-295), and the music upload/list/play section (CUM-40) then crossed
-// 336 KB, so it moves to 352 KB (assembled page 327 KB + 16 KB headroom = 344 KB fits;
-// base64 ~481 KB, ~43 KB under the 512 KB res frame - the static_assert below bounds it).
-constexpr unsigned kLoopbackMaxRespBody = 352u * 1024u;
+// History: 256 KB -> 320 KB -> 336 KB -> 352 KB -> 376 KB, raised as the web UI gained
+// features; the buffer is PSRAM-backed (not the scarce internal SRAM the 16 KB inbound
+// cap guards). The CUM-279 honest-UI additions (hosted-flag branches + resolve links)
+// crossed the old 320 KB line (-> 336 KB). The danger-zone v2 offer predicate (CUM-15),
+// the sign-in countdown UI (CUM-295), and the music upload/list/play section (CUM-40)
+// then crossed 336 KB (-> 352 KB). The Safety ACTIVITY surface (CUM-215: the
+// blocked/suspected list + scoped allowlist UI and its JS) left only ~0.6 KB under the
+// 352 KB line, so it moves to 376 KB (assembled page ~340 KB + 16 KB headroom = ~356 KB
+// fits; base64 ~501 KB, ~11 KB under the 512 KB res frame - the static_assert bounds it).
+constexpr unsigned kLoopbackMaxRespBody = 376u * 1024u;
 
 // The relay frames each response body as base64 inside a res-frame bounded by this
 // protocol max; the raw cap MUST leave room after the 4/3 base64 expansion or a full
