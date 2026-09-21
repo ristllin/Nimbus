@@ -39,7 +39,8 @@ bool record(nimbus::orch::SafetyVerdict verdict, const std::string& rule,
 // excerpt is redacted the same way record() does so a Pattern rule matches the
 // stored form. Used by the scanner choke points to turn an owner "approve" into a
 // real, SCOPED unblock (never a global off switch).
-bool allowed(const std::string& rule, const std::string& sender, const std::string& rawExcerpt);
+bool allowed(const std::string& rule, const std::string& sender, const std::string& source,
+             const std::string& rawExcerpt);
 
 // ---- web-route + console surface (all take the Lock) ----
 
@@ -51,11 +52,22 @@ std::string listJson(bool hasCumuloKey);
 // Mark an entry dismissed. false when the id is unknown. Persists.
 bool dismiss(const std::string& id);
 
+// Outcome of an approve() call, so the route can answer honestly (a full allowlist
+// is a 409, not a false success). Ok also covers "already allowed" (a duplicate rule):
+// the entry is marked approved and no second rule is stored.
+enum class ApproveResult : uint8_t {
+  Ok = 0,     // rule stored (or already present); entry marked approved
+  NotFound,   // unknown entry id
+  Rejected,   // bad scope for this entry, or an empty/catch-all derived value
+  Full,       // allowlist at capacity: nothing stored, entry NOT marked approved
+};
+
 // Approve an entry: add ONE scoped allow-rule derived from the entry (scope =
-// sender|content-class|pattern; the route validates the choice) and mark the entry
-// approved. Persists both files. false when the id is unknown or the derived value
-// is empty (which would be a catch-all and is refused by the core).
-bool approve(const std::string& id, nimbus::orch::AllowScope scope, std::string& msgOut);
+// sender|content-class|pattern; the route validates the choice), bound to the entry's
+// gate source, and mark the entry approved. Persists both files. Returns Full without
+// storing or marking when the allowlist is at capacity (the owner is told, honestly),
+// NotFound for an unknown id, and Rejected for a bad scope / empty derived value.
+ApproveResult approve(const std::string& id, nimbus::orch::AllowScope scope, std::string& msgOut);
 
 // Revoke an allow-rule by id. false when unknown. Persists.
 bool revokeAllow(const std::string& id);

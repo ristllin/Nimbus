@@ -134,12 +134,14 @@ std::string isoNow() {
 
 void begin() { memory::Lock g; ensureLoaded(); }
 
-bool allowed(const std::string& rule, const std::string& sender, const std::string& rawExcerpt) {
+bool allowed(const std::string& rule, const std::string& sender, const std::string& source,
+             const std::string& rawExcerpt) {
   memory::Lock g;
   ensureLoaded();
   SafetyEntry probe;
   probe.rule = rule;
   probe.sender = sender;
+  probe.source = source;   // gate binding: a rule only matches its own gate's entries
   probe.excerpt = redact(rawExcerpt);
   return g_allow.allows(probe);
 }
@@ -156,8 +158,16 @@ bool record(SafetyVerdict verdict, const std::string& rule, const std::string& c
   e.verdict = verdict;
   e.excerpt = redact(rawExcerpt);
   if (g_allow.allows(e)) return false;   // scoped unblock: nothing to record
+  // Ring-flush guard (CUM-215): if this is the same verdict the newest entry already
+  // holds, refresh its recency instead of appending, so one guest resending a blocked
+  // message cannot evict the owner's other unreviewed entries.
+  const uint32_t now = (uint32_t)time(nullptr);
+  if (g_log.refreshDuplicateFront(e, now)) {
+    writeWhole(kActivityPath, g_log.serialize());
+    return false;   // collapsed onto the existing entry; no new ring slot
+  }
   e.id = nextId();
-  e.tsEpoch = (uint32_t)time(nullptr);
+  e.tsEpoch = now;
   e.status = SafetyStatus::Active;
   g_log.record(std::move(e));
   writeWhole(kActivityPath, g_log.serialize());
@@ -213,18 +223,18 @@ bool dismiss(const std::string& id) {
   return true;
 }
 
-bool approve(const std::string& id, AllowScope scope, std::string& msgOut) {
+ApproveResult approve(const std::string& id, AllowScope scope, std::string& msgOut) {
   memory::Lock g;
   ensureLoaded();
   const SafetyEntry* e = g_log.find(id);
-  if (!e) { msgOut = "Entry not found."; return false; }
+  if (!e) { msgOut = "Entry not found."; return ApproveResult::NotFound; }
   // ContentClass is a real scope ONLY for a genuine narrow category. A coarse rule
   // (the moderation-classifier block, which carries no sub-category) would make the
   // allow match every future block on that gate: a global off switch, which the whole
   // surface forbids. Refuse it and steer the owner to sender/pattern (CUM-215).
   if (scope == AllowScope::ContentClass && !nimbus::orch::contentClassApprovable(e->rule)) {
     msgOut = "That kind has no specific category. Approve this sender or this exact content instead.";
-    return false;
+    return ApproveResult::Rejected;
   }
   std::string value;
   switch (scope) {
@@ -234,15 +244,25 @@ bool approve(const std::string& id, AllowScope scope, std::string& msgOut) {
   }
   if (!nimbus::orch::isConcreteAllowValue(value)) {
     msgOut = "Nothing to allow for that scope.";
-    return false;
+    return ApproveResult::Rejected;
   }
+  // Bind the rule to the gate that produced the entry, so this approval never quiets
+  // another gate for the same principal/content (CUM-215 cross-gate binding).
   std::string outId;
-  g_allow.add(scope, value, (uint32_t)time(nullptr), outId);   // dup is fine (already allowed)
+  const bool added = g_allow.add(scope, value, e->source, (uint32_t)time(nullptr), outId);
+  if (!added && outId.empty()) {
+    // Allowlist at capacity: nothing was stored. Do NOT mark the entry approved or
+    // claim a rule exists (the item keeps being blocked until the owner revokes one).
+    msgOut = "The allowed list is full. Revoke an item to allow another.";
+    return ApproveResult::Full;
+  }
+  // added==true (new rule) or added==false with outId set (already allowed): both mean
+  // the item is now allowed, so the entry is genuinely approved.
   g_log.approve(id);
   writeWhole(kAllowPath, g_allow.serialize());
   writeWhole(kActivityPath, g_log.serialize());
   msgOut = "Approved. Similar items are now allowed.";
-  return true;
+  return ApproveResult::Ok;
 }
 
 bool revokeAllow(const std::string& id) {

@@ -47,9 +47,14 @@ void handleApprove(AsyncWebServerRequest* r) {
     return;
   }
   std::string msg;
-  if (!agent::safety::approve(id, scope, msg)) {
-    // Unknown id or an empty derived value (which would be a catch-all): 400/404.
-    const int code = (msg == "Entry not found.") ? 404 : 400;
+  const agent::safety::ApproveResult res = agent::safety::approve(id, scope, msg);
+  if (res != agent::safety::ApproveResult::Ok) {
+    int code;
+    switch (res) {
+      case agent::safety::ApproveResult::NotFound: code = 404; break;  // unknown id
+      case agent::safety::ApproveResult::Full:     code = 409; break;  // allowlist full
+      default:                                     code = 400; break;  // bad scope / empty
+    }
     JsonDocument d; d["error"] = msg;
     String body; serializeJson(d, body);
     r->send(code, "application/json", body);
