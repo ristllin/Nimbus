@@ -802,6 +802,15 @@ class NimbusdRig {
       return true;
     };
 
+    registerHeads(d);
+    eng_.reset(new agent::TurnEngine(std::move(d)));
+  }
+
+  // Register the provider heads for the current key set. Kept out of buildEngine so
+  // each is one small, named unit: the direct BYOK heads (openai/anthropic/mistral),
+  // then the router-style OpenAI-compatible heads (cumulo, Z.ai) that a keyed VN with
+  // no direct key still runs on.
+  void registerHeads(agent::TurnEngine::Deps& d) {
     for (const char* h : {"openai", "anthropic", "mistral"}) {
       if (cfg_.providerKey(h).empty()) continue;
       const std::string host = h;
@@ -817,37 +826,29 @@ class NimbusdRig {
         return agent::providers::orchTurnMistral(pd, conv, ins, inp, out, err, tools, usage);
       });
     }
-    // CUM-286: the Cumulo router as a first-class head, so a keyed VN with NO
-    // direct provider key still runs the whole assistant - the "one key, one
-    // balance" path. Registered when the key is present (the pod restarts to pick
-    // up the env, so no after-boot add is needed here); head resolution reaches
-    // it via routerFallbackHost() above once every BYOK head misses.
-    if (hasCumulo()) {
-      d.hosts.add(kCumuloSlug,
-                  [this](std::string& conv, const std::string& ins, const std::string& inp,
-                         std::string& out, std::string& err, const agent::HeadTools* tools,
-                         orch::TokenUsage* usage) -> bool {
-                    auto pd = cumuloProviderDeps();
-                    return agent::providers::orchTurnCustom(pd, conv, ins, inp, out, err,
-                                                            tools, usage);
-                  });
-    }
-    // CUM-445: the Z.ai direct-BYOK head, registered when Z_AI_TOKEN is present. Like
-    // cumulo it runs through orchTurnCustom (OpenAI-compatible), NOT the {openai,
-    // anthropic,mistral} loop above whose else-branch is Mistral - routing a Z.ai key
-    // there would post it to Mistral, exactly the silent-misroute class the UI comment
-    // (ui_js.h "silently wrote a cumulo key into Mistral") warns against.
-    if (hostAvailable(kZaiSlug)) {
-      d.hosts.add(kZaiSlug,
-                  [this](std::string& conv, const std::string& ins, const std::string& inp,
-                         std::string& out, std::string& err, const agent::HeadTools* tools,
-                         orch::TokenUsage* usage) -> bool {
-                    auto pd = zaiProviderDeps();
-                    return agent::providers::orchTurnCustom(pd, conv, ins, inp, out, err,
-                                                            tools, usage);
-                  });
-    }
-    eng_.reset(new agent::TurnEngine(std::move(d)));
+    // CUM-286: the Cumulo router as a first-class head, so a keyed VN with NO direct
+    // provider key still runs the whole assistant - the "one key, one balance" path.
+    // Head resolution reaches it via routerFallbackHost() once every BYOK head misses.
+    if (hasCumulo()) addCustomHead(d, kCumuloSlug, [this] { return cumuloProviderDeps(); });
+    // CUM-445: the Z.ai direct-BYOK head, when Z_AI_TOKEN is present. Like cumulo it
+    // runs through orchTurnCustom (OpenAI-compatible), NOT the loop above whose else-
+    // branch is Mistral - routing a Z.ai key there would post it to Mistral, exactly
+    // the silent-misroute class the UI comment ("wrote a cumulo key into Mistral") warns
+    // against.
+    if (hostAvailable(kZaiSlug)) addCustomHead(d, kZaiSlug, [this] { return zaiProviderDeps(); });
+  }
+
+  // Register one OpenAI-compatible head (cumulo / Z.ai) that resolves its wire deps
+  // from `depsFn` at turn time. Shared by the router-style heads so each call site is
+  // one line.
+  void addCustomHead(agent::TurnEngine::Deps& d, const std::string& slug,
+                     std::function<agent::providers::ProviderDeps()> depsFn) {
+    d.hosts.add(slug, [depsFn](std::string& conv, const std::string& ins, const std::string& inp,
+                               std::string& out, std::string& err, const agent::HeadTools* tools,
+                               orch::TokenUsage* usage) -> bool {
+      auto pd = depsFn();
+      return agent::providers::orchTurnCustom(pd, conv, ins, inp, out, err, tools, usage);
+    });
   }
 
   // ---- episodic helpers -----------------------------------------------------

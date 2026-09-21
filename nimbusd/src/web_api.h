@@ -534,11 +534,11 @@ class WebApi {
     return true;
   }
 
-  ApiResp orchPost(const std::string& body) {
-    // Refuse an unknown key field LOUDLY (400) instead of the old silent {"ok":true}:
-    // the field-name drift that dropped every direct-provider write (CUM-445) must not
-    // be able to hide again. A field is a key write iff it ends in `Key` (with an
-    // optional `clr_` prefix); its base must be a canonical registry keyField.
+  // A 400 ApiResp naming the first unknown key field in the body, or status 0 when
+  // every key field is one the canonical registry owns. Refusing an unknown key field
+  // LOUDLY (instead of the old silent {"ok":true}) is what keeps the CUM-445 field-name
+  // drift that dropped every direct-provider write from hiding again.
+  ApiResp unknownKeyFieldError(const std::string& body) {
     for (const std::string& name : formFieldNames(body)) {
       std::string base;
       if (looksLikeKeyField(name, base) && NimbusdRig::hostForKeyField(base).empty()) {
@@ -550,6 +550,12 @@ class WebApi {
         return ApiResp{400, "application/json", out};
       }
     }
+    return ApiResp{0, "", ""};
+  }
+
+  ApiResp orchPost(const std::string& body) {
+    const ApiResp unknown = unknownKeyFieldError(body);
+    if (unknown.status != 0) return unknown;
     std::vector<std::pair<std::string, std::string>> keyWrites;    // (host, key); "" clears
     std::vector<std::pair<std::string, std::string>> modelWrites;  // (host, model); "" clears
     // The key FIELD names come from the canonical registry (provider_slots.h keyField),
