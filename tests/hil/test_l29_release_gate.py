@@ -109,13 +109,13 @@ class TestTunnelLoopback:
 # runs the manifest fetch + signature verify OFF the AsyncTCP web task
 # (requestCheck spawns the self-deleting checkTask, which takes the single TLS
 # arbiter slot), so the browser gets an immediate 202 accept and the origin /
-# tunnel budget can never expire mid-request the way it did pre-fix (the H4
-# v0.4.37 tunnel run saw a raw Cloudflare 502 while the device quietly finished
-# the check and /api/state then read ota=available). This LAN leg times the accept
-# and reads the settled verdict back from /api/state; the tunnel property follows
-# from the fast LAN answer. Point it at a bench manifest with
-# NIMBUS_OTA_MANIFEST_URL (else it runs against the real feed - any DEFINITIVE
-# verdict, unreachable included, still proves the timing + settle contract).
+# relay budget can never expire mid-request the way it did on the tunnel bench leg
+# (a raw upstream 502 from the edge while the device quietly finished the check and
+# /api/state then read ota=available). This LAN leg times the accept and reads the
+# settled verdict back from /api/state; the tunnel property follows from the fast
+# LAN answer. Point it at a bench manifest with NIMBUS_OTA_MANIFEST_URL (else it
+# runs against the real feed - any DEFINITIVE verdict, unreachable included, still
+# proves the timing + settle contract).
 # ============================================================================
 @pytest.mark.net
 class TestOtaCheckAnswersFast:
@@ -152,8 +152,11 @@ class TestOtaCheckAnswersFast:
             # The verdict is NOT in the accept - it settles asynchronously and the
             # client reads it from /api/state's otaResult. Poll until it is
             # definitive; a poll must never hang on 'pending' (CUM-249/CUM-441).
+            # Bench-manifest checks settle in a second or two; against the real
+            # feed a slow multi-hop HTTPS fetch can take a while, so allow generous
+            # headroom - this bounds "never hangs", it is not a latency SLA.
             result = "pending"
-            deadline = time.monotonic() + 60.0
+            deadline = time.monotonic() + 120.0
             while time.monotonic() < deadline:
                 st = net.get_json("/api/state", ip=ip, timeout=5.0)
                 result = str(st.get("otaResult", "pending"))

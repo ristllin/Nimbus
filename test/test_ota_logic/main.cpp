@@ -464,13 +464,11 @@ static void test_check_result() {
   TEST_ASSERT_EQUAL_STRING("failed", checkResultStr(CheckResult::Failed));
 }
 
-// CUM-441: the async, tunnel-safe check contract, locked as a CLASS over EVERY
-// State. POST /api/ota/check answers immediately (202) and the manifest fetch +
-// verify run OFF the web task, so through the relay/Cloudflare tunnel the browser
-// gets the fast accept, never a raw upstream 5xx while the device finishes. Two
-// pure invariants keep that honest, and both are asserted here across the whole
-// enum with an independent classifier, so a NEW state must be placed deliberately
-// or this fails (the class rule, not one instance - AGENTS.md section 3):
+// CUM-441: the async, tunnel-safe check contract, locked as a CLASS. POST
+// /api/ota/check answers immediately (202) and the manifest fetch + verify run
+// OFF the web task, so through the remote relay tunnel the browser gets the fast
+// accept, never a raw upstream 5xx while the device finishes. Two pure invariants
+// keep that honest, asserted below over EVERY State the firmware knows:
 //   (1) single-flight: a check may START only from a settled state, so a second
 //       check while one is in flight (any busy state) is refused and can never
 //       spin a second fetch;
@@ -478,17 +476,30 @@ static void test_check_result() {
 //       while (and only while) the check has not settled to an outcome, then a
 //       definitive result - so a poller keeps waiting rather than reading a stale
 //       prior verdict or a false terminal mid-check.
+// The scan is driven off stateStr()'s default-less switch, not a hand-listed
+// array: a NEW enum value forces that switch to name it (a compiler -Wswitch
+// break otherwise), which makes it a non-"?" state this loop then REQUIRES to be
+// classified below - an unclassified new state FAILS here. That is the class rule
+// with teeth (AGENTS.md section 3): a new case with no guard cannot pass green.
 static void test_check_async_lifecycle() {
-  const State all[] = {State::Idle, State::Checking, State::UpToDate, State::Available,
-                       State::Downloading, State::Verifying, State::ReadyToReboot,
-                       State::Error, State::Unsupported};
-  for (State s : all) {
-    // A settled state is one a fresh check may start from.
+  int seen = 0;
+  for (int i = 0; i < 64; i++) {           // State is a uint8_t enum; scan its range
+    const State s = static_cast<State>(i);
+    const char* name = stateStr(s);
+    if (!std::strcmp(name, "?")) continue;  // not a real state the firmware names
+    seen++;
+    // Every real state must fall into exactly one class the async-check contract
+    // understands. A newly-added state that no one classified lands in none of
+    // these and trips this assertion, rather than silently defaulting.
     const bool settled = (s == State::Idle || s == State::UpToDate ||
                           s == State::Available || s == State::Error);
-    // (1) single-flight: canCheck is true IFF settled. Every busy state
-    // (Checking/Downloading/Verifying/ReadyToReboot) and Unsupported refuse, so a
-    // click during a check can never launch a second manifest fetch.
+    const bool busy = (s == State::Checking || s == State::Downloading ||
+                       s == State::Verifying || s == State::ReadyToReboot);
+    const bool unsupported = (s == State::Unsupported);
+    TEST_ASSERT_TRUE_MESSAGE(settled || busy || unsupported,
+        "a new OTA State is unclassified in the async-check contract test (CUM-441)");
+    // (1) single-flight: canCheck is true IFF settled. Every busy state and
+    // Unsupported refuse, so a click during a check can never launch a 2nd fetch.
     if (settled)
       TEST_ASSERT_TRUE_MESSAGE(canCheck(s), "a settled state must accept a new check");
     else
@@ -507,6 +518,7 @@ static void test_check_async_lifecycle() {
           "a non-outcome state must poll as pending regardless of reachability");
     }
   }
+  TEST_ASSERT_TRUE_MESSAGE(seen >= 9, "stateStr scan found fewer states than expected");
 
   // The exact transitions the finding names: checking -> {up-to-date | available |
   // failed | unreachable}, each derived from the ONE settled State the check task
