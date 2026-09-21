@@ -49,9 +49,51 @@ constexpr size_t kMcpMaxBody = 64u * 1024;
 // teardown (including a mid-body abort) - no owned pointer to leak.
 struct ImportAcc {
   bool authed;
+  bool oom;                                  // an earlier chunk failed to allocate: the
+                                             // body is truncated, so onRequest answers 503
+                                             // instead of dispatching a head-truncated body
   agent::memory::restore::ByteAccum bytes;   // buf = data(), hard-capped append
   char* data() { return reinterpret_cast<char*>(this) + sizeof(ImportAcc); }
 };
+
+// Shared first-chunk gate for the two JSON body endpoints (/api/mem/import and /mcp).
+// Auth is decided on the FIRST chunk before any large buffer exists (unauth -> a
+// header-only block, every byte dropped); the payload lives in PSRAM behind a hard cap.
+//
+// CUM-410: the body callback carries `index` (the running byte offset). A first-SEEN
+// chunk with index != 0 means an EARLIER chunk's allocation failed and we left
+// _tempObject null, so chunks were dropped and the body is already truncated: allocate a
+// tiny header flagged `oom` so onRequest answers 503, and never buffer a head-truncated
+// body for dispatch. Extracted into one helper so the two handlers stop being byte
+// copies (keeps registerMemoryRoutes under its complexity baseline).
+void accumulateJsonBody(AsyncWebServerRequest* r, const uint8_t* data, size_t len,
+                        size_t index, size_t maxBody) {
+  ImportAcc* acc = static_cast<ImportAcc*>(r->_tempObject);
+  if (!acc) {
+    const bool ok = webAuthOk(r);
+    if (index != 0) {
+      // A prior chunk's allocation failed: the body is truncated. Keep only a header
+      // that marks the request broken; buffer nothing.
+      acc = static_cast<ImportAcc*>(calloc(1, sizeof(ImportAcc)));
+      r->_tempObject = acc;
+      if (!acc) return;   // even the header failed: onRequest sees null -> 400/401
+      acc->authed = ok;
+      acc->oom = true;
+      acc->bytes.init(acc->data(), 0);
+      return;
+    }
+    const size_t cap = ok ? maxBody : 0;
+    acc = static_cast<ImportAcc*>(heap_caps_calloc(1, sizeof(ImportAcc) + cap, MALLOC_CAP_SPIRAM));
+    if (!acc) acc = static_cast<ImportAcc*>(calloc(1, sizeof(ImportAcc) + cap));
+    r->_tempObject = acc;
+    if (!acc) return;   // OOM on chunk 0: _tempObject stays null; a later chunk (index!=0)
+                        // takes the branch above and marks the request broken.
+    acc->authed = ok;
+    acc->bytes.init(acc->data(), cap);
+  }
+  if (!acc->authed) return;   // refuse + drop: nothing buffered for an unauth caller
+  acc->bytes.append((const char*)data, len);   // hard-capped; sets over on overflow
+}
 
 void sendJson(AsyncWebServerRequest* r, int code, const String& body) {
   AsyncWebServerResponse* res = r->beginResponse(code, "application/json", body);
@@ -758,6 +800,7 @@ void registerMemoryRoutes(AsyncWebServer& server) {
                 return;
               }
               if (!acc->authed)      { sendJson(r, 401, "{\"ok\":false,\"error\":\"auth required - X-Nimbus-Token\"}"); return; }
+              if (acc->oom)          { sendJson(r, 503, "{\"ok\":false,\"error\":\"device low on memory - retry\"}"); return; }
               if (acc->bytes.over)   { sendJson(r, 413, "{\"ok\":false,\"error\":\"import body too large\"}"); return; }
               std::string resp = mem::restoreImport(acc->data(), acc->bytes.len);
               sendJson(r, 200, String(resp.c_str()));
@@ -765,22 +808,8 @@ void registerMemoryRoutes(AsyncWebServer& server) {
               // the request - do not free it here.
             },
             nullptr,
-            [](AsyncWebServerRequest* r, uint8_t* data, size_t len, size_t, size_t) {
-              ImportAcc* acc = static_cast<ImportAcc*>(r->_tempObject);
-              if (!acc) {
-                // First chunk: authorize BEFORE allocating the big buffer. Unauthenticated
-                // -> a header-only block (cap 0), and every byte is dropped below.
-                const bool ok = webAuthOk(r);
-                const size_t cap = ok ? kImportMaxBody : 0;
-                acc = static_cast<ImportAcc*>(heap_caps_calloc(1, sizeof(ImportAcc) + cap, MALLOC_CAP_SPIRAM));
-                if (!acc) acc = static_cast<ImportAcc*>(calloc(1, sizeof(ImportAcc) + cap));
-                r->_tempObject = acc;
-                if (!acc) return;   // OOM: onRequest sees null -> 400/401
-                acc->authed = ok;
-                acc->bytes.init(acc->data(), cap);
-              }
-              if (!acc->authed) return;   // refuse + drop: nothing buffered for an unauth caller
-              acc->bytes.append((const char*)data, len);   // hard-capped; sets over on overflow
+            [](AsyncWebServerRequest* r, uint8_t* data, size_t len, size_t index, size_t) {
+              accumulateJsonBody(r, data, len, index, kImportMaxBody);
             });
 
   // LAN MCP endpoint: raw JSON-RPC 2.0 body -> memory::handleMcp. The body is a
@@ -807,6 +836,7 @@ void registerMemoryRoutes(AsyncWebServer& server) {
                 return;
               }
               if (!acc->authed)    { sendJson(r, 401, "{\"error\":\"auth required - X-Nimbus-Token\"}"); return; }
+              if (acc->oom)        { sendJson(r, 503, "{\"error\":\"device low on memory - retry\"}"); return; }
               if (acc->bytes.over) { sendJson(r, 413, "{\"error\":\"request body too large\"}"); return; }
               std::string body(acc->data(), acc->bytes.len);
               // acc (header + PSRAM payload, one block) is freed by the framework with
@@ -831,21 +861,8 @@ void registerMemoryRoutes(AsyncWebServer& server) {
               r->send(res);
             },
             nullptr,
-            [](AsyncWebServerRequest* r, uint8_t* data, size_t len, size_t, size_t) {
-              ImportAcc* acc = static_cast<ImportAcc*>(r->_tempObject);
-              if (!acc) {
-                // First chunk: authorize BEFORE allocating the payload buffer.
-                const bool ok = webAuthOk(r);
-                const size_t cap = ok ? kMcpMaxBody : 0;
-                acc = static_cast<ImportAcc*>(heap_caps_calloc(1, sizeof(ImportAcc) + cap, MALLOC_CAP_SPIRAM));
-                if (!acc) acc = static_cast<ImportAcc*>(calloc(1, sizeof(ImportAcc) + cap));
-                r->_tempObject = acc;
-                if (!acc) return;   // OOM: onRequest sees null -> 400/401
-                acc->authed = ok;
-                acc->bytes.init(acc->data(), cap);
-              }
-              if (!acc->authed) return;   // refuse + drop: nothing buffered for an unauth caller
-              acc->bytes.append((const char*)data, len);   // hard-capped; sets over on overflow
+            [](AsyncWebServerRequest* r, uint8_t* data, size_t len, size_t index, size_t) {
+              accumulateJsonBody(r, data, len, index, kMcpMaxBody);
             });
 }
 
