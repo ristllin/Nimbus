@@ -285,6 +285,7 @@ rules.
 |---|---|---|
 | **Directive** | Web app: setup wizard (Directive step) and the Directive box under Memory | Device menu: not editable there (free text; web-only) |
 | **Music tracks** | Web app: Memory & Files, Music (add, play, remove tracks on the card's music folder) | Device menu: not managed there; play from Telegram `/play` or the assistant. |
+| **Safety activity and allowlist** | Web app: Assistant, Safety, Activity (review what the scanner blocked or suspected; approve scoped, dismiss, or report) and Allowed items (revoke) | Device menu: not shown there; the `SAFETY?` serial command prints a one-line summary. |
 
 ## 5. The status language - colors, motion, themes
 

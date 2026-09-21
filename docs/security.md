@@ -65,6 +65,30 @@ server - findings are weighted by real reachability.
     instruction and MARKS it untrusted so the model treats it as data; it never
     blocks. The decision policy is the pure `nimbus::orch` moderation core; the
     device classifier is `src/agent/adapters/moderation`.
+- **Safety activity log and scoped allowlist (privacy-first).** Every verdict the
+  scanner reaches (a blocked guest message, a suspected injection in fetched
+  content) is recorded to a bounded, newest-first local log the owner reviews under
+  Assistant, Safety, Activity. The log is a ring of the 64 most recent entries;
+  each excerpt is redacted through the same secret set the durable log uses and
+  clamped to 512 bytes, so it cannot carry a key. It is persisted on the card or
+  flash tier the durable error log uses, never on NVS, and its bound and ordering
+  are host-tested (`test_safety_activity`). From that list the owner can:
+  - **Approve (unblock), always scoped.** Approving adds one allow-rule scoped to a
+    specific sender, content class, or content pattern. There is no global off
+    switch: the allow scope has no "everything" value, and an empty target is
+    refused, so an approval can never become a blanket disable (host-tested as the
+    class). The scanner then honors the rule as a real unblock. The allowlist is
+    inspectable and revocable from the same tab (Allowed items).
+  - **Dismiss.** Clear an entry without changing what the scanner does next time.
+  - **Report to Cumulo, subscription-gated, never automatic.** Nothing is ever
+    auto-reported. A report is possible only when the device holds a Cumulo key and
+    the account is entitled; without a key the action states "Reporting needs a
+    Cumulo subscription." and spends no network. The payload carries exactly the
+    flagged item, its rule, channel, timestamp, and the device id, and nothing else
+    (host-tested to that exact field set). The decision policy, the allowlist, and
+    the report payload builder are the pure `nimbus::orch` safety-activity core; the
+    device seam is `src/agent/safety_activity_store` and the web surface is
+    `src/net/safety_routes` (`/api/safety*`, token-gated).
 - **Danger-zone actions are typed-confirm gated, each distinct.** Erase Storage
   (`ERASE STORAGE`), Factory Reset (`FACTORY RESET`), and full-card Format
   (`FORMAT CARD`) each require their OWN exact phrase, so one confirmation can never
