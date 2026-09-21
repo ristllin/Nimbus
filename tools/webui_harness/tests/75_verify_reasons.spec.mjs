@@ -2,7 +2,7 @@
 // for each reason the verify surface (L1's /api/orch) reports, instead of a bare
 // "key rejected" / "couldn't verify". Contract: each provider object may carry a
 // `vfyReason` string on a non-verified row, one of:
-//   nocredits | router_outdated | deferred | connectfail | tlsbusy
+//   nocredits | router_outdated | low-memory | connectfail | tlsbusy
 // A real pass (verify===1) always wins over any reason.
 //
 // T4 (host) tier: overrides /api/orch with a row per reason. Runs unchanged on a
@@ -23,7 +23,7 @@ function orchPayload() {
       openai: prov(true, -1, 'router_outdated'),
       anthropic: prov(true, -1, 'connectfail'),
       mistral: prov(true, -1, 'tlsbusy'),
-      zai: prov(true, -1, 'deferred'),
+      zai: prov(true, -1, 'low-memory'),
     },
     cust: { base: '', conv: 'openai', model: '', hasKey: false },
     orchHost: 'anthropic',
