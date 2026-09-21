@@ -6,8 +6,13 @@ ships as a signed image on the public
 repository; a device on Orchestrator mode sees it on its daily check and
 installs on your say-so ([how updates work](ota.md)).
 
-## Unreleased
+## v4.5.5 - More free memory on the Freenove, clearer key and memory checks, a Safety activity view
 
+- **More free working memory on the Freenove board.** The audio parts now release
+  their buffers when sound is idle instead of holding them for the whole session, so
+  the board keeps far more of its scarce internal memory free at rest, well above the
+  low-memory floor. Sound still plays and records the same; the parts come back the
+  moment they are needed.
 - **A deferred key check now explains itself and retries on its own.** When you
   paste a provider key and the device is low on working memory, it saves the key and
   shows "Verification deferred" instead of a failed check. The badge and a line under

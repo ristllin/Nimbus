@@ -267,11 +267,20 @@ bool ruleMatches(const AllowRule& r, const SafetyEntry& e) {
     case AllowScope::ContentClass:
       // Trust a specific rule/category. An entry with no rule can never match.
       return !e.rule.empty() && e.rule == r.value;
-    case AllowScope::Pattern:
+    case AllowScope::Pattern: {
       // Trust ONE exact content excerpt (case-insensitive equality, never substring):
       // the approved text embedded in a longer hostile message no longer matches, so a
       // Pattern approve is "this exact content", not a guest-controlled bypass token.
-      return !e.excerpt.empty() && ciEquals(e.excerpt, r.value);
+      // Trim the entry excerpt to compare like-for-like: add() stores rule.value as
+      // trimmed(value), so the stored side has no edge whitespace. The excerpt is a
+      // fixed 512-byte window whose edge often lands on whitespace (non-printable bytes
+      // are substituted to spaces upstream), so an untrimmed compare made the owner's
+      // Pattern approval silently never match its own content. Only leading/trailing
+      // blanks are stripped (the same trim add() applied); the inner content must still
+      // match exactly, so this is not a substring bypass.
+      const std::string ex = trimmed(e.excerpt);
+      return !ex.empty() && ciEquals(ex, r.value);
+    }
   }
   return false;
 }

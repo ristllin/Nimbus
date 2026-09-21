@@ -430,6 +430,12 @@ static void runOne() {
   if (!key.length()) {  // nothing to verify - rejected, no TLS spent
     store::setVerify(provider, 0, (uint32_t)millis());
     setReason(provider, "");   // rejected carries its own copy; no badge reason
+    // A no-key result is DEFINITIVE (rejected), so resolve any outstanding
+    // low-memory self-retry here too - this path returns before the memory-
+    // sufficient clear below, so without it a provider that was low-memory
+    // deferred and then had its key removed keeps re-firing the retry every pump
+    // tick (a verify-task + setVerify NVS-write storm). (CUM-447 gate fix.)
+    { int ri = retryIdx(provider); if (ri >= 0) g_retry[ri].clear(); }
     alogf("verify: %s no key -> rejected", provider.c_str());
     g_pending = false;
     return;
