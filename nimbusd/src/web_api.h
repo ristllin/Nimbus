@@ -523,15 +523,24 @@ class WebApi {
     return false;
   }
 
-  // A posted field name is a key write iff it is `<x>Key` (or `clr_<x>Key`); its base
-  // must be a keyField the canonical registry owns. `oaiKey` is known, `openaiKey` /
-  // `mistralKey` / a typo is not (CUM-445 drift).
+  // A posted field name is a key write iff it is `<x>Key` (or `clr_<x>Key`).
   static bool looksLikeKeyField(std::string name, std::string& baseOut) {
     if (name.rfind("clr_", 0) == 0) name = name.substr(4);
     const size_t n = name.size();
     if (n <= 3 || name.compare(n - 3, 3, "Key") != 0) return false;
     baseOut = name;
     return true;
+  }
+
+  // Whether a `<x>Key` base is a key field the orch surface legitimately handles: a
+  // canonical PROVIDER keyField (oaiKey/antKey/mistKey/zaiKey/cumuloKey), OR one of the
+  // non-provider key fields the shared orch form also posts - the custom endpoint key
+  // and the Tavily key. Anything else is provider-key drift (openaiKey/mistralKey/a
+  // typo) that must be refused (CUM-445), NOT the custom/Tavily fields the Save Changes
+  // payload carries (refusing those would break saving the orch settings).
+  static bool isRecognizedKeyField(const std::string& base) {
+    if (!NimbusdRig::hostForKeyField(base).empty()) return true;
+    return base == "custKey" || base == "tavKey";
   }
 
   // A 400 ApiResp naming the first unknown key field in the body, or status 0 when
@@ -541,7 +550,7 @@ class WebApi {
   ApiResp unknownKeyFieldError(const std::string& body) {
     for (const std::string& name : formFieldNames(body)) {
       std::string base;
-      if (looksLikeKeyField(name, base) && NimbusdRig::hostForKeyField(base).empty()) {
+      if (looksLikeKeyField(name, base) && !isRecognizedKeyField(base)) {
         JsonDocument e;
         e["ok"] = false;
         e["error"] = "unknown field " + base;

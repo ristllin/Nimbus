@@ -223,6 +223,15 @@ static void testUnknownKeyFieldRefused(ndtest::Ctx& c) {
   ApiResp clr;
   api.handle("POST", "/api/orch", "clr_openaiKey=1", clr);
   c.eqi(clr.status, 400, "clr_ of an unknown field is refused too");
+
+  // Counter-check: the NON-provider key fields the shared orch form legitimately posts
+  // (the custom endpoint key, the Tavily key) must NOT be refused - they are not
+  // provider-key drift, and refusing them would break the whole Save Changes payload.
+  ApiResp save;
+  c.ok(api.handle("POST", "/api/orch",
+                  "custKey=cust_endpoint_key&tavKey=tvly_search_key&orchLoop=1", save),
+       "a Save Changes payload with custKey/tavKey is handled");
+  c.eqi(save.status, 200, "custKey/tavKey are accepted (not refused as unknown)");
   eng.stop();
   clearProviderEnv();
 }
