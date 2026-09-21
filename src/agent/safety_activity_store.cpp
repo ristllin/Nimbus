@@ -271,10 +271,8 @@ void reportRunOne(const std::string& id) {
     if (p) { e = *p; found = true; }
   }
   ReportOutcome oc = ReportOutcome::Failed;
-  if (!found) {
-    // The entry vanished (evicted/dismissed) between request and run.
-    g_reportLastMsg = "Entry not found.";
-  } else {
+  std::string msg = "Entry not found.";
+  if (found) {
     nimbus::orch::SafetyReportInput in =
         nimbus::orch::reportInputFromEntry(e, std::string(store::cloudDeviceId().c_str()),
                                            isoNow(), NIMBUS_FW_VERSION);
@@ -292,13 +290,18 @@ void reportRunOne(const std::string& id) {
     std::string err;
     const bool ok = agent::deviceTransport().exec(req, res, err);
     oc = ok ? nimbus::orch::reportOutcomeFromHttp(res.status) : ReportOutcome::Failed;
-    g_reportLastMsg = nimbus::orch::reportOutcomeCopy(oc);
+    msg = nimbus::orch::reportOutcomeCopy(oc);
     alogf("safety: report %s -> %s (http=%d)", id.c_str(), nimbus::orch::reportOutcomeName(oc),
           ok ? res.status : 0);
   }
+  // Publish the snapshot under the shared serializer (the same lock listJson holds to
+  // read it), so the web task never sees a torn std::string mid-update. The TLS POST
+  // above ran WITHOUT the lock - only this brief assignment is guarded.
+  memory::Lock g;
+  g_reportLastMsg     = msg;
   g_reportLastOutcome = oc;
-  g_reportLastId = id;
-  g_reportHaveLast = true;
+  g_reportLastId      = id;
+  g_reportHaveLast    = true;
 }
 
 void reportTask(void*) {
