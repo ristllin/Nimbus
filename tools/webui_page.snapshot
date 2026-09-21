@@ -1528,7 +1528,7 @@ function fillVoices(prov, sel, ck){
     list.forEach(v=>{const o=document.createElement('option');o.value=v.value;o.textContent=v.label;if(v.value===sel)o.selected=true;tv.appendChild(o);});
     tv.onchange=()=>orchApply({ttsVoice:tv.value});
     showCascade(false);
-    if(h)h.textContent=(prov==='cumulo')?(ck?'Cumulo Nimbus voices (male, female, neutral).':'Needs a Cumulo key to use this.')
+    if(h)h.textContent=(prov==='cumulo')?(ck?'Cumulo Nimbus voices (male / female / neutral).':'Needs a Cumulo key to use this.')
       :(prov==='openai')?'OpenAI voices (male / female / neutral).':'Mistral voices, live from the provider.';};
   const buildCascade=list=>{if(!g||!pp||!em){renderFlat(list);return;} showCascade(true);
     const uniq=a=>a.filter((v,i)=>a.indexOf(v)===i);
@@ -1551,7 +1551,9 @@ function fillVoices(prov, sel, ck){
     em.onchange=resolve;
     if(h)h.textContent='Mistral voices, live from the provider: pick gender, then persona, then emotion.';};
   const render=list=>{
-    const structured=prov!=='openai'&&list.some(v=>v.gender||v.name);
+    // openai and cumulo (which rides the openai upstream) are always flat; only
+    // Mistral's catalog carries the gender/persona/emotion structure.
+    const structured=prov!=='openai'&&prov!=='cumulo'&&list.some(v=>v.gender||v.name);
     structured?buildCascade(list):renderFlat(list);};
   fetch('/api/voices?provider='+encodeURIComponent(catProv)).then(r=>r.json())
     .then(l=>render(Array.isArray(l)&&l.length?l:(FB[prov]||FB.mistral)))

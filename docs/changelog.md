@@ -15,7 +15,7 @@ installs on your say-so ([how updates work](ota.md)).
   the edge while the device quietly finished. The result still appears on the
   Software update panel once it settles: up to date, a new version, or an honest
   failure with the reason.
-- **Cumulo Nimbus is now a choosable voice provider.** The web Voice settings and
+- **Cumulo Nimbus is now a selectable voice provider.** The web Voice settings and
   the device Sound menu both offer Cumulo Nimbus for dictation and spoken replies,
   alongside Mistral and OpenAI. Choosing it routes voice through the metered router,
   so a one-key device can speak without a separate OpenAI or Mistral key. An explicit

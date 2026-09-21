@@ -30,7 +30,10 @@ std::string saverText(uint16_t m) {
 }
 
 const char* kVoiceProvNames[] = {"Mistral", "OpenAI", "Cumulo Nimbus"};
-constexpr int kVoiceProvCount = 3;
+// Derived from the array so the cycle can never drift from the label list (add a
+// name and the cycle reaches it automatically). Matches the sizeof idiom used for
+// kAnimNames / kSaverStepsTft elsewhere in this file.
+constexpr int kVoiceProvCount = int(sizeof(kVoiceProvNames) / sizeof(kVoiceProvNames[0]));
 
 // An SSID is arbitrary bytes off the air and the 5x7 font only draws
 // 32-126, so one UTF-8 network name would paint a row of '?'-noise (the "many
