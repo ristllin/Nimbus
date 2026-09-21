@@ -219,6 +219,10 @@ class _BootScan:
 
     def __init__(self) -> None:
         self.rst_since_progress = 0
+        # A reset marker (rst:) is the boot stream's own proof that the chip
+        # actually restarted this cycle - the honest oracle _confirm_boot reads
+        # instead of racing STATUS through the post-boot SD scan (bench rerun 2).
+        self.saw_reset = False
 
     def feed(self, line: str):
         """Classify one line: ``("ready", mode, ip)`` / ``("legacy", None, None)``
@@ -226,6 +230,7 @@ class _BootScan:
         if any(marker in line for marker in PANIC_MARKERS):
             return "panic"
         if line.startswith("rst:"):
+            self.saw_reset = True
             self.rst_since_progress += 1
             return "loop" if self.rst_since_progress >= 2 else "progress"
         m = re.search(r"READY\s+mode=(?P<mode>\d+)\s+ip=(?P<ip>\S+)", line)
@@ -236,6 +241,23 @@ class _BootScan:
         if any(p in line for p in self._APP_PROGRESS):
             self.rst_since_progress = 0
         return "progress"
+
+
+class _BootResult:
+    """What one boot-stream scan showed, beyond just (mode, ip): whether a reset
+    marker was seen (the fresh-boot proof), whether the READY beacon was reached
+    (directly or via a PING fallback when the reopen ate it), and the wall-clock
+    time the first rst: line arrived (so a caller can size a boot-recency uptime
+    from the stream when STATUS is still busy with the SD scan)."""
+
+    __slots__ = ("mode", "ip", "saw_reset", "ready", "reset_at")
+
+    def __init__(self, mode, ip, saw_reset, ready, reset_at):
+        self.mode = mode
+        self.ip = ip
+        self.saw_reset = saw_reset
+        self.ready = ready
+        self.reset_at = reset_at
 
 
 class Device:
@@ -769,10 +791,21 @@ class Device:
         loop cannot hang the suite.
 
         Reboot-loop detector: see _BootScan (>= 2 ``rst:`` with no app progress)."""
+        r = self._scan_boot(timeout, max_total)
+        return r.mode, r.ip
+
+    def _scan_boot(self, timeout: float = 20.0, max_total: "Optional[float]" = None) -> "_BootResult":
+        """The boot-stream reader behind wait_ready, but REPORTING what the stream
+        showed (a _BootResult) rather than only (mode, ip). Same failure contract:
+        BootError on a panic / reboot loop, ExpectTimeout on a silent board. It
+        records ``saw_reset`` (a ``rst:`` line arrived - the chip really restarted)
+        and ``reset_at`` (when the first one did), so _confirm_boot can trust the
+        stream over a STATUS read that the post-boot SD scan is still blocking."""
         if max_total is None:
             max_total = max(timeout * 6, 120.0)
         hard_deadline = time.time() + max_total
         scan = _BootScan()
+        reset_at: Optional[float] = None
         while True:
             line = self._readline(min(time.time() + timeout, hard_deadline))
             if line is None:
@@ -781,17 +814,19 @@ class Device:
                 # consecutive resets - a board that answers PING is ready regardless
                 # of who read the beacon), or the board is silent/bricked.
                 if self.ping():
-                    return (None, None)
+                    return _BootResult(None, None, scan.saw_reset, True, reset_at)
                 if time.time() >= hard_deadline:
                     raise ExpectTimeout("READY beacon (boot did not settle within the ceiling)", self._transcript)
                 raise ExpectTimeout("READY beacon", self._transcript)
             verdict = scan.feed(line)
+            if reset_at is None and scan.saw_reset:
+                reset_at = time.time()
             if verdict == "panic":
                 raise BootError(f"panic during boot: {line!r}")
             if verdict == "loop":
                 raise BootError("reboot loop: >= 2 'rst:' lines with no boot progress between")
             if isinstance(verdict, tuple):  # ("ready"|"legacy", mode, ip)
-                return verdict[1], verdict[2]
+                return _BootResult(verdict[1], verdict[2], scan.saw_reset, True, reset_at)
             # "progress": a boot line arrived; the top of the loop re-arms the idle
             # window from now, so an actively-booting board keeps its wait alive.
 
@@ -836,28 +871,71 @@ class Device:
         instead. ``chip_id`` just drives a connect + the reset sequence (--before
         default-reset to enter, --after hard-reset to leave). Targets THIS device's
         own port (never the other board when two are attached), closes it first
-        (esptool needs it), and reports whether any invocation succeeded."""
+        (esptool needs it), and reports whether any invocation succeeded.
+
+        ALWAYS reopens the console afterwards - success OR failure. esptool holds
+        the port exclusively (so this closes it first) and, on success, drives a
+        re-enumerating hard reset; leaving the handle closed on the failure path is
+        what cascaded into 15 'serial port not open' failures for every test after a
+        failed escalation (bench rerun 2 item 2). The reopen is in a finally so a
+        no-op escalation never poisons the rest of the session."""
         port = self.port or self._pinned_port
         if not port:
             return False
         self.close()
         base = ["--chip", "esp32s3", "--port", port, "--before", "default-reset", "--after", "hard-reset", "chip_id"]
-        for prefix in (["esptool.py"], [sys.executable, "-m", "esptool"], ["esptool"]):
+        ok = False
+        try:
+            for prefix in (["esptool.py"], [sys.executable, "-m", "esptool"], ["esptool"]):
+                try:
+                    r = subprocess.run(prefix + base, capture_output=True, text=True, timeout=40)
+                except (OSError, subprocess.SubprocessError):
+                    continue
+                if r.returncode == 0:
+                    ok = True
+                    break
+        finally:
+            # Bring the console back no matter what. drain_boot=False keeps the boot
+            # stream intact for the caller's confirm. A board that genuinely did not
+            # re-enumerate raises DeviceLostError, which the caller's confirm and the
+            # wedge sentinel handle - but a reachable board is never left closed.
             try:
-                r = subprocess.run(prefix + base, capture_output=True, text=True, timeout=40)
-            except (OSError, subprocess.SubprocessError):
-                continue
-            if r.returncode == 0:
-                return True
-        return False
+                self.reopen_after_reenumerate(drain_boot=False)
+            except DeviceLostError:
+                pass
+        return ok
 
     def _confirm_boot(self, before: "Optional[int]", timeout: float) -> "Optional[int]":
-        """Consume the boot stream (raising BootError on a panic / reboot-loop),
-        then return a fresh uptime, or None if the device did not actually restart."""
+        """Confirm a reboot actually took by reading the boot stream it produces.
+
+        The bench-rerun-2 bug: the old confirm polled STATUS for a fresh uptime, but
+        a console REBOOT on this board reliably prints ``rst:.. -> READY`` in ~12 s
+        and then runs a heavy SD episodic scan that keeps STATUS from answering for
+        many seconds - so a genuine reboot read back uptime=None, was wrongly
+        escalated to a hard reset, and then declared a failure ("uptime 2857s ->
+        None"). The boot stream is the honest oracle: a reset marker (rst:) followed
+        by READY IS proof of a fresh boot, whatever STATUS says next.
+
+        Returns a fresh uptime on a confirmed boot - the real value when STATUS
+        answers promptly, else the small boot-recency wall clock since the reset
+        marker - or None so the caller escalates. Propagates BootError on a panic /
+        reboot loop."""
         try:
-            self.wait_ready(timeout=timeout)
+            boot = self._scan_boot(timeout=timeout)
         except ExpectTimeout:
-            pass  # the beacon can be eaten by the reopen; uptime is the real oracle
+            boot = None
+        if boot is not None and boot.saw_reset:
+            # The stream proved the restart. Report a fresh uptime WITHOUT blocking
+            # on STATUS through the SD scan (that race is exactly what read None).
+            up = self._uptime_or_none(timeout=4.0)
+            if up is not None and up < FRESH_BOOT_CEILING_S:
+                return up
+            if boot.reset_at is not None:
+                return max(0, int(time.time() - boot.reset_at))
+            return 0
+        # No reset marker in the stream: the beacon may have been eaten, or the soft
+        # REBOOT was a no-op. Fall back to the uptime oracle - a no-op reboot leaves
+        # uptime climbing (not fresh -> None -> the caller escalates).
         up = self._settled_uptime(timeout)
         return up if is_fresh_boot(before, up) else None
 
@@ -868,19 +946,21 @@ class Device:
         A plain reset()+status() cannot tell a real restart from a REBOOT the chip
         ignored (uptime keeps climbing) - the CUM-418 bench saw uptime=3254s "after
         a reboot". This does the soft console REBOOT (reset(), which also self-heals
-        a wedged console with a bus reset), confirms the boot actually happened via
-        uptime, and if it did not, escalates to an esptool hard reset and confirms
-        again. Returns the fresh uptime; raises DeviceError if the board would not
-        restart either way, and propagates BootError on a panic / reboot-loop."""
+        a wedged console with a bus reset), confirms the boot actually happened by
+        reading the boot stream it produces (rst: -> READY, not a STATUS poll the SD
+        scan blocks), and if it did not, escalates to an esptool hard reset and
+        confirms again. Returns the fresh uptime; raises DeviceError if the board
+        would not restart either way, and propagates BootError on a panic / loop."""
         before = self._uptime_or_none()
         self.reset()
         up = self._confirm_boot(before, timeout)
         if up is not None:
             return up
-        # The soft REBOOT did not take (native USB-CDC no-op). Escalate to a hard
-        # reset via esptool, which drives the chip's reset line, then re-confirm.
+        # The soft REBOOT did not take (native USB-CDC no-op). Escalate to an esptool
+        # hard reset, which drives the chip's reset line, then re-confirm.
+        # esptool_hard_reset reopens the console itself (even on failure), so the
+        # escalation never leaves the port closed for the rest of the session.
         if self.esptool_hard_reset():
-            self.reopen_after_reenumerate(drain_boot=False)
             up = self._confirm_boot(before, timeout)
             if up is not None:
                 return up

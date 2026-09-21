@@ -351,9 +351,13 @@ class TestCrashLoopResilience:
             # back - so a true boot loop surfaces here as a failure, not a hang, and
             # a reboot the chip ignored is caught rather than passing as "fresh".
             up = device.reboot_and_confirm(timeout=25.0)
-            # A real reboot resets uptime: it comes back SMALL (reboot_and_confirm
-            # guarantees a fresh boot or raises), and below the last reading.
-            assert up < 15, (
+            # reboot_and_confirm PROVES the restart from the boot stream (rst: ->
+            # READY) and raises otherwise, so THAT is the "did it actually restart"
+            # oracle - not this uptime, which on a slow SD-scan boot is the boot
+            # recency (~12 s, can edge past a flat 15 s bar) when STATUS is still
+            # busy. Keep an absolute-freshness ceiling (a no-op reboot's ~2857 s is
+            # never < 120) and the it-dropped guard as the counter-tests they were.
+            assert 0 <= up < FRESH_BOOT_CEILING_S, (
                 f"cycle {cycle}/{n}: uptime={up}s after a reboot is not a fresh boot "
                 "(the device did not actually restart, or is stuck past the boot window)"
             )
