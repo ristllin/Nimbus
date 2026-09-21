@@ -2451,7 +2451,11 @@ void beginWeb(const WebConfig& wc) {
   s_server.on("/api/verify", HTTP_POST, [](AsyncWebServerRequest* r) {
     if (authBlocked(r)) return;
     String p = r->hasParam("provider", true) ? r->getParam("provider", true)->value() : "";
-    if (p != "openai" && p != "anthropic" && p != "mistral" && p != "telegram" && p != "tavily") {
+    // cumulo + zai were missing here, so the web UI's Verify button 400'd for them
+    // and a provider stuck low-memory-"deferred" had no manual way back (CUM-451).
+    // They are already in kRetryProv and provider_verify handles them, so accept them.
+    if (p != "openai" && p != "anthropic" && p != "mistral" && p != "cumulo" &&
+        p != "zai" && p != "telegram" && p != "tavily") {
       r->send(400, "application/json", "{\"error\":\"unknown provider\"}");
       return;
     }

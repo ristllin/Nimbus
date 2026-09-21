@@ -455,6 +455,14 @@ static void runOne() {
     // token only rides a couldn't-verify (-1). Clearing it on 1/0 stops a stale
     // "nocredits" from lingering after the account is funded.
     setReason(prov, result == 1 ? "" : rsn);
+    // A DEFINITIVE verdict (verified=1 or rejected=0) resolves any low-memory
+    // deferral: stop the self-retry here, at the ONE place a real verdict lands.
+    // A transient (-1: tlsbusy / connectfail / timeout) must NOT clear it, or a
+    // busy slot on a memory-recovered attempt abandons the auto-retry forever and
+    // the provider is stuck "deferred" with no way back (CUM-451; the live Cumulo
+    // stuck-verify). The low-memory path passes -1 then arms onDeferred(), so the
+    // retry survives until a verdict lands or memory + the slot are both free.
+    if (result != -1) { int ri = retryIdx(prov); if (ri >= 0) g_retry[ri].clear(); }
   };
   // MUST include MALLOC_CAP_INTERNAL: plain MALLOC_CAP_8BIT counts PSRAM too, so on
   // this 8 MB-PSRAM board the block is always ~megabytes and the guard never fires -
@@ -478,9 +486,10 @@ static void runOne() {
     g_pending = false;
     return;
   }
-  // Memory was sufficient this attempt: resolve any outstanding low-memory retry so
-  // the pump stops re-arming (a definitive verdict below also stands on its own).
-  { int ri = retryIdx(provider); if (ri >= 0) g_retry[ri].clear(); }
+  // Memory was sufficient this attempt. Do NOT clear the low-memory retry here:
+  // clearing before the slot is acquired means a "tls busy" (or connectfail) below
+  // abandons the auto-retry, leaving the provider stuck "deferred" (CUM-451). The
+  // retry is now cleared only on a DEFINITIVE verdict, inside recordVerify().
   // Outlast one full Telegram long-poll cycle (30 s) so a verify queued behind
   // an orchestrator turn still lands instead of bouncing "tls busy".
   if (!arbiter::acquireWork(35000)) {
