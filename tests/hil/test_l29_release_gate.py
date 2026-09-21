@@ -344,21 +344,25 @@ class TestCrashLoopResilience:
         #
         # N is bounded so the bench leg stays quick; override for a longer soak.
         n = int(os.environ.get("NIMBUS_GATE_REBOOT_CYCLES", "5"))
-        prev_up = device._uptime_or_none() or 0
         for cycle in range(1, n + 1):
-            # reboot_and_confirm PROVES each restart took (escalating a no-op soft
-            # REBOOT to an esptool hard reset) and raises if the board never comes
-            # back - so a true boot loop surfaces here as a failure, not a hang, and
-            # a reboot the chip ignored is caught rather than passing as "fresh".
+            # reboot_and_confirm PROVES each restart took by reading the boot stream
+            # the reboot produces (rst: -> READY) and RAISES otherwise: a chip that
+            # ignored the REBOOT escalates to an esptool hard reset and then fails
+            # loudly, and a reboot LOOP (rst: -> rst: with no progress between) comes
+            # back as BootError. So a non-reset or a reset storm surfaces HERE as a
+            # failure, not as a stale uptime that reads green - that boot-stream proof
+            # is the "did it actually restart" oracle (host-tested in
+            # test_reboot_confirm), stronger than comparing two already-fresh uptimes.
             up = device.reboot_and_confirm(timeout=25.0)
-            # A real reboot resets uptime: it comes back SMALL (reboot_and_confirm
-            # guarantees a fresh boot or raises), and below the last reading.
-            assert up < 15, (
+            # A returned value is always a FRESH boot (< the ceiling): a no-op
+            # reboot's climbing ~2857 s can never come back through reboot_and_confirm
+            # (it returns None -> escalates -> raises), so this ceiling still fails a
+            # device that did not reset. The exact number is boot recency (~12 s) when
+            # the SD scan is still blocking STATUS, so it is not gated on a flat 15 s.
+            assert 0 <= up < FRESH_BOOT_CEILING_S, (
                 f"cycle {cycle}/{n}: uptime={up}s after a reboot is not a fresh boot "
                 "(the device did not actually restart, or is stuck past the boot window)"
             )
-            assert up <= prev_up or prev_up < 5, f"cycle {cycle}/{n}: uptime did not reset (prev={prev_up}s now={up}s)"
-            prev_up = up
         # After the last cycle the device must still be serving the console - a
         # settled, non-looping state, not a board that only answers between resets.
         assert device.ping(timeout=6.0), f"device did not settle after {n} reboots (boot-loop / reset storm)"
