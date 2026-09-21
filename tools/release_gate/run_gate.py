@@ -33,11 +33,16 @@ HARDWARE (bench, --allow-hardware; paste the real output):
   pytest tests/hil/test_l29_release_gate.py -m hil --allow-hardware   # RenderToGlass, TouchCorrectness, CrashLoop, OTA
   # Device tunnel serves its own page, not a 502 (CUM-173):
   pytest tests/hil/test_l29_release_gate.py -m net --allow-hardware   # TunnelLoopback (CLOUDLOOP)
-  # Full HIL battery on each board:
-  pytest tests/hil -m "hil and not manual"  --allow-hardware
+  # Full HIL battery on each board (the destructive fresh-device legs are DESELECTED here -
+  # they factory-reset the board, so they carry the `destructive` marker, not `hil`):
+  pytest tests/hil -m "hil and not manual and not destructive"  --allow-hardware
   pytest tests/hil -m "net and not manual"  --allow-hardware
   # The human-glance + physical-tap steps (recorded):
   pytest tests/hil -m manual --allow-hardware --manual-yes=false
+  # Destructive fresh-device legs (L33): factory-reset the board, run DELIBERATELY and alone.
+  # The fixture re-provisions Wi-Fi and clears the adversarial cal/flip, but the board is left
+  # factory-fresh (re-onboard after):
+  pytest tests/hil -m destructive --allow-hardware
 """
 
 CLOUD_BATTERY = """\

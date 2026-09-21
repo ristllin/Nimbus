@@ -20,16 +20,24 @@ std::string trimmed(const std::string& s) {
 
 char lc(char c) { return (c >= 'A' && c <= 'Z') ? char(c - 'A' + 'a') : c; }
 
-// Case-insensitive substring test (needle non-empty).
-bool ciContains(const std::string& hay, const std::string& needle) {
-  if (needle.empty() || needle.size() > hay.size()) return false;
+// Case-insensitive full-string equality.
+bool ciEquals(const std::string& a, const std::string& b) {
+  if (a.size() != b.size()) return false;
+  for (size_t i = 0; i < a.size(); i++)
+    if (lc(a[i]) != lc(b[i])) return false;
+  return true;
+}
+
+// Case-insensitive substring search: index of the first match, or npos.
+size_t ciFind(const std::string& hay, const std::string& needle) {
+  if (needle.empty() || needle.size() > hay.size()) return std::string::npos;
   for (size_t i = 0; i + needle.size() <= hay.size(); i++) {
     size_t j = 0;
     for (; j < needle.size(); j++)
       if (lc(hay[i + j]) != lc(needle[j])) break;
-    if (j == needle.size()) return true;
+    if (j == needle.size()) return i;
   }
-  return false;
+  return std::string::npos;
 }
 
 }  // namespace
@@ -88,6 +96,37 @@ std::string clampExcerpt(const std::string& in) {
   return in.substr(0, kSafetyExcerptMax);
 }
 
+std::string excerptWindowAround(const std::string& text, const std::string& pattern,
+                                size_t maxLen) {
+  if (text.size() <= maxLen) return text;
+  const size_t pos = ciFind(text, pattern);
+  if (pos == std::string::npos) return text.substr(0, maxLen);
+  // Center the window on the match: keep roughly equal context on each side, then
+  // clamp to the string bounds so the returned window is always exactly maxLen here.
+  const size_t lead = (maxLen > pattern.size()) ? (maxLen - pattern.size()) / 2 : 0;
+  size_t start = pos > lead ? pos - lead : 0;
+  if (start + maxLen > text.size()) start = text.size() - maxLen;
+  return text.substr(start, maxLen);
+}
+
+// ---- id shape guards ---------------------------------------------------------
+
+bool isValidSafetyEntryId(const std::string& id) {
+  if (id.size() != 9 || id[0] != 's') return false;   // "s" + 8 lowercase hex (s%08x)
+  for (size_t i = 1; i < id.size(); i++) {
+    const char c = id[i];
+    if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
+  }
+  return true;
+}
+
+bool isValidAllowRuleId(const std::string& id) {
+  if (id.size() < 2 || id[0] != 'a') return false;    // "a" + one or more decimal digits
+  for (size_t i = 1; i < id.size(); i++)
+    if (id[i] < '0' || id[i] > '9') return false;
+  return true;
+}
+
 // ---- JSONL codec (entry) -----------------------------------------------------
 
 std::string encodeSafetyLine(const SafetyEntry& e) {
@@ -114,7 +153,8 @@ bool decodeSafetyLine(const std::string& line, SafetyEntry& out) {
   if (!d["id"].is<const char*>()) return false;
   SafetyEntry e;
   e.id = d["id"].as<std::string>();
-  if (e.id.empty()) return false;
+  if (!isValidSafetyEntryId(e.id)) return false;   // reject a hostile/hand-edited id
+
   e.tsEpoch = d["ts"].as<uint32_t>();
   SafetyVerdict v;
   if (!safetyVerdictFromName(d["verdict"].as<std::string>(), v)) return false;
@@ -137,6 +177,18 @@ const SafetyEntry& SafetyActivityLog::record(SafetyEntry e) {
   entries_.insert(entries_.begin(), std::move(e));
   if ((int)entries_.size() > cap_) entries_.resize(cap_);   // drop the oldest (tail)
   return entries_.front();
+}
+
+bool SafetyActivityLog::refreshDuplicateFront(const SafetyEntry& e, uint32_t ts) {
+  if (entries_.empty()) return false;
+  SafetyEntry& f = entries_.front();
+  if (f.status != SafetyStatus::Active) return false;   // never resurrect a reviewed entry
+  if (f.verdict == e.verdict && f.rule == e.rule && f.channel == e.channel &&
+      f.sender == e.sender && f.source == e.source && f.excerpt == clampExcerpt(e.excerpt)) {
+    f.tsEpoch = ts;   // recurring: bump recency, but do not grow the ring
+    return true;
+  }
+  return false;
 }
 
 const SafetyEntry* SafetyActivityLog::find(const std::string& id) const {
@@ -187,7 +239,8 @@ int SafetyActivityLog::loadAll(const std::string& blob) {
 // ---- AllowRule + allowlist ---------------------------------------------------
 
 bool AllowRule::operator==(const AllowRule& o) const {
-  return id == o.id && scope == o.scope && value == o.value && tsEpoch == o.tsEpoch;
+  return id == o.id && scope == o.scope && value == o.value && source == o.source &&
+         tsEpoch == o.tsEpoch;
 }
 
 bool isConcreteAllowValue(const std::string& value) {
@@ -202,6 +255,10 @@ bool ruleMatches(const AllowRule& r, const SafetyEntry& e) {
   // A rule can only match on its ONE concrete field. An empty target never
   // matches (defense: it should never be stored, but a hand-edited file might).
   if (!isConcreteAllowValue(r.value)) return false;
+  // Gate binding: a rule only silences the gate/source it was minted from, so an
+  // inbound approval can never quiet the outbound or world gate (CUM-215). Real
+  // entries always carry a source; a source-less (hand-edited) rule matches nothing.
+  if (r.source != e.source) return false;
   switch (r.scope) {
     case AllowScope::Sender:
       // Trust a specific principal. An entry with no sender (web/world) can never
@@ -211,9 +268,10 @@ bool ruleMatches(const AllowRule& r, const SafetyEntry& e) {
       // Trust a specific rule/category. An entry with no rule can never match.
       return !e.rule.empty() && e.rule == r.value;
     case AllowScope::Pattern:
-      // Trust a specific content pattern: the value must appear in the excerpt.
-      // An empty excerpt never matches.
-      return !e.excerpt.empty() && ciContains(e.excerpt, r.value);
+      // Trust ONE exact content excerpt (case-insensitive equality, never substring):
+      // the approved text embedded in a longer hostile message no longer matches, so a
+      // Pattern approve is "this exact content", not a guest-controlled bypass token.
+      return !e.excerpt.empty() && ciEquals(e.excerpt, r.value);
   }
   return false;
 }
@@ -226,31 +284,44 @@ const AllowRule* SafetyAllowlist::find(const std::string& id) const {
 
 namespace {
 // Parse an auto-assigned "aN" id back to N (0 when it is not that shape), so a
-// reload can keep the id counter ahead of every rule it read.
+// reload can keep the id counter ahead of every rule it read. Bounded manual parse
+// (NEVER std::stoul): a corrupt/hand-edited over-range digit run returns 0 rather
+// than throwing std::out_of_range, which on the 32-bit target would abort the device
+// on the first ensureLoaded() (CUM-215; the sibling device_identity.cpp guards the
+// same way).
 uint32_t autoIdSuffix(const std::string& id) {
   if (id.size() < 2 || id[0] != 'a') return 0;
-  for (size_t i = 1; i < id.size(); i++)
+  uint64_t v = 0;
+  for (size_t i = 1; i < id.size(); i++) {
     if (id[i] < '0' || id[i] > '9') return 0;
-  return (uint32_t)std::stoul(id.substr(1));
+    v = v * 10 + (uint32_t)(id[i] - '0');
+    if (v > 0xFFFFFFFFull) return 0;   // over-range: skip, do not overflow the counter
+  }
+  return (uint32_t)v;
 }
 }  // namespace
 
-bool SafetyAllowlist::hasRule(AllowScope scope, const std::string& value) const {
+bool SafetyAllowlist::hasRule(AllowScope scope, const std::string& value,
+                              const std::string& source) const {
   for (const auto& r : rules_)
-    if (r.scope == scope && r.value == value) return true;
+    if (r.scope == scope && r.value == value && r.source == source) return true;
   return false;
 }
 
-bool SafetyAllowlist::add(AllowScope scope, const std::string& value, uint32_t tsEpoch,
-                          std::string& outId, const std::string& id) {
+bool SafetyAllowlist::add(AllowScope scope, const std::string& value, const std::string& source,
+                          uint32_t tsEpoch, std::string& outId, const std::string& id) {
   const std::string v = trimmed(value);
   if (v.empty()) return false;                       // the anti-global guard
-  if ((int)rules_.size() >= cap_) return false;      // bounded
-  for (const auto& r : rules_)                        // no duplicate scope+value
-    if (r.scope == scope && r.value == v) { outId = r.id; return false; }
+  for (const auto& r : rules_)                        // dup FIRST: an already-allowed
+    if (r.scope == scope && r.value == v && r.source == source) {   // item is never "full"
+      outId = r.id;
+      return false;                                   // outId set: caller reads "already allowed"
+    }
+  if ((int)rules_.size() >= cap_) { outId.clear(); return false; }  // full: outId EMPTY
   AllowRule r;
   r.scope = scope;
   r.value = v;
+  r.source = source;
   r.tsEpoch = tsEpoch;
   if (!id.empty()) {
     r.id = id;
@@ -276,10 +347,11 @@ bool SafetyAllowlist::allows(const SafetyEntry& e) const {
 
 std::string encodeAllowLine(const AllowRule& r) {
   JsonDocument d;
-  d["id"]    = r.id;
-  d["scope"] = allowScopeName(r.scope);
-  d["value"] = r.value;
-  d["ts"]    = r.tsEpoch;
+  d["id"]     = r.id;
+  d["scope"]  = allowScopeName(r.scope);
+  d["value"]  = r.value;
+  d["source"] = r.source;
+  d["ts"]     = r.tsEpoch;
   std::string out;
   serializeJson(d, out);
   return out;
@@ -292,12 +364,13 @@ bool decodeAllowLine(const std::string& line, AllowRule& out) {
   if (deserializeJson(d, s) != DeserializationError::Ok) return false;
   AllowRule r;
   r.id = d["id"].as<std::string>();
-  if (r.id.empty()) return false;
+  if (!isValidAllowRuleId(r.id)) return false;   // reject a hostile/hand-edited id
   AllowScope sc;
   if (!allowScopeFromName(d["scope"].as<std::string>(), sc)) return false;
   r.scope = sc;
   r.value = d["value"].as<std::string>();
   if (!isConcreteAllowValue(r.value)) return false;   // never load a catch-all
+  r.source = d["source"].as<std::string>();
   r.tsEpoch = d["ts"].as<uint32_t>();
   out = r;
   return true;
@@ -322,7 +395,7 @@ int SafetyAllowlist::loadAll(const std::string& blob) {
     pos = (nl == std::string::npos) ? blob.size() : nl + 1;
     AllowRule r;
     if (!decodeAllowLine(line, r)) continue;
-    if (hasRule(r.scope, r.value)) continue;                 // drop a duplicate scope+value
+    if (hasRule(r.scope, r.value, r.source)) continue;       // drop a duplicate scope+value+source
     uint32_t n = autoIdSuffix(r.id);                         // keep the id counter ahead
     if (n >= nextSfx_) nextSfx_ = n + 1;
     rules_.push_back(std::move(r));

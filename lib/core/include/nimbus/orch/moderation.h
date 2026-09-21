@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include "nimbus/orch/rbac.h"
 
@@ -71,6 +72,13 @@ FailMode failModeFor(ModGate g);
 // point is that the fail-open/fail-closed contract lives in one testable place.
 ModAction decide(ModGate g, ClassifierVerdict v);
 
+// Should a Block be RECORDED as a scanner verdict on the Safety activity log? Only a
+// genuine classifier FLAG is: a fail-closed ERROR blocks the turn but is the ABSENCE
+// of a verdict, not flagged content, so persisting it as "blocked" would misstate
+// provenance and durably retain unflagged guest text (CUM-215). Allow/Unchecked are
+// never blocks, so never recorded.
+bool blockIsScannerVerdict(ClassifierVerdict v);
+
 // May an outbound reply skip the OutboundReply screen? ONLY genuine device-authored
 // system copy is exempt, and provenance is signalled OUT-OF-BAND by the emitting
 // code path (`systemProvenance`), NEVER by anything in the reply text. A guest or a
@@ -102,6 +110,12 @@ bool looksLikeInjection(const std::string& text);
 // class), so an owner "approve this type" (content-class) unblock is scoped to one
 // pattern instead of silencing the whole injection scan (CUM-215).
 std::string injectionPatternHit(const std::string& text);
+
+// EVERY injection pattern `text` trips, in catalog order (empty when none). The
+// world-content scan trusts fetched content only when the owner has allow-listed
+// EVERY pattern it hits: approving one pattern must not hide a different, later-listed
+// pattern that co-occurs with it (CUM-215; injectionPatternHit returns only the first).
+std::vector<std::string> injectionPatternHits(const std::string& text);
 
 }  // namespace orch
 }  // namespace nimbus

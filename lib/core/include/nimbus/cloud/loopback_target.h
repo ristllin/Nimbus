@@ -30,9 +30,10 @@ namespace cloud {
 // crossed the old 320 KB line (-> 336 KB). The danger-zone v2 offer predicate (CUM-15),
 // the sign-in countdown UI (CUM-295), and the music upload/list/play section (CUM-40)
 // then crossed 336 KB (-> 352 KB). The Safety ACTIVITY surface (CUM-215: the
-// blocked/suspected list + scoped allowlist UI and its JS) left only ~0.6 KB under the
-// 352 KB line, so it moves to 376 KB (assembled page ~340 KB + 16 KB headroom = ~356 KB
-// fits; base64 ~501 KB, ~11 KB under the 512 KB res frame - the static_assert bounds it).
+// blocked/suspected list + scoped allowlist UI and its JS) pushed the assembled page to
+// ~341 KB, so page + 16 KB headroom (~357 KB) landed ~5.5 KB OVER the 352 KB line, not
+// under it; it moves to 376 KB (~357 KB fits with room to spare; base64 ~501 KB, ~11 KB
+// under the 512 KB res frame - the static_assert bounds that).
 constexpr unsigned kLoopbackMaxRespBody = 376u * 1024u;
 
 // The relay frames each response body as base64 inside a res-frame bounded by this

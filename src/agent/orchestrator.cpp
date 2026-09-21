@@ -323,13 +323,18 @@ static nimbus::orch::ModAction moderateGate(nimbus::orch::ModGate gate, const St
   // otherwise the verdict is recorded to the bounded activity log for the Safety tab.
   if (a == ModAction::Block) {
     const std::string s(chatId.c_str()), tx(text.c_str());
+    const std::string src = modGateName(gate);   // inbound | outbound: the gate binding
     // The classifier returns no sub-category, so the rule is the coarse moderation
     // class (kCoarseModerationRule); the granular gate name goes to `source`. The
     // owner can unblock this sender or this exact content, but not "this type" (that
-    // would be the whole gate - forbidden by contentClassApprovable).
-    if (agent::safety::allowed(kCoarseModerationRule, s, tx)) return ModAction::Allow;
-    agent::safety::record(SafetyVerdict::Blocked, kCoarseModerationRule, "telegram", s,
-                          modGateName(gate), tx);
+    // would be the whole gate - forbidden by contentClassApprovable). The allow-rule is
+    // bound to this gate's source, so an inbound approval never quiets the outbound gate.
+    if (agent::safety::allowed(kCoarseModerationRule, s, src, tx)) return ModAction::Allow;
+    // Record ONLY a genuine classifier flag. A fail-closed Error (no key / outage) also
+    // returns Block here, but it is the absence of a verdict, not flagged content: do not
+    // persist unscreened guest text as "blocked" or make it reportable (CUM-215).
+    if (blockIsScannerVerdict(v))
+      agent::safety::record(SafetyVerdict::Blocked, kCoarseModerationRule, "telegram", s, src, tx);
   }
   return a;
 }

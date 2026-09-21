@@ -30,6 +30,12 @@ installs on your say-so ([how updates work](ota.md)).
   outage by falling back to a labeled keyword match over your stored memories, so
   recall no longer reads as empty. Saving a memory during an outage is refused
   with the real reason rather than stored without a vector.
+- **A new Safety activity surface shows what the scanner blocked or flagged.** Under
+  Assistant, Safety, Activity you see a list of the most recent blocked or suspected
+  items, newest first. From it you can approve an item to allow that sender, that exact
+  content, or that pattern from then on, dismiss it, or report it to Cumulo if you
+  subscribe. Approving is always scoped and bound to the gate it came from, never a
+  blanket off switch, and the Allowed items list below lets you revoke any approval.
 - **The LAN MCP endpoint no longer buffers a request before checking the device
   token.** An unauthenticated `POST /mcp` is refused with nothing kept in memory, and
   an authenticated request larger than 64 KB is refused rather than silently cut
