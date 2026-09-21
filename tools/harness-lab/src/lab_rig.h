@@ -216,7 +216,10 @@ class LabRig {
                             std::chrono::system_clock::now().time_since_epoch())
                             .count());
     };
-    mc.embed = [this](const std::string& text) { return embed(text); };
+    // CUM-435: the Embedder seam now threads the failure cause; the rig logs its
+    // own embed errors to stderr, so clear err here (empty vector still signals
+    // "unavailable" to the memory tools, which then degrade / refuse honestly).
+    mc.embed = [this](const std::string& text, std::string& err) { err.clear(); return embed(text); };
     orch::registerMemoryTools(reg_, mc);
 
     // Split by tool group so each registration (and its lambda) stays inside the

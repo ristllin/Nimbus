@@ -1,6 +1,9 @@
 #include "nimbus/orch/memory_tools.h"
 
+#include <algorithm>
+#include <cctype>
 #include <cmath>
+#include <utility>
 
 #include "nimbus/mem_cap.h"
 #include "nimbus/orch/caps.h"   // scratchpad tier/item caps -> capacity line (W11)
@@ -41,7 +44,163 @@ static std::vector<std::string> readSetFor(const Principal& who) {
   return allow;
 }
 
+// ---- honest embedding-failure reasons (CUM-435) -----------------------------
+// Map the device seam's raw err token (agent::embeddings::embedWith) to a class +
+// honest words. Secret-safe by construction: `detail` is only ever a KNOWN
+// provider slug or a numeric HTTP status, never arbitrary text from `raw`, so a
+// key-shaped string in `raw` cannot reach the tool result. Keep every token here
+// in step with what embeddings.cpp emits and the test that iterates the classes.
 namespace {
+bool rawStartsWith(const std::string& s, const char* p) { return s.rfind(p, 0) == 0; }
+
+// The status portion of an "HTTP ..." token: a known router refusal code maps to
+// its own class; otherwise ProviderError carrying ONLY the numeric status.
+EmbedFail classifyHttpToken(const std::string& raw, std::string& detail) {
+  if (raw.find("funding_cap_reached")  != std::string::npos) return EmbedFail::OutOfCredit;
+  if (raw.find("rate_limited")         != std::string::npos) return EmbedFail::RateLimited;
+  if (raw.find("endpoint_not_allowed") != std::string::npos) return EmbedFail::RouteNotAllowed;
+  std::string code;
+  for (size_t i = 5; i < raw.size(); i++) {   // digits after "HTTP " are secret-safe
+    const char c = raw[i];
+    if (c < '0' || c > '9') break;
+    code += c;
+  }
+  detail = code;
+  return EmbedFail::ProviderError;
+}
+}  // namespace
+
+EmbedFail classifyEmbedFail(const std::string& raw, std::string& detail) {
+  detail.clear();
+  if (raw.empty()) return EmbedFail::None;
+  // Exact-match tokens the device seam emits.
+  static const struct { const char* tok; EmbedFail kind; } kExact[] = {
+    {"empty text",     EmbedFail::BadRequest},
+    {"no model",       EmbedFail::NoModel},
+    {"tls busy",       EmbedFail::Busy},
+    {"connect failed", EmbedFail::Unreachable},
+    {"timeout",        EmbedFail::Timeout},
+    {"key rejected",   EmbedFail::KeyRejected},
+  };
+  for (const auto& e : kExact) if (raw == e.tok) return e.kind;
+  if (rawStartsWith(raw, "no embeddings key for ")) {
+    const std::string p = raw.substr(sizeof("no embeddings key for ") - 1);
+    // Name the provider ONLY when it is a known slug - never echo raw text.
+    static const char* kProviders[] = {"openai", "mistral", "cumulo", "anthropic", "zai"};
+    for (const char* known : kProviders) if (p == known) { detail = p; break; }
+    return EmbedFail::NoKey;
+  }
+  if (rawStartsWith(raw, "parse:")) return EmbedFail::BadResponse;
+  if (rawStartsWith(raw, "HTTP "))  return classifyHttpToken(raw, detail);
+  return EmbedFail::Unknown;
+}
+
+std::string embedFailWords(EmbedFail kind, const std::string& detail) {
+  // The two detail-bearing classes are explicit; the rest are a flat table.
+  if (kind == EmbedFail::NoKey)
+    return detail.empty() ? "no embeddings key for the configured provider"
+                          : ("no embeddings key for " + detail);
+  if (kind == EmbedFail::ProviderError)
+    return detail.empty() ? "provider error" : ("provider error HTTP " + detail);
+  static const struct { EmbedFail k; const char* w; } kW[] = {
+    {EmbedFail::None,            ""},
+    {EmbedFail::KeyRejected,     "the embeddings key was rejected"},
+    {EmbedFail::Busy,            "connection busy, retry"},
+    {EmbedFail::Unreachable,     "provider unreachable"},
+    {EmbedFail::Timeout,         "provider timed out"},
+    {EmbedFail::OutOfCredit,     "out of embedding credit for now"},
+    {EmbedFail::RateLimited,     "provider busy (rate limited)"},
+    {EmbedFail::RouteNotAllowed, "embeddings route not allowed for this provider"},
+    {EmbedFail::BadResponse,     "provider sent a malformed response"},
+    {EmbedFail::NoModel,         "no embeddings model configured"},
+    {EmbedFail::BadRequest,      "no text to embed"},
+    {EmbedFail::Unknown,         "unavailable"},
+  };
+  for (const auto& e : kW) if (e.k == kind) return e.w;
+  return "unavailable";
+}
+
+std::string embedFailReason(const std::string& raw) {
+  std::string detail;
+  const EmbedFail k = classifyEmbedFail(raw, detail);
+  std::string w = embedFailWords(k, detail);
+  if (w.empty()) w = "unavailable";
+  std::string out = "embeddings: " + w;
+  if (k == EmbedFail::NoKey) out += " (set an embeddings key in Settings > Providers)";
+  return out;
+}
+
+namespace {
+
+// Reason phrase for a search fallback label, given the seam's raw err.
+std::string embedFailLabelReason(const std::string& raw) {
+  std::string detail;
+  std::string w = embedFailWords(classifyEmbedFail(raw, detail), detail);
+  return w.empty() ? std::string("unavailable") : w;
+}
+
+// Mirror of VectorMemory nsVisible (orch_vector_memory.cpp): an empty allow-list
+// is unscoped; a legacy empty entry ns belongs to the owner. Kept in lockstep so
+// the lexical fallback enforces EXACTLY the semantic read boundary and can never
+// widen access.
+bool nsAllowsEntry(const std::string& entryNs, const std::vector<std::string>& allow) {
+  if (allow.empty()) return true;
+  const std::string eff = entryNs.empty() ? std::string(kOwnerNs) : entryNs;
+  for (const auto& a : allow) if (a == eff) return true;
+  return false;
+}
+
+std::string toLowerAscii(std::string s) {
+  for (char& c : s) c = (char)std::tolower((unsigned char)c);
+  return s;
+}
+
+// Lowercased query tokens (alphanumeric runs, length >= 2). Falls back to the
+// whole trimmed lowercased query when there is no such token (e.g. a non-Latin
+// query) so a plain substring match still works.
+std::vector<std::string> lexTokens(const std::string& query) {
+  std::vector<std::string> toks;
+  std::string cur;
+  for (char ch : query) {
+    const unsigned char c = (unsigned char)ch;
+    if (std::isalnum(c)) cur += (char)std::tolower(c);
+    else { if (cur.size() >= 2) toks.push_back(cur); cur.clear(); }
+  }
+  if (cur.size() >= 2) toks.push_back(cur);
+  if (toks.empty()) {
+    const std::string q = toLowerAscii(query);
+    const size_t a = q.find_first_not_of(" \t\r\n");
+    const size_t b = q.find_last_not_of(" \t\r\n");
+    if (a != std::string::npos) toks.push_back(q.substr(a, b - a + 1));
+  }
+  return toks;
+}
+
+// Mirror of VectorMemory::isExpiredRaw (orch_vector_memory.cpp) over the public
+// VecEntry fields, so the keyword fallback hides the SAME entries the semantic
+// path drops at query time (a fact the owner set to expire must not resurface
+// through the fallback). nowHours == 0 (clockless) disables the age check, exactly
+// like the engine.
+bool entryExpired(const VecEntry& e, uint32_t nowHours) {
+  if (e.permanentFlag || e.creatorFlag) return false;
+  if (e.importance < VectorMemory::kMinImportance) return true;
+  if (e.ttlHours <= 0) return false;
+  if (nowHours == 0) return false;
+  const uint32_t age = nowHours >= e.createdAtHours ? nowHours - e.createdAtHours : 0;
+  return (int64_t)age > (int64_t)e.ttlHours;
+}
+
+// Count query tokens whose text appears in `contentLc` (already lowercased).
+int lexScore(const std::string& contentLc, const std::vector<std::string>& toks) {
+  int hits = 0;
+  for (const auto& t : toks)
+    if (!t.empty() && contentLc.find(t) != std::string::npos) hits++;
+  return hits;
+}
+
+// Bound on entries examined by a keyword fallback, so a full store cannot turn a
+// degraded search into a long stall under the memory lock.
+constexpr size_t kLexScanMax = 2000;
 
 // Deterministic id from content (djb2). On-device a content hash is stable,
 // needs no RNG, and dedup handles near-collisions anyway.
@@ -111,8 +270,12 @@ ToolResult doWrite(const MemoryContext& ctx, JsonObjectConst a, const Principal&
   std::string content = strArg(a, "content");
   if (content.empty()) return ToolResult::fail("missing 'content'");
   if (!ctx.vec || !ctx.embed) return ToolResult::fail("memory engine unavailable");
-  std::vector<int8_t> vec = ctx.embed(content);
-  if (vec.empty()) return ToolResult::fail("embedding unavailable (provider offline?)");
+  std::string eerr;
+  std::vector<int8_t> vec = ctx.embed(content, eerr);
+  // No embedding, no store: the vector store has no deferred-embedding path
+  // (add() needs a full-width vector), so refuse HONESTLY with the real cause
+  // instead of the old fixed guess - never store the text as if it were embedded.
+  if (vec.empty()) return ToolResult::fail(embedFailReason(eerr) + " (memory not stored)");
 
   VecEntry e;
   e.id = contentId(content);
@@ -155,13 +318,21 @@ ToolResult doUpdate(const MemoryContext& ctx, JsonObjectConst a, const Principal
   if (content.empty()) return ToolResult::fail("missing 'content' (the new fact)");
   if (!ctx.vec || !ctx.embed) return ToolResult::fail("memory engine unavailable");
 
+  // Embed the NEW content FIRST: if embeddings are unavailable, refuse honestly
+  // BEFORE removing anything, so a failed update can never delete the old fact and
+  // leave nothing in its place (CUM-435).
+  std::string eerr;
+  std::vector<int8_t> vec = ctx.embed(content, eerr);
+  if (vec.empty()) return ToolResult::fail(embedFailReason(eerr) + " (memory not changed)");
+
   // Identify the memory to replace: explicit id, else the nearest match to 'old'/'query'.
   std::string oldId = strArg(a, "id");
   if (oldId.empty()) {
     std::string q = strArg(a, "old");
     if (q.empty()) q = strArg(a, "query");
     if (!q.empty()) {
-      std::vector<int8_t> qv = ctx.embed(q);
+      std::string qerr;
+      std::vector<int8_t> qv = ctx.embed(q, qerr);
       if (!qv.empty()) {
         auto hits = ctx.vec->search(qv, 1, 0, readSetFor(who));
         // Only treat it as "the same fact" if it's genuinely close (cosine sim >= 0.55),
@@ -176,8 +347,6 @@ ToolResult doUpdate(const MemoryContext& ctx, JsonObjectConst a, const Principal
     return ToolResult::fail("no such memory");
   const bool removed = !oldId.empty() && ctx.vec->remove(oldId);
 
-  std::vector<int8_t> vec = ctx.embed(content);
-  if (vec.empty()) return ToolResult::fail("embedding unavailable (provider offline?)");
   VecEntry e;
   e.ns = who.ns;   // the replacement belongs to the caller, like every write
   e.id = contentId(content);
@@ -243,6 +412,42 @@ ToolResult doPin(const MemoryContext& ctx, JsonObjectConst a, const Principal& w
   return ToolResult::ok(action + " ok (" + id + ")");
 }
 
+// Degraded recall when no embedding can be produced (CUM-435): a bounded,
+// case-insensitive keyword scan over the LIVE vector store, honoring the SAME
+// namespace read boundary the semantic path applies (nsAllowsEntry mirrors the
+// engine's nsVisible). Clearly labelled so the model never mistakes it for
+// semantic recall. Returns ok (degraded), never a bare failure, so a transient
+// embed outage no longer reads as "empty memory".
+ToolResult lexicalSearchFallback(const MemoryContext& ctx, const std::string& query,
+                                 int k, const Principal& who, const std::string& eerr) {
+  const std::string label = "keyword match, embeddings unavailable: " +
+                            embedFailLabelReason(eerr);
+  const std::vector<std::string> allow = readSetFor(who);
+  const std::vector<std::string> toks = lexTokens(query);
+  const uint32_t nowH = ctx.nowHours ? ctx.nowHours() : 0;
+  std::vector<std::pair<int, std::string>> found;   // (keyword hits, bullet)
+  size_t scanned = 0;
+  for (const auto& e : ctx.vec->getAll()) {          // importance-desc
+    if (++scanned > kLexScanMax) break;
+    if (!nsAllowsEntry(e.ns, allow)) continue;       // never widen the read boundary
+    if (entryExpired(e, nowH)) continue;             // same query-time TTL as semantic search
+    const int sc = lexScore(toLowerAscii(e.content), toks);
+    if (sc <= 0) continue;
+    found.push_back({sc, "- [" + std::to_string((int)(e.importance * 100)) + "%] " +
+                             e.content + "\n"});
+  }
+  // Rank by keyword hits desc; getAll() was importance-desc, so stable_sort keeps
+  // importance order within a tie.
+  std::stable_sort(found.begin(), found.end(),
+                   [](const std::pair<int, std::string>& x,
+                      const std::pair<int, std::string>& y) { return x.first > y.first; });
+  std::string out;
+  int n = 0;
+  for (const auto& f : found) { if (n >= k) break; out += f.second; n++; }
+  if (n == 0) return ToolResult::ok("No memories matched (" + label + ").");
+  return ToolResult::ok("Found " + std::to_string(n) + " memories (" + label + "):\n" + out);
+}
+
 // ---- memory.search ----------------------------------------------------------
 ToolResult doSearch(const MemoryContext& ctx, JsonObjectConst a, const Principal& who) {
   // A revoked (Unknown) principal keeps its namespace - the data is retained
@@ -257,8 +462,11 @@ ToolResult doSearch(const MemoryContext& ctx, JsonObjectConst a, const Principal
   int k = numArg(a, "n_results", kNum) ? (int)std::lround(kNum)
         : (ctx.cfg ? ctx.cfg->retrievalCount : 5);
   if (k < 1) k = 1;
-  std::vector<int8_t> qv = ctx.embed(query);
-  if (qv.empty()) return ToolResult::fail("embedding unavailable (provider offline?)");
+  std::string eerr;
+  std::vector<int8_t> qv = ctx.embed(query, eerr);
+  // Degrade instead of hard-failing: a keyword scan over the same rows + the same
+  // read boundary, clearly labelled, so recall is not simply "empty" (CUM-435).
+  if (qv.empty()) return lexicalSearchFallback(ctx, query, k, who, eerr);
 
   auto hits = ctx.vec->search(qv, k, ctx.nowHours(), readSetFor(who));   // TTL + v3.7.0 read boundary
   // Apply the user/model relevance threshold (similarity = 1 - distance).
@@ -289,6 +497,33 @@ static std::string archiveBullet(const std::string& content, float importance,
          " (id " + id + ")\n";
 }
 
+// Keyword fallback for the archive (CUM-435): same contract as the live-store
+// fallback (bounded, clearly labelled). getAll already applies the caller's read
+// set, so the namespace boundary is preserved.
+ToolResult lexicalArchiveFallback(const MemoryContext& ctx, const std::string& query,
+                                  int k, const Principal& who, const std::string& eerr) {
+  const std::string label = "keyword match, embeddings unavailable: " +
+                            embedFailLabelReason(eerr);
+  const std::vector<std::string> toks = lexTokens(query);
+  std::vector<std::pair<int, std::string>> found;
+  size_t scanned = 0;
+  for (const auto& e : ctx.archive->getAll(readSetFor(who))) {   // already ns-scoped
+    if (++scanned > kLexScanMax) break;
+    const int sc = lexScore(toLowerAscii(e.content), toks);
+    if (sc <= 0) continue;
+    found.push_back({sc, archiveBullet(e.content, e.importance, e.id)});
+  }
+  std::stable_sort(found.begin(), found.end(),
+                   [](const std::pair<int, std::string>& x,
+                      const std::pair<int, std::string>& y) { return x.first > y.first; });
+  std::string out;
+  int n = 0;
+  for (const auto& f : found) { if (n >= k) break; out += f.second; n++; }
+  if (n == 0) return ToolResult::ok("No matching archived memories (" + label + ").");
+  return ToolResult::ok("Found " + std::to_string(n) + " archived memories (" + label +
+                        "; restore one with action=restore, id=...):\n" + out);
+}
+
 ToolResult doArchiveList(const MemoryContext& ctx, JsonObjectConst a, const Principal& who) {
   double num;
   int limit = numArg(a, "limit", num) ? (int)std::lround(num) : 10;
@@ -311,8 +546,9 @@ ToolResult doArchiveSearch(const MemoryContext& ctx, JsonObjectConst a, const Pr
   int k = numArg(a, "n_results", num) ? (int)std::lround(num)
         : (ctx.cfg ? ctx.cfg->retrievalCount : 5);
   if (k < 1) k = 1;
-  std::vector<int8_t> qv = ctx.embed(query);
-  if (qv.empty()) return ToolResult::fail("embedding unavailable (provider offline?)");
+  std::string eerr;
+  std::vector<int8_t> qv = ctx.embed(query, eerr);
+  if (qv.empty()) return lexicalArchiveFallback(ctx, query, k, who, eerr);
   auto hits = ctx.archive->search(qv, k, readSetFor(who));
   float thr = ctx.cfg ? ctx.cfg->relevanceThreshold : 0.0f;
   std::string out;
@@ -335,8 +571,9 @@ static std::string resolveRestoreId(const MemoryContext& ctx, JsonObjectConst a,
   if (!id.empty()) return id;
   std::string q = strArg(a, "query");
   if (q.empty() || !ctx.embed) return std::string();
-  std::vector<int8_t> qv = ctx.embed(q);
-  if (qv.empty()) return std::string();
+  std::string qerr;
+  std::vector<int8_t> qv = ctx.embed(q, qerr);
+  if (qv.empty()) return std::string();   // restore-by-id still works; refuses cleanly
   auto hits = ctx.archive->search(qv, 1, readSetFor(who));
   if (!hits.empty() && (1.0f - hits[0].distance) >= 0.55f) return hits[0].id;
   return std::string();

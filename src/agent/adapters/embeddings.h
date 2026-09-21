@@ -12,9 +12,10 @@
 //
 // Config comes from agent::store (embedProvider/embedModel/embedDims, set-once).
 // LIVE-GATED: needs the matching provider key + STA WiFi; returns an empty
-// vector (with `err` set) when the key is missing, the network fails, or the
-// response is malformed - the memory.write/search tools surface that as
-// "embedding unavailable" rather than storing a garbage vector.
+// vector (with `err` set to the real cause: no key, key rejected, tls busy,
+// connect failed, timeout, HTTP <code> [+ router refusal code], or parse) rather
+// than storing a garbage vector. The memory tools map `err` to honest words and,
+// for search, fall back to a keyword scan (CUM-435).
 namespace agent {
 namespace embeddings {
 

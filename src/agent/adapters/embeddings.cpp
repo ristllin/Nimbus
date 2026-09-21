@@ -9,6 +9,7 @@
 #include "../../sys/tls_arbiter.h"
 #include "nimbus/orch/embedding.h"       // portable build/parse (host-tested)
 #include "nimbus/orch/vector_memory.h"   // quantize
+#include "nimbus/audio_req.h"            // core::parseErrorCode (host-tested refusal parse)
 
 namespace agent {
 namespace embeddings {
@@ -141,8 +142,28 @@ std::vector<int8_t> embedWith(const String& text, String& err, const String& pro
     tlsClose(client);
     arbiter::releaseWork();
 
+    // No status line parsed: separate a read timeout (deadline exceeded) from the
+    // provider dropping the connection, so the memory tools can say which (CUM-435).
+    if (code == 0) {
+      const bool deadlinePassed = (int32_t)(millis() - deadline) >= 0;
+      err = deadlinePassed ? "timeout" : "connect failed";
+      alogf("embed: no status (%s) heap=%u", err.c_str(), ESP.getFreeHeap());
+      return {};
+    }
     if (code == 401 || code == 403) { err = "key rejected"; return {}; }
-    if (code != 200)                { err = String("HTTP ") + code; alogf("embed: HTTP %d", code); return {}; }
+    if (code != 200) {
+      err = String("HTTP ") + code;
+      // A non-200 body may be a router/provider refusal {"error":"<code>"}. Append
+      // the machine code (bounded, secret-safe: parseErrorCode returns only the code
+      // field, and the memory tools echo just the numeric status unless it is a known
+      // refusal code) so funding_cap_reached / rate_limited / endpoint_not_allowed map
+      // to plain words upstream.
+      bool jok = false;
+      std::string rc = core::parseErrorCode(bodyResp.c_str(), &jok);
+      if (jok && !rc.empty()) { if (rc.size() > 48) rc.resize(48); err += String(" ") + rc.c_str(); }
+      alogf("embed: HTTP %d %s", code, rc.c_str());
+      return {};
+    }
 
     std::vector<float> floats;
     std::string perr;
