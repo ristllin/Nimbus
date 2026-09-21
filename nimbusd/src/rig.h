@@ -444,7 +444,7 @@ class NimbusdRig {
     mc.cfg = &memCfg_;
     mc.episodic = epi_.get();
     mc.nowHours = [] { return nowHours(); };
-    mc.embed = [this](const std::string& text) { return embed(text); };
+    mc.embed = [this](const std::string& text, std::string& err) { return embed(text, err); };
     orch::registerMemoryTools(reg_, mc);
 
     registerWebSearchTool();
@@ -528,10 +528,18 @@ class NimbusdRig {
              R"({"type":"object","properties":{}})");
   }
 
-  std::vector<int8_t> embed(const std::string& text) {
-    if (!opt_.embeddings) return {};
+  // Text -> quantized embedding, on the honest 2-arg Embedder contract (CUM-435):
+  // an empty return writes the REAL cause into `err` using the SAME token vocabulary
+  // the device seam emits (src/agent/adapters/embeddings.cpp), so orch::classifyEmbedFail
+  // names the true failure (no key / key rejected / HTTP nnn / parse: ...) instead of a
+  // fixed guess. `err` is left empty on success.
+  std::vector<int8_t> embed(const std::string& text, std::string& err) {
+    err.clear();
+    if (!opt_.embeddings)     { err = "no model"; return {}; }
     const std::string key = cfg_.providerKey(opt_.embedHost);
-    if (key.empty()) return {};
+    if (key.empty())          { err = "no embeddings key for " + opt_.embedHost; return {}; }
+    if (text.empty())         { err = "empty text"; return {}; }
+    if (opt_.embedModel.empty()) { err = "no model"; return {}; }
     agent::HttpRequest req;
     req.method = "POST";
     req.host = opt_.embedHost == "mistral" ? "api.mistral.ai" : "api.openai.com";
@@ -542,10 +550,16 @@ class NimbusdRig {
     req.body = orch::buildEmbeddingRequest(opt_.embedModel, text,
                                            opt_.embedHost == "mistral" ? 0 : opt_.embedDims);
     agent::HttpResponse resp;
-    std::string err;
-    if (!http_->exec(req, resp, err) || resp.status < 200 || resp.status >= 300) return {};
+    std::string httpErr;
+    if (!http_->exec(req, resp, httpErr))            { err = "connect failed"; return {}; }
+    if (resp.status == 401 || resp.status == 403)    { err = "key rejected"; return {}; }
+    if (resp.status < 200 || resp.status >= 300)     { err = "HTTP " + std::to_string(resp.status); return {}; }
     std::vector<float> f;
-    if (!orch::parseEmbeddingResponse(resp.body.c_str(), 0, f, err)) return {};
+    std::string perr;
+    if (!orch::parseEmbeddingResponse(resp.body.c_str(), 0, f, perr)) {
+      err = "parse: " + perr;
+      return {};
+    }
     return orch::VectorMemory::quantize(f);
   }
 
@@ -673,7 +687,8 @@ class NimbusdRig {
     d.recall = [this](const std::string& q, const orch::Principal&) {
       std::vector<std::string> out;
       if (!opt_.embeddings) return out;
-      auto v = embed(q);
+      std::string eerr;
+      auto v = embed(q, eerr);
       if (v.empty()) return out;
       for (const auto& hit : vec_.search(v, 5)) out.push_back(hit.content);
       return out;
