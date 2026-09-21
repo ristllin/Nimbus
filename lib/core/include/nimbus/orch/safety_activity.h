@@ -200,6 +200,8 @@ class SafetyAllowlist {
   int         loadAll(const std::string& blob);
 
  private:
+  bool hasRule(AllowScope scope, const std::string& value) const;   // dup check (scope+value)
+
   int cap_;
   std::vector<AllowRule> rules_;
   uint32_t nextSfx_ = 1;

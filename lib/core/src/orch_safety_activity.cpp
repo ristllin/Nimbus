@@ -220,6 +220,23 @@ const AllowRule* SafetyAllowlist::find(const std::string& id) const {
   return nullptr;
 }
 
+namespace {
+// Parse an auto-assigned "aN" id back to N (0 when it is not that shape), so a
+// reload can keep the id counter ahead of every rule it read.
+uint32_t autoIdSuffix(const std::string& id) {
+  if (id.size() < 2 || id[0] != 'a') return 0;
+  for (size_t i = 1; i < id.size(); i++)
+    if (id[i] < '0' || id[i] > '9') return 0;
+  return (uint32_t)std::stoul(id.substr(1));
+}
+}  // namespace
+
+bool SafetyAllowlist::hasRule(AllowScope scope, const std::string& value) const {
+  for (const auto& r : rules_)
+    if (r.scope == scope && r.value == value) return true;
+  return false;
+}
+
 bool SafetyAllowlist::add(AllowScope scope, const std::string& value, uint32_t tsEpoch,
                           std::string& outId, const std::string& id) {
   const std::string v = trimmed(value);
@@ -295,27 +312,15 @@ int SafetyAllowlist::loadAll(const std::string& blob) {
   rules_.clear();
   nextSfx_ = 1;
   size_t pos = 0;
-  while (pos < blob.size()) {
+  while (pos < blob.size() && (int)rules_.size() < cap_) {   // bounded on load too
     size_t nl = blob.find('\n', pos);
     std::string line = blob.substr(pos, nl == std::string::npos ? std::string::npos : nl - pos);
     pos = (nl == std::string::npos) ? blob.size() : nl + 1;
     AllowRule r;
     if (!decodeAllowLine(line, r)) continue;
-    if ((int)rules_.size() >= cap_) break;                       // bounded on load too
-    bool dup = false;
-    for (const auto& x : rules_)
-      if (x.scope == r.scope && x.value == r.value) { dup = true; break; }
-    if (dup) continue;
-    // Keep the auto-id counter ahead of any "aN" id we reloaded.
-    if (r.id.size() > 1 && r.id[0] == 'a') {
-      bool allDigits = true;
-      for (size_t i = 1; i < r.id.size(); i++)
-        if (r.id[i] < '0' || r.id[i] > '9') { allDigits = false; break; }
-      if (allDigits) {
-        uint32_t n = (uint32_t)std::stoul(r.id.substr(1));
-        if (n >= nextSfx_) nextSfx_ = n + 1;
-      }
-    }
+    if (hasRule(r.scope, r.value)) continue;                 // drop a duplicate scope+value
+    uint32_t n = autoIdSuffix(r.id);                         // keep the id counter ahead
+    if (n >= nextSfx_) nextSfx_ = n + 1;
     rules_.push_back(std::move(r));
   }
   return (int)rules_.size();
