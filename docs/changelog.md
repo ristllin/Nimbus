@@ -8,6 +8,13 @@ installs on your say-so ([how updates work](ota.md)).
 
 ## Unreleased
 
+- **Checking for updates over a remote connection no longer shows a gateway
+  error when the check actually worked.** The device accepts an update check right
+  away and runs the download-and-verify work in the background, so a check started
+  through the remote link returns promptly instead of the connection timing out at
+  the edge while the device quietly finished. The result still appears on the
+  Software update panel once it settles: up to date, a new version, or an honest
+  failure with the reason.
 - **The LAN MCP endpoint no longer buffers a request before checking the device
   token.** An unauthenticated `POST /mcp` is refused with nothing kept in memory, and
   an authenticated request larger than 64 KB is refused rather than silently cut

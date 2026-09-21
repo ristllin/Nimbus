@@ -121,9 +121,7 @@ class TestTunnelLoopback:
 class TestOtaCheckAnswersFast:
     _DEFINITIVE = {"up-to-date", "new-version", "unreachable", "failed"}
 
-    def test_check_accepts_fast_and_settles_via_state(
-        self, device, net, secrets, require_secret
-    ):
+    def test_check_accepts_fast_and_settles_via_state(self, device, net, secrets, require_secret):
         ip = lan_ip_or_skip(device, net, secrets, require_secret)
         tok = net.token()
         url = os.environ.get("NIMBUS_OTA_MANIFEST_URL", "").strip()
@@ -145,9 +143,7 @@ class TestOtaCheckAnswersFast:
             if r.status_code == 409:
                 # A local refusal (busy / no-wifi / low-heap) is still an instant,
                 # honest answer, never a network 5xx; the timing contract held above.
-                pytest.skip(
-                    f"check refused locally: {body.get('err')!r} ({body.get('msg')!r})"
-                )
+                pytest.skip(f"check refused locally: {body.get('err')!r} ({body.get('msg')!r})")
             assert body.get("ok") is True, f"202 accept body not ok: {body!r}"
             assert body.get("state") == "checking", (
                 f"the 202 accept should be self-describing as checking, got {body!r}"
