@@ -18,8 +18,11 @@ What runs here (deterministic, no LLM, no cost):
   E. no watchdog: the fill + the deep queries must not reboot the device.
 
 Residue: the rows live in session "hiltest-epi" (the standard fill session) and
-are left in place - they are what makes a re-run meaningful. Markers: hil + net;
-needs --allow-hardware, an Orchestrator board WITH SD, NIMBUS_TEST_IP/TOKEN.
+are left in place - they are what makes a re-run meaningful. Markers: net (a web/LAN
+leg reached over HTTP, no serial console, so NOT hil - the serial launchd tier has
+no LAN route and would only error on it; bench rerun 2 item 4). Run it DIRECTLY.
+Needs --allow-hardware, an Orchestrator board WITH SD, NIMBUS_TEST_IP/TOKEN; the
+board fixture skips LOUDLY if the host is set but unreachable from this process.
 """
 
 from __future__ import annotations
@@ -35,7 +38,7 @@ try:
 except ImportError:  # pragma: no cover
     requests = None
 
-pytestmark = [pytest.mark.hil, pytest.mark.net]
+pytestmark = [pytest.mark.net]
 
 NEEDLE = f"bilge pump serial is BP-{int(time.time()) % 100000}"
 # The BYTE budget binds first: kHydrateMaxBytes is 256 KB and a row here is
@@ -111,7 +114,14 @@ def board():
     tok = os.environ.get("NIMBUS_TEST_TOKEN")
     if not ip or not tok:
         pytest.skip("set NIMBUS_TEST_IP + NIMBUS_TEST_TOKEN")
-    st = _state(ip, tok)
+    try:
+        st = _state(ip, tok)
+    except requests.RequestException as exc:
+        pytest.skip(
+            f"NIMBUS_TEST_IP is set but the board is unreachable over HTTP from this "
+            f"process ({exc}). L26 is a web/LAN leg: run it DIRECTLY (not under the "
+            f"serial launchd job, which has no LAN route on this Mac). See PR_BODY runbook."
+        )
     if st.get("mode") != 1:
         pytest.skip("not in Orchestrator mode")
     if not st.get("memSd"):

@@ -23,10 +23,15 @@ Parts A–C are deterministic (they use the TEST-only /api/test/resultput +
 /api/test/astool seams - no LLM, no cost) and carry the ``net`` marker. Part D is
 ``agent`` (deselected by default like the other paid suites).
 
-Markers: ``hil`` + ``net`` (+ ``agent`` on Part D); needs ``--allow-hardware``, a
-LAN-reachable Orchestrator-mode board, and the token (NIMBUS_TEST_TOKEN / WEBTOK?).
-The seams are compiled only in ``[env:test]`` - a production board 404s them, and
-the test skips LOUDLY on 404 so a mis-flashed board can't read as a pass.
+Markers: ``net`` (+ ``agent`` on Part D). This is a web/LAN leg reached entirely
+over HTTP (no serial console), so it carries ``net``, NOT ``hil`` - the serial tier
+(``-m hil``, run under the launchd job, which has no LAN route on this Mac) must not
+pick it up and error on an unreachable host (bench rerun 2 item 4). Run it DIRECTLY.
+Needs ``--allow-hardware``, a LAN-reachable Orchestrator-mode board, and the token
+(NIMBUS_TEST_TOKEN / WEBTOK?); the ``board`` fixture skips LOUDLY if the host is set
+but unreachable from this process. The seams are compiled only in ``[env:test]`` - a
+production board 404s them, and the test skips LOUDLY on 404 so a mis-flashed board
+can't read as a pass.
 """
 
 from __future__ import annotations
@@ -42,7 +47,7 @@ try:
 except ImportError:  # pragma: no cover
     requests = None
 
-pytestmark = [pytest.mark.hil, pytest.mark.net]
+pytestmark = [pytest.mark.net]
 
 # Two distinct NON-owner chats -> two distinct namespaces (nsForChat(id, admin=False)).
 # Neither is the owner, so neither has readAll - the scoping check is real.
@@ -107,7 +112,14 @@ def board():
     tok = os.environ.get("NIMBUS_TEST_TOKEN")
     if not ip or not tok:
         pytest.skip("set NIMBUS_TEST_IP + NIMBUS_TEST_TOKEN (WEBTOK?) to run L24")
-    st = requests.get(_u(ip, tok, "/api/state"), timeout=10).json()
+    try:
+        st = requests.get(_u(ip, tok, "/api/state"), timeout=10).json()
+    except requests.RequestException as exc:
+        pytest.skip(
+            f"NIMBUS_TEST_IP is set but the board is unreachable over HTTP from this "
+            f"process ({exc}). L24 is a web/LAN leg: run it DIRECTLY (not under the "
+            f"serial launchd job, which has no LAN route on this Mac). See PR_BODY runbook."
+        )
     if st.get("mode") != 1:
         pytest.skip("board is not in Orchestrator mode - flash/MODE 1 first")
     return ip, tok

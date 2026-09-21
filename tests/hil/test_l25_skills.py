@@ -9,8 +9,11 @@ no LLM, no cost):
   D. reserved built-in ids refuse agent saves (prompt-substitution guard);
   E. owner approval (POST /api/skills/approve) activates a pending capsule.
 
-Residue: none (finally-deletes both test capsules). Markers: hil + net; needs
---allow-hardware, an Orchestrator board with SD, NIMBUS_TEST_IP/TOKEN.
+Residue: none (finally-deletes both test capsules). Markers: net (a web/LAN leg
+reached over HTTP, no serial console, so NOT hil - the serial launchd tier has no
+LAN route and would only error on it; bench rerun 2 item 4). Run it DIRECTLY. Needs
+--allow-hardware, an Orchestrator board with SD, NIMBUS_TEST_IP/TOKEN; the board
+fixture skips LOUDLY if the host is set but unreachable from this process.
 """
 
 from __future__ import annotations
@@ -26,7 +29,7 @@ try:
 except ImportError:  # pragma: no cover
     requests = None
 
-pytestmark = [pytest.mark.hil, pytest.mark.net]
+pytestmark = [pytest.mark.net]
 
 GUEST = "925001"  # not allow-listed => no admin perms
 MARK = f"MARKER-L25-{int(time.time()) % 100000}"
@@ -64,7 +67,14 @@ def board():
     tok = os.environ.get("NIMBUS_TEST_TOKEN")
     if not ip or not tok:
         pytest.skip("set NIMBUS_TEST_IP + NIMBUS_TEST_TOKEN")
-    st = requests.get(_u(ip, tok, "/api/state"), timeout=10).json()
+    try:
+        st = requests.get(_u(ip, tok, "/api/state"), timeout=10).json()
+    except requests.RequestException as exc:
+        pytest.skip(
+            f"NIMBUS_TEST_IP is set but the board is unreachable over HTTP from this "
+            f"process ({exc}). L25 is a web/LAN leg: run it DIRECTLY (not under the "
+            f"serial launchd job, which has no LAN route on this Mac). See PR_BODY runbook."
+        )
     if st.get("mode") != 1:
         pytest.skip("not in Orchestrator mode")
     if not st.get("memSd"):
