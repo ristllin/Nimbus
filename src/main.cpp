@@ -5060,6 +5060,12 @@ void loop() {
     }
   }
 
+  // CUM-447: re-arm a low-memory-deferred provider verify when its backoff comes
+  // due. Self-gated (online, no turn in flight, internally throttled) and reuses the
+  // same self-deleting, TLS-arbited verify task as the capProbe tick above - no new
+  // task, no new TLS slot. Runs in either mode (deferrals bite hardest in Notifier).
+  agent::provider_verify::pumpRetry();
+
   // Auto-revert a POST /api/preview once its window elapses: nothing else
   // necessarily calls refreshRing() again on its own, so this is the one place
   // that proactively drops back to the live composed state.

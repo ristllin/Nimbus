@@ -34,11 +34,29 @@ bool pending();
 
 // The machine-readable reason for `provider`'s LAST verify outcome, for the web
 // UI badge (CUM-77 x1 §4; contract in lanes/L1/PROGRESS.md). One of:
-//   nocredits | router_outdated | deferred | connectfail | tlsbusy | "" (none)
+//   nocredits | router_outdated | low-memory | connectfail | tlsbusy | "" (none)
 // Empty when verified (result 1), plainly rejected (0), or a generic transient.
 // Emitted into the provider objects of /api/state, /api/orch and /api/models as
 // `vfyReason`. verify===1 overrides it (the badge shows verified regardless).
 String reason(const String& provider);
+
+// The measured largest contiguous INTERNAL block (bytes) from `provider`'s last
+// low-memory deferral, and the fixed gate it had to clear. The web UI shows both in
+// the deferred pill's hover ("largest free block 11 KB, needs 8 KB"). deferMax8 is
+// 0 for a provider that never deferred; deferFloor is a compile-time constant.
+uint32_t deferMax8(const String& provider);
+uint32_t deferFloor();
+
+// Re-arm pump for low-memory deferrals (CUM-447). Call once per main-loop pass: it
+// re-requests a verify for any provider whose deferral backoff is due, provided the
+// device is free (online, no turn in flight, no verify already queued). Reuses the
+// existing self-deleting, TLS-arbited verify task - no new task, no new TLS slot.
+// The Verify button still forces one immediately via request().
+void pumpRetry();
+
+// True while at least one provider has stayed low-memory-deferred past the retry
+// window (the Memory health row surfaces this in one line).
+bool anyDeferredStuck();
 
 }  // namespace provider_verify
 }  // namespace agent
