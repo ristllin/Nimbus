@@ -29,6 +29,7 @@ import time
 import pytest
 
 from device import FRESH_BOOT_CEILING_S, ExpectTimeout
+from test_l4_network import lan_ip_or_skip
 
 
 # --- helpers -----------------------------------------------------------------
@@ -101,6 +102,75 @@ class TestTunnelLoopback:
         _require_wifi(device)
         m = device.cmd_re("CLOUDLOOP /", r"CLOUDLOOP\s+/\s+->\s+(-?\d+)", timeout=20.0)
         assert int(m.group(1)) == 200, "the device UI root did not serve over the loopback path"
+
+
+# ============================================================================
+# CUM-441: a tunneled OTA check must never surface a raw 5xx. POST /api/ota/check
+# runs the manifest fetch + signature verify OFF the AsyncTCP web task
+# (requestCheck spawns the self-deleting checkTask, which takes the single TLS
+# arbiter slot), so the browser gets an immediate 202 accept and the origin /
+# tunnel budget can never expire mid-request the way it did pre-fix (the H4
+# v0.4.37 tunnel run saw a raw Cloudflare 502 while the device quietly finished
+# the check and /api/state then read ota=available). This LAN leg times the accept
+# and reads the settled verdict back from /api/state; the tunnel property follows
+# from the fast LAN answer. Point it at a bench manifest with
+# NIMBUS_OTA_MANIFEST_URL (else it runs against the real feed - any DEFINITIVE
+# verdict, unreachable included, still proves the timing + settle contract).
+# ============================================================================
+@pytest.mark.net
+class TestOtaCheckAnswersFast:
+    _DEFINITIVE = {"up-to-date", "new-version", "unreachable", "failed"}
+
+    def test_check_accepts_fast_and_settles_via_state(
+        self, device, net, secrets, require_secret
+    ):
+        ip = lan_ip_or_skip(device, net, secrets, require_secret)
+        tok = net.token()
+        url = os.environ.get("NIMBUS_OTA_MANIFEST_URL", "").strip()
+        if url:
+            device.set_ota_url(url)
+        try:
+            # The accept must return well inside the ~2 s the finding cares about:
+            # the fetch + verify run off the web task, so this never blocks on them.
+            t0 = time.monotonic()
+            r = net.post("/api/ota/check", {"t": tok}, ip=ip, timeout=10.0)
+            dt = time.monotonic() - t0
+            assert dt < 2.0, (
+                f"POST /api/ota/check took {dt:.2f}s to answer; it must accept OFF "
+                "the web task (<2s) so a tunneled check can never leak a raw upstream "
+                "5xx while the device finishes the work (CUM-441)."
+            )
+            assert r.status_code in (202, 409), f"unexpected status {r.status_code}"
+            body = r.json()
+            if r.status_code == 409:
+                # A local refusal (busy / no-wifi / low-heap) is still an instant,
+                # honest answer, never a network 5xx; the timing contract held above.
+                pytest.skip(
+                    f"check refused locally: {body.get('err')!r} ({body.get('msg')!r})"
+                )
+            assert body.get("ok") is True, f"202 accept body not ok: {body!r}"
+            assert body.get("state") == "checking", (
+                f"the 202 accept should be self-describing as checking, got {body!r}"
+            )
+
+            # The verdict is NOT in the accept - it settles asynchronously and the
+            # client reads it from /api/state's otaResult. Poll until it is
+            # definitive; a poll must never hang on 'pending' (CUM-249/CUM-441).
+            result = "pending"
+            deadline = time.monotonic() + 60.0
+            while time.monotonic() < deadline:
+                st = net.get_json("/api/state", ip=ip, timeout=5.0)
+                result = str(st.get("otaResult", "pending"))
+                if result and result != "pending":
+                    break
+                time.sleep(1.0)
+            assert result in self._DEFINITIVE, (
+                "the async check never settled to a definitive /api/state otaResult "
+                f"(last={result!r}); a poller would hang forever."
+            )
+        finally:
+            if url:
+                device.set_ota_url("")  # restore the real manifest URL (RAM-only)
 
 
 # ============================================================================
