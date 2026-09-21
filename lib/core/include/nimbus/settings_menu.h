@@ -135,10 +135,11 @@ class SettingsMenu {
   bool usbArmRequested() const { return usbArmRequested_; }
   void clearUsbArmRequest() { usbArmRequested_ = false; }
 
-  // Voice providers (Sound submenu cycles; 0 Mistral / 1 OpenAI).
-  void setSttProvider(int v) { sttProv_ = v ? 1 : 0; }
+  // Voice providers (Sound submenu cycles; 0 Mistral / 1 OpenAI / 2 Cumulo Nimbus).
+  // Values appended only (never reordered): a stored 0/1 keeps its old meaning.
+  void setSttProvider(int v) { sttProv_ = (v >= 0 && v <= 2) ? v : 0; }
   int  sttProvider() const { return sttProv_; }
-  void setTtsProvider(int v) { ttsProv_ = v ? 1 : 0; }
+  void setTtsProvider(int v) { ttsProv_ = (v >= 0 && v <= 2) ? v : 0; }
   int  ttsProvider() const { return ttsProv_; }
 
   // True while the Connectivity submenu is showing; lets the device overlay the

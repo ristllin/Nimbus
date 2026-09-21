@@ -1009,7 +1009,9 @@ static void test_saver_cycle_and_snap() {
   TEST_ASSERT_EQUAL(60, m.saverMinutes());
 }
 
-// Sound > Dictation / Spoken replies cycle Mistral <-> OpenAI and dirty.
+// Sound > Dictation / Spoken replies cycle Mistral -> OpenAI -> Cumulo Nimbus and
+// dirty. Class test (CUM-439): the row must visit EVERY voice provider and wrap,
+// so a future added provider that is not in the cycle fails here.
 static void test_provider_rows_cycle() {
   Config c;
   SettingsMenu m(c);
@@ -1022,12 +1024,21 @@ static void test_provider_rows_cycle() {
   TEST_ASSERT_TRUE(contains(viewOf(m).items[3], "Dictation: Mistral"));
   TEST_ASSERT_TRUE(contains(viewOf(m).items[4], "Spoken replies: OpenAI"));
   m.clearDirty();
-  m.onClick();
+  m.onClick();                                     // 0 -> 1 OpenAI
   TEST_ASSERT_EQUAL(1, m.sttProvider());
   TEST_ASSERT_TRUE(m.dirty());
   TEST_ASSERT_TRUE(contains(viewOf(m).items[3], "Dictation: OpenAI"));
+  m.onClick();                                     // 1 -> 2 Cumulo Nimbus
+  TEST_ASSERT_EQUAL(2, m.sttProvider());
+  TEST_ASSERT_TRUE(contains(viewOf(m).items[3], "Dictation: Cumulo Nimbus"));
+  m.onClick();                                     // 2 -> 0 Mistral (wraps)
+  TEST_ASSERT_EQUAL(0, m.sttProvider());
+  TEST_ASSERT_TRUE(contains(viewOf(m).items[3], "Dictation: Mistral"));
   m.onRotate(+1);                                  // -> Spoken replies
-  m.onClick();
+  m.onClick();                                     // 1 -> 2 Cumulo Nimbus
+  TEST_ASSERT_EQUAL(2, m.ttsProvider());
+  TEST_ASSERT_TRUE(contains(viewOf(m).items[4], "Spoken replies: Cumulo Nimbus"));
+  m.onClick();                                     // 2 -> 0 Mistral (wraps)
   TEST_ASSERT_EQUAL(0, m.ttsProvider());
   TEST_ASSERT_TRUE(contains(viewOf(m).items[4], "Spoken replies: Mistral"));
 }

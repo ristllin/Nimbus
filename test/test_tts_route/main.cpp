@@ -167,6 +167,16 @@ static void test_voice_active_explicit_cumulo_selection(void) {
   TEST_ASSERT_EQUAL_STRING("cumulo",  voiceActiveProvider("cumulo", false, false, false).c_str());
 }
 
+static void test_voice_active_explicit_cumulo_wins_over_present_mistral(void) {
+  // CUM-439 acceptance: the whole point of MAKING cumulo selectable is that an
+  // explicit cumulo choice beats a present mistral (or openai) key. A device with
+  // BOTH a cumulo key AND a mistral key, configured to cumulo, speaks through the
+  // router - it must NOT silently fall back to the mistral key it also holds.
+  TEST_ASSERT_EQUAL_STRING("cumulo", voiceActiveProvider("cumulo", false, true, true).c_str());
+  TEST_ASSERT_EQUAL_STRING("cumulo", voiceActiveProvider("cumulo", true, false, true).c_str());
+  TEST_ASSERT_EQUAL_STRING("cumulo", voiceActiveProvider("cumulo", true, true, true).c_str());
+}
+
 // ---- CUM-376: refusal code -> honest one-line status (never silence) -----------
 
 static void test_refusal_status_known_codes(void) {
@@ -306,6 +316,7 @@ int main(int, char**) {
   RUN_TEST(test_voice_active_one_key_device_falls_to_cumulo);
   RUN_TEST(test_voice_active_byok_wins_over_cumulo);
   RUN_TEST(test_voice_active_explicit_cumulo_selection);
+  RUN_TEST(test_voice_active_explicit_cumulo_wins_over_present_mistral);
   RUN_TEST(test_refusal_status_known_codes);
   RUN_TEST(test_refusal_status_unknown_code_has_safe_default);
   RUN_TEST(test_refusal_status_copy_hygiene);

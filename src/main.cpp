@@ -3661,8 +3661,10 @@ static void openSettingsMenu() {
   g_menu.setSaverMinutes(agent::store::saverMin());
   g_menu.setAutoUpdate(agent::store::otaAutoUpdate());
   g_menu.setUsbConfirm(agent::store::usbUpdateConfirm());  // Confirm USB updates (CUM-391)
-  g_menu.setSttProvider(agent::store::sttProvider() == "openai" ? 1 : 0);
-  g_menu.setTtsProvider(agent::store::ttsProvider() == "openai" ? 1 : 0);
+  g_menu.setSttProvider(agent::store::sttProvider() == "cumulo" ? 2
+                        : agent::store::sttProvider() == "openai" ? 1 : 0);
+  g_menu.setTtsProvider(agent::store::ttsProvider() == "cumulo" ? 2
+                        : agent::store::ttsProvider() == "openai" ? 1 : 0);
   // OTA is Orchestrator-mode-only (Notifier's BLE owns the update RAM): the
   // Software update submenu renders Check as unavailable in Notifier mode.
   g_menu.setOtaAllowed(g_orchMode);
@@ -4095,8 +4097,10 @@ static void settleMenuAfterMutation(uint32_t now) {
     if (g_menu.usbConfirm() != agent::store::usbUpdateConfirm())
       agent::store::setUsbUpdateConfirm(g_menu.usbConfirm());  // Confirm USB updates (CUM-391)
     {
-      const String stt = g_menu.sttProvider() ? "openai" : "mistral";
-      const String tts = g_menu.ttsProvider() ? "openai" : "mistral";
+      const String stt = g_menu.sttProvider() == 2 ? "cumulo"
+                         : g_menu.sttProvider() ? "openai" : "mistral";
+      const String tts = g_menu.ttsProvider() == 2 ? "cumulo"
+                         : g_menu.ttsProvider() ? "openai" : "mistral";
       if (stt != agent::store::sttProvider()) agent::store::setSttProvider(stt);
       if (tts != agent::store::ttsProvider()) {
         // Mirrors the web UI: a provider change resets the picked voice to
