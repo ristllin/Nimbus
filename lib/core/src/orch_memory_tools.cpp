@@ -176,6 +176,20 @@ std::vector<std::string> lexTokens(const std::string& query) {
   return toks;
 }
 
+// Mirror of VectorMemory::isExpiredRaw (orch_vector_memory.cpp) over the public
+// VecEntry fields, so the keyword fallback hides the SAME entries the semantic
+// path drops at query time (a fact the owner set to expire must not resurface
+// through the fallback). nowHours == 0 (clockless) disables the age check, exactly
+// like the engine.
+bool entryExpired(const VecEntry& e, uint32_t nowHours) {
+  if (e.permanentFlag || e.creatorFlag) return false;
+  if (e.importance < VectorMemory::kMinImportance) return true;
+  if (e.ttlHours <= 0) return false;
+  if (nowHours == 0) return false;
+  const uint32_t age = nowHours >= e.createdAtHours ? nowHours - e.createdAtHours : 0;
+  return (int64_t)age > (int64_t)e.ttlHours;
+}
+
 // Count query tokens whose text appears in `contentLc` (already lowercased).
 int lexScore(const std::string& contentLc, const std::vector<std::string>& toks) {
   int hits = 0;
@@ -410,11 +424,13 @@ ToolResult lexicalSearchFallback(const MemoryContext& ctx, const std::string& qu
                             embedFailLabelReason(eerr);
   const std::vector<std::string> allow = readSetFor(who);
   const std::vector<std::string> toks = lexTokens(query);
+  const uint32_t nowH = ctx.nowHours ? ctx.nowHours() : 0;
   std::vector<std::pair<int, std::string>> found;   // (keyword hits, bullet)
   size_t scanned = 0;
   for (const auto& e : ctx.vec->getAll()) {          // importance-desc
     if (++scanned > kLexScanMax) break;
     if (!nsAllowsEntry(e.ns, allow)) continue;       // never widen the read boundary
+    if (entryExpired(e, nowH)) continue;             // same query-time TTL as semantic search
     const int sc = lexScore(toLowerAscii(e.content), toks);
     if (sc <= 0) continue;
     found.push_back({sc, "- [" + std::to_string((int)(e.importance * 100)) + "%] " +

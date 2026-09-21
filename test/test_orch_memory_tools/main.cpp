@@ -801,6 +801,22 @@ static void test_search_fallback_is_bounded_by_n_results() {
   TEST_ASSERT_TRUE(r.output.find("- [", first + 1) == std::string::npos);   // exactly one bullet
 }
 
+// The keyword fallback applies the SAME query-time TTL as semantic search: a fact
+// the owner set to expire must not resurface through the fallback (CUM-435 review).
+static void test_search_fallback_hides_expired_like_semantic() {
+  ToolRegistry reg = buildServer();   // g_now = 100
+  TEST_ASSERT_TRUE(call(reg, "memory.write",
+      R"({"content":"the door code is 4417","ttl":"session"})").success);   // 12h ttl
+  g_embedFail = true; g_embedErr = "connect failed";
+  // Fresh: the fallback finds it by keyword.
+  TEST_ASSERT_TRUE(has(call(reg, "memory.search", R"({"query":"door code"})").output, "4417"));
+  // 20h later it is expired: the fallback must hide it, exactly like semantic search.
+  g_now = 120;
+  ToolResult r = call(reg, "memory.search", R"({"query":"door code"})");
+  TEST_ASSERT_FALSE(has(r.output, "4417"));
+  TEST_ASSERT_TRUE(has(r.output, "keyword match, embeddings unavailable"));
+}
+
 // memory.write without an embedding refuses with the real cause and stores NOTHING
 // (never silently as if embedded).
 static void test_write_without_embedding_refuses_honestly() {
@@ -886,6 +902,7 @@ int main(int, char**) {
   RUN_TEST(test_search_falls_back_to_keyword_when_embeddings_down);
   RUN_TEST(test_search_fallback_honors_namespace_scoping);
   RUN_TEST(test_search_fallback_is_bounded_by_n_results);
+  RUN_TEST(test_search_fallback_hides_expired_like_semantic);
   RUN_TEST(test_write_without_embedding_refuses_honestly);
   RUN_TEST(test_update_without_embedding_keeps_old_fact);
   RUN_TEST(test_archive_search_falls_back_to_keyword);
