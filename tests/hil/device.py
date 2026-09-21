@@ -1078,3 +1078,69 @@ class Device:
         manual.confirm(runbook, timeout=120)
         # Operator says it's back - re-establish the link or fail loud.
         self.reopen_after_reenumerate()
+
+    # -- F10 (CUM-248) sleep/wake soak helper (appended; keep small) ---------
+    def power_off_and_wake(
+        self, timer_s: int, notice_s: float = 6.0, ready_timeout: float = 30.0
+    ) -> "WakeResult":
+        """Drive ONE clean power-off -> timer-wake -> fresh-boot cycle and prove it.
+
+        Sends ``POWEROFF <timer_s>`` (the test-only timed deep sleep), lets the chip
+        show its shutdown notice and actually enter deep sleep (the USB-CDC endpoint
+        drops with the chip - reopening before it sleeps would grab the still-live
+        endpoint), then waits for the wake boot to re-enumerate and confirms it from
+        the boot stream (``rst:`` -> READY, the same honest oracle reboot_and_confirm
+        uses) rather than a STATUS poll the post-boot SD scan blocks.
+
+        Returns a WakeResult(mode, ip, saw_reset, boot_latency_s, cycle_s). Raises
+        BootError on a panic / reboot loop, DeviceLostError if the node never came
+        back. ``boot_latency_s`` is the wake-to-READY time (first rst: -> beacon), the
+        measurable proxy for wake latency; ``cycle_s`` is the whole command->READY
+        wall clock."""
+        self.drain(quiet=0.2)
+        self.send(f"POWEROFF {timer_s}")
+        # Confirm the command was accepted before the console goes dark with the chip.
+        self.expect("POWEROFF entering deep sleep", timeout=5.0)
+        t0 = time.time()
+        # Let the shutdown notice (~4.8 s) land and the chip enter deep sleep so the
+        # endpoint drops. Only THEN start hunting for the wake re-enumeration.
+        self.close()
+        time.sleep(notice_s)
+        saved = self.enumerate_timeout
+        self.enumerate_timeout = max(saved, float(timer_s) + 20.0)
+        try:
+            self.reopen_after_reenumerate(drain_boot=False)
+            boot = self._scan_boot(timeout=ready_timeout)
+        finally:
+            self.enumerate_timeout = saved
+        ready_at = time.time()
+        boot_latency = (ready_at - boot.reset_at) if boot.reset_at is not None else None
+        return WakeResult(
+            mode=boot.mode,
+            ip=boot.ip,
+            saw_reset=boot.saw_reset,
+            boot_latency_s=boot_latency,
+            cycle_s=ready_at - t0,
+        )
+
+
+class WakeResult:
+    """What one power_off_and_wake cycle showed (CUM-248). ``boot_latency_s`` is the
+    wake-to-READY time (first reset marker -> beacon); ``cycle_s`` is the whole
+    command->READY wall clock; ``saw_reset`` is the boot stream's own proof the chip
+    really restarted this cycle (vs a beacon eaten by the reopen)."""
+
+    __slots__ = ("mode", "ip", "saw_reset", "boot_latency_s", "cycle_s")
+
+    def __init__(self, mode, ip, saw_reset, boot_latency_s, cycle_s):
+        self.mode = mode
+        self.ip = ip
+        self.saw_reset = saw_reset
+        self.boot_latency_s = boot_latency_s
+        self.cycle_s = cycle_s
+
+    def __repr__(self) -> str:
+        return (
+            f"WakeResult(mode={self.mode}, saw_reset={self.saw_reset}, "
+            f"boot_latency_s={self.boot_latency_s}, cycle_s={self.cycle_s:.1f})"
+        )
