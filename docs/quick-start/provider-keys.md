@@ -36,6 +36,15 @@ Any one verified key runs the assistant. If you are not sure:
 
 You can add more providers later. You only need one to finish setup.
 
+## After you paste a key
+
+Tap **Verify** and the device runs a quick check against the provider, then shows a
+badge: verified, key rejected (the key is wrong or has no credit), or **Verification
+deferred**. Deferred means the device was low on working memory at that moment, so it
+saved your key and skipped the check rather than risk a failed one. Nothing is wrong
+with the key. The device checks it again on its own once memory frees up, and you can
+tap **Verify** any time to retry now. Hover the badge to see the numbers behind it.
+
 ---
 
 ## Mistral (recommended start)

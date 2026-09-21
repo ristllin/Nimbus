@@ -8,6 +8,15 @@ installs on your say-so ([how updates work](ota.md)).
 
 ## Unreleased
 
+- **A deferred key check now explains itself and retries on its own.** When you
+  paste a provider key and the device is low on working memory, it saves the key and
+  shows "Verification deferred" instead of a failed check. The badge and a line under
+  the key field now say what happened and what happens next: the key is saved, and it
+  is checked again automatically when memory frees up, or you can tap Verify to retry.
+  Hovering the badge shows the measured numbers (the largest free block and the amount
+  the check needs). The device re-runs the check by itself on a short, backing-off
+  schedule while memory is tight, and the Memory health row notes when a check has
+  been waiting a while.
 - **Checking for updates over a remote connection no longer shows a gateway
   error when the check actually worked.** The device accepts an update check right
   away and runs the download-and-verify work in the background, so a check started
