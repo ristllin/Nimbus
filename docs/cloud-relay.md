@@ -93,12 +93,32 @@ keeps):
 | Battery | Real reading | Always on external power (hosted) |
 | Sound (mic, speaker, tones) | Real hardware | Not present (no mic/speaker test buttons) |
 | Wi-Fi and network | Real radio | Managed by the platform (no AP or station line shown) |
+| Version | The firmware version, shown in the header | The same version, shown the same way (the engine version, like v4.5.x, not a container tag) |
 | Software update | Device firmware update | The platform rolls the instance image; the update panel says so plainly (no device OTA controls) |
 | Cloud access | Pair to reach it remotely | Already reached through its cloud link; the panel states that and shows the link, with no pairing step |
 | Device sign-in code | A LAN recovery aid | Not shown (a hosted instance is reached through its cloud link, not a LAN sign-in) |
 
 The instance never shows a made-up hardware reading and never leaves a control
-that does nothing: a panel that has no hardware behind it says so plainly. A
-provider key you set on the Providers & keys page applies to the instance right
-away, the same way it does on a device: you set your key in the app, not
-externally.
+that does nothing: a panel that has no hardware behind it says so plainly.
+
+### Provider keys on a Virtual Nimbus
+
+Direct provider keys work on a Virtual Nimbus exactly as they do on a device. On
+the Providers & keys page you can set your own key for OpenAI, Anthropic, Mistral,
+or Z.ai, and it applies to the instance right away: you set your key in the app,
+not externally. The instance persists it and keeps it across a restart.
+
+These sit alongside the Cumulo Nimbus key, and the two relate the same way they do
+on a device:
+
+- The **Cumulo Nimbus key** is the recommended one-key path: one key and one
+  balance cover every provider through the metered router, so you can run without
+  signing up with any provider directly.
+- A **direct provider key** (OpenAI, Anthropic, Mistral, Z.ai) runs turns straight
+  on that provider, billed by that provider, with no router in between.
+
+If you set a direct key, turns run on it; the Cumulo Nimbus key is the fallback
+that keeps the assistant answering when no direct key matches. Set only a Cumulo
+Nimbus key and everything routes through it. Set only a Z.ai key and the assistant
+runs on Z.ai. Each key you set shows "Key set" and unlocks that provider's model
+picker, the same as on a device.

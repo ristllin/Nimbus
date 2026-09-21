@@ -17,6 +17,18 @@ installs on your say-so ([how updates work](ota.md)).
   the check needs). The device re-runs the check by itself on a short, backing-off
   schedule while memory is tight, and the Memory health row notes when a check has
   been waiting a while.
+- **A Virtual Nimbus now accepts your own provider keys from its web app.** Setting
+  an OpenAI, Anthropic, Mistral, or Z.ai key on the Providers & keys page of a hosted
+  instance now takes effect on that instance, the same as on a device: the key shows
+  "Key set", the model picker unlocks, turns run on that provider, and the key
+  survives a restart. Before, only the Cumulo Nimbus key took; the other providers
+  looked saved but nothing applied. Z.ai is now offered as a direct provider on a
+  hosted instance too. An unrecognized key field is refused with a clear error rather
+  than being quietly accepted.
+- **A Virtual Nimbus reports its real version, like a device.** A hosted instance now
+  shows the same engine version a physical device shows (for example v4.5.x) instead
+  of a container tag, and each release builds and publishes the hosted image so an
+  instance is never left several versions behind.
 - **Checking for updates over a remote connection no longer shows a gateway
   error when the check actually worked.** The device accepts an update check right
   away and runs the download-and-verify work in the background, so a check started
