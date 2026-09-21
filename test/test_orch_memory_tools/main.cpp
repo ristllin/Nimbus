@@ -22,10 +22,18 @@ static VectorArchive g_archive;
 static bool         g_archiveAvail;   // simulates the SD card being present
 static uint32_t     g_now;
 
+// When set, the fake embedder fails with this raw err token (CUM-435), so a test
+// can drive the honest-reason mapping + the keyword fallback deterministically.
+static bool        g_embedFail = false;
+static std::string g_embedErr;
+
 // Deterministic FAKE embedder: a tiny keyword->direction map so tests fully
 // control recall geometry without a network. 4-dim vectors, one axis per topic;
-// unknown text lands on a neutral diagonal so it matches nothing strongly.
-static std::vector<int8_t> fakeEmbed(const std::string& text) {
+// unknown text lands on a neutral diagonal so it matches nothing strongly. The
+// `err` out-param mirrors the device seam: set on failure, cleared on success.
+static std::vector<int8_t> fakeEmbed(const std::string& text, std::string& err) {
+  if (g_embedFail) { err = g_embedErr; return {}; }
+  err.clear();
   auto has = [&](const char* w) { return text.find(w) != std::string::npos; };
   if (has("teal") || has("color")) return {127, 0, 0, 0};
   if (has("ship") || has("deadline") || has("friday")) return {0, 127, 0, 0};
@@ -41,6 +49,8 @@ static ToolRegistry buildServer(bool withArchive = true) {
   g_archive = VectorArchive(); g_archive.configure(4);
   g_archiveAvail = true;
   g_now = 100;
+  g_embedFail = false;
+  g_embedErr.clear();
   MemoryContext ctx;
   ctx.vec = &g_vec; ctx.scratch = &g_scratch; ctx.cfg = &g_cfg;
   ctx.episodic = &g_epi;
@@ -668,6 +678,174 @@ static void test_archive_restore_respects_quota() {
   TEST_ASSERT_EQUAL_INT(1, g_archive.size());   // not lost
 }
 
+// ---- CUM-435: honest embedding-failure reasons ------------------------------
+// Each real failure class maps to its OWN honest words, none of them the old fixed
+// "provider offline?" guess. The last block iterates the enum so a NEW class with
+// no words fails here (test the class, not the instance).
+static void test_embed_reason_classes_are_distinct_and_honest() {
+  struct Row { const char* raw; EmbedFail kind; const char* mustContain; };
+  const Row rows[] = {
+    {"key rejected",                 EmbedFail::KeyRejected,     "rejected"},
+    {"tls busy",                     EmbedFail::Busy,            "busy"},
+    {"connect failed",               EmbedFail::Unreachable,     "unreachable"},
+    {"timeout",                      EmbedFail::Timeout,         "timed out"},
+    {"no embeddings key for openai", EmbedFail::NoKey,           "openai"},
+    {"no model",                     EmbedFail::NoModel,         "model"},
+    {"empty text",                   EmbedFail::BadRequest,      "no text"},
+    {"parse: bad json",             EmbedFail::BadResponse,      "malformed"},
+    {"HTTP 500",                     EmbedFail::ProviderError,   "500"},
+    {"HTTP 402 funding_cap_reached", EmbedFail::OutOfCredit,     "credit"},
+    {"HTTP 429 rate_limited",        EmbedFail::RateLimited,     "rate limited"},
+    {"HTTP 403 endpoint_not_allowed",EmbedFail::RouteNotAllowed, "not allowed"},
+  };
+  for (const auto& r : rows) {
+    std::string detail;
+    EmbedFail k = classifyEmbedFail(r.raw, detail);
+    TEST_ASSERT_EQUAL_INT((int)r.kind, (int)k);
+    std::string words = embedFailWords(k, detail);
+    TEST_ASSERT_TRUE(has(words, r.mustContain));
+    std::string reason = embedFailReason(r.raw);
+    TEST_ASSERT_TRUE(has(reason, "embeddings:"));
+    // The whole point of CUM-435: the fixed guess is gone.
+    TEST_ASSERT_FALSE(has(reason, "provider offline"));
+  }
+  // NoKey names the setting to fix.
+  TEST_ASSERT_TRUE(has(embedFailReason("no embeddings key for mistral"), "Settings"));
+  // An unmapped token degrades to the generic line, never a crash or a false class.
+  std::string d;
+  TEST_ASSERT_EQUAL_INT((int)EmbedFail::Unknown, (int)classifyEmbedFail("brand new cause", d));
+
+  // Class guard: every failure class (except None) yields non-empty, distinct words.
+  const EmbedFail kinds[] = {
+    EmbedFail::NoKey, EmbedFail::KeyRejected, EmbedFail::Busy, EmbedFail::Unreachable,
+    EmbedFail::Timeout, EmbedFail::OutOfCredit, EmbedFail::RateLimited,
+    EmbedFail::RouteNotAllowed, EmbedFail::ProviderError, EmbedFail::BadResponse,
+    EmbedFail::NoModel, EmbedFail::BadRequest, EmbedFail::Unknown};
+  std::vector<std::string> seen;
+  for (EmbedFail k : kinds) {
+    std::string w = embedFailWords(k, "");
+    TEST_ASSERT_TRUE(w.size() > 0);
+    for (const auto& s : seen) TEST_ASSERT_FALSE(w == s);   // distinct
+    seen.push_back(w);
+  }
+}
+
+// A raw err carrying a key-shaped / Authorization string must never reach the tool
+// result: the mapper echoes only the numeric HTTP status.
+static void test_embed_reason_never_leaks_a_key() {
+  const char* leaky = "HTTP 500 Authorization: Bearer sk-LIVE1234567890abcdefKEY";
+  std::string reason = embedFailReason(leaky);
+  TEST_ASSERT_FALSE(has(reason, "sk-"));
+  TEST_ASSERT_FALSE(has(reason, "Bearer"));
+  TEST_ASSERT_FALSE(has(reason, "Authorization"));
+  TEST_ASSERT_TRUE(has(reason, "500"));
+  // A key-shaped provider slug in a NoKey token is not a known slug -> dropped.
+  TEST_ASSERT_FALSE(has(embedFailReason("no embeddings key for sk-SECRET1234567890"), "sk-"));
+
+  // End-to-end through the tool: a search under this outage must not leak it either.
+  ToolRegistry reg = buildServer();
+  g_embedFail = true; g_embedErr = leaky;
+  ToolResult r = call(reg, "memory.search", R"({"query":"anything"})");
+  TEST_ASSERT_FALSE(has(r.output, "sk-"));
+  TEST_ASSERT_FALSE(has(r.error, "sk-"));
+}
+
+// memory.search degrades to a labelled keyword scan instead of hard-failing, and
+// carries the real cause.
+static void test_search_falls_back_to_keyword_when_embeddings_down() {
+  ToolRegistry reg = buildServer();
+  TEST_ASSERT_TRUE(call(reg, "memory.write", R"({"content":"my favorite color is teal"})").success);
+  TEST_ASSERT_TRUE(call(reg, "memory.write", R"({"content":"the project ships friday"})").success);
+
+  g_embedFail = true; g_embedErr = "connect failed";
+  ToolResult r = call(reg, "memory.search", R"({"query":"teal","n_results":5})");
+  TEST_ASSERT_TRUE(r.success);                                   // degraded, not a bare failure
+  TEST_ASSERT_TRUE(has(r.output, "keyword match, embeddings unavailable"));
+  TEST_ASSERT_TRUE(has(r.output, "provider unreachable"));       // the real cause
+  TEST_ASSERT_TRUE(has(r.output, "teal"));                       // the intact memory
+  TEST_ASSERT_FALSE(has(r.output, "provider offline"));
+
+  // A query with no lexical hit still degrades honestly (labelled), not "empty".
+  ToolResult none = call(reg, "memory.search", R"({"query":"zzzznotpresent"})");
+  TEST_ASSERT_TRUE(none.success);
+  TEST_ASSERT_TRUE(has(none.output, "keyword match, embeddings unavailable"));
+}
+
+// The keyword fallback honors the SAME namespace boundary as semantic search.
+static void test_search_fallback_honors_namespace_scoping() {
+  ToolRegistry reg = buildServer();
+  const nimbus::orch::Principal alice = nimbus::orch::principalForRole("alice", nimbus::orch::Role::User);
+  const nimbus::orch::Principal bob   = nimbus::orch::principalForRole("bob", nimbus::orch::Role::User);
+  TEST_ASSERT_TRUE(callAs(reg, alice, "memory.write",
+                          R"({"content":"alice keeps her spare key under the mat"})").success);
+  g_embedFail = true; g_embedErr = "key rejected";
+  // Bob's fallback must not surface Alice's memory...
+  ToolResult b = callAs(reg, bob, "memory.search", R"({"query":"spare key","n_results":5})");
+  TEST_ASSERT_FALSE(has(b.output, "under the mat"));
+  // ...while Alice still recalls her own by keyword.
+  ToolResult a = callAs(reg, alice, "memory.search", R"({"query":"spare","n_results":5})");
+  TEST_ASSERT_TRUE(has(a.output, "under the mat"));
+}
+
+// The fallback is bounded by n_results, like the semantic path.
+static void test_search_fallback_is_bounded_by_n_results() {
+  ToolRegistry reg = buildServer();
+  call(reg, "memory.write", R"({"content":"color teal one"})");
+  call(reg, "memory.write", R"({"content":"color teal two"})");
+  call(reg, "memory.write", R"({"content":"color teal three"})");
+  g_embedFail = true; g_embedErr = "tls busy";
+  ToolResult r = call(reg, "memory.search", R"({"query":"color","n_results":1})");
+  TEST_ASSERT_TRUE(r.success);
+  size_t first = r.output.find("- [");
+  TEST_ASSERT_TRUE(first != std::string::npos);
+  TEST_ASSERT_TRUE(r.output.find("- [", first + 1) == std::string::npos);   // exactly one bullet
+}
+
+// memory.write without an embedding refuses with the real cause and stores NOTHING
+// (never silently as if embedded).
+static void test_write_without_embedding_refuses_honestly() {
+  ToolRegistry reg = buildServer();
+  g_embedFail = true; g_embedErr = "key rejected";
+  ToolResult r = call(reg, "memory.write", R"({"content":"remember the alarm code is 4417"})");
+  TEST_ASSERT_FALSE(r.success);
+  TEST_ASSERT_TRUE(has(r.error, "embeddings:"));
+  TEST_ASSERT_TRUE(has(r.error, "rejected"));
+  TEST_ASSERT_TRUE(has(r.error, "not stored"));
+  TEST_ASSERT_FALSE(has(r.error, "provider offline"));
+  TEST_ASSERT_EQUAL_INT(0, g_vec.size());   // nothing landed
+}
+
+// memory.update that cannot embed the new content refuses BEFORE removing the old
+// fact, so a failed update never loses the prior memory.
+static void test_update_without_embedding_keeps_old_fact() {
+  ToolRegistry reg = buildServer();
+  TEST_ASSERT_TRUE(call(reg, "memory.write", R"({"content":"I take my coffee black"})").success);
+  g_embedFail = true; g_embedErr = "timeout";
+  ToolResult u = call(reg, "memory.update",
+                      R"({"old":"coffee","content":"I take my coffee as a flat white"})");
+  TEST_ASSERT_FALSE(u.success);
+  TEST_ASSERT_TRUE(has(u.error, "not changed"));
+  // The old fact must survive: recall it once embeddings are back.
+  g_embedFail = false;
+  TEST_ASSERT_TRUE(has(call(reg, "memory.search", R"({"query":"coffee"})").output, "coffee black"));
+}
+
+// memory.archive search also degrades to a labelled keyword scan.
+static void test_archive_search_falls_back_to_keyword() {
+  ToolRegistry reg = buildServer();
+  auto admin = nimbus::orch::principalForRole("1001", nimbus::orch::Role::Admin);
+  TEST_ASSERT_TRUE(callAs(reg, admin, "memory.write",
+                          R"({"content":"coffee please","ttl":"session"})").success);
+  g_now = 100 + 24;
+  TEST_ASSERT_EQUAL_INT(1, g_vec.pruneExpired(g_now));   // -> archived
+  g_embedFail = true; g_embedErr = "HTTP 402 funding_cap_reached";
+  ToolResult r = callAs(reg, admin, "memory.archive", R"({"action":"search","query":"coffee"})");
+  TEST_ASSERT_TRUE(r.success);
+  TEST_ASSERT_TRUE(has(r.output, "keyword match, embeddings unavailable"));
+  TEST_ASSERT_TRUE(has(r.output, "credit"));
+  TEST_ASSERT_TRUE(has(r.output, "coffee please"));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_update_replaces_matching_fact);
@@ -703,5 +881,13 @@ int main(int, char**) {
   RUN_TEST(test_archive_refuses_when_card_absent);
   RUN_TEST(test_archive_is_namespace_scoped);
   RUN_TEST(test_archive_restore_respects_quota);
+  RUN_TEST(test_embed_reason_classes_are_distinct_and_honest);
+  RUN_TEST(test_embed_reason_never_leaks_a_key);
+  RUN_TEST(test_search_falls_back_to_keyword_when_embeddings_down);
+  RUN_TEST(test_search_fallback_honors_namespace_scoping);
+  RUN_TEST(test_search_fallback_is_bounded_by_n_results);
+  RUN_TEST(test_write_without_embedding_refuses_honestly);
+  RUN_TEST(test_update_without_embedding_keeps_old_fact);
+  RUN_TEST(test_archive_search_falls_back_to_keyword);
   return UNITY_END();
 }

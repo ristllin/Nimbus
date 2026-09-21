@@ -123,11 +123,14 @@ constexpr size_t kFlashFreeFloor = 96 * 1024;
 // freeze the embed config (set-once lock) so the web UI knows the VDB is now
 // committed to this provider/model/dims. Signature matches the portable
 // Embedder (std::string in); we bridge to the Arduino-String adapter call.
-std::vector<int8_t> embedText(const std::string& text) {
-  String err;
-  std::vector<int8_t> v = embeddings::embed(String(text.c_str()), err);
+std::vector<int8_t> embedText(const std::string& text, std::string& err) {
+  String e;
+  std::vector<int8_t> v = embeddings::embed(String(text.c_str()), e);
   if (!v.empty() && !store::embedLocked()) store::setEmbedLocked(true);
-  if (v.empty()) alogf("memory: embed failed: %s", err.c_str());
+  // Thread the real cause up to the memory tools (CUM-435) so they can report why
+  // instead of a fixed guess; also keep the local log line.
+  err = std::string(e.c_str());
+  if (v.empty()) alogf("memory: embed failed: %s", e.c_str());
   return v;
 }
 }  // namespace
