@@ -61,22 +61,19 @@ std::string readWhole(const char* path) {
   return out;
 }
 
-// Rewrite a whole small file atomically (.tmp then rename). Caller holds the Lock.
-// Best-effort like the errlog: a failure keeps the previous copy, never crashes.
+// Rewrite a whole small file (FILE_WRITE truncates on open). Caller holds the Lock.
+// The ring is small and bounded, and the log is best-effort like the errlog: a crash
+// mid-write leaves a torn last line, which loadAll() skips, and serialize() writes
+// newest-first so any lost tail is the OLDEST entries. A direct truncate avoids the
+// remove-before-rename window the codebase warns against (orch_persist.cpp).
 void writeWhole(const char* path, const std::string& blob) {
   ::fs::FS& fs = nimbus::errlog::activeFs();
   fs.mkdir(nimbus::errlog::kDir);   // idempotent; neither FS auto-creates /log
-  std::string tmp = std::string(path) + ".tmp";
-  {
-    ::File f = fs.open(tmp.c_str(), FILE_WRITE);
-    if (!f) { alogf("safety: durable open failed (%s)", path); return; }
-    size_t w = f.write((const uint8_t*)blob.data(), blob.size());
-    f.close();
-    if (w != blob.size()) { alogf("safety: short write %u/%u", (unsigned)w, (unsigned)blob.size());
-                            fs.remove(tmp.c_str()); return; }
-  }
-  fs.remove(path);                  // rename over an existing target is not portable across FS impls
-  if (!fs.rename(tmp.c_str(), path)) { alogf("safety: rename failed (%s)", path); fs.remove(tmp.c_str()); }
+  ::File f = fs.open(path, FILE_WRITE);
+  if (!f) { alogf("safety: durable open failed (%s)", path); return; }
+  size_t w = f.write((const uint8_t*)blob.data(), blob.size());
+  f.close();
+  if (w != blob.size()) alogf("safety: short write %u/%u", (unsigned)w, (unsigned)blob.size());
 }
 
 void seedNextId() {
