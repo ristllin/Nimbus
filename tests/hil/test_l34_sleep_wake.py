@@ -61,7 +61,10 @@ WAKE_TIMER_S = int(os.environ.get("NIMBUS_SOAK_TIMER_S", "4"))
 # Solide S3: XPT2046 T_IRQ not routed (pin -1) -> only a power-cycle / timer wakes it.
 _BOARD_WAKE = {
     "freenove_s3": {"ctrl": "ft6336u", "tap": True, "pin": 17},
-    "solide_s3": {"ctrl": "xpt2046", "tap": False, "pin": -1},
+    # The Solide classic wires no pen-IRQ, so there is no WAKE controller at all: the
+    # plan says ctrl=none (the touch chip is still an XPT2046, but it cannot wake the
+    # part). Proven on the bench 2026-09-21: SLEEP? -> tapWakes=0 pin=-1 level=- ctrl=none.
+    "solide_s3": {"ctrl": "none", "tap": False, "pin": -1},
 }
 
 
