@@ -38,6 +38,7 @@
 #include "nimbus/orch/media.h"         // validMusicName
 #include "sfx/sfx_sync.h"              // sfxsync - sync status in STATUS
 #include "nimbus/power/power_policy.h" // SLEEPMV range/default derived per cell count (CUM-372)
+#include "nimbus/action_feedback.h"   // FEEDBACK? - outcome->cue mapping for ACTFB (CUM-309)
 #include <LittleFS.h>
 #include <esp_task_wdt.h>
 #include <solide/audio.h>
@@ -74,6 +75,38 @@ bool s_saverPending = false;
 void reply(const String& s) {
   Serial.println(s);
   Serial.flush();
+}
+
+// ---- CUM-309: last button-feedback cue, recorded by ACTFB, read by FEEDBACK? ----
+// The pure outcome->cue mapping lives (host-tested) in lib/core (nimbus::action);
+// ACTFB fires the REAL device seam (main.cpp emitMenuActionFeedback) AND records the
+// mapped cue here so FEEDBACK? can report the tone id + ring swell + toast that a
+// button press would produce, with no camera or ears on the bench.
+bool     s_fbSeen    = false;   // has any ACTFB fired this boot?
+int      s_fbAction  = -1;      // MenuAction index
+int      s_fbOutcome = -1;      // Outcome index (0=Ok,1=Ack,2=Failed)
+const char* s_fbSfx  = "-";     // mapped tone slug (agent_done/agent_spawn/error)
+const char* s_fbRing = "-";     // mapped ring swell: success|ack|failure
+const char* s_fbToast = "-";    // action's on-screen line for this outcome (or -)
+
+// Record the cue for a fired (action,outcome). Uses the same pure mapping the device
+// seam uses, so FEEDBACK? reports exactly what the seam emitted.
+void recordActionFeedback(int action, int outcome) {
+  using namespace nimbus::action;
+  s_fbSeen = true;
+  s_fbAction = action;
+  s_fbOutcome = outcome;
+  const Cues cues = cuesFor(Outcome(uint8_t(outcome)));
+  const char* slug = nimbus::sfx::slug(cues.sfx);
+  s_fbSfx = slug ? slug : "-";
+  switch (cues.ring) {
+    case RingCue::Success: s_fbRing = "success"; break;
+    case RingCue::Ack:     s_fbRing = "ack";     break;
+    case RingCue::Failure: s_fbRing = "failure"; break;
+    default:               s_fbRing = "-";       break;
+  }
+  const char* line = lineFor(copyFor(MenuAction(uint8_t(action))), Outcome(uint8_t(outcome)));
+  s_fbToast = (line && line[0]) ? line : "-";
 }
 
 // Fill the four ring-summary fields via the hook (guarded - provider takes the
@@ -884,6 +917,46 @@ void dispatch(String line) {
     Serial.flush();
     return;
   }
+  if (line == "SLEEP?") {
+    // CUM-248: the wake-ARMING plan the power-off path WILL apply, WITHOUT sleeping.
+    // Format: "SLEEP tapWakes=<0|1> pin=<gpio> level=<0|1|-> ctrl=<ft6336u|xpt2046|
+    // none> timer=<secs> canWakeOnTouch=<0|1>". The soak asserts a coherent arm every
+    // cycle - a missing/incoherent report IS the owner's "won't wake" failure mode.
+    if (s_h.wakePlanInfo) {
+      Serial.printf("SLEEP %s\n", s_h.wakePlanInfo().c_str());
+    } else {
+      reply("ERR sleepplan unavailable");
+    }
+    Serial.flush();
+    return;
+  }
+  if (line == "WAKE?") {
+    // CUM-248: this-boot wake facts captured at boot, so the soak proves a fresh boot
+    // came from deep sleep. Format: "WAKE reset=<slug> cause=<slug> poweroff=<0|1>".
+    if (s_h.wakeInfo) {
+      Serial.printf("WAKE %s\n", s_h.wakeInfo().c_str());
+    } else {
+      reply("ERR wakeinfo unavailable");
+    }
+    Serial.flush();
+    return;
+  }
+  if (line.startsWith("POWEROFF ")) {
+    // CUM-248 soak: POWEROFF <secs> runs the REAL clean-shutdown + deep-sleep path but
+    // ALSO arms a timer wake for <secs>, so the board wakes on its own with no finger.
+    // The panel goes dark and USB serial dies with the chip; it re-enumerates on wake.
+    String a = line.substring(9); a.trim();
+    const int secs = a.toInt();
+    if (secs <= 0) { reply("ERR poweroff want <secs> > 0 (bare POWEROFF = no timer)"); return; }
+    if (s_h.powerOffTimed) {
+      Serial.printf("POWEROFF entering deep sleep, timer wake in %ds\n", secs);
+      Serial.flush();
+      s_h.powerOffTimed(secs);
+    } else {
+      reply("ERR poweroff unavailable");
+    }
+    return;
+  }
   if (line == "POWEROFF") {
     // Enter the real clean-shutdown + deep sleep NOW (mechanics test). The board
     // goes dark and USB console dies with it: a tap wakes a touch-wake board, a
@@ -895,6 +968,41 @@ void dispatch(String line) {
     } else {
       reply("ERR poweroff unavailable");
     }
+    return;
+  }
+  if (line.startsWith("ACTFB ")) {
+    // CUM-309: fire the REAL menu-action feedback seam (sound + ring swell + toast)
+    // for a named MenuAction index and Outcome index (0=Ok,1=Ack,2=Failed), then
+    // record the mapped cue for FEEDBACK?. This is the "serial TAP injection on the
+    // test build" the issue calls out: it exercises the on-device seam without a
+    // finger. Format: "ACTFB <action> <outcome>". Example: ACTFB 6 0 (Reset -> Ok).
+    String a = line.substring(6); a.trim();
+    const int sp = a.indexOf(' ');
+    if (sp <= 0) { reply("ERR actfb want <action> <outcome>"); return; }
+    const int action  = a.substring(0, sp).toInt();
+    const int outcome = a.substring(sp + 1).toInt();
+    if (action < 0 || action >= int(nimbus::action::MenuAction::COUNT)) {
+      Serial.printf("ERR actfb action 0-%d\n", int(nimbus::action::MenuAction::COUNT) - 1);
+      return;
+    }
+    if (outcome < 0 || outcome > int(nimbus::action::Outcome::Failed)) {
+      reply("ERR actfb outcome 0-2 (0=ok 1=ack 2=failed)");
+      return;
+    }
+    recordActionFeedback(action, outcome);
+    if (s_h.menuActionFeedback) s_h.menuActionFeedback(action, outcome);
+    Serial.printf("ACTFB fired action=%d outcome=%d\n", action, outcome);
+    Serial.flush();
+    return;
+  }
+  if (line == "FEEDBACK?") {
+    // CUM-309: report the last cue ACTFB (or a menu press) produced, so a HIL leg can
+    // assert confirm-on-success and flag-on-failure with no camera or ears. Format:
+    // "FEEDBACK seen=<0|1> action=<n> outcome=<n> sfx=<slug> ring=<success|ack|
+    // failure> toast=<line|->". The physical tone + ring colour stay an owner leg.
+    Serial.printf("FEEDBACK seen=%d action=%d outcome=%d sfx=%s ring=%s toast=%s\n",
+                  s_fbSeen ? 1 : 0, s_fbAction, s_fbOutcome, s_fbSfx, s_fbRing, s_fbToast);
+    Serial.flush();
     return;
   }
   if (line == "BATTRESET") {

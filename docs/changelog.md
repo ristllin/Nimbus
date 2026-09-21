@@ -34,6 +34,11 @@ installs on your say-so ([how updates work](ota.md)).
   token.** An unauthenticated `POST /mcp` is refused with nothing kept in memory, and
   an authenticated request larger than 64 KB is refused rather than silently cut
   short. Normal MCP clients see no change.
+- **Power off and wake, and button feedback, are now checked repeatedly on real
+  hardware.** A bench soak drives many power-off then wake cycles and confirms the
+  device comes back each time with its settings intact, and a bench check confirms
+  every actionable menu control gives its sound and ring cue and then the ring goes
+  dark. No change to how the device behaves; these close gaps in what was proven.
 
 ## v4.5.4 - Touch works again on classic boards, honest display check, cloud-sync headroom
 

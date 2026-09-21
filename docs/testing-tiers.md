@@ -65,6 +65,37 @@ hits the FIRST boot after a new version. The fresh device is therefore a first-c
   gate state; the four-corner SOLVE itself, and whether a tap lands where you touch under a flip,
   stay finger-on-glass steps the runbook hands to the bench.
 
+## Sleep/wake and button-feedback legs
+
+Two owner-facing behaviors that a green build cannot prove: that the device wakes
+cleanly cycle after cycle from a software power-off, and that every actionable menu
+control gives a sound and ring cue. Both split the same way: assert everything a seam
+can reach, hand the finger/ears part to a human.
+
+- Sleep/wake soak (T5): `tests/hil/test_l34_sleep_wake.py` runs N cycles (default 20,
+  `NIMBUS_SOAK_N`) of the real product power-off path. Each cycle reads the wake-arming
+  plan (`SLEEP?`: whether a tap can wake this board and on which touch controller and
+  GPIO, the ext0 level, and the timer), asserts it is present and coherent (a torn or
+  incoherent arm report is itself the "won't wake" failure), enters deep sleep with a
+  test-only timer wake (`POWEROFF <secs>`, so the leg wakes with no finger), proves a
+  fresh boot from the boot stream plus `WAKE?` (reset reason deep-sleep, cause timer),
+  checks persisted state is intact (mode, screen model, board, web token, touch-cal
+  gate), and records wake latency. The soak runs on the flashable bench board; the
+  Freenove FT6336U-INT variant is a loud skip when no Freenove is attached. The real
+  finger tap that pulses the touch INT is an owner manual leg (no finger or INT jig on
+  the bench).
+- Button feedback (T5): `tests/hil/test_l35_button_feedback.py` fires the real
+  outcome-to-cue seam over serial (`ACTFB <action> <outcome>`) for a success row
+  (Reset) and a failure row (Rescan SD with no card), then reads back the cue that
+  fired (`FEEDBACK?`: tone id, ring swell, and screen line) and polls `RENDER?` to
+  prove the ring swell ends (no lit arc outlives its window, the CUM-134/CUM-11 rule).
+  Whether the tone is audible and the ring is the right color to the eye is an owner
+  manual leg.
+- Host (T1): the pure parsers and the wake-arming coherence rule are covered with no
+  board in `tests/hil/test_l34_sleep_wake_host.py` and
+  `tests/hil/test_l35_button_feedback_host.py` (the outcome-to-cue mapping itself is
+  host-tested in `test/` under `pio test -e native`).
+
 ## The release gate
 
 A cross-cutting battery that must be green before any firmware tag or client flash.

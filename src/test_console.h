@@ -142,6 +142,23 @@ struct Hooks {
   // power-cycle wakes the rest).
   std::function<String()>                                 powerOffInfo;
   std::function<void()>                                   powerOffNow;
+  // CUM-248 sleep/wake soak seams (test-only).
+  //  - powerOffTimed(secs): run the real clean-shutdown + deep-sleep path but ALSO
+  //    arm a timer wake for `secs`, so a scripted soak wakes the board unattended
+  //    (the bench has no finger and no touch-INT jig). Backs `POWEROFF <secs>`.
+  //  - wakePlanInfo(): the wake-ARMING plan the power-off path will apply (tapWakes,
+  //    pin, level, touch controller per board kind, the test timer, canWakeOnTouch),
+  //    so the soak asserts a coherent arm EVERY cycle. Backs `SLEEP?`.
+  //  - wakeInfo(): this-boot wake facts (reset reason, wake cause, was-power-off),
+  //    captured at boot, so the soak proves a fresh deep-sleep wake. Backs `WAKE?`.
+  std::function<void(int secs)>                           powerOffTimed;
+  std::function<String()>                                 wakePlanInfo;
+  std::function<String()>                                 wakeInfo;
+  // CUM-309 button-feedback bench seam (test-only): fire the REAL menu-action
+  // feedback (sound + ring swell + toast) for a named MenuAction index + Outcome
+  // index, so a HIL leg can prove confirm-on-success and flag-on-failure over serial.
+  // Backs `ACTFB <action> <outcome>`; FEEDBACK? reports the resulting cue.
+  std::function<void(int action, int outcome)>            menuActionFeedback;
   // Battery drain/storage (battery-measurement). DRAIN is a TEST characterization tool;
   // STORAGE is the production discharge-to-storage-SoC feature (also reachable here).
   std::function<String(bool on, bool deep)>               drain;    // DRAIN on|off [deep]

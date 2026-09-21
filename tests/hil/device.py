@@ -1078,3 +1078,78 @@ class Device:
         manual.confirm(runbook, timeout=120)
         # Operator says it's back - re-establish the link or fail loud.
         self.reopen_after_reenumerate()
+
+    # -- F10 (CUM-248) sleep/wake soak helper (appended; keep small) ---------
+    def power_off_and_wake(self, timer_s: int, notice_s: float = 6.0, ready_timeout: float = 30.0) -> "WakeResult":
+        """Drive ONE clean power-off -> timer-wake -> fresh-boot cycle and prove it.
+
+        Sends ``POWEROFF <timer_s>`` (the test-only timed deep sleep), lets the chip
+        show its shutdown notice and actually enter deep sleep (the USB-CDC endpoint
+        drops with the chip - reopening before it sleeps would grab the still-live
+        endpoint), then waits for the wake boot to re-enumerate and confirms it from
+        the boot stream (``rst:`` -> READY, the same honest oracle reboot_and_confirm
+        uses) rather than a STATUS poll the post-boot SD scan blocks.
+
+        Returns a WakeResult(mode, ip, saw_reset, boot_latency_s, cycle_s). Raises
+        BootError on a panic / reboot loop, DeviceLostError if the node never came
+        back (a sleep that never woke). ``saw_reset`` is the boot stream's ``rst:``
+        marker, kept for logging - it is NOT the freshness proof, because the reopen
+        races the ROM ``rst:`` line and often eats it (see _confirm_boot). The caller
+        proves a genuine deep-sleep wake with the latched ``WAKE?`` facts instead; that
+        is sound here because the ``POWEROFF entering deep sleep`` ack is only printed
+        immediately before enterPowerOffSleep, whose esp_deep_sleep_start is
+        unconditional, so an acked power-off always sleeps then times-out to a fresh
+        boot. ``boot_latency_s`` is the wake-to-READY time (first rst: -> beacon);
+        ``cycle_s`` is the whole command->READY wall clock."""
+        self.drain(quiet=0.2)
+        self.send(f"POWEROFF {timer_s}")
+        # Confirm the command was accepted before the console goes dark with the chip.
+        # (This ack guarantees the sleep path was entered - see the docstring.)
+        self.expect("POWEROFF entering deep sleep", timeout=5.0)
+        t0 = time.time()
+        # Let the shutdown notice (~4.8 s) land and the chip enter deep sleep so the
+        # endpoint drops. Only THEN start hunting for the wake re-enumeration.
+        self.close()
+        time.sleep(notice_s)
+        saved = self.enumerate_timeout
+        self.enumerate_timeout = max(saved, float(timer_s) + 20.0)
+        try:
+            self.reopen_after_reenumerate(drain_boot=False)
+            boot = self._scan_boot(timeout=ready_timeout)
+        finally:
+            self.enumerate_timeout = saved
+        ready_at = time.time()
+        boot_latency = (ready_at - boot.reset_at) if boot.reset_at is not None else None
+        # Park past the post-boot SD/episodic scan (the CUM-418 window) so the caller's
+        # first STATUS/WAKE?/WEBTOK? read does not race it. Best-effort: a board with no
+        # card answers at once; the value is only for logging.
+        self._settled_uptime(ready_timeout)
+        return WakeResult(
+            mode=boot.mode,
+            ip=boot.ip,
+            saw_reset=boot.saw_reset,
+            boot_latency_s=boot_latency,
+            cycle_s=ready_at - t0,
+        )
+
+
+class WakeResult:
+    """What one power_off_and_wake cycle showed (CUM-248). ``saw_reset`` is the boot
+    stream's raw ``rst:`` marker (often eaten by the reopen race, kept for logging, not
+    a freshness proof); ``boot_latency_s`` is the wake-to-READY time (first reset
+    marker -> beacon); ``cycle_s`` is the whole command->READY wall clock."""
+
+    __slots__ = ("mode", "ip", "saw_reset", "boot_latency_s", "cycle_s")
+
+    def __init__(self, mode, ip, saw_reset, boot_latency_s, cycle_s):
+        self.mode = mode
+        self.ip = ip
+        self.saw_reset = saw_reset
+        self.boot_latency_s = boot_latency_s
+        self.cycle_s = cycle_s
+
+    def __repr__(self) -> str:
+        return (
+            f"WakeResult(mode={self.mode}, saw_reset={self.saw_reset}, "
+            f"boot_latency_s={self.boot_latency_s}, cycle_s={self.cycle_s:.1f})"
+        )

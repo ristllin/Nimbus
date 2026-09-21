@@ -1908,6 +1908,22 @@ static void persistConfig();                // defined below (config section)
 static bool s_wokeFromLowBatt = false;      // this boot is a low-batt wake
 static uint32_t s_lowBattGraceUntil = 0;    // awake window before re-sleeping
 
+// Consistent outcome->cue feedback for an actionable device-menu control (defined
+// well below). Forward-declared here so the NIMBUS_TEST affordances island can wire
+// a hook that fires the REAL seam for the CUM-309 bench leg (serial ACTFB injection).
+static void emitMenuActionFeedback(nimbus::action::MenuAction action,
+                                   nimbus::action::Outcome outcome);
+
+#ifdef NIMBUS_TEST
+// This-boot wake facts for the `WAKE?` console seam (CUM-248 soak oracle): captured
+// once at boot so the sleep/wake soak can assert reset reason DEEPSLEEP + the wake
+// cause, and tell a deliberate power-off wake from a low-batt wake. Set in setup()
+// BEFORE s_rtcPowerOff is cleared. Test builds only.
+static esp_reset_reason_t     s_bootResetReason = ESP_RST_UNKNOWN;
+static esp_sleep_wakeup_cause_t s_bootWakeCause  = ESP_SLEEP_WAKEUP_UNDEFINED;
+static bool                   s_bootWasPowerOff = false;
+#endif
+
 [[noreturn]] static void enterLowBattSleep() {
   persistConfig();
   // Leave the instructions on the panel. They are only readable until the rails
@@ -1968,6 +1984,17 @@ static bool boardCanWakeOnTouch() {
 // RTC memory; the boot path clears it and skips the low-batt grace window.
 RTC_DATA_ATTR static bool s_rtcPowerOff = false;
 
+#ifdef NIMBUS_TEST
+// Test-only (CUM-248): the bench has no finger and no touch-INT jig, so a scripted
+// sleep/wake soak cannot wake the board through the real ext0 tap line. When this is
+// >0, enterPowerOffSleep ALSO arms an ESP deep-sleep timer wake for the leg, so the
+// soak can drive many clean power-off -> wake cycles unattended. It is set ONLY by the
+// `POWEROFF <secs>` console command; the production power-off path (bare POWEROFF, the
+// menu row, the web button) never touches it and stays finger/power-cycle only. The
+// whole seam vanishes from every production build (esp32s3/notifierdbg).
+static uint32_t s_testPowerOffWakeS = 0;
+#endif
+
 [[noreturn]] static void enterPowerOffSleep() {
   persistConfig();
   agent::memory::flushPendingEvents();   // commit any queued memory/journal writes
@@ -1990,6 +2017,14 @@ RTC_DATA_ATTR static bool s_rtcPowerOff = false;
   }
   // No timer wake: "Power off" stays off until the owner acts (a tap where the
   // panel can wake it, a power-cycle otherwise) - never a periodic self-wake.
+#ifdef NIMBUS_TEST
+  // Bench-only soak wake (CUM-248): arm a timer so the scripted leg wakes with no
+  // finger. Never compiled into production; s_testPowerOffWakeS is only set by the
+  // `POWEROFF <secs>` test command, so the real power-off path arms nothing here.
+  if (s_testPowerOffWakeS > 0) {
+    esp_sleep_enable_timer_wakeup(uint64_t(s_testPowerOffWakeS) * 1000000ULL);
+  }
+#endif
   esp_deep_sleep_start();
   __builtin_unreachable();
 }
@@ -3445,6 +3480,69 @@ void setup() {
              " pin=" + String(touchWakePin());
     };
     h.powerOffNow = [] { enterPowerOffSleep(); };                            // POWEROFF
+    // POWEROFF <secs> - CUM-248 soak: arm a test-only timer wake, then run the real
+    // clean-shutdown + deep-sleep path so the board wakes on its own with no finger.
+    h.powerOffTimed = [](int secs) {
+      s_testPowerOffWakeS = secs > 0 ? uint32_t(secs) : 0;
+      enterPowerOffSleep();
+    };
+    // SLEEP? - CUM-248: the wake-ARMING plan the power-off path WILL apply, so the
+    // soak can assert coherent arming EVERY cycle (a missing/incoherent arm is the
+    // owner's "won't wake" failure). Names the touch controller per board kind
+    // (FT6336U INT on Freenove, XPT2046 T_IRQ on the resistive boards) and the level.
+    h.wakePlanInfo = [] () -> String {
+      const bool tap = boardCanWakeOnTouch();
+      const int  pin = touchWakePin();
+      const auto& b = solide::board();
+      const char* ctrl = (b.touchI2c.intr >= 0) ? "ft6336u"
+                       : (b.tft.tirq >= 0)       ? "xpt2046"
+                                                 : "none";
+      // enterPowerOffSleep arms ext0 on level 0 when a tap can wake this board.
+      String level = tap ? String("0") : String("-");
+      return String("tapWakes=") + (tap ? "1" : "0") +
+             " pin=" + String(pin) +
+             " level=" + level +
+             " ctrl=" + ctrl +
+             " timer=" + String(s_testPowerOffWakeS) +
+             " canWakeOnTouch=" + (tap ? "1" : "0");
+    };
+    // WAKE? - CUM-248: this-boot wake facts (captured at boot), so the soak can prove
+    // a fresh boot came from deep sleep (reset=deep-sleep) and via which cause.
+    h.wakeInfo = [] () -> String {
+      const char* rr = "unknown";
+      switch (s_bootResetReason) {
+        case ESP_RST_POWERON:   rr = "power-on"; break;
+        case ESP_RST_SW:        rr = "software-restart"; break;
+        case ESP_RST_PANIC:     rr = "panic"; break;
+        case ESP_RST_INT_WDT:
+        case ESP_RST_TASK_WDT:
+        case ESP_RST_WDT:       rr = "watchdog"; break;
+        case ESP_RST_BROWNOUT:  rr = "brownout"; break;
+        case ESP_RST_DEEPSLEEP: rr = "deep-sleep"; break;
+        default: break;
+      }
+      const char* cause = "none";
+      switch (s_bootWakeCause) {
+        case ESP_SLEEP_WAKEUP_TIMER: cause = "timer"; break;
+        case ESP_SLEEP_WAKEUP_EXT0:  cause = "ext0"; break;
+        case ESP_SLEEP_WAKEUP_EXT1:  cause = "ext1"; break;
+        case ESP_SLEEP_WAKEUP_GPIO:  cause = "gpio"; break;
+        default: break;
+      }
+      return String("reset=") + rr + " cause=" + cause +
+             " poweroff=" + (s_bootWasPowerOff ? "1" : "0");
+    };
+    // ACTFB <action> <outcome> - CUM-309: fire the REAL menu-action feedback seam
+    // (sound + ring swell + toast) for a named MenuAction and Outcome, so the bench
+    // leg can drive a success row and a failure row over serial (the issue's own
+    // suggested route: "serial TAP injection on the test build"). The physical
+    // finger-on-a-row + ears path stays an owner manual leg.
+    h.menuActionFeedback = [](int action, int outcome) {
+      if (action < 0 || action >= int(nimbus::action::MenuAction::COUNT)) return;
+      if (outcome < 0 || outcome > int(nimbus::action::Outcome::Failed)) return;
+      emitMenuActionFeedback(nimbus::action::MenuAction(uint8_t(action)),
+                             nimbus::action::Outcome(uint8_t(outcome)));
+    };
     h.dreamNow = [] () -> String {                                           // DREAM
       if (!g_orchMode) return String("ERR dream: Orchestrator mode only");
       nimbus::orch::LoopRecord rec = agent::dream::reservedLoopRecord();
@@ -3550,6 +3648,12 @@ void setup() {
   g_power.policyRef().setT2Override(agent::store::sleepOvr());
   {
     const esp_sleep_wakeup_cause_t wc = esp_sleep_get_wakeup_cause();
+#ifdef NIMBUS_TEST
+    // Snapshot the wake facts for WAKE? BEFORE the power-off flag is cleared below.
+    s_bootResetReason = esp_reset_reason();
+    s_bootWakeCause   = wc;
+    s_bootWasPowerOff = s_rtcPowerOff;
+#endif
     if (s_rtcPowerOff) {
       // A wake from a deliberate "Power off" (touch ext0 on a wake-capable board):
       // boot normally, never into the low-batt grace path. Clear the RTC flag so a
