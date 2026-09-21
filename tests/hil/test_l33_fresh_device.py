@@ -36,9 +36,30 @@ import pytest
 from device import SCREEN_NAMES, Device, ExpectTimeout
 from secrets import SecretsUnavailable
 
-_TOUCHCAL = SCREEN_NAMES.index("TouchCal")
 _STATUSIDLE = SCREEN_NAMES.index("StatusIdle")
 _MENU = SCREEN_NAMES.index("Menu")
+
+# Screens that are ONLY reachable by NAVIGATING the UI (opening a menu, drilling into a
+# detail). A gated panel must reach none of them - the self-navigation bug drove raw
+# uncalibrated taps into UI navigation and landed on Settings > Sound (the Menu). Ambient
+# screens a gated board may legitimately repaint (StatusIdle for a Wi-Fi-down badge on a
+# fresh board with no creds, Screensaver, IdleArt, Badge, SetupInfo) are NOT navigation and
+# must not fail the leg - so this asserts on reaching a nav screen, not on any screen change.
+_NAV_SCREENS = {
+    SCREEN_NAMES.index(n)
+    for n in (
+        "Menu",
+        "JobDetail",
+        "Battery",
+        "Ask",
+        "SessionDetail",
+        "SelfTest",
+        "TokenDetail",
+        "ConfigQr",
+        "Pairing",
+        "VoiceGlyph",
+    )
+}
 
 
 def _screen_name(s: int) -> str:
@@ -103,21 +124,25 @@ def test_cal_gate_parses_capacitive_never_gated():
 
 @pytest.mark.host
 def test_tftfill_ok_true_only_when_all_three_round_trip():
-    ok = _ScriptedDevice([
-        "TFTFILL red   want=0xF800  tl=0xF800 mid=0xF800 br=0xF800  OK",
-        "TFTFILL green want=0x07E0  tl=0x07E0 mid=0x07E0 br=0x07E0  OK",
-        "TFTFILL blue  want=0x001F  tl=0x001F mid=0x001F br=0x001F  OK",
-    ]).tftfill_ok()
+    ok = _ScriptedDevice(
+        [
+            "TFTFILL red   want=0xF800  tl=0xF800 mid=0xF800 br=0xF800  OK",
+            "TFTFILL green want=0x07E0  tl=0x07E0 mid=0x07E0 br=0x07E0  OK",
+            "TFTFILL blue  want=0x001F  tl=0x001F mid=0x001F br=0x001F  OK",
+        ]
+    ).tftfill_ok()
     assert ok is True
 
 
 @pytest.mark.host
 def test_tftfill_ok_false_on_any_mismatch():
-    ok = _ScriptedDevice([
-        "TFTFILL red   want=0xF800  tl=0xF800 mid=0xF800 br=0xF800  OK",
-        "TFTFILL green want=0x07E0  tl=0x0000 mid=0x0000 br=0x0000  MISMATCH",
-        "TFTFILL blue  want=0x001F  tl=0x001F mid=0x001F br=0x001F  OK",
-    ]).tftfill_ok()
+    ok = _ScriptedDevice(
+        [
+            "TFTFILL red   want=0xF800  tl=0xF800 mid=0xF800 br=0xF800  OK",
+            "TFTFILL green want=0x07E0  tl=0x0000 mid=0x0000 br=0x0000  MISMATCH",
+            "TFTFILL blue  want=0x001F  tl=0x001F mid=0x001F br=0x001F  OK",
+        ]
+    ).tftfill_ok()
     assert ok is False
 
 
@@ -125,7 +150,7 @@ def test_tftfill_ok_false_on_any_mismatch():
 # The on-glass fresh-device legs (HIL).
 # ============================================================================
 
-NO_SELFNAV_S = 30.0        # the self-nav-to-Settings>Sound bug was deterministic within ~30 s
+NO_SELFNAV_S = 30.0  # the self-nav-to-Settings>Sound bug was deterministic within ~30 s
 POLL_S = 2.5
 
 
@@ -137,10 +162,7 @@ def fresh_bench(device, secrets):
     try:
         secrets.require_sta()
     except SecretsUnavailable as exc:
-        pytest.skip(
-            "fresh-device leg FACTORY-RESETS the board and must re-provision Wi-Fi in teardown; "
-            f"{exc}"
-        )
+        pytest.skip(f"fresh-device leg FACTORY-RESETS the board and must re-provision Wi-Fi in teardown; {exc}")
     yield device
     # Teardown: the leg wiped Wi-Fi creds. Restore them so the board is left on its LAN. Never
     # mask the test verdict, but say plainly whether the rejoin confirmed.
@@ -149,8 +171,10 @@ def fresh_bench(device, secrets):
         device.expect("WIFI_GOT_IP", timeout=35.0)
         print("[fresh_bench] teardown: Wi-Fi re-provisioned, GOT_IP confirmed")
     except Exception as exc:  # noqa: BLE001 - teardown must not raise over the real result
-        print(f"[fresh_bench] teardown re-provision did NOT confirm GOT_IP: {exc!r} "
-              "(supervisor: re-provision Wi-Fi before returning the board)")
+        print(
+            f"[fresh_bench] teardown re-provision did NOT confirm GOT_IP: {exc!r} "
+            "(supervisor: re-provision Wi-Fi before returning the board)"
+        )
 
 
 @pytest.mark.hil
@@ -180,32 +204,28 @@ def test_fresh_resistive_gate_first_skip_and_handoff(fresh_bench):
     )
 
     # (a) no self-navigation for 30 s: the pre-fix board deterministically drove raw uncalibrated
-    # taps into UI navigation and landed on Settings > Sound (the Menu screen). The gate must hold
-    # the whole window - CALGATE stays active AND RENDER? never reaches a navigable screen.
-    baseline = device.render().screen
+    # taps into UI navigation and landed on Settings > Sound (the Menu). The gate must hold the
+    # whole window - CALGATE stays active AND RENDER? never reaches a NAVIGATION screen (an
+    # ambient repaint like StatusIdle for a Wi-Fi-down badge on a fresh, credless board is fine).
     deadline = time.monotonic() + NO_SELFNAV_S
     while time.monotonic() < deadline:
         g_active, _, _ = device.cal_gate()
         assert g_active, f"gate released on its own within {NO_SELFNAV_S}s (no cal was stored)"
         s = device.render().screen
-        assert s != _MENU, (
-            f"gated panel self-navigated to the Menu within {NO_SELFNAV_S}s - the CUM-245 "
-            "self-navigation bug (raw uncalibrated taps reaching UI navigation)"
-        )
-        assert s == baseline, (
-            f"gated panel navigated from {_screen_name(baseline)} to {_screen_name(s)} - nothing "
-            "should render while the gate owns the panel"
+        assert s not in _NAV_SCREENS, (
+            f"gated panel self-navigated to {_screen_name(s)} within {NO_SELFNAV_S}s - the "
+            "CUM-245 self-navigation bug (raw uncalibrated taps reaching UI navigation)"
         )
         time.sleep(POLL_S)
 
     # (b) injected taps do not navigate while gated. On a calibrated panel each of these would
     # act (open the gear menu, hit the header Back, tap a tile); while gated, drainTouch is
     # bypassed, so none reach navigation.
-    for (x, y) in ((160, 120), (300, 10), (20, 22), (160, 230)):
+    for x, y in ((160, 120), (300, 10), (20, 22), (160, 230)):
         device.tap(x, y)
     time.sleep(1.0)
     s = device.render().screen
-    assert s != _MENU and s == baseline, (
+    assert s not in _NAV_SCREENS, (
         f"an injected tap navigated the gated panel to {_screen_name(s)} - taps must never reach "
         "navigation while the cal gate owns the panel"
     )
@@ -216,8 +236,7 @@ def test_fresh_resistive_gate_first_skip_and_handoff(fresh_bench):
     # board default) and hands off to the first-run flow.
     a_after, _, s_after = device.cal_gate("skip")
     assert not a_after and s_after, (
-        f"the deliberate skip must OPEN the gate and persist a cal: active={a_after} "
-        f"stored={s_after}"
+        f"the deliberate skip must OPEN the gate and persist a cal: active={a_after} stored={s_after}"
     )
     # The handoff target: persistCalAndReleaseGate renders StatusIdle (the first-run screen; on a
     # credless device it carries the Set up Wi-Fi CTA - host-pinned in test_fresh_device). Poll
@@ -230,8 +249,7 @@ def test_fresh_resistive_gate_first_skip_and_handoff(fresh_bench):
             break
         time.sleep(0.5)
     assert handoff == _STATUSIDLE, (
-        f"after the skip the panel must hand off to the first-run StatusIdle, got "
-        f"{_screen_name(handoff)}"
+        f"after the skip the panel must hand off to the first-run StatusIdle, got {_screen_name(handoff)}"
     )
 
     # (d) render reaches the frame: the REAL full-panel path with a corner-pixel GRAM readback
@@ -304,7 +322,6 @@ def test_nvs_adversarial_cal_survives_reflash_and_opens_gate(fresh_bench):
     device.factory_reset()
     assert device.ping(), "console must answer after the factory-reset reboot"
 
-    _, kind, _ = device.cal_gate()
     # An adversarial per-unit cal: axes swapped and BOTH inverted, a drifted span - a plausible
     # frozen-NVS value from an older firmware/mount that a reflash would carry forward.
     adversarial = "240,3860,300,3760,7"  # minX,maxX,minY,maxY,flags(swap|invX|invY)
@@ -331,15 +348,12 @@ def test_nvs_adversarial_cal_survives_reflash_and_opens_gate(fresh_bench):
 
     # (2) render reaches the frame under the flipped orientation - no white screen from the flip.
     assert device.tftfill_ok(), (
-        "TFTFILL? did not round-trip through GRAM under the adversarial tftFlip=1 - the flip must "
-        "not blank the panel"
+        "TFTFILL? did not round-trip through GRAM under the adversarial tftFlip=1 - the flip must not blank the panel"
     )
 
     # The device is navigable (gate open): a tap reaches the UI. Coordinate placement under the
-    # adversarial cal+flip is finger-on-glass; here we only prove touch is LIVE, not gated.
-    if kind == "cap":
-        # Capacitive ignores tchCal for placement, but the stored-cal gate rule still holds above.
-        pass
+    # adversarial cal+flip is finger-on-glass (a capacitive panel ignores tchCal for placement
+    # anyway); here we only prove touch is LIVE, not gated.
     device.tap(300, 10)  # the gear; on a resistive panel the adversarial cal may land it loosely
     try:
         device.menu_wait_screen(_MENU, timeout=8.0)
