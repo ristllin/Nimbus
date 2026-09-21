@@ -6,6 +6,13 @@ ships as a signed image on the public
 repository; a device on Orchestrator mode sees it on its daily check and
 installs on your say-so ([how updates work](ota.md)).
 
+## Unreleased
+
+- **The LAN MCP endpoint no longer buffers a request before checking the device
+  token.** An unauthenticated `POST /mcp` is refused with nothing kept in memory, and
+  an authenticated request larger than 64 KB is refused rather than silently cut
+  short. Normal MCP clients see no change.
+
 ## v4.5.4 - Touch works again on classic boards, honest display check, cloud-sync headroom
 
 - **Touch responds again on the classic (TFT + ring) board.** v4.5.0 introduced a

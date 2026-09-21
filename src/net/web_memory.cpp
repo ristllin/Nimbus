@@ -36,7 +36,13 @@ namespace {
 // body past it is refused (413), never silently truncated (CUM-406).
 constexpr size_t kImportMaxBody = 512u * 1024;
 
-// Import body accumulator, stored in the request's _tempObject as ONE allocation: this
+// POST /mcp body cap (CUM-410): one JSON-RPC 2.0 request. The largest legitimate call
+// is a memory.* write whose text is already bounded by the per-entry store limits, so
+// 64 KB is generous; a body past it is refused (413), never silently truncated.
+constexpr size_t kMcpMaxBody = 64u * 1024;
+
+// Body accumulator shared by /api/mem/import and /mcp, stored in the request's
+// _tempObject as ONE allocation: this
 // header immediately followed by the payload bytes (data()). Auth is decided on the
 // first chunk before the payload buffer is sized, so an unauthenticated caller only
 // ever costs this tiny header. The framework's raw free() reclaims the whole block on
@@ -780,21 +786,31 @@ void registerMemoryRoutes(AsyncWebServer& server) {
   // LAN MCP endpoint: raw JSON-RPC 2.0 body -> memory::handleMcp. The body is a
   // JSON document (not form fields), so it is accumulated across chunks in the
   // request's own _tempObject (per-request, no shared/static state), then the
-  // request handler dispatches + responds. We delete + null _tempObject before
-  // responding so the framework's raw free() never double-frees the std::string.
-  // (Edge case: a client that aborts mid-body leaks the partial buffer - rare and
-  // bounded; an auth + size cap are the Ph4 hardening.)
+  // request handler dispatches + responds.
+  //
+  // DoS hardening (CUM-410): this used to append every chunk into a heap
+  // std::string before the token check ran, so an unauthenticated LAN caller
+  // could grow the scarce internal heap without bound. It now mirrors the
+  // /api/mem/import gate above: auth is decided on the FIRST chunk before any
+  // payload buffer exists (unauth -> header-only block, every byte dropped), the
+  // payload lives in PSRAM behind a HARD pre-append cap (413 on overflow, never a
+  // silent truncation), and header + payload are ONE allocation the framework's
+  // raw free() reclaims on teardown, so a mid-body abort no longer leaks.
   server.on("/mcp", HTTP_POST,
             [](AsyncWebServerRequest* r) {
-              std::string* acc = static_cast<std::string*>(r->_tempObject);
-              std::string body = acc ? *acc : std::string();
-              if (acc) { delete acc; r->_tempObject = nullptr; }   // free before any early return
+              ImportAcc* acc = static_cast<ImportAcc*>(r->_tempObject);
               // SECURITY (prism): the LAN MCP endpoint mutates memory / drives sub-agents /
               // spends the Tavily key - require the device token (X-Nimbus-Token header).
-              if (!webAuthOk(r)) {
-                r->send(401, "application/json", "{\"error\":\"auth required - X-Nimbus-Token\"}");
+              if (!acc) {   // no body chunk ran (empty POST): decide by auth
+                if (!webAuthOk(r)) { sendJson(r, 401, "{\"error\":\"auth required - X-Nimbus-Token\"}"); return; }
+                sendJson(r, 400, "{\"error\":\"empty body\"}");
                 return;
               }
+              if (!acc->authed)    { sendJson(r, 401, "{\"error\":\"auth required - X-Nimbus-Token\"}"); return; }
+              if (acc->bytes.over) { sendJson(r, 413, "{\"error\":\"request body too large\"}"); return; }
+              std::string body(acc->data(), acc->bytes.len);
+              // acc (header + PSRAM payload, one block) is freed by the framework with
+              // the request - do not free it here.
               // v3.7.0: the LAN MCP endpoint authenticates with ONE device
               // token and carries no per-caller identity, so it gets its OWN
               // namespace rather than being silently treated as the owner.
@@ -816,8 +832,20 @@ void registerMemoryRoutes(AsyncWebServer& server) {
             },
             nullptr,
             [](AsyncWebServerRequest* r, uint8_t* data, size_t len, size_t, size_t) {
-              if (!r->_tempObject) r->_tempObject = new std::string();
-              static_cast<std::string*>(r->_tempObject)->append((const char*)data, len);
+              ImportAcc* acc = static_cast<ImportAcc*>(r->_tempObject);
+              if (!acc) {
+                // First chunk: authorize BEFORE allocating the payload buffer.
+                const bool ok = webAuthOk(r);
+                const size_t cap = ok ? kMcpMaxBody : 0;
+                acc = static_cast<ImportAcc*>(heap_caps_calloc(1, sizeof(ImportAcc) + cap, MALLOC_CAP_SPIRAM));
+                if (!acc) acc = static_cast<ImportAcc*>(calloc(1, sizeof(ImportAcc) + cap));
+                r->_tempObject = acc;
+                if (!acc) return;   // OOM: onRequest sees null -> 400/401
+                acc->authed = ok;
+                acc->bytes.init(acc->data(), cap);
+              }
+              if (!acc->authed) return;   // refuse + drop: nothing buffered for an unauth caller
+              acc->bytes.append((const char*)data, len);   // hard-capped; sets over on overflow
             });
 }
 

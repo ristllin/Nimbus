@@ -35,6 +35,13 @@ server - findings are weighted by real reachability.
   *look* like one: the browser stores the token per ORIGIN, so a browser that identified
   at `http://<ip>` is silently authenticated there while `http://<name>.local` - a
   different origin - still shows the gate. Same device, same gate, two storage buckets.
+- **Body-consuming routes gate before they buffer.** The two routes that accept a raw
+  request body, `POST /api/mem/import` (CUM-406) and the LAN `POST /mcp` (CUM-410),
+  decide auth on the first body chunk before any payload buffer exists: an
+  unauthenticated caller costs a tiny header and every byte is dropped (no internal-heap
+  growth from the LAN). An authenticated body accumulates in PSRAM behind a hard cap
+  (512 KB import, 64 KB MCP) and is refused with `413` past it, never truncated. The
+  bench legs are `tests/hil/test_restore_import.py` and `tests/hil/test_mcp_bodycap.py`.
 - **Secret redaction in logs.** Every line written to the agent log ring (served by
   the token-gated `GET /api/log`) passes through `core::LogRing::redact` at the one
   `logring::put` choke point. Two layers: the provider keys and the Telegram bot
