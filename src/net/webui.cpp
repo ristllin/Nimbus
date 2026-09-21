@@ -3145,9 +3145,15 @@ void beginWeb(const WebConfig& wc) {
     if (authBlocked(r)) return;
     const char* why = "";
     const bool ok = otaupd::requestCheck(&why);
-    // A 409 is a LOCAL refusal, never a network fault: return the real reason
-    // and an honest one-line message the UI can show as-is (CUM-197).
-    String body = ok ? String("{\"ok\":true}")
+    // The check runs OFF this AsyncTCP task (requestCheck spawns the self-deleting
+    // checkTask; the manifest fetch + verify never block here), so the accept is
+    // immediate and cannot outlive the tunnel/origin budget - the browser sees this
+    // 202, never a raw upstream 5xx while the device quietly finishes the check
+    // (CUM-441). The verdict is not in this body; the client polls /api/state for
+    // the settled otaResult. "state":"checking" makes the accept self-describing.
+    // A 409 is a LOCAL refusal, never a network fault: return the real reason and
+    // an honest one-line message the UI can show as-is (CUM-197).
+    String body = ok ? String("{\"ok\":true,\"state\":\"checking\"}")
                      : String("{\"ok\":false,\"err\":\"") + why + "\",\"msg\":\"" +
                        nimbus::ota::checkRefusalCopy(why) + "\"}";
     r->send(ok ? 202 : 409, "application/json", body);
