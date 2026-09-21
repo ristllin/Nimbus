@@ -91,6 +91,13 @@ struct Hooks {
   std::function<bool(const String& ssid, const String& pass)> wifi;  // WIFI
   std::function<void()>                                   reboot;  // REBOOT
   std::function<void()>                                   factoryReset;  // FACTRESET (HIL)
+  // CALGATE / CALGATE skip - the first-run touch-calibration GATE (CUM-245). op 0 reports
+  // the live gate state; op 1 drives the DELIBERATE SKIP the same way an on-glass long hold
+  // does (run the SkipHold recognizer to threshold, then persist the board default and open
+  // the gate). Needed because serviceCalGate reads the RAW panel, not the injectable TAP
+  // buffer, so the skip is otherwise undriveable from the console. The four-corner SOLVE
+  // stays a finger-on-glass leg. Returns "active=<0|1> kind=<res|cap> stored=<0|1>".
+  std::function<String(int op)>                           calGate;  // CALGATE?/skip (HIL)
   std::function<void()>                                   hang;    // HANG (spin)
   // MODE <0|1>: persist the operating mode and restart so it takes effect (mode
   // is resolved once at boot). Lets HIL tests drive Notifier-path assertions on

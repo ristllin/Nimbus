@@ -42,6 +42,28 @@ therefore not adopted. If a hardware-free display and UI regression lane is want
 later, the cloud parts-simulator is the candidate to reassess, not the CPU emulator.
 Full spike evidence and costs are recorded on the CUM-80 issue.
 
+## Fresh-device (default / absent-NVS) leg
+
+The touch-mirror / touch-180 / uncalibrated-out-of-box family kept re-presenting because every
+other automated leg runs on a PROVISIONED unit (calibration solved, NVS good), while the owner
+hits the FIRST boot after a new version. The fresh device is therefore a first-class test STATE:
+
+- Host (T1): `test/test_fresh_device` and `test/test_touch_cal` pin the class rules a fresh boot
+  resolves (per-TouchKind default flags, the first-run cal gate policy over every kind, the
+  flip-compose rule that a stored cal stays valid across a display flip, the no-dead-end
+  first-run screen selection). A new board or touch class without a measured default fails at
+  compile time (a `static_assert` on `TouchKind::Count`).
+- Bench (T5): `tests/hil/test_l33_fresh_device.py` drives the board to the out-of-box state
+  through the product factory-reset path, then on a fresh resistive panel asserts the guided cal
+  gate owns the panel (no self-navigation for 30 s), injected taps do not navigate while gated,
+  the deliberate long-hold skip hands off to first-run setup, and render reaches the frame
+  (`TFTFILL?` GRAM readback). An NVS-adversarial variant persists a hostile `tchCal`/`tftFlip`
+  (frozen keys that survive a reflash), reboots, and asserts the device boots healthy, applies
+  the stored values, and does not re-arm the gate. The gate is invisible to `RENDER?` by design
+  (it paints outside the `g_lastScreen` path), so the `CALGATE` console seam is the oracle for
+  gate state; the four-corner SOLVE itself, and whether a tap lands where you touch under a flip,
+  stay finger-on-glass steps the runbook hands to the bench.
+
 ## The release gate
 
 A cross-cutting battery that must be green before any firmware tag or client flash.

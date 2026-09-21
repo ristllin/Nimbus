@@ -561,6 +561,10 @@ static uint8_t       g_calGateDownRun = 0, g_calGateUpRun = 0;  // raw-chatter d
 static uint16_t      g_calGateLastX = 0, g_calGateLastY = 0;    // last VALID raw press coords
 static uint32_t      g_calGateLastPollMs = 0;    // ~50 Hz raw-read rate limit (bus-friendly)
 static int32_t       g_calGateSig = INT32_MIN;
+#ifdef NIMBUS_TEST
+// CALGATE console seam (CUM-245), defined after serviceCalGate/persistCalAndReleaseGate.
+static String firstRunCalGateConsole(int op);
+#endif
 // True when the stored scrModel is not "tft" (a stale "eink" unit; frozen NVS key).
 // We run the color panel regardless and hold a clear "unsupported display" notice on
 // it at the end of setup (see the boot-notice block).
@@ -3395,6 +3399,7 @@ void setup() {
     };
     h.reboot = [] { ESP.restart(); };
     h.factoryReset = [] { g_factoryResetPending = true; };  // FACTRESET: same seam as web
+    h.calGate = firstRunCalGateConsole;  // CALGATE?/skip: first-run cal gate state + skip (CUM-245)
     h.hang   = [] { for (;;) {} };  // test-only spin - the F12 WDT reboots us in ~8 s
     h.setMode = [](int m) {
       sys::saveMode(m == 1 ? sys::Mode::Orchestrator : sys::Mode::Notifier);
@@ -3891,6 +3896,31 @@ static void serviceCalGate(uint32_t now) {
 
   renderCalGateIfChanged(now);
 }
+
+#ifdef NIMBUS_TEST
+// CALGATE console seam (CUM-245): report the first-run touch-cal gate state and drive its
+// DELIBERATE SKIP. serviceCalGate reads the RAW panel (not the injectable TAP buffer that
+// drainTouch consumes), so the skip cannot be driven with a synthetic tap; this runs the
+// SAME SkipHold recognizer + persistCalAndReleaseGate path an on-glass long hold takes, so
+// the leg proves the on-device gate release + handoff to first-run setup. The four-corner
+// SOLVE stays a finger-on-glass leg (real per-corner raw ADC). op: 0 = query, 1 = skip.
+static String firstRunCalGateConsole(int op) {
+  if (op == 1 && g_calGateActive) {
+    const uint32_t now = millis();
+    g_calSkip.reset();
+    g_calSkip.update(true, now);                                   // hold begins
+    if (g_calSkip.update(true, now + nimbus::touch::SkipHold::kHoldMs))
+      persistCalAndReleaseGate(
+          nimbus::touch::boardDefaultCal(g_firstRunTouchKind),
+          "[cal] first-run calibration skipped (console) - board default persisted");
+  }
+  char b[96];
+  snprintf(b, sizeof(b), "active=%d kind=%s stored=%d", int(g_calGateActive),
+           g_firstRunTouchKind == nimbus::touch::TouchKind::Capacitive ? "cap" : "res",
+           int(agent::store::touchCal().length() > 0));
+  return String(b);
+}
+#endif
 
 // How long a menu-action confirmation holds: the ring swell (matches the web
 // confirm) and the slightly longer on-screen line so it stays readable.

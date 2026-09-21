@@ -774,6 +774,60 @@ class Device:
         """``WIFI <ssid>|<pass>`` (NIMBUS_TEST). Provision creds over serial."""
         self.send(f"WIFI {ssid}|{password}")
 
+    # -- fresh-device / first-run helpers (CUM-245, F5) ---------------------
+    def factory_reset(self, timeout: float = 45.0):
+        """``FACTRESET`` -> the OUT-OF-BOX (default / absent-NVS) state, then a fresh boot.
+
+        The same deferred seam as web ``POST /api/factory-reset``: the main loop erases every
+        config namespace (KEEPING only the board's physical identity) and reboots. Returns
+        ``(mode, ip)`` from the fresh ``READY`` beacon.
+
+        ⚠ DESTRUCTIVE: wipes the stored touch calibration (tchCal), the display flip
+        (tftFlip), Wi-Fi creds, the onboarded flag, and provider keys - exactly the first
+        boot the owner QAs. The board comes back OFF its LAN; re-provision Wi-Fi in teardown
+        (``device.wifi(ssid, pass)``). The reboot re-enumerates the USB-CDC endpoint, so this
+        reopens across it (keeping the boot stream) and asserts the beacon like ``reset()``."""
+        self.cmd("FACTRESET", "FACTRESET", timeout=8.0)  # ack; main loop erases + reboots
+        # Do NOT drain: the erase-and-restart reaches READY quickly, so keep the beacon.
+        self.reopen_after_reenumerate(drain_boot=False)
+        return self.wait_ready(timeout=timeout)
+
+    _CALGATE_RE = r"CALGATE\s+active=(?P<active>\d)\s+kind=(?P<kind>\w+)\s+stored=(?P<stored>\d)"
+
+    def cal_gate(self, op: str = "", timeout: float = 6.0):
+        """``CALGATE`` / ``CALGATE skip`` (NIMBUS_TEST) - the first-run touch-cal GATE.
+
+        ``op=""`` (or ``"?"``) queries the live gate; ``op="skip"`` drives the DELIBERATE
+        long-hold skip the same way an on-glass hold does (``serviceCalGate`` reads the raw
+        panel, not the injectable TAP buffer, so the skip is otherwise undriveable from the
+        console). The four-corner SOLVE stays a finger-on-glass leg.
+
+        Returns ``(active: bool, kind: str, stored: bool)``: whether the gate owns the panel,
+        the touch class ("res"|"cap"), and whether a calibration is persisted."""
+        arg = " skip" if op == "skip" else "?"
+        m = self.cmd_re("CALGATE" + arg, self._CALGATE_RE, timeout=timeout)
+        return (m.group("active") == "1", m.group("kind"), m.group("stored") == "1")
+
+    def tap(self, x: int, y: int, hold: bool = False, timeout: float = 5.0) -> str:
+        """``TAP <x> <y> [HOLD]`` -> the ``TAP<`` ack. A synthetic press-release (or, with
+        ``hold``, a press held until ``TAPUP``) at a panel coordinate. Injected taps take the
+        ``drainTouch`` path, so a tap issued while the first-run cal GATE owns the panel is
+        (correctly) inert - which is exactly the "taps do not navigate while gated" assertion."""
+        return self.cmd(f"TAP {x} {y}{' HOLD' if hold else ''}", "TAP<", timeout=timeout)
+
+    def tftfill_ok(self, timeout: float = 8.0) -> bool:
+        """``TFTFILL?`` drives the REAL full-panel fill path and reads pixels back from the far
+        corners (GRAM readback), for red/green/blue. Returns True only if all three round-trip
+        (every line ends ``OK``) - the honest "render reaches the frame" check, distinct from a
+        golden (which only proves bytes match a capture). Raises on a torn/short reply."""
+        self.drain(quiet=0.2)
+        self.send("TFTFILL?")
+        seen = {}
+        for _ in range(3):
+            m = self.expect_re(r"TFTFILL\s+(?P<name>\w+)\s+want=.*\s+(?P<verdict>OK|MISMATCH)\s*$", timeout=timeout)
+            seen[m.group("name")] = m.group("verdict")
+        return len(seen) == 3 and all(v == "OK" for v in seen.values())
+
     # -- boot capture + beacon ----------------------------------------------
     def wait_ready(self, timeout: float = 20.0, max_total: "Optional[float]" = None):
         """Read the boot stream after a reset; FAIL on a panic or reboot loop,
