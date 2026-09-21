@@ -15,6 +15,12 @@ installs on your say-so ([how updates work](ota.md)).
   the edge while the device quietly finished. The result still appears on the
   Software update panel once it settles: up to date, a new version, or an honest
   failure with the reason.
+- **Cumulo Nimbus is now a selectable voice provider.** The web Voice settings and
+  the device Sound menu both offer Cumulo Nimbus for dictation and spoken replies,
+  alongside Mistral and OpenAI. Choosing it routes voice through the metered router,
+  so a one-key device can speak without a separate OpenAI or Mistral key. An explicit
+  choice of Cumulo Nimbus is honored even when another provider key is present, and
+  the voice picker shows an honest hint when no Cumulo key is set.
 - **The LAN MCP endpoint no longer buffers a request before checking the device
   token.** An unauthenticated `POST /mcp` is refused with nothing kept in memory, and
   an authenticated request larger than 64 KB is refused rather than silently cut

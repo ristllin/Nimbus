@@ -745,9 +745,9 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <div class=setbody>
 <label>Dictation <button class=qh type=button aria-expanded=false aria-label="About dictation">?</button></label>
 <p class="hint tip">Turns your voice, from the microphone or Telegram voice notes, into text. Works as soon as the provider's key is set, independent of chat verification. A Cumulo Nimbus key also covers voice, so a one-key device needs no separate OpenAI or Mistral key.</p>
-<select id=sttProv><option value=mistral>Mistral (Voxtral)</option><option value=openai>OpenAI</option></select>
+<select id=sttProv><option value=mistral>Mistral (Voxtral)</option><option value=openai>OpenAI</option><option value=cumulo>Cumulo Nimbus</option></select>
 <label>Spoken replies</label>
-<select id=ttsProv><option value=mistral>Mistral (Voxtral)</option><option value=openai>OpenAI</option></select>
+<select id=ttsProv><option value=mistral>Mistral (Voxtral)</option><option value=openai>OpenAI</option><option value=cumulo>Cumulo Nimbus</option></select>
 <label>Voice</label>
 <select id=ttsVoice></select>
 <div class=row id=vcascade>
@@ -1512,19 +1512,24 @@ function capProbeUpd(){
       :'';
   }
 }
-function fillVoices(prov, sel){
+function fillVoices(prov, sel, ck){
   const FB={mistral:[{value:'en_paul_neutral',label:'Paul (male, US) - neutral',name:'Paul',gender:'male',lang:'US',emotion:'neutral'},
                      {value:'gb_oliver_neutral',label:'Oliver (male, UK) - neutral',name:'Oliver',gender:'male',lang:'UK',emotion:'neutral'},
                      {value:'gb_jane_neutral',label:'Jane (female, UK) - neutral',name:'Jane',gender:'female',lang:'UK',emotion:'neutral'},
                      {value:'fr_marie_neutral',label:'Marie (female, FR) - neutral',name:'Marie',gender:'female',lang:'FR',emotion:'neutral'}],
             openai:[{value:'alloy',label:'Alloy - neutral'},{value:'nova',label:'Nova - female'},{value:'onyx',label:'Onyx - deep male'}]};
+  // Cumulo Nimbus voice routes through the OpenAI upstream (gpt-4o-mini-tts, default
+  // "alloy"), so its voice set IS the OpenAI one - fetch and fall back against that.
+  FB.cumulo=FB.openai;
+  const catProv=(prov==='cumulo')?'openai':prov;
   const tv=$('ttsVoice'), g=$('vGender'), pp=$('vPersona'), em=$('vEmotion'), h=$('voiceHint');
   const showCascade=on=>{[g,pp,em].forEach(e=>{if(e)e.style.display=on?'':'none';}); if(tv)tv.style.display=on?'none':'';};
   const renderFlat=list=>{if(!tv)return; tv.innerHTML='';
     list.forEach(v=>{const o=document.createElement('option');o.value=v.value;o.textContent=v.label;if(v.value===sel)o.selected=true;tv.appendChild(o);});
     tv.onchange=()=>orchApply({ttsVoice:tv.value});
     showCascade(false);
-    if(h)h.textContent=(prov==='openai')?'OpenAI voices (male / female / neutral).':'Mistral voices, live from the provider.';};
+    if(h)h.textContent=(prov==='cumulo')?(ck?'Cumulo Nimbus voices (male / female / neutral).':'Needs a Cumulo key to use this.')
+      :(prov==='openai')?'OpenAI voices (male / female / neutral).':'Mistral voices, live from the provider.';};
   const buildCascade=list=>{if(!g||!pp||!em){renderFlat(list);return;} showCascade(true);
     const uniq=a=>a.filter((v,i)=>a.indexOf(v)===i);
     const gOf=v=>v.gender||'', nOf=v=>v.name||v.value, eOf=v=>v.emotion||'';
@@ -1546,9 +1551,11 @@ function fillVoices(prov, sel){
     em.onchange=resolve;
     if(h)h.textContent='Mistral voices, live from the provider: pick gender, then persona, then emotion.';};
   const render=list=>{
-    const structured=prov!=='openai'&&list.some(v=>v.gender||v.name);
+    // openai and cumulo (which rides the openai upstream) are always flat; only
+    // Mistral's catalog carries the gender/persona/emotion structure.
+    const structured=prov!=='openai'&&prov!=='cumulo'&&list.some(v=>v.gender||v.name);
     structured?buildCascade(list):renderFlat(list);};
-  fetch('/api/voices?provider='+encodeURIComponent(prov)).then(r=>r.json())
+  fetch('/api/voices?provider='+encodeURIComponent(catProv)).then(r=>r.json())
     .then(l=>render(Array.isArray(l)&&l.length?l:(FB[prov]||FB.mistral)))
     .catch(()=>render(FB[prov]||FB.mistral));
 }
@@ -2976,7 +2983,10 @@ function applyOrch(d){
     // Only rebuild the voice list when the PROVIDER changed (or first load). The
     // 5s state poll re-runs applyOrch; re-filling every time would clobber a voice
     // the user just picked (this was the "switch doesn't update / reverts" bug).
-    if(window._vp!==d.ttsProv){window._vp=d.ttsProv;fillVoices(d.ttsProv, d.ttsVoice||'');}}
+    // Also rebuild when the Cumulo key state flips, so the "Needs a Cumulo key" hint
+    // clears the moment a key is added while Cumulo Nimbus is the chosen voice.
+    const _ck=!!(d.providers&&d.providers.cumulo&&d.providers.cumulo.hasKey);
+    if(window._vp!==d.ttsProv||window._vck!==_ck){window._vp=d.ttsProv;window._vck=_ck;fillVoices(d.ttsProv, d.ttsVoice||'', _ck);}}
   // Theme swatches: palettes are fetched from /api/themes (cached in THEMES) and
   // rendered against the live selection. Fetch lazily on first sight of d.theme.
   if(d.theme!==undefined){_curTheme=d.theme; if(THEMES){renderThemeChips();renderStatusLegend();}else loadThemes();}

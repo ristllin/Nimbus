@@ -141,8 +141,8 @@ roll back if it fails. See [OTA updates](../ota.md).
 
 | Key | Type | Default | Holds | Read back? |
 |---|---|---|---|---|
-| `sttProv` | string | `"mistral"` (Voxtral) | STT provider (`mistral\|openai`). **Freely changeable.** | Yes |
-| `ttsProv` | string | `"mistral"` | TTS provider (`mistral\|openai`). **Freely changeable.** | Yes |
+| `sttProv` | string | `"mistral"` (Voxtral) | STT provider (`mistral\|openai\|cumulo`). Cumulo Nimbus routes voice through the metered router. **Freely changeable.** | Yes |
+| `ttsProv` | string | `"mistral"` | TTS provider (`mistral\|openai\|cumulo`). Cumulo Nimbus routes voice through the metered router. **Freely changeable.** | Yes |
 | `ttsVoice` | string | `""` | TTS voice id/slug; `""` = provider default | Yes |
 | `tftFlip` | bool | `false` | Display flip: rotate the color panel 180 degrees for an upside-down mount (touch panel only). Applies live; touch mapping follows. The stored value is a delta from the board's correct orientation, which the firmware sets per board, so a fresh unit is upright out of the box on every board (the all-in-one panel is mounted 180 from the hand-built board). | Yes |
 | `ttsEnabled` | bool | `false` | Spoken-reply enable | Yes |

@@ -286,6 +286,7 @@ rules.
 | **Directive** | Web app: setup wizard (Directive step) and the Directive box under Memory | Device menu: not editable there (free text; web-only) |
 | **Music tracks** | Web app: Memory & Files, Music (add, play, remove tracks on the card's music folder) | Device menu: not managed there; play from Telegram `/play` or the assistant. |
 | **Safety activity and allowlist** | Web app: Assistant, Safety, Activity (review what the scanner blocked or suspected; approve scoped, dismiss, or report) and Allowed items (revoke) | Device menu: not shown there; the `SAFETY?` serial command prints a one-line summary. |
+| **Voice provider** (dictation and spoken replies) | Web app: Assistant, Models, Voice (Dictation and Spoken replies pickers). Each offers Mistral, OpenAI, and Cumulo Nimbus; Cumulo Nimbus routes voice through the metered router and needs a Cumulo key. | Device menu: Settings, Sound, Dictation and Spoken replies rows cycle the same three providers. |
 
 ## 5. The status language - colors, motion, themes
 

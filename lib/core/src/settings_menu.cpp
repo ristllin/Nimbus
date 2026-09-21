@@ -29,7 +29,11 @@ std::string saverText(uint16_t m) {
   return std::to_string(m) + " min";
 }
 
-const char* kVoiceProvNames[] = {"Mistral", "OpenAI"};
+const char* kVoiceProvNames[] = {"Mistral", "OpenAI", "Cumulo Nimbus"};
+// Derived from the array so the cycle can never drift from the label list (add a
+// name and the cycle reaches it automatically). Matches the sizeof idiom used for
+// kAnimNames / kSaverStepsTft elsewhere in this file.
+constexpr int kVoiceProvCount = int(sizeof(kVoiceProvNames) / sizeof(kVoiceProvNames[0]));
 
 // An SSID is arbitrary bytes off the air and the 5x7 font only draws
 // 32-126, so one UTF-8 network name would paint a row of '?'-noise (the "many
@@ -544,12 +548,12 @@ void SettingsMenu::onClick() {
         case SndVolume:                 // classic adjust: click captures rotation,
           volAdjusting_ = !volAdjusting_;   // rotate = value (ring gauge echoes),
           return;                           // click again releases
-        case SndStt:                    // cycle Mistral <-> OpenAI
-          sttProv_ ^= 1;
+        case SndStt:                    // cycle Mistral -> OpenAI -> Cumulo Nimbus
+          sttProv_ = (sttProv_ + 1) % kVoiceProvCount;
           dirty_ = true;
           return;
         case SndTts:
-          ttsProv_ ^= 1;
+          ttsProv_ = (ttsProv_ + 1) % kVoiceProvCount;
           dirty_ = true;
           return;
         default:                        // Back
@@ -1034,8 +1038,8 @@ void SettingsMenu::view(solide::menu::MenuView& out) const {
       out.items.push_back(volAdjusting_
           ? ("< Volume: " + std::to_string(sfxVolume_) + "% >")
           : ("Volume: " + std::to_string(sfxVolume_) + "%"));
-      out.items.push_back(std::string("Dictation: ") + kVoiceProvNames[sttProv_ & 1]);
-      out.items.push_back(std::string("Spoken replies: ") + kVoiceProvNames[ttsProv_ & 1]);
+      out.items.push_back(std::string("Dictation: ") + kVoiceProvNames[sttProv_ % kVoiceProvCount]);
+      out.items.push_back(std::string("Spoken replies: ") + kVoiceProvNames[ttsProv_ % kVoiceProvCount]);
       out.items.push_back("< Back");
       return;
     }

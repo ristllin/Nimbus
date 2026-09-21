@@ -1274,17 +1274,21 @@ static bool applyOrchField(const String& n, const String& v, bool& cfgDirty) {
     if (s.length()) agent::store::setProviderPriority(s);
     return true;
   }
-  // Only mistral/openai do on-device voice, and only if a key is configured -
+  // mistral/openai/cumulo do on-device voice, and only if a key is configured -
   // reject an unconfigured provider rather than store a voice setting that can
-  // never run (the onboarding UI also gates this, this is the backstop).
+  // never run (the onboarding UI also gates this, this is the backstop). cumulo
+  // is the metered router (CUM-376/CUM-439): its key is hasCumuloKey(), which
+  // store::providerHasKey does not cover, so it is checked explicitly here.
+  auto voiceProviderKeyed = [](const String& p) -> bool {
+    if (p == "cumulo") return agent::store::hasCumuloKey();
+    return (p == "mistral" || p == "openai") && agent::store::providerHasKey(p);
+  };
   if (n == "sttProv") {
-    if ((v == "mistral" || v == "openai") && agent::store::providerHasKey(v))
-      agent::store::setSttProvider(v);
+    if (voiceProviderKeyed(v)) agent::store::setSttProvider(v);
     return true;
   }
   if (n == "ttsProv") {
-    if ((v == "mistral" || v == "openai") && agent::store::providerHasKey(v))
-      agent::store::setTtsProvider(v);
+    if (voiceProviderKeyed(v)) agent::store::setTtsProvider(v);
     return true;
   }
   if (n == "ttsVoice") {   // free-form voice id/slug; validated against the provider on use
