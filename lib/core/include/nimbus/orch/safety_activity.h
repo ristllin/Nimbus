@@ -65,7 +65,7 @@ inline constexpr int    kSafetyAllowMax   = 64;    // bound the allowlist too (s
 
 // One recorded scanner verdict.
 struct SafetyEntry {
-  std::string   id;                              // stable per entry ("a" + hex suffix on device)
+  std::string   id;                              // stable per entry ("s" + 8 hex on device)
   uint32_t      tsEpoch = 0;                      // unix seconds the verdict was recorded
   SafetyVerdict verdict = SafetyVerdict::Blocked;
   std::string   rule;                            // the rule/category that fired (the content class)
@@ -82,6 +82,15 @@ struct SafetyEntry {
 // already redacts secrets upstream, this only bounds length). Exposed for the
 // device seam so it clamps identically to the store.
 std::string clampExcerpt(const std::string& in);
+
+// A window of `text` centered on the first case-insensitive occurrence of `pattern`,
+// at most `maxLen` bytes (defaults to the excerpt cap). Used for world-content entries
+// so the stored excerpt shows the matched region, not the first bytes of a large head:
+// a Pattern approve then keys on the real match, and the tab shows why it fired. When
+// `text` already fits, or `pattern` is absent, it degrades to the leading `maxLen`
+// bytes. Redaction is applied by the caller (substitution-only, so length is preserved).
+std::string excerptWindowAround(const std::string& text, const std::string& pattern,
+                                size_t maxLen = kSafetyExcerptMax);
 
 // ---- the activity log --------------------------------------------------------
 //
@@ -105,6 +114,14 @@ class SafetyActivityLog {
 
   // Find by id; nullptr when absent.
   const SafetyEntry* find(const std::string& id) const;
+
+  // Consecutive-duplicate collapse (CUM-215 ring-flush guard): if the NEWEST entry is
+  // the same scanner verdict on the same (verdict, rule, channel, sender, source,
+  // excerpt) and is still Active (unreviewed), refresh its timestamp to `ts` and return
+  // true WITHOUT growing the ring. This stops a guest resending one blocked message from
+  // evicting the owner's other unreviewed entries. Returns false when it is not such a
+  // duplicate (the caller then records a fresh entry).
+  bool refreshDuplicateFront(const SafetyEntry& e, uint32_t ts);
 
   // Mutate one entry's status. false when the id is unknown.
   bool setStatus(const std::string& id, SafetyStatus s);
@@ -133,9 +150,17 @@ class SafetyActivityLog {
   std::vector<SafetyEntry> entries_;   // newest-first (index 0 = most recent)
 };
 
+// Id shape guards (defense against a tampered durable file). Device entry ids are
+// "s" + 8 lowercase hex (nextId's s%08x); allow-rule ids are "a" + one-or-more
+// decimal digits. A stored line whose id does not match its shape is rejected on
+// load, so a hostile id (one carrying HTML/JS metacharacters from a hand-edited SD
+// card) never reaches the owner's authenticated Safety tab (CUM-215, stored-XSS).
+bool isValidSafetyEntryId(const std::string& id);   // ^s[0-9a-f]{8}$
+bool isValidAllowRuleId(const std::string& id);     // ^a[0-9]+$
+
 // One-entry JSONL codec (shared with the device seam + tests). encodeLine emits a
 // single line WITHOUT a trailing newline; decodeLine is tolerant (false on a
-// torn/garbage/incomplete line).
+// torn/garbage/incomplete line, or an id that fails its shape guard).
 std::string encodeSafetyLine(const SafetyEntry& e);
 bool        decodeSafetyLine(const std::string& line, SafetyEntry& out);
 
@@ -149,15 +174,18 @@ bool        decodeSafetyLine(const std::string& line, SafetyEntry& out);
 enum class AllowScope : uint8_t {
   Sender = 0,        // trust a specific principal (entry.sender == value)
   ContentClass = 1,  // trust a specific rule/category (entry.rule == value)
-  Pattern = 2,       // trust a specific content pattern (value is a substring of entry.excerpt)
+  Pattern = 2,       // trust one EXACT content excerpt (case-insensitive equality, not substring)
 };
 const char* allowScopeName(AllowScope s);                  // "sender"|"content-class"|"pattern"
 bool        allowScopeFromName(const std::string& s, AllowScope& out);
 
 struct AllowRule {
-  std::string id;         // stable per rule
+  std::string id;         // stable per rule ("a" + decimal counter on device)
   AllowScope  scope = AllowScope::Sender;
   std::string value;      // concrete, non-empty target for the scope
+  std::string source;     // the gate that minted it: inbound | outbound | world. A rule
+                          // only matches an entry from the SAME source, so an approval on
+                          // one gate can never silence another (CUM-215 cross-gate binding).
   uint32_t    tsEpoch = 0;
 
   bool operator==(const AllowRule& o) const;
@@ -191,11 +219,16 @@ class SafetyAllowlist {
  public:
   explicit SafetyAllowlist(int cap = kSafetyAllowMax) : cap_(cap > 0 ? cap : kSafetyAllowMax) {}
 
-  // Add a scoped rule. Refuses an empty/whitespace value (the anti-global guard)
-  // and a duplicate (same scope+value). On success returns the rule id via `outId`
-  // and true. `id` may be supplied (device id scheme / reload); "" auto-assigns.
-  bool add(AllowScope scope, const std::string& value, uint32_t tsEpoch,
-           std::string& outId, const std::string& id = "");
+  // Add a scoped rule bound to the gate `source` that produced it. Refuses an
+  // empty/whitespace value (the anti-global guard). A duplicate (same
+  // scope+value+source) is not re-added: `outId` is set to the existing rule id and
+  // the call returns false. When the list is FULL, nothing is stored and `outId` is
+  // left EMPTY (so the caller can tell "already allowed" from "no room"). On a fresh
+  // add returns the new id via `outId` and true. `id` may be supplied (reload); ""
+  // auto-assigns. Dup is checked BEFORE the cap so an already-allowed item never
+  // reports "full".
+  bool add(AllowScope scope, const std::string& value, const std::string& source,
+           uint32_t tsEpoch, std::string& outId, const std::string& id = "");
 
   // Revoke by id. false when unknown. Revocation is always allowed (the list is
   // inspectable + revocable from the same tab).
@@ -215,7 +248,8 @@ class SafetyAllowlist {
   int         loadAll(const std::string& blob);
 
  private:
-  bool hasRule(AllowScope scope, const std::string& value) const;   // dup check (scope+value)
+  // dup check (scope+value+source): same rule from the same gate
+  bool hasRule(AllowScope scope, const std::string& value, const std::string& source) const;
 
   int cap_;
   std::vector<AllowRule> rules_;
