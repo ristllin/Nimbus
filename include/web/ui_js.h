@@ -2409,6 +2409,13 @@ function connCard(k,c,keyed,host){
   let h='<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap"><b>'+connEsc(k.name)+'</b>'+badges+'<span style="margin-left:auto">'+status+'</span></div>';
   h+='<p class=cx style="margin:6px 0">'+connEsc(k.desc||'')+(k.docs?(' <a href="https://ristllin.github.io/Nimbus/guides/connectors#'+connEsc(k.docs)+'" target=_blank>setup&rarr;</a>'):'')+'</p>';
   h+='<div class=row style="margin-top:6px">'+provSel+'</div>';
+  // Mistral connectors (Studio connectors + hosted built-ins) carry NO credential on
+  // this device: they are authorized in the owner's Mistral account, and the device
+  // only references them by name. Enabling the checkbox here is not enough, so say the
+  // real step plainly - otherwise it reads as "on but broken" (the gcal confusion).
+  if(curProv==='mistral'&&kind!=='mcp'){
+    h+='<p class=hint style="margin:6px 0;color:var(--amber)">This runs on Mistral. Add your Mistral key, then turn '+connEsc(k.name)+' on in your Mistral account (La Plateforme &rsaquo; Connectors). It is referenced by name here, so there is nothing to paste.</p>';
+  }
   // token field only for remote MCP (a pasted PAT/bearer). Mistral connectors carry
   // no device secret (Studio-auth); OpenAI first-party needs the OAuth block (helper
   // script / raw editor), not a single token.

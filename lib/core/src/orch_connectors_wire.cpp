@@ -457,7 +457,15 @@ std::string catalogText(const std::vector<ConnectorInfo>& cs, const ProviderStat
       // need intervention, so a bare name means "no known problem" (a healthy
       // list stays cheap; enabled-but-unusable can't masquerade as working).
       if (c.auth == 0)      out += " (sign-in FAILED - tell the owner)";
-      else if (c.auth == 2) out += " (NO credential - not usable until the owner adds one)";
+      else if (c.auth == 2) {
+        // A Mistral Studio connector / hosted built-in has NO device credential: it
+        // is authorized in the owner's Mistral account and referenced by name here,
+        // so "add a credential" is the wrong instruction - point at Mistral instead.
+        if (r.prov == "mistral" && c.kind != "mcp")
+          out += " (not usable until the owner enables it in their Mistral Studio account)";
+        else
+          out += " (NO credential - not usable until the owner adds one)";
+      }
       any = true;
     }
     out += "\n";

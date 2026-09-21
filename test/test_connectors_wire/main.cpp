@@ -366,6 +366,23 @@ static void test_catalog_marks_current_provider() {
   TEST_ASSERT_TRUE(t.find("anthropic (YOU are here)") == std::string::npos);
 }
 
+// A Mistral connector (Studio connector or hosted built-in) has no device
+// credential - it is authorized in the owner's Mistral account. So an enabled-but-
+// unauthorized (auth==2) Mistral non-mcp connector must point at Mistral Studio, NOT
+// tell the owner to "add a credential" here; a device-token MCP still says the latter.
+static void test_catalog_mistral_studio_points_at_studio_not_device() {
+  ConnectorInfo studio = mk("gcal", "mistral", "connector");  // Studio connector by name
+  studio.enabled = true; studio.auth = 2;                     // enabled, not authorized
+  ConnectorInfo mcp = mk("slack", "mistral", "mcp");          // device-token MCP
+  mcp.enabled = true; mcp.auth = 2;
+  std::vector<ConnectorInfo> cs = {studio, mcp};
+  ProviderState ps; ps.mistralKeyed = true; ps.currentHost = "mistral";
+  std::string t = catalogText(cs, ps);
+  TEST_ASSERT_TRUE(t.find("Mistral Studio account") != std::string::npos);          // gcal
+  TEST_ASSERT_TRUE(t.find("NO credential - not usable until the owner adds one")
+                   != std::string::npos);                                            // slack
+}
+
 static void test_catalog_no_connectors() {
   std::vector<ConnectorInfo> cs;
   ProviderState ps;
@@ -931,6 +948,7 @@ int main() {
   RUN_TEST(test_anthropic_no_tools_key_polluted);
   RUN_TEST(test_catalog_marks_current_provider);
   RUN_TEST(test_catalog_no_connectors);
+  RUN_TEST(test_catalog_mistral_studio_points_at_studio_not_device);
   RUN_TEST(test_known_catalog_json_shape);
   RUN_TEST(test_catalog_surfaces_connector_caps);
   RUN_TEST(test_github_caps_state_repo_creation);
