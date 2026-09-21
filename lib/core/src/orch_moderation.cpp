@@ -62,6 +62,10 @@ ModAction decide(ModGate g, ClassifierVerdict v) {
   return ModAction::Allow;
 }
 
+bool blockIsScannerVerdict(ClassifierVerdict v) {
+  return v == ClassifierVerdict::Flag;
+}
+
 bool outboundExempt(bool systemProvenance) {
   // Provenance-only, fail-closed: the exemption is the flag and nothing else. There
   // is no text argument on purpose - a reply's bytes can never satisfy this, so a
@@ -120,6 +124,13 @@ std::string injectionPatternHit(const std::string& text) {
   for (const char* p : kInjectionPatterns)
     if (ciContains(text, p)) return std::string(p);
   return std::string();
+}
+
+std::vector<std::string> injectionPatternHits(const std::string& text) {
+  std::vector<std::string> hits;
+  for (const char* p : kInjectionPatterns)
+    if (ciContains(text, p)) hits.push_back(std::string(p));
+  return hits;
 }
 
 bool looksLikeInjection(const std::string& text) {
