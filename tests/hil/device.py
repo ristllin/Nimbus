@@ -820,6 +820,16 @@ class Device:
         m = self.cmd_re("CALGATE" + arg, self._CALGATE_RE, timeout=timeout)
         return (m.group("active") == "1", m.group("kind"), m.group("stored") == "1")
 
+    def set_ota_url(self, url: str, timeout: float = 6.0) -> str:
+        """``OTAURL <url>`` (NIMBUS_TEST) - RAM-only override of the manifest URL the
+        next OTACHECK / ``POST /api/ota/check`` fetches (lost on reboot). ``url=""``
+        (or ``"clear"``) restores the real GitHub manifest URL. Returns the echoed
+        URL. Lets a LAN OTA leg point the check at a bench manifest server without a
+        reflash (CUM-441)."""
+        arg = "clear" if url == "" else url
+        m = self.cmd_re(f"OTAURL {arg}", r"OTAURL\s?(.*)", timeout=timeout)
+        return m.group(1).strip()
+
     def tap(self, x: int, y: int, hold: bool = False, timeout: float = 5.0) -> str:
         """``TAP <x> <y> [HOLD]`` -> the ``TAP<`` ack. A synthetic press-release (or, with
         ``hold``, a press held until ``TAPUP``) at a panel coordinate. Injected taps take the

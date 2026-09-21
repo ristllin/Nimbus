@@ -127,6 +127,19 @@ docs. What a device does with a release once it is published is described below.
   `pending` means a check is still running or none has run yet. The distinction
   between `unreachable` and `failed` is honest: a transport failure is never
   reported as "up to date". (`nimbus::ota::checkResult`, host-tested.)
+- **The check never blocks the web request, so a tunneled check cannot leak a
+  raw 5xx.** `POST /api/ota/check` only *starts* the check. It claims the
+  single-flight guard, runs a few cheap local gates (Wi-Fi up, heap headroom),
+  hands the manifest fetch and signature verify to a short-lived worker that takes
+  the one shared TLS slot, and answers `202 {"ok":true,"state":"checking"}` right
+  away. No new long-lived task and no second TLS session are created (the
+  concurrency invariants hold). Because the slow HTTPS work runs off the web task,
+  the accept lands well inside the relay and origin time budgets, so over the
+  encrypted relay tunnel the browser sees that fast `202`, never a raw upstream
+  `502` from the edge giving up on a slow origin while the device quietly finishes
+  the check. The verdict is read afterwards from `/api/state` (above), and a
+  second check pressed while one is in flight is refused (`409 busy`) rather than
+  starting a second fetch.
 - **On-screen feedback (device menu).** Settings > Software update shows a status
   band while a check or install runs and after it settles, so the check is never
   silent: a progress bar (the download percent while installing, an indeterminate
@@ -225,13 +238,23 @@ easy to read amid ordinary log output.
 - Host: `pio test -e native -f test_ota_logic` (version/manifest/policy core +
   the signed-message golden, cross-checked against `tools/make_manifest.py
   --print-message`; the battery/health `installGate` branches; the definitive
-  `checkResult` mapping incl. reachable-vs-unreachable).
+  `checkResult` mapping incl. reachable-vs-unreachable; and the async check-flow
+  class in `test_check_async_lifecycle`: single-flight over every state, so a
+  second check while one is in flight can never start a second fetch, and the
+  polled verdict is `pending` only until the check settles).
 - Host (USB path): `pio test -e native -f test_usbfw_proto` (crc32 vectors, the
   START-header and chunk framing round-trips, and the arm-before-flip commit-order
   sequence, incl. that a failed flip disarms the pending guard).
 - HIL: `python3 -m pytest tests/hil/test_ota.py -m net --allow-hardware` -
   local self-signed TLS server (flips `tlsVerify` off/on), test-key-signed
   manifest, real dry-run E2E, sha-fail + sig-fail negatives, 302 redirect hop.
+- HIL (release gate): `python3 -m pytest
+  tests/hil/test_l29_release_gate.py::TestOtaCheckAnswersFast -m net
+  --allow-hardware` times `POST /api/ota/check` over the LAN (must accept in
+  under 2 s, off the web task) and polls `/api/state` until `otaResult` is
+  definitive. Set `NIMBUS_OTA_MANIFEST_URL` to point the check at a bench manifest
+  (else it runs against the real feed). The tunnel property follows from the fast
+  LAN answer.
 - Rollback drill (console, `env:test`, both slots flashed): `OTASIM arm app0`
   (label from `OTA?` `slot=`) + `OTASIM crash` + `REBOOT` → three synthetic
   crash-boots → device returns on the previous slot with `lastOta=rollback`.

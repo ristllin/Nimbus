@@ -464,6 +464,81 @@ static void test_check_result() {
   TEST_ASSERT_EQUAL_STRING("failed", checkResultStr(CheckResult::Failed));
 }
 
+// CUM-441: the async, tunnel-safe check contract, locked as a CLASS. POST
+// /api/ota/check answers immediately (202) and the manifest fetch + verify run
+// OFF the web task, so through the remote relay tunnel the browser gets the fast
+// accept, never a raw upstream 5xx while the device finishes. Two pure invariants
+// keep that honest, asserted below over EVERY State the firmware knows:
+//   (1) single-flight: a check may START only from a settled state, so a second
+//       check while one is in flight (any busy state) is refused and can never
+//       spin a second fetch;
+//   (2) poll-never-hangs: the verdict a client reads from /api/state is Pending
+//       while (and only while) the check has not settled to an outcome, then a
+//       definitive result - so a poller keeps waiting rather than reading a stale
+//       prior verdict or a false terminal mid-check.
+// The scan is driven off stateStr()'s default-less switch, not a hand-listed
+// array: a NEW enum value forces that switch to name it (a compiler -Wswitch
+// break otherwise), which makes it a non-"?" state this loop then REQUIRES to be
+// classified below - an unclassified new state FAILS here. That is the class rule
+// with teeth (AGENTS.md section 3): a new case with no guard cannot pass green.
+static void test_check_async_lifecycle() {
+  int seen = 0;
+  for (int i = 0; i < 64; i++) {           // State is a uint8_t enum; scan its range
+    const State s = static_cast<State>(i);
+    const char* name = stateStr(s);
+    if (!std::strcmp(name, "?")) continue;  // not a real state the firmware names
+    seen++;
+    // Every real state must fall into exactly one class the async-check contract
+    // understands. A newly-added state that no one classified lands in none of
+    // these and trips this assertion, rather than silently defaulting.
+    const bool settled = (s == State::Idle || s == State::UpToDate ||
+                          s == State::Available || s == State::Error);
+    const bool busy = (s == State::Checking || s == State::Downloading ||
+                       s == State::Verifying || s == State::ReadyToReboot);
+    const bool unsupported = (s == State::Unsupported);
+    TEST_ASSERT_TRUE_MESSAGE(settled || busy || unsupported,
+        "a new OTA State is unclassified in the async-check contract test (CUM-441)");
+    // (1) single-flight: canCheck is true IFF settled. Every busy state and
+    // Unsupported refuse, so a click during a check can never launch a 2nd fetch.
+    if (settled)
+      TEST_ASSERT_TRUE_MESSAGE(canCheck(s), "a settled state must accept a new check");
+    else
+      TEST_ASSERT_FALSE_MESSAGE(canCheck(s), "a busy/unsupported state must refuse a second check");
+    // (2) poll-never-hangs: only a settled check OUTCOME (up-to-date / available /
+    // error) is definitive; Idle/Checking and the install states poll as Pending.
+    const bool outcome = (s == State::UpToDate || s == State::Available ||
+                          s == State::Error);
+    if (outcome) {
+      TEST_ASSERT_TRUE_MESSAGE(checkResult(s, true) != CheckResult::Pending,
+          "a settled check outcome must be a definitive result, never pending");
+    } else {
+      TEST_ASSERT_EQUAL_INT_MESSAGE((int)CheckResult::Pending, (int)checkResult(s, true),
+          "a non-outcome state must poll as pending");
+      TEST_ASSERT_EQUAL_INT_MESSAGE((int)CheckResult::Pending, (int)checkResult(s, false),
+          "a non-outcome state must poll as pending regardless of reachability");
+    }
+  }
+  TEST_ASSERT_TRUE_MESSAGE(seen >= 9, "stateStr scan found fewer states than expected");
+
+  // The exact transitions the finding names: checking -> {up-to-date | available |
+  // failed | unreachable}, each derived from the ONE settled State the check task
+  // sets plus whether the fetch reached the server.
+  TEST_ASSERT_EQUAL_INT((int)CheckResult::Pending,     (int)checkResult(State::Checking, false));
+  TEST_ASSERT_EQUAL_INT((int)CheckResult::UpToDate,    (int)checkResult(State::UpToDate, true));
+  TEST_ASSERT_EQUAL_INT((int)CheckResult::NewVersion,  (int)checkResult(State::Available, true));
+  TEST_ASSERT_EQUAL_INT((int)CheckResult::Failed,      (int)checkResult(State::Error, true));
+  TEST_ASSERT_EQUAL_INT((int)CheckResult::Unreachable, (int)checkResult(State::Error, false));
+
+  // While checking, the state is exposed honestly (the web UI shows "Checking for
+  // updates..." and keeps polling) and offers no Install - never a stale verdict.
+  TEST_ASSERT_EQUAL_STRING("checking", stateStr(State::Checking));
+  TEST_ASSERT_EQUAL_INT((int)State::Checking, (int)stateFromStr("checking"));
+  UpdateView chk = updateView(State::Checking, -1, "v9.9.9", "", "v1.0.0");
+  TEST_ASSERT_TRUE(chk.busy);
+  TEST_ASSERT_FALSE(chk.showInstall);
+  TEST_ASSERT_EQUAL_STRING("Checking for updates...", chk.line);
+}
+
 static void test_state_from_str_roundtrips() {
   const State all[] = {State::Idle, State::Checking, State::UpToDate, State::Available,
                        State::Downloading, State::Verifying, State::ReadyToReboot,
@@ -663,6 +738,7 @@ int main(int, char**) {
   RUN_TEST(test_auto_install_window);
   RUN_TEST(test_install_gate);
   RUN_TEST(test_check_result);
+  RUN_TEST(test_check_async_lifecycle);
   RUN_TEST(test_state_from_str_roundtrips);
   RUN_TEST(test_update_view);
   RUN_TEST(test_verdict_status_consistency);
