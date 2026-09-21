@@ -456,13 +456,14 @@ static void runOne() {
   // 2-slot arbiter lets verify run beside another work-TLS session).
   size_t max8 = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
   if (deferReason((uint32_t)max8, (uint32_t)VERIFY_MIN_MAX8)[0]) {   // below the gate
-    // Persist the measured number so the pill's hover can name it, then record the
-    // deferral. recordVerify keeps a cached VERIFIED as-is (a transient blip must not
-    // demote it), so only arm the self-retry when the provider is NOT already verified.
+    // recordVerify keeps a cached VERIFIED as-is (a transient blip must not demote
+    // it), so it only SHOWS low-memory when the provider is not already verified.
+    // Persist the measured number and arm the self-retry in exactly that case, so a
+    // number is never stored that the UI will not surface.
     const bool wasVerified = (store::verifyResult(provider) == 1);
-    setDeferMax8(provider, (uint32_t)max8);
     recordVerify(provider, -1, deferReason((uint32_t)max8, (uint32_t)VERIFY_MIN_MAX8));
     if (!wasVerified) {
+      setDeferMax8(provider, (uint32_t)max8);
       int ri = retryIdx(provider);
       if (ri >= 0) g_retry[ri].onDeferred((uint32_t)millis());
     }
@@ -863,10 +864,9 @@ void pumpRetry() {
   // so a 1 s gate keeps the common (nothing-armed) path free without changing when a
   // retry actually fires. now-relative, so it survives the millis() wrap.
   static uint32_t s_nextPump = 0;
-  const uint32_t nowGate = (uint32_t)millis();
-  if ((int32_t)(nowGate - s_nextPump) < 0) return;
-  s_nextPump = nowGate + 1000;
-  const uint32_t now    = (uint32_t)millis();
+  const uint32_t now = (uint32_t)millis();
+  if ((int32_t)(now - s_nextPump) < 0) return;
+  s_nextPump = now + 1000;
   const bool     inTurn = orchestrator::turnInFlight();
   const bool     online = (WiFi.status() == WL_CONNECTED);
   for (int i = 0; i < kNRetry; ++i) {
