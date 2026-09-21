@@ -150,6 +150,9 @@ struct WebConfig {
   // power" interstitial.
   std::function<void()>       powerOff;
   std::function<bool()>       canWakeOnTouch;
+  // Test image only (CUM-248 bench): the WAKE? facts over HTTP, so a sleep/wake cycle
+  // can be proven over the LAN without a console reopen (which resets the S3 over USB).
+  std::function<String()>     testWakeInfo;
   // Web chat (POST /api/chat): inject a message as an orchestrator turn (runs on the
   // poll task). chatPoll() returns + clears the last web-turn reply ("" if none yet).
   // FALSE when the device could not accept the message (inbound queue full
@@ -197,6 +200,9 @@ bool     showCodeStale();
 // Register routes and start the server on port 80. `wc` is copied; its borrowed
 // pointers/callbacks must outlive the server.
 void beginWeb(const WebConfig& wc);
+// Test image only (CUM-248): late-bind the WAKE? facts producer after beginWeb (the
+// console hooks are wired after the web server), so /api/state can carry `testWake`.
+void webCallbacksTestWake(std::function<String()> fn);
 
 // Pump deferred work: apply any staged profile/mode/override change on the main
 // task and fire onChanged/onModeChanged. Call every main loop.

@@ -56,6 +56,39 @@ SOAK_N = int(os.environ.get("NIMBUS_SOAK_N", "20"))
 # a few minutes, long enough that the host closes the port before the chip sleeps.
 WAKE_TIMER_S = int(os.environ.get("NIMBUS_SOAK_TIMER_S", "4"))
 
+
+def _lan_wake_facts(timeout_s: float = 90.0):
+    """Read the test image's ``testWake`` facts from ``/api/state`` over the LAN.
+
+    Why the LAN: on the ESP32-S3 the host's USB-CDC reopen after a sleep cycle resets the
+    chip (``rst:0x15 USB_UART_CHIP_RESET``) and that reset ALSO clears the RTC-latched
+    counters, so nothing read over the console can prove the wake. Proven on the bench
+    2026-09-21: the same cycle read over the LAN shows ``reset=deep-sleep cause=timer
+    poweroff=1 deepWakes=+1`` while the console path reads ``unknown`` / ``0``. Needs
+    ``NIMBUS_TEST_IP`` + ``NIMBUS_TEST_TOKEN``; returns the parsed dict or None if the LAN
+    never answered within ``timeout_s``. Raises SkipTest-style via pytest.skip when the
+    env is absent (a loud skip, never a fake pass)."""
+    ip = os.environ.get("NIMBUS_TEST_IP")
+    tok = os.environ.get("NIMBUS_TEST_TOKEN")
+    if not (ip and tok):
+        pytest.skip("sleep/wake soak needs NIMBUS_TEST_IP + NIMBUS_TEST_TOKEN: the wake is proven over the LAN")
+    try:
+        import requests  # noqa: PLC0415 - optional bench dep
+    except ImportError:  # pragma: no cover
+        pytest.skip("requests not installed")
+    t0 = time.time()
+    while time.time() - t0 < timeout_s:
+        try:
+            d = requests.get(f"http://{ip}/api/state", headers={"X-Nimbus-Token": tok}, timeout=5).json()
+            raw = d.get("testWake")
+            if raw:
+                return parse_wake_info("WAKE " + raw)
+        except Exception:  # noqa: BLE001 - still rebooting / rejoining
+            pass
+        time.sleep(1.5)
+    return None
+
+
 # Board slug (STATUS board=) -> expected touch controller + tap-wake capability.
 # Freenove CYD: FT6336U INT on GPIO17 (RTC-capable) -> a tap wakes it.
 # Solide S3: XPT2046 T_IRQ not routed (pin -1) -> only a power-cycle / timer wakes it.
@@ -194,38 +227,48 @@ def test_sleep_wake_soak(device):
                 f"cycle {cycle}: board={board} pin should be {expect['pin']}, got {plan['pin']}"
             )
 
-        # 2) Power off with a timer wake and re-establish the console on the fresh boot.
+        # 2) Power off with a timer wake. The proof of the wake is read over the LAN
+        # BEFORE the console is reopened (the reopen resets the chip and wipes the
+        # RTC-latched facts on the S3); the console comes back afterwards for the
+        # state checks and the next cycle.
+        lan_before = _lan_wake_facts(timeout_s=20.0)
+        deep_before = (
+            lan_before["deepWakes"] if lan_before and lan_before["deepWakes"] is not None else deep_wakes_before
+        )
+        device.drain(quiet=0.2)
+        device.send(f"POWEROFF {WAKE_TIMER_S}")
+        device.expect("POWEROFF entering deep sleep", timeout=5.0)
+        t_off = time.time()
+        device.close()
+        lan = _lan_wake_facts(timeout_s=float(WAKE_TIMER_S) + 90.0)
+        t_back = time.time()
+        assert lan is not None, f"cycle {cycle}: the board never came back on the LAN after the timer wake"
+        assert lan["reset"] == "deep-sleep", f"cycle {cycle}: LAN reset reason {lan['reset']!r}, expected deep-sleep"
+        assert lan["cause"] == "timer", f"cycle {cycle}: LAN wake cause {lan['cause']!r}, expected timer"
+        assert lan["poweroff"], f"cycle {cycle}: LAN poweroff=0, this was not a power-off wake"
+        if lan["deepWakes"] is not None:
+            assert lan["deepWakes"] == deep_before + 1, (
+                f"cycle {cycle}: deepWakes {deep_before} -> {lan['deepWakes']}, expected +1"
+            )
+        # Now re-establish the console (this may reset the chip once more: expected).
         try:
-            wake = device.power_off_and_wake(WAKE_TIMER_S)
+            device.reopen_after_reenumerate(drain_boot=False)
+            device.wait_ready(timeout=40.0)
+            device.drain(quiet=0.3)
         except BootError as exc:
-            pytest.fail(f"cycle {cycle}: panic/reboot-loop across sleep/wake: {exc}")
-        # 3) It must have come back FROM deep sleep, via the timer we armed. These are
-        # latched boot facts read past the post-boot SD scan with a retry, and they are
-        # the non-racy freshness proof: the power_off_and_wake ack guarantees the sleep
-        # path was entered (esp_deep_sleep_start is unconditional after it), so a
-        # reset=deep-sleep/cause=timer reading is proof THIS cycle slept and woke. (The
-        # raw rst: marker is often eaten by the reopen race, so it is logged, not
-        # asserted - wake.saw_reset below.)
+            pytest.fail(f"cycle {cycle}: panic/reboot-loop after the wake: {exc}")
+
+        class _W:  # the fields the rest of the leg logs
+            saw_reset = True
+            boot_latency_s = round(t_back - t_off - float(WAKE_TIMER_S), 1)
+            cycle_s = round(time.time() - t_off, 1)
+
+        wake = _W()
+        # 3) The wake itself was proven over the LAN above; the console WAKE? after the
+        # reopen is logged for the record (the reopen reset makes it read one boot late).
         info = parse_wake_info(_retry(lambda: device.cmd("WAKE?", "WAKE ", timeout=10.0)))
-        if info["reset"] == "deep-sleep":
-            # The console reopen did not reset the chip: the this-boot facts are direct.
-            assert info["cause"] == "timer", f"cycle {cycle}: wake cause {info['cause']!r}, expected timer"
-            assert info["poweroff"], f"cycle {cycle}: WAKE? poweroff=0, this was not a power-off wake"
-        else:
-            # The reopen reset the chip after the wake (rst:0x15 on the S3), so prove the
-            # cycle from the RTC-latched facts: exactly one more deep-sleep wake than
-            # before, caused by the timer, from a deliberate power-off.
-            assert info["deepWakes"] is not None, (
-                f"cycle {cycle}: reset reason {info['reset']!r} and WAKE? carries no RTC-latched "
-                "deepWakes counter (old test image?)"
-            )
-            assert info["deepWakes"] == deep_wakes_before + 1, (
-                f"cycle {cycle}: deepWakes {deep_wakes_before} -> {info['deepWakes']}, expected +1 "
-                f"(reset reason this boot was {info['reset']!r})"
-            )
-            assert info["lastCause"] == "timer", f"cycle {cycle}: last wake cause {info['lastCause']!r}, expected timer"
-            assert info["lastPoweroff"], f"cycle {cycle}: last deep-sleep wake was not a power-off wake"
-        deep_wakes_before = info["deepWakes"] if info["deepWakes"] is not None else deep_wakes_before
+        print(f"[soak] cycle {cycle}: LAN proof {lan}; console after reopen {info}")
+        deep_wakes_before = lan["deepWakes"] if lan["deepWakes"] is not None else deep_before + 1
 
         # 4) Persisted state intact across the power-off (all read with settle-retries).
         assert _status_field(device, "mode") == before_mode, f"cycle {cycle}: mode changed"

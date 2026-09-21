@@ -641,6 +641,7 @@ static void buildState(String& out) {
   // First-run gate: the web UI shows the setup wizard overlay while this is true
   // (cleared when the wizard finishes, or by an NVS-wipe factory reset).
   d["needsOnboarding"] = !agent::store::onboarded();
+  if (s_wc.testWakeInfo) d["testWake"] = s_wc.testWakeInfo();   // test image only (CUM-248)
   // Onboarding summary truth (CUM-233): at least one provider verified - the SAME
   // gate /api/onboard/complete enforces. Lets the wizard's Done step derive its
   // summary from live server state instead of page-load-local flags that reset
@@ -1449,6 +1450,8 @@ static bool applyOrchField(const String& n, const String& v, bool& cfgDirty) {
 }
 
 // ---- routes -----------------------------------------------------------------
+void webCallbacksTestWake(std::function<String()> fn) { s_wc.testWakeInfo = std::move(fn); }
+
 void beginWeb(const WebConfig& wc) {
   s_wc = wc;
 

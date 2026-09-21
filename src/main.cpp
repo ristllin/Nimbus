@@ -3549,6 +3549,7 @@ void setup() {
              " deepWakes=" + String(s_rtcDeepWakes) + " lastCause=" + lastCause +
              " lastPoweroff=" + (s_rtcLastWasPowerOff ? "1" : "0");
     };
+    net::webCallbacksTestWake(h.wakeInfo);   // same facts over /api/state (CUM-248 bench)
     // ACTFB <action> <outcome> - CUM-309: fire the REAL menu-action feedback seam
     // (sound + ring swell + toast) for a named MenuAction and Outcome, so the bench
     // leg can drive a success row and a failure row over serial (the issue's own
