@@ -28,7 +28,7 @@ from net import Net  # noqa: E402
 from nsn import BrokerUnavailable, NsnInjector  # noqa: E402
 from secrets import Secrets, SecretsUnavailable  # noqa: E402
 
-HARDWARE_MARKERS = ("hil", "net", "agent", "audio")
+HARDWARE_MARKERS = ("hil", "net", "agent", "audio", "destructive")
 GATE_REASON = "hardware gated: pass --allow-hardware (board must be recovered first - F11/F12 brick)"
 
 # ---- CUM-141: mid-run console-wedge detection + in-place auto-recovery ------
@@ -52,6 +52,7 @@ def pytest_configure(config: "pytest.Config") -> None:
         ("manual", "human-assisted step; loud-fails if unconfirmed"),
         ("connectors", "live provider-connector E2E lifecycle; gated + agent + net"),
         ("qa", "comprehensive pre-OTA connector + follow-up QA (recorded + judged); gated"),
+        ("destructive", "factory-resets the board; runs only with -m destructive --allow-hardware"),
     ):
         config.addinivalue_line("markers", f"{name}: {desc}")
     # One wedge sentinel per session, reachable from the runtest hooks below.

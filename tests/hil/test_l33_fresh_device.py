@@ -17,11 +17,16 @@ so the gate never shows in RENDER? screen. The reliable oracle is the CALGATE se
 (device.cal_gate()); RENDER? is used only to catch the self-NAVIGATION the bug produced (a
 gated panel that reaches the Menu).
 
-⚠ DESTRUCTIVE: this leg FACTORY-RESETS the board (erases Wi-Fi creds, the onboarded flag,
-provider keys, the token and every owner setting) and then CLEARS the stored touch cal
+⚠ DESTRUCTIVE: these legs FACTORY-RESET the board (erase Wi-Fi creds, the onboarded flag,
+provider keys, the token and every owner setting) and then CLEAR the stored touch cal
 (`CALGATE clear`; a factory reset keeps tchCal as hardware identity, so this second step is
-what makes the touch path genuinely first-boot). The `fresh_bench` fixture requires STA creds
-up front and ALWAYS re-provisions Wi-Fi on teardown, so the board is left on its LAN.
+what makes the touch path genuinely first-boot). Because they are destructive they carry the
+`destructive` marker, NOT `hil`: the standard `-m "hil and not manual"` run and the release
+gate deselect them, and they run ONLY with `-m destructive --allow-hardware` (see
+docs/testing-tiers.md). The `fresh_bench` fixture requires STA creds up front and, on
+teardown, resets tftFlip to 0, clears the (possibly adversarial) touch cal, and re-provisions
+Wi-Fi, so the board is left factory-fresh but usable on its LAN (it does NOT restore keys,
+token or pairing - the supervisor re-onboards).
 
 Still owned by a finger on glass (NOT automatable, documented in PR_BODY.md): the four-corner
 SOLVE itself (real per-corner raw ADC), and "a tap lands where you touch" under a flip - the
@@ -160,14 +165,36 @@ POLL_S = 2.5
 def fresh_bench(device, secrets):
     """Guards the destructive fresh-device legs. Requires STA creds UP FRONT (a loud skip if
     absent - the teardown needs them to leave the board usable), yields the live device, and
-    ALWAYS re-provisions Wi-Fi on teardown so a factory-reset board rejoins its LAN."""
+    on teardown leaves the board in a known-usable state.
+
+    What teardown RESTORES: the adversarial leg persists a bad touch cal + tftFlip=1 (both
+    frozen keys that survive a factory reset), so teardown resets the flip to 0 and clears the
+    stored cal, and always re-provisions Wi-Fi so a factory-reset board rejoins its LAN.
+
+    What teardown CANNOT restore (a factory reset erased them, and the secrets are not the
+    fixture's to re-mint): provider keys, the Telegram token, cloud pairing, the device name
+    and every other owner setting. The board is left FACTORY-FRESH (onboarded=0) but on its
+    LAN, with default orientation and no stale cal, for the supervisor to re-onboard."""
     try:
         secrets.require_sta()
     except SecretsUnavailable as exc:
         pytest.skip(f"fresh-device leg FACTORY-RESETS the board and must re-provision Wi-Fi in teardown; {exc}")
     yield device
-    # Teardown: the leg wiped Wi-Fi creds. Restore them so the board is left on its LAN. Never
-    # mask the test verdict, but say plainly whether the rejoin confirmed.
+    # Teardown must never raise over the real test verdict, but must say plainly what it did.
+    # 1) Undo the adversarial orientation flip (frozen key; survives factory reset).
+    try:
+        device.cmd_re("TFTFLIP 0", r"TFTFLIP\s+->\s+0", timeout=6.0)
+        print("[fresh_bench] teardown: tftFlip reset to 0")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[fresh_bench] teardown could NOT reset tftFlip: {exc!r} (supervisor: set TFTFLIP 0)")
+    # 2) Clear any stored (adversarial) touch cal so the board is not left mis-calibrated. This
+    #    reboots the board, so it runs before the Wi-Fi rejoin below.
+    try:
+        device.clear_touch_cal()
+        print("[fresh_bench] teardown: stored touch cal cleared")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[fresh_bench] teardown could NOT clear touch cal: {exc!r} (supervisor: CALGATE clear)")
+    # 3) Restore Wi-Fi so the board is left on its LAN.
     try:
         device.wifi(secrets.sta_ssid, secrets.sta_pass)
         device.expect("WIFI_GOT_IP", timeout=35.0)
@@ -179,7 +206,7 @@ def fresh_bench(device, secrets):
         )
 
 
-@pytest.mark.hil
+@pytest.mark.destructive
 def test_fresh_resistive_gate_first_skip_and_handoff(fresh_bench):
     """The full out-of-box first-boot flow on a fresh RESISTIVE panel (legs 3a-3d):
     (a) the guided cal gate owns the panel from boot, and does NOT self-navigate for 30 s;
@@ -286,7 +313,7 @@ def test_fresh_resistive_gate_first_skip_and_handoff(fresh_bench):
         device.cmd("WIFIAP off", "WIFIAP off", timeout=8.0)  # resume joining for the teardown rejoin
 
 
-@pytest.mark.hil
+@pytest.mark.destructive
 def test_fresh_capacitive_never_gates(fresh_bench):
     """A fresh CAPACITIVE panel (Freenove FT6336U) reports pixels, needs no per-unit cal, and
     must NEVER gate: the cal gate is off out of the box and a tap navigates immediately. Keeps
@@ -314,7 +341,7 @@ def test_fresh_capacitive_never_gates(fresh_bench):
     assert reached.screen == _MENU, "a fresh capacitive panel must navigate on a tap (no gate)"
 
 
-@pytest.mark.hil
+@pytest.mark.destructive
 def test_nvs_adversarial_cal_survives_reflash_and_opens_gate(fresh_bench):
     """The NVS-adversarial variant (the nimbus-4 touch-180-across-firmware case): tchCal and
     tftFlip are FROZEN keys that survive a reflash. Persist an adversarial calibration + flip via

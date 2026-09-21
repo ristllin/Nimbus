@@ -17,6 +17,14 @@ Rules: never mock the thing under test to make a tier pass; hardware claims need
 (T5) or an explicit handed-off manual step; T6 results persist to `~/nimbus-evals/`
 (JSONL per run with model, scores, token and dollar cost) - never into the repo.
 
+Destructive legs (fresh-device / factory-reset): a few T5 legs FACTORY-RESET the board
+(they erase keys, the token, pairing and every owner setting to reach the genuine
+out-of-box state). They carry the `destructive` marker, not `hil`, so the standard
+`pytest tests/hil -m "hil and not manual" --allow-hardware` run and the release gate
+DESELECT them. Run them deliberately and alone with `pytest tests/hil -m destructive
+--allow-hardware`; the fixture re-provisions Wi-Fi and clears the adversarial cal/flip on
+teardown, but the board is left factory-fresh, so re-onboard it afterward.
+
 ## T4 emulated-device tier: evaluated, not adopted
 
 T4 runs end-to-end against host rigs (`tools/harness-lab`) only. We evaluated adding
