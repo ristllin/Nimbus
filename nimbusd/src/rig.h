@@ -20,6 +20,7 @@
 #include "nimbus/orch/episodic_log.h"
 #include "nimbus/orch/mem_config.h"
 #include "nimbus/orch/memory_tools.h"
+#include "nimbus/orch/provider_slots.h"
 #include "nimbus/orch/router_route.h"
 #include "nimbus/orch/scratchpad.h"
 #include "nimbus/orch/tool_registry.h"
@@ -59,6 +60,21 @@ constexpr const char* kCumuloPathPrefix = "/router/openai/v1";     // replaces t
 constexpr const char* kCumuloConv       = "openai";                // wire convention
 constexpr const char* kCumuloModel      = "gpt-5.6";               // CUMULO_MODEL default
 constexpr const char* kCumuloSlug       = "cumulo";               // head + routing slug
+
+// The Z.ai (GLM) direct-BYOK head the DEVICE consumes (src/agent/orchestrator.cpp
+// zai head + agent_config.h ZAI_HOST_PRIMARY / ZAI_BASE_PATH / ZAI_MODEL): an
+// OpenAI-compatible provider with its own key. Mirrored here (the daemon cannot
+// include the firmware header) so a keyed Virtual Nimbus routes to Z.ai identically
+// to a keyed device (CUM-445). The canonical env name is Z_AI_TOKEN (daemon_config.h
+// providerEnvName is the single slug->env source). The device probes api.z.ai then
+// open.bigmodel.cn; a hosted instance has no probe seam, so it uses the primary host
+// and lets NIMBUSD_ZAI_BASE override it.
+constexpr const char* kZaiEnvKey     = "Z_AI_TOKEN";     // canonical env name
+constexpr const char* kZaiHost       = "api.z.ai";       // ZAI_HOST_PRIMARY
+constexpr const char* kZaiPathPrefix = "/api/paas/v4";   // ZAI_BASE_PATH (NOT /v1)
+constexpr const char* kZaiConv       = "openai";         // OpenAI-compatible wire
+constexpr const char* kZaiModel      = "glm-5.3";        // ZAI_MODEL default
+constexpr const char* kZaiSlug       = "zai";            // head + routing slug
 
 struct TurnRecord {
   std::string chatId, userText, reply;
@@ -241,11 +257,16 @@ class NimbusdRig {
   // configured" state (CUM-211/CUM-286): a keyless instance produces no reply,
   // so the surface must say so, but a Cumulo-only instance DOES reply (via the
   // router head) and must read healthy, never degraded.
+  // Enumerated over the CANONICAL registry (anySlotWhere), not a hand-listed provider
+  // array: the b2f4930 / CUM-246 drift ("anyKeyed missed cumulo/zai") that told a
+  // Z.ai-only instance it had no provider - and so never dispatched its turn - cannot
+  // recur, because a slot added to provider_slots.h is counted here with no edit.
+  // cumulo is the router key (not a BYOK env slot), so it is read via hasCumulo().
   bool anyProviderConfigured() const {
-    if (hasCumulo()) return true;
-    for (const char* h : {"openai", "anthropic", "mistral"})
-      if (!cfg_.providerKey(h).empty()) return true;
-    return false;
+    return nimbus::orch::anySlotWhere([this](const char* slug) {
+      if (std::string(slug) == kCumuloSlug) return hasCumulo();
+      return !cfg_.providerKey(slug).empty();
+    });
   }
 
   // ---- in-app provider keys (CUM-279, device parity) ------------------------
@@ -254,14 +275,17 @@ class NimbusdRig {
   static std::string keyEnvFor(const std::string& host) {
     return Config::providerEnvName(host);
   }
-  // Map a web /api/orch key FIELD (the daemon emits `<slug>Key`) back to its slug: a
-  // plain suffix strip, valid iff the slug is one keyEnvFor knows - so a new provider
-  // added to the single env map works here with no edit.
+  // Map a web /api/orch key FIELD back to its provider slug through the CANONICAL
+  // registry (lib/core provider_slots.h): the device UI posts `oaiKey`/`antKey`/
+  // `mistKey`/`zaiKey`/`cumuloKey` (NOT `<slug>Key` - `oaiKey` != `openaiKey`), so a
+  // suffix strip silently dropped every direct-provider write (CUM-445). The registry
+  // is the ONE table the device, this GET, and this POST all read, so the field name
+  // can never drift again. Empty for a field no slot owns.
   static std::string hostForKeyField(const std::string& field) {
-    const size_t n = field.size();
-    if (n <= 3 || field.compare(n - 3, 3, "Key") != 0) return std::string();
-    const std::string slug = field.substr(0, n - 3);
-    return keyEnvFor(slug).empty() ? std::string() : slug;
+    for (size_t i = 0; i < nimbus::orch::kProviderSlotCount; i++)
+      if (field == nimbus::orch::kProviderSlots[i].keyField)
+        return std::string(nimbus::orch::kProviderSlots[i].slug);
+    return std::string();
   }
 
   // Set (or clear, when `key` is empty) a provider key from the running UI and make
@@ -325,6 +349,9 @@ class NimbusdRig {
     // - an empty model made budgeting fall to the conservative default window and
     // (with the fold path fixed) the fold request would carry no model at all.
     if (h == kCumuloSlug) return std::string(kCumuloModel);
+    // Z.ai direct head resolves to its default GLM model so budgeting reads a real
+    // window and the model picker shows a value (CUM-445), same shape as cumulo.
+    if (h == kZaiSlug) return std::string(kZaiModel);
     return std::string();
   }
 
@@ -574,8 +601,14 @@ class NimbusdRig {
     // engine consults this only after every BYOK head in the priority list
     // misses (a keyed BYOK head still wins), exactly as the device does
     // (src/agent/store_config.cpp routerFallbackHost).
+    // Device parity (src/agent/store_config.cpp routerFallbackHost): Cumulo first
+    // (the flagship one-key path), then Z.ai. Consulted only after every BYOK head in
+    // the priority list misses, so a VN with ONLY a Z.ai key still runs its turns on
+    // Z.ai instead of falling through to the first (keyless) priority head (CUM-445).
     p.routerFallbackHost = [this] {
-      return hasCumulo() ? std::string(kCumuloSlug) : std::string();
+      if (hasCumulo()) return std::string(kCumuloSlug);
+      if (hostAvailable(kZaiSlug)) return std::string(kZaiSlug);
+      return std::string();
     };
     // Device-truth "is any provider configured", INCLUDING the router key that
     // hasKey() above does not report (cumulo is not a canonical-env BYOK slot).
@@ -591,6 +624,7 @@ class NimbusdRig {
       if (h == "openai")    return std::string("gpt-6-astra,gpt-5.6,gpt-5.6-luna");
       if (h == "anthropic") return std::string("claude-opus-5,claude-sonnet-5,claude-haiku-4-5");
       if (h == "mistral")   return std::string("mistral-large-latest,mistral-medium-latest,mistral-small-latest");
+      if (h == "zai")       return std::string("glm-5.3,glm-5.2,glm-5.3-flash");
       return std::string();
     };
     p.convId = [this] { return convId_; };
@@ -670,6 +704,24 @@ class NimbusdRig {
     pd.customKey        = [this] { return cumuloKey(); };
     pd.customConv       = [] { return std::string(kCumuloConv); };
     pd.customModel      = [rr] { return rr.model; };
+    return pd;
+  }
+
+  // The provider deps for the Z.ai direct-BYOK head (CUM-445): the base ProviderDeps
+  // with the custom/proxy fields pointed at Z.ai's OpenAI-compatible endpoint
+  // (api.z.ai + /api/paas/v4), bearer = the Z_AI_TOKEN the owner set in the UI. This
+  // mirrors the device's zai head (src/agent/orchestrator.cpp) - orchTurnCustom over
+  // the same base/path/conv - so a keyed VN talks to Z.ai byte-for-byte like a device.
+  // NIMBUSD_ZAI_BASE overrides the host (the device's api.z.ai/open.bigmodel.cn probe
+  // has no hosted equivalent). The model is the in-app pick else the GLM default.
+  agent::providers::ProviderDeps zaiProviderDeps() {
+    auto pd = providerDeps();
+    const std::string base = cfg_.get("NIMBUSD_ZAI_BASE");
+    pd.customBase       = [base] { return base.empty() ? std::string(kZaiHost) : base; };
+    pd.customPathPrefix = [] { return std::string(kZaiPathPrefix); };
+    pd.customKey        = [this] { return cfg_.providerKey(kZaiSlug); };
+    pd.customConv       = [] { return std::string(kZaiConv); };
+    pd.customModel      = [this] { return modelFor(kZaiSlug); };
     return pd;
   }
 
@@ -776,6 +828,21 @@ class NimbusdRig {
                          std::string& out, std::string& err, const agent::HeadTools* tools,
                          orch::TokenUsage* usage) -> bool {
                     auto pd = cumuloProviderDeps();
+                    return agent::providers::orchTurnCustom(pd, conv, ins, inp, out, err,
+                                                            tools, usage);
+                  });
+    }
+    // CUM-445: the Z.ai direct-BYOK head, registered when Z_AI_TOKEN is present. Like
+    // cumulo it runs through orchTurnCustom (OpenAI-compatible), NOT the {openai,
+    // anthropic,mistral} loop above whose else-branch is Mistral - routing a Z.ai key
+    // there would post it to Mistral, exactly the silent-misroute class the UI comment
+    // (ui_js.h "silently wrote a cumulo key into Mistral") warns against.
+    if (hostAvailable(kZaiSlug)) {
+      d.hosts.add(kZaiSlug,
+                  [this](std::string& conv, const std::string& ins, const std::string& inp,
+                         std::string& out, std::string& err, const agent::HeadTools* tools,
+                         orch::TokenUsage* usage) -> bool {
+                    auto pd = zaiProviderDeps();
                     return agent::providers::orchTurnCustom(pd, conv, ins, inp, out, err,
                                                             tools, usage);
                   });
