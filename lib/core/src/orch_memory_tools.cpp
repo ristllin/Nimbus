@@ -50,64 +50,73 @@ static std::vector<std::string> readSetFor(const Principal& who) {
 // provider slug or a numeric HTTP status, never arbitrary text from `raw`, so a
 // key-shaped string in `raw` cannot reach the tool result. Keep every token here
 // in step with what embeddings.cpp emits and the test that iterates the classes.
+namespace {
+bool rawStartsWith(const std::string& s, const char* p) { return s.rfind(p, 0) == 0; }
+
+// The status portion of an "HTTP ..." token: a known router refusal code maps to
+// its own class; otherwise ProviderError carrying ONLY the numeric status.
+EmbedFail classifyHttpToken(const std::string& raw, std::string& detail) {
+  if (raw.find("funding_cap_reached")  != std::string::npos) return EmbedFail::OutOfCredit;
+  if (raw.find("rate_limited")         != std::string::npos) return EmbedFail::RateLimited;
+  if (raw.find("endpoint_not_allowed") != std::string::npos) return EmbedFail::RouteNotAllowed;
+  std::string code;
+  for (size_t i = 5; i < raw.size(); i++) {   // digits after "HTTP " are secret-safe
+    const char c = raw[i];
+    if (c < '0' || c > '9') break;
+    code += c;
+  }
+  detail = code;
+  return EmbedFail::ProviderError;
+}
+}  // namespace
+
 EmbedFail classifyEmbedFail(const std::string& raw, std::string& detail) {
   detail.clear();
   if (raw.empty()) return EmbedFail::None;
-  if (raw == "empty text") return EmbedFail::BadRequest;
-  if (raw == "no model")   return EmbedFail::NoModel;
-  const char* kNoKey = "no embeddings key for ";
-  if (raw.rfind(kNoKey, 0) == 0) {
-    const std::string p = raw.substr(std::char_traits<char>::length(kNoKey));
+  // Exact-match tokens the device seam emits.
+  static const struct { const char* tok; EmbedFail kind; } kExact[] = {
+    {"empty text",     EmbedFail::BadRequest},
+    {"no model",       EmbedFail::NoModel},
+    {"tls busy",       EmbedFail::Busy},
+    {"connect failed", EmbedFail::Unreachable},
+    {"timeout",        EmbedFail::Timeout},
+    {"key rejected",   EmbedFail::KeyRejected},
+  };
+  for (const auto& e : kExact) if (raw == e.tok) return e.kind;
+  if (rawStartsWith(raw, "no embeddings key for ")) {
+    const std::string p = raw.substr(sizeof("no embeddings key for ") - 1);
     // Name the provider ONLY when it is a known slug - never echo raw text.
-    if (p == "openai" || p == "mistral" || p == "cumulo" || p == "anthropic" ||
-        p == "zai")
-      detail = p;
+    static const char* kProviders[] = {"openai", "mistral", "cumulo", "anthropic", "zai"};
+    for (const char* known : kProviders) if (p == known) { detail = p; break; }
     return EmbedFail::NoKey;
   }
-  if (raw == "tls busy")       return EmbedFail::Busy;
-  if (raw == "connect failed") return EmbedFail::Unreachable;
-  if (raw == "timeout")        return EmbedFail::Timeout;
-  if (raw == "key rejected")   return EmbedFail::KeyRejected;
-  if (raw.rfind("parse:", 0) == 0) return EmbedFail::BadResponse;
-  // Non-200 HTTP, optionally carrying a router refusal code appended by
-  // embeddings.cpp ("HTTP <code>" or "HTTP <code> <refusalCode>").
-  if (raw.rfind("HTTP ", 0) == 0) {
-    if (raw.find("funding_cap_reached")  != std::string::npos) return EmbedFail::OutOfCredit;
-    if (raw.find("rate_limited")         != std::string::npos) return EmbedFail::RateLimited;
-    if (raw.find("endpoint_not_allowed") != std::string::npos) return EmbedFail::RouteNotAllowed;
-    // Keep ONLY the numeric status as detail (digits are secret-safe).
-    std::string code;
-    for (size_t i = 5; i < raw.size(); i++) {
-      const char c = raw[i];
-      if (c < '0' || c > '9') break;
-      code += c;
-    }
-    detail = code;
-    return EmbedFail::ProviderError;
-  }
+  if (rawStartsWith(raw, "parse:")) return EmbedFail::BadResponse;
+  if (rawStartsWith(raw, "HTTP "))  return classifyHttpToken(raw, detail);
   return EmbedFail::Unknown;
 }
 
 std::string embedFailWords(EmbedFail kind, const std::string& detail) {
-  switch (kind) {
-    case EmbedFail::None:            return "";
-    case EmbedFail::NoKey:
-      return detail.empty() ? "no embeddings key for the configured provider"
-                            : ("no embeddings key for " + detail);
-    case EmbedFail::KeyRejected:     return "the embeddings key was rejected";
-    case EmbedFail::Busy:            return "connection busy, retry";
-    case EmbedFail::Unreachable:     return "provider unreachable";
-    case EmbedFail::Timeout:         return "provider timed out";
-    case EmbedFail::OutOfCredit:     return "out of embedding credit for now";
-    case EmbedFail::RateLimited:     return "provider busy (rate limited)";
-    case EmbedFail::RouteNotAllowed: return "embeddings route not allowed for this provider";
-    case EmbedFail::ProviderError:
-      return detail.empty() ? "provider error" : ("provider error HTTP " + detail);
-    case EmbedFail::BadResponse:     return "provider sent a malformed response";
-    case EmbedFail::NoModel:         return "no embeddings model configured";
-    case EmbedFail::BadRequest:      return "no text to embed";
-    case EmbedFail::Unknown:         return "unavailable";
-  }
+  // The two detail-bearing classes are explicit; the rest are a flat table.
+  if (kind == EmbedFail::NoKey)
+    return detail.empty() ? "no embeddings key for the configured provider"
+                          : ("no embeddings key for " + detail);
+  if (kind == EmbedFail::ProviderError)
+    return detail.empty() ? "provider error" : ("provider error HTTP " + detail);
+  static const struct { EmbedFail k; const char* w; } kW[] = {
+    {EmbedFail::None,            ""},
+    {EmbedFail::KeyRejected,     "the embeddings key was rejected"},
+    {EmbedFail::Busy,            "connection busy, retry"},
+    {EmbedFail::Unreachable,     "provider unreachable"},
+    {EmbedFail::Timeout,         "provider timed out"},
+    {EmbedFail::OutOfCredit,     "out of embedding credit for now"},
+    {EmbedFail::RateLimited,     "provider busy (rate limited)"},
+    {EmbedFail::RouteNotAllowed, "embeddings route not allowed for this provider"},
+    {EmbedFail::BadResponse,     "provider sent a malformed response"},
+    {EmbedFail::NoModel,         "no embeddings model configured"},
+    {EmbedFail::BadRequest,      "no text to embed"},
+    {EmbedFail::Unknown,         "unavailable"},
+  };
+  for (const auto& e : kW) if (e.k == kind) return e.w;
   return "unavailable";
 }
 

@@ -155,6 +155,23 @@ The embed config `{provider, model, dims}` is stored beside the table;
 mixed-config vectors are refused; changing config = wipe + re-embed from the
 episodic store (background job) behind the loud UI warning.
 
+**When embeddings are unavailable.** An embedding round-trip can fail for many
+reasons, and the memory tools name the real one instead of a single fixed guess.
+The device seam reports the cause (no key for the configured provider, key
+rejected, connection busy, provider unreachable, timeout, an HTTP status, a
+malformed response, or a router refusal such as out of credit / rate limited /
+route not allowed) and each maps to its own honest, secret-safe line (a key or
+Authorization header is never echoed; only a known provider name or the numeric
+HTTP status is shown). `memory.write` and `memory.update` refuse with that reason
+and store nothing rather than saving an un-embedded entry as if it were embedded
+(update embeds the new text before removing the old fact, so a failed update never
+loses the prior memory). `memory.search` and `memory.archive` search **degrade**
+instead of failing: they run a bounded, case-insensitive keyword scan over the
+same rows, inside the same namespace boundary the semantic path enforces, and
+label the result `keyword match, embeddings unavailable: <reason>` so the model
+does not mistake it for semantic recall. A transient embed outage therefore reads
+as "keyword match" plus the real cause, not as empty memory.
+
 ## 2. Per-turn context assembly
 
 The system prompt is assembled in this order (each section byte-capped; total

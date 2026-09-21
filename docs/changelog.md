@@ -21,6 +21,15 @@ installs on your say-so ([how updates work](ota.md)).
   so a one-key device can speak without a separate OpenAI or Mistral key. An explicit
   choice of Cumulo Nimbus is honored even when another provider key is present, and
   the voice picker shows an honest hint when no Cumulo key is set.
+- **Memory tools say why when embeddings are unavailable, and search still
+  answers.** When the assistant cannot turn text into a vector, it now names the
+  real cause (no embeddings key, a rejected key, a busy connection, an
+  unreachable provider, a timeout, an HTTP error, or a provider that is out of
+  credit or rate limited) instead of one fixed "provider offline?" message, and
+  never shows a key. Memory search and archive search keep working through the
+  outage by falling back to a labeled keyword match over your stored memories, so
+  recall no longer reads as empty. Saving a memory during an outage is refused
+  with the real reason rather than stored without a vector.
 - **The LAN MCP endpoint no longer buffers a request before checking the device
   token.** An unauthenticated `POST /mcp` is refused with nothing kept in memory, and
   an authenticated request larger than 64 KB is refused rather than silently cut
