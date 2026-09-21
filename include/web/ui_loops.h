@@ -75,7 +75,7 @@ static const char UI_LOOPS[] PROGMEM = R"=====(<div class=pane id=pane-gov style
 <div class=sec>
 <h2>Allowed items <button class=qh type=button aria-expanded=false aria-label="About allowed items">?</button></h2>
 <p class="hint tip">The senders, types, and content patterns you approved. The scanner lets these through. Revoke any to screen it again.</p>
-<div id=safetyAllow class=hint>none yet</div>
+<div id=safetyAllow class=hint>None yet</div>
 </div>
 <div class=sec>
 <h2>Downloads <button class=qh type=button aria-expanded=false aria-label="About downloads">?</button></h2>

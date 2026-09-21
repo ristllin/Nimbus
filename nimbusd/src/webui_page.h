@@ -1031,7 +1031,7 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <div class=sec>
 <h2>Allowed items <button class=qh type=button aria-expanded=false aria-label="About allowed items">?</button></h2>
 <p class="hint tip">The senders, types, and content patterns you approved. The scanner lets these through. Revoke any to screen it again.</p>
-<div id=safetyAllow class=hint>none yet</div>
+<div id=safetyAllow class=hint>None yet</div>
 </div>
 <div class=sec>
 <h2>Downloads <button class=qh type=button aria-expanded=false aria-label="About downloads">?</button></h2>
@@ -3147,7 +3147,8 @@ function fetchQAct(id,op){
 // owner actions (approve scoped / dismiss / report), and the scoped allowlist.
 var _safetyReport={available:false,copy:''};
 function loadSafety(){fetch('/api/safety').then(r=>r.json()).then(renderSafety).catch(function(){var b=$('safetyList');if(b&&/loading/i.test(b.textContent))b.innerHTML='<p class=hint>Could not load activity. Try again.</p>';});}
-function _sfxEsc(t){return (t||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+// Reuse the one full HTML escaper (connEsc, defined below and hoisted): it also
+// escapes ' and ", so ids interpolated into inline handlers cannot break out (CUM-215).
 function renderSafety(d){
   d=d||{};_safetyReport=d.report||{available:false,copy:''};
   var box=$('safetyList');
@@ -3166,17 +3167,18 @@ function renderSafety(d){
         if(e.rule&&e.rule!=='moderation')opts+='<option value=content-class>this type</option>';
         var when=e.ts?new Date(e.ts*1000).toLocaleString():'';
         var rep=_safetyReport||{};var repNote='';
+        var eid=connEsc(e.id);
         if(rep.pending&&rep.pendingId===e.id)repNote='<div class=hint>Reporting&hellip;</div>';
-        else if(rep.last&&rep.last.id===e.id)repNote='<div class=hint>'+_sfxEsc(rep.last.message||'')+'</div>';
+        else if(rep.last&&rep.last.id===e.id)repNote='<div class=hint>'+connEsc(rep.last.message||'')+'</div>';
         h+='<div class=provrow style="border-top:0;padding-top:8px;margin-top:8px"><div style="min-width:0">'+
-           '<b>'+vbad+'</b>'+sbad+' <span class=hint>'+_sfxEsc(e.rule)+' &middot; '+_sfxEsc(e.channel)+(e.sender?' &middot; '+_sfxEsc(e.sender):'')+'</span>'+
-           '<div class=hint style="overflow-wrap:anywhere">'+_sfxEsc(e.excerpt)+'</div>'+
-           (when?'<div class=hint>'+_sfxEsc(when)+'</div>':'')+
+           '<b>'+vbad+'</b>'+sbad+' <span class=hint>'+connEsc(e.rule)+' &middot; '+connEsc(e.channel)+(e.sender?' &middot; '+connEsc(e.sender):'')+'</span>'+
+           '<div class=hint style="overflow-wrap:anywhere">'+connEsc(e.excerpt)+'</div>'+
+           (when?'<div class=hint>'+connEsc(when)+'</div>':'')+
            '<div class=row style="gap:6px;flex-wrap:wrap;margin-top:6px">'+
-           '<select id=asc_'+e.id+' aria-label="Approve scope">'+opts+'</select>'+
-           '<button type=button onclick="safetyApprove(\''+e.id+'\')">Approve</button>'+
-           '<button type=button class=warn onclick="safetyDismiss(\''+e.id+'\')">Dismiss</button>'+
-           '<button type=button onclick="safetyReport(\''+e.id+'\')">Report</button>'+
+           '<select id="asc_'+eid+'" aria-label="Approve scope">'+opts+'</select>'+
+           '<button type=button onclick="safetyApprove(\''+eid+'\')">Approve</button>'+
+           '<button type=button class=warn onclick="safetyDismiss(\''+eid+'\')">Dismiss</button>'+
+           '<button type=button onclick="safetyReport(\''+eid+'\')">Report</button>'+
            '</div>'+repNote+'</div></div>';
       });
       box.innerHTML=h;
@@ -3185,14 +3187,14 @@ function renderSafety(d){
   var abox=$('safetyAllow');
   if(abox){
     var al=d.allow||[];
-    if(!al.length){abox.innerHTML='none yet';}
+    if(!al.length){abox.innerHTML='None yet';}
     else{
       var scopeLabel={sender:'sender',"content-class":'type',pattern:'content'};
       var ah='';
       al.forEach(function(r){
         ah+='<div class=row style="justify-content:space-between;gap:8px;border-top:1px solid var(--raise3);padding:6px 0">'+
-            '<div style="min-width:0;overflow-wrap:anywhere"><b>'+_sfxEsc(scopeLabel[r.scope]||r.scope)+'</b>: '+_sfxEsc(r.value)+'</div>'+
-            '<button type=button class=warn style="flex:0 0 auto" onclick="safetyRevoke(\''+r.id+'\')">Revoke</button></div>';
+            '<div style="min-width:0;overflow-wrap:anywhere"><b>'+connEsc(scopeLabel[r.scope]||r.scope)+'</b>: '+connEsc(r.value)+'</div>'+
+            '<button type=button class=warn style="flex:0 0 auto" onclick="safetyRevoke(\''+connEsc(r.id)+'\')">Revoke</button></div>';
       });
       abox.innerHTML=ah;
     }
