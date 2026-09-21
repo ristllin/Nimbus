@@ -43,10 +43,11 @@ from __future__ import annotations
 import os
 import re
 import statistics
+import time
 
 import pytest
 
-from device import BootError
+from device import BootError, ExpectTimeout
 
 # Default cycle count; override with NIMBUS_SOAK_N. CUM-248 asks for N=20+.
 SOAK_N = int(os.environ.get("NIMBUS_SOAK_N", "20"))
@@ -125,8 +126,24 @@ def _first_line_after(raw: str, marker: str) -> str:
     return raw[idx:].splitlines()[0]
 
 
+def _retry(fn, overall: float = 25.0):
+    """Retry ``fn`` past an ExpectTimeout until ``overall`` seconds elapse. The
+    post-boot SD/episodic scan can block the console for many seconds right after a
+    wake (the documented CUM-418 window), so a single fixed-timeout read races it; a
+    settle-retry rides it out. Re-raises the last timeout if the console never
+    answers."""
+    deadline = time.time() + overall
+    while True:
+        try:
+            return fn()
+        except ExpectTimeout:
+            if time.time() >= deadline:
+                raise
+            time.sleep(0.5)
+
+
 def _status_field(device, field: str) -> str:
-    raw = device.cmd("STATUS", "STATUS ", timeout=8.0)
+    raw = _retry(lambda: device.cmd("STATUS", "STATUS ", timeout=8.0))
     m = re.search(rf"{field}=(\S+)", raw[raw.index("STATUS ") :].splitlines()[0])
     return m.group(1) if m else "?"
 
@@ -162,28 +179,29 @@ def test_sleep_wake_soak(device):
                 f"cycle {cycle}: board={board} pin should be {expect['pin']}, got {plan['pin']}"
             )
 
-        # 2+3) Power off with a timer wake; prove a fresh boot from the stream.
+        # 2) Power off with a timer wake and re-establish the console on the fresh boot.
         try:
             wake = device.power_off_and_wake(WAKE_TIMER_S)
         except BootError as exc:
             pytest.fail(f"cycle {cycle}: panic/reboot-loop across sleep/wake: {exc}")
-        assert wake.saw_reset, (
-            f"cycle {cycle}: no reset marker in the wake boot stream - the chip may "
-            f"not have slept/woken cleanly ({wake!r})"
-        )
-
-        # 3b) It must have come back FROM deep sleep, via the timer we armed.
-        info = parse_wake_info(device.cmd("WAKE?", "WAKE ", timeout=10.0))
+        # 3) It must have come back FROM deep sleep, via the timer we armed. These are
+        # latched boot facts read past the post-boot SD scan with a retry, and they are
+        # the non-racy freshness proof: the power_off_and_wake ack guarantees the sleep
+        # path was entered (esp_deep_sleep_start is unconditional after it), so a
+        # reset=deep-sleep/cause=timer reading is proof THIS cycle slept and woke. (The
+        # raw rst: marker is often eaten by the reopen race, so it is logged, not
+        # asserted - wake.saw_reset below.)
+        info = parse_wake_info(_retry(lambda: device.cmd("WAKE?", "WAKE ", timeout=10.0)))
         assert info["reset"] == "deep-sleep", f"cycle {cycle}: reset reason {info['reset']!r}, expected deep-sleep"
         assert info["cause"] == "timer", f"cycle {cycle}: wake cause {info['cause']!r}, expected timer"
         assert info["poweroff"], f"cycle {cycle}: WAKE? poweroff=0, this was not a power-off wake"
 
-        # 4) Persisted state intact across the power-off.
+        # 4) Persisted state intact across the power-off (all read with settle-retries).
         assert _status_field(device, "mode") == before_mode, f"cycle {cycle}: mode changed"
         assert _status_field(device, "scr") == before_scr, f"cycle {cycle}: screen model changed"
         assert _status_field(device, "board") == board, f"cycle {cycle}: board slug changed"
-        assert device.webtok() == before_tok, f"cycle {cycle}: web token changed across power-off"
-        assert device.cal_gate("?")[2] == before_stored, (
+        assert _retry(device.webtok) == before_tok, f"cycle {cycle}: web token changed across power-off"
+        assert _retry(lambda: device.cal_gate("?"))[2] == before_stored, (
             f"cycle {cycle}: touch-cal stored flag changed across power-off"
         )
 
@@ -193,7 +211,8 @@ def test_sleep_wake_soak(device):
         print(
             f"[soak] cycle {cycle}/{SOAK_N}: boot_latency="
             f"{wake.boot_latency_s if wake.boot_latency_s is None else round(wake.boot_latency_s, 2)}s "
-            f"cycle={round(wake.cycle_s, 1)}s ctrl={plan['ctrl']} tapWakes={plan['tapWakes']}"
+            f"cycle={round(wake.cycle_s, 1)}s saw_reset={wake.saw_reset} "
+            f"ctrl={plan['ctrl']} tapWakes={plan['tapWakes']}"
         )
 
     if latencies:

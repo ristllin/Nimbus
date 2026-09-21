@@ -1092,12 +1092,19 @@ class Device:
 
         Returns a WakeResult(mode, ip, saw_reset, boot_latency_s, cycle_s). Raises
         BootError on a panic / reboot loop, DeviceLostError if the node never came
-        back. ``boot_latency_s`` is the wake-to-READY time (first rst: -> beacon), the
-        measurable proxy for wake latency; ``cycle_s`` is the whole command->READY
-        wall clock."""
+        back (a sleep that never woke). ``saw_reset`` is the boot stream's ``rst:``
+        marker, kept for logging - it is NOT the freshness proof, because the reopen
+        races the ROM ``rst:`` line and often eats it (see _confirm_boot). The caller
+        proves a genuine deep-sleep wake with the latched ``WAKE?`` facts instead; that
+        is sound here because the ``POWEROFF entering deep sleep`` ack is only printed
+        immediately before enterPowerOffSleep, whose esp_deep_sleep_start is
+        unconditional, so an acked power-off always sleeps then times-out to a fresh
+        boot. ``boot_latency_s`` is the wake-to-READY time (first rst: -> beacon);
+        ``cycle_s`` is the whole command->READY wall clock."""
         self.drain(quiet=0.2)
         self.send(f"POWEROFF {timer_s}")
         # Confirm the command was accepted before the console goes dark with the chip.
+        # (This ack guarantees the sleep path was entered - see the docstring.)
         self.expect("POWEROFF entering deep sleep", timeout=5.0)
         t0 = time.time()
         # Let the shutdown notice (~4.8 s) land and the chip enter deep sleep so the
@@ -1113,6 +1120,10 @@ class Device:
             self.enumerate_timeout = saved
         ready_at = time.time()
         boot_latency = (ready_at - boot.reset_at) if boot.reset_at is not None else None
+        # Park past the post-boot SD/episodic scan (the CUM-418 window) so the caller's
+        # first STATUS/WAKE?/WEBTOK? read does not race it. Best-effort: a board with no
+        # card answers at once; the value is only for logging.
+        self._settled_uptime(ready_timeout)
         return WakeResult(
             mode=boot.mode,
             ip=boot.ip,
@@ -1123,10 +1134,10 @@ class Device:
 
 
 class WakeResult:
-    """What one power_off_and_wake cycle showed (CUM-248). ``boot_latency_s`` is the
-    wake-to-READY time (first reset marker -> beacon); ``cycle_s`` is the whole
-    command->READY wall clock; ``saw_reset`` is the boot stream's own proof the chip
-    really restarted this cycle (vs a beacon eaten by the reopen)."""
+    """What one power_off_and_wake cycle showed (CUM-248). ``saw_reset`` is the boot
+    stream's raw ``rst:`` marker (often eaten by the reopen race, kept for logging, not
+    a freshness proof); ``boot_latency_s`` is the wake-to-READY time (first reset
+    marker -> beacon); ``cycle_s`` is the whole command->READY wall clock."""
 
     __slots__ = ("mode", "ip", "saw_reset", "boot_latency_s", "cycle_s")
 
