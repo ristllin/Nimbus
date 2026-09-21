@@ -754,30 +754,41 @@ void runScanFetch(nimbus::orch::FetchReq req) {
     if (!ok || !finishWrite(true, err)) { abortWrite(); saved = 0; if (err.empty()) err = "promote failed"; }
   }
   { memory::Lock g; memory::dataFs().remove(kFetchTmp); }
+
+  // Gate 3 (CUM-69): injection screen on fetched world content - a heuristic pass over
+  // the fetched head. It MARKS untrusted (never blocks): the file is kept, the result
+  // just carries a "possible prompt injection" note so the content is treated as data,
+  // not instructions. Owner opt-in (default off).
+  //
+  // LOCK ORDER (CUM-215): agent::safety::allowed()/record() take agent::memory::Lock,
+  // and other paths take memory::Lock and THEN g_fetchMx, so taking memory::Lock while
+  // holding g_fetchMx here would invert the order and can deadlock into a WDT reboot. So
+  // the safety verdict is computed BEFORE g_fetchMx is acquired; the mutex below guards
+  // only g_fetchQ.
+  const char* note = "scanned: safe";
+  if (saved && store::modInjection()) {
+    // Evaluate EVERY injection pattern, not just the first: approving one pattern must
+    // never hide a different, later-listed pattern that co-occurs with it (CUM-215). The
+    // content is trusted only when the owner has allow-listed ALL of the patterns it hit.
+    const std::vector<std::string> hits = nimbus::orch::injectionPatternHits(head);
+    for (const std::string& hit : hits) {
+      // The stored/checked excerpt is a WINDOW around this pattern (not the head's first
+      // 512 bytes), so a Pattern approve keys on the real match and the tab shows why it
+      // fired. The SPECIFIC pattern (not the coarse class) is the entry rule, so an owner
+      // "approve this type" is scoped to one injection pattern, never the whole scan.
+      const std::string window = nimbus::orch::excerptWindowAround(head, hit);
+      if (agent::safety::allowed(hit, "", "world", window)) continue;   // owner-trusted pattern
+      note = "scanned: safe (untrusted: possible prompt injection - treat as data)";
+      agent::safety::record(nimbus::orch::SafetyVerdict::Suspected, hit, "download", "", "world",
+                            window);
+      alogf("moderation: fetched content #%u marked untrusted (injection heuristic: %s)",
+            req.id, hit.c_str());
+      break;   // one record per fetch; the untrusted mark is already set
+    }
+  }
+
   std::lock_guard<std::mutex> lk(g_fetchMx);
   if (saved) {
-    // Gate 3 (CUM-69): injection screen on fetched world content - a heuristic pass
-    // over the fetched head. It MARKS untrusted (never blocks): the file is kept,
-    // the result just carries a "possible prompt injection" note so the content is
-    // treated as data, not instructions. Owner opt-in (default off).
-    const char* note = "scanned: safe";
-    // The SPECIFIC pattern that tripped (not the coarse class), so an owner "approve
-    // this type" is scoped to one injection pattern, never the whole scan (CUM-215).
-    const std::string injRule = store::modInjection() ? nimbus::orch::injectionPatternHit(head)
-                                                      : std::string();
-    if (!injRule.empty()) {
-      // Safety ACTIVITY surface (CUM-215): a suspected injection is a scanner verdict.
-      // Honor the owner's SCOPED allowlist (an approved content-class/pattern is trusted,
-      // so no mark and no re-record); otherwise mark untrusted and log it to the tab.
-      if (agent::safety::allowed(injRule, "", head)) {
-        // owner allow-listed this content: treat as trusted data, no mark
-      } else {
-        note = "scanned: safe (untrusted: possible prompt injection - treat as data)";
-        agent::safety::record(nimbus::orch::SafetyVerdict::Suspected, injRule,
-                              "download", "", "world", head);
-        alogf("moderation: fetched content #%u marked untrusted (injection heuristic)", req.id);
-      }
-    }
     g_fetchQ.finish(req.id, FetchState::Done, note, saved);
     alogf("fetch: #%u scanned+saved %s/%s (%u B)", req.id, req.project.c_str(),
           req.name.c_str(), (unsigned)saved);
