@@ -302,6 +302,16 @@ static void test_report_verdict_suspected() {
 // Subscription gate + outcome mapping
 // ============================================================================
 
+static void test_cumulo_host_from_base() {
+  const std::string def = "app.cumulo-nimbus.ai";
+  TEST_ASSERT_EQUAL_STRING(def.c_str(), cumuloHostFromBase("", def).c_str());
+  TEST_ASSERT_EQUAL_STRING("app.cumulo-nimbus.ai", cumuloHostFromBase("https://app.cumulo-nimbus.ai", def).c_str());
+  TEST_ASSERT_EQUAL_STRING("host.example", cumuloHostFromBase("https://host.example/router/v1", def).c_str());
+  TEST_ASSERT_EQUAL_STRING("host.example:8443", cumuloHostFromBase("host.example:8443/x", def).c_str());
+  TEST_ASSERT_EQUAL_STRING("bare.host", cumuloHostFromBase("  bare.host  ", def).c_str());
+  TEST_ASSERT_EQUAL_STRING("/devices/safety-report", kSafetyReportPath);
+}
+
 static void test_report_gate_needs_cumulo_key() {
   TEST_ASSERT_FALSE(reportAvailable(false));
   TEST_ASSERT_TRUE(reportAvailable(true));
@@ -359,6 +369,7 @@ int main(int, char**) {
   RUN_TEST(test_report_exact_fields);
   RUN_TEST(test_report_excerpt_clamped);
   RUN_TEST(test_report_verdict_suspected);
+  RUN_TEST(test_cumulo_host_from_base);
   RUN_TEST(test_report_gate_needs_cumulo_key);
   RUN_TEST(test_report_outcome_from_http);
   RUN_TEST(test_enum_names_roundtrip);

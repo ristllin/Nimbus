@@ -25,6 +25,7 @@
 #include "skills.h"                     // skills::spawnCapsule - per-spawn injection (P2)
 #include "memory_subsystem.h"           // memory::registry/scratchpad/vectors (live World)
 #include "adapters/moderation.h"        // CUM-69 device classifier (behind the gate decision core)
+#include "safety_activity_store.h"       // CUM-215 Safety activity log + scoped allowlist (record/allow)
 #include "nimbus/orch/moderation.h"     // portable gate decision core (fail-open/closed, admin-exempt)
 #include "nimbus/orch/media.h"          // CUM-40 validMusicName (for /play)
 #include "../sfx/music.h"               // CUM-40 music player control (/play)
@@ -315,7 +316,18 @@ static nimbus::orch::ModAction moderateGate(nimbus::orch::ModGate gate, const St
   if (!gateApplies(gate, role, cfg)) return ModAction::Allow;
   const uint32_t acquireMs = (gate == ModGate::OutboundReply) ? 250u : 15000u;
   ClassifierVerdict v = agent::moderation::classify(std::string(text.c_str()), gate, acquireMs);
-  return decide(gate, v);
+  ModAction a = decide(gate, v);
+  // Safety ACTIVITY surface (CUM-215): a text gate that blocks is a scanner verdict
+  // the owner can review. Consult the owner's SCOPED allowlist first: an approved
+  // sender/pattern turns the block into a real unblock (never a global off switch);
+  // otherwise the verdict is recorded to the bounded activity log for the Safety tab.
+  if (a == ModAction::Block) {
+    const std::string s(chatId.c_str()), tx(text.c_str());
+    if (agent::safety::allowed("moderation", s, tx)) return ModAction::Allow;
+    agent::safety::record(SafetyVerdict::Blocked, "moderation", "telegram", s,
+                          modGateName(gate), tx);
+  }
+  return a;
 }
 
 // ---- delivery helpers -------------------------------------------------------

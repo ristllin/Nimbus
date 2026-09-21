@@ -24,6 +24,7 @@
 #include "agent/orchestrator.h"  // PROMPT? - dump the last composed World system prompt
 #include "agent/telegram.h"      // TGSEND - media-send smoke test
 #include "agent/store.h"
+#include "agent/safety_activity_store.h"  // SAFETY? - activity log + allowlist summary (CUM-215)
 #include "nimbus_board_flip.h"    // per-board display-flip base (CUM-189)
 #include "version.h"
 #include "agent/memory_subsystem.h"    // STATUS - storage tier + vector stats
@@ -297,6 +298,13 @@ void dispatch(String line) {
       if (nimbus::fault::active(nimbus::fault::Cap(i)))
         Serial.printf(" %s", nimbus::fault::name(nimbus::fault::Cap(i)));
     Serial.println();
+    Serial.flush();
+    return;
+  }
+  if (line == "SAFETY?") {
+    // CUM-215: one-line summary of the Safety activity log + scoped allowlist so the
+    // HIL suite can assert a verdict was recorded without opening the web UI.
+    Serial.printf("SAFETY %s\n", agent::safety::consoleSummary().c_str());
     Serial.flush();
     return;
   }

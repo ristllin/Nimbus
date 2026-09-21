@@ -233,6 +233,16 @@ struct SafetyReportInput {
 
 std::string buildSafetyReportJson(const SafetyReportInput& in);
 
+// Frozen wire path for the safety report (the contract above). The device seam
+// POSTs to cumuloHostFromBase(...) + this path.
+inline constexpr char kSafetyReportPath[] = "/devices/safety-report";
+
+// Parse the bare host from a Cumulo base URL/host: strip a leading scheme
+// ("https://") and any trailing path, returning just the host[:port]. Falls back
+// to `deflt` when `base` is empty. Host-tested so the device seam and the tests
+// agree on exactly where the report POST lands.
+std::string cumuloHostFromBase(const std::string& base, const std::string& deflt);
+
 // Build the report input from a stored entry + device identity, so the route
 // cannot accidentally add a field the contract does not name.
 SafetyReportInput reportInputFromEntry(const SafetyEntry& e, const std::string& deviceId,

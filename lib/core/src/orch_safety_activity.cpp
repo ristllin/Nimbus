@@ -356,6 +356,16 @@ SafetyReportInput reportInputFromEntry(const SafetyEntry& e, const std::string& 
   return in;
 }
 
+std::string cumuloHostFromBase(const std::string& base, const std::string& deflt) {
+  std::string h = trimmed(base);
+  if (h.empty()) h = deflt;
+  const size_t sch = h.find("://");
+  if (sch != std::string::npos) h = h.substr(sch + 3);
+  const size_t sl = h.find('/');
+  if (sl != std::string::npos) h = h.substr(0, sl);
+  return h;
+}
+
 bool reportAvailable(bool hasCumuloKey) { return hasCumuloKey; }
 
 const char* reportUnavailableCopy() { return "Reporting needs a Cumulo subscription."; }
