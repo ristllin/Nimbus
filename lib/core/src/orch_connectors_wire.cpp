@@ -338,6 +338,44 @@ void attachOpenAIWire(JsonDocument& d, const std::vector<ConnectorInfo>& cs, con
   }
 }
 
+std::string mistralConnectorId(const ConnectorInfo& c) {
+  // Mistral's connector ids are its OWN namespace (workspace-listable via GET
+  // /v1/connectors) - NOT OpenAI's "connector_*" first-party ids the known-catalog
+  // defaults carry. An owner-set explicit id wins; a blank or OpenAI-namespace id
+  // maps through the canonical table by type/name.
+  std::string cid = c.connectorId;
+  if (cid.empty() || cid.rfind("connector_", 0) == 0) {
+    const std::string& t2 = c.type.empty() ? c.name : c.type;
+    cid = (t2 == "github") ? "github_app"
+        : (t2 == "gcal")   ? "google_calendar"
+        : (t2 == "gdrive") ? "google_drive_mcp"
+                           : t2;
+  }
+  return cid;
+}
+
+bool parseMistralConnectorsAuthed(const char* body, std::vector<std::string>& authedOut) {
+  if (!body || !body[0]) return false;
+  // Filter the (potentially large) /v1/connectors body down to just the three
+  // fields we need per item, so the parsed document stays tiny on the device.
+  JsonDocument filter;
+  filter["items"][0]["name"]             = true;
+  filter["items"][0]["is_authenticated"] = true;
+  filter["items"][0]["active"]           = true;
+  JsonDocument d;
+  if (deserializeJson(d, body, DeserializationOption::Filter(filter))) return false;
+  JsonArrayConst items = d["items"].as<JsonArrayConst>();
+  if (items.isNull()) return false;   // not the expected shape: treat as "no signal"
+  for (JsonObjectConst it : items) {
+    const char* name = it["name"] | "";
+    if (!name[0]) continue;
+    const bool authed = it["is_authenticated"] | false;
+    const bool active = it["active"] | true;   // absent -> treat as active
+    if (authed && active) authedOut.emplace_back(name);
+  }
+  return true;
+}
+
 void attachMistralWire(JsonDocument& d, const std::vector<ConnectorInfo>& cs, bool builtinsOnly) {
   // Two shapes, per the Mistral Conversations API (docs.mistral.ai):
   //   hosted built-in TOOL (web_search, code_interpreter, image_generation,
@@ -356,22 +394,11 @@ void attachMistralWire(JsonDocument& d, const std::vector<ConnectorInfo>& cs, bo
     } else {
       JsonObject t = d["tools"].add<JsonObject>();
       t["type"] = "connector";
-      // Mistral's connector ids are its OWN namespace (workspace-listable via
-      // GET /v1/connectors) - NOT OpenAI's "connector_*" first-party ids the
-      // catalog defaults carry. An unknown id is SILENTLY ignored by the API
-      // (the request 200s, the tools never appear - field-hit on nimbus-5:
-      // "github" instead of "github_app" made every GitHub probe come back
-      // empty). An owner-set explicit id wins; a blank or OpenAI-namespace id
-      // maps through the canonical table.
-      std::string cid = c.connectorId;
-      if (cid.empty() || cid.rfind("connector_", 0) == 0) {
-        const std::string& t2 = c.type.empty() ? c.name : c.type;
-        cid = (t2 == "github") ? "github_app"
-            : (t2 == "gcal")   ? "google_calendar"
-            : (t2 == "gdrive") ? "google_drive_mcp"
-                               : t2;
-      }
-      t["connector_id"] = cid;
+      // The Mistral workspace id (shared mistralConnectorId, also used by the
+      // connector-verify probe). An unknown id is SILENTLY ignored by the API (the
+      // request 200s, the tools never appear - field-hit on nimbus-5: "github"
+      // instead of "github_app" made every GitHub probe come back empty).
+      t["connector_id"] = mistralConnectorId(c);
     }
   }
 }

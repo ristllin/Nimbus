@@ -1,18 +1,19 @@
-// An enabled, keyed connector whose provider is NOT the assistant's current head
-// is reachable through a spawned sub-session on that provider (core rule:
-// connectorScope -> SubsessionsOnly, orch_connectors_wire.cpp). The Connectors-tab
-// badge must say so for EVERY provider, including Mistral, which previously read a
-// misleading "idle - set host to Mistral" and pushed the owner to switch head for
-// no reason. This locks the badge to the core capability model and to its OpenAI
-// sibling, and keeps the cross-surface story consistent with the Capabilities table.
+// An enabled, keyed Mistral Studio connector authenticates in the owner's Mistral
+// account, not on the device. The Connectors-tab badge must tell the honest story:
+//   - not connected in Mistral yet (auth==2)        -> "connect it in Mistral"
+//   - connected, and Mistral is NOT the head (auth 1) -> "via sessions" (spawned sub)
+//   - connected, and Mistral IS the head (auth 1)     -> "live on your turns"
+// It must never read the old misleading "idle - set host to Mistral", and never imply
+// readiness ("via sessions") for a connector the owner has not connected in Mistral.
 import { test, expect } from '@playwright/test';
 import { seedToken, openApp } from './_helpers.mjs';
 
 const KNOWN = [{ id: 'gcal', name: 'Google Calendar', providers: 'openai,mistral', kind: 'connector', cid: '', cred: 'Google', desc: 'Calendar.', docs: '' }];
 
-function connectors(host, keyed) {
+// auth: -1 n/a, 1 present/connected, 0 sign-in failed, 2 missing / not connected in Mistral.
+function connectors(host, keyed, auth) {
   return {
-    configured: [{ type: 'gcal', name: 'Google Calendar', prov: 'mistral', kind: 'connector', en: 1 }],
+    configured: [{ type: 'gcal', name: 'Google Calendar', prov: 'mistral', kind: 'connector', en: 1, auth }],
     known: KNOWN, keyed, host,
   };
 }
@@ -26,25 +27,34 @@ async function openConnectorsWith(page, payload) {
   await expect(page.locator('#conncards')).toBeVisible();
 }
 
-test('off-host Mistral connector reads "via sessions", never "idle"', async ({ page }) => {
+test('not connected in Mistral (auth=2) reads "connect it in Mistral", never "via sessions" or "idle"', async ({ page }) => {
   await seedToken(page);
-  await openConnectorsWith(page, connectors('anthropic', { mistral: true, anthropic: true }));
+  await openConnectorsWith(page, connectors('anthropic', { mistral: true, anthropic: true }, 2));
   const card = page.locator('#conncards', { hasText: 'Google Calendar' });
-  await expect(card).toContainText('via sessions');
+  await expect(card).toContainText('connect it in Mistral');
+  await expect(card).not.toContainText('via sessions');
   await expect(card).not.toContainText('idle');
   await expect(card).not.toContainText('set host to Mistral');
 });
 
-test('on-host Mistral connector reads "live on your turns"', async ({ page }) => {
+test('connected off-host (auth=1) reads "via sessions"', async ({ page }) => {
   await seedToken(page);
-  await openConnectorsWith(page, connectors('mistral', { mistral: true }));
+  await openConnectorsWith(page, connectors('anthropic', { mistral: true, anthropic: true }, 1));
+  const card = page.locator('#conncards', { hasText: 'Google Calendar' });
+  await expect(card).toContainText('via sessions');
+  await expect(card).not.toContainText('idle');
+});
+
+test('connected on-host (auth=1) reads "live on your turns"', async ({ page }) => {
+  await seedToken(page);
+  await openConnectorsWith(page, connectors('mistral', { mistral: true }, 1));
   const card = page.locator('#conncards', { hasText: 'Google Calendar' });
   await expect(card).toContainText('live on your turns');
 });
 
-test('Mistral connector with no Mistral key still reads "key missing", not "idle"', async ({ page }) => {
+test('no Mistral key still reads "key missing", not "idle"', async ({ page }) => {
   await seedToken(page);
-  await openConnectorsWith(page, connectors('anthropic', { anthropic: true }));
+  await openConnectorsWith(page, connectors('anthropic', { anthropic: true }, 2));
   const card = page.locator('#conncards', { hasText: 'Google Calendar' });
   await expect(card).toContainText('key missing');
   await expect(card).not.toContainText('idle');

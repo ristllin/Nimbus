@@ -174,6 +174,23 @@ std::string catalogText(const std::vector<ConnectorInfo>& cs, const ProviderStat
 // The known-catalog as a JSON array string, for GET /api/connectors.
 std::string knownCatalogJson();
 
+// The Mistral workspace connector id a device connector maps to (the id Mistral's
+// Conversations API + GET /v1/connectors use, e.g. gcal -> "google_calendar"). An
+// owner-set explicit connector id wins UNLESS it is an OpenAI-namespace default
+// ("connector_*" carried by the known-catalog); those map through the canonical
+// table by type/name. Shared by attachMistralWire (the wire attach) and the device
+// connector-verify (which asks Mistral which of these are authenticated in Studio),
+// so the two never drift on the id.
+std::string mistralConnectorId(const ConnectorInfo& c);
+
+// Parse a Mistral GET /v1/connectors response body ({items:[{name,is_authenticated,
+// active,...}], ...}) into the set of connector names the owner has AUTHENTICATED in
+// their Mistral account (is_authenticated == true and not explicitly inactive). These
+// are the Studio connectors a Mistral sub-session can actually use; the rest need the
+// owner to connect them in Mistral. Returns false only if the body is not parseable
+// (a transient/HTTP error the caller treats as "no signal", never as "none authed").
+bool parseMistralConnectorsAuthed(const char* body, std::vector<std::string>& authedOut);
+
 // --- capability scope (CUM-159) ----------------------------------------------
 // Where a connector capability is reachable FROM. This is the machine-readable
 // sibling of the "callable on YOUR OWN turns vs reachable only by spawning a

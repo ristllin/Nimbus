@@ -10,11 +10,14 @@
 #include <time.h>
 
 #include "esp_heap_caps.h"
+#include <memory>                 // unique_ptr - heap-allocate the connectors Info[] (no big stack array)
+#include <new>                    // std::nothrow
 #include <solide/memory.h>        // NVS side channel for the verify-reason token
 #include "agent_config.h"
 #include "../sys/agent_log.h"
 #include "../sys/net_util.h"      // tlsClose - RST-close on every path
 #include "store.h"
+#include "connectors.h"           // Mistral Studio connector workspace-auth probe
 #include "../sys/tls_arbiter.h"   // one work TLS at a time (coexists with Telegram's)
 #include "orchestrator.h"         // turnInFlight - never re-verify beside a live turn
 #include "provider_verify_retry.h" // pure backoff policy (host-tested)
@@ -388,6 +391,73 @@ static void syncCumuloFallbacks(const char* host, const String& key) {
   time_t now = time(nullptr);
   store::setFallbackSyncTs(now > 100000 ? (uint32_t)now : 1);
   alogf("verify: cumulo fallback rules synced (%u rules)", (unsigned)rs.rules.size());
+}
+
+// Worth the large /v1/connectors fetch only if the owner has an enabled Mistral
+// Studio connector to verify.
+static bool hasEnabledMistralStudioConnector() {
+  // Heap-allocate the Info[] (each Info is ~11 Strings; a kMaxConnectors stack array
+  // is ~5 KB and overflows small task stacks - connectors.h rule, same pattern as the
+  // other call sites). This runs on the 8 KB pverify task right before a TLS session.
+  std::unique_ptr<agent::connectors::Info[]> ci(
+      new (std::nothrow) agent::connectors::Info[agent::connectors::kMaxConnectors]);
+  if (!ci) return false;
+  const int cn = agent::connectors::list(ci.get(), agent::connectors::kMaxConnectors);
+  for (int i = 0; i < cn; i++)
+    if (ci[i].enabled && ci[i].kind == "connector" &&
+        (ci[i].prov == "mistral" || ci[i].prov == "any"))
+      return true;
+  return false;
+}
+
+// Drain an HTTP/1.0 response into buf via bulk reads, bounded by cap and deadline.
+// Returns bytes read; NUL-terminates buf; sets *truncated when the cap was hit.
+static size_t drainHttpBody(WiFiClientSecure& client, char* buf, size_t cap,
+                            uint32_t deadline, bool* truncated) {
+  size_t blen = 0;
+  while ((int32_t)(millis() - deadline) < 0 && blen < cap - 1) {   // rollover-safe
+    const size_t want = (cap - 1 - blen) < 4096 ? (cap - 1 - blen) : 4096;
+    int r = client.read((uint8_t*)(buf + blen), want);   // bulk read (not byte-by-byte)
+    if (r > 0) { blen += (size_t)r; continue; }
+    if (!client.connected() && client.available() == 0) break;   // drained + closed
+    delay(2);
+  }
+  buf[blen] = 0;
+  if (truncated) *truncated = (blen >= cap - 1);
+  return blen;
+}
+
+// Ask Mistral which Studio connectors the owner has authenticated in their account
+// (GET /v1/connectors), so a Studio connector (gcal/notion/slack: no device
+// credential by design) is offered to the model only once it is actually connected
+// there. Runs on the held work slot right after a successful Mistral verify. The body
+// (~300 KB of connector metadata) is read into PSRAM; parseMistralConnectorsAuthed
+// then filters it to the authenticated names. Any failure leaves the last good signal
+// untouched (Studio connectors stay "connect it in Mistral", never usable-by-guess).
+static void syncMistralConnectors(const String& key) {
+  if (!hasEnabledMistralStudioConnector()) return;   // skip the large fetch
+  WiFiClientSecure client;
+  tlsSetup(client);
+  client.setHandshakeTimeout(12);
+  client.setConnectionTimeout(15000);
+  if (!client.connect(MISTRAL_HOST, 443)) return;
+  String req = String("GET /v1/connectors?page_size=100 HTTP/1.0\r\nHost: ") + MISTRAL_HOST +
+               "\r\nAuthorization: Bearer " + key +
+               "\r\nAccept-Encoding: identity\r\nUser-Agent: Nimbus\r\nConnection: close\r\n\r\n";
+  client.print(req);
+  const size_t kCap = 512 * 1024;   // headroom over the ~300 KB body; all in PSRAM
+  char* buf = (char*)heap_caps_malloc(kCap, MALLOC_CAP_SPIRAM);
+  if (!buf) { tlsClose(client); return; }
+  bool truncated = false;
+  const size_t blen = drainHttpBody(client, buf, kCap, millis() + 25000, &truncated);
+  tlsClose(client);
+  // Skip the HTTP headers to the JSON body (only compact status/header text precedes it).
+  const char* jbody = strstr(buf, "\r\n\r\n");
+  jbody = jbody ? jbody + 4 : (strstr(buf, "\n\n") ? strstr(buf, "\n\n") + 2 : buf);
+  if (!truncated) agent::connectors::noteMistralConnectorsProbe(jbody);
+  alogf("verify: mistral connectors probed (%u bytes%s)", (unsigned)blen,
+        truncated ? ", TRUNCATED - kept last signal" : "");
+  free(buf);
 }
 
 static void runOne() {
@@ -834,6 +904,9 @@ static void runOne() {
     probeSelectedModels(provider);
   // On a Cumulo key, pull the admin master fallback rule set (provisional; CUM-41).
   if (result == 1 && provider == "cumulo" && host) syncCumuloFallbacks(host, key);
+  // On a Mistral key, learn which Studio connectors are authenticated in the owner's
+  // Mistral account, so gcal/notion/slack become usable only once connected there.
+  if (result == 1 && provider == "mistral") syncMistralConnectors(key);
   arbiter::releaseWork();
   recordVerify(provider, result, rsn);
   // A verify verdict is tiny and load-bearing; the mcat_ catalog caches are large

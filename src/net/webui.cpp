@@ -1185,10 +1185,10 @@ static bool applyOrchField(const String& n, const String& v, bool& cfgDirty) {
   // provider keys (set on non-empty; explicit clr_* to clear)
   if (n == "oaiKey")  { if (v.length()) { agent::store::setOpenaiKey(v);    agent::store::setVerify("openai", -1, 0); }    return true; }
   if (n == "antKey")  { if (v.length()) { agent::store::setAnthropicKey(v); agent::store::setVerify("anthropic", -1, 0); } return true; }
-  if (n == "mistKey") { if (v.length()) { agent::store::setMistralKey(v);   agent::store::setVerify("mistral", -1, 0); }   return true; }
+  if (n == "mistKey") { if (v.length()) { agent::store::setMistralKey(v);   agent::store::setVerify("mistral", -1, 0); agent::connectors::resetMistralConnectorsProbe(); }   return true; }
   if (n == "clr_oaiKey")  { agent::store::setOpenaiKey("");    agent::store::setVerify("openai", -1, 0);    return true; }
   if (n == "clr_antKey")  { agent::store::setAnthropicKey(""); agent::store::setVerify("anthropic", -1, 0); return true; }
-  if (n == "clr_mistKey") { agent::store::setMistralKey("");   agent::store::setVerify("mistral", -1, 0);   return true; }
+  if (n == "clr_mistKey") { agent::store::setMistralKey("");   agent::store::setVerify("mistral", -1, 0);   agent::connectors::resetMistralConnectorsProbe();   return true; }
   // Tavily web-search key (enables the web.search tool at the next boot/registration)
   if (n == "tavKey")     {
     if (v.length()) {
@@ -2262,6 +2262,18 @@ void beginWeb(const WebConfig& wc) {
         o["type"] = (const char*)(c["type"] | "");
         o["hasTok"]   = ((const char*)(c["tok"] | ""))[0] != 0;
         o["hasOauth"] = !c["oauth"].isNull();
+        // Derived credential state (same rule the model catalog + wire attach use), so
+        // the badge shows a Mistral Studio connector as "connect it in Mistral" until
+        // the owner has authenticated it there. -1 n/a, 1 ok, 0 sign-in failed, 2 missing.
+        nimbus::orch::ConnectorInfo ci;
+        ci.name        = (const char*)(c["name"] | "");
+        ci.prov        = (const char*)(c["prov"] | "any");
+        ci.kind        = (const char*)(c["kind"] | "mcp");
+        ci.type        = (const char*)(c["type"] | "");
+        ci.connectorId = (const char*)(c["cid"] | "");
+        ci.hasToken    = ((const char*)(c["tok"] | ""))[0] != 0;
+        ci.hasOauth    = !c["oauth"].isNull();
+        o["auth"]      = agent::connectors::connectorAuthState(ci);
       }
     }
     // known[]: the Tier-1 + built-ins catalog (descriptions/links) so the UI can

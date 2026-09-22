@@ -4,7 +4,7 @@
 
 // Forward declaration so the outbound-MCP sync() can take the registry by
 // reference without this widely-included header pulling the whole registry TU.
-namespace nimbus { namespace orch { class ToolRegistry; } }
+namespace nimbus { namespace orch { class ToolRegistry; struct ConnectorInfo; } }
 
 // connectors - per-provider external-tool wiring (Phase C). The OWNER configures
 // connectors once (web UI -> one NVS JSON blob, store::connectorsJson); the
@@ -71,6 +71,25 @@ String bearerFor(const Info& c);
 // W12: live OAuth outcome for a connector since boot - 1 = mint succeeded,
 // 0 = mint FAILED (credential needs the owner), -1 = no signal yet.
 int8_t authStateOf(const String& name);
+
+// Fold a Mistral GET /v1/connectors response body into the live "which Studio
+// connectors are authenticated in the owner's Mistral account" signal, so a
+// Mistral Studio connector (gcal/notion/slack: no device credential by design) is
+// offered to the model only once the owner has actually connected it in Mistral.
+// Called from the Mistral provider-verify path. A bad/empty body is ignored (keeps
+// the last good signal). No-op-safe to call with garbage.
+void noteMistralConnectorsProbe(const char* v1ConnectorsBody);
+
+// The honest credential state for one connector (-1 n/a builtin, 1 present, 0 mint
+// failed, 2 missing / not connected in Mistral). One source of truth for the model
+// catalog, the wire attach, GET /api/connectors, and the /api/tools Capabilities
+// table, so the surfaces never disagree.
+int8_t connectorAuthState(const nimbus::orch::ConnectorInfo& c);
+
+// Forget the Mistral workspace-auth signal (Studio connectors revert to auth=2 until
+// the next verify re-probes). Call on a Mistral key change so a connector authed under
+// the previous account cannot read usable under a new key.
+void resetMistralConnectorsProbe();
 
 // Attach enabled connectors to a provider request body (call before serialize):
 //   OpenAI (head + sub dispatch): tools[] += {type:"mcp", server_label/url or

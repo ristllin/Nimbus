@@ -572,9 +572,18 @@ void handleToolsGet(AsyncWebServerRequest* r) {
       // prose: on the current host provider (callable directly) vs another
       // provider (spawn a sub-agent) vs unkeyed/disabled/sign-in-failed.
       ConnectorInfo cw;
-      cw.prov    = std::string(ci[i].prov.c_str());
-      cw.enabled = ci[i].enabled;
-      cw.auth    = agent::connectors::authStateOf(ci[i].name);
+      cw.name        = std::string(ci[i].name.c_str());
+      cw.prov        = std::string(ci[i].prov.c_str());
+      cw.kind        = std::string(ci[i].kind.c_str());
+      cw.type        = std::string(ci[i].type.c_str());
+      cw.connectorId = std::string(ci[i].connectorId.c_str());
+      cw.hasToken    = ci[i].tok.length() > 0;
+      cw.hasOauth    = ci[i].hasOauth;
+      cw.enabled     = ci[i].enabled;
+      // Same derivation the model catalog, wire attach, and /api/connectors use, so a
+      // Mistral Studio connector reads "reachable" here only once it is authenticated
+      // in the owner's Mistral account (not merely because it has no device signal).
+      cw.auth        = agent::connectors::connectorAuthState(cw);
       grp("connector", ci[i].name.c_str(),
           "Provider-side connector - the cloud provider runs it for the model.",
           tag.c_str(), false, capScopeSlug(connectorScope(cw, ps)));

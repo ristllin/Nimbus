@@ -2364,16 +2364,20 @@ function loadOrch(){if(!canPoll())return;fetch('/api/orch').then(r=>r.json()).th
 // round-trip can never silently strip a stored token).
 function connEsc(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 // Which providers actually run this connector, and how, right now.
-function connAvail(prov,host,keyed){
+function connAvail(prov,host,keyed,auth){
   if(prov==='any')prov=host||'openai';
   if(!keyed||!keyed[prov])return{cls:'unk',txt:prov+' key missing'};
   if(prov==='openai')return host==='openai'?{cls:'ok',txt:'live on your turns'}:{cls:'ext',txt:'via sessions'};
   if(prov==='anthropic')return{cls:'ext',txt:'via sessions'};
-  // Off-host Mistral is reachable through a spawned Mistral sub-session that carries
-  // its Studio connectors server-side, same as the OpenAI case above and the core
-  // connectorScope SubsessionsOnly rule (orch_connectors_wire.cpp) the Capabilities
-  // table already shows. It is not idle - do not push the owner to switch head.
-  if(prov==='mistral')return host==='mistral'?{cls:'ok',txt:'live on your turns'}:{cls:'ext',txt:'via sessions'};
+  if(prov==='mistral'){
+    // A Mistral Studio connector authenticates in the owner's Mistral account, not on
+    // the device (auth==2 means it is not connected there yet), so say exactly that
+    // instead of implying it is ready. Once connected, it runs on Mistral turns or via
+    // a spawned Mistral sub-session, same as the OpenAI case and the core connectorScope
+    // SubsessionsOnly rule the Capabilities table shows.
+    if(auth===2)return{cls:'unk',txt:'connect it in Mistral'};
+    return host==='mistral'?{cls:'ok',txt:'live on your turns'}:{cls:'ext',txt:'via sessions'};
+  }
   return{cls:'unk',txt:'configured'};
 }
 // The kind a connector attaches as depends on the chosen provider.
@@ -2406,7 +2410,7 @@ function connCard(k,c,keyed,host){
   let status;
   if(!set)status='<span class="badge vfy unk">not set</span>';
   else if(!en)status='<span class="badge vfy unk">off</span>';
-  else{const a=connAvail(curProv,host,keyed);status='<span class="badge vfy '+a.cls+'">'+connEsc(a.txt)+'</span>';}
+  else{const a=connAvail(curProv,host,keyed,(c&&c.auth!==undefined)?c.auth:-1);status='<span class="badge vfy '+a.cls+'">'+connEsc(a.txt)+'</span>';}
   const id=k.id,kind=connKindFor(curProv,k);
   const badges=provs.map(p=>'<span class="badge ext" style="margin-left:4px">'+connEsc(p)+'</span>').join('');
   const provSel='<select id="cc_'+id+'_prov" onchange="connProvChange(\''+connEsc(id)+'\')">'+provs.map(p=>'<option'+(p===curProv?' selected':'')+'>'+connEsc(p)+'</option>').join('')+'</select>';

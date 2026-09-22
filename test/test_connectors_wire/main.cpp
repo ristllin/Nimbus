@@ -24,6 +24,8 @@ using nimbus::orch::connectorScope;
 using nimbus::orch::urlRoutableToProviderHead;
 using nimbus::orch::forwardsToProviderHead;
 using nimbus::orch::connectorConfigError;
+using nimbus::orch::mistralConnectorId;
+using nimbus::orch::parseMistralConnectorsAuthed;
 
 void setUp() {}
 void tearDown() {}
@@ -921,8 +923,74 @@ static void test_cumulo_route_anthropic_drops_private_mcp() {
   TEST_ASSERT_FALSE(routed["mcp_servers"].is<JsonArrayConst>());
 }
 
+// The shared device->Mistral-workspace id map (used by both the wire attach and the
+// connector-verify probe, so they can never drift). Owner-set ids win unless they are
+// an OpenAI-namespace default; those map through the canonical table by type/name.
+static void test_mistral_connector_id_shared_map() {
+  auto mk = [](const char* type, const char* name, const char* cid) {
+    ConnectorInfo c; c.type = type; c.name = name; c.connectorId = cid; c.prov = "mistral";
+    c.kind = "connector"; return c;
+  };
+  // Canonical remaps when the cid is blank or an OpenAI "connector_*" default.
+  TEST_ASSERT_EQUAL_STRING("google_calendar", mistralConnectorId(mk("gcal", "gcal", "connector_googlecalendar")).c_str());
+  TEST_ASSERT_EQUAL_STRING("google_calendar", mistralConnectorId(mk("gcal", "gcal", "")).c_str());
+  TEST_ASSERT_EQUAL_STRING("github_app",      mistralConnectorId(mk("github", "github", "")).c_str());
+  TEST_ASSERT_EQUAL_STRING("google_drive_mcp", mistralConnectorId(mk("gdrive", "gdrive", "")).c_str());
+  // A workspace-native name passes through; an owner-set explicit id wins.
+  TEST_ASSERT_EQUAL_STRING("notion",  mistralConnectorId(mk("notion", "notion", "notion")).c_str());
+  TEST_ASSERT_EQUAL_STRING("my-uuid", mistralConnectorId(mk("gcal", "gcal", "my-uuid")).c_str());
+}
+
+// The /v1/connectors filter parse: keep only connectors the owner has AUTHENTICATED
+// (is_authenticated == true) and not explicitly inactive. This is the honest usable
+// signal; a listed-but-unauthenticated connector (like google_calendar out of the box)
+// must NOT come back as usable.
+static void test_parse_mistral_connectors_authed() {
+  const char* body =
+    "{\"items\":["
+    "{\"name\":\"google_calendar\",\"is_authenticated\":false,\"active\":true,\"description\":\"cal\"},"
+    "{\"name\":\"document_library\",\"is_authenticated\":true,\"active\":true},"
+    "{\"name\":\"notion\",\"is_authenticated\":true},"          // active absent -> treated active
+    "{\"name\":\"slack\",\"is_authenticated\":true,\"active\":false},"  // authed but inactive -> excluded
+    "{\"name\":\"gmail\",\"is_authenticated\":false,\"active\":true}"
+    "],\"pagination\":{\"next_cursor\":null}}";
+  std::vector<std::string> authed;
+  TEST_ASSERT_TRUE(parseMistralConnectorsAuthed(body, authed));
+  TEST_ASSERT_EQUAL(2, (int)authed.size());
+  auto has = [&](const char* n) {
+    for (const auto& s : authed) if (s == n) return true; return false;
+  };
+  TEST_ASSERT_TRUE(has("document_library"));
+  TEST_ASSERT_TRUE(has("notion"));
+  TEST_ASSERT_FALSE(has("google_calendar"));   // listed but not connected -> not usable
+  TEST_ASSERT_FALSE(has("slack"));             // authed but inactive
+  TEST_ASSERT_FALSE(has("gmail"));
+}
+
+// A non-parseable / wrong-shape body is "no signal", never "none authed": returns
+// false so the caller keeps the last good workspace answer (a transient HTTP error
+// must not silently strip a working connector).
+static void test_parse_mistral_connectors_bad_body_is_no_signal() {
+  std::vector<std::string> a1;
+  TEST_ASSERT_FALSE(parseMistralConnectorsAuthed("not json at all", a1));
+  TEST_ASSERT_EQUAL(0, (int)a1.size());
+  std::vector<std::string> a2;
+  TEST_ASSERT_FALSE(parseMistralConnectorsAuthed("{\"error\":\"unauthorized\"}", a2));  // no items[]
+  TEST_ASSERT_EQUAL(0, (int)a2.size());
+  std::vector<std::string> a3;
+  TEST_ASSERT_FALSE(parseMistralConnectorsAuthed("", a3));
+  TEST_ASSERT_FALSE(parseMistralConnectorsAuthed(nullptr, a3));
+  // An empty (but valid) workspace list is a real signal: parse OK, zero authed.
+  std::vector<std::string> a4;
+  TEST_ASSERT_TRUE(parseMistralConnectorsAuthed("{\"items\":[]}", a4));
+  TEST_ASSERT_EQUAL(0, (int)a4.size());
+}
+
 int main() {
   UNITY_BEGIN();
+  RUN_TEST(test_mistral_connector_id_shared_map);
+  RUN_TEST(test_parse_mistral_connectors_authed);
+  RUN_TEST(test_parse_mistral_connectors_bad_body_is_no_signal);
   RUN_TEST(test_parse_connectors_reads_past_eight);
   RUN_TEST(test_parse_connectors_caps_and_reports_drop);
   RUN_TEST(test_parse_connectors_skips_nameless_but_counts_it);

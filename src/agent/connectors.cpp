@@ -90,6 +90,31 @@ void noteAuth(const String& name, int8_t st) {
   s_auth[slot] = {name, st};
 }
 
+// Mistral STUDIO connectors the owner has authenticated in their Mistral account,
+// learned from GET /v1/connectors on each Mistral verify (mistralConnectorId
+// namespace, e.g. "google_calendar"). A Studio connector carries no device
+// credential - its Google/Notion/Slack sign-in lives in the owner's Mistral
+// account - so this workspace probe is the ONLY honest usability signal. Until the
+// first successful probe (s_mistralProbed=false) a Studio connector reads
+// "connect it in Mistral" (auth=2), never usable-by-guess. Small fixed table.
+static String s_mistralAuthed[16];
+static int    s_mistralAuthedN = 0;
+static bool   s_mistralProbed  = false;
+
+// auth for a Mistral Studio connector (kind=connector, prov=mistral): 1 once the
+// owner has authenticated it in their Mistral workspace, else 2 (needs connecting
+// in Mistral). Uses the shared id map so it matches exactly what attachMistralWire
+// sends. Note this is NOT the "credential MISSING" case: a Studio connector never
+// has a device credential by design, so the old no-token/no-oauth => auth=2 default
+// would have kept every Studio connector permanently unusable.
+static int8_t mistralStudioAuth(const nimbus::orch::ConnectorInfo& c) {
+  if (!s_mistralProbed) return 2;
+  const std::string id = nimbus::orch::mistralConnectorId(c);
+  for (int i = 0; i < s_mistralAuthedN; i++)
+    if (s_mistralAuthed[i] == id.c_str()) return 1;
+  return 2;
+}
+
 // POST a form-encoded refresh grant to the token URL, parse {access_token,
 // expires_in}. One bounded TLS exchange under the work arbiter (same discipline
 // as the provider adapters). Returns "" on any failure (attach proceeds unauth'd
@@ -172,6 +197,44 @@ int8_t authStateOf(const String& name) {
   return -1;   // no live signal since boot
 }
 
+void noteMistralConnectorsProbe(const char* v1ConnectorsBody) {
+  std::vector<std::string> authed;
+  if (!nimbus::orch::parseMistralConnectorsAuthed(v1ConnectorsBody, authed))
+    return;   // unparseable body (HTTP/transient error): keep the last good signal
+  int n = 0;
+  for (const std::string& id : authed) {
+    if (n >= (int)(sizeof(s_mistralAuthed) / sizeof(s_mistralAuthed[0]))) break;
+    s_mistralAuthed[n++] = id.c_str();
+  }
+  s_mistralAuthedN = n;
+  s_mistralProbed  = true;   // a definitive workspace answer: connectors not in the
+                             // list now read "connect it in Mistral", not usable-by-guess
+}
+
+// W12: the honest per-connector credential state, one place so the model catalog,
+// the wire attach, and GET /api/connectors all agree. Built-ins authenticate
+// provider-side (-1, n/a); a static-token or OAuth connector reports its device
+// credential state (1 present / 0 mint failed); a Mistral Studio connector has NO
+// device credential by design, so it reports whether the owner has authenticated it
+// in their Mistral account (mistralStudioAuth); anything else with no credential is
+// MISSING (2, skipped at attach).
+int8_t connectorAuthState(const nimbus::orch::ConnectorInfo& c) {
+  if (c.kind == "builtin")                            return -1;
+  if (c.hasToken)                                     return 1;
+  if (c.hasOauth)                                     return authStateOf(c.name.c_str());
+  if (c.prov == "mistral" && c.kind == "connector")  return mistralStudioAuth(c);
+  return 2;
+}
+
+void resetMistralConnectorsProbe() {
+  // Drop the workspace-auth signal so a Studio connector reverts to "connect it in
+  // Mistral" (auth=2) until the next verify re-probes. Called on a Mistral key change
+  // so a connector authenticated under the OLD account can never read usable under a
+  // new key before the fresh probe lands.
+  s_mistralAuthedN = 0;
+  s_mistralProbed  = false;
+}
+
 String bearerFor(const Info& c) {
   if (c.tok.length()) return c.tok;          // T2 static token
   if (!c.hasOauth || !c.oauthUrl.length() || !c.oauthRefresh.length()) return "";
@@ -208,12 +271,7 @@ std::vector<nimbus::orch::ConnectorInfo> portableList() {
   // party connector NEEDS one - enabled-with-no-credential is skipped at attach,
   // so the model must not treat it as usable. The OAuth mint outcome is device
   // RAM state (authStateOf), applied here on top of the portable presence flags.
-  for (auto& c : out) {
-    if (c.kind == "builtin")      c.auth = -1;                        // n/a
-    else if (c.hasToken)          c.auth = 1;                         // static token present
-    else if (c.hasOauth)          c.auth = authStateOf(c.name.c_str());  // live mint outcome
-    else                          c.auth = 2;                         // credential MISSING
-  }
+  for (auto& c : out) c.auth = connectorAuthState(c);
   // Assistant > Tools "Code sandbox" (CUM-49): inject the code_interpreter builtin
   // when the toggle is on, so the OpenAI/Mistral sandbox is enabled without an
   // explicit connector card. Skipped if a code_interpreter card is already present.
