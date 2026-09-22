@@ -3422,7 +3422,11 @@ function connAvail(prov,host,keyed){
   if(!keyed||!keyed[prov])return{cls:'unk',txt:prov+' key missing'};
   if(prov==='openai')return host==='openai'?{cls:'ok',txt:'live on your turns'}:{cls:'ext',txt:'via sessions'};
   if(prov==='anthropic')return{cls:'ext',txt:'via sessions'};
-  if(prov==='mistral')return host==='mistral'?{cls:'ok',txt:'live on your turns'}:{cls:'unk',txt:'idle - set host to Mistral'};
+  // Off-host Mistral is reachable through a spawned Mistral sub-session that carries
+  // its Studio connectors server-side, same as the OpenAI case above and the core
+  // connectorScope SubsessionsOnly rule (orch_connectors_wire.cpp) the Capabilities
+  // table already shows. It is not idle - do not push the owner to switch head.
+  if(prov==='mistral')return host==='mistral'?{cls:'ok',txt:'live on your turns'}:{cls:'ext',txt:'via sessions'};
   return{cls:'unk',txt:'configured'};
 }
 // The kind a connector attaches as depends on the chosen provider.
@@ -4691,7 +4695,7 @@ function loadChatHistory(){
         (byTurn[t]=byTurn[t]||[]).push(m);
       }
     });
-    let trace=[];let any=false;
+    let trace=[];let any=false;let liveTid='';
     ms.forEach(m=>{
       if(m.session==='system')return;
       if(m.kind==='tool_output'||m.kind==='llm_response'||m.kind==='log'){
@@ -4703,14 +4707,19 @@ function loadChatHistory(){
       // A user row's OWN id is its turn id; the reply row carries turn:<that id>.
       // Trace renders just above the reply it produced.
       const tid=m.role==='user'?m.id:_turnId(m);
+      if(m.role==='user')liveTid=m.id;   // newest user row wins: the turn that may still be in flight
       if(m.role!=='user'&&tid&&byTurn[tid]){_traceGroup(log,byTurn[tid]);delete byTurn[tid];}
       const bub=_chatBubble(m.role==='user'?'u':'a',m.text,m.role==='user'?_chatMeta(m):undefined);
       if(m.role!=='user'&&tid&&endByTurn[tid]){_turnChip(bub,endByTurn[tid]);delete endByTurn[tid];}
       any=true;
     });
     if(trace.length)_traceGroup(log,trace);
-    // Orphans: a turn still in flight, or whose reply row fell outside this page.
-    Object.keys(byTurn).forEach(k=>_traceGroup(log,byTurn[k]));
+    // Float ONLY the newest owner turn if it is still in flight (its user row is the
+    // last on the page and no reply has landed yet, so its bucket survived line 3653).
+    // Every other leftover bucket is a context-free orphan - a reply-less/errored turn
+    // or a seedless routine/synthesis turn with no chat bubble - and is dropped, not
+    // stacked as a wall of collapsed "N tool calls" rows the owner cannot place.
+    if(liveTid&&byTurn[liveTid])_traceGroup(log,byTurn[liveTid]);
     if(!any)log.innerHTML='<p class=hint>No conversation yet - say something below, message the bot on Telegram, or hold the mic button to talk.</p>';
     log.scrollTop=log.scrollHeight;
   }).catch(()=>{});
