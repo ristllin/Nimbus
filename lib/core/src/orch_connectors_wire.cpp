@@ -354,34 +354,166 @@ std::string mistralConnectorId(const ConnectorInfo& c) {
   return cid;
 }
 
+namespace {
+// A forward-only, NON-RECURSIVE reader for the /v1/connectors body. The live body
+// (~300 KB) nests 26 levels deep inside fields we do not read (tool input schemas),
+// and a filtered ArduinoJson parse still descends into every skipped value: at its
+// default nesting limit it rejects the body (TooDeep, so the probe never landed an
+// answer), and raising the limit trades that for a stack that grows with the
+// provider's schema depth - on the device that runs on a small verify task stack.
+// This reader descends only root -> items[] -> item{} (a fixed depth); every other
+// value, however deep, is skipped with a bracket counter. Stack use is constant.
+class WorkspaceScanner {
+ public:
+  explicit WorkspaceScanner(const char* p) : p_(p) {}
+
+  void ws() {
+    while (*p_ == ' ' || *p_ == '\t' || *p_ == '\n' || *p_ == '\r') p_++;
+  }
+  char peek() {
+    ws();
+    return *p_;
+  }
+  // A JSON string at the cursor, into `out` (nullptr = skip). Escapes keep the
+  // escaped byte (enough for ids/names; a \u sequence stays literal). false when
+  // the cursor is not on a string or it is unterminated.
+  bool str(std::string* out) {
+    if (peek() != '"') return false;
+    for (p_++; *p_ && *p_ != '"'; p_++) {
+      if (*p_ == '\\') {
+        if (!*++p_) return false;
+      }
+      if (out) out->push_back(*p_);
+    }
+    if (*p_ != '"') return false;
+    p_++;
+    return true;
+  }
+  // Skip one value of ANY depth: strings honored (a bracket inside one does not
+  // count), containers balanced by a counter - never by recursion.
+  bool skip() {
+    const char c = peek();
+    if (c == '"') return str(nullptr);
+    if (c != '{' && c != '[') return scalar();
+    int depth = 0;
+    while (*p_) {
+      if (*p_ == '"') {
+        if (!str(nullptr)) return false;
+        continue;
+      }
+      if (*p_ == '{' || *p_ == '[') depth++;
+      if ((*p_ == '}' || *p_ == ']') && --depth == 0) {
+        p_++;
+        return true;
+      }
+      p_++;
+    }
+    return false;   // unterminated (e.g. a truncated body)
+  }
+  // true/false at the cursor -> 1/0; any other value is skipped -> -1; a broken
+  // value -> -2.
+  int boolean() {
+    ws();
+    if (!std::strncmp(p_, "true", 4)) { p_ += 4; return 1; }
+    if (!std::strncmp(p_, "false", 5)) { p_ += 5; return 0; }
+    return skip() ? -1 : -2;
+  }
+  // Walk an object's members; `fn(key)` is called with the cursor on the value and
+  // must consume it. false on any structural error.
+  template <class F>
+  bool members(F fn) {
+    if (peek() != '{') return false;
+    p_++;
+    if (peek() == '}') { p_++; return true; }
+    for (;;) {
+      std::string key;
+      if (!str(&key) || peek() != ':') return false;
+      p_++;
+      if (!fn(key)) return false;
+      const char c = peek();
+      if (c != '}' && c != ',') return false;   // includes end of input
+      p_++;
+      if (c == '}') return true;
+    }
+  }
+  // Walk an array's elements; `fn()` is called with the cursor on each element.
+  template <class F>
+  bool elements(F fn) {
+    if (peek() != '[') return false;
+    p_++;
+    if (peek() == ']') { p_++; return true; }
+    for (;;) {
+      if (!fn()) return false;
+      const char c = peek();
+      if (c != ']' && c != ',') return false;   // includes end of input
+      p_++;
+      if (c == ']') return true;
+    }
+  }
+
+ private:
+  bool scalar() {
+    const char* start = p_;
+    while (*p_ && !std::strchr(",}] \t\r\n", *p_)) p_++;
+    return p_ != start;
+  }
+  const char* p_;
+};
+
+// One items[] entry's four fields we read.
+struct WorkspaceItem {
+  std::string id, name;
+  int active = -1;   // 1/0, -1 absent or not a bool (treated as active)
+  int signedIn = -1; // is_authenticated: 1 only when literally true
+};
+
+bool scanWorkspaceItem(WorkspaceScanner& sc, WorkspaceItem& it) {
+  return sc.members([&](const std::string& k) {
+    if (k == "id" || k == "name") {
+      std::string& dst = (k == "id") ? it.id : it.name;
+      return sc.peek() == '"' ? sc.str(&dst) : sc.skip();
+    }
+    if (k == "active" || k == "is_authenticated") {
+      const int b = sc.boolean();
+      (k == "active" ? it.active : it.signedIn) = b;
+      return b != -2;
+    }
+    return sc.skip();
+  });
+}
+}  // namespace
+
 bool parseMistralWorkspaceConnectors(const char* body, std::vector<std::string>& listedOut,
                                      std::vector<std::string>* signedInOut) {
   if (!body || !body[0]) return false;
-  // Filter the (~300 KB) /v1/connectors body down to just the three fields we need
-  // per item, so the parsed document stays tiny on the device.
-  JsonDocument filter;
-  filter["items"][0]["id"]               = true;
-  filter["items"][0]["name"]             = true;
-  filter["items"][0]["is_authenticated"] = true;
-  filter["items"][0]["active"]           = true;
-  JsonDocument d;
-  if (deserializeJson(d, body, DeserializationOption::Filter(filter))) return false;
-  JsonArrayConst items = d["items"].as<JsonArrayConst>();
-  if (items.isNull()) return false;   // not the expected shape: treat as "no signal"
+  WorkspaceScanner sc(body);
+  std::vector<std::string> listed, signedIn;   // committed only on a clean parse
+  bool sawItems = false;
   int seen = 0;
-  for (JsonObjectConst it : items) {
-    if (++seen > kMistralWorkspaceMaxItems) break;
-    if (!(it["active"] | true)) continue;   // explicitly inactive: not usable; absent = active
-    // A hint only: a listed connector reporting is_authenticated:false still works
-    // (measured live), so this never decides usability.
-    const bool signedIn = it["is_authenticated"] | false;
-    for (const char* key : {"name", "id"}) {
-      const char* v = it[key] | "";
-      if (!v[0]) continue;
-      listedOut.emplace_back(v);
-      if (signedInOut && signedIn) signedInOut->emplace_back(v);
-    }
-  }
+  const bool ok = sc.members([&](const std::string& key) {
+    if (key != "items") return sc.skip();
+    sawItems = true;
+    return sc.elements([&]() {
+      if (sc.peek() != '{') return sc.skip();   // a non-object element is ignored
+      WorkspaceItem it;
+      if (!scanWorkspaceItem(sc, it)) return false;
+      // Bounded, above the probe's page size; the rest is still walked (so a
+      // malformed tail is still caught) but not kept.
+      if (++seen > kMistralWorkspaceMaxItems) return true;
+      if (it.active == 0) return true;   // explicitly inactive: not usable; absent = active
+      // is_authenticated is a hint only: a listed connector reporting false still
+      // works (measured live), so it never decides usability.
+      for (const std::string* v : {&it.name, &it.id}) {
+        if (v->empty()) continue;
+        listed.push_back(*v);
+        if (it.signedIn == 1) signedIn.push_back(*v);
+      }
+      return true;
+    });
+  });
+  if (!ok || !sawItems) return false;   // not the expected shape: "no signal"
+  listedOut.insert(listedOut.end(), listed.begin(), listed.end());
+  if (signedInOut) signedInOut->insert(signedInOut->end(), signedIn.begin(), signedIn.end());
   return true;
 }
 

@@ -1147,6 +1147,76 @@ static void test_catalog_hint_when_listed_but_not_signed_in() {
     TEST_ASSERT_EQUAL((int)CapScope::OrchestratorDirect, (int)connectorScope(c, ps));
 }
 
+// The LIVE body nests 26 levels deep inside fields the probe does not read (tool
+// input schemas), and a filtered ArduinoJson parse still descends into them: at its
+// default limit it answered TooDeep, so a real probe NEVER landed an answer (caught
+// by the first live hosted e2e, 2026-09-27). The class: any depth, any junk inside
+// ignored fields, brackets/quotes inside strings, nested keys that reuse our field
+// names - only an item's own top-level id/name/active/is_authenticated count.
+static std::string deepValue(int depth) {
+  std::string v;
+  for (int i = 0; i < depth; i++) v += (i % 2) ? "[" : "{\"k\":";
+  v += "\"leaf \\\" }] {[ \"";
+  for (int i = depth - 1; i >= 0; i--) v += (i % 2) ? "]" : "}";
+  return v;
+}
+
+static void test_workspace_parses_any_depth_and_ignores_nested_names() {
+  std::string body = "{\"pagination\":{\"next_cursor\":null,\"deep\":" + deepValue(60) +
+                     "},\"items\":[";
+  const char* names[] = {"notion", "google_calendar", "document_library", "slack"};
+  for (int i = 0; i < 4; i++) {
+    if (i) body += ",";
+    body += "{\"locale\":{\"name\":{\"en\":\"Display " + std::to_string(i) + "\"}},";
+    body += "\"tools\":[{\"name\":\"tool_x\",\"input_schema\":" + deepValue(40) + "}],";
+    body += "\"description\":\"has \\\"quotes\\\" and ]} brackets\",";
+    body += std::string("\"name\":\"") + names[i] + "\",\"id\":\"uuid-" + std::to_string(i) + "\",";
+    body += std::string("\"is_authenticated\":") + (i == 2 ? "true" : "false") + ",\"active\":true}";
+  }
+  body += "]}";
+  std::vector<std::string> ids, signedIn;
+  TEST_ASSERT_TRUE(parseMistralWorkspaceConnectors(body.c_str(), ids, &signedIn));
+  TEST_ASSERT_EQUAL(8, (int)ids.size());          // 4 names + 4 ids, nothing nested
+  TEST_ASSERT_EQUAL(2, (int)signedIn.size());     // document_library name + id
+  auto has = [](const std::vector<std::string>& v, const char* n) {
+    for (const auto& x : v) if (x == n) return true;
+    return false;
+  };
+  TEST_ASSERT_TRUE(has(ids, "google_calendar"));
+  TEST_ASSERT_TRUE(has(ids, "uuid-3"));
+  TEST_ASSERT_FALSE(has(ids, "tool_x"));          // a nested "name" is not an item name
+  TEST_ASSERT_FALSE(has(ids, "Display 0"));
+  TEST_ASSERT_TRUE(has(signedIn, "document_library"));
+  MistralWorkspace ws = probed(body.c_str());
+  TEST_ASSERT_EQUAL(1, connectorAuthFor(studio("gcal"), ws, -1));
+}
+
+// Structure: a truncated or wrong-shape body is no signal; key order and a
+// non-bool active do not matter; an absent items[] is no signal.
+static void test_workspace_scanner_structure() {
+  std::string full = kLiveListing;
+  std::vector<std::string> ids;
+  for (size_t cut : {full.size() / 3, full.size() / 2, full.size() - 3}) {
+    ids.clear();
+    TEST_ASSERT_FALSE(parseMistralWorkspaceConnectors(full.substr(0, cut).c_str(), ids));
+    TEST_ASSERT_EQUAL(0, (int)ids.size());        // nothing leaks from a half parse
+  }
+  const char* noSignal[] = {"[]", "{\"pagination\":{}}", "{\"items\":\"x\"}",
+                            "{\"items\":[{\"name\":\"a\" \"id\":\"b\"}]}", "   "};
+  for (const char* b : noSignal) {
+    ids.clear();
+    TEST_ASSERT_FALSE_MESSAGE(parseMistralWorkspaceConnectors(b, ids), b);
+  }
+  ids.clear();
+  TEST_ASSERT_TRUE(parseMistralWorkspaceConnectors(
+      " {\n \"pagination\" : {\"page_size\":100} ,\"items\" : [ 7, null,"
+      "{\"active\":null,\"name\":\"a\"},{\"active\":\"false\",\"name\":\"b\"},"
+      "{\"active\":false,\"name\":\"c\"}] } ", ids));
+  TEST_ASSERT_EQUAL(2, (int)ids.size());          // a, b (non-bool active = absent); c inactive
+  TEST_ASSERT_EQUAL_STRING("a", ids[0].c_str());
+  TEST_ASSERT_EQUAL_STRING("b", ids[1].c_str());
+}
+
 // A full page (page_size 100) is never truncated; a runaway body is bounded.
 static void test_workspace_item_cap() {
   auto body = [](int n) {
@@ -1211,6 +1281,8 @@ int main() {
   RUN_TEST(test_workspace_matches_uuid_and_rejects_newline_ids);
   RUN_TEST(test_workspace_signed_in_never_gates_class);
   RUN_TEST(test_catalog_hint_when_listed_but_not_signed_in);
+  RUN_TEST(test_workspace_parses_any_depth_and_ignores_nested_names);
+  RUN_TEST(test_workspace_scanner_structure);
   RUN_TEST(test_workspace_item_cap);
   RUN_TEST(test_connector_auth_rule_table);
   RUN_TEST(test_wants_probe_only_for_enabled_studio_connectors);
