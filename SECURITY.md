@@ -2,9 +2,10 @@
 
 ## Reporting a vulnerability
 
-Please report vulnerabilities privately via
-**GitHub Security Advisories**: on the repository page, Security → Report a
-vulnerability. Do not open a public issue for anything exploitable.
+Please report vulnerabilities privately by email to
+**security@cumulo-nimbus.ai**, or via **GitHub Security Advisories**: on the
+repository page, Security → Report a vulnerability. Do not open a public issue
+for anything exploitable.
 
 You can expect an acknowledgement within a week. Fixes ship as a signed OTA
 release; credit is given unless you prefer otherwise.
