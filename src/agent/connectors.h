@@ -78,7 +78,10 @@ int8_t authStateOf(const String& name);
 // kept only as a catalog hint - it reads false for connectors that demonstrably
 // work). Called from the Mistral provider-verify path. A bad/empty body is ignored
 // (keeps the last good answer) and returns false. No-op-safe to call with garbage.
-bool noteMistralConnectorsProbe(const char* v1ConnectorsBody);
+// `generation` is mistralProbeGeneration() read BEFORE the fetch: if the Mistral key
+// changed meanwhile (resetMistralConnectorsProbe), the stale answer is dropped.
+bool noteMistralConnectorsProbe(const char* v1ConnectorsBody, uint32_t generation);
+uint32_t mistralProbeGeneration();
 
 // Whether an enabled Mistral Studio connector exists, i.e. whether the (large)
 // workspace probe is worth fetching on a Mistral verify. Parses the blob through the

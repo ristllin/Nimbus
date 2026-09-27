@@ -1,5 +1,6 @@
 #include "connectors.h"
 #include "store.h"
+#include "store_config.h"                   // harnessConfigFromStore (head resolution)
 #include "agent_config.h"
 #include "memory_subsystem.h"                // memory::registry(), memory::Lock
 #include "orchestrator.h"                    // orchestrator::inScheduledTurn()
@@ -99,6 +100,9 @@ void noteAuth(const String& name, int8_t st) {
 // web handlers, so every access holds s_wsMux (a STATIC mutex: no lazy-create race,
 // no heap). A mutex, not a spinlock: readers allocate while matching ids.
 static nimbus::orch::MistralWorkspace s_ws;
+// Bumped by every reset (a Mistral key change). A probe that started under an older
+// generation - its fetch can take ~25 s - must not publish its answer for the new key.
+static uint32_t s_wsGen = 0;
 static StaticSemaphore_t s_wsMuxBuf;
 static SemaphoreHandle_t s_wsMux = xSemaphoreCreateMutexStatic(&s_wsMuxBuf);
 struct WsLock {
@@ -190,13 +194,19 @@ int8_t authStateOf(const String& name) {
   return -1;   // no live signal since boot
 }
 
-bool noteMistralConnectorsProbe(const char* v1ConnectorsBody) {
+uint32_t mistralProbeGeneration() {
+  WsLock lk;
+  return s_wsGen;
+}
+
+bool noteMistralConnectorsProbe(const char* v1ConnectorsBody, uint32_t generation) {
   // Parse OUTSIDE the lock into a scratch answer, then publish with a swap, so the
-  // lock is held for pointer moves only (never across the filter-parse).
+  // lock is held for pointer moves only (never across the parse).
   nimbus::orch::MistralWorkspace fresh;
   if (!nimbus::orch::noteMistralWorkspaceProbe(fresh, v1ConnectorsBody))
     return false;   // unparseable body (HTTP/transient error): keep the last good answer
   WsLock lk;
+  if (generation != s_wsGen) return false;   // the key changed mid-probe: stale answer
   s_ws.listed.swap(fresh.listed);     // a full replace: removed in Mistral => drops out
   s_ws.signedIn.swap(fresh.signedIn);
   s_ws.probed = true;
@@ -220,6 +230,7 @@ void resetMistralConnectorsProbe() {
   // key before the fresh probe lands.
   WsLock lk;
   s_ws = nimbus::orch::MistralWorkspace();
+  s_wsGen++;
 }
 
 bool wantsMistralWorkspaceProbe() {
@@ -322,13 +333,27 @@ nimbus::orch::BearerFn bearerClosure() {
   };
 }
 
-// The resolved current head: explicit orchHost(), else the first KEYED provider in
-// providerPriority() - the rule the turn engine resolves its head with (and the one
-// the /api/tools Capabilities table already reads). The raw first token named an
-// unkeyed provider "YOU are here" whenever the priority list led with one, so the
-// model misjudged which connectors it could call on its own turns.
+// The head the turn engine will actually run on, by the SAME rule and the same
+// device inputs the engine resolves it with (harnessConfigFromStore: every slug's
+// key incl. cumulo/zai/custom, then the router fallback) via the shared
+// nimbus::orch::resolveHeadHost. The raw first token named an unkeyed provider
+// "YOU are here" whenever the priority list led with one, and a BYOK-only rule would
+// name mistral while a cumulo-first device really runs on cumulo.
+// The config table (~25 std::function slots) goes on the HEAP, never this task's
+// stack (the turn path's stack is the tight one - see kMaxConnectors); C++17
+// guaranteed elision builds it in place. No memory: the old raw first token.
 std::string currentHost() {
-  return store::resolvedOrchHost().c_str();
+  std::unique_ptr<agent::HarnessConfig> hc(
+      new (std::nothrow) agent::HarnessConfig(agent::harnessConfigFromStore()));
+  if (!hc) {
+    const std::string pri = store::providerPriority().c_str();
+    return pri.substr(0, pri.find(','));
+  }
+  const auto& p = hc->provider;
+  return nimbus::orch::resolveHeadHost(p.orchHost ? p.orchHost() : std::string(),
+                                       p.providerPriority ? p.providerPriority() : std::string(),
+                                       p.hasKey,
+                                       p.routerFallbackHost ? p.routerFallbackHost() : std::string());
 }
 }  // namespace
 

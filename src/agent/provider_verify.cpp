@@ -420,6 +420,9 @@ static size_t drainHttpBody(WiFiClientSecure& client, char* buf, size_t cap,
 // by guess).
 static void syncMistralConnectors(const String& key) {
   if (!agent::connectors::wantsMistralWorkspaceProbe()) return;   // skip the large fetch
+  // Captured before the fetch: a Mistral key saved while this probe runs bumps it,
+  // and the old key's answer is then dropped instead of published for the new key.
+  const uint32_t gen = agent::connectors::mistralProbeGeneration();
   WiFiClientSecure client;
   tlsSetup(client);
   client.setHandshakeTimeout(12);
@@ -438,10 +441,10 @@ static void syncMistralConnectors(const String& key) {
   // Skip the HTTP headers to the JSON body (only compact status/header text precedes it).
   const char* jbody = strstr(buf, "\r\n\r\n");
   jbody = jbody ? jbody + 4 : (strstr(buf, "\n\n") ? strstr(buf, "\n\n") + 2 : buf);
-  const bool noted = !truncated && agent::connectors::noteMistralConnectorsProbe(jbody);
+  const bool noted = !truncated && agent::connectors::noteMistralConnectorsProbe(jbody, gen);
   alogf("verify: mistral connectors probed (%u bytes%s)", (unsigned)blen,
         truncated ? ", TRUNCATED - kept last answer"
-                  : (noted ? "" : ", unparseable - kept last answer"));
+                  : (noted ? "" : ", unparseable or key changed - not published"));
   free(buf);
 }
 

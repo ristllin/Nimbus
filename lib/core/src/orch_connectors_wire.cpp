@@ -578,6 +578,32 @@ void applyConnectorAuth(std::vector<ConnectorInfo>& cs, const MistralWorkspace& 
   }
 }
 
+std::string resolveHeadHost(const std::string& orchHost, const std::string& priority,
+                            const std::function<bool(const std::string&)>& keyed,
+                            const std::string& routerFallback) {
+  auto trim = [](const std::string& t) {
+    const size_t b = t.find_first_not_of(" \t\r\n");
+    if (b == std::string::npos) return std::string();
+    return t.substr(b, t.find_last_not_of(" \t\r\n") - b + 1);
+  };
+  const std::string pin = trim(orchHost);
+  if (!pin.empty()) return pin;
+  std::string head;
+  for (size_t start = 0; start <= priority.size();) {
+    const size_t comma = priority.find(',', start);
+    const size_t end = comma == std::string::npos ? priority.size() : comma;
+    const std::string tok = trim(priority.substr(start, end - start));
+    if (!tok.empty()) {
+      if (head.empty()) head = tok;
+      if (keyed && keyed(tok)) return tok;
+    }
+    if (comma == std::string::npos) break;
+    start = comma + 1;
+  }
+  const std::string rf = trim(routerFallback);
+  return rf.empty() ? head : rf;
+}
+
 bool wantsMistralWorkspaceProbe(const std::vector<ConnectorInfo>& cs) {
   for (const ConnectorInfo& c : cs)
     if (c.enabled && isMistralStudioConnector(c)) return true;
@@ -641,8 +667,8 @@ static std::string connectorRowNote(const ConnectorInfo& c, const char* prov) {
     // Fail-closed, but honest about WHY: an unchecked workspace is not the same
     // next step as a connector the workspace does not offer.
     if (c.workspace == W::Unprobed)
-      return " (not usable yet: the Mistral workspace has not been checked; verifying "
-             "the Mistral key on the web page re-checks it)";
+      return " (not usable yet: the Mistral workspace has not been checked; it is "
+             "re-checked when the Mistral key is verified or saved)";
     // A Mistral Studio connector / hosted built-in has NO device credential: it
     // is authorized in the owner's Mistral account and referenced by name here,
     // so "add a credential" is the wrong instruction - point at Mistral instead.

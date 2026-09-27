@@ -1217,6 +1217,35 @@ static void test_workspace_scanner_structure() {
   TEST_ASSERT_EQUAL_STRING("b", ids[1].c_str());
 }
 
+// The catalog's "YOU are here" must be the head the turn engine dispatches to. The
+// class: pin > first KEYED priority token (any slug, router ones included) > router
+// fallback > bare first token. A BYOK-only keyed check named mistral on a
+// cumulo-first device that really runs on cumulo; the raw first token named an
+// unkeyed openai on a mistral-only one.
+static void test_resolve_head_host_matches_the_engine_rule() {
+  using nimbus::orch::resolveHeadHost;
+  auto keyedSet = [](std::vector<std::string> ks) {
+    return [ks](const std::string& h) {
+      for (const auto& k : ks) if (k == h) return true;
+      return false;
+    };
+  };
+  TEST_ASSERT_EQUAL_STRING("cumulo",
+      resolveHeadHost("", "cumulo,mistral", keyedSet({"cumulo", "mistral"}), "cumulo").c_str());
+  TEST_ASSERT_EQUAL_STRING("mistral",
+      resolveHeadHost("", "openai,anthropic,mistral,cumulo", keyedSet({"mistral"}), "").c_str());
+  TEST_ASSERT_EQUAL_STRING("anthropic",
+      resolveHeadHost(" anthropic ", "openai,mistral", keyedSet({"openai"}), "").c_str());
+  TEST_ASSERT_EQUAL_STRING("zai",
+      resolveHeadHost("", "openai, mistral", keyedSet({}), "zai").c_str());
+  TEST_ASSERT_EQUAL_STRING("openai",
+      resolveHeadHost("", " openai , mistral", keyedSet({}), "").c_str());
+  TEST_ASSERT_EQUAL_STRING("mistral",
+      resolveHeadHost("", "openai,,  mistral ", keyedSet({"mistral"}), "").c_str());
+  TEST_ASSERT_EQUAL_STRING("", resolveHeadHost("", "", keyedSet({}), "").c_str());
+  TEST_ASSERT_EQUAL_STRING("mistral", resolveHeadHost("", "mistral", nullptr, "").c_str());
+}
+
 // A full page (page_size 100) is never truncated; a runaway body is bounded.
 static void test_workspace_item_cap() {
   auto body = [](int n) {
@@ -1284,6 +1313,7 @@ int main() {
   RUN_TEST(test_workspace_parses_any_depth_and_ignores_nested_names);
   RUN_TEST(test_workspace_scanner_structure);
   RUN_TEST(test_workspace_item_cap);
+  RUN_TEST(test_resolve_head_host_matches_the_engine_rule);
   RUN_TEST(test_connector_auth_rule_table);
   RUN_TEST(test_wants_probe_only_for_enabled_studio_connectors);
   RUN_TEST(test_parse_connectors_reads_past_eight);
