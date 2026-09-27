@@ -21,7 +21,7 @@
 // Env / config keys: NIMBUSD_DATA_DIR (/data), NIMBUSD_CONFIG (<data>/config.env),
 //   NIMBUSD_CONTROL_ADDR (127.0.0.1), NIMBUSD_CONTROL_PORT (8787),
 //   NIMBUSD_WEB_TOKEN, NIMBUSD_TG_CHAT_ID, NIMBUSD_DEVICE_NAME, NIMBUSD_PRIORITY,
-//   NIMBUSD_SUB_PRIORITY, NIMBUSD_ORCH_HOST,
+//   NIMBUSD_SUB_PRIORITY, NIMBUSD_ORCH_HOST, NIMBUSD_TOOL_LOOP (1),
 //   TELEGRAM_BOT_TOKEN, OPENAI_API_KEY / ANTHROPIC_API_KEY / MISTRAL_API_KEY,
 //   TAVILY_API_KEY, TZ.
 #include <atomic>
@@ -55,6 +55,11 @@ nimbusd::NimbusdRig::Options buildOptions(const nimbusd::Config& cfg) {
   // explicit head pin ("" -> the first keyed provider in NIMBUSD_PRIORITY).
   opt.subPriority = cfg.get("NIMBUSD_SUB_PRIORITY");
   opt.orchHost = cfg.get("NIMBUSD_ORCH_HOST");
+  // Device parity (store::orchToolLoop, default on): 0 runs single-shot head turns,
+  // which is also the only head path a Mistral key without chat-completions access
+  // can use (the tool loop runs on /v1/chat/completions, single-shot on
+  // /v1/conversations, where Studio connectors attach to the head turn itself).
+  opt.toolLoop = cfg.getInt("NIMBUSD_TOOL_LOOP", 1) != 0;
   opt.role = "admin";  // a hosted instance is single-owner by construction
   // Embeddings default to Mistral (cheapest); disabled if no key is present so
   // the daemon still runs (recall simply returns nothing).
@@ -116,7 +121,8 @@ void logStartupConfig(const nimbusd::Config& cfg, const nimbusd::NimbusdRig::Opt
   logLine("starting nimbusd: data=" + opt.dataDir + " name=" + opt.devName +
           " priority=" + opt.priority +
           " subPriority=" + (opt.subPriority.empty() ? "(same)" : opt.subPriority) +
-          " orchHost=" + (opt.orchHost.empty() ? "(first keyed)" : opt.orchHost));
+          " orchHost=" + (opt.orchHost.empty() ? "(first keyed)" : opt.orchHost) +
+          " toolLoop=" + (opt.toolLoop ? "on" : "off"));
   for (const char* h : {"openai", "anthropic", "mistral"})
     logLine(std::string("provider ") + h + ": " +
             (cfg.providerKey(h).empty() ? "no key" : nimbusd::Config::mask(cfg.providerKey(h))));

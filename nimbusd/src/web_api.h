@@ -507,7 +507,7 @@ class WebApi {
     d["orchHost"] = rig_->options().orchHost;   // device parity ("" = first keyed)
     d["provPrio"] = rig_->options().priority;
     d["subPrio"] = rig_->subPriority();
-    d["orchLoop"] = true;
+    d["orchLoop"] = rig_->options().toolLoop;   // device parity (store::orchToolLoop)
     d["hasTav"] = rig_->cfg().has("TAVILY_API_KEY");
     d["hasTg"] = rig_->cfg().has("TELEGRAM_BOT_TOKEN");
     d["tgLive"] = rig_->cfg().has("TELEGRAM_BOT_TOKEN");

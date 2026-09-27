@@ -216,6 +216,9 @@ static void testBackgroundWorkIsNotATurn(ndtest::Ctx& c) {
   api.handle("POST", "/api/orch", "oaiKey=sk_TEST_FAB_3", out);
   c.eqi(out.status, 200, "the key write queued behind it is applied (200), not refused busy");
   c.ok(has(out.body, "\"applied\":1"), "the write reports it applied");
+  ApiResp orch;
+  api.handle("GET", "/api/orch", "", orch);
+  c.ok(has(orch.body, "\"orchLoop\":false"), "/api/orch reports the configured tool loop (off here)");
   eng.stop();
   clearEnv();
 }
