@@ -187,11 +187,12 @@ bool panelCodeStale();
 // task (the panel renderer); the table op is spinlock-guarded.
 //
 // showCodeRemint(): mint a fresh display code now (call on entry to the screen).
-// showCode():       current display code, minting one if none/expired.
+// showCode():       current display code, minting one if none/stale.
 // showCodeSecsLeft(): whole seconds until it expires (0 once expired) - drives the
 //                   on-screen mm:ss countdown.
-// showCodeStale():  true once it has expired, so the loop can repaint (re-mint) and
-//                   a dead code never sits on screen as if valid.
+// showCodeStale():  true once it has expired, been redeemed, or been evicted, so the
+//                   loop can repaint (re-mint) and a dead code never sits on screen
+//                   as if valid.
 String   showCodeRemint();
 String   showCode();
 uint32_t showCodeSecsLeft();
@@ -225,6 +226,14 @@ bool consumeLedConfirm();
 // one-shot flags written by AsyncTCP and consumed by the main task.
 bool consumeWifiJoinStarted();
 bool consumeWifiHandoffReady();
+
+// True while the setup network signs its peers in on its own (nothing saved in the
+// Wi-Fi slot yet). When false, a join screen must show a sign-in code (CUM-453).
+bool apSignsInAutomatically();
+
+// True (once) after POST /api/wifi action=publishap was APPLIED on the main task
+// (CUM-452): the main loop consumes it and puts the Setup screen on the panel.
+bool consumeSetupInfoRequest();
 
 // True (once) when repeated web-auth failures (3 x 401 inside 60 s) suggest the
 // owner is on a token-less page - the main loop consumes it and shows the

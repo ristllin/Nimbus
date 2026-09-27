@@ -41,8 +41,11 @@ struct ScreenCtx {
   uint8_t     battHealthPct = 100;
   std::string battChargeState;         // "discharging"/"charging"/"full"/... ("" hides)
   bool networkDegraded = false;
-  // Header radio status glyphs (top-right, left of the battery). 0 = off,
-  // 1 = advertising / connecting, 2 = linked / up. Rendered as wi±/bt± tags.
+  // Header radio status (top-right, left of the battery). 0 = off / not set up,
+  // 1 = advertising / connecting (Wi-Fi saved but not connected), 2 = linked / up.
+  // wifiState drives the header Wi-Fi glyph (CUM-455), which also shows a small
+  // "AP" marker while apUp (below) holds and Wi-Fi is not connected. btState is
+  // carried for callers but not drawn.
   uint8_t wifiState = 0;
   uint8_t btState = 0;
   // Header line 2 (owner R4): sound state, spelled out - sfxLevel 0-3
@@ -107,11 +110,13 @@ struct ScreenCtx {
                           // (the scanning phone is on the setup AP; a LAN IP is
                           // unroutable from there - audit P1.2). "" -> configUrl.
   std::string netStatus;  // one-line live connectivity status under the ConfigQr QR
-  std::string webToken;   // TokenDetail ("Show code") body: the SINGLE-USE, short-lived
-                          // sign-in code to read and type by hand (CUM-295). Not the
-                          // durable token - the web gate exchanges this code for the token.
-                          // Normal setup/sign-in QRs carry a code automatically; setup
-                          // screens never require typing anything.
+  std::string webToken;   // The SINGLE-USE, short-lived sign-in code to read and type by
+                          // hand (CUM-295): the TokenDetail ("Show code") body, and the
+                          // "Sign-in code" field of a join screen on a provisioned device
+                          // (CUM-453, see joinScreenNeedsSigninCode). Not the durable
+                          // token - the web gate exchanges this code for the token. Empty
+                          // on a first-run join screen, where the setup network signs the
+                          // owner in automatically.
   int signinSecsLeft = -1;  // TokenDetail countdown: whole seconds until webToken expires,
                           // rendered as mm:ss so staleness is honest (CUM-295). -1 hides it.
   bool showCodeAffordance = false;  // draw the tappable "Show code" button on the Sign-in
@@ -163,6 +168,34 @@ struct ScreenCtx {
   struct SelfTestRow { std::string name; uint8_t status = 2; };
   std::vector<SelfTestRow> selfTest;
   std::string selfTestSummary;   // e.g. "8P/0F/3S"
+
+  // Locked out (CUM-200): the station link is down while the named setup network
+  // is up, so the Sign-in QR screen shows how to JOIN the setup network instead
+  // of a sign-in URL to a LAN address the owner cannot reach.
+  bool lockedOut() const { return apUp && !staConnected && !apName.empty(); }
 };
+
+// The header Wi-Fi glyph's small "AP" marker (CUM-455): the setup network is up
+// while Wi-Fi is not connected - setup or recovery mode. One rule for the renderer
+// and the device's header-repaint watcher.
+inline bool wifiApMarker(uint8_t wifiState, bool apUp) { return apUp && wifiState < 2; }
+
+// A JOIN screen shows how to join the setup network (name, password, Wi-Fi-join
+// QR): SetupInfo always, and the Sign-in QR (ConfigQr) while locked out.
+inline bool isJoinScreen(attn::ScreenId id, const ScreenCtx& c) {
+  return id == attn::ScreenId::SetupInfo || (id == attn::ScreenId::ConfigQr && c.lockedOut());
+}
+
+// Does this screen need a hand-entry sign-in code in ctx.webToken (CUM-452/453)?
+// Only a join screen of a PROVISIONED Orchestrator. Once Wi-Fi is set up, the
+// setup network's page no longer signs the owner in on its own (the token handout
+// is unprovisioned-only), so the owner who joins it needs a code the sign-in gate
+// will redeem. A first-run device signs in automatically, and Notifier has no web
+// surface on the radio.
+inline bool joinScreenNeedsSigninCode(attn::ScreenId id, const ScreenCtx& c,
+                                      bool provisioned) {
+  if (!provisioned || !c.modeName || std::string(c.modeName) != "orchestrator") return false;
+  return isJoinScreen(id, c);
+}
 
 }  // namespace nimbus::render

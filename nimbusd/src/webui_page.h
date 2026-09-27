@@ -229,6 +229,11 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 #dashJobs th,#dashJobs td{overflow-wrap:normal;word-break:normal;white-space:nowrap}
 }
 .mobmode{display:none;position:fixed;top:10px;right:12px;z-index:60}
+/* Sign-in gate up (CUM-454, set by showAuth in ui_js.h): the page must not scroll under
+   it and nothing of the app may show through, so the shell, the panes and the mobile
+   mode switch are hidden outright, not merely covered. Removed on sign-in. */
+html.authlock,html.authlock body{overflow:hidden;overscroll-behavior:none}
+html.authlock aside.side,html.authlock .pane,html.authlock .mobmode{visibility:hidden}
 </style>
 
 <aside class=side>
@@ -525,7 +530,7 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 <div class=setbody>
 <p class="hint tip">The setup hotspot is a recovery network, separate from your home Wi-Fi. Touch/TFT devices normally turn it off after joining home Wi-Fi. Publishing it pauses joining and makes the recovery network available; resume joining once the password is corrected.</p>
 <div class=row><button id=wifiAp type=button>Publish Setup Network</button><button id=wifiResume type=button>Resume Joining</button></div>
-<p class=hint id=wifiApMsg></p>
+<p class=hint id=wifiApMsg role=status></p>
 </div>
 </details>
 </div>
@@ -1151,13 +1156,19 @@ function canPoll(){return !!nimbusTok() && !_authPaused;}
 function showAuth(){
   _authPaused=true;   // stop the background pollers from re-flooding the device with 401s
   if($('authgate'))return;
+  // CUM-454: nothing of the app may show through the gate. On a phone the overlay alone
+  // was not enough: the page under it still scrolled, and iOS overscroll or the
+  // collapsing URL bar exposed the shell at the bottom edge. authlock (ui_shell.h)
+  // stops the page scrolling and hides the sidebar/bottom bar and every pane; the gate
+  // is sized to the dynamic viewport and scrolls within itself. Removed on sign-in.
+  document.documentElement.classList.add('authlock');
   const b=document.createElement('div');b.id='authgate';
-  b.style.cssText='position:fixed;inset:0;background:#14181c;color:#dde;z-index:9999;display:flex;align-items:center;justify-content:center;text-align:center;padding:24px';
+  b.style.cssText='position:fixed;inset:0;height:100vh;height:100dvh;overflow-y:auto;overscroll-behavior:none;background:#14181c;color:#dde;z-index:9999;display:flex;text-align:center;padding:24px';
   // Scan-first, with an explicit text fallback (CUM-208): a QR-only flow strands
   // anyone who can't scan (no second device, camera trouble, or they ARE the phone).
   // "Enter the code instead" reveals the code field + how to read the code as text on
   // the device, so the manual path is discoverable rather than buried.
-  b.innerHTML='<div style="max-width:420px">'+
+  b.innerHTML='<div style="max-width:420px;margin:auto">'+
     '<img src=/logo.svg alt="" style="width:96px;height:96px;display:block;margin:0 auto 14px;background:#fff;border-radius:50%;padding:6px">'+
     '<h2 style="margin:0 0 8px">Sign in to Nimbus</h2>'+
     '<p style="color:#9ab">Scan the Sign-in QR on the device screen to sign in with no typing.</p>'+
@@ -1167,20 +1178,25 @@ function showAuth(){
     // device - the Show code affordance on its own Sign-in QR screen.
     '<button id=authshow type=button style="background:none;border:1px solid #2ea394;color:#7fd1c8;cursor:pointer;font-size:14px;padding:8px 16px;border-radius:9px;margin-top:4px">Enter the code instead</button>'+
     '<div id=authcode style="display:none;margin-top:12px">'+
-    '<p style="color:#9ab;font-size:13px">On the device screen, open the Sign-in QR (Settings &gt; Connectivity) and tap Show code, then type the device sign-in code here. It lasts about 10 minutes.</p>'+
-    '<input id=authtok placeholder="device sign-in code" style="width:240px;padding:8px;font-size:15px"> '+
+    '<p style="color:#9ab;font-size:13px">Type the device sign-in code from the device screen. When the device shows its Setup screen, the code is on it; otherwise open the Sign-in QR (Settings &gt; Connectivity) and tap Show code. It lasts about 10 minutes.</p>'+
+    // Codes are lowercase hex (CUM-453): no autocapitalize or autocorrect, or a phone
+    // keyboard capitalizes the first letter of a case-sensitive code.
+    '<input id=authtok placeholder="device sign-in code" aria-label="Device sign-in code" autocapitalize=off autocorrect=off spellcheck=false autocomplete=off style="width:240px;padding:8px;font-size:15px"> '+
     '<button id=authuse style="padding:8px 16px;font-size:15px">Continue</button>'+
-    '<p id=autherr style="color:#e88;font-size:13px;margin-top:8px"></p></div>'+
+    '<p id=autherr role=alert style="color:#e88;font-size:13px;margin-top:8px"></p></div>'+
     '<p style="color:#678;font-size:12px;margin-top:14px">New device? Open 192.168.4.1 on its setup hotspot. First-time setup signs you in automatically.</p></div>';
   document.body.appendChild(b);
   $('authshow').onclick=()=>{$('authcode').style.display='block';$('authshow').style.display='none';$('authtok').focus();};
   // Hand-entry fallback (CUM-208, CUM-295): the typed value is a SINGLE-USE,
   // short-lived sign-in code, exchanged for the durable token exactly like the ?c=
   // link - never stored as the token itself (a single-use code is not the token).
-  $('authuse').onclick=()=>{const c=$('authtok').value.trim();if(!c)return;
+  // Normalized to the minted form (lowercase hex) so a stray capital or space still redeems.
+  // Enter (the phone keyboard's Go key) submits, like every other single-field form here.
+  $('authtok').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();$('authuse').click();}};
+  $('authuse').onclick=()=>{const c=$('authtok').value.trim().toLowerCase();if(!c)return;
     const btn=$('authuse');btn.disabled=true;
     signinExchange(c,()=>{btn.disabled=false;
-      $('autherr').textContent='That code is invalid or has expired. Tap Show code on the device for a fresh one.';});};
+      $('autherr').textContent='That code is invalid or has expired. Type the code the device screen shows now.';});};
 }
 // One-time sign-in code exchange (CUM-45): a short-lived, single-use code is
 // exchanged for the durable token, stored client-side, and the page reloads clean.
@@ -1196,6 +1212,7 @@ function signinExchange(code,onFail){
       // reload would drop it and the single-use code is already spent. Instead
       // dismiss any sign-in gate and resume with the in-memory token.
       _authPaused=false;const g=$('authgate');if(g)g.remove();
+      document.documentElement.classList.remove('authlock');   // CUM-454: app back
       if(typeof loadState==='function')loadState();})
     .catch(()=>{if(onFail)onFail();});
 }
@@ -3920,11 +3937,20 @@ $('savewifi').onclick=()=>{
 // stays reachable however wrong the saved credentials are.
 (function(){
  const b=$('wifiAp'); if(b)b.onclick=()=>{
-  uiConfirm('Publish the setup network?\n\nThe device stops trying to join Wi-Fi until you resume, so this page stays reachable over its own network.',{ok:'Publish Network'}).then(ok=>{ if(!ok)return;
-  wifiPost('publishap').then(d=>{toast('Setup network published');
-   if($('wifiApMsg'))$('wifiApMsg').textContent='Setup network "'+(d.apSsid||'')+'" is coming up. Joining is paused until you resume.';
-   setTimeout(loadWifi,1500);
-  }).catch(e=>{if($('wifiApMsg'))$('wifiApMsg').textContent=e.message;});});};
+  uiConfirm('Publish the setup network?\n\nThe device stops joining Wi-Fi until you resume and shows the setup network on its screen. A page open over your Wi-Fi disconnects; join the setup network to keep going.',{ok:'Publish Network'}).then(ok=>{ if(!ok)return;
+  // CUM-452: the result states the next step. Over the home Wi-Fi this page loses the
+  // device a second later, so the message says so and names the network to join, and
+  // no list reload replaces it; on the setup network itself the page stays.
+  const m=$('wifiApMsg'), say=t=>{if(m)m.textContent=t;};
+  b.disabled=true; say('Publishing the setup network\u2026');
+  wifiPost('publishap').then(d=>{b.disabled=false;toast('Setup network published');
+   if(d.onAp){say('The device screen now shows the setup network. Joining is paused until you resume.');setTimeout(loadWifi,1500);return;}
+   say('The device screen now shows the setup network; this page will disconnect.'+(d.apSsid?(' Join "'+d.apSsid+'" and follow the steps on the device screen.'):''));
+  }).catch(e=>{b.disabled=false;
+   // A network-level failure (fetch rejects with a TypeError) right after a publish
+   // most likely means the device already left this network; say so, with the next
+   // step, rather than a raw "Failed to fetch". A reply from the device is its error.
+   say(e instanceof TypeError?'Lost the device. If it is publishing its setup network, the device screen shows it; join that network to keep going.':e.message);});});};
  const c=$('wifiResume'); if(c)c.onclick=()=>{
   wifiPost('resume').then(()=>{toast('Joining resumed');
    if($('wifiApMsg'))$('wifiApMsg').textContent='Joining resumed. The device is trying its saved networks again.';

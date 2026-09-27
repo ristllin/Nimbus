@@ -5,6 +5,7 @@
 #include <cstring>
 #include <set>
 #include <string>
+#include <vector>
 
 #include "nimbus/tft_render/fb565.h"
 #include "nimbus/tft_render/screens.h"
@@ -117,6 +118,14 @@ static void assertRegionsSane(const char* name, const Rendered& r, int w, int h)
       TEST_ASSERT_FALSE_MESSAGE(overlap, msg);
     }
   }
+}
+
+// Copy a rectangle out of a framebuffer for region-level comparisons.
+static std::vector<uint16_t> grab(const Fb565& fb, int x0, int y0, int x1, int y1) {
+  std::vector<uint16_t> out;
+  for (int y = y0; y < y1; y++)
+    for (int x = x0; x < x1; x++) out.push_back(fb.get(x, y));
+  return out;
 }
 
 // The supported panels, each golden-tested at its own resolution. The default
@@ -527,6 +536,7 @@ static void test_config_qr_signin_hides_password() {
   base.netStatus = "Home Wi-Fi connected: 192.0.2.10";
   base.apName = "Nimbus-4-setup";
   base.staConnected = true;   // on the LAN
+  base.wifiState = 2;         // ...so the header reads connected, as fillHeaderCtx reports it
   base.apPass = "aaaa2345pq";
   for (const auto& p : kPanels) {
     ScreenCtx apDown = base;  apDown.apUp = false;   // TFT steady state (AP torn down)
@@ -544,6 +554,205 @@ static void test_config_qr_signin_hides_password() {
   }
 }
 
+// ---- CUM-452/453: join screens that also sign the owner in ------------------
+// On a PROVISIONED device the setup network's page shows the sign-in gate, so a
+// join screen (SetupInfo after "Publish setup network", or the locked-out Sign-in
+// QR) carries a real hand-entry code in webToken. Obviously-fake code values only.
+
+// The shipped menu combination CI never rendered: locked out + the Show code
+// affordance. First without a code (an unprovisioned device, whose setup network
+// signs the owner in on its own): the onboarding column with NO Show code card -
+// that card used to land at y=231..275 on a 240 px panel.
+static void test_config_qr_recover_affordance() {
+  ScreenCtx c = configQrRecoverCtx("wxyz2345pq");
+  c.showCodeAffordance = true;
+  golden("config_qr_recover_affordance", ScreenId::ConfigQr, c);
+}
+
+// ...and on a provisioned device: the code is on the screen, and its card is the
+// Show code tap.
+static ScreenCtx recoverSigninCtx() {
+  ScreenCtx c = configQrRecoverCtx("wxyz2345pq");
+  c.wifiState = 1;            // provisioned: Wi-Fi saved, not connected (as fillHeaderCtx reports)
+  c.showCodeAffordance = true;
+  c.webToken = "0123456789ab";
+  return c;
+}
+static void test_config_qr_recover_signin() {
+  golden("config_qr_recover_signin", ScreenId::ConfigQr, recoverSigninCtx());
+}
+
+// SetupInfo right after "Publish setup network" on a provisioned device: the same
+// fields, the code not tappable (the menu is closed there).
+static ScreenCtx setupSigninCtx() {
+  ScreenCtx c = baseCtx();
+  c.modeName = "orchestrator";
+  c.apName = "Nimbus-4-setup";
+  c.apPass = "wxyz2345pq";
+  c.apUp = true;
+  c.setupUrl = "http://192.168.4.1/?c=aaaaaaaaaaaa";
+  c.wifiState = 1;            // provisioned, joining paused by the publish
+  c.webToken = "0123456789ab";
+  return c;
+}
+static void test_setup_info_signin() {
+  golden("setup_info_signin", ScreenId::SetupInfo, setupSigninCtx());
+}
+
+// True when any pixel in rows [y0, y1) differs from the page background.
+static bool inkInRows(const Fb565& fb, int y0, int y1) {
+  for (int y = y0; y < y1; y++)
+    for (int x = 0; x < fb.width(); x++)
+      if (fb.get(x, y) != kBg) return true;
+  return false;
+}
+
+// No card may run into the Show code control from above. On the join fields the
+// code's caption sits kFieldGap below the previous card, so the row just above the
+// caption band must be background; on the Sign in column the row just above the
+// button must be. (An upward clamp once drew the code card over the card above.)
+static void assertNothingDrawnOverShowCode(const char* name, const Fb565& fb,
+                                           const Rendered& r) {
+  for (const auto& t : r.taps) {
+    if (t.action != TapRegion::Action::ShowCode) continue;
+    const bool fields = std::strstr(name, "signin") != nullptr;   // compact join fields
+    const int y = fields ? t.y - (Fb565::textHeight(1) + 3) - 1 : t.y - 1;
+    for (int x = t.x; x < t.x + t.w; x++) {
+      char msg[128];
+      std::snprintf(msg, sizeof msg, "%s: something is drawn over the Show code control (%d,%d)",
+                    name, x, y);
+      TEST_ASSERT_TRUE_MESSAGE(fb.get(x, y) == kBg, msg);
+    }
+  }
+}
+
+// "Every card fully on-glass": for each join / sign-in variant, at every panel
+// size, with a long device name and a long password, nothing is drawn in the
+// bottom gutter (a card running off the panel paints it) and every tap target
+// passes the structural check (on-panel, >= 44 px).
+static void test_join_screens_stay_on_glass() {
+  for (const auto& p : kPanels) {
+    for (const char* ssid : {"Nimbus-4-setup", "nimbus-kitchen-counter-setup"}) {
+      for (const char* pass : {"wxyz2345pq", "a-much-longer-setup-password-0123456789"}) {
+        ScreenCtx a = recoverSigninCtx();                   // locked out, provisioned, menu
+        ScreenCtx b = setupSigninCtx();                     // publish -> SetupInfo
+        ScreenCtx c = configQrRecoverCtx(pass);             // locked out, first-run, menu
+        c.showCodeAffordance = true;
+        ScreenCtx d = recoverSigninCtx();                   // 401 auto-surface (menu closed)
+        d.showCodeAffordance = false;
+        ScreenCtx e = setupSigninCtx();                     // first-run SetupInfo: no code
+        e.webToken = "";
+        e.wifiState = 0;
+        for (ScreenCtx* x : {&a, &b, &c, &d, &e}) {
+          x->apName = ssid;
+          x->apPass = pass;
+          x->netStatus = "No known Wi-Fi found - use " + std::string(ssid);
+        }
+        const struct { const char* name; ScreenId id; const ScreenCtx* ctx; } cases[] = {
+            {"recover_signin", ScreenId::ConfigQr, &a}, {"setup_signin", ScreenId::SetupInfo, &b},
+            {"recover_affordance", ScreenId::ConfigQr, &c}, {"recover_401", ScreenId::ConfigQr, &d},
+            {"first_run_setup", ScreenId::SetupInfo, &e}};
+        for (const auto& k : cases) {
+          Fb565 fb(p.w, p.h);
+          const Rendered r = renderScreen(fb, k.id, *k.ctx);
+          assertRegionsSane(k.name, r, p.w, p.h);
+          char msg[128];
+          std::snprintf(msg, sizeof msg, "%s at %dx%d (%s): drew into the bottom gutter",
+                        k.name, p.w, p.h, ssid);
+          TEST_ASSERT_FALSE_MESSAGE(inkInRows(fb, p.h - kPad + 1, p.h), msg);
+          assertNothingDrawnOverShowCode(k.name, fb, r);
+        }
+      }
+    }
+  }
+}
+
+// The Sign in (station up) column with an absurdly long status line: the status
+// card clamps, the Show code button stays on the glass, and nothing is drawn over it.
+static void test_signin_column_long_status_keeps_show_code_clear() {
+  for (const auto& p : kPanels) {
+    ScreenCtx c = baseCtx();
+    c.modeName = "orchestrator";
+    c.configUrl = "http://192.0.2.10/?t=ffffffffffff";
+    c.netStatus = std::string(40, 'x') + " " + std::string(40, 'y') + " " + std::string(40, 'z') +
+                  " " + std::string(40, 'w');
+    c.staConnected = true;
+    c.wifiState = 2;
+    c.showCodeAffordance = true;
+    Fb565 fb(p.w, p.h);
+    const Rendered r = renderScreen(fb, ScreenId::ConfigQr, c);
+    assertRegionsSane("sign_in_long_status", r, p.w, p.h);
+    TEST_ASSERT_TRUE_MESSAGE(hasTapAction(r, TapRegion::Action::ShowCode),
+                             "Sign in lost its Show code button");
+    TEST_ASSERT_FALSE_MESSAGE(inkInRows(fb, p.h - kPad + 1, p.h),
+                              "sign_in_long_status drew into the bottom gutter");
+    assertNothingDrawnOverShowCode("sign_in_long_status", fb, r);
+  }
+}
+
+// The code on the glass is the code in the context (the one the device minted into
+// the table the sign-in gate redeems from), on both join screens and at every size.
+static void test_join_screen_shows_the_code() {
+  for (const auto& p : kPanels) {
+    for (ScreenCtx base : {recoverSigninCtx(), setupSigninCtx()}) {
+      const ScreenId id = base.showCodeAffordance ? ScreenId::ConfigQr : ScreenId::SetupInfo;
+      ScreenCtx other = base;
+      other.webToken = "fedcba987654";
+      Fb565 a(p.w, p.h), b(p.w, p.h);
+      renderScreen(a, id, base);
+      renderScreen(b, id, other);
+      TEST_ASSERT_TRUE_MESSAGE(grab(a, 0, 0, p.w, p.h) != grab(b, 0, 0, p.w, p.h),
+                               "the sign-in code is not on the join screen");
+      // The network password is still shown beside it (labelled network password).
+      ScreenCtx pw = base;
+      pw.apPass = "qqqq9999zz";
+      Fb565 c(p.w, p.h);
+      renderScreen(c, id, pw);
+      TEST_ASSERT_TRUE_MESSAGE(grab(a, 0, 0, p.w, p.h) != grab(c, 0, 0, p.w, p.h),
+                               "the network password is no longer on the join screen");
+    }
+  }
+}
+
+// The code card is the Show code control exactly when the menu owns the screen.
+static void test_join_code_card_tappable_only_in_menu() {
+  for (const auto& p : kPanels) {
+    ScreenCtx menu = recoverSigninCtx();
+    ScreenCtx closed = menu;
+    closed.showCodeAffordance = false;
+    Fb565 a(p.w, p.h), b(p.w, p.h);
+    TEST_ASSERT_TRUE_MESSAGE(hasTapAction(renderScreen(a, ScreenId::ConfigQr, menu),
+                                          TapRegion::Action::ShowCode),
+                             "menu join screen: the code card is not the Show code tap");
+    TEST_ASSERT_FALSE_MESSAGE(hasTapAction(renderScreen(b, ScreenId::ConfigQr, closed),
+                                           TapRegion::Action::ShowCode),
+                              "menu-closed join screen draws a dead Show code tap");
+  }
+}
+
+// Which screens carry a code, over EVERY ScreenId (a new screen with no decision
+// fails here): only SetupInfo and the locked-out Sign-in QR of a provisioned
+// Orchestrator. First-run devices sign in automatically; Notifier has no radio page.
+static void test_join_screen_code_decision_covers_every_screen() {
+  using nimbus::render::joinScreenNeedsSigninCode;
+  ScreenCtx locked = configQrRecoverCtx("wxyz2345pq");
+  ScreenCtx onLan = locked;
+  onLan.staConnected = true;
+  ScreenCtx notifier = locked;
+  notifier.modeName = "notifier";
+  for (int i = 0; i <= int(ScreenId::TouchCal); i++) {
+    const ScreenId id = ScreenId(i);
+    const bool join = id == ScreenId::SetupInfo || id == ScreenId::ConfigQr;
+    char msg[96];
+    std::snprintf(msg, sizeof msg, "screen %d: wrong sign-in code decision", i);
+    TEST_ASSERT_EQUAL_MESSAGE(int(join), int(joinScreenNeedsSigninCode(id, locked, true)), msg);
+    TEST_ASSERT_FALSE_MESSAGE(joinScreenNeedsSigninCode(id, locked, false), msg);   // first run
+    TEST_ASSERT_FALSE_MESSAGE(joinScreenNeedsSigninCode(id, notifier, true), msg);
+    TEST_ASSERT_EQUAL_MESSAGE(int(id == ScreenId::SetupInfo),
+                              int(joinScreenNeedsSigninCode(id, onLan, true)), msg);
+  }
+}
+
 // Item 2: the join QR must encode the CURRENT password, never the stale default.
 static void test_setup_join_qr_carries_current_password() {
   const std::string qr = nimbus::identity::wifiQrPayload("Nimbus-4-setup", "wxyz2345pq");
@@ -553,6 +762,127 @@ static void test_setup_join_qr_carries_current_password() {
                            "join QR must not carry the shipped default password");
   TEST_ASSERT_TRUE_MESSAGE(qr.find("S:Nimbus-4-setup;") != std::string::npos,
                            "join QR must carry the setup SSID");
+}
+
+// ---- CUM-455: the header Wi-Fi glyph ---------------------------------------
+// wifiState 2 connected / 1 searching / 0 not set up, plus an "AP" marker while
+// the setup network is up and Wi-Fi is not connected. Each state is golden-pinned
+// on the home screen (the surface the owner asked for).
+static ScreenCtx wifiHomeCtx(uint8_t state, bool apUp, bool battery) {
+  ScreenCtx c = baseCtx();
+  c.modeName = "orchestrator";
+  c.wifiState = state;
+  c.apUp = apUp;
+  c.battery.valid = battery;
+  c.battery.percent = 82;
+  return c;
+}
+static void test_status_wifi_connected() {
+  golden("status_wifi_connected", ScreenId::StatusIdle, wifiHomeCtx(2, false, true));
+}
+static void test_status_wifi_searching() {
+  golden("status_wifi_searching", ScreenId::StatusIdle, wifiHomeCtx(1, false, true));
+}
+static void test_status_wifi_setup_ap() {
+  golden("status_wifi_setup_ap", ScreenId::StatusIdle, wifiHomeCtx(0, true, false));
+}
+
+
+// The glyph box as drawHeader places it: left of the battery (or the gear).
+static int wifiGlyphX(int w, bool battery) { return (w - kMinTap) - (battery ? 56 : 30); }
+
+// Every state reads differently, the AP marker appears ONLY in setup mode
+// (apUp && not connected), and all of it stays inside the header, at every size.
+static void test_wifi_glyph_states_are_distinct() {
+  for (const auto& p : kPanels) {
+    for (bool batt : {false, true}) {
+      const int x0 = wifiGlyphX(p.w, batt) - 2, x1 = x0 + 26;
+      std::vector<uint16_t> seen[3];
+      for (uint8_t s = 0; s < 3; s++) {
+        Fb565 fb(p.w, p.h);
+        renderScreen(fb, ScreenId::StatusIdle, wifiHomeCtx(s, false, batt));
+        seen[s] = grab(fb, x0, 0, x1, kHeaderH);
+      }
+      TEST_ASSERT_TRUE_MESSAGE(seen[0] != seen[1], "Wi-Fi glyph: state 0 and 1 look the same");
+      TEST_ASSERT_TRUE_MESSAGE(seen[1] != seen[2], "Wi-Fi glyph: state 1 and 2 look the same");
+      TEST_ASSERT_TRUE_MESSAGE(seen[0] != seen[2], "Wi-Fi glyph: state 0 and 2 look the same");
+      for (uint8_t s = 0; s < 3; s++) {
+        Fb565 plain(p.w, p.h), ap(p.w, p.h);
+        renderScreen(plain, ScreenId::StatusIdle, wifiHomeCtx(s, false, batt));
+        renderScreen(ap, ScreenId::StatusIdle, wifiHomeCtx(s, true, batt));
+        const bool marker = grab(plain, 0, 0, p.w, p.h) != grab(ap, 0, 0, p.w, p.h);
+        char msg[96];
+        std::snprintf(msg, sizeof msg, "AP marker drawn=%d for wifiState %d (want %d)",
+                      int(marker), int(s), int(s < 2));
+        TEST_ASSERT_TRUE_MESSAGE(marker == (s < 2), msg);
+        // The marker lives in the header strip, never in the body below it.
+        TEST_ASSERT_TRUE_MESSAGE(grab(plain, 0, kHeaderH, p.w, p.h) ==
+                                     grab(ap, 0, kHeaderH, p.w, p.h),
+                                 "AP marker drew outside the header");
+      }
+    }
+  }
+}
+
+// A title of any length stops before the status glyphs: the glyph columns render
+// byte-identically under a short and an absurdly long title, on every screen kind
+// that draws the header, with and without the battery.
+static void test_header_title_never_reaches_wifi_glyph() {
+  for (const auto& p : kPanels) {
+    for (bool batt : {false, true}) {
+      const int x0 = wifiGlyphX(p.w, batt) - 2;
+      // Home titles with the device name (no Back); a short menu titles with its
+      // breadcrumb (Back chevron, no pager). Both are the long-title surfaces.
+      ScreenCtx home = wifiHomeCtx(1, true, batt);
+      ScreenCtx homeLong = home;
+      homeLong.deviceName = std::string(60, 'W');
+      ScreenCtx menu = displayMenuCtx();
+      menu.wifiState = 2;
+      menu.battery = home.battery;
+      ScreenCtx menuLong = menu;
+      menuLong.menuTitle = std::string(60, 'W');   // one segment: nothing to drop
+      const struct { ScreenId id; const ScreenCtx* a; const ScreenCtx* b; } cases[] = {
+          {ScreenId::StatusIdle, &home, &homeLong}, {ScreenId::Menu, &menu, &menuLong}};
+      for (const auto& k : cases) {
+        Fb565 a(p.w, p.h), b(p.w, p.h);
+        renderScreen(a, k.id, *k.a);
+        renderScreen(b, k.id, *k.b);
+        TEST_ASSERT_TRUE_MESSAGE(grab(a, x0, 0, p.w, kHeaderH) == grab(b, x0, 0, p.w, kHeaderH),
+                                 "a long header title ran into the Wi-Fi glyph");
+      }
+    }
+  }
+}
+
+// The Settings pager sits in the header where the glyphs would go; the glyphs give
+// way (no icon under a scroll target) and the title stops short of the pager.
+static void test_menu_pager_owns_the_header_right_side() {
+  for (const auto& p : kPanels) {
+    ScreenCtx with = menuCtx();
+    with.menuItems.resize(40, "Row");            // overflow at every panel size
+    with.wifiState = 2;
+    with.apUp = true;
+    with.battery.valid = true;
+    with.battery.percent = 50;
+    ScreenCtx without = with;
+    without.wifiState = 0;
+    without.apUp = false;
+    without.battery.valid = false;
+    Fb565 a(p.w, p.h), b(p.w, p.h);
+    const Rendered ra = renderScreen(a, ScreenId::Menu, with);
+    renderScreen(b, ScreenId::Menu, without);
+    TEST_ASSERT_TRUE_MESSAGE(hasTapAction(ra, TapRegion::Action::ScrollDown),
+                             "fixture must overflow so the pager is drawn");
+    TEST_ASSERT_TRUE_MESSAGE(grab(a, 0, 0, p.w, kHeaderH) == grab(b, 0, 0, p.w, kHeaderH),
+                             "status glyphs drawn under the menu pager");
+    ScreenCtx longT = without;
+    longT.menuTitle = std::string(60, 'W');
+    Fb565 c(p.w, p.h);
+    renderScreen(c, ScreenId::Menu, longT);
+    const int upX = p.w - kMinTap - 2 * kMinTap - 8;
+    TEST_ASSERT_TRUE_MESSAGE(grab(b, upX, 0, p.w, kHeaderH) == grab(c, upX, 0, p.w, kHeaderH),
+                             "a long menu title ran under the header pager");
+  }
 }
 
 static void test_pairing() {
@@ -753,7 +1083,21 @@ int main() {
   RUN_TEST(test_config_qr_recover);
   RUN_TEST(test_config_qr_recover_shows_current_password);
   RUN_TEST(test_config_qr_signin_hides_password);
+  RUN_TEST(test_config_qr_recover_affordance);
+  RUN_TEST(test_config_qr_recover_signin);
+  RUN_TEST(test_setup_info_signin);
+  RUN_TEST(test_join_screens_stay_on_glass);
+  RUN_TEST(test_signin_column_long_status_keeps_show_code_clear);
+  RUN_TEST(test_join_screen_shows_the_code);
+  RUN_TEST(test_join_code_card_tappable_only_in_menu);
+  RUN_TEST(test_join_screen_code_decision_covers_every_screen);
   RUN_TEST(test_setup_join_qr_carries_current_password);
+  RUN_TEST(test_status_wifi_connected);
+  RUN_TEST(test_status_wifi_searching);
+  RUN_TEST(test_status_wifi_setup_ap);
+  RUN_TEST(test_wifi_glyph_states_are_distinct);
+  RUN_TEST(test_header_title_never_reaches_wifi_glyph);
+  RUN_TEST(test_menu_pager_owns_the_header_right_side);
   RUN_TEST(test_pairing);
   RUN_TEST(test_screensaver);
 

@@ -63,6 +63,7 @@ run in headless CI.
 - `66_onboarding`      - onboarding v2: flip step, Cumulo Nimbus + Z.ai, no e-ink, what-next card.
 - `68_updates_storage` - OTA result states + battery gate, files quota caption, typed erase confirm.
 - `72_wakeups_safety`  - wake-ups policy + single approval card; Safety subtab downloads policy + guest moderation gates (the retired dead gates are gone).
+- `79_setup_network_signin` - Publish Setup Network states the next step (LAN vs setup network, pending, error); the gate's code field is not autocapitalized and a typed code is normalized; while the gate is up the app is hidden and the page does not scroll, and sign-in restores it.
 - `90_screenshots`     - archives {desktop,phone}-{home,chat,memory,assistant,device}.png.
 - `95_audit_shots`     - render-audit capture of every pane / subtab / state (CUM-214).
 - `98_connectivity_states` - the CUM-207 Connectivity + Cloud-access render matrix.

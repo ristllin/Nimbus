@@ -229,6 +229,11 @@ flex-direction:row;align-items:center;padding:6px 4px calc(6px + env(safe-area-i
 #dashJobs th,#dashJobs td{overflow-wrap:normal;word-break:normal;white-space:nowrap}
 }
 .mobmode{display:none;position:fixed;top:10px;right:12px;z-index:60}
+/* Sign-in gate up (CUM-454, set by showAuth in ui_js.h): the page must not scroll under
+   it and nothing of the app may show through, so the shell, the panes and the mobile
+   mode switch are hidden outright, not merely covered. Removed on sign-in. */
+html.authlock,html.authlock body{overflow:hidden;overscroll-behavior:none}
+html.authlock aside.side,html.authlock .pane,html.authlock .mobmode{visibility:hidden}
 </style>
 
 <aside class=side>

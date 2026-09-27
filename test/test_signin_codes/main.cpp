@@ -4,6 +4,8 @@
 // constant-work redeem that rejects wrong/empty/over-long codes.
 #include <unity.h>
 
+#include <cstdio>
+
 #include "nimbus/signin_codes.h"
 
 using nimbus::SigninCodes;
@@ -137,6 +139,112 @@ static void test_display_countdown_wraparound() {
   TEST_ASSERT_EQUAL_UINT32(599, d.secsLeft(near + 1000));
 }
 
+// --- CUM-453: the slot pick is expiry-aware. A displayed 10-minute code must never
+// be evicted by the Sign-in QR's 2-minute scan codes, which re-mint every ~90 s.
+
+// The incident shape: a hand-entry code on screen while the scan path keeps
+// minting. Round-robin overwrote it after eight scan mints; now it outlives them.
+static void test_display_code_survives_scan_churn() {
+  const uint32_t t0 = 1000;
+  codes->mint("SHOWN0001", t0, SigninCodes::DISPLAY_TTL_MS);
+  char c[12];
+  // 20 scan mints ~90 s apart plus a burst of 3 link codes each time: far more
+  // mints than CAP inside the display code's own 10-minute life.
+  uint32_t t = t0;
+  for (int i = 0; t < t0 + SigninCodes::DISPLAY_TTL_MS - 90000; i++) {
+    t += 30000;
+    for (int k = 0; k < 3; k++) {
+      std::snprintf(c, sizeof c, "S%02d%d", i, k);
+      codes->mint(c, t);
+    }
+  }
+  TEST_ASSERT_TRUE_MESSAGE(codes->isRedeemable("SHOWN0001", t),
+                           "scan-code churn evicted the displayed code");
+  TEST_ASSERT_TRUE(codes->redeem("SHOWN0001", t));
+}
+
+// With every slot holding a live code, the one closest to expiry goes - never the
+// long-lived displayed code - and an exact tie falls back to the oldest mint.
+static void test_full_table_evicts_soonest_expiring() {
+  codes->mint("DISP0001", 0, SigninCodes::DISPLAY_TTL_MS);       // expires at 600 s
+  char c[8];
+  for (int i = 0; i < (int)SigninCodes::CAP - 1; i++) {
+    std::snprintf(c, sizeof c, "Q%d", i);
+    codes->mint(c, uint32_t(1000 * (i + 1)));                    // expire at 121..127 s
+  }
+  TEST_ASSERT_EQUAL_UINT32(SigninCodes::CAP, codes->liveCount(8000));
+  codes->mint("QNEW", 8000);
+  TEST_ASSERT_FALSE(codes->isRedeemable("Q0", 8000));            // soonest to expire: evicted
+  TEST_ASSERT_TRUE(codes->isRedeemable("DISP0001", 8000));       // the long code survives
+  TEST_ASSERT_TRUE(codes->isRedeemable("Q1", 8000));
+  TEST_ASSERT_TRUE(codes->isRedeemable("QNEW", 8000));
+}
+
+// A used or expired slot is reused before any redeemable code is touched.
+static void test_used_and_expired_slots_reused_first() {
+  char c[8];
+  for (int i = 0; i < (int)SigninCodes::CAP; i++) {
+    std::snprintf(c, sizeof c, "U%d", i);
+    codes->mint(c, 0, SigninCodes::DISPLAY_TTL_MS);
+  }
+  TEST_ASSERT_TRUE(codes->redeem("U5", 10));                      // frees slot 5 (used)
+  codes->mint("NEWA", 20, SigninCodes::DISPLAY_TTL_MS);
+  for (int i = 0; i < (int)SigninCodes::CAP; i++) {
+    if (i == 5) continue;
+    std::snprintf(c, sizeof c, "U%d", i);
+    TEST_ASSERT_TRUE_MESSAGE(codes->isRedeemable(c, 20), "a live code was evicted over a used slot");
+  }
+  TEST_ASSERT_TRUE(codes->isRedeemable("NEWA", 20));
+}
+
+// The class rule over an arbitrary mint/redeem sequence: while any slot holds
+// nothing redeemable, a mint never evicts a redeemable code.
+static void test_mint_never_evicts_live_while_a_slot_is_free() {
+  uint32_t rng = 0x453u, t = 0;
+  auto next = [&]() { rng = rng * 1664525u + 1013904223u; return rng >> 8; };
+  constexpr int kHist = 64;          // ring of the most recent mints, far more than CAP
+  char minted[kHist][12];
+  int count = 0, head = 0;
+  for (int step = 0; step < 400; step++) {
+    t += next() % 40000;                                           // 0-40 s between events
+    size_t liveBefore = codes->liveCount(t);
+    bool liveNow[kHist];
+    for (int i = 0; i < count; i++) liveNow[i] = codes->isRedeemable(minted[i], t);
+    if (next() % 5 == 0 && count > 0) {                              // sometimes redeem one
+      codes->redeem(minted[next() % uint32_t(count)], t);
+      continue;
+    }
+    char c[12];
+    std::snprintf(c, sizeof c, "R%05d", step);
+    const uint32_t ttl = (next() % 3 == 0) ? SigninCodes::DISPLAY_TTL_MS
+                                           : SigninCodes::DEFAULT_TTL_MS;
+    codes->mint(c, t, ttl);
+    if (liveBefore < SigninCodes::CAP) {
+      for (int i = 0; i < count; i++)
+        TEST_ASSERT_TRUE_MESSAGE(!liveNow[i] || codes->isRedeemable(minted[i], t),
+                                 "a redeemable code was evicted while a slot was free");
+    }
+    std::snprintf(minted[head], sizeof minted[0], "%s", c);
+    head = (head + 1) % kHist;
+    if (count < kHist) count++;
+  }
+}
+
+// isRedeemable mirrors redeem() without consuming: wrong, used, expired, and
+// malformed codes all read false, and asking twice changes nothing.
+static void test_is_redeemable_is_read_only() {
+  codes->mint("PEEK0001", 1000);
+  TEST_ASSERT_TRUE(codes->isRedeemable("PEEK0001", 1000));
+  TEST_ASSERT_TRUE(codes->isRedeemable("PEEK0001", 1000));        // no side effect
+  TEST_ASSERT_FALSE(codes->isRedeemable("PEEK0002", 1000));
+  TEST_ASSERT_FALSE(codes->isRedeemable("PEEK000", 1000));
+  TEST_ASSERT_FALSE(codes->isRedeemable("", 1000));
+  TEST_ASSERT_FALSE(codes->isRedeemable(nullptr, 1000));
+  TEST_ASSERT_FALSE(codes->isRedeemable("PEEK0001", 1000 + SigninCodes::DEFAULT_TTL_MS));
+  TEST_ASSERT_TRUE(codes->redeem("PEEK0001", 2000));              // peeking consumed nothing
+  TEST_ASSERT_FALSE(codes->isRedeemable("PEEK0001", 2000));       // used -> no longer shown
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_mint_then_redeem_once);
@@ -151,5 +259,10 @@ int main(int, char**) {
   RUN_TEST(test_display_lifecycle_expiry_and_remint);
   RUN_TEST(test_display_countdown_secs_left);
   RUN_TEST(test_display_countdown_wraparound);
+  RUN_TEST(test_display_code_survives_scan_churn);
+  RUN_TEST(test_full_table_evicts_soonest_expiring);
+  RUN_TEST(test_used_and_expired_slots_reused_first);
+  RUN_TEST(test_mint_never_evicts_live_while_a_slot_is_free);
+  RUN_TEST(test_is_redeemable_is_read_only);
   return UNITY_END();
 }

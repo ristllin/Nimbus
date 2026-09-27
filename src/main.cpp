@@ -81,6 +81,7 @@
 #include "nimbus/wifi/setup_ap.h"              // portable, tested setup-AP recovery policy (CUM-190)
 #include "nimbus/render_context.h"
 #include "nimbus/render_sched.h"
+#include "nimbus/signin_codes.h"               // DISPLAY_TTL_MS - the hand-entry code window
 #include "hw/power_fuelgauge.h"
 #include "hw/power_battery_adc.h"
 #include "nimbus/power/power_manager.h"
@@ -180,6 +181,20 @@ static uint32_t      g_revealUntilMs = 0;
 // showed (owner: "a full night, no logo"). 0 = not currently showing the auth QR.
 static uint32_t      g_authQrUntilMs = 0;
 static constexpr uint32_t kAuthQrHoldMs = 45000;
+// CUM-452: Settings > Connectivity > Wi-Fi > Publish setup network asks loop() to
+// put the Setup screen up (the web path raises net::consumeSetupInfoRequest()).
+static bool          g_setupInfoReq = false;
+// ...and holds it for up to kSetupHoldMs (the sign-in code's own window), ending early
+// once Wi-Fi reconnects after the publish took it down. 0 = no hold.
+static uint32_t      g_setupHoldUntilMs = 0;
+static bool          g_setupHoldSawStaDown = false;
+static constexpr uint32_t kSetupHoldMs = 10UL * 60UL * 1000UL;
+// CUM-453: the frame on the panel shows the hand-entry sign-in code (a join screen of
+// a provisioned device), so loop() repaints it the moment that code stops working.
+static bool          g_panelShowsCode = false;
+// A frame carrying a freshly minted code was dropped (a blit in flight): the panel
+// may still show the previous, dead code, so loop() retries the repaint.
+static bool          g_codeFrameDropped = false;
 static uint32_t      g_revealDurMs   = 4000;   // actual length of the live reveal window
                                                // (the boot handoff uses a shorter one)
 static constexpr uint32_t kRevealMs = 4000;  // how long a single click lights the ring
@@ -917,6 +932,19 @@ static std::string configUrl();      // defined below (net-derived, token-carryi
 static std::string setupUrl();       // defined below (ALWAYS the SoftAP address - P1.2)
 static std::string netStatusLine();  // defined below (one-line connectivity readout)
 
+// The header Wi-Fi glyph state (CUM-455): 2 connected, 1 saved but not connected
+// (searching), 0 not set up. Notifier runs the radio OFF (Bluetooth owns the link),
+// so it is always 0 there - a saved network would otherwise read as "searching"
+// forever on a device that is not even trying. Shared by fillHeaderCtx and the
+// debounced header-repaint watcher so the two can never disagree.
+static uint8_t headerWifiState() {
+  if (!g_orchMode) return 0;
+  return net::staConnected() ? 2 : (net::staConfigured() ? 1 : 0);
+}
+
+// The setup SoftAP is up (a failed or stopped AP reports 0.0.0.0).
+static bool softApUp() { return (uint32_t)WiFi.softAPIP() != 0u; }
+
 // Fill the ScreenCtx fields the shared panel HEADER reads (mode / profile /
 // posture + WiFi/BT glyphs + battery % + net-degraded "!"). Called from BOTH the
 // status render (buildCtx) and the menu render (renderMenu) so the header is
@@ -930,7 +958,10 @@ static void fillHeaderCtx(render::ScreenCtx& c) {
                                                    // vocabulary (Dark/Balanced/Full)
   // Header radio glyphs: WiFi up(2)/connecting(1)/off(0); BT linked(2)/
   // advertising(1)/off(0). BLE only runs in Notifier mode, so it's off in Orch.
-  c.wifiState = net::staConnected() ? 2 : (net::staConfigured() ? 1 : 0);
+  c.wifiState = headerWifiState();
+  // The header Wi-Fi glyph marks setup mode (CUM-455), so the AP state rides on
+  // every render - menu screens included - not just the status/setup builds.
+  c.apUp = softApUp();
   c.btState   = g_orchMode ? 0
                            : (net::ble::connected() ? 2
                               : (net::ble::enabled() ? 1 : 0));
@@ -1005,7 +1036,7 @@ static render::ScreenCtx buildCtx(int cursorJob) {
   // renderMenu. Cheap string builds; renders are ~2 s events.
   c.apName = std::string(net::apSsid().c_str());
   c.apPass = std::string(net::apPass().c_str());   // per-device stored passphrase
-  c.apUp = ((uint32_t)WiFi.softAPIP() != 0u);
+  // (c.apUp: fillHeaderCtx above)
   c.staConnected = net::staConnected();   // locked-out ConfigQr shows AP creds (CUM-200)
   c.configUrl = configUrl();
   c.setupUrl = setupUrl();   // SetupInfo QR: always the AP address (P1.2)
@@ -1098,23 +1129,46 @@ static render::ScreenCtx buildCtx(int cursorJob) {
   return c;
 }
 
+// CUM-452/453: a join screen of a provisioned device (render::joinScreenNeedsSigninCode)
+// carries the hand-entry sign-in code - the 10-minute display code, the same one
+// TokenDetail shows, so there is time to read it and type it. Without it the owner
+// who joins the setup network meets a sign-in gate and has nothing it will accept.
+// Returns whether the frame shows a code.
+static bool fillJoinSigninCode(render::ScreenCtx& c, attn::ScreenId screen) {
+  // "Provisioned" here is exactly "the setup network no longer signs its peers in"
+  // - the same rule the web layer's token handout uses, so the two cannot disagree.
+  if (!render::joinScreenNeedsSigninCode(screen, c, !net::apSignsInAutomatically()))
+    return false;
+  c.webToken = std::string(net::showCode().c_str());
+  return true;
+}
+
 static void renderScreen(attn::ScreenId screen, int cursorJob, bool fullClear) {
   (void)fullClear;   // legacy panel refresh hint; the color panel ignores it
   const uint32_t tnow = millis();
+  render::ScreenCtx ctx = buildCtx(cursorJob);
+  // Outside the menu a ConfigQr is only ever the repeated-401 auto-surface, which
+  // unauthenticated traffic can trigger - so it never mints or shows a code. The
+  // code appears on the owner's explicit paths only: the menu's Sign-in QR
+  // (renderMenu) and the Setup screen after a publish.
+  const bool showsCode = screen != attn::ScreenId::ConfigQr && fillJoinSigninCode(ctx, screen);
   // Honour a dropped push. renderAndPush returns false when the previous
   // ~31 ms blit is still in flight - and it only swaps the tap map on a
   // SUCCESSFUL push, so pretending it painted leaves the panel AND the hit
   // regions a screen behind while the FSM has already moved on. Leave
   // g_lastScreen alone so the caller's entry gates still re-fire.
-  const auto push = hw::tft::renderAndPush(screen, buildCtx(cursorJob));
+  const auto push = hw::tft::renderAndPush(screen, ctx);
   if (push == hw::tft::Push::Dropped) {
     g_sched.onRenderDone(tnow);   // never leave the scheduler latched
+    if (showsCode) g_codeFrameDropped = true;   // the minted code never reached the glass
     return;                       // panel is a frame behind; caller retries
   }
+  g_codeFrameDropped = false;
   // Pushed OR Unchanged: the panel genuinely shows this screen, so the entry
   // gates that key off g_lastScreen must see it (an Unchanged frame is a
   // SUCCESS - treating it as a drop is what latched the repaint loop).
   g_lastScreen = uint8_t(screen);
+  g_panelShowsCode = showsCode;
   // First-run auto-return (CUM-259, the (a) leg): whenever a credless device lands
   // on StatusIdle, arm a short dwell after which the loop repaints SetupInfo, so a
   // tap that backed out of Setup can never leave the owner parked on the idle screen.
@@ -1754,6 +1808,7 @@ static void renderMenu() {
   else if (tokenDetail) screen = attn::ScreenId::TokenDetail;
   else if (stScreen) screen = attn::ScreenId::SelfTest;
   else if (batScreen) screen = attn::ScreenId::Battery;
+  bool showsCode = false;
   if (qr) {
     // ConfigQr uses the best live address: LAN when joined, setup AP otherwise.
     // setupUrl remains populated so the renderer can tell those states apart and
@@ -1763,10 +1818,13 @@ static void renderMenu() {
     c.fwVersion = NIMBUS_FW_VERSION;
     c.apName = std::string(net::apSsid().c_str());
     c.apPass = std::string(net::apPass().c_str());   // per-device stored passphrase
-    c.apUp = ((uint32_t)WiFi.softAPIP() != 0u);
+    // (c.apUp: fillHeaderCtx above)
     c.staConnected = net::staConnected();   // locked-out ConfigQr shows AP creds (CUM-200)
     c.netStatus = netStatusLine();
     c.showCodeAffordance = true;   // menu state: the ShowCode tap routes to TokenDetail
+    // Locked out on a provisioned device, the Sign-in QR is a join screen: it carries
+    // the hand-entry sign-in code itself (CUM-453); its code card is the Show code tap.
+    showsCode = fillJoinSigninCode(c, screen);
   } else if (tokenDetail) {
     // "Show code" hand-entry fallback (CUM-295): a SINGLE-USE, 10-minute code the
     // owner reads and types (the web gate exchanges it), never the durable token.
@@ -1856,6 +1914,7 @@ static void renderMenu() {
   if (hw::tft::renderAndPush(screen, c) == hw::tft::Push::Dropped) return;
   g_menuNeedsPaint = false;
   g_lastScreen = uint8_t(screen);
+  g_panelShowsCode = showsCode;
   // ⚠ Keep g_menuDoneAt moving. The repaint gate is int32_t(now - g_menuDoneAt)
   // >= 0; left at 0 that becomes int32_t(now), which goes NEGATIVE once uptime
   // passes ~24.8 days and the menu then never repaints again. A frame has no
@@ -4380,6 +4439,9 @@ static void settleMenuAfterMutation(uint32_t now) {
     // Fire-and-forget: the AP comes up asynchronously, so acknowledge the press.
     emitMenuActionFeedback(nimbus::action::MenuAction::PublishAp,
                            nimbus::action::Outcome::Acknowledged);
+    // CUM-452: then show the Setup screen (network, password, join QR, sign-in code)
+    // - the same follow-up the web button gets. loop() closes the menu for it.
+    g_setupInfoReq = true;
   }
   if (g_menu.wifiScanRequested()) {
     // Kick the scan and seed whatever is already available. The rows refresh
@@ -4701,6 +4763,46 @@ static void drainTouch(uint32_t now) {
     default:
       break;
   }
+}
+
+// A join screen showing the hand-entry sign-in code (CUM-453) must never keep a dead
+// one: expired, already redeemed (the owner just signed in with it), or evicted.
+// Repaint the moment it stops working - the render re-mints it through
+// net::showCode(). Only a frame that actually shows a code triggers this.
+static void repaintIfShownCodeDead() {
+  if (!g_panelShowsCode || !(g_codeFrameDropped || net::showCodeStale())) return;
+  if (g_menu.isOpen())
+    g_menuNeedsPaint = true;
+  else if (g_lastScreen == uint8_t(attn::ScreenId::SetupInfo))
+    renderScreen(attn::ScreenId::SetupInfo, -1);
+  else
+    g_panelShowsCode = false;   // the frame moved on without a render we saw
+}
+
+// CUM-452: after "Publish setup network" (web or device menu), put the Setup screen
+// on the panel. It is an explicit owner action, so it closes the menu, dismisses a
+// held reply, and wakes a resting screen. The first-run calibration gate owns the
+// panel outright, so it is left alone there.
+static void showSetupAfterPublish(uint32_t now) {
+  if (g_calGateActive) return;
+  saverKick();                           // wake a resting (backlight-off) panel
+  if (g_menu.isOpen()) {
+    g_menu.close();
+    g_menuNeedsPaint = false;
+    // A menu-action confirm may be swelling the ring right now; its expiry restores
+    // the status ring (menu closed). Otherwise hand the ring back immediately.
+    solide::leds::clearFrame();
+    if (g_ledConfirmUntilMs == 0) refreshRing();
+  }
+  g_askSticky = false; g_askPage = 0; g_askOverride = "";
+  renderScreen(attn::ScreenId::SetupInfo, -1);
+  if (g_lastScreen != uint8_t(attn::ScreenId::SetupInfo)) {
+    g_setupInfoReq = true;   // the push was dropped (a blit in flight): retry next pass
+    return;
+  }
+  g_sched.clearPendingAmbient();   // an ambient intent queued earlier must not repaint over it
+  g_setupHoldUntilMs = now + kSetupHoldMs;
+  g_setupHoldSawStaDown = false;
 }
 
 // Pin the portable identity-key list to the frozen AKEY_* machine keys, so a
@@ -5113,6 +5215,29 @@ void loop() {
   // shows on the device instantly (not only at the next ring event).
   if (net::consumeRingRefresh() && !g_menu.isOpen()) refreshRing();
 
+  // CUM-452: the setup network was just published (web button or device menu).
+  // Radio-only feedback left the owner with nothing on the device, and the web page
+  // that showed a toast went unreachable a second later. Put the Setup screen up -
+  // network name, password, join QR and, on a provisioned device, the sign-in code
+  // the setup network's page will ask for. Runs BEFORE the LED confirm below: a
+  // publish closes an open menu, and the confirm only plays with the menu closed.
+  if (net::consumeSetupInfoRequest() || g_setupInfoReq) {
+    g_setupInfoReq = false;
+    showSetupAfterPublish(now);
+  }
+  // ...and give the panel back once the Setup screen has done its job: Wi-Fi came
+  // back (joining resumed, or a network was joined) or the hold elapsed. The network
+  // password and a live sign-in code must not stay on the glass indefinitely, and
+  // the screensaver only arms from the status screen.
+  if (g_setupHoldUntilMs) {
+    const bool sta = net::staConnected();
+    if (!sta) g_setupHoldSawStaDown = true;   // the publish has taken the link down
+    if ((sta && g_setupHoldSawStaDown) || int32_t(now - g_setupHoldUntilMs) >= 0) {
+      g_setupHoldUntilMs = 0;
+      if (!g_menu.isOpen() && g_lastScreen == uint8_t(attn::ScreenId::SetupInfo))
+        renderScreen(attn::ScreenId::StatusIdle, -1);
+    }
+  }
   // P3: subtle LED confirmation for web actions (WiFi saved / scan done) - a
   // short theme-accent soft-pulse window, then restore the composed ring. (Was
   // Pattern::Flash - 3 hard full-ring ON/OFF snaps; ambient grammar, owner
@@ -5379,7 +5504,12 @@ void loop() {
     static int s_lastWifi = -1, s_lastBt = -1;
     static int s_pendWifi = -2, s_pendBt = -2;
     static uint32_t s_pendSinceMs = 0;
-    const int w = net::staConnected() ? 2 : (net::staConfigured() ? 1 : 0);
+    // The Wi-Fi glyph level plus its "AP" setup-mode marker (CUM-455): the marker
+    // appearing or clearing is a visible header change too, so it is folded into
+    // the watched value (levels are 0..2, so +kApMarker keeps every pair distinct).
+    constexpr int kApMarker = 10;
+    const int wl = headerWifiState();
+    const int w = wl + (render::wifiApMarker(uint8_t(wl), softApUp()) ? kApMarker : 0);
     const int b = g_orchMode ? 0
                              : (net::ble::connected() ? 2
                                 : (net::ble::enabled() ? 1 : 0));
@@ -5393,6 +5523,11 @@ void loop() {
       if (!g_menu.isOpen() &&
           g_lastScreen == uint8_t(attn::ScreenId::StatusIdle))
         g_sched.onIntent(uint8_t(attn::ScreenId::StatusIdle), false, now);
+      // The Setup screen after a publish carries the same header (CUM-455): it is
+      // painted in the very pass that drops the link, before the radio reports it,
+      // so repaint it once the new level has settled.
+      else if (!g_menu.isOpen() && g_lastScreen == uint8_t(attn::ScreenId::SetupInfo))
+        renderScreen(attn::ScreenId::SetupInfo, -1);
     }
   }
 
@@ -5437,17 +5572,22 @@ void loop() {
 
   // Keep the on-screen "Show code" sign-in code honest (CUM-295). The hand-entry
   // code carries a 10-minute display TTL; while TokenDetail is open we (a) mint a
-  // fresh full window on ENTRY, (b) repaint ~1 Hz so the mm:ss countdown ticks, and
-  // (c) re-mint + repaint the moment it expires, so a dead code never sits on screen
-  // as if valid. renderMenu() reads net::showCode()/showCodeSecsLeft(), so a repaint
-  // is what actually re-mints and re-ticks.
+  // fresh window on ENTRY unless the current code still has most of its life,
+  // (b) repaint ~1 Hz so the mm:ss countdown ticks, and (c) re-mint + repaint the
+  // moment it stops working (expired, redeemed, evicted), so a dead code never sits
+  // on screen as if valid. renderMenu() reads net::showCode()/showCodeSecsLeft(), so
+  // a repaint is what actually re-mints and re-ticks.
   {
     static bool     s_tokenDetailWasOpen = false;
     static uint32_t s_tokenDetailTickMs = 0;
     const bool tdOpen = g_menu.isOpen() && g_menu.showingTokenDetail();
-    // Re-mint on ENTRY (a fresh full-TTL window each time the screen opens) and when
-    // the shown code EXPIRES; otherwise just tick the countdown ~1 Hz.
-    if (tdOpen && (!s_tokenDetailWasOpen || net::showCodeStale())) {
+    // On ENTRY keep a code with at least half its window left: TokenDetail is also
+    // "tap the code to see it bigger" from the Sign-in QR's join screen (CUM-453),
+    // and it must show the same digits the owner may already be typing. An older
+    // code gets a fresh full window, as before.
+    constexpr uint32_t kKeepOnEntryS = nimbus::SigninCodes::DISPLAY_TTL_MS / 2000;
+    const bool entry = tdOpen && !s_tokenDetailWasOpen;
+    if (tdOpen && (net::showCodeStale() || (entry && net::showCodeSecsLeft() < kKeepOnEntryS))) {
       net::showCodeRemint();
       g_menuNeedsPaint = true;
       s_tokenDetailTickMs = now;
@@ -5457,6 +5597,8 @@ void loop() {
     }
     s_tokenDetailWasOpen = tdOpen;
   }
+
+  repaintIfShownCodeDead();
 
   // Flush a coalesced menu repaint once the menu's OWN refresh window elapses.
   // Gated on g_menuDoneAt so a busy/stuck status render can
@@ -5874,6 +6016,11 @@ void loop() {
   // reply is being held (P2.3): a sticky reply must not be overwritten by the
   // next scheduled render - it dismisses on tap, like the menu's own gating. It is
   // also suppressed while the calibration gate owns the panel (CUM-245).
+  // While the post-publish Setup screen holds (CUM-452), an AMBIENT status refresh -
+  // a turn ending because the publish cut the link, a telemetry tick - must not
+  // replace it. Attention intents (a job waiting on the owner) still paint.
+  if (g_setupHoldUntilMs && g_lastScreen == uint8_t(attn::ScreenId::SetupInfo))
+    g_sched.clearPendingAmbient();
   if (!g_calGateActive && !g_menu.isOpen() && !g_askSticky) {
     render::RenderCommand cmd = g_sched.tick(now);
     if (cmd.render) {
