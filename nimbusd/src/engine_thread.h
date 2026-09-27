@@ -132,10 +132,12 @@ class EngineThread {
   // way the device serializes its verify/probe on the single work slot (e.g. the
   // Mistral workspace probe after a key or connectors write). An exception is
   // contained here, so a failed job can never take the daemon down.
+  // It is NOT a turn: the snapshot's turnInFlight stays false while it runs, so a
+  // web write queued behind it waits its short budget instead of being refused.
   void postWork(std::function<void()> fn) {
     post([fn] {
       try { fn(); } catch (...) {}
-    });
+    }, /*background=*/true);
   }
 
   // Flush all durable stores ON the engine thread and wait. Used by the backup
@@ -158,15 +160,15 @@ class EngineThread {
   bool running() const { return running_.load(); }
 
  private:
-  void post(std::function<void()> task) {
+  void post(std::function<void()> task, bool background = false) {
     std::lock_guard<std::mutex> lk(mu_);
-    queue_.push_back(std::move(task));
+    queue_.push_back(Task{std::move(task), background});
     cv_.notify_one();
   }
 
   void run() {
     while (running_.load()) {
-      std::function<void()> task;
+      Task task;
       {
         std::unique_lock<std::mutex> lk(mu_);
         // Wake on a queued task, on shutdown, or every 1 s to pump periodic work.
@@ -175,19 +177,29 @@ class EngineThread {
         if (!running_.load() && queue_.empty()) break;
         if (!queue_.empty()) { task = std::move(queue_.front()); queue_.pop_front(); }
       }
-      if (task) {
-        snapInFlight(true);
-        task();
-        snapInFlight(false);
-        refreshSnapshot();
-      } else {
-        // Idle tick: refresh the snapshot (cheap) so uptime/state stay current.
-        refreshSnapshot();
+      if (task.fn) {
+        if (!task.background) snapInFlight(true);
+        task.fn();
+        if (!task.background) snapInFlight(false);
       }
+      pumpJobs();
+      // Refresh the snapshot (cheap) so uptime/state stay current.
+      refreshSnapshot();
     }
     // Drain any remaining fire-and-forget tasks so a queued turn is not lost on
     // a clean shutdown (MCP promises left unset simply resolve as the future
     // dies - the HTTP handler treats that as a 503).
+  }
+
+  // Sub-agent jobs (device parity: the orchestrator's pollJobs on every loop pass):
+  // one JobEngine pump step after each task and on each idle tick (<= 1 s apart).
+  // A step can dispatch a synchronous sub-session or run the synthesis turn, so it
+  // is marked in-flight like a task (readers get an honest busy, never a stall).
+  void pumpJobs() {
+    if (!rig_->jobsBusy()) return;   // nothing queued, running or awaiting synthesis
+    snapInFlight(true);
+    try { rig_->pumpJobs(); } catch (...) {}   // a failed step must not end the daemon
+    snapInFlight(false);
   }
 
   void snapInFlight(bool v) {
@@ -224,7 +236,11 @@ class EngineThread {
 
   std::mutex mu_;
   std::condition_variable cv_;
-  std::deque<std::function<void()>> queue_;
+  struct Task {
+    std::function<void()> fn;
+    bool background = false;   // postWork: runs serialized, but is not a turn
+  };
+  std::deque<Task> queue_;
   std::atomic<uint64_t> curWebTurn_{0};   // web turn id of the running task (0 = none)
 
   mutable std::mutex snapMu_;

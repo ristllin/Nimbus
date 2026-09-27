@@ -30,6 +30,7 @@
 #include "posix_files.h"
 #include "posix_fs.h"
 #include "posix_platform.h"
+#include "sub_fabric.h"
 
 // NimbusdRig - a whole Nimbus orchestrator as a hosted daemon.
 //
@@ -129,6 +130,7 @@ class NimbusdRig {
     loadModels();    // in-app model picks persisted from a prior session (CUM-425)
     conns_.setPath(memDir() + "/connectors.json");
     conns_.load();   // connector registry (CUM-424); tolerant of absent/torn
+    buildFabric();   // sub-agent adapters + the durable job journal (device parity)
     buildEngine();
   }
 
@@ -273,6 +275,16 @@ class NimbusdRig {
     return head;
   }
 
+  // ---- sub-agent jobs (device parity: orchestrator pollJobs -> JobEngine::pump) ----
+  // One pump step: reap, the synthesis clock, at most one dispatch, one poll round.
+  // Engine thread only (a Mistral dispatch is a synchronous provider call, and a
+  // synthesis runs a whole turn) - the EngineThread drives it on every tick.
+  int pumpJobs() { return jobs_ ? jobs_->pump() : 0; }
+  // Whether a pump can do real work right now (a job queued, running, or results
+  // waiting for synthesis) - lets the engine thread mark itself busy around it.
+  bool jobsBusy() const { return jobs_ && (jobs_->activeCount() > 0 || jobs_->hasFreshResults()); }
+  agent::JobEngine& jobs() { return *jobs_; }
+
   // ---- Mistral workspace probe (device parity: provider_verify syncMistralConnectors)
   // A Mistral Studio connector is usable once the key's workspace LISTS it as active
   // in GET /v1/connectors (the portable rule in connectors_wire.h). The device runs
@@ -289,9 +301,16 @@ class NimbusdRig {
     uint64_t epoch = 0;     // when it ran
     uint32_t runs = 0;      // probes attempted since start (lets a poller see a new one)
   };
+  // Whether a probe would do anything: a Mistral key (or `assumeKey`, for a caller
+  // about to apply one) and an enabled Studio connector. Lets the web layer skip
+  // queueing a no-op behind the engine.
+  bool wantsWorkspaceProbe(bool assumeKey = false) const {
+    return (assumeKey || !cfg_.providerKey("mistral").empty()) &&
+           nimbus::orch::wantsMistralWorkspaceProbe(conns_.parsed());
+  }
   bool refreshMistralWorkspace() {
     const std::string key = cfg_.providerKey("mistral");
-    if (key.empty() || !nimbus::orch::wantsMistralWorkspaceProbe(conns_.parsed())) return false;
+    if (!wantsWorkspaceProbe()) return false;
     agent::HttpRequest req;
     req.method = "GET";
     req.host = "api.mistral.ai";
@@ -845,6 +864,7 @@ class NimbusdRig {
     agent::JobEngine::Deps jd;
     jd.platform = makePosixPlatform(&mem_);
     jd.deliver = [this](const std::string& c, const std::string& t) { record(c, t); };
+    wireJobDeps(jd);
     jobs_.reset(new agent::JobEngine(std::move(jd)));
 
     agent::TurnEngine::Deps d;
@@ -908,6 +928,21 @@ class NimbusdRig {
       memory_ = m;
       return true;
     };
+    // Sub-agent session ops (device buildApplyDeps): spawn/terminate/await reach the
+    // JobEngine, which dispatches through the fabric on the engine thread's pump.
+    // Unwired, a model's spawn vanished at the apply layer with no trace.
+    d.apply.enqueueSpawn = [this](const orch::Spawn& s, const std::string& chat, bool quiet) {
+      if (jobs_) jobs_->enqueueSpawn(s, chat, quiet);
+    };
+    d.apply.cancelSession = [this](const std::string& id) {
+      return jobs_ && jobs_->cancel(id.c_str());
+    };
+    d.apply.awaitTag = [this](const std::string& tag) {
+      if (jobs_) jobs_->awaitTag(tag);
+    };
+    d.apply.noteSpawned = [this] {
+      if (jobs_) jobs_->noteSpawned();
+    };
 
     registerHeads(d);
     eng_.reset(new agent::TurnEngine(std::move(d)));
@@ -956,6 +991,162 @@ class NimbusdRig {
       auto pd = depsFn();
       return agent::providers::orchTurnCustom(pd, conv, ins, inp, out, err, tools, usage);
     });
+  }
+
+  // ---- sub-agent fabric (device parity: adapters/adapter_factory.cpp) -------
+  // The five backends the device registers (anthropic/openai/mistral always; zai +
+  // cumulo when keyed there - here always, since a key can arrive in-app later and
+  // dispatch answers Auth without one). Each call resolves the CURRENT deps, key
+  // and model, mirroring the device adapters line for line.
+  void buildFabric() {
+    journalStore_.reset(new FileJournalStore(memDir() + "/journal"));
+    journal_.begin(journalStore_.get());   // re-attach unfinished jobs after a restart
+    auto add = [this](const char* backend, SubAdapter::Ops ops) {
+      subAdapters_.emplace_back(new SubAdapter(backend, std::move(ops)));
+      fabric_.registerAdapter(subAdapters_.back().get());
+    };
+    add("anthropic", anthropicOps());
+    add("openai", openaiOps());
+    add("mistral", mistralOps());
+    add(kZaiSlug, compatOps(kZaiSlug));
+    add(kCumuloSlug, compatOps(kCumuloSlug));
+  }
+  SubAdapter::Ops mistralOps() {
+    SubAdapter::Ops o;
+    o.dispatch = [this](const agent::Directive& d, char out[72]) {
+      return agent::providers::mistralDispatch(providerDeps(), modelFor("mistral"), d, out);
+    };
+    o.poll = [this](const char* id, agent::ResultEnvelope& env) {
+      return agent::providers::mistralPoll(providerDeps(), id, env);
+    };
+    o.cancel = [this](const char* id) { return agent::providers::mistralCancel(providerDeps(), id); };
+    return o;
+  }
+  SubAdapter::Ops openaiOps() {
+    static const char* kHost = "api.openai.com";   // device OPENAI_HOST
+    SubAdapter::Ops o;
+    o.dispatch = [this](const agent::Directive& d, char out[72]) {
+      const std::string key = cfg_.providerKey("openai");
+      if (key.empty()) return agent::FabricErr::Auth;
+      const std::string model = (d.model && d.model[0]) ? std::string(d.model) : modelFor("openai");
+      return agent::providers::oaiDispatch(providerDeps(), kHost, key, model.c_str(), "openai", d, out);
+    };
+    o.poll = [this](const char* id, agent::ResultEnvelope& env) {
+      return agent::providers::oaiPoll(providerDeps(), kHost, cfg_.providerKey("openai"), "openai", id, env);
+    };
+    o.cancel = [this](const char* id) {
+      return agent::providers::oaiCancel(providerDeps(), kHost, cfg_.providerKey("openai"), id);
+    };
+    return o;
+  }
+  SubAdapter::Ops anthropicOps() {
+    SubAdapter::Ops o;
+    o.dispatch = [this](const agent::Directive& d, char out[72]) {
+      if (cfg_.providerKey("anthropic").empty()) return agent::FabricErr::Auth;
+      return agent::providers::antDispatch(providerDeps(), modelFor("anthropic").c_str(), d, out);
+    };
+    o.poll = [this](const char* id, agent::ResultEnvelope& env) {
+      return agent::providers::antPoll(providerDeps(), id, env);
+    };
+    o.cancel = [this](const char* id) { return agent::providers::antCancel(providerDeps(), id); };
+    return o;
+  }
+  // Z.ai and the Cumulo router: the OpenAI-compatible sub-session over an explicit
+  // endpoint (device ZaiAdapter / CumuloAdapter), same host/path/model/route rules
+  // as this instance's own zai/cumulo heads.
+  SubAdapter::Ops compatOps(const char* tag) {
+    const std::string backend = tag;
+    SubAdapter::Ops o;
+    o.dispatch = [this, backend](const agent::Directive& d, char out[72]) {
+      agent::providers::CompatEndpoint ep;
+      std::string host;
+      if (backend == kZaiSlug) {
+        host = cfg_.get("NIMBUSD_ZAI_BASE");
+        if (host.empty()) host = kZaiHost;
+        ep.basePath = kZaiPathPrefix;
+        ep.key = cfg_.providerKey(kZaiSlug);
+        ep.model = modelFor(kZaiSlug);
+      } else {
+        const nimbus::orch::RouterRoute route = nimbus::orch::resolveRouterRoute(cumuloModel());
+        if (route.model.empty()) return agent::FabricErr::BadRequest;
+        host = kCumuloHost;
+        ep.basePath = route.basePath;
+        ep.key = cumuloKey();
+        ep.model = route.model;
+        ep.wire = route.upstream == "anthropic" ? agent::providers::CompatWire::AnthropicMessages
+                                                : agent::providers::CompatWire::OpenAIChat;
+      }
+      if (ep.key.empty()) return agent::FabricErr::Auth;
+      ep.host = host.c_str();
+      ep.backendTag = backend == kZaiSlug ? kZaiSlug : kCumuloSlug;
+      return agent::providers::openaiCompatDispatch(providerDeps(), ep, d, out);
+    };
+    o.poll = [this, backend](const char* id, agent::ResultEnvelope& env) {
+      return agent::providers::openaiCompatPoll(providerDeps(), backend.c_str(), id, env);
+    };
+    o.cancel = [this](const char* id) { return agent::providers::openaiCompatCancel(providerDeps(), id); };
+    return o;
+  }
+
+  // The JobEngine's config reads + execution closures (device buildJobDeps). Left
+  // unwired on purpose: skill capsules, doc attachments, result persistence and
+  // provider-file capture (no hosted equivalents yet - the engine then passes the
+  // task through and notes attachments instead of splicing them).
+  void wireJobDeps(agent::JobEngine::Deps& jd) {
+    jd.fabric = &fabric_;
+    jd.journal = &journal_;
+    jd.subPriority = [this] { return subPriority(); };
+    jd.providerHasKey = [this](const std::string& p) {
+      return p == kCumuloSlug ? hasCumulo() : !cfg_.providerKey(p).empty();
+    };
+    jd.subModel = [this](const std::string& p) {
+      return p == kCumuloSlug ? cumuloModel() : modelFor(p);
+    };
+    // No live-harvested model catalog on a hosted instance to validate a spawn's
+    // model pick against, so every spawn runs the configured sub model (the engine
+    // coerces when this is unset) - never a model the key may not be entitled to.
+    jd.modelIsValid = nullptr;
+    jd.connectorProvider = [this](const std::string& skill) { return connectorProviderFor(skill); };
+    jd.nowString = [] { return localNowString(); };
+    jd.chatContext = [this](const std::string& chat) { return spawnContext(chat); };
+    jd.synthesize = [this](const std::string& chat) {
+      if (eng_) eng_->maybeConsolidate(chat);
+    };
+    jd.turnInFlight = [this] { return eng_ && eng_->turnInFlight(); };
+  }
+
+  // Connector-aware routing (device d.connectorProvider): a spawn whose skill names
+  // an enabled connector runs on the provider that hosts it.
+  std::string connectorProviderFor(const std::string& skill) const {
+    for (const auto& c : conns_.parsed()) {
+      if (!c.enabled) continue;
+      const bool match = skill == c.name || (!c.type.empty() && skill == c.type);
+      if (match && c.prov != "any") return c.prov;
+    }
+    return std::string();
+  }
+
+  static std::string localNowString() {
+    const time_t now = time(nullptr);
+    struct tm lt{};
+    localtime_r(&now, &lt);
+    char buf[64];
+    strftime(buf, sizeof buf, "%Y-%m-%d %H:%M %Z (%A)", &lt);
+    return buf;
+  }
+
+  // The spawning chat's recent window for the sub-agent brief (device chatContext),
+  // bounded well under the head's own window.
+  std::string spawnContext(const std::string& chat) {
+    if (chat.empty() || chat == "system") return std::string();
+    orch::MsgQuery q;
+    q.sessionId = chat;
+    q.limit = 6;
+    std::string body;
+    for (const auto& m : epi_->query(q))
+      body += std::string(m.role == "user" ? "owner" : "nimbus") + ": " + trunc(m.text, 300) + "\n";
+    if (body.empty()) return std::string();
+    return "[CONTEXT] (the conversation this task came from, oldest first)\n" + body;
   }
 
   // ---- episodic helpers -----------------------------------------------------
@@ -1009,6 +1200,12 @@ class NimbusdRig {
   std::vector<std::string> toolNames_;
   std::string tavilyKey_;
 
+  // Sub-agent fabric (device parity): adapters + the durable journal. Rig-owned so
+  // an engine rebuild (key/model change) keeps in-flight jobs re-attachable.
+  agent::HeavyFabric fabric_;
+  std::vector<std::unique_ptr<SubAdapter>> subAdapters_;
+  std::unique_ptr<FileJournalStore> journalStore_;
+  nimbus::orch::Journal journal_;
   std::unique_ptr<agent::JobEngine>  jobs_;
   std::unique_ptr<agent::TurnEngine> eng_;
 

@@ -225,10 +225,11 @@ class WebApi {
     // connector just enabled) - probe it so the connector can read usable without a
     // verify button (the hosted page has none).
     NimbusdRig* rig = rig_;
-    eng_->postWork([rig] {
+    const bool probe = !rig_->workspaceProbed() && rig_->wantsWorkspaceProbe();
+    eng_->postWork([rig, probe] {
       rig->noteConnectorsWrite();
       rig->persist();
-      if (!rig->workspaceProbed()) rig->refreshMistralWorkspace();
+      if (probe) rig->refreshMistralWorkspace();
     });
     out = okJson(R"({"ok":true})");
     return true;
@@ -588,6 +589,7 @@ class WebApi {
   // probe behind the key apply so a Studio connector reads usable again without a
   // verify button (device parity: save-and-verify runs the probe after the verify).
   void reprobeOnMistralKey(const std::vector<std::pair<std::string, std::string>>& keyWrites) {
+    if (!rig_->wantsWorkspaceProbe(/*assumeKey=*/true)) return;   // nothing to probe for
     for (const auto& w : keyWrites) {
       if (w.first != "mistral" || w.second.empty()) continue;
       NimbusdRig* rig = rig_;
@@ -641,7 +643,7 @@ class WebApi {
   // thread (serialized with turns); GET /api/connectors shows the result. Other
   // providers are acknowledged, as before (nothing to check on a hosted instance).
   ApiResp verifyPost(const std::string& body) {
-    if (formValue(body, "provider") == "mistral") {
+    if (formValue(body, "provider") == "mistral" && rig_->wantsWorkspaceProbe()) {
       NimbusdRig* rig = rig_;
       eng_->postWork([rig] { rig->refreshMistralWorkspace(); });
     }

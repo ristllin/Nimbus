@@ -147,21 +147,31 @@ OTA) report their honest virtual truth and never fabricate a reading or leave a
 dead control, and software update is the platform rolling the instance image, not
 an ESP OTA. A keyless instance still says so plainly rather than sitting silent.
 
-## Sub-agent fan-out: composed fabric-less in Phase 0 (documented decision)
+## Sub-agent fan-out (device parity)
 
-The device fans sub-agents out through four provider adapters
-(`src/agent/adapters/{openai,anthropic,mistral,custom}_adapter.cpp`) built on
-`WiFiClientSecure`. Those are **device-only** today. Porting them onto the
-daemon's `HttpTransport` (the "Fabric port" work item in plan §3.1) is **not done
-in Phase 0**: nimbusd registers no fabric loop (`ProviderHosts::fabric` is
-unset), so a turn runs its tool loop on a single head provider and does not
-dispatch parallel sub-agents.
+A spawned sub-agent is how the device runs a provider's connectors off its own
+turn (a Mistral sub carries the Studio connectors server-side) and how it farms out
+research. The hosted instance now runs the same machinery: the portable
+`JobEngine` (queue, one dispatch per pump, round-robin poll, the synthesis turn)
+over a fabric of five adapters (`src/sub_fabric.h`: anthropic, openai, mistral,
+zai, cumulo) that call the same `providers::*Dispatch/Poll/Cancel` wire functions
+the device adapters wrap, each resolving the instance's current key, model and
+connectors at call time. The engine thread pumps the jobs after every task and on
+every idle tick, so dispatches and the synthesis turn stay serialized with turns
+(the device's one-work-slot rule). The job journal lives on the instance volume
+(`<data>/mem/journal/j<slot>.json`), so an unfinished job re-attaches after a
+restart instead of being dispatched again.
 
-This is the plan's sanctioned Phase 0 option ("sub-agent fan-out working (Fabric
-port) **or explicitly deferred with the engine composed fabric-less**"). The
-head turn, tool loop, memory, web.search, and Telegram persona are all fully
-functional without it. The Fabric port is tracked for Phase 2. It is recorded in
-ADR 0003.
+Every spawn runs the configured sub model for its provider (no live model catalog
+to validate a per-spawn pick against), and a spawn on an unkeyed provider is
+answered with an honest "couldn't start" message. Not wired yet on a hosted
+instance: skill capsules, document attachments, auto-saving a sub's result into a
+project, and provider file capture (the engine passes the task through and notes
+attachments instead of splicing them).
+
+This replaces the Phase 0 "fabric-less" composition, under which the JobEngine
+had no fabric and every spawn was dropped without a message, so a Mistral Studio
+connector could never run under the default tool loop.
 
 ## The scenario suite (live, paid)
 
