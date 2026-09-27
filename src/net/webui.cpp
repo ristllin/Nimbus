@@ -222,9 +222,17 @@ static String mintShowCode() {
 String showCodeRemint() { return mintShowCode(); }
 
 // True once the shown code has expired (or none minted yet), so the loop repaints and
-// showCode() re-mints - a dead code never sits on screen as if valid.
+// showCode() re-mints - a dead code never sits on screen as if valid. "Dead" also
+// covers a code the table no longer honors before its own expiry: already redeemed
+// (the owner just signed in with it) or evicted (CUM-453), so the glass never keeps
+// showing a code the sign-in gate will reject.
 bool showCodeStale() {
-  return s_showCode.length() == 0 || s_showDisp.expired(millis());
+  const uint32_t now = millis();
+  if (s_showCode.length() == 0 || s_showDisp.expired(now)) return true;
+  portENTER_CRITICAL(&s_signinMux);
+  const bool live = s_signinCodes.isRedeemable(s_showCode.c_str(), now);
+  portEXIT_CRITICAL(&s_signinMux);
+  return !live;
 }
 
 String showCode() {

@@ -187,11 +187,12 @@ bool panelCodeStale();
 // task (the panel renderer); the table op is spinlock-guarded.
 //
 // showCodeRemint(): mint a fresh display code now (call on entry to the screen).
-// showCode():       current display code, minting one if none/expired.
+// showCode():       current display code, minting one if none/stale.
 // showCodeSecsLeft(): whole seconds until it expires (0 once expired) - drives the
 //                   on-screen mm:ss countdown.
-// showCodeStale():  true once it has expired, so the loop can repaint (re-mint) and
-//                   a dead code never sits on screen as if valid.
+// showCodeStale():  true once it has expired, been redeemed, or been evicted, so the
+//                   loop can repaint (re-mint) and a dead code never sits on screen
+//                   as if valid.
 String   showCodeRemint();
 String   showCode();
 uint32_t showCodeSecsLeft();

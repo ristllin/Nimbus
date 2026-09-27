@@ -33,18 +33,25 @@ class SigninCodes {
   explicit SigninCodes(uint32_t ttlMs = DEFAULT_TTL_MS) : ttl_(ttlMs) {}
 
   // Store a freshly generated code (caller supplies device-RNG bytes as a
-  // null-terminated string) with an explicit lifetime. Reuses the oldest slot when
-  // full. An empty or over-long code is ignored (returns false).
+  // null-terminated string) with an explicit lifetime. An empty or over-long code
+  // is ignored (returns false).
+  //
+  // Slot choice is expiry-aware (CUM-453): a free, used, or expired slot is always
+  // taken first, and only when every slot still holds a redeemable code is one
+  // evicted - the one closest to its own expiry (oldest mint on a tie). Plain
+  // round-robin evicted a 10-minute code that was still on the screen: the Sign-in
+  // QR re-mints a 2-minute code every ~90 s, so eight scan mints overwrote the
+  // displayed hand-entry code while the owner was still typing it.
   bool mint(const char* code, uint32_t now, uint32_t ttlMs) {
     if (!code) return false;
     const size_t n = ::strnlen(code, MAXLEN);
     if (n == 0 || n >= MAXLEN) return false;
-    Slot& s = slots_[next_];
-    next_ = (next_ + 1) % CAP;
+    Slot& s = slots_[pickSlot(now)];
     ::memcpy(s.code, code, n);
     s.code[n] = '\0';
     s.len = n;
     s.expiresAt = now + ttlMs;
+    s.seq = ++seq_;
     s.used = false;
     s.live = true;
     return true;
@@ -77,13 +84,27 @@ class SigninCodes {
   size_t liveCount(uint32_t now) const {
     size_t c = 0;
     for (size_t i = 0; i < CAP; i++)
-      if (slots_[i].live && !slots_[i].used && !expired(slots_[i], now)) c++;
+      if (redeemable(slots_[i], now)) c++;
     return c;
+  }
+
+  // Would redeem(code, now) succeed? Read-only: nothing is consumed. The screen
+  // that shows a code polls this so a code that was already used, expired, or
+  // evicted is replaced instead of sitting on the glass as if it still worked.
+  bool isRedeemable(const char* code, uint32_t now) const {
+    if (!code) return false;
+    const size_t n = ::strnlen(code, MAXLEN);
+    if (n == 0 || n >= MAXLEN) return false;
+    for (size_t i = 0; i < CAP; i++) {
+      const Slot& s = slots_[i];
+      if (redeemable(s, now) && s.len == n && ::memcmp(s.code, code, n) == 0) return true;
+    }
+    return false;
   }
 
   void clear() {
     for (size_t i = 0; i < CAP; i++) slots_[i] = Slot{};
-    next_ = 0;
+    seq_ = 0;
   }
 
  private:
@@ -91,6 +112,7 @@ class SigninCodes {
     char code[MAXLEN] = {0};
     size_t len = 0;
     uint32_t expiresAt = 0;
+    uint32_t seq = 0;       // mint order, the tie-break when two slots expire together
     bool used = false;
     bool live = false;
   };
@@ -98,8 +120,25 @@ class SigninCodes {
   static bool expired(const Slot& s, uint32_t now) {
     return int32_t(now - s.expiresAt) >= 0;
   }
+  static bool redeemable(const Slot& s, uint32_t now) {
+    return s.live && !s.used && !expired(s, now);
+  }
+  // The slot the next mint overwrites: the first one holding nothing redeemable,
+  // else the redeemable code with the least life left (the oldest mint on a tie).
+  size_t pickSlot(uint32_t now) const {
+    size_t best = 0;
+    for (size_t i = 0; i < CAP; i++) {
+      const Slot& s = slots_[i];
+      if (!redeemable(s, now)) return i;
+      const Slot& b = slots_[best];
+      const int32_t left = int32_t(s.expiresAt - now);
+      const int32_t bestLeft = int32_t(b.expiresAt - now);
+      if (left < bestLeft || (left == bestLeft && int32_t(s.seq - b.seq) < 0)) best = i;
+    }
+    return best;
+  }
   Slot slots_[CAP]{};
-  size_t next_ = 0;
+  uint32_t seq_ = 0;
   uint32_t ttl_;
 };
 
