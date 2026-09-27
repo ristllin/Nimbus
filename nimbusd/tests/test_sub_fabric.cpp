@@ -223,6 +223,47 @@ static void testBackgroundWorkIsNotATurn(ndtest::Ctx& c) {
   clearEnv();
 }
 
+// (e) an engine rebuild (a key/model save) keeps queued spawns.
+static void testRebuildKeepsJobs(ndtest::Ctx& c) {
+  std::printf("  -- (e) a key/model save does not drop queued sub-agent work --\n");
+  clearEnv();
+  FakeHttpTransport tx;
+  Config cfg;
+  NimbusdRig rig(cfg, opts("fab-e"), &tx);
+  rig.applyProviderKey("mistral", "mk_TEST_FAB_4");
+  nimbus::orch::Spawn sp;
+  sp.task = "look something up";
+  sp.provider = "mistral";
+  agent::JobEngine* before = &rig.jobs();
+  rig.jobs().enqueueSpawn(sp, "owner", /*quiet=*/true);
+  c.eqi(rig.jobs().pendingCount(), 1, "one spawn is queued (not yet dispatched)");
+  c.ok(rig.applyOrchModel("mistral", "mistral-medium-latest"), "a model save rebuilds the engine");
+  c.ok(&rig.jobs() == before, "the job engine survived the rebuild");
+  c.eqi(rig.jobs().pendingCount(), 1, "the queued spawn is still queued");
+  clearEnv();
+}
+
+// (f) an unauthenticated chat (Telegram with no chat lock) cannot spawn.
+static void testUntrustedChatCannotSpawn(ndtest::Ctx& c) {
+  std::printf("  -- (f) a chat the daemon could not authenticate gets no sub-agents --\n");
+  clearEnv();
+  FakeHttpTransport tx;
+  tx.script.push_back(headTurn(
+      "{\"reply\":\"On it.\",\"memory\":\"\",\"ask\":\"\",\"session_ops\":[{\"op\":\"spawn\","
+      "\"id\":null,\"task\":\"read the calendar\",\"provider\":\"mistral\",\"model\":null}]}"));
+  Config cfg;
+  NimbusdRig rig(cfg, opts("fab-f"), &tx);
+  rig.applyProviderKey("mistral", "mk_TEST_FAB_5");
+  rig.noteUntrustedChat("424242");
+  Inbox inbox;
+  rig.setDeliver([&inbox](const std::string&, const std::string& t) { inbox.push(t); });
+  rig.say("424242", "what is on my calendar?");
+  c.ok(inbox.waitFor("Sub-agents are off in this chat", 100), "the spawn is refused with the reason");
+  c.eqi(rig.jobs().activeCount(), 0, "nothing was queued");
+  c.eqi((long)tx.seen.size(), 1, "only the head turn reached a provider");
+  clearEnv();
+}
+
 int main() {
   ndtest::Ctx c;
   c.suite = "sub-agent fabric (device parity)";
@@ -231,6 +272,8 @@ int main() {
   testUnkeyedSpawnSaysSo(c);
   testJournalReattaches(c);
   testBackgroundWorkIsNotATurn(c);
+  testRebuildKeepsJobs(c);
+  testUntrustedChatCannotSpawn(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);
   std::printf("%s\n", c.failures ? "FAILED" : "PASSED");
   return c.failures ? 1 : 0;

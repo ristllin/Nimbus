@@ -337,6 +337,54 @@ static void testWebSurface(ndtest::Ctx& c) {
   clearEnv();
 }
 
+// (h) probe coalescing + a hostile prov never reaches the page as markup + a slow
+// background probe never turns a queued settings save into a false failure.
+static void testCoalesceTagAndQueuedSave(ndtest::Ctx& c) {
+  std::printf("  -- (h) coalesced probes, safe capability tags, queued saves --\n");
+  clearEnv();
+  FakeHttpTransport tx;
+  Config cfg;
+  NimbusdRig rig(cfg, opts("mws-h", "mistral"), &tx);
+  c.ok(rig.claimProbe(), "the first probe request claims the slot");
+  c.ok(!rig.claimProbe(), "a second request while one is queued is coalesced");
+  rig.refreshMistralWorkspace();   // no key: no request, but the claim is released
+  c.ok(rig.claimProbe(), "once the probe runs, a new request can queue one again");
+  c.eqi((long)tx.seen.size(), 0, "no request without a key");
+
+  c.eq(rig.connectors().replaceBlob(
+           "[{\"name\":\"x\",\"prov\":\"<img src=x onerror=alert(1)>\",\"kind\":\"builtin\",\"en\":1}]"),
+       "", "a blob with a markup-shaped prov saves (the device accepts it too)");
+  EngineThread eng(&rig);
+  eng.start();
+  ReplyBuffer replies;
+  WebApi api(&rig, &eng, &replies);
+  std::string tools;
+  for (int i = 0; i < 100 && tools.empty(); i++) {
+    ApiResp r;
+    api.handle("GET", "/api/tools", "", r);
+    if (r.status == 200) tools = r.body;
+    else std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  c.ok(!has(tools, "<img") && has(tools, "\"tag\":\"custom builtin\""),
+       "the capability tag never carries markup (it reads custom)");
+
+  eng.postWork([] { std::this_thread::sleep_for(std::chrono::milliseconds(6500)); });
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  ApiResp busyRead;
+  api.handle("GET", "/api/tools", "", busyRead);
+  c.eqi(busyRead.status, 503, "a read during background work answers busy at once");
+  ApiResp save;
+  api.handle("POST", "/api/orch", "orchM_mistral=mistral-small-latest", save);
+  c.eqi(save.status, 200, "a save queued behind a long probe is not a 503");
+  c.ok(has(save.body, "\"queued\":true"), "it says it is queued (and it does apply)");
+  // A read queued now runs AFTER the save (the engine thread is FIFO).
+  auto after = eng.dispatchRead([&rig] { return rig.modelFor("mistral"); });
+  const bool ran = after.wait_for(std::chrono::seconds(10)) == std::future_status::ready;
+  c.ok(ran && after.get() == "mistral-small-latest", "the queued model save applied");
+  eng.stop();
+  clearEnv();
+}
+
 int main() {
   ndtest::Ctx c;
   c.suite = "mistral workspace gating (device parity)";
@@ -345,6 +393,7 @@ int main() {
   testProbeGatesAndKeyReset(c);
   testResolvedHead(c);
   testWebSurface(c);
+  testCoalesceTagAndQueuedSave(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);
   std::printf("%s\n", c.failures ? "FAILED" : "PASSED");
   return c.failures ? 1 : 0;

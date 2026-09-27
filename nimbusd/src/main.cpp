@@ -144,7 +144,7 @@ int runDaemon(nimbusd::Config& cfg) {
   // Studio connector (gcal/notion/slack) is usable after a restart without anyone
   // pressing verify (a hosted page has no verify button). A no-op without a Mistral
   // key or an enabled Studio connector; runs on the engine thread before any turn.
-  eng.postWork([&rig] { rig.refreshMistralWorkspace(); });
+  if (rig.claimProbe()) eng.postWork([&rig] { rig.refreshMistralWorkspace(); });
 
   // The reply ring that backs the web chat page (GET /api/replies). Every reply
   // the engine produces is recorded here and, when a bot is configured, also
@@ -179,6 +179,9 @@ int runDaemon(nimbusd::Config& cfg) {
                                               opt.dataDir + "/tg_offset", allowChat));
     tgSend.reset(new nimbusd::TelegramChannel(tgToken, sendHttp.get(),
                                               opt.dataDir + "/tg_send_unused", allowChat));
+    if (allowChat.empty())
+      logLine("telegram: WARNING no NIMBUSD_TG_CHAT_ID - any chat can talk to this bot; "
+              "sub-agents are refused for Telegram chats until it is set");
     std::string user, err;
     if (tgPoll->getMe(user, err)) logLine("telegram: bot @" + user + " validated");
     else logLine("telegram: getMe failed (" + err + ") - poll loop will still retry");
@@ -195,8 +198,13 @@ int runDaemon(nimbusd::Config& cfg) {
           if (!g_stop.load()) { logLine("telegram poll error: " + err); std::this_thread::sleep_for(std::chrono::seconds(3)); }
           continue;
         }
-        for (const auto& u : ups)
-          if (!u.text.empty()) eng.postMessage(u.chatId, u.text);
+        for (const auto& u : ups) {
+          if (u.text.empty()) continue;
+          // No chat lock: this chat is unauthenticated, so it never spawns sub-agents
+          // (they reach the owner's provider connectors on the owner's keys).
+          if (allowChat.empty()) rig.noteUntrustedChat(u.chatId);
+          eng.postMessage(u.chatId, u.text);
+        }
       }
     });
   } else {

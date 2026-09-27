@@ -158,6 +158,10 @@ class EngineThread {
   }
 
   bool running() const { return running_.load(); }
+  // True while the engine thread executes ANY task (a turn, a read, background work,
+  // a job pump step). A web read checks it to answer an honest busy at once instead
+  // of holding the single HTTP thread behind a long background probe.
+  bool busy() const { return busy_.load(); }
 
  private:
   void post(std::function<void()> task, bool background = false) {
@@ -178,11 +182,13 @@ class EngineThread {
         if (!queue_.empty()) { task = std::move(queue_.front()); queue_.pop_front(); }
       }
       if (task.fn) {
+        busy_.store(true);
         if (!task.background) snapInFlight(true);
         task.fn();
         if (!task.background) snapInFlight(false);
+        busy_.store(false);
       }
-      pumpJobs();
+      if (running_.load()) pumpJobs();   // never start a sub dispatch while stopping
       // Refresh the snapshot (cheap) so uptime/state stay current.
       refreshSnapshot();
     }
@@ -197,9 +203,11 @@ class EngineThread {
   // is marked in-flight like a task (readers get an honest busy, never a stall).
   void pumpJobs() {
     if (!rig_->jobsBusy()) return;   // nothing queued, running or awaiting synthesis
+    busy_.store(true);
     snapInFlight(true);
     try { rig_->pumpJobs(); } catch (...) {}   // a failed step must not end the daemon
     snapInFlight(false);
+    busy_.store(false);
   }
 
   void snapInFlight(bool v) {
@@ -242,6 +250,7 @@ class EngineThread {
   };
   std::deque<Task> queue_;
   std::atomic<uint64_t> curWebTurn_{0};   // web turn id of the running task (0 = none)
+  std::atomic<bool> busy_{false};          // any task / pump step executing now
 
   mutable std::mutex snapMu_;
   StateSnapshot snap_;

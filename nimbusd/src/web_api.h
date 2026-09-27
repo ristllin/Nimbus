@@ -225,12 +225,11 @@ class WebApi {
     // connector just enabled) - probe it so the connector can read usable without a
     // verify button (the hosted page has none).
     NimbusdRig* rig = rig_;
-    const bool probe = !rig_->workspaceProbed() && rig_->wantsWorkspaceProbe();
-    eng_->postWork([rig, probe] {
+    eng_->postWork([rig] {
       rig->noteConnectorsWrite();
       rig->persist();
-      if (probe) rig->refreshMistralWorkspace();
     });
+    if (rig_->wantsWorkspaceProbe() && rig_->workspaceStale()) kickProbe();
     out = okJson(R"({"ok":true})");
     return true;
   }
@@ -265,7 +264,7 @@ class WebApi {
     // snapshot routes. If a turn is in flight, tell the poller to retry (503) at
     // once rather than blocking every other request behind a 2 s wait. Only when
     // the engine is idle do we dispatch and await (it answers in milliseconds).
-    if (eng_->snapshot().turnInFlight) return busy();
+    if (eng_->snapshot().turnInFlight || eng_->busy()) return busy();
     auto fut = eng_->dispatchRead(std::move(fn));
     if (fut.wait_for(std::chrono::seconds(2)) != std::future_status::ready) return busy();
     try {
@@ -588,14 +587,21 @@ class WebApi {
   // A new Mistral key resets the workspace answer (applyProviderKey); queue a fresh
   // probe behind the key apply so a Studio connector reads usable again without a
   // verify button (device parity: save-and-verify runs the probe after the verify).
+  // (A clear re-probes too: an env/file key may be active again underneath.)
   void reprobeOnMistralKey(const std::vector<std::pair<std::string, std::string>>& keyWrites) {
     if (!rig_->wantsWorkspaceProbe(/*assumeKey=*/true)) return;   // nothing to probe for
     for (const auto& w : keyWrites) {
-      if (w.first != "mistral" || w.second.empty()) continue;
-      NimbusdRig* rig = rig_;
-      eng_->postWork([rig] { rig->refreshMistralWorkspace(); });
+      if (w.first != "mistral") continue;
+      kickProbe();
       return;
     }
+  }
+
+  // Queue ONE background workspace probe (coalesced: none while one is queued).
+  void kickProbe() {
+    if (!rig_->claimProbe()) return;
+    NimbusdRig* rig = rig_;
+    eng_->postWork([rig] { rig->refreshMistralWorkspace(); });
   }
 
   ApiResp orchPost(const std::string& body) {
@@ -631,7 +637,11 @@ class WebApi {
       return out;
     });
     reprobeOnMistralKey(keyWrites);
-    if (fut.wait_for(std::chrono::seconds(5)) != std::future_status::ready) return busy();
+    // The write is QUEUED on the engine thread and will apply: past the wait (a
+    // background probe ahead of it), say so rather than a 503 that reads as failed
+    // and invites a duplicate save.
+    if (fut.wait_for(std::chrono::seconds(5)) != std::future_status::ready)
+      return okJson(R"({"ok":true,"queued":true,"note":"Saved. It applies in a moment."})");
     try { return okJson(fut.get()); } catch (...) { return busy(); }
   }
 
@@ -643,10 +653,7 @@ class WebApi {
   // thread (serialized with turns); GET /api/connectors shows the result. Other
   // providers are acknowledged, as before (nothing to check on a hosted instance).
   ApiResp verifyPost(const std::string& body) {
-    if (formValue(body, "provider") == "mistral" && rig_->wantsWorkspaceProbe()) {
-      NimbusdRig* rig = rig_;
-      eng_->postWork([rig] { rig->refreshMistralWorkspace(); });
-    }
+    if (formValue(body, "provider") == "mistral" && rig_->wantsWorkspaceProbe()) kickProbe();
     return okJson(R"({"ok":true})");
   }
 
@@ -899,6 +906,15 @@ class WebApi {
     });
   }
 
+  // prov/kind are free-form blob strings and the page renders the tag as HTML, so
+  // only an identifier-shaped value passes through; anything else reads "custom".
+  static std::string tagSafe(const std::string& v) {
+    if (v.empty() || v.size() > 24) return "custom";
+    for (char ch : v)
+      if (!isalnum((unsigned char)ch) && ch != '_' && ch != '-') return "custom";
+    return v;
+  }
+
   // Provider-side connector rows for the Capabilities table, device parity
   // (web_memory.cpp handleToolsGet): each classified by the shared connectorScope
   // over the SAME auth-stamped view the catalog and GET /api/connectors read.
@@ -910,7 +926,7 @@ class WebApi {
       o["group"] = "connector";
       o["name"] = c.name;
       o["description"] = "Provider-side connector: the cloud provider runs it for the model.";
-      o["tag"] = c.prov + " " + c.kind + (c.enabled ? "" : " (disabled)");
+      o["tag"] = tagSafe(c.prov) + " " + tagSafe(c.kind) + (c.enabled ? "" : " (disabled)");
       o["rides_loop"] = false;
       o["availability"] = nimbus::orch::capScopeSlug(nimbus::orch::connectorScope(c, ps));
       n++;

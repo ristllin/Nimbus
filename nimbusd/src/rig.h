@@ -2,10 +2,12 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+#include <atomic>
 #include <chrono>
 #include <ctime>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -14,6 +16,7 @@
 #include "daemon_config.h"
 #include "daemon_http.h"
 #include "nimbus/docs_pack.h"
+#include "nimbus/harness/dream.h"
 #include "nimbus/harness/engine.h"
 #include "nimbus/harness/log.h"
 #include "nimbus/harness/providers.h"
@@ -259,20 +262,26 @@ class NimbusdRig {
   // raw-first-token badge told a mistral-only instance whose priority led with
   // openai that it was "running on openai", so it misjudged every connector.
   std::string hostBadge() const {
-    if (!opt_.orchHost.empty()) return opt_.orchHost;
-    std::string head;
-    std::stringstream ss(opt_.priority);
-    for (std::string tok; std::getline(ss, tok, ',');) {
-      const size_t b = tok.find_first_not_of(" \t");
-      const size_t e = tok.find_last_not_of(" \t");
-      if (b == std::string::npos) continue;
-      tok = tok.substr(b, e - b + 1);
-      if (head.empty()) head = tok;
-      if (!cfg_.providerKey(tok).empty()) return tok;
-    }
-    if (hasCumulo()) return kCumuloSlug;               // routerFallbackHost order
-    if (hostAvailable(kZaiSlug)) return kZaiSlug;
-    return head;
+    return nimbus::orch::resolveHeadHost(
+        opt_.orchHost, opt_.priority,
+        [this](const std::string& h) { return !cfg_.providerKey(h).empty(); },
+        hasCumulo() ? std::string(kCumuloSlug)
+                    : (hostAvailable(kZaiSlug) ? std::string(kZaiSlug) : std::string()));
+  }
+
+  // ---- chats that cannot be trusted with sub-agents -----------------------------
+  // A Telegram bot with no NIMBUSD_TG_CHAT_ID lock accepts ANY chat (every one runs
+  // as the owner - an existing gap, see PR notes). Sub-agents reach the owner's
+  // provider connectors (calendar, Notion, Slack) on the owner's keys, so a chat the
+  // daemon could not authenticate never gets to spawn one: the Telegram poll marks
+  // such chats here, and the spawn path refuses them with an honest message.
+  void noteUntrustedChat(const std::string& chat) {
+    std::lock_guard<std::mutex> lk(untrustedMu_);
+    untrusted_.insert(chat);
+  }
+  bool untrustedChat(const std::string& chat) const {
+    std::lock_guard<std::mutex> lk(untrustedMu_);
+    return untrusted_.count(chat) != 0;
   }
 
   // ---- sub-agent jobs (device parity: orchestrator pollJobs -> JobEngine::pump) ----
@@ -308,7 +317,23 @@ class NimbusdRig {
     return (assumeKey || !cfg_.providerKey("mistral").empty()) &&
            nimbus::orch::wantsMistralWorkspaceProbe(conns_.parsed());
   }
+  // Coalescing: at most one probe queued at a time. claimProbe() is true for the
+  // caller that should post one; the probe releases the claim as it starts, so a
+  // request that lands mid-probe queues exactly one follow-up.
+  bool claimProbe() { return !probeQueued_.exchange(true); }
+  // Whether the answer is worth refreshing on a connectors write: none yet, or an
+  // enabled Studio connector the last answer did not list (the owner may have just
+  // added it in Mistral). A hosted page has no verify button to force this.
+  bool workspaceStale() const {
+    for (const auto& c : connectorsView())
+      if (c.enabled && c.workspace != nimbus::orch::ConnectorInfo::Workspace::NotApplicable &&
+          c.workspace != nimbus::orch::ConnectorInfo::Workspace::ListedSignedIn &&
+          c.workspace != nimbus::orch::ConnectorInfo::Workspace::ListedNotSignedIn)
+        return true;
+    return false;
+  }
   bool refreshMistralWorkspace() {
+    probeQueued_.store(false);   // a request arriving from now on queues a fresh probe
     const std::string key = cfg_.providerKey("mistral");
     if (!wantsWorkspaceProbe()) return false;
     agent::HttpRequest req;
@@ -862,10 +887,15 @@ class NimbusdRig {
 
   void buildEngine() {
     agent::JobEngine::Deps jd;
-    jd.platform = makePosixPlatform(&mem_);
-    jd.deliver = [this](const std::string& c, const std::string& t) { record(c, t); };
-    wireJobDeps(jd);
-    jobs_.reset(new agent::JobEngine(std::move(jd)));
+    // Built ONCE: an engine rebuild (a key/model save) must not drop spawns still
+    // queued or finished results waiting for synthesis - both live only in the
+    // JobEngine, and every dep below reads the rig's current state through `this`.
+    if (!jobs_) {
+      jd.platform = makePosixPlatform(&mem_);
+      jd.deliver = [this](const std::string& c, const std::string& t) { record(c, t); };
+      wireJobDeps(jd);
+      jobs_.reset(new agent::JobEngine(std::move(jd)));
+    }
 
     agent::TurnEngine::Deps d;
     d.cfg = config();
@@ -932,6 +962,11 @@ class NimbusdRig {
     // JobEngine, which dispatches through the fabric on the engine thread's pump.
     // Unwired, a model's spawn vanished at the apply layer with no trace.
     d.apply.enqueueSpawn = [this](const orch::Spawn& s, const std::string& chat, bool quiet) {
+      if (untrustedChat(chat)) {
+        record(chat, "Sub-agents are off in this chat: this instance is not locked to one "
+                     "Telegram chat yet (set NIMBUSD_TG_CHAT_ID to the owner's chat).");
+        return;
+      }
       if (jobs_) jobs_->enqueueSpawn(s, chat, quiet);
     };
     d.apply.cancelSession = [this](const std::string& id) {
@@ -1135,19 +1170,24 @@ class NimbusdRig {
     return buf;
   }
 
-  // The spawning chat's recent window for the sub-agent brief (device chatContext),
-  // bounded well under the head's own window.
+  // The spawning chat's recent window for the sub-agent brief (device chatContext):
+  // the same digest builder, so each row is flattened to one line (a newline in a
+  // relayed calendar/Slack text cannot forge an "owner:" line) and clipped
+  // UTF-8-safe (a torn character is invalid JSON the provider rejects), within the
+  // device's brief budget.
   std::string spawnContext(const std::string& chat) {
     if (chat.empty() || chat == "system") return std::string();
     orch::MsgQuery q;
     q.sessionId = chat;
+    q.haveKind = true;
+    q.kind = orch::MsgKind::Message;
     q.limit = 6;
-    std::string body;
-    for (const auto& m : epi_->query(q))
-      body += std::string(m.role == "user" ? "owner" : "nimbus") + ": " + trunc(m.text, 300) + "\n";
-    if (body.empty()) return std::string();
-    return "[CONTEXT] (the conversation this task came from, oldest first)\n" + body;
+    const auto rows = epi_->query(q);
+    if (rows.empty()) return std::string();
+    return "[CONTEXT] (the conversation this task came from, oldest first)\n" +
+           agent::dream::buildEpisodicDigest(rows, kSpawnBriefBytes);
   }
+  static constexpr size_t kSpawnBriefBytes = 1200;   // device brief budget at the 200K anchor
 
   // ---- episodic helpers -----------------------------------------------------
   void capture(const std::string& chat, const char* role, const std::string& text,
@@ -1223,6 +1263,9 @@ class NimbusdRig {
   mutable std::mutex wsMu_;
   nimbus::orch::MistralWorkspace ws_;
   WorkspaceProbe wsProbe_;
+  std::atomic<bool> probeQueued_{false};   // one workspace probe queued at a time
+  mutable std::mutex untrustedMu_;
+  std::set<std::string> untrusted_;        // unauthenticated Telegram chats (no spawns)
   std::string convId_, antEnv_, antAgents_, memory_, lastHost_, lastServedBy_;
   bool lastFallback_ = false;   // CUM-236 served-by of the most recent turn
   std::function<void(const std::string&, const std::string&)> onDeliver_;

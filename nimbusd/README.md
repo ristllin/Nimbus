@@ -75,6 +75,20 @@ docker run --rm -e TELEGRAM_BOT_TOKEN=... -e MISTRAL_API_KEY=... \
 
 The build stage runs `make test`, so a broken build never produces an image.
 
+### Connectors e2e (live, paid)
+
+`tools/vn_connectors_e2e.py` drives a running instance over its HTTP surface the
+way the web app does: it configures Studio connectors (gcal, notion, slack on
+Mistral), runs the workspace probe via `POST /api/verify` and checks that the
+connector badge, the Capabilities row and the model catalog agree; then it asks
+"What is on my calendar today?" and asserts the reply names an event that one
+independent Mistral call with the calendar connector sees. Secrets come only from
+the environment (`NIMBUSD_WEB_TOKEN`, `MISTRAL_ORACLE_KEY`) and every evidence
+file is redacted. `--skip-bc` runs the free configuration + probe step only. It
+waits between paid calls (`--settle`) because a Mistral key's Studio connectors
+have their own per-minute and per-day request quota (`x-ratelimit-*-custom-*`
+headers).
+
 ## Configuration
 
 Secrets come from the environment (a mounted Secret in k8s); non-secret settings
