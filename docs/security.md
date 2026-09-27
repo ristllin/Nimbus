@@ -337,22 +337,26 @@ When the station is down but the setup AP is up (home Wi-Fi lost), ConfigQr inst
 shows the setup network's name, its current password, and a Wi-Fi-join QR, so a
 locked-out owner can rejoin from the device screen without needing the LAN it cannot
 reach. SetupInfo shows the same AP-first credentials during first-run onboarding.
-
-**Join screens carry a sign-in code once Wi-Fi is set up (CUM-452, CUM-453).** A
-provisioned device no longer signs AP peers in on its own (see below), so a person who
-joins the setup network lands on the sign-in gate. Every join screen of a provisioned
-Orchestrator therefore shows a real device sign-in code beside the network name and
-password: the locked-out Sign-in QR (where the code card is also the Show code
-control) and the Setup screen. That code is the 10-minute hand-entry code from the
-same single-use table the gate redeems from, so what the screen shows is what the
-gate accepts. **Publish setup network** (the web page's **Connectivity > Recovery**, or
-the device's **Settings > Connectivity > Wi-Fi**) now puts that Setup screen on the
-screen and confirms on the ring, and the web button says the page will disconnect when
-it is open over the home Wi-Fi. First-run SetupInfo keeps its numbered onboarding steps
-and shows no code: an unprovisioned device signs the owner in automatically.
 The password is on-glass only in both cases: it is never logged, never sent over
 serial, and the `/api/connect` endpoint that carries it is blocked and redacted on
 the tunnel.
+
+**Join screens carry a sign-in code once Wi-Fi is set up (CUM-452, CUM-453).** A
+provisioned device no longer signs AP peers in on its own (see below), so a person who
+joins the setup network lands on the sign-in gate. The join screens the owner opens on
+a provisioned Orchestrator therefore show a real device sign-in code beside the network
+name and password: the locked-out Sign-in QR opened from the device menu (where the
+code card is also the Show code control) and the Setup screen. That code is the
+10-minute hand-entry code from the same single-use table the gate redeems from, so what
+the screen shows is what the gate accepts. The Sign-in QR that repeated failed sign-ins
+bring up on their own never shows a code, since unauthenticated traffic can trigger it.
+**Publish setup network** (the web page's **Connectivity > Recovery**, or the device's
+**Settings > Connectivity > Wi-Fi**) now shows that Setup screen on the device and
+confirms on the ring, and the web button says the page will disconnect when it is open
+over the home Wi-Fi. The Setup screen stays up for the code's 10 minutes, or until
+Wi-Fi reconnects, then the status screen returns. First-run SetupInfo keeps its
+numbered onboarding steps and shows no code: an unprovisioned device signs the owner in
+automatically.
 
 **Token handout is unprovisioned-only.** The AP interface auto-supplies the device
 token (`GET /?t=<token>` redirect, and the captive-portal catch-all) so first-run
