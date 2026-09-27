@@ -94,7 +94,7 @@ visible without opening a menu:
 | Glyph | Meaning |
 |---|---|
 | Dot and three bright arcs | Connected |
-| Bright dot, dimmed arcs | A network is saved but not connected (searching or joining) |
+| Bright dot, dimmed arcs | A network is saved but not connected (searching, joining, or paused while the setup network is published) |
 | Faint arcs with a slash | No Wi-Fi set up, or Notifier mode (the radio is off there) |
 | A small amber `AP` under the glyph | The setup network is up while Wi-Fi is not connected |
 

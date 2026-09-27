@@ -84,6 +84,17 @@ test('CUM-452: a failed publish shows the error and re-enables the button', asyn
   await expect(page.locator('#wifiAp')).toBeEnabled();
 });
 
+test('CUM-452: a reply lost with the link still states the next step, not a fetch error', async ({ page }) => {
+  await toRecovery(page);
+  await page.route('**/api/wifi', (route) =>
+    route.request().method() === 'POST' ? route.abort('connectionreset') : route.fallback());
+  await publish(page);
+  const msg = page.locator('#wifiApMsg');
+  await expect(msg).toContainText('device screen shows it; join that network');
+  await expect(msg).not.toContainText('Failed to fetch');
+  await expect(page.locator('#wifiAp')).toBeEnabled();
+});
+
 test('CUM-452: the button shows a pending state while the request is in flight', async ({ page }) => {
   await toRecovery(page);
   let release;

@@ -1041,9 +1041,7 @@ int drawField(Fb565& fb, const Layout& L, int y, int w, const Field& f) {
 // when the menu owns the screen (bigger digits and a countdown on TokenDetail).
 // The fields stack top-down; if two-line values would not fit the column (a very
 // long name and password on the smallest panel), every value drops to one line, so
-// the stack never runs off the glass and no card is drawn over another. With no
-// code in the context (a first-run device, where none is needed) the card reads
-// "Show code" instead.
+// the stack never runs off the glass and no card is drawn over another.
 void drawJoinFields(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx,
                     int textW, bool tappable) {
   const int w = textW ? textW : (L.w - 2 * L.gut());
@@ -1052,9 +1050,7 @@ void drawJoinFields(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ct
   fields.push_back({"1. Join network", ctx.apName});
   if (!ctx.apPass.empty()) fields.push_back({"Network password", ctx.apPass, kTeal});
   fields.push_back({"2. Open", hostOf(ctx.setupUrl)});
-  fields.push_back({"3. Sign-in code",
-                    ctx.webToken.empty() ? std::string("Show code") : ctx.webToken, kTeal,
-                    L.minTap, tappable});
+  fields.push_back({"3. Sign-in code", ctx.webToken, kTeal, L.minTap, tappable});
   int total = -kGap;
   for (const Field& f : fields) total += fieldCaptionH() + fieldCardH(w, f) + kGap;
   if (total > (L.h - L.gut()) - L.bodyTop())
@@ -1097,20 +1093,26 @@ void drawSetupColumn(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& c
   // closed and leaves the flag false, so the button never becomes a dead end. (CUM-48 #3)
   const bool showCodeBtn = sc.showCodeBtn;
   // CUM-453: the cards above the button are laid out against a panel shortened by
-  // the button plus its clearance, so drawTextCard's line clamp absorbs a long
-  // status instead of the button being pushed off the bottom of the glass.
+  // the button plus its gap, so drawTextCard's line clamp absorbs a long status
+  // instead of the button being pushed off the bottom of the glass.
   const int fwClear = fb.textHeight(1) + 3;   // the fw-version line under the button
-  constexpr int kBtnGap = 6;
+  constexpr int kBtnGap = 6, kCaptionH = 14, kCardGap = 8;
+  const int oneLineCardH = fb.textHeight(1) + 6 + 24;   // drawTextCard, 1 line at scale 1
   Layout colL = L;
-  if (showCodeBtn) colL.h -= L.minTap + fwClear + kBtnGap;
+  if (showCodeBtn) colL.h -= L.minTap + kBtnGap;
+  // The first card also always leaves room for the captioned card under it: with a
+  // long device name the onboarding steps otherwise filled the column and pushed the
+  // network password off the bottom of the glass.
+  Layout firstL = colL;
+  if (sc.hasQr) firstL.h -= kCaptionH + oneLineCardH + kCardGap;
 
-  int y = drawTextCard(fb, colL, L.bodyTop(), body, {1, kInk2}, sc.textW) + 8;
+  int y = drawTextCard(fb, firstL, L.bodyTop(), body, {1, kInk2}, sc.textW) + kCardGap;
   if (sc.hasQr) {
     const bool showPass = sc.joinScreen && !ctx.apPass.empty();
     fb.label(L.gut(), y, sc.joinScreen ? (showPass ? "network password" : "setup address")
                                        : "QR includes sign-in",
              kInk3);
-    y += 14;
+    y += kCaptionH;
     y = drawTextCard(fb, colL, y,
                      sc.joinScreen ? (showPass ? ctx.apPass : displayUrl(ctx.setupUrl))
                                    : std::string("Nothing to type."),
@@ -1193,14 +1195,18 @@ void drawSetup(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx, bo
   // (webToken). There the setup network's page serves the sign-in gate, so the
   // owner who joins it needs a code the gate will redeem - the network password
   // alone is not one. The column switches to compact captioned fields so the
-  // steps, the password and the code all fit on the glass. The menu's locked-out
-  // Sign-in QR always uses them: its Show code control does not fit under the
-  // onboarding steps and the password on a 240 px panel.
+  // steps, the password and the code all fit on the glass; on the menu's Sign-in
+  // QR the code card is the Show code control.
+  //
+  // A join screen WITHOUT a code is a first-run device, whose setup network signs
+  // the owner in on its own: it keeps the onboarding steps and draws no Show code
+  // button (under the steps and the password it ran off a 240 px panel, and there
+  // is nothing to type anyway). Sign in (station up) keeps its Show code button.
   const bool menuShowCode = config && ctx.showCodeAffordance;
-  if (joinScreen && (!ctx.webToken.empty() || menuShowCode))
+  if (joinScreen && !ctx.webToken.empty())
     drawJoinFields(fb, L, r, ctx, textW, menuShowCode);
   else
-    drawSetupColumn(fb, L, r, ctx, {joinScreen, menuShowCode, textW, !url.empty()});
+    drawSetupColumn(fb, L, r, ctx, {joinScreen, menuShowCode && !joinScreen, textW, !url.empty()});
   // Firmware version, small in the bottom-left. Guarded so the golden fixture
   // (empty fwVersion) draws nothing and stays byte-identical.
   if (!ctx.fwVersion.empty())

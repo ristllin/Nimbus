@@ -560,8 +560,9 @@ static void test_config_qr_signin_hides_password() {
 // QR) carries a real hand-entry code in webToken. Obviously-fake code values only.
 
 // The shipped menu combination CI never rendered: locked out + the Show code
-// affordance. First without a code (an unprovisioned device): the classic column,
-// whose Show code card used to land at y=231..275 on a 240 px panel.
+// affordance. First without a code (an unprovisioned device, whose setup network
+// signs the owner in on its own): the onboarding column with NO Show code card -
+// that card used to land at y=231..275 on a 240 px panel.
 static void test_config_qr_recover_affordance() {
   ScreenCtx c = configQrRecoverCtx("wxyz2345pq");
   c.showCodeAffordance = true;
@@ -572,6 +573,7 @@ static void test_config_qr_recover_affordance() {
 // Show code tap.
 static ScreenCtx recoverSigninCtx() {
   ScreenCtx c = configQrRecoverCtx("wxyz2345pq");
+  c.wifiState = 1;            // provisioned: Wi-Fi saved, not connected (as fillHeaderCtx reports)
   c.showCodeAffordance = true;
   c.webToken = "0123456789ab";
   return c;
@@ -589,6 +591,7 @@ static ScreenCtx setupSigninCtx() {
   c.apPass = "wxyz2345pq";
   c.apUp = true;
   c.setupUrl = "http://192.168.4.1/?c=aaaaaaaaaaaa";
+  c.wifiState = 1;            // provisioned, joining paused by the publish
   c.webToken = "0123456789ab";
   return c;
 }
@@ -602,6 +605,25 @@ static bool inkInRows(const Fb565& fb, int y0, int y1) {
     for (int x = 0; x < fb.width(); x++)
       if (fb.get(x, y) != kBg) return true;
   return false;
+}
+
+// No card may run into the Show code control from above. On the join fields the
+// code's caption sits kFieldGap below the previous card, so the row just above the
+// caption band must be background; on the Sign in column the row just above the
+// button must be. (An upward clamp once drew the code card over the card above.)
+static void assertNothingDrawnOverShowCode(const char* name, const Fb565& fb,
+                                           const Rendered& r) {
+  for (const auto& t : r.taps) {
+    if (t.action != TapRegion::Action::ShowCode) continue;
+    const bool fields = std::strstr(name, "signin") != nullptr;   // compact join fields
+    const int y = fields ? t.y - (Fb565::textHeight(1) + 3) - 1 : t.y - 1;
+    for (int x = t.x; x < t.x + t.w; x++) {
+      char msg[128];
+      std::snprintf(msg, sizeof msg, "%s: something is drawn over the Show code control (%d,%d)",
+                    name, x, y);
+      TEST_ASSERT_TRUE_MESSAGE(fb.get(x, y) == kBg, msg);
+    }
+  }
 }
 
 // "Every card fully on-glass": for each join / sign-in variant, at every panel
@@ -618,14 +640,18 @@ static void test_join_screens_stay_on_glass() {
         c.showCodeAffordance = true;
         ScreenCtx d = recoverSigninCtx();                   // 401 auto-surface (menu closed)
         d.showCodeAffordance = false;
-        for (ScreenCtx* x : {&a, &b, &c, &d}) {
+        ScreenCtx e = setupSigninCtx();                     // first-run SetupInfo: no code
+        e.webToken = "";
+        e.wifiState = 0;
+        for (ScreenCtx* x : {&a, &b, &c, &d, &e}) {
           x->apName = ssid;
           x->apPass = pass;
           x->netStatus = "No known Wi-Fi found - use " + std::string(ssid);
         }
         const struct { const char* name; ScreenId id; const ScreenCtx* ctx; } cases[] = {
             {"recover_signin", ScreenId::ConfigQr, &a}, {"setup_signin", ScreenId::SetupInfo, &b},
-            {"recover_affordance", ScreenId::ConfigQr, &c}, {"recover_401", ScreenId::ConfigQr, &d}};
+            {"recover_affordance", ScreenId::ConfigQr, &c}, {"recover_401", ScreenId::ConfigQr, &d},
+            {"first_run_setup", ScreenId::SetupInfo, &e}};
         for (const auto& k : cases) {
           Fb565 fb(p.w, p.h);
           const Rendered r = renderScreen(fb, k.id, *k.ctx);
@@ -634,9 +660,33 @@ static void test_join_screens_stay_on_glass() {
           std::snprintf(msg, sizeof msg, "%s at %dx%d (%s): drew into the bottom gutter",
                         k.name, p.w, p.h, ssid);
           TEST_ASSERT_FALSE_MESSAGE(inkInRows(fb, p.h - kPad + 1, p.h), msg);
+          assertNothingDrawnOverShowCode(k.name, fb, r);
         }
       }
     }
+  }
+}
+
+// The Sign in (station up) column with an absurdly long status line: the status
+// card clamps, the Show code button stays on the glass, and nothing is drawn over it.
+static void test_signin_column_long_status_keeps_show_code_clear() {
+  for (const auto& p : kPanels) {
+    ScreenCtx c = baseCtx();
+    c.modeName = "orchestrator";
+    c.configUrl = "http://192.0.2.10/?t=ffffffffffff";
+    c.netStatus = std::string(40, 'x') + " " + std::string(40, 'y') + " " + std::string(40, 'z') +
+                  " " + std::string(40, 'w');
+    c.staConnected = true;
+    c.wifiState = 2;
+    c.showCodeAffordance = true;
+    Fb565 fb(p.w, p.h);
+    const Rendered r = renderScreen(fb, ScreenId::ConfigQr, c);
+    assertRegionsSane("sign_in_long_status", r, p.w, p.h);
+    TEST_ASSERT_TRUE_MESSAGE(hasTapAction(r, TapRegion::Action::ShowCode),
+                             "Sign in lost its Show code button");
+    TEST_ASSERT_FALSE_MESSAGE(inkInRows(fb, p.h - kPad + 1, p.h),
+                              "sign_in_long_status drew into the bottom gutter");
+    assertNothingDrawnOverShowCode("sign_in_long_status", fb, r);
   }
 }
 
@@ -1037,6 +1087,7 @@ int main() {
   RUN_TEST(test_config_qr_recover_signin);
   RUN_TEST(test_setup_info_signin);
   RUN_TEST(test_join_screens_stay_on_glass);
+  RUN_TEST(test_signin_column_long_status_keeps_show_code_clear);
   RUN_TEST(test_join_screen_shows_the_code);
   RUN_TEST(test_join_code_card_tappable_only_in_menu);
   RUN_TEST(test_join_screen_code_decision_covers_every_screen);

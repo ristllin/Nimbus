@@ -227,6 +227,10 @@ bool consumeLedConfirm();
 bool consumeWifiJoinStarted();
 bool consumeWifiHandoffReady();
 
+// True while the setup network signs its peers in on its own (nothing saved in the
+// Wi-Fi slot yet). When false, a join screen must show a sign-in code (CUM-453).
+bool apSignsInAutomatically();
+
 // True (once) after POST /api/wifi action=publishap was APPLIED on the main task
 // (CUM-452): the main loop consumes it and puts the Setup screen on the panel.
 bool consumeSetupInfoRequest();

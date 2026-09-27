@@ -288,6 +288,15 @@ bool webAuthOk(::AsyncWebServerRequest* r) {
   return ok;
 }
 
+// True while the setup network signs its peers in on its own: nothing is saved in
+// the Wi-Fi slot yet, so an AP peer is handed the token (the "/" and catch-all
+// redirects) and /savewifi takes first credentials without one. Once Wi-Fi is saved
+// it is not, and a join screen must carry a sign-in code instead (CUM-453). One rule
+// for all of them so the handout and the on-screen code can never disagree.
+bool apSignsInAutomatically() {
+  return solide::memory::getString(NIMBUS_KEY_STA_SSID, "").length() == 0;
+}
+
 // Reject an unauthenticated state-changing request with 401. Returns true if it blocked.
 static bool authBlocked(::AsyncWebServerRequest* r) {
   if (webAuthOk(r)) return false;
@@ -358,6 +367,11 @@ static volatile int     s_storagePct     = 0;
 // the AsyncTCP handler. One slot, so clicking both in quick succession lands the
 // LAST intent rather than an arbitrary interleaving. 0 = none, 1 = publish, 2 = resume.
 static volatile int8_t  s_wifiLinkAction = 0;
+// When it was queued. The apply waits kWifiLinkFlushMs so the HTTP reply leaves
+// before a publish drops the station link it travels on (CUM-452): applied at once,
+// the reply died with the link and the page showed a fetch error, not the next step.
+static volatile uint32_t s_wifiLinkAtMs = 0;
+static constexpr uint32_t kWifiLinkFlushMs = 500;
 // CUM-452: set when a publish is APPLIED (the radio really switched), so loop()
 // puts the Setup screen up. Main-task only: written in loopWeb(), read by
 // consumeSetupInfoRequest(), both on the main task.
@@ -1492,7 +1506,7 @@ void beginWeb(const WebConfig& wc) {
     // for free - it hits the identify gate like any LAN peer. (webAuthToken() is
     // stable, so this only changes WHEN the token is auto-supplied, not its value.)
     const bool onAp = r->client() && isApInterface(r->client()->localIP());
-    const bool provisioned = solide::memory::getString(NIMBUS_KEY_STA_SSID, "").length() > 0;
+    const bool provisioned = !apSignsInAutomatically();
     if (onAp && !provisioned && !(r->hasParam("t"))) {
       r->redirect(String("/?t=") + agent::store::webAuthToken().c_str());
       return;
@@ -3700,6 +3714,7 @@ void beginWeb(const WebConfig& wc) {
       // spinlock: an unlocked read-then-clear could drop a request landing between them.
       portENTER_CRITICAL(&s_cfgMux);
       s_wifiLinkAction = (action == "publishap") ? 1 : 2;
+      s_wifiLinkAtMs = millis();
       portEXIT_CRITICAL(&s_cfgMux);
       JsonDocument d;
       d["queued"] = true;
@@ -3737,7 +3752,7 @@ void beginWeb(const WebConfig& wc) {
     // the token - it is protected by the setup-AP password and the owner has no token
     // path before joining. Once provisioned, repointing WiFi needs the token so a LAN
     // attacker can't move the device onto a hostile network.
-    bool provisioned = solide::memory::getString(NIMBUS_KEY_STA_SSID, "").length() > 0;
+    const bool provisioned = !apSignsInAutomatically();
     if (provisioned && authBlocked(r)) return;
     String ssid = r->hasParam("ssid", true) ? r->getParam("ssid", true)->value() : "";
     String pass = r->hasParam("pass", true) ? r->getParam("pass", true)->value() : "";
@@ -3781,7 +3796,7 @@ void beginWeb(const WebConfig& wc) {
     // device with the shipped AP password no longer leaks its full-control token to
     // anyone in RF range - provisioned AP peers land on the token-less identify gate.
     const bool onAp = r->client() && isApInterface(r->client()->localIP());
-    const bool provisioned = solide::memory::getString(NIMBUS_KEY_STA_SSID, "").length() > 0;
+    const bool provisioned = !apSignsInAutomatically();
     if (onAp && !provisioned) {
       const String openUrl = String("/?t=") + agent::store::webAuthToken().c_str();
       // Known OS captive-detection probe (CUM-260): a bare redirect is not reliably
@@ -3894,9 +3909,12 @@ void loopWeb() {
   // POST /api/wifi publishap|resume - they re-point the radio and can restart the
   // captive DNS server that process() pumps from this same task, so they run here.
   if (s_wifiLinkAction) {
+    int8_t act = 0;
     portENTER_CRITICAL(&s_cfgMux);
-    const int8_t act = s_wifiLinkAction;
-    s_wifiLinkAction = 0;
+    if (uint32_t(millis() - s_wifiLinkAtMs) >= kWifiLinkFlushMs) {   // reply flushed
+      act = s_wifiLinkAction;
+      s_wifiLinkAction = 0;
+    }
     portEXIT_CRITICAL(&s_cfgMux);
     if (act == 1) {
       publishSetupNetwork();
@@ -3905,7 +3923,7 @@ void loopWeb() {
       // (network, password, join QR, sign-in code) on the panel.
       s_ledConfirm = true;
       s_setupInfoReq = true;
-    } else {
+    } else if (act == 2) {
       cancelSetupHold();
     }
   }

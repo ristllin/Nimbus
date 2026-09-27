@@ -350,10 +350,10 @@ code card is also the Show code control) and the Setup screen. That code is the
 10-minute hand-entry code from the same single-use table the gate redeems from, so what
 the screen shows is what the gate accepts. The Sign-in QR that repeated failed sign-ins
 bring up on their own never shows a code, since unauthenticated traffic can trigger it.
-**Publish setup network** (the web page's **Connectivity > Recovery**, or the device's
-**Settings > Connectivity > Wi-Fi**) now shows that Setup screen on the device and
-confirms on the ring, and the web button says the page will disconnect when it is open
-over the home Wi-Fi. The Setup screen stays up for the code's 10 minutes, or until
+**Publish Setup Network** on the web page (**Connectivity > Recovery**), or **Publish
+setup network** on the device (**Settings > Connectivity > Wi-Fi**), now shows that
+Setup screen on the device and confirms on the ring, and the web button says the page
+will disconnect when it is open over the home Wi-Fi. The Setup screen stays up for the code's 10 minutes, or until
 Wi-Fi reconnects, then the status screen returns. First-run SetupInfo keeps its
 numbered onboarding steps and shows no code: an unprovisioned device signs the owner in
 automatically.

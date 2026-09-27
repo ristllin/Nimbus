@@ -192,6 +192,9 @@ static constexpr uint32_t kSetupHoldMs = 10UL * 60UL * 1000UL;
 // CUM-453: the frame on the panel shows the hand-entry sign-in code (a join screen of
 // a provisioned device), so loop() repaints it the moment that code stops working.
 static bool          g_panelShowsCode = false;
+// A frame carrying a freshly minted code was dropped (a blit in flight): the panel
+// may still show the previous, dead code, so loop() retries the repaint.
+static bool          g_codeFrameDropped = false;
 static uint32_t      g_revealDurMs   = 4000;   // actual length of the live reveal window
                                                // (the boot handoff uses a shorter one)
 static constexpr uint32_t kRevealMs = 4000;  // how long a single click lights the ring
@@ -1132,7 +1135,10 @@ static render::ScreenCtx buildCtx(int cursorJob) {
 // who joins the setup network meets a sign-in gate and has nothing it will accept.
 // Returns whether the frame shows a code.
 static bool fillJoinSigninCode(render::ScreenCtx& c, attn::ScreenId screen) {
-  if (!render::joinScreenNeedsSigninCode(screen, c, net::provisioned())) return false;
+  // "Provisioned" here is exactly "the setup network no longer signs its peers in"
+  // - the same rule the web layer's token handout uses, so the two cannot disagree.
+  if (!render::joinScreenNeedsSigninCode(screen, c, !net::apSignsInAutomatically()))
+    return false;
   c.webToken = std::string(net::showCode().c_str());
   return true;
 }
@@ -1154,8 +1160,10 @@ static void renderScreen(attn::ScreenId screen, int cursorJob, bool fullClear) {
   const auto push = hw::tft::renderAndPush(screen, ctx);
   if (push == hw::tft::Push::Dropped) {
     g_sched.onRenderDone(tnow);   // never leave the scheduler latched
+    if (showsCode) g_codeFrameDropped = true;   // the minted code never reached the glass
     return;                       // panel is a frame behind; caller retries
   }
+  g_codeFrameDropped = false;
   // Pushed OR Unchanged: the panel genuinely shows this screen, so the entry
   // gates that key off g_lastScreen must see it (an Unchanged frame is a
   // SUCCESS - treating it as a drop is what latched the repaint loop).
@@ -4762,7 +4770,7 @@ static void drainTouch(uint32_t now) {
 // Repaint the moment it stops working - the render re-mints it through
 // net::showCode(). Only a frame that actually shows a code triggers this.
 static void repaintIfShownCodeDead() {
-  if (!g_panelShowsCode || !net::showCodeStale()) return;
+  if (!g_panelShowsCode || !(g_codeFrameDropped || net::showCodeStale())) return;
   if (g_menu.isOpen())
     g_menuNeedsPaint = true;
   else if (g_lastScreen == uint8_t(attn::ScreenId::SetupInfo))
@@ -5515,6 +5523,11 @@ void loop() {
       if (!g_menu.isOpen() &&
           g_lastScreen == uint8_t(attn::ScreenId::StatusIdle))
         g_sched.onIntent(uint8_t(attn::ScreenId::StatusIdle), false, now);
+      // The Setup screen after a publish carries the same header (CUM-455): it is
+      // painted in the very pass that drops the link, before the radio reports it,
+      // so repaint it once the new level has settled.
+      else if (!g_menu.isOpen() && g_lastScreen == uint8_t(attn::ScreenId::SetupInfo))
+        renderScreen(attn::ScreenId::SetupInfo, -1);
     }
   }
 
@@ -6003,6 +6016,11 @@ void loop() {
   // reply is being held (P2.3): a sticky reply must not be overwritten by the
   // next scheduled render - it dismisses on tap, like the menu's own gating. It is
   // also suppressed while the calibration gate owns the panel (CUM-245).
+  // While the post-publish Setup screen holds (CUM-452), an AMBIENT status refresh -
+  // a turn ending because the publish cut the link, a telemetry tick - must not
+  // replace it. Attention intents (a job waiting on the owner) still paint.
+  if (g_setupHoldUntilMs && g_lastScreen == uint8_t(attn::ScreenId::SetupInfo))
+    g_sched.clearPendingAmbient();
   if (!g_calGateActive && !g_menu.isOpen() && !g_askSticky) {
     render::RenderCommand cmd = g_sched.tick(now);
     if (cmd.render) {

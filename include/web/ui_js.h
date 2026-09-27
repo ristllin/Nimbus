@@ -2869,7 +2869,11 @@ $('savewifi').onclick=()=>{
   wifiPost('publishap').then(d=>{b.disabled=false;toast('Setup network published');
    if(d.onAp){say('The device screen now shows the setup network. Joining is paused until you resume.');setTimeout(loadWifi,1500);return;}
    say('The device screen now shows the setup network; this page will disconnect.'+(d.apSsid?(' Join "'+d.apSsid+'" and follow the steps on the device screen.'):''));
-  }).catch(e=>{b.disabled=false;say(e.message);});});};
+  }).catch(e=>{b.disabled=false;
+   // A network-level failure (fetch rejects with a TypeError) right after a publish
+   // most likely means the device already left this network; say so, with the next
+   // step, rather than a raw "Failed to fetch". A reply from the device is its error.
+   say(e instanceof TypeError?'Lost the device. If it is publishing its setup network, the device screen shows it; join that network to keep going.':e.message);});});};
  const c=$('wifiResume'); if(c)c.onclick=()=>{
   wifiPost('resume').then(()=>{toast('Joining resumed');
    if($('wifiApMsg'))$('wifiApMsg').textContent='Joining resumed. The device is trying its saved networks again.';
