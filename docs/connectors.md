@@ -89,6 +89,27 @@ known problem; a successful OAuth mint this boot is positive proof the
 credential works (`src/agent/connectors.cpp` `authStateOf`, fed from the one
 credential choke point).
 
+**Mistral Studio connectors: the workspace listing decides.** A Studio connector
+(Google Calendar, Notion, Slack, ...) has no credential on the device, so its
+state comes from Mistral. On each Mistral **Verify** the device asks Mistral which
+connectors the key's workspace offers (`GET /v1/connectors`):
+
+- **Listed and active:** usable. The assistant is told it can use it, and the
+  Connectors tab shows where it runs.
+- **Not listed, or listed as inactive:** not usable; the Connectors tab shows
+  **connect it in Mistral**.
+- **Not checked yet** (after a restart or a Mistral key change, until the next
+  Mistral verify): treated as not usable. The assistant is told the workspace has
+  not been checked rather than sent to Mistral for nothing.
+
+Mistral's own "signed in" flag (`is_authenticated`) is a hint, not the rule: it
+reads false even for connectors that demonstrably work (a Google Calendar
+connector reporting false returned real events). So a listed connector is used,
+and the assistant is told that if a result comes back empty, the account may
+still need connecting in Mistral. A Virtual Nimbus runs the same check at
+startup, after a Mistral key is saved, and when its first Studio connector is
+added (the hosted page has no Verify button).
+
 > **What validation does not do.** It confirms the *provider key* works, not each
 > connector's individual tools. Per-connector *functional* probing - actually
 > calling a connector, which would spend tokens - is not implemented. A connector

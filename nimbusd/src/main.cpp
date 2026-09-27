@@ -21,6 +21,7 @@
 // Env / config keys: NIMBUSD_DATA_DIR (/data), NIMBUSD_CONFIG (<data>/config.env),
 //   NIMBUSD_CONTROL_ADDR (127.0.0.1), NIMBUSD_CONTROL_PORT (8787),
 //   NIMBUSD_WEB_TOKEN, NIMBUSD_TG_CHAT_ID, NIMBUSD_DEVICE_NAME, NIMBUSD_PRIORITY,
+//   NIMBUSD_SUB_PRIORITY, NIMBUSD_ORCH_HOST,
 //   TELEGRAM_BOT_TOKEN, OPENAI_API_KEY / ANTHROPIC_API_KEY / MISTRAL_API_KEY,
 //   TAVILY_API_KEY, TZ.
 #include <atomic>
@@ -50,6 +51,10 @@ nimbusd::NimbusdRig::Options buildOptions(const nimbusd::Config& cfg) {
   opt.dataDir = cfg.get("NIMBUSD_DATA_DIR", "/data");
   opt.devName = cfg.get("NIMBUSD_DEVICE_NAME", "Nimbus");
   opt.priority = cfg.get("NIMBUSD_PRIORITY", "mistral,openai,anthropic");
+  // Device parity: the sub-agent ladder ("" -> same as NIMBUSD_PRIORITY) and an
+  // explicit head pin ("" -> the first keyed provider in NIMBUSD_PRIORITY).
+  opt.subPriority = cfg.get("NIMBUSD_SUB_PRIORITY");
+  opt.orchHost = cfg.get("NIMBUSD_ORCH_HOST");
   opt.role = "admin";  // a hosted instance is single-owner by construction
   // Embeddings default to Mistral (cheapest); disabled if no key is present so
   // the daemon still runs (recall simply returns nothing).
@@ -98,6 +103,7 @@ void installReplyDelivery(nimbusd::NimbusdRig& rig, nimbusd::ReplyBuffer& replie
 // Run one turn and print the reply (a keyed smoke check).
 int cmdOnce(nimbusd::Config& cfg, const std::string& text) {
   nimbusd::NimbusdRig rig(cfg, buildOptions(cfg));
+  rig.refreshMistralWorkspace();   // same startup probe the daemon runs
   auto t = rig.say("owner", text);
   std::printf("%s\n", t.reply.empty() ? "(no reply)" : t.reply.c_str());
   return t.reply.empty() ? 1 : 0;
@@ -108,7 +114,9 @@ int cmdOnce(nimbusd::Config& cfg, const std::string& text) {
 // other provider so a keyed instance's boot log tells the honest story.
 void logStartupConfig(const nimbusd::Config& cfg, const nimbusd::NimbusdRig::Options& opt) {
   logLine("starting nimbusd: data=" + opt.dataDir + " name=" + opt.devName +
-          " priority=" + opt.priority);
+          " priority=" + opt.priority +
+          " subPriority=" + (opt.subPriority.empty() ? "(same)" : opt.subPriority) +
+          " orchHost=" + (opt.orchHost.empty() ? "(first keyed)" : opt.orchHost));
   for (const char* h : {"openai", "anthropic", "mistral"})
     logLine(std::string("provider ") + h + ": " +
             (cfg.providerKey(h).empty() ? "no key" : nimbusd::Config::mask(cfg.providerKey(h))));
@@ -126,6 +134,11 @@ int runDaemon(nimbusd::Config& cfg) {
   nimbusd::NimbusdRig rig(cfg, opt);
   nimbusd::EngineThread eng(&rig);
   eng.start();
+  // The Mistral workspace answer is RAM state: probe it at startup so an enabled
+  // Studio connector (gcal/notion/slack) is usable after a restart without anyone
+  // pressing verify (a hosted page has no verify button). A no-op without a Mistral
+  // key or an enabled Studio connector; runs on the engine thread before any turn.
+  eng.postWork([&rig] { rig.refreshMistralWorkspace(); });
 
   // The reply ring that backs the web chat page (GET /api/replies). Every reply
   // the engine produces is recorded here and, when a bot is configured, also

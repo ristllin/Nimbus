@@ -91,6 +91,8 @@ may also live in `<data>/config.env`. Env always wins. Nothing secret is logged
 | `NIMBUSD_DATA_DIR` | durable store root (default `/data`) |
 | `NIMBUSD_CONTROL_ADDR` / `NIMBUSD_CONTROL_PORT` | control surface bind (default `127.0.0.1:8787`) |
 | `NIMBUSD_DEVICE_NAME`, `NIMBUSD_PRIORITY`, `TZ` | display name, provider failover order, timezone |
+| `NIMBUSD_SUB_PRIORITY` | sub-agent provider order (device `subPrio`); unset = same as `NIMBUSD_PRIORITY` |
+| `NIMBUSD_ORCH_HOST` | pin the head provider (device `orchHost`); unset = the first keyed provider in `NIMBUSD_PRIORITY` |
 
 ## Control surface (the seam the Phase-1 sidecar forwards to)
 
@@ -112,6 +114,23 @@ every forwarded request, so the browser reaches all of these through the tunnel.
 | `GET /api/themes`, `/api/qr`, `/api/docs/search` | pure/static surfaces (no engine, no hardware) |
 | hardware panels (`/api/audio/*`, `/api/wifi`, `/api/ota/*`, ...) | honest "not on a hosted instance" - never a faked value or a dead control |
 | `POST /mcp`, `GET /backup` | JSON-RPC to the tool registry / a consistent tar of the mem tree |
+| `GET/POST /api/connectors` | the connector registry (device contract); each configured entry carries the derived `auth` the badge reads |
+| `GET /api/connectors/catalog` | the model-facing `[PROVIDERS & CONNECTORS]` block exactly as the next turn gets it (text) |
+| `POST /api/verify` | `provider=mistral` re-runs the Mistral workspace probe in the background; other providers are acknowledged |
+
+**Mistral Studio connectors (device parity).** A Studio connector (gcal, notion,
+slack, ...) has no stored credential: it is usable once the Mistral key's workspace
+lists it as active in `GET /v1/connectors` (the shared rule in
+`lib/core/.../connectors_wire.h`; `is_authenticated` is only a hint, since it reads
+false for connectors that work). The device runs that probe after each Mistral
+verify; the hosted page has no verify button, so the daemon runs it at startup,
+after a Mistral key is saved, after a connectors write while the workspace is still
+unchecked, and on `POST /api/verify provider=mistral`. It is skipped (no request)
+without a Mistral key or an enabled Studio connector, and until an answer lands a
+Studio connector reads not usable (fail-closed). The catalog, the `/api/connectors`
+badges and the `/api/tools` connector rows all read one auth-stamped view, and the
+catalog names the head the turn really runs on (the first keyed provider, or the
+`NIMBUSD_ORCH_HOST` pin).
 
 **The web app (CUM-265).** `GET /` serves the device's own single-page app - the
 exact fragment bytes the device serves (`tools/gen_webui.py` assembles them from

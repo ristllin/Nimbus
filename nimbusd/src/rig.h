@@ -3,7 +3,9 @@
 #include <unistd.h>
 
 #include <chrono>
+#include <ctime>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -92,6 +94,11 @@ class NimbusdRig {
   struct Options {
     std::string dataDir = "/data";               // durable store root
     std::string priority = "mistral,openai,anthropic";
+    // Device parity (store::subPriority / store::orchHost): the sub-agent provider
+    // ladder ("" -> same as priority) and an explicit head pin ("" -> the first
+    // keyed provider in priority, the device's resolvedOrchHost rule).
+    std::string subPriority;
+    std::string orchHost;
     std::string devName = "Nimbus";
     std::string role = "admin";                   // hosted instance is single-owner
     bool        toolLoop = true;
@@ -243,13 +250,110 @@ class NimbusdRig {
   // fresh conversation carrying the new set (device parity: setOrchConvId("")).
   void noteConnectorsWrite() { convId_.clear(); }
   bool providerKeyed(const char* h) const { return !cfg_.providerKey(h).empty(); }
-  // The host the UI badges connectors against: nimbusd pins no orch host, so the
-  // first alpha token of the priority list (the device's fallback rule).
+  // The host the turn ACTUALLY runs on, which the connector catalog, the web badge
+  // and the Capabilities table all key "callable on your own turns" off: an explicit
+  // orchHost, else the first KEYED provider in priority, else the router fallback
+  // head, else the bare first token - the engine's resolveTurnHost rule. The old
+  // raw-first-token badge told a mistral-only instance whose priority led with
+  // openai that it was "running on openai", so it misjudged every connector.
   std::string hostBadge() const {
-    const std::string& pri = opt_.priority;
-    size_t e = 0;
-    while (e < pri.size() && isalpha((unsigned char)pri[e])) e++;
-    return pri.substr(0, e);
+    if (!opt_.orchHost.empty()) return opt_.orchHost;
+    std::string head;
+    std::stringstream ss(opt_.priority);
+    for (std::string tok; std::getline(ss, tok, ',');) {
+      const size_t b = tok.find_first_not_of(" \t");
+      const size_t e = tok.find_last_not_of(" \t");
+      if (b == std::string::npos) continue;
+      tok = tok.substr(b, e - b + 1);
+      if (head.empty()) head = tok;
+      if (!cfg_.providerKey(tok).empty()) return tok;
+    }
+    if (hasCumulo()) return kCumuloSlug;               // routerFallbackHost order
+    if (hostAvailable(kZaiSlug)) return kZaiSlug;
+    return head;
+  }
+
+  // ---- Mistral workspace probe (device parity: provider_verify syncMistralConnectors)
+  // A Mistral Studio connector is usable once the key's workspace LISTS it as active
+  // in GET /v1/connectors (the portable rule in connectors_wire.h). The device runs
+  // this after each Mistral verify; a hosted instance has no verify button, so the
+  // daemon runs it at startup, after a Mistral key is set, after a connectors write
+  // that finds it unchecked, and on POST /api/verify provider=mistral. Skipped (no
+  // request) unless an enabled Studio connector exists and a Mistral key is set.
+  // Returns whether a definitive answer landed. Engine thread only (it uses the
+  // engine's transport); readers take the snapshot under wsMu_.
+  struct WorkspaceProbe {
+    int status = -1;        // last HTTP status (0 transport failure, -1 never ran)
+    size_t bytes = 0;       // size of the last response body
+    bool noted = false;     // the last body parsed into an answer
+    uint64_t epoch = 0;     // when it ran
+    uint32_t runs = 0;      // probes attempted since start (lets a poller see a new one)
+  };
+  bool refreshMistralWorkspace() {
+    const std::string key = cfg_.providerKey("mistral");
+    if (key.empty() || !nimbus::orch::wantsMistralWorkspaceProbe(conns_.parsed())) return false;
+    agent::HttpRequest req;
+    req.method = "GET";
+    req.host = "api.mistral.ai";
+    req.path = "/v1/connectors?page_size=100";
+    req.timeoutMs = 25000;
+    req.headers.push_back({"Authorization", "Bearer " + key});
+    req.headers.push_back({"Accept", "application/json"});
+    agent::HttpResponse resp;
+    std::string err;
+    const bool sent = http_->exec(req, resp, err);
+    nimbus::orch::MistralWorkspace fresh;
+    // Only a 200 carries a listing; anything else is "no signal" (keep the last).
+    const bool noted = sent && resp.status == 200 &&
+                       nimbus::orch::noteMistralWorkspaceProbe(fresh, resp.body.c_str());
+    std::lock_guard<std::mutex> lk(wsMu_);
+    if (noted) ws_ = std::move(fresh);
+    wsProbe_ = WorkspaceProbe{sent ? resp.status : 0, resp.body.size(), noted,
+                              (uint64_t)time(nullptr), wsProbe_.runs + 1};
+    std::fprintf(stderr, "[nimbusd] connectors: mistral workspace probe HTTP %d (%zu bytes)%s\n",
+                 wsProbe_.status, wsProbe_.bytes,
+                 noted ? "" : " - no answer, kept the last one");
+    return noted;
+  }
+  WorkspaceProbe workspaceProbe() const {
+    std::lock_guard<std::mutex> lk(wsMu_);
+    return wsProbe_;
+  }
+  bool workspaceProbed() const {
+    std::lock_guard<std::mutex> lk(wsMu_);
+    return ws_.probed;
+  }
+  // The credential state for one connector by the shared rule, against the current
+  // workspace answer. T3 OAuth has no hosted mint, so its live signal is -1.
+  int8_t connectorAuth(const nimbus::orch::ConnectorInfo& c) const {
+    std::lock_guard<std::mutex> lk(wsMu_);
+    return nimbus::orch::connectorAuthFor(c, ws_, -1);
+  }
+  // The parsed registry with auth + the workspace hint stamped: the ONE view the
+  // model catalog, GET /api/connectors and /api/tools all read (device parity:
+  // connectors.cpp portableList).
+  std::vector<nimbus::orch::ConnectorInfo> connectorsView() const {
+    auto cs = conns_.parsed();
+    std::lock_guard<std::mutex> lk(wsMu_);
+    nimbus::orch::applyConnectorAuth(cs, ws_);
+    return cs;
+  }
+  // The provider state the catalog and the capability scope read.
+  nimbus::orch::ProviderState providerState() const {
+    nimbus::orch::ProviderState ps;
+    ps.openaiKeyed = providerKeyed("openai");
+    ps.anthropicKeyed = providerKeyed("anthropic");
+    ps.mistralKeyed = providerKeyed("mistral");
+    ps.capProbe = 0;   // no verify cache: report key presence, never claim "verified"
+    ps.currentHost = hostBadge();
+    return ps;
+  }
+  // The "[PROVIDERS & CONNECTORS]" block exactly as the next turn's context gets it
+  // ("" when no connector is configured, matching the turn path).
+  std::string connectorsCatalog() const {
+    auto cs = connectorsView();
+    if (cs.empty()) return std::string();
+    return nimbus::orch::catalogText(cs, providerState());
   }
 
   // True iff at least one chat provider is configured - a direct BYOK key OR the
@@ -300,6 +404,13 @@ class NimbusdRig {
     if (env.empty()) return false;
     cfg_.setOverride(env, key);   // authoritative; an empty key erases the override
     saveSecrets();
+    // Device parity (resetMistralConnectorsProbe on a mistKey write): a connector
+    // listed under the OLD key's workspace must not read usable under the new key
+    // until a fresh probe lands (the web layer kicks one right after).
+    if (host == "mistral") {
+      std::lock_guard<std::mutex> lk(wsMu_);
+      ws_ = nimbus::orch::MistralWorkspace();
+    }
     buildEngine();                // re-register heads for the new key set
     ++keyGen_;
     return true;
@@ -334,6 +445,11 @@ class NimbusdRig {
   std::string lastServedBy() const { return lastServedBy_; }
 
   const Options& options() const { return opt_; }
+  // The sub-agent provider ladder (device store::subPriority): the configured one,
+  // else the head priority.
+  std::string subPriority() const {
+    return opt_.subPriority.empty() ? opt_.priority : opt_.subPriority;
+  }
 
   // The model a head requests: an operator override (opt.models[h]) else the
   // provider default. Wired into the provider deps as orchModel/subModel, so the
@@ -615,9 +731,9 @@ class NimbusdRig {
     // Keeps the engine's honest "no provider set up" reply from firing on a
     // Cumulo-only instance (CUM-211).
     p.anyKeyed = [this] { return anyProviderConfigured(); };
-    p.orchHost = [] { return std::string(); };
+    p.orchHost = [this] { return opt_.orchHost; };
     p.providerPriority = [this] { return opt_.priority; };
-    p.subPriority = [this] { return opt_.priority; };
+    p.subPriority = [this] { return subPriority(); };
     p.orchModel = [this](const std::string& h) { return modelFor(h); };
     p.subModel = [this](const std::string& h) { return modelFor(h); };
     p.modelChoices = [](const std::string& h) {
@@ -758,20 +874,11 @@ class NimbusdRig {
       return reg_.handleRpc(req, who);
     };
     // Connector catalog (CUM-424): the "[PROVIDERS & CONNECTORS]" context block,
-    // rendered by the same portable composer the device uses. capProbe=0: nimbusd
-    // has no verify cache yet, so the catalog reports key PRESENCE and never
+    // rendered by the same portable composer the device uses, over the SAME
+    // auth-stamped view GET /api/connectors badges (connectorsView). capProbe=0:
+    // nimbusd has no verify cache yet, so the catalog reports key PRESENCE and never
     // claims "verified" (the honest mode the composer defines for exactly this).
-    d.connectorsCatalog = [this] {
-      auto cs = conns_.parsed();
-      if (cs.empty()) return std::string();
-      nimbus::orch::ProviderState ps;
-      ps.openaiKeyed = providerKeyed("openai");
-      ps.anthropicKeyed = providerKeyed("anthropic");
-      ps.mistralKeyed = providerKeyed("mistral");
-      ps.capProbe = 0;
-      ps.currentHost = hostBadge();
-      return nimbus::orch::catalogText(cs, ps);
-    };
+    d.connectorsCatalog = [this] { return connectorsCatalog(); };
     d.modelChoices = [this](const std::string& p) { return config().provider.modelChoices(p); };
     d.episodicCaptureUser = [this](const std::string& c, const std::string& t,
                                    const std::string& tag) { capture(c, "user", t, tag); };
@@ -914,6 +1021,11 @@ class NimbusdRig {
   }
 
   ConnectorsStore conns_;   // connector registry (CUM-424), file-backed
+  // The Mistral workspace answer (Studio-connector usability) + the last probe's
+  // outcome; written on the engine thread, read by the HTTP thread, so under wsMu_.
+  mutable std::mutex wsMu_;
+  nimbus::orch::MistralWorkspace ws_;
+  WorkspaceProbe wsProbe_;
   std::string convId_, antEnv_, antAgents_, memory_, lastHost_, lastServedBy_;
   bool lastFallback_ = false;   // CUM-236 served-by of the most recent turn
   std::function<void(const std::string&, const std::string&)> onDeliver_;

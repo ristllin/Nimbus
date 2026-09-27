@@ -128,6 +128,16 @@ class EngineThread {
     return fut;
   }
 
+  // Fire-and-forget background work ON the engine thread, serialized with turns the
+  // way the device serializes its verify/probe on the single work slot (e.g. the
+  // Mistral workspace probe after a key or connectors write). An exception is
+  // contained here, so a failed job can never take the daemon down.
+  void postWork(std::function<void()> fn) {
+    post([fn] {
+      try { fn(); } catch (...) {}
+    });
+  }
+
   // Flush all durable stores ON the engine thread and wait. Used by the backup
   // endpoint so it captures a CONSISTENT on-disk state (nimbusd owns the
   // tmp->rename + append discipline; a naive tar of a live volume races it).
