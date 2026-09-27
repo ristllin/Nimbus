@@ -202,12 +202,13 @@ static void test_used_and_expired_slots_reused_first() {
 static void test_mint_never_evicts_live_while_a_slot_is_free() {
   uint32_t rng = 0x453u, t = 0;
   auto next = [&]() { rng = rng * 1664525u + 1013904223u; return rng >> 8; };
-  char minted[64][12];
-  int count = 0;
+  constexpr int kHist = 64;          // ring of the most recent mints, far more than CAP
+  char minted[kHist][12];
+  int count = 0, head = 0;
   for (int step = 0; step < 400; step++) {
     t += next() % 40000;                                           // 0-40 s between events
     size_t liveBefore = codes->liveCount(t);
-    bool liveNow[64];
+    bool liveNow[kHist];
     for (int i = 0; i < count; i++) liveNow[i] = codes->isRedeemable(minted[i], t);
     if (next() % 5 == 0 && count > 0) {                              // sometimes redeem one
       codes->redeem(minted[next() % uint32_t(count)], t);
@@ -223,8 +224,9 @@ static void test_mint_never_evicts_live_while_a_slot_is_free() {
         TEST_ASSERT_TRUE_MESSAGE(!liveNow[i] || codes->isRedeemable(minted[i], t),
                                  "a redeemable code was evicted while a slot was free");
     }
-    std::snprintf(minted[count % 64], sizeof minted[0], "%s", c);
-    if (count < 64) count++;
+    std::snprintf(minted[head], sizeof minted[0], "%s", c);
+    head = (head + 1) % kHist;
+    if (count < kHist) count++;
   }
 }
 

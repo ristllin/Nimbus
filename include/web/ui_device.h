@@ -284,7 +284,7 @@ static const char UI_DEVICE[] PROGMEM = R"=====(<div class=pane id=pane-dash>
 <div class=setbody>
 <p class="hint tip">The setup hotspot is a recovery network, separate from your home Wi-Fi. Touch/TFT devices normally turn it off after joining home Wi-Fi. Publishing it pauses joining and makes the recovery network available; resume joining once the password is corrected.</p>
 <div class=row><button id=wifiAp type=button>Publish Setup Network</button><button id=wifiResume type=button>Resume Joining</button></div>
-<p class=hint id=wifiApMsg></p>
+<p class=hint id=wifiApMsg role=status></p>
 </div>
 </details>
 </div>

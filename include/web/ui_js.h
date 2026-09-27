@@ -104,9 +104,9 @@ function showAuth(){
     '<p style="color:#9ab;font-size:13px">Type the device sign-in code from the device screen. When the device shows its Setup screen, the code is on it; otherwise open the Sign-in QR (Settings &gt; Connectivity) and tap Show code. It lasts about 10 minutes.</p>'+
     // Codes are lowercase hex (CUM-453): no autocapitalize or autocorrect, or a phone
     // keyboard capitalizes the first letter of a case-sensitive code.
-    '<input id=authtok placeholder="device sign-in code" autocapitalize=off autocorrect=off spellcheck=false autocomplete=off style="width:240px;padding:8px;font-size:15px"> '+
+    '<input id=authtok placeholder="device sign-in code" aria-label="Device sign-in code" autocapitalize=off autocorrect=off spellcheck=false autocomplete=off style="width:240px;padding:8px;font-size:15px"> '+
     '<button id=authuse style="padding:8px 16px;font-size:15px">Continue</button>'+
-    '<p id=autherr style="color:#e88;font-size:13px;margin-top:8px"></p></div>'+
+    '<p id=autherr role=alert style="color:#e88;font-size:13px;margin-top:8px"></p></div>'+
     '<p style="color:#678;font-size:12px;margin-top:14px">New device? Open 192.168.4.1 on its setup hotspot. First-time setup signs you in automatically.</p></div>';
   document.body.appendChild(b);
   $('authshow').onclick=()=>{$('authcode').style.display='block';$('authshow').style.display='none';$('authtok').focus();};
@@ -114,10 +114,12 @@ function showAuth(){
   // short-lived sign-in code, exchanged for the durable token exactly like the ?c=
   // link - never stored as the token itself (a single-use code is not the token).
   // Normalized to the minted form (lowercase hex) so a stray capital or space still redeems.
+  // Enter (the phone keyboard's Go key) submits, like every other single-field form here.
+  $('authtok').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();$('authuse').click();}};
   $('authuse').onclick=()=>{const c=$('authtok').value.trim().toLowerCase();if(!c)return;
     const btn=$('authuse');btn.disabled=true;
     signinExchange(c,()=>{btn.disabled=false;
-      $('autherr').textContent='That code is invalid or has expired. Tap Show code on the device for a fresh one.';});};
+      $('autherr').textContent='That code is invalid or has expired. Type the code the device screen shows now.';});};
 }
 // One-time sign-in code exchange (CUM-45): a short-lived, single-use code is
 // exchanged for the durable token, stored client-side, and the page reloads clean.

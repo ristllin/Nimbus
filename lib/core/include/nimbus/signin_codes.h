@@ -13,9 +13,10 @@
 // for the durable token over POST (see POST /api/signin/exchange). A copy of the
 // link sitting in synced history is inert the moment the code is used or expires.
 //
-// This is portable logic (no Arduino), so it is host-unit-tested. It lives on the
-// web server's single task (the firmware has no on-device concurrency, a frozen
-// invariant), so it needs no locking. Fixed capacity, no heap.
+// This is portable logic (no Arduino), so it is host-unit-tested. The class itself
+// takes no lock: the device reaches one table from both the web server task (the
+// exchange) and the main task (the screen's codes), so src/net/webui.cpp wraps every
+// call in a spinlock. Fixed capacity, no heap.
 namespace nimbus {
 
 class SigninCodes {
@@ -43,9 +44,8 @@ class SigninCodes {
   // QR re-mints a 2-minute code every ~90 s, so eight scan mints overwrote the
   // displayed hand-entry code while the owner was still typing it.
   bool mint(const char* code, uint32_t now, uint32_t ttlMs) {
-    if (!code) return false;
-    const size_t n = ::strnlen(code, MAXLEN);
-    if (n == 0 || n >= MAXLEN) return false;
+    const size_t n = codeLen(code);
+    if (n == 0) return false;
     Slot& s = slots_[pickSlot(now)];
     ::memcpy(s.code, code, n);
     s.code[n] = '\0';
@@ -64,13 +64,12 @@ class SigninCodes {
   // early-out on the byte loop so a wrong guess is not timed against a right one.
   // Returns true (and consumes the slot) only for a live, unused, unexpired match.
   bool redeem(const char* code, uint32_t now) {
-    if (!code) return false;
-    const size_t n = ::strnlen(code, MAXLEN);
-    if (n == 0 || n >= MAXLEN) return false;
+    const size_t n = codeLen(code);
+    if (n == 0) return false;
     int hit = -1;
     for (size_t i = 0; i < CAP; i++) {
       Slot& s = slots_[i];
-      const bool valid = s.live && !s.used && !expired(s, now) && s.len == n;
+      const bool valid = redeemable(s, now) && s.len == n;
       uint8_t diff = 0;
       for (size_t j = 0; j < n; j++) diff |= uint8_t(s.code[j] ^ code[j]);
       if (valid && diff == 0) hit = int(i);   // record, keep scanning (constant work)
@@ -92,9 +91,8 @@ class SigninCodes {
   // that shows a code polls this so a code that was already used, expired, or
   // evicted is replaced instead of sitting on the glass as if it still worked.
   bool isRedeemable(const char* code, uint32_t now) const {
-    if (!code) return false;
-    const size_t n = ::strnlen(code, MAXLEN);
-    if (n == 0 || n >= MAXLEN) return false;
+    const size_t n = codeLen(code);
+    if (n == 0) return false;
     for (size_t i = 0; i < CAP; i++) {
       const Slot& s = slots_[i];
       if (redeemable(s, now) && s.len == n && ::memcmp(s.code, code, n) == 0) return true;
@@ -116,6 +114,12 @@ class SigninCodes {
     bool used = false;
     bool live = false;
   };
+  // A code's length, or 0 when it is null, empty, or too long to store.
+  static size_t codeLen(const char* code) {
+    if (!code) return 0;
+    const size_t n = ::strnlen(code, MAXLEN);
+    return n >= MAXLEN ? 0 : n;
+  }
   // Wraparound-safe expiry: now is at/after expiry when (now - expiresAt) >= 0.
   static bool expired(const Slot& s, uint32_t now) {
     return int32_t(now - s.expiresAt) >= 0;

@@ -189,7 +189,9 @@ void drawHeader(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx,
   // them.
   const int gearX = L.w - L.minTap;                 // gear target spans gearX..L.w
   const bool glyphs = controlsW <= 0;
-  const int wifiX = gearX - (ctx.battery.valid ? 56 : 30);
+  constexpr int kBattSlot = 30, kGlyphGap = 5;      // battery x from the gear; glyph spacing
+  const int battX = gearX - kBattSlot;
+  const int wifiX = ctx.battery.valid ? battX - kGlyphGap - kWifiGlyphW : battX;
   const int rightEdge = glyphs ? wifiX : gearX - controlsW;
   const int titleMax = rightEdge - 4 - tx;
   // ⚠ A breadcrumb is MOST specific at its tail. Clipping head-first turned
@@ -210,9 +212,9 @@ void drawHeader(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx,
 
   if (!glyphs) return;
   if (ctx.battery.valid)
-    iconBattery(fb, gearX - 30, (L.headerH - 11) / 2, ctx.battery.percent, kInk2);
+    iconBattery(fb, battX, (L.headerH - 11) / 2, ctx.battery.percent, kInk2);
   iconWifi(fb, wifiX, (L.headerH - kWifiGlyphH) / 2, ctx.wifiState,
-           ctx.apUp && ctx.wifiState < 2);
+           render::wifiApMarker(ctx.wifiState, ctx.apUp));
 }
 
 // ---- status home ------------------------------------------------------------
@@ -465,15 +467,19 @@ constexpr int kMenuCols = 2;
 int menuRowsPerCol(const Layout& L) {
   return std::max(1, ((L.h - L.gut()) - L.bodyTop()) / (L.rowH + 4));
 }
+// The header pager's two arrows plus their spacing, left of the gear.
+int menuPagerW(const Layout& L) { return 2 * L.minTap + 8; }
 
 void drawMenu(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx) {
   const int n = int(ctx.menuItems.size());
   // The pager lives in the header (see below) whenever the list overflows and no
   // value is being adjusted; the status glyphs give way to it there.
   const bool adjusting = ctx.menuAdjusting && ctx.menuSelected >= 0 && ctx.menuSelected < n;
-  const bool pager = !adjusting && n > menuRowsPerCol(L) * kMenuCols;
+  const int rowsPerCol = menuRowsPerCol(L);
+  const int perPage = rowsPerCol * kMenuCols;
+  const bool pager = !adjusting && n > perPage;
   drawHeader(fb, L, r, ctx, {ctx.menuTitle.empty() ? "Settings" : ctx.menuTitle, true,
-             pager ? 2 * L.minTap + 8 : 0});
+             pager ? menuPagerW(L) : 0});
 
   if (n == 0) return;
 
@@ -548,8 +554,6 @@ void drawMenu(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx) {
   constexpr int cols = kMenuCols;
   constexpr int colGap = 8;
   const int colW = (L.w - 2 * L.gut() - colGap * (cols - 1)) / cols;
-  const int rowsPerCol = menuRowsPerCol(L);
-  int perPage = rowsPerCol * cols;
   int first = 0;
   if (n > perPage) {
     // ⚠ PAGE-ALIGNED, not centred on the selection.
@@ -681,7 +685,7 @@ void drawMenu(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx) {
   // drawn as visible arrows, and exist only when there is somewhere to scroll to.
   if (n > perPage) {
     const int pagerW = L.minTap;
-    const int upX = L.w - L.minTap - 2 * pagerW - 8;
+    const int upX = L.w - L.minTap - menuPagerW(L);
     const int dnX = L.w - L.minTap - pagerW - 4;
     if (first > 0) {
       iconChevronUp(fb, upX + pagerW / 2, L.headerH / 2, kInk2);
@@ -982,7 +986,7 @@ std::string hostOf(const std::string& url) {
 
 // One captioned value in the join screen's compact column (CUM-453): the caption
 // in the web .k style over a small card holding the value. SSIDs, passwords and
-// codes carry no spaces to wrap on, so the value hard-breaks onto at most two
+// codes carry no spaces to wrap on, so the value hard-breaks onto at most maxLines
 // lines (anything longer ends in ".."). minH lifts the card to the tap floor when
 // it is a control; chevron marks it as one.
 struct Field {
@@ -991,25 +995,42 @@ struct Field {
   uint16_t colour = kInk;
   int minH = 0;
   bool chevron = false;
+  int maxLines = 2;
 };
+
+constexpr int kFieldPadX = 8;
+int fieldCaptionH() { return Fb565::textHeight(1) + 3; }
+int fieldLineH() { return Fb565::textHeight(1) + 4; }
+size_t fieldPerLine(int w, const Field& f) {
+  const int innerW = w - 2 * kFieldPadX - (f.chevron ? 14 : 0);
+  return size_t(std::max(1, (innerW + 1) / 6));   // textWidth(n chars, 1) = 6n - 1
+}
+int fieldLines(int w, const Field& f) {
+  return (f.maxLines > 1 && asciiSanitize(f.value).size() > fieldPerLine(w, f)) ? 2 : 1;
+}
+int fieldCardH(int w, const Field& f) {
+  return std::max(f.minH, fieldLines(w, f) * fieldLineH() - 4 + 14);
+}
 
 // Draws the field at y across width w; returns the bottom of its card.
 int drawField(Fb565& fb, const Layout& L, int y, int w, const Field& f) {
   fb.label(L.gut(), y, f.caption, kInk3);
-  y += fb.textHeight(1) + 3;
-  constexpr int kPadX = 8;
-  const int lineH = fb.textHeight(1) + 4;
-  const int innerW = w - 2 * kPadX - (f.chevron ? 14 : 0);
+  y += fieldCaptionH();
   const std::string v = asciiSanitize(f.value);
-  const size_t perLine = size_t(std::max(1, (innerW + 1) / 6));   // textWidth = 6n - 1
-  const int lines = v.size() > perLine ? 2 : 1;
-  const int textH = lines * lineH - 4;
-  const int h = std::max(f.minH, textH + 14);
+  const size_t perLine = fieldPerLine(w, f);
+  const int lines = fieldLines(w, f);
+  const int textH = lines * fieldLineH() - 4;
+  const int h = fieldCardH(w, f);
   fb.card(L.gut(), y, w, h, kRaise, kLine, 8);
-  const int tx = L.gut() + kPadX;
+  const int tx = L.gut() + kFieldPadX;
   const int ty = y + (h - textH) / 2;
-  fb.text(tx, ty, v.substr(0, perLine), f.colour, 1);
-  if (lines == 2) fb.textClipped(tx, ty + lineH, v.substr(perLine), f.colour, innerW, 1);
+  const int innerW = w - 2 * kFieldPadX - (f.chevron ? 14 : 0);
+  if (lines == 1) {
+    fb.textClipped(tx, ty, v, f.colour, innerW, 1);
+  } else {
+    fb.text(tx, ty, v.substr(0, perLine), f.colour, 1);
+    fb.textClipped(tx, ty + fieldLineH(), v.substr(perLine), f.colour, innerW, 1);
+  }
   if (f.chevron) iconChevronRight(fb, L.gut() + w - 12, y + h / 2, kInk3);
   return y + h;
 }
@@ -1017,26 +1038,33 @@ int drawField(Fb565& fb, const Layout& L, int y, int w, const Field& f) {
 // The join screen when it must also sign the owner in: the steps are carried by
 // numbered captions - join the network (the QR does it, or the name + password by
 // hand), open the device, type the code. The code card is the "Show code" control
-// when the menu owns the screen (bigger digits and a countdown on TokenDetail), and
-// is clamped so its target is always on the glass. With no code in the context (a
-// first-run device, where none is needed) the card reads "Show code" instead.
+// when the menu owns the screen (bigger digits and a countdown on TokenDetail).
+// The fields stack top-down; if two-line values would not fit the column (a very
+// long name and password on the smallest panel), every value drops to one line, so
+// the stack never runs off the glass and no card is drawn over another. With no
+// code in the context (a first-run device, where none is needed) the card reads
+// "Show code" instead.
 void drawJoinFields(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx,
                     int textW, bool tappable) {
   const int w = textW ? textW : (L.w - 2 * L.gut());
   constexpr int kGap = 5;
-  int y = L.bodyTop();
-  y = drawField(fb, L, y, w, {"1. Join network", ctx.apName}) + kGap;
-  if (!ctx.apPass.empty())
-    y = drawField(fb, L, y, w, {"Network password", ctx.apPass, kTeal}) + kGap;
-  y = drawField(fb, L, y, w, {"2. Open", hostOf(ctx.setupUrl)}) + kGap;
+  std::vector<Field> fields;
+  fields.push_back({"1. Join network", ctx.apName});
+  if (!ctx.apPass.empty()) fields.push_back({"Network password", ctx.apPass, kTeal});
+  fields.push_back({"2. Open", hostOf(ctx.setupUrl)});
+  fields.push_back({"3. Sign-in code",
+                    ctx.webToken.empty() ? std::string("Show code") : ctx.webToken, kTeal,
+                    L.minTap, tappable});
+  int total = -kGap;
+  for (const Field& f : fields) total += fieldCaptionH() + fieldCardH(w, f) + kGap;
+  if (total > (L.h - L.gut()) - L.bodyTop())
+    for (Field& f : fields) f.maxLines = 1;
 
-  const int capH = fb.textHeight(1) + 3;
-  y = std::min(y, L.h - L.gut() - L.minTap - capH);
-  const std::string code = ctx.webToken.empty() ? std::string("Show code") : ctx.webToken;
-  const int bottom =
-      drawField(fb, L, y, w, {"3. Sign-in code", code, kTeal, L.minTap, tappable});
-  if (tappable)
-    push(r, L.gut(), y + capH, w, bottom - (y + capH), TapRegion::Action::ShowCode);
+  int y = L.bodyTop();
+  for (size_t i = 0; i + 1 < fields.size(); i++) y = drawField(fb, L, y, w, fields[i]) + kGap;
+  const int cardY = y + fieldCaptionH();
+  const int bottom = drawField(fb, L, y, w, fields.back());
+  if (tappable) push(r, L.gut(), cardY, w, bottom - cardY, TapRegion::Action::ShowCode);
 }
 
 // The classic column: a text card (the numbered steps on SetupInfo, the link status
@@ -1044,7 +1072,7 @@ void drawJoinFields(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ct
 // "Show code" button.
 struct SetupColumn {
   bool joinScreen;
-  bool config;
+  bool showCodeBtn;   // the menu's Sign-in QR: draw the Show code button
   int textW;
   bool hasQr;
 };
@@ -1067,7 +1095,7 @@ void drawSetupColumn(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& c
   // is a MENU state (showCodeAffordance) - the tap layer routes ShowCode ->
   // TokenDetail there; the repeated-401 auto-surface renders the QR with the menu
   // closed and leaves the flag false, so the button never becomes a dead end. (CUM-48 #3)
-  const bool showCodeBtn = sc.config && ctx.showCodeAffordance;
+  const bool showCodeBtn = sc.showCodeBtn;
   // CUM-453: the cards above the button are laid out against a panel shortened by
   // the button plus its clearance, so drawTextCard's line clamp absorbs a long
   // status instead of the button being pushed off the bottom of the glass.
@@ -1129,8 +1157,10 @@ void drawSetup(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx, bo
   // network, exactly like onboarding, not a sign-in URL to an address that is
   // unreachable until they have joined. With the station up, Config keeps its
   // sign-in QR. SetupInfo (config == false) always shows the join credentials.
-  const bool apRecover = config && ctx.lockedOut();
-  const bool joinScreen = !config || apRecover;  // show SSID + password + Wi-Fi-join QR
+  // show SSID + password + Wi-Fi-join QR (the same rule the device uses to decide
+  // whether this screen carries a sign-in code - render::isJoinScreen)
+  const bool joinScreen =
+      render::isJoinScreen(config ? attn::ScreenId::ConfigQr : attn::ScreenId::SetupInfo, ctx);
 
   drawHeader(fb, L, r, ctx, {joinScreen ? "Setup" : "Sign in", true});
 
@@ -1170,7 +1200,7 @@ void drawSetup(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx, bo
   if (joinScreen && (!ctx.webToken.empty() || menuShowCode))
     drawJoinFields(fb, L, r, ctx, textW, menuShowCode);
   else
-    drawSetupColumn(fb, L, r, ctx, {joinScreen, config, textW, !url.empty()});
+    drawSetupColumn(fb, L, r, ctx, {joinScreen, menuShowCode, textW, !url.empty()});
   // Firmware version, small in the bottom-left. Guarded so the golden fixture
   // (empty fwVersion) draws nothing and stays byte-identical.
   if (!ctx.fwVersion.empty())

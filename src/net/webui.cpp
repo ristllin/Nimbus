@@ -199,7 +199,8 @@ bool panelCodeStale() { return panelCodeExpiredBy(millis()); }
 // CUM-295: the hand-entry "Show code" (TokenDetail) path. A person reading this code
 // off the screen and typing it into another machine routinely needs more than the
 // 2-minute scan window, so the DISPLAYED code is minted with the long display TTL
-// and only re-minted when it actually expires (never mid-read). It is a distinct
+// and only re-minted once it stops working - expired, redeemed, or evicted (CUM-453) -
+// never mid-read while it still redeems. It is a distinct
 // slot in the SAME table the QR uses, so /api/signin/exchange redeems it unchanged.
 // These fields are touched only from the main task (the panel renderer), so they
 // need no lock of their own; only the table op takes the spinlock (in mintShowCode).
@@ -3694,7 +3695,12 @@ void beginWeb(const WebConfig& wc) {
     }
 
     if (action == "publishap" || action == "resume") {
-      s_wifiLinkAction = (action == "publishap") ? 1 : 2;   // applied on the main task
+      // Applied on the main task. The slot is written here (AsyncTCP task) and
+      // read-then-cleared in loopWeb() (main task), so both sides take the config
+      // spinlock: an unlocked read-then-clear could drop a request landing between them.
+      portENTER_CRITICAL(&s_cfgMux);
+      s_wifiLinkAction = (action == "publishap") ? 1 : 2;
+      portEXIT_CRITICAL(&s_cfgMux);
       JsonDocument d;
       d["queued"] = true;
       d["apSsid"] = apSsid();
@@ -3888,8 +3894,10 @@ void loopWeb() {
   // POST /api/wifi publishap|resume - they re-point the radio and can restart the
   // captive DNS server that process() pumps from this same task, so they run here.
   if (s_wifiLinkAction) {
+    portENTER_CRITICAL(&s_cfgMux);
     const int8_t act = s_wifiLinkAction;
     s_wifiLinkAction = 0;
+    portEXIT_CRITICAL(&s_cfgMux);
     if (act == 1) {
       publishSetupNetwork();
       // CUM-452: the only feedback used to be a web toast on a page that goes

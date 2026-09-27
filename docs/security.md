@@ -347,7 +347,7 @@ control) and the Setup screen. That code is the 10-minute hand-entry code from t
 same single-use table the gate redeems from, so what the screen shows is what the
 gate accepts. **Publish setup network** (the web page's **Connectivity > Recovery**, or
 the device's **Settings > Connectivity > Wi-Fi**) now puts that Setup screen on the
-panel and confirms on the ring, and the web button says the page will disconnect when
+screen and confirms on the ring, and the web button says the page will disconnect when
 it is open over the home Wi-Fi. First-run SetupInfo keeps its numbered onboarding steps
 and shows no code: an unprovisioned device signs the owner in automatically.
 The password is on-glass only in both cases: it is never logged, never sent over

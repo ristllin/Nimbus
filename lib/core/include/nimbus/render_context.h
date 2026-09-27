@@ -175,17 +175,27 @@ struct ScreenCtx {
   bool lockedOut() const { return apUp && !staConnected && !apName.empty(); }
 };
 
+// The header Wi-Fi glyph's small "AP" marker (CUM-455): the setup network is up
+// while Wi-Fi is not connected - setup or recovery mode. One rule for the renderer
+// and the device's header-repaint watcher.
+inline bool wifiApMarker(uint8_t wifiState, bool apUp) { return apUp && wifiState < 2; }
+
+// A JOIN screen shows how to join the setup network (name, password, Wi-Fi-join
+// QR): SetupInfo always, and the Sign-in QR (ConfigQr) while locked out.
+inline bool isJoinScreen(attn::ScreenId id, const ScreenCtx& c) {
+  return id == attn::ScreenId::SetupInfo || (id == attn::ScreenId::ConfigQr && c.lockedOut());
+}
+
 // Does this screen need a hand-entry sign-in code in ctx.webToken (CUM-452/453)?
-// Only a JOIN screen - SetupInfo, or the Sign-in QR while locked out - of a
-// PROVISIONED Orchestrator. Once Wi-Fi is set up, the setup network's page no
-// longer signs the owner in on its own (the token handout is unprovisioned-only),
-// so the owner who joins it needs a code the sign-in gate will redeem. A first-run
-// device signs in automatically, and Notifier has no web surface on the radio.
+// Only a join screen of a PROVISIONED Orchestrator. Once Wi-Fi is set up, the
+// setup network's page no longer signs the owner in on its own (the token handout
+// is unprovisioned-only), so the owner who joins it needs a code the sign-in gate
+// will redeem. A first-run device signs in automatically, and Notifier has no web
+// surface on the radio.
 inline bool joinScreenNeedsSigninCode(attn::ScreenId id, const ScreenCtx& c,
                                       bool provisioned) {
   if (!provisioned || !c.modeName || std::string(c.modeName) != "orchestrator") return false;
-  if (id == attn::ScreenId::SetupInfo) return true;
-  return id == attn::ScreenId::ConfigQr && c.lockedOut();
+  return isJoinScreen(id, c);
 }
 
 }  // namespace nimbus::render

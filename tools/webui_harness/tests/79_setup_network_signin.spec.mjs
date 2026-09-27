@@ -124,6 +124,31 @@ test('CUM-453: the code field never autocapitalizes and a typed code is normaliz
   expect(exchange).not.toContain('A1B2');
   // The gate points at where the code is shown on the device.
   await expect(page.locator('#authcode')).toContainText('Setup screen');
+  // Named for assistive tech (a placeholder is not a label); a rejection is announced
+  // and points at the code the device shows now.
+  await expect(input).toHaveAttribute('aria-label', 'Device sign-in code');
+  await expect(page.locator('#autherr')).toHaveAttribute('role', 'alert');
+  await expect(page.locator('#autherr')).toContainText('expired');
+  await expect(page.locator('#autherr')).toContainText('device screen');
+});
+
+test('CUM-453: Enter in the code field submits it', async ({ page }) => {
+  let exchange = null;
+  await page.route('**/api/signin/exchange', async (route) => {
+    exchange = route.request().postData() || '';
+    await route.fulfill({ status: 401, contentType: 'application/json', body: '{"error":"x"}' });
+  });
+  await page.goto('/');
+  await page.locator('#authshow').click();
+  await page.locator('#authtok').fill('a1b2c3d4e5f6');
+  await page.locator('#authtok').press('Enter');
+  await expect.poll(() => exchange).not.toBeNull();
+  expect(exchange).toContain('a1b2c3d4e5f6');
+});
+
+test('CUM-452: the publish result is announced to assistive tech', async ({ page }) => {
+  await toRecovery(page);
+  await expect(page.locator('#wifiApMsg')).toHaveAttribute('role', 'status');
 });
 
 // Everything the gate is covering: the navigation shell and every pane.
