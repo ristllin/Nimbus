@@ -103,12 +103,51 @@ void iconBattery(Fb565& fb, int x, int y, uint8_t pct, uint16_t c) {
   if (inner > 0) fb.fillRect(x + 2, y + 2, inner, h - 4, c);
 }
 
+// Wi-Fi status glyph (CUM-455): a dot with three arcs above it, in a
+// kWifiGlyphW x kWifiGlyphH box. Integer-only - each arc is the band of pixels
+// whose squared distance from the dot falls in (inner^2, outer^2], limited to the
+// upper quarter (|dx| <= -dy) - so the goldens stay bit-deterministic with no libm.
+//   state 2 (connected):      dot + three solid arcs
+//   state 1 (searching, or saved but not connected): dot + dimmed arcs
+//   state 0 (not set up / radio off): faint arcs + a slash through the glyph
+// apMarker adds a small "AP" under the glyph: the setup network is up while the
+// device is not on Wi-Fi (setup or recovery mode).
+constexpr int kWifiGlyphW = 21, kWifiGlyphH = 15;
+
+void iconWifi(Fb565& fb, int x, int y, uint8_t state, bool apMarker) {
+  const int cx = x + kWifiGlyphW / 2, cy = y + kWifiGlyphH - 2;   // the dot's centre
+  const uint16_t on = kInk2, dim = kLine2;
+  const uint16_t arcs = state >= 2 ? on : state == 1 ? kInk3 : dim;
+  static const int8_t kBands[3][2] = {{3, 5}, {7, 9}, {11, 13}};   // (inner, outer]
+  for (int dy = -13; dy < 0; dy++) {
+    for (int dx = dy; dx <= -dy; dx++) {                          // |dx| <= -dy
+      const int d2 = dx * dx + dy * dy;
+      for (const auto& b : kBands)
+        if (d2 > b[0] * b[0] && d2 <= b[1] * b[1]) fb.set(cx + dx, cy + dy, arcs);
+    }
+  }
+  fb.fillRect(cx - 1, cy - 1, 3, 3, state == 0 ? dim : on);        // the dot
+  if (state == 0) {
+    // Two-pixel slash, bottom-left to top-right across the whole glyph.
+    for (int i = 0; i < kWifiGlyphH; i++) {
+      fb.set(x + 3 + i, y + kWifiGlyphH - 1 - i, on);
+      fb.set(x + 4 + i, y + kWifiGlyphH - 1 - i, on);
+    }
+  }
+  if (apMarker)
+    fb.text(cx - fb.textWidth("AP", 1) / 2, y + kWifiGlyphH + 3, "AP", kAmber, 1);
+}
+
 // ---- shared chrome ----------------------------------------------------------
 
-// Top bar: device name, optional back chevron, gear, battery. Present on every
-// screen so navigation never depends on remembering a gesture.
+// Top bar: device name, optional back chevron, gear, Wi-Fi + battery status.
+// Present on every screen so navigation never depends on remembering a gesture.
+//
+// controlsW > 0 means the caller puts its own header controls (the menu pager) in
+// the controlsW pixels left of the gear. The status glyphs would sit under those
+// targets, so they give way there, and the title stops short of the controls.
 void drawHeader(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx,
-                const std::string& title, bool backable) {
+                const std::string& title, bool backable, int controlsW = 0) {
   fb.fillRect(0, 0, L.w, L.headerH, kRaise);
   fb.hline(0, L.headerH - 1, L.w, kLine);
 
@@ -136,9 +175,14 @@ void drawHeader(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx,
         name[v + 3] >= '0' && name[v + 3] <= '9')
       name.erase(v);
   }
-  // Clip before the right cluster (battery + gear) rather than at a fixed width,
-  // so a long title can never collide with them.
-  const int titleMax = (L.w - L.minTap - (ctx.battery.valid ? 34 : 4)) - tx;
+  // Clip before the right cluster (Wi-Fi + battery + gear, or the caller's header
+  // controls) rather than at a fixed width, so a long title can never collide with
+  // them.
+  const int gearX = L.w - L.minTap;                 // gear target spans gearX..L.w
+  const bool glyphs = controlsW <= 0;
+  const int wifiX = gearX - (ctx.battery.valid ? 56 : 30);
+  const int rightEdge = glyphs ? wifiX : gearX - controlsW;
+  const int titleMax = rightEdge - 4 - tx;
   // ⚠ A breadcrumb is MOST specific at its tail. Clipping head-first turned
   // "Settings > Customize > Brightness" into "Settings ..", hiding the one word
   // that says what is being edited. Drop leading segments until it fits, so the
@@ -151,13 +195,15 @@ void drawHeader(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx,
   fb.textClipped(tx, (L.headerH - fb.textHeight(2)) / 2, name, kInk, titleMax, 2);
 
   // Right cluster: the gear is flush to the right edge so its tap target fits
-  // on-panel exactly; the battery sits to its left.
-  const int gearX = L.w - L.minTap;                 // target spans gearX..L.w
+  // on-panel exactly; the battery sits to its left and Wi-Fi left of that.
   iconGear(fb, gearX + L.minTap / 2, L.headerH / 2, kInk2);
   push(r, gearX, 0, L.minTap, L.headerH, TapRegion::Action::OpenMenu);
 
+  if (!glyphs) return;
   if (ctx.battery.valid)
     iconBattery(fb, gearX - 30, (L.headerH - 11) / 2, ctx.battery.percent, kInk2);
+  iconWifi(fb, wifiX, (L.headerH - kWifiGlyphH) / 2, ctx.wifiState,
+           ctx.apUp && ctx.wifiState < 2);
 }
 
 // ---- status home ------------------------------------------------------------
@@ -404,15 +450,27 @@ void drawStatusHome(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ct
 
 // ---- menu / settings --------------------------------------------------------
 
-void drawMenu(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx) {
-  drawHeader(fb, L, r, ctx, ctx.menuTitle.empty() ? "Settings" : ctx.menuTitle, true);
+// Row-list geometry shared by the header (which must know whether the pager takes
+// its right side) and the list itself.
+constexpr int kMenuCols = 2;
+int menuRowsPerCol(const Layout& L) {
+  return std::max(1, ((L.h - L.gut()) - L.bodyTop()) / (L.rowH + 4));
+}
 
+void drawMenu(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx) {
   const int n = int(ctx.menuItems.size());
+  // The pager lives in the header (see below) whenever the list overflows and no
+  // value is being adjusted; the status glyphs give way to it there.
+  const bool adjusting = ctx.menuAdjusting && ctx.menuSelected >= 0 && ctx.menuSelected < n;
+  const bool pager = !adjusting && n > menuRowsPerCol(L) * kMenuCols;
+  drawHeader(fb, L, r, ctx, ctx.menuTitle.empty() ? "Settings" : ctx.menuTitle, true,
+             pager ? 2 * L.minTap + 8 : 0);
+
   if (n == 0) return;
 
   // When a value is being adjusted the selected row becomes a stepper - the
   // the touch cursor step.
-  if (ctx.menuAdjusting && ctx.menuSelected >= 0 && ctx.menuSelected < n) {
+  if (adjusting) {
     // The FSM wraps the captured value in "< ... >" as the cursor's
     // adjust affordance. Here there are real [-] and [+] buttons directly
     // beneath it, so the arrows are noise that competes with them.
@@ -478,10 +536,10 @@ void drawMenu(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx) {
   // took SEVEN pages to walk - for a screen whose whole job is to be the control
   // surface when the web UI is unreachable. Two columns of three is one page in
   // three, and 320px of width is exactly what makes it possible.
-  constexpr int cols = 2;
+  constexpr int cols = kMenuCols;
   constexpr int colGap = 8;
   const int colW = (L.w - 2 * L.gut() - colGap * (cols - 1)) / cols;
-  const int rowsPerCol = std::max(1, (listBot - listTop) / (L.rowH + 4));
+  const int rowsPerCol = menuRowsPerCol(L);
   int perPage = rowsPerCol * cols;
   int first = 0;
   if (n > perPage) {
@@ -1007,14 +1065,18 @@ void drawSetup(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx, bo
 }
 
 void drawTokenDetail(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx) {
-  drawHeader(fb, L, r, ctx, "Device sign-in code", true);   // canonical (CUM-45)
+  // The header says "Sign-in code" and the card caption carries the canonical
+  // "device sign-in code" (CUM-45): the full phrase no longer fits the title once
+  // the Wi-Fi and battery glyphs share the header (CUM-455), and a clipped
+  // "Device sign-in .." title read as broken.
+  drawHeader(fb, L, r, ctx, "Sign-in code", true);
   const int y = L.bodyTop();
   fb.text(L.gut(), y, "Only if you can't scan the Sign-in QR.", kInk3, 1);
 
   const int cardY = y + 24;
   const int cardH = 116;
   fb.card(L.gut(), cardY, L.w - 2 * L.gut(), cardH);
-  fb.label(L.gut() + 14, cardY + 12, "sign-in code", kInk3);
+  fb.label(L.gut() + 14, cardY + 12, "device sign-in code", kInk3);
 
   std::string code = asciiSanitize(ctx.webToken.empty() ? std::string("-")
                                                         : ctx.webToken);

@@ -41,8 +41,11 @@ struct ScreenCtx {
   uint8_t     battHealthPct = 100;
   std::string battChargeState;         // "discharging"/"charging"/"full"/... ("" hides)
   bool networkDegraded = false;
-  // Header radio status glyphs (top-right, left of the battery). 0 = off,
-  // 1 = advertising / connecting, 2 = linked / up. Rendered as wi±/bt± tags.
+  // Header radio status (top-right, left of the battery). 0 = off / not set up,
+  // 1 = advertising / connecting (Wi-Fi saved but not connected), 2 = linked / up.
+  // wifiState drives the header Wi-Fi glyph (CUM-455), which also shows a small
+  // "AP" marker while apUp (below) holds and Wi-Fi is not connected. btState is
+  // carried for callers but not drawn.
   uint8_t wifiState = 0;
   uint8_t btState = 0;
   // Header line 2 (owner R4): sound state, spelled out - sfxLevel 0-3

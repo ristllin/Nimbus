@@ -88,6 +88,19 @@ over across more than one reachable saved network, the status reads for example
 `Joining Office 2/3...`, so you can see it working through the list rather than
 appearing stuck on one name. A single candidate shows the plain `Joining <name>...`.
 
+Every screen's header carries a Wi-Fi glyph beside the battery, so the link state is
+visible without opening a menu:
+
+| Glyph | Meaning |
+|---|---|
+| Dot and three bright arcs | Connected |
+| Bright dot, dimmed arcs | A network is saved but not connected (searching or joining) |
+| Faint arcs with a slash | No Wi-Fi set up, or Notifier mode (the radio is off there) |
+| A small amber `AP` under the glyph | The setup network is up while Wi-Fi is not connected |
+
+On a Settings page long enough to need page arrows, the arrows take the header's right
+side and the glyphs step aside.
+
 ## Where you manage it
 
 The saved-network list is managed on the web page under **Settings → Connectivity**:

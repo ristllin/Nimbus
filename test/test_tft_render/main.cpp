@@ -5,6 +5,7 @@
 #include <cstring>
 #include <set>
 #include <string>
+#include <vector>
 
 #include "nimbus/tft_render/fb565.h"
 #include "nimbus/tft_render/screens.h"
@@ -527,6 +528,7 @@ static void test_config_qr_signin_hides_password() {
   base.netStatus = "Home Wi-Fi connected: 192.0.2.10";
   base.apName = "Nimbus-4-setup";
   base.staConnected = true;   // on the LAN
+  base.wifiState = 2;         // ...so the header reads connected, as fillHeaderCtx reports it
   base.apPass = "aaaa2345pq";
   for (const auto& p : kPanels) {
     ScreenCtx apDown = base;  apDown.apUp = false;   // TFT steady state (AP torn down)
@@ -553,6 +555,134 @@ static void test_setup_join_qr_carries_current_password() {
                            "join QR must not carry the shipped default password");
   TEST_ASSERT_TRUE_MESSAGE(qr.find("S:Nimbus-4-setup;") != std::string::npos,
                            "join QR must carry the setup SSID");
+}
+
+// ---- CUM-455: the header Wi-Fi glyph ---------------------------------------
+// wifiState 2 connected / 1 searching / 0 not set up, plus an "AP" marker while
+// the setup network is up and Wi-Fi is not connected. Each state is golden-pinned
+// on the home screen (the surface the owner asked for).
+static ScreenCtx wifiHomeCtx(uint8_t state, bool apUp, bool battery) {
+  ScreenCtx c = baseCtx();
+  c.modeName = "orchestrator";
+  c.wifiState = state;
+  c.apUp = apUp;
+  c.battery.valid = battery;
+  c.battery.percent = 82;
+  return c;
+}
+static void test_status_wifi_connected() {
+  golden("status_wifi_connected", ScreenId::StatusIdle, wifiHomeCtx(2, false, true));
+}
+static void test_status_wifi_searching() {
+  golden("status_wifi_searching", ScreenId::StatusIdle, wifiHomeCtx(1, false, true));
+}
+static void test_status_wifi_setup_ap() {
+  golden("status_wifi_setup_ap", ScreenId::StatusIdle, wifiHomeCtx(0, true, false));
+}
+
+// Copy a header rectangle out of a framebuffer for region-level comparisons.
+static std::vector<uint16_t> grab(const Fb565& fb, int x0, int y0, int x1, int y1) {
+  std::vector<uint16_t> out;
+  for (int y = y0; y < y1; y++)
+    for (int x = x0; x < x1; x++) out.push_back(fb.get(x, y));
+  return out;
+}
+
+// The glyph box as drawHeader places it: left of the battery (or the gear).
+static int wifiGlyphX(int w, bool battery) { return (w - kMinTap) - (battery ? 56 : 30); }
+
+// Every state reads differently, the AP marker appears ONLY in setup mode
+// (apUp && not connected), and all of it stays inside the header, at every size.
+static void test_wifi_glyph_states_are_distinct() {
+  for (const auto& p : kPanels) {
+    for (bool batt : {false, true}) {
+      const int x0 = wifiGlyphX(p.w, batt) - 2, x1 = x0 + 26;
+      std::vector<uint16_t> seen[3];
+      for (uint8_t s = 0; s < 3; s++) {
+        Fb565 fb(p.w, p.h);
+        renderScreen(fb, ScreenId::StatusIdle, wifiHomeCtx(s, false, batt));
+        seen[s] = grab(fb, x0, 0, x1, kHeaderH);
+      }
+      TEST_ASSERT_TRUE_MESSAGE(seen[0] != seen[1], "Wi-Fi glyph: state 0 and 1 look the same");
+      TEST_ASSERT_TRUE_MESSAGE(seen[1] != seen[2], "Wi-Fi glyph: state 1 and 2 look the same");
+      TEST_ASSERT_TRUE_MESSAGE(seen[0] != seen[2], "Wi-Fi glyph: state 0 and 2 look the same");
+      for (uint8_t s = 0; s < 3; s++) {
+        Fb565 plain(p.w, p.h), ap(p.w, p.h);
+        renderScreen(plain, ScreenId::StatusIdle, wifiHomeCtx(s, false, batt));
+        renderScreen(ap, ScreenId::StatusIdle, wifiHomeCtx(s, true, batt));
+        const bool marker = grab(plain, 0, 0, p.w, p.h) != grab(ap, 0, 0, p.w, p.h);
+        char msg[96];
+        std::snprintf(msg, sizeof msg, "AP marker drawn=%d for wifiState %d (want %d)",
+                      int(marker), int(s), int(s < 2));
+        TEST_ASSERT_TRUE_MESSAGE(marker == (s < 2), msg);
+        // The marker lives in the header strip, never in the body below it.
+        TEST_ASSERT_TRUE_MESSAGE(grab(plain, 0, kHeaderH, p.w, p.h) ==
+                                     grab(ap, 0, kHeaderH, p.w, p.h),
+                                 "AP marker drew outside the header");
+      }
+    }
+  }
+}
+
+// A title of any length stops before the status glyphs: the glyph columns render
+// byte-identically under a short and an absurdly long title, on every screen kind
+// that draws the header, with and without the battery.
+static void test_header_title_never_reaches_wifi_glyph() {
+  for (const auto& p : kPanels) {
+    for (bool batt : {false, true}) {
+      const int x0 = wifiGlyphX(p.w, batt) - 2;
+      // Home titles with the device name (no Back); a short menu titles with its
+      // breadcrumb (Back chevron, no pager). Both are the long-title surfaces.
+      ScreenCtx home = wifiHomeCtx(1, true, batt);
+      ScreenCtx homeLong = home;
+      homeLong.deviceName = std::string(60, 'W');
+      ScreenCtx menu = displayMenuCtx();
+      menu.wifiState = 2;
+      menu.battery = home.battery;
+      ScreenCtx menuLong = menu;
+      menuLong.menuTitle = std::string(60, 'W');   // one segment: nothing to drop
+      const struct { ScreenId id; const ScreenCtx* a; const ScreenCtx* b; } cases[] = {
+          {ScreenId::StatusIdle, &home, &homeLong}, {ScreenId::Menu, &menu, &menuLong}};
+      for (const auto& k : cases) {
+        Fb565 a(p.w, p.h), b(p.w, p.h);
+        renderScreen(a, k.id, *k.a);
+        renderScreen(b, k.id, *k.b);
+        TEST_ASSERT_TRUE_MESSAGE(grab(a, x0, 0, p.w, kHeaderH) == grab(b, x0, 0, p.w, kHeaderH),
+                                 "a long header title ran into the Wi-Fi glyph");
+      }
+    }
+  }
+}
+
+// The Settings pager sits in the header where the glyphs would go; the glyphs give
+// way (no icon under a scroll target) and the title stops short of the pager.
+static void test_menu_pager_owns_the_header_right_side() {
+  for (const auto& p : kPanels) {
+    ScreenCtx with = menuCtx();
+    with.menuItems.resize(40, "Row");            // overflow at every panel size
+    with.wifiState = 2;
+    with.apUp = true;
+    with.battery.valid = true;
+    with.battery.percent = 50;
+    ScreenCtx without = with;
+    without.wifiState = 0;
+    without.apUp = false;
+    without.battery.valid = false;
+    Fb565 a(p.w, p.h), b(p.w, p.h);
+    const Rendered ra = renderScreen(a, ScreenId::Menu, with);
+    renderScreen(b, ScreenId::Menu, without);
+    TEST_ASSERT_TRUE_MESSAGE(hasTapAction(ra, TapRegion::Action::ScrollDown),
+                             "fixture must overflow so the pager is drawn");
+    TEST_ASSERT_TRUE_MESSAGE(grab(a, 0, 0, p.w, kHeaderH) == grab(b, 0, 0, p.w, kHeaderH),
+                             "status glyphs drawn under the menu pager");
+    ScreenCtx longT = without;
+    longT.menuTitle = std::string(60, 'W');
+    Fb565 c(p.w, p.h);
+    renderScreen(c, ScreenId::Menu, longT);
+    const int upX = p.w - kMinTap - 2 * kMinTap - 8;
+    TEST_ASSERT_TRUE_MESSAGE(grab(b, upX, 0, p.w, kHeaderH) == grab(c, upX, 0, p.w, kHeaderH),
+                             "a long menu title ran under the header pager");
+  }
 }
 
 static void test_pairing() {
@@ -754,6 +884,12 @@ int main() {
   RUN_TEST(test_config_qr_recover_shows_current_password);
   RUN_TEST(test_config_qr_signin_hides_password);
   RUN_TEST(test_setup_join_qr_carries_current_password);
+  RUN_TEST(test_status_wifi_connected);
+  RUN_TEST(test_status_wifi_searching);
+  RUN_TEST(test_status_wifi_setup_ap);
+  RUN_TEST(test_wifi_glyph_states_are_distinct);
+  RUN_TEST(test_header_title_never_reaches_wifi_glyph);
+  RUN_TEST(test_menu_pager_owns_the_header_right_side);
   RUN_TEST(test_pairing);
   RUN_TEST(test_screensaver);
 

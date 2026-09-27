@@ -917,6 +917,16 @@ static std::string configUrl();      // defined below (net-derived, token-carryi
 static std::string setupUrl();       // defined below (ALWAYS the SoftAP address - P1.2)
 static std::string netStatusLine();  // defined below (one-line connectivity readout)
 
+// The header Wi-Fi glyph state (CUM-455): 2 connected, 1 saved but not connected
+// (searching), 0 not set up. Notifier runs the radio OFF (Bluetooth owns the link),
+// so it is always 0 there - a saved network would otherwise read as "searching"
+// forever on a device that is not even trying. Shared by fillHeaderCtx and the
+// debounced header-repaint watcher so the two can never disagree.
+static uint8_t headerWifiState() {
+  if (!g_orchMode) return 0;
+  return net::staConnected() ? 2 : (net::staConfigured() ? 1 : 0);
+}
+
 // Fill the ScreenCtx fields the shared panel HEADER reads (mode / profile /
 // posture + WiFi/BT glyphs + battery % + net-degraded "!"). Called from BOTH the
 // status render (buildCtx) and the menu render (renderMenu) so the header is
@@ -930,7 +940,10 @@ static void fillHeaderCtx(render::ScreenCtx& c) {
                                                    // vocabulary (Dark/Balanced/Full)
   // Header radio glyphs: WiFi up(2)/connecting(1)/off(0); BT linked(2)/
   // advertising(1)/off(0). BLE only runs in Notifier mode, so it's off in Orch.
-  c.wifiState = net::staConnected() ? 2 : (net::staConfigured() ? 1 : 0);
+  c.wifiState = headerWifiState();
+  // The header Wi-Fi glyph marks setup mode (CUM-455), so the AP state rides on
+  // every render - menu screens included - not just the status/setup builds.
+  c.apUp = ((uint32_t)WiFi.softAPIP() != 0u);
   c.btState   = g_orchMode ? 0
                            : (net::ble::connected() ? 2
                               : (net::ble::enabled() ? 1 : 0));
@@ -5379,7 +5392,10 @@ void loop() {
     static int s_lastWifi = -1, s_lastBt = -1;
     static int s_pendWifi = -2, s_pendBt = -2;
     static uint32_t s_pendSinceMs = 0;
-    const int w = net::staConnected() ? 2 : (net::staConfigured() ? 1 : 0);
+    // The Wi-Fi glyph level plus its "AP" setup-mode marker (CUM-455): the marker
+    // appearing or clearing is a visible header change too.
+    const int wl = headerWifiState();
+    const int w = wl + ((wl < 2 && (uint32_t)WiFi.softAPIP() != 0u) ? 10 : 0);
     const int b = g_orchMode ? 0
                              : (net::ble::connected() ? 2
                                 : (net::ble::enabled() ? 1 : 0));
