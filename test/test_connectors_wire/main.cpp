@@ -25,7 +25,10 @@ using nimbus::orch::urlRoutableToProviderHead;
 using nimbus::orch::forwardsToProviderHead;
 using nimbus::orch::connectorConfigError;
 using nimbus::orch::mistralConnectorId;
-using nimbus::orch::parseMistralConnectorsAuthed;
+using nimbus::orch::connectorAuthFor;
+using nimbus::orch::mistralWorkspaceState;
+using nimbus::orch::noteMistralWorkspaceProbe;
+using nimbus::orch::parseMistralWorkspaceConnectors;
 
 void setUp() {}
 void tearDown() {}
@@ -941,56 +944,276 @@ static void test_mistral_connector_id_shared_map() {
   TEST_ASSERT_EQUAL_STRING("my-uuid", mistralConnectorId(mk("gcal", "gcal", "my-uuid")).c_str());
 }
 
-// The /v1/connectors filter parse: keep only connectors the owner has AUTHENTICATED
-// (is_authenticated == true) and not explicitly inactive. This is the honest usable
-// signal; a listed-but-unauthenticated connector (like google_calendar out of the box)
-// must NOT come back as usable.
-static void test_parse_mistral_connectors_authed() {
-  const char* body =
+// ---- Mistral workspace probe: listed + active => usable ----------------------
+// Measured live (2026-09-27): GET /v1/connectors listed google_calendar with
+// is_authenticated:false, active:true - and the SAME key's Conversations call ran
+// google_calendar_list_events server-side and returned the owner's real events. So
+// the workspace LISTING (active) is the usability signal and is_authenticated is a
+// hint only. kLiveListing mirrors that live response: the 18 items in the order
+// Mistral returned them, with name/active/is_authenticated as observed (ids are
+// placeholders; the ~300 KB of per-item metadata is dropped).
+static const char* kLiveListing =
     "{\"items\":["
-    "{\"name\":\"google_calendar\",\"is_authenticated\":false,\"active\":true,\"description\":\"cal\"},"
-    "{\"name\":\"document_library\",\"is_authenticated\":true,\"active\":true},"
-    "{\"name\":\"notion\",\"is_authenticated\":true},"          // active absent -> treated active
-    "{\"name\":\"slack\",\"is_authenticated\":true,\"active\":false},"  // authed but inactive -> excluded
-    "{\"name\":\"gmail\",\"is_authenticated\":false,\"active\":true}"
-    "],\"pagination\":{\"next_cursor\":null}}";
-  std::vector<std::string> authed;
-  TEST_ASSERT_TRUE(parseMistralConnectorsAuthed(body, authed));
-  TEST_ASSERT_EQUAL(2, (int)authed.size());
-  auto has = [&](const char* n) {
-    for (const auto& s : authed) if (s == n) return true; return false;
-  };
-  TEST_ASSERT_TRUE(has("document_library"));
-  TEST_ASSERT_TRUE(has("notion"));
-  TEST_ASSERT_FALSE(has("google_calendar"));   // listed but not connected -> not usable
-  TEST_ASSERT_FALSE(has("slack"));             // authed but inactive
-  TEST_ASSERT_FALSE(has("gmail"));
+    "{\"id\":\"0198e70f-0000-7000-8000-000000000001\",\"name\":\"atlassian\",\"is_authenticated\":false,\"active\":true},"
+    "{\"id\":\"0198f11d-0000-7000-8000-000000000002\",\"name\":\"notion\",\"is_authenticated\":false,\"active\":true},"
+    "{\"id\":\"0198f11d-0000-7000-8000-000000000003\",\"name\":\"box\",\"is_authenticated\":false,\"active\":true},"
+    "{\"id\":\"0198f11e-0000-7000-8000-000000000004\",\"name\":\"stripe\",\"is_authenticated\":false,\"active\":true},"
+    "{\"id\":\"0198f11e-0000-7000-8000-000000000005\",\"name\":\"linear\",\"is_authenticated\":false,\"active\":true},"
+    "{\"id\":\"019cfb41-0000-7000-8000-000000000006\",\"name\":\"slack\",\"is_authenticated\":false,\"active\":true},"
+    "{\"id\":\"019d8b52-0000-7000-8000-000000000007\",\"name\":\"github_app\",\"is_authenticated\":false,\"active\":true},"
+    "{\"id\":\"019dafec-0000-7000-8000-000000000008\",\"name\":\"outlook_calendar\",\"is_authenticated\":false,\"active\":true},"
+    "{\"id\":\"019df75b-0000-7000-8000-000000000009\",\"name\":\"gmail\",\"is_authenticated\":false,\"active\":true},"
+    "{\"id\":\"019df75b-0000-7000-8000-000000000010\",\"name\":\"outlook\",\"is_authenticated\":false,\"active\":true},"
+    "{\"id\":\"019df75b-0000-7000-8000-000000000011\",\"name\":\"google_calendar\",\"is_authenticated\":false,\"active\":true,"
+    "\"description\":\"cal\",\"tools\":[],\"connection_config\":{\"type\":\"mcp\"}},"
+    "{\"id\":\"019e641f-0000-7000-8000-000000000012\",\"name\":\"document_library\",\"is_authenticated\":true,\"active\":true},"
+    "{\"id\":\"019e693b-0000-7000-8000-000000000013\",\"name\":\"slack_http\",\"is_authenticated\":false,\"active\":true},"
+    "{\"id\":\"019e721b-0000-7000-8000-000000000014\",\"name\":\"github_http\",\"is_authenticated\":false,\"active\":true},"
+    "{\"id\":\"019eab87-0000-7000-8000-000000000015\",\"name\":\"sharepoint_mcp\",\"is_authenticated\":false,\"active\":true},"
+    "{\"id\":\"019ed053-0000-7000-8000-000000000016\",\"name\":\"bigquery_\",\"is_authenticated\":false,\"active\":true},"
+    "{\"id\":\"019f4b9c-0000-7000-8000-000000000017\",\"name\":\"google_drive_mcp\",\"is_authenticated\":false,\"active\":true},"
+    "{\"id\":\"01a0d3b2-0000-7000-8000-000000000018\",\"name\":\"gitlab_http\",\"is_authenticated\":false,\"active\":true}"
+    "],\"pagination\":{\"next_cursor\":null,\"page_size\":100}}";
+
+using nimbus::orch::MistralWorkspace;
+using W = ConnectorInfo::Workspace;
+
+static MistralWorkspace probed(const char* body) {
+  MistralWorkspace ws;
+  TEST_ASSERT_TRUE(noteMistralWorkspaceProbe(ws, body));
+  return ws;
 }
 
-// A non-parseable / wrong-shape body is "no signal", never "none authed": returns
-// false so the caller keeps the last good workspace answer (a transient HTTP error
-// must not silently strip a working connector).
-static void test_parse_mistral_connectors_bad_body_is_no_signal() {
-  std::vector<std::string> a1;
-  TEST_ASSERT_FALSE(parseMistralConnectorsAuthed("not json at all", a1));
-  TEST_ASSERT_EQUAL(0, (int)a1.size());
-  std::vector<std::string> a2;
-  TEST_ASSERT_FALSE(parseMistralConnectorsAuthed("{\"error\":\"unauthorized\"}", a2));  // no items[]
-  TEST_ASSERT_EQUAL(0, (int)a2.size());
-  std::vector<std::string> a3;
-  TEST_ASSERT_FALSE(parseMistralConnectorsAuthed("", a3));
-  TEST_ASSERT_FALSE(parseMistralConnectorsAuthed(nullptr, a3));
-  // An empty (but valid) workspace list is a real signal: parse OK, zero authed.
-  std::vector<std::string> a4;
-  TEST_ASSERT_TRUE(parseMistralConnectorsAuthed("{\"items\":[]}", a4));
-  TEST_ASSERT_EQUAL(0, (int)a4.size());
+// A Studio connector card as the web UI saves it (the OpenAI-namespace default cid
+// for gcal/gdrive, remapped by mistralConnectorId).
+static ConnectorInfo studio(const char* type, const char* cid = "") {
+  return mk(type, "mistral", "connector", "", cid);
+}
+
+static void test_workspace_listed_is_usable_even_when_not_signed_in() {
+  MistralWorkspace ws = probed(kLiveListing);
+  ConnectorInfo gcal = studio("gcal", "connector_googlecalendar");
+  // The live case: listed + active + is_authenticated:false => USABLE (auth 1).
+  TEST_ASSERT_EQUAL(1, connectorAuthFor(gcal, ws, -1));
+  TEST_ASSERT_EQUAL((int)W::ListedNotSignedIn, (int)mistralWorkspaceState(gcal, ws));
+  for (const char* t : {"notion", "slack", "gmail", "github", "gdrive", "linear"})
+    TEST_ASSERT_EQUAL_MESSAGE(1, connectorAuthFor(studio(t), ws, -1), t);
+  // The one item reporting is_authenticated:true reads SignedIn (same auth).
+  ConnectorInfo lib = studio("document_library");
+  TEST_ASSERT_EQUAL((int)W::ListedSignedIn, (int)mistralWorkspaceState(lib, ws));
+  TEST_ASSERT_EQUAL(1, connectorAuthFor(lib, ws, -1));
+}
+
+// Class guard for the old fixed 16-slot table: EVERY item of the live 18-item
+// listing must read listed (google_drive_mcp is item 17), by name AND by id.
+static void test_workspace_keeps_every_listed_item() {
+  MistralWorkspace ws = probed(kLiveListing);
+  std::vector<std::string> ids;
+  TEST_ASSERT_TRUE(parseMistralWorkspaceConnectors(kLiveListing, ids));
+  TEST_ASSERT_EQUAL(36, (int)ids.size());   // 18 names + 18 ids
+  for (const std::string& id : ids) {
+    ConnectorInfo c = studio("custom", id.c_str());
+    TEST_ASSERT_EQUAL_MESSAGE(1, connectorAuthFor(c, ws, -1), id.c_str());
+  }
+  TEST_ASSERT_EQUAL(1, connectorAuthFor(studio("gdrive", "connector_googledrive"), ws, -1));
+}
+
+// Unlisted or explicitly inactive => refused (auth 2, "enable it in Mistral").
+static void test_workspace_unlisted_or_inactive_is_refused() {
+  MistralWorkspace ws = probed(
+      "{\"items\":[{\"name\":\"slack\",\"is_authenticated\":true,\"active\":false},"
+      "{\"name\":\"gmail\",\"is_authenticated\":false}]}");   // active absent => active
+  ConnectorInfo slack = studio("slack");
+  ConnectorInfo notion = studio("notion");
+  TEST_ASSERT_EQUAL(2, connectorAuthFor(slack, ws, -1));   // inactive, even though signed in
+  TEST_ASSERT_EQUAL((int)W::NotListed, (int)mistralWorkspaceState(slack, ws));
+  TEST_ASSERT_EQUAL(2, connectorAuthFor(notion, ws, -1));  // not in the listing
+  TEST_ASSERT_EQUAL(1, connectorAuthFor(studio("gmail"), ws, -1));
+  std::vector<ConnectorInfo> cs = {slack, notion};
+  nimbus::orch::applyConnectorAuth(cs, ws);
+  ProviderState ps; ps.mistralKeyed = true; ps.currentHost = "mistral";
+  const std::string t = catalogText(cs, ps);
+  TEST_ASSERT_TRUE(t.find("slack (not usable until the owner enables it in their Mistral "
+                          "Studio account)") != std::string::npos);
+  TEST_ASSERT_TRUE(t.find("notion (not usable until the owner enables it") != std::string::npos);
+  for (const ConnectorInfo& c : cs)
+    TEST_ASSERT_EQUAL((int)CapScope::Unavailable, (int)connectorScope(c, ps));
+}
+
+// Fail-closed: before any workspace answer a Studio connector is NOT usable, and the
+// catalog says why (not checked) instead of sending the owner to Mistral for nothing.
+static void test_workspace_unprobed_is_fail_closed() {
+  MistralWorkspace ws;   // never probed
+  std::vector<ConnectorInfo> cs = {studio("gcal", "connector_googlecalendar")};
+  nimbus::orch::applyConnectorAuth(cs, ws);
+  TEST_ASSERT_EQUAL(2, cs[0].auth);
+  TEST_ASSERT_EQUAL((int)W::Unprobed, (int)cs[0].workspace);
+  ProviderState ps; ps.mistralKeyed = true; ps.currentHost = "mistral";
+  const std::string t = catalogText(cs, ps);
+  TEST_ASSERT_TRUE(t.find("gcal (not usable yet: the Mistral workspace has not been checked")
+                   != std::string::npos);
+  TEST_ASSERT_EQUAL((int)CapScope::Unavailable, (int)connectorScope(cs[0], ps));
+}
+
+// A non-parseable / wrong-shape body is "no signal", never "nothing listed": the
+// parse returns false and the last good answer survives (a transient HTTP error must
+// not silently strip a working connector). An EMPTY listing is a real answer.
+static void test_workspace_bad_body_is_no_signal() {
+  const char* bad[] = {"not json at all", "{\"error\":\"unauthorized\"}",
+                       "{\"detail\":\"Unauthorized\"}", "{\"items\":{}}", ""};
+  for (const char* b : bad) {
+    std::vector<std::string> ids;
+    TEST_ASSERT_FALSE_MESSAGE(parseMistralWorkspaceConnectors(b, ids), b);
+    TEST_ASSERT_EQUAL(0, (int)ids.size());
+  }
+  std::vector<std::string> none;
+  TEST_ASSERT_FALSE(parseMistralWorkspaceConnectors(nullptr, none));
+  MistralWorkspace ws = probed(kLiveListing);
+  ConnectorInfo gcal = studio("gcal");
+  for (const char* b : bad) TEST_ASSERT_FALSE(noteMistralWorkspaceProbe(ws, b));
+  TEST_ASSERT_EQUAL(1, connectorAuthFor(gcal, ws, -1));   // last good answer kept
+  TEST_ASSERT_TRUE(noteMistralWorkspaceProbe(ws, "{\"items\":[]}"));
+  TEST_ASSERT_TRUE(ws.probed);
+  TEST_ASSERT_EQUAL(2, connectorAuthFor(gcal, ws, -1));   // empty workspace: nothing usable
+}
+
+// Each probe is a FULL replace: a connector removed in Mistral stops being usable.
+static void test_workspace_probe_is_full_replace() {
+  MistralWorkspace ws = probed("{\"items\":[{\"name\":\"google_calendar\",\"is_authenticated\":true}]}");
+  ConnectorInfo gcal = studio("gcal");
+  TEST_ASSERT_EQUAL((int)W::ListedSignedIn, (int)mistralWorkspaceState(gcal, ws));
+  TEST_ASSERT_TRUE(noteMistralWorkspaceProbe(ws, "{\"items\":[{\"name\":\"notion\"}]}"));
+  TEST_ASSERT_EQUAL((int)W::NotListed, (int)mistralWorkspaceState(gcal, ws));
+  TEST_ASSERT_EQUAL(1, connectorAuthFor(studio("notion"), ws, -1));
+}
+
+// The Conversations API accepts a uuid as connector_id, so an owner-set uuid that
+// the workspace lists is usable; an id containing a newline can never match.
+static void test_workspace_matches_uuid_and_rejects_newline_ids() {
+  MistralWorkspace ws = probed(kLiveListing);
+  TEST_ASSERT_EQUAL(1, connectorAuthFor(studio("notion", "0198f11d-0000-7000-8000-000000000002"), ws, -1));
+  TEST_ASSERT_EQUAL(2, connectorAuthFor(studio("notion", "0198f11d-ffff-7000-8000-000000000002"), ws, -1));
+  TEST_ASSERT_FALSE(ws.isListed("notion\nslack"));
+  TEST_ASSERT_FALSE(ws.isListed(""));
+}
+
+// THE CLASS RULE, over every (listed?, active, is_authenticated) combination:
+// usable <=> listed and not explicitly inactive; is_authenticated NEVER changes
+// auth or capability scope, only the hint.
+static void test_workspace_signed_in_never_gates_class() {
+  const char* actives[] = {"", ",\"active\":true", ",\"active\":false"};
+  const char* signs[] = {"", ",\"is_authenticated\":true", ",\"is_authenticated\":false"};
+  ProviderState ps; ps.mistralKeyed = true; ps.currentHost = "openai"; ps.openaiKeyed = true;
+  int combos = 0;
+  for (int listed = 0; listed < 2; listed++)
+    for (const char* a : actives)
+      for (const char* s : signs) {
+        std::string body = "{\"items\":[{\"name\":\"";
+        body += listed ? "google_calendar" : "outlook";
+        body += "\"" + std::string(a) + s + "}]}";
+        MistralWorkspace ws = probed(body.c_str());
+        std::vector<ConnectorInfo> cs = {studio("gcal")};
+        nimbus::orch::applyConnectorAuth(cs, ws);
+        const bool usable = listed && std::strcmp(a, ",\"active\":false") != 0;
+        TEST_ASSERT_EQUAL_MESSAGE(usable ? 1 : 2, cs[0].auth, body.c_str());
+        TEST_ASSERT_EQUAL_MESSAGE(usable ? (int)CapScope::SubsessionsOnly : (int)CapScope::Unavailable,
+                                  (int)connectorScope(cs[0], ps), body.c_str());
+        if (usable) {
+          const bool signedIn = std::strcmp(s, ",\"is_authenticated\":true") == 0;
+          TEST_ASSERT_EQUAL_MESSAGE(signedIn ? (int)W::ListedSignedIn : (int)W::ListedNotSignedIn,
+                                    (int)cs[0].workspace, body.c_str());
+        }
+        combos++;
+      }
+  TEST_ASSERT_EQUAL(18, combos);
+}
+
+// The hint: usable + not signed in => the catalog cautions that results may come
+// back empty, but never calls it unusable; signed in => a bare, healthy name.
+static void test_catalog_hint_when_listed_but_not_signed_in() {
+  MistralWorkspace ws = probed(
+      "{\"items\":[{\"name\":\"google_calendar\",\"is_authenticated\":false,\"active\":true},"
+      "{\"name\":\"notion\",\"is_authenticated\":true,\"active\":true}]}");
+  std::vector<ConnectorInfo> cs = {studio("gcal", "connector_googlecalendar"), studio("notion")};
+  nimbus::orch::applyConnectorAuth(cs, ws);
+  ProviderState ps; ps.mistralKeyed = true; ps.currentHost = "mistral";
+  const std::string t = catalogText(cs, ps);
+  TEST_ASSERT_TRUE(t.find("gcal (Mistral reports it not signed in: results may come back "
+                          "empty until the owner connects it in Mistral") != std::string::npos);
+  TEST_ASSERT_TRUE(t.find("gcal (not usable") == std::string::npos);
+  TEST_ASSERT_TRUE(t.find("notion\n") != std::string::npos || t.find("notion,") != std::string::npos);
+  TEST_ASSERT_TRUE(t.find("notion (") == std::string::npos);
+  for (const ConnectorInfo& c : cs)
+    TEST_ASSERT_EQUAL((int)CapScope::OrchestratorDirect, (int)connectorScope(c, ps));
+}
+
+// A full page (page_size 100) is never truncated; a runaway body is bounded.
+static void test_workspace_item_cap() {
+  auto body = [](int n) {
+    std::string b = "{\"items\":[";
+    for (int i = 0; i < n; i++) b += (i ? ",{\"name\":\"c" : "{\"name\":\"c") + std::to_string(i) + "\"}";
+    return b + "]}";
+  };
+  std::vector<std::string> ids;
+  TEST_ASSERT_TRUE(parseMistralWorkspaceConnectors(body(100).c_str(), ids));
+  TEST_ASSERT_EQUAL(100, (int)ids.size());
+  ids.clear();
+  TEST_ASSERT_TRUE(parseMistralWorkspaceConnectors(body(200).c_str(), ids));
+  TEST_ASSERT_EQUAL(nimbus::orch::kMistralWorkspaceMaxItems, (int)ids.size());
+  MistralWorkspace ws = probed(body(100).c_str());
+  TEST_ASSERT_TRUE(ws.isListed("c99"));
+}
+
+// The shared credential rule every surface (device + hosted) reads.
+static void test_connector_auth_rule_table() {
+  MistralWorkspace ws = probed(kLiveListing);
+  ConnectorInfo bi = mk("web_search", "mistral", "builtin");
+  ConnectorInfo tok = mk("github", "openai", "mcp", "https://api.githubcopilot.com/mcp/");
+  tok.hasToken = true;
+  ConnectorInfo oa = mk("gmail", "openai", "connector", "", "connector_gmail");
+  oa.hasOauth = true;
+  ConnectorInfo bare = mk("linear", "openai", "mcp", "https://mcp.linear.app/mcp");
+  ConnectorInfo anyConn = mk("gcal", "any", "connector");
+  TEST_ASSERT_EQUAL(-1, connectorAuthFor(bi, ws, -1));
+  TEST_ASSERT_EQUAL(1, connectorAuthFor(tok, ws, -1));
+  TEST_ASSERT_EQUAL(0, connectorAuthFor(oa, ws, 0));
+  TEST_ASSERT_EQUAL(1, connectorAuthFor(oa, ws, 1));
+  TEST_ASSERT_EQUAL(-1, connectorAuthFor(oa, ws, -1));
+  TEST_ASSERT_EQUAL(2, connectorAuthFor(bare, ws, -1));
+  TEST_ASSERT_EQUAL(2, connectorAuthFor(anyConn, ws, -1));   // only prov=mistral reads the workspace
+  std::vector<ConnectorInfo> cs = {bi, tok, oa, bare, studio("gcal")};
+  nimbus::orch::applyConnectorAuth(cs, ws, [](const ConnectorInfo&) { return (int8_t)0; });
+  TEST_ASSERT_EQUAL(0, cs[2].auth);   // the OAuth callback feeds the rule
+  for (int i = 0; i < 4; i++) TEST_ASSERT_EQUAL((int)W::NotApplicable, (int)cs[i].workspace);
+  TEST_ASSERT_EQUAL((int)W::ListedNotSignedIn, (int)cs[4].workspace);
+}
+
+static void test_wants_probe_only_for_enabled_studio_connectors() {
+  using nimbus::orch::wantsMistralWorkspaceProbe;
+  std::vector<ConnectorInfo> none = {mk("web_search", "mistral", "builtin"),
+                                     mk("slack", "mistral", "mcp", "https://x.example/mcp"),
+                                     mk("gcal", "openai", "connector"),
+                                     mk("gcal", "mistral", "connector", "", "", false)};
+  TEST_ASSERT_FALSE(wantsMistralWorkspaceProbe(none));
+  none.push_back(studio("notion"));
+  TEST_ASSERT_TRUE(wantsMistralWorkspaceProbe(none));
 }
 
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_mistral_connector_id_shared_map);
-  RUN_TEST(test_parse_mistral_connectors_authed);
-  RUN_TEST(test_parse_mistral_connectors_bad_body_is_no_signal);
+  RUN_TEST(test_workspace_listed_is_usable_even_when_not_signed_in);
+  RUN_TEST(test_workspace_keeps_every_listed_item);
+  RUN_TEST(test_workspace_unlisted_or_inactive_is_refused);
+  RUN_TEST(test_workspace_unprobed_is_fail_closed);
+  RUN_TEST(test_workspace_bad_body_is_no_signal);
+  RUN_TEST(test_workspace_probe_is_full_replace);
+  RUN_TEST(test_workspace_matches_uuid_and_rejects_newline_ids);
+  RUN_TEST(test_workspace_signed_in_never_gates_class);
+  RUN_TEST(test_catalog_hint_when_listed_but_not_signed_in);
+  RUN_TEST(test_workspace_item_cap);
+  RUN_TEST(test_connector_auth_rule_table);
+  RUN_TEST(test_wants_probe_only_for_enabled_studio_connectors);
   RUN_TEST(test_parse_connectors_reads_past_eight);
   RUN_TEST(test_parse_connectors_caps_and_reports_drop);
   RUN_TEST(test_parse_connectors_skips_nameless_but_counts_it);

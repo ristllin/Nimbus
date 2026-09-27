@@ -354,11 +354,13 @@ std::string mistralConnectorId(const ConnectorInfo& c) {
   return cid;
 }
 
-bool parseMistralConnectorsAuthed(const char* body, std::vector<std::string>& authedOut) {
+bool parseMistralWorkspaceConnectors(const char* body, std::vector<std::string>& listedOut,
+                                     std::vector<std::string>* signedInOut) {
   if (!body || !body[0]) return false;
-  // Filter the (potentially large) /v1/connectors body down to just the three
-  // fields we need per item, so the parsed document stays tiny on the device.
+  // Filter the (~300 KB) /v1/connectors body down to just the three fields we need
+  // per item, so the parsed document stays tiny on the device.
   JsonDocument filter;
+  filter["items"][0]["id"]               = true;
   filter["items"][0]["name"]             = true;
   filter["items"][0]["is_authenticated"] = true;
   filter["items"][0]["active"]           = true;
@@ -366,14 +368,88 @@ bool parseMistralConnectorsAuthed(const char* body, std::vector<std::string>& au
   if (deserializeJson(d, body, DeserializationOption::Filter(filter))) return false;
   JsonArrayConst items = d["items"].as<JsonArrayConst>();
   if (items.isNull()) return false;   // not the expected shape: treat as "no signal"
+  int seen = 0;
   for (JsonObjectConst it : items) {
-    const char* name = it["name"] | "";
-    if (!name[0]) continue;
-    const bool authed = it["is_authenticated"] | false;
-    const bool active = it["active"] | true;   // absent -> treat as active
-    if (authed && active) authedOut.emplace_back(name);
+    if (++seen > kMistralWorkspaceMaxItems) break;
+    if (!(it["active"] | true)) continue;   // explicitly inactive: not usable; absent = active
+    // A hint only: a listed connector reporting is_authenticated:false still works
+    // (measured live), so this never decides usability.
+    const bool signedIn = it["is_authenticated"] | false;
+    for (const char* key : {"name", "id"}) {
+      const char* v = it[key] | "";
+      if (!v[0]) continue;
+      listedOut.emplace_back(v);
+      if (signedInOut && signedIn) signedInOut->emplace_back(v);
+    }
   }
   return true;
+}
+
+namespace {
+// Membership in a "\nid\nid\n" set. An id carrying a newline can never match (and
+// could otherwise straddle two entries).
+bool inIdSet(const std::string& set, const std::string& id) {
+  if (id.empty() || id.find('\n') != std::string::npos) return false;
+  return set.find("\n" + id + "\n") != std::string::npos;
+}
+std::string toIdSet(const std::vector<std::string>& ids) {
+  std::string s = "\n";
+  for (const std::string& id : ids)
+    if (id.find('\n') == std::string::npos) s += id + "\n";
+  return s;
+}
+}  // namespace
+
+bool MistralWorkspace::isListed(const std::string& id) const { return inIdSet(listed, id); }
+bool MistralWorkspace::isSignedIn(const std::string& id) const { return inIdSet(signedIn, id); }
+
+bool noteMistralWorkspaceProbe(MistralWorkspace& ws, const char* body) {
+  std::vector<std::string> listed, signedIn;
+  if (!parseMistralWorkspaceConnectors(body, listed, &signedIn)) return false;
+  ws.listed = toIdSet(listed);       // full replace: a connector removed in Mistral drops out
+  ws.signedIn = toIdSet(signedIn);
+  ws.probed = true;
+  return true;
+}
+
+bool isMistralStudioConnector(const ConnectorInfo& c) {
+  return c.prov == "mistral" && c.kind == "connector";
+}
+
+ConnectorInfo::Workspace mistralWorkspaceState(const ConnectorInfo& c, const MistralWorkspace& ws) {
+  using W = ConnectorInfo::Workspace;
+  if (!isMistralStudioConnector(c)) return W::NotApplicable;
+  if (!ws.probed) return W::Unprobed;
+  const std::string id = mistralConnectorId(c);
+  if (!ws.isListed(id)) return W::NotListed;
+  return ws.isSignedIn(id) ? W::ListedSignedIn : W::ListedNotSignedIn;
+}
+
+int8_t connectorAuthFor(const ConnectorInfo& c, const MistralWorkspace& ws, int8_t oauthState) {
+  using W = ConnectorInfo::Workspace;
+  if (c.kind == "builtin") return -1;   // authenticates provider-side
+  if (c.hasToken)          return 1;
+  if (c.hasOauth)          return oauthState;
+  if (isMistralStudioConnector(c)) {
+    const W w = mistralWorkspaceState(c, ws);
+    return (w == W::ListedSignedIn || w == W::ListedNotSignedIn) ? 1 : 2;
+  }
+  return 2;   // a credential is required and none is stored
+}
+
+void applyConnectorAuth(std::vector<ConnectorInfo>& cs, const MistralWorkspace& ws,
+                        const OauthStateFn& oauthState) {
+  for (ConnectorInfo& c : cs) {
+    const int8_t oauth = (c.hasOauth && oauthState) ? oauthState(c) : (int8_t)-1;
+    c.auth = connectorAuthFor(c, ws, oauth);
+    c.workspace = mistralWorkspaceState(c, ws);
+  }
+}
+
+bool wantsMistralWorkspaceProbe(const std::vector<ConnectorInfo>& cs) {
+  for (const ConnectorInfo& c : cs)
+    if (c.enabled && isMistralStudioConnector(c)) return true;
+  return false;
 }
 
 void attachMistralWire(JsonDocument& d, const std::vector<ConnectorInfo>& cs, bool builtinsOnly) {
@@ -421,6 +497,34 @@ void attachAnthropicWire(JsonDocument& agentBody, const std::vector<ConnectorInf
 }
 
 // ---- catalog text ------------------------------------------------------------
+
+// The parenthetical after an enabled connector's name in its provider row. W12:
+// enabled is a CHECKBOX, not health - only the states that need intervention (or
+// that change what a result means) get a note, so a bare name means "no known
+// problem" and enabled-but-unusable can't masquerade as working.
+static std::string connectorRowNote(const ConnectorInfo& c, const char* prov) {
+  using W = ConnectorInfo::Workspace;
+  if (c.auth == 0) return " (sign-in FAILED - tell the owner)";
+  if (c.auth == 2) {
+    // Fail-closed, but honest about WHY: an unchecked workspace is not the same
+    // next step as a connector the workspace does not offer.
+    if (c.workspace == W::Unprobed)
+      return " (not usable yet: the Mistral workspace has not been checked; verifying "
+             "the Mistral key on the web page re-checks it)";
+    // A Mistral Studio connector / hosted built-in has NO device credential: it
+    // is authorized in the owner's Mistral account and referenced by name here,
+    // so "add a credential" is the wrong instruction - point at Mistral instead.
+    if (!std::strcmp(prov, "mistral") && c.kind != "mcp")
+      return " (not usable until the owner enables it in their Mistral Studio account)";
+    return " (NO credential - not usable until the owner adds one)";
+  }
+  // Usable. is_authenticated is a hint, never a gate: a listed connector that
+  // reports it false still ran live, so say what an empty result may mean.
+  if (c.workspace == W::ListedNotSignedIn)
+    return " (Mistral reports it not signed in: results may come back empty until the "
+           "owner connects it in Mistral, so try it and say so if it returns nothing)";
+  return "";
+}
 
 std::string catalogText(const std::vector<ConnectorInfo>& cs, const ProviderState& ps) {
   std::string out = "\n[PROVIDERS & CONNECTORS]\n";
@@ -480,19 +584,7 @@ std::string catalogText(const std::vector<ConnectorInfo>& cs, const ProviderStat
       if (!provMatches(c, r.prov)) continue;
       out += any ? ", " : ". Enabled connectors: ";
       out += c.name;
-      // W12: enabled is a CHECKBOX, not health - surface only the states that
-      // need intervention, so a bare name means "no known problem" (a healthy
-      // list stays cheap; enabled-but-unusable can't masquerade as working).
-      if (c.auth == 0)      out += " (sign-in FAILED - tell the owner)";
-      else if (c.auth == 2) {
-        // A Mistral Studio connector / hosted built-in has NO device credential: it
-        // is authorized in the owner's Mistral account and referenced by name here,
-        // so "add a credential" is the wrong instruction - point at Mistral instead.
-        if (r.prov == "mistral" && c.kind != "mcp")
-          out += " (not usable until the owner enables it in their Mistral Studio account)";
-        else
-          out += " (NO credential - not usable until the owner adds one)";
-      }
+      out += connectorRowNote(c, r.prov);   // W12 state note ("" when healthy)
       any = true;
     }
     out += "\n";

@@ -43,7 +43,8 @@ struct ConnectorInfo {
   // W12: credential state (no secrets): -1 = no live signal / not applicable
   // (builtins auth provider-side), 1 = a credential is present and (for OAuth)
   // provably minted this boot, 0 = the last OAuth sign-in FAILED, 2 = a
-  // credential is REQUIRED but missing (the attach skips this connector).
+  // credential is REQUIRED but missing (the attach skips this connector). For a
+  // Mistral Studio connector 1/2 come from the workspace probe (see `workspace`).
   int8_t auth = -1;
   // Credential PRESENCE (no secret value): whether the blob entry carries a
   // static token / OAuth broker fields. These are the same has-flags the web GET
@@ -59,6 +60,18 @@ struct ConnectorInfo {
   // Fail-closed: an unapproved device-dialed server is never dialed and its
   // tools are never registered. Set by parseConnectorsJson.
   bool approved = false;
+  // What the Mistral workspace probe says about a Mistral Studio connector
+  // (prov=mistral, kind=connector); NotApplicable for every other entry. Stamped
+  // by applyConnectorAuth together with `auth`. Only Listed* map to auth=1; the
+  // SignedIn distinction is an informational hint for the catalog, never a gate.
+  enum class Workspace : int8_t {
+    NotApplicable = -1,
+    Unprobed = 0,           // no workspace answer yet (fail-closed: auth=2)
+    NotListed = 1,          // absent from GET /v1/connectors, or listed inactive
+    ListedNotSignedIn = 2,  // listed + active, is_authenticated:false (usable)
+    ListedSignedIn = 3,     // listed + active, is_authenticated:true (usable)
+  };
+  Workspace workspace = Workspace::NotApplicable;
 };
 
 // Parse the connectors NVS blob (a JSON array of entries; shape in connectors.h)
@@ -178,18 +191,76 @@ std::string knownCatalogJson();
 // Conversations API + GET /v1/connectors use, e.g. gcal -> "google_calendar"). An
 // owner-set explicit connector id wins UNLESS it is an OpenAI-namespace default
 // ("connector_*" carried by the known-catalog); those map through the canonical
-// table by type/name. Shared by attachMistralWire (the wire attach) and the device
-// connector-verify (which asks Mistral which of these are authenticated in Studio),
-// so the two never drift on the id.
+// table by type/name. Shared by attachMistralWire (the wire attach) and the
+// workspace probe (which asks Mistral which of these its workspace lists), so the
+// two never drift on the id.
 std::string mistralConnectorId(const ConnectorInfo& c);
 
-// Parse a Mistral GET /v1/connectors response body ({items:[{name,is_authenticated,
-// active,...}], ...}) into the set of connector names the owner has AUTHENTICATED in
-// their Mistral account (is_authenticated == true and not explicitly inactive). These
-// are the Studio connectors a Mistral sub-session can actually use; the rest need the
-// owner to connect them in Mistral. Returns false only if the body is not parseable
-// (a transient/HTTP error the caller treats as "no signal", never as "none authed").
-bool parseMistralConnectorsAuthed(const char* body, std::vector<std::string>& authedOut);
+// --- Mistral workspace probe (the Studio-connector usability signal) ---------
+// A Mistral Studio connector has no device credential: it is referenced by id on
+// the Conversations request and Mistral runs it server-side. The honest usability
+// signal is whether the configured key's WORKSPACE lists that connector as active
+// in GET /v1/connectors. `is_authenticated` is NOT that signal: measured live
+// (2026-09-27) a key whose listing says google_calendar is_authenticated:false ran
+// google_calendar_list_events server-side and returned the owner's real events. So
+// listed + active => usable (attach it and let Mistral enforce); is_authenticated
+// is kept only as a hint ("results may come back empty until it is connected").
+//
+// Storage is two newline-delimited id sets ("\nname\nid\n...") rather than vectors
+// of strings: the device keeps this for its whole uptime, and one small block per
+// set fragments its scarce internal heap far less than ~40 tiny allocations.
+struct MistralWorkspace {
+  bool probed = false;   // a definitive workspace answer has landed
+  std::string listed;    // ids (name AND uuid) of items listed AND active: usable
+  std::string signedIn;  // the subset reporting is_authenticated:true (hint only)
+  bool isListed(const std::string& id) const;
+  bool isSignedIn(const std::string& id) const;
+};
+
+// Upper bound on items read from one probe. Above the probe's page_size (100), so a
+// full page can never be truncated into a false "not listed".
+constexpr int kMistralWorkspaceMaxItems = 128;
+
+// Parse a GET /v1/connectors body ({items:[{id,name,active,is_authenticated,...}]}).
+// `listedOut` receives the identifiers (the name and, when present, the uuid id -
+// the Conversations API accepts either as connector_id) of every item that is not
+// explicitly inactive (an absent `active` counts as active); `signedInOut`
+// (optional) the identifiers of the subset whose is_authenticated is true. Returns
+// false when the body is not the expected shape (not JSON, no items[] array: an
+// HTTP/transient error) - the caller then keeps its last answer; that is "no
+// signal", never "nothing listed".
+bool parseMistralWorkspaceConnectors(const char* body, std::vector<std::string>& listedOut,
+                                     std::vector<std::string>* signedInOut = nullptr);
+
+// Fold one probe body into `ws`: a parseable body REPLACES the whole answer (a
+// connector removed from the workspace drops out) and sets probed; an unparseable
+// one leaves `ws` untouched. Returns whether the body parsed.
+bool noteMistralWorkspaceProbe(MistralWorkspace& ws, const char* body);
+
+// True for a Mistral Studio connector: prov=mistral, kind=connector.
+bool isMistralStudioConnector(const ConnectorInfo& c);
+
+// What the workspace answer says about one connector (NotApplicable unless it is a
+// Mistral Studio connector). Matches on mistralConnectorId, the id the wire sends.
+ConnectorInfo::Workspace mistralWorkspaceState(const ConnectorInfo& c, const MistralWorkspace& ws);
+
+// The single credential-state rule every surface shares (model catalog, wire-side
+// capability scope, GET /api/connectors, the Capabilities table) on the device AND
+// on a hosted instance: builtin -1 (provider-side); static token 1; OAuth ->
+// `oauthState` (the caller's live mint outcome, -1 when none yet); Mistral Studio
+// connector -> 1 when listed + active in the workspace, else 2 (unprobed included:
+// fail-closed); anything else 2 (credential required but missing).
+int8_t connectorAuthFor(const ConnectorInfo& c, const MistralWorkspace& ws, int8_t oauthState);
+
+// Stamp `auth` and `workspace` on every entry with the rule above. `oauthState`
+// resolves an OAuth entry's live mint outcome (nullptr => -1, no live signal).
+using OauthStateFn = std::function<int8_t(const ConnectorInfo&)>;
+void applyConnectorAuth(std::vector<ConnectorInfo>& cs, const MistralWorkspace& ws,
+                        const OauthStateFn& oauthState = nullptr);
+
+// Whether any ENABLED entry is a Mistral Studio connector, i.e. whether the (large,
+// ~300 KB) workspace probe is worth fetching at all.
+bool wantsMistralWorkspaceProbe(const std::vector<ConnectorInfo>& cs);
 
 // --- capability scope (CUM-159) ----------------------------------------------
 // Where a connector capability is reachable FROM. This is the machine-readable

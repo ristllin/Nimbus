@@ -72,23 +72,29 @@ String bearerFor(const Info& c);
 // 0 = mint FAILED (credential needs the owner), -1 = no signal yet.
 int8_t authStateOf(const String& name);
 
-// Fold a Mistral GET /v1/connectors response body into the live "which Studio
-// connectors are authenticated in the owner's Mistral account" signal, so a
-// Mistral Studio connector (gcal/notion/slack: no device credential by design) is
-// offered to the model only once the owner has actually connected it in Mistral.
-// Called from the Mistral provider-verify path. A bad/empty body is ignored (keeps
-// the last good signal). No-op-safe to call with garbage.
-void noteMistralConnectorsProbe(const char* v1ConnectorsBody);
+// Fold a Mistral GET /v1/connectors response body into the live workspace answer:
+// a Mistral Studio connector (gcal/notion/slack: no device credential by design) is
+// usable once the configured key's workspace LISTS it as active (is_authenticated is
+// kept only as a catalog hint - it reads false for connectors that demonstrably
+// work). Called from the Mistral provider-verify path. A bad/empty body is ignored
+// (keeps the last good answer) and returns false. No-op-safe to call with garbage.
+bool noteMistralConnectorsProbe(const char* v1ConnectorsBody);
 
-// The honest credential state for one connector (-1 n/a builtin, 1 present, 0 mint
-// failed, 2 missing / not connected in Mistral). One source of truth for the model
-// catalog, the wire attach, GET /api/connectors, and the /api/tools Capabilities
-// table, so the surfaces never disagree.
+// Whether an enabled Mistral Studio connector exists, i.e. whether the (large)
+// workspace probe is worth fetching on a Mistral verify. Parses the blob through the
+// portable parser (no Info[] array).
+bool wantsMistralWorkspaceProbe();
+
+// The honest credential state for one connector (-1 n/a builtin, 1 present / listed
+// in the Mistral workspace, 0 mint failed, 2 missing / not listed / workspace not
+// checked yet). One source of truth for the model catalog, the capability scope,
+// GET /api/connectors, and the /api/tools Capabilities table, so the surfaces never
+// disagree.
 int8_t connectorAuthState(const nimbus::orch::ConnectorInfo& c);
 
-// Forget the Mistral workspace-auth signal (Studio connectors revert to auth=2 until
-// the next verify re-probes). Call on a Mistral key change so a connector authed under
-// the previous account cannot read usable under a new key.
+// Forget the Mistral workspace answer (Studio connectors revert to auth=2 until the
+// next verify re-probes). Call on a Mistral key change so a connector listed under the
+// previous key's workspace cannot read usable under a new key.
 void resetMistralConnectorsProbe();
 
 // Attach enabled connectors to a provider request body (call before serialize):
