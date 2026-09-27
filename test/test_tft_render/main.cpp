@@ -120,6 +120,14 @@ static void assertRegionsSane(const char* name, const Rendered& r, int w, int h)
   }
 }
 
+// Copy a rectangle out of a framebuffer for region-level comparisons.
+static std::vector<uint16_t> grab(const Fb565& fb, int x0, int y0, int x1, int y1) {
+  std::vector<uint16_t> out;
+  for (int y = y0; y < y1; y++)
+    for (int x = x0; x < x1; x++) out.push_back(fb.get(x, y));
+  return out;
+}
+
 // The supported panels, each golden-tested at its own resolution. The default
 // (2.8" / freenove-28) keeps the ROOT golden dir so its files stay byte-identical
 // and frozen; the larger, host-verified-only panels get a per-size subdir.
@@ -546,6 +554,155 @@ static void test_config_qr_signin_hides_password() {
   }
 }
 
+// ---- CUM-452/453: join screens that also sign the owner in ------------------
+// On a PROVISIONED device the setup network's page shows the sign-in gate, so a
+// join screen (SetupInfo after "Publish setup network", or the locked-out Sign-in
+// QR) carries a real hand-entry code in webToken. Obviously-fake code values only.
+
+// The shipped menu combination CI never rendered: locked out + the Show code
+// affordance. First without a code (an unprovisioned device): the classic column,
+// whose Show code card used to land at y=231..275 on a 240 px panel.
+static void test_config_qr_recover_affordance() {
+  ScreenCtx c = configQrRecoverCtx("wxyz2345pq");
+  c.showCodeAffordance = true;
+  golden("config_qr_recover_affordance", ScreenId::ConfigQr, c);
+}
+
+// ...and on a provisioned device: the code is on the screen, and its card is the
+// Show code tap.
+static ScreenCtx recoverSigninCtx() {
+  ScreenCtx c = configQrRecoverCtx("wxyz2345pq");
+  c.showCodeAffordance = true;
+  c.webToken = "0123456789ab";
+  return c;
+}
+static void test_config_qr_recover_signin() {
+  golden("config_qr_recover_signin", ScreenId::ConfigQr, recoverSigninCtx());
+}
+
+// SetupInfo right after "Publish setup network" on a provisioned device: the same
+// fields, the code not tappable (the menu is closed there).
+static ScreenCtx setupSigninCtx() {
+  ScreenCtx c = baseCtx();
+  c.modeName = "orchestrator";
+  c.apName = "Nimbus-4-setup";
+  c.apPass = "wxyz2345pq";
+  c.apUp = true;
+  c.setupUrl = "http://192.168.4.1/?c=aaaaaaaaaaaa";
+  c.webToken = "0123456789ab";
+  return c;
+}
+static void test_setup_info_signin() {
+  golden("setup_info_signin", ScreenId::SetupInfo, setupSigninCtx());
+}
+
+// True when any pixel in rows [y0, y1) differs from the page background.
+static bool inkInRows(const Fb565& fb, int y0, int y1) {
+  for (int y = y0; y < y1; y++)
+    for (int x = 0; x < fb.width(); x++)
+      if (fb.get(x, y) != kBg) return true;
+  return false;
+}
+
+// "Every card fully on-glass": for each join / sign-in variant, at every panel
+// size, with a long device name and a long password, nothing is drawn in the
+// bottom gutter (a card running off the panel paints it) and every tap target
+// passes the structural check (on-panel, >= 44 px).
+static void test_join_screens_stay_on_glass() {
+  for (const auto& p : kPanels) {
+    for (const char* ssid : {"Nimbus-4-setup", "nimbus-kitchen-counter-setup"}) {
+      for (const char* pass : {"wxyz2345pq", "a-much-longer-setup-password-0123456789"}) {
+        ScreenCtx a = recoverSigninCtx();                   // locked out, provisioned, menu
+        ScreenCtx b = setupSigninCtx();                     // publish -> SetupInfo
+        ScreenCtx c = configQrRecoverCtx(pass);             // locked out, first-run, menu
+        c.showCodeAffordance = true;
+        ScreenCtx d = recoverSigninCtx();                   // 401 auto-surface (menu closed)
+        d.showCodeAffordance = false;
+        for (ScreenCtx* x : {&a, &b, &c, &d}) {
+          x->apName = ssid;
+          x->apPass = pass;
+          x->netStatus = "No known Wi-Fi found - use " + std::string(ssid);
+        }
+        const struct { const char* name; ScreenId id; const ScreenCtx* ctx; } cases[] = {
+            {"recover_signin", ScreenId::ConfigQr, &a}, {"setup_signin", ScreenId::SetupInfo, &b},
+            {"recover_affordance", ScreenId::ConfigQr, &c}, {"recover_401", ScreenId::ConfigQr, &d}};
+        for (const auto& k : cases) {
+          Fb565 fb(p.w, p.h);
+          const Rendered r = renderScreen(fb, k.id, *k.ctx);
+          assertRegionsSane(k.name, r, p.w, p.h);
+          char msg[128];
+          std::snprintf(msg, sizeof msg, "%s at %dx%d (%s): drew into the bottom gutter",
+                        k.name, p.w, p.h, ssid);
+          TEST_ASSERT_FALSE_MESSAGE(inkInRows(fb, p.h - kPad + 1, p.h), msg);
+        }
+      }
+    }
+  }
+}
+
+// The code on the glass is the code in the context (the one the device minted into
+// the table the sign-in gate redeems from), on both join screens and at every size.
+static void test_join_screen_shows_the_code() {
+  for (const auto& p : kPanels) {
+    for (ScreenCtx base : {recoverSigninCtx(), setupSigninCtx()}) {
+      const ScreenId id = base.showCodeAffordance ? ScreenId::ConfigQr : ScreenId::SetupInfo;
+      ScreenCtx other = base;
+      other.webToken = "fedcba987654";
+      Fb565 a(p.w, p.h), b(p.w, p.h);
+      renderScreen(a, id, base);
+      renderScreen(b, id, other);
+      TEST_ASSERT_TRUE_MESSAGE(grab(a, 0, 0, p.w, p.h) != grab(b, 0, 0, p.w, p.h),
+                               "the sign-in code is not on the join screen");
+      // The network password is still shown beside it (labelled network password).
+      ScreenCtx pw = base;
+      pw.apPass = "qqqq9999zz";
+      Fb565 c(p.w, p.h);
+      renderScreen(c, id, pw);
+      TEST_ASSERT_TRUE_MESSAGE(grab(a, 0, 0, p.w, p.h) != grab(c, 0, 0, p.w, p.h),
+                               "the network password is no longer on the join screen");
+    }
+  }
+}
+
+// The code card is the Show code control exactly when the menu owns the screen.
+static void test_join_code_card_tappable_only_in_menu() {
+  for (const auto& p : kPanels) {
+    ScreenCtx menu = recoverSigninCtx();
+    ScreenCtx closed = menu;
+    closed.showCodeAffordance = false;
+    Fb565 a(p.w, p.h), b(p.w, p.h);
+    TEST_ASSERT_TRUE_MESSAGE(hasTapAction(renderScreen(a, ScreenId::ConfigQr, menu),
+                                          TapRegion::Action::ShowCode),
+                             "menu join screen: the code card is not the Show code tap");
+    TEST_ASSERT_FALSE_MESSAGE(hasTapAction(renderScreen(b, ScreenId::ConfigQr, closed),
+                                           TapRegion::Action::ShowCode),
+                              "menu-closed join screen draws a dead Show code tap");
+  }
+}
+
+// Which screens carry a code, over EVERY ScreenId (a new screen with no decision
+// fails here): only SetupInfo and the locked-out Sign-in QR of a provisioned
+// Orchestrator. First-run devices sign in automatically; Notifier has no radio page.
+static void test_join_screen_code_decision_covers_every_screen() {
+  using nimbus::render::joinScreenNeedsSigninCode;
+  ScreenCtx locked = configQrRecoverCtx("wxyz2345pq");
+  ScreenCtx onLan = locked;
+  onLan.staConnected = true;
+  ScreenCtx notifier = locked;
+  notifier.modeName = "notifier";
+  for (int i = 0; i <= int(ScreenId::TouchCal); i++) {
+    const ScreenId id = ScreenId(i);
+    const bool join = id == ScreenId::SetupInfo || id == ScreenId::ConfigQr;
+    char msg[96];
+    std::snprintf(msg, sizeof msg, "screen %d: wrong sign-in code decision", i);
+    TEST_ASSERT_EQUAL_MESSAGE(int(join), int(joinScreenNeedsSigninCode(id, locked, true)), msg);
+    TEST_ASSERT_FALSE_MESSAGE(joinScreenNeedsSigninCode(id, locked, false), msg);   // first run
+    TEST_ASSERT_FALSE_MESSAGE(joinScreenNeedsSigninCode(id, notifier, true), msg);
+    TEST_ASSERT_EQUAL_MESSAGE(int(id == ScreenId::SetupInfo),
+                              int(joinScreenNeedsSigninCode(id, onLan, true)), msg);
+  }
+}
+
 // Item 2: the join QR must encode the CURRENT password, never the stale default.
 static void test_setup_join_qr_carries_current_password() {
   const std::string qr = nimbus::identity::wifiQrPayload("Nimbus-4-setup", "wxyz2345pq");
@@ -580,13 +737,6 @@ static void test_status_wifi_setup_ap() {
   golden("status_wifi_setup_ap", ScreenId::StatusIdle, wifiHomeCtx(0, true, false));
 }
 
-// Copy a header rectangle out of a framebuffer for region-level comparisons.
-static std::vector<uint16_t> grab(const Fb565& fb, int x0, int y0, int x1, int y1) {
-  std::vector<uint16_t> out;
-  for (int y = y0; y < y1; y++)
-    for (int x = x0; x < x1; x++) out.push_back(fb.get(x, y));
-  return out;
-}
 
 // The glyph box as drawHeader places it: left of the battery (or the gear).
 static int wifiGlyphX(int w, bool battery) { return (w - kMinTap) - (battery ? 56 : 30); }
@@ -883,6 +1033,13 @@ int main() {
   RUN_TEST(test_config_qr_recover);
   RUN_TEST(test_config_qr_recover_shows_current_password);
   RUN_TEST(test_config_qr_signin_hides_password);
+  RUN_TEST(test_config_qr_recover_affordance);
+  RUN_TEST(test_config_qr_recover_signin);
+  RUN_TEST(test_setup_info_signin);
+  RUN_TEST(test_join_screens_stay_on_glass);
+  RUN_TEST(test_join_screen_shows_the_code);
+  RUN_TEST(test_join_code_card_tappable_only_in_menu);
+  RUN_TEST(test_join_screen_code_decision_covers_every_screen);
   RUN_TEST(test_setup_join_qr_carries_current_password);
   RUN_TEST(test_status_wifi_connected);
   RUN_TEST(test_status_wifi_searching);

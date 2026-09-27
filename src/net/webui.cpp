@@ -357,6 +357,10 @@ static volatile int     s_storagePct     = 0;
 // the AsyncTCP handler. One slot, so clicking both in quick succession lands the
 // LAST intent rather than an arbitrary interleaving. 0 = none, 1 = publish, 2 = resume.
 static volatile int8_t  s_wifiLinkAction = 0;
+// CUM-452: set when a publish is APPLIED (the radio really switched), so loop()
+// puts the Setup screen up. Main-task only: written in loopWeb(), read by
+// consumeSetupInfoRequest(), both on the main task.
+static bool             s_setupInfoReq = false;
 #ifdef NIMBUS_TEST
 static volatile bool    s_drainPending = false, s_drainOn = false, s_drainDeep = false;
 static volatile int     s_drainBright  = -1;   // battlab: per-run LED load; -1 = firmware default
@@ -3694,6 +3698,10 @@ void beginWeb(const WebConfig& wc) {
       JsonDocument d;
       d["queued"] = true;
       d["apSsid"] = apSsid();
+      // Which interface the request arrived on (CUM-452): a page open over the LAN
+      // loses the device when joining stops, a page on the setup network does not,
+      // so the button states the next step for the case the owner is actually in.
+      d["onAp"] = r->client() && isApInterface(r->client()->localIP());
       ok(d);
       return;
     }
@@ -3815,6 +3823,12 @@ bool consumeWifiHandoffReady() {
   return true;
 }
 
+bool consumeSetupInfoRequest() {
+  if (!s_setupInfoReq) return false;
+  s_setupInfoReq = false;
+  return true;
+}
+
 bool consumeAuthQrRequest() {
   // Main-task only (like every consume*). 3 fails inside the rolling 60 s
   // window trip the QR; a 5-min re-show guard stops refresh churn if a
@@ -3876,8 +3890,16 @@ void loopWeb() {
   if (s_wifiLinkAction) {
     const int8_t act = s_wifiLinkAction;
     s_wifiLinkAction = 0;
-    if (act == 1) publishSetupNetwork();
-    else          cancelSetupHold();
+    if (act == 1) {
+      publishSetupNetwork();
+      // CUM-452: the only feedback used to be a web toast on a page that goes
+      // unreachable a second later. Confirm on the ring and put the Setup screen
+      // (network, password, join QR, sign-in code) on the panel.
+      s_ledConfirm = true;
+      s_setupInfoReq = true;
+    } else {
+      cancelSetupHold();
+    }
   }
 #ifdef NIMBUS_TEST
   if (s_drainPending) {

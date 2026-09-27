@@ -146,8 +146,17 @@ void iconWifi(Fb565& fb, int x, int y, uint8_t state, bool apMarker) {
 // controlsW > 0 means the caller puts its own header controls (the menu pager) in
 // the controlsW pixels left of the gear. The status glyphs would sit under those
 // targets, so they give way there, and the title stops short of the controls.
+struct HeaderSpec {
+  std::string title;    // "" = the device name
+  bool backable = false;
+  int controlsW = 0;    // caller-owned header controls left of the gear (menu pager)
+};
+
 void drawHeader(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx,
-                const std::string& title, bool backable, int controlsW = 0) {
+                const HeaderSpec& hs) {
+  const std::string& title = hs.title;
+  const bool backable = hs.backable;
+  const int controlsW = hs.controlsW;
   fb.fillRect(0, 0, L.w, L.headerH, kRaise);
   fb.hline(0, L.headerH - 1, L.w, kLine);
 
@@ -315,7 +324,7 @@ static void drawRingHome(Fb565& fb, const Layout& L, Rendered& r, const ScreenCt
 }
 
 void drawStatusHome(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx) {
-  drawHeader(fb, L, r, ctx, "", false);
+  drawHeader(fb, L, r, ctx, {"", false});
 
   // First-run, credless device (CUM-259): the idle status screen must NOT look
   // onboarded with an empty session list and no way back. Draw a "Set up Wi-Fi"
@@ -463,8 +472,8 @@ void drawMenu(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx) {
   // value is being adjusted; the status glyphs give way to it there.
   const bool adjusting = ctx.menuAdjusting && ctx.menuSelected >= 0 && ctx.menuSelected < n;
   const bool pager = !adjusting && n > menuRowsPerCol(L) * kMenuCols;
-  drawHeader(fb, L, r, ctx, ctx.menuTitle.empty() ? "Settings" : ctx.menuTitle, true,
-             pager ? 2 * L.minTap + 8 : 0);
+  drawHeader(fb, L, r, ctx, {ctx.menuTitle.empty() ? "Settings" : ctx.menuTitle, true,
+             pager ? 2 * L.minTap + 8 : 0});
 
   if (n == 0) return;
 
@@ -779,7 +788,7 @@ int drawTextCard(Fb565& fb, const Layout& L, int y, const std::string& body,
 }
 
 void drawSessionDetail(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx) {
-  drawHeader(fb, L, r, ctx, ctx.sessionIsRoot ? "Nimbus" : "Session", true);
+  drawHeader(fb, L, r, ctx, {ctx.sessionIsRoot ? "Nimbus" : "Session", true});
   int y = L.bodyTop();
 
   const std::string title = ctx.sessionTitle.empty()
@@ -837,7 +846,7 @@ AskGeom askGeometry(const Layout& L) {
 // encoder pages it (main.cpp); on a touch board a swipe does (also main.cpp) -
 // this renderer only draws whatever page it's asked for.
 void drawAsk(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx) {
-  drawHeader(fb, L, r, ctx, "Message", true);
+  drawHeader(fb, L, r, ctx, {"Message", true});
   const std::string body = ctx.askText.empty() ? "(no message)" : ctx.askText;
   const AskGeom g = askGeometry(L);
   TextPager pager;
@@ -872,7 +881,7 @@ void drawAsk(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx) {
 }
 
 void drawVoice(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx) {
-  drawHeader(fb, L, r, ctx, "Voice", false);
+  drawHeader(fb, L, r, ctx, {"Voice", false});
   const char* what = ctx.voice == attn::VoiceStage::Recording  ? "Listening"
                    : ctx.voice == attn::VoiceStage::Processing ? "Transcribing"
                    : ctx.voice == attn::VoiceStage::Speaking   ? "Speaking"
@@ -887,7 +896,7 @@ void drawVoice(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx) {
 }
 
 void drawSelfTest(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx) {
-  drawHeader(fb, L, r, ctx, "Self-test", true);
+  drawHeader(fb, L, r, ctx, {"Self-test", true});
   int y = L.bodyTop();
   if (!ctx.selfTestSummary.empty()) {
     fb.label(L.gut(), y, ctx.selfTestSummary, kInk3);
@@ -908,7 +917,7 @@ void drawSelfTest(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx)
 }
 
 void drawBattery(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx) {
-  drawHeader(fb, L, r, ctx, "Battery", true);
+  drawHeader(fb, L, r, ctx, {"Battery", true});
   const int y = L.bodyTop();
   fb.card(L.gut(), y, L.w - 2 * L.gut(), 120);
 
@@ -959,12 +968,144 @@ std::string displayUrl(const std::string& url) {
   return query == std::string::npos ? url : url.substr(0, query);
 }
 
+// The bare host of a device URL, for a field that must fit a narrow column:
+// "http://192.168.4.1/?c=..." -> "192.168.4.1". A browser takes it as typed. Falls
+// back to the setup network's fixed address when there is no URL (AP not up yet).
+std::string hostOf(const std::string& url) {
+  std::string u = displayUrl(url);
+  const size_t scheme = u.find("://");
+  if (scheme != std::string::npos) u.erase(0, scheme + 3);
+  const size_t slash = u.find('/');
+  if (slash != std::string::npos) u.erase(slash);
+  return u.empty() ? std::string("192.168.4.1") : u;
+}
+
+// One captioned value in the join screen's compact column (CUM-453): the caption
+// in the web .k style over a small card holding the value. SSIDs, passwords and
+// codes carry no spaces to wrap on, so the value hard-breaks onto at most two
+// lines (anything longer ends in ".."). minH lifts the card to the tap floor when
+// it is a control; chevron marks it as one.
+struct Field {
+  const char* caption;
+  std::string value;
+  uint16_t colour = kInk;
+  int minH = 0;
+  bool chevron = false;
+};
+
+// Draws the field at y across width w; returns the bottom of its card.
+int drawField(Fb565& fb, const Layout& L, int y, int w, const Field& f) {
+  fb.label(L.gut(), y, f.caption, kInk3);
+  y += fb.textHeight(1) + 3;
+  constexpr int kPadX = 8;
+  const int lineH = fb.textHeight(1) + 4;
+  const int innerW = w - 2 * kPadX - (f.chevron ? 14 : 0);
+  const std::string v = asciiSanitize(f.value);
+  const size_t perLine = size_t(std::max(1, (innerW + 1) / 6));   // textWidth = 6n - 1
+  const int lines = v.size() > perLine ? 2 : 1;
+  const int textH = lines * lineH - 4;
+  const int h = std::max(f.minH, textH + 14);
+  fb.card(L.gut(), y, w, h, kRaise, kLine, 8);
+  const int tx = L.gut() + kPadX;
+  const int ty = y + (h - textH) / 2;
+  fb.text(tx, ty, v.substr(0, perLine), f.colour, 1);
+  if (lines == 2) fb.textClipped(tx, ty + lineH, v.substr(perLine), f.colour, innerW, 1);
+  if (f.chevron) iconChevronRight(fb, L.gut() + w - 12, y + h / 2, kInk3);
+  return y + h;
+}
+
+// The join screen when it must also sign the owner in: the steps are carried by
+// numbered captions - join the network (the QR does it, or the name + password by
+// hand), open the device, type the code. The code card is the "Show code" control
+// when the menu owns the screen (bigger digits and a countdown on TokenDetail), and
+// is clamped so its target is always on the glass. With no code in the context (a
+// first-run device, where none is needed) the card reads "Show code" instead.
+void drawJoinFields(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx,
+                    int textW, bool tappable) {
+  const int w = textW ? textW : (L.w - 2 * L.gut());
+  constexpr int kGap = 5;
+  int y = L.bodyTop();
+  y = drawField(fb, L, y, w, {"1. Join network", ctx.apName}) + kGap;
+  if (!ctx.apPass.empty())
+    y = drawField(fb, L, y, w, {"Network password", ctx.apPass, kTeal}) + kGap;
+  y = drawField(fb, L, y, w, {"2. Open", hostOf(ctx.setupUrl)}) + kGap;
+
+  const int capH = fb.textHeight(1) + 3;
+  y = std::min(y, L.h - L.gut() - L.minTap - capH);
+  const std::string code = ctx.webToken.empty() ? std::string("Show code") : ctx.webToken;
+  const int bottom =
+      drawField(fb, L, y, w, {"3. Sign-in code", code, kTeal, L.minTap, tappable});
+  if (tappable)
+    push(r, L.gut(), y + capH, w, bottom - (y + capH), TapRegion::Action::ShowCode);
+}
+
+// The classic column: a text card (the numbered steps on SetupInfo, the link status
+// on Sign in), one captioned value card, and - on the menu's Sign-in QR - the
+// "Show code" button.
+struct SetupColumn {
+  bool joinScreen;
+  bool config;
+  int textW;
+  bool hasQr;
+};
+
+void drawSetupColumn(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx,
+                     const SetupColumn& sc) {
+  // SetupInfo leads with the SEQUENCE, not just the facts (CUM-260): join this
+  // network, then open the setup address. The owner who joined via the QR was left
+  // with nothing telling them the next step; step 2 is that step, and the trailing
+  // line is the no-popup safety net. Sign-in (config) keeps its one-line status.
+  const std::string body = sc.joinScreen
+      ? nimbus::wifi::setupSteps(ctx.apName, displayUrl(ctx.setupUrl))
+      : (ctx.netStatus.empty() ? std::string("Scan to open settings. You are signed in automatically.")
+                               : ctx.netStatus);
+  // "Show code" affordance (Sign-in QR only): the escape hatch for a camera
+  // that cannot scan. Tapping it opens the full device sign-in code (TokenDetail)
+  // to read and type by hand. It lives in the text column so it never collides
+  // with the QR on the right, is bottom-anchored above the fw-version line, and
+  // is at least minTap tall for the a11y tap floor. Drawn ONLY when this ConfigQr
+  // is a MENU state (showCodeAffordance) - the tap layer routes ShowCode ->
+  // TokenDetail there; the repeated-401 auto-surface renders the QR with the menu
+  // closed and leaves the flag false, so the button never becomes a dead end. (CUM-48 #3)
+  const bool showCodeBtn = sc.config && ctx.showCodeAffordance;
+  // CUM-453: the cards above the button are laid out against a panel shortened by
+  // the button plus its clearance, so drawTextCard's line clamp absorbs a long
+  // status instead of the button being pushed off the bottom of the glass.
+  const int fwClear = fb.textHeight(1) + 3;   // the fw-version line under the button
+  constexpr int kBtnGap = 6;
+  Layout colL = L;
+  if (showCodeBtn) colL.h -= L.minTap + fwClear + kBtnGap;
+
+  int y = drawTextCard(fb, colL, L.bodyTop(), body, {1, kInk2}, sc.textW) + 8;
+  if (sc.hasQr) {
+    const bool showPass = sc.joinScreen && !ctx.apPass.empty();
+    fb.label(L.gut(), y, sc.joinScreen ? (showPass ? "network password" : "setup address")
+                                       : "QR includes sign-in",
+             kInk3);
+    y += 14;
+    y = drawTextCard(fb, colL, y,
+                     sc.joinScreen ? (showPass ? ctx.apPass : displayUrl(ctx.setupUrl))
+                                   : std::string("Nothing to type."),
+                     {1, kTeal}, sc.textW);
+  }
+  if (!showCodeBtn) return;
+  const int bh = L.minTap;
+  const int bw = sc.textW ? sc.textW : (L.w - 2 * L.gut());
+  const int bx = L.gut();
+  int by = L.h - L.gut() - bh - fwClear;          // clear the fw-version line
+  if (by < y + kBtnGap) by = y + kBtnGap;         // never overlap the caption above...
+  by = std::min(by, L.h - L.gut() - bh);          // ...and never leave the glass
+  fb.card(bx, by, bw, bh);
+  fb.text(bx + 10, by + (bh - fb.textHeight(1)) / 2, "Show code", kTeal, 1);
+  push(r, bx, by, bw, bh, TapRegion::Action::ShowCode);
+}
+
 void drawSetup(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx, bool config) {
   // Notifier connects over Bluetooth (the nsn broker), not Wi-Fi - it never runs
   // the radio. So its "not connected" screen must NOT tell the owner to join a
   // setup Wi-Fi network that does not exist; it points at the broker instead.
   if (!config && ctx.modeName && std::string(ctx.modeName) == "notifier") {
-    drawHeader(fb, L, r, ctx, "Setup", true);
+    drawHeader(fb, L, r, ctx, {"Setup", true});
     int y = L.bodyTop();
     y = drawTextCard(fb, L, y,
         "Waiting for a Bluetooth connection.\n\nOn your computer, run the "
@@ -988,24 +1129,14 @@ void drawSetup(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx, bo
   // network, exactly like onboarding, not a sign-in URL to an address that is
   // unreachable until they have joined. With the station up, Config keeps its
   // sign-in QR. SetupInfo (config == false) always shows the join credentials.
-  const bool apRecover =
-      config && ctx.apUp && !ctx.staConnected && !ctx.apName.empty();
+  const bool apRecover = config && ctx.lockedOut();
   const bool joinScreen = !config || apRecover;  // show SSID + password + Wi-Fi-join QR
 
-  drawHeader(fb, L, r, ctx, joinScreen ? "Setup" : "Sign in", true);
-  int y = L.bodyTop();
-  // SetupInfo leads with the SEQUENCE, not just the facts (CUM-260): join this
-  // network, then open the setup address. The owner who joined via the QR was left
-  // with nothing telling them the next step; step 2 is that step, and the trailing
-  // line is the no-popup safety net. Sign-in (config) keeps its one-line status.
-  const std::string body = joinScreen
-      ? nimbus::wifi::setupSteps(ctx.apName, displayUrl(ctx.setupUrl))
-      : (ctx.netStatus.empty() ? std::string("Scan to open settings. You are signed in automatically.")
-                               : ctx.netStatus);
+  drawHeader(fb, L, r, ctx, {joinScreen ? "Setup" : "Sign in", true});
 
   // The join QR carries the CURRENT per-device password (wifiQrPayload reads
-  // ctx.apPass, the live stored value); the passphrase is also printed below for
-  // anyone joining by hand. This screen is the only place the owner can learn it.
+  // ctx.apPass, the live stored value); the passphrase is also printed beside it
+  // for anyone joining by hand. This screen is the only place the owner can learn it.
   const std::string url = joinScreen
       ? (!ctx.apName.empty() ? nimbus::identity::wifiQrPayload(ctx.apName, ctx.apPass)
                              : (ctx.setupUrl.empty() ? ctx.configUrl : ctx.setupUrl))
@@ -1025,39 +1156,21 @@ void drawSetup(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx, bo
   constexpr int kQrTextMin = 108;   // min px kept for the text column beside the QR
   const int qrBox = std::min(L.h - L.bodyTop() - L.gut(),
                              L.w - 2 * L.gut() - 10 - kQrTextMin);
-  const int qrW = drawQr(fb, L, url, y, qrBox);
+  const int qrW = drawQr(fb, L, url, L.bodyTop(), qrBox);
   const int textW = qrW ? (L.w - 2 * L.gut() - qrW - 10) : 0;
 
-  y = drawTextCard(fb, L, y, body, {1, kInk2}, textW) + 8;
-  if (!url.empty()) {
-    const bool showPass = joinScreen && !ctx.apPass.empty();
-    fb.label(L.gut(), y, joinScreen ? (showPass ? "network password" : "setup address")
-                                    : "QR includes sign-in",
-             kInk3);
-    y += 14;
-    y = drawTextCard(fb, L, y,
-                     joinScreen ? (showPass ? ctx.apPass : displayUrl(ctx.setupUrl))
-                                : std::string("Nothing to type."),
-                     {1, kTeal}, textW);
-  }
-  // "Show code" affordance (Sign-in QR only): the escape hatch for a camera
-  // that cannot scan. Tapping it opens the full device sign-in code (TokenDetail)
-  // to read and type by hand. It lives in the text column so it never collides
-  // with the QR on the right, is bottom-anchored above the fw-version line, and
-  // is at least minTap tall for the a11y tap floor. Drawn ONLY when this ConfigQr
-  // is a MENU state (showCodeAffordance) - the tap layer routes ShowCode ->
-  // TokenDetail there; the repeated-401 auto-surface renders the QR with the menu
-  // closed and leaves the flag false, so the button never becomes a dead end. (CUM-48 #3)
-  if (config && ctx.showCodeAffordance) {
-    const int bh = L.minTap;
-    const int bw = textW ? textW : (L.w - 2 * L.gut());
-    const int bx = L.gut();
-    int by = L.h - L.gut() - bh - (fb.textHeight(1) + 3);   // clear the fw-version line
-    if (by < y + 6) by = y + 6;                             // never overlap the caption above
-    fb.card(bx, by, bw, bh);
-    fb.text(bx + 10, by + (bh - fb.textHeight(1)) / 2, "Show code", kTeal, 1);
-    push(r, bx, by, bw, bh, TapRegion::Action::ShowCode);
-  }
+  // CUM-453: a join screen on a PROVISIONED device carries a real sign-in code
+  // (webToken). There the setup network's page serves the sign-in gate, so the
+  // owner who joins it needs a code the gate will redeem - the network password
+  // alone is not one. The column switches to compact captioned fields so the
+  // steps, the password and the code all fit on the glass. The menu's locked-out
+  // Sign-in QR always uses them: its Show code control does not fit under the
+  // onboarding steps and the password on a 240 px panel.
+  const bool menuShowCode = config && ctx.showCodeAffordance;
+  if (joinScreen && (!ctx.webToken.empty() || menuShowCode))
+    drawJoinFields(fb, L, r, ctx, textW, menuShowCode);
+  else
+    drawSetupColumn(fb, L, r, ctx, {joinScreen, config, textW, !url.empty()});
   // Firmware version, small in the bottom-left. Guarded so the golden fixture
   // (empty fwVersion) draws nothing and stays byte-identical.
   if (!ctx.fwVersion.empty())
@@ -1069,7 +1182,7 @@ void drawTokenDetail(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& c
   // "device sign-in code" (CUM-45): the full phrase no longer fits the title once
   // the Wi-Fi and battery glyphs share the header (CUM-455), and a clipped
   // "Device sign-in .." title read as broken.
-  drawHeader(fb, L, r, ctx, "Sign-in code", true);
+  drawHeader(fb, L, r, ctx, {"Sign-in code", true});
   const int y = L.bodyTop();
   fb.text(L.gut(), y, "Only if you can't scan the Sign-in QR.", kInk3, 1);
 
@@ -1102,7 +1215,7 @@ void drawTokenDetail(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& c
 }
 
 void drawPairing(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx) {
-  drawHeader(fb, L, r, ctx, "Pairing", false);
+  drawHeader(fb, L, r, ctx, {"Pairing", false});
   const int y = L.bodyTop() + 20;
   fb.card(L.gut(), y, L.w - 2 * L.gut(), 110);
   fb.label(L.gut() + 14, y + 14, "pairing code", kInk3);

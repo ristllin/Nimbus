@@ -180,6 +180,12 @@ static uint32_t      g_revealUntilMs = 0;
 // showed (owner: "a full night, no logo"). 0 = not currently showing the auth QR.
 static uint32_t      g_authQrUntilMs = 0;
 static constexpr uint32_t kAuthQrHoldMs = 45000;
+// CUM-452: Settings > Connectivity > Wi-Fi > Publish setup network asks loop() to
+// put the Setup screen up (the web path raises net::consumeSetupInfoRequest()).
+static bool          g_setupInfoReq = false;
+// CUM-453: the frame on the panel shows the hand-entry sign-in code (a join screen of
+// a provisioned device), so loop() repaints it the moment that code stops working.
+static bool          g_panelShowsCode = false;
 static uint32_t      g_revealDurMs   = 4000;   // actual length of the live reveal window
                                                // (the boot handoff uses a shorter one)
 static constexpr uint32_t kRevealMs = 4000;  // how long a single click lights the ring
@@ -1111,15 +1117,28 @@ static render::ScreenCtx buildCtx(int cursorJob) {
   return c;
 }
 
+// CUM-452/453: a join screen of a provisioned device (render::joinScreenNeedsSigninCode)
+// carries the hand-entry sign-in code - the 10-minute display code, the same one
+// TokenDetail shows, so there is time to read it and type it. Without it the owner
+// who joins the setup network meets a sign-in gate and has nothing it will accept.
+// Returns whether the frame shows a code.
+static bool fillJoinSigninCode(render::ScreenCtx& c, attn::ScreenId screen) {
+  if (!render::joinScreenNeedsSigninCode(screen, c, net::provisioned())) return false;
+  c.webToken = std::string(net::showCode().c_str());
+  return true;
+}
+
 static void renderScreen(attn::ScreenId screen, int cursorJob, bool fullClear) {
   (void)fullClear;   // legacy panel refresh hint; the color panel ignores it
   const uint32_t tnow = millis();
+  render::ScreenCtx ctx = buildCtx(cursorJob);
+  const bool showsCode = fillJoinSigninCode(ctx, screen);
   // Honour a dropped push. renderAndPush returns false when the previous
   // ~31 ms blit is still in flight - and it only swaps the tap map on a
   // SUCCESSFUL push, so pretending it painted leaves the panel AND the hit
   // regions a screen behind while the FSM has already moved on. Leave
   // g_lastScreen alone so the caller's entry gates still re-fire.
-  const auto push = hw::tft::renderAndPush(screen, buildCtx(cursorJob));
+  const auto push = hw::tft::renderAndPush(screen, ctx);
   if (push == hw::tft::Push::Dropped) {
     g_sched.onRenderDone(tnow);   // never leave the scheduler latched
     return;                       // panel is a frame behind; caller retries
@@ -1128,6 +1147,7 @@ static void renderScreen(attn::ScreenId screen, int cursorJob, bool fullClear) {
   // gates that key off g_lastScreen must see it (an Unchanged frame is a
   // SUCCESS - treating it as a drop is what latched the repaint loop).
   g_lastScreen = uint8_t(screen);
+  g_panelShowsCode = showsCode;
   // First-run auto-return (CUM-259, the (a) leg): whenever a credless device lands
   // on StatusIdle, arm a short dwell after which the loop repaints SetupInfo, so a
   // tap that backed out of Setup can never leave the owner parked on the idle screen.
@@ -1767,6 +1787,7 @@ static void renderMenu() {
   else if (tokenDetail) screen = attn::ScreenId::TokenDetail;
   else if (stScreen) screen = attn::ScreenId::SelfTest;
   else if (batScreen) screen = attn::ScreenId::Battery;
+  bool showsCode = false;
   if (qr) {
     // ConfigQr uses the best live address: LAN when joined, setup AP otherwise.
     // setupUrl remains populated so the renderer can tell those states apart and
@@ -1780,6 +1801,9 @@ static void renderMenu() {
     c.staConnected = net::staConnected();   // locked-out ConfigQr shows AP creds (CUM-200)
     c.netStatus = netStatusLine();
     c.showCodeAffordance = true;   // menu state: the ShowCode tap routes to TokenDetail
+    // Locked out on a provisioned device, the Sign-in QR is a join screen: it carries
+    // the hand-entry sign-in code itself (CUM-453); its code card is the Show code tap.
+    showsCode = fillJoinSigninCode(c, screen);
   } else if (tokenDetail) {
     // "Show code" hand-entry fallback (CUM-295): a SINGLE-USE, 10-minute code the
     // owner reads and types (the web gate exchanges it), never the durable token.
@@ -1869,6 +1893,7 @@ static void renderMenu() {
   if (hw::tft::renderAndPush(screen, c) == hw::tft::Push::Dropped) return;
   g_menuNeedsPaint = false;
   g_lastScreen = uint8_t(screen);
+  g_panelShowsCode = showsCode;
   // ⚠ Keep g_menuDoneAt moving. The repaint gate is int32_t(now - g_menuDoneAt)
   // >= 0; left at 0 that becomes int32_t(now), which goes NEGATIVE once uptime
   // passes ~24.8 days and the menu then never repaints again. A frame has no
@@ -4393,6 +4418,9 @@ static void settleMenuAfterMutation(uint32_t now) {
     // Fire-and-forget: the AP comes up asynchronously, so acknowledge the press.
     emitMenuActionFeedback(nimbus::action::MenuAction::PublishAp,
                            nimbus::action::Outcome::Acknowledged);
+    // CUM-452: then show the Setup screen (network, password, join QR, sign-in code)
+    // - the same follow-up the web button gets. loop() closes the menu for it.
+    g_setupInfoReq = true;
   }
   if (g_menu.wifiScanRequested()) {
     // Kick the scan and seed whatever is already available. The rows refresh
@@ -4714,6 +4742,25 @@ static void drainTouch(uint32_t now) {
     default:
       break;
   }
+}
+
+// CUM-452: after "Publish setup network" (web or device menu), put the Setup screen
+// on the panel. It is an explicit owner action, so it supersedes the menu and a held
+// reply the same way the first-run Setup tap does, and wakes a resting screen. The
+// first-run calibration gate owns the panel outright, so it is left alone there.
+static void showSetupAfterPublish() {
+  if (g_calGateActive) return;
+  saverKick();                           // wake a resting (backlight-off) panel
+  if (g_menu.isOpen()) {
+    g_menu.close();
+    g_menuNeedsPaint = false;
+    // A menu-action confirm may be swelling the ring right now; its expiry restores
+    // the status ring (menu closed). Otherwise hand the ring back immediately.
+    solide::leds::clearFrame();
+    if (g_ledConfirmUntilMs == 0) refreshRing();
+  }
+  g_askSticky = false; g_askPage = 0; g_askOverride = "";
+  renderScreen(attn::ScreenId::SetupInfo, -1);
 }
 
 // Pin the portable identity-key list to the frozen AKEY_* machine keys, so a
@@ -5173,6 +5220,15 @@ void loop() {
     renderScreen(attn::ScreenId::ConfigQr, -1);
     g_authQrUntilMs = now + kAuthQrHoldMs;
   }
+  // CUM-452: the setup network was just published (web button or device menu).
+  // Radio-only feedback left the owner with nothing on the device, and the web page
+  // that showed a toast went unreachable a second later. Put the Setup screen up -
+  // network name, password, join QR and, on a provisioned device, the sign-in code
+  // the setup network's page will ask for.
+  if (net::consumeSetupInfoRequest() || g_setupInfoReq) {
+    g_setupInfoReq = false;
+    showSetupAfterPublish();
+  }
   // Auth-QR hold elapsed: fall back to ambient status (unless the menu is now
   // deliberately showing the QR, or a later screen already replaced it) so the
   // panel returns to idle and the screensaver can arm.
@@ -5472,6 +5528,21 @@ void loop() {
       s_tokenDetailTickMs = now;
     }
     s_tokenDetailWasOpen = tdOpen;
+  }
+
+  // A join screen showing the hand-entry sign-in code (CUM-453) must never keep a
+  // dead one: expired, already redeemed (the owner just signed in with it), or
+  // evicted. Repaint the moment it stops working - the render re-mints it through
+  // net::showCode(). Only the frame that actually shows a code triggers this.
+  if (g_panelShowsCode && net::showCodeStale()) {
+    if (g_menu.isOpen()) {
+      g_menuNeedsPaint = true;
+    } else if (g_lastScreen == uint8_t(attn::ScreenId::SetupInfo) ||
+               g_lastScreen == uint8_t(attn::ScreenId::ConfigQr)) {
+      renderScreen(attn::ScreenId(g_lastScreen), -1);
+    } else {
+      g_panelShowsCode = false;   // the frame moved on without a render we saw
+    }
   }
 
   // Flush a coalesced menu repaint once the menu's OWN refresh window elapses.

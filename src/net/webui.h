@@ -227,6 +227,10 @@ bool consumeLedConfirm();
 bool consumeWifiJoinStarted();
 bool consumeWifiHandoffReady();
 
+// True (once) after POST /api/wifi action=publishap was APPLIED on the main task
+// (CUM-452): the main loop consumes it and puts the Setup screen on the panel.
+bool consumeSetupInfoRequest();
+
 // True (once) when repeated web-auth failures (3 x 401 inside 60 s) suggest the
 // owner is on a token-less page - the main loop consumes it and shows the
 // Config QR screen on the panel. Re-arms after 5 min (no refresh churn); any
