@@ -5,6 +5,7 @@
 #include "nimbus/device_identity.h"   // wifiQrPayload - the setup screen's join QR
 #include "nimbus/qr.h"
 #include "nimbus/text_page.h"         // TextPager - Ask-screen pagination
+#include "nimbus/voice_flow.h"        // voice::wrap - the hold-to-talk status line
 #include "nimbus/wifi/copy.h"         // first-run setup copy (CTA + step sequence)
 
 // The colour touch UI. Layout language is lifted from the web interface so the
@@ -273,6 +274,38 @@ static void ringCenterLine(Fb565& fb, int cx, int y, int inner, const std::strin
   fb.textClipped(cx - w / 2, y, s, colour, inner, 1);
 }
 
+// Hold-to-talk status colour: accent while listening / processing, the error
+// colour for a failed outcome, plain ink for a calm one ("Didn't catch that").
+uint16_t voiceToneColour(uint8_t tone) {
+  return tone == 1 ? kCrit : tone == 2 ? kInk : kTeal;
+}
+
+// The voice flow's line inside the on-screen ring (CUM-456): a coloured title over
+// the wrapped detail, centred as a block and clipped to the inner circle. Replaces
+// the idle legend while hold-to-talk is live, so listening, processing and the
+// outcome all read on the screen the owner is holding.
+// How many scale-1 characters fit in `maxW` px (textWidth of n chars is n * advance
+// minus the trailing gap, so measure the advance rather than one glyph).
+size_t charsThatFit(int maxW) {
+  const int advance = std::max(1, Fb565::textWidth("MM", 1) - Fb565::textWidth("M", 1));
+  return size_t(std::max(1, (maxW + 1) / advance));
+}
+
+void ringVoiceStatus(Fb565& fb, int cx, int cy, int inner, const ScreenCtx& ctx) {
+  const size_t maxChars = charsThatFit(inner);
+  const std::vector<std::string> lines =
+      nimbus::voice::wrap(ctx.voiceDetail, maxChars, nimbus::voice::kDetailMaxLines);
+  constexpr int kTitleGap = 16, kLineH = 12;
+  const int blockH = kTitleGap + int(lines.size()) * kLineH;
+  int y = cy - blockH / 2;
+  ringCenterLine(fb, cx, y, inner, ctx.voiceTitle, voiceToneColour(ctx.voiceTone));
+  y += kTitleGap;
+  for (const std::string& ln : lines) {
+    ringCenterLine(fb, cx, y, inner, ln, kInk2);
+    y += kLineH;
+  }
+}
+
 // Ring-dominant Notifier screen for boards with NO physical LED ring: the ring is
 // the whole display. Sessions are the arcs the ring already draws; a small legend
 // sits inside it (clipped to the inner circle), and orchestrator's hold-to-talk is
@@ -294,7 +327,9 @@ static void drawRingHome(Fb565& fb, const Layout& L, Rendered& r, const ScreenCt
 
   const int cx = rx + rs / 2, cy = ry + rs / 2;
   const int inner = rs - 72;                           // text stays well inside the dots
-  if (ctx.jobs.empty()) {
+  if (!ctx.voiceTitle.empty()) {
+    ringVoiceStatus(fb, cx, cy, inner, ctx);
+  } else if (ctx.jobs.empty()) {
     ringCenterLine(fb, cx, cy - 8, inner, "Nothing running", kInk);
     ringCenterLine(fb, cx, cy + 8, inner, "no sessions yet", kInk3);
   } else {
@@ -314,13 +349,19 @@ static void drawRingHome(Fb565& fb, const Layout& L, Rendered& r, const ScreenCt
   }
 
   // Hold-to-talk: a tall button on the RIGHT (orchestrator only). Pressed state
-  // fills brighter so a touch is felt instantly (ctx.micHeld set by the device).
+  // fills brighter so a touch is felt instantly (ctx.micHeld set by the device);
+  // while a turn is processing it draws inactive ("wait") - a hold then does
+  // nothing, and the button says so instead of looking ready (CUM-456).
   if (showMic) {
     const int bw = micW - L.gut(), bh = std::min(bodyH, 132);
     const int bx = L.w - L.gut() - bw, by = bodyTop + (bodyH - bh) / 2;
-    fb.fillRoundRect(bx, by, bw, bh, L.cardRadius, ctx.micHeld ? kInk : kTeal);
-    iconMic(fb, bx + bw / 2, by + bh / 2 - 9, kBg);
-    fb.text(bx + (bw - fb.textWidth("hold", 1)) / 2, by + bh / 2 + 7, "hold", kBg, 1);
+    const bool busy = ctx.micBusy && !ctx.micHeld;
+    const uint16_t fill = ctx.micHeld ? kInk : busy ? kRaise2 : kTeal;
+    const uint16_t ink = busy ? kInk3 : kBg;
+    const char* word = busy ? "wait" : "hold";
+    fb.fillRoundRect(bx, by, bw, bh, L.cardRadius, fill);
+    iconMic(fb, bx + bw / 2, by + bh / 2 - 9, ink);
+    fb.text(bx + (bw - fb.textWidth(word, 1)) / 2, by + bh / 2 + 7, word, ink, 1);
     push(r, bx, by, bw, bh, TapRegion::Action::Mic);
   }
 }
@@ -453,6 +494,23 @@ void drawStatusHome(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ct
   // control on the screen - in Orchestrator mode. See showMic above.
   if (!showMic) return;
   const int my = L.h - L.gut() - micH;
+  if (!ctx.voiceTitle.empty()) {
+    // Hold-to-talk is live (CUM-456): the bar carries the voice flow's line - the
+    // coloured title, then the detail - on a neutral fill, so listening, processing
+    // and the outcome read right where the owner holds. Still the Mic target, so a
+    // retry after an outcome is a hold on the same spot.
+    const int bw = L.w - 2 * L.gut();
+    fb.fillRoundRect(L.gut(), my, bw, micH, L.cardRadius, kRaise2);
+    fb.roundRect(L.gut(), my, bw, micH, L.cardRadius, voiceToneColour(ctx.voiceTone));
+    const int tx = L.gut() + 12, tw = bw - 24;
+    fb.textClipped(tx, my + 7, ctx.voiceTitle, voiceToneColour(ctx.voiceTone), tw, 1);
+    const std::vector<std::string> lines =
+        nimbus::voice::wrap(ctx.voiceDetail, charsThatFit(tw), 2);
+    for (size_t i = 0; i < lines.size(); ++i)
+      fb.textClipped(tx, my + 19 + int(i) * 11, lines[i], kInk2, tw, 1);
+    push(r, L.gut(), my, bw, micH, TapRegion::Action::Mic);
+    return;
+  }
   fb.fillRoundRect(L.gut(), my, L.w - 2 * L.gut(), micH, L.cardRadius, kTeal);
   iconMic(fb, L.gut() + 30, my + micH / 2, kBg);
   fb.text(L.gut() + 52, my + (micH - fb.textHeight(2)) / 2, "Hold to talk", kBg, 2);
