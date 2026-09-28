@@ -1,8 +1,16 @@
-# OTA release pipeline: on a v* tag, build both OTA variants, sign the release
-# manifest with the OTA_SIGNING_KEY secret (ECDSA P-256 - the device verifies
-# against include/ota_pubkey.h before flipping firmware), and publish a GitHub
-# Release. Devices poll releases/latest/download/manifest.json daily. docs/ota.md
-# has the full scheme + the release checklist.
+# Release pipeline, two channels, each started by its own tag shape (docs/ota.md,
+# "Release tags"):
+#   vX.Y.Z[-rc*]      OTA release: build every OTA variant, sign the release manifest
+#                     with the OTA_SIGNING_KEY secret (ECDSA P-256 - the device verifies
+#                     against include/ota_pubkey.h before flipping firmware), publish a
+#                     GitHub Release (devices poll releases/latest/download/manifest.json
+#                     daily) AND build + push the nimbusd:<tag> Virtual Nimbus image.
+#   vn-vX.Y.Z[-N]     Virtual release: ONLY the nimbusd:<tag> image. No firmware, no OTA
+#                     manifest, no web-flash.
+# The tag-shape job decides the channel once (tools/release_gate/tag_shape.py) and every
+# other job is gated on it at job level, so no job ever half-runs on the wrong shape. Both
+# shapes stay in THIS workflow under refs/tags/v*: the registry credential is issued only
+# to release.yml on a pushed refs/tags/v* tag ("vn-..." starts with "v").
 name: release
 
 on:
@@ -13,7 +21,28 @@ permissions:
   contents: write   # create the release + upload assets
 
 jobs:
+  # The ONE tag gate: which channel this tag drives, and does it name the current
+  # include/version.h NIMBUS_FW_VERSION? A refused tag fails here and every job below is
+  # skipped (they all need this job), so nothing builds or publishes.
+  tag-shape:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      channel: ${{ steps.shape.outputs.channel }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0 (pinned SHA)
+        with:
+          persist-credentials: false
+
+      - name: Tag shape / version.h coherence gate
+        id: shape
+        run: python3 tools/release_gate/tag_shape.py --tag "${GITHUB_REF_NAME}"
+
+  # Firmware OTA release: OTA tags only. A virtual tag skips this whole job.
   release:
+    needs: tag-shape
+    if: needs.tag-shape.outputs.channel == 'ota'
     runs-on: ubuntu-latest
     steps:
       # platformio.ini consumes ../solide-drivers via symlink:// - recreate the
@@ -31,18 +60,6 @@ jobs:
           repository: ristllin/solide-drivers
           ref: fc03b8dc3fbe00e3258ffeb8e145a28308f532b5   # solide-drivers v0.5.1 (freenove CYD) - pin the SHA, a tag is mutable
           path: solide-drivers
-
-      - name: Tag / version.h coherence gate
-        working-directory: Nimbus
-        run: |
-          TAG="${GITHUB_REF_NAME}"
-          VER=$(sed -n 's/#define NIMBUS_FW_VERSION "\(.*\)"/\1/p' include/version.h)
-          echo "tag=$TAG version.h=$VER"
-          # The tag may carry an -rcN suffix while version.h holds the base version.
-          case "$TAG" in
-            "$VER"|"$VER"-rc*) ;;
-            *) echo "::error::tag $TAG != NIMBUS_FW_VERSION $VER"; exit 1 ;;
-          esac
 
       # RELEASE GATE (CUM-174 #6): refuse to build/publish on a known white-screen
       # driver pin (CUM-167). Fast, no toolchain - fails the release before the
@@ -111,7 +128,7 @@ jobs:
           # own type in the message.
           python3 tools/make_manifest.py \
             --version "${GITHUB_REF_NAME}" \
-            --build "$(git describe --tags --always)" \
+            --build "$(git describe --tags --always --match 'v[0-9]*')" \
             --key /tmp/ota_priv.pem \
             --url-base "https://github.com/ristllin/nimbus-fw-releases/releases/download/${GITHUB_REF_NAME}" \
             --out manifest.json \
@@ -195,13 +212,15 @@ jobs:
             "https://x-access-token:${RELEASE_PAT}@github.com/ristllin/nimbus-fw-releases.git" \
             webflash:webflash
 
-  # nimbusd (Virtual Nimbus) container image, built + pushed on the SAME firmware tag
-  # (CUM-444). The cloud deploy pins NIMBUSD to nimbusd:<tag>, but nothing built that
-  # image, so a VN ran whatever was last pushed by hand as :latest - stale by several
-  # releases. This job makes the image real per release, so a VN reports the same
-  # v4.5.x a physical device does. Independent of the firmware release job (a VN image
-  # failure must not block the OTA release, and vice versa).
+  # nimbusd (Virtual Nimbus) container image, built + pushed as nimbusd:<tag> on BOTH
+  # channels (CUM-444): with the firmware on an OTA tag, alone on a virtual tag. The
+  # cloud deploy pins which image VNs run (its RECONCILER_NIMBUSD_TAG variable), so a
+  # pushed image changes nothing until that pin moves. Independent of the firmware
+  # release job (a VN image failure must not block the OTA release, and vice versa).
+  # The image's `fw` is always include/version.h, which tag-shape proved the tag names.
   nimbusd-image:
+    needs: tag-shape
+    if: needs.tag-shape.outputs.channel == 'ota' || needs.tag-shape.outputs.channel == 'virtual'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -213,16 +232,25 @@ jobs:
       IMAGE: us-central1-docker.pkg.dev/cumulo-nimbus-prod/cumulo-nimbus/nimbusd
     steps:
       # Preflight: this job needs two owner-set repo secrets for keyless GCP auth. Until
-      # they exist it CANNOT build/push, and a hard failure here would red the whole
-      # release run even though the firmware OTA job (independent) published fine. So
-      # detect the secrets and, when absent, skip the rest of the job with a loud notice
-      # instead of failing. Once the owner sets GCP_WIF_PROVIDER + GCP_DEPLOY_SA the job
-      # runs and fails loudly on any REAL build/push error, as it should.
+      # they exist it CANNOT build/push. On an OTA tag a hard failure here would red the
+      # whole release run even though the firmware OTA job (independent) published fine,
+      # so it skips the rest of the job with a loud notice instead. On a virtual tag the
+      # image IS the release, so a missing secret fails the run rather than reading green
+      # having shipped nothing. With both secrets set the job fails loudly on any REAL
+      # build/push error, as it should.
       - name: Preflight - GCP secrets present?
         id: preflight
+        env:
+          CHANNEL: ${{ needs.tag-shape.outputs.channel }}
+          # Via env, never pasted into the script text.
+          GCP_WIF_PROVIDER: ${{ secrets.GCP_WIF_PROVIDER }}
+          GCP_DEPLOY_SA: ${{ secrets.GCP_DEPLOY_SA }}
         run: |
-          if [ -n "${{ secrets.GCP_WIF_PROVIDER }}" ] && [ -n "${{ secrets.GCP_DEPLOY_SA }}" ]; then
+          if [ -n "$GCP_WIF_PROVIDER" ] && [ -n "$GCP_DEPLOY_SA" ]; then
             echo "enabled=true" >> "$GITHUB_OUTPUT"
+          elif [ "$CHANNEL" = "virtual" ]; then
+            echo "::error::virtual release ${GITHUB_REF_NAME} builds only nimbusd:${GITHUB_REF_NAME}, but repo secrets GCP_WIF_PROVIDER and GCP_DEPLOY_SA are not set, so nothing was built or pushed."
+            exit 1
           else
             echo "enabled=false" >> "$GITHUB_OUTPUT"
             echo "::notice::nimbusd image skipped: set repo secrets GCP_WIF_PROVIDER and GCP_DEPLOY_SA to build+push nimbusd:${GITHUB_REF_NAME}. The firmware OTA release is unaffected."
@@ -234,19 +262,6 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0 (pinned SHA)
         with:
           persist-credentials: false
-
-      # Same tag/version.h coherence gate the firmware job uses: the image `fw` comes
-      # from include/version.h, so refuse to build an image whose tag disagrees with it.
-      - name: Tag / version.h coherence gate
-        if: steps.preflight.outputs.enabled == 'true'
-        run: |
-          TAG="${GITHUB_REF_NAME}"
-          VER=$(sed -n 's/#define NIMBUS_FW_VERSION "\(.*\)"/\1/p' include/version.h)
-          echo "tag=$TAG version.h=$VER"
-          case "$TAG" in
-            "$VER"|"$VER"-rc*) ;;
-            *) echo "::error::tag $TAG != NIMBUS_FW_VERSION $VER"; exit 1 ;;
-          esac
 
       # WIF auth. The firmware release has no GCP auth today, so this adds the standard
       # keyless Workload Identity Federation step. The owner MUST set two repo secrets
@@ -289,10 +304,11 @@ jobs:
           tags: ${{ env.IMAGE }}:${{ github.ref_name }}
 
       # Smoke: run the just-built image and prove it answers /api/state with the ENGINE
-      # version (fw == NIMBUS_FW_VERSION), the exact drift CUM-444 is about. Bind the
-      # control surface to 0.0.0.0 for this run only so the published port is reachable
-      # from the runner (production keeps the loopback default). /api/state is gated, so
-      # supply the web token.
+      # version (fw == NIMBUS_FW_VERSION), the exact drift CUM-444 is about, and with the
+      # image tag this run pushes (image == nimbusd:<tag>; on a virtual tag that is the
+      # only thing telling vn-vX.Y.Z-1 from -2). Bind the control surface to 0.0.0.0 for
+      # this run only so the published port is reachable from the runner (production
+      # keeps the loopback default). /api/state is gated, so supply the web token.
       - name: Smoke - image answers /api/state with fw == NIMBUS_FW_VERSION
         if: steps.preflight.outputs.enabled == 'true'
         run: |
@@ -302,23 +318,23 @@ jobs:
             -e NIMBUSD_WEB_TOKEN=smoke-token \
             -e NIMBUSD_CONTROL_ADDR=0.0.0.0 \
             "${IMAGE}:${GITHUB_REF_NAME}"
-          for i in $(seq 1 30); do
+          for _ in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:8787/healthz >/dev/null 2>&1; then break; fi
             sleep 1
           done
           STATE=$(curl -fsS -H "X-Nimbus-Token: smoke-token" http://127.0.0.1:8787/api/state)
           echo "state: $STATE"
-          echo "$STATE" | grep -q "\"fw\":\"${VER}\"" || {
-            echo "::error::/api/state fw != ${VER}"; docker logs nimbusd-smoke; docker rm -f nimbusd-smoke; exit 1;
-          }
+          fail() { echo "::error::$1"; docker logs nimbusd-smoke; docker rm -f nimbusd-smoke; exit 1; }
+          echo "$STATE" | grep -qF "\"fw\":\"${VER}\"" || fail "/api/state fw != ${VER}"
+          echo "$STATE" | grep -qF "\"image\":\"nimbusd:${GITHUB_REF_NAME}\"" || fail "/api/state image != nimbusd:${GITHUB_REF_NAME}"
           docker rm -f nimbusd-smoke
 
-      # Push ONLY the version tag. The registry has tag immutability ON, so an existing
-      # tag can never be moved: a :latest (or :stable) push is refused and would red this
-      # job after the versioned image already landed. The running VN image is selected
-      # by version, never by :latest (the cloud deploy pins it via its
+      # Push ONLY the git tag (vX.Y.Z or vn-vX.Y.Z[-N]). The registry has tag immutability
+      # ON, so an existing tag can never be moved: a :latest (or :stable) push is refused
+      # and would red this job after the tagged image already landed. The running VN
+      # image is selected by that tag, never by :latest (the cloud deploy pins it via its
       # RECONCILER_NIMBUSD_TAG repo variable), so rolling VNs onto a release stays an
-      # explicit, reviewed step.
+      # explicit, reviewed step on either channel.
       - name: Push nimbusd:<tag>
         if: steps.preflight.outputs.enabled == 'true'
         run: docker push "${IMAGE}:${GITHUB_REF_NAME}"
