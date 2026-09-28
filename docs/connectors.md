@@ -259,10 +259,24 @@ Mistral turns.
   format returned the real events in about 5 seconds, which is exactly what a
   sub-agent sends. A Virtual Nimbus therefore attaches Studio connectors only to
   Mistral sub-agents, and its assistant is told to spawn one for connector work.
+  On the device, a single-shot Mistral turn that carries a Studio connector
+  leaves the structured format off (the model gets the same reply format in
+  its instructions instead), so it answers rather than timing out. When the
+  model answers in plain text, that text is the whole reply: no device action,
+  memory write or sub-agent rides that turn. Built-in connectors alone keep the
+  structured format.
 - **A Mistral key's Studio connectors have their own quota.** The personal key
   measured 2026-09-27 allowed 5 connector requests per minute and 50 per day
   (headers `x-ratelimit-limit-custom-minute` / `-custom-day`); the daily count
   reset at midnight UTC. Past it, every connector call answers HTTP 429.
+- **A refused turn says which limit it hit.** When a provider answers HTTP 429,
+  the device's reply names the window from the provider's rate-limit headers
+  or error text: a per-minute limit ("wait a minute and ask again"), a daily
+  limit (for Mistral Studio connectors, "it resets at midnight UTC"), a plan
+  that allows no requests of that kind ("waiting won't help"), or a spent
+  quota ("check the plan and billing"). When the provider does not say, the
+  reply makes no promise about when. A Virtual Nimbus does not read the
+  rate-limit headers yet, so there only the error text can name the window.
 - **Keep it to about 2 enabled Mistral connectors at a time.** One or two work
   reliably (proven: GitHub returned a live issue count, Gmail a live unread
   count). Enabling around 4 at once made the Conversations response come back

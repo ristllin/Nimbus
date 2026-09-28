@@ -14,6 +14,7 @@
 #include "nimbus/orch/servedby.h"        // CUM-236 served-by fallback disclosure
 
 #include "nimbus/harness/log.h"
+#include "nimbus/harness/rate_limit.h"   // CUM-460 honest 429 reply
 #include "nimbus/orch/turn.h"
 
 // Lifted from src/agent/orchestrator.cpp (Stage G - the final lift: runTurn /
@@ -809,11 +810,19 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       fireTurnEnd(false, 0);
       return false;
     }
+    // CUM-460: a 429 says WHICH quota window refused (the adapter's [rl:...] tag
+    // from the provider's headers, else the provider's own text). "Wait a minute"
+    // is only true for a per-minute window; a spent daily quota or a plan that
+    // allows 0 requests gets its own honest reply.
+    if (has("HTTP 429")) {
+      deliver(chatId, rateLimitReply(rateLimitFromError(err)));
+      fireTurnEnd(false, 0);
+      return false;
+    }
     if (err.empty())                              cause = "the provider gave no response";
     else if (has("key"))                          cause = "no working provider key (check Capabilities in the web app)";
     else if (has("network"))                      cause = "the provider could not be reached (check the connection)";
     else if (has("HTTP 401") || has("HTTP 403")) cause = "the provider rejected this device's key";
-    else if (has("HTTP 429"))                     cause = "the provider rate-limited this device (wait a minute)";
     else if (has("HTTP 5"))                       cause = "the provider had a server error";
     else if (has("budget"))                       cause = "this turn hit its limits before a final answer";
     else {

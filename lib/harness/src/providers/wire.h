@@ -23,11 +23,15 @@ namespace wire {
 // from the returned body string). Returns the HTTP status code; 0 on transport
 // failure (connect/TLS/timeout/arbiter - the pre-split adapters' 0 and -1
 // returns both mapped to "network" at every call site, so they collapse here).
+// `rateLimitHeaders` (optional): on an error response, the provider's
+// x-ratelimit-* headers land there (see HttpRequest::errHeaders) - the quota
+// window a 429 refused on.
 inline int exchange(const ProviderDeps& pd, const char* host, uint16_t port, bool tls,
                     const char* method, const std::string& path,
                     std::vector<std::pair<std::string, std::string>> headers,
                     std::string body, uint32_t timeoutMs,
-                    JsonDocument& doc, const JsonDocument& filter) {
+                    JsonDocument& doc, const JsonDocument& filter,
+                    HeaderList* rateLimitHeaders = nullptr) {
   doc.clear();
   if (!pd.http) return 0;
   HttpRequest req;
@@ -39,6 +43,10 @@ inline int exchange(const ProviderDeps& pd, const char* host, uint16_t port, boo
   req.headers = std::move(headers);
   req.body = std::move(body);
   req.timeoutMs = timeoutMs;
+  if (rateLimitHeaders) {
+    req.errHeaderPrefix = "x-ratelimit";
+    req.errHeaders = rateLimitHeaders;
+  }
   // execJson parses the response into `doc` through the filter - on the device it
   // STREAMS off the socket (never buffering a fat connector-write body); on the
   // host/fake it filter-parses the scripted body string. Either way only the

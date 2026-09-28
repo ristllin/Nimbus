@@ -4,6 +4,7 @@
 #include <string>
 
 #include "nimbus/harness/providers.h"
+#include "nimbus/harness/rate_limit.h"  // 429 -> the quota window that refused (CUM-460)
 #include "nimbus/orch/head_loop.h"    // runHeadLoop - the portable ReAct controller
 #include "nimbus/orch/orch_schema.h"  // ORCH_SCHEMA_BODY - the wire contract
 #include "nimbus/orch/token_usage_json.h"  // tokenUsageFromJson - per-round usage
@@ -111,9 +112,11 @@ static int mistralParseFileRefs(const JsonDocument& doc,
 }
 
 // One HTTPS exchange with api.mistral.ai (filter-parsed JSON reply).
+// `quotaHeaders`, when set, receives the x-ratelimit-* headers of an error response.
 static int mistralRequest(const ProviderDeps& pd, const char* method, const std::string& path,
                           std::string body, JsonDocument& doc, const JsonDocument& filter,
-                          uint32_t timeoutMs = MISTRAL_TIMEOUT_MS) {
+                          uint32_t timeoutMs = MISTRAL_TIMEOUT_MS,
+                          HeaderList* quotaHeaders = nullptr) {
   std::vector<std::pair<std::string, std::string>> headers = {
       {"Authorization", "Bearer " + (pd.key ? pd.key("mistral") : std::string())},
       {"Content-Type", "application/json"},
@@ -123,7 +126,21 @@ static int mistralRequest(const ProviderDeps& pd, const char* method, const std:
   wire::UpstreamReq req{kMistralHost, 443, true, path, std::move(headers)};
   wire::applyRouter(pd, "mistral", req);
   return exchange(pd, req.host.c_str(), req.port, req.tls, method, req.path,
-                  std::move(req.headers), std::move(body), timeoutMs, doc, filter);
+                  std::move(req.headers), std::move(body), timeoutMs, doc, filter, quotaHeaders);
+}
+
+// "<what> HTTP <code>[ [rl:<window>]][: <provider message>]". On a 429 the quota
+// window that refused rides along as a tag, read from the x-ratelimit-* headers:
+// Mistral's body reads the same for a per-minute limit, a spent daily connector
+// quota and a plan that allows 0 requests, so only the headers can tell the
+// engine's reply which one it was (CUM-460).
+static std::string mistralHttpErr(const char* what, int code, const HeaderList& quota,
+                                  const char* msg) {
+  std::string e = std::string(what) + " HTTP " + std::to_string(code);
+  const std::string tag = code == 429 ? rateLimitTag(rateLimitFromHeaders(quota)) : std::string();
+  if (!tag.empty()) e += " " + tag;
+  if (msg && msg[0]) e += std::string(": ") + msg;
+  return e;
 }
 
 // ---- head turn (Conversations API + canonical schema) -----------------------
@@ -314,14 +331,14 @@ nimbus::orch::HeadStepFn misLoopStep(const ProviderDeps& pd,
     filter["model"] = true;   // served model echo -> fallback disclosure (CUM-236)
 
     JsonDocument resp = makeDoc(pd);
+    HeaderList quota;
     int code = mistralRequest(pd, "POST", "/v1/chat/completions", serializeBody(req),
-                              resp, filter, roundMs);
+                              resp, filter, roundMs, &quota);
     if (code <= 0) { out.ok = false; out.error = "network"; return out; }
     if (code != 200) {
-      std::string e = "chat HTTP " + std::to_string(code);
       const char* em = resp["message"] | "";
       if (!em[0]) em = resp["detail"][0]["msg"] | "";   // 422 validation shape
-      if (em[0]) e += std::string(": ") + em;
+      const std::string e = mistralHttpErr("chat", code, quota, em);
       out.ok = false; out.error = e;
       hlog::logf("orchTurn(mistral-loop): %s", e.c_str());
       return out;
@@ -390,6 +407,180 @@ static bool runMistralLoop(const ProviderDeps& pd, std::string& convId,
   return true;
 }
 
+// ---- the schema-less head shape (a Studio connector is attached) -------------
+// Measured live 2026-09-27 (CUM-460): a Conversations call carrying a Studio
+// connector AND the strict orch_turn response_format never answers - the stream is
+// closed at the 60 s deadline, 3 of 3, also with short instructions - while the
+// same call without the response_format returns in 5.5 s with the connector run
+// and its real result. So a head turn that carries a Studio connector sends no
+// response_format and ASKS for the orch_turn object in its instructions instead
+// (the one place this adapter asks for JSON in prose: the structured mode is
+// exactly what hangs), then reads the reply leniently - the orch_turn object when
+// the whole reply is one, else the whole text as the reply, the way a sub-agent's
+// free text is read. Built-ins alone (web_search, ...) keep the strict schema:
+// only the Studio connector + schema pair was measured to hang. This is the
+// smaller of the two honest fixes; the other (route Studio connectors to a spawned
+// sub-agent, as nimbusd does) also needs the device catalog to say so.
+
+// Drop every "description" from a schema node: the field docs already ride the
+// prompt (ORCH_FIELD_DOCS, from the same macros), so only the shapes are needed.
+// (The same reduction the Anthropic wire applies to fit its grammar budget.)
+static void mistralStripDescriptions(ArduinoJson::JsonVariant v) {
+  if (v.is<ArduinoJson::JsonObject>()) {
+    ArduinoJson::JsonObject o = v.as<ArduinoJson::JsonObject>();
+    o.remove("description");
+    for (ArduinoJson::JsonPair kv : o) mistralStripDescriptions(kv.value());
+  } else if (v.is<ArduinoJson::JsonArray>()) {
+    for (ArduinoJson::JsonVariant e : v.as<ArduinoJson::JsonArray>()) mistralStripDescriptions(e);
+  }
+}
+
+// The instruction that replaces the response_format on a schema-less turn: the
+// same canonical schema (single source, ~3.8 KB without descriptions), as text,
+// so item shapes (a mem_write needs `content`, a device action its `type`) are
+// still known to the model. "" if the schema cannot be read.
+static std::string mistralSchemaLessNote() {
+  JsonDocument sd;
+  if (deserializeJson(sd, nimbus::orch::ORCH_SCHEMA_BODY, DeserializationOption::NestingLimit(16)))
+    return std::string();
+  mistralStripDescriptions(sd.as<ArduinoJson::JsonVariant>());
+  std::string shapes;
+  serializeJson(sd, shapes);   // ArduinoJson 7 REPLACES the target string's content
+  return "\n\n[OUTPUT FORMAT] No response format is attached to this turn (connector "
+         "tools are live). Answer with ONE JSON object for your orch_turn and nothing "
+         "outside it; it must match this JSON schema: " + shapes;
+}
+
+// A Studio connector ({type:"connector"}) among the attached tools.
+static bool mistralCarriesStudio(const JsonDocument& d) {
+  for (JsonObjectConst t : d["tools"].as<JsonArrayConst>())
+    if (strcmp(t["type"] | "", "connector") == 0) return true;
+  return false;
+}
+
+// Whether this head turn carries a Studio connector. A NEW conversation attaches
+// the connectors into its body (`body`); a CONTINUED one carries the set pinned at
+// its creation, which the current attach reproduces (the attach reads only the
+// saved connector set, and the device resets the Mistral conversation on every
+// connector save), probed into a scratch doc that is never sent.
+static bool mistralHeadCarriesStudio(const ProviderDeps& pd, const std::string& convId,
+                                     const JsonDocument& body) {
+  if (convId.empty()) return mistralCarriesStudio(body);
+  if (!pd.attachMistral) return false;
+  JsonDocument probe;
+  pd.attachMistral(probe);
+  return mistralCarriesStudio(probe);
+}
+
+static const char kSpace[] = " \t\r\n";
+
+// Whether the WHOLE reply is one JSON object: the trimmed text, or the inside of
+// one fenced block (```json ... ```). [b, e] is then the object.
+static bool wholeJsonObject(const std::string& text, size_t& b, size_t& e) {
+  b = text.find_first_not_of(kSpace);
+  e = text.find_last_not_of(kSpace);
+  if (b == std::string::npos) return false;
+  if (text.compare(b, 3, "```") == 0) {
+    const size_t nl = text.find('\n', b);
+    if (nl == std::string::npos || e < nl + 3 || text.compare(e - 2, 3, "```") != 0) return false;
+    b = text.find_first_not_of(kSpace, nl);
+    e = text.find_last_not_of(kSpace, e - 3);
+    if (b == std::string::npos || e == std::string::npos || e < b) return false;
+  }
+  return text[b] == '{' && text[e] == '}';
+}
+
+// Whether the reply (first non-space at `b`) opens like a JSON object: a brace, or
+// a fence whose first line of content starts with one. A fenced table or code is
+// prose.
+static bool opensLikeJsonObject(const std::string& text, size_t b) {
+  if (text[b] == '{') return true;
+  if (text.compare(b, 3, "```") != 0) return false;
+  const size_t nl = text.find('\n', b);
+  const size_t c = nl == std::string::npos ? nl : text.find_first_not_of(kSpace, nl);
+  return c != std::string::npos && text[c] == '{';
+}
+
+// `json` as an orch_turn (the turn parser's required strings made present), or ""
+// when it does not parse to an object with a string reply.
+static std::string mistralTurnFields(const ProviderDeps& pd, const std::string& json) {
+  JsonDocument d = makeDoc(pd);
+  if (deserializeJson(d, json, DeserializationOption::NestingLimit(16))) return "";
+  if (!d.is<JsonObject>() || !d["reply"].is<const char*>()) return "";
+  for (const char* k : {"memory", "ask"})
+    if (!d[k].is<const char*>()) d[k] = "";
+  return serializeBody(d);
+}
+
+// Lenient read of a schema-less head reply. A reply that IS one JSON object (bare
+// or fenced) is the turn. A reply that opens like JSON (a brace or a fence) but is
+// not a turn passes through untouched for the engine's salvage path, so raw JSON
+// never reaches a person. Anything else is prose and only ever the reply - even
+// prose that quotes a JSON object: this turn carries connector content (a mail
+// body, an issue), and a payload the model merely quotes must never become device
+// actions, memory writes or spawns.
+static std::string mistralLenientTurn(const ProviderDeps& pd, const std::string& text) {
+  size_t ob = 0, oe = 0;
+  if (wholeJsonObject(text, ob, oe)) {
+    const std::string turn = mistralTurnFields(pd, text.substr(ob, oe - ob + 1));
+    return turn.empty() ? text : turn;
+  }
+  const size_t b = text.find_first_not_of(kSpace);
+  if (b == std::string::npos) return "";   // nothing but whitespace
+  if (opensLikeJsonObject(text, b)) return text;   // the engine's salvage path
+  const size_t e = text.find_last_not_of(kSpace);
+  // Visible in /api/log: this turn's reply is the whole answer - no device action,
+  // memory write or spawn rode it.
+  hlog::logf("orchTurn(mistral): schema-less reply was prose (%u B), delivered as reply only",
+             (unsigned)(e - b + 1));
+  JsonDocument d = makeDoc(pd);
+  d["reply"]  = text.substr(b, e - b + 1);
+  d["memory"] = "";
+  d["ask"]    = "";
+  return serializeBody(d);
+}
+
+// The strict orch_turn response_format: the canonical schema (single source) via
+// Mistral's response_format json_schema (Nuage's proven envelope shape).
+static bool mistralPinTurnSchema(JsonDocument& d) {
+  JsonObject rf = d["completion_args"]["response_format"].to<JsonObject>();
+  rf["type"] = "json_schema";
+  rf["json_schema"]["name"]   = "orch_turn";
+  rf["json_schema"]["strict"] = true;
+  JsonDocument sd;
+  if (deserializeJson(sd, nimbus::orch::ORCH_SCHEMA_BODY,
+                      DeserializationOption::NestingLimit(16)))  // schema depth > the default 10
+    return false;
+  rf["json_schema"]["schema"] = sd;
+  return true;
+}
+
+// The single-shot head request body. `studio` reports the shape: with a Studio
+// connector attached there is no response_format (it is what hangs, above).
+static bool mistralHeadBody(const ProviderDeps& pd, const std::string& convId,
+                            const std::string& instructions, const std::string& inputs,
+                            std::string& body, bool& studio) {
+  JsonDocument d;
+  d["store"]  = true;
+  d["inputs"] = inputs;
+  if (convId.empty()) {                // new conversation: pins model + instructions
+    d["model"]        = pd.orchModel ? pd.orchModel("mistral") : std::string();
+    d["instructions"] = instructions;
+    // Studio-authenticated built-in connectors (web_search, code_interpreter,
+    // ...) pin on conversation creation and run server-side on every turn.
+    if (pd.attachMistral) pd.attachMistral(d);
+  }
+  studio = mistralHeadCarriesStudio(pd, convId, d);
+  if (studio && convId.empty()) {
+    const std::string note = mistralSchemaLessNote();
+    if (note.empty()) return false;
+    d["instructions"] = instructions + note;
+  }
+  if (!studio && !mistralPinTurnSchema(d)) return false;
+  body = serializeBody(d);
+  return true;
+}
+
 bool orchTurnMistral(const ProviderDeps& pd, std::string& convId,
                      const std::string& instructions, const std::string& inputs,
                      std::string& outJson, std::string& err,
@@ -403,31 +594,10 @@ bool orchTurnMistral(const ProviderDeps& pd, std::string& convId,
     return runMistralLoop(pd, convId, instructions, inputs, outJson, err, *tools, usage);
 
   std::string body;
-  {
-    JsonDocument d;
-    d["store"]  = true;
-    d["inputs"] = inputs;
-    if (convId.length() == 0) {          // new conversation: pins model + instructions
-      d["model"]        = pd.orchModel ? pd.orchModel("mistral") : std::string();
-      d["instructions"] = instructions;
-      // Studio-authenticated built-in connectors (web_search, code_interpreter,
-      // ...) pin on conversation creation and run server-side on every turn.
-      if (pd.attachMistral) pd.attachMistral(d);
-    }
-    // Structured output: the canonical orch_turn schema (single source) via
-    // Mistral's response_format json_schema (Nuage's proven envelope shape).
-    JsonObject rf = d["completion_args"]["response_format"].to<JsonObject>();
-    rf["type"] = "json_schema";
-    rf["json_schema"]["name"]   = "orch_turn";
-    rf["json_schema"]["strict"] = true;
-    {
-      JsonDocument sd;
-      DeserializationError se = deserializeJson(sd, nimbus::orch::ORCH_SCHEMA_BODY,
-          DeserializationOption::NestingLimit(16));  // schema depth > the default 10
-      if (se) { err = "schema parse"; return false; }
-      rf["json_schema"]["schema"] = sd;
-    }
-    body = serializeBody(d);
+  bool studio = false;   // a Studio connector rides this turn: the schema-less shape
+  if (!mistralHeadBody(pd, convId, instructions, inputs, body, studio)) {
+    err = "schema parse";
+    return false;
   }
 
   JsonDocument filter;
@@ -435,6 +605,7 @@ bool orchTurnMistral(const ProviderDeps& pd, std::string& convId,
   JsonObject oi = filter["outputs"].add<JsonObject>();
   oi["type"] = true; oi["content"] = true;
   filter["message"] = true;            // error envelope
+  filter["detail"] = true;             // error envelope, connector-quota shape
   filter["usage"] = true;              // whole usage object -> token accounting
   filter["model"] = true;   // served model echo -> fallback disclosure (CUM-236)
 
@@ -442,13 +613,15 @@ bool orchTurnMistral(const ProviderDeps& pd, std::string& convId,
       ? std::string("/v1/conversations/") + convId
       : std::string("/v1/conversations");
   JsonDocument doc = makeDoc(pd);   // response doc -> PSRAM (retained turn content)
-  int code = mistralRequest(pd, "POST", path, std::move(body), doc, filter);
+  HeaderList quota;
+  int code = mistralRequest(pd, "POST", path, std::move(body), doc, filter,
+                            MISTRAL_TIMEOUT_MS, &quota);
   if (code <= 0)   { err = "network"; return false; }
   if (code == 404 && convId.length()) { convId = ""; err = "conversation gone"; return false; }
   if (code != 200) {
-    err = "conversations HTTP " + std::to_string(code);
     const char* em = doc["message"] | "";
-    if (em[0]) err += std::string(": ") + em;
+    if (!em[0]) em = doc["detail"] | "";   // {"detail":"Custom connector rate limit reached."}
+    err = mistralHttpErr("conversations", code, quota, em);
     hlog::logf("orchTurn(mistral): %s", err.c_str());
     return false;
   }
@@ -461,6 +634,7 @@ bool orchTurnMistral(const ProviderDeps& pd, std::string& convId,
     if (strcmp(o["type"] | "", "message.output") != 0) continue;
     outJson = mistralOutputContent(o);   // string OR array-of-text-chunks
   }
+  if (studio) outJson = mistralLenientTurn(pd, outJson);   // no schema pinned it
   if (outJson.length() == 0) { err = "no message.output"; return false; }
   return true;
 }
