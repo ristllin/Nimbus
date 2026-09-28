@@ -73,6 +73,19 @@ class BlockingClientReader : public Stream {
   uint32_t deadline_;
 };
 
+// One "Name: value" header line -> the caller's error-header capture, when it
+// asked for this one (the shared rule in http.h: error status + name prefix). The
+// rule is checked on the raw line first, so a healthy response allocates nothing.
+void keepErrHeader(const HttpRequest& req, int code, const String& line) {
+  if (!wantsErrHeader(req, code, line.c_str())) return;
+  const int colon = line.indexOf(':');
+  if (colon <= 0) return;
+  String value = line.substring(colon + 1);
+  value.trim();
+  captureErrHeader(req, code, std::string(line.c_str(), size_t(colon)),
+                   std::string(value.c_str()));
+}
+
 class TlsTransport : public HttpTransport {
  public:
   bool exec(const HttpRequest& req, HttpResponse& out, std::string& err) override {
@@ -231,13 +244,19 @@ class TlsTransport : public HttpTransport {
     int sp = status.indexOf(' ');
     if (sp > 0 && (int)status.length() >= sp + 4) code = status.substring(sp + 1, sp + 4).toInt();
 
-    // Skip headers up to the blank line.
+    // Skip headers up to the blank line. An error response keeps the headers the
+    // caller asked for (HttpRequest::errHeaders, e.g. a 429's x-ratelimit-*
+    // quota window); a healthy response keeps nothing.
     String line;
     bool headersDone = false;
     while (!headersDone && !expired()) {
       if (client->available()) {
         char c = client->read();
-        if (c == '\n') { if (line.length() == 0) headersDone = true; line = ""; }
+        if (c == '\n') {
+          if (line.length() == 0) headersDone = true;
+          else keepErrHeader(req, code, line);
+          line = "";
+        }
         else if (c != '\r') line += c;
       } else if (!client->connected() && !client->available()) break;
       else delay(2);

@@ -5,6 +5,9 @@
 #include "../support/fake_platform.h"
 #include "../support/fake_provider_deps.h"
 #include "nimbus/harness/providers.h"
+#include "nimbus/harness/rate_limit.h"
+#include "nimbus/orch/orch_schema.h"
+#include "nimbus/orch/turn.h"
 
 // Stage H wire suite - the Mistral provider: the Conversations-API head turn
 // (new-conversation pins model/instructions/connectors; continuation sends
@@ -109,7 +112,12 @@ static void test_continuation_sends_no_model_or_instructions() {
   // legitimately contains a "model" property for spawns.)
   TEST_ASSERT_FALSE(bodyHas(d, 0, "\"model\":\"model-mistral\""));
   TEST_ASSERT_FALSE(bodyHas(d, 0, "\"instructions\":\"SYS\""));
-  TEST_ASSERT_EQUAL(0, d.mistralAttaches);
+  // CUM-460: the attach is consulted once as a PROBE (does the thread carry a
+  // Studio connector?) but its tools are never re-sent on a continuation.
+  TEST_ASSERT_EQUAL(1, d.mistralAttaches);
+  TEST_ASSERT_FALSE(bodyHas(d, 0, "\"tools\""));
+  // Built-ins only: the strict schema still rides the continued turn.
+  TEST_ASSERT_TRUE(bodyHas(d, 0, "\"strict\":true"));
 }
 
 static void test_error_mapping() {
@@ -461,6 +469,303 @@ static void test_reserved_toolname_renamed_and_inverted() {
   TEST_ASSERT_EQUAL_STRING("memory_search", providers::mistralUnsafeName("memory_search").c_str());
 }
 
+// ---- CUM-460a: Studio connector on a single-shot head turn ------------------
+// Measured live: a Conversations call with a Studio connector AND the strict
+// orch_turn response_format is cut at the 60 s deadline (3 of 3); without the
+// response_format it answers in ~5 s. The head turn that carries a Studio
+// connector therefore sends NO strict-schema field; every other head turn is
+// byte-for-byte unchanged.
+
+// The fake's default attach is built-ins only; these add a Studio connector.
+static void attachStudio(FakeProviderDeps& d, agent::providers::ProviderDeps& pd) {
+  pd.attachMistral = [&d](JsonDocument& doc) {
+    d.mistralAttaches++;
+    doc["tools"].add<JsonObject>()["type"] = "web_search";
+    JsonObject t = doc["tools"].add<JsonObject>();
+    t["type"] = "connector";
+    t["connector_id"] = "google_calendar";
+  };
+}
+
+static std::string freeTextBody(const char* cid, const char* text) {
+  JsonDocument d;
+  d["conversation_id"] = cid;
+  JsonObject o = d["outputs"].add<JsonObject>();
+  o["type"] = "message.output";
+  JsonObject c = o["content"].add<JsonObject>();
+  c["type"] = "text";
+  c["text"] = text;
+  std::string s;
+  serializeJson(d, s);
+  return s;
+}
+
+static bool hasStrictSchema(const FakeProviderDeps& d, size_t i) {
+  return bodyHas(d, i, "\"response_format\"") || bodyHas(d, i, "\"json_schema\"") ||
+         bodyHas(d, i, "\"strict\"");
+}
+
+// The exact pre-CUM-460 body of a new conversation (built-ins attached): the
+// shape the no-Studio path must keep, byte for byte.
+static std::string strictNewConversationBody() {
+  JsonDocument e;
+  e["store"] = true;
+  e["inputs"] = "USER";
+  e["model"] = "model-mistral";
+  e["instructions"] = "SYS";
+  e["tools"].add<JsonObject>()["type"] = "web_search";
+  JsonObject rf = e["completion_args"]["response_format"].to<JsonObject>();
+  rf["type"] = "json_schema";
+  rf["json_schema"]["name"] = "orch_turn";
+  rf["json_schema"]["strict"] = true;
+  JsonDocument sd;
+  deserializeJson(sd, orch::ORCH_SCHEMA_BODY, DeserializationOption::NestingLimit(16));
+  rf["json_schema"]["schema"] = sd;
+  std::string s;
+  serializeJson(e, s);
+  return s;
+}
+
+static void test_head_without_studio_connector_is_unchanged() {
+  FakeProviderDeps d;
+  d.http.script.push_back({"", "/v1/conversations", 200, messageOutputBody("conv_1")});
+  auto pd = d.contract();
+  std::string conv, out, err;
+  TEST_ASSERT_TRUE_MESSAGE(
+      providers::orchTurnMistral(pd, conv, "SYS", "USER", out, err, nullptr, nullptr),
+      err.c_str());
+  TEST_ASSERT_EQUAL_STRING(strictNewConversationBody().c_str(), harness_test::reqBody(d, 0).c_str());
+  TEST_ASSERT_FALSE(bodyHas(d, 0, "OUTPUT FORMAT"));
+  // The reply is the schema-pinned content, verbatim (no lenient rewrite).
+  TEST_ASSERT_EQUAL_STRING("{\"reply\":\"hello there\",\"memory\":\"\"}", out.c_str());
+}
+
+static void test_head_with_studio_connector_sends_no_strict_schema() {
+  FakeProviderDeps d;
+  d.http.script.push_back({"api.mistral.ai", "/v1/conversations", 200,
+      freeTextBody("conv_s", "| 19:00 | Standup |\n| 21:00 | School email |")});
+  auto pd = d.contract();
+  attachStudio(d, pd);
+  std::string conv, out, err;
+  TEST_ASSERT_TRUE_MESSAGE(
+      providers::orchTurnMistral(pd, conv, "SYS", "USER", out, err, nullptr, nullptr),
+      err.c_str());
+  // The connector and the built-in still ride the new conversation...
+  TEST_ASSERT_TRUE(bodyHas(d, 0, "\"connector_id\":\"google_calendar\""));
+  TEST_ASSERT_TRUE(bodyHas(d, 0, "\"type\":\"web_search\""));
+  // ...but no strict-schema field does; the instructions ask for the object.
+  TEST_ASSERT_FALSE(hasStrictSchema(d, 0));
+  TEST_ASSERT_FALSE(bodyHas(d, 0, "\"completion_args\""));
+  TEST_ASSERT_TRUE(bodyHas(d, 0, "\"instructions\":\"SYS\\n\\n[OUTPUT FORMAT]"));
+  // The instruction carries the canonical schema's SHAPES (item keys such as a
+  // mem_write's content), without the descriptions the prompt already has.
+  TEST_ASSERT_TRUE(bodyHas(d, 0, "\\\"mem_write\\\":{\\\"type\\\":\\\"array\\\""));
+  TEST_ASSERT_TRUE(bodyHas(d, 0, "\\\"required\\\":[\\\"content\\\""));
+  TEST_ASSERT_FALSE(bodyHas(d, 0, "description"));
+  TEST_ASSERT_EQUAL_STRING("conv_s", conv.c_str());
+  // Free text (the measured reply shape: a markdown table) becomes the reply of a
+  // turn the portable parser accepts, and the log says the turn carried nothing else.
+  orch::Turn t;
+  orch::ParseError pe;
+  TEST_ASSERT_TRUE_MESSAGE(orch::parseTurn(out, t, pe), pe.detail.c_str());
+  TEST_ASSERT_EQUAL_STRING("| 19:00 | Standup |\n| 21:00 | School email |", t.reply.c_str());
+  TEST_ASSERT_EQUAL_STRING("", t.memory.c_str());
+  TEST_ASSERT_EQUAL_STRING("", t.ask.c_str());
+  TEST_ASSERT_TRUE(LogCapture::contains("schema-less reply was prose"));
+}
+
+// A CONTINUED conversation carries the connectors pinned at its creation, so the
+// shape follows the attach probe even though no tools are re-sent.
+static void test_head_studio_continuation_sends_no_strict_schema() {
+  FakeProviderDeps d;
+  d.http.script.push_back({"", "/v1/conversations/conv_s", 200,
+      freeTextBody("conv_s",
+                   "```json\n{\"reply\":\"Two events today.\",\"memory\":\"cal checked\","
+                   "\"device\":[]}\n```")});
+  auto pd = d.contract();
+  attachStudio(d, pd);
+  std::string conv = "conv_s", out, err;
+  TEST_ASSERT_TRUE_MESSAGE(
+      providers::orchTurnMistral(pd, conv, "SYS", "USER", out, err, nullptr, nullptr),
+      err.c_str());
+  TEST_ASSERT_EQUAL_STRING("/v1/conversations/conv_s", d.http.seen[0].path.c_str());
+  TEST_ASSERT_FALSE(hasStrictSchema(d, 0));
+  TEST_ASSERT_FALSE(bodyHas(d, 0, "\"tools\""));          // pinned, never re-sent
+  TEST_ASSERT_FALSE(bodyHas(d, 0, "\"instructions\""));   // pinned at creation
+  // The fenced orch_turn object is the turn; the missing "ask" is filled in.
+  orch::Turn t;
+  orch::ParseError pe;
+  TEST_ASSERT_TRUE_MESSAGE(orch::parseTurn(out, t, pe), pe.detail.c_str());
+  TEST_ASSERT_EQUAL_STRING("Two events today.", t.reply.c_str());
+  TEST_ASSERT_EQUAL_STRING("cal checked", t.memory.c_str());
+  TEST_ASSERT_EQUAL_STRING("", t.ask.c_str());
+}
+
+// One schema-less reply through the adapter; returns ok and fills out/err.
+static bool studioTurn(const char* text, std::string& out, std::string& err) {
+  FakeProviderDeps d;
+  d.http.script.push_back({"", "", 200, freeTextBody("c", text)});
+  auto pd = d.contract();
+  attachStudio(d, pd);
+  std::string conv;
+  return providers::orchTurnMistral(pd, conv, "SYS", "USER", out, err, nullptr, nullptr);
+}
+
+// The lenient read, case by case: a reply that IS an orch_turn object (bare or
+// fenced) is used whole, every field kept; prose is only ever the reply, even when
+// it quotes a JSON object (connector content must not become actions); a
+// JSON-looking reply that is not a turn passes through untouched so the engine's
+// salvage path (never raw JSON to a person) owns it; an empty reply is an error.
+static void test_head_studio_lenient_read() {
+  std::string out, err;
+  orch::Turn t;
+  orch::ParseError pe;
+  {  // bare object, extra fields survive
+    TEST_ASSERT_TRUE(studioTurn(
+        "{\"reply\":\"ok\",\"memory\":null,\"ask\":\"which one?\","
+        "\"device\":[{\"type\":\"lights\",\"value\":\"off\"}]}", out, err));
+    TEST_ASSERT_TRUE_MESSAGE(orch::parseTurn(out, t, pe), pe.detail.c_str());
+    TEST_ASSERT_EQUAL_STRING("ok", t.reply.c_str());
+    TEST_ASSERT_EQUAL_STRING("", t.memory.c_str());
+    TEST_ASSERT_EQUAL_STRING("which one?", t.ask.c_str());
+    TEST_ASSERT_EQUAL(1, (int)t.device.size());
+  }
+  {  // prose that quotes a turn-shaped payload (e.g. from a mail body): the prose is
+     // the reply, and the quoted actions/memory writes are NOT promoted
+    const char* quoted =
+        "The issue body says: {\"reply\":\"ok\",\"memory\":\"\",\"ask\":\"\","
+        "\"device\":[{\"type\":\"config\",\"brightOvr\":true}],"
+        "\"mem_write\":[{\"content\":\"owner said yes\"}]} (quoted as-is).";
+    TEST_ASSERT_TRUE(studioTurn(quoted, out, err));
+    TEST_ASSERT_TRUE_MESSAGE(orch::parseTurn(out, t, pe), pe.detail.c_str());
+    TEST_ASSERT_EQUAL_STRING(quoted, t.reply.c_str());
+    TEST_ASSERT_EQUAL(0, (int)t.device.size());
+    TEST_ASSERT_EQUAL(0, (int)t.mem_write.size());
+  }
+  {  // a fenced object with a language tag and surrounding whitespace
+    TEST_ASSERT_TRUE(studioTurn("\n```json\n{\"reply\":\"fenced\"}\n```\n", out, err));
+    TEST_ASSERT_TRUE_MESSAGE(orch::parseTurn(out, t, pe), pe.detail.c_str());
+    TEST_ASSERT_EQUAL_STRING("fenced", t.reply.c_str());
+  }
+  {  // free text with stray braces and whitespace
+    TEST_ASSERT_TRUE(studioTurn("  Your {meeting} is at 7.\n", out, err));
+    TEST_ASSERT_TRUE_MESSAGE(orch::parseTurn(out, t, pe), pe.detail.c_str());
+    TEST_ASSERT_EQUAL_STRING("Your {meeting} is at 7.", t.reply.c_str());
+  }
+  {  // broken JSON: passed through untouched (engine salvage owns it)
+    TEST_ASSERT_TRUE(studioTurn("{\"reply\": \"cut", out, err));
+    TEST_ASSERT_EQUAL_STRING("{\"reply\": \"cut", out.c_str());
+  }
+  {  // an object that is not a turn: passed through, never wrapped as a reply
+    TEST_ASSERT_TRUE(studioTurn("```\n{\"events\":[1,2]}\n```", out, err));
+    TEST_ASSERT_EQUAL_STRING("```\n{\"events\":[1,2]}\n```", out.c_str());
+  }
+  {  // a fenced markdown table is prose, not JSON: it is the reply
+    TEST_ASSERT_TRUE(studioTurn("```\n| 19:00 | Standup |\n```", out, err));
+    TEST_ASSERT_TRUE_MESSAGE(orch::parseTurn(out, t, pe), pe.detail.c_str());
+    TEST_ASSERT_EQUAL_STRING("```\n| 19:00 | Standup |\n```", t.reply.c_str());
+  }
+  {  // whitespace only: no turn
+    TEST_ASSERT_FALSE(studioTurn(" \n ", out, err));
+    TEST_ASSERT_EQUAL_STRING("no message.output", err.c_str());
+  }
+}
+
+// The CLASS rule over every attach shape and both conversation states: the strict
+// schema rides a head turn exactly when no Studio connector does. A new attach
+// shape that forgets the rule fails here, not on the 60 s cutoff in the field.
+static void test_head_schema_xor_studio_connector_class() {
+  struct Shape { const char* name; bool builtin, studio; };
+  const Shape shapes[] = {{"none", false, false},   {"builtin", true, false},
+                          {"studio", false, true},  {"both", true, true}};
+  for (const Shape& sh : shapes) {
+    for (int cont = 0; cont < 2; cont++) {
+      FakeProviderDeps d;
+      d.http.script.push_back({"", "", 200, messageOutputBody("c")});
+      auto pd = d.contract();
+      pd.attachMistral = [sh](JsonDocument& doc) {
+        if (sh.builtin) doc["tools"].add<JsonObject>()["type"] = "code_interpreter";
+        if (sh.studio) {
+          JsonObject t = doc["tools"].add<JsonObject>();
+          t["type"] = "connector";
+          t["connector_id"] = "notion";
+        }
+      };
+      std::string conv = cont ? "c" : "", out, err;
+      TEST_ASSERT_TRUE_MESSAGE(
+          providers::orchTurnMistral(pd, conv, "SYS", "USER", out, err, nullptr, nullptr),
+          sh.name);
+      TEST_ASSERT_EQUAL_MESSAGE(!sh.studio, hasStrictSchema(d, 0), sh.name);
+      TEST_ASSERT_EQUAL_MESSAGE(sh.studio && !cont, bodyHas(d, 0, "OUTPUT FORMAT"), sh.name);
+    }
+  }
+}
+
+// ---- CUM-460b: a 429 names the quota window that refused ---------------------
+// Mistral's 429 body reads the same for a per-minute limit, a spent daily
+// connector quota and a 0-per-minute plan; the x-ratelimit-* headers are what
+// differ, so the adapter carries the window as a tag the engine turns into copy.
+static void test_head_429_carries_the_quota_window() {
+  {  // spent daily Studio connector quota (the live 2026-09-27 shape)
+    FakeProviderDeps d;
+    harness_test::Exchange e;
+    e.status = 429;
+    e.body = "{\"detail\":\"Custom connector rate limit reached.\"}";
+    e.headers = {{"X-RateLimit-Limit-Custom-Minute", "5"},
+                 {"x-ratelimit-limit-custom-day", "50"},
+                 {"x-ratelimit-remaining-custom-day", "0"},
+                 {"content-type", "application/json"}};
+    d.http.script.push_back(e);
+    auto pd = d.contract();
+    attachStudio(d, pd);
+    std::string conv, out, err;
+    TEST_ASSERT_FALSE(providers::orchTurnMistral(pd, conv, "S", "U", out, err, nullptr, nullptr));
+    TEST_ASSERT_EQUAL_STRING(
+        "conversations HTTP 429 [rl:day-utc]: Custom connector rate limit reached.",
+        err.c_str());
+    TEST_ASSERT_EQUAL((int)agent::RateLimit::DailyUtc, (int)agent::rateLimitFromError(err));
+  }
+  {  // no headers (a transport without capture): no tag, the text still quoted
+    FakeProviderDeps d;
+    d.http.script.push_back({"", "", 429, "{\"message\":\"Requests rate limit exceeded\"}"});
+    auto pd = d.contract();
+    std::string conv, out, err;
+    TEST_ASSERT_FALSE(providers::orchTurnMistral(pd, conv, "S", "U", out, err, nullptr, nullptr));
+    TEST_ASSERT_EQUAL_STRING("conversations HTTP 429: Requests rate limit exceeded", err.c_str());
+  }
+  {  // a non-429 error never carries a window, even with quota headers present
+    FakeProviderDeps d;
+    harness_test::Exchange e;
+    e.status = 503;
+    e.body = "{\"message\":\"busy\"}";
+    e.headers = {{"x-ratelimit-remaining-custom-day", "0"}};
+    d.http.script.push_back(e);
+    auto pd = d.contract();
+    std::string conv, out, err;
+    TEST_ASSERT_FALSE(providers::orchTurnMistral(pd, conv, "S", "U", out, err, nullptr, nullptr));
+    TEST_ASSERT_EQUAL_STRING("conversations HTTP 503: busy", err.c_str());
+  }
+}
+
+// The tool loop (chat/completions) on a key whose plan allows 0 requests/min there:
+// the live personal-key shape. Waiting never helps, and the error says so.
+static void test_loop_429_zero_per_minute_plan() {
+  FakeProviderDeps d;
+  harness_test::Exchange e;
+  e.status = 429;
+  e.body = "{\"message\":\"Requests rate limit exceeded\"}";
+  e.headers = {{"x-ratelimit-limit-req-minute", "0"},
+               {"x-ratelimit-remaining-req-minute", "0"}};
+  d.http.script.push_back(e);
+  auto pd = d.contract();
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  std::string conv, out, err;
+  TEST_ASSERT_FALSE(providers::orchTurnMistral(pd, conv, "S", "U", out, err, &rig.ht, nullptr));
+  TEST_ASSERT_TRUE_MESSAGE(err.find("chat HTTP 429 [rl:plan]") != std::string::npos, err.c_str());
+  TEST_ASSERT_EQUAL((int)agent::RateLimit::NotAllowed, (int)agent::rateLimitFromError(err));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_reserved_toolname_renamed_and_inverted);
@@ -478,6 +783,13 @@ int main(int, char**) {
   RUN_TEST(test_sub_dispatch_text_only_no_artifacts);
   RUN_TEST(test_sub_per_dispatch_model_override);
   RUN_TEST(test_sub_error_mapping);
+  RUN_TEST(test_head_without_studio_connector_is_unchanged);
+  RUN_TEST(test_head_with_studio_connector_sends_no_strict_schema);
+  RUN_TEST(test_head_studio_continuation_sends_no_strict_schema);
+  RUN_TEST(test_head_studio_lenient_read);
+  RUN_TEST(test_head_schema_xor_studio_connector_class);
+  RUN_TEST(test_head_429_carries_the_quota_window);
+  RUN_TEST(test_loop_429_zero_per_minute_plan);
   UNITY_END();
   return 0;
 }

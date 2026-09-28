@@ -8,7 +8,9 @@
 # board - it only proves each target still links.
 #
 # The matrix (F15 - "debug/flag paths not in any build-matrix check"):
-#   native                              host unit-test toolchain
+#   native                              host unit-test toolchain (compiles every
+#                                       test program; `pio run -e native` has no
+#                                       sources to build and always failed)
 #   esp32s3                             production firmware
 #   notifierdbg                         esp32s3 + NIMBUS_NOTIFIER_DEBUG (status echo)
 #   provision                           serial provisioning / STA test tool
@@ -61,6 +63,16 @@ pass=0
 fail=0
 failed_labels=()
 
+# The host env has no firmware sources (build_src_filter = -<*>), so build its
+# test programs instead; every firmware env is a plain compile + link.
+build_env() {
+  if [ "$1" = native ]; then
+    pio test -e native --without-testing
+  else
+    pio run -e "$1"
+  fi
+}
+
 echo "== Nimbus build matrix (compile-only; no upload) =="
 for row in "${MATRIX[@]}"; do
   IFS='|' read -r label env flags <<<"$row"
@@ -74,10 +86,10 @@ for row in "${MATRIX[@]}"; do
   fi
 
   if [ "$VERBOSE" -eq 1 ]; then
-    pio run -e "$env"
+    build_env "$env"
     rc=$?
   else
-    log="$(pio run -e "$env" 2>&1)"
+    log="$(build_env "$env" 2>&1)"
     rc=$?
     [ $rc -ne 0 ] && printf '%s\n' "$log"
   fi

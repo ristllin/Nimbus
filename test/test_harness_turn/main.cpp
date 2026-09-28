@@ -8,6 +8,7 @@
 #include "../support/fake_config.h"
 #include "../support/fake_platform.h"
 #include "nimbus/harness/engine.h"
+#include "nimbus/harness/rate_limit.h"   // CUM-460 the 429 reply table
 #include "nimbus/harness/skill_md.h"   // W15: skillsIndexText for the rig index
 
 // Stage G suite - the turn orchestration, host-tested for the first time: the
@@ -20,6 +21,7 @@
 // stuck-turn reaper.
 
 using agent::JobEngine;
+using agent::RateLimit;
 using agent::TurnEngine;
 using harness_test::FakeConfig;
 using harness_test::FakePlatform;
@@ -518,6 +520,41 @@ static void test_no_retry_after_tool_dispatched() {
       r.lastText().c_str());
   // The head arc is still freed on the error path (TurnGuard dtor).
   TEST_ASSERT_EQUAL(1, r.headEventsWith(Status::Offline));
+}
+
+// ---- (5b) a 429 names the window that refused (CUM-460) ---------------------
+// Every keyed provider refuses with the same 429; the owner hears the window the
+// provider named (the adapter's tag, else its own text), never a blanket "wait a
+// minute". The old copy was wrong for a 0/min plan and a spent daily quota.
+static void test_rate_limit_reply_names_the_window() {
+  struct Case { const char* err; RateLimit want; };
+  const Case cases[] = {
+      {"conversations HTTP 429 [rl:day-utc]: Custom connector rate limit reached.",
+       RateLimit::DailyUtc},
+      {"chat HTTP 429 [rl:plan]: Requests rate limit exceeded", RateLimit::NotAllowed},
+      {"resp HTTP 429: Rate limit reached for gpt-4o-mini on requests per day (RPD)",
+       RateLimit::Daily},
+      {"resp HTTP 429: You exceeded your current quota, please check your plan and "
+       "billing details.", RateLimit::Quota},
+      {"messages HTTP 429: This request would exceed the rate limit of 50 requests per "
+       "minute.", RateLimit::PerMinute},
+      {"conversations HTTP 429: Custom connector rate limit reached.", RateLimit::Unknown},
+  };
+  for (const Case& c : cases) {
+    Rig r;
+    Rig::Script limited;
+    limited.ok = false;
+    limited.err = c.err;
+    for (const char* h : {"anthropic", "openai", "mistral"}) r.scripts[h] = {limited};
+    TEST_ASSERT_FALSE(r.eng->runTurn("inputs", "1001", ""));
+    // The same-host retry and the failover ladder still ran BEFORE the reply:
+    // anthropic twice, then both alternates, each with its switch notice.
+    TEST_ASSERT_EQUAL_MESSAGE(4, (int)r.attempts.size(), c.err);
+    TEST_ASSERT_TRUE_MESSAGE(r.anyDelivered("switching to openai"), c.err);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(agent::rateLimitReply(c.want), r.lastText().c_str(), c.err);
+    TEST_ASSERT_FALSE_MESSAGE(r.anyDelivered("rate-limited this device"), c.err);
+    TEST_ASSERT_FALSE_MESSAGE(r.anyDelivered("That didn't finish -"), c.err);
+  }
 }
 
 // ---- (6) budget failover + all-exhausted refusal ----------------------------
@@ -1223,6 +1260,7 @@ int main(int, char**) {
   RUN_TEST(test_same_host_fresh_conv_retry);
   RUN_TEST(test_failover_walks_priority_with_owner_notice);
   RUN_TEST(test_no_retry_after_tool_dispatched);
+  RUN_TEST(test_rate_limit_reply_names_the_window);
   RUN_TEST(test_budget_failover_and_exhausted_refusal);
   RUN_TEST(test_salvage_never_delivers_raw_json);
   RUN_TEST(test_scheduled_turn_rails_and_fire_outcome);

@@ -16,6 +16,7 @@ struct Exchange {
   int status = 200;                // 0 => transport error (exec returns false)
   std::string body;                // canned provider JSON
   std::string err = "scripted transport error";
+  agent::HeaderList headers;       // response headers (e.g. a 429's x-ratelimit-*)
 };
 
 struct FakeHttpTransport : agent::HttpTransport {
@@ -53,6 +54,7 @@ struct FakeHttpTransport : agent::HttpTransport {
     }
     out.status = e.status;
     out.body = e.body;
+    out.headers = e.headers;
     return true;
   }
 

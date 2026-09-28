@@ -124,12 +124,14 @@ void SettingsMenu::close() {
   state_ = State::Closed;
   sel_ = 0;
   adjusting_ = false;
+  codeFromSetup_ = false;
 }
 
 void SettingsMenu::enter(State s) {
   state_ = s;
   sel_ = 0;
   adjusting_ = false;
+  codeFromSetup_ = false;   // only openCodeFromSetup() sets it, after entering
   // ConfirmReset defaults to "No" (row 0) - a destructive action must not be
   // one accidental click away.
 }
@@ -195,6 +197,26 @@ void SettingsMenu::showCode() {
   enter(State::TokenDetail);   // dismiss paths already return to ConnToken
 }
 
+// The Setup screen's code card: the same TokenDetail, entered from a CLOSED menu,
+// so its dismissal closes the menu and asks for Setup back (leaveTokenDetail).
+void SettingsMenu::openCodeFromSetup() {
+  enter(State::TokenDetail);
+  codeFromSetup_ = true;
+}
+
+// Every TokenDetail dismissal (click, rotate, long-press) lands here: back to the
+// Connectivity row it came from, or - entered from the Setup code card - closed,
+// with the request to put Setup back.
+void SettingsMenu::leaveTokenDetail() {
+  if (codeFromSetup_) {
+    close();
+    setupReturnRequested_ = true;
+    return;
+  }
+  enter(State::Connectivity);
+  sel_ = ConnToken;
+}
+
 // Customize (TuneList) hides the ring-only params on a board with no LED ring
 // (CUM-187, F5). hasRing_ defaults true, so on a ring board these are all
 // identities and behaviour is unchanged.
@@ -252,8 +274,7 @@ void SettingsMenu::onRotate(int dir) {
     return;
   }
   if (state_ == State::TokenDetail) {
-    enter(State::Connectivity);
-    sel_ = ConnToken;
+    leaveTokenDetail();
     return;
   }
   if (state_ == State::SelfTest) { enter(State::Main); sel_ = RowSelfTest; return; }
@@ -520,9 +541,8 @@ void SettingsMenu::onClick() {
       sel_ = ConnConfigQr;
       return;
 
-    case State::TokenDetail:  // any click returns to its source row
-      enter(State::Connectivity);
-      sel_ = ConnToken;
+    case State::TokenDetail:  // any click returns to its source (row or Setup)
+      leaveTokenDetail();
       return;
 
     case State::SelfTest:  // any click dismisses the full-screen results
@@ -709,8 +729,7 @@ void SettingsMenu::onLongPress() {
       sel_ = ConnConfigQr;
       return;
     case State::TokenDetail:
-      enter(State::Connectivity);
-      sel_ = ConnToken;
+      leaveTokenDetail();
       return;
     case State::SelfTest:
       enter(State::Main);

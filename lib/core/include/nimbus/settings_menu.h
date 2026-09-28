@@ -67,6 +67,19 @@ class SettingsMenu {
   // not on the Sign-in QR. (CUM-48 #3)
   void showCode();
 
+  // The Setup screen's code card (the menu is CLOSED there): open straight onto the
+  // same enlarged device sign-in code (TokenDetail) the Connectivity row opens. Any
+  // gesture on it closes the menu again and raises setupReturnRequested(), which the
+  // device drains to go back to the Setup screen while that screen still has a job
+  // (the owner came from Setup, not from Settings). Not Config state -> never
+  // dirty(), like the other request flags.
+  void openCodeFromSetup();
+  bool setupReturnRequested() const { return setupReturnRequested_; }
+  void clearSetupReturnRequest() { setupReturnRequested_ = false; }
+  // The enlarged code is up because the Setup code card opened it: when the Setup
+  // screen's own time runs out, the device closes this view with it.
+  bool showingCodeFromSetup() const { return state_ == State::TokenDetail && codeFromSetup_; }
+
   // Mode is menu-visible state the device syncs with NVS. Set it before opening
   // so the Mode row shows the persisted value; read it back after edits.
   void setMode(Mode m) { mode_ = m; }
@@ -436,6 +449,7 @@ class SettingsMenu {
   int   visibleIndexOf(Param p) const;
   void clampSel();         // keep sel_ in [0, itemCount()-1]
   void enter(State s);     // switch state, reset cursor to a sane default
+  void leaveTokenDetail();  // TokenDetail dismissal: its row, or closed back to Setup
 
   Config* cfg_;
   Mode    mode_ = Mode::Notifier;
@@ -475,6 +489,8 @@ class SettingsMenu {
   bool    restartRequested_ = false;        // ConfirmRestart > Restart (device drains -> deferred restart)
   bool    resetRequested_ = false;          // ConfirmReset > Reset all (device drains for feedback)
   bool    touchWake_ = true;                 // board can wake from sleep on a touch (device-seeded)
+  bool    codeFromSetup_ = false;            // TokenDetail was opened by the Setup code card
+  bool    setupReturnRequested_ = false;     // its dismissal: put Setup back (device drains)
   State   state_ = State::Closed;
   int     sel_ = 0;        // cursor in the current list
   Param   editing_ = Param::Posture;  // valid only in State::Edit
