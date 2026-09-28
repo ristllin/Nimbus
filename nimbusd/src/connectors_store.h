@@ -21,12 +21,18 @@
 // and validated but the mint is not implemented on a hosted instance yet -
 // bearerForName returns "" for them, and the attach builders already skip an
 // unauthenticated first-party connector rather than send a doomed request.
+//
+// Threading: the web handlers write the registry on the HTTP thread while the engine
+// thread reads it mid-turn (catalog + attach), so every public method holds mu_; the
+// private helpers assume it is already held.
 
 #include <ArduinoJson.h>
 #include <fcntl.h>
 #include <unistd.h>
 
 #include <cstdio>
+#include <functional>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -50,19 +56,33 @@ class ConnectorsStore {
     if (!fsutil::readFile(path_, raw)) return;
     JsonDocument d;
     if (deserializeJson(d, raw) || !d.is<JsonArray>()) return;  // torn -> keep []
+    std::lock_guard<std::mutex> lk(mu_);
     blob_ = raw;
   }
 
-  const std::string& blob() const { return blob_; }
+  // A copy (never a reference): the HTTP thread may replace the blob concurrently.
+  std::string blob() const {
+    std::lock_guard<std::mutex> lk(mu_);
+    return blob_;
+  }
   bool empty() const {
+    std::lock_guard<std::mutex> lk(mu_);
     return blob_ == "[]" || blob_.empty();
   }
 
   // The sanitized configured[] view for GET /api/connectors: secrets are never
   // echoed - tok becomes hasTok, oauth becomes hasOauth (device webui.cpp rule).
-  void sanitizedConfigured(JsonArray out) const {
+  // When `authOf` is given, each entry also carries the derived credential state
+  // `auth` (-1 n/a, 1 ok / listed in the Mistral workspace, 0 sign-in failed, 2
+  // missing / not listed / not checked yet), built from the raw entry exactly as the
+  // device GET builds it, so the web badge reads the same rule the catalog does.
+  using AuthOf = std::function<int8_t(const nimbus::orch::ConnectorInfo&)>;
+  void sanitizedConfigured(JsonArray out, const AuthOf& authOf = nullptr) const {
     JsonDocument in;
-    if (deserializeJson(in, blob_)) return;
+    {
+      std::lock_guard<std::mutex> lk(mu_);
+      if (deserializeJson(in, blob_)) return;
+    }
     for (JsonObjectConst c : in.as<JsonArrayConst>()) {
       JsonObject o = out.add<JsonObject>();
       o["name"] = c["name"];
@@ -74,12 +94,14 @@ class ConnectorsStore {
       o["type"] = (const char*)(c["type"] | "");
       o["hasTok"] = ((const char*)(c["tok"] | ""))[0] != 0;
       o["hasOauth"] = !c["oauth"].isNull();
+      if (authOf) o["auth"] = authOf(entryInfo(c));
     }
   }
 
   // POST mode 1: whole-blob replace (the Advanced raw editor). Returns the
   // owner-facing error string, "" on success. Error strings match the device.
   std::string replaceBlob(const std::string& newBlob) {
+    std::lock_guard<std::mutex> lk(mu_);
     JsonDocument d;
     if (newBlob.size() > kBlobCap || deserializeJson(d, newBlob) || !d.is<JsonArray>())
       return "blob must be a JSON array (<=3500B)";
@@ -93,6 +115,7 @@ class ConnectorsStore {
   // POST mode 2: remove the FIRST entry whose name matches. A missing name is a
   // no-op success (device parity).
   std::string removeByName(const std::string& name) {
+    std::lock_guard<std::mutex> lk(mu_);
     JsonDocument cur = current();
     JsonArray arr = cur.as<JsonArray>();
     for (size_t i = 0; i < arr.size(); i++) {
@@ -112,6 +135,7 @@ class ConnectorsStore {
       return "patch must be a JSON object";
     const char* nm = pd["name"] | "";
     if (!nm[0]) return "patch needs a name";
+    std::lock_guard<std::mutex> lk(mu_);
     JsonDocument cur = current();
     JsonArray arr = cur.as<JsonArray>();
     JsonObject dst;  // find existing (preserving its secrets) or append
@@ -135,9 +159,10 @@ class ConnectorsStore {
   // The parsed non-secret view for catalog/attach (the single no-silent-drop
   // parser the device also uses). Drops past the cap are loud-logged.
   std::vector<nimbus::orch::ConnectorInfo> parsed() const {
+    const std::string snap = blob();
     std::vector<nimbus::orch::ConnectorInfo> cs;
     int total = 0;
-    const int n = nimbus::orch::parseConnectorsJson(blob_.c_str(), cs, kMaxConnectors, &total);
+    const int n = nimbus::orch::parseConnectorsJson(snap.c_str(), cs, kMaxConnectors, &total);
     if (total > n)
       std::fprintf(stderr, "connectors: %d of %d entries active (cap %d, nameless skipped)\n",
                    n, total, kMaxConnectors);
@@ -149,13 +174,30 @@ class ConnectorsStore {
   // builders skip an unauthenticated first-party connector).
   std::string bearerForName(const std::string& name) const {
     JsonDocument in;
-    if (deserializeJson(in, blob_)) return {};
+    if (deserializeJson(in, blob())) return {};
     for (JsonObjectConst c : in.as<JsonArrayConst>())
       if (name == (const char*)(c["name"] | "")) return (const char*)(c["tok"] | "");
     return {};
   }
 
  private:
+  // The non-secret ConnectorInfo for one RAW blob entry, with the same defaults the
+  // device GET applies (prov "any", kind "mcp") - so the per-entry auth there and
+  // here are computed from identical inputs.
+  static nimbus::orch::ConnectorInfo entryInfo(JsonObjectConst c) {
+    nimbus::orch::ConnectorInfo ci;
+    ci.name = (const char*)(c["name"] | "");
+    ci.prov = (const char*)(c["prov"] | "any");
+    ci.kind = (const char*)(c["kind"] | "mcp");
+    ci.type = (const char*)(c["type"] | "");
+    ci.connectorId = (const char*)(c["cid"] | "");
+    ci.enabled = (c["en"] | 0) != 0;
+    ci.hasToken = ((const char*)(c["tok"] | ""))[0] != 0;
+    ci.hasOauth = !c["oauth"].isNull();
+    return ci;
+  }
+
+  // mu_ held by the caller.
   JsonDocument current() const {
     JsonDocument cur;
     if (deserializeJson(cur, blob_) || !cur.is<JsonArray>()) cur.to<JsonArray>();
@@ -202,6 +244,7 @@ class ConnectorsStore {
     if (::rename(tmp.c_str(), path_.c_str()) != 0) ::unlink(tmp.c_str());
   }
 
+  mutable std::mutex mu_;
   std::string path_;
   std::string blob_ = "[]";
 };

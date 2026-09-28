@@ -1,5 +1,6 @@
 #include "connectors.h"
 #include "store.h"
+#include "store_config.h"                   // harnessConfigFromStore (head resolution)
 #include "agent_config.h"
 #include "memory_subsystem.h"                // memory::registry(), memory::Lock
 #include "orchestrator.h"                    // orchestrator::inScheduledTurn()
@@ -90,30 +91,26 @@ void noteAuth(const String& name, int8_t st) {
   s_auth[slot] = {name, st};
 }
 
-// Mistral STUDIO connectors the owner has authenticated in their Mistral account,
-// learned from GET /v1/connectors on each Mistral verify (mistralConnectorId
-// namespace, e.g. "google_calendar"). A Studio connector carries no device
-// credential - its Google/Notion/Slack sign-in lives in the owner's Mistral
-// account - so this workspace probe is the ONLY honest usability signal. Until the
-// first successful probe (s_mistralProbed=false) a Studio connector reads
-// "connect it in Mistral" (auth=2), never usable-by-guess. Small fixed table.
-static String s_mistralAuthed[16];
-static int    s_mistralAuthedN = 0;
-static bool   s_mistralProbed  = false;
-
-// auth for a Mistral Studio connector (kind=connector, prov=mistral): 1 once the
-// owner has authenticated it in their Mistral workspace, else 2 (needs connecting
-// in Mistral). Uses the shared id map so it matches exactly what attachMistralWire
-// sends. Note this is NOT the "credential MISSING" case: a Studio connector never
-// has a device credential by design, so the old no-token/no-oauth => auth=2 default
-// would have kept every Studio connector permanently unusable.
-static int8_t mistralStudioAuth(const nimbus::orch::ConnectorInfo& c) {
-  if (!s_mistralProbed) return 2;
-  const std::string id = nimbus::orch::mistralConnectorId(c);
-  for (int i = 0; i < s_mistralAuthedN; i++)
-    if (s_mistralAuthed[i] == id.c_str()) return 1;
-  return 2;
-}
+// The Mistral workspace answer: which Studio connectors the configured key's
+// workspace LISTS as active in GET /v1/connectors (plus the is_authenticated hint),
+// learned on each Mistral verify. A Studio connector carries no device credential,
+// so this is its usability signal; the rule itself (listed + active => usable,
+// unprobed => not yet) is the portable nimbus::orch::connectorAuthFor, shared with
+// the hosted instance. Written by the verify task, read by the turn task and the
+// web handlers, so every access holds s_wsMux (a STATIC mutex: no lazy-create race,
+// no heap). A mutex, not a spinlock: readers allocate while matching ids.
+static nimbus::orch::MistralWorkspace s_ws;
+// Bumped by every reset (a Mistral key change). A probe that started under an older
+// generation - its fetch can take ~25 s - must not publish its answer for the new key.
+static uint32_t s_wsGen = 0;
+static StaticSemaphore_t s_wsMuxBuf;
+static SemaphoreHandle_t s_wsMux = xSemaphoreCreateMutexStatic(&s_wsMuxBuf);
+struct WsLock {
+  WsLock() { xSemaphoreTake(s_wsMux, portMAX_DELAY); }
+  ~WsLock() { xSemaphoreGive(s_wsMux); }
+  WsLock(const WsLock&) = delete;
+  WsLock& operator=(const WsLock&) = delete;
+};
 
 // POST a form-encoded refresh grant to the token URL, parse {access_token,
 // expires_in}. One bounded TLS exchange under the work arbiter (same discipline
@@ -197,42 +194,50 @@ int8_t authStateOf(const String& name) {
   return -1;   // no live signal since boot
 }
 
-void noteMistralConnectorsProbe(const char* v1ConnectorsBody) {
-  std::vector<std::string> authed;
-  if (!nimbus::orch::parseMistralConnectorsAuthed(v1ConnectorsBody, authed))
-    return;   // unparseable body (HTTP/transient error): keep the last good signal
-  int n = 0;
-  for (const std::string& id : authed) {
-    if (n >= (int)(sizeof(s_mistralAuthed) / sizeof(s_mistralAuthed[0]))) break;
-    s_mistralAuthed[n++] = id.c_str();
-  }
-  s_mistralAuthedN = n;
-  s_mistralProbed  = true;   // a definitive workspace answer: connectors not in the
-                             // list now read "connect it in Mistral", not usable-by-guess
+uint32_t mistralProbeGeneration() {
+  WsLock lk;
+  return s_wsGen;
+}
+
+bool noteMistralConnectorsProbe(const char* v1ConnectorsBody, uint32_t generation) {
+  // Parse OUTSIDE the lock into a scratch answer, then publish with a swap, so the
+  // lock is held for pointer moves only (never across the parse).
+  nimbus::orch::MistralWorkspace fresh;
+  if (!nimbus::orch::noteMistralWorkspaceProbe(fresh, v1ConnectorsBody))
+    return false;   // unparseable body (HTTP/transient error): keep the last good answer
+  WsLock lk;
+  if (generation != s_wsGen) return false;   // the key changed mid-probe: stale answer
+  s_ws.listed.swap(fresh.listed);     // a full replace: removed in Mistral => drops out
+  s_ws.signedIn.swap(fresh.signedIn);
+  s_ws.probed = true;
+  return true;
 }
 
 // W12: the honest per-connector credential state, one place so the model catalog,
-// the wire attach, and GET /api/connectors all agree. Built-ins authenticate
-// provider-side (-1, n/a); a static-token or OAuth connector reports its device
-// credential state (1 present / 0 mint failed); a Mistral Studio connector has NO
-// device credential by design, so it reports whether the owner has authenticated it
-// in their Mistral account (mistralStudioAuth); anything else with no credential is
-// MISSING (2, skipped at attach).
+// the wire-side capability scope, and GET /api/connectors all agree. The rule is
+// the portable connectorAuthFor (shared with the hosted instance); the device only
+// supplies its live inputs: the OAuth mint outcome and the workspace answer.
 int8_t connectorAuthState(const nimbus::orch::ConnectorInfo& c) {
-  if (c.kind == "builtin")                            return -1;
-  if (c.hasToken)                                     return 1;
-  if (c.hasOauth)                                     return authStateOf(c.name.c_str());
-  if (c.prov == "mistral" && c.kind == "connector")  return mistralStudioAuth(c);
-  return 2;
+  const int8_t oauth = c.hasOauth ? authStateOf(c.name.c_str()) : (int8_t)-1;
+  WsLock lk;
+  return nimbus::orch::connectorAuthFor(c, s_ws, oauth);
 }
 
 void resetMistralConnectorsProbe() {
-  // Drop the workspace-auth signal so a Studio connector reverts to "connect it in
-  // Mistral" (auth=2) until the next verify re-probes. Called on a Mistral key change
-  // so a connector authenticated under the OLD account can never read usable under a
-  // new key before the fresh probe lands.
-  s_mistralAuthedN = 0;
-  s_mistralProbed  = false;
+  // Drop the workspace answer so a Studio connector reverts to "not checked yet"
+  // (auth=2) until the next verify re-probes. Called on a Mistral key change so a
+  // connector listed under the OLD key's workspace can never read usable under a new
+  // key before the fresh probe lands.
+  WsLock lk;
+  s_ws = nimbus::orch::MistralWorkspace();
+  s_wsGen++;
+}
+
+bool wantsMistralWorkspaceProbe() {
+  String blob = store::connectorsJson();
+  std::vector<nimbus::orch::ConnectorInfo> cs;
+  nimbus::orch::parseConnectorsJson(blob.c_str(), cs, kMaxConnectors);
+  return nimbus::orch::wantsMistralWorkspaceProbe(cs);
 }
 
 String bearerFor(const Info& c) {
@@ -269,9 +274,16 @@ std::vector<nimbus::orch::ConnectorInfo> portableList() {
   // W12: honest per-connector credential state for the catalog. Built-ins
   // authenticate provider-side (no device credential); a remote MCP / first-
   // party connector NEEDS one - enabled-with-no-credential is skipped at attach,
-  // so the model must not treat it as usable. The OAuth mint outcome is device
-  // RAM state (authStateOf), applied here on top of the portable presence flags.
-  for (auto& c : out) c.auth = connectorAuthState(c);
+  // so the model must not treat it as usable; a Mistral Studio connector reads the
+  // workspace answer (auth + the is_authenticated hint the catalog notes). The
+  // OAuth mint outcome is device RAM state (authStateOf), applied on top of the
+  // portable presence flags by the shared rule.
+  {
+    WsLock lk;
+    nimbus::orch::applyConnectorAuth(out, s_ws, [](const nimbus::orch::ConnectorInfo& c) {
+      return authStateOf(c.name.c_str());
+    });
+  }
   // Assistant > Tools "Code sandbox" (CUM-49): inject the code_interpreter builtin
   // when the toggle is on, so the OpenAI/Mistral sandbox is enabled without an
   // explicit connector card. Skipped if a code_interpreter card is already present.
@@ -321,19 +333,27 @@ nimbus::orch::BearerFn bearerClosure() {
   };
 }
 
-// The resolved current head: explicit orchHost(), else the first token of
-// providerPriority() - the same rule compose.cpp/engine.cpp use.
+// The head the turn engine will actually run on, by the SAME rule and the same
+// device inputs the engine resolves it with (harnessConfigFromStore: every slug's
+// key incl. cumulo/zai/custom, then the router fallback) via the shared
+// nimbus::orch::resolveHeadHost. The raw first token named an unkeyed provider
+// "YOU are here" whenever the priority list led with one, and a BYOK-only rule would
+// name mistral while a cumulo-first device really runs on cumulo.
+// The config table (~25 std::function slots) goes on the HEAP, never this task's
+// stack (the turn path's stack is the tight one - see kMaxConnectors); C++17
+// guaranteed elision builds it in place. No memory: the old raw first token.
 std::string currentHost() {
-  String h = store::orchHost();
-  if (h.length()) return h.c_str();
-  String pri = store::providerPriority();
-  int e = 0;
-  while (e < (int)pri.length()) {
-    char ch = pri[e];
-    if (!((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z'))) break;
-    e++;
+  std::unique_ptr<agent::HarnessConfig> hc(
+      new (std::nothrow) agent::HarnessConfig(agent::harnessConfigFromStore()));
+  if (!hc) {
+    const std::string pri = store::providerPriority().c_str();
+    return pri.substr(0, pri.find(','));
   }
-  return std::string(pri.c_str(), e);
+  const auto& p = hc->provider;
+  return nimbus::orch::resolveHeadHost(p.orchHost ? p.orchHost() : std::string(),
+                                       p.providerPriority ? p.providerPriority() : std::string(),
+                                       p.hasKey,
+                                       p.routerFallbackHost ? p.routerFallbackHost() : std::string());
 }
 }  // namespace
 

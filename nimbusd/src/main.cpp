@@ -21,6 +21,7 @@
 // Env / config keys: NIMBUSD_DATA_DIR (/data), NIMBUSD_CONFIG (<data>/config.env),
 //   NIMBUSD_CONTROL_ADDR (127.0.0.1), NIMBUSD_CONTROL_PORT (8787),
 //   NIMBUSD_WEB_TOKEN, NIMBUSD_TG_CHAT_ID, NIMBUSD_DEVICE_NAME, NIMBUSD_PRIORITY,
+//   NIMBUSD_SUB_PRIORITY, NIMBUSD_ORCH_HOST, NIMBUSD_TOOL_LOOP (1),
 //   TELEGRAM_BOT_TOKEN, OPENAI_API_KEY / ANTHROPIC_API_KEY / MISTRAL_API_KEY,
 //   TAVILY_API_KEY, TZ.
 #include <atomic>
@@ -50,6 +51,15 @@ nimbusd::NimbusdRig::Options buildOptions(const nimbusd::Config& cfg) {
   opt.dataDir = cfg.get("NIMBUSD_DATA_DIR", "/data");
   opt.devName = cfg.get("NIMBUSD_DEVICE_NAME", "Nimbus");
   opt.priority = cfg.get("NIMBUSD_PRIORITY", "mistral,openai,anthropic");
+  // Device parity: the sub-agent ladder ("" -> same as NIMBUSD_PRIORITY) and an
+  // explicit head pin ("" -> the first keyed provider in NIMBUSD_PRIORITY).
+  opt.subPriority = cfg.get("NIMBUSD_SUB_PRIORITY");
+  opt.orchHost = cfg.get("NIMBUSD_ORCH_HOST");
+  // Device parity (store::orchToolLoop, default on): 0 runs single-shot head turns,
+  // which is also the only head path a Mistral key without chat-completions access
+  // can use (the tool loop runs on /v1/chat/completions, single-shot on
+  // /v1/conversations, where Studio connectors attach to the head turn itself).
+  opt.toolLoop = cfg.getInt("NIMBUSD_TOOL_LOOP", 1) != 0;
   opt.role = "admin";  // a hosted instance is single-owner by construction
   // Embeddings default to Mistral (cheapest); disabled if no key is present so
   // the daemon still runs (recall simply returns nothing).
@@ -98,6 +108,7 @@ void installReplyDelivery(nimbusd::NimbusdRig& rig, nimbusd::ReplyBuffer& replie
 // Run one turn and print the reply (a keyed smoke check).
 int cmdOnce(nimbusd::Config& cfg, const std::string& text) {
   nimbusd::NimbusdRig rig(cfg, buildOptions(cfg));
+  rig.refreshMistralWorkspace();   // same startup probe the daemon runs
   auto t = rig.say("owner", text);
   std::printf("%s\n", t.reply.empty() ? "(no reply)" : t.reply.c_str());
   return t.reply.empty() ? 1 : 0;
@@ -108,7 +119,10 @@ int cmdOnce(nimbusd::Config& cfg, const std::string& text) {
 // other provider so a keyed instance's boot log tells the honest story.
 void logStartupConfig(const nimbusd::Config& cfg, const nimbusd::NimbusdRig::Options& opt) {
   logLine("starting nimbusd: data=" + opt.dataDir + " name=" + opt.devName +
-          " priority=" + opt.priority);
+          " priority=" + opt.priority +
+          " subPriority=" + (opt.subPriority.empty() ? "(same)" : opt.subPriority) +
+          " orchHost=" + (opt.orchHost.empty() ? "(first keyed)" : opt.orchHost) +
+          " toolLoop=" + (opt.toolLoop ? "on" : "off"));
   for (const char* h : {"openai", "anthropic", "mistral"})
     logLine(std::string("provider ") + h + ": " +
             (cfg.providerKey(h).empty() ? "no key" : nimbusd::Config::mask(cfg.providerKey(h))));
@@ -126,6 +140,11 @@ int runDaemon(nimbusd::Config& cfg) {
   nimbusd::NimbusdRig rig(cfg, opt);
   nimbusd::EngineThread eng(&rig);
   eng.start();
+  // The Mistral workspace answer is RAM state: probe it at startup so an enabled
+  // Studio connector (gcal/notion/slack) is usable after a restart without anyone
+  // pressing verify (a hosted page has no verify button). A no-op without a Mistral
+  // key or an enabled Studio connector; runs on the engine thread before any turn.
+  if (rig.claimProbe()) eng.postWork([&rig] { rig.refreshMistralWorkspace(); });
 
   // The reply ring that backs the web chat page (GET /api/replies). Every reply
   // the engine produces is recorded here and, when a bot is configured, also
@@ -160,6 +179,9 @@ int runDaemon(nimbusd::Config& cfg) {
                                               opt.dataDir + "/tg_offset", allowChat));
     tgSend.reset(new nimbusd::TelegramChannel(tgToken, sendHttp.get(),
                                               opt.dataDir + "/tg_send_unused", allowChat));
+    if (allowChat.empty())
+      logLine("telegram: WARNING no NIMBUSD_TG_CHAT_ID - any chat can talk to this bot; "
+              "sub-agents are refused for Telegram chats until it is set");
     std::string user, err;
     if (tgPoll->getMe(user, err)) logLine("telegram: bot @" + user + " validated");
     else logLine("telegram: getMe failed (" + err + ") - poll loop will still retry");
@@ -176,8 +198,13 @@ int runDaemon(nimbusd::Config& cfg) {
           if (!g_stop.load()) { logLine("telegram poll error: " + err); std::this_thread::sleep_for(std::chrono::seconds(3)); }
           continue;
         }
-        for (const auto& u : ups)
-          if (!u.text.empty()) eng.postMessage(u.chatId, u.text);
+        for (const auto& u : ups) {
+          if (u.text.empty()) continue;
+          // No chat lock: this chat is unauthenticated, so it never spawns sub-agents
+          // (they reach the owner's provider connectors on the owner's keys).
+          if (allowChat.empty()) rig.noteUntrustedChat(u.chatId);
+          eng.postMessage(u.chatId, u.text);
+        }
       }
     });
   } else {

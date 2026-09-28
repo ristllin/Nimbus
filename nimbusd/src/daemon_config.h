@@ -2,6 +2,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <map>
+#include <mutex>
 #include <string>
 
 // daemon_config - HarnessConfig inputs over environment + an optional config
@@ -17,6 +18,15 @@ namespace nimbusd {
 
 class Config {
  public:
+  Config() = default;
+  // Copyable (the rig takes its Config by value); the copy gets its own mutex.
+  Config(const Config& o) {
+    std::lock_guard<std::mutex> lk(o.mu_);
+    file_ = o.file_;
+    override_ = o.override_;
+  }
+  Config& operator=(const Config&) = delete;
+
   // Load a KEY=VALUE file (tolerant: comments, blanks, `export`, quotes). Values
   // already present from a prior load are NOT overwritten (first load wins),
   // matching the dotenv precedence the lab + HIL suite use.
@@ -24,6 +34,7 @@ class Config {
     std::ifstream f(path);
     if (!f) return;
     std::string line, k, v;
+    std::lock_guard<std::mutex> lk(mu_);
     while (std::getline(f, line)) {
       if (parseEnvLine(line, k, v) && !file_.count(k)) file_[k] = v;  // first load wins
     }
@@ -66,14 +77,23 @@ class Config {
   // key you set in its own UI as the one it uses. An empty value ERASES the override
   // so the env/file value shows through again (a "Clear key" from the page). The rig
   // persists these to a durable secrets file so they survive a process restart.
+  //
+  // Threading: the engine thread writes overrides (an in-app key save) while the
+  // HTTP thread reads keys for the web snapshots, so the maps sit behind mu_ and
+  // every accessor hands out copies, never references into them.
   void setOverride(const std::string& name, const std::string& value) {
+    std::lock_guard<std::mutex> lk(mu_);
     if (value.empty()) override_.erase(name);
     else override_[name] = value;
   }
-  const std::map<std::string, std::string>& overrides() const { return override_; }
+  std::map<std::string, std::string> overrides() const {
+    std::lock_guard<std::mutex> lk(mu_);
+    return override_;
+  }
 
   // Override wins, then environment, then the file.
   std::string get(const std::string& name, const std::string& dflt = "") const {
+    std::lock_guard<std::mutex> lk(mu_);
     auto ov = override_.find(name);
     if (ov != override_.end() && !ov->second.empty()) return ov->second;
     if (const char* e = std::getenv(name.c_str()))
@@ -118,6 +138,7 @@ class Config {
   }
 
  private:
+  mutable std::mutex mu_;
   std::map<std::string, std::string> file_;
   std::map<std::string, std::string> override_;  // in-app, authoritative (CUM-279)
 };

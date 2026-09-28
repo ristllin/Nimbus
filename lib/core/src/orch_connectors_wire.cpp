@@ -354,26 +354,260 @@ std::string mistralConnectorId(const ConnectorInfo& c) {
   return cid;
 }
 
-bool parseMistralConnectorsAuthed(const char* body, std::vector<std::string>& authedOut) {
-  if (!body || !body[0]) return false;
-  // Filter the (potentially large) /v1/connectors body down to just the three
-  // fields we need per item, so the parsed document stays tiny on the device.
-  JsonDocument filter;
-  filter["items"][0]["name"]             = true;
-  filter["items"][0]["is_authenticated"] = true;
-  filter["items"][0]["active"]           = true;
-  JsonDocument d;
-  if (deserializeJson(d, body, DeserializationOption::Filter(filter))) return false;
-  JsonArrayConst items = d["items"].as<JsonArrayConst>();
-  if (items.isNull()) return false;   // not the expected shape: treat as "no signal"
-  for (JsonObjectConst it : items) {
-    const char* name = it["name"] | "";
-    if (!name[0]) continue;
-    const bool authed = it["is_authenticated"] | false;
-    const bool active = it["active"] | true;   // absent -> treat as active
-    if (authed && active) authedOut.emplace_back(name);
+namespace {
+// A forward-only, NON-RECURSIVE reader for the /v1/connectors body. The live body
+// (~300 KB) nests 26 levels deep inside fields we do not read (tool input schemas),
+// and a filtered ArduinoJson parse still descends into every skipped value: at its
+// default nesting limit it rejects the body (TooDeep, so the probe never landed an
+// answer), and raising the limit trades that for a stack that grows with the
+// provider's schema depth - on the device that runs on a small verify task stack.
+// This reader descends only root -> items[] -> item{} (a fixed depth); every other
+// value, however deep, is skipped with a bracket counter. Stack use is constant.
+class WorkspaceScanner {
+ public:
+  explicit WorkspaceScanner(const char* p) : p_(p) {}
+
+  void ws() {
+    while (*p_ == ' ' || *p_ == '\t' || *p_ == '\n' || *p_ == '\r') p_++;
   }
+  char peek() {
+    ws();
+    return *p_;
+  }
+  // A JSON string at the cursor, into `out` (nullptr = skip). Escapes keep the
+  // escaped byte (enough for ids/names; a \u sequence stays literal). false when
+  // the cursor is not on a string or it is unterminated.
+  bool str(std::string* out) {
+    if (peek() != '"') return false;
+    for (p_++; *p_ && *p_ != '"'; p_++) {
+      if (*p_ == '\\') {
+        if (!*++p_) return false;
+      }
+      if (out) out->push_back(*p_);
+    }
+    if (*p_ != '"') return false;
+    p_++;
+    return true;
+  }
+  // Skip one value of ANY depth: strings honored (a bracket inside one does not
+  // count), containers balanced by a counter - never by recursion.
+  bool skip() {
+    const char c = peek();
+    if (c == '"') return str(nullptr);
+    if (c != '{' && c != '[') return scalar();
+    int depth = 0;
+    while (*p_) {
+      if (*p_ == '"') {
+        if (!str(nullptr)) return false;
+        continue;
+      }
+      if (*p_ == '{' || *p_ == '[') depth++;
+      if ((*p_ == '}' || *p_ == ']') && --depth == 0) {
+        p_++;
+        return true;
+      }
+      p_++;
+    }
+    return false;   // unterminated (e.g. a truncated body)
+  }
+  // true/false at the cursor -> 1/0; any other value is skipped -> -1; a broken
+  // value -> -2.
+  int boolean() {
+    ws();
+    if (!std::strncmp(p_, "true", 4)) { p_ += 4; return 1; }
+    if (!std::strncmp(p_, "false", 5)) { p_ += 5; return 0; }
+    return skip() ? -1 : -2;
+  }
+  // Walk an object's members; `fn(key)` is called with the cursor on the value and
+  // must consume it. false on any structural error.
+  template <class F>
+  bool members(F fn) {
+    if (peek() != '{') return false;
+    p_++;
+    if (peek() == '}') { p_++; return true; }
+    for (;;) {
+      std::string key;
+      if (!str(&key) || peek() != ':') return false;
+      p_++;
+      if (!fn(key)) return false;
+      const char c = peek();
+      if (c != '}' && c != ',') return false;   // includes end of input
+      p_++;
+      if (c == '}') return true;
+    }
+  }
+  // Walk an array's elements; `fn()` is called with the cursor on each element.
+  template <class F>
+  bool elements(F fn) {
+    if (peek() != '[') return false;
+    p_++;
+    if (peek() == ']') { p_++; return true; }
+    for (;;) {
+      if (!fn()) return false;
+      const char c = peek();
+      if (c != ']' && c != ',') return false;   // includes end of input
+      p_++;
+      if (c == ']') return true;
+    }
+  }
+
+ private:
+  bool scalar() {
+    const char* start = p_;
+    while (*p_ && !std::strchr(",}] \t\r\n", *p_)) p_++;
+    return p_ != start;
+  }
+  const char* p_;
+};
+
+// One items[] entry's four fields we read.
+struct WorkspaceItem {
+  std::string id, name;
+  int active = -1;   // 1/0, -1 absent or not a bool (treated as active)
+  int signedIn = -1; // is_authenticated: 1 only when literally true
+};
+
+bool scanWorkspaceItem(WorkspaceScanner& sc, WorkspaceItem& it) {
+  return sc.members([&](const std::string& k) {
+    if (k == "id" || k == "name") {
+      std::string& dst = (k == "id") ? it.id : it.name;
+      return sc.peek() == '"' ? sc.str(&dst) : sc.skip();
+    }
+    if (k == "active" || k == "is_authenticated") {
+      const int b = sc.boolean();
+      (k == "active" ? it.active : it.signedIn) = b;
+      return b != -2;
+    }
+    return sc.skip();
+  });
+}
+}  // namespace
+
+bool parseMistralWorkspaceConnectors(const char* body, std::vector<std::string>& listedOut,
+                                     std::vector<std::string>* signedInOut) {
+  if (!body || !body[0]) return false;
+  WorkspaceScanner sc(body);
+  std::vector<std::string> listed, signedIn;   // committed only on a clean parse
+  bool sawItems = false;
+  int seen = 0;
+  const bool ok = sc.members([&](const std::string& key) {
+    if (key != "items") return sc.skip();
+    sawItems = true;
+    return sc.elements([&]() {
+      if (sc.peek() != '{') return sc.skip();   // a non-object element is ignored
+      WorkspaceItem it;
+      if (!scanWorkspaceItem(sc, it)) return false;
+      // Bounded, above the probe's page size; the rest is still walked (so a
+      // malformed tail is still caught) but not kept.
+      if (++seen > kMistralWorkspaceMaxItems) return true;
+      if (it.active == 0) return true;   // explicitly inactive: not usable; absent = active
+      // is_authenticated is a hint only: a listed connector reporting false still
+      // works (measured live), so it never decides usability.
+      for (const std::string* v : {&it.name, &it.id}) {
+        if (v->empty()) continue;
+        listed.push_back(*v);
+        if (it.signedIn == 1) signedIn.push_back(*v);
+      }
+      return true;
+    });
+  });
+  if (!ok || !sawItems) return false;   // not the expected shape: "no signal"
+  listedOut.insert(listedOut.end(), listed.begin(), listed.end());
+  if (signedInOut) signedInOut->insert(signedInOut->end(), signedIn.begin(), signedIn.end());
   return true;
+}
+
+namespace {
+// Membership in a "\nid\nid\n" set. An id carrying a newline can never match (and
+// could otherwise straddle two entries).
+bool inIdSet(const std::string& set, const std::string& id) {
+  if (id.empty() || id.find('\n') != std::string::npos) return false;
+  return set.find("\n" + id + "\n") != std::string::npos;
+}
+std::string toIdSet(const std::vector<std::string>& ids) {
+  std::string s = "\n";
+  for (const std::string& id : ids)
+    if (id.find('\n') == std::string::npos) s += id + "\n";
+  return s;
+}
+}  // namespace
+
+bool MistralWorkspace::isListed(const std::string& id) const { return inIdSet(listed, id); }
+bool MistralWorkspace::isSignedIn(const std::string& id) const { return inIdSet(signedIn, id); }
+
+bool noteMistralWorkspaceProbe(MistralWorkspace& ws, const char* body) {
+  std::vector<std::string> listed, signedIn;
+  if (!parseMistralWorkspaceConnectors(body, listed, &signedIn)) return false;
+  ws.listed = toIdSet(listed);       // full replace: a connector removed in Mistral drops out
+  ws.signedIn = toIdSet(signedIn);
+  ws.probed = true;
+  return true;
+}
+
+bool isMistralStudioConnector(const ConnectorInfo& c) {
+  return c.prov == "mistral" && c.kind == "connector";
+}
+
+ConnectorInfo::Workspace mistralWorkspaceState(const ConnectorInfo& c, const MistralWorkspace& ws) {
+  using W = ConnectorInfo::Workspace;
+  if (!isMistralStudioConnector(c)) return W::NotApplicable;
+  if (!ws.probed) return W::Unprobed;
+  const std::string id = mistralConnectorId(c);
+  if (!ws.isListed(id)) return W::NotListed;
+  return ws.isSignedIn(id) ? W::ListedSignedIn : W::ListedNotSignedIn;
+}
+
+int8_t connectorAuthFor(const ConnectorInfo& c, const MistralWorkspace& ws, int8_t oauthState) {
+  using W = ConnectorInfo::Workspace;
+  if (c.kind == "builtin") return -1;   // authenticates provider-side
+  if (c.hasToken)          return 1;
+  if (c.hasOauth)          return oauthState;
+  if (isMistralStudioConnector(c)) {
+    const W w = mistralWorkspaceState(c, ws);
+    return (w == W::ListedSignedIn || w == W::ListedNotSignedIn) ? 1 : 2;
+  }
+  return 2;   // a credential is required and none is stored
+}
+
+void applyConnectorAuth(std::vector<ConnectorInfo>& cs, const MistralWorkspace& ws,
+                        const OauthStateFn& oauthState) {
+  for (ConnectorInfo& c : cs) {
+    const int8_t oauth = (c.hasOauth && oauthState) ? oauthState(c) : (int8_t)-1;
+    c.auth = connectorAuthFor(c, ws, oauth);
+    c.workspace = mistralWorkspaceState(c, ws);
+  }
+}
+
+std::string resolveHeadHost(const std::string& orchHost, const std::string& priority,
+                            const std::function<bool(const std::string&)>& keyed,
+                            const std::string& routerFallback) {
+  auto trim = [](const std::string& t) {
+    const size_t b = t.find_first_not_of(" \t\r\n");
+    if (b == std::string::npos) return std::string();
+    return t.substr(b, t.find_last_not_of(" \t\r\n") - b + 1);
+  };
+  const std::string pin = trim(orchHost);
+  if (!pin.empty()) return pin;
+  std::string head;
+  for (size_t start = 0; start <= priority.size();) {
+    const size_t comma = priority.find(',', start);
+    const size_t end = comma == std::string::npos ? priority.size() : comma;
+    const std::string tok = trim(priority.substr(start, end - start));
+    if (!tok.empty()) {
+      if (head.empty()) head = tok;
+      if (keyed && keyed(tok)) return tok;
+    }
+    if (comma == std::string::npos) break;
+    start = comma + 1;
+  }
+  const std::string rf = trim(routerFallback);
+  return rf.empty() ? head : rf;
+}
+
+bool wantsMistralWorkspaceProbe(const std::vector<ConnectorInfo>& cs) {
+  for (const ConnectorInfo& c : cs)
+    if (c.enabled && isMistralStudioConnector(c)) return true;
+  return false;
 }
 
 void attachMistralWire(JsonDocument& d, const std::vector<ConnectorInfo>& cs, bool builtinsOnly) {
@@ -422,6 +656,35 @@ void attachAnthropicWire(JsonDocument& agentBody, const std::vector<ConnectorInf
 
 // ---- catalog text ------------------------------------------------------------
 
+// The parenthetical after an enabled connector's name in its provider row. W12:
+// enabled is a CHECKBOX, not health - only the states that need intervention (or
+// that change what a result means) get a note, so a bare name means "no known
+// problem" and enabled-but-unusable can't masquerade as working.
+static std::string connectorRowNote(const ConnectorInfo& c, const char* prov) {
+  using W = ConnectorInfo::Workspace;
+  if (c.auth == 0) return " (sign-in FAILED - tell the owner)";
+  if (c.auth == 2) {
+    // Fail-closed, but honest about WHY: an unchecked workspace is not the same
+    // next step as a connector the workspace does not offer.
+    if (c.workspace == W::Unprobed)
+      return " (not usable yet: the Mistral workspace has not been checked; it is "
+             "re-checked when the Mistral key is verified or saved)";
+    // A Mistral Studio connector / hosted built-in has NO device credential: it
+    // is authorized in the owner's Mistral account and referenced by name here,
+    // so "add a credential" is the wrong instruction - point at Mistral instead.
+    if (!std::strcmp(prov, "mistral") && c.kind != "mcp")
+      return " (not usable until the owner enables it in their Mistral Studio account)";
+    return " (NO credential - not usable until the owner adds one)";
+  }
+  // Usable. is_authenticated is a hint, never a gate: a listed connector that
+  // reports it false still ran live, so say what an empty result may mean.
+  if (c.workspace == W::ListedNotSignedIn)
+    return " (usable: always try it first. Mistral's signed-in flag is unreliable for "
+           "it, so never skip it on that basis; only if it returns nothing or asks to "
+           "sign in, tell the owner to connect it in Mistral)";
+  return "";
+}
+
 std::string catalogText(const std::vector<ConnectorInfo>& cs, const ProviderState& ps) {
   std::string out = "\n[PROVIDERS & CONNECTORS]\n";
   const std::string& host = ps.currentHost;
@@ -433,6 +696,11 @@ std::string catalogText(const std::vector<ConnectorInfo>& cs, const ProviderStat
     out += host;
     out += " are callable on YOUR OWN turns; connectors on the other providers are "
            "reachable only by spawning a sub-agent on that provider.\n";
+    if (host == "mistral" && !ps.mistralHeadCarriesStudio)
+      out += "EXCEPTION: Mistral Studio connectors (calendar, Notion, Slack, Gmail, "
+             "Drive, GitHub...) are NOT attached to your own turns here; they run ONLY "
+             "on a sub-agent you spawn on mistral (session_ops spawn: provider = "
+             "mistral, skill = the connector name).\n";
     out += "For a HEAVY connector action - creating or updating a document/page/"
            "issue, or fetching a large file - prefer to SPAWN a sub-agent on the "
            "connector's provider (session_ops spawn: provider = that provider, "
@@ -456,11 +724,15 @@ std::string catalogText(const std::vector<ConnectorInfo>& cs, const ProviderStat
        "search/fetch; connectors (BYO MCP by URL) attach to SUB-AGENTS only, "
        "not your own turns"},
       {"mistral", ps.mistralKeyed, ps.mistralVerified,
-       "connectors + built-ins attach to a single-shot turn AND to sub-agents "
-       "you spawn on mistral, but NOT to your tool-loop turns (the loop forces "
-       "tool_choice, which the provider rejects with built-ins) - so on your own "
-       "loop turns you have only the registry tools; spawn a mistral sub for "
-       "connector work"},
+       ps.mistralHeadCarriesStudio
+           ? "connectors + built-ins attach to a single-shot turn AND to sub-agents "
+             "you spawn on mistral, but NOT to your tool-loop turns (the loop forces "
+             "tool_choice, which the provider rejects with built-ins) - so on your own "
+             "loop turns you have only the registry tools; spawn a mistral sub for "
+             "connector work"
+           : "built-ins attach to a single-shot turn AND to sub-agents you spawn on "
+             "mistral; Studio connectors run ONLY on sub-agents you spawn on mistral, "
+             "never on your own turns: spawn a mistral sub for connector work"},
   };
   for (const Row& r : rows) {
     out += "- ";
@@ -480,19 +752,7 @@ std::string catalogText(const std::vector<ConnectorInfo>& cs, const ProviderStat
       if (!provMatches(c, r.prov)) continue;
       out += any ? ", " : ". Enabled connectors: ";
       out += c.name;
-      // W12: enabled is a CHECKBOX, not health - surface only the states that
-      // need intervention, so a bare name means "no known problem" (a healthy
-      // list stays cheap; enabled-but-unusable can't masquerade as working).
-      if (c.auth == 0)      out += " (sign-in FAILED - tell the owner)";
-      else if (c.auth == 2) {
-        // A Mistral Studio connector / hosted built-in has NO device credential: it
-        // is authorized in the owner's Mistral account and referenced by name here,
-        // so "add a credential" is the wrong instruction - point at Mistral instead.
-        if (r.prov == "mistral" && c.kind != "mcp")
-          out += " (not usable until the owner enables it in their Mistral Studio account)";
-        else
-          out += " (NO credential - not usable until the owner adds one)";
-      }
+      out += connectorRowNote(c, r.prov);   // W12 state note ("" when healthy)
       any = true;
     }
     out += "\n";
@@ -789,6 +1049,10 @@ CapScope connectorScope(const ConnectorInfo& c, const ProviderState& ps) {
   // exact split catalogText() states in prose.
   const bool onHost = (c.prov == "any") ||
                       (!ps.currentHost.empty() && c.prov == ps.currentHost);
+  // A Studio connector that does not ride the Mistral head turn is sub-agent-only
+  // even when mistral is the head (see ProviderState.mistralHeadCarriesStudio).
+  if (onHost && !ps.mistralHeadCarriesStudio && isMistralStudioConnector(c))
+    return CapScope::SubsessionsOnly;
   return onHost ? CapScope::OrchestratorDirect : CapScope::SubsessionsOnly;
 }
 

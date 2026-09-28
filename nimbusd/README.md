@@ -75,6 +75,20 @@ docker run --rm -e TELEGRAM_BOT_TOKEN=... -e MISTRAL_API_KEY=... \
 
 The build stage runs `make test`, so a broken build never produces an image.
 
+### Connectors e2e (live, paid)
+
+`tools/vn_connectors_e2e.py` drives a running instance over its HTTP surface the
+way the web app does: it configures Studio connectors (gcal, notion, slack on
+Mistral), runs the workspace probe via `POST /api/verify` and checks that the
+connector badge, the Capabilities row and the model catalog agree; then it asks
+"What is on my calendar today?" and asserts the reply names an event that one
+independent Mistral call with the calendar connector sees. Secrets come only from
+the environment (`NIMBUSD_WEB_TOKEN`, `MISTRAL_ORACLE_KEY`) and every evidence
+file is redacted. `--skip-bc` runs the free configuration + probe step only. It
+waits between paid calls (`--settle`) because a Mistral key's Studio connectors
+have their own per-minute and per-day request quota (`x-ratelimit-*-custom-*`
+headers).
+
 ## Configuration
 
 Secrets come from the environment (a mounted Secret in k8s); non-secret settings
@@ -91,6 +105,9 @@ may also live in `<data>/config.env`. Env always wins. Nothing secret is logged
 | `NIMBUSD_DATA_DIR` | durable store root (default `/data`) |
 | `NIMBUSD_CONTROL_ADDR` / `NIMBUSD_CONTROL_PORT` | control surface bind (default `127.0.0.1:8787`) |
 | `NIMBUSD_DEVICE_NAME`, `NIMBUSD_PRIORITY`, `TZ` | display name, provider failover order, timezone |
+| `NIMBUSD_SUB_PRIORITY` | sub-agent provider order (device `subPrio`); unset = same as `NIMBUSD_PRIORITY` |
+| `NIMBUSD_ORCH_HOST` | pin the head provider (device `orchHost`); unset = the first keyed provider in `NIMBUSD_PRIORITY` |
+| `NIMBUSD_TOOL_LOOP` | `1` (default) head tool loop, `0` single-shot head turns (device `orchLoop`) |
 
 ## Control surface (the seam the Phase-1 sidecar forwards to)
 
@@ -112,6 +129,27 @@ every forwarded request, so the browser reaches all of these through the tunnel.
 | `GET /api/themes`, `/api/qr`, `/api/docs/search` | pure/static surfaces (no engine, no hardware) |
 | hardware panels (`/api/audio/*`, `/api/wifi`, `/api/ota/*`, ...) | honest "not on a hosted instance" - never a faked value or a dead control |
 | `POST /mcp`, `GET /backup` | JSON-RPC to the tool registry / a consistent tar of the mem tree |
+| `GET/POST /api/connectors` | the connector registry (device contract); each configured entry carries the derived `auth` the badge reads |
+| `GET /api/connectors/catalog` | the model-facing `[PROVIDERS & CONNECTORS]` block exactly as the next turn gets it (text) |
+| `POST /api/verify` | `provider=mistral` re-runs the Mistral workspace probe in the background; other providers are acknowledged |
+
+**Mistral Studio connectors (device parity).** A Studio connector (gcal, notion,
+slack, ...) has no stored credential: it is usable once the Mistral key's workspace
+lists it as active in `GET /v1/connectors` (the shared rule in
+`lib/core/.../connectors_wire.h`; `is_authenticated` is only a hint, since it reads
+false for connectors that work). The device runs that probe after each Mistral
+verify; the hosted page has no verify button, so the daemon runs it at startup,
+after a Mistral key is saved, after a connectors write while the workspace is still
+unchecked, and on `POST /api/verify provider=mistral`. It is skipped (no request)
+without a Mistral key or an enabled Studio connector, and until an answer lands a
+Studio connector reads not usable (fail-closed). The catalog, the `/api/connectors`
+badges and the `/api/tools` connector rows all read one auth-stamped view, and the
+catalog names the head the turn really runs on (the first keyed provider, or the
+`NIMBUSD_ORCH_HOST` pin). Studio connectors never ride a Mistral HEAD turn here
+(`headProviderDeps`): the head's single-shot turn always carries the strict
+structured-output schema, and Mistral does not answer a call that combines it with
+a Studio connector (closed at 60 s, measured), so they run on a spawned Mistral
+sub-agent (free text), and the catalog and `/api/tools` report them sub-agent-only.
 
 **The web app (CUM-265).** `GET /` serves the device's own single-page app - the
 exact fragment bytes the device serves (`tools/gen_webui.py` assembles them from
@@ -128,21 +166,31 @@ OTA) report their honest virtual truth and never fabricate a reading or leave a
 dead control, and software update is the platform rolling the instance image, not
 an ESP OTA. A keyless instance still says so plainly rather than sitting silent.
 
-## Sub-agent fan-out: composed fabric-less in Phase 0 (documented decision)
+## Sub-agent fan-out (device parity)
 
-The device fans sub-agents out through four provider adapters
-(`src/agent/adapters/{openai,anthropic,mistral,custom}_adapter.cpp`) built on
-`WiFiClientSecure`. Those are **device-only** today. Porting them onto the
-daemon's `HttpTransport` (the "Fabric port" work item in plan §3.1) is **not done
-in Phase 0**: nimbusd registers no fabric loop (`ProviderHosts::fabric` is
-unset), so a turn runs its tool loop on a single head provider and does not
-dispatch parallel sub-agents.
+A spawned sub-agent is how the device runs a provider's connectors off its own
+turn (a Mistral sub carries the Studio connectors server-side) and how it farms out
+research. The hosted instance now runs the same machinery: the portable
+`JobEngine` (queue, one dispatch per pump, round-robin poll, the synthesis turn)
+over a fabric of five adapters (`src/sub_fabric.h`: anthropic, openai, mistral,
+zai, cumulo) that call the same `providers::*Dispatch/Poll/Cancel` wire functions
+the device adapters wrap, each resolving the instance's current key, model and
+connectors at call time. The engine thread pumps the jobs after every task and on
+every idle tick, so dispatches and the synthesis turn stay serialized with turns
+(the device's one-work-slot rule). The job journal lives on the instance volume
+(`<data>/mem/journal/j<slot>.json`), so an unfinished job re-attaches after a
+restart instead of being dispatched again.
 
-This is the plan's sanctioned Phase 0 option ("sub-agent fan-out working (Fabric
-port) **or explicitly deferred with the engine composed fabric-less**"). The
-head turn, tool loop, memory, web.search, and Telegram persona are all fully
-functional without it. The Fabric port is tracked for Phase 2. It is recorded in
-ADR 0003.
+Every spawn runs the configured sub model for its provider (no live model catalog
+to validate a per-spawn pick against), and a spawn on an unkeyed provider is
+answered with an honest "couldn't start" message. Not wired yet on a hosted
+instance: skill capsules, document attachments, auto-saving a sub's result into a
+project, and provider file capture (the engine passes the task through and notes
+attachments instead of splicing them).
+
+This replaces the Phase 0 "fabric-less" composition, under which the JobEngine
+had no fabric and every spawn was dropped without a message, so a Mistral Studio
+connector could never run under the default tool loop.
 
 ## The scenario suite (live, paid)
 

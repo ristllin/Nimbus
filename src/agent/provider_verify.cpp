@@ -393,23 +393,6 @@ static void syncCumuloFallbacks(const char* host, const String& key) {
   alogf("verify: cumulo fallback rules synced (%u rules)", (unsigned)rs.rules.size());
 }
 
-// Worth the large /v1/connectors fetch only if the owner has an enabled Mistral
-// Studio connector to verify.
-static bool hasEnabledMistralStudioConnector() {
-  // Heap-allocate the Info[] (each Info is ~11 Strings; a kMaxConnectors stack array
-  // is ~5 KB and overflows small task stacks - connectors.h rule, same pattern as the
-  // other call sites). This runs on the 8 KB pverify task right before a TLS session.
-  std::unique_ptr<agent::connectors::Info[]> ci(
-      new (std::nothrow) agent::connectors::Info[agent::connectors::kMaxConnectors]);
-  if (!ci) return false;
-  const int cn = agent::connectors::list(ci.get(), agent::connectors::kMaxConnectors);
-  for (int i = 0; i < cn; i++)
-    if (ci[i].enabled && ci[i].kind == "connector" &&
-        (ci[i].prov == "mistral" || ci[i].prov == "any"))
-      return true;
-  return false;
-}
-
 // Drain an HTTP/1.0 response into buf via bulk reads, bounded by cap and deadline.
 // Returns bytes read; NUL-terminates buf; sets *truncated when the cap was hit.
 static size_t drainHttpBody(WiFiClientSecure& client, char* buf, size_t cap,
@@ -427,15 +410,19 @@ static size_t drainHttpBody(WiFiClientSecure& client, char* buf, size_t cap,
   return blen;
 }
 
-// Ask Mistral which Studio connectors the owner has authenticated in their account
-// (GET /v1/connectors), so a Studio connector (gcal/notion/slack: no device
-// credential by design) is offered to the model only once it is actually connected
-// there. Runs on the held work slot right after a successful Mistral verify. The body
-// (~300 KB of connector metadata) is read into PSRAM; parseMistralConnectorsAuthed
-// then filters it to the authenticated names. Any failure leaves the last good signal
-// untouched (Studio connectors stay "connect it in Mistral", never usable-by-guess).
+// Ask Mistral which Studio connectors the key's workspace lists (GET /v1/connectors),
+// so a Studio connector (gcal/notion/slack: no device credential by design) is
+// offered to the model once the workspace lists it as active. Runs on the held work
+// slot right after a successful Mistral verify. The body (~300 KB of connector
+// metadata) is read into PSRAM; the portable workspace parse filters it to the listed
+// ids (+ the is_authenticated hint). Any failure leaves the last good answer untouched
+// (before the first answer a Studio connector reads "not checked yet", never usable
+// by guess).
 static void syncMistralConnectors(const String& key) {
-  if (!hasEnabledMistralStudioConnector()) return;   // skip the large fetch
+  if (!agent::connectors::wantsMistralWorkspaceProbe()) return;   // skip the large fetch
+  // Captured before the fetch: a Mistral key saved while this probe runs bumps it,
+  // and the old key's answer is then dropped instead of published for the new key.
+  const uint32_t gen = agent::connectors::mistralProbeGeneration();
   WiFiClientSecure client;
   tlsSetup(client);
   client.setHandshakeTimeout(12);
@@ -454,9 +441,10 @@ static void syncMistralConnectors(const String& key) {
   // Skip the HTTP headers to the JSON body (only compact status/header text precedes it).
   const char* jbody = strstr(buf, "\r\n\r\n");
   jbody = jbody ? jbody + 4 : (strstr(buf, "\n\n") ? strstr(buf, "\n\n") + 2 : buf);
-  if (!truncated) agent::connectors::noteMistralConnectorsProbe(jbody);
+  const bool noted = !truncated && agent::connectors::noteMistralConnectorsProbe(jbody, gen);
   alogf("verify: mistral connectors probed (%u bytes%s)", (unsigned)blen,
-        truncated ? ", TRUNCATED - kept last signal" : "");
+        truncated ? ", TRUNCATED - kept last answer"
+                  : (noted ? "" : ", unparseable or key changed - not published"));
   free(buf);
 }
 

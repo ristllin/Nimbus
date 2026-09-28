@@ -81,6 +81,7 @@ class WebApi {
     if (base == "/api/orch" && m == "GET")    { out = orchResp();   return true; }
     if (base == "/api/orch" && m == "POST")   { out = orchPost(body); return true; }
     if (base == "/api/connect" && m == "GET") { out = connectResp(); return true; }
+    if (base == "/api/verify" && m == "POST") { out = verifyPost(body); return true; }
     return false;
   }
 
@@ -175,10 +176,21 @@ class WebApi {
                           R"({"error":"OAuth sign-in is not available on a hosted instance yet. Use a pasted token or a Studio connector."})"};
       return true;
     }
+    if (base == "/api/connectors/catalog" && get) {
+      // The model-facing "[PROVIDERS & CONNECTORS]" block exactly as the next turn's
+      // context carries it, so an operator (and the e2e) can confirm the catalog and
+      // the badges below agree. Token-gated like every /api/* route; no secrets in it.
+      out = ApiResp{200, "text/plain; charset=utf-8", rig_->connectorsCatalog()};
+      return true;
+    }
     if (base != "/api/connectors") return false;
     if (get) {
       JsonDocument outDoc;
-      rig_->connectors().sanitizedConfigured(outDoc["configured"].to<JsonArray>());
+      // Each entry carries the derived `auth` (device parity, webui.cpp GET): the
+      // same shared rule + workspace answer the catalog reads.
+      rig_->connectors().sanitizedConfigured(
+          outDoc["configured"].to<JsonArray>(),
+          [this](const nimbus::orch::ConnectorInfo& ci) { return rig_->connectorAuth(ci); });
       JsonDocument known;
       if (!deserializeJson(known, nimbus::orch::knownCatalogJson())) outDoc["known"] = known;
       JsonObject keyed = outDoc["keyed"].to<JsonObject>();
@@ -207,8 +219,17 @@ class WebApi {
       out = ApiResp{400, "application/json", s};
       return true;
     }
-    rig_->noteConnectorsWrite();
-    rig_->persist();
+    // Engine-thread follow-ups (the conversation id and the memory stores belong to
+    // the engine thread): drop the pinned conversation so the new set rides the next
+    // turn, and - when the Mistral workspace has not answered yet (a first Studio
+    // connector just enabled) - probe it so the connector can read usable without a
+    // verify button (the hosted page has none).
+    NimbusdRig* rig = rig_;
+    eng_->postWork([rig] {
+      rig->noteConnectorsWrite();
+      rig->persist();
+    });
+    if (rig_->wantsWorkspaceProbe() && rig_->workspaceStale()) kickProbe();
     out = okJson(R"({"ok":true})");
     return true;
   }
@@ -243,7 +264,7 @@ class WebApi {
     // snapshot routes. If a turn is in flight, tell the poller to retry (503) at
     // once rather than blocking every other request behind a 2 s wait. Only when
     // the engine is idle do we dispatch and await (it answers in milliseconds).
-    if (eng_->snapshot().turnInFlight) return busy();
+    if (eng_->snapshot().turnInFlight || eng_->busy()) return busy();
     auto fut = eng_->dispatchRead(std::move(fn));
     if (fut.wait_for(std::chrono::seconds(2)) != std::future_status::ready) return busy();
     try {
@@ -482,9 +503,10 @@ class WebApi {
       // default), same field the device page reads (CUM-425).
       o["orchModel"] = rig_->modelFor(slug);
     }
+    d["orchHost"] = rig_->options().orchHost;   // device parity ("" = first keyed)
     d["provPrio"] = rig_->options().priority;
-    d["subPrio"] = rig_->options().priority;
-    d["orchLoop"] = true;
+    d["subPrio"] = rig_->subPriority();
+    d["orchLoop"] = rig_->options().toolLoop;   // device parity (store::orchToolLoop)
     d["hasTav"] = rig_->cfg().has("TAVILY_API_KEY");
     d["hasTg"] = rig_->cfg().has("TELEGRAM_BOT_TOKEN");
     d["tgLive"] = rig_->cfg().has("TELEGRAM_BOT_TOKEN");
@@ -562,6 +584,26 @@ class WebApi {
     return ApiResp{0, "", ""};
   }
 
+  // A new Mistral key resets the workspace answer (applyProviderKey); queue a fresh
+  // probe behind the key apply so a Studio connector reads usable again without a
+  // verify button (device parity: save-and-verify runs the probe after the verify).
+  // (A clear re-probes too: an env/file key may be active again underneath.)
+  void reprobeOnMistralKey(const std::vector<std::pair<std::string, std::string>>& keyWrites) {
+    if (!rig_->wantsWorkspaceProbe(/*assumeKey=*/true)) return;   // nothing to probe for
+    for (const auto& w : keyWrites) {
+      if (w.first != "mistral") continue;
+      kickProbe();
+      return;
+    }
+  }
+
+  // Queue ONE background workspace probe (coalesced: none while one is queued).
+  void kickProbe() {
+    if (!rig_->claimProbe()) return;
+    NimbusdRig* rig = rig_;
+    eng_->postWork([rig] { rig->refreshMistralWorkspace(); });
+  }
+
   ApiResp orchPost(const std::string& body) {
     const ApiResp unknown = unknownKeyFieldError(body);
     if (unknown.status != 0) return unknown;
@@ -594,8 +636,25 @@ class WebApi {
       serializeJson(d, out);
       return out;
     });
-    if (fut.wait_for(std::chrono::seconds(5)) != std::future_status::ready) return busy();
+    reprobeOnMistralKey(keyWrites);
+    // The write is QUEUED on the engine thread and will apply: past the wait (a
+    // background probe ahead of it), say so rather than a 503 that reads as failed
+    // and invites a duplicate save.
+    if (fut.wait_for(std::chrono::seconds(5)) != std::future_status::ready)
+      return okJson(R"({"ok":true,"queued":true,"note":"Saved. It applies in a moment."})");
     try { return okJson(fut.get()); } catch (...) { return busy(); }
+  }
+
+  // ------------------------------------------------------------------ /api/verify
+  // Device parity (webui.cpp /api/verify): accept the request, run the check in the
+  // background, answer at once. A hosted instance has no cheap key verify, but the
+  // one check the device runs after a Mistral verify - the workspace probe that makes
+  // Studio connectors usable - IS real here: provider=mistral queues it on the engine
+  // thread (serialized with turns); GET /api/connectors shows the result. Other
+  // providers are acknowledged, as before (nothing to check on a hosted instance).
+  ApiResp verifyPost(const std::string& body) {
+    if (formValue(body, "provider") == "mistral" && rig_->wantsWorkspaceProbe()) kickProbe();
+    return okJson(R"({"ok":true})");
   }
 
   // ------------------------------------------------------------------ /api/connect
@@ -841,9 +900,38 @@ class WebApi {
         o["availability"] = "orchestrator-direct";
         count++;
       }
+      count += connectorToolRows(arr);
       d["count"] = count;
       std::string out; serializeJson(d, out); return out;
     });
+  }
+
+  // prov/kind are free-form blob strings and the page renders the tag as HTML, so
+  // only an identifier-shaped value passes through; anything else reads "custom".
+  static std::string tagSafe(const std::string& v) {
+    if (v.empty() || v.size() > 24) return "custom";
+    for (char ch : v)
+      if (!isalnum((unsigned char)ch) && ch != '_' && ch != '-') return "custom";
+    return v;
+  }
+
+  // Provider-side connector rows for the Capabilities table, device parity
+  // (web_memory.cpp handleToolsGet): each classified by the shared connectorScope
+  // over the SAME auth-stamped view the catalog and GET /api/connectors read.
+  int connectorToolRows(JsonArray arr) {
+    const nimbus::orch::ProviderState ps = rig_->providerState();
+    int n = 0;
+    for (const auto& c : rig_->connectorsView()) {
+      JsonObject o = arr.add<JsonObject>();
+      o["group"] = "connector";
+      o["name"] = c.name;
+      o["description"] = "Provider-side connector: the cloud provider runs it for the model.";
+      o["tag"] = tagSafe(c.prov) + " " + tagSafe(c.kind) + (c.enabled ? "" : " (disabled)");
+      o["rides_loop"] = false;
+      o["availability"] = nimbus::orch::capScopeSlug(nimbus::orch::connectorScope(c, ps));
+      n++;
+    }
+    return n;
   }
 
   // ------------------------------------------------------------------ static
@@ -1023,7 +1111,7 @@ class WebApi {
   // The web channel's delivery chat id (a web turn is posted as, and its reply is
   // delivered to, this chat). The reply matcher consumes only assistant replies on
   // this channel, so a Telegram/routine reply cannot surface in the web bubble.
-  static constexpr const char* kWebChat = "owner";
+  static constexpr const char* kWebChat = kWebChatId;   // rig.h: the synchronous channel
   struct PendingTurn { uint64_t userSeq; time_t deadline; };
   std::deque<PendingTurn> pending_;
   std::map<uint64_t, std::string> resolved_;

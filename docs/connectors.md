@@ -89,6 +89,27 @@ known problem; a successful OAuth mint this boot is positive proof the
 credential works (`src/agent/connectors.cpp` `authStateOf`, fed from the one
 credential choke point).
 
+**Mistral Studio connectors: the workspace listing decides.** A Studio connector
+(Google Calendar, Notion, Slack, ...) has no credential on the device, so its
+state comes from Mistral. On each Mistral **Verify** the device asks Mistral which
+connectors the key's workspace offers (`GET /v1/connectors`):
+
+- **Listed and active:** usable. The assistant is told it can use it, and the
+  Connectors tab shows where it runs.
+- **Not listed, or listed as inactive:** not usable; the Connectors tab shows
+  **connect it in Mistral**.
+- **Not checked yet** (after a restart or a Mistral key change, until the next
+  Mistral verify): treated as not usable. The assistant is told the workspace has
+  not been checked rather than sent to Mistral for nothing.
+
+Mistral's own "signed in" flag (`is_authenticated`) is a hint, not the rule: it
+reads false even for connectors that demonstrably work (a Google Calendar
+connector reporting false returned real events). So a listed connector is used,
+and the assistant is told that if a result comes back empty, the account may
+still need connecting in Mistral. A Virtual Nimbus runs the same check at
+startup, after a Mistral key is saved, and when its first Studio connector is
+added (the hosted page has no Verify button).
+
 > **What validation does not do.** It confirms the *provider key* works, not each
 > connector's individual tools. Per-connector *functional* probing - actually
 > calling a connector, which would spend tokens - is not implemented. A connector
@@ -231,6 +252,17 @@ Mistral turns.
   (rejected alongside built-in connectors). Set the Orchestrator host to Mistral
   and the tool loop off to use them on your own turns, or spawn a Mistral
   sub-agent for connector work while the loop is on.
+- **Studio connectors are most reliable on a Mistral sub-agent.** Measured
+  2026-09-27: a single-shot turn that carries a Studio connector (Google
+  Calendar) together with the structured reply format did not answer within
+  60 seconds (3 of 3 tries), while the same request without the structured
+  format returned the real events in about 5 seconds, which is exactly what a
+  sub-agent sends. A Virtual Nimbus therefore attaches Studio connectors only to
+  Mistral sub-agents, and its assistant is told to spawn one for connector work.
+- **A Mistral key's Studio connectors have their own quota.** The personal key
+  measured 2026-09-27 allowed 5 connector requests per minute and 50 per day
+  (headers `x-ratelimit-limit-custom-minute` / `-custom-day`); the daily count
+  reset at midnight UTC. Past it, every connector call answers HTTP 429.
 - **Keep it to about 2 enabled Mistral connectors at a time.** One or two work
   reliably (proven: GitHub returned a live issue count, Gmail a live unread
   count). Enabling around 4 at once made the Conversations response come back
