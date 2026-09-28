@@ -1025,6 +1025,16 @@ class NimbusdRig {
       lastServedBy_ = ev.host + (ev.servedModel.empty() ? std::string() : (" " + ev.servedModel));
     };
 
+    wireApply(d);
+
+    registerHeads(d);
+    eng_.reset(new agent::TurnEngine(std::move(d)));
+  }
+
+  // The apply layer's deps (device buildApplyDeps): delivery, the turn principal,
+  // running memory and the sub-agent session ops. Split from buildEngine so each
+  // stays within the complexity gate.
+  void wireApply(agent::TurnEngine::Deps& d) {
     d.apply.deliver = d.deliver;
     d.apply.stageDevice = [](const orch::ValidatedAction&) {};  // hosted: no device actions
     // The WHOLE principal from the tenant table (device principalFor): the owner's
@@ -1045,17 +1055,7 @@ class NimbusdRig {
     // is exactly what the owner granted by approving it). The live re-check only
     // covers a chat the owner removed while its turn was running.
     d.apply.enqueueSpawn = [this](const orch::Spawn& s, const std::string& chat, bool quiet) {
-      if (!access_->mayConverse(chat)) {
-        record(chat, "Sub-agents are off for this chat: the owner has not approved it.");
-        return;
-      }
-      const std::string ns = access_->principalFor(chat).ns;
-      if (backgroundBusy() && ns != bgNs_) {
-        record(chat, "Sub-agents are busy with another person's request. Try again in a few minutes.");
-        return;
-      }
-      bgNs_ = ns;
-      if (jobs_) jobs_->enqueueSpawn(s, chat, quiet);
+      enqueueSpawnFor(s, chat, quiet);
     };
     // Stopping a sub-agent is the owner's, or its own namespace's, to do (a member
     // turn only runs while the in-flight work is its own - see turnMustWait).
@@ -1077,9 +1077,23 @@ class NimbusdRig {
     d.apply.turnComplete = [this](const std::string& chat) {
       if (chat == kWebChatId) record(chat, "Done.");
     };
+  }
 
-    registerHeads(d);
-    eng_.reset(new agent::TurnEngine(std::move(d)));
+  // A spawn from `chat`: refused (with the reason, never silently) when the owner has
+  // not approved the chat, or while another person's sub-agent work is in flight (the
+  // one-namespace rule, see turnMustWait); otherwise queued on the JobEngine.
+  void enqueueSpawnFor(const orch::Spawn& s, const std::string& chat, bool quiet) {
+    if (!access_->mayConverse(chat)) {
+      record(chat, "Sub-agents are off for this chat: the owner has not approved it.");
+      return;
+    }
+    const std::string ns = access_->principalFor(chat).ns;
+    if (backgroundBusy() && ns != bgNs_) {
+      record(chat, "Sub-agents are busy with another person's request. Try again in a few minutes.");
+      return;
+    }
+    bgNs_ = ns;
+    if (jobs_) jobs_->enqueueSpawn(s, chat, quiet);
   }
 
   // Register the provider heads for the current key set. Kept out of buildEngine so

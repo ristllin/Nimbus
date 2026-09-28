@@ -172,17 +172,24 @@ class TelegramWeb {
     if (!roleS.empty() && !nimbus::orch::roleFromName(roleS, role)) return error(400, "bad role");
     nimbus::orch::Quota q;
     acc_->quotaOf(id, q);   // start from what is set today
-    uint32_t pins = q.maxPins;
     bool any = false;
+    if (!parseLimits(form, q, any))
+      return error(400, "Limits must be 0 or more (0 restores the default for their role).");
+    if (!roleS.empty() && !acc_->setRole(id, role, err)) return error(409, err);
+    if (any && !acc_->setQuota(id, q, err)) return error(err == TelegramAccess::kErrNoTenant ? 404 : 409, err);
+    return ok();
+  }
+
+  // The four limits onto `q`. False on any bad value (nothing is applied then);
+  // `any` says whether a limit was given at all.
+  static bool parseLimits(const Form& form, nimbus::orch::Quota& q, bool& any) {
+    uint32_t pins = q.maxPins;
     const bool good = parseLimit(form("vectors"), 2147483647u, q.maxVectors, any) &&
                       parseLimit(form("bytes"), 2147483647u, q.maxBytes, any) &&
                       parseLimit(form("ttl"), 2147483647u, q.maxTtlHours, any) &&
                       parseLimit(form("pins"), 65535u, pins, any);
-    if (!good) return error(400, "Limits must be 0 or more (0 restores the default for their role).");
-    if (!roleS.empty() && !acc_->setRole(id, role, err)) return error(409, err);
     q.maxPins = (uint16_t)pins;
-    if (any && !acc_->setQuota(id, q, err)) return error(err == TelegramAccess::kErrNoTenant ? 404 : 409, err);
-    return ok();
+    return good;
   }
 
   TelegramAccess* acc_;

@@ -636,14 +636,12 @@ class WebApi {
     return ApiResp{400, "application/json", out};
   }
 
-  ApiResp orchPost(const std::string& body) {
-    const ApiResp unknown = unknownKeyFieldError(body);
-    if (unknown.status != 0) return unknown;
-    std::vector<std::pair<std::string, std::string>> keyWrites;    // (host, key); "" clears
-    std::vector<std::pair<std::string, std::string>> modelWrites;  // (host, model); "" clears
-    // The key FIELD names come from the canonical registry (provider_slots.h keyField),
-    // the SAME table hostForKeyField and /api/orch read, so what the UI posts and what
-    // this consumes cannot drift.
+  using Writes = std::vector<std::pair<std::string, std::string>>;   // (host, value); "" clears
+
+  // The key and model writes a body carries. The key FIELD names come from the
+  // canonical registry (provider_slots.h keyField), the SAME table hostForKeyField and
+  // /api/orch read, so what the UI posts and what this consumes cannot drift.
+  static void collectWrites(const std::string& body, Writes& keyWrites, Writes& modelWrites) {
     for (size_t i = 0; i < nimbus::orch::kProviderSlotCount; i++) {
       const std::string field = nimbus::orch::kProviderSlots[i].keyField;
       const std::string host = NimbusdRig::hostForKeyField(field);
@@ -651,6 +649,13 @@ class WebApi {
       formWrite(body, field, host, keyWrites);
       formWrite(body, "orchM_" + host, host, modelWrites);
     }
+  }
+
+  ApiResp orchPost(const std::string& body) {
+    const ApiResp unknown = unknownKeyFieldError(body);
+    if (unknown.status != 0) return unknown;
+    Writes keyWrites, modelWrites;
+    collectWrites(body, keyWrites, modelWrites);
     // Refuse a mid-turn key/model write BEFORE anything else in the body applies, so
     // a 503 always means "nothing changed".
     if ((!keyWrites.empty() || !modelWrites.empty()) && eng_->snapshot().turnInFlight) return busy();
