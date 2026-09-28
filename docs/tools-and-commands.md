@@ -204,6 +204,8 @@ Commands grouped by purpose, one line each. Arguments in angle brackets.
 |---|---|
 | `TURN <text>` | Run one live Orchestrator turn; the reply echoes to serial. |
 | `VOICE <text>` | Inject a simulated voice transcript so the reply renders on-screen exactly like hold-to-talk - no microphone needed. |
+| `VOICE?` | Report the hold-to-talk state: phase, outcome, transition count, the ms from release to the first repaint and to the speech-to-text call (0 = never started), and the status line. |
+| `STTKEY placeholder` / `STTKEY off` | Test image only: a memory-only placeholder speech-to-text key so hold-to-talk can be exercised on a board with no key. Never saved; a provider answers it with HTTP 401. |
 | `PROMPT?` | Dump the last composed system prompt. |
 | `CTX? [chat]` / `COMPACT <chat>` | Inspect a conversation's context size; force compaction now. |
 | `EPIQ [@<cursor>] <text>` | Run a cold episodic-memory query over deep history and time it; page further back by passing `@<cursor>` from the previous result. |

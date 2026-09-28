@@ -232,9 +232,9 @@ there.
 
 - **Telegram:** send the bot a message. It runs a turn and replies, sometimes
   with voice if it chooses to speak.
-- **On the device:** press and hold the **on-screen mic bar** to talk. The ring
-  breathes red while listening, then shows a spinner while it transcribes.
-  Release to send.
+- **On the device:** press and hold the **on-screen mic bar** to talk, then
+  release to send. The ring shows your theme color while listening, then a
+  spinner from the moment you let go until the reply lands.
 
 That is it, the device is live. From here, the
 [web UI reference](webui-reference.md) walks every settings tab, and

@@ -27,6 +27,8 @@ struct Field {
 // `filePath` on LittleFS; if `filePath` is empty, no file part is sent (fields
 // only). On success returns true and fills `respBody` (truncated to its capacity);
 // on failure returns false and sets `err`.
+// The optional knobs ride in Options (named fields, so a call site cannot shift a
+// value into the wrong positional slot):
 // srcFs: the filesystem the file part streams from - nullptr = LittleFS (the
 // historical default); pass &memory::dataFs() to stream an SD /mem/... artifact
 // (E1 files.send) without staging it into the small LittleFS partition first.
@@ -40,11 +42,26 @@ struct Field {
 // PCM capture as a WAV (44-byte RIFF header inline) WITHOUT writing a second copy
 // of the whole recording to flash - the double-copy was the ceiling on recording
 // length (owner 2026-07-16).
+// connectBudgetMs: 0 = the historical connect (up to 3 attempts inside the 60 s
+// operation deadline). Non-zero (the hold-to-talk STT upload, CUM-456) bounds the
+// whole connect phase: the host is resolved first and a DNS failure returns
+// "connect failed" at once (the core would otherwise go on to connect to an
+// unresolved address and sit out its socket timeout), the lookup is charged to
+// the budget, each attempt's connection AND TLS handshake timeouts are capped at
+// what is left, and no new attempt starts past it - so an unreachable host costs
+// about the budget (up to a second over: the handshake timeout is whole seconds),
+// never three full timeouts. The TLS-slot wait is not charged: that is "busy".
+struct Options {
+  fs::FS* srcFs = nullptr;
+  bool lockSrc = false;
+  const uint8_t* filePrefix = nullptr;
+  size_t filePrefixLen = 0;
+  uint32_t connectBudgetMs = 0;
+};
 bool post(const char* host, int port, const char* path, const String& bearer,
           const std::vector<Field>& fields, const char* fileField,
           const char* fileName, const char* fileMime, const char* filePath,
-          String& respBody, String& err, fs::FS* srcFs = nullptr, bool lockSrc = false,
-          const uint8_t* filePrefix = nullptr, size_t filePrefixLen = 0);
+          String& respBody, String& err, const Options& opt = Options());
 
 }  // namespace httpmp
 }  // namespace agent

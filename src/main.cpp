@@ -51,6 +51,7 @@
 #include "agent/connectors.h"                 // MCP OAuth pump on the main loop
 #include "nimbus/theme.h"                     // themeAccent - LED colour personality
 #include "nimbus/status_style.h"              // status -> {theme role, anim} single source
+#include "nimbus/voice_flow.h"                // hold-to-talk state machine + error taxonomy (CUM-456)
 #include <LittleFS.h>
 #include <SD.h>                 // SD card FS (mounted via solide::storage) for orch data
 #include <solide/storage.h>     // microSD mount helper
@@ -141,15 +142,31 @@ static int  g_askPage = 0;
 // such a confirmation; a reboot follows immediately, so it never leaks to a later
 // dismissible reply (and a fresh boot clears it).
 static bool g_askTransient = false;
-// Voice hold-to-talk state. g_voiceActive guards re-entry (LongPress auto-repeats
-// while held); g_voiceStop is the recordToFile stop flag driven by the release
-// watcher; g_voiceDone lets the watcher exit. g_voiceReply* carries the async turn
-// reply back from the poll task to the main loop for panel rendering.
+// Voice hold-to-talk state. g_voiceActive is true while the mic records (drawn as
+// the pressed mic; re-entry is guarded by g_voice.canPress()); g_voiceStop is the
+// recordToFile stop flag driven by the release watcher; g_voiceDone lets the
+// watcher exit. g_voiceReply* carries the async turn reply back from the poll task
+// to the main loop for panel rendering.
 static volatile bool g_voiceActive = false;
 static volatile bool g_voiceStop = false;
 static volatile bool g_voiceDone = false;
 static volatile bool g_voiceReplyPending = false;
 static String        g_voiceReply;
+// Hold-to-talk flow (CUM-456): the portable state machine that orders the release
+// path (processing is shown BEFORE any network I/O) and holds the processing /
+// outcome state until the reply lands. Main-task owned - the touch dispatch,
+// captureVoiceTurn() and loop() all run on the loop task - so no lock.
+static nimbus::voice::Flow g_voice;
+static uint32_t g_voiceEndTarget = 0;            // voice-message count that means OURS is done
+static volatile uint32_t g_voiceReleaseMs = 0;   // when the watcher saw the release
+// Bench seam timings for VOICE? (release -> first repaint, release -> STT start).
+static uint32_t g_voiceShownMs = 0, g_voiceSttMs = 0;
+// Theme colors for the voice cue, refreshed on each flow transition (an NVS read -
+// the 30 fps ring tick must not pay it).
+static solide::ring::RGB g_voiceAccent{0, 0, 0}, g_voiceAlert{0, 0, 0};
+// While the voice flow's cue is live (listening, processing, an error outcome) it
+// owns the ring: nothing else may recompose over it.
+static bool voiceOwnsRing() { return g_voice.ownsRing(); }
 // Web chat (POST /api/chat): the turn runs on tg_poll; its reply is captured here
 // (chatId "web" in orchSendSink) for GET /api/chat to poll. Single-slot, one owner.
 static volatile bool g_webReplyPending = false;
@@ -367,11 +384,6 @@ static volatile bool g_factoryEraseSd = false;       // CUM-15: also erase /mem 
 static volatile bool g_sdResetPending = false;       // web SD reset: erase /mem durable store + reboot
 static volatile bool g_sdFormatPending = false;      // CUM-15: web full-card format (reformat whole SD) + reboot
 static volatile bool g_powerOffPending = false;      // CUM-224: web power-off -> clean shutdown + deep sleep on main task
-// Voice turn "waiting for the agent" state: after the transcript is sent, a theme
-// spinner runs until the reply lands (or a timeout) so the ring shows work in flight
-// instead of going dark. Cleared in the reply drain / timeout in loop().
-static volatile bool g_voiceWaiting = false;
-static uint32_t      g_voiceWaitStart = 0;
 static render::Scheduler g_sched;
 static NotifierMode g_notifier(g_router);
 static SettingsMenu g_menu(g_cfg);
@@ -1026,6 +1038,16 @@ static bool deviceNeedsSetup() {
   return g_orchMode && !net::provisioned() && !agent::store::onboarded();
 }
 
+// Hold-to-talk status line (CUM-456): drawn on the home screen - in the on-screen
+// ring, or the mic bar on a ring board - while the flow is live.
+static void fillVoiceCtx(render::ScreenCtx& c) {
+  if (g_voice.phase() == nimbus::voice::Phase::Idle) return;
+  c.voiceTitle = g_voice.line().title;
+  c.voiceDetail = g_voice.line().detail;
+  c.voiceTone = uint8_t(g_voice.tone());
+  c.micBusy = g_voice.busy();
+}
+
 static render::ScreenCtx buildCtx(int cursorJob) {
   render::ScreenCtx c;
   fillHeaderCtx(c);   // mode/profile/posture + WiFi/BT/battery/net-degraded header
@@ -1126,6 +1148,7 @@ static render::ScreenCtx buildCtx(int cursorJob) {
       c.ringLeds[size_t(i)] = { rf[i].r, rf[i].g, rf[i].b };
     c.micHeld = g_voiceActive;   // instant pressed feedback on the hold-to-talk button
   }
+  fillVoiceCtx(c);
   return c;
 }
 
@@ -1254,6 +1277,7 @@ static void voiceReleaseWatcher(void*) {
     }
     vTaskDelay(pdMS_TO_TICKS(15));
   }
+  g_voiceReleaseMs = millis();        // the release moment the flow's latency is measured from
   g_voiceStop = true;                 // button up (debounced, past the floor) -> stop recordToFile
   while (!g_voiceDone) vTaskDelay(pdMS_TO_TICKS(20));
   vTaskDelete(nullptr);
@@ -1267,7 +1291,7 @@ static void voiceReleaseWatcher(void*) {
 // can't start now - firmware updating, or no speech-to-text key configured.
 static bool voiceStartBlocked() {
   if (otaupd::installing()) {  // flash write + TLS own the device right now
-    g_askOverride = "Updating firmware - try again after the restart.";
+    g_askOverride = nimbus::voice::blockedLine(nimbus::voice::Block::Updating).c_str();
     g_askSticky = true; g_askPage = 0;
     renderScreen(attn::ScreenId::Ask, -1);
     return true;
@@ -1276,7 +1300,7 @@ static bool voiceStartBlocked() {
     // Give the owner ACTUAL feedback instead of a silent no-op on a silent-serial
     // device: a panel line telling them voice needs a key (audit device-flows).
     Serial.println("VOICE: no STT provider key");
-    g_askOverride = "Voice needs a speech-to-text key (set one in the web UI).";
+    g_askOverride = nimbus::voice::blockedLine(nimbus::voice::Block::NoKey).c_str();
     g_askSticky = true; g_askPage = 0;   // hold until click (P2.3)
     renderScreen(attn::ScreenId::Ask, -1);
     return true;
@@ -1284,52 +1308,151 @@ static bool voiceStartBlocked() {
   return false;
 }
 
-// Instant press feedback: repaint so the hold-to-talk button shows pressed the
-// moment it is touched (the region-only ring repaint would miss it - the button
-// sits outside the ring rectangle). On a panel-ring board also paint a static
-// LISTENING frame (the whole ring in the theme hue): the physical Pulse drives
-// only the absent LED, and recordToFile blocks the loop so the animator can't
-// breathe it live - a steady lit ring is the honest single-task listening cue.
-static void voicePressFeedback() {
-  if (!g_screenIsTft || g_menu.isOpen()) return;
-  if (!solide::board().hasRing) {
-    nimbus::ThemeColor lt =
-        nimbus::themeAccent(std::string(agent::store::theme().c_str()));
-    hw::paintRingSolid(lt.r, lt.g, lt.b);
+// Paint the flow's cue frame into the on-screen ring (a board with no LED ring
+// draws the ring on the panel from g_animBuf; the loop's region repaint pushes it).
+static void paintVoiceFrame(uint32_t now) {
+  solide::ring::RGB frame[NIMBUS_RING_LEDS];
+  nimbus::voice::cueFrame(g_voice.cue(), now - g_voice.since(), g_voiceAccent, g_voiceAlert,
+                          frame, NIMBUS_RING_LEDS);
+  hw::paintRingFrame(frame, NIMBUS_RING_LEDS);
+}
+
+// Paint the voice flow's ring cue (CUM-456). The LED driver gets the SELF-ANIMATING
+// pattern nimbus::voice::ledCueFor() names - recordToFile and the speech-to-text
+// call block the loop, so only the driver's own task can keep an LED ring moving
+// through them. A board with no LED ring gets the cue frame on the panel;
+// voiceRingTick() advances it whenever the loop runs. Called on each flow
+// transition and when refreshRing() hands the ring back mid-flow - never per job
+// edge (those call sites skip refreshRing while the voice cue owns the ring), so
+// the re-shown pattern does not restart its motion on every edge.
+static void voiceApplyRing() {
+  const nimbus::voice::LedCue l = nimbus::voice::ledCueFor(g_voice.cue());
+  const solide::ring::RGB& c = l.alert ? g_voiceAlert : g_voiceAccent;
+  solide::leds::clearFrame();   // a raw frame outranks patterns: release it first
+  switch (l.motion) {
+    case nimbus::voice::LedMotion::Pulse:   solide::leds::show(solide::leds::Pattern::Pulse, c.r, c.g, c.b); break;
+    case nimbus::voice::LedMotion::Spinner: solide::leds::show(solide::leds::Pattern::Spinner, c.r, c.g, c.b); break;
+    case nimbus::voice::LedMotion::Solid:   solide::leds::show(solide::leds::Pattern::Solid, c.r, c.g, c.b); break;
+    case nimbus::voice::LedMotion::Off:     break;
   }
-  renderScreen(attn::ScreenId::StatusIdle, -1);
+  if (g_screenIsTft && !solide::board().hasRing) paintVoiceFrame(millis());
 }
 
-// Release feedback: recompose + un-press the mic button if still on the ring home
-// (a reply/ask screen otherwise replaces it, un-pressing it by leaving Idle).
-static void voiceReleaseFeedback() {
-  if (!g_screenIsTft || g_menu.isOpen() ||
-      g_lastScreen != uint8_t(attn::ScreenId::StatusIdle))
+// Loop cadence: advance the on-screen cue (processing comet, offline breathe) on a
+// panel-ring board. The ring-region repaint in loop() pushes it at ~30 fps.
+static void voiceRingTick(uint32_t now) {
+  if (!g_screenIsTft || solide::board().hasRing) return;   // LED patterns self-animate
+  static uint32_t s_last = 0;
+  if (uint32_t(now - s_last) < 33) return;
+  s_last = now;
+  paintVoiceFrame(now);
+}
+
+// The flow no longer owns the ring: hand it back to the normal status composition
+// (or repaint an orchestrator LED override instead of stranding it dark).
+static void voiceReleaseRing() {
+  if (g_ledOverrideActive) {
+    // The override repaints the LEDs; on a panel-ring board also drop the voice
+    // frame, or the on-screen ring would hold a frozen comet under the override.
+    if (g_screenIsTft && !solide::board().hasRing) hw::paintRingSolid(0, 0, 0);
+    g_devActDirty = true;
     return;
-  refreshRing();   // replace the static LISTENING frame with the real idle ring
-  renderScreen(attn::ScreenId::StatusIdle, -1);
-}
-
-// Nothing usable was heard: LEDs off, ring back to idle, and a panel-aware hint held
-// until the owner clicks. When STT failed on a router/provider REFUSAL (out of
-// credit, rate limited, bad audio), surface that honest one-line status instead of
-// the generic retry hint - a refusal must never masquerade as a missed word (CUM-376).
-static void voiceEmptyTranscript() {
+  }
   solide::leds::off();
   refreshRing();
-  const String refusal = agent::stt::lastStatus();
-  // Hold-to-talk is the mic button on the touch panel.
-  g_askOverride = refusal.length() ? refusal
-                                   : String("Didn't catch that - hold the mic button and speak.");
-  g_askSticky = true; g_askPage = 0;   // hold until click (P2.3)
-  renderScreen(attn::ScreenId::Ask, -1);
 }
 
+// Show the flow's state: the ring cue, and the home screen that carries the line
+// (listening / processing / outcome). A reply on the Ask screen is never yanked
+// away, and the menu keeps the panel. Called on every flow transition - once per
+// state change, never per loop pass (no repaint thrash).
+static void voiceShow(bool render = true) {
+  const std::string theme = std::string(agent::store::theme().c_str());
+  const nimbus::ThemeColor tc = nimbus::themeAccent(theme);
+  g_voiceAccent = solide::ring::RGB{tc.r, tc.g, tc.b};
+  g_voiceAlert = solide::ring::hsv(uint16_t(nimbus::themeAlertHue(theme)) * 257, 255, 255);
+  if (voiceOwnsRing()) voiceApplyRing(); else voiceReleaseRing();
+  if (!render || !g_screenIsTft || g_menu.isOpen()) return;
+  if (g_voice.phase() == nimbus::voice::Phase::Recording ||
+      g_lastScreen == uint8_t(attn::ScreenId::StatusIdle))
+    renderScreen(attn::ScreenId::StatusIdle, -1);
+}
+
+// The device side of the release path (nimbus::voice::Port). Everything here but
+// transcribe() is free of network I/O - the order afterRelease() drives is what
+// makes the release instant: processing is on the ring + screen first, a missing
+// link fails at once, and only then does the speech-to-text call run.
+class VoicePort : public nimbus::voice::Port {
+ public:
+  explicit VoicePort(const String& reId) : reId_(reId) {}
+  uint32_t now() override { return millis(); }
+  void show(const nimbus::voice::Flow& f) override {
+    const uint32_t t0 = millis();
+    voiceShow();
+    const uint32_t since = millis() - g_voiceReleaseMs;
+    if (!g_voiceShownMs) g_voiceShownMs = since ? since : 1;
+    Serial.printf("VOICE: state=%s outcome=%s +%lums after release (render %lums)\n",
+                  nimbus::voice::phaseName(f.phase()), nimbus::voice::outcomeName(f.outcome()),
+                  (unsigned long)since, (unsigned long)(millis() - t0));
+    if (f.phase() == nimbus::voice::Phase::Notice)
+      agent::alogf("[voice] %s", nimbus::voice::sentence(f.line()).c_str());
+  }
+  // Cached association state: WiFi.status() reads the driver's flag, no I/O.
+  bool linkUp() override {
+    return WiFi.status() == WL_CONNECTED && (uint32_t)WiFi.localIP() != 0u;
+  }
+  nimbus::voice::SttResult transcribe() override {
+    const uint32_t since = millis() - g_voiceReleaseMs;
+    g_voiceSttMs = since ? since : 1;
+    Serial.printf("VOICE: stt start +%lums after release\n", (unsigned long)since);
+    // 10 s connect budget: an unreachable host (joined Wi-Fi, no internet) costs
+    // about that, never three full socket timeouts.
+    const nimbus::voice::SttResult r = agent::stt::transcribePcmResult("/voice.pcm", 16000, 10000);
+    Serial.printf("VOICE: stt done textLen=%u +%lums after release\n", (unsigned)r.text.size(),
+                  (unsigned long)(millis() - g_voiceReleaseMs));
+    agent::alogif("[voice] result transcriptLen=%u text=\"%.80s\"", (unsigned)r.text.size(),
+                  r.text.c_str());
+    return r;
+  }
+  bool sendTurn(const std::string& transcript) override {
+    const String t(transcript.c_str());
+    agent::orchestrator::clearAsk();   // the owner just answered by voice -> clear any pending ask
+    // Durable audit copy of the spoken turn -> /mem/blobs on the SD (SD-gated no-op).
+    // Raw headerless PCM (16 kHz/16-bit/mono forensic artifact); the transcript is
+    // the primary record.
+    agent::memory::captureMediaFile("voice", "user", nimbus::orch::MsgKind::Audio,
+                                    t, "/voice.pcm", "pcm");
+    String msg = reId_.length() ? (String("[re: ") + reId_ + "] " + t) : t;
+    if (msg.length() > 4000) msg = msg.substring(0, 4000);   // inbound text buffer is 4097
+    // Voice messages are handled one at a time in arrival order, so OURS is done
+    // once the finished count reaches (count now) + 1 - a stray reply, a mid-turn
+    // notice or a synthesis turn on the same chat can never be mistaken for it.
+    uint32_t handled = 0;
+    agent::orchestrator::voiceMessages(&handled, nullptr);
+    g_voiceEndTarget = handled + 1;
+    // The reply routes back to the panel (see orchSendSink); loop() ends the
+    // processing state on the voice turn's own end (voiceLoopStep).
+    if (agent::telegram::injectMessage("voice", msg)) return true;
+    agent::alog("voice: inbound queue full - transcript dropped");
+    return false;
+  }
+  void sound(nimbus::sfx::Ev e) override { ::sfx::fire(e); }
+
+ private:
+  String reId_;
+};
+
+// Long-press-to-talk capture (runs on the main task from the touch/encoder hold).
+// Recording blocks the loop until the watcher sees the release; everything after
+// the release is nimbus::voice::afterRelease(), which shows processing BEFORE any
+// network call (CUM-456: the old order held the listening frame through a ~57 s
+// offline STT timeout, then called the network failure "Didn't catch that").
 static void captureVoiceTurn() {
-  if (g_voiceActive) return;   // re-entry guard: LongPress auto-repeats while held
+  if (!g_voice.canPress()) return;   // re-entry (LongPress auto-repeats) + processing guard
   if (voiceStartBlocked()) return;
   g_voiceActive = true;
-  voicePressFeedback();
+  g_voice.press(millis());
+  voiceShow();                       // listening: ring cue + "Listening" + the pressed mic
   String reId;  // snapshot the focused session id BEFORE recording (it can complete mid-record)
   // Focus 0 = the Orchestrator itself -> talk to it directly, no "[re:]" hint. Focus
   // >=1 = a sub-session -> hint the turn at that job's id (still routed to the head).
@@ -1338,12 +1461,6 @@ static void captureVoiceTurn() {
     if (idx >= 1 && (idx - 1) < g_sessionList.size())
       reId = g_sessionList[idx - 1].id.c_str();
   }
-  // IMMEDIATE LED feedback: the ring turns a self-animating red breathe the instant
-  // you hold (the panel is far too slow to be the primary cue). It keeps pulsing
-  // through the blocking record because solide::leds Patterns self-animate.
-  nimbus::ThemeColor th = nimbus::themeAccent(std::string(agent::store::theme().c_str()));
-  solide::leds::clearFrame();
-  solide::leds::show(solide::leds::Pattern::Pulse, th.r, th.g, th.b);  // theme breathe = LISTENING
   Serial.println("VOICE: hold-to-talk recording (release to stop)...");
   // HOLD-TO-RECORD: record until the button is released (watcher sets g_voiceStop),
   // capped at 60 s so a stuck button can't record forever (was 15 s - raised once
@@ -1351,8 +1468,8 @@ static void captureVoiceTurn() {
   // LittleFS space (32 KB/s at 16 kHz mono 16-bit, 256 KB reserved for the other
   // flash writers) so a full partition truncates the CAP, not the capture.
   // SFX is MUTED for the whole capture (a clip played mid-record would pollute
-  // the STT audio; the red breathe ring is the "listening" cue instead - no
-  // VoiceListen sound by design).
+  // the STT audio; the listening ring is the cue instead - no VoiceListen sound
+  // by design).
   uint32_t capMs = 60000;
   {
     const size_t freeB = LittleFS.totalBytes() - LittleFS.usedBytes();
@@ -1362,53 +1479,80 @@ static void captureVoiceTurn() {
   }
   ::sfx::setMuted(true);
   g_voiceStop = false; g_voiceDone = false;
+  g_voiceReleaseMs = 0; g_voiceShownMs = 0; g_voiceSttMs = 0;
   xTaskCreatePinnedToCore(voiceReleaseWatcher, "vrel", 2560, nullptr, 4, nullptr, 1);
   esp_task_wdt_delete(nullptr);
   const uint32_t recStart = millis();
   size_t bytes = solide::audio::recordToFile(LittleFS, "/voice.pcm", capMs, &g_voiceStop);
   const uint32_t recMs = millis() - recStart;
-  ::sfx::setMuted(false);
-  ::sfx::fire(nimbus::sfx::Ev::VoiceStop);   // "I gotcha." - capture confirmed (heavy tier)
-  // 16 kHz mono 16-bit = 32000 B/s; ~<0.4 s of audio can't hold a word.
-  Serial.printf("VOICE: recorded bytes=%u durMs=%lu (~%.2fs audio)%s\n",
-                (unsigned)bytes, (unsigned long)recMs, bytes / 32000.0f,
-                bytes < 12000 ? "  <-- SHORT, likely warm-up only" : "");
-  agent::alogf("[voice] recorded bytes=%u durMs=%lu audio=%.2fs%s",
-               (unsigned)bytes, (unsigned long)recMs, bytes / 32000.0f,
-               bytes < 12000 ? " SHORT/warmup" : "");
-  solide::leds::show(solide::leds::Pattern::Spinner, th.r, th.g, th.b);  // theme sweep = TRANSCRIBING
-  // WAV header streams INLINE in the upload (transcribePcm) - no /voice.wav copy,
-  // so the partition pays once per capture and 60 s fits where 15 s used to.
-  String transcript = agent::stt::transcribePcm("/voice.pcm", 16000);
-  esp_task_wdt_add(nullptr);
-  g_voiceDone = true;   // release the watcher task
-  Serial.printf("VOICE: bytes=%u transcript=\"%s\"\n", (unsigned)bytes, transcript.c_str());
-  agent::alogf("[voice] result transcriptLen=%u text=\"%.80s\"",
-               (unsigned)transcript.length(), transcript.c_str());
+  g_voiceDone = true;   // the watcher's job ended with the capture - release it now
+  if (!g_voiceReleaseMs) g_voiceReleaseMs = millis();   // hit the cap while still held
+  const uint32_t stopLagMs = millis() - g_voiceReleaseMs;   // the driver's last read chunk
   g_voiceActive = false;
-  voiceReleaseFeedback();
-  if (transcript.length() == 0) { voiceEmptyTranscript(); return; }
-  g_askOverride = String("You: ") + transcript;   // show what was heard on the panel
-  g_askSticky = true; g_askPage = 0;   // hold the transcript while the turn runs;
-                                       // the reply overwrites it directly (P2.3)
-  agent::orchestrator::clearAsk();   // the owner just answered by voice -> clear any pending ask
-  renderScreen(attn::ScreenId::Ask, -1);
-  // Durable audit copy of the spoken turn -> /mem/blobs on the SD (SD-gated no-op).
-  // Raw headerless PCM now (the WAV copy no longer exists) - the transcript is the
-  // primary record; the blob is a 16 kHz/16-bit/mono forensic artifact.
-  agent::memory::captureMediaFile("voice", "user", nimbus::orch::MsgKind::Audio,
-                                  transcript, "/voice.pcm", "pcm");
-  String msg = reId.length() ? (String("[re: ") + reId + "] " + transcript) : transcript;
-  if (msg.length() > 4000) msg = msg.substring(0, 4000);   // inbound text buffer is 4097
-                                                           // (was a stale 1000-char guard
-                                                           // from the old 1024 buffer)
-  // WAIT FEEDBACK: the turn runs async on the poll task, so keep a theme spinner
-  // running from send until the reply lands (cleared in the reply drain / a timeout in
-  // loop()) - the ring shows the agent is working instead of going dark.
-  solide::leds::show(solide::leds::Pattern::Spinner, th.r, th.g, th.b);
-  g_voiceWaiting = true; g_voiceWaitStart = millis();
-  if (!agent::telegram::injectMessage("voice", msg))    // reply routes back to the panel (see orchSendSink)
-    agent::alog("voice: inbound queue full - transcript dropped");
+  ::sfx::setMuted(false);
+  // 16 kHz mono 16-bit = 32000 B/s; ~<0.4 s of audio can't hold a word. Serial only
+  // here: the durable log line waits until processing is on screen (a flash-persisted
+  // log write on this path cost ~70 ms of release latency on the bench).
+  Serial.printf("VOICE: recorded bytes=%u durMs=%lu (~%.2fs audio) stop +%lums%s\n",
+                (unsigned)bytes, (unsigned long)recMs, bytes / 32000.0f,
+                (unsigned long)stopLagMs, bytes < 12000 ? "  <-- SHORT, likely warm-up only" : "");
+  VoicePort port(reId);
+  const nimbus::voice::Outcome o = nimbus::voice::afterRelease(g_voice, port);
+  esp_task_wdt_add(nullptr);
+  agent::alogif("[voice] recorded bytes=%u durMs=%lu audio=%.2fs%s",
+                (unsigned)bytes, (unsigned long)recMs, bytes / 32000.0f,
+                bytes < 12000 ? " SHORT/warmup" : "");
+  Serial.printf("VOICE: release path done outcome=%s phase=%s\n",
+                nimbus::voice::outcomeName(o), nimbus::voice::phaseName(g_voice.phase()));
+}
+
+// Hold-to-talk after the release path returned (CUM-456), once per loop pass: show
+// a voice reply, end processing on the voice turn's OWN end (a mid-turn fallback
+// notice is not the answer), and run the flow's backstops. Held off while the menu
+// owns the panel, exactly like the old reply drain.
+static void voiceLoopStep(uint32_t now) {
+  if (g_menu.isOpen()) return;
+  // Read "a turn is running" BEFORE the end counter: the engine bumps the counter
+  // before it clears in-flight, so a turn that just ended is never read as "no turn
+  // ran" by this pass.
+  const bool inFlight = agent::orchestrator::turnInFlight();
+  uint32_t handled = 0;
+  bool ok = false;
+  agent::orchestrator::voiceMessages(&handled, &ok);
+  bool replyNow = false;
+  if (g_voiceReplyPending) {
+    String reply;
+    { net::ConfigLockGuard lk; reply = g_voiceReply; g_voiceReplyPending = false; }
+    g_askOverride = String("Nimbus: ") + reply;
+    g_askSticky = true; g_askPage = 0;   // hold until click; rotate pages (P2.3)
+    renderScreen(attn::ScreenId::Ask, -1);   // first, so the home line is never flashed
+    replyNow = true;
+  }
+  nimbus::voice::Flow::TurnSignals sig;
+  sig.turnInFlight = inFlight;
+  sig.turnEnded = int32_t(handled - g_voiceEndTarget) >= 0;   // wrap-safe: ours is done
+  sig.turnOk = ok;
+  sig.replyLanded = replyNow;
+  if (!g_voice.step(sig, now)) return;
+  voiceShow();
+  if (g_voice.phase() == nimbus::voice::Phase::Notice) {
+    nimbus::sfx::Ev e;
+    if (nimbus::voice::sfxFor(g_voice.outcome(), e)) ::sfx::fire(e);
+    agent::alogf("[voice] %s", nimbus::voice::sentence(g_voice.line()).c_str());
+  }
+}
+
+// VOICE? bench seam (test image): the flow state + the release timings the
+// on-device check asserts (release -> first repaint, release -> speech-to-text).
+static String voiceStateLine() {
+  char buf[256];   // the line is capped (%.120s) so the closing quote always fits
+  std::snprintf(buf, sizeof buf,
+                "VOICE phase=%s outcome=%s transitions=%u shownMs=%lu sttMs=%lu line=\"%.120s\"",
+                nimbus::voice::phaseName(g_voice.phase()),
+                nimbus::voice::outcomeName(g_voice.outcome()), unsigned(g_voice.transitions()),
+                (unsigned long)g_voiceShownMs, (unsigned long)g_voiceSttMs,
+                nimbus::voice::sentence(g_voice.line()).c_str());
+  return String(buf);
 }
 
 // Mode-switch visual: a short LED sweep in the destination mode's colour (teal for
@@ -1430,17 +1574,27 @@ static void playModeSwitchFeedback(bool toOrch) {
   }
 }
 
+// Another owner holds the ring, so refreshRing() must not re-compose over it:
+//  - an OTA install: the ring is the PRIMARY "do not power off" indicator, a live
+//    progress bar owned by otaLoopUx (a Telegram-turn reply / Notifier job edge /
+//    status render would otherwise stomp it mid-flash-write). Released when the
+//    install ends.
+//  - an orchestrator device-action override: an explicit `led` pattern must not be
+//    clobbered, and an owner-silenced (lights:off) ring stays dark (a NEW attention
+//    event clears the silence in orchEventSink first, so calls-to-action still get
+//    through).
+//  - hold-to-talk's live cue (listening, processing, an error outcome): re-apply
+//    the cue instead, so no caller can stomp the processing state mid-flow (CUM-456).
+static bool ringHeldElsewhere() {
+  if (otaupd::installing() || g_ledOverrideActive) return true;
+  if (!voiceOwnsRing()) return false;
+  voiceApplyRing();   // re-show: whatever just changed the ring (an LED swell ending,
+                      // an override expiring, the menu closing) left its own pattern
+  return true;
+}
+
 static void refreshRing() {
-  // During an OTA install the ring is the PRIMARY "do not power off" indicator -
-  // otaLoopUx owns it as a live progress bar. Nothing else may re-compose over it
-  // (a Telegram-turn reply / Notifier job edge / status render would otherwise
-  // stomp the progress bar mid-flash-write). Released when the install ends.
-  if (otaupd::installing()) return;
-  // Orchestrator device-action overrides own the ring: an explicit `led` pattern
-  // must not be clobbered by a re-compose, and an owner-silenced (lights:off) ring
-  // stays dark (a NEW attention event clears the silence in orchEventSink first,
-  // so calls-to-action still get through).
-  if (g_ledOverrideActive) return;
+  if (ringHeldElsewhere()) return;
   if (g_lightsOff) {
     solide::leds::clearFrame();   // release any raw-frame (Full animator) hold
     solide::leds::off();
@@ -3691,6 +3845,7 @@ void setup() {
     h.storage = [](int pct) { return storageSet(pct); };               // STORAGE <pct>|off
     h.drainState = [](bool& active, bool& deep, uint16_t& restMv) {     // STATUS surfacing
       active = g_highLoadActive; deep = g_drainDeep; restMv = g_hlRestingMv; };
+    h.voiceState = [] () -> String { return voiceStateLine(); };       // VOICE? (CUM-456)
     tc::begin(h);
   }
   // Surface WiFi disconnect reason on serial + arm the attention badge (F9),
@@ -4635,6 +4790,16 @@ static void pageAskReply(int dir) {
 // touch-aware: the menu FSM keeps its onRotate/onClick/onLongPress contract, and
 // the dirty-persist + request-flag drains in loop() run exactly as they do for
 // the same gestures. That is the whole reason a second input device needed no FSM change.
+// Any tap acknowledges a hold-to-talk outcome line (CUM-456) and still does what
+// it was aimed at; a tap on dead space or on the mic just clears the line. Returns
+// true when the tap was consumed.
+static bool voiceTapDismiss(const nimbus::tft::TapRegion* t, uint32_t now) {
+  if (!g_voice.dismiss(now)) return false;
+  const bool elsewhere = t && t->action != nimbus::tft::TapRegion::Action::Mic;
+  voiceShow(/*render=*/!elsewhere);
+  return !elsewhere;
+}
+
 static void drainTouch(uint32_t now) {
   // First-run calibration GATE (CUM-245): while a fresh resistive panel is
   // uncalibrated, NO tap may drive navigation - the guided TouchCal flow
@@ -4679,6 +4844,8 @@ static void drainTouch(uint32_t now) {
     return;
   }
   if (g.kind == hw::touch::Gesture::Kind::HoldEnd) return;   // recording self-terminates
+
+  if (g.kind == hw::touch::Gesture::Kind::Tap && voiceTapDismiss(t, now)) return;
 
   // Swipe = scroll the open menu, OR page a held Ask reply. With no knob, a
   // list longer than one page (or a reply longer than one screen) had no way
@@ -5082,7 +5249,7 @@ void loop() {
                    (unsigned)(cap / 1000));
       if (g_orchMode) agent::orchestrator::noteRingBackstopFired();   // CUM-11/CUM-221 metric
     }
-    if ((cleared || doneCleared) && !g_menu.isOpen() && !g_voiceWaiting) refreshRing();
+    if ((cleared || doneCleared) && !g_menu.isOpen() && !voiceOwnsRing()) refreshRing();
     // CUM-243: the status-agnostic orphan reaper - collapses any ring slot whose
     // owning job the engine no longer tracks (key not in the live session set and
     // not the head), which closes the stuck-Idle / dropped-job gap the per-status
@@ -5105,7 +5272,7 @@ void loop() {
       if (orphanCleared) {
         agent::alog("ring: orphan reaper collapsed an arc for a job the engine no longer tracks");
         agent::orchestrator::noteRingBackstopFired();   // CUM-243 metric
-        if (!g_menu.isOpen() && !g_voiceWaiting) refreshRing();
+        if (!g_menu.isOpen() && !voiceOwnsRing()) refreshRing();
       }
     }
     // Head-turn reaper: the blue "processing" Running arc is NOT an attention status,
@@ -5114,7 +5281,7 @@ void loop() {
     if (g_orchMode && agent::orchestrator::reapStuckTurn(now)) {
       agent::alog("ring: stuck-turn reaper freed a dead head-turn arc (blue processing ring)");
       g_orchRingDirty = true;
-      if (!g_menu.isOpen() && !g_voiceWaiting) refreshRing();
+      if (!g_menu.isOpen() && !voiceOwnsRing()) refreshRing();
     }
     // W6: keep the orchestrator's own head arc lit while its sub-agents run (a
     // fan-out returns the instant it enqueues children, so the TurnGuard would
@@ -5122,7 +5289,7 @@ void loop() {
     // periodically refreshes / clears the arc from the always-alive main loop.
     if (g_orchMode && agent::orchestrator::reconcileHeadArc(now)) {
       g_orchRingDirty = true;
-      if (!g_menu.isOpen() && !g_voiceWaiting) refreshRing();
+      if (!g_menu.isOpen() && !voiceOwnsRing()) refreshRing();
     }
     // Absolute working-breathe ceiling (belt-and-suspenders over reapStuckTurn):
     // if turnInFlight has been continuously true past kWorkingHardMaxMs, latch the
@@ -5141,7 +5308,7 @@ void loop() {
           g_workingCeilingHit = true;
           agent::orchestrator::noteRingBackstopFired();   // CUM-11 metric
           agent::alog("ring: working-breathe hit its 30 min absolute ceiling - dropped (stuck-turn reaper stalled?)");
-          if (!g_menu.isOpen() && !g_voiceWaiting) refreshRing();
+          if (!g_menu.isOpen() && !voiceOwnsRing()) refreshRing();
         }
       }
     }
@@ -5752,7 +5919,7 @@ void loop() {
       // clamp the cursor so a completed job can't leave it dangling past the end.
       g_sessionList = agent::orchestrator::sessionInfos();
       g_lastActivityMs = now;   // a sub-agent just started/finished -> Calm blink
-      if (!g_menu.isOpen() && !g_voiceWaiting) refreshRing();
+      if (!g_menu.isOpen() && !voiceOwnsRing()) refreshRing();
     }
     // Apply a staged led/lights device action (DeviceSink, poll task -> here).
     // The main loop owns the LEDs, so patterns are only ever shown from this task.
@@ -5845,7 +6012,7 @@ void loop() {
     const bool workingNow = agent::orchestrator::turnInFlight();
     if (workingNow != s_lastWorking) {
       s_lastWorking = workingNow;
-      if (!g_menu.isOpen() && !g_voiceWaiting) refreshRing();
+      if (!g_menu.isOpen() && !voiceOwnsRing()) refreshRing();
       // Turn just ENDED: settle the panel to the final state with ONE render (the
       // ambient intents below were held back while the turn ran). Not over the
       // screensaver - a settle there would flash the logo off and back.
@@ -5861,31 +6028,9 @@ void loop() {
     if (screenRender && !g_menu.isOpen() && (screenAttn || !workingNow) &&
         screenAmbientAllowedOverSaver(screenAttn))
       g_sched.onIntent(screenId, screenAttn, now);
-    // Voice turn reply arrived on the poll task -> render it on the panel here.
-    if (g_voiceReplyPending && !g_menu.isOpen()) {
-      String reply;
-      { net::ConfigLockGuard lk; reply = g_voiceReply; g_voiceReplyPending = false; }
-      if (g_voiceWaiting) {   // stop the waiting spinner (repaint an override, don't strand it dark)
-        g_voiceWaiting = false;
-        if (g_ledOverrideActive) g_devActDirty = true;
-        else { solide::leds::off(); refreshRing(); }
-      }
-      g_askOverride = String("Nimbus: ") + reply;
-      g_askSticky = true; g_askPage = 0;   // hold until click; rotate pages (P2.3)
-      renderScreen(attn::ScreenId::Ask, -1);
-    }
-    // Voice-wait watchdog: if no reply lands within 30 s (turn failed / dropped), stop
-    // the spinner so the ring doesn't spin forever.
-    if (g_voiceWaiting && !g_menu.isOpen() && (millis() - g_voiceWaitStart) > 30000) {
-      // ^ menu-gated like the reply drain (review): painting the Ask screen +
-      //   setting sticky while the menu owns the panel wedged the close path.
-      g_voiceWaiting = false;
-      if (g_ledOverrideActive) g_devActDirty = true;   // repaint, don't strand dark
-      else { solide::leds::off(); refreshRing(); }
-      g_askOverride = "No reply - try again.";
-      g_askSticky = true; g_askPage = 0;   // hold until click (P2.3)
-      renderScreen(attn::ScreenId::Ask, -1);
-    }
+    // Hold-to-talk (CUM-456): show a voice reply, end processing on the voice turn's
+    // own end, and run the flow's backstops (replaces the fixed 30 s "no reply").
+    voiceLoopStep(now);
     // Retention maintenance (docs/orchestrator-storage.md §4): every ~6 h prune SD
     // episodic day-streams + unreferenced blob sidecars older than 30 days. No-op
     // without an SD append-log or before the clock advances past the window; runs off
@@ -6324,7 +6469,7 @@ void loop() {
     menuRingRepaint(false);
   } else if (g_themePreviewUntilMs && int32_t(now - g_themePreviewUntilMs) < 0 &&
              !otaupd::installing() && !g_ledOverrideActive && !g_lightsOff &&
-             !g_voiceWaiting && !ringHasAttention()) {
+             !voiceOwnsRing() && !ringHasAttention()) {
     // Theme just picked: flourish the new palette on the main screen so the change
     // is visible (an idle ring is otherwise dark). ⚠ Yields to a live job / CTA /
     // voice cue (the guards above) - a raw frame outranks the router's segments, so
@@ -6343,7 +6488,11 @@ void loop() {
       buf[i] = {c.r, c.g, c.b};
     }
     solide::leds::showFrame(buf, L);
-  } else if (!otaupd::installing() && !g_voiceWaiting && !g_ledOverrideActive &&
+  } else if (voiceOwnsRing() && !otaupd::installing() && !g_ledOverrideActive) {
+    // Hold-to-talk owns the ring (CUM-456): advance its cue - the processing comet /
+    // offline breathe on a panel-ring board (LED patterns animate themselves).
+    voiceRingTick(now);
+  } else if (!otaupd::installing() && !g_ledOverrideActive &&
              !g_lightsOff) {
     // Active-posture ring animation (birth/ripple/collapse) needs a fresh frame
     // even between job-state edges - cheap + self-rate-limited (~30 FPS, no-op

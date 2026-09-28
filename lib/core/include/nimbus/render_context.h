@@ -69,6 +69,16 @@ struct ScreenCtx {
   std::vector<RingLed> ringLeds;
   bool micHeld = false;   // hold-to-talk is being pressed -> draw the button pressed
 
+  // Hold-to-talk status (CUM-456): the voice flow's line (nimbus::voice::Flow).
+  // A non-empty voiceTitle draws it on the home screen in place of the idle legend -
+  // inside the on-screen ring (ringless boards) or in the mic bar (ring boards) - so
+  // the listening / processing / outcome state is on the same screen the owner is
+  // holding. Empty by default, so every existing render stays byte-identical.
+  std::string voiceTitle;              // "Listening" / "Transcribing" / "No network" ...
+  std::string voiceDetail;             // "Release to send." / "You: <heard>" / the next step
+  uint8_t voiceTone = 0;               // 0 accent (listening, processing), 1 alert, 2 calm
+  bool micBusy = false;                // processing: the mic control draws inactive
+
   // SessionDetail (Orchestrator cursor focus). The Orchestrator itself is
   // ALWAYS focus index 0 (sessionIsRoot) - the head agent you're always talking to
   // - so this screen never shows "nothing"; sub-sessions are focus indices 1..N.

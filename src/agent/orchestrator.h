@@ -88,6 +88,18 @@ nimbus::orch::TokenUsage lastTurnUsage();
 nimbus::orch::TokenUsage sessionUsage();   // running sum of billed tokens since boot
 uint32_t                 turnCount();      // non-empty turns since boot
 
+// Hold-to-talk message lifecycle (CUM-456): how many on-device voice messages
+// (chatId "voice") handleMessage() has FINISHED since boot - every exit path: a
+// turn that answered or failed, an honest early refusal, a command - and whether
+// the latest one's turn answered. handleMessage runs one message at a time in
+// arrival order, so the panel knows its OWN message is done when the count reaches
+// (count at send) + 1: not on the first delivered text (a mid-turn fallback notice,
+// or a sub-agent result that happens to land), and not on a synthesis turn on the
+// same chat (those never pass through handleMessage). Written on the turn task,
+// read on the main loop (atomics; the reply is delivered BEFORE the count moves).
+// Either out-param may be null.
+void voiceMessages(uint32_t* handled, bool* lastOk);
+
 // Run a Local Loops scheduled turn synchronously (mirrors the auto-synthesis
 // turn). Fires on the tg_poll task; returns real usage + the delivered reply.
 // loopId (optional, additive) feeds the ledger's spend-attribution tag

@@ -62,5 +62,10 @@ VoiceRouteInfo voiceRouteFor(const std::string& effectiveProvider, VoiceKind kin
 // happened then the one next step. Pure + host-tested.
 std::string voiceRefusalStatus(const std::string& code);
 
+// True when `code` is one of the contract's refusal codes above (so it has its own
+// named line). Anything else - a provider's own error body, e.g. a rejected key - is
+// shown to the owner as its plain HTTP status instead (CUM-456).
+bool voiceRefusalKnown(const std::string& code);
+
 }  // namespace orch
 }  // namespace nimbus

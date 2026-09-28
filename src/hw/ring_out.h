@@ -32,10 +32,15 @@ const solide::ring::RGB* currentRingFrame();
 int currentRingCount();
 
 // Overwrite the composited ring frame with a solid color (every LED = r,g,b) so
-// the panel mirror (currentRingFrame) shows it at once. For the hold-to-talk
-// LISTENING cue on a panel-ring board: recordToFile blocks the loop, so the
-// animator can't paint a live breathe - a steady lit ring is the honest cue.
+// the panel mirror (currentRingFrame) shows it at once - e.g. dark for lights-off,
+// or to drop the voice cue frame under an LED override on a panel-ring board.
 void paintRingSolid(uint8_t r, uint8_t g, uint8_t b);
+
+// Overwrite the composited ring frame with `n` colors (clamped to the ring size) so
+// the panel mirror shows them at once. The hold-to-talk cue frames (listening,
+// the processing comet, an error outcome) on a panel-ring board (CUM-456); the
+// loop advances the frame while the voice flow owns the ring.
+void paintRingFrame(const solide::ring::RGB* frame, int n);
 
 // Advance the Active-posture Animator and push a fresh frame when it's time
 // (rate-limited internally to ~30 FPS - this call is cheap to make every main

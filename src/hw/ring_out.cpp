@@ -242,4 +242,10 @@ void paintRingSolid(uint8_t r, uint8_t g, uint8_t b) {
   for (auto& px : g_animBuf) px = solide::ring::RGB{r, g, b};
 }
 
+void paintRingFrame(const solide::ring::RGB* frame, int n) {
+  if (!frame) return;
+  const int m = n < NIMBUS_RING_LEDS ? n : NIMBUS_RING_LEDS;
+  for (int i = 0; i < m; ++i) g_animBuf[i] = frame[i];
+}
+
 }  // namespace nimbus::hw
