@@ -63,8 +63,8 @@ And smaller, transient feedback:
 |---|---|
 | Cursor moves (menu navigation) | soft **trailing comet** follows the cursor LED, decays after the dwell |
 | Config saved (menu or web change persisted) | a single white **blip travels once around** the ring - "saved" |
-| Voice: listening / processing / speaking | breathe in the theme color (in) / sweeping spinner from release until the reply lands (thinking) / solid (out). Processing starts on release, before any network call |
-| Voice outcome: no network / error | the theme's alert color, breathing for no network, steady for any other failure, for a few seconds (a tap clears it). "Didn't catch that" shows no alert |
+| Voice: listening / processing / speaking | breathe in the theme color (in; the all-in-one's on-screen ring holds steady) / sweeping spinner from release until the reply lands (thinking) / solid (out). Processing starts on release, before any network call |
+| Voice outcome: no network / error | the theme's alert color, breathing for no network, steady for any other failure, for 15 seconds (a tap clears it sooner). "Didn't catch that" shows no alert |
 | Low battery (first warning) | a slow **red breathe** overlaid under everything else |
 
 ## How the ring level changes the language

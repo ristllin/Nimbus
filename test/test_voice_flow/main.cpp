@@ -238,7 +238,11 @@ static void test_empty_transcript_only_from_a_reachable_provider() {
 
 static void test_transport_error_mapping() {
   int http = -1;
-  TEST_ASSERT_EQUAL(int(SttResult::Kind::NoNetwork), int(sttKindForError("connect failed", &http)));
+  TEST_ASSERT_EQUAL(int(SttResult::Kind::NoNetwork), int(sttKindForError(kErrConnectFailed, &http)));
+  // The uploader's wire words (shared constants: producer and classifier agree).
+  TEST_ASSERT_EQUAL_STRING("connect failed", kErrConnectFailed);
+  TEST_ASSERT_EQUAL_STRING("tls arbiter busy", kErrSlotBusy);
+  TEST_ASSERT_EQUAL_STRING("file open failed", kErrFileOpen);
   TEST_ASSERT_EQUAL(0, http);
   TEST_ASSERT_EQUAL(int(SttResult::Kind::Busy), int(sttKindForError("tls arbiter busy", &http)));
   TEST_ASSERT_EQUAL(int(SttResult::Kind::NoAudio), int(sttKindForError("file open failed", &http)));
@@ -388,7 +392,7 @@ static void test_happy_path_is_exactly_four_transitions() {
   TEST_ASSERT_TRUE(f.transcribed("hi", 2500));
   // A storm of ticks while the turn runs changes nothing.
   for (uint32_t t = 2500; t < 2500 + 50000; t += 33) TEST_ASSERT_FALSE(f.tick(true, t));
-  TEST_ASSERT_FALSE(f.replyLanded(true, 52000));   // reply mid-turn: keep processing
+  f.replyLanded(52000);   // a reply mid-turn: processing continues until the turn ends
   TEST_ASSERT_EQUAL(int(Phase::Thinking), int(f.phase()));
   TEST_ASSERT_TRUE(f.turnEnded(true, 52010));
   TEST_ASSERT_EQUAL(int(Phase::Idle), int(f.phase()));
@@ -397,7 +401,7 @@ static void test_happy_path_is_exactly_four_transitions() {
   TEST_ASSERT_FALSE(f.release(52100));
   TEST_ASSERT_FALSE(f.transcribed("late", 52100));
   TEST_ASSERT_FALSE(f.turnEnded(false, 52100));
-  TEST_ASSERT_FALSE(f.replyLanded(false, 52100));
+  f.replyLanded(52100);   // a late reply after the end: no-op
   TEST_ASSERT_FALSE(f.dismiss(52100));
   for (uint32_t t = 52100; t < 300000; t += 500) TEST_ASSERT_FALSE(f.tick(false, t));
   TEST_ASSERT_EQUAL(4u, f.transitions());
@@ -469,7 +473,7 @@ static void test_thinking_backstops() {
   h.release(0);
   h.transcribed("x", 0);
   TEST_ASSERT_FALSE(h.tick(true, 20000));
-  TEST_ASSERT_FALSE(h.replyLanded(true, 21000));
+  h.replyLanded(21000);
   TEST_ASSERT_TRUE(h.tick(false, 21000 + kQuietMs));
   TEST_ASSERT_EQUAL(int(Phase::Idle), int(h.phase()));
   TEST_ASSERT_EQUAL(int(Outcome::None), int(h.outcome()));
@@ -483,14 +487,17 @@ static void test_turn_end_and_reply_outcomes() {
   TEST_ASSERT_TRUE(f.turnEnded(false, 10));
   TEST_ASSERT_EQUAL(int(Outcome::TurnError), int(f.outcome()));
   TEST_ASSERT_EQUAL(int(Cue::Alert), int(f.cue()));
-  // A reply that lands with no turn running ends processing (an early honest reply).
+  // A reply on its own never ends processing (a stray sub-agent result or a mid-turn
+  // notice is not the answer): only the message's own end does.
   Flow g;
   g.press(0);
   g.release(0);
   g.transcribed("x", 0);
-  TEST_ASSERT_TRUE(g.replyLanded(false, 10));
+  g.replyLanded(10);
+  TEST_ASSERT_EQUAL(int(Phase::Thinking), int(g.phase()));
+  TEST_ASSERT_TRUE(g.replyShown());
+  TEST_ASSERT_TRUE(g.turnEnded(true, 20));
   TEST_ASSERT_EQUAL(int(Phase::Idle), int(g.phase()));
-  TEST_ASSERT_EQUAL(int(Outcome::None), int(g.outcome()));
 }
 
 // Fuzz the event stream: every transition must follow an allowed edge, Recording
@@ -519,7 +526,7 @@ static bool randomEvent(Flow& f, Lcg& rnd, uint32_t now, uint32_t& presses) {
     case 1: return f.release(now);
     case 2: return f.transcribed("x", now);
     case 3: return f.fail(Outcome(1 + rnd.next() % (kOutcomeCount - 1)), lineFor(Outcome::Busy), now);
-    case 4: return f.replyLanded(flag, now);
+    case 4: f.replyLanded(now); return false;
     case 5: return f.turnEnded(flag, now);
     case 6: return f.tick(flag, now);
     case 7: return f.dismiss(now);
@@ -650,11 +657,17 @@ static void test_flow_cue_per_phase() {
 static void test_named_refusals_and_names() {
   for (const char* c : {"funding_cap_reached", "rate_limited", "audio_duration_unknown",
                         "unsupported_media_type"})
-    TEST_ASSERT_TRUE_MESSAGE(namedRefusal(c), c);
+    TEST_ASSERT_TRUE_MESSAGE(nimbus::orch::voiceRefusalKnown(c), c);
   // A provider's own error code (a rejected key) is NOT a named refusal: it is shown
   // as its HTTP status, never reworded as "unavailable".
   for (const char* c : {"", "invalid_api_key", "Unauthorized", "rate_limit_exceeded"})
-    TEST_ASSERT_FALSE_MESSAGE(namedRefusal(c), c);
+    TEST_ASSERT_FALSE_MESSAGE(nimbus::orch::voiceRefusalKnown(c), c);
+  // Known <=> it has its own line: one table backs both, so they cannot drift.
+  const std::string generic = nimbus::orch::voiceRefusalStatus("");
+  for (const char* c : {"funding_cap_reached", "rate_limited", "audio_duration_unknown",
+                        "unsupported_media_type", "x", ""})
+    TEST_ASSERT_EQUAL(nimbus::orch::voiceRefusalKnown(c),
+                      nimbus::orch::voiceRefusalStatus(c) != generic);
   TEST_ASSERT_EQUAL_STRING("transcribing", phaseName(Phase::Transcribing));
   TEST_ASSERT_EQUAL_STRING("notice", phaseName(Phase::Notice));
   TEST_ASSERT_EQUAL_STRING("no_network", outcomeName(Outcome::NoNetwork));
@@ -670,7 +683,6 @@ static void test_blocked_lines_are_pinned() {
                            blockedLine(Block::Updating).c_str());
   TEST_ASSERT_EQUAL_STRING("Voice needs a speech-to-text key. Set one in the web app.",
                            blockedLine(Block::NoKey).c_str());
-  TEST_ASSERT_EQUAL_STRING(blockedLine(Block::NoKey).c_str(), noKeyLine().c_str());
   for (Block b : {Block::Updating, Block::NoKey}) {
     const std::string l = blockedLine(b);
     TEST_ASSERT_TRUE(l.find(" - ") == std::string::npos);
@@ -679,25 +691,133 @@ static void test_blocked_lines_are_pinned() {
   // A keyless refusal reads through the SttRefused line, never as no-speech.
   SttResult r;
   r.kind = SttResult::Kind::Refused;
-  r.refusal = noKeyLine();
+  r.refusal = blockedLine(Block::NoKey);
   TEST_ASSERT_EQUAL(int(Outcome::SttRefused), int(classify(r)));
   assertCopy(lineFor(Outcome::SttRefused, r));
 }
 
 static void test_tone_per_phase_and_outcome() {
   Flow f;
-  TEST_ASSERT_EQUAL(0, f.tone());
+  TEST_ASSERT_EQUAL(int(Tone::Accent), int(f.tone()));
   f.press(0);
-  TEST_ASSERT_EQUAL(0, f.tone());
+  TEST_ASSERT_EQUAL(int(Tone::Accent), int(f.tone()));
   f.release(0);
-  TEST_ASSERT_EQUAL(0, f.tone());
+  TEST_ASSERT_EQUAL(int(Tone::Accent), int(f.tone()));
   f.fail(Outcome::NoNetwork, lineFor(Outcome::NoNetwork), 0);
-  TEST_ASSERT_EQUAL(1, f.tone());
+  TEST_ASSERT_EQUAL(int(Tone::Alert), int(f.tone()));
   Flow g;
   g.press(0);
   g.release(0);
   g.fail(Outcome::EmptyTranscript, lineFor(Outcome::EmptyTranscript), 0);
-  TEST_ASSERT_EQUAL(2, g.tone());
+  TEST_ASSERT_EQUAL(int(Tone::Calm), int(g.tone()));
+}
+
+// The LED look per cue, and its agreement with the panel frame's COLOR: every
+// alert cue is the alert color on both, every accent cue the accent on both.
+static void test_led_cue_matches_the_panel_color() {
+  const RGB accent{240, 120, 40}, alert{240, 40, 60};
+  for (Cue c : {Cue::None, Cue::Listening, Cue::Processing, Cue::Alert, Cue::Offline}) {
+    const LedCue l = ledCueFor(c);
+    TEST_ASSERT_EQUAL(c == Cue::None, l.motion == LedMotion::Off);
+    TEST_ASSERT_EQUAL(c == Cue::Alert || c == Cue::Offline, l.alert);
+    if (c == Cue::None) continue;
+    RGB frame[45];
+    cueFrame(c, kOfflineBreatheMs / 2, accent, alert, frame, 45);
+    const RGB want = l.alert ? alert : accent;
+    const int b = brightest(frame, 45);
+    TEST_ASSERT_EQUAL(want.r, frame[b].r);
+    TEST_ASSERT_EQUAL(want.g, frame[b].g);
+  }
+  TEST_ASSERT_EQUAL(int(LedMotion::Pulse), int(ledCueFor(Cue::Listening).motion));
+  TEST_ASSERT_EQUAL(int(LedMotion::Spinner), int(ledCueFor(Cue::Processing).motion));
+  TEST_ASSERT_EQUAL(int(LedMotion::Solid), int(ledCueFor(Cue::Alert).motion));
+  TEST_ASSERT_EQUAL(int(LedMotion::Pulse), int(ledCueFor(Cue::Offline).motion));
+}
+
+// The device loop's pass (Flow::step), the ONLINE path end to end on the host:
+// transcript sent -> processing held while the turn runs -> ends on the turn's own
+// end, with every ordering of reply and end the two tasks can produce.
+static Flow thinkingFlow() {
+  Flow f;
+  f.press(0);
+  f.release(1000);
+  f.transcribed("what time is it", 2000);
+  return f;
+}
+
+static void test_step_online_reply_then_end() {
+  Flow f = thinkingFlow();
+  Flow::TurnSignals s;
+  s.turnInFlight = true;
+  for (uint32_t t = 2000; t < 20000; t += 33) TEST_ASSERT_FALSE(f.step(s, t));
+  s.replyLanded = true;   // a mid-turn delivery (e.g. a fallback notice)
+  TEST_ASSERT_FALSE(f.step(s, 20000));
+  TEST_ASSERT_EQUAL(int(Phase::Thinking), int(f.phase()));
+  s.replyLanded = false;
+  s.turnInFlight = false;
+  s.turnEnded = true;
+  s.turnOk = true;
+  TEST_ASSERT_TRUE(f.step(s, 21000));
+  TEST_ASSERT_EQUAL(int(Phase::Idle), int(f.phase()));
+  TEST_ASSERT_EQUAL(4u, f.transitions());
+  s.turnEnded = false;   // later passes: nothing moves
+  for (uint32_t t = 21000; t < 400000; t += 1000) TEST_ASSERT_FALSE(f.step(s, t));
+  TEST_ASSERT_EQUAL(4u, f.transitions());
+}
+
+static void test_step_reply_and_end_in_one_pass() {
+  Flow f = thinkingFlow();
+  Flow::TurnSignals s;
+  s.replyLanded = true;
+  s.turnEnded = true;
+  s.turnOk = true;
+  TEST_ASSERT_TRUE(f.step(s, 5000));
+  TEST_ASSERT_EQUAL(int(Phase::Idle), int(f.phase()));
+  TEST_ASSERT_EQUAL(int(Outcome::None), int(f.outcome()));
+  Flow g = thinkingFlow();
+  s.turnOk = false;   // the engine's honest failure reply + a failed end
+  TEST_ASSERT_TRUE(g.step(s, 5000));
+  TEST_ASSERT_EQUAL(int(Outcome::TurnError), int(g.outcome()));
+  TEST_ASSERT_EQUAL(int(Cue::Alert), int(g.cue()));
+}
+
+static void test_step_stray_reply_waits_for_our_message() {
+  // A sub-agent result lands on the voice chat while OUR message is still queued
+  // (no turn running): it is shown, but processing waits for our message.
+  Flow f = thinkingFlow();
+  Flow::TurnSignals s;
+  s.replyLanded = true;
+  TEST_ASSERT_FALSE(f.step(s, 3000));
+  TEST_ASSERT_EQUAL(int(Phase::Thinking), int(f.phase()));
+  // Our message then ends with an honest early refusal ("No AI provider is set up
+  // yet", no turn ran): not ok -> the turn-error cue, never a silent idle.
+  s.replyLanded = true;
+  s.turnEnded = true;
+  s.turnOk = false;
+  TEST_ASSERT_TRUE(f.step(s, 3100));
+  TEST_ASSERT_EQUAL(int(Outcome::TurnError), int(f.outcome()));
+}
+
+static void test_step_queued_turn_is_not_no_reply() {
+  // Queued behind another chat's turn for 50 s: still processing, no false alarm.
+  Flow f = thinkingFlow();
+  Flow::TurnSignals s;
+  s.turnInFlight = true;
+  uint32_t lastBusy = 0;
+  for (uint32_t t = 2000; t < 52000; t += 100) {
+    TEST_ASSERT_FALSE(f.step(s, t));
+    lastBusy = t;
+  }
+  TEST_ASSERT_EQUAL(int(Phase::Thinking), int(f.phase()));
+  // It never runs and nothing is in flight: the quiet backstop, counted from the
+  // last pass a turn was running, fires once.
+  s.turnInFlight = false;
+  TEST_ASSERT_FALSE(f.step(s, lastBusy + kQuietMs - 1));
+  TEST_ASSERT_TRUE(f.step(s, lastBusy + kQuietMs));
+  TEST_ASSERT_EQUAL(int(Outcome::NoReply), int(f.outcome()));
+  TEST_ASSERT_FALSE(f.step(s, lastBusy + kQuietMs + 1));
+  TEST_ASSERT_TRUE(f.step(s, lastBusy + kQuietMs + kNoticeHoldMs));
+  TEST_ASSERT_EQUAL(int(Phase::Idle), int(f.phase()));
 }
 
 int main() {
@@ -728,5 +848,10 @@ int main() {
   RUN_TEST(test_named_refusals_and_names);
   RUN_TEST(test_tone_per_phase_and_outcome);
   RUN_TEST(test_blocked_lines_are_pinned);
+  RUN_TEST(test_led_cue_matches_the_panel_color);
+  RUN_TEST(test_step_online_reply_then_end);
+  RUN_TEST(test_step_reply_and_end_in_one_pass);
+  RUN_TEST(test_step_stray_reply_waits_for_our_message);
+  RUN_TEST(test_step_queued_turn_is_not_no_reply);
   return UNITY_END();
 }

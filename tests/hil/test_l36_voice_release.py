@@ -44,7 +44,7 @@ RELEASE_TO_PROCESSING_MS = 200
 # Mic target per board (320x240 landscape). The all-in-one draws a tall mic button
 # right of the on-screen ring; a ring board draws a full-width "Hold to talk" bar.
 MIC_XY = {"freenove_s3": (272, 140), "solide_s3": (160, 206)}
-DEAD_SPACE_XY = (110, 60)  # header strip left of the gear: taps nothing
+DEAD_SPACE_XY = (110, 20)  # header strip (44 px tall), left of the gear: taps nothing
 
 
 def parse_voice_state(raw: str) -> dict:
@@ -72,15 +72,20 @@ def parse_voice_state(raw: str) -> dict:
 
 
 def _board(device) -> str:
+    """The board slug from STATUS; LOUD if unknown (a wrong mic coordinate would
+    silently hold dead space and read as a firmware failure)."""
     raw = device.cmd("STATUS", "STATUS ", timeout=4.0)
     m = re.search(r"board=(\S+)", raw)
-    return m.group(1) if m else "freenove_s3"
+    board = m.group(1) if m else ""
+    if board not in MIC_XY:
+        pytest.fail(f"unknown board {board!r} in STATUS - add its mic coordinate to MIC_XY")
+    return board
 
 
 def _hold_and_release(device, board: str) -> dict:
     """Press-hold the mic and let the watcher release it; return VOICE? after the
     release path finished. Always lifts the injected finger."""
-    x, y = MIC_XY.get(board, MIC_XY["freenove_s3"])
+    x, y = MIC_XY[board]
     try:
         device.tap(x, y, hold=True)
         device.expect("VOICE: release path done", timeout=90.0)
@@ -144,8 +149,9 @@ def test_voice_flow_looks_right(device, require_manual, voice_ready):
         "HOLD-TO-TALK (owner leg):\n"
         "  1. Hold the mic, say 'what time is it', release.\n"
         "     Confirm: 'Listening' while held; the instant you let go the ring becomes a\n"
-        "     sweeping spinner with 'Transcribing', then 'Thinking' and what it heard;\n"
-        "     the mic reads 'wait'; the reply appears and the ring returns to normal.\n"
+        "     spinner with 'Transcribing' (on the all-in-one it holds still while the\n"
+        "     recording uploads), then 'Thinking' and what it heard with the spinner\n"
+        "     sweeping; the reply appears and the ring returns to normal.\n"
         "  2. Turn Wi-Fi off (or leave its range), hold + release again.\n"
         "     Confirm: within a blink 'No network / Check Wi-Fi and try again.' and a\n"
         "     breathing alert ring; a tap clears it.\n"

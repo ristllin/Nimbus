@@ -105,9 +105,10 @@ static LittleFsMemoryStore   g_memStore;
 static LittleFsFoldStoreIO      g_foldIO;
 static nimbus::orch::FoldStore  g_folds;
 static char g_lastTurnChat[32]  = {};   // the chat compactTick() watches
-// Hold-to-talk turn completion (CUM-456) - see voiceTurnSeq() in the header.
-static std::atomic<uint32_t> s_voiceTurnSeq{0};
-static std::atomic<bool>     s_voiceTurnOk{false};
+// Hold-to-talk message lifecycle (CUM-456) - see voiceMessages() in the header.
+static std::atomic<uint32_t> s_voiceHandled{0};
+static std::atomic<bool>     s_voiceOk{false};
+static bool                  s_inVoiceMessage = false;   // tg_poll only
 // Glass Box turn identity: "turn:<user row id>" - stamped on every trace row and
 // on the turn's assistant reply rows, so the chat UI groups a bubble with its
 // trace by ID instead of chronological adjacency (adjacency mis-bucketed rows
@@ -1090,12 +1091,11 @@ static TurnEngine::Deps buildTurnDeps() {
   // real billed tokens + tool-call count. onSpawn/onResult stay UNWIRED here on
   // purpose - sfx + the ring already cover those via the event/fire sinks.
   d.hooks.onTurnEnd = [](const TurnEndEv& ev) {
-    // Hold-to-talk completion edge (CUM-456): ok first, then the counter (release),
-    // so the main loop never pairs a new edge with a stale result.
-    if (ev.chatId == "voice") {
-      s_voiceTurnOk.store(ev.ok, std::memory_order_relaxed);
-      s_voiceTurnSeq.fetch_add(1, std::memory_order_release);
-    }
+    // Hold-to-talk (CUM-456): the voice message's own turn answered? A salvaged
+    // reply (parse failed, text recovered) still answered the owner; the honest
+    // failure paths deliver their own line and pass 0 bytes.
+    if (s_inVoiceMessage && ev.chatId == "voice")
+      s_voiceOk.store(ev.ok || ev.replyBytes > 0, std::memory_order_relaxed);
     // Prism B: the in-flight-user-row id must not outlive its turn - a stale id
     // matching the chat's newest row made SYNTHESIS/loop turns silently drop the
     // owner's real last message from the RECENT CONVERSATION window (exactly the
@@ -1379,6 +1379,20 @@ static String (*g_otaInstallHook)() = nullptr;
 void setOtaInstallHook(String (*fn)()) { g_otaInstallHook = fn; }
 
 void handleMessage(const String& text, const String& fromName, const String& chatId) {
+  // Hold-to-talk (CUM-456): count an on-device voice message as finished on EVERY
+  // exit path below (turn, early refusal, command), after its reply was delivered.
+  struct VoiceDone {
+    bool on;
+    ~VoiceDone() {
+      if (!on) return;
+      s_inVoiceMessage = false;
+      s_voiceHandled.fetch_add(1, std::memory_order_release);
+    }
+  } voiceDone{chatId == "voice"};
+  if (voiceDone.on) {
+    s_voiceOk.store(false, std::memory_order_relaxed);   // until its turn answers
+    s_inVoiceMessage = true;
+  }
   clearAsk();     // the owner responded -> resolve any pending "needs you" ask
   drainStaged();  // apply web-staged directive/memory edits before the turn
 
@@ -2314,15 +2328,18 @@ void stageTerminate(const std::string& id) {
 // Phase 0 token seam: the real provider token usage of the most recently
 // completed turn. Local Loops reads this right after injectScheduledTurn() to
 // meter true billed spend against its per-loop + daily cost caps.
-uint32_t voiceTurnSeq(bool* lastOk) {
-  const uint32_t seq = s_voiceTurnSeq.load(std::memory_order_acquire);
-  if (lastOk) *lastOk = s_voiceTurnOk.load(std::memory_order_relaxed);
-  return seq;
-}
-
 nimbus::orch::TokenUsage lastTurnUsage() {
   return g_engine ? g_engine->lastTurnUsage() : nimbus::orch::TokenUsage{};
 }
+
+// Hold-to-talk (CUM-456): the count is read first (acquire), so a reader that sees
+// a finished message also sees its ok.
+void voiceMessages(uint32_t* handled, bool* lastOk) {
+  const uint32_t n = s_voiceHandled.load(std::memory_order_acquire);
+  if (handled) *handled = n;
+  if (lastOk) *lastOk = s_voiceOk.load(std::memory_order_relaxed);
+}
+
 nimbus::orch::TokenUsage sessionUsage() {
   return g_engine ? g_engine->sessionUsage() : nimbus::orch::TokenUsage{};
 }

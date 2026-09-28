@@ -1,7 +1,7 @@
 #pragma once
 #include <Arduino.h>
 
-#include "nimbus/voice_flow.h"   // SttResult (CUM-456)
+#include "nimbus/stt_result.h"   // SttResult (CUM-456)
 
 // audio_stt - speech-to-text via a provider transcription endpoint (OpenAI
 // /v1/audio/transcriptions, model gpt-4o-mini-transcribe). Uploads an audio file

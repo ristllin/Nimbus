@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "nimbus/sfx_map.h"
+#include "nimbus/stt_result.h"   // SttResult + the transport error vocabulary
 #include "solide/ring.h"
 
 // voice_flow - the portable hold-to-talk state machine and its error taxonomy
@@ -45,28 +46,28 @@ enum class Outcome : uint8_t {
   NoReply,          // nothing came back within the wait window
 };
 constexpr int kOutcomeCount = 10;
+static_assert(int(Outcome::NoReply) + 1 == kOutcomeCount,
+              "kOutcomeCount must track the Outcome enum (the property tests iterate it)");
 
 // The ring cue a phase/outcome shows. Listening and Processing use the theme
 // accent; Alert and Offline use the theme's alert color; None hands the ring back
 // to the normal status composition.
 enum class Cue : uint8_t { None = 0, Listening, Processing, Alert, Offline };
 
-// What the device's speech-to-text call came back with (built by the device seam
-// from the transport result; host tests build it directly).
-struct SttResult {
-  enum class Kind : uint8_t { Ok = 0, NoNetwork, Http, Refused, BadReply, Busy, NoAudio };
-  Kind kind = Kind::Ok;
-  int http = 0;             // Http: the status code (0 = no answer before the deadline)
-  std::string provider;     // effective provider slug: "mistral" | "openai" | "cumulo"
-  std::string refusal;      // Refused: the honest one-line refusal status
-  std::string text;         // Ok: the transcript (may be empty)
+// How a cue drives an LED ring (a self-animating driver pattern: the loop is
+// blocked through recording and speech-to-text, so only the driver can keep an LED
+// ring moving) - in the theme accent, or the theme alert color. The on-screen ring
+// of a ringless board draws cueFrame() instead: the same colors, but its listening
+// frame is STEADY (it is painted once, then the loop blocks while recording).
+enum class LedMotion : uint8_t { Off = 0, Solid, Pulse, Spinner };
+struct LedCue {
+  LedMotion motion = LedMotion::Off;
+  bool alert = false;   // alert color (else the theme accent)
 };
+LedCue ledCueFor(Cue c);
 
-// Map the multipart transport's error string (agent::httpmp::post `err`) to a
-// result kind. `httpOut` receives the status for "HTTP <n>" (0 otherwise).
-// "connect failed" -> NoNetwork, "tls arbiter busy" -> Busy, "file open failed"
-// -> NoAudio, "HTTP <n>" -> Http; anything else -> Http with status 0.
-SttResult::Kind sttKindForError(const std::string& err, int* httpOut);
+// Status-line color tone.
+enum class Tone : uint8_t { Accent = 0, Alert = 1, Calm = 2 };
 
 // The outcome a speech-to-text result leads to: None for a usable transcript.
 Outcome classify(const SttResult& r);
@@ -83,10 +84,9 @@ constexpr size_t kDetailMaxLines = 4;
 
 // Why a hold could not start at all (shown before recording, on the reply screen).
 enum class Block : uint8_t { Updating, NoKey };
+// NoKey is also the refusal line the speech-to-text adapter reports for a keyless
+// device, so the two paths cannot disagree.
 std::string blockedLine(Block b);
-// The refusal line for a device with no speech-to-text key (the same next step
-// blockedLine(NoKey) gives, so the two paths cannot disagree).
-std::string noKeyLine();
 
 Line lineFor(Outcome o, const SttResult& r);
 Line lineFor(Outcome o);                  // outcomes that carry no transport detail
@@ -97,11 +97,6 @@ Cue cueFor(Outcome o);
 bool sfxFor(Outcome o, sfx::Ev& out);
 // "Mistral" / "OpenAI" / "Cumulo" for a provider slug ("Speech-to-text" if unknown).
 std::string providerName(const std::string& slug);
-// A router refusal code the owner can be told about by name (the CUM-376 route
-// contract: credit, rate limit, unreadable or unsupported audio). Any other error
-// body is shown as its plain HTTP status, so a rejected key is never reworded as a
-// vague "unavailable".
-bool namedRefusal(const std::string& code);
 // Stable lowercase names for serial / log seams ("transcribing", "no_network").
 const char* phaseName(Phase p);
 const char* outcomeName(Outcome o);
@@ -118,12 +113,14 @@ constexpr uint32_t kOfflineBreatheMs = 2000;
 void cueFrame(Cue c, uint32_t elapsedMs, solide::ring::RGB accent, solide::ring::RGB alert,
               solide::ring::RGB* out, int n);
 
-// Timing. A Notice holds this long (or until a touch). Thinking ends on the
-// turn's own end; these are the backstops: no turn running for kQuietMs (the turn
-// never started, or ended without a record), or kMaxThinkMs overall.
+// Timing. A Notice holds this long (or until a touch). Thinking ends when the
+// device reports the voice message finished; these are the backstops: no turn
+// running for kQuietMs (the message was lost), or kMaxThinkMs overall - the
+// engine's longest loop deadline (3600 s, owner-tunable) plus its stuck-turn
+// reaper margin (120 s), so a healthy long turn is never called "No reply".
 constexpr uint32_t kNoticeHoldMs = 15000;
 constexpr uint32_t kQuietMs = 60000;
-constexpr uint32_t kMaxThinkMs = 180000;
+constexpr uint32_t kMaxThinkMs = (3600 + 120) * 1000;
 
 class Flow {
  public:
@@ -134,12 +131,27 @@ class Flow {
   bool release(uint32_t now);                                // Recording -> Transcribing
   bool transcribed(const std::string& heard, uint32_t now);  // Transcribing -> Thinking
   bool fail(Outcome o, const Line& line, uint32_t now);      // Transcribing|Thinking -> Notice
-  // A reply for the voice chat landed. While the turn is still running the flow
-  // keeps processing (a fallback notice is not the answer); otherwise it ends.
-  bool replyLanded(bool turnInFlight, uint32_t now);
+  // A reply for the voice chat was shown. It never ends processing by itself - a
+  // mid-turn fallback notice or a stray sub-agent result is not the answer - it
+  // only lets a backstop end quietly (the answer is on screen) instead of saying
+  // "No reply".
+  void replyLanded(uint32_t now);
   bool turnEnded(bool ok, uint32_t now);                     // Thinking -> Idle | Notice
   bool tick(bool turnInFlight, uint32_t now);                // backstops + Notice expiry
   bool dismiss(uint32_t now);                                // Notice -> Idle
+
+  // What the device's loop saw this pass while a turn may be running (the order of
+  // the reads matters on the device: turnInFlight BEFORE the end counter, because
+  // the engine bumps the counter before it clears in-flight).
+  struct TurnSignals {
+    bool turnInFlight = false;   // a turn is running now
+    bool turnEnded = false;      // the device finished OUR voice message
+    bool turnOk = false;         // ... and its turn answered
+    bool replyLanded = false;    // a reply for the voice channel was shown this pass
+  };
+  // One loop pass: note a shown reply, end on our message's own end, then the
+  // backstops. Returns true when the phase changed.
+  bool step(const TurnSignals& s, uint32_t now);
 
   Phase phase() const { return phase_; }
   Outcome outcome() const { return outcome_; }
@@ -148,9 +160,9 @@ class Flow {
   bool canPress() const { return phase_ == Phase::Idle || phase_ == Phase::Notice; }
   bool busy() const { return phase_ == Phase::Transcribing || phase_ == Phase::Thinking; }
   bool replyShown() const { return replyShown_; }
-  // Colour tone for the status line: 0 accent (listening / processing), 1 alert
-  // (a failed outcome), 2 calm (an outcome that is not a failure).
-  uint8_t tone() const;
+  // Color tone for the status line: accent while listening / processing, alert
+  // for a failed outcome, calm for an outcome that is not a failure.
+  Tone tone() const;
   uint32_t since() const { return since_; }
   uint32_t transitions() const { return transitions_; }
   // The status line for the current phase ("Listening", "Transcribing", "Thinking"
@@ -183,8 +195,9 @@ class Port {
 };
 
 // Everything after the mic is released: leave Recording and SHOW processing, then
-// fail fast with no link, then transcribe, then send the turn. Returns the outcome
-// (None = the turn was sent and the flow is Thinking).
+// fail fast with no link, then transcribe, then send the turn. Returns the outcome:
+// None when the turn was sent (the flow is Thinking) - or when the flow was not
+// recording, so there was nothing to run.
 Outcome afterRelease(Flow& f, Port& p);
 
 }  // namespace nimbus::voice

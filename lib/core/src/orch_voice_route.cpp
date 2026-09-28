@@ -56,15 +56,31 @@ VoiceRouteInfo voiceRouteFor(const std::string& effectiveProvider, VoiceKind kin
   return {"", "", "", false, false, /*known=*/false};
 }
 
-std::string voiceRefusalStatus(const std::string& code) {
-  // The device panel and serial are ASCII, sentence case, no em dash, no exclamation:
-  // say what happened, then the one next step.
-  if (code == "funding_cap_reached")    return "Voice is out of credit for now. Try again later.";
-  if (code == "rate_limited")           return "Voice is busy right now. Wait a moment and try again.";
-  if (code == "audio_duration_unknown") return "Could not read that recording. Try again.";
-  if (code == "unsupported_media_type") return "That audio format is not supported.";
-  return "Voice is unavailable right now. Try again soon.";
+namespace {
+// The router refusal contract (CUM-376): code -> the honest one-line status. ONE
+// table backs both voiceRefusalStatus() and voiceRefusalKnown(), so the set of
+// codes the owner is told about by name cannot drift from the lines themselves.
+// ASCII, sentence case, no em dash, no exclamation: what happened, then the step.
+struct Refusal { const char* code; const char* line; };
+constexpr Refusal kRefusals[] = {
+    {"funding_cap_reached",    "Voice is out of credit for now. Try again later."},
+    {"rate_limited",           "Voice is busy right now. Wait a moment and try again."},
+    {"audio_duration_unknown", "Could not read that recording. Try again."},
+    {"unsupported_media_type", "That audio format is not supported."},
+};
+const Refusal* findRefusal(const std::string& code) {
+  for (const Refusal& r : kRefusals)
+    if (code == r.code) return &r;
+  return nullptr;
 }
+}  // namespace
+
+std::string voiceRefusalStatus(const std::string& code) {
+  const Refusal* r = findRefusal(code);
+  return r ? r->line : "Voice is unavailable right now. Try again soon.";
+}
+
+bool voiceRefusalKnown(const std::string& code) { return findRefusal(code) != nullptr; }
 
 }  // namespace orch
 }  // namespace nimbus

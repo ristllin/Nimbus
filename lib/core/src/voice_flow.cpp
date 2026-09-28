@@ -18,9 +18,8 @@ std::string trimmed(const std::string& s) {
 // "<Provider> error" when the provider is known; the title must fit the ring
 // center, so an unknown slug gets the short generic form.
 std::string errorTitle(const std::string& slug) {
-  if (slug == "mistral" || slug == "openai" || slug == "cumulo")
-    return providerName(slug) + " error";
-  return "Voice error";
+  const std::string name = providerName(slug);
+  return name == providerName("") ? std::string("Voice error") : name + " error";
 }
 
 std::string httpDetail(int http) {
@@ -58,10 +57,11 @@ void comet(uint32_t elapsedMs, RGB accent, RGB* out, int n) {
 
 SttResult::Kind sttKindForError(const std::string& err, int* httpOut) {
   if (httpOut) *httpOut = 0;
-  if (err == "connect failed") return SttResult::Kind::NoNetwork;
-  if (err == "tls arbiter busy") return SttResult::Kind::Busy;
-  if (err == "file open failed") return SttResult::Kind::NoAudio;
-  if (err.rfind("HTTP ", 0) == 0 && httpOut) *httpOut = std::atoi(err.c_str() + 5);
+  if (err == kErrConnectFailed) return SttResult::Kind::NoNetwork;
+  if (err == kErrSlotBusy) return SttResult::Kind::Busy;
+  if (err == kErrFileOpen) return SttResult::Kind::NoAudio;
+  const size_t prefix = std::string(kErrHttpPrefix).size();
+  if (err.rfind(kErrHttpPrefix, 0) == 0 && httpOut) *httpOut = std::atoi(err.c_str() + prefix);
   return SttResult::Kind::Http;
 }
 
@@ -84,11 +84,6 @@ std::string providerName(const std::string& slug) {
   if (slug == "openai") return "OpenAI";
   if (slug == "cumulo") return "Cumulo";
   return "Speech-to-text";
-}
-
-bool namedRefusal(const std::string& code) {
-  return code == "funding_cap_reached" || code == "rate_limited" ||
-         code == "audio_duration_unknown" || code == "unsupported_media_type";
 }
 
 const char* phaseName(Phase p) {
@@ -118,14 +113,9 @@ const char* outcomeName(Outcome o) {
   return "unknown";
 }
 
-std::string noKeyLine() { return "Voice needs a speech-to-text key. Set one in the web app."; }
-
 std::string blockedLine(Block b) {
-  switch (b) {
-    case Block::Updating: return "Updating firmware. Try again after the restart.";
-    case Block::NoKey:    return noKeyLine();
-  }
-  return noKeyLine();
+  if (b == Block::Updating) return "Updating firmware. Try again after the restart.";
+  return "Voice needs a speech-to-text key. Set one in the web app.";
 }
 
 Line lineFor(Outcome o, const SttResult& r) {
@@ -167,9 +157,20 @@ Cue cueFor(Outcome o) {
 }
 
 bool sfxFor(Outcome o, sfx::Ev& out) {
-  if (o == Outcome::None || o == Outcome::EmptyTranscript) return false;
+  if (cueFor(o) == Cue::None) return false;   // not a failure: no error sound
   out = sfx::Ev::Error;   // voiced from the Light level up, in both modes
   return true;
+}
+
+LedCue ledCueFor(Cue c) {
+  switch (c) {
+    case Cue::None:       return {LedMotion::Off, false};
+    case Cue::Listening:  return {LedMotion::Pulse, false};
+    case Cue::Processing: return {LedMotion::Spinner, false};
+    case Cue::Alert:      return {LedMotion::Solid, true};
+    case Cue::Offline:    return {LedMotion::Pulse, true};
+  }
+  return {};
 }
 
 namespace {
@@ -248,9 +249,9 @@ Cue Flow::cue() const {
   return Cue::None;
 }
 
-uint8_t Flow::tone() const {
-  if (phase_ != Phase::Notice) return 0;
-  return cueFor(outcome_) == Cue::None ? 2 : 1;
+Tone Flow::tone() const {
+  if (phase_ != Phase::Notice) return Tone::Accent;
+  return cueFor(outcome_) == Cue::None ? Tone::Calm : Tone::Alert;
 }
 
 bool Flow::press(uint32_t now) {
@@ -281,13 +282,10 @@ bool Flow::fail(Outcome o, const Line& line, uint32_t now) {
   return go(Phase::Notice, now);
 }
 
-bool Flow::replyLanded(bool turnInFlight, uint32_t now) {
-  if (phase_ != Phase::Thinking) return false;
+void Flow::replyLanded(uint32_t now) {
+  if (phase_ != Phase::Thinking) return;
   replyShown_ = true;
   lastBusy_ = now;
-  if (turnInFlight) return false;   // still working: a mid-turn notice is not the end
-  outcome_ = Outcome::None;
-  return go(Phase::Idle, now);
 }
 
 bool Flow::turnEnded(bool ok, uint32_t now) {
@@ -316,6 +314,12 @@ bool Flow::tick(bool turnInFlight, uint32_t now) {
   outcome_ = Outcome::NoReply;
   line_ = lineFor(Outcome::NoReply);
   return go(Phase::Notice, now);
+}
+
+bool Flow::step(const TurnSignals& s, uint32_t now) {
+  if (s.replyLanded) replyLanded(now);
+  const bool ended = s.turnEnded && turnEnded(s.turnOk, now);
+  return tick(s.turnInFlight, now) || ended;
 }
 
 bool Flow::dismiss(uint32_t now) {

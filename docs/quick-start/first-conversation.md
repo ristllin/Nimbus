@@ -31,23 +31,26 @@ hold. The ring and the screen always say what is happening:
 
 | State | Ring | Screen |
 |---|---|---|
-| Listening (held) | steady ring in your theme color | "Listening", the mic shows pressed |
-| Processing (released, until the reply lands) | a sweeping spinner in your theme color | "Transcribing", then "Thinking" with what it heard; the mic reads "wait" |
+| Listening (held) | your theme color: the LED ring breathes, the all-in-one's on-screen ring holds steady | "Listening" |
+| Processing (released, until the reply lands) | a spinner in your theme color | "Transcribing", then "Thinking" with what it heard |
 | Reply | back to normal status | the reply, held until you tap Close |
 
 Processing starts the moment you let go, before anything goes over the network.
-The reply also speaks when a voice provider that supports the device speaker is
-configured. On the all-in-one the ring is drawn on the screen; on the Nimbus
-board it is the LED ring and the lines appear in the mic bar.
+On the all-in-one the ring and the lines are on the screen, and the mic button
+shows pressed while you hold and reads "wait" while processing; the on-screen
+spinner holds still while the recording uploads, then sweeps while the assistant
+thinks. On the Nimbus board the LED ring shows the cue and the lines replace the
+"Hold to talk" bar. The reply also speaks when a voice provider that supports the
+device speaker is configured.
 
 If something goes wrong, the screen says what, and the ring turns your theme's
-alert color for a few seconds (tap anywhere to clear it, or hold the mic to try
-again):
+alert color for 15 seconds (tap anywhere to clear it sooner, or hold the mic to
+try again):
 
 | You see | What happened |
 |---|---|
-| **No network**: Check Wi-Fi and try again. | The device is not on Wi-Fi, or the speech-to-text service cannot be reached. Shown at once, without waiting for a timeout. The ring breathes. |
-| **Mistral error** (or OpenAI, Cumulo): the HTTP status | The speech-to-text provider answered with an error. "Key rejected" means the key needs checking in the web app. |
+| **No network**: Check Wi-Fi and try again. | The device is not on Wi-Fi (shown at once, without waiting for a timeout), or it is on Wi-Fi but the speech-to-text service cannot be reached (shown within about 10 seconds). The ring breathes. |
+| **Mistral error** (or OpenAI, Cumulo): the HTTP status | The speech-to-text provider answered with an error, or did not answer in time. "Key rejected" means the key needs checking in the web app. |
 | **Voice unavailable** | The provider refused the request, for example out of credit or rate limited. |
 | **Busy** | Another request was using the connection. Try again in a moment. |
 | **No audio** | The mic recorded nothing. |

@@ -108,7 +108,7 @@ static nimbus::voice::SttResult transcribeCommon(const char* localPath, const ch
   if (prov.key.length() == 0) {
     alogf("stt: no key for provider %s", store::sttProvider().c_str());
     out.kind = Kind::Refused;
-    out.refusal = nimbus::voice::noKeyLine();
+    out.refusal = nimbus::voice::blockedLine(nimbus::voice::Block::NoKey);
     return out;
   }
 
@@ -120,11 +120,13 @@ static nimbus::voice::SttResult transcribeCommon(const char* localPath, const ch
 
   std::vector<httpmp::Field> fields = { {"model", prov.model} };  // Voxtral rejects response_format; text is default
   String resp, err;
+  httpmp::Options opt;   // LittleFS source, no SD lock
+  opt.filePrefix = prefix;
+  opt.filePrefixLen = prefixLen;
+  opt.connectBudgetMs = connectBudgetMs;
   bool ok = httpmp::post(prov.host.c_str(), 443, prov.path,
                          prov.key, fields, "file", fname,
-                         mime && mime[0] ? mime : "audio/ogg", localPath, resp, err,
-                         /*srcFs=*/nullptr, /*lockSrc=*/false, prefix, prefixLen,
-                         connectBudgetMs);
+                         mime && mime[0] ? mime : "audio/ogg", localPath, resp, err, opt);
   STTDIAG("http ok=%d err='%s' respLen=%u resp='%.160s'",
           ok ? 1 : 0, err.c_str(), (unsigned)resp.length(), resp.c_str());
   if (!ok) {
@@ -135,7 +137,7 @@ static nimbus::voice::SttResult transcribeCommon(const char* localPath, const ch
     // so the owner sees what actually failed.
     bool jok = false;
     const std::string code = core::parseErrorCode(resp.c_str(), &jok);
-    if (jok && nimbus::voice::namedRefusal(code)) {
+    if (jok && nimbus::orch::voiceRefusalKnown(code)) {
       out.kind = Kind::Refused;
       out.refusal = nimbus::orch::voiceRefusalStatus(code);
     } else {

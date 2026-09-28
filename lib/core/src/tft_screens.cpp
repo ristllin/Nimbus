@@ -277,13 +277,14 @@ static void ringCenterLine(Fb565& fb, int cx, int y, int inner, const std::strin
 // Hold-to-talk status colour: accent while listening / processing, the error
 // colour for a failed outcome, plain ink for a calm one ("Didn't catch that").
 uint16_t voiceToneColour(uint8_t tone) {
-  return tone == 1 ? kCrit : tone == 2 ? kInk : kTeal;
+  switch (nimbus::voice::Tone(tone)) {
+    case nimbus::voice::Tone::Alert: return kCrit;
+    case nimbus::voice::Tone::Calm:  return kInk;
+    case nimbus::voice::Tone::Accent: break;
+  }
+  return kTeal;
 }
 
-// The voice flow's line inside the on-screen ring (CUM-456): a coloured title over
-// the wrapped detail, centred as a block and clipped to the inner circle. Replaces
-// the idle legend while hold-to-talk is live, so listening, processing and the
-// outcome all read on the screen the owner is holding.
 // How many scale-1 characters fit in `maxW` px (textWidth of n chars is n * advance
 // minus the trailing gap, so measure the advance rather than one glyph).
 size_t charsThatFit(int maxW) {
@@ -291,6 +292,10 @@ size_t charsThatFit(int maxW) {
   return size_t(std::max(1, (maxW + 1) / advance));
 }
 
+// The voice flow's line inside the on-screen ring (CUM-456): a coloured title over
+// the wrapped detail, centred as a block and clipped to the inner circle. Replaces
+// the idle legend while hold-to-talk is live, so listening, processing and the
+// outcome all read on the screen the owner is holding.
 void ringVoiceStatus(Fb565& fb, int cx, int cy, int inner, const ScreenCtx& ctx) {
   const size_t maxChars = charsThatFit(inner);
   const std::vector<std::string> lines =
@@ -355,7 +360,7 @@ static void drawRingHome(Fb565& fb, const Layout& L, Rendered& r, const ScreenCt
   if (showMic) {
     const int bw = micW - L.gut(), bh = std::min(bodyH, 132);
     const int bx = L.w - L.gut() - bw, by = bodyTop + (bodyH - bh) / 2;
-    const bool busy = ctx.micBusy && !ctx.micHeld;
+    const bool busy = ctx.micBusy;   // never held at the same time (held = recording)
     const uint16_t fill = ctx.micHeld ? kInk : busy ? kRaise2 : kTeal;
     const uint16_t ink = busy ? kInk3 : kBg;
     const char* word = busy ? "wait" : "hold";
@@ -364,6 +369,24 @@ static void drawRingHome(Fb565& fb, const Layout& L, Rendered& r, const ScreenCt
     fb.text(bx + (bw - fb.textWidth(word, 1)) / 2, by + bh / 2 + 7, word, ink, 1);
     push(r, bx, by, bw, bh, TapRegion::Action::Mic);
   }
+}
+
+// Hold-to-talk is live on a ring board (CUM-456): the mic bar carries the voice
+// flow's line - the coloured title, then the detail - on a neutral fill, so
+// listening, processing and the outcome read right where the owner holds. Still the
+// Mic target, so a retry after an outcome is a hold on the same spot.
+void drawVoiceBar(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx, int my,
+                  int micH) {
+  const int bw = L.w - 2 * L.gut();
+  const uint16_t tone = voiceToneColour(ctx.voiceTone);
+  fb.fillRoundRect(L.gut(), my, bw, micH, L.cardRadius, kRaise2);
+  fb.roundRect(L.gut(), my, bw, micH, L.cardRadius, tone);
+  const int tx = L.gut() + 12, tw = bw - 24;
+  fb.textClipped(tx, my + 7, ctx.voiceTitle, tone, tw, 1);
+  const std::vector<std::string> lines = nimbus::voice::wrap(ctx.voiceDetail, charsThatFit(tw), 2);
+  for (size_t i = 0; i < lines.size(); ++i)
+    fb.textClipped(tx, my + 19 + int(i) * 11, lines[i], kInk2, tw, 1);
+  push(r, L.gut(), my, bw, micH, TapRegion::Action::Mic);
 }
 
 void drawStatusHome(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx) {
@@ -494,23 +517,7 @@ void drawStatusHome(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ct
   // control on the screen - in Orchestrator mode. See showMic above.
   if (!showMic) return;
   const int my = L.h - L.gut() - micH;
-  if (!ctx.voiceTitle.empty()) {
-    // Hold-to-talk is live (CUM-456): the bar carries the voice flow's line - the
-    // coloured title, then the detail - on a neutral fill, so listening, processing
-    // and the outcome read right where the owner holds. Still the Mic target, so a
-    // retry after an outcome is a hold on the same spot.
-    const int bw = L.w - 2 * L.gut();
-    fb.fillRoundRect(L.gut(), my, bw, micH, L.cardRadius, kRaise2);
-    fb.roundRect(L.gut(), my, bw, micH, L.cardRadius, voiceToneColour(ctx.voiceTone));
-    const int tx = L.gut() + 12, tw = bw - 24;
-    fb.textClipped(tx, my + 7, ctx.voiceTitle, voiceToneColour(ctx.voiceTone), tw, 1);
-    const std::vector<std::string> lines =
-        nimbus::voice::wrap(ctx.voiceDetail, charsThatFit(tw), 2);
-    for (size_t i = 0; i < lines.size(); ++i)
-      fb.textClipped(tx, my + 19 + int(i) * 11, lines[i], kInk2, tw, 1);
-    push(r, L.gut(), my, bw, micH, TapRegion::Action::Mic);
-    return;
-  }
+  if (!ctx.voiceTitle.empty()) { drawVoiceBar(fb, L, r, ctx, my, micH); return; }
   fb.fillRoundRect(L.gut(), my, L.w - 2 * L.gut(), micH, L.cardRadius, kTeal);
   iconMic(fb, L.gut() + 30, my + micH / 2, kBg);
   fb.text(L.gut() + 52, my + (micH - fb.textHeight(2)) / 2, "Hold to talk", kBg, 2);

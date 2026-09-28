@@ -4,11 +4,13 @@
 #include <WiFi.h>              // hostByName - the bounded-connect DNS pre-check
 #include <WiFiClientSecure.h>
 
+#include <algorithm>  // std::min/max - the budgeted handshake cap
 #include <cstdlib>    // atol
 #include <string>
 #include <strings.h>  // strncasecmp
 
 #include "nimbus/audio_req.h"        // core::ByteReader + core::readHttpBody (shared, host-tested)
+#include "nimbus/stt_result.h"       // the error vocabulary the STT classifier reads (CUM-456)
 #include "../../sys/net_util.h"      // tlsClose
 #include "../../sys/tls_arbiter.h"   // single-TLS arena
 #include "../../sys/agent_log.h"
@@ -55,15 +57,18 @@ void writeField(WiFiClientSecure& c, const Field& f) {
 bool post(const char* host, int port, const char* path, const String& bearer,
           const std::vector<Field>& fields, const char* fileField,
           const char* fileName, const char* fileMime, const char* filePath,
-          String& respBody, String& err, fs::FS* srcFs, bool lockSrc,
-          const uint8_t* filePrefix, size_t filePrefixLen, uint32_t connectBudgetMs) {
-  fs::FS& src = srcFs ? *srcFs : LittleFS;   // nullptr = LittleFS (historical default)
+          String& respBody, String& err, const Options& opt) {
+  const bool lockSrc = opt.lockSrc;
+  const uint8_t* filePrefix = opt.filePrefix;
+  const size_t filePrefixLen = opt.filePrefixLen;
+  const uint32_t connectBudgetMs = opt.connectBudgetMs;
+  fs::FS& src = opt.srcFs ? *opt.srcFs : LittleFS;   // nullptr = LittleFS (historical default)
   const bool haveFile = filePath && filePath[0];
   size_t fileSize = 0;
   if (haveFile) {
     SdGuard g(lockSrc);
     File f = src.open(filePath, FILE_READ);
-    if (!f) { err = "file open failed"; return false; }
+    if (!f) { err = nimbus::voice::kErrFileOpen; return false; }
     fileSize = f.size();
     f.close();
   }
@@ -87,15 +92,21 @@ bool post(const char* host, int port, const char* path, const String& bearer,
   // unreachable from here - answer "connect failed" now instead of letting the
   // core connect to an unresolved address and sit out its socket timeout (the
   // offline hold-to-talk measured ~18 s per attempt, x3).
+  // The budget covers the lookup AND the connect (not the TLS-slot wait, which is
+  // "busy", not "unreachable").
+  uint32_t budgetLeft = connectBudgetMs;
   if (connectBudgetMs) {
+    const uint32_t t0 = millis();
     IPAddress ip;
     if (!WiFi.hostByName(host, ip)) {
-      err = "connect failed";
+      err = nimbus::voice::kErrConnectFailed;
       alogf("multipart: resolve %s failed", host);
       return false;
     }
+    const uint32_t spent = millis() - t0;
+    budgetLeft = spent < connectBudgetMs ? connectBudgetMs - spent : 1;
   }
-  if (!arbiter::acquireWork(10000)) { err = "tls arbiter busy"; return false; }
+  if (!arbiter::acquireWork(10000)) { err = nimbus::voice::kErrSlotBusy; return false; }
   WiFiClientSecure c;
   tlsSetup(c);
   c.setHandshakeTimeout(12);
@@ -103,17 +114,24 @@ bool post(const char* host, int port, const char* path, const String& bearer,
   // socket, and ONE wall clock covers connect + upload + response (the STT/voice
   // upload is the speak-path sibling that can wedge tg_poll on a half-open NAT).
   const uint32_t opDeadline = millis() + 60000;   // upload + server transcription + read
-  const uint32_t connectDeadline = connectBudgetMs ? millis() + connectBudgetMs : opDeadline;
-  c.setConnectionTimeout(connectBudgetMs && connectBudgetMs < 45000 ? connectBudgetMs : 45000);
+  const uint32_t connectDeadline = connectBudgetMs ? millis() + budgetLeft : opDeadline;
+  c.setConnectionTimeout(45000);
   bool connected = false;
   for (int a = 0; a < 3 && !connected && (int32_t)(millis() - connectDeadline) < 0; a++) {
+    if (connectBudgetMs) {
+      // Cap this attempt's socket + TLS handshake timeouts at what is left of the
+      // budget, so no attempt can outlast it (handshake in whole seconds, >= 1).
+      const uint32_t left = connectDeadline - millis();
+      c.setConnectionTimeout(left);
+      c.setHandshakeTimeout(std::max<uint32_t>(1, std::min<uint32_t>(12, left / 1000)));
+    }
     if (c.connect(host, port)) { connected = true; break; }
     tlsClose(c);
     if (a < 2) vTaskDelay(pdMS_TO_TICKS(400));
   }
   if (!connected) {
     arbiter::releaseWork();
-    err = "connect failed";
+    err = nimbus::voice::kErrConnectFailed;
     alogf("multipart: connect %s failed heap=%u", host, ESP.getFreeHeap());
     return false;
   }
@@ -220,7 +238,7 @@ bool post(const char* host, int port, const char* path, const String& bearer,
   arbiter::releaseWork();
 
   if (status < 200 || status >= 300) {
-    err = String("HTTP ") + status;
+    err = String(nimbus::voice::kErrHttpPrefix) + status;
     // SECURITY: the Telegram send path is "/bot<token>/sendXxx" - never let the token
     // reach the log ring, which is served (token-gated) at GET /api/log. Redact the
     // /bot<token>/ segment before logging.

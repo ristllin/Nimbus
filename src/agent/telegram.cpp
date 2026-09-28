@@ -1196,9 +1196,11 @@ static void drainMedia() {
   std::vector<httpmp::Field> fields = {{"chat_id", m.chatId}};
   if (m.caption[0]) fields.push_back({"caption", m.caption});
   String resp, err;
+  httpmp::Options opt;
+  opt.srcFs = m.sd ? &agent::memory::dataFs() : nullptr;   // E1: SD artifacts
+  opt.lockSrc = m.sd;                                      // serialize SD reads (tg_poll)
   bool ok = httpmp::post(TG_HOST, TG_PORT, path, "", fields, field, base, mime, m.path, resp, err,
-                         m.sd ? &agent::memory::dataFs() : nullptr,    // E1: SD artifacts
-                         /*lockSrc=*/m.sd);                            // serialize SD reads (tg_poll)
+                         opt);
   alogf("telegram: %s %s (%s)", method, ok ? "ok" : "FAIL", ok ? "" : err.c_str());
 }
 
