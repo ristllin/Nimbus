@@ -345,8 +345,11 @@ the tunnel.
 provisioned device no longer signs AP peers in on its own (see below), so a person who
 joins the setup network lands on the sign-in gate. The join screens the owner opens on
 a provisioned Orchestrator therefore show a real device sign-in code beside the network
-name and password: the locked-out Sign-in QR opened from the device menu (where the
-code card is also the Show code control) and the Setup screen. That code is the
+name and password: the locked-out Sign-in QR opened from the device menu and the Setup
+screen. On both, tapping the code card opens the same code in large digits with its
+countdown (the Sign-in code view, as under **Settings > Connectivity > Device sign-in
+code**). Opened from the Setup screen, its back arrow returns to Setup, and it closes
+when the Setup screen's time is up, like Setup itself. That code is the
 10-minute hand-entry code from the same single-use table the gate redeems from, so what
 the screen shows is what the gate accepts. The Sign-in QR that repeated failed sign-ins
 bring up on their own never shows a code, since unauthenticated traffic can trigger it.

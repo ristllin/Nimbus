@@ -553,6 +553,73 @@ static void test_show_code_from_signin_qr() {
   TEST_ASSERT_FALSE(m.showingTokenDetail());
 }
 
+// The Setup screen's code card (menu CLOSED) opens the same enlarged sign-in code
+// the Connectivity row opens (TokenDetail). Any gesture there closes the menu again
+// and asks the device to put the Setup screen back; nothing is dirtied, and the
+// Connectivity path keeps its own dismissal (back to its row, no Setup request).
+static void test_code_card_from_setup_screen() {
+  Config c;
+  const struct { const char* name; void (*dismiss)(SettingsMenu&); } ways[] = {
+      {"click", [](SettingsMenu& m) { m.onClick(); }},
+      {"rotate", [](SettingsMenu& m) { m.onRotate(+1); }},
+      {"long-press", [](SettingsMenu& m) { m.onLongPress(); }},
+      {"back", [](SettingsMenu& m) { m.onBack(); }},
+  };
+  for (const auto& w : ways) {
+    SettingsMenu m(c);
+    TEST_ASSERT_FALSE(m.isOpen());
+    m.openCodeFromSetup();
+    TEST_ASSERT_TRUE_MESSAGE(m.isOpen(), w.name);
+    TEST_ASSERT_TRUE_MESSAGE(m.showingTokenDetail(), w.name);
+    TEST_ASSERT_TRUE(viewOf(m).items.empty());
+    TEST_ASSERT_TRUE(contains(viewOf(m).title, "Device sign-in code"));   // the same view
+    TEST_ASSERT_FALSE(m.setupReturnRequested());
+    TEST_ASSERT_TRUE(m.showingCodeFromSetup());
+    w.dismiss(m);
+    TEST_ASSERT_FALSE(m.showingCodeFromSetup());
+    TEST_ASSERT_FALSE_MESSAGE(m.isOpen(), w.name);                         // back to Setup,
+    TEST_ASSERT_TRUE_MESSAGE(m.setupReturnRequested(), w.name);           // not Settings
+    TEST_ASSERT_FALSE_MESSAGE(m.dirty(), w.name);
+    m.clearSetupReturnRequest();
+    TEST_ASSERT_FALSE(m.setupReturnRequested());
+  }
+
+  // Swipe = several rotations in a row: the first closes the menu, the rest are
+  // no-ops on the closed menu (never re-open, never wrap into another screen).
+  SettingsMenu s(c);
+  s.openCodeFromSetup();
+  for (int i = 0; i < 5; i++) s.onRotate(-1);
+  TEST_ASSERT_FALSE(s.isOpen());
+  TEST_ASSERT_TRUE(s.setupReturnRequested());
+
+  // The origin does not leak: after a Setup visit, the Connectivity row's own
+  // TokenDetail still returns to its row and raises no Setup request.
+  SettingsMenu m(c);
+  m.openCodeFromSetup();
+  m.onClick();
+  m.clearSetupReturnRequest();
+  m.open();
+  while (viewOf(m).selected != 3) m.onRotate(+1);          // Connectivity
+  m.onClick();
+  while (viewOf(m).selected != 5) m.onRotate(+1);          // Device sign-in code
+  m.onClick();
+  TEST_ASSERT_TRUE(m.showingTokenDetail());
+  TEST_ASSERT_FALSE(m.showingCodeFromSetup());   // the Setup hold does not own this one
+  m.onClick();
+  TEST_ASSERT_TRUE(m.showingConnectivity());
+  TEST_ASSERT_EQUAL(5, viewOf(m).selected);
+  TEST_ASSERT_FALSE(m.setupReturnRequested());
+
+  // A close() while the Setup-origin code is showing (e.g. the device closing the
+  // menu for a publish) drops the origin too: nothing to put back.
+  SettingsMenu k(c);
+  k.openCodeFromSetup();
+  k.close();
+  TEST_ASSERT_FALSE(k.setupReturnRequested());
+  k.open();
+  TEST_ASSERT_FALSE(k.showingTokenDetail());
+}
+
 // The Connectivity > Bluetooth row toggles bleEnabled() (menu-visible, device
 // applies it live + persists), dirties, shows the on/off label, and stays put so
 // the flip is visible. It never enters the ConfigQr state.
@@ -1656,6 +1723,7 @@ int main() {
   RUN_TEST(test_connectivity_and_config_qr);
   RUN_TEST(test_connectivity_cloud_link_row);
   RUN_TEST(test_show_code_from_signin_qr);
+  RUN_TEST(test_code_card_from_setup_screen);
   RUN_TEST(test_connectivity_bluetooth_toggle);
   RUN_TEST(test_connectivity_forget_paired);
   RUN_TEST(test_connectivity_sd_reprobe);

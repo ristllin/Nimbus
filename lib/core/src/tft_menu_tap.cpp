@@ -43,6 +43,8 @@ bool applyMenuTap(SettingsMenu& menu, const TapRegion& tap) {
     case Action::ScrollUp:   menu.onRotate(-1);   return true;
     case Action::ScrollDown: menu.onRotate(+1);   return true;
     // "Show code" on the Sign-in QR -> the full device sign-in code (TokenDetail).
+    // (The Setup screen's code card arrives with the menu closed; the device routes
+    // that one to SettingsMenu::openCodeFromSetup.)
     case Action::ShowCode:   menu.showCode();     return true;
 
     // Not menu gestures - the device handles these with the menu closed.

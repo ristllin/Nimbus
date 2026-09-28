@@ -55,7 +55,7 @@ struct TapRegion {
     SessionCard, // focus session `index`
     ScrollUp,
     ScrollDown,
-    ShowCode,    // Sign-in QR: reveal the full device sign-in code (TokenDetail)
+    ShowCode,    // code card on the Sign-in QR / Setup screen: the enlarged code (TokenDetail)
     Setup,       // first-run CTA: return to the SetupInfo screen (CUM-259)
   };
   Action  action = Action::None;

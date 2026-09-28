@@ -1038,7 +1038,9 @@ int drawField(Fb565& fb, const Layout& L, int y, int w, const Field& f) {
 // The join screen when it must also sign the owner in: the steps are carried by
 // numbered captions - join the network (the QR does it, or the name + password by
 // hand), open the device, type the code. The code card is the "Show code" control
-// when the menu owns the screen (bigger digits and a countdown on TokenDetail).
+// wherever a tap reaches the enlarged code (bigger digits and a countdown on
+// TokenDetail): the menu's Sign-in QR, and the Setup screen, whose menu-closed
+// tap the device routes there (SettingsMenu::openCodeFromSetup).
 // The fields stack top-down; if two-line values would not fit the column (a very
 // long name and password on the smallest panel), every value drops to one line, so
 // the stack never runs off the glass and no card is drawn over another.
@@ -1203,8 +1205,12 @@ void drawSetup(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx, bo
   // button (under the steps and the password it ran off a 240 px panel, and there
   // is nothing to type anyway). Sign in (station up) keeps its Show code button.
   const bool menuShowCode = config && ctx.showCodeAffordance;
+  // The Setup screen's code card opens the enlarged code too (the device routes
+  // that menu-closed tap to TokenDetail); a Sign-in QR only as a menu state, never
+  // as the repeated-401 auto-surface, which shows no code.
+  const bool codeTap = !config || menuShowCode;
   if (joinScreen && !ctx.webToken.empty())
-    drawJoinFields(fb, L, r, ctx, textW, menuShowCode);
+    drawJoinFields(fb, L, r, ctx, textW, codeTap);
   else
     drawSetupColumn(fb, L, r, ctx, {joinScreen, menuShowCode && !joinScreen, textW, !url.empty()});
   // Firmware version, small in the bottom-left. Guarded so the golden fixture

@@ -4203,6 +4203,7 @@ static void emitMenuActionFeedback(nimbus::action::MenuAction action,
 // Callers must NOT hold the net config lock: the block re-acquires it via
 // applyConfig()/renderScreen() and does real work (NVS writes, renders).
 static void settleMenuAfterMutation(uint32_t now) {
+  bool backToSetup = false;   // the close below returns to the Setup screen
   // Menu ring echo: every detent repaints the dim fill-bar INSTANTLY (the
   // panel is the slow truth, the LEDs are the echo) and restarts its ~2 s
   // hold, after which the ring yields back to the black baseline. If this
@@ -4230,13 +4231,22 @@ static void settleMenuAfterMutation(uint32_t now) {
       g_themeFlourishPending = false;
     }
     refreshRing();
-    // Menu CLOSED: force the panel back to LIVE STATUS. Without this the
-    // render scheduler resumes on its last ambient intent - which can be a
-    // STALE Screensaver latched before the menu session - flashing the logo
+    // The enlarged code was opened from the Setup screen's code card: dismissing
+    // it goes back to Setup while Setup still has a job (the post-publish hold, or
+    // a device that still needs setup); otherwise to live status as always.
+    backToSetup = g_menu.setupReturnRequested() &&
+                  (g_setupHoldUntilMs != 0 || deviceNeedsSetup());
+    g_menu.clearSetupReturnRequest();
+    // Menu CLOSED: force the panel back to LIVE STATUS (or Setup, above). Without
+    // this the render scheduler resumes on its last ambient intent - which can be
+    // a STALE Screensaver latched before the menu session - flashing the logo
     // for one refresh before the next status tick (field bug, 2026-07-18:
     // close-menu -> ~3 s of screensaver -> StatusIdle). The saver clock was
-    // already kicked by the per-event saverKick() above.
-    g_sched.onIntent(uint8_t(attn::ScreenId::StatusIdle), true, millis());
+    // already kicked by the per-event saverKick() above. The intent also repaints
+    // the right screen if the direct render at the end of this pass is dropped.
+    g_sched.onIntent(uint8_t(backToSetup ? attn::ScreenId::SetupInfo
+                                         : attn::ScreenId::StatusIdle),
+                     true, millis());
   }
   // Any menu mutation applies live (timings/brightness) + persists. While
   // the menu is open g_cfg.profile() is the user's pick (seeded on open,
@@ -4604,7 +4614,8 @@ static void settleMenuAfterMutation(uint32_t now) {
     applyConfig();
     g_menuNeedsPaint = false;
     refreshRing();
-    if (!installRefusedAsk) renderScreen(attn::ScreenId::StatusIdle, -1);
+    if (!installRefusedAsk)
+      renderScreen(backToSetup ? attn::ScreenId::SetupInfo : attn::ScreenId::StatusIdle, -1);
   }
 }
 
@@ -4722,6 +4733,14 @@ static void drainTouch(uint32_t now) {
   switch (t->action) {
     case Action::OpenMenu:
       openSettingsMenu();
+      break;
+    case Action::ShowCode:
+      // The Setup screen's code card: open the enlarged sign-in code, the same
+      // TokenDetail view as Connectivity > Device sign-in code. Dismissing it closes
+      // the menu and returns to Setup while Setup still has a job
+      // (settleMenuAfterMutation); the Setup hold's end closes it too.
+      openSettingsMenu();
+      g_menu.openCodeFromSetup();
       break;
     case Action::SessionCard:
       // Focus that session - the touch equivalent of rotating the cursor onto
@@ -5239,8 +5258,14 @@ void loop() {
     if (!sta) g_setupHoldSawStaDown = true;   // the publish has taken the link down
     if ((sta && g_setupHoldSawStaDown) || int32_t(now - g_setupHoldUntilMs) >= 0) {
       g_setupHoldUntilMs = 0;
-      if (!g_menu.isOpen() && g_lastScreen == uint8_t(attn::ScreenId::SetupInfo))
+      if (!g_menu.isOpen() && g_lastScreen == uint8_t(attn::ScreenId::SetupInfo)) {
         renderScreen(attn::ScreenId::StatusIdle, -1);
+      } else if (g_menu.showingCodeFromSetup()) {
+        // The enlarged code opened from Setup ends with Setup: a live sign-in code
+        // must not outlast the hold on the glass (the view re-mints on its own).
+        g_menu.close();
+        settleMenuAfterMutation(now);
+      }
     }
   }
   // P3: subtle LED confirmation for web actions (WiFi saved / scan done) - a

@@ -306,6 +306,55 @@ static void test_row_tap_while_adjusting_does_not_move_the_value() {
                             "a tap while adjusting should commit, not stay captured");
 }
 
+// The Setup screen's code card, end to end on the host: RENDER the Setup screen a
+// provisioned device shows after a publish -> HIT-TEST the code card -> the device's
+// menu-closed route (main.cpp: Action::ShowCode -> openCodeFromSetup) -> the menu
+// shows the enlarged code (the same TokenDetail the Connectivity row opens) ->
+// RENDER it and tap its exit through the real applyMenuTap -> the menu is closed
+// again and asks for the Setup screen back.
+static void test_setup_code_card_opens_the_enlarged_code_and_returns() {
+  ScreenCtx setup;
+  setup.deviceName = "Nimbus-4";
+  setup.modeName = "orchestrator";
+  setup.apName = "Nimbus-4-setup";
+  setup.apPass = "wxyz2345pq";
+  setup.apUp = true;
+  setup.setupUrl = "http://192.168.4.1/?c=aaaaaaaaaaaa";
+  setup.wifiState = 1;
+  setup.webToken = "0123456789ab";
+  Fb565 fb;
+  const Rendered r = renderScreen(fb, ScreenId::SetupInfo, setup);
+  const TapRegion* card = nullptr;
+  for (const auto& t : r.taps)
+    if (t.action == TapRegion::Action::ShowCode) card = &t;
+  TEST_ASSERT_NOT_NULL_MESSAGE(card, "the Setup code card is not tappable");
+  const TapRegion* hit = r.hit(card->x + card->w / 2, card->y + card->h / 2);
+  TEST_ASSERT_NOT_NULL(hit);
+  TEST_ASSERT_EQUAL_INT(int(TapRegion::Action::ShowCode), int(hit->action));
+
+  Config cfg;
+  SettingsMenu menu(cfg);
+  TEST_ASSERT_FALSE(menu.isOpen());            // Setup is a menu-closed screen
+  menu.openCodeFromSetup();                    // the device's route for this tap
+  TEST_ASSERT_TRUE(menu.showingTokenDetail());
+
+  ScreenCtx code;
+  code.deviceName = "Nimbus-4";
+  code.menuTitle = menu.view().title;
+  code.webToken = setup.webToken;              // the same code, larger
+  code.signinSecsLeft = 547;
+  Fb565 fb2;
+  const Rendered td = renderScreen(fb2, ScreenId::TokenDetail, code);
+  const TapRegion* exit = nullptr;
+  for (const auto& t : td.taps)
+    if (t.action == TapRegion::Action::Back || t.action == TapRegion::Action::Home) exit = &t;
+  TEST_ASSERT_NOT_NULL_MESSAGE(exit, "the enlarged code has no way out");
+  TEST_ASSERT_TRUE(applyMenuTap(menu, *exit));
+  TEST_ASSERT_FALSE_MESSAGE(menu.isOpen(), "dismissing the code left the menu open");
+  TEST_ASSERT_TRUE_MESSAGE(menu.setupReturnRequested(), "the Setup screen is not put back");
+  TEST_ASSERT_FALSE(menu.dirty());
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_tap_matches_the_knob);
@@ -316,5 +365,6 @@ int main() {
   RUN_TEST(test_non_menu_actions_are_no_ops);
   RUN_TEST(test_mapping_is_not_inert);
   RUN_TEST(test_row_tap_while_adjusting_does_not_move_the_value);
+  RUN_TEST(test_setup_code_card_opens_the_enlarged_code_and_returns);
   return UNITY_END();
 }

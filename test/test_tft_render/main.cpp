@@ -426,11 +426,12 @@ static void test_token_detail() {
   golden("token_detail", ScreenId::TokenDetail, c);
 }
 
-static bool hasTapAction(const Rendered& r, TapRegion::Action a) {
+static const TapRegion* tapOf(const Rendered& r, TapRegion::Action a) {
   for (const auto& t : r.taps)
-    if (t.action == a) return true;
-  return false;
+    if (t.action == a) return &t;
+  return nullptr;
 }
+static bool hasTapAction(const Rendered& r, TapRegion::Action a) { return tapOf(r, a) != nullptr; }
 
 // CUM-48 #3: the "Show code" tap only appears when the Sign-in QR is a MENU
 // state (showCodeAffordance), whose tap layer routes ShowCode -> TokenDetail.
@@ -583,7 +584,8 @@ static void test_config_qr_recover_signin() {
 }
 
 // SetupInfo right after "Publish setup network" on a provisioned device: the same
-// fields, the code not tappable (the menu is closed there).
+// fields, and the code card opens the enlarged code (TokenDetail) even though the
+// menu is closed there - the device routes the tap (settings_menu openCodeFromSetup).
 static ScreenCtx setupSigninCtx() {
   ScreenCtx c = baseCtx();
   c.modeName = "orchestrator";
@@ -714,19 +716,41 @@ static void test_join_screen_shows_the_code() {
   }
 }
 
-// The code card is the Show code control exactly when the menu owns the screen.
-static void test_join_code_card_tappable_only_in_menu() {
+// The code card is the Show code control exactly where a tap can reach the enlarged
+// code: the menu's Sign-in QR and the Setup screen (whose menu-closed tap the device
+// routes to TokenDetail). The repeated-401 auto-surface (ConfigQr, menu closed) and a
+// first-run Setup screen (no code) draw none.
+static void test_join_code_card_tappable_where_the_code_opens() {
   for (const auto& p : kPanels) {
     ScreenCtx menu = recoverSigninCtx();
     ScreenCtx closed = menu;
     closed.showCodeAffordance = false;
-    Fb565 a(p.w, p.h), b(p.w, p.h);
+    ScreenCtx setup = setupSigninCtx();
+    ScreenCtx firstRun = setupSigninCtx();
+    firstRun.webToken = "";
+    firstRun.wifiState = 0;
+    Fb565 a(p.w, p.h), b(p.w, p.h), c(p.w, p.h), d(p.w, p.h);
     TEST_ASSERT_TRUE_MESSAGE(hasTapAction(renderScreen(a, ScreenId::ConfigQr, menu),
                                           TapRegion::Action::ShowCode),
                              "menu join screen: the code card is not the Show code tap");
     TEST_ASSERT_FALSE_MESSAGE(hasTapAction(renderScreen(b, ScreenId::ConfigQr, closed),
                                            TapRegion::Action::ShowCode),
-                              "menu-closed join screen draws a dead Show code tap");
+                              "menu-closed Sign-in QR draws a dead Show code tap");
+    const Rendered rs = renderScreen(c, ScreenId::SetupInfo, setup);
+    const TapRegion* code = tapOf(rs, TapRegion::Action::ShowCode);
+    TEST_ASSERT_NOT_NULL_MESSAGE(code, "Setup screen: the code card is not tappable");
+    // The region is the code card itself: the bottom field, full column width, at
+    // least the tap floor tall, holding the code's ink.
+    TEST_ASSERT_TRUE_MESSAGE(code->h >= 44, "Setup code card below the 44 px tap floor");
+    TEST_ASSERT_TRUE_MESSAGE(code->y + code->h <= p.h - 1, "Setup code card off the glass");
+    bool ink = false;
+    for (int y = code->y; y < code->y + code->h && !ink; y++)
+      for (int x = code->x; x < code->x + code->w && !ink; x++)
+        ink = c.get(x, y) == kTeal;
+    TEST_ASSERT_TRUE_MESSAGE(ink, "Setup code region does not hold the code");
+    TEST_ASSERT_FALSE_MESSAGE(hasTapAction(renderScreen(d, ScreenId::SetupInfo, firstRun),
+                                           TapRegion::Action::ShowCode),
+                              "first-run Setup screen draws a Show code tap with no code");
   }
 }
 
@@ -1089,7 +1113,7 @@ int main() {
   RUN_TEST(test_join_screens_stay_on_glass);
   RUN_TEST(test_signin_column_long_status_keeps_show_code_clear);
   RUN_TEST(test_join_screen_shows_the_code);
-  RUN_TEST(test_join_code_card_tappable_only_in_menu);
+  RUN_TEST(test_join_code_card_tappable_where_the_code_opens);
   RUN_TEST(test_join_screen_code_decision_covers_every_screen);
   RUN_TEST(test_setup_join_qr_carries_current_password);
   RUN_TEST(test_status_wifi_connected);
