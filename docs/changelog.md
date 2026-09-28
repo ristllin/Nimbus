@@ -6,6 +6,33 @@ ships as a signed image on the public
 repository; a device on Orchestrator mode sees it on its daily check and
 installs on your say-so ([how updates work](ota.md)).
 
+## v4.5.7 - Voice that responds instantly, setup that signs you in, connectors that really work
+
+- **Letting go of the mic responds instantly.** Releasing the hold-to-talk button now
+  changes the screen and ring at once, shows a thinking state while your request is
+  processed, and ends with the reply. Off Wi-Fi, the answer comes back in about two
+  seconds and says the real reason: "No network. Check Wi-Fi and try again." Every
+  failure now names itself (provider error, nothing heard, busy) instead of a
+  catch-all "didn't catch that".
+- **Publish Setup Network now walks you through it.** The button confirms what happens
+  next, and the device screen switches to the setup network: the network name and
+  password, a join QR, numbered steps, and a sign-in code that the sign-in page
+  actually accepts. Tap the code to enlarge it. The code field on the phone no longer
+  capitalizes what you type, and every card fits the screen.
+- **Wi-Fi status is back on the screen.** The header shows connected, searching, or
+  not set up, plus an amber AP marker while the setup network is up.
+- **Mistral connectors work, verified against your Mistral account.** The device now
+  asks Mistral which connectors your account really offers and uses exactly those;
+  Google Calendar, Notion, and Slack pulls were proven end to end. Connector turns no
+  longer stall for a minute, and a rate-limit reply tells you the actual limit you
+  hit and when it resets.
+- **A Virtual Nimbus now matches the device.** It runs sub-agents, uses the same
+  connectors, and handles Telegram the device way: nobody is trusted by default, and
+  you approve each chat from its own web page with the roles you already know.
+- **The sign-in page keeps everything behind it hidden** on the phone until you sign
+  in, and the chat no longer piles up old tool-call disclosures without their
+  conversation.
+
 ## v4.5.6 - Stuck key checks clear themselves, clearer Mistral connector setup
 
 - **A key check stuck on "Verification deferred" now recovers, and Verify works for
