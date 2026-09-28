@@ -21,11 +21,12 @@ The bot is now live, but it answers no one yet.
 2. Open your instance's web app and go to **Assistant**, **Connectors**,
    **Telegram**. Your message is waiting under **Who can message this device**.
 3. Tap **Approve**. Your next message gets a real answer.
+4. Make your own chat an **admin**: click the role on your chip until it shows
+   **admin**. As an admin, your Telegram chat shares the memories and files of your
+   web chat; until then it is a separate **user**.
 
-The first person you approve becomes the **admin** and shares your memories, so
-approve yourself before anyone else. If you already
-know a chat ID, type it into **Chat ID** and tap **Add** instead of waiting for a
-message.
+If you already know a chat ID, type it into **Chat ID** and tap **Add** instead of
+waiting for a message.
 
 ## Let other people in
 
@@ -33,8 +34,9 @@ Anyone else who messages the bot gets the same polite refusal and waits in the
 same list for you. They are never served until you approve them, and a stranger
 who keeps writing is not sent the refusal more than once every 10 minutes.
 
-Each approved person has a role, shown on their chip. Click it to cycle
-**admin**, **user**, **guest**:
+Everyone you approve starts as a **user**; nobody becomes an admin unless you make
+them one. Each person's role is shown on their chip. Click it to cycle **admin**,
+**user**, **guest**:
 
 | Role | What it means on a Virtual Nimbus |
 |---|---|
@@ -44,13 +46,18 @@ Each approved person has a role, shown on their chip. Click it to cycle
 
 Things to know before you approve someone:
 
-- **An approved person can start background agents, and those agents use your
-  connectors** (calendar, Notion, Slack, and the rest) and your provider keys.
-  Approving someone is granting that.
+- **An approved person's conversations use your connectors** (calendar, Notion,
+  Slack, and the rest) and your provider keys, and they can start background
+  agents that do the same. Approving someone is granting that.
+- **One person's background agents at a time.** While your agents are working,
+  a user's or guest's message waits until your report is delivered, so they never
+  see your results; an agent they ask for while someone else's are running is
+  declined with a short note. Your own messages never wait.
 - **Stored files stay yours.** On a hosted instance a user or guest cannot list,
   read, or save files.
-- **Removing someone** (the × on their chip) takes effect on their next message.
-  There is always at least one admin, so the last admin's role cannot be changed.
+- **Removing someone** (the × on their chip) takes effect on their next message,
+  and their role goes with them: if you approve them again later, they start as a
+  user.
 - **There is no open access.** The device's **Open access** switch is refused on a
   hosted instance: a public bot would spend your keys and reach your connectors.
 

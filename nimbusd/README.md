@@ -46,8 +46,8 @@ New code lives only in this directory:
 /data/mem/scratchpad.txt     the model's working-memory tiers
 /data/mem/memconfig.txt      retrieval/decay knobs
 /data/mem/files/             file artifacts + .index
-/data/mem/telegram.txt       Telegram allowlist, owners, display names, consumed legacy seed
-/data/mem/tenants.txt        RBAC roles + limits (the device's tenants.txt format)
+/data/mem/telegram.txt       Telegram allowlist, display names, consumed legacy seed and the
+                             RBAC roles + limits, in ONE atomically written file
 /data/tg_offset              Telegram long-poll offset (no re-delivery on restart)
 ```
 
@@ -125,20 +125,32 @@ Telegram**): one tap on a waiting sender, or **Add** by chat ID. The allowlist a
 the roles are stored on the instance volume, so they survive restarts and ride
 `GET /backup`.
 
-- **Roles are the existing RBAC.** The first approved chat becomes the admin (the
-  device's legacy adoption); later ones are users. Click a chip's role to cycle
-  admin, user, guest. A user or guest runs as themselves: their own memory
-  namespace, their own recall, a prompt that says who is speaking, and no access
-  to the owner's files. An approved chat of any role can start sub-agents, and so
-  use the owner's connectors: approving someone is granting that.
+- **Roles are the existing RBAC.** An approved chat is a **user**; admin is only an
+  explicit grant (click a chip's role to cycle admin, user, guest, or `POST
+  /api/tenant`). This differs from the device, which adopts the first approved chat
+  as admin: on a hosted instance the owner lives in the web app, and that rule would
+  hand owner rights to whoever was approved first. A user or guest runs as
+  themselves: their own memory namespace, their own recall, a prompt that says who
+  is speaking, and no access to the owner's files. An approved chat of any role can
+  use the owner's connectors and start sub-agents: approving someone is granting
+  that.
+- **One namespace's sub-agent work at a time.** The shared job engine keeps one pool
+  of sub-agent results and folds it into whoever speaks next, so a hosted instance
+  keeps queued, running and unreported work inside one data namespace: a spawn
+  from another namespace is refused with the reason, and a member's turn from
+  another namespace is held on the engine thread until that work is reported (the
+  owner's own turns never wait).
 - **Revoking** (role `unknown` through `POST /api/tenant`) or removing a chat takes
-  effect on its next message; a revoked chat is told its access was removed.
+  effect on its next message; a revoked chat is told its access was removed, and a
+  removed chat's role is erased (re-approving starts it as a user). Work it left
+  running is not reported to it.
 - **No open access.** The device's "Open access" switch is refused on a hosted
   instance: a public bot would spend the owner's keys and reach the owner's
   connectors.
 - **`NIMBUSD_TG_CHAT_ID` is legacy.** If set, it seeds an EMPTY allowlist once (that
-  chat becomes the admin) and is then consumed: a list the owner already manages
-  is left alone, and a seeded chat the owner removes does not come back on restart.
+  chat becomes the admin, since the operator named it as the owner's) and is then
+  consumed: a list the owner already manages is left alone, and a seeded chat the
+  owner removes does not come back on restart.
 - The web chat and the token-gated control API are the owner's own surfaces and
   always run as the admin; a Telegram chat id posted to `POST /api/message` is held
   to the same allowlist as the Telegram poll.
