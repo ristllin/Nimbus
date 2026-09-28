@@ -108,6 +108,15 @@ struct ProviderState {
   // catalog text; 1 and 2 render identically (both read the same cache).
   int8_t capProbe = 1;
   std::string currentHost;  // "openai" | "anthropic" | "mistral" | custom | ""
+  // Whether a Mistral HEAD turn carries the Mistral Studio connectors (true = the
+  // device's historical wiring: they attach to the single-shot head turn). false =
+  // Studio connectors run ONLY on spawned mistral sub-agents: the catalog says so and
+  // connectorScope reports them SubsessionsOnly even with mistral as the head.
+  // Measured 2026-09-27: a Conversations call that carries a Studio connector AND the
+  // head's strict response_format json_schema never answers (Mistral's edge closes
+  // the stream at 60 s, 3 of 3), while the same call without the schema returns real
+  // calendar events in ~5 s - which is exactly the sub-agent's free-text call.
+  bool mistralHeadCarriesStudio = true;
 };
 
 // A known connector the UI can describe / link even before it is configured.

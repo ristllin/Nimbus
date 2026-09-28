@@ -390,6 +390,7 @@ class NimbusdRig {
     ps.mistralKeyed = providerKeyed("mistral");
     ps.capProbe = 0;   // no verify cache: report key presence, never claim "verified"
     ps.currentHost = hostBadge();
+    ps.mistralHeadCarriesStudio = false;   // Studio connectors ride subs only (headDeps)
     return ps;
   }
   // The "[PROVIDERS & CONNECTORS]" block exactly as the next turn's context gets it
@@ -845,6 +846,22 @@ class NimbusdRig {
     return pd;
   }
 
+  // The deps a HEAD turn runs with: the base deps, except that a Mistral head turn
+  // attaches only the hosted built-ins, never the Studio connectors. The head's
+  // single-shot turn always carries the strict orch_turn json_schema, and a
+  // Conversations call with a Studio connector plus that schema never answers
+  // (Mistral's edge closes it at 60 s, measured 3 of 3; without the schema the same
+  // call returns in ~5 s). So Studio connectors run where the device's default loop
+  // runs them anyway: on a spawned mistral sub-agent (free text, no schema). The
+  // catalog says so (ProviderState.mistralHeadCarriesStudio = false).
+  agent::providers::ProviderDeps headProviderDeps() {
+    auto pd = providerDeps();
+    pd.attachMistral = [this](JsonDocument& doc) {
+      nimbus::orch::attachMistralWire(doc, conns_.parsed(), /*builtinsOnly=*/true);
+    };
+    return pd;
+  }
+
   // The provider deps for the Cumulo router head: the base ProviderDeps with the
   // custom/proxy fields pointed at the fixed router base + path prefix and the
   // router key. Byte-for-byte the seam the device's cumulo head fills in
@@ -995,7 +1012,7 @@ class NimbusdRig {
                                      const std::string& inp, std::string& out,
                                      std::string& err, const agent::HeadTools* tools,
                                      orch::TokenUsage* usage) -> bool {
-        auto pd = providerDeps();
+        auto pd = headProviderDeps();
         if (host == "anthropic")
           return agent::providers::orchTurnAnthropic(pd, conv, ins, inp, out, err, tools, usage);
         if (host == "openai")

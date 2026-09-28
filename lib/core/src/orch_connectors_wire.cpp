@@ -695,6 +695,11 @@ std::string catalogText(const std::vector<ConnectorInfo>& cs, const ProviderStat
     out += host;
     out += " are callable on YOUR OWN turns; connectors on the other providers are "
            "reachable only by spawning a sub-agent on that provider.\n";
+    if (host == "mistral" && !ps.mistralHeadCarriesStudio)
+      out += "EXCEPTION: Mistral Studio connectors (calendar, Notion, Slack, Gmail, "
+             "Drive, GitHub...) are NOT attached to your own turns here; they run ONLY "
+             "on a sub-agent you spawn on mistral (session_ops spawn: provider = "
+             "mistral, skill = the connector name).\n";
     out += "For a HEAVY connector action - creating or updating a document/page/"
            "issue, or fetching a large file - prefer to SPAWN a sub-agent on the "
            "connector's provider (session_ops spawn: provider = that provider, "
@@ -718,11 +723,15 @@ std::string catalogText(const std::vector<ConnectorInfo>& cs, const ProviderStat
        "search/fetch; connectors (BYO MCP by URL) attach to SUB-AGENTS only, "
        "not your own turns"},
       {"mistral", ps.mistralKeyed, ps.mistralVerified,
-       "connectors + built-ins attach to a single-shot turn AND to sub-agents "
-       "you spawn on mistral, but NOT to your tool-loop turns (the loop forces "
-       "tool_choice, which the provider rejects with built-ins) - so on your own "
-       "loop turns you have only the registry tools; spawn a mistral sub for "
-       "connector work"},
+       ps.mistralHeadCarriesStudio
+           ? "connectors + built-ins attach to a single-shot turn AND to sub-agents "
+             "you spawn on mistral, but NOT to your tool-loop turns (the loop forces "
+             "tool_choice, which the provider rejects with built-ins) - so on your own "
+             "loop turns you have only the registry tools; spawn a mistral sub for "
+             "connector work"
+           : "built-ins attach to a single-shot turn AND to sub-agents you spawn on "
+             "mistral; Studio connectors run ONLY on sub-agents you spawn on mistral, "
+             "never on your own turns: spawn a mistral sub for connector work"},
   };
   for (const Row& r : rows) {
     out += "- ";
@@ -1039,6 +1048,10 @@ CapScope connectorScope(const ConnectorInfo& c, const ProviderState& ps) {
   // exact split catalogText() states in prose.
   const bool onHost = (c.prov == "any") ||
                       (!ps.currentHost.empty() && c.prov == ps.currentHost);
+  // A Studio connector that does not ride the Mistral head turn is sub-agent-only
+  // even when mistral is the head (see ProviderState.mistralHeadCarriesStudio).
+  if (onHost && !ps.mistralHeadCarriesStudio && isMistralStudioConnector(c))
+    return CapScope::SubsessionsOnly;
   return onHost ? CapScope::OrchestratorDirect : CapScope::SubsessionsOnly;
 }
 

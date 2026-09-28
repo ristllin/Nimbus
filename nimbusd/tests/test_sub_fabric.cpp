@@ -127,6 +127,14 @@ static void testMistralSpawnEndToEnd(ndtest::Ctx& c) {
   eng.stop();
 
   c.eqi((long)tx.seen.size(), 3, "exactly three provider calls: head, sub, synthesis");
+  if (tx.seen.size() >= 3) {
+    // The head turns carry the strict orch_turn schema, which Mistral cannot combine
+    // with a Studio connector (the call never answers): the connector rides the sub.
+    c.ok(!has(tx.seen[0].body, "connector_id") && !has(tx.seen[2].body, "connector_id"),
+         "the head turns carry NO Studio connector");
+    c.ok(has(tx.seen[0].body, "json_schema"), "the head turn is the structured single-shot turn");
+    c.ok(!has(tx.seen[1].body, "json_schema"), "the sub turn is free text (no schema)");
+  }
   if (tx.seen.size() >= 2) {
     const std::string& b = tx.seen[1].body;
     c.ok(has(b, "\"connector_id\":\"google_calendar\""),

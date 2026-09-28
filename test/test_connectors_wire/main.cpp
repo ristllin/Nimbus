@@ -1246,6 +1246,36 @@ static void test_resolve_head_host_matches_the_engine_rule() {
   TEST_ASSERT_EQUAL_STRING("mistral", resolveHeadHost("", "mistral", nullptr, "").c_str());
 }
 
+// Hosted wiring (ProviderState.mistralHeadCarriesStudio = false): Studio connectors
+// never ride the Mistral head turn (strict schema + Studio connector never answers),
+// so with mistral as the head they are sub-agent-only, the catalog says so, and the
+// hosted built-ins stay on the head. The device default (true) is unchanged.
+static void test_studio_connectors_sub_only_when_the_head_cannot_carry_them() {
+  MistralWorkspace ws = probed(kLiveListing);
+  std::vector<ConnectorInfo> cs = {studio("gcal", "connector_googlecalendar"),
+                                   mk("web_search", "mistral", "builtin")};
+  nimbus::orch::applyConnectorAuth(cs, ws);
+  ProviderState ps; ps.mistralKeyed = true; ps.currentHost = "mistral";
+  TEST_ASSERT_EQUAL((int)CapScope::OrchestratorDirect, (int)connectorScope(cs[0], ps));
+  const std::string dflt = catalogText(cs, ps);
+  TEST_ASSERT_TRUE(dflt.find("EXCEPTION: Mistral Studio connectors") == std::string::npos);
+  ps.mistralHeadCarriesStudio = false;
+  TEST_ASSERT_EQUAL((int)CapScope::SubsessionsOnly, (int)connectorScope(cs[0], ps));
+  TEST_ASSERT_EQUAL((int)CapScope::OrchestratorDirect, (int)connectorScope(cs[1], ps));
+  const std::string t = catalogText(cs, ps);
+  TEST_ASSERT_TRUE(t.find("EXCEPTION: Mistral Studio connectors") != std::string::npos);
+  TEST_ASSERT_TRUE(t.find("Studio connectors run ONLY on sub-agents you spawn on mistral") !=
+                   std::string::npos);
+  ps.currentHost = "openai"; ps.openaiKeyed = true;   // another head: the usual split
+  TEST_ASSERT_EQUAL((int)CapScope::SubsessionsOnly, (int)connectorScope(cs[0], ps));
+  TEST_ASSERT_TRUE(catalogText(cs, ps).find("EXCEPTION:") == std::string::npos);
+  // The attach the hosted head uses: built-ins only, never the Studio connector.
+  JsonDocument head;
+  attachMistralWire(head, cs, /*builtinsOnly=*/true);
+  TEST_ASSERT_FALSE(has(head, "connector_id"));
+  TEST_ASSERT_TRUE(has(head, "\"type\":\"web_search\""));
+}
+
 // A full page (page_size 100) is never truncated; a runaway body is bounded.
 static void test_workspace_item_cap() {
   auto body = [](int n) {
@@ -1314,6 +1344,7 @@ int main() {
   RUN_TEST(test_workspace_scanner_structure);
   RUN_TEST(test_workspace_item_cap);
   RUN_TEST(test_resolve_head_host_matches_the_engine_rule);
+  RUN_TEST(test_studio_connectors_sub_only_when_the_head_cannot_carry_them);
   RUN_TEST(test_connector_auth_rule_table);
   RUN_TEST(test_wants_probe_only_for_enabled_studio_connectors);
   RUN_TEST(test_parse_connectors_reads_past_eight);

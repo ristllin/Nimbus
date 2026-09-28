@@ -145,7 +145,11 @@ without a Mistral key or an enabled Studio connector, and until an answer lands 
 Studio connector reads not usable (fail-closed). The catalog, the `/api/connectors`
 badges and the `/api/tools` connector rows all read one auth-stamped view, and the
 catalog names the head the turn really runs on (the first keyed provider, or the
-`NIMBUSD_ORCH_HOST` pin).
+`NIMBUSD_ORCH_HOST` pin). Studio connectors never ride a Mistral HEAD turn here
+(`headProviderDeps`): the head's single-shot turn always carries the strict
+structured-output schema, and Mistral does not answer a call that combines it with
+a Studio connector (closed at 60 s, measured), so they run on a spawned Mistral
+sub-agent (free text), and the catalog and `/api/tools` report them sub-agent-only.
 
 **The web app (CUM-265).** `GET /` serves the device's own single-page app - the
 exact fragment bytes the device serves (`tools/gen_webui.py` assembles them from

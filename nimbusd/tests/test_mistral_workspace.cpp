@@ -277,7 +277,9 @@ static void checkSurfacesAgree(ndtest::Ctx& c, WebApi& api, const std::string& c
     const std::string av = availabilityOf(tools, n);
     const bool catalogUsable = !has(cat, std::string(n) + " (not usable");
     const bool usable = a == 1;
-    c.ok(usable == (av == "orchestrator-direct") && usable == catalogUsable,
+    // Studio connectors ride sub-agents on a hosted instance, so usable reads
+    // "subsessions-only" even with mistral as the head.
+    c.ok(usable == (av == "subsessions-only") && usable == catalogUsable,
          std::string(n) + ": badge auth, Capabilities availability and catalog agree (" +
              std::to_string(a) + "/" + av + ")");
   }
