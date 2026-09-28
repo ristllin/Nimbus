@@ -197,8 +197,9 @@ static void testUnlistedRefused(ndtest::Ctx& c) {
   checkNoStateChange(c, f);
   // A flood of strangers is bounded: the queue keeps the newest 5 (device ring).
   for (int i = 0; i < 12; i++) f.route({text(10 + i, std::to_string(7000 + i), "x", "hi")}, 5000, &sent);
-  c.eqi((long)f.acc().pending().size(), 5, "the approval queue stays bounded at 5");
-  c.eq(f.acc().pending().back().chatId, "7011", "the newest knock is kept (oldest dropped)");
+  const auto ring = f.acc().pending();
+  c.eqi((long)ring.size(), 5, "the approval queue stays bounded at 5");
+  c.ok(!ring.empty() && ring.back().chatId == "7011", "the newest knock is kept (oldest dropped)");
 }
 
 // (c) --------------------------------------------------------------------------
@@ -284,6 +285,21 @@ static void testEnvSeedOnce(ndtest::Ctx& c) {
   {
     Fx f("tga-e", false);
     c.eq(f.acc().allowCsv(), "777", "a new seed never touches a list the owner manages");
+  }
+  // The seeded chat removed so the list is EMPTY again: a restart must not quietly
+  // re-trust it (the seed is consumed, not a standing rule).
+  setenv("NIMBUSD_TG_CHAT_ID", "444", 1);
+  {
+    Fx f("tga-e3");
+    c.eq(f.acc().allowCsv(), "444", "a fresh volume takes the seed");
+    std::string note, err;
+    f.acc().remove("444", note, err);
+    c.ok(f.acc().allowEmpty(), "the owner removes the seeded chat");
+  }
+  {
+    Fx f("tga-e3", false);
+    c.ok(f.acc().allowEmpty() && f.acc().admit("444") == Admit::Unlisted,
+         "the removed seed is NOT re-added on restart, even onto an empty list");
   }
   setenv("NIMBUSD_TG_CHAT_ID", "not-a-chat", 1);
   {
@@ -440,7 +456,7 @@ int main() {
   testMemberRbac(c);
   testEngineSeamRechecks(c);
   testTenantGuards(c);
-  for (const char* t : {"tga-b", "tga-c", "tga-d", "tga-e", "tga-e2", "tga-f", "tga-g", "tga-h",
+  for (const char* t : {"tga-b", "tga-c", "tga-d", "tga-e", "tga-e2", "tga-e3", "tga-f", "tga-g", "tga-h",
                         "tga-i", "tga-j", "tga-k"})
     ndtest::rmTree(ndtest::scratchDir(t));
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);
