@@ -71,13 +71,11 @@ class EngineThread {
   // seq); it is published as currentWebTurn() for the duration of the turn so the
   // delivery hook can tag each reply with the turn it answers (CUM-293). It is 0
   // for non-web producers (Telegram, the /message control path).
+  // A member's message that arrives while another person's sub-agent work is in
+  // flight waits in held_ and runs once that work is reported (runOrHold).
   void postMessage(const std::string& chatId, const std::string& text, uint64_t webTurn = 0) {
     post([this, msg = Held{chatId, text, webTurn}] { runOrHold(msg); });
   }
-
-  // Messages waiting for another person's sub-agent work to be reported (the rig's
-  // one-namespace rule, CUM-459). Engine thread only; exposed for tests.
-  size_t heldCount() const { return heldCount_.load(); }
 
   // The web turn id currently being run, or 0 when the running task is not a web
   // turn. Read by the reply delivery hook (main.cpp) to tag each reply with its
@@ -231,7 +229,6 @@ class EngineThread {
         held_.pop_front();
       }
       held_.push_back(m);
-      heldCount_.store(held_.size());
       return;
     }
     curWebTurn_.store(m.webTurn, std::memory_order_release);
@@ -247,7 +244,6 @@ class EngineThread {
       else post([this, msg = std::move(m)] { runOrHold(msg); });
     }
     held_.swap(still);
-    heldCount_.store(held_.size());
   }
 
   void snapInFlight(bool v) {
@@ -292,7 +288,6 @@ class EngineThread {
   std::atomic<uint64_t> curWebTurn_{0};   // web turn id of the running task (0 = none)
   std::atomic<bool> busy_{false};          // any task / pump step executing now
   std::deque<Held> held_;                  // turns waiting on another namespace (engine thread)
-  std::atomic<size_t> heldCount_{0};
 
   mutable std::mutex snapMu_;
   StateSnapshot snap_;
