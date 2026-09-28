@@ -108,7 +108,7 @@ static nimbus::voice::SttResult transcribeCommon(const char* localPath, const ch
   if (prov.key.length() == 0) {
     alogf("stt: no key for provider %s", store::sttProvider().c_str());
     out.kind = Kind::Refused;
-    out.refusal = "Voice needs a speech-to-text key. Set one in the web app.";
+    out.refusal = nimbus::voice::noKeyLine();
     return out;
   }
 

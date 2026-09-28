@@ -1287,7 +1287,7 @@ static void voiceReleaseWatcher(void*) {
 // can't start now - firmware updating, or no speech-to-text key configured.
 static bool voiceStartBlocked() {
   if (otaupd::installing()) {  // flash write + TLS own the device right now
-    g_askOverride = "Updating firmware. Try again after the restart.";
+    g_askOverride = nimbus::voice::blockedLine(nimbus::voice::Block::Updating).c_str();
     g_askSticky = true; g_askPage = 0;
     renderScreen(attn::ScreenId::Ask, -1);
     return true;
@@ -1296,7 +1296,7 @@ static bool voiceStartBlocked() {
     // Give the owner ACTUAL feedback instead of a silent no-op on a silent-serial
     // device: a panel line telling them voice needs a key (audit device-flows).
     Serial.println("VOICE: no STT provider key");
-    g_askOverride = "Voice needs a speech-to-text key (set one in the web UI).";
+    g_askOverride = nimbus::voice::blockedLine(nimbus::voice::Block::NoKey).c_str();
     g_askSticky = true; g_askPage = 0;   // hold until click (P2.3)
     renderScreen(attn::ScreenId::Ask, -1);
     return true;
@@ -1310,17 +1310,24 @@ static bool voiceStartBlocked() {
 // listening, theme sweep = processing, alert = a failed outcome). A board with no
 // LED ring draws the ring on the panel from g_animBuf: paint the cue frame there;
 // voiceRingTick() advances it whenever the loop runs.
-static void voiceApplyRing() {
+// The LED pattern last shown for the voice cue: refreshRing() re-applies the cue on
+// every job edge mid-flow, and re-showing the same pattern would restart its motion.
+static nimbus::voice::Cue s_voiceLedCue = nimbus::voice::Cue::None;
+
+static void voiceApplyRing(bool force = false) {
   const nimbus::voice::Cue cue = g_voice.cue();
   const solide::ring::RGB& a = g_voiceAccent;
   const solide::ring::RGB& e = g_voiceAlert;
-  solide::leds::clearFrame();   // a raw frame outranks patterns: release it first
-  switch (cue) {
-    case nimbus::voice::Cue::Listening:  solide::leds::show(solide::leds::Pattern::Pulse, a.r, a.g, a.b); break;
-    case nimbus::voice::Cue::Processing: solide::leds::show(solide::leds::Pattern::Spinner, a.r, a.g, a.b); break;
-    case nimbus::voice::Cue::Alert:      solide::leds::show(solide::leds::Pattern::Solid, e.r, e.g, e.b); break;
-    case nimbus::voice::Cue::Offline:    solide::leds::show(solide::leds::Pattern::Pulse, e.r, e.g, e.b); break;
-    case nimbus::voice::Cue::None:       break;
+  if (force || cue != s_voiceLedCue) {
+    solide::leds::clearFrame();   // a raw frame outranks patterns: release it first
+    switch (cue) {
+      case nimbus::voice::Cue::Listening:  solide::leds::show(solide::leds::Pattern::Pulse, a.r, a.g, a.b); break;
+      case nimbus::voice::Cue::Processing: solide::leds::show(solide::leds::Pattern::Spinner, a.r, a.g, a.b); break;
+      case nimbus::voice::Cue::Alert:      solide::leds::show(solide::leds::Pattern::Solid, e.r, e.g, e.b); break;
+      case nimbus::voice::Cue::Offline:    solide::leds::show(solide::leds::Pattern::Pulse, e.r, e.g, e.b); break;
+      case nimbus::voice::Cue::None:       break;
+    }
+    s_voiceLedCue = cue;
   }
   if (g_screenIsTft && !solide::board().hasRing) {
     solide::ring::RGB frame[NIMBUS_RING_LEDS];
@@ -1345,6 +1352,7 @@ static void voiceRingTick(uint32_t now) {
 // The flow no longer owns the ring: hand it back to the normal status composition
 // (or repaint an orchestrator LED override instead of stranding it dark).
 static void voiceReleaseRing() {
+  s_voiceLedCue = nimbus::voice::Cue::None;
   if (g_ledOverrideActive) { g_devActDirty = true; return; }
   solide::leds::off();
   refreshRing();
@@ -1359,7 +1367,7 @@ static void voiceShow(bool render = true) {
   const nimbus::ThemeColor tc = nimbus::themeAccent(theme);
   g_voiceAccent = solide::ring::RGB{tc.r, tc.g, tc.b};
   g_voiceAlert = solide::ring::hsv(uint16_t(nimbus::themeAlertHue(theme)) * 257, 255, 255);
-  if (voiceOwnsRing()) voiceApplyRing(); else voiceReleaseRing();
+  if (voiceOwnsRing()) voiceApplyRing(/*force=*/true); else voiceReleaseRing();
   if (!render || !g_screenIsTft || g_menu.isOpen()) return;
   if (g_voice.phase() == nimbus::voice::Phase::Recording ||
       g_lastScreen == uint8_t(attn::ScreenId::StatusIdle))
@@ -1375,12 +1383,13 @@ class VoicePort : public nimbus::voice::Port {
   explicit VoicePort(const String& reId) : reId_(reId) {}
   uint32_t now() override { return millis(); }
   void show(const nimbus::voice::Flow& f) override {
+    const uint32_t t0 = millis();
     voiceShow();
     const uint32_t since = millis() - g_voiceReleaseMs;
     if (!g_voiceShownMs) g_voiceShownMs = since ? since : 1;
-    Serial.printf("VOICE: state=%s outcome=%s +%lums after release\n",
+    Serial.printf("VOICE: state=%s outcome=%s +%lums after release (render %lums)\n",
                   nimbus::voice::phaseName(f.phase()), nimbus::voice::outcomeName(f.outcome()),
-                  (unsigned long)since);
+                  (unsigned long)since, (unsigned long)(millis() - t0));
     if (f.phase() == nimbus::voice::Phase::Notice)
       agent::alogf("[voice] %s", nimbus::voice::sentence(f.line()).c_str());
   }
@@ -1397,6 +1406,8 @@ class VoicePort : public nimbus::voice::Port {
     const nimbus::voice::SttResult r = agent::stt::transcribePcmResult("/voice.pcm", 16000, 10000);
     Serial.printf("VOICE: stt done textLen=%u +%lums after release\n", (unsigned)r.text.size(),
                   (unsigned long)(millis() - g_voiceReleaseMs));
+    agent::alogif("[voice] result transcriptLen=%u text=\"%.80s\"", (unsigned)r.text.size(),
+                  r.text.c_str());
     return r;
   }
   bool sendTurn(const std::string& transcript) override {
@@ -1467,18 +1478,21 @@ static void captureVoiceTurn() {
   const uint32_t recMs = millis() - recStart;
   g_voiceDone = true;   // the watcher's job ended with the capture - release it now
   if (!g_voiceReleaseMs) g_voiceReleaseMs = millis();   // hit the cap while still held
+  const uint32_t stopLagMs = millis() - g_voiceReleaseMs;   // the driver's last read chunk
   g_voiceActive = false;
   ::sfx::setMuted(false);
-  // 16 kHz mono 16-bit = 32000 B/s; ~<0.4 s of audio can't hold a word.
-  Serial.printf("VOICE: recorded bytes=%u durMs=%lu (~%.2fs audio)%s\n",
+  // 16 kHz mono 16-bit = 32000 B/s; ~<0.4 s of audio can't hold a word. Serial only
+  // here: the durable log line waits until processing is on screen (a flash-persisted
+  // log write on this path cost ~70 ms of release latency on the bench).
+  Serial.printf("VOICE: recorded bytes=%u durMs=%lu (~%.2fs audio) stop +%lums%s\n",
                 (unsigned)bytes, (unsigned long)recMs, bytes / 32000.0f,
-                bytes < 12000 ? "  <-- SHORT, likely warm-up only" : "");
-  agent::alogf("[voice] recorded bytes=%u durMs=%lu audio=%.2fs%s",
-               (unsigned)bytes, (unsigned long)recMs, bytes / 32000.0f,
-               bytes < 12000 ? " SHORT/warmup" : "");
+                (unsigned long)stopLagMs, bytes < 12000 ? "  <-- SHORT, likely warm-up only" : "");
   VoicePort port(reId);
   const nimbus::voice::Outcome o = nimbus::voice::afterRelease(g_voice, port);
   esp_task_wdt_add(nullptr);
+  agent::alogif("[voice] recorded bytes=%u durMs=%lu audio=%.2fs%s",
+                (unsigned)bytes, (unsigned long)recMs, bytes / 32000.0f,
+                bytes < 12000 ? " SHORT/warmup" : "");
   Serial.printf("VOICE: release path done outcome=%s phase=%s\n",
                 nimbus::voice::outcomeName(o), nimbus::voice::phaseName(g_voice.phase()));
 }

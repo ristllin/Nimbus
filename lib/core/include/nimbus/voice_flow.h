@@ -81,6 +81,13 @@ struct Line {
 constexpr size_t kTitleMaxChars = 17;   // ring-center width on the 2.8" panel
 constexpr size_t kDetailMaxLines = 4;
 
+// Why a hold could not start at all (shown before recording, on the reply screen).
+enum class Block : uint8_t { Updating, NoKey };
+std::string blockedLine(Block b);
+// The refusal line for a device with no speech-to-text key (the same next step
+// blockedLine(NoKey) gives, so the two paths cannot disagree).
+std::string noKeyLine();
+
 Line lineFor(Outcome o, const SttResult& r);
 Line lineFor(Outcome o);                  // outcomes that carry no transport detail
 std::string sentence(const Line& l);      // "Title. Detail" for logs and serial

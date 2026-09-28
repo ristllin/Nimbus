@@ -495,44 +495,51 @@ static void test_turn_end_and_reply_outcomes() {
 
 // Fuzz the event stream: every transition must follow an allowed edge, Recording
 // is entered only by an accepted press, and nothing ever moves without an event.
-static void test_random_event_storm_never_takes_an_illegal_edge() {
-  auto allowed = [](Phase a, Phase b) {
-    switch (a) {
-      case Phase::Idle:         return b == Phase::Recording;
-      case Phase::Recording:    return b == Phase::Transcribing;
-      case Phase::Transcribing: return b == Phase::Thinking || b == Phase::Notice;
-      case Phase::Thinking:     return b == Phase::Idle || b == Phase::Notice;
-      case Phase::Notice:       return b == Phase::Idle || b == Phase::Recording;
-    }
-    return false;
-  };
+static bool allowedEdge(Phase a, Phase b) {
+  switch (a) {
+    case Phase::Idle:         return b == Phase::Recording;
+    case Phase::Recording:    return b == Phase::Transcribing;
+    case Phase::Transcribing: return b == Phase::Thinking || b == Phase::Notice;
+    case Phase::Thinking:     return b == Phase::Idle || b == Phase::Notice;
+    case Phase::Notice:       return b == Phase::Idle || b == Phase::Recording;
+  }
+  return false;
+}
+
+struct Lcg {
   uint32_t seed = 0x5eed1234u;
-  auto rnd = [&seed]() { seed = seed * 1664525u + 1013904223u; return seed >> 8; };
+  uint32_t next() { seed = seed * 1664525u + 1013904223u; return seed >> 8; }
+};
+
+// One random event; returns whether the flow reported a transition.
+static bool randomEvent(Flow& f, Lcg& rnd, uint32_t now, uint32_t& presses) {
+  const bool flag = rnd.next() % 2;
+  switch (rnd.next() % 9) {
+    case 0: { const bool c = f.press(now); presses += c; return c; }
+    case 1: return f.release(now);
+    case 2: return f.transcribed("x", now);
+    case 3: return f.fail(Outcome(1 + rnd.next() % (kOutcomeCount - 1)), lineFor(Outcome::Busy), now);
+    case 4: return f.replyLanded(flag, now);
+    case 5: return f.turnEnded(flag, now);
+    case 6: return f.tick(flag, now);
+    case 7: return f.dismiss(now);
+    default: return false;   // no event
+  }
+}
+
+static void test_random_event_storm_never_takes_an_illegal_edge() {
+  Lcg rnd;
   Flow f;
   uint32_t now = 0, presses = 0, recordingEntries = 0;
   for (int i = 0; i < 20000; ++i) {
-    now += rnd() % 5000;
+    now += rnd.next() % 5000;
     const Phase before = f.phase();
     const uint32_t tBefore = f.transitions();
-    bool changed = false;
-    switch (rnd() % 9) {
-      case 0: changed = f.press(now); if (changed) ++presses; break;
-      case 1: changed = f.release(now); break;
-      case 2: changed = f.transcribed("x", now); break;
-      case 3: changed = f.fail(Outcome(1 + rnd() % (kOutcomeCount - 1)), lineFor(Outcome::Busy), now); break;
-      case 4: changed = f.replyLanded(rnd() % 2, now); break;
-      case 5: changed = f.turnEnded(rnd() % 2, now); break;
-      case 6: changed = f.tick(rnd() % 2, now); break;
-      case 7: changed = f.dismiss(now); break;
-      default: break;   // no event
-    }
+    const bool changed = randomEvent(f, rnd, now, presses);
     TEST_ASSERT_EQUAL(changed ? tBefore + 1 : tBefore, f.transitions());
-    if (changed) {
-      TEST_ASSERT_TRUE_MESSAGE(allowed(before, f.phase()), "illegal voice-flow edge");
-      if (f.phase() == Phase::Recording) ++recordingEntries;
-    } else {
-      TEST_ASSERT_EQUAL(int(before), int(f.phase()));
-    }
+    if (!changed) TEST_ASSERT_EQUAL(int(before), int(f.phase()));
+    if (changed) TEST_ASSERT_TRUE_MESSAGE(allowedEdge(before, f.phase()), "illegal voice-flow edge");
+    if (changed && f.phase() == Phase::Recording) ++recordingEntries;
     // The ring is owned exactly while a cue is live, and Idle never owns it.
     if (f.phase() == Phase::Idle) TEST_ASSERT_FALSE(f.ownsRing());
   }
@@ -658,6 +665,25 @@ static void test_named_refusals_and_names() {
     TEST_ASSERT_TRUE(std::strcmp(phaseName(Phase(pi)), "unknown") != 0);
 }
 
+static void test_blocked_lines_are_pinned() {
+  TEST_ASSERT_EQUAL_STRING("Updating firmware. Try again after the restart.",
+                           blockedLine(Block::Updating).c_str());
+  TEST_ASSERT_EQUAL_STRING("Voice needs a speech-to-text key. Set one in the web app.",
+                           blockedLine(Block::NoKey).c_str());
+  TEST_ASSERT_EQUAL_STRING(blockedLine(Block::NoKey).c_str(), noKeyLine().c_str());
+  for (Block b : {Block::Updating, Block::NoKey}) {
+    const std::string l = blockedLine(b);
+    TEST_ASSERT_TRUE(l.find(" - ") == std::string::npos);
+    for (char c : l) TEST_ASSERT_TRUE(c >= 0x20 && c < 0x7F);
+  }
+  // A keyless refusal reads through the SttRefused line, never as no-speech.
+  SttResult r;
+  r.kind = SttResult::Kind::Refused;
+  r.refusal = noKeyLine();
+  TEST_ASSERT_EQUAL(int(Outcome::SttRefused), int(classify(r)));
+  assertCopy(lineFor(Outcome::SttRefused, r));
+}
+
 static void test_tone_per_phase_and_outcome() {
   Flow f;
   TEST_ASSERT_EQUAL(0, f.tone());
@@ -701,5 +727,6 @@ int main() {
   RUN_TEST(test_flow_cue_per_phase);
   RUN_TEST(test_named_refusals_and_names);
   RUN_TEST(test_tone_per_phase_and_outcome);
+  RUN_TEST(test_blocked_lines_are_pinned);
   return UNITY_END();
 }

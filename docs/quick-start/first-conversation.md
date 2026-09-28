@@ -26,11 +26,34 @@ your API credits. Leave it off unless you mean to run a public bot.
 
 ## Hold-to-talk (on the device)
 
-**Press and hold the on-screen mic bar**, speak, release. While listening, the
-Nimbus board's ring breathes red (the all-in-one shows the state on its screen),
-then a spinner appears while it transcribes; the reply renders on the display
-(and speaks, when a voice provider that supports the device speaker is
-configured). Up to 60 seconds per hold.
+**Press and hold the on-screen mic bar**, speak, release. Up to 60 seconds per
+hold. The ring and the screen always say what is happening:
+
+| State | Ring | Screen |
+|---|---|---|
+| Listening (held) | steady ring in your theme color | "Listening", the mic shows pressed |
+| Processing (released, until the reply lands) | a sweeping spinner in your theme color | "Transcribing", then "Thinking" with what it heard; the mic reads "wait" |
+| Reply | back to normal status | the reply, held until you tap Close |
+
+Processing starts the moment you let go, before anything goes over the network.
+The reply also speaks when a voice provider that supports the device speaker is
+configured. On the all-in-one the ring is drawn on the screen; on the Nimbus
+board it is the LED ring and the lines appear in the mic bar.
+
+If something goes wrong, the screen says what, and the ring turns your theme's
+alert color for a few seconds (tap anywhere to clear it, or hold the mic to try
+again):
+
+| You see | What happened |
+|---|---|
+| **No network**: Check Wi-Fi and try again. | The device is not on Wi-Fi, or the speech-to-text service cannot be reached. Shown at once, without waiting for a timeout. The ring breathes. |
+| **Mistral error** (or OpenAI, Cumulo): the HTTP status | The speech-to-text provider answered with an error. "Key rejected" means the key needs checking in the web app. |
+| **Voice unavailable** | The provider refused the request, for example out of credit or rate limited. |
+| **Busy** | Another request was using the connection. Try again in a moment. |
+| **No audio** | The mic recorded nothing. |
+| **Didn't catch that** | The provider was reached and heard no speech. No alert color: nothing is broken. |
+| **No answer** or the assistant's own error reply | The assistant could not finish the turn. |
+| **No reply** | Nothing came back in time. |
 
 Everything else is a **tap**: move between sessions, open the menu, and go back
 from the touchscreen. The 45-LED ring on the Nimbus board wakes for a glance at

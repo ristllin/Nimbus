@@ -118,6 +118,16 @@ const char* outcomeName(Outcome o) {
   return "unknown";
 }
 
+std::string noKeyLine() { return "Voice needs a speech-to-text key. Set one in the web app."; }
+
+std::string blockedLine(Block b) {
+  switch (b) {
+    case Block::Updating: return "Updating firmware. Try again after the restart.";
+    case Block::NoKey:    return noKeyLine();
+  }
+  return noKeyLine();
+}
+
 Line lineFor(Outcome o, const SttResult& r) {
   switch (o) {
     case Outcome::None:            return {};
@@ -162,34 +172,44 @@ bool sfxFor(Outcome o, sfx::Ev& out) {
   return true;
 }
 
+namespace {
+std::vector<std::string> words(const std::string& s) {
+  std::vector<std::string> out;
+  size_t i = 0;
+  while (i < s.size()) {
+    const size_t b = s.find_first_not_of(' ', i);
+    if (b == std::string::npos) break;
+    const size_t e = s.find(' ', b);
+    out.push_back(s.substr(b, e == std::string::npos ? std::string::npos : e - b));
+    i = e == std::string::npos ? s.size() : e;
+  }
+  return out;
+}
+
+// Append one word to the lines being built, hard-splitting a word longer than a line.
+void place(std::string w, size_t maxChars, std::string& cur, std::vector<std::string>& out) {
+  while (w.size() > maxChars) {
+    if (!cur.empty()) { out.push_back(cur); cur.clear(); }
+    out.push_back(w.substr(0, maxChars));
+    w = w.substr(maxChars);
+  }
+  if (cur.empty()) cur = w;
+  else if (cur.size() + 1 + w.size() <= maxChars) cur += " " + w;
+  else { out.push_back(cur); cur = w; }
+}
+}  // namespace
+
 std::vector<std::string> wrap(const std::string& s, size_t maxChars, size_t maxLines) {
   std::vector<std::string> out;
   if (maxChars == 0 || maxLines == 0) return out;
   std::string cur;
-  size_t i = 0;
-  while (i < s.size()) {
-    while (i < s.size() && s[i] == ' ') ++i;
-    size_t j = i;
-    while (j < s.size() && s[j] != ' ') ++j;
-    std::string w = s.substr(i, j - i);
-    i = j;
-    if (w.empty()) continue;
-    while (w.size() > maxChars) {   // hard-split an over-long word
-      if (!cur.empty()) { out.push_back(cur); cur.clear(); }
-      out.push_back(w.substr(0, maxChars));
-      w = w.substr(maxChars);
-    }
-    if (cur.empty()) cur = w;
-    else if (cur.size() + 1 + w.size() <= maxChars) cur += " " + w;
-    else { out.push_back(cur); cur = w; }
-  }
+  for (const std::string& w : words(s)) place(w, maxChars, cur, out);
   if (!cur.empty()) out.push_back(cur);
-  if (out.size() > maxLines) {
-    out.resize(maxLines);
-    std::string& last = out.back();
-    if (last.size() + 3 > maxChars) last.resize(maxChars >= 3 ? maxChars - 3 : 0);
-    last += "...";
-  }
+  if (out.size() <= maxLines) return out;
+  out.resize(maxLines);   // overflow: the last line says so
+  std::string& last = out.back();
+  if (last.size() + 3 > maxChars) last.resize(maxChars >= 3 ? maxChars - 3 : 0);
+  last += "...";
   return out;
 }
 
