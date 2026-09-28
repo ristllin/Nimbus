@@ -137,7 +137,7 @@ static void testProbeFlipsAndKeeps(ndtest::Ctx& c) {
   c.eqi(authOf(rig, "ghost"), 2, "a Studio connector the workspace does not list => refused");
   c.eqi(authOf(rig, "web_search"), -1, "a built-in stays provider-side (-1)");
   const std::string cat = rig.connectorsCatalog();
-  c.ok(has(cat, "gcal (Mistral reports it not signed in: results may come back empty"),
+  c.ok(has(cat, "gcal (usable: always try it first."),
        "the catalog carries the not-signed-in hint for gcal");
   c.ok(!has(cat, "gcal (not usable"), "the hint never gates: gcal is not called unusable");
   c.ok(has(cat, "ghost (not usable until the owner enables it in their Mistral Studio account)"),

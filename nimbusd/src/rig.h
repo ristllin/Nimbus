@@ -82,6 +82,11 @@ constexpr const char* kZaiConv       = "openai";         // OpenAI-compatible wi
 constexpr const char* kZaiModel      = "glm-5.3";        // ZAI_MODEL default
 constexpr const char* kZaiSlug       = "zai";            // head + routing slug
 
+// The chat id the web app's chat surface runs its turns under (web_api.h posts
+// every /api/chat turn with it). It is the hosted instance's SYNCHRONOUS channel:
+// the page resolves its poll only on a delivered message.
+constexpr const char* kWebChatId = "owner";
+
 struct TurnRecord {
   std::string chatId, userText, reply;
   std::vector<std::string> toolCalls;
@@ -994,6 +999,13 @@ class NimbusdRig {
     };
     d.apply.noteSpawned = [this] {
       if (jobs_) jobs_->noteSpawned();
+    };
+    // Device parity (orchestrator turnComplete): a turn that ends with no reply, no
+    // spawn and no tool reply still confirms it finished on the SYNCHRONOUS channel
+    // (the web chat), instead of leaving the page waiting out its poll with nothing.
+    // Async channels (Telegram, /api/message) stay silent, as on the device.
+    d.apply.turnComplete = [this](const std::string& chat) {
+      if (chat == kWebChatId) record(chat, "Done.");
     };
 
     registerHeads(d);

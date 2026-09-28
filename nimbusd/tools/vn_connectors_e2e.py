@@ -258,31 +258,33 @@ def title_hit(title, text):
 
 
 def step_b(inst, ev, oracle_key, model, secs, settle):
+    # The instance's turn FIRST, in a fresh provider minute: a small key's
+    # per-minute token quota is shared by the head turn, the spawned sub and the
+    # synthesis turn. The independent oracle runs after, on the same day.
+    q = "What is on my calendar today?"
+    attempts = ask_with_retry(inst, q, secs, settle)
+    ev("b_transcript.json", json.dumps({"prompt": q, "attempts": attempts}, indent=2))
+    time.sleep(settle)
     day = datetime.date.today().isoformat()
     ran_tool, titles, usage, oracle_text = oracle_titles(oracle_key, model, day)
     ev(
         "b_oracle.json",
         json.dumps({"day": day, "tool_ran": ran_tool, "titles": titles, "usage": usage, "text": oracle_text}, indent=2),
     )
-    time.sleep(settle)  # the oracle spent this minute's provider quota
-    q = "What is on my calendar today?"
-    attempts = ask_with_retry(inst, q, secs, settle)
-    ev("b_transcript.json", json.dumps({"prompt": q, "attempts": attempts}, indent=2))
-    final = attempts[-1]["replies"]
-    joined = "\n".join(r["text"] for r in final)
+    joined = "\n".join(r["text"] for a in attempts for r in a["replies"])
     hits = {t: title_hit(t, joined) for t in titles}
     hits = {t: h for t, h in hits.items() if h}
     if not titles:
         ok, why = False, "oracle saw no events today: nothing stable to assert on"
     else:
-        ok, why = bool(hits), f"{len(hits)} of {len(titles)} oracle events named in the reply"
+        ok, why = bool(hits), f"{len(hits)} of {len(titles)} oracle events named in the replies"
     return ok, {
         "oracle_tool_ran": ran_tool,
         "oracle_events": len(titles),
         "hit_rules": list(hits.values()),
         "why": why,
         "attempts": len(attempts),
-        "replies": len(final),
+        "replies": sum(len(a["replies"]) for a in attempts),
     }
 
 

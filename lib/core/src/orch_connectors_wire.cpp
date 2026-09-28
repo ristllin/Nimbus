@@ -679,8 +679,9 @@ static std::string connectorRowNote(const ConnectorInfo& c, const char* prov) {
   // Usable. is_authenticated is a hint, never a gate: a listed connector that
   // reports it false still ran live, so say what an empty result may mean.
   if (c.workspace == W::ListedNotSignedIn)
-    return " (Mistral reports it not signed in: results may come back empty until the "
-           "owner connects it in Mistral, so try it and say so if it returns nothing)";
+    return " (usable: always try it first. Mistral's signed-in flag is unreliable for "
+           "it, so never skip it on that basis; only if it returns nothing or asks to "
+           "sign in, tell the owner to connect it in Mistral)";
   return "";
 }
 

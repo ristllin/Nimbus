@@ -1111,7 +1111,7 @@ class WebApi {
   // The web channel's delivery chat id (a web turn is posted as, and its reply is
   // delivered to, this chat). The reply matcher consumes only assistant replies on
   // this channel, so a Telegram/routine reply cannot surface in the web bubble.
-  static constexpr const char* kWebChat = "owner";
+  static constexpr const char* kWebChat = kWebChatId;   // rig.h: the synchronous channel
   struct PendingTurn { uint64_t userSeq; time_t deadline; };
   std::deque<PendingTurn> pending_;
   std::map<uint64_t, std::string> resolved_;

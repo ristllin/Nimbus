@@ -1138,8 +1138,12 @@ static void test_catalog_hint_when_listed_but_not_signed_in() {
   nimbus::orch::applyConnectorAuth(cs, ws);
   ProviderState ps; ps.mistralKeyed = true; ps.currentHost = "mistral";
   const std::string t = catalogText(cs, ps);
-  TEST_ASSERT_TRUE(t.find("gcal (Mistral reports it not signed in: results may come back "
-                          "empty until the owner connects it in Mistral") != std::string::npos);
+  // The hint must steer the model to TRY the connector (live 2026-09-28: the first
+  // wording, "reports it not signed in", made the model refuse notion/slack without
+  // trying - the hint acting as a gate), and only then relay a needs-connect result.
+  TEST_ASSERT_TRUE(t.find("gcal (usable: always try it first.") != std::string::npos);
+  TEST_ASSERT_TRUE(t.find("never skip it on that basis") != std::string::npos);
+  TEST_ASSERT_TRUE(t.find("not signed in") == std::string::npos);
   TEST_ASSERT_TRUE(t.find("gcal (not usable") == std::string::npos);
   TEST_ASSERT_TRUE(t.find("notion\n") != std::string::npos || t.find("notion,") != std::string::npos);
   TEST_ASSERT_TRUE(t.find("notion (") == std::string::npos);

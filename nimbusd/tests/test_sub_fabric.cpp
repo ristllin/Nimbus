@@ -272,6 +272,29 @@ static void testUntrustedChatCannotSpawn(ndtest::Ctx& c) {
   clearEnv();
 }
 
+// (g) device parity: a turn with no reply and no spawn still completes on the
+// synchronous web chat ("Done."), never on an async channel.
+static void testReplyLessTurnCompletesOnWeb(ndtest::Ctx& c) {
+  std::printf("  -- (g) a reply-less turn says Done. on the web chat only --\n");
+  clearEnv();
+  FakeHttpTransport tx;
+  tx.script.push_back(headTurn("{\"reply\":\"\",\"memory\":\"\",\"ask\":\"\"}"));
+  tx.script.push_back(headTurn("{\"reply\":\"\",\"memory\":\"\",\"ask\":\"\"}"));
+  Config cfg;
+  NimbusdRig rig(cfg, opts("fab-g"), &tx);
+  rig.applyProviderKey("mistral", "mk_TEST_FAB_6");
+  std::vector<std::pair<std::string, std::string>> got;
+  rig.setDeliver([&got](const std::string& ch, const std::string& t) { got.push_back({ch, t}); });
+  rig.say(kWebChatId, "hello");
+  rig.say("12345", "hello");
+  c.eqi((long)got.size(), 1, "exactly one completion delivered");
+  if (!got.empty()) {
+    c.eq(got[0].first, kWebChatId, "it went to the web chat");
+    c.eq(got[0].second, "Done.", "it says Done.");
+  }
+  clearEnv();
+}
+
 int main() {
   ndtest::Ctx c;
   c.suite = "sub-agent fabric (device parity)";
@@ -282,6 +305,7 @@ int main() {
   testBackgroundWorkIsNotATurn(c);
   testRebuildKeepsJobs(c);
   testUntrustedChatCannotSpawn(c);
+  testReplyLessTurnCompletesOnWeb(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);
   std::printf("%s\n", c.failures ? "FAILED" : "PASSED");
   return c.failures ? 1 : 0;
