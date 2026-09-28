@@ -3,6 +3,7 @@
 Run: python3 -m pytest tools/release_gate
 """
 
+import fnmatch
 import itertools
 import re
 from pathlib import Path
@@ -244,17 +245,21 @@ def check_workflow(text):
     shape = jobs.pop(CLASSIFIER, None)
     if shape is None:
         return [f"no {CLASSIFIER} job"]
-    body = "\n".join(shape["body"])
+    lines = [line.strip() for line in shape["body"]]
     errs = []
     if shape["if"] is not None or shape["needs"]:
         errs.append(f"{CLASSIFIER} must run first and unconditionally")
+    # Exact lines: a `|| true` or `continue-on-error` would let a refused tag leave the
+    # gate green with no channel, so the run would read green having shipped nothing.
     for needle in (
         "id: shape",
-        "python3 tools/release_gate/tag_shape.py",
+        'run: python3 tools/release_gate/tag_shape.py --tag "${GITHUB_REF_NAME}"',
         "channel: ${{ steps.shape.outputs.channel }}",
     ):
-        if needle not in body:
-            errs.append(f"{CLASSIFIER} lacks {needle!r}")
+        if needle not in lines:
+            errs.append(f"{CLASSIFIER} lacks the line {needle!r}")
+    if any(line.startswith("continue-on-error") for line in lines):
+        errs.append(f"{CLASSIFIER} must not continue on error")
     if set(jobs) != set(JOB_CHANNELS):
         errs.append(f"jobs {sorted(jobs)} != declared {sorted(JOB_CHANNELS)}")
     for name, job in jobs.items():
@@ -288,6 +293,29 @@ def test_firmware_job_is_ota_only():
     assert JOB_CHANNELS["release"] == {ts.OTA}
 
 
+# `git describe --tags` names a build after the nearest tag; a vn- tag must never be it.
+DESCRIBE_MATCH = "v[0-9]*"
+
+
+def test_every_git_describe_in_the_release_ignores_virtual_tags():
+    code = [line.split("#")[0] for line in release_yml().splitlines()]  # the run: lines hold no '#'
+    uses = [line for line in code if "git describe" in line]
+    assert uses, "release.yml no longer runs git describe; drop this test"
+    for line in uses:
+        assert f"--match '{DESCRIBE_MATCH}'" in line, line
+
+
+def test_describe_match_admits_every_firmware_tag_and_no_virtual_tag():
+    tags = [p + v + s for p in ("", "vn-") for v in (VER, "v10.0.0") for s in ("", "-1", "-rc1", "-rcx")]
+    seen = set()
+    for tag in tags:
+        ch = ts.classify(tag, tag.removeprefix("vn-").split("-")[0])[0]
+        if ch is not None:
+            assert fnmatch.fnmatchcase(tag, DESCRIBE_MATCH) == (ch == ts.OTA), tag
+            seen.add(ch)
+    assert seen == set(ts.CHANNELS)
+
+
 # The checker is not vacuous: each way of breaking the wiring is caught.
 @pytest.mark.parametrize(
     "old,new",
@@ -313,6 +341,10 @@ def test_firmware_job_is_ota_only():
         ("  nimbusd-image:\n    needs: tag-shape\n", "  nimbusd-image:\n"),
         # the classifier stops running the script
         ("python3 tools/release_gate/tag_shape.py", "true"),
+        # the classifier swallows a refusal
+        ('--tag "${GITHUB_REF_NAME}"\n', '--tag "${GITHUB_REF_NAME}" || true\n'),
+        ("        id: shape\n", "        id: shape\n        continue-on-error: true\n"),
+        ("    outputs:\n      channel:", "    continue-on-error: true\n    outputs:\n      channel:"),
         # the classifier stops exporting the channel
         ("channel: ${{ steps.shape.outputs.channel }}", "channel: ota"),
         # a new, ungated job

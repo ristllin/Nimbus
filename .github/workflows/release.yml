@@ -128,7 +128,7 @@ jobs:
           # own type in the message.
           python3 tools/make_manifest.py \
             --version "${GITHUB_REF_NAME}" \
-            --build "$(git describe --tags --always)" \
+            --build "$(git describe --tags --always --match 'v[0-9]*')" \
             --key /tmp/ota_priv.pem \
             --url-base "https://github.com/ristllin/nimbus-fw-releases/releases/download/${GITHUB_REF_NAME}" \
             --out manifest.json \
