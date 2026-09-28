@@ -640,6 +640,40 @@ static void test_flow_cue_per_phase() {
   TEST_ASSERT_FALSE(f.fail(Outcome::None, Line{}, 1));
 }
 
+static void test_named_refusals_and_names() {
+  for (const char* c : {"funding_cap_reached", "rate_limited", "audio_duration_unknown",
+                        "unsupported_media_type"})
+    TEST_ASSERT_TRUE_MESSAGE(namedRefusal(c), c);
+  // A provider's own error code (a rejected key) is NOT a named refusal: it is shown
+  // as its HTTP status, never reworded as "unavailable".
+  for (const char* c : {"", "invalid_api_key", "Unauthorized", "rate_limit_exceeded"})
+    TEST_ASSERT_FALSE_MESSAGE(namedRefusal(c), c);
+  TEST_ASSERT_EQUAL_STRING("transcribing", phaseName(Phase::Transcribing));
+  TEST_ASSERT_EQUAL_STRING("notice", phaseName(Phase::Notice));
+  TEST_ASSERT_EQUAL_STRING("no_network", outcomeName(Outcome::NoNetwork));
+  TEST_ASSERT_EQUAL_STRING("empty_transcript", outcomeName(Outcome::EmptyTranscript));
+  for (int oi = 0; oi < kOutcomeCount; ++oi)
+    TEST_ASSERT_TRUE(std::strcmp(outcomeName(Outcome(oi)), "unknown") != 0);
+  for (int pi = 0; pi <= int(Phase::Notice); ++pi)
+    TEST_ASSERT_TRUE(std::strcmp(phaseName(Phase(pi)), "unknown") != 0);
+}
+
+static void test_tone_per_phase_and_outcome() {
+  Flow f;
+  TEST_ASSERT_EQUAL(0, f.tone());
+  f.press(0);
+  TEST_ASSERT_EQUAL(0, f.tone());
+  f.release(0);
+  TEST_ASSERT_EQUAL(0, f.tone());
+  f.fail(Outcome::NoNetwork, lineFor(Outcome::NoNetwork), 0);
+  TEST_ASSERT_EQUAL(1, f.tone());
+  Flow g;
+  g.press(0);
+  g.release(0);
+  g.fail(Outcome::EmptyTranscript, lineFor(Outcome::EmptyTranscript), 0);
+  TEST_ASSERT_EQUAL(2, g.tone());
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_release_shows_processing_before_any_network_call);
@@ -665,5 +699,7 @@ int main() {
   RUN_TEST(test_wrap);
   RUN_TEST(test_cue_frames);
   RUN_TEST(test_flow_cue_per_phase);
+  RUN_TEST(test_named_refusals_and_names);
+  RUN_TEST(test_tone_per_phase_and_outcome);
   return UNITY_END();
 }

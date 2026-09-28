@@ -86,6 +86,38 @@ std::string providerName(const std::string& slug) {
   return "Speech-to-text";
 }
 
+bool namedRefusal(const std::string& code) {
+  return code == "funding_cap_reached" || code == "rate_limited" ||
+         code == "audio_duration_unknown" || code == "unsupported_media_type";
+}
+
+const char* phaseName(Phase p) {
+  switch (p) {
+    case Phase::Idle:         return "idle";
+    case Phase::Recording:    return "recording";
+    case Phase::Transcribing: return "transcribing";
+    case Phase::Thinking:     return "thinking";
+    case Phase::Notice:       return "notice";
+  }
+  return "unknown";
+}
+
+const char* outcomeName(Outcome o) {
+  switch (o) {
+    case Outcome::None:            return "none";
+    case Outcome::NoNetwork:       return "no_network";
+    case Outcome::SttHttp:         return "stt_http";
+    case Outcome::SttRefused:      return "stt_refused";
+    case Outcome::SttBadReply:     return "stt_bad_reply";
+    case Outcome::Busy:            return "busy";
+    case Outcome::NoAudio:         return "no_audio";
+    case Outcome::EmptyTranscript: return "empty_transcript";
+    case Outcome::TurnError:       return "turn_error";
+    case Outcome::NoReply:         return "no_reply";
+  }
+  return "unknown";
+}
+
 Line lineFor(Outcome o, const SttResult& r) {
   switch (o) {
     case Outcome::None:            return {};
@@ -194,6 +226,11 @@ Cue Flow::cue() const {
     case Phase::Idle:         break;
   }
   return Cue::None;
+}
+
+uint8_t Flow::tone() const {
+  if (phase_ != Phase::Notice) return 0;
+  return cueFor(outcome_) == Cue::None ? 2 : 1;
 }
 
 bool Flow::press(uint32_t now) {

@@ -1,6 +1,7 @@
 #include "http_multipart.h"
 
 #include <LittleFS.h>
+#include <WiFi.h>              // hostByName - the bounded-connect DNS pre-check
 #include <WiFiClientSecure.h>
 
 #include <cstdlib>    // atol
@@ -55,7 +56,7 @@ bool post(const char* host, int port, const char* path, const String& bearer,
           const std::vector<Field>& fields, const char* fileField,
           const char* fileName, const char* fileMime, const char* filePath,
           String& respBody, String& err, fs::FS* srcFs, bool lockSrc,
-          const uint8_t* filePrefix, size_t filePrefixLen) {
+          const uint8_t* filePrefix, size_t filePrefixLen, uint32_t connectBudgetMs) {
   fs::FS& src = srcFs ? *srcFs : LittleFS;   // nullptr = LittleFS (historical default)
   const bool haveFile = filePath && filePath[0];
   size_t fileSize = 0;
@@ -82,6 +83,18 @@ bool post(const char* host, int port, const char* path, const String& bearer,
     contentLen += fileHdr.length() + filePrefixLen + fileSize + 2;
   contentLen += 2 + strlen(kBoundary) + 4;                       // --boundary--\r\n
 
+  // Bounded connect (CUM-456): resolve first. A failed lookup means the host is
+  // unreachable from here - answer "connect failed" now instead of letting the
+  // core connect to an unresolved address and sit out its socket timeout (the
+  // offline hold-to-talk measured ~18 s per attempt, x3).
+  if (connectBudgetMs) {
+    IPAddress ip;
+    if (!WiFi.hostByName(host, ip)) {
+      err = "connect failed";
+      alogf("multipart: resolve %s failed", host);
+      return false;
+    }
+  }
   if (!arbiter::acquireWork(10000)) { err = "tls arbiter busy"; return false; }
   WiFiClientSecure c;
   tlsSetup(c);
@@ -90,9 +103,10 @@ bool post(const char* host, int port, const char* path, const String& bearer,
   // socket, and ONE wall clock covers connect + upload + response (the STT/voice
   // upload is the speak-path sibling that can wedge tg_poll on a half-open NAT).
   const uint32_t opDeadline = millis() + 60000;   // upload + server transcription + read
-  c.setConnectionTimeout(45000);
+  const uint32_t connectDeadline = connectBudgetMs ? millis() + connectBudgetMs : opDeadline;
+  c.setConnectionTimeout(connectBudgetMs && connectBudgetMs < 45000 ? connectBudgetMs : 45000);
   bool connected = false;
-  for (int a = 0; a < 3 && !connected && (int32_t)(millis() - opDeadline) < 0; a++) {
+  for (int a = 0; a < 3 && !connected && (int32_t)(millis() - connectDeadline) < 0; a++) {
     if (c.connect(host, port)) { connected = true; break; }
     tlsClose(c);
     if (a < 2) vTaskDelay(pdMS_TO_TICKS(400));

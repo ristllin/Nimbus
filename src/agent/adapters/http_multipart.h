@@ -40,11 +40,19 @@ struct Field {
 // PCM capture as a WAV (44-byte RIFF header inline) WITHOUT writing a second copy
 // of the whole recording to flash - the double-copy was the ceiling on recording
 // length (owner 2026-07-16).
+// connectBudgetMs: 0 = the historical connect (up to 3 attempts inside the 60 s
+// operation deadline). Non-zero (the hold-to-talk STT upload, CUM-456) bounds the
+// whole connect phase: the host is resolved first and a DNS failure returns
+// "connect failed" at once (the core would otherwise go on to connect to an
+// unresolved address and sit out its socket timeout), each attempt's connection
+// timeout is capped at the budget, and no new attempt starts past it - so an
+// unreachable host costs about the budget, never three full timeouts.
 bool post(const char* host, int port, const char* path, const String& bearer,
           const std::vector<Field>& fields, const char* fileField,
           const char* fileName, const char* fileMime, const char* filePath,
           String& respBody, String& err, fs::FS* srcFs = nullptr, bool lockSrc = false,
-          const uint8_t* filePrefix = nullptr, size_t filePrefixLen = 0);
+          const uint8_t* filePrefix = nullptr, size_t filePrefixLen = 0,
+          uint32_t connectBudgetMs = 0);
 
 }  // namespace httpmp
 }  // namespace agent

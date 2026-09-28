@@ -182,6 +182,10 @@ struct Hooks {
   // here rather than on the web task so the measurement is of the card, not of
   // AsyncTCP, and so a HIL check of the cold path has a non-web route.
   std::function<String(const String& before, const String& text)> epiQuery;
+  // VOICE? (CUM-456 bench seam): the hold-to-talk flow state + the release timings
+  // the on-device check asserts - release -> first repaint and release -> the
+  // speech-to-text call (0 = never started, the offline fast-fail).
+  std::function<String()> voiceState;
 };
 
 #if defined(NIMBUS_TEST)

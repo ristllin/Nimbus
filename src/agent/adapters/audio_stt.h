@@ -1,6 +1,8 @@
 #pragma once
 #include <Arduino.h>
 
+#include "nimbus/voice_flow.h"   // SttResult (CUM-456)
+
 // audio_stt - speech-to-text via a provider transcription endpoint (OpenAI
 // /v1/audio/transcriptions, model gpt-4o-mini-transcribe). Uploads an audio file
 // straight off LittleFS through the shared multipart uploader (TLS on PSRAM).
@@ -16,12 +18,6 @@ namespace stt {
 // device (CUM-376).
 bool available();
 
-// The honest one-line status of the LAST transcribe attempt when it failed with a
-// router/provider refusal (e.g. funding_cap_reached, rate_limited); "" otherwise.
-// The mic path surfaces this instead of the generic "Didn't catch that" so a
-// refusal is never silent. Reset at the start of each transcribe call.
-String lastStatus();
-
 // Transcribe the audio at `localPath` (LittleFS) with the given mime type. Returns
 // the transcript text ("" on failure). Signature matches telegram::SttSink so it
 // can be passed directly to telegram::setSttSink.
@@ -35,6 +31,14 @@ String transcribe(const char* localPath, const char* mime);
 // multipart upload. Replaces the old pcmToWav two-file dance - the second full
 // copy on LittleFS halved the recordable length for nothing but 44 bytes.
 String transcribePcm(const char* pcmPath, uint32_t sampleRate);
+
+// The same transcription, returning the structured outcome the hold-to-talk path
+// needs (CUM-456): Ok + text, or WHICH failure - no network, a provider HTTP error,
+// a named router refusal (the refusal line rides in `refusal`), an unreadable reply,
+// a busy device, or no audio. connectBudgetMs bounds the connect phase (0 = the
+// historical connect); see agent::httpmp::post.
+nimbus::voice::SttResult transcribePcmResult(const char* pcmPath, uint32_t sampleRate,
+                                             uint32_t connectBudgetMs);
 
 #ifdef NIMBUS_TEST
 // Bench seam (test image only, console STTKEY): a RAM-only placeholder key so the

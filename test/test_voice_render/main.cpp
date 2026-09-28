@@ -143,15 +143,10 @@ static ScreenCtx ringlessCtx(voice::Cue cue, uint32_t elapsedMs) {
   return c;
 }
 
-static uint8_t toneFor(const voice::Flow& f) {
-  if (f.phase() != voice::Phase::Notice) return 0;
-  return f.cue() == voice::Cue::None ? 2 : 1;
-}
-
 static void applyFlow(ScreenCtx& c, const voice::Flow& f) {
   c.voiceTitle = f.line().title;
   c.voiceDetail = f.line().detail;
-  c.voiceTone = toneFor(f);
+  c.voiceTone = f.tone();
   c.micHeld = f.phase() == voice::Phase::Recording;
   c.micBusy = f.busy();
 }

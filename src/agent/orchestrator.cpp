@@ -34,6 +34,7 @@
 #include "adapters/provider_file_fetch.h"  // captureProviderFile - v4.1 code_interpreter file capture
 #include <solide/audio.h>               // reply.speak - play WAV on the device speaker (P6)
 #include <LittleFS.h>
+#include <atomic>                       // voiceTurnSeq - hold-to-talk completion edge
 #include <memory>                       // unique_ptr - heap Info[] (kMaxConnectors)
 #include <new>       // std::nothrow - alloc failure degrades, never panics
 #include "telegram.h"                   // telegram::enabled - capability manifest
@@ -104,6 +105,9 @@ static LittleFsMemoryStore   g_memStore;
 static LittleFsFoldStoreIO      g_foldIO;
 static nimbus::orch::FoldStore  g_folds;
 static char g_lastTurnChat[32]  = {};   // the chat compactTick() watches
+// Hold-to-talk turn completion (CUM-456) - see voiceTurnSeq() in the header.
+static std::atomic<uint32_t> s_voiceTurnSeq{0};
+static std::atomic<bool>     s_voiceTurnOk{false};
 // Glass Box turn identity: "turn:<user row id>" - stamped on every trace row and
 // on the turn's assistant reply rows, so the chat UI groups a bubble with its
 // trace by ID instead of chronological adjacency (adjacency mis-bucketed rows
@@ -1086,6 +1090,12 @@ static TurnEngine::Deps buildTurnDeps() {
   // real billed tokens + tool-call count. onSpawn/onResult stay UNWIRED here on
   // purpose - sfx + the ring already cover those via the event/fire sinks.
   d.hooks.onTurnEnd = [](const TurnEndEv& ev) {
+    // Hold-to-talk completion edge (CUM-456): ok first, then the counter (release),
+    // so the main loop never pairs a new edge with a stale result.
+    if (ev.chatId == "voice") {
+      s_voiceTurnOk.store(ev.ok, std::memory_order_relaxed);
+      s_voiceTurnSeq.fetch_add(1, std::memory_order_release);
+    }
     // Prism B: the in-flight-user-row id must not outlive its turn - a stale id
     // matching the chat's newest row made SYNTHESIS/loop turns silently drop the
     // owner's real last message from the RECENT CONVERSATION window (exactly the
@@ -2304,6 +2314,12 @@ void stageTerminate(const std::string& id) {
 // Phase 0 token seam: the real provider token usage of the most recently
 // completed turn. Local Loops reads this right after injectScheduledTurn() to
 // meter true billed spend against its per-loop + daily cost caps.
+uint32_t voiceTurnSeq(bool* lastOk) {
+  const uint32_t seq = s_voiceTurnSeq.load(std::memory_order_acquire);
+  if (lastOk) *lastOk = s_voiceTurnOk.load(std::memory_order_relaxed);
+  return seq;
+}
+
 nimbus::orch::TokenUsage lastTurnUsage() {
   return g_engine ? g_engine->lastTurnUsage() : nimbus::orch::TokenUsage{};
 }

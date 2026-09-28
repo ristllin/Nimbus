@@ -88,6 +88,15 @@ nimbus::orch::TokenUsage lastTurnUsage();
 nimbus::orch::TokenUsage sessionUsage();   // running sum of billed tokens since boot
 uint32_t                 turnCount();      // non-empty turns since boot
 
+// Hold-to-talk turn completion (CUM-456): a counter that advances once each time a
+// turn on the on-device voice channel (chatId "voice") ENDS - every exit path, via
+// the engine's onTurnEnd hook - with that turn's success in *lastOk. The panel's
+// processing state ends on this edge (not on the first delivered text, which can be
+// a mid-turn fallback notice), and a failed turn shows its error cue. Written on the
+// turn task, read on the main loop (atomic; the reply text is delivered BEFORE the
+// counter moves, so a reader that sees the edge also sees the reply).
+uint32_t voiceTurnSeq(bool* lastOk);
+
 // Run a Local Loops scheduled turn synchronously (mirrors the auto-synthesis
 // turn). Fires on the tg_poll task; returns real usage + the delivered reply.
 // loopId (optional, additive) feeds the ledger's spend-attribution tag

@@ -37,6 +37,12 @@ int currentRingCount();
 // animator can't paint a live breathe - a steady lit ring is the honest cue.
 void paintRingSolid(uint8_t r, uint8_t g, uint8_t b);
 
+// Overwrite the composited ring frame with `n` colors (clamped to the ring size) so
+// the panel mirror shows them at once. The hold-to-talk cue frames (listening,
+// the processing comet, an error outcome) on a panel-ring board (CUM-456); the
+// loop advances the frame while the voice flow owns the ring.
+void paintRingFrame(const solide::ring::RGB* frame, int n);
+
 // Advance the Active-posture Animator and push a fresh frame when it's time
 // (rate-limited internally to ~30 FPS - this call is cheap to make every main
 // loop iteration). No-op in Dark/Calm levels or whenever applyRingPlan() hasn't

@@ -90,6 +90,14 @@ Cue cueFor(Outcome o);
 bool sfxFor(Outcome o, sfx::Ev& out);
 // "Mistral" / "OpenAI" / "Cumulo" for a provider slug ("Speech-to-text" if unknown).
 std::string providerName(const std::string& slug);
+// A router refusal code the owner can be told about by name (the CUM-376 route
+// contract: credit, rate limit, unreadable or unsupported audio). Any other error
+// body is shown as its plain HTTP status, so a rejected key is never reworded as a
+// vague "unavailable".
+bool namedRefusal(const std::string& code);
+// Stable lowercase names for serial / log seams ("transcribing", "no_network").
+const char* phaseName(Phase p);
+const char* outcomeName(Outcome o);
 
 // Greedy word wrap into at most `maxLines` lines of `maxChars`; a word longer than
 // a line is hard-split, and overflow ends the last line with "...".
@@ -133,6 +141,9 @@ class Flow {
   bool canPress() const { return phase_ == Phase::Idle || phase_ == Phase::Notice; }
   bool busy() const { return phase_ == Phase::Transcribing || phase_ == Phase::Thinking; }
   bool replyShown() const { return replyShown_; }
+  // Colour tone for the status line: 0 accent (listening / processing), 1 alert
+  // (a failed outcome), 2 calm (an outcome that is not a failure).
+  uint8_t tone() const;
   uint32_t since() const { return since_; }
   uint32_t transitions() const { return transitions_; }
   // The status line for the current phase ("Listening", "Transcribing", "Thinking"

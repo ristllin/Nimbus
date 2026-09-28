@@ -631,6 +631,10 @@ void dispatch(String line) {
     Serial.printf("MICREC bytes=%u transcript=\"%s\"\n", (unsigned)bytes, tr.c_str());
     return;
   }
+  if (line == "VOICE?") {
+    reply(s_h.voiceState ? s_h.voiceState() : String("VOICE unavailable"));
+    return;
+  }
   if (line == "STTKEY placeholder" || line == "STTKEY off") {
     // CUM-456 bench seam: a RAM-only placeholder speech-to-text key so hold-to-talk
     // can be driven on a keyless bench board (the offline leg never sends it; an
