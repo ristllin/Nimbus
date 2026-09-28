@@ -394,7 +394,7 @@ static void testMemberRbac(ndtest::Ctx& c) {
   { orch::VecEntry e; e.id = "s1"; e.content = "OWNER-SECRET-FACT"; e.ttlHours = -1;
     e.vec.assign(64, 0); e.vec[0] = 127; f.rig->vectors().add(e); }
   { orch::VecEntry e; e.id = "s2"; e.content = "EXPIRED-OWNER-FACT"; e.ttlHours = 24; e.createdAtHours = 1;
-    e.vec.assign(64, 0); e.vec[0] = 127; f.rig->vectors().add(e); }   // expired decades ago
+    e.vec.assign(64, 0); e.vec[0] = 127; f.rig->vectors().add(e, /*dedup=*/false); }   // expired long ago
   f.tx.script = {embedExchange(), replyTurn("ok"), embedExchange(), replyTurn("ok")};
   f.rig->say("666", "what do you remember?");
   f.rig->say("555", "what do you remember?");
