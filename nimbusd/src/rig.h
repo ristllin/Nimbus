@@ -305,9 +305,9 @@ class NimbusdRig {
   const TelegramAccess& telegramAccess() const { return *access_; }
 
   // ---- one person's background work at a time -----------------------------------
-  // The shared JobEngine (lib/harness) keeps ONE pool of sub-agent results: every
-  // result is folded into the NEXT turn whoever sends it, and the report goes to the
-  // chat whose job finished last. That is fine for one owner and wrong for several
+  // The shared JobEngine (lib/harness, tracked as CUM-463) keeps ONE pool of
+  // sub-agent results: every result is folded into the NEXT turn whoever sends it,
+  // and the report goes to the chat whose job finished last. That is fine for one owner and wrong for several
   // approved people (one would read another's calendar), so a hosted instance keeps
   // all queued, running and unreported sub-agent work inside ONE data namespace at
   // a time: a spawn from another namespace is refused with the reason, and a
