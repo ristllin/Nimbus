@@ -1,0 +1,669 @@
+// Host tests for the hold-to-talk flow (lib/core voice_flow, CUM-456).
+//
+// The owner's report: on RELEASE the ring stayed on the listening color for ~30 s
+// (the speech-to-text network call ran first, offline), then the device said
+// "Didn't catch that" although the real failure was the network. These tests pin
+// the CLASS, not the instance:
+//   - release leaves the recording state and shows processing with ZERO network
+//     calls made first, whatever the network does afterwards (seam test);
+//   - no link / unreachable -> the network line, never the no-speech line, for
+//     every failure kind (property over the whole taxonomy);
+//   - the state machine counts transitions and fails on oscillation (absence of
+//     thrash, AGENTS.md section 3);
+//   - every user-facing string is pinned and fits the ring-center layout.
+
+#include <unity.h>
+
+#include <cstring>
+#include <string>
+#include <vector>
+
+#include "nimbus/orch/voice_route.h"
+#include "nimbus/voice_flow.h"
+
+using namespace nimbus::voice;
+using solide::ring::RGB;
+
+void setUp() {}
+void tearDown() {}
+
+// ---- a recording fake of the device seam --------------------------------------
+
+struct FakePort : Port {
+  uint32_t clock = 1000;
+  bool link = true;
+  SttResult stt;
+  uint32_t sttCostMs = 1500;    // how long the network call "takes"
+  bool sendOk = true;
+  const Flow* flow = nullptr;   // to inspect the state from inside transcribe()
+  std::vector<std::string> log;
+  std::vector<uint32_t> showTimes;
+  int shows = 0, transcribes = 0, sends = 0;
+  Phase phaseAtTranscribe = Phase::Idle;
+  std::string lastShownTitle;
+  std::string sentText;
+  std::vector<nimbus::sfx::Ev> sounds;
+
+  uint32_t now() override { return clock; }
+  void show(const Flow& f) override {
+    ++shows;
+    showTimes.push_back(clock);
+    lastShownTitle = f.line().title;
+    log.push_back("show:" + f.line().title);
+  }
+  bool linkUp() override { log.push_back("link"); return link; }
+  SttResult transcribe() override {
+    ++transcribes;
+    phaseAtTranscribe = flow ? flow->phase() : Phase::Idle;
+    log.push_back("transcribe");
+    clock += sttCostMs;
+    return stt;
+  }
+  bool sendTurn(const std::string& t) override {
+    ++sends;
+    sentText = t;
+    log.push_back("send");
+    return sendOk;
+  }
+  void sound(nimbus::sfx::Ev e) override { sounds.push_back(e); }
+
+  int indexOf(const std::string& entry) const {
+    for (size_t i = 0; i < log.size(); ++i)
+      if (log[i] == entry) return int(i);
+    return -1;
+  }
+};
+
+static SttResult okText(const std::string& t) {
+  SttResult r;
+  r.kind = SttResult::Kind::Ok;
+  r.provider = "mistral";
+  r.text = t;
+  return r;
+}
+
+static void startRecording(Flow& f, FakePort& p) {
+  p.flow = &f;
+  TEST_ASSERT_TRUE(f.press(p.clock));
+  TEST_ASSERT_EQUAL(int(Phase::Recording), int(f.phase()));
+}
+
+// ---- seam: release shows processing before ANY network I/O ---------------------
+
+static void test_release_shows_processing_before_any_network_call() {
+  Flow f;
+  FakePort p;
+  p.stt = okText("what is on my calendar");
+  startRecording(f, p);
+  const Outcome o = afterRelease(f, p);
+  TEST_ASSERT_EQUAL(int(Outcome::None), int(o));
+  const int shown = p.indexOf("show:Transcribing");
+  const int net = p.indexOf("transcribe");
+  TEST_ASSERT_TRUE_MESSAGE(shown >= 0, "processing was never shown");
+  TEST_ASSERT_TRUE_MESSAGE(net >= 0, "online path never transcribed");
+  TEST_ASSERT_TRUE_MESSAGE(shown < net, "the network call ran before processing was shown");
+  // At the moment the network call started, recording was already over.
+  TEST_ASSERT_EQUAL(int(Phase::Transcribing), int(p.phaseAtTranscribe));
+  TEST_ASSERT_EQUAL(1, p.transcribes);
+  TEST_ASSERT_EQUAL(1, p.sends);
+  TEST_ASSERT_EQUAL_STRING("what is on my calendar", p.sentText.c_str());
+  TEST_ASSERT_EQUAL(int(Phase::Thinking), int(f.phase()));
+  TEST_ASSERT_EQUAL_STRING("Thinking", f.line().title.c_str());
+  TEST_ASSERT_EQUAL_STRING("You: what is on my calendar", f.line().detail.c_str());
+}
+
+// The release -> visible change latency is independent of the network: a 30 s
+// transcription (the owner's offline case) must not delay the first repaint.
+static void test_release_repaint_latency_is_independent_of_network_time() {
+  for (uint32_t cost : {0u, 1500u, 30000u, 60000u}) {
+    Flow f;
+    FakePort p;
+    p.stt = okText("hello");
+    p.sttCostMs = cost;
+    startRecording(f, p);
+    const uint32_t releasedAt = p.clock;
+    afterRelease(f, p);
+    TEST_ASSERT_TRUE(p.showTimes.size() >= 1);
+    TEST_ASSERT_UINT32_WITHIN_MESSAGE(0, releasedAt, p.showTimes[0],
+                                      "first repaint waited on the network");
+    TEST_ASSERT_TRUE_MESSAGE(p.showTimes[0] - releasedAt < 200, "release repaint >= 200 ms");
+  }
+}
+
+static void test_offline_fails_fast_with_the_network_line_and_no_network_call() {
+  Flow f;
+  FakePort p;
+  p.link = false;
+  p.stt = okText("");   // would be "empty" if it were ever called - it must not be
+  startRecording(f, p);
+  const uint32_t releasedAt = p.clock;
+  const Outcome o = afterRelease(f, p);
+  TEST_ASSERT_EQUAL(int(Outcome::NoNetwork), int(o));
+  TEST_ASSERT_EQUAL_MESSAGE(0, p.transcribes, "offline must not attempt the network call");
+  TEST_ASSERT_EQUAL(0, p.sends);
+  TEST_ASSERT_EQUAL(int(Phase::Notice), int(f.phase()));
+  TEST_ASSERT_EQUAL_STRING("No network", f.line().title.c_str());
+  TEST_ASSERT_EQUAL_STRING("No network. Check Wi-Fi and try again.", sentence(f.line()).c_str());
+  TEST_ASSERT_EQUAL_MESSAGE(0, int(p.clock - releasedAt), "offline error took time");
+  TEST_ASSERT_EQUAL(int(Cue::Offline), int(f.cue()));
+  // Processing was shown first, then the notice: exactly two renders.
+  TEST_ASSERT_EQUAL(2, p.shows);
+  TEST_ASSERT_EQUAL_STRING("show:Transcribing", p.log[0].c_str());
+  TEST_ASSERT_EQUAL_STRING("show:No network", p.log.back().c_str());
+  // No "capture confirmed" sound when the send cannot happen; the error sound only.
+  TEST_ASSERT_EQUAL(1, int(p.sounds.size()));
+  TEST_ASSERT_EQUAL(int(nimbus::sfx::Ev::Error), int(p.sounds[0]));
+}
+
+// Wi-Fi joined but the host unreachable (captive portal, no internet): the
+// transport reports "connect failed" -> still the network line, never no-speech.
+static void test_unreachable_host_is_the_network_line_not_no_speech() {
+  Flow f;
+  FakePort p;
+  int http = -1;
+  p.stt.kind = sttKindForError("connect failed", &http);
+  p.stt.provider = "mistral";
+  startRecording(f, p);
+  TEST_ASSERT_EQUAL(int(Outcome::NoNetwork), int(afterRelease(f, p)));
+  TEST_ASSERT_EQUAL(1, p.transcribes);
+  TEST_ASSERT_EQUAL_STRING("No network", f.line().title.c_str());
+}
+
+static void test_send_failure_is_busy_not_silence() {
+  Flow f;
+  FakePort p;
+  p.stt = okText("remind me at five");
+  p.sendOk = false;
+  startRecording(f, p);
+  TEST_ASSERT_EQUAL(int(Outcome::Busy), int(afterRelease(f, p)));
+  TEST_ASSERT_EQUAL(int(Phase::Notice), int(f.phase()));
+  TEST_ASSERT_EQUAL_STRING("Busy", f.line().title.c_str());
+}
+
+static void test_release_when_not_recording_does_nothing() {
+  Flow f;
+  FakePort p;
+  p.flow = &f;
+  TEST_ASSERT_EQUAL(int(Outcome::None), int(afterRelease(f, p)));
+  TEST_ASSERT_EQUAL(0, p.shows);
+  TEST_ASSERT_EQUAL(0, p.transcribes);
+  TEST_ASSERT_EQUAL(0u, f.transitions());
+}
+
+// ---- the taxonomy, as a property over every failure kind -----------------------
+
+static const SttResult::Kind kFailKinds[] = {
+    SttResult::Kind::NoNetwork, SttResult::Kind::Http,     SttResult::Kind::Refused,
+    SttResult::Kind::BadReply,  SttResult::Kind::Busy,     SttResult::Kind::NoAudio,
+};
+
+static void test_no_failure_kind_ever_reads_as_no_speech() {
+  const std::string noSpeech = sentence(lineFor(Outcome::EmptyTranscript));
+  for (SttResult::Kind k : kFailKinds) {
+    for (const char* text : {"", "   ", "hello"}) {
+      SttResult r;
+      r.kind = k;
+      r.provider = "mistral";
+      r.text = text;   // a failure never becomes "empty" even with an empty body
+      const Outcome o = classify(r);
+      TEST_ASSERT_TRUE_MESSAGE(o != Outcome::EmptyTranscript, "a failure read as no-speech");
+      TEST_ASSERT_TRUE_MESSAGE(o != Outcome::None, "a failure read as success");
+      TEST_ASSERT_TRUE(sentence(lineFor(o, r)) != noSpeech);
+      // ... and the same holds end to end through the release path.
+      Flow f;
+      FakePort p;
+      p.stt = r;
+      startRecording(f, p);
+      TEST_ASSERT_TRUE(afterRelease(f, p) != Outcome::EmptyTranscript);
+      TEST_ASSERT_TRUE(f.line().title != "Didn't catch that");
+    }
+  }
+}
+
+static void test_empty_transcript_only_from_a_reachable_provider() {
+  for (const char* text : {"", " ", "\n", " \t "}) {
+    TEST_ASSERT_EQUAL(int(Outcome::EmptyTranscript), int(classify(okText(text))));
+  }
+  TEST_ASSERT_EQUAL(int(Outcome::None), int(classify(okText("hi"))));
+  Flow f;
+  FakePort p;
+  p.stt = okText("  ");
+  startRecording(f, p);
+  TEST_ASSERT_EQUAL(int(Outcome::EmptyTranscript), int(afterRelease(f, p)));
+  TEST_ASSERT_EQUAL_STRING("Didn't catch that. Hold the mic button and speak.",
+                           sentence(f.line()).c_str());
+  TEST_ASSERT_EQUAL(0, p.sends);
+  TEST_ASSERT_EQUAL(int(Cue::None), int(f.cue()));   // calm: no alarm for silence
+}
+
+static void test_transport_error_mapping() {
+  int http = -1;
+  TEST_ASSERT_EQUAL(int(SttResult::Kind::NoNetwork), int(sttKindForError("connect failed", &http)));
+  TEST_ASSERT_EQUAL(0, http);
+  TEST_ASSERT_EQUAL(int(SttResult::Kind::Busy), int(sttKindForError("tls arbiter busy", &http)));
+  TEST_ASSERT_EQUAL(int(SttResult::Kind::NoAudio), int(sttKindForError("file open failed", &http)));
+  TEST_ASSERT_EQUAL(int(SttResult::Kind::Http), int(sttKindForError("HTTP 401", &http)));
+  TEST_ASSERT_EQUAL(401, http);
+  TEST_ASSERT_EQUAL(int(SttResult::Kind::Http), int(sttKindForError("HTTP 0", &http)));
+  TEST_ASSERT_EQUAL(0, http);
+  TEST_ASSERT_EQUAL(int(SttResult::Kind::Http), int(sttKindForError("something odd", &http)));
+  TEST_ASSERT_EQUAL(0, http);
+  TEST_ASSERT_EQUAL(int(SttResult::Kind::Http), int(sttKindForError("HTTP 503", nullptr)));
+}
+
+static void test_http_error_names_the_provider_and_status() {
+  struct { const char* slug; const char* title; } provs[] = {
+      {"mistral", "Mistral error"}, {"openai", "OpenAI error"}, {"cumulo", "Cumulo error"},
+      {"", "Voice error"}};
+  for (const auto& pv : provs) {
+    SttResult r;
+    r.kind = SttResult::Kind::Http;
+    r.provider = pv.slug;
+    r.http = 500;
+    const Line l = lineFor(Outcome::SttHttp, r);
+    TEST_ASSERT_EQUAL_STRING(pv.title, l.title.c_str());
+    TEST_ASSERT_EQUAL_STRING("Speech-to-text HTTP 500. Try again.", l.detail.c_str());
+  }
+  SttResult r;
+  r.kind = SttResult::Kind::Http;
+  r.provider = "mistral";
+  r.http = 401;
+  TEST_ASSERT_EQUAL_STRING("Key rejected (HTTP 401). Check it in the web app.",
+                           lineFor(Outcome::SttHttp, r).detail.c_str());
+  r.http = 403;
+  TEST_ASSERT_EQUAL_STRING("Key rejected (HTTP 403). Check it in the web app.",
+                           lineFor(Outcome::SttHttp, r).detail.c_str());
+  r.http = 429;
+  TEST_ASSERT_EQUAL_STRING("Too many requests (HTTP 429). Wait a minute.",
+                           lineFor(Outcome::SttHttp, r).detail.c_str());
+  r.http = 0;
+  TEST_ASSERT_EQUAL_STRING("No answer from speech-to-text. Try again.",
+                           lineFor(Outcome::SttHttp, r).detail.c_str());
+}
+
+// Every remaining string, pinned exactly.
+static void test_every_line_is_pinned() {
+  struct { Outcome o; const char* s; } want[] = {
+      {Outcome::NoNetwork, "No network. Check Wi-Fi and try again."},
+      {Outcome::SttBadReply, "Voice error. Unreadable speech-to-text reply. Try again."},
+      {Outcome::Busy, "Busy. Another request is running. Try again in a moment."},
+      {Outcome::NoAudio, "No audio. The mic recorded nothing. Try again."},
+      {Outcome::EmptyTranscript, "Didn't catch that. Hold the mic button and speak."},
+      {Outcome::TurnError, "No answer. The assistant could not finish. Try again."},
+      {Outcome::NoReply, "No reply. Nothing came back. Try again."},
+      {Outcome::SttRefused, "Voice unavailable. Try again soon."},
+  };
+  for (const auto& w : want)
+    TEST_ASSERT_EQUAL_STRING(w.s, sentence(lineFor(w.o)).c_str());
+  SttResult refused;
+  refused.kind = SttResult::Kind::Refused;
+  refused.refusal = nimbus::orch::voiceRefusalStatus("funding_cap_reached");
+  TEST_ASSERT_EQUAL_STRING("Voice unavailable. Voice is out of credit for now. Try again later.",
+                           sentence(lineFor(Outcome::SttRefused, refused)).c_str());
+  TEST_ASSERT_TRUE(lineFor(Outcome::None).title.empty());
+  // Phase lines.
+  Flow f;
+  TEST_ASSERT_TRUE(f.line().title.empty());
+  f.press(0);
+  TEST_ASSERT_EQUAL_STRING("Listening. Release to send.", sentence(f.line()).c_str());
+  f.release(1);
+  TEST_ASSERT_EQUAL_STRING("Transcribing. One moment.", sentence(f.line()).c_str());
+  TEST_ASSERT_EQUAL_STRING("Mistral", providerName("mistral").c_str());
+  TEST_ASSERT_EQUAL_STRING("OpenAI", providerName("openai").c_str());
+  TEST_ASSERT_EQUAL_STRING("Cumulo", providerName("cumulo").c_str());
+  TEST_ASSERT_EQUAL_STRING("Speech-to-text", providerName("zai").c_str());
+}
+
+// Copy style (AGENTS.md section 6) + the ring-center layout, for EVERY outcome and
+// every detail variant: printable ASCII, no em dash, no " - ", no "!", a title that
+// fits, a detail that wraps into the lines the ring center has without truncating.
+static void assertCopy(const Line& l) {
+  const std::string all = sentence(l);
+  for (char c : all) TEST_ASSERT_TRUE_MESSAGE(c >= 0x20 && c < 0x7F, all.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(all.find(" - ") == std::string::npos, all.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(all.find('!') == std::string::npos, all.c_str());
+  TEST_ASSERT_FALSE_MESSAGE(l.title.empty(), all.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(l.title.size() <= kTitleMaxChars, l.title.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(all.back() == '.', all.c_str());
+  const auto lines = wrap(l.detail, kTitleMaxChars, kDetailMaxLines);
+  TEST_ASSERT_TRUE_MESSAGE(!lines.empty(), all.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(lines.back().size() < 3 ||
+                               lines.back().compare(lines.back().size() - 3, 3, "...") != 0,
+                           (std::string("detail truncated: ") + all).c_str());
+  for (const auto& ln : lines) TEST_ASSERT_TRUE(ln.size() <= kTitleMaxChars);
+}
+
+static void test_copy_style_and_fit_for_every_outcome() {
+  const char* slugs[] = {"mistral", "openai", "cumulo", "", "zai"};
+  const int codes[] = {0, 400, 401, 403, 404, 413, 429, 500, 502, 503};
+  const char* refusals[] = {"funding_cap_reached", "rate_limited", "audio_duration_unknown",
+                            "unsupported_media_type", "", "something_new"};
+  for (int oi = 1; oi < kOutcomeCount; ++oi) {
+    const Outcome o = Outcome(oi);
+    for (const char* slug : slugs) {
+      for (int code : codes) {
+        for (const char* rc : refusals) {
+          SttResult r;
+          r.provider = slug;
+          r.http = code;
+          r.refusal = nimbus::orch::voiceRefusalStatus(rc);
+          assertCopy(lineFor(o, r));
+        }
+      }
+    }
+  }
+  Flow f;
+  f.press(0);
+  assertCopy(f.line());
+  f.release(0);
+  assertCopy(f.line());
+}
+
+static void test_cue_and_sound_per_outcome() {
+  for (int oi = 0; oi < kOutcomeCount; ++oi) {
+    const Outcome o = Outcome(oi);
+    nimbus::sfx::Ev e = nimbus::sfx::Ev::Boot;
+    const bool loud = sfxFor(o, e);
+    if (o == Outcome::None || o == Outcome::EmptyTranscript) {
+      TEST_ASSERT_EQUAL(int(Cue::None), int(cueFor(o)));
+      TEST_ASSERT_FALSE(loud);
+    } else if (o == Outcome::NoNetwork) {
+      TEST_ASSERT_EQUAL(int(Cue::Offline), int(cueFor(o)));
+      TEST_ASSERT_TRUE(loud);
+      TEST_ASSERT_EQUAL(int(nimbus::sfx::Ev::Error), int(e));
+    } else {
+      TEST_ASSERT_EQUAL(int(Cue::Alert), int(cueFor(o)));
+      TEST_ASSERT_TRUE(loud);
+      TEST_ASSERT_EQUAL(int(nimbus::sfx::Ev::Error), int(e));
+    }
+  }
+}
+
+// ---- state machine: transitions counted, no oscillation --------------------------
+
+static void test_happy_path_is_exactly_four_transitions() {
+  Flow f;
+  TEST_ASSERT_TRUE(f.press(0));
+  TEST_ASSERT_TRUE(f.release(1000));
+  TEST_ASSERT_TRUE(f.transcribed("hi", 2500));
+  // A storm of ticks while the turn runs changes nothing.
+  for (uint32_t t = 2500; t < 2500 + 50000; t += 33) TEST_ASSERT_FALSE(f.tick(true, t));
+  TEST_ASSERT_FALSE(f.replyLanded(true, 52000));   // reply mid-turn: keep processing
+  TEST_ASSERT_EQUAL(int(Phase::Thinking), int(f.phase()));
+  TEST_ASSERT_TRUE(f.turnEnded(true, 52010));
+  TEST_ASSERT_EQUAL(int(Phase::Idle), int(f.phase()));
+  TEST_ASSERT_EQUAL(4u, f.transitions());
+  // Duplicate and late events are ignored - no extra transitions.
+  TEST_ASSERT_FALSE(f.release(52100));
+  TEST_ASSERT_FALSE(f.transcribed("late", 52100));
+  TEST_ASSERT_FALSE(f.turnEnded(false, 52100));
+  TEST_ASSERT_FALSE(f.replyLanded(false, 52100));
+  TEST_ASSERT_FALSE(f.dismiss(52100));
+  for (uint32_t t = 52100; t < 300000; t += 500) TEST_ASSERT_FALSE(f.tick(false, t));
+  TEST_ASSERT_EQUAL(4u, f.transitions());
+  TEST_ASSERT_TRUE(f.replyShown());
+}
+
+static void test_busy_flow_ignores_a_second_press() {
+  Flow f;
+  f.press(0);
+  TEST_ASSERT_FALSE(f.press(10));   // re-entry while held
+  f.release(20);
+  TEST_ASSERT_FALSE(f.press(30));   // while transcribing
+  f.transcribed("x", 40);
+  TEST_ASSERT_FALSE(f.press(50));   // while thinking
+  TEST_ASSERT_EQUAL(3u, f.transitions());
+  TEST_ASSERT_TRUE(f.busy());
+  TEST_ASSERT_FALSE(f.canPress());
+}
+
+static void test_notice_holds_then_expires_once_and_can_retry() {
+  Flow f;
+  f.press(0);
+  f.release(100);
+  TEST_ASSERT_TRUE(f.fail(Outcome::NoNetwork, lineFor(Outcome::NoNetwork), 100));
+  TEST_ASSERT_TRUE(f.ownsRing());
+  for (uint32_t t = 100; t < 100 + kNoticeHoldMs; t += 33) TEST_ASSERT_FALSE(f.tick(false, t));
+  TEST_ASSERT_TRUE(f.tick(false, 100 + kNoticeHoldMs));
+  TEST_ASSERT_EQUAL(int(Phase::Idle), int(f.phase()));
+  TEST_ASSERT_FALSE(f.ownsRing());
+  TEST_ASSERT_EQUAL(4u, f.transitions());
+  // Retry straight from a notice (the owner holds the mic again).
+  Flow g;
+  g.press(0);
+  g.release(1);
+  g.fail(Outcome::SttHttp, lineFor(Outcome::SttHttp), 2);
+  TEST_ASSERT_TRUE(g.canPress());
+  TEST_ASSERT_TRUE(g.press(3));
+  TEST_ASSERT_EQUAL(int(Outcome::None), int(g.outcome()));
+  // A touch dismisses.
+  Flow h;
+  h.press(0);
+  h.release(1);
+  h.fail(Outcome::Busy, lineFor(Outcome::Busy), 2);
+  TEST_ASSERT_TRUE(h.dismiss(3));
+  TEST_ASSERT_FALSE(h.dismiss(4));
+}
+
+static void test_thinking_backstops() {
+  // No turn ever runs: NoReply exactly at kQuietMs, not a moment before.
+  Flow f;
+  f.press(0);
+  f.release(0);
+  f.transcribed("x", 1000);
+  TEST_ASSERT_FALSE(f.tick(false, 1000 + kQuietMs - 1));
+  TEST_ASSERT_TRUE(f.tick(false, 1000 + kQuietMs));
+  TEST_ASSERT_EQUAL(int(Outcome::NoReply), int(f.outcome()));
+  TEST_ASSERT_EQUAL_STRING("No reply", f.line().title.c_str());
+  // A running turn (even a long one) is never called "no reply" before the ceiling.
+  Flow g;
+  g.press(0);
+  g.release(0);
+  g.transcribed("x", 0);
+  for (uint32_t t = 0; t < kMaxThinkMs; t += 1000) TEST_ASSERT_FALSE(g.tick(true, t));
+  TEST_ASSERT_TRUE(g.tick(true, kMaxThinkMs));
+  TEST_ASSERT_EQUAL(int(Outcome::NoReply), int(g.outcome()));
+  // Queued behind another turn, then ours ends quietly after a shown reply -> Idle.
+  Flow h;
+  h.press(0);
+  h.release(0);
+  h.transcribed("x", 0);
+  TEST_ASSERT_FALSE(h.tick(true, 20000));
+  TEST_ASSERT_FALSE(h.replyLanded(true, 21000));
+  TEST_ASSERT_TRUE(h.tick(false, 21000 + kQuietMs));
+  TEST_ASSERT_EQUAL(int(Phase::Idle), int(h.phase()));
+  TEST_ASSERT_EQUAL(int(Outcome::None), int(h.outcome()));
+}
+
+static void test_turn_end_and_reply_outcomes() {
+  Flow f;
+  f.press(0);
+  f.release(0);
+  f.transcribed("x", 0);
+  TEST_ASSERT_TRUE(f.turnEnded(false, 10));
+  TEST_ASSERT_EQUAL(int(Outcome::TurnError), int(f.outcome()));
+  TEST_ASSERT_EQUAL(int(Cue::Alert), int(f.cue()));
+  // A reply that lands with no turn running ends processing (an early honest reply).
+  Flow g;
+  g.press(0);
+  g.release(0);
+  g.transcribed("x", 0);
+  TEST_ASSERT_TRUE(g.replyLanded(false, 10));
+  TEST_ASSERT_EQUAL(int(Phase::Idle), int(g.phase()));
+  TEST_ASSERT_EQUAL(int(Outcome::None), int(g.outcome()));
+}
+
+// Fuzz the event stream: every transition must follow an allowed edge, Recording
+// is entered only by an accepted press, and nothing ever moves without an event.
+static void test_random_event_storm_never_takes_an_illegal_edge() {
+  auto allowed = [](Phase a, Phase b) {
+    switch (a) {
+      case Phase::Idle:         return b == Phase::Recording;
+      case Phase::Recording:    return b == Phase::Transcribing;
+      case Phase::Transcribing: return b == Phase::Thinking || b == Phase::Notice;
+      case Phase::Thinking:     return b == Phase::Idle || b == Phase::Notice;
+      case Phase::Notice:       return b == Phase::Idle || b == Phase::Recording;
+    }
+    return false;
+  };
+  uint32_t seed = 0x5eed1234u;
+  auto rnd = [&seed]() { seed = seed * 1664525u + 1013904223u; return seed >> 8; };
+  Flow f;
+  uint32_t now = 0, presses = 0, recordingEntries = 0;
+  for (int i = 0; i < 20000; ++i) {
+    now += rnd() % 5000;
+    const Phase before = f.phase();
+    const uint32_t tBefore = f.transitions();
+    bool changed = false;
+    switch (rnd() % 9) {
+      case 0: changed = f.press(now); if (changed) ++presses; break;
+      case 1: changed = f.release(now); break;
+      case 2: changed = f.transcribed("x", now); break;
+      case 3: changed = f.fail(Outcome(1 + rnd() % (kOutcomeCount - 1)), lineFor(Outcome::Busy), now); break;
+      case 4: changed = f.replyLanded(rnd() % 2, now); break;
+      case 5: changed = f.turnEnded(rnd() % 2, now); break;
+      case 6: changed = f.tick(rnd() % 2, now); break;
+      case 7: changed = f.dismiss(now); break;
+      default: break;   // no event
+    }
+    TEST_ASSERT_EQUAL(changed ? tBefore + 1 : tBefore, f.transitions());
+    if (changed) {
+      TEST_ASSERT_TRUE_MESSAGE(allowed(before, f.phase()), "illegal voice-flow edge");
+      if (f.phase() == Phase::Recording) ++recordingEntries;
+    } else {
+      TEST_ASSERT_EQUAL(int(before), int(f.phase()));
+    }
+    // The ring is owned exactly while a cue is live, and Idle never owns it.
+    if (f.phase() == Phase::Idle) TEST_ASSERT_FALSE(f.ownsRing());
+  }
+  TEST_ASSERT_EQUAL(presses, recordingEntries);
+  TEST_ASSERT_TRUE(presses > 10);
+}
+
+// Render thrash: the release path repaints once per state change, never more.
+static void test_release_path_renders_once_per_transition() {
+  struct Case { bool link; SttResult r; bool send; };
+  SttResult http;
+  http.kind = SttResult::Kind::Http;
+  http.http = 500;
+  const Case cases[] = {{true, okText("hi"), true},  {false, okText("hi"), true},
+                        {true, okText(""), true},    {true, http, true},
+                        {true, okText("hi"), false}};
+  for (const Case& c : cases) {
+    Flow f;
+    FakePort p;
+    p.link = c.link;
+    p.stt = c.r;
+    p.sendOk = c.send;
+    startRecording(f, p);
+    const uint32_t t0 = f.transitions();
+    afterRelease(f, p);
+    TEST_ASSERT_EQUAL_MESSAGE(int(f.transitions() - t0), p.shows,
+                              "renders != state changes in the release path");
+  }
+}
+
+// ---- wrap + ring frames --------------------------------------------------------------
+
+static void test_wrap() {
+  auto w = wrap("Check Wi-Fi and try again.", 17, 4);
+  TEST_ASSERT_EQUAL(2, int(w.size()));
+  TEST_ASSERT_EQUAL_STRING("Check Wi-Fi and", w[0].c_str());
+  TEST_ASSERT_EQUAL_STRING("try again.", w[1].c_str());
+  w = wrap("abcdefghijklmnopqrstuvwxyz", 10, 4);   // hard split
+  TEST_ASSERT_EQUAL(3, int(w.size()));
+  TEST_ASSERT_EQUAL_STRING("abcdefghij", w[0].c_str());
+  TEST_ASSERT_EQUAL_STRING("uvwxyz", w[2].c_str());
+  w = wrap("one two three four five six seven eight", 9, 2);   // overflow
+  TEST_ASSERT_EQUAL(2, int(w.size()));
+  TEST_ASSERT_EQUAL_STRING("three...", w[1].c_str());
+  for (const auto& ln : w) TEST_ASSERT_TRUE(ln.size() <= 9);
+  TEST_ASSERT_EQUAL(0, int(wrap("", 17, 4).size()));
+  TEST_ASSERT_EQUAL(0, int(wrap("   ", 17, 4).size()));
+  TEST_ASSERT_EQUAL(0, int(wrap("x", 0, 4).size()));
+}
+
+static int brightest(const RGB* f, int n) {
+  int best = 0;
+  for (int i = 1; i < n; ++i)
+    if (f[i].r + f[i].g + f[i].b > f[best].r + f[best].g + f[best].b) best = i;
+  return best;
+}
+
+static void test_cue_frames() {
+  const int n = 45;
+  const RGB accent{255, 128, 0}, alert{255, 0, 0};
+  RGB a[n], b[n];
+  // Listening + Alert: steady, whole ring, their color.
+  cueFrame(Cue::Listening, 0, accent, alert, a, n);
+  cueFrame(Cue::Listening, 5000, accent, alert, b, n);
+  TEST_ASSERT_EQUAL_MEMORY(a, b, sizeof a);
+  TEST_ASSERT_EQUAL(255, a[17].r);
+  TEST_ASSERT_EQUAL(128, a[17].g);
+  cueFrame(Cue::Alert, 123, accent, alert, a, n);
+  for (int i = 0; i < n; ++i) TEST_ASSERT_EQUAL(0, a[i].g);
+  TEST_ASSERT_EQUAL(255, a[0].r);
+  // Processing: a comet whose head MOVES, with one brightest LED and a lit floor.
+  cueFrame(Cue::Processing, 0, accent, alert, a, n);
+  cueFrame(Cue::Processing, kSpinMs / 3, accent, alert, b, n);
+  TEST_ASSERT_TRUE_MESSAGE(brightest(a, n) != brightest(b, n), "processing ring does not move");
+  int maxCount = 0;
+  for (int i = 0; i < n; ++i)
+    if (a[i].r == 255) ++maxCount;
+  TEST_ASSERT_EQUAL(1, maxCount);
+  for (int i = 0; i < n; ++i) TEST_ASSERT_TRUE_MESSAGE(a[i].r > 0, "processing floor went dark");
+  cueFrame(Cue::Processing, kSpinMs, accent, alert, b, n);   // one full sweep
+  TEST_ASSERT_EQUAL_MEMORY(a, b, sizeof a);
+  // Offline: breathes (brightness changes over time) in the alert color.
+  cueFrame(Cue::Offline, 0, accent, alert, a, n);
+  cueFrame(Cue::Offline, kOfflineBreatheMs / 2, accent, alert, b, n);
+  TEST_ASSERT_TRUE(a[0].r != b[0].r);
+  TEST_ASSERT_EQUAL(0, a[0].g);
+  // None: dark.
+  cueFrame(Cue::None, 0, accent, alert, a, n);
+  for (int i = 0; i < n; ++i) TEST_ASSERT_EQUAL(0, a[i].r + a[i].g + a[i].b);
+  cueFrame(Cue::Alert, 0, accent, alert, nullptr, n);   // tolerated, no crash
+}
+
+static void test_flow_cue_per_phase() {
+  Flow f;
+  TEST_ASSERT_EQUAL(int(Cue::None), int(f.cue()));
+  f.press(0);
+  TEST_ASSERT_EQUAL(int(Cue::Listening), int(f.cue()));
+  f.release(0);
+  TEST_ASSERT_EQUAL(int(Cue::Processing), int(f.cue()));
+  f.transcribed("x", 0);
+  TEST_ASSERT_EQUAL(int(Cue::Processing), int(f.cue()));
+  f.fail(Outcome::EmptyTranscript, lineFor(Outcome::EmptyTranscript), 0);   // calm notice
+  TEST_ASSERT_EQUAL(int(Phase::Notice), int(f.phase()));
+  TEST_ASSERT_FALSE(f.ownsRing());
+  TEST_ASSERT_FALSE(f.fail(Outcome::None, Line{}, 1));
+}
+
+int main() {
+  UNITY_BEGIN();
+  RUN_TEST(test_release_shows_processing_before_any_network_call);
+  RUN_TEST(test_release_repaint_latency_is_independent_of_network_time);
+  RUN_TEST(test_offline_fails_fast_with_the_network_line_and_no_network_call);
+  RUN_TEST(test_unreachable_host_is_the_network_line_not_no_speech);
+  RUN_TEST(test_send_failure_is_busy_not_silence);
+  RUN_TEST(test_release_when_not_recording_does_nothing);
+  RUN_TEST(test_no_failure_kind_ever_reads_as_no_speech);
+  RUN_TEST(test_empty_transcript_only_from_a_reachable_provider);
+  RUN_TEST(test_transport_error_mapping);
+  RUN_TEST(test_http_error_names_the_provider_and_status);
+  RUN_TEST(test_every_line_is_pinned);
+  RUN_TEST(test_copy_style_and_fit_for_every_outcome);
+  RUN_TEST(test_cue_and_sound_per_outcome);
+  RUN_TEST(test_happy_path_is_exactly_four_transitions);
+  RUN_TEST(test_busy_flow_ignores_a_second_press);
+  RUN_TEST(test_notice_holds_then_expires_once_and_can_retry);
+  RUN_TEST(test_thinking_backstops);
+  RUN_TEST(test_turn_end_and_reply_outcomes);
+  RUN_TEST(test_random_event_storm_never_takes_an_illegal_edge);
+  RUN_TEST(test_release_path_renders_once_per_transition);
+  RUN_TEST(test_wrap);
+  RUN_TEST(test_cue_frames);
+  RUN_TEST(test_flow_cue_per_phase);
+  return UNITY_END();
+}
