@@ -54,6 +54,7 @@ const PAGES = [
   // Cloud
   ['cloud-relay.md', 'cloud/cloud-access.md', 'Cloud access - reach the device from anywhere', 'Cloud access'],
   ['cloud/cumulo-key.md', 'cloud/cumulo-key.md', 'Use your Cumulo key', 'Use your Cumulo key'],
+  ['cloud/virtual-nimbus-telegram.md', 'cloud/virtual-nimbus-telegram.md', 'Telegram on a Virtual Nimbus', 'Telegram on a Virtual Nimbus'],
   // How It Works
   ['architecture.md', 'guides/architecture.md', 'Nimbus Architecture', 'Architecture'],
   ['turn-anatomy.md', 'guides/turn-anatomy.md', 'Turn anatomy - what the model sees', 'Turn anatomy'],

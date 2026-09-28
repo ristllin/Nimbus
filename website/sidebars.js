@@ -60,6 +60,7 @@ const sidebars = {
       items: [
         'cloud/cloud-access',
         'cloud/cumulo-key',
+        'cloud/virtual-nimbus-telegram',
       ],
     },
     {
