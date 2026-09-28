@@ -109,6 +109,36 @@ signing step, the one-time schema-1 transition manifest, the two CI secrets
 operator task. That runbook is maintainer-internal and is not part of the public
 docs. What a device does with a release once it is published is described below.
 
+## Release tags: firmware and Virtual Nimbus image
+
+One release workflow serves two channels, and the tag that is pushed picks the channel.
+They are controlled separately: a Virtual Nimbus image can ship without a firmware OTA
+release, and no release moves running Virtual Nimbus instances by itself.
+
+| Tag | Example | What it builds and publishes |
+|---|---|---|
+| OTA tag `vX.Y.Z` (or `vX.Y.Z-rcN`) | `v4.5.7` | the signed firmware OTA release and web-flash images, plus the Virtual Nimbus image `nimbusd:v4.5.7` |
+| Virtual tag `vn-vX.Y.Z` or `vn-vX.Y.Z-N` | `vn-v4.5.7-1` | only the Virtual Nimbus image `nimbusd:vn-v4.5.7-1`. No firmware build, no OTA manifest, no web-flash, and no device is offered an update. |
+
+- **Both tags name the current firmware version.** `vX.Y.Z` must equal
+  `NIMBUS_FW_VERSION` in `include/version.h`, the version the image reports as `fw` in
+  `/api/state`. A tag that names another version, or has any other shape, is refused
+  before anything builds.
+- **`-N` numbers repeat virtual releases** of one firmware version (`vn-v4.5.7`,
+  `vn-v4.5.7-1`, `vn-v4.5.7-2`, ...). The image registry never overwrites an existing
+  tag, so every image release needs a new one. `N` is a positive whole number with no
+  leading zero.
+- **The image tag is the git tag.** The image reports it as `image` in `/api/state`
+  (for example `nimbusd:vn-v4.5.7-1`), and the release smoke test checks both `fw` and
+  `image` before the image is pushed.
+- **Publishing an image does not roll it out.** Which image Virtual Nimbus instances run
+  is pinned by the cloud deploy (its `RECONCILER_NIMBUSD_TAG` setting) on either channel.
+  Moving instances onto a new image is a separate, deliberate step: point that pin at the
+  pushed tag (`v4.5.7` or `vn-v4.5.7-1`) and deploy.
+- The tag gate is `tools/release_gate/tag_shape.py`. `python3 -m pytest
+  tools/release_gate` tests it and checks that every release job runs only on its
+  channel.
+
 ## Device behavior
 
 - **Check**: ~2 min after boot, then daily; on demand from Settings → Software
