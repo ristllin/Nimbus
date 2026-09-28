@@ -1,4 +1,5 @@
 #pragma once
+#include <algorithm>
 #include <atomic>
 #include <condition_variable>
 #include <cstdio>
@@ -70,12 +71,10 @@ class EngineThread {
   // seq); it is published as currentWebTurn() for the duration of the turn so the
   // delivery hook can tag each reply with the turn it answers (CUM-293). It is 0
   // for non-web producers (Telegram, the /message control path).
+  // A member's message that arrives while another person's sub-agent work is in
+  // flight waits in held_ and runs once that work is reported (runOrHold).
   void postMessage(const std::string& chatId, const std::string& text, uint64_t webTurn = 0) {
-    post([this, chatId, text, webTurn] {
-      curWebTurn_.store(webTurn, std::memory_order_release);
-      rig_->say(chatId, text);
-      curWebTurn_.store(0, std::memory_order_release);
-    });
+    post([this, msg = Held{chatId, text, webTurn}] { runOrHold(msg); });
   }
 
   // The web turn id currently being run, or 0 when the running task is not a web
@@ -189,6 +188,7 @@ class EngineThread {
         busy_.store(false);
       }
       if (running_.load()) pumpJobs();   // never start a sub dispatch while stopping
+      if (running_.load()) releaseHeld();
       // Refresh the snapshot (cheap) so uptime/state stay current.
       refreshSnapshot();
     }
@@ -208,6 +208,42 @@ class EngineThread {
     try { rig_->pumpJobs(); } catch (...) {}   // a failed step must not end the daemon
     snapInFlight(false);
     busy_.store(false);
+  }
+
+  // A turn runs now, or waits in held_ while another person's sub-agent work is in
+  // flight (the rig's turnMustWait). Bounded: past kHeldMax the oldest waiting
+  // message is dropped with a log line rather than growing without limit.
+  struct Held {
+    std::string chat, text;
+    uint64_t webTurn = 0;
+  };
+  static constexpr size_t kHeldMax = 64;
+  void runOrHold(const Held& m) {
+    // A chat with an earlier message still waiting queues behind it (order kept).
+    const bool behind = std::any_of(held_.begin(), held_.end(),
+                                    [&m](const Held& h) { return h.chat == m.chat; });
+    if (behind || rig_->turnMustWait(m.chat)) {
+      if (held_.size() >= kHeldMax) {
+        std::fprintf(stderr, "[nimbusd] held-turn queue full - dropped a message for %s\n",
+                     held_.front().chat.c_str());
+        held_.pop_front();
+      }
+      held_.push_back(m);
+      return;
+    }
+    curWebTurn_.store(m.webTurn, std::memory_order_release);
+    rig_->say(m.chat, m.text);
+    curWebTurn_.store(0, std::memory_order_release);
+  }
+  // Re-queue, in arrival order, every held message that may run now (each becomes
+  // an ordinary task, so it is marked in flight like any turn).
+  void releaseHeld() {
+    std::deque<Held> still;
+    for (auto& m : held_) {
+      if (rig_->turnMustWait(m.chat)) still.push_back(std::move(m));
+      else post([this, msg = std::move(m)] { runOrHold(msg); });
+    }
+    held_.swap(still);
   }
 
   void snapInFlight(bool v) {
@@ -251,6 +287,7 @@ class EngineThread {
   std::deque<Task> queue_;
   std::atomic<uint64_t> curWebTurn_{0};   // web turn id of the running task (0 = none)
   std::atomic<bool> busy_{false};          // any task / pump step executing now
+  std::deque<Held> held_;                  // turns waiting on another namespace (engine thread)
 
   mutable std::mutex snapMu_;
   StateSnapshot snap_;

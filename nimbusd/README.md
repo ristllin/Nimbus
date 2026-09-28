@@ -26,6 +26,9 @@ New code lives only in this directory:
 | `src/posix_files.h` | disk-backed `files.*` / `artifact.save` (real bytes + `FileStore` index, `validSegment` gate) |
 | `src/daemon_config.h` | `HarnessConfig` inputs from env + an optional config file (env wins); secret masking |
 | `src/telegram.h` | Telegram channel over the portable `nimbus::tg::parseUpdates` + offset arithmetic; durable offset |
+| `src/tg_access.h` | who may talk over Telegram: the device's fail-closed allowlist + approval queue + the shared RBAC `TenantStore`, durable on the instance volume |
+| `src/tg_inbound.h` | routes each getUpdates batch through `tg_access.h`: approved text becomes a turn, anyone else is queued for approval and told so |
+| `src/tg_web.h` | the device's `/api/telegram*` + `/api/tenant` routes over `tg_access.h`, so the web app's Telegram panel manages a hosted instance unchanged |
 | `src/rig.h` | `NimbusdRig` - the composition, rehydrating all stores on construct and flushing after each turn |
 | `src/engine_thread.h` | the concurrency layer: one engine thread + request mailbox + a snapshot for lock-free reads |
 | `src/http_control.h` | the 127.0.0.1-only control surface (serves the web app + logo, health, replies, message, MCP, backup; delegates `/api/*` to `WebApi`), web-token gated |
@@ -43,6 +46,8 @@ New code lives only in this directory:
 /data/mem/scratchpad.txt     the model's working-memory tiers
 /data/mem/memconfig.txt      retrieval/decay knobs
 /data/mem/files/             file artifacts + .index
+/data/mem/telegram.txt       Telegram allowlist, display names, consumed legacy seed and the
+                             RBAC roles + limits, in ONE atomically written file
 /data/tg_offset              Telegram long-poll offset (no re-delivery on restart)
 ```
 
@@ -100,7 +105,7 @@ may also live in `<data>/config.env`. Env always wins. Nothing secret is logged
 | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `MISTRAL_API_KEY` | BYOK provider keys (Phase 0 key mode) |
 | `TAVILY_API_KEY` | web.search (the router does not proxy it) |
 | `TELEGRAM_BOT_TOKEN` | the instance's bot (validate with `nimbusd --getme`) |
-| `NIMBUSD_TG_CHAT_ID` | restrict the channel to one chat (auth gate on chat.id) |
+| `NIMBUSD_TG_CHAT_ID` | **legacy**, optional: a one-time seed of an EMPTY Telegram allowlist (see Telegram access below). It is no longer a gate |
 | `NIMBUSD_WEB_TOKEN` | required to reach the control surface (the sidecar injects it) |
 | `NIMBUSD_DATA_DIR` | durable store root (default `/data`) |
 | `NIMBUSD_CONTROL_ADDR` / `NIMBUSD_CONTROL_PORT` | control surface bind (default `127.0.0.1:8787`) |
@@ -108,6 +113,50 @@ may also live in `<data>/config.env`. Env always wins. Nothing secret is logged
 | `NIMBUSD_SUB_PRIORITY` | sub-agent provider order (device `subPrio`); unset = same as `NIMBUSD_PRIORITY` |
 | `NIMBUSD_ORCH_HOST` | pin the head provider (device `orchHost`); unset = the first keyed provider in `NIMBUSD_PRIORITY` |
 | `NIMBUSD_TOOL_LOOP` | `1` (default) head tool loop, `0` single-shot head turns (device `orchLoop`) |
+
+## Telegram access (the device model)
+
+A hosted instance trusts **no** Telegram chat by default, exactly like the desk
+device. With a bot token set and nobody approved, every chat is refused: it gets
+no turn, one polite message saying the owner has to approve it (at most once per
+10 minutes per chat), and it waits in the approval queue (the newest 5, RAM only).
+The owner approves people in the instance's own web app (**Assistant, Connectors,
+Telegram**): one tap on a waiting sender, or **Add** by chat ID. The allowlist and
+the roles are stored on the instance volume, so they survive restarts and ride
+`GET /backup`.
+
+- **Roles are the existing RBAC.** An approved chat is a **user**; admin is only an
+  explicit grant (click a chip's role to cycle admin, user, guest, or `POST
+  /api/tenant`). This differs from the device, which adopts the first approved chat
+  as admin: on a hosted instance the owner lives in the web app, and that rule would
+  hand owner rights to whoever was approved first. A user or guest runs as
+  themselves: their own memory namespace, their own recall, a prompt that says who
+  is speaking, and no access to the owner's files. An approved chat of any role can
+  use the owner's connectors and start sub-agents: approving someone is granting
+  that.
+- **One namespace's sub-agent work at a time.** The shared job engine keeps one pool
+  of sub-agent results and folds it into whoever speaks next, so a hosted instance
+  keeps queued, running and unreported work inside one data namespace: a spawn
+  from another namespace is refused with the reason, and a member's turn from
+  another namespace is held on the engine thread until that work is reported (the
+  owner's own turns never wait).
+- **Revoking** (role `unknown` through `POST /api/tenant`) or removing a chat takes
+  effect on its next message; a revoked chat is told its access was removed, and a
+  removed chat's role is erased (re-approving starts it as a user). Work it left
+  running is not reported to it.
+- **No open access.** The device's "Open access" switch is refused on a hosted
+  instance: a public bot would spend the owner's keys and reach the owner's
+  connectors.
+- **`NIMBUSD_TG_CHAT_ID` is legacy.** If set, it seeds an EMPTY allowlist once (that
+  chat becomes the admin, since the operator named it as the owner's) and is then
+  consumed: a list the owner already manages is left alone, and a seeded chat the
+  owner removes does not come back on restart.
+- The web chat and the token-gated control API are the owner's own surfaces and
+  always run as the admin; a Telegram chat id posted to `POST /api/message` is held
+  to the same allowlist as the Telegram poll.
+
+The routing and every rule above are host-tested offline in
+`tests/test_tg_access.cpp` and `tests/test_sub_fabric.cpp`.
 
 ## Control surface (the seam the Phase-1 sidecar forwards to)
 
@@ -132,6 +181,8 @@ every forwarded request, so the browser reaches all of these through the tunnel.
 | `GET/POST /api/connectors` | the connector registry (device contract); each configured entry carries the derived `auth` the badge reads |
 | `GET /api/connectors/catalog` | the model-facing `[PROVIDERS & CONNECTORS]` block exactly as the next turn gets it (text) |
 | `POST /api/verify` | `provider=mistral` re-runs the Mistral workspace probe in the background; other providers are acknowledged |
+| `GET /api/telegram`, `POST /api/telegram/{add,approve,deny,remove,rename,role,public}` | the Telegram allowlist + approval queue (device routes and shapes); `public` (open access) is refused on a hosted instance |
+| `GET/POST /api/tenant` | RBAC roles + limits per approved chat (device routes, device guards) |
 
 **Mistral Studio connectors (device parity).** A Studio connector (gcal, notion,
 slack, ...) has no stored credential: it is usable once the Mistral key's workspace

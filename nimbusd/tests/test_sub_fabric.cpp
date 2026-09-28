@@ -10,10 +10,19 @@
 //   (b) a spawn on an unkeyed provider says so (no silent drop);
 //   (c) the durable journal re-attaches an unfinished job after a restart;
 //   (d) background engine work is not a turn: a web write queued behind it is
-//       applied, not refused busy.
+//       applied, not refused busy;
+//   (f) CUM-459 retired the stopgap that only blocked spawns: an APPROVED Telegram
+//       chat runs sub-agents (and so the owner's connectors) like the owner, an
+//       unapproved chat never reaches a turn, and a chat removed mid-turn cannot
+//       start one;
+//   (h) one person's sub-agent work never reaches another: a member's turn waits
+//       while the owner's results are unreported (and then runs without them), a
+//       spawn from another namespace is refused, and a removed chat's report is
+//       dropped, not delivered.
 // Offline: an injected FakeHttpTransport; no network, no real keys.
 #include <chrono>
 #include <cstdio>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -251,24 +260,217 @@ static void testRebuildKeepsJobs(ndtest::Ctx& c) {
   clearEnv();
 }
 
-// (f) an unauthenticated chat (Telegram with no chat lock) cannot spawn.
-static void testUntrustedChatCannotSpawn(ndtest::Ctx& c) {
-  std::printf("  -- (f) a chat the daemon could not authenticate gets no sub-agents --\n");
+// A transport that runs `hook` once, when request number `hookAt` (0-based) is in
+// flight - the owner acting in the web app while the provider is still thinking.
+struct HookedTransport : FakeHttpTransport {
+  std::function<void()> hook;
+  size_t hookAt = 0;
+  bool exec(const agent::HttpRequest& req, agent::HttpResponse& out, std::string& err) override {
+    if (hook && seen.size() == hookAt) {
+      auto h = std::move(hook);
+      hook = nullptr;
+      h();
+    }
+    return FakeHttpTransport::exec(req, out, err);
+  }
+};
+
+static const char* kSpawnGcal =
+    "{\"reply\":\"Checking your calendar.\",\"memory\":\"\",\"ask\":\"\",\"session_ops\":[{\"op\":\"spawn\","
+    "\"id\":null,\"task\":\"List every event on my calendar today\",\"provider\":\"mistral\","
+    "\"model\":null,\"skill\":\"gcal\"}]}";
+
+// (f) an APPROVED Telegram chat spawns (the stopgap is gone); an unapproved one
+// never reaches a turn, so it can never reach a spawn.
+static void testApprovedChatSpawns(ndtest::Ctx& c) {
+  std::printf("  -- (f) an approved Telegram chat runs sub-agents; an unapproved one gets nothing --\n");
   clearEnv();
   FakeHttpTransport tx;
+  tx.script.push_back(headTurn(kSpawnGcal));
+  Exchange sub;
+  sub.expectHost = "api.mistral.ai";
+  sub.expectPathContains = "/v1/conversations";
+  sub.body = "{\"conversation_id\":\"sub1\",\"outputs\":[{\"type\":\"message.output\","
+             "\"content\":\"Standup at 10:00; Dentist at 15:00\"}]}";
+  tx.script.push_back(sub);
   tx.script.push_back(headTurn(
-      "{\"reply\":\"On it.\",\"memory\":\"\",\"ask\":\"\",\"session_ops\":[{\"op\":\"spawn\","
-      "\"id\":null,\"task\":\"read the calendar\",\"provider\":\"mistral\",\"model\":null}]}"));
+      "{\"reply\":\"Today: Standup at 10:00 and Dentist at 15:00.\",\"memory\":\"\",\"ask\":\"\"}"));
   Config cfg;
   NimbusdRig rig(cfg, opts("fab-f"), &tx);
   rig.applyProviderKey("mistral", "mk_TEST_FAB_5");
-  rig.noteUntrustedChat("424242");
+  c.eq(rig.connectors().replaceBlob(kGcal), "", "a gcal Studio connector is configured");
   Inbox inbox;
   rig.setDeliver([&inbox](const std::string&, const std::string& t) { inbox.push(t); });
   rig.say("424242", "what is on my calendar?");
-  c.ok(inbox.waitFor("Sub-agents are off in this chat", 100), "the spawn is refused with the reason");
+  c.eqi((long)tx.seen.size(), 0, "an unapproved chat never reaches a turn (so never a spawn)");
+  c.eqi(rig.jobs().activeCount(), 0, "nothing was queued for it");
+  std::string err;
+  c.ok(rig.telegramAccess().approve("424242", "Roy", err), "the owner approves the chat");
+  EngineThread eng(&rig);
+  eng.start();
+  eng.postMessage("424242", "What is on my calendar today?");
+  c.ok(inbox.waitFor("Checking your calendar.", 5000), "the approved chat's turn spawned a sub-agent");
+  c.ok(inbox.waitFor("Dentist at 15:00.", 15000), "its sub-agent ran and the result came back");
+  eng.stop();
+  c.eqi((long)tx.seen.size(), 3, "head, sub, synthesis: the full device path");
+  if (tx.seen.size() >= 2)
+    c.ok(has(tx.seen[1].body, "\"connector_id\":\"google_calendar\""),
+         "the approved chat's sub-agent carried the owner's connector");
+  clearEnv();
+}
+
+// (f2) the owner removes a chat while its turn is in flight: the spawn that turn
+// asks for is refused with the reason, not started.
+static void testRemovedMidTurnCannotSpawn(ndtest::Ctx& c) {
+  std::printf("  -- (f2) a chat removed mid-turn cannot start a sub-agent --\n");
+  clearEnv();
+  HookedTransport tx;
+  tx.script.push_back(headTurn(kSpawnGcal));
+  Config cfg;
+  NimbusdRig rig(cfg, opts("fab-f2"), &tx);
+  rig.applyProviderKey("mistral", "mk_TEST_FAB_7");
+  std::string err;
+  rig.telegramAccess().approve("555", "Roy", err);
+  rig.telegramAccess().approve("424242", "Sam", err);
+  tx.hook = [&rig] {
+    std::string e;
+    rig.telegramAccess().remove("424242", e);
+  };
+  Inbox inbox;
+  rig.setDeliver([&inbox](const std::string&, const std::string& t) { inbox.push(t); });
+  rig.say("424242", "what is on my calendar?");
+  c.ok(inbox.waitFor("Sub-agents are off for this chat", 100), "the spawn is refused with the reason");
   c.eqi(rig.jobs().activeCount(), 0, "nothing was queued");
-  c.eqi((long)tx.seen.size(), 1, "only the head turn reached a provider");
+  c.eqi((long)tx.seen.size(), 1, "only the in-flight head turn reached a provider");
+  clearEnv();
+}
+
+// ---- (h) one person's background work at a time ------------------------------
+static Exchange subResult(const std::string& text) {
+  Exchange sub;
+  sub.expectHost = "api.mistral.ai";
+  sub.expectPathContains = "/v1/conversations";
+  sub.body = "{\"conversation_id\":\"sub\",\"outputs\":[{\"type\":\"message.output\",\"content\":\"" +
+             text + "\"}]}";
+  return sub;
+}
+static Exchange plainReply(const std::string& reply) {
+  return headTurn("{\"reply\":\"" + reply + "\",\"memory\":\"\",\"ask\":\"\"}");
+}
+// Pump the job engine (as the engine thread does) until `done` or a timeout.
+static bool pumpUntil(NimbusdRig& rig, const std::function<bool()>& done, int ms) {
+  for (int i = 0; i < ms / 20 && !done(); i++) {
+    rig.pumpJobs();
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  return done();
+}
+// A rig with a Mistral key and two approved Telegram chats: 555 (admin), 666 (user).
+static void approveTwo(NimbusdRig& rig) {
+  std::string err;
+  rig.telegramAccess().approve("555", "Roy", err);
+  rig.telegramAccess().approve("666", "Sam", err);
+  rig.telegramAccess().setRole("555", nimbus::orch::Role::Admin, err);
+}
+
+static void testMemberNeverSeesOwnersResults(ndtest::Ctx& c) {
+  std::printf("  -- (h1) a member's turn cannot start while the owner's results are unreported --\n");
+  clearEnv();
+  FakeHttpTransport tx;
+  tx.script = {headTurn(kSpawnGcal), subResult("Standup at 10:00; Dentist at 15:00")};
+  Config cfg;
+  NimbusdRig rig(cfg, opts("fab-h1"), &tx);
+  rig.applyProviderKey("mistral", "mk_TEST_FAB_8");
+  approveTwo(rig);
+  Inbox inbox;
+  rig.setDeliver([&inbox](const std::string&, const std::string& t) { inbox.push(t); });
+  rig.say("555", "what is on my calendar?");
+  c.ok(pumpUntil(rig, [&rig] { return rig.jobs().hasFreshResults(); }, 5000),
+       "the owner's sub-agent result is waiting for its report");
+  c.ok(rig.turnMustWait("666"), "the member's turn must wait");
+  c.ok(!rig.turnMustWait("555") && !rig.turnMustWait(kWebChatId), "the owner's own chats never wait");
+  rig.say("666", "anything new?");
+  c.eqi((long)tx.seen.size(), 2, "the member's turn did not run (so it never saw the owner's calendar)");
+  c.ok(rig.jobs().hasFreshResults(), "the owner's results are still there for the owner's report");
+  clearEnv();
+}
+
+static void testHeldTurnRunsAfterReport(ndtest::Ctx& c) {
+  std::printf("  -- (h2) the engine holds the member's message and runs it after the report --\n");
+  clearEnv();
+  FakeHttpTransport tx;
+  tx.script = {headTurn(kSpawnGcal), subResult("Standup at 10:00; Dentist at 15:00"),
+               plainReply("Today: Standup at 10:00 and Dentist at 15:00."), plainReply("Hi Sam.")};
+  Config cfg;
+  NimbusdRig rig(cfg, opts("fab-h2"), &tx);
+  rig.applyProviderKey("mistral", "mk_TEST_FAB_9");
+  approveTwo(rig);
+  std::mutex mu;
+  std::vector<std::pair<std::string, std::string>> got;
+  rig.setDeliver([&](const std::string& ch, const std::string& t) {
+    std::lock_guard<std::mutex> lk(mu);
+    got.push_back({ch, t});
+  });
+  EngineThread eng(&rig);
+  eng.start();
+  eng.postMessage("555", "what is on my calendar?");
+  eng.postMessage("666", "anything new?");   // arrives while the owner's work is in flight
+  bool done = false;
+  for (int i = 0; i < 300 && !done; i++) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    std::lock_guard<std::mutex> lk(mu);
+    done = !got.empty() && got.back().second == "Hi Sam.";
+  }
+  eng.stop();
+  c.ok(done, "the member's held message ran in the end (nothing was dropped)");
+  c.eqi((long)tx.seen.size(), 4, "owner head, sub, owner report, member head - in that order");
+  if (tx.seen.size() == 4) {
+    c.ok(has(tx.seen[2].body, "Dentist at 15:00"), "the owner's report carried the owner's results");
+    c.ok(!has(tx.seen[3].body, "Dentist at 15:00"), "the member's turn never saw them");
+  }
+  std::lock_guard<std::mutex> lk(mu);
+  bool ownerGotReport = false;
+  for (const auto& g : got) ownerGotReport = ownerGotReport || (g.first == "555" && has(g.second, "Today:"));
+  c.ok(ownerGotReport, "the report went to the owner's chat");
+  clearEnv();
+}
+
+static void testSpawnFromOtherNamespaceRefused(ndtest::Ctx& c) {
+  std::printf("  -- (h3) a spawn while another person's work is in flight is refused --\n");
+  clearEnv();
+  FakeHttpTransport tx;
+  tx.script = {headTurn(kSpawnGcal), headTurn(kSpawnGcal)};
+  Config cfg;
+  NimbusdRig rig(cfg, opts("fab-h3"), &tx);
+  rig.applyProviderKey("mistral", "mk_TEST_FAB_10");
+  approveTwo(rig);
+  Inbox inbox;
+  rig.setDeliver([&inbox](const std::string&, const std::string& t) { inbox.push(t); });
+  rig.say("666", "check my calendar");     // the member's work is queued first
+  rig.say(kWebChatId, "check my calendar"); // the owner's turn runs, its spawn cannot mix in
+  c.ok(inbox.waitFor("busy with another person's request", 100), "the second spawn is refused with the reason");
+  c.eqi(rig.jobs().pendingCount(), 1, "only the member's spawn is queued");
+  clearEnv();
+}
+
+static void testRemovedChatReportDropped(ndtest::Ctx& c) {
+  std::printf("  -- (h4) a chat removed while its sub-agent ran gets no report --\n");
+  clearEnv();
+  FakeHttpTransport tx;
+  tx.script = {headTurn(kSpawnGcal), subResult("Standup at 10:00; Dentist at 15:00")};
+  Config cfg;
+  NimbusdRig rig(cfg, opts("fab-h4"), &tx);
+  rig.applyProviderKey("mistral", "mk_TEST_FAB_11");
+  approveTwo(rig);
+  Inbox inbox;
+  rig.setDeliver([&inbox](const std::string&, const std::string& t) { inbox.push(t); });
+  rig.say("666", "check my calendar");
+  c.ok(pumpUntil(rig, [&rig] { return rig.jobs().hasFreshResults(); }, 5000), "the sub-agent finished");
+  std::string err;
+  rig.telegramAccess().remove("666", err);   // the owner removes them before the report
+  c.ok(pumpUntil(rig, [&rig] { return !rig.jobs().hasFreshResults(); }, 6000), "the report step ran");
+  c.eqi((long)tx.seen.size(), 2, "no report turn ran for the removed chat");
+  c.ok(!inbox.waitFor("Dentist", 50), "and the results were never delivered to it");
   clearEnv();
 }
 
@@ -285,6 +487,8 @@ static void testReplyLessTurnCompletesOnWeb(ndtest::Ctx& c) {
   rig.applyProviderKey("mistral", "mk_TEST_FAB_6");
   std::vector<std::pair<std::string, std::string>> got;
   rig.setDeliver([&got](const std::string& ch, const std::string& t) { got.push_back({ch, t}); });
+  std::string err;
+  rig.telegramAccess().approve("12345", "", err);   // an approved async (Telegram) chat
   rig.say(kWebChatId, "hello");
   rig.say("12345", "hello");
   c.eqi((long)got.size(), 1, "exactly one completion delivered");
@@ -304,7 +508,12 @@ int main() {
   testJournalReattaches(c);
   testBackgroundWorkIsNotATurn(c);
   testRebuildKeepsJobs(c);
-  testUntrustedChatCannotSpawn(c);
+  testApprovedChatSpawns(c);
+  testRemovedMidTurnCannotSpawn(c);
+  testMemberNeverSeesOwnersResults(c);
+  testHeldTurnRunsAfterReport(c);
+  testSpawnFromOtherNamespaceRefused(c);
+  testRemovedChatReportDropped(c);
   testReplyLessTurnCompletesOnWeb(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);
   std::printf("%s\n", c.failures ? "FAILED" : "PASSED");

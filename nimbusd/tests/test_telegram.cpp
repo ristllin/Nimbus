@@ -1,8 +1,10 @@
 // test_telegram - offline (T2) proof of the Telegram channel against a FAKE
 // Telegram server (an injected HttpTransport that returns canned bodies). No
 // network. Covers the load-bearing behaviours: getMe validation, long-poll
-// parse + chat-id auth gate, offset advance, send, and offset DURABILITY across
-// a restart (the property that stops a handled message being re-answered).
+// parse, offset advance, send, and offset DURABILITY across a restart (the
+// property that stops a handled message being re-answered). The chat-id auth
+// gate is no longer the channel's job: every update is returned and routed
+// through the device trust model (tests/test_tg_access.cpp, CUM-459).
 #include <string>
 #include <vector>
 
@@ -64,7 +66,7 @@ int main() {
     c.ok(err.find("401") != std::string::npos, "the failure names the HTTP cause");
   }
 
-  // ---- 3. poll parses, applies the chat-id gate, advances the offset --------
+  // ---- 3. poll parses every update (the caller gates), advances the offset ---
   ndtest::rmTree(dir);
   {
     FakeTg tg;
@@ -73,14 +75,15 @@ int main() {
       {"update_id":1001,"message":{"chat":{"id":555},"from":{"first_name":"Roy"},"text":"hello nimbus"}},
       {"update_id":1002,"message":{"chat":{"id":999},"from":{"first_name":"Stranger"},"text":"let me in"}}
     ]})"});
-    TelegramChannel ch("t", &tg, offsetPath, /*allowChatId=*/"555");
+    TelegramChannel ch("t", &tg, offsetPath);
     std::vector<nimbus::tg::Update> ups;
     std::string err;
     c.ok(ch.poll(0, ups, err), "poll succeeds");
-    c.eqi((long)ups.size(), 1, "only the allow-listed chat's message is returned");
-    if (!ups.empty()) {
+    c.eqi((long)ups.size(), 2, "both updates are returned for the trust gate to route");
+    if (ups.size() == 2) {
       c.eq(ups[0].text, "hello nimbus", "the message text parsed correctly");
-      c.eq(ups[0].chatId, "555", "the auth gate is on message.chat.id");
+      c.eq(ups[0].chatId, "555", "the chat id is message.chat.id (what the gate keys on)");
+      c.eq(ups[1].chatId, "999", "the stranger's update is returned too, in wire order");
     }
     c.eqi(ch.offset(), 1003, "offset advanced past the last whole update (1002 + 1)");
   }
@@ -91,7 +94,7 @@ int main() {
     // getUpdates asks the server for >= 1003 (the handled ones are not replayed).
     FakeTg tg;
     tg.queue.push_back({200, R"({"ok":true,"result":[]})"});
-    TelegramChannel ch("t", &tg, offsetPath, "555");
+    TelegramChannel ch("t", &tg, offsetPath);
     c.eqi(ch.offset(), 1003, "offset restored from disk after restart");
     std::vector<nimbus::tg::Update> ups;
     std::string err;
@@ -104,7 +107,7 @@ int main() {
   {
     FakeTg tg;
     tg.queue.push_back({200, R"({"ok":true})"});
-    TelegramChannel ch("t", &tg, offsetPath, "555");
+    TelegramChannel ch("t", &tg, offsetPath);
     std::string err;
     c.ok(ch.sendMessage("555", "line one\nline \"two\"", err), "sendMessage succeeds");
     c.ok(tg.paths[0].find("/sendMessage") != std::string::npos, "sendMessage path");

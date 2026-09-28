@@ -6,8 +6,8 @@
 #include <chrono>
 #include <ctime>
 #include <memory>
+#include <map>
 #include <mutex>
-#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -34,6 +34,7 @@
 #include "posix_fs.h"
 #include "posix_platform.h"
 #include "sub_fabric.h"
+#include "tg_access.h"
 
 // NimbusdRig - a whole Nimbus orchestrator as a hosted daemon.
 //
@@ -133,6 +134,9 @@ class NimbusdRig {
     }
     installLog(opt_.verboseHttp);
     fsutil::mkdirs(memDir());
+    // Telegram trust (CUM-459): the device model, durable on the instance volume.
+    access_.reset(new TelegramAccess(memDir()));
+    seedTelegramAllowlist();
     buildMemory();
     loadSecrets();   // in-app provider keys persisted from a prior session (CUM-279)
     loadModels();    // in-app model picks persisted from a prior session (CUM-425)
@@ -172,6 +176,19 @@ class NimbusdRig {
     cur_ = TurnRecord{};
     cur_.chatId = chatId;
     cur_.userText = text;
+    // The engine seam fails closed too (CUM-459): whatever posted it (the Telegram
+    // poll, POST /api/message), a Telegram chat the owner has not approved - or has
+    // revoked since the message was queued - never gets a turn.
+    if (!access_->mayConverse(chatId)) {
+      std::fprintf(stderr, "[nimbusd] telegram: chat %s is not approved - no turn\n", chatId.c_str());
+      return cur_;
+    }
+    // Safety net for the one-namespace rule below: the engine thread HOLDS such a
+    // turn until it may run (EngineThread), so this only refuses a direct caller.
+    if (turnMustWait(chatId)) {
+      std::fprintf(stderr, "[nimbusd] chat %s must wait for another person's sub-agents\n", chatId.c_str());
+      return cur_;
+    }
     const auto t0 = std::chrono::steady_clock::now();
     eng_->handleMessage(text, "Owner", chatId);
     cur_.seconds = std::chrono::duration<double>(
@@ -190,6 +207,11 @@ class NimbusdRig {
     cur_ = TurnRecord{};
     cur_.chatId = chatId;
     cur_.userText = prompt;
+    if (!access_->mayConverse(chatId)) {   // same fail-closed seam as say()
+      orch::FireOutcome blocked;
+      blocked.detail = "blocked: chat not approved";
+      return blocked;
+    }
     auto r = eng_->injectScheduledTurn(chatId, prompt, name, "", quietOk);
     if (!cur_.deliveries.empty()) cur_.reply = cur_.deliveries.back();
     cur_.ok = r.ok;
@@ -274,19 +296,31 @@ class NimbusdRig {
                     : (hostAvailable(kZaiSlug) ? std::string(kZaiSlug) : std::string()));
   }
 
-  // ---- chats that cannot be trusted with sub-agents -----------------------------
-  // A Telegram bot with no NIMBUSD_TG_CHAT_ID lock accepts ANY chat (every one runs
-  // as the owner - an existing gap, see PR notes). Sub-agents reach the owner's
-  // provider connectors (calendar, Notion, Slack) on the owner's keys, so a chat the
-  // daemon could not authenticate never gets to spawn one: the Telegram poll marks
-  // such chats here, and the spawn path refuses them with an honest message.
-  void noteUntrustedChat(const std::string& chat) {
-    std::lock_guard<std::mutex> lk(untrustedMu_);
-    untrusted_.insert(chat);
+  // ---- Telegram trust (CUM-459, the device model) -------------------------------
+  // The fail-closed allowlist + RBAC table the owner manages in the web app. It
+  // replaced the VNC stopgap (an "untrusted chat" set that only blocked sub-agent
+  // spawns while EVERY chat still ran turns as the owner): an unapproved chat now
+  // never reaches a turn at all, and an approved one runs as its real role.
+  TelegramAccess& telegramAccess() { return *access_; }
+  const TelegramAccess& telegramAccess() const { return *access_; }
+
+  // ---- one person's background work at a time -----------------------------------
+  // The shared JobEngine (lib/harness, tracked as CUM-463) keeps ONE pool of
+  // sub-agent results: every result is folded into the NEXT turn whoever sends it,
+  // and the report goes to the chat whose job finished last. That is fine for one owner and wrong for several
+  // approved people (one would read another's calendar), so a hosted instance keeps
+  // all queued, running and unreported sub-agent work inside ONE data namespace at
+  // a time: a spawn from another namespace is refused with the reason, and a
+  // member's turn from another namespace WAITS until that work is reported (the
+  // engine thread holds it; nothing is dropped). The owner's own turns never wait.
+  // Engine thread only.
+  bool backgroundBusy() const {
+    return jobs_ && (jobs_->activeCount() > 0 || jobs_->hasFreshResults());
   }
-  bool untrustedChat(const std::string& chat) const {
-    std::lock_guard<std::mutex> lk(untrustedMu_);
-    return untrusted_.count(chat) != 0;
+  bool turnMustWait(const std::string& chat) const {
+    if (!backgroundBusy()) return false;
+    const orch::Principal who = access_->principalFor(chat);
+    return !who.owner && who.ns != bgNs_;
   }
 
   // ---- sub-agent jobs (device parity: orchestrator pollJobs -> JobEngine::pump) ----
@@ -558,6 +592,15 @@ class NimbusdRig {
   static uint32_t nowHours() {
     return (uint32_t)std::chrono::duration_cast<std::chrono::hours>(
                std::chrono::system_clock::now().time_since_epoch()).count();
+  }
+
+  // Legacy NIMBUSD_TG_CHAT_ID: an optional one-time SEED of the allowlist, no longer
+  // a gate (TelegramAccess::seedFromEnv has the rules). Logged so an operator can see
+  // what it did.
+  void seedTelegramAllowlist() {
+    const std::string note = access_->seedFromEnv(cfg_.get("NIMBUSD_TG_CHAT_ID"));
+    if (!note.empty())
+      std::fprintf(stderr, "[nimbusd] telegram: NIMBUSD_TG_CHAT_ID (legacy seed): %s\n", note.c_str());
   }
 
   // ---- in-app provider keys: durable secrets (CUM-279) ----------------------
@@ -914,7 +957,10 @@ class NimbusdRig {
     // JobEngine, and every dep below reads the rig's current state through `this`.
     if (!jobs_) {
       jd.platform = makePosixPlatform(&mem_);
-      jd.deliver = [this](const std::string& c, const std::string& t) { record(c, t); };
+      // A chat the owner removed or revoked after it queued work hears nothing more.
+      jd.deliver = [this](const std::string& c, const std::string& t) {
+        if (access_->mayConverse(c)) record(c, t);
+      };
       wireJobDeps(jd);
       jobs_.reset(new agent::JobEngine(std::move(jd)));
     }
@@ -924,13 +970,17 @@ class NimbusdRig {
     d.platform = makePosixPlatform(&mem_);
     d.jobs = jobs_.get();
     d.deliver = [this](const std::string& c, const std::string& t) { record(c, t); };
-    d.recall = [this](const std::string& q, const orch::Principal&) {
+    d.recall = [this](const std::string& q, const orch::Principal& who) {
       std::vector<std::string> out;
       if (!opt_.embeddings) return out;
       std::string eerr;
       auto v = embed(q, eerr);
       if (v.empty()) return out;
-      for (const auto& hit : vec_.search(v, 5)) out.push_back(hit.content);
+      // Device read boundary (memory_subsystem recall): STRICTLY the caller's own
+      // namespace, so an approved member never recalls the owner's memories; an
+      // unattributed caller recalls nothing rather than everything.
+      const std::vector<std::string> ns{who.valid() ? who.ns : std::string("\x01none")};
+      for (const auto& hit : vec_.search(v, 5, nowHours(), ns)) out.push_back(hit.content);
       return out;
     };
     d.composeInputs = [this](const std::string& chat) {
@@ -938,7 +988,11 @@ class NimbusdRig {
       in.devName = opt_.devName;
       in.hostLabel = lastHost_.empty() ? std::string("(picking)") : lastHost_;
       in.recentConversation = recentWindow(chat);
-      in.runningMemory = memory_;
+      in.runningMemory = runningMemory(chat);
+      // Who this message is from (device W10): the prompt names the speaker's real
+      // role, so an approved member is never addressed as the owner.
+      in.speakerRole = orch::roleName(access_->roleOf(chat));
+      in.speakerLabel = access_->labelOf(chat);
       return in;
     };
     d.toolSpecs = [this](const orch::Principal& who) { return reg_.toolSpecsFor(who); };
@@ -971,27 +1025,43 @@ class NimbusdRig {
       lastServedBy_ = ev.host + (ev.servedModel.empty() ? std::string() : (" " + ev.servedModel));
     };
 
+    wireApply(d);
+
+    registerHeads(d);
+    eng_.reset(new agent::TurnEngine(std::move(d)));
+  }
+
+  // The apply layer's deps (device buildApplyDeps): delivery, the turn principal,
+  // running memory and the sub-agent session ops. Split from buildEngine so each
+  // stays within the complexity gate.
+  void wireApply(agent::TurnEngine::Deps& d) {
     d.apply.deliver = d.deliver;
     d.apply.stageDevice = [](const orch::ValidatedAction&) {};  // hosted: no device actions
+    // The WHOLE principal from the tenant table (device principalFor): the owner's
+    // own surfaces are Admin, an approved Telegram chat runs as its RBAC role.
     d.apply.principalFor = [this](const std::string& chat) {
-      return orch::principalForRole(chat, role());
+      return access_->principalFor(chat);
     };
-    d.apply.setModelMemory = [this](const std::string&, const std::string& m) {
-      memory_ = m;
+    // Per-chat running memory (device g_mem.model(chatId)): one person's rolling
+    // summary never rides another person's prompt. Engine thread only.
+    d.apply.setModelMemory = [this](const std::string& chat, const std::string& m) {
+      memory_[chat] = m;
       return true;
     };
     // Sub-agent session ops (device buildApplyDeps): spawn/terminate/await reach the
     // JobEngine, which dispatches through the fabric on the engine thread's pump.
     // Unwired, a model's spawn vanished at the apply layer with no trace.
+    // An approved chat spawns normally (sub-agents reach the owner's connectors, which
+    // is exactly what the owner granted by approving it). The live re-check only
+    // covers a chat the owner removed while its turn was running.
     d.apply.enqueueSpawn = [this](const orch::Spawn& s, const std::string& chat, bool quiet) {
-      if (untrustedChat(chat)) {
-        record(chat, "Sub-agents are off in this chat: this instance is not locked to one "
-                     "Telegram chat yet (set NIMBUSD_TG_CHAT_ID to the owner's chat).");
-        return;
-      }
-      if (jobs_) jobs_->enqueueSpawn(s, chat, quiet);
+      enqueueSpawnFor(s, chat, quiet);
     };
+    // Stopping a sub-agent is the owner's, or its own namespace's, to do (a member
+    // turn only runs while the in-flight work is its own - see turnMustWait).
     d.apply.cancelSession = [this](const std::string& id) {
+      const orch::Principal who = access_->principalFor(cur_.chatId);
+      if (!who.owner && who.ns != bgNs_) return false;
       return jobs_ && jobs_->cancel(id.c_str());
     };
     d.apply.awaitTag = [this](const std::string& tag) {
@@ -1007,9 +1077,23 @@ class NimbusdRig {
     d.apply.turnComplete = [this](const std::string& chat) {
       if (chat == kWebChatId) record(chat, "Done.");
     };
+  }
 
-    registerHeads(d);
-    eng_.reset(new agent::TurnEngine(std::move(d)));
+  // A spawn from `chat`: refused (with the reason, never silently) when the owner has
+  // not approved the chat, or while another person's sub-agent work is in flight (the
+  // one-namespace rule, see turnMustWait); otherwise queued on the JobEngine.
+  void enqueueSpawnFor(const orch::Spawn& s, const std::string& chat, bool quiet) {
+    if (!access_->mayConverse(chat)) {
+      record(chat, "Sub-agents are off for this chat: the owner has not approved it.");
+      return;
+    }
+    const std::string ns = access_->principalFor(chat).ns;
+    if (backgroundBusy() && ns != bgNs_) {
+      record(chat, "Sub-agents are busy with another person's request. Try again in a few minutes.");
+      return;
+    }
+    bgNs_ = ns;
+    if (jobs_) jobs_->enqueueSpawn(s, chat, quiet);
   }
 
   // Register the provider heads for the current key set. Kept out of buildEngine so
@@ -1173,7 +1257,13 @@ class NimbusdRig {
     jd.connectorProvider = [this](const std::string& skill) { return connectorProviderFor(skill); };
     jd.nowString = [] { return localNowString(); };
     jd.chatContext = [this](const std::string& chat) { return spawnContext(chat); };
+    // The report turn for a chat the owner removed or revoked meanwhile never runs:
+    // its results are dropped instead of delivered.
     jd.synthesize = [this](const std::string& chat) {
+      if (!access_->mayConverse(chat)) {
+        if (jobs_) jobs_->takeFreshResults();
+        return;
+      }
       if (eng_) eng_->maybeConsolidate(chat);
     };
     jd.turnInFlight = [this] { return eng_ && eng_->turnInFlight(); };
@@ -1231,16 +1321,24 @@ class NimbusdRig {
     epi_->addMessage(m);
   }
 
+  // The chat's recent window. A member's lines are labeled "user", never "owner":
+  // the model must not read an approved guest's words as the owner's.
   std::string recentWindow(const std::string& chat) {
     orch::MsgQuery q;
     q.sessionId = chat;
     q.limit = 12;
+    const char* speaker = access_->roleOf(chat) == orch::Role::Admin ? "owner" : "user";
     std::string out;
     for (const auto& m : epi_->query(q)) {
-      const char* who = (m.role == "user") ? "owner" : "nimbus";
+      const char* who = (m.role == "user") ? speaker : "nimbus";
       out += std::string(who) + ": " + trunc(m.text, 400) + "\n";
     }
     return out;
+  }
+
+  std::string runningMemory(const std::string& chat) const {
+    auto it = memory_.find(chat);
+    return it == memory_.end() ? std::string() : it->second;
   }
 
   void record(const std::string& chat, const std::string& text) {
@@ -1255,6 +1353,9 @@ class NimbusdRig {
 
   Config cfg_;
   Options opt_;
+  // Telegram allowlist + RBAC (CUM-459). Declared early so it outlives the engine and
+  // job engine whose closures consult it.
+  std::unique_ptr<TelegramAccess> access_;
   CgroupMemory mem_;
   std::unique_ptr<DaemonHttpTransport> ownedHttp_;  // owned unless a test injects one
   agent::HttpTransport* http_ = nullptr;            // the live transport (owned or injected)
@@ -1293,9 +1394,9 @@ class NimbusdRig {
   nimbus::orch::MistralWorkspace ws_;
   WorkspaceProbe wsProbe_;
   std::atomic<bool> probeQueued_{false};   // one workspace probe queued at a time
-  mutable std::mutex untrustedMu_;
-  std::set<std::string> untrusted_;        // unauthenticated Telegram chats (no spawns)
-  std::string convId_, antEnv_, antAgents_, memory_, lastHost_, lastServedBy_;
+  std::map<std::string, std::string> memory_;   // running memory per chat (engine thread)
+  std::string bgNs_;   // the data namespace that owns the in-flight sub-agent work
+  std::string convId_, antEnv_, antAgents_, lastHost_, lastServedBy_;
   bool lastFallback_ = false;   // CUM-236 served-by of the most recent turn
   std::function<void(const std::string&, const std::string&)> onDeliver_;
 
