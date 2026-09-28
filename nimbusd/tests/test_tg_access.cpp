@@ -6,7 +6,8 @@
 //   (a) a fresh instance fails CLOSED, for every Telegram chat id (the class);
 //   (b) an unlisted chat is refused: no turn, no spawn, no provider call, no state
 //       change, one polite refusal (rate-limited), queued for approval;
-//   (c) approving through the web routes serves the chat normally;
+//   (c) approving through the web routes serves the chat normally, as a user;
+//       admin is only ever an explicit grant;
 //   (d) the allowlist + roles survive a restart;
 //   (e) NIMBUSD_TG_CHAT_ID is a one-time seed of an EMPTY allowlist only;
 //   (f) a revoked chat gets no turn and is told so; re-approving restores it;
@@ -15,7 +16,10 @@
 //   (i) RBAC is real for an approved member: principal, speaker line, recall
 //       boundary, owner-only files;
 //   (j) the engine seam refuses a chat removed after its message was queued;
-//   (k) /api/tenant keeps the device's guards (no pre-seeding, last admin, limits).
+//   (k) /api/tenant keeps the device's guards (no pre-seeding, last admin, limits)
+//       and a refused request changes nothing;
+//   (l) a role never outlives its chat's approval (no revival on re-add), and one
+//       atomic file holds it all (a torn or missing file fails closed).
 // Offline: an injected FakeHttpTransport (script exhaustion fails loudly, so any
 // unexpected provider call is caught); no network, no real keys.
 #include <cstdio>
@@ -163,7 +167,7 @@ static void checkNoStateChange(ndtest::Ctx& c, Fx& f) {
   c.eq(f.acc().allowCsv(), "", "the allowlist is unchanged (still empty)");
   c.eqi((long)f.acc().tenants().size(), 0, "the RBAC table is unchanged (still empty)");
   std::string blob;
-  c.ok(!fsutil::readFile(f.acc().accessPath(), blob), "no access state was persisted");
+  c.ok(!fsutil::readFile(f.acc().path(), blob), "no access state was persisted");
 }
 
 static void testUnlistedRefused(ndtest::Ctx& c) {
@@ -217,12 +221,17 @@ static void testApproveThenServe(ndtest::Ctx& c) {
   c.eqi(r.status, 200, "POST /api/telegram/approve -> 200");
   c.eqi((long)f.acc().pending().size(), 0, "approval drops them from the queue");
   r = f.call("GET", "/api/telegram");
-  c.ok(has(r.body, "\"allow\":[{\"id\":\"555\",\"name\":\"Roy\",\"owner\":true}]") &&
+  c.ok(has(r.body, "\"allow\":[{\"id\":\"555\",\"name\":\"Roy\",\"owner\":false}]") &&
            has(r.body, "\"public\":false"),
-       "the chip lists Roy as the owner (the first approved chat is the admin, device adoptLegacy)");
+       "Roy is listed as approved, NOT as an admin (approval never grants owner rights)");
+  c.eq(nimbus::orch::roleName(f.acc().roleOf("555")), "user", "an approved chat is a user");
+  c.eqi(f.call("POST", "/api/tenant", "id=555&role=admin").status, 200,
+        "the owner makes their own chat an admin explicitly (the role chip)");
   r = f.call("GET", "/api/tenant");
   c.ok(has(r.body, "{\"id\":\"555\",\"role\":\"admin\"") && has(r.body, "\"admins\":1"),
        "GET /api/tenant has Roy's RBAC row as admin");
+  c.ok(has(f.call("GET", "/api/telegram").body, "{\"id\":\"555\",\"name\":\"Roy\",\"owner\":true}"),
+       "and the chip now shows the admin");
   c.ok(has(f.call("GET", "/api/orch").body, "\"tgAllow\":\"555\""), "GET /api/orch reports tgAllow");
   f.tx.script.push_back(replyTurn("Hello Roy."));
   const auto st = f.route({text(2, "555", "Roy", "hello")}, 200, &sent);
@@ -247,6 +256,7 @@ static void testPersistsAcrossRestart(ndtest::Ctx& c) {
     Fx f("tga-d");
     f.call("POST", "/api/telegram/approve", "id=555&name=Roy");
     f.call("POST", "/api/telegram/add", "id=777&name=Sam");
+    c.eqi(f.call("POST", "/api/tenant", "id=555&role=admin").status, 200, "Roy is made the admin");
     c.eqi(f.call("POST", "/api/tenant", "id=777&role=guest").status, 200, "Sam is made a guest");
   }
   Fx g("tga-d", /*fresh=*/false);
@@ -274,8 +284,8 @@ static void testEnvSeedOnce(ndtest::Ctx& c) {
     Fx f("tga-e", false);
     c.eq(f.acc().allowCsv(), "555", "a restart with the same env does not seed again");
     f.call("POST", "/api/telegram/add", "id=777");
-    std::string note, err;
-    f.acc().remove("555", note, err);
+    std::string err;
+    f.acc().remove("555", err);
   }
   {
     Fx f("tga-e", false);
@@ -292,8 +302,8 @@ static void testEnvSeedOnce(ndtest::Ctx& c) {
   {
     Fx f("tga-e3");
     c.eq(f.acc().allowCsv(), "444", "a fresh volume takes the seed");
-    std::string note, err;
-    f.acc().remove("444", note, err);
+    std::string err;
+    f.acc().remove("444", err);
     c.ok(f.acc().allowEmpty(), "the owner removes the seeded chat");
   }
   {
@@ -377,11 +387,14 @@ static void testMemberRbac(ndtest::Ctx& c) {
   Fx f("tga-i", true, /*embeddings=*/true);
   f.call("POST", "/api/telegram/approve", "id=555&name=Roy");
   f.call("POST", "/api/telegram/approve", "id=666&name=Sam");
+  f.call("POST", "/api/tenant", "id=555&role=admin");   // Roy is the owner's own chat
   const auto who = f.acc().principalFor("666");
   c.ok(!who.owner && who.role == nimbus::orch::Role::User && who.ns == "chat:666",
        "the member's principal is User with its own namespace");
-  { orch::VecEntry e; e.id = "s1"; e.content = "OWNER-SECRET-FACT"; e.vec.assign(64, 0); e.vec[0] = 127;
-    f.rig->vectors().add(e); }
+  { orch::VecEntry e; e.id = "s1"; e.content = "OWNER-SECRET-FACT"; e.ttlHours = -1;
+    e.vec.assign(64, 0); e.vec[0] = 127; f.rig->vectors().add(e); }
+  { orch::VecEntry e; e.id = "s2"; e.content = "EXPIRED-OWNER-FACT"; e.ttlHours = 24; e.createdAtHours = 1;
+    e.vec.assign(64, 0); e.vec[0] = 127; f.rig->vectors().add(e); }   // expired decades ago
   f.tx.script = {embedExchange(), replyTurn("ok"), embedExchange(), replyTurn("ok")};
   f.rig->say("666", "what do you remember?");
   f.rig->say("555", "what do you remember?");
@@ -391,6 +404,7 @@ static void testMemberRbac(ndtest::Ctx& c) {
     const std::string& owner = f.tx.seen[3].body;
     c.ok(!has(member, "OWNER-SECRET-FACT"), "the member's turn never recalls the owner's memory");
     c.ok(has(owner, "OWNER-SECRET-FACT"), "the owner's own turn does recall it");
+    c.ok(!has(owner, "EXPIRED-OWNER-FACT"), "an expired memory is not recalled (query-time TTL)");
     c.ok(has(member, "role: user") && has(member, "NOT your owner"), "the member's prompt names them a user");
     c.ok(has(owner, "role: admin"), "the owner's prompt names them the admin");
   }
@@ -414,9 +428,10 @@ static void testEngineSeamRechecks(ndtest::Ctx& c) {
   f.rig->say("12345", "posted over /api/message for an unknown chat");
   c.eqi((long)f.tx.seen.size(), 0, "neither reached a provider");
   c.eqi((long)f.out.size(), 0, "and nothing was delivered");
-  ApiResp r = f.call("POST", "/api/telegram/remove", "id=555");
-  c.ok(r.status == 200 && has(r.body, "only admin"), "removing the last admin chat says its row stays");
-  c.ok(f.acc().admit("555") == Admit::Unlisted, "but the chat itself is refused at once");
+  f.call("POST", "/api/tenant", "id=555&role=admin");
+  c.eqi(f.call("POST", "/api/telegram/remove", "id=555").status, 200,
+        "even the only admin chat can be removed (the web app is always the owner)");
+  c.ok(f.acc().admit("555") == Admit::Unlisted, "and it is refused at once");
 }
 
 // (k) --------------------------------------------------------------------------
@@ -426,6 +441,7 @@ static void testTenantGuards(ndtest::Ctx& c) {
   Fx f("tga-k");
   f.call("POST", "/api/telegram/approve", "id=555");
   f.call("POST", "/api/telegram/approve", "id=666");
+  f.call("POST", "/api/tenant", "id=555&role=admin");
   c.eqi(f.call("POST", "/api/tenant", "id=999&role=admin").status, 409,
         "no role for a chat that was never approved (no pre-seeding)");
   c.eqi(f.call("POST", "/api/tenant", "id=555&role=user").status, 409, "the last admin cannot be demoted");
@@ -439,6 +455,37 @@ static void testTenantGuards(ndtest::Ctx& c) {
        "and read back");
   c.eqi(f.call("POST", "/api/tenant", "id=666&role=wizard").status, 400, "an unknown role is refused");
   c.eqi(f.call("POST", "/api/tenant", "role=user").status, 400, "a missing id is refused");
+  c.eqi(f.call("POST", "/api/tenant", "id=12%1F3&role=unknown").status, 400, "a non-numeric id is refused");
+  c.eqi(f.call("POST", "/api/tenant", "id=666&role=guest&ttl=-1").status, 400,
+        "a request with one bad limit is refused whole");
+  c.eq(nimbus::orch::roleName(f.acc().roleOf("666")), "user", "and its role part was NOT applied");
+  c.eqi(f.call("PUT", "/api/tenant", "id=666&role=guest").status, 405, "only GET and POST are routes");
+  c.eqi(f.call("POST", "/api/telegram/role", "id=666&owner=1").status, 200,
+        "the legacy owner flag route maps onto the real role");
+  c.eq(nimbus::orch::roleName(f.acc().roleOf("666")), "admin", "and it made them an admin");
+}
+
+// (l) --------------------------------------------------------------------------
+static void testNoRoleRevival(ndtest::Ctx& c) {
+  std::printf("  -- (l) a role never outlives its chat's approval; one file, fail closed --\n");
+  clearEnv();
+  Fx f("tga-l");
+  f.call("POST", "/api/telegram/approve", "id=555");
+  f.call("POST", "/api/telegram/approve", "id=666");
+  f.call("POST", "/api/tenant", "id=666&role=admin");
+  c.eqi(f.call("POST", "/api/orch", "tgAllow=555").status, 200, "the raw tgAllow write drops 666");
+  c.ok(!has(f.call("GET", "/api/tenant").body, "\"666\""), "and its admin row went with it");
+  c.eqi(f.call("POST", "/api/telegram/add", "id=666").status, 200, "666 is approved again later");
+  c.eq(nimbus::orch::roleName(f.acc().roleOf("666")), "user", "as a user: the old admin grant is NOT revived");
+  std::string blob;
+  c.ok(fsutil::readFile(f.acc().path(), blob) && has(blob, "tgAllow=555,666") && has(blob, "\ntenants="),
+       "the allowlist and the roles live in ONE atomically written file");
+  fsutil::writeFileAtomic(f.acc().path(), "tgAllow=555\ntenants=\x01garbage\n");
+  TelegramAccess torn(ndtest::scratchDir("tga-l") + "/data/mem");
+  c.eq(nimbus::orch::roleName(torn.roleOf("555")), "user", "a torn roles line never promotes anyone");
+  fsutil::writeFileAtomic(f.acc().path(), "\x7f\x7f not a config \x7f");
+  TelegramAccess junk(ndtest::scratchDir("tga-l") + "/data/mem");
+  c.ok(junk.allowEmpty() && junk.admit("555") == Admit::Unlisted, "an unreadable file is an empty allowlist");
 }
 
 int main() {
@@ -456,8 +503,9 @@ int main() {
   testMemberRbac(c);
   testEngineSeamRechecks(c);
   testTenantGuards(c);
+  testNoRoleRevival(c);
   for (const char* t : {"tga-b", "tga-c", "tga-d", "tga-e", "tga-e2", "tga-e3", "tga-f", "tga-g", "tga-h",
-                        "tga-i", "tga-j", "tga-k"})
+                        "tga-i", "tga-j", "tga-k", "tga-l"})
     ndtest::rmTree(ndtest::scratchDir(t));
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);
   std::printf("%s\n", c.failures ? "FAILED" : "PASSED");

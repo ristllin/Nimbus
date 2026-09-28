@@ -71,14 +71,11 @@ class TelegramChannel {
       err = "getUpdates parse failed";
       return false;
     }
-    int32_t maxWhole = offset_ - 1;
-    for (const auto& u : ups) {
-      // Never ack past a truncated tail's last whole update.
-      maxWhole = u.updateId;
-      out.push_back(u);
-    }
+    out = ups;
+    // Ack past the last whole update only when the page parsed to its end (a
+    // truncated tail is re-served whole on the next poll).
     if (!ups.empty() && !truncated) {
-      offset_ = nimbus::core::nextTelegramOffset(offset_, maxWhole);
+      offset_ = nimbus::core::nextTelegramOffset(offset_, ups.back().updateId);
       persistOffset();
     }
     return true;

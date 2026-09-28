@@ -32,12 +32,23 @@ class PosixFiles {
   static constexpr const char* kOwnerOnly =
       "Files on this instance belong to its owner; ask the owner to share what you need.";
 
+  // Register one owner-only tool: the handler refuses a non-owner (enforcement) and
+  // the registry leaves it out of a non-owner's list (advertisement), in one place.
+  static void addOwnerOnly(nimbus::orch::ToolRegistry& reg, const char* name, const char* desc,
+                           nimbus::orch::ToolHandler fn, const char* schema) {
+    reg.add(name, desc,
+            [fn](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) {
+              return who.owner ? fn(a, who) : nimbus::orch::ToolResult::fail(kOwnerOnly);
+            },
+            schema);
+    reg.setAdminOnly(name);
+  }
+
   void registerTools(nimbus::orch::ToolRegistry& reg) {
-    reg.add("files.list",
+    addOwnerOnly(reg, "files.list",
             "List stored files. Optional 'project' narrows to one project. "
             "Returns one 'project/name (N bytes)' per line.",
-            [this](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) {
-              if (!who.owner) return nimbus::orch::ToolResult::fail(kOwnerOnly);
+            [this](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) {
               const std::string proj = str(a, "project");
               std::string out;
               for (const auto* e : store_.list(proj))
@@ -48,10 +59,9 @@ class PosixFiles {
             },
             R"({"type":"object","properties":{"project":{"type":"string"}}})");
 
-    reg.add("artifact.save",
+    addOwnerOnly(reg, "artifact.save",
             "Save a text file under a project. Overwrites an existing file of the same name.",
-            [this](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) {
-              if (!who.owner) return nimbus::orch::ToolResult::fail(kOwnerOnly);
+            [this](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) {
               const std::string p = str(a, "project"), n = str(a, "name"), t = str(a, "text");
               if (p.empty() || n.empty())
                 return nimbus::orch::ToolResult::fail("need 'project' and 'name'");
@@ -64,9 +74,8 @@ class PosixFiles {
             R"("name":{"type":"string"},"text":{"type":"string"}},)"
             R"("required":["project","name"]})");
 
-    reg.add("files.read", "Read a stored file's contents.",
-            [this](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) {
-              if (!who.owner) return nimbus::orch::ToolResult::fail(kOwnerOnly);
+    addOwnerOnly(reg, "files.read", "Read a stored file's contents.",
+            [this](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) {
               const std::string p = str(a, "project"), n = str(a, "name");
               std::string body;
               if (!read(p, n, body))
@@ -75,7 +84,6 @@ class PosixFiles {
             },
             R"({"type":"object","properties":{"project":{"type":"string"},)"
             R"("name":{"type":"string"}},"required":["project","name"]})");
-    for (const char* t : {"files.list", "artifact.save", "files.read"}) reg.setAdminOnly(t);
   }
 
   // ---- direct access (scenario seeding + assertions) ----

@@ -1,5 +1,7 @@
 #pragma once
 #include <dirent.h>
+#include <fcntl.h>
+#include <unistd.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 
@@ -67,31 +69,45 @@ inline bool readFile(const std::string& path, std::string& out) {
   return true;
 }
 
-// Atomic whole-file write: write to "<path>.tmp", fsync, then rename over the
-// target (rename is atomic on POSIX within a filesystem). The same discipline
-// the device's stores use (tmp->rename), so a crash between open and rename
-// leaves the previous good file in place, never a half-written one.
+// Write every byte (a short write is retried; EINTR is not an error).
+inline bool writeAll(int fd, const std::string& bytes) {
+  size_t off = 0;
+  while (off < bytes.size()) {
+    const ssize_t n = ::write(fd, bytes.data() + off, bytes.size() - off);
+    if (n < 0 && errno == EINTR) continue;
+    if (n <= 0) return false;
+    off += (size_t)n;
+  }
+  return true;
+}
+
+// Make a rename inside `dir` durable. Best effort: a filesystem that refuses to
+// fsync a directory still has the file's own bytes on disk.
+inline void syncDir(const std::string& dir) {
+  const int d = ::open(dir.empty() ? "." : dir.c_str(), O_RDONLY);
+  if (d < 0) return;
+  ::fsync(d);
+  ::close(d);
+}
+
+// Atomic, durable whole-file write: write "<path>.tmp", fsync it, rename it over
+// the target, then fsync the directory. The same discipline the device's stores
+// use (tmp->rename), so a crash leaves either the previous good file or the new
+// one, never a half-written or empty one (a rename that lands before its bytes do
+// is exactly the empty-file-after-power-loss case, so the fsync is not optional).
 inline bool writeFileAtomic(const std::string& path, const std::string& bytes) {
   const std::string dir = dirOf(path);
   if (!dir.empty() && !mkdirs(dir)) return false;
   const std::string tmp = path + ".tmp";
-  {
-    std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
-    if (!f) return false;
-    f.write(bytes.data(), (std::streamsize)bytes.size());
-    f.flush();
-    if (!f) return false;
-  }
-  // Best-effort durability: flush the file's bytes to the platter before the
-  // rename so the rename can never land pointing at unwritten data.
-  if (FILE* c = std::fopen(tmp.c_str(), "rb")) {
-    fflush(c);
-    std::fclose(c);
-  }
-  if (std::rename(tmp.c_str(), path.c_str()) != 0) {
+  const int fd = ::open(tmp.c_str(), O_CREAT | O_WRONLY | O_TRUNC, 0644);
+  if (fd < 0) return false;
+  const bool wrote = writeAll(fd, bytes) && ::fsync(fd) == 0;
+  ::close(fd);
+  if (!wrote || std::rename(tmp.c_str(), path.c_str()) != 0) {
     std::remove(tmp.c_str());
     return false;
   }
+  syncDir(dir);
   return true;
 }
 

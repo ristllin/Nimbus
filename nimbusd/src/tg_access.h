@@ -1,4 +1,5 @@
 #pragma once
+#include <algorithm>
 #include <ctime>
 #include <functional>
 #include <map>
@@ -11,7 +12,6 @@
 #include "nimbus/mem_cap.h"
 #include "nimbus/orch/rbac.h"
 #include "nimbus/orch/tool_registry.h"
-#include "nimbus/tg_updates.h"
 #include "posix_fs.h"
 
 // tg_access - who may talk to this instance over Telegram, and as whom.
@@ -26,29 +26,34 @@
 //   * An unlisted sender lands in a 5-slot first-message approval ring (dedup by
 //     chat, oldest dropped, RAM only) and gets no turn (pendingPush).
 //   * Approve = add to tgAllow + the display-name sidecar + drop from the ring.
-//   * Roles come from the SHARED TenantStore (lib/core rbac.h). An empty table is
-//     adopted from the legacy lists exactly as the device's loadTenants() does
-//     (owners -> Admin, the rest -> User, no owners -> the FIRST allow-listed chat
-//     is Admin), and a chat's role follows the device's roleOfChat(): an explicit
-//     row wins (an explicit Unknown is a revocation), else allow-listed -> User,
-//     else Unknown.
+//   * Roles come from the SHARED TenantStore (lib/core rbac.h) and the device's
+//     roleOfChat(): an explicit row wins (an explicit Unknown is a revocation), else
+//     allow-listed -> User, else Unknown.
 //   * The instance's own token-gated surfaces (the web chat, the control API) are
 //     the owner: the device answers Admin for web/serial/voice. Telegram chat ids
 //     are numeric (Bot API chat.id), so a non-numeric chat id is a local surface.
 //
-// Hosted differences, each one fail-closed: an unlisted or revoked chat is told so
-// in one polite, rate-limited message instead of silence (a hosted bot has no
-// screen for the owner to notice a knock on); a revoked chat never reaches a turn
-// (the device still runs one and relies on the prompt to refuse); there is no open
-// access mode (a public bot on a hosted instance spends the owner's keys and reaches
-// the owner's connectors); allowlist ids must be numeric.
+// Hosted differences, each one fail-closed:
+//   * Approving a chat grants User. Admin is only ever an explicit grant (the role
+//     chip, POST /api/tenant, or the legacy NIMBUSD_TG_CHAT_ID seed). The device
+//     adopts the FIRST allow-listed chat as admin; on a hosted instance the owner
+//     lives in the web app, so that rule would hand owner rights to whoever the
+//     owner happened to approve first.
+//   * A role only exists while its chat is on the allowlist: every way off the list
+//     erases the row, so re-adding a chat later never revives an old grant.
+//   * An unlisted or revoked chat is told so in one polite, rate-limited message
+//     instead of silence (a hosted bot has no screen where the owner would notice a
+//     knock), and a revoked chat never reaches a turn (the device runs one and
+//     relies on the prompt to refuse).
+//   * There is no open access mode, and allowlist ids must be numeric.
 //
-// Durable on the instance volume (<data>/mem, so GET /backup carries it):
-// telegram.txt holds the allowlist, owners, names and the consumed legacy seed, in
-// the device's NVS key names; tenants.txt holds the RBAC table in the device's
-// /data/tenants.txt format. The approval ring and the refusal memo are RAM, as on
-// the device. Thread-safe: the Telegram poll thread, the HTTP thread and the engine
-// thread all consult it.
+// Durable on the instance volume as ONE file (<data>/mem/telegram.txt, so GET
+// /backup carries it and a crash can never leave the allowlist and the roles out
+// of step): the allowlist, names and consumed seed under the device's NVS key
+// names, plus the RBAC table in TenantStore::dump form. A missing or unreadable
+// file is an empty allowlist: fail closed. The approval ring and the refusal memo
+// are RAM, as on the device. Thread-safe: the Telegram poll thread, the HTTP thread
+// and the engine thread all consult it.
 namespace nimbusd {
 
 class TelegramAccess {
@@ -74,20 +79,18 @@ class TelegramAccess {
   static constexpr const char* kErrStillAllowed =
       "They are still approved. Remove them from the allowlist first, or set their role "
       "to unknown to revoke access.";
+  static constexpr const char* kErrNoTenant = "no such tenant";   // lib/core's wording
 
   explicit TelegramAccess(std::string dir) : dir_(std::move(dir)) { load(); }
 
-  std::string accessPath() const { return dir_ + "/telegram.txt"; }
-  std::string tenantsPath() const { return dir_ + "/tenants.txt"; }
+  std::string path() const { return dir_ + "/telegram.txt"; }
 
   // A Telegram chat id: an optional '-' (groups) then digits, bounded.
   static bool isChatId(const std::string& s) {
     if (s.empty() || s.size() > kIdMax) return false;
-    size_t i = s[0] == '-' ? 1 : 0;
-    if (i == s.size()) return false;
-    for (; i < s.size(); i++)
-      if (s[i] < '0' || s[i] > '9') return false;
-    return true;
+    const size_t digits = s[0] == '-' ? 1 : 0;
+    return digits < s.size() &&
+           std::all_of(s.begin() + (long)digits, s.end(), [](char c) { return c >= '0' && c <= '9'; });
   }
 
   // ---- the gate -------------------------------------------------------------
@@ -122,8 +125,6 @@ class TelegramAccess {
   // Display name for the prompt's speaker line ("" when none).
   std::string labelOf(const std::string& chat) const {
     std::lock_guard<std::mutex> lk(mu_);
-    const Tenant* t = st_.tenants.find(chat);
-    if (t && !t->label.empty()) return t->label;
     auto it = st_.names.find(chat);
     return it == st_.names.end() ? std::string() : it->second;
   }
@@ -137,9 +138,7 @@ class TelegramAccess {
     std::lock_guard<std::mutex> lk(mu_);
     return st_.allow.empty();
   }
-  // The allow-listed chats with their names. `owner` is the EFFECTIVE role (Admin),
-  // not the device's legacy first-entry guess, so the chip the page draws for a chat
-  // with no tenant row always matches what the gate will do.
+  // The allow-listed chats with their names; `owner` is the effective role (Admin).
   std::vector<Member> members() const {
     std::lock_guard<std::mutex> lk(mu_);
     std::vector<Member> out;
@@ -159,23 +158,23 @@ class TelegramAccess {
     if (admins) *admins = st_.tenants.adminCount();
     return st_.tenants.all();
   }
+  // A tenant row's explicit limits; false when the chat has no row.
   bool quotaOf(const std::string& chat, Quota& out) const {
     std::lock_guard<std::mutex> lk(mu_);
     const Tenant* t = st_.tenants.find(chat);
-    if (!t) return false;
-    out = t->quota;
-    return true;
+    if (t) out = t->quota;
+    return t != nullptr;
   }
 
   // ---- inbound bookkeeping (the poll thread) ---------------------------------
   // Queue an unlisted sender for one-tap approval (device pendingPush): dedup by
   // chat, the oldest dropped when full. The name and preview are the sender's own
-  // text, so both are sanitized and capped (UTF-8 safe).
+  // text, so both are sanitized and capped (UTF-8 safe). A chat approved since the
+  // caller checked is not queued.
   void notePending(const std::string& chat, const std::string& from, const std::string& text) {
     if (!isChatId(chat)) return;
     std::lock_guard<std::mutex> lk(mu_);
-    for (const auto& p : pending_)
-      if (p.chatId == chat) return;
+    if (inAllow(st_, chat) || pendingAt(chat) != pending_.end()) return;
     if (pending_.size() >= kPendingMax) pending_.erase(pending_.begin());
     const std::string nm = cleanName(from);
     pending_.push_back({chat, nm.empty() ? std::string("?") : nm, capUtf8(text, kPreviewMax)});
@@ -187,14 +186,18 @@ class TelegramAccess {
     std::lock_guard<std::mutex> lk(mu_);
     auto it = refused_.find(chat);
     if (it != refused_.end() && now - it->second < kRefusalCooldownS) return false;
-    if (it == refused_.end() && refused_.size() >= kRefusalMemoMax) evictOldestRefusal();
+    if (it == refused_.end() && refused_.size() >= kRefusalMemoMax) {
+      refused_.erase(std::min_element(refused_.begin(), refused_.end(),
+                                      [](const auto& a, const auto& b) { return a.second < b.second; }));
+    }
     refused_[chat] = now;
     return true;
   }
 
   // ---- owner management (the web surface) ------------------------------------
   // POST /api/orch tgAllow=<csv> (device webui.cpp): replace the whole list. Every
-  // id must be a chat id, or nothing changes.
+  // id must be a chat id, or nothing changes. A chat that leaves the list loses its
+  // role with it.
   bool setAllowCsv(const std::string& csv, std::string& err) {
     std::vector<std::string> ids;
     if (!parseIds(csv, ids)) { err = kErrBadId; return false; }
@@ -204,8 +207,8 @@ class TelegramAccess {
   }
 
   // Approve / add (device approvePending): idempotent add, name upsert, drop from
-  // the ring. An explicit approval is an explicit grant, so it also lifts a revoked
-  // (Unknown) row back to User - otherwise re-adding someone could never let them in.
+  // the ring. A newly approved chat is a User. An explicit approval is an explicit
+  // grant, so it also lifts a revoked (Unknown) row back to User.
   bool approve(const std::string& id, const std::string& name, std::string& err) {
     if (!isChatId(id)) { err = kErrBadId; return false; }
     const std::string nm = cleanName(name);
@@ -213,8 +216,7 @@ class TelegramAccess {
       if (!inAllow(s, id)) s.allow.push_back(id);
       if (!nm.empty()) s.names[id] = nm;
       std::string e;
-      if (s.tenants.known(id) && s.tenants.roleOf(id) == Role::Unknown)
-        s.tenants.setRole(id, Role::User, e);
+      if (s.tenants.known(id) && s.tenants.roleOf(id) == Role::Unknown) s.tenants.setRole(id, Role::User, e);
       return true;
     }, err);
     if (ok) dropPending(id);
@@ -223,19 +225,12 @@ class TelegramAccess {
 
   void deny(const std::string& id) { dropPending(id); }   // device: a session tombstone
 
-  // Remove from the allowlist (device /api/telegram/remove): prune an explicit owners
-  // list, then drop the RBAC row. When the row cannot go (the last admin) the chat is
-  // still off the allowlist, so the gate refuses them; `note` says why the row stayed.
-  bool remove(const std::string& id, std::string& note, std::string& err) {
-    note.clear();
+  // Remove from the allowlist (device /api/telegram/remove). The chat's role goes
+  // with it, even the last Telegram admin's: the web app is always the owner, so the
+  // instance can never become unadministrable.
+  bool remove(const std::string& id, std::string& err) {
     return mutate([&](State& s, std::string&) {
-      eraseId(s.allow, id);
-      eraseId(s.owners, id);
-      std::string terr;
-      if (s.tenants.known(id) && !s.tenants.remove(id, terr)) {
-        std::string rerr;
-        if (!s.tenants.setRole(id, Role::Unknown, rerr)) note = terr;
-      }
+      s.allow.erase(std::remove(s.allow.begin(), s.allow.end(), id), s.allow.end());
       return true;
     }, err);
   }
@@ -251,66 +246,54 @@ class TelegramAccess {
     }, err);
   }
 
-  // Legacy owner flag (device /api/telegram/role): materialize the effective owner
-  // set, then add or drop `id`. Never leaves zero owners.
-  bool setOwner(const std::string& id, bool owner, std::string& err) {
-    return mutate([&](State& s, std::string& e) {
-      if (owner && !inAllow(s, id)) { e = kErrNotApproved; return false; }
-      std::vector<std::string> cur = s.owners;
-      if (cur.empty() && !s.allow.empty()) cur.push_back(s.allow.front());
-      eraseId(cur, id);
-      if (owner) cur.push_back(id);
-      if (cur.empty()) { e = "At least one owner is required."; return false; }
-      s.owners = cur;
-      return true;
-    }, err);
-  }
-
   // RBAC writes (device /api/tenant). No pre-seeding: only an approved chat can be
-  // given a real role; revoking (Unknown) is always allowed. The last-admin rule is
-  // the shared TenantStore's.
+  // given a real role; revoking (Unknown) an unlisted chat is a no-op (it is already
+  // refused). The last-admin rule is the shared TenantStore's.
   bool setRole(const std::string& id, Role r, std::string& err) {
+    if (!isChatId(id)) { err = kErrBadId; return false; }
     return mutate([&](State& s, std::string& e) {
-      if (r != Role::Unknown && !inAllow(s, id)) { e = kErrNotApproved; return false; }
+      if (!inAllow(s, id)) {
+        if (r == Role::Unknown) return true;
+        e = kErrNotApproved;
+        return false;
+      }
       return s.tenants.setRole(id, r, e);
     }, err);
   }
   bool setQuota(const std::string& id, const Quota& q, std::string& err) {
+    if (!isChatId(id)) { err = kErrBadId; return false; }
     return mutate([&](State& s, std::string& e) { return s.tenants.setQuota(id, q, e); }, err);
   }
   // Removing a ROW is not revoking: an allow-listed chat with no row falls back to
-  // User, so a row only goes once the chat is off the allowlist (device parity).
-  bool removeTenant(const std::string& id, std::string& err) {
-    return mutate([&](State& s, std::string& e) {
-      if (inAllow(s, id)) { e = kErrStillAllowed; return false; }
-      return s.tenants.remove(id, e);
-    }, err);
+  // User, so a row only goes with its chat (device parity: refused while approved).
+  // Here rows only exist for approved chats, so this always answers why not.
+  bool removeTenant(const std::string& id, std::string& err) const {
+    if (!isChatId(id)) err = kErrBadId;
+    else err = allowed(id) ? kErrStillAllowed : kErrNoTenant;
+    return false;
   }
 
-  // Legacy NIMBUSD_TG_CHAT_ID: an optional one-time SEED, never an ongoing gate.
-  // Applied once per value: only onto an EMPTY allowlist (a list the owner already
-  // manages in the web app is left alone), and a seed the owner later removes never
-  // comes back on restart. Returns whether the id was added; `note` says what
-  // happened for the boot log.
-  bool seedFromEnv(const std::string& raw, std::string& note) {
+  // Legacy NIMBUSD_TG_CHAT_ID: an optional SEED, never an ongoing gate. It names the
+  // owner's chat, so the seeded chat is an admin. It is applied only onto an EMPTY
+  // allowlist (a list the owner manages in the web app is left alone), and a value is
+  // consumed once: a seeded chat the owner removes does not come back on restart.
+  // (Only the most recent value is remembered.) Returns the boot-log line.
+  std::string seedFromEnv(const std::string& raw) {
     const std::string id = trim(raw);
-    note.clear();
-    if (id.empty()) return false;
-    if (!isChatId(id)) { note = "ignored: not a numeric chat id"; return false; }
-    bool added = false;
-    std::string err;
-    mutate([&](State& s, std::string&) {
+    if (id.empty()) return std::string();
+    if (!isChatId(id)) return "ignored: not a numeric chat id";
+    std::string note, err;
+    const bool changed = mutate([&](State& s, std::string&) {
       if (s.seed == id) { note = "already applied once"; return false; }
       s.seed = id;
       if (!s.allow.empty()) { note = "not added: the allowlist is managed in the web app"; return true; }
       s.allow.push_back(id);
-      added = true;
-      note = "added to the allowlist";
+      std::string e;
+      s.tenants.setRole(id, Role::Admin, e);
+      note = "added to the allowlist as the admin";
       return true;
     }, err);
-    if (!err.empty()) { note = err; added = false; }
-    if (added) dropPending(id);
-    return added;
+    return changed || err.empty() ? note : err;
   }
 
   // Test/diagnostic view of the consumed seed value.
@@ -322,25 +305,14 @@ class TelegramAccess {
  private:
   struct State {
     std::vector<std::string> allow;            // tgAllow, in approval order
-    std::vector<std::string> owners;           // tgOwners (legacy owner subset)
     std::map<std::string, std::string> names;  // tgNames sidecar
     std::string seed;                          // the NIMBUSD_TG_CHAT_ID value consumed
     nimbus::orch::TenantStore tenants;         // the shared RBAC table
   };
 
-  static bool contains(const std::vector<std::string>& v, const std::string& id) {
-    for (const auto& x : v)
-      if (x == id) return true;
-    return false;
-  }
   static bool inAllow(const State& s, const std::string& id) {
-    return !id.empty() && contains(s.allow, id);   // empty list => false (fail closed)
-  }
-  static void eraseId(std::vector<std::string>& v, const std::string& id) {
-    for (size_t i = 0; i < v.size();) {
-      if (v[i] == id) v.erase(v.begin() + (long)i);
-      else i++;
-    }
+    // An empty list holds nothing: fail closed.
+    return !id.empty() && std::find(s.allow.begin(), s.allow.end(), id) != s.allow.end();
   }
   // Device roleOfChat() with the hosted local-surface rule (see the file header).
   static Role roleIn(const State& s, const std::string& chat) {
@@ -348,17 +320,27 @@ class TelegramAccess {
     if (s.tenants.known(chat)) return s.tenants.roleOf(chat);
     return inAllow(s, chat) ? Role::User : Role::Unknown;
   }
-  // The device's loadTenants(): an EMPTY table is rebuilt from the legacy lists, so
-  // the first approved chat becomes the admin.
-  static void adoptIfEmpty(State& s) {
-    if (s.tenants.all().empty() && !s.allow.empty()) s.tenants.adoptLegacy(s.owners, s.allow);
+  // Keep the invariant "a row exists only for an allow-listed chat". The table is
+  // rebuilt rather than edited because TenantStore refuses to remove its last admin,
+  // and a chat that is off the list is no admin of anything.
+  static void pruneRows(State& s) {
+    const auto& rows = s.tenants.all();
+    if (std::all_of(rows.begin(), rows.end(), [&s](const Tenant& t) { return inAllow(s, t.chatId); }))
+      return;
+    nimbus::orch::TenantStore kept;
+    std::string e;
+    for (const Tenant& t : rows) {
+      if (!inAllow(s, t.chatId)) continue;
+      kept.setRole(t.chatId, t.role, e);
+      kept.setQuota(t.chatId, t.quota, e);
+    }
+    s.tenants = std::move(kept);
   }
 
   static std::string trim(const std::string& v) {
     const size_t b = v.find_first_not_of(" \t\r\n");
     if (b == std::string::npos) return std::string();
-    const size_t e = v.find_last_not_of(" \t\r\n");
-    return v.substr(b, e - b + 1);
+    return v.substr(b, v.find_last_not_of(" \t\r\n") - b + 1);
   }
   static std::string capUtf8(const std::string& s, int maxBytes) {
     return s.substr(0, (size_t)nimbus::utf8CapLen(s.c_str(), (int)s.size(), maxBytes));
@@ -366,11 +348,11 @@ class TelegramAccess {
   // A display name is the sender's ATTACKER-CONTROLLED Telegram name: drop the
   // sidecar delimiters and control characters (device approvePending), then cap.
   static std::string cleanName(const std::string& raw) {
-    std::string o;
-    for (char ch : raw) {
+    std::string o = raw;
+    std::replace_if(o.begin(), o.end(), [](char ch) {
       const unsigned char c = (unsigned char)ch;
-      o += (ch == ',' || ch == ':' || c < 0x20 || c == 0x7f) ? ' ' : ch;
-    }
+      return ch == ',' || ch == ':' || c < 0x20 || c == 0x7f;
+    }, ' ');
     return capUtf8(trim(o), kNameMax);
   }
   static std::string join(const std::vector<std::string>& v) {
@@ -378,43 +360,47 @@ class TelegramAccess {
     for (const auto& x : v) o += (o.empty() ? "" : ",") + x;
     return o;
   }
-  // Split a comma list into trimmed, de-duplicated chat ids. False if any entry is
-  // not a chat id.
-  static bool parseIds(const std::string& csv, std::vector<std::string>& out) {
+  // Split a comma list into trimmed, de-duplicated chat ids, in order. `strict`
+  // refuses the whole list on a bad entry (a web write); otherwise a bad entry is
+  // dropped (a tolerant reload).
+  static bool splitIds(const std::string& csv, bool strict, std::vector<std::string>& out) {
     out.clear();
     std::stringstream ss(csv);
     std::string tok;
     while (std::getline(ss, tok, ',')) {
-      tok = trim(tok);
-      if (tok.empty()) continue;
-      if (!isChatId(tok)) return false;
-      if (!contains(out, tok)) out.push_back(tok);
+      const std::string id = trim(tok);
+      if (id.empty()) continue;
+      if (!isChatId(id)) {
+        if (strict) return false;
+        continue;
+      }
+      if (std::find(out.begin(), out.end(), id) == out.end()) out.push_back(id);
     }
     return true;
   }
+  static bool parseIds(const std::string& csv, std::vector<std::string>& out) {
+    return splitIds(csv, /*strict=*/true, out);
+  }
 
+  std::vector<Pending>::iterator pendingAt(const std::string& id) {
+    return std::find_if(pending_.begin(), pending_.end(),
+                        [&id](const Pending& p) { return p.chatId == id; });
+  }
   void dropPending(const std::string& id) {
     std::lock_guard<std::mutex> lk(mu_);
-    for (size_t i = 0; i < pending_.size(); i++)
-      if (pending_[i].chatId == id) { pending_.erase(pending_.begin() + (long)i); return; }
-  }
-  void evictOldestRefusal() {
-    auto oldest = refused_.begin();
-    for (auto it = refused_.begin(); it != refused_.end(); ++it)
-      if (it->second < oldest->second) oldest = it;
-    if (oldest != refused_.end()) refused_.erase(oldest);
+    auto it = pendingAt(id);
+    if (it != pending_.end()) pending_.erase(it);
   }
 
   // Apply `fn` to a COPY of the durable state, persist it, and only then publish it:
   // a change that did not reach the disk is never reported as done (the device's
-  // tenant writes roll back the same way).
+  // tenant writes roll back the same way). `fn` returning false means "no change".
   bool mutate(const std::function<bool(State&, std::string&)>& fn, std::string& err) {
     std::lock_guard<std::mutex> lk(mu_);
     State next = st_;
     if (!fn(next, err)) return false;
-    adoptIfEmpty(next);
-    if (!save(next)) {
-      save(st_);   // best effort: put the last good state back on disk
+    pruneRows(next);
+    if (!fsutil::writeFileAtomic(path(), serialize(next))) {
       err = kErrSave;
       return false;
     }
@@ -425,8 +411,10 @@ class TelegramAccess {
   static std::string serialize(const State& s) {
     std::string names;
     for (const auto& kv : s.names) names += (names.empty() ? "" : ",") + kv.first + ":" + kv.second;
-    return "tgAllow=" + join(s.allow) + "\ntgOwners=" + join(s.owners) + "\ntgNames=" + names +
-           "\ntgSeed=" + s.seed + "\n";
+    std::string rows = s.tenants.dump();   // \x1E/\x1F separated; ids are digits, no labels
+    rows.erase(std::remove(rows.begin(), rows.end(), '\n'), rows.end());
+    return "tgAllow=" + join(s.allow) + "\ntgNames=" + names + "\ntgSeed=" + s.seed +
+           "\ntenants=" + rows + "\n";
   }
   static void parseNames(const std::string& v, std::map<std::string, std::string>& out) {
     std::stringstream ss(v);
@@ -438,43 +426,25 @@ class TelegramAccess {
       if (isChatId(id)) out[id] = cleanName(entry.substr(colon + 1));
     }
   }
-  // Tolerant parse: unknown keys and malformed ids are dropped, never fatal.
+  // Tolerant parse: unknown keys and malformed entries are dropped, never fatal, and
+  // a torn or missing file reads as an empty allowlist (fail closed).
   static void parse(const std::string& blob, State& s) {
     std::stringstream ss(blob);
     std::string line;
     while (std::getline(ss, line)) {
       const size_t eq = line.find('=');
       if (eq == std::string::npos) continue;
-      const std::string k = line.substr(0, eq), v = trim(line.substr(eq + 1));
-      std::vector<std::string> ids;
-      if (k == "tgAllow" || k == "tgOwners") {
-        std::stringstream is(v);
-        std::string tok;
-        while (std::getline(is, tok, ','))
-          if (isChatId(trim(tok)) && !contains(ids, trim(tok))) ids.push_back(trim(tok));
-        (k == "tgAllow" ? s.allow : s.owners) = ids;
-      } else if (k == "tgNames") {
-        parseNames(v, s.names);
-      } else if (k == "tgSeed") {
-        s.seed = v;
-      }
+      const std::string k = line.substr(0, eq), v = line.substr(eq + 1);
+      if (k == "tgAllow") splitIds(v, /*strict=*/false, s.allow);
+      else if (k == "tgNames") parseNames(v, s.names);
+      else if (k == "tgSeed") s.seed = trim(v);
+      else if (k == "tenants") s.tenants.load(v);
     }
+    pruneRows(s);
   }
-  bool save(const State& s) const {
-    return fsutil::writeFileAtomic(tenantsPath(), s.tenants.dump()) &&
-           fsutil::writeFileAtomic(accessPath(), serialize(s));
-  }
-  // Rehydrate, then run the device's boot-time adoption once (an allowlist written by
-  // an earlier build with no tenants file gets its admin, same as a device upgrade).
   void load() {
     std::string blob;
-    if (fsutil::readFile(accessPath(), blob)) parse(blob, st_);
-    std::string tb;
-    if (fsutil::readFile(tenantsPath(), tb)) st_.tenants.load(tb);
-    if (st_.tenants.all().empty() && !st_.allow.empty()) {
-      adoptIfEmpty(st_);
-      save(st_);
-    }
+    if (fsutil::readFile(path(), blob)) parse(blob, st_);
   }
 
   std::string dir_;

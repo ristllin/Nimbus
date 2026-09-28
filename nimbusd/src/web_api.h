@@ -1,6 +1,7 @@
 #pragma once
 #include <ArduinoJson.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
@@ -623,11 +624,10 @@ class WebApi {
   // instance volume and live at once (no restart). An empty value clears it, which
   // fails CLOSED (nobody is served). Status 0 = the field was absent or applied.
   ApiResp allowlistWrite(const std::string& body) {
-    bool present = false;
-    for (const std::string& name : formFieldNames(body)) present = present || name == "tgAllow";
+    const auto names = formFieldNames(body);
+    if (std::find(names.begin(), names.end(), "tgAllow") == names.end()) return ApiResp{0, "", ""};
     std::string err;
-    if (!present || rig_->telegramAccess().setAllowCsv(formValue(body, "tgAllow"), err))
-      return ApiResp{0, "", ""};
+    if (rig_->telegramAccess().setAllowCsv(formValue(body, "tgAllow"), err)) return ApiResp{0, "", ""};
     JsonDocument e;
     e["ok"] = false;
     e["error"] = err;
@@ -639,8 +639,6 @@ class WebApi {
   ApiResp orchPost(const std::string& body) {
     const ApiResp unknown = unknownKeyFieldError(body);
     if (unknown.status != 0) return unknown;
-    const ApiResp allow = allowlistWrite(body);
-    if (allow.status != 0) return allow;
     std::vector<std::pair<std::string, std::string>> keyWrites;    // (host, key); "" clears
     std::vector<std::pair<std::string, std::string>> modelWrites;  // (host, model); "" clears
     // The key FIELD names come from the canonical registry (provider_slots.h keyField),
@@ -653,9 +651,13 @@ class WebApi {
       formWrite(body, field, host, keyWrites);
       formWrite(body, "orchM_" + host, host, modelWrites);
     }
+    // Refuse a mid-turn key/model write BEFORE anything else in the body applies, so
+    // a 503 always means "nothing changed".
+    if ((!keyWrites.empty() || !modelWrites.empty()) && eng_->snapshot().turnInFlight) return busy();
+    const ApiResp allow = allowlistWrite(body);
+    if (allow.status != 0) return allow;
     if (keyWrites.empty() && modelWrites.empty())
       return okJson(R"({"ok":true})");   // non-key settings: honest ack
-    if (eng_->snapshot().turnInFlight) return busy();
     auto fut = eng_->dispatchRead([this, keyWrites, modelWrites]() -> std::string {
       int applied = 0;
       for (const auto& w : keyWrites)

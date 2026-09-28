@@ -183,6 +183,12 @@ class NimbusdRig {
       std::fprintf(stderr, "[nimbusd] telegram: chat %s is not approved - no turn\n", chatId.c_str());
       return cur_;
     }
+    // Safety net for the one-namespace rule below: the engine thread HOLDS such a
+    // turn until it may run (EngineThread), so this only refuses a direct caller.
+    if (turnMustWait(chatId)) {
+      std::fprintf(stderr, "[nimbusd] chat %s must wait for another person's sub-agents\n", chatId.c_str());
+      return cur_;
+    }
     const auto t0 = std::chrono::steady_clock::now();
     eng_->handleMessage(text, "Owner", chatId);
     cur_.seconds = std::chrono::duration<double>(
@@ -297,6 +303,25 @@ class NimbusdRig {
   // never reaches a turn at all, and an approved one runs as its real role.
   TelegramAccess& telegramAccess() { return *access_; }
   const TelegramAccess& telegramAccess() const { return *access_; }
+
+  // ---- one person's background work at a time -----------------------------------
+  // The shared JobEngine (lib/harness) keeps ONE pool of sub-agent results: every
+  // result is folded into the NEXT turn whoever sends it, and the report goes to the
+  // chat whose job finished last. That is fine for one owner and wrong for several
+  // approved people (one would read another's calendar), so a hosted instance keeps
+  // all queued, running and unreported sub-agent work inside ONE data namespace at
+  // a time: a spawn from another namespace is refused with the reason, and a
+  // member's turn from another namespace WAITS until that work is reported (the
+  // engine thread holds it; nothing is dropped). The owner's own turns never wait.
+  // Engine thread only.
+  bool backgroundBusy() const {
+    return jobs_ && (jobs_->activeCount() > 0 || jobs_->hasFreshResults());
+  }
+  bool turnMustWait(const std::string& chat) const {
+    if (!backgroundBusy()) return false;
+    const orch::Principal who = access_->principalFor(chat);
+    return !who.owner && who.ns != bgNs_;
+  }
 
   // ---- sub-agent jobs (device parity: orchestrator pollJobs -> JobEngine::pump) ----
   // One pump step: reap, the synthesis clock, at most one dispatch, one poll round.
@@ -573,11 +598,9 @@ class NimbusdRig {
   // a gate (TelegramAccess::seedFromEnv has the rules). Logged so an operator can see
   // what it did.
   void seedTelegramAllowlist() {
-    const std::string env = cfg_.get("NIMBUSD_TG_CHAT_ID");
-    if (env.empty()) return;
-    std::string note;
-    access_->seedFromEnv(env, note);
-    std::fprintf(stderr, "[nimbusd] telegram: NIMBUSD_TG_CHAT_ID (legacy seed): %s\n", note.c_str());
+    const std::string note = access_->seedFromEnv(cfg_.get("NIMBUSD_TG_CHAT_ID"));
+    if (!note.empty())
+      std::fprintf(stderr, "[nimbusd] telegram: NIMBUSD_TG_CHAT_ID (legacy seed): %s\n", note.c_str());
   }
 
   // ---- in-app provider keys: durable secrets (CUM-279) ----------------------
@@ -934,7 +957,10 @@ class NimbusdRig {
     // JobEngine, and every dep below reads the rig's current state through `this`.
     if (!jobs_) {
       jd.platform = makePosixPlatform(&mem_);
-      jd.deliver = [this](const std::string& c, const std::string& t) { record(c, t); };
+      // A chat the owner removed or revoked after it queued work hears nothing more.
+      jd.deliver = [this](const std::string& c, const std::string& t) {
+        if (access_->mayConverse(c)) record(c, t);
+      };
       wireJobDeps(jd);
       jobs_.reset(new agent::JobEngine(std::move(jd)));
     }
@@ -954,7 +980,7 @@ class NimbusdRig {
       // namespace, so an approved member never recalls the owner's memories; an
       // unattributed caller recalls nothing rather than everything.
       const std::vector<std::string> ns{who.valid() ? who.ns : std::string("\x01none")};
-      for (const auto& hit : vec_.search(v, 5, 0, ns)) out.push_back(hit.content);
+      for (const auto& hit : vec_.search(v, 5, nowHours(), ns)) out.push_back(hit.content);
       return out;
     };
     d.composeInputs = [this](const std::string& chat) {
@@ -1023,9 +1049,19 @@ class NimbusdRig {
         record(chat, "Sub-agents are off for this chat: the owner has not approved it.");
         return;
       }
+      const std::string ns = access_->principalFor(chat).ns;
+      if (backgroundBusy() && ns != bgNs_) {
+        record(chat, "Sub-agents are busy with another person's request. Try again in a few minutes.");
+        return;
+      }
+      bgNs_ = ns;
       if (jobs_) jobs_->enqueueSpawn(s, chat, quiet);
     };
+    // Stopping a sub-agent is the owner's, or its own namespace's, to do (a member
+    // turn only runs while the in-flight work is its own - see turnMustWait).
     d.apply.cancelSession = [this](const std::string& id) {
+      const orch::Principal who = access_->principalFor(cur_.chatId);
+      if (!who.owner && who.ns != bgNs_) return false;
       return jobs_ && jobs_->cancel(id.c_str());
     };
     d.apply.awaitTag = [this](const std::string& tag) {
@@ -1207,7 +1243,13 @@ class NimbusdRig {
     jd.connectorProvider = [this](const std::string& skill) { return connectorProviderFor(skill); };
     jd.nowString = [] { return localNowString(); };
     jd.chatContext = [this](const std::string& chat) { return spawnContext(chat); };
+    // The report turn for a chat the owner removed or revoked meanwhile never runs:
+    // its results are dropped instead of delivered.
     jd.synthesize = [this](const std::string& chat) {
+      if (!access_->mayConverse(chat)) {
+        if (jobs_) jobs_->takeFreshResults();
+        return;
+      }
       if (eng_) eng_->maybeConsolidate(chat);
     };
     jd.turnInFlight = [this] { return eng_ && eng_->turnInFlight(); };
@@ -1339,6 +1381,7 @@ class NimbusdRig {
   WorkspaceProbe wsProbe_;
   std::atomic<bool> probeQueued_{false};   // one workspace probe queued at a time
   std::map<std::string, std::string> memory_;   // running memory per chat (engine thread)
+  std::string bgNs_;   // the data namespace that owns the in-flight sub-agent work
   std::string convId_, antEnv_, antAgents_, lastHost_, lastServedBy_;
   bool lastFallback_ = false;   // CUM-236 served-by of the most recent turn
   std::function<void(const std::string&, const std::string&)> onDeliver_;

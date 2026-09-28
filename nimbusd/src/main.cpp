@@ -29,6 +29,7 @@
 #include <csignal>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <string>
 #include <thread>
 
@@ -199,7 +200,7 @@ int runDaemon(nimbusd::Config& cfg) {
       io.turn = [&eng](const std::string& chat, const std::string& text) { eng.postMessage(chat, text); };
       io.send = [&tgPoll](const std::string& chat, const std::string& text) {
         std::string e;
-        tgPoll->sendMessage(chat, text, e);
+        if (!tgPoll->sendMessage(chat, text, e)) logLine("telegram: refusal to " + chat + " not sent: " + e);
       };
       while (!g_stop.load()) {
         std::vector<nimbus::tg::Update> ups;
@@ -208,7 +209,7 @@ int runDaemon(nimbusd::Config& cfg) {
           if (!g_stop.load()) { logLine("telegram poll error: " + err); std::this_thread::sleep_for(std::chrono::seconds(3)); }
           continue;
         }
-        const auto st = nimbusd::routeTelegramUpdates(ups, rig.telegramAccess(), io, time(nullptr));
+        const auto st = nimbusd::routeTelegramUpdates(ups, rig.telegramAccess(), io, std::time(nullptr));
         if (st.refused)
           logLine("telegram: refused " + std::to_string(st.refused) +
                   " update(s) from unapproved chats (waiting for the owner's approval)");

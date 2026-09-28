@@ -2,6 +2,7 @@
 #include <ArduinoJson.h>
 
 #include <cstdlib>
+#include <cstring>
 #include <functional>
 #include <string>
 
@@ -18,12 +19,12 @@
 //   POST /api/telegram/add       id, name   approve by chat ID
 //   POST /api/telegram/approve   id, name   approve a pending sender
 //   POST /api/telegram/deny      id         drop from the approval queue
-//   POST /api/telegram/remove    id         off the allowlist (+ its RBAC row)
+//   POST /api/telegram/remove    id         off the allowlist (its role goes too)
 //   POST /api/telegram/rename    id, name   display name only
-//   POST /api/telegram/role      id, owner  legacy owner flag
+//   POST /api/telegram/role      id, owner  owner=1 -> admin, else user
 //   POST /api/telegram/public    on         open access: refused on a hosted instance
 //   GET  /api/tenant             {tenants:[{id,role,vectors,bytes,ttl,pins}], admins}
-//   POST /api/tenant             id + remove=1 | role | vectors/bytes/ttl/pins
+//   POST /api/tenant             id + remove=1 | role and/or vectors/bytes/ttl/pins
 namespace nimbusd {
 
 struct TgWebResp {
@@ -41,22 +42,23 @@ class TelegramWeb {
   // Handle one Telegram / people route. False when `base` is not one of them.
   bool handle(const std::string& method, const std::string& base, const Form& form,
               bool hasToken, TgWebResp& out) {
+    static constexpr char kSub[] = "/api/telegram/";
     if (base == "/api/tenant") {
-      out = method == "GET" ? tenantsGet() : tenantPost(form);
+      out = method == "GET" ? tenantsGet() : method == "POST" ? tenantPost(form) : notAllowed();
       return true;
     }
-    if (base == "/api/telegram" && method == "GET") {
-      out = telegramGet(hasToken);
+    if (base == "/api/telegram") {
+      out = method == "GET" ? telegramGet(hasToken) : notAllowed();
       return true;
     }
-    if (base.rfind("/api/telegram/", 0) != 0) return false;
-    out = method == "POST" ? telegramPost(base.substr(14), form)
-                           : TgWebResp{405, R"({"error":"use POST"})"};
+    if (base.rfind(kSub, 0) != 0) return false;
+    out = method == "POST" ? telegramPost(base.substr(sizeof(kSub) - 1), form) : notAllowed();
     return true;
   }
 
  private:
   static TgWebResp ok() { return TgWebResp{200, R"({"ok":true})"}; }
+  static TgWebResp notAllowed() { return TgWebResp{405, R"({"error":"method not allowed"})"}; }
   static TgWebResp error(int status, const std::string& msg) {
     JsonDocument d;
     d["error"] = msg;
@@ -102,40 +104,23 @@ class TelegramWeb {
     }
     if (id.empty()) return error(400, "id required");
     std::string err;
-    if (op == "add" || op == "approve") {
-      if (!acc_->approve(id, form("name"), err)) return error(400, err);
-      return ok();
-    }
-    if (op == "remove") return removePost(id);
-    if (op == "rename") {
-      if (!acc_->rename(id, form("name"), err)) return error(400, err);
-      return ok();
-    }
-    if (op == "role") {
-      if (!acc_->setOwner(id, form("owner") == "1", err)) return error(409, err);
-      return ok();
-    }
-    return error(404, "not found");
+    bool done = false;
+    if (op == "add" || op == "approve") done = acc_->approve(id, form("name"), err);
+    else if (op == "remove") done = acc_->remove(id, err);
+    else if (op == "rename") done = acc_->rename(id, form("name"), err);
+    else if (op == "role")   // the device's legacy owner flag, mapped onto the real role
+      done = acc_->setRole(id, form("owner") == "1" ? TelegramAccess::Role::Admin
+                                                    : TelegramAccess::Role::User, err);
+    else return error(404, "not found");
+    return done ? ok() : error(err == TelegramAccess::kErrSave ? 500 : 400, err);
   }
 
   // Open access is a device option (DANGER: anyone who finds the bot uses it). A
   // hosted instance runs on the owner's keys and reaches the owner's connectors, so
   // it is refused here; turning it OFF is always fine.
   static TgWebResp publicPost(const Form& form) {
-    if (std::atoi(form("on").c_str()) == 0) return TgWebResp{200, R"({"public":false})"};
+    if (std::strtol(form("on").c_str(), nullptr, 10) == 0) return TgWebResp{200, R"({"public":false})"};
     return error(400, "Open access isn't available on a hosted instance. Approve each person instead.");
-  }
-
-  TgWebResp removePost(const std::string& id) {
-    std::string note, err;
-    if (!acc_->remove(id, note, err)) return error(500, err);
-    if (note.empty()) return ok();
-    JsonDocument d;
-    d["ok"] = true;
-    d["note"] = note;
-    std::string s;
-    serializeJson(d, s);
-    return TgWebResp{200, s};
   }
 
   TgWebResp tenantsGet() const {
@@ -158,52 +143,45 @@ class TelegramWeb {
     return TgWebResp{200, s};
   }
 
-  // Device /api/tenant POST: remove=1, else a role and/or limits.
-  TgWebResp tenantPost(const Form& form) {
-    const std::string id = trimmed(form("id"));
-    if (id.empty()) return error(400, "id required");
-    std::string err;
-    if (form("remove") == "1") {
-      if (acc_->removeTenant(id, err)) return ok();
-      return error(err == "no such tenant" ? 404 : 409, err);
-    }
-    const std::string roleS = form("role");
-    if (!roleS.empty()) {
-      nimbus::orch::Role role;
-      if (!nimbus::orch::roleFromName(roleS, role)) return error(400, "bad role");
-      if (!acc_->setRole(id, role, err)) return error(409, err);
-    }
-    return quotaPost(id, form);
-  }
-
-  // A limit is "" (unchanged) or a whole number >= 0 (0 restores the role default).
-  // Anything else refuses the whole write: a wrapped negative would read back as
-  // "never expires", the most permissive value (device webui.cpp).
-  static bool parseLimit(const std::string& v, uint32_t cap, uint32_t& out, bool& set) {
-    set = false;
+  // A limit is "" (unchanged) or a whole number in [0, cap] (0 restores the role
+  // default). Anything else refuses the whole write: a wrapped negative would read
+  // back as "never expires", the most permissive value (device webui.cpp).
+  static bool parseLimit(const std::string& v, uint32_t cap, uint32_t& out, bool& any) {
     if (v.empty()) return true;
     char* end = nullptr;
     const long long n = std::strtoll(v.c_str(), &end, 10);
-    if (!end || *end != 0 || n < 0 || n > (long long)cap) return false;
+    if (*end != 0 || n < 0 || n > (long long)cap) return false;
     out = (uint32_t)n;
-    set = true;
+    any = true;
     return true;
   }
 
-  TgWebResp quotaPost(const std::string& id, const Form& form) {
+  // Device /api/tenant POST: remove=1, else a role and/or limits. Every field is
+  // validated BEFORE anything is written, so a refused request changes nothing.
+  TgWebResp tenantPost(const Form& form) {
+    const std::string id = trimmed(form("id"));
+    if (id.empty()) return error(400, "id required");
+    if (!TelegramAccess::isChatId(id)) return error(400, TelegramAccess::kErrBadId);
+    std::string err;
+    if (form("remove") == "1") {
+      acc_->removeTenant(id, err);
+      return error(err == TelegramAccess::kErrNoTenant ? 404 : 409, err);
+    }
+    nimbus::orch::Role role = nimbus::orch::Role::Unknown;
+    const std::string roleS = form("role");
+    if (!roleS.empty() && !nimbus::orch::roleFromName(roleS, role)) return error(400, "bad role");
     nimbus::orch::Quota q;
     acc_->quotaOf(id, q);   // start from what is set today
     uint32_t pins = q.maxPins;
-    bool sv = false, sb = false, st = false, sp = false;
-    const bool good = parseLimit(form("vectors"), 2147483647u, q.maxVectors, sv) &&
-                      parseLimit(form("bytes"), 2147483647u, q.maxBytes, sb) &&
-                      parseLimit(form("ttl"), 2147483647u, q.maxTtlHours, st) &&
-                      parseLimit(form("pins"), 65535u, pins, sp);
+    bool any = false;
+    const bool good = parseLimit(form("vectors"), 2147483647u, q.maxVectors, any) &&
+                      parseLimit(form("bytes"), 2147483647u, q.maxBytes, any) &&
+                      parseLimit(form("ttl"), 2147483647u, q.maxTtlHours, any) &&
+                      parseLimit(form("pins"), 65535u, pins, any);
     if (!good) return error(400, "Limits must be 0 or more (0 restores the default for their role).");
-    if (!(sv || sb || st || sp)) return ok();
+    if (!roleS.empty() && !acc_->setRole(id, role, err)) return error(409, err);
     q.maxPins = (uint16_t)pins;
-    std::string err;
-    if (!acc_->setQuota(id, q, err)) return error(404, err);
+    if (any && !acc_->setQuota(id, q, err)) return error(err == TelegramAccess::kErrNoTenant ? 404 : 409, err);
     return ok();
   }
 
