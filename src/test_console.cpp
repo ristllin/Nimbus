@@ -631,6 +631,17 @@ void dispatch(String line) {
     Serial.printf("MICREC bytes=%u transcript=\"%s\"\n", (unsigned)bytes, tr.c_str());
     return;
   }
+  if (line == "STTKEY placeholder" || line == "STTKEY off") {
+    // CUM-456 bench seam: a RAM-only placeholder speech-to-text key so hold-to-talk
+    // can be driven on a keyless bench board (the offline leg never sends it; an
+    // online provider answers it with HTTP 401). Nothing is persisted.
+    const bool on = line.endsWith("placeholder");
+    agent::stt::setPlaceholderKey(on);
+    Serial.printf("STTKEY< %s avail=%d\n", on ? "placeholder" : "off",
+                  int(agent::stt::available()));
+    Serial.flush();
+    return;
+  }
   if (line.startsWith("VOICE ")) {
     // Simulate a voice transcript: inject a turn on the "voice" chatId so the reply
     // renders on the panel (Ask screen), exactly like a real hold-to-talk would -

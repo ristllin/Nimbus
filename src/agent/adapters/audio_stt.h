@@ -36,5 +36,11 @@ String transcribe(const char* localPath, const char* mime);
 // copy on LittleFS halved the recordable length for nothing but 44 bytes.
 String transcribePcm(const char* pcmPath, uint32_t sampleRate);
 
+#ifdef NIMBUS_TEST
+// Bench seam (test image only, console STTKEY): a RAM-only placeholder key so the
+// hold-to-talk path can be driven on a keyless bench board. Never persisted.
+void setPlaceholderKey(bool on);
+#endif
+
 }  // namespace stt
 }  // namespace agent

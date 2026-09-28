@@ -42,6 +42,16 @@ static String s_lastStatus;
 // embeddings viaCumuloRouter pattern (CUM-302). All three POST multipart and return
 // {"text":...}, so only host/path/model/key differ.
 struct SttProvider { String host; const char* path; const char* model; String key; };
+
+#ifdef NIMBUS_TEST
+// Bench seam (CUM-456, test image only): a RAM-only PLACEHOLDER key so the
+// hold-to-talk release path can be driven on a keyless bench board. It is never
+// persisted and is not a credential - a provider answers it with HTTP 401, which
+// is itself a real leg (the STT HTTP error line). A real stored key always wins.
+static bool s_placeholderKey = false;
+void setPlaceholderKey(bool on) { s_placeholderKey = on; }
+#endif
+
 static SttProvider resolve() {
   const std::string eff = nimbus::orch::voiceActiveProvider(
       std::string(store::sttProvider().c_str()), store::hasOpenaiKey(),
@@ -58,6 +68,9 @@ static SttProvider resolve() {
   } else {  // mistral
     p.host = "api.mistral.ai"; p.key = store::mistralKey();
   }
+#ifdef NIMBUS_TEST
+  if (s_placeholderKey && p.key.length() == 0) p.key = "placeholder-not-a-key";
+#endif
   return p;
 }
 
