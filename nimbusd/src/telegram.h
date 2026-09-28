@@ -13,8 +13,10 @@
 // HttpTransport, using the SAME portable parser (nimbus::tg::parseUpdates) and
 // offset arithmetic (nimbus::core::nextTelegramOffset) the device runs, so the
 // wire handling is byte-identical. The ESP32 task/TLS discipline drops out; the
-// long-poll loop, the getMe validation, the send path, and the chat-id auth gate
-// stay.
+// long-poll loop, the getMe validation and the send path stay. The chat-id auth
+// gate is NOT here: every parsed update is returned, and the daemon routes each one
+// through TelegramAccess (the device's fail-closed allowlist + RBAC, CUM-459), so
+// an unlisted chat can be queued for approval and told so rather than dropped.
 //
 // The transport is injected, so the whole channel is host-tested against a fake
 // Telegram server (no network) - see tests/test_telegram.cpp.
@@ -26,13 +28,8 @@ namespace nimbusd {
 
 class TelegramChannel {
  public:
-  // `allowChatId` empty = accept any chat (single-tenant instance, owner-only by
-  // construction upstream); non-empty = only that chat's messages are dispatched
-  // (the auth gate is on message.chat.id, never from.id).
-  TelegramChannel(std::string token, agent::HttpTransport* http,
-                  std::string offsetPath, std::string allowChatId = "")
-      : token_(std::move(token)), http_(http),
-        offsetPath_(std::move(offsetPath)), allowChatId_(std::move(allowChatId)) {
+  TelegramChannel(std::string token, agent::HttpTransport* http, std::string offsetPath)
+      : token_(std::move(token)), http_(http), offsetPath_(std::move(offsetPath)) {
     std::string s;
     if (fsutil::readFile(offsetPath_, s)) offset_ = (int32_t)std::atoi(s.c_str());
   }
@@ -56,7 +53,7 @@ class TelegramChannel {
   }
 
   // One long-poll cycle: getUpdates from the current offset, parse, and return
-  // the accepted (allow-listed) updates in wire order. Advances + persists the
+  // every whole update in wire order (the caller gates them). Advances + persists the
   // offset past the last WHOLE update received. `err` is set on a transport or
   // parse failure (returns false); an empty poll is a successful empty vector.
   bool poll(int timeoutS, std::vector<nimbus::tg::Update>& out, std::string& err) {
@@ -78,7 +75,7 @@ class TelegramChannel {
     for (const auto& u : ups) {
       // Never ack past a truncated tail's last whole update.
       maxWhole = u.updateId;
-      if (allowChatId_.empty() || u.chatId == allowChatId_) out.push_back(u);
+      out.push_back(u);
     }
     if (!ups.empty() && !truncated) {
       offset_ = nimbus::core::nextTelegramOffset(offset_, maxWhole);
@@ -154,7 +151,6 @@ class TelegramChannel {
   std::string token_;
   agent::HttpTransport* http_;
   std::string offsetPath_;
-  std::string allowChatId_;
   int32_t offset_ = 0;
 };
 

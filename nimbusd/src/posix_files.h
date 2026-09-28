@@ -26,11 +26,18 @@ class PosixFiles {
     if (fsutil::readFile(indexPath(), idx)) store_.load(idx);
   }
 
+  // The hosted store has no per-person namespaces (the device keeps each person's
+  // files apart), so it belongs to the owner alone: an approved member or guest
+  // (CUM-459 RBAC) neither sees these tools advertised nor can run them.
+  static constexpr const char* kOwnerOnly =
+      "Files on this instance belong to its owner; ask the owner to share what you need.";
+
   void registerTools(nimbus::orch::ToolRegistry& reg) {
     reg.add("files.list",
             "List stored files. Optional 'project' narrows to one project. "
             "Returns one 'project/name (N bytes)' per line.",
-            [this](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) {
+            [this](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) {
+              if (!who.owner) return nimbus::orch::ToolResult::fail(kOwnerOnly);
               const std::string proj = str(a, "project");
               std::string out;
               for (const auto* e : store_.list(proj))
@@ -43,7 +50,8 @@ class PosixFiles {
 
     reg.add("artifact.save",
             "Save a text file under a project. Overwrites an existing file of the same name.",
-            [this](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) {
+            [this](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) {
+              if (!who.owner) return nimbus::orch::ToolResult::fail(kOwnerOnly);
               const std::string p = str(a, "project"), n = str(a, "name"), t = str(a, "text");
               if (p.empty() || n.empty())
                 return nimbus::orch::ToolResult::fail("need 'project' and 'name'");
@@ -57,7 +65,8 @@ class PosixFiles {
             R"("required":["project","name"]})");
 
     reg.add("files.read", "Read a stored file's contents.",
-            [this](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) {
+            [this](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) {
+              if (!who.owner) return nimbus::orch::ToolResult::fail(kOwnerOnly);
               const std::string p = str(a, "project"), n = str(a, "name");
               std::string body;
               if (!read(p, n, body))
@@ -66,6 +75,7 @@ class PosixFiles {
             },
             R"({"type":"object","properties":{"project":{"type":"string"},)"
             R"("name":{"type":"string"}},"required":["project","name"]})");
+    for (const char* t : {"files.list", "artifact.save", "files.read"}) reg.setAdminOnly(t);
   }
 
   // ---- direct access (scenario seeding + assertions) ----

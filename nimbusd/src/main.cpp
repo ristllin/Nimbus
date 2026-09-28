@@ -20,10 +20,11 @@
 //
 // Env / config keys: NIMBUSD_DATA_DIR (/data), NIMBUSD_CONFIG (<data>/config.env),
 //   NIMBUSD_CONTROL_ADDR (127.0.0.1), NIMBUSD_CONTROL_PORT (8787),
-//   NIMBUSD_WEB_TOKEN, NIMBUSD_TG_CHAT_ID, NIMBUSD_DEVICE_NAME, NIMBUSD_PRIORITY,
+//   NIMBUSD_WEB_TOKEN, NIMBUSD_DEVICE_NAME, NIMBUSD_PRIORITY,
 //   NIMBUSD_SUB_PRIORITY, NIMBUSD_ORCH_HOST, NIMBUSD_TOOL_LOOP (1),
 //   TELEGRAM_BOT_TOKEN, OPENAI_API_KEY / ANTHROPIC_API_KEY / MISTRAL_API_KEY,
-//   TAVILY_API_KEY, TZ.
+//   TAVILY_API_KEY, TZ. NIMBUSD_TG_CHAT_ID is LEGACY: an optional one-time seed of
+//   the Telegram allowlist, which the owner manages in the web app (CUM-459).
 #include <atomic>
 #include <csignal>
 #include <cstdio>
@@ -38,6 +39,7 @@
 #include "reply_buffer.h"
 #include "rig.h"
 #include "telegram.h"
+#include "tg_inbound.h"
 
 namespace {
 
@@ -167,7 +169,6 @@ int runDaemon(nimbusd::Config& cfg) {
   // Telegram: separate transports for the long-poll and for sends so a held
   // long-poll never blocks a reply.
   const std::string tgToken = cfg.get("TELEGRAM_BOT_TOKEN");
-  const std::string allowChat = cfg.get("NIMBUSD_TG_CHAT_ID");
   std::unique_ptr<nimbusd::DaemonHttpTransport> pollHttp, sendHttp;
   std::unique_ptr<nimbusd::TelegramChannel> tgPoll, tgSend;
   std::thread pollThread;
@@ -175,13 +176,13 @@ int runDaemon(nimbusd::Config& cfg) {
   if (!tgToken.empty()) {
     pollHttp.reset(new nimbusd::DaemonHttpTransport());
     sendHttp.reset(new nimbusd::DaemonHttpTransport());
-    tgPoll.reset(new nimbusd::TelegramChannel(tgToken, pollHttp.get(),
-                                              opt.dataDir + "/tg_offset", allowChat));
-    tgSend.reset(new nimbusd::TelegramChannel(tgToken, sendHttp.get(),
-                                              opt.dataDir + "/tg_send_unused", allowChat));
-    if (allowChat.empty())
-      logLine("telegram: WARNING no NIMBUSD_TG_CHAT_ID - any chat can talk to this bot; "
-              "sub-agents are refused for Telegram chats until it is set");
+    tgPoll.reset(new nimbusd::TelegramChannel(tgToken, pollHttp.get(), opt.dataDir + "/tg_offset"));
+    tgSend.reset(new nimbusd::TelegramChannel(tgToken, sendHttp.get(), opt.dataDir + "/tg_send_unused"));
+    // Device parity (telegram.cpp poll start): the allowlist fails CLOSED, so say
+    // loudly when nobody is approved yet.
+    if (rig.telegramAccess().allowEmpty())
+      logLine("telegram: allowlist EMPTY - every chat is refused until the owner approves "
+              "one in the web app (Assistant, Connectors, Telegram)");
     std::string user, err;
     if (tgPoll->getMe(user, err)) logLine("telegram: bot @" + user + " validated");
     else logLine("telegram: getMe failed (" + err + ") - poll loop will still retry");
@@ -191,6 +192,15 @@ int runDaemon(nimbusd::Config& cfg) {
 
     pollThread = std::thread([&] {
       logLine("telegram long-poll started");
+      // Every update goes through the device trust model (CUM-459): an approved chat
+      // becomes a turn; anyone else is queued for the owner's approval and told so.
+      // The refusal rides the POLL transport, which this thread owns.
+      nimbusd::TgInboundIo io;
+      io.turn = [&eng](const std::string& chat, const std::string& text) { eng.postMessage(chat, text); };
+      io.send = [&tgPoll](const std::string& chat, const std::string& text) {
+        std::string e;
+        tgPoll->sendMessage(chat, text, e);
+      };
       while (!g_stop.load()) {
         std::vector<nimbus::tg::Update> ups;
         std::string err;
@@ -198,13 +208,10 @@ int runDaemon(nimbusd::Config& cfg) {
           if (!g_stop.load()) { logLine("telegram poll error: " + err); std::this_thread::sleep_for(std::chrono::seconds(3)); }
           continue;
         }
-        for (const auto& u : ups) {
-          if (u.text.empty()) continue;
-          // No chat lock: this chat is unauthenticated, so it never spawns sub-agents
-          // (they reach the owner's provider connectors on the owner's keys).
-          if (allowChat.empty()) rig.noteUntrustedChat(u.chatId);
-          eng.postMessage(u.chatId, u.text);
-        }
+        const auto st = nimbusd::routeTelegramUpdates(ups, rig.telegramAccess(), io, time(nullptr));
+        if (st.refused)
+          logLine("telegram: refused " + std::to_string(st.refused) +
+                  " update(s) from unapproved chats (waiting for the owner's approval)");
       }
     });
   } else {

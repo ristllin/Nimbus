@@ -16,6 +16,7 @@
 #include "engine_thread.h"
 #include "reply_buffer.h"
 #include "rig.h"
+#include "tg_web.h"
 
 #include "nimbus/docs_pack.h"
 #include "nimbus/orch/connectors_wire.h"
@@ -55,7 +56,7 @@ struct ApiResp {
 class WebApi {
  public:
   WebApi(NimbusdRig* rig, EngineThread* eng, ReplyBuffer* replies)
-      : rig_(rig), eng_(eng), replies_(replies) {}
+      : rig_(rig), eng_(eng), replies_(replies), tg_(&rig->telegramAccess()) {}
 
   // Handle one gated /api/* request. Returns false if the path is not part of the
   // web surface (the caller then 404s). `path` includes any query string. The work
@@ -67,6 +68,7 @@ class WebApi {
            tryChat(method, base, path, body, out) ||
            tryMemory(method, base, path, body, out) ||
            tryConnectors(method, base, body, out) ||
+           tryTelegram(method, base, body, out) ||
            tryStatic(method, base, path, out) ||
            tryStubs(method, base, out) ||
            tryHardware(base, out);
@@ -118,6 +120,18 @@ class WebApi {
     return false;
   }
 
+  // Telegram access + people (CUM-459): the device's routes over the instance's
+  // durable allowlist + RBAC table (tg_web.h). Answered on the HTTP thread: the
+  // access store is thread-safe and never touches the engine.
+  bool tryTelegram(const std::string& m, const std::string& base, const std::string& body,
+                   ApiResp& out) {
+    TgWebResp r;
+    const TelegramWeb::Form form = [&body](const std::string& k) { return formValue(body, k); };
+    if (!tg_.handle(m, base, form, rig_->cfg().has("TELEGRAM_BOT_TOKEN"), r)) return false;
+    out = ApiResp{r.status, "application/json", r.body};
+    return true;
+  }
+
   // Pure/static surfaces (no engine, no hardware).
   bool tryStatic(const std::string& m, const std::string& base, const std::string& path, ApiResp& out) {
     if (base == "/api/themes" && m == "GET")      { out = themesResp();     return true; }
@@ -139,9 +153,7 @@ class WebApi {
     static const Stub kStubs[] = {
         {"/api/loops", false, "[]"},
         {"/api/fetchq", false, "[]"},
-        {"/api/tenant", false, R"({"tenants":[]})"},
         {"/api/wakeups", false, R"({"policy":"silent-allow","pending":null,"items":[]})"},
-        {"/api/telegram", true, R"({"public":false,"pending":[],"allow":[]})"},
         {"/api/skills", true, R"({"sd":true,"skills":[]})"},
         {"/api/files", true, R"({"present":true,"count":0,"bytes":0,"files":[]})"},
     };
@@ -510,6 +522,9 @@ class WebApi {
     d["hasTav"] = rig_->cfg().has("TAVILY_API_KEY");
     d["hasTg"] = rig_->cfg().has("TELEGRAM_BOT_TOKEN");
     d["tgLive"] = rig_->cfg().has("TELEGRAM_BOT_TOKEN");
+    // The Telegram allowlist (device /api/orch tgAllow): the readiness line reads it
+    // ("No one approved yet" until the owner approves a chat).
+    d["tgAllow"] = rig_->telegramAccess().allowCsv();
     // Usage (real session counters).
     JsonObject u = d["usage"].to<JsonObject>();
     u["sessIn"] = s.sessionTokensIn;
@@ -604,9 +619,28 @@ class WebApi {
     eng_->postWork([rig] { rig->refreshMistralWorkspace(); });
   }
 
+  // tgAllow=<csv> (device /api/orch): replace the Telegram allowlist, persisted on the
+  // instance volume and live at once (no restart). An empty value clears it, which
+  // fails CLOSED (nobody is served). Status 0 = the field was absent or applied.
+  ApiResp allowlistWrite(const std::string& body) {
+    bool present = false;
+    for (const std::string& name : formFieldNames(body)) present = present || name == "tgAllow";
+    std::string err;
+    if (!present || rig_->telegramAccess().setAllowCsv(formValue(body, "tgAllow"), err))
+      return ApiResp{0, "", ""};
+    JsonDocument e;
+    e["ok"] = false;
+    e["error"] = err;
+    std::string out;
+    serializeJson(e, out);
+    return ApiResp{400, "application/json", out};
+  }
+
   ApiResp orchPost(const std::string& body) {
     const ApiResp unknown = unknownKeyFieldError(body);
     if (unknown.status != 0) return unknown;
+    const ApiResp allow = allowlistWrite(body);
+    if (allow.status != 0) return allow;
     std::vector<std::pair<std::string, std::string>> keyWrites;    // (host, key); "" clears
     std::vector<std::pair<std::string, std::string>> modelWrites;  // (host, model); "" clears
     // The key FIELD names come from the canonical registry (provider_slots.h keyField),
@@ -1097,6 +1131,7 @@ class WebApi {
   NimbusdRig* rig_;
   EngineThread* eng_;
   ReplyBuffer* replies_;
+  TelegramWeb tg_;   // /api/telegram* + /api/tenant (CUM-459)
   std::string webToken_;
 
   // Web chat reply matching (CUM-218). A single slot could track only ONE pending
