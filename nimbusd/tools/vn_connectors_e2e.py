@@ -169,7 +169,11 @@ def ask_with_retry(inst, text, secs, settle):
     for _ in range(2):
         replies, meta = ask(inst, text, secs)
         attempts.append({"meta": meta, "replies": replies})
-        if not any(RATE_LIMITED in r["text"] for r in replies):
+        limited = any(RATE_LIMITED in r["text"] for r in replies)
+        # A rate-limited SYNTHESIS still delivers the sub-agent's raw result; only
+        # retry when nothing substantive came back at all.
+        substantive = [r for r in replies if RATE_LIMITED not in r["text"] and not r["text"].startswith("On it.")]
+        if not limited or len(substantive) > 1 or any("[FRESH RESULTS]" in r["text"] for r in substantive):
             break
         time.sleep(settle)
     return attempts
