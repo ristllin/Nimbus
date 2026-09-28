@@ -3,7 +3,7 @@
 
 .github/workflows/release.yml serves two release channels, each started by its own tag:
 
-  ota      vX.Y.Z (or vX.Y.Z-rcN)     the firmware OTA release AND the nimbusd:<tag> image
+  ota      vX.Y.Z or vX.Y.Z-rc...     the firmware OTA release AND the nimbusd:<tag> image
   virtual  vn-vX.Y.Z or vn-vX.Y.Z-N   ONLY the nimbusd:<tag> Virtual Nimbus image: no
                                       firmware build, no OTA manifest, no web-flash
 
@@ -39,9 +39,10 @@ VIRTUAL_PREFIX = "vn-"
 
 _VERSION_RE = re.compile(r'^\s*#define\s+NIMBUS_FW_VERSION\s+"([^"]*)"', re.MULTILINE)
 # What a container registry accepts as a tag (the git tag is pushed as nimbusd:<tag>).
-_IMAGE_TAG_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$")
+# Both patterns are used with fullmatch: a `$` anchor would also admit a trailing newline.
+_IMAGE_TAG_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}")
 # The -N of a repeat virtual release: a positive integer, no leading zero.
-_SEQ_RE = re.compile(r"^[1-9][0-9]*$")
+_SEQ_RE = re.compile(r"[1-9][0-9]*")
 
 
 def read_version(text: str) -> str | None:
@@ -50,15 +51,15 @@ def read_version(text: str) -> str | None:
     return m.group(1) if m and m.group(1) else None
 
 
-def classify(tag: str, version: str) -> tuple[str | None, str]:
+def classify(tag: str, version: str | None) -> tuple[str | None, str]:
     """(channel, reason) for `tag` against NIMBUS_FW_VERSION `version`; channel None = refused."""
     if not version:
         return None, "include/version.h has no NIMBUS_FW_VERSION"
-    if not _IMAGE_TAG_RE.match(tag):
+    if not _IMAGE_TAG_RE.fullmatch(tag):
         return None, f"tag {tag!r} is not a valid image tag (letters, digits, '_', '.', '-'; at most 128)"
     if tag.startswith(VIRTUAL_PREFIX):
         return _classify_virtual(tag, version)
-    # Firmware tags: exactly the pre-existing gate (the tag may carry -rcN on the same version).
+    # Firmware tags: exactly the pre-existing gate, "$VER" or "$VER"-rc* (anything after -rc).
     if tag == version or tag.startswith(version + "-rc"):
         return OTA, f"firmware release {tag} of {version}"
     return None, (
@@ -68,12 +69,12 @@ def classify(tag: str, version: str) -> tuple[str | None, str]:
 
 
 def _classify_virtual(tag: str, version: str) -> tuple[str | None, str]:
-    rest = tag[len(VIRTUAL_PREFIX) :]
+    rest = tag.removeprefix(VIRTUAL_PREFIX)
     if rest == version:
         return VIRTUAL, f"virtual release {tag} of {version}"
     if rest.startswith(version + "-"):
-        seq = rest[len(version) + 1 :]
-        if _SEQ_RE.match(seq):
+        seq = rest.removeprefix(version + "-")
+        if _SEQ_RE.fullmatch(seq):
             return VIRTUAL, f"virtual release {tag} of {version}"
         return None, f"virtual tag {tag}: -{seq} is not a release number (use -1, -2, ...)"
     return None, (
@@ -94,7 +95,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"::error::cannot read {args.version_h}: {e}")
         return 1
     print(f"tag={args.tag} version.h={version}")
-    channel, reason = classify(args.tag, version or "")
+    channel, reason = classify(args.tag, version)
     if channel is None:
         print(f"::error::{reason}")
         return 1

@@ -1,6 +1,6 @@
 # Release pipeline, two channels, each started by its own tag shape (docs/ota.md,
 # "Release tags"):
-#   vX.Y.Z[-rcN]      OTA release: build every OTA variant, sign the release manifest
+#   vX.Y.Z[-rc*]      OTA release: build every OTA variant, sign the release manifest
 #                     with the OTA_SIGNING_KEY secret (ECDSA P-256 - the device verifies
 #                     against include/ota_pubkey.h before flipping firmware), publish a
 #                     GitHub Release (devices poll releases/latest/download/manifest.json
@@ -60,8 +60,6 @@ jobs:
           repository: ristllin/solide-drivers
           ref: fc03b8dc3fbe00e3258ffeb8e145a28308f532b5   # solide-drivers v0.5.1 (freenove CYD) - pin the SHA, a tag is mutable
           path: solide-drivers
-
-      # (The tag / version.h coherence gate ran in the tag-shape job this job needs.)
 
       # RELEASE GATE (CUM-174 #6): refuse to build/publish on a known white-screen
       # driver pin (CUM-167). Fast, no toolchain - fails the release before the
@@ -244,8 +242,11 @@ jobs:
         id: preflight
         env:
           CHANNEL: ${{ needs.tag-shape.outputs.channel }}
+          # Via env, never pasted into the script text.
+          GCP_WIF_PROVIDER: ${{ secrets.GCP_WIF_PROVIDER }}
+          GCP_DEPLOY_SA: ${{ secrets.GCP_DEPLOY_SA }}
         run: |
-          if [ -n "${{ secrets.GCP_WIF_PROVIDER }}" ] && [ -n "${{ secrets.GCP_DEPLOY_SA }}" ]; then
+          if [ -n "$GCP_WIF_PROVIDER" ] && [ -n "$GCP_DEPLOY_SA" ]; then
             echo "enabled=true" >> "$GITHUB_OUTPUT"
           elif [ "$CHANNEL" = "virtual" ]; then
             echo "::error::virtual release ${GITHUB_REF_NAME} builds only nimbusd:${GITHUB_REF_NAME}, but repo secrets GCP_WIF_PROVIDER and GCP_DEPLOY_SA are not set, so nothing was built or pushed."
@@ -323,12 +324,9 @@ jobs:
           done
           STATE=$(curl -fsS -H "X-Nimbus-Token: smoke-token" http://127.0.0.1:8787/api/state)
           echo "state: $STATE"
-          echo "$STATE" | grep -q "\"fw\":\"${VER}\"" || {
-            echo "::error::/api/state fw != ${VER}"; docker logs nimbusd-smoke; docker rm -f nimbusd-smoke; exit 1;
-          }
-          echo "$STATE" | grep -qF "\"image\":\"nimbusd:${GITHUB_REF_NAME}\"" || {
-            echo "::error::/api/state image != nimbusd:${GITHUB_REF_NAME}"; docker logs nimbusd-smoke; docker rm -f nimbusd-smoke; exit 1;
-          }
+          fail() { echo "::error::$1"; docker logs nimbusd-smoke; docker rm -f nimbusd-smoke; exit 1; }
+          echo "$STATE" | grep -qF "\"fw\":\"${VER}\"" || fail "/api/state fw != ${VER}"
+          echo "$STATE" | grep -qF "\"image\":\"nimbusd:${GITHUB_REF_NAME}\"" || fail "/api/state image != nimbusd:${GITHUB_REF_NAME}"
           docker rm -f nimbusd-smoke
 
       # Push ONLY the git tag (vX.Y.Z or vn-vX.Y.Z[-N]). The registry has tag immutability

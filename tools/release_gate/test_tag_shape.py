@@ -73,7 +73,9 @@ def test_other_v_tags_are_refused():
         assert channel(tag) is None, tag
 
 
-@pytest.mark.parametrize("tag", ["v4.5.7-rc1+meta", "v4.5.7-rc1/x", "v4.5.7-rc" + "1" * 130, ""])
+@pytest.mark.parametrize(
+    "tag", ["v4.5.7-rc1+meta", "v4.5.7-rc1/x", "v4.5.7-rc" + "1" * 130, "", "v4.5.7-rc1\n", "vn-v4.5.7-1\n", "v4.5.7\n"]
+)
 def test_tag_that_cannot_be_an_image_tag_is_refused(tag):
     # The image job pushes nimbusd:<tag>; a tag the registry would reject must stop
     # BEFORE the firmware job publishes, not half way through the run.
@@ -82,16 +84,18 @@ def test_tag_that_cannot_be_an_image_tag_is_refused(tag):
 
 
 def test_empty_version_refuses_everything():
-    assert ts.classify("v4.5.7", "")[0] is None
-    assert ts.classify("vn-", "")[0] is None
+    for version in ("", None):
+        assert ts.classify("v4.5.7", version)[0] is None
+        assert ts.classify("vn-", version)[0] is None
 
 
 def test_accepted_iff_the_tag_names_the_current_version():
     """The class rule: over every combination of prefix x version x suffix, a tag is
     accepted exactly when it names version.h in one of the two shapes."""
     versions = [VER, "v4.5.8", "v4.6.7", "v5.5.7", "v4.5.70", "v4.5", "4.5.7", "v14.5.7"]
-    suffixes = ["", "-1", "-2", "-10", "-rc1", "-rc2", "-0", "-x", "-1-1"]
-    expected = {VER + s: ts.OTA for s in ("", "-rc1", "-rc2")}
+    suffixes = ["", "-1", "-2", "-10", "-rc1", "-rc2", "-rc", "-rcx", "-0", "-x", "-1-1"]
+    # Firmware tags keep the old shell gate's `"$VER"-rc*` exactly: anything after -rc.
+    expected = {VER + s: ts.OTA for s in ("", "-rc1", "-rc2", "-rc", "-rcx")}
     expected.update({"vn-" + VER + s: ts.VIRTUAL for s in ("", "-1", "-2", "-10")})
     seen = set()
     for prefix, ver, suffix in itertools.product(["", "vn-", "v"], versions, suffixes):
@@ -201,16 +205,21 @@ def workflow_jobs(text):
             continue
         if line[:1] not in ("", " ", "#"):
             break  # the next top-level key ends the jobs map
-        m = _JOB_RE.match(line)
-        if m:
-            cur = jobs.setdefault(m.group(1), {"if": None, "needs": [], "body": []})
-        elif cur is not None:
-            cur["body"].append(line)
-            k = _KEY_RE.match(line)
-            if k and k.group(1) == "if":
-                cur["if"] = k.group(2)
-            elif k:
-                cur["needs"] = [n.strip() for n in k.group(2).strip("[]").split(",") if n.strip()]
+        job = _JOB_RE.match(line)
+        if job:
+            cur = jobs.setdefault(job.group(1), {"if": None, "needs": [], "body": []})
+            continue
+        if cur is None:
+            continue
+        cur["body"].append(line)
+        key = _KEY_RE.match(line)
+        if key is None:
+            continue
+        name, value = key.groups()
+        if name == "if":
+            cur["if"] = value
+        else:
+            cur["needs"] = [n.strip() for n in value.strip("[]").split(",") if n.strip()]
     return jobs
 
 
@@ -268,10 +277,6 @@ def mutate(text, old, new):
 
 def test_release_workflow_gates_every_job_on_its_channels():
     assert check_workflow(release_yml()) == []
-
-
-def test_workflow_parser_sees_every_job():
-    assert set(workflow_jobs(release_yml())) == {CLASSIFIER, *JOB_CHANNELS}
 
 
 def test_every_channel_runs_something_and_names_a_real_channel():

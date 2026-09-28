@@ -117,12 +117,12 @@ release, and no release moves running Virtual Nimbus instances by itself.
 
 | Tag | Example | What it builds and publishes |
 |---|---|---|
-| OTA tag `vX.Y.Z` (or `vX.Y.Z-rcN`) | `v4.5.7` | the signed firmware OTA release and web-flash images, plus the Virtual Nimbus image `nimbusd:v4.5.7` |
+| OTA tag `vX.Y.Z` (a release candidate adds `-rc`, as in `v4.5.7-rc1`) | `v4.5.7` | the signed firmware OTA release and web-flash images, plus the Virtual Nimbus image `nimbusd:v4.5.7` |
 | Virtual tag `vn-vX.Y.Z` or `vn-vX.Y.Z-N` | `vn-v4.5.7-1` | only the Virtual Nimbus image `nimbusd:vn-v4.5.7-1`. No firmware build, no OTA manifest, no web-flash, and no device is offered an update. |
 
 - **Both tags name the current firmware version.** `vX.Y.Z` must equal
   `NIMBUS_FW_VERSION` in `include/version.h`, the version the image reports as `fw` in
-  `/api/state`. A tag that names another version, or has any other shape, is refused
+  `/api/state`. A tag that names another version, or has neither shape, is refused
   before anything builds.
 - **`-N` numbers repeat virtual releases** of one firmware version (`vn-v4.5.7`,
   `vn-v4.5.7-1`, `vn-v4.5.7-2`, ...). The image registry never overwrites an existing
