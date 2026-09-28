@@ -3134,9 +3134,14 @@ void setup() {
   // task (owns ADC + model), same staging as calibrateBatteryFull. ⚠ a divider
   // change re-scales every mV, so the BATTCAL anchor is now stale; the UI tells the
   // owner to re-Calibrate. Skips the ADC when monitoring is off (opt-in boards).
+  // The ADC monitor only exists in the divider build (same selection as g_monitor
+  // above): a fuel-gauge build reads the cell through the gauge, so it has no
+  // divider to re-arm and only the model half applies (CUM-458).
   wc.reconfigureBattery = [] {
+#if defined(NIMBUS_HAS_BATTERY_ADC) && !defined(NIMBUS_HAS_FUEL_GAUGE)
     if (battMonOn())
       g_battAdc.begin(battAdcPin(), battDivX100(), battCells(), NIMBUS_BATT_VBUS_PIN);
+#endif
     g_battModel.setCapacityMah(agent::store::battCapMah());
     applyBattChemConfig();   // chemistry + cells + custom SoC curve apply live
     g_battEstimate = g_battModel.estimate();
