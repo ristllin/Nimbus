@@ -37,6 +37,7 @@ Enumerated with their consumer, so a rename is caught before it ships:
 | `make_manifest.py` | `.github/workflows/release.yml` | OTA release signing (must stay byte-identical to `nimbus::ota::buildSigMessage()`) |
 | `release/make_webflash_manifest.py` | `.github/workflows/release.yml` | web-flasher manifest |
 | `release/check_known_patterns.sh` | `.pre-commit-config.yaml` | the pre-commit leak gate |
+| `release_gate/tag_shape.py` | `.github/workflows/release.yml` (job tag-shape) | every release: the channel gate (a rename skips every job) |
 
 Rename or move one of these and you must update its consumer in the same change.
 

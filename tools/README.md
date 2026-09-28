@@ -68,6 +68,7 @@ a generated file.
 | `harness-lab/` | Runs the real agent harness on the Mac instead of the device (see its README). |
 | `test_setup_device.py` | Unit tests for `setup_device.py`. |
 | `test_tcal_wizard.py` | Unit tests for `tcal_wizard.py`. |
+| **⚠ `release_gate/tag_shape.py`** | Release channel gate (release.yml): OTA tag vs virtual vn- tag, version.h coherence. |
 
 Bench-only and board-specific scripts (a live connector-QA harness, the quality
 benchmark, panic-capture, the connector-shape grid) live in the private `ops/`
