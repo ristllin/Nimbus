@@ -36,6 +36,15 @@ fs::FS&   dataFs();   // the active store (SD when mounted, else LittleFS)
 // every vector blob, episodic day-stream, file, and media blob. A reboot must
 // follow so the in-RAM engines reload empty. Web Danger-zone action only.
 bool      eraseDurableStore();
+// Factory-reset sweep: eraseDurableStore() PLUS every private sidecar the 2026-09-29
+// audit found surviving a "factory" reset - LittleFS /data (RBAC table, chat
+// summaries, per-chat memory, routines, usage history, and the legacy pre-SD memory
+// blobs that would silently re-import into an empty card on the next boot), leftover
+// voice/TTS audio, the durable /log tree on both storage tiers, and the SD /music +
+// settings mirror. Returns false ONLY when the memory-store erase itself was refused
+// (the card that holds the store is unreadable) - the caller must then abort the
+// reset instead of rebooting into a device that reads clean while the data survives.
+bool      eraseAllPrivateData();
 
 // Load config + persisted state, bind the embedder, register tools. Safe to call
 // once from setup() in either mode (Notifier can still browse an existing store).

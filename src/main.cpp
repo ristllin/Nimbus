@@ -27,6 +27,9 @@
 #include <esp_bt.h>         // esp_bt_controller_mem_release (free BT RAM in Orch mode)
 #include <esp_sleep.h>
 #include <esp_task_wdt.h>
+#if __has_include(<esp_core_dump.h>)
+#include <esp_core_dump.h>   // factory reset erases any crash dump (stacks can hold secrets)
+#endif
 #include <nvs_flash.h>   // nvs_flash_erase() - web factory reset
 #include <nvs.h>         // raw NVS read/write to preserve identity across the wipe
 #include "agent/agent_config.h"            // AKEY_* frozen NVS key macros
@@ -4675,13 +4678,23 @@ static void settleMenuAfterMutation(uint32_t now) {
                                   : nimbus::action::Outcome::Failed);
   }
   if (g_menu.resetRequested()) {
-    // Reset to defaults already applied above via the dirty() drain (or was a
+    // Reset settings already applied above via the dirty() drain (or was a
     // no-op with nothing to clear). Either way the owner pressed a real action:
     // confirm it. It always succeeds locally, so the outcome is Ok.
     g_menu.clearResetRequest();
     g_menuNeedsPaint = true;
     emitMenuActionFeedback(nimbus::action::MenuAction::Reset,
                            nimbus::action::Outcome::Ok);
+  }
+  if (g_menu.factoryResetRequested()) {
+    // Reset > Factory reset > Erase everything. Route through the same deferred
+    // flow as the web factory reset (loop() drains g_factoryResetPending: erase
+    // NVS + the SD memory store, keep the hardware identity, restart into
+    // setup) so the two surfaces can never drift apart. The menu flow always
+    // erases the SD store: "factory" on glass must not leave memories behind.
+    g_menu.clearFactoryResetRequest();
+    g_factoryEraseSd = true;
+    g_factoryResetPending = true;
   }
   // Keep the saved-network picker in step with the store whenever the menu
   // is open, so "Forget network" never lists something already gone.
@@ -5098,14 +5111,18 @@ void loop() {
     g_powerOffPending = false;
     enterPowerOffSleep();
   }
-  if (g_factoryResetPending) {  // web factory reset: scrap everything, keep only the panel identity
+  if (g_factoryResetPending) {  // web/menu factory reset: scrap everything, keep only the panel identity
+    g_factoryResetPending = false;   // consume the request either way (a refusal must not re-fire)
     // CUM-50 + CUM-230: factoryResetPreserveIdentity() keeps ONLY the hardware identity
     // (scrModel/tftFlip/tchCal/otaType, so a TFT board comes back on the right driver,
     // never a white screen) and seeds the setup mode so the reset device boots into the
     // Wi-Fi onboarding wizard. Everything the owner set - keys/token/bonds/config AND the
     // device name - is scrapped; the unit re-onboards fresh with a new name + mDNS.
-    // g_factoryEraseSd additionally wipes the durable /mem store in the same flow.
-    Serial.println(g_factoryEraseSd ? "FACTORY RESET (+SD) -> keep identity, erase config + /mem, restart"
+    // g_factoryEraseSd additionally erases every private durable byte in the same
+    // flow: the /mem store plus the sidecars (LittleFS /data incl. the RBAC table
+    // and legacy memory blobs, leftover audio, /log on both tiers, SD /music +
+    // settings mirror) - see agent::memory::eraseAllPrivateData().
+    Serial.println(g_factoryEraseSd ? "FACTORY RESET (+SD) -> keep identity, erase config + storage, restart"
                                     : "FACTORY RESET -> keep identity, erase config, restart");
     // Progress screen with an honest duration; also buys the panel ~2.2 s to paint
     // before the erase blocks. The screen setup is preserved, so this is safe on TFT.
@@ -5113,10 +5130,25 @@ void loop() {
                                      : "Resetting to factory settings. This takes a few seconds.";
     renderScreen(attn::ScreenId::Ask, -1);
     Serial.flush();
-    if (g_factoryEraseSd) agent::memory::eraseDurableStore();   // CUM-15: optional combined /mem erase
-    factoryResetPreserveIdentity();   // wipes NVS, restores hardware identity + device name
-    delay(50);
-    ESP.restart();
+    if (g_factoryEraseSd && !agent::memory::eraseAllPrivateData()) {
+      // Refused: the card that holds the memories is unreadable. Mirror the SD-reset
+      // contract below - do NOT continue into a device that reads factory-fresh
+      // while every memory survives on the reseatable card. Config stays, the owner
+      // reseats the card and runs the reset again.
+      g_factoryEraseSd = false;
+      Serial.println("FACTORY RESET refused -> storage not available");
+      g_askOverride = "Couldn't erase storage. Reseat the SD card and try again.";
+      renderScreen(attn::ScreenId::Ask, -1);
+    } else {
+      factoryResetPreserveIdentity();   // wipes NVS, keeps ONLY the hardware identity
+#if __has_include(<esp_core_dump.h>)
+      // A crash dump captures task stacks, which can hold keys or message text in
+      // transit; a factory-fresh device must not carry one from its previous owner.
+      esp_core_dump_image_erase();      // best-effort; absent/blank partition is fine
+#endif
+      delay(50);
+      ESP.restart();
+    }
   }
   if (g_sdResetPending) {  // web SD reset: erase the durable /mem store, keep config, reboot
     g_sdResetPending = false;             // consume the request either way (no re-fire)

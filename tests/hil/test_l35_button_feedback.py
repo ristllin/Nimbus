@@ -145,7 +145,7 @@ def test_feedback_is_audible_and_visible(device, require_manual, wake_home):
     wake_home()
     require_manual.confirm(
         "BUTTON FEEDBACK (owner leg):\n"
-        "  1. Open Settings and press 'Reset to defaults'.\n"
+        "  1. Open Settings > Reset, choose 'Reset settings', then 'Reset all'.\n"
         "     Confirm: a rising confirm tone AND a brief GREEN ring swell that then goes dark.\n"
         "  2. With NO SD card inserted, press 'Rescan SD card'.\n"
         "     Confirm: a distinct error tone, a brief RED ring swell that then goes dark,\n"

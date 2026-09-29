@@ -107,7 +107,17 @@ server - findings are weighted by real reachability.
   identity** (panel model, mount orientation, touch calibration, update slug) so a
   reset device reboots on the right driver instead of a screen it cannot recover; it
   scraps everything the owner set, including the device name, and the unit re-onboards
-  fresh with a new name. It can optionally erase the SD card in the same flow.
+  fresh with a new name. With "erase storage" it also runs the full private-data
+  sweep in the same flow: the durable memory store, LittleFS `/data` (the Telegram
+  access table, chat summaries, per-chat memory, routines, and the legacy pre-SD
+  memory blobs), leftover voice/reply audio, the `/log` tree on both storage tiers,
+  the owner's `/music`, and any crash dump - so a handed-over board carries nothing
+  of its previous owner. If the card that holds the store is unreadable the reset
+  refuses honestly instead of rebooting into a device that reads clean while the
+  data survives on the reseatable card. The device menu offers the same action as
+  Settings > Reset > Factory reset (always the full sweep); on glass the gate is a
+  dedicated confirm screen that defaults to Cancel, the touch counterpart of the
+  web's typed phrase.
   Full-card Format rewrites the whole card and is offered only when a card is
   physically present, so the control is never a knob that can only fail; with no card
   the action refuses honestly.

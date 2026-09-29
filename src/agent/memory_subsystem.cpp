@@ -197,6 +197,37 @@ bool eraseDurableStore() {
   return true;   // wiped (caller reboots to an empty store); rmTree completeness logged
 }
 
+bool eraseAllPrivateData() {
+  // The store first: it is the one erase that can be REFUSED (card pulled), and a
+  // refusal must abort the whole reset before anything else is half-erased.
+  if (!eraseDurableStore()) return false;
+  // LittleFS /data survives eraseDurableStore whenever the store lives on SD. It
+  // holds the RBAC table (tenants.txt - the old owner's Admin row), chat summaries
+  // and per-chat memory (chatsum.txt/orchmem.txt), routines (loops.json), usage
+  // history, and the legacy pre-SD memory blobs (orchvec.bin/episodic.bin) whose
+  // survival makes the migration path re-import the "erased" memories into the
+  // empty card on the next boot.
+  rmTree(LittleFS, "/data");
+  LittleFS.mkdir("/data");
+  // Loose private files outside any tree: the last push-to-talk recording, the
+  // last spoken reply / TTS audio, and Telegram staging files a crash can strand.
+  static const char* kLoosePrivate[] = {"/voice.pcm", "/reply.wav", "/reply.mp3",
+                                        "/tts.mp3"};
+  for (const char* p : kLoosePrivate) LittleFS.remove(p);
+  rmTree(LittleFS, "/audio");   // tgvoice.ogg / tgattach.bin staging
+  // Durable logs carry sender names, chat ids, and message/transcript snippets -
+  // wipe the /log tree on BOTH tiers (errlog writes to SD when present, else
+  // LittleFS; a device that changed tiers can have both).
+  rmTree(LittleFS, "/log");
+  if (g_haveSd && effHaveSd()) {
+    rmTree(*g_fs, "/log");
+    rmTree(*g_fs, "/music");    // owner-uploaded music
+    rmTree(*g_fs, "/memory");   // solide settings mirror (nimbus_cfg.bin)
+  }
+  alog("memory: factory sweep done (data/audio/log cleared)");
+  return true;
+}
+
 void lock()   { if (g_memMux) xSemaphoreTakeRecursive(g_memMux, portMAX_DELAY); }
 void unlock() { if (g_memMux) xSemaphoreGiveRecursive(g_memMux); }
 

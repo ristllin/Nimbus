@@ -27,7 +27,12 @@
 //        │                     Config via QR -> ConfigQr (full-screen link to
 //        │                     the on-device WiFi/BLE page)
 //        ├ Display ›       -> Display: screen flip (180) [+ touch calibration]
-//        ├ Reset to defaults -> ConfirmReset: "Reset all" clears all overrides
+//        ├ Reset ›         -> ResetPick: "Reset settings" -> ConfirmReset
+//        │                     ("Reset all" clears all overrides, keeps Wi-Fi,
+//        │                     keys, and memories) or "Factory reset" ->
+//        │                     ConfirmFactory ("Erase everything": the device
+//        │                     erases its config and the SD memory store, keeps
+//        │                     only the hardware identity, restarts into setup)
 //        └ Done            -> back to the normal UI
 //
 // Editing a param steps its value within paramMeta() bounds and commits it as a
@@ -182,12 +187,20 @@ class SettingsMenu {
   bool forgetBondsRequested() const { return forgetRequested_; }
   void clearForgetRequest() { forgetRequested_ = false; }
 
-  // Set true when the user confirms "Reset to defaults" (ConfirmReset > Reset
+  // Set true when the user confirms "Reset settings" (ConfirmReset > Reset
   // all); the device drains it to sound + flash the reset confirmation. Kept
   // separate from dirty(): a reset with no overrides to clear persists nothing,
   // but it is still a real action the owner pressed and must be confirmed.
   bool resetRequested() const { return resetRequested_; }
   void clearResetRequest() { resetRequested_ = false; }
+
+  // Set true when the user confirms "Factory reset" (Reset > Factory reset >
+  // Erase everything). The device drains it into the same deferred flow as the
+  // web factory reset: erase NVS and the SD memory store, keep only the
+  // hardware identity, restart into setup (CUM-50/CUM-230 semantics). Kept
+  // separate from resetRequested(): that one only clears setting overrides.
+  bool factoryResetRequested() const { return factoryResetRequested_; }
+  void clearFactoryResetRequest() { factoryResetRequested_ = false; }
 
   // Cursor on the "Cloud link code" row - lets the device show mode-aware help.
   bool onCloudRow() const {
@@ -384,7 +397,8 @@ class SettingsMenu {
   enum class State : uint8_t {
     Closed, Main, ProfilePick, TuneList, Edit, ConfirmReset, Connectivity,
     ConfigQr, TokenDetail, ThemePick, SelfTest, Battery, Sound, UpdateMenu, ConfirmInstall,
-    WifiMenu, WifiPick, WifiForget, Display, ConfirmPowerOff, ConfirmRestart };
+    WifiMenu, WifiPick, WifiForget, Display, ConfirmPowerOff, ConfirmRestart,
+    ResetPick, ConfirmFactory };
 
   // Rows on the Main screen, in display order. Sound absorbs the old
   // Sounds/Voice/Volume rows (one submenu for everything audible); Screensaver
@@ -488,6 +502,7 @@ class SettingsMenu {
   bool    powerOffRequested_ = false;       // ConfirmPowerOff > Power off (device drains -> deep sleep)
   bool    restartRequested_ = false;        // ConfirmRestart > Restart (device drains -> deferred restart)
   bool    resetRequested_ = false;          // ConfirmReset > Reset all (device drains for feedback)
+  bool    factoryResetRequested_ = false;   // ConfirmFactory > Erase everything (device drains -> NVS+SD erase, restart)
   bool    touchWake_ = true;                 // board can wake from sleep on a touch (device-seeded)
   bool    codeFromSetup_ = false;            // TokenDetail was opened by the Setup code card
   bool    setupReturnRequested_ = false;     // its dismissal: put Setup back (device drains)

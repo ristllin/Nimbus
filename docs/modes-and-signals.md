@@ -42,8 +42,11 @@ the whole row; change any single value and your override survives mode
 switches until you reset it.
 
 - **On the device:** Settings > Battery mode to pick a mode; Settings >
-  Customize to change individual values; Settings > Reset to defaults to drop
-  every override.
+  Customize to change individual values; Settings > Reset > Reset settings to
+  drop every override (it keeps Wi-Fi, keys, pairing, and memories). The same
+  Reset screen also offers Factory reset: the full erase - Wi-Fi and passwords,
+  provider keys, paired computers, settings, memories, routines, and logs,
+  including the SD card - after which the device restarts into first-time setup.
 - **On the web page:** Settings → Battery mode; Settings → Customize battery mode;
   the **Revert to Defaults** button clears all overrides at once.
 

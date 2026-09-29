@@ -286,7 +286,9 @@ static void test_reset_clears_all_overrides() {
   SettingsMenu m(c);
   m.open();
   while (viewOf(m).selected != 8) m.onRotate(+1);  // Reset row (Main row 8)
-  m.onClick();                                     // ConfirmReset
+  m.onClick();                                     // -> Reset picker
+  TEST_ASSERT_EQUAL(3, int(viewOf(m).items.size()));
+  m.onClick();                                     // Reset settings -> ConfirmReset
   auto v = viewOf(m);
   TEST_ASSERT_EQUAL(2, int(v.items.size()));
   TEST_ASSERT_EQUAL(0, v.selected);  // defaults to "No"
@@ -302,6 +304,79 @@ static void test_reset_clears_all_overrides() {
                     c.effective(Param::RingFps));
   // Back at Main.
   TEST_ASSERT_EQUAL(16, int(viewOf(m).items.size()));
+}
+
+// The Reset row opens a picker: "Reset settings" keeps the old overrides-only
+// contract, "Factory reset" arms the device-drained full erase (NVS + the SD
+// memory store). The class rules from the other destructive confirms hold here
+// too: the confirm defaults to Cancel, both ways out latch nothing, and
+// confirming raises ONLY factoryResetRequested_ (owner report 2026-09-29: the
+// old single reset read as a factory reset but left Wi-Fi passwords and
+// paired computers on the board).
+static void test_factory_reset_picker_and_confirm() {
+  Config c;
+  c.setOverride(Param::RingFps, 5);   // factory must not touch overrides itself
+  SettingsMenu m(c);
+  m.open();
+  while (viewOf(m).selected != 8) m.onRotate(+1);
+  TEST_ASSERT_EQUAL_STRING("Reset >", viewOf(m).items[8].c_str());
+  m.onClick();                        // -> picker
+  auto pk = viewOf(m);
+  TEST_ASSERT_EQUAL_STRING("Settings > Reset", pk.title.c_str());
+  TEST_ASSERT_EQUAL(3, int(pk.items.size()));
+  TEST_ASSERT_EQUAL_STRING("Reset settings", pk.items[0].c_str());
+  TEST_ASSERT_EQUAL_STRING("Factory reset", pk.items[1].c_str());
+  TEST_ASSERT_EQUAL_STRING("< Back", pk.items[2].c_str());
+
+  // No-thrash: enter + cancel the factory confirm both ways; nothing latches
+  // and the cursor comes back to the SAME Factory reset row.
+  for (int i = 0; i < 2; ++i) {
+    while (viewOf(m).selected != 1) m.onRotate(+1);
+    m.onClick();                      // -> ConfirmFactory
+    auto cf = viewOf(m);
+    TEST_ASSERT_EQUAL_STRING("Settings > Factory reset?", cf.title.c_str());
+    TEST_ASSERT_EQUAL(2, int(cf.items.size()));
+    TEST_ASSERT_EQUAL_STRING("Cancel", cf.items[0].c_str());
+    TEST_ASSERT_EQUAL_STRING("Erase everything", cf.items[1].c_str());
+    TEST_ASSERT_EQUAL(0, cf.selected);   // never one accidental click from erasing
+    TEST_ASSERT_FALSE(m.factoryResetRequested());
+    if (i == 0) m.onClick();          // Cancel via row 0
+    else        m.onLongPress();      // Cancel via the back gesture
+    TEST_ASSERT_FALSE(m.factoryResetRequested());
+    TEST_ASSERT_EQUAL(1, viewOf(m).selected);   // no cursor drift
+  }
+
+  // Confirm: ONLY the factory flag rises, the menu closes, nothing dirtied,
+  // overrides untouched (the device erases NVS wholesale on the drain - the
+  // menu itself must not erase anything inline).
+  m.onClick();                        // re-enter confirm
+  m.onRotate(+1);                     // -> Erase everything
+  m.onClick();
+  TEST_ASSERT_TRUE(m.factoryResetRequested());
+  TEST_ASSERT_FALSE(m.resetRequested());        // class isolation, both directions
+  TEST_ASSERT_FALSE(m.restartRequested());
+  TEST_ASSERT_FALSE(m.powerOffRequested());
+  TEST_ASSERT_FALSE(m.isOpen());                // the reset UX owns the screen now
+  TEST_ASSERT_FALSE(m.dirty());                 // a device action, not Config state
+  TEST_ASSERT_TRUE(c.hasOverride(Param::RingFps));
+  m.clearFactoryResetRequest();
+  TEST_ASSERT_FALSE(m.factoryResetRequested());
+}
+
+// And the mirror: walking the settings-only confirm never arms the factory flag.
+static void test_settings_reset_never_arms_factory() {
+  Config c;
+  c.setOverride(Param::RingFps, 5);
+  SettingsMenu m(c);
+  m.open();
+  while (viewOf(m).selected != 8) m.onRotate(+1);
+  m.onClick();      // picker
+  m.onClick();      // Reset settings -> confirm
+  m.onRotate(+1);   // -> Reset all
+  m.onClick();
+  TEST_ASSERT_TRUE(m.resetRequested());
+  TEST_ASSERT_FALSE(m.factoryResetRequested());
+  TEST_ASSERT_FALSE(c.hasOverride(Param::RingFps));
 }
 
 // The Sounds/Voice rows cycle in place (no submenu) and mark the menu dirty,
@@ -386,10 +461,14 @@ static void test_reset_no_keeps_overrides() {
   c.setOverride(Param::RingFps, 5);
   SettingsMenu m(c);
   m.open();
-  while (viewOf(m).selected != 4) m.onRotate(+1);
-  m.onClick();      // ConfirmReset, cursor on No
-  m.onClick();      // confirm No
+  // Walk the REAL path (the old version rotated to index 4, which had rotted
+  // onto the Sound row when Main grew, so it asserted nothing).
+  while (viewOf(m).selected != 8) m.onRotate(+1);  // Reset row
+  m.onClick();      // -> Reset picker
+  m.onClick();      // Reset settings -> ConfirmReset, cursor on No
+  m.onClick();      // confirm No: back to the picker
   TEST_ASSERT_TRUE(c.hasOverride(Param::RingFps));
+  TEST_ASSERT_FALSE(m.resetRequested());
 }
 
 // --- mode toggle -----------------------------------------------------------
@@ -1031,8 +1110,13 @@ static void test_titles_are_breadcrumb_paths() {
   TEST_ASSERT_EQUAL_STRING("Settings > Software update", viewOf(m).title.c_str());
   m.onLongPress();        // back to Main, cursor on the Software update row (7)
 
-  cw(m, 1); m.onClick();  // row 8 -> ConfirmReset
-  TEST_ASSERT_EQUAL_STRING("Settings > Reset to defaults?", viewOf(m).title.c_str());
+  cw(m, 1); m.onClick();  // row 8 -> Reset picker
+  TEST_ASSERT_EQUAL_STRING("Settings > Reset", viewOf(m).title.c_str());
+  m.onClick();            // Reset settings -> its confirm
+  TEST_ASSERT_EQUAL_STRING("Settings > Reset settings?", viewOf(m).title.c_str());
+  m.onLongPress();        // back to the picker, cursor on Reset settings
+  cw(m, 1); m.onClick();  // Factory reset -> its confirm
+  TEST_ASSERT_EQUAL_STRING("Settings > Factory reset?", viewOf(m).title.c_str());
 }
 
 // The Main row says "Battery mode" with the DISPLAY label (Dark/Balanced/Full),
@@ -1318,8 +1402,17 @@ static void test_help_text_per_state() {
   m.onLongPress();                             // back to Main, cursor on Connectivity (row 3)
 
   while (viewOf(m).selected != 8) m.onRotate(+1);
-  m.onClick();                                 // ConfirmReset (row 8)
+  m.onClick();                                 // Reset picker (row 8)
+  TEST_ASSERT_TRUE(contains(std::string(m.helpText()), "Keeps"));   // settings row: what survives
+  m.onRotate(+1);                              // Factory reset row: what it erases
+  TEST_ASSERT_TRUE(contains(std::string(m.helpText()), "SD card"));
+  m.onRotate(+1);                              // Back row: no pane
   TEST_ASSERT_EQUAL_STRING("", m.helpText());
+  m.onRotate(+1); m.onClick();                 // wrap to Reset settings -> its confirm
+  TEST_ASSERT_EQUAL_STRING("", m.helpText());  // settings confirm: no pane
+  m.onLongPress();                             // back to the picker
+  m.onRotate(+1); m.onClick();                 // Factory reset -> its confirm
+  TEST_ASSERT_TRUE(contains(std::string(m.helpText()), "cannot be undone"));
 }
 
 // Every string the menu ever shows must be printable ASCII (32-126): the panel
@@ -1421,8 +1514,13 @@ static void test_all_views_are_printable_ascii() {
   m.onLongPress();              // back to UpdateMenu
   m.onLongPress();              // back to main, cursor on Software update (7)
 
-  m.onRotate(+1); m.onClick();  // ConfirmReset (main row 8)
+  m.onRotate(+1); m.onClick();  // Reset picker (main row 8)
+  assertAsciiView(m, "reset-pick");
+  m.onClick();                  // Reset settings -> ConfirmReset
   assertAsciiView(m, "confirm-reset");
+  m.onLongPress();              // back to the picker
+  m.onRotate(+1); m.onClick();  // Factory reset -> ConfirmFactory
+  assertAsciiView(m, "confirm-factory");
 }
 
 // Self-test + Battery Main rows launch full-screen views (like ConfigQr): any
@@ -1711,6 +1809,8 @@ int main() {
   RUN_TEST(test_adjust_submode_gates_rotation);
   RUN_TEST(test_clear_override_row);
   RUN_TEST(test_reset_clears_all_overrides);
+  RUN_TEST(test_factory_reset_picker_and_confirm);
+  RUN_TEST(test_settings_reset_never_arms_factory);
   RUN_TEST(test_sfx_rows_cycle);
   RUN_TEST(test_saver_cycle_and_snap);
   RUN_TEST(test_provider_rows_cycle);

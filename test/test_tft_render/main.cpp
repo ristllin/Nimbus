@@ -216,8 +216,22 @@ static ScreenCtx menuCtx() {
   // draw a right chevron. Toggle/cycle/action rows remain tappable without one.
   c.menuItems = {"Mode", "Battery mode", "Customize >", "Connectivity >",
                  "Sound >", "Theme", "Screensaver", "Software update >",
-                 "Reset to defaults", "Self-test >", "Battery >", "SD card", "Close"};
+                 "Reset >", "Self-test >", "Battery >", "SD card", "Close"};
   c.menuSelected = 4;
+  return c;
+}
+
+// The factory-reset confirm carries the owner-facing warning pane: the screen
+// that tells someone handing a device over exactly what "Erase everything"
+// erases. Pinned so the warning can never silently vanish or clip.
+static ScreenCtx factoryConfirmCtx() {
+  ScreenCtx c = baseCtx();
+  c.menuTitle = "Settings > Factory reset?";
+  c.menuItems = {"Cancel", "Erase everything"};
+  c.menuSelected = 0;   // the render must show Cancel as the default
+  c.menuHelp = "Erases Wi-Fi and passwords, provider keys, paired "
+               "computers, settings, memories, routines, and logs, "
+               "including the SD card. This cannot be undone.";
   return c;
 }
 
@@ -296,6 +310,9 @@ static void test_status_ring() {
 }
 static void test_menu_main()      { golden("menu_main", ScreenId::Menu, menuCtx()); }
 static void test_menu_stepper()   { golden("menu_stepper", ScreenId::Menu, stepperCtx()); }
+static void test_menu_factory_confirm() {
+  golden("menu_factory_confirm", ScreenId::Menu, factoryConfirmCtx());
+}
 static ScreenCtx updateCtx() {
   ScreenCtx c = baseCtx();
   c.menuTitle = "Settings > Software update";
@@ -1087,6 +1104,7 @@ int main() {
   RUN_TEST(test_status_jobs);
   RUN_TEST(test_status_ring);
   RUN_TEST(test_menu_main);
+  RUN_TEST(test_menu_factory_confirm);
   RUN_TEST(test_menu_stepper);
   RUN_TEST(test_menu_update_checking);
   RUN_TEST(test_menu_update_available);
