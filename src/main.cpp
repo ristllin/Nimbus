@@ -5119,9 +5119,7 @@ void loop() {
     // Wi-Fi onboarding wizard. Everything the owner set - keys/token/bonds/config AND the
     // device name - is scrapped; the unit re-onboards fresh with a new name + mDNS.
     // g_factoryEraseSd additionally erases every private durable byte in the same
-    // flow: the /mem store plus the sidecars (LittleFS /data incl. the RBAC table
-    // and legacy memory blobs, leftover audio, /log on both tiers, SD /music +
-    // settings mirror) - see agent::memory::eraseAllPrivateData().
+    // flow; the authoritative path list lives in agent::memory::eraseAllPrivateData().
     Serial.println(g_factoryEraseSd ? "FACTORY RESET (+SD) -> keep identity, erase config + storage, restart"
                                     : "FACTORY RESET -> keep identity, erase config, restart");
     // Progress screen with an honest duration; also buys the panel ~2.2 s to paint
@@ -5131,14 +5129,19 @@ void loop() {
     renderScreen(attn::ScreenId::Ask, -1);
     Serial.flush();
     if (g_factoryEraseSd && !agent::memory::eraseAllPrivateData()) {
-      // Refused: the card that holds the memories is unreadable. Mirror the SD-reset
-      // contract below - do NOT continue into a device that reads factory-fresh
-      // while every memory survives on the reseatable card. Config stays, the owner
-      // reseats the card and runs the reset again.
+      // Refused: private data survives somewhere this erase cannot reach (card
+      // absent/pulled, or a delete failed). Do NOT continue into a device that
+      // reads factory-fresh while data survives. Config stays, the owner
+      // reseats the card and runs the reset again. STICKY, like the OTA
+      // install refusal: without it the next ambient repaint replaced this
+      // message within seconds, so nobody ever read the next step.
       g_factoryEraseSd = false;
       Serial.println("FACTORY RESET refused -> storage not available");
       g_askOverride = "Couldn't erase storage. Reseat the SD card and try again.";
+      g_askSticky = true; g_askPage = 0;
       renderScreen(attn::ScreenId::Ask, -1);
+      emitMenuActionFeedback(nimbus::action::MenuAction::Reset,
+                             nimbus::action::Outcome::Failed);   // error tone
     } else {
       factoryResetPreserveIdentity();   // wipes NVS, keeps ONLY the hardware identity
 #if __has_include(<esp_core_dump.h>)
@@ -5160,10 +5163,11 @@ void loop() {
       delay(50);
       ESP.restart();                      // engines reload empty; NVS config untouched
     } else {
-      // Refused: the card that held the store is gone. Say so honestly and DON'T
-      // reboot into a device that reads "erased" while the data survives on the card.
+      // Refused: the card that held the store is gone, or a delete failed. Say so
+      // honestly and DON'T reboot into a device that reads "erased" while the
+      // data survives on the card. Same copy as the factory refusal.
       Serial.println("SD RESET refused -> storage not available");
-      g_askOverride = "Couldn't erase - storage not available";
+      g_askOverride = "Couldn't erase storage. Reseat the SD card and try again.";
       renderScreen(attn::ScreenId::Ask, -1);
     }
   }

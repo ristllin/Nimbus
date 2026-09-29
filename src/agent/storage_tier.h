@@ -40,5 +40,16 @@ inline TierDecision decideStorageTier(const TierInputs& in) {
   return d;
 }
 
+// Factory-erase refusal (2026-09-29 review): the erase must REFUSE whenever the
+// owner's memories could survive on a reseatable card it cannot reach - either
+// the card that holds the store was demoted/pulled since boot (storeOnSd &&
+// !storeSdAlive), or no card mounted this boot yet evidence says a card holds
+// memories (sdMissingWithData, the CUM-405 banner predicate). Pure so the truth
+// table is host-tested; memory_subsystem feeds it the live device state.
+inline bool factoryEraseMustRefuse(bool sdMissingWithData, bool storeOnSd,
+                                   bool storeSdAlive) {
+  return sdMissingWithData || (storeOnSd && !storeSdAlive);
+}
+
 }  // namespace memory
 }  // namespace agent

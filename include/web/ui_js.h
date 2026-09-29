@@ -1306,7 +1306,7 @@ function loadConnect(){
       '<img src=/logo.svg style="width:52px;height:52px"><h2 style="margin:14px 0 8px">Device is resetting…</h2>'+
       '<p style="color:var(--ink2);line-height:1.5">Everything has been erased and the device is restarting into first-time setup. '+
       'Reconnect to its <b>&ldquo;…-setup&rdquo;</b> Wi-Fi network to run the setup wizard.</p></div>';
-  }).catch(()=>toast('Reset failed - try again'));});};
+  }).catch(st=>toast(st===409?'Couldn\'t erase - reseat the SD card':'Reset failed - try again'));});};
 })();
 // Restart (CUM-270): styled confirm, POST /api/restart (token-gated, deferred on
 // the device to the main task), then an honest interstitial that polls /api/state

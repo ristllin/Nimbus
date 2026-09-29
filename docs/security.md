@@ -108,16 +108,21 @@ server - findings are weighted by real reachability.
   reset device reboots on the right driver instead of a screen it cannot recover; it
   scraps everything the owner set, including the device name, and the unit re-onboards
   fresh with a new name. With "erase storage" it also runs the full private-data
-  sweep in the same flow: the durable memory store, LittleFS `/data` (the Telegram
-  access table, chat summaries, per-chat memory, routines, and the legacy pre-SD
-  memory blobs), leftover voice/reply audio, the `/log` tree on both storage tiers,
-  the owner's `/music`, and any crash dump - so a handed-over board carries nothing
-  of its previous owner. If the card that holds the store is unreadable the reset
-  refuses honestly instead of rebooting into a device that reads clean while the
-  data survives on the reseatable card. The device menu offers the same action as
-  Settings > Reset > Factory reset (always the full sweep); on glass the gate is a
-  dedicated confirm screen that defaults to Cancel, the touch counterpart of the
-  web's typed phrase.
+  sweep in the same flow - memories, chat state, routines, logs, leftover audio,
+  and any crash dump, across internal flash and the SD card - so a handed-over
+  board carries nothing of its previous owner. The authoritative path list lives
+  in `agent::memory::eraseAllPrivateData()` (src/agent/memory_subsystem.cpp);
+  prose lists drift, so this doc deliberately does not repeat it. The erase
+  REFUSES - keeping config, telling the owner to reseat the card and try again -
+  whenever private data could survive somewhere it cannot reach: a card with
+  memories that is not mounted (pulled since boot, or absent at boot per the
+  CUM-405 evidence probe), or any delete of existing data failing. The web page
+  pre-checks the same predicate so it never claims "erased" over a refusal. The
+  device menu offers the same action as Settings > Reset > Factory reset (always
+  the full sweep); on glass the gate is a dedicated confirm screen that defaults
+  to Cancel, and its "Erase everything" row is tap-armed - the first tap only
+  selects it, a second deliberate tap fires - so a doubled or bounced tap can
+  never erase the device (the touch counterpart of the web's typed phrase).
   Full-card Format rewrites the whole card and is offered only when a card is
   physically present, so the control is never a knob that can only fail; with no card
   the action refuses honestly.

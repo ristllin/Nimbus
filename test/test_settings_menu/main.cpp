@@ -1427,6 +1427,10 @@ static void assertAsciiView(SettingsMenu& m, const char* where) {
   for (const std::string& item : v.items)
     for (unsigned char c : item)
       TEST_ASSERT_TRUE_MESSAGE(c >= 32 && c <= 126, where);
+  // helpText renders on glass now too (the list-mode pane), through the same
+  // 5x7 printable-ASCII font - so it is subject to the same rule as the rows.
+  for (unsigned char c : std::string(m.helpText()))
+    TEST_ASSERT_TRUE_MESSAGE(c >= 32 && c <= 126, where);
 }
 
 // The device seeds NIMBUS_FW_VERSION into the Main title band; unset keeps the

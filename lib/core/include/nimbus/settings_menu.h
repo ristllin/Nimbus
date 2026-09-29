@@ -48,6 +48,18 @@ namespace nimbus {
 // The Notifier/Orchestrator mode. The menu only toggles the flag and marks the
 // config dirty; persistence of `mode` is a simple NVS key the device owns.
 enum class Mode : uint8_t { Notifier = 0, Orchestrator = 1 };
+
+// Factory-reset warning copy, shared by the menu help pane and the golden
+// render fixture (test_tft_render) so the pinned screen can never drift from
+// the words the firmware actually shows.
+inline constexpr char kFactoryResetPickHelp[] =
+    "Erases everything: Wi-Fi and passwords, provider keys, paired computers, "
+    "settings, memories, routines, and logs, including the SD card. Restarts "
+    "into setup.";
+inline constexpr char kFactoryResetConfirmHelp[] =
+    "Erases Wi-Fi and passwords, provider keys, paired computers, settings, "
+    "memories, routines, and logs, including the SD card. This cannot be "
+    "undone.";
 const char* modeName(Mode m);   // machine key "notifier"/"orchestrator" (renderer contract)
 const char* modeLabel(Mode m);  // display label "Notifier"/"Orchestrator" (menu rows)
 
@@ -201,6 +213,17 @@ class SettingsMenu {
   // separate from resetRequested(): that one only clears setting overrides.
   bool factoryResetRequested() const { return factoryResetRequested_; }
   void clearFactoryResetRequest() { factoryResetRequested_ = false; }
+
+  // True when a tap on this row must ARM first: the tap layer then only
+  // SELECTS the row, and a second tap on the already-selected row activates
+  // it. ConfirmFactory's "Erase everything" sits at the same panel coordinates
+  // as the picker row that opened the screen, so a doubled or bounced tap
+  // would otherwise erase the device in one gesture (a tap is a cursor move +
+  // click in one, which silently defeats the defaults-to-Cancel guard on
+  // touch). The encoder path is unchanged - rotating already selects first.
+  bool tapArmRequired(int row) const {
+    return state_ == State::ConfirmFactory && row == 1;
+  }
 
   // Cursor on the "Cloud link code" row - lets the device show mode-aware help.
   bool onCloudRow() const {
@@ -420,6 +443,11 @@ class SettingsMenu {
     RowMode = 0, RowProfile, RowTune, RowConn, RowSound, RowTheme,
     RowSaver, RowUpdate, RowReset, RowSelfTest, RowBattery, RowSdCard,
     RowRestart, RowPowerOff, RowDisplay, RowClose, kMainRows };
+
+  // Rows on the Reset picker, in display order. Named because the cancel-path
+  // cursor restores and the help pane key off them - a raw 0/1 would silently
+  // land both on the wrong row if a row were ever inserted.
+  enum ResetPickRow : int { PickSettings = 0, PickFactory = 1, PickBack = 2 };
 
   // Rows in the Sound submenu, in display order. Dictation/Spoken replies cycle
   // the STT/TTS provider (0 Mistral / 1 OpenAI - device maps string<->index).

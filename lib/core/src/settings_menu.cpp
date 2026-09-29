@@ -648,8 +648,8 @@ void SettingsMenu::onClick() {
       return;
 
     case State::ResetPick:
-      if (sel_ == 0) { enter(State::ConfirmReset); return; }    // defaults to Cancel (row 0)
-      if (sel_ == 1) { enter(State::ConfirmFactory); return; }  // defaults to Cancel (row 0)
+      if (sel_ == PickSettings) { enter(State::ConfirmReset); return; }    // defaults to Cancel
+      if (sel_ == PickFactory)  { enter(State::ConfirmFactory); return; }  // defaults to Cancel
       enter(State::Main);   // < Back
       sel_ = RowReset;
       return;
@@ -686,7 +686,7 @@ void SettingsMenu::onClick() {
         return;
       }
       enter(State::ResetPick);  // Cancel
-      sel_ = 1;                 // back onto the Factory reset row
+      sel_ = PickFactory;       // back onto the Factory reset row
       return;
   }
 }
@@ -730,7 +730,7 @@ void SettingsMenu::onLongPress() {
       return;
     case State::ConfirmFactory:
       enter(State::ResetPick);
-      sel_ = 1;   // back onto the Factory reset row
+      sel_ = PickFactory;   // back onto the Factory reset row
       return;
     case State::ConfirmPowerOff:
       enter(State::Main);
@@ -965,20 +965,13 @@ const char* SettingsMenu::helpText() const {
   // the old single "Reset to defaults" read as a factory reset but kept Wi-Fi
   // passwords and paired computers on the board).
   if (state_ == State::ResetPick) {
-    if (sel_ == 0)
+    if (sel_ == PickSettings)
       return "Returns every setting to its default. Keeps "
              "Wi-Fi, keys, pairing, and memories.";
-    if (sel_ == 1)
-      return "Erases everything: Wi-Fi and passwords, provider "
-             "keys, paired computers, settings, memories, "
-             "routines, and logs, including the SD card. "
-             "Restarts into setup.";
+    if (sel_ == PickFactory) return kFactoryResetPickHelp;
     return "";   // Back row: no pane
   }
-  if (state_ == State::ConfirmFactory)
-    return "Erases Wi-Fi and passwords, provider keys, paired "
-           "computers, settings, memories, routines, and logs, "
-           "including the SD card. This cannot be undone.";
+  if (state_ == State::ConfirmFactory) return kFactoryResetConfirmHelp;
   return "";  // no pane anywhere else (renderer hides it on empty)
 }
 
