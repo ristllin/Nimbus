@@ -80,7 +80,7 @@ enum class MenuAction : uint8_t {
   PublishAp,        // Connectivity > Wi-Fi > Publish setup network
   WifiJoin,         // Connectivity > Wi-Fi > Choose network (join a saved one)
   WifiForget,       // Connectivity > Wi-Fi > Forget network
-  Reset,            // Main > Reset to defaults
+  Reset,            // Reset > Reset settings (overrides only; factory has its own UX)
   BluetoothOn,      // Connectivity > Bluetooth -> On
   BluetoothOff,     // Connectivity > Bluetooth -> Off
   Restart,          // Main > Restart

@@ -535,6 +535,16 @@ int menuRowsPerCol(const Layout& L) {
 // The header pager's two arrows plus their spacing, left of the gear.
 int menuPagerW(const Layout& L) { return 2 * L.minTap + 8; }
 
+// The text style for a card body: glyph scale + colour. Bundled so drawTextCard
+// stays within the argument budget now that it also carries the panel Layout.
+// Declared above drawMenu because the menu help pane renders through it.
+struct TextStyle { int scale = 2; uint16_t colour = kInk; };
+// Where a text card sits: y is required; width 0 = the full-gutter card, and
+// x < 0 = the left gutter (the menu help pane places itself in the right column).
+struct TextCardPlace { int y = 0; int width = 0; int x = -1; };
+int drawTextCard(Fb565& fb, const Layout& L, TextCardPlace at, const std::string& body,
+                 TextStyle st = {});
+
 void drawMenu(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx) {
   const int n = int(ctx.menuItems.size());
   // The pager lives in the header (see below) whenever the list overflows and no
@@ -708,6 +718,18 @@ void drawMenu(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx) {
     push(r, x, y, colW, L.rowH, TapRegion::Action::MenuRow, i);
   }
 
+  // Help pane (list mode). ctx.menuHelp historically rendered only inside the
+  // value stepper above, so every list-row explanation - including the
+  // factory-reset warning this exists for - was invisible on glass. When the
+  // list leaves the right-hand column empty (n <= rowsPerCol: the confirm
+  // screens and short pickers), that column is exactly a pane's worth of dead
+  // space; render the help there, where it cannot collide with rows, the
+  // scrollbar, or the pager (none of which exist at these row counts).
+  if (!ctx.menuHelp.empty() && n <= rowsPerCol) {
+    const int paneX = L.gut() + colW + colGap;
+    drawTextCard(fb, L, {listTop, colW, paneX}, ctx.menuHelp, {1, kInk2});
+  }
+
   // Paging affordances, only when the list actually overflows.
   //
   // ⚠ These must NOT sit on top of a row. hit() is last-wins, so an invisible
@@ -798,31 +820,20 @@ void drawMenu(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx) {
 
 // ---- text-ish screens -------------------------------------------------------
 
-// The text style for a card body: glyph scale + colour. Bundled so drawTextCard
-// stays within the argument budget now that it also carries the panel Layout.
-struct TextStyle { int scale = 2; uint16_t colour = kInk; };
-
-// Word-wrapped body text inside a card. Used by Ask, SessionDetail, JobDetail,
-// SetupInfo and Pairing, which differ only in what they say.
-int drawTextCard(Fb565& fb, const Layout& L, int y, const std::string& body,
-                 TextStyle st = {}, int width = 0) {
-  const int scale = st.scale;
-  const uint16_t colour = st.colour;
-  const int cardW = width > 0 ? width : L.w - 2 * L.gut();
-  const int innerW = cardW - 2 * 12;
-  const int lineH = fb.textHeight(scale) + 6;
-  const int perLine = std::max(1, innerW / (6 * scale));
-
-  // Greedy word wrap.
+// Greedy word wrap for a card body: perLine glyphs per row, honoring '\n' as a
+// hard break and splitting over-long single tokens on character boundaries (the
+// sign-in address is exactly that - "http://.../?t=<24 hex>" - and it ran
+// straight off its card and underneath the QR beside it). asciiSanitize() drops
+// '\n' (u < 32), so the filter runs inline instead: printable ASCII is
+// byte-identical to the old path, and a newline breaks the line the way a step
+// list or paragraph needs (the Setup screen's numbered sequence relies on it -
+// CUM-260).
+static std::vector<std::string> wrapCardBody(const std::string& body, int perLine) {
   std::vector<std::string> lines;
   std::string cur;
   std::string word;
   auto flushWord = [&]() {
     if (word.empty()) return;
-    // ⚠ Break an OVER-LONG single word on character boundaries. Greedy word wrap
-    // alone cannot split a token with no spaces in it, and the sign-in address is
-    // exactly that ("http://.../?t=<24 hex>") - it ran straight off its card and
-    // underneath the QR beside it.
     while (int(word.size()) > perLine) {
       if (!cur.empty()) { lines.push_back(cur); cur.clear(); }
       lines.push_back(word.substr(0, size_t(perLine)));
@@ -834,10 +845,6 @@ int drawTextCard(Fb565& fb, const Layout& L, int y, const std::string& body,
     else { lines.push_back(cur); cur = word; }
     word.clear();
   };
-  // Honor explicit '\n' as a hard line break. asciiSanitize() drops it (u < 32), so
-  // filter inline instead: printable ASCII is byte-identical to the old path, and a
-  // newline now breaks the line the way a step list or paragraph needs (the copy that
-  // leads the Setup screen with a numbered sequence relies on it - CUM-260).
   for (char c : body) {
     const uint8_t u = uint8_t(c);
     if (c == '\n') { flushWord(); lines.push_back(cur); cur.clear(); }
@@ -846,13 +853,31 @@ int drawTextCard(Fb565& fb, const Layout& L, int y, const std::string& body,
   }
   flushWord();
   if (!cur.empty()) lines.push_back(cur);
+  return lines;
+}
+
+// Word-wrapped body text inside a card. Used by Ask, SessionDetail, JobDetail,
+// SetupInfo, Pairing and the menu help pane, which differ only in what they say
+// and where the card sits (TextCardPlace; TextStyle and the prototype live
+// above drawMenu).
+int drawTextCard(Fb565& fb, const Layout& L, TextCardPlace at, const std::string& body,
+                 TextStyle st) {
+  const int y = at.y;
+  const int scale = st.scale;
+  const uint16_t colour = st.colour;
+  const int cardX = at.x >= 0 ? at.x : L.gut();
+  const int cardW = at.width > 0 ? at.width : L.w - 2 * L.gut();
+  const int innerW = cardW - 2 * 12;
+  const int lineH = fb.textHeight(scale) + 6;
+  const int perLine = std::max(1, innerW / (6 * scale));
+  const std::vector<std::string> lines = wrapCardBody(body, perLine);
 
   const int maxLines = std::max(1, (L.h - L.gut() - y - 24) / lineH);
   const int shown = std::min<int>(int(lines.size()), maxLines);
   const int cardH = shown * lineH + 24;
-  fb.card(L.gut(), y, cardW, cardH);
+  fb.card(cardX, y, cardW, cardH);
   for (int i = 0; i < shown; i++)
-    fb.text(L.gut() + 12, y + 12 + i * lineH, lines[size_t(i)], colour, scale);
+    fb.text(cardX + 12, y + 12 + i * lineH, lines[size_t(i)], colour, scale);
   return y + cardH;
 }
 
@@ -876,7 +901,7 @@ void drawSessionDetail(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx&
   }
   y += 84;
 
-  if (!ctx.askText.empty()) y = drawTextCard(fb, L, y, ctx.askText, {1, kInk2}) + 8;
+  if (!ctx.askText.empty()) y = drawTextCard(fb, L, {y}, ctx.askText, {1, kInk2}) + 8;
 
   const int my = L.h - L.gut() - L.minTap;
   fb.fillRoundRect(L.gut(), my, L.w - 2 * L.gut(), L.minTap, L.cardRadius, kTeal);
@@ -1173,17 +1198,17 @@ void drawSetupColumn(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& c
   Layout firstL = colL;
   if (sc.hasQr) firstL.h -= kCaptionH + oneLineCardH + kCardGap;
 
-  int y = drawTextCard(fb, firstL, L.bodyTop(), body, {1, kInk2}, sc.textW) + kCardGap;
+  int y = drawTextCard(fb, firstL, {L.bodyTop(), sc.textW}, body, {1, kInk2}) + kCardGap;
   if (sc.hasQr) {
     const bool showPass = sc.joinScreen && !ctx.apPass.empty();
     fb.label(L.gut(), y, sc.joinScreen ? (showPass ? "network password" : "setup address")
                                        : "QR includes sign-in",
              kInk3);
     y += kCaptionH;
-    y = drawTextCard(fb, colL, y,
+    y = drawTextCard(fb, colL, {y, sc.textW},
                      sc.joinScreen ? (showPass ? ctx.apPass : displayUrl(ctx.setupUrl))
                                    : std::string("Nothing to type."),
-                     {1, kTeal}, sc.textW);
+                     {1, kTeal});
   }
   if (!showCodeBtn) return;
   const int bh = L.minTap;
@@ -1204,14 +1229,14 @@ void drawSetup(Fb565& fb, const Layout& L, Rendered& r, const ScreenCtx& ctx, bo
   if (!config && ctx.modeName && std::string(ctx.modeName) == "notifier") {
     drawHeader(fb, L, r, ctx, {"Setup", true});
     int y = L.bodyTop();
-    y = drawTextCard(fb, L, y,
+    y = drawTextCard(fb, L, {y},
         "Waiting for a Bluetooth connection.\n\nOn your computer, run the "
         "nimbus-notify broker - it finds this device automatically.",
-        {1, kInk2}, 0) + 10;
+        {1, kInk2}) + 10;
     fb.label(L.gut(), y, "device", kInk3);
     y += 14;
-    drawTextCard(fb, L, y, ctx.deviceName.empty() ? std::string("Nimbus") : ctx.deviceName,
-                 {1, kTeal}, 0);
+    drawTextCard(fb, L, {y}, ctx.deviceName.empty() ? std::string("Nimbus") : ctx.deviceName,
+                 {1, kTeal});
     if (!ctx.fwVersion.empty())
       fb.text(L.gut(), L.h - fb.textHeight(1) - 1, ctx.fwVersion, kInk3, 1);
     return;

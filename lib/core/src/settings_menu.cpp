@@ -145,6 +145,8 @@ int SettingsMenu::itemCount() const {
     case State::TuneList:    return visibleParamCount() + 1;       // params (ring-filtered) + Back
     case State::Edit:        return cfg_->hasOverride(editing_) ? 3 : 2;  // value [+clear] +back
     case State::ConfirmReset: return 2;                            // No / Yes
+    case State::ResetPick:    return 3;                            // settings / factory / Back
+    case State::ConfirmFactory: return 2;                          // Cancel / Erase everything
     case State::Connectivity: return kConnRows;                    // Config via QR + Back
     case State::WifiMenu:    return kWifiRows;                     // publish/choose/forget + Back
     // Both pickers always carry a Back row, so an empty list is a way out, not
@@ -340,7 +342,7 @@ void SettingsMenu::onClick() {
           enter(State::Connectivity);
           return;
         case RowReset:
-          enter(State::ConfirmReset);  // defaults to No (row 0)
+          enter(State::ResetPick);     // pick settings-only vs factory reset
           return;
         case RowSelfTest:
           enter(State::SelfTest);   // device runs the health check + renders it full-screen
@@ -645,6 +647,13 @@ void SettingsMenu::onClick() {
       sel_ = RowRestart;
       return;
 
+    case State::ResetPick:
+      if (sel_ == PickSettings) { enter(State::ConfirmReset); return; }    // defaults to Cancel
+      if (sel_ == PickFactory)  { enter(State::ConfirmFactory); return; }  // defaults to Cancel
+      enter(State::Main);   // < Back
+      sel_ = RowReset;
+      return;
+
     case State::ConfirmReset:
       if (sel_ == 1) {  // Yes, clear all
         // The owner pressed a real action - signal it so the device confirms it
@@ -659,9 +668,25 @@ void SettingsMenu::onClick() {
           cfg_->clearAllOverrides();
           dirty_ = true;
         }
+        enter(State::Main);
+        sel_ = RowReset;
+        return;
       }
-      enter(State::Main);
-      sel_ = RowReset;
+      enter(State::ResetPick);  // Cancel: back to the picker's settings row
+      return;
+
+    case State::ConfirmFactory:
+      if (sel_ == 1) {  // Erase everything
+        // The device drains this into the deferred web-reset flow (erase NVS +
+        // the SD memory store, keep the hardware identity, restart into setup),
+        // so the flag is the whole action here - never erase inline in a click
+        // handler.
+        factoryResetRequested_ = true;
+        close();   // the reset UX (progress line + restart) owns the screen now
+        return;
+      }
+      enter(State::ResetPick);  // Cancel
+      sel_ = PickFactory;       // back onto the Factory reset row
       return;
   }
 }
@@ -696,9 +721,16 @@ void SettingsMenu::onLongPress() {
       sel_ = visibleIndexOf(p);   // back onto this param's VISIBLE row (ring-filtered)
       return;
     }
-    case State::ConfirmReset:
+    case State::ResetPick:
       enter(State::Main);
       sel_ = RowReset;
+      return;
+    case State::ConfirmReset:
+      enter(State::ResetPick);
+      return;
+    case State::ConfirmFactory:
+      enter(State::ResetPick);
+      sel_ = PickFactory;   // back onto the Factory reset row
       return;
     case State::ConfirmPowerOff:
       enter(State::Main);
@@ -928,6 +960,18 @@ const char* SettingsMenu::helpText() const {
                "at the cloud portal while you are signed in."
              : "Available in Orchestrator mode. Switch modes, then link this "
                "device to the cloud.";
+  // Reset picker: say up front what each choice keeps and what it erases, so
+  // nobody discovers the difference after pressing it (owner report 2026-09-29:
+  // the old single "Reset to defaults" read as a factory reset but kept Wi-Fi
+  // passwords and paired computers on the board).
+  if (state_ == State::ResetPick) {
+    if (sel_ == PickSettings)
+      return "Returns every setting to its default. Keeps "
+             "Wi-Fi, keys, pairing, and memories.";
+    if (sel_ == PickFactory) return kFactoryResetPickHelp;
+    return "";   // Back row: no pane
+  }
+  if (state_ == State::ConfirmFactory) return kFactoryResetConfirmHelp;
   return "";  // no pane anywhere else (renderer hides it on empty)
 }
 
@@ -952,7 +996,7 @@ void SettingsMenu::view(solide::menu::MenuView& out) const {
       out.items.push_back(std::string("Theme: ") + titleCase(themeAt(theme_)));
       out.items.push_back(std::string("Screensaver: ") + saverText(saverMin_));
       out.items.push_back("Software update >");
-      out.items.push_back("Reset to defaults");
+      out.items.push_back("Reset >");    // ResetPick: settings-only vs factory
       out.items.push_back("Self-test >"); // '>' = opens a screen (menu convention)
       out.items.push_back("Battery >");   // live battery detail full-screen
       out.items.push_back(std::string("SD card: ") + (sdStatus_.empty() ? "?" : sdStatus_));
@@ -1028,10 +1072,23 @@ void SettingsMenu::view(solide::menu::MenuView& out) const {
       return;
     }
 
+    case State::ResetPick:
+      out.title = "Settings > Reset";
+      out.items.push_back("Reset settings");
+      out.items.push_back("Factory reset");
+      out.items.push_back("< Back");
+      return;
+
     case State::ConfirmReset:
-      out.title = "Settings > Reset to defaults?";
+      out.title = "Settings > Reset settings?";
       out.items.push_back("Cancel");
       out.items.push_back("Reset all");
+      return;
+
+    case State::ConfirmFactory:
+      out.title = "Settings > Factory reset?";
+      out.items.push_back("Cancel");
+      out.items.push_back("Erase everything");
       return;
 
     case State::ConfirmPowerOff:

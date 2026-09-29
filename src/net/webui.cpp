@@ -2618,6 +2618,17 @@ void beginWeb(const WebConfig& wc) {
     if (!s_wc.factoryReset) { r->send(501, "application/json", "{\"error\":\"unsupported\"}"); return; }
     // CUM-15: optional combined SD erase in the same flow. Identity is always kept.
     const bool eraseSd = r->hasParam("eraseSd", true) && r->getParam("eraseSd", true)->value() == "1";
+    // Honest pre-check (2026-09-29 review): the deferred erase REFUSES when a
+    // card with memories is unreachable, but this handler replies before the
+    // deferred work runs and the browser then paints its terminal "everything
+    // has been erased" page on ok:true. Refuse HERE instead, before promising
+    // anything. The deferred refusal stays as the backstop for a card pulled
+    // between this check and the drain.
+    if (eraseSd && agent::memory::factoryEraseWouldRefuse()) {
+      r->send(409, "application/json",
+              "{\"error\":\"storage not available - reseat the SD card and try again\"}");
+      return;
+    }
     r->send(200, "application/json", "{\"ok\":true,\"rebooting\":true}");
     s_wc.factoryReset(eraseSd);   // sets the deferred flag; main loop erases NVS + reboots
   });

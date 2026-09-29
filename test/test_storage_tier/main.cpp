@@ -9,6 +9,7 @@
 using agent::memory::TierInputs;
 using agent::memory::TierDecision;
 using agent::memory::decideStorageTier;
+using agent::memory::factoryEraseMustRefuse;
 
 void setUp() {}
 void tearDown() {}
@@ -87,8 +88,25 @@ static void test_full_truth_table() {
       }
 }
 
+// Factory-erase refusal truth table (2026-09-29 review): refuse whenever the
+// memories could survive on a reseatable card the erase cannot reach - the
+// CUM-405 banner state (card absent at boot, evidence of data) OR a store card
+// demoted/pulled since boot. Full 8-case table so a new input cannot ship with
+// only its happy path pinned.
+static void test_factory_erase_refusal_truth_table() {
+  for (int banner = 0; banner <= 1; banner++)
+    for (int onSd = 0; onSd <= 1; onSd++)
+      for (int alive = 0; alive <= 1; alive++) {
+        const bool expect = banner == 1 || (onSd == 1 && alive == 0);
+        TEST_ASSERT_EQUAL_MESSAGE(
+            expect, factoryEraseMustRefuse(banner, onSd, alive),
+            "refuse == sdMissingWithData || (storeOnSd && !storeSdAlive)");
+      }
+}
+
 int main() {
   UNITY_BEGIN();
+  RUN_TEST(test_factory_erase_refusal_truth_table);
   RUN_TEST(test_haveSd_mirrors_mount);
   RUN_TEST(test_mounted_never_banners);
   RUN_TEST(test_prev_seen_banners);

@@ -610,8 +610,8 @@ html.authlock aside.side,html.authlock .pane,html.authlock .mobmode{visibility:h
 <p class=hint style="color:var(--crit)">Reformats the whole card, not only the assistant's data. Use this only if the card looks corrupted. It asks for its own typed confirmation.</p></div>
 <b style="display:block;margin-top:14px;color:var(--crit)">Factory reset</b>
 <div class=row style="margin-top:6px"><button id=factoryReset type=button style="background:rgba(240,104,122,.12);color:var(--crit)">Factory Reset&hellip;</button></div>
-<div class=row style="margin-top:6px"><label><input type=checkbox id=factoryEraseSd> Also erase the SD card</label></div>
-<p class=hint style="color:var(--crit)">Erases <b>everything</b> (Wi-Fi, API keys, the Telegram list, Bluetooth pairings, themes, sound settings, memory, the device name, and the device sign-in code), then restarts into first-time setup as a fresh device. This takes a few seconds, or up to a minute when erasing the card.</p>
+<div class=row style="margin-top:6px"><label><input type=checkbox id=factoryEraseSd> Also erase storage (memories, routines, logs, and the SD card)</label></div>
+<p class=hint style="color:var(--crit)">Erases <b>everything</b> (Wi-Fi, API keys, the Telegram list, Bluetooth pairings, themes, sound settings, the device name, and the device sign-in code), then restarts into first-time setup as a fresh device. With the box checked it also erases every memory, routine, and log, including the SD card. This takes a few seconds, or up to a minute when erasing storage.</p>
 </div>
 </details>
 
@@ -2383,7 +2383,7 @@ function loadConnect(){
       '<img src=/logo.svg style="width:52px;height:52px"><h2 style="margin:14px 0 8px">Device is resetting…</h2>'+
       '<p style="color:var(--ink2);line-height:1.5">Everything has been erased and the device is restarting into first-time setup. '+
       'Reconnect to its <b>&ldquo;…-setup&rdquo;</b> Wi-Fi network to run the setup wizard.</p></div>';
-  }).catch(()=>toast('Reset failed - try again'));});};
+  }).catch(st=>toast(st===409?'Couldn\'t erase - reseat the SD card':'Reset failed - try again'));});};
 })();
 // Restart (CUM-270): styled confirm, POST /api/restart (token-gated, deferred on
 // the device to the main task), then an honest interstitial that polls /api/state

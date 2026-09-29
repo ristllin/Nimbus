@@ -66,6 +66,60 @@ static bool sameState(const SettingsMenu& a, const SettingsMenu& b) {
          va.items == vb.items && va.selected == vb.selected;
 }
 
+// 2026-09-29 review (HIGH): the picker's "Factory reset" row and the confirm's
+// "Erase everything" row occupy the IDENTICAL panel rectangle, and a tap folds
+// cursor-move + click into one gesture - so a doubled or bounced tap on one
+// spot erased the device straight past the defaults-to-Cancel guard. The
+// destructive row is ARMED now: a tap on it while unselected only selects it;
+// only a tap on the already-selected row fires. This drives the exact attack:
+// the same pixel, tapped twice, through the real renderer and hit-test.
+static void test_double_tap_cannot_fire_factory_reset() {
+  Config cfg;
+  SettingsMenu menu(cfg);
+  menu.open();
+  while (menu.selected() != 8) menu.onRotate(+1);   // Main > Reset row
+  menu.onClick();                                   // -> ResetPick
+  Fb565 fb;
+
+  // First tap: the "Factory reset" picker row (index 1).
+  Rendered r = renderMenuNow(fb, menu);
+  const TapRegion* pick = rowRegion(r, 1);
+  TEST_ASSERT_NOT_NULL(pick);
+  const int px = pick->x + pick->w / 2, py = pick->y + pick->h / 2;
+  TEST_ASSERT_TRUE(applyMenuTap(menu, *r.hit(px, py)));
+  TEST_ASSERT_TRUE(menu.view().title.find("Factory reset?") != std::string::npos);
+
+  // Second tap, SAME pixel, against the fresh confirm screen: it resolves to
+  // "Erase everything" (row 1) but must only ARM it - select, not fire.
+  r = renderMenuNow(fb, menu);
+  const TapRegion* hit2 = r.hit(px, py);
+  TEST_ASSERT_NOT_NULL(hit2);
+  TEST_ASSERT_EQUAL_INT(1, hit2->index);
+  TEST_ASSERT_TRUE(applyMenuTap(menu, *hit2));      // handled: cursor moved
+  TEST_ASSERT_FALSE(menu.factoryResetRequested());  // but nothing fired
+  TEST_ASSERT_TRUE(menu.isOpen());
+  TEST_ASSERT_EQUAL_INT(1, menu.selected());        // armed: cursor shows intent
+
+  // Third tap on the now-selected row is a deliberate second touch: it fires.
+  r = renderMenuNow(fb, menu);
+  TEST_ASSERT_TRUE(applyMenuTap(menu, *r.hit(px, py)));
+  TEST_ASSERT_TRUE(menu.factoryResetRequested());
+  TEST_ASSERT_FALSE(menu.isOpen());
+  menu.clearFactoryResetRequest();
+
+  // The encoder path is untouched: rotate onto the row and click fires at once.
+  Config cfg2;
+  SettingsMenu knob(cfg2);
+  knob.open();
+  while (knob.selected() != 8) knob.onRotate(+1);
+  knob.onClick();               // picker
+  knob.onRotate(+1);            // -> Factory reset
+  knob.onClick();               // confirm (Cancel selected)
+  knob.onRotate(+1);            // -> Erase everything
+  knob.onClick();
+  TEST_ASSERT_TRUE(knob.factoryResetRequested());
+}
+
 static void test_tap_matches_the_knob() {
   Config cfg;
   SettingsMenu menu(cfg);
@@ -358,6 +412,7 @@ static void test_setup_code_card_opens_the_enlarged_code_and_returns() {
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_tap_matches_the_knob);
+  RUN_TEST(test_double_tap_cannot_fire_factory_reset);
   RUN_TEST(test_every_visible_row_matches_the_knob);
   RUN_TEST(test_back_leaves_the_menu);
   RUN_TEST(test_stepper_adjusts_a_captured_value_and_commits);

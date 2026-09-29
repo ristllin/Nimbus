@@ -10,6 +10,7 @@
 #include "nimbus/tft_render/fb565.h"
 #include "nimbus/tft_render/screens.h"
 #include "nimbus/device_identity.h"   // wifiQrPayload - the join QR carried by the setup screens
+#include "nimbus/settings_menu.h"     // driven menu fixtures: pinned screens carry the SHIPPED copy
 
 // Golden-image + tap-region matrix for the COLOUR TOUCH UI (the old raster suite is
 // test_golden and stays untouched).
@@ -216,8 +217,23 @@ static ScreenCtx menuCtx() {
   // draw a right chevron. Toggle/cycle/action rows remain tappable without one.
   c.menuItems = {"Mode", "Battery mode", "Customize >", "Connectivity >",
                  "Sound >", "Theme", "Screensaver", "Software update >",
-                 "Reset to defaults", "Self-test >", "Battery >", "SD card", "Close"};
+                 "Reset >", "Self-test >", "Battery >", "SD card", "Close"};
   c.menuSelected = 4;
+  return c;
+}
+
+// Menu-screen fixtures DRIVEN through the real SettingsMenu FSM, never
+// hand-copied strings, so a pinned screen cannot drift from the shipped copy
+// (2026-09-29 review: the factory warning briefly existed as three hand-synced
+// copies). The ctx carries exactly what main.cpp feeds the renderer: view()
+// for title/items/cursor, helpText() for the pane.
+static ScreenCtx menuCtxFrom(const nimbus::SettingsMenu& m) {
+  ScreenCtx c = baseCtx();
+  const auto v = m.view();
+  c.menuTitle = v.title;
+  c.menuItems = v.items;
+  c.menuSelected = v.selected;
+  c.menuHelp = m.helpText();
   return c;
 }
 
@@ -296,6 +312,49 @@ static void test_status_ring() {
 }
 static void test_menu_main()      { golden("menu_main", ScreenId::Menu, menuCtx()); }
 static void test_menu_stepper()   { golden("menu_stepper", ScreenId::Menu, stepperCtx()); }
+// The four destructive confirms, each with its help pane. The factory one is
+// the owner-facing warning ("Erase everything" + what it erases); the other
+// three gained their pane when list-mode help became visible on glass, so they
+// are pinned here with eyes-on blessing like every other golden.
+static void test_menu_factory_confirm() {
+  nimbus::Config cfg;
+  nimbus::SettingsMenu m(cfg);
+  m.open();
+  while (m.view().selected != 8) m.onRotate(+1);   // Main > Reset
+  m.onClick();                                     // picker
+  m.onRotate(+1);                                  // Factory reset
+  m.onClick();                                     // its confirm (Cancel default)
+  golden("menu_factory_confirm", ScreenId::Menu, menuCtxFrom(m));
+}
+static void test_menu_confirm_restart() {
+  nimbus::Config cfg;
+  nimbus::SettingsMenu m(cfg);
+  m.open();
+  const int n = int(m.view().items.size());
+  while (m.view().selected != n - 4) m.onRotate(+1);   // Restart (tail-relative)
+  m.onClick();
+  golden("menu_confirm_restart", ScreenId::Menu, menuCtxFrom(m));
+}
+static void test_menu_confirm_poweroff() {
+  nimbus::Config cfg;
+  nimbus::SettingsMenu m(cfg);
+  m.open();
+  const int n = int(m.view().items.size());
+  while (m.view().selected != n - 3) m.onRotate(+1);   // Power off (tail-relative)
+  m.onClick();
+  golden("menu_confirm_poweroff", ScreenId::Menu, menuCtxFrom(m));
+}
+static void test_menu_confirm_install() {
+  nimbus::Config cfg;
+  nimbus::SettingsMenu m(cfg);
+  m.setUpdateAvailable("v9.9.9");
+  m.open();
+  while (m.view().selected != 7) m.onRotate(+1);   // Software update
+  m.onClick();
+  for (int i = 0; i < 3; i++) m.onRotate(+1);      // Auto, USB confirm, Check -> Install
+  m.onClick();                                     // ConfirmInstall
+  golden("menu_confirm_install", ScreenId::Menu, menuCtxFrom(m));
+}
 static ScreenCtx updateCtx() {
   ScreenCtx c = baseCtx();
   c.menuTitle = "Settings > Software update";
@@ -1087,6 +1146,10 @@ int main() {
   RUN_TEST(test_status_jobs);
   RUN_TEST(test_status_ring);
   RUN_TEST(test_menu_main);
+  RUN_TEST(test_menu_factory_confirm);
+  RUN_TEST(test_menu_confirm_restart);
+  RUN_TEST(test_menu_confirm_poweroff);
+  RUN_TEST(test_menu_confirm_install);
   RUN_TEST(test_menu_stepper);
   RUN_TEST(test_menu_update_checking);
   RUN_TEST(test_menu_update_available);

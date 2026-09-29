@@ -25,6 +25,12 @@ bool applyMenuTap(SettingsMenu& menu, const TapRegion& tap) {
       // converges without wrapping, so rowCount() steps is a sufficient bound.
       const int rows = menu.rowCount();
       if (rows <= 0 || tap.index >= rows) return false;
+      // Armed rows fire on the SECOND tap only. ConfirmFactory's destructive
+      // row shares its panel rectangle with the picker row that opened the
+      // screen, so the move+click fold below would let one doubled/bounced tap
+      // erase the device past the defaults-to-Cancel guard. Capture whether
+      // the cursor already sat on the target BEFORE converging.
+      const bool wasOnRow = menu.selected() == tap.index;
       int guard = 0;
       while (menu.selected() != tap.index && guard++ <= rows)
         menu.onRotate(menu.selected() < tap.index ? +1 : -1);
@@ -32,6 +38,8 @@ bool applyMenuTap(SettingsMenu& menu, const TapRegion& tap) {
       // changed state under the tap), do nothing: activating whatever row the
       // cursor happens to sit on is worse than ignoring the tap.
       if (menu.selected() != tap.index) return false;
+      if (!wasOnRow && menu.tapArmRequired(tap.index))
+        return true;   // first tap arms: cursor now on the row, repaint shows it
       menu.onClick();
       return true;
     }

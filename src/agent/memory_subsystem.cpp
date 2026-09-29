@@ -191,10 +191,80 @@ bool eraseDurableStore() {
   g_archive.flushAll();   // drop the cold store too (the /mem tree wipe removes its blob)
   g_scratch.clearAll();
   const char* root = g_haveSd ? "/mem" : "/data";
-  bool ok = rmTree(*g_fs, root);
+  const bool ok = !g_fs->exists(root) || rmTree(*g_fs, root);
   g_fs->mkdir(root);   // recreate the empty parent so post-reboot persists work
   alogf("memory: durable store erased (%s) ok=%d", root, (int)ok);
-  return true;   // wiped (caller reboots to an empty store); rmTree completeness logged
+  // A partial wipe must not read as clean (2026-09-29 review): the caller
+  // refuses the reset instead of rebooting a device that claims factory-fresh
+  // while deletable data survived. An absent root counts as already-erased.
+  return ok;
+}
+
+// Erase helpers that treat "was never there" as success: rmTree()/remove()
+// return false for an absent path, and the factory sweep must only fail when
+// data that EXISTS could not be deleted.
+static bool rmTreeIfPresent(fs::FS& fs, const char* path) {
+  return !fs.exists(path) || rmTree(fs, String(path));
+}
+static bool removeIfPresent(fs::FS& fs, const char* path) {
+  return !fs.exists(path) || fs.remove(path);
+}
+
+bool factoryEraseWouldRefuse() {
+  // Pure truth table in storage_tier.h (host-tested); this feeds it live state.
+  return factoryEraseMustRefuse(g_sdMissing, g_haveSd, effHaveSd());
+}
+
+bool eraseAllPrivateData() {
+  // Adopt the live card routing before deciding anything: setDataFs() runs in
+  // BOTH modes at boot, but g_haveSd is only resolved in begin(), which runs
+  // Orchestrator-web-only. Without this a Notifier-mode factory reset erased
+  // SD:/data (nothing) and left SD:/mem intact while reporting success
+  // (2026-09-29 review, HIGH).
+  if (!g_haveSd && g_fs != &LittleFS) g_haveSd = true;
+  // Refuse while the memories could survive on a reseatable card this erase
+  // cannot reach: no card mounted this boot but evidence a card holds data
+  // (the CUM-405 banner predicate), or the store's card demoted/pulled since
+  // boot. The caller aborts the whole reset and tells the owner to reseat.
+  if (factoryEraseWouldRefuse()) {
+    alog("memory: factory erase refused - memories on an unreachable card");
+    return false;
+  }
+  // The store next: its erase can also be refused, and a refusal must abort
+  // the whole reset before anything else is half-erased.
+  if (!eraseDurableStore()) return false;
+  // LittleFS /data survives eraseDurableStore whenever the store lives on SD. It
+  // holds the RBAC table (tenants.txt - the old owner's Admin row), chat summaries
+  // and per-chat memory (chatsum.txt/orchmem.txt), routines (loops.json), usage
+  // history, and the legacy pre-SD memory blobs (orchvec.bin/episodic.bin) whose
+  // survival makes the migration path re-import the "erased" memories into the
+  // empty card on the next boot.
+  bool ok = rmTreeIfPresent(LittleFS, "/data");
+  LittleFS.mkdir("/data");
+  // Loose private files outside any tree: the last push-to-talk recording, the
+  // last spoken reply / TTS audio (both formats: the test-console SPKSAY writes
+  // /tts.wav on WAV providers), and Telegram staging a crash can strand.
+  static const char* kLoosePrivate[] = {"/voice.pcm", "/reply.wav", "/reply.mp3",
+                                        "/tts.mp3", "/tts.wav"};
+  for (const char* p : kLoosePrivate) ok = removeIfPresent(LittleFS, p) && ok;
+  ok = rmTreeIfPresent(LittleFS, "/audio") && ok;   // tgvoice.ogg / tgattach.bin staging
+  // Durable logs carry sender names, chat ids, and message/transcript snippets -
+  // wipe the /log tree on BOTH tiers (errlog writes to SD when present, else
+  // LittleFS; a device that changed tiers can have both).
+  ok = rmTreeIfPresent(LittleFS, "/log") && ok;
+  if (g_haveSd && effHaveSd()) {
+    ok = rmTreeIfPresent(*g_fs, "/log") && ok;
+    ok = rmTreeIfPresent(*g_fs, "/music") && ok;    // owner-uploaded music
+    ok = rmTreeIfPresent(*g_fs, "/memory") && ok;   // solide settings mirror (nimbus_cfg.bin)
+  }
+  if (!ok) {
+    // A delete failed on data that exists. Same contract as the refusals above:
+    // never reboot a device that reads factory-fresh while private data survived.
+    alog("memory: factory sweep INCOMPLETE - a delete failed; reset aborted");
+    return false;
+  }
+  alog("memory: factory sweep done (data/audio/log cleared)");
+  return true;
 }
 
 void lock()   { if (g_memMux) xSemaphoreTakeRecursive(g_memMux, portMAX_DELAY); }
