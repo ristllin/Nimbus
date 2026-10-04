@@ -46,20 +46,26 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # platformio.ini consumes ../solide-drivers via symlink:// - recreate the
-      # sibling-repo layout inside the workspace.
-      - uses: actions/checkout@v4
+      # sibling-repo layout inside the workspace. Pinned like every step in this job
+      # (it signs with OTA_SIGNING_KEY and publishes with RELEASE_PAT; a mutable tag
+      # would run unreviewed code with those secrets in scope). Nothing pushes through
+      # this checkout (the webflash publish does its own git init + RELEASE_PAT), so
+      # do not leave the job token in .git/config.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0 (pinned SHA)
         with:
           path: Nimbus
           fetch-depth: 0   # tools/git_version.py needs `git describe --tags`
+          persist-credentials: false
 
       # solide-drivers is public - plain checkout, pinned to the validated release.
       # RELEASE_PAT now needs only: nimbus-fw-releases = Contents:write (publish
       # the release there); the default github.token is scoped to THIS repo only.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0 (pinned SHA)
         with:
           repository: ristllin/solide-drivers
           ref: fc03b8dc3fbe00e3258ffeb8e145a28308f532b5   # solide-drivers v0.5.1 (freenove CYD) - pin the SHA, a tag is mutable
           path: solide-drivers
+          persist-credentials: false
 
       # RELEASE GATE (CUM-174 #6): refuse to build/publish on a known white-screen
       # driver pin (CUM-167). Fast, no toolchain - fails the release before the
@@ -84,12 +90,12 @@ jobs:
         working-directory: Nimbus
         run: python3 tools/release_gate/check_config_mapping.py
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0 (pinned SHA)
         with:
           path: ~/.platformio
           key: pio-${{ runner.os }}-${{ hashFiles('Nimbus/platformio.ini') }}
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0 (pinned SHA)
         with:
           python-version: '3.12'
 
