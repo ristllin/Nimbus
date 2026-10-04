@@ -275,8 +275,9 @@ Mistral turns.
   limit (for Mistral Studio connectors, "it resets at midnight UTC"), a plan
   that allows no requests of that kind ("waiting won't help"), or a spent
   quota ("check the plan and billing"). When the provider does not say, the
-  reply makes no promise about when. A Virtual Nimbus does not read the
-  rate-limit headers yet, so there only the error text can name the window.
+  reply makes no promise about when. A Virtual Nimbus reads the same headers.
+  A sub-agent the provider refuses at start says only that it couldn't start
+  on that provider; it does not name the window yet.
 - **Keep it to about 2 enabled Mistral connectors at a time.** One or two work
   reliably (proven: GitHub returned a live issue count, Gmail a live unread
   count). Enabling around 4 at once made the Conversations response come back
