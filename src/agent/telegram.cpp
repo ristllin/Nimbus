@@ -19,6 +19,7 @@
 #include "agent_config.h"
 #include "store.h"
 #include "../sys/agent_log.h"
+#include <esp_task_wdt.h>       // quiesce() feeds the main-task WDT while it waits
 #include "memory_subsystem.h"   // captureMediaFile - durable voice-note sidecar
 #include "adapters/image_vision.h"   // a photo enters the conversation as words
 #include "files_subsystem.h"        // per-sender storage limit, checked pre-download
@@ -255,7 +256,12 @@ static bool localTurnWaiting() {
 static void idlePause(uint32_t pauseMs) {
   const uint32_t start = millis();
   for (;;) {
-    const uint32_t ms = nimbus::net::tgIdleSleepMs(localTurnWaiting(), millis() - start, pauseMs);
+    // A quiesce request (!g_running) ends the pause exactly like a waiting
+    // local turn: both mean "stop idling, let the loop come around" - the loop
+    // top then exits on g_running. Without this the factory-reset quiesce only
+    // ever joined an idle task by luck (release-gate verifier, 2026-10-04).
+    const uint32_t ms = nimbus::net::tgIdleSleepMs(localTurnWaiting() || !g_running,
+                                                   millis() - start, pauseMs);
     if (ms == 0) return;
     vTaskDelay(pdMS_TO_TICKS(ms));
   }
@@ -703,9 +709,13 @@ static int readPollBodyOrDefer(long contentLen, uint32_t deadline, bool& serverC
 static nimbus::net::TgWait awaitPollResponse(uint32_t deadline, int timeoutS) {
   for (;;) {
     const bool bytes = g_pollSc.available() > 0;
+    // !g_running rides the local-turn input: a quiesce ends the long-poll wait
+    // through the same GiveUp path as a waiting turn (socket closed, offset
+    // uncommitted - Telegram re-sends; nothing is lost), instead of sitting out
+    // up to 30s of getUpdates while the factory reset waits.
     const nimbus::net::TgWait w = nimbus::net::tgWaitStep(
         bytes, bytes || g_pollSc.connected(), (int32_t)(millis() - deadline) >= 0,
-        localTurnWaiting(), timeoutS);
+        localTurnWaiting() || !g_running, timeoutS);
     if (w != nimbus::net::TgWait::Keep) return w;
     vTaskDelay(1);
   }
@@ -1703,11 +1713,14 @@ void stop() {
 }
 
 bool quiesce(uint32_t timeoutMs) {
-  g_running = false;   // every wait in the loop is <=50ms sliced (CUM-462), so an
-                       // IDLE task notices fast; a turn mid-flight holds it longer
+  g_running = false;   // idlePause AND the long-poll wait end on this (the GiveUp
+                       // path), so an idle task - token or not - joins within a
+                       // slice or two; only a turn mid-provider-call holds it.
   const uint32_t t0 = millis();
   while (g_task != nullptr) {
     if (millis() - t0 >= timeoutMs) break;
+    esp_task_wdt_reset();   // this runs ON the watchdog'd main task: a 7s wait
+                            // without feeding starved the 8s loop WDT (verifier)
     vTaskDelay(pdMS_TO_TICKS(50));
   }
   return g_task == nullptr;

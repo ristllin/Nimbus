@@ -51,6 +51,11 @@ bool      eraseAllPrivateData();
 // demoted/pulled since boot. The web handler pre-checks this so the browser
 // never paints "everything erased" over a refusal.
 bool      factoryEraseWouldRefuse();
+// The last word before the post-erase restart: re-sweeps every sidecar tree a
+// writer could have repopulated past the quiesce timeout (trace dossiers,
+// usage, loops, TTS/staging audio, the safety log's /log). Best-effort mop -
+// the NVS erase has already happened, so a failure is logged, never refused.
+bool      finalSweepPass();
 
 // Load config + persisted state, bind the embedder, register tools. Safe to call
 // once from setup() in either mode (Notifier can still browse an existing store).

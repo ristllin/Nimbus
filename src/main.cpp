@@ -5154,11 +5154,13 @@ void loop() {
       // orch_persist, errlog_fs and memory_subsystem hold the line), and the
       // durable-log suspension keeps /log from being reborn mid-sweep.
       //
-      // This branch: a delete FAILED on existing data mid-sweep. Honest copy
-      // (not the reseat line - reseating cannot fix an internal-flash delete);
-      // durable logs come back on, the poll task stays down (the memory
-      // barrier refuses persists for the rest of this boot anyway) until the
-      // owner retries or restarts.
+      // This branch: the erase returned false past the cheap check. Honest
+      // copy (not the reseat line - reseating cannot fix an internal-flash
+      // delete); durable logs come back on, the poll task stays down until
+      // the owner retries or restarts. The memory barrier is up whenever the
+      // store erase began; the one sub-path where it is not (the store
+      // refused before any delete - a card demoted during the quiesce) erased
+      // nothing at all, which is equally safe.
       nimbus::errlog::setSuspended(false);
       g_factoryEraseSd = false;
       Serial.println("FACTORY RESET failed mid-sweep -> a delete failed on existing data");
@@ -5168,12 +5170,16 @@ void loop() {
       emitMenuActionFeedback(nimbus::action::MenuAction::Reset,
                              nimbus::action::Outcome::Failed);   // error tone
     } else {
+      esp_task_wdt_reset();   // the sweep + a timed-out quiesce can near the 8s budget
       factoryResetPreserveIdentity();   // wipes NVS, keeps ONLY the hardware identity
+      esp_task_wdt_reset();   // a 5-sector NVS erase + 64KB coredump erase cost ~0.5s
 #if __has_include(<esp_core_dump.h>)
       // A crash dump captures task stacks, which can hold keys or message text in
       // transit; a factory-fresh device must not carry one from its previous owner.
       esp_core_dump_image_erase();      // best-effort; absent/blank partition is fine
 #endif
+      if (g_factoryEraseSd && !agent::memory::finalSweepPass())
+        Serial.println("FACTORY RESET: final mop pass incomplete (see finalSweepPass)");
       delay(50);
       ESP.restart();
     }

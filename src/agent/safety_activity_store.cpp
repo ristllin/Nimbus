@@ -77,6 +77,10 @@ std::string readWhole(const char* path) {
 // newest-first so any lost tail is the OLDEST entries. A direct truncate avoids the
 // remove-before-rename window the codebase warns against (orch_persist.cpp).
 void writeWhole(const char* path, const std::string& blob) {
+  // Factory-sweep barrier: this writer recreates /log directly through the
+  // errlog tier, BYPASSING errlog's own suspension - a moderation verdict
+  // landing mid-sweep would resurrect the log tree (release-gate verifier).
+  if (agent::memory::erasing()) return;
   ::fs::FS& fs = nimbus::errlog::activeFs();
   fs.mkdir(nimbus::errlog::kDir);   // idempotent; neither FS auto-creates /log
   ::File f = fs.open(path, FILE_WRITE);

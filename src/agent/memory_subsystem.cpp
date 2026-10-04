@@ -215,6 +215,47 @@ bool factoryEraseWouldRefuse() {
   return factoryEraseMustRefuse(g_sdMissing, g_haveSd, effHaveSd());
 }
 
+// The sidecar sweep, shared by eraseAllPrivateData and the pre-restart mop
+// (finalSweepPass): LittleFS /data, loose audio, /audio, /log on both tiers,
+// SD /music + settings mirror. Absent paths count as erased.
+static bool sweepSidecars() {
+  bool ok = rmTreeIfPresent(LittleFS, "/data");
+  LittleFS.mkdir("/data");
+  // Loose private files outside any tree: the last push-to-talk recording, the
+  // last spoken reply / TTS audio (both formats: the test-console SPKSAY writes
+  // /tts.wav on WAV providers), and Telegram staging a crash can strand.
+  static const char* kLoosePrivate[] = {"/voice.pcm", "/reply.wav", "/reply.mp3",
+                                        "/tts.mp3", "/tts.wav"};
+  for (const char* p : kLoosePrivate) ok = removeIfPresent(LittleFS, p) && ok;
+  ok = rmTreeIfPresent(LittleFS, "/audio") && ok;   // tgvoice.ogg / tgattach.bin staging
+  // Durable logs carry sender names, chat ids, and message/transcript snippets -
+  // wipe the /log tree on BOTH tiers (errlog writes to SD when present, else
+  // LittleFS; a device that changed tiers can have both).
+  ok = rmTreeIfPresent(LittleFS, "/log") && ok;
+  if (g_haveSd && effHaveSd()) {
+    ok = rmTreeIfPresent(*g_fs, "/log") && ok;
+    ok = rmTreeIfPresent(*g_fs, "/music") && ok;    // owner-uploaded music
+    ok = rmTreeIfPresent(*g_fs, "/memory") && ok;   // solide settings mirror (nimbus_cfg.bin)
+  }
+  return ok;
+}
+
+bool finalSweepPass() {
+  // The last word before ESP.restart() (release-gate verifier, 2026-10-04): any
+  // writer that slipped the quiesce timeout and the erasing() barriers (trace
+  // dossiers, usage history, loops, TTS files, staging audio, the safety log)
+  // wrote into trees this pass now erases AGAIN, milliseconds before the
+  // restart. Best-effort by design - the primary guarantee is quiesce+barriers;
+  // a false here is loudly Serial-logged by the caller but cannot refuse (the
+  // NVS erase has already happened).
+  esp_task_wdt_reset();
+  bool ok = sweepSidecars();
+  // writeTraceFile uses dataFs() + "/mem/trace" on BOTH tiers (kTraceDir), so
+  // the mop targets the same: g_fs IS dataFs().
+  ok = rmTreeIfPresent(*g_fs, "/mem/trace") && ok;
+  return ok;
+}
+
 bool eraseAllPrivateData() {
   // Adopt the live card routing before deciding anything: setDataFs() runs in
   // BOTH modes at boot, but g_haveSd is only resolved in begin(), which runs
@@ -239,24 +280,8 @@ bool eraseAllPrivateData() {
   // history, and the legacy pre-SD memory blobs (orchvec.bin/episodic.bin) whose
   // survival makes the migration path re-import the "erased" memories into the
   // empty card on the next boot.
-  bool ok = rmTreeIfPresent(LittleFS, "/data");
-  LittleFS.mkdir("/data");
-  // Loose private files outside any tree: the last push-to-talk recording, the
-  // last spoken reply / TTS audio (both formats: the test-console SPKSAY writes
-  // /tts.wav on WAV providers), and Telegram staging a crash can strand.
-  static const char* kLoosePrivate[] = {"/voice.pcm", "/reply.wav", "/reply.mp3",
-                                        "/tts.mp3", "/tts.wav"};
-  for (const char* p : kLoosePrivate) ok = removeIfPresent(LittleFS, p) && ok;
-  ok = rmTreeIfPresent(LittleFS, "/audio") && ok;   // tgvoice.ogg / tgattach.bin staging
-  // Durable logs carry sender names, chat ids, and message/transcript snippets -
-  // wipe the /log tree on BOTH tiers (errlog writes to SD when present, else
-  // LittleFS; a device that changed tiers can have both).
-  ok = rmTreeIfPresent(LittleFS, "/log") && ok;
-  if (g_haveSd && effHaveSd()) {
-    ok = rmTreeIfPresent(*g_fs, "/log") && ok;
-    ok = rmTreeIfPresent(*g_fs, "/music") && ok;    // owner-uploaded music
-    ok = rmTreeIfPresent(*g_fs, "/memory") && ok;   // solide settings mirror (nimbus_cfg.bin)
-  }
+  esp_task_wdt_reset();   // the quiesce may have spent most of the loop budget
+  bool ok = sweepSidecars();
   if (!ok) {
     // A delete failed on data that exists. Same contract as the refusals above:
     // never reboot a device that reads factory-fresh while private data survived.
@@ -1584,6 +1609,10 @@ static void traceRingPrune() {
 }
 
 bool writeTraceFile(const String& turnId, const char* buf, size_t len) {
+  // Factory-sweep barrier: the dossier writer RECREATES /mem/trace itself, so a
+  // turn finishing after the quiesce timeout would hand the next owner its last
+  // conversation trace (release-gate verifier, 2026-10-04).
+  if (g_erasing) return false;
   if (!traceActive() || !buf || !len || !validTurnId(turnId)) return false;
   fs::FS& fsd = dataFs();
   fsd.mkdir(kTraceDir);
