@@ -137,6 +137,7 @@ FabricErr customDispatch(const ProviderDeps& pd, const Directive& d, char outJob
   int code = custRequest(pd, "POST", path, std::move(body), anthropic, doc, filter);
   if (code == 401 || code == 403) return FabricErr::Auth;
   if (code <= 0)                  return FabricErr::Network;
+  if (code == 429) return wire::rateLimitedByText(d, "custom", doc["error"]["message"] | "");
   if (code != 200)               { hlog::logf("custom: HTTP %d", code); return FabricErr::RemoteFail; }
 
   std::string reply = anthropic ? std::string((const char*)(doc["content"][0]["text"] | ""))

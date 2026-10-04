@@ -8,6 +8,7 @@
 //
 //   (a) Mistral spawn end to end, driven by the real EngineThread pump;
 //   (b) a spawn on an unkeyed provider says so (no silent drop);
+//   (b2) a spawn the provider refuses with a 429 names the quota window (CUM-465);
 //   (c) the durable journal re-attaches an unfinished job after a restart;
 //   (d) background engine work is not a turn: a web write queued behind it is
 //       applied, not refused busy;
@@ -30,6 +31,7 @@
 
 #include "../../test/support/fake_http.h"
 #include "engine_thread.h"
+#include "nimbus/harness/rate_limit.h"
 #include "reply_buffer.h"
 #include "rig.h"
 #include "sub_fabric.h"
@@ -87,6 +89,12 @@ struct Inbox {
   void push(const std::string& t) {
     std::lock_guard<std::mutex> lk(mu);
     msgs.push_back(t);
+  }
+  std::string find(const std::string& needle) {   // the first message containing it
+    std::lock_guard<std::mutex> lk(mu);
+    for (const auto& m : msgs)
+      if (has(m, needle)) return m;
+    return std::string();
   }
   bool waitFor(const std::string& needle, int ms) {
     for (int i = 0; i < ms / 20; i++) {
@@ -179,6 +187,49 @@ static void testUnkeyedSpawnSaysSo(ndtest::Ctx& c) {
        "the unkeyed openai spawn is reported, not dropped");
   eng.stop();
   c.eqi((long)tx.seen.size(), 1, "no request was sent to the unkeyed provider");
+  clearEnv();
+}
+
+// (b2) CUM-465: a sub the provider refuses with a 429 names the quota window. The
+// measured case: a spent daily Studio connector quota refuses the Mistral sub's
+// Conversations call, and only the x-ratelimit-* headers say it was the day.
+static void testSpawn429NamesTheWindow(ndtest::Ctx& c) {
+  std::printf("  -- (b2) a spawn refused by a spent daily connector quota names the window --\n");
+  clearEnv();
+  FakeHttpTransport tx;
+  tx.script.push_back(headTurn(
+      "{\"reply\":\"Checking your calendar.\",\"memory\":\"\",\"ask\":\"\",\"session_ops\":[{\"op\":\"spawn\","
+      "\"id\":null,\"task\":\"List every event on my calendar today\",\"provider\":\"mistral\","
+      "\"model\":null,\"skill\":\"gcal\"}]}"));
+  Exchange sub;
+  sub.expectHost = "api.mistral.ai";
+  sub.expectPathContains = "/v1/conversations";
+  sub.status = 429;
+  sub.body = "{\"detail\":\"Custom connector rate limit reached.\"}";
+  sub.headers = {{"x-ratelimit-limit-custom-day", "50"}, {"x-ratelimit-remaining-custom-day", "0"}};
+  tx.script.push_back(sub);
+  Config cfg;
+  NimbusdRig rig(cfg, opts("fab-b2"), &tx);
+  rig.applyProviderKey("mistral", "mk_TEST_FAB_B2");
+  c.eq(rig.connectors().replaceBlob(kGcal), "", "a gcal Studio connector is configured");
+  Inbox inbox;
+  rig.setDeliver([&inbox](const std::string&, const std::string& t) { inbox.push(t); });
+  EngineThread eng(&rig);
+  eng.start();
+  eng.postMessage("web", "What is on my calendar today?");
+  const bool refused = inbox.waitFor("Couldn't start that agent on mistral.", 8000);
+  eng.stop();
+  c.ok(refused, "the refused spawn is reported, not dropped");
+  c.eq(inbox.find("Couldn't start that agent on mistral."),
+       std::string("Couldn't start that agent on mistral. ") +
+           agent::rateLimitReply(agent::RateLimit::DailyUtc),
+       "the refusal names the daily window, worded as a head-turn 429");
+  c.eqi((long)tx.seen.size(), 2, "two provider calls: the head turn and the refused sub");
+  if (tx.seen.size() >= 2) {
+    const char* asked = tx.seen[1].errHeaderPrefix;
+    c.eq(asked ? asked : "(none)", "x-ratelimit", "the sub asked for the quota headers");
+  }
+  c.eqi(rig.jobs().activeCount(), 0, "nothing journaled for the refused spawn");
   clearEnv();
 }
 
@@ -505,6 +556,7 @@ int main() {
   std::printf("=== %s ===\n", c.suite);
   testMistralSpawnEndToEnd(c);
   testUnkeyedSpawnSaysSo(c);
+  testSpawn429NamesTheWindow(c);
   testJournalReattaches(c);
   testBackgroundWorkIsNotATurn(c);
   testRebuildKeepsJobs(c);

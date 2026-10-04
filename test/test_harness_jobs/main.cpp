@@ -2,18 +2,23 @@
 
 #include <map>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
 
 #include "../support/fake_fabric.h"
 #include "../support/fake_platform.h"
+#include "../support/fake_provider_deps.h"
 #include "nimbus/harness/jobs.h"
+#include "nimbus/harness/providers.h"
+#include "nimbus/harness/rate_limit.h"
 #include "nimbus/orch/journal.h"
 
 // Stage F suite - the sub-agent job machinery, host-tested for the first time:
 // the one-dispatch-per-cycle gate (+2500/+1500 timers), the job-limit and
-// keyless-provider refusals, model coercion, the round-robin poll lifecycle
+// keyless-provider refusals, a 429 refusal naming its quota window (CUM-465),
+// model coercion, the round-robin poll lifecycle
 // (Running -> Done fresh-parking, Error/NotFound delivery, transient backoff
 // doubling + reset), the reap scheduler (Done grace vs Error attn-hold), the
 // per-completion synthesis clock (coalesce + stuck fallback), reboot re-attach
@@ -563,6 +568,99 @@ static void test_transient_backoff_doubles_then_resets() {
   TEST_ASSERT_EQUAL(3, r.adapter.pollCount);
 }
 
+// ---- spawn refused with a 429 (CUM-465 part 3) -------------------------------
+// The real Mistral sub-session wire behind the fabric: the call the device's
+// MistralAdapter and a Virtual Nimbus SubAdapter both make. So the quota window
+// travels the whole path the owner depends on: the provider's x-ratelimit-*
+// headers -> mistralDispatch -> JobEngine -> the refusal copy.
+struct WireMistral : agent::ManagedAgentAdapter {
+  harness_test::FakeProviderDeps fake;
+  agent::providers::ProviderDeps pd = fake.contract();   // lambdas bind `fake`: never copy
+  const char* backendId() const override { return "mistral"; }
+  agent::Capabilities capabilities() const override { return {}; }
+  agent::FabricErr dispatch(const agent::Directive& d, char out[72]) override {
+    return agent::providers::mistralDispatch(pd, "mistral-small-latest", d, out);
+  }
+  agent::FabricErr poll(const char* id, agent::ResultEnvelope& env) override {
+    return agent::providers::mistralPoll(pd, id, env);
+  }
+  agent::FabricErr cancel(const char* id) override {
+    return agent::providers::mistralCancel(pd, id);
+  }
+};
+
+// The measured default-device case: Studio connectors run on Mistral sub-agents,
+// and a spent daily connector quota refuses the sub's Conversations call. The
+// owner must hear that window ("resets at midnight UTC"), worded exactly as a
+// head-turn 429 words it, not a bare "Couldn't start".
+static void test_spawn_429_names_the_daily_window() {
+  Rig r;
+  WireMistral mistral;
+  harness_test::Exchange e;
+  e.status = 429;
+  e.body = "{\"detail\":\"Custom connector rate limit reached.\"}";
+  e.headers = {{"X-RateLimit-Limit-Custom-Minute", "5"},
+               {"x-ratelimit-remaining-custom-minute", "4"},
+               {"x-ratelimit-limit-custom-day", "50"},
+               {"x-ratelimit-remaining-custom-day", "0"}};
+  mistral.fake.http.script.push_back(e);
+  r.fabric.registerAdapter(&mistral);
+  r.keyed.insert("mistral");
+  orch::Spawn s = sp("list today's calendar events");
+  s.provider = "mistral";
+  r.eng->enqueueSpawn(s, "chat1");
+  r.eng->pump();
+  TEST_ASSERT_EQUAL(1, (int)mistral.fake.http.seen.size());   // the sub's one call
+  TEST_ASSERT_EQUAL(1, (int)r.delivered.size());
+  const std::string want = std::string("Couldn't start that agent on mistral. ") +
+                           agent::rateLimitReply(agent::RateLimit::DailyUtc);
+  TEST_ASSERT_EQUAL_STRING(want.c_str(), r.delivered[0].second.c_str());
+  TEST_ASSERT_TRUE(r.delivered[0].second.find("resets at midnight UTC") != std::string::npos);
+  TEST_ASSERT_EQUAL(0, r.eng->activeJobCount());   // refused: nothing journaled
+}
+
+// The class rule, over EVERY window and every other failure: a dispatch refused
+// with RateLimited answers with the provider plus the head turn's own 429 copy for
+// the window the adapter named; an adapter that names none gets the no-promise
+// (Unknown) copy, never a window left over from an earlier spawn; any other failure
+// keeps its own copy, even if a misbehaving adapter wrote a window anyway.
+static void test_spawn_refusal_copy_every_window() {
+  Rig r;
+  auto refuse = [&r](agent::FabricErr err, std::optional<agent::RateLimit> window) {
+    r.adapter.dispatchErr = err;
+    r.adapter.dispatchWindow = window;
+    const size_t before = r.delivered.size();
+    r.eng->enqueueSpawn(sp(), "chat1");
+    r.eng->pump();
+    r.plat.ms += 2500;   // past the one-dispatch-per-cycle gate for the next one
+    TEST_ASSERT_EQUAL(before + 1, r.delivered.size());   // exactly one reply each
+    return r.delivered.back().second;
+  };
+  const std::string refused = "Couldn't start that agent on anthropic.";
+  for (int i = 0; i < (int)agent::RateLimit::kCount; i++) {
+    const agent::RateLimit k = agent::RateLimit(i);
+    const std::string want = refused + " " + agent::rateLimitReply(k);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(want.c_str(),
+                                     refuse(agent::FabricErr::RateLimited, k).c_str(),
+                                     agent::rateLimitSlug(k));
+  }
+  refuse(agent::FabricErr::RateLimited, agent::RateLimit::DailyUtc);
+  const std::string unnamed = refused + " " + agent::rateLimitReply(agent::RateLimit::Unknown);
+  TEST_ASSERT_EQUAL_STRING(unnamed.c_str(),
+                           refuse(agent::FabricErr::RateLimited, std::nullopt).c_str());
+  for (int e = (int)agent::FabricErr::Network; e <= (int)agent::FabricErr::ParseFail; e++) {
+    const agent::FabricErr err = agent::FabricErr(e);
+    if (err == agent::FabricErr::RateLimited || err == agent::FabricErr::Timeout) continue;
+    TEST_ASSERT_EQUAL_STRING(refused.c_str(), refuse(err, agent::RateLimit::DailyUtc).c_str());
+  }
+  TEST_ASSERT_EQUAL_STRING("The agent on anthropic didn't respond within 60s - it may have "
+                           "run without me getting its result. Try a smaller task or split "
+                           "it into steps.",
+                           refuse(agent::FabricErr::Timeout, std::nullopt).c_str());
+  TEST_ASSERT_EQUAL(0, (int)r.adapter.dispatched.size());
+  TEST_ASSERT_EQUAL(0, r.eng->activeJobCount());
+}
+
 static void test_notfound_expired_message() {
   Rig r;
   r.eng->enqueueSpawn(sp(), "chat1");
@@ -793,6 +891,8 @@ int main(int, char**) {
   RUN_TEST(test_error_delivers_failure_and_holds_attn_window);
   RUN_TEST(test_transient_backoff_doubles_then_resets);
   RUN_TEST(test_notfound_expired_message);
+  RUN_TEST(test_spawn_429_names_the_daily_window);
+  RUN_TEST(test_spawn_refusal_copy_every_window);
   RUN_TEST(test_synthesis_waits_for_all_jobs_then_fires_once);
   RUN_TEST(test_synthesis_coalesce_blocked_by_turn_in_flight);
   RUN_TEST(test_synthesis_fallback_delivers_raw_after_60s);

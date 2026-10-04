@@ -276,8 +276,9 @@ Mistral turns.
   that allows no requests of that kind ("waiting won't help"), or a spent
   quota ("check the plan and billing"). When the provider does not say, the
   reply makes no promise about when. A Virtual Nimbus reads the same headers.
-  A sub-agent the provider refuses at start says only that it couldn't start
-  on that provider; it does not name the window yet.
+  A sub-agent the provider refuses at start says it couldn't start on that
+  provider and names the window the same way, so a Mistral sub refused by a
+  spent connector day says it resets at midnight UTC.
 - **Keep it to about 2 enabled Mistral connectors at a time.** One or two work
   reliably (proven: GitHub returned a live issue count, Gmail a live unread
   count). Enabling around 4 at once made the Conversations response come back

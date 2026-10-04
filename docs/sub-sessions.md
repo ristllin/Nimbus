@@ -186,10 +186,22 @@ a slow one outlasts the device's 60 s read deadline. `mistralDispatch`
 (`lib/harness/src/providers/mistral.cpp`) classifies that case as
 `FabricErr::Timeout` (elapsed ≈ the whole deadline) rather than a connection
 failure, and `JobEngine::dispatchSpawn` (`lib/harness/src/jobs.cpp`) tells the
-owner *"Started an agent on mistral, but it ran longer than I can wait (60s) and
-I couldn't get its result. Try a smaller task or split it into steps."* - where
-it used to say "Couldn't start that agent", which was a lie (the agent HAD
+owner *"The agent on mistral didn't respond within 60s - it may have run without
+me getting its result. Try a smaller task or split it into steps."* - where it
+used to say "Couldn't start that agent", which was a lie (the agent HAD
 started).
+
+**A sub the provider refuses with HTTP 429 names the quota window** (CUM-465).
+The dispatch hands the window back through `Directive::rateLimit`
+(`lib/harness/include/nimbus/harness/fabric.h`): from Mistral's `x-ratelimit-*`
+headers (a spent Studio connector day reads the same in the body as a
+per-minute limit, so only the headers tell them apart), else from the provider's
+error text (OpenAI, the custom endpoint, Z.ai, the Cumulo router). The owner
+hears *"Couldn't start that agent on mistral."* followed by the same reply a
+head-turn 429 gets (`rateLimitReply`, `lib/harness/src/rate_limit.cpp`); for a
+spent connector day that ends *"it resets at midnight UTC."* A Virtual Nimbus
+runs the same code. An Anthropic sub's 429 is not classified yet and still
+reads only *"Couldn't start that agent on anthropic."*
 
 ## Results - how output reaches you
 

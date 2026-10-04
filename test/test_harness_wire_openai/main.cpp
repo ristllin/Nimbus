@@ -5,6 +5,7 @@
 #include "../support/fake_platform.h"
 #include "../support/fake_provider_deps.h"
 #include "nimbus/harness/providers.h"
+#include "nimbus/harness/rate_limit.h"
 
 // Stage H wire suite - the OpenAI Responses provider, host-tested for the first
 // time over FakeHttpTransport: single-shot strict json_schema request shape,
@@ -464,6 +465,46 @@ static void test_sub_dispatch_error_mapping() {
   }
 }
 
+// CUM-465: a background dispatch refused with a 429 hands back the window its text
+// names (OpenAI says it in the message), exactly as a head turn's 429 reads it.
+static void test_sub_dispatch_429_names_the_window() {
+  struct Case { const char* body; agent::RateLimit want; };
+  const Case cases[] = {
+      {"{\"error\":{\"message\":\"Rate limit reached for gpt-4o-mini in organization org-x on "
+       "requests per day (RPD): Limit 200, Used 200, Requested 1.\",\"code\":\"rate_limit_exceeded\"}}",
+       agent::RateLimit::Daily},
+      {"{\"error\":{\"message\":\"Rate limit reached for gpt-4o on tokens per min (TPM): Limit "
+       "30000, Used 29000, Requested 2000.\"}}",
+       agent::RateLimit::PerMinute},
+      {"{\"error\":{\"message\":\"You exceeded your current quota, please check your plan and "
+       "billing details.\",\"code\":\"insufficient_quota\"}}",
+       agent::RateLimit::Quota},
+      {"{}", agent::RateLimit::Unknown},
+  };
+  for (const Case& k : cases) {
+    FakeProviderDeps d;
+    d.http.script.push_back({"", "/v1/responses", 429, k.body});
+    auto pd = d.contract();
+    agent::RateLimit window = agent::RateLimit::kCount;   // sentinel: never written
+    agent::Directive dir; dir.instruction = "x"; dir.rateLimit = &window;
+    char jobId[72];
+    TEST_ASSERT_EQUAL((int)agent::FabricErr::RateLimited,
+        (int)providers::oaiDispatch(pd, "h", "k", "m", "openai", dir, jobId));
+    TEST_ASSERT_EQUAL_MESSAGE((int)k.want, (int)window, k.body);
+  }
+  {  // any other failure writes no window
+    FakeProviderDeps d;
+    d.http.script.push_back({"", "", 500, "{\"error\":{\"message\":\"requests per day\"}}"});
+    auto pd = d.contract();
+    agent::RateLimit window = agent::RateLimit::kCount;
+    agent::Directive dir; dir.instruction = "x"; dir.rateLimit = &window;
+    char jobId[72];
+    TEST_ASSERT_EQUAL((int)agent::FabricErr::RemoteFail,
+        (int)providers::oaiDispatch(pd, "h", "k", "m", "openai", dir, jobId));
+    TEST_ASSERT_EQUAL((int)agent::RateLimit::kCount, (int)window);
+  }
+}
+
 static void test_sub_poll_states() {
   {  // completed with concatenated output_text
     FakeProviderDeps d;
@@ -583,6 +624,7 @@ int main(int, char**) {
   RUN_TEST(test_loop_gate_respects_toggle);
   RUN_TEST(test_sub_dispatch_shape);
   RUN_TEST(test_sub_dispatch_error_mapping);
+  RUN_TEST(test_sub_dispatch_429_names_the_window);
   RUN_TEST(test_sub_poll_states);
   RUN_TEST(test_sub_poll_captures_container_file_citation);
   RUN_TEST(test_over_cap_repeat_citations_count_once);

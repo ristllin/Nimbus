@@ -5,6 +5,7 @@
 #include "../support/fake_platform.h"
 #include "../support/fake_provider_deps.h"
 #include "nimbus/harness/providers.h"
+#include "nimbus/harness/rate_limit.h"
 
 // Stage H wire suite - the custom/proxy provider: base-URL parsing (http/https,
 // port), the keyless-on-http rule (R_CUST_keyless), the per-convention
@@ -123,6 +124,29 @@ static void test_sub_error_mapping() {
     auto pd = d.contract();
     TEST_ASSERT_EQUAL((int)agent::FabricErr::Network,
                       (int)providers::customDispatch(pd, dir, jobId));
+  }
+  {  // CUM-465: a 429 is RateLimited and hands back the window its text names
+    FakeProviderDeps d; d.custBase = "https://p.example";
+    d.http.script.push_back({"", "", 429,
+        "{\"error\":{\"message\":\"Rate limit reached on requests per day (RPD)\"}}"});
+    auto pd = d.contract();
+    agent::RateLimit window = agent::RateLimit::kCount;   // sentinel: never written
+    agent::Directive rl = dir; rl.rateLimit = &window;
+    TEST_ASSERT_EQUAL((int)agent::FabricErr::RateLimited,
+                      (int)providers::customDispatch(pd, rl, jobId));
+    TEST_ASSERT_EQUAL((int)agent::RateLimit::Daily, (int)window);
+  }
+  {  // ...and on the anthropic convention, from its error text
+    FakeProviderDeps d; d.custBase = "https://p.example"; d.custConv = "anthropic";
+    d.http.script.push_back({"", "/v1/messages", 429,
+        "{\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"This "
+        "request would exceed the rate limit of 50 requests per minute.\"}}"});
+    auto pd = d.contract();
+    agent::RateLimit window = agent::RateLimit::kCount;
+    agent::Directive rl = dir; rl.rateLimit = &window;
+    TEST_ASSERT_EQUAL((int)agent::FabricErr::RateLimited,
+                      (int)providers::customDispatch(pd, rl, jobId));
+    TEST_ASSERT_EQUAL((int)agent::RateLimit::PerMinute, (int)window);
   }
 }
 

@@ -116,11 +116,12 @@ FabricErr oaiDispatch(const ProviderDeps& pd, const char* host, const std::strin
   }
 
   JsonDocument filter; filter["id"] = true;
+  filter["error"]["message"] = true;   // a 429's text names its window (CUM-465)
   JsonDocument doc;
   int code = exchange(pd, host, 443, true, "POST", "/v1/responses", oaiHeaders(key),
                       std::move(body), OAI_TIMEOUT_MS, doc, filter);
   if (code == 401 || code == 403) return FabricErr::Auth;
-  if (code == 429)                return FabricErr::RateLimited;
+  if (code == 429) return wire::rateLimitedByText(d, backend, doc["error"]["message"] | "");
   if (code <= 0)                  return FabricErr::Network;
   if (code != 200)               { hlog::logf("%s: dispatch HTTP %d", backend, code); return FabricErr::RemoteFail; }
 

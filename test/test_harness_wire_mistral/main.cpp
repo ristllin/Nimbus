@@ -747,6 +747,68 @@ static void test_head_429_carries_the_quota_window() {
   }
 }
 
+// CUM-465: a sub-session dispatch refused with a 429 hands the window back through
+// the Directive, read the same way as a head turn's (headers first, else the text),
+// and asks the transport for the quota headers in the first place.
+static void test_sub_429_names_the_quota_window() {
+  char jobId[72];
+  {  // spent daily Studio connector quota: only the headers say it was the day
+    FakeProviderDeps d;
+    harness_test::Exchange e;
+    e.status = 429;
+    e.body = "{\"detail\":\"Custom connector rate limit reached.\"}";
+    e.headers = {{"x-ratelimit-limit-custom-day", "50"},
+                 {"x-ratelimit-remaining-custom-day", "0"}};
+    d.http.script.push_back(e);
+    auto pd = d.contract();
+    agent::RateLimit window = agent::RateLimit::kCount;   // sentinel: never written
+    agent::Directive dir; dir.instruction = "x"; dir.rateLimit = &window;
+    TEST_ASSERT_EQUAL((int)agent::FabricErr::RateLimited,
+                      (int)providers::mistralDispatch(pd, "m", dir, jobId));
+    TEST_ASSERT_EQUAL((int)agent::RateLimit::DailyUtc, (int)window);
+    TEST_ASSERT_EQUAL_STRING("x-ratelimit", d.http.seen[0].errHeaderPrefix);
+    TEST_ASSERT_TRUE(LogCapture::contains(
+        "dispatch HTTP 429 [rl:day-utc]: Custom connector rate limit reached."));
+  }
+  {  // a 0-request plan, from the headers
+    FakeProviderDeps d;
+    harness_test::Exchange e;
+    e.status = 429;
+    e.body = "{\"message\":\"Requests rate limit exceeded\"}";
+    e.headers = {{"x-ratelimit-limit-req-minute", "0"}};
+    d.http.script.push_back(e);
+    auto pd = d.contract();
+    agent::RateLimit window = agent::RateLimit::kCount;
+    agent::Directive dir; dir.instruction = "x"; dir.rateLimit = &window;
+    providers::mistralDispatch(pd, "m", dir, jobId);
+    TEST_ASSERT_EQUAL((int)agent::RateLimit::NotAllowed, (int)window);
+  }
+  {  // no headers (a transport without capture): the text decides, and names none
+    FakeProviderDeps d;
+    d.http.script.push_back({"", "", 429, "{\"message\":\"Requests rate limit exceeded\"}"});
+    auto pd = d.contract();
+    agent::RateLimit window = agent::RateLimit::kCount;
+    agent::Directive dir; dir.instruction = "x"; dir.rateLimit = &window;
+    TEST_ASSERT_EQUAL((int)agent::FabricErr::RateLimited,
+                      (int)providers::mistralDispatch(pd, "m", dir, jobId));
+    TEST_ASSERT_EQUAL((int)agent::RateLimit::Unknown, (int)window);
+  }
+  {  // any other failure writes no window, even with quota headers present
+    FakeProviderDeps d;
+    harness_test::Exchange e;
+    e.status = 503;
+    e.body = "{\"message\":\"busy\"}";
+    e.headers = {{"x-ratelimit-remaining-custom-day", "0"}};
+    d.http.script.push_back(e);
+    auto pd = d.contract();
+    agent::RateLimit window = agent::RateLimit::kCount;
+    agent::Directive dir; dir.instruction = "x"; dir.rateLimit = &window;
+    TEST_ASSERT_EQUAL((int)agent::FabricErr::RemoteFail,
+                      (int)providers::mistralDispatch(pd, "m", dir, jobId));
+    TEST_ASSERT_EQUAL((int)agent::RateLimit::kCount, (int)window);
+  }
+}
+
 // The tool loop (chat/completions) on a key whose plan allows 0 requests/min there:
 // the live personal-key shape. Waiting never helps, and the error says so.
 static void test_loop_429_zero_per_minute_plan() {
@@ -789,6 +851,7 @@ int main(int, char**) {
   RUN_TEST(test_head_studio_lenient_read);
   RUN_TEST(test_head_schema_xor_studio_connector_class);
   RUN_TEST(test_head_429_carries_the_quota_window);
+  RUN_TEST(test_sub_429_names_the_quota_window);
   RUN_TEST(test_loop_429_zero_per_minute_plan);
   UNITY_END();
   return 0;

@@ -143,6 +143,13 @@ static std::string mistralHttpErr(const char* what, int code, const HeaderList& 
   return e;
 }
 
+// The provider's error text: {"message": ...}, else the connector-quota shape
+// {"detail":"Custom connector rate limit reached."}. "" when neither is a string.
+static const char* mistralErrText(const JsonDocument& doc) {
+  const char* em = doc["message"] | "";
+  return em[0] ? em : (doc["detail"] | "");
+}
+
 // ---- head turn (Conversations API + canonical schema) -----------------------
 
 // ---- multi-turn tool-use loop (ReAct) ---------------------------------------
@@ -619,9 +626,7 @@ bool orchTurnMistral(const ProviderDeps& pd, std::string& convId,
   if (code <= 0)   { err = "network"; return false; }
   if (code == 404 && convId.length()) { convId = ""; err = "conversation gone"; return false; }
   if (code != 200) {
-    const char* em = doc["message"] | "";
-    if (!em[0]) em = doc["detail"] | "";   // {"detail":"Custom connector rate limit reached."}
-    err = mistralHttpErr("conversations", code, quota, em);
+    err = mistralHttpErr("conversations", code, quota, mistralErrText(doc));
     hlog::logf("orchTurn(mistral): %s", err.c_str());
     return false;
   }
@@ -696,10 +701,13 @@ FabricErr mistralDispatch(const ProviderDeps& pd, const std::string& model,
   // widening beyond this is needed to keep {file_id,file_name,file_type}.
   oi["type"] = true; oi["content"] = true;
   filter["message"] = true;   // error envelope
+  filter["detail"] = true;    // error envelope, connector-quota shape
 
   JsonDocument doc = makeDoc(pd);   // response -> PSRAM; execJson streams it off the socket
+  HeaderList quota;                 // a 429's x-ratelimit-*: which window refused
   const uint32_t t0 = pd.nowMs ? pd.nowMs() : 0;
-  int code = mistralRequest(pd, "POST", "/v1/conversations", std::move(body), doc, filter);
+  int code = mistralRequest(pd, "POST", "/v1/conversations", std::move(body), doc, filter,
+                            MISTRAL_TIMEOUT_MS, &quota);
   if (code <= 0) {
     // A Mistral sub runs INSIDE this blocking POST, so a slow sub outlasts our
     // 60 s read deadline. Distinguish that read TIMEOUT (elapsed ~= the whole
@@ -711,9 +719,16 @@ FabricErr mistralDispatch(const ProviderDeps& pd, const std::string& model,
                                                     : FabricErr::Network;
   }
   if (code == 401) return FabricErr::Auth;
-  if (code == 429) return FabricErr::RateLimited;
+  if (code == 429) {
+    // Classified exactly like a head turn's 429 (CUM-465): the headers' window,
+    // else whatever the provider's text names. A spent Studio connector day reads
+    // the same in the body as a per-minute limit; only the headers tell them apart.
+    const std::string err = mistralHttpErr("dispatch", code, quota, mistralErrText(doc));
+    hlog::logf("mistral %s", err.c_str());
+    return wire::rateLimited(d, rateLimitFromError(err));
+  }
   if (code != 200) {
-    hlog::logf("mistral dispatch HTTP %d: %s", code, (const char*)(doc["message"] | ""));
+    hlog::logf("mistral dispatch HTTP %d: %s", code, mistralErrText(doc));
     return FabricErr::RemoteFail;
   }
   std::string reply;
