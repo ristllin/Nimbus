@@ -163,6 +163,16 @@ to 2 keyed alternates with an owner notice; a fresh provider thread each time.
   across the reboot in NVS).
 - **Voice hold-to-talk**: blocks the MAIN loop (WDT suspended around record +
   STT) - `tg_poll` keeps running; the transcript is injected as a normal turn.
+  A waiting injected turn (voice, web or serial) ends `tg_poll`'s idle waits
+  early (CUM-462, `nimbus/net/tg_poll_sched.h`): it cuts a long-poll that is
+  still waiting for its answer short (offset untouched, so nothing is lost),
+  ends the inter-cycle pause or a poll-error backoff, and skips the next
+  cycle's poll - never two running: the cycle after a skip checks Telegram
+  first with an immediate getUpdates, so Telegram is never starved. Same
+  single task and TLS session. Once `tg_poll` reaches one of those waits the
+  turn starts within a few tens of milliseconds instead of waiting out the
+  ~30 s long-poll; it still queues behind a running turn, outbound sends and
+  a poll reconnect that are already under way.
 - **Low-battery deep sleep**: full stop; config persisted; wake by the 5-minute
   timer. All
   loop state re-derives at the next boot (no backfill), and the first 10 min
