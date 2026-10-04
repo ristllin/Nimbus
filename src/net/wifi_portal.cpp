@@ -5,6 +5,7 @@
 #include "nimbus_config.h"
 
 #include <WiFi.h>
+#include <esp_wifi.h>   // esp_wifi_get_mode - apRadioUp() asks the driver, not the netif
 #include <DNSServer.h>
 #include <ESPmDNS.h>
 #include <ArduinoJson.h>
@@ -31,20 +32,39 @@ static String    s_mdnsHost = NIMBUS_MDNS_HOST;
 // the very first boot we SCAN for sibling Nimbus APs currently advertising and
 // auto-number ourselves ("Nimbus" -> "Nimbus-2" -> ...), then persist so the
 // name stays stable across reboots. The scan needs the STA iface the AP_STA
-// mode-set below just brought up, runs only on that one first boot (~2 s,
+// mode-set below just brought up, runs only on that one first boot (~2-3 s,
 // before the loop watchdog is armed), and never on a provisioned device.
+//
+// CUM-468: the scan result used to be read blindly, so a driver that refused the
+// scan right after the mode-set looked exactly like an empty neighborhood. On the
+// 2026-10-04 bench the scan finished in <200 ms on every captured boot and two
+// adjacent fresh units both became "Nimbus-setup" / nimbus.local. A refusal is
+// either a negative return (the scan never started) or an implausibly fast 0 (the
+// core reports a driver-aborted scan as 0 networks). identity::runSiblingScan now
+// retries both inside a bounded window (policy and loop host-tested in
+// test_identity); this seam only wires the real radio into it. Device-only: bench
+// HIL on the two FNK0104B units covers it via the boot line below.
 static String resolveDeviceName() {
   String name = sys::deviceName();
   if (name.length()) return name;
+  const identity::SiblingScanOutcome scan = identity::runSiblingScan(
+      [] { return int(WiFi.scanNetworks(/*async=*/false, /*show_hidden=*/true)); },
+      [] { return uint32_t(millis()); },
+      [](uint32_t ms) { delay(ms); });
   std::vector<std::string> ssids;
-  const int n = WiFi.scanNetworks(/*async=*/false, /*show_hidden=*/true);
-  for (int i = 0; i < n; i++) ssids.push_back(std::string(WiFi.SSID(i).c_str()));
+  for (int i = 0; i < scan.result; i++) ssids.push_back(std::string(WiFi.SSID(i).c_str()));
   WiFi.scanDelete();
+  // A scan that never got an answer still names the device (every surface needs
+  // a name this boot) and persists it, exactly as before: the owner can rename.
   name = String(identity::pickSiblingName(identity::kBaseName, ssids).c_str());
   sys::saveDeviceName(name);
-#ifdef NIMBUS_NOTIFIER_DEBUG
-  Serial.printf("[net] first boot: %d APs visible -> device name '%s'\n", n, name.c_str());
-#endif
+  // Every build, only on a boot with no stored name (first boot, or after a factory
+  // reset): how the name was chosen. Counts and driver codes only - never the
+  // neighbors' SSIDs. first_rc and attempts pin which refusal shape the bench hit;
+  // a negative `networks` (or 0 with attempts > 1 and a small ms) means the radio
+  // never answered and no sibling could be seen.
+  Serial.printf("[net] first-boot sibling scan: networks=%d attempts=%d first_rc=%d ms=%lu -> '%s'\n",
+                scan.result, scan.attempts, scan.firstRc, (unsigned long)scan.ms, name.c_str());
   return name;
 }
 
@@ -80,11 +100,13 @@ void begin(const char* apSsid, const char* apPass) {
   // pass nullptr (open) explicitly when the caller wants no password.
   const bool apOk = s_apPass.length() ? WiFi.softAP(ssid, s_apPass.c_str())
                                       : WiFi.softAP(ssid);
-#ifdef NIMBUS_NOTIFIER_DEBUG
-  Serial.printf("[net] softAP('%s', pw=%d) -> ok=%d ip=%s mac=%s\n", ssid,
-                int(pass ? strlen(pass) : 0), int(apOk),
-                WiFi.softAPIP().toString().c_str(), WiFi.softAPmacAddress().c_str());
-#endif
+  // CUM-468: this was NIMBUS_NOTIFIER_DEBUG-only, so a production first boot said
+  // nothing about the one thing a fresh device must do, and a false "ok" could
+  // never be caught from a log. Every build now prints the result next to what the
+  // radio itself reports (radio=, apRadioUp()) - ok=1 radio=0 is the lie, visible.
+  // The passphrase (and its length) is deliberately never printed.
+  Serial.printf("[net] softAP '%s' ok=%d radio=%d ip=%s\n", ssid, int(apOk), int(apRadioUp()),
+                WiFi.softAPIP().toString().c_str());
   s_dns.start(53, "*", WiFi.softAPIP());   // captive portal: all DNS -> AP IP
   WiFi.setAutoReconnect(true);
 
@@ -128,12 +150,33 @@ void dropSoftAP() {
 // config page) is always available exactly when it is needed: when the device
 // can't reach Wi-Fi. It goes off again on the next GOT_IP, so the beacon train
 // only exists while disconnected, never during normal connected operation.
-void restoreSoftAP() {
+// Returns what the radio reports afterwards (apRadioUp), not what softAP() said,
+// so the caller's log can never claim a restore that did not happen (CUM-468).
+bool restoreSoftAP() {
   WiFi.mode(WIFI_AP_STA);
   if (s_apPass.length()) WiFi.softAP(s_apSsid.c_str(), s_apPass.c_str());
   else                   WiFi.softAP(s_apSsid.c_str());
   s_dns.stop();
   s_dns.start(53, "*", WiFi.softAPIP());
+  return apRadioUp();
+}
+
+// Radio truth for the setup AP (CUM-468). softAPIP() is the WRONG question: it
+// reads the lwIP netif, and the core binds the AP netif, static 192.168.4.1 and
+// all, the moment the AP interface is enabled - before, and regardless of
+// whether, the driver ever starts the AP. So a softAP that genuinely failed still
+// "had an address", decideSetupAp() never saw it down, RestoreAp never fired, and
+// every surface claimed the setup network was up. This asks the driver instead:
+// its mode must include AP (esp_wifi_get_mode), AND it must have raised
+// WIFI_EVENT_AP_START without a later AP_STOP. The core already tracks that pair
+// as the AP interface's started bit (WiFi.AP.started(), set and cleared by its own
+// handler on the existing event loop), so this polls state - no new task, no new
+// event hook. Device-only: bench HIL covers it (WIFIAP? radio=, the boot line).
+bool apRadioUp() {
+  wifi_mode_t mode = WIFI_MODE_NULL;
+  if (esp_wifi_get_mode(&mode) != ESP_OK) return false;   // driver not initialized: no AP
+  if (mode != WIFI_MODE_AP && mode != WIFI_MODE_APSTA) return false;
+  return WiFi.AP.started();
 }
 
 bool   staConnected() { return WiFi.status() == WL_CONNECTED; }
@@ -244,7 +287,8 @@ void publishSetupNetwork() {
   WiFi.setAutoReconnect(false);
   WiFi.disconnect(/*wifioff=*/false, /*eraseap=*/false);
   // Re-assert the AP if it never came up (or was dragged off-channel by the STA).
-  if (WiFi.softAPIP() == IPAddress(0, 0, 0, 0)) {
+  // Ask the radio, not the netif address (CUM-468, see apRadioUp).
+  if (!apRadioUp()) {
     if (s_apPass.length()) WiFi.softAP(s_apSsid.c_str(), s_apPass.c_str());
     else                   WiFi.softAP(s_apSsid.c_str());
     s_dns.stop();

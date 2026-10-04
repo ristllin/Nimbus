@@ -77,6 +77,17 @@ std::string pickSiblingName(const std::string& base,
   return i == 1 ? base : base + "-" + std::to_string(i);
 }
 
+static_assert(kSiblingScanWindowMs >= kSiblingScanRetryGapMs,
+              "the retry window must fit at least one gap");
+
+bool retrySiblingScan(int scanResult, uint32_t attemptMs, uint32_t msSinceFirstAttempt) {
+  const bool neverRan = scanResult < 0;
+  const bool aborted  = scanResult == 0 && attemptMs < kSiblingScanMinRealMs;
+  if (!neverRan && !aborted) return false;   // a real answer (a slow 0 included) is final
+  // Written as a subtraction so a huge elapsed value can never wrap the sum.
+  return msSinceFirstAttempt <= kSiblingScanWindowMs - kSiblingScanRetryGapMs;
+}
+
 std::string makeSetupPass(uint32_t (*rnd)()) {
   // 24 lowercase letters (no o/l) + 8 digits (no 0/1) = exactly 32 symbols,
   // so the modulo below is unbiased.

@@ -1,8 +1,10 @@
 // Host tests for nimbus::identity - the device-name sanitizer, mDNS label
-// derivation, and the first-boot sibling auto-numbering (P2 of the agent-3
-// revamp plan). Pure string logic; the NVS/WiFi glue is device-side.
+// derivation, the first-boot sibling auto-numbering (P2 of the agent-3 revamp
+// plan) and its scan-retry loop (CUM-468). Pure logic; the NVS/WiFi glue is
+// device-side.
 #include <unity.h>
 
+#include <algorithm>
 #include <cctype>
 #include <cstdint>
 #include <string>
@@ -89,6 +91,136 @@ static void test_pick_dedupes_and_bounds() {
                                   "Nimbus-99999-setup"}).c_str());
 }
 
+// ---- first-boot sibling scan retry (CUM-468) ---------------------------------
+// The 2026-10-04 bench: two fresh units side by side both named themselves
+// "Nimbus" because the scan came back in <200 ms with nothing in it. These pin
+// the class rule "a refused scan is not an empty neighborhood" - in BOTH shapes a
+// refusal takes (a negative code, or an aborted scan reported as a fast 0) - plus
+// the first-boot budget.
+static constexpr int kScanFailed  = -2;   // WIFI_SCAN_FAILED
+static constexpr int kScanRunning = -1;   // WIFI_SCAN_RUNNING
+static constexpr uint32_t kRealScanMs = 2100;   // a completed 2.4 GHz sweep
+static constexpr uint32_t kLastRetryAt = kSiblingScanWindowMs - kSiblingScanRetryGapMs;
+
+static void test_scan_retry_real_result_is_final() {
+  // Any count ends the loop at every elapsed time - 0 included when the scan took
+  // as long as a real sweep: that is a genuinely empty neighborhood, and the
+  // device correctly names itself "Nimbus".
+  const uint32_t times[] = {0u, 150u, kLastRetryAt, kLastRetryAt + 1, 5000u, UINT32_MAX};
+  for (uint32_t t : times) {
+    for (int n : {1, 7, 40}) {
+      TEST_ASSERT_FALSE(retrySiblingScan(n, 0, t));   // even a fast non-empty list is data
+      TEST_ASSERT_FALSE(retrySiblingScan(n, kRealScanMs, t));
+    }
+    TEST_ASSERT_FALSE(retrySiblingScan(0, kSiblingScanMinRealMs, t));
+    TEST_ASSERT_FALSE(retrySiblingScan(0, kRealScanMs, t));
+  }
+}
+
+static void test_scan_retry_refusal_inside_window() {
+  // Both refusal shapes: a negative code (never ran) at any attempt length, and an
+  // empty list faster than any completed sweep (aborted, reported as 0).
+  for (uint32_t t : {0u, 150u, kLastRetryAt}) {
+    for (int rc : {kScanFailed, kScanRunning, -100}) {
+      TEST_ASSERT_TRUE(retrySiblingScan(rc, 0, t));
+      TEST_ASSERT_TRUE(retrySiblingScan(rc, 150, t));
+    }
+    TEST_ASSERT_TRUE(retrySiblingScan(0, 0, t));
+    TEST_ASSERT_TRUE(retrySiblingScan(0, 150, t));
+    TEST_ASSERT_TRUE(retrySiblingScan(0, kSiblingScanMinRealMs - 1, t));
+  }
+}
+
+static void test_scan_retry_refusal_outside_window() {
+  for (uint32_t t : {kLastRetryAt + 1, 60000u, UINT32_MAX}) {   // UINT32_MAX: no wrap back in
+    for (int rc : {kScanFailed, kScanRunning}) TEST_ASSERT_FALSE(retrySiblingScan(rc, 150, t));
+    TEST_ASSERT_FALSE(retrySiblingScan(0, 150, t));
+  }
+}
+
+// A scripted radio on a fake clock: attempt i takes durMs[i] and returns rc[i]
+// (the last entry repeats). Drives the SAME runSiblingScan loop the device runs.
+// A loop that stopped honoring the window would spin forever; past kRunaway calls
+// the fake answers a real list (final under any policy) to force an exit, so the
+// attempt-count asserts FAIL instead of hanging the suite.
+struct FakeRadio {
+  static constexpr int kRunaway = 1000;
+  std::vector<int>      rc;
+  std::vector<uint32_t> durMs;
+  uint32_t clock = 5000;   // arbitrary non-zero boot time
+  uint32_t lastStart = 0;
+  int      calls = 0;
+  SiblingScanOutcome run() {
+    return runSiblingScan(
+        [this] {
+          if (calls >= kRunaway) return 1;
+          const size_t i = std::min<size_t>(size_t(calls), rc.size() - 1);
+          lastStart = clock;
+          clock += durMs[std::min<size_t>(size_t(calls), durMs.size() - 1)];
+          calls++;
+          return rc[i];
+        },
+        [this] { return clock; }, [this](uint32_t ms) { clock += ms; });
+  }
+};
+
+static void test_scan_loop_bench_repro_refused_then_real() {
+  // The CUM-468 shape, in both refusal forms: the first attempt is refused fast,
+  // the driver is up a beat later, and a real ~2 s scan sees the sibling. Must be
+  // ONE retry, with the real list reaching pickSiblingName.
+  for (int refusal : {kScanFailed, 0}) {
+    FakeRadio r{{refusal, 9}, {150, kRealScanMs}};
+    const SiblingScanOutcome o = r.run();
+    TEST_ASSERT_EQUAL(9, o.result);
+    TEST_ASSERT_EQUAL(refusal, o.firstRc);
+    TEST_ASSERT_EQUAL(2, o.attempts);
+    TEST_ASSERT_EQUAL_UINT32(150 + kSiblingScanRetryGapMs + kRealScanMs, o.ms);
+    TEST_ASSERT_TRUE(o.ms <= 3000);   // inside the ~3 s first-boot budget
+  }
+}
+
+static void test_scan_loop_first_attempt_ok_never_retries() {
+  // A real sweep - including an empty one - is taken at its word, first time.
+  for (int n : {0, 3}) {
+    FakeRadio r{{n}, {kRealScanMs}};
+    const SiblingScanOutcome o = r.run();
+    TEST_ASSERT_EQUAL(n, o.result);
+    TEST_ASSERT_EQUAL(n, o.firstRc);
+    TEST_ASSERT_EQUAL(1, o.attempts);
+    TEST_ASSERT_EQUAL(1, r.calls);
+  }
+}
+
+static void test_scan_loop_always_refused_terminates_in_window() {
+  // Class property over both refusal shapes and every per-attempt duration a
+  // refusal could take: the loop always ends, never STARTS an attempt past the
+  // window, stays inside window + one attempt, and hands back the refusal (so the
+  // boot log shows the name was picked without seeing siblings).
+  for (int refusal : {kScanFailed, kScanRunning, 0}) {
+    const uint32_t maxD = refusal == 0 ? kSiblingScanMinRealMs - 1 : 3000;
+    for (uint32_t d = 0; d <= maxD; d += 7) {
+      FakeRadio r{{refusal}, {d}};
+      const uint32_t t0 = r.clock;
+      const SiblingScanOutcome o = r.run();
+      TEST_ASSERT_EQUAL(refusal, o.result);
+      TEST_ASSERT_TRUE(o.attempts >= 1);
+      TEST_ASSERT_TRUE(r.lastStart - t0 <= kSiblingScanWindowMs);
+      TEST_ASSERT_TRUE(o.ms <= kSiblingScanWindowMs + d);
+      // An instant refusal can retry at most window/gap more times.
+      TEST_ASSERT_TRUE(o.attempts <= 1 + int(kSiblingScanWindowMs / kSiblingScanRetryGapMs));
+    }
+  }
+}
+
+static void test_scan_loop_slow_failure_is_not_retried() {
+  // A scan the core gave up on after its own long timeout is not repeated: first
+  // boot must not stall for another full timeout.
+  FakeRadio r{{kScanFailed}, {60000}};
+  const SiblingScanOutcome o = r.run();
+  TEST_ASSERT_EQUAL(1, o.attempts);
+  TEST_ASSERT_EQUAL(kScanFailed, o.result);
+}
+
 // ---- makeSetupPass -----------------------------------------------------------
 static uint32_t s_seq;
 static uint32_t seqRnd() { return s_seq++; }
@@ -148,6 +280,13 @@ int main(int, char**) {
   RUN_TEST(test_pick_matches_bare_names_too);
   RUN_TEST(test_pick_ignores_lookalikes);
   RUN_TEST(test_pick_dedupes_and_bounds);
+  RUN_TEST(test_scan_retry_real_result_is_final);
+  RUN_TEST(test_scan_retry_refusal_inside_window);
+  RUN_TEST(test_scan_retry_refusal_outside_window);
+  RUN_TEST(test_scan_loop_bench_repro_refused_then_real);
+  RUN_TEST(test_scan_loop_first_attempt_ok_never_retries);
+  RUN_TEST(test_scan_loop_always_refused_terminates_in_window);
+  RUN_TEST(test_scan_loop_slow_failure_is_not_retried);
   RUN_TEST(test_setup_pass_shape);
   RUN_TEST(test_setup_pass_alphabet_unambiguous);
   RUN_TEST(test_wifi_qr_payload_basic);

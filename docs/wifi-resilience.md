@@ -68,6 +68,10 @@ network failover is designed to cooperate with that, not fight it:
 - The setup hotspot returns only once failover is **exhausted** (every saved network
   tried, none reachable). That is the point at which a person genuinely needs it.
 
+To decide whether the hotspot is up, the device asks the radio whether it is really
+running, not just whether it still has an address, so a hotspot that failed to start
+is brought back too.
+
 Because failover only engages after a short grace once the link is lost, and never
 while someone is connected to the setup hotspot or a manual join is in flight, the
 common cases (a brief router blip, a normal single-network reconnect, first-run
@@ -122,6 +126,7 @@ If this page disagrees with the code, the code wins.
 | Selection / failover state machine | `lib/core/src/wifi_policy.cpp` |
 | Supervisor engage / bow-out / re-begin decision | `lib/core/src/wifi_supervise.cpp` (`decideSupervise`) |
 | Setup-AP recovery decision | `lib/core/src/setup_ap.cpp` (`decideSetupAp`) |
+| Setup-AP state as the radio reports it (the decision's input) | `src/net/wifi_portal.cpp` (`apRadioUp`) |
 | Status copy ("Joining X 2/3...") | `lib/core/src/wifi_copy.cpp` |
 | Device seam wiring the machine to the radio | `src/net/wifi_link.cpp` |
 | NVS glue for the list | `src/net/wifi_store.cpp` |
