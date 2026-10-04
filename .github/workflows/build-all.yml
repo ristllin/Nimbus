@@ -1,0 +1,124 @@
+name: build-all
+
+# The full compile matrix (tools/build_all.sh): every environment and flag path
+# the fast PR gate never builds - notifierdbg, provision, the fuel-gauge and
+# battery-ADC flag rows, the test-console env, plus the harness-lab link check.
+# Exists because matrix-only rows rotted red on main unseen: no workflow ran
+# build_all.sh, so nothing caught it (CUM-466; the rot itself was CUM-458).
+#
+# Triggers:
+#   pull_request (path-filtered)  PRs that touch a build input. The filter is
+#       the CUM-466 list (src/**, lib/**, platformio.ini, tools/build_all.sh)
+#       plus the inputs only this matrix compiles: include/** (firmware headers
+#       ride every env) and tools/harness-lab/** (a matrix row). Doc, site, and
+#       test-suite PRs stay on the fast gate - checks.yml already builds native
+#       and runs the static gates on every PR.
+#   push to main (same paths)     the merged result is what rots.
+#   schedule (weekly)             catches environment rot (a platform or
+#       lib_deps pin resolving differently) when no commit touched the inputs.
+#   workflow_dispatch             manual rerun from the Actions tab.
+#
+# NOTE if this job is ever made a required status check: a path-filtered job
+# reports nothing on PRs outside its filter, which would block those merges.
+# Keep it non-required, or switch the filter to a changed-files step first.
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'lib/**'
+      - 'include/**'
+      - 'platformio.ini'
+      - 'tools/build_all.sh'
+      - 'tools/harness-lab/**'
+      - '.github/workflows/build-all.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'lib/**'
+      - 'include/**'
+      - 'platformio.ini'
+      - 'tools/build_all.sh'
+      - 'tools/harness-lab/**'
+      - '.github/workflows/build-all.yml'
+  schedule:
+    # Weekly anti-rot sweep on main. Not at the top of the hour - that is when
+    # GitHub delays or drops scheduled runs the most.
+    - cron: '14 5 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to the same PR supersedes a running matrix - cancel it (these
+# runs are long). Main, schedule, and dispatch runs are left to finish so the
+# record of main's health stays complete.
+concurrency:
+  group: build-all-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build-all:
+    runs-on: ubuntu-latest
+    # Warm-cache runs finish well inside this; the bound exists so a hung
+    # toolchain download fails loudly instead of idling to the 6 h default.
+    timeout-minutes: 120
+    steps:
+      # The native row and harness-lab consume ../solide-drivers as a sibling
+      # checkout - recreate that layout inside the workspace (same shape as
+      # checks.yml native-tests). Device envs fetch their own pinned copy via
+      # lib_deps.
+      - uses: actions/checkout@v4
+        with:
+          path: Nimbus
+
+      - name: Resolve solide-drivers ref from platformio.ini (single source of truth)
+        id: solide
+        run: |
+          # Parse the device-build pin rather than duplicating it, so a pin
+          # bump can never diverge this job from the local battery (the exact
+          # drift that bit native-tests at v0.8.1).
+          REF=$(grep -oE 'solide-drivers\.git#v[0-9]+\.[0-9]+\.[0-9]+' Nimbus/platformio.ini | head -1 | cut -d'#' -f2)
+          test -n "$REF" || { echo "could not parse solide-drivers pin from platformio.ini" >&2; exit 1; }
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+          echo "solide-drivers ref: $REF"
+
+      - name: Checkout solide-drivers (public sibling)
+        uses: actions/checkout@v4
+        with:
+          repository: ristllin/solide-drivers
+          ref: ${{ steps.solide.outputs.ref }}
+          path: solide-drivers
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Cache ONLY the package store, never Nimbus/.pio or the harness-lab
+      # build dir: a stale object file can satisfy a link whose source was
+      # deleted - the exact rot this gate exists to catch. The packages are
+      # what turn a cold multi-GB toolchain fetch into seconds; the per-env
+      # compiles always start clean.
+      - name: Cache PlatformIO packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            ~/.cache/pip
+          key: pio-buildall-${{ runner.os }}-${{ hashFiles('Nimbus/platformio.ini') }}
+          restore-keys: |
+            pio-buildall-${{ runner.os }}-
+
+      - name: Install PlatformIO
+        run: pip install platformio
+
+      - name: Install libcurl headers (harness-lab links -lcurl)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libcurl4-openssl-dev
+
+      # The script is the gate: a [ OK ]/[FAIL] marker per row (plus the
+      # failing row's full compiler output), then a non-zero exit if ANY row
+      # failed. Run bare - no pipe, nothing between its exit code and the step
+      # result (AGENTS.md section 3: never mask a gate's exit status).
+      - name: Full build matrix (tools/build_all.sh)
+        working-directory: Nimbus
+        run: bash tools/build_all.sh
