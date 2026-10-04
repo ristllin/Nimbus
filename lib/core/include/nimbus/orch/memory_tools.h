@@ -56,6 +56,8 @@ enum class EmbedFail {
   RouteNotAllowed,  // router refusal: endpoint_not_allowed
   ProviderError,    // any other non-200 HTTP status
   BadResponse,      // a 200 whose body did not parse as an embedding
+  WidthMismatch,    // a vector whose width is not the store's (CUM-469: stored dims
+                    // disagree with the model's native width, e.g. mistral-embed 1024)
   NoModel,          // no embeddings model configured
   BadRequest,       // nothing to embed (empty text)
   Unknown           // an unmapped token (generic line)
@@ -63,9 +65,10 @@ enum class EmbedFail {
 
 // Classify a raw failure token from `agent::embeddings::embedWith` err. Pure +
 // host-tested. `detail` receives ONLY a bounded, secret-safe extra (a KNOWN
-// provider slug for NoKey, or the numeric HTTP status for ProviderError) or is
-// left empty - it NEVER echoes arbitrary raw text, so a key-shaped string in
-// `raw` can never reach the tool result.
+// provider slug for NoKey, the numeric HTTP status for ProviderError, or the two
+// numeric widths "<got>/<expected>" for WidthMismatch) or is left empty - it
+// NEVER echoes arbitrary raw text, so a key-shaped string in `raw` can never
+// reach the tool result.
 EmbedFail classifyEmbedFail(const std::string& raw, std::string& detail);
 
 // Concise, honest cause phrase for a failure class (no "embeddings:" prefix, no

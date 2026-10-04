@@ -9,12 +9,17 @@ using ArduinoJson::JsonDocument;
 namespace nimbus {
 namespace orch {
 
-std::string buildEmbeddingRequest(const std::string& model, const std::string& input, int dims) {
+std::string buildEmbeddingRequest(const std::string& provider, const std::string& model,
+                                  const std::string& input, int dims) {
+  const EmbedWire wire = embedRouteFor(provider).wire;
+  if (wire == EmbedWire::None) return std::string();
   JsonDocument d;
   d["model"] = model;
   d["input"] = input;
-  if (dims > 0) d["dimensions"] = dims;
-  d["encoding_format"] = "float";
+  if (wire == EmbedWire::OpenAI) {
+    if (dims > 0) d["dimensions"] = dims;
+    d["encoding_format"] = "float";
+  }
   std::string out;
   serializeJson(d, out);
   return out;

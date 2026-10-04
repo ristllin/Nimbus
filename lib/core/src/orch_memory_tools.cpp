@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstring>
 #include <utility>
 
 #include "nimbus/mem_cap.h"
@@ -47,8 +48,8 @@ static std::vector<std::string> readSetFor(const Principal& who) {
 // ---- honest embedding-failure reasons (CUM-435) -----------------------------
 // Map the device seam's raw err token (agent::embeddings::embedWith) to a class +
 // honest words. Secret-safe by construction: `detail` is only ever a KNOWN
-// provider slug or a numeric HTTP status, never arbitrary text from `raw`, so a
-// key-shaped string in `raw` cannot reach the tool result. Keep every token here
+// provider slug, a numeric HTTP status, or two numeric widths, never arbitrary text
+// from `raw`, so a key-shaped string in `raw` cannot reach the tool result. Keep every token here
 // in step with what embeddings.cpp emits and the test that iterates the classes.
 namespace {
 bool rawStartsWith(const std::string& s, const char* p) { return s.rfind(p, 0) == 0; }
@@ -67,6 +68,19 @@ EmbedFail classifyHttpToken(const std::string& raw, std::string& detail) {
   }
   detail = code;
   return EmbedFail::ProviderError;
+}
+
+// The digits right after `marker` in `raw` ("" if none). Digits only, so the
+// result is secret-safe whatever else `raw` carries.
+std::string digitsAfter(const std::string& raw, const char* marker) {
+  const size_t at = raw.find(marker);
+  std::string n;
+  if (at == std::string::npos) return n;
+  for (size_t i = at + std::strlen(marker); i < raw.size() && n.size() < 6; i++) {
+    if (raw[i] < '0' || raw[i] > '9') break;
+    n += raw[i];
+  }
+  return n;
 }
 }  // namespace
 
@@ -90,6 +104,13 @@ EmbedFail classifyEmbedFail(const std::string& raw, std::string& detail) {
     for (const char* known : kProviders) if (p == known) { detail = p; break; }
     return EmbedFail::NoKey;
   }
+  // The width contract (nimbus/orch/embedding.h): a vector of the wrong width is a
+  // config mismatch, not a malformed reply, so it gets its own words + fix (CUM-469).
+  if (rawStartsWith(raw, "parse: dim mismatch")) {
+    const std::string got = digitsAfter(raw, "got "), want = digitsAfter(raw, "expected ");
+    if (!got.empty() && !want.empty()) detail = got + "/" + want;
+    return EmbedFail::WidthMismatch;
+  }
   if (rawStartsWith(raw, "parse:")) return EmbedFail::BadResponse;
   if (rawStartsWith(raw, "HTTP "))  return classifyHttpToken(raw, detail);
   return EmbedFail::Unknown;
@@ -102,6 +123,13 @@ std::string embedFailWords(EmbedFail kind, const std::string& detail) {
                           : ("no embeddings key for " + detail);
   if (kind == EmbedFail::ProviderError)
     return detail.empty() ? "provider error" : ("provider error HTTP " + detail);
+  if (kind == EmbedFail::WidthMismatch) {
+    const size_t slash = detail.find('/');
+    if (slash == std::string::npos)
+      return "the embedding size doesn't match the memory setting";
+    return "the model returns " + detail.substr(0, slash) +
+           "-wide embeddings but memory is set to " + detail.substr(slash + 1);
+  }
   static const struct { EmbedFail k; const char* w; } kW[] = {
     {EmbedFail::None,            ""},
     {EmbedFail::KeyRejected,     "the embeddings key was rejected"},
@@ -127,6 +155,8 @@ std::string embedFailReason(const std::string& raw) {
   if (w.empty()) w = "unavailable";
   std::string out = "embeddings: " + w;
   if (k == EmbedFail::NoKey) out += " (set an embeddings key in Settings > Providers)";
+  if (k == EmbedFail::WidthMismatch)
+    out += " (set Dimensions to the model's size in Memory > Embedding model)";
   return out;
 }
 
@@ -137,6 +167,25 @@ std::string embedFailLabelReason(const std::string& raw) {
   std::string detail;
   std::string w = embedFailWords(classifyEmbedFail(raw, detail), detail);
   return w.empty() ? std::string("unavailable") : w;
+}
+
+// Embed `text` for a store `width` wide. A vector of any other width can never be
+// stored or compared - VectorMemory::add rejects it and search matches nothing - so
+// it is refused HERE with the same token the response parser emits, and every tool
+// reports the mismatch honestly (CUM-469). Without this a mismatch read as
+// "duplicate of an existing memory" on write, as an empty result on search, and an
+// update deleted the old fact before its replacement failed to store. It happens
+// whenever the stored dims disagree with what the model returns (dims=0 on a
+// 256-wide store, or a seam that does not check the width, like nimbusd's).
+std::vector<int8_t> embedForStore(const MemoryContext& ctx, int width, const std::string& text,
+                                  std::string& err) {
+  std::vector<int8_t> v = ctx.embed(text, err);
+  if (!v.empty() && (int)v.size() != width) {
+    err = "parse: dim mismatch: got " + std::to_string(v.size()) + " expected " +
+          std::to_string(width);
+    v.clear();
+  }
+  return v;
 }
 
 // Mirror of VectorMemory nsVisible (orch_vector_memory.cpp): an empty allow-list
@@ -271,7 +320,7 @@ ToolResult doWrite(const MemoryContext& ctx, JsonObjectConst a, const Principal&
   if (content.empty()) return ToolResult::fail("missing 'content'");
   if (!ctx.vec || !ctx.embed) return ToolResult::fail("memory engine unavailable");
   std::string eerr;
-  std::vector<int8_t> vec = ctx.embed(content, eerr);
+  std::vector<int8_t> vec = embedForStore(ctx, ctx.vec->dims(), content, eerr);
   // No embedding, no store: the vector store has no deferred-embedding path
   // (add() needs a full-width vector), so refuse HONESTLY with the real cause
   // instead of the old fixed guess - never store the text as if it were embedded.
@@ -322,7 +371,7 @@ ToolResult doUpdate(const MemoryContext& ctx, JsonObjectConst a, const Principal
   // BEFORE removing anything, so a failed update can never delete the old fact and
   // leave nothing in its place (CUM-435).
   std::string eerr;
-  std::vector<int8_t> vec = ctx.embed(content, eerr);
+  std::vector<int8_t> vec = embedForStore(ctx, ctx.vec->dims(), content, eerr);
   if (vec.empty()) return ToolResult::fail(embedFailReason(eerr) + " (memory not changed)");
 
   // Identify the memory to replace: explicit id, else the nearest match to 'old'/'query'.
@@ -332,7 +381,7 @@ ToolResult doUpdate(const MemoryContext& ctx, JsonObjectConst a, const Principal
     if (q.empty()) q = strArg(a, "query");
     if (!q.empty()) {
       std::string qerr;
-      std::vector<int8_t> qv = ctx.embed(q, qerr);
+      std::vector<int8_t> qv = embedForStore(ctx, ctx.vec->dims(), q, qerr);
       if (!qv.empty()) {
         auto hits = ctx.vec->search(qv, 1, 0, readSetFor(who));
         // Only treat it as "the same fact" if it's genuinely close (cosine sim >= 0.55),
@@ -463,7 +512,7 @@ ToolResult doSearch(const MemoryContext& ctx, JsonObjectConst a, const Principal
         : (ctx.cfg ? ctx.cfg->retrievalCount : 5);
   if (k < 1) k = 1;
   std::string eerr;
-  std::vector<int8_t> qv = ctx.embed(query, eerr);
+  std::vector<int8_t> qv = embedForStore(ctx, ctx.vec->dims(), query, eerr);
   // Degrade instead of hard-failing: a keyword scan over the same rows + the same
   // read boundary, clearly labelled, so recall is not simply "empty" (CUM-435).
   if (qv.empty()) return lexicalSearchFallback(ctx, query, k, who, eerr);
@@ -547,7 +596,7 @@ ToolResult doArchiveSearch(const MemoryContext& ctx, JsonObjectConst a, const Pr
         : (ctx.cfg ? ctx.cfg->retrievalCount : 5);
   if (k < 1) k = 1;
   std::string eerr;
-  std::vector<int8_t> qv = ctx.embed(query, eerr);
+  std::vector<int8_t> qv = embedForStore(ctx, ctx.archive->dims(), query, eerr);
   if (qv.empty()) return lexicalArchiveFallback(ctx, query, k, who, eerr);
   auto hits = ctx.archive->search(qv, k, readSetFor(who));
   float thr = ctx.cfg ? ctx.cfg->relevanceThreshold : 0.0f;
@@ -572,7 +621,7 @@ static std::string resolveRestoreId(const MemoryContext& ctx, JsonObjectConst a,
   std::string q = strArg(a, "query");
   if (q.empty() || !ctx.embed) return std::string();
   std::string qerr;
-  std::vector<int8_t> qv = ctx.embed(q, qerr);
+  std::vector<int8_t> qv = embedForStore(ctx, ctx.archive->dims(), q, qerr);
   if (qv.empty()) return std::string();   // restore-by-id still works; refuses cleanly
   auto hits = ctx.archive->search(qv, 1, readSetFor(who));
   if (!hits.empty() && (1.0f - hits[0].distance) >= 0.55f) return hits[0].id;

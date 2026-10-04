@@ -148,6 +148,16 @@ class VectorMemory {
   void configure(int dims) { dims_ = dims > 0 ? dims : 256; }
   int  dims() const { return dims_; }
   int  size() const { return (int)entries_.size(); }
+  // An EMPTY store takes `dims` (CUM-469). A wiped store persisted before an
+  // embed-config change carries the OLD width in its blob header, and deserialize()
+  // adopts the header, so after a reboot the store stayed at the old width while the
+  // provider returned the new one and every write was refused. A store holding
+  // vectors is never re-widened (they would be stranded). True when it changed.
+  bool adoptWidthIfEmpty(int dims) {
+    if (!entries_.empty() || dims <= 0 || dims == dims_) return false;
+    dims_ = dims;
+    return true;
+  }
 
   // Cap the working set. 0 = unlimited (default). When add() would exceed the cap
   // it evicts the entry with the LOWEST retention score = importance * ttl-left

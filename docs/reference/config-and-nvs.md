@@ -301,7 +301,7 @@ are read back into the web UI.
 |---|---|---|---|
 | `embProv` | string | `"openai"` | Embedding provider (`openai\|mistral\|cumulo`). `cumulo` routes the OpenAI embed models through the Cumulo Nimbus router with the one router key, metered on credits like every other router call, so a device that carries only a Cumulo key still has working memory. |
 | `embModel` | string | `"text-embedding-3-small"` | Embedding model |
-| `embDims` | int | `256` | Embedding width; `0` = provider-native |
+| `embDims` | int | `256` | Embedding width. Must equal what the model returns: Mistral has no width field, so `mistral-embed` needs `1024`. Saving `0` stores the model's own width, read with one live call |
 | `embLocked` | bool | `false` | Flips `true` the first time a vector is embedded |
 
 ## Credential-gate rails (model vs. human)
@@ -395,5 +395,9 @@ unless `reset=1` is passed. `reset=1` is the destructive path - it
 **flushes and wipes the VDB** (`flushAll` + `persistVectors`), clears
 `embLocked`, then writes the new config and reconfigures the engine to the new
 dims. A change can therefore never silently strand incomparable vectors; the web
-UI must warn and require the explicit reset. `provider` must be `openai` or
-`mistral` and `model` is required (else HTTP 400).
+UI must warn and require the explicit reset. `provider` must be `openai`,
+`mistral`, or `cumulo` and `model` is required (else HTTP 400). `dims=0` is
+resolved to the model's own width with one live embeddings call before it is
+stored (HTTP 400 with the cause if that call fails), so the vector store never
+holds a width no model fills. At boot an empty vector store takes the configured
+width, so a wiped store never keeps the width of the config it replaced.

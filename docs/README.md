@@ -78,7 +78,7 @@ Three other generators read this tree - keep them in sync when you edit:
 | `reference/config-and-nvs.md` | Config keys and NVS layout |
 | `reference/tool-catalog.md` | The tool catalog |
 | `reference/turn-contract.md` | The turn contract |
-| `reference/capabilities-matrix.md` | Provider x role x feature matrix (generated from the catalog) |
+| `reference/capabilities-matrix.md` | Provider x role x feature matrix, plus the memory-embeddings request per provider (generated from the catalog and the embeddings builder) |
 | `tools-and-commands.md` | User and contributor tools and console commands |
 | `changelog.md` | Release history |
 

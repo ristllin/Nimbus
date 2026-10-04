@@ -6,6 +6,9 @@
 #include <string>
 #include <vector>
 
+#include <ArduinoJson.h>
+
+#include "nimbus/orch/embedding.h"
 #include "nimbus/orch/model_catalog.h"
 #include "nimbus/orch/provider_slots.h"
 
@@ -64,6 +67,56 @@ static bool fileExists(const char* path) {
   return true;
 }
 
+// CUM-469: which providers the DEVICE can embed memories with, and the exact request
+// it sends each one. The catalog's Embedding column above only says a provider HAS an
+// embedding model; Mistral was "yes" there while every device embed call to it 422'd,
+// because one OpenAI-shaped body went to every provider. These rows come from the
+// real route table + request builder (nimbus/orch/embedding.h) over the same
+// registry, so a provider gets an honest row (or an explicit "no") the moment it is
+// added, and the request-field list changes here whenever the builder's output does.
+static std::string bodyFields(const std::string& body, bool& carriesWidth) {
+  ArduinoJson::JsonDocument d;
+  carriesWidth = false;
+  if (deserializeJson(d, body)) return "";
+  std::string out;
+  for (ArduinoJson::JsonPairConst kv : d.as<ArduinoJson::JsonObjectConst>()) {
+    if (!out.empty()) out += ", ";
+    out += std::string("`") + kv.key().c_str() + "`";
+    if (std::strcmp(kv.key().c_str(), "dimensions") == 0) carriesWidth = true;
+  }
+  return out;
+}
+
+static std::string buildEmbeddingsSection() {
+  std::string md;
+  md += "\n## Memory embeddings\n\n";
+  md += "Which providers the device can embed long-term memories with (Memory >\n";
+  md += "Embedding model). Generated from the embeddings route table and request\n";
+  md += "builder (`lib/core/include/nimbus/orch/embedding.h`), so each row shows the\n";
+  md += "request the device really sends. `Width` says what sets the vector width:\n";
+  md += "`Dimensions` when the request carries the saved Dimensions, `model` when the\n";
+  md += "provider has no width field and the model's own width comes back\n";
+  md += "(mistral-embed: 1024), so Dimensions must equal it. A vector of any other\n";
+  md += "width is refused, never truncated.\n\n";
+  md += "| Provider | Memory embeddings | Endpoint | Request fields | Width |\n";
+  md += "|---|---|---|---|---|\n";
+  for (const ProviderSlot& slot : kProviderSlots) {
+    const EmbedRoute r = embedRouteFor(slot.slug);
+    if (!r.known) {
+      md += std::string("| ") + slot.slug + " | no | - | - | - |\n";
+      continue;
+    }
+    bool carriesWidth = false;
+    const std::string fields =
+        bodyFields(buildEmbeddingRequest(slot.slug, "m", "x", 256), carriesWidth);
+    TEST_ASSERT_FALSE_MESSAGE(fields.empty(), slot.slug);   // a routed provider must build a body
+    md += std::string("| ") + slot.slug + " | yes | `" + r.path + "`" +
+          (r.viaCumuloRouter ? " (router key)" : "") + " | " + fields + " | " +
+          (carriesWidth ? "Dimensions" : "model") + " |\n";
+  }
+  return md;
+}
+
 // CUM-246: the matrix is driven by the canonical provider registry, NOT a list
 // hand-copied beside it. The old rows[] = {openai, anthropic, mistral, zai} was
 // exactly the "provider-list hardcode" anti-pattern this issue guards: a provider
@@ -112,6 +165,7 @@ static std::string buildMatrix() {
   md += "\nCumulo Nimbus is a router: each role inherits the capabilities of the upstream\n";
   md += "chosen for it (the model id is `<upstream>/<model>`), so its row is the union of\n";
   md += "whichever upstreams the admin enables.\n";
+  md += buildEmbeddingsSection();
   return md;
 }
 

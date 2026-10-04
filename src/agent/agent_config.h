@@ -411,9 +411,9 @@ static_assert(ORCH_TURN_MIN_LARGEST_BLOCK == nimbus::cloud::kRelayHeapFloorLarge
 // LOCKED flips true the first time a vector is embedded; the web UI must warn +
 // require an explicit reset before changing a locked config. Defaults are the
 // design's choice: OpenAI text-embedding-3-small truncated to 256 dims.
-#define AKEY_EMBED_PROVIDER "embProv"     // "openai" | "mistral"
+#define AKEY_EMBED_PROVIDER "embProv"     // "openai" | "mistral" | "cumulo"
 #define AKEY_EMBED_MODEL    "embModel"
-#define AKEY_EMBED_DIMS     "embDims"     // int (0 = provider default width)
+#define AKEY_EMBED_DIMS     "embDims"     // int, the model's output width (embedcfg resolves 0 to it)
 #define AKEY_EMBED_LOCKED   "embLocked"   // bool: a vector has been embedded
 #define AKEY_USAGE_LEDGER   "usgLedger"   // per-provider monthly usage+budget blob (UsageLedger::serialize)
 #define EMBED_DEFAULT_PROVIDER "openai"
