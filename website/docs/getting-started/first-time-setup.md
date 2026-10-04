@@ -96,6 +96,10 @@ then numbers itself.
 | a second nearby | `Nimbus-2-setup` | `nimbus-2.local` |
 | a third | `Nimbus-3-setup` | `nimbus-3.local` |
 
+It counts only the setup networks that are on when it first starts. A device that
+has already joined your Wi-Fi turns its setup network off, so a device added later
+can also call itself `Nimbus`, and one of the two then needs a new name.
+
 Rename it later under **Settings > Mode & identity**. One name drives the setup
 Wi-Fi, the network address, the Bluetooth name, and what the assistant calls
 itself; a rename takes effect on the next restart.

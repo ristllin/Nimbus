@@ -530,12 +530,16 @@ void dispatch(String line) {
   if (line == "WIFIAP?") {
     // TEST SEAM (CUM-190 HIL): report the setup-AP state + uptime so a poll can watch
     // the AP address return and confirm the device did NOT reset (uptime monotonic).
-    Serial.printf("WIFIAP? ssid=%s ip=%s up=%d sta=%d onboarded=%d uptime=%lu\n",
+    // radio= (CUM-468) is what the setup-AP reconcile now decides on - the driver's own
+    // AP state (net::apRadioUp), which up= (the netif address) cannot show. Appended
+    // last so every existing WIFIAP? regex still matches.
+    Serial.printf("WIFIAP? ssid=%s ip=%s up=%d sta=%d onboarded=%d uptime=%lu radio=%d\n",
                   nimbus::net::apSsid().c_str(), nimbus::net::apIp().c_str(),
                   (int)(nimbus::net::apIp() != "0.0.0.0" && nimbus::net::apIp().length() > 0),
                   (int)nimbus::net::staConnected(),
                   (int)agent::store::onboarded(),
-                  (unsigned long)millis());
+                  (unsigned long)millis(),
+                  (int)nimbus::net::apRadioUp());
     Serial.flush();
     return;
   }

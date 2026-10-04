@@ -33,7 +33,14 @@ void dropSoftAP();
 
 // Bring the SoftAP back (STA is down) so the setup/recovery web page is reachable
 // whenever the device can't reach Wi-Fi. Dropped again on the next GOT_IP.
-void restoreSoftAP();
+// Returns apRadioUp() after the attempt: true only if the radio really has it.
+bool restoreSoftAP();
+
+// The setup AP is up AT THE RADIO: the driver's mode includes AP and it has
+// reported the AP started (WIFI_EVENT_AP_START, no AP_STOP since). Not the same as
+// apIp() != "0.0.0.0": the AP netif keeps its static address even when the AP
+// never started (CUM-468). This is what the setup-AP reconcile feeds decideSetupAp.
+bool   apRadioUp();
 
 bool   staConnected();
 bool   staConfigured();        // an STA SSID is set (connected, or connecting/down)

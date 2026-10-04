@@ -8,7 +8,7 @@
 //
 // Why this exists (CUM-190). During first-time setup the softAP is the owner's only
 // lifeline, yet several paths can take it down while onboarding is unfinished: a
-// failed softAP() (reports 0.0.0.0), the white-screen beacon-drop after the STA
+// failed softAP() (never started), the white-screen beacon-drop after the STA
 // joins, and - the nastiest - a wrong Wi-Fi password, which makes the core retry the
 // association forever and starve the AP's beacons on the single shared 2.4 GHz radio
 // (softAP() still reports success while the network cannot be seen). The device then
@@ -32,7 +32,10 @@ struct SetupApInputs {
   bool     orchestrator = false;  // the radio only runs in Orchestrator mode (Notifier is BLE-only)
   bool     tftBoard     = false;  // the AP-beacon white-screen risk applies to the jumper-wired TFT only
   bool     staConnected = false;  // WL_CONNECTED && localIP() != 0
-  bool     apAddressed  = false;  // softAPIP() != 0.0.0.0 (a failed AP reports 0.0.0.0)
+  // The AP is up AT THE RADIO (net::apRadioUp: driver mode includes AP + AP_START seen).
+  // NOT softAPIP() != 0.0.0.0: the AP netif keeps its static address even when the AP
+  // never started, which hid a failed softAP from this policy (CUM-468).
+  bool     apAddressed  = false;
   bool     onboarded    = true;   // the setup wizard has finished (store::onboarded())
   bool     handoffGrace = false;  // just-joined grace window before a white-screen drop
   uint32_t msSinceJoin  = 0;      // since the last credential test began; 0 = none pending

@@ -6344,12 +6344,14 @@ void loop() {
     g_restoreApPending = false;
     g_lastApReconcileMs = now;
     const bool connected = WiFi.status() == WL_CONNECTED && (uint32_t)WiFi.localIP() != 0u;
-    const bool apUp = (uint32_t)WiFi.softAPIP() != 0u;
     nimbus::wifi::SetupApInputs si;
     si.orchestrator = g_orchMode;
     si.tftBoard     = g_screenIsTft;
     si.staConnected = connected;
-    si.apAddressed  = apUp;
+    // CUM-468: radio truth, not the netif address. softAPIP() stays 192.168.4.1 even
+    // when the AP never started, so a genuinely failed softAP never triggered
+    // RestoreAp. The policy itself is unchanged; only this input seam is.
+    si.apAddressed  = net::apRadioUp();
     si.onboarded    = agent::store::onboarded();
     si.handoffGrace = g_apHandoffArmed ||
                       (g_dropApAfterMs != 0 && int32_t(now - g_dropApAfterMs) < 0);
@@ -6364,11 +6366,22 @@ void loop() {
         g_dropApAfterMs = 0;
         agent::alog("[net] SoftAP dropped on a TFT board (white-screen mitigation)");
         break;
-      case nimbus::wifi::SetupApAct::RestoreAp:
+      case nimbus::wifi::SetupApAct::RestoreAp: {
         g_dropApAfterMs = 0;
-        net::restoreSoftAP();
-        agent::alog("[net] Wi-Fi down - SoftAP restored so setup/recovery is reachable");
+        // Log what the radio reports, not that we asked. Now that radio truth feeds
+        // the policy, an AP that cannot start is retried on every 3 s reconcile; log
+        // that failure once per run (alog is durable - a line per retry would wear
+        // flash), and log the restore that finally lands (CUM-468).
+        static bool s_apRestoreFailing = false;
+        if (net::restoreSoftAP()) {
+          s_apRestoreFailing = false;
+          agent::alog("[net] Wi-Fi down - SoftAP restored so setup/recovery is reachable");
+        } else if (!s_apRestoreFailing) {
+          s_apRestoreFailing = true;
+          agent::alog("[net] Wi-Fi down - SoftAP restore failed at the radio; retrying");
+        }
         break;
+      }
       case nimbus::wifi::SetupApAct::ProtectAp:
         net::publishSetupNetwork();
         agent::alog("[net] setup join stalled - setup network re-published (no restart needed)");
