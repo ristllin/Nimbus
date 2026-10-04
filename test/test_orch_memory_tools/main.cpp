@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "nimbus/orch/embedding.h"
 #include "nimbus/orch/memory_tools.h"
 
 using namespace nimbus::orch;
@@ -26,6 +27,10 @@ static uint32_t     g_now;
 // can drive the honest-reason mapping + the keyword fallback deterministically.
 static bool        g_embedFail = false;
 static std::string g_embedErr;
+// When >0, the fake embedder SUCCEEDS but returns a vector this wide - a model whose
+// native width disagrees with the 4-wide stores (CUM-469: mistral-embed's 1024 on a
+// store configured for another width).
+static int         g_embedWidth = 0;
 
 // Deterministic FAKE embedder: a tiny keyword->direction map so tests fully
 // control recall geometry without a network. 4-dim vectors, one axis per topic;
@@ -34,6 +39,7 @@ static std::string g_embedErr;
 static std::vector<int8_t> fakeEmbed(const std::string& text, std::string& err) {
   if (g_embedFail) { err = g_embedErr; return {}; }
   err.clear();
+  if (g_embedWidth > 0) return std::vector<int8_t>((size_t)g_embedWidth, 40);
   auto has = [&](const char* w) { return text.find(w) != std::string::npos; };
   if (has("teal") || has("color")) return {127, 0, 0, 0};
   if (has("ship") || has("deadline") || has("friday")) return {0, 127, 0, 0};
@@ -51,6 +57,7 @@ static ToolRegistry buildServer(bool withArchive = true) {
   g_now = 100;
   g_embedFail = false;
   g_embedErr.clear();
+  g_embedWidth = 0;
   MemoryContext ctx;
   ctx.vec = &g_vec; ctx.scratch = &g_scratch; ctx.cfg = &g_cfg;
   ctx.episodic = &g_epi;
@@ -697,6 +704,8 @@ static void test_embed_reason_classes_are_distinct_and_honest() {
     {"HTTP 402 funding_cap_reached", EmbedFail::OutOfCredit,     "credit"},
     {"HTTP 429 rate_limited",        EmbedFail::RateLimited,     "rate limited"},
     {"HTTP 403 endpoint_not_allowed",EmbedFail::RouteNotAllowed, "not allowed"},
+    // CUM-469: a width mismatch is a config mismatch, not a malformed reply.
+    {"parse: dim mismatch: got 1024 expected 256", EmbedFail::WidthMismatch, "1024-wide"},
   };
   for (const auto& r : rows) {
     std::string detail;
@@ -711,6 +720,22 @@ static void test_embed_reason_classes_are_distinct_and_honest() {
   }
   // NoKey names the setting to fix.
   TEST_ASSERT_TRUE(has(embedFailReason("no embeddings key for mistral"), "Settings"));
+  // The token is the response parser's own refusal, prefixed the way the device seam
+  // prefixes it (embeddings.cpp: "parse: " + perr): rewording the parser must not
+  // silently demote a width mismatch to "malformed response".
+  {
+    std::vector<float> f; std::string perr;
+    TEST_ASSERT_FALSE(parseEmbeddingResponse(R"({"data":[{"embedding":[1,2,3]}]})", 256, f, perr));
+    std::string detail;
+    TEST_ASSERT_EQUAL_INT((int)EmbedFail::WidthMismatch,
+                          (int)classifyEmbedFail("parse: " + perr, detail));
+    TEST_ASSERT_EQUAL_STRING("3/256", detail.c_str());
+  }
+  // WidthMismatch names both widths and the setting to fix; never "malformed".
+  const std::string wm = embedFailReason("parse: dim mismatch: got 1024 expected 256");
+  TEST_ASSERT_TRUE(has(wm, "1024-wide embeddings but memory is set to 256"));
+  TEST_ASSERT_TRUE(has(wm, "Dimensions"));
+  TEST_ASSERT_FALSE(has(wm, "malformed"));
   // An unmapped token degrades to the generic line, never a crash or a false class.
   std::string d;
   TEST_ASSERT_EQUAL_INT((int)EmbedFail::Unknown, (int)classifyEmbedFail("brand new cause", d));
@@ -720,7 +745,7 @@ static void test_embed_reason_classes_are_distinct_and_honest() {
     EmbedFail::NoKey, EmbedFail::KeyRejected, EmbedFail::Busy, EmbedFail::Unreachable,
     EmbedFail::Timeout, EmbedFail::OutOfCredit, EmbedFail::RateLimited,
     EmbedFail::RouteNotAllowed, EmbedFail::ProviderError, EmbedFail::BadResponse,
-    EmbedFail::NoModel, EmbedFail::BadRequest, EmbedFail::Unknown};
+    EmbedFail::WidthMismatch, EmbedFail::NoModel, EmbedFail::BadRequest, EmbedFail::Unknown};
   std::vector<std::string> seen;
   for (EmbedFail k : kinds) {
     std::string w = embedFailWords(k, "");
@@ -728,6 +753,50 @@ static void test_embed_reason_classes_are_distinct_and_honest() {
     for (const auto& s : seen) TEST_ASSERT_FALSE(w == s);   // distinct
     seen.push_back(w);
   }
+}
+
+// CUM-469: a vector whose width is not the store's must be refused honestly by every
+// tool. Before, write said "duplicate of an existing memory" (add() rejected the
+// width and the false return read as dedup), search returned "no memories", and
+// update deleted the old fact before its replacement failed to store.
+static void test_width_mismatch_is_refused_honestly_by_every_tool() {
+  ToolRegistry reg = buildServer();
+  TEST_ASSERT_TRUE(call(reg, "memory.write", R"({"content":"I take my coffee black"})").success);
+  TEST_ASSERT_EQUAL_INT(1, g_vec.size());
+  const std::string oldId = g_vec.getAll()[0].id;
+
+  g_embedWidth = 1024;   // the model now returns 1024-wide vectors; the store is 4-wide
+  ToolResult w = call(reg, "memory.write", R"({"content":"the project ships friday"})");
+  TEST_ASSERT_FALSE(w.success);
+  TEST_ASSERT_FALSE(has(w.output, "duplicate"));
+  TEST_ASSERT_TRUE(has(w.error, "1024-wide embeddings but memory is set to 4"));
+  TEST_ASSERT_TRUE(has(w.error, "memory not stored"));
+  TEST_ASSERT_EQUAL_INT(1, g_vec.size());
+
+  // update by id: refused BEFORE the old fact is removed.
+  const std::string args = std::string(R"({"id":")") + oldId + R"(","content":"flat white"})";
+  ToolResult u = call(reg, "memory.update", args.c_str());
+  TEST_ASSERT_FALSE(u.success);
+  TEST_ASSERT_TRUE(has(u.error, "memory not changed"));
+  TEST_ASSERT_EQUAL_INT(1, g_vec.size());
+  TEST_ASSERT_EQUAL_STRING("I take my coffee black", g_vec.getAll()[0].content.c_str());
+
+  // search degrades to the labelled keyword scan with the real cause.
+  ToolResult s = call(reg, "memory.search", R"({"query":"coffee","n_results":5})");
+  TEST_ASSERT_TRUE(s.success);
+  TEST_ASSERT_TRUE(has(s.output, "keyword match, embeddings unavailable"));
+  TEST_ASSERT_TRUE(has(s.output, "memory is set to 4"));
+  TEST_ASSERT_TRUE(has(s.output, "coffee black"));
+
+  // archive search: the same guard against the archive's width.
+  ToolResult a = call(reg, "memory.archive", R"({"action":"search","query":"coffee"})");
+  TEST_ASSERT_TRUE(a.success);
+  TEST_ASSERT_TRUE(has(a.output, "memory is set to 4"));
+
+  // Matching width again: writes store normally.
+  g_embedWidth = 4;
+  TEST_ASSERT_TRUE(call(reg, "memory.write", R"({"content":"the project ships friday"})").success);
+  TEST_ASSERT_EQUAL_INT(2, g_vec.size());
 }
 
 // A raw err carrying a key-shaped / Authorization string must never reach the tool
@@ -898,6 +967,7 @@ int main(int, char**) {
   RUN_TEST(test_archive_is_namespace_scoped);
   RUN_TEST(test_archive_restore_respects_quota);
   RUN_TEST(test_embed_reason_classes_are_distinct_and_honest);
+  RUN_TEST(test_width_mismatch_is_refused_honestly_by_every_tool);
   RUN_TEST(test_embed_reason_never_leaks_a_key);
   RUN_TEST(test_search_falls_back_to_keyword_when_embeddings_down);
   RUN_TEST(test_search_fallback_honors_namespace_scoping);

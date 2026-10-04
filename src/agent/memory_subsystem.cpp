@@ -378,6 +378,14 @@ void begin() {
     if (blob.length() && !g_vec.deserialize(std::string(blob.c_str(), blob.length())))
       alog("memory: vector blob partial/garbage - loaded what parsed");
   }
+  // An EMPTY store takes the configured width (CUM-469): embedcfg reset=1 persists
+  // the wiped store before the new width is applied, so its blob header carries the
+  // OLD width (e.g. 256 while mistral-embed returns 1024). Host-tested rule.
+  {
+    const int was = g_vec.dims();
+    if (g_vec.adoptWidthIfEmpty(store::embedDims() > 0 ? store::embedDims() : EMBED_DEFAULT_DIMS))
+      alogf("memory: empty store width %d -> configured %d", was, g_vec.dims());
+  }
   // Cold store for TTL-expired memories (CUM-225). SD-only: on a card-less device we
   // never attach it, so prune drops at TTL exactly as before. On the card, load the
   // archive blob and attach it as the prune sink so expiry MOVES entries here (the

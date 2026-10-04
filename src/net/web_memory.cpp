@@ -640,19 +640,54 @@ void handleEmbedCfgPost(AsyncWebServerRequest* r) {
   if (provider != "openai" && provider != "mistral" && provider != "cumulo") { sendJson(r, 400, "{\"error\":\"provider must be openai|mistral|cumulo\"}"); return; }
   if (!model.length()) { sendJson(r, 400, "{\"error\":\"model required\"}"); return; }
 
+  static const char* kLocked =
+      "{\"error\":\"embed config is locked (vectors exist). Pass reset=1 to WIPE the vector memory and re-set it.\"}";
   if (agent::store::embedLocked() && !reset) {
-    sendJson(r, 409, "{\"error\":\"embed config is locked (vectors exist). Pass reset=1 to WIPE the vector memory and re-set it.\"}");
+    sendJson(r, 409, kLocked);
     return;
+  }
+  // dims=0 means "the model's own width" (the UI's "0 = provider default"). The
+  // vector store needs a fixed width before its first vector, so resolve it now with
+  // one live call (outside the memory lock, like every TLS call) instead of storing
+  // 0: that configured a 256-wide store no 1024/1536-wide model could fill, so every
+  // memory write was refused (CUM-469, mistral-embed is fixed at 1024).
+  if (dims <= 0) {
+    String err;
+    auto v = agent::embeddings::embedWith("nimbus embedding check", err, provider, model, 0);
+    if (v.empty()) {
+      const String msg = String("Couldn't read the model's embedding size (") + err +
+                         "). Set Dimensions and try again.";
+      JsonDocument e;
+      e["error"] = msg;
+      String out; serializeJson(e, out); sendJson(r, 400, out);
+      return;
+    }
+    dims = (int)v.size();
   }
   {
     mem::Lock lk;   // WIPE + reconfigure the VDB atomically wrt the turn task
+    // Re-check under the lock: the dims=0 call above can take seconds, and a turn may
+    // have stored the first vector meanwhile. Re-widening a store that holds vectors
+    // without the wipe would leave them at the old width (search reads past them and
+    // the next persist writes a blob boot rejects).
+    if (!reset && (agent::store::embedLocked() || mem::vectors().size() > 0)) {
+      sendJson(r, 409, kLocked);
+      return;
+    }
     if (reset) {
       mem::vectors().flushAll();
       mem::persistVectors();
       agent::store::setEmbedLocked(false);
     }
     agent::store::setEmbedConfig(provider, model, dims);
-    mem::vectors().configure(dims > 0 ? dims : 256);
+    mem::vectors().configure(dims);
+    // The cold store follows the live width, the same rule boot applies
+    // (memory_subsystem begin()): archived vectors of another width can never be
+    // searched or restored again, and the memory tools would name the wrong width.
+    if (mem::archive().dims() != dims) {
+      mem::archive().flushAll();
+      mem::archive().configure(dims);
+    }
   }
   handleEmbedCfgGet(r);
 }

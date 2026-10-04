@@ -67,8 +67,10 @@ std::vector<int8_t> embedWith(const String& text, String& err, const String& pro
   if (text.length() == 0) { err = "empty text"; return {}; }
   if (model.length() == 0) { err = "no model"; return {}; }
 
+  // Provider-aware body (CUM-469): mistral gets {model, input} - its schema has no
+  // `dimensions`, which is why the one OpenAI-shaped body 422'd on every call.
   std::string body = nimbus::orch::buildEmbeddingRequest(
-      std::string(model.c_str()), std::string(text.c_str()), dims);
+      std::string(provider.c_str()), std::string(model.c_str()), std::string(text.c_str()), dims);
 
   if (!arbiter::acquireWork(12000)) { err = "tls busy"; return {}; }
 

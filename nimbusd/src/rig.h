@@ -776,15 +776,17 @@ class NimbusdRig {
     if (key.empty())          { err = "no embeddings key for " + opt_.embedHost; return {}; }
     if (text.empty())         { err = "empty text"; return {}; }
     if (opt_.embedModel.empty()) { err = "no model"; return {}; }
+    // One provider decision drives both the host and the body dialect (CUM-469:
+    // the portable builder is provider-aware, so mistral never gets OpenAI fields).
+    const std::string prov = opt_.embedHost == "mistral" ? "mistral" : "openai";
     agent::HttpRequest req;
     req.method = "POST";
-    req.host = opt_.embedHost == "mistral" ? "api.mistral.ai" : "api.openai.com";
+    req.host = prov == "mistral" ? "api.mistral.ai" : "api.openai.com";
     req.path = "/v1/embeddings";
     req.timeoutMs = 30000;
     req.headers.push_back({"Content-Type", "application/json"});
     req.headers.push_back({"Authorization", "Bearer " + key});
-    req.body = orch::buildEmbeddingRequest(opt_.embedModel, text,
-                                           opt_.embedHost == "mistral" ? 0 : opt_.embedDims);
+    req.body = orch::buildEmbeddingRequest(prov, opt_.embedModel, text, opt_.embedDims);
     agent::HttpResponse resp;
     std::string httpErr;
     if (!http_->exec(req, resp, httpErr))            { err = "connect failed"; return {}; }

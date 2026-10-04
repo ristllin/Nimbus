@@ -233,7 +233,9 @@ void     setVerify(const String& provider, int8_t r, uint32_t ts);
 // the caller so this stays a plain accessor).
 String embedProvider();      // default "openai"
 String embedModel();         // default "text-embedding-3-small"
-int    embedDims();          // default 256 (0 = provider-native width)
+int    embedDims();          // default 256; must equal the model's output width. POST
+                             // /api/mem/embedcfg resolves dims=0 to it before storing
+                             // (CUM-469), so 0 is only ever a legacy stored value.
 bool   embedLocked();        // true once the first vector was embedded
 void   setEmbedConfig(const String& provider, const String& model, int dims);
 void   setEmbedLocked(bool v);
