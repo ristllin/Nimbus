@@ -53,7 +53,11 @@ the commented `symlink://../solide-drivers` line in `platformio.ini`.
 | `beep`, `mictest`, `tftmin`, `tfttouch`, `tftbringup` (+`-uart`) | Single-purpose hardware diagnostics |
 
 `tools/build_all.sh` compiles the whole matrix - a compile-only gate before a
-release. The full annotated list is in
+release. CI runs the same script (the `build-all` workflow) on pull requests
+that touch a build input (`src/`, `lib/`, `include/`, `platformio.ini`,
+`tools/harness-lab/`, or the script itself), on pushes to `main` touching those
+paths, and on a weekly schedule - so an environment only this matrix compiles
+can no longer rot unseen. The full annotated list is in
 [Tools & commands](tools-and-commands.md).
 
 ## The verification ladder
