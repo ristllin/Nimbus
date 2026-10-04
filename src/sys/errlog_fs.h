@@ -34,6 +34,13 @@ void begin();
 // point of the log is to survive failures, not to become one).
 void append(const std::string& redacted, const char* cat);
 
+// Factory-erase suspension: while true, append() keeps the RAM tail (and the
+// caller's Serial print) but drops the durable flash write, so the sweep's own
+// progress lines cannot recreate the /log tree it just erased. Set from the
+// main-loop factory-reset drain; cleared again only on the refusal path (a
+// successful erase restarts the device).
+void setSuspended(bool on);
+
 // Agent-read seam: the most recent <= maxBytes of the durable log, line-aligned
 // and reboot-surviving (read from the card/flash, newest last). Falls back to the
 // in-RAM tail when the FS is unavailable. This is what lets Nimbus self-report

@@ -1,5 +1,6 @@
 #include "orch_persist.h"
 #include "../sys/agent_log.h"
+#include "memory_subsystem.h"   // erasing() - the factory-sweep write barrier
 
 #include <Arduino.h>
 #include <LittleFS.h>
@@ -22,6 +23,12 @@ namespace agent {
 // The short write is also now reported rather than silently accepted; a full
 // filesystem previously looked exactly like a successful save.
 static bool writeFileAtomic(const char* path, const std::string& blob, const char* tag) {
+  // Factory-erase barrier (release-gate finding 2026-10-04): a persist racing the
+  // sweep would recreate tenants/chatsum/orchmem after /data was erased, handing
+  // the next owner the old RBAC table. Refusing here is safe: on the success path
+  // the device restarts into an empty store, and on the refusal path the caller's
+  // in-RAM state persists again on the next normal mutation.
+  if (agent::memory::erasing()) return false;
   std::string tmp = std::string(path) + ".tmp";
   {
     File f = LittleFS.open(tmp.c_str(), FILE_WRITE);

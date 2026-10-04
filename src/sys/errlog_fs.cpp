@@ -28,6 +28,7 @@ namespace {
 constexpr uint32_t kDurableLockMs = 8;
 
 bool      g_inited    = false;
+volatile bool g_suspended = false;   // factory erase in progress: drop durable writes
 bool      g_haveSd    = false;  // tier for reporting (listJson/onSdTier); engine tracks its own
 ::fs::FS* g_fs        = nullptr;
 bool      g_tierNoted = false;  // the storage-tier decision line has landed on disk
@@ -186,11 +187,19 @@ void begin() {
   ensureInit();
 }
 
+void setSuspended(bool on) { g_suspended = on; }
+
 void append(const std::string& redacted, const char* cat) {
   // Non-blocking phase: format + RAM tail, guarded only by a leaf spinlock. This part
   // never touches the card, so a log call is cheap even while the card is busy.
   std::string line = formatLine(g_seq.fetch_add(1), millis(), cat, redacted);
   ramPush(line);        // RAM tail always gets it (the readRecent() fallback + /api/log ring)
+
+  // Factory-erase suspension (release-gate finding 2026-10-04): while the sweep
+  // runs, a durable append would recreate the just-swept /log tree - including
+  // the sweep's own progress lines - so a "factory fresh" board carried a log.
+  // RAM tail + Serial keep every line; only the flash write is dropped.
+  if (g_suspended) return;
 
   // Durable phase: best-effort. Take the shared card lock only briefly; if the card is
   // contended (e.g. a big memory persist in flight) SKIP rather than stall the caller

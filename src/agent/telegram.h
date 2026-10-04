@@ -98,6 +98,14 @@ bool sendMediaSd(const String& chatId, const char* kind, const char* filePath,
                  const String& caption = "");
 void stop();
 
+// Factory-reset quiesce (release-gate finding 2026-10-04): signal the poll task
+// to exit and WAIT for it to self-delete, deleting NOTHING out from under it
+// (stop() while the task lives crashes on the freed queue - see stop()'s
+// warning). Bounded: a turn mid-provider-call can hold the task past the
+// timeout; the caller then proceeds behind the erase barriers instead of
+// waiting out a TLS exchange. Returns true when the task is gone.
+bool quiesce(uint32_t timeoutMs);
+
 // self-heal hooks (a future net-recovery ladder can read these).
 uint32_t consecutiveFails();
 int      activeJobCount();

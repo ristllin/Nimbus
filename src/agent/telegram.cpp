@@ -1452,6 +1452,10 @@ void pollTask(void*) {
 
     idlePause(activeJobs > 0 ? 600 : TELEGRAM_POLL_INTERVAL_MS);   // ends for a local turn (CUM-462)
   }
+  // Publish "gone" BEFORE self-deleting so quiesce() can poll the handle without
+  // touching a dead task's state. Queues are deliberately left alive (reboot or
+  // a fresh begin() follows; deleting them here is the stop()-crash in reverse).
+  g_task = nullptr;
   vTaskDelete(nullptr);
 }
 
@@ -1696,6 +1700,17 @@ bool send(const String& chatId, const String& text, bool block) {
 void stop() {
   g_running = false;
   if (g_replyQ) { vQueueDeleteWithCaps(g_replyQ); g_replyQ = nullptr; }
+}
+
+bool quiesce(uint32_t timeoutMs) {
+  g_running = false;   // every wait in the loop is <=50ms sliced (CUM-462), so an
+                       // IDLE task notices fast; a turn mid-flight holds it longer
+  const uint32_t t0 = millis();
+  while (g_task != nullptr) {
+    if (millis() - t0 >= timeoutMs) break;
+    vTaskDelay(pdMS_TO_TICKS(50));
+  }
+  return g_task == nullptr;
 }
 
 uint32_t consecutiveFails() { return g_pollFails; }

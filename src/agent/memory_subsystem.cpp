@@ -1067,6 +1067,7 @@ static inline bool effHaveSd() {
 }
 
 bool haveSd()    { return effHaveSd(); }
+bool erasing()   { return g_erasing; }
 bool flashFull() { return g_flashFull; }
 bool sdMissingWithData() { return g_sdMissing; }
 

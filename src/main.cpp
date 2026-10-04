@@ -30,6 +30,7 @@
 #if __has_include(<esp_core_dump.h>)
 #include <esp_core_dump.h>   // factory reset erases any crash dump (stacks can hold secrets)
 #endif
+#include "sys/errlog_fs.h"   // setSuspended - the factory sweep's durable-log barrier
 #include <nvs_flash.h>   // nvs_flash_erase() - web factory reset
 #include <nvs.h>         // raw NVS read/write to preserve identity across the wipe
 #include "agent/agent_config.h"            // AKEY_* frozen NVS key macros
@@ -5128,16 +5129,40 @@ void loop() {
                                      : "Resetting to factory settings. This takes a few seconds.";
     renderScreen(attn::ScreenId::Ask, -1);
     Serial.flush();
-    if (g_factoryEraseSd && !agent::memory::eraseAllPrivateData()) {
-      // Refused: private data survives somewhere this erase cannot reach (card
-      // absent/pulled, or a delete failed). Do NOT continue into a device that
-      // reads factory-fresh while data survives. Config stays, the owner
-      // reseats the card and runs the reset again. STICKY, like the OTA
-      // install refusal: without it the next ambient repaint replaced this
-      // message within seconds, so nobody ever read the next step.
+    if (g_factoryEraseSd && agent::memory::factoryEraseWouldRefuse()) {
+      // Cheap refusal FIRST, before quiescing anything: the reseat case must
+      // leave the device fully alive (poll task, durable logs) for the retry.
+      // STICKY, like the OTA install refusal: without it the next ambient
+      // repaint replaced this message within seconds.
       g_factoryEraseSd = false;
-      Serial.println("FACTORY RESET refused -> storage not available");
+      Serial.println("FACTORY RESET refused -> card with memories unreachable");
       g_askOverride = "Couldn't erase storage. Reseat the SD card and try again.";
+      g_askSticky = true; g_askPage = 0;
+      renderScreen(attn::ScreenId::Ask, -1);
+      emitMenuActionFeedback(nimbus::action::MenuAction::Reset,
+                             nimbus::action::Outcome::Failed);   // error tone
+    } else if (g_factoryEraseSd &&
+               (agent::telegram::quiesce(7000), nimbus::errlog::setSuspended(true),
+                !agent::memory::eraseAllPrivateData())) {
+      // Release-gate finding 2026-10-04: the sweep used to race the live
+      // tg_poll task, whose writers (chatsum/tenants persists, TTS and
+      // Telegram staging audio, durable log lines - incl. the sweep's own)
+      // could recreate files AFTER their tree was erased, so a handed-over
+      // board could still carry the previous owner's data. The quiesce joins
+      // the poll task (bounded: a turn mid-provider-call can outlive the
+      // timeout, and then the erasing()/setSuspended barriers in
+      // orch_persist, errlog_fs and memory_subsystem hold the line), and the
+      // durable-log suspension keeps /log from being reborn mid-sweep.
+      //
+      // This branch: a delete FAILED on existing data mid-sweep. Honest copy
+      // (not the reseat line - reseating cannot fix an internal-flash delete);
+      // durable logs come back on, the poll task stays down (the memory
+      // barrier refuses persists for the rest of this boot anyway) until the
+      // owner retries or restarts.
+      nimbus::errlog::setSuspended(false);
+      g_factoryEraseSd = false;
+      Serial.println("FACTORY RESET failed mid-sweep -> a delete failed on existing data");
+      g_askOverride = "Couldn't erase storage. Try again, or restart the device.";
       g_askSticky = true; g_askPage = 0;
       renderScreen(attn::ScreenId::Ask, -1);
       emitMenuActionFeedback(nimbus::action::MenuAction::Reset,

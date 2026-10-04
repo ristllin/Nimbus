@@ -85,6 +85,10 @@ bool tryLock(uint32_t timeoutMs);
 // flashFull(): a degraded vector persist hit the LittleFS free floor and paused
 // (surfaced in STATUS / the dashboard banner). Both resolve after begin().
 bool haveSd();
+// True while a durable-store erase / factory sweep is running (the g_erasing
+// barrier). Writers of private sidecar files (orch_persist) consult it so a
+// racing persist cannot recreate a just-swept file (release gate 2026-10-04).
+bool erasing();
 bool flashFull();
 // sdMissingWithData() (CUM-405): no SD card mounted this boot, yet evidence says a
 // card holds the owner's memories (a card was present the previous boot, or a
