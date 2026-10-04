@@ -2,6 +2,7 @@
 #include <curl/curl.h>
 
 #include <atomic>
+#include <cstdlib>
 #include <mutex>
 #include <string>
 
@@ -17,6 +18,8 @@
 // trips). recordBodies is hard-off by construction - the log-discipline rule
 // (§3.4) is that nimbusd never keeps prompt/completion content in memory or
 // logs; only the injected transport ever sees the bytes, and it drops them.
+// Response headers are dropped too, except the bounded error-header capture a
+// request asks for (HttpRequest::errHeaders: a 429's x-ratelimit-* quota window).
 //
 // The handle is guarded by a mutex: the engine runs on one thread, but the
 // control surface / health path can also probe, so exec() is made reentrant-safe
@@ -70,6 +73,16 @@ class DaemonHttpTransport : public agent::HttpTransport {
     curl_easy_setopt(handle_, CURLOPT_CONNECTTIMEOUT_MS, 15000L);
     curl_easy_setopt(handle_, CURLOPT_WRITEFUNCTION, &DaemonHttpTransport::onWrite);
     curl_easy_setopt(handle_, CURLOPT_WRITEDATA, &out.body);
+    // Error-header capture (HttpRequest::errHeaders), only when the caller asked:
+    // a Mistral 429's x-ratelimit-* headers are the only thing that names the
+    // quota window, since its body reads the same for all of them (CUM-465). The sink
+    // lives for this exchange only; curl_easy_reset above clears it from the
+    // persistent handle before the next one.
+    HeaderSink sink{&req, 0};
+    if (req.errHeaders && req.errHeaderPrefix) {
+      curl_easy_setopt(handle_, CURLOPT_HEADERFUNCTION, &DaemonHttpTransport::onHeader);
+      curl_easy_setopt(handle_, CURLOPT_HEADERDATA, &sink);
+    }
     curl_easy_setopt(handle_, CURLOPT_NOSIGNAL, 1L);
     // Keep the connection alive between exchanges (the whole point of the
     // persistent handle) and cap redirects off - provider APIs never redirect.
@@ -106,6 +119,35 @@ class DaemonHttpTransport : public agent::HttpTransport {
   static size_t onWrite(char* p, size_t sz, size_t nm, void* ud) {
     static_cast<std::string*>(ud)->append(p, sz * nm);
     return sz * nm;
+  }
+
+  // One curl header callback per line. A status line opens a header block and
+  // sets its status, so a 1xx block or a proxy's CONNECT 200 keeps nothing;
+  // each "Name: value" line of an error block then goes through the
+  // shared captureErrHeader rule (error status, requested prefix, bounded), the
+  // same capture-while-reading the device transport does. out.headers stays
+  // empty, so the default execJson never captures a header twice.
+  struct HeaderSink {
+    const agent::HttpRequest* req;
+    int status;
+  };
+  static size_t onHeader(char* p, size_t sz, size_t nm, void* ud) {
+    const size_t n = sz * nm;
+    auto* sink = static_cast<HeaderSink*>(ud);
+    std::string line(p, n);
+    line.erase(line.find_last_not_of(" \t\r\n") + 1);
+    if (line.rfind("HTTP/", 0) == 0) {
+      const size_t sp = line.find(' ');
+      sink->status = sp == std::string::npos ? 0 : std::atoi(line.c_str() + sp + 1);
+      return n;
+    }
+    if (!agent::wantsErrHeader(*sink->req, sink->status, line.c_str())) return n;
+    const size_t colon = line.find(':');
+    if (colon == std::string::npos) return n;
+    const size_t v = line.find_first_not_of(" \t", colon + 1);
+    agent::captureErrHeader(*sink->req, sink->status, line.substr(0, colon),
+                            v == std::string::npos ? std::string() : line.substr(v));
+    return n;
   }
 
   // Process-wide refcount for curl_global_init/cleanup.

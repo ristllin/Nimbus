@@ -22,7 +22,7 @@ New code lives only in this directory:
 |---|---|
 | `src/posix_fs.h` | `PosixEpiFs` (the `EpiFs` byte-file seam over a POSIX tree) + `fsutil` atomic tmp->rename writer |
 | `src/posix_platform.h` | `agent::Platform` with **cgroup v2 heap accounting** so the engine sheds load before the kernel OOM-kills the pod |
-| `src/daemon_http.h` | `agent::HttpTransport` over one persistent, connection-reusing curl handle; bodies never retained |
+| `src/daemon_http.h` | `agent::HttpTransport` over one persistent, connection-reusing curl handle; bodies never retained; keeps only the bounded error headers a request asks for (a 429's `x-ratelimit-*` quota window) |
 | `src/posix_files.h` | disk-backed `files.*` / `artifact.save` (real bytes + `FileStore` index, `validSegment` gate) |
 | `src/daemon_config.h` | `HarnessConfig` inputs from env + an optional config file (env wins); secret masking |
 | `src/telegram.h` | Telegram channel over the portable `nimbus::tg::parseUpdates` + offset arithmetic; durable offset |
@@ -92,7 +92,12 @@ the environment (`NIMBUSD_WEB_TOKEN`, `MISTRAL_ORACLE_KEY`) and every evidence
 file is redacted. `--skip-bc` runs the free configuration + probe step only. It
 waits between paid calls (`--settle`) because a Mistral key's Studio connectors
 have their own per-minute and per-day request quota (`x-ratelimit-*-custom-*`
-headers).
+headers). A turn the provider refused is retried once, after `--settle`, only
+when the reply names a window that can reopen by then (per-minute, or none
+named); a spent daily quota or a plan that allows no such request is recorded,
+not retried. It recognizes those replies by the engine's own 429 copy
+(`lib/harness/src/rate_limit.cpp`), which `tools/test_vn_connectors_e2e.py`
+pins as part of `make test`.
 
 ## Configuration
 

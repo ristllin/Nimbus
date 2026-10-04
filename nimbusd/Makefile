@@ -7,7 +7,8 @@
 # firmware compiles - composed here with POSIX stores instead of SD/NVS.
 #
 #   make            build ./build/nimbusd
-#   make test       build + run the offline (T1/T2) host tests -> the CI marker
+#   make test       build + run the offline (T1/T2) host tests and the Python
+#                   tool tests -> the CI marker
 #   make check      compile-only (no network) - the anti-rot gate
 #   make clean
 #
@@ -108,9 +109,16 @@ $(BUILD)/%: $(CURDIR)/tests/%.cpp $(WEBUI_HDR) $(CORE_OBJS) | $(BUILD)
 $(BUILD) $(BUILD)/core:
 	@mkdir -p $@
 
-# Run every test binary; fail the whole target if any returns non-zero.
+# The offline Python tool tests (stdlib unittest, no network): one per
+# tools/test_*.py, e.g. the connectors e2e's 429 matcher pinned to the engine's
+# reply table.
+PY_TESTS  := $(wildcard $(CURDIR)/tools/test_*.py)
+
+# Run every test binary and Python tool test; fail the whole target if any
+# returns non-zero.
 test: $(TEST_BINS)
 	@fail=0; for t in $(TEST_BINS); do echo; echo ">>> $$t"; $$t || fail=1; done; \
+	 for t in $(PY_TESTS); do echo; echo ">>> $$t"; python3 $$t || fail=1; done; \
 	 echo; if [ $$fail -eq 0 ]; then echo "ALL NIMBUSD TESTS PASSED"; else echo "NIMBUSD TESTS FAILED"; fi; \
 	 exit $$fail
 

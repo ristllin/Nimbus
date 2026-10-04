@@ -2226,8 +2226,9 @@ Mistral turns.
   limit (for Mistral Studio connectors, "it resets at midnight UTC"), a plan
   that allows no requests of that kind ("waiting won't help"), or a spent
   quota ("check the plan and billing"). When the provider does not say, the
-  reply makes no promise about when. A Virtual Nimbus does not read the
-  rate-limit headers yet, so there only the error text can name the window.
+  reply makes no promise about when. A Virtual Nimbus reads the same headers.
+  A sub-agent the provider refuses at start says only that it couldn't start
+  on that provider; it does not name the window yet.
 - **Keep it to about 2 enabled Mistral connectors at a time.** One or two work
   reliably (proven: GitHub returned a live issue count, Gmail a live unread
   count). Enabling around 4 at once made the Conversations response come back
@@ -2244,10 +2245,10 @@ Mistral turns.
   every provider response *off the socket* (only the filter-retained fields
   are stored), so a large connector-write response no longer exhausts the
   board's memory - the Notion page-create that used to restart it now
-  completes. For heavy writes and large fetches, prefer **spawning a
-  sub-agent** (the Orchestrator is guided to): the work runs on the provider's)NIMBUSDOC"},
+  completes. For heavy writes and large fetches, prefer **spawning a)NIMBUSDOC"},
   {"connectors#operational-notes-live-verified-on-hardware-2", "Operational notes (live-verified on hardware) (2/2)",
-   R"NIMBUSDOC(  compute and only a short result returns.)NIMBUSDOC"},
+   R"NIMBUSDOC(  sub-agent** (the Orchestrator is guided to): the work runs on the provider's
+  compute and only a short result returns.)NIMBUSDOC"},
   {"connectors#security", "Security",
    R"NIMBUSDOC(- Secrets are **write-only**: the web UI never echoes a token back (it shows a
   "saved" state); editing a card and leaving the credential blank keeps the

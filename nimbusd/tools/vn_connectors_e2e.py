@@ -157,23 +157,52 @@ def availability(tools, name):
     return None
 
 
-RATE_LIMITED = "rate-limited"
+# The engine's 429 replies, one per quota window (rateLimitReply in
+# lib/harness/src/rate_limit.cpp; test_vn_connectors_e2e.py pins this table to
+# it). Matched on that copy, never on a word it may drop: the old "rate-limited"
+# match went dead when the copy changed (CUM-460) and the retry silently stopped.
+# Every 429 reply carries one of these refusal clauses; the engine's other
+# failure replies ("That didn't finish - ...", "so that couldn't finish") do not.
+RATE_LIMIT_CLAUSES = ("so that didn't finish", "so waiting won't help")
+# Distinctive phrase -> window slug (rateLimitSlug); the first match wins, and a
+# 429 reply that names no window is "unknown".
+RATE_LIMIT_WINDOWS = (
+    ("per-minute limit", "minute"),
+    ("midnight UTC", "day-utc"),
+    ("daily limit", "day"),
+    ("waiting won't help", "plan"),
+    ("quota is used up", "quota"),
+)
+# Only these can reopen within `settle` seconds; a spent daily or monthly quota
+# or a plan that allows no such request cannot, so retrying them only spends time.
+RETRY_WINDOWS = ("minute", "unknown")
+
+
+def rate_limit_window(text):
+    """The quota window a 429 reply names ("minute", "day-utc", ...), or None
+    when the text is not one of the engine's 429 replies."""
+    if not any(clause in text for clause in RATE_LIMIT_CLAUSES):
+        return None
+    return next((slug for phrase, slug in RATE_LIMIT_WINDOWS if phrase in text), "unknown")
 
 
 def ask_with_retry(inst, text, secs, settle):
-    """ask(), retried ONCE after `settle` seconds when the provider rate-limited it.
+    """ask(), retried ONCE after `settle` seconds when the provider rate-limited it
+    on a window that can reopen by then (per-minute, or one it did not name).
 
     A per-minute provider quota is not a product failure; every attempt is kept
-    in the evidence so a retry is visible, never hidden."""
+    in the evidence, with the window each 429 reply named, so a retry is visible,
+    never hidden."""
     attempts = []
     for _ in range(2):
         replies, meta = ask(inst, text, secs)
-        attempts.append({"meta": meta, "replies": replies})
-        limited = any(RATE_LIMITED in r["text"] for r in replies)
+        windows = [rate_limit_window(r["text"]) for r in replies]
+        attempts.append({"meta": meta, "replies": replies, "rate_limit": [w for w in windows if w]})
         # A rate-limited SYNTHESIS still delivers the sub-agent's raw result; only
         # retry when nothing substantive came back at all.
-        substantive = [r for r in replies if RATE_LIMITED not in r["text"] and not r["text"].startswith("On it.")]
-        if not limited or len(substantive) > 1 or any("[FRESH RESULTS]" in r["text"] for r in substantive):
+        substantive = [r for r, w in zip(replies, windows) if not w and not r["text"].startswith("On it.")]
+        retry = any(w in RETRY_WINDOWS for w in windows)
+        if not retry or len(substantive) > 1 or any("[FRESH RESULTS]" in r["text"] for r in substantive):
             break
         time.sleep(settle)
     return attempts
