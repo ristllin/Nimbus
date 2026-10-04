@@ -1,9 +1,11 @@
 #pragma once
 #include <cstring>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "nimbus/harness/fabric.h"
+#include "nimbus/harness/rate_limit.h"
 
 // FakeAdapter - a scripted ManagedAgentAdapter for host tests. dispatch()
 // returns "<backend>:job-N"; poll() walks a scripted JobState sequence per
@@ -13,6 +15,9 @@ namespace harness_test {
 struct FakeAdapter : agent::ManagedAgentAdapter {
   std::string backend = "fake";
   agent::FabricErr dispatchErr = agent::FabricErr::Ok;
+  // The quota window a failing dispatch writes back through Directive::rateLimit
+  // (nullopt: names none, like an adapter that cannot tell).
+  std::optional<agent::RateLimit> dispatchWindow;
   agent::FabricErr pollErr = agent::FabricErr::Ok;
 
   struct SeenDirective {
@@ -33,7 +38,10 @@ struct FakeAdapter : agent::ManagedAgentAdapter {
   agent::Capabilities capabilities() const override { return {}; }
 
   agent::FabricErr dispatch(const agent::Directive& d, char outJobId[72]) override {
-    if (dispatchErr != agent::FabricErr::Ok) return dispatchErr;
+    if (dispatchErr != agent::FabricErr::Ok) {
+      if (dispatchWindow && d.rateLimit) *d.rateLimit = *dispatchWindow;
+      return dispatchErr;
+    }
     SeenDirective s;
     s.category    = d.category    ? d.category    : "";
     s.instruction = d.instruction ? d.instruction : "";

@@ -10,6 +10,7 @@
 #include "nimbus/harness/http.h"
 #include "nimbus/harness/log.h"
 #include "nimbus/harness/providers.h"
+#include "nimbus/harness/rate_limit.h"
 
 // wire.h - INTERNAL helpers shared by the four portable provider files. Not part
 // of the public harness surface (lives under src/, not include/).
@@ -132,6 +133,21 @@ inline bool applyRouter(const ProviderDeps& pd, const char* upstream, UpstreamRe
   else
     r.headers.push_back({"Authorization", "Bearer " + rk});
   return true;
+}
+
+// A sub-session dispatch the provider refused with HTTP 429: hand the quota window
+// back through the Directive (when the caller asked for it) and report RateLimited,
+// so the spawn refusal names the window the way a head-turn 429 does (CUM-465).
+inline FabricErr rateLimited(const Directive& d, RateLimit window) {
+  if (d.rateLimit) *d.rateLimit = window;
+  return FabricErr::RateLimited;
+}
+// The same, for a provider that names the window only in its error text (OpenAI's
+// "... requests per day (RPD)", an Anthropic-style "per minute", Z.ai, the Cumulo
+// router): logged, then read the way a head turn's 429 text is read.
+inline FabricErr rateLimitedByText(const Directive& d, const char* who, const char* text) {
+  hlog::logf("%s: dispatch HTTP 429: %s", who, text);
+  return rateLimited(d, rateLimitFromText(text));
 }
 
 // Serialize a request document into ONE contiguous string (the transport then

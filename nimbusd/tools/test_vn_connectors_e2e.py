@@ -61,6 +61,15 @@ class ReplyTableTest(unittest.TestCase):
             with self.subTest(kind=kind):
                 self.assertEqual(vn.rate_limit_window(reply), self.slugs[kind], reply)
 
+    def test_spawn_refusal_maps_to_its_window(self):
+        # A sub-agent the provider refuses with a 429 leads with the spawn refusal
+        # and then carries the same reply (JobEngine::dispatchSpawn, CUM-465), so
+        # the e2e reads its window exactly like a head turn's.
+        for kind, reply in self.replies.items():
+            with self.subTest(kind=kind):
+                text = "Couldn't start that agent on mistral. " + reply
+                self.assertEqual(vn.rate_limit_window(text), self.slugs[kind], text)
+
     def test_other_failures_are_not_rate_limits(self):
         for text in (
             "That didn't finish - the provider had a server error. Nothing is still running; ask again to retry.",

@@ -5,6 +5,7 @@
 
 #include "../support/fake_provider_deps.h"
 #include "nimbus/harness/providers.h"
+#include "nimbus/harness/rate_limit.h"
 
 using namespace harness_test;
 using agent::providers::CompatEndpoint;
@@ -97,11 +98,39 @@ static void test_error_mapping() {
   }
 }
 
+// CUM-465: a 429 (Z.ai, the Cumulo router) is RateLimited, not a generic remote
+// failure, and hands back the window its text names - so the spawn refusal says
+// the provider is limiting requests instead of a bare "Couldn't start".
+static void test_429_names_the_window() {
+  struct Case { const char* body; agent::RateLimit want; };
+  const Case cases[] = {
+      {"{\"error\":{\"message\":\"Rate limit reached on requests per day (RPD)\"}}",
+       agent::RateLimit::Daily},
+      {"{\"error\":{\"code\":\"1302\",\"message\":\"High concurrency usage of this API\"}}",
+       agent::RateLimit::Unknown},
+  };
+  for (const Case& k : cases) {
+    FakeProviderDeps rig;
+    rig.http.script.push_back({"", "/chat/completions", 429, k.body});
+    agent::providers::ProviderDeps pd = rig.contract();
+    CompatEndpoint ep;
+    ep.host = "api.z.ai"; ep.basePath = "/api/paas/v4"; ep.key = "x"; ep.model = "glm-5";
+    ep.backendTag = "zai";
+    agent::RateLimit window = agent::RateLimit::kCount;   // sentinel: never written
+    agent::Directive d = makeDirective();
+    d.rateLimit = &window;
+    char jobId[72] = {};
+    TEST_ASSERT_TRUE(openaiCompatDispatch(pd, ep, d, jobId) == agent::FabricErr::RateLimited);
+    TEST_ASSERT_EQUAL_MESSAGE((int)k.want, (int)window, k.body);
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_openai_wire_hits_chat_completions);
   RUN_TEST(test_anthropic_wire_hits_messages_not_chat);
   RUN_TEST(test_error_mapping);
+  RUN_TEST(test_429_names_the_window);
   UNITY_END();
   return 0;
 }

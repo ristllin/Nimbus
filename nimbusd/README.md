@@ -239,7 +239,9 @@ restart instead of being dispatched again.
 
 Every spawn runs the configured sub model for its provider (no live model catalog
 to validate a per-spawn pick against), and a spawn on an unkeyed provider is
-answered with an honest "couldn't start" message. Not wired yet on a hosted
+answered with an honest "couldn't start" message; one the provider refuses with
+HTTP 429 also names the quota window, read the same way as a head turn's 429.
+Not wired yet on a hosted
 instance: skill capsules, document attachments, auto-saving a sub's result into a
 project, and provider file capture (the engine passes the task through and notes
 attachments instead of splicing them).

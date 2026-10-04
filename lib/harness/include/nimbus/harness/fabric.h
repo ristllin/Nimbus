@@ -37,6 +37,8 @@ enum class FabricErr : uint8_t {
   NotFound, Unsupported, Timeout, RemoteFail, ParseFail,
 };
 
+enum class RateLimit : uint8_t;   // the quota window a 429 refused on (rate_limit.h)
+
 struct Capabilities {
   bool resultAsPR      = false;
   bool resultAsFile    = false;
@@ -53,6 +55,12 @@ struct Directive {
   const char* tag         = nullptr;  // device correlation id
   const char* model       = nullptr;  // per-dispatch model override (else adapter default)
   const char* skill       = nullptr;  // skill hint, e.g. "deep_research" | "web"
+  // OUT, optional (CUM-465): when dispatch() returns RateLimited, the adapter writes
+  // the quota window that refused here (nothing is written otherwise), so the spawn
+  // refusal names it the way a head-turn 429 does. FabricErr alone cannot carry it.
+  // The caller owns the storage; every adapter passes the Directive through
+  // unchanged, so the device and a Virtual Nimbus both carry it.
+  RateLimit*  rateLimit   = nullptr;
 };
 
 class ManagedAgentAdapter {

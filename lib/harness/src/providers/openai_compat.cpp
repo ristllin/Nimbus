@@ -80,6 +80,17 @@ std::string buildCompatRequest(const CompatEndpoint& ep, const Directive& d,
   filter["error"]["message"] = true;
   return serializeBody(doc);
 }
+
+// The FabricErr for an answer that is not a 200 (code 0 = transport failure). A
+// 429 names its window when the error text does (CUM-465).
+FabricErr compatHttpErr(int code, const Directive& d, const JsonDocument& out,
+                        const char* backendTag) {
+  if (code == 401 || code == 403) return FabricErr::Auth;
+  if (code <= 0) return FabricErr::Network;
+  if (code == 429) return wire::rateLimitedByText(d, backendTag, out["error"]["message"] | "");
+  hlog::logf("%s: HTTP %d", backendTag, code);
+  return FabricErr::RemoteFail;
+}
 }  // namespace
 
 FabricErr openaiCompatDispatch(const ProviderDeps& pd, const CompatEndpoint& ep,
@@ -106,12 +117,7 @@ FabricErr openaiCompatDispatch(const ProviderDeps& pd, const CompatEndpoint& ep,
   JsonDocument out;
   int code = exchange(pd, ep.host, ep.port, ep.tls, "POST", path, std::move(headers),
                       std::move(body), 30000, out, filter);
-  if (code == 401 || code == 403) return FabricErr::Auth;
-  if (code <= 0) return FabricErr::Network;
-  if (code != 200) {
-    hlog::logf("%s: HTTP %d", backendTag, code);
-    return FabricErr::RemoteFail;
-  }
+  if (code != 200) return compatHttpErr(code, d, out, backendTag);
   std::string reply = anthropic ? std::string((const char*)(out["content"][0]["text"] | ""))
                                 : std::string((const char*)(out["choices"][0]["message"]["content"] | ""));
   if (reply.empty()) return FabricErr::ParseFail;

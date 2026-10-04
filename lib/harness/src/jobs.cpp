@@ -5,6 +5,7 @@
 #include <cstring>
 
 #include "nimbus/harness/log.h"
+#include "nimbus/harness/rate_limit.h" // rateLimitReply - a refused spawn names its window
 #include "nimbus/harness/skill_md.h"   // composeSkillInjection - per-spawn capsule
 #include "nimbus/mem_cap.h"   // utf8CapLen - the fresh-result 3500-char UTF-8 cap
 #include "nimbus/orch/gradient.h"   // foldLine - the overflow-stub one-liner
@@ -72,6 +73,23 @@ static std::string jobLabel(const orch::JobRecord& rec) {
   std::string mdl = rec.model[0] ? std::string(rec.model)
                                  : std::string(rec.backend[0] ? rec.backend : "sub-agent");
   return rec.category[0] ? (mdl + " (" + rec.category + ")") : mdl;
+}
+
+// The owner's reply when a spawn's dispatch fails.
+static std::string spawnRefusal(FabricErr err, const std::string& provider, RateLimit window) {
+  // A Timeout usually means the sub STARTED and outran the 60 s wait (the old
+  // "couldn't start" was a lie the owner caught) - but the same signal can be
+  // a very slow connection that never delivered the request, so the honest
+  // wording claims neither outcome as certain (prism v4.1 #4).
+  if (err == FabricErr::Timeout)
+    return "The agent on " + provider +
+           " didn't respond within 60s - it may have run without me getting "
+           "its result. Try a smaller task or split it into steps.";
+  const std::string refused = "Couldn't start that agent on " + provider + ".";
+  // CUM-465: a 429 names the quota window that refused, in the head turn's own
+  // copy (rateLimitReply), so "wait a minute" is never promised for a spent day.
+  if (err == FabricErr::RateLimited) return refused + " " + rateLimitReply(window);
+  return refused;
 }
 
 // ---- JobEngine --------------------------------------------------------------
@@ -364,6 +382,7 @@ void JobEngine::dispatchSpawn(const PendingSpawn& p) {
     }
   }
 
+  RateLimit window = RateLimit::Unknown;   // a refusing 429's window, adapter-filled
   Directive d;
   d.category    = p.category;
   d.instruction = instruction.c_str();
@@ -371,22 +390,14 @@ void JobEngine::dispatchSpawn(const PendingSpawn& p) {
   d.tag         = tag;
   d.model       = model.length() ? model.c_str() : nullptr;
   d.skill       = p.skill[0] ? p.skill : nullptr;
+  d.rateLimit   = &window;
 
   char jobId[96] = {};
   FabricErr err = a->dispatch(d, jobId);
   if (err != FabricErr::Ok) {
     hlog::logf("orchestrator: spawn failed %d (prov=%s model=%s cat=%s)",
                (int)err, provider.c_str(), model.c_str(), p.category);
-    // A Timeout usually means the sub STARTED and outran the 60 s wait (the old
-    // "couldn't start" was a lie the owner caught) - but the same signal can be
-    // a very slow connection that never delivered the request, so the honest
-    // wording claims neither outcome as certain (prism v4.1 #4).
-    if (err == FabricErr::Timeout)
-      deliver(chatId, std::string("The agent on ") + provider +
-              " didn't respond within 60s - it may have run without me getting "
-              "its result. Try a smaller task or split it into steps.");
-    else
-      deliver(chatId, std::string("Couldn't start that agent on ") + provider + ".");
+    deliver(chatId, spawnRefusal(err, provider, window));
     return;
   }
 
