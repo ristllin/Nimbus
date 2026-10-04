@@ -6,6 +6,31 @@ ships as a signed image on the public
 repository; a device on Orchestrator mode sees it on its daily check and
 installs on your say-so ([how updates work](ota.md)).
 
+## v4.5.8 - A factory reset you can trust, voice that starts now, memory on Mistral
+
+- **Factory reset now erases everything, and says so first.** Settings > Reset opens a
+  choice: "Reset settings" returns every setting to its default and keeps your Wi-Fi,
+  keys, and memories; "Factory reset" erases all of it - Wi-Fi and passwords, provider
+  keys, paired computers, settings, memories, routines, and logs, including the SD
+  card - with the full list on screen before you confirm. The erase refuses honestly
+  if the card holding your memories is not readable ("Reseat the SD card and try
+  again"), and the confirm button needs a second deliberate tap, so a bounced touch
+  can never wipe the device.
+- **Voice and web messages start right away.** A hold-to-talk or web message used to
+  wait for the next Telegram check, up to half a minute. It now starts at once, and
+  Telegram messages still arrive as before.
+- **Two devices no longer end up with the same name.** A second Nimbus set up next to
+  a running one now calls itself Nimbus-2 - its setup network and web address stay
+  distinct.
+- **Mistral works for memory.** Choosing Mistral as the memory (embeddings) provider
+  now works; before, every save failed. If the memory store and the model disagree on
+  size, the device says exactly that instead of pretending nothing matched.
+- **Rate limits name their window everywhere.** A Virtual Nimbus and background
+  helpers now say which limit was hit and when it resets, the same way the device
+  already did.
+- **Behind the scenes:** the release pipeline's remaining actions are pinned, and a
+  weekly full build of every firmware variant guards against silent rot.
+
 ## v4.5.7 - Voice that responds instantly, setup that signs you in, connectors that really work
 
 - **Letting go of the mic responds instantly.** Releasing the hold-to-talk button now
