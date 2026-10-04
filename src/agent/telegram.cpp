@@ -29,6 +29,7 @@
 #include "nimbus/tg_updates.h"        // nimbus::tg::parseUpdates (host-tested filtered parse)
 #include "nimbus/orch/msg_batch.h"    // CUM-398 rapid-message batcher + drainPages (host-tested)
 #include "nimbus/net/telegram_auth.h" // nimbus::net::TelegramAuthFailDetector (host-tested)
+#include "nimbus/net/tg_poll_sched.h" // CUM-462 idle waits yield to local turns (host-tested)
 #include "adapters/http_multipart.h"  // media send (sendDocument/Photo/Voice)
 
 #include <WiFi.h>
@@ -64,6 +65,8 @@ struct InboundMsg {
                    // cap on injected (web/serial/voice) messages. The queue slots
                    // live in PSRAM (xQueueCreateWithCaps), so this costs no internal
                    // heap - only the drain's stack local (tg_poll, 16 KB).
+  uint32_t queuedAt;   // millis() at injectMessage: the drain logs how long the
+                       // message waited for tg_poll (the CUM-462 bench seam)
 };
 
 // A voice note seen during a poll, downloaded + transcribed AFTER the getUpdates
@@ -237,6 +240,30 @@ static InboundMsg* ensureInboundStage() {
     g_inboundStage = (InboundMsg*)heap_caps_malloc(sizeof(InboundMsg), MALLOC_CAP_SPIRAM);
   return g_inboundStage;
 }
+
+// CUM-462: a local turn (voice / web / serial inject) is waiting AND this cycle's
+// inbound drain can take it (callback set, staging slot allocated - begin() does
+// that up front). The idle waits below end early on this, so it must never stay
+// true for a message the drain cannot consume: that would turn every pause into a
+// spin and every long-poll into a reconnect. Poll-task-only (g_inboundStage).
+static bool localTurnWaiting() {
+  return g_cb && g_inboundStage && g_inboundQ && uxQueueMessagesWaiting(g_inboundQ) > 0;
+}
+
+// Sleep an idle pause (the inter-cycle pause, a poll-error backoff) in short
+// slices, ending it the moment a local turn is waiting (nimbus/net/tg_poll_sched.h).
+static void idlePause(uint32_t pauseMs) {
+  const uint32_t start = millis();
+  for (;;) {
+    const uint32_t ms = nimbus::net::tgIdleSleepMs(localTurnWaiting(), millis() - start, pauseMs);
+    if (ms == 0) return;
+    vTaskDelay(pdMS_TO_TICKS(ms));
+  }
+}
+
+// Whether each cycle's Telegram poll runs or yields to a waiting local turn (never
+// two cycles running). Poll-task-owned.
+static nimbus::net::TgPollScheduler g_pollSched;
 
 // CUM-398 rapid-message batcher (portable, host-tested). Reused across drains;
 // cleared between them. Its accumulated payload rides the WorkingAllocator, which
@@ -667,6 +694,23 @@ static int readPollBodyOrDefer(long contentLen, uint32_t deadline, bool& serverC
   return 0;
 }
 
+// CUM-462: wait for the first byte of a getUpdates response that asked for
+// `timeoutS`, giving an idle long-poll up for a waiting local turn - never once a
+// decrypted response byte is available, never a Check (timeout 0); see
+// nimbus/net/tg_poll_sched.h. Read and GiveUp both hand over to readLine, which
+// reads the status line or reports the failure exactly as before. The socket is
+// probed only while silent, as readLine does.
+static nimbus::net::TgWait awaitPollResponse(uint32_t deadline, int timeoutS) {
+  for (;;) {
+    const bool bytes = g_pollSc.available() > 0;
+    const nimbus::net::TgWait w = nimbus::net::tgWaitStep(
+        bytes, bytes || g_pollSc.connected(), (int32_t)(millis() - deadline) >= 0,
+        localTurnWaiting(), timeoutS);
+    if (w != nimbus::net::TgWait::Keep) return w;
+    vTaskDelay(1);
+  }
+}
+
 // Fetch ONE getUpdates page at `offset`: HTTP + parse the whole updates into `out`
 // and fill `rp` (count/limit/fetchError) for the drain driver. Runs NO per-update
 // side effects - the driver calls handleUpdate lazily per reached update. Does NOT
@@ -675,8 +719,9 @@ static int readPollBodyOrDefer(long contentLen, uint32_t deadline, bool& serverC
 // CUM-308 debounce: AuthFail on 401/403, Conflict on 409, Ok on a clean ok:true body,
 // Transient for a connect/socket/parse hiccup. rp.fetchError marks a poll error that
 // drives the backoff; an oversized batch leaves rp.count 0 (re-polled limit=1 next).
+// `yielded` is set when the idle wait was given up for a waiting local turn (CUM-462).
 static void fetchOnePage(int32_t offset, int longPollS, std::vector<nimbus::tg::Update>& out,
-                         nimbus::orch::RawPage& rp,
+                         nimbus::orch::RawPage& rp, bool& yielded,
                          nimbus::net::TgPollOutcome* outcome = nullptr) {
   auto setOutcome = [&](nimbus::net::TgPollOutcome o) { if (outcome) *outcome = o; };
   setOutcome(nimbus::net::TgPollOutcome::Transient);   // default until classified
@@ -697,6 +742,16 @@ static void fetchOnePage(int32_t offset, int longPollS, std::vector<nimbus::tg::
   if (g_pollSc.print(req) == 0) { closePollSocket(); rp.fetchError = true; return; }
 
   uint32_t deadline = millis() + (longPollS + 10) * 1000UL;
+  if (awaitPollResponse(deadline, longPollS) == nimbus::net::TgWait::Yield) {
+    // The socket carries an unanswered request, so it cannot be reused: drop it. The
+    // offset is untouched, so anything Telegram held is re-served by the next poll
+    // (at-least-once). Neither success nor failure: the outcome stays Transient
+    // (neutral for CUM-308) and rp.count stays 0, so nothing is batched or acked.
+    closePollSocket();
+    yielded = true;
+    alogi("telegram: long-poll cut short for a local turn");
+    return;
+  }
 
   char line[MAX_LINE];
   if (readLine(g_pollSc, line, sizeof(line), deadline) == 0) { closePollSocket(); rp.fetchError = true; return; }
@@ -734,15 +789,16 @@ static void fetchOnePage(int32_t offset, int longPollS, std::vector<nimbus::tg::
 // - a mid-drain reset re-serves the whole un-committed page (at-least-once per page,
 // no loss). A rapid burst fits one page = one turn; a backlog drains a page per cycle.
 // Still fully serial on tg_poll - no new task, one TLS session at a time. Returns the
-// message count handled this cycle, or -1 on a poll error (backoff).
+// message count handled this cycle, or -1 on a poll error (backoff). `yielded`: the
+// poll was given up for a waiting local turn (CUM-462; returns 0, nothing acked).
 static int drainAndDispatch(int32_t startOffset, int longPollS,
-                            nimbus::net::TgPollOutcome* outcome) {
+                            nimbus::net::TgPollOutcome* outcome, bool& yielded) {
   // This page's parsed updates; fetch (below) fills it and handle reads it. Exactly
   // one page is fetched per call, so this holds at most one getUpdates page.
   std::vector<nimbus::tg::Update> pageUpdates;
   auto fetch = [&](int32_t off) -> nimbus::orch::RawPage {
     nimbus::orch::RawPage rp;
-    fetchOnePage(off, longPollS, pageUpdates, rp, outcome);
+    fetchOnePage(off, longPollS, pageUpdates, rp, yielded, outcome);
     return rp;
   };
   auto handle = [&](int i) -> nimbus::orch::ClassifiedUpdate {
@@ -1269,12 +1325,23 @@ void pollTask(void*) {
     // Telegram long-poll: ONLY with a token. Without one the task still runs so
     // console/web-injected turns and background job polling execute off the main
     // loop (no watchdog reboot on a multi-second turn).
-    if (haveToken) {
+    // CUM-462: a waiting local turn (voice / web / serial) sets this cycle's plan
+    // (tg_poll_sched.h): Skip the poll and run the turn below at once - or, right
+    // after a skip, Check Telegram first with an immediate getUpdates, so Telegram
+    // is served at least every other cycle.
+    const nimbus::net::TgPoll plan =
+        haveToken ? g_pollSched.plan(localTurnWaiting()) : nimbus::net::TgPoll::LongPoll;
+    if (haveToken && plan == nimbus::net::TgPoll::Skip) {
+      closePollSocket();   // the local turn needs the single TLS session
+    } else if (haveToken) {
       // Shorten the long-poll while jobs run so the loop cycles + delivers results,
       // but not too short (each cycle's TLS churn drains heap on the no-PSRAM board).
-      int longPollS = (activeJobs > 0) ? 18 : TELEGRAM_LONG_POLL_TIMEOUT_S;
+      // A Check asks for timeout 0.
+      int longPollS = nimbus::net::tgPollTimeoutS(
+          plan, (activeJobs > 0) ? 18 : TELEGRAM_LONG_POLL_TIMEOUT_S);
       nimbus::net::TgPollOutcome outcome = nimbus::net::TgPollOutcome::Transient;
-      int n = drainAndDispatch(offset, longPollS, &outcome);
+      bool yielded = false;   // CUM-462: the wait was given up for a waiting local turn
+      int n = drainAndDispatch(offset, longPollS, &outcome, yielded);
       // CUM-308: fold this cycle's auth classification into the debounce and
       // publish the honest verdict. A revoked token (repeated 401/403) flips
       // g_authRejected within a few cycles; a 409 conflict or a transient network
@@ -1289,8 +1356,8 @@ void pollTask(void*) {
         uint32_t backoff = TG_BACKOFF_STEP_MS *
                            (g_pollFails < TG_BACKOFF_MAX_STEPS ? g_pollFails : TG_BACKOFF_MAX_STEPS);
         alogf("telegram: poll error (%u), backoff %ums", g_pollFails, backoff);
-        vTaskDelay(pdMS_TO_TICKS(backoff));
-      } else {
+        idlePause(backoff);   // a waiting local turn ends it (CUM-462)
+      } else if (!yielded) {  // a yielded poll proves nothing either way
         g_pollFails = 0;
         if (!g_polledOk) { g_polledOk = true; alog("telegram: poll ok"); }
       }
@@ -1330,6 +1397,9 @@ void pollTask(void*) {
             }
             break;
           }
+          // Batched into this drain's turns. The CUM-462 seam: inject -> drain time.
+          alogif("telegram: local turn from %s waited %lu ms", from,
+                 (unsigned long)(millis() - im->queuedAt));
         }
         for (size_t i = 0; i < g_batch.chatCount(); ++i)
           g_cb(String(g_batch.turnFromAt(i)), String(g_batch.chatIdAt(i)),
@@ -1380,7 +1450,7 @@ void pollTask(void*) {
       }
     }
 
-    vTaskDelay(pdMS_TO_TICKS(activeJobs > 0 ? 600 : TELEGRAM_POLL_INTERVAL_MS));
+    idlePause(activeJobs > 0 ? 600 : TELEGRAM_POLL_INTERVAL_MS);   // ends for a local turn (CUM-462)
   }
   vTaskDelete(nullptr);
 }
@@ -1406,6 +1476,11 @@ void begin(const String& token, const String& allowlist, MessageCallback cb) {
   // See docs/memory-model.md. Deleted with vQueueDeleteWithCaps in stop().
   g_replyQ    = xQueueCreateWithCaps(REPLY_QUEUE_DEPTH, sizeof(PendingReply), MALLOC_CAP_SPIRAM);
   g_inboundQ  = xQueueCreateWithCaps(INBOUND_QUEUE_DEPTH, sizeof(InboundMsg), MALLOC_CAP_SPIRAM);
+  // The inbound drain slot (PSRAM) up front, before the task starts: the idle waits
+  // end early only for a message the drain can take (localTurnWaiting, CUM-462), so
+  // the very first local turn after boot must find it allocated. A null here keeps
+  // the old behavior (waits run full; the drain still retries the alloc lazily).
+  ensureInboundStage();
   g_running   = true;
   BaseType_t ok = xTaskCreatePinnedToCore(pollTask, "tg_poll", POLL_STACK_BYTES,
                                           nullptr, 3, &g_task, 0);
@@ -1460,6 +1535,7 @@ bool injectMessage(const String& chatId, const String& text) {
   // drain forwards it as `from`, so the episodic capture labels the origin honestly.
   chatId.toCharArray(im.from, sizeof(im.from));
   text.toCharArray(im.text, sizeof(im.text));
+  im.queuedAt = millis();
   // Report a full queue instead of dropping in silence: the caller decides what
   // the sender is told (the web/serial/voice surfaces surface it; a drop that
   // nobody can see is the bug this replaces).

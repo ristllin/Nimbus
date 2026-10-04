@@ -10,7 +10,9 @@
 //     every failure kind (property over the whole taxonomy);
 //   - the state machine counts transitions and fails on oscillation (absence of
 //     thrash, AGENTS.md section 3);
-//   - every user-facing string is pinned and fits the ring-center layout.
+//   - every user-facing string is pinned and fits the ring-center layout;
+//   - the transcript's turn starts promptly wherever the tg_poll loop is in its
+//     Telegram poll cycle (CUM-462, composed with test/support/tg_poll_sim.h).
 
 #include <unity.h>
 
@@ -18,6 +20,8 @@
 #include <string>
 #include <vector>
 
+#include "../support/tg_poll_sim.h"
+#include "nimbus/net/tg_poll_sched.h"
 #include "nimbus/orch/voice_route.h"
 #include "nimbus/voice_flow.h"
 
@@ -820,6 +824,47 @@ static void test_step_queued_turn_is_not_no_reply() {
   TEST_ASSERT_EQUAL(int(Phase::Idle), int(f.phase()));
 }
 
+// ---- composed with the tg_poll loop (CUM-462) -----------------------------------
+
+// sendTurn hands the transcript to the tg_poll loop (injectMessage), which spent
+// almost all its time blocked in the Telegram long-poll and never looked at it: the
+// owner saw "Thinking" and the turn could start ~30 s later. Release at every point
+// of an idle device's poll cycle: the turn starts within one pause slice of the
+// transcript, the flow holds Thinking (no transition) until it does, and ends on our
+// own turn's end - never the quiet backstop.
+static void test_voice_turn_starts_promptly_wherever_the_poll_cycle_is() {
+  const tgsim::Config c;
+  for (uint32_t offset = 0; offset < c.longPollS * 1000 + c.pauseMs + 500; offset += 101) {
+    tgsim::Sim sim(c);
+    sim.runUntil(100000);   // an idle device: poll socket open, long-poll cycling
+    Flow f;
+    FakePort p;
+    p.stt = okText("turn on the lights");
+    p.clock = sim.now() + offset;
+    startRecording(f, p);
+    TEST_ASSERT_EQUAL(int(Outcome::None), int(afterRelease(f, p)));
+    const uint32_t sentAt = p.clock;   // sendTurn ran here, after speech-to-text
+    sim.injectLocal(sentAt);
+    sim.runUntil(sentAt + 2 * c.longPollS * 1000);
+    TEST_ASSERT_EQUAL(1, int(sim.local().size()));
+    const uint32_t startedAt = sim.local()[0].startedAt;
+    TEST_ASSERT_TRUE_MESSAGE(startedAt - sentAt <= nimbus::net::kTgIdleSliceMs,
+                             "the voice turn waited on the Telegram long-poll");
+    const uint32_t before = f.transitions();
+    Flow::TurnSignals s;
+    for (uint32_t t = sentAt; t < startedAt; t += 50) TEST_ASSERT_FALSE(f.step(s, t));
+    s.turnInFlight = true;
+    TEST_ASSERT_FALSE(f.step(s, startedAt));
+    TEST_ASSERT_EQUAL(before, f.transitions());
+    s.turnInFlight = false;
+    s.turnEnded = true;
+    s.turnOk = true;
+    TEST_ASSERT_TRUE(f.step(s, startedAt + c.turnMs));
+    TEST_ASSERT_EQUAL(int(Phase::Idle), int(f.phase()));
+    TEST_ASSERT_EQUAL(int(Outcome::None), int(f.outcome()));
+  }
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_release_shows_processing_before_any_network_call);
@@ -853,5 +898,6 @@ int main() {
   RUN_TEST(test_step_reply_and_end_in_one_pass);
   RUN_TEST(test_step_stray_reply_waits_for_our_message);
   RUN_TEST(test_step_queued_turn_is_not_no_reply);
+  RUN_TEST(test_voice_turn_starts_promptly_wherever_the_poll_cycle_is);
   return UNITY_END();
 }
