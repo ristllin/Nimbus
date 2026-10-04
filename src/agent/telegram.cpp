@@ -1460,6 +1460,10 @@ void pollTask(void*) {
       }
     }
 
+    // Quiesce tighten (verifier round 2): a stop that ended the long-poll above
+    // should not run another drain/turn cycle before the exit check - the
+    // factory reset is waiting on this task.
+    if (!g_running) break;
     idlePause(activeJobs > 0 ? 600 : TELEGRAM_POLL_INTERVAL_MS);   // ends for a local turn (CUM-462)
   }
   // Publish "gone" BEFORE self-deleting so quiesce() can poll the handle without

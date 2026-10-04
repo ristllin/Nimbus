@@ -250,9 +250,13 @@ bool finalSweepPass() {
   // NVS erase has already happened).
   esp_task_wdt_reset();
   bool ok = sweepSidecars();
-  // writeTraceFile uses dataFs() + "/mem/trace" on BOTH tiers (kTraceDir), so
-  // the mop targets the same: g_fs IS dataFs().
-  ok = rmTreeIfPresent(*g_fs, "/mem/trace") && ok;
+  // Re-sweep the WHOLE store root, not just /mem/trace: the skills and files
+  // tools recreate their own directories under /mem and nothing gates them
+  // (verifier round 2). The store is already empty, so this is cheap, and it
+  // catches any writer added later without this list needing to know.
+  const char* root = g_haveSd ? "/mem" : "/data";
+  ok = rmTreeIfPresent(*g_fs, root) && ok;
+  g_fs->mkdir(root);   // the next boot expects the empty parent
   return ok;
 }
 
