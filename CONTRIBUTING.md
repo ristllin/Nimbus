@@ -24,11 +24,12 @@ sort that out before opening a PR.
 
 - **Build + test.** `pio test -e native` must be 100% green, and
   `pio run -e esp32s3` must compile. See docs for the full environment list.
-- **Pre-commit hooks.** Install once with `pip install pre-commit && pre-commit
-  install`. CI runs the same hooks (`pre-commit run --all-files`) and will fail
-  loudly if they don't pass. The lizard complexity gate applies to new code
-  only - existing offenders are baselined in `tools/release/lizard_whitelist.txt`
-  (the whitelist only shrinks; don't add to it without discussion).
+- **Pre-commit hooks.** Install once with `pipx install pre-commit && pre-commit
+  install` (`pip install` works where pip allows it). CI runs the same hooks
+  (`pre-commit run --all-files`) and will fail loudly if they don't pass. The
+  lizard complexity gate applies to new code only - existing offenders are
+  baselined in `tools/release/lizard_whitelist.txt` (the whitelist only shrinks;
+  don't add to it without discussion).
 - **No repo-wide reformatting.** Formatting-only diffs of code you didn't
   otherwise change will be declined.
 - **Docs follow code.** If you rename or move anything user-visible, update the

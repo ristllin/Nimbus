@@ -38,8 +38,11 @@ one board, plug in USB-C, flash.
 2. **A data-capable USB-C cable** for the first firmware install. (Many cables
    are charge-only and never show a serial port.)
 3. **A computer** to flash from: any OS with a Chromium-based browser for the
-   [browser flasher](flash.md), or Python 3 and
-   [PlatformIO](https://platformio.org/) for the command line.
+   [browser flasher](flash.md), or Python 3, git, and
+   [PlatformIO](https://platformio.org/) for the command line
+   ([Set up your computer](computer-setup.md) installs them). The command-line
+   path downloads about 0.6 GB of build tools on its first run and needs about
+   6 GB of free disk space.
 4. **A 2.4 GHz Wi-Fi network.** The radio does not see 5 GHz-only networks.
 5. **One AI provider key** (for Orchestrator mode). **Start with
    [Mistral](https://console.mistral.ai/):** its free tier is enough to set up and

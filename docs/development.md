@@ -111,7 +111,8 @@ is generated from the reference encoder in
 ## Pre-commit hooks
 
 ```bash
-pip install pre-commit && pre-commit install
+pipx install pre-commit       # or pip install pre-commit where pip allows it
+pre-commit install
 pre-commit run --all-files    # what CI runs
 ```
 

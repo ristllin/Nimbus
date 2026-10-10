@@ -2,14 +2,22 @@
 # Set up your computer
 
 For anyone who has never opened a terminal. By the end you will have the tools
-the command-line flasher needs: a terminal, Python 3, PlatformIO, and (on some
-computers) a USB-serial driver.
+the command-line flasher needs: a terminal, Python 3, git, PlatformIO, and (on
+some computers) a USB-serial driver or permission to use serial ports.
 
 :::tip Most people can skip this page
 The **[browser flasher](flash.md#path-1---browser-flasher-recommended)** needs
 none of the below. All it takes is a Chromium-based browser (Chrome or Edge) and
 a data-capable USB cable. Come here only if you want the command-line path, or the
 browser flasher never shows your board's serial port.
+:::
+
+:::note Plan for the download
+The first build downloads about 0.6 GB of ESP32 build tools and takes several
+minutes: about three and a half on a fast computer and connection, longer on a
+slow one. Afterwards PlatformIO's tools take about 5 GB of disk and each board you
+build adds about 0.35 GB, so have at least 6 GB free. Later builds take about a
+minute.
 :::
 
 ## 1. Open a terminal
@@ -29,8 +37,12 @@ Nimbus's installer is a Python program, so you need Python 3.8 or newer.
 - **macOS / Windows:** download the installer from
   [python.org/downloads](https://www.python.org/downloads/) and run it. On
   Windows, tick **Add Python to PATH** on the first screen.
-- **Linux:** it is almost always already there; if not, install `python3` and
-  `python3-pip` from your package manager.
+- **Linux:** Python is almost always already there. Also install `pipx`, which
+  step 4 uses to install PlatformIO. On Ubuntu or Debian:
+
+  ```bash
+  sudo apt install python3 pipx
+  ```
 
 Check it worked:
 
@@ -41,25 +53,63 @@ python3 --version
 You should see `Python 3.something`. If Windows says `python3` is not found, try
 `python --version` instead.
 
-## 3. Install PlatformIO
+## 3. Install git
 
-PlatformIO builds and uploads the firmware. Install it with Python's package
-tool:
+git downloads the firmware in step 6.
+
+- **macOS:** run `git --version`. If git is missing, macOS offers to install its
+  command line developer tools: accept, and wait for the install to finish (it
+  can take several minutes).
+- **Windows:** download the installer from
+  [git-scm.com](https://git-scm.com/downloads), run it with the default options,
+  then close and reopen PowerShell.
+- **Linux:** on Ubuntu or Debian, `sudo apt install git`; elsewhere, install the
+  `git` package from your package manager.
+
+Check it worked:
+
+```bash
+git --version
+```
+
+You should see `git version 2.something`.
+
+## 4. Install PlatformIO
+
+PlatformIO builds and uploads the firmware. How you install it depends on where
+your Python came from.
+
+**Linux, or a Mac that uses Homebrew's Python:** install it with `pipx`, which
+keeps command-line tools in their own space:
+
+```bash
+pipx install platformio
+pipx ensurepath
+```
+
+On a Mac, run `brew install pipx` first (on Linux, step 2 installed it). These
+systems refuse a plain `pip3 install` with an `externally-managed-environment`
+error; pipx is the fix that error suggests.
+
+**Windows, or a Mac with Python from python.org:** use Python's package tool:
 
 ```bash
 pip3 install platformio
 ```
 
-Check it worked:
+On Windows, if `pip3` is not found, run `pip install platformio` instead. If
+`pip3` stops with `externally-managed-environment`, use the pipx commands above.
+
+Close and reopen the terminal so it picks up the new `pio` command, then check it
+worked:
 
 ```bash
 pio --version
 ```
 
-If the command is not found, close and reopen the terminal so it picks up the new
-tool, then try again.
+You should see `PlatformIO Core, version 6.something`.
 
-## 4. Install a USB-serial driver (only if needed)
+## 5. Install a USB-serial driver (only if needed)
 
 The Nimbus board's **UART** port talks to your computer through a CP2102N chip.
 macOS and modern Windows and Linux usually recognize it with no driver. Install
@@ -72,7 +122,24 @@ one only if the flasher never lists a serial port for a connected board:
 The **all-in-one (Freenove CYD)** board rides the ESP32-S3's own USB and needs no
 driver on any current operating system.
 
-## 5. Get the firmware and flash
+### Linux: allow your account to use serial ports
+
+On Linux a connected board shows up as `/dev/ttyUSB0` (the Nimbus board's UART
+port) or `/dev/ttyACM0` (native USB, and the Freenove), and those ports belong to
+the `dialout` group. A new account is usually not in it, so the installer stops
+with a `Permission denied` error naming the port. Add your account once, then log
+out and back in:
+
+```bash
+sudo usermod -aG dialout $USER
+```
+
+On Arch Linux the group is `uucp` instead. PlatformIO may also print
+`Please install 99-platformio-udev.rules` during an upload; its
+[udev rules guide](https://docs.platformio.org/en/latest/core/installation/udev-rules.html)
+grants the same access a different way.
+
+## 6. Get the firmware and flash
 
 You are ready for the command-line path. Clone the firmware repository, then run
 the installer:
@@ -84,7 +151,9 @@ python3 tools/setup_device.py
 ```
 
 The installer finds your board, confirms before it writes, and never erases an
-already-configured device. Full flashing steps, flags, and recovery:
+already-configured device. If the ESP32 build tools are not installed yet, it
+prints `PlatformIO needs to install the ESP32 build tools first.` and starts the
+download described at the top of this page; let it finish. Full flashing steps, flags, building without a board, and recovery:
 **[Flash the firmware](flash.md)**.
 
 ---

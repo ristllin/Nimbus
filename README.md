@@ -27,7 +27,8 @@ about **$60–75 in commodity parts** to build.
   battery section: full list with sourcing links and prices in the
   **[bill of materials](docs/hardware/bom.md)** (~$60–75)
 - A data-capable USB-C cable
-- A computer with a Chromium browser (web flasher) or Python 3 + PlatformIO
+- A computer with a Chromium browser (web flasher) or Python 3, git, and
+  PlatformIO ([set up your computer](https://docs.cumulo-nimbus.ai/quick-start/computer-setup))
 - A 2.4 GHz Wi-Fi network
 - One AI provider API key (Orchestrator mode; skip for the status light)
 - Optional: a FAT32 microSD card for long-term memory, and a Telegram account
@@ -83,7 +84,7 @@ If you prefer not to keep a sibling checkout, point the `lib_deps` entry in
 `platformio.ini` at the public git URL instead.
 
 Nimbus speaks the [nimbus-notify](https://github.com/ristllin/nimbus-notify)
-wire protocol (`pip install nimbus-notify` for the host-side broker), and
+wire protocol (`pipx install nimbus-notify` for the host-side broker), and
 ships signed firmware updates from
 [nimbus-fw-releases](https://github.com/ristllin/nimbus-fw-releases).
 

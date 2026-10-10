@@ -104,10 +104,11 @@ Notes:
 - **`npm run build`** doubles as the dead-link check: `onBrokenLinks` is set to
   throw, so a build failure there means a doc link points at something that moved
   or was removed. A clean build proves the doc graph is intact.
-- **`pre-commit`**: install once with `pip install pre-commit && pre-commit
-  install`. CI runs the same hooks. A complexity gate (lizard) applies to **new**
-  code only; existing offenders are baselined in a whitelist that only ever
-  shrinks - don't add to it without discussion.
+- **`pre-commit`**: install once with `pipx install pre-commit && pre-commit
+  install` (`pip install` works where pip allows it). CI runs the same hooks. A
+  complexity gate (lizard) applies to **new** code only; existing offenders are
+  baselined in a whitelist that only ever shrinks - don't add to it without
+  discussion.
 - The build matrix beyond the two shown (`notifierdbg`, `bttest`, the
   `tft*`/`beep`/`provision` bring-up sketches) is compiled by
   `tools/build_all.sh`, which also runs the `make -C tools/harness-lab check`

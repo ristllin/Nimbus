@@ -135,7 +135,7 @@ each through a narrow seam:
 | Repository | What it is | How Nimbus consumes it |
 |---|---|---|
 | [`solide-drivers`](https://github.com/ristllin/solide-drivers) (public) | Board support - the `solide::` drivers for the Solide S3 (LEDs, displays, audio, SD, NVS), plus the board-level build/BOM docs | Pinned library dependency in `platformio.ini` (a sibling checkout or the public git URL); its self-test console example is the hardware acceptance gate |
-| [`nsnotify`](https://github.com/ristllin/nimbus-notify) (public) | The nsn wire protocol and the host-side broker, published on PyPI as **`nimbus-notify`** | The reference encoder generates test vectors that byte-lock the device codec; users `pip install nimbus-notify` to run the broker |
+| [`nsnotify`](https://github.com/ristllin/nimbus-notify) (public) | The nsn wire protocol and the host-side broker, published on PyPI as **`nimbus-notify`** | The reference encoder generates test vectors that byte-lock the device codec; users `pipx install nimbus-notify` to run the broker |
 | `nimbus-fw-releases` (public) | Signed firmware releases | Devices poll it for updates - see below |
 
 Releases are published to the dedicated `nimbus-fw-releases` repository
