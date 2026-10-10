@@ -30,12 +30,24 @@ never forks its internals.
 **Device builds** (`esp32s3`, `test`, …) fetch it automatically from the pinned
 public tag in `platformio.ini` - a fresh clone builds with nothing else.
 **Host tests** (`pio test -e native`) additionally need its headers on the
-include path, which expects a sibling checkout:
+include path, which expects a sibling checkout at the **same tag** the device
+builds use: the one on the `https://github.com/ristllin/solide-drivers.git#…`
+line of `platformio.ini`. The first line below reads that tag, so the checkout
+always matches the pin (an older tag fails the native build on headers it does
+not have yet):
 
 ```bash
+SOLIDE_TAG=$(sed -n 's|^[[:space:]]*https://github.com/ristllin/solide-drivers.git#\(v[0-9.]*\).*|\1|p' platformio.ini)
 git clone https://github.com/ristllin/solide-drivers.git ../solide-drivers
-git -C ../solide-drivers checkout v0.5.1   # the tag the firmware pins
+git -C ../solide-drivers checkout "$SOLIDE_TAG"   # the tag platformio.ini pins
 ```
+
+When the pin moves to a newer tag, run the first line again, then
+`git -C ../solide-drivers fetch --tags` and the last line.
+
+Host tests also need a C++ compiler on the computer: the Xcode command line tools
+on macOS (`xcode-select --install`), or `build-essential` on Ubuntu and Debian
+(`sudo apt install build-essential`).
 
 Driver developers can point the device builds at that same sibling by swapping
 the commented `symlink://../solide-drivers` line in `platformio.ini`.

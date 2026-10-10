@@ -68,20 +68,23 @@ your build includes the battery.
 
 Board support lives in the public
 [solide-drivers](https://github.com/ristllin/solide-drivers) repository,
-consumed as a PlatformIO library. `platformio.ini` expects it as a **sibling
-checkout** (`symlink://../solide-drivers`):
+consumed as a PlatformIO library. Device builds fetch it automatically at the tag
+pinned in `platformio.ini`; only the host unit tests need a **sibling checkout**
+at that same tag:
 
 ```bash
 git clone https://github.com/ristllin/Nimbus.git
-git clone https://github.com/ristllin/solide-drivers.git   # sibling directory
 cd Nimbus
+pio run -e esp32s3            # compile production firmware (esp32s3-cyd for a Freenove)
+python3 tools/setup_device.py # guarded install
+SOLIDE_TAG=$(sed -n 's|^[[:space:]]*https://github.com/ristllin/solide-drivers.git#\(v[0-9.]*\).*|\1|p' platformio.ini)
+git clone https://github.com/ristllin/solide-drivers.git ../solide-drivers
+git -C ../solide-drivers checkout "$SOLIDE_TAG"   # the tag platformio.ini pins
 pio test -e native            # host unit tests, no hardware
-pio run -e esp32s3            # compile production firmware
-python3 tools/setup_device.py # guarded install over the UART port
 ```
 
-If you prefer not to keep a sibling checkout, point the `lib_deps` entry in
-`platformio.ini` at the public git URL instead.
+Build environments, the test ladder, and prerequisites such as a host C++
+compiler are in the [development guide](docs/development.md).
 
 Nimbus speaks the [nimbus-notify](https://github.com/ristllin/nimbus-notify)
 wire protocol (`pipx install nimbus-notify` for the host-side broker), and
