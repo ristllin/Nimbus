@@ -40,8 +40,9 @@ lives on the docs site:
 
 1. **[What you need](https://docs.cumulo-nimbus.ai/quick-start/what-you-need)**
 2. **[Flash the firmware](https://docs.cumulo-nimbus.ai/quick-start/flash)**
-   - browser flasher, or `python3 tools/setup_device.py` over the DevKit's
-   **UART** port (a factory-fresh board flashes only through that port)
+   - browser flasher, or `python3 tools/setup_device.py`; on the Nimbus board use
+   the DevKit's **UART** port (a factory-fresh board flashes only through that
+   port), on the Freenove its single USB-C port
 3. **[Set up the device](https://docs.cumulo-nimbus.ai/quick-start/setup-wizard)**
    - join the `Nimbus-setup` network, walk the wizard
 4. **[Your first conversation](https://docs.cumulo-nimbus.ai/quick-start/first-conversation)**

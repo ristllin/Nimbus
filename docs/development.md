@@ -52,6 +52,11 @@ on macOS (`xcode-select --install`), or `build-essential` on Ubuntu and Debian
 Driver developers can point the device builds at that same sibling by swapping
 the commented `symlink://../solide-drivers` line in `platformio.ini`.
 
+Every git dependency in `platformio.ini` (solide-drivers, AsyncTCP,
+ESPAsyncWebServer) is pinned to an exact tag or commit, so a tagged clone builds
+the same library code as the release did. Bump a pin on purpose, in its own
+commit, once every device environment still links.
+
 ## Build environments
 
 | Environment | What it is |

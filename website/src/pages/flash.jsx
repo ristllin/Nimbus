@@ -22,8 +22,11 @@ const VARIANTS = [
   {slug: 'freenove-40', label: 'Freenove CYD - 4.0 inch'},
 ];
 
-const manifestUrlFor = (slug) =>
-  `https://raw.githubusercontent.com/ristllin/nimbus-fw-releases/webflash/latest/${slug}/manifest.json`;
+const WEBFLASH_BASE = 'https://raw.githubusercontent.com/ristllin/nimbus-fw-releases/webflash/latest';
+const manifestUrlFor = (slug) => `${WEBFLASH_BASE}/${slug}/manifest.json`;
+// The per-board image and its SHA-256 sidecar, published next to the manifest.
+const imageUrlFor = (slug) => `${WEBFLASH_BASE}/${slug}/nimbus-webflash.bin`;
+const shaUrlFor = (slug) => `${imageUrlFor(slug)}.sha256`;
 
 const styles = {
   main: {maxWidth: 760, margin: '0 auto', padding: '2rem 1rem 4rem'},
@@ -69,8 +72,9 @@ export default function FlashPage() {
       <main style={styles.main}>
         <h1>Flash Nimbus from the browser</h1>
         <p>
-          Install the latest Nimbus firmware release on an ESP32-S3-DevKitC-1
-          board straight from this page - no toolchain, no downloads. The full
+          Install the latest Nimbus firmware release on a Nimbus board
+          (ESP32-S3-DevKitC-1) or a Freenove CYD all-in-one straight from this
+          page - no toolchain, no downloads. The full
           walkthrough (including the command-line path) is in{' '}
           <Link to="/quick-start/flash">Quick Start &rarr; Flash the firmware</Link>.
         </p>
@@ -118,7 +122,7 @@ export default function FlashPage() {
             onChange={(e) => setVariant(e.target.value)}
             style={{padding: '0.4rem 0.6rem', fontSize: '1rem', width: '100%', maxWidth: 420}}>
             <option value="" disabled>
-              &mdash; Select your board &mdash;
+              Select your board
             </option>
             {VARIANTS.map((v) => (
               <option key={v.slug} value={v.slug}>
@@ -161,7 +165,7 @@ export default function FlashPage() {
                 <button
                   slot="activate"
                   className="button button--primary button--lg">
-                  Install Nimbus &mdash; {chosen.label}
+                  Install Nimbus: {chosen.label}
                 </button>
                 <span slot="unsupported">
                   This browser can&apos;t flash devices - use Chrome or Edge on a
@@ -175,9 +179,16 @@ export default function FlashPage() {
               <p style={{marginTop: '0.75rem'}}>
                 <small>
                   Installing the <strong>{chosen.label}</strong> image. Pick the
-                  board&apos;s serial port when the browser asks. Choosing
-                  &quot;Erase device&quot; is fine on a new board; on a board
-                  already running Nimbus it wipes its saved settings.
+                  board&apos;s serial port when the browser asks. Installing
+                  replaces the device&apos;s saved settings (Wi-Fi, provider
+                  keys, Telegram, pairings) whether or not you choose
+                  &quot;Erase device&quot;, so on a board already running Nimbus
+                  have your Wi-Fi password and provider key ready, or update it
+                  over the air instead (
+                  <Link to="/quick-start/flash#reinstalling-from-the-browser">
+                    details
+                  </Link>
+                  ).
                 </small>
               </p>
             </>
@@ -193,6 +204,11 @@ export default function FlashPage() {
             network, not through the flasher.
           </li>
           <li>
+            <strong>It starts in Orchestrator mode</strong>, with its setup
+            Wi-Fi network and Sign-in QR on the screen. You can switch to
+            Notifier mode later.
+          </li>
+          <li>
             On your phone or computer, join the Wi-Fi network named{' '}
             <strong>Nimbus-setup</strong> (the password is shown on the device screen,
             unique to your device - or just scan the on-screen QR to join)
@@ -202,7 +218,7 @@ export default function FlashPage() {
           <li>
             <strong>The screen is ready right away.</strong> The image you
             picked already tells the board which display it has, so it comes up
-            on the correct panel - there is no blank-screen step and no display
+            on the right display - there is no blank-screen step and no display
             question in the wizard.
           </li>
         </ul>
@@ -211,9 +227,11 @@ export default function FlashPage() {
         <ul>
           <li>Swap in a known-good data cable (the most common cause).</li>
           <li>
-            Confirm the cable is in the <code>UART</code> port and try another
-            USB port on the computer.
+            Nimbus board: confirm the cable is in the port labeled{' '}
+            <code>UART</code>. Freenove CYD: it has a single USB-C port, so
+            there is no wrong port.
           </li>
+          <li>Try another USB port on the computer.</li>
           <li>
             Recovery and port details:{' '}
             <Link to="/quick-start/flash">Flash the firmware</Link>.
@@ -224,13 +242,27 @@ export default function FlashPage() {
         <p>
           First-time flashing writes the image as-is - like any firmware
           installer before secure boot, it is not signed. If you want to
-          confirm the bytes before flashing, the image's SHA-256 is published
-          next to it at{' '}
-          <code>
-            raw.githubusercontent.com/ristllin/nimbus-fw-releases/webflash/latest/nimbus-webflash.bin.sha256
-          </code>
-          . Over-the-air updates after setup are ECDSA-signed and verified on
-          the device.
+          confirm the bytes before flashing, each board&apos;s image and its
+          SHA-256 are published together, and this page installs exactly that
+          image.{' '}
+          {chosen ? (
+            <>
+              For the <strong>{chosen.label}</strong>:{' '}
+              <a href={imageUrlFor(chosen.slug)}>image</a> and{' '}
+              <a href={shaUrlFor(chosen.slug)}>SHA-256</a>.
+            </>
+          ) : (
+            <>
+              Choose your board above to get its two links, or find them under{' '}
+              <code>{WEBFLASH_BASE}/&lt;board&gt;/</code>.
+            </>
+          )}{' '}
+          Download both into one folder and run{' '}
+          <code>shasum -a 256 -c nimbus-webflash.bin.sha256</code> (macOS) or{' '}
+          <code>sha256sum -c nimbus-webflash.bin.sha256</code> (Linux); it
+          prints <code>nimbus-webflash.bin: OK</code> when the bytes match.
+          Over-the-air updates after setup are ECDSA-signed and verified on the
+          device.
         </p>
       </main>
     </Layout>

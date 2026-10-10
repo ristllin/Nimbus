@@ -153,7 +153,10 @@ python3 tools/setup_device.py
 The installer finds your board, confirms before it writes, and never erases an
 already-configured device. If the ESP32 build tools are not installed yet, it
 prints `PlatformIO needs to install the ESP32 build tools first.` and starts the
-download described at the top of this page; let it finish. Full flashing steps, flags, building without a board, and recovery:
+download described at the top of this page; let it finish. If the `python3` you
+started it with has no pyserial (usual after a pipx or Homebrew install of
+PlatformIO), it re-runs itself with PlatformIO's own Python; there is nothing to
+do. Full flashing steps, flags, building without a board, and recovery:
 **[Flash the firmware](flash.md)**.
 
 ---
