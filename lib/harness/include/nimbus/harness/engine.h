@@ -159,7 +159,10 @@ class TurnEngine {
     // capsule so the model can PULL a playbook with skill.get. A skill the
     // per-turn context never NAMES is a skill the model will never reach for.
     std::function<std::string()> skillsIndex;
-    // Compile-time model choice list per provider ([AVAILABLE MODELS] block).
+    // Model choice list per provider for the [AVAILABLE MODELS] block. MUST be the
+    // same derivation the spawn validator accepts (device: the shared
+    // nimbus::orch::effectiveModelChoices over the harvested list - CUM-486), so
+    // the head is never offered a model that validation coerces away.
     std::function<std::string(const std::string& provider)> modelChoices;
     // Episodic auto-capture of the owner's message (session row + user row with
     // the engine-sanitized "from:<name>" tag). Nullable.

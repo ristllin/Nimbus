@@ -84,7 +84,7 @@ Concatenated in `handleMessage()` / synthesis / scheduled-loop paths
 | `[ACTIVE SESSIONS]` | always | live sub-agent digest - authoritative ("if it lists none, nothing is running") |
 | `[AVAILABLE PROVIDERS]` | always | the sub-session provider priority order |
 | `[YOUR MODEL]` | always | the host/model serving THIS turn |
-| `[AVAILABLE MODELS]` | always | per-provider model choice lists (yours + sub-agents'), filtered to keyed providers |
+| `[AVAILABLE MODELS]` | always | per-provider model choice lists (yours + sub-agents'), filtered to keyed providers. Built from the same list the spawn validator checks (live harvest, else the cold-start list), so an advertised model always spawns as named |
 | `[PROVIDERS & CONNECTORS]` | connectors configured | which cloud connectors each provider carries |
 | `[CHANNEL]` | owner turns | which channel the message arrived on + reply-routing rules |
 | `[USER]` | owner turns | your message - **the only thing you typed that the model sees this turn** |

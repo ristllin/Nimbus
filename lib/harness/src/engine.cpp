@@ -11,6 +11,7 @@
 
 #include "nimbus/orch/fallback_rules.h"  // CUM-41 unified fallback engine
 #include "nimbus/orch/model_catalog.h"   // modelSizeClass for the size-class predicate
+#include "nimbus/orch/provider_slots.h"  // CUM-486: [AVAILABLE MODELS] walks the registry
 #include "nimbus/orch/servedby.h"        // CUM-236 served-by fallback disclosure
 
 #include "nimbus/harness/log.h"
@@ -260,15 +261,22 @@ std::string TurnEngine::buildDynamicContext() {
   }
   ctx += "[AVAILABLE MODELS] (yours + sub-agents')";
   bool any = false;
-  // The router heads (cumulo/zai) are first-class keyed hosts now (CUM-242), so a
-  // Cumulo-only device advertises its routable choices here instead of tripping
-  // "(none configured)" and the spawn honesty rails. Each is gated on hasKey() -
-  // a default fleet with no router key is byte-identical to the pre-CUM-242 line.
-  // cumulo choices are the "<upstream>/<model>" ids the router harvests.
-  static const char* kProviders[] = {"openai", "anthropic", "mistral", "cumulo", "zai"};
-  for (const char* p : kProviders) {
+  // CUM-486: walk the canonical provider registry (kProviderSlots), never a hand
+  // list, so a provider added there is advertised here with no edit. The router
+  // heads (cumulo/zai) are first-class keyed hosts (CUM-242); cumulo choices are
+  // the "<upstream>/<model>" ids the router harvests. Each is gated on hasKey().
+  // The list is Deps::modelChoices - the SAME derivation the spawn validator
+  // accepts - so every advertised model spawns as named. A keyed provider whose
+  // list comes back empty is advertised with the model a spawn there actually
+  // runs (its sub default), never "zai: ;", which the honesty rails read as "no
+  // models" and refused to route to.
+  for (const orch::ProviderSlot& slot : orch::kProviderSlots) {
+    const std::string p = slot.slug;
     if (!d_.cfg.provider.hasKey || !d_.cfg.provider.hasKey(p)) continue;
-    ctx += std::string(" ") + p + ": " + (d_.modelChoices ? d_.modelChoices(p) : std::string()) + ";";
+    std::string list = d_.modelChoices ? d_.modelChoices(p) : std::string();
+    if (list.empty() && d_.cfg.provider.subModel) list = d_.cfg.provider.subModel(p);
+    if (list.empty()) continue;
+    ctx += " " + p + ": " + list + ";";
     any = true;
   }
   // The custom LAN endpoint, when configured, is a REAL spawn/head target - its

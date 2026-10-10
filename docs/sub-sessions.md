@@ -161,10 +161,13 @@ which provider hosts which connector.
 3. Else the first keyed provider in the sub-session priority order
    (`providerPriority`, web-settable, never model-settable).
 
-The model id is coerced against the provider's choice list (live-harvested, else
-compile-time); an invalid model logs `spawn model coerced` and uses the
-per-provider sub-model default. `deep_research` on OpenAI upgrades the default
-to the deep-research model.
+The model id is checked against the provider's choice list (live-harvested,
+else the cold-start list); an id outside it logs `spawn model coerced` and uses
+the per-provider sub-model default. The head's `[AVAILABLE MODELS]` line is
+built from that same list, so every model it is offered spawns as named. Deep
+research models are not in any list (they cannot run the turn contract), so a
+`deep_research` skill hint runs on the provider's sub-model default with its
+always-on web search, not on a dedicated deep-research model.
 
 ## The wire, per backend
 

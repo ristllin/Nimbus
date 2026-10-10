@@ -408,33 +408,19 @@ static bool providerHasKey(const String& p) {
   return false;
 }
 
-static String modelChoicesFor(const String& p) {
-  // Live-harvested list first (the verify pass reads the provider's /v1/models -
-  // keeps current-generation ids selectable without a firmware release); the
-  // compile-time list stays the fallback for never-verified providers.
-  String dyn = store::modelChoices(p);
-  if (dyn.length()) return dyn;
-  if (p == "openai")    return OPENAI_MODEL_CHOICES;
-  if (p == "anthropic") return ANT_MODEL_CHOICES;
-  if (p == "mistral")   return MISTRAL_MODEL_CHOICES;
-  if (p == "cumulo")    return CUMULO_MODEL_CHOICES;
-  if (p == "zai")       return ZAI_MODEL_CHOICES;
-  return "";
+// CUM-486: the ONE model-choice derivation (nimbus::orch::effectiveModelChoices:
+// the live-harvested list first - the verify pass reads the provider's /models,
+// keeping current-generation ids selectable without a firmware release - else
+// the cold-start list). The spawn validator, the orch_model validator AND the
+// prompt's [AVAILABLE MODELS] line (d.modelChoices below) all read it, so the
+// head is never offered a model that validation then coerces away.
+static std::string modelChoicesFor(const std::string& p) {
+  return nimbus::orch::effectiveModelChoices(p.c_str(),
+                                             std::string(store::modelChoices(String(p.c_str())).c_str()));
 }
 
 static bool modelIsValid(const String& provider, const char* model) {
-  if (!model || !*model) return false;
-  String list = modelChoicesFor(provider);
-  if (list.length() == 0) return false;
-  int start = 0;
-  while (start < (int)list.length()) {
-    int comma = list.indexOf(',', start);
-    if (comma < 0) comma = list.length();
-    String item = list.substring(start, comma); item.trim();
-    if (item == model) return true;
-    start = comma + 1;
-  }
-  return false;
+  return model && nimbus::orch::modelInChoices(modelChoicesFor(std::string(provider.c_str())), model);
 }
 
 // ---- last-turn introspection (owner ask 2026-07-16: "create a file where I can
@@ -944,14 +930,11 @@ static TurnEngine::Deps buildTurnDeps() {
   // desc) so the model pulls the procedure with skill.get instead of the recipes
   // riding every prompt.
   d.skillsIndex = [] { return skills::indexText(); };
-  // [AVAILABLE MODELS] uses the COMPILE-TIME lists (the pre-lift behavior - the
-  // live-harvested store::modelChoices list feeds validation, not this block).
-  d.modelChoices = [](const std::string& p) {
-    if (p == "openai")    return std::string(OPENAI_MODEL_CHOICES);
-    if (p == "anthropic") return std::string(ANT_MODEL_CHOICES);
-    if (p == "mistral")   return std::string(MISTRAL_MODEL_CHOICES);
-    return std::string();
-  };
+  // [AVAILABLE MODELS] reads the SAME derivation the spawn validator accepts
+  // (CUM-486). It used compile-time lists for three providers and "" for the
+  // rest, so the head saw "zai: ;" / "cumulo: ;" and refused those sub-agents,
+  // and kept offering o4-mini-deep-research, which validation coerced away.
+  d.modelChoices = [](const std::string& p) { return modelChoicesFor(p); };
   d.episodicCaptureUser = [](const std::string& chatId, const std::string& text,
                              const std::string& fromTag) {
     memory::captureSession(chatId.c_str(), store::orchHost().c_str(), String(text.c_str()));

@@ -10,6 +10,8 @@
 #include "nimbus/harness/engine.h"
 #include "nimbus/harness/rate_limit.h"   // CUM-460 the 429 reply table
 #include "nimbus/harness/skill_md.h"   // W15: skillsIndexText for the rig index
+#include "nimbus/orch/model_choices.h"   // CUM-486: the one model-choice derivation
+#include "nimbus/orch/provider_slots.h"
 
 // Stage G suite - the turn orchestration, host-tested for the first time: the
 // TurnGuard head arc, the recall gate, the "host|convId" conversation state,
@@ -75,6 +77,8 @@ struct Rig {
   std::vector<orch::ValidatedAction> staged;   // ApplyDeps.stageDevice recorder
   std::vector<orch::ScratchUpdate> scratchApplied;   // ApplyDeps.applyScratch recorder
   bool adminChats = false;   // opt-in: chats resolve to an Admin principal (scratchpad writes)
+  // Optional [AVAILABLE MODELS] source (CUM-486); null = the fixed fake lists.
+  std::function<std::string(const std::string&)> modelChoicesFn;
   int journalGcs = 0;
 
   struct DebugCap {
@@ -133,7 +137,10 @@ struct Rig {
           {"deliver-pdf", "Build a PDF via an openai sub's code_interpreter and send it with files.send", false}};
       return agent::skillsIndexText(es);
     };
-    d.modelChoices = [](const std::string& p) { return "model-" + p + "-a,model-" + p + "-b"; };
+    d.modelChoices = [this](const std::string& p) {
+      if (modelChoicesFn) return modelChoicesFn(p);
+      return "model-" + p + "-a,model-" + p + "-b";
+    };
     d.episodicCaptureUser = [this](const std::string& c, const std::string& t,
                                    const std::string& f) {
       captured.push_back({c, t, f});
@@ -638,6 +645,101 @@ static void test_cum483_turn_without_memory_keeps_side_effects() {
   TEST_ASSERT_FALSE(r.anyDelivered("{"));
   TEST_ASSERT_EQUAL(1, (int)r.hookEnds.size());
   TEST_ASSERT_TRUE(r.hookEnds[0].ok);
+}
+
+// ---- CUM-486: [AVAILABLE MODELS] == what the spawn validator accepts -------
+
+// The provider -> advertised models map parsed off the turn's [AVAILABLE MODELS]
+// line ("" value = the "p: ;" shape the bug produced).
+static std::map<std::string, std::string> advertisedModels(const std::string& inputs) {
+  std::map<std::string, std::string> out;
+  const std::string tag = "[AVAILABLE MODELS] (yours + sub-agents')";
+  size_t b = inputs.find(tag);
+  if (b == std::string::npos) return out;
+  b += tag.size();
+  const std::string line = inputs.substr(b, inputs.find('\n', b) - b);
+  size_t s = 0;
+  while (s < line.size()) {
+    size_t semi = line.find(';', s);
+    if (semi == std::string::npos) break;
+    std::string item = line.substr(s, semi - s);
+    s = semi + 1;
+    const size_t colon = item.find(':');
+    if (colon == std::string::npos) continue;
+    std::string p = item.substr(0, colon), m = item.substr(colon + 1);
+    p.erase(0, p.find_first_not_of(' '));
+    m.erase(0, m.find_first_not_of(' '));
+    out[p] = m;
+  }
+  return out;
+}
+
+// The class rule over EVERY provider slot, with and without a live harvest: the
+// prompt advertises exactly the derivation the spawn validator reads (the device
+// wires both to nimbus::orch::effectiveModelChoices), so every advertised model
+// spawns as named and no keyed provider is ever shown as "p: ;" (bench unit A:
+// "zai: ;" made the head refuse Z.ai; o4-mini-deep-research was offered and then
+// coerced away on every spawn).
+static void test_cum486_advertised_models_equal_spawnable_for_every_slot() {
+  for (int live = 0; live < 2; ++live) {
+    Rig r;
+    std::map<std::string, std::string> harvest;
+    for (const orch::ProviderSlot& slot : orch::kProviderSlots) {
+      r.cfg.keyed.insert(slot.slug);
+      if (live) harvest[slot.slug] = std::string("live-") + slot.slug + "-1,live-" + slot.slug + "-2";
+    }
+    auto derive = [&harvest](const std::string& p) {
+      auto it = harvest.find(p);
+      return orch::effectiveModelChoices(p.c_str(), it == harvest.end() ? std::string() : it->second);
+    };
+    r.modelChoicesFn = derive;
+    r.eng->handleMessage("which models can you use?", "Owner", "1001");
+    TEST_ASSERT_EQUAL(1, (int)r.attempts.size());
+    const auto adv = advertisedModels(r.attempts[0].inputs);
+    for (const orch::ProviderSlot& slot : orch::kProviderSlots) {
+      auto it = adv.find(slot.slug);
+      TEST_ASSERT_TRUE_MESSAGE(it != adv.end(), slot.slug);   // every keyed slot is listed
+      TEST_ASSERT_FALSE_MESSAGE(it->second.empty(), slot.slug);   // never "p: ;"
+      TEST_ASSERT_EQUAL_STRING_MESSAGE(derive(slot.slug).c_str(), it->second.c_str(), slot.slug);
+      // ...and each advertised id passes the validator's own check.
+      size_t s = 0;
+      const std::string& csv = it->second;
+      while (s <= csv.size()) {
+        size_t c = csv.find(',', s);
+        if (c == std::string::npos) c = csv.size();
+        const std::string id = csv.substr(s, c - s);
+        TEST_ASSERT_TRUE_MESSAGE(orch::modelInChoices(derive(slot.slug), id), id.c_str());
+        s = c + 1;
+      }
+    }
+  }
+}
+
+// The two configs bench unit A could not even test: a Z.ai-only and a Cumulo-only
+// device. Each advertises its cold-start list (no harvest yet), nothing else, and
+// a source that returns nothing still yields the model a spawn would run.
+static void test_cum486_router_only_devices_advertise_their_models() {
+  for (const char* only : {"zai", "cumulo"}) {
+    Rig r;
+    r.cfg.keyed = {only};
+    r.cfg.routerHost = only;
+    r.modelChoicesFn = [](const std::string& p) { return orch::effectiveModelChoices(p.c_str(), ""); };
+    r.eng->handleMessage("hi", "Owner", "1001");
+    TEST_ASSERT_EQUAL(1, (int)r.attempts.size());
+    const auto adv = advertisedModels(r.attempts[0].inputs);
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)adv.size(), only);
+    TEST_ASSERT_EQUAL_STRING(orch::staticModelChoices(only), adv.at(only).c_str());
+    TEST_ASSERT_TRUE(r.attempts[0].inputs.find(std::string(" ") + only + ": ;") == std::string::npos);
+  }
+  // Belt and braces: a keyed provider whose list source is empty is shown with
+  // its sub default (what a spawn there runs after coercion), never "zai: ;".
+  Rig r;
+  r.cfg.keyed = {"zai"};
+  r.cfg.routerHost = "zai";
+  r.modelChoicesFn = [](const std::string&) { return std::string(); };
+  r.eng->handleMessage("hi", "Owner", "1001");
+  TEST_ASSERT_TRUE(r.attempts[0].inputs.find("zai: sub-zai;") != std::string::npos);
+  TEST_ASSERT_TRUE(r.attempts[0].inputs.find("zai: ;") == std::string::npos);
 }
 
 // ---- (8) scheduled turn: rails + FireOutcome --------------------------------
@@ -1312,6 +1414,8 @@ int main(int, char**) {
   RUN_TEST(test_budget_failover_and_exhausted_refusal);
   RUN_TEST(test_salvage_never_delivers_raw_json);
   RUN_TEST(test_cum483_turn_without_memory_keeps_side_effects);
+  RUN_TEST(test_cum486_advertised_models_equal_spawnable_for_every_slot);
+  RUN_TEST(test_cum486_router_only_devices_advertise_their_models);
   RUN_TEST(test_scheduled_turn_rails_and_fire_outcome);
   RUN_TEST(test_once_wakeup_gets_wakeup_preamble_not_recurring);
   RUN_TEST(test_owner_reminder_gets_reminder_framing_not_wakeup);

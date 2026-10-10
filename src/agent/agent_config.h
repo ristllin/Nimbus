@@ -1,5 +1,6 @@
 #pragma once
-#include "nimbus/cloud/relay_heap.h"  // CUM-404 v2: reuse the relay-proven per-connection
+#include "nimbus/cloud/relay_heap.h"
+#include "nimbus/orch/model_choices.h"   // CUM-486: the cold-start model lists live in lib/core  // CUM-404 v2: reuse the relay-proven per-connection
                                       // largest-block floor (kRelayHeapFloorLargest) for the
                                       // chat hot path - same handshake, CYD-safe (pure lib/core)
 // agent_config - device-side constants for the Orchestrator subsystem, ported
@@ -23,17 +24,18 @@
 // endpoints, model overview pages.
 
 // ---- Provider model choice lists (comma-separated) --------------------------
-#define MISTRAL_MODEL_CHOICES "mistral-large-latest,mistral-medium-latest,mistral-small-latest"
-#define OPENAI_MODEL_CHOICES  "gpt-6-astra,gpt-5.6,gpt-5.6-terra,gpt-5.6-luna,o4-mini-deep-research"
-#define ANT_MODEL_CHOICES     "claude-opus-5,claude-sonnet-5,claude-haiku-4-5"
-// Router providers (Cumulo Nimbus, Z.ai) run the assistant as first-class heads.
-// These are the fallback choice lists + default head model when the live /models
-// harvest has not landed yet; the harvested list wins when present. Cumulo speaks
-// the OpenAI-compatible router (default upstream openai), so its defaults are the
-// proven router models.
-#define CUMULO_MODEL_CHOICES  "gpt-5.6,gpt-5.6-terra,gpt-5.6-luna"
+// CUM-486: the cold-start lists are defined ONCE in lib/core
+// (nimbus/orch/model_choices.h) so the prompt's [AVAILABLE MODELS] line and the
+// spawn validator derive from the same source; these names are aliases kept for
+// the existing call sites. The live /models harvest replaces them on the first
+// verify. Router providers (Cumulo Nimbus, Z.ai) run the assistant as
+// first-class heads; CUMULO_MODEL / ZAI_MODEL are their default head models.
+#define MISTRAL_MODEL_CHOICES NIMBUS_MISTRAL_MODEL_CHOICES
+#define OPENAI_MODEL_CHOICES  NIMBUS_OPENAI_MODEL_CHOICES
+#define ANT_MODEL_CHOICES     NIMBUS_ANT_MODEL_CHOICES
+#define CUMULO_MODEL_CHOICES  NIMBUS_CUMULO_MODEL_CHOICES
 #define CUMULO_MODEL          "gpt-5.6"
-#define ZAI_MODEL_CHOICES     "glm-5.3,glm-5.2,glm-5.3-flash"
+#define ZAI_MODEL_CHOICES     NIMBUS_ZAI_MODEL_CHOICES
 #define ZAI_MODEL             "glm-5.3"
 
 // ---- Anthropic REST endpoints ----------------------------------------------
