@@ -64,7 +64,18 @@ A provider with no key is skipped, not faked.
 ./build/nimbus-lab scenarios                 # the whole suite
 ./build/nimbus-lab scenarios memory tool-loop
 ./build/nimbus-lab list-scenarios
+./build/nimbus-lab --host=anthropic sub "find the sources for X"   # one sub-agent, end to end
 ```
+
+`sub` runs one Anthropic sub-agent through the shipping spawn chain
+(`providers::antDispatch`: environment, agent, session, first turn) and polls it
+with `antPoll` until it finishes, printing the reply and the harness log. Add
+`--model=<id>` to pick the agent model, `--nvs-full` to drop every cache write
+the way a full NVS partition does (CUM-481 reproduced here first), `--runs=<n>`
+to prove a warm spawn re-creates nothing, and `--record=<dir>` to save every
+response body (the source of the recorded fixtures under
+`test/support/fixtures/anthropic_managed_agents_2026-10/`). Each run is a real
+session: a one-line reply costs about $0.02, a short research task about $0.12.
 
 Useful flags: `--host=mistral` pins one provider (no failover, so a failure is
 attributable), `--model=<id>` overrides its model, `--verbose` echoes every HTTP

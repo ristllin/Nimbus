@@ -170,7 +170,7 @@ to the deep-research model.
 
 | backend | create | poll | cancel | survives reboot? |
 |---|---|---|---|---|
-| **anthropic** | `POST /v1/environments` + `/v1/agents` (both NVS-cached) → `POST /v1/sessions` → brief as a `user.message` event | `GET /v1/sessions/<sid>/events?types[]=agent.message&types[]=session.status_idle&types[]=session.error` | `user.interrupt` event | **yes** (session id in the journal) |
+| **anthropic** | `POST /v1/environments` + `/v1/agents` (both cached: NVS, plus a RAM copy for the boot) → `POST /v1/sessions` → brief as a `user.message` event | `GET /v1/sessions/<sid>/events?types[]=agent.message&types[]=session.status_idle&types[]=session.error` | `user.interrupt` event | **yes** (session id in the journal) |
 | **openai** | `POST /v1/responses` with `background:true, store:true` + always-on `web_search` tool | `GET /v1/responses/<id>` (status + output text + **usage**) | `POST /v1/responses/<id>/cancel` | **yes** (response id) |
 | **mistral** | `POST /v1/conversations` - actually **synchronous**: the reply streams back at dispatch and is cached on-device | poll serves the cached reply once as Done | cache-local | **no** - a reboot loses the cache → "expired" |
 | **custom** | `POST /v1/chat/completions` (or `/v1/messages`) - synchronous, single cache slot | cache, once | cache-local | no |
@@ -200,8 +200,46 @@ error text (OpenAI, the custom endpoint, Z.ai, the Cumulo router). The owner
 hears *"Couldn't start that agent on mistral."* followed by the same reply a
 head-turn 429 gets (`rateLimitReply`, `lib/harness/src/rate_limit.cpp`); for a
 spent connector day that ends *"it resets at midnight UTC."* A Virtual Nimbus
-runs the same code. An Anthropic sub's 429 is not classified yet and still
-reads only *"Couldn't start that agent on anthropic."*
+runs the same code. An Anthropic spawn makes up to four calls (environment,
+agent, session, first turn), and a 429 on any of them is classified the same
+way, from the provider's error text (CUM-474).
+
+**An Anthropic spawn names why it failed, and never re-creates what it already
+has** (CUM-481, `antDispatch` in `lib/harness/src/providers/anthropic.cpp`):
+
+- **The ids live in RAM for the whole boot.** The environment id and the
+  per-model agent ids are loaded once from NVS and written through to it. Each
+  write is read back; when NVS is full the write is dropped silently, so a
+  dropped one logs `anthropic: env id not saved (storage full?) - kept in RAM
+  until restart` once and the RAM copy keeps serving it. The session request
+  always carries both ids, and no spawn creates a second environment or agent.
+  (Before this, a full NVS sent the session with an empty `environment_id`,
+  which the API refuses with HTTP 400 `environment_id: value is required`.)
+- **Every failure names its reason.** A non-2xx on any call of the chain logs
+  the step, the status and the provider's reason (at most 150 characters), for
+  example `anthropic: create session HTTP 400: invalid_request_error:
+  environment_id: value is required`. The owner still hears *"Couldn't start
+  that agent on anthropic."* for every refusal except a 429; the reason is in
+  the device log (`GET /api/errlog`).
+- **The error is classified.** 429 is a rate limit with its window, 401/403 a
+  key problem, 404 a missing environment or agent, any other 4xx a refused
+  request, and 5xx a provider fault.
+- **Dead ids are dropped.** When the session create says the cached environment
+  or agent is gone (404) or archived (a 400 "... is archived"), both cached ids
+  are dropped so the next spawn re-creates them. Before, an archived environment
+  failed every spawn until NVS was erased.
+- **A stopped session ends the job.** A session that stops for any reason other
+  than finishing or waiting for input (for example `retries_exhausted`) ends as
+  an error instead of running forever.
+- **MCP connectors fit the managed-agents shape.** Owner MCP connectors ride the
+  sub-agent as `mcp_servers` plus a matching `mcp_toolset` (tool calls allowed
+  without confirmation, since a sub-agent runs unattended). A connector that
+  needs a token is left off and logged (`anthropic: connector <name> needs a
+  vault credential - left off the sub-agent`): the API refuses inline MCP
+  tokens, and the spawn would otherwise fail at agent creation.
+
+The host harness runs this whole chain live: `nimbus-lab sub` in
+`tools/harness-lab` (add `--nvs-full` to reproduce a full partition).
 
 ## Results - how output reaches you
 

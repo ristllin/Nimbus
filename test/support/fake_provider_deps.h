@@ -23,6 +23,9 @@ struct FakeProviderDeps {
   std::string antEnv;                    // cached environment id ("" = none)
   std::string antAgents;                 // "model=agentid;..."
   int antEnvSets = 0, antAgentSets = 0;  // write counters (stale-cache clears)
+  // A full NVS partition (CUM-479): every cache write is attempted (counted) and
+  // silently dropped, exactly like store::setAntEnvId on a full device.
+  bool nvsFull = false;
 
   std::string custBase, custKey, custModel = "mock-model";
   std::string custConv = "openai";
@@ -43,9 +46,12 @@ struct FakeProviderDeps {
     pd.orchModel = [](const char* h) { return "model-" + std::string(h); };
     pd.toolLoopOn = [this] { return toolLoop; };
     pd.antEnvId = [this] { return antEnv; };
-    pd.setAntEnvId = [this](const std::string& v) { antEnv = v; antEnvSets++; };
+    pd.setAntEnvId = [this](const std::string& v) { if (!nvsFull) antEnv = v; antEnvSets++; };
     pd.antAgentMap = [this] { return antAgents; };
-    pd.setAntAgentMap = [this](const std::string& v) { antAgents = v; antAgentSets++; };
+    pd.setAntAgentMap = [this](const std::string& v) {
+      if (!nvsFull) antAgents = v;
+      antAgentSets++;
+    };
     pd.customBase = [this] { return custBase; };
     pd.customKey = [this] { return custKey; };
     pd.customConv = [this] { return custConv; };

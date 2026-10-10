@@ -5,6 +5,7 @@
 //   nimbus-lab tool <name> <json>     call one registry tool directly
 //   nimbus-lab chat [host]            interactive REPL against the real harness
 //   nimbus-lab scenarios [names...]   the scenario suite (see scenarios.cpp)
+//   nimbus-lab sub <task>             one Anthropic sub-agent end to end (sub_cmd.cpp)
 //
 // Flags: --host=<h> --model=<m> --verbose --no-tools --no-embed
 #include <cstdio>
@@ -15,6 +16,7 @@
 
 #include "lab_rig.h"
 #include "scenarios.h"
+#include "sub_cmd.h"
 
 namespace {
 
@@ -28,6 +30,11 @@ void usage() {
       "  chat                      interactive REPL against the real turn engine\n"
       "  scenarios [name...]       run the scenario suite (no names = all)\n"
       "  list-scenarios            show what the suite covers\n"
+      "  sub <task>                one Anthropic sub-agent end to end (dispatch + polls);\n"
+      "                            --model=<id> picks the agent model, --nvs-full drops\n"
+      "                            every cache write (a full NVS partition), --runs=<n>\n"
+      "                            repeats it, --timeout=<s> bounds each run,\n"
+      "                            --record=<dir> saves every response body\n"
       "\n"
       "Options:\n"
       "  --host=<openai|anthropic|mistral>   force the provider (default: priority order)\n"
@@ -53,6 +60,7 @@ int main(int argc, char** argv) {
   lab::LabRig::Options opt;
   std::string envPath = lab::Env::defaultDotenvPath();
   std::string forceHost, forceModel;
+  lab::SubOptions sub;
 
   for (int i = 1; i < argc; i++) {
     std::string a = argv[i];
@@ -66,6 +74,10 @@ int main(int argc, char** argv) {
     else if (a.rfind("--role=", 0) == 0)     opt.role = a.substr(7);
     else if (a.rfind("--heap=", 0) == 0)     opt.heapBytes = (uint32_t)std::stoul(a.substr(7));
     else if (a.rfind("--heap-decay=", 0) == 0) opt.heapDecay = (uint32_t)std::stoul(a.substr(13));
+    else if (a == "--nvs-full")              sub.nvsFull = true;
+    else if (a.rfind("--runs=", 0) == 0)     sub.runs = std::stoi(a.substr(7));
+    else if (a.rfind("--timeout=", 0) == 0)  sub.timeoutS = std::stoi(a.substr(10));
+    else if (a.rfind("--record=", 0) == 0)   sub.recordDir = a.substr(9);
     else if (a == "-h" || a == "--help")   { usage(); return 0; }
     else args.push_back(a);
   }
@@ -134,6 +146,18 @@ int main(int argc, char** argv) {
       std::printf("  [%.1fs, %u in / %u out tokens]\n", t.seconds, t.tokensIn, t.tokensOut);
     }
     return 0;
+  }
+
+  if (cmd == "sub") {
+    if (args.size() < 2) { std::fprintf(stderr, "sub needs a task\n"); return 2; }
+    for (size_t i = 1; i < args.size(); i++) sub.task += (i > 1 ? " " : "") + args[i];
+    sub.model = forceModel;
+    sub.verbose = opt.verboseHttp;
+    if (sub.runs < 1 || sub.timeoutS < 1) {   // 0 runs would report "reached Done" vacuously
+      std::fprintf(stderr, "--runs and --timeout must be at least 1\n");
+      return 2;
+    }
+    return lab::cmdSub(env, sub);
   }
 
   if (cmd == "scenarios") {

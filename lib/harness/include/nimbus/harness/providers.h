@@ -184,12 +184,23 @@ bool orchTurnCustom(const ProviderDeps& pd, std::string& convId,
 
 // ---- sub-session dispatch/poll/cancel/answer --------------------------------
 // Anthropic Managed Agents (cloud sandbox sessions; env/agent cached via the
-// ant* closures). defaultModel = the device's ANT_MODEL fallback.
+// ant* closures). defaultModel = the device's ANT_MODEL fallback. The cached ids
+// are loaded once per boot into RAM and written through to the closures; a
+// write that does not read back (a full NVS partition) is logged and RAM keeps
+// serving the id until restart, so no spawn re-creates them (CUM-481). A non-2xx
+// on any call of the spawn chain logs the provider's reason (<= 150 chars) and
+// classifies: 429 -> RateLimited (+ Directive::rateLimit), 401/403 -> Auth,
+// 404 -> NotFound, other 4xx -> BadRequest, 5xx -> RemoteFail (CUM-474). A
+// session create that names a cached id dead (404, or a 400 "... is archived")
+// drops both cached ids so the next dispatch re-creates them.
 FabricErr antDispatch(const ProviderDeps& pd, const char* defaultModel,
                       const Directive& d, char outJobId[72]);
 FabricErr antPoll(const ProviderDeps& pd, const char* jobId, ResultEnvelope& env);
 FabricErr antCancel(const ProviderDeps& pd, const char* jobId);
 FabricErr antAnswer(const ProviderDeps& pd, const char* jobId, const char* userText);
+// Drop the boot-lifetime RAM copy of the managed-agent ids; the next dispatch
+// reloads them from the closures. Host suites call it between cases.
+void antForgetIds();
 
 // OpenAI Responses background mode, host/key/model-parameterized (kept generic
 // exactly like the pre-split openai_responses:: so a proxy could reuse it).

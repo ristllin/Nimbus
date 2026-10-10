@@ -1,6 +1,7 @@
 #include <ArduinoJson.h>
 
 #include <cstring>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -24,9 +25,11 @@
 // HttpTransport; socket/TLS mechanics live in the device transport.
 //
 // LIVE-GATED on device: needs the Anthropic key (web UI / NVS) + STA WiFi. The
-// env/agent creation writes the antEnvId/antAgentMap caches (NVS via closures).
-// VERIFY(2026-06): beta header (managed-agents-2026-04-01) + /v1/{agents,
-// environments,sessions} endpoints + model choice list re-verify at implementation.
+// env/agent creation writes the antEnvId/antAgentMap caches (NVS via closures,
+// with a boot-lifetime RAM copy - see AntIds below).
+// Verified live 2026-10-10 (CUM-481, host harness `nimbus-lab sub`): beta header
+// managed-agents-2026-04-01, the environment/agent/session bodies below, the
+// session `agent` string shorthand, and the typed event poll all current.
 
 namespace agent {
 namespace providers {
@@ -74,83 +77,269 @@ static inline uint32_t clampRoundMs(uint32_t budgetMs, uint32_t provDefaultMs) {
   return budgetMs < kMinRoundMs ? kMinRoundMs : budgetMs;
 }
 
-// Create the cloud environment once (network egress for web tools); cache in NVS.
-static bool ensureEnv(const ProviderDeps& pd) {
-  if (!s(pd.antEnvId).empty()) return true;
-  if (!pd.key || pd.key("anthropic").empty()) return false;
-  std::string body;
-  {
-    JsonDocument d;
-    d["name"] = "nimbus-env";
-    JsonObject cfg = d["config"].to<JsonObject>();
-    cfg["type"] = "cloud";
-    cfg["networking"]["type"] = "unrestricted";
-    body = serializeBody(d);
-  }
-  JsonDocument filter; filter["id"] = true;
-  JsonDocument doc;
-  int code = antRequest(pd, "POST", "/v1/environments", std::move(body), doc, filter);
-  const char* id = doc["id"] | "";
-  if (code != 200 || !id[0]) { hlog::logf("anthropic: create env HTTP %d", code); return false; }
-  if (pd.setAntEnvId) pd.setAntEnvId(id);
-  hlog::logf("anthropic: env %s", id);
-  return true;
+// ---- Managed Agents sub-sessions --------------------------------------------
+
+// The longest provider reason a log line carries (CUM-481): enough for an
+// Anthropic "<type>: <message>" pair, and short enough that the longest line
+// ("anthropic: create session HTTP 400: " + excerpt) still fits hlog's 192-byte
+// buffer whole instead of being cut mid-reason.
+static const size_t kErrExcerptMax = 150;
+
+static bool is2xx(int code) { return code >= 200 && code < 300; }
+
+// Ask a response filter to keep the API's error envelope
+// {"type":"error","error":{"type":...,"message":...}}.
+static void keepErrorEnvelope(JsonDocument& filter) {
+  filter["error"]["type"] = true;
+  filter["error"]["message"] = true;
 }
 
-// Anthropic pins the model on the AGENT (no per-session model field), so each
-// model needs its own agent. Return the cached agent id for `model`, creating +
-// caching it on first use. Cache = NVS string map "model=agentid;model2=...;".
-static std::string agentForModel(const ProviderDeps& pd, const char* model,
-                                 const char* defaultModel) {
-  if (!model || !*model) model = defaultModel;
-  // The model string keys an NVS map ("model=agentid;..."), and it originates from
-  // LLM-chosen spawn directives - reject any name containing the map delimiters
-  // '=' / ';' (or other unexpected chars) so a crafted name can't corrupt the map.
+// `text` as one printable-ASCII log fragment of at most `max` chars: control
+// bytes and non-ASCII become '?', so provider or model text can never forge a
+// second log line.
+static std::string logSafe(std::string text, size_t max) {
+  for (char& c : text)
+    if ((unsigned char)c < 0x20 || (unsigned char)c > 0x7e) c = '?';
+  if (text.size() > max) text.resize(max);
+  return text;
+}
+
+// "<error.type>: <error.message>" from an error reply, log-safe, at most
+// kErrExcerptMax chars; "" when the body carried neither. The managed-agents
+// error envelope names a field or a limit, not a value (and the device log
+// sink still masks registered keys and Bearer tokens on top of this).
+static std::string antErrExcerpt(const JsonDocument& doc) {
+  std::string out = doc["error"]["type"] | "";
+  const char* msg = doc["error"]["message"] | "";
+  if (msg[0]) out += (out.empty() ? "" : ": ") + std::string(msg);
+  return logSafe(out, kErrExcerptMax);
+}
+
+// Log one failed call and say why, in the device log's one-line shape.
+static void logCallFail(const char* what, int code, const JsonDocument& doc) {
+  if (code <= 0) { hlog::logf("anthropic: %s: no response", what); return; }
+  const std::string why = is2xx(code) ? std::string("reply carried no id") : antErrExcerpt(doc);
+  hlog::logf("anthropic: %s HTTP %d%s%s", what, code, why.empty() ? "" : ": ", why.c_str());
+}
+
+// CUM-474: ONE status -> FabricErr rule for every call of the spawn chain
+// (environment, agent, session, first turn), so a 429 on any of them reaches
+// the owner as a rate limit naming its window, a refused request reads as a bad
+// request (retrying cannot help), and only a 5xx reads as a provider fault.
+static FabricErr chainErr(const Directive& d, const char* what, int code,
+                          const JsonDocument& doc) {
+  logCallFail(what, code, doc);
+  if (code <= 0) return FabricErr::Network;
+  if (is2xx(code) || code >= 500) return FabricErr::RemoteFail;
+  if (code == 429) return wire::rateLimited(d, rateLimitFromText(antErrExcerpt(doc)));
+  if (code == 401 || code == 403) return FabricErr::Auth;
+  if (code == 404) return FabricErr::NotFound;
+  return FabricErr::BadRequest;
+}
+
+// ---- managed-agent id cache (CUM-481) ---------------------------------------
+// The shared environment id and the per-model agent map ("model=agentid;...")
+// persist in NVS through the ant* closures, whose setters are void. On a full
+// NVS partition (CUM-479) a write is silently dropped, and the old code then
+// re-read the environment id it had just "saved" to build the session body -
+// sending "environment_id":"" (HTTP 400 "environment_id: value is required") -
+// and re-created a provider-side environment + agent on every spawn.
+//
+// Now the ids live in RAM for the whole boot: loaded from NVS once, then every
+// lookup reads RAM and every change goes to RAM first and is written through to
+// NVS and read back. A write that did not land is logged when it happens; the
+// RAM copy keeps serving it until restart. (The NVS storage itself is untouched.)
+// The copy is keyed by a fingerprint of the credential it was made under, so a
+// key change drops the RAM-only ids and re-reads NVS. The persisted ids are not
+// keyed (unchanged from before): ids saved under an older key are reused until
+// the provider answers 404, which clears them.
+struct AntIds {
+  bool        loaded = false;
+  size_t      owner = 0;       // std::hash of the key the ids belong to
+  std::string envId;
+  std::string agentMap;
+};
+static AntIds& antIdStore() { static AntIds ids; return ids; }
+
+void antForgetIds() { antIdStore() = AntIds(); }
+
+static AntIds& antIds(const ProviderDeps& pd) {
+  AntIds& ids = antIdStore();
+  const size_t owner = std::hash<std::string>()(pd.key ? pd.key("anthropic") : std::string());
+  if (ids.loaded && ids.owner == owner) return ids;
+  ids = AntIds();
+  ids.loaded = true;
+  ids.owner = owner;
+  ids.envId = s(pd.antEnvId);
+  ids.agentMap = s(pd.antAgentMap);
+  return ids;
+}
+
+// Write `v` through a void NVS setter and read it back; a write that did not
+// land logs one line naming `what`, and the caller's RAM copy carries on.
+static void writeThrough(const std::function<void(const std::string&)>& set,
+                         const std::function<std::string()>& get, const std::string& v,
+                         const char* what) {
+  if (set) set(v);
+  if (set && s(get) == v) return;
+  hlog::logf("anthropic: %s not saved (storage full?) - kept in RAM until restart", what);
+}
+
+// "model=agentid;" map lookup, anchored at an entry start so one model name
+// that ends with another can never return the wrong agent.
+static std::string agentInMap(const std::string& map, const std::string& model) {
+  const std::string key = model + "=";
+  size_t p = 0;
+  while ((p = map.find(key, p)) != std::string::npos) {
+    if (p == 0 || map[p - 1] == ';') {
+      size_t st = p + key.size();
+      size_t e = map.find(';', st);
+      return map.substr(st, (e == std::string::npos ? map.size() : e) - st);
+    }
+    p += key.size();
+  }
+  return std::string();
+}
+
+// True when a session create refused the cached environment or agent itself:
+// 404 (deleted, or another account's id) or a 400 naming it archived (an
+// archived env/agent can never start a session again). Live-verified bodies
+// 2026-10-10: "Environment env_... is archived." / "agent agent_... is
+// archived and cannot be used to create a session" / "... not found".
+static bool cachedIdsDead(int code, const JsonDocument& doc) {
+  if (code == 404) return true;
+  if (code != 400) return false;
+  const char* msg = doc["error"]["message"] | "";
+  return strstr(msg, " is archived") != nullptr;
+}
+
+// One create call of the spawn chain: POST `body` to `path` and return the new
+// resource's id with the HTTP status; on any failure the id is "" and `err`
+// holds the classified error (chainErr logged why).
+struct Created {
+  std::string id;
+  int code = 0;
+  bool deadRef = false;   // the call refused a cached id itself (cachedIdsDead)
+};
+static Created createCall(const ProviderDeps& pd, const Directive& d, const char* what,
+                          const char* path, std::string body, FabricErr& err) {
+  JsonDocument filter; filter["id"] = true; keepErrorEnvelope(filter);
+  JsonDocument doc;
+  Created out;
+  out.code = antRequest(pd, "POST", path, std::move(body), doc, filter);
+  const char* id = doc["id"] | "";
+  if (is2xx(out.code) && id[0]) out.id = id;
+  else err = chainErr(d, what, out.code, doc);
+  out.deadRef = cachedIdsDead(out.code, doc);
+  return out;
+}
+
+// The cloud environment (network egress for the web tools), created once and
+// cached. "" + `err` on failure.
+static std::string envFor(const ProviderDeps& pd, const Directive& d, AntIds& ids,
+                          FabricErr& err) {
+  if (!ids.envId.empty()) return ids.envId;
+  std::string body;
+  {
+    JsonDocument doc;
+    doc["name"] = "nimbus-env";
+    JsonObject cfg = doc["config"].to<JsonObject>();
+    cfg["type"] = "cloud";
+    cfg["networking"]["type"] = "unrestricted";
+    body = serializeBody(doc);
+  }
+  const Created env = createCall(pd, d, "create env", "/v1/environments", std::move(body), err);
+  if (env.id.empty()) return std::string();
+  ids.envId = env.id;
+  hlog::logf("anthropic: env %s", env.id.c_str());
+  writeThrough(pd.setAntEnvId, pd.antEnvId, ids.envId, "env id");
+  return ids.envId;
+}
+
+// A model name from an LLM-chosen spawn directive keys the "model=agentid;" map,
+// so anything outside [A-Za-z0-9._-] (the map's '=' / ';' delimiters above all)
+// falls back to the default rather than corrupting it.
+static const char* safeModel(const char* model, const char* defaultModel) {
+  if (!model || !*model) return defaultModel;
   for (const char* p = model; *p; ++p) {
     char ch = *p;
     if (!((ch>='A'&&ch<='Z')||(ch>='a'&&ch<='z')||(ch>='0'&&ch<='9')||ch=='-'||ch=='.'||ch=='_')) {
-      hlog::logf("anthropic: unsafe model name '%s' -> default", model);
-      model = defaultModel; break;
+      hlog::logf("anthropic: unsafe model name '%s' -> default", logSafe(model, 64).c_str());
+      return defaultModel;
     }
   }
-  std::string map = s(pd.antAgentMap);
-  std::string key = std::string(model) + "=";
-  size_t p = map.find(key);
-  if (p != std::string::npos) {
-    size_t st = p + key.length();
-    size_t e = map.find(';', st); if (e == std::string::npos) e = map.length();
-    return map.substr(st, e - st);
+  return model;
+}
+
+// Fit the connector layer's MCP attachments to managed-agents-2026-04-01. Live
+// 2026-10-10 the API refused both shapes the connector layer emits: an inline
+// `authorization_token` ("unknown field" - credentials ride a vault attached to
+// the session) and an mcp_servers entry that no `mcp_toolset` tool references
+// ("declared but no mcp_toolset in tools references them"). Either made EVERY
+// spawn fail at agent creation for an owner with an Anthropic MCP connector. So
+// a server that needs a token is left off (logged) instead of failing the spawn,
+// and each remaining server gets its mcp_toolset with always_allow: the device
+// has no tool-confirmation path, and MCP toolsets default to always_ask, which
+// would park the session in requires_action forever (OpenAI's attach uses
+// require_approval "never" for the same reason). Vault credentials: CUM-519.
+static void fitMcpServers(JsonDocument& agent) {
+  JsonArray servers = agent["mcp_servers"].as<JsonArray>();
+  if (servers.isNull()) return;
+  for (size_t i = servers.size(); i-- > 0;) {
+    if (servers[i]["authorization_token"].isNull()) continue;
+    const std::string name = servers[i]["name"] | "";
+    hlog::logf("anthropic: connector %s needs a vault credential - left off the sub-agent",
+               logSafe(name, 40).c_str());
+    servers.remove(i);
   }
+  std::vector<std::string> names;
+  for (JsonObject srv : servers) names.push_back(srv["name"] | "");
+  if (names.empty()) { agent.remove("mcp_servers"); return; }
+  JsonArray tools = agent["tools"].as<JsonArray>();
+  for (const std::string& name : names) {
+    JsonObject t = tools.add<JsonObject>();
+    t["type"] = "mcp_toolset";
+    t["mcp_server_name"] = name;
+    t["default_config"]["permission_policy"]["type"] = "always_allow";
+  }
+}
+
+// Anthropic pins the model on the AGENT (no per-session model field), so each
+// model needs its own agent: the cached id for `model`, created on first use.
+// "" + `err` on failure.
+static std::string agentFor(const ProviderDeps& pd, const Directive& d, const char* defaultModel,
+                            AntIds& ids, FabricErr& err) {
+  const char* model = safeModel(d.model, defaultModel);
+  std::string cached = agentInMap(ids.agentMap, model);
+  if (!cached.empty()) return cached;
   std::string body;
   {
-    JsonDocument d;
-    d["name"]   = std::string("Nimbus Agent (") + model + ")";
-    d["model"]  = model;
-    d["system"] = "You are an autonomous assistant agent running on a managed "
-                  "sandbox. Use your tools (bash, web search/fetch, files) to "
-                  "complete the task fully, then give the final result concisely.";
-    JsonArray tools = d["tools"].to<JsonArray>();
+    JsonDocument doc;
+    doc["name"]   = std::string("Nimbus Agent (") + model + ")";
+    doc["model"]  = model;
+    doc["system"] = "You are an autonomous assistant agent running on a managed "
+                    "sandbox. Use your tools (bash, web search/fetch, files) to "
+                    "complete the task fully, then give the final result concisely.";
+    JsonArray tools = doc["tools"].to<JsonArray>();
     tools.add<JsonObject>()["type"] = ANT_TOOLSET;
     // Owner-configured connectors ride the managed agent as mcp_servers[] - the
     // session created against this agent inherits them (sub-agents only; the head
-    // is one forced tool). ⚠ managed-agents mcp_servers shape is Board-1
-    // live-verified before ship.
-    if (pd.attachAnthropic) pd.attachAnthropic(d);
-    body = serializeBody(d);
+    // is one forced tool) - fitted to the managed-agents shape (fitMcpServers).
+    if (pd.attachAnthropic) { pd.attachAnthropic(doc); fitMcpServers(doc); }
+    body = serializeBody(doc);
   }
-  JsonDocument filter; filter["id"] = true;
-  JsonDocument doc;
-  int code = antRequest(pd, "POST", "/v1/agents", std::move(body), doc, filter);
-  const char* id = doc["id"] | "";
-  if (code != 200 || !id[0]) { hlog::logf("anthropic: create agent(%s) HTTP %d", model, code); return std::string(); }
-  map += key + id + ";";
-  if (pd.setAntAgentMap) pd.setAntAgentMap(map);
-  hlog::logf("anthropic: agent %s for %s", id, model);
-  return std::string(id);
+  const Created agent = createCall(pd, d, "create agent", "/v1/agents", std::move(body), err);
+  if (agent.id.empty()) return std::string();
+  ids.agentMap += std::string(model) + "=" + agent.id + ";";
+  hlog::logf("anthropic: agent %s for %s", agent.id.c_str(), model);
+  writeThrough(pd.setAntAgentMap, pd.antAgentMap, ids.agentMap, "agent map");
+  return agent.id;
 }
 
-// Send a user.message turn to an existing session.
-static FabricErr sendTurn(const ProviderDeps& pd, const char* sessionId, const char* text) {
+// Send a user.message turn to an existing session. Returns the HTTP status;
+// `doc` keeps the error envelope for the caller's log.
+static int sendTurn(const ProviderDeps& pd, const char* sessionId, const char* text,
+                    JsonDocument& doc) {
   std::string body;
   {
     JsonDocument d;
@@ -161,50 +350,73 @@ static FabricErr sendTurn(const ProviderDeps& pd, const char* sessionId, const c
     c["type"] = "text"; c["text"] = text;
     body = serializeBody(d);
   }
-  JsonDocument filter; filter["data"] = true;   // minimal; we don't need the body
-  JsonDocument doc;
+  JsonDocument filter; keepErrorEnvelope(filter);   // the success body is not read
   std::string path = std::string("/v1/sessions/") + sessionId + "/events";
-  int code = antRequest(pd, "POST", path, std::move(body), doc, filter);
-  return (code == 200) ? FabricErr::Ok : FabricErr::RemoteFail;
+  return antRequest(pd, "POST", path, std::move(body), doc, filter);
+}
+
+// The session request, built from the ids THIS dispatch resolved (never re-read
+// from the cache it just wrote - the CUM-481 bug).
+static std::string sessionBody(const std::string& agentId, const std::string& envId) {
+  JsonDocument doc;
+  doc["agent"]          = agentId;   // string shorthand = the agent's latest version
+  doc["environment_id"] = envId;
+  return serializeBody(doc);
 }
 
 FabricErr antDispatch(const ProviderDeps& pd, const char* defaultModel,
                       const Directive& d, char outJobId[72]) {
   if (!pd.key || pd.key("anthropic").empty()) { hlog::log("anthropic: no API key"); return FabricErr::Auth; }
-  if (!ensureEnv(pd)) return FabricErr::RemoteFail;
-  std::string agentId = agentForModel(pd, d.model, defaultModel);   // per-model agent (cached)
-  if (agentId.empty()) return FabricErr::RemoteFail;
+  AntIds& ids = antIds(pd);
+  FabricErr err = FabricErr::RemoteFail;
+  const std::string envId = envFor(pd, d, ids, err);
+  if (envId.empty()) return err;
+  const std::string agentId = agentFor(pd, d, defaultModel, ids, err);   // per-model agent (cached)
+  if (agentId.empty()) return err;
 
-  // Create a session bound to the per-model agent + the shared environment.
-  std::string body;
-  {
-    JsonDocument doc;
-    doc["agent"]          = agentId;
-    doc["environment_id"] = s(pd.antEnvId);
-    body = serializeBody(doc);
+  const Created session =
+      createCall(pd, d, "create session", "/v1/sessions", sessionBody(agentId, envId), err);
+  if (session.deadRef) {
+    // The cached env/agent are gone or archived provider-side - forget them
+    // (RAM and NVS) so the next dispatch recreates them.
+    ids.envId.clear();
+    ids.agentMap.clear();
+    writeThrough(pd.setAntEnvId, pd.antEnvId, "", "env id reset");
+    writeThrough(pd.setAntAgentMap, pd.antAgentMap, "", "agent map reset");
   }
-  JsonDocument filter; filter["id"] = true;
-  JsonDocument doc;
-  int code = antRequest(pd, "POST", "/v1/sessions", std::move(body), doc, filter);
-  if (code == 404) {
-    // Cached env/agents are stale - clear so they recreate next dispatch.
-    if (pd.setAntEnvId) pd.setAntEnvId("");
-    if (pd.setAntAgentMap) pd.setAntAgentMap("");
+  if (session.id.empty()) return err;
+  // The job id must carry the session id WHOLE ("anthropic:<id>" in 72 bytes),
+  // or polls and cancel would address a different session than the turn runs.
+  if (session.id.size() > 72 - sizeof("anthropic:")) {
+    hlog::logf("anthropic: create session: id too long (%u chars)", (unsigned)session.id.size());
     return FabricErr::RemoteFail;
   }
-  const char* sid = doc["id"] | "";
-  if (code != 200 || !sid[0]) { hlog::logf("anthropic: create session HTTP %d", code); return FabricErr::RemoteFail; }
 
-  char session[64];
-  strncpy(session, sid, sizeof(session) - 1);
-  session[sizeof(session) - 1] = 0;
+  JsonDocument turnDoc;
+  const int code = sendTurn(pd, session.id.c_str(), d.instruction, turnDoc);
+  if (!is2xx(code)) return chainErr(d, "send turn", code, turnDoc);
 
-  FabricErr e = sendTurn(pd, session, d.instruction);
-  if (e != FabricErr::Ok) { hlog::log("anthropic: send turn failed"); return e; }
-
-  snprintf(outJobId, 72, "anthropic:%s", session);
-  hlog::logf("anthropic: session %s started", session);
+  snprintf(outJobId, 72, "anthropic:%s", session.id.c_str());
+  hlog::logf("anthropic: session %s started", session.id.c_str());
   return FabricErr::Ok;
+}
+
+// What one session.status_idle means for the job, per the documented rule
+// (stop polling on any stop_reason except requires_action): end_turn is done;
+// requires_action is the session waiting on a client event (not reachable with
+// this agent's always-allow toolsets, so it stays Running rather than ending a
+// live job); anything else - retries_exhausted, budget_reached, or a reason this
+// code does not know yet - ends the job as an error instead of Running forever
+// (a Running job has no give-up timer in the job engine).
+static void applyIdle(const char* stopReason, bool& done, bool& errored, ResultEnvelope& env) {
+  if (!strcmp(stopReason, "end_turn")) { done = true; return; }
+  if (!stopReason[0] || !strcmp(stopReason, "requires_action")) return;
+  errored = true;
+  if (!strcmp(stopReason, "retries_exhausted"))
+    strncpy(env.error, "the agent stopped after repeated errors", sizeof(env.error) - 1);
+  else
+    snprintf(env.error, sizeof(env.error), "the agent stopped early (%s)",
+             logSafe(stopReason, 40).c_str());
 }
 
 FabricErr antPoll(const ProviderDeps& pd, const char* jobId, ResultEnvelope& env) {
@@ -215,7 +427,7 @@ FabricErr antPoll(const ProviderDeps& pd, const char* jobId, ResultEnvelope& env
   strncpy(env.backend, "anthropic", sizeof(env.backend) - 1);
 
   // Pull the event list; keep only event type, message text, idle stop_reason,
-  // and error message.
+  // and error message (plus the top-level error envelope of a refused poll).
   JsonDocument filter;
   JsonObject di = filter["data"].add<JsonObject>();
   di["type"] = true;
@@ -223,6 +435,7 @@ FabricErr antPoll(const ProviderDeps& pd, const char* jobId, ResultEnvelope& env
   ci["type"] = true; ci["text"] = true;
   di["stop_reason"]["type"] = true;
   di["error"]["message"] = true;
+  keepErrorEnvelope(filter);
 
   JsonDocument doc;
   std::string path = std::string("/v1/sessions/") + sid +
@@ -231,7 +444,7 @@ FabricErr antPoll(const ProviderDeps& pd, const char* jobId, ResultEnvelope& env
   if (code == 404)                return FabricErr::NotFound;   // session gone/expired
   if (code == 401 || code == 403) return FabricErr::Auth;
   if (code <= 0)                  return FabricErr::Network;     // transient
-  if (code != 200)               { hlog::logf("anthropic: poll HTTP %d", code); return FabricErr::RemoteFail; }
+  if (code != 200)               { logCallFail("poll", code, doc); return FabricErr::RemoteFail; }
 
   bool done = false, errored = false;
   size_t used = 0;
@@ -249,7 +462,7 @@ FabricErr antPoll(const ProviderDeps& pd, const char* jobId, ResultEnvelope& env
         if (used >= sizeof(env.reply) - 1) break;
       }
     } else if (!strcmp(type, "session.status_idle")) {
-      if (!strcmp(ev["stop_reason"]["type"] | "", "end_turn")) done = true;
+      applyIdle(ev["stop_reason"]["type"] | "", done, errored, env);
     } else if (!strcmp(type, "session.error")) {
       errored = true;
       strncpy(env.error, ev["error"]["message"] | "agent error", sizeof(env.error) - 1);
@@ -265,7 +478,11 @@ FabricErr antPoll(const ProviderDeps& pd, const char* jobId, ResultEnvelope& env
 FabricErr antAnswer(const ProviderDeps& pd, const char* jobId, const char* userText) {
   const char* colon = strchr(jobId, ':');
   if (!colon) return FabricErr::BadRequest;
-  return sendTurn(pd, colon + 1, userText);
+  JsonDocument doc;
+  int code = sendTurn(pd, colon + 1, userText, doc);
+  if (is2xx(code)) return FabricErr::Ok;
+  logCallFail("answer", code, doc);
+  return FabricErr::RemoteFail;
 }
 
 FabricErr antCancel(const ProviderDeps& pd, const char* jobId) {
@@ -273,11 +490,13 @@ FabricErr antCancel(const ProviderDeps& pd, const char* jobId) {
   if (!colon) return FabricErr::BadRequest;
   // Interrupt the in-flight run (DELETE alone won't halt a running session).
   std::string body = "{\"events\":[{\"type\":\"user.interrupt\"}]}";
-  JsonDocument filter; filter["data"] = true;
+  JsonDocument filter; keepErrorEnvelope(filter);
   JsonDocument doc;
   std::string path = std::string("/v1/sessions/") + (colon + 1) + "/events";
   int code = antRequest(pd, "POST", path, std::move(body), doc, filter);
-  return (code == 200) ? FabricErr::Ok : FabricErr::RemoteFail;
+  if (is2xx(code)) return FabricErr::Ok;
+  logCallFail("cancel", code, doc);
+  return FabricErr::RemoteFail;
 }
 
 // Recursively drop "description" keys from a schema node. Anthropic's strict
@@ -747,7 +966,7 @@ static bool runAntLoop(const ProviderDeps& pd, std::string& convId,
 // session is needed. convId is set to a marker so the caller's per-host
 // conversation bookkeeping stays consistent. The old path's agent/session
 // caching (antOrchAgent) is orch-unused now; sub-agent dispatch still uses
-// environments/sessions (ensureEnv) unchanged.
+// environments/sessions (envFor / agentFor) unchanged.
 bool orchTurnAnthropic(const ProviderDeps& pd, std::string& convId,
                        const std::string& instructions, const std::string& inputs,
                        std::string& outJson, std::string& err,

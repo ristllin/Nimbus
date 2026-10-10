@@ -23,7 +23,10 @@ using harness_test::reqBody;
 namespace providers = agent::providers;
 namespace orch = nimbus::orch;
 
-void setUp() { LogCapture::install(); }
+void setUp() {
+  LogCapture::install();
+  providers::antForgetIds();   // the managed-agent ids live in RAM for a boot
+}
 void tearDown() { agent::hlog::setSink(nullptr); }
 
 // Canned single-shot success: the tool_use input IS the turn.
@@ -378,7 +381,7 @@ static void test_sub_dispatch_stale_404_clears_caches() {
   auto pd = d.contract();
   agent::Directive dir; dir.instruction = "x";
   char jobId[72];
-  TEST_ASSERT_EQUAL((int)agent::FabricErr::RemoteFail,
+  TEST_ASSERT_EQUAL((int)agent::FabricErr::NotFound,   // CUM-474: 404 classified
                     (int)providers::antDispatch(pd, "claude-sonnet-4-6", dir, jobId));
   // Both caches cleared so the next dispatch recreates them.
   TEST_ASSERT_EQUAL_STRING("", d.antEnv.c_str());

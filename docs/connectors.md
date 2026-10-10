@@ -46,7 +46,7 @@ in firmware ([Security](#security)).
 | | On the Orchestrator's **own turns** | On **sub-agents** it spawns |
 |---|---|---|
 | **OpenAI** | ✅ remote MCP (`server_url` + token) and first-party connectors (Gmail, Calendar, Drive…) | ✅ same |
-| **Anthropic** | - (the head turn is a single forced tool; MCP can't run mid-turn) | ✅ BYO remote MCP by URL (`mcp_servers`) |
+| **Anthropic** | - (the head turn is a single forced tool; MCP can't run mid-turn) | ✅ BYO remote MCP by URL (`mcp_servers`) for servers that need no token. A connector with a token is left off Anthropic sub-agents for now: Anthropic accepts MCP credentials only through a vault, which Nimbus does not set up yet. |
 | **Mistral** | ✅ Studio built-ins + Studio-named connectors - **single-shot turns** | ✅ sub-agents run over the Conversations API; built-ins *and* Studio connectors attach to the spawn dispatch (server-side) |
 
 Two consequences:

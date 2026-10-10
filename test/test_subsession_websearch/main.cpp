@@ -40,7 +40,10 @@ using harness_test::LogCapture;
 using harness_test::bodyHas;
 namespace providers = agent::providers;
 
-void setUp() { LogCapture::install(); }
+void setUp() {
+  LogCapture::install();
+  agent::providers::antForgetIds();   // fresh boot: the anthropic cases dispatch cold
+}
 void tearDown() { agent::hlog::setSink(nullptr); }
 
 static agent::Directive researchDirective() {
