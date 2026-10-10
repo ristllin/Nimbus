@@ -68,8 +68,9 @@ budget), so message length is preserved independently of the budget.
 
 ## Write side - the optional turn arrays
 
-`parseTurn` accepts a turn whose only required fields are the three strings
-(`reply`/`memory`/`ask`). Every array is optional, and the live-integration arrays
+`parseTurn` accepts a turn whose only required field is `reply`; `memory` and
+`ask` are optional strings (absent reads as `""`, so a turn that leaves them out
+still applies its side effects). Every array is optional, and the live-integration arrays
 are parsed **tolerantly** - a malformed item is dropped, never a whole-turn error,
 so one slightly-off item can't lose a good reply. Each array is capped to
 `kAgentMaxJobs` (6). `applyTurn` dispatches them after the model-memory update:

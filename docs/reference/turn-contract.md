@@ -27,24 +27,31 @@ the parser is the real enforcement layer, and it never throws away a good reply
 over one slightly-off item. Keep the schema string and the parser in lockstep -
 do **not** diverge them.
 
-The split that matters at the parser is between the required strings and the
-arrays:
+The split that matters at the parser is between `reply` and everything else:
 
-- **Required strings** (`reply`, `memory`, `ask`) are **strict**: absent ⇒
-  `MissingField`, present-but-not-a-string ⇒ `WrongType`. Without them there is
-  no usable turn.
+- **`reply` is the one required field** and it is **strict**: absent (or
+  `null`) ⇒ `MissingField`, present-but-not-a-string ⇒ `WrongType`. Without it
+  there is no usable turn.
+- **`memory` and `ask` are optional strings**: absent, `null`, or a non-string
+  value reads as `""`, which already means "memory unchanged" / "no question".
+  A model that leaves one out (Anthropic's schema is advisory, so this
+  happens in the field) keeps the turn and its side effects: scratchpad,
+  `mem_write`, device actions, and `session_ops` still apply.
 - **Every array** (`device`, `spawn`, `await`, `mem_write`, `mem_query`,
   `session_ops`) is **tolerant**: a present-but-not-array value reads as
   **empty**, and a malformed *item* is **dropped silently**, never a whole-turn
   error. One slightly-off item can't cost you a good reply.
+
+The wire schema still lists `memory` and `ask` under `required`: OpenAI strict
+mode demands every property be listed there. Only the parser is lenient.
 
 ## Contract shape
 
 ```json
 {
   "reply":   "string (required)",
-  "memory":  "string (required)",
-  "ask":     "string (required)",
+  "memory":  "string (optional; absent = unchanged)",
+  "ask":     "string (optional; absent = no question)",
 
   "device":  [ /* discriminated-union objects, validated + executed device-side */ ],
   "mem_write":   [ { "content","importance","permanent","ttl" } ],
@@ -63,11 +70,11 @@ parser then defaults each one, so at the parser they are all optional. `spawn[]`
 and `await[]` are **retired from the wire** (`session_ops` is the one spawn
 surface), but the parser still accepts them so an old client keeps working.
 
-## Required string fields
+## String fields
 
-`reply`, `memory`, and `ask` are the three REQUIRED strings. A missing one
-rejects with `MissingField`; a mistyped one (e.g. an array where a string is
-required) rejects with `WrongType`.
+`reply` is the one REQUIRED string: missing (or `null`) rejects with
+`MissingField`, mistyped (e.g. an array) rejects with `WrongType`. `memory` and
+`ask` are optional: absent, `null`, or mistyped all read as `""`.
 
 | Field | Meaning | Cap on parse |
 |---|---|---|
@@ -89,7 +96,7 @@ does, and only its success result lets the reply claim it happened.
 Every array key is OPTIONAL and TOLERANT: **absent ⇒ empty vector**, and
 **present-but-not-an-array ⇒ also empty** (`as<JsonArrayConst>()` on a non-array
 iterates zero times - it is not an error). This is what makes a bare
-`{"reply":"hi","memory":"","ask":""}` a fully valid turn (all arrays empty), and
+`{"reply":"hi"}` a fully valid turn (all arrays empty, `memory`/`ask` `""`), and
 lets a new turn omit `spawn`/`await`/`device` and drive the run through the
 live-integration arrays instead.
 
@@ -262,11 +269,11 @@ the reason; `err.detail` names the offending field/reason for logs + tests.
 | `Ok` | valid turn |
 | `JsonError` | did not deserialize (garbage / truncated / empty / not JSON) - `detail` is the ArduinoJson error string |
 | `NotObject` | valid JSON but the top-level value is not an object (e.g. `[1,2,3]`, `42`) |
-| `MissingField` | a required top-level string (`reply`/`memory`/`ask`) is absent; `detail` is the key (e.g. `"reply"`) |
-| `WrongType` | one of `reply`/`memory`/`ask` is present but not a JSON string |
+| `MissingField` | `reply` is absent or `null`; `detail` is `"reply"` |
+| `WrongType` | `reply` is present but not a JSON string |
 
-`MissingField`/`WrongType` fire **only** for the three required strings. No
-array - `device`, `spawn`, `await`, `mem_write`, `mem_query`, or `session_ops` -
+`MissingField`/`WrongType` fire **only** for `reply`. `memory`/`ask` never fail a
+turn (an off value reads as `""`), and no array - `device`, `spawn`, `await`, `mem_write`, `mem_query`, or `session_ops` -
 can produce a parse error: a present-but-not-array value reads as empty, and a
 malformed item is dropped. The `scratchpad` object is equally tolerant: a
 present-but-non-object value reads as **no change**, never an error.
@@ -276,15 +283,17 @@ present-but-non-object value reads as **no change**, never an error.
 An **old six-field turn** (`reply`/`memory`/`ask` + `device`/`spawn`/`await`,
 no live-integration arrays) still validates and applies exactly as before -
 `spawn[]` still parses, and the new `mem_write`/`mem_query`/`session_ops`
-vectors simply stay empty. Symmetrically, a new turn may carry only the required
-strings plus the live-integration arrays and omit the legacy arrays. In all
-cases, an absent - or present-but-mistyped - array parses to an **empty vector**.
+vectors simply stay empty. Symmetrically, a new turn may carry only `reply` plus
+the live-integration arrays and omit everything else. In all cases, an absent -
+or present-but-mistyped - array parses to an **empty vector**, and an absent
+`memory`/`ask` parses to `""`.
 
 ## Validation order (as implemented)
 
 1. Deserialize → `JsonError`; not an object → `NotObject`.
-2. `reply`/`memory`/`ask` required strings (`MissingField` / `WrongType`); every
-   array key optional and tolerant (absent OR present-but-not-array ⇒ empty).
+2. `reply` required string (`MissingField` / `WrongType`); `memory`/`ask`
+   optional strings (absent / `null` / mistyped ⇒ `""`); every array key
+   optional and tolerant (absent OR present-but-not-array ⇒ empty).
 3. Copy string fields: `reply`/`ask` uncapped; `memory` capped to `kMemModelMax`.
 4. `spawn[]` tolerant per-item: non-object / missing-or-empty-`task` items
    dropped; other fields defaulted + provider lowercased + per-field byte caps;

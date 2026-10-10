@@ -69,17 +69,20 @@ bool parseTurn(const std::string& json, Turn& out, ParseError& err) {
     return fail(out, err, ParseError::Code::NotObject, "top-level value is not an object");
   JsonObjectConst root = doc.as<JsonObjectConst>();
 
-  // 2. reply/memory/ask are REQUIRED strings. Every array is OPTIONAL: absent =>
-  //    empty, present-but-not-array => WrongType. This is backward-compatible (old
-  //    6-field turns still validate) and forward-flexible: a new turn may omit
-  //    spawn/await/device and use mem_write/mem_query/session_ops instead (Q3:
-  //    spawning moved to the session tool). Missing string -> MissingField.
-  static const char* kStrKeys[] = {"reply", "memory", "ask"};
-  for (const char* k : kStrKeys) {
-    JsonVariantConst v = root[k];
-    if (v.isNull()) return fail(out, err, ParseError::Code::MissingField, k);
+  // 2. `reply` is the ONE required field: absent -> MissingField, present but not
+  //    a string -> WrongType (without it there is genuinely no usable turn).
+  //    `memory` and `ask` are OPTIONAL strings (CUM-483): absent, null, or a
+  //    non-string read as "" - which already means "memory unchanged" / "no
+  //    question" downstream (apply.cpp). On Anthropic the wire schema is
+  //    ADVISORY (its strict-grammar budget rejects a contract this size), so a
+  //    model can and does leave `memory` out; failing the whole turn for that
+  //    threw away its scratchpad, mem_write, device and session_ops side effects
+  //    (bench B, 2026-10-10). Every array is OPTIONAL too: absent => empty.
+  {
+    JsonVariantConst v = root["reply"];
+    if (v.isNull()) return fail(out, err, ParseError::Code::MissingField, "reply");
     if (!v.is<const char*>())
-      return fail(out, err, ParseError::Code::WrongType, std::string(k) + " must be a string");
+      return fail(out, err, ParseError::Code::WrongType, "reply must be a string");
   }
   // Arrays are TOLERANT throughout (owner field bug 2026-07-16: on Anthropic the
   // wire schema is ADVISORY - its strict grammar budget rejects a contract this
@@ -87,16 +90,20 @@ bool parseTurn(const std::string& json, Turn& out, ParseError& err) {
   // array item was failing the whole turn, which leaked the raw JSON to the user
   // via the caller's fallback). Policy: a present-but-not-array field reads as
   // empty (as<JsonArrayConst>() on a non-array iterates zero times below), and a
-  // malformed ITEM is dropped, never a whole-turn error. reply/memory/ask above
-  // stay required - without those there is genuinely no usable turn.
+  // malformed ITEM is dropped, never a whole-turn error. The optional strings
+  // follow the same rule; only `reply` can fail a turn.
 
   // 3. String fields. reply/ask are user-facing and uncapped here (the device
   //    budgets them elsewhere). memory is clamped to kMemModelMax UTF-8-safe so the
   //    parsed Turn is self-consistent with the memory module's cap even before
   //    OrchMemory::setModel runs; the definitive cap + truncation flag live there.
+  auto optStr = [&](const char* k) -> std::string {
+    JsonVariantConst v = root[k];
+    return v.is<const char*>() ? std::string(v.as<const char*>()) : std::string();
+  };
   out.reply  = root["reply"].as<const char*>();
-  out.ask    = root["ask"].as<const char*>();
-  out.memory = capUtf8(std::string(root["memory"].as<const char*>()), kMemModelMax);
+  out.ask    = optStr("ask");
+  out.memory = capUtf8(optStr("memory"), kMemModelMax);
 
   // 4. spawn[] - TOLERANT per item: a non-object element, or one whose `task` is
   //    missing/non-string/empty, is DROPPED (matches enqueueSpawn: `if (!task[0])

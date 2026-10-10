@@ -2,8 +2,11 @@
 
 #include <string>
 
+#include <ArduinoJson.h>
+
 #include "nimbus/orch/turn.h"
 #include "nimbus/orch/caps.h"
+#include "nimbus/orch/orch_schema.h"
 
 using namespace nimbus::orch;
 using Code = ParseError::Code;
@@ -67,20 +70,108 @@ static void test_empty_arrays_are_valid() {
 
 // ---- required-key enforcement (strict at the wire) --------------------------
 
-// Only reply/memory/ask are required; when absent each rejects with MissingField.
-static void test_missing_each_required_key_rejects() {
-  const char* keys[] = {"reply", "memory", "ask"};
+// `reply` is the ONE required key (CUM-483): absent or explicit null rejects with
+// MissingField - without it there is genuinely no usable turn.
+static void test_missing_reply_rejects() {
   const char* bodies[] = {
-    R"({"memory":"","ask":""})",     // no reply
-    R"({"reply":"","ask":""})",      // no memory
-    R"({"reply":"","memory":""})",   // no ask
+    R"({"memory":"","ask":""})",               // absent
+    R"({"reply":null,"memory":"","ask":""})",  // explicit null
   };
-  for (int i = 0; i < 3; i++) {
+  for (const char* b : bodies) {
     Turn t;
     ParseError e;
-    TEST_ASSERT_FALSE_MESSAGE(parseTurn(bodies[i], t, e), keys[i]);
-    TEST_ASSERT_EQUAL_MESSAGE(int(Code::MissingField), int(e.code), keys[i]);
-    TEST_ASSERT_EQUAL_STRING(keys[i], e.detail.c_str());
+    TEST_ASSERT_FALSE_MESSAGE(parseTurn(b, t, e), b);
+    TEST_ASSERT_EQUAL_MESSAGE(int(Code::MissingField), int(e.code), b);
+    TEST_ASSERT_EQUAL_STRING("reply", e.detail.c_str());
+  }
+}
+
+// CUM-483 class test: `memory` and `ask` are OPTIONAL strings. Every off shape a
+// model can send for either one (absent, null, or any non-string) reads as "" and
+// the turn - with its side effects - survives. "" is exactly what apply treats as
+// "memory unchanged" / "no question", so nothing is invented.
+static void test_optional_strings_absent_null_or_mistyped_read_empty() {
+  const char* keys[] = {"memory", "ask"};
+  const char* shapes[] = {nullptr, "null", "[\"a\",\"b\"]", "42", "{\"x\":1}", "true"};
+  for (const char* k : keys) {
+    for (const char* v : shapes) {
+      std::string j = R"({"reply":"kept","mem_write":[{"content":"fact"}])";
+      // The OTHER optional string is present and well-formed - it must survive.
+      j += std::string(",\"") + (std::string(k) == "memory" ? "ask" : "memory") + "\":\"other\"";
+      if (v) j += std::string(",\"") + k + "\":" + v;
+      j += "}";
+      Turn t;
+      ParseError e;
+      TEST_ASSERT_TRUE_MESSAGE(parseTurn(j, t, e), j.c_str());
+      TEST_ASSERT_TRUE_MESSAGE(e.ok(), j.c_str());
+      TEST_ASSERT_EQUAL_STRING("kept", t.reply.c_str());
+      TEST_ASSERT_EQUAL_STRING_MESSAGE("", (std::string(k) == "memory" ? t.memory : t.ask).c_str(),
+                                       j.c_str());
+      TEST_ASSERT_EQUAL_STRING("other", (std::string(k) == "memory" ? t.ask : t.memory).c_str());
+      TEST_ASSERT_EQUAL_MESSAGE(1u, t.mem_write.size(), j.c_str());   // side effect kept
+    }
+  }
+}
+
+// CUM-483: the EXACT orch_turn L4 captured from claude-sonnet-5 on bench unit B
+// (GET /api/lastturn, 2026-10-10 ~21:08 UTC). Valid JSON, no `memory` key. It used
+// to fail parseTurn (MissingField memory) and the engine dropped its scratchpad
+// update; it must now parse with the scratchpad intact.
+static void test_cum483_anthropic_turn_without_memory_parses() {
+  const char* j =
+      R"({"reply":"- **Sampling:** 3 cores per site at 15 monospecific *Posidonia oceanica* meadows",)"
+      R"("ask":"","device":[],"mem_write":[],"mem_query":[],"session_ops":[],)"
+      R"("scratchpad":{"active":null,"short":["[complete] Verified Apostolaki et al. (2024) method",)"
+      R"("[complete] Delivered paragraph + 3-bullet versions to Omar"],"mid":null,"long":null}})";
+  Turn t;
+  ParseError e;
+  TEST_ASSERT_TRUE_MESSAGE(parseTurn(j, t, e), e.detail.c_str());
+  TEST_ASSERT_EQUAL_STRING("", t.memory.c_str());   // "" = memory unchanged
+  TEST_ASSERT_EQUAL_STRING("", t.ask.c_str());
+  TEST_ASSERT_TRUE(t.reply.find("Sampling") != std::string::npos);
+  TEST_ASSERT_TRUE(t.scratchpad.present);
+  TEST_ASSERT_FALSE(t.scratchpad.hasActive);   // null active = unchanged
+  TEST_ASSERT_TRUE(t.scratchpad.hasShort);
+  TEST_ASSERT_EQUAL(2u, t.scratchpad.shortItems.size());
+  TEST_ASSERT_FALSE(t.scratchpad.hasMid);
+  TEST_ASSERT_FALSE(t.scratchpad.hasLong);
+}
+
+// The invariant behind CUM-483, over EVERY key the wire schema marks required:
+// dropping any one of them except `reply` still parses and keeps the reply.
+// A future key that the parser starts to demand (the CUM-483 shape again) FAILS
+// here, because the list comes from the schema, not from this file.
+static void test_only_reply_can_fail_a_turn_for_every_schema_key() {
+  JsonDocument schema;
+  TEST_ASSERT_FALSE(deserializeJson(schema, ORCH_SCHEMA_BODY, DeserializationOption::NestingLimit(16)));
+  JsonArrayConst req = schema["required"].as<JsonArrayConst>();
+  TEST_ASSERT_TRUE(req.size() >= 8);
+  JsonDocument full;
+  TEST_ASSERT_FALSE(deserializeJson(full, R"({"reply":"r","memory":"m","ask":"a","device":[],)"
+                                          R"("mem_write":[],"mem_query":[],"session_ops":[],)"
+                                          R"("scratchpad":null})"));
+  for (JsonVariantConst k : req) {
+    const std::string key = k.as<const char*>();
+    // The base turn must carry every schema key, or the drop below proves nothing.
+    bool present = false;
+    for (JsonPairConst kv : full.as<JsonObjectConst>())
+      if (key == kv.key().c_str()) present = true;
+    TEST_ASSERT_TRUE_MESSAGE(present, key.c_str());
+    JsonDocument d;
+    d.set(full);
+    d.remove(key.c_str());
+    std::string j;
+    serializeJson(d, j);
+    Turn t;
+    ParseError e;
+    const bool ok = parseTurn(j, t, e);
+    if (key == "reply") {
+      TEST_ASSERT_FALSE_MESSAGE(ok, "dropping reply must fail the turn");
+      TEST_ASSERT_EQUAL(int(Code::MissingField), int(e.code));
+    } else {
+      TEST_ASSERT_TRUE_MESSAGE(ok, key.c_str());
+      TEST_ASSERT_EQUAL_STRING_MESSAGE("r", t.reply.c_str(), key.c_str());
+    }
   }
 }
 
@@ -98,7 +189,7 @@ static void test_arrays_optional_reply_only() {
   TEST_ASSERT_EQUAL(0u, t.session_ops.size());
 }
 
-// A mistyped top-level field: the required STRINGS stay strict; arrays are tolerant
+// A mistyped top-level field: the required `reply` stays strict; arrays are tolerant
 // (owner field bug 2026-07-16 - a whole-turn failure leaked raw JSON to the user, so
 // a present-but-not-array field now reads as empty instead of failing the turn).
 static void test_mistyped_top_level_field_policy() {
@@ -455,7 +546,10 @@ int main() {
   RUN_TEST(test_session_ops_parsed);
   RUN_TEST(test_session_ops_unknown_op_dropped);
   RUN_TEST(test_backward_compat_old_six_field_turn);
-  RUN_TEST(test_missing_each_required_key_rejects);
+  RUN_TEST(test_missing_reply_rejects);
+  RUN_TEST(test_optional_strings_absent_null_or_mistyped_read_empty);
+  RUN_TEST(test_cum483_anthropic_turn_without_memory_parses);
+  RUN_TEST(test_only_reply_can_fail_a_turn_for_every_schema_key);
   RUN_TEST(test_mistyped_top_level_field_policy);
   RUN_TEST(test_spawn_item_missing_key_defaults);
   RUN_TEST(test_spawn_item_bad_task_dropped);

@@ -8,20 +8,18 @@
 // UTF-8 handling come from nimbus/orch/caps.h + nimbus/mem_cap.h.
 //
 // Contract shape (source: ORCH_SCHEMA_BODY, orch_schema.h):
-//   { reply, memory, ask : string
+//   { reply : string (required), memory, ask : string (optional)
 //     device[] : object   (validated/executed device-side; carried raw here)
 //     spawn[]  : { provider, model, skill, task, category, note, name } : string
 //     await[]  : string }
 //
-// parseTurn is STRICT ON THE THREE STRING KEYS (reply/memory/ask required and typed)
-// - a missing or mistyped one rejects the whole turn. EVERY array key is OPTIONAL:
-// absent => empty, present-but-not-an-array => WrongType. This keeps old six-field
-// turns valid AND lets a new turn omit spawn/await/device and drive the run via the
-// live-integration arrays instead. Within a present array, legacy items (spawn/await/
-// device) are still validated strictly per-item (a bad item rejects the turn), while
-// the live-integration items (mem_write/mem_query/session_ops) are TOLERANT - a
-// malformed item is dropped, never a whole-turn error. Defaults / lowercasing /
-// byte-caps are applied on copy.
+// parseTurn is STRICT ON `reply` ONLY (required, must be a string) - without it
+// there is no usable turn. `memory` and `ask` are OPTIONAL strings (CUM-483):
+// absent, null, or mistyped read as "" ("memory unchanged" / "no question"), so a
+// model that leaves one out (the Anthropic wire schema is advisory) keeps its
+// side effects. EVERY array key is OPTIONAL and TOLERANT: absent or
+// present-but-not-an-array => empty, and a malformed item is dropped, never a
+// whole-turn error. Defaults / lowercasing / byte-caps are applied on copy.
 
 #include <string>
 #include <vector>
@@ -120,8 +118,8 @@ struct ParseError {
     Ok = 0,
     JsonError,          // did not deserialize (garbage / truncated / not JSON)
     NotObject,          // top-level value is not a JSON object
-    MissingField,       // a required top-level key is absent
-    WrongType,          // a top-level field or spawn field has the wrong JSON type
+    MissingField,       // `reply` (the one required key) is absent
+    WrongType,          // `reply` is present but not a JSON string
   };
   Code        code = Code::Ok;
   std::string detail;   // human-readable: which field, why
@@ -134,20 +132,21 @@ struct ParseError {
 //
 // Validation:
 //   1. Must deserialize to a JSON OBJECT           -> JsonError / NotObject.
-//   2. reply, memory, ask are REQUIRED strings (absent -> MissingField, mistyped
-//      -> WrongType). EVERY array key (device/spawn/await/mem_write/mem_query/
-//      session_ops) is OPTIONAL: absent => empty; present-but-not-an-array =>
-//      WrongType. Old six-field turns still validate; a new turn may omit
+//   2. reply is the one REQUIRED string (absent -> MissingField, mistyped ->
+//      WrongType). memory and ask are OPTIONAL strings: absent / null / mistyped
+//      => "" (CUM-483). EVERY array key (device/spawn/await/mem_write/mem_query/
+//      session_ops) is OPTIONAL: absent or present-but-not-an-array => empty.
+//      Old six-field turns still validate; a new turn may omit
 //      spawn/await/device and use the live-integration arrays instead.
-//   3. Each spawn[] element (STRICT) must be an object with the six string keys
-//      present and typed (WrongType otherwise). Then, on the accepted item:
-//        - empty task  -> the item is DROPPED silently (not an error).
+//   3. Each spawn[] element is TOLERANT: a non-object, or one whose task is
+//      missing / non-string / empty, is DROPPED silently (not an error). On an
+//      accepted item:
 //        - provider    -> lowercased.
-//        - category "" -> "research"; note "" -> "On it.".
+//        - category "" -> "research"; note "" -> "On it."; other fields default "".
 //        - every field byte-capped UTF-8-safe to its device buffer size (caps.h).
 //   4. spawn vector is truncated to kAgentMaxJobs (6) accepted items.
-//   5. await[] entries must be strings (WrongType otherwise); blank ones skipped.
-//   6. device[] elements must be objects (WrongType otherwise); each carried raw.
+//   5. await[] non-string entries are dropped; blank ones skipped.
+//   6. device[] non-object elements are dropped; each kept element carried raw.
 //   7. mem_write/mem_query/session_ops (live-integration) are TOLERANT per-item: a
 //      malformed item is dropped (never a whole-turn error); each capped to
 //      kAgentMaxJobs. importance accepts int- or float-encoded numbers, clamped [0,1].

@@ -20,6 +20,10 @@
 //
 // "Strict at the wire, lenient at the parser" still holds: parseTurn()
 // tolerates missing arrays and null optionals (a provider may null them out).
+// `memory` and `ask` stay in `required` here because strict mode demands every
+// property be listed, but the parser treats them as optional (CUM-483): only
+// `reply` can fail a turn, since Anthropic's schema is advisory and a model
+// that omits `memory` must not lose the turn's side effects.
 //
 // Description text rules: printable ASCII, NO double quotes (they are embedded
 // inside a JSON string inside a C string).

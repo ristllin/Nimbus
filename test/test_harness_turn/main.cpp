@@ -73,6 +73,8 @@ struct Rig {
   struct Captured { std::string chatId, text, fromTag; };
   std::vector<Captured> captured;
   std::vector<orch::ValidatedAction> staged;   // ApplyDeps.stageDevice recorder
+  std::vector<orch::ScratchUpdate> scratchApplied;   // ApplyDeps.applyScratch recorder
+  bool adminChats = false;   // opt-in: chats resolve to an Admin principal (scratchpad writes)
   int journalGcs = 0;
 
   struct DebugCap {
@@ -152,6 +154,15 @@ struct Rig {
     d.apply.deliver = d.deliver;
     d.apply.stageDevice = [this](const orch::ValidatedAction& va) { staged.push_back(va); };
     d.apply.fire = [this](const char* c) { cues.push_back(c); };
+    d.apply.applyScratch = [this](const orch::ScratchUpdate& u) { scratchApplied.push_back(u); };
+    // Default = the harness's own deny-all principal (byte-identical to an unset
+    // hook); a test opts into an admin chat with adminChats = true.
+    d.apply.principalFor = [this](const std::string& chat) {
+      if (adminChats) return orch::principalForRole(chat, orch::Role::Admin);
+      orch::Principal p;
+      p.ns = orch::nsForChat(chat, false);
+      return p;
+    };
     // CUM-242: cumulo/zai are first-class heads on the device now, registered the
     // same way - the rig mirrors that so a router-fallback turn has a head to run.
     for (const char* h : {"openai", "anthropic", "mistral", "custom", "cumulo", "zai"})
@@ -582,11 +593,14 @@ static void test_budget_failover_and_exhausted_refusal() {
 // ---- (7) salvage: never deliver raw JSON ------------------------------------
 
 static void test_salvage_never_delivers_raw_json() {
+  // CUM-483: `ask`/`memory` are optional now, so a turn missing them is a VALID
+  // turn (applied, ok) - the salvage path is reserved for a turn with no usable
+  // `reply`. Its job is unchanged: never hand a human raw wire JSON.
   Rig r;
-  r.scripts["anthropic"] = {{true, "{\"reply\":\"hi\",\"memory\":\"\",\"junk\":42}", "", 0}};
+  r.scripts["anthropic"] = {{true, "{\"ask\":\"Which repo?\",\"memory\":\"\",\"junk\":42}", "", 0}};
   const bool ok = r.eng->runTurn("inputs", "1001", "");
-  TEST_ASSERT_FALSE(ok);   // parse failed (missing `ask`)
-  TEST_ASSERT_EQUAL_STRING("hi", r.lastText().c_str());   // salvaged text, NOT the JSON
+  TEST_ASSERT_FALSE(ok);   // parse failed (missing `reply`)
+  TEST_ASSERT_EQUAL_STRING("Which repo?", r.lastText().c_str());   // salvaged text, NOT the JSON
   TEST_ASSERT_FALSE(r.anyDelivered("{"));
   TEST_ASSERT_TRUE(LogCapture::contains("orchestrator: turn parse fail"));
 
@@ -596,6 +610,34 @@ static void test_salvage_never_delivers_raw_json() {
   TEST_ASSERT_EQUAL_STRING(
       "I hit a formatting error composing that reply - please resend.",
       r2.lastText().c_str());
+}
+
+// CUM-483: the EXACT orch_turn claude-sonnet-5 returned on bench unit B (no
+// `memory` key). It used to fail the parse, deliver only the salvaged reply,
+// FAIL the turn and drop the scratchpad update; now the turn applies in full.
+static const char* kL4AnthropicNoMemory =
+    "{\"reply\":\"- **Sampling:** 3 cores per site at 15 monospecific *Posidonia oceanica* meadows\","
+    "\"ask\":\"\",\"device\":[],\"mem_write\":[],\"mem_query\":[],\"session_ops\":[],"
+    "\"scratchpad\":{\"active\":null,\"short\":[\"[complete] Verified Apostolaki et al. (2024) method\","
+    "\"[complete] Delivered paragraph + 3-bullet versions to Omar\"],\"mid\":null,\"long\":null}}";
+
+static void test_cum483_turn_without_memory_keeps_side_effects() {
+  Rig r;
+  r.adminChats = true;   // web chat = the owner (scratchpad writes are admin-only)
+  r.scripts["anthropic"] = {{true, kL4AnthropicNoMemory, "", 0}};
+  const bool ok = r.eng->runTurn("inputs", "web", "now in 3 bullet points");
+  TEST_ASSERT_TRUE_MESSAGE(ok, "a turn without `memory` must not FAIL");
+  TEST_ASSERT_FALSE(LogCapture::contains("orchestrator: turn parse fail"));
+  TEST_ASSERT_EQUAL(1, (int)r.attempts.size());   // no retry, no failover
+  // The side effect the old parse failure threw away: the scratchpad update.
+  TEST_ASSERT_EQUAL(1, (int)r.scratchApplied.size());
+  TEST_ASSERT_TRUE(r.scratchApplied[0].hasShort);
+  TEST_ASSERT_EQUAL(2u, r.scratchApplied[0].shortItems.size());
+  // The reply reaches the owner, and the turn ends ok in the lifecycle hook.
+  TEST_ASSERT_TRUE(r.anyDelivered("Sampling"));
+  TEST_ASSERT_FALSE(r.anyDelivered("{"));
+  TEST_ASSERT_EQUAL(1, (int)r.hookEnds.size());
+  TEST_ASSERT_TRUE(r.hookEnds[0].ok);
 }
 
 // ---- (8) scheduled turn: rails + FireOutcome --------------------------------
@@ -1269,6 +1311,7 @@ int main(int, char**) {
   RUN_TEST(test_rate_limit_reply_names_the_window);
   RUN_TEST(test_budget_failover_and_exhausted_refusal);
   RUN_TEST(test_salvage_never_delivers_raw_json);
+  RUN_TEST(test_cum483_turn_without_memory_keeps_side_effects);
   RUN_TEST(test_scheduled_turn_rails_and_fire_outcome);
   RUN_TEST(test_once_wakeup_gets_wakeup_preamble_not_recurring);
   RUN_TEST(test_owner_reminder_gets_reminder_framing_not_wakeup);
