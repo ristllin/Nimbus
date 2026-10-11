@@ -71,7 +71,7 @@ device environment still links.
 | `test` / `test-cyd` | Production plus the serial test console, which the HIL suite drives |
 | `testuart` | `test` with the console on the UART port instead of native USB |
 | `notifierdbg` | Production plus a device-to-host status echo for Notifier end-to-end tests |
-| `bttest` | `test` advertising as "Nimbus-BT" so a bench board is unambiguous |
+| `bttest` | `test` advertising over Bluetooth as "Nimbus-BT", so a test board can be told apart from a production "Nimbus" on the same desk |
 | `provision`, `provision-uart`, `provision-cyd` | Standalone serial network diagnostic and installer seed tool |
 | `beep`, `ledring`, `mictest`, `audio-cyd`, `tftmin`, `tfttouch`, `tftbringup` (some with `-uart` or `-cyd` variants) | Single-purpose hardware diagnostics |
 
@@ -129,15 +129,21 @@ golden text in `test/golden/`. The flow after an intentional screen change:
    `test/golden_tft/out/`.
 2. Review it. One screen:
    `python3 tools/tftpreview.py diff test/golden_tft/<case>.bin test/golden_tft/out/<case>.bin diff.png`.
-   The whole UI on one sheet:
+   Every changed screen on one sheet:
    `python3 tools/tftpreview.py contact test/golden_tft/out sheet.png`.
+   The whole blessed UI: `python3 tools/tftpreview.py contact test/golden_tft sheet.png`.
+   Renders for the larger displays land in `out/480x320/` and `out/480x480/`:
+   point any command at those folders and append `480x320` or `480x480`.
 3. If it looks right, re-bless with `GOLDEN_UPDATE=1 pio test -e native -f test_tft_render`
-   and commit the new buffers with the change.
+   and commit the regenerated `.bin` and `.regions.json` files (at the root and in
+   `480x320/` and `480x480/`) with the change.
 
 The nsn wire protocol is pinned the same way - `test/test_proto/nsn_vectors.h`
 is generated from the reference encoder in
 [nimbus-notify](https://github.com/ristllin/nimbus-notify) by
-`tools/gen_nsn_vectors.py`, byte-locking the device codec to the broker.
+`tools/gen_nsn_vectors.py`, byte-locking the device codec to the broker. The script
+expects that repository checked out next to this one as `../nsnotify`; set
+`NIMBUS_NOTIFY_HOST=<path>` to use another location.
 
 ## Pre-commit hooks
 

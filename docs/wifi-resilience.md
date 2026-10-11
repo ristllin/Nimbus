@@ -27,7 +27,7 @@ The list lives in NVS under a new key and never touches the older single-network
 keys except to read them once: on the first boot after upgrading, the legacy single
 credential is folded in as the first saved network, and the list head is mirrored
 back to those legacy keys so that an OTA rollback to an older image still finds a
-working network. A factory reset (`nvs_flash_erase`) wipes the whole list, exactly as
+working network. A factory reset (`nvs_flash_erase`) erases the whole list, exactly as
 the danger-zone copy promises.
 
 ## How the device chooses
@@ -112,8 +112,9 @@ add a network, forget one, reorder priority, and see which is connected. A passw
 is never shown back; joining a saved network reuses the stored one. This is the
 canonical home for the list.
 
-The device screen's **Settings → Wi-Fi** is the second surface. It shows the live
-status and a scan-and-join picker for getting online, but not the full list editor.
+The device screen's **Settings > Connectivity > Wi-Fi** is the second surface. Its
+Wi-Fi row shows the live status, and the screen offers Publish setup network,
+Choose network (scan and join), and Forget network, but not the full list editor.
 Both surfaces write into the one shared list.
 
 ## Where the logic lives
@@ -135,7 +136,7 @@ If this page disagrees with the code, the code wins.
 
 Host tests: `test/test_wifi_known`, `test/test_wifi_policy`, `test/test_wifi_recovery`,
 `test/test_wifi_supervise`, `test/test_wifi_copy`, `test/test_net_up`. The two-access-point
-migration is a bench (hardware) test,
+migration is a hardware test,
 `tests/hil/test_l33_multi_network_failover.py`, marked manual because it needs a
 person to power one access point down.
 
@@ -147,6 +148,6 @@ one network-up latch. It is evaluated on every main-loop tick from the live link
 not from the "got an IP" event: on a strong network with saved credentials the device
 joins within a few seconds of power-on, long before start-up finishes, and an event that
 fires before anyone listens is simply gone. That is exactly how the clock used to stay
-unset for a whole session (CUM-504). A disconnect event is still noted, because a drop
-and rejoin that both land between two ticks must count as a reconnect. The bench check is
+unset for a whole session. A disconnect event is still noted, because a drop and rejoin
+that both land between two ticks must count as a reconnect. The hardware check is
 `tests/hil/test_l38_clock_sync.py` (clock set within 60 s of start-up).

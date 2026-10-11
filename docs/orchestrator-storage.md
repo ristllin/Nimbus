@@ -28,7 +28,7 @@ flowchart TD
   NVS -.critical config.-> PSRAM
 ```
 
-The pre-redesign code violated the directive in three locatable ways:
+The pre-redesign code violated this rule in three locatable ways:
 
 1. **VDB working set in internal SRAM.** `g_vec` holds `std::vector<VecEntry>` on
    the default heap. At `maxVectors=2000` (256-dim int8) that is ~1.14 MB -
@@ -43,7 +43,7 @@ The pre-redesign code violated the directive in three locatable ways:
 ## 1. The four tiers
 
 Rule of thumb:
-- **NVS** - tiny critical config that must survive a firmware wipe and is
+- **NVS** - tiny critical config that must survive an over-the-air firmware update and is
   human-set (model-read-only). Card-independent.
 - **LittleFS (internal flash)** - firmware + ephemeral per-turn scratch + a
   *bounded* degraded fallback cache when there is no SD.
@@ -66,7 +66,7 @@ Rule of thumb:
 | Logs / diagnostics | Durable error log (`GET /api/errlog`) on SD `/log/nimbus.log` (rotated 4x256 KB), plus the 1280 B RAM ring (`GET /api/log`) + serial. Device EVENTS are also durable via the episodic `system` timeline (kind=log) | - | flash fallback `/log` on LittleFS (2x24 KB) + RAM ring |
 
 Two things **do not move**: NVS config/keys/scratchpad/verify are already at the
-right tier and are card-independent - the "critical info" the directive keeps off
+right tier and are card-independent - the "critical info" the design rule keeps off
 SD. Rebuildable caches never live in NVS: the 20 KB partition is reserved for owner
 config and bounded values (the full rule and the HTTP 507 contract for a save that
 does not land are in the [Config and NVS reference](reference/config-and-nvs.md#nvs-budget-and-the-full-storage-contract)). Everything bulk targets SD with a **bounded** LittleFS/RAM degraded mode.
@@ -247,12 +247,12 @@ the budget is what bounds the work, not a big buffer.
 
 ## 4. Media / blobs - SD `/mem/blobs`, referenced by episodic `blobPath`
 
-Content-addressed sidecars: on capture (Telegram voice note, TTS synth, mic
-record, image/doc), hash the bytes → `/mem/blobs/<hash>.<ext>`, then
+Content-addressed sidecars: on capture (Telegram voice note, mic record, inbound
+image/doc), hash the bytes → `/mem/blobs/<hash>.<ext>`, then
 `captureMessage(kind=Audio/Image/File, blobPath=…)`. The episodic row is the index;
 the file is the payload; identical bytes dedup for free. Ephemeral in-flight files
 (`/voice.pcm`, `/reply.mp3`, `/audio/tgvoice.ogg`) stay transient LittleFS scratch
-(privacy-deleted per turn); the **durable copy** is the SD sidecar (wipe the card
+(privacy-deleted per turn); the **durable copy** is the SD sidecar (erase the card
 to purge). Retention: a maintenance pass archives/prunes day-streams + unreferenced
 blobs older than 30 days (reference-count scan).
 
@@ -280,11 +280,14 @@ existing SD-first/LittleFS-fallback `loadBlob`; episodic replays the old
 | Journal / logs | last-N RAM ring + small rotating LittleFS file. |
 | Config / keys / scratchpad / verify | fully functional (NVS). |
 
-**Verification signal (per AGENTS.md's bar):** a no-card boot emits a serial line
-+ dashboard banner (`memory: no SD - degraded (vectors capped, no durable media)`),
-a `STATUS`/`/api/state` field `sd=absent`, and a `RENDER?`-assertable indicator so
-HIL can *prove* the degraded path. SD is re-probed live (`/api/sdprobe` / timer /
-menu) so inserting a card upgrades the tier + runs migration without a reboot.
+**Verification signal (per AGENTS.md's bar):** a no-card boot logs
+`memory: storage tier=flash /data (no SD) sd_mounted=0 ...`, the dashboard shows the
+banner "No SD card - memory is limited to N entries on internal storage, with no
+durable media or history. Insert a FAT32 SD card for full storage.", the `STATUS`
+console line reports `sd=absent` (and `/api/mem/stats` reports `sdPresent:false`),
+and a `RENDER?`-assertable indicator lets HIL *prove* the degraded path. SD is
+re-probed live (`/api/sdprobe` / timer / menu) so inserting a card upgrades the
+tier + runs migration without a restart.
 
 ⚠ **The boot scan is BOUNDED, and must stay that way (F31).** `hydrate()` runs
 inside `setup()`, before the device can serve anything, on a path the watchdog
@@ -326,16 +329,17 @@ and logs `memory: vectors flash full (free=..KB need=..KB) - persist paused`.
   an out-of-window day file, tolerant torn-line decode. Host-tested (`test_orch_episodic_log`,
   12 cases: O(1)-append proof via a write-counting fake FS, ring+index query parity vs the
   in-memory store, out-of-window skip, zero-read fast path, >500 history, hydrate/migration,
-  torn-line tolerance, id-counter resume, retention prune, civil-date). Native **355/355**.
+  torn-line tolerance, id-counter resume, retention prune, civil-date).
 - **30-day retention prune** (§4): `AppendLogEpisodicStore::prune` drops old day-streams
   + reference-count-scans away unreferenced blob sidecars; wired to `memory::pruneRetention()`.
 - **Durable media sidecars, WIRED + ON-DEVICE VERIFIED** (§4): `memory::captureMediaFile`
   STREAMS a LittleFS file → content-addressed `/mem/blobs/<hash>.<ext>` in a 512 B buffer
   (a streaming `BlobHasher`, so the ~480 KB mic PCM never loads whole into RAM), dedup +
-  `.part`→rename atomic, then an episodic `Audio` row referencing it. Wired at all three
-  capture sites: **TTS reply** (`/reply.mp3`), **inbound Telegram voice note**
-  (`/audio/tgvoice.ogg`, persisted *before* the LittleFS privacy-delete), and the
-  **on-device mic turn** (`/voice.wav`). With no card this is a no-op. The resulting row
+  `.part`→rename atomic, then an episodic `Audio` row referencing it. Wired at three
+  capture sites: the **inbound Telegram voice note** (`/audio/tgvoice.ogg`, persisted
+  *before* the LittleFS privacy-delete), an **inbound Telegram photo or document**,
+  and the **on-device mic turn** (`/voice.pcm`). A spoken reply is recorded as a text
+  row, not a media sidecar. With no card this is a no-op. The resulting row
   appears in `/api/mem/episodic` as `{"kind":"audio","blob":"/mem/blobs/<hash>.<ext>"}`.
   Privacy note: raw inbound voice-note audio is retained on the card by design; erase the
   card to purge it.
@@ -352,14 +356,14 @@ and logs `memory: vectors flash full (free=..KB need=..KB) - persist paused`.
   (the legacy whole-blob's 37 rows replayed into the SD day-streams).
 - **Query proven:** `GET /api/mem/episodic` returns all 37 rows, newest-first, content-
   identical - the append-log serves reads via `readRange` over the real card.
-- **Persistence across reboot proven (F10 crux):** after a `REBOOT`, the second boot
+- **Persistence across a restart proven (F10 crux):** after a `REBOOT`, the second boot
   shows `[sd] mounted` + `memory: ready` with **NO "migrated" line** and `episodicMsgs=37`
   - `hydrate()` read the day-streams back (hydrate()>0 → migration skipped, no double-
-  migrate), and a post-reboot query still returns all 37 rows. Durability confirmed.
+  migrate), and a post-restart query still returns all 37 rows. Durability confirmed.
 
 **Not built:** the journal stays in its six NVS slots; there is no SD day-stream for it (see the journal row in section 1).
 
-## 5c. SD quota + truth (CUM-7)
+## 5c. SD quota and supported-card truth
 
 The artifact store must not be able to fill the card the bulk tiers also live on,
 so it carries a quota, recomputed from the REAL card size at every mount:
@@ -395,9 +399,9 @@ in-memory store); degraded VDB cap + LittleFS overflow guard; blob content-addre
 + reference-count prune; dirty-flag/debounced persist. *All at 100% on `native`.*
 
 **Phase B - device seams, no card required.** PSRAM routing for `g_vec` + episodic
-recent window (boot PSRAM assert; `STATUS` reports `psram=ok`); `sd=absent` status
-field + degraded banner + live SD re-probe. *Verifiable on the current cardless
-board via `STATUS`/`RENDER?`.*
+recent window (boot PSRAM assert; `STATUS` reports the PSRAM size as
+`psram=<bytes>`); `sd=absent` status field + degraded banner + live SD re-probe.
+*Verifiable on a board with no card via `STATUS`/`RENDER?`.*
 
 **Phase C - SD-dependent (gated on the card being detected).** `/mem/*` paths wired
 through `setDataFs`; LittleFS→SD migration converter; durable media sidecars;
@@ -422,14 +426,14 @@ retention/archival maintenance.
 **On-device HIL (`tests/hil`, `--allow-hardware`, gated markers)** - device
 behavior; SD rows stay skipped until `cardType != 0`:
 
-- *No card today (Phase B):* PSRAM backs the VDB (`heapMin` stays off the OOM
+- *Without a card (Phase B):* PSRAM backs the VDB (`heapMin` stays off the OOM
   floor as vectors grow); no-SD degraded banner + `sd=absent` + clamped cap;
-  LittleFS-overflow pause; persist-across-reboot in degraded mode.
+  LittleFS-overflow pause; persist-across-restart in degraded mode.
 - *Gated on the card (Phase C):* SD mount + `/mem/*` created; migration on first
   mount; episodic full history on SD (cap lifted); durable media sidecar (voice
   note persists + episodic `Audio` row references it); recall into the live turn
   (must run off the main loop, not the watchdog-killed console `TURN`);
-  persist-across-reboot from SD; SD hot-plug upgrade.
+  persist-across-restart from SD; SD hot-plug upgrade.
 
 Collection stays clean with no device; state-mutating rows restore in `finally`;
 manual media/hotplug rows fail LOUD if unconfirmed. A HIL row counts only when

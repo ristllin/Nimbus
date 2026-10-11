@@ -8,8 +8,9 @@ diving into a subsystem; each subsystem has its own document, linked from here.
 Nimbus is firmware for a battery-capable desk device. It runs on the hand-built
 **Solide S3** board (ESP32-S3-DevKitC-1 N16R8) with a 45-LED ring, an I²S
 microphone and speaker, and a 2.8" color touchscreen, and on the off-the-shelf
-**Freenove ESP32-S3 Display** all-in-one board. Each board ships as its own
-firmware image, and every image includes both operating modes.
+**Freenove ESP32-S3 Display** all-in-one board. Each board, and each Freenove
+screen size, ships as its own firmware image, and every image includes both
+operating modes.
 
 ## Code layering
 
@@ -84,7 +85,7 @@ flowchart LR
 ```
 
 The wire protocol is byte-locked to the reference encoder in the
-[`nsnotify`](#sibling-repositories) repository via generated test vectors, so
+[`nimbus-notify`](#sibling-repositories) repository via generated test vectors, so
 the broker and the device codec cannot drift apart. Details:
 [notifier status language](./notifier-status-language.md) and
 [modes & signals](./modes-and-signals.md).
@@ -95,8 +96,10 @@ In Orchestrator mode the device joins Wi-Fi and becomes a small self-contained
 agent host:
 
 - **LLM turns** against OpenAI, Anthropic, Mistral, or Z.ai, directly or
-  through the Cumulo Nimbus router, with structured outputs and a bounded
-  multi-round tool loop ([provider wire](./provider-wire.md),
+  through the Cumulo Nimbus router, or against an OpenAI-compatible custom
+  endpoint on your own network (a local model). On OpenAI, Anthropic and Mistral
+  the head runs a bounded multi-round tool loop; Z.ai and a custom endpoint
+  answer in a single structured call ([provider wire](./provider-wire.md),
   [turn anatomy](./turn-anatomy.md)).
 - **The World memory system** - vector recall, episodic history, scratchpad
   goals - tiered across PSRAM, SD card, and flash
@@ -121,6 +124,11 @@ capacitive touchscreen:
 | **Touch TFT** | Solide S3 | 2.8" ILI9341, 240×320 color | XPT2046 resistive touch |
 | **All-in-one (Freenove CYD)** | Freenove ESP32-S3 Display | 2.8" ILI9341, 240×320 color | FT6336U capacitive touch |
 
+The Freenove also comes with 3.5" (480×320) and 4.0" (480×480) screens, each built
+as its own image (`esp32s3-cyd-35`, `esp32s3-cyd-40`). These sizes are
+host-verified only and have not yet run on a physical screen; see
+[All-in-one (Freenove CYD)](./hardware/all-in-one-cyd.md#supported-panels).
+
 Each board's pinout is a compile-time identity fixed by `SOLIDE_BOARD`, so each is
 a separate firmware image. The display setting `scrModel` is fixed to `tft`; its
 legacy `eink` value is no longer supported (a board carrying it boots an
@@ -136,7 +144,7 @@ each through a narrow seam:
 | Repository | What it is | How Nimbus consumes it |
 |---|---|---|
 | [`solide-drivers`](https://github.com/ristllin/solide-drivers) (public) | Board support - the `solide::` drivers for the Solide S3 (LEDs, displays, audio, SD, NVS), plus the board-level build/BOM docs | Pinned library dependency in `platformio.ini` (a sibling checkout or the public git URL); its self-test console example is the hardware acceptance gate |
-| [`nsnotify`](https://github.com/ristllin/nimbus-notify) (public) | The nsn wire protocol and the host-side broker, published on PyPI as **`nimbus-notify`** | The reference encoder generates test vectors that byte-lock the device codec; users `pipx install nimbus-notify` to run the broker |
+| [`nimbus-notify`](https://github.com/ristllin/nimbus-notify) (public) | The nsn wire protocol and the host-side broker, published on PyPI as **`nimbus-notify`** | The reference encoder generates test vectors that byte-lock the device codec; users `pipx install nimbus-notify` to run the broker |
 | `nimbus-fw-releases` (public) | Signed firmware releases | Devices poll it for updates - see below |
 
 Releases are published to the dedicated `nimbus-fw-releases` repository
@@ -146,8 +154,9 @@ a clean, assets-only repository.
 ## How a release ships
 
 Firmware updates are signed, published to the public releases repository, and
-installed over the air on a single owner action, with automatic rollback if a
-bad image ships. The full design is in [OTA updates](./ota.md).
+installed over the air on a single owner action (or by themselves in an idle
+window when **Automatic updates** is on), with automatic rollback if a bad image
+ships. The full design is in [OTA updates](./ota.md).
 
 ```mermaid
 sequenceDiagram
@@ -160,7 +169,7 @@ sequenceDiagram
   CI->>CI: build firmware, sign the manifest (ECDSA)
   CI->>Rel: publish signed binaries + manifest
   Nim->>Rel: daily poll of releases/latest
-  Nim-->>Nim: update available - owner installs<br/>(web UI, device menu, or Telegram /update)
+  Nim-->>Nim: update available - owner installs<br/>(web UI, device menu, Telegram /update,<br/>or Automatic updates when idle)
   Nim->>Rel: download + verify signature
   Nim->>Nim: write the inactive A/B slot, restart
   Note over Nim: a failing image self-reverts<br/>after 3 boots (boot guard)
@@ -174,9 +183,12 @@ Key properties:
 - **A/B slots + boot guard.** The update writes the inactive partition; if the
   new image fails to prove itself within 3 boots, the device reverts to the
   previous one on its own.
-- **Owner-approved.** Devices check daily but install only on an explicit
-  action - from the web UI, the device's Settings menu, or the Telegram
-  `/update` command.
+- **Owner-approved by default.** Devices check daily but install only on an
+  explicit action (from the web UI, the device's Settings menu, or the Telegram
+  `/update` command), unless the owner turns on **Automatic updates** (NVS
+  `autoUpd`, off by default). With it on, a pending release installs by itself
+  in an idle window: no turn or voice in flight, enough battery and memory,
+  checked hourly.
 - **Orchestrator mode only.** In Notifier mode the Bluetooth stack occupies the
   memory the update needs, so a Notifier device updates over USB or by
   switching modes first.

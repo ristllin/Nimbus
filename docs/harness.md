@@ -38,11 +38,11 @@ Order matters; each step is in `src/main.cpp::setup()` or
    into PSRAM, scratchpad +
    retrieval config from NVS, and the episodic **hydrate** - day-stream JSONL
    files on SD are indexed and the last 512 messages rebuilt into the PSRAM hot
-   ring, so per-chat context survives reboot with zero flash reads at runtime.
+   ring, so per-chat context survives a restart with zero flash reads at runtime.
    A boot timeline row (`ev:boot` with reset reason + OTA result) is captured.
 6. **`orchestratorBegin()`**: provider fabric + adapters, sinks, the job
    **journal restore from NVS** (active sub-agents re-attach and resume
-   polling), running-memory load (LittleFS), Local Loops load
+   polling), running-memory load (LittleFS), routines load
    (`/data/loops.json`, every `nextRun` recomputed from now), the dream loop
    ensured (insert-if-missing; an owner pause survives), and finally
    `telegram::begin` spawns **`tg_poll`** - the task every turn runs on. The
@@ -104,12 +104,14 @@ entry (owner msg | sub-agents finished | loop fired | post-OTA)   [tg_poll]
   → usage summed across rounds+failovers → ledger (attribution: turn/synthesis/loop:<id>)
 ```
 
-Prompt v2: the system prompt has two variants, selected by the NVS `promptV2`
+Prompt v2: the system prompt has two variants, selected by the NVS `orchPromptV2`
 flag (default off). v1 is the historical prompt. v2 compresses
 the inlined orch_turn field docs to their essentials plus the rules a JSON schema
 cannot enforce, de-duplicates the memory-tier explainer, and keeps every safety
-rail; the wire schema (`ORCH_SCHEMA_BODY`) is unchanged. v2 is about 37% smaller
-(14.5 KB to 9.0 KB) and, in the A/B eval (`tools/eval_prompt_ab.py`), reached
+rail; the wire schema (`ORCH_SCHEMA_BODY`) is unchanged. v2 is about a third
+smaller (the default-fixture goldens `test/golden/orch_prompt_default.txt` and
+`orch_prompt_v2_default.txt` are about 14.8 KB and 9.8 KB) and, in the A/B eval run
+when v2 was introduced (`tools/eval_prompt_ab.py`), reached
 task-success parity with v1 on Anthropic and OpenAI while billing roughly 1,200
 to 1,900 fewer input tokens per turn. It stays OFF until enabled per device;
 `composeInstructions` reads it from `ComposeInputs::promptV2` (wired from
@@ -135,7 +137,7 @@ to 2 keyed alternates with an owner notice; a fresh provider thread each time.
   background workers on provider fabrics; ≤6 tracked / 4 in-flight; polled
   ~15 s; once every sub has finished, one unattended synthesis turn reports
   (raw-delivery fallback 60 s after that drain, so results are never lost).
-- **Local Loops (routines)**: owner- or agent-created `{schedule, prompt}`
+- **Routines**: owner- or agent-created `{schedule, prompt}`
   records fire scheduled turns. The fire decision is a pure, hard-coded gate
   table (enabled → approved → breaker → clock → due → chat-allowed → per-loop
   fires/tokens → device window/tokens) - never LLM-judged. At-most-once:
@@ -183,13 +185,13 @@ to 2 keyed alternates with an owner notice; a fresh provider thread each time.
 ## Lifecycle 5 - interrupts (what device life does to the harness)
 
 - **Mode switch / restart**: hard restart, no teardown. Routines can't double-fire
-  (persist-before-fire) and daily cost counters can't be wiped (rollover is
+  (persist-before-fire) and daily cost counters can't be reset (rollover is
   clock-gated), which is exactly why scheduled turns may not restart the device.
 - **OTA install**: runs alongside the live poller (stopping it once crashed the
   device mid-install); the ring becomes the progress bar; voice is refused;
   every phase writes a timeline row; after the post-update boot validates, a
   staged system turn tells the model what changed (release notes persisted
-  across the reboot in NVS).
+  across the restart in NVS).
 - **Voice hold-to-talk**: blocks the main loop (WDT suspended around record and
   STT); `tg_poll` keeps running and the transcript is injected as a normal turn.
   A waiting injected turn (voice, web or serial) ends `tg_poll`'s idle waits
@@ -238,7 +240,7 @@ and are golden-pinned - never device-side.
 
 **Security rails are structural**: `HarnessConfig` has NO setter for provider
 keys, `providerPriority`, or `orchHost` (human-only surfaces). Scheduled-turn
-refusals (reboot/ttsOn/devName/sleepOvr/brightOvr) and risk-note composition
+refusals (`reboot`/`ttsOn`/`devName`/`sleepOvr`/`brightOvr`) and risk-note composition
 are portable policy in `apply.cpp`, pinned by `test_harness_apply` - the
 injected execution closures contain no policy branches.
 
@@ -296,11 +298,11 @@ dir separately - include them relatively).
 
 ## Invariants that must never regress
 
-1. Turn contract (`orch_schema.h`) and `/api/*` are additive-only (Rule 5) -
-   the schema golden + api-surface gate enforce this.
+1. Turn contract (`orch_schema.h`) and `/api/*` are additive-only - the schema
+   golden (`test/test_harness_goldens`) enforces this for the turn contract.
 2. No retry/failover after any tool executed in a turn (side-effect replay).
 3. Recall, synthesis, and the tool loop are fail-open - a memory/provider
-   failure degrades the turn, never crashes or reboots the device.
+   failure degrades the turn, never crashes or restarts the device.
 4. `takeFreshResults` is the single reset point of the synthesis clock.
-5. Steady-state internal-SRAM footprint does not grow (Rule 4): big buffers go
+5. Steady-state internal-SRAM footprint does not grow: big buffers go
    through `Platform::allocLarge` (PSRAM) or stay on the device side.

@@ -47,10 +47,12 @@ a multi-second turn does not restart the device.
 `runTurn(inputs, chatId, userText)` composes context before choosing a host:
 
 1. **Associative recall (one embed, fail-open).** When `userText` is non-empty and
-   free heap is at or above `ORCH_RECALL_MIN_HEAP` (12000 bytes, equal to the turn
-   hard floor `ORCH_TURN_HARD_FLOOR` - the recall embed is a *second* TLS handshake
-   that must fit ahead of the LLM call), `memory::recall(userText)` embeds the message once and runs a
-   top-K cosine `search` over the VDB under the retrieval config. Synthesis turns
+   free heap is at or above `ORCH_RECALL_MIN_HEAP` (12000 bytes, the same value as
+   the turn hard floor `ORCH_TURN_HARD_FLOOR`: the recall embed is a second TLS
+   handshake, but mbedTLS buffers live in PSRAM, so its only internal-heap cost is a
+   small HTTP/JSON transient; it stays a named floor so a heavier build can raise
+   it), `memory::recall(userText)` embeds the message once and runs a top-K cosine
+   `search` over the VDB under the retrieval config. Synthesis turns
    (empty `userText`) skip recall. Any embed failure returns empty content and the
    turn proceeds - recall never blocks a reply.
 2. **Prompt assembly.** `composeInstructions(recalled)` builds a `ContextInputs`
@@ -60,19 +62,27 @@ a multi-second turn does not restart the device.
    | Section | Source |
    |---|---|
    | Immutable rules + output contract | `ORCH_ROLE` (the `orch_turn` field spec) |
+   | Identity (device name, time, speaker) | composed in `compose.cpp` |
    | Directive (+ `[RUNNING MEMORY]`) | `g_mem.directive()` + `g_mem.model()` |
    | `## CAPABILITIES` | `renderCapabilities(hw, memory::registry().manifest())` |
    | `## RUNNING SESSIONS` | `renderSessions(sessionInfos())` |
+   | Chat summary | the chat's folded summary |
+   | Recent conversation | the per-chat window |
    | Scratchpad | `memory::scratchpad()` |
    | `## RELEVANT MEMORIES` | the recalled top-K bullets |
-   | `## HOW YOUR MEMORY WORKS` | the static `MEMORY_EXPLAINER` |
+   | `## HOW YOUR MEMORY WORKS` | the static `MEMORY_EXPLAINER` (v1 prompt only; the v2 prompt, NVS `orchPromptV2`, drops this block) |
 
    The capability manifest lists tools **live from the MCP registry manifest**, so
-   it never drifts from what actually dispatches. The `hw` descriptor is mostly
-   static (ring/screen/mic/speaker present; no battery/SD/BLE) with the
-   Telegram capability read live from `telegram::enabled()`. The composed prompt is
-   also stashed in `g_lastInstructions` so the `PROMPT?` console command can dump it
-   without a provider round-trip.
+   it never drifts from what actually dispatches. The `hw` descriptor is read live
+   each turn: the ring and touchscreen from HAL health and the fault mask, mic and
+   speaker from the fault mask, battery from the board's battery-ADC build flag (set
+   on every ESP32-S3 build), SD from the live mount state, the file store from
+   `files::available()`, Telegram from `telegram::enabled()`, and the Voice replies
+   toggle from `store::ttsEnabled()`. Wi-Fi is always reported present (a turn only
+   runs with Wi-Fi up) and Bluetooth always absent (it runs only in Notifier mode).
+   The composed prompt is also stashed in the engine's `lastInstructions_` (read
+   through `agent::orchestrator::lastInstructions()`) so the `PROMPT?` console
+   command can dump it without a provider round-trip.
 
 The user/conversation text lives in `inputs` (separate from the system-prompt
 budget), so message length is preserved independently of the budget.
@@ -88,14 +98,16 @@ so one slightly-off item can't lose a good reply. Each array is capped to
 
 - **`mem_write[]`** - `{content, importance (clamped [0,1], default 0.5),
   permanent (default false)}`. Dispatched to `memory.write` (embed + store).
-  `content` is byte-capped to `kMemModelMax` (1200). This is the **only** path that
-  creates a durable associative memory - the model must ask for it explicitly.
+  `content` is byte-capped to `kMemModelMax` (1200). This and the `memory.write`
+  tool (mid-turn on the tool loop, or over `/mcp`) are the only paths that create a
+  durable associative memory - the model must ask for it explicitly.
 - **`mem_query[]`** - search strings. Dispatched to `memory.search`; the hits are
-  accumulated into `g_pendingMemResults` and injected into the next turn's inputs
+  accumulated into the engine's `pendingMemResults_` and injected into the next turn's inputs
   as a `[MEMORY RESULTS]` block. This is the deferred-result pattern the sub-agent
   `[FRESH RESULTS]` channel already uses (`takeFreshResults`): the model asks in
   turn N and sees the answer in turn N+1, with no mid-turn network hop.
-- **`session_ops[]`** - `{op, id, task, provider, model}` with `op` in
+- **`session_ops[]`** - `{op, id, task, provider, model, skill, name, project,
+  attach}` with `op` in
   `spawn|tell|poll|terminate|list`. `spawn` enqueues a sub-agent (the same enqueue
   path as the deprecated `spawn[]` array); `terminate` cancels the job named by
   `id`; `list` is a no-op because the running-sessions digest is already injected
@@ -139,8 +151,9 @@ Memory has two capture paths with different triggers:
   no card it falls back to an `InMemoryEpisodicStore` bounded to 500 messages and
   persisted whole-blob to LittleFS. Either way it is queryable via
   `memory.episodic`.
-- **Associative (VDB) memory is explicit.** The vector store is written **only** by
-  an `mem_write[]` tool call - conversation is never auto-mirrored into the VDB.
+- **Associative (VDB) memory is explicit.** The vector store is written only by an
+  explicit `mem_write[]` item or `memory.write` call - conversation is never
+  auto-mirrored into the VDB.
 
 ## Concurrency - a single writer on the turn task
 
@@ -162,8 +175,9 @@ precedent.
 Total concurrent TLS is bounded by the `tls_arbiter` work slot: Telegram holds its
 own persistent session and every other TLS user (turn, dispatch, poll, STT, TTS,
 media upload) must `acquireWork` before opening a `WiFiClientSecure` and release it
-immediately after close - so the single mbedTLS arena never holds more than two
-resident sessions.
+immediately after close - so the single mbedTLS arena holds at most the Telegram
+session plus one work session (two work sessions when **Concurrent connections**
+is set to 2, applied at boot).
 
 ## PSRAM-backed mbedTLS - the unblock for every live turn
 
@@ -225,8 +239,8 @@ device speaks on its own speaker too.
 
 **Outbound media on the poll task (`sendMedia`).** A send publishes a single
 pending-media slot under the `g_mediaMux` spinlock; the `tg_poll` task drains it via
-`drainMedia()` **after** closing the poll socket, so only one TLS session is ever
-resident (the single-TLS invariant). Kinds `document`/`photo`/`voice`/`audio` map to
+`drainMedia()` **after** closing the poll socket, so the Telegram poll session is
+not resident while the upload holds a work slot. Kinds `document`/`photo`/`voice`/`audio` map to
 the Bot API `sendDocument`/`sendPhoto`/`sendVoice`/`sendAudio` methods.
 
 **Spoken reply path.** Speaking is the model's choice, gated by the owner's

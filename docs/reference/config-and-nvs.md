@@ -194,7 +194,7 @@ security model.
 |---|---|---|---|---|
 | `cloudOptIn` | bool | `false` | Cloud relay enabled. | Yes |
 | `cloudDevId` | string | `""` | Cloud device id assigned at pairing. | Yes |
-| `cloudCred` | string | `""` | Cloud-minted device credential (bearer); wiped on unpair. | No - write-only |
+| `cloudCred` | string | `""` | Cloud-minted device credential (bearer); erased on unpair. | No - write-only |
 | `cloudHost` | string | `app.cumulo-nimbus.ai` | Relay host. | Yes |
 | `cloudName` | string | `""` | Paired device display name for the web status line. | Yes |
 
@@ -230,9 +230,9 @@ roll back if it fails. See [OTA updates](../ota.md).
 | `sfxLvlO` | int | `2` (Medium) | Sound-effect level in Orchestrator mode (same scale). | Yes |
 | `sfxTheme` | string | `"pulse"` | Sound theme slug. `pulse` is the only shipping theme; an unknown value is coerced back to `pulse` on write. | Yes |
 | `sfxVol` | int | `50` | Master speaker volume, `0..100`. | Yes |
-| `saverMin` | int | `-1` (mode default) | Screensaver idle threshold in minutes; `0` = off, unset (`-1`) uses the battery-mode default (5 min). Set from Settings > Display on the web (the Screen rest field) or the Screensaver row on the device menu; the web control applies live. | Yes |
+| `saverMin` | int | `-1` (unset) | Screensaver idle threshold in minutes; `0` = off, unset (`-1`) reads as 5 min. Choosing a battery mode on the web page writes that mode's default here (Dark 2 min, Balanced 5 min, Full 0 = off) unless you have set your own value. Set from Settings > Display on the web (the Screen rest field) or the Screensaver row on the device menu; the web control applies live. | Yes |
 | `webTok` | string | gen on first use | Per-device web/MCP auth token behind the LAN surface. | No - printed only over UART (`WEBTOK?`) |
-| `apPass` | string | gen on first use | Per-device setup-network passphrase, shown on the setup screen. | Yes (on-device only) |
+| `apPass` | string | gen on first use | Per-device setup-network passphrase, shown on the setup screen. | Yes (setup screen; Settings > Connectivity for a signed-in owner) |
 | `codeSbx` | bool | `false` | Code sandbox toggle (Assistant > Tools). | Yes |
 | `orchPromptV2` | bool | `false` | Use the simplified v2 system prompt (A/B flag). | Yes |
 | `fetchPol` | int | `1` (ask) | Download trust for `files.fetch`: `0` off / `1` ask per link / `2` scan then keep / `3` full trust (Assistant > Safety > Downloads). | Yes |
@@ -288,7 +288,7 @@ value is the owner's override and wins under the listed clamp.
 | `orchLoopRCap` | int | `0` (auto) | Per-tool-result byte clamp. `0` = auto; else `512..65536`. | Yes |
 | `orchLoopTCap` | int | `0` (auto) | Cumulative tool-output byte budget. `0` = auto; else `2048..1048576`. | Yes |
 
-### Local Loops governor caps (`src/agent/store.cpp`)
+### Routine governor caps (`src/agent/store.cpp`)
 
 Owner overrides for the routine/scheduler governor. Each defaults to the hard
 ceiling in `lib/core/include/nimbus/orch/caps.h`; an override may only make a cap
@@ -395,9 +395,12 @@ model can reach (device-action executor, turn loop, tools). `setSubPriority()`
 is the **only** model-writable routing knob; it targets the **sub-session** list
 (`subPrio`), never the orchestrator-host list.
 
-**2. `lib/core` - the deny policy (portable security core).** The model may
-tune exactly two config keys: `ledBrightness` (0..255) and `priority` (a routing
-**preference**, i.e. the sub-session list - not a host). Everything else is
+**2. `lib/core` - the deny policy (portable security core).** The model's
+`config` action carries only the benign owner knobs the wire schema lists
+(`ledBrightness`, `priority` - a routing **preference**, i.e. the sub-session
+list, not a host - `posture`, `profile`, `theme`, `attnHoldMs`, the voice and
+sound knobs, `ttsOn`, `sleepOvr`, `brightOvr`, `devName`), each clamped; a
+scheduled turn may not set `ttsOn`, `devName`, `sleepOvr` or `brightOvr`. Everything else is
 ignored (unknown) or **BLOCKED**. The protected list
 (`lib/core/src/orch_device_actions.cpp`, nullptr-terminated) is:
 
@@ -406,6 +409,11 @@ ignored (unknown) or **BLOCKED**. The protected list
 | `password`, `token`, `connector` | Secrets - an LLM-issued chat action must never set a credential |
 | `allowlist` | The device's own auth gate - the model must not grant itself access |
 | `orchHost`, `fabric` | Provider / sub-agent routing - the model must not redirect its own brain / sub-agent backends |
+| `loops` | The routines blob - only the `loop.*` tools write it |
+| `providerPriority`, `provPrio`, `orchPriority` | The orchestrator-host priority list under every alias |
+| `tgToken`, `tgAllow`, `sysPrompt` | The Telegram credential and allowlist, and the owner directive |
+| `orchLoop`, `budget`, `tlsSlots` | The tool-loop and budget governors and the TLS slot count |
+| `oaiKey`, `antKey`, `mistralKey`, `custKey`, `tavilyKey` | Provider API keys, by name; any other key ending in "Key" (for example `zaiKey`, `cumuloKey`) is refused by a generic backstop |
 
 If **any** protected key is present, the **whole** config action is refused
 (reason `"protected-BLOCKED"`). The reason string reports only the policy tag,

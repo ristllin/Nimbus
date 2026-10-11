@@ -242,8 +242,9 @@ on region: `api.z.ai` and `open.bigmodel.cn`. On the first verify the device
 answers, so you never pick the wrong region by hand. The model list is harvested
 into the catalog (GET /api/models) with GLM ids classified into roles; a GLM
 sub-agent runs one synchronous `POST /api/paas/v4/chat/completions` and its reply
-is read from `choices[0].message.content`. Set the key on Assistant > Models
-(Z.ai token); leave the endpoint to the probe.
+is read from `choices[0].message.content`. Paste the key into the Z.ai row's
+**API key** field under Assistant > Models > Providers & keys and select
+**Save & Verify**; leave the endpoint to the probe.
 
 ## Cumulo Nimbus router
 
@@ -259,8 +260,9 @@ resolve the selector the same way, splitting the upstream off, routing to
 id the router prices). This
 lets one key drive the orchestrator on one upstream and sub-agents on another,
 with embeddings/vision/STT/TTS available where the chosen upstream supports them.
-Get the key from your Cumulo Nimbus account (see the cloud docs page); set it on
-Assistant > Models (Cumulo key).
+Get the key from your Cumulo Nimbus account (see
+[Use your Cumulo key](cloud/cumulo-key.md)); paste it into the Cumulo Nimbus row
+under Assistant > Models > Providers & keys.
 
 A verified Cumulo key is the default source for the whole assistant: when no other
 provider key is set, the orchestrator and its sub-agents run on the Cumulo key with
@@ -283,7 +285,10 @@ ids with a size class and the billed rates as metadata, so the Cumulo model list
 tracks the router's catalog rather than one upstream's `/v1/models`. A one-shot cheap usability probe
 per selected model means a model your key cannot actually use never appears. The
 catalog is served at `GET /api/models` (add `?all=1` to include probe-hidden models)
-and cached in PSRAM with a 24 h refresh. The generated
+and stored in the device's flash (LittleFS) as a rebuildable cache that every
+verify re-harvests: a manual **Verify**, `POST /api/models/refresh`, or, with
+**Capability validation** set to Active, the scheduled re-check (default every 24
+hours; OpenAI, Anthropic and Mistral keys only). The generated
 [capability matrix](reference/capabilities-matrix.md) shows which role and feature
 each provider offers.
 
