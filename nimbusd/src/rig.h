@@ -722,7 +722,7 @@ class NimbusdRig {
 
   // Monotonic key-change counter, surfaced as the providers' verify timestamp so the
   // web save-flow's poll observes the change (a hosted instance has no cheap verify).
-  uint32_t keyGen() const { return keyGen_; }
+  uint32_t keyGen() const { return keyGen_.load(); }
 
   // Served-by of the most recent turn (CUM-236), for the web chat's honest footer.
   bool lastFallback() const { return lastFallback_; }
@@ -1077,12 +1077,13 @@ class NimbusdRig {
 
   // ---- memory + tools -------------------------------------------------------
   void buildMemory() {
-    loadEmbedCfg();   // the owner's embed choice from the app (CUM-540), else the env defaults
+    const bool savedWidth = loadEmbedCfg();   // the owner's embed choice from the app (CUM-540), else the env defaults
     vec_.configure(opt_.embedDims);
     vec_.setMaxEntries(opt_.maxVectors);
     // Rehydrate the durable stores (each is tolerant of an absent/torn file).
     std::string blob;
     if (fsutil::readFile(vectorsPath(), blob)) vec_.deserialize(blob);
+    reconcileVectorWidth(savedWidth);
     if (fsutil::readFile(scratchPath(), blob)) scratch_.deserialize(blob);
     if (fsutil::readFile(memConfigPath(), blob)) memCfg_.deserialize(blob);
 
@@ -1263,34 +1264,41 @@ class NimbusdRig {
 
   // The web app's embedding settings save (device parity, web_memory.cpp
   // handleEmbedCfgPost): refused while memories exist unless `reset` erases them
-  // (vectors of two models cannot be compared); dims 0 means the model's own
-  // width, read with one live call. Persisted on the instance volume. Returns ""
-  // or the refusal sentence; `status` carries the HTTP status. Engine thread only.
-  std::string applyEmbedCfg(const std::string& provider, const std::string& model, int dims,
-                            bool reset, int& status) {
+  // (vectors of two models cannot be compared). `width` is the width the live
+  // check read from the model (web_api.h embedCfgPost): a width is never saved
+  // unchecked, since a wrong one made every later memory write fail. Persisted on
+  // the instance volume. Returns "" or the refusal sentence; `status` carries the
+  // HTTP status. Engine thread only.
+  std::string applyEmbedCfg(const std::string& provider, const std::string& model, int width, bool reset,
+                            int& status) {
     status = 400;
-    if (!orch::embedRouteFor(provider).known || provider == "custom")
-      return "Choose Cumulo Nimbus, OpenAI or Mistral.";
-    if (model.empty() || !validSelector(model)) return "Choose a model.";
-    if (dims < 0 || dims > 4096) return "Dimensions must be 0 to 4096.";
+    const std::string why = embedCfgRefusal(provider, model, width);
+    if (!why.empty()) return why;
+    if (width <= 0) return "Couldn't read the model's embedding size. Try again.";
     if (!reset && vec_.size() > 0) {
       status = 409;
       return "Memories exist for the current model. Save again and choose to erase them to switch.";
     }
-    if (dims == 0) {
-      std::string err;
-      const auto v = embedWith(kEmbedProbeText, err, provider, model, 0);
-      if (v.empty()) return "Couldn't read the model's embedding size (" + err + "). Set Dimensions and try again.";
-      dims = (int)v.size();
-    }
     if (reset) vec_.flushAll();
     opt_.embedHost = provider;
     opt_.embedModel = model;
-    opt_.embedDims = dims;
-    vec_.configure(dims);
-    saveEmbedCfg();
+    opt_.embedDims = width;
+    vec_.configure(width);
+    // The store first, the config last: a restart between the two writes finds an
+    // EMPTY store at the new width under the old config, which the load simply
+    // re-widens (reconcileVectorWidth), never old vectors under a new config.
     flush();
+    saveEmbedCfg();
     status = 200;
+    return std::string();
+  }
+  // The shape check for an embedding candidate ("" = valid): a provider this
+  // instance can embed with, a model name that fits one line of embed.txt, and a
+  // width in range (0 = the model's own).
+  static std::string embedCfgRefusal(const std::string& provider, const std::string& model, int dims) {
+    if (!orch::embedRouteFor(provider).known || provider == "custom") return "Choose Cumulo Nimbus, OpenAI or Mistral.";
+    if (model.empty() || !validSelector(model)) return "Choose a model.";
+    if (dims < 0 || dims > 4096) return "Dimensions must be 0 to 4096.";
     return std::string();
   }
 
@@ -1301,11 +1309,13 @@ class NimbusdRig {
   static constexpr const char* kEmbedProbeText = "nimbus embedding check";   // the verify/width probe
 
  private:
-  void loadEmbedCfg() {
+  // True when the saved config set the width (the owner's choice, not the env's).
+  bool loadEmbedCfg() {
     std::string blob;
-    if (!fsutil::readFile(embedCfgPath(), blob)) return;
+    if (!fsutil::readFile(embedCfgPath(), blob)) return false;
     std::istringstream is(blob);
     std::string line;
+    bool width = false;
     while (std::getline(is, line)) {
       const size_t eq = line.find('=');
       if (eq == std::string::npos) continue;
@@ -1315,8 +1325,41 @@ class NimbusdRig {
       else if (k == "dims") {
         const int dims = std::atoi(v.c_str());
         if (dims > 0 && dims <= 4096) opt_.embedDims = dims;
+        width = width || (dims > 0 && dims <= 4096);
       }
     }
+    return width;
+  }
+  // The loaded vector store and the embedding config must agree on the width:
+  // vectors of another width can never be compared with what the model returns
+  // now (every write fails and recall finds nothing, silently).
+  //  * an empty store takes the configured width (its blob header can carry the
+  //    old one, device CUM-469);
+  //  * vectors at a width the owner's saved config does not produce (a restart
+  //    inside a model switch) are set aside as vectors.bin.mismatch and memory
+  //    starts empty, said in the log;
+  //  * with no saved config the stored width wins (the env default never chose it).
+  void reconcileVectorWidth(bool savedWidth) {
+    const int want = opt_.embedDims, have = vec_.dims();
+    if (have == want || vec_.adoptWidthIfEmpty(want)) return;
+    if (!savedWidth) {
+      opt_.embedDims = have;
+      memLog("memory: the stored memories are " + std::to_string(have) + " wide, so embeddings use that width");
+      return;
+    }
+    const std::string kept = vectorsPath() + ".mismatch";
+    const bool moved = ::rename(vectorsPath().c_str(), kept.c_str()) == 0;
+    memLog("memory: " + std::to_string(vec_.size()) + " stored memories are " + std::to_string(have) +
+           " wide but the saved embedding model is " + std::to_string(want) +
+           " wide; they cannot be compared, so memory starts empty" +
+           (moved ? " (the old store is kept as vectors.bin.mismatch)" : ""));
+    vec_.flushAll();
+    vec_.configure(want);
+    fsutil::writeFileAtomic(vectorsPath(), vec_.serialize());
+  }
+  static void memLog(const std::string& line) {
+    std::fprintf(stderr, "[nimbusd] %s\n", line.c_str());
+    agent::hlog::logf("%s", line.c_str());
   }
   void saveEmbedCfg() {
     fsutil::writeFileAtomic(embedCfgPath(), "provider=" + opt_.embedHost + "\nmodel=" + opt_.embedModel +
@@ -2184,7 +2227,7 @@ class NimbusdRig {
 
   TurnRecord cur_;
   std::vector<TurnRecord> turns_;
-  uint32_t keyGen_ = 0;   // bumps on each in-app key change (CUM-279 verify-ts seam)
+  std::atomic<uint32_t> keyGen_{0};   // bumps on each in-app key change (engine thread; the web layer reads it)
 };
 
 }  // namespace nimbusd

@@ -12,10 +12,23 @@
 //   (d) the device's "cumulo" embed provider is the /router/openai/v1 route;
 //   (e) the page's verify-then-save: embedverify runs a real call and saves
 //       nothing; embedcfg refuses a model switch while memories exist unless the
-//       owner erases them, then applies and persists across a restart.
+//       owner erases them, then applies and persists across a restart;
+//   (f) a slow embeddings host never parks the single HTTP thread: verify and save
+//       answer within a short bound ("still checking", nothing saved), GET
+//       /api/mem/embedcfg shows the check settle, and the next verify and save
+//       answer from that result without a second call;
+//   (g) a width the model does not produce is never saved (Mistral ignores a
+//       requested width), and a refused save leaves memory working;
+//   (h) on load, vectors of another width than the saved config are set aside and
+//       memory starts empty (said in the log), and an empty store takes the saved
+//       width, so new vectors are never compared with incompatible ones.
 // Offline: an injected FakeHttpTransport; no network, no real keys.
+#include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <string>
+#include <sys/stat.h>
+#include <thread>
 
 #include "../../test/support/fake_http.h"
 #include "engine_thread.h"
@@ -61,6 +74,23 @@ static Exchange embedOk(const std::string& host, const std::string& path, int n)
   e.expectPathContains = path;
   e.body = "{\"data\":[{\"embedding\":[" + v + "]}],\"usage\":{\"prompt_tokens\":3}}";
   return e;
+}
+
+// A transport that takes `delayMs` to answer every request (a slow embeddings host).
+struct SlowTransport : agent::HttpTransport {
+  SlowTransport(agent::HttpTransport* in, int ms) : inner(in), delayMs(ms) {}
+  bool exec(const agent::HttpRequest& req, agent::HttpResponse& out, std::string& err) override {
+    std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
+    calls++;
+    return inner->exec(req, out, err);
+  }
+  agent::HttpTransport* inner;
+  int delayMs;
+  std::atomic<int> calls{0};
+};
+
+static double secondsSince(std::chrono::steady_clock::time_point t0) {
+  return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
 }
 
 static std::string header(const agent::HttpRequest& r, const std::string& name) {
@@ -199,6 +229,116 @@ static void testVerifyThenSave(ndtest::Ctx& c) {
   clearEnv();
 }
 
+static void testSlowCheckNeverParksTheHttpThread(ndtest::Ctx& c) {
+  std::printf("  -- (f) a slow check answers within the bound; its result is kept for the next try --\n");
+  clearEnv();
+  setenv("CUMULO_API_KEY", kKey, 1);
+  FakeHttpTransport inner;
+  inner.script.push_back(embedOk(kCumuloHost, "/router/openai/v1/embeddings", 16));
+  SlowTransport tx(&inner, 7000);   // past the bound the HTTP thread may wait
+  Config cfg;
+  NimbusdRig rig(cfg, opts("emb-f"), &tx);
+  Web web(rig);
+  const std::string cand = "provider=openai&model=text-embedding-3-small&dims=16";
+  auto t0 = std::chrono::steady_clock::now();
+  const ApiResp v = web.call("POST", "/api/mem/embedverify", cand);
+  const double waited = secondsSince(t0);
+  c.ok(waited < 6.5, "embedverify answers within the bound while the call takes 7 s (waited " +
+                         std::to_string((int)waited) + " s)");
+  c.eqi(v.status, 202, "it answers 202: accepted, still checking");
+  c.ok(has(v.body, "\"ok\":false") && has(v.body, "\"checking\":true") && has(v.body, "Still checking this model"),
+       "the page shows \"still checking\" and saves nothing (never \"Verified\" without a width)");
+  t0 = std::chrono::steady_clock::now();
+  const ApiResp early = web.call("POST", "/api/mem/embedcfg", cand + "&reset=1");
+  c.ok(secondsSince(t0) < 1.0, "a save during the check answers at once");
+  c.eqi(early.status, 503, "a save during the check is not a 2xx (the page reads any 2xx as saved)");
+  c.eqi(rig.embedWidth(), 8, "nothing changed");
+  std::string cfgBody;
+  for (int i = 0; i < 100 && !has(cfgBody, "\"state\":\"ok\""); i++) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    cfgBody = web.call("GET", "/api/mem/embedcfg").body;   // 503 while the engine runs the call
+  }
+  c.ok(has(cfgBody, "\"check\":{") && has(cfgBody, "\"state\":\"ok\"") && has(cfgBody, "\"width\":16"),
+       "GET /api/mem/embedcfg shows the settled check");
+  const ApiResp again = web.call("POST", "/api/mem/embedverify", cand);
+  c.ok(again.status == 200 && has(again.body, "\"ok\":true") && has(again.body, "\"dims\":16"),
+       "the next verify answers from the settled check");
+  const ApiResp saved = web.call("POST", "/api/mem/embedcfg", cand + "&reset=1");
+  c.eqi(saved.status, 200, "the save applies the checked width");
+  c.eqi(rig.embedWidth(), 16, "the width is the one the model returned");
+  c.eqi(tx.calls.load(), 1, "one live call served the check, the verify and the save");
+  clearEnv();
+}
+
+static void testUncheckedWidthNeverSaved(ndtest::Ctx& c) {
+  std::printf("  -- (g) a width the model does not produce is never saved --\n");
+  clearEnv();
+  setenv("CUMULO_API_KEY", kKey, 1);
+  FakeHttpTransport tx;
+  tx.script.push_back(embedOk(kCumuloHost, "/router/mistral/v1/embeddings", 1024));   // the save's check
+  tx.script.push_back(embedOk(kCumuloHost, "/router/mistral/v1/embeddings", 1024));   // a verify after it
+  tx.script.push_back(embedOk(kCumuloHost, "/router/mistral/v1/embeddings", 8));      // a memory
+  Config cfg;
+  NimbusdRig rig(cfg, opts("emb-g"), &tx);
+  {
+    Web web(rig);
+    const std::string cand = "provider=mistral&model=mistral-embed&dims=512";
+    const ApiResp r = web.call("POST", "/api/mem/embedcfg", cand);
+    c.eqi(r.status, 400, "a width the model does not return is refused");
+    c.ok(has(r.body, "returns 1024 dimensions"), "the refusal names the real width");
+    c.eqi(rig.embedWidth(), 8, "the saved width is unchanged");
+    const ApiResp v = web.call("POST", "/api/mem/embedverify", cand);
+    c.ok(v.status == 400 && has(v.body, "\"dims\":1024") && has(v.body, "Set Dimensions to 1024 or 0"),
+         "verify fails it too, naming the fix (the page used to save the typed width after a green verify)");
+  }
+  rig.callTool("memory.write", R"({"content":"still remembered"})");
+  c.eqi(rig.vectors().size(), 1, "memory still works on the saved width");
+  clearEnv();
+}
+
+static void testLoadReconcilesWidth(ndtest::Ctx& c) {
+  std::printf("  -- (h) vectors of another width than the saved config are not compared --\n");
+  clearEnv();
+  setenv("CUMULO_API_KEY", kKey, 1);
+  const NimbusdRig::Options o = opts("emb-h");
+  const std::string mem = o.dataDir + "/mem";
+  std::string oldBlob, emptyBlob;
+  {
+    FakeHttpTransport tx;
+    tx.script.push_back(embedOk(kCumuloHost, "/router/mistral/v1/embeddings", 8));
+    Config cfg;
+    NimbusdRig rig(cfg, o, &tx);
+    emptyBlob = rig.vectors().serialize();
+    rig.callTool("memory.write", R"({"content":"made by the old model"})");
+    c.eqi(rig.vectors().size(), 1, "one 8-wide memory");
+    oldBlob = rig.vectors().serialize();
+  }
+  // A restart inside a switch: embed.txt already says 16 wide, vectors.bin is the old 8-wide store.
+  fsutil::writeFileAtomic(mem + "/embed.txt", "provider=openai\nmodel=text-embedding-3-small\ndims=16\n");
+  fsutil::writeFileAtomic(mem + "/vectors.bin", oldBlob);
+  {
+    Config cfg;
+    NimbusdRig rig(cfg, o);
+    c.eqi(rig.vectors().size(), 0, "the incompatible memories are not loaded");
+    c.eqi(rig.vectors().dims(), 16, "the store is the saved width");
+    c.eqi(rig.embedWidth(), 16, "and so is the config");
+    c.ok(NimbusdRig::loggedContaining("cannot be compared"), "the log says why memory starts empty");
+    struct stat st;
+    c.ok(::stat((mem + "/vectors.bin.mismatch").c_str(), &st) == 0, "the old store is kept aside, not destroyed");
+  }
+  // An EMPTY store whose header carries the old width simply takes the saved width.
+  fsutil::writeFileAtomic(mem + "/vectors.bin", emptyBlob);
+  ::unlink((mem + "/vectors.bin.mismatch").c_str());
+  {
+    Config cfg;
+    NimbusdRig rig(cfg, o);
+    c.eqi(rig.vectors().dims(), 16, "an empty store takes the saved width");
+    struct stat st;
+    c.ok(::stat((mem + "/vectors.bin.mismatch").c_str(), &st) != 0, "nothing is set aside for an empty store");
+  }
+  clearEnv();
+}
+
 int main() {
   ndtest::Ctx c;
   std::printf("=== embeddings through the Cumulo router (CUM-540, offline) ===\n");
@@ -207,6 +347,9 @@ int main() {
   testNoKeyNoRequest(c);
   testCumuloProviderRoute(c);
   testVerifyThenSave(c);
+  testSlowCheckNeverParksTheHttpThread(c);
+  testUncheckedWidthNeverSaved(c);
+  testLoadReconcilesWidth(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);
   std::printf("%s\n", c.failures ? "FAILED" : "PASSED");
   return c.failures ? 1 : 0;

@@ -14,6 +14,7 @@
 #include <utility>
 #include <vector>
 
+#include "embed_check.h"
 #include "engine_thread.h"
 #include "reply_buffer.h"
 #include "rig.h"
@@ -423,7 +424,10 @@ class WebApi {
   // "nothing happened" and invites a duplicate write.
   ApiResp engineWrite(std::function<std::string()> fn, int waitS) {
     if (eng_->snapshot().turnInFlight || eng_->busy()) return busy();
-    auto fut = eng_->dispatchRead(std::move(fn));
+    return awaitWrite(eng_->dispatchRead(std::move(fn)), waitS);
+  }
+  // A posted write's answer: its result, or "queued" past the wait (it still runs).
+  static ApiResp awaitWrite(std::future<std::string> fut, int waitS) {
     if (fut.wait_for(std::chrono::seconds(waitS)) != std::future_status::ready)
       return ApiResp{202, "application/json", R"({"ok":true,"queued":true,"note":"Saved. It applies in a moment."})"};
     try {
@@ -1152,45 +1156,127 @@ class WebApi {
       e["model"] = rig_->embedModelName();
       e["dims"] = rig_->embedWidth();
       e["route"] = rig_->embedRouteLabel();
+      fillEmbedCheck(d);
       std::string out; serializeJson(d, out); return out;
     });
   }
 
   // ---- embedding settings (CUM-540, device parity web_memory.cpp) -----------
-  // A live embedding call can take up to the embed timeout (30 s), so these wait
-  // past it; they are owner-initiated and rare, and refused at once mid-turn.
-  static constexpr int kEmbedWaitS = 35;
+  // Verify and Save make one live embeddings call for the candidate (embed_check.h).
+  // It runs on the engine thread and can take the whole embed timeout (30 s), while
+  // this thread also serves /healthz and every poller and the relay times a request
+  // out at 30 s: so these wait at most kEmbedWaitS, then answer "still checking"
+  // (the call goes on; the next Verify or Save of the same candidate answers from
+  // its result at once). Refused at once mid-turn.
+  static constexpr int kEmbedWaitS = 5;
+  static constexpr const char* kStillChecking = "Still checking this model. Save again in a few seconds.";
+  static constexpr const char* kCheckingOther = "Still checking another model. Try again in a few seconds.";
+
+  // The candidate a verify or save names, or the refusal sentence ("" = valid).
+  std::string embedCandidate(const std::string& body, EmbedCandidate& c) const {
+    c.provider = formValue(body, "provider");
+    c.model = formValue(body, "model");
+    c.dims = atoiOr(formValue(body, "dims"), 0);
+    c.keyGen = rig_->keyGen();
+    return NimbusdRig::embedCfgRefusal(c.provider, c.model, c.dims);
+  }
+
+  // A settled check of `c` in `r`: a fresh result is reused, else ONE live call is
+  // queued on the engine thread and awaited for kEmbedWaitS. False (`r` = the check
+  // still running) when nothing has settled in time.
+  bool checkEmbed(const EmbedCandidate& c, EmbedCheck& r) {
+    const EmbedCheckSlot::Next n = embedCheck_.begin(c, steadyS(), r);
+    if (n != EmbedCheckSlot::Next::Run) return n == EmbedCheckSlot::Next::Settled;
+    // Background work, not a turn: /api/state and the other writes are not held
+    // up as if the assistant were answering while the call runs.
+    auto done = std::make_shared<std::promise<void>>();
+    std::future<void> fut = done->get_future();
+    eng_->postWork([this, c, done] {
+      runEmbedCheck(c);
+      done->set_value();
+    });
+    const bool settled = fut.wait_for(std::chrono::seconds(kEmbedWaitS)) == std::future_status::ready;
+    r = embedCheck_.get();
+    if (!settled || !(r.cand == c) || r.state == EmbedCheck::State::Checking) return false;
+    embedCheck_.markReported();
+    return true;
+  }
+  // The live call (engine thread): the model must answer, and at the width asked
+  // for when one is set (Mistral ignores a requested width; saving one it does not
+  // produce made every later memory write fail).
+  void runEmbedCheck(const EmbedCandidate& c) {
+    std::string err;
+    int width = 0;
+    try {
+      width = (int)rig_->embedWith(NimbusdRig::kEmbedProbeText, err, c.provider, c.model, c.dims).size();
+      if (width > 0 && c.dims > 0 && width != c.dims)
+        err = "That model returns " + std::to_string(width) + " dimensions. Set Dimensions to " +
+              std::to_string(width) + " or 0.";
+      if (width == 0 && err.empty()) err = "no answer";
+    } catch (...) {
+      err = "check failed";
+    }
+    embedCheck_.settle(c, width, err, steadyS());
+  }
+  static int64_t steadyS() {
+    return std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+  }
+  // A check that has not settled: nothing is saved. Verify answers 202 (the page
+  // shows the sentence and saves nothing); Save answers 503, because the page
+  // reads any 2xx as saved.
+  static ApiResp embedNotSettled(const EmbedCheck& r, const EmbedCandidate& c, int status) {
+    JsonDocument d;
+    d["ok"] = false;
+    d["queued"] = true;
+    d["checking"] = true;
+    d["error"] = (r.cand == c) ? kStillChecking : kCheckingOther;
+    std::string out;
+    serializeJson(d, out);
+    return ApiResp{status, "application/json", out};
+  }
 
   // POST embedverify: one REAL embeddings call with a candidate provider/model/dims,
   // saving nothing; the page only saves when it works.
   ApiResp embedVerify(const std::string& body) {
-    const std::string prov = formValue(body, "provider"), model = formValue(body, "model");
-    const int dims = atoiOr(formValue(body, "dims"), 0);
-    auto st = std::make_shared<int>(200);
-    ApiResp r = engineRead([this, prov, model, dims, st]() -> std::string {
-      std::string err;
-      const auto v = rig_->embedWith(NimbusdRig::kEmbedProbeText, err, prov, model, dims);
-      JsonDocument d;
-      d["ok"] = !v.empty();
-      d["dims"] = (int)v.size();
-      if (v.empty()) { d["error"] = err; *st = 400; }
-      std::string out; serializeJson(d, out); return out;
-    }, kEmbedWaitS);
-    if (r.status == 200) r.status = *st;
-    return r;
+    EmbedCandidate c;
+    const std::string why = embedCandidate(body, c);
+    if (!why.empty()) return refuse(why);
+    if (eng_->snapshot().turnInFlight) return busy();
+    EmbedCheck r;
+    if (!checkEmbed(c, r)) return embedNotSettled(r, c, 202);
+    JsonDocument d;
+    d["ok"] = r.state == EmbedCheck::State::Ok;
+    d["dims"] = r.width;
+    if (r.state != EmbedCheck::State::Ok) d["error"] = r.error;
+    std::string out;
+    serializeJson(d, out);
+    return ApiResp{r.state == EmbedCheck::State::Ok ? 200 : 400, "application/json", out};
   }
 
+  // POST embedcfg: saved only at the width the live check read (dims 0 = the
+  // model's own; a set width must be the one the model returns), never on an
+  // unchecked width.
   ApiResp embedCfgPost(const std::string& body) {
-    const std::string prov = formValue(body, "provider"), model = formValue(body, "model");
-    const int dims = atoiOr(formValue(body, "dims"), 0);
+    EmbedCandidate c;
+    const std::string why = embedCandidate(body, c);
+    if (!why.empty()) return refuse(why);
+    if (eng_->snapshot().turnInFlight) return busy();
+    EmbedCheck r;
+    if (!checkEmbed(c, r)) return embedNotSettled(r, c, 503);
+    if (r.state != EmbedCheck::State::Ok)
+      return refuse(r.width > 0 ? r.error : "Couldn't check the model (" + r.error + "). Nothing was saved.");
     const bool reset = formValue(body, "reset") == "1";
+    const int width = r.width;
     auto st = std::make_shared<int>(200);
-    ApiResp r = engineWrite([this, prov, model, dims, reset, st]() -> std::string {
-      const std::string err = rig_->applyEmbedCfg(prov, model, dims, reset, *st);
+    // Posted even if the engine is still finishing the check's work (engineWrite
+    // would answer busy in that instant); mid-turn was refused above.
+    ApiResp out = awaitWrite(eng_->dispatchRead([this, c, width, reset, st]() -> std::string {
+      const std::string err = rig_->applyEmbedCfg(c.provider, c.model, width, reset, *st);
       return err.empty() ? embedCfgJson() : refuse(err).body;
-    }, kEmbedWaitS);
-    if (r.status == 200) r.status = *st;
-    return r;
+    }), kEmbedWaitS);
+    if (out.status == 200) out.status = *st;
+    return out;
   }
 
   ApiResp embedCfgGet() {
@@ -1204,7 +1290,22 @@ class WebApi {
     d["dims"] = rig_->embedWidth();
     d["locked"] = rig_->vectors().size() > 0;
     d["vectors"] = rig_->vectors().size();
+    fillEmbedCheck(d);
     std::string out; serializeJson(d, out); return out;
+  }
+  // The last embedding check, settled or still running (GET /api/mem/embedcfg and
+  // /api/mem/stats), so a check that outlived its request is not lost to the page.
+  void fillEmbedCheck(JsonDocument& d) const {
+    const EmbedCheck r = embedCheck_.get();
+    if (r.state == EmbedCheck::State::None) return;
+    static const char* const kState[] = {"none", "checking", "ok", "failed"};
+    JsonObject o = d["check"].to<JsonObject>();
+    o["state"] = kState[(int)r.state];
+    o["provider"] = r.cand.provider;
+    o["model"] = r.cand.model;
+    o["dims"] = r.cand.dims;
+    o["width"] = r.width;
+    if (!r.error.empty()) o["error"] = r.error;
   }
 
   ApiResp memScratch() {
@@ -1535,6 +1636,7 @@ class WebApi {
   ReplyBuffer* replies_;
   TelegramWeb tg_;   // /api/telegram* + /api/tenant (CUM-459)
   std::string webToken_;
+  EmbedCheckSlot embedCheck_;   // the embedding settings' live check (CUM-540)
 
   // Web chat reply matching (CUM-218). A single slot could track only ONE pending
   // web turn, so a mid-turn rapid tap either dropped a turn or replayed a prior

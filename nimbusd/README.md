@@ -32,6 +32,7 @@ New code lives only in this directory:
 | `src/rig.h` | `NimbusdRig` - the composition, rehydrating all stores on construct and flushing after each turn |
 | `src/router_head.h` | the Cumulo head's view of a router refusal (`RouterTap`) and the honest copy for each kind |
 | `src/hosted_settings.h` | the owner's settings (durable, thread-safe) and the apply-or-refuse rule for every field the web app posts |
+| `src/embed_check.h` | the embedding settings' live check: run on the engine thread, never awaited past 5 s, its result kept for the next Verify or Save |
 | `src/engine_thread.h` | the concurrency layer: one engine thread + request mailbox + a snapshot for lock-free reads |
 | `src/http_control.h` | the 127.0.0.1-only control surface (serves the web app + logo, health, replies, message, MCP, backup; delegates `/api/*` to `WebApi`), web-token gated |
 | `src/web_api.h` | the `/api/*` surface the web app calls, answered with honest Virtual Nimbus semantics (real chat/memory/providers; hardware panels honestly virtual) |
@@ -138,6 +139,21 @@ router route (`/router/openai/v1/embeddings`). `/api/mem/stats` reports
 web app's embedding settings work as on the device: `POST /api/mem/embedverify`
 makes one real call and saves nothing, `POST /api/mem/embedcfg` refuses a model
 switch while memories exist unless the owner erases them (`reset=1`).
+
+That call can take the whole 30 s embed timeout, and one HTTP thread serves every
+request (`/healthz` included), so it runs on the engine thread and Verify and Save
+wait for it at most 5 s (`src/embed_check.h`). Past that, Verify answers `202
+{"ok":false,"checking":true,"error":"Still checking this model. ..."}` and Save
+answers `503` with the same body: nothing is saved, the call goes on, `GET
+/api/mem/embedcfg` and `/api/mem/stats` show it as `check` (`checking`, then `ok`
+with the `width` the model returned, or `failed` with the `error`), and the next
+Verify or Save of the same candidate answers from that result at once. A width is
+saved only as the check read it: Dimensions 0 takes the model's own width, and a
+set width the model does not return (Mistral ignores a requested width) is refused
+with the real one. On start, an empty vector store takes the saved width, and
+vectors of another width than the saved embedding config (a restart inside a model
+switch) are set aside as `vectors.bin.mismatch` so memory starts empty, said in the
+log, instead of comparing vectors that cannot be compared.
 
 ## Settings on a hosted instance (CUM-543)
 
