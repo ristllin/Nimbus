@@ -30,7 +30,10 @@ constexpr uint32_t kCtxDefaultTokens = 100000;
 // Returns the context window (tokens) for a provider/model pair.
 // Matching: exact family prefixes on the known catalogs - "claude-*" 200K,
 // "gpt-5*" 272K, "gpt-6*" and newer 922K, "o<digit>*" 200K, "mistral-*" 128K -
-// else the default.
+// else the default. A router selector ("<upstream>/<model>", what the Cumulo
+// picker stores) and any provider's namespaced id are split by
+// resolveRouterRoute first and read as (upstream, bare model); provider "cumulo"
+// with a bare id reads as the router's default upstream (openai).
 uint32_t modelCtxTokens(const std::string& provider, const std::string& model);
 
 // ---- trigger math ------------------------------------------------------------

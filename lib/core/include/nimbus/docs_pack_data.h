@@ -3409,7 +3409,11 @@ rather than hardcoded: `nimbus::orch::deriveBudget(ctxTokens, overrides)`
 (`lib/core/src/orch_budget.cpp`) turns the window into a system-prompt budget,
 summary cap, verbatim-tail cap, per-tool-result clamp, cumulative tool budget,
 sub-agent brief size and fold-slice size - each a ratio with a floor and a cap.
-The window comes from the existing `modelCtxTokens()` table.
+The window comes from the existing `modelCtxTokens()` table. A Cumulo router
+pick is stored as `<upstream>/<model>` (the model picker saves `openai/gpt-5.6`
+for the default); the table splits it with the same router rule the head uses
+and reads the upstream model's window, so a prefixed pick gets the same budget
+as the bare id.
 
 **Anchor invariant:** at a 200K window the derived values are 32768 / 4096 /
 8192 / 8192 / 65536 / 1200 / 65536 (system prompt / summary / recent tail /

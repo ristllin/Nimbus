@@ -1574,6 +1574,24 @@ static void test_router_key_is_the_head_when_no_byok_key() {
   TEST_ASSERT_EQUAL_STRING("cumulo", r.attempts[0].host.c_str());   // ran on the router
 }
 
+// CUM-530: the Cumulo picker saves the router default as "openai/gpt-5.6". The
+// turn's budget line (the window /api/lastturn and the errlog show) must read the
+// gpt-5.x window, not the 100K default the raw selector used to fall to.
+static void test_cum530_router_selector_head_gets_its_real_window() {
+  for (const char* sel : {"openai/gpt-5.6", "gpt-5.6"}) {
+    Rig r;
+    r.cfg.keyed.clear();
+    r.cfg.routerKeyed = true;
+    r.cfg.routerHost = "cumulo";
+    r.cfg.orchModels["cumulo"] = sel;
+    r.scripts["cumulo"] = {{true, kGoodTurn, "", 0, "c1", 50, 10}};
+    LogCapture::lines().clear();
+    TEST_ASSERT_TRUE(r.eng->runTurn("hello", "1001", "hello"));
+    TEST_ASSERT_TRUE_MESSAGE(LogCapture::contains("budget: ctx=272K"), sel);
+    TEST_ASSERT_FALSE_MESSAGE(LogCapture::contains("budget: ctx=100K"), sel);
+  }
+}
+
 // A keyed BYOK head still WINS over the router key (CUM-201: BYOK-override first).
 // The router key is the SOURCE only when nothing the owner brought is keyed.
 static void test_byok_head_outranks_router_fallback() {
@@ -2003,6 +2021,7 @@ int main(int, char**) {
   RUN_TEST(test_cum486_advertised_models_equal_spawnable_for_every_slot);
   RUN_TEST(test_cum486_router_only_devices_advertise_their_models);
   RUN_TEST(test_cum485_prev_reply_code_reaches_the_next_tool_loop_turn);
+  RUN_TEST(test_cum530_router_selector_head_gets_its_real_window);
   RUN_TEST(test_cum495_zai_prose_reply_is_delivered_not_apologized);
   RUN_TEST(test_cum495_every_head_delivers_prose_and_fenced_turns);
   RUN_TEST(test_cum495_turn_followed_by_more_text_never_acts);

@@ -39,6 +39,49 @@ static void test_ctx_table_every_gpt_generation_is_known() {
   }
 }
 
+// CUM-530: the Cumulo picker stores every pick as a router selector
+// ("<upstream>/<id>"; re-picking the default stores "openai/gpt-5.6"). The window
+// lookup resolves it through the ONE router rule (resolveRouterRoute) and reads
+// the upstream's window for the bare id: the prefixed default fell to the 100K
+// default, a 2.7x smaller recent window and compaction at a third of the window.
+static void test_ctx_router_selectors_resolve_to_the_upstream_window() {
+  TEST_ASSERT_EQUAL_UINT32(272000, modelCtxTokens("cumulo", "openai/gpt-5.6"));
+  TEST_ASSERT_EQUAL_UINT32(200000, modelCtxTokens("cumulo", "anthropic/claude-opus-5"));
+  TEST_ASSERT_EQUAL_UINT32(922000, modelCtxTokens("cumulo", "openai/gpt-6-astra"));
+  TEST_ASSERT_EQUAL_UINT32(128000, modelCtxTokens("cumulo", "mistral/mistral-large-latest"));
+  TEST_ASSERT_EQUAL_UINT32(272000, modelCtxTokens("cumulo", "OpenAI/GPT-5.6"));   // case-insensitive
+  // The bare spelling keeps the router's default upstream (openai): unchanged.
+  TEST_ASSERT_EQUAL_UINT32(272000, modelCtxTokens("cumulo", "gpt-5.6"));
+  TEST_ASSERT_EQUAL_UINT32(128000, modelCtxTokens("cumulo", "gpt-4o"));
+  // Any provider's "<upstream>/<model>" id reads the upstream's family window too
+  // (a namespaced id on a compatible endpoint); an unknown family stays default.
+  TEST_ASSERT_EQUAL_UINT32(200000, modelCtxTokens("custom", "anthropic/claude-sonnet-5"));
+  TEST_ASSERT_EQUAL_UINT32(kCtxDefaultTokens, modelCtxTokens("custom", "meta-llama/llama-3-70b"));
+  // A leading '/' is not an upstream marker (the router rule's own semantics).
+  TEST_ASSERT_EQUAL_UINT32(kCtxDefaultTokens, modelCtxTokens("custom", "/gpt-5.6"));
+}
+
+// The class: whatever (upstream, model) the router serves, the selector's window
+// equals the direct upstream's window for the bare id, and a bare id on the router
+// equals the default upstream's. A new family added to the table is covered here
+// with no per-selector edit.
+static void test_ctx_router_selector_class() {
+  struct Pick { const char* up; const char* id; };
+  static const Pick kPicks[] = {
+      {"openai", "gpt-5.6"},          {"openai", "gpt-5.6-terra"},   {"openai", "gpt-6-astra"},
+      {"openai", "gpt-4o-mini"},      {"openai", "o4-mini"},         {"anthropic", "claude-opus-5"},
+      {"anthropic", "claude-haiku-4-5"}, {"mistral", "mistral-large-latest"},
+      {"mistral", "mistral-small-2"}, {"zai", "glm-5.3"},            {"zai", "glm-4.5-flash"},
+  };
+  for (const Pick& k : kPicks) {
+    const std::string sel = std::string(k.up) + "/" + k.id;
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(modelCtxTokens(k.up, k.id), modelCtxTokens("cumulo", sel),
+                                     sel.c_str());
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(modelCtxTokens("openai", k.id), modelCtxTokens("cumulo", k.id),
+                                     k.id);
+  }
+}
+
 static void test_ctx_table_unknown_is_conservative() {
   // Unknown family -> the conservative default (compacts EARLY, never late).
   TEST_ASSERT_EQUAL_UINT32(kCtxDefaultTokens, modelCtxTokens("custom", "llama-3-70b"));
@@ -313,6 +356,8 @@ int main(int, char**) {
   RUN_TEST(test_ctx_table_families);
   RUN_TEST(test_ctx_table_every_gpt_generation_is_known);
   RUN_TEST(test_ctx_table_unknown_is_conservative);
+  RUN_TEST(test_ctx_router_selectors_resolve_to_the_upstream_window);
+  RUN_TEST(test_ctx_router_selector_class);
   RUN_TEST(test_threshold_window_math);
   RUN_TEST(test_threshold_floors);
   RUN_TEST(test_should_compact);

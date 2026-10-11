@@ -5,6 +5,7 @@
 
 #include "nimbus/mem_cap.h"   // utf8CapLen - every re-injected cap must be UTF-8-safe
 #include "nimbus/orch/model_catalog.h"  // gptGeneration - the one gpt-<N> parser
+#include "nimbus/orch/router_route.h"   // resolveRouterRoute - the one selector split
 
 namespace nimbus {
 namespace orch {
@@ -18,11 +19,9 @@ std::string lower(const std::string& s) {
                  [](unsigned char c) { return (char)std::tolower(c); });
   return o;
 }
-}  // namespace
 
-uint32_t modelCtxTokens(const std::string& provider, const std::string& model) {
-  const std::string m = lower(model);
-  const std::string p = lower(provider);
+// The family table proper, on a lowercased (provider, bare model) pair.
+uint32_t familyCtxTokens(const std::string& p, const std::string& m) {
   // Family prefixes over exact ids: a new snapshot ("claude-sonnet-4-7") gets its
   // family's window without a table edit; a genuinely unknown family compacts
   // early on the conservative default, never late.
@@ -39,6 +38,24 @@ uint32_t modelCtxTokens(const std::string& provider, const std::string& model) {
   if (m.size() >= 2 && m[0] == 'o' && m[1] >= '1' && m[1] <= '9') return 200000;
   if (p == "mistral" || startsWith(m, "mistral-")) return 128000;
   return kCtxDefaultTokens;
+}
+}  // namespace
+
+uint32_t modelCtxTokens(const std::string& provider, const std::string& model) {
+  const std::string m = lower(model);
+  const std::string p = lower(provider);
+  // CUM-530: a router selector names its upstream ("openai/gpt-5.6" is what the
+  // Cumulo picker stores, even for the default). Split it with the ONE router
+  // rule and read the upstream's window for the bare id; matching the raw
+  // selector dropped the router head to the 100K default. A bare id on the router
+  // keeps the default upstream (openai), so "gpt-5.6" reads exactly as before.
+  // Any provider's "<upstream>/<model>" id resolves the same way.
+  const std::string::size_type slash = m.find('/');
+  if (p == "cumulo" || (slash != std::string::npos && slash > 0)) {
+    const RouterRoute r = resolveRouterRoute(m);
+    return familyCtxTokens(r.upstream, r.model);
+  }
+  return familyCtxTokens(p, m);
 }
 
 uint32_t compactThreshold(uint32_t ctxTokens, uint32_t reservedOutTokens,
