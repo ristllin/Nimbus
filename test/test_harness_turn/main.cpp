@@ -1087,6 +1087,20 @@ static void test_stuck_turn_reaper() {
   TEST_ASSERT_FALSE(r.eng->turnInFlight());
 }
 
+// A head reply that is wholly a JSON array is wire data: the owner gets the
+// honest formatting apology, never the raw array, and nothing is applied.
+static void test_cum495_json_array_reply_is_never_shown_raw() {
+  Rig r;
+  r.cfg.keyed = {"zai"};
+  r.cfg.routerHost = "zai";
+  r.scripts["zai"] = {{true, "[{\"reply\":\"x\",\"device\":[{\"type\":\"reboot\"}]}]", "", 0}};
+  r.eng->handleMessage("hi", "Omar", "web");
+  TEST_ASSERT_FALSE(r.anyDelivered("["));
+  TEST_ASSERT_EQUAL(0, (int)r.staged.size());
+  TEST_ASSERT_EQUAL_STRING("I hit a formatting error composing that reply - please resend.",
+                           r.lastText().c_str());
+}
+
 // prism (logic lens): a ladder of LIVE attempts (Z.ai head request up to 120 s,
 // its same-host retry, then a failover) can outlast "loop deadline + 120 s" in
 // total. Each attempt re-arms the reaper, so it never reaps a turn that is still
@@ -1578,6 +1592,7 @@ int main(int, char**) {
   RUN_TEST(test_cum495_every_head_delivers_prose_and_fenced_turns);
   RUN_TEST(test_cum495_turn_followed_by_more_text_never_acts);
   RUN_TEST(test_reaper_spares_a_live_retry_and_failover_ladder);
+  RUN_TEST(test_cum495_json_array_reply_is_never_shown_raw);
   RUN_TEST(test_head_host_is_the_host_the_turn_runs_on);
   RUN_TEST(test_scheduled_turn_rails_and_fire_outcome);
   RUN_TEST(test_once_wakeup_gets_wakeup_preamble_not_recurring);

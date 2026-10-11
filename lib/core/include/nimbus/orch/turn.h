@@ -178,7 +178,8 @@ enum class ReplyShape {
 //     a reply that only STARTS with an object is never executed as a turn.
 //   - Unusable: the reply opens like a JSON object (a brace, or a fence whose
 //     first content line starts with one) and is not a Turn - truncated, broken,
-//     not a turn, or a turn-shaped object followed by more text. The caller's
+//     not a turn, or a turn-shaped object followed by more text - or the whole
+//     reply is one JSON array. The caller's
 //     salvage keeps reply/ask only (see leadingJsonObject); raw wire JSON never
 //     reaches a person and nothing in it is executed.
 //   - Prose: anything else, including a reply that opens with a JSON example that

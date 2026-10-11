@@ -43,8 +43,8 @@ channel:
 ignored, malformed items are dropped individually, string caps are applied on
 copy. The engine reads every head reply through `parseHeadReply`: a reply that
 IS one JSON object (bare, or the whole reply in one fence) is the turn; a reply
-that opens like JSON but is not a turn goes to the salvage path, so raw wire
-JSON never reaches a person; any other reply is prose and is delivered as the
+that opens like JSON but is not a turn (or is wholly a JSON array) goes to the
+salvage path, so raw wire JSON never reaches a person; any other reply is prose and is delivered as the
 reply alone - prose (even prose quoting JSON) never becomes device actions,
 memory writes or spawns. And the portable device-action validator
 (`orch_device_actions.cpp`) re-checks EVERY device action - including the

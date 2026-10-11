@@ -653,6 +653,22 @@ static void test_head_reply_turn_followed_by_more_text_never_acts() {
     TEST_ASSERT_EQUAL_MESSAGE(int(ReplyShape::Prose), int(parseHeadReply(b, t, e)), b);
     TEST_ASSERT_EQUAL_STRING(b, t.reply.c_str());
   }
+  // A reply that is WHOLLY a JSON array is wire data, not prose: never shown raw.
+  for (const char* b : {R"([{"reply":"x","device":[{"type":"reboot"}]}])",
+                        "```json\n[1, {\"a\": \"]\"}]\n```"}) {
+    Turn t;
+    ParseError e;
+    TEST_ASSERT_EQUAL_MESSAGE(int(ReplyShape::Unusable), int(parseHeadReply(b, t, e)), b);
+    TEST_ASSERT_EQUAL(0u, t.device.size());
+  }
+  // ...while prose that only starts with a bracket stays prose.
+  for (const char* b : {"[1] Apostolaki et al. (2024) used AMS 14C dating.",
+                        "[the docs](https://docs.cumulo-nimbus.ai) explain it.",
+                        "[1, 2] are the two cores I mean."}) {
+    Turn t;
+    ParseError e;
+    TEST_ASSERT_EQUAL_MESSAGE(int(ReplyShape::Prose), int(parseHeadReply(b, t, e)), b);
+  }
   // A brace inside a JSON string never closes the object early.
   bool whole = false;
   const std::string obj = leadingJsonObject("{\"reply\":\"a } b \\\" { c\"}", &whole);

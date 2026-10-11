@@ -273,9 +273,12 @@ bool parseTurn(const std::string& json, Turn& out, ParseError& err) {
 namespace {
 const char kSpace[] = " \t\r\n";
 
-// Index of the '}' that closes the JSON object opening at s[b] (a '{'), skipping
-// string contents and escapes; npos when it never closes (truncated reply).
+// Index of the bracket that closes the JSON object or array opening at s[b] (a
+// '{' or '['), skipping string contents and escapes; npos when it never closes
+// (a truncated reply). Only the opening kind is counted - enough for JSON, where
+// the other kind always nests balanced inside.
 size_t objectEnd(const std::string& s, size_t b) {
+  const char open = s[b], close = open == '{' ? '}' : ']';
   int depth = 0;
   bool inString = false;
   for (size_t i = b; i < s.size(); ++i) {
@@ -286,8 +289,8 @@ size_t objectEnd(const std::string& s, size_t b) {
       continue;
     }
     if (c == '"') inString = true;
-    else if (c == '{') ++depth;
-    else if (c == '}' && --depth == 0) return i;
+    else if (c == open) ++depth;
+    else if (c == close && --depth == 0) return i;
   }
   return std::string::npos;
 }
@@ -327,6 +330,20 @@ ReplyShape prose(const std::string& text, Turn& out, ParseError& err) {
   return ReplyShape::Prose;
 }
 
+// Whether the WHOLE reply is one JSON array (bare or one whole fence): wire data
+// that is not a turn - never shown to a person as prose (the base apologized for
+// it too). A reply that merely starts with "[" (a citation, a Markdown link) is
+// prose: the array must close exactly at the end and parse.
+bool wholeJsonArray(const std::string& text) {
+  bool fenced = false;
+  const size_t b = leadingObjectStart(text, fenced);
+  if (b == std::string::npos || text[b] != '[') return false;
+  const size_t e = objectEnd(text, b);
+  if (e == std::string::npos || !spansWholeReply(text, e, fenced)) return false;
+  JsonDocument d;
+  return !deserializeJson(d, text.substr(b, e - b + 1)) && d.is<JsonArrayConst>();
+}
+
 ReplyShape unusable(Turn& out, ParseError& err, const char* why) {
   out = Turn{};
   if (err.ok()) {
@@ -354,7 +371,9 @@ ReplyShape parseHeadReply(const std::string& text, Turn& out, ParseError& err) {
     return unusable(out, err, "empty reply");
   bool fenced = false;
   const size_t ob = leadingObjectStart(text, fenced);
-  if (ob == std::string::npos || text[ob] != '{') return prose(text, out, err);
+  if (ob == std::string::npos || text[ob] != '{')
+    return wholeJsonArray(text) ? unusable(out, err, "a JSON array, not a turn")
+                                : prose(text, out, err);
   bool whole = false;
   const std::string obj = leadingJsonObject(text, &whole);
   if (obj.empty()) return unusable(out, err, "truncated JSON object");

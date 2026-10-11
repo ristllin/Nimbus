@@ -137,7 +137,8 @@ Built by `dream::buildConversationWindow` (`lib/harness/src/dream.cpp`) and fitt
 by `assembleContext` (`lib/core/src/orch_world.cpp`):
 
 - **Budget.** `ContextBudget::recentConvBytes`, derived from the head model's
-  context window: a quarter of the system-prompt budget (8 KB at a 200K head,
+  context window: a quarter of the derived system-prompt budget (an owner
+  override of the prompt budget does not change it; 8 KB at a 200K head,
   ~11 KB at a 272K head, capped at 16 KB, never below 3000 B). The text lives in
   PSRAM (the episodic ring and the rendered block), so the binding limit is the
   prompt, not memory.
