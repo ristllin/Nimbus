@@ -43,8 +43,8 @@ channel:
 ignored, malformed items are dropped individually, string caps are applied on
 copy. The engine reads every head reply through `parseHeadReply`: a reply that
 IS one JSON object (bare, or the whole reply in one fence) is the turn; a reply
-that opens like JSON but is not a turn (or is wholly a JSON array) goes to the
-salvage path, so raw wire JSON never reaches a person; any other reply is prose and is delivered as the
+that opens like JSON but is not a turn (or is wholly a JSON array, or an array
+of objects cut off before it closes) goes to the salvage path, so raw wire JSON never reaches a person; any other reply is prose and is delivered as the
 reply alone - prose (even prose quoting JSON) never becomes device actions,
 memory writes or spawns. And the portable device-action validator
 (`orch_device_actions.cpp`) re-checks EVERY device action - including the
@@ -84,8 +84,8 @@ tool calls (typically `memory_write`) in the same response as its final
 delivered, then discards that premature reply - it was written before the
 results existed - and the next round hands the results back, so the answer the
 owner gets can only claim saves (or use data) it actually saw. On the forced
-final round (tools withdrawn) such calls are not run. The OpenAI and Mistral
-steps surface every sibling call, before or after `orch_turn`.
+final round (tools withdrawn) such calls are not run. The OpenAI, Mistral and
+Anthropic steps surface every sibling call, before or after `orch_turn`.
 
 Each renderer speaks its provider's dialect from the same record:
 

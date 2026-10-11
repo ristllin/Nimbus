@@ -1101,6 +1101,20 @@ static void test_cum495_json_array_reply_is_never_shown_raw() {
                            r.lastText().c_str());
 }
 
+// Gate W2 #19: the same array cut by the head's output cap (Z.ai json_object mode
+// sets no max_tokens) is never delivered raw as prose either.
+static void test_truncated_json_array_reply_is_never_shown_raw() {
+  Rig r;
+  r.cfg.keyed = {"zai"};
+  r.cfg.routerHost = "zai";
+  r.scripts["zai"] = {{true, "[{\"reply\":\"x\"},{\"re", "", 0}};
+  r.eng->handleMessage("hi", "Omar", "web");
+  TEST_ASSERT_FALSE(r.anyDelivered("["));
+  TEST_ASSERT_EQUAL(0, (int)r.staged.size());
+  TEST_ASSERT_EQUAL_STRING("I hit a formatting error composing that reply - please resend.",
+                           r.lastText().c_str());
+}
+
 // prism (logic lens): a ladder of LIVE attempts (Z.ai head request up to 120 s,
 // its same-host retry, then a failover) can outlast "loop deadline + 120 s" in
 // total. Each attempt re-arms the reaper, so it never reaps a turn that is still
@@ -1593,6 +1607,7 @@ int main(int, char**) {
   RUN_TEST(test_cum495_turn_followed_by_more_text_never_acts);
   RUN_TEST(test_reaper_spares_a_live_retry_and_failover_ladder);
   RUN_TEST(test_cum495_json_array_reply_is_never_shown_raw);
+  RUN_TEST(test_truncated_json_array_reply_is_never_shown_raw);
   RUN_TEST(test_head_host_is_the_host_the_turn_runs_on);
   RUN_TEST(test_scheduled_turn_rails_and_fire_outcome);
   RUN_TEST(test_once_wakeup_gets_wakeup_preamble_not_recurring);

@@ -880,9 +880,14 @@ nimbus::orch::HeadStepFn antLoopStep(const ProviderDeps& pd,
       const char* nm = c["name"] | "";
       std::string args; serializeJson(c["input"], args);
       if (!strcmp(nm, "orch_turn")) {
-        out.finished  = true;
-        out.finalTurn = args;
-        return out;   // terminal - no echo needed, the loop ends here
+        // CUM-526 (the CUM-506 class): keep scanning - tool_use blocks batched
+        // AFTER the final orch_turn are side effects too (the controller runs
+        // them before accepting a final answer); the first orch_turn wins.
+        if (!out.finished) {
+          out.finished  = true;
+          out.finalTurn = args;
+        }
+        continue;
       }
       orch::HeadToolCall call;
       call.id       = c["id"] | "";
@@ -890,6 +895,9 @@ nimbus::orch::HeadStepFn antLoopStep(const ProviderDeps& pd,
       call.argsJson = (args.length() && args != "null") ? args : "{}";
       out.toolCalls.push_back(call);
     }
+    // Finished: the turn (plus any siblings) goes to the controller. No echo
+    // needed - the transcript records the siblings and their results.
+    if (out.finished) return out;
     if (out.toolCalls.empty()) {
       // Text-only round. Distinguish a real stall from max_tokens truncation (the
       // single-shot path surfaces this too) - a truncated round must NOT be echoed

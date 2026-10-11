@@ -344,6 +344,19 @@ bool wholeJsonArray(const std::string& text) {
   return !deserializeJson(d, text.substr(b, e - b + 1)) && d.is<JsonArrayConst>();
 }
 
+// Whether the reply opens a JSON array of objects ("[{", bare or fenced) that
+// never closes: a wire reply cut by the provider's output cap. Never prose - the
+// raw partial array would reach the owner (gate W2 #19). Prose that merely starts
+// with "[" ("[1] ...", "[the docs](...)") is not "[{"-shaped and stays prose.
+bool truncatedJsonArray(const std::string& text) {
+  bool fenced = false;
+  const size_t b = leadingObjectStart(text, fenced);
+  if (b == std::string::npos || text[b] != '[') return false;
+  const size_t first = text.find_first_not_of(kSpace, b + 1);
+  return first != std::string::npos && text[first] == '{' &&
+         objectEnd(text, b) == std::string::npos;
+}
+
 ReplyShape unusable(Turn& out, ParseError& err, const char* why) {
   out = Turn{};
   if (err.ok()) {
@@ -371,9 +384,11 @@ ReplyShape parseHeadReply(const std::string& text, Turn& out, ParseError& err) {
     return unusable(out, err, "empty reply");
   bool fenced = false;
   const size_t ob = leadingObjectStart(text, fenced);
-  if (ob == std::string::npos || text[ob] != '{')
-    return wholeJsonArray(text) ? unusable(out, err, "a JSON array, not a turn")
-                                : prose(text, out, err);
+  if (ob == std::string::npos || text[ob] != '{') {
+    if (wholeJsonArray(text)) return unusable(out, err, "a JSON array, not a turn");
+    if (truncatedJsonArray(text)) return unusable(out, err, "truncated JSON array");
+    return prose(text, out, err);
+  }
   bool whole = false;
   const std::string obj = leadingJsonObject(text, &whole);
   if (obj.empty()) return unusable(out, err, "truncated JSON object");

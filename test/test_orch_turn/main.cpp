@@ -661,8 +661,20 @@ static void test_head_reply_turn_followed_by_more_text_never_acts() {
     TEST_ASSERT_EQUAL_MESSAGE(int(ReplyShape::Unusable), int(parseHeadReply(b, t, e)), b);
     TEST_ASSERT_EQUAL(0u, t.device.size());
   }
+  // Gate W2 #19: an array of objects cut by the output cap is wire data too - the
+  // apology path, never the raw partial JSON as prose.
+  for (const char* b : {"[{\"reply\":\"x\"},{\"re",
+                        "[{\"content\":\"fact 1\"},{\"content\":\"fa",
+                        "  [ {\"reply\":\"a ] b\"", "```json\n[{\"reply\":\"x\"},{\"re"}) {
+    Turn t;
+    ParseError e;
+    TEST_ASSERT_EQUAL_MESSAGE(int(ReplyShape::Unusable), int(parseHeadReply(b, t, e)), b);
+    TEST_ASSERT_EQUAL_STRING("", t.reply.c_str());
+    TEST_ASSERT_EQUAL_STRING("truncated JSON array", e.detail.c_str());
+  }
   // ...while prose that only starts with a bracket stays prose.
-  for (const char* b : {"[1] Apostolaki et al. (2024) used AMS 14C dating.",
+  for (const char* b : {"[Note: the 2024 cores were not dated yet",
+                        "[1] Apostolaki et al. (2024) used AMS 14C dating.",
                         "[the docs](https://docs.cumulo-nimbus.ai) explain it.",
                         "[1, 2] are the two cores I mean."}) {
     Turn t;
