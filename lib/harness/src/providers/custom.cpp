@@ -37,6 +37,8 @@ static const uint32_t CUST_TIMEOUT_MS = 30000;
 // the engine's same-host retry burned another 30 s, and the turn failed over.
 // 120 s matches the OpenAI and Anthropic head ceilings (OAI_TIMEOUT_MS /
 // ANT_TIMEOUT_MS); the stuck-turn reaper (loop deadline + 120 s) still bounds it.
+// A head with its own budget (pd.customHeadTimeoutMs - the Z.ai heads, CUM-544)
+// uses that instead.
 static const uint32_t CUST_HEAD_TIMEOUT_MS = 120000;
 static const char* kAnthropicVer = "2023-06-01";   // mirrors agent_config.h ANTHROPIC_VER
 
@@ -72,7 +74,8 @@ static bool parseBase(const std::string& base, std::string& host, int& port, boo
 static int custRequest(const ProviderDeps& pd, const char* method, const std::string& path,
                        std::string body, bool anthropicAuth,
                        JsonDocument& doc, const JsonDocument& filter,
-                       uint32_t timeoutMs = CUST_TIMEOUT_MS) {
+                       uint32_t timeoutMs = CUST_TIMEOUT_MS,
+                       std::string* transportErr = nullptr) {
   doc.clear();
   std::string host; int port; bool http;
   if (!parseBase(s(pd.customBase), host, port, http)) return 0;
@@ -101,7 +104,8 @@ static int custRequest(const ProviderDeps& pd, const char* method, const std::st
     fullPath = (path.rfind("/v1", 0) == 0) ? prefix + path.substr(3) : prefix + path;
   }
   return exchange(pd, host.c_str(), (uint16_t)port, !http, method, fullPath,
-                  std::move(headers), std::move(body), timeoutMs, doc, filter);
+                  std::move(headers), std::move(body), timeoutMs, doc, filter,
+                  /*rateLimitHeaders=*/nullptr, transportErr);
 }
 
 FabricErr customDispatch(const ProviderDeps& pd, const Directive& d, char outJobId[72]) {
@@ -207,6 +211,10 @@ static bool customHeadBody(const ProviderDeps& pd, const std::string& instructio
                        "- no prose, no code fences.";
   JsonObject u = msgs.add<JsonObject>();
   u["role"] = "user"; u["content"] = inputs;
+  // CUM-544: a bounded reasoning effort rides EVERY attempt (the 400 retry too:
+  // dropping it would put an always-reasoning model back on the slow path).
+  const std::string effort = s(pd.customReasoningEffort);
+  if (!effort.empty()) d["reasoning_effort"] = effort;
   if (fmt == HeadFormat::Object) d["response_format"]["type"] = "json_object";
   if (fmt == HeadFormat::Schema) {
     JsonObject rf = d["response_format"].to<JsonObject>();
@@ -257,7 +265,9 @@ bool orchTurnCustom(const ProviderDeps& pd, std::string& convId,
   JsonDocument doc = wire::makeDoc(pd);  // response doc -> PSRAM (retained turn content)
   const HeadFormat first = (pd.customJsonMode && pd.customJsonMode() == "object")
                                ? HeadFormat::Object : HeadFormat::Schema;
+  const uint32_t timeoutMs = pd.customHeadTimeoutMs ? pd.customHeadTimeoutMs : CUST_HEAD_TIMEOUT_MS;
   int code = 0;
+  std::string terr;
   for (int attempt = 0; attempt < 2; ++attempt) {
     const bool withFormat = (attempt == 0);
     std::string body;
@@ -266,7 +276,7 @@ bool orchTurnCustom(const ProviderDeps& pd, std::string& convId,
       return false;
     }
     code = custRequest(pd, "POST", "/v1/chat/completions", std::move(body),
-                       /*anthropicAuth=*/false, doc, filter, CUST_HEAD_TIMEOUT_MS);
+                       /*anthropicAuth=*/false, doc, filter, timeoutMs, &terr);
     if (code == 400 && withFormat) {
       // Schema-incapable backend: drop response_format and lean on the nudge +
       // the engine's tolerant parser.
@@ -275,7 +285,19 @@ bool orchTurnCustom(const ProviderDeps& pd, std::string& convId,
     }
     break;
   }
-  if (code <= 0)   { err = "network"; return false; }
+  if (code <= 0) {
+    // CUM-544: "no response" = the request went out and nothing came back inside
+    // the budget (or the provider's gateway gave up first). That is model latency,
+    // not a dead link: say so, so the engine fails over without a same-host retry
+    // and the owner hears the real reason. Connect/write failures stay "network".
+    // (No byte counts or other digits ride the token: the engine's error
+    // classifier keys on substrings like "401" and "503".)
+    err = (terr.find("no response") != std::string::npos)
+              ? "timeout: the provider did not answer in time"
+              : "network";
+    hlog::logf("orchTurn(custom): %s (%u s budget)", err.c_str(), (unsigned)(timeoutMs / 1000));
+    return false;
+  }
   if (code != 200) {
     err = "chat HTTP " + std::to_string(code);
     const char* em = doc["error"]["message"] | "";
@@ -291,6 +313,33 @@ bool orchTurnCustom(const ProviderDeps& pd, std::string& convId,
   if (outJson.empty()) { err = "no message content"; return false; }
   convId = "chat";   // stateless host: marker keeps per-host conv bookkeeping happy
   return true;
+}
+
+// ---- Z.ai (GLM) wire policy (CUM-544) ---------------------------------------
+
+const char* reasoningEffortFor(const std::string& upstream) {
+  return upstream == "zai" ? kZaiReasoningEffort : "";
+}
+
+void applyZaiHeadPolicy(ProviderDeps& pd) {
+  // CUM-495: Z.ai answers 200 but IGNORES response_format json_schema; json_object
+  // + the JSON-only nudge returns valid orch_turns.
+  pd.customJsonMode        = [] { return std::string("object"); };
+  pd.customReasoningEffort = [] { return std::string(kZaiReasoningEffort); };
+  pd.customHeadTimeoutMs   = kZaiHeadTimeoutMs;
+}
+
+void configureRouterCompatHead(ProviderDeps& pd, const std::string& upstream,
+                               const std::string& model) {
+  pd.customBase       = pd.routerBase;
+  pd.customPathPrefix = [upstream] { return std::string("/router/") + upstream; };
+  pd.customKey        = pd.routerKey;
+  pd.customConv       = [] { return std::string("openai"); };
+  pd.customModel      = [model] { return model; };
+  // Every upstream on this path gets json_object: GLM behind the router ignores
+  // json_schema exactly like direct Z.ai, and json_object is the portable mode.
+  pd.customJsonMode   = [] { return std::string("object"); };
+  if (upstream == "zai") applyZaiHeadPolicy(pd);
 }
 
 }  // namespace providers

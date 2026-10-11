@@ -787,7 +787,13 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
                *loopDispatched);
   if (!ok && isLowMem(err))
     hlog::logf("orchestrator: low-memory turn failure - skipping retry/failover (%s)", err.c_str());
-  if (!ok && !fabricOn && *loopDispatched == 0 && !isLowMem(err)) {   // one same-host retry on a fresh conversation
+  // CUM-544: a TIMEOUT is model latency, not a dead link - the same prompt on the
+  // same host times out again (Z.ai: 2 x 120 s, then failover at 268 s). Fail over
+  // straight away; a transient network error still gets its one same-host retry.
+  const bool timedOut = !ok && classifyErr(err) == orch::ErrorClass::Timeout;
+  if (timedOut && !fabricOn && *loopDispatched == 0)
+    hlog::logf("orchestrator: %s did not answer in time - failing over without a retry", host.c_str());
+  if (!ok && !fabricOn && *loopDispatched == 0 && !isLowMem(err) && !timedOut) {   // one same-host retry on a fresh conversation
     hlog::logf("orchestrator: turn err (%s) -> fresh conv retry", err.c_str());
     if (d_.platform.delayMs) d_.platform.delayMs(400);
     // Each attempt re-arms the stuck-turn reaper: it exists to spot a DEAD turn
@@ -803,7 +809,11 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       if (ok || tried >= 2) break;
       tried++;
       hlog::logf("orchestrator: %s down -> failover to %s", host.c_str(), fb.c_str());
-      deliver(chatId, std::string("\xE2\x9A\xA0\xEF\xB8\x8F ") + host + " is unavailable - switching to " +
+      // The notice names the real reason: a provider that did not answer in time
+      // is not "unavailable" (CUM-544).
+      deliver(chatId, std::string("\xE2\x9A\xA0\xEF\xB8\x8F ") + host +
+              (ec == orch::ErrorClass::Timeout ? " did not answer in time - switching to "
+                                               : " is unavailable - switching to ") +
               fb + " (your recent messages carry over; the provider-side thread restarts).");
       // Record the switch as a model-facing context note for the next turn.
       pendingFallbackNote_ = orch::fallbackNote(host, "", fb, "", ec);
@@ -853,6 +863,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       return false;
     }
     if (err.empty())                              cause = "the provider gave no response";
+    else if (has("timeout"))                      cause = "the provider did not answer in time";
     else if (has("key"))                          cause = "no working provider key (check Assistant > Models on the web page)";
     else if (has("network"))                      cause = "the provider could not be reached (check the connection)";
     else if (has("HTTP 401") || has("HTTP 403")) cause = "the provider rejected this device's key";

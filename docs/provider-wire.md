@@ -200,7 +200,10 @@ per-host loops could not carry a turn across providers.)
 
 1. A failed turn retries ONCE on the same host with a fresh conversation
    (transient TLS/handshake flakes), then walks up to two keyed alternates from
-   `providerPriority`, notifying the owner at each switch.
+   `providerPriority`, notifying the owner at each switch. A provider that
+   did not answer in time is not retried: the same prompt would time out
+   again, so the turn fails over at once and the notice says it did not
+   answer in time.
 2. **Both steps are skipped entirely if ANY tool executed during the failed
    attempt** - replaying a turn re-runs its side effects (a memory write, a
    spawn, a message). The owner gets an honest error instead.
@@ -245,6 +248,14 @@ sub-agent runs one synchronous `POST /api/paas/v4/chat/completions` and its repl
 is read from `choices[0].message.content`. Paste the key into the Z.ai row's
 **API key** field under Assistant > Models > Providers & keys and select
 **Save & Verify**; leave the endpoint to the probe.
+
+GLM always reasons before it answers (Z.ai refuses `thinking: disabled`), and
+Z.ai's gateway closes a request that has not answered after about 60 s. So every
+Z.ai request the device makes (the head, direct or through the Cumulo router's
+`zai` upstream, and every Z.ai sub-agent) carries `reasoning_effort: "low"`.
+A head request gets 50 s; if Z.ai has not answered by then, the turn fails over
+to the next provider straight away (no same-host retry) and the notice says Z.ai
+did not answer in time.
 
 ## Cumulo Nimbus router
 
@@ -338,8 +349,8 @@ Notes, all deliberate:
 - The head speaks single-shot chat-completions with the strict orch_turn
   JSON schema (schema-less retry on 400); there is no mid-turn tool loop on
   the custom backend. A head request may take up to 120 s (the same ceiling
-  as the OpenAI and Anthropic heads; the Z.ai head shares this path and GLM
-  regularly needs 40-50 s); a sub-agent request times out at 30 s.
+  as the OpenAI and Anthropic heads; the Z.ai head shares this path with its
+  own 50 s budget, see Z.ai above); a sub-agent request times out at 30 s.
 - Firmware before v4.1.6 needs "Switch providers mid-task if one fails"
   (`midFail`) turned off while the head runs on the custom endpoint; those
   builds routed loop turns into the cloud-only fabric and failed before sending

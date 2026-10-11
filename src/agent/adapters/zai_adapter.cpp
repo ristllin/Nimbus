@@ -24,6 +24,7 @@ FabricErr ZaiAdapter::dispatch(const Directive& d, char outJobId[72]) {
   ep.key = std::string(store::zaiKey().c_str());
   ep.model = std::string(model.c_str());
   ep.backendTag = "zai";
+  ep.reasoningEffort = providers::reasoningEffortFor("zai");   // CUM-544: bounded GLM reasoning
   return providers::openaiCompatDispatch(deviceProviderDeps(), ep, d, outJobId);
 }
 

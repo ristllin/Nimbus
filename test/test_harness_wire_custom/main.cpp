@@ -6,6 +6,7 @@
 #include "../support/fake_provider_deps.h"
 #include "nimbus/harness/providers.h"
 #include "nimbus/harness/rate_limit.h"
+#include "nimbus/orch/provider_slots.h"   // CUM-544: the effort rule over every slot
 
 // Stage H wire suite - the custom/proxy provider: base-URL parsing (http/https,
 // port), the keyless-on-http rule (R_CUST_keyless), the per-convention
@@ -384,6 +385,142 @@ static void test_head_json_object_mode() {
   TEST_ASSERT_TRUE(bodyHas(f, 1, "Respond with ONLY the JSON object"));
 }
 
+// ---- CUM-544: the Z.ai wire policy ------------------------------------------
+// Bench (nimbus-light, 2026-10-11): glm-5.3 always reasons, the device sent no
+// reasoning_effort, Z.ai's gateway dropped the request at ~60 s, the device
+// waited 2 x 120 s and failed over at 268 s. Live replay of the device body:
+// no answer at 61.0 s without the field, 200 in 13.5 s with "low".
+
+static std::string zaiOkBody() {
+  return chatBody("{\\\"reply\\\":\\\"ok\\\"}");
+}
+
+// The direct Z.ai head: every attempt (the 400 retry too) carries the bounded
+// effort and the 50 s budget, plus json_object on the first attempt.
+static void test_cum544_zai_head_sends_low_effort_and_50s_budget() {
+  FakeProviderDeps d;
+  d.custBase = "https://api.z.ai";
+  d.custPathPrefix = "/api/paas/v4";
+  d.custKey = "zai_x";
+  d.http.script.push_back({"", "", 400, "{\"error\":{\"message\":\"unsupported\"}}"});
+  d.http.script.push_back({"", "", 200, zaiOkBody()});
+  auto pd = d.contract();
+  providers::applyZaiHeadPolicy(pd);
+  std::string conv, out, err;
+  TEST_ASSERT_TRUE_MESSAGE(providers::orchTurnCustom(pd, conv, "S", "U", out, err, nullptr, nullptr),
+                           err.c_str());
+  TEST_ASSERT_EQUAL(2, (int)d.http.seen.size());
+  for (size_t i = 0; i < d.http.seen.size(); ++i) {
+    TEST_ASSERT_TRUE(bodyHas(d, i, "\"reasoning_effort\":\"low\""));
+    TEST_ASSERT_EQUAL_UINT32(providers::kZaiHeadTimeoutMs, d.http.seen[i].timeoutMs);
+  }
+  TEST_ASSERT_TRUE(bodyHas(d, 0, "\"response_format\":{\"type\":\"json_object\"}"));
+  TEST_ASSERT_FALSE(bodyHas(d, 1, "response_format"));
+  // "Well under 90 s": one attempt's budget sits under Z.ai's ~60 s gateway cut.
+  TEST_ASSERT_TRUE(providers::kZaiHeadTimeoutMs < 60000u);
+}
+
+// The Cumulo router's zai upstream gets the SAME policy through the portable
+// helper the device head calls - and only zai: another upstream on this path keeps
+// json_object with no effort field and the default head budget.
+static void test_cum544_router_zai_head_gets_the_same_policy() {
+  FakeProviderDeps d;
+  harness_test::Exchange e;
+  e.expectHost = "app.cumulo-nimbus.ai";
+  e.expectPathContains = "/router/zai/chat/completions";   // no /v1 on the zai upstream
+  e.status = 200; e.body = zaiOkBody();
+  d.http.script.push_back(e);
+  auto pd = d.contract();
+  pd.routerBase = [] { return std::string("https://app.cumulo-nimbus.ai"); };
+  pd.routerKey  = [] { return std::string("cumulo_sk_test"); };
+  providers::configureRouterCompatHead(pd, "zai", "glm-5.3");
+  std::string conv, out, err;
+  TEST_ASSERT_TRUE_MESSAGE(providers::orchTurnCustom(pd, conv, "S", "U", out, err, nullptr, nullptr),
+                           err.c_str());
+  TEST_ASSERT_TRUE(bodyHas(d, 0, "\"reasoning_effort\":\"low\""));
+  TEST_ASSERT_TRUE(bodyHas(d, 0, "\"model\":\"glm-5.3\""));
+  TEST_ASSERT_TRUE(bodyHas(d, 0, "\"response_format\":{\"type\":\"json_object\"}"));
+  TEST_ASSERT_EQUAL_STRING("Bearer cumulo_sk_test",
+                           headerOf(d.http.seen[0], "Authorization").c_str());
+  TEST_ASSERT_EQUAL_UINT32(providers::kZaiHeadTimeoutMs, d.http.seen[0].timeoutMs);
+
+  FakeProviderDeps o;   // a non-zai upstream on the same path: no effort, default budget
+  o.http.script.push_back({"", "/router/groq/chat/completions", 200, zaiOkBody()});
+  auto opd = o.contract();
+  opd.routerBase = pd.routerBase;
+  opd.routerKey  = pd.routerKey;
+  providers::configureRouterCompatHead(opd, "groq", "llama-x");
+  TEST_ASSERT_TRUE(providers::orchTurnCustom(opd, conv, "S", "U", out, err, nullptr, nullptr));
+  TEST_ASSERT_FALSE(bodyHas(o, 0, "reasoning_effort"));
+  TEST_ASSERT_TRUE(bodyHas(o, 0, "json_object"));
+  TEST_ASSERT_EQUAL_UINT32(120000u, o.http.seen[0].timeoutMs);
+}
+
+// A LAN/custom head never sends the field (no policy applied = byte-identical).
+static void test_cum544_custom_head_sends_no_effort() {
+  FakeProviderDeps d;
+  d.custBase = "http://10.0.0.2:11434";
+  d.http.script.push_back({"", "", 200, zaiOkBody()});
+  auto pd = d.contract();
+  std::string conv, out, err;
+  TEST_ASSERT_TRUE(providers::orchTurnCustom(pd, conv, "S", "U", out, err, nullptr, nullptr));
+  TEST_ASSERT_FALSE(bodyHas(d, 0, "reasoning_effort"));
+}
+
+// The class: the effort rule names exactly one provider. Every other slot (and
+// the custom endpoint) gets no field, so a new provider never inherits GLM's knob.
+static void test_cum544_effort_rule_is_zai_only() {
+  TEST_ASSERT_EQUAL_STRING("low", providers::reasoningEffortFor("zai"));
+  for (const auto& slot : nimbus::orch::kProviderSlots) {
+    if (std::string(slot.slug) == "zai") continue;
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("", providers::reasoningEffortFor(slot.slug), slot.slug);
+  }
+  TEST_ASSERT_EQUAL_STRING("", providers::reasoningEffortFor("custom"));
+}
+
+// A canned slow provider: the request went out and nothing came back inside the
+// budget ("no response"). The head reports a TIMEOUT - the token the engine reads
+// to fail over without a same-host retry and to name the real reason - after ONE
+// request (the 400 retry is for a refused format, never for silence). A
+// connect failure stays "network" (the counter-test in the dimension the new
+// branch reads).
+static void test_cum544_no_answer_is_a_timeout_not_network() {
+  FakeProviderDeps d;
+  d.custBase = "https://api.z.ai";
+  d.custPathPrefix = "/api/paas/v4";
+  harness_test::Exchange slow;
+  slow.status = 0;
+  slow.err = "no response";
+  d.http.script.push_back(slow);
+  auto pd = d.contract();
+  providers::applyZaiHeadPolicy(pd);
+  std::string conv, out, err;
+  TEST_ASSERT_FALSE(providers::orchTurnCustom(pd, conv, "S", "U", out, err, nullptr, nullptr));
+  TEST_ASSERT_EQUAL(1, (int)d.http.seen.size());
+  TEST_ASSERT_EQUAL_STRING("timeout: the provider did not answer in time", err.c_str());
+  TEST_ASSERT_TRUE(LogCapture::contains("orchTurn(custom): timeout"));
+
+  FakeProviderDeps c;
+  c.custBase = "https://api.z.ai";
+  harness_test::Exchange down;
+  down.status = 0;
+  down.err = "connect failed";
+  c.http.script.push_back(down);
+  auto cpd = c.contract();
+  providers::applyZaiHeadPolicy(cpd);
+  TEST_ASSERT_FALSE(providers::orchTurnCustom(cpd, conv, "S", "U", out, err, nullptr, nullptr));
+  TEST_ASSERT_EQUAL_STRING("network", err.c_str());
+
+  // An empty 200 (all reasoning, no content) is NOT a timeout either.
+  FakeProviderDeps e;
+  e.custBase = "https://api.z.ai";
+  e.http.script.push_back({"", "", 200, "{\"choices\":[{\"message\":{\"content\":\"\"}}]}"});
+  auto epd = e.contract();
+  providers::applyZaiHeadPolicy(epd);
+  TEST_ASSERT_FALSE(providers::orchTurnCustom(epd, conv, "S", "U", out, err, nullptr, nullptr));
+  TEST_ASSERT_EQUAL_STRING("no message content", err.c_str());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_keyless_on_http);
@@ -399,6 +536,11 @@ int main(int, char**) {
   RUN_TEST(test_head_mistral_error_envelope);
   RUN_TEST(test_head_timeout_is_the_head_budget_not_30s);
   RUN_TEST(test_head_json_object_mode);
+  RUN_TEST(test_cum544_zai_head_sends_low_effort_and_50s_budget);
+  RUN_TEST(test_cum544_router_zai_head_gets_the_same_policy);
+  RUN_TEST(test_cum544_custom_head_sends_no_effort);
+  RUN_TEST(test_cum544_effort_rule_is_zai_only);
+  RUN_TEST(test_cum544_no_answer_is_a_timeout_not_network);
   UNITY_END();
   return 0;
 }

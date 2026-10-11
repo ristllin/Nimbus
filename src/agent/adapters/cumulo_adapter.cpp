@@ -45,6 +45,9 @@ FabricErr CumuloAdapter::dispatch(const Directive& d, char outJobId[72]) {
   // everyone else chat-completions.
   ep.wire = (route.upstream == "anthropic") ? providers::CompatWire::AnthropicMessages
                                             : providers::CompatWire::OpenAIChat;
+  // CUM-544: a router zai sub-agent carries the same bounded reasoning effort as
+  // a direct Z.ai one (the router forwards the body to Z.ai as-is).
+  ep.reasoningEffort = providers::reasoningEffortFor(route.upstream);
   return providers::openaiCompatDispatch(deviceProviderDeps(), ep, d, outJobId);
 }
 

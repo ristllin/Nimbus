@@ -529,6 +529,63 @@ static void test_failover_walks_priority_with_owner_notice() {
   TEST_ASSERT_EQUAL_STRING("openai", r.cfg.recorded[0].host.c_str());
 }
 
+// ---- CUM-544: a timeout fails over at once, and the notice says why ---------
+// Bench (nimbus-light): the Z.ai head timed out, the engine retried the same host
+// on a fresh conversation (another full timeout), then failed over at 268 s with
+// "zai is unavailable". A timeout is model latency: no same-host retry, and the
+// owner hears "did not answer in time".
+static void test_cum544_timeout_fails_over_without_same_host_retry() {
+  Rig r;
+  r.cfg.keyed = {"zai", "openai"};
+  r.cfg.orchHost = "zai";
+  r.cfg.priority = "openai";
+  r.scripts["zai"] = {{false, "", "timeout: the provider did not answer in time", 0, "", 0, 0}};
+  r.eng->runTurn("inputs", "1001", "");
+  TEST_ASSERT_EQUAL(2, (int)r.attempts.size());   // zai once, then openai - no retry
+  TEST_ASSERT_EQUAL_STRING("zai", r.attempts[0].host.c_str());
+  TEST_ASSERT_EQUAL_STRING("openai", r.attempts[1].host.c_str());
+  TEST_ASSERT_EQUAL(0, (int)r.plat.delays.size());   // no 400 ms same-host retry pause
+  TEST_ASSERT_TRUE(LogCapture::contains(
+      "orchestrator: zai did not answer in time - failing over without a retry"));
+  TEST_ASSERT_FALSE(LogCapture::contains("fresh conv retry"));
+  TEST_ASSERT_TRUE(r.anyDelivered(
+      "\xE2\x9A\xA0\xEF\xB8\x8F zai did not answer in time - switching to openai "
+      "(your recent messages carry over; the provider-side thread restarts)."));
+  TEST_ASSERT_FALSE(r.anyDelivered("is unavailable"));
+  TEST_ASSERT_FALSE(r.anyDelivered("formatting error"));
+  TEST_ASSERT_EQUAL_STRING("hello there", r.lastText().c_str());
+}
+
+// Every provider times out: the final line names the real cause, never the
+// connection. Counter-test: a plain network error keeps its one same-host retry
+// (test_same_host_fresh_conv_retry) - only the Timeout class skips it.
+static void test_cum544_all_timeouts_say_no_answer_in_time() {
+  Rig r;
+  r.cfg.keyed = {"zai", "openai"};
+  r.cfg.orchHost = "zai";
+  r.cfg.priority = "openai";
+  const Rig::Script slow{false, "", "timeout: the provider did not answer in time", 0, "", 0, 0};
+  r.scripts["zai"] = {slow};
+  r.scripts["openai"] = {slow};
+  TEST_ASSERT_FALSE(r.eng->runTurn("inputs", "1001", ""));
+  TEST_ASSERT_EQUAL(2, (int)r.attempts.size());
+  TEST_ASSERT_EQUAL_STRING(
+      "That didn't finish - the provider did not answer in time. Nothing is still running; "
+      "ask again to retry.",
+      r.lastText().c_str());
+  TEST_ASSERT_FALSE(r.anyDelivered("check the connection"));
+
+  Rig n;   // the counter-test, same rig shape: "network" still retries same-host once
+  n.cfg.keyed = {"zai", "openai"};
+  n.cfg.orchHost = "zai";
+  n.cfg.priority = "openai";
+  n.scripts["zai"] = {{false, "", "network", 0, "", 0, 0}};
+  n.eng->runTurn("inputs", "1001", "");
+  TEST_ASSERT_EQUAL(3, (int)n.attempts.size());   // zai, zai (retry), openai
+  TEST_ASSERT_EQUAL_STRING("zai", n.attempts[1].host.c_str());
+  TEST_ASSERT_TRUE(n.anyDelivered("zai is unavailable - switching to openai"));
+}
+
 // ---- (5) NO retry after a tool dispatched -----------------------------------
 
 static void test_no_retry_after_tool_dispatched() {
@@ -1699,6 +1756,8 @@ int main(int, char**) {
   RUN_TEST(test_recall_injected_for_user_text_skipped_for_synthesis);
   RUN_TEST(test_same_host_fresh_conv_retry);
   RUN_TEST(test_failover_walks_priority_with_owner_notice);
+  RUN_TEST(test_cum544_timeout_fails_over_without_same_host_retry);
+  RUN_TEST(test_cum544_all_timeouts_say_no_answer_in_time);
   RUN_TEST(test_no_retry_after_tool_dispatched);
   RUN_TEST(test_rate_limit_reply_names_the_window);
   RUN_TEST(test_budget_failover_and_exhausted_refusal);

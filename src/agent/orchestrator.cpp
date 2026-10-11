@@ -1290,15 +1290,11 @@ static TurnEngine::Deps buildTurnDeps() {
     // zai / unknown upstream: single-shot chat-completions over /router/<upstream>
     // (NOT rr.basePath - the zai upstream path carries no /v1, unlike the fabric
     // upstreams; custRequest maps "/v1/chat/completions" to prefix + "/chat/...").
-    pd.customBase       = pd.routerBase;
-    pd.customPathPrefix = [upstream] { return std::string("/router/") + upstream; };
-    pd.customKey        = [] { return std::string(store::cumuloKey().c_str()); };
-    pd.customConv       = [] { return std::string("openai"); };
-    pd.customModel      = [model] { return model; };
-    // Every upstream on this path (zai, and any other the native fabric does not
-    // drive) gets json_object: GLM behind the router ignores json_schema exactly
-    // like direct Z.ai (CUM-495), and json_object is the portable JSON mode.
-    pd.customJsonMode   = [] { return std::string("object"); };
+    // json_object for every such upstream (GLM behind the router ignores
+    // json_schema exactly like direct Z.ai, CUM-495), and for zai the same bounded
+    // reasoning effort + 50 s budget as the direct Z.ai head (CUM-544) - one
+    // portable helper, host-tested, so the two Z.ai paths cannot drift.
+    providers::configureRouterCompatHead(pd, upstream, model);
     return providers::orchTurnCustom(pd, cv, ins, inp, out, err, tools, usage);
   });
   d.hosts.add("zai", [](std::string& cv, const std::string& ins, const std::string& inp,
@@ -1312,10 +1308,11 @@ static TurnEngine::Deps buildTurnDeps() {
     pd.customConv       = [] { return std::string("openai"); };
     pd.customModel      = [] { String m = store::orchModel("zai");
                                return std::string((m.length() ? m : String(ZAI_MODEL)).c_str()); };
-    // CUM-495: Z.ai answers 200 but IGNORES response_format json_schema (prose
-    // came back on 2 of 2 live turns); json_object + the JSON-only nudge returned
-    // valid orch_turns. A prose reply still reaches the owner (parseHeadReply).
-    pd.customJsonMode   = [] { return std::string("object"); };
+    // CUM-495: Z.ai answers 200 but IGNORES response_format json_schema, so
+    // json_object + the JSON-only nudge (a prose reply still reaches the owner via
+    // parseHeadReply). CUM-544: GLM always reasons; reasoning_effort "low" + the
+    // 50 s budget keep a substantive turn inside Z.ai's ~60 s gateway cut.
+    providers::applyZaiHeadPolicy(pd);
     return providers::orchTurnCustom(pd, cv, ins, inp, out, err, tools, usage);
   });
   return d;

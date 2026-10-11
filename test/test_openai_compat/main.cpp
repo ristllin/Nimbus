@@ -125,12 +125,41 @@ static void test_429_names_the_window() {
   }
 }
 
+// CUM-544: a Z.ai sub-agent (direct, or the router's zai upstream) carries the
+// same bounded reasoning effort as the Z.ai head - the effort the adapters set from
+// reasoningEffortFor(). Other endpoints send no field.
+static void test_cum544_zai_sub_carries_low_effort() {
+  FakeProviderDeps rig;
+  rig.http.script.push_back({"", "", 200, "{\"choices\":[{\"message\":{\"content\":\"ok\"}}]}"});
+  rig.http.script.push_back({"", "", 200, "{\"choices\":[{\"message\":{\"content\":\"ok\"}}]}"});
+  agent::providers::ProviderDeps pd = rig.contract();
+  CompatEndpoint ep;
+  ep.host = "api.z.ai";
+  ep.basePath = "/api/paas/v4";
+  ep.model = "glm-5.3";
+  ep.backendTag = "zai";
+  ep.reasoningEffort = agent::providers::reasoningEffortFor("zai");
+  char jobId[72] = {};
+  TEST_ASSERT_TRUE(openaiCompatDispatch(pd, ep, makeDirective(), jobId) == agent::FabricErr::Ok);
+  TEST_ASSERT_TRUE(rig.http.seen[0].body.find("\"reasoning_effort\":\"low\"") != std::string::npos);
+
+  CompatEndpoint oai;   // a router openai upstream: no field
+  oai.host = "app.cumulo-nimbus.ai";
+  oai.basePath = "/router/openai/v1";
+  oai.model = "gpt-5.6";
+  oai.backendTag = "cumulo";
+  oai.reasoningEffort = agent::providers::reasoningEffortFor("openai");
+  TEST_ASSERT_TRUE(openaiCompatDispatch(pd, oai, makeDirective(), jobId) == agent::FabricErr::Ok);
+  TEST_ASSERT_TRUE(rig.http.seen[1].body.find("reasoning_effort") == std::string::npos);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_openai_wire_hits_chat_completions);
   RUN_TEST(test_anthropic_wire_hits_messages_not_chat);
   RUN_TEST(test_error_mapping);
   RUN_TEST(test_429_names_the_window);
+  RUN_TEST(test_cum544_zai_sub_carries_low_effort);
   UNITY_END();
   return 0;
 }

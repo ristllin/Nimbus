@@ -27,13 +27,19 @@ namespace wire {
 // `rateLimitHeaders` (optional): on an error response, the provider's
 // x-ratelimit-* headers land there (see HttpRequest::errHeaders) - the quota
 // window a 429 refused on.
+// `transportErr` (optional): on a transport failure (status 0) the transport's own
+// reason lands there ("no response", "connect failed", "request body truncated
+// ..."), so a caller can tell a provider that never answered from one it never
+// reached (CUM-544).
 inline int exchange(const ProviderDeps& pd, const char* host, uint16_t port, bool tls,
                     const char* method, const std::string& path,
                     std::vector<std::pair<std::string, std::string>> headers,
                     std::string body, uint32_t timeoutMs,
                     JsonDocument& doc, const JsonDocument& filter,
-                    HeaderList* rateLimitHeaders = nullptr) {
+                    HeaderList* rateLimitHeaders = nullptr,
+                    std::string* transportErr = nullptr) {
   doc.clear();
+  if (transportErr) transportErr->clear();
   if (!pd.http) return 0;
   HttpRequest req;
   req.method = method;
@@ -54,6 +60,7 @@ inline int exchange(const ProviderDeps& pd, const char* host, uint16_t port, boo
   // filter-retained fields land in `doc`. Empty/garbage bodies leave doc cleared.
   std::string terr;
   int status = pd.http->execJson(req, doc, filter, terr);
+  if (status == 0 && transportErr) *transportErr = terr;
   if (status == 0 && !terr.empty())
     hlog::logf("provider: transport fail %s%s: %s", host, path.c_str(), terr.c_str());
   // A response that arrived but did not parse leaves `doc` holding whatever was

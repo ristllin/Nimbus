@@ -74,6 +74,15 @@ struct ProviderDeps {
   // for backends that answer 200 but IGNORE json_schema (Z.ai GLM answered in
   // Markdown, 2 of 2 live turns, while json_object returned valid turns - CUM-495).
   std::function<std::string()> customJsonMode;
+  // Optional reasoning effort for the custom HEAD body (orchTurnCustom). Non-empty
+  // = "reasoning_effort":"<value>" on every attempt; unset/"" = no field (LAN and
+  // custom endpoints, byte-identical). CUM-544: Z.ai GLM always reasons and
+  // cannot switch it off, and with no bound it out-thinks Z.ai's ~60 s gateway cut
+  // on a substantive turn (glm-5.3 replay: no answer at 61 s; "low": 13.5 s).
+  std::function<std::string()> customReasoningEffort;
+  // Optional per-request budget for the custom HEAD in ms; 0 = the 120 s head
+  // default (CUST_HEAD_TIMEOUT_MS). The Z.ai heads set kZaiHeadTimeoutMs.
+  uint32_t customHeadTimeoutMs = 0;
 
   // Cumulo router HEAD override (CUM-242 tool loop). When routerBase() is
   // non-empty, the three native head-turn wire helpers (antRequest / the OpenAI
@@ -181,15 +190,42 @@ std::string mistralCallId(const std::string& id);
 // when the backend accepts it, or json_object when pd.customJsonMode says so;
 // on a 400 it retries once schema-less with a JSON-only nudge, leaning on the
 // engine's lenient parseHeadReply + salvage). Each request may take up to the
-// head budget (120 s, same as the OpenAI/Anthropic heads) - the Z.ai head shares
-// this path, and GLM regularly needs more than 30 s.
+// head budget: pd.customHeadTimeoutMs, else 120 s (the OpenAI/Anthropic ceiling).
+// The Z.ai heads share this path with their own 50 s budget (kZaiHeadTimeoutMs).
 // v1 has NO tool loop (tools ignored); customConv "anthropic" is refused (the
 // head speaks chat-completions only). Registered in orchestrator.cpp ONLY when
 // store::hasCustom().
+// A request that reached the provider but got no answer inside the budget fails
+// with err "timeout: ..." (the engine reads it as a Timeout - no same-host retry,
+// an honest "did not answer in time" notice); any other transport failure is
+// "network".
 bool orchTurnCustom(const ProviderDeps& pd, std::string& convId,
                     const std::string& instructions, const std::string& inputs,
                     std::string& outJson, std::string& err,
                     const HeadTools* tools, nimbus::orch::TokenUsage* usage);
+
+// ---- Z.ai (GLM) wire policy (CUM-544) ---------------------------------------
+// ONE place for every Z.ai request path: the direct BYOK head, the Cumulo
+// router's zai upstream head, and both sub-agent dispatches. GLM always reasons;
+// "low" bounds it (the owner has no effort knob - none exists to reuse, and NVS
+// keys are frozen). The head budget sits under Z.ai's ~60 s gateway cut, and a
+// timeout fails over without a same-host retry, so an owner waits about 50 s
+// before the fallback provider answers - never the old 2 x 120 s.
+inline constexpr const char* kZaiReasoningEffort = "low";
+inline constexpr uint32_t    kZaiHeadTimeoutMs   = 50000;
+// The reasoning effort a request to this upstream/backend must carry ("" = none).
+// "zai" -> kZaiReasoningEffort; every other name -> "".
+const char* reasoningEffortFor(const std::string& upstream);
+// Apply the Z.ai head policy to a pd already pointed at a Z.ai endpoint:
+// json_object mode (CUM-495), kZaiReasoningEffort, kZaiHeadTimeoutMs.
+void applyZaiHeadPolicy(ProviderDeps& pd);
+// Point pd at the Cumulo router's single-shot chat-completions head for an
+// upstream the native fabric does not drive (zai, or any unknown name):
+// base = pd.routerBase(), path prefix "/router/<upstream>" (no /v1 - the zai
+// upstream path has none), key = pd.routerKey(), convention openai, json_object
+// mode, the given bare model, and the Z.ai policy when upstream is "zai".
+void configureRouterCompatHead(ProviderDeps& pd, const std::string& upstream,
+                               const std::string& model);
 
 // ---- sub-session dispatch/poll/cancel/answer --------------------------------
 // Anthropic Managed Agents (cloud sandbox sessions; env/agent cached via the
@@ -255,6 +291,9 @@ struct CompatEndpoint {
   std::string model;
   const char* backendTag = "compat";  // jobId prefix + adapter route key
   CompatWire  wire = CompatWire::OpenAIChat;
+  // "" = no field; else "reasoning_effort":"<value>" on the chat-completions body
+  // (the Z.ai sub-agents: reasoningEffortFor("zai"), CUM-544).
+  std::string reasoningEffort;
 };
 FabricErr openaiCompatDispatch(const ProviderDeps& pd, const CompatEndpoint& ep,
                                const Directive& d, char outJobId[72]);
