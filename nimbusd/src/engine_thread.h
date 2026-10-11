@@ -38,6 +38,8 @@ struct StateSnapshot {
   int      episodicMessages = 0;
   uint32_t sessionTokensIn = 0;
   uint32_t sessionTokensOut = 0;
+  uint32_t lastTokensIn = 0;     // the most recent turn's billed tokens
+  uint32_t lastTokensOut = 0;
   bool     providerConfigured = false;  // any provider key present (CUM-211 honest state)
   std::string lastHost;
   bool        lastFallback = false;     // served-by of the most recent turn (CUM-236)
@@ -254,11 +256,16 @@ class EngineThread {
   void refreshSnapshot() {
     StateSnapshot s;
     s.running = running_.load();
-    s.turnCount = rig_->engine().turnCount();
+    // Session totals across engine rebuilds (a key or model save rebuilds the engine
+    // and used to zero these, CUM-546).
+    s.turnCount = rig_->turnCount();
     s.vectors = rig_->vectors().size();
     s.episodicMessages = rig_->episodic().messageCount();
-    s.sessionTokensIn = rig_->engine().sessionUsage().promptTokens;
-    s.sessionTokensOut = rig_->engine().sessionUsage().completionTokens;
+    const nimbus::orch::TokenUsage su = rig_->sessionUsage();
+    s.sessionTokensIn = su.promptTokens;
+    s.sessionTokensOut = su.completionTokens;
+    s.lastTokensIn = rig_->lastTurnUsage().promptTokens;
+    s.lastTokensOut = rig_->lastTurnUsage().completionTokens;
     s.providerConfigured = rig_->anyProviderConfigured();
     // Served-by of the most recent turn (CUM-236). Read on the engine thread (the
     // only writer, via the onTurnEnd hook) and published under snapMu_, so the HTTP

@@ -72,6 +72,7 @@ class WebApi {
            tryConnectors(method, base, body, out) ||
            tryTelegram(method, base, body, out) ||
            tryStatic(method, base, path, out) ||
+           tryInsight(method, base, path, out) ||
            tryFiles(method, base, path, body, out) ||
            tryStubs(method, base, out) ||
            tryHardware(base, out);
@@ -146,7 +147,7 @@ class WebApi {
     if (base == "/api/voices" && m == "GET")      { out = okJson("[]");     return true; }
     if (base == "/api/token/regen" && m == "POST"){ out = tokenRegen();     return true; }
     if (base == "/api/usage/history" && m == "GET") { out = usageHistory(); return true; }
-    if (base == "/api/models" && m == "GET")      { out = modelsResp(path); return true; }
+
     return false;
   }
 
@@ -170,6 +171,34 @@ class WebApi {
       return true;
     }
     return tryStubsExtra(get, base, out);
+  }
+
+  // Read-only insight surfaces: the model catalog (CUM-545) and the diagnostics.
+  bool tryInsight(const std::string& m, const std::string& base, const std::string& path, ApiResp& out) {
+    if (m != "GET") return false;
+    if (base == "/api/models") { out = modelsResp(path); return true; }
+    return tryDiagnostics(base, path, out);
+  }
+
+  // ---- diagnostics (CUM-546): the device's turn anatomy and logs -------------
+  // /api/lastturn: the last turn's prompt, input and raw output (it carries memories
+  // and the directive, so it is token-gated like every /api/* route); /api/log: the
+  // bounded engine log; /api/errlog/recent: its failure lines (?bytes=, <= 64 KB).
+  bool tryDiagnostics(const std::string& base, const std::string& path, ApiResp& out) {
+    static const char* kText = "text/plain; charset=utf-8";
+    if (base == "/api/lastturn") {
+      const std::string t = rig_->lastTurnAnatomy();
+      out = t.empty() ? ApiResp{404, kText, "no turn has run yet"} : ApiResp{200, kText, t};
+      return true;
+    }
+    if (base == "/api/log") { out = ApiResp{200, kText, NimbusdRig::logTail(64 * 1024, false)}; return true; }
+    if (base == "/api/errlog/recent") {
+      int bytes = atoiOr(queryParam(path, "bytes"), 4096);
+      bytes = std::min(std::max(bytes, 256), 64 * 1024);
+      out = ApiResp{200, kText, NimbusdRig::logTail((size_t)bytes, true)};
+      return true;
+    }
+    return false;
   }
 
   // ---- files (CUM-543): the device's /api/files/* over the instance disk ------
@@ -640,6 +669,8 @@ class WebApi {
     u["sessIn"] = s.sessionTokensIn;
     u["sessOut"] = s.sessionTokensOut;
     u["turns"] = s.turnCount;
+    u["lastIn"] = s.lastTokensIn;
+    u["lastOut"] = s.lastTokensOut;
     u["byProvider"].to<JsonArray>();
     d["jobs"].to<JsonArray>();
     std::string out;

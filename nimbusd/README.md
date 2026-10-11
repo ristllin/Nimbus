@@ -244,6 +244,7 @@ every forwarded request, so the browser reaches all of these through the tunnel.
 | `GET /api/themes`, `/api/qr`, `/api/docs/search` | pure/static surfaces (no engine, no hardware) |
 | hardware panels (`/api/audio/*`, `/api/wifi`, `/api/ota/*`, ...) | honest "not on a hosted instance" - never a faked value or a dead control |
 | `POST /mcp`, `GET /backup` | JSON-RPC to the tool registry / a consistent tar of the mem tree |
+| `GET /api/lastturn`, `/api/log`, `/api/errlog/recent?bytes=` | the last turn's anatomy (prompt, input, raw output, tool rounds), the bounded engine log (1000 lines), and its failure lines (device diagnostics, CUM-546). `/api/orch` usage (`sessIn`/`sessOut`/`turns`, `lastIn`/`lastOut`) and `/api/state` `turnCount` keep counting across a key or model save |
 | `GET/POST /api/connectors` | the connector registry (device contract); each configured entry carries the derived `auth` the badge reads |
 | `GET /api/connectors/catalog` | the model-facing `[PROVIDERS & CONNECTORS]` block exactly as the next turn gets it (text) |
 | `POST /api/verify` | verifies a keyed provider in the background the device's way (one unmetered read of its model list; the router's `GET /router/models` for Cumulo): `GET /api/orch` then reports `verify` 1 / 0 / -1 with `vfyReason` (`nocredits`, `router_outdated`), and the harvested list is the model picker's catalog. Also run at start and after a key save; a turn that answered on a head marks it verified. `provider=mistral` also re-runs the workspace probe |

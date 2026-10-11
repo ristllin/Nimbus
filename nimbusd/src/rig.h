@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cstring>
 #include <ctime>
+#include <deque>
 #include <memory>
 #include <map>
 #include <mutex>
@@ -306,6 +307,15 @@ class NimbusdRig {
   }
 
   agent::TurnEngine& engine() { return *eng_; }
+  // Session usage since the process started, across engine rebuilds (CUM-546).
+  // Engine thread (the snapshot publishes them for the HTTP thread).
+  orch::TokenUsage sessionUsage() const {
+    orch::TokenUsage u = carriedUsage_;
+    u += eng_->sessionUsage();
+    return u;
+  }
+  uint32_t turnCount() const { return carriedTurns_ + eng_->turnCount(); }
+  orch::TokenUsage lastTurnUsage() const { return lastUsage_; }
   orch::ToolRegistry& registry() { return reg_; }
   orch::VectorMemory& vectors() { return vec_; }
   orch::Scratchpad& scratchpad() { return scratch_; }
@@ -819,26 +829,86 @@ class NimbusdRig {
   orch::Principal principal() const { return orch::principalForRole("owner", role()); }
 
   // ---- harness log capture (the degraded scenario asserts on these) --------
-  static const std::vector<std::string>& harnessLog() { return logLines(); }
+  // A BOUNDED ring (CUM-546): it used to be an unbounded vector that grew for the
+  // life of the daemon. Thread-safe: the engine thread writes, GET /api/log reads.
+  static std::vector<std::string> harnessLog() {
+    std::lock_guard<std::mutex> lk(logMu());
+    return std::vector<std::string>(logLines().begin(), logLines().end());
+  }
   static bool loggedContaining(const char* needle) {
+    std::lock_guard<std::mutex> lk(logMu());
     for (const auto& l : logLines())
       if (l.find(needle) != std::string::npos) return true;
     return false;
   }
+  // The log tail as text (newest last), at most `maxBytes`; `failuresOnly` keeps
+  // the lines that record a failure (the hosted /api/errlog/recent).
+  static std::string logTail(size_t maxBytes, bool failuresOnly) {
+    std::lock_guard<std::mutex> lk(logMu());
+    std::string out;
+    for (auto it = logLines().rbegin(); it != logLines().rend(); ++it) {
+      if (failuresOnly && !isFailureLine(*it)) continue;
+      if (out.size() + it->size() + 1 > maxBytes) break;
+      out.insert(0, *it + "\n");
+    }
+    return out;
+  }
+  static bool isFailureLine(const std::string& l) {
+    for (const char* k : {"fail", "FAIL", "error", "refused", "HTTP 4", "HTTP 5", "rejected", "timed out"})
+      if (l.find(k) != std::string::npos) return true;
+    return false;
+  }
+  // The most recent turn's anatomy (device /api/lastturn): what the model got and
+  // what it answered. "" before the first turn.
+  std::string lastTurnAnatomy() const {
+    std::lock_guard<std::mutex> lk(diagMu_);
+    return lastTurn_;
+  }
 
  private:
-  static std::vector<std::string>& logLines() {
-    static std::vector<std::string> v;
+  static constexpr size_t kLogLinesMax = 1000;
+  static std::deque<std::string>& logLines() {
+    static std::deque<std::string> v;
     return v;
   }
+  static std::mutex& logMu() {
+    static std::mutex m;
+    return m;
+  }
   static void installLog(bool echo) {
-    logLines().clear();
+    {
+      std::lock_guard<std::mutex> lk(logMu());
+      logLines().clear();
+    }
     static bool s_echo = false;
     s_echo = echo;
     agent::hlog::setSink(+[](const char* l) {
-      logLines().push_back(l);
+      {
+        std::lock_guard<std::mutex> lk(logMu());
+        logLines().push_back(l);
+        while (logLines().size() > kLogLinesMax) logLines().pop_front();
+      }
       if (s_echo) std::fprintf(stderr, "[harness] %s\n", l);
     });
+  }
+
+  // Build the /api/lastturn page from the engine's introspection hook (device
+  // captureTurnDebug shape), capped so a huge prompt cannot grow it without bound.
+  void captureTurn(const agent::TurnDebugEv& ev) {
+    static constexpr size_t kCap = 256 * 1024;
+    std::string t = "===== NIMBUS TURN ANATOMY - the last completed turn =====\nhost: " + ev.host +
+                    "\nprovider conversation: " + (ev.convContinued ? "CONTINUED" : "FRESH") +
+                    "\nresult: " + (ev.ok ? "ok" : "FAILED") +
+                    "\n\n===== 1. INSTRUCTIONS - the system prompt sent this turn =====\n" +
+                    (ev.instructions ? hostedPrompt(*ev.instructions) : std::string()) +
+                    "\n\n===== 2. INPUT - the per-turn input block =====\n" +
+                    (ev.inputs ? *ev.inputs : std::string()) +
+                    "\n\n===== 3. OUTPUT - the raw model output =====\n" + (ev.rawOut ? *ev.rawOut : std::string());
+    if (ev.transcriptBrief && !ev.transcriptBrief->empty())
+      t += "\n\n===== 4. TOOL LOOP - the mid-turn rounds =====\n" + *ev.transcriptBrief;
+    if (t.size() > kCap) t.resize(kCap);
+    std::lock_guard<std::mutex> lk(diagMu_);
+    lastTurn_ = std::move(t);
   }
 
   static uint32_t nowHours() {
@@ -1370,8 +1440,8 @@ class NimbusdRig {
     const std::string fallback = cumuloFallbackFor(picked, kind);
     if (rf.firstRequest && !fallback.empty()) {
       if (kind == RefusalKind::Selector) setModelPick(kCumuloSlug, fallback == kCumuloModel ? std::string() : fallback);
-      std::fprintf(stderr, "[nimbusd] router refused %s (HTTP %d %s) - answering on %s\n",
-                   picked.c_str(), rf.status, rf.reason.c_str(), fallback.c_str());
+      agent::hlog::logf("router refused %s (HTTP %d %s) - answering on %s", picked.c_str(), rf.status,
+                        rf.reason.c_str(), fallback.c_str());
       tap_.begin();
       conv.clear();
       o.out.clear();
@@ -1490,9 +1560,11 @@ class NimbusdRig {
     d.hooks.onToolResult = [this](const orch::HeadToolResult& r) {
       cur_.toolResults.push_back(trunc(r.output, 300));
     };
+    d.hooks.onTurnDebug = [this](const agent::TurnDebugEv& ev) { captureTurn(ev); };
     d.hooks.onTurnEnd = [this](const agent::TurnEndEv& ev) {
       lastHost_ = ev.host;
       if (ev.ok && !ev.host.empty()) verify_.markWorking(ev.host);   // the key answered (CUM-545)
+      if (ev.ok) lastUsage_ = ev.usage;   // survives an engine rebuild, unlike the engine's own
       // Served-by disclosure (CUM-236): remember whether this turn was served by a
       // fallback provider/model and how to say it, so the web chat can surface it.
       lastFallback_ = ev.fallback;
@@ -1502,6 +1574,12 @@ class NimbusdRig {
     wireApply(d);
 
     registerHeads(d);
+    // A rebuild (a key or model save) must not zero the session usage (CUM-546):
+    // the counters live in the TurnEngine, so carry the old engine's totals over.
+    if (eng_) {
+      carriedUsage_ += eng_->sessionUsage();
+      carriedTurns_ += eng_->turnCount();
+    }
     eng_.reset(new agent::TurnEngine(std::move(d)));
   }
 
@@ -1902,6 +1980,11 @@ class NimbusdRig {
   std::string envTz_;            // the operator's TZ at start ("" = none)
   std::string curUserRowId_;     // the in-flight user row (excluded from the window)
   uint32_t epiSeq_ = 0;          // episodic row id sequence (engine thread)
+  orch::TokenUsage carriedUsage_;   // session usage of engines a rebuild replaced (CUM-546)
+  uint32_t carriedTurns_ = 0;
+  orch::TokenUsage lastUsage_;      // the most recent completed turn's usage
+  mutable std::mutex diagMu_;    // guards lastTurn_ (engine writes, HTTP reads)
+  std::string lastTurn_;         // the /api/lastturn page
 
   PosixEpiFs         epiFs_;
   orch::VectorMemory vec_;
