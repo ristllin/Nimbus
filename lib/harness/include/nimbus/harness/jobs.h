@@ -170,8 +170,9 @@ class JobEngine {
   // Synthesis clock + reap grace (byte-moved constants).
   static constexpr uint32_t kSynthCoalesceMs = 3000;   // burst window: batch near-simultaneous
                                                        // completions into ONE synthesis turn
-  static constexpr uint32_t kSynthFallbackMs = 60000;  // synthesis stuck (heap/provider) ->
-                                                       // drain raw so results are never lost
+  static constexpr uint32_t kSynthFallbackMs = 60000;  // synthesis stuck (heap/provider) for this
+                                                       // long AFTER the batch drained -> deliver
+                                                       // raw so results are never lost (CUM-480)
   static constexpr uint32_t kReapGraceMs     = 6000;
 
   JobEngine(Deps d, Tuning t);
@@ -195,8 +196,20 @@ class JobEngine {
   // Fresh sub-agent results parked for the next consolidation turn.
   bool hasFreshResults() const { return !fresh_.empty(); }
   std::string takeFreshResults();
+  // The same parked results rendered for the OWNER, without consuming them: the
+  // raw fallback's text when the summary step cannot run (CUM-480). A one-line
+  // preamble, then each sub-agent's title and its findings - none of the
+  // model-facing scaffolding ([FRESH RESULTS] header, job tags, results.get
+  // handles). Bounded like the seed: past the budget a result folds to one line.
+  std::string ownerResultsText() const;
+  // Deliver an owner-facing results text through the job engine's own delivery
+  // sink. The synthesis turn's failure path uses it so its raw fallback lands
+  // exactly like the stuck-synthesis one (same seam, same device handling).
+  void deliverResults(const std::string& chatId, const std::string& text) { deliver(chatId, text); }
+  // `failed` marks the engine's OWN failure lines (provenance out of band: a
+  // sub-agent reply that merely starts with "FAILED: " is still a finding).
   void addFreshResult(const char* tag, const char* model, const std::string& text,
-                      const std::string& ns = std::string());
+                      const std::string& ns = std::string(), bool failed = false);
   const std::string& freshChatId() const { return freshChatId_; }
 
   void noteSpawned() { nextDispatchAt_ = d_.platform.nowMs(); }  // dispatch-now nudge
@@ -251,7 +264,13 @@ class JobEngine {
   // "sub:job0007") - carried so an overflow stub points at the real entry instead
   // of reconstructing "sub:"+tag, which only matches while job tags stay short and
   // punctuation-free (prism 2026-08-05: make it correct-by-construction).
-  struct FreshResult { std::string tag, model, text, ringTag; };
+  // `text` is the (UTF-8 capped) finding itself; `hint` is the model-facing
+  // widen handle appended after it (" [full N B: results.get(...)]", or "") - kept
+  // apart so the owner rendering can drop it while the seed stays byte-identical.
+  struct FreshResult {
+    std::string tag, model, text, hint, ringTag;
+    bool failed = false;   // an engine failure line, not a sub-agent's finding
+  };
   struct ReapEntry { uint32_t key; uint32_t dueAt; };
 
   void dispatchSpawn(const PendingSpawn& p);
@@ -284,8 +303,13 @@ class JobEngine {
 
   std::vector<FreshResult> fresh_;
   std::string freshChatId_;
-  uint32_t freshSinceMs_ = 0;            // millis() of the OLDEST un-synthesized fresh
-                                         // result; 0 = none pending (R5b topology)
+  // The batch DRAINED (fresh results parked and no live/queued/dispatching
+  // work) at drainedAtMs_. The stuck-synthesis clock runs from here, never from
+  // the first result: a fan-out whose subs finish minutes apart is not "stuck"
+  // just because its first result is old (CUM-480).
+  bool     drained_ = false;
+  uint32_t drainedAtMs_ = 0;
+  void deliverOwnerFallback();           // the stuck-synthesis raw delivery
 
   std::vector<ReapEntry> reap_;
   // Error arcs are calls-to-action: hold them for the tunable attention window

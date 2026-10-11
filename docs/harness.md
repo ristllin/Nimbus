@@ -128,8 +128,8 @@ to 2 keyed alternates with an owner notice; a fresh provider thread each time.
   the breaker; state is rollback-safe on LittleFS.
 - **Sub-agents** (see [sub-sessions.md](sub-sessions.md)): fire-and-forget
   background workers on provider fabrics; ≤6 tracked / 4 in-flight; polled
-  ~15 s; results coalesce 3 s into one unattended synthesis turn (60 s raw-
-  delivery fallback so results are never lost).
+  ~15 s; once every sub has finished, one unattended synthesis turn reports
+  (raw-delivery fallback 60 s after that drain, so results are never lost).
 - **Local Loops (routines)**: owner- or agent-created `{schedule, prompt}`
   records fire scheduled turns. The fire decision is a pure, hard-coded gate
   table (enabled → approved → breaker → clock → due → chat-allowed → per-loop

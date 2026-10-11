@@ -954,6 +954,8 @@ void TurnEngine::maybeConsolidate(const std::string& chatId) {
   // owner RAW - takeFreshResults() frees the entries, so without this snapshot a
   // failed turn silently destroyed completed sub-agent work (review finding,
   // 2026-07-13: the "60 s fallback" only covers the PRE-consumption defer case).
+  // The owner gets the HUMAN rendering (CUM-480), never the model-facing seed.
+  const std::string ownerRaw = d_.jobs->ownerResultsText();
   std::string fresh  = d_.jobs->takeFreshResults();
   std::string inputs = takePendingMemResults() + fresh + buildDynamicContext() +
     "\n[SYSTEM]\nOne or more of your sub-agents just finished (others may still be "
@@ -963,7 +965,7 @@ void TurnEngine::maybeConsolidate(const std::string& chatId) {
   hlog::log("orchestrator: auto-synthesis turn (batch complete)");
   if (!runTurn(inputs, chatId, "") && fresh.length()) {
     hlog::log("orchestrator: synthesis turn failed - delivering raw results (never lost)");
-    deliver(chatId, fresh);
+    d_.jobs->deliverResults(chatId, ownerRaw);   // the job engine's sink, like the stuck fallback
   }
   if (d_.journalGc) d_.journalGc();
 }

@@ -195,7 +195,7 @@ std::string JobEngine::firstSubProvider() const {
 // ---- fresh-result store -----------------------------------------------------
 
 void JobEngine::addFreshResult(const char* tag, const char* model, const std::string& text,
-                               const std::string& ns) {
+                               const std::string& ns, bool failed) {
   // Spill the FULL text to the recent-results ring FIRST (nullable - host rigs
   // without the closure keep the legacy shape). The returned ring tag
   // ("sub:<jobtag>") is what overflow stubs and clip markers reference, so a
@@ -207,11 +207,12 @@ void JobEngine::addFreshResult(const char* tag, const char* model, const std::st
   fr.tag   = tag   ? std::string(tag).substr(0, 11)   : std::string();
   fr.model = model ? std::string(model).substr(0, 39) : std::string();
   fr.ringTag = ringTag;   // the real ring handle, used verbatim by the overflow stub
+  fr.failed = failed;
   if ((int)fresh_.size() >= orch::kAgentMaxJobs) {
     // Over the block cap: a one-line STUB instead of the old SILENT DROP
     // (Context Fabric - bounded views over unbounded storage, never loss).
-    fr.text = nimbus::orch::foldLine("", text, 160) + " [full " +
-              std::to_string((unsigned)text.size()) + " B" +
+    fr.text = nimbus::orch::foldLine("", text, 160);
+    fr.hint = " [full " + std::to_string((unsigned)text.size()) + " B" +
               (ringTag.empty() ? "" : ": results.get(\"" + ringTag + "\")") + "]";
     fresh_.push_back(std::move(fr));
     return;
@@ -223,8 +224,8 @@ void JobEngine::addFreshResult(const char* tag, const char* model, const std::st
   if (keep < (int)text.length()) {
     fr.text = text.substr(0, (size_t)keep) + "\xE2\x80\xA6";
     if (!ringTag.empty())
-      fr.text += " [full " + std::to_string((unsigned)text.size()) + " B: results.get(\"" +
-                 ringTag + "\")]";
+      fr.hint = " [full " + std::to_string((unsigned)text.size()) + " B: results.get(\"" +
+                ringTag + "\")]";
   } else {
     fr.text = text;
   }
@@ -244,13 +245,14 @@ std::string JobEngine::takeFreshResults() {
   int stubbed = 0;
   for (const auto& f : fresh_) {
     const std::string head = "- " + f.tag + " (" + f.model + "): ";
-    if (b.size() + head.size() + f.text.size() + 1 <= kBlockBudget) {
-      b += head + f.text + "\n";
+    const std::string full = f.text + f.hint;   // the seed keeps the widen handle
+    if (b.size() + head.size() + full.size() + 1 <= kBlockBudget) {
+      b += head + full + "\n";
     } else {
       // Use the REAL ring tag spillResult() handed back (falls back to the
       // reconstruction only when a host rig ran without the spill closure).
       const std::string handle = !f.ringTag.empty() ? f.ringTag : ("sub:" + f.tag);
-      b += head + nimbus::orch::foldLine("", f.text, 120) +
+      b += head + nimbus::orch::foldLine("", full, 120) +
            " [full: results.get(\"" + handle + "\")]\n";
       stubbed++;
     }
@@ -259,11 +261,46 @@ std::string JobEngine::takeFreshResults() {
     b += "(" + std::to_string(stubbed) +
          " result(s) summarized - fetch full text with results.get)\n";
   fresh_.clear();
-  freshSinceMs_ = 0;   // single reset point: EVERY consumer (per-completion synthesis,
-                       // batch consolidation, a user turn folding results in) clears the
-                       // coalesce/fallback clock - a stale t0 made the next completion
-                       // false-trip the 60 s raw fallback (review finding 2026-07-13)
+  drained_ = false;   // single reset point: EVERY consumer (batch consolidation, a user
+                      // turn folding results in, the raw fallback) clears the stuck
+                      // clock - a stale t0 made the next batch false-trip the 60 s raw
+                      // fallback (review finding 2026-07-13)
   return b;
+}
+
+std::string JobEngine::ownerResultsText() const {
+  if (fresh_.empty()) return "";
+  // Copy style (AGENTS.md section 6): calm, what happened, no machinery. The
+  // title is the agent's owner-facing label (its chosen name, else model and
+  // category) - never the job tag, never a results.get handle.
+  std::string b = "Here are the raw findings; the summary step did not complete.\n";
+  const size_t kBudget = 8192;   // same bound as the seed: Telegram splits, the web
+                                 // reply slot does not
+  const std::string kFailed = "FAILED: ";
+  for (const auto& f : fresh_) {
+    // An engine failure line already names its sub ("Job [label] failed: why") -
+    // the same line the owner gets when it fails alone - so it needs no title.
+    // Decided by the out-of-band flag, never by the text: a sub-agent's own reply
+    // that starts with "FAILED: " keeps its title (it cannot pose as the device).
+    const bool prefixed = f.failed && f.text.compare(0, kFailed.size(), kFailed) == 0;
+    const std::string body = prefixed ? f.text.substr(kFailed.size()) : f.text;
+    const std::string title = f.failed ? std::string() : (f.model.empty() ? "Result" : f.model);
+    std::string block = title.empty() ? body : title + "\n" + body;
+    if (b.size() + block.size() + 2 > kBudget) {
+      const std::string line = nimbus::orch::foldLine("", body, 160);
+      block = title.empty() ? line : title + "\n" + line;
+    }
+    b += "\n" + block + "\n";
+  }
+  return b;
+}
+
+void JobEngine::deliverOwnerFallback() {
+  hlog::log("orchestrator: synthesis stuck - delivering raw results (fallback)");
+  const std::string chatId = freshChatId_;
+  const std::string text = ownerResultsText();
+  (void)takeFreshResults();   // consumed: the clock resets, nothing is delivered twice
+  deliver(chatId, text);
 }
 
 // ---- spawn enqueue + dispatch -----------------------------------------------
@@ -454,15 +491,23 @@ int JobEngine::pump() {
   // a follow-up generation from that turn; each generation ends in exactly one
   // report. The stuck-synthesis raw fallback waits for the same drain (a raw
   // dump of 50 labeled results mid-run is the same spam, worse).
-  if (hasFreshResults() && freshSinceMs_ && activeCount() == 0) {
-    const uint32_t waited = nowMs() - freshSinceMs_;
+  //
+  // CUM-480: the stuck clock starts at the DRAIN, not at the first result. Subs
+  // routinely finish minutes apart; timing from the oldest result made the very
+  // first post-drain pump fire the raw fallback with no synthesis ever tried.
+  // Synthesis is attempted first - by the loop-closure below on the drain pump
+  // itself, and again each pump while it defers (low memory leaves the results
+  // parked) - and the raw fallback fires only after kSynthFallbackMs of that real
+  // stuckness. New work starting re-arms the clock.
+  if (!hasFreshResults() || activeCount() != 0) {
+    drained_ = false;
+  } else {
+    if (!drained_) { drained_ = true; drainedAtMs_ = nowMs(); }
+    const uint32_t waited = nowMs() - drainedAtMs_;
     if (waited >= kSynthFallbackMs) {
-      hlog::log("orchestrator: synthesis stuck - delivering raw results (fallback)");
-      deliver(freshChatId_, takeFreshResults());
-      freshSinceMs_ = 0;
+      deliverOwnerFallback();
     } else if (waited >= kSynthCoalesceMs && !(d_.turnInFlight && d_.turnInFlight())) {
       if (d_.synthesize) d_.synthesize(freshChatId_);
-      if (!hasFreshResults()) freshSinceMs_ = 0;   // consumed by the turn
     }
   }
 
@@ -563,9 +608,8 @@ int JobEngine::pump() {
         // synthesis reports it; alone, it IS the report.
         if (activeCount() > 1 || !pending_.empty()) {
           addFreshResult(rec.tag, jobLabel(rec).c_str(), std::string("FAILED: ") + failText,
-                         nimbus::orch::nsForChat(rec.chatId, /*admin=*/false));
+                         nimbus::orch::nsForChat(rec.chatId, /*admin=*/false), /*failed=*/true);
           freshChatId_ = rec.chatId;
-          if (!freshSinceMs_) freshSinceMs_ = nowMs();
         } else {
           deliver(rec.chatId, failText);
         }
@@ -615,7 +659,7 @@ int JobEngine::pump() {
       // is parked as a fresh result and a per-completion SYNTHESIS turn (above, in
       // this same pump cadence after a short coalesce window) decides what the
       // owner actually sees. If the synthesis can't run (heap/provider down), the
-      // 60 s fallback drains the raw results with their labels - never lost.
+      // fallback (60 s after the batch drains) delivers the raw results - never lost.
       emitJobState(rec.tag, rec.backend, orch::JobState::Done);
       d_.journal->markSeen(rec.tag);
       watchClear(rec.tag);
@@ -649,7 +693,6 @@ int JobEngine::pump() {
       addFreshResult(rec.tag, jobLabel(rec).c_str(), reply,
                      nimbus::orch::nsForChat(rec.chatId, /*admin=*/false));
       freshChatId_ = rec.chatId;
-      if (!freshSinceMs_) freshSinceMs_ = nowMs();   // oldest un-synthesized result
     } else if (env_ref().state == orch::JobState::Error) {
       // While OTHER work is still running, a per-sub failure joins the fresh
       // results (the final report says which subs failed) instead of pinging
@@ -659,9 +702,8 @@ int JobEngine::pump() {
               (env_ref().error[0] ? env_ref().error : "unknown error");
       if (activeCount() > 1 || !pending_.empty()) {   // >1: this job still counts
         addFreshResult(rec.tag, jobLabel(rec).c_str(), std::string("FAILED: ") + failText,
-                       nimbus::orch::nsForChat(rec.chatId, /*admin=*/false));
+                       nimbus::orch::nsForChat(rec.chatId, /*admin=*/false), /*failed=*/true);
         freshChatId_ = rec.chatId;
-        if (!freshSinceMs_) freshSinceMs_ = nowMs();
       } else {
         deliver(rec.chatId, failText);
       }

@@ -729,9 +729,15 @@ static void test_synthesis_consolidation_and_raw_fallback() {
   r2.eng->maybeConsolidate("1001");
   TEST_ASSERT_TRUE(LogCapture::contains(
       "orchestrator: synthesis turn failed - delivering raw results (never lost)"));
+  // The owner gets the HUMAN rendering (CUM-480): preamble + title + findings,
+  // none of the model-facing seed scaffolding.
   const std::string& raw = r2.delivered.back().second;
-  TEST_ASSERT_TRUE(raw.rfind("[FRESH RESULTS] (sub-agents that just finished)\n", 0) == 0);
-  TEST_ASSERT_TRUE(raw.find("precious result") != std::string::npos);
+  TEST_ASSERT_EQUAL_STRING(
+      "Here are the raw findings; the summary step did not complete.\n"
+      "\nmodelY\nprecious result\n",
+      raw.c_str());
+  TEST_ASSERT_TRUE(raw.find("[FRESH RESULTS]") == std::string::npos);
+  TEST_ASSERT_TRUE(raw.find("job0001") == std::string::npos);
 
   // Heap gate: deferral leaves the fresh results parked (the 60 s fallback's case).
   Rig r3;

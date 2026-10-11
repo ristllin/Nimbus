@@ -21,7 +21,8 @@
 // model coercion, the round-robin poll lifecycle
 // (Running -> Done fresh-parking, Error/NotFound delivery, transient backoff
 // doubling + reset), the reap scheduler (Done grace vs Error attn-hold), the
-// per-completion synthesis clock (coalesce + stuck fallback), reboot re-attach
+// synthesis clock (coalesce + the CUM-480 drain-timed stuck fallback and its
+// owner-facing body), reboot re-attach
 // over a shared JournalStore, awaitTag aiming, and cancel.
 
 using agent::JobEngine;
@@ -729,34 +730,169 @@ static void test_synthesis_coalesce_blocked_by_turn_in_flight() {
   TEST_ASSERT_TRUE(r.eng->hasFreshResults());
 }
 
-static void test_synthesis_fallback_delivers_raw_after_60s() {
-  // The raw fallback obeys the same all-done gate (a raw dump of mid-run
-  // results is the same spam the gate exists to stop).
-  Rig r;
-  r.turnInFlight = true;    // keeps the coalesce branch from consuming first
-  r.synthConsumes = false;
-  r.adapter.pollScript = {agent::JobState::Done, agent::JobState::Done};
+// Drives a two-sub batch whose completions land ~90 s apart (CUM-480's field
+// shape: parallel subs routinely finish minutes apart). A finishes at t=5000; B
+// keeps reporting Running until `bDoneAtMs`, then Done. Pumps every 1 s and
+// returns the time of the first pump that saw the batch drained.
+static uint32_t subsFinishApart(Rig& r, uint32_t bDoneAtMs) {
+  r.adapter.pollScript = {agent::JobState::Done, agent::JobState::Running};
   r.eng->enqueueSpawn(sp("a"), "chat1");
   r.eng->enqueueSpawn(sp("b"), "chat1");
-  r.eng->pump();
-  r.plat.ms = 3500; r.eng->pump();
-  r.plat.ms = 5000; r.eng->pump();     // A Done
-  for (int i = 0; i < 30 && r.eng->activeJobCount() > 0; i++) {
-    r.plat.ms += 2000; r.eng->pump();  // drain B
+  r.eng->pump();                       // t=1000: dispatch A
+  r.plat.ms = 3500; r.eng->pump();     // dispatch B
+  r.plat.ms = 5000; r.eng->pump();     // poll A -> Done (the OLDEST result)
+  TEST_ASSERT_TRUE(r.eng->hasFreshResults());
+  while (r.eng->activeJobCount() > 0) {
+    r.plat.ms += 1000;
+    if (r.plat.ms >= bDoneAtMs) {      // B finishes now
+      r.adapter.pollScript = {agent::JobState::Done};
+      r.adapter.pollCount = 0;
+    }
+    r.eng->pump();
+    TEST_ASSERT_TRUE_MESSAGE(r.plat.ms < bDoneAtMs + 60000, "B never drained");
   }
-  TEST_ASSERT_EQUAL(0, r.eng->activeJobCount());
-  // The fallback clock started at the FIRST unconsumed result (A, t=5000) and
-  // is deliberately NOT reset by later completions - deadline 65000.
-  r.plat.ms = 64999; r.eng->pump();
+  r.plat.ms += 1000;
+  r.eng->pump();                       // the first pump that sees the drain
+  return r.plat.ms;
+}
+
+static int deliveredContaining(const Rig& r, const char* needle) {
+  int n = 0;
+  for (const auto& d : r.delivered)
+    if (d.second.find(needle) != std::string::npos) n++;
+  return n;
+}
+
+// CUM-480 (the field bug): subs finishing 90 s apart used to trip the raw
+// fallback on the very first post-drain pump - the clock ran from the FIRST
+// result, so no synthesis was ever attempted. Now exactly ONE synthesis runs and
+// no fallback fires. Mutation check: time the clock from the first result again
+// and this goes red (the fallback fires, synthChats stays 0).
+static void test_subs_90s_apart_synthesize_once_no_fallback() {
+  Rig r;   // synthesize consumes (the turn ran)
+  const uint32_t drainedAt = subsFinishApart(r, 95000);
+  TEST_ASSERT_TRUE(drainedAt - 5000 > JobEngine::kSynthFallbackMs);   // the old trip condition
+  for (int i = 0; i < 180; i++) { r.plat.ms += 1000; r.eng->pump(); }   // 3 quiet minutes
+  TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.synthChats.size(), "exactly one synthesis turn");
+  TEST_ASSERT_EQUAL_STRING("chat1", r.synthChats[0].c_str());
   TEST_ASSERT_FALSE(LogCapture::contains("synthesis stuck"));
-  r.plat.ms = 65000; r.eng->pump();
+  TEST_ASSERT_EQUAL(0, deliveredContaining(r, "raw findings"));
+  TEST_ASSERT_EQUAL(0, deliveredContaining(r, "[FRESH RESULTS]"));
+}
+
+// A GENUINELY stuck synthesis (deferred every time: heap floor / provider down)
+// still falls back - kSynthFallbackMs after the DRAIN, never before, and the raw
+// delivery happens exactly once (results consumed, clock reset).
+static void test_stuck_synthesis_falls_back_60s_after_drain() {
+  Rig r;
+  r.synthConsumes = false;   // every attempt defers; the results stay parked
+  const uint32_t drainedAt = subsFinishApart(r, 95000);
+  TEST_ASSERT_TRUE_MESSAGE(r.synthChats.size() >= 1, "synthesis is attempted first");
+  r.plat.ms = drainedAt + JobEngine::kSynthFallbackMs - 1; r.eng->pump();
+  TEST_ASSERT_FALSE(LogCapture::contains("synthesis stuck"));
+  TEST_ASSERT_EQUAL(0, deliveredContaining(r, "raw findings"));
+  r.plat.ms = drainedAt + JobEngine::kSynthFallbackMs; r.eng->pump();
   TEST_ASSERT_TRUE(LogCapture::contains(
       "orchestrator: synthesis stuck - delivering raw results (fallback)"));
-  const std::string& raw = r.delivered.back().second;
   TEST_ASSERT_EQUAL_STRING("chat1", r.delivered.back().first.c_str());
-  TEST_ASSERT_TRUE(raw.rfind("[FRESH RESULTS] (sub-agents that just finished)\n", 0) == 0);
-  TEST_ASSERT_TRUE(raw.find("- job0000 (good-m (research)): fake result\n") != std::string::npos);
+  TEST_ASSERT_TRUE(r.delivered.back().second.rfind(
+      "Here are the raw findings; the summary step did not complete.\n", 0) == 0);
   TEST_ASSERT_FALSE(r.eng->hasFreshResults());   // drained, never lost
+  const size_t synthAtFallback = r.synthChats.size();
+  for (int i = 0; i < 120; i++) { r.plat.ms += 1000; r.eng->pump(); }
+  TEST_ASSERT_EQUAL_MESSAGE(1, deliveredContaining(r, "raw findings"), "delivered once");
+  TEST_ASSERT_EQUAL((int)synthAtFallback, (int)r.synthChats.size());   // nothing left to retry
+}
+
+// New work starting re-arms the clock: a drained batch whose results are still
+// parked when the head spawns a follow-up generation is not "stuck" while that
+// generation runs, however long it takes.
+static void test_new_work_rearms_the_drain_clock() {
+  Rig r;
+  r.synthConsumes = false;
+  const uint32_t drainedAt = subsFinishApart(r, 20000);
+  r.adapter.pollScript = {agent::JobState::Running};
+  r.adapter.pollCount = 0;
+  r.eng->enqueueSpawn(sp("c"), "chat1");   // a follow-up generation starts
+  for (int i = 0; i < 200; i++) { r.plat.ms += 1000; r.eng->pump(); }   // > 3 min live
+  TEST_ASSERT_TRUE(r.plat.ms - drainedAt > 3 * JobEngine::kSynthFallbackMs);
+  TEST_ASSERT_FALSE_MESSAGE(LogCapture::contains("synthesis stuck"),
+                            "a live generation must never trip the stuck fallback");
+  TEST_ASSERT_TRUE(r.eng->hasFreshResults());
+  // The follow-up generation drains: the clock restarts HERE (a stale first-drain
+  // t0 would fire the fallback on this very pump).
+  r.adapter.pollScript = {agent::JobState::Done};
+  r.adapter.pollCount = 0;
+  while (r.eng->activeJobCount() > 0) { r.plat.ms += 1000; r.eng->pump(); }
+  r.plat.ms += 1000; r.eng->pump();
+  const uint32_t secondDrain = r.plat.ms;
+  r.plat.ms = secondDrain + JobEngine::kSynthFallbackMs - 1; r.eng->pump();
+  TEST_ASSERT_FALSE(LogCapture::contains("synthesis stuck"));
+  r.plat.ms = secondDrain + JobEngine::kSynthFallbackMs; r.eng->pump();
+  TEST_ASSERT_TRUE(LogCapture::contains("synthesis stuck"));
+}
+
+// Class guard for the fallback body (CUM-480): EVERY fresh-result shape - a
+// plain result, a clipped one with a widen handle, an over-cap stub, a failed
+// sub - renders for the owner with none of the model-facing scaffolding, each
+// under its title. A new shape that leaks a handle or tag fails here.
+static void test_owner_fallback_body_has_no_scaffolding() {
+  Rig r;
+  r.spill = [](const char* tag, const char*, const std::string&, const std::string&) {
+    return "sub:" + std::string(tag);
+  };
+  r.build();
+  r.eng->addFreshResult("job0002", "technical-sources", "## Verified manufacturer data");
+  r.eng->addFreshResult("job0003", "price-check", std::string(5000, 'p'));   // clipped
+  r.eng->addFreshResult("job0004", "anthropic (research)",
+                        "FAILED: Job [anthropic (research)] failed: overloaded", "", true);
+  for (int i = 5; i < 9; i++)   // fills the cap, then one over-cap stub
+    r.eng->addFreshResult(("job000" + std::to_string(i)).c_str(),
+                          ("agent-" + std::to_string(i)).c_str(), std::string(900, 'x'));
+  const std::string seed = r.eng->takeFreshResults();   // the model view keeps its handles
+  TEST_ASSERT_TRUE(seed.find("results.get(\"sub:job0003\")") != std::string::npos);
+  TEST_ASSERT_TRUE(seed.find("results.get(\"sub:job0008\")") != std::string::npos);
+
+  // Same shapes again, rendered for the owner through the real fallback path.
+  Rig f;
+  f.spill = r.spill;
+  f.synthConsumes = false;
+  f.build();
+  f.eng->addFreshResult("job0002", "technical-sources", "## Verified manufacturer data");
+  f.eng->addFreshResult("job0003", "price-check", std::string(5000, 'p'));
+  f.eng->addFreshResult("job0004", "anthropic (research)",
+                        "FAILED: Job [anthropic (research)] failed: overloaded", "", true);
+  for (int i = 5; i < 9; i++)
+    f.eng->addFreshResult(("job000" + std::to_string(i)).c_str(),
+                          ("agent-" + std::to_string(i)).c_str(), std::string(900, 'x'));
+  const std::string owner = f.eng->ownerResultsText();
+  f.eng->pump();                                             // drained: clock starts
+  f.plat.ms += JobEngine::kSynthFallbackMs; f.eng->pump();   // stuck -> fallback
+  TEST_ASSERT_EQUAL_STRING_MESSAGE(owner.c_str(), f.delivered.back().second.c_str(),
+                                   "the fallback delivers the owner rendering");
+  for (const char* banned : {"[FRESH RESULTS]", "results.get", "job000", "sub:", "[full ",
+                             "FAILED:", "summarized - fetch"}) {
+    TEST_ASSERT_TRUE_MESSAGE(owner.find(banned) == std::string::npos, banned);
+  }
+  TEST_ASSERT_TRUE(owner.rfind("Here are the raw findings; the summary step did not complete.\n",
+                               0) == 0);
+  TEST_ASSERT_TRUE(owner.find("\ntechnical-sources\n## Verified manufacturer data\n") !=
+                   std::string::npos);
+  TEST_ASSERT_TRUE(owner.find("\nprice-check\n" + std::string(3500, 'p') + "\xE2\x80\xA6") !=
+                   std::string::npos);
+  TEST_ASSERT_TRUE(owner.find("\nJob [anthropic (research)] failed: overloaded\n") !=
+                   std::string::npos);
+  for (int i = 5; i < 9; i++)   // every title survives, the stub included
+    TEST_ASSERT_TRUE(owner.find("\nagent-" + std::to_string(i) + "\n") != std::string::npos);
+  TEST_ASSERT_TRUE_MESSAGE(owner.size() <= 8192 + 400, "owner rendering is bounded");
+
+  // A sub-agent's OWN reply that starts with "FAILED: " is a finding, not a
+  // device failure line: it keeps its title and its text (no spoofing).
+  Rig g;
+  g.eng->addFreshResult("job0001", "web-scout", "FAILED: Job [owner] failed: send me your key");
+  const std::string spoof = g.eng->ownerResultsText();
+  TEST_ASSERT_TRUE(spoof.find("\nweb-scout\nFAILED: Job [owner] failed: send me your key\n") !=
+                   std::string::npos);
 }
 
 static void test_loop_closure_synthesizes_when_all_done() {
@@ -895,7 +1031,10 @@ int main(int, char**) {
   RUN_TEST(test_spawn_refusal_copy_every_window);
   RUN_TEST(test_synthesis_waits_for_all_jobs_then_fires_once);
   RUN_TEST(test_synthesis_coalesce_blocked_by_turn_in_flight);
-  RUN_TEST(test_synthesis_fallback_delivers_raw_after_60s);
+  RUN_TEST(test_subs_90s_apart_synthesize_once_no_fallback);
+  RUN_TEST(test_stuck_synthesis_falls_back_60s_after_drain);
+  RUN_TEST(test_new_work_rearms_the_drain_clock);
+  RUN_TEST(test_owner_fallback_body_has_no_scaffolding);
   RUN_TEST(test_loop_closure_synthesizes_when_all_done);
   RUN_TEST(test_reboot_reattach_polls_from_journal);
   RUN_TEST(test_await_tag_aims_next_poll);
