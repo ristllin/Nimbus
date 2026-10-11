@@ -20,7 +20,7 @@ Everything you need to install, recover, and manage a device you own.
 | `setup_device.py` | Guarded firmware installer over the UART port (MAC-confirmed; seeds display + mode on a fresh board). |
 | `usb_reset.py` | Programmatic unbrick - a libusb bus reset, equivalent to replugging a wedged USB-serial port. macOS and Linux; needs pyusb (`pipx run tools/usb_reset.py` brings it) and libusb. |
 | `tcal_wizard.py` | Touch-calibration wizard for the TFT variant (four-corner press → axis/orientation flags via `TCAL`). |
-| `connectors_setup.py` | Push connector credentials from the root `.env` to a board via the token-gated API (`--list` to inspect). |
+| `connectors_setup.py` | Push connector credentials from the root `.env` to a board via the token-gated API (`--list` to inspect; `--ip`/`--token` override the `.env` board). |
 | `backup_device.py` | Pull a board's user data (files, vectors, scratchpad, state) over the web API into a dated folder. Read-only; never exports secrets. |
 | `ring_check.py` | Quick LED-ring smoke test over serial (`LEDTEST` acknowledgement). |
 
@@ -68,6 +68,7 @@ a generated file.
 | `harness-lab/` | Runs the real agent harness on the Mac instead of the device (see its README). |
 | `test_setup_device.py` | Unit tests for `setup_device.py`. |
 | `test_usb_reset.py` | Unit tests for `usb_reset.py`'s setup error paths (no USB bus touched). |
+| `test_device_http_auth.py` | Every tool that calls the device API signs in with the `X-Nimbus-Token` header, never a URL token (fake device, no network). |
 | `test_tcal_wizard.py` | Unit tests for `tcal_wizard.py`. |
 | **⚠ `release_gate/tag_shape.py`** | Release channel gate (release.yml): OTA tag vs virtual vn- tag, version.h coherence. |
 

@@ -114,6 +114,10 @@ jobs:
         # pyusb/libusb/platform failures must exit 2 with the fix, never a traceback;
         # the tests use fakes and never touch a USB bus.
         run: python3 -m pytest tools/test_usb_reset.py
+      - name: Device API sign-in shape across tools/ (CUM-514)
+        # Every device client sends the X-Nimbus-Token header, never a ?t= query
+        # (dropped by the device since CUM-45); a local fake device, no network.
+        run: python3 -m pytest tools/test_device_http_auth.py
 
   # HIL suite must stay importable/collectable on a device-less box (the repo's
   # own contract: `pytest tests/hil --collect-only` clean with no hardware).

@@ -9,6 +9,11 @@ Usage:
   python3 tools/connectors_setup.py            # configure all with creds present
   python3 tools/connectors_setup.py --list     # just show current board state
   python3 tools/connectors_setup.py --only github,google,mistral
+  python3 tools/connectors_setup.py --ip 192.0.2.10 --token <ACCESS_TOKEN>
+
+The board comes from NIMBUS_BOARD1_IP / NIMBUS_BOARD1_TOKEN in .env, or --ip /
+--token. Auth: the access token travels on the "X-Nimbus-Token" header of every
+request, never in the URL; the device ignores a ?t= query since CUM-45 (CUM-514).
 
 No secret is ever printed. Safe to re-run (idempotent upsert).
 """
@@ -16,6 +21,7 @@ No secret is ever printed. Safe to re-run (idempotent upsert).
 import argparse
 import json
 import sys
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -38,9 +44,11 @@ def load_env() -> dict:
 
 
 def api(ip: str, token: str, method: str, params: dict | None = None):
-    url = f"http://{ip}/api/connectors?t={token}"
+    # CUM-45 / CUM-514: the token rides the X-Nimbus-Token header on GET and POST
+    # alike, never a ?t= query (the device ignores it, and a URL lands in logs).
+    url = f"http://{ip}/api/connectors"
     data = urllib.parse.urlencode(params).encode() if params else None
-    req = urllib.request.Request(url, data=data, method=method)
+    req = urllib.request.Request(url, data=data, method=method, headers={"X-Nimbus-Token": token})
     if data:
         req.add_header("Content-Type", "application/x-www-form-urlencoded")
     with urllib.request.urlopen(req, timeout=10) as r:
@@ -109,19 +117,26 @@ def build_connectors(env: dict) -> list[tuple[str, dict]]:
     return out
 
 
-def main():
+def main(argv: list[str] | None = None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--list", action="store_true", help="show board state only")
     ap.add_argument("--only", default="", help="comma list of labels to configure")
-    args = ap.parse_args()
+    ap.add_argument("--ip", help="board address (default: NIMBUS_BOARD1_IP from .env)")
+    ap.add_argument("--token", help="board access token (default: NIMBUS_BOARD1_TOKEN from .env)")
+    args = ap.parse_args(argv)
 
     env = load_env()
-    ip = env.get("NIMBUS_BOARD1_IP")
-    token = env.get("NIMBUS_BOARD1_TOKEN")
+    ip = args.ip or env.get("NIMBUS_BOARD1_IP")
+    token = args.token or env.get("NIMBUS_BOARD1_TOKEN")
     if not ip or not token:
-        sys.exit("Set NIMBUS_BOARD1_IP and NIMBUS_BOARD1_TOKEN in .env")
+        sys.exit("Set NIMBUS_BOARD1_IP and NIMBUS_BOARD1_TOKEN in .env, or pass --ip and --token.")
 
-    state = api(ip, token, "GET")
+    try:
+        state = api(ip, token, "GET")
+    except urllib.error.HTTPError as exc:
+        if exc.code == 401:
+            sys.exit("Stopped: the board refused the access token (HTTP 401). Check NIMBUS_BOARD1_TOKEN or --token.")
+        raise
     print(f"board {ip}  host={state.get('host')}  keyed={state.get('keyed')}")
     print("configured:", [(c["name"], c["prov"], c["en"], c["hasTok"]) for c in state.get("configured", [])])
     if args.list:
