@@ -293,8 +293,17 @@ The host harness runs this whole chain live: `nimbus-lab sub` in
    request and asks `connectorAskedFor` whether the bare task
    (`Directive::task`, never the chat `[CONTEXT]` tail) or the spawn's `skill`
    names one of them (its name, catalog or workspace id, or an owner-data phrase
-   such as "my calendar"; talk about calendars in general does not count). After
-   it, `countsAsConnectorRun` decides which runs count for that connector:
+   such as "my calendar"; talk about calendars in general does not count). A
+   catalog name that is an ordinary English word (Linear, Notion, Slack) counts
+   only inside a phrase ("Linear issues", "in Notion", "Slack channel", "Linear
+   connector"), so "explain linear regression" is not a Linear request. The wire
+   carries only connector ids, and a custom Studio connector rides by UUID, so
+   the dispatch also runs the attach once on a scratch document that is never
+   sent (`kMistralIdentityProbe`), which adds each connector's device name and
+   type: a task that says "pull my deals from crm" is matched to the connector
+   named `crm` on the device, and an explicit id such as `notion_mcp` still reads
+   as Notion. After it, `countsAsConnectorRun` decides which runs count for that
+   connector (named by its id, catalog id, device name or type):
    provider built-ins (`isProviderBuiltinTool`) and runs named for another
    attached connector (`gmail_search` when Google Calendar was asked) do not;
    unclaimed or nameless runs do, so real data is never called a guess on a
@@ -311,7 +320,9 @@ The host harness runs this whole chain live: `nimbus-lab sub` in
    in its `[SYSTEM]` text and stores nothing in long-term memory: `mem_write[]`
    items in `applyTurn` and the mid-loop `memory.write` and `memory.update`
    tools are refused with `kUnverifiedMemoryRefusal`, which also lands in the
-   next turn's `[MEMORY RESULTS]`. Refusing (rather than tagging) keeps the
+   next turn's `[MEMORY RESULTS]`. A head that calls the `mem_write` field as a
+   tool on that turn hears that memory writes are refused this turn, through
+   that field too, and why, instead of the usual "call memory_write now". Refusing (rather than tagging) keeps the
    guess out of memory in that turn; a later turn can store it only when asked,
    and the marker stays on every copy it would read. Known limits: the match is
    lexical (a task that never names the connector is not marked, and the sub

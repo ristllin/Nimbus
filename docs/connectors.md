@@ -131,6 +131,11 @@ in the turn that reads it, so the guess is not stored as a fact on its own. A
 result where the connector ran is delivered unchanged. The check matches words,
 so a task that never names the connector (say, "is Friday free?") is not marked;
 the sub-agent is also told never to invent records when a tool does not run.
+Linear, Notion and Slack are also everyday words, so for them only a phrase
+counts ("my Linear issues", "a Notion page", "the #eng Slack channel", "in
+Linear"): research on "linear regression" or "the notion of" is never marked. A
+custom Studio connector is matched by the name it has on the device, even
+though it is sent to Mistral by its id.
 
 > **What validation does not do.** It confirms the *provider key* works, not each
 > connector's individual tools. Per-connector *functional* probing - actually

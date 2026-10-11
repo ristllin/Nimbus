@@ -199,6 +199,11 @@ class ToolRegistry {
   // True when `name` (any of session_ops / session.ops / Session-Ops spellings) is
   // a field of the orch_turn reply or one of its retired aliases.
   static bool isTurnFieldName(const std::string& name);
+  // The registry tool a reply-field alias stands for (mem_write -> memory.write,
+  // the twin its recovery text offers); nullptr when `name` is no such alias or
+  // the field has no tool twin. The engine uses it to refuse a mem_write call
+  // on a turn that stores nothing, instead of offering the twin.
+  static const char* turnFieldTool(const std::string& name);
 
   // Remove a tool by exact name; also clears any static policy entry for it.
   // Returns true if a tool was removed. Used to retract dynamically-registered

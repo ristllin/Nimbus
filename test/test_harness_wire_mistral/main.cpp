@@ -6,6 +6,7 @@
 #include "../support/fake_provider_deps.h"
 #include "nimbus/harness/providers.h"
 #include "nimbus/harness/rate_limit.h"
+#include "nimbus/orch/connectors_wire.h"   // CUM-536: the real Mistral attach + identity probe
 #include "nimbus/orch/orch_schema.h"
 #include "nimbus/orch/turn.h"
 
@@ -534,6 +535,64 @@ static void test_sub_provenance_reads_the_task_not_the_context() {
   TEST_ASSERT_EQUAL_STRING("", e2.connectorAsked);
 }
 
+// CUM-536 gate: the attach hook is the real attachMistralWire over the device's
+// connector list. (a) A research task that only uses the word "linear" with the
+// Linear connector attached is not a connector request: delivered untouched. (b) A
+// custom Studio connector rides by UUID; the task names it by its device name, so
+// a run that never called it is still caught, and a run of it counts.
+static agent::providers::ProviderDeps listAttachedPd(FakeProviderDeps& d,
+                                                     std::vector<orch::ConnectorInfo> cs) {
+  auto pd = d.contract();
+  pd.attachMistral = [cs](JsonDocument& doc) { orch::attachMistralWire(doc, cs, false); };
+  return pd;
+}
+static orch::ConnectorInfo studio(const char* name, const char* type, const char* cid) {
+  orch::ConnectorInfo c;
+  c.name = name;
+  c.type = type;
+  c.prov = "mistral";
+  c.kind = "connector";
+  c.connectorId = cid;
+  c.enabled = true;
+  return c;
+}
+
+static void test_sub_word_named_connector_is_not_asked_by_research_text() {
+  FakeProviderDeps d;
+  d.http.script.push_back({"", "/v1/conversations", 200,
+      "{\"outputs\":[{\"type\":\"tool.execution\",\"name\":\"web_search\"},"
+      "{\"type\":\"message.output\",\"content\":\"Linear regression fits a line.\"}]}"});
+  auto pd = listAttachedPd(d, {studio("linear", "linear", ""), studio("slack", "slack", "")});
+  agent::ResultEnvelope env = runSub(pd, "Explain linear regression; cut the jargon some slack", "x");
+  TEST_ASSERT_EQUAL_STRING("", env.connectorAsked);
+  TEST_ASSERT_EQUAL_STRING("Linear regression fits a line.", env.reply);
+  TEST_ASSERT_TRUE(bodyHas(d, 0, "\"connector_id\":\"linear\""));   // it still rode the request
+  TEST_ASSERT_FALSE(bodyHas(d, 0, "device_name"));                   // the probe is never sent
+  TEST_ASSERT_FALSE(bodyHas(d, 0, orch::kMistralIdentityProbe));
+}
+
+static void test_sub_uuid_connector_is_named_by_its_device_name() {
+  const char* uuid = "3f2a9c1e-7d41-4b0a-9e55-0c1d2e3f4a5b";
+  FakeProviderDeps d;
+  d.http.script.push_back({"", "/v1/conversations", 200,
+      "{\"outputs\":[{\"type\":\"message.output\",\"content\":\"Acme, 12k; Globex, 40k\"}]}"});
+  auto pd = listAttachedPd(d, {studio("crm", "crm", uuid)});
+  agent::ResultEnvelope env = runSub(pd, "Pull my open deals from crm", "x");
+  TEST_ASSERT_EQUAL_STRING("crm", env.connectorAsked);
+  TEST_ASSERT_EQUAL(0, env.connectorCalls);
+  TEST_ASSERT_TRUE(bodyHas(d, 0, uuid));
+  TEST_ASSERT_FALSE(bodyHas(d, 0, "device_name"));
+
+  FakeProviderDeps d2;
+  d2.http.script.push_back({"", "/v1/conversations", 200,
+      "{\"outputs\":[{\"type\":\"tool.execution\",\"name\":\"crm_search_deals\"},"
+      "{\"type\":\"message.output\",\"content\":\"Acme, 12k\"}]}"});
+  agent::ResultEnvelope e2 = runSub(listAttachedPd(d2, {studio("crm", "crm", uuid)}),
+                                    "Pull my open deals from crm", "x");
+  TEST_ASSERT_EQUAL_STRING("crm", e2.connectorAsked);
+  TEST_ASSERT_EQUAL(1, e2.connectorCalls);
+}
+
 // A file-only run (no prose message) still succeeds and yields the artifact - the
 // bytes are the payload, so an empty reply must not be read as RemoteFail.
 static void test_sub_dispatch_file_only_no_prose() {
@@ -1048,6 +1107,8 @@ int main(int, char**) {
   RUN_TEST(test_sub_connector_called_counts_the_execution);
   RUN_TEST(test_sub_provenance_reads_the_task_not_the_context);
   RUN_TEST(test_sub_other_connectors_run_does_not_vouch);
+  RUN_TEST(test_sub_word_named_connector_is_not_asked_by_research_text);
+  RUN_TEST(test_sub_uuid_connector_is_named_by_its_device_name);
   RUN_TEST(test_sub_dispatch_text_only_no_artifacts);
   RUN_TEST(test_sub_per_dispatch_model_override);
   RUN_TEST(test_sub_error_mapping);

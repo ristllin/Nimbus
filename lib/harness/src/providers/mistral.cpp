@@ -691,15 +691,28 @@ void clearSlot(Cached& c) {
 // Studio connectors that rode it and the one the bare task (never the chat
 // [CONTEXT] tail) or the spawn skill asked for.
 struct Provenance {
-  std::vector<std::string> attached;   // connector ids on the request
-  std::string askedId;                  // the attach id the task named ("" = none)
+  std::vector<nimbus::orch::AttachedConnector> attached;   // connectors on the request
+  std::string askedId;                  // the wire id the task named ("" = none)
   std::string asked;                    // its display name
 };
-Provenance provenanceOf(const JsonDocument& req, const Directive& d) {
+Provenance provenanceOf(const ProviderDeps& pd, const JsonDocument& req, const Directive& d) {
   Provenance p;
-  for (JsonObjectConst t : req["tools"].as<JsonArrayConst>())
-    if (strcmp(t["type"] | "", "connector") == 0) p.attached.push_back(t["connector_id"] | "");
+  p.attached = nimbus::orch::mistralAttachedConnectors(req);
   if (p.attached.empty()) return p;
+  // The request names a connector only by its wire id, and a custom Studio
+  // connector rides by UUID: an identity probe of the same attach (a scratch doc,
+  // never sent) adds the device name and type the task would call it by.
+  if (pd.attachMistral) {
+    JsonDocument probe = makeDoc(pd);
+    probe[nimbus::orch::kMistralIdentityProbe] = true;
+    pd.attachMistral(probe);
+    for (const auto& known : nimbus::orch::mistralAttachedConnectors(probe))
+      for (auto& a : p.attached)
+        if (a.id == known.id && a.name.empty() && a.type.empty()) {
+          a.name = known.name;
+          a.type = known.type;
+        }
+  }
   const char* task = d.task ? d.task : d.instruction;
   p.asked = nimbus::orch::connectorAskedFor(task ? task : "", d.skill ? d.skill : "",
                                             p.attached, &p.askedId);
@@ -742,7 +755,7 @@ FabricErr mistralDispatch(const ProviderDeps& pd, const std::string& model,
     // Studio connectors ride the conversation and run server-side (auto tool_choice
     // - no forcing, so no 422). Free-text result (no response_format schema).
     if (pd.attachMistral) pd.attachMistral(doc);
-    prov = provenanceOf(doc, d);
+    prov = provenanceOf(pd, doc, d);
     body = serializeBody(doc);
   }
 

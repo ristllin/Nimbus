@@ -188,6 +188,15 @@ void attachOpenAIWire(JsonDocument& d, const std::vector<ConnectorInfo>& cs, con
                       bool builtinsOnly = false);
 void attachMistralWire(JsonDocument& d, const std::vector<ConnectorInfo>& cs,
                        bool builtinsOnly = false);
+// A SCRATCH doc (never sent) whose root carries this key set to true asks
+// attachMistralWire for each Studio connector's device identity as well:
+// "device_name" and "device_type" ride beside its connector_id. Connector
+// provenance reads it to resolve a wire id back to what the owner and the head
+// call the connector (a custom Studio connector rides by UUID). A real request
+// never carries the key, so the wire stays byte-identical. Every attach hook
+// (device and Virtual Nimbus) passes the doc straight to attachMistralWire, so
+// both honor it with no wiring of their own.
+constexpr const char kMistralIdentityProbe[] = "nimbus_identity";
 void attachAnthropicWire(JsonDocument& agentBody, const std::vector<ConnectorInfo>& cs,
                          const BearerFn& bearer, bool builtinsOnly = false);
 
@@ -275,27 +284,54 @@ std::string connectorProviderForName(const std::vector<ConnectorInfo>& cs, const
 // is not a connector call.
 bool isProviderBuiltinTool(const std::string& name);
 
+// One connector that rode a sub-agent request: the wire id (a Mistral workspace id
+// such as google_calendar, or a custom connector's UUID) and, when known, the
+// device-side name and type it was configured under ("" = unknown). Implicit from
+// a bare id so a caller with only wire ids keeps working.
+struct AttachedConnector {
+  std::string id;     // connector_id on the wire
+  std::string name;   // device name ("crm", "work-cal"); "" = unknown
+  std::string type;   // device type / catalog id ("gcal", "notion"); "" = unknown
+  AttachedConnector(const char* wireId = "") : id(wireId ? wireId : "") {}
+  AttachedConnector(std::string wireId, std::string devName = "", std::string devType = "")
+      : id(std::move(wireId)), name(std::move(devName)), type(std::move(devType)) {}
+};
+
 // The display name ("Google Calendar") of the first attached connector a sub-agent
-// task asks for; "" when it names none of them. `attachedIds` are the connector
-// ids that rode the request (Mistral workspace ids such as google_calendar, or
-// device names). The task asks for one when `skill` names it exactly, or the task
-// text mentions its display name, catalog id, workspace id or an owner-data
-// phrase ("my calendar", "calendar events", "'s inbox", ...), case-insensitively
-// on word boundaries. A heuristic: a task that names none of these (e.g. "is
-// Friday free?") is not marked, so the sub system prompt's no-invention rule is
-// the backstop. `askedIdOut` (optional) receives the matched attach id.
+// task asks for; "" when it names none of them. A catalog connector shows its
+// catalog name (resolved from the device type when the wire id is not a catalog
+// id); any other shows its device name, else its wire id. The task asks for one
+// when `skill` names it exactly, or the task text, case-insensitively on word
+// boundaries, mentions:
+//   - an owner-data phrase ("my calendar", "calendar events", "'s inbox",
+//     "Linear issues", "Notion page", "Slack channel", "my repos", ...), or
+//   - its display name, catalog id, wire id or device name - EXCEPT a catalog
+//     name that is an ordinary English word (linear, notion, slack): research
+//     text ("explain linear regression", "the notion of", "some slack in the
+//     plan") uses those words without meaning the connector, so for them only a
+//     phrase or "<Name> connector" counts. A phrase with a capital letter
+//     ("in Linear") matches only as written, so "in linear time" is not one.
+// A heuristic: a task that names none of these (e.g. "is Friday free?") is not
+// marked, so the sub system prompt's no-invention rule is the backstop.
+// `askedIdOut` (optional) receives the matched wire id.
 std::string connectorAskedFor(const std::string& task, const std::string& skill,
-                              const std::vector<std::string>& attachedIds,
+                              const std::vector<AttachedConnector>& attached,
                               std::string* askedIdOut = nullptr);
 
 // Whether a tool.execution named `toolName` counts as a run of the asked
-// connector (attach id `askedId`, "" = none asked) among `attachedIds`: a
-// built-in never counts; a run named for ANOTHER attached connector
-// (gmail_search when Google Calendar was asked) does not count; a run named for
-// the asked one, or one no attached connector claims (nameless, unrecognized),
-// counts - real data is never called a guess on a naming hunch.
+// connector (wire id `askedId`, "" = none asked) among `attached`: a built-in
+// never counts; a run named for ANOTHER attached connector (gmail_search when
+// Google Calendar was asked, crm_search when a custom "crm" rode beside it) does
+// not count; a run named for the asked one, or one no attached connector claims
+// (nameless, unrecognized), counts - real data is never called a guess on a
+// naming hunch. A run is named for a connector when it starts with its wire id,
+// catalog id, device name or device type, then "_" or the end.
 bool countsAsConnectorRun(const std::string& toolName, const std::string& askedId,
-                          const std::vector<std::string>& attachedIds);
+                          const std::vector<AttachedConnector>& attached);
+
+// The connectors a Mistral request carries, read from its tools[] (connector_id,
+// plus device_name/device_type when `doc` is a kMistralIdentityProbe scratch doc).
+std::vector<AttachedConnector> mistralAttachedConnectors(const JsonDocument& doc);
 
 // The marker that opens a result whose task asked for `displayName` while the
 // connector never ran: "The Google Calendar connector was NOT called. The text

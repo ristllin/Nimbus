@@ -559,11 +559,20 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       const std::string& regName = (it != nameMap->end()) ? it->second : call.name;
       // CUM-536: a turn carrying an unverified connector result stores nothing in
       // long-term memory - memory.update stores new content too (it falls back to
-      // a plain store when nothing matches), so both doors are shut.
-      if (unverifiedTurn_ && (regName == "memory.write" || regName == "memory.update")) {
-        r.isError = true;
-        r.output = agent::kUnverifiedMemoryRefusal;
-        return done(r);
+      // a plain store when nothing matches), so both doors are shut. A head that
+      // calls the mem_write reply field as a tool hears that the field is shut
+      // too, never the usual "call memory_write now" recovery.
+      if (unverifiedTurn_) {
+        auto stores = [](const std::string& n) { return n == "memory.write" || n == "memory.update"; };
+        const char* twin = orch::ToolRegistry::turnFieldTool(regName);
+        if (stores(regName) || (twin && stores(twin))) {
+          r.isError = true;
+          r.output = twin ? regName + " is not a tool, and memory writes are refused this turn, "
+                                      "through the mem_write field of your orch_turn reply too. " +
+                                std::string(agent::kUnverifiedMemoryRefusal)
+                          : std::string(agent::kUnverifiedMemoryRefusal);
+          return done(r);
+        }
       }
       JsonDocument rq;
       rq["jsonrpc"] = "2.0";

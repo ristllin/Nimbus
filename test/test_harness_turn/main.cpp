@@ -1721,6 +1721,39 @@ static void test_unverified_turn_shuts_every_memory_store_tool() {
   }
 }
 
+// CUM-536 gate: on that turn the mem_write reply field is shut too, so a head that
+// calls it as a tool hears so, with the reason - never the usual recovery text
+// ("call memory_write now"), which the same turn would then refuse.
+static void test_unverified_turn_recovery_for_mem_write_names_the_refusal() {
+  for (const char* tool : {"mem_write", "Mem-Write"}) {
+    Rig r;
+    r.specs.push_back(orch::ToolRegistry::Spec{"memory.write", "store a fact", "{}"});
+    Rig::Script sc;
+    sc.dispatchTools = 1;
+    sc.toolName = tool;
+    r.scripts["anthropic"] = {sc};
+    r.jobs->addFreshResult("job0000", "gcal-fetch", "guess", "", false, /*unverified=*/true);
+    r.eng->maybeConsolidate("web");
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.toolResults.size(), tool);
+    const std::string& out = r.toolResults[0].output;
+    TEST_ASSERT_TRUE_MESSAGE(r.toolResults[0].isError, tool);
+    TEST_ASSERT_TRUE_MESSAGE(out.find("is not a tool, and memory writes are refused this turn") !=
+                                 std::string::npos, out.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(out.find(agent::kUnverifiedMemoryRefusal) != std::string::npos, out.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(out.find("call memory_write now") == std::string::npos, out.c_str());
+    TEST_ASSERT_EQUAL_MESSAGE(0, (int)r.mcpRequests.size(), tool);   // never reached the registry
+  }
+  // A verified turn keeps the ordinary recovery path (the registry answers it).
+  Rig v;
+  Rig::Script sc;
+  sc.dispatchTools = 1;
+  sc.toolName = "mem_write";
+  v.scripts["anthropic"] = {sc};
+  v.jobs->addFreshResult("job0000", "web-research", "facts", "", false, /*unverified=*/false);
+  v.eng->maybeConsolidate("web");
+  TEST_ASSERT_EQUAL(1, (int)v.mcpRequests.size());
+}
+
 // CUM-538 (item 5): the head's next turn hears that a spawn did not start and why,
 // once; a turn with nothing refused carries no such block.
 static void test_spawn_refusal_reaches_the_next_turn_once() {
@@ -1937,6 +1970,7 @@ int main(int, char**) {
   RUN_TEST(test_unverified_connector_result_closes_memory_for_that_turn);
   RUN_TEST(test_spawn_refusal_reaches_the_next_turn_once);
   RUN_TEST(test_unverified_turn_shuts_every_memory_store_tool);
+  RUN_TEST(test_unverified_turn_recovery_for_mem_write_names_the_refusal);
   RUN_TEST(test_hooks_turn_end_fires_on_failure_and_sources_track);
   UNITY_END();
   return 0;

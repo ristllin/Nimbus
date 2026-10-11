@@ -1,6 +1,6 @@
 #include "nimbus/orch/connectors_wire.h"
 
-#include <cstring>   // std::strcmp (sub-agent-capabilities provider match)
+#include <cstring>   // std::strcmp (provider match, connector tools[] scan)
 
 namespace nimbus {
 namespace orch {
@@ -603,25 +603,48 @@ namespace {
 // What a connector's data IS for the owner ("not your calendar"), and the
 // phrases a task may use for the OWNER'S data instead of the connector's name.
 // Phrases, not bare words: "research the Gregorian calendar" must not read as a
-// request for the owner's calendar. Ids are catalog ids; lists end in nullptr.
+// request for the owner's calendar. A phrase with a capital letter is matched as
+// written ("in Linear" is the product, "in linear time" is not). Ids are catalog
+// ids; lists end in nullptr.
 const char* const kGcalPhrases[] = {"my calendar", "your calendar", "'s calendar",
                                     "calendar event", "calendar events", "my schedule",
                                     "your schedule", "'s schedule", nullptr};
 const char* const kGmailPhrases[] = {"my inbox", "your inbox", "'s inbox", "my email",
                                      "my emails", "'s email", "'s emails", nullptr};
+const char* const kNotionPhrases[] = {"notion page", "notion pages", "notion database",
+                                      "notion databases", "notion workspace", "notion doc",
+                                      "notion docs", "notion connector", "in Notion",
+                                      "from Notion", "to Notion", nullptr};
+const char* const kGithubPhrases[] = {"my repo", "my repos", "my repository",
+                                      "my repositories", "your repo", "your repos",
+                                      "your repository", "your repositories", "'s repo",
+                                      "'s repos", nullptr};
+const char* const kSlackPhrases[] = {"slack channel", "slack channels", "slack message",
+                                     "slack messages", "slack thread", "slack threads",
+                                     "slack dm", "slack dms", "slack workspace",
+                                     "slack connector", "in Slack", "on Slack", "from Slack",
+                                     "to Slack", nullptr};
+const char* const kLinearPhrases[] = {"linear issue", "linear issues", "linear ticket",
+                                      "linear tickets", "linear project", "linear projects",
+                                      "linear workspace", "linear connector", "in Linear",
+                                      "from Linear", nullptr};
 struct ProvenanceWords {
   const char* id;
   const char* noun;
   const char* const* phrases;   // nullptr = none
+  // The catalog name is an ordinary English word ("explain linear regression",
+  // "the notion of", "some slack in the plan"): the bare id or display name never
+  // names the connector, only a phrase does.
+  bool phraseOnly;
 };
 const ProvenanceWords kProvenance[] = {
-    {"gcal", "your calendar", kGcalPhrases},
-    {"gmail", "your email", kGmailPhrases},
-    {"gdrive", "your Drive files", nullptr},
-    {"notion", "your Notion pages", nullptr},
-    {"github", "your GitHub data", nullptr},
-    {"slack", "your Slack messages", nullptr},
-    {"linear", "your Linear issues", nullptr},
+    {"gcal", "your calendar", kGcalPhrases, false},
+    {"gmail", "your email", kGmailPhrases, false},
+    {"gdrive", "your Drive files", nullptr, false},
+    {"notion", "your Notion pages", kNotionPhrases, true},
+    {"github", "your GitHub data", kGithubPhrases, false},
+    {"slack", "your Slack messages", kSlackPhrases, true},
+    {"linear", "your Linear issues", kLinearPhrases, true},
 };
 
 const ProvenanceWords* provenanceFor(const std::string& canonId) {
@@ -630,24 +653,38 @@ const ProvenanceWords* provenanceFor(const std::string& canonId) {
   return nullptr;
 }
 
-// The owner-facing name of a catalog id ("gcal" -> "Google Calendar"); a
-// connector outside the catalog keeps the id it was attached under.
-std::string displayNameFor(const std::string& canonId, const std::string& rawId) {
+const KnownConnector* catalogEntry(const std::string& canonId) {
   int n = 0;
   const KnownConnector* k = knownConnectors(n);
   for (int i = 0; i < n; i++)
-    if (canonId == k[i].id) return k[i].displayName;
-  return rawId;
+    if (canonId == k[i].id) return &k[i];
+  return nullptr;
+}
+
+// The catalog id an attached connector stands for: its wire id's, else its device
+// type's (an owner-set explicit id like "notion_mcp" on a notion connector), else
+// the wire id itself (a custom connector).
+std::string canonOf(const AttachedConnector& a) {
+  const std::string fromId = canonicalConnectorId(a.id);
+  if (catalogEntry(fromId) || a.type.empty()) return fromId;
+  const std::string fromType = canonicalConnectorId(a.type);
+  return catalogEntry(fromType) ? fromType : fromId;
+}
+
+// The owner-facing name: the catalog name, else the device name, else the wire id.
+std::string displayOf(const AttachedConnector& a, const std::string& canon) {
+  if (const KnownConnector* k = catalogEntry(canon)) return k->displayName;
+  return a.name.empty() ? a.id : a.name;
 }
 
 bool isWordChar(char c) {
   return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9');
 }
 
-// `needle` (lowercase) occurs in `hay` (lowercase) with no letter or digit
-// against either edge that is itself a letter or digit ("calendar events"
-// matches "Google Calendar events", not "calendar eventsx"; "'s calendar"
-// matches "dana's calendar").
+// `needle` occurs in `hay` with no letter or digit against either edge that is
+// itself a letter or digit ("calendar events" matches "Google Calendar events",
+// not "calendar eventsx"; "'s calendar" matches "dana's calendar"). Exact bytes:
+// the caller lowercases both sides for a case-insensitive match.
 bool containsWord(const std::string& hay, const std::string& needle) {
   if (needle.empty()) return false;
   const bool wordStart = isWordChar(needle.front());
@@ -661,24 +698,35 @@ bool containsWord(const std::string& hay, const std::string& needle) {
   return false;
 }
 
-// Whether the task text names this connector in any of its forms.
-bool taskNames(const std::string& hay, const std::string& rawId, const std::string& canonId,
-               const std::string& display) {
-  if (containsWord(hay, lowerStr(rawId)) || containsWord(hay, canonId) ||
-      containsWord(hay, lowerStr(display)))
-    return true;
-  const ProvenanceWords* p = provenanceFor(canonId);
-  if (!p || !p->phrases) return false;
-  for (const char* const* ph = p->phrases; *ph; ++ph)
-    if (containsWord(hay, *ph)) return true;
+bool hasUpper(const char* s) {
+  for (; *s; ++s)
+    if (*s >= 'A' && *s <= 'Z') return true;
   return false;
 }
 
-// `name` (a tool.execution name, lowercase) is a run of the connector attached as
-// `id`: its name starts with the id, the catalog id, or the id without a
-// "_mcp"/"_app" suffix (google_drive_mcp runs google_drive_*), then "_" or end.
-bool runNamedFor(const std::string& name, const std::string& id) {
-  std::string forms[3] = {lowerStr(id), canonicalConnectorId(id), lowerStr(id)};
+// Whether the task (`task` as written, `hay` lowercased) names this connector.
+bool taskNames(const std::string& task, const std::string& hay, const AttachedConnector& a,
+               const std::string& canon, const std::string& display) {
+  const ProvenanceWords* p = provenanceFor(canon);
+  const std::string bareForms[] = {a.id, canon, display, a.name, a.type};
+  for (const std::string& form : bareForms) {
+    const std::string f = lowerStr(form);
+    if (p && p->phraseOnly && f == p->id) continue;   // an ordinary word: phrases only
+    if (containsWord(hay, f)) return true;
+  }
+  if (!p || !p->phrases) return false;
+  for (const char* const* ph = p->phrases; *ph; ++ph)
+    if (hasUpper(*ph) ? containsWord(task, *ph) : containsWord(hay, *ph)) return true;
+  return false;
+}
+
+// `name` (a tool.execution name, lowercase) is a run of attached connector `a`:
+// it starts with the wire id, the catalog id, the wire id without a "_mcp"/"_app"
+// suffix (google_drive_mcp runs google_drive_*), the device name or the device
+// type, then "_" or end.
+bool runNamedFor(const std::string& name, const AttachedConnector& a) {
+  std::string forms[5] = {lowerStr(a.id), canonOf(a), lowerStr(a.id), lowerStr(a.name),
+                          lowerStr(a.type)};
   for (const char* suffix : {"_mcp", "_app"}) {
     const size_t n = std::strlen(suffix);
     if (forms[2].size() > n && forms[2].compare(forms[2].size() - n, n, suffix) == 0)
@@ -693,16 +741,18 @@ bool runNamedFor(const std::string& name, const std::string& id) {
 }  // namespace
 
 std::string connectorAskedFor(const std::string& task, const std::string& skill,
-                              const std::vector<std::string>& attachedIds,
+                              const std::vector<AttachedConnector>& attached,
                               std::string* askedIdOut) {
   const std::string hay = lowerStr(task);
   const std::string wantSkill = canonicalConnectorId(skill);
-  for (const std::string& id : attachedIds) {
-    if (id.empty()) continue;
-    const std::string canon = canonicalConnectorId(id);
-    const std::string display = displayNameFor(canon, id);
-    if ((!wantSkill.empty() && wantSkill == canon) || taskNames(hay, id, canon, display)) {
-      if (askedIdOut) *askedIdOut = id;
+  for (const AttachedConnector& a : attached) {
+    if (a.id.empty()) continue;
+    const std::string canon = canonOf(a);
+    const std::string display = displayOf(a, canon);
+    const bool skillNames =
+        !wantSkill.empty() && (wantSkill == canon || wantSkill == lowerStr(a.name));
+    if (skillNames || taskNames(task, hay, a, canon, display)) {
+      if (askedIdOut) *askedIdOut = a.id;
       return display;
     }
   }
@@ -710,13 +760,25 @@ std::string connectorAskedFor(const std::string& task, const std::string& skill,
 }
 
 bool countsAsConnectorRun(const std::string& toolName, const std::string& askedId,
-                          const std::vector<std::string>& attachedIds) {
+                          const std::vector<AttachedConnector>& attached) {
   if (isProviderBuiltinTool(toolName)) return false;
   const std::string name = lowerStr(toolName);
-  if (askedId.empty() || runNamedFor(name, askedId)) return true;
-  for (const std::string& other : attachedIds)
-    if (other != askedId && runNamedFor(name, other)) return false;   // another connector ran
+  if (askedId.empty()) return true;
+  for (const AttachedConnector& a : attached)
+    if (a.id == askedId && runNamedFor(name, a)) return true;
+  for (const AttachedConnector& other : attached)
+    if (other.id != askedId && runNamedFor(name, other)) return false;   // another connector ran
   return true;   // nameless or unrecognized: some connector ran, give it the benefit of the doubt
+}
+
+std::vector<AttachedConnector> mistralAttachedConnectors(const JsonDocument& doc) {
+  std::vector<AttachedConnector> out;
+  for (JsonObjectConst t : doc["tools"].as<JsonArrayConst>()) {
+    if (std::strcmp(t["type"] | "", "connector") != 0) continue;
+    out.emplace_back(std::string(t["connector_id"] | ""), std::string(t["device_name"] | ""),
+                     std::string(t["device_type"] | ""));
+  }
+  return out;
 }
 
 std::string connectorNotCalledNote(const std::string& displayName) {
@@ -838,6 +900,10 @@ void attachMistralWire(JsonDocument& d, const std::vector<ConnectorInfo>& cs, bo
       // request 200s, the tools never appear - field-hit on nimbus-5: "github"
       // instead of "github_app" made every GitHub probe come back empty).
       t["connector_id"] = mistralConnectorId(c);
+      if (d[kMistralIdentityProbe] | false) {   // scratch doc only (never sent)
+        t["device_name"] = c.name;
+        t["device_type"] = c.type;
+      }
     }
   }
 }

@@ -252,6 +252,11 @@ bool ToolRegistry::isTurnFieldName(const std::string& name) {
   return turnFieldFor(name) != nullptr;
 }
 
+const char* ToolRegistry::turnFieldTool(const std::string& name) {
+  const TurnFieldHint* h = turnFieldFor(name);
+  return h ? h->tool : nullptr;
+}
+
 std::string ToolRegistry::callableNamesText(const std::string& name, const Principal& who) const {
   std::string list;
   int more = 0;

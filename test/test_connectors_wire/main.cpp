@@ -1438,7 +1438,7 @@ static void test_cum514_no_stale_web_location_in_sources() {
 // never marked.
 static void test_cum536_connector_asked_for() {
   using nimbus::orch::connectorAskedFor;
-  const std::vector<std::string> gcal = {"google_calendar"};
+  const std::vector<nimbus::orch::AttachedConnector> gcal = {"google_calendar"};
   TEST_ASSERT_EQUAL_STRING("Google Calendar",
       connectorAskedFor("Fetch all Google Calendar events for the current week", "", gcal).c_str());
   TEST_ASSERT_EQUAL_STRING("Google Calendar",
@@ -1471,6 +1471,134 @@ static void test_cum536_connector_asked_for() {
   TEST_ASSERT_EQUAL_STRING("", connectorAskedFor("Fetch my calendar", "", {}).c_str());
 }
 
+// ---- CUM-536 gate: catalog names that are ordinary English words -------------
+// Every enabled Mistral Studio connector rides every Mistral sub-agent, so with the
+// Linear connector enabled a research task like "Explain linear regression" used to
+// be marked "connector was NOT called ... the model's own guess" and lose its turn's
+// memory writes. A catalog name that is an ordinary word now needs an owner-data
+// phrase (or "<Name> connector"); a name that is not a word still counts bare.
+static void test_cum536_word_names_need_an_owner_data_phrase() {
+  using nimbus::orch::connectorAskedFor;
+  struct Case { const char* task; const char* id; const char* want; };
+  static const Case kCases[] = {
+      // The gate's research tasks: never a connector request.
+      {"Explain linear regression for the report", "linear", ""},
+      {"Explain linear regression with a worked example", "linear", ""},
+      {"Survey linear regression libraries for ESP32", "linear", ""},
+      {"Linear interpolation vs cubic splines", "linear", ""},
+      {"Why does the algorithm run in linear time?", "linear", ""},
+      {"There is some slack in the build schedule", "slack", ""},
+      {"Pick up the slack on the Q4 plan", "slack", ""},
+      {"Explain the notion of back-pressure", "notion", ""},
+      {"Notion of free will: a short survey", "notion", ""},
+      // Owner-data phrases, one or more per list.
+      {"List my open Linear issues", "linear", "Linear"},
+      {"Create a Linear ticket for the crash", "linear", "Linear"},
+      {"Find the bugs filed in Linear this week", "linear", "Linear"},
+      {"Use the Linear connector to list projects", "linear", "Linear"},
+      {"Create a Notion page with the summary", "notion", "Notion"},
+      {"Query the roadmap database in Notion", "notion", "Notion"},
+      {"Publish the report to Notion", "notion", "Notion"},
+      {"Summarize the #eng Slack channel", "slack", "Slack"},
+      {"Read my Slack messages from today", "slack", "Slack"},
+      {"Post the digest on Slack", "slack", "Slack"},
+      {"List my repos with open pull requests", "github_app", "GitHub"},
+      {"Which of your repositories has the most stars?", "github_app", "GitHub"},
+      // GitHub is not a dictionary word: its bare name still counts.
+      {"Open a GitHub issue for the crash", "github_app", "GitHub"},
+  };
+  for (const Case& c : kCases)
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(c.want, connectorAskedFor(c.task, "", {c.id}).c_str(), c.task);
+  // The skill path stays the exact ask for a word-named connector.
+  TEST_ASSERT_EQUAL_STRING("Linear", connectorAskedFor("triage the backlog", "linear", {"linear"}).c_str());
+  // A phrase with a capital matches only as written: "in linear" is not "in Linear".
+  TEST_ASSERT_EQUAL_STRING("", connectorAskedFor("topics in linear algebra", "", {"linear"}).c_str());
+}
+
+// The class: every catalog connector a sub-agent can carry is classified here, so a
+// new one cannot ship without a decision on whether its name is an ordinary word
+// (the bare name in research text must not mark the job) and with an owner-data
+// phrase that names it without the bare word.
+static void test_cum536_every_catalog_connector_is_classified() {
+  using nimbus::orch::connectorAskedFor;
+  struct Expect { const char* id; bool bareCounts; const char* phrase; };
+  static const Expect kExpect[] = {
+      {"github", true, "list my repos"},
+      {"gmail", true, "search my inbox"},
+      {"gcal", true, "what is on my calendar"},
+      {"gdrive", true, "find the deck in google drive"},
+      {"notion", false, "update the notion page"},
+      {"slack", false, "read the slack channel"},
+      {"linear", false, "close the linear issue"},
+  };
+  int n = 0;
+  const nimbus::orch::KnownConnector* k = knownConnectors(n);
+  for (int i = 0; i < n; i++) {
+    if (std::string(k[i].kind) == "builtin") continue;
+    const Expect* e = nullptr;
+    for (const Expect& x : kExpect)
+      if (std::string(x.id) == k[i].id) e = &x;
+    TEST_ASSERT_NOT_NULL_MESSAGE(e, k[i].id);   // a new catalog connector: classify it above
+    // Attached by the wire id the Mistral attach really sends.
+    ConnectorInfo ci = mk(k[i].id, "mistral", "connector");
+    const nimbus::orch::AttachedConnector att(nimbus::orch::mistralConnectorId(ci));
+    const std::string research = std::string("Research the history of ") + k[i].displayName +
+                                 " and the word " + k[i].id;
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(e->bareCounts ? k[i].displayName : "",
+                                     connectorAskedFor(research, "", {att}).c_str(), k[i].id);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(k[i].displayName,
+                                     connectorAskedFor(e->phrase, "", {att}).c_str(), e->phrase);
+  }
+}
+
+// ---- CUM-536 gate: custom or explicitly-id'd Studio connectors -------------------
+// A custom Studio connector rides by UUID, and a catalog connector may carry an
+// owner-set explicit id; the task names it by its device name or catalog name, so
+// provenance resolves the wire id through the device's own connector list (the
+// identity probe of the attach) for both the ask and the run count.
+static void test_cum536_custom_ids_resolve_through_the_device_list() {
+  using nimbus::orch::AttachedConnector;
+  using nimbus::orch::connectorAskedFor;
+  using nimbus::orch::countsAsConnectorRun;
+  const char* uuid = "3f2a9c1e-7d41-4b0a-9e55-0c1d2e3f4a5b";
+  ConnectorInfo crm = mk("crm", "mistral", "connector", "", uuid);
+  ConnectorInfo notion = mk("team-wiki", "mistral", "connector", "", "notion_mcp");
+  notion.type = "notion";
+  ConnectorInfo gcal = mk("gcal", "mistral", "connector", "", "connector_googlecalendar");
+  const std::vector<ConnectorInfo> cs = {crm, notion, gcal};
+  // The real request carries wire ids only - byte-identical to before.
+  JsonDocument wire;
+  nimbus::orch::attachMistralWire(wire, cs);
+  TEST_ASSERT_FALSE(has(wire, "device_name"));
+  TEST_ASSERT_FALSE(has(wire, nimbus::orch::kMistralIdentityProbe));
+  const auto bare = nimbus::orch::mistralAttachedConnectors(wire);
+  TEST_ASSERT_EQUAL(3, (int)bare.size());
+  TEST_ASSERT_EQUAL_STRING(uuid, bare[0].id.c_str());
+  TEST_ASSERT_EQUAL_STRING("", bare[0].name.c_str());
+  // The identity probe (a scratch doc) adds the device name and type.
+  JsonDocument probe;
+  probe[nimbus::orch::kMistralIdentityProbe] = true;
+  nimbus::orch::attachMistralWire(probe, cs);
+  const auto att = nimbus::orch::mistralAttachedConnectors(probe);
+  TEST_ASSERT_EQUAL(3, (int)att.size());
+  TEST_ASSERT_EQUAL_STRING("crm", att[0].name.c_str());
+  TEST_ASSERT_EQUAL_STRING("notion", att[1].type.c_str());
+  // The ask, by device name (custom) and by catalog name (explicit id).
+  std::string askedId;
+  TEST_ASSERT_EQUAL_STRING("crm", connectorAskedFor("Pull my open deals from crm", "", att, &askedId).c_str());
+  TEST_ASSERT_EQUAL_STRING(uuid, askedId.c_str());
+  TEST_ASSERT_EQUAL_STRING("Notion", connectorAskedFor("Create a Notion page with the plan", "", att).c_str());
+  TEST_ASSERT_EQUAL_STRING("Google Calendar", connectorAskedFor("check my calendar", "", att).c_str());
+  // Without the device identity the UUID connector is invisible (the old blind spot).
+  TEST_ASSERT_EQUAL_STRING("", connectorAskedFor("Pull my open deals from crm", "", bare).c_str());
+  // The run count: a crm_* run is crm's, so it counts for crm and never vouches for
+  // the calendar; a notion_* run counts for the explicitly-id'd Notion connector.
+  TEST_ASSERT_TRUE(countsAsConnectorRun("crm_search_deals", uuid, att));
+  TEST_ASSERT_FALSE(countsAsConnectorRun("crm_search_deals", "google_calendar", att));
+  TEST_ASSERT_TRUE(countsAsConnectorRun("notion_search", "notion_mcp", att));
+  TEST_ASSERT_FALSE(countsAsConnectorRun("notion_search", uuid, att));
+}
+
 static void test_cum536_not_called_note_and_builtins() {
   TEST_ASSERT_EQUAL_STRING(
       "The Google Calendar connector was NOT called. The text below is the model's own "
@@ -1487,7 +1615,8 @@ static void test_cum536_not_called_note_and_builtins() {
   TEST_ASSERT_FALSE(nimbus::orch::isProviderBuiltinTool(""));
   // Attribution: which runs count for the asked connector.
   using nimbus::orch::countsAsConnectorRun;
-  const std::vector<std::string> att = {"google_calendar", "gmail", "google_drive_mcp"};
+  const std::vector<nimbus::orch::AttachedConnector> att = {"google_calendar", "gmail",
+                                                            "google_drive_mcp"};
   TEST_ASSERT_TRUE(countsAsConnectorRun("google_calendar_list_events", "google_calendar", att));
   TEST_ASSERT_FALSE(countsAsConnectorRun("gmail_search", "google_calendar", att));
   TEST_ASSERT_FALSE(countsAsConnectorRun("google_drive_search", "google_calendar", att));
@@ -1645,6 +1774,9 @@ int main() {
   RUN_TEST(test_cum514_no_stale_web_location_in_sources);
   RUN_TEST(test_cum536_connector_asked_for);
   RUN_TEST(test_cum536_not_called_note_and_builtins);
+  RUN_TEST(test_cum536_word_names_need_an_owner_data_phrase);
+  RUN_TEST(test_cum536_every_catalog_connector_is_classified);
+  RUN_TEST(test_cum536_custom_ids_resolve_through_the_device_list);
   RUN_TEST(test_cum537_save_queues_probe_only_when_stale);
   RUN_TEST(test_cum537_card_state_never_says_connect_while_unchecked);
   RUN_TEST(test_cum537_catalog_row_says_check_is_running);
