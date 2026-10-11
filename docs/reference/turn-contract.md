@@ -237,8 +237,9 @@ an unknown name with recovery text instead of a bare error, in this order:
    case-folded). The text says it is a connector attached to that provider's
    sub-agent jobs, not a tool, and to spawn a job there with the request.
 3. **Anything else**: `unknown tool: <name>.` plus the names this caller can call,
-   in the spelling it used (`memory_write` for the head loop, `memory.write` for an
-   MCP client), bounded to 640 bytes with a `(+N more)` tail.
+   in the spelling it can call them (`memory.write` for the LAN MCP endpoint,
+   `memory_write` for the head loop unless it used a dotted name), bounded to 640
+   bytes with a `(+N more)` tail.
 
 The text is built per call from static strings; nothing is kept between calls.
 Pinned by `test/test_orch_tools` (`test_unknown_tool_*`, including a walk over

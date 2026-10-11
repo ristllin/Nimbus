@@ -1508,6 +1508,28 @@ static void test_unverified_connector_result_closes_memory_for_that_turn() {
   TEST_ASSERT_TRUE(r.attempts.back().inputs.find("connector was NOT called") == std::string::npos);
 }
 
+// The class, not the instance: EVERY loop tool that stores new long-term content
+// is shut on a flagged turn - memory.update falls back to a plain store when
+// nothing matches, so it was a second door (prism review).
+static void test_unverified_turn_shuts_every_memory_store_tool() {
+  for (const char* tool : {"memory_write", "memory_update"}) {
+    Rig r;
+    r.specs.push_back(orch::ToolRegistry::Spec{"memory.write", "store a fact", "{}"});
+    r.specs.push_back(orch::ToolRegistry::Spec{"memory.update", "update a fact", "{}"});
+    Rig::Script sc;
+    sc.dispatchTools = 1;
+    sc.toolName = tool;
+    r.scripts["anthropic"] = {sc};
+    r.jobs->addFreshResult("job0000", "gcal-fetch", "guess", "", false, /*unverified=*/true);
+    r.eng->maybeConsolidate("web");
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.toolResults.size(), tool);
+    TEST_ASSERT_TRUE_MESSAGE(r.toolResults[0].isError, tool);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(agent::kUnverifiedMemoryRefusal,
+                                     r.toolResults[0].output.c_str(), tool);
+    TEST_ASSERT_EQUAL_MESSAGE(0, (int)r.mcpRequests.size(), tool);
+  }
+}
+
 // CUM-538 (item 5): the head's next turn hears that a spawn did not start and why,
 // once; a turn with nothing refused carries no such block.
 static void test_spawn_refusal_reaches_the_next_turn_once() {
@@ -1521,6 +1543,9 @@ static void test_spawn_refusal_reaches_the_next_turn_once() {
   extra.task = "fetch the calendar";
   extra.name = "gcal-fetch";
   r.jobs->enqueueSpawn(extra, "web");
+  // Another chat's turn never sees it (the note carries this chat's task text).
+  r.eng->handleMessage("hello", "", "1001");
+  TEST_ASSERT_TRUE(r.attempts.back().inputs.find("[SPAWN REFUSED]") == std::string::npos);
   r.eng->handleMessage("did it start?", "", "web");
   const std::string& in = r.attempts.back().inputs;
   TEST_ASSERT_TRUE(in.find("[SPAWN REFUSED] (background: sub-agents you asked for that did NOT "
@@ -1710,6 +1735,7 @@ int main(int, char**) {
   RUN_TEST(test_hooks_fire_on_happy_turn_with_tools);
   RUN_TEST(test_unverified_connector_result_closes_memory_for_that_turn);
   RUN_TEST(test_spawn_refusal_reaches_the_next_turn_once);
+  RUN_TEST(test_unverified_turn_shuts_every_memory_store_tool);
   RUN_TEST(test_hooks_turn_end_fires_on_failure_and_sources_track);
   UNITY_END();
   return 0;

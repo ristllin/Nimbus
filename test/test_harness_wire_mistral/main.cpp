@@ -437,8 +437,8 @@ static agent::providers::ProviderDeps gcalAttachedPd(FakeProviderDeps& d) {
   return pd;
 }
 
-static agent::ResultEnvelope runSub(FakeProviderDeps& d, const agent::providers::ProviderDeps& pd,
-                                    const char* task, const char* instruction) {
+static agent::ResultEnvelope runSub(const agent::providers::ProviderDeps& pd, const char* task,
+                                    const char* instruction) {
   agent::Directive dir;
   dir.task = task;
   dir.instruction = instruction;
@@ -446,7 +446,6 @@ static agent::ResultEnvelope runSub(FakeProviderDeps& d, const agent::providers:
   TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::mistralDispatch(pd, "m", dir, jobId));
   agent::ResultEnvelope env{};
   TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::mistralPoll(pd, jobId, env));
-  (void)d;
   return env;
 }
 
@@ -458,10 +457,9 @@ static void test_sub_connector_attached_but_never_called() {
       "{\"conversation_id\":\"conv_x\",\"outputs\":[{\"type\":\"message.output\","
       "\"content\":\"Mon 12 Oct 09:00 Team Stand-up\"}]}"});
   auto pd = gcalAttachedPd(d);
-  agent::ResultEnvelope env = runSub(d, pd,
+  agent::ResultEnvelope env = runSub(pd,
       "Fetch all Google Calendar events for the current week (2026-10-11 to 2026-10-17).",
       "[Current date-time: x]\nFetch all Google Calendar events for the current week.");
-  TEST_ASSERT_EQUAL(1, env.connectorsAttached);   // web_search is a built-in, not counted
   TEST_ASSERT_EQUAL(0, env.connectorCalls);
   TEST_ASSERT_EQUAL_STRING("Google Calendar", env.connectorAsked);
   TEST_ASSERT_EQUAL_STRING("Mon 12 Oct 09:00 Team Stand-up", env.reply);   // the text is untouched here
@@ -480,11 +478,41 @@ static void test_sub_connector_called_counts_the_execution() {
       "\"arguments\":\"{}\",\"info\":{\"big\":[1,2,3]}},"
       "{\"type\":\"message.output\",\"content\":\"Standup at 10:00\"}]}"});
   auto pd = gcalAttachedPd(d);
-  agent::ResultEnvelope env = runSub(d, pd, "List my Google Calendar events today", "x");
-  TEST_ASSERT_EQUAL(1, env.connectorsAttached);
+  agent::ResultEnvelope env = runSub(pd, "List my Google Calendar events today", "x");
   TEST_ASSERT_EQUAL(1, env.connectorCalls);   // the web_search run is not a connector call
   TEST_ASSERT_EQUAL_STRING("Google Calendar", env.connectorAsked);
   TEST_ASSERT_EQUAL_STRING("Standup at 10:00", env.reply);
+}
+
+// Per-connector attribution (prism review): with gcal AND gmail attached, a
+// gmail run must not vouch for a calendar answer the gcal connector never
+// fetched; a run no attached connector claims still counts (benefit of doubt).
+static void test_sub_other_connectors_run_does_not_vouch() {
+  auto twoAttached = [](FakeProviderDeps& d) {
+    auto pd = d.contract();
+    pd.attachMistral = [](JsonDocument& doc) {
+      for (const char* id : {"google_calendar", "gmail"}) {
+        JsonObject t = doc["tools"].add<JsonObject>();
+        t["type"] = "connector";
+        t["connector_id"] = id;
+      }
+    };
+    return pd;
+  };
+  FakeProviderDeps d;
+  d.http.script.push_back({"", "/v1/conversations", 200,
+      "{\"outputs\":[{\"type\":\"tool.execution\",\"name\":\"gmail_search\"},"
+      "{\"type\":\"message.output\",\"content\":\"Invite added to your calendar\"}]}"});
+  agent::ResultEnvelope env = runSub(twoAttached(d), "Add the invites to my Google Calendar", "x");
+  TEST_ASSERT_EQUAL_STRING("Google Calendar", env.connectorAsked);
+  TEST_ASSERT_EQUAL(0, env.connectorCalls);   // only gmail ran
+
+  FakeProviderDeps d2;
+  d2.http.script.push_back({"", "/v1/conversations", 200,
+      "{\"outputs\":[{\"type\":\"tool.execution\",\"name\":\"list_events\"},"
+      "{\"type\":\"message.output\",\"content\":\"Standup 10:00\"}]}"});
+  agent::ResultEnvelope e2 = runSub(twoAttached(d2), "List my calendar events today", "x");
+  TEST_ASSERT_EQUAL(1, e2.connectorCalls);    // unclaimed run: counted, never called a guess
 }
 
 // Only the bare task decides: a calendar mention in the chat [CONTEXT] tail of the
@@ -495,16 +523,14 @@ static void test_sub_provenance_reads_the_task_not_the_context() {
   d.http.script.push_back({"", "/v1/conversations", 200,
       "{\"outputs\":[{\"type\":\"message.output\",\"content\":\"prices...\"}]}"});
   auto pd = gcalAttachedPd(d);
-  agent::ResultEnvelope env = runSub(d, pd, "Compare wood-fibre board prices",
+  agent::ResultEnvelope env = runSub(pd, "Compare wood-fibre board prices",
       "Compare wood-fibre board prices\n\n[CONTEXT]\n- user: what's on my Google Calendar?");
-  TEST_ASSERT_EQUAL(1, env.connectorsAttached);
   TEST_ASSERT_EQUAL_STRING("", env.connectorAsked);
 
   FakeProviderDeps d2;   // the default rig attaches only the web_search built-in
   d2.http.script.push_back({"", "/v1/conversations", 200,
       "{\"outputs\":[{\"type\":\"message.output\",\"content\":\"ok\"}]}"});
-  agent::ResultEnvelope e2 = runSub(d2, d2.contract(), "Fetch my Google Calendar", "x");
-  TEST_ASSERT_EQUAL(0, e2.connectorsAttached);
+  agent::ResultEnvelope e2 = runSub(d2.contract(), "Fetch my Google Calendar", "x");
   TEST_ASSERT_EQUAL_STRING("", e2.connectorAsked);
 }
 
@@ -1021,6 +1047,7 @@ int main(int, char**) {
   RUN_TEST(test_sub_connector_attached_but_never_called);
   RUN_TEST(test_sub_connector_called_counts_the_execution);
   RUN_TEST(test_sub_provenance_reads_the_task_not_the_context);
+  RUN_TEST(test_sub_other_connectors_run_does_not_vouch);
   RUN_TEST(test_sub_dispatch_text_only_no_artifacts);
   RUN_TEST(test_sub_per_dispatch_model_override);
   RUN_TEST(test_sub_error_mapping);

@@ -3497,10 +3497,10 @@ function loadConnectors(){fetch('/api/connectors').then(r=>r.json()).then(d=>{
   extra.forEach(c=>{html+=connCard({id:c.name,name:c.name,providers:c.prov,kind:c.kind,cid:c.cid||'',cred:'Credential / token',desc:'Custom connector.',docs:''},c,keyed,host);});
   $('conncards').innerHTML=html||'<p class=hint>No connectors available.</p>';
   $('connstat').textContent=cfg.length?(cfg.length+' configured'):'';
-  // CUM-537: while the workspace check runs, refresh the cards (bounded) so the badge
-  // turns to its real state without a reload.
+  // CUM-537: while the workspace check runs, refresh the cards so the badge turns to
+  // its real state without a reload. Bounded (~7 min) to cover the device's retries.
   clearTimeout(window._connPoll);
-  if(d.wsChecking&&(window._connPolls=(window._connPolls||0)+1)<=60)window._connPoll=setTimeout(loadConnectors,4000);
+  if(d.wsChecking&&(window._connPolls=(window._connPolls||0)+1)<=100)window._connPoll=setTimeout(loadConnectors,4000);
   else if(!d.wsChecking)window._connPolls=0;
 }).catch(()=>{});}
 function connCard(k,c,keyed,host){
@@ -3612,18 +3612,18 @@ function saveConnCard(id){
   if(kind==='connector')patch.cid=g('cid');
   if(kind!=='builtin'){const t=g('tok');if(t)patch.tok=t;}
   fetch('/api/connectors',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({patch:JSON.stringify(patch)}).toString()})
-   .then(jok).then(x=>{toast(x.ok?'Saved':'Rejected');loadConnectors();}).catch(failToast);
+   .then(jok).then(x=>{toast(x.ok?'Saved':'Rejected');window._connPolls=0;loadConnectors();}).catch(failToast);
 }
 function delConn(name){uiConfirm('Remove the '+name+' connector?',{ok:'Remove Connector',danger:true}).then(ok=>{ if(!ok)return;
   fetch('/api/connectors',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({del:name}).toString()})
-   .then(jok).then(x=>{toast('Removed');loadConnectors();}).catch(failToast);});
+   .then(jok).then(x=>{toast('Removed');window._connPolls=0;loadConnectors();}).catch(failToast);});
 }
 function saveConnectors(){
   const v=$('connBlob').value.trim(); if(!v){toast('Paste a JSON array first');return;}
   try{const p=JSON.parse(v); if(!Array.isArray(p))throw 0;}catch(e){toast('Not a JSON array');return;}
   fetch('/api/connectors',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
     body:new URLSearchParams({blob:v}).toString()})
-   .then(jok).then(d=>{toast(d.ok?'Connectors saved':'Rejected');$('connBlob').value='';loadConnectors();})
+   .then(jok).then(d=>{toast(d.ok?'Connectors saved':'Rejected');$('connBlob').value='';window._connPolls=0;loadConnectors();})
    .catch(failToast);
 }
 function orchApply(body){

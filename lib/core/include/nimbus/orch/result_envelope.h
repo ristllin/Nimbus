@@ -65,15 +65,14 @@ struct ResultEnvelope {
   uint32_t completionTokens = 0;
   // Connector provenance (CUM-536), filled by adapters that can see what ran
   // (the Mistral Conversations response lists one `tool.execution` entry per tool
-  // run). connectorsAttached = provider-side connectors that rode the dispatch;
-  // connectorCalls = connector executions the provider reported (built-in tools
-  // such as web_search excluded); connectorAsked = display name of an attached
-  // connector the TASK asked for ("" = none named). connectorAsked set with
+  // run). connectorAsked = display name of an attached connector the TASK asked
+  // for ("" = none named; a custom connector's id may be a 36-char UUID, hence
+  // 48); connectorCalls = runs that count for it (countsAsConnectorRun: built-ins
+  // and other attached connectors' runs excluded). connectorAsked set with
   // connectorCalls == 0 means the result is the model's own guess, and the job
   // engine opens it with an honest marker. Zeroed by the existing memsets.
-  uint8_t  connectorsAttached = 0;
   uint16_t connectorCalls     = 0;
-  char     connectorAsked[32] = {};
+  char     connectorAsked[48] = {};
   Action   actions[kMaxActions] = {};
   int      actionCount = 0;
   Artifact artifacts[kMaxArtifacts] = {};

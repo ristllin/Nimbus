@@ -1,5 +1,7 @@
 #include "nimbus/orch/tool_registry.h"
 
+#include "nimbus/orch/provider_slots.h"   // findProviderSlot - the provider label (CUM-538)
+
 using ArduinoJson::DeserializationError;
 using ArduinoJson::JsonArray;
 using ArduinoJson::JsonDocument;
@@ -232,23 +234,16 @@ const TurnFieldHint* turnFieldFor(const std::string& name) {
   return nullptr;
 }
 
-// The head loop advertises registry names with '.' -> '_' (loopToolName); an MCP
-// client uses them dotted. Answer in the spelling the caller used.
-std::string spellLike(const std::string& callerName, const std::string& regName) {
-  if (callerName.find('.') != std::string::npos) return regName;
+// Registry names in the spelling this caller can call: the LAN MCP endpoint
+// (its own kMcpNs principal) uses them dotted; the head loop advertises them with
+// '.' -> '_' (loopToolName), and a dotted call from it still resolves exactly.
+std::string spellFor(const Principal& who, const std::string& callerName,
+                     const std::string& regName) {
+  if (who.ns == kMcpNs || callerName.find('.') != std::string::npos) return regName;
   std::string out = regName;
   for (char& c : out)
     if (c == '.') c = '_';
   return out;
-}
-
-const char* providerLabel(const std::string& slug) {
-  if (slug == "mistral") return "Mistral";
-  if (slug == "openai") return "OpenAI";
-  if (slug == "anthropic") return "Anthropic";
-  if (slug == "zai") return "Z.ai";
-  if (slug == "cumulo") return "Cumulo Nimbus";
-  return nullptr;
 }
 
 }  // namespace
@@ -264,7 +259,7 @@ std::string ToolRegistry::callableNamesText(const std::string& name, const Princ
     // A registry tool that is ALSO a reply-field alias (session.spawn/tell/poll)
     // is hidden from the head loop; never offer it here as callable.
     if (isTurnFieldName(s.name)) continue;
-    const std::string n = spellLike(name, s.name);
+    const std::string n = spellFor(who, name, s.name);
     if (list.size() + n.size() + 2 > kUnknownToolListMax) { more++; continue; }
     if (!list.empty()) list += ", ";
     list += n;
@@ -287,7 +282,7 @@ std::string ToolRegistry::unknownToolText(const std::string& name, const Princip
                ? std::string("It is a field of your orch_turn reply: ")
                : std::string("Use the ") + h->field + " field of your orch_turn reply: ";
     out += h->how;
-    if (h->tool && has(h->tool)) out += std::string(", or call ") + spellLike(name, h->tool) + " now";
+    if (h->tool && has(h->tool)) out += std::string(", or call ") + spellFor(who, name, h->tool) + " now";
     out += ".";
     if (h->spawns) out += roomText;
     return out;
@@ -295,7 +290,8 @@ std::string ToolRegistry::unknownToolText(const std::string& name, const Princip
   // 2. A configured connector: it runs inside sub-agent jobs, never as a tool.
   const std::string prov = hints_.connectorProvider ? hints_.connectorProvider(name) : std::string();
   if (!prov.empty()) {
-    const char* label = providerLabel(prov);
+    const ProviderSlot* slot = findProviderSlot(prov.c_str());
+    const char* label = slot ? slot->label : nullptr;
     if (!label)   // "any" or an unknown slug: no provider to name
       return name + " is a connector attached to sub-agent jobs, not a tool. Spawn a "
              "sub-agent with the request: a session_ops item {\"op\":\"spawn\",\"task\":"

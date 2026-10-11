@@ -279,10 +279,23 @@ bool isProviderBuiltinTool(const std::string& name);
 // task asks for; "" when it names none of them. `attachedIds` are the connector
 // ids that rode the request (Mistral workspace ids such as google_calendar, or
 // device names). The task asks for one when `skill` names it exactly, or the task
-// text mentions its display name, catalog id, workspace id or a short alias
-// (gcal: "calendar"; gmail: "inbox"), case-insensitively on word boundaries.
+// text mentions its display name, catalog id, workspace id or an owner-data
+// phrase ("my calendar", "calendar events", "'s inbox", ...), case-insensitively
+// on word boundaries. A heuristic: a task that names none of these (e.g. "is
+// Friday free?") is not marked, so the sub system prompt's no-invention rule is
+// the backstop. `askedIdOut` (optional) receives the matched attach id.
 std::string connectorAskedFor(const std::string& task, const std::string& skill,
-                              const std::vector<std::string>& attachedIds);
+                              const std::vector<std::string>& attachedIds,
+                              std::string* askedIdOut = nullptr);
+
+// Whether a tool.execution named `toolName` counts as a run of the asked
+// connector (attach id `askedId`, "" = none asked) among `attachedIds`: a
+// built-in never counts; a run named for ANOTHER attached connector
+// (gmail_search when Google Calendar was asked) does not count; a run named for
+// the asked one, or one no attached connector claims (nameless, unrecognized),
+// counts - real data is never called a guess on a naming hunch.
+bool countsAsConnectorRun(const std::string& toolName, const std::string& askedId,
+                          const std::vector<std::string>& attachedIds);
 
 // The marker that opens a result whose task asked for `displayName` while the
 // connector never ran: "The Google Calendar connector was NOT called. The text
@@ -311,19 +324,24 @@ void applyConnectorAuth(std::vector<ConnectorInfo>& cs, const MistralWorkspace& 
 // ~300 KB) workspace probe is worth fetching at all.
 bool wantsMistralWorkspaceProbe(const std::vector<ConnectorInfo>& cs);
 
-// CUM-537: whether a connectors save should queue the workspace probe - an
-// enabled Studio connector the current answer does not list as usable (no answer
-// yet counts). A save that only touched already-listed connectors queues nothing.
-// The same rule a Virtual Nimbus applies on a connectors write.
+// CUM-537: whether a connectors save (or boot) should queue the workspace probe:
+// the STORED set has an enabled Studio connector the current answer does not list
+// as usable (no answer yet counts). It looks at the whole set, not at what one
+// save changed, so while such a connector stays enabled every save re-checks -
+// the owner may have just connected it in Mistral. When every enabled Studio
+// connector is listed, nothing is queued. The same rule a Virtual Nimbus applies
+// on a connectors write.
 bool mistralWorkspaceStale(const std::vector<ConnectorInfo>& cs, const MistralWorkspace& ws);
 
 // The web card's workspace state for one connector, as a machine slug the page
 // maps to a badge (CUM-537):
 //   ""          not a Mistral Studio connector, or listed (usable);
-//   "checking"  not checked yet, and the probe is queued or running;
+//   "checking"  the probe is queued or running and it is not listed yet (not
+//               checked, or not listed by the last answer);
 //   "unchecked" not checked yet, and nothing is queued (no Mistral key, or the
 //               last check could not run);
-//   "unlisted"  checked: the workspace does not offer it (connect it in Mistral).
+//   "unlisted"  checked, nothing pending: the workspace does not offer it
+//               (connect it in Mistral).
 const char* studioCardState(const ConnectorInfo& c, const MistralWorkspace& ws, bool probePending);
 
 // The head a turn actually runs on - the turn engine's resolution rule, shared so the

@@ -262,8 +262,9 @@ class JobEngine {
   // CUM-538: spawns that never started (queue full, no provider, the provider
   // refused) - the owner hears each at once, but the head used to learn nothing
   // and could claim a capacity it never had. One line per refusal with the real
-  // reason, bounded; the next turn's input carries them (consumed here).
-  std::string takeSpawnNotes();
+  // reason, bounded, kept per SPAWNING chat: only that chat's next turn reads
+  // (and consumes) them, so one tenant's task text never reaches another's turn.
+  std::string takeSpawnNotes(const std::string& chatId);
 
  private:
   // Pending-spawn queue entry (fixed char[] kept from the device struct so the
@@ -306,8 +307,13 @@ class JobEngine {
   struct ReapEntry { uint32_t key; uint32_t dueAt; };
 
   void dispatchSpawn(const PendingSpawn& p);
-  void noteSpawnRefused(const char* name, const std::string& task, const std::string& reason);
-  std::string spawnNotes_;   // bounded (kSpawnNotesMax); drained by takeSpawnNotes()
+  void noteSpawnRefused(const std::string& chatId, const char* name, const std::string& task,
+                        const std::string& reason);
+  // The Done text exactly as every copy must carry it (CUM-536 marker included).
+  std::string deliveredReply(const nimbus::orch::JobRecord& rec, bool& unverified);
+  struct SpawnNote { std::string chatId, line; };
+  std::vector<SpawnNote> spawnNotes_;   // all chats, bounded (kSpawnNotesMax bytes)
+  size_t spawnNotesBytes_ = 0;
   void deliver(const std::string& chatId, const std::string& text);
   void emitJobState(const char* tag, const char* backend, nimbus::orch::JobState st);
   void emitJobCleared(uint32_t key);

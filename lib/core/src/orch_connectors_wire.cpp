@@ -594,16 +594,23 @@ bool isProviderBuiltinTool(const std::string& name) {
 }
 
 namespace {
-// What a connector's data IS for the owner ("not your calendar"), and a short
-// alias a task may use instead of the connector's name. Ids are catalog ids.
+// What a connector's data IS for the owner ("not your calendar"), and the
+// phrases a task may use for the OWNER'S data instead of the connector's name.
+// Phrases, not bare words: "research the Gregorian calendar" must not read as a
+// request for the owner's calendar. Ids are catalog ids; lists end in nullptr.
+const char* const kGcalPhrases[] = {"my calendar", "your calendar", "'s calendar",
+                                    "calendar event", "calendar events", "my schedule",
+                                    "your schedule", "'s schedule", nullptr};
+const char* const kGmailPhrases[] = {"my inbox", "your inbox", "'s inbox", "my email",
+                                     "my emails", "'s email", "'s emails", nullptr};
 struct ProvenanceWords {
   const char* id;
   const char* noun;
-  const char* alias;   // nullptr = none
+  const char* const* phrases;   // nullptr = none
 };
 const ProvenanceWords kProvenance[] = {
-    {"gcal", "your calendar", "calendar"},
-    {"gmail", "your email", "inbox"},
+    {"gcal", "your calendar", kGcalPhrases},
+    {"gmail", "your email", kGmailPhrases},
     {"gdrive", "your Drive files", nullptr},
     {"notion", "your Notion pages", nullptr},
     {"github", "your GitHub data", nullptr},
@@ -631,14 +638,18 @@ bool isWordChar(char c) {
   return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9');
 }
 
-// `needle` (lowercase) occurs in `hay` (lowercase) with no letter or digit on
-// either side ("calendar" matches "Google Calendar events", not "calendars").
+// `needle` (lowercase) occurs in `hay` (lowercase) with no letter or digit
+// against either edge that is itself a letter or digit ("calendar events"
+// matches "Google Calendar events", not "calendar eventsx"; "'s calendar"
+// matches "dana's calendar").
 bool containsWord(const std::string& hay, const std::string& needle) {
   if (needle.empty()) return false;
+  const bool wordStart = isWordChar(needle.front());
+  const bool wordEnd = isWordChar(needle.back());
   for (size_t at = hay.find(needle); at != std::string::npos; at = hay.find(needle, at + 1)) {
-    const bool startOk = at == 0 || !isWordChar(hay[at - 1]);
+    const bool startOk = !wordStart || at == 0 || !isWordChar(hay[at - 1]);
     const size_t end = at + needle.size();
-    const bool endOk = end >= hay.size() || !isWordChar(hay[end]);
+    const bool endOk = !wordEnd || end >= hay.size() || !isWordChar(hay[end]);
     if (startOk && endOk) return true;
   }
   return false;
@@ -651,22 +662,55 @@ bool taskNames(const std::string& hay, const std::string& rawId, const std::stri
       containsWord(hay, lowerStr(display)))
     return true;
   const ProvenanceWords* p = provenanceFor(canonId);
-  return p && p->alias && containsWord(hay, p->alias);
+  if (!p || !p->phrases) return false;
+  for (const char* const* ph = p->phrases; *ph; ++ph)
+    if (containsWord(hay, *ph)) return true;
+  return false;
+}
+
+// `name` (a tool.execution name, lowercase) is a run of the connector attached as
+// `id`: its name starts with the id, the catalog id, or the id without a
+// "_mcp"/"_app" suffix (google_drive_mcp runs google_drive_*), then "_" or end.
+bool runNamedFor(const std::string& name, const std::string& id) {
+  std::string forms[3] = {lowerStr(id), canonicalConnectorId(id), lowerStr(id)};
+  for (const char* suffix : {"_mcp", "_app"}) {
+    const size_t n = std::strlen(suffix);
+    if (forms[2].size() > n && forms[2].compare(forms[2].size() - n, n, suffix) == 0)
+      forms[2].resize(forms[2].size() - n);
+  }
+  for (const std::string& f : forms) {
+    if (f.empty() || name.compare(0, f.size(), f) != 0) continue;
+    if (name.size() == f.size() || name[f.size()] == '_') return true;
+  }
+  return false;
 }
 }  // namespace
 
 std::string connectorAskedFor(const std::string& task, const std::string& skill,
-                              const std::vector<std::string>& attachedIds) {
+                              const std::vector<std::string>& attachedIds,
+                              std::string* askedIdOut) {
   const std::string hay = lowerStr(task);
-  const std::string wantSkill = skill.empty() ? std::string() : canonicalConnectorId(skill);
+  const std::string wantSkill = canonicalConnectorId(skill);
   for (const std::string& id : attachedIds) {
     if (id.empty()) continue;
     const std::string canon = canonicalConnectorId(id);
     const std::string display = displayNameFor(canon, id);
-    if ((!wantSkill.empty() && wantSkill == canon) || taskNames(hay, id, canon, display))
+    if ((!wantSkill.empty() && wantSkill == canon) || taskNames(hay, id, canon, display)) {
+      if (askedIdOut) *askedIdOut = id;
       return display;
+    }
   }
   return "";
+}
+
+bool countsAsConnectorRun(const std::string& toolName, const std::string& askedId,
+                          const std::vector<std::string>& attachedIds) {
+  if (isProviderBuiltinTool(toolName)) return false;
+  const std::string name = lowerStr(toolName);
+  if (askedId.empty() || runNamedFor(name, askedId)) return true;
+  for (const std::string& other : attachedIds)
+    if (other != askedId && runNamedFor(name, other)) return false;   // another connector ran
+  return true;   // nameless or unrecognized: some connector ran, give it the benefit of the doubt
 }
 
 std::string connectorNotCalledNote(const std::string& displayName) {
@@ -756,9 +800,11 @@ bool mistralWorkspaceStale(const std::vector<ConnectorInfo>& cs, const MistralWo
 
 const char* studioCardState(const ConnectorInfo& c, const MistralWorkspace& ws, bool probePending) {
   using W = ConnectorInfo::Workspace;
+  // A pending probe outranks an old "not listed": the owner may have just
+  // connected it in Mistral and saved, which is exactly what queued the probe.
   switch (mistralWorkspaceState(c, ws)) {
     case W::Unprobed:  return probePending ? "checking" : "unchecked";
-    case W::NotListed: return "unlisted";
+    case W::NotListed: return probePending ? "checking" : "unlisted";
     default:           return "";   // not a Studio connector, or listed (usable)
   }
 }
@@ -819,15 +865,15 @@ static std::string connectorRowNote(const ConnectorInfo& c, const char* prov,
   if (c.auth == 0) return " (sign-in FAILED - tell the owner)";
   if (c.auth == 2) {
     // Fail-closed, but honest about WHY: an unchecked workspace is not the same
-    // next step as a connector the workspace does not offer.
+    // next step as a connector the workspace does not offer, and a check that is
+    // running right now (a save or restart queued it) settles both.
+    if (probePending && (c.workspace == W::Unprobed || c.workspace == W::NotListed))
+      return " (not usable yet: the Mistral workspace check is running now, so try "
+             "again in a minute rather than sending the owner to Mistral)";
     if (c.workspace == W::Unprobed)
-      return probePending
-                 ? " (not usable yet: the Mistral workspace has not been checked; the "
-                   "check is running now, so try again in a minute rather than sending "
-                   "the owner to Mistral)"
-                 : " (not usable yet: the Mistral workspace has not been checked; it is "
-                   "checked after a restart, when a connector is saved, and when the "
-                   "Mistral key is verified or saved)";
+      return " (not usable yet: the Mistral workspace has not been checked; it is "
+             "checked after a restart, when a connector is saved, and when the "
+             "Mistral key is verified or saved)";
     // A Mistral Studio connector / hosted built-in has NO device credential: it
     // is authorized in the owner's Mistral account and referenced by name here,
     // so "add a credential" is the wrong instruction - point at Mistral instead.
@@ -955,11 +1001,6 @@ std::string catalogText(const std::vector<ConnectorInfo>& cs, const ProviderStat
   //    "owner can add slack" with no Mistral key would be a false promise);
   //  - document_library is skipped until its library-id plumbing exists.
   {
-    auto lower = [](std::string s) {
-      for (char& ch : s) if (ch >= 'A' && ch <= 'Z') ch = char(ch - 'A' + 'a');
-      return s;
-    };
-    auto canonical = [](const std::string& raw) { return canonicalConnectorId(raw); };
     auto keyedFor = [&](const char* providers) {
       const std::string p(providers);
       return (ps.openaiKeyed && p.find("openai") != std::string::npos) ||
@@ -973,8 +1014,8 @@ std::string catalogText(const std::vector<ConnectorInfo>& cs, const ProviderStat
       if (!keyedFor(kk[i].providers)) continue; // no keyed provider can run it
       bool have = false, en = false;
       for (const ConnectorInfo& c : cs)
-        if (canonical(c.type.empty() ? c.name : c.type) == id ||
-            canonical(c.name) == id) {
+        if (canonicalConnectorId(c.type.empty() ? c.name : c.type) == id ||
+            canonicalConnectorId(c.name) == id) {
           have = true;
           en = en || c.enabled;
         }

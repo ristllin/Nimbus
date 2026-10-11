@@ -33,7 +33,6 @@ struct FakeAdapter : agent::ManagedAgentAdapter {
   // fill it only when the provider returns a usage object - e.g. OpenAI).
   uint32_t usageIn = 0, usageOut = 0;
   // Optional scripted connector provenance (CUM-536), reported on the Done poll.
-  uint8_t connectorsAttached = 0;
   uint16_t connectorCalls = 0;
   std::string connectorAsked;
   int pollCount = 0;
@@ -70,7 +69,6 @@ struct FakeAdapter : agent::ManagedAgentAdapter {
     env.completionTokens = usageOut;
     if (env.state == agent::JobState::Done) {
       strncpy(env.reply, doneReply.c_str(), sizeof(env.reply) - 1);
-      env.connectorsAttached = connectorsAttached;
       env.connectorCalls = connectorCalls;
       strncpy(env.connectorAsked, connectorAsked.c_str(), sizeof(env.connectorAsked) - 1);
     }

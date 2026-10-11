@@ -11,6 +11,7 @@
 #include <time.h>
 
 #include "esp_heap_caps.h"
+#include <atomic>                 // g_pending / probe-queue flags touched by three tasks (CUM-537)
 #include <memory>                 // unique_ptr - heap-allocate the connectors Info[] (no big stack array)
 #include <new>                    // std::nothrow
 #include <solide/memory.h>        // NVS side channel for the verify-reason token
@@ -26,12 +27,13 @@
 namespace agent {
 namespace provider_verify {
 
-// One-slot queue. g_pending is the handoff flag between the web task (request)
-// and the verify task (run); the provider string is only written while
-// g_pending is false and read after it flips true, so the volatile flag is the
-// only synchronization needed (single producer, single consumer).
-static volatile bool g_pending = false;
-static char          g_provider[16] = {};
+// One-slot queue. g_pending is the handoff flag between the starters (the web
+// task's request(), the main loop's pumpRetry()) and the verify task (run). A
+// starter CLAIMS it with compare_exchange before writing g_provider/g_wsOnly, so
+// two starters can never both create a task (CUM-537 made the pump a regular
+// starter); the task reads them only after it was created, and clears it last.
+static std::atomic<bool> g_pending{false};
+static char              g_provider[16] = {};
 
 // Largest-contiguous-INTERNAL-block floor below which we DON'T attempt the handshake.
 // mbedTLS's big RX/TX content buffers (~16 KB each) are now routed to PSRAM (main.cpp
@@ -115,24 +117,25 @@ static int retryIdx(const String& provider) {
 // clearing: the Memory health row calls it out (past the retry window, item 4).
 static const uint32_t kStuckWindowMs = 1200000u;   // 20 min
 
-// CUM-537 workspace-probe queue. g_wsOnly marks the queued/running task as a
-// probe-only run (written before g_pending flips, like g_provider). g_wsQueued is
-// the one coalesced request; g_wsNextAt/g_wsTries bound the retries of a probe
-// that could not run (low memory, TLS busy, no answer) so a struggling device is
-// asked again a few times on a slow clock, never every pump pass.
-static volatile bool     g_wsOnly   = false;
-static volatile bool     g_wsQueued = false;
-static volatile uint32_t g_wsNextAt = 0;
-static volatile uint8_t  g_wsTries  = 0;
+// CUM-537 workspace-probe queue. g_wsOnly marks the claimed task as a probe-only
+// run (written after the claim, like g_provider). g_wsQueued is the one coalesced
+// request, written by the web task (a save), the main loop (the pump) and the
+// verify task (a re-queue); g_wsNextAt/g_wsTries bound the retries of a probe that
+// could not run so a struggling device is asked again a few times on a slow clock,
+// never every pump pass.
+static bool                  g_wsOnly = false;
+static std::atomic<bool>     g_wsQueued{false};
+static std::atomic<uint32_t> g_wsNextAt{0};
+static std::atomic<uint8_t>  g_wsTries{0};
 static const uint8_t  kWsMaxTries = 3;
 static const uint32_t kWsRetryMs  = 120000u;   // 2 min between attempts
 
 static bool startTask(const char* provider, bool wsOnly) {
-  if (g_pending) return false;  // slot busy - one verify at a time
+  bool idle = false;
+  if (!g_pending.compare_exchange_strong(idle, true)) return false;  // one verify at a time
   strncpy(g_provider, provider, sizeof(g_provider) - 1);
   g_provider[sizeof(g_provider) - 1] = 0;
   g_wsOnly = wsOnly;
-  g_pending = true;
   // Spawn the worker HERE rather than keeping one resident. A verify happens
   // when a human clicks "verify" in the web UI - a handful of times in a device's
   // life - but the task's 8 KB stack is INTERNAL SRAM held for the whole uptime,
@@ -152,10 +155,23 @@ bool request(const String& provider) { return startTask(provider.c_str(), false)
 
 bool pending() { return g_pending; }
 
-void queueWorkspaceProbe() {
+void queueWorkspaceProbeIfStale(uint32_t delayMs) {
+  if (!store::hasMistralKey() || !agent::connectors::mistralWorkspaceStale()) return;
   g_wsTries  = 0;
-  g_wsNextAt = (uint32_t)millis();
+  g_wsNextAt = (uint32_t)millis() + delayMs;
   g_wsQueued = true;
+}
+
+// A queued probe that could not run: try again on the slow clock, at most
+// kWsMaxTries attempts (a running turn defers without spending one), else drop it
+// - the next save, restart or manual verify asks again.
+static void rearmWorkspaceProbe(const char* why, bool countsTry) {
+  const bool retry = !countsTry || (uint8_t)(g_wsTries + 1) < kWsMaxTries;
+  alogf("verify: mistral workspace probe did not run (%s)%s", why,
+        retry ? " - will retry in 2 min" : "");
+  if (countsTry) g_wsTries = (uint8_t)(g_wsTries + 1);
+  g_wsNextAt = (uint32_t)millis() + kWsRetryMs;
+  g_wsQueued = retry;
 }
 
 bool workspaceProbePending() {
@@ -478,29 +494,33 @@ static bool syncMistralConnectors(const String& key) {
 // save or at boot): same task, same internal-memory gate and work slot as a
 // verify, but no /v1/models, no model probes and no verdict write. A probe that
 // cannot run re-queues itself on a slow clock, at most kWsMaxTries times.
-static void runWorkspaceProbeOnly() {
-  const String key = store::mistralKey();
-  const size_t max8 = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-  const char* why = !key.length() ? "no key" : (max8 < VERIFY_MIN_MAX8 ? "low memory" : nullptr);
-  if (!why) {
-    if (arbiter::acquireWork(35000)) {
-      const bool ok = syncMistralConnectors(key);
-      arbiter::releaseWork();
-      if (ok) { g_wsTries = 0; return; }
-      why = "no answer";
-    } else {
-      why = "tls busy";
-    }
+// One attempt: nullptr when an answer landed, else why it did not run. This
+// probe is AUTOMATIC (a save or a restart queued it), so it yields to the owner:
+// it never waits long for the work slot and backs off when a turn has started
+// since the pump queued it, rather than make that turn queue behind a ~300 KB
+// fetch on the single slot.
+static const char* attemptWorkspaceProbe(const String& key) {
+  if (!key.length()) return "no key";
+  if (heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) < VERIFY_MIN_MAX8)
+    return "low memory";
+  if (orchestrator::turnInFlight()) return "a turn is running";
+  if (!arbiter::acquireWork(5000)) return "tls busy";
+  if (orchestrator::turnInFlight()) {
+    arbiter::releaseWork();
+    return "a turn is running";
   }
-  const bool retry = key.length() && (uint8_t)(g_wsTries + 1) < kWsMaxTries;
-  alogf("verify: mistral workspace probe did not run (%s)%s", why,
-        retry ? " - will retry in 2 min" : "");
-  if (!retry) return;
-  g_wsTries  = (uint8_t)(g_wsTries + 1);
-  g_wsNextAt = (uint32_t)millis() + kWsRetryMs;
-  g_wsQueued = true;
+  const bool ok = syncMistralConnectors(key);
+  arbiter::releaseWork();
+  return ok ? nullptr : "no answer";
 }
 
+static void runWorkspaceProbeOnly() {
+  const String key = store::mistralKey();
+  const char* why = attemptWorkspaceProbe(key);
+  if (!why) { g_wsTries = 0; return; }
+  if (!key.length()) { g_wsQueued = false; return; }   // nothing to probe with
+  rearmWorkspaceProbe(why, strcmp(why, "a turn is running") != 0);
+}
 
 static void runOne() {
   if (g_wsOnly) { runWorkspaceProbeOnly(); g_pending = false; return; }   // CUM-537
@@ -994,8 +1014,9 @@ void pumpRetry() {
   const bool     online = (WiFi.status() == WL_CONNECTED);
   // CUM-537: a queued workspace probe (connector save / boot) goes first - it is
   // what turns an owner-visible "connect it in Mistral" into the truth.
-  if (g_wsQueued && !inTurn && online && (int32_t)(now - g_wsNextAt) >= 0) {
+  if (g_wsQueued && !inTurn && online && (int32_t)(now - g_wsNextAt.load()) >= 0) {
     if (startTask("mistral", /*wsOnly=*/true)) g_wsQueued = false;
+    else rearmWorkspaceProbe("could not start the worker", /*countsTry=*/true);
     return;
   }
   for (int i = 0; i < kNRetry; ++i) {

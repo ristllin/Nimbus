@@ -99,8 +99,9 @@ connector is not listed yet. That check needs no click from you:
   Connectors tab shows where it runs.
 - **Not listed, or listed as inactive:** not usable; the Connectors tab shows
   **connect it in Mistral**.
-- **Being checked** (right after a save or a restart): the card shows
-  **checking your Mistral workspace** and updates by itself when the check lands.
+- **Being checked** (right after a save or a restart, including a re-check of a
+  connector Mistral did not list before): the card shows **checking your Mistral
+  workspace** and updates by itself when the check lands.
 - **Not checked** (no Mistral key yet, or the check could not run): the card
   shows **Mistral workspace not checked**, and the assistant is told the
   workspace has not been checked rather than sent to Mistral for nothing.
@@ -116,15 +117,18 @@ added (the hosted page has no Verify button).
 calendar request from its own guess without ever calling the calendar connector.
 For a Mistral sub-agent the device reads Mistral's own record of the run (one
 entry per tool that ran). If the task asked for an attached connector (by its
-name, its id, or for Google Calendar the word "calendar") and no connector ran,
-the result opens with:
+name, its id, or a phrase such as "my calendar" or "calendar events") and that
+connector never ran, the result opens with:
 
 *"The Google Calendar connector was NOT called. The text below is the model's own
 guess, not your calendar."*
 
-That note rides into the saved document, the assistant's summary and the raw
-results, and nothing from that turn is saved to memory, so a guess is never
-remembered as a fact. A result where the connector ran is delivered unchanged.
+That note rides into the saved document, the assistant's summary, the activity
+record and the raw results, and the assistant saves nothing to long-term memory
+in the turn that reads it, so the guess is not stored as a fact on its own. A
+result where the connector ran is delivered unchanged. The check matches words,
+so a task that never names the connector (say, "is Friday free?") is not marked;
+the sub-agent is also told never to invent records when a tool does not run.
 
 > **What validation does not do.** It confirms the *provider key* works, not each
 > connector's individual tools. Per-connector *functional* probing - actually

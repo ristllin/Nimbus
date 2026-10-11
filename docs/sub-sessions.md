@@ -72,9 +72,10 @@ fan-out costs that memory only transiently.
 **The head hears the real reason a spawn did not start.** Every refusal (queue
 full, no keyed provider, a provider that refused the dispatch, including a 429
 with its quota window) is told to the owner at once and also leaves one line in
-the job engine (`JobEngine::takeSpawnNotes`, bounded to 640 bytes). The next
-turn's input carries them in a `[SPAWN REFUSED]` block (background framing: the
-owner was already told, nothing is running for them), so the head neither
+the job engine, kept per spawning chat and bounded to 640 bytes. That chat's
+next turn (and no other chat's: the line carries its task text) reads them in a
+`[SPAWN REFUSED]` block (`JobEngine::takeSpawnNotes(chatId)`, background framing:
+the owner was already told, nothing is running for them), so the head neither
 retries blind nor invents a reason. A head that calls a spawn field as a tool
 (`session_ops`, `spawn`) gets the live `[SPAWN CAPACITY]` number in the recovery
 text ([turn-contract.md](reference/turn-contract.md)): a Mistral head once
@@ -281,26 +282,35 @@ The host harness runs this whole chain live: `nimbus-lab sub` in
    connector that never ran opens with an honest marker, and its turn stores
    nothing. The Mistral sub-agent is synchronous, so the dispatch response
    already lists every tool run as a `tool.execution` output (no extra request).
-   `mistralDispatch` counts the ones that are not provider built-ins
-   (`isProviderBuiltinTool`: web_search, code_interpreter, ...), records which
-   Studio connectors rode the request, and asks `connectorAskedFor` whether the
-   bare task (`Directive::task`, never the chat `[CONTEXT]` tail) or the spawn's
-   `skill` names one of them. The `ResultEnvelope` carries
-   `connectorsAttached`, `connectorCalls` and `connectorAsked`; the log line is
+   Before the run, `mistralDispatch` records which Studio connectors rode the
+   request and asks `connectorAskedFor` whether the bare task
+   (`Directive::task`, never the chat `[CONTEXT]` tail) or the spawn's `skill`
+   names one of them (its name, catalog or workspace id, or an owner-data phrase
+   such as "my calendar"; talk about calendars in general does not count). After
+   it, `countsAsConnectorRun` decides which runs count for that connector:
+   provider built-ins (`isProviderBuiltinTool`) and runs named for another
+   attached connector (`gmail_search` when Google Calendar was asked) do not;
+   unclaimed or nameless runs do, so real data is never called a guess on a
+   naming hunch. The `ResultEnvelope` carries `connectorCalls` and
+   `connectorAsked`; the log line is
    `mistral sub: connectors attached=1 calls=0 asked=Google Calendar`. When
-   `connectorAsked` is set and `connectorCalls` is 0, `JobEngine` prepends
-   `connectorNotCalledNote` (*"The Google Calendar connector was NOT called. The
-   text below is the model's own guess, not your calendar."*) before the
-   project auto-persist, so the saved doc, `[FRESH RESULTS]` and the owner's raw
-   fallback all carry it, and flags the fresh result. The turn that takes a
-   flagged result (the synthesis turn, or an owner turn that folds it in) gets a
-   provenance sentence in its `[SYSTEM]` text and refuses every memory write:
-   `mem_write[]` items in `applyTurn` and the mid-loop `memory.write` tool, both
-   with `kUnverifiedMemoryRefusal`, which also lands in the next turn's
-   `[MEMORY RESULTS]`. Refusing (rather than tagging) keeps a guess out of
-   long-term memory entirely; the next turn can store what a real connector run
-   returns. Adapters that cannot see tool runs leave the fields zero, so their
-   results are delivered as before.
+   `connectorAsked` is set and `connectorCalls` is 0, `JobEngine` builds the
+   text with `connectorNotCalledNote` (*"The Google Calendar connector was NOT
+   called. The text below is the model's own guess, not your calendar."*) in
+   front BEFORE any copy is made: the result hook's activity row, the project
+   auto-persist, `[FRESH RESULTS]` and the owner's raw fallback all carry it,
+   and the fresh result is flagged. The turn that takes a flagged result (the
+   synthesis turn, or an owner turn that folds it in) gets a provenance sentence
+   in its `[SYSTEM]` text and stores nothing in long-term memory: `mem_write[]`
+   items in `applyTurn` and the mid-loop `memory.write` and `memory.update`
+   tools are refused with `kUnverifiedMemoryRefusal`, which also lands in the
+   next turn's `[MEMORY RESULTS]`. Refusing (rather than tagging) keeps the
+   guess out of memory in that turn; a later turn can store it only when asked,
+   and the marker stays on every copy it would read. Known limits: the match is
+   lexical (a task that never names the connector is not marked, and the sub
+   system prompt's no-invention rule is the backstop), and adapters that cannot
+   see tool runs leave the fields zero, so their results are delivered as
+   before.
 
 Every job-engine message (spawn acknowledgements, "Couldn't start that agent
 on ...", failures, the raw fallback) is also recorded in the chat's history, and

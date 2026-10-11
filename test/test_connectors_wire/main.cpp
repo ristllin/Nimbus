@@ -1432,6 +1432,19 @@ static void test_cum536_connector_asked_for() {
       connectorAskedFor("Use the gcal connector now and list the events", "", gcal).c_str());
   TEST_ASSERT_EQUAL_STRING("Google Calendar",
       connectorAskedFor("What is on my calendar on Friday?", "", gcal).c_str());
+  TEST_ASSERT_EQUAL_STRING("Google Calendar",
+      connectorAskedFor("Fetch Dana's calendar for next week", "", gcal).c_str());
+  TEST_ASSERT_EQUAL_STRING("Google Calendar",
+      connectorAskedFor("List the calendar events for Tuesday", "", gcal).c_str());
+  // Talk ABOUT calendars is not a request for the owner's calendar.
+  TEST_ASSERT_EQUAL_STRING("", connectorAskedFor("Summarize the history of the Gregorian "
+                                                 "calendar", "", gcal).c_str());
+  TEST_ASSERT_EQUAL_STRING("", connectorAskedFor("Research the best calendar app for "
+                                                 "freelancers", "", gcal).c_str());
+  TEST_ASSERT_EQUAL_STRING("", connectorAskedFor("Tips for inbox zero", "", {"gmail"}).c_str());
+  std::string askedId;
+  connectorAskedFor("check my calendar", "", {"gmail", "google_calendar"}, &askedId);
+  TEST_ASSERT_EQUAL_STRING("google_calendar", askedId.c_str());
   TEST_ASSERT_EQUAL_STRING("Google Calendar", connectorAskedFor("check it", "gcal", gcal).c_str());
   // Word boundaries and no-mention: never a false marker.
   TEST_ASSERT_EQUAL_STRING("", connectorAskedFor("Compare wood-fibre insulation prices", "", gcal).c_str());
@@ -1459,6 +1472,18 @@ static void test_cum536_not_called_note_and_builtins() {
     TEST_ASSERT_TRUE_MESSAGE(nimbus::orch::isProviderBuiltinTool(b), b);
   TEST_ASSERT_FALSE(nimbus::orch::isProviderBuiltinTool("google_calendar_list_events"));
   TEST_ASSERT_FALSE(nimbus::orch::isProviderBuiltinTool(""));
+  // Attribution: which runs count for the asked connector.
+  using nimbus::orch::countsAsConnectorRun;
+  const std::vector<std::string> att = {"google_calendar", "gmail", "google_drive_mcp"};
+  TEST_ASSERT_TRUE(countsAsConnectorRun("google_calendar_list_events", "google_calendar", att));
+  TEST_ASSERT_FALSE(countsAsConnectorRun("gmail_search", "google_calendar", att));
+  TEST_ASSERT_FALSE(countsAsConnectorRun("google_drive_search", "google_calendar", att));
+  TEST_ASSERT_FALSE(countsAsConnectorRun("web_search", "google_calendar", att));
+  TEST_ASSERT_TRUE(countsAsConnectorRun("list_events", "google_calendar", att));   // unclaimed
+  TEST_ASSERT_TRUE(countsAsConnectorRun("", "google_calendar", att));             // nameless
+  TEST_ASSERT_TRUE(countsAsConnectorRun("gmail_search", "", att));                // none asked
+  // The prefix needs "_" or the end: google_calendarx is claimed by nobody, so it counts.
+  TEST_ASSERT_TRUE(countsAsConnectorRun("google_calendarx", "gmail", {"gmail", "google_calendar"}));
   // The class: every catalog BUILT-IN is recognized (a new one must be added).
   int n = 0;
   const nimbus::orch::KnownConnector* k = knownConnectors(n);
@@ -1503,7 +1528,10 @@ static void test_cum537_card_state_never_says_connect_while_unchecked() {
   TEST_ASSERT_EQUAL_STRING("checking", studioCardState(gcal, none, /*probePending=*/true));
   TEST_ASSERT_EQUAL_STRING("unchecked", studioCardState(gcal, none, false));
   const auto other = wsListing("[{\"id\":\"u2\",\"name\":\"notion\",\"active\":true}]");
-  TEST_ASSERT_EQUAL_STRING("unlisted", studioCardState(gcal, other, true));
+  TEST_ASSERT_EQUAL_STRING("unlisted", studioCardState(gcal, other, false));
+  // A probe queued by a save outranks an old "not listed": the owner may have just
+  // connected it in Mistral, so the badge must not send them there meanwhile.
+  TEST_ASSERT_EQUAL_STRING("checking", studioCardState(gcal, other, true));
   const auto listed = wsListing("[{\"id\":\"u1\",\"name\":\"google_calendar\",\"active\":true}]");
   TEST_ASSERT_EQUAL_STRING("", studioCardState(gcal, listed, true));
   TEST_ASSERT_EQUAL_STRING("", studioCardState(mk("web_search", "mistral", "builtin"), none, true));
@@ -1521,8 +1549,12 @@ static void test_cum537_catalog_row_says_check_is_running() {
   ps.currentHost = "mistral";
   ps.mistralProbePending = true;
   const std::string running = catalogText(cs, ps);
-  TEST_ASSERT_TRUE(running.find("gcal (not usable yet: the Mistral workspace has not been checked; "
-                                "the check is running now") != std::string::npos);
+  TEST_ASSERT_TRUE(running.find("gcal (not usable yet: the Mistral workspace check is running "
+                                "now") != std::string::npos);
+  // ...and for a connector the last answer did not list while a re-check runs.
+  std::vector<ConnectorInfo> unl = {mk("gcal", "mistral", "connector", "", "connector_googlecalendar")};
+  nimbus::orch::applyConnectorAuth(unl, wsListing("[{\"id\":\"u2\",\"name\":\"notion\",\"active\":true}]"));
+  TEST_ASSERT_TRUE(catalogText(unl, ps).find("check is running now") != std::string::npos);
   ps.mistralProbePending = false;
   const std::string idle = catalogText(cs, ps);
   TEST_ASSERT_TRUE(idle.find("checked after a restart, when a connector is saved, and when the "

@@ -2404,13 +2404,6 @@ void beginWeb(const WebConfig& wc) {
       }
       return {};
     };
-    // CUM-537: a stored set with an enabled Studio connector the workspace answer
-    // does not list yet queues the same workspace probe a Mistral verify runs, so
-    // a connector that is connected in Mistral reads usable without a re-verify.
-    auto queueWorkspaceProbe = [] {
-      if (agent::store::hasMistralKey() && agent::connectors::mistralWorkspaceStale())
-        agent::provider_verify::queueWorkspaceProbe();
-    };
     String blob = param("blob");
     if (blob.length()) {
       JsonDocument d;
@@ -2427,7 +2420,10 @@ void beginWeb(const WebConfig& wc) {
       // connectors pin at conversation creation: reset it only once the set stored
       if (agent::store::setConnectorsJson(blob)) {
         agent::store::setOrchConvId("");
-        queueWorkspaceProbe();
+        // CUM-537: a stored set with an enabled Studio connector the workspace
+        // answer does not list yet queues the workspace probe a Mistral verify
+        // runs, so a connector connected in Mistral reads usable with no re-verify.
+        agent::provider_verify::queueWorkspaceProbeIfStale(0);
       }
       sendSaved(r, save);
       return;
@@ -2484,7 +2480,7 @@ void beginWeb(const WebConfig& wc) {
     // actually stored (a 507 leaves the old set, and its conversation, in force).
     if (agent::store::setConnectorsJson(outBlob)) {
       agent::store::setOrchConvId("");
-      queueWorkspaceProbe();
+      agent::provider_verify::queueWorkspaceProbeIfStale(0);   // CUM-537 (see the blob path)
     }
     sendSaved(r, save);
   });

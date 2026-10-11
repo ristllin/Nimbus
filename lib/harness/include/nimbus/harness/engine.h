@@ -314,7 +314,8 @@ class TurnEngine {
 
  private:
   std::string takePendingMemResults();
-  std::string takeSpawnNotes();   // CUM-538: "[SPAWN REFUSED]" block ("" when none)
+  // CUM-538: this chat's "[SPAWN REFUSED]" block ("" when none).
+  std::string takeSpawnNotes(const std::string& chatId);
   std::string buildDynamicContext();
  public:
   // The head the next turn will run on - the ONE resolution runTurn and the

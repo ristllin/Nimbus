@@ -342,6 +342,15 @@ static void test_unknown_tool_lists_callable_names_bounded() {
   TEST_ASSERT_FALSE(has(u.error, "session_spawn"));
   ToolResult d = callUnknown(reg, "ghost.tool");
   TEST_ASSERT_TRUE(has(d.error, "Callable tools: memory.write, device.reboot."));
+  // The LAN MCP endpoint (its own kMcpNs principal) gets the dotted names it can
+  // call, whatever the spelling of its bad name.
+  nimbus::orch::Principal mcp =
+      nimbus::orch::principalForRole(nimbus::orch::kMcpNs, nimbus::orch::Role::User);
+  mcp.ns = nimbus::orch::kMcpNs;
+  JsonDocument e; e.to<JsonObject>();
+  ToolResult m = reg.dispatch("search", e.as<JsonObjectConst>(), mcp);
+  TEST_ASSERT_TRUE(has(m.error, "Callable tools: memory.write"));
+  TEST_ASSERT_FALSE(has(m.error, "memory_write"));
   for (int i = 0; i < 200; i++)
     reg.add("bulk.tool_number_" + std::to_string(i), "d", noop);
   ToolResult b = callUnknown(reg, "nope");

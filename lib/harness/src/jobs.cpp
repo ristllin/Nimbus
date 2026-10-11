@@ -328,24 +328,47 @@ void JobEngine::deliverOwnerFallback() {
 // ---- spawn enqueue + dispatch -----------------------------------------------
 
 // CUM-538: one model-facing line per spawn that never started, so the head's next
-// turn knows the real reason (and does not invent one). Bounded: past the budget a
-// count replaces further lines.
+// turn knows the real reason (and does not invent one). Kept per spawning chat.
+// Bounded: past the budget a chat gets one fold line and nothing more after it.
 static constexpr size_t kSpawnNotesMax = 640;
+static const char kSpawnNotesFold[] = "(more refusals not listed)\n";
 
-void JobEngine::noteSpawnRefused(const char* name, const std::string& task,
-                                 const std::string& reason) {
+void JobEngine::noteSpawnRefused(const std::string& chatId, const char* name,
+                                 const std::string& task, const std::string& reason) {
+  for (const auto& n : spawnNotes_)
+    if (n.chatId == chatId && n.line == kSpawnNotesFold) return;   // already folded
   const std::string who = (name && name[0]) ? std::string(name)
                                             : nimbus::orch::foldLine("", task, 40);
-  const std::string line = "- '" + who + "' did not start: " + reason + "\n";
-  if (spawnNotes_.size() + line.size() <= kSpawnNotesMax) spawnNotes_ += line;
-  else if (spawnNotes_.find("(more refusals not listed)") == std::string::npos)
-    spawnNotes_ += "(more refusals not listed)\n";
+  std::string line = "- '" + who + "' did not start: " + reason + "\n";
+  if (spawnNotesBytes_ + line.size() > kSpawnNotesMax) line = kSpawnNotesFold;
+  spawnNotesBytes_ += line.size();
+  spawnNotes_.push_back(SpawnNote{chatId, std::move(line)});
 }
 
-std::string JobEngine::takeSpawnNotes() {
+std::string JobEngine::takeSpawnNotes(const std::string& chatId) {
   std::string out;
-  out.swap(spawnNotes_);
+  for (size_t i = 0; i < spawnNotes_.size();) {
+    if (spawnNotes_[i].chatId != chatId) { ++i; continue; }
+    out += spawnNotes_[i].line;
+    spawnNotesBytes_ -= spawnNotes_[i].line.size();
+    spawnNotes_.erase(spawnNotes_.begin() + (long)i);
+  }
   return out;
+}
+
+std::string JobEngine::deliveredReply(const orch::JobRecord& rec, bool& unverified) {
+  const orch::ResultEnvelope& e = env_ref();
+  std::string reply = e.reply[0] ? std::string(e.reply) : std::string("(done, no output)");
+  // CUM-536 connector provenance: the task asked for an attached connector and no
+  // run of it was reported, so the text is the model's own guess. The marker is
+  // put on BEFORE any copy is made (the result hook's trace row, the project
+  // auto-persist, [FRESH RESULTS], the owner's raw fallback), and the flag makes
+  // the turn that reads it refuse memory writes.
+  unverified = e.connectorAsked[0] && e.connectorCalls == 0;
+  if (!unverified) return reply;
+  hlog::logf("orchestrator: %s asked for %s but no connector ran - result marked unverified",
+             rec.tag, e.connectorAsked);
+  return nimbus::orch::connectorNotCalledNote(e.connectorAsked) + "\n\n" + reply;
 }
 
 void JobEngine::enqueueSpawn(const orch::Spawn& s, const std::string& chatId, bool quiet) {
@@ -361,7 +384,7 @@ void JobEngine::enqueueSpawn(const orch::Spawn& s, const std::string& chatId, bo
   if ((int)pending_.size() >= orch::kMaxPendingSpawns) {
     deliver(chatId, "My spawn queue is full - I couldn't take that one. Ask "
                     "again once some agents finish.");
-    noteSpawnRefused(s.name.c_str(), s.task,
+    noteSpawnRefused(chatId, s.name.c_str(), s.task,
                      "the spawn queue is full (" + std::to_string(orch::kMaxPendingSpawns) +
                          " waiting); start it again after some finish");
     return;
@@ -407,13 +430,14 @@ void JobEngine::dispatchSpawn(const PendingSpawn& p) {
   if (provider.empty()) provider = firstSubProvider();
   if (provider.length() == 0) {
     deliver(chatId, "No provider is configured to run that agent.");
-    noteSpawnRefused(p.name, p.task, "no provider with a key can run it");
+    noteSpawnRefused(chatId, p.name, p.task, "no provider with a key can run it");
     return;
   }
   ManagedAgentAdapter* a = d_.fabric->adapterFor(provider.c_str());
   if (!a) {
     deliver(chatId, std::string("Provider '") + provider + "' isn't configured.");
-    noteSpawnRefused(p.name, p.task, "provider '" + provider + "' isn't configured on this device");
+    noteSpawnRefused(chatId, p.name, p.task,
+                     "provider '" + provider + "' isn't configured on this device");
     return;
   }
 
@@ -491,7 +515,7 @@ void JobEngine::dispatchSpawn(const PendingSpawn& p) {
                (int)err, provider.c_str(), model.c_str(), p.category);
     const std::string refusal = spawnRefusal(err, provider, window);
     deliver(chatId, refusal);
-    noteSpawnRefused(p.name, p.task, refusal);
+    noteSpawnRefused(chatId, p.name, p.task, refusal);
     return;
   }
 
@@ -707,21 +731,13 @@ int JobEngine::pump() {
     if (orch::isTerminal(env_ref().state) && d_.recordSpawnUsage &&
         (env_ref().promptTokens || env_ref().completionTokens))
       d_.recordSpawnUsage(rec.backend, env_ref().promptTokens, env_ref().completionTokens);
+    const bool done = env_ref().state == orch::JobState::Done;
+    bool unverified = false;
+    std::string reply = done ? deliveredReply(rec, unverified) : std::string();
     fireResult(rec.tag, env_ref().state, rec.chatId,
-               env_ref().reply[0] ? env_ref().reply : env_ref().error);   // Error: reason, not "" (prism B)
-    if (env_ref().state == orch::JobState::Done) {
-      std::string reply = env_ref().reply[0] ? std::string(env_ref().reply) : std::string("(done, no output)");
-      // CUM-536 connector provenance: the task asked for an attached connector and
-      // the provider reports no connector run, so the text is the model's own
-      // guess. It opens with an honest marker BEFORE persist/park, so the saved
-      // doc, the head's [FRESH RESULTS] and the owner's raw fallback all carry it,
-      // and the result is flagged so that turn's memory writes are refused.
-      const bool unverified = env_ref().connectorAsked[0] && env_ref().connectorCalls == 0;
-      if (unverified) {
-        hlog::logf("orchestrator: %s asked for %s but no connector ran - result marked unverified",
-                   rec.tag, env_ref().connectorAsked);
-        reply = nimbus::orch::connectorNotCalledNote(env_ref().connectorAsked) + "\n\n" + reply;
-      }
+               done ? reply.c_str()
+                    : (env_ref().reply[0] ? env_ref().reply : env_ref().error));   // Error: reason, not "" (prism B)
+    if (done) {
       // TOPOLOGY INVERSION (owner R5b): the owner talks ONLY to the orchestrator.
       // Raw sub-agent output no longer goes straight to Telegram - the FULL result
       // is parked as a fresh result and a per-completion SYNTHESIS turn (above, in

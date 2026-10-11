@@ -172,8 +172,8 @@ bool TurnEngine::loopActiveAt(uint32_t heap) const {
 }
 bool TurnEngine::loopActiveNow() const { return loopActiveAt(freeHeap()); }
 
-std::string TurnEngine::takeSpawnNotes() {
-  const std::string notes = d_.jobs ? d_.jobs->takeSpawnNotes() : std::string();
+std::string TurnEngine::takeSpawnNotes(const std::string& chatId) {
+  const std::string notes = d_.jobs ? d_.jobs->takeSpawnNotes(chatId) : std::string();
   if (notes.empty()) return "";
   // Same background framing as [MEMORY RESULTS]: the owner was already told each
   // of these; the model needs the REAL reason (not a guessed "capacity 0") and the
@@ -529,8 +529,10 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       // Resolve the advertised (sanitized) name back to the registry name.
       auto it = nameMap->find(call.name);
       const std::string& regName = (it != nameMap->end()) ? it->second : call.name;
-      // CUM-536: a turn carrying an unverified connector result never stores it.
-      if (unverifiedTurn_ && regName == "memory.write") {
+      // CUM-536: a turn carrying an unverified connector result stores nothing in
+      // long-term memory - memory.update stores new content too (it falls back to
+      // a plain store when nothing matches), so both doors are shut.
+      if (unverifiedTurn_ && (regName == "memory.write" || regName == "memory.update")) {
         r.isError = true;
         r.output = agent::kUnverifiedMemoryRefusal;
         return done(r);
@@ -1001,7 +1003,7 @@ void TurnEngine::maybeConsolidate(const std::string& chatId) {
   // The owner gets the HUMAN rendering (CUM-480), never the model-facing seed.
   const std::string ownerRaw = d_.jobs->ownerResultsText();
   std::string fresh  = d_.jobs->takeFreshResults(&unverifiedTurn_);
-  std::string inputs = takePendingMemResults() + takeSpawnNotes() + fresh + buildDynamicContext() +
+  std::string inputs = takePendingMemResults() + takeSpawnNotes(chatId) + fresh + buildDynamicContext() +
     "\n[SYSTEM]\nOne or more of your sub-agents just finished (others may still be "
     "running - see [ACTIVE SESSIONS]). There is no new user message. "
     "Synthesize their results for the owner in reply, and fold anything worth keeping "
@@ -1074,7 +1076,7 @@ void TurnEngine::handleMessage(const std::string& text, const std::string& fromN
   // CUM-536: results folded into an owner turn carry their provenance flag too.
   unverifiedTurn_ = false;
   const std::string fresh = d_.jobs ? d_.jobs->takeFreshResults(&unverifiedTurn_) : std::string();
-  std::string inputs = takePendingMemResults() + takeSpawnNotes() + fresh + buildDynamicContext() +
+  std::string inputs = takePendingMemResults() + takeSpawnNotes(chatId) + fresh + buildDynamicContext() +
     "\n[CHANNEL] This message arrived via " + channelOf(chatId) +
     ". Your orch_turn `reply` field is ALREADY delivered to this same channel - that is"
     " the one and only answer; never send the same answer twice." +
@@ -1134,7 +1136,7 @@ nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& cha
         "when you set it:\n\n"
       : "\n[SCHEDULED LOOP]\nYour recurring task \"" + name + "\" is firing on its schedule. "
         "There is no new owner message - do the task now and reply to the owner concisely.\n\n";
-  std::string inputs = takePendingMemResults() + takeSpawnNotes() + buildDynamicContext() + preamble + prompt;
+  std::string inputs = takePendingMemResults() + takeSpawnNotes(target) + buildDynamicContext() + preamble + prompt;
   unverifiedTurn_ = false;   // a scheduled turn reads no fresh results
   o.ok = runTurn(inputs, target, prompt);
   scheduledTurn_ = false;

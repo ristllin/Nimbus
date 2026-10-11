@@ -196,18 +196,18 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
         if (st.pendingMemResults)
           *st.pendingMemResults += std::string("[MEMORY] ") + kUnverifiedMemoryRefusal + "\n";
       }
-      for (size_t wi = 0; !refuseWrites && wi < t.mem_write.size(); ++wi) {
-        const auto& w = t.mem_write[wi];
-        JsonDocument a;
-        a["content"]    = w.content;
-        a["importance"] = w.importance;
-        a["permanent"]  = w.permanent;
-        if (!w.ttl.empty()) a["ttl"] = w.ttl;
-        ToolResult r = d.memDispatch("memory.write", a.as<ArduinoJson::JsonObjectConst>(), who);
-        hlog::logf("orchestrator: mem_write -> %s", (r.success ? r.output : r.error).c_str());
-        if (r.success && d.fire) d.fire("memsaved");   // heavy tier: "Orders received."
-        memMutated = true;
-      }
+      if (!refuseWrites)
+        for (const auto& w : t.mem_write) {
+          JsonDocument a;
+          a["content"]    = w.content;
+          a["importance"] = w.importance;
+          a["permanent"]  = w.permanent;
+          if (!w.ttl.empty()) a["ttl"] = w.ttl;
+          ToolResult r = d.memDispatch("memory.write", a.as<ArduinoJson::JsonObjectConst>(), who);
+          hlog::logf("orchestrator: mem_write -> %s", (r.success ? r.output : r.error).c_str());
+          if (r.success && d.fire) d.fire("memsaved");   // heavy tier: "Orders received."
+          memMutated = true;
+        }
       for (const auto& q : t.mem_query) {
         JsonDocument a;
         a["query"] = q;
