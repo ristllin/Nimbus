@@ -269,6 +269,42 @@ class NimbusdRig {
 
   bool hostAvailable(const std::string& h) const { return !cfg_.providerKey(h).empty(); }
 
+  // Whether the ENGINE may treat `h` as a keyed provider (CUM-541): every BYOK key,
+  // and the instance's own Cumulo router key, which Config::providerKey() keeps out
+  // of the BYOK-only paths (connector auth, embeddings-by-key). Device parity
+  // (src/agent/store_config.cpp hasKey): the router head is a first-class keyed
+  // provider, so [AVAILABLE MODELS] lists it and a spawn may run on it.
+  bool keyedForEngine(const std::string& h) const {
+    return h == kCumuloSlug ? hasCumulo() : !cfg_.providerKey(h).empty();
+  }
+
+  // The sub-agent ladder the JobEngine walks: the configured order, then the
+  // router keys this instance holds (Cumulo, then Z.ai) when the order does not
+  // name them, so a one-key instance runs a spawn on its own key instead of
+  // answering "No provider is configured to run that agent". A keyed BYOK
+  // provider in the configured order still wins (it comes first).
+  std::string subLadder() const {
+    std::string ladder = subPriority();
+    for (const char* r : {kCumuloSlug, kZaiSlug}) {
+      if (!keyedForEngine(r) || csvHas(ladder, r)) continue;
+      ladder += (ladder.empty() ? "" : ",") + std::string(r);
+    }
+    return ladder;
+  }
+  static bool csvHas(const std::string& csv, const std::string& item) {
+    size_t start = 0;
+    while (start <= csv.size()) {
+      size_t comma = csv.find(',', start);
+      if (comma == std::string::npos) comma = csv.size();
+      std::string t = csv.substr(start, comma - start);
+      while (!t.empty() && isspace((unsigned char)t.front())) t.erase(t.begin());
+      while (!t.empty() && isspace((unsigned char)t.back())) t.pop_back();
+      if (t == item) return true;
+      start = comma + 1;
+    }
+    return false;
+  }
+
   // The Cumulo router key from the canonical env (CUM-286). This is the daemon's
   // equivalent of the device's store::cumuloKey() - the material the "cumulo"
   // head places in its bearer, and the source that makes the router the fallback
@@ -302,7 +338,7 @@ class NimbusdRig {
   std::string hostBadge() const {
     return nimbus::orch::resolveHeadHost(
         opt_.orchHost, opt_.priority,
-        [this](const std::string& h) { return !cfg_.providerKey(h).empty(); },
+        [this](const std::string& h) { return keyedForEngine(h); },
         hasCumulo() ? std::string(kCumuloSlug)
                     : (hostAvailable(kZaiSlug) ? std::string(kZaiSlug) : std::string()));
   }
@@ -825,7 +861,7 @@ class NimbusdRig {
   agent::HarnessConfig config() {
     agent::HarnessConfig c;
     auto& p = c.provider;
-    p.hasKey = [this](const std::string& h) { return !cfg_.providerKey(h).empty(); };
+    p.hasKey = [this](const std::string& h) { return keyedForEngine(h); };
     p.key = [this](const std::string& h) { return cfg_.providerKey(h); };
     // CUM-286 / CUM-242 mirror: with NO direct BYOK head keyed, the verified
     // Cumulo router key is the fallback head that runs the whole assistant - the
@@ -1329,7 +1365,10 @@ class NimbusdRig {
         ep.key = cfg_.providerKey(kZaiSlug);
         ep.model = modelFor(kZaiSlug);
       } else {
-        const nimbus::orch::RouterRoute route = nimbus::orch::resolveRouterRoute(cumuloModel());
+        // The model the JobEngine resolved for this spawn (the configured sub model
+        // when the pick was not one it accepts), routed by the same split as the head.
+        const std::string sel = (d.model && d.model[0]) ? std::string(d.model) : cumuloModel();
+        const nimbus::orch::RouterRoute route = nimbus::orch::resolveRouterRoute(sel);
         if (route.model.empty()) return agent::FabricErr::BadRequest;
         host = kCumuloHost;
         ep.basePath = route.basePath;
@@ -1357,10 +1396,8 @@ class NimbusdRig {
   void wireJobDeps(agent::JobEngine::Deps& jd) {
     jd.fabric = &fabric_;
     jd.journal = &journal_;
-    jd.subPriority = [this] { return subPriority(); };
-    jd.providerHasKey = [this](const std::string& p) {
-      return p == kCumuloSlug ? hasCumulo() : !cfg_.providerKey(p).empty();
-    };
+    jd.subPriority = [this] { return subLadder(); };
+    jd.providerHasKey = [this](const std::string& p) { return keyedForEngine(p); };
     jd.subModel = [this](const std::string& p) {
       return p == kCumuloSlug ? cumuloModel() : modelFor(p);
     };

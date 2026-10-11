@@ -267,6 +267,13 @@ every idle tick, so dispatches and the synthesis turn stay serialized with turns
 (`<data>/mem/journal/j<slot>.json`), so an unfinished job re-attaches after a
 restart instead of being dispatched again.
 
+The instance's own Cumulo key counts as a keyed provider for the engine (CUM-541,
+device parity): the head's `[AVAILABLE MODELS]` lists `cumulo`, and the router
+keys the instance holds (Cumulo, then Z.ai) are appended after the configured
+sub-agent order, so on a one-key instance a spawn that names no provider runs on
+the router, while a keyed BYOK provider in the order still wins. The key stays out
+of the BYOK-only paths (connector credentials, embeddings by direct key).
+
 Every spawn runs the configured sub model for its provider (no live model catalog
 to validate a per-spawn pick against), and a spawn on an unkeyed provider is
 answered with an honest "couldn't start" message; one the provider refuses with
