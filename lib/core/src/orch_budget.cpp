@@ -38,7 +38,13 @@ ContextBudget deriveBudget(uint32_t ctxTokens, const BudgetOverrides& ov) {
   // owner could set by hand.
   b.systemPromptBytes = (int)scaled(32768, wb, 8192, (size_t)MemConfig::kContextMax);
   b.chatSummaryBytes  = scaled(4096, wb, 2048, 8192);
-  b.recentConvBytes   = scaled(3000, wb, 1500, 8192);
+  // CUM-485: the verbatim recent window is the head's ONLY short-term context on
+  // a stateless tool-loop turn (no provider-side thread), so it gets a quarter of
+  // the system-prompt budget (8192 of 32768 at the anchor). Floor 3000 = the old
+  // shipped total, so no head regresses; cap 16384 bounds the PSRAM block and the
+  // prompt on a 1M head. assembleContext still trims the OLDEST rows when the
+  // prompt has less room left than this (the 128K head case).
+  b.recentConvBytes   = scaled(8192, wb, 3000, 16384);
   b.toolResultBytes   = scaled(8192, wb, 512, 65536);
   b.toolTotalBytes    = scaled(65536, wb, 8192, 1048576);
   b.briefBytes        = scaled(1200, wb, 600, 4096);

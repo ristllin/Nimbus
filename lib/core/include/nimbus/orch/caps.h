@@ -66,10 +66,11 @@ constexpr int kSpawnAttachMax = 4;    // max attached docs per spawn (device spl
 constexpr int kSpawnNameMax = 24;   // short display name (mirrors JobRecord.name)
 
 // --- Per-chat conversation window (Release B1) ---
-// min(N messages, C bytes) of the turn's own chat, rendered oldest-first into
-// the "## RECENT CONVERSATION" prompt section. Zero flash reads (PSRAM ring).
+// Up to N messages of the turn's own chat, rendered oldest-first into the
+// "## RECENT CONVERSATION" prompt section. Zero flash reads (PSRAM ring). The
+// BYTE budget is derived per head model (ContextBudget::recentConvBytes,
+// CUM-485) - the old fixed 3000 B constant clipped the previous reply's code.
 constexpr int    kRecentTurnsMax  = 12;
-constexpr size_t kRecentConvBytes = 3000;
 
 // --- Rapid-message batching (CUM-398) ---------------------------------------
 // Several messages arriving in quick succession in one chat are drained into ONE

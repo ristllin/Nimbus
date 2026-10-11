@@ -18,7 +18,9 @@ static void test_anchor_identity_at_200k() {
   ContextBudget b = deriveBudget(200000, {});
   TEST_ASSERT_EQUAL_INT(32768, b.systemPromptBytes);
   TEST_ASSERT_EQUAL_UINT32(4096, (uint32_t)b.chatSummaryBytes);
-  TEST_ASSERT_EQUAL_UINT32(3000, (uint32_t)b.recentConvBytes);
+  // CUM-485: the recent window is a quarter of the system prompt now (was a
+  // 3000 B dead knob - the device used a fixed constant that cut code replies).
+  TEST_ASSERT_EQUAL_UINT32(8192, (uint32_t)b.recentConvBytes);
   TEST_ASSERT_EQUAL_UINT32(8192, (uint32_t)b.toolResultBytes);
   TEST_ASSERT_EQUAL_UINT32(65536, (uint32_t)b.toolTotalBytes);
   TEST_ASSERT_EQUAL_UINT32(1200, (uint32_t)b.briefBytes);
@@ -32,7 +34,7 @@ static void test_floors_bind_on_8k_window() {
   // 8K tokens = 32000 B window; every scaled value lands below its floor.
   TEST_ASSERT_EQUAL_INT(8192, b.systemPromptBytes);
   TEST_ASSERT_EQUAL_UINT32(2048, (uint32_t)b.chatSummaryBytes);
-  TEST_ASSERT_EQUAL_UINT32(1500, (uint32_t)b.recentConvBytes);
+  TEST_ASSERT_EQUAL_UINT32(3000, (uint32_t)b.recentConvBytes);   // floor = the old shipped total
   TEST_ASSERT_EQUAL_UINT32(512, (uint32_t)b.toolResultBytes);
   TEST_ASSERT_EQUAL_UINT32(8192, (uint32_t)b.toolTotalBytes);
   TEST_ASSERT_EQUAL_UINT32(600, (uint32_t)b.briefBytes);
@@ -44,7 +46,7 @@ static void test_caps_bind_on_1m_window() {
   ContextBudget b = deriveBudget(1000000, {});
   TEST_ASSERT_EQUAL_INT(MemConfig::kContextMax, b.systemPromptBytes);  // 65536
   TEST_ASSERT_EQUAL_UINT32(8192, (uint32_t)b.chatSummaryBytes);
-  TEST_ASSERT_EQUAL_UINT32(8192, (uint32_t)b.recentConvBytes);
+  TEST_ASSERT_EQUAL_UINT32(16384, (uint32_t)b.recentConvBytes);
   TEST_ASSERT_EQUAL_UINT32(40960, (uint32_t)b.toolResultBytes);   // 5x anchor, under cap
   TEST_ASSERT_EQUAL_UINT32(327680, (uint32_t)b.toolTotalBytes);   // 5x anchor, under cap
   TEST_ASSERT_EQUAL_UINT32(4096, (uint32_t)b.briefBytes);

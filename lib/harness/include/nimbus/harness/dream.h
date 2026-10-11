@@ -97,6 +97,27 @@ bool skipReflection(bool digestEmpty, uint64_t scratchHash, uint64_t lastHash,
 std::string buildEpisodicDigest(const std::vector<nimbus::orch::EpisodicMessage>& msgs,
                                 size_t capBytes = kDigestCapBytes);
 
+// The per-chat RECENT CONVERSATION window (CUM-485). On a stateless tool-loop
+// turn the provider keeps no thread, so this window is the head's ONLY view of
+// the previous reply - and the digest above (one flattened 300 B line per row)
+// cut a code answer before its variables were defined, so a "now add a plot"
+// follow-up guessed the names. `msgs` arrive newest-first; the rule:
+//   1. NEWEST ROWS WHOLE FIRST: walking newest-first, a row is kept whole -
+//      verbatim, line breaks kept, continuation lines indented two spaces so the
+//      row still starts with "- role: " - whenever it fits the remaining budget.
+//   2. The newest row, if it alone exceeds the budget, keeps its head (UTF-8
+//      safe), marked "...".
+//   3. Any other row that does not fit whole falls back to the one-line preview
+//      (newlines flattened, clipped to kWindowPreviewBytes) if THAT fits.
+//   4. The first row that fits in neither form ends the window, and
+//      kConvOmittedNote leads the block.
+// Rendered oldest-first; "" for no rows. `capBytes` is the head's derived
+// ContextBudget::recentConvBytes; assembleContext then trims whole oldest rows
+// if the system prompt has less room left than that.
+constexpr size_t kWindowPreviewBytes = 300;
+std::string buildConversationWindow(const std::vector<nimbus::orch::EpisodicMessage>& msgs,
+                                    size_t capBytes);
+
 // The [DREAM] input block: instructions (distill up to 7 durable mem_write facts (0 on a quiet day),
 // groom stale scratchpad goals, refresh the running `memory` summary, flag
 // contradictions, reply "" unless the owner is genuinely needed) + [MEMORY

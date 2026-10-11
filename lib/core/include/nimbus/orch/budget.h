@@ -7,11 +7,11 @@
 // NVS clamps enforce).
 //
 // ANCHOR INVARIANT (pinned by test_orch_budget): deriveBudget(200000, {})
-// reproduces today's shipped constants EXACTLY - 32768 system prompt / 4096
-// summary / 3000 recent tail / 8192 per-result / 65536 tool total / 1200 brief
-// / 65536 fold slice - so behavior on the current fleet (Anthropic 200K head)
-// is byte-identical until a different window is configured. Ratios below are
-// each constant over the 200K window's byte estimate (200000 * 4 = 800000 B).
+// reproduces the shipped constants EXACTLY - 32768 system prompt / 4096
+// summary / 8192 recent tail (CUM-485: was 3000, and a dead knob - the device
+// used a fixed constant) / 8192 per-result / 65536 tool total / 1200 brief /
+// 65536 fold slice. Ratios below are each constant over the 200K window's byte
+// estimate (200000 * 4 = 800000 B).
 //
 // ROW COUNTS deliberately stay fixed constants (kRecentTurnsMax=12, brief 6
 // rows, fold 400 rows): their cost is internal-SRAM row overhead (many SMALL
@@ -35,7 +35,7 @@ struct ContextBudget {
   uint32_t ctxTokens = 200000;         // resolved window this was derived from
   int      systemPromptBytes = 32768;  // assembleContext budget
   size_t   chatSummaryBytes = 4096;    // anchored CONVERSATION SUMMARY cap
-  size_t   recentConvBytes = 3000;     // verbatim recent-tail byte cap
+  size_t   recentConvBytes = 8192;     // verbatim recent-window byte cap (CUM-485)
   size_t   toolResultBytes = 8192;     // per-tool-result clamp
   size_t   toolTotalBytes = 65536;     // cumulative tool-output budget
   size_t   briefBytes = 1200;          // sub-agent brief digest bytes

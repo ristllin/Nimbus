@@ -6,8 +6,12 @@
 #include <vector>
 
 #include "../support/fake_config.h"
+#include "../support/code_snippet.h"   // CUM-485: the previous reply's code block
 #include "../support/fake_platform.h"
 #include "nimbus/harness/dream.h"
+#include "nimbus/mem_cap.h"
+#include "nimbus/orch/budget.h"
+#include "nimbus/orch/world.h"
 #include "nimbus/harness/engine.h"
 #include "nimbus/orch/loops.h"
 #include "nimbus/orch/tool_registry.h"
@@ -209,6 +213,100 @@ static void test_digest_empty_placeholder_and_long_line_clip() {
   std::string d = dream::buildEpisodicDigest(one);
   TEST_ASSERT_TRUE(d.find("...") != std::string::npos);   // per-line 300 B clip
   TEST_ASSERT_TRUE(d.size() < 400);
+}
+
+// ---- CUM-485: the RECENT CONVERSATION window ---------------------------------
+
+// Every line of the snippet must appear in the window verbatim (continuation
+// lines indented two spaces), i.e. the code block survived whole.
+static bool windowHoldsWhole(const std::string& w, const std::string& text) {
+  size_t s = 0;
+  bool first = true;
+  while (s <= text.size()) {
+    size_t e = text.find('\n', s);
+    if (e == std::string::npos) e = text.size();
+    const std::string line = text.substr(s, e - s);
+    if (!line.empty()) {
+      const std::string needle = first ? ("- assistant: " + line + "\n") : ("\n  " + line + "\n");
+      if (w.find(needle) == std::string::npos) return false;
+    }
+    first = false;
+    s = e + 1;
+  }
+  return true;
+}
+
+// The bench-B shape: the previous reply's 1.2 KB code block, then "add a plot".
+// The newest rows are kept WHOLE (line breaks and indentation intact) - the old
+// digest flattened them into one 300 B line cut before `stock_by_core` existed.
+static void test_window_keeps_newest_rows_whole_with_line_breaks() {
+  const std::string code = harness_test::kPrevReplyCodeSnippet;
+  TEST_ASSERT_TRUE(code.size() >= 1200);
+  std::vector<orch::EpisodicMessage> msgs = {
+      msg("assistant", code),   // newest
+      msg("user", "Can you give me a Python snippet to parse a CSV of my sediment core samples?"),
+  };
+  const std::string w = dream::buildConversationWindow(msgs, 8192);
+  TEST_ASSERT_TRUE_MESSAGE(windowHoldsWhole(w, code), w.c_str());
+  TEST_ASSERT_TRUE(w.find("stock_by_core = (") != std::string::npos);
+  TEST_ASSERT_TRUE(w.find("\n      .sum()\n") != std::string::npos);   // relative indent kept
+  TEST_ASSERT_TRUE(w.find("- user: Can you give me") < w.find("- assistant: "));   // oldest first
+  TEST_ASSERT_TRUE(w.find("omitted") == std::string::npos);
+  // No line inside a row can start a new row or a prompt header.
+  TEST_ASSERT_TRUE(w.find("\n## ") == std::string::npos);
+}
+
+// Rule 1 + 3 + 4 together: newest rows whole, an older row too big to fit whole
+// falls back to its one-line 300 B preview, and the first row that fits neither
+// way ends the window behind the omission note.
+static void test_window_newest_whole_then_previews_then_note() {
+  std::vector<orch::EpisodicMessage> msgs = {
+      msg("assistant", "line one\nline two"),                    // newest, small
+      msg("user", std::string(2000, 'u')),                       // too big whole -> preview
+      msg("assistant", "short"),                                 // fits whole
+      msg("user", std::string(5000, 'o')),                       // preview would not fit
+      msg("user", "the oldest"),
+  };
+  const std::string w = dream::buildConversationWindow(msgs, 600);
+  TEST_ASSERT_TRUE(w.size() <= 600 + sizeof(nimbus::orch::kConvOmittedNote));
+  TEST_ASSERT_TRUE(w.find("- assistant: line one\n  line two\n") != std::string::npos);
+  const size_t pv = w.find("- user: uuu");
+  TEST_ASSERT_TRUE(pv != std::string::npos);
+  TEST_ASSERT_TRUE(w.find("...\n", pv) != std::string::npos);   // previewed, clipped
+  TEST_ASSERT_TRUE(w.find(std::string(400, 'u')) == std::string::npos);
+  TEST_ASSERT_TRUE(w.find("- assistant: short\n") != std::string::npos);
+  TEST_ASSERT_TRUE(w.rfind(nimbus::orch::kConvOmittedNote, 0) == 0);   // note leads
+  TEST_ASSERT_TRUE(w.find("the oldest") == std::string::npos);
+}
+
+// Rule 2: a newest row bigger than the whole budget keeps its head (UTF-8 safe,
+// "..." marked) instead of collapsing to a 300 B preview.
+static void test_window_oversize_newest_row_keeps_its_head() {
+  std::string big;
+  while (big.size() < 20000) big += "\xC3\xA9t\xC3\xA9 line\n";   // multi-byte text
+  std::vector<orch::EpisodicMessage> msgs = {msg("assistant", big), msg("user", "q")};
+  const std::string w = dream::buildConversationWindow(msgs, 4096);
+  TEST_ASSERT_TRUE(w.size() <= 4096 + sizeof(nimbus::orch::kConvOmittedNote));
+  TEST_ASSERT_TRUE(w.size() > 3500);                       // the head, not a preview
+  const size_t cut = w.rfind("...\n");
+  TEST_ASSERT_TRUE(cut != std::string::npos);
+  // The cut never splits a multi-byte character (utf8CapLen drops a straddler).
+  const std::string head = w.substr(0, cut);
+  TEST_ASSERT_EQUAL((int)head.size(), nimbus::utf8CapLen(head.c_str(), (int)head.size(), (int)head.size()));
+}
+
+// The class over every head window the device derives a budget for: the
+// derived window always carries a 1.2 KB code reply whole (the floor is 3000 B).
+static void test_window_snippet_survives_every_head_window() {
+  const std::string code = harness_test::kPrevReplyCodeSnippet;
+  for (uint32_t ctx : {0u, 8000u, 128000u, 200000u, 272000u, 922000u}) {
+    const size_t cap = nimbus::orch::deriveBudget(ctx, {}).recentConvBytes;
+    std::vector<orch::EpisodicMessage> msgs = {msg("assistant", code), msg("user", "snippet please")};
+    for (int i = 0; i < 10; ++i) msgs.push_back(msg(i % 2 ? "user" : "assistant", std::string(700, 'h')));
+    const std::string w = dream::buildConversationWindow(msgs, cap);
+    TEST_ASSERT_TRUE_MESSAGE(windowHoldsWhole(w, code), std::to_string(ctx).c_str());
+    TEST_ASSERT_TRUE(w.size() <= cap + sizeof(nimbus::orch::kConvOmittedNote));
+  }
 }
 
 // ---- (5) the [DREAM] prompt -------------------------------------------------
@@ -471,6 +569,10 @@ int main(int, char**) {
   RUN_TEST(test_digest_renders_oldest_first_and_flattens_newlines);
   RUN_TEST(test_digest_caps_bytes_dropping_oldest);
   RUN_TEST(test_digest_empty_placeholder_and_long_line_clip);
+  RUN_TEST(test_window_keeps_newest_rows_whole_with_line_breaks);
+  RUN_TEST(test_window_newest_whole_then_previews_then_note);
+  RUN_TEST(test_window_oversize_newest_row_keeps_its_head);
+  RUN_TEST(test_window_snippet_survives_every_head_window);
   RUN_TEST(test_dream_inputs_content_and_stats);
   RUN_TEST(test_dream_inputs_recap_oversize_digest);
   RUN_TEST(test_maintenance_decay_prune_dedup_counts);

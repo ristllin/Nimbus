@@ -31,13 +31,17 @@ std::vector<nimbus::orch::EpisodicMessage> liveConversation(
 }
 
 std::string recentConversationBlock(const std::vector<nimbus::orch::EpisodicMessage>& newestFirst,
-                                    const std::string& inFlightId) {
+                                    const std::string& inFlightId, size_t capBytes) {
   const auto rows = liveConversation(newestFirst, inFlightId, (size_t)nimbus::orch::kRecentTurnsMax);
   if (rows.empty()) return std::string();
+  if (capBytes < (size_t)nimbus::orch::kRecentConvBytes) capBytes = nimbus::orch::kRecentConvBytes;
   std::string block =
       "\n## RECENT CONVERSATION (this chat, oldest first; the current message "
       "is NOT here - it is in [USER])\n";
-  block += dream::buildEpisodicDigest(rows, nimbus::orch::kRecentConvBytes);
+  // CUM-485: newest rows ride whole (buildConversationWindow), not the digest's
+  // per-row preview - on a stateless tool-loop turn this window is the only
+  // place the model sees its previous reply.
+  block += dream::buildConversationWindow(rows, capBytes);
   return block;
 }
 

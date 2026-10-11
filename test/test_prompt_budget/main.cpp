@@ -3,6 +3,8 @@
 #include <string>
 #include <vector>
 
+#include "../support/code_snippet.h"   // CUM-485
+#include "nimbus/harness/dream.h"       // buildConversationWindow (the device's window)
 #include "nimbus/orch/budget.h"
 #include "nimbus/orch/world.h"
 
@@ -326,6 +328,87 @@ static void test_recall_flood_cannot_evict_the_memory_explainer() {
                              "memoryExplainer must never be the section that gives way");
 }
 
+// ---- CUM-485: the conversation window is a gradient ---------------------------
+
+static const char* kConvHeader =
+    "\n## RECENT CONVERSATION (this chat, oldest first; the current message is NOT "
+    "here - it is in [USER])\n";
+
+static nimbus::orch::EpisodicMessage row(const char* role, const std::string& text) {
+  nimbus::orch::EpisodicMessage m;
+  m.role = role;
+  m.text = text;
+  return m;
+}
+
+// On a 128K head the device-shaped prompt leaves well under 1 KB for the window,
+// and the window was fit-or-drop - so the WHOLE conversation vanished every turn.
+// It must now keep the newest rows that fit (oldest cut first), stay inside the
+// budget, say what it cut, and never touch the self-model above it.
+static void test_conversation_trims_oldest_rows_instead_of_vanishing() {
+  const int budget = autoSystemBudget();   // 128K head
+  std::vector<nimbus::orch::EpisodicMessage> rows;   // newest-first, as queried
+  rows.push_back(row("assistant", "the newest reply"));
+  rows.push_back(row("user", "the newest question"));
+  for (int i = 0; i < 10; ++i) rows.push_back(row(i % 2 ? "user" : "assistant",
+                                                   "older row " + std::to_string(i) + " " + std::string(250, 'o')));
+  ContextInputs in;
+  in.immutableRules = std::string(9900, 'r');
+  in.capabilities = nimbus::orch::renderCapabilities(deviceHw(), deviceShapedTools());
+  in.recentConversation = std::string(kConvHeader) +
+                          agent::dream::buildConversationWindow(rows, nimbus::orch::deriveBudget(128000, {}).recentConvBytes);
+  const auto a = nimbus::orch::assembleContext(in, budget);
+  TEST_ASSERT_TRUE((int)a.prompt.size() <= budget);
+  TEST_ASSERT_TRUE_MESSAGE(a.prompt.find("## RECENT CONVERSATION") != std::string::npos,
+                           "the window vanished whole (the pre-CUM-485 fit-or-drop)");
+  TEST_ASSERT_TRUE(a.prompt.find("- assistant: the newest reply\n") != std::string::npos);
+  TEST_ASSERT_TRUE(a.prompt.find("older row 9 ") == std::string::npos);   // oldest cut
+  TEST_ASSERT_TRUE(a.prompt.find(nimbus::orch::kConvOmittedNote) != std::string::npos);
+  bool clipped = false;
+  for (const auto& d : a.droppedSections) clipped |= (d == "conversation(clipped)");
+  TEST_ASSERT_TRUE(clipped);
+  TEST_ASSERT_TRUE(a.prompt.find("Hardware present:") != std::string::npos);   // self-model intact
+}
+
+// A window that fits is emitted byte-for-byte; one whose NEWEST row alone cannot
+// fit is still dropped (and reported), never cut mid-row.
+static void test_conversation_fits_untouched_or_drops_honestly() {
+  ContextInputs in;
+  in.immutableRules = std::string(2000, 'r');
+  in.recentConversation = std::string(kConvHeader) + "- user: hi\n- assistant: hello\n";
+  auto a = nimbus::orch::assembleContext(in, 32768);
+  TEST_ASSERT_TRUE(a.prompt.find(in.recentConversation) != std::string::npos);
+  TEST_ASSERT_TRUE(a.droppedSections.empty());
+
+  in.recentConversation = std::string(kConvHeader) + "- user: hi\n- assistant: " + std::string(3000, 'z') + "\n";
+  a = nimbus::orch::assembleContext(in, 2000 + 1500);
+  TEST_ASSERT_TRUE(a.prompt.find("RECENT CONVERSATION") == std::string::npos);
+  bool dropped = false;
+  for (const auto& d : a.droppedSections) dropped |= (d == "conversation");
+  TEST_ASSERT_TRUE(dropped);
+}
+
+// The DoD case at prompt level: on the head bench unit B used (gpt-5.6, 272K) and
+// on the 200K anchor, the previous reply's 1.2 KB code block reaches the
+// assembled system prompt whole, behind a device-shaped prefix and manifest.
+static void test_prev_reply_code_survives_assembly_on_200k_and_272k_heads() {
+  const std::string code = harness_test::kPrevReplyCodeSnippet;
+  for (uint32_t ctx : {200000u, 272000u}) {
+    const auto b = nimbus::orch::deriveBudget(ctx, {});
+    std::vector<nimbus::orch::EpisodicMessage> rows = {row("assistant", code), row("user", "snippet?")};
+    for (int i = 0; i < 10; ++i) rows.push_back(row(i % 2 ? "user" : "assistant", std::string(600, 'h')));
+    ContextInputs in;
+    in.immutableRules = std::string(9900, 'r');
+    in.capabilities = nimbus::orch::renderCapabilities(deviceHw(), deviceShapedTools());
+    in.recentConversation = std::string(kConvHeader) + agent::dream::buildConversationWindow(rows, b.recentConvBytes);
+    const auto a = nimbus::orch::assembleContext(in, b.systemPromptBytes);
+    TEST_ASSERT_TRUE((int)a.prompt.size() <= b.systemPromptBytes);
+    TEST_ASSERT_TRUE_MESSAGE(a.prompt.find("stock_by_core = (") != std::string::npos, std::to_string(ctx).c_str());
+    TEST_ASSERT_TRUE(a.prompt.find("\n  print(stock_by_core)\n") != std::string::npos);
+    TEST_ASSERT_TRUE(a.prompt.find("one row per core.") != std::string::npos);
+  }
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_oversize_manifest_clips_and_keeps_its_head);
@@ -338,5 +421,8 @@ int main() {
   RUN_TEST(test_under_pressure_the_verbs_survive_and_admin_is_sacrificed);
   RUN_TEST(test_glossed_manifest_is_valid_utf8);
   RUN_TEST(test_recall_flood_cannot_evict_the_memory_explainer);
+  RUN_TEST(test_conversation_trims_oldest_rows_instead_of_vanishing);
+  RUN_TEST(test_conversation_fits_untouched_or_drops_honestly);
+  RUN_TEST(test_prev_reply_code_survives_assembly_on_200k_and_272k_heads);
   return UNITY_END();
 }

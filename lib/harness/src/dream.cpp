@@ -1,5 +1,6 @@
 #include "nimbus/harness/dream.h"
-#include "nimbus/mem_cap.h"   // utf8CapLen - UTF-8-safe row clip (prism B)
+#include "nimbus/mem_cap.h"     // utf8CapLen - UTF-8-safe row clip (prism B)
+#include "nimbus/orch/world.h"  // kConvOmittedNote - shared with assembleContext
 
 #include <cstdio>
 
@@ -96,8 +97,72 @@ std::string buildEpisodicDigest(const std::vector<EpisodicMessage>& msgs,
   }
   std::string out;
   out.reserve(total + 48);
-  if (clipped) out += "(earlier messages omitted - byte budget)\n";
+  if (clipped) out += nimbus::orch::kConvOmittedNote;
   for (auto it = lines.rbegin(); it != lines.rend(); ++it) out += *it;
+  return out;
+}
+
+namespace {
+const char* roleOf(const EpisodicMessage& m) { return m.role.empty() ? "?" : m.role.c_str(); }
+
+// A row kept whole: verbatim, CR dropped, each continuation line indented two
+// spaces (code keeps its relative indentation; a list inside the message can
+// never read as a row start, and no line inside a row can open a "## " header).
+std::string wholeRow(const EpisodicMessage& m) {
+  std::string line = std::string("- ") + roleOf(m) + ": ";
+  line.reserve(line.size() + m.text.size() + 16);
+  for (char c : m.text) {
+    if (c == '\r') continue;
+    line += c;
+    if (c == '\n') line += "  ";
+  }
+  while (!line.empty() && (line.back() == ' ' || line.back() == '\n')) line.pop_back();
+  line += '\n';
+  return line;
+}
+
+// The one-line preview (the digest's row shape): newlines flattened, clipped
+// UTF-8-safe to kWindowPreviewBytes with a "..." marker.
+std::string previewRow(const EpisodicMessage& m) {
+  std::string t = m.text;
+  for (char& c : t)
+    if (c == '\n' || c == '\r') c = ' ';
+  if (t.size() > kWindowPreviewBytes) {
+    t.resize((size_t)nimbus::utf8CapLen(t.c_str(), (int)t.size(), (int)kWindowPreviewBytes - 3));
+    t += "...";
+  }
+  return std::string("- ") + roleOf(m) + ": " + t + "\n";
+}
+}  // namespace
+
+std::string buildConversationWindow(const std::vector<EpisodicMessage>& msgs,
+                                    size_t capBytes) {
+  std::vector<std::string> rows;   // newest-first; emitted reversed
+  size_t total = 0;
+  bool clipped = false;
+  for (size_t i = 0; i < msgs.size(); ++i) {
+    std::string row = wholeRow(msgs[i]);
+    if (total + row.size() > capBytes) {
+      const size_t room = capBytes - total;
+      if (i == 0 && room > kWindowPreviewBytes + 8) {
+        // Rule 2: the newest row alone is bigger than the budget - keep its head.
+        row.resize((size_t)nimbus::utf8CapLen(row.c_str(), (int)row.size(), (int)room - 4));
+        row += "...\n";
+      } else {
+        row = previewRow(msgs[i]);
+        if (total + row.size() > capBytes) {
+          clipped = true;
+          break;
+        }
+      }
+    }
+    total += row.size();
+    rows.push_back(std::move(row));
+  }
+  std::string out;
+  out.reserve(total + sizeof(nimbus::orch::kConvOmittedNote));
+  if (clipped) out += nimbus::orch::kConvOmittedNote;
+  for (auto it = rows.rbegin(); it != rows.rend(); ++it) out += *it;
   return out;
 }
 

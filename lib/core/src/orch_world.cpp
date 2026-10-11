@@ -286,6 +286,40 @@ std::string renderSessions(const std::vector<SessionInfo>& sessions) {
 }
 
 namespace {
+// 5b (CUM-485): the conversation window is a GRADIENT, not fit-or-drop. It used
+// to be appended whole or not at all, so on a head whose prompt is nearly full
+// (a 128K Mistral head leaves ~0.6 KB after the self-model) the ENTIRE window
+// vanished every turn. When it does not fit, whole OLDEST rows go first: keep
+// the header plus the longest newest suffix of rows that fits, behind the
+// omission note. Only when not even the newest row fits is the section dropped.
+// Rows are lines starting "- " (a whole row indents its continuation lines, so
+// a list inside a message never reads as a row start).
+void appendConversation(std::string& out, const std::string& conv, int budget,
+                        AssembledContext& ctx) {
+  if (conv.empty()) return;
+  if ((int)(out.size() + conv.size()) <= budget) {
+    out += conv;
+    return;
+  }
+  std::vector<size_t> rows;
+  for (size_t p = conv.find("- "); p != std::string::npos; p = conv.find("- ", p + 1))
+    if (p == 0 || conv[p - 1] == '\n') rows.push_back(p);
+  ctx.truncated = true;
+  if (!rows.empty()) {
+    std::string head = conv.substr(0, rows[0]);
+    if (head.find(kConvOmittedNote) == std::string::npos) head += kConvOmittedNote;
+    for (size_t i = 1; i < rows.size(); ++i) {   // oldest cut first: keep the most
+      if ((int)(out.size() + head.size() + (conv.size() - rows[i])) <= budget) {
+        out += head;
+        out.append(conv, rows[i], std::string::npos);
+        ctx.droppedSections.push_back("conversation(clipped)");
+        return;
+      }
+    }
+  }
+  ctx.droppedSections.push_back("conversation");
+}
+
 // Append `section` to `out` if it fits the remaining budget; otherwise record it
 // as dropped. Sections are atomic here (rules/identity/directive/capabilities/
 // sessions/explainer) - they are already small and self-contained.
@@ -366,8 +400,9 @@ AssembledContext assembleContext(const ContextInputs& in, int budgetBytes) {
     tryAppend(out, in.capabilities, "capabilities", softBudget, ctx);
   }
   tryAppend(out, in.sessions, "sessions", softBudget, ctx);
-  // 5b: the per-chat conversation window (Release B1) - already byte-capped at
-  // build time (drop-oldest), so fit-or-drop as a unit here.
+  // 5b: the per-chat conversation window (Release B1) - byte-capped at build
+  // time (newest rows whole first), then trimmed oldest-first here if the
+  // prompt has less room than its cap (appendConversation, CUM-485).
   // 5a before 5b: the anchored fold summary, then the verbatim recent tail -
   // the researched summary+tail shape. Under budget pressure 5a is sacrificed
   // FIRST (the verbatim tail is the fresher signal): emission order would give
@@ -391,7 +426,7 @@ AssembledContext assembleContext(const ContextInputs& in, int budgetBytes) {
   } else {
     tryAppend(out, in.chatSummary, "chatsummary", softBudget, ctx);
   }
-  tryAppend(out, in.recentConversation, "conversation", softBudget, ctx);
+  appendConversation(out, in.recentConversation, softBudget, ctx);
 
   // 6: scratchpad (render then fit-or-drop as a unit - it is already tier/count
   // capped, so it is small). ALWAYS shown with the write instruction rendered

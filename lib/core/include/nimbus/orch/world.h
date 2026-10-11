@@ -84,11 +84,21 @@ struct ContextInputs {
   std::string sessions;         // 5. renderSessions(...)  ("" => skipped)
   std::string chatSummary;         // 5a. per-chat "## CONVERSATION SUMMARY" (fold)
   std::string recentConversation;  // 5b. per-chat "## RECENT CONVERSATION" window
-                                   //     (pre-rendered, byte-capped; "" => skipped)
+                                   //     (pre-rendered, byte-capped; "" => skipped).
+                                   //     Shape: header line(s), then one ROW per
+                                   //     message, oldest first; a row starts at a
+                                   //     line beginning "- " and its continuation
+                                   //     lines are indented. assembleContext trims
+                                   //     whole OLDEST rows when it does not fit.
   const Scratchpad* scratchpad = nullptr;  // 6. model working memory
   std::vector<std::string> recalled;       // 7. "## RELEVANT MEMORIES" bullets
   std::string memoryExplainer;  // 8. how-your-memory-works note ("" => skipped)
 };
+
+// The note that leads a conversation window whose OLDEST rows were cut to fit a
+// byte budget - by the window builder (dream::buildConversationWindow) or by
+// assembleContext's gradient. One literal so both say the same thing.
+inline constexpr char kConvOmittedNote[] = "(earlier messages omitted - byte budget)\n";
 
 // Outcome of an assembly: the prompt plus which sections were truncated/dropped
 // under the budget (so the device can surface it and tests can assert it).

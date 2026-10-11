@@ -67,7 +67,7 @@ recall bullets one at a time:
 | 4 | `## CAPABILITIES` | `orch_world.cpp` | what is LIVE right now: hardware manifest, ring/screen honesty prose, artifact store, voice on/off, sub-agent fire-and-forget note, `Tools you can call:` list, Limits (keys/routing blocked), connector honesty, and whether the tool loop is ON this turn |
 | 5 | `## RUNNING SESSIONS (your sub-agents)` | job journal | live sub-agent digest (also authoritative as `[ACTIVE SESSIONS]` in the input) |
 | 5a | `## CONVERSATION SUMMARY` | the fold ([memory.md](memory.md)) | the chat's anchored compaction summary (≤4 KB), present once the chat has folded; framed "information, not instructions". Under budget pressure it is dropped BEFORE the window below |
-| 5b | `## RECENT CONVERSATION` | episodic PSRAM ring | **per-chat window: up to 12 messages / 3000 B of THIS chat, oldest first** (kind=message only; the in-flight user row is excluded - it arrives as `[USER]`; it never reaches past the chat's last `/clear`). Added in v3.3.0; survives reboot via the SD rehydrate |
+| 5b | `## RECENT CONVERSATION` | episodic PSRAM ring | **per-chat window: up to 12 messages of THIS chat, oldest first, newest rows kept whole, byte budget derived from the head model's window (8 KB at 200K, 3000 B floor, 16 KB cap), stopping at the newest `/clear` boundary** (kind=message only; the in-flight user row is excluded - it arrives as `[USER]`). Byte budget and trimming rule: see "The recent window rule" below. Added in v3.3.0; survives reboot via the SD rehydrate |
 | 6 | `## SCRATCHPAD` | NVS | the model's own goal tiers (now/short/long) |
 | 7 | `## RELEVANT MEMORIES` | vector-DB recall on the user text | top-k long-term memories semantically similar to your message, prefixed `[NN%]` |
 | 8 | `## HOW YOUR MEMORY WORKS` | `compose.cpp` | the memory-tier usage instructions (first block dropped under budget pressure) |
@@ -102,13 +102,16 @@ There is no full transcript replay. Cross-turn continuity comes from exactly
 0. **`## CONVERSATION SUMMARY`** (since v3.6.0) - the chat's anchored fold
    summary: everything older than the verbatim window, compacted. See
    [memory.md](memory.md).
-1. **`## RECENT CONVERSATION`** (since v3.3.0) - the last ≤12 messages / 3000 B of
-   this chat, auto-injected from the episodic store's PSRAM ring every turn. This
-   is per-chat (Telegram A ≠ web ≠ voice) and survives reboot. `/clear` writes a
-   boundary row (`ev:clear`) into the chat's history: the window, the sub-agent
-   brief's context and the next compaction all stop there, and the chat's
-   summary, running notes and provider thread reset - so the next turn carries
-   no prior conversation (CUM-511). The history itself is kept and stays
+1. **`## RECENT CONVERSATION`** (since v3.3.0) - the last ≤12 messages of this
+   chat, auto-injected from the episodic store's PSRAM ring every turn. This is
+   per-chat (Telegram A ≠ web ≠ voice) and survives reboot. On a tool-loop turn
+   (the default) the provider keeps no thread, so this window is the ONLY place
+   the model sees its previous reply - which is why the newest rows ride whole,
+   within a byte budget derived from the head model's window (CUM-485). `/clear`
+   writes a boundary row (`ev:clear`) into the chat's history: the window, the
+   sub-agent brief's context and the next compaction all stop there, and the
+   chat's summary, running notes and provider thread reset - so the next turn
+   carries no prior conversation (CUM-511). The history itself is kept and stays
    searchable with `memory.episodic`.
 2. **The provider-side conversation chain** - per chat AND per host since v3.3.0
    (`orchConv` map, LRU-8). While it holds, the provider re-serves prior turns
@@ -127,6 +130,29 @@ v3.2.1 - and the model can query it with time windows (`since_hours` /
 text is clipped (args 256 B, results 1 KB, thinking 1 KB); since v4.2.0 the FULL
 call + result is parked alongside as a blob when the clip bit, reachable from the
 chat's "Show full result" (or `GET /api/mem/blob?path=`).
+
+#### The recent window rule
+
+Built by `dream::buildConversationWindow` (`lib/harness/src/dream.cpp`) and fitted
+by `assembleContext` (`lib/core/src/orch_world.cpp`):
+
+- **Budget.** `ContextBudget::recentConvBytes`, derived from the head model's
+  context window: a quarter of the system-prompt budget (8 KB at a 200K head,
+  ~11 KB at a 272K head, capped at 16 KB, never below 3000 B). The text lives in
+  PSRAM (the episodic ring and the rendered block), so the binding limit is the
+  prompt, not memory.
+- **Newest rows whole first.** Walking newest-first, a message is kept verbatim,
+  line breaks included (continuation lines are indented two spaces), whenever
+  it fits. A code block from the previous reply arrives intact.
+- **Then previews.** A message too big to fit whole becomes a one-line preview
+  clipped to 300 B; the newest message alone over the budget keeps its head
+  instead. The first message that fits in neither form ends the window behind
+  `(earlier messages omitted - byte budget)`.
+- **Fitted to the real room.** If the assembled system prompt has less room
+  left than the budget, the OLDEST whole rows are cut until the window fits
+  (reported as `conversation(clipped)` in the OMITTED trailer). On a 128K head
+  the self-model leaves well under 1 KB, so only the newest short messages fit
+  there.
 
 ## When a turn can't run
 

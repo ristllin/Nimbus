@@ -5,9 +5,13 @@
 #include <string>
 #include <vector>
 
+#include "../support/code_snippet.h"   // CUM-485: the previous reply's code block
 #include "../support/fake_config.h"
 #include "../support/fake_platform.h"
+#include "nimbus/harness/dream.h"      // CUM-485: buildConversationWindow
 #include "nimbus/harness/engine.h"
+#include "nimbus/orch/budget.h"
+#include "nimbus/orch/compact.h"
 #include "nimbus/harness/rate_limit.h"   // CUM-460 the 429 reply table
 #include "nimbus/harness/skill_md.h"   // W15: skillsIndexText for the rig index
 #include "nimbus/orch/model_choices.h"   // CUM-486: the one model-choice derivation
@@ -77,6 +81,7 @@ struct Rig {
   std::vector<orch::ValidatedAction> staged;   // ApplyDeps.stageDevice recorder
   std::vector<orch::ScratchUpdate> scratchApplied;   // ApplyDeps.applyScratch recorder
   bool adminChats = false;   // opt-in: chats resolve to an Admin principal (scratchpad writes)
+  std::string recentConversation;   // CUM-485: the window composeInputs hands the engine
   // Optional [AVAILABLE MODELS] source (CUM-486); null = the fixed fake lists.
   std::function<std::string(const std::string&)> modelChoicesFn;
   int journalGcs = 0;
@@ -121,6 +126,7 @@ struct Rig {
       agent::ComposeInputs in;
       in.devName = "Nimbus";
       in.hostLabel = "anthropic / model-anthropic";
+      in.recentConversation = recentConversation;
       composeCalls.push_back(in);
       return in;
     };
@@ -740,6 +746,47 @@ static void test_cum486_router_only_devices_advertise_their_models() {
   r.eng->handleMessage("hi", "Owner", "1001");
   TEST_ASSERT_TRUE(r.attempts[0].inputs.find("zai: sub-zai;") != std::string::npos);
   TEST_ASSERT_TRUE(r.attempts[0].inputs.find("zai: ;") == std::string::npos);
+}
+
+// ---- CUM-485: the previous reply reaches the next stateless tool-loop turn ---
+
+// Bench unit B, step 6b: gpt-5.6 head, tool loop on. The fabric loop keeps NO
+// provider-side thread (convId ""), so the RECENT CONVERSATION window is the only
+// place the next turn sees the previous reply - and the old 300 B row clip cut
+// that reply's code before `stock_by_core` was defined. With the device's window
+// builder at the head's derived budget and a device-sized tool registry, the
+// whole 1.2 KB block must reach the instructions of the next (fabric) turn.
+static void test_cum485_prev_reply_code_reaches_the_next_tool_loop_turn() {
+  const std::string code = harness_test::kPrevReplyCodeSnippet;
+  for (const char* host : {"openai", "anthropic"}) {
+    Rig r;
+    r.cfg.orchHost = host;
+    r.cfg.orchModels[host] = std::string(host) == "openai" ? "gpt-5.6" : "claude-sonnet-5";
+    r.cfg.midFail = true;   // the device default: loop turns run on the stateless fabric
+    for (int i = 0; i < 42; ++i)   // a device-sized registry (~42 tools, ~309 B each)
+      r.specs.push_back(orch::ToolRegistry::Spec{"tool_" + std::to_string(i), std::string(309, 'd'), "{}"});
+    std::vector<orch::EpisodicMessage> rows(2);
+    rows[0].role = "assistant"; rows[0].text = code;   // newest
+    rows[1].role = "user";      rows[1].text = "Can you give me a Python snippet to parse a CSV?";
+    const auto b = orch::deriveBudget(orch::modelCtxTokens(host, r.cfg.orchModels[host]), {});
+    r.recentConversation = "\n## RECENT CONVERSATION (this chat, oldest first; the current "
+                           "message is NOT here - it is in [USER])\n" +
+                           agent::dream::buildConversationWindow(rows, b.recentConvBytes);
+    r.eng->handleMessage("add a plot", "Omar", "web");
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.fabricCalls.size(), host);   // stateless tool-loop turn
+    TEST_ASSERT_EQUAL(1, (int)r.debug.size());
+    const std::string& ins = r.debug[0].instructions;
+    size_t s = 0;
+    while (s <= code.size()) {
+      size_t e = code.find('\n', s);
+      if (e == std::string::npos) e = code.size();
+      const std::string line = code.substr(s, e - s);
+      if (!line.empty())
+        TEST_ASSERT_TRUE_MESSAGE(ins.find(line) != std::string::npos, (std::string(host) + ": " + line).c_str());
+      s = e + 1;
+    }
+    TEST_ASSERT_TRUE(ins.find("\n  print(stock_by_core)\n") != std::string::npos);   // line breaks kept
+  }
 }
 
 // ---- (8) scheduled turn: rails + FireOutcome --------------------------------
@@ -1416,6 +1463,7 @@ int main(int, char**) {
   RUN_TEST(test_cum483_turn_without_memory_keeps_side_effects);
   RUN_TEST(test_cum486_advertised_models_equal_spawnable_for_every_slot);
   RUN_TEST(test_cum486_router_only_devices_advertise_their_models);
+  RUN_TEST(test_cum485_prev_reply_code_reaches_the_next_tool_loop_turn);
   RUN_TEST(test_scheduled_turn_rails_and_fire_outcome);
   RUN_TEST(test_once_wakeup_gets_wakeup_preamble_not_recurring);
   RUN_TEST(test_owner_reminder_gets_reminder_framing_not_wakeup);
