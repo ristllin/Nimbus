@@ -271,8 +271,9 @@ the synthesis reply is recorded like any turn reply - so the web chat, which
 renders that history, shows them and they survive a reload (CUM-482). They are
 not conversation the assistant reads back: the recent-conversation window, a
 sub-agent's brief and compaction all skip them (a raw fallback is sub-agent web
-content). While sub-agents run, an open web chat watches the device's activity
-and re-renders when a result lands, so the synthesis appears without sending
+content). An open web chat watches the device's activity (every 4 seconds while
+sub-agents run, every 30 seconds otherwise) and re-renders when a result lands,
+so the synthesis, or a reminder that fires later, appears without sending
 another message.
 
 ## What the head can and cannot do

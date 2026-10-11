@@ -75,6 +75,9 @@ class WebChatBook {
   int begin(const std::string& turnText);
   // A delivery to chat "web" (tg_poll, inside or outside a turn).
   void deliver(const std::string& text);
+  // A delivery that is never a turn's reply, whatever is running: it only bumps
+  // asyncSeq() so an open page re-renders its history (a routine's output).
+  void deliverAsync(const std::string& text);
   // tg_poll: the web turn ended. Its claimed turns become Answered.
   void end();
 
@@ -102,6 +105,17 @@ class WebChatBook {
   uint32_t seq_;
   uint32_t asyncSeq_ = 0;
 };
+
+// One delivery to chat "web" (the device's orchSendSink), so the host suite drives
+// the real routing. Every delivery reaches the book: inside a claimed turn it is
+// that turn's reply, otherwise it is async (asyncSeq moves and an open page
+// re-renders its history, where captureAssistant already put the text). A
+// routine's delivery (`routine`: a loop's scheduled turn is running) is ALWAYS
+// async (CUM-505): nobody is waiting on it, so it is never a turn's reply. Returns
+// true when the caller must also fill the legacy single slot (clients that poll
+// without a turn id) - never for a routine, whose text the next legacy poll would
+// otherwise show as the answer to the owner's next message.
+bool deliverToWebChat(WebChatBook& book, const std::string& text, bool routine);
 
 // ---- the /api/chat route bodies (portable: test_harness_webchat drives the
 // real decision; the device handlers only adapt the HTTP request) -------------

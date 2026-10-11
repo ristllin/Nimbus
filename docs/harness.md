@@ -154,9 +154,11 @@ to 2 keyed alternates with an owner notice; a fresh provider thread each time.
   back to the web chat and the reply opens with a sentence saying so; any other
   unreachable Telegram chat (removed, tenant revoked, allowlist emptied, a
   member's chat) pauses, because a fallback turn runs as the web chat (admin).
-  A loop's web-chat output is written to the web history only (the live
-  single-slot `GET /api/chat` would hand it to the owner's next message), and a
-  loop turn never fabricates a "Done.".
+  A loop's web-chat output is written to the web history and counted as an
+  async delivery (`agent::deliverToWebChat`): an open web chat re-renders its
+  history within its idle watch (every 30 s), and the output is never any turn's
+  reply nor the legacy single-slot `GET /api/chat` reply (either would hand it to
+  the owner's next message). A loop turn never fabricates a "Done.".
 - **Dreaming**: a reserved, undeletable (pause-only) daily loop at 03:30 local
   (the device timezone - Settings → Mode & identity). Stage 1 (no LLM): vector
   decay + expiry prune + windowed dedup - skipped entirely if the clock never

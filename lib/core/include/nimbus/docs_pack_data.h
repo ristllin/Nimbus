@@ -766,7 +766,9 @@ Notes:
   `chat_id` overrides that. One with no remembered chat goes to the owner's Telegram
   when it is set up, otherwise to the web chat. If the bot is turned off when the
   owner's own Telegram routine fires, it shows in the web chat and the reply says so;
-  a routine aimed at a chat that is no longer allowed pauses instead.)NIMBUSDOC"},
+  a routine aimed at a chat that is no longer allowed pauses instead. An open web
+  chat shows a routine's reply within about 30 seconds, without a reload, and never
+  as the answer to the owner's next message.)NIMBUSDOC"},
   {"tool-catalog#reply-output-channels", "`reply.*` - output channels",
    R"NIMBUSDOC(Registered by the memory subsystem. Turn-output tools: the model chooses how to
 reach the person. Both refuse outside a live turn.
@@ -2067,8 +2069,9 @@ the synthesis reply is recorded like any turn reply - so the web chat, which
 renders that history, shows them and they survive a reload (CUM-482). They are
 not conversation the assistant reads back: the recent-conversation window, a
 sub-agent's brief and compaction all skip them (a raw fallback is sub-agent web
-content). While sub-agents run, an open web chat watches the device's activity
-and re-renders when a result lands, so the synthesis appears without sending
+content). An open web chat watches the device's activity (every 4 seconds while
+sub-agents run, every 30 seconds otherwise) and re-renders when a result lands,
+so the synthesis, or a reminder that fires later, appears without sending
 another message.)NIMBUSDOC"},
   {"sub-sessions#what-the-head-can-and-cannot-do", "What the head can and cannot do",
    R"NIMBUSDOC(| ask | answer |

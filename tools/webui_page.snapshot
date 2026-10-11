@@ -4785,10 +4785,12 @@ function loadChatHistory(){
   }).catch(()=>{});
 }
 // Async results (CUM-482): a sub-agent synthesis, spawn acks and raw fallbacks are
-// delivered BETWEEN turns, into the chat history - never as any turn's reply. While
-// background work may still deliver, poll GET /api/chat?watch=1 (activity only: no
-// history read, consumes nothing) and re-render the history when the device's async
-// counter moves, so the result appears without the owner sending another message.
+// delivered BETWEEN turns, into the chat history - never as any turn's reply. Poll
+// GET /api/chat?watch=1 (activity only: no history read, consumes nothing) and
+// re-render the history when the device's async counter moves, so the result
+// appears without the owner sending another message. Every 4 s while background
+// work may still deliver; otherwise every 30 s, so a reminder or routine that fires
+// into an idle open page (CUM-505) still shows up on its own.
 // Watches only a device that reports `busy`; a hosted instance keeps its own flow.
 let _chatWatchT=0,_chatAsync=-1,_chatWatchUntil=0;
 function _chatWatch(d,arm){
@@ -4797,15 +4799,18 @@ function _chatWatch(d,arm){
   // (arm) re-renders through its own completion, so it only re-baselines here.
   if(!arm&&_chatAsync>=0&&d.async!==_chatAsync)setTimeout(loadChatHistory,1500);
   _chatAsync=d.async;
-  // Keep watching 90 s past the last sign of work: covers spawns still queued
-  // and a deferred synthesis (its raw fallback lands 60 s after the batch ends).
+  // Fast for 90 s past the last sign of work: covers spawns still queued and a
+  // deferred synthesis (its raw fallback lands 60 s after the batch ends).
   if(arm||d.busy>0)_chatWatchUntil=Date.now()+90000;
+  _chatWatchNext();
+}
+function _chatWatchNext(){
   clearTimeout(_chatWatchT);
-  if(Date.now()<_chatWatchUntil)_chatWatchT=setTimeout(_chatWatchPoll,4000);
+  _chatWatchT=setTimeout(_chatWatchPoll,Date.now()<_chatWatchUntil?4000:30000);
 }
 function _chatWatchPoll(){
-  fetch('/api/chat?watch=1').then(r=>r.json()).then(d=>_chatWatch(d,false))
-    .catch(()=>{clearTimeout(_chatWatchT);if(Date.now()<_chatWatchUntil)_chatWatchT=setTimeout(_chatWatchPoll,4000);});
+  if(!canPoll()){_chatWatchNext();return;}   // signed out: wait, never flood 401s
+  fetch('/api/chat?watch=1').then(r=>r.json()).then(d=>_chatWatch(d,false)).catch(_chatWatchNext);
 }
 // Rapid taps must never be lost or mismatched (CUM-218). Every send gets its own
 // user bubble + dim pending bubble IMMEDIATELY - even mid-turn - and is queued.

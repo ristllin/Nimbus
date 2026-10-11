@@ -367,13 +367,10 @@ static bool deliver(const String& chatId, const String& text, bool system = fals
   // still full after its short block. The queue is now sized for a full turn's burst
   // (see REPLY_QUEUE_DEPTH), but if it ever overflows anyway, log it rather than drop
   // the owner's message silently - a dropped reply is otherwise invisible.
-  // A routine's output to the web chat goes to its history only (CUM-505): the live
-  // GET /api/chat slot holds ONE reply and the next poll claims it, so a routine landing
-  // there would show up as the answer to the owner's next message. captureAssistant
-  // records the reply in session "web", and the chat shows it on its next load.
-  // Not a suppression: the capturing delivery wrapper (CUM-482) must still record
-  // a job-engine message that lands here, so this returns true, never false.
-  if (chatId == "web" && loops::firing()) return true;
+  // A routine's output to the web chat (CUM-505) goes through the sink like any
+  // other: orchSendSink hands it to the web chat book as an ASYNC delivery (the open
+  // page re-renders its history, where captureAssistant records it), never into the
+  // legacy single slot or any turn's reply (agent::deliverToWebChat).
   if (g_sinks.send && !g_sinks.send(chatId, text))
     alogf("orchestrator: reply queue full - dropped %d-byte message to %s",
           (int)text.length(), chatId.c_str());

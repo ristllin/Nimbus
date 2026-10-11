@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include "nimbus/harness/apply.h"
 #include "nimbus/harness/web_chat.h"
 #include "nimbus/orch/msg_batch.h"
 
@@ -337,6 +338,147 @@ static void test_turn_ids_unique_and_seeded() {
   TEST_ASSERT_TRUE(seen.count(c.open("x0", 1000)) == 0);
 }
 
+// ---- gate W2 #1 (CUM-505 x CUM-482): a routine's reply reaches the open page --
+// The merged tree skipped the web sink for a routine's reply (`firing()` early
+// return), so the book never counted it: the reminder sat in history and the open
+// page, which re-renders only when the async counter moves, never showed it. The
+// device's chat "web" sink is orchSendSink -> agent::deliverToWebChat plus the
+// legacy single slot; this rig is that branch verbatim.
+struct WebSink {
+  WebChatBook& book;
+  bool routine = false;          // loops::firing(): a loop's scheduled turn is running
+  std::string legacy;            // the no-turn-id slot (g_webReply)
+  bool legacyPending = false;
+  explicit WebSink(WebChatBook& b) : book(b) {}
+  void send(const std::string& text) {
+    if (agent::deliverToWebChat(book, text, routine)) {
+      legacy = text;
+      legacyPending = true;
+    }
+  }
+  // GET /api/chat with no turn id (legacy clients): returns + clears the slot.
+  JsonDocument legacyPoll() {
+    agent::ChatGetRequest rq;
+    agent::ChatGetDeps deps;
+    deps.legacyPoll = [this] {
+      const std::string r = legacyPending ? legacy : std::string();
+      legacyPending = false;
+      return r;
+    };
+    deps.legacyPending = [] { return false; };
+    return parse(agent::chatGetJson(rq, deps));
+  }
+};
+
+struct HistoryRow {
+  std::string chat, role, text;
+};
+
+// GET /api/chat?watch=1 through the real route body: what the page's watcher reads.
+static uint32_t watchAsync(WebChatBook& b) {
+  agent::ChatGetRequest rq;
+  rq.watch = true;
+  agent::ChatGetDeps deps;
+  deps.activity = [&b](uint32_t& a, int& busy) { a = b.asyncSeq(); busy = 0; };
+  return parse(agent::chatGetJson(rq, deps))["async"].as<uint32_t>();
+}
+
+// The device's apply wiring for a scheduled turn's reply: delivered through the
+// sink, captured to history, and no fabricated "Done." while a loop fires.
+static agent::ApplyDeps routineApplyDeps(WebSink& sink, std::vector<HistoryRow>& history) {
+  agent::ApplyDeps d;
+  d.deliver = [&sink](const std::string& chat, const std::string& text) {
+    if (chat == "web") sink.send(text);
+  };
+  d.captureAssistant = [&history](const std::string& chat, const std::string& text) {
+    history.push_back({chat, "assistant", text});
+  };
+  d.turnComplete = [&sink](const std::string& chat) {
+    if (!sink.routine && chat == "web") sink.send("Done.");
+  };
+  return d;
+}
+
+// The DoD sequence: a reminder made from the web chat fires minutes later with no
+// web turn running. Its reply is in history AND bumps the async counter the page
+// watches; the legacy slot stays empty; the owner's next question's first poll is
+// still empty, and its answer is only its own.
+static void test_routine_reply_is_async_captured_and_never_a_turns_reply() {
+  WebChatBook b(21);
+  WebSink sink(b);
+  std::vector<HistoryRow> history;
+  const agent::ApplyDeps d = routineApplyDeps(sink, history);
+
+  const std::string t1 = post(b, "/remind 2m take the pizza out");
+  b.begin("/remind 2m take the pizza out");
+  sink.send("Reminder set for 19:42.");
+  b.end();
+  TEST_ASSERT_EQUAL_STRING("Reminder set for 19:42.", getTurn(b, t1)["reply"].as<std::string>().c_str());
+  sink.legacyPending = false;   // that turn's legacy client read its answer
+
+  // T+2 min: the loop fires on tg_poll (inTurn_ is false - checkDue never runs
+  // inside a turn) and the scheduled turn replies to chat "web".
+  const uint32_t before = watchAsync(b);
+  sink.routine = true;
+  nimbus::orch::Turn t;
+  t.reply = "Time to take the pizza out.";
+  agent::ApplyState st;
+  st.scheduledTurn = true;
+  bool spawned = false;
+  agent::applyTurn(t, "web", d, st, spawned);
+  sink.routine = false;
+
+  TEST_ASSERT_EQUAL_UINT32_MESSAGE(before + 1, watchAsync(b),
+                                   "the open page's watcher saw no change: the reminder stays unseen");
+  TEST_ASSERT_EQUAL(1, (int)history.size());
+  TEST_ASSERT_EQUAL_STRING("web", history[0].chat.c_str());
+  TEST_ASSERT_EQUAL_STRING("Time to take the pizza out.", history[0].text.c_str());
+  TEST_ASSERT_EQUAL_STRING_MESSAGE("", sink.legacyPoll()["reply"].as<std::string>().c_str(),
+                                   "a routine must never sit in the legacy slot");
+
+  // The owner's next question: the first poll is empty and pending, and the
+  // answer carries only this turn's reply.
+  const std::string t2 = post(b, "thanks, is the oven off?");
+  JsonDocument first = getTurn(b, t2);
+  TEST_ASSERT_TRUE(first["pending"].as<bool>());
+  TEST_ASSERT_EQUAL_STRING("", first["reply"].as<std::string>().c_str());
+  TEST_ASSERT_EQUAL(1, b.begin("thanks, is the oven off?"));
+  sink.send("I can't see the oven, but I can remind you to check it.");
+  b.end();
+  TEST_ASSERT_EQUAL_STRING("I can't see the oven, but I can remind you to check it.",
+                           getTurn(b, t2)["reply"].as<std::string>().c_str());
+  TEST_ASSERT_EQUAL_STRING("I can't see the oven, but I can remind you to check it.",
+                           sink.legacyPoll()["reply"].as<std::string>().c_str());
+}
+
+// Class guard over every (routine, in-turn) pair: a routine's delivery is async
+// whatever is running - never a turn's reply, never the legacy slot - while every
+// other delivery keeps its CUM-482 behavior (a turn's reply inside a turn, async
+// between turns) and still fills the legacy slot for no-turn-id clients.
+static void test_web_delivery_routing_over_every_case() {
+  for (bool routine : {false, true}) {
+    for (bool inTurn : {false, true}) {
+      WebChatBook b(30);
+      WebSink sink(b);
+      const std::string id = post(b, "q");
+      if (inTurn) TEST_ASSERT_EQUAL(1, b.begin("q"));
+      const uint32_t a0 = b.asyncSeq();
+      sink.routine = routine;
+      sink.send("the delivery");
+      const bool asAsync = routine || !inTurn;
+      TEST_ASSERT_EQUAL_UINT32(a0 + (asAsync ? 1 : 0), b.asyncSeq());
+      TEST_ASSERT_EQUAL(!routine, sink.legacyPending);
+      if (inTurn) {
+        b.end();
+        TEST_ASSERT_EQUAL_STRING(routine ? "" : "the delivery",
+                                 getTurn(b, id)["reply"].as<std::string>().c_str());
+      }
+      sink.send("");   // an empty delivery never moves anything
+      TEST_ASSERT_EQUAL_UINT32(a0 + (asAsync ? 1 : 0), b.asyncSeq());
+    }
+  }
+}
+
 // ---- the route bodies -------------------------------------------------------
 
 static void test_post_body_returns_the_turn_id() {
@@ -432,6 +574,8 @@ int main(int, char**) {
   RUN_TEST(test_post_body_returns_the_turn_id);
   RUN_TEST(test_turn_body_flags_are_exclusive_for_every_state);
   RUN_TEST(test_legacy_watch_and_turn_paths);
+  RUN_TEST(test_routine_reply_is_async_captured_and_never_a_turns_reply);
+  RUN_TEST(test_web_delivery_routing_over_every_case);
   UNITY_END();
   return 0;
 }

@@ -843,15 +843,22 @@ static bool orchSendSink(const String& chatId, const String& text) {
     return true;
   }
   // Web chat turn (POST /api/chat): capture the reply for GET /api/chat to poll.
+  // A routine's output (CUM-505: a loop's scheduled turn delivering to "web") is
+  // async in the book - the open page re-renders its history - and never fills the
+  // legacy slot, where the next poll would claim it as the owner's next answer.
   if (chatId == "web") {
+    bool legacy;
     {
+      std::lock_guard<std::mutex> lk(g_webChatMx);
+      legacy = agent::deliverToWebChat(g_webChat, std::string(text.c_str(), text.length()),
+                                       agent::loops::firing());
+    }
+    if (legacy) {
       net::ConfigLockGuard lk;   // the legacy single slot (no-turn-id clients)
       g_webReply = text;
       g_webReplyPending = true;
       g_webTurnDeadlineMs = 0;   // the turn answered - no longer pending
     }
-    std::lock_guard<std::mutex> lk(g_webChatMx);
-    g_webChat.deliver(std::string(text.c_str(), text.length()));   // the turn's reply, or async
     return true;
   }
   return agent::telegram::send(chatId, text);

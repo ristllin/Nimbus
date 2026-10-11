@@ -128,6 +128,10 @@ void WebChatBook::deliver(const std::string& text) {
   current_.append(text.data(), text.size());
 }
 
+void WebChatBook::deliverAsync(const std::string& text) {
+  if (!text.empty()) asyncSeq_++;
+}
+
 void WebChatBook::end() {
   if (!inTurn_) return;
   for (auto& e : turns_)
@@ -147,6 +151,15 @@ WebChatBook::View WebChatBook::view(const std::string& id, uint32_t nowMs) const
     return v;
   }
   return v;
+}
+
+bool deliverToWebChat(WebChatBook& book, const std::string& text, bool routine) {
+  if (routine) {
+    book.deliverAsync(text);
+    return false;
+  }
+  book.deliver(text);
+  return true;
 }
 
 // ---- route bodies -----------------------------------------------------------

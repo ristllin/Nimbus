@@ -301,7 +301,9 @@ Notes:
   `chat_id` overrides that. One with no remembered chat goes to the owner's Telegram
   when it is set up, otherwise to the web chat. If the bot is turned off when the
   owner's own Telegram routine fires, it shows in the web chat and the reply says so;
-  a routine aimed at a chat that is no longer allowed pauses instead.
+  a routine aimed at a chat that is no longer allowed pauses instead. An open web
+  chat shows a routine's reply within about 30 seconds, without a reload, and never
+  as the answer to the owner's next message.
 
 ## `reply.*` - output channels
 
