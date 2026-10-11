@@ -72,6 +72,7 @@ class WebApi {
            tryConnectors(method, base, body, out) ||
            tryTelegram(method, base, body, out) ||
            tryStatic(method, base, path, out) ||
+           tryFiles(method, base, path, body, out) ||
            tryStubs(method, base, out) ||
            tryHardware(base, out);
   }
@@ -148,25 +149,119 @@ class WebApi {
     return false;
   }
 
-  // Well-formed-empty honest surfaces (nothing to lie about yet) - each returns a
-  // truthful, correctly-shaped body so the app renders and no control is dead. The
-  // constant surfaces are a table; a GET returns the empty-but-shaped body, a write
-  // acks. `prefix` covers the sub-routes (/api/telegram/add, /api/files/rm, ...).
+  // Surfaces a hosted instance does not have yet (CUM-543): a GET returns the
+  // truthful, correctly-shaped empty body so the page renders, and a write is
+  // REFUSED with the feature named - it used to answer {"ok":true} and drop it, so
+  // the page printed "Created" for a routine that never existed.
   bool tryStubs(const std::string& m, const std::string& base, ApiResp& out) {
     const bool get = m == "GET";
-    struct Stub { const char* base; bool prefix; const char* getBody; };
+    struct Stub { const char* base; bool prefix; const char* getBody; const char* feature; };
     static const Stub kStubs[] = {
-        {"/api/loops", false, "[]"},
-        {"/api/fetchq", false, "[]"},
-        {"/api/wakeups", false, R"({"policy":"silent-allow","pending":null,"items":[]})"},
-        {"/api/skills", true, R"({"sd":true,"skills":[]})"},
-        {"/api/files", true, R"({"present":true,"count":0,"bytes":0,"files":[]})"},
+        {"/api/loops", false, "[]", "routines"},
+        {"/api/fetchq", false, "[]", "downloads"},
+        {"/api/wakeups", false, R"({"policy":"silent-allow","pending":null,"items":[]})", "wake-ups"},
+        {"/api/skills", true, R"({"sd":true,"skills":[]})", "skills"},
     };
     for (const Stub& s : kStubs) {
       const bool hit = s.prefix ? base.rfind(s.base, 0) == 0 : base == s.base;
-      if (hit) { out = get ? okJson(s.getBody) : okJson(R"({"ok":true})"); return true; }
+      if (!hit) continue;
+      out = get ? okJson(s.getBody) : refuse(std::string("Not available on a hosted Nimbus yet: ") + s.feature);
+      return true;
     }
     return tryStubsExtra(get, base, out);
+  }
+
+  // ---- files (CUM-543): the device's /api/files/* over the instance disk ------
+  // The same store the assistant's files.* tools use (PosixFiles, the FileStore
+  // traversal gate), so an upload is readable by the assistant and a saved
+  // artifact shows in the panel. Engine thread (the store is single-context).
+  // Downloads are served as application/octet-stream: never rendered on this
+  // origin (the page saves or previews them from a blob).
+  bool tryFiles(const std::string& m, const std::string& base, const std::string& path,
+                const std::string& body, ApiResp& out) {
+    if (base.rfind("/api/files/", 0) != 0) return false;
+    const std::string proj = queryParam(path, "project"), name = queryParam(path, "name");
+    if (base == "/api/files/list" && m == "GET") out = filesList(proj);
+    else if (base == "/api/files/dl" && m == "GET") out = filesGet(proj, name);
+    else if (base == "/api/files/upload" && m == "POST") out = filesUpload(proj, name, body);
+    else if (base == "/api/files/rm" && m == "POST") out = filesRemove(body);
+    else if (base == "/api/files/rmproject" && m == "POST") out = filesRemoveProject(body, proj);
+    else out = refuse("Not available on a hosted Nimbus yet: " + base);
+    return true;
+  }
+  ApiResp filesList(const std::string& proj) {
+    return engineRead([this, proj] {
+      JsonDocument d;
+      d["present"] = true;
+      d["unsupported"] = false;
+      d["count"] = (int)rig_->files().count();
+      d["bytes"] = (double)rig_->files().totalBytes();
+      rig_->files().listInto(d["files"].to<JsonArray>(), proj);
+      std::string out; serializeJson(d, out); return out;
+    });
+  }
+  ApiResp filesGet(const std::string& proj, const std::string& name) {
+    auto found = std::make_shared<bool>(false);
+    ApiResp r = engineRead([this, proj, name, found] {
+      std::string bytes;
+      *found = rig_->files().fetch(proj, name, bytes);
+      return bytes;
+    });
+    if (r.status != 200) return r;
+    if (!*found) return ApiResp{404, "application/json", R"({"error":"not found"})"};
+    r.ctype = "application/octet-stream";
+    return r;
+  }
+  // The page posts one multipart file part (FormData "file"); the bytes run from
+  // the part's header end to the next boundary line, binary-safe.
+  static bool multipartFile(const std::string& body, std::string& bytes, std::string& filename) {
+    const size_t eol = body.find("\r\n");
+    if (body.rfind("--", 0) != 0 || eol == std::string::npos) return false;
+    const std::string boundary = body.substr(0, eol);
+    const size_t hdrEnd = body.find("\r\n\r\n", eol);
+    if (hdrEnd == std::string::npos) return false;
+    const std::string hdr = body.substr(eol, hdrEnd - eol);
+    const size_t fn = hdr.find("filename=\"");
+    if (fn != std::string::npos) filename = hdr.substr(fn + 10, hdr.find('"', fn + 10) - fn - 10);
+    const size_t start = hdrEnd + 4;
+    const size_t end = body.find("\r\n" + boundary, start);
+    if (end == std::string::npos) return false;
+    bytes = body.substr(start, end - start);
+    return true;
+  }
+  ApiResp filesUpload(std::string proj, std::string name, const std::string& body) {
+    std::string bytes, filename;
+    if (!multipartFile(body, bytes, filename)) return refuse("No file in the upload. Choose a file and try again.");
+    if (proj.empty()) proj = "uploads";
+    if (name.empty()) name = filename;
+    auto err = std::make_shared<std::string>();
+    ApiResp r = engineRead([this, proj, name, bytes, err] {
+      return rig_->files().put(proj, name, bytes, *err) ? std::string(R"({"ok":true})") : std::string();
+    });
+    if (r.status == 200 && !err->empty()) return refuse("Couldn't store the file: " + *err + ".");
+    return r;
+  }
+  ApiResp filesRemove(const std::string& body) {
+    const std::string proj = formValue(body, "project"), name = formValue(body, "name");
+    auto ok = std::make_shared<bool>(false);
+    ApiResp r = engineRead([this, proj, name, ok] {
+      *ok = rig_->files().remove(proj, name);
+      return std::string(R"({"ok":true})");
+    });
+    if (r.status == 200 && !*ok) return ApiResp{404, "application/json", R"({"error":"not found"})"};
+    return r;
+  }
+  ApiResp filesRemoveProject(const std::string& body, std::string proj) {
+    if (proj.empty()) proj = formValue(body, "project");
+    if (formValue(body, "confirm") != "DELETE") return refuse("confirm phrase required");
+    auto n = std::make_shared<int>(-1);
+    ApiResp r = engineRead([this, proj, n] {
+      *n = rig_->files().removeProject(proj);
+      return std::string();
+    });
+    if (r.status != 200) return r;
+    if (*n < 0) return ApiResp{404, "application/json", R"({"error":"not found"})"};
+    return okJson(R"({"ok":true,"removed":)" + std::to_string(*n) + "}");
   }
 
   // ---- connectors (CUM-424) - the REAL registry, device-contract-compatible.

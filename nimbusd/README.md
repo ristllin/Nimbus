@@ -168,6 +168,14 @@ truth: a cloud instance that is always online, with no screen, microphone, speak
 LED ring or battery (the composer's desk-device lines are replaced for every head
 this daemon registers; `tests/test_hosted_prompt.cpp` pins the wording).
 
+**Files, routines and the rest.** The Files panel (`/api/files/list`, `upload`,
+`dl`, `rm`, `rmproject`) works on the instance disk: it is the same store the
+assistant's `files.*` tools read, so an upload is readable by the assistant (one
+upload up to 1 MB; downloads are served as `application/octet-stream`). Routines,
+skills, wake-ups and URL downloads have no hosted engine yet: their lists answer an
+honest empty GET and a write answers `400 "Not available on a hosted Nimbus yet:
+<feature>"`.
+
 **Commands.** `/clear` (then `/clear yes`) clears the conversation exactly like the
 button, `/help` lists the commands, and any other slash command gets a fixed reply:
 none of them reaches the model or costs a turn.

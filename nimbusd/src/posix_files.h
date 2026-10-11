@@ -1,4 +1,8 @@
 #pragma once
+#include <ArduinoJson.h>
+#include <unistd.h>
+
+#include <ctime>
 #include <string>
 
 #include "nimbus/orch/file_store.h"
@@ -106,6 +110,41 @@ class PosixFiles {
     return body;
   }
   size_t count() const { return store_.count(); }
+  uint64_t totalBytes() const { return store_.totalBytes(); }
+
+  // ---- the web app's Files panel (device /api/files/*, CUM-543) ----
+  // The listing in the device's shape (web_files.cpp + files_subsystem listJson).
+  void listInto(JsonArray arr, const std::string& project) const {
+    for (const auto* e : store_.list(project)) {
+      JsonObject o = arr.add<JsonObject>();
+      o["project"] = e->project;
+      o["name"] = e->name;
+      o["bytes"] = e->bytes;
+      o["kind"] = nimbus::orch::fileKindName(e->kind);
+      o["createdAt"] = e->createdAt;
+    }
+  }
+  // Store an uploaded file (any bytes) under the same traversal gate as the tools.
+  bool put(const std::string& p, const std::string& n, const std::string& bytes, std::string& err) {
+    return save(p, n, bytes, err);
+  }
+  bool fetch(const std::string& p, const std::string& n, std::string& out) const { return read(p, n, out); }
+  bool remove(const std::string& p, const std::string& n) {
+    if (!store_.find(p, n)) return false;
+    ::unlink(bytesPath(p, n).c_str());
+    store_.remove(p, n);
+    fsutil::writeFileAtomic(indexPath(), store_.dump());
+    return true;
+  }
+  // Delete every file in a project; -1 when the project holds none.
+  int removeProject(const std::string& p) {
+    std::vector<std::string> names;
+    for (const auto* e : store_.list(p)) names.push_back(e->name);
+    if (p.empty() || names.empty()) return -1;
+    for (const auto& n : names) remove(p, n);
+    ::rmdir((root_ + "/" + p).c_str());
+    return (int)names.size();
+  }
 
  private:
   std::string indexPath() const { return root_ + "/.index"; }
@@ -128,6 +167,7 @@ class PosixFiles {
     e.project = p;
     e.name = n;
     e.bytes = (uint32_t)text.size();
+    e.createdAt = (uint32_t)time(nullptr);
     e.kind = nimbus::orch::fileKindForName(n);
     if (!store_.add(e, err)) return false;
     fsutil::writeFileAtomic(indexPath(), store_.dump());
