@@ -25,7 +25,7 @@ can never touch the signed-in session on the main origin.
 1. Put the device in Orchestrator mode.
 2. Start pairing from either surface:
    - On the device screen, open Settings > Connectivity > Cloud link code.
-   - Or on the device web UI, open Settings > Cloud access and choose "Pair with the cloud".
+   - Or on the device web UI, open **Device > Cloud access** and choose **Pair with the cloud**.
 
    The device shows a **Cloud link code** (8 characters, and a QR) on its screen.
 3. Sign in at `app.cumulo-nimbus.ai`, open the pairing page, and enter the Cloud link
@@ -33,8 +33,8 @@ can never touch the signed-in session on the main origin.
 4. The device connects and appears in your account as online. "Open" serves its UI
    through the tunnel.
 
-To stop remote access, open Settings > Cloud access and choose "Unpair" (drops this
-pairing, keeps cloud access on) or "Turn off" (disables cloud access).
+To stop remote access, open **Device > Cloud access** and choose **Unpair** (drops
+this pairing, keeps cloud access on) or **Turn off** (disables cloud access).
 
 ## Security
 

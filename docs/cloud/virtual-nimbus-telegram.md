@@ -49,10 +49,12 @@ Things to know before you approve someone:
 - **An approved person's conversations use your connectors** (calendar, Notion,
   Slack, and the rest) and your provider keys, and they can start background
   agents that do the same. Approving someone is granting that.
-- **One person's background agents at a time.** While your agents are working,
-  a user's or guest's message waits until your report is delivered, so they never
-  see your results; an agent they ask for while someone else's are running is
-  declined with a short note. Your own messages never wait.
+- **One person's background agents at a time.** While one person's background
+  agents are working, a message from a different user or guest waits until that
+  work is reported, so they never see someone else's results, and a background
+  agent anyone else asks for, you included, is declined with a short note until
+  that work is reported. Your own messages never wait, so if you write while
+  someone else's agents are working, your turn can receive their results.
 - **Stored files stay yours.** On a hosted instance a user or guest cannot list,
   read, or save files.
 - **Removing someone** (the × on their chip) takes effect on their next message,

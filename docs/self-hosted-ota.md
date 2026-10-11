@@ -44,8 +44,9 @@ openssl ecparam -name prime256v1 -genkey -noout -out ota_priv.pem
 openssl ec -in ota_priv.pem -pubout -out ota_pub.pem
 ```
 
-Put the public key into `include/ota_pubkey.h` (`kOtaPubKeys[]`; the firmware
-trusts a list, which is what makes later rotation possible). Back up the
+Replace the upstream `key #1` entry in `kOtaPubKeys[]` in `include/ota_pubkey.h`
+with your public key PEM, and leave the `#ifdef NIMBUS_TEST` entry as it is. The
+firmware trusts a list, which is what makes later rotation possible. Back up the
 private key offline: if it is lost, no future release can be signed and every
 fielded device is left with USB-only updates.
 
@@ -89,8 +90,10 @@ gh secret set RELEASE_PAT     -R <you>/<fork>
 In the same workflow, replace the upstream releases repository name wherever it
 appears: the publish step's `repository:`, the manifest `--url-base`, and the
 web-flash branch URLs. The Virtual Nimbus image job in that workflow skips
-itself with a notice when the `GCP_WIF_PROVIDER` and `GCP_DEPLOY_SA` secrets
-are not set, so a fork that does not run Virtual Nimbus can leave it alone.
+itself with a notice on firmware tags when the `GCP_WIF_PROVIDER` and
+`GCP_DEPLOY_SA` secrets are not set (a `vn-v*` tag without them fails instead), so
+a fork that does not run Virtual Nimbus can leave it alone and never push `vn-`
+tags.
 
 ### 5. Cut a release
 
@@ -102,9 +105,15 @@ git tag vX.Y.Z && git push origin main vX.Y.Z
 CI gates tag == version, builds the four board variants (`esp32s3`,
 `esp32s3-cyd`, `esp32s3-cyd-35`, `esp32s3-cyd-40`), signs the manifest, and
 publishes. Devices already running your firmware see it on their next daily
-check. Your fork's ongoing release chores - rc tags, token renewal, key
-rotation, and troubleshooting - mirror the upstream process, with your own
-repositories in place of the upstream names.
+check.
+
+A release candidate is tagged `vX.Y.Z-rcN`. It passes the same tag gate, is
+published as a prerelease (so devices polling `releases/latest` do not see it),
+and does not update the web flasher. To rotate the signing key, add the new
+public key to `kOtaPubKeys[]`, ship one release signed with the old key so
+fielded devices learn the new one, then replace `OTA_SIGNING_KEY` with the new
+private key and remove the old entry a release later. Renew `RELEASE_PAT` before
+it expires.
 
 ## What you inherit for free
 

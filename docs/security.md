@@ -24,7 +24,7 @@ server - findings are weighted by real reachability.
   exceptions exist, both **unprovisioned-only**: `/savewifi` (first provision), and the
   AP-interface token handout on `GET /` + the captive-portal catch-all, which `302`s to
   `/?t=<token>` for a peer on the setup AP while no `staSsid` is saved (detailed under
-  *Setup AP + shipped password* below). Once Wi-Fi is configured, neither fires.
+  *Token handout is unprovisioned-only* in the Setup AP password section below). Once Wi-Fi is configured, neither fires.
   Delivered automatically via the **Sign-in QR**: `configUrl()` embeds a single-use
   `?c=` code (never the durable token), which the browser exchanges once over `POST
   /api/signin/exchange` for the token. The token
@@ -174,7 +174,7 @@ ERROR, not a security hole). ⚠ **Known limitation:** the flag is GLOBAL, not p
 providers. Per-provider granularity is the follow-up if a self-hosted + cloud mix ever
 needs both at once.
 
-### DONE(security): cloud relay socket always validates (never setInsecure)
+### Cloud relay socket always validates, never setInsecure (done)
 
 The cloud relay client (`src/net/relay_client.cpp`, see [cloud-relay.md](cloud-relay.md))
 does NOT go through `tlsSetup()`, so the `tlsVerify=0` escape hatch above can never weaken
@@ -195,7 +195,7 @@ bundle symbol resolved. Each provider must be confirmed to still CONNECT with va
 on (trigger `provider_verify` per provider → `result=1 verified`, plus one real turn) -
 a provider whose root isn't bundled fails as a connect error until the flag is flipped.
 
-### DONE(security): tunnel secret-containment (canonicalize, deny, scrub)
+### Tunnel secret containment: canonicalize, deny, scrub (done)
 
 The loopback replay stamps a valid LAN token onto every tunneled request, so any endpoint
 whose response reflects a durable secret must never be served over the tunnel. That
@@ -220,7 +220,7 @@ containment now lives in one portable, host-tested place
 The remote owner is already authenticated by the service and reaches the device on its own
 network for anything the denylist withholds, so remote use is unaffected.
 
-### DONE(security): connector OAuth /oauth/go requires a per-flow launch key (CUM-274)
+### Connector OAuth /oauth/go requires a per-flow launch key (done)
 
 The MCP connector OAuth 2.1 flow (see the connector sign-in in the outbound MCP docs)
 parks at consent for up to an hour with a state-bearing authorize URL ready to hand out.
@@ -238,7 +238,7 @@ home page and never sees `state`. The gate decision is the pure, host-tested
 presented key; `test_mcp_oauth` tables the caller classes). With `state` no longer
 leakable, the callback's existing state-equality check is a real gate again.
 
-### DONE(security): outbound moderation exemption is provenance-based (CUM-275)
+### Outbound moderation exemption is provenance-based (done)
 
 The outbound-reply screen ("Check replies sent to guests") skips the device's own
 deterministic system copy so it never pays a classifier call on known-safe strings. That
@@ -264,7 +264,7 @@ Sign-in QR carries a single-use `?c=` code. What changed:
   and expires (default 2 min), so a copy of the link in synced history is inert once
   used or expired. `/api/connect` returns `?c=` links; `GET /api/signin/code` mints a
   fresh code for a caller that renders a QR.
-- **Longer window for hand entry (CUM-295).** The scan path keeps the 2-minute TTL (a
+- **Longer window for hand entry.** The scan path keeps the 2-minute TTL (a
   scan is instant), but the "Show code" fallback, for anyone who cannot scan, mints its
   own single-use code with a 10-minute TTL and shows a live mm:ss countdown, re-minting
   and repainting the moment it expires. So a code being read off the screen and typed
@@ -273,7 +273,7 @@ Sign-in QR carries a single-use `?c=` code. What changed:
   does, so the durable token is never entered by hand. It trims and lowercases what
   was typed (codes are lowercase hex; a phone keyboard capitalizes the first letter)
   and the field turns off autocapitalize and autocorrect.
-- **A shown code is never evicted (CUM-453).** The table holds eight codes. A mint
+- **A shown code is never evicted.** The table holds eight codes. A mint
   takes a free, used, or expired slot first and, only when every slot still holds a
   redeemable code, evicts the one closest to its own expiry. Before this the slots
   were reused round-robin, so the Sign-in QR's 2-minute scan codes (re-minted about
@@ -290,15 +290,17 @@ Sign-in QR carries a single-use `?c=` code. What changed:
   once (existing QR codes / bookmarks), stores the token, strips it, and shows a one-time
   migration hint pointing the owner at the Sign-in QR.
 
-**Device-screen QR (CUM-209, wired):** `configUrl()`/`setupUrl()` in `main.cpp` now
+**Device-screen QR (wired):** `configUrl()`/`setupUrl()` in `main.cpp` now
 embed a single-use `?c=` code from `net::panelSigninCode()`. It mints off the same
 `nimbus::SigninCodes` table the exchange endpoint redeems from - spinlock-guarded for
 this main-task caller - and caches the code (re-minting only near expiry) so the QR
 image stays stable across panel repaints yet is always live when scanned. So a scan
-signs the browser in with no typing; a phone-scan pass is the remaining bench check.
+signs the browser in with no typing; a live phone scan is the one step not yet
+verified on hardware.
 
-**Still to do (owned outside the web layer):** the unprovisioned setup-AP redirect +
-captive-portal redirect still emit `/?t=<token>` (in `wifi_portal.cpp`). Switching them
+**Still to do:** the unprovisioned setup-AP redirect and the captive-portal catch-all
+still hand out `/?t=<token>` (the `GET /` AP branch and `onNotFound` in
+`src/net/webui.cpp`). Switching them
 to `/?c=<code>` needs hardware-in-the-loop verification of first-run + the Wi-Fi handoff.
 Until then the client accepts the legacy `?t=` on those paths and shows the migration
 hint. `POST /api/token/regen` remains the revocation lever.
@@ -362,7 +364,7 @@ The password is on-glass only in both cases: it is never logged, never sent over
 serial, and the `/api/connect` endpoint that carries it is blocked and redacted on
 the tunnel.
 
-**Join screens carry a sign-in code once Wi-Fi is set up (CUM-452, CUM-453).** A
+**Join screens carry a sign-in code once Wi-Fi is set up.** A
 provisioned device no longer signs AP peers in on its own (see below), so a person who
 joins the setup network lands on the sign-in gate. The join screens the owner opens on
 a provisioned Orchestrator therefore show a real device sign-in code beside the network

@@ -10,9 +10,12 @@ on the device, and call the router from your own code.
 ## Create a key
 
 1. Sign in at [app.cumulo-nimbus.ai](https://app.cumulo-nimbus.ai).
-2. Open **API keys** and create one. Give it a name, and optionally a monthly
+2. Add credit: on the **Credits** page (or with **Top up** on the **API keys**
+   page), top up your prepaid balance. The router needs a balance before a key can
+   make calls.
+3. Open **API keys** and create one. Give it a name, and optionally a monthly
    spending limit for a hard cap.
-3. Copy the key when it is shown. **You only see it once.** If you lose it, revoke
+4. Copy the key when it is shown. **You only see it once.** If you lose it, revoke
    it and create another.
 
 Each key tracks its own usage and can be revoked on its own, so you can keep a
@@ -24,12 +27,16 @@ The device can use your Cumulo key as its AI provider, so its assistant reaches
 models without any other provider account.
 
 1. In the device web UI, open **Assistant > Models**.
-2. Under **Providers & keys**, choose **Cumulo Nimbus** and paste the key.
-3. Once it verifies, pick a model. The key is stored write-only: it shows as
-   "set" and is never displayed again.
+2. Under **Providers & keys**, paste the key into the **Cumulo Nimbus** row and
+   select **Save & Verify**. In Notifier mode the button reads **Save Key**: the
+   key is saved now and can be verified once you switch to Orchestrator mode.
+3. Once it verifies, pick the **Orchestrator model** and **Session model**. The
+   key is stored write-only: it shows as "set" and is never displayed again.
 
-You can also mint a key from the device instead of pasting one. Once the device
-is paired with the cloud:
+You can also mint a key from the device instead of pasting one. The option appears
+under **Device > Cloud access** once the device is paired with the cloud (see
+[Cloud access](../cloud-relay.md); pairing needs Orchestrator mode), and only while
+no Cumulo key is set (a Virtual Nimbus does not offer it). To mint one:
 
 1. In the device web UI, open **Device > Cloud access**.
 2. Under **Mint a key for this device**, enter **Capacity (credits per month)**
@@ -107,8 +114,8 @@ msg = client.messages.create(
 print(msg.content[0].text)
 ```
 
-The **API keys** page in the portal shows the same base URLs and snippets next to
-each key.
+The **Setup guide** at the bottom of the portal's **API keys** page shows the same
+base URLs, with copy buttons and equivalent snippets.
 
 ## Costs and limits
 

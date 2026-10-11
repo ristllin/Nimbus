@@ -173,7 +173,7 @@ Found by two invented new joiners running 15 to 20 turn sessions on fresh boards
   three Freenove screen sizes cannot be told apart by the hardware, so a board
   with no seeded type no longer guesses 2.8" and is skipped by typed updates
   until it is set up with the installer.
-- Installer and bench tooling: `tools/board_info.py` reads a board over USB
+- Installer and test tooling: `tools/board_info.py` reads a board over USB
   without resetting it; the installer picks the provisioning image by board and
   cable; the on-device test suite measures the classic board honestly instead
   of skipping.
@@ -260,8 +260,8 @@ to end on v4.0.0, or to the review of the composed prompt that followed.
   ("sign-in FAILED - tell the owner") and a missing credential ("NO credential
   - not usable"), fed from the one credential choke point. Enabled is a
   checkbox; these markers are evidence.
-- **Capability validation is a user setting** (Assistant > Models > Tool
-  use): off / passive (default) / active. Passive marks a provider verified
+- **Capability validation is a user setting** (now under Assistant > Tools >
+  Tool use): Off / Passive (default) / Active. Passive marks a provider verified
   when a real turn succeeds; active adds a periodic free re-verify
   (`GET /v1/models`, ~$0) so a revoked key is caught.
 
@@ -324,7 +324,7 @@ Owner-set timezone with device clock + sync badge on the web UI; routines adopt
 a timezone edit budget-neutrally; the nightly dream skips its paid reflection
 turn on quiet nights and respects an honest fact quota; the memory dashboard
 gained lifecycle columns (created / expires-in / last-used), browse pagination,
-Delete All (typed confirm), file content search, SD-wipe danger controls, and
+Delete All (typed confirm), file content search, SD erase danger controls, and
 photo-aware `files.send`.
 
 ### Main architectural decisions

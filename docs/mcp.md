@@ -16,7 +16,7 @@ the rest, run in the AI provider's cloud), see [Connectors](connectors.md).
 ## The device as a server
 
 The device serves MCP over your LAN at `POST /mcp` (JSON-RPC 2.0), behind the
-per-device access token sent as the `X-Nimbus-Token` request header (the body is
+device sign-in code sent as the `X-Nimbus-Token` request header (the body is
 raw JSON-RPC, so the header is the only place the token goes). `tools/list`
 returns the device's tool catalog; `tools/call` runs one. This is the same
 registry the Orchestrator uses on its own turns, so what a LAN client can call and
@@ -78,8 +78,9 @@ waiting for your approval, and which are temporarily unreachable.
 
 ### Signing in to a hosted server (OAuth)
 
-Some hosted servers, such as `https://mcp.linear.app/mcp`, do not take a pasted
-token at all: they use a sign-in you complete in your browser. The device has no
+Some hosted servers, such as `https://mcp.notion.com/mcp`, do not take a pasted
+token at all, and others, such as `https://mcp.linear.app/mcp`, also accept one:
+either way, they offer a sign-in you complete in your browser. The device has no
 browser of its own, so it borrows one you already have. It shows a link on the
 Connectors page; you open that link on a phone or laptop on the same network,
 approve access there, and the browser hands the result back to the device. The
@@ -92,10 +93,12 @@ Linear's hosted server (`https://mcp.linear.app/mcp`) is the worked example; Not
 Sentry, and Atlassian connect the same way.
 
 1. Add the server as in [Setting one up](#setting-one-up): name `linear`, URL
-   `https://mcp.linear.app/mcp`, no token (this server does not take one), and
-   `"dev":1`. Then choose **Approve** on its card.
-2. On the card, choose **Sign in**. The device shows a link and a QR code on the
-   Connectors page, plus a short code when the server issues one.
+   `https://mcp.linear.app/mcp`, no token (to sign in through the browser instead;
+   a Linear API key in `tok` also works and skips the steps below), and `"dev":1`.
+   Then choose **Approve** on its card.
+2. On the card, choose **Sign in**. The device shows a link, a short code, and a
+   QR code on the Connectors page. The code only helps you match the link to this
+   device; nothing asks you to type it.
 3. On your phone or laptop, open the link (or scan the QR). It takes you to Linear's
    own sign-in page. Sign in and approve access for the device.
 4. Linear sends the browser back to the device, which finishes the exchange and
@@ -203,17 +206,16 @@ and give it a fixed token. Your data stays on your network.
 | Home Assistant | Control lights, scenes, and climate, and read sensors, by voice, on your own network. | `http://homeassistant.local:8123/api/mcp` | A long-lived access token from Home Assistant. |
 | Your own server | Reach files, notes, or a database on a machine at home without sending anything to a provider. | `http://192.168.1.20:3111/mcp` (your address) | A fixed token you set on that server. |
 
-### Hosted servers that need a browser sign-in
+### Hosted servers that sign in through the browser
 
-These are OAuth-only: they do not take a pasted token, so you connect them with the
-**Sign in** button (see [Signing in to a hosted server](#signing-in-to-a-hosted-server-oauth)),
+These connect with the **Sign in** button (see [Signing in to a hosted server](#signing-in-to-a-hosted-server-oauth)),
 approving on a phone or laptop on the same network. Sign-in works with a server that
 offers automatic client registration; a server that needs a hand-registered client is
 not supported this way.
 
 | Server | What it does for you | Endpoint | Connect with |
 |---|---|---|---|
-| Linear | Create and update issues and projects. | `https://mcp.linear.app/mcp` | Sign in (browser). |
+| Linear | Create and update issues and projects. | `https://mcp.linear.app/mcp` | Sign in (browser), or a Linear API key in the token field. |
 | Notion | Search and update your pages and databases. | `https://mcp.notion.com/mcp` | Sign in (browser). |
 | Sentry | Look up errors and issues from your projects. | `https://mcp.sentry.dev/mcp` | Sign in (browser). |
 | Atlassian | Read and update Jira issues and Confluence pages. | `https://mcp.atlassian.com/v1/sse` | Sign in (browser). |
@@ -222,8 +224,8 @@ not supported this way.
 
 You do not need a public address to reach the device's MCP server from outside
 your home. Pair the device for [cloud access](cloud-relay.md) and reach `/mcp`
-through the tunnel; the device stamps its own access token onto the forwarded
-request, so the token never leaves the device. See
+through the tunnel; the device stamps its own sign-in code onto the forwarded
+request, so the code never leaves the device. See
 [Cloud access](cloud-relay.md) for pairing and the security model.
 
 ## Troubleshooting

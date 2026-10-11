@@ -134,8 +134,8 @@ release, and no release moves running Virtual Nimbus instances by itself.
 
 ## Device behavior
 
-- **Check**: about 2 minutes after boot, then daily; on demand from Settings >
-  Software update > **Check for Updates** on the web page, from the device's
+- **Check**: about 2 minutes after boot, then daily; on demand from
+  **Check for Updates** under Device > Software update on the web page, from the device's
   Settings > Software update > Check for updates row (Orchestrator mode only; in
   Notifier mode the row renders "(unavailable)"), or with `POST /api/ota/check`. State surfaces in `/api/state`
   (`ota`, `otaResult`, `otaLatest`, `otaNotes`, `otaPct`, `lastOta`, `autoUpd`)
@@ -209,7 +209,7 @@ Cloud OTA needs a published signed release, and a fresh ROM esptool flash needs
 the physical BOOT button (unreachable over native USB on some units). The USB
 serial update is a third path: the **running** firmware accepts a locally-built
 `.bin` over the USB cable and installs it through the **same** esp_ota A/B engine,
-rollback guard, and deferred reboot as cloud OTA. Compared to cloud OTA it drops
+rollback guard, and deferred restart as cloud OTA. Compared to cloud OTA it drops
 everything that only makes sense for a remotely-fetched signed release: the HTTPS
 fetch, the ECDSA signature check, the version-eligibility check, and the
 battery/health install gate. It keeps the streamed-sha256 integrity check. The
@@ -264,7 +264,7 @@ easy to read amid ordinary log output.
   tests/hil/test_l29_release_gate.py::TestOtaCheckAnswersFast -m net
   --allow-hardware` times `POST /api/ota/check` over the LAN (must accept in
   under 2 s, off the web task) and polls `/api/state` until `otaResult` is
-  definitive. Set `NIMBUS_OTA_MANIFEST_URL` to point the check at a bench manifest
+  definitive. Set `NIMBUS_OTA_MANIFEST_URL` to point the check at a test manifest of your own
   (else it runs against the real feed). The tunnel property follows from the fast
   LAN answer.
 - Rollback drill (console, `env:test`, both slots flashed): `OTASIM arm app0`
