@@ -225,13 +225,22 @@ static void testUnknownKeyFieldRefused(ndtest::Ctx& c) {
   c.eqi(clr.status, 400, "clr_ of an unknown field is refused too");
 
   // Counter-check: the NON-provider key fields the shared orch form legitimately posts
-  // (the custom endpoint key, the Tavily key) must NOT be refused - they are not
-  // provider-key drift, and refusing them would break the whole Save Changes payload.
+  // (the custom endpoint key, the Tavily key) are not provider-key drift. The page's
+  // Save Changes posts custKey BLANK ("keep"), so that payload must save; a typed
+  // value is something a hosted instance does not store from the page, so it is
+  // refused honestly by name (CUM-543) - never as an "unknown field".
   ApiResp save;
-  c.ok(api.handle("POST", "/api/orch",
-                  "custKey=cust_endpoint_key&tavKey=tvly_search_key&orchLoop=1", save),
-       "a Save Changes payload with custKey/tavKey is handled");
-  c.eqi(save.status, 200, "custKey/tavKey are accepted (not refused as unknown)");
+  c.ok(api.handle("POST", "/api/orch", "custKey=&orchLoop=1", save),
+       "a Save Changes payload with a blank custKey is handled");
+  c.eqi(save.status, 200, "a blank custKey rides Save Changes (not refused as unknown)");
+  for (const char* f : {"custKey", "tavKey"}) {
+    ApiResp typed;
+    api.handle("POST", "/api/orch", std::string(f) + "=typed_value", typed);
+    c.eqi(typed.status, 400, std::string("a typed ") + f + " is refused");
+    c.ok(typed.body.find(std::string("Not available on a hosted Nimbus: ") + f) != std::string::npos &&
+             typed.body.find("unknown field") == std::string::npos,
+         std::string(f) + " is refused by name as hosted-only, not as drift");
+  }
   eng.stop();
   clearProviderEnv();
 }

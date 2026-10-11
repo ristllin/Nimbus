@@ -53,7 +53,7 @@ class EngineThread {
 
   void start() {
     if (running_.exchange(true)) return;
-    snap_.devName = rig_->options().devName;
+    snap_.devName = rig_->settings().devName;
     snap_.startedEpoch = (uint64_t)time(nullptr);
     refreshSnapshot();
     thread_ = std::thread([this] { run(); });
@@ -265,7 +265,7 @@ class EngineThread {
     // thread never races a std::string mid-reassignment.
     s.lastFallback = rig_->lastFallback();
     s.lastServedBy = rig_->lastServedBy();
-    s.devName = rig_->options().devName;
+    s.devName = rig_->settings().devName;
     {
       std::lock_guard<std::mutex> lk(snapMu_);
       s.turnInFlight = snap_.turnInFlight;  // preserve the in-flight flag

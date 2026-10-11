@@ -31,6 +31,7 @@ New code lives only in this directory:
 | `src/tg_web.h` | the device's `/api/telegram*` + `/api/tenant` routes over `tg_access.h`, so the web app's Telegram panel manages a hosted instance unchanged |
 | `src/rig.h` | `NimbusdRig` - the composition, rehydrating all stores on construct and flushing after each turn |
 | `src/router_head.h` | the Cumulo head's view of a router refusal (`RouterTap`) and the honest copy for each kind |
+| `src/hosted_settings.h` | the owner's settings (durable, thread-safe) and the apply-or-refuse rule for every field the web app posts |
 | `src/engine_thread.h` | the concurrency layer: one engine thread + request mailbox + a snapshot for lock-free reads |
 | `src/http_control.h` | the 127.0.0.1-only control surface (serves the web app + logo, health, replies, message, MCP, backup; delegates `/api/*` to `WebApi`), web-token gated |
 | `src/web_api.h` | the `/api/*` surface the web app calls, answered with honest Virtual Nimbus semantics (real chat/memory/providers; hardware panels honestly virtual) |
@@ -47,6 +48,8 @@ New code lives only in this directory:
 /data/mem/scratchpad.txt     the model's working-memory tiers
 /data/mem/memconfig.txt      retrieval/decay knobs
 /data/mem/embed.txt          the embedding provider/model/width saved from the web app
+/data/mem/settings.json      the owner's settings from the web app (routing, directive, time zone, name, tool loop)
+/data/mem/submodels.txt      per-provider sub-agent model picks
 /data/mem/files/             file artifacts + .index
 /data/mem/telegram.txt       Telegram allowlist, display names, consumed legacy seed and the
                              RBAC roles + limits, in ONE atomically written file
@@ -135,6 +138,33 @@ router route (`/router/openai/v1/embeddings`). `/api/mem/stats` reports
 web app's embedding settings work as on the device: `POST /api/mem/embedverify`
 makes one real call and saves nothing, `POST /api/mem/embedcfg` refuses a model
 switch while memories exist unless the owner erases them (`reset=1`).
+
+## Settings on a hosted instance (CUM-543)
+
+Every field the web app posts to `POST /api/orch` or `POST /api/config` either
+applies or is refused; a page never shows "Saved" over a dropped write.
+
+| Applies (persisted on the instance volume, read back by GET, used from the next turn) | |
+|---|---|
+| `orchHost`, `provPrio`, `subPrio` | primary provider and the fallback orders (unknown names are dropped; an empty order is refused) |
+| `sysPrompt` | the directive (up to 1500 characters; blank = the shipped default) |
+| `orchLoop` | the head tool loop |
+| `devName`, `devTz` (`/api/config`) | the name and the time zone (a POSIX string or a zone name such as `Europe/London`; `/api/state` clock and the prompt's clock follow it at once) |
+| `clearConv`, `clearMem`, `convReset` | Clear conversation (a `/clear` boundary: the next turn carries no earlier conversation, the history is kept), erase the running notes, reset provider threads |
+| keys, `orchM_<slug>`, `subM_<slug>`, `tgAllow` | provider keys, head and sub-agent model picks, the Telegram allowlist |
+
+The device knobs a hosted instance does not offer (tool-loop limits, TLS slots,
+mid-turn failover, trace, the custom endpoint) are reported by `GET /api/orch` at
+their hosted values, so the page's whole-form **Save Changes** round-trips them as a
+no-op; posting any other value, or any field not listed above (sound, voice, ring,
+display, battery, mode, budgets, a typed bot or Tavily key), answers
+`400 {"ok":false,"error":"Not available on a hosted Nimbus: <field>"}` and nothing
+in that post applies. Env values (`NIMBUSD_ORCH_HOST`, `NIMBUSD_PRIORITY`, `TZ`,
+...) are the defaults until the owner saves a value in the app.
+
+**Commands.** `/clear` (then `/clear yes`) clears the conversation exactly like the
+button, `/help` lists the commands, and any other slash command gets a fixed reply:
+none of them reaches the model or costs a turn.
 
 ## Telegram access (the device model)
 

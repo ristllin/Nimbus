@@ -21,6 +21,7 @@
 
 #include "nimbus/docs_pack.h"
 #include "nimbus/orch/connectors_wire.h"
+#include "nimbus/orch/directive.h"
 #include "nimbus/qr.h"
 #include "nimbus/status_style.h"
 #include "nimbus/theme.h"
@@ -84,6 +85,7 @@ class WebApi {
     if (base == "/api/orch" && m == "GET")    { out = orchResp();   return true; }
     if (base == "/api/orch" && m == "POST")   { out = orchPost(body); return true; }
     if (base == "/api/connect" && m == "GET") { out = connectResp(); return true; }
+    if (base == "/api/config")                { out = m == "POST" ? configPost(body) : configGet(); return true; }
     if (base == "/api/verify" && m == "POST") { out = verifyPost(body); return true; }
     return false;
   }
@@ -381,10 +383,10 @@ class WebApi {
   // ------------------------------------------------------------------ /api/state
   ApiResp stateResp() {
     const StateSnapshot s = eng_->snapshot();
-    const auto& opt = rig_->options();
+    const HostedSettings st = rig_->settings();
     JsonDocument d;
-    d["name"]    = opt.devName;
-    d["devName"] = opt.devName;
+    d["name"]    = st.devName;
+    d["devName"] = st.devName;
     // Honest marker: a hosted instance, not a physical device. The current web app
     // ignores it; it is the seam a future UI (and the parity ledger) keys on to
     // hide hardware-only panels, and it is the truth for any API consumer.
@@ -426,9 +428,9 @@ class WebApi {
     // Real clock (the host is NTP-synced), so routines and usage history work.
     JsonObject clock = d["clock"].to<JsonObject>();
     const time_t now = time(nullptr);
-    clock["tz"] = tz();
+    clock["tz"] = rig_->clockTz();   // the owner's time zone (CUM-543), else the operator's, else UTC
     clock["epoch"] = (double)now;
-    clock["local"] = localStr(now);
+    clock["local"] = hosted::localTime(now, "%Y-%m-%d %H:%M");
     clock["synced"] = true;
     // Session usage (real engine counters).
     d["turnInFlight"] = s.turnInFlight;
@@ -514,13 +516,20 @@ class WebApi {
       o["verify"] = -1;
       o["vts"] = 0;
       // The resolved model this head requests (an in-app pick or the provider
-      // default), same field the device page reads (CUM-425).
+      // default), same field the device page reads (CUM-425), and the sub-agent
+      // model a spawn there runs (device subModel).
       o["orchModel"] = rig_->modelFor(slug);
+      o["subModel"] = rig_->subModelFor(slug);
     }
-    d["orchHost"] = rig_->options().orchHost;   // device parity ("" = first keyed)
-    d["provPrio"] = rig_->options().priority;
+    const HostedSettings st = rig_->settings();
+    d["orchHost"] = st.orchHost;   // device parity ("" = first keyed)
+    d["provPrio"] = st.provPrio;
     d["subPrio"] = rig_->subPriority();
-    d["orchLoop"] = rig_->options().toolLoop;   // device parity (store::orchToolLoop)
+    d["orchLoop"] = st.toolLoop;   // device parity (store::orchToolLoop)
+    d["directive"] = st.directive;   // "" = the shipped default (the page pre-fills it)
+    d["directiveDefault"] = nimbus::orch::kOwnerDirectiveDefault;
+    d["directiveMax"] = nimbus::orch::kMemDirectiveMax;
+    fillHostedKnobs(d);
     d["hasTav"] = rig_->cfg().has("TAVILY_API_KEY");
     d["hasTg"] = rig_->cfg().has("TELEGRAM_BOT_TOKEN");
     d["tgLive"] = rig_->cfg().has("TELEGRAM_BOT_TOKEN");
@@ -537,6 +546,23 @@ class WebApi {
     std::string out;
     serializeJson(d, out);
     return okJson(out);
+  }
+
+  // The device knobs a hosted instance does not offer, reported at their hosted
+  // values (hosted_settings.h fixedKnobs) so the page renders them truthfully and
+  // its Save Changes round-trips them as a no-op. The custom endpoint is absent.
+  static void fillHostedKnobs(JsonDocument& d) {
+    for (const auto& k : hosted::fixedKnobs()) {
+      const std::string f = k.field;
+      if (f.rfind("cust", 0) == 0) continue;   // reported under "cust" below
+      if (k.boolean) d[f] = std::string(k.value) == "1";
+      else d[f] = std::atoi(k.value);
+    }
+    JsonObject cust = d["cust"].to<JsonObject>();
+    cust["base"] = "";
+    cust["conv"] = "openai";
+    cust["model"] = "";
+    cust["hasKey"] = false;
   }
 
   // ------------------------------------------------------------------ /api/orch POST
@@ -652,39 +678,182 @@ class WebApi {
     }
   }
 
+  // A 400 with the sentence the page shows (never a 200 over a dropped write).
+  static ApiResp refuse(const std::string& why) {
+    JsonDocument e;
+    e["ok"] = false;
+    e["error"] = why;
+    std::string out;
+    serializeJson(e, out);
+    return ApiResp{400, "application/json", out};
+  }
+
+  // The fields POST /api/orch applies on a hosted instance (CUM-543): the canonical
+  // key fields, the per-provider head and sub-agent model picks, routing, the
+  // directive, the tool loop, the Telegram allowlist and the conversation/memory
+  // clears. Everything else is a no-op knob or refused (hosted::orchFieldVerdict).
+  static bool appliedOrchField(const std::string& f) {
+    static const char* kApplied[] = {"orchHost", "provPrio", "subPrio", "sysPrompt", "clearConv",
+                                     "clearMem", "convReset", "orchLoop", "tgAllow"};
+    for (const char* a : kApplied) if (f == a) return true;
+    for (size_t i = 0; i < nimbus::orch::kProviderSlotCount; i++) {
+      const std::string slug = nimbus::orch::kProviderSlots[i].slug;
+      const std::string key = nimbus::orch::kProviderSlots[i].keyField;
+      for (const std::string& n : {key, "orchM_" + slug, "subM_" + slug})
+        if (f == n || f == "clr_" + n) return true;
+    }
+    return false;
+  }
+
+  // The settings and actions one POST carries, validated before anything applies.
+  struct OrchWrites {
+    Writes keys, models, subs;
+    std::vector<std::function<void(HostedSettings&)>> settings;
+    bool clearConv = false, clearMem = false, convReset = false;
+    bool empty() const {
+      return keys.empty() && models.empty() && subs.empty() && settings.empty() && !clearConv &&
+             !clearMem && !convReset;
+    }
+  };
+
+  static bool present(const std::vector<std::string>& names, const char* f) {
+    return std::find(names.begin(), names.end(), f) != names.end();
+  }
+
+  // Validate the routing/directive/loop fields; "" or the refusal sentence.
+  static std::string collectSettings(const std::string& body, const std::vector<std::string>& names,
+                                     OrchWrites& w) {
+    if (present(names, "orchHost")) {
+      const std::string h = formValue(body, "orchHost");
+      if (h == "custom") return hosted::notAvailable("custom endpoint");
+      if (!hosted::validHost(h)) return "Choose a provider this instance can run.";
+      w.settings.push_back([h](HostedSettings& s) { s.orchHost = h; });
+    }
+    for (const char* f : {"provPrio", "subPrio"}) {
+      if (!present(names, f)) continue;
+      const std::string order = hosted::sanitizePriority(formValue(body, f));
+      if (order.empty()) return "Turn on at least one provider in the order.";
+      const bool head = std::string(f) == "provPrio";
+      w.settings.push_back([order, head](HostedSettings& s) { (head ? s.provPrio : s.subPrio) = order; });
+    }
+    if (present(names, "sysPrompt")) {
+      const std::string dir = formValue(body, "sysPrompt");
+      if ((int)dir.size() > nimbus::orch::kMemDirectiveMax)
+        return "The directive is too long. Keep it under " + std::to_string(nimbus::orch::kMemDirectiveMax) +
+               " characters.";
+      w.settings.push_back([dir](HostedSettings& s) { s.directive = dir; });
+    }
+    if (present(names, "orchLoop")) {
+      const bool on = hosted::normBool(formValue(body, "orchLoop")) == "1";
+      w.settings.push_back([on](HostedSettings& s) { s.toolLoop = on; });
+    }
+    return std::string();
+  }
+
+  // Every posted field applies or is refused before anything changes, so a 400 always
+  // means nothing was stored. "" or the refusal.
+  static std::string collectOrchWrites(const std::string& body, OrchWrites& w) {
+    const std::vector<std::string> names = formFieldNames(body);
+    for (const std::string& f : names)
+      if (hosted::orchFieldVerdict(f, formValue(body, f), appliedOrchField) == hosted::Verdict::Refuse)
+        return hosted::notAvailable(f);
+    collectWrites(body, w.keys, w.models);
+    for (size_t i = 0; i < nimbus::orch::kProviderSlotCount; i++) {
+      const std::string slug = nimbus::orch::kProviderSlots[i].slug;
+      formWrite(body, "subM_" + slug, slug, w.subs);
+    }
+    for (const auto* list : {&w.models, &w.subs})
+      for (const auto& m : *list)
+        if (!NimbusdRig::validSelector(m.second)) return "That model name is not valid.";
+    w.clearConv = formValue(body, "clearConv") == "1";
+    w.clearMem = formValue(body, "clearMem") == "1";
+    w.convReset = present(names, "convReset");
+    return collectSettings(body, names, w);
+  }
+
+  // Apply a validated write set on the engine thread (keys and model picks rebuild
+  // the engine; the clears touch the conversation and memory stores).
+  std::string applyOrchWrites(const OrchWrites& w) {
+    int applied = 0;
+    for (const auto& k : w.keys) applied += rig_->applyProviderKey(k.first, k.second) ? 1 : 0;
+    for (const auto& m : w.models) applied += rig_->applyOrchModel(m.first, m.second) ? 1 : 0;
+    for (const auto& m : w.subs) applied += rig_->applySubModel(m.first, m.second) ? 1 : 0;
+    if (!w.settings.empty() && rig_->updateSettings([&w](HostedSettings& s) {
+          for (const auto& fn : w.settings) fn(s);
+        }))
+      applied += (int)w.settings.size();
+    if (w.clearConv) { rig_->clearConversation(kWebChat); applied++; }
+    if (w.clearMem) { rig_->clearRunningMemory(); applied++; }
+    if (w.convReset) { rig_->resetConversations(); applied++; }
+    JsonDocument d;
+    d["ok"] = true;
+    d["applied"] = applied;
+    d["note"] = !w.keys.empty() ? "Key saved and applied." : !w.models.empty() ? "Model saved and applied."
+                                                                               : "Saved and applied.";
+    std::string out;
+    serializeJson(d, out);
+    return out;
+  }
+
   ApiResp orchPost(const std::string& body) {
     const ApiResp unknown = unknownKeyFieldError(body);
     if (unknown.status != 0) return unknown;
-    Writes keyWrites, modelWrites;
-    collectWrites(body, keyWrites, modelWrites);
-    // Refuse a mid-turn key/model write BEFORE anything else in the body applies, so
-    // a 503 always means "nothing changed".
-    if ((!keyWrites.empty() || !modelWrites.empty()) && eng_->snapshot().turnInFlight) return busy();
+    OrchWrites w;
+    const std::string why = collectOrchWrites(body, w);
+    if (!why.empty()) return refuse(why);
+    // Refuse a mid-turn write BEFORE anything else in the body applies, so a 503
+    // always means "nothing changed".
+    if (!w.empty() && eng_->snapshot().turnInFlight) return busy();
     const ApiResp allow = allowlistWrite(body);
     if (allow.status != 0) return allow;
-    if (keyWrites.empty() && modelWrites.empty())
-      return okJson(R"({"ok":true})");   // non-key settings: honest ack
-    auto fut = eng_->dispatchRead([this, keyWrites, modelWrites]() -> std::string {
-      int applied = 0;
-      for (const auto& w : keyWrites)
-        if (rig_->applyProviderKey(w.first, w.second)) applied++;
-      for (const auto& w : modelWrites)
-        if (rig_->applyOrchModel(w.first, w.second)) applied++;
-      JsonDocument d;
-      d["ok"] = true;
-      d["applied"] = applied;
-      d["note"] = keyWrites.empty() ? "Model saved and applied." : "Key saved and applied.";
-      std::string out;
-      serializeJson(d, out);
-      return out;
-    });
-    reprobeOnMistralKey(keyWrites);
+    if (w.empty()) return okJson(R"({"ok":true,"applied":0})");   // only no-op knobs or the allowlist
+    auto fut = eng_->dispatchRead([this, w]() { return applyOrchWrites(w); });
+    reprobeOnMistralKey(w.keys);
     // The write is QUEUED on the engine thread and will apply: past the wait (a
     // background probe ahead of it), say so rather than a 503 that reads as failed
     // and invites a duplicate save.
     if (fut.wait_for(std::chrono::seconds(5)) != std::future_status::ready)
       return okJson(R"({"ok":true,"queued":true,"note":"Saved. It applies in a moment."})");
     try { return okJson(fut.get()); } catch (...) { return busy(); }
+  }
+
+  // ------------------------------------------------------------------ /api/config
+  // The Settings page (device parity webui.cpp /api/config): the name and the time
+  // zone apply at once (persisted on the instance volume), "Sync now" is a no-op
+  // (the host clock is always synced), and every device-only field (mode, battery,
+  // display, onboarding, updates) is refused with its name.
+  ApiResp configPost(const std::string& body) {
+    const std::vector<std::string> names = formFieldNames(body);
+    for (const std::string& f : names)
+      if (hosted::configFieldVerdict(f) == hosted::Verdict::Refuse) return refuse(hosted::notAvailable(f));
+    std::vector<std::function<void(HostedSettings&)>> fns;
+    if (present(names, "devName")) {
+      const std::string n = formValue(body, "devName");
+      if (!hosted::validName(n)) return refuse("Choose a name of 1 to 32 characters.");
+      fns.push_back([n](HostedSettings& s) { s.devName = n; });
+    }
+    if (present(names, "devTz")) {
+      std::string tz = formValue(body, "devTz");
+      while (!tz.empty() && isspace((unsigned char)tz.back())) tz.pop_back();
+      while (!tz.empty() && isspace((unsigned char)tz.front())) tz.erase(tz.begin());
+      if (!hosted::validTz(tz))
+        return refuse("Unknown time zone. Use a POSIX string such as GMT0BST,M3.5.0/1,M10.5.0/2 or a "
+                      "zone name such as Europe/London.");
+      fns.push_back([tz](HostedSettings& s) { s.devTz = tz; });
+    }
+    // The settings store and the time zone are thread-safe; no engine state changes.
+    if (!fns.empty() && !rig_->updateSettings([&fns](HostedSettings& s) { for (const auto& fn : fns) fn(s); }))
+      return ApiResp{500, "application/json", R"({"ok":false,"error":"Couldn't save. Try again."})"};
+    return okJson(R"({"ok":true})");
+  }
+  ApiResp configGet() {
+    const HostedSettings st = rig_->settings();
+    JsonDocument d;
+    d["devName"] = st.devName;
+    d["devTz"] = st.devTz;
+    std::string out;
+    serializeJson(d, out);
+    return okJson(out);
   }
 
   // ------------------------------------------------------------------ /api/verify
@@ -702,7 +871,7 @@ class WebApi {
   // ------------------------------------------------------------------ /api/connect
   ApiResp connectResp() {
     JsonDocument d;
-    d["name"] = rig_->options().devName;
+    d["name"] = rig_->settings().devName;
     // Reachability is the cloud tunnel, not a LAN AP - report honestly, no fake
     // AP password or LAN IP.
     d["apSsid"] = "";
@@ -1164,7 +1333,7 @@ class WebApi {
         "/api/audio/mic", "/api/audio/beep", "/api/audio/sfx", "/api/audio/loopback",
         "/api/battcal", "/api/ota/check", "/api/ota/apply", "/api/sdprobe",
         "/api/sdreset", "/api/sdformat", "/api/wifi", "/api/poweroff",
-        "/api/factory-reset", "/api/ble/forget", "/api/cloud", "/api/config",
+        "/api/factory-reset", "/api/ble/forget", "/api/cloud",
         "/api/onboard/complete", "/api/onboard/restart", "/api/wifi/handoff"};
     for (const char* h : kHw) if (base == h) return true;
     return false;
@@ -1173,10 +1342,7 @@ class WebApi {
   ApiResp hardwareResp(const std::string& base) {
     // Honest virtual truth: the actuation is not available on a hosted instance.
     // The web app surfaces the message; nothing is faked and nothing silently
-    // "succeeds". /api/config is accepted for the settings that DO apply to a VN
-    // (name, timezone) but ignores hardware-only keys - it never lies about a
-    // knob it cannot honor, so it returns ok with an honest note.
-    if (base == "/api/config") return okJson(R"({"ok":true})");
+    // "succeeds". (/api/config has its own handler: configPost.)
     if (base == "/api/wifi")   return okJson(R"({"networks":[],"apUp":false,"sta":false,"note":"networking is managed by the platform on a hosted instance"})");
     if (base == "/api/audio/mic")
       return okJson(R"({"ok":false,"note":"no microphone on a hosted instance"})");
@@ -1189,17 +1355,6 @@ class WebApi {
 
   static int atoiOr(const std::string& s, int dflt) { return s.empty() ? dflt : std::atoi(s.c_str()); }
 
-  std::string tz() const {
-    const char* t = std::getenv("TZ");
-    return (t && *t) ? std::string(t) : std::string("UTC");
-  }
-  static std::string localStr(time_t now) {
-    char buf[32];
-    struct tm tmv;
-    localtime_r(&now, &tmv);
-    strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M", &tmv);
-    return buf;
-  }
 
  public:
   // The instance web token, seeded into the page and handed back by signin. Set by

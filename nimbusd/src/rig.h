@@ -15,12 +15,15 @@
 #include "connectors_store.h"
 #include "daemon_config.h"
 #include "daemon_http.h"
+#include "hosted_settings.h"
 #include "nimbus/docs_pack.h"
+#include "nimbus/harness/conversation.h"
 #include "nimbus/harness/dream.h"
 #include "nimbus/harness/engine.h"
 #include "nimbus/harness/log.h"
 #include "nimbus/harness/providers.h"
 #include "nimbus/harness/websearch.h"
+#include "nimbus/orch/command.h"
 #include "nimbus/orch/embedding.h"
 #include "nimbus/orch/episodic_log.h"
 #include "nimbus/orch/mem_config.h"
@@ -148,12 +151,14 @@ class NimbusdRig {
     tap_.setInner(http_);   // the cumulo head's view of the transport (router refusals)
     installLog(opt_.verboseHttp);
     fsutil::mkdirs(memDir());
+    loadSettings();   // the owner's settings from the app (CUM-543), else the env defaults
     // Telegram trust (CUM-459): the device model, durable on the instance volume.
     access_.reset(new TelegramAccess(memDir()));
     seedTelegramAllowlist();
     buildMemory();
     loadSecrets();   // in-app provider keys persisted from a prior session (CUM-279)
     loadModels();    // in-app model picks persisted from a prior session (CUM-425)
+    loadSubModels(); // in-app sub-agent model picks (device subM_<slug>)
     conns_.setPath(memDir() + "/connectors.json");
     conns_.load();   // connector registry (CUM-424); tolerant of absent/torn
     buildFabric();   // sub-agent adapters + the durable job journal (device parity)
@@ -197,6 +202,13 @@ class NimbusdRig {
       std::fprintf(stderr, "[nimbusd] telegram: chat %s is not approved - no turn\n", chatId.c_str());
       return cur_;
     }
+    // Deterministic commands (/clear, /help) are answered here, before any model
+    // call: never a paid turn (device parity, orchestrator.cpp handleMessage).
+    if (handleCommand(chatId, text)) {
+      if (!cur_.deliveries.empty()) cur_.reply = cur_.deliveries.back();
+      cur_.ok = true;
+      return cur_;
+    }
     // Safety net for the one-namespace rule below: the engine thread HOLDS such a
     // turn until it may run (EngineThread), so this only refuses a direct caller.
     if (turnMustWait(chatId)) {
@@ -214,6 +226,46 @@ class NimbusdRig {
     turns_.push_back(cur_);
     flush();
     return cur_;
+  }
+
+  // The slash commands a hosted instance answers itself. /clear is the device's
+  // light two-step (it explains and asks; "/clear yes" clears); /help lists them;
+  // the device commands that need hardware or a routines engine say so; anything
+  // else gets a deterministic reply instead of a paid model turn.
+  bool handleCommand(const std::string& chat, const std::string& text) {
+    const orch::Command cmd = orch::parseCommand(text);
+    if (!cmd.isCommand) return false;
+    const std::string& v = cmd.verb;
+    if (v == "help" || v == "start") {
+      record(chat, "Commands on this instance:\n/clear - forget this conversation (keeps memory and files)\n"
+                   "/help - this list\nTo chat, write without the slash.");
+      return true;
+    }
+    if (v == "clear") {
+      commandClear(chat, cmd.args);
+      return true;
+    }
+    for (const char* d : {"update", "loops", "loop", "remind", "compact", "skill", "fetch", "mcp", "play"}) {
+      if (v != d) continue;
+      record(chat, "/" + v + " is not available on a hosted Nimbus yet.");
+      return true;
+    }
+    record(chat, "There is no /" + v + " command. Send /help for the list, or write without the slash to chat.");
+    return true;
+  }
+  void commandClear(const std::string& chat, std::string arg) {
+    if (!access_->principalFor(chat).owner) {
+      record(chat, "Only the owner can clear this conversation.");
+      return;
+    }
+    for (char& ch : arg) ch = (char)tolower((unsigned char)ch);
+    if (arg == "yes" || arg == "confirm") {
+      clearConversation(chat);
+      record(chat, "Cleared this conversation and its active task. Long-term memory and files are kept.");
+      return;
+    }
+    record(chat, "Clear this conversation and the current active task? Long-term memory and files are kept. "
+                 "Send /clear yes to confirm.");
   }
 
   orch::FireOutcome scheduled(const std::string& chatId, const std::string& prompt,
@@ -356,7 +408,7 @@ class NimbusdRig {
   // openai that it was "running on openai", so it misjudged every connector.
   std::string hostBadge() const {
     return nimbus::orch::resolveHeadHost(
-        opt_.orchHost, opt_.priority,
+        settings_.get().orchHost, settings_.get().provPrio,
         [this](const std::string& h) { return keyedForEngine(h); },
         hasCumulo() ? std::string(kCumuloSlug)
                     : (hostAvailable(kZaiSlug) ? std::string(kZaiSlug) : std::string()));
@@ -573,11 +625,7 @@ class NimbusdRig {
   // so the same rebuild-on-the-engine-thread discipline as applyProviderKey applies.
   bool applyOrchModel(const std::string& host, const std::string& model) {
     if (keyEnvFor(host).empty()) return false;   // unknown provider slug
-    if (model.size() > 64) return false;
-    for (char ch : model)
-      if (!isalnum((unsigned char)ch) && ch != '.' && ch != '_' && ch != '-' &&
-          ch != '/' && ch != ':')
-        return false;
+    if (!validSelector(model)) return false;
     setModelPick(host, model);
     buildEngine();                // the head captures its model/route at build time
     ++keyGen_;                    // the web save-flow polls this counter
@@ -596,7 +644,76 @@ class NimbusdRig {
   // The sub-agent provider ladder (device store::subPriority): the configured one,
   // else the head priority.
   std::string subPriority() const {
-    return opt_.subPriority.empty() ? opt_.priority : opt_.subPriority;
+    const HostedSettings st = settings_.get();
+    return st.subPrio.empty() ? st.provPrio : st.subPrio;
+  }
+
+  // ---- the owner's settings (CUM-543) ---------------------------------------
+  HostedSettings settings() const { return settings_.get(); }
+  // Apply a settings change and persist it on the instance volume. A new time zone
+  // takes effect at once (the next turn's clock and /api/state read it). Callers
+  // validate first (hosted_settings.h); engine thread.
+  bool updateSettings(const std::function<void(HostedSettings&)>& fn) {
+    const std::string tzBefore = settings_.get().devTz;
+    const bool ok = settings_.update(fn);
+    const std::string tzAfter = settings_.get().devTz;
+    if (tzAfter != tzBefore) hosted::applyTz(tzAfter);
+    return ok;
+  }
+  // The time zone /api/state shows: the owner's, else the operator's TZ, else UTC.
+  std::string clockTz() const {
+    const std::string tz = settings_.get().devTz;
+    return !tz.empty() ? tz : (envTz_.empty() ? std::string("UTC") : envTz_);
+  }
+
+  // The web app's "Clear conversation" and the /clear command (device parity,
+  // orchestrator.cpp clearConversation, CUM-511): a boundary row in the chat's own
+  // history that every conversation read stops at, the chat's provider-side thread
+  // and running notes dropped, and the scratchpad's active task cleared. Long-term
+  // memory, files and the history itself are kept. Engine thread.
+  void clearConversation(const std::string& chat) {
+    capture(chat, "system", agent::kClearBoundaryText, agent::kClearBoundaryTag);
+    if (eng_) eng_->clearChatConv(chat);
+    memory_.erase(chat);
+    scratch_.setActiveTask("");
+    flush();
+  }
+  // "Erase the assistant's memory" (device requestMemoryClear): every chat's
+  // running notes; the directive and long-term memory are kept. Engine thread.
+  void clearRunningMemory() { memory_.clear(); }
+  // Drop every provider-side conversation so the next turn starts clean (device
+  // convReset). Engine thread.
+  void resetConversations() { convId_.clear(); }
+
+  // Per-provider sub-agent model picks (device subM_<slug>, "" = the head's model).
+  bool applySubModel(const std::string& host, const std::string& model) {
+    if (keyEnvFor(host).empty() || !validSelector(model)) return false;
+    std::string blob;
+    {
+      std::lock_guard<std::mutex> lk(modelsMu_);
+      if (model.empty()) subModels_.erase(host);
+      else subModels_[host] = model;
+      for (const auto& kv : subModels_) blob += kv.first + "=" + kv.second + "\n";
+    }
+    fsutil::writeFileAtomic(memDir() + "/submodels.txt", blob);
+    return true;
+  }
+  // The model a spawn on `h` runs: the sub pick, else the head's model there.
+  std::string subModelFor(const std::string& h) const {
+    {
+      std::lock_guard<std::mutex> lk(modelsMu_);
+      auto it = subModels_.find(h);
+      if (it != subModels_.end()) return it->second;
+    }
+    return h == kCumuloSlug ? cumuloModel() : modelFor(h);
+  }
+  // A bounded selector token ("glm-4.5-flash", "zai/glm-4.5-flash"); "" clears.
+  static bool validSelector(const std::string& model) {
+    if (model.size() > 64) return false;
+    for (char ch : model)
+      if (!isalnum((unsigned char)ch) && ch != '.' && ch != '_' && ch != '-' && ch != '/' && ch != ':')
+        return false;
+    return true;
   }
 
   // The model a head requests: an operator override (opt.models[h]) else the
@@ -720,6 +837,35 @@ class NimbusdRig {
       if (!k.empty() && !v.empty() && !keyEnvFor(k).empty()) opt_.models[k] = v;
     }
   }
+  // The owner's settings (CUM-543): the env/options are the defaults, a value the
+  // owner saved in the app wins. The process time zone is put in the environment
+  // here, before any thread starts, so a later change replaces it in place.
+  void loadSettings() {
+    HostedSettings def;
+    def.orchHost = opt_.orchHost;
+    def.provPrio = opt_.priority;
+    def.subPrio = opt_.subPriority;
+    def.devName = opt_.devName;
+    def.toolLoop = opt_.toolLoop;
+    settings_.init(memDir() + "/settings.json", def);
+    const char* env = std::getenv("TZ");
+    envTz_ = env ? env : "";
+    const std::string tz = settings_.get().devTz;
+    if (!tz.empty() || envTz_.empty()) hosted::applyTz(tz);
+  }
+  void loadSubModels() {
+    std::string blob;
+    if (!fsutil::readFile(memDir() + "/submodels.txt", blob)) return;
+    std::istringstream is(blob);
+    std::string line;
+    while (std::getline(is, line)) {
+      const size_t eq = line.find('=');
+      if (eq == std::string::npos) continue;
+      const std::string k = line.substr(0, eq), v = line.substr(eq + 1);
+      if (!k.empty() && !v.empty() && !keyEnvFor(k).empty()) subModels_[k] = v;
+    }
+  }
+
   // Store (or clear, when `model` is empty) one head's pick and persist the set.
   // The picks are read by the HTTP thread (GET /api/orch) while the engine thread
   // writes them, so the map sits behind modelsMu_.
@@ -747,6 +893,7 @@ class NimbusdRig {
 
     epi_.reset(new orch::AppendLogEpisodicStore(epiFs_, episodicDir(), /*recentCap=*/256));
     epi_->hydrate();  // rebuild index/cache from the day-streams
+    epiSeq_ = epi_->nextIdHint();   // row ids continue past the stored history
 
     files_.reset(new PosixFiles(filesDir()));
 
@@ -833,7 +980,7 @@ class NimbusdRig {
     reg_.add("device.status", "Report the instance's current state.",
              [this](ArduinoJson::JsonObjectConst, const orch::Principal&) {
                return orch::ToolResult::ok(
-                   std::string("{\"name\":\"") + opt_.devName +
+                   std::string("{\"name\":\"") + settings_.get().devName +
                    "\",\"mode\":\"orchestrator\",\"host\":\"nimbusd\",\"vectors\":" +
                    std::to_string(vec_.size()) + "}");
              },
@@ -994,11 +1141,11 @@ class NimbusdRig {
     // Keeps the engine's honest "no provider set up" reply from firing on a
     // Cumulo-only instance (CUM-211).
     p.anyKeyed = [this] { return anyProviderConfigured(); };
-    p.orchHost = [this] { return opt_.orchHost; };
-    p.providerPriority = [this] { return opt_.priority; };
+    p.orchHost = [this] { return settings_.get().orchHost; };
+    p.providerPriority = [this] { return settings_.get().provPrio; };
     p.subPriority = [this] { return subPriority(); };
     p.orchModel = [this](const std::string& h) { return modelFor(h); };
-    p.subModel = [this](const std::string& h) { return modelFor(h); };
+    p.subModel = [this](const std::string& h) { return subModelFor(h); };
     p.modelChoices = [](const std::string& h) {
       if (h == "openai")    return std::string("gpt-6-astra,gpt-5.6,gpt-5.6-luna");
       if (h == "anthropic") return std::string("claude-opus-5,claude-sonnet-5,claude-haiku-4-5");
@@ -1013,7 +1160,7 @@ class NimbusdRig {
     p.customConv = [] { return std::string("openai"); };
     p.customModel = [] { return std::string(); };
 
-    c.loop.toolLoopOn = [this] { return opt_.toolLoop; };
+    c.loop.toolLoopOn = [this] { return settings_.get().toolLoop; };
     c.loop.rounds = [] { return 12; };
     c.loop.deadlineS = [] { return 600; };
     c.loop.resultCap = [] { return 4096; };
@@ -1023,7 +1170,7 @@ class NimbusdRig {
     c.budget.recordTokens = [](const std::string&, uint32_t, uint32_t,
                                uint32_t, uint32_t, const std::string&) {};
     c.ttsEnabled = [] { return false; };
-    c.deviceName = [this] { return opt_.devName; };
+    c.deviceName = [this] { return settings_.get().devName; };
     return c;
   }
 
@@ -1032,7 +1179,7 @@ class NimbusdRig {
     pd.http = http_;
     pd.key = [this](const char* h) { return cfg_.providerKey(h); };
     pd.orchModel = [this](const char* h) { return modelFor(h); };
-    pd.toolLoopOn = [this] { return opt_.toolLoop; };
+    pd.toolLoopOn = [this] { return settings_.get().toolLoop; };
     pd.antEnvId = [this] { return antEnv_; };
     pd.setAntEnvId = [this](const std::string& v) { antEnv_ = v; };
     pd.antAgentMap = [this] { return antAgents_; };
@@ -1242,7 +1389,9 @@ class NimbusdRig {
     };
     d.composeInputs = [this](const std::string& chat) {
       agent::ComposeInputs in;
-      in.devName = opt_.devName;
+      const HostedSettings st = settings_.get();
+      in.devName = st.devName;
+      in.directive = st.directive;   // "" = the shipped default (effectiveDirective)
       in.hostLabel = lastHost_.empty() ? std::string("(picking)") : lastHost_;
       in.recentConversation = recentWindow(chat);
       in.runningMemory = runningMemory(chat);
@@ -1264,7 +1413,9 @@ class NimbusdRig {
     d.connectorsCatalog = [this] { return connectorsCatalog(); };
     d.modelChoices = [this](const std::string& p) { return config().provider.modelChoices(p); };
     d.episodicCaptureUser = [this](const std::string& c, const std::string& t,
-                                   const std::string& tag) { capture(c, "user", t, tag); };
+                                   const std::string& tag) {
+      curUserRowId_ = capture(c, "user", t, tag);   // the in-flight row rides [USER], not the window
+    };
     d.firstAllowedChat = [] { return std::string("owner"); };
     d.journalGc = [] {};
 
@@ -1510,9 +1661,7 @@ class NimbusdRig {
     jd.journal = &journal_;
     jd.subPriority = [this] { return subLadder(); };
     jd.providerHasKey = [this](const std::string& p) { return keyedForEngine(p); };
-    jd.subModel = [this](const std::string& p) {
-      return p == kCumuloSlug ? cumuloModel() : modelFor(p);
-    };
+    jd.subModel = [this](const std::string& p) { return subModelFor(p); };
     // No live-harvested model catalog on a hosted instance to validate a spawn's
     // model pick against, so every spawn runs the configured sub model (the engine
     // coerces when this is unset) - never a model the key may not be entitled to.
@@ -1544,12 +1693,7 @@ class NimbusdRig {
   }
 
   static std::string localNowString() {
-    const time_t now = time(nullptr);
-    struct tm lt{};
-    localtime_r(&now, &lt);
-    char buf[64];
-    strftime(buf, sizeof buf, "%Y-%m-%d %H:%M %Z (%A)", &lt);
-    return buf;
+    return hosted::localTime(time(nullptr), "%Y-%m-%d %H:%M %Z (%A)");
   }
 
   // The spawning chat's recent window for the sub-agent brief (device chatContext):
@@ -1572,9 +1716,15 @@ class NimbusdRig {
   static constexpr size_t kSpawnBriefBytes = 1200;   // device brief budget at the 200K anchor
 
   // ---- episodic helpers -----------------------------------------------------
-  void capture(const std::string& chat, const char* role, const std::string& text,
-               const std::string& tags) {
+  // Append one chat row and return its id. Every row gets the device's id shape
+  // ("m%08x", memory_subsystem captureMessage): the window excludes the in-flight
+  // row by id, and memory.episodic pages by it.
+  std::string capture(const std::string& chat, const char* role, const std::string& text,
+                      const std::string& tags) {
+    char id[16];
+    snprintf(id, sizeof id, "m%08x", (unsigned)(++epiSeq_));
     orch::EpisodicMessage m;
+    m.id = id;
     m.sessionId = chat;
     m.kind = orch::MsgKind::Message;
     m.role = role;
@@ -1582,22 +1732,26 @@ class NimbusdRig {
     m.tags = tags;
     m.tsHours = nowHours();
     epi_->addMessage(m);
+    return m.id;
   }
 
-  // The chat's recent window. A member's lines are labeled "user", never "owner":
-  // the model must not read an approved guest's words as the owner's.
+  // The chat's recent window, built the device's way (agent::recentConversationBlock,
+  // CUM-511 + CUM-534): it stops at the chat's newest /clear boundary, leaves out
+  // the in-flight message (it is the turn's [USER]) and job deliveries, renders
+  // each row by its stored role ("user" / "assistant", never "owner") with every
+  // line break neutralized, so a message can never forge a conversation line, and
+  // keeps the newest rows whole within the window budget.
   std::string recentWindow(const std::string& chat) {
+    if (chat.empty() || chat == "system") return std::string();
     orch::MsgQuery q;
     q.sessionId = chat;
-    q.limit = 12;
-    const char* speaker = access_->roleOf(chat) == orch::Role::Admin ? "owner" : "user";
-    std::string out;
-    for (const auto& m : epi_->query(q)) {
-      const char* who = (m.role == "user") ? speaker : "nimbus";
-      out += std::string(who) + ": " + trunc(m.text, 400) + "\n";
-    }
-    return out;
+    q.haveKind = true;
+    q.kind = orch::MsgKind::Message;
+    q.alsoKinds = {orch::MsgKind::Image, orch::MsgKind::File, orch::MsgKind::Audio};
+    q.limit = 2 * orch::kRecentTurnsMax + 1;   // headroom for the skipped rows
+    return agent::recentConversationBlock(epi_->query(q), curUserRowId_, kRecentWindowBytes);
   }
+  static constexpr size_t kRecentWindowBytes = 8192;   // the device budget at the 200K anchor
 
   std::string runningMemory(const std::string& chat) const {
     auto it = memory_.find(chat);
@@ -1624,7 +1778,12 @@ class NimbusdRig {
   agent::HttpTransport* http_ = nullptr;            // the live transport (owned or injected)
   RouterTap tap_{nullptr, kCumuloHost};             // the cumulo head's transport (refusal reasons)
   std::string lastGoodCumulo_;   // the last router selector a turn succeeded on (engine thread)
-  mutable std::mutex modelsMu_;  // guards opt_.models (HTTP-thread reads, engine-thread writes)
+  mutable std::mutex modelsMu_;  // guards opt_.models + subModels_ (HTTP reads, engine writes)
+  std::map<std::string, std::string> subModels_;   // sub-agent model picks (device subM_<slug>)
+  SettingsStore settings_;       // the owner's settings (CUM-543), durable, thread-safe
+  std::string envTz_;            // the operator's TZ at start ("" = none)
+  std::string curUserRowId_;     // the in-flight user row (excluded from the window)
+  uint32_t epiSeq_ = 0;          // episodic row id sequence (engine thread)
 
   PosixEpiFs         epiFs_;
   orch::VectorMemory vec_;
