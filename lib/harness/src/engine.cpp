@@ -173,14 +173,21 @@ bool TurnEngine::loopActiveAt(uint32_t heap) const {
 bool TurnEngine::loopActiveNow() const { return loopActiveAt(freeHeap()); }
 
 std::string TurnEngine::takeSpawnNotes(const std::string& chatId) {
-  const std::string notes = d_.jobs ? d_.jobs->takeSpawnNotes(chatId) : std::string();
+  bool mayHaveRun = false;
+  const std::string notes = d_.jobs ? d_.jobs->takeSpawnNotes(chatId, &mayHaveRun) : std::string();
   if (notes.empty()) return "";
   // Same background framing as [MEMORY RESULTS]: the owner was already told each
   // of these; the model needs the REAL reason (not a guessed "capacity 0") and the
   // fact that nothing is running for them. Live room is in [SPAWN CAPACITY].
-  return "\n[SPAWN REFUSED] (background: sub-agents you asked for that did NOT start; "
-         "the owner was already told. Nothing is running for them - spawn again if "
-         "still needed, within [SPAWN CAPACITY].)\n" + notes;
+  if (!mayHaveRun)
+    return "\n[SPAWN REFUSED] (background: sub-agents you asked for that did NOT start; "
+           "the owner was already told. Nothing is running for them - spawn again if "
+           "still needed, within [SPAWN CAPACITY].)\n" + notes;
+  // A timed-out dispatch most likely ran: "spawn again" would pay for it twice.
+  return "\n[SPAWN REFUSED] (background: sub-agents you asked for that did not run as "
+         "asked; the owner was already told. A 'did not start' one is not running - spawn "
+         "it again if still needed, within [SPAWN CAPACITY]. A 'may have started' one may "
+         "have run on its provider - do NOT spawn it again unless the owner asks.)\n" + notes;
 }
 
 std::string TurnEngine::takePendingMemResults() {
@@ -262,7 +269,14 @@ std::string TurnEngine::buildDynamicContext() {
     // turn can actually contain - no silent truncation. spawnRoomFor is shared
     // with the unknown-tool recovery text (CUM-538): one number everywhere.
     const int canStart = orch::spawnRoomFor(queued);
-    ctx += "[SPAWN CAPACITY] " + std::to_string(live) + " running, " +
+    // A dispatch that timed out may still be running on its provider (no job
+    // here to wait for): counted as possibly running so it is not spawned twice.
+    const int maybe = d_.jobs ? d_.jobs->maybeRunningCount() : 0;
+    const std::string maybeText =
+        maybe > 0 ? " (+" + std::to_string(maybe) + " possibly still running after a "
+                    "timeout: no result will arrive, do not spawn again)"
+                  : std::string();
+    ctx += "[SPAWN CAPACITY] " + std::to_string(live) + " running" + maybeText + ", " +
            std::to_string(queued) + " queued. You can start up to " +
            std::to_string(canStart) + " sub-agents this turn; they run "
            "SEQUENTIALLY (the device does one network call at a time, up to " +

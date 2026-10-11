@@ -1880,11 +1880,21 @@ fan-out costs that memory only transiently.
 **The head hears the real reason a spawn did not start.** Every refusal (queue
 full, no keyed provider, a provider that refused the dispatch, including a 429
 with its quota window) is told to the owner at once and also leaves one line in
-the job engine, kept per spawning chat and bounded to 640 bytes. That chat's
+the job engine, kept per spawning chat with its own 640-byte budget (past it,
+that chat gets one `(more refusals not listed)` line; no other chat is
+affected). At most 16 chats (the chat registry size, `kFoldMaxChats`) hold
+notes at once; a seventeenth drops the notes that waited longest. That chat's
 next turn (and no other chat's: the line carries its task text) reads them in a
 `[SPAWN REFUSED]` block (`JobEngine::takeSpawnNotes(chatId)`, background framing:
 the owner was already told, nothing is running for them), so the head neither
-retries blind nor invents a reason. A head that calls a spawn field as a tool
+retries blind nor invents a reason. A dispatch that **timed out** is different:
+a Mistral sub runs inside the request that outlived the 60 s wait, so it most
+likely ran and only its result was lost, and no job exists to wait on. Its line
+reads `'<name>' may have started: ... Do not spawn it again unless the owner
+asks`, the block's framing says a "may have started" sub must not be spawned
+again, and `[SPAWN CAPACITY]` counts it as possibly running for 10 minutes
+(`JobEngine::maybeRunningCount`), so the head does not pay for the same work
+twice. A head that calls a spawn field as a tool
 (`session_ops`, `spawn`) gets the live `[SPAWN CAPACITY]` number in the recovery
 text ([turn-contract.md](reference/turn-contract.md)): a Mistral head once
 claimed "spawn capacity is 0 this turn" while the prompt offered 6, right after

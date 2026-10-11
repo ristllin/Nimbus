@@ -13,6 +13,7 @@
 #include "nimbus/harness/jobs.h"
 #include "nimbus/harness/providers.h"
 #include "nimbus/harness/rate_limit.h"
+#include "nimbus/orch/compact.h"   // kFoldMaxChats - the spawn-note chat bound
 #include "nimbus/orch/journal.h"
 
 // Stage F suite - the sub-agent job machinery, host-tested for the first time:
@@ -345,6 +346,85 @@ static void test_spawn_refusals_reach_the_head_with_the_real_reason() {
   const size_t fold = notes.find("(more refusals not listed)\n");
   TEST_ASSERT_TRUE(fold != std::string::npos);
   TEST_ASSERT_EQUAL(notes.size(), fold + strlen("(more refusals not listed)\n"));   // nothing after it
+}
+
+// CUM-538 gate: a dispatch that TIMED OUT most likely ran (a Mistral sub runs
+// inside the POST that outlived the 60 s wait) and no job record exists. The head
+// used to read "did NOT start ... spawn again" and pay for the same work twice; the
+// note now says it may have started and must not be spawned again, and the job
+// counts as possibly running for kMaybeRunningMs.
+static void test_timed_out_spawn_may_have_started_and_is_not_respawned() {
+  Rig r;
+  r.adapter.dispatchErr = agent::FabricErr::Timeout;
+  orch::Spawn s = sp("fetch the calendar");
+  s.name = "gcal-fetch";
+  r.eng->enqueueSpawn(s, "chat1");
+  r.eng->pump();
+  TEST_ASSERT_EQUAL_STRING("The agent on anthropic didn't respond within 60s - it may have run "
+                           "without me getting its result. Try a smaller task or split it into "
+                           "steps.", r.delivered[0].second.c_str());   // the owner's honest line
+  bool maybe = false;
+  const std::string notes = r.eng->takeSpawnNotes("chat1", &maybe);
+  TEST_ASSERT_TRUE(maybe);
+  TEST_ASSERT_TRUE_MESSAGE(notes.find("did not start") == std::string::npos, notes.c_str());
+  TEST_ASSERT_EQUAL_STRING(
+      "- 'gcal-fetch' may have started: the agent on anthropic did not answer within 60s, so "
+      "it may have run, and its result will not arrive. Do not spawn it again unless the "
+      "owner asks\n", notes.c_str());
+  TEST_ASSERT_EQUAL(1, r.eng->maybeRunningCount());
+  r.plat.ms += JobEngine::kMaybeRunningMs - 1;
+  TEST_ASSERT_EQUAL(1, r.eng->maybeRunningCount());
+  r.plat.ms += 1;
+  TEST_ASSERT_EQUAL(0, r.eng->maybeRunningCount());   // the window closes
+
+  // Every other dispatch failure stays a plain refusal and is never counted.
+  for (agent::FabricErr e : {agent::FabricErr::RemoteFail, agent::FabricErr::Network,
+                             agent::FabricErr::Auth, agent::FabricErr::RateLimited}) {
+    Rig f;
+    f.adapter.dispatchErr = e;
+    f.eng->enqueueSpawn(sp("summarize the thread"), "chat1");
+    f.eng->pump();
+    const std::string n = f.eng->takeSpawnNotes("chat1", &maybe);
+    TEST_ASSERT_FALSE(maybe);
+    TEST_ASSERT_TRUE(n.find("did not start: Couldn't start that agent on anthropic.") != std::string::npos);
+    TEST_ASSERT_EQUAL(0, f.eng->maybeRunningCount());
+  }
+}
+
+// CUM-538 gate: the note budget is per chat. One chat's unread flood used to spend
+// the single engine-wide budget, so another chat's first refusal became a bare
+// "(more refusals not listed)" with no name and no reason.
+static void test_spawn_note_budget_is_per_chat() {
+  Rig b;
+  for (int i = 0; i < orch::kMaxPendingSpawns + 40; i++) b.eng->enqueueSpawn(sp(), "chat1");
+  orch::Spawn extra = sp("summarize the thread");
+  extra.name = "b-task";
+  b.eng->enqueueSpawn(extra, "chat2");   // the queue is still full
+  TEST_ASSERT_EQUAL_STRING("- 'b-task' did not start: the spawn queue is full (12 waiting); "
+                           "start it again after some finish\n",
+                           b.eng->takeSpawnNotes("chat2").c_str());
+  const std::string n1 = b.eng->takeSpawnNotes("chat1");   // chat1 folded in its own budget
+  TEST_ASSERT_TRUE(n1.size() <= 700);
+  TEST_ASSERT_EQUAL(n1.size() - strlen("(more refusals not listed)\n"),
+                    n1.find("(more refusals not listed)\n"));
+
+  // Bounded overall: at most kFoldMaxChats chats hold notes; one more drops the
+  // notes that waited longest, and every other chat keeps its reason.
+  Rig c;
+  for (int i = 0; i < orch::kMaxPendingSpawns; i++) c.eng->enqueueSpawn(sp(), "fill");
+  (void)c.eng->takeSpawnNotes("fill");
+  const int chats = (int)orch::kFoldMaxChats + 1;
+  for (int k = 0; k < chats; k++) {
+    orch::Spawn t = sp("x");
+    t.name = "t" + std::to_string(k);
+    c.eng->enqueueSpawn(t, "chat" + std::to_string(k));
+  }
+  TEST_ASSERT_EQUAL_STRING("", c.eng->takeSpawnNotes("chat0").c_str());
+  for (int k = 1; k < chats; k++) {
+    const std::string n = c.eng->takeSpawnNotes("chat" + std::to_string(k));
+    TEST_ASSERT_TRUE_MESSAGE(n.find("- 't" + std::to_string(k) + "' did not start: the spawn queue is full") == 0,
+                             n.c_str());
+  }
 }
 
 static void test_keyless_provider_refusal() {
@@ -1213,6 +1293,8 @@ int main(int, char**) {
   RUN_TEST(test_spawn_ack_message_bytes);
   RUN_TEST(test_job_limit_refusal);
   RUN_TEST(test_spawn_refusals_reach_the_head_with_the_real_reason);
+  RUN_TEST(test_timed_out_spawn_may_have_started_and_is_not_respawned);
+  RUN_TEST(test_spawn_note_budget_is_per_chat);
   RUN_TEST(test_keyless_provider_refusal);
   RUN_TEST(test_connector_routing_no_hint);
   RUN_TEST(test_connector_routing_explicit_hint_wins);

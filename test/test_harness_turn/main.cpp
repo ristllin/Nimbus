@@ -7,12 +7,14 @@
 
 #include "../support/code_snippet.h"   // CUM-485: the previous reply's code block
 #include "../support/fake_config.h"
+#include "../support/fake_fabric.h"   // CUM-538: the opt-in sub-agent fabric
 #include "../support/fake_platform.h"
 #include "../support/zai_replies.h"   // CUM-495: the captured Z.ai prose reply
 #include "nimbus/harness/dream.h"      // CUM-485: buildConversationWindow
 #include "nimbus/harness/engine.h"
 #include "nimbus/orch/budget.h"
 #include "nimbus/orch/compact.h"
+#include "nimbus/orch/journal.h"
 #include "nimbus/orch/connectors_wire.h"   // CUM-536: connectorNotCalledNote
 #include "nimbus/harness/rate_limit.h"   // CUM-460 the 429 reply table
 #include "nimbus/harness/skill_md.h"   // W15: skillsIndexText for the rig index
@@ -102,15 +104,39 @@ struct Rig {
   std::vector<orch::HeadToolCall> hookToolCalls;
   std::vector<orch::HeadToolResult> hookToolResults;
 
+  // Opt-in sub-agent fabric (one scripted "anthropic" adapter over an in-memory
+  // journal) for tests that need a real dispatch; the default rig has none.
+  struct MemJournalStore : orch::JournalStore {
+    std::map<int, std::string> slots;
+    std::string get(int slot) override {
+      auto it = slots.find(slot);
+      return it == slots.end() ? std::string() : it->second;
+    }
+    void put(int slot, const std::string& v) override { slots[slot] = v; }
+    void remove(int slot) override { slots.erase(slot); }
+    void clearNs() override { slots.clear(); }
+  };
+  harness_test::FakeAdapter subAdapter;
+  agent::HeavyFabric subFabric;
+  MemJournalStore journalStore;
+  orch::Journal journal;
+
   std::unique_ptr<JobEngine> jobs;
   std::unique_ptr<TurnEngine> eng;
 
-  Rig() {
+  explicit Rig(bool withSubFabric = false) {
     JobEngine::Deps jd;
     jd.platform = plat.contract();
     jd.deliver = [this](const std::string& c, const std::string& t) {
       delivered.push_back({c, t});
     };
+    if (withSubFabric) {
+      subAdapter.backend = "anthropic";
+      subFabric.registerAdapter(&subAdapter);
+      journal.begin(&journalStore);
+      jd.fabric = &subFabric;
+      jd.journal = &journal;
+    }
     jobs.reset(new JobEngine(std::move(jd)));
 
     TurnEngine::Deps d;
@@ -1780,6 +1806,37 @@ static void test_spawn_refusal_reaches_the_next_turn_once() {
   TEST_ASSERT_TRUE(r.attempts.back().inputs.find("[SPAWN REFUSED]") == std::string::npos);
 }
 
+// CUM-538 gate: a sub whose dispatch timed out most likely ran. The next turn
+// hears it "may have started" and must not spawn it again (never the "did NOT
+// start ... spawn again" block), and [SPAWN CAPACITY] counts it as possibly
+// running. A plain refusal keeps the original block byte-for-byte.
+static void test_timed_out_spawn_is_not_respawned_by_the_next_turn() {
+  Rig r(/*withSubFabric=*/true);
+  r.subAdapter.dispatchErr = agent::FabricErr::Timeout;
+  orch::Spawn s;
+  s.task = "fetch the calendar";
+  s.name = "gcal-fetch";
+  s.provider = "anthropic";
+  r.jobs->enqueueSpawn(s, "web");
+  r.jobs->pump();
+  r.eng->handleMessage("did it run?", "", "web");
+  const std::string in = r.attempts.back().inputs;
+  TEST_ASSERT_TRUE_MESSAGE(in.find("A 'may have started' one may have run on its provider - do "
+                                   "NOT spawn it again unless the owner asks.") != std::string::npos,
+                           in.c_str());
+  TEST_ASSERT_TRUE(in.find("- 'gcal-fetch' may have started: ") != std::string::npos);
+  TEST_ASSERT_TRUE(in.find("Nothing is running for them") == std::string::npos);
+  TEST_ASSERT_TRUE(in.find("'gcal-fetch' did not start") == std::string::npos);
+  TEST_ASSERT_TRUE(in.find("[SPAWN CAPACITY] 0 running (+1 possibly still running after a "
+                           "timeout: no result will arrive, do not spawn again), 0 queued.") !=
+                   std::string::npos);
+  // The window closes: no stale "possibly running" forever.
+  r.plat.ms += JobEngine::kMaybeRunningMs;
+  r.eng->handleMessage("and now?", "", "web");
+  TEST_ASSERT_TRUE(r.attempts.back().inputs.find("[SPAWN CAPACITY] 0 running, 0 queued.") !=
+                   std::string::npos);
+}
+
 static void test_hooks_turn_end_fires_on_failure_and_sources_track() {
   Rig r;
   // All hosts fail -> onTurnEnd(ok=false) still fires exactly once per turn.
@@ -1969,6 +2026,7 @@ int main(int, char**) {
   RUN_TEST(test_hooks_fire_on_happy_turn_with_tools);
   RUN_TEST(test_unverified_connector_result_closes_memory_for_that_turn);
   RUN_TEST(test_spawn_refusal_reaches_the_next_turn_once);
+  RUN_TEST(test_timed_out_spawn_is_not_respawned_by_the_next_turn);
   RUN_TEST(test_unverified_turn_shuts_every_memory_store_tool);
   RUN_TEST(test_unverified_turn_recovery_for_mem_write_names_the_refusal);
   RUN_TEST(test_hooks_turn_end_fires_on_failure_and_sources_track);

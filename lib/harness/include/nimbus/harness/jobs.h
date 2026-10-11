@@ -263,9 +263,19 @@ class JobEngine {
   // CUM-538: spawns that never started (queue full, no provider, the provider
   // refused) - the owner hears each at once, but the head used to learn nothing
   // and could claim a capacity it never had. One line per refusal with the real
-  // reason, bounded, kept per SPAWNING chat: only that chat's next turn reads
-  // (and consumes) them, so one tenant's task text never reaches another's turn.
-  std::string takeSpawnNotes(const std::string& chatId);
+  // reason, kept per SPAWNING chat: only that chat's next turn reads (and
+  // consumes) them, so one tenant's task text never reaches another's turn. The
+  // byte budget is per chat too, so one chat's unread backlog never strips
+  // another chat's refusal of its reason. A dispatch that timed out is a "may
+  // have started" line, not a refusal: the sub most likely ran and its result is
+  // lost, so a re-spawn would pay for the same work twice. `mayHaveRun`
+  // (optional) reports whether the taken notes carry such a line.
+  std::string takeSpawnNotes(const std::string& chatId, bool* mayHaveRun = nullptr);
+  // Sub-agents whose dispatch timed out recently (within kMaybeRunningMs): they
+  // may still be running on their provider with no job here to wait for. The
+  // [SPAWN CAPACITY] line counts them as possibly running.
+  int maybeRunningCount() const;
+  static constexpr uint32_t kMaybeRunningMs = 10u * 60 * 1000;
 
  private:
   // Pending-spawn queue entry (fixed char[] kept from the device struct so the
@@ -309,12 +319,18 @@ class JobEngine {
 
   void dispatchSpawn(const PendingSpawn& p);
   void noteSpawnRefused(const std::string& chatId, const char* name, const std::string& task,
-                        const std::string& reason);
+                        const std::string& reason, bool mayHaveRun = false);
   // The Done text exactly as every copy must carry it (CUM-536 marker included).
   std::string deliveredReply(const nimbus::orch::JobRecord& rec, bool& unverified);
-  struct SpawnNote { std::string chatId, line; };
-  std::vector<SpawnNote> spawnNotes_;   // all chats, bounded (kSpawnNotesMax bytes)
-  size_t spawnNotesBytes_ = 0;
+  // One entry per chat with unread notes (at most kSpawnNoteChats); `text` is that
+  // chat's lines, bounded to kSpawnNotesMax bytes plus one fold line.
+  struct SpawnNotes {
+    std::string chatId, text;
+    bool folded = false;       // budget spent: nothing more is listed for this chat
+    bool mayHaveRun = false;   // a timed-out dispatch is among the lines
+  };
+  std::vector<SpawnNotes> spawnNotes_;
+  std::vector<uint32_t> timedOutAt_;   // dispatch-timeout times, <= kAgentMaxJobs
   void deliver(const std::string& chatId, const std::string& text);
   void emitJobState(const char* tag, const char* backend, nimbus::orch::JobState st);
   void emitJobCleared(uint32_t key);

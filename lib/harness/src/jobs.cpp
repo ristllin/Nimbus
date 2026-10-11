@@ -1,5 +1,6 @@
 #include "nimbus/harness/jobs.h"
 
+#include <algorithm>   // remove_if - expire timed-out dispatch times
 #include <cctype>
 #include <cstdio>
 #include <cstring>
@@ -8,6 +9,7 @@
 #include "nimbus/harness/rate_limit.h" // rateLimitReply - a refused spawn names its window
 #include "nimbus/harness/skill_md.h"   // composeSkillInjection - per-spawn capsule
 #include "nimbus/mem_cap.h"   // utf8CapLen - the fresh-result 3500-char UTF-8 cap
+#include "nimbus/orch/compact.h"   // kFoldMaxChats - the chat registry bound on spawn notes
 #include "nimbus/orch/connectors_wire.h"  // connectorNotCalledNote (CUM-536)
 #include "nimbus/orch/gradient.h"   // foldLine - the overflow-stub one-liner
 #include "nimbus/orch/vector_memory.h"  // nsForChat - the sub-agent result owner
@@ -328,32 +330,61 @@ void JobEngine::deliverOwnerFallback() {
 // ---- spawn enqueue + dispatch -----------------------------------------------
 
 // CUM-538: one model-facing line per spawn that never started, so the head's next
-// turn knows the real reason (and does not invent one). Kept per spawning chat.
-// Bounded: past the budget a chat gets one fold line and nothing more after it.
+// turn knows the real reason (and does not invent one). Kept per spawning chat,
+// with a per-chat budget: past it that chat gets one fold line and nothing more,
+// and no other chat is affected. At most kSpawnNoteChats chats hold notes (the
+// chat registry bound); a further chat's first note drops the notes that have
+// waited longest (their owner was told each refusal at once). The per-chat text
+// grows past the small-allocation threshold at once (reserved), so on the device
+// it lives in PSRAM, not internal SRAM.
 static constexpr size_t kSpawnNotesMax = 640;
+static constexpr size_t kSpawnNoteChats = orch::kFoldMaxChats;
 static const char kSpawnNotesFold[] = "(more refusals not listed)\n";
 
 void JobEngine::noteSpawnRefused(const std::string& chatId, const char* name,
-                                 const std::string& task, const std::string& reason) {
-  for (const auto& n : spawnNotes_)
-    if (n.chatId == chatId && n.line == kSpawnNotesFold) return;   // already folded
+                                 const std::string& task, const std::string& reason,
+                                 bool mayHaveRun) {
+  SpawnNotes* n = nullptr;
+  for (auto& e : spawnNotes_)
+    if (e.chatId == chatId) n = &e;
+  if (n && n->folded) return;
   const std::string who = (name && name[0]) ? std::string(name)
                                             : nimbus::orch::foldLine("", task, 40);
-  std::string line = "- '" + who + "' did not start: " + reason + "\n";
-  if (spawnNotesBytes_ + line.size() > kSpawnNotesMax) line = kSpawnNotesFold;
-  spawnNotesBytes_ += line.size();
-  spawnNotes_.push_back(SpawnNote{chatId, std::move(line)});
+  std::string line = "- '" + who + (mayHaveRun ? "' may have started: " : "' did not start: ") +
+                     reason + "\n";
+  if (!n) {
+    if (spawnNotes_.size() >= kSpawnNoteChats) spawnNotes_.erase(spawnNotes_.begin());
+    spawnNotes_.push_back(SpawnNotes{chatId, std::string(), false, false});
+    n = &spawnNotes_.back();
+    n->text.reserve(kSpawnNotesMax + sizeof(kSpawnNotesFold));
+  }
+  if (n->text.size() + line.size() > kSpawnNotesMax) {
+    line = kSpawnNotesFold;
+    n->folded = true;
+  } else if (mayHaveRun) {
+    n->mayHaveRun = true;
+  }
+  n->text += line;
 }
 
-std::string JobEngine::takeSpawnNotes(const std::string& chatId) {
-  std::string out;
-  for (size_t i = 0; i < spawnNotes_.size();) {
-    if (spawnNotes_[i].chatId != chatId) { ++i; continue; }
-    out += spawnNotes_[i].line;
-    spawnNotesBytes_ -= spawnNotes_[i].line.size();
+std::string JobEngine::takeSpawnNotes(const std::string& chatId, bool* mayHaveRun) {
+  if (mayHaveRun) *mayHaveRun = false;
+  for (size_t i = 0; i < spawnNotes_.size(); ++i) {
+    if (spawnNotes_[i].chatId != chatId) continue;
+    if (mayHaveRun) *mayHaveRun = spawnNotes_[i].mayHaveRun;
+    std::string out = std::move(spawnNotes_[i].text);
     spawnNotes_.erase(spawnNotes_.begin() + (long)i);
+    return out;
   }
-  return out;
+  return "";
+}
+
+int JobEngine::maybeRunningCount() const {
+  const uint32_t now = nowMs();
+  int n = 0;
+  for (uint32_t at : timedOutAt_)
+    if (now - at < kMaybeRunningMs) n++;
+  return n;
 }
 
 std::string JobEngine::deliveredReply(const orch::JobRecord& rec, bool& unverified) {
@@ -515,7 +546,23 @@ void JobEngine::dispatchSpawn(const PendingSpawn& p) {
                (int)err, provider.c_str(), model.c_str(), p.category);
     const std::string refusal = spawnRefusal(err, provider, window);
     deliver(chatId, refusal);
-    noteSpawnRefused(chatId, p.name, p.task, refusal);
+    if (err == FabricErr::Timeout) {
+      // It most likely ran (a Mistral sub runs inside the POST that timed out) and
+      // no job record exists to wait on, so the head must not spawn it again.
+      noteSpawnRefused(chatId, p.name, p.task,
+                       "the agent on " + provider + " did not answer within 60s, so it may "
+                       "have run, and its result will not arrive. Do not spawn it again "
+                       "unless the owner asks",
+                       /*mayHaveRun=*/true);
+      const uint32_t now = nowMs();
+      timedOutAt_.erase(std::remove_if(timedOutAt_.begin(), timedOutAt_.end(),
+                                       [now](uint32_t at) { return now - at >= kMaybeRunningMs; }),
+                        timedOutAt_.end());
+      if ((int)timedOutAt_.size() >= orch::kAgentMaxJobs) timedOutAt_.erase(timedOutAt_.begin());
+      timedOutAt_.push_back(now);
+    } else {
+      noteSpawnRefused(chatId, p.name, p.task, refusal);
+    }
     return;
   }
 
