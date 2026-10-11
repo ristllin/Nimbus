@@ -238,7 +238,7 @@ class WebApi {
       return bytes;
     });
     if (r.status != 200) return r;
-    if (!*found) return ApiResp{404, "application/json", R"({"error":"not found"})"};
+    if (!*found) return notFound();
     r.ctype = "application/octet-stream";
     return r;
   }
@@ -265,32 +265,32 @@ class WebApi {
     if (proj.empty()) proj = "uploads";
     if (name.empty()) name = filename;
     auto err = std::make_shared<std::string>();
-    ApiResp r = engineRead([this, proj, name, bytes, err] {
+    ApiResp r = engineWrite([this, proj, name, bytes, err] {
       return rig_->files().put(proj, name, bytes, *err) ? std::string(R"({"ok":true})") : std::string();
-    });
+    }, 5);
     if (r.status == 200 && !err->empty()) return refuse("Couldn't store the file: " + *err + ".");
     return r;
   }
   ApiResp filesRemove(const std::string& body) {
     const std::string proj = formValue(body, "project"), name = formValue(body, "name");
     auto ok = std::make_shared<bool>(false);
-    ApiResp r = engineRead([this, proj, name, ok] {
+    ApiResp r = engineWrite([this, proj, name, ok] {
       *ok = rig_->files().remove(proj, name);
       return std::string(R"({"ok":true})");
-    });
-    if (r.status == 200 && !*ok) return ApiResp{404, "application/json", R"({"error":"not found"})"};
+    }, 5);
+    if (r.status == 200 && !*ok) return notFound();
     return r;
   }
   ApiResp filesRemoveProject(const std::string& body, std::string proj) {
     if (proj.empty()) proj = formValue(body, "project");
     if (formValue(body, "confirm") != "DELETE") return refuse("confirm phrase required");
     auto n = std::make_shared<int>(-1);
-    ApiResp r = engineRead([this, proj, n] {
+    ApiResp r = engineWrite([this, proj, n] {
       *n = rig_->files().removeProject(proj);
       return std::string();
-    });
+    }, 5);
     if (r.status != 200) return r;
-    if (*n < 0) return ApiResp{404, "application/json", R"({"error":"not found"})"};
+    if (*n < 0) return notFound();
     return okJson(R"({"ok":true,"removed":)" + std::to_string(*n) + "}");
   }
 
@@ -399,15 +399,33 @@ class WebApi {
     return ApiResp{503, "application/json", R"({"error":"instance busy - try again"})"};
   }
 
-  ApiResp engineRead(std::function<std::string()> fn) {
+  static ApiResp notFound() { return ApiResp{404, "application/json", R"({"error":"not found"})"}; }
+
+  ApiResp engineRead(std::function<std::string()> fn, int waitS = 2) {
     // Never stall the single HTTP thread behind a turn: a turn can hold the engine
     // for a long time, and this thread also serves /healthz, /readyz and the
     // snapshot routes. If a turn is in flight, tell the poller to retry (503) at
-    // once rather than blocking every other request behind a 2 s wait. Only when
-    // the engine is idle do we dispatch and await (it answers in milliseconds).
+    // once rather than blocking every other request behind the wait. Only when
+    // the engine is idle do we dispatch and await (it answers in milliseconds;
+    // a live embedding check is the one caller that waits longer).
     if (eng_->snapshot().turnInFlight || eng_->busy()) return busy();
     auto fut = eng_->dispatchRead(std::move(fn));
-    if (fut.wait_for(std::chrono::seconds(2)) != std::future_status::ready) return busy();
+    if (fut.wait_for(std::chrono::seconds(waitS)) != std::future_status::ready) return busy();
+    try {
+      return okJson(fut.get());
+    } catch (...) {
+      return busy();
+    }
+  }
+
+  // A WRITE dispatched onto the engine thread. Once posted it will run, so a wait
+  // that runs out answers "queued" (like orchPost), never a 503 that reads as
+  // "nothing happened" and invites a duplicate write.
+  ApiResp engineWrite(std::function<std::string()> fn, int waitS) {
+    if (eng_->snapshot().turnInFlight || eng_->busy()) return busy();
+    auto fut = eng_->dispatchRead(std::move(fn));
+    if (fut.wait_for(std::chrono::seconds(waitS)) != std::future_status::ready)
+      return ApiResp{202, "application/json", R"({"ok":true,"queued":true,"note":"Saved. It applies in a moment."})"};
     try {
       return okJson(fut.get());
     } catch (...) {
@@ -633,7 +651,7 @@ class WebApi {
       // cumulo is a router key, not a canonical-env BYOK slot, so hostAvailable()
       // does not see it - report it from hasCumulo() (CUM-286). Every other slot
       // (including Z.ai's Z_AI_TOKEN) is a real env key hostAvailable() reads.
-      o["hasKey"] = (slug == kCumuloSlug) ? rig_->hasCumulo() : rig_->hostAvailable(slug);
+      o["hasKey"] = rig_->keyedForEngine(slug);
       if (slot.recommended) o["recommended"] = true;
       // The real verdict (CUM-545): the provider's model-list read on start, on a
       // key save and on POST /api/verify, or a turn that answered on this head.
@@ -700,7 +718,7 @@ class WebApi {
   // fields the device's Providers & keys form posts (`<slug>Key` / `clr_<slug>Key`
   // for keys, `orchM_<slug>` / `clr_orchM_<slug>` for the per-head model), applied
   // through the rig seams so a value set in the UI takes effect - no external
-  // attach. Other orch settings are acked honestly (a VN's priority knob defaults).
+  // attach. Every other field applies or is refused by name (CUM-543, see orchPost).
   // The apply runs on the engine thread (serialized; refused mid-turn with a 503
   // retry) because it rebuilds the engine to register the newly-keyed head or the
   // re-routed model.
@@ -745,14 +763,7 @@ class WebApi {
   ApiResp unknownKeyFieldError(const std::string& body) {
     for (const std::string& name : formFieldNames(body)) {
       std::string base;
-      if (looksLikeKeyField(name, base) && !isRecognizedKeyField(base)) {
-        JsonDocument e;
-        e["ok"] = false;
-        e["error"] = "unknown field " + base;
-        std::string out;
-        serializeJson(e, out);
-        return ApiResp{400, "application/json", out};
-      }
+      if (looksLikeKeyField(name, base) && !isRecognizedKeyField(base)) return refuse("unknown field " + base);
     }
     return ApiResp{0, "", ""};
   }
@@ -785,12 +796,7 @@ class WebApi {
     if (std::find(names.begin(), names.end(), "tgAllow") == names.end()) return ApiResp{0, "", ""};
     std::string err;
     if (rig_->telegramAccess().setAllowCsv(formValue(body, "tgAllow"), err)) return ApiResp{0, "", ""};
-    JsonDocument e;
-    e["ok"] = false;
-    e["error"] = err;
-    std::string out;
-    serializeJson(e, out);
-    return ApiResp{400, "application/json", out};
+    return refuse(err);
   }
 
   using Writes = std::vector<std::pair<std::string, std::string>>;   // (host, value); "" clears
@@ -816,23 +822,6 @@ class WebApi {
     std::string out;
     serializeJson(e, out);
     return ApiResp{400, "application/json", out};
-  }
-
-  // The fields POST /api/orch applies on a hosted instance (CUM-543): the canonical
-  // key fields, the per-provider head and sub-agent model picks, routing, the
-  // directive, the tool loop, the Telegram allowlist and the conversation/memory
-  // clears. Everything else is a no-op knob or refused (hosted::orchFieldVerdict).
-  static bool appliedOrchField(const std::string& f) {
-    static const char* kApplied[] = {"orchHost", "provPrio", "subPrio", "sysPrompt", "clearConv",
-                                     "clearMem", "convReset", "orchLoop", "tgAllow"};
-    for (const char* a : kApplied) if (f == a) return true;
-    for (size_t i = 0; i < nimbus::orch::kProviderSlotCount; i++) {
-      const std::string slug = nimbus::orch::kProviderSlots[i].slug;
-      const std::string key = nimbus::orch::kProviderSlots[i].keyField;
-      for (const std::string& n : {key, "orchM_" + slug, "subM_" + slug})
-        if (f == n || f == "clr_" + n) return true;
-    }
-    return false;
   }
 
   // The settings and actions one POST carries, validated before anything applies.
@@ -885,7 +874,7 @@ class WebApi {
   static std::string collectOrchWrites(const std::string& body, OrchWrites& w) {
     const std::vector<std::string> names = formFieldNames(body);
     for (const std::string& f : names)
-      if (hosted::orchFieldVerdict(f, formValue(body, f), appliedOrchField) == hosted::Verdict::Refuse)
+      if (hosted::orchFieldVerdict(f, formValue(body, f)) == hosted::Verdict::Refuse)
         return hosted::notAvailable(f);
     collectWrites(body, w.keys, w.models);
     for (size_t i = 0; i < nimbus::orch::kProviderSlotCount; i++) {
@@ -903,23 +892,28 @@ class WebApi {
 
   // Apply a validated write set on the engine thread (keys and model picks rebuild
   // the engine; the clears touch the conversation and memory stores).
+  // Returns "" when the settings could not be stored (the caller answers 500;
+  // nothing in the settings changed - SettingsStore applies only what persists).
   std::string applyOrchWrites(const OrchWrites& w) {
     int applied = 0;
     for (const auto& k : w.keys) applied += rig_->applyProviderKey(k.first, k.second) ? 1 : 0;
     for (const auto& m : w.models) applied += rig_->applyOrchModel(m.first, m.second) ? 1 : 0;
     for (const auto& m : w.subs) applied += rig_->applySubModel(m.first, m.second) ? 1 : 0;
-    if (!w.settings.empty() && rig_->updateSettings([&w](HostedSettings& s) {
-          for (const auto& fn : w.settings) fn(s);
-        }))
+    if (!w.settings.empty()) {
+      if (!rig_->updateSettings([&w](HostedSettings& s) { for (const auto& fn : w.settings) fn(s); }))
+        return std::string();
       applied += (int)w.settings.size();
+    }
     if (w.clearConv) { rig_->clearConversation(kWebChat); applied++; }
     if (w.clearMem) { rig_->clearRunningMemory(); applied++; }
     if (w.convReset) { rig_->resetConversations(); applied++; }
+    const char* note = "Saved and applied.";
+    if (!w.keys.empty()) note = "Key saved and applied.";
+    else if (!w.models.empty()) note = "Model saved and applied.";
     JsonDocument d;
     d["ok"] = true;
     d["applied"] = applied;
-    d["note"] = !w.keys.empty() ? "Key saved and applied." : !w.models.empty() ? "Model saved and applied."
-                                                                               : "Saved and applied.";
+    d["note"] = note;
     std::string out;
     serializeJson(d, out);
     return out;
@@ -936,7 +930,10 @@ class WebApi {
     if (!w.empty() && eng_->snapshot().turnInFlight) return busy();
     const ApiResp allow = allowlistWrite(body);
     if (allow.status != 0) return allow;
-    if (w.empty()) return okJson(R"({"ok":true,"applied":0})");   // only no-op knobs or the allowlist
+    if (w.empty()) {   // only no-op knobs, or the allowlist (applied above)
+      const bool tg = present(formFieldNames(body), "tgAllow");
+      return okJson(tg ? R"({"ok":true,"applied":1})" : R"({"ok":true,"applied":0})");
+    }
     auto fut = eng_->dispatchRead([this, w]() { return applyOrchWrites(w); });
     reprobeOnMistralKey(w.keys);
     for (const auto& k : w.keys)   // a new key is verified right after it applies (CUM-545)
@@ -946,7 +943,13 @@ class WebApi {
     // and invites a duplicate save.
     if (fut.wait_for(std::chrono::seconds(5)) != std::future_status::ready)
       return okJson(R"({"ok":true,"queued":true,"note":"Saved. It applies in a moment."})");
-    try { return okJson(fut.get()); } catch (...) { return busy(); }
+    try {
+      const std::string out = fut.get();
+      return out.empty() ? ApiResp{500, "application/json", R"({"ok":false,"error":"Couldn't save. Try again."})"}
+                         : okJson(out);
+    } catch (...) {
+      return busy();
+    }
   }
 
   // ------------------------------------------------------------------ /api/config
@@ -965,9 +968,7 @@ class WebApi {
       fns.push_back([n](HostedSettings& s) { s.devName = n; });
     }
     if (present(names, "devTz")) {
-      std::string tz = formValue(body, "devTz");
-      while (!tz.empty() && isspace((unsigned char)tz.back())) tz.pop_back();
-      while (!tz.empty() && isspace((unsigned char)tz.front())) tz.erase(tz.begin());
+      const std::string tz = hosted::trim(formValue(body, "devTz"));
       if (!hosted::validTz(tz))
         return refuse("Unknown time zone. Use a POSIX string such as GMT0BST,M3.5.0/1,M10.5.0/2 or a "
                       "zone name such as Europe/London.");
@@ -990,11 +991,11 @@ class WebApi {
 
   // ------------------------------------------------------------------ /api/verify
   // Device parity (webui.cpp /api/verify): accept the request, run the check in the
-  // background, answer at once. A hosted instance has no cheap key verify, but the
-  // one check the device runs after a Mistral verify - the workspace probe that makes
-  // Studio connectors usable - IS real here: provider=mistral queues it on the engine
-  // thread (serialized with turns); GET /api/connectors shows the result. Other
-  // providers are acknowledged, as before (nothing to check on a hosted instance).
+  // background, answer at once. Every keyed provider gets the device's verify (one
+  // model-list read, CUM-545; GET /api/orch shows the verdict); provider=mistral also
+  // re-runs the workspace probe that makes Studio connectors usable (GET
+  // /api/connectors shows it). Both are queued on the engine thread, serialized with
+  // turns.
   ApiResp verifyPost(const std::string& body) {
     const std::string prov = formValue(body, "provider");
     if (prov == "mistral" && rig_->wantsWorkspaceProbe()) kickProbe();
@@ -1137,25 +1138,15 @@ class WebApi {
       e["provider"] = rig_->embedProvider();
       e["model"] = rig_->embedModelName();
       e["dims"] = rig_->embedWidth();
-      e["route"] = !rig_->embedAvailable() ? "none" : rig_->embedViaRouter() ? "router" : "direct";
+      e["route"] = rig_->embedRouteLabel();
       std::string out; serializeJson(d, out); return out;
     });
   }
 
   // ---- embedding settings (CUM-540, device parity web_memory.cpp) -----------
-  // A live embedding call can take seconds, so these wait longer than a plain read;
-  // they are owner-initiated and rare. Refused at once while a turn holds the engine.
-  ApiResp engineCall(std::function<std::string()> fn, int& status, int waitS) {
-    if (eng_->snapshot().turnInFlight || eng_->busy()) return busy();
-    auto fut = eng_->dispatchRead(std::move(fn));
-    if (fut.wait_for(std::chrono::seconds(waitS)) != std::future_status::ready) return busy();
-    try {
-      const std::string body = fut.get();
-      return ApiResp{status, "application/json", body};
-    } catch (...) {
-      return busy();
-    }
-  }
+  // A live embedding call can take up to the embed timeout (30 s), so these wait
+  // past it; they are owner-initiated and rare, and refused at once mid-turn.
+  static constexpr int kEmbedWaitS = 35;
 
   // POST embedverify: one REAL embeddings call with a candidate provider/model/dims,
   // saving nothing; the page only saves when it works.
@@ -1163,16 +1154,15 @@ class WebApi {
     const std::string prov = formValue(body, "provider"), model = formValue(body, "model");
     const int dims = atoiOr(formValue(body, "dims"), 0);
     auto st = std::make_shared<int>(200);
-    int status = 200;
-    ApiResp r = engineCall([this, prov, model, dims, st]() -> std::string {
+    ApiResp r = engineRead([this, prov, model, dims, st]() -> std::string {
       std::string err;
-      const auto v = rig_->embedWith("nimbus embedding check", err, prov, model, dims);
+      const auto v = rig_->embedWith(NimbusdRig::kEmbedProbeText, err, prov, model, dims);
       JsonDocument d;
       d["ok"] = !v.empty();
       d["dims"] = (int)v.size();
       if (v.empty()) { d["error"] = err; *st = 400; }
       std::string out; serializeJson(d, out); return out;
-    }, status, 25);
+    }, kEmbedWaitS);
     if (r.status == 200) r.status = *st;
     return r;
   }
@@ -1182,17 +1172,10 @@ class WebApi {
     const int dims = atoiOr(formValue(body, "dims"), 0);
     const bool reset = formValue(body, "reset") == "1";
     auto st = std::make_shared<int>(200);
-    int status = 200;
-    ApiResp r = engineCall([this, prov, model, dims, reset, st]() -> std::string {
+    ApiResp r = engineWrite([this, prov, model, dims, reset, st]() -> std::string {
       const std::string err = rig_->applyEmbedCfg(prov, model, dims, reset, *st);
-      if (!err.empty()) {
-        JsonDocument e;
-        e["ok"] = false;
-        e["error"] = err;
-        std::string out; serializeJson(e, out); return out;
-      }
-      return embedCfgJson();
-    }, status, 25);
+      return err.empty() ? embedCfgJson() : refuse(err).body;
+    }, kEmbedWaitS);
     if (r.status == 200) r.status = *st;
     return r;
   }

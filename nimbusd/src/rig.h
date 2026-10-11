@@ -31,6 +31,7 @@
 #include "nimbus/orch/episodic_log.h"
 #include "nimbus/orch/mem_config.h"
 #include "nimbus/orch/memory_tools.h"
+#include "nimbus/orch/model_choices.h"
 #include "nimbus/orch/provider_slots.h"
 #include "nimbus/orch/router_route.h"
 #include "nimbus/orch/scratchpad.h"
@@ -108,8 +109,15 @@ struct TurnRecord {
   bool        ok = false;
 };
 
-// One head attempt's outputs, bundled so the router head stays within the
-// argument-count gate: the orch_turn JSON, the error, and the usage accumulator.
+// One head call's inputs and outputs as the engine hands them to a head (the
+// provider conversation, the instructions, the per-turn input, the loop tools; the
+// orch_turn JSON, the error, the usage), bundled for the router head's helpers.
+struct HeadCall {
+  std::string& conv;
+  const std::string& ins;
+  const std::string& inp;
+  const agent::HeadTools* tools;
+};
 struct HeadOut {
   std::string& out;
   std::string& err;
@@ -185,6 +193,7 @@ class NimbusdRig {
   // In-app model picks (CUM-425): durable like the keys, but not secret material,
   // so they live in their own plain file (slug=model lines).
   std::string modelsPath() const { return memDir() + "/models.txt"; }
+  std::string subModelsPath() const { return memDir() + "/submodels.txt"; }
 
   // Persist every whole-file store with the atomic tmp->rename writer. The
   // episodic append-log is already durable per-message; this flushes the RAM
@@ -255,7 +264,12 @@ class NimbusdRig {
       record(chat, "/" + v + " is not available on a hosted Nimbus yet.");
       return true;
     }
-    record(chat, "There is no /" + v + " command. Send /help for the list, or write without the slash to chat.");
+    // The reply is stored as an assistant row, so it never echoes free text a
+    // sender chose (a "verb" can be a whole sentence spaced with non-ASCII blanks).
+    const bool plain = !v.empty() && v.size() <= 24 &&
+                       std::all_of(v.begin(), v.end(), [](char ch) { return isalnum((unsigned char)ch) || ch == '_'; });
+    record(chat, (plain ? "There is no /" + v + " command." : std::string("There is no such command.")) +
+                     " Send /help for the list, or write without the slash to chat.");
     return true;
   }
   void commandClear(const std::string& chat, std::string arg) {
@@ -326,7 +340,6 @@ class NimbusdRig {
   // web app's "Free RAM" tile - a real hosted-process figure, never faked HW SRAM.
   uint32_t freeHeapBytes() const { return mem_.freeBytes(); }
   uint32_t heapCapBytes() const { return mem_.capBytes(); }
-  bool embeddingsOn() const { return opt_.embeddings; }
   // Whether an embedding call can run right now (the master switch plus a route
   // with a key: direct, or through the Cumulo router). Engine thread only.
   bool embedAvailable() const {
@@ -337,10 +350,12 @@ class NimbusdRig {
   std::string embedProvider() const { return opt_.embedHost; }
   std::string embedModelName() const { return opt_.embedModel; }
   int embedWidth() const { return opt_.embedDims; }
-  // Whether the stored embed route is the Cumulo router (no direct key).
-  bool embedViaRouter() const {
+  // The route an embedding takes right now: "direct", "router" (the Cumulo key)
+  // or "none" (off, or no key can carry it). For /api/mem/stats.
+  std::string embedRouteLabel() const {
     EmbedRoute r;
-    return embedRoute(opt_.embedHost, r) && r.viaRouter;
+    if (!opt_.embeddings || !embedRoute(opt_.embedHost, r)) return "none";
+    return r.viaRouter ? "router" : "direct";
   }
   // Persist the whole-file stores after a web mutation (config/vector edit). Same
   // atomic writer flush() uses; safe to call on the engine thread.
@@ -359,8 +374,10 @@ class NimbusdRig {
   // of the BYOK-only paths (connector auth, embeddings-by-key). Device parity
   // (src/agent/store_config.cpp hasKey): the router head is a first-class keyed
   // provider, so [AVAILABLE MODELS] lists it and a spawn may run on it.
-  bool keyedForEngine(const std::string& h) const {
-    return h == kCumuloSlug ? hasCumulo() : !cfg_.providerKey(h).empty();
+  bool keyedForEngine(const std::string& h) const { return !engineKey(h).empty(); }
+  // The key the engine uses for `h` (the Cumulo router key for "cumulo").
+  std::string engineKey(const std::string& h) const {
+    return h == kCumuloSlug ? cumuloKey() : cfg_.providerKey(h);
   }
 
   // The sub-agent ladder the JobEngine walks: the configured order, then the
@@ -371,23 +388,10 @@ class NimbusdRig {
   std::string subLadder() const {
     std::string ladder = subPriority();
     for (const char* r : {kCumuloSlug, kZaiSlug}) {
-      if (!keyedForEngine(r) || csvHas(ladder, r)) continue;
+      if (!keyedForEngine(r) || nimbus::orch::modelInChoices(ladder, r)) continue;
       ladder += (ladder.empty() ? "" : ",") + std::string(r);
     }
     return ladder;
-  }
-  static bool csvHas(const std::string& csv, const std::string& item) {
-    size_t start = 0;
-    while (start <= csv.size()) {
-      size_t comma = csv.find(',', start);
-      if (comma == std::string::npos) comma = csv.size();
-      std::string t = csv.substr(start, comma - start);
-      while (!t.empty() && isspace((unsigned char)t.front())) t.erase(t.begin());
-      while (!t.empty() && isspace((unsigned char)t.back())) t.pop_back();
-      if (t == item) return true;
-      start = comma + 1;
-    }
-    return false;
   }
 
   // The Cumulo router key from the canonical env (CUM-286). This is the daemon's
@@ -421,8 +425,9 @@ class NimbusdRig {
   // raw-first-token badge told a mistral-only instance whose priority led with
   // openai that it was "running on openai", so it misjudged every connector.
   std::string hostBadge() const {
+    const HostedSettings st = settings_.get();
     return nimbus::orch::resolveHeadHost(
-        settings_.get().orchHost, settings_.get().provPrio,
+        st.orchHost, st.provPrio,
         [this](const std::string& h) { return keyedForEngine(h); },
         hasCumulo() ? std::string(kCumuloSlug)
                     : (hostAvailable(kZaiSlug) ? std::string(kZaiSlug) : std::string()));
@@ -545,11 +550,10 @@ class NimbusdRig {
   // the engine's transport); readers take a copy from verify_.
   bool verifyProvider(const std::string& slug) {
     releaseVerify(slug);
-    const std::string key = slug == kCumuloSlug ? cumuloKey() : cfg_.providerKey(slug);
+    const std::string key = engineKey(slug);
     if (key.empty()) return false;
-    const std::string zaiHost = cfg_.get("NIMBUSD_ZAI_BASE").empty() ? kZaiHost : cfg_.get("NIMBUSD_ZAI_BASE");
     ProbeTarget t;
-    if (!probeTarget(slug, key, zaiHost, t)) return false;
+    if (!probeTarget(slug, key, ProbeHosts{zaiHost(), kCumuloHost}, t)) return false;
     agent::HttpRequest req;
     req.method = "GET";
     req.host = t.host;
@@ -566,9 +570,9 @@ class NimbusdRig {
       nimbus::orch::parseModelsList(slug, resp.body, cat);
       // The parser splits a router id into (upstream, bare id); the picker posts the
       // id back as the head selector, which must be the routable "<upstream>/<model>".
-      for (auto& m : cat)
-        if (slug == kCumuloSlug && !m.upstream.empty() && m.id.find('/') == std::string::npos)
-          m.id = m.upstream + "/" + m.id;
+      if (slug == kCumuloSlug)
+        for (auto& m : cat)
+          if (!m.upstream.empty() && m.id.find('/') == std::string::npos) m.id = m.upstream + "/" + m.id;
       if (!cat.empty()) verify_.setCatalog(slug, std::move(cat));
     }
     std::fprintf(stderr, "[nimbusd] verify %s: HTTP %d%s%s\n", slug.c_str(), status,
@@ -587,18 +591,24 @@ class NimbusdRig {
     verifyQueued_.erase(slug);
   }
   // The Recommended list the picker and the prompt read for a provider: the
-  // harvested catalog when there is one, else the compiled default.
+  // harvested catalog when there is one, else the shared cold-start list
+  // (orch::staticModelChoices, the device's source). Cumulo advertises only what
+  // a spawn accepts (jd.modelIsValid): the harvested router catalog, else nothing
+  // (the prompt then names the configured sub model).
   std::string modelChoicesFor(const std::string& h) const {
     const std::string harvested =
         catalogCsv(verify_.get(h).models, nimbus::orch::RoleOrchestrator, 8);
-    return !harvested.empty() ? harvested : staticChoices(h);
+    if (!harvested.empty() || h == kCumuloSlug) return harvested;
+    return nimbus::orch::staticModelChoices(h.c_str());
   }
-  static std::string staticChoices(const std::string& h) {
-    if (h == "openai")    return "gpt-6-astra,gpt-5.6,gpt-5.6-luna";
-    if (h == "anthropic") return "claude-opus-5,claude-sonnet-5,claude-haiku-4-5";
-    if (h == "mistral")   return "mistral-large-latest,mistral-medium-latest,mistral-small-latest";
-    if (h == "zai")       return "glm-5.3,glm-5.2,glm-5.3-flash";
-    return std::string();
+  // The Z.ai host: NIMBUSD_ZAI_BASE reduced to a bare host (a scheme, port or path
+  // in the operator's value never becomes part of a hostname), else api.z.ai.
+  std::string zaiHost() const {
+    std::string b = cfg_.get("NIMBUSD_ZAI_BASE");
+    const size_t sch = b.find("://");
+    if (sch != std::string::npos) b = b.substr(sch + 3);
+    b = b.substr(0, b.find_first_of("/:"));
+    return b.empty() ? std::string(kZaiHost) : b;
   }
 
   // The credential state for one connector by the shared rule, against the current
@@ -728,20 +738,24 @@ class NimbusdRig {
 
   // ---- the owner's settings (CUM-543) ---------------------------------------
   HostedSettings settings() const { return settings_.get(); }
-  // Apply a settings change and persist it on the instance volume. A new time zone
-  // takes effect at once (the next turn's clock and /api/state read it). Callers
-  // validate first (hosted_settings.h); engine thread.
+  // Apply a settings change, only if it persists on the instance volume. A new
+  // time zone takes effect at once (the next turn's clock and /api/state read it);
+  // clearing it returns to the operator's TZ, else UTC - the same zone a restart
+  // would run. Callers validate first (hosted_settings.h). Thread-safe (the store
+  // and the tz lock); called from the engine thread (/api/orch) and the HTTP
+  // thread (/api/config).
   bool updateSettings(const std::function<void(HostedSettings&)>& fn) {
     const std::string tzBefore = settings_.get().devTz;
-    const bool ok = settings_.update(fn);
+    if (!settings_.update(fn)) return false;
     const std::string tzAfter = settings_.get().devTz;
-    if (tzAfter != tzBefore) hosted::applyTz(tzAfter);
-    return ok;
+    if (tzAfter != tzBefore) hosted::applyTz(tzAfter.empty() ? envTz_ : tzAfter);
+    return true;
   }
   // The time zone /api/state shows: the owner's, else the operator's TZ, else UTC.
   std::string clockTz() const {
     const std::string tz = settings_.get().devTz;
-    return !tz.empty() ? tz : (envTz_.empty() ? std::string("UTC") : envTz_);
+    if (!tz.empty()) return tz;
+    return envTz_.empty() ? std::string("UTC") : envTz_;
   }
 
   // The web app's "Clear conversation" and the /clear command (device parity,
@@ -766,14 +780,7 @@ class NimbusdRig {
   // Per-provider sub-agent model picks (device subM_<slug>, "" = the head's model).
   bool applySubModel(const std::string& host, const std::string& model) {
     if (keyEnvFor(host).empty() || !validSelector(model)) return false;
-    std::string blob;
-    {
-      std::lock_guard<std::mutex> lk(modelsMu_);
-      if (model.empty()) subModels_.erase(host);
-      else subModels_[host] = model;
-      for (const auto& kv : subModels_) blob += kv.first + "=" + kv.second + "\n";
-    }
-    fsutil::writeFileAtomic(memDir() + "/submodels.txt", blob);
+    storePick(subModels_, subModelsPath(), host, model);
     return true;
   }
   // The model a spawn on `h` runs: the sub pick, else the head's model there.
@@ -795,7 +802,8 @@ class NimbusdRig {
   }
 
   // The model a head requests: an operator override (opt.models[h]) else the
-  // provider default. Wired into the provider deps as orchModel/subModel, so the
+  // provider default. Wired into the provider deps as orchModel (subModelFor falls
+  // back to it), so the
   // engine's budget derivation reads through here for the resolved head. Public so
   // the one-key path test can assert the router head resolves a model (CUM-288).
   std::string modelFor(const std::string& h) const {
@@ -844,14 +852,35 @@ class NimbusdRig {
   // The log tail as text (newest last), at most `maxBytes`; `failuresOnly` keeps
   // the lines that record a failure (the hosted /api/errlog/recent).
   static std::string logTail(size_t maxBytes, bool failuresOnly) {
-    std::lock_guard<std::mutex> lk(logMu());
-    std::string out;
-    for (auto it = logLines().rbegin(); it != logLines().rend(); ++it) {
-      if (failuresOnly && !isFailureLine(*it)) continue;
-      if (out.size() + it->size() + 1 > maxBytes) break;
-      out.insert(0, *it + "\n");
+    std::vector<std::string> picked;   // newest first, chosen under the lock
+    {
+      std::lock_guard<std::mutex> lk(logMu());
+      size_t total = 0;
+      for (auto it = logLines().rbegin(); it != logLines().rend(); ++it) {
+        if (failuresOnly && !isFailureLine(*it)) continue;
+        if (total + it->size() + 1 > maxBytes) break;
+        total += it->size() + 1;
+        picked.push_back(*it);
+      }
     }
+    std::string out;
+    for (auto it = picked.rbegin(); it != picked.rend(); ++it) out += *it + "\n";
     return out;
+  }
+  // Mask anything shaped like a provider or router key in a log line before it is
+  // kept (provider error texts can quote a key's prefix and last characters, and
+  // the log is served by /api/log): sk-..., cumulo_sk_..., key-shaped tokens.
+  static std::string redactKeys(std::string l) {
+    for (const char* pre : {"cumulo_sk_", "sk-", "sk_"}) {
+      for (size_t at = l.find(pre); at != std::string::npos; at = l.find(pre, at + 1)) {
+        size_t end = at + std::strlen(pre);
+        while (end < l.size() && (isalnum((unsigned char)l[end]) || l[end] == '_' || l[end] == '-' || l[end] == '*' ||
+                                  l[end] == '.'))
+          end++;
+        if (end - at > std::strlen(pre) + 3) l.replace(at, end - at, "[key]");
+      }
+    }
+    return l;
   }
   static bool isFailureLine(const std::string& l) {
     for (const char* k : {"fail", "FAIL", "error", "refused", "HTTP 4", "HTTP 5", "rejected", "timed out"})
@@ -885,7 +914,7 @@ class NimbusdRig {
     agent::hlog::setSink(+[](const char* l) {
       {
         std::lock_guard<std::mutex> lk(logMu());
-        logLines().push_back(l);
+        logLines().push_back(redactKeys(l));
         while (logLines().size() > kLogLinesMax) logLines().pop_front();
       }
       if (s_echo) std::fprintf(stderr, "[harness] %s\n", l);
@@ -962,9 +991,11 @@ class NimbusdRig {
   // ---- in-app model picks: durable overrides (CUM-425) ----------------------
   // slug=model lines, tolerant of an absent/torn file. Only slugs the daemon
   // knows are loaded (a stale line for a removed provider is dropped on read).
-  void loadModels() {
+  void loadModels() { readPicks(modelsPath(), opt_.models); }
+  void loadSubModels() { readPicks(subModelsPath(), subModels_); }
+  static void readPicks(const std::string& path, std::map<std::string, std::string>& out) {
     std::string blob;
-    if (!fsutil::readFile(modelsPath(), blob)) return;
+    if (!fsutil::readFile(path, blob)) return;
     std::istringstream is(blob);
     std::string line;
     while (std::getline(is, line)) {
@@ -972,7 +1003,7 @@ class NimbusdRig {
       if (eq == std::string::npos) continue;
       std::string k = line.substr(0, eq), v = line.substr(eq + 1);
       while (!v.empty() && (v.back() == '\r' || v.back() == '\n')) v.pop_back();
-      if (!k.empty() && !v.empty() && !keyEnvFor(k).empty()) opt_.models[k] = v;
+      if (!k.empty() && !v.empty() && !keyEnvFor(k).empty()) out[k] = v;
     }
   }
   // The owner's settings (CUM-543): the env/options are the defaults, a value the
@@ -991,31 +1022,23 @@ class NimbusdRig {
     const std::string tz = settings_.get().devTz;
     if (!tz.empty() || envTz_.empty()) hosted::applyTz(tz);
   }
-  void loadSubModels() {
-    std::string blob;
-    if (!fsutil::readFile(memDir() + "/submodels.txt", blob)) return;
-    std::istringstream is(blob);
-    std::string line;
-    while (std::getline(is, line)) {
-      const size_t eq = line.find('=');
-      if (eq == std::string::npos) continue;
-      const std::string k = line.substr(0, eq), v = line.substr(eq + 1);
-      if (!k.empty() && !v.empty() && !keyEnvFor(k).empty()) subModels_[k] = v;
-    }
-  }
 
   // Store (or clear, when `model` is empty) one head's pick and persist the set.
   // The picks are read by the HTTP thread (GET /api/orch) while the engine thread
   // writes them, so the map sits behind modelsMu_.
   void setModelPick(const std::string& host, const std::string& model) {
+    storePick(opt_.models, modelsPath(), host, model);
+  }
+  void storePick(std::map<std::string, std::string>& picks, const std::string& path,
+                 const std::string& host, const std::string& model) {
     std::string blob;
     {
       std::lock_guard<std::mutex> lk(modelsMu_);
-      if (model.empty()) opt_.models.erase(host);
-      else opt_.models[host] = model;
-      for (const auto& kv : opt_.models) blob += kv.first + "=" + kv.second + "\n";
+      if (model.empty()) picks.erase(host);
+      else picks[host] = model;
+      for (const auto& kv : picks) blob += kv.first + "=" + kv.second + "\n";
     }
-    fsutil::writeFileAtomic(modelsPath(), blob);
+    fsutil::writeFileAtomic(path, blob);
   }
 
   // ---- memory + tools -------------------------------------------------------
@@ -1117,10 +1140,14 @@ class NimbusdRig {
   void registerDeviceStatusTool() {
     reg_.add("device.status", "Report the instance's current state.",
              [this](ArduinoJson::JsonObjectConst, const orch::Principal&) {
-               return orch::ToolResult::ok(
-                   std::string("{\"name\":\"") + settings_.get().devName +
-                   "\",\"mode\":\"orchestrator\",\"host\":\"nimbusd\",\"vectors\":" +
-                   std::to_string(vec_.size()) + "}");
+               JsonDocument d;
+               d["name"] = settings_.get().devName;   // owner-set: escaped, never spliced
+               d["mode"] = "orchestrator";
+               d["host"] = "nimbusd";
+               d["vectors"] = vec_.size();
+               std::string out;
+               serializeJson(d, out);
+               return orch::ToolResult::ok(out);
              },
              R"({"type":"object","properties":{}})");
   }
@@ -1210,7 +1237,7 @@ class NimbusdRig {
     status = 400;
     if (!orch::embedRouteFor(provider).known || provider == "custom")
       return "Choose Cumulo Nimbus, OpenAI or Mistral.";
-    if (model.empty() || model.size() > 64) return "Choose a model.";
+    if (model.empty() || !validSelector(model)) return "Choose a model.";
     if (dims < 0 || dims > 4096) return "Dimensions must be 0 to 4096.";
     if (!reset && vec_.size() > 0) {
       status = 409;
@@ -1218,7 +1245,7 @@ class NimbusdRig {
     }
     if (dims == 0) {
       std::string err;
-      const auto v = embedWith("nimbus embedding check", err, provider, model, 0);
+      const auto v = embedWith(kEmbedProbeText, err, provider, model, 0);
       if (v.empty()) return "Couldn't read the model's embedding size (" + err + "). Set Dimensions and try again.";
       dims = (int)v.size();
     }
@@ -1235,6 +1262,11 @@ class NimbusdRig {
 
  private:
   std::string embedCfgPath() const { return memDir() + "/embed.txt"; }
+
+ public:
+  static constexpr const char* kEmbedProbeText = "nimbus embedding check";   // the verify/width probe
+
+ private:
   void loadEmbedCfg() {
     std::string blob;
     if (!fsutil::readFile(embedCfgPath(), blob)) return;
@@ -1245,8 +1277,11 @@ class NimbusdRig {
       if (eq == std::string::npos) continue;
       const std::string k = line.substr(0, eq), v = line.substr(eq + 1);
       if (k == "provider" && orch::embedRouteFor(v).known) opt_.embedHost = v;
-      else if (k == "model" && !v.empty()) opt_.embedModel = v;
-      else if (k == "dims" && std::atoi(v.c_str()) > 0) opt_.embedDims = std::atoi(v.c_str());
+      else if (k == "model" && !v.empty() && validSelector(v)) opt_.embedModel = v;
+      else if (k == "dims") {
+        const int dims = std::atoi(v.c_str());
+        if (dims > 0 && dims <= 4096) opt_.embedDims = dims;
+      }
     }
   }
   void saveEmbedCfg() {
@@ -1328,8 +1363,8 @@ class NimbusdRig {
     // Connector attach seams (CUM-424): BYOK heads advertise the instance's
     // configured connectors exactly as a device with direct keys does
     // (builtinsOnly=false; the portable guard already keeps disabled, wrong-prov
-    // and private-URL entries off the wire). The cumulo router head runs through
-    // orchTurnCustom, which has no attach seam - router lanes carry no private
+    // and private-URL entries off the wire). The cumulo router head overrides
+    // these with builtinsOnly=true (routerHeadDeps): router lanes carry no private
     // connectors, the same boundary the device draws on shared keys.
     pd.attachOpenAI = [this](JsonDocument& doc) {
       nimbus::orch::attachOpenAIWire(doc, conns_.parsed(), bearerFn(), false);
@@ -1394,14 +1429,22 @@ class NimbusdRig {
   // on); zai and any upstream the native fabric does not drive keep the single-shot
   // chat-completions path over /router/<upstream> with json_object (GLM behind the
   // router ignores json_schema, CUM-495).
-  bool runRouterHead(const std::string& selector, std::string& conv, const std::string& ins,
-                     const std::string& inp, HeadOut& o, const agent::HeadTools* tools) {
+  bool runRouterHead(const std::string& selector, HeadCall& c, HeadOut& o) {
+    std::string& conv = c.conv;
+    const std::string& ins = c.ins;
+    const std::string& inp = c.inp;
+    const agent::HeadTools* tools = c.tools;
     const nimbus::orch::RouterRoute rr = nimbus::orch::resolveRouterRoute(selector);
     auto pd = routerHeadDeps(rr.model);
     if (rr.upstream == "anthropic")
       return agent::providers::orchTurnAnthropic(pd, conv, ins, inp, o.out, o.err, tools, o.usage);
-    if (rr.upstream == "mistral")
+    if (rr.upstream == "mistral") {
+      // The router admits only POST /v1/conversations (a new conversation), never an
+      // append to /v1/conversations/<id>: start fresh every turn. The prompt already
+      // carries the recent conversation, so nothing is lost.
+      conv.clear();
       return agent::providers::orchTurnMistral(pd, conv, ins, inp, o.out, o.err, tools, o.usage);
+    }
     if (rr.upstream == "openai")
       return agent::providers::orchTurnOpenAI(pd, conv, ins, inp, o.out, o.err, tools, o.usage);
     const std::string upstream = rr.upstream, model = rr.model;
@@ -1415,48 +1458,67 @@ class NimbusdRig {
   }
 
   // The Cumulo head turn (CUM-539). A refusal never leaves the assistant dead:
-  //   * the picked model is not offered (model_not_priced, endpoint_not_allowed,
-  //     404): the pick goes back to the last selector that worked (else the router
-  //     default) and THIS turn is answered on it, with a first line naming the
-  //     refusal and the fix - so the next turn answers too, and GET /api/orch shows
-  //     the model actually in use;
-  //   * that upstream is paused (funding_cap_reached, provider_disabled): this turn
-  //     is answered on the router default, the pick is kept;
+  //   * the picked model is not offered (model_not_priced, 404): the pick goes back
+  //     to the last selector that worked (else the router default) and THIS turn is
+  //     answered on it, with a first line naming the refusal and the fix - so the
+  //     next turn answers too, and GET /api/orch shows the model actually in use;
+  //   * that upstream is paused or its route is not allowed (funding_cap_reached,
+  //     provider_disabled, endpoint_not_allowed): this turn is answered on the
+  //     router default, the pick is kept;
   //   * account-wide refusals (credits, spending limit) cannot be answered on any
   //     model, so the failure reply says what to do instead of "rejected this
   //     device's key".
   // Only a refusal of the attempt's FIRST request is re-run: no tool has executed
   // yet, so the retry cannot repeat a side effect.
-  bool cumuloTurn(std::string& conv, const std::string& ins, const std::string& inp, HeadOut& o,
-                  const agent::HeadTools* tools) {
+  bool cumuloTurn(HeadCall& c, HeadOut& o) {
     const std::string picked = cumuloModel();
     tap_.begin();
-    if (runRouterHead(picked, conv, ins, inp, o, tools)) {
+    if (runRouterHead(picked, c, o)) {
       lastGoodCumulo_ = picked;
       return true;
     }
     const RouterRefusal rf = tap_.refusal();
     const RefusalKind kind = classifyRefusal(rf);
     const std::string fallback = cumuloFallbackFor(picked, kind);
-    if (rf.firstRequest && !fallback.empty()) {
-      if (kind == RefusalKind::Selector) setModelPick(kCumuloSlug, fallback == kCumuloModel ? std::string() : fallback);
-      agent::hlog::logf("router refused %s (HTTP %d %s) - answering on %s", picked.c_str(), rf.status,
-                        rf.reason.c_str(), fallback.c_str());
-      tap_.begin();
-      conv.clear();
-      o.out.clear();
-      o.err.clear();
-      if (!runRouterHead(fallback, conv, ins, inp, o, tools)) return false;
-      lastGoodCumulo_ = fallback;
-      prefixReply(o.out, fallbackNotice(kind, picked, fallback));
-      return true;
-    }
-    if (kind == RefusalKind::Auth) verify_.record(kCumuloSlug, 0, "");
-    if (kind == RefusalKind::Account) verify_.record(kCumuloSlug, -1, "nocredits");
-    const std::string cause = refusalCause(kind, picked);
-    if (!cause.empty()) o.err = cause;
+    if (rf.firstRequest && !fallback.empty()) return answerOnFallback(picked, fallback, kind, c, o);
+    noteRefusal(kind, picked, o);
     return false;
   }
+
+  // The refused pick's turn, answered on `fallback`. A background compaction call
+  // (the fold runs through this same head, with no turn in flight) gets the
+  // answer only: no notice prefixed into the summary, and the owner's pick is
+  // never moved by housekeeping.
+  bool answerOnFallback(const std::string& picked, const std::string& fallback, RefusalKind kind, HeadCall& c,
+                        HeadOut& o) {
+    agent::hlog::logf("router refused %s (%s) - answering on %s", picked.c_str(), tap_.refusal().reason.c_str(),
+                      fallback.c_str());
+    tap_.begin();
+    c.conv.clear();
+    o.out.clear();
+    o.err.clear();
+    if (!runRouterHead(fallback, c, o)) {
+      noteRefusal(classifyRefusal(tap_.refusal()), fallback, o);   // the fallback was refused too
+      return false;
+    }
+    lastGoodCumulo_ = fallback;
+    if (!eng_ || !eng_->turnInFlight()) return true;   // a fold, not a conversation turn
+    // Only a model the router does not offer moves the pick, and only once the
+    // fallback has answered (a failed fallback leaves the owner's choice alone).
+    if (kind == RefusalKind::Selector) setModelPick(kCumuloSlug, fallback == kCumuloModel ? std::string() : fallback);
+    prefixReply(o.out, fallbackNotice(kind, picked, fallback));
+    return true;
+  }
+
+  // A refusal no other model can answer: the badge learns what it means, and the
+  // failure reply names the cause and the fix instead of "rejected this device's key".
+  void noteRefusal(RefusalKind kind, const std::string& selector, HeadOut& o) {
+    if (kind == RefusalKind::Auth) verify_.record(kCumuloSlug, 0, "");
+    if (kind == RefusalKind::Account) verify_.record(kCumuloSlug, -1, "nocredits");
+    const std::string cause = refusalCause(kind, selector);
+    if (!cause.empty()) o.err = cause;
+  }
+
 
   // The selector a refused pick falls back to, or "" when none would help: a
   // refused model goes back to the last selector that worked (else the router
@@ -1565,6 +1627,10 @@ class NimbusdRig {
       lastHost_ = ev.host;
       if (ev.ok && !ev.host.empty()) verify_.markWorking(ev.host);   // the key answered (CUM-545)
       if (ev.ok) lastUsage_ = ev.usage;   // survives an engine rebuild, unlike the engine's own
+      // The in-flight row id must not outlive its turn: a later synthesis or
+      // scheduled turn (no user row of its own) would hide that message from its
+      // window (device parity, orchestrator.cpp onTurnEnd).
+      curUserRowId_.clear();
       // Served-by disclosure (CUM-236): remember whether this turn was served by a
       // fallback provider/model and how to say it, so the web chat can surface it.
       lastFallback_ = ev.fallback;
@@ -1689,7 +1755,11 @@ class NimbusdRig {
       return;
     }
     bgNs_ = ns;
-    if (jobs_) jobs_->enqueueSpawn(s, chat, quiet);
+    // Only the owner chooses a spawn's model on the owner's keys: a member's spawn
+    // runs the configured sub model (the JobEngine coerces an empty pick).
+    orch::Spawn spawn = s;
+    if (!access_->principalFor(chat).owner) spawn.model.clear();
+    if (jobs_) jobs_->enqueueSpawn(spawn, chat, quiet);
   }
 
   // Register the provider heads for the current key set. Kept out of buildEngine so
@@ -1720,11 +1790,13 @@ class NimbusdRig {
       d.hosts.add(kCumuloSlug, [this](std::string& conv, const std::string& ins, const std::string& inp,
                                       std::string& out, std::string& err, const agent::HeadTools* tools,
                                       orch::TokenUsage* usage) -> bool {
+        const std::string hosted = hostedPrompt(ins);
+        HeadCall c{conv, hosted, inp, tools};
         HeadOut o{out, err, usage};
-        return cumuloTurn(conv, hostedPrompt(ins), inp, o, tools);
+        return cumuloTurn(c, o);
       });
-    // CUM-445: the Z.ai direct-BYOK head, when Z_AI_TOKEN is present. Like cumulo it
-    // runs through orchTurnCustom (OpenAI-compatible), NOT the loop above whose else-
+    // CUM-445: the Z.ai direct-BYOK head, when Z_AI_TOKEN is present. It runs through
+    // orchTurnCustom (OpenAI-compatible, single-shot), NOT the loop above whose else-
     // branch is Mistral - routing a Z.ai key there would post it to Mistral, exactly
     // the silent-misroute class the UI comment ("wrote a cumulo key into Mistral") warns
     // against.
@@ -1811,8 +1883,7 @@ class NimbusdRig {
       agent::providers::CompatEndpoint ep;
       std::string host;
       if (backend == kZaiSlug) {
-        host = cfg_.get("NIMBUSD_ZAI_BASE");
-        if (host.empty()) host = kZaiHost;
+        host = zaiHost();
         ep.basePath = kZaiPathPrefix;
         ep.key = cfg_.providerKey(kZaiSlug);
         ep.model = modelFor(kZaiSlug);

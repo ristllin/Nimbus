@@ -15,10 +15,16 @@
 //   (d) the fallback is the last selector that WORKED, not always the default;
 //   (e) an account-wide refusal (402 credits) says what to do instead of "rejected
 //       this device's key", keeps the pick, and the next turn still answers;
-//   (f) a paused upstream (402 funding_cap_reached) answers on the default and keeps
-//       the pick;
+//   (f) a paused upstream (402 funding_cap_reached) or a route the router does not
+//       allow (403 endpoint_not_allowed) answers on the default and keeps the pick;
 //   (g) zai keeps the single-shot chat-completions path with json_object;
-//   (h) a refusal AFTER a tool ran is not re-run (no repeated side effects).
+//   (h) a refusal AFTER a tool ran is not re-run (no repeated side effects);
+//   (i) the fold (a background compaction through the same head) answers on the
+//       fallback with no notice in the summary and never moves the pick;
+//   (j) a refused fallback still gets an honest cause; a built-in tool refusal
+//       (native_tool_not_metered) says so;
+//   (k) Mistral over the router starts a fresh conversation every turn (the router
+//       admits only POST /v1/conversations, never an append to /<id>).
 #include <cstdio>
 #include <string>
 
@@ -190,7 +196,7 @@ static void testFallbackIsLastWorking(ndtest::Ctx& c) {
   setenv("CUMULO_API_KEY", kKey, 1);
   FakeHttpTransport tx;
   tx.script.push_back(ex("/router/mistral/v1/conversations", 200, misBody("mistral here")));
-  tx.script.push_back(ex("/router/anthropic/v1/messages", 403, refusal("endpoint_not_allowed")));
+  tx.script.push_back(ex("/router/anthropic/v1/messages", 403, refusal("model_not_priced")));
   tx.script.push_back(ex("/router/mistral/v1/conversations", 200, misBody("mistral again")));
   Config cfg;
   NimbusdRig rig(cfg, baseOpt("rh-d", false), &tx);
@@ -235,10 +241,87 @@ static void testUpstreamPausedKeepsPick(ndtest::Ctx& c) {
   NimbusdRig rig(cfg, baseOpt("rh-f", false), &tx);
   rig.applyOrchModel("cumulo", "anthropic/claude-sonnet-5");
   const TurnRecord t = rig.say("owner", "hello");
-  c.ok(has(t.reply, "has paused anthropic/claude-sonnet-5"), "the notice names the paused model");
+  c.ok(has(t.reply, "cannot run anthropic/claude-sonnet-5 right now"), "the notice names the paused model");
   c.ok(has(t.reply, "Your model choice is kept"), "the notice says the pick stays");
   c.ok(has(t.reply, "default meanwhile"), "answered on the default");
   c.eq(rig.modelFor("cumulo"), "anthropic/claude-sonnet-5", "the pick is kept");
+  clearProviderEnv();
+}
+
+static void testRouteRefusalKeepsPick(ndtest::Ctx& c) {
+  std::printf("  -- (f2) endpoint_not_allowed answers on the default and keeps the pick --\n");
+  clearProviderEnv();
+  setenv("CUMULO_API_KEY", kKey, 1);
+  FakeHttpTransport tx;
+  tx.script.push_back(ex("/router/anthropic/v1/messages", 403, refusal("endpoint_not_allowed")));
+  tx.script.push_back(ex("/router/openai/v1/responses", 200, respBody("default answered")));
+  Config cfg;
+  NimbusdRig rig(cfg, baseOpt("rh-f2", false), &tx);
+  rig.applyOrchModel("cumulo", "anthropic/claude-sonnet-5");
+  const TurnRecord t = rig.say("owner", "hello");
+  c.ok(has(t.reply, "default answered") && has(t.reply, "Your model choice is kept"), "answered, pick kept");
+  c.eq(rig.modelFor("cumulo"), "anthropic/claude-sonnet-5", "a route refusal never rewrites the owner's pick");
+  clearProviderEnv();
+}
+
+static void testFoldNeverGetsANotice(ndtest::Ctx& c) {
+  std::printf("  -- (i) the fold answers on the fallback without a notice or a pick change --\n");
+  clearProviderEnv();
+  setenv("CUMULO_API_KEY", kKey, 1);
+  FakeHttpTransport tx;
+  tx.script.push_back(ex("/router/anthropic/v1/messages", 403, refusal("model_not_priced")));
+  tx.script.push_back(ex("/router/openai/v1/responses", 200, respBody("1. Owner intent: plan the launch")));
+  Config cfg;
+  NimbusdRig rig(cfg, baseOpt("rh-i", false), &tx);
+  rig.applyOrchModel("cumulo", "anthropic/claude-sonnet-5");
+  std::string sum;
+  const auto fr = rig.engine().runFold("owner", "", "- user: hi\n", sum);
+  c.ok(fr == agent::TurnEngine::FoldResult::Ok, "the fold succeeds on the fallback");
+  c.ok(has(sum, "Owner intent") && !has(sum, "Cumulo router"), "the summary carries no refusal notice");
+  c.eq(rig.modelFor("cumulo"), "anthropic/claude-sonnet-5", "housekeeping never moves the owner's pick");
+  clearProviderEnv();
+}
+
+static void testHonestCauses(ndtest::Ctx& c) {
+  std::printf("  -- (j) a refused fallback and a built-in tool refusal get honest causes --\n");
+  clearProviderEnv();
+  setenv("CUMULO_API_KEY", kKey, 1);
+  FakeHttpTransport tx;
+  // The pick is refused, then the default too; the engine retries the head once.
+  for (int i = 0; i < 2; i++) {
+    tx.script.push_back(ex("/router/anthropic/v1/messages", 403, refusal("model_not_priced")));
+    tx.script.push_back(ex("/router/openai/v1/responses", 403, refusal("model_not_priced")));
+  }
+  for (int i = 0; i < 2; i++)
+    tx.script.push_back(ex("/router/openai/v1/responses", 403, refusal("native_tool_not_metered")));
+  Config cfg;
+  NimbusdRig rig(cfg, baseOpt("rh-j", false), &tx);
+  rig.applyOrchModel("cumulo", "anthropic/claude-sonnet-5");
+  const TurnRecord t = rig.say("owner", "hello");
+  c.ok(has(t.reply, "does not offer gpt-5.6 right now"), "a refused fallback names the refused default");
+  c.ok(!has(t.reply, "rejected this device's key"), "never blamed on the key");
+  c.eq(rig.modelFor("cumulo"), "anthropic/claude-sonnet-5", "a failed fallback leaves the pick alone");
+  rig.applyOrchModel("cumulo", "");
+  const TurnRecord t2 = rig.say("owner", "again");
+  c.ok(has(t2.reply, "does not run provider built-in tools"), "a built-in tool refusal says so");
+  clearProviderEnv();
+}
+
+static void testMistralFreshConversation(ndtest::Ctx& c) {
+  std::printf("  -- (k) Mistral over the router never appends to a stored conversation --\n");
+  clearProviderEnv();
+  setenv("CUMULO_API_KEY", kKey, 1);
+  FakeHttpTransport tx;
+  tx.script.push_back(ex("/router/mistral/v1/conversations", 200, misBody("first")));
+  tx.script.push_back(ex("/router/mistral/v1/conversations", 200, misBody("second")));
+  Config cfg;
+  NimbusdRig rig(cfg, baseOpt("rh-k", false), &tx);
+  rig.applyOrchModel("cumulo", "mistral/mistral-large-latest");
+  rig.say("owner", "one");
+  const TurnRecord t = rig.say("owner", "two");
+  c.eqi((long)tx.seen.size(), 2, "two requests");
+  if (tx.seen.size() == 2) c.eq(tx.seen[1].path, "/router/mistral/v1/conversations", "the second turn starts a new conversation");
+  c.ok(has(t.reply, "second"), "and answers");
   clearProviderEnv();
 }
 
@@ -292,8 +375,12 @@ int main() {
   testFallbackIsLastWorking(c);
   testAccountRefusal(c);
   testUpstreamPausedKeepsPick(c);
+  testRouteRefusalKeepsPick(c);
   testZaiKeepsCustomPath(c);
   testMidLoopRefusalNotRerun(c);
+  testFoldNeverGetsANotice(c);
+  testHonestCauses(c);
+  testMistralFreshConversation(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);
   std::printf("%s\n", c.failures ? "FAILED" : "PASSED");
   return c.failures ? 1 : 0;

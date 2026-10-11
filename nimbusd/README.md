@@ -156,11 +156,14 @@ applies or is refused; a page never shows "Saved" over a dropped write.
 The device knobs a hosted instance does not offer (tool-loop limits, TLS slots,
 mid-turn failover, trace, the custom endpoint) are reported by `GET /api/orch` at
 their hosted values, so the page's whole-form **Save Changes** round-trips them as a
-no-op; posting any other value, or any field not listed above (sound, voice, ring,
+no-op (a blank number field is "unchanged"); posting any other value, or any field not listed above (sound, voice, ring,
 display, battery, mode, budgets, a typed bot or Tavily key), answers
 `400 {"ok":false,"error":"Not available on a hosted Nimbus: <field>"}` and nothing
-in that post applies. Env values (`NIMBUSD_ORCH_HOST`, `NIMBUSD_PRIORITY`, `TZ`,
-...) are the defaults until the owner saves a value in the app.
+in that post applies, and a value the instance volume cannot store changes nothing
+(500). Env values (`NIMBUSD_ORCH_HOST`, `NIMBUSD_PRIORITY`, `TZ`, ...) are the
+defaults until the owner saves a value in the app; clearing the time zone returns to
+the operator's `TZ` (else UTC). A spawn's model is the owner's to choose: an approved
+member's spawn runs the configured sub-agent model.
 
 **What the assistant is told about the instance (CUM-542).** Every head's prompt
 carries the real clock in the owner's time zone, the engine version and the hosted
@@ -244,7 +247,7 @@ every forwarded request, so the browser reaches all of these through the tunnel.
 | `GET /api/themes`, `/api/qr`, `/api/docs/search` | pure/static surfaces (no engine, no hardware) |
 | hardware panels (`/api/audio/*`, `/api/wifi`, `/api/ota/*`, ...) | honest "not on a hosted instance" - never a faked value or a dead control |
 | `POST /mcp`, `GET /backup` | JSON-RPC to the tool registry / a consistent tar of the mem tree |
-| `GET /api/lastturn`, `/api/log`, `/api/errlog/recent?bytes=` | the last turn's anatomy (prompt, input, raw output, tool rounds), the bounded engine log (1000 lines), and its failure lines (device diagnostics, CUM-546). `/api/orch` usage (`sessIn`/`sessOut`/`turns`, `lastIn`/`lastOut`) and `/api/state` `turnCount` keep counting across a key or model save |
+| `GET /api/lastturn`, `/api/log`, `/api/errlog/recent?bytes=` | the last turn's anatomy (prompt, input, raw output, tool rounds), the bounded engine log (1000 lines, key-shaped text masked), and its failure lines (device diagnostics, CUM-546). `/api/orch` usage (`sessIn`/`sessOut`/`turns`, `lastIn`/`lastOut`) and `/api/state` `turnCount` keep counting across a key or model save |
 | `GET/POST /api/connectors` | the connector registry (device contract); each configured entry carries the derived `auth` the badge reads |
 | `GET /api/connectors/catalog` | the model-facing `[PROVIDERS & CONNECTORS]` block exactly as the next turn gets it (text) |
 | `POST /api/verify` | verifies a keyed provider in the background the device's way (one unmetered read of its model list; the router's `GET /router/models` for Cumulo): `GET /api/orch` then reports `verify` 1 / 0 / -1 with `vfyReason` (`nocredits`, `router_outdated`), and the harvested list is the model picker's catalog. Also run at start and after a key save; a turn that answered on a head marks it verified. `provider=mistral` also re-runs the workspace probe |
@@ -304,14 +307,18 @@ reads the router's own reason from the refused request):
 
 | Router answer | What happens |
 |---|---|
-| The picked model is not offered (`model_not_priced`, `endpoint_not_allowed`, 404) | The same turn is answered on the last router model that worked (else the router default), the reply opens with a line naming the refused model and the fix, and the pick moves to the model in use, so GET /api/orch shows it and the next turn answers |
-| That upstream is paused (`funding_cap_reached`, `provider_disabled`) | The turn is answered on the router default with a line saying so; the pick is kept |
+| The picked model is not offered (`model_not_priced`, 404) | The same turn is answered on the last router model that worked (else the router default), the reply opens with a line naming the refused model and the fix, and once that answer lands the pick moves to the model in use, so GET /api/orch shows it and the next turn answers |
+| That upstream is paused or its route is not allowed (`funding_cap_reached`, `provider_disabled`, `endpoint_not_allowed`) | The turn is answered on the router default with a line saying so; the pick is kept |
+| A provider built-in tool is not offered on a paying key (`native_tool_not_metered`) | "That didn't finish - the Cumulo router does not run provider built-in tools on this account. Remove them under Connectors." |
 | Credits or a plan are missing (402) | "That didn't finish - the Cumulo router needs credits or a plan for this account. Add credits in the portal." |
 | Rate limited (429) | the engine's rate-limit reply |
 
 Only a refusal of an attempt's first request is answered again on another model,
-so a tool that already ran is never repeated. Host-tested offline in
-`tests/test_router_head.cpp`.
+so a tool that already ran is never repeated; a fallback that is refused too gets
+its own honest cause. The context fold runs through the same head: it is answered
+on the fallback with no notice in the summary and never moves the pick. Mistral
+over the router starts a new conversation every turn (the router admits only `POST
+/v1/conversations`). Host-tested offline in `tests/test_router_head.cpp`.
 
 ## Sub-agent fan-out (device parity)
 

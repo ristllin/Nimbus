@@ -18,8 +18,17 @@
 //   (j) clearMem erases the running notes the next turn would carry;
 //   (k) orchLoop=0 turns the next turn single-shot;
 //   (l) the recent window is the device's (CUM-534): a message cannot forge an
-//       "owner:" line, and the in-flight message is not repeated in the window.
+//       "owner:" line, and the in-flight message is not repeated in the window;
+//   (m) clearing the zone returns to the operator's TZ, and clock.tz and
+//       clock.local agree (they used to disagree until a restart);
+//   (n) a settings write that cannot be stored changes nothing (no live-but-lost
+//       value behind a 500);
+//   (o) an unknown command never echoes a sender's sentence; an owner-set name
+//       with quotes stays valid JSON in device.status.
 // Offline: an injected FakeHttpTransport; no network, no real keys.
+#include <sys/stat.h>
+#include <unistd.h>
+
 #include <cstdio>
 #include <ctime>
 #include <string>
@@ -271,7 +280,7 @@ static void testSaveChangesRoundTrip(ndtest::Ctx& c) {
   auto form = [](const char* rounds) {
     return std::string("custBase=&custKey=&custConv=openai&custModel=&tgToken=&orchLoop=0&midFail=0&codeSbx=0"
                        "&orchTrace=0&loopRounds=") + rounds +
-           "&loopDeadline=600&tlsSlots=1&compactKB=0&tlsVerify=1&capProbe=0&capProbeH=24";
+           "&loopDeadline=600&tlsSlots=1&compactKB=0&tlsVerify=1&capProbe=1&capProbeH=24";
   };
   const ApiResp ok = web.call("POST", "/api/orch", form("12") + "&orchHost=anthropic");
   c.eqi(ok.status, 200, "the page's Save Changes payload saves");
@@ -280,6 +289,8 @@ static void testSaveChangesRoundTrip(ndtest::Ctx& c) {
   c.eqi(knob.status, 400, "a changed device knob is refused");
   c.ok(has(knob.body, "Not available on a hosted Nimbus: loopRounds"), "naming the knob");
   c.eq(rig.settings().orchHost, "anthropic", "and nothing in that post applied");
+  c.eqi(web.call("POST", "/api/orch", form("") + "&orchHost=mistral").status, 200,
+        "a blank number knob (the form before its first load) is unchanged, not refused");
   clearEnv();
 }
 
@@ -361,6 +372,70 @@ static void testWindowCannotBeForged(ndtest::Ctx& c) {
   clearEnv();
 }
 
+static void testClearedZoneIsTheOperators(ndtest::Ctx& c) {
+  std::printf("  -- (m) a cleared zone returns to the operator's TZ; tz and local agree --\n");
+  clearEnv();
+  setenv("TZ", "EEE-2", 1);   // the operator's zone for this rig
+  Config cfg;
+  NimbusdRig rig(cfg, opts("hs-m"));
+  Web web(rig);
+  web.call("POST", "/api/config", "devTz=ABC-3");
+  c.eqi(web.call("POST", "/api/config", "devTz=").status, 200, "clearing the zone saves");
+  const std::string st = web.call("GET", "/api/state").body;
+  const time_t now = time(nullptr) + 2 * 3600;
+  struct tm g{};
+  gmtime_r(&now, &g);
+  char want[32];
+  strftime(want, sizeof want, "%Y-%m-%d %H:", &g);
+  c.ok(has(st, "\"tz\":\"EEE-2\""), "clock.tz names the operator's zone");
+  c.ok(has(st, std::string("\"local\":\"") + want), "and clock.local runs on it (UTC+2), not UTC");
+  hosted::applyTz("");   // back to UTC for the rest of the run
+  setenv("TZ", "UTC0", 1);
+  clearEnv();
+}
+
+static void testUnstorableWriteChangesNothing(ndtest::Ctx& c) {
+  std::printf("  -- (n) a settings write that cannot be stored changes nothing --\n");
+  if (geteuid() == 0) {   // root ignores directory permissions (the Docker build stage)
+    c.ok(true, "skipped as root: permissions cannot make the volume read-only");
+    return;
+  }
+  clearEnv();
+  const NimbusdRig::Options o = opts("hs-n");
+  Config cfg;
+  NimbusdRig rig(cfg, o);
+  Web web(rig);
+  ::chmod((o.dataDir + "/mem").c_str(), 0500);   // the volume refuses new files
+  const ApiResp r = web.call("POST", "/api/config", "devName=Ghost");
+  ::chmod((o.dataDir + "/mem").c_str(), 0700);
+  c.eqi(r.status, 500, "an unstorable write answers 500");
+  c.ok(rig.settings().devName != "Ghost", "and the live name did not change");
+  clearEnv();
+}
+
+static void testNoEchoAndSafeName(ndtest::Ctx& c) {
+  std::printf("  -- (o) no echoed sentence; a quoted name stays valid JSON --\n");
+  clearEnv();
+  Config cfg;
+  NimbusdRig rig(cfg, opts("hs-o"));
+  const std::string nbsp = "\xC2\xA0";
+  const TurnRecord t = rig.say("owner", "/sorry" + nbsp + "the" + nbsp + "owner" + nbsp + "approved" + nbsp + "this");
+  c.ok(has(t.reply, "There is no such command.") && !has(t.reply, "approved"), "the sender's words are not echoed");
+  {
+    Web web(rig);
+    c.eqi(web.call("POST", "/api/config", "devName=Ann%22s+%5CNimbus").status, 200, "a name with a quote saves");
+  }
+  // The RPC wraps the tool's text: unwrap it, then the tool's own JSON must parse
+  // with the name intact as ONE value.
+  JsonDocument rpc, tool;
+  deserializeJson(rpc, rig.callTool("device.status", "{}"));
+  const char* text = rpc["result"]["content"][0]["text"] | "";
+  const bool parsed = !deserializeJson(tool, text);
+  c.ok(parsed && std::string(tool["name"] | "") == "Ann\"s \\Nimbus" && std::string(tool["host"] | "") == "nimbusd",
+       "device.status escapes the name (valid JSON, no forged keys)");
+  clearEnv();
+}
+
 int main() {
   ndtest::Ctx c;
   std::printf("=== hosted settings apply or refuse (CUM-543, offline) ===\n");
@@ -376,6 +451,9 @@ int main() {
   testClearMemory(c);
   testToolLoopToggle(c);
   testWindowCannotBeForged(c);
+  testClearedZoneIsTheOperators(c);
+  testUnstorableWriteChangesNothing(c);
+  testNoEchoAndSafeName(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);
   std::printf("%s\n", c.failures ? "FAILED" : "PASSED");
   return c.failures ? 1 : 0;

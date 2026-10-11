@@ -243,6 +243,58 @@ static void testSpawnOnHarvestedModel(ndtest::Ctx& c) {
   clearEnv();
 }
 
+static void testZaiBaseIsABareHost(ndtest::Ctx& c) {
+  std::printf("  -- (f) the Z.ai verify host is the bare host of NIMBUSD_ZAI_BASE --\n");
+  clearEnv();
+  setenv("Z_AI_TOKEN", "zai_test_VERIFY", 1);
+  setenv("NIMBUSD_ZAI_BASE", "https://open.bigmodel.cn/api/paas/v4", 1);
+  FakeHttpTransport tx;
+  Exchange e;
+  e.expectHost = "open.bigmodel.cn";
+  e.expectPathContains = "/api/paas/v4/models";
+  e.body = "{\"data\":[]}";
+  tx.script.push_back(e);
+  Config cfg;
+  NimbusdRig rig(cfg, opts("pv-f"), &tx);
+  c.ok(rig.verifyProvider("zai"), "the verify reaches the bare host (no scheme in the hostname)");
+  unsetenv("NIMBUSD_ZAI_BASE");
+  clearEnv();
+}
+
+static void testMemberSpawnRunsTheSubModel(ndtest::Ctx& c) {
+  std::printf("  -- (g) a member's spawn cannot pick a model on the owner's key --\n");
+  clearEnv();
+  setenv("CUMULO_API_KEY", kKey, 1);
+  FakeHttpTransport tx;
+  tx.script.push_back(routerModels(200, kCatalog));
+  tx.script.push_back(routerHead(
+      "{\"reply\":\"Asking.\",\"memory\":\"\",\"ask\":\"\",\"session_ops\":[{\"op\":\"spawn\",\"id\":null,"
+      "\"task\":\"look this up\",\"provider\":\"cumulo\",\"model\":\"anthropic/claude-sonnet-5\"}]}"));
+  Exchange sub;
+  sub.expectHost = kCumuloHost;
+  sub.expectPathContains = "/router/openai/v1/chat/completions";
+  sub.body = "{\"choices\":[{\"message\":{\"content\":\"found it\"}}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":2}}";
+  tx.script.push_back(sub);
+  tx.script.push_back(routerHead("{\"reply\":\"Here it is.\",\"memory\":\"\"}"));
+  Config cfg;
+  NimbusdRig rig(cfg, opts("pv-g"), &tx);
+  rig.verifyProvider("cumulo");
+  std::string err;
+  c.ok(rig.telegramAccess().setAllowCsv("424242", err), "an approved Telegram member");
+  EngineThread eng(&rig);
+  eng.start();
+  eng.postMessage("424242", "look this up with Claude");
+  for (int i = 0; i < 750 && tx.seen.size() < 4; i++) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  eng.stop();
+  if (tx.seen.size() >= 3) {
+    c.eq(tx.seen[2].path, "/router/openai/v1/chat/completions", "the member's spawn runs the configured sub model's route");
+    c.ok(has(tx.seen[2].body, "\"model\":\"gpt-5.6\""), "with the configured sub model, not the member's pick");
+  } else {
+    c.ok(false, "the member's spawn ran");
+  }
+  clearEnv();
+}
+
 int main() {
   ndtest::Ctx c;
   std::printf("=== provider verify + router model catalog (CUM-545, offline) ===\n");
@@ -251,6 +303,8 @@ int main() {
   testTurnMarksVerified(c);
   testWebTriggers(c);
   testSpawnOnHarvestedModel(c);
+  testZaiBaseIsABareHost(c);
+  testMemberSpawnRunsTheSubModel(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);
   std::printf("%s\n", c.failures ? "FAILED" : "PASSED");
   return c.failures ? 1 : 0;

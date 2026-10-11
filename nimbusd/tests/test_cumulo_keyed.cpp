@@ -142,6 +142,11 @@ static void testSpawnRunsOnRouter(ndtest::Ctx& c) {
     for (const auto& h : r.headers) bearer = bearer || (h.first == "Authorization" && h.second == std::string("Bearer ") + kKey);
     c.ok(bearer, "the sub's bearer is the Cumulo key");
   }
+  // The synthesis turn has no user row of its own: the owner's request must still
+  // be in its conversation window (the in-flight row id may not outlive its turn).
+  if (tx.seen.size() >= 3)
+    c.ok(has(tx.seen[2].body, "- user: research the FCA Consumer Duty"),
+         "the synthesis turn's window still carries the owner's request");
   clearEnv();
 }
 

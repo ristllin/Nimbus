@@ -28,14 +28,19 @@ struct ProbeTarget {
   std::string host, path;
   agent::HeaderList headers;
 };
-inline bool probeTarget(const std::string& slug, const std::string& key, const std::string& zaiHost,
+// The configurable hosts: the Z.ai host and the router host come from the same
+// values the heads use, so a key is only ever checked where it is used.
+struct ProbeHosts {
+  std::string zai, router;
+};
+inline bool probeTarget(const std::string& slug, const std::string& key, const ProbeHosts& hosts,
                         ProbeTarget& t) {
   t = ProbeTarget{};
   if (slug == "openai") t = {"api.openai.com", "/v1/models", {}};
   else if (slug == "anthropic") t = {"api.anthropic.com", "/v1/models", {}};
   else if (slug == "mistral") t = {"api.mistral.ai", "/v1/models", {}};
-  else if (slug == "zai") t = {zaiHost, "/api/paas/v4/models", {}};
-  else if (slug == "cumulo") t = {"app.cumulo-nimbus.ai", "/router/models", {}};
+  else if (slug == "zai") t = {hosts.zai, "/api/paas/v4/models", {}};
+  else if (slug == "cumulo") t = {hosts.router, "/router/models", {}};
   else return false;
   if (slug == "anthropic") {
     t.headers.push_back({"x-api-key", key});
@@ -63,7 +68,7 @@ struct ProviderVerify {
   int8_t verify = -1;          // 1 verified, 0 rejected, -1 unknown / could not verify
   uint64_t vts = 0;            // epoch of the last verdict (0 = never)
   std::string reason;          // badge reason for a -1 ("nocredits", "router_outdated")
-  std::vector<nimbus::orch::ModelInfo> models;   // the harvested catalog ("" before a 200)
+  std::vector<nimbus::orch::ModelInfo> models;   // the harvested catalog (empty before a 200)
   uint64_t catalogAt = 0;      // epoch the catalog was harvested
 };
 

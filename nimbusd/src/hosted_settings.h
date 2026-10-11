@@ -2,6 +2,7 @@
 #include <ArduinoJson.h>
 #include <sys/stat.h>
 
+#include <algorithm>
 #include <cctype>
 #include <cstdlib>
 #include <ctime>
@@ -28,7 +29,7 @@
 namespace nimbusd {
 
 // The settings a hosted instance applies. Empty strings mean "the default": no
-// pinned head, the env priority, UTC, the shipped directive, the env name.
+// pinned head, the shipped directive; devTz "" is the operator's TZ, else UTC.
 struct HostedSettings {
   std::string orchHost;    // device orchHost ("" = first keyed provider in provPrio)
   std::string provPrio;    // device provPrio (head failover order)
@@ -40,7 +41,8 @@ struct HostedSettings {
 };
 
 // Thread-safe, durable store: the HTTP thread reads for GET /api/state and
-// /api/orch while the engine thread applies writes, so every accessor copies.
+// /api/orch and applies /api/config writes, the engine thread applies /api/orch
+// writes and reads per turn, so every accessor copies.
 class SettingsStore {
  public:
   void init(const std::string& path, const HostedSettings& defaults) {
@@ -62,21 +64,26 @@ class SettingsStore {
     std::lock_guard<std::mutex> lk(mu_);
     return s_;
   }
-  // Apply a mutation and persist it (atomic tmp->rename). Returns the write result.
+  // Apply a mutation only if it persists (atomic tmp->rename): a failed write
+  // leaves the live settings untouched, so a refusal never hides a half-applied
+  // change and a success is always on disk. `fn` only assigns fields.
   bool update(const std::function<void(HostedSettings&)>& fn) {
     std::lock_guard<std::mutex> lk(mu_);
-    fn(s_);
+    HostedSettings next = s_;
+    fn(next);
     JsonDocument d;
-    d["orchHost"] = s_.orchHost;
-    d["provPrio"] = s_.provPrio;
-    d["subPrio"] = s_.subPrio;
-    d["devTz"] = s_.devTz;
-    d["directive"] = s_.directive;
-    d["devName"] = s_.devName;
-    d["toolLoop"] = s_.toolLoop;
+    d["orchHost"] = next.orchHost;
+    d["provPrio"] = next.provPrio;
+    d["subPrio"] = next.subPrio;
+    d["devTz"] = next.devTz;
+    d["directive"] = next.directive;
+    d["devName"] = next.devName;
+    d["toolLoop"] = next.toolLoop;
     std::string out;
     serializeJson(d, out);
-    return fsutil::writeFileAtomic(path_, out);
+    if (!fsutil::writeFileAtomic(path_, out)) return false;
+    s_ = std::move(next);
+    return true;
   }
 
  private:
@@ -95,6 +102,13 @@ inline std::string notAvailable(const std::string& field) {
   return "Not available on a hosted Nimbus: " + field;
 }
 
+inline std::string trim(std::string s) {
+  while (!s.empty() && isspace((unsigned char)s.back())) s.pop_back();
+  size_t b = 0;
+  while (b < s.size() && isspace((unsigned char)s[b])) b++;
+  return s.substr(b);
+}
+
 // A head pin: "" (automatic) or a provider this instance can run.
 inline bool validHost(const std::string& h) {
   return h.empty() || nimbus::orch::isProviderSlug(h.c_str());
@@ -109,11 +123,8 @@ inline std::string sanitizePriority(const std::string& csv) {
   while (start <= csv.size()) {
     size_t comma = csv.find(',', start);
     if (comma == std::string::npos) comma = csv.size();
-    std::string t = csv.substr(start, comma - start);
-    while (!t.empty() && isspace((unsigned char)t.front())) t.erase(t.begin());
-    while (!t.empty() && isspace((unsigned char)t.back())) t.pop_back();
-    bool dup = false;
-    for (const auto& x : seen) dup = dup || x == t;
+    const std::string t = trim(csv.substr(start, comma - start));
+    const bool dup = std::find(seen.begin(), seen.end(), t) != seen.end();
     if (!t.empty() && !dup && nimbus::orch::isProviderSlug(t.c_str())) {
       seen.push_back(t);
       out += (out.empty() ? "" : ",") + t;
@@ -177,10 +188,14 @@ inline bool validTz(const std::string& s) {
   return knownZone(s) || validPosixTz(s);
 }
 
-// The process time zone is global state (TZ + tzset). Every local-time read in
-// the daemon and every change goes through this one lock, so a change can never
-// race a strftime. TZ is put in the environment before any thread starts
-// (NimbusdRig's constructor), so a later setenv replaces the value in place.
+// The process time zone is global state (TZ + tzset). Every local-time read the
+// daemon makes and every change go through this one lock, so a change never races
+// a strftime here. Other threads still call getenv() for OTHER variables (Config,
+// libcurl): POSIX calls setenv/getenv racy, so TZ is put in the environment before
+// any thread starts (NimbusdRig's constructor) and a later setenv only replaces
+// that existing entry - glibc swaps one pointer and never frees the old string, so
+// a concurrent getenv reads either value, never freed memory. A change is a rare
+// owner action (Settings > Time zone).
 inline std::mutex& tzMutex() {
   static std::mutex m;
   return m;
@@ -202,7 +217,10 @@ inline std::string localTime(time_t t, const char* fmt) {
 // ---- the /api/orch field policy -------------------------------------------
 // Device knobs the hosted page shows: GET /api/orch reports these hosted values,
 // so the page's Save Changes (which posts the whole form) round-trips them as a
-// no-op; any other value is refused with the field name.
+// no-op; any other value is refused with the field name. A blank number or text
+// knob is "unchanged" (the form before the first load fills it), and capProbe
+// reads "passive" - what a hosted instance does: it marks a key verified when a
+// turn on it answers. Values match the page's own defaults where possible.
 struct FixedKnob {
   const char* field;
   const char* value;
@@ -212,7 +230,7 @@ inline const std::vector<FixedKnob>& fixedKnobs() {
   static const std::vector<FixedKnob> k = {
       {"midFail", "0", true},       {"codeSbx", "0", true},     {"orchTrace", "0", true},
       {"tlsVerify", "1", true},     {"loopRounds", "12", false}, {"loopDeadline", "600", false},
-      {"compactKB", "0", false},    {"tlsSlots", "1", false},   {"capProbe", "0", false},
+      {"compactKB", "0", false},    {"tlsSlots", "1", false},   {"capProbe", "1", false},
       {"capProbeH", "24", false},   {"custBase", "", false},    {"custModel", "", false},
       {"custConv", "openai", false},
   };
@@ -230,15 +248,30 @@ inline std::string normBool(const std::string& v) {
 
 enum class Verdict { Apply, NoOp, Refuse };
 
-// What POST /api/orch does with one posted field. `applied` decides the fields
-// the instance applies (keys, models, routing, directive, clears); the knob and
-// keep-if-empty tables decide the no-ops; everything else is refused.
-inline Verdict orchFieldVerdict(const std::string& field, const std::string& value,
-                                const std::function<bool(const std::string&)>& applied) {
+// The fields POST /api/orch applies on a hosted instance: the canonical key
+// fields, the per-provider head and sub-agent model picks, routing, the directive,
+// the tool loop, the Telegram allowlist and the conversation/memory clears.
+inline bool appliedOrchField(const std::string& f) {
+  static const char* kApplied[] = {"orchHost", "provPrio", "subPrio", "sysPrompt", "clearConv",
+                                   "clearMem", "convReset", "orchLoop", "tgAllow"};
+  for (const char* a : kApplied)
+    if (f == a) return true;
+  for (const auto& slot : nimbus::orch::kProviderSlots) {
+    const std::string slug = slot.slug;
+    for (const std::string& n : {std::string(slot.keyField), "orchM_" + slug, "subM_" + slug})
+      if (f == n || f == "clr_" + n) return true;
+  }
+  return false;
+}
+
+// What POST /api/orch does with one posted field: the applied set applies; the
+// knob and keep-if-empty tables decide the no-ops; everything else is refused.
+inline Verdict orchFieldVerdict(const std::string& field, const std::string& value) {
   if (field == "t" || field == "token") return Verdict::NoOp;   // auth, not a setting
-  if (applied(field)) return Verdict::Apply;
+  if (appliedOrchField(field)) return Verdict::Apply;
   for (const auto& k : fixedKnobs()) {
     if (field != k.field) continue;
+    if (!k.boolean && value.empty()) return Verdict::NoOp;   // blank = unchanged
     const std::string v = k.boolean ? normBool(value) : value;
     return v == k.value ? Verdict::NoOp : Verdict::Refuse;
   }

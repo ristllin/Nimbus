@@ -28,19 +28,27 @@ struct RouterRefusal {
   bool firstRequest = false;   // it refused the attempt's FIRST request (no tool ran)
 };
 
-// How a refusal should be answered. Selector: the model the owner picked is not
-// offered (switch back and answer). Upstream: that upstream is paused right now
-// (answer on the default model, keep the pick). Account: no model would work
-// (credits, spending limit). RateLimit/Auth/Other keep the engine's own reply.
-enum class RefusalKind { None, Selector, Upstream, Account, Paused, RateLimit, Auth, Other };
+// How a refusal should be answered:
+//   Selector - the router does not offer the picked model (model_not_priced, or a
+//              404 for the model or its upstream): answer on a model that works and
+//              move the pick there;
+//   Upstream - that upstream is paused (funding_cap_reached, provider_disabled) or
+//              its route is not allowed (endpoint_not_allowed): answer on the router
+//              default this turn and KEEP the pick (nothing is wrong with the choice);
+//   Tool     - a provider built-in tool is not offered on a paying key
+//              (native_tool_not_metered): every model would carry it, so say so;
+//   Account  - credits or a plan are missing (402): no model would work;
+//   Paused   - the whole router is paused (router_disabled);
+//   RateLimit/Auth/Other keep the engine's own reply.
+enum class RefusalKind { None, Selector, Upstream, Tool, Account, Paused, RateLimit, Auth, Other };
 
 inline RefusalKind classifyRefusal(const RouterRefusal& r) {
   if (r.status == 0) return RefusalKind::None;
   const std::string& why = r.reason;
-  if (why == "model_not_priced" || why == "endpoint_not_allowed" ||
-      why == "native_tool_not_metered" || r.status == 404)
-    return RefusalKind::Selector;
-  if (why == "funding_cap_reached" || why == "provider_disabled") return RefusalKind::Upstream;
+  if (why == "model_not_priced" || r.status == 404) return RefusalKind::Selector;
+  if (why == "funding_cap_reached" || why == "provider_disabled" || why == "endpoint_not_allowed")
+    return RefusalKind::Upstream;
+  if (why == "native_tool_not_metered") return RefusalKind::Tool;
   if (why == "router_disabled") return RefusalKind::Paused;
   if (r.status == 429) return RefusalKind::RateLimit;
   if (r.status == 402) return RefusalKind::Account;
@@ -51,13 +59,17 @@ inline RefusalKind classifyRefusal(const RouterRefusal& r) {
 // The engine renders a failed turn as "That didn't finish - <cause>. Nothing is
 // still running; ask again to retry." and maps a cause containing "key",
 // "network", "budget" or an "HTTP 4xx/5xx" token to its own generic wording, so
-// these causes avoid those words and stay under its 100-character cut.
+// these causes avoid those words. The engine also cuts a cause at 100 characters,
+// so a long selector is named "that model" rather than losing the fix at the end.
 inline std::string refusalCause(RefusalKind k, const std::string& selector) {
+  const std::string name = selector.size() <= 24 ? selector : std::string("that model");
   switch (k) {
     case RefusalKind::Selector:
-      return "the Cumulo router does not offer " + selector + " right now. Choose another model under Models";
+      return "the Cumulo router does not offer " + name + " right now. Choose another model under Models";
     case RefusalKind::Upstream:
-      return "the Cumulo router has paused " + selector + " for now. Try again shortly";
+      return "the Cumulo router cannot run " + name + " right now. Try again shortly";
+    case RefusalKind::Tool:
+      return "the Cumulo router does not run provider built-in tools on this account. Remove them under Connectors";
     case RefusalKind::Account:
       return "the Cumulo router needs credits or a plan for this account. Add credits in the portal";
     case RefusalKind::Paused:
@@ -70,7 +82,7 @@ inline std::string refusalCause(RefusalKind k, const std::string& selector) {
 // The line that opens a reply answered by a different model than the one picked.
 inline std::string fallbackNotice(RefusalKind k, const std::string& picked, const std::string& used) {
   if (k == RefusalKind::Upstream)
-    return "The Cumulo router has paused " + picked + " for now, so " + used +
+    return "The Cumulo router cannot run " + picked + " right now, so " + used +
            " answered this one. Your model choice is kept.";
   return "The Cumulo router does not offer " + picked + " for this key, so " + used +
          " answered instead. Choose another model under Models.";
@@ -121,9 +133,9 @@ class RouterTap : public agent::HttpTransport {
     JsonDocument d;
     if (deserializeJson(d, out.body) || !d.is<JsonObject>()) return;
     // The router names its reason in `reason`, and in `error` as a plain string.
-    const char* why = d["reason"].is<const char*>() ? d["reason"].as<const char*>()
-                      : d["error"].is<const char*>() ? d["error"].as<const char*>()
-                                                     : "";
+    const char* why = "";
+    if (d["reason"].is<const char*>()) why = d["reason"].as<const char*>();
+    else if (d["error"].is<const char*>()) why = d["error"].as<const char*>();
     refusal_.reason = std::string(why).substr(0, 48);
   }
 

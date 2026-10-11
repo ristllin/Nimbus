@@ -17,7 +17,11 @@
 // CLI, wasteful for a long-lived process doing thousands of provider round
 // trips). recordBodies is hard-off by construction - the log-discipline rule
 // (§3.4) is that nimbusd never keeps prompt/completion content in memory or
-// logs; only the injected transport ever sees the bytes, and it drops them.
+// logs; only the injected transport ever sees the bytes, and it drops them. (The
+// one exception is the owner's own turn anatomy, GET /api/lastturn: a single
+// token-gated RAM slot of the LAST turn, capped, never logged, gone on restart -
+// the device's diagnostic, which CUM-546 asked for. The conversation itself is
+// the episodic history on the instance volume, as on the device.)
 // Response headers are dropped too, except the bounded error-header capture a
 // request asks for (HttpRequest::errHeaders: a 429's x-ratelimit-* quota window).
 //

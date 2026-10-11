@@ -159,6 +159,9 @@ static void testLogIsBounded(ndtest::Ctx& c) {
   const auto lines = NimbusdRig::harnessLog();
   c.ok(lines.size() <= 1000, "at most 1000 lines are kept");
   c.ok(!lines.empty() && has(lines.back(), "filler line 2499"), "the newest line is kept");
+  agent::hlog::logf("resp HTTP 401: Incorrect API key provided: sk-proj-ABCD****WXYZ, cumulo_sk_live1234abcd");
+  const std::string tail = NimbusdRig::logTail(4096, true);
+  c.ok(has(tail, "[key]") && !has(tail, "ABCD") && !has(tail, "live1234"), "key-shaped text is masked in the log");
 }
 
 int main() {

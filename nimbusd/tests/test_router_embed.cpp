@@ -187,6 +187,8 @@ static void testVerifyThenSave(ndtest::Ctx& c) {
     c.eqi(ok.status, 200, "reset=1 applies the switch");
     c.ok(has(ok.body, "\"provider\":\"openai\"") && has(ok.body, "\"dims\":16"), "the new config reads back");
     c.eqi(rig.vectors().size(), 0, "the old-model memories were erased");
+    const ApiResp bad = web.call("POST", "/api/mem/embedcfg", "provider=openai&model=x%0Aprovider%3Dmistral&dims=16");
+    c.eqi(bad.status, 400, "a model name with a line break is refused (it cannot inject a line into embed.txt)");
   }
   {
     Config cfg;   // a restart on the same volume

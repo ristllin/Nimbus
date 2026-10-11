@@ -121,6 +121,15 @@ int cmdOnce(nimbusd::Config& cfg, const std::string& text) {
   return t.reply.empty() ? 1 : 0;
 }
 
+// How long-term memory embeds at start (CUM-540): a direct key, the Cumulo router,
+// or waiting for a key (each call re-resolves, so a key set later turns it on).
+std::string embedStatus(const nimbusd::NimbusdRig::Options& opt, bool directKey, bool cumuloKey) {
+  if (!opt.embeddings) return "off (NIMBUSD_EMBEDDINGS=0)";
+  if (directKey) return "on (" + opt.embedHost + ", direct key)";
+  if (cumuloKey) return "on (" + opt.embedHost + " through the Cumulo router)";
+  return "waiting for a key (" + opt.embedHost + ")";
+}
+
 // Boot log: the data layout plus each provider's key presence (masked). The
 // Cumulo router key (CUM-286, the flagship one-key path) is reported like any
 // other provider so a keyed instance's boot log tells the honest story.
@@ -136,12 +145,7 @@ void logStartupConfig(const nimbusd::Config& cfg, const nimbusd::NimbusdRig::Opt
   const std::string ck = cfg.get(nimbusd::kCumuloEnvKey);
   logLine(std::string("provider cumulo (router): ") +
           (ck.empty() ? "no key" : nimbusd::Config::mask(ck)));
-  const bool direct = !cfg.providerKey(opt.embedHost).empty();
-  logLine(std::string("embeddings: ") +
-          (!opt.embeddings ? "off (NIMBUSD_EMBEDDINGS=0)"
-           : direct        ? "on (" + opt.embedHost + ", direct key)"
-           : !ck.empty()   ? "on (" + opt.embedHost + " through the Cumulo router)"
-                           : "waiting for a key (" + opt.embedHost + ")"));
+  logLine("embeddings: " + embedStatus(opt, !cfg.providerKey(opt.embedHost).empty(), !ck.empty()));
 }
 
 // Background checks queued on the engine thread at start, before any turn:
