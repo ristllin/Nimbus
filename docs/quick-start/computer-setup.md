@@ -148,6 +148,9 @@ cd Nimbus
 python3 tools/setup_device.py
 ```
 
+On Windows, if `python3` is not found, run `python tools/setup_device.py` instead
+(as in step 2).
+
 The installer finds your board, confirms before it writes, and never erases an
 already-configured device. If the ESP32 build tools are not installed yet, it
 prints `PlatformIO needs to install the ESP32 build tools first.` and starts the

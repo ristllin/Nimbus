@@ -51,7 +51,7 @@ in whether the status ring is physical or rendered on screen.
         <li>WS2812B LED ring</li>
         <li>2.8" ILI9341 240x320, resistive touch (XPT2046)</li>
         <li>Mic, speaker, microSD, optional 2S battery</li>
-        <li>Around $60 in electronics (enclosure and fasteners extra)</li>
+        <li>Around $65 to $77 in electronics (enclosure and fasteners extra)</li>
       </ul>
       <p><a href="/guides/hardware-touch-tft">Build guide &rarr;</a></p>
     </div>
@@ -99,8 +99,9 @@ Light the segments render on screen.
 
 ### Orchestrator
 
-A self-hosted agent backed by a hosted LLM and your own key. Reach it over
-Telegram, hold-to-talk on the device, or the local web UI. Long-term memory on the
+A self-hosted agent backed by the LLM you choose: a hosted provider with your own
+key, or a model you host yourself. Reach it over Telegram, hold-to-talk on the
+device, or the local web UI. Long-term memory on the
 SD card, tools mid-turn, background sub-agents, scheduled routines, and signed
 over-the-air updates.
 
@@ -141,7 +142,7 @@ model call ever leaves, and only when you point it at a hosted provider.
       <span class="boundary__wire boundary__wire--out">&#8595; model call</span>
       <div class="bnode bnode--remote">
         <b>AI lab</b>
-        <span>Mistral, OpenAI, or Anthropic</span>
+        <span>Mistral, OpenAI, Anthropic, or Z.ai</span>
       </div>
     </div>
     <p class="boundary__cap">Point at a hosted provider and only the model call leaves. Memory, routines, and actions stay on the device.</p>

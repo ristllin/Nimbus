@@ -5,9 +5,14 @@ computer reports session state over an encrypted Bluetooth link, and the ring
 shows what every session is doing - running, waiting on you, done, or errored.
 
 You need a flashed device in **Notifier mode** and a computer with Python 3 and
-Bluetooth. The [installer](flash.md) asks for the starting mode on a new board;
-a device already running as an Orchestrator switches on its web page under
-**Settings → Mode & identity** (the switch restarts it).
+Bluetooth. The [command-line installer](flash.md#path-2---command-line-installer)
+asks for the starting mode on a new board; the
+[browser flasher](flash.md#path-1---browser-flasher-recommended) always starts it
+in Orchestrator mode. To switch a board that runs as an Orchestrator, use the
+**Mode** row in the device's **Settings** menu (no Wi-Fi or provider key needed),
+or, once it is set up, the **Notifier** / **Orchestrator** switch in its web
+page's sidebar (also under **Device → Mode & identity**). Switching modes
+restarts the device.
 
 ## 1. Install the broker
 

@@ -37,8 +37,9 @@ When it finishes, the board restarts into Nimbus in **Orchestrator** mode:
 join the `Nimbus-setup` Wi-Fi network and continue in the
 **[setup wizard](setup-wizard.md)** (you can switch to Notifier mode later). The
 image you picked already carries the display it belongs to, so **the screen
-comes up right away, sized for your display**: there is no blank-screen step and
-no display question in the wizard.
+comes up right away, sized for your display**: there is no blank-screen step, and
+the wizard's **Choose your display** step only offers **Flip display 180 degrees**
+(skip it if the screen already reads the right way up).
 
 ### Reinstalling from the browser
 
@@ -121,6 +122,8 @@ From a clone of the firmware repository, with Python 3, git, and
 ```bash
 python3 tools/setup_device.py
 ```
+
+On Windows, if `python3` is not found, run `python tools/setup_device.py` instead.
 
 If that Python has no pyserial (common when PlatformIO came from pipx, Homebrew,
 or PlatformIO's installer script), the installer re-runs itself with
@@ -229,7 +232,7 @@ stateDiagram-v2
   [*] --> fresh
   fresh --> nimbus: first flash - UART port only<br/>(the native USB port has no<br/>path into download mode)
   nimbus --> nimbus: reflash over either USB-C port
-  nimbus --> updated: OTA over Wi-Fi<br/>(signed, owner-approved)
+  nimbus --> updated: OTA over Wi-Fi<br/>(signed, owner-approved or automatic)
   updated --> nimbus: automatic rollback<br/>if the new image can't boot
 ```
 
@@ -269,7 +272,7 @@ flowchart TD
   A["Serial is silent - can esptool connect?"] -->|yes| B["Flash normally"]
   A -->|no| C["Reset the USB link: unplug and replug,<br/>or tools/usb_reset.py (macOS, Linux)"]
   C --> D["Catch the bootloader:<br/>esptool --before default-reset --after no-reset chip-id"]
-  D --> E["pio run -e test -t upload"]
+  D --> E["pio run -e test -t upload<br/>(test-cyd on a Freenove 2.8 inch),<br/>then tools/setup_device.py"]
   C -->|still nothing| F["Move the cable to the UART port<br/>and run tools/setup_device.py"]
 ```
 
@@ -316,6 +319,11 @@ the port is `/dev/ttyACM0` rather than `/dev/cu.usbmodem101`):
   --before default-reset --after no-reset chip-id
 pio run -e test -t upload --upload-port /dev/cu.usbmodem101
 ```
+
+On a Freenove 2.8 inch use `-e test-cyd` instead of `-e test`; on a 3.5 or 4.0 inch
+Freenove, skip the `pio` command and run `python3 tools/setup_device.py --size 35`
+(or `40`). Once the board answers again, run `python3 tools/setup_device.py` to put
+the production firmware back: the `test` build is not for a finished device.
 
 Newer PlatformIO tool versions print a `DEPRECATED: 'esptool.py' is deprecated`
 notice for the first command; it still works.

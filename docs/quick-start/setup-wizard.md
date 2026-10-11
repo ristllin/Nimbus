@@ -14,16 +14,17 @@ sequenceDiagram
   participant LAN as Home Wi-Fi
 
   Note over Dev: first boot after flashing
-  Dev->>Dev: broadcast setup network "Nimbus-setup"<br/>show its name + Sign-in QR on the screen
+  Dev->>Dev: broadcast setup network "Nimbus-setup"<br/>show its name, password, and a join QR on the screen
   You->>Dev: join Nimbus-setup (password shown on the device screen)
-  You->>Dev: captive page opens → http://192.168.4.1<br/>(already signed in - the Sign-in QR carries the code)
+  You->>Dev: captive page opens → http://192.168.4.1<br/>(already signed in - a brand-new device signs you in automatically)
+  You->>Dev: wizard: choose your display (skippable: flip it if mounted upside down)
   You->>Dev: wizard: pick your Wi-Fi + password (required)
   Dev->>LAN: join your home Wi-Fi
   Dev->>Dev: setup hotspot shuts down after handoff
   Dev-->>You: wizard carries you to the device's LAN address
   You->>Dev: wizard: pick a provider, paste its key, Save & Verify (required)
   opt skippable steps
-    You->>Dev: display · mode · Telegram · voice · directive · device name
+    You->>Dev: mode · Telegram · voice · directive · device name
   end
   Dev-->>You: dashboard at the device's LAN address
 ```
@@ -34,8 +35,8 @@ Power the board over USB-C. What you see depends on the board's operating
 mode. A board installed from the **browser flasher** always starts in
 **Orchestrator**; the **command-line installer** asks which mode to start in.
 
-- **Orchestrator** shows its own **setup Wi-Fi network name** and a Sign-in
-  QR on the screen. Continue below.
+- **Orchestrator** shows its own **setup Wi-Fi network name**, its password, and a
+  QR code that joins it on the screen. Continue below.
 - **Notifier** shows Bluetooth pairing guidance instead - there is no Wi-Fi
   or web UI in that mode. Jump to the
   **[Notifier quick start](notifier-quick-start.md)**.
@@ -62,6 +63,7 @@ The wizard asks for two required things and lets you skip the rest:
 
 | Step | Required? | Notes |
 |---|---|---|
+| Choose your display | Skippable | Shown before Wi-Fi. Tick **Flip display 180 degrees** if the screen is mounted upside down; it applies right away. |
 | **Connect to Wi-Fi** | Yes | Scan, pick your home network, type its password. 2.4 GHz only; SSIDs are case-sensitive. |
 | **Add an AI provider** | Yes - one verified key | Pick the provider, paste its API key, click **Save & Verify**. The device checks the key with the provider before you continue. Providers: Cumulo Nimbus, Anthropic, OpenAI, Mistral, Z.ai; [Get your provider key](provider-keys.md) helps you choose. Have the key ready before you start: you cannot fetch one while connected to the device's own Wi-Fi. The key stays on the device and is never shown again. |
 | Choose a mode | Skippable | Keeps the mode the board started in (see [Power on](#1-power-on)). Applied when you finish; a mode change restarts the device. |
@@ -76,11 +78,12 @@ its own radio), and the wizard carries you to the device's new LAN address
 automatically. "Home Wi-Fi connected + setup hotspot off" is the healthy end
 state, not a failure.
 
-:::danger Using only a Mistral key? Set the embedding provider before your first conversation
+:::danger Using only a Mistral or Cumulo Nimbus key? Set the embedding provider before your first conversation
 Long-term memory embeds with **OpenAI** by default. Once the first memory is
 stored the choice locks: changing the provider, model, or dimensions later means
-erasing every stored memory and starting fresh. If Mistral is your only key, open
-**Memory → Embedding model**, set **Provider** to **Mistral**, and click **Save**
+erasing every stored memory and starting fresh. If Mistral or a Cumulo Nimbus key
+is your only key, open **Memory → Long-term memory → Embedding model**, set
+**Provider** to **Mistral** or **Cumulo Nimbus** to match, and click **Save**
 before your first conversation, while the memory is still empty. Anthropic and
 Z.ai keys cannot embed; semantic memory needs a Cumulo Nimbus, OpenAI, or Mistral key.
 :::

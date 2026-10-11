@@ -13,7 +13,8 @@ one AI provider key.
 The whole path, detailed below:
 
 1. **Flash the firmware** once. It seeds the display for you.
-2. **Power on.** The device shows its setup Wi-Fi network and a Sign-in QR.
+2. **Power on.** The device shows its setup Wi-Fi network name, its password, and
+   a QR code that joins it.
 3. **Join that Wi-Fi.** A setup page opens by itself, already signed in.
 4. **Walk the wizard:** pick your Wi-Fi, add one provider key. Done.
 
@@ -51,7 +52,8 @@ right screen without asking:
   python3 tools/setup_device.py
   ```
 
-  The installer lists connected boards, detects the family, and asks only what it
+  On Windows, if `python3` is not found, run `python tools/setup_device.py`
+  instead. The installer lists connected boards, detects the family, and asks only what it
   cannot know: the **operating mode**, and on a Freenove the **display size**. It
   confirms before writing and never erases saved settings.
 
@@ -85,8 +87,8 @@ Power the board over USB-C. What you see depends on the operating mode: a
 browser install always starts in Orchestrator, and the command-line installer
 starts in the mode you picked.
 
-- **Orchestrator** shows its **setup Wi-Fi network name** and a **Sign-in QR**.
-  Continue below.
+- **Orchestrator** shows its **setup Wi-Fi network name**, its **password**, and a
+  **QR code that joins that network**. Continue below.
 - **Notifier** shows Bluetooth pairing guidance instead, and keeps Wi-Fi off to
   leave room for Bluetooth. Follow the
   [Notifier quick start](../quick-start/notifier-quick-start.md) and you are done.
@@ -106,7 +108,7 @@ It counts only the setup networks that are on when it first starts. A device tha
 has already joined your Wi-Fi turns its setup network off, so a device added later
 can also call itself `Nimbus`, and one of the two then needs a new name.
 
-Rename it later under **Settings > Mode & identity**. One name drives the setup
+Rename it later on the web page under **Home > Device name**. One name drives the setup
 Wi-Fi, the network address, the Bluetooth name, and what the assistant calls
 itself; a rename takes effect on the next restart.
 
@@ -120,8 +122,8 @@ Two steps, in the order the device screen shows them:
    - **Network:** `Nimbus-setup` (or the name your screen shows)
    - **Password:** shown on the device screen, unique to your device. Or scan
      the on-screen QR to join automatically.
-2. **Open the setup page.** It usually opens by itself, already signed in (the
-   QR carried the code). If nothing opens, browse to `http://192.168.4.1`. Do
+2. **Open the setup page.** It usually opens by itself, already signed in (a
+   brand-new device signs you in automatically on its setup network). If nothing opens, browse to `http://192.168.4.1`. Do
    not use `nimbus.local` for this first hop; it can point at a different Nimbus.
 
 On that page, pick your home network, type its password, and click **Connect**.
@@ -145,15 +147,19 @@ The wizard asks for two required things and lets you skip the rest.
 
 | Step | Required? | What to do |
 |---|---|---|
+| Choose your display | Optional | Flip the display 180 degrees if it is mounted upside down. |
 | **Connect to Wi-Fi** | Yes | Tap **Scan**, pick your home network, type its password, **Connect**. |
-| **Provider key** | Yes, one verified key | Paste an API key and click **Verify**. |
-| Operating mode | Optional | Keep the current mode, or change it (a change restarts the device). |
+| **Add an AI provider** | Yes, one verified key | Pick the provider, paste the API key, and click **Save & Verify**. |
+| Choose a mode | Optional | Keep the current mode, or change it (a change restarts the device). |
 | Telegram | Optional | Add a bot token later. |
 | Voice | Optional | Dictation and spoken replies default to Mistral. |
-| Device name | Optional | Rename it now or later. |
+| Directive | Optional | Keep the default standing guidance or edit it. |
+| Name this device | Optional | Rename it now or later. |
 
 **Which provider key?** Any one verified key runs the assistant. **Mistral is the
-easiest start:** free tier, and the voice default. OpenAI and Anthropic work too.
+easiest start:** free tier, and the voice default. A **Cumulo Nimbus** key (the
+wizard's preselected choice) works across providers on one prepaid balance and
+also covers voice. OpenAI, Anthropic, and Z.ai work too.
 [Get your provider key](../quick-start/provider-keys.md) covers each provider
 step by step. Keys are write-only: a saved key shows as "set"
 and is never displayed again.
@@ -164,11 +170,12 @@ When the device joins your Wi-Fi, its setup network shuts down and the wizard
 it lands on the dashboard.
 :::
 
-:::caution Using only a Mistral key? Set embeddings before your first turn
+:::caution Using only a Mistral or Cumulo Nimbus key? Set embeddings before your first turn
 Long-term memory's embedding provider defaults to OpenAI, and it is a
-**set-once** choice: changing it later erases the stored memory. If Mistral is
-your only key, open **Memory > Long-term memory > Embedding model**, set
-**Provider** to **Mistral**, and click **Save**, all **before your first
+**set-once** choice: changing it later erases the stored memory. If Mistral or a
+Cumulo Nimbus key is your only key, open
+**Memory > Long-term memory > Embedding model**, set **Provider** to **Mistral**
+or **Cumulo Nimbus** to match, and click **Save**, all **before your first
 conversation**, while the memory is still empty and there is nothing to lose.
 :::
 
@@ -187,7 +194,8 @@ still works, just with lower limits.
    32 GB ship as exFAT and **will not mount** until reformatted.
 2. **Insert it fully**, then **tap the SD card row** in the Settings menu. It
    re-checks the card in place, no restart needed. A mounted card shows its free
-   space; an unseen one shows "none, click to retry".
+   space; an unseen one shows "none - click to retry", and a card that dropped out
+   shows "dropped - click to retry".
 
 ## Optional: connect Telegram
 

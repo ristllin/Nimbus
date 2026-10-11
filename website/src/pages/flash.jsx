@@ -197,8 +197,8 @@ export default function FlashPage() {
           </li>
           <li>
             <strong>It starts in Orchestrator mode</strong>, with its setup
-            Wi-Fi network and Sign-in QR on the screen. You can switch to
-            Notifier mode later.
+            Wi-Fi network, its password, and a QR code that joins it on the
+            screen. You can switch to Notifier mode later.
           </li>
           <li>
             On your phone or computer, scan the QR on the device screen, or
@@ -210,7 +210,8 @@ export default function FlashPage() {
           <li>
             <strong>The screen is ready right away.</strong> The image you
             picked already matches the display, so there is no blank-screen
-            step and no display question in the wizard.
+            step; the wizard&apos;s Choose your display step only offers a
+            180-degree flip.
           </li>
         </ul>
 

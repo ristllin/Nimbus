@@ -41,7 +41,7 @@ next" card. Notifier intentionally keeps Wi-Fi and this web UI off. See
 ## Signing in
 
 The page shows nothing until the browser is signed in. Normally you scan the
-device's **Sign-in QR** (**Device > Connectivity** on the screen): it signs the
+device's **Sign-in QR** (on the device: **Settings > Connectivity > Sign-in QR**): it signs the
 browser in with a one-time code, nothing to copy or type. Once per browser; the
 credential is stored locally and sent as a request header, never in the URL.
 
@@ -68,6 +68,9 @@ every few seconds.
 - **Tiles** - live figures with their scale and thresholds: free RAM, PSRAM,
   battery (corrected voltage and time-left estimate), die temperature, and the
   current mode with its active-session count.
+- **Device name** - sets the setup Wi-Fi network name, the network address, the
+  Bluetooth name, and what the assistant calls itself. Takes effect after a
+  restart.
 - **Quick actions** - one-click jumps to the things people do most: open Chat,
   add a file, providers and models, check for updates, **Restart**, and
   **Power off**. Restart confirms first, then reconnects on its own in about a
@@ -77,8 +80,8 @@ every few seconds.
   state.
 - **Health** - a component roster from `/api/health`, each row colored by state
   (**ok / degraded / absent / unknown**) with a one-line detail. Four probe
-  buttons exercise hardware on demand: **Mic test**, **Speaker test**,
-  **Loopback** (plays a tone and checks the mic hears it), and **Probe SD**
+  buttons exercise hardware on demand: **Mic Test**, **Speaker Tone**,
+  **Loopback Test** (plays a tone and checks the mic hears it), and **Probe SD**
   (re-checks the card and upgrades the storage tier live).
 
 For how background sessions work from start to finish, see
@@ -113,8 +116,8 @@ cloud. Three groups:
   (the assistant's working notes), **Recall tuning** (memories per turn, relevance
   threshold, storage limit - at the limit, the least valuable memory is dropped),
   and the **Embedding model**, which is verified with a real embedding call on
-  save and locks once vectors are stored - changing it erases and re-embeds the
-  store, and the UI warns first.
+  save and locks once vectors are stored - changing it erases the stored memories
+  (they are not re-embedded), and the UI warns first.
 - **Files** - files persist across restarts and are never deleted automatically.
   The caption shows the real card size and free space plus the file quota. The
   assistant saves reports here with `artifact.save`; you can filter by project,
@@ -149,10 +152,11 @@ never by the model.
 
 External tools that run in your AI provider's cloud, on the assistant's own turns
 and on the sessions it starts. Each connector is a card: create the credential
-once, paste it in, enable it - secrets are write-only. An **Advanced** section
-edits the raw JSON directly. A device-dialed **MCP** server that the assistant
-adds arrives **pending your approval** and shows **Approve / Deny** on its card;
-nothing is dialed until you approve it. Setup details per service:
+once, paste it in, enable it - secrets are write-only. An
+**Advanced - edit raw JSON** section edits the raw JSON directly. A device-dialed
+**MCP** server (an entry with `"dev":1`, added in the raw JSON editor) shows
+**pending approval** with **Approve / Deny** on its saved card; nothing is dialed
+until you approve it. Setup details per service:
 **[Connectors](../guides/connectors.md)**.
 
 The **Telegram** group also lives here: the bot token (from @BotFather), who can
@@ -206,9 +210,15 @@ the reset day and the assistant fails over when it can).
 
 ### Safety
 
-Download trust and guest screening. Your own messages, the web page, and voice
-are always exempt.
+What the scanner blocked or flagged, what you allowed, download trust, and guest
+screening. Your own messages, the web page, and voice are always exempt.
 
+- **Activity** - items the scanner blocked or flagged as suspected, newest first.
+  Approve one to allow that sender, type, or exact content from now on, dismiss it
+  to clear it, or report it to Cumulo if you subscribe. Approving is always
+  scoped, never a blanket off switch.
+- **Allowed items** - the senders, types, and content patterns you approved. The
+  scanner lets these through; revoke any to screen it again.
 - **Downloads** - how much trust the assistant gets to download a file from the
   web: **Off**, **Ask me per link**, **Scan, then keep**, or **Full trust**.
 - **Guest moderation** - screens people other than you who reach the bot.
@@ -227,21 +237,20 @@ Display, sound, power, network, updates, and cloud - all in one place, as
 collapsible groups:
 
 - **Mode & identity** - the operating mode (**Notifier** or **Orchestrator**;
-  switching restarts the device), the **Device name**, the **Timezone**, the
+  switching restarts the device), the **Timezone**, the
   **Device clock** (set automatically from the internet; a badge shows **synced**
   or **waiting**, with **Sync now**), and the **Device sign-in code** (only needed
   when a QR cannot be scanned; tap to copy).
-- **Display** - a 180-degree **Display flip** for upside-down mounts, and **Touch
-  calibration** for the touch screen (or the self-calibrating panel's swap/flip
-  orientation toggles). Takes effect right away.
+- **Display** - a 180-degree **Display flip** for upside-down mounts, **Screen
+  rest** (minutes of no activity before the screen rests; 0 keeps it on), and
+  **Touch calibration** for the touch screen (or the self-calibrating panel's
+  swap/flip orientation toggles). Takes effect right away.
 - **Ring** - **Theme** picks the color family (a session's status picks its
   color role and motion), **Preview** shows any status pattern for a chosen
   status and mode, and **Demo on Device** plays it on the physical ring for a
   few seconds without saving anything. Ring brightness and effects belong to the
   battery mode, set under **Battery**. The status language itself:
   **[LED experience](../guides/led-ux.md)**.
-- **Customize battery mode** - every parameter starts at the selected battery
-  mode's default; set a value to override it, or **Revert to Defaults**.
 - **Sound** - audio checks (**Mic Meter**, **Speaker Tone**, **Loopback Test**)
   and the **Sound effects** engine (**[SFX map](../guides/sfx-map.md)**): a
   per-mode level, a sound theme, a **Volume** slider, and **Play**.
@@ -253,7 +262,9 @@ collapsible groups:
   with **Calibrate Full Charge** (anchors 100% to a fully charged pack), the
   low-battery options (**Low-battery light**, **Save power when low**, sleep and
   wake voltages), and **Battery hardware** (pack capacity, chemistry, cells in
-  series, sense resistors) so the readings match the pack fitted.
+  series, sense resistors) so the readings match the pack fitted. Inside it,
+  **Customize battery mode** starts every parameter at the selected battery
+  mode's default; set a value to override it, or **Revert to Defaults**.
 - **Software update** - installed and latest versions, **Check for Updates**
   (which reports whether an update was found, you are up to date, or the check
   failed), **Install Update**, **Automatic updates** (installs new firmware when
@@ -265,8 +276,11 @@ collapsible groups:
   reverts on its own if a new version fails to start.
 - **Connectivity** - the home-network address; the temporary setup hotspot and
   password; the **Device sign-in code** and **Generate New Code**; **Bluetooth**
-  status and **Forget Paired Devices**; and **Wi-Fi** (scan, pick a network,
-  **Join** - 2.4 GHz only; the one action allowed before signing in).
+  status and **Forget Paired Devices**; and **Wi-Fi**: **Saved Wi-Fi networks**
+  (the device joins whichever one it can see; **Connect**, **Forget**, and arrows
+  to set priority), **Scan Networks** (pick a network, type its password, and
+  click **Save**), **Add a hidden network**, and **Recovery** (**Publish Setup
+  Network** / **Resume Joining**). 2.4 GHz networks only.
 - **Cloud access** - reach the device from anywhere through CumuloNimbus
   (Orchestrator mode only). **Pair with the cloud** shows the **Cloud link code**
   beside a QR: sign in at app.cumulo-nimbus.ai, then scan the QR or enter the
@@ -277,6 +291,8 @@ collapsible groups:
   effect after a restart. **Power Off…** saves everything and puts the device to
   sleep. Both confirm first.
 - **Danger zone** - **Erase Storage…** erases the SD card. **Factory Reset…**
-  erases everything (Wi-Fi, API keys, the Telegram list, Bluetooth pairings,
-  themes, sound settings, memory, and the device sign-in code) and restarts into
-  first-time setup. Both need the exact confirmation phrase typed.
+  erases every setting (Wi-Fi, API keys, the Telegram list, Bluetooth pairings,
+  themes, sound settings, the device name, and the device sign-in code) and
+  restarts into first-time setup. Tick **Also erase storage** to also erase every
+  memory, routine, and log, including the SD card. Both need the exact
+  confirmation phrase typed.

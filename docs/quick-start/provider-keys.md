@@ -27,11 +27,13 @@ Any one verified key runs the assistant. If you are not sure:
 - **Easiest and free to try: Mistral.** Its free tier is enough to set up and use
   Nimbus, and no card is required to start. It is also the voice default.
 - **One key for everything: a Cumulo key.** Prepay once and it works across
-  Mistral, OpenAI, and Anthropic, with no per-provider accounts to manage. It also
+  Mistral, OpenAI, Anthropic, and Z.ai, with no per-provider accounts to manage. It also
   covers voice, both dictation and spoken replies, so a one-key device needs no
   separate voice provider.
 - **OpenAI** adds image generation. **Anthropic** is strong at conversation and
   reasoning. Both need a paid balance to start.
+- **Z.ai** runs conversation and tools only: no dictation, spoken replies, image
+  generation, or memory embeddings.
 
 You can add more providers later. You only need one to finish setup.
 
@@ -104,7 +106,19 @@ Strong at conversation and reasoning.
    will set up from. You see the full key only once.
 5. **To revoke it later.** Return to the same **API keys** page and delete the key.
 
-## Cumulo key (one key for all three)
+## Z.ai
+
+Conversation and tools only. For voice, images, or memory embeddings, add a second
+key (see [What works with which provider](setup-wizard.md#what-works-with-which-provider)).
+
+1. **Create an account.** Sign up at [z.ai](https://z.ai).
+2. **Billing (required).** Add credit to your account.
+3. **Create the key.** Create an API key in your account and name it `nimbus`.
+4. **Copy it now.** Copy the key and paste it into your notes app on the device you
+   will set up from.
+5. **To revoke it later.** Delete the key from the same page.
+
+## Cumulo key (one key for every provider)
 
 A Cumulo key draws on one prepaid balance and routes to any provider, so you top up
 once and use any model without an account at each provider.
