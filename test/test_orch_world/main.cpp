@@ -234,6 +234,25 @@ static void test_assemble_skips_empty_sections() {
   TEST_ASSERT_TRUE(has(c.prompt, "only a directive"));
 }
 
+// CUM-523: the reply-channel advice names Telegram only when a bot is configured.
+static void test_cum523_channel_advice_without_telegram() {
+  Hardware hw;
+  hw.speaker = true;
+  hw.telegram = false;
+  hw.voiceReplies = true;
+  std::string out = renderCapabilities(hw, {});
+  TEST_ASSERT_TRUE(out.find("This device has no Telegram.") != std::string::npos);
+  TEST_ASSERT_TRUE(out.find("reply.telegram") == std::string::npos);
+  TEST_ASSERT_TRUE(out.find("Telegram text") == std::string::npos);
+  hw.voiceReplies = false;
+  out = renderCapabilities(hw, {});
+  TEST_ASSERT_TRUE(out.find("Reply in TEXT (on-screen) by default") != std::string::npos);
+  TEST_ASSERT_TRUE(out.find("Telegram") == std::string::npos);
+  hw.telegram = true;   // with a bot: the advice is unchanged
+  out = renderCapabilities(hw, {});
+  TEST_ASSERT_TRUE(out.find("Reply in TEXT (Telegram / on-screen) by default") != std::string::npos);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_capabilities_lists_present_hardware);
@@ -249,5 +268,6 @@ int main(int, char**) {
   RUN_TEST(test_assemble_summary_clips_before_dropping);
   RUN_TEST(test_assemble_omitted_trailer_lists_drops);
   RUN_TEST(test_assemble_skips_empty_sections);
+  RUN_TEST(test_cum523_channel_advice_without_telegram);
   return UNITY_END();
 }

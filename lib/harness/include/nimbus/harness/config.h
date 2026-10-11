@@ -86,6 +86,11 @@ struct HarnessConfig {
   BudgetConfig   budget;
 
   std::function<bool()> ttsEnabled;      // "Voice replies" master toggle
+  // CUM-523: is a Telegram bot configured and running on this device? false =
+  // the turn is never offered (or steered toward) a Telegram leg: reply.telegram
+  // is not advertised and no prompt line mentions it. Nullable = configured (host
+  // rigs and nimbusd unchanged).
+  std::function<bool()> telegramConfigured;
   std::function<std::string()> deviceName;
   // N11: select the simplified v2 system prompt (NVS `promptV2`, default off).
   // Nullable = off (v1, byte-identical) so host rigs and un-wired devices are

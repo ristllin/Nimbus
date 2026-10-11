@@ -34,6 +34,7 @@ struct FakeConfig {
   std::vector<Recorded> recorded;
 
   bool tts = false;
+  bool telegramOn = true;   // CUM-523: a Telegram bot is configured (the device default here)
   bool promptV2 = false;   // N11: select the simplified v2 system prompt
   std::string devName = "Nimbus";
   // CUM-211: simulate a router/relay provider (Cumulo, Z.ai) that is configured +
@@ -92,6 +93,7 @@ struct FakeConfig {
     };
 
     c.ttsEnabled = [this] { return tts; };
+    c.telegramConfigured = [this] { return telegramOn; };
     c.deviceName = [this] { return devName; };
     c.promptV2 = [this] { return promptV2; };
     return c;

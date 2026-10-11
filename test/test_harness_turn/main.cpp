@@ -1063,6 +1063,53 @@ static void test_owner_reminder_gets_reminder_framing_not_wakeup() {
   TEST_ASSERT_TRUE(in.find("[SCHEDULED LOOP]") == std::string::npos);
 }
 
+// ---- CUM-523: a reminder on a Telegram-less device stays in its own chat -----
+// Bench (nimbus-light, T15, no Telegram bot): the web reminder's wakeup turn
+// called reply_telegram, got "no allowed Telegram target", and the reminder ended
+// "I couldn't send a separate Telegram alert". With no bot the wakeup turn is
+// never offered the Telegram tool or any Telegram hint, and it is told its reply
+// (to the web chat that set it) IS the reminder.
+static void test_cum523_telegramless_wakeup_has_no_telegram_leg() {
+  Rig r;
+  r.cfg.telegramOn = false;
+  r.specs.push_back(orch::ToolRegistry::Spec{"reply.telegram", "Send a Telegram message.", "{}"});
+  r.specs.push_back(orch::ToolRegistry::Spec{"reply.speak", "Speak a line.", "{}"});
+  r.scripts["anthropic"] = {{true, "{\"reply\":\"Time to ring the crane company.\"}", "", 0}};
+  orch::FireOutcome o = r.eng->injectScheduledTurn(
+      "web", "Remind Dana now: ring the crane company about the 20 Oct delivery.", "wakeup",
+      "lp11566d", /*quietOk=*/false, /*once=*/true);
+  TEST_ASSERT_TRUE(o.ok);
+  TEST_ASSERT_EQUAL(1, (int)r.debug.size());
+  const std::string& sys = r.debug[0].instructions;
+  const std::string& in = r.attempts[0].inputs;
+  TEST_ASSERT_TRUE(sys.find("reply_telegram") == std::string::npos);   // not advertised
+  TEST_ASSERT_TRUE(sys.find("reply_speak") != std::string::npos);      // the rest still are
+  TEST_ASSERT_TRUE(in.find("reply.telegram") == std::string::npos);
+  TEST_ASSERT_TRUE(in.find("(Your reply is delivered to the web UI - that IS the reminder. Do "
+                           "not send it to any other channel.)") != std::string::npos);
+  TEST_ASSERT_EQUAL(0, (int)r.toolResults.size());   // nothing was even attempted on Telegram
+  for (const auto& d : r.delivered) TEST_ASSERT_TRUE(d.second.find("Telegram") == std::string::npos);
+  TEST_ASSERT_EQUAL_STRING("web", r.delivered.back().first.c_str());
+}
+
+// Counter-test: with a bot configured the tool stays advertised (a Telegram owner
+// keeps reply.telegram), and an ordinary web message still gets the full hint.
+static void test_cum523_telegram_device_keeps_the_tool() {
+  Rig r;
+  r.specs.push_back(orch::ToolRegistry::Spec{"reply.telegram", "Send a Telegram message.", "{}"});
+  r.eng->handleMessage("hi", "Dana", "web");
+  TEST_ASSERT_TRUE(r.debug[0].instructions.find("reply_telegram") != std::string::npos);
+  TEST_ASSERT_TRUE(r.attempts[0].inputs.find("reply.telegram is ONLY for messaging") !=
+                   std::string::npos);
+
+  Rig w;   // the same web message on a Telegram-less device: no Telegram anywhere
+  w.cfg.telegramOn = false;
+  w.specs.push_back(orch::ToolRegistry::Spec{"reply.telegram", "Send a Telegram message.", "{}"});
+  w.eng->handleMessage("hi", "Dana", "web");
+  TEST_ASSERT_TRUE(w.debug[0].instructions.find("reply_telegram") == std::string::npos);
+  TEST_ASSERT_TRUE(w.attempts[0].inputs.find("reply.telegram") == std::string::npos);
+}
+
 // ---- (9) synthesis consolidation + raw fallback -----------------------------
 
 static void test_synthesis_consolidation_and_raw_fallback() {
@@ -1794,6 +1841,8 @@ int main(int, char**) {
   RUN_TEST(test_scheduled_turn_rails_and_fire_outcome);
   RUN_TEST(test_once_wakeup_gets_wakeup_preamble_not_recurring);
   RUN_TEST(test_owner_reminder_gets_reminder_framing_not_wakeup);
+  RUN_TEST(test_cum523_telegramless_wakeup_has_no_telegram_leg);
+  RUN_TEST(test_cum523_telegram_device_keeps_the_tool);
   RUN_TEST(test_synthesis_consolidation_and_raw_fallback);
   RUN_TEST(test_turn_debug_hook_success_and_failure);
   RUN_TEST(test_stuck_turn_reaper);

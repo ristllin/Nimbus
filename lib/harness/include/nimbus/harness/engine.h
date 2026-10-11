@@ -278,6 +278,9 @@ class TurnEngine {
   // runs (runTurn), so "advertised == callable" holds even when memory pressure
   // forces a single-shot turn.
   bool loopActiveNow() const;
+  // CUM-523: a Telegram bot is configured (HarnessConfig::telegramConfigured;
+  // unset = true).
+  bool telegramOn() const;
   // The same gate against a supplied heap reading - runTurn gates on the
   // turn-ENTRY heap so recall's transient dip can't defer the loop (see the
   // rationale at the top of runTurn).

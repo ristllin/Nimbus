@@ -139,16 +139,26 @@ std::string renderCapabilities(const Hardware& hw, const std::vector<ToolInfo>& 
            "<name>). Save reports/documents there with artifact.save; browse with files.list; "
            "deliver one to the owner with files.send. Files persist across reboots and are "
            "never auto-deleted.\n";
+  // CUM-523: with no Telegram bot the channel advice never names Telegram (it used
+  // to steer a web-only device's turns toward a reply.telegram that cannot work).
   if (hw.speaker || hw.telegram) {
-    if (hw.voiceReplies)
+    if (hw.voiceReplies && hw.telegram)
       out += "- YOU choose the reply channel per situation (owner rule): short status or a "
              "heads-up while the owner is nearby -> speak it aloud on the device speaker "
              "(reply.speak, or the tts device action); longer content, lists, code -> "
              "Telegram text; a question you need answered -> ask. For a spoken Telegram "
              "message use reply.telegram with voice true. Never send the SAME content as "
              "both text and audio. There is no live phone call.\n";
+    else if (hw.voiceReplies)
+      out += "- YOU choose the reply channel per situation (owner rule): short status or a "
+             "heads-up while the owner is nearby -> speak it aloud on the device speaker "
+             "(reply.speak, or the tts device action); longer content, lists, code -> your "
+             "text reply; a question you need answered -> ask. Never send the SAME content "
+             "as both text and audio. This device has no Telegram.\n";
     else
-      out += "- Reply in TEXT (Telegram / on-screen) by default: spoken replies are switched "
+      out += std::string(hw.telegram ? "- Reply in TEXT (Telegram / on-screen)"
+                                     : "- Reply in TEXT (on-screen)") +
+             " by default: spoken replies are switched "
              "OFF, so tts and reply.speak will not play. If the owner asks you to speak or to "
              "turn on voice replies, enable it IN THIS SAME TURN with the device.control tool "
              "({\"action\":{\"type\":\"config\",\"ttsOn\":true}}) and then call reply.speak in "

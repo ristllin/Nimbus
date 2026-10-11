@@ -730,7 +730,9 @@ reach the person. Both refuse outside a live turn.
 
 Note: `reply.speak` degrades honestly when voice replies are switched off or the
 speaker volume is 0. With voice replies off, `reply.telegram` `voice:true` falls
-back to text - the content is never dropped.)NIMBUSDOC"},
+back to text - the content is never dropped. On a device with no Telegram bot,
+`reply.telegram` is not offered at all, and a reminder or wakeup answers in the
+chat that set it.)NIMBUSDOC"},
   {"tool-catalog#web-live-web-search", "`web.*` - live web search",
    R"NIMBUSDOC(| Tool | Description (as registered) | Arguments | State |
 |---|---|---|---|

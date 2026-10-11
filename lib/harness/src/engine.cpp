@@ -199,6 +199,10 @@ std::string TurnEngine::takePendingMemResults() {
 // The input channel a turn arrived on, keyed by the routing chatId (P6). The
 // reply routes back to the SAME channel by default; the model can reach another
 // via the reply.speak / reply.telegram tools when the loop is on.
+bool TurnEngine::telegramOn() const {
+  return !d_.cfg.telegramConfigured || d_.cfg.telegramConfigured();
+}
+
 const char* TurnEngine::channelOf(const std::string& chatId) {
   if (chatId == "serial") return "the developer serial console";
   if (chatId == "voice")  return "the device microphone (hold-to-talk); your reply shows on the panel";
@@ -389,6 +393,16 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // failed call and a confusing walk-back, and described the admin surface).
   std::vector<orch::ToolRegistry::Spec> specs =
       d_.toolSpecs ? d_.toolSpecs(turnWho) : std::vector<orch::ToolRegistry::Spec>{};
+  // CUM-523: no Telegram bot, no Telegram tool. A web reminder's wakeup turn on a
+  // Telegram-less device called reply.telegram, failed, and told the owner it
+  // "couldn't send a separate Telegram alert". Dropping the spec here removes it
+  // from the prompt's tool list AND the loop's callable set (both read `specs`).
+  if (!telegramOn())
+    specs.erase(std::remove_if(specs.begin(), specs.end(),
+                               [](const orch::ToolRegistry::Spec& s) {
+                                 return s.name == "reply.telegram";
+                               }),
+                specs.end());
   // Pick the host BEFORE composing: the context budget is derived from the head
   // model's window (owner ask 2026-08-05 - caps derive from the context length
   // allowed for the task), so the model must be known when the prompt is sized.
@@ -1093,9 +1107,11 @@ void TurnEngine::handleMessage(const std::string& text, const std::string& fromN
     "\n[CHANNEL] This message arrived via " + channelOf(chatId) +
     ". Your orch_turn `reply` field is ALREADY delivered to this same channel - that is"
     " the one and only answer; never send the same answer twice." +
-    (loopActiveNow() ? " reply.speak additionally speaks a line on the device speaker;"
-                       " reply.telegram is ONLY for messaging a DIFFERENT allowlisted"
-                       " Telegram chat, never for answering this one." : "") +
+    (loopActiveNow() ? std::string(" reply.speak additionally speaks a line on the device speaker;") +
+                           (telegramOn() ? " reply.telegram is ONLY for messaging a DIFFERENT"
+                                           " allowlisted Telegram chat, never for answering this one."
+                                         : "")
+                     : std::string()) +
     "\n\n[USER]\n" + text;
   runTurn(inputs, chatId, text);   // text drives associative recall
   unverifiedTurn_ = false;
@@ -1149,7 +1165,16 @@ nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& cha
         "when you set it:\n\n"
       : "\n[SCHEDULED LOOP]\nYour recurring task \"" + name + "\" is firing on its schedule. "
         "There is no new owner message - do the task now and reply to the owner concisely.\n\n";
-  std::string inputs = takePendingMemResults() + takeSpawnNotes(target) + buildDynamicContext() + preamble + prompt;
+  // CUM-523: a one-shot (wakeup / reminder) is answered where it was set. Saying
+  // so stops the model sending a "separate alert" down another channel - the web
+  // reminder's turn did exactly that on a Telegram-less device.
+  const std::string where =
+      (once || ownerReminder)
+          ? "\n\n(Your reply is delivered to " + std::string(channelOf(target)) +
+                " - that IS the reminder. Do not send it to any other channel.)"
+          : std::string();
+  std::string inputs = takePendingMemResults() + takeSpawnNotes(target) + buildDynamicContext() +
+                       preamble + prompt + where;
   unverifiedTurn_ = false;   // a scheduled turn reads no fresh results
   o.ok = runTurn(inputs, target, prompt);
   scheduledTurn_ = false;
