@@ -24,7 +24,14 @@
 //   (j) a refused fallback still gets an honest cause; a built-in tool refusal
 //       (native_tool_not_metered) says so;
 //   (k) Mistral over the router starts a fresh conversation every turn (the router
-//       admits only POST /v1/conversations, never an append to /<id>).
+//       admits only POST /v1/conversations, never an append to /<id>);
+//   (l) a conversation marker never crosses to another upstream (every router
+//       selector shares the engine's one "cumulo" conversation slot), and the tool
+//       loop's stateless marker never rides to the OpenAI wire as a response id;
+//   (m) a pick whose last working selector is refused too is answered on the router
+//       default (pick -> last working -> default, each tried once);
+//   (n) every refusal cause fits the engine's 100-character cut, so the fix at the
+//       end of the sentence is never cut off.
 #include <cstdio>
 #include <string>
 
@@ -96,6 +103,12 @@ static std::string chatBody(const std::string& reply) {
 static std::string refusal(const char* reason) {
   return std::string("{\"error\":\"") + reason + "\",\"reason\":\"" + reason +
          "\",\"charged\":false,\"message\":\"refused\"}";
+}
+
+static std::string oaiLoopFinal(const std::string& reply) {   // the loop's orch_turn call
+  return "{\"id\":\"resp_f\",\"output\":[{\"type\":\"function_call\",\"call_id\":\"call_f\","
+         "\"name\":\"orch_turn\",\"arguments\":\"{\\\"reply\\\":\\\"" + reply +
+         "\\\",\\\"memory\\\":\\\"\\\"}\"}],\"usage\":{\"input_tokens\":60,\"output_tokens\":15}}";
 }
 
 static bool has(const std::string& hay, const std::string& needle) {
@@ -363,7 +376,118 @@ static void testMidLoopRefusalNotRerun(ndtest::Ctx& c) {
   c.ok(!t.toolCalls.empty(), "the tool did run");
   c.eq(rig.modelFor("cumulo"), "anthropic/claude-opus-5", "the pick is not touched mid-loop");
   c.ok(!has(t.reply, "rejected this device's key"), "the failure is not blamed on the key");
+  // anthropic/claude-opus-5 is 23 characters: named in full, the cause ran to 101 and
+  // the engine cut the fix to "under Model...".
+  c.ok(has(t.reply, "under Models."), "the fix sentence is whole (never cut by the engine's 100-character cap)");
+  c.ok(!has(t.reply, "\xE2\x80\xA6"), "no cut marker in the reply");
   clearProviderEnv();
+}
+
+static void testMarkerNeverCrossesUpstreams(ndtest::Ctx& c) {
+  std::printf("  -- (l) a conversation marker never crosses to another upstream --\n");
+  clearProviderEnv();
+  setenv("CUMULO_API_KEY", kKey, 1);
+  FakeHttpTransport tx;
+  tx.script.push_back(ex("/router/anthropic/v1/messages", 200, antBody("from claude")));
+  tx.script.push_back(ex("/router/openai/v1/responses", 200, respBody("from gpt")));
+  tx.script.push_back(ex("/router/mistral/v1/conversations", 200, misBody("from mistral")));
+  tx.script.push_back(ex("/router/openai/v1/responses", 200, respBody("gpt again")));
+  Config cfg;
+  NimbusdRig rig(cfg, baseOpt("rh-l", false), &tx);
+  const char* picks[] = {"anthropic/claude-sonnet-5", "openai/gpt-5.6", "mistral/mistral-large-latest", "openai/gpt-5.6"};
+  const char* replies[] = {"from claude", "from gpt", "from mistral", "gpt again"};
+  for (int i = 0; i < 4; i++) {
+    rig.applyOrchModel("cumulo", picks[i]);
+    c.ok(has(rig.say("owner", "next").reply, replies[i]), std::string("the turn on ") + picks[i] + " answers");
+  }
+  c.eqi((long)tx.seen.size(), 4, "one request per turn (nothing refused, nothing retried)");
+  if (tx.seen.size() == 4) {
+    c.ok(!has(tx.seen[1].body, "previous_response_id"), "the Anthropic marker never rides to OpenAI");
+    c.eq(tx.seen[2].path, "/router/mistral/v1/conversations", "Mistral starts its own conversation");
+    c.ok(!has(tx.seen[3].body, "previous_response_id"), "the Mistral conversation id never rides to OpenAI");
+  }
+  clearProviderEnv();
+}
+
+static void testLoopMarkerIsNotAResponseId(ndtest::Ctx& c) {
+  std::printf("  -- (l2) the tool loop's stateless marker never rides as a response id --\n");
+  clearProviderEnv();
+  setenv("CUMULO_API_KEY", kKey, 1);
+  FakeHttpTransport tx;
+  tx.script.push_back(ex("/router/openai/v1/responses", 200, oaiLoopFinal("looped")));
+  tx.script.push_back(ex("/router/openai/v1/responses", 200, respBody("single shot")));
+  Config cfg;
+  NimbusdRig rig(cfg, baseOpt("rh-l2", true), &tx);
+  rig.applyOrchModel("cumulo", "openai/gpt-5.6");
+  c.ok(has(rig.say("owner", "one").reply, "looped"), "the loop turn answers");
+  rig.updateSettings([](HostedSettings& s) { s.toolLoop = false; });
+  c.ok(has(rig.say("owner", "two").reply, "single shot"), "the single-shot turn answers");
+  c.eqi((long)tx.seen.size(), 2, "two requests");
+  if (tx.seen.size() == 2) c.ok(!has(tx.seen[1].body, "previous_response_id"), "no previous_response_id after the loop");
+  clearProviderEnv();
+}
+
+static void testRefusedFallbackFallsToDefault(ndtest::Ctx& c) {
+  std::printf("  -- (m) a refused last working selector falls to the router default, once --\n");
+  clearProviderEnv();
+  setenv("CUMULO_API_KEY", kKey, 1);
+  {
+    FakeHttpTransport tx;
+    tx.script.push_back(ex("/router/mistral/v1/conversations", 200, misBody("mistral here")));
+    tx.script.push_back(ex("/router/anthropic/v1/messages", 403, refusal("model_not_priced")));
+    tx.script.push_back(ex("/router/mistral/v1/conversations", 402, refusal("funding_cap_reached")));
+    tx.script.push_back(ex("/router/openai/v1/responses", 200, respBody("default answered")));
+    tx.script.push_back(ex("/router/openai/v1/responses", 200, respBody("next one")));
+    Config cfg;
+    NimbusdRig rig(cfg, baseOpt("rh-m", false), &tx);
+    rig.applyOrchModel("cumulo", "mistral/mistral-large-latest");
+    rig.say("owner", "hi");
+    rig.applyOrchModel("cumulo", "anthropic/claude-sonnet-5");
+    const TurnRecord t = rig.say("owner", "hi again");
+    c.ok(has(t.reply, "default answered"), "the router default answers the turn");
+    c.ok(has(t.reply, "does not offer anthropic/claude-sonnet-5") && has(t.reply, "so gpt-5.6 answered"),
+         "the notice names the refused pick and the model that answered");
+    c.eqi((long)tx.seen.size(), 4, "pick, last working, default: each tried once");
+    c.eq(rig.modelFor("cumulo"), "gpt-5.6", "the refused pick moves to the model that answered");
+    c.ok(has(rig.say("owner", "and now?").reply, "next one"), "the next turn answers on it");
+  }
+  {
+    FakeHttpTransport tx;
+    tx.script.push_back(ex("/router/mistral/v1/conversations", 200, misBody("mistral here")));
+    for (int i = 0; i < 2; i++) {   // the engine retries a failed head once
+      tx.script.push_back(ex("/router/anthropic/v1/messages", 403, refusal("model_not_priced")));
+      tx.script.push_back(ex("/router/mistral/v1/conversations", 402, refusal("funding_cap_reached")));
+      tx.script.push_back(ex("/router/openai/v1/responses", 403, refusal("model_not_priced")));
+    }
+    Config cfg;
+    NimbusdRig rig(cfg, baseOpt("rh-m2", false), &tx);
+    rig.applyOrchModel("cumulo", "mistral/mistral-large-latest");
+    rig.say("owner", "hi");
+    rig.applyOrchModel("cumulo", "anthropic/claude-sonnet-5");
+    const TurnRecord t = rig.say("owner", "hi again");
+    c.ok(has(t.reply, "does not offer gpt-5.6 right now"), "a refused default gets its honest cause");
+    c.eqi((long)tx.seen.size(), 7, "three attempts per head run, never a loop");
+    c.eq(rig.modelFor("cumulo"), "anthropic/claude-sonnet-5", "nothing answered, so the pick is left alone");
+  }
+  clearProviderEnv();
+}
+
+static void testCausesFitTheCut(ndtest::Ctx& c) {
+  std::printf("  -- (n) every refusal cause fits the engine's 100-character cut --\n");
+  int over = 0, unnamed = 0;
+  for (int k = (int)RefusalKind::None; k <= (int)RefusalKind::Other; k++) {
+    for (size_t n = 0; n <= 64; n++) {
+      const std::string sel = "anthropic/" + std::string(n, 'm');
+      const std::string cause = refusalCause((RefusalKind)k, sel);
+      if (cause.size() > 100) over++;
+      if (cause.find("that model") != std::string::npos && refusalCause((RefusalKind)k, "x").size() + sel.size() <= 101)
+        unnamed++;   // named "that model" although the selector would have fit
+    }
+  }
+  c.eqi(over, 0, "no kind and no selector length yields a cause over 100 characters");
+  c.eqi(unnamed, 0, "a selector that fits is named, not replaced");
+  c.ok(has(refusalCause(RefusalKind::Selector, "anthropic/claude-opus-5"), "under Models"),
+       "a 23-character pick keeps the fix");
 }
 
 int main() {
@@ -381,6 +505,10 @@ int main() {
   testFoldNeverGetsANotice(c);
   testHonestCauses(c);
   testMistralFreshConversation(c);
+  testMarkerNeverCrossesUpstreams(c);
+  testLoopMarkerIsNotAResponseId(c);
+  testRefusedFallbackFallsToDefault(c);
+  testCausesFitTheCut(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);
   std::printf("%s\n", c.failures ? "FAILED" : "PASSED");
   return c.failures ? 1 : 0;

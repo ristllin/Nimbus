@@ -58,8 +58,8 @@ same as a device:
 - **Sub-agents.** Background research and other sub-agents run on the Cumulo key.
 - **A model the router does not offer.** If the router refuses the model you
   picked, the reply says so and the assistant switches back to the last model that
-  worked, so the next message still gets an answer. Pick another model under
-  **Models**.
+  worked (or to the router's default model if that one is refused too), so the
+  next message still gets an answer. Pick another model under **Models**.
 
 ## Use it from your own code
 

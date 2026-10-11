@@ -59,10 +59,13 @@ inline RefusalKind classifyRefusal(const RouterRefusal& r) {
 // The engine renders a failed turn as "That didn't finish - <cause>. Nothing is
 // still running; ask again to retry." and maps a cause containing "key",
 // "network", "budget" or an "HTTP 4xx/5xx" token to its own generic wording, so
-// these causes avoid those words. The engine also cuts a cause at 100 characters,
-// so a long selector is named "that model" rather than losing the fix at the end.
-inline std::string refusalCause(RefusalKind k, const std::string& selector) {
-  const std::string name = selector.size() <= 24 ? selector : std::string("that model");
+// these causes avoid those words. The engine also cuts a cause at
+// kEngineCauseMax characters (lib/harness engine.cpp), so the selector is named
+// only when its whole sentence fits; a longer one is "that model", so the fix at
+// the end of the sentence is never the part that gets cut.
+constexpr size_t kEngineCauseMax = 100;
+
+inline std::string refusalSentence(RefusalKind k, const std::string& name) {
   switch (k) {
     case RefusalKind::Selector:
       return "the Cumulo router does not offer " + name + " right now. Choose another model under Models";
@@ -77,6 +80,11 @@ inline std::string refusalCause(RefusalKind k, const std::string& selector) {
     default:
       return std::string();
   }
+}
+
+inline std::string refusalCause(RefusalKind k, const std::string& selector) {
+  const std::string named = refusalSentence(k, selector);
+  return named.size() <= kEngineCauseMax ? named : refusalSentence(k, "that model");
 }
 
 // The line that opens a reply answered by a different model than the one picked.

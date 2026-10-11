@@ -307,18 +307,23 @@ reads the router's own reason from the refused request):
 
 | Router answer | What happens |
 |---|---|
-| The picked model is not offered (`model_not_priced`, 404) | The same turn is answered on the last router model that worked (else the router default), the reply opens with a line naming the refused model and the fix, and once that answer lands the pick moves to the model in use, so GET /api/orch shows it and the next turn answers |
+| The picked model is not offered (`model_not_priced`, 404) | The same turn is answered on the last router model that worked, else (none, or it is refused too) on the router default, each tried once; the reply opens with a line naming the refused model and the fix, and once that answer lands the pick moves to the model in use, so GET /api/orch shows it and the next turn answers |
 | That upstream is paused or its route is not allowed (`funding_cap_reached`, `provider_disabled`, `endpoint_not_allowed`) | The turn is answered on the router default with a line saying so; the pick is kept |
 | A provider built-in tool is not offered on a paying key (`native_tool_not_metered`) | "That didn't finish - the Cumulo router does not run provider built-in tools on this account. Remove them under Connectors." |
 | Credits or a plan are missing (402) | "That didn't finish - the Cumulo router needs credits or a plan for this account. Add credits in the portal." |
 | Rate limited (429) | the engine's rate-limit reply |
 
 Only a refusal of an attempt's first request is answered again on another model,
-so a tool that already ran is never repeated; a fallback that is refused too gets
-its own honest cause. The context fold runs through the same head: it is answered
+so a tool that already ran is never repeated; a refusal no model can answer gets
+its own honest cause, and the selector it names is replaced by "that model" when
+the sentence would not fit the engine's 100-character cut, so the fix at its end
+is always whole. The context fold runs through the same head: it is answered
 on the fallback with no notice in the summary and never moves the pick. Mistral
 over the router starts a new conversation every turn (the router admits only `POST
-/v1/conversations`). Host-tested offline in `tests/test_router_head.cpp`.
+/v1/conversations`), and a conversation marker is handed back only to the upstream
+that wrote it, so a pick switch never sends another upstream's id (or a tool loop's
+stateless marker) as OpenAI's `previous_response_id`. Host-tested offline in
+`tests/test_router_head.cpp`.
 
 ## Sub-agent fan-out (device parity)
 

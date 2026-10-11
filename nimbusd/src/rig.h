@@ -1429,12 +1429,36 @@ class NimbusdRig {
   // on); zai and any upstream the native fabric does not drive keep the single-shot
   // chat-completions path over /router/<upstream> with json_object (GLM behind the
   // router ignores json_schema, CUM-495).
+  //
+  // Every router selector shares the engine's ONE conversation slot for the
+  // "cumulo" host, so the marker an upstream leaves is stored tagged with that
+  // upstream and handed back only to it: a Mistral conversation id or an Anthropic
+  // "messages" marker never rides to the OpenAI Responses wire as
+  // previous_response_id after a pick switch.
   bool runRouterHead(const std::string& selector, HeadCall& c, HeadOut& o) {
-    std::string& conv = c.conv;
+    const nimbus::orch::RouterRoute rr = nimbus::orch::resolveRouterRoute(selector);
+    std::string conv = routerConvFor(c.conv, rr.upstream);
+    const bool ok = runRouterUpstream(rr, conv, c, o);
+    c.conv = conv.empty() ? std::string() : rr.upstream + kRouterConvSep + conv;
+    return ok;
+  }
+  static constexpr const char* kRouterConvSep = "~";
+  // The marker `upstream` may continue: only one it wrote itself, and never a
+  // stateless marker (the providers' "responses" / "messages" / "chat" name no
+  // server-side thread; the loop's "responses" would otherwise become the
+  // single-shot turn's previous_response_id once the tool loop is switched off).
+  static std::string routerConvFor(const std::string& stored, const std::string& upstream) {
+    const std::string tag = upstream + kRouterConvSep;
+    if (stored.compare(0, tag.size(), tag) != 0) return std::string();
+    const std::string marker = stored.substr(tag.size());
+    for (const char* stateless : {"responses", "messages", "chat"})
+      if (marker == stateless) return std::string();
+    return marker;
+  }
+  bool runRouterUpstream(const nimbus::orch::RouterRoute& rr, std::string& conv, HeadCall& c, HeadOut& o) {
     const std::string& ins = c.ins;
     const std::string& inp = c.inp;
     const agent::HeadTools* tools = c.tools;
-    const nimbus::orch::RouterRoute rr = nimbus::orch::resolveRouterRoute(selector);
     auto pd = routerHeadDeps(rr.model);
     if (rr.upstream == "anthropic")
       return agent::providers::orchTurnAnthropic(pd, conv, ins, inp, o.out, o.err, tools, o.usage);
@@ -1458,10 +1482,11 @@ class NimbusdRig {
   }
 
   // The Cumulo head turn (CUM-539). A refusal never leaves the assistant dead:
-  //   * the picked model is not offered (model_not_priced, 404): the pick goes back
-  //     to the last selector that worked (else the router default) and THIS turn is
-  //     answered on it, with a first line naming the refusal and the fix - so the
-  //     next turn answers too, and GET /api/orch shows the model actually in use;
+  //   * the picked model is not offered (model_not_priced, 404): THIS turn is
+  //     answered on the last selector that worked, else (none, or it is refused
+  //     too) on the router default, with a first line naming the refusal and the
+  //     fix; the pick moves to the model that answered - so the next turn answers
+  //     too, and GET /api/orch shows the model actually in use;
   //   * that upstream is paused or its route is not allowed (funding_cap_reached,
   //     provider_disabled, endpoint_not_allowed): this turn is answered on the
   //     router default, the pick is kept;
@@ -1489,17 +1514,22 @@ class NimbusdRig {
   // (the fold runs through this same head, with no turn in flight) gets the
   // answer only: no notice prefixed into the summary, and the owner's pick is
   // never moved by housekeeping.
-  bool answerOnFallback(const std::string& picked, const std::string& fallback, RefusalKind kind, HeadCall& c,
+  bool answerOnFallback(const std::string& picked, std::string fallback, RefusalKind kind, HeadCall& c,
                         HeadOut& o) {
     agent::hlog::logf("router refused %s (%s) - answering on %s", picked.c_str(), tap_.refusal().reason.c_str(),
                       fallback.c_str());
-    tap_.begin();
-    c.conv.clear();
-    o.out.clear();
-    o.err.clear();
-    if (!runRouterHead(fallback, c, o)) {
-      noteRefusal(classifyRefusal(tap_.refusal()), fallback, o);   // the fallback was refused too
-      return false;
+    if (!attemptOn(fallback, c, o)) {
+      if (!defaultIsNext(picked, fallback)) {
+        noteRefusal(classifyRefusal(tap_.refusal()), fallback, o);   // the fallback was refused too
+        return false;
+      }
+      agent::hlog::logf("router refused %s too (%s) - answering on %s", fallback.c_str(),
+                        tap_.refusal().reason.c_str(), kCumuloModel);
+      fallback = kCumuloModel;
+      if (!attemptOn(fallback, c, o)) {
+        noteRefusal(classifyRefusal(tap_.refusal()), fallback, o);
+        return false;
+      }
     }
     lastGoodCumulo_ = fallback;
     if (!eng_ || !eng_->turnInFlight()) return true;   // a fold, not a conversation turn
@@ -1508,6 +1538,26 @@ class NimbusdRig {
     if (kind == RefusalKind::Selector) setModelPick(kCumuloSlug, fallback == kCumuloModel ? std::string() : fallback);
     prefixReply(o.out, fallbackNotice(kind, picked, fallback));
     return true;
+  }
+
+  // One more head attempt on `selector` after a refusal: a fresh conversation, a
+  // clean output and the tap re-armed. False when it failed or was refused too.
+  bool attemptOn(const std::string& selector, HeadCall& c, HeadOut& o) {
+    tap_.begin();
+    c.conv.clear();
+    o.out.clear();
+    o.err.clear();
+    return runRouterHead(selector, c, o);
+  }
+
+  // The router default is the last resort after the fallback `tried` was refused
+  // too: tried once, only when that refusal came before any tool ran and names the
+  // model or its upstream (an account-wide refusal would refuse the default too).
+  bool defaultIsNext(const std::string& picked, const std::string& tried) const {
+    const RouterRefusal rf = tap_.refusal();
+    const RefusalKind k = classifyRefusal(rf);
+    return tried != kCumuloModel && picked != kCumuloModel && rf.firstRequest &&
+           (k == RefusalKind::Selector || k == RefusalKind::Upstream);
   }
 
   // A refusal no other model can answer: the badge learns what it means, and the
@@ -1520,9 +1570,10 @@ class NimbusdRig {
   }
 
 
-  // The selector a refused pick falls back to, or "" when none would help: a
+  // The selector a refused pick falls back to first, or "" when none would help: a
   // refused model goes back to the last selector that worked (else the router
-  // default); a paused upstream answers on the router default.
+  // default, which answerOnFallback also tries if that one is refused too); a
+  // paused upstream answers on the router default.
   std::string cumuloFallbackFor(const std::string& picked, RefusalKind kind) const {
     std::string fb;
     if (kind == RefusalKind::Selector)
