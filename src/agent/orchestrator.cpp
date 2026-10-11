@@ -45,7 +45,7 @@
 #include "version.h"                    // NIMBUS_FW_VERSION -> prompt identity + cmd replies
 #include "nimbus/fault.h"               // fault mask -> live capability manifest
 #include <solide/storage.h>             // SD mount -> hw.sd
-#include <solide/boards/board_solide_s3.h>  // board pixel count -> hw.ledCount (W10)
+#include <solide/board.h>        // the build's board profile -> hw.ledCount (W10, CUM-514)
 #include "nimbus/orch/world.h"          // SessionInfo / Hardware (composeInputs closure)
 #include "nimbus/orch/router_route.h"   // CUM-369: shared router "<upstream>/<model>" resolution
 
@@ -916,7 +916,11 @@ static TurnEngine::Deps buildTurnDeps() {
     in.hw.telegram = agent::telegram::enabled();
     in.hw.voiceReplies = agent::store::ttsEnabled();   // owner's "Voice replies" toggle (P2.5)
     in.hw.files = agent::files::available();            // E1 artifact store (SD-backed)
-    in.hw.ledCount = solide::kBoardSolideS3.led.count;  // board pixel count, not a prose literal
+    // CUM-514: the BUILD's board (the same -DSOLIDE_BOARD /api/state reports), not
+    // the Solide S3 constant - a Freenove all-in-one has one status pixel and draws
+    // the ring on its screen, and must not describe a 45-LED ring to its owner.
+    in.hw.ledCount = solide::board().led.count;
+    in.board = &agent::buildBoardIdentity();
     // W10: who this turn's message is from (multi-tenant honesty - the prompt
     // used to call everyone "your owner"). Pseudo-channels (web/serial/voice)
     // resolve to Admin via roleOfChat; a synthesis/scheduled turn keeps the

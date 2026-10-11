@@ -183,9 +183,11 @@ std::string composeInstructions(const ComposeInputs& in) {
                 "It answers a page at a time and tells you how far back it looked - "
                 "pass its 'to continue' token back as `before` to read further, and "
                 "if you stop before the end, say so.\n";
+  // CUM-514: the board is the build's own, never a hard-coded Solide S3.
+  const BoardIdentity& board = in.board ? *in.board : buildBoardIdentity();
   ci.identity = "\nYou are " + devName +
                 ", an always-on personal assistant (a Nimbus device), running in "
-                "Orchestrator mode on a Solide S3 (ESP32-S3-DevKitC-1) desk device.\n"
+                "Orchestrator mode on a " + board.name + " desk device.\n"
                 "Your brain right now: " + in.hostLabel + ".\n" +
                 (in.fw.empty() ? std::string()
                                : "Firmware: " + in.fw + ".\n") +
@@ -282,6 +284,8 @@ std::string composeInstructions(const ComposeInputs& in) {
   ci.directive = dir;
   Hardware hw = in.hw;
   hw.deviceName = devName.c_str();   // devName outlives the renderCapabilities call below
+  hw.display = board.display;        // static board facts (flash strings)
+  hw.ringOnScreen = !board.physicalRing;
   ci.capabilities = renderCapabilities(hw, in.tools);
   // "Advertised == callable" (§coherence): the tool list is ALWAYS advertised
   // (owner R7: the self-model used to lose all tool knowledge whenever the loop

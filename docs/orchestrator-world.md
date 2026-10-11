@@ -223,7 +223,9 @@ the constraint is device RAM):
 
 1. **Immutable rules** - safety + device rails (model cannot touch keys/
    priority/host; see §6).
-2. **Identity/version** - "You are Nimbus vX on an ESP32-S3 desk device…"
+2. **Identity/version** - "You are Nimbus vX on an ESP32-S3 desk device…", naming
+   the board the firmware was built for (Solide S3, or the Freenove display board
+   and its screen size), and the `hardware` skill describes that same board.
 3. **DIRECTIVE** - user text, verbatim.
 4. **Capability/world manifest** (§3) - hardware + tool list generated from
    the registry into the `## CAPABILITIES` section

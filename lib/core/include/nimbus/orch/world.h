@@ -44,6 +44,11 @@ struct Hardware {
   // W10: the LIVE ring LED count from the driver - the manifest hardcoded
   // "45-LED ring" while the animator already took the count as a parameter.
   uint16_t ledCount = 45;
+  // CUM-514: board facts from the build's board profile. `display` names the
+  // screen (nullptr = the 2.8" default); `ringOnScreen` = the board has no LED
+  // ring and the status ring is drawn on the screen (the Freenove all-in-one).
+  const char* display = nullptr;
+  bool ringOnScreen = false;
 };
 
 struct ToolInfo {

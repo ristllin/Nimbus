@@ -7,6 +7,7 @@
 
 #include "memory_subsystem.h"          // dataFs() + haveSd() + Lock (SD serialization)
 #include "../sys/agent_log.h"
+#include "nimbus/harness/board_identity.h"   // CUM-514: the build's own 'hardware' capsule
 #include "nimbus/harness/skill_md.h"   // portable parseSkillMd (host-tested)
 
 namespace agent::skills {
@@ -74,7 +75,8 @@ const char kDeepResearch[] PROGMEM =
 
 const char kArchitecture[] PROGMEM =
     "# Device architecture (how you run)\n"
-    "You are the head orchestrator on a Solide S3 (ESP32-S3) desk device with two modes:\n"
+    "You are the head orchestrator on a Nimbus desk device (ESP32-S3) with two modes\n"
+    "(the 'hardware' capsule names this board):\n"
     "- NOTIFIER: a BLE-driven status light for AI coding sessions (you are inactive).\n"
     "- ORCHESTRATOR (current): a hosted-LLM agent reachable over Telegram, the device\n"
     "  microphone (hold-to-talk), the web UI, and the serial console.\n\n"
@@ -89,19 +91,6 @@ const char kArchitecture[] PROGMEM =
     "backed by the SD card when present (degraded but functional on internal flash).\n"
     "You may NEVER set provider keys, the orchestrator host, or provider priority -\n"
     "those are human-only. You MAY retune the sub-session provider preference.\n";
-
-const char kHardware[] PROGMEM =
-    "# Device hardware\n"
-    "Board: ESP32-S3-DevKitC-1 N16R8 (16 MB flash, 8 MB PSRAM; TLS + the memory\n"
-    "working set live in PSRAM, ~300 KB internal SRAM is scarce).\n"
-    // ⚠ No display/input claim here: the live manifest (orch_world) and
-    // system.health name the color touch panel per board, and this capsule is
-    // static - so it defers to them rather than hardcoding hardware details.
-    "Peripherals: 45-LED WS2812B ring; a status display with its input device (the\n"
-    "live manifest names which); I2S MEMS microphone (INMP441/ICS-43434); MAX98357A I2S speaker\n"
-    "(both audio paths verified via acoustic loopback); microSD (orchestrator data\n"
-    "store); Wi-Fi 2.4 GHz; BLE (Notifier mode only). No battery gauge yet\n"
-    "(desk-powered). Call system.health for the LIVE status of each of these.\n";
 
 const char kToolsGuide[] PROGMEM =
     "# Using your tools\n"
@@ -153,9 +142,11 @@ const Builtin kBuiltins[] = {
     {"deep-research", "Deep research: multi-wave fan-out with cited report",
      "Multi-wave research fan-out producing a cited report - read BEFORE any deep/thorough research request.",
      kDeepResearch},
+    // CUM-514: the body is per board - nullptr here, served from
+    // buildBoardIdentity().hardware (a static flash string per board) in get().
     {"hardware", "The device's hardware inventory",
      "What hardware this body has (ring, screen, mic, speaker, battery, SD) and what each can do.",
-     kHardware},
+     nullptr},
     {"tools-guide", "How to use your own tools",
      "Which tool to reach for, per job - read when a task needs tools you rarely use.",
      kToolsGuide},
@@ -277,7 +268,8 @@ std::string get(const std::string& id) {
   std::string md = readMd(id);
   if (!md.empty()) return parseSkillMd(md).body;
   for (int i = 0; i < kBuiltinCount; i++)
-    if (id == kBuiltins[i].id) return std::string(kBuiltins[i].body);
+    if (id == kBuiltins[i].id)
+      return std::string(kBuiltins[i].body ? kBuiltins[i].body : buildBoardIdentity().hardware);
   return std::string();
 }
 

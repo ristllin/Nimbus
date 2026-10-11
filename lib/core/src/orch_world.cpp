@@ -94,8 +94,9 @@ std::string renderCapabilities(const Hardware& hw, const std::vector<ToolInfo>& 
   // (The `hw.version` clause was removed: the identity block already carries the
   // firmware version, and no caller ever populated the field - a dead branch.)
   std::vector<std::string> parts;
-  if (hw.ring)     parts.push_back(std::to_string(hw.ledCount) + "-LED ring");
-  if (hw.touch)    parts.push_back("2.8\" color touchscreen");
+  if (hw.ring)     parts.push_back(hw.ringOnScreen ? std::string("status ring drawn on the screen")
+                                                   : std::to_string(hw.ledCount) + "-LED ring");
+  if (hw.touch)    parts.push_back(hw.display ? hw.display : "2.8\" color touchscreen");
   if (hw.mic)      parts.push_back("microphone");
   if (hw.speaker)  parts.push_back("speaker");
   if (hw.battery)  parts.push_back("battery");
@@ -121,7 +122,11 @@ std::string renderCapabilities(const Hardware& hw, const std::vector<ToolInfo>& 
   // charge sensing, live voice) and failing at the wire. This is the human-readable
   // view of the device-action contract (ORCH_D_DEVICE); keep the two in sync.
   if (hw.ring)
-    out += "- The LED ring is a STATUS ring (colour + motion), NOT a display - it cannot "
+    out += std::string(hw.ringOnScreen
+                           ? "- The status ring (drawn on the screen - this board has no LED ring) "
+                             "is a STATUS ring"
+                           : "- The LED ring is a STATUS ring") +
+           " (colour + motion), NOT a display - it cannot "
            "show text or images. Drive it with a `led` action (mode solid/spinner/pulse/"
            "flash + an RGB colour, or mode rainbow for a self-animating hue wheel), turn it "
            "off or back to full with `lights`, or recolour it with `config.theme`. Those are "

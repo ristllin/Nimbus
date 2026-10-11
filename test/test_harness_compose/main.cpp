@@ -292,6 +292,37 @@ static void test_identity_uses_devname_and_host() {
                    std::string::npos);
 }
 
+// CUM-514: the identity line and the capability line describe the BUILD's board.
+// Bench (nimbus-light, a Freenove 2.8" CYD): "what hardware are you?" answered
+// "a hand-built Solide S3 ... 45-LED WS2812B ring ... XPT2046 resistive touch".
+static void test_identity_names_the_builds_board() {
+  ComposeInputs in = cannedInputs();
+  in.board = &agent::boardIdentity("freenove_s3", 320, 240);
+  in.hw.ledCount = 1;   // the Freenove's one status pixel (solide::board().led.count)
+  const std::string p = agent::composeInstructions(in);
+  TEST_ASSERT_TRUE(p.find("Orchestrator mode on a Freenove ESP32-S3 2.8\" display board "
+                          "(FNK0104B) desk device.") != std::string::npos);
+  TEST_ASSERT_TRUE(p.find("Solide") == std::string::npos);
+  TEST_ASSERT_TRUE(p.find("status ring drawn on the screen, 2.8\" color touchscreen") !=
+                   std::string::npos);
+  TEST_ASSERT_TRUE(p.find("-LED ring") == std::string::npos);
+  TEST_ASSERT_TRUE(p.find("- The status ring (drawn on the screen - this board has no LED "
+                          "ring) is a STATUS ring") != std::string::npos);
+
+  in.board = &agent::boardIdentity("freenove_s3", 480, 320);   // esp32s3-cyd-35
+  const std::string p35 = agent::composeInstructions(in);
+  TEST_ASSERT_TRUE(p35.find("3.5\" color touchscreen") != std::string::npos);
+  TEST_ASSERT_TRUE(p35.find("2.8\"") == std::string::npos);
+
+  // No board given = the build's own (solide_s3 on this host build): byte-identical
+  // to the blessed goldens.
+  in = cannedInputs();
+  const std::string d = agent::composeInstructions(in);
+  TEST_ASSERT_TRUE(d.find("Orchestrator mode on a Solide S3 (ESP32-S3-DevKitC-1) desk device.") !=
+                   std::string::npos);
+  TEST_ASSERT_TRUE(d.find("45-LED ring, 2.8\" color touchscreen") != std::string::npos);
+}
+
 static void test_empty_devname_falls_back_to_nimbus() {
   ComposeInputs in = cannedInputs();
   in.devName.clear();
@@ -522,6 +553,7 @@ int main(int, char**) {
   RUN_TEST(test_chat_summary_section_above_window);
   RUN_TEST(test_chat_summary_yields_to_window_by_clipping);
   RUN_TEST(test_identity_uses_devname_and_host);
+  RUN_TEST(test_identity_names_the_builds_board);
   RUN_TEST(test_empty_devname_falls_back_to_nimbus);
   RUN_TEST(test_role_line_uses_devname);
   RUN_TEST(test_speaker_line_role_aware);

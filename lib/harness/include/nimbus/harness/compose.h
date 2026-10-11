@@ -2,6 +2,7 @@
 #include <string>
 #include <vector>
 
+#include "nimbus/harness/board_identity.h"
 #include "nimbus/harness/config.h"
 #include "nimbus/orch/world.h"
 
@@ -31,6 +32,9 @@ struct ComposeInputs {
   std::string hostLabel;             // hostForPrompt(...)
   std::string now;                   // local "YYYY-MM-DD Day HH:MM TZ"; "" = clock unsynced
   std::string fw;                    // firmware version (+build) for the identity line
+  // CUM-514: the board this build runs on (identity line + the capability
+  // line's screen/ring facts). nullptr = buildBoardIdentity(), the build's own.
+  const BoardIdentity* board = nullptr;
   std::string directive;             // owner directive (OrchMemory::directive)
   std::string runningMemory;         // model working notes (OrchMemory::model)
   nimbus::orch::Hardware hw;         // live manifest flags (deviceName ignored -
