@@ -390,7 +390,9 @@ void checkDue(uint64_t nowEpoch, bool turnInFlight, uint32_t heap) {
         case orch::FireDecision::BlockedChatRevoked:
           if (l.enabled) { l.enabled = false; l.lastResult = orch::LastResult::Paused;
             l.pauseReason = orch::PauseReason::ChatRevoked;
-            if (g_alert) g_alert(AlertLevel::Warn, l.id, "loop '" + l.name + "' paused: its target chat is no longer allow-listed");
+            // CUM-505: also a revoked tenant, an emptied allowlist, or a member's chat
+            // while the bot is off - not only an allowlist removal.
+            if (g_alert) g_alert(AlertLevel::Warn, l.id, "routine '" + l.name + "' paused: its chat can no longer receive it");
             persist(); }
           break;
         case orch::FireDecision::BlockedDeviceTokens:
@@ -539,9 +541,10 @@ void sntpTick(uint32_t nowMs, bool netUp, bool upEdge) {
   const SntpKick::Why w = s_sntpKick.tick(nowMs, netUp, upEdge, synced);
   if (w == SntpKick::Why::None) return;
   restartSntpClient();
-  // Durable only for the evidence a bench reads (the first kick of an unsynced clock, or
-  // the owner's Sync now). Backstop retries and reconnect re-syncs can repeat for hours
-  // on a flapping or NTP-blocking network, so they stay RAM + serial only (flash wear).
+  // Durable only for the evidence a bench reads: a link-up kick while the clock is still
+  // unsynced (the boot join, or a reconnect before the first sync) and the owner's Sync
+  // now. Backstop retries and re-syncs of a synced clock can repeat for hours on a
+  // flapping or NTP-blocking network, so they stay RAM + serial only (flash wear).
   const bool durable = w == SntpKick::Why::Requested || (w == SntpKick::Why::LinkUp && !synced);
   const char* why = nimbus::wifi::sntpWhyName(w);
   const String tz = deviceTzOrUtc();
