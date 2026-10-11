@@ -102,6 +102,33 @@ prompt-injection channel aimed at the owner (`orch_memory_tools.cpp`).
 > [`orchestrator-storage.md`](orchestrator-storage.md) §3a. The original
 > design below is kept for reference.
 
+**How a history search matches words.** `memory.episodic` (and the web
+history search, `GET /api/mem/episodic?text=`) finds a row when **any** word of
+the search occurs in it, so a natural question works even when the owner used
+only one of the words: searching "advisor supervisor PhD" finds "my advisor is
+Dr. Leila Mansour". The same rule runs every text search on the device: the
+keyword fallback of `memory.search` and `memory.archive`, `files.search`, and
+`docs.search`.
+
+- Punctuation and the case of English letters never matter: "PhD-advisor?" is
+  the words "phd" and "advisor". Accented and non-Latin letters match as typed.
+- Common words do not count: "the", "is", "my", "what", "who", "again" and
+  other everyday words (and any one-letter word) are ignored. A search made only
+  of common words finds nothing and says so.
+- Plural and verb endings are trimmed, and a trimmed word also finds its longer
+  forms: "boats" finds "boat", "advised" finds "advisor".
+- A word of four or more letters matches inside longer words ("boat" finds
+  "lifeboat"); a shorter word must start a word ("phd" finds "PhDs", but "ai"
+  never matches "said").
+- With two or more counted words the results are **ranked**: rows holding more
+  of the different words come first, newest first among equals, up to the
+  requested limit (at most 200). When more rows matched than fit, the answer says
+  how many were left out. With one counted word, results are newest first, as
+  before.
+
+Before this rule, every word had to appear, so adding a synonym guaranteed an
+empty answer and the assistant concluded it had never been told (CUM-515).
+
 The original design splits this into (a) an **SQLite DB** for structured rows
 and (b) an **append-only JSONL day-file stream** (`/data/blob/YYYY-MM-DD.jsonl`)
 for the raw audit trail, plus adapter transcripts. Nimbus keeps that exact split

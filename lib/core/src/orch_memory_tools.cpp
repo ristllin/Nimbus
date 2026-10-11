@@ -1,7 +1,6 @@
 #include "nimbus/orch/memory_tools.h"
 
 #include <algorithm>
-#include <cctype>
 #include <cmath>
 #include <cstring>
 #include <utility>
@@ -199,32 +198,6 @@ bool nsAllowsEntry(const std::string& entryNs, const std::vector<std::string>& a
   return false;
 }
 
-std::string toLowerAscii(std::string s) {
-  for (char& c : s) c = (char)std::tolower((unsigned char)c);
-  return s;
-}
-
-// Lowercased query tokens (alphanumeric runs, length >= 2). Falls back to the
-// whole trimmed lowercased query when there is no such token (e.g. a non-Latin
-// query) so a plain substring match still works.
-std::vector<std::string> lexTokens(const std::string& query) {
-  std::vector<std::string> toks;
-  std::string cur;
-  for (char ch : query) {
-    const unsigned char c = (unsigned char)ch;
-    if (std::isalnum(c)) cur += (char)std::tolower(c);
-    else { if (cur.size() >= 2) toks.push_back(cur); cur.clear(); }
-  }
-  if (cur.size() >= 2) toks.push_back(cur);
-  if (toks.empty()) {
-    const std::string q = toLowerAscii(query);
-    const size_t a = q.find_first_not_of(" \t\r\n");
-    const size_t b = q.find_last_not_of(" \t\r\n");
-    if (a != std::string::npos) toks.push_back(q.substr(a, b - a + 1));
-  }
-  return toks;
-}
-
 // Mirror of VectorMemory::isExpiredRaw (orch_vector_memory.cpp) over the public
 // VecEntry fields, so the keyword fallback hides the SAME entries the semantic
 // path drops at query time (a fact the owner set to expire must not resurface
@@ -239,12 +212,14 @@ bool entryExpired(const VecEntry& e, uint32_t nowHours) {
   return (int64_t)age > (int64_t)e.ttlHours;
 }
 
-// Count query tokens whose text appears in `contentLc` (already lowercased).
-int lexScore(const std::string& contentLc, const std::vector<std::string>& toks) {
-  int hits = 0;
-  for (const auto& t : toks)
-    if (!t.empty() && contentLc.find(t) != std::string::npos) hits++;
-  return hits;
+// Appended to a keyword fallback's empty answer when the query held only
+// common words (lexical.h ignores them), so the model searches again with a
+// distinctive word instead of concluding the memory is gone.
+std::string commonWordsHint(const LexQuery& lq) {
+  return lq.onlyCommonWords()
+             ? std::string(" Every word in that query is a common word that keyword "
+                           "search ignores - search again with a distinctive word.")
+             : std::string();
 }
 
 // Bound on entries examined by a keyword fallback, so a full store cannot turn a
@@ -472,7 +447,7 @@ ToolResult lexicalSearchFallback(const MemoryContext& ctx, const std::string& qu
   const std::string label = "keyword match, embeddings unavailable: " +
                             embedFailLabelReason(eerr);
   const std::vector<std::string> allow = readSetFor(who);
-  const std::vector<std::string> toks = lexTokens(query);
+  const LexQuery lq = lexParse(query);   // the shared word rule (CUM-515)
   const uint32_t nowH = ctx.nowHours ? ctx.nowHours() : 0;
   std::vector<std::pair<int, std::string>> found;   // (keyword hits, bullet)
   size_t scanned = 0;
@@ -480,7 +455,7 @@ ToolResult lexicalSearchFallback(const MemoryContext& ctx, const std::string& qu
     if (++scanned > kLexScanMax) break;
     if (!nsAllowsEntry(e.ns, allow)) continue;       // never widen the read boundary
     if (entryExpired(e, nowH)) continue;             // same query-time TTL as semantic search
-    const int sc = lexScore(toLowerAscii(e.content), toks);
+    const int sc = lexCoverage(e.content, lq);       // distinct words matched, in place
     if (sc <= 0) continue;
     found.push_back({sc, "- [" + std::to_string((int)(e.importance * 100)) + "%] " +
                              e.content + "\n"});
@@ -493,7 +468,7 @@ ToolResult lexicalSearchFallback(const MemoryContext& ctx, const std::string& qu
   std::string out;
   int n = 0;
   for (const auto& f : found) { if (n >= k) break; out += f.second; n++; }
-  if (n == 0) return ToolResult::ok("No memories matched (" + label + ").");
+  if (n == 0) return ToolResult::ok("No memories matched (" + label + ")." + commonWordsHint(lq));
   return ToolResult::ok("Found " + std::to_string(n) + " memories (" + label + "):\n" + out);
 }
 
@@ -553,12 +528,12 @@ ToolResult lexicalArchiveFallback(const MemoryContext& ctx, const std::string& q
                                   int k, const Principal& who, const std::string& eerr) {
   const std::string label = "keyword match, embeddings unavailable: " +
                             embedFailLabelReason(eerr);
-  const std::vector<std::string> toks = lexTokens(query);
+  const LexQuery lq = lexParse(query);   // the shared word rule (CUM-515)
   std::vector<std::pair<int, std::string>> found;
   size_t scanned = 0;
   for (const auto& e : ctx.archive->getAll(readSetFor(who))) {   // already ns-scoped
     if (++scanned > kLexScanMax) break;
-    const int sc = lexScore(toLowerAscii(e.content), toks);
+    const int sc = lexCoverage(e.content, lq);
     if (sc <= 0) continue;
     found.push_back({sc, archiveBullet(e.content, e.importance, e.id)});
   }
@@ -568,7 +543,8 @@ ToolResult lexicalArchiveFallback(const MemoryContext& ctx, const std::string& q
   std::string out;
   int n = 0;
   for (const auto& f : found) { if (n >= k) break; out += f.second; n++; }
-  if (n == 0) return ToolResult::ok("No matching archived memories (" + label + ").");
+  if (n == 0)
+    return ToolResult::ok("No matching archived memories (" + label + ")." + commonWordsHint(lq));
   return ToolResult::ok("Found " + std::to_string(n) + " archived memories (" + label +
                         "; restore one with action=restore, id=...):\n" + out);
 }
@@ -717,6 +693,17 @@ ToolResult doConfig(const MemoryContext& ctx, JsonObjectConst a) {
 }
 
 // ---- memory.episodic (read_recent / filtered blob reads) --------------------
+// A ranked page keeps only its best rows: say when more matched, so a short
+// page is not read as everything the history holds. Adding words widens an
+// any-word search, so the advice is the narrowing moves: one distinctive word
+// (which pages newest-first through every match) or a time window.
+std::string unshownNote(int matched, int shown) {
+  if (matched <= shown) return std::string();
+  return "[" + std::to_string(matched - shown) +
+         " more matching rows in this range are not shown - raise limit, search one "
+         "distinctive word, or narrow with since_hours/before_hours]\n";
+}
+
 // Read-only recall over the "everything that happened" store: past user/assistant
 // messages, tool outputs, media artifacts. Filter by kind/session/text; newest
 // first, capped. Complements memory.search (semantic) with literal/temporal recall.
@@ -741,6 +728,15 @@ ToolResult doEpisodic(const MemoryContext& ctx, JsonObjectConst a, const Princip
   }
   std::string t = strArg(a, "text");
   if (!t.empty()) q.textContains = t;
+  // The store applies the shared word rule (lexical.h, CUM-515); its shape here
+  // lets the answer say WHY nothing matched and whether the page is ranked.
+  const LexShape shape = lexShape(t);
+  if (shape == LexShape::CommonOnly)
+    return ToolResult::ok(
+        "No matching episodic messages: every word in that search is a common word "
+        "(like \"the\", \"my\" or \"what\") that search ignores. Search again with a "
+        "distinctive word from the conversation.");
+  const bool ranked = shape == LexShape::Ranked;
   std::string kindStr = strArg(a, "kind");
   MsgKind k;
   if (!kindStr.empty() && kindFromName(kindStr.c_str(), k)) { q.haveKind = true; q.kind = k; }
@@ -786,9 +782,10 @@ ToolResult doEpisodic(const MemoryContext& ctx, JsonObjectConst a, const Princip
     if (!m.blobPath.empty()) out += " (" + m.blobPath + ")";
     out += "\n";
   }
+  if (ranked) out += unshownNote(qi.matched, (int)rows.size());
   return ToolResult::ok("Episodic (" + std::to_string(rows.size()) + " of " +
-                        std::to_string(ctx.episodic->messageCount()) + " indexed):\n" +
-                        out + floorNote);
+                        std::to_string(ctx.episodic->messageCount()) + " indexed" +
+                        (ranked ? ", best match first" : "") + "):\n" + out + floorNote);
 }
 
 // ---- memory.scratchpad ------------------------------------------------------
@@ -922,7 +919,10 @@ void registerMemoryTools(ToolRegistry& reg, const MemoryContext& ctx) {
             "switches, storage changes, nightly-dream outcomes - so questions like "
             "'did you restart?' or 'what happened today?' are answerable from data. "
             "The search reaches months back, beyond what is loaded at startup, so "
-            "SEARCH IT before saying you do not remember something. It answers one "
+            "SEARCH IT before saying you do not remember something. `text` finds rows "
+            "containing ANY of its words (common words like 'the' or 'my' are ignored, "
+            "'boats' also finds 'boat') and ranks rows holding more of them first, so "
+            "one search can carry a few likely words. It answers one "
             "page at a time: when the result ends with a 'to continue' token, pass "
             "it back as `before` to read further into the past.",
             [ctx](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) { return doEpisodic(ctx, a, who); },

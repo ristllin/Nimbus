@@ -3,6 +3,8 @@
 #include <string>
 #include <vector>
 
+#include "nimbus/orch/lexical.h"   // the shared word-match rule (CUM-515)
+
 // episodic - the "everything that ever happened" store: every session, message,
 // and artifact, queryable by date / kind / session / text. It combines an
 // append-only audit stream with filtered reads plus the session/message rows.
@@ -52,7 +54,8 @@ struct EpisodicMessage {
 
 // Query filter for messages (any field left at its default is "don't care").
 // The query model shared by every backend: by session, kind, time
-// window, and a case-sensitive substring over `text` (full-text-ish).
+// window, and a word search over `text` (the lexical.h rule: any counted word
+// matches, rows holding more of the words rank first).
 struct MsgQuery {
   std::string sessionId;             // "" => any session
   bool        haveKind = false;
@@ -66,8 +69,10 @@ struct MsgQuery {
   std::vector<MsgKind> alsoKinds;
   uint32_t    sinceHours = 0;        // inclusive lower bound (0 => no bound)
   uint32_t    beforeHours = 0;       // exclusive upper bound (0 => no bound)
-  std::string textContains;          // "" => no text filter
-  int         limit = 50;            // max rows (most-recent first)
+  std::string textContains;          // "" => no text filter; else words (lexical.h)
+  // Max rows. Most-recent first, except a ranked text search (2+ counted words),
+  // which returns its best rows first and caps at kEpiRankedMax.
+  int         limit = 50;
   // v3.7.0 READ BOUNDARY (distinct from sessionId, which is a caller's own
   // convenience filter). Empty = unscoped, for maintenance passes that
   // legitimately span every session (retention prune). A model-facing query
@@ -111,19 +116,87 @@ struct EpiQueryInfo {
   std::string nextBefore;       // token to pass as MsgQuery::before to continue
   int      coldFiles = 0;       // day-streams opened by the cold pass
   size_t   coldBytes = 0;       // bytes the cold pass read
+  // Rows that matched the query (every filter, text included) in the range
+  // searched. A ranked search keeps only its best `limit`, so this can exceed
+  // the rows returned - the caller says so instead of implying the page is
+  // everything.
+  int      matched = 0;
 };
 
-// Case-insensitive, ALL-of-terms text match: the needle is split on whitespace
-// and every term must appear. "bilge pump" matches "the Bilge Pump serial" -
-// the substring match it replaces missed both the case and the word order.
-// Empty needle matches everything.
+// The lexical.h word match as a yes/no: true when ANY counted word of `needle`
+// occurs in `hay` (case-insensitive, stems, stop words ignored). A needle with
+// no words at all filters nothing (true); one made only of common words
+// matches nothing (false). It used to require EVERY word (CUM-515).
+// Convenience for one-off checks: it parses the needle on every call, so a
+// loop over many rows parses once with lexParse and calls lexCoverage.
 bool epiTextMatch(const std::string& hay, const std::string& needle);
 
-// Ranked variant for content search: 0 when not every term is present (same
-// all-terms gate as epiTextMatch), else a BM25-lite score = summed term
-// frequency (no IDF - the file corpus is tiny and hard-capped, so document
-// frequency adds cost without ranking value). Higher = more on-topic.
+// Ranked variant for content search (files.search): 0 when no counted word
+// occurs, else lexRank - coverage first (how many DIFFERENT words), total
+// occurrences second. No IDF: the file corpus is tiny and hard-capped, so
+// document frequency adds cost without ranking value. Higher = more on-topic.
 int  textMatchScore(const std::string& hay, const std::string& needle);
+
+// Most rows a ranked text search keeps (= the web route's limit clamp). A
+// ranked page holds its best rows so far, so it needs a bound even when the
+// caller asked for "no limit".
+inline constexpr int kEpiRankedMax = 200;
+
+// Every non-text filter of `q` on one row: the paging cursor (skipped when
+// beforeSfx is 0), session, the v3.7.0 read boundary, kind, and time window.
+bool epiPassesFilters(const MsgQuery& q, const EpisodicMessage& m, uint32_t beforeSfx);
+
+// One query's result page, shared by every EpisodicStore backend so the text
+// rule and the ranking are identical everywhere (the in-memory reference, the
+// RAM ring, the SD index and the cold pass all feed the same collector).
+//
+//   * Unranked - no text filter, or ONE counted word (every match then scores
+//     the same, so best-first IS newest-first): keeps the first `limit` rows
+//     offered, newest-first, and done() tells the scan to stop. Paging is
+//     exactly the pre-CUM-515 behavior: every match is reachable.
+//   * Ranked - 2+ counted words: keeps the page best-first as rows arrive (by
+//     coverage; ties: the newer row, which arrives first) and, once full,
+//     replaces its worst row with any strictly better one. It stops (done())
+//     only when the page is full of rows holding EVERY word - nothing can beat
+//     them - so the cursor never skips a full match. Otherwise it examines the
+//     caller's whole window; a partial match that ranked below the cut is
+//     counted in matched() but not returned.
+//
+// Memory bound: besides the page itself (the same <= limit rows a query
+// always returned) a ranked page holds one score byte per kept row, reserved
+// once on the first match - at most kEpiRankedMax bytes of heap - plus the
+// parsed query (~220 bytes, inline). Matching allocates nothing per row.
+class EpiCollector {
+ public:
+  EpiCollector(const MsgQuery& q, std::vector<EpisodicMessage>& out);
+
+  // Score one row that passed every non-text filter (0 = no text match; 1 for
+  // every row when there is no text filter). Counts it in matched() and
+  // remembers `id` as the oldest row examined so far - the cursor a
+  // window-bounded scan continues below.
+  int  consider(const char* id, size_t idLen, const char* text, size_t textLen);
+  // Would a row with this score enter the page? Lets a scan skip building rows
+  // that cannot (ties never displace the newer row already kept).
+  bool wants(int score) const;
+  void add(EpisodicMessage&& m, int score);   // only after wants(score)
+  // consider + wants + add for a row already built; returns done().
+  bool offer(EpisodicMessage&& m);
+
+  bool full() const { return limit_ > 0 && (int)out_.size() >= limit_; }
+  bool done() const;                                         // stop scanning now
+  bool impossible() const { return lq_.onlyCommonWords(); }  // nothing can match
+  int  matched() const { return matched_; }
+  const std::string& lastExamined() const { return examined_; }
+
+ private:
+  LexQuery lq_;
+  std::vector<EpisodicMessage>& out_;
+  std::vector<uint8_t> scores_;   // parallel to out_, best-first (ranked only)
+  std::string examined_;          // id of the oldest row considered
+  int  limit_ = 0;
+  int  matched_ = 0;
+  bool ranked_ = false;
+};
 
 // Numeric suffix of a device row id ("m0000a1f3" -> 0xa1f3); 0 when it does not
 // parse. Ids are minted monotonically, so the suffix orders rows chronologically.
@@ -159,6 +232,8 @@ class InMemoryEpisodicStore : public EpisodicStore {
   void addMessage(const EpisodicMessage& m) override;
   std::vector<EpisodicSession> sessions(const std::string& status = "") const override;
   std::vector<EpisodicMessage> query(const MsgQuery& q) const override;
+  // Reports `matched` (no cold tier, so the rest of EpiQueryInfo stays empty).
+  std::vector<EpisodicMessage> query(const MsgQuery& q, EpiQueryInfo* info) const override;
   int messageCount() const override { return (int)msgs_.size(); }
 
   // Whole-store binary blob for device persistence (LittleFS /data/episodic.bin),

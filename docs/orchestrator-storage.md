@@ -182,8 +182,9 @@ resolves the long-standing **F10 "SQLite-on-SD unbuilt"** item without the lib.
   reads without SD I/O. It stops being the system-of-record and becomes a cache.
 - **Query path:** the existing `MsgQuery` (session/kind/time-window/textContains/
   limit) is served index-first (skip day-files outside the window; reject on
-  session/kind before opening the JSONL; textContains streams the survivors up to
-  `limit`). A window fully inside the recent ring answers from RAM with zero SD I/O.
+  session/kind before opening the JSONL; textContains scores the survivors by the
+  shared word rule, see "Text search" in §3a). A window fully inside the recent ring
+  answers from RAM with zero SD I/O.
   Same semantics the in-memory store is host-tested against ⇒ tests transfer.
 
 ### 3a. Deep history - reaching below the boot index (v4.0.0)
@@ -197,9 +198,26 @@ in the index** - a plain query cannot see them, and for a while nothing said so.
 Deep history closes that gap without moving the cliff (raising the budget just
 delays it and costs RAM + boot time):
 
-- **`epiTextMatch`** - the text filter is case-insensitive and matches every
-  whitespace-separated term in any order, so "bilge pump" finds "the Bilge Pump
-  serial". The old case-sensitive substring missed both.
+- **Text search** (`nimbus/orch/lexical.h`, CUM-515) - the `text` filter splits the
+  query into words (whitespace and punctuation), drops common words ("the", "my",
+  "what", ...) and one-letter words, trims one plural or verb suffix ("boats" ->
+  "boat"), and matches case-insensitively by substring (a word under 4 bytes must
+  start a word, so "ai" never matches "said"). A row matches when **any** counted word
+  occurs. With two or more counted words the page is **ranked**: rows holding more of
+  the different words come first (ties: newest first), the store examines every row
+  in the call's window (the RAM ring, the read-budgeted index, or the cold budget)
+  and keeps the best `limit` (capped at 200), and `EpiQueryInfo::matched` reports how
+  many rows matched so a short page is never presented as everything. The scan stops
+  early once the page is full of rows holding **every** word (nothing can beat them),
+  so paging with the cursor never skips a full match; a partial match that ranked
+  below the cut in its window is counted but not returned. One counted
+  word keeps the old contract exactly: newest-first, stop at `limit`, page with no row
+  lost. A query of only common words matches nothing and reads nothing. The old rule
+  required **every** word, so "advisor supervisor PhD" found nothing when the owner
+  had only ever said "my advisor is Dr. Leila Mansour" (bench B, 2026-10-10). Memory:
+  the parsed query is ~220 bytes on the caller's stack, a ranked page adds one score
+  byte per kept row (at most 200 bytes of heap), and matching scans each row in place
+  with no per-row allocation (the old matcher lowercased a full copy of every row).
 - **Cold query** (`MsgQuery::coldScan`, opt-in) - when the indexed range comes up
   short, walk the day-streams *below each file's own index floor*, newest record
   first, reading backward in bounded windows. The unindexed region is **per file**:
@@ -218,7 +236,8 @@ delays it and costs RAM + boot time):
 Surfaces: `memory.episodic` cold-scans by default and takes `before`; its result
 ends with a "searched back to `<date>`; older history exists … `before=<token>`"
 line when there is more. `GET /api/mem/episodic` gains `cold` / `before` params and
-returns `searchedTo` / `olderExists` / `nextBefore`; `GET /api/mem/stats` exposes
+returns `searchedTo` / `olderExists` / `nextBefore` (and `matched`, the rows the `text`
+filter matched in the range searched); `GET /api/mem/stats` exposes
 `epiTruncated` + `epiFloor`. The `[HOW YOU RUN]` prompt tells the model the log
 reaches months back and to search it before claiming not to remember. Hot per-turn
 windows never set `coldScan`, so they stay zero-read.

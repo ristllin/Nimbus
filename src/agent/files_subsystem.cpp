@@ -899,9 +899,10 @@ void registerTools() {
           R"({"type":"object","properties":{"project":{"type":"string"},"name":{"type":"string"},"offset":{"type":"number"}},"required":["project","name"]})");
   // Content search: the head asks "which of my saved docs mention X" without
   // knowing exact names. Scans TEXT doc bodies only (readable by the caller),
-  // ranks by term-frequency (textMatchScore), returns the best matches with a
-  // snippet around the first hit. Bounded: the store is hard-capped at 256
-  // files, each read is size-limited, so a query is a bounded on-demand scan -
+  // ranks by textMatchScore (the shared lexical.h word rule, CUM-515: how many
+  // of the words a doc holds, then how often), returns the best matches with a
+  // snippet around the earliest matching word. Bounded: the store is hard-capped
+  // at 256 files, each read is size-limited, so a query is a bounded on-demand scan -
   // no index to maintain (the corpus is too small for BM25's IDF to earn its
   // cost). For a MEANING search over facts use memory.search; for conversation
   // history use memory.episodic.
@@ -915,6 +916,7 @@ void registerTools() {
             if (qy.empty()) return nimbus::orch::ToolResult::fail("need 'query'");
             struct Hit { std::string project, name, snippet; int score; };
             std::vector<Hit> hits;
+            const nimbus::orch::LexQuery qlex = nimbus::orch::lexParse(qy);
             {
               memory::Lock g;
               if (!available())
@@ -925,18 +927,11 @@ void registerTools() {
                 std::string body = readWhole(e->project, e->name, 64 * 1024);
                 int sc = nimbus::orch::textMatchScore(body, qy);
                 if (sc <= 0) continue;
-                // Snippet: a window around the first term hit, single-line. Anchor on
-                // the first NON-whitespace token - a query with a leading space would
-                // otherwise yield t0="" (find(" ")==0), matching at offset 0 and
-                // snipping the doc's head instead of the actual hit.
-                std::string low = body;
-                for (char& c : low) if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
-                size_t tb = qy.find_first_not_of(" \t\r\n");
-                std::string t0 = (tb == std::string::npos)
-                                     ? std::string()
-                                     : qy.substr(tb, qy.find_first_of(" \t\r\n", tb) - tb);
-                for (char& c : t0) if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
-                size_t at = t0.empty() ? std::string::npos : low.find(t0);
+                // Snippet: a window around the earliest word that MATCHED, single-
+                // line. Any one word is enough to match now (CUM-515), so the
+                // query's first word may not occur in the doc at all - anchoring on
+                // it snipped the doc's head instead of the hit.
+                size_t at = nimbus::orch::lexFirstHit(body.data(), body.size(), qlex);
                 size_t s0 = at == std::string::npos ? 0 : (at > 40 ? at - 40 : 0);
                 std::string snip = body.substr(s0, 160);
                 for (char& c : snip) if (c == '\n' || c == '\r' || c == '\t') c = ' ';

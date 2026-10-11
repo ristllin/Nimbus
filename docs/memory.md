@@ -129,6 +129,13 @@ whole scan. This is the counter-lesson to "route churn to PSRAM" - a small
 bounded internal read on a stack-tight task is the correct shape. Full design:
 [`orchestrator-storage.md`](orchestrator-storage.md) §3a.
 
+The **word match** every text search runs (`nimbus/orch/lexical.h`, CUM-515) holds to
+the same shape: the parsed query is a fixed ~220-byte value on the querying task's
+stack, each row is scanned in place (no lowercased copy, nothing allocated per row),
+and a ranked page adds one score byte per kept row - at most 200 bytes of heap.
+`test_orch_lexical` counts heap allocations and fails if matching or a no-match store
+scan makes any.
+
 ### The heap floors are INTERNAL-only guards - not a whole-device budget
 
 `agent_config.h` defines `ORCH_TURN_HARD_FLOOR` / `ORCH_AUTO_TURN_MIN_HEAP` /

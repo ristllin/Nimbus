@@ -43,12 +43,14 @@ const DocSection* find(const std::string& id);
 // The file whose slug matches; nullptr when unknown.
 const DocFile* findFile(const std::string& slug);
 
-// Keyword AND-match (epiTextMatch - the host-tested episodic matcher) over
-// title+body. Fills out[0..max) with matching sections in table order; returns
-// the number of hits (never more than max).
+// Ranked keyword search over title+body, by the shared word rule
+// (nimbus/orch/lexical.h, CUM-515): a section matches when ANY counted word of
+// the query occurs; sections holding more of the words rank first, then more
+// occurrences, then table order. Fills out[0..n) best-first; returns n (never
+// more than max, and at most 16). Scans the rodata in place - no copies.
 size_t search(const std::string& query, const DocSection** out, size_t max);
 
-// A one-line snippet around the first occurrence of the query's first keyword
+// A one-line snippet around the earliest occurrence of any counted query word
 // in the section body (title fallback: the body's first line). <= ~160 bytes,
 // trimmed at UTF-8 boundaries.
 std::string snippet(const DocSection& s, const std::string& query);

@@ -223,16 +223,29 @@ static void test_kind_set_includes_media_but_not_trace() {
 }
 
 
+// CUM-515 re-bless (reason): this test used to pin the ALL-of-terms gate
+// ("bilge diesel" -> 0), which is exactly the rule that made natural questions
+// find nothing. textMatchScore now ranks partial matches: coverage (how many
+// DIFFERENT words) first, occurrences second - lexRank = coverage*1000 + hits.
 static void test_text_match_score() {
-  // all-of-terms gate: a missing term scores 0
-  TEST_ASSERT_EQUAL_INT(0, textMatchScore("the bilge pump serial", "bilge diesel"));
-  // present terms score their summed frequency, case-insensitive
-  TEST_ASSERT_EQUAL_INT(3, textMatchScore("Pump the pump, pump it", "pump"));
-  TEST_ASSERT_EQUAL_INT(2, textMatchScore("Bilge PUMP and bilge tank", "bilge"));
-  // multi-term: sum across terms, order-independent
-  TEST_ASSERT_EQUAL_INT(3, textMatchScore("bilge pump; the pump runs", "pump bilge"));
-  // empty needle scores 0 (nothing to rank)
+  // one of two words present: a match now, ranked below a row with both
+  TEST_ASSERT_EQUAL_INT(1001, textMatchScore("the bilge pump serial", "bilge diesel"));
+  TEST_ASSERT_EQUAL_INT(2002, textMatchScore("the bilge pump serial", "bilge pump"));
+  // no counted word present still scores 0
+  TEST_ASSERT_EQUAL_INT(0, textMatchScore("the bilge pump serial", "anchor diesel"));
+  // occurrences break ties inside one coverage level, case-insensitive
+  TEST_ASSERT_EQUAL_INT(1003, textMatchScore("Pump the pump, pump it", "pump"));
+  TEST_ASSERT_EQUAL_INT(1002, textMatchScore("Bilge PUMP and bilge tank", "bilge"));
+  // multi-term: coverage 2, hits summed across terms, order-independent
+  TEST_ASSERT_EQUAL_INT(2003, textMatchScore("bilge pump; the pump runs", "pump bilge"));
+  // coverage dominates frequency: one word repeated 50 times never outranks
+  // a short text holding both words
+  std::string spam;
+  for (int i = 0; i < 50; i++) spam += "pump ";
+  TEST_ASSERT_TRUE(textMatchScore("bilge pump", "bilge pump") > textMatchScore(spam, "bilge pump"));
+  // empty / common-words-only needles score 0 (nothing to rank)
   TEST_ASSERT_EQUAL_INT(0, textMatchScore("anything", ""));
+  TEST_ASSERT_EQUAL_INT(0, textMatchScore("the pump is here", "the is"));
 }
 
 int main(int, char**) {

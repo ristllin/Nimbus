@@ -234,25 +234,24 @@ bool AppendLogEpisodicStore::readRec(const IdxRec& r, EpisodicMessage& out) cons
   return decodeEpisodicLine(line, out);
 }
 
-std::vector<EpisodicMessage> AppendLogEpisodicStore::queryRing(const MsgQuery& q) const {
-  std::vector<EpisodicMessage> out;
+void AppendLogEpisodicStore::queryRing(const MsgQuery& q, EpiCollector& col) const {
   const uint32_t beforeSfx = epiIdSuffix(q.before);
   for (auto it = recent_.rbegin(); it != recent_.rend(); ++it) {
     // Run the pre-filters first (only the id/session bridges below allocate a small
-    // transient std::string; the kind/time checks are alloc-free), so only a
-    // surviving row pays for the full CachedMsg -> EpisodicMessage conversion.
+    // transient std::string; the kind/time checks are alloc-free), then score the
+    // text IN PLACE, so only a row that enters the page pays for the full
+    // CachedMsg -> EpisodicMessage conversion.
     if (beforeSfx && epiIdSuffix(st(it->id)) >= beforeSfx) continue;
     if (!q.sessionId.empty() && q.sessionId != it->sessionId.c_str()) continue;
     if (!q.sessionVisible(st(it->sessionId))) continue;   // v3.7.0 read boundary
     if (!q.kindVisible(it->kind)) continue;
     if (q.sinceHours && it->tsHours < q.sinceHours) continue;
     if (q.beforeHours && it->tsHours >= q.beforeHours) continue;
-    EpisodicMessage m = msgOf(*it);
-    if (!epiTextMatch(m.text, q.textContains)) continue;
-    out.push_back(std::move(m));
-    if (q.limit > 0 && (int)out.size() >= q.limit) break;
+    const int sc = col.consider(it->id.data(), it->id.size(), it->text.data(), it->text.size());
+    if (!col.wants(sc)) continue;
+    col.add(msgOf(*it), sc);
+    if (col.done()) break;
   }
-  return out;
 }
 
 uint32_t AppendLogEpisodicStore::indexFloorDay() const {
@@ -266,6 +265,14 @@ std::vector<EpisodicMessage> AppendLogEpisodicStore::query(const MsgQuery& q) co
 std::vector<EpisodicMessage> AppendLogEpisodicStore::query(const MsgQuery& q,
                                                           EpiQueryInfo* info) const {
   EpiQueryInfo local;
+  std::vector<EpisodicMessage> out;
+  // One collector for every tier below, so the ring, the index and the cold
+  // pass share one text rule, one page and one ranking (CUM-515).
+  EpiCollector col(q, out);
+  if (col.impossible()) {   // only common words: nothing can match, read nothing
+    if (info) *info = local;
+    return out;
+  }
   // Whole history resident -> answer from the PSRAM ring with zero FS reads.
   // Serve from the RAM ring when the whole history fits it OR when SD writes have
   // been failing (unpersisted_ > 0): the index then points at an unreliable/absent
@@ -287,17 +294,18 @@ std::vector<EpisodicMessage> AppendLogEpisodicStore::query(const MsgQuery& q,
   const bool byteCursor = q.before.find(':') != std::string::npos;
   const bool coldWanted = q.coldScan && hydrateTruncated_;
   if (unpersisted_ > 0 || (ringResident() && !coldWanted && !byteCursor)) {
-    std::vector<EpisodicMessage> out = queryRing(q);
+    queryRing(q, col);
     if (!recent_.empty()) local.searchedToDay = recent_.front().tsHours / 24;
     local.olderExists = hydrateTruncated_;
+    local.matched = col.matched();
     if (info) *info = local;
     return out;
   }
 
   // Index-first: cheap filters off the in-RAM index (out-of-window day files are
-  // never opened); read + text-filter only the survivors, newest-first, up to limit.
+  // never opened); read + text-filter only the survivors, newest-first, until the
+  // collector is done (unranked: `limit` rows) or the read budget runs out.
   const uint32_t beforeSfx = epiIdSuffix(q.before);
-  std::vector<EpisodicMessage> out;
   bool indexCapped = false;
   if (ringResident() && !byteCursor) {
     // Every indexed row is ALSO in the RAM ring: reading them back off the card
@@ -305,7 +313,7 @@ std::vector<EpisodicMessage> AppendLogEpisodicStore::query(const MsgQuery& q,
     // 490-row index took ~60 s of SD opens and wedged the web task.) A byte
     // cursor has paged past the ring already, so skip it and fall to the cold
     // pass below.
-    out = queryRing(q);
+    queryRing(q, col);
   } else if (!byteCursor) {
     int reads = 0;
     for (auto it = index_.rbegin(); it != index_.rend(); ++it) {
@@ -331,9 +339,7 @@ std::vector<EpisodicMessage> AppendLogEpisodicStore::query(const MsgQuery& q,
       EpisodicMessage m;
       reads++;
       if (!readRec(r, m)) continue;  // tolerant: torn line drops out
-      if (!epiTextMatch(m.text, q.textContains)) continue;
-      out.push_back(m);
-      if (q.limit > 0 && (int)out.size() >= q.limit) break;
+      if (col.offer(std::move(m))) break;
     }
   }
   local.searchedToDay = indexFloorDay();
@@ -341,22 +347,23 @@ std::vector<EpisodicMessage> AppendLogEpisodicStore::query(const MsgQuery& q,
   // The index floor is not the history floor: everything the boot scan could not
   // afford is still on the card. Walk it only when the caller opted in AND the
   // hot pass came up short - a full window is what the caller asked for.
-  const bool needMore = q.limit <= 0 || (int)out.size() < q.limit;
   if (indexCapped) {
     // Stopped on the read budget - the cursor is already set; do not also spend
     // this call's budget on the cold pass.
-  } else if (!needMore) {
+  } else if (col.full()) {
     // The page filled from the index: hand back the cursor that continues below
     // it. Without this a caller with a small window can never page past the
-    // first screen of history.
-    local.nextBefore = out.back().id;
+    // first screen of history. It is the oldest row EXAMINED: unranked that is
+    // the last row returned; ranked, the bottom of the window it ranked.
+    local.nextBefore = col.lastExamined();
     local.olderExists = true;
   } else if (q.coldScan) {
-    queryCold(q, out, local);
+    queryCold(q, col, local);
   } else if (hydrateTruncated_) {
     local.olderExists = true;
   }
 
+  local.matched = col.matched();
   if (info) *info = local;
   return out;
 }
@@ -368,8 +375,7 @@ std::vector<EpisodicMessage> AppendLogEpisodicStore::query(const MsgQuery& q,
 // it". Within a file the read is BACKWARD in kColdWindow chunks; each chunk
 // drops its own partial head record and hands that boundary to the next (older)
 // chunk, so a record straddling a boundary is read whole exactly once.
-void AppendLogEpisodicStore::queryCold(const MsgQuery& q,
-                                       std::vector<EpisodicMessage>& out,
+void AppendLogEpisodicStore::queryCold(const MsgQuery& q, EpiCollector& col,
                                        EpiQueryInfo& info) const {
   // Where to start: an explicit byte cursor, else just below the index floor.
   uint32_t curDay = 0;
@@ -478,16 +484,12 @@ void AppendLogEpisodicStore::queryCold(const MsgQuery& q,
         EpisodicMessage m;
         if (!decodeEpisodicLine(li->second, m)) continue;   // tolerant
         info.searchedToDay = m.tsHours / 24;
-        if (!q.sessionId.empty() && m.sessionId != q.sessionId) continue;
-        if (!q.sessionVisible(m.sessionId)) continue;       // read boundary holds here too
-        if (!q.kindVisible(m.kind)) continue;
-        if (q.sinceHours && m.tsHours < q.sinceHours) continue;
-        if (q.beforeHours && m.tsHours >= q.beforeHours) continue;
-        if (!epiTextMatch(m.text, q.textContains)) continue;
-        out.push_back(m);
-        if (q.limit > 0 && (int)out.size() >= q.limit) {
+        // The cold rows sit below the id range, so no cursor filter (beforeSfx 0);
+        // the read boundary holds here too.
+        if (!epiPassesFilters(q, m, 0)) continue;
+        if (col.offer(std::move(m))) {   // page done (see EpiCollector::done)
           // Resume EXACTLY below the row just emitted.
-          info.nextBefore = std::to_string((unsigned long)(m.tsHours / 24)) + ":" +
+          info.nextBefore = std::to_string((unsigned long)info.searchedToDay) + ":" +
                             std::to_string((long long)li->first);
           info.olderExists = true;
           info.coldFiles = files;
@@ -616,8 +618,14 @@ int AppendLogEpisodicStore::hydrate(int maxRows, size_t maxBytes,
       if (maxRows > 0 && (int)newestFirst.size() >= maxRows) { truncated = true; break; }
       newestFirst.push_back(*ri);
     }
+    // The ring never holds a row the index does not: when maxRows cut the index
+    // short of recentCap_, an un-indexed ring row sat below the per-file index
+    // floor too, so a cold scan returned it a second time (found by the CUM-515
+    // read-boundary test; latent at the device defaults, maxRows 4000 > ring 512).
     for (auto mi = dayMsgs.rbegin();
-         mi != dayMsgs.rend() && (int)recentNewestFirst.size() < recentCap_; ++mi)
+         mi != dayMsgs.rend() && (int)recentNewestFirst.size() < recentCap_ &&
+         recentNewestFirst.size() < newestFirst.size();
+         ++mi)
       recentNewestFirst.push_back(cacheOf(*mi));
     if (yield) yield();   // the caller feeds the watchdog here
   }

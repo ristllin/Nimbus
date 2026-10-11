@@ -102,17 +102,44 @@ static void test_search_finds_known_sections() {
   TEST_ASSERT_TRUE(anyBodyHasTerm);
 }
 
-static void test_search_is_and_match_and_case_insensitive() {
+// CUM-515 re-bless (reason): this pinned "multi-word AND: both terms must
+// appear", the rule that returned nothing for a natural question. docs.search
+// now ranks: any word matches, sections holding MORE of the words come first.
+static bool hayHas(const DocSection* s, const char* word) {
+  std::string hay = std::string(s->title) + "\n" + s->body;
+  for (char& c : hay) c = (char)tolower((unsigned char)c);
+  return hay.find(word) != std::string::npos;
+}
+
+static void test_search_ranks_full_matches_first_and_ignores_case() {
   const DocSection* hits[8];
-  // Multi-word AND: both terms must appear (spawn + brief - sub-sessions).
   size_t n = search("SPAWN brief", hits, 8);
   TEST_ASSERT_GREATER_THAN(0, (int)n);
+  TEST_ASSERT_TRUE(hayHas(hits[0], "spawn") && hayHas(hits[0], "brief"));
+  // Monotone: once a hit lacks a word, no later hit holds both.
+  bool sawPartial = false;
   for (size_t i = 0; i < n; i++) {
-    std::string hay = std::string(hits[i]->title) + "\n" + hits[i]->body;
-    for (char& c : hay) c = (char)tolower((unsigned char)c);
-    TEST_ASSERT_TRUE_MESSAGE(hay.find("spawn") != std::string::npos, hits[i]->id);
-    TEST_ASSERT_TRUE_MESSAGE(hay.find("brief") != std::string::npos, hits[i]->id);
+    const bool both = hayHas(hits[i], "spawn") && hayHas(hits[i], "brief");
+    TEST_ASSERT_TRUE_MESSAGE(!(both && sawPartial), hits[i]->id);
+    if (!both) sawPartial = true;
+    TEST_ASSERT_TRUE_MESSAGE(hayHas(hits[i], "spawn") || hayHas(hits[i], "brief"), hits[i]->id);
   }
+}
+
+// 1 of 3 words is enough; case and punctuation do not matter; common words
+// alone find nothing; the snippet anchors on a word that actually matched.
+static void test_search_partial_words_punctuation_and_common_words() {
+  const DocSection* base[8];
+  const DocSection* hits[8];
+  TEST_ASSERT_GREATER_THAN(0, (int)search("scratchpad", base, 8));
+  TEST_ASSERT_GREATER_THAN(0, (int)search("scratchpad zzqxv wibblefrob", hits, 8));
+  TEST_ASSERT_EQUAL_STRING(base[0]->id, hits[0]->id);
+  TEST_ASSERT_GREATER_THAN(0, (int)search("\xE2\x80\x9CSCRATCHPAD?!\xE2\x80\x9D", hits, 8));
+  TEST_ASSERT_EQUAL_STRING(base[0]->id, hits[0]->id);
+  TEST_ASSERT_EQUAL(0, (int)search("what is the", hits, 8));
+  std::string snip = snippet(*base[0], "zzqxv scratchpad");
+  for (char& c : snip) c = (char)tolower((unsigned char)c);
+  TEST_ASSERT_TRUE(snip.find("scratchpad") != std::string::npos);
 }
 
 static void test_search_misses_garbage() {
@@ -170,7 +197,8 @@ int main(int, char**) {
   RUN_TEST(test_find_file_by_slug);
   RUN_TEST(test_near_misses_for_wrong_heading);
   RUN_TEST(test_search_finds_known_sections);
-  RUN_TEST(test_search_is_and_match_and_case_insensitive);
+  RUN_TEST(test_search_ranks_full_matches_first_and_ignores_case);
+  RUN_TEST(test_search_partial_words_punctuation_and_common_words);
   RUN_TEST(test_search_misses_garbage);
   RUN_TEST(test_search_respects_max);
   RUN_TEST(test_snippet_is_bounded_and_relevant);

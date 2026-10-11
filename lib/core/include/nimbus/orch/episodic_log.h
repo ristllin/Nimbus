@@ -247,14 +247,15 @@ class AppendLogEpisodicStore : public EpisodicStore {
   bool hydrateTruncated() const { return hydrateTruncated_; }
 
  private:
-  std::vector<EpisodicMessage> queryRing(const MsgQuery& q) const;
+  // Offer every ring row (newest-first) to `col` until it says done.
+  void queryRing(const MsgQuery& q, EpiCollector& col) const;
 
   // Walk the day-streams BELOW the index (or below `cur`), newest record first,
-  // appending matches until `limit` or the call budget. Updates `info` with the
-  // floor reached and the resume cursor. See the .cpp for the backward-window
-  // read (a record straddling a window boundary is read whole by the next one).
-  void queryCold(const MsgQuery& q, std::vector<EpisodicMessage>& out,
-                 EpiQueryInfo& info) const;
+  // offering matches to `col` until it is done (unranked: `limit` reached) or
+  // the call budget runs out. Updates `info` with the floor reached and the
+  // resume cursor. See the .cpp for the backward-window read (a record
+  // straddling a window boundary is read whole by the next one).
+  void queryCold(const MsgQuery& q, EpiCollector& col, EpiQueryInfo& info) const;
 
   EpiFs& fs_;
   std::string dir_;

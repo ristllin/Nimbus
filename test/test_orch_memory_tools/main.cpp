@@ -8,6 +8,8 @@
 #include "nimbus/orch/embedding.h"
 #include "nimbus/orch/memory_tools.h"
 
+#include "../support/episodic_fixture.h"   // CUM-515: bench B's recorded history
+
 using namespace nimbus::orch;
 using ArduinoJson::JsonDocument;
 using ArduinoJson::JsonObject;
@@ -931,6 +933,97 @@ static void test_archive_search_falls_back_to_keyword() {
   TEST_ASSERT_TRUE(has(r.output, "coffee please"));
 }
 
+
+// ============================================================================
+// CUM-515 - the memory tools the head calls answer partial-word questions.
+// ============================================================================
+
+// The exact bench B call (L4-PERSONA-B step 9b, lastturn_recall1.txt), against
+// the rows the device held: it returned "No matching episodic messages." and
+// the model told the owner it did not know their advisor.
+static void test_cum515_l4_episodic_call_finds_the_advisor() {
+  ToolRegistry reg = buildServer();
+  const auto rows = loadEpisodicFixture(kL4EpisodicFixture);
+  TEST_ASSERT_EQUAL_INT(51, (int)rows.size());
+  for (const auto& m : rows) g_epi.addMessage(m);
+  ToolResult r = call(reg, "memory.episodic",
+                      R"({"kind":"message","text":"advisor supervisor PhD","limit":20})");
+  TEST_ASSERT_TRUE(r.success);
+  TEST_ASSERT_FALSE(has(r.output, "No matching episodic messages"));
+  TEST_ASSERT_TRUE(has(r.output, "best match first"));
+  TEST_ASSERT_TRUE(has(r.output, "my advisor is Dr. Leila Mansour"));
+  // Ranked: the question itself (PhD + advisor) heads the page, the fact follows.
+  TEST_ASSERT_TRUE(r.output.find("Who is my PhD advisor again?") <
+                   r.output.find("my advisor is Dr. Leila Mansour"));
+  // The four other step-9 recalls, each in ONE call (the bench needed 3-6).
+  for (const auto& c : kL4Recalls) {
+    const std::string args =
+        std::string(R"({"kind":"message","text":")") + c.text + R"(","limit":20})";
+    ToolResult m = call(reg, "memory.episodic", args.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(has(m.output, c.want), c.text);
+  }
+}
+
+// Common words only: say WHY nothing matched, so the model retries with a real
+// word instead of concluding the owner never said it.
+static void test_cum515_episodic_common_words_only_explains_itself() {
+  ToolRegistry reg = buildServer();
+  EpisodicMessage u; u.id = "1"; u.sessionId = "chat"; u.tsHours = 10; u.role = "user";
+  u.text = "what is the plan for my week";
+  g_epi.addMessage(u);
+  ToolResult r = call(reg, "memory.episodic", R"({"text":"what is my"})");
+  TEST_ASSERT_TRUE(r.success);
+  TEST_ASSERT_TRUE(has(r.output, "No matching episodic messages"));
+  TEST_ASSERT_TRUE(has(r.output, "common word"));
+  TEST_ASSERT_FALSE(has(r.output, "plan for my week"));
+}
+
+// A ranked page that left rows out says so (bounded page, honest count).
+static void test_cum515_episodic_says_when_more_rows_matched() {
+  ToolRegistry reg = buildServer();
+  for (int i = 0; i < 12; i++) {
+    EpisodicMessage m; m.id = std::to_string(i + 1); m.sessionId = "chat"; m.tsHours = 10;
+    m.role = "user"; m.text = "pump check number " + std::to_string(i);
+    g_epi.addMessage(m);
+  }
+  ToolResult r = call(reg, "memory.episodic", R"({"text":"bilge pump","limit":5})");
+  TEST_ASSERT_TRUE(r.success);
+  TEST_ASSERT_TRUE(has(r.output, "Episodic (5 of 12 indexed, best match first)"));
+  TEST_ASSERT_TRUE(has(r.output, "[7 more matching rows in this range are not shown"));
+  // One word: unranked, newest-first, no ranking claims.
+  ToolResult one = call(reg, "memory.episodic", R"({"text":"pump","limit":5})");
+  TEST_ASSERT_TRUE(has(one.output, "Episodic (5 of 12 indexed):"));
+  TEST_ASSERT_FALSE(has(one.output, "more matching rows"));
+}
+
+// The keyword fallback of memory.search and memory.archive runs the same rule:
+// 1 of 3 words finds the memory, case-insensitively; common words do not count.
+static void test_cum515_keyword_fallbacks_use_the_shared_rule() {
+  ToolRegistry reg = buildServer();
+  TEST_ASSERT_TRUE(call(reg, "memory.write", R"({"content":"Omar's advisor is Dr. Leila Mansour"})").success);
+  TEST_ASSERT_TRUE(call(reg, "memory.write", R"({"content":"the project ships friday"})").success);
+  g_embedFail = true; g_embedErr = "connect failed";
+  ToolResult r = call(reg, "memory.search", R"({"query":"Who is my PhD ADVISOR, supervisor?","n_results":5})");
+  TEST_ASSERT_TRUE(has(r.output, "Leila Mansour"));
+  TEST_ASSERT_FALSE(has(r.output, "ships friday"));   // "is" / "the" no longer count
+  ToolResult stop = call(reg, "memory.search", R"({"query":"what is the","n_results":5})");
+  TEST_ASSERT_TRUE(has(stop.output, "No memories matched"));
+  TEST_ASSERT_TRUE(has(stop.output, "common word"));
+  // Archive fallback: same rule.
+  g_embedFail = false;
+  auto admin = nimbus::orch::principalForRole("1001", nimbus::orch::Role::Admin);
+  TEST_ASSERT_TRUE(callAs(reg, admin, "memory.write",
+                          R"({"content":"coffee: cortado with oat milk please","ttl":"session"})").success);
+  g_now = 100 + 24;
+  TEST_ASSERT_EQUAL_INT(1, g_vec.pruneExpired(g_now));   // -> archived
+  g_embedFail = true; g_embedErr = "connect failed";
+  ToolResult a = callAs(reg, admin, "memory.archive",
+                        R"({"action":"search","query":"usual COFFEE order cortado"})");
+  TEST_ASSERT_TRUE(has(a.output, "cortado with oat milk"));
+  ToolResult as = callAs(reg, admin, "memory.archive", R"({"action":"search","query":"the of my"})");
+  TEST_ASSERT_TRUE(has(as.output, "common word"));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_update_replaces_matching_fact);
@@ -976,5 +1069,9 @@ int main(int, char**) {
   RUN_TEST(test_write_without_embedding_refuses_honestly);
   RUN_TEST(test_update_without_embedding_keeps_old_fact);
   RUN_TEST(test_archive_search_falls_back_to_keyword);
+  RUN_TEST(test_cum515_l4_episodic_call_finds_the_advisor);
+  RUN_TEST(test_cum515_episodic_common_words_only_explains_itself);
+  RUN_TEST(test_cum515_episodic_says_when_more_rows_matched);
+  RUN_TEST(test_cum515_keyword_fallbacks_use_the_shared_rule);
   return UNITY_END();
 }

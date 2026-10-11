@@ -146,8 +146,6 @@ src/sys/ota_update.cpp:otaupd::requestInstall
 src/agent/adapters/b64_stream.h:agent::b64decodeToFile
 src/agent/adapters/provider_file_fetch.cpp:agent::safeName
 src/agent/orchestrator.cpp:agent::orchestrator::sendToChat
-lib/core/src/orch_episodic.cpp:nimbus::orch::textMatchScore
-lib/core/src/orch_episodic.cpp:nimbus::orch::epiTextMatch
 test/test_orch_rbac/main.cpp:test_role_permissions_matrix
 src/net/web_files.cpp:nimbus::net::contentTypeFor
 lib/harness/src/compose.cpp:agent::composeInstructions

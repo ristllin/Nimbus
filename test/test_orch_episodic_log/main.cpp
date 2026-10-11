@@ -9,6 +9,10 @@
 #include "nimbus/orch/blob_store.h"
 #include "nimbus/orch/psram_alloc.h"   // CUM-185: prove the recent-ring/index cache routes to PSRAM
 #include <cstdlib>
+#include <functional>
+#include <memory>
+
+#include "../support/episodic_fixture.h"   // CUM-515: bench B's recorded history
 
 using namespace nimbus::orch;
 
@@ -579,13 +583,20 @@ static void test_before_cursor_pages_the_indexed_range() {
 }
 
 // ---- epiTextMatch: what the substring filter could not do -------------------
+// CUM-515 re-bless (reason): "bilge anchor" used to be pinned FALSE - the ALL-
+// of-terms rule that returned nothing for "advisor supervisor PhD" on bench B.
+// One counted word is now enough; ranking (not the filter) puts full matches
+// first, and a needle sharing NO word with the row still misses.
 static void test_text_match_case_and_order_insensitive() {
   TEST_ASSERT_TRUE(epiTextMatch("The Bilge Pump serial is BP-4471", "bilge pump"));
   TEST_ASSERT_TRUE(epiTextMatch("The Bilge Pump serial is BP-4471", "pump bilge"));
   TEST_ASSERT_TRUE(epiTextMatch("The Bilge Pump serial is BP-4471", "BP-4471 serial"));
-  TEST_ASSERT_FALSE(epiTextMatch("The Bilge Pump serial", "bilge anchor"));
+  TEST_ASSERT_TRUE(epiTextMatch("The Bilge Pump serial", "bilge anchor"));    // any word
+  TEST_ASSERT_FALSE(epiTextMatch("The Bilge Pump serial", "anchor diesel"));  // no word
+  TEST_ASSERT_FALSE(epiTextMatch("The Bilge Pump serial", "the of what"));    // common words only
   TEST_ASSERT_TRUE(epiTextMatch("anything", ""));        // no filter
   TEST_ASSERT_TRUE(epiTextMatch("anything", "   "));     // whitespace-only: no filter
+  TEST_ASSERT_TRUE(epiTextMatch("anything", "?!..."));   // punctuation-only: no filter
 }
 
 static void test_id_suffix_orders_rows() {
@@ -794,10 +805,13 @@ static void test_recent_ring_and_index_route_through_psram_seam() {
     TEST_ASSERT_TRUE(g_epiWsBytes >= (long)N * 40);   // at least the long strings, conservatively
 
     // Round-trip correctness is unaffected by the custom allocator: the ring answers
-    // a text query with the right rows, newest-first, over the PSRAM-backed cache.
+    // a text query with the right rows over the PSRAM-backed cache.
+    // CUM-515 re-bless (reason): this pinned size()==1, i.e. the old ALL-words
+    // rule. Every row holds "beyond SSO length", so a 4-word query now fills the
+    // page (limit 5) - and ranks the one row holding all four words FIRST.
     MsgQuery q; q.limit = 5; q.textContains = "beyond SSO length #39";
     auto hits = st.query(q);
-    TEST_ASSERT_EQUAL(1, (int)hits.size());
+    TEST_ASSERT_EQUAL(5, (int)hits.size());
     TEST_ASSERT_EQUAL_STRING("m1039", hits[0].id.c_str());
     TEST_ASSERT_EQUAL_STRING("session-longenough-39", hits[0].sessionId.c_str());
 
@@ -811,10 +825,356 @@ static void test_recent_ring_and_index_route_through_psram_seam() {
     int loaded = st2.hydrate(0, 0, nullptr);
     TEST_ASSERT_EQUAL(N, loaded);
     auto after = st2.query(q);
-    TEST_ASSERT_EQUAL(1, (int)after.size());
+    TEST_ASSERT_EQUAL(5, (int)after.size());
     TEST_ASSERT_EQUAL_STRING("m1039", after[0].id.c_str());
   }  // stores destruct here (free via the hook) BEFORE we restore the default
   setWorkingAllocators(nullptr, nullptr);  // restore malloc/free for the other tests
+}
+
+
+// ============================================================================
+// CUM-515 - the text rule is the same on EVERY backend (test the class).
+// Bench B step 9: the model searched "advisor supervisor PhD"; the owner had
+// only ever said "my advisor is Dr. Leila Mansour"; the ALL-words matcher
+// returned "No matching episodic messages." and the model told the owner it
+// did not know. Each property below runs against every place a text query is
+// answered: the in-memory reference, the RAM ring, the SD index, and the cold
+// pass below the boot-scan floor.
+// ============================================================================
+namespace cum515 {
+
+const char* kFact     = "A few things to keep on file: my advisor is Dr. Leila Mansour.";
+const char* kFull     = "PhD supervisor meeting: advisor wants chapter two by May.";
+const char* kQuestion = "Who is my PhD advisor again?";
+
+// Oldest first: the fact, 30 fillers, the all-words row, 30 fillers, the question.
+std::vector<EpisodicMessage> corpus() {
+  std::vector<EpisodicMessage> rows;
+  char id[16];
+  auto add = [&](const std::string& text) {
+    snprintf(id, sizeof(id), "m%08x", (unsigned)rows.size() + 1);
+    rows.push_back(msg(id, "web", dayTs(19000, (uint32_t)(rows.size() % 24)), "user",
+                       MsgKind::Message, text));
+  };
+  add(kFact);
+  for (int i = 0; i < 30; i++) add("filler chatter about the weather #" + std::to_string(i));
+  add(kFull);
+  for (int i = 30; i < 60; i++) add("filler chatter about the weather #" + std::to_string(i));
+  add(kQuestion);
+  return rows;
+}
+
+using Runner = std::function<std::vector<EpisodicMessage>(MsgQuery, EpiQueryInfo*)>;
+struct Backend { const char* name; Runner run; };
+
+// Every backend gets the same rows; each owns its store for the test's lifetime.
+std::vector<Backend> backends(const std::vector<EpisodicMessage>& rows) {
+  std::vector<Backend> out;
+  auto mem = std::make_shared<InMemoryEpisodicStore>(2000);
+  for (const auto& m : rows) mem->addMessage(m);
+  out.push_back({"in-memory", [mem](MsgQuery q, EpiQueryInfo* i) { return mem->query(q, i); }});
+
+  auto ringFs = std::make_shared<FakeFs>();
+  auto ring = std::make_shared<AppendLogEpisodicStore>(*ringFs, "/mem/episodic", 1000);
+  for (const auto& m : rows) ring->addMessage(m);
+  out.push_back({"ring", [ringFs, ring](MsgQuery q, EpiQueryInfo* i) { return ring->query(q, i); }});
+
+  auto idxFs = std::make_shared<FakeFs>();
+  { AppendLogEpisodicStore w(*idxFs, "/mem/episodic", 4); for (const auto& m : rows) w.addMessage(m); }
+  auto idx = std::make_shared<AppendLogEpisodicStore>(*idxFs, "/mem/episodic", 4);
+  idx->hydrate(0, 0);   // everything indexed, ring far smaller: the SD index path
+  out.push_back({"index", [idxFs, idx](MsgQuery q, EpiQueryInfo* i) { return idx->query(q, i); }});
+
+  auto coldFs = std::make_shared<FakeFs>();
+  { AppendLogEpisodicStore w(*coldFs, "/mem/episodic", 8); for (const auto& m : rows) w.addMessage(m); }
+  auto cold = std::make_shared<AppendLogEpisodicStore>(*coldFs, "/mem/episodic", 16);
+  cold->hydrate(/*maxRows=*/5, /*maxBytes=*/0);   // the fact + the all-words row are cold-only
+  out.push_back({"cold", [coldFs, cold](MsgQuery q, EpiQueryInfo* i) {
+                   q.coldScan = true;               // what memory.episodic always sets
+                   return cold->query(q, i);
+                 }});
+  return out;
+}
+
+bool holds(const std::vector<EpisodicMessage>& rows, const char* text) {
+  for (const auto& m : rows) if (m.text == text) return true;
+  return false;
+}
+
+}  // namespace cum515
+
+// 1 of 3 words is enough; case and punctuation never matter; best rows first.
+static void test_cum515_partial_match_is_found_and_ranked_on_every_backend() {
+  const auto rows = cum515::corpus();
+  for (const auto& b : cum515::backends(rows)) {
+    for (const char* text : {"advisor supervisor PhD", "ADVISOR Supervisor phd",
+                             "advisor, supervisor; PhD?!", "\xE2\x80\x9C" "advisor\xE2\x80\x9D supervisor phd"}) {
+      MsgQuery q; q.textContains = text; q.limit = 20;
+      EpiQueryInfo info;
+      const auto got = b.run(q, &info);
+      std::string ctx = std::string(b.name) + " / " + text;
+      TEST_ASSERT_EQUAL_INT_MESSAGE(3, (int)got.size(), ctx.c_str());
+      TEST_ASSERT_EQUAL_STRING_MESSAGE(cum515::kFull, got[0].text.c_str(), ctx.c_str());     // 3 words
+      TEST_ASSERT_EQUAL_STRING_MESSAGE(cum515::kQuestion, got[1].text.c_str(), ctx.c_str()); // 2 words
+      TEST_ASSERT_EQUAL_STRING_MESSAGE(cum515::kFact, got[2].text.c_str(), ctx.c_str());     // 1 word
+      TEST_ASSERT_EQUAL_INT_MESSAGE(3, info.matched, ctx.c_str());
+    }
+    // One real word + two that occur nowhere: the fact row is still found.
+    MsgQuery one; one.textContains = "Mansour zzqxv wibblefrob"; one.limit = 20;
+    const auto got = b.run(one, nullptr);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, (int)got.size(), b.name);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(cum515::kFact, got[0].text.c_str(), b.name);
+  }
+}
+
+// A query made only of common words matches nothing (and reads nothing); a
+// query with no words at all is no filter - both on every backend.
+static void test_cum515_common_words_only_finds_nothing_on_every_backend() {
+  const auto rows = cum515::corpus();
+  for (const auto& b : cum515::backends(rows)) {
+    MsgQuery stop; stop.textContains = "who is my... what was the"; stop.limit = 20;
+    EpiQueryInfo info;
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, (int)b.run(stop, &info).size(), b.name);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, info.matched, b.name);
+    MsgQuery none; none.textContains = " ?! "; none.limit = 5;
+    TEST_ASSERT_EQUAL_INT_MESSAGE(5, (int)b.run(none, nullptr).size(), b.name);
+  }
+}
+
+// One counted word keeps the exact pre-CUM-515 contract: newest-first, stops
+// at `limit`, pages with no row lost (the paging tests above all hold).
+static void test_cum515_single_word_stays_newest_first_on_every_backend() {
+  const auto rows = cum515::corpus();
+  for (const auto& b : cum515::backends(rows)) {
+    MsgQuery q; q.textContains = "the advisor"; q.limit = 20;   // "the" is a common word
+    const auto got = b.run(q, nullptr);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(3, (int)got.size(), b.name);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(cum515::kQuestion, got[0].text.c_str(), b.name);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(cum515::kFull, got[1].text.c_str(), b.name);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(cum515::kFact, got[2].text.c_str(), b.name);
+  }
+}
+
+// The ranked page is BOUNDED (kEpiRankedMax) even when the caller asked for no
+// limit, and it says how many rows it left out.
+static void test_cum515_ranked_page_is_bounded() {
+  InMemoryEpisodicStore mem(2000);
+  FakeFs fs;
+  AppendLogEpisodicStore ring(fs, "/mem/episodic", 1000);
+  char id[16];
+  for (int i = 0; i < 600; i++) {
+    snprintf(id, sizeof(id), "m%08x", i + 1);
+    auto m = msg(id, "web", dayTs(19000, 1), "user", MsgKind::Message,
+                 i == 3 ? "bilge pump serial BP-4471" : "pump log entry " + std::to_string(i));
+    mem.addMessage(m);
+    ring.addMessage(m);
+  }
+  for (EpisodicStore* st : {(EpisodicStore*)&mem, (EpisodicStore*)&ring}) {
+    MsgQuery q; q.textContains = "bilge pump"; q.limit = 0;   // "no limit"
+    EpiQueryInfo info;
+    const auto got = st->query(q, &info);
+    TEST_ASSERT_EQUAL_INT(kEpiRankedMax, (int)got.size());
+    TEST_ASSERT_EQUAL_STRING("bilge pump serial BP-4471", got[0].text.c_str());   // oldest, but best
+    TEST_ASSERT_EQUAL_INT(600, info.matched);
+  }
+}
+
+// Ranked paging across the ring and the cold pass: the cursor advances, no row
+// repeats, and a strong match deep in cold-only history is reached. Same shape
+// as test_cold_paging_with_resident_truncated_ring (the shipped config), with a
+// TWO-word query so every page is ranked.
+static void test_cum515_ranked_paging_reaches_deep_history_without_repeats() {
+  FakeFs fs;
+  {
+    AppendLogEpisodicStore w(fs, "/mem/episodic", 64);
+    char id[16];
+    const std::string pad(200, 'x');
+    for (int i = 0; i < 800; i++) {
+      snprintf(id, sizeof(id), "m%08x", i + 1);
+      std::string text = (i == 1) ? ("entry bilge pump BP-9931 " + pad)
+                                  : ("entry " + std::to_string(i) + " " + pad);
+      w.addMessage(msg(id, "chat1", dayTs(19000, (uint32_t)(i % 24)), "user",
+                       MsgKind::Message, text));
+    }
+  }
+  AppendLogEpisodicStore st(fs, "/mem/episodic", 600);
+  st.hydrate();
+  TEST_ASSERT_TRUE(st.hydrateTruncated());
+
+  MsgQuery q;
+  q.coldScan = true;
+  q.textContains = "entry bilge";
+  q.limit = 25;
+  std::string before;
+  bool found = false;
+  std::set<std::string> seen;
+  int pages = 0;
+  for (; pages < 40 && !found; pages++) {
+    q.before = before;
+    EpiQueryInfo info;
+    const auto got = st.query(q, &info);
+    if (pages == 0) TEST_ASSERT_TRUE(info.matched > (int)got.size());   // honest: more matched
+    for (const auto& m : got) {
+      TEST_ASSERT_TRUE(seen.insert(m.id).second);
+      if (m.text.find("BP-9931") != std::string::npos) {
+        found = true;
+        TEST_ASSERT_EQUAL_STRING(got[0].id.c_str(), m.id.c_str());   // best on its page
+      }
+    }
+    if (info.nextBefore.empty()) break;
+    TEST_ASSERT_TRUE(info.nextBefore != before);
+    before = info.nextBefore;
+  }
+  TEST_ASSERT_TRUE(found);
+}
+
+// The exact L4 query, against bench B's recorded rows, through the backends
+// the device actually uses (the RAM ring, and a cold scan below a truncated
+// boot index - memory.episodic always sets coldScan).
+static void test_cum515_l4_advisor_query_finds_the_earlier_conversation() {
+  const auto rows = loadEpisodicFixture(kL4EpisodicFixture);
+  TEST_ASSERT_EQUAL_INT(51, (int)rows.size());
+  TEST_ASSERT_EQUAL_STRING("Who is my PhD advisor again?", rows.back().text.c_str());
+  for (const auto& b : cum515::backends(rows)) {
+    MsgQuery q;
+    q.haveKind = true; q.kind = MsgKind::Message;              // {"kind":"message",
+    q.textContains = "advisor supervisor PhD"; q.limit = 20;   //  "text":..., "limit":20}
+    const auto got = b.run(q, nullptr);
+    bool fact = false, reply = false;
+    for (const auto& m : got) {
+      if (m.role == "user" && m.text.find("my advisor is Dr. Leila Mansour") != std::string::npos) fact = true;
+      if (m.role == "assistant" && m.text.find("Your advisor is **Dr. Leila Mansour**") != std::string::npos) reply = true;
+    }
+    TEST_ASSERT_TRUE_MESSAGE(fact, b.name);
+    TEST_ASSERT_TRUE_MESSAGE(reply, b.name);
+    // The other step-9 searches that came back empty on the bench.
+    for (const auto& c : kL4Recalls) {
+      MsgQuery m2 = q;
+      m2.textContains = c.text;
+      bool ok = false;
+      for (const auto& m : b.run(m2, nullptr))
+        if (m.text.find(c.want) != std::string::npos) ok = true;
+      std::string ctx = std::string(b.name) + " / " + c.text;
+      TEST_ASSERT_TRUE_MESSAGE(ok, ctx.c_str());
+    }
+  }
+}
+
+
+// Every row holding EVERY word stays reachable by paging, on the index path
+// and on the shipped cold-scan config, even with partial matches interleaved:
+// a ranked page stops as soon as it is full of full matches, so its cursor
+// never skips one (prism logic lens: the first cut dropped them below the cut).
+static void test_cum515_ranked_paging_never_skips_a_full_match() {
+  auto build = [](FakeFs& fs, int rows) {
+    AppendLogEpisodicStore w(fs, "/mem/episodic", 64);
+    char id[16];
+    const std::string pad(60, 'x');
+    for (int i = 0; i < rows; i++) {
+      snprintf(id, sizeof(id), "m%08x", i + 1);
+      const bool full = (i % 3) != 0;
+      w.addMessage(msg(id, "chat1", dayTs(19000, (uint32_t)(i % 24)), "user", MsgKind::Message,
+                       (full ? "bilge pump row " : "pump only row ") + std::to_string(i) + " " + pad));
+    }
+  };
+  struct Case { const char* name; int rows; int recentCap; bool truncate; };
+  for (const Case& c : {Case{"index", 900, 16, false}, Case{"cold", 2400, 600, true}}) {
+    FakeFs fs;
+    build(fs, c.rows);
+    AppendLogEpisodicStore st(fs, "/mem/episodic", c.recentCap);
+    if (c.truncate) {
+      st.hydrate();                              // default budget: tail-read, truncates
+      TEST_ASSERT_TRUE_MESSAGE(st.hydrateTruncated(), c.name);
+    } else {
+      st.hydrate(0, 0);                          // everything indexed, tiny ring
+    }
+    MsgQuery q;
+    q.coldScan = true;
+    q.textContains = "bilge pump";
+    q.limit = 20;
+    std::set<std::string> fullSeen;
+    std::string before;
+    int pages = 0;
+    for (; pages < 400; pages++) {
+      q.before = before;
+      EpiQueryInfo info;
+      for (const auto& m : st.query(q, &info)) {
+        if (m.text.find("bilge") == std::string::npos) continue;
+        TEST_ASSERT_TRUE_MESSAGE(fullSeen.insert(m.id).second, c.name);   // never repeated
+      }
+      if (info.nextBefore.empty()) break;
+      TEST_ASSERT_TRUE_MESSAGE(info.nextBefore != before, c.name);       // always advances
+      before = info.nextBefore;
+    }
+    const int fullRows = c.rows - (c.rows + 2) / 3;
+    TEST_ASSERT_EQUAL_INT_MESSAGE(fullRows, (int)fullSeen.size(), c.name);
+  }
+}
+
+// The read boundary holds for a ranked page: better matches in a session the
+// caller cannot read never displace, count toward, or become the cursor of
+// its page (prism authz lens: the boundary test only covered unranked).
+static void test_cum515_ranked_page_stays_inside_the_read_boundary() {
+  std::vector<EpisodicMessage> rows;
+  char id[16];
+  for (int i = 0; i < 40; i++) {
+    snprintf(id, sizeof(id), "m%08x", i + 1);
+    const bool mine = (i % 2) == 0;
+    rows.push_back(msg(id, mine ? "chat1" : "chat2", dayTs(19000, (uint32_t)(i % 24)), "user",
+                       MsgKind::Message,
+                       mine ? "pump note " + std::to_string(i)
+                            : "bilge pump secret " + std::to_string(i)));
+  }
+  for (const auto& b : cum515::backends(rows)) {
+    MsgQuery q;
+    q.textContains = "bilge pump";
+    q.sessionAllow = {"chat1"};
+    // A page with room for everything searches every tier: exactly chat1's 20.
+    q.limit = 50;
+    EpiQueryInfo all;
+    const auto every = b.run(q, &all);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(20, (int)every.size(), b.name);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(20, all.matched, b.name);      // chat2 never counted
+    for (const auto& m : every) TEST_ASSERT_EQUAL_STRING_MESSAGE("chat1", m.sessionId.c_str(), b.name);
+    // A small page: still only chat1 rows, and an id cursor names a chat1 row.
+    q.limit = 5;
+    EpiQueryInfo info;
+    const auto got = b.run(q, &info);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(5, (int)got.size(), b.name);
+    for (const auto& m : got) TEST_ASSERT_EQUAL_STRING_MESSAGE("chat1", m.sessionId.c_str(), b.name);
+    TEST_ASSERT_TRUE_MESSAGE(info.matched >= 5 && info.matched <= 20, b.name);
+    if (!info.nextBefore.empty() && info.nextBefore.find(':') == std::string::npos)
+      TEST_ASSERT_TRUE_MESSAGE(epiIdSuffix(info.nextBefore) % 2 == 1, b.name);   // chat1 ids are odd
+  }
+}
+
+
+// REGRESSION (pre-existing, found by the CUM-515 boundary test): a boot scan cut
+// short by maxRows below the ring size left un-indexed rows in the RAM ring;
+// they also sat below the cold pass's per-file floor, so a deep query returned
+// them twice. The ring must be a subset of the index.
+static void test_hydrate_ring_never_outgrows_the_index() {
+  FakeFs fs;
+  {
+    AppendLogEpisodicStore w(fs, "/mem/episodic", 8);
+    char id[16];
+    for (int i = 0; i < 40; i++) {
+      snprintf(id, sizeof(id), "m%08x", i + 1);
+      w.addMessage(msg(id, "chat1", dayTs(19000, (uint32_t)(i % 24)), "user", MsgKind::Message,
+                       "pump note " + std::to_string(i)));
+    }
+  }
+  AppendLogEpisodicStore st(fs, "/mem/episodic", /*recentCap=*/16);
+  TEST_ASSERT_EQUAL_INT(5, st.hydrate(/*maxRows=*/5, /*maxBytes=*/0));
+  for (const char* text : {"", "pump"}) {
+    MsgQuery q;
+    q.coldScan = true;
+    q.textContains = text;
+    q.limit = 100;
+    std::set<std::string> ids;
+    for (const auto& m : st.query(q, nullptr)) TEST_ASSERT_TRUE_MESSAGE(ids.insert(m.id).second, text);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(40, (int)ids.size(), text);
+  }
 }
 
 int main(int, char**) {
@@ -848,5 +1208,14 @@ int main(int, char**) {
   RUN_TEST(test_hydrate_tail_read_indexes_file_offsets);
   RUN_TEST(test_cold_budget_cursor_resumes_mid_file);
   RUN_TEST(test_cold_paging_with_resident_truncated_ring);
+  RUN_TEST(test_cum515_partial_match_is_found_and_ranked_on_every_backend);
+  RUN_TEST(test_cum515_common_words_only_finds_nothing_on_every_backend);
+  RUN_TEST(test_cum515_single_word_stays_newest_first_on_every_backend);
+  RUN_TEST(test_cum515_ranked_page_is_bounded);
+  RUN_TEST(test_cum515_ranked_paging_reaches_deep_history_without_repeats);
+  RUN_TEST(test_cum515_l4_advisor_query_finds_the_earlier_conversation);
+  RUN_TEST(test_cum515_ranked_paging_never_skips_a_full_match);
+  RUN_TEST(test_cum515_ranked_page_stays_inside_the_read_boundary);
+  RUN_TEST(test_hydrate_ring_never_outgrows_the_index);
   return UNITY_END();
 }

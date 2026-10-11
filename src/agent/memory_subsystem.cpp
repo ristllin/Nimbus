@@ -845,9 +845,10 @@ void begin() {
             },
             R"({"type":"object","properties":{"file":{"type":"string"}}})");
   g_reg.add("docs.search",
-            "Search your own device documentation (keyword AND-match over titles + bodies) "
-            "- use it BEFORE saying what you can or cannot do, or how a feature of yours "
-            "works. Returns section ids + a snippet; read the full section with docs.read.",
+            "Search your own device documentation (ranked keyword match over titles + "
+            "bodies: any of the words, sections holding more of them first) - use it "
+            "BEFORE saying what you can or cannot do, or how a feature of yours works. "
+            "Returns section ids + a snippet; read the full section with docs.read.",
             [](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) -> nimbus::orch::ToolResult {
               std::string q = a["query"].is<const char*>() ? std::string(a["query"].as<const char*>()) : std::string();
               if (q.empty()) return nimbus::orch::ToolResult::fail("missing 'query'");
@@ -855,7 +856,7 @@ void begin() {
               size_t n = nimbus::docs::search(q, hits, 8);
               if (n == 0)
                 return nimbus::orch::ToolResult::ok(
-                    "no sections match - try fewer or different keywords, or browse docs.list");
+                    "no sections match - try different keywords, or browse docs.list");
               JsonDocument d;
               JsonArray arr = d.to<JsonArray>();
               for (size_t i = 0; i < n; i++) {

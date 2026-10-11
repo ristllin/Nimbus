@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <utility>
 
 namespace nimbus {
 namespace orch {
@@ -13,53 +14,77 @@ const char* kKindNames[] = {"message", "tool_output", "llm_response",
 }
 
 bool epiTextMatch(const std::string& hay, const std::string& needle) {
-  if (needle.empty()) return true;
-  auto lower = [](const std::string& s) {
-    std::string o = s;
-    for (char& c : o)
-      if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
-    return o;
-  };
-  const std::string h = lower(hay);
-  const std::string n = lower(needle);
-  size_t i = 0;
-  bool any = false;
-  while (i < n.size()) {
-    while (i < n.size() && (n[i] == ' ' || n[i] == '\t' || n[i] == '\n')) i++;
-    size_t start = i;
-    while (i < n.size() && n[i] != ' ' && n[i] != '\t' && n[i] != '\n') i++;
-    if (i > start) {
-      any = true;
-      if (h.find(n.substr(start, i - start)) == std::string::npos) return false;
-    }
-  }
-  return any ? true : true;   // whitespace-only needle filters nothing
+  const LexQuery q = lexParse(needle);
+  if (!q.filters()) return true;   // no words at all: no filter
+  return lexCoverage(hay, q) > 0;
 }
 
 int textMatchScore(const std::string& hay, const std::string& needle) {
-  if (needle.empty()) return 0;
-  auto lower = [](const std::string& s) {
-    std::string o = s;
-    for (char& c : o) if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
-    return o;
-  };
-  const std::string h = lower(hay), n = lower(needle);
-  int total = 0;
-  size_t i = 0;
-  while (i < n.size()) {
-    while (i < n.size() && (n[i] == ' ' || n[i] == '\t' || n[i] == '\n')) i++;
-    size_t start = i;
-    while (i < n.size() && n[i] != ' ' && n[i] != '\t' && n[i] != '\n') i++;
-    if (i > start) {
-      const std::string term = n.substr(start, i - start);
-      int count = 0;
-      for (size_t at = h.find(term); at != std::string::npos; at = h.find(term, at + term.size()))
-        count++;
-      if (count == 0) return 0;   // all-of-terms gate
-      total += count;
-    }
+  const LexQuery q = lexParse(needle);
+  LexTally t;
+  lexTally(hay.data(), hay.size(), q, t);
+  return lexRank(t);
+}
+
+bool epiPassesFilters(const MsgQuery& q, const EpisodicMessage& m, uint32_t beforeSfx) {
+  if (beforeSfx && epiIdSuffix(m.id) >= beforeSfx) return false;
+  if (!q.sessionId.empty() && m.sessionId != q.sessionId) return false;
+  if (!q.sessionVisible(m.sessionId)) return false;
+  if (!q.kindVisible(m.kind)) return false;
+  if (q.sinceHours && m.tsHours < q.sinceHours) return false;
+  if (q.beforeHours && m.tsHours >= q.beforeHours) return false;
+  return true;
+}
+
+// ---- EpiCollector -----------------------------------------------------------
+EpiCollector::EpiCollector(const MsgQuery& q, std::vector<EpisodicMessage>& out)
+    : lq_(lexParse(q.textContains)), out_(out), limit_(q.limit) {
+  out_.clear();
+  ranked_ = lq_.ranks();
+  if (ranked_ && (limit_ <= 0 || limit_ > kEpiRankedMax)) limit_ = kEpiRankedMax;
+}
+
+int EpiCollector::consider(const char* id, size_t idLen, const char* text, size_t textLen) {
+  examined_.assign(id, idLen);
+  const int score = lq_.filters() ? lexCoverage(text, textLen, lq_) : 1;
+  if (score > 0) matched_++;
+  return score;
+}
+
+bool EpiCollector::wants(int score) const {
+  if (score <= 0) return false;
+  if (!full()) return true;
+  return ranked_ && score > scores_.back();   // strictly better than the worst kept row
+}
+
+void EpiCollector::add(EpisodicMessage&& m, int score) {
+  if (!ranked_) {
+    out_.push_back(std::move(m));
+    return;
   }
-  return total;
+  if (scores_.empty()) scores_.reserve((size_t)limit_);
+  if (full()) {   // drop the worst: lowest score, and the oldest among ties
+    out_.pop_back();
+    scores_.pop_back();
+  }
+  // Best-first: insert after every kept row scoring at least as much. Rows
+  // arrive newest-first, so equal scores stay newest-first.
+  size_t at = scores_.size();
+  while (at > 0 && scores_[at - 1] < score) at--;
+  out_.insert(out_.begin() + (std::ptrdiff_t)at, std::move(m));
+  scores_.insert(scores_.begin() + (std::ptrdiff_t)at, (uint8_t)score);
+}
+
+bool EpiCollector::offer(EpisodicMessage&& m) {
+  const int score = consider(m.id.data(), m.id.size(), m.text.data(), m.text.size());
+  if (!wants(score)) return false;
+  add(std::move(m), score);
+  return done();
+}
+
+bool EpiCollector::done() const {
+  if (!full()) return false;
+  return !ranked_ || scores_.back() >= lq_.count;   // ranked: every kept row holds every word
 }
 
 uint32_t epiIdSuffix(const std::string& id) {
@@ -121,6 +146,7 @@ std::vector<EpisodicSession> InMemoryEpisodicStore::sessions(const std::string& 
 
 // ---- binary persistence (device: LittleFS /data/episodic.bin) ----
 namespace {
+
 void putU32(std::string& b, uint32_t v) {
   b.push_back((char)(v & 0xFF)); b.push_back((char)((v >> 8) & 0xFF));
   b.push_back((char)((v >> 16) & 0xFF)); b.push_back((char)((v >> 24) & 0xFF));
@@ -192,22 +218,28 @@ bool InMemoryEpisodicStore::deserialize(const std::string& blob) {
 }
 
 std::vector<EpisodicMessage> InMemoryEpisodicStore::query(const MsgQuery& q) const {
+  return query(q, nullptr);
+}
+
+std::vector<EpisodicMessage> InMemoryEpisodicStore::query(const MsgQuery& q,
+                                                          EpiQueryInfo* info) const {
   std::vector<EpisodicMessage> out;
+  EpiCollector col(q, out);
+  if (info) *info = EpiQueryInfo();
+  if (col.impossible()) return out;   // only common words: nothing can match
   const uint32_t beforeSfx = epiIdSuffix(q.before);
-  // Walk newest-first so `limit` keeps the most-recent matches (read_recent
-  // reads reversed). msgs_ is oldest-first, so iterate in reverse.
+  // Walk newest-first so an unranked `limit` keeps the most-recent matches
+  // (read_recent reads reversed). msgs_ is oldest-first, so iterate in reverse.
+  // Score in place first: only a row that enters the page is copied.
   for (auto it = msgs_.rbegin(); it != msgs_.rend(); ++it) {
     const EpisodicMessage& m = *it;
-    if (beforeSfx && epiIdSuffix(m.id) >= beforeSfx) continue;   // paging cursor
-    if (!q.sessionId.empty() && m.sessionId != q.sessionId) continue;
-    if (!q.sessionVisible(m.sessionId)) continue;   // v3.7.0 read boundary
-    if (!q.kindVisible(m.kind)) continue;
-    if (q.sinceHours && m.tsHours < q.sinceHours) continue;
-    if (q.beforeHours && m.tsHours >= q.beforeHours) continue;
-    if (!epiTextMatch(m.text, q.textContains)) continue;
-    out.push_back(m);
-    if (q.limit > 0 && (int)out.size() >= q.limit) break;
+    if (!epiPassesFilters(q, m, beforeSfx)) continue;
+    const int sc = col.consider(m.id.data(), m.id.size(), m.text.data(), m.text.size());
+    if (!col.wants(sc)) continue;
+    col.add(EpisodicMessage(m), sc);
+    if (col.done()) break;
   }
+  if (info) info->matched = col.matched();
   return out;
 }
 

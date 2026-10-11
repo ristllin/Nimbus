@@ -488,6 +488,10 @@ void handleEpisodicGet(AsyncWebServerRequest* r) {
   d["nextBefore"]  = qinfo.nextBefore;
   d["coldFiles"]   = qinfo.coldFiles;   // what the deep read actually cost
   d["coldBytes"]   = (unsigned long)qinfo.coldBytes;
+  // `text` uses the shared word rule (any word matches; 2+ words rank best-first
+  // and keep only the best `limit`): rows that matched in the range searched,
+  // which can exceed the rows returned.
+  d["matched"]     = qinfo.matched;
   // PSRAM + chunked (Glass Box A4 hardening): with trace rows a 200-row response
   // reaches ~150-200 KB - serializing into an internal-heap String here would
   // spike the AsyncTCP task straight through the TLS danger floor. Serialize

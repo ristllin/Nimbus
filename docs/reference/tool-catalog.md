@@ -112,7 +112,11 @@ Notes:
   history - and answers one page at a time: when a result ends with a continue
   token, pass it back as `before` to read further into the past. Session
   `system` holds the device event timeline (restarts with reset reason, firmware
-  updates with release notes, mode switches, storage changes). Registered only
+  updates with release notes, mode switches, storage changes). `text` finds rows
+  containing **any** of its words (common words ignored, plural and verb endings
+  trimmed); two or more words rank rows holding more of them first, and the
+  answer says when more rows matched than the limit returned (the full rule:
+  [orchestrator-world.md](../orchestrator-world.md) §1.3). Registered only
   when an episodic store is bound (device).
 - `memory.archive` reaches the **cold store** of TTL-expired memories. Because
   re-embedding is expensive, a memory that reaches its time-to-live is moved to an
@@ -203,7 +207,7 @@ instead of guessing. Read-only, open to every principal.
 | Tool | Description (as registered) | Arguments | State |
 |---|---|---|---|
 | `docs.list` | Browse the documentation index - the doc files, or one file's sections. | `file` (string, optional - a file slug from the top-level listing) | live |
-| `docs.search` | Keyword AND-match over section titles + bodies; returns ids + a snippet. | `query` (string, **required**) | live |
+| `docs.search` | Ranked keyword match over section titles + bodies (any of the words; sections holding more of them first); returns ids + a snippet. | `query` (string, **required**) | live |
 | `docs.read` | Read one section by id; an unknown id fails honestly with near-miss ids. | `id` (string, **required** - `<file-slug>#<heading-slug>`) | live |
 
 Notes:
@@ -227,7 +231,7 @@ absent when no SD card is present. Reads honor per-person visibility (RBAC
 | `files.list` | List the device's durable artifact store: projects and files. | `project` (string, optional filter) | live |
 | `files.stat` | Metadata for one stored file: size, kind, created time, provider file id. | `project` (**required**), `name` (**required**) | live |
 | `files.read` | Read a stored TEXT document's content, paged. | `project` (**required**), `name` (**required**), `offset` (number) | live |
-| `files.search` | Search the CONTENT of saved text documents for words; returns the best matches with a snippet, ranked by term frequency. | `query` (**required**), `project` (optional filter) | live |
+| `files.search` | Search the CONTENT of saved text documents for words; returns the best matches with a snippet, ranked by how many of the words each document holds, then by how often they occur. | `query` (**required**), `project` (optional filter) | live |
 | `artifact.save` | Persist a TEXT artifact (report, summary, document) into the durable store. | `project` (**required**), `name` (**required**, with extension `.md`/`.txt`/`.csv`/`.json`), `text` (**required**, max ~24 KB per call) | live |
 | `files.share` | Share one of your saved files read-only with everyone, or stop sharing it. | `project` (**required**), `name` (**required**), `share` (boolean, default true) | live |
 | `files.send` | Send a stored file to the owner on Telegram - images go as an inline photo, other files as a document. | `project` (**required**), `name` (**required**), `chat_id` (optional) | live |
