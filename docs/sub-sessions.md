@@ -69,6 +69,18 @@ worker, not extra parallelism. The queue's internal-SRAM backing is released
 once it drains (a `std::vector().swap` back to the baseline reserve), so a deep
 fan-out costs that memory only transiently.
 
+**The head hears the real reason a spawn did not start.** Every refusal (queue
+full, no keyed provider, a provider that refused the dispatch, including a 429
+with its quota window) is told to the owner at once and also leaves one line in
+the job engine (`JobEngine::takeSpawnNotes`, bounded to 640 bytes). The next
+turn's input carries them in a `[SPAWN REFUSED]` block (background framing: the
+owner was already told, nothing is running for them), so the head neither
+retries blind nor invents a reason. A head that calls a spawn field as a tool
+(`session_ops`, `spawn`) gets the live `[SPAWN CAPACITY]` number in the recovery
+text ([turn-contract.md](reference/turn-contract.md)): a Mistral head once
+claimed "spawn capacity is 0 this turn" while the prompt offered 6, right after
+a bare `unknown tool: session_ops`.
+
 ## The brief - the exact prompt a sub-agent receives
 
 Assembled inline in `JobEngine::dispatchSpawn` (`lib/harness/src/jobs.cpp`), in

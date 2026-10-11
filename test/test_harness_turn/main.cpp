@@ -1508,6 +1508,29 @@ static void test_unverified_connector_result_closes_memory_for_that_turn() {
   TEST_ASSERT_TRUE(r.attempts.back().inputs.find("connector was NOT called") == std::string::npos);
 }
 
+// CUM-538 (item 5): the head's next turn hears that a spawn did not start and why,
+// once; a turn with nothing refused carries no such block.
+static void test_spawn_refusal_reaches_the_next_turn_once() {
+  Rig r;
+  for (int i = 0; i < orch::kMaxPendingSpawns; i++) {
+    orch::Spawn s;
+    s.task = "wave item";
+    r.jobs->enqueueSpawn(s, "web");
+  }
+  orch::Spawn extra;
+  extra.task = "fetch the calendar";
+  extra.name = "gcal-fetch";
+  r.jobs->enqueueSpawn(extra, "web");
+  r.eng->handleMessage("did it start?", "", "web");
+  const std::string& in = r.attempts.back().inputs;
+  TEST_ASSERT_TRUE(in.find("[SPAWN REFUSED] (background: sub-agents you asked for that did NOT "
+                           "start") != std::string::npos);
+  TEST_ASSERT_TRUE(in.find("- 'gcal-fetch' did not start: the spawn queue is full") !=
+                   std::string::npos);
+  r.eng->handleMessage("and now?", "", "web");
+  TEST_ASSERT_TRUE(r.attempts.back().inputs.find("[SPAWN REFUSED]") == std::string::npos);
+}
+
 static void test_hooks_turn_end_fires_on_failure_and_sources_track() {
   Rig r;
   // All hosts fail -> onTurnEnd(ok=false) still fires exactly once per turn.
@@ -1686,6 +1709,7 @@ int main(int, char**) {
   RUN_TEST(test_clear_chat_conv_is_per_chat);
   RUN_TEST(test_hooks_fire_on_happy_turn_with_tools);
   RUN_TEST(test_unverified_connector_result_closes_memory_for_that_turn);
+  RUN_TEST(test_spawn_refusal_reaches_the_next_turn_once);
   RUN_TEST(test_hooks_turn_end_fires_on_failure_and_sources_track);
   UNITY_END();
   return 0;

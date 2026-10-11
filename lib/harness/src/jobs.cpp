@@ -327,6 +327,27 @@ void JobEngine::deliverOwnerFallback() {
 
 // ---- spawn enqueue + dispatch -----------------------------------------------
 
+// CUM-538: one model-facing line per spawn that never started, so the head's next
+// turn knows the real reason (and does not invent one). Bounded: past the budget a
+// count replaces further lines.
+static constexpr size_t kSpawnNotesMax = 640;
+
+void JobEngine::noteSpawnRefused(const char* name, const std::string& task,
+                                 const std::string& reason) {
+  const std::string who = (name && name[0]) ? std::string(name)
+                                            : nimbus::orch::foldLine("", task, 40);
+  const std::string line = "- '" + who + "' did not start: " + reason + "\n";
+  if (spawnNotes_.size() + line.size() <= kSpawnNotesMax) spawnNotes_ += line;
+  else if (spawnNotes_.find("(more refusals not listed)") == std::string::npos)
+    spawnNotes_ += "(more refusals not listed)\n";
+}
+
+std::string JobEngine::takeSpawnNotes() {
+  std::string out;
+  out.swap(spawnNotes_);
+  return out;
+}
+
 void JobEngine::enqueueSpawn(const orch::Spawn& s, const std::string& chatId, bool quiet) {
   if (s.task.length() == 0) return;
   if ((int)s.task.length() > orch::kSpawnTaskMax - 1)   // was a SILENT strncpy clip
@@ -340,6 +361,9 @@ void JobEngine::enqueueSpawn(const orch::Spawn& s, const std::string& chatId, bo
   if ((int)pending_.size() >= orch::kMaxPendingSpawns) {
     deliver(chatId, "My spawn queue is full - I couldn't take that one. Ask "
                     "again once some agents finish.");
+    noteSpawnRefused(s.name.c_str(), s.task,
+                     "the spawn queue is full (" + std::to_string(orch::kMaxPendingSpawns) +
+                         " waiting); start it again after some finish");
     return;
   }
   if (d_.fire) d_.fire("spawn");   // "Right away, sir."
@@ -381,9 +405,17 @@ void JobEngine::dispatchSpawn(const PendingSpawn& p) {
     if (!cp.empty() && (!d_.providerHasKey || d_.providerHasKey(cp))) provider = cp;
   }
   if (provider.empty()) provider = firstSubProvider();
-  if (provider.length() == 0) { deliver(chatId, "No provider is configured to run that agent."); return; }
+  if (provider.length() == 0) {
+    deliver(chatId, "No provider is configured to run that agent.");
+    noteSpawnRefused(p.name, p.task, "no provider with a key can run it");
+    return;
+  }
   ManagedAgentAdapter* a = d_.fabric->adapterFor(provider.c_str());
-  if (!a) { deliver(chatId, std::string("Provider '") + provider + "' isn't configured."); return; }
+  if (!a) {
+    deliver(chatId, std::string("Provider '") + provider + "' isn't configured.");
+    noteSpawnRefused(p.name, p.task, "provider '" + provider + "' isn't configured on this device");
+    return;
+  }
 
   std::string model = p.model;
   if (!d_.modelIsValid || !d_.modelIsValid(provider, model)) {
@@ -457,7 +489,9 @@ void JobEngine::dispatchSpawn(const PendingSpawn& p) {
   if (err != FabricErr::Ok) {
     hlog::logf("orchestrator: spawn failed %d (prov=%s model=%s cat=%s)",
                (int)err, provider.c_str(), model.c_str(), p.category);
-    deliver(chatId, spawnRefusal(err, provider, window));
+    const std::string refusal = spawnRefusal(err, provider, window);
+    deliver(chatId, refusal);
+    noteSpawnRefused(p.name, p.task, refusal);
     return;
   }
 

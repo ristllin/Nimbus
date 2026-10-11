@@ -259,6 +259,12 @@ class JobEngine {
   }
   int  pendingCount() const { return (int)pending_.size(); }  // queued-not-yet-dispatched (W5)
 
+  // CUM-538: spawns that never started (queue full, no provider, the provider
+  // refused) - the owner hears each at once, but the head used to learn nothing
+  // and could claim a capacity it never had. One line per refusal with the real
+  // reason, bounded; the next turn's input carries them (consumed here).
+  std::string takeSpawnNotes();
+
  private:
   // Pending-spawn queue entry (fixed char[] kept from the device struct so the
   // field truncation caps stay byte-identical).
@@ -300,6 +306,8 @@ class JobEngine {
   struct ReapEntry { uint32_t key; uint32_t dueAt; };
 
   void dispatchSpawn(const PendingSpawn& p);
+  void noteSpawnRefused(const char* name, const std::string& task, const std::string& reason);
+  std::string spawnNotes_;   // bounded (kSpawnNotesMax); drained by takeSpawnNotes()
   void deliver(const std::string& chatId, const std::string& text);
   void emitJobState(const char* tag, const char* backend, nimbus::orch::JobState st);
   void emitJobCleared(uint32_t key);

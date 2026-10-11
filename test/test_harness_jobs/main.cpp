@@ -298,6 +298,52 @@ static void test_job_limit_refusal() {
   TEST_ASSERT_TRUE(orch::kMaxPendingSpawns > orch::kMaxActiveInflight);
 }
 
+// CUM-538 (item 5): a spawn that never starts used to reach only the owner; the
+// head learned nothing and invented a reason ("spawn capacity is 0"). Every
+// refusal path now leaves one model-facing line with the REAL reason, consumed by
+// the next turn, and bounded however many pile up.
+static void test_spawn_refusals_reach_the_head_with_the_real_reason() {
+  Rig r;
+  TEST_ASSERT_EQUAL_STRING("", r.eng->takeSpawnNotes().c_str());
+  // 1. queue full
+  for (int i = 0; i < orch::kMaxPendingSpawns; i++) r.eng->enqueueSpawn(sp(), "chat1");
+  orch::Spawn extra = sp("fetch the calendar");
+  extra.name = "gcal-fetch";
+  r.eng->enqueueSpawn(extra, "chat1");
+  std::string notes = r.eng->takeSpawnNotes();
+  TEST_ASSERT_EQUAL_STRING(
+      "- 'gcal-fetch' did not start: the spawn queue is full (12 waiting); start it again "
+      "after some finish\n", notes.c_str());
+  TEST_ASSERT_EQUAL_STRING("", r.eng->takeSpawnNotes().c_str());   // consumed
+
+  // 2. the provider refused the dispatch (the owner hears the same sentence)
+  Rig f;
+  f.adapter.dispatchErr = agent::FabricErr::RemoteFail;
+  f.eng->enqueueSpawn(sp("summarize the thread"), "chat1");
+  f.eng->pump();
+  notes = f.eng->takeSpawnNotes();
+  TEST_ASSERT_TRUE(notes.find("'summarize the thread' did not start: Couldn't start that agent "
+                              "on anthropic.") != std::string::npos);
+  TEST_ASSERT_EQUAL_STRING("Couldn't start that agent on anthropic.", f.delivered[0].second.c_str());
+
+  // 3. no keyed provider
+  Rig k;
+  k.keyed.clear();
+  orch::Spawn s = sp();
+  s.provider = "";
+  k.eng->enqueueSpawn(s, "chat1");
+  k.eng->pump();
+  TEST_ASSERT_TRUE(k.eng->takeSpawnNotes().find("did not start: no provider with a key can run it") !=
+                   std::string::npos);
+
+  // Bounded: a flood folds into one tail line.
+  Rig b;
+  for (int i = 0; i < orch::kMaxPendingSpawns + 40; i++) b.eng->enqueueSpawn(sp(), "chat1");
+  notes = b.eng->takeSpawnNotes();
+  TEST_ASSERT_TRUE(notes.size() <= 700);
+  TEST_ASSERT_TRUE(notes.find("(more refusals not listed)") != std::string::npos);
+}
+
 static void test_keyless_provider_refusal() {
   Rig r;
   r.keyed.clear();   // nothing key'd -> firstSubProvider() == ""
@@ -1160,6 +1206,7 @@ int main(int, char**) {
   RUN_TEST(test_long_running_job_arc_parks_dim_then_completes);
   RUN_TEST(test_spawn_ack_message_bytes);
   RUN_TEST(test_job_limit_refusal);
+  RUN_TEST(test_spawn_refusals_reach_the_head_with_the_real_reason);
   RUN_TEST(test_keyless_provider_refusal);
   RUN_TEST(test_connector_routing_no_hint);
   RUN_TEST(test_connector_routing_explicit_hint_wins);
