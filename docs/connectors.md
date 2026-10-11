@@ -26,7 +26,9 @@ pasted once into the device web UI.
 
 Every connector is a card under **Assistant → Connectors** in the web UI.
 Paste the credential once; the device stores it write-only and never shows it
-again. Google connectors (Gmail, Calendar, Drive) on OpenAI are the one
+again. A credential with a space or a hidden character inside it (a line break,
+say) is refused with a message saying so, because it would break every request
+that carries it. Google connectors (Gmail, Calendar, Drive) on OpenAI are the one
 exception: their card has no credential field, because they need an OAuth block
 rather than a single token (see [Gmail](#gmail)). For every other connector:
 

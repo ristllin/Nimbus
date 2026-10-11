@@ -87,6 +87,7 @@
 #include "relay_client.h"                // cloud tunnel status + control
 #include "cloud_mint.h"                  // CUM-397: user-triggered device-key mint
 #include "nimbus/cloud/device_key.h"     // CUM-397: capacity validation (one source of truth)
+#include "nimbus/orch/key_shape.h"       // CUM-514: posted key/token shape check
 #include "../agent/connectors.h"           // /api/connectors - known catalog + host
 #include "web_memory.h"
 #include "web_files.h"                   // E1: /api/files* artifact-store routes
@@ -2290,6 +2291,22 @@ void beginWeb(const WebConfig& wc) {
               "{\"error\":\"Directive is too long. Keep it under 1500 characters.\"}");
       return;
     }
+    // CUM-514: a key or token is sent raw inside a request header or path, so one
+    // with a CR/LF (it would add header lines), another control byte, a space inside
+    // it or an impossible length is refused here, before anything is stored.
+    for (size_t i = 0; i < r->params(); i++) {
+      const AsyncWebParameter* prm = r->getParam(i);
+      const nimbus::orch::KeyShape* ks =
+          prm->isPost() ? nimbus::orch::keyShapeFor(prm->name().c_str()) : nullptr;
+      if (!ks) continue;
+      const String& v = prm->value();
+      const std::string err = nimbus::orch::keyShapeError(*ks, std::string(v.c_str(), v.length()));
+      if (!err.empty()) {
+        JsonDocument e; e["error"] = err; String out; serializeJson(e, out);
+        r->send(400, "application/json", out);
+        return;
+      }
+    }
     // CUM-479: the scope covers every NVS write any field below makes, including the
     // ones nested inside a setter (verify reset, telegram offset, the usage ledger).
     nimbus::sys::SaveScope save;
@@ -2431,12 +2448,25 @@ void beginWeb(const WebConfig& wc) {
       }
       return {};
     };
+    // CUM-514: a connector token rides "Authorization: Bearer <tok>" raw, so a
+    // token posted in this request with a control byte or a space is refused.
+    auto tokError = [](JsonObjectConst c) -> std::string {
+      return nimbus::orch::connectorTokenError(c["name"] | "", std::string(c["tok"] | ""));
+    };
+    auto send400 = [r](const std::string& msg) {
+      JsonDocument e; e["error"] = msg; String out; serializeJson(e, out);
+      r->send(400, "application/json", out);
+    };
     String blob = param("blob");
     if (blob.length()) {
       JsonDocument d;
       if (blob.length() > 3500 || deserializeJson(d, blob) || !d.is<JsonArray>()) {
         r->send(400, "application/json", "{\"error\":\"blob must be a JSON array (<=3500B)\"}");
         return;
+      }
+      for (JsonObjectConst c : d.as<JsonArrayConst>()) {
+        const std::string te = tokError(c);
+        if (!te.empty()) { send400(te); return; }
       }
       std::string cfgErr = configError(blob);
       if (!cfgErr.empty()) {
@@ -2475,6 +2505,8 @@ void beginWeb(const WebConfig& wc) {
       }
       const char* nm = pd["name"] | "";
       if (!nm[0]) { r->send(400, "application/json", "{\"error\":\"patch needs a name\"}"); return; }
+      const std::string te = tokError(pd.as<JsonObjectConst>());
+      if (!te.empty()) { send400(te); return; }
       JsonObject dst;                       // find existing (preserve its secrets) or append
       for (JsonObject o : arr)
         if (del.length() == 0 && strcmp(nm, (const char*)(o["name"] | "")) == 0) { dst = o; break; }
