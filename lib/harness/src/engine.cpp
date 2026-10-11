@@ -285,12 +285,13 @@ std::string TurnEngine::buildDynamicContext() {
     // turn can actually contain - no silent truncation. spawnRoomFor is shared
     // with the unknown-tool recovery text (CUM-538): one number everywhere.
     const int canStart = orch::spawnRoomFor(queued);
-    // A dispatch that timed out may still be running on its provider (no job
-    // here to wait for): counted as possibly running so it is not spawned twice.
+    // A dispatch that timed out may still be running on its provider with no job
+    // here to wait for: counted as possibly running. The "do not spawn it again"
+    // instruction rides only the spawning chat's [SPAWN REFUSED] line.
     const int maybe = d_.jobs ? d_.jobs->maybeRunningCount() : 0;
     const std::string maybeText =
-        maybe > 0 ? " (+" + std::to_string(maybe) + " possibly still running after a "
-                    "timeout: no result will arrive, do not spawn again)"
+        maybe > 0 ? " (+" + std::to_string(maybe) + " possibly still running on its "
+                    "provider after a timeout; its result will not arrive)"
                   : std::string();
     ctx += "[SPAWN CAPACITY] " + std::to_string(live) + " running" + maybeText + ", " +
            std::to_string(queued) + " queued. You can start up to " +

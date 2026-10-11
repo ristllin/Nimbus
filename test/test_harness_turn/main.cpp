@@ -1827,9 +1827,16 @@ static void test_timed_out_spawn_is_not_respawned_by_the_next_turn() {
   TEST_ASSERT_TRUE(in.find("- 'gcal-fetch' may have started: ") != std::string::npos);
   TEST_ASSERT_TRUE(in.find("Nothing is running for them") == std::string::npos);
   TEST_ASSERT_TRUE(in.find("'gcal-fetch' did not start") == std::string::npos);
-  TEST_ASSERT_TRUE(in.find("[SPAWN CAPACITY] 0 running (+1 possibly still running after a "
-                           "timeout: no result will arrive, do not spawn again), 0 queued.") !=
+  TEST_ASSERT_TRUE(in.find("[SPAWN CAPACITY] 0 running (+1 possibly still running on its "
+                           "provider after a timeout; its result will not arrive), 0 queued.") !=
                    std::string::npos);
+  // Another chat sees the count (the device's sub-agents are shared, like
+  // [ACTIVE SESSIONS]) but never the order not to spawn, which is this chat's.
+  r.eng->handleMessage("hello", "", "1001");
+  const std::string other = r.attempts.back().inputs;
+  TEST_ASSERT_TRUE(other.find("possibly still running on its provider") != std::string::npos);
+  TEST_ASSERT_TRUE(other.find("Do not spawn it again") == std::string::npos);
+  TEST_ASSERT_TRUE(other.find("[SPAWN REFUSED]") == std::string::npos);
   // The window closes: no stale "possibly running" forever.
   r.plat.ms += JobEngine::kMaybeRunningMs;
   r.eng->handleMessage("and now?", "", "web");

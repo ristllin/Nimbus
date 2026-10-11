@@ -376,6 +376,23 @@ static void test_timed_out_spawn_may_have_started_and_is_not_respawned() {
   TEST_ASSERT_EQUAL(1, r.eng->maybeRunningCount());
   r.plat.ms += 1;
   TEST_ASSERT_EQUAL(0, r.eng->maybeRunningCount());   // the window closes
+  // ...and stays closed when millis() wraps: 2^32 ms after the timeout, plus one
+  // second, the stale time would read as one second old if it were kept.
+  r.plat.ms += 1000u - JobEngine::kMaybeRunningMs;   // wraps: timeout + 2^32 + 1 s
+  TEST_ASSERT_EQUAL(0, r.eng->maybeRunningCount());
+
+  // A timeout after the chat's budget is spent is still listed, and the flag is set:
+  // a folded-away "may have started" line would read as "spawn again".
+  Rig full;
+  for (int i = 0; i < orch::kMaxPendingSpawns + 20; i++) full.eng->enqueueSpawn(sp(), "chat1");
+  full.adapter.dispatchErr = agent::FabricErr::Timeout;
+  for (int i = 0; i < orch::kMaxPendingSpawns; i++) full.eng->pump(), full.plat.ms += 10000;
+  const std::string fn = full.eng->takeSpawnNotes("chat1", &maybe);
+  TEST_ASSERT_TRUE(maybe);
+  TEST_ASSERT_TRUE_MESSAGE(fn.find("(more refusals not listed)\n") != std::string::npos, fn.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(fn.find("may have started: the agent on anthropic did not answer") !=
+                               std::string::npos, fn.c_str());
+  TEST_ASSERT_TRUE(fn.size() <= 1400);
 
   // Every other dispatch failure stays a plain refusal and is never counted.
   for (agent::FabricErr e : {agent::FabricErr::RemoteFail, agent::FabricErr::Network,

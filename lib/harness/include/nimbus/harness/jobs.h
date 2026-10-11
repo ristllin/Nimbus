@@ -330,7 +330,12 @@ class JobEngine {
     bool mayHaveRun = false;   // a timed-out dispatch is among the lines
   };
   std::vector<SpawnNotes> spawnNotes_;
-  std::vector<uint32_t> timedOutAt_;   // dispatch-timeout times, <= kAgentMaxJobs
+  SpawnNotes& spawnNotesFor(const std::string& chatId);   // found or added (bounded)
+  // Dispatch-timeout times, <= kAgentMaxJobs, none older than kMaybeRunningMs
+  // (mutable: the const count drops expired entries too).
+  mutable std::vector<uint32_t> timedOutAt_;
+  void expireTimeouts() const;
+  void noteDispatchTimeout();
   void deliver(const std::string& chatId, const std::string& text);
   void emitJobState(const char* tag, const char* backend, nimbus::orch::JobState st);
   void emitJobCleared(uint32_t key);

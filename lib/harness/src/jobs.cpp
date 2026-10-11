@@ -338,33 +338,40 @@ void JobEngine::deliverOwnerFallback() {
 // grows past the small-allocation threshold at once (reserved), so on the device
 // it lives in PSRAM, not internal SRAM.
 static constexpr size_t kSpawnNotesMax = 640;
+// A "may have started" line is never folded away while this much room is left:
+// dropping it would let the head spawn a paid job twice. Timeouts are rare (each
+// holds the single dispatch for the whole 60 s wait), so the extra room is too.
+static constexpr size_t kSpawnNotesMaybeMax = 2 * kSpawnNotesMax;
 static constexpr size_t kSpawnNoteChats = orch::kFoldMaxChats;
 static const char kSpawnNotesFold[] = "(more refusals not listed)\n";
+
+JobEngine::SpawnNotes& JobEngine::spawnNotesFor(const std::string& chatId) {
+  for (auto& e : spawnNotes_)
+    if (e.chatId == chatId) return e;
+  if (spawnNotes_.size() >= kSpawnNoteChats) spawnNotes_.erase(spawnNotes_.begin());
+  spawnNotes_.push_back(SpawnNotes{chatId, std::string(), false, false});
+  spawnNotes_.back().text.reserve(kSpawnNotesMax + sizeof(kSpawnNotesFold));
+  return spawnNotes_.back();
+}
 
 void JobEngine::noteSpawnRefused(const std::string& chatId, const char* name,
                                  const std::string& task, const std::string& reason,
                                  bool mayHaveRun) {
-  SpawnNotes* n = nullptr;
-  for (auto& e : spawnNotes_)
-    if (e.chatId == chatId) n = &e;
-  if (n && n->folded) return;
+  SpawnNotes& n = spawnNotesFor(chatId);
+  if (mayHaveRun) n.mayHaveRun = true;   // the framing warns even if the line cannot fit
+  if (n.folded && !mayHaveRun) return;
   const std::string who = (name && name[0]) ? std::string(name)
                                             : nimbus::orch::foldLine("", task, 40);
-  std::string line = "- '" + who + (mayHaveRun ? "' may have started: " : "' did not start: ") +
-                     reason + "\n";
-  if (!n) {
-    if (spawnNotes_.size() >= kSpawnNoteChats) spawnNotes_.erase(spawnNotes_.begin());
-    spawnNotes_.push_back(SpawnNotes{chatId, std::string(), false, false});
-    n = &spawnNotes_.back();
-    n->text.reserve(kSpawnNotesMax + sizeof(kSpawnNotesFold));
+  const std::string line = "- '" + who +
+                           (mayHaveRun ? "' may have started: " : "' did not start: ") +
+                           reason + "\n";
+  const size_t budget = mayHaveRun ? kSpawnNotesMaybeMax : kSpawnNotesMax;
+  if (n.text.size() + line.size() <= budget) {
+    n.text += line;
+  } else if (!n.folded) {
+    n.text += kSpawnNotesFold;
+    n.folded = true;
   }
-  if (n->text.size() + line.size() > kSpawnNotesMax) {
-    line = kSpawnNotesFold;
-    n->folded = true;
-  } else if (mayHaveRun) {
-    n->mayHaveRun = true;
-  }
-  n->text += line;
 }
 
 std::string JobEngine::takeSpawnNotes(const std::string& chatId, bool* mayHaveRun) {
@@ -379,12 +386,24 @@ std::string JobEngine::takeSpawnNotes(const std::string& chatId, bool* mayHaveRu
   return "";
 }
 
-int JobEngine::maybeRunningCount() const {
+// Expired entries are dropped on every read and write, so a stale time can never
+// count again when millis() wraps (49.7 days).
+void JobEngine::expireTimeouts() const {
   const uint32_t now = nowMs();
-  int n = 0;
-  for (uint32_t at : timedOutAt_)
-    if (now - at < kMaybeRunningMs) n++;
-  return n;
+  timedOutAt_.erase(std::remove_if(timedOutAt_.begin(), timedOutAt_.end(),
+                                   [now](uint32_t at) { return now - at >= kMaybeRunningMs; }),
+                    timedOutAt_.end());
+}
+
+void JobEngine::noteDispatchTimeout() {
+  expireTimeouts();
+  if ((int)timedOutAt_.size() >= orch::kAgentMaxJobs) timedOutAt_.erase(timedOutAt_.begin());
+  timedOutAt_.push_back(nowMs());
+}
+
+int JobEngine::maybeRunningCount() const {
+  expireTimeouts();
+  return (int)timedOutAt_.size();
 }
 
 std::string JobEngine::deliveredReply(const orch::JobRecord& rec, bool& unverified) {
@@ -554,12 +573,7 @@ void JobEngine::dispatchSpawn(const PendingSpawn& p) {
                        "have run, and its result will not arrive. Do not spawn it again "
                        "unless the owner asks",
                        /*mayHaveRun=*/true);
-      const uint32_t now = nowMs();
-      timedOutAt_.erase(std::remove_if(timedOutAt_.begin(), timedOutAt_.end(),
-                                       [now](uint32_t at) { return now - at >= kMaybeRunningMs; }),
-                        timedOutAt_.end());
-      if ((int)timedOutAt_.size() >= orch::kAgentMaxJobs) timedOutAt_.erase(timedOutAt_.begin());
-      timedOutAt_.push_back(now);
+      noteDispatchTimeout();
     } else {
       noteSpawnRefused(chatId, p.name, p.task, refusal);
     }

@@ -84,10 +84,12 @@ retries blind nor invents a reason. A dispatch that **timed out** is different:
 a Mistral sub runs inside the request that outlived the 60 s wait, so it most
 likely ran and only its result was lost, and no job exists to wait on. Its line
 reads `'<name>' may have started: ... Do not spawn it again unless the owner
-asks`, the block's framing says a "may have started" sub must not be spawned
-again, and `[SPAWN CAPACITY]` counts it as possibly running for 10 minutes
-(`JobEngine::maybeRunningCount`), so the head does not pay for the same work
-twice. A head that calls a spawn field as a tool
+asks` (such a line is never folded away while the chat's notes are under twice
+the budget), the block's framing says a "may have started" sub must not be
+spawned again, and `[SPAWN CAPACITY]` in every chat counts it as possibly running
+for 10 minutes (`JobEngine::maybeRunningCount`; the "do not spawn it again"
+instruction stays with the spawning chat), so the head does not pay for the same
+work twice. A head that calls a spawn field as a tool
 (`session_ops`, `spawn`) gets the live `[SPAWN CAPACITY]` number in the recovery
 text ([turn-contract.md](reference/turn-contract.md)): a Mistral head once
 claimed "spawn capacity is 0 this turn" while the prompt offered 6, right after
