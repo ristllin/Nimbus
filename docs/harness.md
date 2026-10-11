@@ -163,7 +163,8 @@ to 2 keyed alternates with an owner notice; a fresh provider thread each time.
   (the device timezone - Settings → Mode & identity). Stage 1 (no LLM): vector
   decay + expiry prune + windowed dedup - skipped entirely if the clock never
   synced. Stage 2: one unattended reflection turn over yesterday's episodic
-  digest - distill up to 7 durable facts (0 is correct on a quiet day), groom
+  digest (the owner's conversation only: captured job-engine output and /clear
+  markers are left out, as in every model-facing conversation read) - distill up to 7 durable facts (0 is correct on a quiet day), groom
   the scratchpad, stay silent unless something needs the owner. On a provably
   quiet night (empty 24 h digest AND the scratchpad unchanged since the last
   dream, fnv64 baseline in NVS `dreamScrHash`) the PAID stage-2 turn is

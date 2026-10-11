@@ -348,10 +348,13 @@ summary cap, verbatim-tail cap, per-tool-result clamp, cumulative tool budget,
 sub-agent brief size and fold-slice size - each a ratio with a floor and a cap.
 The window comes from the existing `modelCtxTokens()` table.
 
-**Anchor invariant:** at a 200K window the derived values equal the previously
-hardcoded constants exactly (32768 / 4096 / 3000 / 8192 / 65536 / 1200 / 65536),
-so a device on defaults behaves identically. A smaller-window model degrades
-gracefully; a larger one automatically gets a richer prompt.
+**Anchor invariant:** at a 200K window the derived values are 32768 / 4096 /
+8192 / 8192 / 65536 / 1200 / 65536 (system prompt / summary / recent tail /
+per-tool-result / tool total / brief / fold slice). Each equals the previously
+hardcoded constant except the recent tail, which CUM-485 raised from 3000 to
+8192 so the previous reply reaches the next turn whole (3000 is now its floor).
+A smaller-window model degrades gracefully; a larger one automatically gets a
+richer prompt.
 
 **Owner overrides win.** `max_context_bytes` (memory config) and the two loop-cap
 NVS keys now treat **0 / absent as "auto"**; any value you set is used verbatim

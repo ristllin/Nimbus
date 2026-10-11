@@ -97,6 +97,32 @@ bool skipReflection(bool digestEmpty, uint64_t scratchHash, uint64_t lastHash,
 std::string buildEpisodicDigest(const std::vector<nimbus::orch::EpisodicMessage>& msgs,
                                 size_t capBytes = kDigestCapBytes);
 
+// The [YESTERDAY] read of the nightly reflection - the turn that runs as the
+// OWNER and writes what it reads into long-term memory. The trailing 24 h of the
+// owner's conversation in `sessions` (the owner's local surfaces, "system" and
+// the owner's Telegram chats; a member's history stays in their conversation):
+// Message rows plus the media kinds (a photo's row IS its description), never
+// the ToolOutput / LlmResponse trace rows (last night's own reflection captured
+// those, and they made every night look busy). Two kinds of message row are not
+// conversation and are left out, exactly like the head's window, the sub-agent
+// brief and the fold leave them out:
+//   * captured job-engine deliveries (role "tool", src:jobs - spawn acks,
+//     failures and raw fallbacks carrying sub-agent WEB CONTENT: an injection
+//     path into long-term memory if read here);
+//   * /clear boundary rows (a device marker, nobody's words).
+// Not cut at a /clear boundary: the assistant starts that chat afresh, but the
+// day still happened (memory.episodic still searches cleared history too).
+// `empty` = nothing of the owner's in 24 h - the quiet-night signal that skips
+// the paid reflection turn, so job rows alone must keep it true.
+constexpr int kYesterdayRows = 48;        // rows the digest may hold
+constexpr int kYesterdayQueryRows = 64;   // headroom for the skipped rows
+struct Yesterday {
+  std::string digest;   // buildEpisodicDigest over the kept rows
+  bool empty = true;
+};
+Yesterday readYesterday(const nimbus::orch::EpisodicStore& store, uint32_t nowHours,
+                        const std::vector<std::string>& sessions);
+
 // The per-chat RECENT CONVERSATION window (CUM-485). On a stateless tool-loop
 // turn the provider keeps no thread, so this window is the head's ONLY view of
 // the previous reply - and the digest above (one flattened 300 B line per row)
@@ -108,7 +134,7 @@ std::string buildEpisodicDigest(const std::vector<nimbus::orch::EpisodicMessage>
 //   2. The newest row, if it alone exceeds the budget, keeps its head (UTF-8
 //      safe), marked "...".
 //   3. Any other row that does not fit whole falls back to the one-line preview
-//      (newlines flattened, clipped to kWindowPreviewBytes) if THAT fits.
+//      (every line break flattened, clipped to kWindowPreviewBytes) if THAT fits.
 //   4. The first row that fits in neither form ends the window, and
 //      kConvOmittedNote leads the block.
 // Rendered oldest-first; "" for no rows. `capBytes` is the head's derived

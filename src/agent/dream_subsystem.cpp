@@ -105,32 +105,14 @@ nimbus::orch::FireOutcome fire(const orch::LoopFireRequest& r, bool force) {
   uint64_t scratchHash = 0;
   {
     memory::Lock lk;
-    const uint32_t nowH = memory::nowHours();
-    orch::MsgQuery q;
-    q.sinceHours = nowH > 24 ? nowH - 24 : 0;
-    q.limit = 48;
-    // v3.7.0 (prism R2, "namespace laundering"): the reflection turn runs as the
-    // OWNER and distils what it reads into the owner's long-term memory. Left
-    // unscoped it read EVERY session, so a guest's private conversation would be
-    // absorbed into the owner's memories overnight - invisible to the guest and
-    // never something they agreed to. The nightly digest is therefore limited to
-    // the owner's OWN surfaces plus the device timeline; a member's history stays
-    // in their conversation, where the owner can still read it deliberately.
-    q.sessionAllow = ownerSessionIds();
-    // CONVERSATION kinds only - the documented window contract. Without this the
-    // query admits ALL kinds, including the ToolOutput/LlmResponse TRACE rows
-    // that the previous night's OWN reflection turn captured into the owner
-    // chat (otrace default-on): those seeded the next digest so `emptyDay` was
-    // never true on a default SD device, permanently defeating the quiet-night
-    // skip (prism, high). A photo/file the owner sent is a real conversation
-    // item, so Image/File/Audio ride alongside Message (mirrors the live-turn
-    // window at MsgQuery::alsoKinds).
-    q.haveKind = true;
-    q.kind = orch::MsgKind::Message;
-    q.alsoKinds = {orch::MsgKind::Image, orch::MsgKind::File, orch::MsgKind::Audio};
-    const auto msgs = memory::episodic().query(q);
-    emptyDay = msgs.empty();
-    digest = buildEpisodicDigest(msgs);
+    // The owner's last 24 h of conversation, minus captured job-engine output and
+    // /clear markers (readYesterday; host-tested in test_harness_dream). v3.7.0
+    // (prism R2, "namespace laundering"): limited to the owner's OWN surfaces plus
+    // the device timeline - a guest's private conversation must never be absorbed
+    // into the owner's memories overnight.
+    const Yesterday y = readYesterday(memory::episodic(), memory::nowHours(), ownerSessionIds());
+    emptyDay = y.empty;
+    digest = y.digest;
     memory::scratchpad().appendPromptBlock(scratch);
     scratchHash = orch::fnv64(memory::scratchpad().serialize());
     memory::Stats s = memory::stats();

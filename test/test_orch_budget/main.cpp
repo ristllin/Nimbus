@@ -1,5 +1,8 @@
 #include <unity.h>
 
+#include <cstdio>
+#include <string>
+
 #include "nimbus/orch/budget.h"
 #include "nimbus/orch/compact.h"
 #include "nimbus/orch/mem_config.h"
@@ -109,6 +112,52 @@ static void test_mistral_128k_derivation() {
   TEST_ASSERT_EQUAL_UINT32(41943, (uint32_t)b.toolTotalBytes);
 }
 
+// ---- gate W2 #16: every per-turn size follows the head the engine runs --------
+// The window, the sub-agent brief and the fold slice each derived their bytes in
+// src/agent/orchestrator.cpp, and only the window used the engine's head
+// (headHost, router fallback included); the brief and the fold kept the store's
+// guess. Static guard over the device source (code lines, comments stripped):
+// exactly ONE deriveBudget call and ONE store::resolvedOrchHost call, both in the
+// shared headBudget() helper, so a new size site cannot drift to another head.
+static std::string codeOf(const char* path) {
+  std::string out;
+  FILE* f = std::fopen(path, "rb");
+  TEST_ASSERT_NOT_NULL_MESSAGE(f, path);
+  char buf[4096];
+  std::string all;
+  for (size_t n; (n = std::fread(buf, 1, sizeof buf, f)) > 0;) all.append(buf, n);
+  std::fclose(f);
+  for (size_t s = 0; s < all.size();) {
+    size_t e = all.find('\n', s);
+    if (e == std::string::npos) e = all.size();
+    std::string line = all.substr(s, e - s);
+    const size_t c = line.find("//");
+    if (c != std::string::npos) line.erase(c);
+    out += line + "\n";
+    s = e + 1;
+  }
+  return out;
+}
+static int countOf(const std::string& hay, const std::string& needle) {
+  int n = 0;
+  for (size_t p = hay.find(needle); p != std::string::npos; p = hay.find(needle, p + 1)) n++;
+  return n;
+}
+static void test_orchestrator_sizes_off_one_head_budget() {
+  const std::string src = codeOf("src/agent/orchestrator.cpp");
+  TEST_ASSERT_EQUAL_MESSAGE(1, countOf(src, "deriveBudget("), "a second budget derivation in orchestrator.cpp");
+  TEST_ASSERT_EQUAL_MESSAGE(1, countOf(src, "resolvedOrchHost()"), "a size sited off the store's head guess");
+  const size_t helper = src.find("ContextBudget headBudget()");
+  TEST_ASSERT_TRUE(helper != std::string::npos);
+  const size_t body = src.find("\n}\n", helper);
+  const std::string fn = src.substr(helper, body - helper);
+  TEST_ASSERT_TRUE(fn.find("g_engine->headHost()") != std::string::npos);
+  TEST_ASSERT_TRUE(fn.find("resolvedOrchHost()") != std::string::npos);
+  TEST_ASSERT_TRUE(fn.find("deriveBudget(") != std::string::npos);
+  for (const char* use : {"headBudget().briefBytes", "headBudget().recentConvBytes", "headBudget().foldSliceBytes"})
+    TEST_ASSERT_EQUAL_MESSAGE(1, countOf(src, use), use);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_anchor_identity_at_200k);
@@ -118,5 +167,6 @@ int main(int, char**) {
   RUN_TEST(test_zero_window_uses_default);
   RUN_TEST(test_monotonic_in_window);
   RUN_TEST(test_mistral_128k_derivation);
+  RUN_TEST(test_orchestrator_sizes_off_one_head_budget);
   return UNITY_END();
 }

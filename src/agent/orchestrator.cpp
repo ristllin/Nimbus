@@ -339,6 +339,19 @@ static nimbus::orch::ModAction moderateGate(nimbus::orch::ModGate gate, const St
   return a;
 }
 
+// The ONE head-window budget for every per-turn size that follows the head model
+// (the RECENT CONVERSATION window, the sub-agent brief, the fold slice): sized for
+// the head the ENGINE will run (headHost: the router fallback included), never a
+// store-side guess - store::resolvedOrchHost does not know the router fallback,
+// and on a Z.ai-only device it sized a 272K window for a 100K model (CUM-485).
+// Before the engine exists (boot), the store's resolution is the best answer.
+// test_orch_budget pins that this is the only deriveBudget call in this file.
+static nimbus::orch::ContextBudget headBudget() {
+  const String h = g_engine ? String(g_engine->headHost().c_str()) : store::resolvedOrchHost();
+  return nimbus::orch::deriveBudget(
+      nimbus::orch::modelCtxTokens(h.c_str(), store::orchModel(h).c_str()), {});
+}
+
 // ---- delivery helpers -------------------------------------------------------
 
 // `system` marks GENUINE device-authored deterministic copy (command replies,
@@ -596,9 +609,7 @@ static JobEngine::Deps buildJobDeps() {
     // Brief bytes derive from the HEAD's window (the spawning context; 1200 at
     // the 200K anchor). Per-sub-model derivation deferred - this closure has no
     // provider argument today.
-    const String h = store::resolvedOrchHost();
-    const auto bb = deriveBudget(modelCtxTokens(h.c_str(), store::orchModel(h).c_str()), {});
-    block += dream::buildEpisodicDigest(rows, bb.briefBytes);
+    block += dream::buildEpisodicDigest(rows, headBudget().briefBytes);
     return block;
   };
   // Connector-aware routing: a spawn whose skill names an enabled connector routes
@@ -853,12 +864,9 @@ static TurnEngine::Deps buildTurnDeps() {
     // the 200K anchor; the old fixed 3000 B cut the previous reply's code), and
     // the newest rows are kept WHOLE first - on a stateless tool-loop turn this
     // window is the only place the model sees its last answer.
-    // Sized for the head the ENGINE will run (headHost: the router fallback
-    // included), not store::resolvedOrchHost - on a Z.ai-only device that guessed
-    // the unkeyed priority head and sized a 272K window for a 100K model.
-    const String wh = g_engine ? String(g_engine->headHost().c_str()) : store::resolvedOrchHost();
-    const auto wb = deriveBudget(modelCtxTokens(wh.c_str(), store::orchModel(wh).c_str()), {});
-    return agent::recentConversationBlock(rows, std::string(g_curUserRowId), wb.recentConvBytes);
+    // Sized for the head the ENGINE will run (headBudget).
+    return agent::recentConversationBlock(rows, std::string(g_curUserRowId),
+                                          headBudget().recentConvBytes);
   };
   d.composeInputs = [buildRecentWindow](const std::string& chatId) {
     using namespace nimbus::orch;
@@ -2069,9 +2077,7 @@ static void compactTick() {
     rows = agent::liveConversation(rows, std::string(), 0);
     // Fold-slice bytes derive from the head model's window (65536 at the 200K
     // anchor - identical to the old constant on today's fleet).
-    const String fh = store::resolvedOrchHost();
-    const auto fb = deriveBudget(modelCtxTokens(fh.c_str(), store::orchModel(fh).c_str()), {});
-    digest = dream::buildEpisodicDigest(rows, fb.foldSliceBytes);   // PSRAM via the 128 B spill
+    digest = dream::buildEpisodicDigest(rows, headBudget().foldSliceBytes);   // PSRAM via the 128 B spill
   }
 
   std::string summary;

@@ -147,14 +147,16 @@ by `assembleContext` (`lib/core/src/orch_world.cpp`):
   are indented two spaces, so no message can start a fake row or header),
   whenever it fits. A code block from the previous reply arrives intact.
 - **Then previews.** A message too big to fit whole becomes a one-line preview
-  clipped to 300 B; the newest message alone over the budget keeps its head
+  (every line break flattened to a space, the same set as above, so a preview
+  cannot fake a row or header either) clipped to 300 B; the newest message alone
+  over the budget keeps its head
   instead. The first message that fits in neither form ends the window behind
   `(earlier messages omitted - byte budget)`.
 - **Fitted to the real room.** If the assembled system prompt has less room
   left than the budget, the OLDEST whole rows are cut until the window fits
   (reported as `conversation(clipped)` in the OMITTED trailer); if not even the
-  newest message fits, its head is kept. A trimmed window never takes the room
-  the scratchpad needs. On a 128K head the self-model leaves well under 1 KB, so
+  newest message fits, its head is kept. The window, whole or trimmed, never
+  takes the room the scratchpad needs. On a 128K head the self-model leaves well under 1 KB, so
   only the newest short messages (or the head of the last reply) fit there.
 
 ## When a turn can't run

@@ -391,6 +391,65 @@ static void test_trimmed_window_leaves_room_for_the_scratchpad() {
   for (const auto& d : a.droppedSections) TEST_ASSERT_TRUE_MESSAGE(d != "scratchpad", "scratchpad dropped");
 }
 
+// Gate W2 #4: a window that FITS WHOLE must not evict the scratchpad either. The
+// gate repro: 2000 B of rules, a 1.3 KB window and an active task at a 3.5 KB
+// budget - the window fit, took the scratchpad's room, and the owner's plan
+// vanished from the turn (only the trimming branch held the reserve back).
+static void test_whole_window_still_leaves_room_for_the_scratchpad() {
+  nimbus::orch::Scratchpad sp;
+  sp.setActiveTask("finish the carbon-stock report");
+  ContextInputs in;
+  in.immutableRules = std::string(2000, 'r');
+  in.recentConversation = std::string(kConvHeader) +
+                          agent::dream::buildConversationWindow({row("assistant", std::string(1300, 'a'))}, 8192);
+  in.scratchpad = &sp;
+  const auto a = nimbus::orch::assembleContext(in, 2000 + 1500);
+  TEST_ASSERT_TRUE((int)a.prompt.size() <= 2000 + 1500);
+  TEST_ASSERT_TRUE_MESSAGE(a.prompt.find("finish the carbon-stock report") != std::string::npos,
+                           "a window that fit whole evicted the scratchpad");
+  for (const auto& d : a.droppedSections) TEST_ASSERT_TRUE_MESSAGE(d != "scratchpad", "scratchpad dropped");
+  TEST_ASSERT_TRUE(a.prompt.find("- assistant: aaaa") != std::string::npos);   // the reply's head stays
+}
+
+// The class over every budget from "rules only" to "everything fits", for a big
+// window beside a small scratchpad and a small window beside a big one: the
+// scratchpad is present whenever it fits at all, the prompt never overflows, the
+// window is whole whenever window + scratchpad fit, and when the scratchpad cannot
+// fit even alone no room is held back for it (a window that fits keeps it).
+static void test_scratchpad_and_window_over_every_budget() {
+  for (int shape = 0; shape < 2; ++shape) {
+    const bool bigWindow = shape == 0;
+    nimbus::orch::Scratchpad sp;
+    sp.setActiveTask("finish the carbon-stock report");
+    if (!bigWindow)
+      for (int i = 0; i < 4; ++i)
+        sp.add(nimbus::orch::Tier::Mid, "core " + std::to_string(i) + ": date the slices " + std::string(60, 'm'));
+    ContextInputs in;
+    in.immutableRules = std::string(2000, 'r');
+    in.scratchpad = &sp;
+    const int spBytes = (int)nimbus::orch::assembleContext(in, 32768).prompt.size() - 2000;
+    std::vector<nimbus::orch::EpisodicMessage> rows;
+    const int nRows = bigWindow ? 6 : 1;
+    for (int i = 0; i < nRows; ++i)
+      rows.push_back(row(i % 2 ? "user" : "assistant",
+                         "row " + std::to_string(i) + " " + std::string(bigWindow ? 180 : 10, 'w')));
+    in.recentConversation = std::string(kConvHeader) + agent::dream::buildConversationWindow(rows, 8192);
+    const int conv = (int)in.recentConversation.size();
+    TEST_ASSERT_TRUE(bigWindow ? conv > spBytes : conv < spBytes);
+    for (int room = 0; room <= conv + spBytes + 200; room += 7) {
+      const int budget = 2000 + room;
+      const auto a = nimbus::orch::assembleContext(in, budget);
+      const std::string at = "shape " + std::to_string(shape) + " room " + std::to_string(room);
+      TEST_ASSERT_TRUE_MESSAGE((int)a.prompt.size() <= budget, at.c_str());
+      const bool hasSp = a.prompt.find("finish the carbon-stock report") != std::string::npos;
+      TEST_ASSERT_EQUAL_MESSAGE(room >= spBytes, hasSp, at.c_str());
+      const bool whole = a.prompt.find(in.recentConversation) != std::string::npos;
+      if (room >= conv + spBytes) TEST_ASSERT_TRUE_MESSAGE(whole, at.c_str());
+      if (room < spBytes && room >= conv) TEST_ASSERT_TRUE_MESSAGE(whole, at.c_str());
+    }
+  }
+}
+
 // A window that fits is emitted byte-for-byte; one whose NEWEST row alone cannot
 // fit keeps that row's head; with no useful room left it is dropped (reported).
 static void test_conversation_fits_untouched_or_drops_honestly() {
@@ -452,6 +511,8 @@ int main() {
   RUN_TEST(test_conversation_trims_oldest_rows_instead_of_vanishing);
   RUN_TEST(test_conversation_fits_untouched_or_drops_honestly);
   RUN_TEST(test_trimmed_window_leaves_room_for_the_scratchpad);
+  RUN_TEST(test_whole_window_still_leaves_room_for_the_scratchpad);
+  RUN_TEST(test_scratchpad_and_window_over_every_budget);
   RUN_TEST(test_prev_reply_code_survives_assembly_on_200k_and_272k_heads);
   return UNITY_END();
 }

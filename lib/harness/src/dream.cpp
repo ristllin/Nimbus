@@ -1,4 +1,6 @@
 #include "nimbus/harness/dream.h"
+#include "nimbus/harness/conversation.h"   // isClearBoundary - a /clear marker is not conversation
+#include "nimbus/harness/jobs.h"           // isJobDelivery - captured job rows are not conversation
 #include "nimbus/mem_cap.h"     // utf8CapLen - UTF-8-safe row clip (prism B)
 #include "nimbus/orch/world.h"  // kConvOmittedNote - shared with assembleContext
 
@@ -68,6 +70,28 @@ namespace {
 std::string previewRow(const EpisodicMessage& m);   // defined with the window helpers below
 }  // namespace
 
+Yesterday readYesterday(const nimbus::orch::EpisodicStore& store, uint32_t nowHours,
+                        const std::vector<std::string>& sessions) {
+  using nimbus::orch::MsgKind;
+  nimbus::orch::MsgQuery q;
+  q.sinceHours = nowHours > 24 ? nowHours - 24 : 0;
+  q.limit = kYesterdayQueryRows;
+  q.sessionAllow = sessions;
+  q.haveKind = true;
+  q.kind = MsgKind::Message;
+  q.alsoKinds = {MsgKind::Image, MsgKind::File, MsgKind::Audio};
+  std::vector<EpisodicMessage> rows;
+  for (EpisodicMessage& m : store.query(q)) {
+    if (agent::isJobDelivery(m.tags) || agent::isClearBoundary(m)) continue;
+    if ((int)rows.size() >= kYesterdayRows) break;
+    rows.push_back(std::move(m));
+  }
+  Yesterday y;
+  y.empty = rows.empty();
+  y.digest = buildEpisodicDigest(rows);
+  return y;
+}
+
 std::string buildEpisodicDigest(const std::vector<EpisodicMessage>& msgs,
                                 size_t capBytes) {
   if (msgs.empty()) return "(no episodic messages captured in the last day)\n";
@@ -117,35 +141,42 @@ size_t lineBreakAt(const std::string& t, size_t i) {
   return unicodeBreakAt(t, i);
 }
 
+// THE one break normalizer every rendered row goes through (whole rows, the
+// window's previews, the digest - so the brief, the fold and the nightly digest
+// too): each lineBreakAt() break becomes `sep`. A row-renderer that flattened
+// only LF/CR let U+2028 + "- owner: ..." through on the preview path (gate W2).
+std::string replaceBreaks(const std::string& t, const char* sep) {
+  std::string out;
+  out.reserve(t.size() + 16);
+  for (size_t i = 0; i < t.size();) {
+    const size_t br = lineBreakAt(t, i);
+    if (br) {
+      out += sep;
+      i += br;
+    } else {
+      out += t[i++];
+    }
+  }
+  return out;
+}
+
 // A row kept whole: verbatim, every line break normalized to LF and followed by
 // a two-space indent (code keeps its relative indentation; a list inside the
 // message can never read as a row start, and no line inside a row can open a
 // "## " header).
 std::string wholeRow(const EpisodicMessage& m) {
-  std::string line = std::string("- ") + roleOf(m) + ": ";
-  line.reserve(line.size() + m.text.size() + 16);
-  for (size_t i = 0; i < m.text.size();) {
-    const size_t br = lineBreakAt(m.text, i);
-    if (br) {
-      line += "\n  ";
-      i += br;
-    } else {
-      line += m.text[i++];
-    }
-  }
+  std::string line = std::string("- ") + roleOf(m) + ": " + replaceBreaks(m.text, "\n  ");
   while (!line.empty() && (line.back() == ' ' || line.back() == '\n')) line.pop_back();
   line += '\n';
   return line;
 }
 
-// The one-line preview (the digest's row shape): newlines flattened, clipped
-// UTF-8-safe to kWindowPreviewBytes with a "..." marker. UTF-8 safety matters
-// (prism B): a raw byte resize tore multi-byte chars, and the torn row then
-// poisoned EVERY turn of that chat with invalid JSON (sticky 400s).
+// The one-line preview (the digest's row shape): every line break flattened to a
+// space, clipped UTF-8-safe to kWindowPreviewBytes with a "..." marker. UTF-8
+// safety matters (prism B): a raw byte resize tore multi-byte chars, and the torn
+// row then poisoned EVERY turn of that chat with invalid JSON (sticky 400s).
 std::string previewRow(const EpisodicMessage& m) {
-  std::string t = m.text;
-  for (char& c : t)
-    if (c == '\n' || c == '\r') c = ' ';
+  std::string t = replaceBreaks(m.text, " ");
   if (t.size() > kWindowPreviewBytes) {
     t.resize((size_t)nimbus::utf8CapLen(t.c_str(), (int)t.size(), (int)kWindowPreviewBytes - 3));
     t += "...";

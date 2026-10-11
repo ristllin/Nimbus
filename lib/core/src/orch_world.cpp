@@ -294,18 +294,20 @@ namespace {
 // omission note. Only when not even the newest row fits is the section dropped.
 // Rows are lines starting "- " (a whole row indents its continuation lines, so
 // a list inside a message never reads as a row start).
-// `reserve` is held back only when TRIMMING: a window that fits whole is emitted
-// as before, but a cut-down one leaves room for the scratchpad that follows it
-// (the old fit-or-drop dropped the window and kept the scratchpad; the gradient
-// must not trade the owner's persistent plan for one more old row).
+// `reserve` (the rendered scratchpad that follows) is held back whether the
+// window fits whole or is cut down: the gradient must not trade the owner's
+// persistent plan for one more old row (the old fit-or-drop dropped the window
+// and kept the scratchpad). A window that fit whole used to skip the reserve and
+// evict the scratchpad (gate W2 #4). When the scratchpad cannot fit even with no
+// window at all, nothing is held back for it and the window keeps the room.
 void appendConversation(std::string& out, const std::string& conv, int budget, int reserve,
                         AssembledContext& ctx) {
   if (conv.empty()) return;
+  if (reserve <= budget - (int)out.size()) budget -= reserve;
   if ((int)(out.size() + conv.size()) <= budget) {
     out += conv;
     return;
   }
-  budget -= reserve;
   std::vector<size_t> rows;
   for (size_t p = conv.find("- "); p != std::string::npos; p = conv.find("- ", p + 1))
     if (p == 0 || conv[p - 1] == '\n') rows.push_back(p);
