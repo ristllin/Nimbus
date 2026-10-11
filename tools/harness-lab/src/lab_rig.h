@@ -22,6 +22,7 @@
 #include "nimbus/orch/memory_tools.h"
 #include "nimbus/orch/scratchpad.h"
 #include "nimbus/orch/session_tools.h"
+#include "nimbus/orch/tool_gates.h"
 #include "nimbus/orch/tool_registry.h"
 #include "nimbus/orch/vector_memory.h"
 
@@ -232,27 +233,21 @@ class LabRig {
     for (const auto& s : reg_.toolSpecs()) toolNames_.push_back(s.name);
   }
 
-  // web.search - the real thing, through the real portable path. A key is optional:
-  // without one the tool is simply not advertised, exactly as on a device with no
-  // Tavily key.
+  // web.search - the real thing, through the real portable registration the device
+  // uses (agent::websearch::registerWebSearchTool + the live key gate, CUM-508).
+  // Without a key it is registered but not advertised, exactly as on a device
+  // with no Tavily key.
   void registerWebSearchTool() {
     tavilyKey_ = env_.get("TAVILY_API_KEY");
-    if (tavilyKey_.empty()) return;
-    reg_.add("web.search",
-             "Search the live web for up-to-date information. Returns an answer plus "
-             "top results (title, url, snippet).",
-             [this](ArduinoJson::JsonObjectConst a,
-                    const orch::Principal&) -> orch::ToolResult {
-               std::string q = a["query"].is<const char*>()
-                                   ? std::string(a["query"].as<const char*>()) : std::string();
-               if (q.empty()) return orch::ToolResult::fail("missing 'query'");
-               int k = a["max_results"].is<int>() ? a["max_results"].as<int>() : 5;
-               auto r = agent::websearch::search(http_, tavilyKey_, q, k);
-               if (!r.ok) return orch::ToolResult::fail("web search failed: " + r.err);
-               return orch::ToolResult::ok(r.digest);
-             },
-             R"({"type":"object","properties":{"query":{"type":"string"},)"
-             R"("max_results":{"type":"integer"}},"required":["query"]})");
+    agent::websearch::WebSearchToolDeps wd;
+    wd.search = [this](const std::string& q, int k) {
+      return agent::websearch::search(http_, tavilyKey_, q, k);
+    };
+    agent::websearch::registerWebSearchTool(reg_, wd);
+    orch::applyToolGates(reg_, [this](orch::ToolGate g) {
+      if (g == orch::ToolGate::WebSearchKey) return !tavilyKey_.empty();
+      return !env_.providerKey("openai").empty();
+    });
   }
 
   // The REAL on-device docs pack (docs.search / docs.read) through the real portable

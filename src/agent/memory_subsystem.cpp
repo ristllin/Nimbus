@@ -9,7 +9,10 @@
 #include <time.h>
 
 #include "adapters/embeddings.h"
+#include "adapters/image_gen.h"   // CUM-508: imagegen::available() opens image.generate's gate
 #include "adapters/tavily.h"
+#include "nimbus/harness/websearch.h"  // registerWebSearchTool (portable, host-tested)
+#include "nimbus/orch/tool_gates.h"     // CUM-508: the provider-gated tool table
 #include "memory_restore.h"               // CUM-406: portable restore parse/apply core
 #include "../sys/ps_json.h"               // CUM-406: PSRAM JsonDocument for a large restore body
 #include "health.h"                       // system.health tool (P5)
@@ -572,33 +575,29 @@ void begin() {
     registerResultTools(g_reg, rh);
   }
 
-  // web.search (Tavily) - registered only when a key is set. Gives the orchestrator +
-  // external MCP clients a live-web capability (the key is human-set, never model-
-  // writable). The handler does one blocking HTTPS round-trip via the TLS arbiter.
-  if (agent::tavily::available()) {
-    g_reg.add("web.search",
-              "Search the live web for up-to-date information. Returns an answer plus top results (title, url, snippet).",
-              [](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) -> nimbus::orch::ToolResult {
-                std::string q = a["query"].is<const char*>() ? std::string(a["query"].as<const char*>()) : std::string();
-                if (q.empty()) return nimbus::orch::ToolResult::fail("missing 'query'");
-                // Budget gate (owner: monthly Tavily call cap). Refuse BEFORE spending
-                // a billable call when the month's ceiling is reached; the count itself
-                // is recorded on a successful search below.
-                if (agent::store::providerOverBudget("tavily"))
-                  return nimbus::orch::ToolResult::fail("web search skipped: Tavily monthly call budget reached");
-                int k = a["max_results"].is<int>() ? a["max_results"].as<int>() : 5;
-                agent::websearch::Result r = agent::tavily::search(q, k);
-                // Report the ACTUAL cause. This used to collapse six distinct
-                // failures - and a genuinely empty result set - into one string,
-                // "web search failed (network / no results)", which was wrong
-                // about the cause in every case and left the model retrying a
-                // search that could never work.
-                if (!r.ok) return nimbus::orch::ToolResult::fail("web search failed: " + r.err);
-                agent::store::recordProviderCall("tavily");
-                return nimbus::orch::ToolResult::ok(r.digest);
-              },
-              R"({"type":"object","properties":{"query":{"type":"string"},"max_results":{"type":"integer"}},"required":["query"]})");
+  // web.search (Tavily) - gives the orchestrator + external MCP clients a live-web
+  // capability (the key is human-set, never model-writable). The handler does one
+  // blocking HTTPS round-trip via the TLS arbiter. CUM-508: registered ALWAYS;
+  // whether it is listed is the live key gate installed below, so a key saved
+  // after boot works on the next turn (it used to need a restart).
+  {
+    agent::websearch::WebSearchToolDeps wd;
+    wd.search = [](const std::string& q, int k) { return agent::tavily::search(q, k); };
+    wd.overBudget = [] { return agent::store::providerOverBudget("tavily"); };
+    wd.recordCall = [] { agent::store::recordProviderCall("tavily"); };
+    agent::websearch::registerWebSearchTool(g_reg, wd);
   }
+  // CUM-508: every provider-gated tool (nimbus/orch/tool_gates.h) is listed
+  // exactly while its key is present - evaluated live on each listing and call,
+  // so adding or removing a key never needs a restart. image.generate registers
+  // later (files subsystem); gates are keyed by name, so order does not matter.
+  nimbus::orch::applyToolGates(g_reg, [](nimbus::orch::ToolGate g) {
+    switch (g) {
+      case nimbus::orch::ToolGate::WebSearchKey: return agent::tavily::available();
+      case nimbus::orch::ToolGate::ImageKey:     return agent::imagegen::available();
+    }
+    return false;
+  });
 
   // Local Loops - schedule recurring/timed tasks that fire as future turns. A loop
   // the MODEL creates is stored PENDING until the owner approves it (prism: defuses

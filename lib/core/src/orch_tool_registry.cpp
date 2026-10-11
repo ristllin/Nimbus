@@ -68,10 +68,32 @@ int ToolRegistry::removeByPrefix(const std::string& prefix) {
   return removed;
 }
 
+const ToolRegistry::GateEntry* ToolRegistry::gateFor(const std::string& name) const {
+  for (const auto& g : gates_) if (g.name == name) return &g;
+  return nullptr;
+}
+
+void ToolRegistry::setGate(const std::string& name, std::function<bool()> open,
+                           const std::string& reason) {
+  for (size_t i = 0; i < gates_.size(); ++i) {
+    if (gates_[i].name != name) continue;
+    if (open) gates_[i] = GateEntry{name, std::move(open), reason};
+    else gates_.erase(gates_.begin() + i);
+    return;
+  }
+  if (open) gates_.push_back(GateEntry{name, std::move(open), reason});
+}
+
+bool ToolRegistry::gateOpen(const std::string& name) const {
+  const GateEntry* g = gateFor(name);
+  return !g || g->open();
+}
+
 std::vector<ToolInfo> ToolRegistry::manifest() const {
   std::vector<ToolInfo> out;
   out.reserve(tools_.size());
-  for (const auto& t : tools_) out.push_back(ToolInfo{t.name, t.description});
+  for (const auto& t : tools_)
+    if (gateOpen(t.name)) out.push_back(ToolInfo{t.name, t.description});
   return out;
 }
 
@@ -82,6 +104,7 @@ std::vector<ToolRegistry::Spec> ToolRegistry::toolSpecs() const {
   // its provider's function-tool shape. Normalize an empty/blank schema to "{}" so
   // a consumer that parses it always gets a valid object schema.
   for (const auto& t : tools_) {
+    if (!gateOpen(t.name)) continue;   // CUM-508: a closed gate is not advertised
     std::string schema = t.schemaJson.empty() ? "{}" : t.schemaJson;
     out.push_back(Spec{t.name, t.description, schema});
   }
@@ -95,6 +118,7 @@ std::vector<ToolRegistry::Spec> ToolRegistry::toolSpecsFor(const Principal& who)
   out.reserve(tools_.size());
   for (const auto& t : tools_) {
     if (t.adminOnly) continue;   // not callable by this caller -> not advertised
+    if (!gateOpen(t.name)) continue;   // prerequisite missing right now (CUM-508)
     out.push_back(Spec{t.name, t.description, t.schemaJson.empty() ? "{}" : t.schemaJson});
   }
   return out;
@@ -134,6 +158,11 @@ ToolResult ToolRegistry::dispatch(const std::string& name, JsonObjectConst args,
                                 : v.reason);
   const Tool* t = find(name);
   if (!t) return ToolResult::fail("unknown tool: " + name);
+  // CUM-508: a gated tool whose prerequisite is missing right now refuses with
+  // its honest reason, never reaching a handler that would need it.
+  const GateEntry* g = gateFor(name);
+  if (g && !g->open())
+    return ToolResult::fail(g->reason.empty() ? ("tool unavailable: " + name) : g->reason);
   if (!t->handler) return ToolResult::fail("tool has no handler: " + name);
   return t->handler(args, who);
 }
@@ -194,6 +223,7 @@ std::string ToolRegistry::handleRpc(const std::string& requestJson,
     JsonDocument d;
     JsonArray arr = d["tools"].to<JsonArray>();
     for (const auto& t : tools_) {
+      if (!gateOpen(t.name)) continue;   // CUM-508: same listing rule as toolSpecs
       JsonObject o = arr.add<JsonObject>();
       o["name"] = t.name;
       o["description"] = t.description;

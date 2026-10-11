@@ -235,7 +235,7 @@ absent when no SD card is present. Reads honor per-person visibility (RBAC
 | `artifact.save` | Persist a TEXT artifact (report, summary, document) into the durable store. | `project` (**required**), `name` (**required**, with extension `.md`/`.txt`/`.csv`/`.json`), `text` (**required**, max ~24 KB per call) | live |
 | `files.share` | Share one of your saved files read-only with everyone, or stop sharing it. | `project` (**required**), `name` (**required**), `share` (boolean, default true) | live |
 | `files.send` | Send a stored file to the owner on Telegram - images go as an inline photo, other files as a document. | `project` (**required**), `name` (**required**), `chat_id` (optional) | live |
-| `image.generate` | Generate an image from a text prompt and save it as a PNG in the durable store; returns the saved `project`/`name`. | `prompt` (**required**), `project` (default `images`), `name` (optional stem), `size` (optional), `quality` (`low`/`medium`/`high`, default `low`), `model` (optional, default `gpt-image-1`), `describe` (boolean, default false) | live |
+| `image.generate` | Generate an image from a text prompt and save it as a PNG in the durable store; returns the saved `project`/`name`. | `prompt` (**required**), `project` (default `images`), `name` (optional stem), `size` (optional), `quality` (`low`/`medium`/`high`, default `low`), `model` (optional, default `gpt-image-1`), `describe` (boolean, default false) | live (listed while an OpenAI key is set; a key added later works on the next turn) |
 
 Notes:
 - `files.read` serves text extensions only (`.md` / `.txt` / `.json` / `.csv` /
@@ -323,8 +323,12 @@ back to text - the content is never dropped.
 |---|---|---|---|
 | `web.search` | Search the live web; returns an answer plus top results (title, url, snippet). | `query` (string, **required**), `max_results` (integer, default 5) | live (when a web-search key is set) |
 
-Note: registered only when a web-search (Tavily) key is configured - the key is
-human-set, never model-writable. A monthly call budget can gate it.
+Note: always registered, and listed (to the model, in `/api/tools` and in MCP
+`tools/list`) exactly while a web-search (Tavily) key is configured. A key added
+in the web app takes effect on the next turn, no restart; without one a call
+refuses and says the key is missing. The key is human-set, never
+model-writable. A monthly call budget can gate it. The provider-gated tools are
+one table, `kGatedTools` in `lib/core/include/nimbus/orch/tool_gates.h`.
 
 ## `tenant.*` - people & roles
 

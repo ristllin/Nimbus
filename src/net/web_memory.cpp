@@ -594,7 +594,9 @@ void handleToolsGet(AsyncWebServerRequest* r) {
           tag.c_str(), false, capScopeSlug(connectorScope(cw, ps)));
     }
   }
-  if (!agent::store::tavilyKey().length())
+  // The same live gate the registry listing uses (CUM-508), so this hint and the
+  // web.search row can never disagree.
+  if (!mem::registry().gateOpen("web.search"))
     grp("connector", "web.search (Tavily)", "Live web search - add a Tavily key to enable.",
         "needs Tavily key", false, kUnavail);
   d["count"] = d["tools"].as<JsonArray>().size();

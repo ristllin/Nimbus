@@ -131,5 +131,29 @@ Result search(HttpTransport& http, const std::string& apiKey,
   return res;
 }
 
+void registerWebSearchTool(nimbus::orch::ToolRegistry& reg, const WebSearchToolDeps& deps) {
+  using nimbus::orch::ToolResult;
+  reg.add("web.search",
+          "Search the live web for up-to-date information. Returns an answer plus top results (title, url, snippet).",
+          [deps](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) -> ToolResult {
+            std::string q = a["query"].is<const char*>() ? std::string(a["query"].as<const char*>()) : std::string();
+            if (q.empty()) return ToolResult::fail("missing 'query'");
+            // Budget gate (owner: monthly Tavily call cap). Refuse BEFORE spending a
+            // billable call when the month's ceiling is reached; the count itself is
+            // recorded on a successful search below.
+            if (deps.overBudget && deps.overBudget())
+              return ToolResult::fail("web search skipped: Tavily monthly call budget reached");
+            if (!deps.search) return ToolResult::fail("web search is not wired on this build");
+            const int k = a["max_results"].is<int>() ? a["max_results"].as<int>() : 5;
+            Result r = deps.search(q, k);
+            // Report the ACTUAL cause - one catch-all string used to send the model
+            // retrying a search that could never work.
+            if (!r.ok) return ToolResult::fail("web search failed: " + r.err);
+            if (deps.recordCall) deps.recordCall();
+            return ToolResult::ok(r.digest);
+          },
+          R"({"type":"object","properties":{"query":{"type":"string"},"max_results":{"type":"integer"}},"required":["query"]})");
+}
+
 }  // namespace websearch
 }  // namespace agent

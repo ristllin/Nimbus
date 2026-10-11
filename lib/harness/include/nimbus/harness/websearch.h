@@ -1,7 +1,9 @@
 #pragma once
+#include <functional>
 #include <string>
 
 #include "http.h"
+#include "nimbus/orch/tool_registry.h"
 
 // websearch - the portable half of the device's "web.search" capability (Tavily
 // POST /search). Everything except the key lookup lives here, behind the
@@ -49,6 +51,19 @@ void buildFilter(JsonDocument& filter);
 // Render a parsed (filtered) response into the model-facing digest. Split out so
 // the rendering is testable without a transport.
 std::string renderDigest(const JsonDocument& doc, int maxResults);
+
+// The web.search TOOL (CUM-508). Registered UNCONDITIONALLY - whether it is
+// listed is the live ToolGate::WebSearchKey gate (nimbus/orch/tool_gates.h), so
+// a Tavily key saved after boot makes it callable on the next turn. It used to
+// be registered only when a key existed at boot, so a key added later showed
+// "verified" while the assistant said it could not search the web. The device
+// binds `search` to its key + transport; host tests bind fakes.
+struct WebSearchToolDeps {
+  std::function<Result(const std::string& query, int maxResults)> search;  // required
+  std::function<bool()> overBudget;   // the owner's monthly call cap is reached (nullable)
+  std::function<void()> recordCall;   // count one billable search (nullable)
+};
+void registerWebSearchTool(nimbus::orch::ToolRegistry& reg, const WebSearchToolDeps& deps);
 
 }  // namespace websearch
 }  // namespace agent

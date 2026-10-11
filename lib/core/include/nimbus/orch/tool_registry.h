@@ -157,6 +157,17 @@ class ToolRegistry {
   bool has(const std::string& name) const;
   int  size() const { return (int)tools_.size(); }
 
+  // Live availability gate (CUM-508). A tool whose prerequisite can appear or
+  // vanish at runtime (a provider key) is registered ONCE, unconditionally, and
+  // gated here: while `open()` is false it is left out of every listing
+  // (manifest, toolSpecs, toolSpecsFor, MCP tools/list) and a call refuses with
+  // `reason`; the moment it turns true the next listing carries the tool - no
+  // re-registration, no restart. `open` is evaluated on every listing and call
+  // (never cached). Keyed by name, independent of add() order; setting a gate
+  // again replaces it, and a null `open` removes it. See tool_gates.h.
+  void setGate(const std::string& name, std::function<bool()> open, const std::string& reason);
+  bool gateOpen(const std::string& name) const;   // true when ungated
+
   // Remove a tool by exact name; also clears any static policy entry for it.
   // Returns true if a tool was removed. Used to retract dynamically-registered
   // tools (outbound MCP tools when a server is disabled or its approval is
@@ -217,6 +228,10 @@ class ToolRegistry {
   struct PolicyEntry { std::string name; Verdict verdict; };
   std::vector<PolicyEntry> policies_;
   PolicyResolver           resolver_;
+
+  struct GateEntry { std::string name; std::function<bool()> open; std::string reason; };
+  std::vector<GateEntry> gates_;
+  const GateEntry* gateFor(const std::string& name) const;
 };
 
 }  // namespace orch
