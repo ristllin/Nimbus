@@ -16,11 +16,9 @@ Install it with `pipx`, which keeps command-line tools in their own space:
 pipx install nimbus-notify
 ```
 
-No pipx yet? On Ubuntu or Debian, `sudo apt install pipx`; on a Mac with
-Homebrew, `brew install pipx`; then run `pipx ensurepath` and reopen the
-terminal. (Current Ubuntu, Debian, and Homebrew Python refuse a plain
-`pip install` with an `externally-managed-environment` error.) On Windows, or
-with a Python from python.org, `pip install nimbus-notify` also works.
+No pipx yet? Run `sudo apt install pipx` (Ubuntu, Debian) or `brew install pipx`
+(Mac with Homebrew), then `pipx ensurepath`, and reopen the terminal. On Windows,
+or with Python from python.org, `pip install nimbus-notify` works too.
 
 The broker is the host-side half of the
 [nimbus-notify](https://github.com/ristllin/nimbus-notify) project

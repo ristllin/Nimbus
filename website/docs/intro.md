@@ -63,7 +63,7 @@ in whether the status ring is physical or rendered on screen.
     <div class="variant-card__body">
       <p class="variant-card__kicker">All-in-one</p>
       <h3>Nimbus Light (Freenove CYD)</h3>
-      <p>A single Freenove ESP32-S3 module: display, capacitive touch, microSD, mic, and speaker on one board. No wiring, no soldering. The status arcs render on the panel.</p>
+      <p>A single Freenove ESP32-S3 module: display, capacitive touch, microSD, mic, and speaker on one board. No wiring, no soldering. The status arcs render on the screen.</p>
       <ul class="variant-card__specs">
         <li>Freenove ESP32-S3 Display (FNK0104B)</li>
         <li>2.8" ILI9341 240x320, capacitive touch (FT6336U)</li>
@@ -83,8 +83,9 @@ are in the [hardware reference](guides/hardware.md); the parts list is in the
 
 ## One device, two modes
 
-Pick a mode at flash time; switch later from the settings menu. A switch restarts
-the device.
+A board installed from the browser starts in Orchestrator; the command-line
+installer asks which mode to start in. Switch any time from the settings menu. A
+switch restarts the device.
 
 ### Notifier
 

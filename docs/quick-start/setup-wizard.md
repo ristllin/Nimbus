@@ -14,9 +14,9 @@ sequenceDiagram
   participant LAN as Home Wi-Fi
 
   Note over Dev: first boot after flashing
-  Dev->>Dev: broadcast setup network "Nimbus-setup"<br/>show its name + sign-in QR on the panel
+  Dev->>Dev: broadcast setup network "Nimbus-setup"<br/>show its name + Sign-in QR on the screen
   You->>Dev: join Nimbus-setup (password shown on the device screen)
-  You->>Dev: captive page opens → http://192.168.4.1<br/>(already signed in - the QR carries the token)
+  You->>Dev: captive page opens → http://192.168.4.1<br/>(already signed in - the Sign-in QR carries the code)
   You->>Dev: wizard: pick your Wi-Fi + password (required)
   Dev->>LAN: join your home Wi-Fi
   Dev->>Dev: setup hotspot shuts down after handoff
@@ -30,11 +30,12 @@ sequenceDiagram
 
 ## 1. Power on
 
-Power the board over USB-C. What you see depends on the mode chosen during
-flashing:
+Power the board over USB-C. What you see depends on the board's operating
+mode. A board installed from the **browser flasher** always starts in
+**Orchestrator**; the **command-line installer** asks which mode to start in.
 
-- **Orchestrator** shows its own **setup Wi-Fi network name** and a sign-in
-  QR on the display. Continue below.
+- **Orchestrator** shows its own **setup Wi-Fi network name** and a Sign-in
+  QR on the screen. Continue below.
 - **Notifier** shows Bluetooth pairing guidance instead - there is no Wi-Fi
   or web UI in that mode. Jump to the
   **[Notifier quick start](notifier-quick-start.md)**.
@@ -43,17 +44,17 @@ flashing:
 
 Two steps, in order - the same two the device screen shows:
 
-1. **Join the setup network** shown on the panel:
+1. **Join the setup network** shown on the screen:
    - **Network:** `Nimbus-setup` (a second device numbers itself
      `Nimbus-2-setup`, and so on)
    - **Password:** shown on the device screen (unique to your device) - or just
-     scan the QR to join automatically
+     scan the on-screen QR code to join automatically
 2. **Open `http://192.168.4.1`.** A setup page usually opens on its own once you
    join. **If nothing opens, visit `http://192.168.4.1`** in your browser.
 
 Don't use `nimbus.local` for this first hop - it is a LAN name and can resolve to
 a different Nimbus. The setup page opens the wizard **already signed in**; there is
-no token to copy.
+no code to copy.
 
 ## 3. Walk the wizard
 
@@ -63,13 +64,13 @@ The wizard asks for two required things and lets you skip the rest:
 |---|---|---|
 | **Connect to Wi-Fi** | Yes | Scan, pick your home network, type its password. 2.4 GHz only; SSIDs are case-sensitive. |
 | **Provider key** | Yes - one verified key | Paste an API key and click **Verify**. **[Mistral](https://console.mistral.ai/) is the recommended starting point** - free tier, and the voice default; OpenAI and Anthropic work too. Have the key ready before you start (see [Get your provider key](provider-keys.md)); you cannot fetch one now, on the device's own Wi-Fi. Keys are write-only: shown as "set", never displayed again. |
-| Operating mode | Skippable | Defaults to what the installer chose; changeable later (a change restarts the device). |
+| Operating mode | Skippable | Keeps the mode the board started in (see [Power on](#1-power-on)); changeable later (a change restarts the device). |
 | Telegram | Skippable | Add a bot token later under Assistant → Connectors → Telegram. |
 | Voice | Skippable | Dictation and spoken replies default to Mistral. |
 | Device name | Skippable | One name drives the setup network SSID, the LAN address, the Bluetooth name, and what the assistant calls itself. |
 
 On a **touchscreen board**, keep the wizard open while the device joins your
-Wi-Fi: the setup network shuts down after handoff (to protect the panel from
+Wi-Fi: the setup network shuts down after handoff (to protect the display from
 its own radio), and the wizard carries you to the device's new LAN address
 automatically. "Home Wi-Fi connected + setup hotspot off" is the healthy end
 state, not a failure.
@@ -78,9 +79,9 @@ state, not a failure.
 The long-term memory's **embedding provider defaults to OpenAI**, and it is a
 **set-once** choice: changing it later **erases the vector memory** (every
 stored embedding becomes unreadable to the new model). If Mistral is your only
-key, open **Memory & Files → Memory settings** and switch the embedding
-provider to **Mistral before your first conversation** - while the memory is
-still empty and there is nothing to lose.
+key, open **Memory → Long-term memory → Embedding model**, set **Provider** to
+**Mistral**, and click **Save**, all **before your first conversation** -
+while the memory is still empty and there is nothing to lose.
 :::
 
 ## What works with which provider
@@ -92,8 +93,8 @@ specific provider or key - honestly, today:
 |---|---|---|---|
 | Conversation, tools, sub-agents, routines | ✓ | ✓ | ✓ |
 | Dictation (speech-to-text) | ✓ *(default)* | ✓ | - |
-| Spoken replies over Telegram | ✓ *(default)* | ✓ | - |
-| Spoken replies on the device speaker | - | ✓ | - |
+| Spoken replies as Telegram audio (when the device cannot play them) | ✓ *(default)* | ✓ | - |
+| Spoken replies on the device speaker | ✓ *(default)* | ✓ | - |
 | Image generation (`image.generate`) | - | ✓ | - |
 | Long-term memory embeddings | ✓ *(switch before first use)* | ✓ *(default)* | - |
 | Web search | needs a separate **Tavily** key (Assistant → Tools → Web search) | same | same |
@@ -104,7 +105,7 @@ The wizard ends on the device's **dashboard** at its LAN address - health,
 battery, memory, and sessions at a glance, with **Home**, **Chat**, **Memory**,
 the **Assistant** page (one flat subtab row: Models, Connectors, Tools, Skills,
 Routines, Usage, and Safety), and **Device** settings. You sign in once per
-browser; the sign-in QR on the device screen gets any new browser in.
+browser; the Sign-in QR on the device screen gets any new browser in.
 
 Full tab-by-tab detail: the
 [web UI reference](https://docs.cumulo-nimbus.ai/getting-started/webui-reference).

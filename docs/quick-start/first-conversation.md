@@ -12,8 +12,11 @@ the browser chat.
 3. **Message your bot once** from your own account. Your message appears on
    the Telegram card as a **pending approval** - click **Approve**. No
    chat-ID hunting.
-4. Say hello. The assistant replies in text, and, with **Voice replies** on (the
-   default), can also speak the reply aloud on the device speaker.
+4. Say hello. The assistant replies in text. With **Voice replies** on (the
+   default, on the same Telegram card), it may also speak a reply aloud on the
+   device speaker when that fits; if the device cannot play it, the audio goes
+   to Telegram instead. Voice needs a Mistral key (the default), an OpenAI key,
+   or a Cumulo key; Anthropic has no voice.
 
 The first approved account becomes the **owner**: only the owner can run the
 management commands (`/update`, `/loops`, `/compact`, `/skill`, `/help` lists
@@ -40,8 +43,8 @@ On the all-in-one the ring and the lines are on the screen, and the mic button
 shows pressed while you hold and reads "wait" while processing; the on-screen
 spinner holds still while the recording uploads, then sweeps while the assistant
 thinks. On the Nimbus board the LED ring shows the cue and the lines replace the
-"Hold to talk" bar. The reply also speaks when a voice provider that supports the
-device speaker is configured.
+"Hold to talk" bar. With **Voice replies** on, the assistant can also speak its
+reply on the device speaker.
 
 If something goes wrong, the screen says what, and the ring turns your theme's
 alert color for 15 seconds (tap anywhere to clear it sooner, or hold the mic to
@@ -64,28 +67,27 @@ live status.
 
 ## The dashboard tour (two minutes)
 
-Open the device's web page (scan the sign-in QR on the display if this browser
+Open the device's web page (scan the Sign-in QR on the screen if this browser
 hasn't signed in yet):
 
-- **Dashboard** - health, battery, storage, and live sessions. Watch a turn's
+- **Home** - health, battery, storage, and active sessions. Watch a turn's
   ring arc mirror here while the assistant works.
 - **Chat** - a browser conversation with the same assistant, same memory.
+- **Memory** - what the assistant remembers (your directive, its notes, and the
+  long-term memories you can search) and every file it has saved.
 - **Assistant** - one page with seven subtabs: provider keys and routing
   (Models), connectors like Telegram (Connectors), the tool surface and Tavily
-  web search (Tools), approved skills (Skills), scheduled routines (Routines),
-  token usage and budgets (Usage), and download trust and guest screening (Safety).
-- **Memory & Files** - what the assistant remembers (vector memories,
-  conversation history) and every file it has saved; search, preview, share,
-  delete.
-- **Routines** - scheduled recurring tasks ("morning digest at 8"), each
-  needing your approval before it can run.
-- **Settings** - battery modes, sound, connectivity, software updates, and
-  the danger zone.
+  web search (Tools), approved skills (Skills), scheduled recurring tasks such
+  as "morning digest at 8", each needing your approval before it can run
+  (Routines), token usage and budgets (Usage), and download trust and guest
+  screening (Safety).
+- **Device** - mode and name, display, ring, sound, battery modes, software
+  updates, connectivity, and the danger zone.
 
 Try asking for something that exercises the machinery: *"Remember that my
-partner's birthday is March 12"* (a memory write you can see land in
-Memory & Files), or *"Research the best 2S BMS modules and send me a
-summary"* (a background sub-agent - watch it on the Dashboard).
+partner's birthday is March 12"* (a memory write you can see land under
+Memory), or *"Research the best 2S BMS modules and send me a summary"* (a
+background sub-agent - watch it on Home).
 
 ---
 

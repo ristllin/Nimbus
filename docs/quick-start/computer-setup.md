@@ -14,9 +14,9 @@ browser flasher never shows your board's serial port.
 
 :::note Plan for the download
 The first build downloads about 0.6 GB of ESP32 build tools and takes several
-minutes: about three and a half on a fast computer and connection, longer on a
-slow one. Afterwards PlatformIO's tools take about 5 GB of disk and each board you
-build adds about 0.35 GB, so have at least 6 GB free. Later builds take about a
+minutes: about three on a fast computer and connection, longer on a slow one.
+Afterwards PlatformIO's tools take about 5 GB of disk and each board you build
+adds about 0.35 GB, so have at least 6 GB free. Later builds take about a
 minute.
 :::
 
@@ -80,16 +80,16 @@ PlatformIO builds and uploads the firmware. How you install it depends on where
 your Python came from.
 
 **Linux, or a Mac that uses Homebrew's Python:** install it with `pipx`, which
-keeps command-line tools in their own space:
+keeps command-line tools in their own space. On a Mac, run `brew install pipx`
+first; on Linux, step 2 installed it.
 
 ```bash
 pipx install platformio
 pipx ensurepath
 ```
 
-On a Mac, run `brew install pipx` first (on Linux, step 2 installed it). These
-systems refuse a plain `pip3 install` with an `externally-managed-environment`
-error; pipx is the fix that error suggests.
+These systems refuse a plain `pip3 install` with an
+`externally-managed-environment` error; pipx is the fix that error suggests.
 
 **Windows, or a Mac with Python from python.org:** use Python's package tool:
 
@@ -136,8 +136,9 @@ sudo usermod -aG dialout $USER
 
 On Arch Linux the group is `uucp` instead. PlatformIO may also print
 `Please install 99-platformio-udev.rules` during an upload; its
-[udev rules guide](https://docs.platformio.org/en/latest/core/installation/udev-rules.html)
-grants the same access a different way.
+[udev rules](https://docs.platformio.org/en/latest/core/installation/udev-rules.html)
+work too, but they open the port to every account on the computer, so on a
+shared computer prefer the group.
 
 ## 6. Get the firmware and flash
 
@@ -153,10 +154,7 @@ python3 tools/setup_device.py
 The installer finds your board, confirms before it writes, and never erases an
 already-configured device. If the ESP32 build tools are not installed yet, it
 prints `PlatformIO needs to install the ESP32 build tools first.` and starts the
-download described at the top of this page; let it finish. If the `python3` you
-started it with has no pyserial (usual after a pipx or Homebrew install of
-PlatformIO), it re-runs itself with PlatformIO's own Python; there is nothing to
-do. Full flashing steps, flags, building without a board, and recovery:
+download described at the top of this page; let it finish. Full flashing steps, flags, building without a board, and recovery:
 **[Flash the firmware](flash.md)**.
 
 ---

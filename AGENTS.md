@@ -78,9 +78,9 @@ The **host test suite** (`pio test -e native`) additionally needs the driver
 headers on its include path, which expects a sibling checkout:
 
 ```bash
-SOLIDE_TAG=$(sed -n 's|^[[:space:]]*https://github.com/ristllin/solide-drivers.git#\(v[0-9.]*\).*|\1|p' platformio.ini)
-git clone https://github.com/ristllin/solide-drivers.git ../solide-drivers
-git -C ../solide-drivers checkout "$SOLIDE_TAG"   # the tag platformio.ini pins
+SOLIDE_REF=$(sed -n 's|^[[:space:]]*https://github\.com/ristllin/solide-drivers\.git#\([^[:space:];]*\).*|\1|p' platformio.ini | head -n 1)
+[ -n "$SOLIDE_REF" ] && git clone https://github.com/ristllin/solide-drivers.git ../solide-drivers \
+  && git -C ../solide-drivers checkout "$SOLIDE_REF"   # the tag or commit platformio.ini pins
 ```
 
 Driver developers can point the device builds at that same sibling by swapping

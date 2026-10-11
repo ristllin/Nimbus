@@ -180,15 +180,11 @@ export default function FlashPage() {
                 <small>
                   Installing the <strong>{chosen.label}</strong> image. Pick the
                   board&apos;s serial port when the browser asks. Installing
-                  replaces the device&apos;s saved settings (Wi-Fi, provider
-                  keys, Telegram, pairings) whether or not you choose
-                  &quot;Erase device&quot;, so on a board already running Nimbus
-                  have your Wi-Fi password and provider key ready, or update it
-                  over the air instead (
-                  <Link to="/quick-start/flash#reinstalling-from-the-browser">
-                    details
-                  </Link>
-                  ).
+                  replaces the device&apos;s saved settings even without
+                  &quot;Erase device&quot;. On a board already running Nimbus,
+                  have your Wi-Fi password and provider key ready, or update over
+                  the air instead
+                  (<Link to="/quick-start/flash#reinstalling-from-the-browser">details</Link>).
                 </small>
               </p>
             </>
@@ -243,8 +239,8 @@ export default function FlashPage() {
           First-time flashing writes the image as-is - like any firmware
           installer before secure boot, it is not signed. If you want to
           confirm the bytes before flashing, each board&apos;s image and its
-          SHA-256 are published together, and this page installs exactly that
-          image.{' '}
+          SHA-256 are published together, and this page installs the image
+          from that same address.{' '}
           {chosen ? (
             <>
               For the <strong>{chosen.label}</strong>:{' '}
@@ -253,16 +249,19 @@ export default function FlashPage() {
             </>
           ) : (
             <>
-              Choose your board above to get its two links, or find them under{' '}
-              <code>{WEBFLASH_BASE}/&lt;board&gt;/</code>.
+              Choose your board above, or see{' '}
+              <Link to="/quick-start/flash#on-trust">all four boards</Link>.
             </>
           )}{' '}
-          Download both into one folder and run{' '}
+          Save both into one folder (right-click each link and choose Save Link
+          As) and run{' '}
           <code>shasum -a 256 -c nimbus-webflash.bin.sha256</code> (macOS) or{' '}
           <code>sha256sum -c nimbus-webflash.bin.sha256</code> (Linux); it
-          prints <code>nimbus-webflash.bin: OK</code> when the bytes match.
-          Over-the-air updates after setup are ECDSA-signed and verified on the
-          device.
+          prints <code>nimbus-webflash.bin: OK</code> when the bytes match. This
+          confirms your download is complete and matches what is published; it
+          does not prove who published it, because the image and its checksum
+          come from the same place. Over-the-air updates after setup are
+          ECDSA-signed and verified on the device.
         </p>
       </main>
     </Layout>

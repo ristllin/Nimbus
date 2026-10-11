@@ -198,8 +198,11 @@ to **Mistral** (`voxtral-mini-tts-latest`), with OpenAI selectable
 straight to a LittleFS file so a clip never sits in internal heap. The response
 shapes differ: OpenAI honors `response_format` (`wav`/`mp3`) and returns raw binary;
 Mistral ignores it and always returns MP3 as base64 inside `{"audio_data": …}`,
-which is stream-decoded to the file. Since the device speaker plays WAV/PCM only,
-MP3 output is the **Telegram-audio** path, not an on-device readout.
+which is stream-decoded to the file. The device speaker plays both: the speaker
+path (`speakOnDevice`) asks for the format the effective provider actually emits
+(`core::speakerTtsFormat`: WAV from OpenAI and the Cumulo router, MP3 from Mistral)
+and plays WAV directly or decodes MP3 with the vendored minimp3, so a Mistral-only
+device speaks on its own speaker too.
 
 **Outbound media on the poll task (`sendMedia`).** A send publishes a single
 pending-media slot under the `g_mediaMux` spinlock; the `tg_poll` task drains it via
@@ -207,8 +210,11 @@ pending-media slot under the `g_mediaMux` spinlock; the `tg_poll` task drains it
 resident (the single-TLS invariant). Kinds `document`/`photo`/`voice`/`audio` map to
 the Bot API `sendDocument`/`sendPhoto`/`sendVoice`/`sendAudio` methods.
 
-**Spoken reply path.** In `applyTurn`, when a reply exists, `store::ttsEnabled()` is
-on, `tts::available()`, and the `chatId` is a real numeric Telegram chat (synthetic
-`"serial"`/`"web"` ids are skipped), the reply is synthesized to `/reply.mp3` and
-handed to `sendMedia(chatId, "audio", …)` - Telegram audio is the audible path
-because the bench speaker is disconnected.
+**Spoken reply path.** Speaking is the model's choice, gated by the owner's
+**Voice replies** toggle (`store::ttsEnabled()`, on by default). `reply.speak`
+calls `speakOnDevice` and plays on the device speaker, refusing with a reason when
+voice replies are off or the speaker volume is 0. The `tts` device action and
+`reply.telegram` with `voice:true` go through the speak sink (`orchSpeakSink` in
+`main.cpp`), which plays on the speaker first and falls back to a Telegram audio
+message (`/tts.mp3` via `sendMedia(…, "audio", …)`) only when on-device speech is
+not possible.

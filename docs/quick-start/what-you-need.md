@@ -47,10 +47,10 @@ one board, plug in USB-C, flash.
 5. **One AI provider key** (for Orchestrator mode). **Start with
    [Mistral](https://console.mistral.ai/):** its free tier is enough to set up and
    try Nimbus, and it is the voice default. OpenAI and Anthropic work too and can
-   be added later (a few extras, like image generation and spoken replies on the
-   device speaker, are OpenAI-only). The setup wizard needs one verified key. Skip
-   this if you only want the Notifier status light. Prefer one prepaid balance
-   across every provider? Use a [Cumulo key](../cloud/cumulo-key.md).
+   be added later (image generation is OpenAI-only). The setup wizard needs one
+   verified key. Skip this if you only want the Notifier status light. Prefer one
+   prepaid balance across every provider? Use a
+   [Cumulo key](../cloud/cumulo-key.md).
    Step-by-step for each provider: **[Get your provider key](provider-keys.md)**.
 6. **Optional, recommended:** a microSD card (formatted FAT32) for long-term
    memory and media, and a Telegram account to chat with the assistant.

@@ -29,7 +29,7 @@ unless noted. Most need only the standard library.
 | Tool | What it does | When you need it |
 |---|---|---|
 | `setup_device.py` | Guarded firmware installer over USB. Discovers connected boards by their USB descriptor, auto-detects the board family (Nimbus board or Freenove CYD) from USB plus the saved NVS, and confirms with an identify-and-confirm prompt before writing anything. On a new board it seeds the display, orientation, operating mode, and typed-OTA slug, then installs the production image built for the board and its display size (`--size 28|35|40` on a Freenove; a configured board keeps its saved size). It re-runs itself with PlatformIO's own Python when the `python3` that launched it has no pyserial, and stops with the one fix to run if no such Python exists, so the board checks never switch off. It refuses a wrong-variant flash two ways: it probes for the Freenove capacitive touch controller and refuses a Solide image on a Freenove regardless of the flag, and after flashing it reads the board's boot screen-health signal and fails loudly if the display did not come up. Never erases NVS or factory-resets a configured device. | Installing firmware on any board, especially a factory-fresh one, which can only be flashed over USB. |
-| `usb_reset.py` | Programmatic unbrick for a wedged ESP32-S3 USB-serial port: a libusb bus-level reset, protocol-equivalent to unplugging and replugging the cable. Supports `--skip`, `--serial`, and `--all` to pick the right board when more than one is attached. Runs on macOS and Linux. Needs the libusb library (macOS `brew install libusb`, Debian/Ubuntu `sudo apt install libusb-1.0-0`, Fedora `sudo dnf install libusb1`) and pyusb (`pipx run tools/usb_reset.py` with pipx 1.4.2 or newer brings it along; otherwise install it into a virtual environment). On Linux the reset needs `sudo` or a udev rule for vendor `303a`. If something is missing it says what to install and exits 2. | Serial has gone silent and esptool cannot connect. Run this instead of physically replugging. |
+| `usb_reset.py` | Programmatic unbrick for a wedged ESP32-S3 USB-serial port: a libusb bus-level reset, protocol-equivalent to unplugging and replugging the cable. Supports `--skip`, `--serial`, and `--all` to pick the right board when more than one is attached. Runs on macOS and Linux and needs libusb and pyusb; install steps are in [Recovery](quick-start/flash.md#recovery). If something is missing it says what to install and exits 2. | Serial has gone silent and esptool cannot connect. Or simply unplug and replug the cable. |
 | `tcal_wizard.py` | Touch calibration wizard for the TFT variant: prompts you to press each of four corners, samples the raw ADC, derives the axis-swap and orientation flags, applies the result over the `TCAL` console command, and verifies it. Needs an `[env:test]`-family build. | A touch panel where taps land away from where you aimed - which is otherwise indistinguishable from broken touch. |
 | `connectors_setup.py` | Pushes connector credentials from the repository-root `.env` (gitignored) to a board via the token-gated `POST /api/connectors` upsert. Idempotent; never prints a secret. Signs in with the `X-Nimbus-Token` header (never a token in the URL, which the device ignores); the board comes from `NIMBUS_BOARD1_IP` / `NIMBUS_BOARD1_TOKEN` in `.env`, or `--ip` / `--token`. `--list` shows the board's current connector state. | Configuring or re-configuring a board's external connectors after a flash or NVS change. |
 
@@ -266,15 +266,15 @@ Commands grouped by purpose, one line each. Arguments in angle brackets.
 The device plays music from the SD card's `/music` folder over the speaker, on top
 of the same volume control as sound effects (Settings, Sound). Reach it from the
 `media.play` / `media.pause` / `media.stop` / `media.list` tools (the assistant), the
-`/play` Telegram command, the `PLAY` console command, or the Music section of the web
-page (Memory & Files, Music).
+`/play` Telegram command, or the `PLAY` console command. The web page has no music
+controls of its own (no track list, play, or remove).
 
-- **Adding tracks.** Open the web page, go to Memory & Files, Music, and use Add
-  music to put a `.wav` or `.mp3` file onto the card's music folder. The track then
-  appears in the list, ready to play here, over Telegram with `/play`, or by asking
-  the assistant. A file that is not a `.wav` or `.mp3` is refused with a note; if
-  there is no card, Music says so instead of failing quietly. (Tracks copied onto
-  the card's `/music` folder by hand work too.)
+- **Adding tracks.** Upload an `.mp3` under **Memory → Files** (Upload a file), or
+  drop it into Chat: it goes straight to the card's `/music` folder, ready to play
+  here, over Telegram with `/play`, or by asking the assistant. A `.wav` uploaded
+  that way is stored as an ordinary file instead, so copy WAV tracks onto the
+  card's `/music` folder by hand (that works for MP3 too). To remove a track,
+  delete it from that folder.
 - **Formats.** 16-bit PCM **WAV** and **MP3** both play (MP3 decode uses the
   bundled public-domain minimp3 decoder). A file whose format is not recognized is
   skipped, never played as noise.

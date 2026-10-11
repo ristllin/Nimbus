@@ -121,12 +121,12 @@ acknowledged - the conversation simply does not gain a description.
 
 ## Viewing files in the web UI
 
-**Memory & Files** lists everything stored, with **view** next to files that
+**Memory → Files** lists everything stored, with **view** next to files that
 can be previewed in place: images render inline, text opens in a panel.
 
 Previews are narrow on purpose. Files arrive from everyone the device talks
-to, and the web UI holds the device access token. An HTML or SVG file rendered
-inside the UI would run its own script on the device's origin, with that token
+to, and the web UI holds the device's permanent sign-in code. An HTML or SVG file rendered
+inside the UI would run its own script on the device's origin, with that code
 in reach. So the device renders only what cannot execute - images and plain
 text - and everything else downloads instead, however the request is framed.
 

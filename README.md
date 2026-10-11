@@ -78,9 +78,9 @@ git clone https://github.com/ristllin/Nimbus.git
 cd Nimbus
 pio run -e esp32s3            # compile production firmware (esp32s3-cyd for a Freenove)
 python3 tools/setup_device.py # guarded install
-SOLIDE_TAG=$(sed -n 's|^[[:space:]]*https://github.com/ristllin/solide-drivers.git#\(v[0-9.]*\).*|\1|p' platformio.ini)
-git clone https://github.com/ristllin/solide-drivers.git ../solide-drivers
-git -C ../solide-drivers checkout "$SOLIDE_TAG"   # the tag platformio.ini pins
+SOLIDE_REF=$(sed -n 's|^[[:space:]]*https://github\.com/ristllin/solide-drivers\.git#\([^[:space:];]*\).*|\1|p' platformio.ini | head -n 1)
+[ -n "$SOLIDE_REF" ] && git clone https://github.com/ristllin/solide-drivers.git ../solide-drivers \
+  && git -C ../solide-drivers checkout "$SOLIDE_REF"   # the tag or commit platformio.ini pins
 pio test -e native            # host unit tests, no hardware
 ```
 

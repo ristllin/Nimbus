@@ -13,7 +13,7 @@ one AI provider key.
 The whole path, detailed below:
 
 1. **Flash the firmware** once. It seeds the display for you.
-2. **Power on.** The device shows its setup Wi-Fi network and a sign-in QR.
+2. **Power on.** The device shows its setup Wi-Fi network and a Sign-in QR.
 3. **Join that Wi-Fi.** A setup page opens by itself, already signed in.
 4. **Walk the wizard:** pick your Wi-Fi, add one provider key. Done.
 
@@ -38,11 +38,14 @@ Notifier status light, you do not even need a provider key. See
 If this is an already-configured Nimbus, skip to [step 2](#2-power-on).
 
 Two ways to install. Both seed the display, so the board comes up on the right
-panel with no display question:
+display with no display question:
 
 - **From your browser** (easiest): open [Flash Nimbus](/flash) in Chrome or Edge,
-  pick your board, and click Install. Nothing to download.
-- **From the firmware repository:**
+  pick your board, and click Install. Nothing to download. The board starts in
+  Orchestrator mode. Reinstalling this way replaces saved settings (see
+  [Reinstalling from the browser](../quick-start/flash.md#reinstalling-from-the-browser)).
+- **From the firmware repository** (needs Python 3, git, and PlatformIO; see
+  [Set up your computer](../quick-start/computer-setup.md)):
 
   ```bash
   python3 tools/setup_device.py
@@ -68,8 +71,9 @@ there is no wrong one to pick.
 <summary>I flashed <code>[env:provision]</code> or a bring-up sketch by mistake</summary>
 
 Those are standalone diagnostics with no Nimbus UI, setup Wi-Fi, or web
-settings. Run `python3 tools/setup_device.py` (or the browser flasher) to install
-the real firmware. Saved settings are preserved.
+settings. Run `python3 tools/setup_device.py` to install the real firmware; it
+keeps saved settings. The browser flasher also works, but it replaces saved
+settings.
 
 </details>
 
@@ -77,9 +81,11 @@ the real firmware. Saved settings are preserved.
 
 ## 2. Power on
 
-Power the board over USB-C. What you see depends on the mode you flashed:
+Power the board over USB-C. What you see depends on the operating mode: a
+browser install always starts in Orchestrator, and the command-line installer
+starts in the mode you picked.
 
-- **Orchestrator** shows its **setup Wi-Fi network name** and a **sign-in QR**.
+- **Orchestrator** shows its **setup Wi-Fi network name** and a **Sign-in QR**.
   Continue below.
 - **Notifier** shows Bluetooth pairing guidance instead, and keeps Wi-Fi off to
   leave room for Bluetooth. Follow the
@@ -112,7 +118,7 @@ On your phone or laptop, join the network shown on the screen:
 
 Two steps, in order - the same two the device screen shows:
 
-1. **Join the setup network** shown on the panel:
+1. **Join the setup network** shown on the screen:
    - **Network:** `Nimbus-setup` (or the name your screen shows)
    - **Password:** shown on the device screen, unique to your device. Or scan
      the on-screen QR to join automatically.
@@ -143,7 +149,7 @@ The wizard asks for two required things and lets you skip the rest.
 |---|---|---|
 | **Connect to Wi-Fi** | Yes | Tap **Scan**, pick your home network, type its password, **Connect**. |
 | **Provider key** | Yes, one verified key | Paste an API key and click **Verify**. |
-| Operating mode | Optional | Keep what you flashed, or change it (a change restarts the device). |
+| Operating mode | Optional | Keep the current mode, or change it (a change restarts the device). |
 | Telegram | Optional | Add a bot token later. |
 | Voice | Optional | Dictation and spoken replies default to Mistral. |
 | Device name | Optional | Rename it now or later. |
@@ -164,9 +170,9 @@ end state, not a failure.
 :::caution Using only a Mistral key? Set embeddings before your first turn
 Long-term memory's embedding provider defaults to OpenAI, and it is a
 **set-once** choice: changing it later erases the stored memory. If Mistral is
-your only key, open **Memory & Files > Memory settings** and switch the embedding
-provider to **Mistral before your first conversation**, while the memory is still
-empty and there is nothing to lose.
+your only key, open **Memory > Long-term memory > Embedding model**, set
+**Provider** to **Mistral**, and click **Save**, all **before your first
+conversation**, while the memory is still empty and there is nothing to lose.
 :::
 
 That is the whole setup. The wizard lands on the **dashboard** at the device's
@@ -249,14 +255,15 @@ and the tool loop.
 
 ## Signing in from another browser
 
-First-time setup never makes you handle the access token; the wizard carried it
-for you. For a **later** browser, or a device configured by older firmware:
+First-time setup never makes you handle the device sign-in code; the wizard
+carried it for you. For a **later** browser, or a device configured by older
+firmware:
 
-1. **Scan the sign-in QR** on the device screen with your phone. It opens the
+1. **Scan the Sign-in QR** on the device screen with your phone. It opens the
    settings page already signed in.
-2. If you browse in without it, a **Sign in to Nimbus** page appears. Scan the QR
-   (on the device: **Settings > Connectivity > Sign-in QR**). You identify once
-   per browser; the device remembers it after that.
+2. If you browse in without it, a **Sign in to Nimbus** page appears. Scan the
+   Sign-in QR (on the device: **Settings > Connectivity > Sign-in QR**). You
+   identify once per browser; the device remembers it after that.
 
 <details>
 <summary>The screen is unavailable and I cannot scan or read the code</summary>
@@ -267,8 +274,11 @@ Connect the board's **UART** port and run:
 python3 tools/setup_device.py --show-token
 ```
 
-It identifies the board, prints only the existing sign-in token, and restores the
-firmware afterward. It does not erase saved settings. Then open
-`http://<device-address>/?t=<token>`.
+It identifies the board, prints only the device's saved sign-in code (the long,
+permanent one, not the short code the sign-in page asks for; treat it like a
+password), and restores the firmware afterward. It does not erase saved
+settings. Then open `http://<device-address>/?t=<code>` in a private (incognito)
+window, so the code is not kept in your browser history; once the screen works
+again, sign in your usual browser with the Sign-in QR.
 
 </details>

@@ -30,9 +30,8 @@ Any one verified key runs the assistant. If you are not sure:
   Mistral, OpenAI, and Anthropic, with no per-provider accounts to manage. It also
   covers voice, both dictation and spoken replies, so a one-key device needs no
   separate voice provider.
-- **OpenAI** adds a few extras (image generation, and spoken replies on the device
-  speaker). **Anthropic** is great for conversation. Both need a paid balance to
-  start.
+- **OpenAI** adds image generation. **Anthropic** is great for conversation.
+  Both need a paid balance to start.
 
 You can add more providers later. You only need one to finish setup.
 
@@ -65,7 +64,8 @@ Free to try, no card needed to begin.
 
 ## OpenAI
 
-Adds image generation and spoken replies on the device speaker.
+Adds image generation, and a second choice of voice for dictation and spoken
+replies.
 
 1. **Create an account.** Go to [platform.openai.com](https://platform.openai.com/)
    and sign up.

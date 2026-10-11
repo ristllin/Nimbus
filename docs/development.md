@@ -29,21 +29,22 @@ never forks its internals.
 
 **Device builds** (`esp32s3`, `test`, …) fetch it automatically from the pinned
 public tag in `platformio.ini` - a fresh clone builds with nothing else.
-**Host tests** (`pio test -e native`) additionally need its headers on the
-include path, which expects a sibling checkout at the **same tag** the device
-builds use: the one on the `https://github.com/ristllin/solide-drivers.git#…`
-line of `platformio.ini`. The first line below reads that tag, so the checkout
-always matches the pin (an older tag fails the native build on headers it does
-not have yet):
+**Host tests** (`pio test -e native`) also need its headers, from a sibling
+checkout at the tag `platformio.ini` pins (an older tag fails on headers it does
+not have yet). The first line reads that pin, so the checkout matches it; if
+it finds nothing, nothing is cloned:
 
 ```bash
-SOLIDE_TAG=$(sed -n 's|^[[:space:]]*https://github.com/ristllin/solide-drivers.git#\(v[0-9.]*\).*|\1|p' platformio.ini)
-git clone https://github.com/ristllin/solide-drivers.git ../solide-drivers
-git -C ../solide-drivers checkout "$SOLIDE_TAG"   # the tag platformio.ini pins
+SOLIDE_REF=$(sed -n 's|^[[:space:]]*https://github\.com/ristllin/solide-drivers\.git#\([^[:space:];]*\).*|\1|p' platformio.ini | head -n 1)
+[ -n "$SOLIDE_REF" ] && git clone https://github.com/ristllin/solide-drivers.git ../solide-drivers \
+  && git -C ../solide-drivers checkout "$SOLIDE_REF"   # the tag or commit platformio.ini pins
 ```
 
-When the pin moves to a newer tag, run the first line again, then
-`git -C ../solide-drivers fetch --tags` and the last line.
+When the pin moves, re-run the `SOLIDE_REF=` line, then:
+
+```bash
+git -C ../solide-drivers fetch --tags && git -C ../solide-drivers checkout "$SOLIDE_REF"
+```
 
 Host tests also need a C++ compiler on the computer: the Xcode command line tools
 on macOS (`xcode-select --install`), or `build-essential` on Ubuntu and Debian
@@ -54,8 +55,10 @@ the commented `symlink://../solide-drivers` line in `platformio.ini`.
 
 Every git dependency in `platformio.ini` (solide-drivers, AsyncTCP,
 ESPAsyncWebServer) is pinned to an exact tag or commit, so a tagged clone builds
-the same library code as the release did. Bump a pin on purpose, in its own
-commit, once every device environment still links.
+the same code from those libraries as the release did. Registry libraries
+(ArduinoJson, NimBLE-Arduino) follow version ranges, so a later build can pick up
+a newer compatible release. Bump a pin on purpose, in its own commit, once every
+device environment still links.
 
 ## Build environments
 

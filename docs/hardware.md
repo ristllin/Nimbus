@@ -65,14 +65,16 @@ production install, use the guarded installer:
 python3 tools/setup_device.py
 ```
 
-It lists the UART adapters, requires an explicit choice, reads the selected
-board's immutable factory MAC and NVS state, and asks for the fitted display plus
-initial operating mode. It then asks you to type the MAC back before any upload.
-On a new board a UART-only diagnostic writes and verifies `scrModel` and
-`nimbus_mode`; production firmware is installed last. Existing Nimbus settings
-produce a prominent warning, and NVS is never erased. Do not run a bare `pio run
-... -t upload` with more than one board connected, because PlatformIO may select
-a different serial device than the one you intended.
+It finds the connected boards by their USB descriptor (the UART bridge or the
+native USB port; with several, it lists them and can blink one to identify it),
+reads the chosen board's factory MAC and saved settings (NVS) without changing
+them, asks only what it cannot detect (the operating mode, and the display size
+on a Freenove; there is no display question), and confirms before any upload. A temporary serial diagnostic then seeds and verifies the
+board's settings, and production firmware is installed last. NVS is never
+erased: a configured board keeps its Wi-Fi, keys, pairings, and device sign-in
+code. Do not run a bare `pio run ... -t upload` with more than one board
+connected, because PlatformIO may select a different serial device than the one
+you intended.
 
 The full flashing guide - the installer in detail, reflashing a running board,
 recovery, and which build environment to use - is
