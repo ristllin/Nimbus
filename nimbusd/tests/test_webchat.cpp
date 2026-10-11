@@ -76,6 +76,15 @@ static void checkPage(ndtest::Ctx& c) {
   c.ok(has(buildWebUiPage(""), "setItem('nimbusTok','tunnel')"),
        "an ungated instance seeds a sentinel token (gate still skipped)");
 
+  // CUM-543: a refused hosted save shows the instance's own sentence. The shim is
+  // appended AFTER the app script and wraps the page's failure text, whose name is
+  // pinned here so a rename in the shared page fails this test instead of silently
+  // falling back to the bare retry hint.
+  c.ok(has(page, "function saveFailText("), "the page still defines saveFailText (the shim's seam)");
+  c.ok(page.find("window.__nimbusRefusal") > page.find("function saveFailText("),
+       "the refusal shim runs after the app script defines saveFailText");
+  c.ok(has(page, "window.saveFailText=function(e,d)"), "the shim surfaces a 400's server sentence");
+
   bool emdash = false;
   for (size_t i = 0; i + 2 < page.size(); i++)
     if ((unsigned char)page[i] == 0xE2 && (unsigned char)page[i + 1] == 0x80 &&

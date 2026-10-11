@@ -24,6 +24,27 @@
 // so the app renders and the ungated API accepts it.
 namespace nimbusd {
 
+// Runs after the app script (appended last). A hosted instance answers a setting
+// it cannot apply with 400 {"error":"Not available on a hosted Nimbus: <field>"}
+// (CUM-543), but the shared page names only a storage-full (507) failure and
+// shows a bare "Couldn't save - try again" for every other one. This keeps the
+// server's sentence of the latest 400 and has the page's own failure text
+// (saveFailText, behind every failed save's toast and status line) show it, so
+// the owner reads WHY a control did not save. Hosted only; the device page is
+// untouched. A missing saveFailText (renamed in the shared page) leaves the page's
+// own wording, still honest; tests/test_webchat.cpp pins the name.
+inline constexpr const char* kRefusalShim =
+    "<script>/* Virtual Nimbus (CUM-543): show the instance's refusal sentence. */\n"
+    "(function(){try{var f=window.fetch;"
+    "window.fetch=function(){return f.apply(this,arguments).then(function(r){"
+    "if(r.status!==400)return r;"
+    "return r.clone().json().then(function(j){window.__nimbusRefusal=(j&&typeof j.error==='string')?j.error:'';return r;},"
+    "function(){window.__nimbusRefusal='';return r;});});};"
+    "var s=window.saveFailText;"
+    "if(typeof s==='function')window.saveFailText=function(e,d){"
+    "return(e===400&&window.__nimbusRefusal)?window.__nimbusRefusal:s(e,d);};"
+    "}catch(e){}})();</script>";
+
 // Build the app the browser stores its token under. `webToken` is this
 // instance's web token (NIMBUSD_WEB_TOKEN); empty means the API is ungated (dev),
 // so a sentinel is seeded purely to skip the client gate.
@@ -66,6 +87,7 @@ inline std::string buildWebUiPage(const std::string& webToken) {
     page.insert(at + anchor.size(), bootstrap);
   else
     page.insert(0, bootstrap);  // anchor moved: still seed (degrades, never fakes)
+  page += kRefusalShim;
   return page;
 }
 

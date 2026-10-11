@@ -38,6 +38,22 @@ is paired with the cloud:
 The device creates a key for itself with that monthly cap, which renews each
 billing period, and stores it the same way. You can revoke it anytime in the app.
 
+### On a Virtual Nimbus
+
+A Virtual Nimbus with only a Cumulo key runs the whole assistant through it, the
+same as a device:
+
+- **Verify and models.** The key is checked when you save it, and the model picker
+  lists the models the router offers, grouped by provider (for example Anthropic's
+  Claude models). A model you pick runs with the assistant's tools.
+- **Memory.** Long-term memory works with only the Cumulo key: memories are saved
+  and searched through the router.
+- **Sub-agents.** Background research and other sub-agents run on the Cumulo key.
+- **A model the router does not offer.** If the router refuses the model you
+  picked, the reply says so and the assistant switches back to the last model that
+  worked, so the next message still gets an answer. Pick another model under
+  **Models**.
+
 ## Use it from your own code
 
 The router speaks the OpenAI and Anthropic APIs, so most tools work by changing
