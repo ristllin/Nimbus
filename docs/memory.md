@@ -173,9 +173,11 @@ an honest low-memory reply, no restart.
 `ESP.getFreeHeap()` = internal free; `ESP.getFreePsram()` = PSRAM free.
 `/api/state` reports both (`heap`/`heapMin` vs `psramFree`/`psramTotal`) and
 `/api/health` lists PSRAM as its own row. For an internal-vs-PSRAM-vs-DMA
-breakdown use
-`heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA)`
-and `heap_caps_get_largest_free_block(...)`.
+breakdown, read the `mem` object in `/api/state` (`intFree`, `intLargest`,
+`dmaFree`, `spiFree`, `spiLargest`), or call `heap_caps_get_free_size()` and
+`heap_caps_get_largest_free_block()` once per pool (`MALLOC_CAP_INTERNAL`,
+`MALLOC_CAP_SPIRAM`, `MALLOC_CAP_DMA`). The caps are ANDed, so ORing two pools
+returns 0.
 
 ## 2. Heap under a live turn - what's movable, what isn't
 
@@ -198,9 +200,9 @@ the heavy-connector-write restart, 2026-07).
   restart.
 - **Small (< 128 B) allocations** - stay internal by the extmem threshold;
   cheap and not worth lowering the threshold (churn).
-- **FreeRTOS task stacks** - e.g. `tg_poll` (16 K), which runs the whole
-  turn. Internal by nature. The response parse is bounded to
-  `NestingLimit(16)`, well within this stack.
+- **FreeRTOS task stacks** - e.g. `tg_poll` (24 KB, `POLL_STACK_BYTES`), which
+  runs the whole turn. Internal by nature. The response parse is bounded to
+  `NestingLimit(64)` (`kResponseNestingLimit`), well within this stack.
 
 ### The size-transparency contract
 
@@ -369,7 +371,7 @@ turn logs one line: `budget: ctx=200K sys=32768 res=8192 tot=65536 (auto|owner)`
 The research principle (summary + verbatim tail) also applies **inside** a
 turn and at every clip site:
 
-- **In-turn replay (Anthropic only** - OpenAI/Mistral keep history server-side**)**:
+- **In-turn replay** (the Anthropic loop only):
   once the replayed conversation passes a quarter of the window, rounds older
   than the newest two collapse to one `[earlier round N] tool: gist… (N B)` line.
   Pairs fold whole, so every `tool_use` keeps its `tool_result`.

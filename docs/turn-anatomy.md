@@ -40,7 +40,7 @@ A byte-pinned copy of the full system-prompt template lives in the goldens:
 `test/golden/orch_prompt_default.txt` (tool-loop ON) and
 `test/golden/orch_prompt_recall_loopoff.txt`, plus
 `test/golden/orch_prompt_v2_default.txt` (the simplified v2 prompt, behind the
-`promptV2` flag - see [harness.md](harness.md)) - regenerated with
+NVS `orchPromptV2` flag - see [harness.md](harness.md)) - regenerated with
 `GOLDEN_UPDATE=1 pio test -e native -f test_harness_compose`. Those files are the
 raw template; CI fails when the composed prompt drifts from them.
 

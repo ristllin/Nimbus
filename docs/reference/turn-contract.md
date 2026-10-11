@@ -64,9 +64,14 @@ mode demands every property be listed there. Only the parser is lenient.
 }
 ```
 
-Every sub-field the wire schema lists is `required` there but **nullable**
-(strict json_schema has no optional keys - an omitted value rides as `null`); the
-parser then defaults each one, so at the parser they are all optional. `spawn[]`
+Every key the wire schema lists is `required` there (strict json_schema has no
+optional keys). The keys a turn may leave unset are typed **nullable**, so an
+omitted value rides as `null`: `mem_write` `importance`/`permanent`/`ttl`, every
+`session_ops` key except `op`, the `scratchpad` object and its four keys, the `led`
+action's `brightness`, and every `config` knob. The rest are not nullable:
+`mem_write.content`, `session_ops.op`, and each device action's `type` and core
+fields (`led` `mode`/`r`/`g`/`b`, `lights` `value`, `tts` `text`, `orch_model`
+`provider`/`model`). The parser defaults every missing nullable value. `spawn[]`
 and `await[]` are **retired from the wire** (`session_ops` is the one spawn
 surface), but the parser still accepts them so an old client keeps working.
 
@@ -105,7 +110,8 @@ live-integration arrays instead.
 A non-object element is **dropped** (never a whole-turn error). Each accepted
 element is carried as the **raw serialized JSON slice** of the element (compact, no spaces) into
 `DeviceAction.json`; the portable device-action validator
-(`nimbus/orch/device_actions.*`, a sibling module) turns it into a typed+clamped
+(`lib/core/include/nimbus/orch/device_actions.h` and
+`lib/core/src/orch_device_actions.cpp`, a sibling module) turns it into a typed+clamped
 action, and the executor lives on the device. Keeping the raw slice here
 decouples the turn parser from that module.
 
@@ -137,7 +143,9 @@ parseable, so an old client still works. Per item:
 
 ### `await[]` (tolerant per-item, retired from the wire)
 
-Retired from the wire (`session.poll` superseded it) but still parsed. A
+Retired from the wire (sub-agent results arrive on their own in a later turn's
+`[FRESH RESULTS]` block; there is no working poll) but still parsed: the first
+kept tag still steers the next job poll to that sub-agent. A
 **non-string** entry is **dropped**; entries are **trimmed** of surrounding
 whitespace and blank / whitespace-only entries are **skipped** (a
 whitespace-only tag can never match a real job tag, so keeping it would seed a
@@ -190,9 +198,10 @@ The advertised way to start and stop sub-agents (superseding the retired
   they are **no-ops** on this fabric. A non-object item, a non-string `op`, or an
   **unknown `op` is dropped** (turn stays valid).
 - Every other field is used per-op, defaulted-empty, and byte-capped. All nine
-  keys (`op`, `id`, `task`, `provider`, `model`, `skill`, `name`, `project`,
-  `attach`) are `required` in the strict wire schema as **nullable** types; the
-  parser defaults each:
+  keys are `required` in the strict wire schema. `op` is a non-nullable enum
+  (`spawn` | `terminate`); the other eight (`id`, `task`, `provider`, `model`,
+  `skill`, `name`, `project`, `attach`) are **nullable** types, and the parser
+  defaults each:
 
 | Sub-field | Used by op | Rule / cap (usable = buffer−1) |
 |---|---|---|

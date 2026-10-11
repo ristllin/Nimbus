@@ -20,8 +20,7 @@ screen. **Full** means the Full preset is active, never "plugged in".
 A quick example: on a desk, most people run **Full** - every session gets a
 color arc, the screen updates promptly. Unplugged for the evening, switch to
 **Balanced** - the ring quiets to a single soft cue and the screen batches its
-updates. Overnight on battery, **Dark** - no lights at all unless a job errors
-or needs you.
+updates. Overnight on battery, **Dark** - no lights at all unless a job errors.
 
 One exception on Balanced, in Orchestrator mode only: while the assistant is
 running sub-agents, the ring temporarily splits into one arc per sub-agent -
@@ -81,13 +80,15 @@ Source of truth: `lib/core/src/profile.cpp` (`kPresets`). Machine keys stay
 only the user-facing labels changed. "Revert to Defaults" is
 `revert_overrides` on `POST /api/config`.
 
-Selecting a mode also seeds two cross-cutting defaults (screen-rest minutes and
-sound level) into any key the owner has not set explicitly, via a one-time
+Selecting a mode on the web page also seeds two cross-cutting defaults
+(screen-rest minutes and sound level) into any key the owner has not set
+explicitly, via a one-time
 migration that marks itself done in NVS. On a device whose NVS is full the marker
 cannot persist, so the migration is deferred rather than re-run on every mode
 switch: it fails loud once (a log line and a "Settings storage" health hint that
-NVS is full), stops retrying for that boot, and applies cleanly once a reboot finds
-NVS headroom. Freeing NVS space, then rebooting, lets the profile defaults land.
+NVS is full), stops retrying until the next restart, and applies cleanly once a
+restart finds NVS headroom. Freeing NVS space, then restarting, lets the profile
+defaults land.
 
 </details>
 
@@ -100,8 +101,8 @@ Customize is the only place you change it independently.
 | | Dark | Calm | Full |
 |---|---|---|---|
 | Session arcs and animations | - | - | ✔ every session a color arc |
-| Needs-you cue | ✔ one attention LED | ✔ one attention LED | shown as arcs |
-| Orchestrator activity glow (working breathe) | - | ✔ | via arcs |
+| Needs-you cue | errors only, a dim whole-ring breathe | ✔ a dim whole-ring breathe | shown as arcs |
+| Working breathe (a session or turn running) | - | ✔ | via arcs |
 | Idle | dark | dark | dark - a lit ring always means something |
 | How long ambient status lingers after the link goes quiet | 5 s | 30 s | 5 min |
 | How long a needs-you cue holds | 1 min | 2 min | 5 min |
@@ -136,7 +137,9 @@ battery to save.
 
 The screen also **rests after a short idle**: the default idle delay is
 **5 minutes**, because an hour of backlight at an empty desk is the most wasteful
-thing the device can do.
+thing the device can do. Choosing a battery mode on the web page sets the delay to
+that mode's default unless you have set your own: 2 minutes in Dark, 5 in
+Balanced, and 0 (always on) in Full.
 Setting the delay yourself (Settings > Screensaver on the device, Settings →
 Display on the web) always wins over either default. Set it to 0 to keep the
 screen always on. The web control is also the way to change the delay when the
@@ -343,9 +346,10 @@ actually connect to moves to the top on its own.
 
 **Where you manage it.** The saved-network list (add, forget, reorder, see which is
 connected) lives on the web page under **Settings → Connectivity** - that is its
-canonical home; a password is never shown back. The device screen's **Settings →
-Wi-Fi** is the other surface: it shows the live status and a scan-and-join picker,
-but not the full list editor. Networks save from either surface into the one shared
+canonical home; a password is never shown back. The device screen's
+**Settings > Connectivity > Wi-Fi** is the other surface: the Wi-Fi row shows the
+live status, and the screen offers Publish setup network, Choose network (scan and
+join), and Forget network, but not the full list editor. Networks save from either surface into the one shared
 list.
 
 ---
@@ -364,7 +368,7 @@ If this page ever disagrees with the code, the code's single sources win:
 | Ambient/needs-you holds + tombstones | `lib/core/src/notifier_map.cpp`, `attention.cpp` |
 | Backlight per mode + rest glow + deep-dim delay | `lib/core/include/nimbus/duty.h` |
 | Screensaver idle clock + stages (rest, deep-dim) | `lib/core/include/nimbus/saver.h` |
-| Sound event ranks | `lib/core/nimbus/sfx_map.*` + `docs/sfx-map.md` |
+| Sound event ranks | `lib/core/include/nimbus/sfx_map.h`, `lib/core/src/sfx_map.cpp` + `docs/sfx-map.md` |
 | Header (title, Wi-Fi glyph, battery icon) | `lib/core/src/tft_screens.cpp` `drawHeader` |
 | Saved-network list + selection/failover | `lib/core/src/wifi_known_networks.cpp`, `wifi_policy.cpp` |
 | Failover wiring to the radio (the seam) | `src/net/wifi_link.cpp` |

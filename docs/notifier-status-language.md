@@ -19,7 +19,9 @@ flowchart LR
 
 Each harness adapter normalizes its hook events to a **canonical verb**; the broker
 maps that verb to a **State** (`notify/broker/session.py` `_VERB_TO_STATE`). Unknown
-verbs default to `Running`.
+verbs default to `Running`, except an unmapped `notify:*` subtype, which maps to
+WaitingInput (or AwaitingApproval when the subtype mentions permission, approval,
+or consent).
 
 | Harness | Hook / event | verb | State |
 |---|---|---|---|
@@ -29,6 +31,8 @@ verbs default to `Running`.
 | Claude | Notification `elicitation_dialog` | `notify:elicitation_dialog` | WaitingInput |
 | Claude | Notification `idle_prompt` (idle 60 s) | `notify:idle_prompt` | WaitingInput |
 | Claude | Stop | `done` | Done |
+| Claude | StopFailure | `error` | Error |
+| Claude | PostToolUse on ScheduleWakeup / CronCreate (the session hands off to a timer) | `wakeup` | Done |
 | Claude | SessionEnd | `end` | Offline |
 | Codex | SessionStart | `start` | Idle |
 | Codex | UserPromptSubmit / PreToolUse | `running` | Running |
@@ -59,8 +63,8 @@ in `test/test_status_style`. Ring behavior is computed from `(State, active them
 not from the raw wire hue, so changing the theme recolors the ring.
 
 **Ambient rule.** The ring is all-day peripheral signage, so nothing that persists may
-strobe. Every needs-you state is the same smooth ~2.6 s breathe and hue alone carries
-the meaning: cool means answer, amber means approve, and the theme's reserved alert red
+strobe. Every needs-you state is the same smooth ~2.6 s breathe (in Full; the Dark/Calm
+cue follows the Attention speed setting) and hue alone carries the meaning: cool means answer, amber means approve, and the theme's reserved alert red
 means error. Red stays unmissable because nothing else is ever red. Fast motion is
 allowed only as sub-second one-shot transition cues, and even those swell or slide
 rather than flash. `Anim::Blink` maps to no status (a host test asserts this; the enum
@@ -73,15 +77,18 @@ remains for wire compatibility).
 | AwaitingApproval | 3 - detail (amber) | **Breathe** (~2.6 s) | 100% | decision / permission gate |
 | Done | 2 - success | **Fade** (settle → 38% ember) | 85% | turn completed |
 | Error | - alert hue | **Breathe** (~2.6 s, "breathing red") | 100% | tool / turn errored |
-| Idle | 0 - primary | Static dim | 20% | session open, no active turn |
+| Idle | - neutral white (theme-less) | Static dim | 20% | session open, no active turn |
 | Offline | - | Off | 0% | session ended (segment freed) |
 
 One-shot transition cues (soft by rule): born = the arc grows fading in from dim in its
-own hue (350 ms); dying = collapse fading out (350 ms); Done = one green sweep (500 ms);
-web-action confirm = a soft pulse window (no Flash). In **Dark** battery mode the
-single-LED cue keeps this table's hue, so an Error still breathes red there.
+own hue (350 ms); dying = collapse fading out (350 ms); Done = one sweep in the theme's
+done color (500 ms); web-action confirm = a soft pulse window (no Flash). In the
+**Dark** and **Calm** ring levels (the Dark and Balanced battery-mode defaults) the dim
+whole-ring cue keeps this table's hue, so an Error still breathes in the theme's alert
+color there. In Dark, an Error is the only status that lights the ring.
 
-`Role` is an index into the active theme's color family; `alert` uses the theme's
+`Role` is an index into the active theme's color family (Idle ignores it and stays
+neutral white, so a warm theme's dim primary never reads as a red idle); `alert` uses the theme's
 dedicated alert hue (below), so Error reads as danger while staying in-family.
 
 ## 3. Theme families
@@ -112,14 +119,17 @@ task / cwd basename), appended as a backward-compatible TLV under the same magic
 decoder ignores the trailing bytes (still CRC-covered). This is what lets the
 SessionDetail screen show "**codex · deploy-plan · waiting**" instead of a meaningless "job 3".
 Codec: `lib/core/src/nsn_proto.cpp` (byte-locked to `notify/broker/frame.py` in [nimbus-notify](https://github.com/ristllin/nimbus-notify)
-via generated vectors). See [`hardware.md`](hardware.md) for the Bluetooth transport.
+via generated vectors). See [Architecture](architecture.md) for the Bluetooth transport
+and the [Notifier quick start](quick-start/notifier-quick-start.md) for pairing.
 
 The broker caps the v2 payload at the wire's 1-byte length field (≤255 bytes): with many
 long-titled sessions it budgets titles greedily and degrades a segment to harness-only rather
 than overflow (the device encoder guards the same limit). **Known limitation:** the broker
-sets a harness tag for every real session, so any frame with at least one active session is
-v2 (`LEN > 68`). A device still on pre-v2 firmware rejects such frames because there is no
-protocol-version negotiation. The fix is to update that device's firmware.
+sets a harness tag for every real session, so any frame with an active session is v2.
+Pre-v2 firmware accepts frames up to the v1 maximum of 68 payload bytes and ignores the v2
+extras, so one or two sessions still show (without names); a frame that grows past that, as
+it does with several titled sessions, is rejected, because there is no protocol-version
+negotiation. The fix is to update that device's firmware.
 
 ## 5. One session fills the ring
 

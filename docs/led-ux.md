@@ -27,12 +27,10 @@ Three design principles behind everything below:
 | Waiting for you (approval) | the theme's approval color (amber-leaning) | permission gate |
 | Done / success | the theme's done color (green-leaning) | completion |
 | Error | the theme's alert color (red is reserved for errors) | failures, critical battery |
-| Provider accents | Anthropic cyan · OpenAI green · Mistral amber · unknown white | segment tint |
-| System / neutral | white | boot, "saved" blip |
+| System / neutral | white | boot, idle |
 
-Provider accent tints the segment; status drives the *animation*. The two
-compose: a blue-comet "running" segment tinted cyan reads as "Anthropic is
-thinking."
+Status drives both the color and the motion: each status maps to a role in your
+theme, and an idle session stays neutral white.
 
 The exact hues follow your **theme**: each theme maps the status roles to its
 own color family, and changing the theme recolors the ring live. The
@@ -47,11 +45,11 @@ Every session on the ring is an arc, and every moment of its life gets motion:
 
 | Moment | Motion | Why |
 |---|---|---|
-| **Birth** (new session) | arc **grows** from 1 LED to full width (~350 ms), starting as a bright shimmer, **settling** to the provider color | "a new thing began" - celebratory but brief |
+| **Birth** (new session) | arc **grows** from 1 LED to full width (~350 ms), easing in from dim to full brightness in its status color | "a new thing began" - brief, never a flash |
 | **Status change** | **crossfade** the segment old → new hue (~250 ms) | continuity, never a jarring recolor |
-| **Progress** | fill **eases** to the new percentage, doesn't jump | smooth, legible |
-| **Attention arrives** (input/approval/error) | one **emphasis flash** (bright, 120 ms), then the steady breathe | "hey - look here," then sustained |
-| **Completion** (done) | a bright green **success ripple** sweeps the arc → fades to a dim ember | earned closure |
+| **Progress** | not shown on the ring (the screen shows it) | status, not a bar |
+| **Attention arrives** (input/approval/error) | the arc **crossfades** into the attention color (~250 ms), then **breathes** steadily (~2.6 s cycle) | "look here," sustained without a flash |
+| **Completion** (done) | a bright **success ripple** in the theme's done color sweeps the arc → fades to a dim ember | earned closure |
 | **Termination** (offline) | arc **contracts** back to a point and winks out (~350 ms) | graceful closure, symmetric with birth |
 
 And smaller, transient feedback:
@@ -59,28 +57,32 @@ And smaller, transient feedback:
 | Moment | Motion |
 |---|---|
 | Cursor moves (menu navigation) | soft **trailing comet** follows the cursor LED, decays after the dwell |
-| Config saved (menu or web change persisted) | a single white **blip travels once around** the ring - "saved" |
+| Setting saved (a web Wi-Fi save or scan, or a device-menu action) | a brief soft pulse of the whole ring: the theme color for a web action, green or red for a menu action's success or failure (never in Dark) |
 | Voice: listening | breathe in the theme color (the all-in-one's on-screen ring holds steady) |
 | Voice: processing | sweeping spinner from the moment you release the button until the reply lands |
 | Voice: speaking | solid in the theme color |
 | Voice: no network | the theme's alert color, breathing, for 15 seconds (a tap clears it sooner) |
 | Voice: other failure | the theme's alert color, steady, for 15 seconds (a tap clears it sooner). "Didn't catch that" shows no alert |
-| Low battery (first warning) | a slow **red breathe** overlaid under everything else |
+| Low battery (first warning) | nothing by default; with the **Low-battery light** setting on, a dim pulse in the theme's alert color for about 3 seconds each minute, giving way to any job that needs you (in Full, to any session arc) |
 
 ## How the ring level changes the language
 
 The [ring level](./modes-and-signals.md) (Dark / Calm / Full - each battery mode
 binds one as its default) decides how much of this vocabulary plays:
 
-- **Dark:** everything collapses to the *single attention LED* - system states
-  and the top attention job play on that one LED (dim breathe / emphasis
-  flash); the rest of the ring stays dark. Birth, death, and ripple are
-  suppressed to a brief one-LED blip. Quiet by design.
-- **Calm** (Balanced default): Dark, plus a soft working glow - whenever a
-  session is working (a Notifier session running, or the Orchestrator's
-  "working" heartbeat and sub-agent births/deaths) the single LED breathes
-  softly, so an active ring dims but never goes fully dark, without the full
-  segment treatment. It returns to dark once the sessions clear.
+- **Dark:** the ring stays off. Only a failed job lights it, as a dim breathe in
+  the alert color over the whole ring. Jobs that are running, done, or waiting
+  for you show nothing until you single-click to reveal them, and births,
+  deaths, and ripples are not shown. (Voice cues and the optional Low-battery
+  light still show.) Quiet by design.
+- **Calm** (Balanced default): the ring stays dark except for one dim cue over
+  the whole ring. It breathes in the attention color when a job needs your input
+  or approval or has failed, breathes softly in your theme color while a session
+  is working (a Notifier session running, or an Orchestrator turn), and glows a
+  steady green for a finished session until it ages out. It returns to dark once
+  the sessions clear. One exception, Orchestrator only: while sub-agents are
+  running, Calm shows the same per-session arcs as Full, at Calm's brightness,
+  and returns to the single cue as they finish.
 - **Full:** the full motion language above. When **idle** (no jobs, no voice)
   the ring goes **fully dark** - an all-day desk ring shouldn't glow with
   nothing happening. A call for your attention or a single-click reveal still
@@ -120,7 +122,7 @@ implemented**; do not cite them as current behavior.
 
 | Moment | Motion | Status |
 |---|---|---|
-| **Boot / waking** | very dim white breathe, slow (~2.5 s cycle) | **live** |
+| **Boot / waking** | white breathe (about a 2 s cycle) at the ring's brightness for the first ~2.5 s after a start; any job or call for attention ends it early | **live** |
 | **Idle** | dark in every ring level; a needs-you cue or a single click still lights it | **live** |
 | **Connecting** (Wi-Fi/Bluetooth) | dim white comet, brightness building as it retries | *design intent, not wired* |
 | **Connected** | one quick bright green flash (150 ms) → fade to idle | *design intent, not wired* |
@@ -149,7 +151,7 @@ above. The seam:
 
 ```mermaid
 flowchart TD
-  EV["ring events (born / statusChanged / progress / attention / done / terminated,<br/>system: connecting / connected / failed / setup / sleep)<br/>+ nowMs + Config (ring level, brightness, fps)"]
+  EV["ring plan changes (born / status change / done / terminated,<br/>or the Dark/Calm cue)<br/>+ nowMs + Config (ring level, brightness, fps)"]
   EV --> AN["nimbus::ring::Animator<br/>(lib/core - portable, host-tested)"]
   AN --> FR["RGB frame[45]"]
   FR --> SF["solide::leds::showFrame(const RGB* px, int n)<br/>raw frame path"]
@@ -157,8 +159,8 @@ flowchart TD
 ```
 
 - **The Animator is portable and host-tested**: it holds per-segment animation
-  state (phase, start time, from/to color, progress) and a system-state
-  overlay, and on `frame(nowMs)` computes all 45 LEDs. Deterministic (the
+  state (phase, start time, from/to color, motion, brightness) and, outside Full,
+  the one dim whole-ring cue, and on `frame(nowMs)` computes all 45 LEDs. Deterministic (the
   clock is passed in), so tests assert exact LED colors at chosen times during
   a birth grow-in, a death collapse, a crossfade midpoint, a success ripple -
   the golden-frame equivalent for the ring.
@@ -171,8 +173,8 @@ flowchart TD
 
 **Status:** the job-lifecycle transitions (birth grow-in, hue crossfade, done
 ripple, termination collapse) are implemented in `lib/core` `ring::Animator`
-(see `test_ring_animator`) and render on the device in the Full ring level
-through `showFrame()`. `ring_plan` (Dark single LED vs Full segments) remains
+(see `test_ring_animator`) and render on the device through `showFrame()` in
+every ring level. `ring_plan` (Dark/Calm cue vs Full segments) remains
 the *steady-state* decision layer; the Animator is the *motion* layer that
 renders those decisions with transitions between them. The whole-ring system
 states above are the part still at design stage.

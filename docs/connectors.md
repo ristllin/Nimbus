@@ -26,19 +26,21 @@ pasted once into the device web UI.
 
 Every connector is a card under **Assistant → Connectors** in the web UI.
 Paste the credential once; the device stores it write-only and never shows it
-again. Google connectors on OpenAI are the one exception: they need an OAuth
-block (token URL, client id, client secret, refresh token) rather than a single
-token, entered through the **Advanced - edit raw JSON** editor below the cards
-or pushed from a repository `.env` with `tools/connectors_setup.py`:
+again. Google connectors (Gmail, Calendar, Drive) on OpenAI are the one
+exception: their card has no credential field, because they need an OAuth block
+rather than a single token (see [Gmail](#gmail)). For every other connector:
 
-1. Create the credential once in a browser: a GitHub personal access token, a
-   Notion integration token, a Slack bot token, an OAuth refresh token, or a
-   Studio-side connection.
+1. Create the credential once in a browser: for example a GitHub personal access
+   token or a Linear API key, or connect the service in Mistral Studio.
 2. Open the device web UI → **Assistant → Connectors**.
 3. Pick the provider on the connector's card, paste the credential (or, for
    Mistral, just enable it), toggle **enabled**, **Save**.
-4. The card's status badge confirms whether it is live on your turns, via
-   sub-agents, or idle until you change the host.
+4. The card's badge shows what applies right now: **live on your turns**,
+   **via sessions** (reachable through a sub-agent on that provider), or a
+   **key missing** badge naming the provider (for example **mistral key missing**). A Mistral
+   Studio connector can also show **checking your Mistral workspace**,
+   **Mistral workspace not checked**, or **connect it in Mistral** (see below).
+   An unsaved card reads **not set** and a disabled one **off**.
 
 The model can never set a connector or read a secret - that rail is enforced
 in firmware ([Security](#security)).
@@ -179,9 +181,21 @@ condition) is not treated as a rejected token.
 - **Providers:** OpenAI (first-party connector `connector_gmail`), Mistral (Studio).
 - **Credential:** an **OAuth refresh token** created off-device (Google's
   device flow excludes Gmail scopes, so do the one-time auth-code consent in a
-  browser and paste the refresh token). For Mistral, connect Google in Studio
-  instead.
+  browser to get a refresh token, then enter it as an OAuth block, below). For
+  Mistral, connect Google in Studio instead.
 - **Unlocks:** read, search, draft, and label email.
+
+**Entering the OAuth block (OpenAI).** Open **Advanced - edit raw JSON** below the
+cards and add one entry per Google connector, for example:
+
+```json
+{"name":"gmail","prov":"openai","kind":"connector","cid":"connector_gmail","oauth":{"rurl":"https://oauth2.googleapis.com/token","cid":"<client id>","sec":"<client secret>","rtok":"<refresh token>"},"en":1}
+```
+
+For Calendar use `"name":"gcal"` and `"cid":"connector_googlecalendar"`; for Drive
+use `"name":"gdrive"` and `"cid":"connector_googledrive"`. **Save JSON** replaces
+the whole connector list and keeps no stored tokens, so include every connector
+you want to keep, with its credential.
 
 ## Google Calendar {#google-calendar}
 
@@ -201,27 +215,32 @@ condition) is not treated as a rejected token.
 
 - **Providers:** Mistral (Studio) requires the least setup; OpenAI/Anthropic
   via a remote MCP URL work too.
-- **Credential:** a Notion **Internal Integration** token - Notion → Settings
-  → Connections → Develop integrations. Share each target page with the
-  integration once. Notion's hosted MCP (`https://mcp.notion.com/mcp`, the
-  card's default URL) signs in through the browser instead: save the card, then
-  use its **Sign in** button and approve on a phone or laptop on the same
-  network.
+- **Credential:** for OpenAI/Anthropic, nothing to paste for Notion's hosted MCP
+  server: enter `https://mcp.notion.com/mcp` as the card's MCP server URL, select
+  **Save**, then use the card's **Sign in** button and approve on a phone or
+  laptop on the same network (see
+  [Signing in to a hosted server](mcp.md#signing-in-to-a-hosted-server-oauth)). A
+  Notion **Internal Integration** token (Notion → Settings → Connections →
+  Develop integrations) goes in the token field only for a Notion MCP server that
+  accepts a fixed token; share each target page with the integration once. For
+  Mistral, connect Notion in Studio instead.
 - **Unlocks:** create and query pages and databases - report publishing,
   research corpora.
 
 ## Slack {#slack}
 
 - **Providers:** Mistral (Studio); elsewhere needs a small REST adapter (future).
-- **Credential:** a **bot token** (`xoxb-…`) - create a Slack app once in a
-  browser, install it to the workspace, copy the token. No on-device OAuth.
+- **Credential:** none on the device: connect Slack in Mistral Studio, then enable
+  it by name here.
 - **Unlocks:** read channel/DM history, search, post messages, reactions.
 
 ## Linear {#linear}
 
 - **Providers:** OpenAI / Anthropic (remote MCP `https://mcp.linear.app/mcp`), Mistral (Studio).
-- **Credential:** a static **Linear API key** (Bearer) that bypasses OAuth
-  entirely - Linear → Settings → API.
+- **Credential:** either a **Linear API key** (Linear → Settings → API) pasted
+  into the card's token field, or none: save the card with the URL, then use its
+  **Sign in** button and approve on a phone or laptop on the same network (see
+  [Signing in to a hosted server](mcp.md#signing-in-to-a-hosted-server-oauth)).
 - **Unlocks:** find, create, and update issues, projects, and comments.
 
 ## Mistral built-ins {#mistral-builtins}
@@ -326,7 +345,7 @@ Mistral turns.
   stored secret.
 - The model **cannot** configure connectors or read their secrets - the
   `connector` config key is a protected key, refused at the wire.
-- Everything is behind the per-device access token (identify once per browser).
+- Everything is behind the device sign-in (once per browser).
 
 ## Finance connectors
 

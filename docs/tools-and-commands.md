@@ -56,36 +56,38 @@ confused.
 
 A routine or skill the assistant creates on its own stays inactive until the
 owner approves it here (or from the web UI). The one exception is a one-time
-wakeup the assistant sets for itself (a single follow-up turn, minutes to days
+wake-up the assistant sets for itself (a single follow-up turn, minutes to days
 out): it fires once without approval, shows up in `/loops` like any routine, and
-can be cancelled the same way. Managing people, keys, and other settings is
+can be canceled the same way. Managing people, keys, and other settings is
 web-only; the bot has no commands for them.
 
-Wake-ups: ask me first. If you would rather approve even those one-time wakeups,
-turn on "Wake-ups: ask me first" from the web control surface. With it on, a
-wakeup the assistant arms lands pending and you get a single approval card (the
-same approve/deny as a routine); it never re-asks while it waits. Only an admin
-can arm or approve a wakeup. The web surface for this is `GET /api/wakeups` (the
-wakeup list, arm state, and approval mode) and `POST /api/wakeups` with
+If you would rather approve even those one-time wake-ups, open Assistant →
+Routines on the web page and, under Wake-ups, set "When the assistant schedules a
+wake-up" to "Ask me first" (if the page does not keep the choice, set it with
+`POST /api/wakeups` and `action=mode&value=ask`, below). With that set, a wake-up
+the assistant arms lands pending and you get a single approval card (the same
+approve/deny as a routine); it never re-asks while it waits. Only an admin can arm
+or approve a wake-up. The web surface for this is `GET /api/wakeups` (the wake-up
+list, arm state, and approval mode) and `POST /api/wakeups` with
 `action=mode&value=ask|auto`, `action=approve&id=<id>`, or `action=cancel&id=<id>`.
 
 ## Contributor tools
 
-Everything below is for working on the firmware or driving a board on the
-bench. Everyday use of a device needs none of it.
+Everything below is for working on the firmware or driving a board over its
+serial console. Everyday use of a device needs none of it.
 
 ### Rendering & golden-image review
 
 | Tool | What it does | When you need it |
 |---|---|---|
-| `tftpreview.py` | Converts the TFT golden suite (240×320 RGB565 buffers in `test/golden_tft/*.bin`) to PNGs for human review, and pixel-diffs two buffers (differences in red, exit 1 on mismatch). Adds `contact` (tile every blessed screen into one labelled sheet) and `regions` (overlay tap targets and fail on targets under the 44 px minimum or on overlaps). | Reviewing TFT screens after a layout change - `render` to look at a screen, `diff` to see what changed, `contact` shows the whole UI at a glance, and `regions` catches the two bugs a pixel diff cannot see. |
+| `tftpreview.py` | Converts the TFT golden suite (320×240 RGB565 buffers in `test/golden_tft/*.bin`, plus `480x320/` and `480x480/` for the larger displays) to PNGs for human review, and pixel-diffs two buffers (differences in magenta, exit 1 on mismatch). Append `480x320` or `480x480` to any command for a larger display. Adds `contact` (tile every `.bin` in a folder into one labeled sheet) and `regions` (overlay tap targets and fail on targets under the 44 px minimum or on overlaps). | Reviewing TFT screens after a layout change - `render` to look at a screen, `diff` to see what changed, `contact` shows the whole UI at a glance, and `regions` catches the two bugs a pixel diff cannot see. |
 | `logo/gen_logo.py` | Generates the Nimbus logo (the dotted teal ring) and every artifact derived from it: `assets/logo*.svg`, the website logo, favicon, social card, and the PROGMEM mark served at `GET /logo.svg`. | Any logo change. Edit the generator and re-run it - never hand-edit its outputs. |
 
 ### Test-vector & artifact generators
 
 | Tool | What it does | When you need it |
 |---|---|---|
-| `gen_nsn_vectors.py` | Regenerates the nsn wire-protocol test vectors from the reference encoder in the sibling `nsnotify` repository, writing `tools/nsn_vectors.json` and the embedded header for the native test suite. | Whenever the reference encoder in `nsnotify` changes - the device codec is byte-locked to it through these vectors. |
+| `gen_nsn_vectors.py` | Regenerates the nsn wire-protocol test vectors from the reference encoder in the [nimbus-notify](https://github.com/ristllin/nimbus-notify) repository (expected checked out next to this one as `../nsnotify`, or set `NIMBUS_NOTIFY_HOST`), writing `tools/nsn_vectors.json` and the embedded header for the native test suite. | Whenever the reference encoder in nimbus-notify changes - the device codec is byte-locked to it through these vectors. |
 | `gen_qr_vectors.py` | Regenerates the QR known-answer vectors from Project Nayuki's reference `qrcodegen` (the algorithm `lib/core/src/qr.cpp` reimplements), pinning the exact configuration the device uses. Needs `pip install qrcodegen`. | Whenever the QR vector list changes. |
 | `make_manifest.py` | Builds and signs the OTA release manifest (ECDSA P-256 over a canonical message that must stay byte-identical to `nimbus::ota::buildSigMessage()` - the pairing is golden-tested). Also prints the unsigned message for cross-checks. | Used by the release workflow with the real signing key, and by `tests/hil/test_ota.py` with the committed test key. Run by hand only when debugging a signature mismatch. |
 | `git_version.py` | PlatformIO extra script - injects `git describe` as the `NIMBUS_FW_BUILD` build id so `/api/state` pins the exact commit a running unit was flashed from. | Runs automatically on every build; nothing to invoke. |
@@ -103,7 +105,7 @@ bench. Everyday use of a device needs none of it.
 
 | Tool | What it does | When you need it |
 |---|---|---|
-| `nsn_send.py` | End-to-end hardware validation: encodes nsn frames with the real broker encoder from `nsnotify` and sends them to a device over Bluetooth, optionally reading back the device's debug status echo over serial. Needs `bleak` with a working macOS Bluetooth entitlement. | Proving the full broker→Bluetooth→device pipeline against real hardware. |
+| `nsn_send.py` | End-to-end hardware validation: encodes nsn frames with the real broker encoder from nimbus-notify and sends them to a device over Bluetooth, optionally reading back the device's debug status echo over serial. Needs `bleak` with a working macOS Bluetooth entitlement. | Proving the full broker→Bluetooth→device pipeline against real hardware. |
 | `ring_check.py` | Quick LED-ring smoke test over serial: drives `LEDTEST` through the console and reports whether the ring data path acknowledges. Errors are console/port problems, not ring verdicts. Needs an `[env:test]`-family build. | A fast eyes-on check that the ring is being driven at all. |
 | `backup_device.py` | Pulls a board's user data - artifact-store files, the full vector DB (embeddings included), scratchpad, and state/usage snapshots - over the token-gated web API into a dated folder. Read-only (GETs only); provider keys and tokens are deliberately never exported. | Backing up a device whose SD card is a single point of failure, before a reflash or as routine insurance. |
 | `restore_device.py` | The write side of `backup_device.py`: pushes a dated backup folder back onto a device (vectors, episodic history, scratchpad, artifact files) over the token-gated web API, idempotently, with `--dry-run` and a MANIFEST check. Vectors restore by id (safe to re-run); episodic appends and refuses a non-empty store unless `--force`. Secrets are never imported. | Restoring a device after an erase or a failed SD card, or seeding a spare device from a known-good backup. |
@@ -143,18 +145,24 @@ Firmware variants are PlatformIO environments in `platformio.ini`. Build with
 | Environment | What it is |
 |---|---|
 | `native` | Host-side unit tests (Unity + golden images), no hardware needed: `pio test -e native`. Keep it at 100%. |
-| `esp32s3` | Production firmware. Serial stays silent (power and flashing only); no test or debug code. |
+| `esp32s3` | Production firmware for the Nimbus board (Solide S3). Serial stays silent (power and flashing only); no test or debug code. |
+| `esp32s3-cyd` / `esp32s3-cyd-35` / `esp32s3-cyd-40` | Production firmware for the all-in-one (Freenove CYD) board with the 2.8", 3.5", and 4.0" display. `setup_device.py --size 28\|35\|40` picks the matching one. The 3.5" and 4.0" images are verified by host tests only. |
 | `notifierdbg` | Production firmware plus a device→host status echo over serial, for end-to-end Notifier validation. |
 | `test` | Production firmware plus the serial test console (`NIMBUS_TEST`) - what the HIL harness drives. Never the flash target for a production unit. |
+| `test-cyd` | The `test` console build for the all-in-one (Freenove CYD) board. |
 | `testuart` | Same as `test`, but the console lives on the UART USB-C port instead of the native USB port (which drops bytes on the V0.1 board). |
-| `bttest` | Same as `test`, but advertises over Bluetooth as "Nimbus-BT" so a bench board is unambiguous next to a production "Nimbus". |
+| `bttest` | Same as `test`, but advertises over Bluetooth as "Nimbus-BT", so a test board can be told apart from a production "Nimbus" on the same desk. |
 | `beep` | Minimal speaker diagnostic - isolates the amp and speaker from the full firmware. |
+| `ledring` | Minimal LED-ring data-path test, isolated from the full firmware. |
 | `mictest` | Minimal I²S microphone bring-up - verifies the mic read path and concurrent speaker+mic loopback. |
 | `tftmin` / `tftmin-uart` | The smallest program that puts anything on the TFT panel: init, one solid fill, nothing else. Exists to take every variable out of a blank-screen fault. |
 | `tfttouch` / `tfttouch-uart` | Five on-screen buttons that prove display, touch, and calibration together - a swapped or mirrored axis is obvious with five buttons and invisible with one. |
+| `audio-cyd` | All-in-one audio bring-up: codec beep plus microphone-to-speaker loopback, checked by ear. |
+| `tfttouch-cyd` | All-in-one touch bring-up: capacitive touch with on-screen quadrant feedback. |
 | `tftbringup` / `tftbringup-uart` | Full TFT + touch bring-up: panel init, color order, backlight PWM, and raw touch coordinates, decoupled from the full firmware. |
 | `provision` | Standalone serial network diagnostic (not first-time setup - it has no setup network or web UI). The Nimbus board on its native USB port uses this variant when `setup_device.py` seeds a new board. It also answers a `PROBE` command that scans the Freenove capacitive touch bus (I2C 0x38), so the installer can tell a Freenove from a Nimbus board and refuse the wrong image before flashing. |
 | `provision-uart` | UART-console variant `setup_device.py` uses to seed a Nimbus board that is on its UART bridge port; the Freenove uses `provision-cyd`. The installer picks the variant that matches the board and the port on its own, so its serial reply always reaches the same cable. |
+| `provision-cyd` | The provisioning diagnostic for the all-in-one (Freenove CYD) board, on its native USB port; `setup_device.py` uses it for that board. |
 
 The `-uart` variants exist because the DevKit has two USB-C ports: native USB
 and UART. A factory-fresh board can only be flashed through the UART port, and
@@ -164,7 +172,7 @@ the console on the UART port so one cable can both flash and report.
 ### Console commands
 
 Builds in the `[env:test]` family compile in a serial command console
-(`src/test_console.cpp`). It lets the HIL harness, or a person at a bench, drive
+(`src/test_console.cpp`). It lets the HIL harness, or a person at a serial terminal, drive
 and observe the device without a camera or a finger. Production builds do not
 include it.
 
@@ -252,7 +260,7 @@ Commands grouped by purpose, one line each. Arguments in angle brackets.
 |---|---|
 | `MICREC` | Record 4 seconds, transcribe it, print the transcript. |
 | `SPKSAY <text>` | Synthesize the text and play it on the speaker. |
-| `TTSTG <text>` | Synthesize the text and send it to the owner as a Telegram audio message - audible even with a dead bench speaker. |
+| `TTSTG <text>` | Synthesize the text and send it to the owner as a Telegram audio message - audible even when the board's own speaker is not working. |
 | `TGSEND` | Telegram document-send smoke test. |
 | `SFX <slug>` / `SFXVOL <0-100>` | Play a sound effect by slug; set the master volume. |
 | `PLAY [name\|stop\|pause]` | Music player: `PLAY` plays all of SD `/music`, `PLAY song.wav` one track, `PLAY stop`/`PLAY pause` control it. |

@@ -14,14 +14,14 @@ cover the board itself. This page is the Nimbus-side view.
 
 A Nimbus device runs in **one of two display configurations**, one per board. The
 hand-built **Solide S3** board drives a 2.8" color touchscreen alongside its LED
-ring (`screenModel=tft`). The other is an off-the-shelf all-in-one module, the
+ring (`scrModel=tft`). The other is an off-the-shelf all-in-one module, the
 **Freenove ESP32-S3 Display (CYD)**, that arrives as a single part and runs its
 own firmware image.
 
-| Configuration | Display | Input | `screenModel` | Board | Details |
+| Configuration | Display | Input | `scrModel` | Board | Details |
 |---|---|---|---|---|---|
 | **[Touch TFT](hardware/touch-tft.md)** | 2.8" ILI9341, 240×320 RGB565 | XPT2046 resistive touch | `tft` | `solide_s3` | [→ pinout, wiring, touch cal](hardware/touch-tft.md) |
-| **[All-in-one (Freenove CYD)](hardware/all-in-one-cyd.md)** *(lowest effort)* | 2.8" ILI9341, 240×320 capacitive touch | Touch | `tft` | `freenove_s3` | [→ pinout & happy-path build](hardware/all-in-one-cyd.md) |
+| **[All-in-one (Freenove CYD)](hardware/all-in-one-cyd.md)** *(lowest effort)* | 2.8" ILI9341, 240×320 capacitive touch (3.5" and 4.0" images are host-verified only) | Touch | `tft` | `freenove_s3` | [→ pinout & happy-path build](hardware/all-in-one-cyd.md) |
 
 The Solide S3 pinout:
 
@@ -38,8 +38,11 @@ and it is exempt from "Revert to Defaults". Surfaced as `scrModel` in `/api/stat
 and `scr=` in `STATUS`.
 
 The all-in-one is different: its pinout is a **compile-time identity** chosen by
-`SOLIDE_BOARD=freenove_s3` at flash time, and `screenModel` is fixed to `tft`.
-There is no display setting to pick, and nothing to wire.
+`SOLIDE_BOARD=freenove_s3` at flash time, and `scrModel` is fixed to `tft`.
+There is no display setting to pick and nothing to wire. The only choice is the
+panel size (2.8", 3.5" or 4.0"), which picks the firmware image when you flash: the
+installer asks once, or takes `--size 28|35|40`. The 3.5" and 4.0" images are
+[host-verified only](hardware/all-in-one-cyd.md#supported-panels).
 
 Everything below this section covers the **Solide S3** board. The all-in-one
 carries the same peripherals on a different, fixed pinout, covered in full on its
@@ -147,7 +150,8 @@ brown out or damage the display even though its bus is separate.
 :::
 
 **Reserved (never assign):** 0·45·46 strapping · 19·20 native USB · 43·44 UART0 ·
-26–32 flash · **33–37 OCTAL PSRAM** · 48 on-board RGB. **Free spares:** 3 · **4 (battery
+26–32 flash · **33–37 OCTAL PSRAM**. GPIO 48 drives the DevKit's on-board RGB LED
+and is the touch CS on the Touch TFT build. **Free spares:** 3 · **4 (battery
 sense)** · 5 · 6 · 9. **(18 = I²S mic WS/LRCLK.)**
 
 > **Nimbus V0.1** moves audio to two separate, well-protected breakouts: a **MAX98357A**
@@ -180,18 +184,25 @@ flowchart TD
 
 - Ratio: (220k+100k)/100k = **÷3.2**, so 8.4 V → 2.63 V, inside the ADC's ~0–3.1 V range.
 - Firmware: `AdcBatteryMonitor` (`src/hw/power_battery_adc.cpp`) averages
-  `analogReadMilliVolts(GPIO4)`, multiplies by 3.2 → pack mV, divides by the cell count
-  (2) → per-cell mV → `liIonPercent()` SoC curve (host-tested).
+  `analogReadMilliVolts(GPIO4)`, multiplies by the divider ratio (3.2 by default) →
+  pack mV, divides by the cell count (2 by default) → per-cell mV → the chemistry's
+  SoC curve (host-tested).
 - An optional divider that is not fitted leaves the ADC pin floating. Firmware
   accepts telemetry only across a broad **2.5–4.5 V/cell** plausibility window;
   outside it the board behaves as desk-powered with no battery gauge. This keeps
   a USB-only fresh board awake instead of mistaking a floating reading for a dead
   pack and entering low-battery sleep during setup.
-- Config in [`include/nimbus_config.h`](../include/nimbus_config.h):
-  `NIMBUS_BATT_SENSE_PIN 4` · `NIMBUS_BATT_DIVIDER_X100 320` · `NIMBUS_BATT_CELLS 2` ·
-  `NIMBUS_BATT_VBUS_PIN -1`. Enable with `-DNIMBUS_HAS_BATTERY_ADC`.
-- **Single-cell LiPo instead?** Use a ÷2 divider (e.g. 100k/100k), set
-  `NIMBUS_BATT_DIVIDER_X100 200` and `NIMBUS_BATT_CELLS 1`, on any free ADC1 pin.
+- Config: the sense pin (GPIO 4) and the default 2S cell count come from the board
+  map (`board_solide_s3.h` in solide-drivers); the divider resistors and the cell
+  count are runtime settings (see
+  [Battery hardware settings in the web UI](#battery-hardware-settings-in-the-web-ui)).
+  `NIMBUS_HAS_BATTERY_ADC` is on in every firmware build, and the `NIMBUS_BATT_*`
+  values in [`include/nimbus_config.h`](../include/nimbus_config.h) are only
+  fallbacks (`NIMBUS_BATT_VBUS_PIN -1`: no USB-present pin).
+- **Single-cell LiPo instead?** Fit a ÷2 divider (e.g. 100k/100k) on GPIO 4, then
+  under **Device > Settings > Battery** set **Sense resistor (top)** and
+  **Sense resistor (bottom)** to the fitted values and **Cells in series** to
+  **1S (one cell)**, and save. No rebuild is needed.
 
 **Measured on a 2S pack** with `NIMBUS_HAS_BATTERY_ADC` enabled: 7923 mV, or 3962 mV
 per cell. **The S3 ADC under-reads near full.** The ÷3.2 node at 8.4 V is 2.625 V, above

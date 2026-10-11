@@ -17,12 +17,16 @@ the constraint and its reason are called out explicitly.
 - **Tool interface = on-device MCP server** (`memory.*` / `session.*` /
   `device.*`), bridged to the LLM via native function-calling; also reachable
   by external MCP clients over the LAN (Ph4, with auth).
-- **Episodic index = SQLite on the SD card** + raw JSONL day-files + blob
-  sidecars (a SQLite index paired with a `/data/blob/*.jsonl` raw stream).
-- **Embeddings configurable but SET-ONCE** - changing provider/model/dims
-  wipes + re-embeds the VDB; the web UI must warn loudly (destructive).
-- **SD card REQUIRED** for tiers 2–4 (episodic + VDB). Directive + scratchpad
-  + sessions work without SD.
+- **Episodic store = append-only JSONL day-streams on the SD card** + blob
+  sidecars (SQLite was evaluated and retired, see §1.3).
+- **Embeddings configurable but SET-ONCE** - once vectors exist, changing
+  provider/model/dims erases the vector memory (nothing is re-embedded); the web
+  UI warns before it does.
+- **SD card is the primary store** for tiers 2-4 (episodic + VDB). Without a card
+  both run in a bounded degraded mode on internal storage (see
+  [orchestrator-storage.md](orchestrator-storage.md) section 5); media, the file
+  store and the memory archive need a card. Directive, scratchpad and sessions
+  live in NVS and work without SD.
 
 ## 1. Cognitive tiers
 
@@ -30,7 +34,7 @@ The model-facing prompt (the `[HOW YOU RUN]` section, `lib/harness/src/compose.c
 names **four memory tiers the model itself reads and writes**, in escalating
 durability: **running memory** (the `memory` response field - short-lived working
 notes for the NEXT turn only), the **scratchpad** (§1.2 - persistent goal tiers that
-survive across turns and reboots), **long-term vector memory** (§1.4 - durable
+survive across turns and restarts), **long-term vector memory** (§1.4 - durable
 embedded facts), and the **episodic log** (§1.3 - auto-captured conversation history).
 The **directive** (§1.1) sits above all four: human-owned, the model cannot write it.
 
@@ -61,7 +65,7 @@ Device caps (enforced because of NVS/RAM limits): 1 active line
 (240 B), 8 items/tier, 160 B/item, UTF-8-safe truncation
 (`caps.h`: `kScratchActiveMax` / `kScratchItemMax` / `kScratchTierItems`, via
 `capUtf8`). The model proposes, the device enforces - the same contract as the
-memory caps. Persisted in NVS, so it **survives across turns AND reboots** and
+memory caps. Persisted in NVS, so it **survives across turns AND restarts** and
 works without SD.
 
 **Write path (v4.1.0): the scratchpad is a first-class `orch_turn` RESPONSE
@@ -105,8 +109,8 @@ prompt-injection channel aimed at the owner (`orch_memory_tools.cpp`).
 **How a history search matches words.** `memory.episodic` (and the web
 history search, `GET /api/mem/episodic?text=`) finds a row when **any** word of
 the search occurs in it, so a natural question works even when the owner used
-only one of the words: searching "advisor supervisor PhD" finds "my advisor is
-Dr. Leila Mansour". The same rule runs every text search on the device: the
+only one of the words: searching "advisor supervisor PhD" finds a row that says
+only "my advisor reviewed the draft". The same rule runs every text search on the device: the
 keyword fallback of `memory.search` and `memory.archive`, `files.search`, and
 `docs.search`.
 
@@ -129,11 +133,11 @@ keyword fallback of `memory.search` and `memory.archive`, `files.search`, and
 Before this rule, every word had to appear, so adding a synonym guaranteed an
 empty answer and the assistant concluded it had never been told.
 
-The original design splits this into (a) an **SQLite DB** for structured rows
+The original design split this into (a) an **SQLite DB** for structured rows
 and (b) an **append-only JSONL day-file stream** (`/data/blob/YYYY-MM-DD.jsonl`)
-for the raw audit trail, plus adapter transcripts. Nimbus keeps that exact split
-because it satisfies both requested query modes - SQL queries AND grepping
-raw files:
+for the raw audit trail, plus adapter transcripts; it was proposed to serve both
+SQL queries and grepping raw files. Only (b) shipped. The proposed layout, for
+reference:
 
 ```
 /sd/mem/nimbus.db          SQLite index
@@ -149,8 +153,8 @@ raw files:
 ```
 
 Retention: day-files older than 30 days move to `/sd/mem/blob/archive/`
-(`retention_days=30`); the SQLite index is permanent (it is small relative to
-the SD).
+(`retention_days=30`). (The SQLite index was never shipped; see the callout
+above.)
 
 ### 1.4 Associative memory (VDB, SD)
 Record:
@@ -176,11 +180,13 @@ Record:
 embedder. Nimbus embeds via provider API
 (default **OpenAI `text-embedding-3-small`, `dimensions=256`**, int8-quantized
 ≈ 256 B/vector + text) through a new adapter method on the existing HTTPS
-path. Storage: vectors + metadata in SQLite (`vdb` table), recall =
+path. Storage: vectors + metadata in one serialized blob (`/mem/vectors.bin` on
+SD, `/data/orchvec.bin` without a card), recall =
 brute-force cosine over int8 (thousands of entries ≈ ms on the S3, PSRAM).
 The embed config `{provider, model, dims}` is stored beside the table;
-mixed-config vectors are refused; changing config = wipe + re-embed from the
-episodic store (background job) behind the loud UI warning.
+mixed-config vectors are refused; changing the config once vectors exist erases
+the vector memory (`POST /api/mem/embedcfg` with `reset=1`; nothing is
+re-embedded), behind the loud UI warning.
 
 Each embeddings provider gets its own request shape (see the Memory
 embeddings table in the [capability matrix](reference/capabilities-matrix.md)).
@@ -220,17 +226,21 @@ the constraint is device RAM):
 2. **Identity/version** - "You are Nimbus vX on an ESP32-S3 desk device…"
 3. **DIRECTIVE** - user text, verbatim.
 4. **Capability/world manifest** (§3) - hardware + tool list generated from
-   the registry into a `## TOOLS` section.
-5. **Scratchpad** (§1.2) - active line + three goal tiers, rendered as a
+   the registry into the `## CAPABILITIES` section
+   (`orch_world.cpp::renderCapabilities`).
+5. **Running-sessions digest** (§4) - a summary of the active sessions.
+6. **Recent conversation** - the chat's folded summary, then the per-chat window
+   of recent messages, trimmed oldest-first when over budget (see
+   [turn anatomy](turn-anatomy.md)).
+7. **Scratchpad** (§1.2) - active line + three goal tiers, rendered as a
    `## SCRATCHPAD` block with the write instruction printed directly beneath the
    data (`orch_world.cpp`) so the model always sees how to update it via the
    `scratchpad` response field.
-6. **Running-sessions digest** (§4) - a summary of the active sessions.
-7. **RELEVANT MEMORIES** - top-K recall (§2.1).
-8. **MEMORY explainer** - a `## MEMORY` section telling the model how its memory
-   works and that `memory.config` can tune it.
-9. Recent conversation (rolling, trimmed front-first when over budget;
-   a summarize-and-compress step keeps the last 2 messages + a summary block).
+8. **RELEVANT MEMORIES** - top-K recall (§2.1).
+9. **Memory explainer** - a `## HOW YOUR MEMORY WORKS` block explaining automatic
+   recall, `mem_write[]`, `mem_query[]` and the `memory` field (v1 prompt, the
+   default; the v2 prompt drops it because `[HOW YOU RUN]` already carries the
+   memory tiers, see §1).
 
 ### 2.1 Recall
 ```
@@ -330,7 +340,8 @@ A conversation-manager + agent-adapter layer over the existing heavy fabric +
 - **Adapter seam**: `create_session(title, cfg)`,
   `send_message(id, text)`, `get_status(id)`, `abort(id)`, `cleanup(id)`.
   Provider adapters (openai/anthropic/custom) implement it for remote
-  sub-sessions; the Journal keeps reboot re-attach exactly as today.
+  sub-sessions; the Journal keeps re-attaching running jobs after a restart, as
+  before.
 - **Digest injected each turn**: `[{id, agent_type/provider, model, title,
   turns, tokens, state, pending_reply}]`.
 - **Model surface** (`session_ops`, v4.0.0): the turn contract advertises
@@ -393,19 +404,29 @@ rails, executes with a timeout, **audits every call to the blob stream**
   earlier `memory.sql` SELECT surface was dropped when SQLite was retired (§1.3).
 - LAN MCP (Ph4) requires a bearer token minted on the device; off by default.
 
-## 7. Dashboard (web UI) - `/memory/*` + `/providers*` routes
+## 7. Dashboard (web UI) - memory routes
 
-- `GET /api/mem/stats` - VDB count, blob file count/MB, DB size.
+- `GET /api/mem/stats` - vector count and cap, scratchpad items, episodic row
+  count, embed config, storage tier (`sdPresent`, `sdMissing`, `flashFull`,
+  `store`).
 - `GET /api/mem/vector?query&limit&offset` - browse (importance-sorted) or
-  semantic search; row actions: delete, mark-permanent, importance shown.
-- `POST /api/mem/vector/flush?keep_permanent` · `POST /api/mem/vector/dedupe`.
-- `GET /api/mem/blob?kind&limit` - filtered episodic browse by day/kind.
-- `GET /api/mem/working` - **the prompt-sections snapshot**: exactly what the
-  model saw last turn, section by section, with byte/token estimates - the
-  single most useful debug view.
-- `PUT /api/mem/config` - retrieval_count / relevance_threshold /
-  decay_factor / max_context_bytes (same clamps as the model's tool).
-- `GET/POST /api/sessions` + transcript view.
+  semantic search.
+- `POST /api/mem/vector?op=delete|permanent|temporary|flush|flushnp|dedupe` - row
+  actions, flush and dedupe (`op=flush` also needs `confirm=DELETE`).
+- `GET /api/mem/episodic?kind&session&text&sinceh&beforeh&before&cold&limit` -
+  filtered episodic browse.
+- `GET /api/mem/blob?path=/mem/blobs/<name>.<ext>` - the full text behind a
+  clipped row.
+- `GET /api/lastturn` - the exact system prompt, per-turn input and raw output of
+  the last turn, as plain text: the single most useful debug view.
+- `GET/PUT /api/mem/config` - retrieval_count / relevance_threshold /
+  decay_factor / max_context_bytes / max_vectors / recency_half_life_hours /
+  mmr_lambda (same clamps as the model's tool).
+- `GET/POST /api/mem/scratchpad`, `GET/POST /api/mem/embedcfg`,
+  `POST /api/mem/embedverify`, `GET /api/mem/nsusage`, `GET /api/tools`,
+  `POST /api/mem/import`, `GET /api/sdprobe`.
+- Live sessions show in `[ACTIVE SESSIONS]` and the Home page's
+  **Active sessions** card.
 - Embed-config panel with the **set-once destructive-change warning**.
 - Scratchpad + directive editors (directive human-editable; scratchpad
   human-viewable, clearable).
@@ -416,7 +437,8 @@ rails, executes with a timeout, **audits every call to the blob stream**
   sessions digest · context assembler (§2 ordering + budgets) · tool registry
   + in-process MCP dispatch · memory-config clamps. All host-tested.
 - **Ph2 (SD):** SQLite episodic store + JSONL blob stream + artifact sidecars
-  + `memory.sql`/`memory.grep` tools + retention/archival.
+  + `memory.sql`/`memory.grep` tools + retention/archival (superseded: the
+  append-log store shipped instead).
 - **Ph3 (SD+net):** embedding adapter (set-once) · int8 VDB + recall +
   dedup/decay/prune · `memory.write/search/config` tools · dashboard memory
   panels.

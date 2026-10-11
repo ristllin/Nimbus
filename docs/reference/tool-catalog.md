@@ -37,8 +37,10 @@ are **never tools** - no registry tool and no `device.config` action can set
 them, and the protected-config denylist blocks them by name. Only the human web
 UI may change them. Specifically off-limits to the model:
 
-- provider keys (`oaiKey` / `antKey` / `mistralKey` / `tavilyKey`), `tgToken`,
-  `tgAllow` - secrets, blocked entirely; only the owner changes them, in the
+- provider keys (`oaiKey` / `antKey` / `mistralKey` / `custKey` / `tavilyKey` by
+  name, plus `zaiKey`, `cumuloKey` and any other key ending in "Key" through a
+  generic backstop in `isProtectedConfigKey`), `tgToken`, `tgAllow` - secrets,
+  blocked entirely; only the owner changes them, in the
   web UI or over Telegram.
 - provider `priority` / routing (`providerPriority` and its aliases),
   `orchHost` / `fabric` - a model that could rewrite these could redirect its
@@ -236,6 +238,7 @@ absent when no SD card is present. Reads honor per-person visibility (RBAC
 | `artifact.save` | Persist a TEXT artifact (report, summary, document) into the durable store. | `project` (**required**), `name` (**required**, with extension `.md`/`.txt`/`.csv`/`.json`), `text` (**required**, max ~24 KB per call) | live |
 | `files.share` | Share one of your saved files read-only with everyone, or stop sharing it. | `project` (**required**), `name` (**required**), `share` (boolean, default true) | live |
 | `files.send` | Send a stored file to the owner on Telegram - images go as an inline photo, other files as a document. | `project` (**required**), `name` (**required**), `chat_id` (optional) | live |
+| `files.fetch` | Download a document from an https URL into the file store, governed by the owner's URL-download trust policy (Off / Ask me per link / Scan, then keep / Full trust; web: Assistant → Safety → Downloads). Runs in the background; per-file size cap applies; under Ask me per link the owner approves each link (Telegram `/fetch approve <id>` or the web card); under Scan, then keep the file is quarantined and promoted only on a SAFE AI verdict. | `url`, `project`, `name` | live |
 | `image.generate` | Generate an image from a text prompt and save it as a PNG in the durable store; returns the saved `project`/`name`. | `prompt` (**required**), `project` (default `images`), `name` (optional stem), `size` (optional), `quality` (`low`/`medium`/`high`, default `low`), `model` (optional, default `gpt-image-1`), `describe` (boolean, default false) | live (listed while an OpenAI key is set; a key added later works on the next turn) |
 
 Notes:
@@ -346,14 +349,16 @@ rail above). See [People & privacy](../people-and-privacy.md).
 
 ## Device & system introspection
 
-Read-only registry tools that report live state; none mutate durable state or
-(except `device.selftest`'s audible items) actuate hardware. Registered in
-`src/main.cpp` (`registerDeviceTools`) and the memory subsystem.
+Registry tools that report live device state, plus `device.control`, which
+applies one device action mid-turn. Only `device.control` and `device.selftest`'s
+audible items actuate hardware. Registered in `src/main.cpp`
+(`registerDeviceTools`: `device.status`, `device.selftest`, `ota.status`),
+`src/agent/memory_subsystem.cpp` (`system.health`) and `src/agent/orchestrator.cpp`
+(`device.control`).
 
 | Tool | Description (as registered) | Arguments | State |
 |---|---|---|---|
 | `system.health` | Report live hardware + subsystem health (ring, display, mic, speaker, SD, memory, PSRAM, Wi-Fi, Telegram). | (none) | live |
-| `files.fetch` | Download a document from an https URL into the file store, governed by the owner's URL-download trust policy (off / ask-per-link / AI scan / full trust; web: Assistant → Safety → Downloads). Runs in the background; per-file size cap applies; under "ask" the owner approves each link (Telegram `/fetch approve <id>` or the web card); under "scan" the file is quarantined and promoted only on a SAFE AI verdict. | `url`, `project`, `name` | live |
 | `device.status` | Read the complete live device state: firmware/build, update engine + slot + auto-update, local time + timezone + clock-sync, free heap/PSRAM, SD (including live `sdLost`) + internal flash usage, battery, Wi-Fi signal, Bluetooth bonds, fault mask, sound tier + sound-pack sync, ring posture + battery mode (user and effective) + attention hold + device name + sub-agent provider priority, memory counts vs live caps (vectors, episodic, scratchpad), file-store count/bytes/free, sub-agent capacity (running/queued vs limits), real billed token usage (last turn + session) including `usage.budget[]` - per-provider spend this billing period (tokens in/out, calls, estimated dollars from the owner's rates) against the owner's dollar and token ceilings plus the reset day (v4.1.2: plan work against the budget instead of discovering a refusal at dispatch), and the current value of every config knob (v4.1: the knobs the model can set are all readable here). | (none) | live |
 | `device.selftest` | Run a hardware self-test; returns per-item PASS/FAIL/SKIP. | `audible` (boolean - also runs the speaker/mic acoustic loopback) | live |
 | `device.control` | Apply ONE device action immediately, mid-turn: `action` is one `device[]` element (`config` / `led` / `lights` / `tts`), so a sequenced flow (read a knob, set it, speak, restore it) completes inside one turn. Same knobs, validator, and policy rails as `device[]`; changes are real and persist. `reboot` is refused here (put it in the end-of-turn `device[]`). | `action` (object) | live |
@@ -370,8 +375,10 @@ owner can (Telegram `/update` or the web UI).
 Device actions are **not** registry tools - they arrive as the turn's
 `device[]` array and are validated by the portable half in
 `lib/core/include/nimbus/orch/device_actions.h`
-(`validateAction()`), then executed by `src/agent/device_actions.cpp` only for
-items with `allowed == true`. Each `device[]` element is exactly one of:
+(`validateAction()`), then executed by `applyDeviceElement()`
+(`lib/harness/src/apply.cpp`) only for items with `allowed == true`; `led`,
+`lights` and `reboot` are staged to the main loop through `orchDeviceSink` in
+`src/main.cpp`. Each `device[]` element is exactly one of:
 
 | Action | What it does | Params | State |
 |---|---|---|---|
@@ -383,7 +390,7 @@ items with `allowed == true`. Each `device[]` element is exactly one of:
 | `tts` | speak text aloud on the device speaker (Telegram audio fallback) | `text` | live |
 
 Rails: a `config` action carrying any protected key (secrets, the auth
-allow-list, provider routing/priority, the Local Loops or budget governors - see
+allow-list, provider routing/priority, the routines blob (`loops`) or the budget governors - see
 the human-web-only rail above) is refused as a **whole** with reason
 `protected-BLOCKED`. `orch_model` is the one deliberate exception to the routing
 rule: the model may repoint its own head host + model. Session ops (spawn /
@@ -431,7 +438,7 @@ shows not just what exists but who can reach it:
 
 The tag is computed from the same host-vs-spawn policy the model's
 `[PROVIDERS & CONNECTORS]` block states in prose - one rule, `connectorScope()`
-in `lib/core/.../connectors_wire.cpp`, host-tested so the two never drift.
+in `lib/core/src/orch_connectors_wire.cpp`, host-tested so the two never drift.
 
 ## See also
 

@@ -3,8 +3,7 @@
 
 What actually happens when the head model spawns a sub-agent: the exact brief it
 receives, the wire protocol per provider, what the head can and cannot do with a
-running or finished session, and what is persisted where. Line references are
-v3.5.0. Sibling docs: [turn-anatomy.md](turn-anatomy.md) (the head's own prompt),
+running or finished session, and what is persisted where. Sibling docs: [turn-anatomy.md](turn-anatomy.md) (the head's own prompt),
 [harness.md](harness.md) (the lifecycle around turns), and
 [orchestrator-storage.md](orchestrator-storage.md) (the storage tiers).
 
@@ -17,14 +16,15 @@ The turn contract advertises exactly two ops (`session_ops[]`):
 
 `tell` / `poll` / `list` are **deliberately not offered** (they used to be
 advertised and hard-failed at runtime; "advertised == real" is a standing rule).
-If the model emits one anyway it gets a plain-text refusal in its next turn's
-input. `[ACTIVE SESSIONS]` (in every turn's input) is the authoritative digest of
+If the model emits `tell` or `poll` anyway, its next turn's input carries a
+plain-text refusal in `[MEMORY RESULTS]` (`[SESSION] '<op>' isn't supported: ...`);
+`list` is silently ignored, since `[ACTIVE SESSIONS]` already answers it. `[ACTIVE SESSIONS]` (in every turn's input) is the authoritative digest of
 what is running; `[FRESH RESULTS]` is how output comes back.
 
 Caps: 6 journal slots (`kAgentMaxJobs`), 4 in flight (`kMaxActiveInflight`),
 a 12-deep pending-spawn queue (`kMaxPendingSpawns`, the depth one turn may
 enqueue, decoupled from concurrency), task text up to 4095 bytes
-(`kSpawnTaskMax`, truncation logged), one dispatch per ~1.5 s pump cycle, and
+(`kSpawnTaskMax`, truncation logged), at most one dispatch every 2.5 s, and
 dispatch deferred below 12 KB of free internal heap (`ORCH_DISPATCH_MIN_HEAP`, the
 same floor as a turn; see [Memory](memory.md)). The model never sees raw
 slot counts; every turn it reads a `[SPAWN CAPACITY]` line (see "Throughput"
@@ -114,7 +114,9 @@ this order:
   ([harness.md](harness.md)). Built-in skill ids (`web`, `deep_research`, …)
   have no capsule - they act as provider/model routing hints only.
 - **[CONTEXT]** (v3.3.0): the last ≤6 chat messages of the spawning conversation,
-  digest-rendered under a 1200-byte budget (oldest lines clipped first,
+  digest-rendered under the head's brief budget (`briefBytes`: 1200 bytes for a
+  200K-context head, scaled with the head's context window between 600 and 4096
+  bytes; oldest lines clipped first,
   `(earlier messages omitted - byte budget)` marker when clipped). This is what
   makes "book the place we talked about" actionable. Appended AFTER the task so
   the task stays the lead instruction (pinned by `test_harness_jobs`).
@@ -267,7 +269,7 @@ The host harness runs this whole chain live: `nimbus-lab sub` in
 2. On the drain, an automatic **synthesis turn** runs with a `[FRESH RESULTS]`
    block and a `[SYSTEM]` preamble - no user message. It runs under the same
    unattended rails as scheduled loops (sub-agent output is untrusted web
-   content: no reboot, no ttsOn, no loop.create, etc.).
+   content: no `reboot`, no `ttsOn`, no `loop.create`, etc.).
 3. If the synthesis cannot run (low memory, provider down) for 60 s **after the
    drain**, or the synthesis turn itself fails, the raw results are delivered
    directly, so results are never lost to a stuck head. The clock starts at the
@@ -339,13 +341,13 @@ another message.
 episodic store is the system of record. The one `sqlite3` in the repo is the
 battery-lab's host-side tool, not firmware.)
 
-| data | store | survives reboot |
+| data | store | survives a restart |
 |---|---|---|
 | active job records (tag, provider jobId, model, chat, state) | **NVS** namespace `agjournal`, 6 slots, ~200 B each | yes - the device re-attaches and resumes polling (anthropic/openai only; mistral/custom caches are RAM) |
 | spawn + result trace rows (`ev:spawn` / `ev:subresult`, the glass-box disclosure) | episodic store, the **spawning chat's** session, kind=log | yes (SD day-streams) |
-| the sub-agent's final reply | 16 KB envelope → 3500 char fresh result → the synthesis turn's reply + anything it `mem_write`s; 512-char excerpt in the `ev:subresult` row | via episodic / vector memory |
+| the sub-agent's final reply | 16 KB envelope → 3500 char fresh result → the synthesis turn's reply + anything it `mem_write`s; the full reply in the `ev:subresult` row | via episodic / vector memory |
 | the sub-agent's internal transcript | **not stored** - provider-side only | - |
-| pending spawn queue, fresh results awaiting synthesis | RAM | no - lost on reboot (results already delivered per-job survive as chat messages) |
+| pending spawn queue, fresh results awaiting synthesis | RAM | no - lost on restart (results already delivered per-job survive as chat messages) |
 
 **No-SD degradation** (same tiering as everything else,
 [orchestrator-storage.md](orchestrator-storage.md)): episodic falls back to a
@@ -362,7 +364,8 @@ throughout.
 - Web chat: the "N sub-agent events" disclosure under an assistant bubble shows
   the spawn brief (task) and terminal result rows.
 - `memory.episodic` tool or `GET /api/mem/episodic?kind=log`: the same rows,
-  filterable by `since_hours`/`before_hours`.
+  filterable by a time window (`since_hours`/`before_hours` on the tool,
+  `sinceh`/`beforeh` on the HTTP route).
 - `[ACTIVE SESSIONS]` in any turn, or the "Active sessions" card on the web
   Home page: live state.
 - `/api/lastturn` - whether the last head turn spawned anything (section 3, the
