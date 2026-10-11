@@ -419,6 +419,61 @@ static void applyIdle(const char* stopReason, bool& done, bool& errored, ResultE
              logSafe(stopReason, 40).c_str());
 }
 
+// Text length of one agent.message event (its text blocks summed).
+static size_t antMessageLen(JsonObjectConst ev) {
+  size_t n = 0;
+  for (JsonObjectConst c : ev["content"].as<JsonArrayConst>())
+    if (!strcmp(c["type"] | "", "text")) n += strlen(c["text"] | "");
+  return n;
+}
+
+// Append one agent.message's text blocks to out[used..cap), NUL-terminated;
+// returns the new length. Messages after the first are separated by a blank line.
+static size_t antAppendMessage(JsonObjectConst ev, char* out, size_t cap, size_t used) {
+  if (used && antMessageLen(ev)) {
+    for (const char* sep = "\n\n"; *sep && used < cap - 1; ++sep) out[used++] = *sep;
+  }
+  for (JsonObjectConst c : ev["content"].as<JsonArrayConst>()) {
+    if (strcmp(c["type"] | "", "text") != 0) continue;
+    const char* t = c["text"] | "";
+    size_t len = strlen(t);
+    if (used + len >= cap) len = cap - 1 - used;
+    memcpy(out + used, t, len);
+    used += len;
+  }
+  out[used] = 0;
+  return used;
+}
+
+// CUM-514: the artifact a sub-agent's run produced, without its narration.
+// Managed Agents buffers each model request's text into ONE agent.message event,
+// so the agent's working narration ("I'll start with Boverket's own pages...",
+// said before a tool call) arrives as separate, short messages ahead of the
+// report - and used to be glued onto the saved artifact with no separator. The
+// rule: the artifact is the LONGEST message (a tie goes to the later one) plus
+// every message after it (a closing note after the report is kept); messages
+// before it are narration and dropped. A one-message run is unchanged. Bounded
+// by the envelope; never allocates.
+static void antArtifactText(JsonArrayConst events, char* out, size_t cap) {
+  int at = -1, idx = 0;
+  size_t best = 0;
+  for (JsonObjectConst ev : events) {
+    if (!strcmp(ev["type"] | "", "agent.message")) {
+      const size_t n = antMessageLen(ev);
+      if (at < 0 || n >= best) { at = idx; best = n; }
+    }
+    ++idx;
+  }
+  size_t used = 0;
+  out[0] = 0;
+  idx = 0;
+  for (JsonObjectConst ev : events) {
+    if (idx++ < at || strcmp(ev["type"] | "", "agent.message") != 0) continue;
+    used = antAppendMessage(ev, out, cap, used);
+    if (used >= cap - 1) return;
+  }
+}
+
 FabricErr antPoll(const ProviderDeps& pd, const char* jobId, ResultEnvelope& env) {
   const char* colon = strchr(jobId, ':');
   if (!colon) return FabricErr::BadRequest;
@@ -447,21 +502,10 @@ FabricErr antPoll(const ProviderDeps& pd, const char* jobId, ResultEnvelope& env
   if (code != 200)               { logCallFail("poll", code, doc); return FabricErr::RemoteFail; }
 
   bool done = false, errored = false;
-  size_t used = 0;
-  env.reply[0] = 0;
+  antArtifactText(doc["data"].as<JsonArrayConst>(), env.reply, sizeof(env.reply));
   for (JsonObject ev : doc["data"].as<JsonArray>()) {
     const char* type = ev["type"] | "";
-    if (!strcmp(type, "agent.message")) {
-      for (JsonObject c : ev["content"].as<JsonArray>()) {
-        if (strcmp(c["type"] | "", "text") != 0) continue;
-        const char* t = c["text"] | "";
-        size_t len = strlen(t);
-        if (used + len >= sizeof(env.reply)) len = sizeof(env.reply) - 1 - used;
-        memcpy(env.reply + used, t, len);
-        used += len; env.reply[used] = 0;
-        if (used >= sizeof(env.reply) - 1) break;
-      }
-    } else if (!strcmp(type, "session.status_idle")) {
+    if (!strcmp(type, "session.status_idle")) {
       applyIdle(ev["stop_reason"]["type"] | "", done, errored, env);
     } else if (!strcmp(type, "session.error")) {
       errored = true;

@@ -535,6 +535,72 @@ static void test_sub_unsafe_model_name_falls_back() {
   TEST_ASSERT_EQUAL_STRING("claude-sonnet-4-6=ag_1;", d.antAgents.c_str());
 }
 
+// ---- CUM-514: a sub-agent's saved report starts at the report ----------------
+// Bench (nimbus-light, T08): the Sweden workstream's saved file began "I'll start
+// with Boverket's own pages on the current rules and any transition from BBR.The
+// new fire rules are BFS 2024:7. I'll read Boverket's guidance..." - every
+// agent.message (narration before each tool call, then the report) glued together
+// with no separator. Canned session transcript in the shape the events poll
+// returns (one buffered agent.message per model request).
+static std::string antMsg(const std::string& text) {
+  return "{\"type\":\"agent.message\",\"content\":[{\"type\":\"text\",\"text\":\"" + text + "\"}]}";
+}
+static const char* kSwedenReport =
+    "# Swedish fire rules for a 3-storey timber-frame home\\n\\nBFS 2024:7 replaces BBR "
+    "section 5 from 2026. A three-storey dwelling is building class Br1: load-bearing "
+    "timber needs R60 and separating walls EI60, with sprinklers allowing reductions...";
+
+static void test_cum514_artifact_drops_the_narration() {
+  FakeProviderDeps d;
+  d.http.script.push_back({"", "/v1/sessions/sess_1/events", 200,
+      "{\"data\":[" +
+      antMsg("I'll start with Boverket's own pages on the current rules and any transition "
+             "from BBR.") + "," +
+      antMsg("The new fire rules are BFS 2024:7. I'll read Boverket's guidance and the "
+             "regulation text.") + "," +
+      antMsg("Those pages are mostly navigation. curl works. I'll write a helper.") + "," +
+      antMsg(kSwedenReport) + "," +
+      "{\"type\":\"session.status_idle\",\"stop_reason\":{\"type\":\"end_turn\"}}]}"});
+  auto pd = d.contract();
+  agent::ResultEnvelope env{};
+  TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::antPoll(pd, "anthropic:sess_1", env));
+  TEST_ASSERT_EQUAL((int)agent::JobState::Done, (int)env.state);
+  std::string want(kSwedenReport);
+  size_t at;
+  while ((at = want.find("\\n")) != std::string::npos) want.replace(at, 2, "\n");
+  TEST_ASSERT_EQUAL_STRING(want.c_str(), env.reply);
+  TEST_ASSERT_TRUE(std::string(env.reply).find("I'll start") == std::string::npos);
+}
+
+// The class around the rule: a closing note AFTER the report is kept (joined by a
+// blank line); a one-message run (the recorded live fixture shape: one message,
+// several text blocks) is byte-identical to before; a run of short messages only
+// keeps the longest and what follows.
+static void test_cum514_artifact_keeps_what_follows_the_report() {
+  FakeProviderDeps d;
+  d.http.script.push_back({"", "", 200,
+      "{\"data\":[" + antMsg("Checking the sources first.") + "," + antMsg(kSwedenReport) + "," +
+      antMsg("Saved as sweden-rules.md.") + "," +
+      "{\"type\":\"session.status_idle\",\"stop_reason\":{\"type\":\"end_turn\"}}]}"});
+  auto pd = d.contract();
+  agent::ResultEnvelope env{};
+  TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::antPoll(pd, "anthropic:sess_1", env));
+  const std::string r(env.reply);
+  TEST_ASSERT_TRUE(r.rfind("# Swedish fire rules", 0) == 0);
+  const std::string tail = "\n\nSaved as sweden-rules.md.";
+  TEST_ASSERT_TRUE(r.size() > tail.size() && r.compare(r.size() - tail.size(), tail.size(), tail) == 0);
+
+  FakeProviderDeps one;   // one message, several blocks: concatenated exactly as before
+  one.http.script.push_back({"", "", 200,
+      "{\"data\":[{\"type\":\"agent.message\",\"content\":["
+      "{\"type\":\"text\",\"text\":\"curl 8.22.0\"},{\"type\":\"text\",\"text\":\", dated Sep 2\"}]},"
+      "{\"type\":\"session.status_idle\",\"stop_reason\":{\"type\":\"end_turn\"}}]}"});
+  auto opd = one.contract();
+  agent::ResultEnvelope oenv{};
+  TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::antPoll(opd, "anthropic:sess_1", oenv));
+  TEST_ASSERT_EQUAL_STRING("curl 8.22.0, dated Sep 2", oenv.reply);
+}
+
 static void test_sub_poll_states() {
   {  // running: messages so far, no idle event
     FakeProviderDeps d;
@@ -610,6 +676,8 @@ int main(int, char**) {
   RUN_TEST(test_sub_dispatch_stale_404_clears_caches);
   RUN_TEST(test_sub_unsafe_model_name_falls_back);
   RUN_TEST(test_sub_poll_states);
+  RUN_TEST(test_cum514_artifact_drops_the_narration);
+  RUN_TEST(test_cum514_artifact_keeps_what_follows_the_report);
   RUN_TEST(test_sub_cancel_sends_interrupt);
   UNITY_END();
   return 0;
