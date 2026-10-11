@@ -25,6 +25,7 @@
 #include <algorithm>
 #include <cstring>
 
+#include "nimbus/harness/log.h"   // hlog - one line when the harvest bound is hit
 #include "nimbus/orch/model_catalog.h"
 #include "nimbus/orch/router_route.h"
 
@@ -38,6 +39,11 @@ inline constexpr size_t kChoicesMaxBytes = 480;
 // One router aggregates every upstream's list, so it gets about four single-provider
 // budgets (nimbus::store::kCatalogMaxBytes is 3800): ~48 models.
 inline constexpr size_t kCatalogMaxBytes = 16000;
+// The most chat ids one harvest keeps from a /router/models body. The body is
+// untrusted and only byte-bounded (64 KB): ~6500 tiny ids would otherwise each
+// cost a string and a sort slot inside the verify slot. Far above any real router
+// list, and ten times the choice list.
+inline constexpr size_t kHarvestMax = 128;
 
 // "<upstream>/<model>" for any selector; a bare id is the openai upstream (the
 // router's default), exactly as the head and the sub-agent resolve it.
@@ -109,9 +115,12 @@ inline bool routerFlagship(const std::string& id) {
 
 // Every "id" value in a /router/models body (HTTP headers may precede it; pretty or
 // compact JSON), chat models only, flagships first, each group in the router's
-// order. An id over 64 chars ends the scan (it is not an id list).
+// order, at most kHarvestMax ids (flagships fill first, wherever they appear; one
+// log line says when the bound cut the list). An id over 64 chars ends the scan
+// (it is not an id list).
 inline std::vector<std::string> harvestIds(const char* body) {
   std::vector<std::string> flag, rest;
+  size_t found = 0;
   const char* p = body;
   while (p && (p = std::strstr(p, "\"id\":")) != nullptr) {
     p += 5;
@@ -121,9 +130,18 @@ inline std::vector<std::string> harvestIds(const char* body) {
     if (!e || e - p > 64) break;
     const std::string id(p, (size_t)(e - p));
     p = e;
-    if (routerChatModel(id)) (routerFlagship(id) ? flag : rest).push_back(id);
+    if (!routerChatModel(id)) continue;
+    ++found;
+    std::vector<std::string>& group = routerFlagship(id) ? flag : rest;
+    if (group.size() < kHarvestMax) group.push_back(id);
   }
-  flag.insert(flag.end(), rest.begin(), rest.end());
+  const size_t room = kHarvestMax - flag.size();
+  const size_t take = std::min(room, rest.size());
+  flag.insert(flag.end(), rest.begin(), rest.begin() + static_cast<std::ptrdiff_t>(take));
+  if (found > flag.size())
+    agent::hlog::logf("router_catalog: harvest keeps %u of %u router chat ids (bound %u, "
+                      "flagships first)",
+                      (unsigned)flag.size(), (unsigned)found, (unsigned)kHarvestMax);
   return flag;
 }
 
@@ -164,28 +182,35 @@ inline std::string undatedModel(const std::string& sel) {
   const std::string alias = undatedAlias(m);
   return alias.empty() ? m : alias;
 }
-inline bool newerFirst(const std::string& a, const std::string& b) {
-  const VersionKey ka = versionKey(undatedModel(a));
-  const VersionKey kb = versionKey(undatedModel(b));
+inline bool newerFirst(const VersionKey& ka, const VersionKey& kb) {
   if (ka.v != kb.v) return ka.v > kb.v;
   return !ka.variant && kb.variant;
 }
 
-inline bool contains(const std::vector<std::string>& v, const std::string& x) {
-  for (const std::string& e : v)
-    if (e == x) return true;
-  return false;
-}
-
-// Distinct, non-twin candidates (indexes into canon) in list order.
+// Distinct, non-twin candidates (indexes into canon) in list order. O(n log n):
+// indexes sorted by (id, position) put each id's first occurrence at the head of
+// its run, and "is the alias listed" is a binary search - no pairwise scan, no
+// copied strings (the list comes from an untrusted router body).
 inline std::vector<size_t> candidates(const std::vector<std::string>& canon) {
+  std::vector<size_t> byId(canon.size());
+  for (size_t i = 0; i < byId.size(); ++i) byId[i] = i;
+  std::sort(byId.begin(), byId.end(), [&](size_t a, size_t b) {
+    const int c = canon[a].compare(canon[b]);
+    return c != 0 ? c < 0 : a < b;
+  });
+  std::vector<bool> first(canon.size(), false);
+  for (size_t k = 0; k < byId.size(); ++k)
+    first[byId[k]] = k == 0 || canon[byId[k]] != canon[byId[k - 1]];
+  auto listed = [&](const std::string& id) {
+    const auto it = std::lower_bound(byId.begin(), byId.end(), id,
+                                     [&](size_t i, const std::string& v) { return canon[i] < v; });
+    return it != byId.end() && canon[*it] == id;
+  };
   std::vector<size_t> cand;
-  std::vector<std::string> kept;
   for (size_t i = 0; i < canon.size(); ++i) {
-    if (canon[i].empty() || contains(kept, canon[i])) continue;
+    if (canon[i].empty() || !first[i]) continue;
     const std::string alias = undatedAlias(canon[i]);
-    if (!alias.empty() && contains(canon, alias)) continue;   // a dated twin of a listed alias
-    kept.push_back(canon[i]);
+    if (!alias.empty() && listed(alias)) continue;   // a dated twin of a listed alias
     cand.push_back(i);
   }
   return cand;
@@ -215,9 +240,12 @@ inline Queues byUpstream(const std::vector<std::string>& canon, const std::vecto
   // The router lists each upstream alphabetically within a size class (oldest
   // generation first): order each upstream newest-first so a cut list keeps
   // claude-opus-5 / gpt-6-astra / glm-5.3, not the 4.x / 5.5 / glm-5 rows.
+  // Each id's key is computed once (not twice per comparison).
+  std::vector<VersionKey> keys(canon.size());
+  for (size_t i : cand) keys[i] = versionKey(undatedModel(canon[i]));
   for (auto& qv : qs.q)
     std::stable_sort(qv.begin(), qv.end(),
-                     [&](size_t a, size_t b) { return newerFirst(canon[a], canon[b]); });
+                     [&](size_t a, size_t b) { return newerFirst(keys[a], keys[b]); });
   return qs;
 }
 
