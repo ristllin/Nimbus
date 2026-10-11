@@ -110,6 +110,10 @@ jobs:
         # screen check are pure host logic; without this line the suite would
         # never be collected by CI and an uncollected test is worth nothing.
         run: python3 -m pytest tools/test_setup_device.py
+      - name: Recovery tool error paths (CUM-493 usb_reset.py)
+        # pyusb/libusb/platform failures must exit 2 with the fix, never a traceback;
+        # the tests use fakes and never touch a USB bus.
+        run: python3 -m pytest tools/test_usb_reset.py
 
   # HIL suite must stay importable/collectable on a device-less box (the repo's
   # own contract: `pytest tests/hil --collect-only` clean with no hardware).
