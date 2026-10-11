@@ -22,17 +22,18 @@ namespace provider_verify {
 // a worker that had already re-armed it, and a fetch that began before a save
 // cleared the save's request when it landed. Here every request bumps a
 // generation; an attempt reads the generation BEFORE it fetches and can only ever
-// settle that generation, so a request made after that point stays queued. The
-// residual race (a save landing between rearm()'s check and its clock write)
-// can at worst delay the save's probe by one retry spacing, never drop it.
+// settle that generation, so a request made after that point stays queued with
+// its own tries. The residual race (a save landing between rearm()'s check and
+// its clock write) can at worst delay the save's first attempt by one retry
+// spacing; it never drops the save or spends its tries.
 class WorkspaceProbeQueue {
  public:
   static const uint8_t  kMaxTries = 3;
   static const uint32_t kRetryMs  = 120000u;   // 2 min between attempts
 
-  // A save or a restart asks for a fresh answer, due `delayMs` after `now`.
+  // A save or a restart asks for a fresh answer, due `delayMs` after `now`. The
+  // new generation starts with no tries spent.
   void request(uint32_t now, uint32_t delayMs) {
-    tries_ = 0;
     nextAt_ = now + delayMs;
     req_.fetch_add(1);   // published last: whoever sees the new generation sees its clock
   }
@@ -46,26 +47,26 @@ class WorkspaceProbeQueue {
   uint32_t generation() const { return req_.load(); }
   // Every request up to `gen` is settled by a fresh answer (or there is nothing
   // to probe). A request made after `gen` was read stays queued.
-  void served(uint32_t gen) {
-    settle(gen);
-    tries_ = 0;
-  }
+  void served(uint32_t gen) { settle(gen); }
   enum class Rearm : uint8_t { Retry, Newer, Dropped };
   // The attempt for `gen` landed no answer: retry on the slow clock (a running
   // turn defers without spending a try) or, past kMaxTries, drop `gen`. A request
-  // made since `gen` owns the clock and is left as it is (Newer).
+  // made since `gen` owns the clock and its tries, and is left as it is (Newer).
   Rearm rearm(uint32_t gen, uint32_t now, bool countsTry) {
     if (req_.load() != gen) return Rearm::Newer;
-    const uint8_t used = countsTry ? (uint8_t)(tries_.load() + 1) : tries_.load();
+    const uint8_t spent = triesGen_.load() == gen ? tries_.load() : (uint8_t)0;
+    const uint8_t used = countsTry ? (uint8_t)(spent + 1) : spent;
     if (used >= kMaxTries) {
       settle(gen);
       return Rearm::Dropped;
     }
     tries_ = used;
+    triesGen_ = gen;
     nextAt_ = now + kRetryMs;
     return Rearm::Retry;
   }
-  uint8_t tries() const { return tries_.load(); }
+  // Tries spent on the current request.
+  uint8_t tries() const { return triesGen_.load() == req_.load() ? tries_.load() : (uint8_t)0; }
   uint32_t nextAt() const { return nextAt_.load(); }
 
  private:
@@ -78,6 +79,7 @@ class WorkspaceProbeQueue {
   std::atomic<uint32_t> req_{0};
   std::atomic<uint32_t> done_{0};
   std::atomic<uint32_t> nextAt_{0};
+  std::atomic<uint32_t> triesGen_{0};   // the generation `tries_` counts for
   std::atomic<uint8_t>  tries_{0};
 };
 
@@ -89,11 +91,18 @@ class WorkspaceProbeQueue {
 // the whole body (the turn's own slot wait is 10 s; the body read is bounded by
 // its byte cap and deadline either way). An aborted fetch publishes nothing and
 // keeps the last good answer.
-struct ProbeExec {
+
+// The gate around one attempt: the memory floor, the turn flag and the slot.
+struct ProbeGate {
+  std::function<bool()> lowMemory;     // internal heap below the verify floor
   std::function<bool()> turnInFlight;
-  std::function<bool()> lowMemory;               // internal heap below the verify floor
-  std::function<bool()> acquireSlot;             // the TLS work slot (bounded wait)
+  std::function<bool()> acquireSlot;   // the TLS work slot (bounded wait)
   std::function<void()> releaseSlot;
+};
+
+// The I/O of one fetch.
+struct FetchIo {
+  std::function<bool()> turnInFlight;
   std::function<bool()> connect;                 // connect and send the GET
   std::function<int(char*, size_t)> read;        // >0 bytes; 0 nothing yet; <0 closed, drained
   std::function<void()> close;
@@ -101,22 +110,29 @@ struct ProbeExec {
   std::function<void()> idle;                    // a short pause between empty reads
 };
 
-enum class FetchResult : uint8_t { Ok, Truncated, TurnStarted, ConnectFailed };
+enum class FetchResult : uint8_t { Ok, Truncated, Deadline, TurnStarted, ConnectFailed };
 
 // Fetch the response into `buf` (`cap` bytes, NUL-terminated; `len` = bytes read)
-// until the peer closes, `cap` fills or `deadlineMs` passes. With `yieldToTurn`,
-// a turn seen after the connect or before any read aborts it (TurnStarted). The
-// connection is closed on every path that opened it.
-inline FetchResult fetchBody(const ProbeExec& io, char* buf, size_t cap, uint32_t deadlineMs,
+// until the peer closes (Ok), `cap` fills (Truncated) or `bodyMs` pass after the
+// connect (Deadline). With `yieldToTurn`, a turn seen after the connect or before
+// any read aborts it (TurnStarted). The connection is closed on every path that
+// opened it.
+inline FetchResult fetchBody(const FetchIo& io, char* buf, size_t cap, uint32_t bodyMs,
                              bool yieldToTurn, size_t& len) {
   len = 0;
-  if (cap) buf[0] = 0;
+  if (cap == 0) return FetchResult::Truncated;
+  buf[0] = 0;
   if (!io.connect()) return FetchResult::ConnectFailed;
-  while (cap && len < cap - 1 && (int32_t)(io.nowMs() - deadlineMs) < 0) {
+  const uint32_t deadline = io.nowMs() + bodyMs;   // the body gets its whole budget
+  FetchResult res = FetchResult::Truncated;
+  while (len < cap - 1) {
+    if ((int32_t)(io.nowMs() - deadline) >= 0) {
+      res = FetchResult::Deadline;
+      break;
+    }
     if (yieldToTurn && io.turnInFlight()) {
-      io.close();
-      buf[len] = 0;
-      return FetchResult::TurnStarted;
+      res = FetchResult::TurnStarted;
+      break;
     }
     const size_t room = cap - 1 - len;
     const int r = io.read(buf + len, room < 4096 ? room : 4096);
@@ -124,37 +140,40 @@ inline FetchResult fetchBody(const ProbeExec& io, char* buf, size_t cap, uint32_
       len += (size_t)r;
       continue;
     }
-    if (r < 0) break;   // drained and closed
+    if (r < 0) {
+      res = FetchResult::Ok;   // drained and closed
+      break;
+    }
     io.idle();
   }
   io.close();
-  if (cap) buf[len] = 0;
-  return (cap && len >= cap - 1) ? FetchResult::Truncated : FetchResult::Ok;
+  buf[len] = 0;
+  return res;
 }
 
 // What one sync (fetch + parse + publish) came to.
 enum class SyncOutcome : uint8_t { Landed, NoAnswer, TurnStarted };
 
-static const char kWhyTurn[] = "a turn is running";
+inline constexpr char kWhyTurn[] = "a turn is running";
 
 // One attempt: nullptr when an answer landed, else why it did not run. The slot
 // is released exactly once on every path that took it.
-inline const char* attemptProbe(const ProbeExec& io, const std::function<SyncOutcome()>& sync) {
-  if (io.lowMemory()) return "low memory";
-  if (io.turnInFlight()) return kWhyTurn;
-  if (!io.acquireSlot()) return "tls busy";
-  if (io.turnInFlight()) {
-    io.releaseSlot();
+inline const char* attemptProbe(const ProbeGate& gate, const std::function<SyncOutcome()>& sync) {
+  if (gate.lowMemory()) return "low memory";
+  if (gate.turnInFlight()) return kWhyTurn;
+  if (!gate.acquireSlot()) return "tls busy";
+  if (gate.turnInFlight()) {
+    gate.releaseSlot();
     return kWhyTurn;
   }
   const SyncOutcome o = sync();
-  io.releaseSlot();
+  gate.releaseSlot();
   if (o == SyncOutcome::Landed) return nullptr;
   return o == SyncOutcome::TurnStarted ? kWhyTurn : "no answer";
 }
 
 // A running turn defers an attempt without spending one of its tries.
-inline bool countsAsTry(const char* why) { return !why || std::strcmp(why, kWhyTurn) != 0; }
+inline bool countsAsTry(const char* why) { return why != kWhyTurn; }
 
 }  // namespace provider_verify
 }  // namespace agent

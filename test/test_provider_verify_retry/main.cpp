@@ -17,7 +17,8 @@
 using agent::provider_verify::DeferralRetry;
 using agent::provider_verify::deferReason;
 using agent::provider_verify::WorkspaceProbeQueue;
-using agent::provider_verify::ProbeExec;
+using agent::provider_verify::FetchIo;
+using agent::provider_verify::ProbeGate;
 using agent::provider_verify::FetchResult;
 using agent::provider_verify::SyncOutcome;
 
@@ -172,6 +173,18 @@ static void test_probe_drop_never_drops_a_newer_save() {
   TEST_ASSERT_TRUE(q.queued());
   TEST_ASSERT_TRUE(q.due(30));            // the save's clock, not +2 min
   TEST_ASSERT_EQUAL_UINT8(0, q.tries());
+  // Tries belong to their generation: those spent on an older request (including
+  // the late write of a rearm that raced a save) never count for a newer one.
+  WorkspaceProbeQueue r;
+  r.request(0, 0);
+  const uint32_t g0 = r.generation();
+  r.rearm(g0, 1, true);
+  r.rearm(g0, 2, true);                 // two tries spent on g0
+  r.request(3, 0);                      // a save: a new generation
+  TEST_ASSERT_EQUAL_UINT8(0, r.tries());
+  TEST_ASSERT_EQUAL((int)WorkspaceProbeQueue::Rearm::Newer, (int)r.rearm(g0, 4, true));
+  TEST_ASSERT_EQUAL((int)WorkspaceProbeQueue::Rearm::Retry, (int)r.rearm(r.generation(), 5, true));
+  TEST_ASSERT_EQUAL_UINT8(1, r.tries());   // the save's first try, not g0's third
   // Exhausting the save's own tries drops it, and only then.
   gen = q.generation();
   for (int i = 0; i < WorkspaceProbeQueue::kMaxTries - 1; i++) q.rearm(gen, 40, true);
@@ -198,19 +211,18 @@ struct FakeExec {
   bool turnAfterConnect = false;
   int reads = 0, closes = 0, acquires = 0, releases = 0;
   bool connected = false;
+  uint32_t connectCostMs = 0;    // how long the connect itself takes
   std::vector<std::string> chunks;   // what successive reads return; then closed
   uint32_t ms = 0;
-  ProbeExec exec() {
-    ProbeExec io;
-    io.turnInFlight = [this] {
-      if (turnBeforeConnect) return true;
-      if (connected && turnAfterConnect) return true;
-      return turnAtRead >= 0 && reads >= turnAtRead;
-    };
-    io.lowMemory = [] { return false; };
-    io.acquireSlot = [this] { acquires++; return true; };
-    io.releaseSlot = [this] { releases++; };
-    io.connect = [this] { connected = true; return true; };
+  bool turn() const {
+    if (turnBeforeConnect) return true;
+    if (connected && turnAfterConnect) return true;
+    return turnAtRead >= 0 && reads >= turnAtRead;
+  }
+  FetchIo io() {
+    FetchIo io;
+    io.turnInFlight = [this] { return turn(); };
+    io.connect = [this] { ms += connectCostMs; connected = true; return true; };
     io.read = [this](char* dst, size_t want) -> int {
       const int i = reads++;
       if (i >= (int)chunks.size()) return -1;
@@ -224,13 +236,21 @@ struct FakeExec {
     io.idle = [this] { ms += 2; };
     return io;
   }
+  ProbeGate gate() {
+    ProbeGate g;
+    g.lowMemory = [] { return false; };
+    g.turnInFlight = [this] { return turn(); };
+    g.acquireSlot = [this] { acquires++; return true; };
+    g.releaseSlot = [this] { releases++; };
+    return g;
+  }
 };
 
 static void test_probe_fetch_yields_to_a_turn_mid_body() {
   FakeExec f;
   f.chunks = {"HTTP/1.0 200 OK\r\n\r\n{\"items\":[", "{\"name\":\"gcal\"}", "]}"};
   f.turnAtRead = 1;   // the owner's message arrives after the first chunk
-  ProbeExec io = f.exec();
+  FetchIo io = f.io();
   char buf[256];
   size_t len = 0;
   TEST_ASSERT_EQUAL((int)FetchResult::TurnStarted, (int)fetchBody(io, buf, sizeof buf, 25000, true, len));
@@ -240,8 +260,8 @@ static void test_probe_fetch_yields_to_a_turn_mid_body() {
   FakeExec g;
   g.chunks = f.chunks;
   g.turnAtRead = 1;
-  ProbeExec gio = g.exec();
-  const char* why = attemptProbe(gio, [&] {
+  FetchIo gio = g.io();
+  const char* why = attemptProbe(g.gate(), [&] {
     char b[256];
     size_t n = 0;
     return fetchBody(gio, b, sizeof b, 25000, true, n) == FetchResult::TurnStarted
@@ -263,7 +283,7 @@ static void test_probe_fetch_checks_right_after_the_connect() {
   FakeExec f;
   f.chunks = {"HTTP/1.0 200 OK\r\n\r\n{}"};
   f.turnAfterConnect = true;
-  ProbeExec io = f.exec();
+  FetchIo io = f.io();
   char buf[64];
   size_t len = 0;
   TEST_ASSERT_EQUAL((int)FetchResult::TurnStarted, (int)fetchBody(io, buf, sizeof buf, 25000, true, len));
@@ -272,21 +292,21 @@ static void test_probe_fetch_checks_right_after_the_connect() {
   // A turn already running never takes the slot at all.
   FakeExec b;
   b.turnBeforeConnect = true;
-  ProbeExec bio = b.exec();
   bool synced = false;
   TEST_ASSERT_EQUAL_STRING("a turn is running",
-                           attemptProbe(bio, [&] { synced = true; return SyncOutcome::Landed; }));
+                           attemptProbe(b.gate(), [&] { synced = true; return SyncOutcome::Landed; }));
   TEST_ASSERT_FALSE(synced);
   TEST_ASSERT_EQUAL(0, b.acquires);
 }
 
 // The owner-initiated verify (yieldToTurn off) and an undisturbed probe read the
-// whole body; the byte cap and the deadline still bound it.
+// whole body; the byte cap and the deadline still bound it, each reported as such,
+// and the body's time budget starts after the connect (a slow connect never eats it).
 static void test_probe_fetch_reads_the_body_and_stays_bounded() {
   FakeExec f;
   f.chunks = {"HTTP/1.0 200 OK\r\n\r\n", "{\"items\":[]}"};
   f.turnAtRead = 0;   // a turn runs, but this is the manual verify: no yield
-  ProbeExec io = f.exec();
+  FetchIo io = f.io();
   char buf[64];
   size_t len = 0;
   TEST_ASSERT_EQUAL((int)FetchResult::Ok, (int)fetchBody(io, buf, sizeof buf, 25000, false, len));
@@ -294,18 +314,26 @@ static void test_probe_fetch_reads_the_body_and_stays_bounded() {
   TEST_ASSERT_EQUAL(1, f.closes);
   FakeExec big;
   big.chunks = {std::string(100, 'x')};
-  ProbeExec bio = big.exec();
+  FetchIo bio = big.io();
   char small[16];
   TEST_ASSERT_EQUAL((int)FetchResult::Truncated, (int)fetchBody(bio, small, sizeof small, 25000, true, len));
   TEST_ASSERT_EQUAL(15, (int)len);
   TEST_ASSERT_EQUAL(0, (int)small[15]);
-  FakeExec slow;   // the peer sends nothing: the deadline ends it
-  slow.chunks = {};
-  ProbeExec sio = slow.exec();
+  TEST_ASSERT_EQUAL(1, big.closes);
+  FakeExec slow;   // the peer sends nothing: the deadline ends it, reported as such
+  slow.connectCostMs = 20000;   // a 20 s connect does not eat the 100 ms body budget
+  FetchIo sio = slow.io();
   sio.read = [](char*, size_t) { return 0; };
-  TEST_ASSERT_EQUAL((int)FetchResult::Ok, (int)fetchBody(sio, buf, sizeof buf, 100, true, len));
-  TEST_ASSERT_TRUE(slow.ms >= 100);
+  TEST_ASSERT_EQUAL((int)FetchResult::Deadline, (int)fetchBody(sio, buf, sizeof buf, 100, true, len));
+  TEST_ASSERT_TRUE(slow.ms >= 20100);
   TEST_ASSERT_EQUAL(0, (int)len);
+  TEST_ASSERT_EQUAL(1, slow.closes);
+  // A connect that fails opens nothing, so nothing is closed.
+  FakeExec down;
+  FetchIo dio = down.io();
+  dio.connect = [] { return false; };
+  TEST_ASSERT_EQUAL((int)FetchResult::ConnectFailed, (int)fetchBody(dio, buf, sizeof buf, 100, true, len));
+  TEST_ASSERT_EQUAL(0, down.closes);
 }
 
 int main() {

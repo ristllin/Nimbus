@@ -456,8 +456,8 @@ static void syncCumuloFallbacks(const char* host, const String& key) {
 
 // The fetch hooks over one WiFiClientSecure for GET /v1/connectors: connect and
 // send the request, bulk reads (not byte-by-byte), RST-close on every path.
-static ProbeExec mistralConnectorsExec(WiFiClientSecure& client, const String& key) {
-  ProbeExec io;
+static FetchIo mistralConnectorsIo(WiFiClientSecure& client, const String& key) {
+  FetchIo io;
   io.turnInFlight = [] { return orchestrator::turnInFlight(); };
   io.connect = [&client, &key]() {
     if (!client.connect(MISTRAL_HOST, 443)) return false;
@@ -478,16 +478,20 @@ static ProbeExec mistralConnectorsExec(WiFiClientSecure& client, const String& k
 }
 
 // Parse a fetched /v1/connectors response and publish it; true when a fresh answer
-// was published (a truncated or unparseable body, or one fetched with a key that
-// has since changed, keeps the last good answer).
-static bool publishConnectorsBody(const char* buf, size_t blen, bool truncated, uint32_t keyGen) {
+// was published. A body cut by the byte cap or the deadline, an unparseable one,
+// or one fetched with a key that has since changed keeps the last good answer.
+static bool publishConnectorsBody(const char* buf, size_t blen, FetchResult fr, uint32_t keyGen) {
+  if (fr != FetchResult::Ok) {
+    alogf("verify: mistral connectors probed (%u bytes, %s - kept last answer)", (unsigned)blen,
+          fr == FetchResult::Truncated ? "TRUNCATED" : "TIMED OUT");
+    return false;
+  }
   // Skip the HTTP headers to the JSON body (only compact status/header text precedes it).
   const char* jbody = strstr(buf, "\r\n\r\n");
   jbody = jbody ? jbody + 4 : (strstr(buf, "\n\n") ? strstr(buf, "\n\n") + 2 : buf);
-  const bool noted = !truncated && agent::connectors::noteMistralConnectorsProbe(jbody, keyGen);
+  const bool noted = agent::connectors::noteMistralConnectorsProbe(jbody, keyGen);
   alogf("verify: mistral connectors probed (%u bytes%s)", (unsigned)blen,
-        truncated ? ", TRUNCATED - kept last answer"
-                  : (noted ? "" : ", unparseable or key changed - not published"));
+        noted ? "" : ", unparseable or key changed - not published");
   return noted;
 }
 
@@ -518,14 +522,14 @@ static SyncOutcome syncMistralConnectors(const String& key, bool yieldToTurn = f
   tlsSetup(client);
   client.setHandshakeTimeout(12);
   client.setConnectionTimeout(15000);
-  const ProbeExec io = mistralConnectorsExec(client, key);
+  const FetchIo io = mistralConnectorsIo(client, key);
   size_t blen = 0;
-  const FetchResult fr = fetchBody(io, buf, kCap, (uint32_t)millis() + 25000, yieldToTurn, blen);
+  const FetchResult fr = fetchBody(io, buf, kCap, 25000, yieldToTurn, blen);   // 25 s for the body
   bool noted = false;
-  if (fr == FetchResult::Ok || fr == FetchResult::Truncated)
-    noted = publishConnectorsBody(buf, blen, fr == FetchResult::Truncated, keyGen);
-  else if (fr == FetchResult::TurnStarted)
+  if (fr == FetchResult::TurnStarted)
     alogf("verify: mistral connectors probe stopped for a turn (%u bytes read)", (unsigned)blen);
+  else if (fr != FetchResult::ConnectFailed)
+    noted = publishConnectorsBody(buf, blen, fr, keyGen);
   free(buf);
   if (noted) g_wsq.served(gen);   // the fresh answer covers every request up to gen
   if (fr == FetchResult::TurnStarted) return SyncOutcome::TurnStarted;
@@ -543,7 +547,7 @@ static void runWorkspaceProbeOnly() {
   const uint32_t gen = g_wsq.generation();
   const String key = store::mistralKey();
   if (!key.length()) { g_wsq.served(gen); return; }   // nothing to probe with
-  ProbeExec gate;
+  ProbeGate gate;
   gate.lowMemory = [] {
     return heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) < VERIFY_MIN_MAX8;
   };

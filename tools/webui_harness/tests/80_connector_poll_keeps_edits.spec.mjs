@@ -55,6 +55,25 @@ test('a workspace-check poll keeps a token being typed and the picked provider',
   await expect(tok).toHaveValue('abc');
 });
 
+test('a card that appears during the check never rebuilds the others, focused or not', async ({ page }) => {
+  await seedToken(page);
+  const state = { body: payload(true, 'checking', 2) };
+  await openConnectors(page, state);
+  // A token typed, then focus moved away (a phone select drops focus the same way).
+  await page.locator('#cc_github_tok').fill('typed');
+  await page.evaluate(() => document.activeElement && document.activeElement.blur());
+  expect(await page.evaluate(() => document.activeElement === document.body)).toBe(true);
+  // Another tab adds a custom connector while the check runs.
+  state.body = payload(true, 'checking', 2);
+  state.body.configured.push({ name: 'crm', type: 'crm', prov: 'mistral', kind: 'connector', en: 1, auth: 2, ws: 'checking' });
+  await page.evaluate(() => loadConnectors(true));
+  await page.waitForTimeout(300);
+  await expect(page.locator('#cc_github_tok')).toHaveValue('typed');
+  await expect(page.locator('#cc_crm_st')).toHaveCount(0);   // waits for the next full load
+  await page.evaluate(() => loadConnectors());
+  await expect(page.locator('#cc_crm_st')).toHaveCount(1);
+});
+
 test('the poll stops once polling is paused', async ({ page }) => {
   await seedToken(page);
   const state = { body: payload(true, 'checking', 2) };

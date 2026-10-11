@@ -3523,8 +3523,9 @@ function connKindFor(prov,k){
 // The connector_id to prefill: OpenAI first-party default, or the Studio name for Mistral.
 function connCidDefault(prov,k){ return k.cid || (prov==='mistral'?k.id:''); }
 function loadConnectors(poll){
-  // A poll (the timer below) stops once signed out or paused, like every poller.
-  if(poll&&!canPoll())return;
+  // A poll (the timer below, poll===true) stops once signed out or paused, like
+  // every poller. Any other call (tab open, save, a handler's event) loads in full.
+  if(poll===true&&!canPoll())return;
   fetch('/api/connectors').then(r=>r.json()).then(d=>{
   if(Array.isArray(d))d={configured:d,known:[],keyed:{},host:''};       // legacy-shape guard
   const cfg=d.configured||[],known=d.known||[],keyed=d.keyed||{},host=d.host||'';
@@ -3533,10 +3534,9 @@ function loadConnectors(poll){
   const extra=cfg.filter(c=>!knownIds[c.type]&&!knownIds[c.name]);
   const cards=known.map(k=>[k,byId[k.id]]).concat(extra.map(c=>[{id:c.name,name:c.name,providers:c.prov,kind:c.kind,cid:c.cid||'',cred:'Credential / token',desc:'Custom connector.',docs:''},c]));
   // CUM-537: a poll refreshes only each card's status badge. Rebuilding the cards
-  // would wipe a token being typed or a provider being picked; a new card from a
-  // poll waits for the next full load unless nothing is being edited.
-  const editing=$('conncards').contains(document.activeElement);
-  if(poll&&(editing||cards.every(([k])=>$('cc_'+k.id+'_st')))){
+  // would wipe a token being typed or a provider being picked (focused or not); a
+  // card that is new since the last full load waits for the next one.
+  if(poll===true){
     cards.forEach(([k,c])=>{const st=$('cc_'+k.id+'_st');if(st)st.innerHTML=connStatus(k,c,keyed,host);});
   }else{
     $('connhost').textContent=host?('The assistant is running on '+host+'. Connectors on '+host+' are live on its own turns; the others are reachable through sessions it spawns.'):'';
