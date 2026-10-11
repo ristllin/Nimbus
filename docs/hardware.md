@@ -227,13 +227,17 @@ Web/LAN surfaces are token-gated - see [`security.md`](security.md).
 ## Battery hardware settings in the web UI
 
 Boards differ: some carry the design **220k/100k** divider (÷3.20), others **270k/120k**
-(÷3.25), and packs range from 3500 mAh cells to reclaimed ~500 mAh cells (always 2S).
-These are runtime settings, not build flags. Under **Device > Settings > Battery**, the
-**Battery hardware** fields expose **Sense resistor (top)**, **Sense resistor (bottom)**
-and **Pack capacity**, stored in NVS (`battRtop`, `battRbot`, `battCapMah`) and applied
-live (the ADC is re-armed and the model capacity
-updated on the main task; the cell count stays compile-time 2S). Defaults match the
-compile-time constants, so an unset board is unchanged.
+(÷3.25), and packs range from 3500 mAh cells to reclaimed ~500 mAh cells. These are
+runtime settings, not build flags. Under **Device > Settings > Battery**, the
+**Battery hardware** fields are **Pack capacity**, **Chemistry** (Li-ion / LiPo or
+LiFePO4), **Cells in series** (Board default, 1S or 2S, capped at the board's physical
+cell count), an optional **Custom curve**, and **Sense resistor (top)** /
+**Sense resistor (bottom)**. They are stored in NVS (`battCapMah`, `battChem`,
+`battCells`, `battCurve`, `battRtop`, `battRbot`; see
+[Config and NVS](reference/config-and-nvs.md)) and applied live (the ADC is re-armed
+and the model capacity updated on the main task). The cell count defaults to the
+board's value (2S on the Solide S3, 1S on the Freenove all-in-one) and can be
+overridden. Defaults match the compile-time constants, so an unset board is unchanged.
 
 Set the resistors actually fitted: with the 220k/100k default on a 270k/120k board,
 voltage reads about 1.6 % low across the whole range, and calibration only corrects the

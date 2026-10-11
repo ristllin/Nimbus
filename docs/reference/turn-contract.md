@@ -165,9 +165,11 @@ auto-mirrored).
 A non-object item, an item with a non-string / missing `content`, or an
 empty-after-cap `content` is **dropped** - the turn stays valid.
 
-A `mem_write` applies **after this turn's reply is sent**, so a reply that says
-"I saved that" is a prediction, not a confirmed fact - phrase it as intent, or
-confirm it on a later turn.
+The device applies `mem_write` while it applies the turn, **before** it delivers
+`reply`/`ask` (`applyTurn`, `lib/harness/src/apply.cpp`). The model never sees the
+write's result in the same turn, so a reply that says "I saved that" is still
+unconfirmed from the model's side: phrase it as intent, or confirm it on a later
+turn.
 
 ### `mem_query[]` → searches echoed into the NEXT turn
 

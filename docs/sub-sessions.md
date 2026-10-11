@@ -25,7 +25,8 @@ Caps: 6 journal slots (`kAgentMaxJobs`), 4 in flight (`kMaxActiveInflight`),
 a 12-deep pending-spawn queue (`kMaxPendingSpawns`, the depth one turn may
 enqueue, decoupled from concurrency), task text up to 4095 bytes
 (`kSpawnTaskMax`, truncation logged), one dispatch per ~1.5 s pump cycle, and
-dispatch deferred below 28 KB of free internal heap. The model never sees raw
+dispatch deferred below 12 KB of free internal heap (`ORCH_DISPATCH_MIN_HEAP`, the
+same floor as a turn; see [Memory](memory.md)). The model never sees raw
 slot counts; every turn it reads a `[SPAWN CAPACITY]` line (see "Throughput"
 below).
 

@@ -1331,13 +1331,17 @@ and the VBUS→Full battery-mode auto-switch.)NIMBUSDOC"},
    R"NIMBUSDOC(Web/LAN surfaces are token-gated - see [`security.md`](security.md).)NIMBUSDOC"},
   {"hardware#battery-hardware-settings-in-the-web-ui", "Battery hardware settings in the web UI",
    R"NIMBUSDOC(Boards differ: some carry the design **220k/100k** divider (÷3.20), others **270k/120k**
-(÷3.25), and packs range from 3500 mAh cells to reclaimed ~500 mAh cells (always 2S).
-These are runtime settings, not build flags. Under **Device > Settings > Battery**, the
-**Battery hardware** fields expose **Sense resistor (top)**, **Sense resistor (bottom)**
-and **Pack capacity**, stored in NVS (`battRtop`, `battRbot`, `battCapMah`) and applied
-live (the ADC is re-armed and the model capacity
-updated on the main task; the cell count stays compile-time 2S). Defaults match the
-compile-time constants, so an unset board is unchanged.
+(÷3.25), and packs range from 3500 mAh cells to reclaimed ~500 mAh cells. These are
+runtime settings, not build flags. Under **Device > Settings > Battery**, the
+**Battery hardware** fields are **Pack capacity**, **Chemistry** (Li-ion / LiPo or
+LiFePO4), **Cells in series** (Board default, 1S or 2S, capped at the board's physical
+cell count), an optional **Custom curve**, and **Sense resistor (top)** /
+**Sense resistor (bottom)**. They are stored in NVS (`battCapMah`, `battChem`,
+`battCells`, `battCurve`, `battRtop`, `battRbot`; see
+[Config and NVS](reference/config-and-nvs.md)) and applied live (the ADC is re-armed
+and the model capacity updated on the main task). The cell count defaults to the
+board's value (2S on the Solide S3, 1S on the Freenove all-in-one) and can be
+overridden. Defaults match the compile-time constants, so an unset board is unchanged.
 
 Set the resistors actually fitted: with the 220k/100k default on a 270k/120k board,
 voltage reads about 1.6 % low across the whole range, and calibration only corrects the
@@ -1568,9 +1572,11 @@ auto-mirrored).
 A non-object item, an item with a non-string / missing `content`, or an
 empty-after-cap `content` is **dropped** - the turn stays valid.
 
-A `mem_write` applies **after this turn's reply is sent**, so a reply that says
-"I saved that" is a prediction, not a confirmed fact - phrase it as intent, or
-confirm it on a later turn.)NIMBUSDOC"},
+The device applies `mem_write` while it applies the turn, **before** it delivers
+`reply`/`ask` (`applyTurn`, `lib/harness/src/apply.cpp`). The model never sees the
+write's result in the same turn, so a reply that says "I saved that" is still
+unconfirmed from the model's side: phrase it as intent, or confirm it on a later
+turn.)NIMBUSDOC"},
   {"turn-contract#live-integration-arrays-mem-query-searches-echoed-into-the-next-turn", "Live-integration arrays - `mem_query[]` → searches echoed into the NEXT turn",
    R"NIMBUSDOC(Search strings. Each entry is **trimmed**; blank ⇒ dropped; a non-string entry
 is dropped (tolerantly, not an error). Kept entries are capped to
@@ -1771,7 +1777,8 @@ Caps: 6 journal slots (`kAgentMaxJobs`), 4 in flight (`kMaxActiveInflight`),
 a 12-deep pending-spawn queue (`kMaxPendingSpawns`, the depth one turn may
 enqueue, decoupled from concurrency), task text up to 4095 bytes
 (`kSpawnTaskMax`, truncation logged), one dispatch per ~1.5 s pump cycle, and
-dispatch deferred below 28 KB of free internal heap. The model never sees raw
+dispatch deferred below 12 KB of free internal heap (`ORCH_DISPATCH_MIN_HEAP`, the
+same floor as a turn; see [Memory](memory.md)). The model never sees raw
 slot counts; every turn it reads a `[SPAWN CAPACITY]` line (see "Throughput"
 below).
 
@@ -2413,10 +2420,10 @@ you choose; the third is the device's job:
 
 They are independent. A silent device can still be at Full light; a Dark device
 still speaks if its sound level is up. What the battery mode does **not** mean:
-it is not the battery's charge state (that rides the battery percentage on the
-header - `^75%` charging, `=75%` steady on external power, bare `75%` draining),
-and `power:Full` in the header means *the Full preset is active*, never "plugged
-in".
+it is not the battery's charge state. Charge shows as the battery icon in the
+screen header (filled in proportion to the percentage), and the percentage with
+its charging or discharging trend is on the device's **Settings > Battery**
+screen. **Full** means the Full preset is active, never "plugged in".
 
 A quick example: on a desk, most people run **Full** - every session gets a
 color arc, the screen updates promptly. Unplugged for the evening, switch to
@@ -2738,7 +2745,7 @@ list.
 | Backlight per mode + rest glow + deep-dim delay | `lib/core/include/nimbus/duty.h` |
 | Screensaver idle clock + stages (rest, deep-dim) | `lib/core/include/nimbus/saver.h` |
 | Sound event ranks | `lib/core/nimbus/sfx_map.*` + `docs/sfx-map.md` |
-| Header (`ring:/sound:/power:`) | `lib/core/src/tft_screens.cpp` `drawHeader` |
+| Header (title, Wi-Fi glyph, battery icon) | `lib/core/src/tft_screens.cpp` `drawHeader` |
 | Saved-network list + selection/failover | `lib/core/src/wifi_known_networks.cpp`, `wifi_policy.cpp` |
 | Failover wiring to the radio (the seam) | `src/net/wifi_link.cpp` |
 | Setup-AP recovery interplay | `lib/core/src/setup_ap.cpp` (`decideSetupAp`) |

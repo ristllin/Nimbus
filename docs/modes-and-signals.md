@@ -12,10 +12,10 @@ you choose; the third is the device's job:
 
 They are independent. A silent device can still be at Full light; a Dark device
 still speaks if its sound level is up. What the battery mode does **not** mean:
-it is not the battery's charge state (that rides the battery percentage on the
-header - `^75%` charging, `=75%` steady on external power, bare `75%` draining),
-and `power:Full` in the header means *the Full preset is active*, never "plugged
-in".
+it is not the battery's charge state. Charge shows as the battery icon in the
+screen header (filled in proportion to the percentage), and the percentage with
+its charging or discharging trend is on the device's **Settings > Battery**
+screen. **Full** means the Full preset is active, never "plugged in".
 
 A quick example: on a desk, most people run **Full** - every session gets a
 color arc, the screen updates promptly. Unplugged for the evening, switch to
@@ -365,7 +365,7 @@ If this page ever disagrees with the code, the code's single sources win:
 | Backlight per mode + rest glow + deep-dim delay | `lib/core/include/nimbus/duty.h` |
 | Screensaver idle clock + stages (rest, deep-dim) | `lib/core/include/nimbus/saver.h` |
 | Sound event ranks | `lib/core/nimbus/sfx_map.*` + `docs/sfx-map.md` |
-| Header (`ring:/sound:/power:`) | `lib/core/src/tft_screens.cpp` `drawHeader` |
+| Header (title, Wi-Fi glyph, battery icon) | `lib/core/src/tft_screens.cpp` `drawHeader` |
 | Saved-network list + selection/failover | `lib/core/src/wifi_known_networks.cpp`, `wifi_policy.cpp` |
 | Failover wiring to the radio (the seam) | `src/net/wifi_link.cpp` |
 | Setup-AP recovery interplay | `lib/core/src/setup_ap.cpp` (`decideSetupAp`) |
