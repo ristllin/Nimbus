@@ -168,6 +168,38 @@ class ToolRegistry {
   void setGate(const std::string& name, std::function<bool()> open, const std::string& reason);
   bool gateOpen(const std::string& name) const;   // true when ungated
 
+  // ---- unknown-tool recovery (CUM-538) ---------------------------------------
+  // A head model that calls a name which is not a tool used to get a bare
+  // "unknown tool: <name>" and no way back: a Mistral head called the orch_turn
+  // field `session_ops` and the connector `gcal` as tools, gave up, and promised
+  // work it never queued. dispatch() now answers an unknown name with recovery
+  // text, in this order:
+  //   1. a field of the orch_turn reply (session_ops, mem_write, spawn, ...):
+  //      say it is a reply field and how to use it (spawn-type fields also carry
+  //      the real remaining spawn room);
+  //   2. a configured connector (gcal, gmail, github, ...): say it runs inside
+  //      sub-agent jobs on its provider and how to spawn one;
+  //   3. anything else: "unknown tool: <name>" plus the callable tool names,
+  //      bounded to kUnknownToolListMax bytes.
+  // The device supplies the live facts through these nullable hooks; with none
+  // installed case 2 never fires and case 1 omits the spawn room. Static strings
+  // only: the text is built per call and freed with the ToolResult.
+  struct UnknownToolHints {
+    // Provider slug ("mistral") hosting an ENABLED configured connector whose
+    // name/type/id matches `name`; "any" for a provider-agnostic one; "" = none.
+    std::function<std::string(const std::string& name)> connectorProvider;
+    // Sub-agents a turn may still start right now (the [SPAWN CAPACITY] number);
+    // negative = unknown.
+    std::function<int()> spawnRoom;
+  };
+  static constexpr size_t kUnknownToolListMax = 640;
+  void setUnknownToolHints(UnknownToolHints h) { hints_ = std::move(h); }
+  // The recovery text dispatch() returns for a name that is not a registered tool.
+  std::string unknownToolText(const std::string& name, const Principal& who) const;
+  // True when `name` (any of session_ops / session.ops / Session-Ops spellings) is
+  // a field of the orch_turn reply or one of its retired aliases.
+  static bool isTurnFieldName(const std::string& name);
+
   // Remove a tool by exact name; also clears any static policy entry for it.
   // Returns true if a tool was removed. Used to retract dynamically-registered
   // tools (outbound MCP tools when a server is disabled or its approval is
@@ -232,6 +264,9 @@ class ToolRegistry {
   struct GateEntry { std::string name; std::function<bool()> open; std::string reason; };
   std::vector<GateEntry> gates_;
   const GateEntry* gateFor(const std::string& name) const;
+
+  UnknownToolHints hints_;
+  std::string callableNamesText(const std::string& name, const Principal& who) const;
 };
 
 }  // namespace orch

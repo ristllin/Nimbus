@@ -70,7 +70,8 @@ static void test_unknown_tool_still_fails_normally() {
   ToolRegistry reg = buildReg();
   ToolResult r = call(reg, "nope.nothing");
   TEST_ASSERT_FALSE(r.success);
-  TEST_ASSERT_EQUAL_STRING("unknown tool: nope.nothing", r.error.c_str());
+  // CUM-538: the failure now also names what IS callable (recovery text).
+  TEST_ASSERT_EQUAL(0, (int)r.error.rfind("unknown tool: nope.nothing. Callable tools: ", 0));
 }
 
 // ---- static table: deny / gated ---------------------------------------------

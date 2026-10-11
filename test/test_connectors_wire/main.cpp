@@ -1332,6 +1332,34 @@ static void test_wants_probe_only_for_enabled_studio_connectors() {
   TEST_ASSERT_TRUE(wantsMistralWorkspaceProbe(none));
 }
 
+// ---- CUM-538: a connector called as a tool names the provider that runs it ----
+// The Mistral head called `gcal` as a tool; the recovery text needs the provider
+// whose sub-agents run that connector. Every spelling the model may use (device
+// name, Mistral workspace id, cased/dashed) resolves; a disabled entry, a
+// device-dialed MCP (its tools are registered on the device) and an unknown name
+// do not.
+static void test_cum538_connector_provider_for_name() {
+  std::vector<ConnectorInfo> cs = {
+      mk("gcal", "mistral", "connector", "", "connector_googlecalendar"),
+      mk("gmail", "openai", "connector", "", "connector_gmail"),
+      mk("notion", "mistral", "connector", "", "", /*en=*/false),
+      mkDeviceDialed("myfs", "any", "http://192.168.50.145:8765/mcp"),
+      mk("linear", "any", "mcp", "https://mcp.linear.app/sse"),
+  };
+  TEST_ASSERT_EQUAL_STRING("mistral", nimbus::orch::connectorProviderForName(cs, "gcal").c_str());
+  TEST_ASSERT_EQUAL_STRING("mistral",
+                           nimbus::orch::connectorProviderForName(cs, "google_calendar").c_str());
+  TEST_ASSERT_EQUAL_STRING("mistral",
+                           nimbus::orch::connectorProviderForName(cs, "Google-Calendar").c_str());
+  TEST_ASSERT_EQUAL_STRING("openai",
+                           nimbus::orch::connectorProviderForName(cs, "connector_gmail").c_str());
+  TEST_ASSERT_EQUAL_STRING("any", nimbus::orch::connectorProviderForName(cs, "linear").c_str());
+  TEST_ASSERT_EQUAL_STRING("", nimbus::orch::connectorProviderForName(cs, "notion").c_str());
+  TEST_ASSERT_EQUAL_STRING("", nimbus::orch::connectorProviderForName(cs, "myfs").c_str());
+  TEST_ASSERT_EQUAL_STRING("", nimbus::orch::connectorProviderForName(cs, "session_ops").c_str());
+  TEST_ASSERT_EQUAL_STRING("", nimbus::orch::connectorProviderForName(cs, "").c_str());
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_mistral_connector_id_shared_map);
@@ -1398,5 +1426,6 @@ int main() {
   RUN_TEST(test_cumulo_route_advertises_builtins_only_openai);
   RUN_TEST(test_cumulo_route_advertises_builtins_only_mistral);
   RUN_TEST(test_cumulo_route_anthropic_drops_private_mcp);
+  RUN_TEST(test_cum538_connector_provider_for_name);
   return UNITY_END();
 }

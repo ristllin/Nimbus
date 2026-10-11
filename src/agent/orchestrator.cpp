@@ -1395,6 +1395,20 @@ void begin(HeavyFabric* fabric, const Sinks& sinks) {
         return nimbus::orch::ToolResult::ok(out);
       },
       R"JS({"type":"object","properties":{"action":{"type":"object","description":"one device[] element, verbatim (config/led/lights/tts)"}},"required":["action"]})JS");
+  // CUM-538: an unknown tool name gets a way back - a configured connector names
+  // the provider whose sub-agents run it, and a spawn field carries the REAL
+  // remaining room (the same spawnRoomFor the [SPAWN CAPACITY] line uses). Both
+  // hooks are evaluated only on an unknown name, never on the normal tool path.
+  {
+    nimbus::orch::ToolRegistry::UnknownToolHints hints;
+    hints.connectorProvider = [](const std::string& name) {
+      return connectors::providerForName(name);
+    };
+    hints.spawnRoom = [] {
+      return nimbus::orch::spawnRoomFor(g_jobs ? g_jobs->pendingCount() : 0);
+    };
+    memory::registry().setUnknownToolHints(hints);
+  }
   int n = g_journal.count();
   alogf("orchestrator: ready (%d active job%s)", n, n == 1 ? "" : "s");
 }

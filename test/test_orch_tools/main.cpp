@@ -4,6 +4,7 @@
 
 #include <string>
 
+#include "nimbus/orch/orch_schema.h"
 #include "nimbus/orch/tool_registry.h"
 
 using namespace nimbus::orch;
@@ -243,8 +244,117 @@ static void test_registry_remove_by_prefix() {
   TEST_ASSERT_EQUAL(0, reg.removeByPrefix(""));  // empty prefix is a no-op
 }
 
+// ---- unknown-tool recovery (CUM-538) ------------------------------------------
+// A Mistral head called the orch_turn field `session_ops` and the connector `gcal`
+// as tools and got a bare "unknown tool"; it gave up and promised work it never
+// queued. Each unknown name must now carry a way back.
+
+static ToolResult callUnknown(const ToolRegistry& reg, const char* name) {
+  JsonDocument d; d.to<JsonObject>();
+  return reg.dispatch(name, d.as<JsonObjectConst>(),
+                      nimbus::orch::principalForRole("test", nimbus::orch::Role::Admin));
+}
+
+// Case 1: a reply field. The text says it is not a tool, names the orch_turn
+// reply, says how to spawn, and carries the REAL spawn room (T02d claimed 0 while
+// the prompt offered 6).
+static void test_unknown_tool_turn_field_session_ops() {
+  ToolRegistry reg = buildRegistry();
+  ToolRegistry::UnknownToolHints h;
+  h.spawnRoom = [] { return 6; };
+  reg.setUnknownToolHints(h);
+  ToolResult r = callUnknown(reg, "session_ops");
+  TEST_ASSERT_FALSE(r.success);
+  TEST_ASSERT_TRUE(has(r.error, "session_ops is not a tool"));
+  TEST_ASSERT_TRUE(has(r.error, "field of your orch_turn reply"));
+  TEST_ASSERT_TRUE(has(r.error, "\"op\":\"spawn\""));
+  TEST_ASSERT_TRUE(has(r.error, "You can start up to 6 sub-agents this turn"));
+  TEST_ASSERT_FALSE(has(r.error, "unknown tool"));
+  // An alias points at the real field; dotted / dashed / cased spellings fold.
+  ToolResult a = callUnknown(reg, "Session.Spawn");
+  TEST_ASSERT_TRUE(has(a.error, "Use the session_ops field of your orch_turn reply"));
+  TEST_ASSERT_TRUE(has(a.error, "up to 6"));
+  // No room hook installed: never invent a number.
+  ToolRegistry bare = buildRegistry();
+  TEST_ASSERT_FALSE(has(callUnknown(bare, "session_ops").error, "You can start up to"));
+}
+
+// The class, not the instance: EVERY property of the wire schema the head fills
+// (ORCH_SCHEMA_BODY) plus the retired spawn/await must answer as a reply field. A
+// field added to the schema without a hint fails here.
+static void test_unknown_tool_every_schema_field_is_a_reply_field() {
+  JsonDocument schema;
+  TEST_ASSERT_TRUE(deserializeJson(schema, nimbus::orch::ORCH_SCHEMA_BODY,
+                                   ArduinoJson::DeserializationOption::NestingLimit(64)) ==
+                   ArduinoJson::DeserializationError::Ok);
+  ToolRegistry reg = buildRegistry();
+  int n = 0;
+  for (ArduinoJson::JsonPairConst kv : schema["properties"].as<ArduinoJson::JsonObjectConst>()) {
+    const std::string f = kv.key().c_str();
+    TEST_ASSERT_TRUE_MESSAGE(ToolRegistry::isTurnFieldName(f), f.c_str());
+    ToolResult r = callUnknown(reg, f.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(has(r.error, "is not a tool"), f.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(has(r.error, "orch_turn reply"), f.c_str());
+    n++;
+  }
+  TEST_ASSERT_TRUE(n >= 8);   // the schema really was walked
+  for (const char* retired : {"spawn", "await"})
+    TEST_ASSERT_TRUE(has(callUnknown(reg, retired).error, "orch_turn reply"));
+  // A field that has a live tool twin offers it, in the caller's spelling.
+  TEST_ASSERT_TRUE(has(callUnknown(reg, "mem_write").error, "or call memory_write now"));
+}
+
+// Case 2: a configured connector. It runs inside sub-agent jobs on its provider;
+// the text names the backend and the spawn shape.
+static void test_unknown_tool_connector_names_spawn_backend() {
+  ToolRegistry reg = buildRegistry();
+  ToolRegistry::UnknownToolHints h;
+  h.connectorProvider = [](const std::string& n) {
+    return (n == "gcal") ? std::string("mistral")
+         : (n == "linear") ? std::string("any") : std::string();
+  };
+  h.spawnRoom = [] { return 4; };
+  reg.setUnknownToolHints(h);
+  ToolResult r = callUnknown(reg, "gcal");
+  TEST_ASSERT_FALSE(r.success);
+  TEST_ASSERT_TRUE(has(r.error, "gcal is a connector attached to Mistral sub-agent jobs, not a tool"));
+  TEST_ASSERT_TRUE(has(r.error, "Spawn a mistral job with the request"));
+  TEST_ASSERT_TRUE(has(r.error, "\"provider\":\"mistral\""));
+  TEST_ASSERT_TRUE(has(r.error, "up to 4"));
+  // A provider-agnostic connector gets the same shape without a provider name.
+  ToolResult any = callUnknown(reg, "linear");
+  TEST_ASSERT_TRUE(has(any.error, "linear is a connector attached to sub-agent jobs"));
+  TEST_ASSERT_FALSE(has(any.error, "\"provider\""));
+}
+
+// Case 3: anything else names what IS callable, in the caller's spelling (the
+// head loop sees memory_write, an MCP client memory.write), never a reply-field
+// alias the loop hides, and bounded no matter how many tools are registered.
+static void test_unknown_tool_lists_callable_names_bounded() {
+  ToolRegistry reg = buildRegistry();
+  auto noop = [](ArduinoJson::JsonObjectConst, const nimbus::orch::Principal&) {
+    return ToolResult::ok("");
+  };
+  reg.add("session.spawn", "hidden from the loop", noop);
+  ToolResult u = callUnknown(reg, "calendar_lookup");
+  TEST_ASSERT_TRUE(has(u.error, "unknown tool: calendar_lookup."));
+  TEST_ASSERT_TRUE(has(u.error, "Callable tools: memory_write, device_reboot."));
+  TEST_ASSERT_FALSE(has(u.error, "session_spawn"));
+  ToolResult d = callUnknown(reg, "ghost.tool");
+  TEST_ASSERT_TRUE(has(d.error, "Callable tools: memory.write, device.reboot."));
+  for (int i = 0; i < 200; i++)
+    reg.add("bulk.tool_number_" + std::to_string(i), "d", noop);
+  ToolResult b = callUnknown(reg, "nope");
+  TEST_ASSERT_TRUE(has(b.error, "more)."));
+  TEST_ASSERT_TRUE(b.error.size() < ToolRegistry::kUnknownToolListMax + 120);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
+  RUN_TEST(test_unknown_tool_turn_field_session_ops);
+  RUN_TEST(test_unknown_tool_every_schema_field_is_a_reply_field);
+  RUN_TEST(test_unknown_tool_connector_names_spawn_backend);
+  RUN_TEST(test_unknown_tool_lists_callable_names_bounded);
   RUN_TEST(test_registry_add_and_manifest);
   RUN_TEST(test_registry_tool_specs_carry_schema);
   RUN_TEST(test_registry_add_replaces_in_place);

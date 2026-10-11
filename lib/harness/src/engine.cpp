@@ -230,12 +230,11 @@ std::string TurnEngine::buildDynamicContext() {
     // fine, it just runs SEQUENTIALLY over successive waves. NOT concurrency.
     const int live   = d_.jobs ? (int)(d_.jobs->sessionInfos().size()) : 0;
     const int queued = d_.jobs ? d_.jobs->pendingCount() : 0;
-    int queueFree = orch::kMaxPendingSpawns - queued;
-    if (queueFree < 0) queueFree = 0;
     // Bound by the per-TURN parse cap (parseTurn keeps at most kAgentMaxJobs
     // session_ops) AND the queue room, so the number never promises more than a
-    // turn can actually contain - no silent truncation.
-    const int canStart = std::min(orch::kAgentMaxJobs, queueFree);
+    // turn can actually contain - no silent truncation. spawnRoomFor is shared
+    // with the unknown-tool recovery text (CUM-538): one number everywhere.
+    const int canStart = orch::spawnRoomFor(queued);
     ctx += "[SPAWN CAPACITY] " + std::to_string(live) + " running, " +
            std::to_string(queued) + " queued. You can start up to " +
            std::to_string(canStart) + " sub-agents this turn; they run "

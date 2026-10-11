@@ -38,6 +38,16 @@ constexpr int kMaxActiveInflight = 4;   // v2.0.0: raised with the 2-slot TLS ar
 // when the queue drains); waves beyond this come from the next synthesis turn.
 constexpr int kMaxPendingSpawns = 12;   // v4.1.0 (W5): was conflated with kAgentMaxJobs (6)
 
+// How many sub-agents ONE turn may still start with `queued` spawns waiting: the
+// per-turn parse cap (kAgentMaxJobs session_ops) bounded by the queue room. The
+// single source for the [SPAWN CAPACITY] prompt line AND the unknown-tool recovery
+// text (CUM-538), so the number the model is told can never differ between them.
+inline int spawnRoomFor(int queued) {
+  int room = kMaxPendingSpawns - queued;
+  if (room < 0) room = 0;
+  return room < kAgentMaxJobs ? room : kAgentMaxJobs;
+}
+
 // Stuck-job watchdog (2026-08-12 field: "orange breathing ring for hours" - a
 // mistral-accent Running arc; orchestrator arcs have NO ambient expiry, and a
 // job whose polls never reach a terminal state breathed forever):

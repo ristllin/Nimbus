@@ -157,7 +157,7 @@ ToolResult ToolRegistry::dispatch(const std::string& name, JsonObjectConst args,
                                 ? ("tool gated pending owner approval: " + name)
                                 : v.reason);
   const Tool* t = find(name);
-  if (!t) return ToolResult::fail("unknown tool: " + name);
+  if (!t) return ToolResult::fail(unknownToolText(name, who));
   // CUM-508: a gated tool whose prerequisite is missing right now refuses with
   // its honest reason, never reaching a handler that would need it.
   const GateEntry* g = gateFor(name);
@@ -165,6 +165,148 @@ ToolResult ToolRegistry::dispatch(const std::string& name, JsonObjectConst args,
     return ToolResult::fail(g->reason.empty() ? ("tool unavailable: " + name) : g->reason);
   if (!t->handler) return ToolResult::fail("tool has no handler: " + name);
   return t->handler(args, who);
+}
+
+// ---- unknown-tool recovery (CUM-538) ------------------------------------------
+
+namespace {
+
+// One orch_turn reply field (or retired alias) a head model may mistake for a
+// tool. `field` is the reply field to use instead; `how` says how, in one clause;
+// `tool` names a registry tool that does the same thing NOW (rendered in the
+// caller's spelling, mentioned only when registered); `spawns` adds the live
+// spawn room to the text.
+struct TurnFieldHint {
+  const char* alias;
+  const char* field;
+  const char* how;
+  const char* tool;
+  bool spawns;
+};
+
+const char kSpawnHow[] =
+    "add {\"op\":\"spawn\",\"provider\":\"<provider>\",\"task\":\"<the request>\"} "
+    "to it and finish the turn with orch_turn; the sub-agent starts right after";
+const char kResultsHow[] =
+    "sub-agent results arrive by themselves in [FRESH RESULTS] on an automatic "
+    "turn, so there is nothing to wait for or poll";
+
+const TurnFieldHint kTurnFields[] = {
+    {"session_ops", "session_ops", kSpawnHow, nullptr, true},
+    {"spawn", "session_ops", kSpawnHow, nullptr, true},
+    {"session_spawn", "session_ops", kSpawnHow, nullptr, true},
+    {"spawn_agent", "session_ops", kSpawnHow, nullptr, true},
+    {"session_tell", "session_ops",
+     "a running sub-agent cannot be messaged, so spawn a new one with the follow-up",
+     nullptr, true},
+    {"session_poll", "session_ops", kResultsHow, nullptr, false},
+    {"await", "session_ops", kResultsHow, nullptr, false},
+    {"mem_write", "mem_write",
+     "add {\"content\":\"<the fact>\"} to store it after this turn", "memory.write", false},
+    {"mem_query", "mem_query",
+     "add a search string and the results arrive next turn", "memory.search", false},
+    {"memory", "memory", "it carries your running notes to the next turn", nullptr, false},
+    {"scratchpad", "scratchpad", "set active/short/mid/long to update your plan",
+     nullptr, false},
+    {"device", "device", "add the device action there to apply it after this turn",
+     "device.control", false},
+    {"reply", "reply", "put your answer to the owner there", nullptr, false},
+    {"ask", "ask", "put your question for the owner there", nullptr, false},
+};
+
+// Lowercase, with '.', '-' and ' ' folded to '_': session.ops, Session-Ops and
+// session_ops are one name.
+std::string foldName(const std::string& n) {
+  std::string out = n;
+  for (char& c : out) {
+    if (c >= 'A' && c <= 'Z') c = char(c - 'A' + 'a');
+    else if (c == '.' || c == '-' || c == ' ') c = '_';
+  }
+  return out;
+}
+
+const TurnFieldHint* turnFieldFor(const std::string& name) {
+  const std::string f = foldName(name);
+  for (const auto& h : kTurnFields)
+    if (f == h.alias) return &h;
+  return nullptr;
+}
+
+// The head loop advertises registry names with '.' -> '_' (loopToolName); an MCP
+// client uses them dotted. Answer in the spelling the caller used.
+std::string spellLike(const std::string& callerName, const std::string& regName) {
+  if (callerName.find('.') != std::string::npos) return regName;
+  std::string out = regName;
+  for (char& c : out)
+    if (c == '.') c = '_';
+  return out;
+}
+
+const char* providerLabel(const std::string& slug) {
+  if (slug == "mistral") return "Mistral";
+  if (slug == "openai") return "OpenAI";
+  if (slug == "anthropic") return "Anthropic";
+  if (slug == "zai") return "Z.ai";
+  if (slug == "cumulo") return "Cumulo Nimbus";
+  return nullptr;
+}
+
+}  // namespace
+
+bool ToolRegistry::isTurnFieldName(const std::string& name) {
+  return turnFieldFor(name) != nullptr;
+}
+
+std::string ToolRegistry::callableNamesText(const std::string& name, const Principal& who) const {
+  std::string list;
+  int more = 0;
+  for (const auto& s : toolSpecsFor(who)) {
+    // A registry tool that is ALSO a reply-field alias (session.spawn/tell/poll)
+    // is hidden from the head loop; never offer it here as callable.
+    if (isTurnFieldName(s.name)) continue;
+    const std::string n = spellLike(name, s.name);
+    if (list.size() + n.size() + 2 > kUnknownToolListMax) { more++; continue; }
+    if (!list.empty()) list += ", ";
+    list += n;
+  }
+  if (list.empty()) return "No tools are callable right now.";
+  std::string out = "Callable tools: " + list;
+  if (more) out += " (+" + std::to_string(more) + " more)";
+  return out + ".";
+}
+
+std::string ToolRegistry::unknownToolText(const std::string& name, const Principal& who) const {
+  const int room = hints_.spawnRoom ? hints_.spawnRoom() : -1;
+  const std::string roomText =
+      room < 0 ? std::string()
+               : " You can start up to " + std::to_string(room) + " sub-agents this turn.";
+  // 1. A field of the orch_turn reply, not a tool.
+  if (const TurnFieldHint* h = turnFieldFor(name)) {
+    std::string out = name + " is not a tool. ";
+    out += (foldName(name) == h->field)
+               ? std::string("It is a field of your orch_turn reply: ")
+               : std::string("Use the ") + h->field + " field of your orch_turn reply: ";
+    out += h->how;
+    if (h->tool && has(h->tool)) out += std::string(", or call ") + spellLike(name, h->tool) + " now";
+    out += ".";
+    if (h->spawns) out += roomText;
+    return out;
+  }
+  // 2. A configured connector: it runs inside sub-agent jobs, never as a tool.
+  const std::string prov = hints_.connectorProvider ? hints_.connectorProvider(name) : std::string();
+  if (!prov.empty()) {
+    const char* label = providerLabel(prov);
+    if (!label)   // "any" or an unknown slug: no provider to name
+      return name + " is a connector attached to sub-agent jobs, not a tool. Spawn a "
+             "sub-agent with the request: a session_ops item {\"op\":\"spawn\",\"task\":"
+             "\"<the request>\"} in your orch_turn reply." + roomText;
+    return name + " is a connector attached to " + label + " sub-agent jobs, not a tool. "
+           "Spawn a " + prov + " job with the request: a session_ops item {\"op\":\"spawn\","
+           "\"provider\":\"" + prov + "\",\"task\":\"<the request>\"} in your orch_turn reply." +
+           roomText;
+  }
+  // 3. Anything else: name what IS callable (bounded).
+  return "unknown tool: " + name + ". " + callableNamesText(name, who);
 }
 
 namespace {

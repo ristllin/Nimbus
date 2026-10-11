@@ -249,6 +249,15 @@ bool noteMistralWorkspaceProbe(MistralWorkspace& ws, const char* body);
 // True for a Mistral Studio connector: prov=mistral, kind=connector.
 bool isMistralStudioConnector(const ConnectorInfo& c);
 
+// The provider that runs an ENABLED connector a model referred to by `name` - its
+// device name, catalog type, Mistral workspace id (gcal -> google_calendar) or
+// connector id, with case and '.'/'-' folded - for the unknown-tool recovery text
+// (CUM-538: a Mistral head called `gcal` as a tool). Returns the entry's prov
+// ("mistral", "openai", "anthropic", or "any"); "" when no enabled, provider-run
+// connector matches. A device-dialed MCP server is skipped: its tools are
+// registered on the device itself, so the callable-tool list is the right answer.
+std::string connectorProviderForName(const std::vector<ConnectorInfo>& cs, const std::string& name);
+
 // What the workspace answer says about one connector (NotApplicable unless it is a
 // Mistral Studio connector). Matches on mistralConnectorId, the id the wire sends.
 ConnectorInfo::Workspace mistralWorkspaceState(const ConnectorInfo& c, const MistralWorkspace& ws);

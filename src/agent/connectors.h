@@ -88,6 +88,12 @@ uint32_t mistralProbeGeneration();
 // portable parser (no Info[] array).
 bool wantsMistralWorkspaceProbe();
 
+// The provider slug running the enabled connector a model called by `name` as if
+// it were a tool ("gcal" -> "mistral"; "" = no such connector). Feeds the
+// unknown-tool recovery text (CUM-538); parses the blob only when called, so it
+// costs nothing on the normal tool path.
+std::string providerForName(const std::string& name);
+
 // The honest credential state for one connector (-1 n/a builtin, 1 present / listed
 // in the Mistral workspace, 0 mint failed, 2 missing / not listed / workspace not
 // checked yet). One source of truth for the model catalog, the capability scope,

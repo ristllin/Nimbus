@@ -548,6 +548,29 @@ bool isMistralStudioConnector(const ConnectorInfo& c) {
   return c.prov == "mistral" && c.kind == "connector";
 }
 
+namespace {
+// Lowercase with '.', '-' and ' ' folded to '_' (Google-Calendar == google_calendar).
+std::string foldId(const std::string& s) {
+  std::string out = lowerStr(s);
+  for (char& ch : out)
+    if (ch == '.' || ch == '-' || ch == ' ') ch = '_';
+  return out;
+}
+}  // namespace
+
+std::string connectorProviderForName(const std::vector<ConnectorInfo>& cs, const std::string& name) {
+  const std::string want = foldId(name);
+  if (want.empty()) return "";
+  for (const ConnectorInfo& c : cs) {
+    if (!c.enabled || c.deviceDialed) continue;
+    const std::string ids[] = {c.name, c.type, c.connectorId,
+                               c.prov == "mistral" ? mistralConnectorId(c) : std::string()};
+    for (const std::string& id : ids)
+      if (!id.empty() && foldId(id) == want) return c.prov.empty() ? std::string("any") : c.prov;
+  }
+  return "";
+}
+
 ConnectorInfo::Workspace mistralWorkspaceState(const ConnectorInfo& c, const MistralWorkspace& ws) {
   using W = ConnectorInfo::Workspace;
   if (!isMistralStudioConnector(c)) return W::NotApplicable;

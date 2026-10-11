@@ -217,6 +217,33 @@ automatic turn lets you spawn the next, so a run can work through dozens. So a
 turn emits one spawn op per unit of work **up to what `[SPAWN CAPACITY]` allows**,
 and carries a larger fan-out across waves rather than silently dropping work.
 
+## When a model calls a field as a tool
+
+Some heads (seen on Mistral) call a reply field such as `session_ops`, or a
+connector such as `gcal`, as if it were a live tool. The registry
+(`ToolRegistry::unknownToolText`, `lib/core/src/orch_tool_registry.cpp`) answers
+an unknown name with recovery text instead of a bare error, in this order:
+
+1. **A field of this contract** (every `ORCH_SCHEMA_BODY` property, plus the
+   retired `spawn` / `await` and the aliases `session_spawn`, `session_tell`,
+   `session_poll`). The text says the name is not a tool but a field of the
+   orch_turn reply, and how to fill it (for `session_ops`: add a
+   `{"op":"spawn","provider":...,"task":...}` item and finish the turn).
+   Spawn-type names add the live `[SPAWN CAPACITY]` number ("You can start up to
+   6 sub-agents this turn"), computed by the same `spawnRoomFor()` as the prompt
+   line, so the two can never disagree. A field with a live tool twin offers it
+   (`mem_write` -> `memory_write`).
+2. **A configured connector** (device name, catalog type or Mistral workspace id,
+   case-folded). The text says it is a connector attached to that provider's
+   sub-agent jobs, not a tool, and to spawn a job there with the request.
+3. **Anything else**: `unknown tool: <name>.` plus the names this caller can call,
+   in the spelling it used (`memory_write` for the head loop, `memory.write` for an
+   MCP client), bounded to 640 bytes with a `(+N more)` tail.
+
+The text is built per call from static strings; nothing is kept between calls.
+Pinned by `test/test_orch_tools` (`test_unknown_tool_*`, including a walk over
+every schema property so a new field without a hint fails).
+
 ## Persistent scratchpad (response object)
 
 `scratchpad` is a top-level, **nullable object** response field - the model's own

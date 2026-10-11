@@ -240,6 +240,13 @@ bool wantsMistralWorkspaceProbe() {
   return nimbus::orch::wantsMistralWorkspaceProbe(cs);
 }
 
+std::string providerForName(const std::string& name) {
+  String blob = store::connectorsJson();
+  std::vector<nimbus::orch::ConnectorInfo> cs;
+  nimbus::orch::parseConnectorsJson(blob.c_str(), cs, kMaxConnectors);
+  return nimbus::orch::connectorProviderForName(cs, name);
+}
+
 String bearerFor(const Info& c) {
   if (c.tok.length()) return c.tok;          // T2 static token
   if (!c.hasOauth || !c.oauthUrl.length() || !c.oauthRefresh.length()) return "";
