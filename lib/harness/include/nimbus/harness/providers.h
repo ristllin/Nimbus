@@ -117,6 +117,11 @@ struct ProviderDeps {
   // Optional: largest contiguous free INTERNAL block (fragmentation trace for the
   // per-round headloop log - free-vs-largest divergence IS fragmentation).
   std::function<uint32_t()> largestBlock;
+  // Optional: block the calling task for ms (device: vTaskDelay - yields, no new
+  // task). Used to let the internal heap recover before the one same-host resend
+  // of a request the device could not finish sending (CUM-477). Null = no wait:
+  // the resend runs only if the heap is already back past the round floor.
+  std::function<void(uint32_t)> delayMs;
 
   // JsonDocument allocator for the big loop docs (device: PsramJsonAllocator).
   // nullptr = ArduinoJson's default (host tests; also fine on device since
@@ -174,6 +179,19 @@ bool fabricSupports(const std::string& host);
 // to the next host in `hostList` (bounded ≤2 switches), re-running the SAME
 // round - executed results ride the transcript, nothing re-dispatches. `notify`
 // fires once per switch (fromHost, toHost).
+// CUM-477: wrap a loop step with ONE same-host resend for a request the device
+// could not finish SENDING (a short head/body write - the provider never saw it,
+// so the resend duplicates nothing). Under heap pressure (free internal heap
+// below cfg.roundMinHeap, the largest block below cfg.roundMinLargest, or the
+// transport's "low memory" tag) it first waits, bounded, for the heap to recover
+// past that floor; if it does not, the step fails with "low memory: ..." so the
+// owner hears the device ran out of working memory, not "check the connection".
+// The per-host loops (runOaiLoop/runAntLoop/runMisLoop - the Cumulo router head
+// runs these, never the fabric) use it; the fabric keeps its own same-host retry.
+nimbus::orch::HeadStepFn resendUnsentOnce(const ProviderDeps& pd,
+                                          const nimbus::orch::HeadLoopConfig& cfg,
+                                          nimbus::orch::HeadStepFn inner, const char* who);
+
 bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostList,
                    const std::string& instructions, const std::string& inputs,
                    std::string& outJson, std::string& err, const HeadTools& ht,

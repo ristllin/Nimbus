@@ -1273,6 +1273,9 @@ static TurnEngine::Deps buildTurnDeps() {
     // regardless of the host arg (applyRouter then swaps in Bearer cumuloKey).
     pd.key       = [](const char*) { return std::string(store::cumuloKey().c_str()); };
     pd.orchModel = [model](const char*) { return model; };
+    // CUM-477: the router loop's one resend of an unsent request may wait (bounded)
+    // for the internal heap to recover - on THIS task, no new task.
+    pd.delayMs   = [](uint32_t ms) { vTaskDelay(pdMS_TO_TICKS(ms)); };
     // Per-route tool advertisement (item 2): a cumulo head advertises provider
     // BUILT-IN tools only - the account's private connectors stay off the shared
     // router key. attach*Wire with builtinsOnly=true does the filtering.

@@ -393,7 +393,9 @@ static bool runMistralLoop(const ProviderDeps& pd, std::string& convId,
   // by construction - no conversation to create or track in loop mode.
   orch::Transcript tr;
   tr.addUser(inputs);
-  orch::HeadStepFn step = misLoopStep(pd, instructions, ht, usage, tr);
+  // CUM-477: one same-host resend of a request that never left (see openai.cpp).
+  orch::HeadStepFn step =
+      resendUnsentOnce(pd, ht.cfg, misLoopStep(pd, instructions, ht, usage, tr), "orchTurn(mis-loop)");
 
   orch::HeadLoopHooks hooks;
   hooks.step     = step;

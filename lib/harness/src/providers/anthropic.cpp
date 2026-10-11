@@ -950,7 +950,9 @@ static bool runAntLoop(const ProviderDeps& pd, std::string& convId,
   // complete - the request body is rendered fresh from it every round.
   orch::Transcript tr;
   tr.addUser(inputs);
-  orch::HeadStepFn step = antLoopStep(pd, instructions, ht, usage, tr);
+  // CUM-477: one same-host resend of a request that never left (see openai.cpp).
+  orch::HeadStepFn step =
+      resendUnsentOnce(pd, ht.cfg, antLoopStep(pd, instructions, ht, usage, tr), "orchTurn(ant-loop)");
 
   orch::HeadLoopHooks hooks;
   hooks.step     = step;

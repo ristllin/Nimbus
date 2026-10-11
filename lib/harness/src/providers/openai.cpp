@@ -523,7 +523,10 @@ static bool runOaiLoop(const ProviderDeps& pd, std::string& convId,
   // by construction - no previous_response_id, no store, no chain to poison.
   orch::Transcript tr;
   tr.addUser(inputs);
-  orch::HeadStepFn step = oaiLoopStep(pd, instructions, ht, usage, tr);
+  // CUM-477: a request the device could not finish sending is resent once on the
+  // same host after the heap recovers (the Cumulo router head runs this loop).
+  orch::HeadStepFn step =
+      resendUnsentOnce(pd, ht.cfg, oaiLoopStep(pd, instructions, ht, usage, tr), "orchTurn(oai-loop)");
 
   orch::HeadLoopHooks hooks;
   hooks.step     = step;

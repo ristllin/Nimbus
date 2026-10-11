@@ -3189,7 +3189,11 @@ the background floor above the interactive one.
 and carries the churn. If turns are deferring ("low on working memory") while
 PSRAM is free, move more internal churn to PSRAM (lower the spill threshold)
 rather than raising the floor. A turn that still runs out of memory fails soft:
-an honest low-memory reply, no restart.)NIMBUSDOC"},
+an honest low-memory reply ("the device ran out of working memory for this
+request; try a shorter question or wait a minute"), no restart. On the Cumulo
+router head, a request the device could not finish sending is sent once more,
+on the same router, after the heap recovers past the round floor (a bounded wait
+of up to 3 s); only if it does not recover does the turn end with that reply.)NIMBUSDOC"},
   {"memory#1-the-two-pools-read-this-before-touching-heap-floors-levers-to-free-internal-sram-biggest-first-verify-on-device", "1. The two pools (read this before touching heap floors) - Levers to free internal SRAM (biggest first, verify on-device)",
    R"NIMBUSDOC(1. **Route Wi-Fi/lwIP buffers to PSRAM** (`CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP`,
    Wi-Fi static-buffer counts) - potentially the largest single win; needs an

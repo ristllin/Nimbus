@@ -1,6 +1,7 @@
 #include "loop_common.h"
 
 #include "nimbus/harness/log.h"
+#include "wire.h"   // wire::lastExchange - did the failed request ever leave the device
 #include "nimbus/orch/head_loop.h"
 #include "nimbus/orch/transcript.h"
 
@@ -16,6 +17,62 @@ namespace orch = nimbus::orch;
 // truncates a real failover ladder mid-switch.
 bool fabricSupports(const std::string& host) {
   return host == "anthropic" || host == "openai" || host == "mistral";
+}
+
+// ---- CUM-477: one same-host resend for a request that never left -------------
+
+namespace {
+// How long the turn task may wait for the internal heap to come back after a short
+// write (the failed connection's buffers are already freed; lwIP gives the rest
+// back within a few hundred ms) - bounded so a starved device fails honestly.
+constexpr uint32_t kHeapRecoverMs = 3000;
+constexpr uint32_t kHeapPollMs = 100;
+
+bool heapBelowFloor(const ProviderDeps& pd, const orch::HeadLoopConfig& cfg) {
+  if (cfg.roundMinHeap && pd.freeHeap && pd.freeHeap() < cfg.roundMinHeap) return true;
+  return cfg.roundMinLargest && pd.largestBlock && pd.largestBlock() < cfg.roundMinLargest;
+}
+
+// True once the heap is back past the round floor, waiting (bounded) when a delay
+// seam exists. A transport "low memory" tag gets one settle pause even when the
+// totals look fine at this instant.
+bool heapRecovered(const ProviderDeps& pd, const orch::HeadLoopConfig& cfg, bool taggedLow) {
+  if (taggedLow && pd.delayMs) pd.delayMs(kHeapPollMs);
+  for (uint32_t waited = 0; heapBelowFloor(pd, cfg); waited += kHeapPollMs) {
+    if (!pd.delayMs || waited >= kHeapRecoverMs) return false;
+    pd.delayMs(kHeapPollMs);
+  }
+  return true;
+}
+
+// The error for a request that still could not be sent: memory when the heap is
+// short (or the transport said so), else the plain network failure it was.
+void markUnsent(orch::HeadStep& sr, const ProviderDeps& pd, const orch::HeadLoopConfig& cfg) {
+  if (heapBelowFloor(pd, cfg) || wire::lastExchange().lowMem)
+    sr.error = "low memory: the device could not send the request";
+}
+}  // namespace
+
+orch::HeadStepFn resendUnsentOnce(const ProviderDeps& pd, const orch::HeadLoopConfig& cfg,
+                                  orch::HeadStepFn inner, const char* who) {
+  return [pd, cfg, inner, who](bool allowTools, const std::vector<orch::HeadToolResult>& prior,
+                               uint32_t budgetMs, const std::string& capReason) -> orch::HeadStep {
+    orch::HeadStep sr = inner(allowTools, prior, budgetMs, capReason);
+    if (sr.ok || !wire::lastExchange().unsent) return sr;
+    const unsigned heapAt = pd.freeHeap ? (unsigned)pd.freeHeap() : 0u;
+    if (!heapRecovered(pd, cfg, wire::lastExchange().lowMem)) {
+      hlog::logf("%s: request not sent and the heap did not recover (heap %u) - no resend",
+                 who, heapAt);
+      sr.error = "low memory: the device could not send the request";
+      return sr;
+    }
+    hlog::logf("%s: request not sent (heap %u) - one same-host resend after the heap "
+               "recovered (heap %u)",
+               who, heapAt, pd.freeHeap ? (unsigned)pd.freeHeap() : 0u);
+    orch::HeadStep sr2 = inner(allowTools, prior, budgetMs, capReason);
+    if (!sr2.ok && wire::lastExchange().unsent) markUnsent(sr2, pd, cfg);
+    return sr2;
+  };
 }
 
 bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostList,

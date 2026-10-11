@@ -639,6 +639,95 @@ static void test_sub_poll_no_annotations_no_artifacts() {
   TEST_ASSERT_EQUAL(0, env.artifactCount);
 }
 
+// ---- CUM-477: the router loop resends a request the device never finished ------
+// Bench (nimbus-light, Cumulo head, C2): round 1's request hit "short body write
+// 0/66852 ... heap=9940"; the router loop (orchTurnOpenAI's own loop - the Cumulo
+// head never runs the fabric) had no step retry, the turn failed after a tool had
+// run, and the owner read "the provider could not be reached (check the
+// connection)". A fake transport fails the round-1 write under heap pressure.
+
+struct RouterRig {
+  FakeProviderDeps d;
+  FakeProviderDeps::ToolRig rig;
+  agent::providers::ProviderDeps pd;
+  bool recovered = false;
+  int delays = 0;
+  uint32_t delayed = 0;
+  explicit RouterRig(bool recovers) {
+    harness_test::Exchange r0;
+    r0.expectHost = "app.cumulo-nimbus.ai";
+    r0.expectPathContains = "/router/openai/v1/responses";
+    r0.body = toolCallBody("resp_1");
+    d.http.script.push_back(r0);
+    harness_test::Exchange unsent;   // the round-1 write that never left the device
+    unsent.status = 0;
+    unsent.err = "request body truncated (0/66852 bytes written)";
+    d.http.script.push_back(unsent);
+    harness_test::Exchange r1 = r0;
+    r1.body = finalCallBody("resp_2");
+    d.http.script.push_back(r1);
+    pd = d.contract();
+    pd.routerBase = [] { return std::string("https://app.cumulo-nimbus.ai"); };
+    pd.routerKey  = [] { return std::string("cumulo_sk_test"); };
+    // Free heap: healthy until the failed write, then 9940 (the bench number)
+    // until the heap recovers (the first wait, when `recovers`).
+    pd.freeHeap = [this] { return (d.http.idx == 2 && !recovered) ? 9940u : 100000u; };
+    pd.delayMs = [this, recovers](uint32_t ms) {
+      ++delays;
+      delayed += ms;
+      if (recovers) recovered = true;
+    };
+    d.fillTools(rig);
+    rig.ht.cfg.roundMinHeap = 12000;   // ORCH_LOOP_MIN_HEAP on the device
+  }
+};
+
+static void test_cum477_router_loop_resends_after_heap_recovers() {
+  RouterRig r(/*recovers=*/true);
+  std::string conv, out, err;
+  const bool ok = providers::orchTurnOpenAI(r.pd, conv, "SYS", "USER", out, err, &r.rig.ht, nullptr);
+  TEST_ASSERT_TRUE_MESSAGE(ok, err.c_str());
+  TEST_ASSERT_EQUAL(3, (int)r.d.http.seen.size());   // round 0, the unsent round 1, its resend
+  TEST_ASSERT_EQUAL_STRING(reqBody(r.d, 1).c_str(), reqBody(r.d, 2).c_str());   // same request
+  TEST_ASSERT_EQUAL(1, (int)r.rig.dispatched.size());   // the round-0 tool ran ONCE
+  TEST_ASSERT_TRUE(r.delays >= 1);                       // it waited for the heap, on this task
+  TEST_ASSERT_TRUE(LogCapture::contains("orchTurn(oai-loop): request not sent (heap 9940) - one "
+                                        "same-host resend after the heap recovered"));
+  TEST_ASSERT_EQUAL_STRING("{\"reply\":\"done\"}", out.c_str());
+}
+
+// The heap never comes back: no resend (it would fail the same way), a bounded
+// wait, and an error the engine reads as low memory - never "network".
+static void test_cum477_no_recovery_fails_as_low_memory_not_network() {
+  RouterRig r(/*recovers=*/false);
+  r.d.http.script.pop_back();   // a resend would be unscripted: the test fails loudly
+  std::string conv, out, err;
+  TEST_ASSERT_FALSE(providers::orchTurnOpenAI(r.pd, conv, "SYS", "USER", out, err, &r.rig.ht, nullptr));
+  TEST_ASSERT_EQUAL(2, (int)r.d.http.seen.size());
+  TEST_ASSERT_TRUE(err.rfind("low memory", 0) == 0);
+  TEST_ASSERT_TRUE(r.delayed >= 3000u && r.delayed <= 3200u);   // bounded wait
+  TEST_ASSERT_TRUE(LogCapture::contains("request not sent and the heap did not recover"));
+}
+
+// Counter-tests in the dimensions the resend now reads: a request that WAS sent
+// and got no answer is never resent (the provider may have acted on it), and an
+// unsent request with a healthy heap is resent at once, without waiting.
+static void test_cum477_only_unsent_requests_are_resent() {
+  RouterRig sent(/*recovers=*/true);
+  sent.d.http.script[1].err = "no response";
+  sent.d.http.script.pop_back();
+  std::string conv, out, err;
+  TEST_ASSERT_FALSE(providers::orchTurnOpenAI(sent.pd, conv, "S", "U", out, err, &sent.rig.ht, nullptr));
+  TEST_ASSERT_EQUAL(2, (int)sent.d.http.seen.size());
+  TEST_ASSERT_EQUAL_STRING("network", err.c_str());
+
+  RouterRig healthy(/*recovers=*/true);
+  healthy.pd.freeHeap = [] { return 100000u; };
+  TEST_ASSERT_TRUE(providers::orchTurnOpenAI(healthy.pd, conv, "S", "U", out, err, &healthy.rig.ht, nullptr));
+  TEST_ASSERT_EQUAL(3, (int)healthy.d.http.seen.size());
+  TEST_ASSERT_EQUAL(0, healthy.delays);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_single_shot_request_shape);
@@ -664,6 +753,9 @@ int main(int, char**) {
   RUN_TEST(test_sub_poll_captures_container_file_citation);
   RUN_TEST(test_over_cap_repeat_citations_count_once);
   RUN_TEST(test_sub_poll_no_annotations_no_artifacts);
+  RUN_TEST(test_cum477_router_loop_resends_after_heap_recovers);
+  RUN_TEST(test_cum477_no_recovery_fails_as_low_memory_not_network);
+  RUN_TEST(test_cum477_only_unsent_requests_are_resent);
   UNITY_END();
   return 0;
 }

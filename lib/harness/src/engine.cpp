@@ -847,9 +847,11 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     // CUM-404: a memory-pressure failure is NOT a provider fault. Degrade with an
     // honest low-memory reply instead of a transport-error cause that reads as a
     // wrong-provider fallback. (Device copy: no em dash, no space-hyphen-space.)
+    // CUM-477: the copy names what happened and the two things that help.
     if (isLowMem(err)) {
-      deliver(chatId, "Low on working memory right now, so that couldn't finish. "
-                      "Nothing is still running; try again in a few seconds.");
+      deliver(chatId, "That didn't finish - the device ran out of working memory for this "
+                      "request. Nothing is still running; try a shorter question or wait a "
+                      "minute.");
       fireTurnEnd(false, 0);
       return false;
     }

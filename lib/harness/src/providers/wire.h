@@ -27,6 +27,20 @@ namespace wire {
 // `rateLimitHeaders` (optional): on an error response, the provider's
 // x-ratelimit-* headers land there (see HttpRequest::errHeaders) - the quota
 // window a 429 refused on.
+// What the most recent exchange()'s transport failure looked like (CUM-477). The
+// turn path is single-task by design (AGENTS.md: no on-device concurrency), so one
+// static record read right after a failed step is exact. `unsent`: the request
+// never fully left the device (short head/body write) - a resend duplicates
+// nothing. `lowMem`: the transport tagged the failure as memory pressure.
+struct LastExchange {
+  bool unsent = false;
+  bool lowMem = false;
+};
+inline LastExchange& lastExchange() {
+  static LastExchange s;
+  return s;
+}
+
 // `transportErr` (optional): on a transport failure (status 0) the transport's own
 // reason lands there ("no response", "connect failed", "request body truncated
 // ..."), so a caller can tell a provider that never answered from one it never
@@ -61,6 +75,9 @@ inline int exchange(const ProviderDeps& pd, const char* host, uint16_t port, boo
   std::string terr;
   int status = pd.http->execJson(req, doc, filter, terr);
   if (status == 0 && transportErr) *transportErr = terr;
+  lastExchange().unsent = status == 0 && (terr.find("body truncated") != std::string::npos ||
+                                          terr.find("head write failed") != std::string::npos);
+  lastExchange().lowMem = status == 0 && terr.find("low memory") != std::string::npos;
   if (status == 0 && !terr.empty())
     hlog::logf("provider: transport fail %s%s: %s", host, path.c_str(), terr.c_str());
   // A response that arrived but did not parse leaves `doc` holding whatever was

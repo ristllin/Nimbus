@@ -391,8 +391,8 @@ static void test_oom_transport_error_yields_low_memory_reply_no_failover() {
   TEST_ASSERT_EQUAL_STRING("anthropic", r.attempts[0].host.c_str());
   // Honest low-memory reply, not a transport-error "That didn't finish" cause, and
   // no "switching to <provider>" failover notice.
-  TEST_ASSERT_TRUE(r.anyDelivered("Low on working memory right now"));
-  TEST_ASSERT_FALSE(r.anyDelivered("That didn't finish"));
+  TEST_ASSERT_TRUE(r.anyDelivered("ran out of working memory for this request"));
+  TEST_ASSERT_FALSE(r.anyDelivered("could not be reached"));
   TEST_ASSERT_FALSE(r.anyDelivered("switching to"));
 }
 
@@ -415,7 +415,7 @@ static void test_network_error_still_fails_over_not_misclassified_oom() {
   TEST_ASSERT_TRUE(r.anyDelivered("switching to openai"));
   TEST_ASSERT_EQUAL_STRING("hello there", r.lastText().c_str());
   // NOT misreported as a low-memory failure.
-  TEST_ASSERT_FALSE(r.anyDelivered("Low on working memory"));
+  TEST_ASSERT_FALSE(r.anyDelivered("working memory"));
 }
 
 // ---- (1) happy turn ---------------------------------------------------------
@@ -527,6 +527,23 @@ static void test_failover_walks_priority_with_owner_notice() {
   TEST_ASSERT_EQUAL_STRING("hello there", r.lastText().c_str());
   TEST_ASSERT_EQUAL_STRING("c1", agent::convMapGet(r.cfg.convId, "1001", "openai").c_str());
   TEST_ASSERT_EQUAL_STRING("openai", r.cfg.recorded[0].host.c_str());
+}
+
+// ---- CUM-477: a send the router loop could not finish is a memory failure ----
+// Bench C2: a tool had run, then round 1 could not be sent (heap 9940); the owner
+// read "the provider could not be reached (check the connection)". The loop now
+// reports "low memory: ..." and the reply names the real cause and the next step.
+static void test_cum477_unsent_request_reply_blames_memory_not_connection() {
+  Rig r;
+  r.scripts["anthropic"] = {{false, "", "low memory: the device could not send the request",
+                             1 /*a tool ran first*/, "", 0, 0}};
+  TEST_ASSERT_FALSE(r.eng->runTurn("inputs", "1001", ""));
+  TEST_ASSERT_EQUAL(1, (int)r.attempts.size());
+  TEST_ASSERT_EQUAL_STRING(
+      "That didn't finish - the device ran out of working memory for this request. Nothing "
+      "is still running; try a shorter question or wait a minute.",
+      r.lastText().c_str());
+  TEST_ASSERT_FALSE(r.anyDelivered("check the connection"));
 }
 
 // ---- CUM-544: a timeout fails over at once, and the notice says why ---------
@@ -1756,6 +1773,7 @@ int main(int, char**) {
   RUN_TEST(test_recall_injected_for_user_text_skipped_for_synthesis);
   RUN_TEST(test_same_host_fresh_conv_retry);
   RUN_TEST(test_failover_walks_priority_with_owner_notice);
+  RUN_TEST(test_cum477_unsent_request_reply_blames_memory_not_connection);
   RUN_TEST(test_cum544_timeout_fails_over_without_same_host_retry);
   RUN_TEST(test_cum544_all_timeouts_say_no_answer_in_time);
   RUN_TEST(test_no_retry_after_tool_dispatched);
