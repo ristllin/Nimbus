@@ -68,6 +68,12 @@ struct ProviderDeps {
   // "/router/openai/v1" (-> /router/openai/v1/chat/completions) and the Z.ai head
   // sets "/api/paas/v4" (-> /api/paas/v4/chat/completions, which has no /v1).
   std::function<std::string()> customPathPrefix;
+  // Optional structured-output mode for the custom HEAD (orchTurnCustom).
+  // Unset/"" = response_format json_schema (strict) carrying the orch schema;
+  // "object" = response_format {type:"json_object"} plus the JSON-only nudge,
+  // for backends that answer 200 but IGNORE json_schema (Z.ai GLM answered in
+  // Markdown, 2 of 2 live turns, while json_object returned valid turns - CUM-495).
+  std::function<std::string()> customJsonMode;
 
   // Cumulo router HEAD override (CUM-242 tool loop). When routerBase() is
   // non-empty, the three native head-turn wire helpers (antRequest / the OpenAI
@@ -172,8 +178,11 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
 std::string mistralCallId(const std::string& id);
 // NEW (Stage H): the head on a custom/LAN endpoint - ONE single-shot structured
 // turn over the OpenAI chat-completions dialect (response_format json_schema
-// when the backend accepts it; on a 400 it retries once schema-less with a
-// JSON-only nudge, leaning on the engine's tolerant parseTurn + salvage).
+// when the backend accepts it, or json_object when pd.customJsonMode says so;
+// on a 400 it retries once schema-less with a JSON-only nudge, leaning on the
+// engine's lenient parseHeadReply + salvage). Each request may take up to the
+// head budget (120 s, same as the OpenAI/Anthropic heads) - the Z.ai head shares
+// this path, and GLM regularly needs more than 30 s.
 // v1 has NO tool loop (tools ignored); customConv "anthropic" is refused (the
 // head speaks chat-completions only). Registered in orchestrator.cpp ONLY when
 // store::hasCustom().

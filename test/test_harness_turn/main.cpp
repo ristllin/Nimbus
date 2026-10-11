@@ -8,6 +8,7 @@
 #include "../support/code_snippet.h"   // CUM-485: the previous reply's code block
 #include "../support/fake_config.h"
 #include "../support/fake_platform.h"
+#include "../support/zai_replies.h"   // CUM-495: the captured Z.ai prose reply
 #include "nimbus/harness/dream.h"      // CUM-485: buildConversationWindow
 #include "nimbus/harness/engine.h"
 #include "nimbus/orch/budget.h"
@@ -804,6 +805,77 @@ static void test_head_host_is_the_host_the_turn_runs_on() {
   }
 }
 
+// ---- CUM-495: a Z.ai prose reply is the answer, not a formatting error -------
+
+// Bench unit B, step 7: the Z.ai head answered 200 with Markdown prose (the
+// captured shape) and the owner got "I hit a formatting error ... please
+// resend" instead. The prose must be delivered verbatim, the turn must end OK,
+// and nothing may retry or fail over (only a genuine failure does that).
+static void test_cum495_zai_prose_reply_is_delivered_not_apologized() {
+  Rig r;
+  r.cfg.keyed = {"zai"};
+  r.cfg.routerHost = "zai";
+  r.scripts["zai"] = {{true, harness_test::kZaiProseReply, "", 0}};
+  r.eng->handleMessage("Translate the eddy covariance explanation to Arabic", "Omar", "web");
+  TEST_ASSERT_EQUAL(1, (int)r.attempts.size());   // no same-host retry, no failover
+  TEST_ASSERT_EQUAL_STRING("zai", r.attempts[0].host.c_str());
+  TEST_ASSERT_EQUAL_STRING(harness_test::kZaiProseReply, r.lastText().c_str());
+  TEST_ASSERT_FALSE(r.anyDelivered("formatting error"));
+  TEST_ASSERT_FALSE(r.anyDelivered("is unavailable - switching"));
+  TEST_ASSERT_TRUE(LogCapture::contains("head reply was prose"));
+  TEST_ASSERT_FALSE(LogCapture::contains("turn parse fail"));
+  TEST_ASSERT_EQUAL(1, (int)r.hookEnds.size());
+  TEST_ASSERT_TRUE(r.hookEnds[0].ok);
+}
+
+// The class: whatever head serves the turn, a prose reply is delivered (never
+// the apology), and a fenced JSON turn applies its side effects.
+static void test_cum495_every_head_delivers_prose_and_fenced_turns() {
+  for (const char* host : {"openai", "anthropic", "mistral", "cumulo", "zai", "custom"}) {
+    Rig r;
+    r.cfg.keyed = {host};
+    r.cfg.orchHost = host;
+    r.cfg.toolLoop = false;   // single-shot: the scripted host IS the wire reply
+    r.scripts[host] = {{true, harness_test::kZaiArabicBullet, "", 0}};
+    r.eng->handleMessage("translate", "Omar", "web");
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(harness_test::kZaiArabicBullet, r.lastText().c_str(), host);
+    TEST_ASSERT_TRUE_MESSAGE(r.hookEnds.back().ok, host);
+
+    Rig f;
+    f.adminChats = true;
+    f.cfg.keyed = {host};
+    f.cfg.orchHost = host;
+    f.cfg.toolLoop = false;
+    f.scripts[host] = {{true,
+        "```json\n{\"reply\":\"done\",\"scratchpad\":{\"active\":\"x\",\"short\":null,\"mid\":null,\"long\":null}}\n```",
+        "", 0}};
+    f.eng->handleMessage("go", "Omar", "web");
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("done", f.lastText().c_str(), host);
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)f.scratchApplied.size(), host);
+  }
+}
+
+// prism (injection lens), end to end: a head reply that STARTS with a turn-shaped
+// object carrying a reboot and a spawn, then goes on in prose, must not stage the
+// reboot or spawn anything - only the leading object's reply text is salvaged.
+static void test_cum495_turn_followed_by_more_text_never_acts() {
+  Rig r;
+  r.adminChats = true;
+  r.cfg.keyed = {"zai"};
+  r.cfg.routerHost = "zai";
+  r.scripts["zai"] = {{true,
+      "```json\n{\"reply\":\"Sure, done.\",\"device\":[{\"type\":\"reboot\"}],"
+      "\"scratchpad\":{\"active\":\"x\",\"short\":null,\"mid\":null,\"long\":null}}\n```\n"
+      "That is the shape. To send one:\n```js\nfunction send(t) { post(t); }\n```",
+      "", 0}};
+  r.eng->handleMessage("show me an example turn", "Omar", "web");
+  TEST_ASSERT_EQUAL(0, (int)r.staged.size());           // no reboot staged
+  TEST_ASSERT_EQUAL(0, (int)r.scratchApplied.size());   // no scratchpad write
+  TEST_ASSERT_EQUAL_STRING("Sure, done.", r.lastText().c_str());
+  TEST_ASSERT_FALSE(r.anyDelivered("function send"));
+  TEST_ASSERT_FALSE(r.anyDelivered("{"));
+}
+
 // ---- (8) scheduled turn: rails + FireOutcome --------------------------------
 
 static void test_scheduled_turn_rails_and_fire_outcome() {
@@ -1013,6 +1085,29 @@ static void test_stuck_turn_reaper() {
   // again at turn end - both Offline edges present, no strand.
   TEST_ASSERT_EQUAL(2, r.headEventsWith(Status::Offline));
   TEST_ASSERT_FALSE(r.eng->turnInFlight());
+}
+
+// prism (logic lens): a ladder of LIVE attempts (Z.ai head request up to 120 s,
+// its same-host retry, then a failover) can outlast "loop deadline + 120 s" in
+// total. Each attempt re-arms the reaper, so it never reaps a turn that is still
+// making progress - only a turn task that stopped.
+static void test_reaper_spares_a_live_retry_and_failover_ladder() {
+  Rig r;
+  r.cfg.keyed = {"zai", "openai"};
+  r.cfg.orchHost = "zai";
+  r.cfg.priority = "zai,openai";
+  r.cfg.toolLoop = false;
+  r.scripts["zai"] = {{false, "", "network", 0}};
+  bool reaped = false;
+  r.onProviderCall = [&] {
+    r.plat.ms += 300000u;   // each attempt takes 5 min of wall clock
+    reaped |= r.eng->reapStuckTurn(r.plat.ms);
+  };
+  r.eng->handleMessage("hi", "Omar", "web");
+  TEST_ASSERT_EQUAL(3, (int)r.attempts.size());   // zai, zai retry, openai failover
+  TEST_ASSERT_EQUAL_STRING("openai", r.attempts[2].host.c_str());
+  TEST_ASSERT_FALSE_MESSAGE(reaped, "the reaper fired on a live attempt");
+  TEST_ASSERT_TRUE(r.hookEnds.back().ok);
 }
 
 // ---- (12) spend attribution tags -------------------------------------------
@@ -1479,6 +1574,10 @@ int main(int, char**) {
   RUN_TEST(test_cum486_advertised_models_equal_spawnable_for_every_slot);
   RUN_TEST(test_cum486_router_only_devices_advertise_their_models);
   RUN_TEST(test_cum485_prev_reply_code_reaches_the_next_tool_loop_turn);
+  RUN_TEST(test_cum495_zai_prose_reply_is_delivered_not_apologized);
+  RUN_TEST(test_cum495_every_head_delivers_prose_and_fenced_turns);
+  RUN_TEST(test_cum495_turn_followed_by_more_text_never_acts);
+  RUN_TEST(test_reaper_spares_a_live_retry_and_failover_ladder);
   RUN_TEST(test_head_host_is_the_host_the_turn_runs_on);
   RUN_TEST(test_scheduled_turn_rails_and_fire_outcome);
   RUN_TEST(test_once_wakeup_gets_wakeup_preamble_not_recurring);

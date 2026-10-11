@@ -270,5 +270,101 @@ bool parseTurn(const std::string& json, Turn& out, ParseError& err) {
   return true;
 }
 
+namespace {
+const char kSpace[] = " \t\r\n";
+
+// Index of the '}' that closes the JSON object opening at s[b] (a '{'), skipping
+// string contents and escapes; npos when it never closes (truncated reply).
+size_t objectEnd(const std::string& s, size_t b) {
+  int depth = 0;
+  bool inString = false;
+  for (size_t i = b; i < s.size(); ++i) {
+    const char c = s[i];
+    if (inString) {
+      if (c == '\\') ++i;
+      else if (c == '"') inString = false;
+      continue;
+    }
+    if (c == '"') inString = true;
+    else if (c == '{') ++depth;
+    else if (c == '}' && --depth == 0) return i;
+  }
+  return std::string::npos;
+}
+
+// Where a reply's leading JSON object would start: the first non-space byte, or
+// for a reply that opens with a ``` fence, the first non-space byte of its second
+// line. `fenced` reports which. npos when the reply is empty or a one-line fence.
+size_t leadingObjectStart(const std::string& text, bool& fenced) {
+  const size_t b = text.find_first_not_of(kSpace);
+  fenced = b != std::string::npos && text.compare(b, 3, "```") == 0;
+  if (!fenced) return b;
+  const size_t nl = text.find('\n', b);
+  return nl == std::string::npos ? nl : text.find_first_not_of(kSpace, nl);
+}
+
+// Whether the object [ob, oe] is the WHOLE reply: nothing but whitespace after it
+// (bare), or nothing but whitespace and the one closing fence (fenced).
+bool spansWholeReply(const std::string& text, size_t oe, bool fenced) {
+  const size_t next = text.find_first_not_of(kSpace, oe + 1);
+  if (!fenced) return next == std::string::npos;
+  return next != std::string::npos && text.compare(next, 3, "```") == 0 &&
+         text.find_first_not_of(kSpace, next + 3) == std::string::npos;
+}
+
+// A JSON object with a string "reply": the shape of a turn attempt.
+bool turnShaped(const std::string& json) {
+  JsonDocument d;
+  return !deserializeJson(d, json) && d["reply"].is<const char*>();
+}
+
+ReplyShape prose(const std::string& text, Turn& out, ParseError& err) {
+  const size_t b = text.find_first_not_of(kSpace);
+  const size_t e = text.find_last_not_of(kSpace);
+  out = Turn{};
+  out.reply = text.substr(b, e - b + 1);
+  err = ParseError{};
+  return ReplyShape::Prose;
+}
+
+ReplyShape unusable(Turn& out, ParseError& err, const char* why) {
+  out = Turn{};
+  if (err.ok()) {
+    err.code = ParseError::Code::JsonError;
+    err.detail = why;
+  }
+  return ReplyShape::Unusable;
+}
+}  // namespace
+
+std::string leadingJsonObject(const std::string& text, bool* wholeReply) {
+  if (wholeReply) *wholeReply = false;
+  bool fenced = false;
+  const size_t ob = leadingObjectStart(text, fenced);
+  if (ob == std::string::npos || text[ob] != '{') return std::string();
+  const size_t oe = objectEnd(text, ob);
+  if (oe == std::string::npos) return std::string();
+  if (wholeReply) *wholeReply = spansWholeReply(text, oe, fenced);
+  return text.substr(ob, oe - ob + 1);
+}
+
+ReplyShape parseHeadReply(const std::string& text, Turn& out, ParseError& err) {
+  err = ParseError{};
+  if (text.find_first_not_of(kSpace) == std::string::npos)
+    return unusable(out, err, "empty reply");
+  bool fenced = false;
+  const size_t ob = leadingObjectStart(text, fenced);
+  if (ob == std::string::npos || text[ob] != '{') return prose(text, out, err);
+  bool whole = false;
+  const std::string obj = leadingJsonObject(text, &whole);
+  if (obj.empty()) return unusable(out, err, "truncated JSON object");
+  if (whole)
+    return parseTurn(obj, out, err) ? ReplyShape::Turn : unusable(out, err, "not a turn");
+  // An object followed by more text: a turn attempt with trailing chatter is
+  // salvaged (reply/ask only); a JSON example that opens a prose answer is prose.
+  if (turnShaped(obj)) return unusable(out, err, "text after the turn object");
+  return prose(text, out, err);
+}
+
 }  // namespace orch
 }  // namespace nimbus

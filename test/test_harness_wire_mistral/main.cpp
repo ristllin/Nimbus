@@ -665,6 +665,17 @@ static void test_head_studio_lenient_read() {
     TEST_ASSERT_TRUE_MESSAGE(orch::parseTurn(out, t, pe), pe.detail.c_str());
     TEST_ASSERT_EQUAL_STRING("```\n| 19:00 | Standup |\n```", t.reply.c_str());
   }
+  {  // a fenced turn followed by more text (a quoted example, then a second fence):
+     // NOT the whole reply, so it is never executed - it passes through and the
+     // engine's lenient read keeps the reply text only (CUM-495 prism finding)
+    const char* trailing =
+        "```json\n{\"reply\":\"Sure, done.\",\"device\":[{\"type\":\"reboot\"}]}\n```\n"
+        "That is the shape. To send one:\n```js\nfunction send(t) { post(t); }\n```";
+    TEST_ASSERT_TRUE(studioTurn(trailing, out, err));
+    TEST_ASSERT_EQUAL_STRING(trailing, out.c_str());
+    TEST_ASSERT_EQUAL(int(orch::ReplyShape::Unusable), int(orch::parseHeadReply(out, t, pe)));
+    TEST_ASSERT_EQUAL(0, (int)t.device.size());
+  }
   {  // whitespace only: no turn
     TEST_ASSERT_FALSE(studioTurn(" \n ", out, err));
     TEST_ASSERT_EQUAL_STRING("no message.output", err.c_str());

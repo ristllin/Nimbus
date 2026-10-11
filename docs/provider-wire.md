@@ -35,11 +35,18 @@ channel:
 | **OpenAI** (Responses API) | `text.format` `json_schema`, `strict:true` | `orch_turn` function tool, `strict:true` parameters | **Yes**, both channels - the model cannot emit an out-of-schema `orch_turn` |
 | **Anthropic** (Messages API) | forced tool-use, `tool_choice:{type:"tool",name:"orch_turn"}` | `orch_turn` offered alongside the registry tools (`tool_choice:auto`) | **No** - the strict-grammar budget rejects a schema this size, so descriptions are stripped and the schema is advisory; the device parser + validator are the enforcement |
 | **Mistral** | Conversations API, `response_format.json_schema`, `strict:true` | chat/completions, `orch_turn` function tool (no `strict` flag) | single-shot **yes**; loop **advisory** - the device parser + validator enforce it |
+| **Z.ai** (direct, or Cumulo with the zai upstream) | chat/completions, `response_format:{type:"json_object"}` + a JSON-only instruction | none (single-shot head) | **No** - Z.ai answers `json_schema` requests with plain Markdown, so the head asks for `json_object`; a reply that is still prose is delivered as the reply (nothing else rides it) |
+| **Custom** (LAN / proxy) | chat/completions, `response_format.json_schema`, `strict:true` (schema-less retry on 400) | none (single-shot head) | when the backend supports it |
 
 **"Strict at the wire, lenient at the parser."** Regardless of provider,
 `parseTurn` (`lib/core/src/orch_turn.cpp`) is tolerant - unknown fields are
 ignored, malformed items are dropped individually, string caps are applied on
-copy. And the portable device-action validator
+copy. The engine reads every head reply through `parseHeadReply`: a reply that
+IS one JSON object (bare, or the whole reply in one fence) is the turn; a reply
+that opens like JSON but is not a turn goes to the salvage path, so raw wire
+JSON never reaches a person; any other reply is prose and is delivered as the
+reply alone - prose (even prose quoting JSON) never becomes device actions,
+memory writes or spawns. And the portable device-action validator
 (`orch_device_actions.cpp`) re-checks EVERY device action - including the
 protected-key refusal (API keys, provider routing) - no matter what the wire
 promised. A provider bug can degrade a turn; it cannot make the device execute
@@ -314,7 +321,9 @@ Notes, all deliberate:
   for anything else.
 - The head speaks single-shot chat-completions with the strict orch_turn
   JSON schema (schema-less retry on 400); there is no mid-turn tool loop on
-  the custom backend, and requests time out at 30 s.
+  the custom backend. A head request may take up to 120 s (the same ceiling
+  as the OpenAI and Anthropic heads; the Z.ai head shares this path and GLM
+  regularly needs 40-50 s); a sub-agent request times out at 30 s.
 - Firmware before v4.1.6 needs "Mid-task provider switch" (midFail) turned OFF
   while the HEAD runs on custom - older builds routed loop turns into the
   cloud-only fabric and failed before sending anything.

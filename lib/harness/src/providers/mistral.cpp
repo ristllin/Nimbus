@@ -7,6 +7,7 @@
 #include "nimbus/harness/rate_limit.h"  // 429 -> the quota window that refused (CUM-460)
 #include "nimbus/orch/head_loop.h"    // runHeadLoop - the portable ReAct controller
 #include "nimbus/orch/orch_schema.h"  // ORCH_SCHEMA_BODY - the wire contract
+#include "nimbus/orch/turn.h"         // leadingJsonObject - the shared whole-reply rule
 #include "nimbus/orch/token_usage_json.h"  // tokenUsageFromJson - per-round usage
 #include "nimbus/orch/transcript.h"   // Transcript - the canonical turn record (Stage 2)
 #include "wire.h"
@@ -481,22 +482,6 @@ static bool mistralHeadCarriesStudio(const ProviderDeps& pd, const std::string& 
 
 static const char kSpace[] = " \t\r\n";
 
-// Whether the WHOLE reply is one JSON object: the trimmed text, or the inside of
-// one fenced block (```json ... ```). [b, e] is then the object.
-static bool wholeJsonObject(const std::string& text, size_t& b, size_t& e) {
-  b = text.find_first_not_of(kSpace);
-  e = text.find_last_not_of(kSpace);
-  if (b == std::string::npos) return false;
-  if (text.compare(b, 3, "```") == 0) {
-    const size_t nl = text.find('\n', b);
-    if (nl == std::string::npos || e < nl + 3 || text.compare(e - 2, 3, "```") != 0) return false;
-    b = text.find_first_not_of(kSpace, nl);
-    e = text.find_last_not_of(kSpace, e - 3);
-    if (b == std::string::npos || e == std::string::npos || e < b) return false;
-  }
-  return text[b] == '{' && text[e] == '}';
-}
-
 // Whether the reply (first non-space at `b`) opens like a JSON object: a brace, or
 // a fence whose first line of content starts with one. A fenced table or code is
 // prose.
@@ -508,8 +493,9 @@ static bool opensLikeJsonObject(const std::string& text, size_t b) {
   return c != std::string::npos && text[c] == '{';
 }
 
-// `json` as an orch_turn (the turn parser's required strings made present), or ""
-// when it does not parse to an object with a string reply.
+// `json` as an orch_turn with "memory"/"ask" filled in (no longer required by the
+// parser since CUM-483, kept for a stable wire shape), or "" when it does not
+// parse to an object with a string reply.
 static std::string mistralTurnFields(const ProviderDeps& pd, const std::string& json) {
   JsonDocument d = makeDoc(pd);
   if (deserializeJson(d, json, DeserializationOption::NestingLimit(16))) return "";
@@ -527,9 +513,14 @@ static std::string mistralTurnFields(const ProviderDeps& pd, const std::string& 
 // body, an issue), and a payload the model merely quotes must never become device
 // actions, memory writes or spawns.
 static std::string mistralLenientTurn(const ProviderDeps& pd, const std::string& text) {
-  size_t ob = 0, oe = 0;
-  if (wholeJsonObject(text, ob, oe)) {
-    const std::string turn = mistralTurnFields(pd, text.substr(ob, oe - ob + 1));
+  // The WHOLE reply must be exactly one object (bare or one fence) - matched to its
+  // closing brace, because the JSON parser stops after the first value: a reply
+  // that merely STARTS with a turn and goes on (a quoted example, a second fence)
+  // is not executed (shared rule: nimbus::orch::leadingJsonObject, CUM-495).
+  bool whole = false;
+  const std::string obj = nimbus::orch::leadingJsonObject(text, &whole);
+  if (whole) {
+    const std::string turn = mistralTurnFields(pd, obj);
     return turn.empty() ? text : turn;
   }
   const size_t b = text.find_first_not_of(kSpace);

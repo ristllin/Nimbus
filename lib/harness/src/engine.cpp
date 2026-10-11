@@ -772,6 +772,10 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   if (!ok && !fabricOn && *loopDispatched == 0 && !isLowMem(err)) {   // one same-host retry on a fresh conversation
     hlog::logf("orchestrator: turn err (%s) -> fresh conv retry", err.c_str());
     if (d_.platform.delayMs) d_.platform.delayMs(400);
+    // Each attempt re-arms the stuck-turn reaper: it exists to spot a DEAD turn
+    // task, and a ladder of live attempts (a head request may take 120 s since
+    // CUM-495, then a fallback runs its own loop) must not read as one.
+    turnStartMs_ = nowMs();
     convId = ""; ok = runTurnHost(host, convId);
   }
   if (!ok && !fabricOn && *loopDispatched == 0 && !isLowMem(err)) {   // unified fallback ladder (CUM-41): up to 2 alternates
@@ -785,6 +789,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
               fb + " (your recent messages carry over; the provider-side thread restarts).");
       // Record the switch as a model-facing context note for the next turn.
       pendingFallbackNote_ = orch::fallbackNote(host, "", fb, "", ec);
+      turnStartMs_ = nowMs();   // a live attempt, not a stuck turn (see the retry above)
       convId = ""; host = fb; ok = runTurnHost(host, convId);
     }
   }
@@ -887,13 +892,25 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // extractable fall back to a short human-readable error. Full JSON goes to the log.
   orch::Turn turn;
   orch::ParseError perr;
-  if (!orch::parseTurn(outJson, turn, perr)) {
+  // CUM-495: read the reply LENIENTLY. A head whose wire cannot pin the schema
+  // (Z.ai ignored json_schema and answered in Markdown) still wrote a good
+  // answer; it used to be thrown away for the "formatting error" apology. Prose
+  // is delivered as the reply - and only the reply (no device actions, memory
+  // writes or spawns ride prose); a fenced JSON turn is the turn.
+  const orch::ReplyShape shape = orch::parseHeadReply(outJson, turn, perr);
+  if (shape == orch::ReplyShape::Prose)
+    hlog::logf("orchestrator: head reply was prose (%u B), delivered as the reply only",
+               (unsigned)turn.reply.size());
+  if (shape == orch::ReplyShape::Unusable) {
     hlog::logf("orchestrator: turn parse fail (%s) json=%.200s", perr.detail.c_str(),
                outJson.c_str());
     std::string salvaged;
     {
+      // Only the reply's leading JSON object (bare or fenced) is read - never the
+      // text after it and never the raw reply (CUM-495).
+      const std::string lead = orch::leadingJsonObject(outJson);
       JsonDocument sd;   // loose second parse just for the human-facing text
-      if (deserializeJson(sd, outJson) == ArduinoJson::DeserializationError::Ok) {
+      if (!lead.empty() && deserializeJson(sd, lead) == ArduinoJson::DeserializationError::Ok) {
         const char* rep = sd["reply"] | (const char*)nullptr;
         const char* ask = sd["ask"]   | (const char*)nullptr;
         if (rep && *rep) salvaged = rep;
@@ -1244,7 +1261,8 @@ TurnEngine::FoldResult TurnEngine::runFold(const std::string& chatId,
   if (!ok) return FoldResult::Failed;
   orch::Turn t;
   orch::ParseError perr;
-  if (!orch::parseTurn(outJson, t, perr) || t.reply.empty()) {
+  // Same lenient read as a head turn (CUM-495): a prose summary IS the summary.
+  if (orch::parseHeadReply(outJson, t, perr) == orch::ReplyShape::Unusable || t.reply.empty()) {
     hlog::logf("fold(%s): no summary in reply (%s)", chatId.c_str(), perr.detail.c_str());
     return FoldResult::Failed;
   }

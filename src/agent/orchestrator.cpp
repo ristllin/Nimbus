@@ -1289,6 +1289,10 @@ static TurnEngine::Deps buildTurnDeps() {
     pd.customKey        = [] { return std::string(store::cumuloKey().c_str()); };
     pd.customConv       = [] { return std::string("openai"); };
     pd.customModel      = [model] { return model; };
+    // Every upstream on this path (zai, and any other the native fabric does not
+    // drive) gets json_object: GLM behind the router ignores json_schema exactly
+    // like direct Z.ai (CUM-495), and json_object is the portable JSON mode.
+    pd.customJsonMode   = [] { return std::string("object"); };
     return providers::orchTurnCustom(pd, cv, ins, inp, out, err, tools, usage);
   });
   d.hosts.add("zai", [](std::string& cv, const std::string& ins, const std::string& inp,
@@ -1302,6 +1306,10 @@ static TurnEngine::Deps buildTurnDeps() {
     pd.customConv       = [] { return std::string("openai"); };
     pd.customModel      = [] { String m = store::orchModel("zai");
                                return std::string((m.length() ? m : String(ZAI_MODEL)).c_str()); };
+    // CUM-495: Z.ai answers 200 but IGNORES response_format json_schema (prose
+    // came back on 2 of 2 live turns); json_object + the JSON-only nudge returned
+    // valid orch_turns. A prose reply still reaches the owner (parseHeadReply).
+    pd.customJsonMode   = [] { return std::string("object"); };
     return providers::orchTurnCustom(pd, cv, ins, inp, out, err, tools, usage);
   });
   return d;

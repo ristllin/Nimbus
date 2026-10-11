@@ -160,5 +160,40 @@ struct ParseError {
 //                 kSpawnAttachRefMax each. The task buffer is a PSRAM std::string.
 bool parseTurn(const std::string& json, Turn& out, ParseError& err);
 
+// How a head reply was read (CUM-495).
+enum class ReplyShape {
+  Turn,      // a contract-valid orch_turn (bare JSON, or the WHOLE reply fenced)
+  Prose,     // plain text: delivered as the reply, nothing else rides it
+  Unusable,  // opens like JSON but is not a turn - the caller's salvage path
+};
+
+// Lenient read of a head reply. A head whose wire cannot pin the schema (Z.ai
+// ignored response_format json_schema and answered in Markdown) still produces a
+// usable answer, and the device used to replace it with a canned "formatting
+// error" apology. The rule:
+//   - Turn: the WHOLE trimmed reply is exactly one JSON object, or exactly one
+//     ``` fence whose whole content is one JSON object, and it passes parseTurn.
+//     "Exactly" is checked by matching the object's closing brace, because the
+//     JSON parser itself stops after the first value and ignores what follows -
+//     a reply that only STARTS with an object is never executed as a turn.
+//   - Unusable: the reply opens like a JSON object (a brace, or a fence whose
+//     first content line starts with one) and is not a Turn - truncated, broken,
+//     not a turn, or a turn-shaped object followed by more text. The caller's
+//     salvage keeps reply/ask only (see leadingJsonObject); raw wire JSON never
+//     reaches a person and nothing in it is executed.
+//   - Prose: anything else, including a reply that opens with a JSON example that
+//     is not turn-shaped and goes on in prose. `out` carries the trimmed text as
+//     the reply and NOTHING else - quoted JSON never becomes device actions,
+//     memory writes or spawns.
+ReplyShape parseHeadReply(const std::string& text, Turn& out, ParseError& err);
+
+// The leading JSON object of a reply - bare at the start, or the content of a
+// leading ``` fence - as its exact text ("" when the reply does not open with a
+// complete one). `wholeReply` (optional) reports whether that object IS the whole
+// reply (nothing after it but whitespace and, when fenced, the closing fence).
+// The salvage path reads reply/ask out of this span only; a provider's own
+// lenient reader uses `wholeReply` to decide whether the reply is a turn.
+std::string leadingJsonObject(const std::string& text, bool* wholeReply = nullptr);
+
 }  // namespace orch
 }  // namespace nimbus

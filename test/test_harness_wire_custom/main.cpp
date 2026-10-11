@@ -327,6 +327,63 @@ static void test_head_mistral_error_envelope() {
   TEST_ASSERT_EQUAL_STRING("chat HTTP 422: bad thing", err.c_str());
 }
 
+// CUM-495: a head request may take the head budget (120 s, the OpenAI /
+// Anthropic ceiling) - GLM-5.3 measured 37-50 s on the device prompt, so the old
+// 30 s killed every slow-but-working Z.ai turn. Sub-agent dispatch keeps 30 s.
+static void test_head_timeout_is_the_head_budget_not_30s() {
+  FakeProviderDeps d;
+  d.custBase = "https://api.z.ai";
+  d.custPathPrefix = "/api/paas/v4";
+  d.http.script.push_back({"", "", 400, "{\"error\":{\"message\":\"no\"}}"});
+  d.http.script.push_back({"", "", 200, chatBody("{\\\"reply\\\":\\\"ok\\\"}")});
+  auto pd = d.contract();
+  std::string conv, out, err;
+  TEST_ASSERT_TRUE(providers::orchTurnCustom(pd, conv, "S", "U", out, err, nullptr, nullptr));
+  TEST_ASSERT_EQUAL(2, (int)d.http.seen.size());
+  for (const auto& r : d.http.seen) TEST_ASSERT_EQUAL_UINT32(120000u, r.timeoutMs);   // both attempts
+
+  FakeProviderDeps s;
+  s.custBase = "https://p.example";
+  s.http.script.push_back({"", "", 200, chatBody("hi")});
+  auto spd = s.contract();
+  agent::Directive dir; dir.instruction = "x";
+  char jobId[72];
+  TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::customDispatch(spd, dir, jobId));
+  TEST_ASSERT_EQUAL_UINT32(30000u, s.http.seen[0].timeoutMs);
+}
+
+// CUM-495: the Z.ai heads ask for response_format json_object plus the JSON-only
+// nudge (Z.ai answered json_schema requests with Markdown, 2 of 2 live turns;
+// json_object returned valid orch_turns). The schema itself does not ride the
+// request in this mode, and the 400 fallback still drops response_format.
+static void test_head_json_object_mode() {
+  FakeProviderDeps d;
+  d.custBase = "https://api.z.ai";
+  d.custPathPrefix = "/api/paas/v4";
+  d.custJsonMode = "object";
+  d.http.script.push_back({"", "", 200, chatBody("{\\\"reply\\\":\\\"ok\\\"}")});
+  auto pd = d.contract();
+  std::string conv, out, err;
+  TEST_ASSERT_TRUE_MESSAGE(providers::orchTurnCustom(pd, conv, "SYS", "USER", out, err, nullptr, nullptr),
+                           err.c_str());
+  TEST_ASSERT_TRUE(bodyHas(d, 0, "\"response_format\":{\"type\":\"json_object\"}"));
+  TEST_ASSERT_FALSE(bodyHas(d, 0, "json_schema"));
+  TEST_ASSERT_FALSE(bodyHas(d, 0, "Text to send the owner now"));   // no schema riding
+  TEST_ASSERT_TRUE(bodyHas(d, 0, "Respond with ONLY the JSON object for your orch_turn"));
+  TEST_ASSERT_EQUAL_STRING("{\"reply\":\"ok\"}", out.c_str());
+
+  FakeProviderDeps f;   // a 400 to json_object -> one retry with no response_format
+  f.custBase = "https://api.z.ai";
+  f.custJsonMode = "object";
+  f.http.script.push_back({"", "", 400, "{\"error\":{\"message\":\"unsupported\"}}"});
+  f.http.script.push_back({"", "", 200, chatBody("{\\\"reply\\\":\\\"ok\\\"}")});
+  auto fpd = f.contract();
+  TEST_ASSERT_TRUE(providers::orchTurnCustom(fpd, conv, "SYS", "USER", out, err, nullptr, nullptr));
+  TEST_ASSERT_TRUE(bodyHas(f, 0, "json_object"));
+  TEST_ASSERT_FALSE(bodyHas(f, 1, "response_format"));
+  TEST_ASSERT_TRUE(bodyHas(f, 1, "Respond with ONLY the JSON object"));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_keyless_on_http);
@@ -340,6 +397,8 @@ int main(int, char**) {
   RUN_TEST(test_head_schema_400_fallback);
   RUN_TEST(test_head_guards_and_errors);
   RUN_TEST(test_head_mistral_error_envelope);
+  RUN_TEST(test_head_timeout_is_the_head_budget_not_30s);
+  RUN_TEST(test_head_json_object_mode);
   UNITY_END();
   return 0;
 }

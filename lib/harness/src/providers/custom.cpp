@@ -29,7 +29,15 @@
 namespace agent {
 namespace providers {
 
+// Sub-session (customDispatch) exchanges: a LAN model's whole answer, inline.
 static const uint32_t CUST_TIMEOUT_MS = 30000;
+// HEAD turn exchanges (orchTurnCustom - also the Z.ai and Cumulo-zai heads).
+// CUM-495: GLM-5.3 with the ~16 KB head prompt took 37-50 s on the host
+// (2026-10-10), so at 30 s every slow-but-working turn died as "no response",
+// the engine's same-host retry burned another 30 s, and the turn failed over.
+// 120 s matches the OpenAI and Anthropic head ceilings (OAI_TIMEOUT_MS /
+// ANT_TIMEOUT_MS); the stuck-turn reaper (loop deadline + 120 s) still bounds it.
+static const uint32_t CUST_HEAD_TIMEOUT_MS = 120000;
 static const char* kAnthropicVer = "2023-06-01";   // mirrors agent_config.h ANTHROPIC_VER
 
 using wire::exchange;
@@ -63,7 +71,8 @@ static bool parseBase(const std::string& base, std::string& host, int& port, boo
 // leak a bearer token in cleartext on the wire; a key needs TLS).
 static int custRequest(const ProviderDeps& pd, const char* method, const std::string& path,
                        std::string body, bool anthropicAuth,
-                       JsonDocument& doc, const JsonDocument& filter) {
+                       JsonDocument& doc, const JsonDocument& filter,
+                       uint32_t timeoutMs = CUST_TIMEOUT_MS) {
   doc.clear();
   std::string host; int port; bool http;
   if (!parseBase(s(pd.customBase), host, port, http)) return 0;
@@ -92,7 +101,7 @@ static int custRequest(const ProviderDeps& pd, const char* method, const std::st
     fullPath = (path.rfind("/v1", 0) == 0) ? prefix + path.substr(3) : prefix + path;
   }
   return exchange(pd, host.c_str(), (uint16_t)port, !http, method, fullPath,
-                  std::move(headers), std::move(body), CUST_TIMEOUT_MS, doc, filter);
+                  std::move(headers), std::move(body), timeoutMs, doc, filter);
 }
 
 FabricErr customDispatch(const ProviderDeps& pd, const Directive& d, char outJobId[72]) {
@@ -176,11 +185,50 @@ FabricErr customCancel(const ProviderDeps& pd, const char* jobId) {
 }
 
 // ---- NEW: the HEAD on the custom endpoint -----------------------------------
+
+// How a head request asks for the orch_turn shape (CUM-495).
+enum class HeadFormat { Schema, Object, None };
+
+// The chat-completions body for one head attempt. Schema = response_format
+// json_schema (strict) carrying the canonical orch schema; Object =
+// response_format json_object; None = no response_format. Every format but
+// Schema asks for the bare JSON object in words (json_object mode also requires
+// the word "JSON" in the messages). False only if the schema will not parse.
+static bool customHeadBody(const ProviderDeps& pd, const std::string& instructions,
+                           const std::string& inputs, HeadFormat fmt, std::string& body) {
+  JsonDocument d;
+  d["model"] = s(pd.customModel);
+  JsonArray msgs = d["messages"].to<JsonArray>();
+  JsonObject sys = msgs.add<JsonObject>();
+  sys["role"] = "system";
+  sys["content"] = fmt == HeadFormat::Schema
+      ? instructions
+      : instructions + "\nRespond with ONLY the JSON object for your orch_turn "
+                       "- no prose, no code fences.";
+  JsonObject u = msgs.add<JsonObject>();
+  u["role"] = "user"; u["content"] = inputs;
+  if (fmt == HeadFormat::Object) d["response_format"]["type"] = "json_object";
+  if (fmt == HeadFormat::Schema) {
+    JsonObject rf = d["response_format"].to<JsonObject>();
+    rf["type"] = "json_schema";
+    rf["json_schema"]["name"]   = "orch_turn";
+    rf["json_schema"]["strict"] = true;
+    JsonDocument sd;
+    if (deserializeJson(sd, nimbus::orch::ORCH_SCHEMA_BODY,
+                        DeserializationOption::NestingLimit(16)))  // schema depth > the default 10
+      return false;
+    rf["json_schema"]["schema"] = sd;
+  }
+  body = serializeBody(d);
+  return true;
+}
 // One single-shot structured turn over the OpenAI chat-completions dialect:
 // messages = [system(instructions), user(inputs)], response_format json_schema
-// (strict) carrying the canonical orch schema. Backends that don't know
-// response_format answer 400 - then retry ONCE schema-less with a JSON-only
-// nudge; the engine's tolerant parseTurn + salvage absorb dialect wobble.
+// (strict) carrying the canonical orch schema - or, when pd.customJsonMode() is
+// "object", response_format json_object plus the JSON-only nudge (a backend that
+// ignores json_schema, like Z.ai GLM). Backends that don't know response_format
+// answer 400 - then retry ONCE schema-less with the nudge; the engine's lenient
+// parseHeadReply + salvage absorb dialect wobble (prose becomes the reply).
 // Stateless (convId = "chat" marker). v1 deliberately has NO tool loop -
 // `tools` is ignored (the engine's loop wiring passes through unused), so a
 // small LAN model can't wedge itself in a forced-tool ReAct loop.
@@ -207,38 +255,19 @@ bool orchTurnCustom(const ProviderDeps& pd, std::string& convId,
   filter["model"] = true;   // served model echo -> fallback disclosure (CUM-236)
 
   JsonDocument doc = wire::makeDoc(pd);  // response doc -> PSRAM (retained turn content)
+  const HeadFormat first = (pd.customJsonMode && pd.customJsonMode() == "object")
+                               ? HeadFormat::Object : HeadFormat::Schema;
   int code = 0;
   for (int attempt = 0; attempt < 2; ++attempt) {
-    const bool withSchema = (attempt == 0);
+    const bool withFormat = (attempt == 0);
     std::string body;
-    {
-      JsonDocument d;
-      d["model"] = s(pd.customModel);
-      JsonArray msgs = d["messages"].to<JsonArray>();
-      JsonObject sys = msgs.add<JsonObject>();
-      sys["role"] = "system";
-      sys["content"] = withSchema
-          ? instructions
-          : instructions + "\nRespond with ONLY the JSON object for your orch_turn "
-                           "- no prose, no code fences.";
-      JsonObject u = msgs.add<JsonObject>();
-      u["role"] = "user"; u["content"] = inputs;
-      if (withSchema) {
-        JsonObject rf = d["response_format"].to<JsonObject>();
-        rf["type"] = "json_schema";
-        rf["json_schema"]["name"]   = "orch_turn";
-        rf["json_schema"]["strict"] = true;
-        JsonDocument sd;
-        DeserializationError se = deserializeJson(sd, nimbus::orch::ORCH_SCHEMA_BODY,
-            DeserializationOption::NestingLimit(16));  // schema depth > the default 10
-        if (se) { err = "schema parse"; return false; }
-        rf["json_schema"]["schema"] = sd;
-      }
-      body = serializeBody(d);
+    if (!customHeadBody(pd, instructions, inputs, withFormat ? first : HeadFormat::None, body)) {
+      err = "schema parse";
+      return false;
     }
     code = custRequest(pd, "POST", "/v1/chat/completions", std::move(body),
-                       /*anthropicAuth=*/false, doc, filter);
-    if (code == 400 && withSchema) {
+                       /*anthropicAuth=*/false, doc, filter, CUST_HEAD_TIMEOUT_MS);
+    if (code == 400 && withFormat) {
       // Schema-incapable backend: drop response_format and lean on the nudge +
       // the engine's tolerant parser.
       hlog::logf("orchTurn(custom): 400 with response_format - retrying schema-less");
