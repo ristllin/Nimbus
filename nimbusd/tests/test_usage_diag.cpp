@@ -164,12 +164,36 @@ static void testLogIsBounded(ndtest::Ctx& c) {
   c.ok(has(tail, "[key]") && !has(tail, "ABCD") && !has(tail, "live1234"), "key-shaped text is masked in the log");
 }
 
+static void testLastTurnIsMasked(ndtest::Ctx& c) {
+  std::printf("  -- (d) /api/lastturn masks keys like the logs do --\n");
+  clearEnv();
+  setenv("CUMULO_API_KEY", "cumulo_sk_test_USAGE", 1);
+  setenv("TAVILY_API_KEY", "tvly-test-HELDSECRET0123", 1);
+  FakeHttpTransport tx;
+  tx.script.push_back(respTurn("/router/openai/v1/responses", "noted"));
+  Config cfg;
+  NimbusdRig rig(cfg, opts("ud-d"), &tx);
+  rig.updateSettings([](HostedSettings& s) { s.directive = "Always use the key sk-proj-ABCDEFGH1234567890 for scripts."; });
+  rig.say("owner", "my search key is tvly-test-HELDSECRET0123 and cumulo_sk_live9876abcd is the router one");
+  Web web(rig);
+  const ApiResp lt = web.call("GET", "/api/lastturn");
+  c.eqi(lt.status, 200, "the anatomy is served");
+  c.ok(has(lt.body, "[key]"), "key-shaped text is masked");
+  c.ok(!has(lt.body, "ABCDEFGH1234567890"), "a key quoted in the directive (the instructions) is masked");
+  c.ok(!has(lt.body, "live9876abcd"), "a router key typed in chat (the input) is masked");
+  c.ok(!has(lt.body, "HELDSECRET0123"), "a key this instance holds is masked whatever its shape");
+  c.ok(has(lt.body, "my search key is"), "the rest of the turn is kept");
+  unsetenv("TAVILY_API_KEY");
+  clearEnv();
+}
+
 int main() {
   ndtest::Ctx c;
   std::printf("=== usage across saves + diagnostics (item 4, CUM-546, offline) ===\n");
   testCountersSurviveSaves(c);
   testDiagnostics(c);
   testLogIsBounded(c);
+  testLastTurnIsMasked(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);
   std::printf("%s\n", c.failures ? "FAILED" : "PASSED");
   return c.failures ? 1 : 0;

@@ -956,8 +956,24 @@ class NimbusdRig {
     if (ev.transcriptBrief && !ev.transcriptBrief->empty())
       t += "\n\n===== 4. TOOL LOOP - the mid-turn rounds =====\n" + *ev.transcriptBrief;
     if (t.size() > kCap) t.resize(kCap);
+    // Masked like /api/log and /api/errlog (CUM-546): a key typed in chat, quoted in
+    // the directive or carried by a tool result is never served back in clear.
+    t = redactHeldKeys(redactKeys(std::move(t)));
     std::lock_guard<std::mutex> lk(diagMu_);
     lastTurn_ = std::move(t);
+  }
+  // Mask every secret value this instance holds wherever it appears, whatever its
+  // shape (a Mistral or Tavily key has no prefix redactKeys can recognize).
+  std::string redactHeldKeys(std::string t) const {
+    std::vector<std::string> names = {"TAVILY_API_KEY", "TELEGRAM_BOT_TOKEN", "NIMBUSD_WEB_TOKEN"};
+    for (size_t i = 0; i < nimbus::orch::kProviderSlotCount; i++)
+      names.push_back(Config::providerEnvName(nimbus::orch::kProviderSlots[i].slug));
+    for (const auto& n : names) {
+      const std::string v = cfg_.get(n);
+      if (v.size() < 8) continue;   // too short to be a key, and masking it would garble text
+      for (size_t at = t.find(v); at != std::string::npos; at = t.find(v, at + 5)) t.replace(at, v.size(), "[key]");
+    }
+    return t;
   }
 
   static uint32_t nowHours() {
