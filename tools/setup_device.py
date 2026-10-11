@@ -20,10 +20,11 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
-import glob
+import importlib
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NamedTuple
 import re
 import shlex
 import shutil
@@ -40,8 +41,8 @@ UART_GLOBS = (
     "/dev/ttyUSB*",
 )
 # The Freenove CYD has no CP210x/CH34x UART bridge at all - a single USB-C port
-# rides the ESP32-S3's native USB-CDC straight through. Used only by the
-# enumerate_esp_ports() name-glob fallback when pyserial is unavailable.
+# rides the ESP32-S3's native USB-CDC straight through. transport_of() reads these
+# device-node names when an explicit --port never enumerated a USB descriptor.
 NATIVE_USB_GLOBS = (
     "/dev/cu.usbmodem*",
     "/dev/tty.usbmodem*",
@@ -69,24 +70,46 @@ BRIDGE_VIDS = (VID_CP210X, VID_CH34X)
 FAMILY_SOLIDE = "solide_s3"
 FAMILY_FREENOVE = "freenove_s3"
 FAMILY_NAME = {FAMILY_SOLIDE: "Nimbus board", FAMILY_FREENOVE: "Freenove CYD"}
-# NVS markers that pin a configured board to a family (seeded by this installer's
-# otaType, matched by presence only - no stored value is displayed).
-FAMILY_NVS_MARKER = ((b"freenove", FAMILY_FREENOVE), (b"nimbus-tft", FAMILY_SOLIDE))
-# The Freenove panel sizes -> the typed-OTA device slug seeded into NVS. The
-# Solide board is always nimbus-tft.
-FREENOVE_SIZES = {"1": ("2.8\"", "freenove-28"), "2": ("3.5\"", "freenove-35"), "3": ("4.0\"", "freenove-40")}
+
+
+class FreenovePanel(NamedTuple):
+    label: str  # the size as the operator says it
+    slug: str  # typed-OTA device slug seeded into NVS (frozen; the manifest key)
+    env: str  # PlatformIO env that builds this panel's image
+
+
+# The Freenove panel sizes. Each size is its own firmware image, compiled at that
+# panel's resolution (platformio.ini esp32s3-cyd / -35 / -40), AND its own typed-OTA
+# device slug, so the image the installer flashes and the slug it seeds come from ONE
+# row (CUM-490: the env used to ignore the size and flash the 2.8" image on every
+# panel). Keyed by the --size value.
+FREENOVE_PANELS = {
+    "28": FreenovePanel("2.8\"", "freenove-28", "esp32s3-cyd"),
+    "35": FreenovePanel("3.5\"", "freenove-35", "esp32s3-cyd-35"),
+    "40": FreenovePanel("4.0\"", "freenove-40", "esp32s3-cyd-40"),
+}
+FREENOVE_SLUGS = {panel.slug: panel for panel in FREENOVE_PANELS.values()}
+# The Solide board has one panel: always nimbus-tft, always the esp32s3 image.
 OTA_TYPE_SOLIDE = "nimbus-tft"
 
 NVS_OFFSET = "0x9000"
 NVS_SIZE = "0x5000"
 
 
-def uart_candidates(*, allow_native: bool = False) -> list[str]:
-    """Return likely CP210x/CH34x UART ports - or (allow_native, for the
-    Freenove CYD) the ESP32-S3 native USB-CDC ports it uses instead, since it
-    has no UART bridge for UART_GLOBS to ever find."""
-    globs = NATIVE_USB_GLOBS if allow_native else UART_GLOBS
-    return sorted({port for pattern in globs for port in glob.glob(pattern)})
+class PyserialMissing(RuntimeError):
+    """pyserial is not importable in the running Python (CUM-487)."""
+
+
+def _pyserial(module: str = "serial"):
+    """Import pyserial (or a submodule), or raise PyserialMissing. The backstop to
+    ensure_pyserial() (CUM-487): a board check fails loudly, it never skips."""
+    try:
+        return importlib.import_module(module)
+    except ImportError as exc:
+        raise PyserialMissing(
+            f"pyserial is not installed for {sys.executable}, so the board cannot be read. "
+            "Run the installer as `python3 tools/setup_device.py` so it can switch to PlatformIO's Python."
+        ) from exc
 
 
 def enumerate_esp_ports() -> list[dict]:
@@ -94,16 +117,10 @@ def enumerate_esp_ports() -> list[dict]:
 
     Uses pyserial's port enumeration (VID/PID/product), so a board is identified
     by what it *is*, not just its device-node name. Only ports whose vendor is a
-    known UART bridge or the ESP32-S3 native USB are returned. Falls back to the
-    name globs when pyserial is unavailable, with the descriptor fields left
-    blank (the name still carries the transport)."""
-    try:
-        from serial.tools import list_ports  # type: ignore
-    except ImportError:
-        out = []
-        for port in uart_candidates() + uart_candidates(allow_native=True):
-            out.append({"port": port, "vid": None, "pid": None, "product": ""})
-        return out
+    known UART bridge or the ESP32-S3 native USB are returned. There is no
+    name-glob fallback: without pyserial this raises PyserialMissing instead of
+    discovering boards blind (CUM-487)."""
+    list_ports = _pyserial("serial.tools.list_ports")
     boards = []
     for info in list_ports.comports():
         vid = info.vid
@@ -123,12 +140,62 @@ def family_from_usb(vid: int | None) -> str | None:
     return FAMILY_SOLIDE if usb_is_bridge(vid) else None
 
 
+# ESP-IDF NVS page layout: a 32-byte header, a 32-byte entry-state bitmap (2 bits
+# per entry), then 126 entries of 32 bytes. A string item is one header entry (type
+# 0x21, key at bytes 8..24, value size at 24..26) followed by its data entries.
+NVS_PAGE_SIZE = 4096
+NVS_ENTRIES_PER_PAGE = 126
+NVS_TYPE_STRING = 0x21
+NVS_ENTRY_WRITTEN = 0b10
+
+
+def nvs_string_values(data: bytes, key: str) -> set[str]:
+    """Every live value of the string setting ``key`` in a raw NVS partition dump.
+
+    Only entries the bitmap marks written count, and only under that exact key: an
+    erased older value stays in flash until its page is reclaimed, and free text
+    elsewhere in NVS (a device name, a Wi-Fi network name, the assistant's notes)
+    can contain any string, so neither may ever be read as the setting. Values are
+    returned to the caller to compare, never displayed."""
+    want = key.encode()
+    values = set()
+    for base in range(0, len(data) - NVS_PAGE_SIZE + 1, NVS_PAGE_SIZE):
+        page = data[base : base + NVS_PAGE_SIZE]
+        index = 0
+        while index < NVS_ENTRIES_PER_PAGE:
+            entry = page[64 + index * 32 : 96 + index * 32]
+            written = (page[32 + index // 4] >> ((index % 4) * 2)) & 0b11 == NVS_ENTRY_WRITTEN
+            span = entry[2] if written and 1 <= entry[2] <= NVS_ENTRIES_PER_PAGE - index else 1
+            if written and entry[1] == NVS_TYPE_STRING and entry[8:24].split(b"\0")[0] == want:
+                size = min(int.from_bytes(entry[24:26], "little"), (span - 1) * 32)
+                start = 64 + (index + 1) * 32
+                values.add(page[start : start + size].split(b"\0")[0].decode("utf-8", "replace"))
+            index += span
+    return values
+
+
+def saved_ota_type(data: bytes) -> str | None:
+    """The board's live typed-OTA slug (the otaType setting this installer and the
+    web flasher seed), or None when there is none or it is not unique."""
+    values = nvs_string_values(data, "otaType")
+    return next(iter(values)) if len(values) == 1 else None
+
+
 def family_from_nvs(data: bytes) -> str | None:
-    """Pin a configured board to a family by marker presence (no value shown)."""
-    for marker, family in FAMILY_NVS_MARKER:
-        if marker in data:
-            return family
+    """Pin a configured board to a family by its saved otaType setting."""
+    ota_type = saved_ota_type(data)
+    if ota_type == OTA_TYPE_SOLIDE:
+        return FAMILY_SOLIDE
+    if ota_type in FREENOVE_SLUGS:
+        return FAMILY_FREENOVE
     return None
+
+
+def freenove_slug_from_nvs(data: bytes) -> str | None:
+    """The Freenove panel slug a configured board already carries, or None (then the
+    caller asks, or under --yes refuses on a configured board, never guesses)."""
+    ota_type = saved_ota_type(data)
+    return ota_type if ota_type in FREENOVE_SLUGS else None
 
 
 def resolve_family(explicit: str | None, usb_vid: int | None, nvs_family: str | None) -> str | None:
@@ -165,12 +232,19 @@ def transport_of(usb_vid: int | None, port: str = "") -> str | None:
     return None
 
 
-def production_env(family: str) -> str:
-    """The PlatformIO env holding the production firmware for a board family."""
-    if family == FAMILY_FREENOVE:
-        return "esp32s3-cyd"
+def production_env(family: str, ota_type: str | None) -> str:
+    """The PlatformIO env holding the production firmware for a board family and,
+    for a Freenove, its panel (named by the typed-OTA slug the device keeps).
+
+    A Freenove's panel size is compiled into its image, so the env comes from the
+    same FREENOVE_PANELS row as the slug that is seeded (CUM-490). A Freenove whose
+    slug matches no row fails closed rather than fall back to the 2.8" image."""
     if family == FAMILY_SOLIDE:
         return "esp32s3"
+    if family == FAMILY_FREENOVE:
+        if ota_type in FREENOVE_SLUGS:
+            return FREENOVE_SLUGS[ota_type].env
+        raise RuntimeError(f"No Freenove firmware matches the display type {ota_type!r}. Pass --size 28, 35 or 40.")
     raise RuntimeError(f"No production firmware env is defined for board family {family!r}.")
 
 
@@ -237,11 +311,7 @@ def identify(port: str) -> bool:
     tell which physical device it is. Best-effort: it asks the running firmware
     (serial ``IDENTIFY``); a board not running Nimbus simply will not answer, and
     we say so rather than fail. Returns True if the board acknowledged."""
-    try:
-        import serial  # type: ignore
-    except ImportError:
-        print("  (cannot identify: PlatformIO's Python has no pyserial)")
-        return False
+    serial = _pyserial()
     try:
         with serial.Serial(port, 115200, timeout=0.25) as conn:
             time.sleep(0.3)
@@ -353,30 +423,48 @@ def bootstrap_commands(
     return commands
 
 
-def freenove_ota_type(args: argparse.Namespace) -> str:
-    """The typed-OTA slug for a Freenove, from its panel size. --size wins; under
-    --yes with no size we fall back to the 2.8\" slug with a note; otherwise we
-    prompt.
+def freenove_ota_type(args: argparse.Namespace, saved: str | None = None, configured: bool = False) -> str:
+    """The typed-OTA slug for a Freenove, from its display size. --size wins; then the
+    slug a configured board already carries (``saved``, its live otaType setting);
+    otherwise a prompt, or under --yes the 2.8\" default for a blank board. A
+    configured board with no readable saved size is refused under --yes rather than
+    re-typed to 2.8\".
 
-    The seeded size is load-bearing: it is the OTA type the device keeps, and the
-    firmware will NOT guess a size later (an unseeded Freenove is offered no update,
-    CUM-417), so a wrong seed here means a mis-sized image on a 3.5\"/4.0\" board.
-    Pass --size (or answer the prompt) with the fitted panel."""
+    The slug is load-bearing twice: it picks the image flashed (each size is its own
+    image, CUM-490) and it is the OTA type the device keeps. The firmware will NOT
+    guess a size later (an unseeded Freenove is offered no update, CUM-417), so a
+    wrong answer here means a mis-sized image on a 3.5\"/4.0\" board."""
     if args.size:
-        return {"28": "freenove-28", "35": "freenove-35", "40": "freenove-40"}[args.size]
+        return FREENOVE_PANELS[args.size].slug
+    if saved:
+        print(f"Display size: keeping the saved size ({saved}). Pass --size to change it.")
+        return saved
+    if args.yes and configured:
+        raise RuntimeError(
+            "This Freenove is already set up, but its display size could not be read. Pass --size 28, 35 or 40."
+        )
     if args.yes:
         print(
-            "Note: no --size given; seeding the Freenove OTA type as freenove-28 (2.8\"). "
-            "Pass --size 35/40 for a larger panel - the firmware does not guess it later."
+            "Note: no --size given; using the 2.8\" display (freenove-28). "
+            "Pass --size 35/40 for a larger one - the firmware does not guess it later."
         )
-        return "freenove-28"
-    print("\nFreenove panel size:")
-    for key, (label, slug) in FREENOVE_SIZES.items():
-        print(f"  {key}. {label}  ({slug})")
-    answer = input("Select the fitted panel [1-3]: ").strip()
-    if answer not in FREENOVE_SIZES:
-        raise RuntimeError("No valid panel size was selected.")
-    return FREENOVE_SIZES[answer][1]
+        return FREENOVE_PANELS["28"].slug
+    choices = {str(index): panel for index, panel in enumerate(FREENOVE_PANELS.values(), 1)}
+    print("\nFreenove display size:")
+    for key, panel in choices.items():
+        print(f"  {key}. {panel.label}  ({panel.slug})")
+    answer = input(f"Select the fitted display [1-{len(choices)}]: ").strip()
+    if answer not in choices:
+        raise RuntimeError("No valid display size was selected.")
+    return choices[answer].slug
+
+
+def board_ota_type(args: argparse.Namespace, family: str, nvs_state: str, saved: str | None) -> str:
+    """The typed-OTA slug for this board, which also names its production image:
+    nimbus-tft for the Nimbus board, the display-size slug for a Freenove."""
+    if family == FAMILY_FREENOVE:
+        return freenove_ota_type(args, saved, configured=nvs_state == "nimbus")
+    return OTA_TYPE_SOLIDE
 
 
 def prompt_mode(args: argparse.Namespace, known_nimbus: bool) -> str | None:
@@ -402,23 +490,21 @@ def prompt_mode(args: argparse.Namespace, known_nimbus: bool) -> str | None:
     return mode
 
 
-def prompt_bootstrap(
-    args: argparse.Namespace, nvs_state: str, family: str
-) -> tuple[str | None, str | None, str | None]:
-    """Choose the settings to seed: (display, mode, ota_type).
+def prompt_bootstrap(args: argparse.Namespace, nvs_state: str, family: str) -> tuple[str | None, str | None]:
+    """Choose the display and mode to seed: (display, mode).
 
     E-ink is gone - both configurations are TFT. The display is derived from the
-    board family (never asked), a Freenove additionally picks its panel size, and
-    the typed-OTA slug is seeded from the family so no board boots without a type.
-    A configured Nimbus keeps its saved display/mode (display None) but is still
-    (re)seeded with its OTA type, which is idempotent."""
+    board family (never asked). The typed-OTA slug is chosen earlier, by
+    board_ota_type(), because it also picks the production image; it is seeded on
+    every install so no board boots without a type. A configured Nimbus keeps its
+    saved display/mode (display None)."""
     known_nimbus = nvs_state == "nimbus"
     mode = prompt_mode(args, known_nimbus)
     if family == FAMILY_FREENOVE:
-        return "tft", mode, freenove_ota_type(args)
+        return "tft", mode
     # Solide board: TFT + ring. Seed the display only on a fresh board.
     display = "tft" if not known_nimbus else args.display
-    return display, mode, OTA_TYPE_SOLIDE
+    return display, mode
 
 
 def resolve_port(args: argparse.Namespace) -> tuple[str, int | None, str]:
@@ -429,16 +515,20 @@ def resolve_port(args: argparse.Namespace) -> tuple[str, int | None, str]:
     --port is validated for existence and its descriptor looked up; otherwise
     boards are discovered by USB descriptor and chosen via the identify-and-confirm
     picker."""
-    candidates = enumerate_esp_ports()
     if args.port:
         if os.name != "nt" and not Path(args.port).exists():
             raise RuntimeError(f"Serial port does not exist: {args.port}")
-        for cand in candidates:
+        for cand in enumerate_esp_ports():
             if cand["port"] == args.port:
                 return args.port, cand["vid"], cand["product"]
         return args.port, None, ""
-    chosen = pick_port(candidates, args.yes)
+    chosen = pick_port(enumerate_esp_ports(), args.yes)
     return chosen["port"], chosen["vid"], chosen["product"]
+
+
+def penv_python(core: Path) -> Path:
+    """PlatformIO's own Python. It always has pyserial (esptool needs it)."""
+    return core / "penv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 
 
 def platformio_executable() -> tuple[Path, str]:
@@ -458,9 +548,7 @@ def platformio_executable() -> tuple[Path, str]:
 
 
 def esptool_command(core: Path) -> list[str] | None:
-    penv = core / "penv"
-
-    python = penv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    python = penv_python(core)
     esptool = core / "packages/tool-esptoolpy/esptool.py"
     if not python.is_file() or not esptool.is_file():
         return None
@@ -483,7 +571,8 @@ def run_checked(command: list[str], *, capture: bool = False) -> subprocess.Comp
         raise
 
 
-def inspect_board(esptool: list[str], port: str) -> tuple[str, str]:
+def inspect_board(esptool: list[str], port: str) -> tuple[str, str, str | None, str | None]:
+    """Read the NVS partition: (MAC, NVS state, family marker, saved Freenove slug)."""
     with tempfile.TemporaryDirectory(prefix="nimbus-setup-") as temp_dir:
         nvs_path = Path(temp_dir) / "nvs.bin"
         command = esptool + [
@@ -501,7 +590,7 @@ def inspect_board(esptool: list[str], port: str) -> tuple[str, str]:
         if mac is None:
             raise RuntimeError("Connected to the board, but could not read its factory MAC.")
         data = nvs_path.read_bytes()
-        return mac, classify_nvs(data), family_from_nvs(data)
+        return mac, classify_nvs(data), family_from_nvs(data), freenove_slug_from_nvs(data)
 
 
 class NoReplyError(RuntimeError):
@@ -658,16 +747,14 @@ def read_panel_signal(connection, timeout: float = 20.0) -> str | None:
 def verify_panel_after_flash(port: str, timeout: float = 20.0) -> str:
     """Open ``port`` after the production flash and read the boot panel signal.
 
-    Returns 'ok', 'dead', 'unverified', or 'unknown'. Never raises: a serial hiccup
-    (no pyserial, the port busy, USB re-enumeration) yields 'unknown' so a healthy
-    board is never failed on a read problem - only a decisive not-responding signal
-    fails. 'unverified' (a shared-MISO board that cannot self-check) is a soft
-    caution, never a hard failure, so a legitimate solide install still proceeds."""
-    try:
-        import serial  # type: ignore
-    except ImportError:
-        print("Note: pyserial is unavailable, so the screen could not be verified.", file=sys.stderr)
-        return "unknown"
+    Returns 'ok', 'dead', 'unverified', or 'unknown'. A serial hiccup (the port busy,
+    USB re-enumeration) yields 'unknown' so a healthy board is never failed on a read
+    problem - only a decisive not-responding signal fails. 'unverified' (a shared-MISO
+    board that cannot self-check) is a soft caution, never a hard failure, so a
+    legitimate solide install still proceeds. A missing pyserial is not a read
+    hiccup: it raises PyserialMissing rather than skip the check (CUM-487); main()
+    guarantees pyserial before it flashes anything."""
+    serial = _pyserial()
     connection = serial.Serial()
     connection.port = port
     connection.baudrate = 115200
@@ -734,14 +821,12 @@ def probe_for_freenove(port: str, timeout: float = 8.0) -> str:
     """Ask the running provision sketch whether the board is a Freenove (CUM-422).
 
     Returns 'freenove', 'clear', 'unsupported' (no PROBE reply - an old setup firmware),
-    or 'unknown' (a serial problem, e.g. no pyserial). Never raises: a read hiccup must
-    not fail an install, only a decisive 'freenove' refuses one; an 'unsupported'/'unknown'
-    result proceeds (the post-flash screen check remains the backstop)."""
-    try:
-        import serial  # type: ignore
-    except ImportError:
-        print("Note: pyserial is unavailable, so the board-family probe was skipped.", file=sys.stderr)
-        return "unknown"
+    or 'unknown' (a serial problem, e.g. the port busy). A read hiccup must not fail an
+    install, only a decisive 'freenove' refuses one; an 'unsupported'/'unknown' result
+    proceeds with a caution. A missing pyserial is not a read hiccup: it raises
+    PyserialMissing, so the setup step fails (exit 1, production firmware still put
+    back) instead of skipping the probe (CUM-487)."""
+    serial = _pyserial()
     connection = serial.Serial()
     connection.port = port
     connection.baudrate = 115200
@@ -763,6 +848,123 @@ def probe_for_freenove(port: str, timeout: float = 8.0) -> str:
     finally:
         if connection.is_open:
             connection.close()
+
+
+# --- pyserial guard (CUM-487) ----------------------------------------------------
+#
+# The wrong-board probe (CUM-422), the post-flash screen check (CUM-388) and USB-
+# descriptor discovery read the board through pyserial. PlatformIO's own Python (its
+# penv) always has it, but the python3 that launches this script often does not: pipx,
+# Homebrew, PlatformIO's installer script and every PEP 668 system Python leave it out.
+# Those checks used to degrade to a one-line "Note" and let the flash proceed
+# unchecked. Now the installer re-runs itself under PlatformIO's Python before it
+# touches a board, or stops with the one command that fixes it.
+
+REEXEC_ENV = "NIMBUS_SETUP_REEXEC"
+
+
+def pyserial_available() -> bool:
+    """True when this Python can import pyserial, including its port enumeration
+    (a different PyPI package also installs a bare `serial` module)."""
+    try:
+        importlib.import_module("serial.tools.list_ports")
+    except ImportError:
+        return False
+    return True
+
+
+def pyserial_stop_message(python: Path | None) -> str:
+    """What happened plus the one next step, when no Python with pyserial can run the installer."""
+    if python is not None:
+        fix = shlex.join([str(python), "-m", "pip", "install", "pyserial"])
+        return f"Stopped: PlatformIO's Python has no pyserial, so the board cannot be read. Install it, then run this again:\n  {fix}"
+    fix = shlex.join([sys.executable, "-m", "pip", "install", "pyserial"])
+    return (
+        "Stopped: this Python has no pyserial and PlatformIO's own Python was not found, so the board "
+        f"cannot be read. Install pyserial, then run this again:\n  {fix}"
+    )
+
+
+def _script_interpreter(executable: str) -> Path | None:
+    """The Python named on the #! line of the `pio` script, if it is one. pipx and
+    Homebrew install PlatformIO into its own environment and point `pio` at that
+    Python, which has pyserial (PlatformIO depends on it)."""
+    try:
+        with open(Path(executable).resolve(), "rb") as script:
+            first = script.readline(512)
+    except OSError:
+        return None
+    words = first[2:].decode("utf-8", "replace").split() if first.startswith(b"#!") else []
+    if len(words) > 1 and Path(words[0]).name == "env":  # "#!/usr/bin/env python3"
+        found = shutil.which(words[1])
+        words = [found] if found else []
+    if not words or not Path(words[0]).name.startswith("python"):
+        return None
+    return Path(words[0])
+
+
+def platformio_python(core: Path, pio: str) -> Path | None:
+    """A Python that has pyserial because PlatformIO runs on it: PlatformIO's own
+    environment (core/penv, which the esptool step uses), else the interpreter the
+    `pio` command runs on."""
+    for candidate in (penv_python(core), _script_interpreter(pio)):
+        if candidate is not None and candidate.is_file():
+            return candidate
+    return None
+
+
+def _wait_for_child(command: list[str]) -> int:
+    """Run the installer again as a child and return its exit code. A Ctrl-C reaches
+    the child too, which handles it (it restores production firmware before it
+    exits), so the parent keeps waiting instead of abandoning it mid-flash. The
+    launching Python's PYTHONPATH/PYTHONHOME are dropped: they belong to that
+    interpreter and could hide pyserial from PlatformIO's."""
+    env = {key: value for key, value in os.environ.items() if key not in ("PYTHONPATH", "PYTHONHOME")}
+    env[REEXEC_ENV] = "1"
+    try:
+        child = subprocess.Popen(command, env=env)
+    except OSError as exc:
+        raise RuntimeError(f"could not start PlatformIO's Python ({exc})") from exc
+    while True:
+        try:
+            return child.wait()
+        except KeyboardInterrupt:
+            continue
+
+
+def ensure_pyserial(argv: list[str]) -> int | None:
+    """Make sure the installer runs under a Python that has pyserial (CUM-487).
+
+    Returns None to carry on in this interpreter, or the exit code to return now:
+    the re-run's own exit code, or 1 after a stop. Never lets an install continue
+    with the board checks switched off. On a first run PlatformIO may not have set
+    up its own Python yet, so the ESP32 build tools are installed first (exactly
+    what the install needs anyway)."""
+    if pyserial_available():
+        return None
+    if os.environ.get(REEXEC_ENV):
+        # Already re-run under PlatformIO's Python, and it has no pyserial either.
+        print(pyserial_stop_message(Path(sys.executable)), file=sys.stderr)
+        return 1
+    core, pio = platformio_executable()
+    python = platformio_python(core, pio)
+    if python is None:
+        install_build_tools(pio)
+        python = platformio_python(core, pio)
+    if python is None:
+        print(pyserial_stop_message(None), file=sys.stderr)
+        return 1
+    # flush: the child writes to the same terminal, and this line must come first.
+    print(
+        f"This Python has no pyserial, so the installer is re-running with PlatformIO's Python:\n  {python}", flush=True
+    )
+    return _wait_for_child([str(python), str(Path(__file__).resolve()), *argv])
+
+
+def install_build_tools(pio: str) -> None:
+    """Have PlatformIO install the ESP32 build tools (esptool and its own Python)."""
+    print("PlatformIO needs to install the ESP32 build tools first.")
+    run_checked([pio, "run", "-e", "esp32s3"])  # neutral env just for the tools
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -792,8 +994,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--size",
-        choices=("28", "35", "40"),
-        help="Freenove panel size in inches*10 (2.8/3.5/4.0) -> its typed-OTA slug; prompted otherwise",
+        choices=tuple(FREENOVE_PANELS),
+        help=(
+            "Freenove display size in inches*10 (2.8/3.5/4.0): picks that size's image and its "
+            "typed-OTA slug; a configured board keeps its saved size, otherwise prompted"
+        ),
     )
     parser.add_argument(
         "--yes",
@@ -1075,16 +1280,20 @@ def main(argv: list[str] | None = None) -> int:
     # Phase 1: discover the board and decide what to flash. Nothing is written yet,
     # so a failure here changed nothing on the board and no screen check applies.
     try:
+        # CUM-487: the board checks need pyserial; switch to PlatformIO's Python (or
+        # stop) before anything reads the board, never run them switched off.
+        early_exit = ensure_pyserial(sys.argv[1:] if argv is None else argv)
+        if early_exit is not None:
+            return early_exit
         port, usb_vid, product = resolve_port(args)
         core, pio = platformio_executable()
         esptool = esptool_command(core)
         if esptool is None:
-            print("PlatformIO needs to install the ESP32 build tools first.")
-            run_checked([pio, "run", "-e", "esp32s3"])  # neutral env just for the tools
+            install_build_tools(pio)
             esptool = esptool_command(core)
         if esptool is None:
             raise RuntimeError("PlatformIO did not install its esptool package.")
-        mac, nvs_state, nvs_family = inspect_board(esptool, port)
+        mac, nvs_state, nvs_family, nvs_slug = inspect_board(esptool, port)
         # Board pinout is compile-time: auto-detect the family (explicit --board >
         # NVS marker > USB descriptor), then pick the matching firmware env. The
         # provisioning env is chosen by family AND transport (CUM-388 D2) so its
@@ -1092,20 +1301,24 @@ def main(argv: list[str] | None = None) -> int:
         # the native-USB provision sketch, not the UART one that can never reply.
         family = resolve_family(args.board, usb_vid, nvs_family) or prompt_family(port, args.yes)
         name = friendly_name(family, product)
+        print(f"\nDetected: {name} ({FAMILY_NAME.get(family, family)}) on {port}  MAC {mac}")
+        # The typed-OTA slug also names the production image (a Freenove panel size is
+        # compiled in, CUM-490), so it is settled before the plan, for every flow that
+        # writes production firmware back - the install and the token recovery alike.
+        ota_type = board_ota_type(args, family, nvs_state, nvs_slug)
         plan = InstallPlan(
             pio=pio,
             esptool=esptool,
-            prod_env=production_env(family),
+            prod_env=production_env(family, ota_type),
             prov_env=provision_env(family, usb_vid, port),
             port=port,
             family=family,
             name=name,
             nvs_state=nvs_state,
         )
-        print(f"\nDetected: {name} ({FAMILY_NAME.get(family, family)}) on {port}  MAC {mac}")
         if args.show_token:
             return run_show_token(plan, args.yes)
-        display, mode, ota_type = prompt_bootstrap(args, nvs_state, family)
+        display, mode = prompt_bootstrap(args, nvs_state, family)
         confirm_install(name, family, nvs_state == "nimbus", port, args.yes)
     except (RuntimeError, subprocess.CalledProcessError, KeyboardInterrupt) as exc:
         print(f"\nStopped: {exc}", file=sys.stderr)

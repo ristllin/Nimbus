@@ -11,9 +11,13 @@ import argparse
 import contextlib
 import importlib.util
 import io
+import os
 import subprocess
 import sys
+import tempfile
+import unittest
 from pathlib import Path
+from unittest import mock
 
 
 def _load():
@@ -47,6 +51,59 @@ def _args(**kw):
     return argparse.Namespace(**base)
 
 
+@contextlib.contextmanager
+def _patched(**values):
+    """Temporarily replace SETUP attributes, restoring the originals afterwards."""
+    saved = {name: getattr(SETUP, name) for name in values}
+    for name, value in values.items():
+        setattr(SETUP, name, value)
+    try:
+        yield
+    finally:
+        for name, value in saved.items():
+            setattr(SETUP, name, value)
+
+
+# The first 256 bytes of the NVS page inside the published v4.5.8 freenove-35 web-flash
+# image (ESP-IDF nvs_partition_gen output; the rest of the 4 KB page is 0xFF). It holds
+# solide=1, scrModel='tft', nimbus_mode=1 and otaType='freenove-35'.
+_REAL_SEED_PAGE = bytes.fromhex(
+    "feffffff00000000feffffffffffffffffffffffffffffffffffffff842dbab9aafaffffffffffffffffffffffff"
+    "ffffffffffffffffffffffffffffffffffff000101ff3e1e0100736f6c6964650000000000000000000001ffffff"
+    "ffffffff012102ff98cdde227363724d6f64656c00000000000000000400ffff54c3ab1c74667400ffffffffffff"
+    "ffffffffffffffffffffffffffffffffffffffffffff011401ffd9cc72726e696d6275735f6d6f64650000000000"
+    "01000000ffffffff012102ffee4925946f7461547970650000000000000000000c00ffff02a0965d667265656e6f"
+    "76652d333500ffffffffffffffffffffffffffffffffffffffff"
+) + b"\xff" * (4096 - 256)
+_BLANK_PAGE = b"\xff" * 4096
+
+
+def _nvs_page(*items):
+    """One NVS page of string items: (key, value, 'written' | 'erased'), laid out the way
+    ESP-IDF writes them (header entry, then the value in the following entries)."""
+    page = bytearray(_BLANK_PAGE)
+    page[0:4] = (0xFFFFFFFE).to_bytes(4, "little")  # active page
+    index = 0
+    for key, value, state in items:
+        data = value.encode() + b"\0"
+        span = 1 + (len(data) + 31) // 32
+        header = bytes([1, SETUP.NVS_TYPE_STRING, span, 0xFF]) + bytes(4) + key.encode().ljust(16, b"\0")
+        header += len(data).to_bytes(2, "little") + b"\xff\xff" + bytes(4)
+        page[64 + index * 32 : 96 + index * 32] = header
+        page[96 + index * 32 : 64 + (index + span) * 32] = data.ljust((span - 1) * 32, b"\xff")
+        bits = SETUP.NVS_ENTRY_WRITTEN if state == "written" else 0b00
+        for entry in range(index, index + span):
+            byte, shift = 32 + entry // 4, (entry % 4) * 2
+            page[byte] = (page[byte] & ~(0b11 << shift)) | (bits << shift)
+        index += span
+    return bytes(page)
+
+
+def _partition(*pages):
+    """A 5-page (0x5000) NVS partition dump: the given pages, then blank ones."""
+    return b"".join(pages) + _BLANK_PAGE * (5 - len(pages))
+
+
 # ---- NVS + MAC (unchanged surface) ----------------------------------------
 
 
@@ -74,10 +131,15 @@ def test_family_from_usb_bridge_is_solide_native_is_ambiguous():
     assert SETUP.family_from_usb(None) is None
 
 
-def test_family_from_nvs_marker_presence():
-    assert SETUP.family_from_nvs(b"...otaType\x00freenove-35...") == SETUP.FAMILY_FREENOVE
-    assert SETUP.family_from_nvs(b"...otaType\x00nimbus-tft...") == SETUP.FAMILY_SOLIDE
-    assert SETUP.family_from_nvs(b"\xff" * 100) is None
+def test_family_from_nvs_reads_the_live_ota_type_setting():
+    # A real nvs_partition_gen seed (the published freenove-35 image) parses to its type.
+    assert SETUP.saved_ota_type(_partition(_REAL_SEED_PAGE)) == "freenove-35"
+    assert SETUP.family_from_nvs(_partition(_REAL_SEED_PAGE)) == SETUP.FAMILY_FREENOVE
+    # Every type the installer seeds maps back to its own family (the class).
+    for slug in [SETUP.OTA_TYPE_SOLIDE, *SETUP.FREENOVE_SLUGS]:
+        want = SETUP.FAMILY_SOLIDE if slug == SETUP.OTA_TYPE_SOLIDE else SETUP.FAMILY_FREENOVE
+        assert SETUP.family_from_nvs(_partition(_nvs_page(("otaType", slug, "written")))) == want, slug
+    assert SETUP.family_from_nvs(_partition()) is None  # blank NVS
 
 
 def test_resolve_family_precedence_and_ambiguity():
@@ -150,7 +212,7 @@ def test_bootstrap_commands_seed_display_mode_and_ota_type():
 def test_freenove_ota_type_from_size_flag_and_default():
     assert SETUP.freenove_ota_type(_args(size="28")) == "freenove-28"
     assert SETUP.freenove_ota_type(_args(size="40")) == "freenove-40"
-    # --yes with no size falls back to the base panel (all sizes share one image).
+    # --yes with no size and nothing saved falls back to the base panel, with a note.
     assert SETUP.freenove_ota_type(_args(yes=True)) == "freenove-28"
     # Interactive prompt.
     SETUP.input = _Input("2")
@@ -160,25 +222,80 @@ def test_freenove_ota_type_from_size_flag_and_default():
         del SETUP.input
 
 
+def test_freenove_ota_type_keeps_a_configured_boards_saved_panel():
+    # A configured board already carries its slug: --yes with no --size keeps it instead
+    # of re-typing a 3.5"/4.0" board to the 2.8" default (and so flashing the 2.8" image).
+    assert SETUP.freenove_ota_type(_args(yes=True), saved="freenove-40") == "freenove-40"
+    # Interactive runs keep it too, without asking again.
+    SETUP.input = _Input()  # any prompt would pop from an empty list and fail
+    try:
+        assert SETUP.freenove_ota_type(_args(), saved="freenove-35") == "freenove-35"
+    finally:
+        del SETUP.input
+    # An explicit --size still wins over the saved slug.
+    assert SETUP.freenove_ota_type(_args(size="28"), saved="freenove-40") == "freenove-28"
+
+
+def test_freenove_ota_type_prompt_rejects_out_of_range_answers():
+    for answer in ("0", "4", "x", "", "\u00b2", "01"):  # "\u00b2" passes str.isdigit() but not int()
+        SETUP.input = _Input(answer)
+        try:
+            SETUP.freenove_ota_type(_args())
+        except RuntimeError as exc:
+            assert "display size" in str(exc)
+        else:
+            raise AssertionError(f"answer {answer!r} must not pick a display size")
+        finally:
+            del SETUP.input
+
+
+def test_freenove_ota_type_refuses_to_guess_for_a_configured_board_under_yes():
+    try:
+        SETUP.freenove_ota_type(_args(yes=True), saved=None, configured=True)
+    except RuntimeError as exc:
+        assert "--size" in str(exc)
+    else:
+        raise AssertionError("a configured Freenove with no readable size must not be re-typed to 2.8")
+
+
+def test_freenove_slug_comes_only_from_the_live_ota_type_entry():
+    for slug in SETUP.FREENOVE_SLUGS:
+        assert SETUP.freenove_slug_from_nvs(_partition(_nvs_page(("otaType", slug, "written")))) == slug
+    # The erased older value stays in flash next to the live one: only the live one counts.
+    resized = _nvs_page(("otaType", "freenove-28", "erased"), ("otaType", "freenove-35", "written"))
+    assert SETUP.freenove_slug_from_nvs(_partition(resized)) == "freenove-35"
+    # Free text elsewhere in NVS (a device name, a network name) is never the setting.
+    named = _nvs_page(("devName", "freenove-40", "written"), ("staSsid", "freenove-35", "written"))
+    assert SETUP.freenove_slug_from_nvs(_partition(named)) is None
+    assert SETUP.family_from_nvs(_partition(named)) is None
+    solide = _nvs_page(("otaType", "nimbus-tft", "written"), ("devName", "freenove-40", "written"))
+    assert SETUP.freenove_slug_from_nvs(_partition(solide)) is None
+    assert SETUP.family_from_nvs(_partition(solide)) == SETUP.FAMILY_SOLIDE
+    # Two live values that disagree: ask, never guess.
+    split = _partition(
+        _nvs_page(("otaType", "freenove-28", "written")), _nvs_page(("otaType", "freenove-40", "written"))
+    )
+    assert SETUP.freenove_slug_from_nvs(split) is None
+    assert SETUP.freenove_slug_from_nvs(_partition()) is None
+
+
 def test_prompt_bootstrap_solide_and_freenove():
-    # Solide fresh board: display seeded to tft, nimbus-tft slug.
-    assert SETUP.prompt_bootstrap(_args(mode="orchestrator"), "blank", SETUP.FAMILY_SOLIDE) == (
-        "tft",
-        "orchestrator",
-        "nimbus-tft",
-    )
-    # A configured Solide keeps its saved display (None) but is still re-seeded.
-    assert SETUP.prompt_bootstrap(_args(mode="notifier"), "nimbus", SETUP.FAMILY_SOLIDE) == (
-        None,
-        "notifier",
-        "nimbus-tft",
-    )
-    # Freenove derives display tft + size slug.
+    # Solide fresh board: display seeded to tft.
+    assert SETUP.prompt_bootstrap(_args(mode="orchestrator"), "blank", SETUP.FAMILY_SOLIDE) == ("tft", "orchestrator")
+    # A configured Solide keeps its saved display (None).
+    assert SETUP.prompt_bootstrap(_args(mode="notifier"), "nimbus", SETUP.FAMILY_SOLIDE) == (None, "notifier")
+    # Freenove derives display tft (its panel slug comes from board_ota_type).
     assert SETUP.prompt_bootstrap(_args(mode="orchestrator", size="40"), "blank", SETUP.FAMILY_FREENOVE) == (
         "tft",
         "orchestrator",
-        "freenove-40",
     )
+
+
+def test_board_ota_type_solide_is_fixed_freenove_follows_the_panel():
+    assert SETUP.board_ota_type(_args(size="40"), SETUP.FAMILY_SOLIDE, "blank", None) == "nimbus-tft"
+    assert SETUP.board_ota_type(_args(size="35"), SETUP.FAMILY_FREENOVE, "blank", None) == "freenove-35"
+    assert SETUP.board_ota_type(_args(yes=True), SETUP.FAMILY_FREENOVE, "nimbus", "freenove-40") == "freenove-40"
+    assert SETUP.board_ota_type(_args(yes=True), SETUP.FAMILY_FREENOVE, "blank", None) == "freenove-28"
 
 
 def test_prompt_mode_yes_requires_mode_on_blank_board():
@@ -221,12 +338,12 @@ def test_pick_port_identify_then_choose():
         {"port": "/dev/cu.usbserial-9", "vid": SETUP.VID_CP210X, "pid": 2, "product": ""},
     ]
     identified = []
-    SETUP.identify = lambda port: identified.append(port) or True
     SETUP.input = _Input("i2", "1")  # identify board 2, then choose board 1
     try:
-        chosen = SETUP.pick_port(two, assume_yes=False)
+        # Restore, never delete, the real identify: later tests call it.
+        with _patched(identify=lambda port: identified.append(port) or True):
+            chosen = SETUP.pick_port(two, assume_yes=False)
     finally:
-        del SETUP.identify
         del SETUP.input
     assert identified == ["/dev/cu.usbserial-9"]
     assert chosen["port"] == "/dev/cu.usbmodem1"
@@ -401,10 +518,10 @@ class _RecordingRunner:
         return subprocess.CompletedProcess(command, 0, "", "")
 
 
-def _board(port="/dev/cu.usbmodem101", vid=None, product="", nvs_state="blank", nvs_family=None):
+def _board(port="/dev/cu.usbmodem101", vid=None, product="", nvs_state="blank", nvs_family=None, nvs_slug=None):
     """A discovered-board description for _run_main (what resolve_port/inspect_board
     would report)."""
-    return dict(port=port, vid=vid, product=product, nvs_state=nvs_state, nvs_family=nvs_family)
+    return dict(port=port, vid=vid, product=product, nvs_state=nvs_state, nvs_family=nvs_family, nvs_slug=nvs_slug)
 
 
 def _run_main(argv, board=None, panel="unknown", runner=None, probe="clear"):
@@ -428,12 +545,20 @@ def _run_main(argv, board=None, panel="unknown", runner=None, probe="clear"):
 
     def _fake_probe(p, timeout=8.0):
         runner.probe_calls.append(p)
+        if isinstance(probe, BaseException):
+            raise probe
         return probe
 
     _patch("resolve_port", lambda args: (board["port"], board["vid"], board["product"]))
     _patch("platformio_executable", lambda: (Path("/tmp/core"), "pio"))
     _patch("esptool_command", lambda core: ["python", "esptool.py"])
-    _patch("inspect_board", lambda esptool, p: ("aa:bb:cc:dd:ee:ff", board["nvs_state"], board["nvs_family"]))
+    _patch(
+        "inspect_board",
+        lambda esptool, p: ("aa:bb:cc:dd:ee:ff", board["nvs_state"], board["nvs_family"], board["nvs_slug"]),
+    )
+    # pyserial presence is its own test (CUM-487, below); here the in-process main()
+    # carries on in this interpreter whether or not the host has pyserial.
+    _patch("ensure_pyserial", lambda argv: None)
     _patch("run_checked", runner)
     _patch("verify_panel_after_flash", _fake_verify)
     _patch("probe_for_freenove", _fake_probe)
@@ -491,6 +616,8 @@ def test_prov_and_prod_env_table_over_family_x_transport_x_nvs():
         "unknown": None,  # explicit --port, no descriptor, non-transport-bearing name
     }
     nvs_states = ("blank", "nimbus", "other")
+    # The production image of a Freenove depends on its panel too; this table pins the
+    # 2.8" row, test_every_freenove_panel_* covers every size.
     expected = {
         (SETUP.FAMILY_FREENOVE, "bridge"): ("provision-cyd", "esp32s3-cyd"),
         (SETUP.FAMILY_FREENOVE, "native"): ("provision-cyd", "esp32s3-cyd"),
@@ -510,7 +637,8 @@ def test_prov_and_prod_env_table_over_family_x_transport_x_nvs():
         vid = transports[transport]
         node = "/dev/cu.mystery" if transport == "unknown" else "/dev/cu.usbX"
         for nvs in nvs_states:  # transport is independent of NVS; assert it holds for all
-            assert SETUP.production_env(family) == want_prod, (family, transport, nvs)
+            slug = "freenove-28" if family == SETUP.FAMILY_FREENOVE else "nimbus-tft"
+            assert SETUP.production_env(family, slug) == want_prod, (family, transport, nvs)
             if want_prov is FAIL:
                 try:
                     SETUP.provision_env(family, vid, node)
@@ -523,7 +651,7 @@ def test_prov_and_prod_env_table_over_family_x_transport_x_nvs():
 
 
 def test_production_and_provision_env_reject_unknown_family():
-    for fn in (SETUP.production_env, lambda f: SETUP.provision_env(f, SETUP.VID_CP210X)):
+    for fn in (lambda f: SETUP.production_env(f, None), lambda f: SETUP.provision_env(f, SETUP.VID_CP210X)):
         try:
             fn("mystery_board")
         except RuntimeError as exc:
@@ -896,9 +1024,401 @@ def test_freenove_install_does_not_probe():
     assert "installed. NVS was not erased" in out
 
 
+# ---- CUM-490: every Freenove panel size installs its own image ----------------------
+#
+# production_env() used to return esp32s3-cyd (the 2.8" image) for every Freenove, so
+# `--size 35` seeded otaType=freenove-35 but flashed a picture sized for the wrong glass.
+# Class tests: every row of FREENOVE_PANELS, every flow that writes production firmware
+# (install and token recovery), and the release config table as the canonical mapping.
+
+
+def _load_config_table():
+    path = Path(__file__).with_name("release_gate") / "check_config_mapping.py"
+    spec = importlib.util.spec_from_file_location("check_config_mapping_for_installer", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module  # the frozen @dataclass resolves its module namespace
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.modules.pop(spec.name, None)
+    return module.CONFIG_TABLE
+
+
+def _acked_ota_type(runner):
+    """The --_ota-type the bootstrap step was asked to seed (None if not seeded)."""
+    for command in runner.calls:
+        if "--_bootstrap-port" in command and "--_ota-type" in command:
+            return command[command.index("--_ota-type") + 1]
+    return None
+
+
+def test_installer_image_mapping_matches_the_release_config_table():
+    # The release gate's CONFIG_TABLE is the canonical type -> image table (CUM-388). The
+    # installer must map every type to the same env, and offer no type the table lacks:
+    # a fifth config added to the table without an installer row (or vice versa) fails.
+    table = {c.type_slug: (c.env, c.is_freenove) for c in _load_config_table()}
+    installer = {SETUP.OTA_TYPE_SOLIDE: (SETUP.production_env(SETUP.FAMILY_SOLIDE, SETUP.OTA_TYPE_SOLIDE), False)}
+    for slug in SETUP.FREENOVE_SLUGS:
+        installer[slug] = (SETUP.production_env(SETUP.FAMILY_FREENOVE, slug), True)
+    assert installer == table
+
+
+def test_size_flag_accepts_exactly_the_panel_rows():
+    for size in SETUP.FREENOVE_PANELS:
+        assert SETUP.parse_args(["--size", size]).size == size
+    with contextlib.redirect_stderr(io.StringIO()):
+        try:
+            SETUP.parse_args(["--size", "50"])
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError("a size with no panel row must be rejected")
+
+
+def test_production_env_freenove_never_guesses_a_panel():
+    for slug in (None, "", "freenove-50", "nimbus-tft"):
+        try:
+            SETUP.production_env(SETUP.FAMILY_FREENOVE, slug)
+        except RuntimeError as exc:
+            assert "--size" in str(exc)
+        else:
+            raise AssertionError(f"Freenove slug {slug!r} must fail closed, not fall back to the 2.8 image")
+
+
+def test_every_freenove_panel_installs_its_own_image_and_seeds_its_own_type():
+    for size, panel in SETUP.FREENOVE_PANELS.items():
+        rc, out, err, runner = _run_main(
+            ["--yes", "--port", "/dev/cu.usbmodem101", "--board", "freenove_s3", "--mode", "notifier", "--size", size],
+            board=_board(vid=SETUP.VID_ESP32S3_NATIVE),
+            panel="ok",
+        )
+        assert rc == 0, (size, rc, err)
+        assert runner.envs == ["provision-cyd", panel.env], (size, runner.envs)
+        assert _acked_ota_type(runner) == panel.slug, (size, runner.calls)
+
+
+def test_every_freenove_panel_from_the_prompt_installs_its_own_image():
+    for index, panel in enumerate(SETUP.FREENOVE_PANELS.values(), 1):
+        SETUP.input = _Input(str(index), "")  # display size, then Enter at the confirm prompt
+        try:
+            rc, out, err, runner = _run_main(
+                ["--port", "/dev/cu.usbmodem101", "--board", "freenove_s3", "--mode", "orchestrator"],
+                board=_board(vid=SETUP.VID_ESP32S3_NATIVE),
+                panel="ok",
+            )
+        finally:
+            del SETUP.input
+        assert rc == 0, (index, rc, err)
+        assert runner.envs == ["provision-cyd", panel.env], (index, runner.envs)
+        assert _acked_ota_type(runner) == panel.slug
+
+
+def _configured_freenove(slug):
+    return _board(vid=SETUP.VID_ESP32S3_NATIVE, nvs_state="nimbus", nvs_family=SETUP.FAMILY_FREENOVE, nvs_slug=slug)
+
+
+def test_configured_freenove_keeps_its_saved_panel_image_under_yes():
+    for panel in SETUP.FREENOVE_PANELS.values():
+        rc, out, err, runner = _run_main(
+            ["--yes", "--port", "/dev/cu.usbmodem101", "--mode", "notifier"],
+            board=_configured_freenove(panel.slug),
+            panel="ok",
+        )
+        assert rc == 0, (panel.slug, rc, err)
+        assert runner.envs == ["provision-cyd", panel.env], (panel.slug, runner.envs)
+        assert _acked_ota_type(runner) == panel.slug  # re-seeded with its own type, never re-typed to 2.8"
+
+
+def test_configured_freenove_without_a_readable_size_is_refused_under_yes():
+    # No guess for a board already in use: nothing is uploaded, the operator is asked for --size.
+    rc, out, err, runner = _run_main(
+        ["--yes", "--port", "/dev/cu.usbmodem101", "--mode", "notifier"],
+        board=_configured_freenove(None),
+        panel="ok",
+    )
+    assert rc == 1
+    assert "could not be read" in err and "--size" in err
+    assert runner.envs == []
+
+
+def test_show_token_restores_the_saved_panel_image():
+    # Token recovery also writes production firmware back; it must be the board's own size.
+    for panel in SETUP.FREENOVE_PANELS.values():
+        rc, out, err, runner = _run_main(
+            ["--yes", "--port", "/dev/cu.usbmodem101", "--show-token"],
+            board=_configured_freenove(panel.slug),
+        )
+        assert rc == 0, (panel.slug, rc, err)
+        assert runner.envs == ["provision-cyd", panel.env], (panel.slug, runner.envs)
+
+
+# ---- CUM-487: the board checks never silently turn off without pyserial --------------
+#
+# The wrong-board probe (CUM-422), the post-flash screen check (CUM-388) and USB-descriptor
+# discovery used to print "Note: pyserial is unavailable ..." and let the flash proceed
+# when the python3 running the installer had no pyserial (pipx/Homebrew/PEP 668 installs).
+
+_MISSING = object()
+
+
+@contextlib.contextmanager
+def _no_pyserial():
+    """Make every pyserial import fail in this process (a None entry in sys.modules
+    raises ImportError on import), restoring the real modules afterwards."""
+    names = ("serial", "serial.tools", "serial.tools.list_ports")
+    saved = {name: sys.modules.get(name, _MISSING) for name in names}
+    for name in names:
+        sys.modules[name] = None
+    try:
+        yield
+    finally:
+        for name, module in saved.items():
+            if module is _MISSING:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = module
+
+
+def test_board_checks_raise_instead_of_skipping_without_pyserial():
+    checks = {
+        "probe_for_freenove": lambda: SETUP.probe_for_freenove("/dev/null", timeout=0.1),
+        "verify_panel_after_flash": lambda: SETUP.verify_panel_after_flash("/dev/null", timeout=0.1),
+        "enumerate_esp_ports": SETUP.enumerate_esp_ports,
+        "identify": lambda: SETUP.identify("/dev/null"),
+    }
+    with _no_pyserial():
+        assert SETUP.pyserial_available() is False
+        for name, call in checks.items():
+            err = io.StringIO()
+            try:
+                with contextlib.redirect_stderr(err):
+                    result = call()
+            except SETUP.PyserialMissing as exc:
+                assert "pyserial" in str(exc), name
+            else:
+                raise AssertionError(f"{name} returned {result!r} without pyserial instead of failing loudly")
+            assert "skipped" not in err.getvalue() and "could not be verified" not in err.getvalue(), name
+
+
+def test_main_probe_without_pyserial_fails_and_restores_production():
+    # If the probe ever runs without pyserial, the setup step fails (exit 1) instead of
+    # proceeding unprobed; production firmware is still put back, nothing reports success.
+    rc, out, err, runner = _run_main(
+        ["--yes", "--port", "/dev/cu.usbmodem101", "--board", "solide_s3", "--mode", "orchestrator"],
+        board=_board(vid=SETUP.VID_ESP32S3_NATIVE),
+        panel="ok",
+        probe=SETUP.PyserialMissing("pyserial is not installed"),
+    )
+    assert rc == 1
+    assert "could not be applied" in err
+    assert runner.envs == ["provision", "esp32s3"]  # setup sketch, then production restored
+    assert "installed. NVS was not erased" not in out
+
+
+def _core_with_penv_python(tmp: str) -> tuple[Path, Path]:
+    core = Path(tmp)
+    python = SETUP.penv_python(core)
+    python.parent.mkdir(parents=True)
+    python.write_text("")
+    return core, python
+
+
+def _must_not_rerun(command):
+    raise AssertionError(f"must not re-run the installer: {command}")
+
+
+def _without_reexec_flag():
+    return {key: value for key, value in os.environ.items() if key != SETUP.REEXEC_ENV}
+
+
+def test_ensure_pyserial_is_a_no_op_when_pyserial_is_present():
+    def _must_not_run():
+        raise AssertionError("PlatformIO must not be consulted when pyserial is present")
+
+    with _patched(pyserial_available=lambda: True, platformio_executable=_must_not_run):
+        assert SETUP.ensure_pyserial(["--yes"]) is None
+
+
+def test_ensure_pyserial_reruns_under_platformio_python_with_the_same_args():
+    children = []
+    argv = ["--yes", "--board", "freenove_s3", "--size", "35"]
+    with tempfile.TemporaryDirectory() as tmp:
+        core, python = _core_with_penv_python(tmp)
+        with (
+            _patched(
+                pyserial_available=lambda: False,
+                platformio_executable=lambda: (core, "pio"),
+                _wait_for_child=lambda command: children.append(command) or 7,
+            ),
+            mock.patch.dict(os.environ, _without_reexec_flag(), clear=True),
+            contextlib.redirect_stdout(io.StringIO()) as out,
+        ):
+            assert SETUP.ensure_pyserial(argv) == 7  # the re-run's own exit code
+    assert children == [[str(python), str(Path(SETUP.__file__).resolve()), *argv]]
+    assert "re-running with PlatformIO's Python" in out.getvalue()
+
+
+def test_ensure_pyserial_uses_the_python_a_pipx_pio_runs_on():
+    # No PlatformIO penv (pipx / Homebrew install): the interpreter on the `pio` script's
+    # #! line has PlatformIO, so it has pyserial. Re-run there; no build first.
+    children, runner = [], _RecordingRunner()
+    with tempfile.TemporaryDirectory() as tmp:
+        venv_python = Path(tmp) / "venv" / "bin" / "python3.12"
+        venv_python.parent.mkdir(parents=True)
+        venv_python.write_text("")
+        pio = Path(tmp) / "venv" / "bin" / "pio"
+        pio.write_text(f"#!{venv_python}\nfrom platformio.__main__ import main\n")
+        with (
+            _patched(
+                pyserial_available=lambda: False,
+                platformio_executable=lambda: (Path(tmp) / "core", str(pio)),
+                _wait_for_child=lambda command: children.append(command) or 0,
+                run_checked=runner,
+            ),
+            mock.patch.dict(os.environ, _without_reexec_flag(), clear=True),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            assert SETUP.ensure_pyserial(["--yes"]) == 0
+    assert children[0][0] == str(venv_python)
+    assert runner.calls == []  # found without building anything
+
+
+def test_script_interpreter_accepts_only_a_python():
+    with tempfile.TemporaryDirectory() as tmp:
+        script = Path(tmp) / "pio"
+        for line, want_python in (("#!/bin/sh", False), ("no shebang", False), ("#!/usr/bin/python3", True)):
+            script.write_text(line + "\n")
+            found = SETUP._script_interpreter(str(script))
+            assert (found is not None) == want_python, (line, found)
+    assert SETUP._script_interpreter("/no/such/pio") is None
+
+
+def test_ensure_pyserial_stops_in_the_rerun_when_platformio_python_lacks_it_too():
+    err = io.StringIO()
+    with (
+        _patched(pyserial_available=lambda: False, _wait_for_child=_must_not_rerun),
+        mock.patch.dict(os.environ, {SETUP.REEXEC_ENV: "1"}),
+        contextlib.redirect_stderr(err),
+    ):
+        assert SETUP.ensure_pyserial(["--yes"]) == 1
+    assert "-m pip install pyserial" in err.getvalue()
+    assert sys.executable in err.getvalue()
+
+
+def test_ensure_pyserial_installs_build_tools_first_then_stops_if_still_missing():
+    runner = _RecordingRunner()
+    err = io.StringIO()
+    with tempfile.TemporaryDirectory() as tmp:
+        with (
+            # No penv yet and a `pio` that is no script: a first run with nothing to re-run on.
+            _patched(
+                pyserial_available=lambda: False,
+                platformio_executable=lambda: (Path(tmp), "pio"),
+                run_checked=runner,
+                _wait_for_child=_must_not_rerun,
+            ),
+            mock.patch.dict(os.environ, _without_reexec_flag(), clear=True),
+            contextlib.redirect_stderr(err),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            assert SETUP.ensure_pyserial(["--yes"]) == 1
+    assert runner.calls == [["pio", "run", "-e", "esp32s3"]]  # the build tools, nothing else
+    assert "PlatformIO's own Python was not found" in err.getvalue()
+
+
+def test_wait_for_child_turns_a_broken_interpreter_into_a_stop():
+    try:
+        SETUP._wait_for_child(["/no/such/python", "setup_device.py"])
+    except RuntimeError as exc:
+        assert "PlatformIO's Python" in str(exc)
+    else:
+        raise AssertionError("a missing interpreter must become a RuntimeError, not a traceback")
+
+
+# The same contract end to end, with real interpreters: the installer is launched by a
+# python3 whose pyserial import fails (a blocker package first on PYTHONPATH), and
+# PLATFORMIO_CORE_DIR points at a fake core whose penv holds fake tools.
+
+_SCRIPT = str(Path(__file__).with_name("setup_device.py"))
+
+
+def _posix_only():
+    if os.name == "nt":
+        raise unittest.SkipTest("the fake interpreters are POSIX shell scripts")
+
+
+def _fake_core(tmp: Path, python_body: str) -> tuple[dict, Path]:
+    blocker = tmp / "blocker" / "serial"
+    blocker.mkdir(parents=True)
+    (blocker / "__init__.py").write_text('raise ImportError("pyserial blocked for this test")\n')
+    pio_log = tmp / "pio.log"
+    bindir = tmp / "core" / "penv" / "bin"
+    bindir.mkdir(parents=True)
+    tools = {"pio": f'#!/bin/sh\necho "$*" >> "{pio_log}"\nexit 0\n', "python": python_body}
+    for name, body in tools.items():
+        (bindir / name).write_text(body)
+        (bindir / name).chmod(0o755)
+    env = {k: v for k, v in os.environ.items() if k not in (SETUP.REEXEC_ENV, "PYTHONHOME")}
+    env.update(PYTHONPATH=str(tmp / "blocker"), PLATFORMIO_CORE_DIR=str(tmp / "core"))
+    return env, pio_log
+
+
+def _launch(env, *args):
+    command = [sys.executable, _SCRIPT, *args]
+    return subprocess.run(command, env=env, capture_output=True, text=True, timeout=60)
+
+
+def test_launch_without_pyserial_reruns_under_platformio_python():
+    _posix_only()
+    with tempfile.TemporaryDirectory() as tmp:
+        fake_python = (
+            '#!/bin/sh\necho "FAKE-PENV $*"\necho "REEXEC=$NIMBUS_SETUP_REEXEC"\n'
+            'echo "PYTHONPATH=[$PYTHONPATH]"\nexit 7\n'
+        )
+        env, pio_log = _fake_core(Path(tmp), fake_python)
+        args = ("--yes", "--port", "/dev/null", "--board", "freenove_s3", "--size", "40", "--mode", "notifier")
+        result = _launch(env, *args)
+        assert result.returncode == 7, (result.stdout, result.stderr)  # the re-run's exit code
+        assert f"FAKE-PENV {Path(_SCRIPT).resolve()} {' '.join(args)}" in result.stdout
+        assert "REEXEC=1" in result.stdout
+        assert "PYTHONPATH=[]" in result.stdout  # the launching Python's path does not leak in
+        assert not pio_log.exists()  # nothing was built or flashed by the parent
+
+
+def test_launch_when_platformio_python_also_lacks_pyserial_stops_before_any_board_work():
+    # The fake penv python is a real interpreter that ALSO lacks the module (it puts the
+    # blocker on its own path): the re-run must stop with the fix, not proceed with checks off.
+    _posix_only()
+    with tempfile.TemporaryDirectory() as tmp:
+        fake_python = f'#!/bin/sh\nPYTHONPATH="{Path(tmp) / "blocker"}" exec "{sys.executable}" "$@"\n'
+        env, pio_log = _fake_core(Path(tmp), fake_python)
+        result = _launch(env, "--yes", "--port", "/dev/null", "--board", "solide_s3", "--mode", "orchestrator")
+        assert result.returncode == 1, (result.stdout, result.stderr)
+        assert "re-running with PlatformIO's Python" in result.stdout
+        assert "PlatformIO's Python has no pyserial" in result.stderr
+        assert "-m pip install pyserial" in result.stderr
+        assert "Note:" not in result.stderr and "installed" not in result.stdout
+        assert not pio_log.exists()  # no build tools run, no upload, no board touched
+
+
+def test_launch_first_run_installs_build_tools_then_stops_if_python_never_appears():
+    _posix_only()
+    with tempfile.TemporaryDirectory() as tmp:
+        env, pio_log = _fake_core(Path(tmp), "")
+        (Path(tmp) / "core" / "penv" / "bin" / "python").unlink()  # PlatformIO's Python not set up yet
+        result = _launch(env, "--yes", "--port", "/dev/null", "--board", "solide_s3", "--mode", "orchestrator")
+        assert result.returncode == 1, (result.stdout, result.stderr)
+        assert pio_log.read_text().splitlines()[0] == "run -e esp32s3"  # the build tools, then stop
+        assert "PlatformIO's own Python was not found" in result.stderr
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
-            fn()
+            try:
+                fn()
+            except unittest.SkipTest as skip:
+                print(f"skipped {name}: {skip}")
     print("setup_device: family autodetect, otaType seed, identify-and-confirm, native-USB all passed")
     print("setup_device: CUM-388 D1 failure-path screen check + D2 transport env selection passed")
+    print("setup_device: CUM-490 per-panel image + CUM-487 pyserial guard (re-run or stop) passed")

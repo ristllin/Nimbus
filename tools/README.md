@@ -17,7 +17,7 @@ Everything you need to install, recover, and manage a device you own.
 
 | Tool | One-liner |
 |---|---|
-| `setup_device.py` | Guarded firmware installer over the UART port (MAC-confirmed; seeds display + mode on a fresh board). |
+| `setup_device.py` | Guarded firmware installer over USB: finds the board by its USB descriptor, installs the image for its board and panel size, refuses a wrong-variant flash, never erases NVS. Re-runs itself under PlatformIO's Python when the launching `python3` has no pyserial. |
 | `usb_reset.py` | Programmatic unbrick - a libusb bus reset, equivalent to replugging a wedged USB-serial port. macOS and Linux; needs pyusb (`pipx run tools/usb_reset.py` brings it) and libusb. |
 | `tcal_wizard.py` | Touch-calibration wizard for the TFT variant (four-corner press → axis/orientation flags via `TCAL`). |
 | `connectors_setup.py` | Push connector credentials from the root `.env` to a board via the token-gated API (`--list` to inspect; `--ip`/`--token` override the `.env` board). |
