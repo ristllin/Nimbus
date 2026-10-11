@@ -26,7 +26,7 @@ static const char UI_LOOPS[] PROGMEM = R"=====(<div class=pane id=pane-gov style
 <p class="hint tip">A wake-up is a turn the assistant schedules for itself to follow up later. Allow silently lets them run; "Ask me first" holds each new one for a single yes/no, never a repeating prompt.</p>
 <label>When the assistant schedules a wake-up</label>
 <select id=wkPolicy>
-<option value=silent-allow>Allow silently</option>
+<option value=auto>Allow silently</option>
 <option value=ask>Ask me first</option>
 </select>
 <div class=hint id=wkMsg></div>

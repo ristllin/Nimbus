@@ -987,7 +987,7 @@ html.authlock aside.side,html.authlock .pane,html.authlock .mobmode{visibility:h
 <p class="hint tip">A wake-up is a turn the assistant schedules for itself to follow up later. Allow silently lets them run; "Ask me first" holds each new one for a single yes/no, never a repeating prompt.</p>
 <label>When the assistant schedules a wake-up</label>
 <select id=wkPolicy>
-<option value=silent-allow>Allow silently</option>
+<option value=auto>Allow silently</option>
 <option value=ask>Ask me first</option>
 </select>
 <div class=hint id=wkMsg></div>
@@ -2369,7 +2369,9 @@ function loadConnect(){
 // Factory reset: type-to-confirm, then POST the exact confirm phrase the device requires.
 (function(){const b=$('factoryReset'); if(!b)return; b.onclick=()=>{
   const alsoSd=$('factoryEraseSd')&&$('factoryEraseSd').checked;
-  uiPrompt('Erase all content and settings?\n\nThis removes Wi-Fi, API keys, the Telegram list, Bluetooth pairings, memory, the device name, and the device sign-in code, then restarts into first-time setup as a fresh device.'+(alsoSd?'\n\nThe SD card will also be erased (up to a minute).':'')+'\n\nType FACTORY RESET to confirm:',{ok:'Factory Reset',danger:true,confirmWord:'FACTORY RESET',placeholder:'FACTORY RESET'}).then(p=>{
+  // CUM-514 (L20 docs audit): memory lives in storage, which this reset erases
+  // ONLY with the box ticked - the sentence follows the box.
+  uiPrompt('Erase all content and settings?\n\nThis removes Wi-Fi, API keys, the Telegram list, Bluetooth pairings, the device name, and the device sign-in code, then restarts into first-time setup as a fresh device.'+(alsoSd?'\n\nStorage is erased too: memories, conversation history, saved files, routines and logs (up to a minute).':'\n\nMemories, conversation history and saved files are kept. To remove them too, tick Also erase storage.')+'\n\nType FACTORY RESET to confirm:',{ok:'Factory Reset',danger:true,confirmWord:'FACTORY RESET',placeholder:'FACTORY RESET'}).then(p=>{
   if(p===null)return;
   if(p.trim().toUpperCase()!=='FACTORY RESET'){toast('Not reset - the phrase didn\'t match');return;}
   const fd=new FormData();fd.append('confirm','FACTORY RESET');fd.append('eraseSd',alsoSd?'1':'0');
@@ -2471,31 +2473,40 @@ function loadLoops(){
 // ---- Wake-ups (CUM-72, N2 /api/wakeups) ------------------------------------
 // Policy default silent-allow; "ask me first" surfaces at most ONE pending
 // approval as a single yes/no card - never a repeating prompt / loop.
+// CUM-514 (L20 docs audit): wired to the device's REAL contract. GET answers
+// {approvalMode:"ask"|"auto", wakeups:[{id,name,note,enabled,pending,inSec}]};
+// POST takes action=mode&value=ask|auto, or action=approve|cancel&id=<id>. The
+// control used to read policy/items/pending and post policy=..., none of which
+// the device has, so it could not save and the approval card never showed.
+function wkIn(s){if(s==null)return '';const m=Math.round(s/60);
+  return m<1?'in under a minute':(m<120?'in ~'+m+' min':'in ~'+Math.round(m/60)+' h');}
+function wkPost(body){return fetch('/api/wakeups',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(body).toString()}).then(jok);}
 function loadWakeups(){
   const sel=$('wkPolicy'); if(!sel)return;
   fetch('/api/wakeups').then(r=>r.ok?r.json():Promise.reject(r.status)).then(d=>{
-    if(document.activeElement!==sel)sel.value=d.policy||'silent-allow';
+    if(document.activeElement!==sel)sel.value=d.approvalMode==='ask'?'ask':'auto';
     sel.onchange=()=>run({status:'wkMsg',pending:'Saving…',
-      work:()=>fetch('/api/wakeups',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({policy:sel.value}).toString()}).then(jok),
+      work:()=>wkPost({action:'mode',value:sel.value}),
       ok:()=>sel.value==='ask'?'Ask me first - new wake-ups wait for approval.':'Wake-ups run silently.',
       error:e=>'Couldn\'t save'+(e?(' ('+e+')'):'')+' - try again.'});
+    const items=(d.wakeups||[]).filter(w=>w);
     // A single pending approval card (never a loop): only the FIRST pending item.
-    const p=d.pending, box=$('wkPending');
+    const p=items.find(w=>w.pending), box=$('wkPending');
     if(box){
       if(p){box.style.display='block';
-        $('wkPendLabel').textContent=p.label||'A new wake-up';
-        $('wkPendWhen').textContent=(p.when?('When: '+p.when+'. '):'')+(p.why||'The assistant wants to follow up later.');
-        const act=(a,msg)=>run({status:'wkPendMsg',pending:msg,
-          work:()=>fetch('/api/wakeups',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({action:a,id:p.id||''}).toString()}).then(jok),
+        $('wkPendLabel').textContent=p.name||'A new wake-up';
+        $('wkPendWhen').textContent=(p.inSec!=null?('When: '+wkIn(p.inSec)+'. '):'')+(p.note||'The assistant wants to follow up later.');
+        const act=(a,word,msg)=>run({status:'wkPendMsg',pending:msg,
+          work:()=>wkPost({action:a,id:p.id||''}),
           ok:()=>{setTimeout(loadWakeups,400);return a==='approve'?'Approved.':'Denied.';},
-          error:e=>'Couldn\'t '+a+(e?(' ('+e+')'):'')+' - try again.'});
-        $('wkApprove').onclick=()=>act('approve','Approving…');
-        $('wkDeny').onclick=()=>act('deny','Denying…');
+          error:e=>'Couldn\'t '+word+(e?(' ('+e+')'):'')+' - try again.'});
+        $('wkApprove').onclick=()=>act('approve','approve','Approving…');
+        $('wkDeny').onclick=()=>act('cancel','deny','Denying…');
       } else box.style.display='none';
     }
     const list=$('wkList');
-    if(list){const items=d.items||[];
-      list.innerHTML=items.length?('Scheduled: '+items.map(w=>_sEsc(w.label||w.when||'wake-up')+(w.enabled===false?' (off)':'')).join(' &middot; ')):'No wake-ups scheduled.';}
+    if(list){const live=items.filter(w=>w.enabled);
+      list.innerHTML=live.length?('Scheduled: '+live.map(w=>_sEsc(w.name||'wake-up')+(w.inSec!=null?' ('+wkIn(w.inSec)+')':'')+(w.pending?' (waiting for approval)':'')).join(' &middot; ')):'No wake-ups scheduled.';}
   }).catch(()=>{const m=$('wkMsg');if(m)fbState('wkMsg','error','Couldn\'t load wake-ups - try again.');});
 }
 function initLoopForm(){

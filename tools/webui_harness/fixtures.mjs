@@ -143,13 +143,15 @@ export const MODELS = {
 export const FALLBACKS = { chain: ['anthropic', 'cumulo', 'zai'] };
 
 // N2 contract stub
+// The device's real GET /api/wakeups shape (lib/core orch_loops.cpp dumpWakeupsApi).
 export const WAKEUPS = {
-  policy: 'silent-allow',
-  items: [
-    { id: 'w1', when: '07:30', label: 'Morning brief', enabled: true },
-    { id: 'w2', when: '18:00', label: 'Evening recap', enabled: false },
+  approvalMode: 'auto', maxArmed: 4, armed: 1,
+  wakeups: [
+    { id: 'lp000a1', name: 'Morning brief', note: 'Send the morning brief.', createdBy: 'agent',
+      enabled: true, approved: true, pending: false, nextRun: 1700000000, inSec: 1800, lastResult: 'none' },
+    { id: 'lp000a2', name: 'Evening recap', note: 'Recap the day.', createdBy: 'agent',
+      enabled: false, approved: true, pending: false, nextRun: 0, lastResult: 'ok' },
   ],
-  pending: null, // when a wake-up needs approval, an object; single card, never a loop
 };
 
 export const HEALTH = { ok: true, checks: [{ name: 'wifi', ok: true }, { name: 'sd', ok: true }] };

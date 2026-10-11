@@ -136,3 +136,27 @@ test('danger zone erase requires typing the exact phrase', async ({ page }) => {
   await confirmModal(page, 'ERASE STORAGE');
   await expect.poll(() => posted).toBe(true);
 });
+
+// CUM-514 (L20 docs audit): the Factory Reset confirm says memory is removed only
+// when "Also erase storage" is ticked - memory lives in storage, which the reset
+// keeps otherwise. Nothing is posted: the dialog is dismissed.
+test('factory reset confirm follows the erase-storage box', async ({ page }) => {
+  await seedToken(page);
+  let posted = false;
+  await page.route('**/api/factory-reset', (r) => { posted = true; return r.fulfill({ status: 200, body: '{}' }); });
+  await openApp(page);
+  await page.locator('.tab[data-p=device]').click();
+  await page.locator('#pane-set details summary', { hasText: 'Danger zone' }).click();
+  await page.locator('#factoryReset').click();
+  const body = page.locator('#modalBody');
+  await expect(body).toContainText('Memories, conversation history and saved files are kept');
+  await expect(body).not.toContainText('Storage is erased too');
+  await dismissModal(page);
+  await page.locator('#factoryEraseSd').check();
+  await page.locator('#factoryReset').click();
+  await expect(body).toContainText('Storage is erased too: memories, conversation history');
+  await expect(body).not.toContainText('are kept');
+  await dismissModal(page);
+  await page.waitForTimeout(200);
+  expect(posted).toBe(false);
+});

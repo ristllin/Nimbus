@@ -14,40 +14,59 @@ async function openSub(page, sp) {
   await page.locator(`.subtab[data-sp=${sp}]`).click();
 }
 
+// CUM-514 (L20 docs audit): the device's REAL /api/wakeups contract
+// (src/net/webui.cpp + lib/core dumpWakeupsApi): GET {approvalMode, wakeups[]},
+// POST action=mode&value=ask|auto and action=approve|cancel&id. These specs used
+// to stub the page's own (wrong) shape, so they passed while the control was dead.
+const wk = (over = {}) => ({ approvalMode: 'auto', maxArmed: 4, armed: 0, wakeups: [], ...over });
+
 test('wake-ups default to silent-allow and the policy is saveable', async ({ page }) => {
   await seedToken(page);
-  let policy = null;
+  let post = null;
   await page.route('**/api/wakeups', (route) => {
     const req = route.request();
-    if (req.method() === 'POST') { policy = new URLSearchParams(req.postData() || '').get('policy'); return route.fulfill({ status: 200, body: '{"ok":true}' }); }
-    return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ policy: 'silent-allow', items: [], pending: null }) });
+    if (req.method() === 'POST') { post = new URLSearchParams(req.postData() || ''); return route.fulfill({ status: 200, body: '{"ok":true}' }); }
+    return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(wk()) });
   });
   await openSub(page, 'routines');
   await expect(page.locator('#wkPolicy')).toBeVisible();
-  await expect(page.locator('#wkPolicy')).toHaveValue('silent-allow');
+  await expect(page.locator('#wkPolicy')).toHaveValue('auto');
   await page.locator('#wkPolicy').selectOption('ask');
-  await expect.poll(() => policy).toBe('ask');
+  await expect.poll(() => post && post.get('action')).toBe('mode');
+  expect(post.get('value')).toBe('ask');
+  await expect(page.locator('#wkMsg')).toContainText('Ask me first');
 });
 
 test('"ask me first" shows a single approval card, not a loop', async ({ page }) => {
   await seedToken(page);
-  let action = null;
+  const posts = [];
   await page.route('**/api/wakeups', (route) => {
     const req = route.request();
-    if (req.method() === 'POST') { action = new URLSearchParams(req.postData() || '').get('action'); return route.fulfill({ status: 200, body: '{"ok":true}' }); }
+    if (req.method() === 'POST') { posts.push(new URLSearchParams(req.postData() || '')); return route.fulfill({ status: 200, body: '{"ok":true}' }); }
     return route.fulfill({ status: 200, contentType: 'application/json',
-      body: JSON.stringify({ policy: 'ask', items: [], pending: { id: 'w9', label: 'Follow up on the build', when: '18:00', why: 'Check whether CI passed.' } }) });
+      body: JSON.stringify(wk({ approvalMode: 'ask', armed: 2, wakeups: [
+        { id: 'lp0009', name: 'Follow up on the build', note: 'Check whether CI passed.', createdBy: 'agent', enabled: true, approved: false, pending: true, nextRun: 1, inSec: 600, lastResult: 'none' },
+        { id: 'lp0010', name: 'Second pending', note: 'x', createdBy: 'agent', enabled: true, approved: false, pending: true, nextRun: 1, inSec: 900, lastResult: 'none' },
+      ] })) });
   });
   await openSub(page, 'routines');
+  await expect(page.locator('#wkPolicy')).toHaveValue('ask');
   const card = page.locator('#wkPending');
   await expect(card).toBeVisible();
   await expect(card).toContainText('Follow up on the build');
+  await expect(card).toContainText('in ~10 min');
+  await expect(card).toContainText('Check whether CI passed.');
   // Exactly one approval card (a single yes/no), never a repeating list of prompts.
   await expect(page.locator('#wkPending')).toHaveCount(1);
   await expect(card.getByRole('button', { name: 'Approve' })).toBeVisible();
-  await expect(card.getByRole('button', { name: 'Deny' })).toBeVisible();
   await card.getByRole('button', { name: 'Approve' }).click();
-  await expect.poll(() => action).toBe('approve');
+  await expect.poll(() => posts.length).toBe(1);
+  expect(posts[0].get('action')).toBe('approve');
+  expect(posts[0].get('id')).toBe('lp0009');
+  await card.getByRole('button', { name: 'Deny' }).click();
+  await expect.poll(() => posts.length).toBe(2);
+  expect(posts[1].get('action')).toBe('cancel');   // the API's deny verb
+  expect(posts[1].get('id')).toBe('lp0009');
 });
 
 test('safety subtab shows the real controls (downloads + guest moderation), no dead gates', async ({ page }) => {
