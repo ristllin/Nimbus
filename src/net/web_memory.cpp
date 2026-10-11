@@ -18,6 +18,7 @@
 #include "nimbus/orch/connectors_wire.h"   // connectorScope - the orchestrator-direct/subsessions-only/unavailable badge (CUM-159)
 #include "../agent/skills.h"              // skill capsules surfaced in /api/tools (P7)
 #include "../agent/store.h"
+#include "nimbus/store/persist.h"          // storageFullJson - embedcfg answers 507 on a full NVS (CUM-479)
 #include "webui.h"                         // webAuthOk() - /mcp token gate
 #include "nimbus/orch/episodic.h"
 #include "nimbus/orch/episodic_log.h"   // civilDate + EpiQueryInfo (deep history)
@@ -632,6 +633,18 @@ void handleEmbedVerify(AsyncWebServerRequest* r) {
   String out; serializeJson(d, out); sendJson(r, v.empty() ? 400 : 200, out);
 }
 
+// Point the live vector store (and its cold archive) at a new width. The cold store
+// follows the live width, the same rule boot applies (memory_subsystem begin()):
+// archived vectors of another width can never be searched or restored again, and
+// the memory tools would name the wrong width. Caller holds mem::Lock.
+void applyEmbedWidthLocked(int dims) {
+  mem::vectors().configure(dims);
+  if (mem::archive().dims() != dims) {
+    mem::archive().flushAll();
+    mem::archive().configure(dims);
+  }
+}
+
 // POST embedcfg: refuse a change while locked UNLESS reset=1, which WIPES the VDB
 // (the destructive set-once path). This is the server-side guard behind the UI
 // warning - a change can never silently strand incomparable vectors.
@@ -678,20 +691,24 @@ void handleEmbedCfgPost(AsyncWebServerRequest* r) {
       sendJson(r, 409, kLocked);
       return;
     }
+    // Store the new config FIRST (CUM-479). On a full NVS it does not land - the
+    // store puts back any part that did, so the stored config stays whole - and then
+    // nothing below may run: a reset must never wipe the owner's memories for a config
+    // that was not saved. Under the lock no turn can embed between this write and the
+    // wipe; only a power cut in that window could leave old-width vectors under the new
+    // config, which a second reset=1 clears.
+    if (!agent::store::setEmbedConfig(provider, model, dims)) {
+      sendJson(r, nimbus::store::kStorageFullStatus, nimbus::store::storageFullJson().c_str());
+      return;
+    }
     if (reset) {
       mem::vectors().flushAll();
       mem::persistVectors();
+      // A failed unlock after the wipe is benign (a locked, empty store re-locks on
+      // its first embed anyway) and must not turn a completed save into a 507.
       agent::store::setEmbedLocked(false);
     }
-    agent::store::setEmbedConfig(provider, model, dims);
-    mem::vectors().configure(dims);
-    // The cold store follows the live width, the same rule boot applies
-    // (memory_subsystem begin()): archived vectors of another width can never be
-    // searched or restored again, and the memory tools would name the wrong width.
-    if (mem::archive().dims() != dims) {
-      mem::archive().flushAll();
-      mem::archive().configure(dims);
-    }
+    applyEmbedWidthLocked(dims);
   }
   handleEmbedCfgGet(r);
 }

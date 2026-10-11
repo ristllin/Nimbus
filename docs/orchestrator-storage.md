@@ -68,11 +68,14 @@ Rule of thumb:
 | Journal | NVS (6 slots `agjournal/j0..j5`) - the SD day-stream was PLANNED, never built | - | same NVS |
 | Provider keys / routing / config | **NVS** | `solide::memory` keys | unchanged |
 | Verify cache | **NVS** | `vfy_*` | unchanged |
+| Provider model catalogs (rebuildable cache) | **LittleFS** | `/data/mcat_<provider>.json` (moved off NVS in CUM-479; see [the NVS budget](reference/config-and-nvs.md#nvs-budget-and-the-full-storage-contract)) | same LittleFS |
 | Logs / diagnostics | Durable error log (`GET /api/errlog`) on SD `/log/nimbus.log` (rotated 4x256 KB), plus the 1280 B RAM ring (`GET /api/log`) + serial. Device EVENTS are also durable via the episodic `system` timeline (kind=log) | - | flash fallback `/log` on LittleFS (2x24 KB) + RAM ring |
 
 Two things **do not move**: NVS config/keys/scratchpad/verify are already at the
 right tier and are card-independent - the "critical info" the directive keeps off
-SD. Everything bulk targets SD with a **bounded** LittleFS/RAM degraded mode.
+SD. Rebuildable caches never live in NVS: the 20 KB partition is reserved for owner
+config and bounded values (the full rule and the HTTP 507 contract for a save that
+does not land are in the [Config and NVS reference](reference/config-and-nvs.md#nvs-budget-and-the-full-storage-contract)). Everything bulk targets SD with a **bounded** LittleFS/RAM degraded mode.
 
 ### Durable log: what persists, and its best-effort limit
 

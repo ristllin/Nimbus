@@ -8,6 +8,14 @@
 // the ported agent code (adapters + orchestrator + telegram) depends on, so the
 // port reads/writes config the same way. Keys live in agent_config.h.
 //
+// WRITE VERDICTS (CUM-479): every setter returns true iff its write LANDED in NVS.
+// A full partition makes solide::memory refuse a write; the old `void` setters threw
+// that away, so save routes answered {"ok":true} over dropped changes. Each write also
+// reports to the persist ledger (nimbus::sys::notePersist), which logs the failing key
+// and lets a route's nimbus::sys::SaveScope answer HTTP 507 storage_full. An empty
+// value for a key whose default is "" is stored as an ERASE, so clearing a key or
+// connector lands even on a 100% full partition (it frees entries, never needs one).
+//
 // CREDENTIAL GATE (live-gated): every getter that returns a key/token/base is ""
 // until the user provisions it via the web UI / NVS. All orchTurn* / adapter
 // dispatch/poll / the Telegram loop are dead without these - the has*() helpers
@@ -27,28 +35,28 @@ String setupApPass();        // per-device setup-AP passphrase (gen-on-first-use
                              // setter - regenerates only via factory reset). Shown on the
                              // device's setup screen; the softAP + Wi-Fi QR use it.
 String deviceTz();           // POSIX TZ for Local Loops wall-clock schedules (default UTC0)
-void   setDeviceTz(const String& tz);
+bool   setDeviceTz(const String& tz);
 
 // Cloud relay (cumulo-nimbus) pairing state. Orchestrator-only; ships dark
 // (cloudOptIn default false). The credential is cloud-minted at pairing (unlike
 // webAuthToken it HAS a setter) and wiped on unpair / a "bye:unpaired" from the relay.
 bool   cloudOptIn();
-void   setCloudOptIn(bool on);
+bool   setCloudOptIn(bool on);
 String cloudDeviceId();
 String cloudCred();
 String cloudHost();          // relay host (default "app.cumulo-nimbus.ai")
 String cloudName();          // paired device display name ("" = none)
 bool   cloudPaired();        // has both a device id and a credential
-// Persist the pairing. Returns false if the credential did NOT land (a fully
-// provisioned 20 KB NVS can be starved by the mcat_ catalog caches). On a starved
-// write it first evicts those rebuildable caches and retries, so a real pairing is
-// never silently lost to a cache; false means even that did not free enough room.
+// Persist the pairing. Returns false if the credential did NOT land (a full 20 KB
+// NVS). On a starved write it evicts any legacy mcat_ catalog cache (a backstop: since
+// CUM-479 the catalogs live in flash files and normally nothing is left to evict) and
+// retries once; false means the credential still did not fit.
 bool   setCloudPairing(const String& deviceId, const String& cred, const String& host,
                        const String& name);
-void   clearCloudPairing();  // wipe id + credential + name (keeps the opt-in flag)
+bool   clearCloudPairing();  // wipe id + credential + name (keeps the opt-in flag)
 
 String dreamScratchHash();   // fnv64-hex of the scratchpad after the last dream ("" = none)
-void   setDreamScratchHash(const String& hex);
+bool   setDreamScratchHash(const String& hex);
 
 // custom / proxy endpoint (registered as backend "custom" when base non-empty)
 String customBase();
@@ -59,14 +67,14 @@ bool   hasCustom();          // customBase() non-empty
 
 // Z.ai (GLM) - OpenAI-compatible provider. zaiBase is the probed working host.
 String zaiKey();             bool hasZaiKey();
-String zaiBase();            void setZaiBase(const String& host);   // "" until probed
+String zaiBase();            bool setZaiBase(const String& host);   // "" until probed
 // Cumulo Nimbus router - one key, per-role upstream chosen via the model id.
 String cumuloKey();          bool hasCumuloKey();
 String cumuloBase();         // "" -> CUMULO_HOST_DEFAULT
 // Fallback rule set (device engine; shared v1 schema with the cloud). "" = use the
 // shipped size-class defaults. syncTs>0 means the set was pulled from the cloud.
-String   fallbackRulesJson();      void setFallbackRulesJson(const String& json);
-uint32_t fallbackSyncTs();         void setFallbackSyncTs(uint32_t ts);
+String   fallbackRulesJson();      bool setFallbackRulesJson(const String& json);
+uint32_t fallbackSyncTs();         bool setFallbackSyncTs(uint32_t ts);
 
 // ---- orchestrator routing + models ----
 String orchHost();                          // explicit host provider ("" => top of priority)
@@ -75,7 +83,7 @@ String resolvedOrchHost();                  // orchHost, else the first KEYED pr
                                             // this whenever the model WINDOW is resolved
 int    effectiveToolResultCap();            // the per-result clamp a turn will apply (derived|owner)
 String orchConvId();                        // "host|convId" (per-host conversation state)
-void   setOrchConvId(const String& v);
+bool   setOrchConvId(const String& v);
 String providerPriority();                  // orchestrator-host priority list
 String orchPriority();                      // alias of providerPriority
 String subPriority();                       // sub-session provider priority list
@@ -84,12 +92,21 @@ String subModel(const String& provider);    // per-provider sub-session model
 // Live model list harvested from the provider's /v1/models by the verify pass;
 // "" until a verify has run. Callers fall back to the static compile-time list.
 String modelChoices(const String& provider);
-void   setModelChoices(const String& provider, const String& csv);
-// Rich capability-aware catalog per provider (GET /api/models model array as JSON,
-// NVS key "mcat_<provider>"). "" = never harvested. Backs the PSRAM runtime cache
-// and survives a reboot; the CSV above stays for the legacy /api/orch dropdowns.
+bool   setModelChoices(const String& provider, const String& csv);
+// Rich capability-aware catalog per provider (GET /api/models model array as JSON).
+// A REBUILDABLE cache, so it lives in a LittleFS file (/data/mcat_<provider>.json),
+// never in NVS (CUM-479: five ~3.8 KB catalogs exhausted the 20 KB partition). ""
+// = never harvested. Survives a reboot; the CSV above stays for the /api/orch
+// dropdowns (bounded: at most 8 ids, the one catalog-ish value left in NVS).
 String modelCatalogJson(const String& provider);
-bool   setModelCatalogJson(const String& provider, const String& json);  // false = write did not land (NVS full)
+bool   setModelCatalogJson(const String& provider, const String& json);  // false = file write failed
+// Erase every legacy NVS catalog key (mcat_<provider>, pre-CUM-479). Erasing only
+// frees entries, so it works on a full partition. Returns how many were removed.
+int    evictLegacyCatalogCaches();
+// Boot heal (called once from provider_verify::begin): copy each legacy NVS catalog
+// to its file when the file is missing, then evict every legacy key, so a device that
+// is full today gets its owner-config room back on the first boot of this build.
+int    migrateCatalogCachesOffNvs();
 String agentFabricCfg();                    // legacy category bindings "code:openai,..."
 
 // ---- user directive + TTS ----
@@ -101,16 +118,16 @@ bool   orchToolLoop();       // head multi-turn tool-use loop enabled (default O
 bool   codeSandbox();        // Assistant > Tools: Code sandbox (code_interpreter/code_execution) (default OFF)
 bool   midTurnFailover();    // mid-turn provider failover on loop turns (default ON)
 bool   orchPromptV2();       // N11: simplified v2 system prompt A/B (default OFF)
-bool   orchTrace();          void setOrchTrace(bool v);   // glass-box trace rows (default ON, A4)
+bool   orchTrace();          bool setOrchTrace(bool v);   // glass-box trace rows (default ON, A4)
 // Head tool-loop caps (P6), user-tunable + clamped. Deadline in seconds.
 int    orchLoopRounds();     // 1..32   (default 8)
 int    orchLoopDeadlineS();  // 30..3600 (default 600)
 int    orchLoopResultCap();  // 512..65536 (default 8192)
 int    orchLoopTotalCap();   // 2048..1048576 (~256K tok ceiling; default 65536)
-void   setOrchLoopRounds(int v);
-void   setOrchLoopDeadlineS(int v);
-void   setOrchLoopResultCap(int v);
-void   setOrchLoopTotalCap(int v);
+bool   setOrchLoopRounds(int v);
+bool   setOrchLoopDeadlineS(int v);
+bool   setOrchLoopResultCap(int v);
+bool   setOrchLoopTotalCap(int v);
 // Local Loops governor (routines) owner overrides (CUM-73). 0 = no override,
 // keep the caps.h default; a set value may only TIGHTEN (the actual folding is
 // nimbus::orch::clampLoopCaps). Getters report the raw stored override.
@@ -120,71 +137,71 @@ int    loopCapFiresPerDay();       // 0 or a lower per-routine daily fire ceilin
 int    loopCapTokensPerDay();      // 0 or a lower per-routine daily token ceiling
 int    loopCapDevTokensPerDay();   // 0 or a lower device-wide daily token ceiling
 int    loopCapDevFiresWindow();    // 0 or a lower device-wide fires-per-window
-void   setLoopCapMaxCount(int v);
-void   setLoopCapMinIntervalS(int v);
-void   setLoopCapFiresPerDay(int v);
-void   setLoopCapTokensPerDay(int v);
-void   setLoopCapDevTokensPerDay(int v);
-void   setLoopCapDevFiresWindow(int v);
+bool   setLoopCapMaxCount(int v);
+bool   setLoopCapMinIntervalS(int v);
+bool   setLoopCapFiresPerDay(int v);
+bool   setLoopCapTokensPerDay(int v);
+bool   setLoopCapDevTokensPerDay(int v);
+bool   setLoopCapDevFiresWindow(int v);
 bool   allowHwTests();       // orchestrator may run device hardware self-tests (default ON)
 bool   onboarded();          // first-run onboarding completed (plain NVS bool; false => show the setup wizard)
-void   setOnboarded(bool v); // set true when the wizard finishes; cleared by an NVS-wipe factory reset
+bool   setOnboarded(bool v); // set true when the wizard finishes; cleared by an NVS-wipe factory reset
 int    tlsSlots();           // concurrent work-TLS sessions 1..2 (default 1; latched at boot)
-void   setTlsSlots(int v);   // clamped 1..2; applies on next boot (arbiter latches at begin)
+bool   setTlsSlots(int v);   // clamped 1..2; applies on next boot (arbiter latches at begin)
 bool   tlsVerify();          // validate provider certs vs the CA bundle (default ON) - tlsSetup() reads this
-void   setTlsVerify(bool v); // false = fall back to setInsecure (self-signed host / unbundled root)
+bool   setTlsVerify(bool v); // false = fall back to setInsecure (self-signed host / unbundled root)
 // ---- capability validation (W3b): how the device confirms provider access -----
 // 0 = off (trust key presence, no VERIFIED claims), 1 = passive (default - use the
 // verify cache, refreshed by the web Verify button and by a real turn SUCCEEDING
 // on that provider; failures don't demote - most turn failures aren't auth),
 // 2 = active (passive + a periodic free provider re-verify to keep the marking fresh).
-int    capProbe();           void setCapProbe(int v);      // clamped 0..2 (default 1)
-int    fetchPolicy();        void setFetchPolicy(int v);   // W18 URL downloads: 0 off/1 approve(default)/2 scan/3 yolo
+int    capProbe();           bool setCapProbe(int v);      // clamped 0..2 (default 1)
+int    fetchPolicy();        bool setFetchPolicy(int v);   // W18 URL downloads: 0 off/1 approve(default)/2 scan/3 yolo
 // Moderation gate switches (non-admin only; each a paid classifier call). Default off.
-bool   modInbound();         void setModInbound(bool on);   // inbound guest text pre-turn (fail-closed)
-bool   modOutbound();        void setModOutbound(bool on);  // outbound replies to guests (fail-open)
-bool   modInjection();       void setModInjection(bool on); // injection-screen world content (fail-open + mark)
-int    capProbeHours();      void setCapProbeHours(int v); // active re-verify interval, clamped 1..168 (default 24)
+bool   modInbound();         bool setModInbound(bool on);   // inbound guest text pre-turn (fail-closed)
+bool   modOutbound();        bool setModOutbound(bool on);  // outbound replies to guests (fail-open)
+bool   modInjection();       bool setModInjection(bool on); // injection-screen world content (fail-open + mark)
+int    capProbeHours();      bool setCapProbeHours(int v); // active re-verify interval, clamped 1..168 (default 24)
 // ---- OTA firmware update (src/sys/ota_update) ----
-int    otaPending();             void setOtaPending(int v);        // 1 = image awaiting validation
-int    otaBootCount();           void setOtaBootCount(int v);      // attempts since the flip
-String otaPrevSlot();            void setOtaPrevSlot(const String& v);  // "app0"/"app1"
-String otaLastResult();          void setOtaLastResult(const String& v);
-bool   otaAutoUpdate();          void setOtaAutoUpdate(bool v);    // idle-window auto-install (default OFF)
-bool   usbUpdateConfirm();       void setUsbUpdateConfirm(bool v); // require on-device confirm for a USB update (default OFF)
-String otaNotifiedVersion();     void setOtaNotifiedVersion(const String& v);  // Telegram no-re-nag
-String otaPendingNotes();        void setOtaPendingNotes(const String& v);     // "ver|notes" across the install reboot
+int    otaPending();             bool setOtaPending(int v);        // 1 = image awaiting validation
+int    otaBootCount();           bool setOtaBootCount(int v);      // attempts since the flip
+String otaPrevSlot();            bool setOtaPrevSlot(const String& v);  // "app0"/"app1"
+String otaLastResult();          bool setOtaLastResult(const String& v);
+bool   otaAutoUpdate();          bool setOtaAutoUpdate(bool v);    // idle-window auto-install (default OFF)
+bool   usbUpdateConfirm();       bool setUsbUpdateConfirm(bool v); // require on-device confirm for a USB update (default OFF)
+String otaNotifiedVersion();     bool setOtaNotifiedVersion(const String& v);  // Telegram no-re-nag
+String otaPendingNotes();        bool setOtaPendingNotes(const String& v);     // "ver|notes" across the install reboot
 String batteryModelState();  // battery analytics learned state (CSV; "" if none)
-void   setBatteryModelState(const String& v);
+bool   setBatteryModelState(const String& v);
 uint32_t lowBattPingEpoch();               // last low-battery owner ping (0 = armed)
-void     setLowBattPingEpoch(uint32_t e);
+bool     setLowBattPingEpoch(uint32_t e);
 // Benign config-action target: the model's `priority` knob tunes the SUB-SESSION
 // provider preference only. It must NOT touch providerPriority()/orchPriority()
 // (the orchestrator-HOST list) - that would let the model redirect its own brain,
 // the exact control blocking the `orchHost` protected key is meant to deny.
-void   setSubPriority(const String& v);
-int    ledBright();          void setLedBright(int v);
+bool   setSubPriority(const String& v);
+int    ledBright();          bool setLedBright(int v);
 
 // ---- Telegram ----
 String   telegramToken();
 String   telegramAllowlist();
 String   telegramOwners();                   // OWNER chat ids (comma-sep; subset of allow). Empty => first allow entry is owner
-void     setTelegramOwners(const String& v);
+bool     setTelegramOwners(const String& v);
 String   telegramNames();                    // "id:name,id:name" display sidecar (P8)
 String   tgBotName();                        // connected bot's @username (set by the getMe verify)
-void     setTgBotName(const String& v);
-void     setTelegramNames(const String& v);
+bool     setTgBotName(const String& v);
+bool     setTelegramNames(const String& v);
 // Rename/upsert one chat's display name: rebuilds the sidecar dropping every
 // exact-id entry, then appends id:name ("" name = just remove). Caller sanitizes.
-void     replaceTelegramName(const String& id, const String& name);
+bool     replaceTelegramName(const String& id, const String& name);
 bool     telegramPublic();                   // DANGER: accept anyone (default off, P8)
-void     setTelegramPublic(bool v);
-int32_t  telegramOffset();   void setTelegramOffset(int32_t v);
+bool     setTelegramPublic(bool v);
+int32_t  telegramOffset();   bool setTelegramOffset(int32_t v);
 
 // ---- Anthropic managed-agents caches ----
-String antEnvId();           void setAntEnvId(const String& v);
-String antAgentMap();        void setAntAgentMap(const String& v);
-String antOrchAgent();       void setAntOrchAgent(const String& v);
+String antEnvId();           bool setAntEnvId(const String& v);
+String antAgentMap();        bool setAntAgentMap(const String& v);
+String antOrchAgent();       bool setAntOrchAgent(const String& v);
 
 // ---- HUMAN-ONLY setters (web UI / provisioning console) ---------------------
 // The write side of the CREDENTIAL GATE. These may be called ONLY from surfaces
@@ -194,36 +211,36 @@ String antOrchAgent();       void setAntOrchAgent(const String& v);
 // model's own brain; exposing a setter to the model is the exact attack the
 // protected-key list in device_actions exists to block. setSubPriority() above
 // stays the ONLY model-writable routing knob.
-void setOpenaiKey(const String& v);        // "" clears
-void setAnthropicKey(const String& v);
-void setMistralKey(const String& v);
-void setTavilyKey(const String& v);        // web-search tool key ("" clears)
-void setCustomBase(const String& v);
-void setCustomKey(const String& v);
-void setCustomConv(const String& v);       // "openai"|"mistral"|"anthropic"
-void setCustomModel(const String& v);
-void setZaiKey(const String& v);           // Z.ai (GLM) token ("" clears)
-void setCumuloKey(const String& v);        // Cumulo router key ("" clears)
-void setCumuloBase(const String& v);       // router base URL/host ("" -> default)
-void setOrchHost(const String& v);         // ""=auto (top of priority)
-void setProviderPriority(const String& v); // orchestrator-HOST list (human only)
-void setSysPrompt(const String& v);        // the user directive
-void setOrchModel(const String& provider, const String& v);  // "" -> default
-void setSubModel(const String& provider, const String& v);
-void setTelegramToken(const String& v);    // WRITE-ONLY on the web surface
-void setTelegramAllowlist(const String& v);
-void setTtsEnabled(bool v);
-void setOrchToolLoop(bool v);               // enable/disable the head tool-use loop
-void setCodeSandbox(bool v);                // enable/disable the code sandbox tool
-void setMidTurnFailover(bool v);            // enable/disable mid-turn provider failover
-void setAllowHwTests(bool v);               // owner gate for orchestrator-triggered hw tests
+bool setOpenaiKey(const String& v);        // "" clears
+bool setAnthropicKey(const String& v);
+bool setMistralKey(const String& v);
+bool setTavilyKey(const String& v);        // web-search tool key ("" clears)
+bool setCustomBase(const String& v);
+bool setCustomKey(const String& v);
+bool setCustomConv(const String& v);       // "openai"|"mistral"|"anthropic"
+bool setCustomModel(const String& v);
+bool setZaiKey(const String& v);           // Z.ai (GLM) token ("" clears)
+bool setCumuloKey(const String& v);        // Cumulo router key ("" clears)
+bool setCumuloBase(const String& v);       // router base URL/host ("" -> default)
+bool setOrchHost(const String& v);         // ""=auto (top of priority)
+bool setProviderPriority(const String& v); // orchestrator-HOST list (human only)
+bool setSysPrompt(const String& v);        // the user directive
+bool setOrchModel(const String& provider, const String& v);  // "" -> default
+bool setSubModel(const String& provider, const String& v);
+bool setTelegramToken(const String& v);    // WRITE-ONLY on the web surface
+bool setTelegramAllowlist(const String& v);
+bool setTtsEnabled(bool v);
+bool setOrchToolLoop(bool v);               // enable/disable the head tool-use loop
+bool setCodeSandbox(bool v);                // enable/disable the code sandbox tool
+bool setMidTurnFailover(bool v);            // enable/disable mid-turn provider failover
+bool setAllowHwTests(bool v);               // owner gate for orchestrator-triggered hw tests
 
 // ---- provider key-verification cache (written by provider_verify) -----------
 // result: 1 = verified (HTTP 200), 0 = rejected (401/403), -1 = couldn't verify
 // (no key / connect failed / never attempted - ts 0 distinguishes "never").
 int8_t   verifyResult(const String& provider);
 uint32_t verifyTs(const String& provider);
-void     setVerify(const String& provider, int8_t r, uint32_t ts);
+bool     setVerify(const String& provider, int8_t r, uint32_t ts);
 
 // ---- embedding config for the vector memory (SET-ONCE; see agent_config.h) --
 // The embed config is immutable once any vector has been embedded (embedLocked),
@@ -237,8 +254,10 @@ int    embedDims();          // default 256; must equal the model's output width
                              // /api/mem/embedcfg resolves dims=0 to it before storing
                              // (CUM-469), so 0 is only ever a legacy stored value.
 bool   embedLocked();        // true once the first vector was embedded
-void   setEmbedConfig(const String& provider, const String& model, int dims);
-void   setEmbedLocked(bool v);
+// True iff all three landed; on a partial failure the previous values are put back
+// (an absent key back to absent), so the stored embedding space is never half old.
+bool   setEmbedConfig(const String& provider, const String& model, int dims);
+bool   setEmbedLocked(bool v);
 
 // Voice providers (freely changeable). Default "mistral" (Voxtral STT + TTS).
 String sttProvider();
@@ -254,7 +273,7 @@ String screenModel();
 String screenModelStored();
 // Touch calibration blob ("" = the driver's defaults); see nimbus/touch_cal.h.
 String touchCal();
-void   setTouchCal(const String& v);
+bool   setTouchCal(const String& v);
 bool   screenIsTft();    // convenience: screenModel() == "tft" (STORED preference)
 void   setBootScreenIsTft(bool v);  // main.cpp records the boot-bound driver (RAM-only)
 int    bootScreenIsTft();           // 1/0 = bound tft/other, -1 = not yet recorded
@@ -282,7 +301,7 @@ void     applyProfileDefaults(nimbus::ProfileId id);
 // reboot that finds NVS headroom. Lock-free RAM read.
 bool     profileSeedDeferredNvsFull();
 uint16_t compactAtKB();  // fold trigger: KB of chat since last fold, 0 = off (default 48, clamp 8..512)
-void     setCompactAtKB(uint16_t v);
+bool     setCompactAtKB(uint16_t v);
 // ---- battery/LED protection (owner feature 2026-07-17; study-grounded) -------
 // sleepMv: pack mV that triggers the low-battery deep sleep (debounced in the
 // power policy). Default + clamp scale with the series-cell count (CUM-202): 2S =
@@ -299,9 +318,9 @@ String   battChem();     // chemistry slug "liion" (default) | "lifepo4" - picks
 uint8_t  battCellsOvr(); // owner series-cell override (1/2); 0 = board-derived default
 uint8_t  battCellsEff(); // effective series-cell count: override, else board default (guard to 1)
 String   battCurve();    // optional custom SoC curve "mv:pct,..." (high-mV first); "" = chemistry default
-void     setBattChem(const String& slug);
-void     setBattCells(uint8_t cells);
-void     setBattCurve(const String& csv);
+bool     setBattChem(const String& slug);
+bool     setBattCells(uint8_t cells);
+bool     setBattCurve(const String& csv);
 uint16_t sleepMv();
 // wakeMv: after a low-batt sleep, stay awake only at/above THIS (a drained pack
 // RESTS UPWARD to 6918-6992 mV - same-threshold wake tests oscillate forever).
@@ -316,28 +335,28 @@ bool     battMon(bool def); // battery monitoring enabled (def = board-derived d
 // web endpoint; the model's `connector` config key is protected-BLOCKED).
 // Parsed by agent::connectors::list(); may contain secrets - never echo raw.
 String connectorsJson();
-void   setConnectorsJson(const String& v);
-void   setSttProvider(const String& v);
-void   setTtsProvider(const String& v);
-void   setTtsVoice(const String& v);
-void   setTheme(const String& v);
-void   setScreenModel(const String& v);  // allowlisted to "eink"|"tft"
-void   setSfxLevelNotif(uint8_t v);   // clamped 0-3
-void   setSfxLevelOrch(uint8_t v);    // clamped 0-3
-void   setSfxTheme(const String& v);
-void   setSfxVolume(uint8_t v);       // clamped 0-100
-void   setSaverMin(uint16_t v);       // clamped 0-1440 (a day)
-void   setBattRtop(uint32_t ohms);    // clamped 1k-10M
-void   setBattRbot(uint32_t ohms);    // clamped 1k-10M
-void   setBattCapMah(uint16_t mah);   // clamped 100-20000
-void   setSleepMv(uint16_t v);        // clamped 0 - (3400 x cells) (2S 6800; a truly-full pack reads ~3950/cell RAW - a pack-wide ceiling was always-true = soft-brick)
-void   setWakeMv(uint16_t v);         // clamped 0 - (3800 x cells) (2S 7600)
-void   setSleepOvr(bool on);
-void   setBrightOvr(bool on);
-void   setTftFlip(bool on);
-void   setLowBattRing(bool on);
-void   setLowBattSaver(bool on);
-void   setBattMon(bool on);
+bool   setConnectorsJson(const String& v);
+bool   setSttProvider(const String& v);
+bool   setTtsProvider(const String& v);
+bool   setTtsVoice(const String& v);
+bool   setTheme(const String& v);
+bool   setScreenModel(const String& v);  // allowlisted to "eink"|"tft"
+bool   setSfxLevelNotif(uint8_t v);   // clamped 0-3
+bool   setSfxLevelOrch(uint8_t v);    // clamped 0-3
+bool   setSfxTheme(const String& v);
+bool   setSfxVolume(uint8_t v);       // clamped 0-100
+bool   setSaverMin(uint16_t v);       // clamped 0-1440 (a day)
+bool   setBattRtop(uint32_t ohms);    // clamped 1k-10M
+bool   setBattRbot(uint32_t ohms);    // clamped 1k-10M
+bool   setBattCapMah(uint16_t mah);   // clamped 100-20000
+bool   setSleepMv(uint16_t v);        // clamped 0 - (3400 x cells) (2S 6800; a truly-full pack reads ~3950/cell RAW - a pack-wide ceiling was always-true = soft-brick)
+bool   setWakeMv(uint16_t v);         // clamped 0 - (3800 x cells) (2S 7600)
+bool   setSleepOvr(bool on);
+bool   setBrightOvr(bool on);
+bool   setTftFlip(bool on);
+bool   setLowBattRing(bool on);
+bool   setLowBattSaver(bool on);
+bool   setBattMon(bool on);
 
 // ---- per-provider usage ledger + budgets (owner: "limit budget, budget per
 // provider - Tavily monthly calls, LLM monthly tokens, per-provider month reset").
@@ -359,12 +378,12 @@ void   recordProviderTokens(const String& provider, uint32_t tokensIn,
                             uint32_t cacheWrite, const char* tag);
 void   recordProviderCall(const String& provider);                     // per search call
 bool   providerOverBudget(const String& provider);                     // gate before spend
-void   setProviderBudget(const String& provider, uint64_t tokenLimit,
+bool   setProviderBudget(const String& provider, uint64_t tokenLimit,
                          uint32_t callLimit, uint8_t resetDay,
                          uint64_t centsLimit = 0);                      // owner web edit (W16: + $ cap in cents)
 // Owner-editable price rates for $ estimates (display-time only, never enforcement):
 // cents per 1M input tokens / 1M output tokens / 1000 calls. 0 = unset.
-void   setProviderRates(const String& provider, uint32_t centsPerMIn,
+bool   setProviderRates(const String& provider, uint32_t centsPerMIn,
                         uint32_t centsPerMOut, uint32_t centsPerKCalls);
 String providerUsageJson();   // JSON array: [{prov,tokens,calls,...,tokIn,tokOut,totIn,totOut,totCalls,rateIn,rateOut,rateCall,centsLimit,estCents}]
 // W16: compact per-provider budget view for the MODEL (device.status usage.budget):

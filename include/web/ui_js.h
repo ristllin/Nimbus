@@ -909,7 +909,7 @@ function applyState(d){
         {cond:dividerChanged, msg:'Changed the sense resistors?\n\nThis re-scales every voltage reading, so the full-charge calibration is now stale. Re-run Calibrate on a fully charged pack afterward.', opts:{ok:'Save Changes'}}
       ]).then(function(ok){ if(!ok)return;
         var pbtn=$('protSave');
-        fetch('/api/config',{method:'POST',body:f}).then(function(rs){return rs.json().catch(function(){return{};});}).then(function(j){if(pbtn){pbtn.textContent='Saved';setTimeout(function(){pbtn.textContent='Save';},1200);}toast((j&&j.warn)?j.warn:'Battery settings saved');if(j&&j.warn)loadState();}).catch(failToast);
+        fetch('/api/config',{method:'POST',body:f}).then(jok).then(function(j){if(pbtn){pbtn.textContent='Saved';setTimeout(function(){pbtn.textContent='Save';},1200);}toast((j&&j.warn)?j.warn:'Battery settings saved');if(j&&j.warn)loadState();}).catch(failToast);
       });
     };
     // --- live readout: real values when a reading is valid, honest 'waiting' copy
@@ -1102,7 +1102,7 @@ function applyState(d){
       if(document.activeElement!==$('tFlipX'))$('tFlipX').checked=(f&2)!==0;
       if(document.activeElement!==$('tFlipY'))$('tFlipY').checked=(f&4)!==0;
       const applyOrient=()=>{const nf=($('tSwap').checked?1:0)|($('tFlipX').checked?2:0)|($('tFlipY').checked?4:0);
-        orchApply({tchCal:'0,320,0,240,'+nf}).then(()=>toast('Touch updated')).catch(failToast);};
+        orchApply({tchCal:'0,320,0,240,'+nf}).then(ok=>{if(ok)toast('Touch updated');});};
       $('tSwap').onchange=applyOrient;$('tFlipX').onchange=applyOrient;$('tFlipY').onchange=applyOrient;}}
   // device identity: mark dirty while editing; Save persists (reboot-to-apply)
   $('devName').oninput=()=>{$('devName').dataset.dirty=1;};
@@ -1133,8 +1133,8 @@ function applyState(d){
 }
 
 let _toastT;
-function toast(msg){const t=$('toast'); if(!t)return; t.textContent=msg||'Saved';
-  t.classList.add('show'); clearTimeout(_toastT); _toastT=setTimeout(()=>t.classList.remove('show'),1400);}
+function toast(msg,ms){const t=$('toast'); if(!t)return; t.textContent=msg||'Saved';
+  t.classList.add('show'); clearTimeout(_toastT); _toastT=setTimeout(()=>t.classList.remove('show'),ms||1400);}
 
 // ---- Shared confirm/prompt modal (CUM-266) ---------------------------------
 // The app's own styled dialog, replacing the native browser popups. A styled
@@ -1272,11 +1272,11 @@ function loadConnect(){
 // on its next call and gets the identify gate.
 (function(){const b=$('regenTok'); if(!b)return; b.onclick=()=>{
   uiConfirm('Generate a new device sign-in code?\n\nEvery browser is signed out except this one. Scan the new Sign-in QR on each other device.',{ok:'Generate Code'}).then(ok=>{ if(!ok)return;
-  fetch('/api/token/regen',{method:'POST'}).then(r=>r.ok?r.json():Promise.reject(r.status)).then(o=>{
+  fetch('/api/token/regen',{method:'POST'}).then(jok).then(o=>{
     if(o&&o.token){setTok(o.token);
       if($('cxToken'))$('cxToken').textContent=o.token;
       toast('New token set');}
-  }).catch(()=>toast('Couldn\'t generate a token - try again'));});};
+  }).catch(e=>{if(e===507)failToast(e);else toast('Couldn\'t generate a token - try again');});});};
 })();
 // Erase storage: type-to-confirm SD wipe (keeps config, keeps the token, so no
 // localStorage cleanup needed - the device reboots on the same network).
@@ -1446,7 +1446,22 @@ document.addEventListener('DOMContentLoaded',initLoopForm);
 // Shared response guard: a 401 body is valid JSON, so `.then(r=>r.json())` alone
 // used to toast a false "Saved" while the auth bar appeared. Throw the status so
 // the catch can say what actually happened.
-function jok(r){if(!r.ok)throw r.status;return r.json();}
+// CUM-479: a save the device could not store (its settings storage is full) answers
+// 507 with a sentence for the owner; jok() keeps that sentence so failToast and the
+// inline status lines show it - never "Saved". STORAGE_FULL_MSG mirrors the device's
+// own text (nimbus::store::kStorageFullMessage) for a body that did not parse.
+const STORAGE_FULL_MSG='Couldn\'t save: device storage is full. Remove an unused provider key or connector and try again.';
+let _saveErr='',_lastFail=0;
+function jok(r){
+  if(r.ok)return r.json();
+  if(r.status!==507)throw r.status;
+  return r.json().catch(()=>({})).then(j=>{_saveErr=(j&&j.message)||STORAGE_FULL_MSG;throw 507;});
+}
+// The failure sentence for a status: storage-full gets the device's sentence, any
+// other failure the caller's fallback.
+function saveFailText(e,dflt){return e===507?(_saveErr||STORAGE_FULL_MSG):(dflt||'Couldn\'t save - try again');}
+// For callers that only see apply()/orchApply()'s false: the last failure's text.
+function lastFailText(dflt){return saveFailText(_lastFail,dflt);}
 // Fetch plain text, surfacing the SERVER's reason on failure. The glass-box
 // endpoints answer 404 with a human sentence ("off: …", "nosd: …", "evicted: …")
 // precisely so the chat can say why instead of showing an empty panel.
@@ -1457,7 +1472,9 @@ function _tfetch(url){
     throw new Error((i>0?t.slice(i+2):t)||('Error '+r.status));
   }));
 }
-function failToast(e){toast(e===401?'Sign in required':'Couldn\'t save - try again');}
+function failToast(e){_lastFail=e;
+  if(e===507){toast(saveFailText(e),6000);return;}
+  toast(e===401?'Sign in required':saveFailText(e));}
 
 // ---- Feedback-state system (CUM-31) ----------------------------------------
 // One helper renders every async action through pending -> result, so nothing
@@ -1556,20 +1573,24 @@ function apply(body){
 function switchMode(mv){
   return uiConfirm('Switch to '+(mv?'Orchestrator':'Notifier')+'?\n\nThe device restarts to change modes. This takes a few seconds.',{ok:mv?'Switch To Orchestrator':'Switch To Notifier'}).then(go=>{
     if(!go)return false;
-    fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
-      body:new URLSearchParams({mode:mv}).toString()}).catch(()=>{});
-    if(!mv){   // -> Notifier: no WiFi in that mode, so the web app cannot reconnect
-      toast('Restarting into Notifier - the web app won\'t be reachable there');
+    // A dropped connection is the expected reboot; an error answer stops the switch -
+    // a 507 means the device could not store the new mode and does NOT restart (CUM-479).
+    return fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
+      body:new URLSearchParams({mode:mv}).toString()}).then(r=>{if(!r.ok)return jok(r);},()=>{})
+     .then(()=>{
+      if(!mv){   // -> Notifier: no WiFi in that mode, so the web app cannot reconnect
+        toast('Restarting into Notifier - the web app won\'t be reachable there');
+        return true;
+      }
+      toast('Restarting to switch');
+      let tries=0;
+      const ping=()=>{ tries++;
+        fetch('/api/state',{cache:'no-store'})
+          .then(r=>{ if(r.ok) location.reload(); else throw 0; })
+          .catch(()=>{ if(tries<40) setTimeout(ping,1500); else toast('Reload the page'); }); };
+      setTimeout(ping,4000);   // let the reboot begin before polling
       return true;
-    }
-    toast('Restarting to switch');
-    let tries=0;
-    const ping=()=>{ tries++;
-      fetch('/api/state',{cache:'no-store'})
-        .then(r=>{ if(r.ok) location.reload(); else throw 0; })
-        .catch(()=>{ if(tries<40) setTimeout(ping,1500); else toast('Reload the page'); }); };
-    setTimeout(ping,4000);   // let the reboot begin before polling
-    return true;
+     }).catch(e=>{failToast(e);return false;});
   });
 }
 
@@ -2480,10 +2501,10 @@ function mcpApprove(name,id,bit){
   run({status:'cc_'+id+'_apprmsg',pending:(bit?'Approving ':'Denying ')+name+'…',
     work:()=>fetch('/api/connectors',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
       body:new URLSearchParams({patch:JSON.stringify({name:name,appr:bit})}).toString()})
-      .then(r=>{if(!r.ok)throw r.status;return r;}),
+      .then(r=>{if(!r.ok)return jok(r);return r;}),
     ok:()=>{setTimeout(loadConnectors,300);
       return (bit?'Approved ':'Denied ')+name+'. The device applies this on its next turn.';},
-    error:e=>'Couldn\'t update '+name+(e?(' ('+e+')'):'')+' - try again.'});
+    error:e=>e===507?saveFailText(e):'Couldn\'t update '+name+(e?(' ('+e+')'):'')+' - try again.'});
 }
 // MCP OAuth sign-in (CUM-256): arm the flow on the device, then poll status and
 // render the link + code + QR the owner opens on their phone/laptop.
@@ -2564,7 +2585,8 @@ function saveAndVerify(p){
   // (device parity, via the same /api/orch seam). Save and report; no dead spinner.
   if(HOSTED){
     const had=Object.keys(body).length;
-    (had?orchApply(body):Promise.resolve()).then(()=>{
+    (had?orchApply(body):Promise.resolve()).then(ok=>{
+      if(ok===false){setProvMsg(p,lastFailText('Couldn\'t save - try again.'),true);return;}
       setProvMsg(p,had?'Key saved and applied.':'Type a key, then save.');
       if(inp)inp.value=''; loadOrch();});
     return;
@@ -2575,7 +2597,8 @@ function saveAndVerify(p){
   // property, so the old guard was ALWAYS false and this branch was unreachable.)
   if(ORCH && !ORCH.running){
     const had=Object.keys(body).length;
-    (had?orchApply(body):Promise.resolve()).then(()=>{
+    (had?orchApply(body):Promise.resolve()).then(ok=>{
+      if(ok===false)return;   // failToast already said why (storage-full text on a 507)
       toast(had?'Key saved - verify from Orchestrator mode':'Switch to Orchestrator mode to verify');
       loadOrch();});
     return;
@@ -2583,9 +2606,11 @@ function saveAndVerify(p){
   $('vfy_'+p).textContent='Checking…'; $('vfy_'+p).disabled=true;
   const prevTs=ORCH.providers[p].vts;
   const go=Object.keys(body).length?orchApply(body):Promise.resolve();
-  go.then(()=>fetch('/api/verify',{method:'POST',
+  // A key that did not save must not be "verified": that would check the OLD key.
+  go.then(ok=>{if(ok===false){setProvMsg(p,lastFailText('Couldn\'t save - try again.'),true);throw 0;}
+    return fetch('/api/verify',{method:'POST',
       headers:{'Content-Type':'application/x-www-form-urlencoded'},
-      body:'provider='+encodeURIComponent(p)}))
+      body:'provider='+encodeURIComponent(p)});})
     .then(()=>{
       clearInterval(VPOLL[p]); let tries=0;   // clear only THIS provider's poll
       VPOLL[p]=setInterval(()=>{
@@ -2636,7 +2661,7 @@ $('sfxPlay').onclick=()=>{const b=new URLSearchParams();b.set('slug',$('sfxSlug'
 // gray hint were both easy to miss and reported "Saved." even on failure).
 function saveVerdict(ok,okMsg){
   const m=$('orchmsg'); if(!m)return;
-  m.textContent=ok?('✓ '+okMsg):'✗ Save failed - nothing was stored. Check the connection and try again.';
+  m.textContent=ok?('✓ '+okMsg):'✗ '+lastFailText('Save failed - nothing was stored. Check the connection and try again.');
   m.style.cssText=ok?'color:#7fd1c8;font-weight:bold':'color:#e77;font-weight:bold';
 }
 // The Models "Save Changes" and the Tools "Save Changes" (the relocated Tool use
@@ -2694,7 +2719,7 @@ $('clearmem').onclick=()=>{
 };
 $('clearconv')&&($('clearconv').onclick=()=>{
   uiConfirm('Clear this conversation and its active task?\n\nLong-term memory and files are kept.',{ok:'Clear Conversation',danger:true}).then(ok=>{ if(ok)
-    orchApply({clearConv:1}).then(()=>toast('Conversation cleared')); });
+    orchApply({clearConv:1}).then(ok=>{if(ok)toast('Conversation cleared');}); });
 });
 
 // ---- Wi-Fi: saved networks, scan, join (P3: BOUNDED, visible timeout, explicit verdicts) ----
@@ -2715,7 +2740,7 @@ function wifiPost(action,extra){
  Object.keys(extra||{}).forEach(k=>fd.append(k,extra[k]));
  return fetch('/api/wifi',{method:'POST',body:fd}).then(r=>
   r.json().catch(()=>({})).then(b=>{
-   if(!r.ok)throw new Error(b.error||'Couldn\'t reach the device. Try again.');
+   if(!r.ok)throw new Error(b.message||b.error||'Couldn\'t reach the device. Try again.');
    return b;}));
 }
 function loadWifi(){
@@ -3130,7 +3155,7 @@ $('embsave').onclick=()=>{
   const save=(reset)=>fetch('/api/mem/embedcfg',{method:'POST',
       headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body+(reset?'&reset=1':'')})
     .then(jok).then(()=>{toast(reset?'Memory reset and saved':'Saved');msg.textContent=reset?'Memories erased - new model saved.':'Saved.';loadMemStats();loadMemList();})
-    .catch(e=>{failToast(e);msg.textContent='Save failed - try again.';});
+    .catch(e=>{failToast(e);msg.textContent=saveFailText(e,'Save failed - try again.');});
   btn.disabled=true; msg.textContent='Verifying the model…';
   // Step 1: verify the CANDIDATE model actually works before we save/wipe anything.
   fetch('/api/mem/embedverify',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body})
@@ -3880,9 +3905,9 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
       if(bootDisp!=='tft'){orchApply({scrModel:'tft'}).then(ok=>{if(ok)dispSel='tft';});}
       const fl=el('onb_flip');
       if(fl){fl.onchange=()=>{const fd=new FormData();fd.append('scrFlip',fl.checked?'1':'0');
-        fetch('/api/config',{method:'POST',body:fd})
+        fetch('/api/config',{method:'POST',body:fd}).then(jok)
           .then(()=>{el('onb_dispmsg').textContent=fl.checked?'Flipped - applied.':'Normal - applied.';})
-          .catch(()=>{el('onb_dispmsg').textContent='Couldn\'t save - try again.';});};}
+          .catch(e=>{el('onb_dispmsg').textContent=saveFailText(e,'Couldn\'t save - try again.');});};}
     } else if(s.id==='wifi'){
       el('onb_scan').onclick=doScan;
       el('onb_wifisave').onclick=doWifi;
@@ -3905,7 +3930,7 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
       });
     } else if(s.id==='telegram'){
       el('onb_tgsave').onclick=()=>{const v=el('onb_tg').value.trim();if(!v){el('onb_tgmsg').textContent='Enter a token first.';return;}
-        orchApply({tgToken:v}).then(ok=>{el('onb_tgmsg').textContent=ok?'Saved ✓':'Rejected';});};
+        orchApply({tgToken:v}).then(ok=>{el('onb_tgmsg').textContent=ok?'Saved ✓':lastFailText('Rejected');});};
     } else if(s.id==='voice'){
       // Only mistral/openai do on-device voice. Offer ONLY the provider the owner
       // configured; if the configured provider is Anthropic (no voice), skip this
@@ -3916,7 +3941,7 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
       el('onb_stt').innerHTML='<option value='+cap+'>'+lbl+'</option>';
       el('onb_tts').innerHTML='<option value='+cap+'>'+lbl+'</option>';
       el('onb_voicesave').onclick=()=>orchApply({sttProv:cap,ttsProv:cap})
-        .then(ok=>{el('onb_voicemsg').textContent=ok?'Saved ✓':'Rejected';});
+        .then(ok=>{el('onb_voicemsg').textContent=ok?'Saved ✓':lastFailText('Rejected');});
     } else if(s.id==='directive'){
       // Pre-fill the shipped default from the server (single source); keeping it is
       // the zero-effort path - just click Next. Editing + Save persists an override.
@@ -3925,11 +3950,11 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
         ta.value=(d.directive&&d.directive.length)?d.directive:def;}).catch(()=>{});
       el('onb_dirsave').onclick=()=>{const v=ta.value;
         if(v.length>mx){m.textContent='Too long - keep it under '+mx+' characters.';return;}
-        orchApply({sysPrompt:v}).then(ok=>{m.textContent=ok?'Saved ✓':'Rejected';});};
+        orchApply({sysPrompt:v}).then(ok=>{m.textContent=ok?'Saved ✓':lastFailText('Rejected');});};
       el('onb_dirreset').onclick=()=>{ta.value=def;m.textContent='Reverted to default - Save to keep, or just continue.';};
     } else if(s.id==='name'){
       el('onb_namesave').onclick=()=>{const v=el('onb_name').value.trim();if(!v){el('onb_namemsg').textContent='Enter a name.';return;}
-        apply({devName:v}).then(ok=>{el('onb_namemsg').textContent=ok?'Saved ✓ (applies after restart)':'Rejected';});};
+        apply({devName:v}).then(ok=>{el('onb_namemsg').textContent=ok?'Saved ✓ (applies after restart)':lastFailText('Rejected');});};
     } else if(s.id==='done'){
       // Derive the summary from LIVE server state, not page-load-local flags: wifiOk
       // resets across the setup-AP -> LAN handoff (the page reloads on the new IP), so
@@ -3978,7 +4003,7 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
     const b=el('onb_wifisave');b.disabled=true;el('onb_wifimsg').textContent='Saving…';
     fetch('/savewifi',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
       body:'ssid='+encodeURIComponent(ssid)+'&pass='+encodeURIComponent(pass)})
-    .then(r=>r.ok?r.json():Promise.reject(r.status)).then(()=>{
+    .then(jok).then(()=>{
       let left=12; el('onb_wifimsg').textContent='Joining "'+ssid+'"…';
       const w=setInterval(()=>fetch('/api/state').then(r=>r.json()).then(st=>{
         if(st.sta&&st.staIp){clearInterval(w);wifiOk=true;
@@ -3986,7 +4011,7 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
           else{b.disabled=false;el('onb_wifimsg').textContent='Connected: '+st.staIp;}}
         else if(--left<=0){clearInterval(w);b.disabled=false;el('onb_wifimsg').textContent='Not connected after 30 s - check the password.';}
       }).catch(()=>{if(--left<=0){clearInterval(w);b.disabled=false;el('onb_wifimsg').textContent='Device unreachable - rejoin its setup network and try again.';}}),2500);
-    }).catch(()=>{b.disabled=false;el('onb_wifimsg').textContent='Save failed - try again.';});
+    }).catch(e=>{b.disabled=false;el('onb_wifimsg').textContent=saveFailText(e,'Save failed - try again.');});
   }
   function beginWifiHandoff(st,b,ssid){
     if(handoffProbe)return;
@@ -4034,7 +4059,8 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
       el('onb_provmsg').textContent='That looks like a Cumulo Nimbus key - choose Cumulo Nimbus above.';return;}
     const b=el('onb_provsave');b.disabled=true;el('onb_provmsg').textContent='Saving & verifying…';
     const body={};body[keyField(p)]=key;
-    orchApply(body).then(()=>fetch('/api/verify',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'provider='+encodeURIComponent(p)}))
+    orchApply(body).then(ok=>{if(ok===false)throw 'nosave';
+      return fetch('/api/verify',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'provider='+encodeURIComponent(p)});})
     .then(()=>{
       let tries=0;const vp=setInterval(()=>fetch('/api/orch').then(r=>r.json()).then(d=>{
         const v=d.providers&&d.providers[p]?d.providers[p].verify:-1;
@@ -4042,11 +4068,12 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
         else if(v===0){clearInterval(vp);b.disabled=false;el('onb_provmsg').textContent='Rejected - check the key.';}
         else if(++tries>20){clearInterval(vp);b.disabled=false;el('onb_provmsg').textContent='Still verifying - tap Save & Verify again in a moment.';}
       }).catch(()=>{}),2000);
-    }).catch(()=>{b.disabled=false;el('onb_provmsg').textContent='Verify failed - try again.';});
+    }).catch(e=>{b.disabled=false;
+      el('onb_provmsg').textContent=e==='nosave'?lastFailText('Couldn\'t save - try again.'):'Verify failed - try again.';});
   }
   function finish(){
     const b=el('onbNext');b.disabled=true;msg('Finishing…');
-    fetch('/api/onboard/complete',{method:'POST'}).then(r=>r.ok?r.json():r.json().then(e=>Promise.reject(e.error||r.status)))
+    fetch('/api/onboard/complete',{method:'POST'}).then(r=>(r.ok||r.status===507)?jok(r):r.json().then(e=>Promise.reject(e.error||r.status)))
     .then(res=>{
       try{localStorage.removeItem('nimbusOnboardStep');localStorage.setItem('nimbusJustOnboarded','1');}catch(e){}
       const mn=pendingMode!==null?pendingMode:curMode;
@@ -4063,7 +4090,8 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
         fetch('/api/onboard/restart',{method:'POST'}).catch(()=>{});
         setTimeout(()=>location.reload(),6000);
       } else { location.reload(); }
-    }).catch(e=>{b.disabled=false;msg('Couldn\'t finish: '+e+' - complete the Wi-Fi and provider steps.');});
+    }).catch(e=>{b.disabled=false;
+      msg(e===507?saveFailText(e):'Couldn\'t finish: '+e+' - complete the Wi-Fi and provider steps.');});
   }
   el('onbBack').onclick=()=>{if(idx>0){idx--;rememberStep();render();}};
   el('onbSkip').onclick=()=>next();

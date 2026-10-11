@@ -298,13 +298,19 @@ void dispatch(String line) {
                                                         : nimbus::display::Scrok::Yes);
     // board= is the compile-time SOLIDE_BOARD slug (pinout identity, distinct from
     // the runtime scr=). Appended at the very END so nothing before heap= shifts.
+    // nvs=<used>/<total> nvsfree=<B> nvsfail=<n> (CUM-479) ride after it, in BYTES:
+    // the settings partition's use (every namespace) and the writes that did not
+    // land since boot, so a bench run can assert the owner-config headroom.
+    nimbus::store::NvsUsage nvsU;
+    nimbus::sys::nvsUsage(nvsU);
 #ifndef SOLIDE_BOARD
 #define SOLIDE_BOARD solide_s3
 #endif
 #define NIMBUS_STR2(x) #x
 #define NIMBUS_STR(x) NIMBUS_STR2(x)
     Serial.printf("STATUS fw=" NIMBUS_FW_VERSION " build=" NIMBUS_FW_BUILD " mode=%d wifi=%d ip=%s rssi=%d heap=%u scr=%s scrok=%s want=%s minheap=%u psram=%u "
-                  "nvsdeg=%d sd=%s sdlost=%d vec=%d/%d flashfull=%d faults=0x%02x jobs=%d sfx=%s/%u/%s vol=%u sync=%s drain=%d/%d restmv=%u ota=%s lastOta=%s uptime=%lu board=%s\n",
+                  "nvsdeg=%d sd=%s sdlost=%d vec=%d/%d flashfull=%d faults=0x%02x jobs=%d sfx=%s/%u/%s vol=%u sync=%s drain=%d/%d restmv=%u ota=%s lastOta=%s uptime=%lu board=%s "
+                  "nvs=%u/%u nvsfree=%u nvsfail=%u\n",
                   mode,
                   int(wifi), ip.c_str(), rssi, unsigned(ESP.getFreeHeap()),
                   scr, scrok, agent::store::screenModel().c_str(),
@@ -323,7 +329,9 @@ void dispatch(String line) {
                   agent::store::sfxVolume(), sfxsync::statusStr(),
                   int(drainA), int(drainD), restMv,
                   otaupd::statusStr(), otaupd::lastResult().c_str(),
-                  (unsigned long)millis(), NIMBUS_STR(SOLIDE_BOARD));
+                  (unsigned long)millis(), NIMBUS_STR(SOLIDE_BOARD),
+                  unsigned(nvsU.usedBytes), unsigned(nvsU.totalBytes), unsigned(nvsU.freeBytes),
+                  unsigned(nimbus::sys::persistFailures()));
     Serial.flush();
     return;
   }

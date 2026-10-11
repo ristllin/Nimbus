@@ -7,6 +7,7 @@
 #include "../sys/ps_json.h"       // PsramJsonAllocator - Mistral model-metadata parse off internal heap
 #include "nimbus/orch/model_catalog.h"  // portable role/capability catalog (GET /api/models)
 #include "nimbus/orch/fallback_rules.h" // portable fallback rule parse (Cumulo cloud sync)
+#include "nimbus/store/persist.h"       // kCatalogMaxBytes - the catalog cache bound (CUM-479)
 #include <time.h>
 
 #include "esp_heap_caps.h"
@@ -137,9 +138,10 @@ bool request(const String& provider) {
 bool pending() { return g_pending; }
 
 // Build the rich capability catalog from a raw /v1/models response body and
-// persist it to NVS (mcat_<provider>). Independent of the legacy CSV harvest; an
-// empty parse keeps the last good catalog. The body may still carry HTTP headers
-// (the portable parser locates the JSON). The doc rides PSRAM, not internal heap.
+// persist it to its flash file (/data/mcat_<provider>.json - never NVS since
+// CUM-479). Independent of the legacy CSV harvest; an empty parse keeps the last
+// good catalog. The body may still carry HTTP headers (the portable parser locates
+// the JSON). The doc rides PSRAM, not internal heap.
 static void buildAndStoreCatalog(const String& provider, const char* body, size_t len,
                                  const String& csvFallback) {
   using namespace nimbus::orch;
@@ -168,10 +170,11 @@ static void buildAndStoreCatalog(const String& provider, const char* body, size_
   modelsToJson(cat, doc.to<JsonArray>(), /*includeUnusable=*/true);
   String out;
   serializeJson(doc, out);
-  // NVS string values cap near 4 KB. Flagships sort first, so drop the trailing
-  // (lowest-priority) models until it fits, and say how many were trimmed.
+  // Bound each provider's catalog (GET /api/models frames every provider's in one
+  // response). Flagships sort first, so drop the trailing (lowest-priority) models
+  // until it fits, and say how many were trimmed.
   int dropped = 0;
-  while (out.length() > 3800 && cat.size() > 1) {
+  while (out.length() > nimbus::store::kCatalogMaxBytes && cat.size() > 1) {
     cat.pop_back();
     ++dropped;
     doc.clear();
@@ -179,28 +182,19 @@ static void buildAndStoreCatalog(const String& provider, const char* body, size_
     out = "";
     serializeJson(doc, out);
   }
-  // A fully provisioned device's 20 KB NVS can be nearly full, so even a
-  // size-capped blob can fail to write (setString -> putString == 0). Store, then
-  // shrink-and-retry until it FITS - the catalog then holds whatever survives
-  // rather than silently vanishing (CUM-242: cumulo verified but /api/models
-  // empty because the write no-oped). The compact CSV choice list is unaffected.
-  bool stored = store::setModelCatalogJson(provider, out);
-  while (!stored && cat.size() > 1) {
-    cat.pop_back();
-    ++dropped;
-    doc.clear();
-    modelsToJson(cat, doc.to<JsonArray>(), true);
-    out = "";
-    serializeJson(doc, out);
-    stored = store::setModelCatalogJson(provider, out);
-  }
+  // The catalog is a rebuildable cache in a LittleFS file, so it can no longer
+  // starve owner config: the old store-then-shrink-until-it-fits-NVS loop (CUM-242)
+  // packed it into whatever NVS was left and starved every later owner write
+  // (CUM-479). A failed file write keeps the last good catalog; the compact CSV
+  // choice list is unaffected either way.
+  const bool stored = store::setModelCatalogJson(provider, out);
   if (dropped)
-    alogf("verify: %s catalog trimmed %d model(s) to fit NVS", provider.c_str(), dropped);
+    alogf("verify: %s catalog trimmed %d model(s) to its size bound", provider.c_str(), dropped);
   if (stored)
     alogf("verify: %s catalog stored (%u models, %u B)", provider.c_str(),
           (unsigned)cat.size(), (unsigned)out.length());
   else
-    alogf("verify: %s catalog did not fit NVS - the choice list still drives the dropdown",
+    alogf("verify: %s catalog file write failed - the choice list still drives the dropdown",
           provider.c_str());
 }
 
@@ -618,14 +612,13 @@ static void runOne() {
         else if (code == 404 && provider == "cumulo") rsn = "router_outdated";
       }
       // NVS-priority (CUM-77 item 6 follow-on): a definitive verdict is tiny and
-      // load-bearing; the catalog blob written below is large and rebuildable. On a
-      // heavily provisioned device the catalog write can EXHAUST NVS, silently
-      // starving the verdict write that otherwise runs only at the END of runOne -
-      // so a real HTTP 200 persisted as a stuck -1 (live-caught on .61: zai/cumulo
-      // verified 200 yet stored -1 while their catalogs "did not fit NVS", and the
-      // three providers verified before them ate the free pages). Persist the
-      // definitive verdict FIRST so it always survives; the catalog stays
-      // best-effort. The recordVerify at the end is then idempotent.
+      // load-bearing. Before CUM-479 the catalog blob written below lived in NVS and
+      // could EXHAUST it, starving the verdict write that otherwise runs only at the
+      // END of runOne - so a real HTTP 200 persisted as a stuck -1 (live-caught on
+      // .61: zai/cumulo verified 200 yet stored -1 while their catalogs "did not fit
+      // NVS"). The catalog is a flash file now, but persisting the definitive verdict
+      // FIRST still costs nothing and keeps it ahead of any later write. The
+      // recordVerify at the end is then idempotent.
       if (result != -1) recordVerify(provider, result, rsn);
       // LLM providers: the verify already fetched /v1/models - HARVEST it (owner
       // 2026-07-16: the static model dropdowns were stale, missing current-gen
@@ -897,22 +890,15 @@ static void runOne() {
   if (result == 1 && provider == "mistral") syncMistralConnectors(key);
   arbiter::releaseWork();
   recordVerify(provider, result, rsn);
-  // A verify verdict is tiny and load-bearing; the mcat_ catalog caches are large
-  // and REBUILDABLE. On a maxed NVS the verdict write above can silently fail (the
-  // other providers' catalog blobs left no free page), leaving a real HTTP 200
-  // stuck at -1 (live-caught on .61: 5 provisioned providers overflowed the ~20 KB
-  // NVS). A verdict must never be lost to a cache: if a DEFINITIVE verdict did not
-  // persist, evict the OTHER providers' catalog caches (each rebuilds on its next
-  // verify / GET /api/models refresh) and retry the verdict once. Only fires under
-  // genuine NVS exhaustion; a transient -1 is left for a later retry.
+  // A verify verdict is tiny and load-bearing. On a maxed NVS the verdict write
+  // above can fail, leaving a real HTTP 200 stuck at -1 (live-caught on .61: 5
+  // provisioned providers' catalog caches overflowed the ~20 KB NVS). Since CUM-479
+  // the catalogs live in flash files and the boot heal evicts any legacy NVS copy,
+  // so this normally frees nothing; it stays as the backstop (a device downgraded
+  // and re-upgraded mid-session). Only fires under genuine NVS exhaustion; a
+  // transient -1 is left for a later retry.
   if (result != -1 && store::verifyResult(provider) != result) {
-    static const char* kProv[] = {"openai", "anthropic", "mistral", "zai",
-                                  "cumulo", "custom", nullptr};
-    int freed = 0;
-    for (int i = 0; kProv[i]; ++i) {
-      if (provider == kProv[i]) continue;
-      if (solide::memory::eraseKey((String("mcat_") + kProv[i]).c_str())) freed++;
-    }
+    const int freed = store::evictLegacyCatalogCaches();
     recordVerify(provider, result, rsn);
     alogf("verify: %s verdict was NVS-starved - evicted %d catalog cache(s), verdict now %d",
           provider.c_str(), freed, (int)store::verifyResult(provider));
@@ -959,8 +945,13 @@ bool anyDeferredStuck() {
 }
 
 void begin() {
-  // Nothing to start: the worker is spawned per request() and self-deletes, so
-  // no stack is held while idle. Kept as a stable entry point for main.cpp.
+  // No worker to start: it is spawned per request() and self-deletes, so no stack
+  // is held while idle. Kept as a stable entry point for main.cpp, which calls it
+  // once at boot in both modes - the moment the CUM-479 heal runs: every legacy
+  // mcat_ catalog leaves NVS, so a device that is full today gets its owner-config
+  // room back on this boot. The copy to its flash file happens only where LittleFS
+  // is mounted (Orchestrator mode); in Notifier mode the caches are just evicted.
+  store::migrateCatalogCachesOffNvs();
 }
 
 }  // namespace provider_verify

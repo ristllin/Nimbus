@@ -7,6 +7,7 @@
 #include <solide/memory.h>
 
 #include "nimbus_config.h"
+#include "../sys/config_nvs.h"   // NvsKv + notePersist: Wi-Fi saves answer 507 on a full NVS (CUM-479)
 
 namespace nimbus::net::wifistore {
 
@@ -41,13 +42,25 @@ struct Lock {
 //
 // So the mirror prefers the working network and falls back to the head only when
 // nothing is connected. Adding a network must never change what the device joins.
-void persistLocked(const std::string& preferSsid = "") {
+// Every write reports its verdict to the persist ledger (CUM-479), so the wizard's
+// /savewifi and POST /api/wifi answer 507 instead of ok when the list did not store.
+bool putNoted(const char* key, const String& v) {
+  nimbus::sys::NvsKv kv;
+  return nimbus::sys::notePersist(nimbus::store::writeString(kv, key, v), key);
+}
+
+// True iff the list blob landed - the list the next boot loads. A mutator that gets
+// false puts its previous list back in RAM (keepOrRevertLocked), so GET /api/wifi never
+// shows a network as saved that the next boot will not have. The boot-slot writes
+// below report to the ledger too (the route still answers 507 if they fail), but they
+// do not decide the RAM list, which must keep matching the stored blob.
+bool persistLocked(const std::string& preferSsid = "") {
   const std::string blob = nimbus::wifi::dumpNetworks(s_nets);
-  solide::memory::setString(NIMBUS_KEY_STA_NETS, String(blob.c_str()));
+  const bool listLanded = putNoted(NIMBUS_KEY_STA_NETS, String(blob.c_str()));
   if (s_nets.empty()) {
-    solide::memory::setString(NIMBUS_KEY_STA_SSID, String(""));
-    solide::memory::setString(NIMBUS_KEY_STA_PASS, String(""));
-    return;
+    putNoted(NIMBUS_KEY_STA_SSID, String(""));
+    putNoted(NIMBUS_KEY_STA_PASS, String(""));
+    return listLanded;
   }
   const nimbus::wifi::KnownNet* pick = nullptr;
   if (!preferSsid.empty()) {
@@ -63,8 +76,14 @@ void persistLocked(const std::string& preferSsid = "") {
         ? nimbus::wifi::findNetwork(s_nets, std::string(cur.c_str())) : -1;
     pick = (at >= 0) ? &s_nets[(size_t)at] : &s_nets[0];
   }
-  solide::memory::setString(NIMBUS_KEY_STA_SSID, String(pick->ssid.c_str()));
-  solide::memory::setString(NIMBUS_KEY_STA_PASS, String(pick->pass.c_str()));
+  putNoted(NIMBUS_KEY_STA_SSID, String(pick->ssid.c_str()));
+  putNoted(NIMBUS_KEY_STA_PASS, String(pick->pass.c_str()));
+  return listLanded;
+}
+
+// Persist a list change, or put the previous list back in RAM when it did not store.
+void keepOrRevertLocked(const std::vector<KnownNet>& before, const std::string& preferSsid = "") {
+  if (!persistLocked(preferSsid)) s_nets = before;
 }
 
 }  // namespace
@@ -111,6 +130,7 @@ int indexOf(const String& ssid) {
 bool add(const String& ssid, const String& pass, const String& protectSsid,
          String* evictedSsid) {
   Lock g;
+  const std::vector<KnownNet> before = s_nets;
   KnownNet n;
   n.ssid = ssid.c_str();
   n.pass = pass.c_str();
@@ -120,15 +140,17 @@ bool add(const String& ssid, const String& pass, const String& protectSsid,
   if (r == nimbus::wifi::UpsertResult::Rejected) return false;
   if (r == nimbus::wifi::UpsertResult::Evicted && evictedSsid)
     *evictedSsid = evicted.ssid.c_str();
-  // Keep the boot slot pointed at the network in use, not the one just added.
-  persistLocked(std::string(protectSsid.c_str()));
+  // Keep the boot slot pointed at the network in use, not the one just added. A
+  // write that does not land restores the old list (the route answers 507).
+  keepOrRevertLocked(before, std::string(protectSsid.c_str()));
   return true;
 }
 
 bool forget(const String& ssid) {
   Lock g;
+  const std::vector<KnownNet> before = s_nets;
   if (!nimbus::wifi::forgetNetwork(s_nets, std::string(ssid.c_str()))) return false;
-  persistLocked();
+  keepOrRevertLocked(before);
   return true;
 }
 
@@ -142,6 +164,7 @@ bool rename(const String& from, const String& to) {
   if (f == t) return true;
   const int at = nimbus::wifi::findNetwork(s_nets, f);
   if (at < 0) return false;
+  const std::vector<KnownNet> before = s_nets;     // for a write that does not land
   const KnownNet original = s_nets[(size_t)at];   // for rollback
   KnownNet moved = original;                      // carries the password with it
   moved.ssid = t;
@@ -159,17 +182,18 @@ bool rename(const String& from, const String& to) {
     nimbus::wifi::upsertNetwork(s_nets, original, nimbus::wifi::kMaxKnownNetworks, f, &evicted);
     return false;
   }
-  persistLocked();
+  keepOrRevertLocked(before);
   return true;
 }
 
 bool reorder(const String& ssid, int toIndex) {
   Lock g;
+  const std::vector<KnownNet> before = s_nets;
   if (!nimbus::wifi::moveNetwork(s_nets, std::string(ssid.c_str()), toIndex)) return false;
   // No preference argument: persistLocked() then keeps the legacy boot-slot pointed at
   // whatever it already names. A reorder is a priority HINT, not a "switch now" - it must
   // never re-point the boot slot at a network that is merely higher in the list.
-  persistLocked();
+  keepOrRevertLocked(before);
   return true;
 }
 

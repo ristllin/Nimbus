@@ -25,6 +25,81 @@ Every typed config value below is an NVS key in that namespace. The one blob
 (`nimbus_cfg`, the profile override `Config`) rides the SD half - see
 [Sparse-override Config + the SD blob](#sparse-override-config--the-sd-blob).
 
+## NVS budget and the full-storage contract
+
+The NVS partition is small and shared: `0x5000` = 20 KB in `default_16MB.csv`, which
+is 5 pages of 126 32-byte entries. NVS holds one page back for garbage collection, so
+about **504 entries (~16 KB)** carry every key in every namespace - `solide`, the
+orchestrator's `orchmem` scratchpad and `agjournal` journal, the RF calibration
+(`cal_data`, ~61 entries), Wi-Fi, and Bluetooth bonds. A string of `n` bytes costs one
+header entry plus `ceil((n + 1) / 32)` data entries; an int or bool costs one.
+
+**What may live there (the headroom rule).** NVS holds owner config and *bounded*
+values only. Nothing rebuildable and unbounded may live in NVS:
+
+| Value | Where | Why |
+|---|---|---|
+| Provider capability catalog (`GET /api/models`) | LittleFS file `/data/mcat_<provider>.json` | A rebuildable cache: every verify re-harvests it. Up to 3800 B per provider (~120 entries, nearly a whole page), so four or five verified providers exhausted NVS by themselves (bench unit A: 309 of 494 used entries) |
+| Model choice list `mch_<provider>` | NVS | Bounded (at most 8 ids) and read on every turn |
+| Usage ledger `usgLedger` | NVS | Owner spend history, bounded (12 providers, 48 tags) |
+
+The guide `/api/state` checks: at least **4 KB** stays free, room for the largest
+single owner value (the connectors blob, capped at 3500 B = 3552 B of entries). Below
+that, `nvs.low` reads `true`. It is a guide, not a guarantee: a string must fit inside
+one 126-entry page, so free entries scattered across pages can still refuse a big
+value. The 507 contract below is what stays exact.
+
+Before CUM-479 the catalogs lived in NVS as `mcat_<provider>`. On the first boot of a
+build with the move (in either mode), each legacy catalog is copied to its file when
+the file is missing (Orchestrator mode, where flash storage is mounted) and **every
+legacy `mcat_` key is erased**. An erase only frees entries, so this heals a device
+that is completely full today. Each later verify writes the file and erases any
+leftover legacy key for that provider.
+
+**A save that does not land never answers ok.** Every `agent::store` setter returns
+whether its write landed, and every write reports to a per-task persist ledger. The
+owner-config save routes (`POST /api/config`, `/api/orch`, `/api/connectors` in blob,
+patch, and delete modes, `/api/onboard/complete`, `/api/token/regen`, and the Wi-Fi
+saves `/savewifi` (the setup wizard) and `POST /api/wifi`) open a scope before their
+first write; `POST /api/mem/embedcfg` checks its config write directly. If any write of
+that request did not land, the route answers **HTTP 507**:
+
+```json
+{"error":"storage_full","message":"Couldn't save: device storage is full. Remove an unused provider key or connector and try again."}
+```
+
+The web page shows that sentence as its failure toast (and in the setup wizard's
+status lines), never "Saved". Side effects wait for the write: a provider key that did
+not store is not verified (that would check the old key), a mode switch that did not
+store does not restart the device, and `/api/mem/embedcfg` stores the new embedding
+config **before** it erases any memories, so a reset never wipes memories for a config
+that was not saved. A Wi-Fi list change or a budget edit that does not store is
+undone in memory too, so the device never shows a change it will lose at the next
+restart. Values the Save buttons post unchanged (a field still at its default, never
+stored) need no write, so they never cause a 507 on their own.
+
+**The remedy works on a full partition.** Clearing a value whose default is empty is
+an erase, not a write of `""`: removing a provider key, its verify verdict reset
+(`-1, 0` is stored as an absent `vfy_<provider>`), the Telegram offset reset, turning
+Telegram open access off, and clearing the directive all free entries instead of
+needing one. Removing a connector
+rewrites a smaller connectors blob; when that cannot land because NVS writes the new
+value before it erases the old one, the device erases first and then writes (only for
+a value that shrinks, so a growing save can never lose the set; if that write still
+fails, the old value is written back). The same applies to removing a chat from the
+Telegram allowlist, whose worst case is an empty allowlist (nobody allowed). This
+fallback is not power-atomic: a power cut inside that one write can lose the value.
+
+**Observability.**
+
+| Surface | Field | Meaning |
+|---|---|---|
+| `GET /api/state` | `nvs.used`, `nvs.free`, `nvs.total` | Bytes, from `nvs_get_stats` over the whole partition. `free` excludes the garbage-collection page, so it is the room left for new data |
+| `GET /api/state` | `nvs.low` | `free` is below the 4 KB headroom guide |
+| `GET /api/state` | `nvs.fails`, `nvs.lastFail` | Writes that did not land since boot, and the most recent failing key |
+| Test console `STATUS` | `nvs=<used>/<total> nvsfree=<free> nvsfail=<n>` | The same numbers, in bytes, at the end of the line |
+| Device log (`GET /api/log`, durable `nvs` class) | `nvs: write FAILED key=<k> - storage full? (<free> B free of <total> B)` | One line per failing key per minute |
+
 ## NVS keys
 
 Two families write to the `solide` namespace: the **system** keys
@@ -63,7 +138,9 @@ gracefully instead of firing a doomed TLS call.
 | `cumuloBase` | string | `""` | Cumulo router host or full base URL; `""` uses the built-in default host (`app.cumulo-nimbus.ai`). Minting a key from the Cloud access card also sends the device pairing credential to this host, so an override must point only at a trusted router | Yes |
 
 Writing or clearing a provider key **resets that provider's verify cache** to
-`-1, 0` (couldn't-verify / never), so a swapped key can't ride the old verdict.
+`-1, 0` (couldn't-verify / never), so a swapped key can't ride the old verdict. A clear
+(and the `-1, 0` reset) is stored as an erase, so it lands even when NVS is full; a
+key that did not store resets nothing and starts no verify.
 
 ### Orchestrator routing + models (`src/agent/store.cpp`)
 
@@ -388,13 +465,15 @@ so the embed config is **set-once**: `embLocked` flips `true` the first time any
 vector is embedded, and after that changing the config invalidates the whole
 vector DB (VDB).
 
-`store::setEmbedConfig()` itself is a plain accessor - the reset/lock **policy**
-lives with the caller. The server-side guard is `POST /api/mem/embedcfg`
-(`src/net/web_memory.cpp`): while locked, a change is refused with **HTTP 409**
-unless `reset=1` is passed. `reset=1` is the destructive path - it
-**flushes and wipes the VDB** (`flushAll` + `persistVectors`), clears
-`embLocked`, then writes the new config and reconfigures the engine to the new
-dims. A change can therefore never silently strand incomparable vectors; the web
+`store::setEmbedConfig()` itself is a plain accessor that reports whether all three
+values landed - the reset/lock **policy** lives with the caller. The server-side guard
+is `POST /api/mem/embedcfg` (`src/net/web_memory.cpp`): while locked, a change is
+refused with **HTTP 409** unless `reset=1` is passed. The route stores the new config
+**first**; if it does not land (a full NVS) it puts the old config back and answers
+**HTTP 507** `storage_full` without touching the memories. `reset=1` is the
+destructive path - after the config is stored it **flushes and wipes the VDB**
+(`flushAll` + `persistVectors`), clears `embLocked`, and reconfigures the engine to the
+new dims. A change can therefore never silently strand incomparable vectors; the web
 UI must warn and require the explicit reset. `provider` must be `openai`,
 `mistral`, or `cumulo` and `model` is required (else HTTP 400). `dims=0` is
 resolved to the model's own width with one live embeddings call before it is

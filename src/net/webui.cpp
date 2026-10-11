@@ -305,6 +305,18 @@ static bool authBlocked(::AsyncWebServerRequest* r) {
   return true;
 }
 
+// The ONE success reply of an owner-config save route (CUM-479). `save` is opened
+// before the route's first write; if ANY NVS write this request made did not land
+// (a full partition), the owner gets HTTP 507 {"error":"storage_full","message":...}
+// and the page toasts that sentence, never a {"ok":true} that reads as "Saved" over
+// a dropped change. test_nvs_full pins every covered route to this helper.
+static void sendSaved(::AsyncWebServerRequest* r, const nimbus::sys::SaveScope& save,
+                      const String& okBody = "{\"ok\":true}", int okStatus = 200) {
+  const nimbus::store::SaveReply rep =
+      nimbus::store::saveReply(!save.failed(), okStatus, std::string(okBody.c_str()));
+  r->send(rep.status, "application/json", rep.body.c_str());
+}
+
 // ---- curated override params (plan §5) -------------------------------------
 // The subset the config page exposes as inputs; the rest stay profile-driven.
 // `kind` drives the input widget on the client ("num" | "bool" | "posture").
@@ -494,6 +506,21 @@ static void buildState(String& out) {
   if (sd) {
     d["storeTotalMB"] = (uint32_t)solide::storage::cardSizeMB();
     d["storeFreeMB"]  = (uint32_t)solide::storage::freeMB();
+  }
+  // NVS (the 20 KB settings partition, every namespace) in BYTES, CUM-479: used/free/
+  // total from nvs_get_stats (free excludes the page NVS holds back for garbage
+  // collection), `low` below the 4 KB owner-config headroom, plus the writes that did
+  // not land since boot and the last failing key - the "why did my save 507" evidence.
+  {
+    nimbus::store::NvsUsage u;
+    JsonObject nvs = d["nvs"].to<JsonObject>();
+    nvs["ok"]       = sys::nvsUsage(u);
+    nvs["used"]     = u.usedBytes;
+    nvs["free"]     = u.freeBytes;
+    nvs["total"]    = u.totalBytes;
+    nvs["low"]      = u.low;
+    nvs["fails"]    = sys::persistFailures();
+    nvs["lastFail"] = sys::lastPersistFailKey();
   }
 
   // HAL health (solide::begin per-subsystem) - which peripherals came up at boot.
@@ -1208,18 +1235,21 @@ static void buildFallbacks(String& out) {
 // Apply one POSTed orchestrator field. Key writes invalidate that provider's
 // verify cache (result -1, ts 0 = "never verified") so a swapped key can't ride
 // a stale "verified" badge. Returns true if the field was recognized.
+// CUM-479: a key that did not store (a full NVS - the route's SaveScope answers 507)
+// triggers none of its side effects: no verify reset or verify run against the OLD
+// key, no live token swap the device would lose on the next boot. A clear is an
+// erase, so clr_* lands even on a full partition (the storage-full remedy).
 static bool applyOrchField(const String& n, const String& v, bool& cfgDirty) {
   // provider keys (set on non-empty; explicit clr_* to clear)
-  if (n == "oaiKey")  { if (v.length()) { agent::store::setOpenaiKey(v);    agent::store::setVerify("openai", -1, 0); }    return true; }
-  if (n == "antKey")  { if (v.length()) { agent::store::setAnthropicKey(v); agent::store::setVerify("anthropic", -1, 0); } return true; }
-  if (n == "mistKey") { if (v.length()) { agent::store::setMistralKey(v);   agent::store::setVerify("mistral", -1, 0); agent::connectors::resetMistralConnectorsProbe(); }   return true; }
+  if (n == "oaiKey")  { if (v.length() && agent::store::setOpenaiKey(v))    agent::store::setVerify("openai", -1, 0);    return true; }
+  if (n == "antKey")  { if (v.length() && agent::store::setAnthropicKey(v)) agent::store::setVerify("anthropic", -1, 0); return true; }
+  if (n == "mistKey") { if (v.length() && agent::store::setMistralKey(v))   { agent::store::setVerify("mistral", -1, 0); agent::connectors::resetMistralConnectorsProbe(); }   return true; }
   if (n == "clr_oaiKey")  { agent::store::setOpenaiKey("");    agent::store::setVerify("openai", -1, 0);    return true; }
   if (n == "clr_antKey")  { agent::store::setAnthropicKey(""); agent::store::setVerify("anthropic", -1, 0); return true; }
   if (n == "clr_mistKey") { agent::store::setMistralKey("");   agent::store::setVerify("mistral", -1, 0);   agent::connectors::resetMistralConnectorsProbe();   return true; }
   // Tavily web-search key (enables the web.search tool at the next boot/registration)
   if (n == "tavKey")     {
-    if (v.length()) {
-      agent::store::setTavilyKey(v);
+    if (v.length() && agent::store::setTavilyKey(v)) {
       // Verify-on-save like every other capability (owner: "unverified? verified but
       // no confirmation?"): one minimal real /search proves the key does work.
       agent::store::setVerify("tavily", -1, 0);
@@ -1240,12 +1270,12 @@ static bool applyOrchField(const String& n, const String& v, bool& cfgDirty) {
   if (n == "custModel") { agent::store::setCustomModel(v); return true; }
   // Z.ai (GLM) + Cumulo router credentials. A key write invalidates the verify
   // cache and enqueues a verify (which probes/harvests + builds the catalog).
-  if (n == "zaiKey")    { if (v.length()) { agent::store::setZaiKey(v); agent::store::setZaiBase("");
+  if (n == "zaiKey")    { if (v.length() && agent::store::setZaiKey(v)) { agent::store::setZaiBase("");
                                             agent::store::setVerify("zai", -1, 0);
                                             agent::provider_verify::request("zai"); } return true; }
   if (n == "clr_zaiKey"){ agent::store::setZaiKey(""); agent::store::setVerify("zai", -1, 0); return true; }
   if (n == "cumuloBase"){ agent::store::setCumuloBase(v); return true; }
-  if (n == "cumuloKey") { if (v.length()) { agent::store::setCumuloKey(v);
+  if (n == "cumuloKey") { if (v.length() && agent::store::setCumuloKey(v)) {
                                             agent::store::setVerify("cumulo", -1, 0);
                                             agent::provider_verify::request("cumulo"); } return true; }
   if (n == "clr_cumuloKey") { agent::store::setCumuloKey(""); agent::store::setVerify("cumulo", -1, 0); return true; }
@@ -1363,8 +1393,7 @@ static bool applyOrchField(const String& n, const String& v, bool& cfgDirty) {
   if (n == "sysPrompt") { agent::store::setSysPrompt(v); cfgDirty = true; return true; }
   if (n == "clearMem")  { if (v == "1") agent::orchestrator::requestMemoryClear(); return true; }
   if (n == "tgToken")   {
-    if (v.length()) {
-      agent::store::setTelegramToken(v);
+    if (v.length() && agent::store::setTelegramToken(v)) {
       // Verify-on-save (owner: "first run a tiny verification"): reset the verdict and
       // enqueue a getMe check on the arbited verify task. The UI polls the verdict.
       agent::store::setVerify("telegram", -1, 0);
@@ -1434,8 +1463,10 @@ static bool applyOrchField(const String& n, const String& v, bool& cfgDirty) {
     // Touch calibration, measured per unit (see nimbus/touch_cal.h). Validated
     // with the SAME parser the console uses so the two surfaces cannot drift,
     // and applied live - recalibrating should not need a restart.
+    // CUM-479: apply live only what was stored - a 507 must not leave the panel on a
+    // mapping the next boot forgets.
     if (v.length() == 0) {
-      agent::store::setTouchCal("");
+      if (!agent::store::setTouchCal("")) return true;   // the route's SaveScope answers 507
       // Restore the per-board-model DEFAULT LIVE (CUM-189): the SAME orientation a
       // fresh board of this model boots with, not the generic driver default, so
       // clearing a mis-calibration returns to a known-good starting point for THIS
@@ -1459,7 +1490,7 @@ static bool applyOrchField(const String& n, const String& v, bool& cfgDirty) {
     // {"ok":true} and the page toast "Saved" for a calibration the device had
     // just rejected - telling the owner a change happened that did not.
     if (!nimbus::touch::parseCal(std::string(v.c_str()), c)) return false;
-    agent::store::setTouchCal(v);
+    if (!agent::store::setTouchCal(v)) return true;      // the route's SaveScope answers 507
     solide::touch::Calibration sc;
     sc.minX = c.minX; sc.maxX = c.maxX;
     sc.minY = c.minY; sc.maxY = c.maxY;
@@ -1896,18 +1927,30 @@ void beginWeb(const WebConfig& wc) {
   // loopWeb() fires onChanged() to persist after draining the staged edits.
   s_server.on("/api/config", HTTP_POST, [](AsyncWebServerRequest* r) {
     if (authBlocked(r)) return;
+    nimbus::sys::SaveScope save;   // CUM-479: every NVS write below answers through sendSaved
     bool touched = false;
     String battWarn;   // set when a battery param is clamped, surfaced as a toast
 
+    // Profile + mode APPLY on the main task (loopWeb), but their NVS ints are written
+    // HERE first, synchronously, so a pick that cannot be stored answers 507 instead of
+    // a staged "ok" - and is then NOT staged: a mode switch that cannot persist would
+    // reboot straight back into the old mode. The main task re-writes the same values
+    // (a no-op write) when it persists the config.
     if (r->hasParam("profile", true)) {
       int p = r->getParam("profile", true)->value().toInt();
       if (p >= 0 && p < nimbus::kProfileCount) {
-        s_pendProf = p; s_haveProf = true; touched = true;
+        if (sys::saveProfile((ProfileId)p)) { s_pendProf = p; s_haveProf = true; }
+        touched = true;
       }
     }
     if (r->hasParam("mode", true)) {
       int m = r->getParam("mode", true)->value().toInt();
-      if (m == 0 || m == 1) { s_pendMode = m; s_haveMode = true; touched = true; }
+      if (m == 0 || m == 1) {
+        if (sys::saveMode(m == 1 ? sys::Mode::Orchestrator : sys::Mode::Notifier)) {
+          s_pendMode = m; s_haveMode = true;
+        }
+        touched = true;
+      }
     }
     // Device identity (P2): sanitize + persist directly (NVS is internally
     // mutexed - same pattern as the /api/orch store writes). Reboot-to-apply:
@@ -1929,9 +1972,10 @@ void beginWeb(const WebConfig& wc) {
       // Only apply on a REAL change: a no-op re-save (the field is pre-filled,
       // so a reflexive Save is one click) would otherwise rebase every
       // wall-clock loop and erase a due-but-not-yet-fired one (prism).
+      // A write that did not land stages nothing (CUM-479): a tzapply over the
+      // unchanged zone is exactly the no-op rebase this guard exists to avoid.
       if (tz != agent::store::deviceTz()) {
-        agent::store::setDeviceTz(tz);
-        agent::loops::stageWebMutation("{\"action\":\"tzapply\"}");
+        if (agent::store::setDeviceTz(tz)) agent::loops::stageWebMutation("{\"action\":\"tzapply\"}");
         touched = true;
       }
     }
@@ -2009,8 +2053,8 @@ void beginWeb(const WebConfig& wc) {
       // reset, so it applies live; forceRepaint makes the next frame land even
       // when the composed pixels are unchanged. Persisted for the next boot too.
       const bool on = r->getParam("scrFlip", true)->value().toInt() != 0;
-      agent::store::setTftFlip(on);
-      if (agent::store::screenModel() == "tft") {
+      // Applied live only once stored (CUM-479): a 507 leaves the screen as it was.
+      if (agent::store::setTftFlip(on) && agent::store::screenModel() == "tft") {
         solide::display_tft::setFlip(nimbus::effectiveTftFlip(on));
         hw::tft::forceRepaint();
       }
@@ -2076,9 +2120,9 @@ void beginWeb(const WebConfig& wc) {
       String body = "{\"ok\":true,\"warn\":\"";
       body += battWarn;
       body += "\"}";
-      r->send(200, "application/json", body);
+      sendSaved(r, save, body);
     } else {
-      r->send(200, "application/json", "{\"ok\":true}");
+      sendSaved(r, save);
     }
   });
 
@@ -2230,6 +2274,9 @@ void beginWeb(const WebConfig& wc) {
               "{\"error\":\"Directive is too long. Keep it under 1500 characters.\"}");
       return;
     }
+    // CUM-479: the scope covers every NVS write any field below makes, including the
+    // ones nested inside a setter (verify reset, telegram offset, the usage ledger).
+    nimbus::sys::SaveScope save;
     bool touched = false, cfgDirty = false;
     const size_t np = r->params();
     for (size_t i = 0; i < np; i++) {
@@ -2241,8 +2288,11 @@ void beginWeb(const WebConfig& wc) {
     // drain; a token/allowlist change needs a reboot (the poll task captured
     // them at begin) - the page surfaces that hint.
     if (cfgDirty) agent::orchestrator::noteConfigChanged();
-    r->send(touched ? 200 : 400, "application/json",
-            touched ? "{\"ok\":true}" : "{\"error\":\"no known field\"}");
+    if (!touched) {
+      r->send(400, "application/json", "{\"error\":\"no known field\"}");
+      return;
+    }
+    sendSaved(r, save);
   });
 
   // Stage a live ring preview: profile=<0..kProfileCount-1>. Applied + reverted
@@ -2327,6 +2377,7 @@ void beginWeb(const WebConfig& wc) {
   });
   s_server.on("/api/connectors", HTTP_POST, [](AsyncWebServerRequest* r) {
     if (authBlocked(r)) return;
+    nimbus::sys::SaveScope save;   // CUM-479: a connector that did not store answers 507
     // Three modes, all token-gated:
     //   blob=<array>    whole-blob replace (the Advanced raw editor)
     //   del=<name>      remove one connector by name
@@ -2361,9 +2412,9 @@ void beginWeb(const WebConfig& wc) {
         r->send(400, "application/json", out);
         return;
       }
-      agent::store::setConnectorsJson(blob);
-      agent::store::setOrchConvId("");  // connectors pin at conversation creation
-      r->send(200, "application/json", "{\"ok\":true}");
+      // connectors pin at conversation creation: reset it only once the set stored
+      if (agent::store::setConnectorsJson(blob)) agent::store::setOrchConvId("");
+      sendSaved(r, save);
       return;
     }
 
@@ -2412,12 +2463,12 @@ void beginWeb(const WebConfig& wc) {
       r->send(400, "application/json", "{\"error\":\"connector set too large (<=3500B)\"}");
       return;
     }
-    agent::store::setConnectorsJson(outBlob);
     // Mistral pins connectors at conversation creation, so a changed connector set
     // is otherwise ignored until the conversation resets. Drop the stored convId so
-    // the next turn starts a fresh conversation with the new set.
-    agent::store::setOrchConvId("");
-    r->send(200, "application/json", "{\"ok\":true}");
+    // the next turn starts a fresh conversation with the new set - only once the set
+    // actually stored (a 507 leaves the old set, and its conversation, in force).
+    if (agent::store::setConnectorsJson(outBlob)) agent::store::setOrchConvId("");
+    sendSaved(r, save);
   });
 
   // ---- MCP OAuth 2.1 sign-in (CUM-256) -------------------------------------
@@ -2527,6 +2578,9 @@ void beginWeb(const WebConfig& wc) {
       r->send(409, "application/json", "{\"error\":\"no verified provider\"}");
       return;
     }
+    // CUM-479: a finish that cannot be stored answers 507, so the wizard stays open
+    // (it would otherwise reappear on the next boot after telling the owner "done").
+    nimbus::sys::SaveScope save;
     agent::store::setOnboarded(true);
     // Tell the wizard whether a restart is still needed: the chosen panel type
     // (stored) vs the driver actually bound at boot. Deciding it here (not from a
@@ -2534,8 +2588,8 @@ void beginWeb(const WebConfig& wc) {
     // handoff, which reloads the wizard and would otherwise lose the choice.
     int boot = agent::store::bootScreenIsTft();
     bool restart = boot >= 0 && (agent::store::screenIsTft() != (boot == 1));
-    r->send(200, "application/json",
-            String("{\"ok\":true,\"restart\":") + (restart ? "true" : "false") + "}");
+    sendSaved(r, save,
+              String("{\"ok\":true,\"restart\":") + (restart ? "true" : "false") + "}");
   });
 
   // Restart to apply the wizard's display choice (scrModel binds its display +
@@ -2553,8 +2607,12 @@ void beginWeb(const WebConfig& wc) {
   // OTHER browser is logged out and must re-scan the Config QR (Connectivity).
   s_server.on("/api/token/regen", HTTP_POST, [](AsyncWebServerRequest* r) {
     if (authBlocked(r)) return;
+    // CUM-479: a rotation that cannot be stored answers 507 and hands back NO token,
+    // so the calling browser keeps the one the device still accepts (handing it the
+    // unsaved new token would sign this browser out).
+    nimbus::sys::SaveScope save;
     String t = agent::store::regenWebAuthToken();
-    r->send(200, "application/json", String("{\"ok\":true,\"token\":\"") + t + "\"}");
+    sendSaved(r, save, String("{\"ok\":true,\"token\":\"") + t + "\"}");
   });
 
   // Web chat: POST a message -> runs one orchestrator turn on the poll task; GET polls
@@ -3600,10 +3658,12 @@ void beginWeb(const WebConfig& wc) {
       String o; serializeJson(e, o);
       r->send(code, "application/json", o);
     };
+    // CUM-479: a list change that did not store answers 507 through sendSaved.
+    nimbus::sys::SaveScope save;
     auto ok = [&](JsonDocument& d) {
       d["ok"] = true;
       String o; serializeJson(d, o);
-      r->send(200, "application/json", o);
+      sendSaved(r, save, o);
     };
     String action = p("action"); action.trim();
     // NEITHER ssid NOR pass is trimmed. The store compares SSIDs exactly (802.11
@@ -3674,6 +3734,10 @@ void beginWeb(const WebConfig& wc) {
       }
       saveAndConnect(ssid, String(n.pass.c_str()));   // stored password -> radio, never out
       s_ledConfirm = true;
+      // The network is already saved; the join promotes it to the head of the list,
+      // a priority hint whose write is best effort. The join itself has happened, so
+      // a full NVS must not answer "couldn't save" here: re-open the scope (CUM-479).
+      save = nimbus::sys::SaveScope();
       JsonDocument d;
       d["joining"] = ssid;
       ok(d);
@@ -3772,9 +3836,10 @@ void beginWeb(const WebConfig& wc) {
     // for the browser to receive the exact LAN IP + carry its auth token across
     // origins. A fixed-panel board ignores the flag because its setup AP remains available.
     s_wifiJoinStarted = true;
+    nimbus::sys::SaveScope save;   // CUM-479: the wizard is told when the network did not store
     saveAndConnect(ssid, pass);
     s_ledConfirm = true;   // creds accepted -> LED confirm blip (P3)
-    r->send(200, "application/json", "{\"ok\":true}");
+    sendSaved(r, save);
   });
 
   // Orchestrator memory dashboard + LAN MCP endpoint (Part B Ph3/Ph4). Kept in

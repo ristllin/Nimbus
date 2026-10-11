@@ -1,7 +1,10 @@
 #pragma once
 #include <Arduino.h>   // String - the deviceName accessors below
 
+#include <solide/memory.h>
+
 #include "nimbus/profile.h"
+#include "nimbus/store/persist.h"   // PersistLedger + NvsUsage (CUM-479, host-tested)
 
 // config_nvs - device persistence glue for the portable Config and the active
 // operating Mode (plan §3.1 profiles, §3.6 mode_manager: "NVS-persisted,
@@ -36,8 +39,14 @@ bool nvsDegraded();
 
 Mode loadMode(Mode def = Mode::Notifier);
 
-// Persist the active mode. Returns false if the store is unavailable.
+// Persist the active mode. Returns false if the store is unavailable or the write
+// did not land (a full NVS).
 bool saveMode(Mode m);
+
+// Persist the battery-mode (profile) mirror int on its own - the same value
+// saveConfig() mirrors. POST /api/config writes it synchronously so a profile pick
+// that cannot be stored answers 507 instead of a staged "ok" (CUM-479).
+bool saveProfile(ProfileId p);
 
 // BLE advertising enable (Notifier-mode nsn transport). Persisted so the user's
 // choice survives reboot; defaults ON (the LED broker needs it). Runtime-applied
@@ -53,7 +62,47 @@ bool saveBleEnabled(bool enabled);
 String deviceName();
 // Sanitizes (identity::sanitizeName) and persists. An empty/unusable name
 // CLEARS the stored value so the next boot re-runs auto-numbering. Returns the
-// value actually stored ("" when cleared).
+// sanitized value (what was asked to be stored, "" when cleared); a write that did
+// not land is reported through the persist ledger below, so a SaveScope sees it.
 String saveDeviceName(const String& raw);
+
+// ---- owner-config persistence honesty (CUM-479) -----------------------------
+// The solide::memory (NVS) seam the portable write primitives in nimbus/store/
+// persist.h run against - shared by agent::store and the saves in this file.
+struct NvsKv {
+  bool   setString(const char* k, const String& v) { return solide::memory::setString(k, v); }
+  String getString(const char* k, const char* def) { return solide::memory::getString(k, def); }
+  bool   has(const char* k) { return solide::memory::has(k); }
+  bool   erase(const char* k) { return solide::memory::eraseKey(k); }
+};
+
+// Every NVS write made through the store (agent::store setters) and the NVS saves
+// above (mode, profile mirror, BLE, device name) reports its verdict here. A failure
+// is recorded against the calling FreeRTOS task and logged ("nvs: write FAILED
+// key=<k> ...", one line per failing key per minute), and the verdict is returned
+// unchanged so a setter can `return notePersist(ok, key);`.
+bool notePersist(bool ok, const char* key);
+
+// A save route opens one of these BEFORE its first write and asks failed() before
+// it answers: true when any NVS write this task made since construction did not land
+// (including writes nested inside a setter). Routes then send the 507 storage_full
+// reply instead of {"ok":true}. Web routes run one at a time on the AsyncTCP task, so
+// the scope sees exactly its own request's writes.
+class SaveScope {
+ public:
+  SaveScope();
+  bool failed() const;
+
+ private:
+  uint32_t  since_;
+  uintptr_t task_;
+};
+
+// NVS partition usage (nvs_get_stats over the default partition, every namespace).
+// Returns false (out zeroed) when the stats call fails.
+bool nvsUsage(nimbus::store::NvsUsage& out);
+// Writes that did not land since boot, and the most recent failing key ("" none).
+uint32_t persistFailures();
+String   lastPersistFailKey();
 
 }  // namespace nimbus::sys

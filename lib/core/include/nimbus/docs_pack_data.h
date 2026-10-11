@@ -1049,7 +1049,7 @@ Commands grouped by purpose, one line each. Arguments in angle brackets.
 | Command | What it does |
 |---|---|
 | `PING` | Liveness check. |
-| `STATUS` | One-line device summary (firmware, mode, network, battery, faults, SFX tier). |
+| `STATUS` | One-line device summary (firmware, mode, network, battery, faults, SFX tier, and NVS use in bytes: `nvs=<used>/<total> nvsfree=<free> nvsfail=<writes that did not land>`). |
 | `RENDER?` | What the screen, posture, and ring are composed to show - the harness's camera substitute. |
 | `MENU?` | The current settings-menu view. |
 | `LEDSTATE` | What the LED driver is physically driving (raw frame layer vs a fallback pattern) - the physical counterpart of `RENDER?`. |
