@@ -126,6 +126,15 @@ static String withTurnTag(const char* base) {
   if (g_turnTag[0]) { if (t.length()) t += ","; t += g_turnTag; }
   return t;
 }
+// CUM-482: captured job-engine deliveries render in the chat but never enter a
+// model-facing conversation read (window, brief, fold) - a raw fallback carries
+// sub-agent web content, and the model never read job messages there before.
+static void dropJobDeliveries(std::vector<orch::EpisodicMessage>& rows) {
+  size_t keep = 0;
+  for (size_t i = 0; i < rows.size(); i++)
+    if (!agent::isJobDelivery(rows[i].tags)) rows[keep++] = std::move(rows[i]);
+  rows.resize(keep);
+}
 // v3.7.0 RBAC: the tenant table (roles + quotas). Unlike the rest of the
 // orchestrator state this genuinely has TWO writers - the web surface
 // (/api/tenant, AsyncTCP) and the assistant's tenant.* tools (tg_poll, or
@@ -353,7 +362,9 @@ static nimbus::orch::ModAction moderateGate(nimbus::orch::ModGate gate, const St
 // reply, a job result - is delivered with system=false (the default) and always
 // screened. (CUM-275: the old exemption keyed on text.startsWith(deviceName), which
 // a guest could prompt-inject the model into reproducing.)
-static void deliver(const String& chatId, const String& text, bool system = false) {
+// Returns false ONLY when the outbound screen suppressed the message (a full reply
+// queue is logged, not "undelivered": the message still belongs in the history).
+static bool deliver(const String& chatId, const String& text, bool system = false) {
   // Gate 2 (outbound to guests, fail-open): when the owner turns it on, a reply to
   // a non-admin chat is screened; a flagged reply is suppressed (a classifier
   // outage fails open, so an outage never silences the assistant). Admin/web/serial
@@ -364,7 +375,7 @@ static void deliver(const String& chatId, const String& text, bool system = fals
   if (!nimbus::orch::outboundExempt(system) &&
       moderateGate(nimbus::orch::ModGate::OutboundReply, chatId, text) == nimbus::orch::ModAction::Block) {
     alogf("moderation: outbound reply to %s suppressed (flagged)", chatId.c_str());
-    return;
+    return false;
   }
   // The send sink enqueues onto a bounded reply queue and returns false if it was
   // still full after its short block. The queue is now sized for a full turn's burst
@@ -378,6 +389,7 @@ static void deliver(const String& chatId, const String& text, bool system = fals
   if (g_sinks.send && !g_sinks.send(chatId, text))
     alogf("orchestrator: reply queue full - dropped %d-byte message to %s",
           (int)text.length(), chatId.c_str());
+  return true;
 }
 
 // Speak a short confirmation of a job result aloud (opt-in via store::ttsEnabled).
@@ -525,9 +537,23 @@ static JobEngine::Deps buildJobDeps() {
   d.platform.freeHeap = [] { return (uint32_t)ESP.getFreeHeap(); };
   d.fabric  = g_fabric;      // set by begin() before the engine is constructed
   d.journal = &g_journal;
-  d.deliver = [](const std::string& chatId, const std::string& text) {
-    deliver(String(chatId.c_str()), String(text.c_str()));
-  };
+  // CUM-482: every job-engine message (spawn acks, refusals, sub failures, raw
+  // fallbacks) also lands in the chat's episodic history, so the web chat - which
+  // renders that history - shows it and it survives a reload. Untagged by turn
+  // when it arrives between turns (tg_poll pump), so it can never be grouped
+  // under, or returned as, a later turn's reply. kJobDeliveryTag marks
+  // provenance: these rows render in the chat but never enter a model-facing
+  // conversation read (window, brief, fold) - a raw fallback carries sub-agent
+  // web content (prism injection + input lenses). Role "tool", never "assistant".
+  d.deliver = agent::capturingDelivery(
+      [](const std::string& chatId, const std::string& text) {
+        return deliver(String(chatId.c_str()), String(text.c_str()));
+      },
+      [](const std::string& chatId, const std::string& text) {
+        memory::captureMessage(chatId.c_str(), "tool", orch::MsgKind::Message,
+                               String(text.c_str()), "", withTurnTag(agent::kJobDeliveryTag));
+        if (chatId != "system") g_folds.noteMessage(chatId, text.size());   // fold trigger
+      });
   d.event = [](const attn::Event& e) { if (g_sinks.event) g_sinks.event(e); };
   d.fire = [](const char* cue) {
     if (strcmp(cue, "spawn") == 0) ::sfx::fire(nimbus::sfx::Ev::AgentSpawn);   // "Right away, sir."
@@ -590,9 +616,11 @@ static JobEngine::Deps buildJobDeps() {
     // the machinery.
     q.haveKind = true; q.kind = MsgKind::Message;
     q.alsoKinds = {MsgKind::Image, MsgKind::File, MsgKind::Audio};
-    q.limit = 6;
+    q.limit = 12;   // 6 shown; headroom for the dropped job-delivery rows
     std::vector<EpisodicMessage> rows;
     { memory::Lock lk; rows = memory::episodic().query(q); }
+    dropJobDeliveries(rows);
+    if (rows.size() > 6) rows.resize(6);
     if (rows.empty()) return std::string();
     std::string block = "[CONTEXT] (the conversation this task came from, oldest first)\n";
     // Brief bytes derive from the HEAD's window (the spawning context; 1200 at
@@ -844,9 +872,12 @@ static TurnEngine::Deps buildTurnDeps() {
     // row carries the description, so including these kinds is what makes
     // "what did I just send you?" answerable one turn later.
     q.alsoKinds = {MsgKind::Image, MsgKind::File, MsgKind::Audio};
-    q.limit = kRecentTurnsMax + 1;                  // +1 covers the in-flight row
+    // Headroom past the 12-row window: the in-flight row and job-delivery rows
+    // are dropped below, not shown.
+    q.limit = 2 * kRecentTurnsMax + 1;
     std::vector<EpisodicMessage> rows;
     { memory::Lock lk; rows = memory::episodic().query(q); }   // newest-first, ring-served
+    dropJobDeliveries(rows);
     if (!rows.empty() && g_curUserRowId[0] && rows.front().id == g_curUserRowId)
       rows.erase(rows.begin());
     if ((int)rows.size() > kRecentTurnsMax) rows.resize(kRecentTurnsMax);
@@ -2056,6 +2087,7 @@ static void compactTick() {
     // never lose what the owner said.
     std::vector<EpisodicMessage> rows;
     { memory::Lock lk; rows = memory::episodic().query(q); }
+    dropJobDeliveries(rows);   // job output is not conversation to summarize
     // Fold-slice bytes derive from the head model's window (65536 at the 200K
     // anchor - identical to the old constant on today's fleet).
     const String fh = store::resolvedOrchHost();

@@ -37,6 +37,25 @@ namespace agent {
 // device glue can key its head-turn arc ("head") on the same hash.
 uint32_t keyFromTag(const char* tag);
 
+// The job engine's owner delivery composed with episodic capture (CUM-482).
+// Job-engine messages - spawn acks, "Couldn't start that agent on ...", sub
+// failures, raw fallbacks - bypassed the chat history, so the web chat (which
+// renders that history) never showed them and they vanished on reload. The
+// device wires JobEngine::Deps::deliver through this: `send` delivers and
+// returns false ONLY when the outbound screen suppressed the message; `capture`
+// records it to the chat's history. A screened-out message is never captured
+// (its text must not resurface through the history window).
+std::function<void(const std::string& chatId, const std::string& text)> capturingDelivery(
+    std::function<bool(const std::string& chatId, const std::string& text)> send,
+    std::function<void(const std::string& chatId, const std::string& text)> capture);
+
+// The tag on every captured job-engine delivery row. Those rows render in the web
+// chat but stay OUT of every model-facing conversation read (the head's window,
+// the sub-agent brief, the fold): a raw fallback carries sub-agent web content,
+// and the model never read job messages there before they were captured.
+extern const char kJobDeliveryTag[];   // "src:jobs"
+bool isJobDelivery(const std::string& rowTags);   // whole comma-list item match
+
 class JobEngine {
  public:
   struct Deps {

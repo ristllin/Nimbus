@@ -30,6 +30,22 @@ uint32_t keyFromTag(const char* tag) {
   return h ? h : 1u;   // never 0 (reserved "no key")
 }
 
+std::function<void(const std::string&, const std::string&)> capturingDelivery(
+    std::function<bool(const std::string&, const std::string&)> send,
+    std::function<void(const std::string&, const std::string&)> capture) {
+  return [send, capture](const std::string& chatId, const std::string& text) {
+    const bool delivered = send ? send(chatId, text) : true;
+    if (delivered && capture) capture(chatId, text);
+  };
+}
+
+const char kJobDeliveryTag[] = "src:jobs";
+
+bool isJobDelivery(const std::string& rowTags) {
+  return ("," + rowTags + ",").find(std::string(",") + kJobDeliveryTag + ",") !=
+         std::string::npos;
+}
+
 // Map a journal JobState to a ring Status (the ring's attention vocabulary).
 static Status ringStatusFor(orch::JobState s) {
   switch (s) {

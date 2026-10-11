@@ -56,6 +56,11 @@ struct Rig {
   std::unique_ptr<orch::Journal> journal;
 
   std::vector<std::pair<std::string, std::string>> delivered;  // chat, text
+  // CUM-482: the device wires Deps.deliver through agent::capturingDelivery, so
+  // the rig does too - every delivery is also recorded to `captured` (the chat's
+  // episodic history on the device) unless `screenOut` suppresses it.
+  std::vector<std::pair<std::string, std::string>> captured;
+  std::function<bool(const std::string&)> screenOut;   // text -> suppressed by the outbound screen
   std::vector<attn::Event> events;                             // FakeEventSink recorder
   std::vector<std::string> cues;                               // fire()
   std::vector<std::string> synthChats;
@@ -90,9 +95,13 @@ struct Rig {
     d.platform = plat.contract();
     d.fabric = &fabric;
     d.journal = journal.get();
-    d.deliver = [this](const std::string& c, const std::string& t) {
-      delivered.push_back({c, t});
-    };
+    d.deliver = agent::capturingDelivery(
+        [this](const std::string& c, const std::string& t) {
+          if (screenOut && screenOut(t)) return false;
+          delivered.push_back({c, t});
+          return true;
+        },
+        [this](const std::string& c, const std::string& t) { captured.push_back({c, t}); });
     d.event = [this](const attn::Event& e) { events.push_back(e); };
     d.fire = [this](const char* c) { cues.push_back(c); };
     d.backendHue = [](const char*) { return (uint8_t)42; };
@@ -1002,6 +1011,75 @@ static void test_spawn_brief_no_context_when_empty() {
   TEST_ASSERT_TRUE(r.adapter.dispatched[0].instruction.find("[CONTEXT]") == std::string::npos);
 }
 
+// CUM-482 class guard: EVERY job-engine delivery to the owner - spawn acks, the
+// queue-full and no-provider refusals, "Couldn't start that agent on ...", an
+// expired job, a lone failure, the stuck-synthesis fallback, the synthesis-turn
+// failure fallback - is captured to the chat's history exactly as delivered
+// (same chat, same text, same order), and a message the outbound screen
+// suppressed is never captured. A new delivery path that skips the capture
+// cannot exist: the engine has one delivery seam and the device composes it.
+static void test_every_job_delivery_is_captured_to_history() {
+  Rig r;
+  r.eng->enqueueSpawn(sp("ack me"), "web");              // spawn ack
+  r.eng->pump();
+  for (int i = 0; i < orch::kMaxPendingSpawns; i++) r.eng->enqueueSpawn(sp(), "web");
+  r.eng->enqueueSpawn(sp("refused"), "web");              // queue full
+  Rig k;
+  k.keyed.clear();
+  orch::Spawn s = sp();
+  s.provider = "";
+  k.eng->enqueueSpawn(s, "web");                          // no provider
+  k.eng->pump();
+  k.adapter.dispatchErr = agent::FabricErr::Network;
+  k.keyed = {"anthropic"};
+  k.eng->enqueueSpawn(sp(), "web");                       // Couldn't start that agent on ...
+  k.plat.ms += 5000; k.eng->pump();
+  Rig e;
+  e.eng->enqueueSpawn(sp(), "web");
+  e.eng->pump();
+  e.adapter.pollErr = agent::FabricErr::NotFound;         // expired
+  e.plat.ms = 2500; e.eng->pump();
+  Rig f;
+  f.synthConsumes = false;
+  f.eng->addFreshResult("job0001", "researcher", "findings");
+  f.eng->pump();
+  f.plat.ms += JobEngine::kSynthFallbackMs; f.eng->pump();   // stuck fallback
+  f.eng->deliverResults("web", "Here are the raw findings; the summary step did not complete.\n");
+  for (Rig* x : {&r, &k, &e, &f}) {
+    TEST_ASSERT_TRUE(!x->delivered.empty());
+    TEST_ASSERT_EQUAL_MESSAGE((int)x->delivered.size(), (int)x->captured.size(),
+                              "every delivery is captured exactly once");
+    for (size_t i = 0; i < x->delivered.size(); i++) {
+      TEST_ASSERT_EQUAL_STRING(x->delivered[i].first.c_str(), x->captured[i].first.c_str());
+      TEST_ASSERT_EQUAL_STRING(x->delivered[i].second.c_str(), x->captured[i].second.c_str());
+    }
+  }
+  TEST_ASSERT_TRUE(r.captured.front().second.rfind("On it.", 0) == 0);
+  TEST_ASSERT_TRUE(k.captured.back().second.rfind("Couldn't start that agent on anthropic.", 0) == 0);
+  TEST_ASSERT_TRUE(e.captured.back().second.find("expired") != std::string::npos);
+  TEST_ASSERT_TRUE(f.captured[0].second.rfind("Here are the raw findings", 0) == 0);
+
+  // Screened out (outbound moderation): neither delivered nor captured.
+  Rig m;
+  m.screenOut = [](const std::string& t) { return t.rfind("On it.", 0) == 0; };
+  m.build();
+  m.eng->enqueueSpawn(sp(), "1001");
+  m.eng->pump();
+  TEST_ASSERT_EQUAL(1, (int)m.adapter.dispatched.size());
+  TEST_ASSERT_EQUAL(0, (int)m.delivered.size());
+  TEST_ASSERT_EQUAL_MESSAGE(0, (int)m.captured.size(), "a screened message never reaches history");
+}
+
+// The provenance tag that keeps captured job rows out of the model's
+// conversation reads matches a whole comma-list item only.
+static void test_job_delivery_tag_matches_whole_item() {
+  TEST_ASSERT_TRUE(agent::isJobDelivery(agent::kJobDeliveryTag));
+  TEST_ASSERT_TRUE(agent::isJobDelivery(std::string("turn:m0000000a,") + agent::kJobDeliveryTag));
+  TEST_ASSERT_TRUE(agent::isJobDelivery(std::string(agent::kJobDeliveryTag) + ",turn:m0000000a"));
+  for (const char* t : {"", "src:job", "src:jobsx", "from:src:jobs", "via:telegram", "ev:clear"})
+    TEST_ASSERT_FALSE_MESSAGE(agent::isJobDelivery(t), t);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_spawn_brief_carries_chat_context);
@@ -1035,6 +1113,8 @@ int main(int, char**) {
   RUN_TEST(test_stuck_synthesis_falls_back_60s_after_drain);
   RUN_TEST(test_new_work_rearms_the_drain_clock);
   RUN_TEST(test_owner_fallback_body_has_no_scaffolding);
+  RUN_TEST(test_every_job_delivery_is_captured_to_history);
+  RUN_TEST(test_job_delivery_tag_matches_whole_item);
   RUN_TEST(test_loop_closure_synthesizes_when_all_done);
   RUN_TEST(test_reboot_reattach_polls_from_journal);
   RUN_TEST(test_await_tag_aims_next_poll);

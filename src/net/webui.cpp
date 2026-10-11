@@ -2643,23 +2643,31 @@ void beginWeb(const WebConfig& wc) {
     text.trim();
     if (text.length() == 0) { r->send(400, "application/json", "{\"error\":\"empty message\"}"); return; }
     if (!s_wc.chatSend) { r->send(501, "application/json", "{\"error\":\"unsupported\"}"); return; }
-    if (!s_wc.chatSend(text)) {
+    const String turn = s_wc.chatSend(text);
+    if (!turn.length()) {
       r->send(503, "application/json",
               "{\"error\":\"busy - the device is finishing a reply; send that again in a moment\"}");
       return;
     }
-    r->send(200, "application/json", "{\"ok\":true}");
+    // CUM-482: the client polls GET /api/chat?turn=<turn> for THIS message's reply.
+    r->send(200, "application/json", String(agent::chatPostJson(turn.c_str()).c_str()));
   });
+  // GET /api/chat?turn=<id>: THAT turn's reply (idempotent); ?watch=1: activity
+  // only; no id: the LEGACY single slot. The whole decision is the portable
+  // agent::chatGetJson (host-tested in test_harness_webchat); this only adapts
+  // the request and the main.cpp hooks.
   s_server.on("/api/chat", HTTP_GET, [](AsyncWebServerRequest* r) {
     if (authBlocked(r)) return;
-    String reply = s_wc.chatPoll ? s_wc.chatPoll() : String();
-    // `pending` = a turn is RUNNING, not merely "no reply queued" (the resting
-    // state). Falls back to the old inference when the hook is absent.
-    const bool pending = reply.length() == 0 &&
-                         (s_wc.chatPending ? s_wc.chatPending() : true);
-    JsonDocument d; d["reply"] = reply; d["pending"] = pending;
-    String s; serializeJson(d, s);
-    r->send(200, "application/json", s);
+    agent::ChatGetRequest rq;
+    rq.hasTurn = r->hasParam("turn");
+    if (rq.hasTurn) rq.turn = r->getParam("turn")->value().c_str();
+    rq.watch = r->hasParam("watch");
+    agent::ChatGetDeps deps;
+    deps.view = s_wc.chatTurn;
+    if (s_wc.chatPoll) deps.legacyPoll = [] { return std::string(s_wc.chatPoll().c_str()); };
+    deps.legacyPending = s_wc.chatPending;
+    deps.activity = s_wc.chatActivity;
+    r->send(200, "application/json", String(agent::chatGetJson(rq, deps).c_str()));
   });
 
   // Factory reset: wipe ALL config (Wi-Fi, keys, allowlist, BLE bonds, memory config,

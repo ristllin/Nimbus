@@ -4779,6 +4779,29 @@ function loadChatHistory(){
     log.scrollTop=log.scrollHeight;
   }).catch(()=>{});
 }
+// Async results (CUM-482): a sub-agent synthesis, spawn acks and raw fallbacks are
+// delivered BETWEEN turns, into the chat history - never as any turn's reply. While
+// background work may still deliver, poll GET /api/chat?watch=1 (activity only: no
+// history read, consumes nothing) and re-render the history when the device's async
+// counter moves, so the result appears without the owner sending another message.
+// Watches only a device that reports `busy`; a hosted instance keeps its own flow.
+let _chatWatchT=0,_chatAsync=-1,_chatWatchUntil=0;
+function _chatWatch(d,arm){
+  if(!d||typeof d.busy!=='number')return;
+  // Re-render once the delivery's history row has surely landed. A finished turn
+  // (arm) re-renders through its own completion, so it only re-baselines here.
+  if(!arm&&_chatAsync>=0&&d.async!==_chatAsync)setTimeout(loadChatHistory,1500);
+  _chatAsync=d.async;
+  // Keep watching 90 s past the last sign of work: covers spawns still queued
+  // and a deferred synthesis (its raw fallback lands 60 s after the batch ends).
+  if(arm||d.busy>0)_chatWatchUntil=Date.now()+90000;
+  clearTimeout(_chatWatchT);
+  if(Date.now()<_chatWatchUntil)_chatWatchT=setTimeout(_chatWatchPoll,4000);
+}
+function _chatWatchPoll(){
+  fetch('/api/chat?watch=1').then(r=>r.json()).then(d=>_chatWatch(d,false))
+    .catch(()=>{clearTimeout(_chatWatchT);if(Date.now()<_chatWatchUntil)_chatWatchT=setTimeout(_chatWatchPoll,4000);});
+}
 // Rapid taps must never be lost or mismatched (CUM-218). Every send gets its own
 // user bubble + dim pending bubble IMMEDIATELY - even mid-turn - and is queued.
 // The pump POSTs one turn at a time and polls GET /api/chat?turn=<id> so each reply
@@ -4807,7 +4830,11 @@ function _chatPump(){
             if(d.fallback&&d.servedBy){const f=document.createElement('div');
               f.style.cssText='font-size:9.5px;color:var(--ink3);margin-top:4px;opacity:.85';
               f.textContent='served by '+d.servedBy+' (fallback)';pend.appendChild(f);}
-            done(true);}
+            _chatWatch(d,true); done(true);}
+          // Answered with nothing to show (a turn that only started sub-agents) or an
+          // id the device no longer knows: drop the placeholder - the history it
+          // re-renders from is canonical, and the watcher brings the async results.
+          else if(d.done||d.gone){pend.remove(); _chatWatch(d,true); done(true);}
           // Keep polling while IN FLIGHT (d.pending). A tool-using turn can run for
           // minutes, so poll up to the ~13 min budget with a 40-try floor for quick
           // turns even if pending flips off in a race.
@@ -4830,6 +4857,7 @@ function sendChatTurn(){
 }
 $('chatSend')&&($('chatSend').onclick=sendChatTurn);
 loadChatHistory();
+if(!HOSTED)_chatWatchPoll();   // research already running when the page opened
 $('chatInput')&&$('chatInput').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendChatTurn();}});
 
 // ---- Chat file upload: file picker + drag-and-drop (CUM-57) -----------------

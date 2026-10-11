@@ -2,6 +2,7 @@
 #include <Arduino.h>      // String - used by the chatSend/chatPoll hooks below
 #include <functional>
 
+#include "nimbus/harness/web_chat.h"   // WebChatBook::View - the /api/chat turn hooks (CUM-482)
 #include "nimbus/power/power_monitor.h"
 #include "nimbus/power/battery_model.h"   // BatteryEstimate (analytics seam)
 #include "nimbus/profile.h"
@@ -154,11 +155,19 @@ struct WebConfig {
   // can be proven over the LAN without a console reopen (which resets the S3 over USB).
   std::function<String()>     testWakeInfo;
   // Web chat (POST /api/chat): inject a message as an orchestrator turn (runs on the
-  // poll task). chatPoll() returns + clears the last web-turn reply ("" if none yet).
-  // FALSE when the device could not accept the message (inbound queue full
-  // while a turn runs) - the route answers 503 instead of pretending success.
-  std::function<bool(const String&)> chatSend;
-  std::function<String()>            chatPoll;
+  // poll task) and return its TURN ID (CUM-482) - "" when the device could not
+  // accept the message (inbound queue full while a turn runs), so the route answers
+  // 503 instead of pretending success. chatTurn(id) reports that one turn (queued /
+  // running / answered with its reply / unknown) - a delivery that landed between
+  // turns is never any turn's reply. chatActivity reports the
+  // async-delivery counter (deliveries that belong to no turn: spawn acks,
+  // synthesis reports, fallbacks) and the live background-work count, which the
+  // chat's light history watcher polls. chatPoll() is the LEGACY single slot for
+  // clients that send no turn id: returns + clears the last web reply.
+  std::function<String(const String&)>                          chatSend;
+  std::function<agent::WebChatBook::View(const std::string& turn)> chatTurn;
+  std::function<void(uint32_t& asyncSeq, int& busy)>            chatActivity;
+  std::function<String()>                                       chatPoll;
   // TRUE while a web turn is actually running. GET /api/chat reports this as
   // `pending`; without it the route inferred pending from an empty reply, which
   // is also the normal resting state - so an observer saw "pending" forever

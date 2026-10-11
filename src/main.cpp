@@ -49,6 +49,9 @@
 #include "agent/files_subsystem.h"            // E1: /mem/files artifact store
 #include "agent/orchestrator.h"
 #include "nimbus/harness/jobs.h"   // agent::keyFromTag - ring keys derive from session tags (CUM-243 reaper)
+#include "nimbus/harness/web_chat.h"   // CUM-482: per-turn web chat reply pairing
+#include <esp_random.h>   // esp_random() - the web chat turn-id seed (unique across restarts)
+#include <mutex>          // g_webChatMx
 #include "agent/loops_subsystem.h"   // Local Loops scheduler (hooks wired below)
 #include "agent/dream_subsystem.h"   // DREAMING: reserved nightly maintenance loop
 #include "agent/store.h"                      // store::theme()
@@ -173,8 +176,19 @@ static solide::ring::RGB g_voiceAccent{0, 0, 0}, g_voiceAlert{0, 0, 0};
 static bool voiceOwnsRing() { return g_voice.ownsRing(); }
 // Web chat (POST /api/chat): the turn runs on tg_poll; its reply is captured here
 // (chatId "web" in orchSendSink) for GET /api/chat to poll. Single-slot, one owner.
+// CUM-482: this slot now serves ONLY legacy clients that poll without a turn id -
+// any delivery overwrites it, so an async result landing between two turns was
+// handed to the next turn's first poll (off by one from then on).
 static volatile bool g_webReplyPending = false;
 static String        g_webReply;
+// CUM-482: per-turn pairing. POST books a turn id, orchOnMessage claims it when
+// tg_poll starts that turn, every delivery to chat "web" inside the turn is its
+// reply, and anything delivered between turns (spawn acks, synthesis reports,
+// raw fallbacks) is async - counted for the history watcher, never a turn's
+// reply. Its own mutex, NOT the config lock: that one is a spinlock critical
+// section, and the book copies reply strings.
+static std::mutex          g_webChatMx;
+static agent::WebChatBook  g_webChat;   // seeded at the first POST (see chatSend)
 // Deadline of the web turn currently in flight (0 = none), so GET /api/chat can
 // report an HONEST `pending`. Set when a message is accepted, cleared when its
 // reply is staged; the deadline is only a backstop for a turn that dies without
@@ -830,10 +844,14 @@ static bool orchSendSink(const String& chatId, const String& text) {
   }
   // Web chat turn (POST /api/chat): capture the reply for GET /api/chat to poll.
   if (chatId == "web") {
-    net::ConfigLockGuard lk;
-    g_webReply = text;
-    g_webReplyPending = true;
-    g_webTurnDeadlineMs = 0;   // the turn answered - no longer pending
+    {
+      net::ConfigLockGuard lk;   // the legacy single slot (no-turn-id clients)
+      g_webReply = text;
+      g_webReplyPending = true;
+      g_webTurnDeadlineMs = 0;   // the turn answered - no longer pending
+    }
+    std::lock_guard<std::mutex> lk(g_webChatMx);
+    g_webChat.deliver(std::string(text.c_str(), text.length()));   // the turn's reply, or async
     return true;
   }
   return agent::telegram::send(chatId, text);
@@ -861,7 +879,19 @@ static void orchSpeakSink(const String& text) {
 // the Telegram TLS socket already closed by the client).
 static void orchOnMessage(const String& from, const String& chatId,
                           const String& text) {
+  // CUM-482: a web turn claims the booked POST(s) it answers for exactly the span
+  // of its handleMessage - the turn runs synchronously on this task, so every
+  // delivery to chat "web" in between is this turn's and nothing else's.
+  const bool web = chatId == "web";
+  if (web) {
+    std::lock_guard<std::mutex> lk(g_webChatMx);
+    g_webChat.begin(std::string(text.c_str(), text.length()));
+  }
   agent::orchestrator::handleMessage(text, from, chatId);
+  if (web) {
+    std::lock_guard<std::mutex> lk(g_webChatMx);
+    g_webChat.end();
+  }
 }
 
 // TickCallback: advance background jobs once per poll cycle; returns active count.
@@ -3406,10 +3436,44 @@ void setup() {
   // the AsyncTCP task. The on-card destructive acceptance stays deferred pending a
   // scratch card (CUM-131); the driver's host tests cover the guards/state machine.
   wc.sdFormat = [] { g_sdFormatPending = true; };          // main loop reformats the whole card + reboots
-  wc.chatSend = [](const String& t) {   // -> tg_poll turn
-    if (!agent::telegram::injectMessage("web", t)) return false;
+  wc.chatSend = [](const String& t) -> String {   // -> tg_poll turn; returns its turn id
+    // Book BEFORE injecting (the drain may start the turn the instant the message
+    // is queued, and an unbooked turn's reply would read as async), and book +
+    // inject under ONE lock so two concurrent POSTs (two tabs) can never queue in
+    // the opposite order to their bookings - turns claim bookings in FIFO order.
+    // injectMessage never blocks (a full queue returns false at once).
+    std::lock_guard<std::mutex> lk(g_webChatMx);
+    // Seed the turn ids on first use, not at static init: esp_random() is only a
+    // true RNG once the radio is up (it is - this request arrived over Wi-Fi), and
+    // a seed that repeated every boot would hand a new turn's reply to a tab still
+    // polling an id from before a restart.
+    static bool s_seeded = false;
+    if (!s_seeded) { g_webChat.reseed(esp_random()); s_seeded = true; }
+    const std::string id = g_webChat.open(std::string(t.c_str(), t.length()), millis());
+    if (id.empty()) return String();   // every booked turn still unanswered: busy
+    if (!agent::telegram::injectMessage("web", t)) {
+      g_webChat.cancel(id);
+      return String();
+    }
     g_webTurnDeadlineMs = millis() + kWebTurnMaxMs;
-    return true;
+    return String(id.c_str());
+  };
+  wc.chatTurn = [](const std::string& turn) {
+    std::lock_guard<std::mutex> lk(g_webChatMx);
+    return g_webChat.view(turn, millis());
+  };
+  wc.chatActivity = [](uint32_t& asyncSeq, int& busy) {
+    {
+      std::lock_guard<std::mutex> lk(g_webChatMx);
+      asyncSeq = g_webChat.asyncSeq();
+    }
+    // Live background work that may still deliver to the chat: running sub-agents
+    // (the cross-task snapshot, never the journal) or a turn in flight (the
+    // synthesis turn is one). Inert zeros in Notifier mode. The client's watcher
+    // keeps a grace window past zero for the gaps (queued spawns, a deferred
+    // synthesis), so this needs no racy read of the pending queue.
+    busy = (int)agent::orchestrator::sessionInfosSnapshot().size() +
+           (agent::orchestrator::turnInFlight() ? 1 : 0);
   };
   wc.chatPending = []() -> bool {
     const uint32_t dl = g_webTurnDeadlineMs;

@@ -262,6 +262,16 @@ The host harness runs this whole chain live: `nimbus-lab sub` in
    final report names it); a failure with nothing else running is delivered at
    once: `Job [<name>] failed: <error>`.
 
+Every job-engine message (spawn acknowledgements, "Couldn't start that agent
+on ...", failures, the raw fallback) is also recorded in the chat's history, and
+the synthesis reply is recorded like any turn reply - so the web chat, which
+renders that history, shows them and they survive a reload (CUM-482). They are
+not conversation the assistant reads back: the recent-conversation window, a
+sub-agent's brief and compaction all skip them (a raw fallback is sub-agent web
+content). While sub-agents run, an open web chat watches the device's activity
+and re-renders when a result lands, so the synthesis appears without sending
+another message.
+
 ## What the head can and cannot do
 
 | ask | answer |
