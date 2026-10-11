@@ -40,19 +40,21 @@ static const char* const kFields[] = {"oaiKey", "antKey", "mistKey", "zaiKey",
                                       "cumuloKey", "tavKey", "custKey", "tgToken"};
 
 // The class: for EVERY credential field, a control byte anywhere (the header
-// injection), a space inside, DEL or a non-ASCII byte is refused; a realistic
-// value, and one with spaces around it, passes.
+// injection), a tab, a space inside, DEL or a non-ASCII byte is refused; a
+// realistic value passes, and so does one with spaces around it where it rides a
+// header (HTTP optional whitespace). In the Telegram path no space is harmless.
 static void test_every_field_refuses_control_bytes_and_inner_spaces() {
   for (const char* f : kFields) {
     const KeyShape* ks = keyShapeFor(f);
     TEST_ASSERT_NOT_NULL_MESSAGE(ks, f);
     const std::string ok = sampleFor(f);
     TEST_ASSERT_EQUAL_STRING_MESSAGE("", keyShapeError(*ks, ok).c_str(), f);
-    TEST_ASSERT_EQUAL_STRING_MESSAGE("", keyShapeError(*ks, "  " + ok + " ").c_str(), f);
+    const std::string spaced = keyShapeError(*ks, "  " + ok + " ");
+    TEST_ASSERT_EQUAL_MESSAGE(ks->inPath, !spaced.empty(), f);
     const std::string bad[] = {
         ok + "\r\nX-Injected: 1", ok + "\n", "\r" + ok, ok.substr(0, 3) + "\t" + ok.substr(3),
         ok + std::string(1, '\0') + "x", ok.substr(0, 4) + " " + ok.substr(4), ok + "\x7f",
-        ok + "\xc3\xa9", ok + "\x1b[0m",
+        ok + "\xc3\xa9", ok + "\x1b[0m", "\t" + ok, ok + "\t",
     };
     for (const std::string& b : bad) {
       const std::string err = keyShapeError(*ks, b);
@@ -60,9 +62,15 @@ static void test_every_field_refuses_control_bytes_and_inner_spaces() {
       TEST_ASSERT_TRUE_MESSAGE(err.find(ks->noun) != std::string::npos, f);
     }
   }
-  // An empty or all-space value is "leave the stored one", not an error.
-  TEST_ASSERT_EQUAL_STRING("", keyShapeError(*keyShapeFor("mistKey"), "").c_str());
-  TEST_ASSERT_EQUAL_STRING("", keyShapeError(*keyShapeFor("mistKey"), "   ").c_str());
+  // Only an empty value is "leave the stored one"; spaces alone would replace the
+  // stored key, so they are refused for every field.
+  for (const char* f : kFields) {
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("", keyShapeError(*keyShapeFor(f), "").c_str(), f);
+    TEST_ASSERT_FALSE_MESSAGE(keyShapeError(*keyShapeFor(f), "   ").empty(), f);
+  }
+  TEST_ASSERT_EQUAL_STRING("That Mistral key is blank. Paste the whole key and save again.",
+                           keyShapeError(*keyShapeFor("mistKey"), "   ").c_str());
+  TEST_ASSERT_TRUE(keyShapeFor("tgToken")->inPath);
 }
 
 static void test_length_outside_the_shape_is_refused() {
@@ -119,6 +127,9 @@ static void test_connector_token_refuses_control_bytes() {
       "save again.",
       connectorTokenError("github", "ghp_abc\r\nX-Injected: 1").c_str());
   TEST_ASSERT_FALSE(connectorTokenError("notion", "secret abc").empty());
+  TEST_ASSERT_FALSE(connectorTokenError("notion", "secret_abc\t").empty());
+  TEST_ASSERT_FALSE(connectorTokenError("notion", "   ").empty());
+  TEST_ASSERT_EQUAL_STRING("", connectorTokenError("notion", " secret_abc ").c_str());
 }
 
 int main(int, char**) {
