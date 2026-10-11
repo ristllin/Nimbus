@@ -106,9 +106,10 @@ namespace orch {
   "fact should live - session|days|weeks|months|permanent (default weeks); pick " \
   "honestly: a meeting time is 'days', a stable preference is 'months', a name " \
   "is 'permanent'. permanent:true additionally pins it so it never decays. A " \
-  "write here applies AFTER this reply is sent, so 'I saved it' in the reply is " \
-  "a prediction - phrase it as intent ('I'll remember that') or confirm it a " \
-  "later turn, never as a completed fact this turn."
+  "write here is stored just before this reply is delivered, but you never see " \
+  "whether it succeeded, so 'I saved it' in the reply is a prediction - phrase " \
+  "it as intent ('I'll remember that') or confirm it a later turn, never as a " \
+  "completed fact this turn."
 #define ORCH_D_MEMQ \
   "Search strings for facts NOT already shown in RELEVANT MEMORIES; results " \
   "arrive next turn as MEMORY RESULTS."

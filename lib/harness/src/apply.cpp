@@ -235,7 +235,7 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
   // answer() only resumes a NeedsInput (HITL) job, it can't inject a follow-up
   // user message into a live conversation. Rather than fail silently, we feed the
   // model that boundary via the deferred [MEMORY RESULTS] channel so it learns to
-  // use spawn + await instead. Results/replies flow back through [FRESH RESULTS].
+  // spawn and wait instead. Results/replies flow back through [FRESH RESULTS].
   for (const auto& op : t.session_ops) {
     if (op.op == "spawn") {
       nimbus::orch::Spawn s;
@@ -261,8 +261,8 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
     } else {  // tell / poll
       if (st.pendingMemResults)
         *st.pendingMemResults += std::string("[SESSION] '") + op.op +
-          "' isn't supported: sub-agents are fire-and-forget. Use spawn to start work"
-          " and await/[FRESH RESULTS] to read their output.\n";
+          "' isn't supported: sub-agents are fire-and-forget. Use spawn to start work;"
+          " their output arrives on its own in [FRESH RESULTS].\n";
       hlog::logf("orchestrator: session op '%s' unsupported (fire-and-forget fabric)",
                  op.op.c_str());
     }

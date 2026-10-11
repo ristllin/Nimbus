@@ -18,8 +18,9 @@
 // block the payload may carry an OPTIONAL per-segment extension so the panel can
 // name a session - [harness:1][titleLen:1][title: titleLen bytes] repeated for the
 // first N segments. A v1 decoder ignores these trailing bytes (they are still
-// covered by the CRC), so a v2 frame decodes cleanly (harness/title empty) on old
-// firmware; the broker only SENDS v2 to a device that advertised protoVer>=2.
+// covered by the CRC) but rejects any frame whose LEN exceeds its old 68-byte cap,
+// so a titled v2 frame is NOT safe on old firmware - which is why the broker only
+// SENDS v2 to a device that advertised protoVer>=2 (ble_notifier kProtoVer).
 //
 // state/anim values match solide::ring::Status/Anim and notify.state by design.
 

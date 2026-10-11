@@ -49,13 +49,16 @@ constexpr const char* kParamLabels[kParamCount] = {
 // User-facing help: what you'd SEE change / why you'd care, plain language.
 // Panel-visible strings: printable ASCII 32-126 only, <= 108 chars each.
 constexpr const char* kParamDescs[kParamCount] = {
-    /* Posture           */ "Dark: one LED, only when a session needs you. Calm: a soft working glow. Full: every session a color arc.",
+    /* Posture           */ "Dark: off until a session needs you, then a dim glow. Calm: a soft working glow. Full: an arc per session.",
     /* RingBrightness    */ "How bright the LED ring glows. Lower is dimmer and uses less power.",
     /* RingFps           */ "How smoothly the LED animations move. Higher looks smoother but works the chip harder.",
-    /* AttnLedIndex      */ "In Dark/Calm level, which single LED around the ring (0-44) lights up when a session needs you.",
-    /* AttnHue           */ "Color of that attention LED. Auto matches the session status: purple=input, amber=approve, red=error.",
-    /* AttnAnim          */ "How the attention LED moves to catch your eye: breathe, blink, a sweeping comet, and so on.",
-    /* AttnPeriodMs      */ "How fast the attention LED breathes or blinks, in ms. Smaller number means a faster pulse.",
+    // CUM-514 (L20 docs audit): the Dark/Calm cue is one dim glow over the WHOLE
+    // ring (ring_animator single-cue path), so no single LED is chosen and the
+    // spot setting is not applied - the copy says so instead of promising it.
+    /* AttnLedIndex      */ "Not used: in Dark and Calm the attention cue lights the whole ring, not one LED.",
+    /* AttnHue           */ "Color of the attention cue. Auto matches the session status: purple=input, amber=approve, red=error.",
+    /* AttnAnim          */ "How the attention cue moves to catch your eye: a slow breathe or a steady glow.",
+    /* AttnPeriodMs      */ "How fast the attention cue breathes, in ms. Smaller number means a faster pulse.",
     /* CoalesceMs        */ "Minor changes wait this long and batch together, so the screen updates calmly instead of constantly.",
     /* DwellMs           */ "After you move the cursor, how long to wait before the detail view redraws for the item you landed on.",
     /* TelemetryPeriodS  */ "How often the battery/status numbers on the screen refresh, in seconds. 0 turns updates off.",

@@ -41,6 +41,7 @@ struct ComposeInputs {
                                      // set from devName for lifetime safety)
   std::vector<nimbus::orch::ToolInfo> tools;  // filtered + sanitized by caller
   bool loopOn = false;               // loopActiveNow() at the device
+  int loopRounds = kLoopRoundsDefault;  // the loop's round cap, as the prompt states it
   std::vector<nimbus::orch::SessionInfo> sessions;
   std::string recentConversation;    // pre-rendered "## RECENT CONVERSATION" block
                                      // ("" => none; device fills from the episodic

@@ -1351,6 +1351,8 @@ void begin(HeavyFabric* fabric, const Sinks& sinks) {
   refreshSessionSnapshot();   // prime it from the restored journal (pre-first-pump reads)
   // The harness config view + the portable turn orchestration over it. Heap
   // floors come from agent_config.h so the device numbers stay authoritative.
+  static_assert(ORCH_LOOP_MAX_ROUNDS == agent::kLoopRoundsDefault,
+                "the prompt's stated round cap must be the device default (CUM-514)");
   g_cfg = harnessConfigFromStore();
   // CUM-523: a device with no running Telegram bot is never offered a Telegram leg
   // (the same predicate the capability manifest's hw.telegram reads).

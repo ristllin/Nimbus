@@ -182,7 +182,8 @@ class JobEngine {
   // portable lib never includes that header.
   struct Tuning {
     int      maxActiveInflight = 4;      // AGENT_MAX_ACTIVE_INFLIGHT
-    uint32_t dispatchMinHeap   = 28000;  // ORCH_DISPATCH_MIN_HEAP
+    uint32_t dispatchMinHeap   = 12000;  // ORCH_DISPATCH_MIN_HEAP (== the turn hard floor:
+                                         // a dispatch makes the same one TLS handshake)
     uint32_t pollIntervalMs    = 15000;  // AGENT_POLL_INTERVAL_MS
   };
 

@@ -54,6 +54,11 @@ struct ProviderConfig {
   std::function<std::string()> customBase, customKey, customConv, customModel;
 };
 
+// The default tool-loop round cap (device: ORCH_LOOP_MAX_ROUNDS, static_assert'ed
+// equal in orchestrator.cpp). The engine uses it when LoopConfig::rounds is unset,
+// and the prompt states the same number (CUM-514: it used to say "~12").
+inline constexpr int kLoopRoundsDefault = 8;
+
 struct LoopConfig {
   std::function<bool()> toolLoopOn;
   std::function<int()>  rounds;      // clamped device-side (1..32)

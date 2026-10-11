@@ -448,6 +448,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // wiring below so "advertised == callable" can't drift). Verified live:
   // without this block Mistral/OpenAI skip mid-turn tools entirely.
   ci.loopOn = loopOnThisTurn;   // decided from entry heap (above), not live
+  ci.loopRounds = d_.cfg.loop.rounds ? d_.cfg.loop.rounds() : kLoopRoundsDefault;
   // N11: opt this turn into the simplified v2 prompt when the device flag is set
   // (nullable closure => v1 when unwired: byte-identical, so a default fleet is
   // untouched). The eval gate decides promotion.
@@ -580,7 +581,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
         r.output = std::string(content[0]["text"] | "");
       return done(r);
     };
-    headTools.cfg.maxRounds          = d_.cfg.loop.rounds ? d_.cfg.loop.rounds() : 8;  // user-tunable (P6); default 8
+    headTools.cfg.maxRounds          = ci.loopRounds;   // user-tunable (P6); the prompt states the same cap
     headTools.cfg.deadlineMs         =
         (uint32_t)(d_.cfg.loop.deadlineS ? d_.cfg.loop.deadlineS() : 600) * 1000U;
     headTools.cfg.roundMinHeap       = t_.loopMinHeap;                 // total-free backstop - not tunable

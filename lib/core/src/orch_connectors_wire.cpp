@@ -43,8 +43,11 @@ static const KnownConnector kKnown[] = {
      "Create/query pages & databases (publish, corpora).", "notion",
      "create/read/update/delete pages - verified. Pages must be shared with the "
      "integration first."},
+    // CUM-514 (L20 docs audit): Slack runs as a Mistral Studio connector, attached
+    // by connector_id with NO device secret (the old "Bot token (xoxb-...)" hint
+    // asked for a credential nothing reads).
     {"slack", "Slack", "mistral", "mcp", "",
-     "Bot token (xoxb-…)",
+     "None on the device - connect Slack in your Mistral account",
      "Read channel/DM history, search, post messages.", "slack", ""},
     {"linear", "Linear", "openai,anthropic,mistral", "mcp", "",
      "Linear API key (Bearer)",
@@ -287,9 +290,12 @@ std::string connectorConfigError(const ConnectorInfo& c) {
   // entry aimed at a provider head (explicit prov or the default "any"): nothing
   // can reach it, so reject the save with the exact next step.
   if (c.deviceDialed || !provTargetsAnyHead(c.prov)) return "";
+  // CUM-514 (L20 docs audit): there is no "device-dialed" switch on the web page;
+  // the flag is the entry's "dev":1 in the raw JSON editor, then an approval.
   return "MCP server \"" + c.name + "\" has a private or local URL that a "
-         "provider's cloud can't reach. Turn on device-dialed for it (the device "
-         "connects directly), or use a public https address.";
+         "provider's cloud can't reach. Use a public https address, or have the "
+         "device connect to it directly: add \"dev\":1 to its entry under Advanced "
+         "- edit raw JSON, save, then approve it on its card.";
 }
 
 // ---- attach builders ---------------------------------------------------------

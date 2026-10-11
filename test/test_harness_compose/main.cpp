@@ -116,6 +116,25 @@ static ComposeInputs cannedInputs() {
 }
 
 // ---- tests ------------------------------------------------------------------
+// CUM-514 (L20 docs audit): two prompt claims the code contradicted. The loop's
+// round cap was stated as "~12" while the default is 8 (and owner-tunable); a
+// mem_write was said to apply AFTER the reply, while applyTurn stores it before
+// delivering (test_harness_apply pins that order). Both prompts (v1 and v2).
+static void test_prompt_states_the_real_round_cap_and_write_timing() {
+  for (bool v2 : {false, true}) {
+    ComposeInputs in = cannedInputs();
+    in.promptV2 = v2;
+    in.loopRounds = 5;
+    const std::string p = agent::composeInstructions(in);
+    TEST_ASSERT_TRUE(p.find("several rounds (at most 5)") != std::string::npos);
+    TEST_ASSERT_TRUE(p.find("~12") == std::string::npos);
+    TEST_ASSERT_TRUE(p.find("AFTER this reply") == std::string::npos);
+    TEST_ASSERT_TRUE(p.find("stored just before this reply is delivered") != std::string::npos);
+  }
+  ComposeInputs d = cannedInputs();   // unset = the shipped default
+  TEST_ASSERT_TRUE(agent::composeInstructions(d).find("(at most 8)") != std::string::npos);
+}
+
 static void test_prompt_golden_default() {
   checkTextGolden("orch_prompt_default.txt",
                   agent::composeInstructions(cannedInputs()));
@@ -213,7 +232,7 @@ static void test_prompt_v2_keeps_safety_rails() {
   // keys / priority / routing owner-only
   TEST_ASSERT_TRUE(p.find("owner-only") != std::string::npos);
   // mem_write is a prediction (applies after the reply)
-  TEST_ASSERT_TRUE(p.find("applies AFTER this reply") != std::string::npos);
+  TEST_ASSERT_TRUE(p.find("stored just before this reply is delivered") != std::string::npos);
   // sub-agent fan-out governor
   TEST_ASSERT_TRUE(p.find("[SPAWN CAPACITY]") != std::string::npos);
   // the deep-history search instruction survives the memory-tier compression
@@ -553,6 +572,7 @@ int main(int, char**) {
   RUN_TEST(test_chat_summary_section_above_window);
   RUN_TEST(test_chat_summary_yields_to_window_by_clipping);
   RUN_TEST(test_identity_uses_devname_and_host);
+  RUN_TEST(test_prompt_states_the_real_round_cap_and_write_timing);
   RUN_TEST(test_identity_names_the_builds_board);
   RUN_TEST(test_empty_devname_falls_back_to_nimbus);
   RUN_TEST(test_role_line_uses_devname);

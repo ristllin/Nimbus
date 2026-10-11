@@ -284,7 +284,11 @@ static void test_connector_config_error() {
   // Explicitly routed to a head with a LAN URL -> reject (names the next step).
   std::string e = connectorConfigError(mk("x", "openai", "mcp", "http://10.1.2.3/mcp"));
   TEST_ASSERT_FALSE(e.empty());
-  TEST_ASSERT_TRUE(e.find("device-dialed") != std::string::npos);
+  // CUM-514: the step it names exists (the raw JSON editor's "dev":1 + approval),
+  // never a "device-dialed" switch the web page does not have.
+  TEST_ASSERT_TRUE(e.find("Advanced - edit raw JSON") != std::string::npos);
+  TEST_ASSERT_TRUE(e.find("\"dev\":1") != std::string::npos);
+  TEST_ASSERT_TRUE(e.find("Turn on device-dialed") == std::string::npos);
   // A device-dialed LAN entry at the default prov "any" is device-side -> OK.
   TEST_ASSERT_TRUE(connectorConfigError(mkDeviceDialed("x", "any", "http://192.168.1.9/mcp")).empty());
   // A device-dialed entry with an EXPLICIT head prov + LAN url is still device-side
@@ -421,6 +425,15 @@ static void test_known_catalog_json_shape() {
   }
   // The honest Gmail caveat (draft-only, no send) is carried in the catalog.
   TEST_ASSERT_TRUE(j.find("NO send") != std::string::npos);
+  // CUM-514 (L20 audit): the class - a Mistral-only connector with no device
+  // field to fill (Studio-authorized: no connector_id slot, no token read) never
+  // asks for a token in its credential hint. Slack used to ask for "xoxb-...".
+  for (JsonObjectConst o : d.as<JsonArrayConst>()) {
+    const std::string id = o["id"] | "", prov = o["providers"] | "", cred = o["cred"] | "";
+    if (prov != "mistral" || std::string(o["kind"] | "") == "builtin") continue;
+    TEST_ASSERT_TRUE_MESSAGE(cred.find("xoxb") == std::string::npos, id.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(cred.find("Mistral") != std::string::npos, id.c_str());
+  }
 }
 
 // A caps'd, ENABLED connector surfaces its real capability/limit line to the model

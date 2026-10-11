@@ -65,8 +65,9 @@ static std::string orchRoleV2(const std::string& devName) {
   "- ask: a question when you genuinely need the owner's input.\n"
   "- memory: short-lived notes for the NEXT turn only; NOT durable storage.\n"
   "- mem_write: durable facts (importance 0-1; ttl session|days|weeks|months|"
-  "permanent). It applies AFTER this reply is sent, so phrase saving as intent, "
-  "never as already done this turn.\n"
+  "permanent). It is stored just before this reply is delivered, but you never "
+  "see whether it succeeded, so phrase saving as intent, never as already done "
+  "this turn.\n"
   "- mem_query: searches whose results arrive next turn as MEMORY RESULTS.\n"
   "- device: local actions - led, lights, tts, reboot, config, orch_model. config "
   "tunes owner knobs (brightness, theme, posture, profile, voice, sound, devName); "
@@ -258,7 +259,8 @@ std::string composeInstructions(const ComposeInputs& in) {
                                    "for one, say that plainly and point them to the "
                                    "owner.\n")) +
                 "- Within a turn, if the tool loop is on you may call tools over several "
-                "rounds (bounded ~12), then MUST finish with one orch_turn - your final "
+                "rounds (at most " + std::to_string(in.loopRounds > 0 ? in.loopRounds : kLoopRoundsDefault) +
+                "), then MUST finish with one orch_turn - your final "
                 "answer. Without the loop, one orch_turn is the whole turn.\n" +
                 (in.promptV2 ? std::string(memTiersV2) : std::string(memTiersV1)) +
                 "- Sub-agents (spawn) are fire-and-forget background workers; name each one "

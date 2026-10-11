@@ -281,6 +281,49 @@ static void test_orch_model_keyless_provider_refused() {
 
 // ---- reply / ask / Done. ----------------------------------------------------
 
+// CUM-514 (L20 docs audit): the order the prompt now states - a turn's mem_write
+// is stored BEFORE its reply is delivered (so a reply delivered at all means the
+// write already ran; whether it SUCCEEDED the model still cannot see).
+static void test_mem_write_is_stored_before_the_reply_is_delivered() {
+  Rec r;
+  ApplyDeps d = makeDeps(r);
+  std::vector<std::string> order;
+  auto mem = d.memDispatch;
+  d.memDispatch = [&order, mem](const char* n, ArduinoJson::JsonObjectConst a,
+                                const nimbus::orch::Principal& p) {
+    order.push_back(std::string("mem:") + n);
+    return mem(n, a, p);
+  };
+  d.deliver = [&order](const std::string&, const std::string& t) { order.push_back("deliver:" + t); };
+  ApplyState st = makeState(r);
+  bool spawned = false;
+  Turn t;
+  t.reply = "I'll remember that.";
+  nimbus::orch::MemWrite w;
+  w.content = "Dana uses 45x240 mm studs";
+  t.mem_write.push_back(w);
+  agent::applyTurn(t, "1001", d, st, spawned);
+  TEST_ASSERT_EQUAL(2, (int)order.size());
+  TEST_ASSERT_EQUAL_STRING("mem:memory.write", order[0].c_str());
+  TEST_ASSERT_EQUAL_STRING("deliver:I'll remember that.", order[1].c_str());
+}
+
+// The tell/poll nudge names the real channel, never the retired await[] field.
+static void test_tell_poll_nudge_does_not_mention_await() {
+  Rec r;
+  ApplyDeps d = makeDeps(r);
+  ApplyState st = makeState(r);
+  bool spawned = false;
+  Turn t;
+  nimbus::orch::SessionOp op;
+  op.op = "tell";
+  op.id = "job0001";
+  t.session_ops.push_back(op);
+  agent::applyTurn(t, "1001", d, st, spawned);
+  TEST_ASSERT_TRUE(r.pendingMem.find("[FRESH RESULTS]") != std::string::npos);
+  TEST_ASSERT_TRUE(r.pendingMem.find("await") == std::string::npos);
+}
+
 static void test_reply_and_ask_deliver_as_one_message() {
   Rec r;
   ApplyDeps d = makeDeps(r);
@@ -495,6 +538,8 @@ int main(int, char**) {
   RUN_TEST(test_orch_model_invalid_model_refused);
   RUN_TEST(test_orch_model_keyless_provider_refused);
   RUN_TEST(test_reply_and_ask_deliver_as_one_message);
+  RUN_TEST(test_mem_write_is_stored_before_the_reply_is_delivered);
+  RUN_TEST(test_tell_poll_nudge_does_not_mention_await);
   RUN_TEST(test_empty_turn_signals_completion_not_done);
   RUN_TEST(test_completion_suppressed_after_spawn);
   RUN_TEST(test_spawn_quiet_flag_tracks_scheduled_turn);

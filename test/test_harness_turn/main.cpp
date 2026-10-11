@@ -321,6 +321,9 @@ static void test_recalibrated_floor_invariants() {
   // Turn / recall / loop-round all make the SAME single mbedTLS handshake: one floor.
   TEST_ASSERT_EQUAL(t.turnHardFloor, t.recallMinHeap);
   TEST_ASSERT_EQUAL(t.turnHardFloor, t.loopMinHeap);
+  // ...and so does a sub-agent dispatch (CUM-514, L20 audit: the portable default
+  // was still the pre-PSRAM 28000 while the device passes ORCH_DISPATCH_MIN_HEAP).
+  TEST_ASSERT_EQUAL(t.turnHardFloor, JobEngine::Tuning{}.dispatchMinHeap);
   // The largest-block guard is the real gate. CUM-404 v2: it REUSES relay_heap.h's
   // relay-proven per-connection floor (5000), NOT provider_verify's one-shot 8000 -
   // 8000 spuriously deferred every turn on the CYD/freenove, whose ~5 KB DMA bounce
@@ -527,6 +530,16 @@ static void test_failover_walks_priority_with_owner_notice() {
   TEST_ASSERT_EQUAL_STRING("hello there", r.lastText().c_str());
   TEST_ASSERT_EQUAL_STRING("c1", agent::convMapGet(r.cfg.convId, "1001", "openai").c_str());
   TEST_ASSERT_EQUAL_STRING("openai", r.cfg.recorded[0].host.c_str());
+}
+
+// CUM-514 (L20 docs audit): the round cap the prompt states IS the loop's cap -
+// the owner-tuned value, the same number headTools.cfg.maxRounds runs with.
+static void test_prompt_round_cap_follows_the_configured_loop() {
+  Rig r;
+  r.cfg.rounds = 3;
+  r.eng->handleMessage("hi", "Roy", "1001");
+  TEST_ASSERT_EQUAL(1, (int)r.debug.size());
+  TEST_ASSERT_TRUE(r.debug[0].instructions.find("several rounds (at most 3)") != std::string::npos);
 }
 
 // ---- CUM-477: a send the router loop could not finish is a memory failure ----
@@ -1821,6 +1834,7 @@ int main(int, char**) {
   RUN_TEST(test_same_host_fresh_conv_retry);
   RUN_TEST(test_failover_walks_priority_with_owner_notice);
   RUN_TEST(test_cum477_unsent_request_reply_blames_memory_not_connection);
+  RUN_TEST(test_prompt_round_cap_follows_the_configured_loop);
   RUN_TEST(test_cum544_timeout_fails_over_without_same_host_retry);
   RUN_TEST(test_cum544_all_timeouts_say_no_answer_in_time);
   RUN_TEST(test_no_retry_after_tool_dispatched);
