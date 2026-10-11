@@ -480,7 +480,7 @@ static void testCausesFitTheCut(ndtest::Ctx& c) {
       const std::string sel = "anthropic/" + std::string(n, 'm');
       const std::string cause = refusalCause((RefusalKind)k, sel);
       if (cause.size() > 100) over++;
-      if (cause.find("that model") != std::string::npos && refusalCause((RefusalKind)k, "x").size() + sel.size() <= 101)
+      if (cause.find("that model") != std::string::npos && refusalSentence((RefusalKind)k, sel).size() <= kEngineCauseMax)
         unnamed++;   // named "that model" although the selector would have fit
     }
   }

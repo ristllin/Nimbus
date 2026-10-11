@@ -139,16 +139,17 @@ inline std::string sanitizePriority(const std::string& csv) {
 // zone name is 3 to kTzNameMax characters (real abbreviations are at most 6), so
 // the clock line that prints it (localTime) always has room for it.
 constexpr size_t kTzNameMax = 16;
+inline bool tzNameFits(size_t n) { return n >= 3 && n <= kTzNameMax; }
 inline bool posixName(const std::string& s, size_t& i) {
   if (i < s.size() && s[i] == '<') {
     const size_t close = s.find('>', i);
-    if (close == std::string::npos || close - i < 4 || close - i - 1 > kTzNameMax) return false;
+    if (close == std::string::npos || !tzNameFits(close - i - 1)) return false;
     i = close + 1;
     return true;
   }
   const size_t b = i;
   while (i < s.size() && isalpha((unsigned char)s[i])) i++;
-  return i - b >= 3 && i - b <= kTzNameMax;
+  return tzNameFits(i - b);
 }
 inline bool posixOffset(const std::string& s, size_t& i) {
   if (i < s.size() && (s[i] == '+' || s[i] == '-')) i++;
@@ -208,10 +209,11 @@ inline void applyTz(const std::string& tz) {
   setenv("TZ", tz.empty() ? "UTC0" : tz.c_str(), 1);
   tzset();
 }
-// `fmt` rendered in the process zone. strftime leaves the buffer unterminated
-// when the text does not fit, and the operator's TZ is not length-checked like
-// the owner's, so a zone name too long for the line renders the time in UTC
-// instead ("" only if even that cannot fit): never an unterminated buffer.
+// `fmt` rendered in the process zone. When the text does not fit, strftime
+// returns 0 and leaves the buffer's contents indeterminate, and the operator's TZ
+// is not length-checked like the owner's, so a zone name too long for the line
+// renders the time in UTC instead ("" only if even that cannot fit): the string is
+// always built from the length strftime returned, never from the raw buffer.
 inline std::string localTime(time_t t, const char* fmt) {
   std::lock_guard<std::mutex> lk(tzMutex());
   struct tm lt{};

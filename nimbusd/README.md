@@ -150,10 +150,13 @@ with the `width` the model returned, or `failed` with the `error`), and the next
 Verify or Save of the same candidate answers from that result at once. A width is
 saved only as the check read it: Dimensions 0 takes the model's own width, and a
 set width the model does not return (Mistral ignores a requested width) is refused
-with the real one. On start, an empty vector store takes the saved width, and
-vectors of another width than the saved embedding config (a restart inside a model
-switch) are set aside as `vectors.bin.mismatch` so memory starts empty, said in the
-log, instead of comparing vectors that cannot be compared.
+with the real one. A save still queued past the bound answers `503` ("Still
+saving"), never a 2xx, since the engine re-checks the memory lock when it runs. On
+start, an empty vector store takes the saved width, and vectors of another width
+than the saved embedding config (a restart inside a model switch) are copied aside
+as `vectors.bin.mismatch-<time>` so memory starts empty, said in the log, instead of
+comparing vectors that cannot be compared; if that copy cannot be written, nothing
+is erased and the log says so.
 
 ## Settings on a hosted instance (CUM-543)
 

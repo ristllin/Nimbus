@@ -807,8 +807,15 @@ class NimbusdRig {
   }
   // The env names the secrets file may hold: the in-app provider keys, nothing else.
   static bool secretsName(const std::string& name) {
-    for (size_t i = 0; i < nimbus::orch::kProviderSlotCount; i++)
-      if (name == Config::providerEnvName(nimbus::orch::kProviderSlots[i].slug)) return true;
+    return nimbus::orch::anySlotWhere([&name](const char* slug) { return name == Config::providerEnvName(slug); });
+  }
+  // Whether a secrets-file line is one clean provider key; logs the NAME (never the
+  // value) of anything else, with `what` saying what happens to it.
+  static bool cleanSecret(const std::string& name, const std::string& value, const char* what) {
+    const bool known = secretsName(name);
+    if (known && validKeyValue(value)) return true;
+    std::fprintf(stderr, "[nimbusd] secrets: %s %s (not a clean provider key)\n", what,
+                 known ? name.c_str() : "a line with an unknown name");
     return false;
   }
 
@@ -890,6 +897,8 @@ class NimbusdRig {
   // Mask anything shaped like a provider or router key in a log line before it is
   // kept (provider error texts can quote a key's prefix and last characters, and
   // the log is served by /api/log): sk-..., cumulo_sk_..., key-shaped tokens.
+  static constexpr const char* kKeyMask = "[key]";   // what a masked key reads as
+  static constexpr size_t kKeyMaskLen = 5;
   static std::string redactKeys(std::string l) {
     for (const char* pre : {"cumulo_sk_", "sk-", "sk_"}) {
       for (size_t at = l.find(pre); at != std::string::npos; at = l.find(pre, at + 1)) {
@@ -897,7 +906,7 @@ class NimbusdRig {
         while (end < l.size() && (isalnum((unsigned char)l[end]) || l[end] == '_' || l[end] == '-' || l[end] == '*' ||
                                   l[end] == '.'))
           end++;
-        if (end - at > std::strlen(pre) + 3) l.replace(at, end - at, "[key]");
+        if (end - at > std::strlen(pre) + 3) l.replace(at, end - at, kKeyMask);
       }
     }
     return l;
@@ -955,10 +964,12 @@ class NimbusdRig {
                     "\n\n===== 3. OUTPUT - the raw model output =====\n" + (ev.rawOut ? *ev.rawOut : std::string());
     if (ev.transcriptBrief && !ev.transcriptBrief->empty())
       t += "\n\n===== 4. TOOL LOOP - the mid-turn rounds =====\n" + *ev.transcriptBrief;
-    if (t.size() > kCap) t.resize(kCap);
     // Masked like /api/log and /api/errlog (CUM-546): a key typed in chat, quoted in
-    // the directive or carried by a tool result is never served back in clear.
-    t = redactHeldKeys(redactKeys(std::move(t)));
+    // the directive or carried by a tool result is never served back in clear. The
+    // held values go first and the cap last, so neither the prefix mask nor the cut
+    // can leave part of a key that the exact-value mask no longer recognizes.
+    t = redactKeys(redactHeldKeys(std::move(t)));
+    if (t.size() > kCap) t.resize(kCap);
     std::lock_guard<std::mutex> lk(diagMu_);
     lastTurn_ = std::move(t);
   }
@@ -971,7 +982,8 @@ class NimbusdRig {
     for (const auto& n : names) {
       const std::string v = cfg_.get(n);
       if (v.size() < 8) continue;   // too short to be a key, and masking it would garble text
-      for (size_t at = t.find(v); at != std::string::npos; at = t.find(v, at + 5)) t.replace(at, v.size(), "[key]");
+      for (size_t at = t.find(v); at != std::string::npos; at = t.find(v, at + kKeyMaskLen))
+        t.replace(at, v.size(), kKeyMask);
     }
     return t;
   }
@@ -1006,12 +1018,7 @@ class NimbusdRig {
       if (eq == std::string::npos) continue;
       std::string k = line.substr(0, eq), v = line.substr(eq + 1);
       while (!v.empty() && (v.back() == '\r' || v.back() == '\n')) v.pop_back();
-      if (!secretsName(k) || !validKeyValue(v)) {
-        std::fprintf(stderr, "[nimbusd] secrets: ignored a line that is not a provider key (%s)\n",
-                     secretsName(k) ? k.c_str() : "unknown name");
-        continue;
-      }
-      cfg_.setOverride(k, v);
+      if (cleanSecret(k, v, "ignored")) cfg_.setOverride(k, v);
     }
   }
   // Persist the current in-app overrides to the owner-only secrets file. Written
@@ -1024,12 +1031,7 @@ class NimbusdRig {
     for (const auto& kv : cfg_.overrides()) {
       // The writer refuses what the loader would misread (the second guard behind
       // the web layer's shape check): one clean KEY=VALUE line per provider key.
-      if (!secretsName(kv.first) || !validKeyValue(kv.second)) {
-        std::fprintf(stderr, "[nimbusd] secrets: not writing %s (not a clean provider key)\n",
-                     secretsName(kv.first) ? kv.first.c_str() : "an unknown name");
-        continue;
-      }
-      blob += kv.first + "=" + kv.second + "\n";
+      if (cleanSecret(kv.first, kv.second, "not writing")) blob += kv.first + "=" + kv.second + "\n";
     }
     const std::string tmp = secretsPath() + ".tmp";
     const int fd = ::open(tmp.c_str(), O_CREAT | O_WRONLY | O_TRUNC, 0600);
@@ -1347,7 +1349,7 @@ class NimbusdRig {
     if (!fsutil::readFile(embedCfgPath(), blob)) return false;
     std::istringstream is(blob);
     std::string line;
-    bool width = false;
+    bool savedWidth = false;
     while (std::getline(is, line)) {
       const size_t eq = line.find('=');
       if (eq == std::string::npos) continue;
@@ -1356,11 +1358,13 @@ class NimbusdRig {
       else if (k == "model" && !v.empty() && validSelector(v)) opt_.embedModel = v;
       else if (k == "dims") {
         const int dims = std::atoi(v.c_str());
-        if (dims > 0 && dims <= 4096) opt_.embedDims = dims;
-        width = width || (dims > 0 && dims <= 4096);
+        if (dims > 0 && dims <= 4096) {
+          opt_.embedDims = dims;
+          savedWidth = true;
+        }
       }
     }
-    return width;
+    return savedWidth;
   }
   // The loaded vector store and the embedding config must agree on the width:
   // vectors of another width can never be compared with what the model returns
@@ -1368,23 +1372,30 @@ class NimbusdRig {
   //  * an empty store takes the configured width (its blob header can carry the
   //    old one, device CUM-469);
   //  * vectors at a width the owner's saved config does not produce (a restart
-  //    inside a model switch) are set aside as vectors.bin.mismatch and memory
-  //    starts empty, said in the log;
+  //    inside a model switch) are copied aside to vectors.bin.mismatch-<time> and
+  //    memory starts empty, said in the log; if the copy cannot be written, nothing
+  //    is erased: the stored width is kept (writes fail honestly) and the log says so;
   //  * with no saved config the stored width wins (the env default never chose it).
   void reconcileVectorWidth(bool savedWidth) {
     const int want = opt_.embedDims, have = vec_.dims();
     if (have == want || vec_.adoptWidthIfEmpty(want)) return;
+    const std::string n = std::to_string(vec_.size()), haveS = std::to_string(have), wantS = std::to_string(want);
     if (!savedWidth) {
       opt_.embedDims = have;
-      memLog("memory: the stored memories are " + std::to_string(have) + " wide, so embeddings use that width");
+      memLog("memory: the stored memories are " + haveS + " wide, so embeddings use that width");
       return;
     }
-    const std::string kept = vectorsPath() + ".mismatch";
-    const bool moved = ::rename(vectorsPath().c_str(), kept.c_str()) == 0;
-    memLog("memory: " + std::to_string(vec_.size()) + " stored memories are " + std::to_string(have) +
-           " wide but the saved embedding model is " + std::to_string(want) +
-           " wide; they cannot be compared, so memory starts empty" +
-           (moved ? " (the old store is kept as vectors.bin.mismatch)" : ""));
+    const std::string kept = vectorsPath() + ".mismatch-" + std::to_string((long long)time(nullptr));
+    if (!fsutil::writeFileAtomic(kept, vec_.serialize())) {
+      opt_.embedDims = have;
+      memLog("memory: " + n + " stored memories are " + haveS + " wide but the saved embedding model is " + wantS +
+             " wide, and a copy could not be written, so they are kept as they are; save the embedding settings " +
+             "again with erase to start fresh");
+      return;
+    }
+    memLog("memory: " + n + " stored memories are " + haveS + " wide but the saved embedding model is " + wantS +
+           " wide; they cannot be compared, so memory starts empty (the old store is kept as " +
+           kept.substr(memDir().size() + 1) + ")");
     vec_.flushAll();
     vec_.configure(want);
     fsutil::writeFileAtomic(vectorsPath(), vec_.serialize());
@@ -1627,18 +1638,16 @@ class NimbusdRig {
                         HeadOut& o) {
     agent::hlog::logf("router refused %s (%s) - answering on %s", picked.c_str(), tap_.refusal().reason.c_str(),
                       fallback.c_str());
-    if (!attemptOn(fallback, c, o)) {
-      if (!defaultIsNext(picked, fallback)) {
-        noteRefusal(classifyRefusal(tap_.refusal()), fallback, o);   // the fallback was refused too
-        return false;
-      }
+    bool answered = attemptOn(fallback, c, o);
+    if (!answered && defaultIsNext(picked, fallback)) {
       agent::hlog::logf("router refused %s too (%s) - answering on %s", fallback.c_str(),
                         tap_.refusal().reason.c_str(), kCumuloModel);
       fallback = kCumuloModel;
-      if (!attemptOn(fallback, c, o)) {
-        noteRefusal(classifyRefusal(tap_.refusal()), fallback, o);
-        return false;
-      }
+      answered = attemptOn(fallback, c, o);
+    }
+    if (!answered) {
+      noteRefusal(classifyRefusal(tap_.refusal()), fallback, o);   // the last model tried was refused too
+      return false;
     }
     lastGoodCumulo_ = fallback;
     if (!eng_ || !eng_->turnInFlight()) return true;   // a fold, not a conversation turn

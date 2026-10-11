@@ -16,19 +16,26 @@
 //   (f) a slow embeddings host never parks the single HTTP thread: verify and save
 //       answer within a short bound ("still checking", nothing saved), GET
 //       /api/mem/embedcfg shows the check settle, and the next verify and save
-//       answer from that result without a second call;
+//       answer from that result without a second call; a save still queued past
+//       the bound is never answered as saved;
 //   (g) a width the model does not produce is never saved (Mistral ignores a
 //       requested width), and a refused save leaves memory working;
-//   (h) on load, vectors of another width than the saved config are set aside and
-//       memory starts empty (said in the log), and an empty store takes the saved
-//       width, so new vectors are never compared with incompatible ones.
+//   (h) on load, vectors of another width than the saved config are copied aside
+//       and memory starts empty (said in the log), an empty store takes the saved
+//       width, so new vectors are never compared with incompatible ones, and when no
+//       copy can be written nothing is erased.
 // Offline: an injected FakeHttpTransport; no network, no real keys.
 #include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <string>
+#include <dirent.h>
 #include <sys/stat.h>
+#include <unistd.h>
+
+#include <memory>
 #include <thread>
+#include <vector>
 
 #include "../../test/support/fake_http.h"
 #include "engine_thread.h"
@@ -76,18 +83,39 @@ static Exchange embedOk(const std::string& host, const std::string& path, int n)
   return e;
 }
 
-// A transport that takes `delayMs` to answer every request (a slow embeddings host).
-struct SlowTransport : agent::HttpTransport {
-  SlowTransport(agent::HttpTransport* in, int ms) : inner(in), delayMs(ms) {}
+// A slow embeddings host: every request is held until the test releases it (or a
+// 30 s backstop, the real embed timeout), so the bound is tested without racing a
+// sleep against it.
+struct HeldTransport : agent::HttpTransport {
+  explicit HeldTransport(agent::HttpTransport* in) : inner(in) {}
   bool exec(const agent::HttpRequest& req, agent::HttpResponse& out, std::string& err) override {
-    std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
+    for (int i = 0; i < 3000 && !released.load(); i++) std::this_thread::sleep_for(std::chrono::milliseconds(10));
     calls++;
     return inner->exec(req, out, err);
   }
   agent::HttpTransport* inner;
-  int delayMs;
+  std::atomic<bool> released{false};
   std::atomic<int> calls{0};
 };
+
+// Every task queued on the engine thread so far has run (FIFO); false on a stall.
+static bool drained(EngineThread& eng) {
+  auto done = std::make_shared<std::atomic<bool>>(false);
+  eng.postWork([done] { done->store(true); });
+  for (int i = 0; i < 3000 && !done->load(); i++) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  return done->load();
+}
+
+// The vectors.bin.mismatch-<time> copies in `dir`.
+static std::vector<std::string> mismatchCopies(const std::string& dir) {
+  std::vector<std::string> out;
+  if (DIR* d = ::opendir(dir.c_str())) {
+    while (const dirent* e = ::readdir(d))
+      if (std::string(e->d_name).rfind("vectors.bin.mismatch-", 0) == 0) out.push_back(e->d_name);
+    ::closedir(d);
+  }
+  return out;
+}
 
 static double secondsSince(std::chrono::steady_clock::time_point t0) {
   return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
@@ -235,7 +263,7 @@ static void testSlowCheckNeverParksTheHttpThread(ndtest::Ctx& c) {
   setenv("CUMULO_API_KEY", kKey, 1);
   FakeHttpTransport inner;
   inner.script.push_back(embedOk(kCumuloHost, "/router/openai/v1/embeddings", 16));
-  SlowTransport tx(&inner, 7000);   // past the bound the HTTP thread may wait
+  HeldTransport tx(&inner);   // answers only once the test releases it: longer than any bound
   Config cfg;
   NimbusdRig rig(cfg, opts("emb-f"), &tx);
   Web web(rig);
@@ -243,7 +271,7 @@ static void testSlowCheckNeverParksTheHttpThread(ndtest::Ctx& c) {
   auto t0 = std::chrono::steady_clock::now();
   const ApiResp v = web.call("POST", "/api/mem/embedverify", cand);
   const double waited = secondsSince(t0);
-  c.ok(waited < 6.5, "embedverify answers within the bound while the call takes 7 s (waited " +
+  c.ok(waited < 6.5, "embedverify answers within the bound while the call is still running (waited " +
                          std::to_string((int)waited) + " s)");
   c.eqi(v.status, 202, "it answers 202: accepted, still checking");
   c.ok(has(v.body, "\"ok\":false") && has(v.body, "\"checking\":true") && has(v.body, "Still checking this model"),
@@ -253,6 +281,7 @@ static void testSlowCheckNeverParksTheHttpThread(ndtest::Ctx& c) {
   c.ok(secondsSince(t0) < 1.0, "a save during the check answers at once");
   c.eqi(early.status, 503, "a save during the check is not a 2xx (the page reads any 2xx as saved)");
   c.eqi(rig.embedWidth(), 8, "nothing changed");
+  tx.released.store(true);   // the embeddings host answers now
   std::string cfgBody;
   for (int i = 0; i < 100 && !has(cfgBody, "\"state\":\"ok\""); i++) {
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -267,6 +296,26 @@ static void testSlowCheckNeverParksTheHttpThread(ndtest::Ctx& c) {
   c.eqi(saved.status, 200, "the save applies the checked width");
   c.eqi(rig.embedWidth(), 16, "the width is the one the model returned");
   c.eqi(tx.calls.load(), 1, "one live call served the check, the verify and the save");
+  clearEnv();
+}
+
+static void testQueuedSaveIsNotSaved(ndtest::Ctx& c) {
+  std::printf("  -- (f2) a save still queued past the bound is not answered as saved --\n");
+  clearEnv();
+  setenv("CUMULO_API_KEY", kKey, 1);
+  FakeHttpTransport tx;
+  tx.script.push_back(embedOk(kCumuloHost, "/router/openai/v1/embeddings", 16));
+  Config cfg;
+  NimbusdRig rig(cfg, opts("emb-f2"), &tx);
+  Web web(rig);
+  const std::string cand = "provider=openai&model=text-embedding-3-small&dims=16";
+  c.eqi(web.call("POST", "/api/mem/embedverify", cand).status, 200, "the candidate is checked");
+  web.eng.postWork([] { std::this_thread::sleep_for(std::chrono::milliseconds(6500)); });   // work ahead of the save
+  const ApiResp r = web.call("POST", "/api/mem/embedcfg", cand);
+  c.eqi(r.status, 503, "a save still queued past the bound answers 503, never a 2xx (it may yet be refused)");
+  c.ok(has(r.body, "Still saving"), "with a sentence that says to look again");
+  c.ok(drained(web.eng), "the queued save ran");
+  c.eqi(rig.embedWidth(), 16, "and applied, since nothing refused it meanwhile");
   clearEnv();
 }
 
@@ -323,18 +372,32 @@ static void testLoadReconcilesWidth(ndtest::Ctx& c) {
     c.eqi(rig.vectors().dims(), 16, "the store is the saved width");
     c.eqi(rig.embedWidth(), 16, "and so is the config");
     c.ok(NimbusdRig::loggedContaining("cannot be compared"), "the log says why memory starts empty");
-    struct stat st;
-    c.ok(::stat((mem + "/vectors.bin.mismatch").c_str(), &st) == 0, "the old store is kept aside, not destroyed");
+    const std::vector<std::string> kept = mismatchCopies(mem);
+    std::string copy;
+    c.ok(kept.size() == 1 && fsutil::readFile(mem + "/" + kept[0], copy) && copy == oldBlob,
+         "the old store is kept aside byte for byte, not destroyed");
   }
   // An EMPTY store whose header carries the old width simply takes the saved width.
   fsutil::writeFileAtomic(mem + "/vectors.bin", emptyBlob);
-  ::unlink((mem + "/vectors.bin.mismatch").c_str());
+  for (const auto& f : mismatchCopies(mem)) ::unlink((mem + "/" + f).c_str());
   {
     Config cfg;
     NimbusdRig rig(cfg, o);
     c.eqi(rig.vectors().dims(), 16, "an empty store takes the saved width");
-    struct stat st;
-    c.ok(::stat((mem + "/vectors.bin.mismatch").c_str(), &st) != 0, "nothing is set aside for an empty store");
+    c.ok(mismatchCopies(mem).empty(), "nothing is set aside for an empty store");
+  }
+  // When no copy can be written, nothing is erased: the memories stay at their width.
+  if (geteuid() != 0) {   // root ignores directory permissions (the Docker build stage)
+    fsutil::writeFileAtomic(mem + "/vectors.bin", oldBlob);
+    ::chmod(mem.c_str(), 0500);
+    Config cfg;
+    NimbusdRig rig(cfg, o);
+    ::chmod(mem.c_str(), 0700);
+    c.eqi(rig.vectors().size(), 1, "with a read-only volume the memories are kept, not erased");
+    c.eqi(rig.embedWidth(), 8, "and embeddings use their width");
+    c.ok(NimbusdRig::loggedContaining("could not be written"), "the log says so");
+    std::string still;
+    c.ok(fsutil::readFile(mem + "/vectors.bin", still) && still == oldBlob, "vectors.bin is untouched");
   }
   clearEnv();
 }
@@ -348,6 +411,7 @@ int main() {
   testCumuloProviderRoute(c);
   testVerifyThenSave(c);
   testSlowCheckNeverParksTheHttpThread(c);
+  testQueuedSaveIsNotSaved(c);
   testUncheckedWidthNeverSaved(c);
   testLoadReconcilesWidth(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);

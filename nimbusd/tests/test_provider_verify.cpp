@@ -19,6 +19,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -298,11 +299,12 @@ static void testMemberSpawnRunsTheSubModel(ndtest::Ctx& c) {
   clearEnv();
 }
 
-// Run every task queued so far on the engine thread (the queue is FIFO).
-static void drain(EngineThread& eng) {
-  std::atomic<bool> done{false};
-  eng.postWork([&done] { done.store(true); });
-  for (int i = 0; i < 500 && !done.load(); i++) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+// Every task queued on the engine thread so far has run (FIFO); false on a stall.
+static bool drained(EngineThread& eng) {
+  auto done = std::make_shared<std::atomic<bool>>(false);   // shared: the task may outlive a stalled wait
+  eng.postWork([done] { done->store(true); });
+  for (int i = 0; i < 1000 && !done->load(); i++) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  return done->load();
 }
 
 static bool bearerIs(const agent::HttpRequest& r, const std::string& key) {
@@ -326,7 +328,7 @@ static void testKeySavedWhileVerifyQueued(ndtest::Ctx& c) {
     c.ok(rig.claimVerify("cumulo"), "the boot path claims the verify");
     web.eng.postWork([&rig] { rig.verifyProvider("cumulo"); });   // the boot verify, still queued
     c.eqi(web.call("POST", "/api/orch", "cumuloKey=cumulo_sk_test_NEWKEY").status, 200, "the key save answers 200");
-    drain(web.eng);
+    c.ok(drained(web.eng), "the engine thread ran everything queued");
     web.eng.stop();
     c.eqi((long)tx.seen.size(), 2, "the new key got its own verify after it applied");
     if (tx.seen.size() == 2) c.ok(bearerIs(tx.seen[1], "cumulo_sk_test_NEWKEY"), "with the NEW key");
@@ -362,7 +364,7 @@ static void testKeySavedWhileVerifyQueued(ndtest::Ctx& c) {
     c.ok(rig.claimProbe(), "the boot path claims the workspace probe");
     web.eng.postWork([&rig] { rig.refreshMistralWorkspace(); });   // still queued
     c.eqi(web.call("POST", "/api/orch", "mistKey=mk_test_NEWKEY").status, 200, "the Mistral key save answers 200");
-    drain(web.eng);
+    c.ok(drained(web.eng), "the engine thread ran everything queued");
     web.eng.stop();
     c.ok(tx.seen.size() >= 2 && bearerIs(tx.seen[1], "mk_test_NEWKEY") &&
              tx.seen[1].path.find("/v1/connectors") != std::string::npos,

@@ -187,6 +187,25 @@ static void testLastTurnIsMasked(ndtest::Ctx& c) {
   clearEnv();
 }
 
+static void testHeldKeyMaskedWhole(ndtest::Ctx& c) {
+  std::printf("  -- (e) a held key with a key-shaped piece inside is masked whole --\n");
+  clearEnv();
+  setenv("CUMULO_API_KEY", "cumulo_sk_test_USAGE", 1);
+  // The prefix mask alone would rewrite only "sk_..." and leave "webtok7Q" in clear;
+  // the exact-value mask must see the value before that happens.
+  setenv("NIMBUSD_WEB_TOKEN", "webtok7Qsk_HELDTOKEN99", 1);
+  FakeHttpTransport tx;
+  tx.script.push_back(respTurn("/router/openai/v1/responses", "ok"));
+  Config cfg;
+  NimbusdRig rig(cfg, opts("ud-e"), &tx);
+  rig.say("owner", "the web token is webtok7Qsk_HELDTOKEN99 for reference");
+  const std::string lt = rig.lastTurnAnatomy();
+  c.ok(has(lt, "the web token is [key] for reference"), "the whole held value reads [key]");
+  c.ok(!has(lt, "webtok7Q") && !has(lt, "HELDTOKEN99"), "no piece of it is left in clear");
+  unsetenv("NIMBUSD_WEB_TOKEN");
+  clearEnv();
+}
+
 int main() {
   ndtest::Ctx c;
   std::printf("=== usage across saves + diagnostics (item 4, CUM-546, offline) ===\n");
@@ -194,6 +213,7 @@ int main() {
   testDiagnostics(c);
   testLogIsBounded(c);
   testLastTurnIsMasked(c);
+  testHeldKeyMaskedWhole(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);
   std::printf("%s\n", c.failures ? "FAILED" : "PASSED");
   return c.failures ? 1 : 0;

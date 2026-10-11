@@ -400,18 +400,20 @@ class WebApi {
     return ApiResp{503, "application/json", R"({"error":"instance busy - try again"})"};
   }
 
+  static constexpr int kReadWaitS = 2;   // an idle engine answers a read in milliseconds
+
   static ApiResp notFound() { return ApiResp{404, "application/json", R"({"error":"not found"})"}; }
 
-  ApiResp engineRead(std::function<std::string()> fn, int waitS = 2) {
+  ApiResp engineRead(std::function<std::string()> fn) {
     // Never stall the single HTTP thread behind a turn: a turn can hold the engine
     // for a long time, and this thread also serves /healthz, /readyz and the
     // snapshot routes. If a turn is in flight, tell the poller to retry (503) at
     // once rather than blocking every other request behind the wait. Only when
     // the engine is idle do we dispatch and await (it answers in milliseconds;
-    // a live embedding check is the one caller that waits longer).
+    // the live embedding check runs as background work instead, see checkEmbed).
     if (eng_->snapshot().turnInFlight || eng_->busy()) return busy();
     auto fut = eng_->dispatchRead(std::move(fn));
-    if (fut.wait_for(std::chrono::seconds(waitS)) != std::future_status::ready) return busy();
+    if (fut.wait_for(std::chrono::seconds(kReadWaitS)) != std::future_status::ready) return busy();
     try {
       return okJson(fut.get());
     } catch (...) {
@@ -424,10 +426,7 @@ class WebApi {
   // "nothing happened" and invites a duplicate write.
   ApiResp engineWrite(std::function<std::string()> fn, int waitS) {
     if (eng_->snapshot().turnInFlight || eng_->busy()) return busy();
-    return awaitWrite(eng_->dispatchRead(std::move(fn)), waitS);
-  }
-  // A posted write's answer: its result, or "queued" past the wait (it still runs).
-  static ApiResp awaitWrite(std::future<std::string> fut, int waitS) {
+    auto fut = eng_->dispatchRead(std::move(fn));
     if (fut.wait_for(std::chrono::seconds(waitS)) != std::future_status::ready)
       return ApiResp{202, "application/json", R"({"ok":true,"queued":true,"note":"Saved. It applies in a moment."})"};
     try {
@@ -1228,7 +1227,6 @@ class WebApi {
   static ApiResp embedNotSettled(const EmbedCheck& r, const EmbedCandidate& c, int status) {
     JsonDocument d;
     d["ok"] = false;
-    d["queued"] = true;
     d["checking"] = true;
     d["error"] = (r.cand == c) ? kStillChecking : kCheckingOther;
     std::string out;
@@ -1236,22 +1234,32 @@ class WebApi {
     return ApiResp{status, "application/json", out};
   }
 
+  // The shared start of verify and save: the candidate the body names, then its
+  // settled check in `r`. An early answer (a refusal, busy mid-turn, or "still
+  // checking" with `pendingStatus`) has a non-zero status; status 0 = `r` is settled.
+  ApiResp settledEmbedCheck(const std::string& body, int pendingStatus, EmbedCandidate& c, EmbedCheck& r) {
+    const std::string why = embedCandidate(body, c);
+    if (!why.empty()) return refuse(why);
+    if (eng_->snapshot().turnInFlight) return busy();
+    if (!checkEmbed(c, r)) return embedNotSettled(r, c, pendingStatus);
+    return ApiResp{0, "", ""};
+  }
+
   // POST embedverify: one REAL embeddings call with a candidate provider/model/dims,
   // saving nothing; the page only saves when it works.
   ApiResp embedVerify(const std::string& body) {
     EmbedCandidate c;
-    const std::string why = embedCandidate(body, c);
-    if (!why.empty()) return refuse(why);
-    if (eng_->snapshot().turnInFlight) return busy();
     EmbedCheck r;
-    if (!checkEmbed(c, r)) return embedNotSettled(r, c, 202);
+    const ApiResp early = settledEmbedCheck(body, 202, c, r);
+    if (early.status != 0) return early;
+    const bool ok = r.state == EmbedCheck::State::Ok;
     JsonDocument d;
-    d["ok"] = r.state == EmbedCheck::State::Ok;
+    d["ok"] = ok;
     d["dims"] = r.width;
-    if (r.state != EmbedCheck::State::Ok) d["error"] = r.error;
+    if (!ok) d["error"] = r.error;
     std::string out;
     serializeJson(d, out);
-    return ApiResp{r.state == EmbedCheck::State::Ok ? 200 : 400, "application/json", out};
+    return ApiResp{ok ? 200 : 400, "application/json", out};
   }
 
   // POST embedcfg: saved only at the width the live check read (dims 0 = the
@@ -1259,24 +1267,32 @@ class WebApi {
   // unchecked width.
   ApiResp embedCfgPost(const std::string& body) {
     EmbedCandidate c;
-    const std::string why = embedCandidate(body, c);
-    if (!why.empty()) return refuse(why);
-    if (eng_->snapshot().turnInFlight) return busy();
     EmbedCheck r;
-    if (!checkEmbed(c, r)) return embedNotSettled(r, c, 503);
+    const ApiResp early = settledEmbedCheck(body, 503, c, r);
+    if (early.status != 0) return early;
     if (r.state != EmbedCheck::State::Ok)
       return refuse(r.width > 0 ? r.error : "Couldn't check the model (" + r.error + "). Nothing was saved.");
     const bool reset = formValue(body, "reset") == "1";
     const int width = r.width;
     auto st = std::make_shared<int>(200);
     // Posted even if the engine is still finishing the check's work (engineWrite
-    // would answer busy in that instant); mid-turn was refused above.
-    ApiResp out = awaitWrite(eng_->dispatchRead([this, c, width, reset, st]() -> std::string {
+    // would answer busy in that instant); mid-turn was refused above. A save still
+    // queued past the wait is NOT answered as saved: the engine thread re-checks the
+    // lock when it runs (a turn ahead of it may store the first memory), so it can
+    // still be refused, and the page reads any 2xx as saved.
+    auto fut = eng_->dispatchRead([this, c, width, reset, st]() -> std::string {
       const std::string err = rig_->applyEmbedCfg(c.provider, c.model, width, reset, *st);
       return err.empty() ? embedCfgJson() : refuse(err).body;
-    }), kEmbedWaitS);
-    if (out.status == 200) out.status = *st;
-    return out;
+    });
+    if (fut.wait_for(std::chrono::seconds(kEmbedWaitS)) != std::future_status::ready)
+      return ApiResp{503, "application/json", R"({"ok":false,"pending":true,"error":"Still saving. Check the embedding settings again in a moment."})"};
+    try {
+      ApiResp out = okJson(fut.get());
+      if (out.status == 200) out.status = *st;
+      return out;
+    } catch (...) {
+      return busy();
+    }
   }
 
   ApiResp embedCfgGet() {
