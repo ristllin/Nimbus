@@ -13,6 +13,7 @@
 #include "nimbus/harness/engine.h"
 #include "nimbus/orch/budget.h"
 #include "nimbus/orch/compact.h"
+#include "nimbus/orch/connectors_wire.h"   // CUM-536: connectorNotCalledNote
 #include "nimbus/harness/rate_limit.h"   // CUM-460 the 429 reply table
 #include "nimbus/harness/skill_md.h"   // W15: skillsIndexText for the rig index
 #include "nimbus/orch/model_choices.h"   // CUM-486: the one model-choice derivation
@@ -52,6 +53,7 @@ struct Rig {
     int dispatchTools = 0;          // with non-null HeadTools: CALL dispatch n times
     std::string convOut = "c1";
     uint32_t usageIn = 100, usageOut = 20;
+    std::string toolName = "memory_search";   // the tool a dispatchTools call names
   };
   std::map<std::string, std::vector<Script>> scripts;
   std::map<std::string, int> scriptIdx;
@@ -81,6 +83,7 @@ struct Rig {
   std::vector<Captured> captured;
   std::vector<orch::ValidatedAction> staged;   // ApplyDeps.stageDevice recorder
   std::vector<orch::ScratchUpdate> scratchApplied;   // ApplyDeps.applyScratch recorder
+  std::vector<std::string> memCalls;   // ApplyDeps.memDispatch recorder (tool names)
   bool adminChats = false;   // opt-in: chats resolve to an Admin principal (scratchpad writes)
   std::string recentConversation;   // CUM-485: the window composeInputs hands the engine
   // Optional [AVAILABLE MODELS] source (CUM-486); null = the fixed fake lists.
@@ -169,6 +172,11 @@ struct Rig {
     d.apply.stageDevice = [this](const orch::ValidatedAction& va) { staged.push_back(va); };
     d.apply.fire = [this](const char* c) { cues.push_back(c); };
     d.apply.applyScratch = [this](const orch::ScratchUpdate& u) { scratchApplied.push_back(u); };
+    d.apply.memDispatch = [this](const char* name, ArduinoJson::JsonObjectConst,
+                                 const orch::Principal&) {
+      memCalls.push_back(name);
+      return orch::ToolResult::ok("stored");
+    };
     // Default = the harness's own deny-all principal (byte-identical to an unset
     // hook); a test opts into an admin chat with adminChats = true.
     d.apply.principalFor = [this](const std::string& chat) {
@@ -226,7 +234,7 @@ struct Rig {
         for (int i = 0; i < s.dispatchTools; i++) {
           orch::HeadToolCall c;
           c.id = "t1";
-          c.name = "memory_search";
+          c.name = s.toolName;
           c.argsJson = "{\"query\":\"x\"}";
           toolResults.push_back(tools->dispatch(c));
         }
@@ -1451,6 +1459,55 @@ static void test_hooks_fire_on_happy_turn_with_tools() {
   TEST_ASSERT_EQUAL((int)strlen("hello there"), (int)r.hookEnds[0].replyBytes);
 }
 
+// ---- (14) CUM-536: an unverified connector result closes memory for its turn --
+// T02b: the synthesis turn read a Mistral sub's invented calendar week and stored
+// it as memory mb82a0935. With the result flagged (its connector never ran), the
+// synthesis input explains the marker, the loop's memory_write and the turn's
+// mem_write are both refused, and the NEXT turn hears why and can store again.
+static void test_unverified_connector_result_closes_memory_for_that_turn() {
+  Rig r;
+  r.specs.push_back(orch::ToolRegistry::Spec{"memory.write", "store a fact", "{}"});
+  const std::string withWrite =
+      "{\"reply\":\"Your week\",\"memory\":\"\",\"ask\":\"\","
+      "\"mem_write\":[{\"content\":\"Dana's week: Team Stand-up Mon 09:00\","
+      "\"importance\":0.5,\"permanent\":false}]}";
+  Rig::Script synth;
+  synth.outJson = withWrite;
+  synth.dispatchTools = 1;
+  synth.toolName = "memory_write";
+  r.scripts["anthropic"] = {synth};
+  r.jobs->addFreshResult("job0000", "gcal-fetch",
+                         nimbus::orch::connectorNotCalledNote("Google Calendar") +
+                             "\n\nMon 12 Oct 09:00 Team Stand-up",
+                         "", /*failed=*/false, /*unverified=*/true);
+  r.eng->maybeConsolidate("web");
+  TEST_ASSERT_EQUAL(1, (int)r.attempts.size());
+  TEST_ASSERT_TRUE(r.attempts[0].inputs.find(
+      "A result above opens with a note that its connector was NOT called") != std::string::npos);
+  // Mid-loop memory_write: refused before the registry is ever reached.
+  TEST_ASSERT_EQUAL(1, (int)r.toolResults.size());
+  TEST_ASSERT_TRUE(r.toolResults[0].isError);
+  TEST_ASSERT_EQUAL_STRING(agent::kUnverifiedMemoryRefusal, r.toolResults[0].output.c_str());
+  TEST_ASSERT_EQUAL(0, (int)r.mcpRequests.size());
+  // End-of-turn mem_write: refused too.
+  TEST_ASSERT_EQUAL(0, (int)r.memCalls.size());
+
+  // The next owner turn carries the refusal and stores normally.
+  Rig::Script owner;
+  owner.outJson = withWrite;
+  r.scripts["anthropic"] = {owner};
+  r.scriptIdx.clear();
+  r.eng->handleMessage("ok, and remember my week", "", "web");
+  TEST_ASSERT_TRUE(r.attempts.back().inputs.find("[MEMORY] Not stored: this turn carries") !=
+                   std::string::npos);
+  TEST_ASSERT_EQUAL(1, (int)r.memCalls.size());
+  TEST_ASSERT_EQUAL_STRING("memory.write", r.memCalls[0].c_str());
+  // A synthesis over a VERIFIED result is unchanged: no provenance sentence.
+  r.jobs->addFreshResult("job0001", "gcal-fetch", "Standup at 10:00");
+  r.eng->maybeConsolidate("web");
+  TEST_ASSERT_TRUE(r.attempts.back().inputs.find("connector was NOT called") == std::string::npos);
+}
+
 static void test_hooks_turn_end_fires_on_failure_and_sources_track() {
   Rig r;
   // All hosts fail -> onTurnEnd(ok=false) still fires exactly once per turn.
@@ -1628,6 +1685,7 @@ int main(int, char**) {
   RUN_TEST(test_fold_router_fallback_only_when_no_byok_keyed);
   RUN_TEST(test_clear_chat_conv_is_per_chat);
   RUN_TEST(test_hooks_fire_on_happy_turn_with_tools);
+  RUN_TEST(test_unverified_connector_result_closes_memory_for_that_turn);
   RUN_TEST(test_hooks_turn_end_fires_on_failure_and_sources_track);
   UNITY_END();
   return 0;

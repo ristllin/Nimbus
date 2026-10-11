@@ -72,6 +72,7 @@ struct Rig {
   std::vector<agent::ResultEv> hookResults;
   struct SpawnUsage { std::string backend; uint32_t in, out; };
   std::vector<SpawnUsage> spawnUsage;                      // recordSpawnUsage recorder
+  std::vector<std::string> persisted;                      // persistResult texts (project runs)
   std::function<std::string(const std::string&)> chatContext;  // B4 (nullable)
   // Context Fabric: recent-results spill recorder (nullable - legacy shape when unset).
   std::function<std::string(const char*, const char*, const std::string&, const std::string&)> spill;
@@ -126,6 +127,11 @@ struct Rig {
     d.hooks.onResult = [this](const agent::ResultEv& ev) { hookResults.push_back(ev); };
     d.recordSpawnUsage = [this](const std::string& b, uint32_t in, uint32_t out) {
       spawnUsage.push_back({b, in, out});
+    };
+    d.persistResult = [this](const std::string&, const std::string&, const std::string&,
+                             const std::string& text, const std::string&) {
+      persisted.push_back(text);
+      return std::string();   // no outcome line: keeps the parked text byte-exact
     };
     eng.reset(new JobEngine(std::move(d)));
   }
@@ -521,6 +527,70 @@ static void test_poll_lifecycle_running_then_done_parks_fresh() {
       "- job0000 (good-m (research)): fake result\n",
       block.c_str());
   TEST_ASSERT_FALSE(r.eng->hasFreshResults());     // consumed + clock reset
+}
+
+// ---- CUM-536: connector provenance on delivery ---------------------------------
+// The Mistral sub answered a calendar task with an invented week and no connector
+// run; the head presented it as Dana's calendar and stored it. A result whose task
+// asked for an attached connector that never ran must open with the honest marker
+// EVERYWHERE it lands (the saved project doc, the head's [FRESH RESULTS], the
+// owner's raw fallback) and be flagged for the memory refusal.
+static void runOneDoneJob(Rig& r, const orch::Spawn& s) {
+  r.eng->enqueueSpawn(s, "web");
+  r.eng->pump();                       // dispatch
+  r.plat.ms = 2500;  r.eng->pump();    // Running
+  r.plat.ms = 17500; r.eng->pump();    // Done
+}
+
+static void test_unverified_connector_result_opens_with_marker() {
+  Rig r;
+  r.adapter.connectorsAttached = 1;
+  r.adapter.connectorCalls = 0;
+  r.adapter.connectorAsked = "Google Calendar";
+  r.adapter.doneReply = "Mon 12 Oct 09:00-10:00: Team Stand-up";
+  orch::Spawn s = sp("Fetch all Google Calendar events this week");
+  s.project = "dana-timber-house";
+  s.name = "gcal-fetch";
+  runOneDoneJob(r, s);
+  // The adapter saw the bare task (provenance must not read the chat context).
+  TEST_ASSERT_EQUAL_STRING("Fetch all Google Calendar events this week",
+                           r.adapter.dispatched[0].task.c_str());
+  const std::string marker =
+      "The Google Calendar connector was NOT called. The text below is the model's own "
+      "guess, not your calendar.\n\n";
+  TEST_ASSERT_EQUAL(1, (int)r.persisted.size());
+  TEST_ASSERT_EQUAL_STRING((marker + "Mon 12 Oct 09:00-10:00: Team Stand-up").c_str(),
+                           r.persisted[0].c_str());
+  TEST_ASSERT_TRUE(r.eng->ownerResultsText().find(marker) != std::string::npos);
+  bool unverified = false;
+  const std::string block = r.eng->takeFreshResults(&unverified);
+  TEST_ASSERT_TRUE(unverified);
+  TEST_ASSERT_TRUE(block.find("- job0000 (gcal-fetch): " + marker) != std::string::npos);
+  TEST_ASSERT_TRUE(LogCapture::contains(
+      "orchestrator: job0000 asked for Google Calendar but no connector ran - result marked unverified"));
+}
+
+// The counter-cases: a connector that ran, and a job whose task named no attached
+// connector (gcal merely rode a research spawn), are delivered untouched.
+static void test_connector_that_ran_or_was_not_asked_is_not_marked() {
+  Rig ran;
+  ran.adapter.connectorsAttached = 1;
+  ran.adapter.connectorCalls = 1;
+  ran.adapter.connectorAsked = "Google Calendar";
+  runOneDoneJob(ran, sp("List my Google Calendar events"));
+  bool unverified = true;
+  std::string block = ran.eng->takeFreshResults(&unverified);
+  TEST_ASSERT_FALSE(unverified);
+  TEST_ASSERT_TRUE(block.find("NOT called") == std::string::npos);
+
+  Rig notAsked;
+  notAsked.adapter.connectorsAttached = 1;
+  notAsked.adapter.connectorCalls = 0;   // nothing ran, but nothing was asked for
+  runOneDoneJob(notAsked, sp("Compare wood-fibre board prices"));
+  unverified = true;
+  block = notAsked.eng->takeFreshResults(&unverified);
+  TEST_ASSERT_FALSE(unverified);
+  TEST_ASSERT_TRUE(block.find("NOT called") == std::string::npos);
 }
 
 static void test_done_arc_cleared_after_grace() {
@@ -1101,6 +1171,8 @@ int main(int, char**) {
   RUN_TEST(test_spill_called_with_full_text_every_result);
   RUN_TEST(test_no_spill_closure_keeps_legacy_shape);
   RUN_TEST(test_poll_lifecycle_running_then_done_parks_fresh);
+  RUN_TEST(test_unverified_connector_result_opens_with_marker);
+  RUN_TEST(test_connector_that_ran_or_was_not_asked_is_not_marked);
   RUN_TEST(test_done_arc_cleared_after_grace);
   RUN_TEST(test_error_delivers_failure_and_holds_attn_window);
   RUN_TEST(test_transient_backoff_doubles_then_resets);

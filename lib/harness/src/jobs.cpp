@@ -8,6 +8,7 @@
 #include "nimbus/harness/rate_limit.h" // rateLimitReply - a refused spawn names its window
 #include "nimbus/harness/skill_md.h"   // composeSkillInjection - per-spawn capsule
 #include "nimbus/mem_cap.h"   // utf8CapLen - the fresh-result 3500-char UTF-8 cap
+#include "nimbus/orch/connectors_wire.h"  // connectorNotCalledNote (CUM-536)
 #include "nimbus/orch/gradient.h"   // foldLine - the overflow-stub one-liner
 #include "nimbus/orch/vector_memory.h"  // nsForChat - the sub-agent result owner
 
@@ -211,7 +212,7 @@ std::string JobEngine::firstSubProvider() const {
 // ---- fresh-result store -----------------------------------------------------
 
 void JobEngine::addFreshResult(const char* tag, const char* model, const std::string& text,
-                               const std::string& ns, bool failed) {
+                               const std::string& ns, bool failed, bool unverified) {
   // Spill the FULL text to the recent-results ring FIRST (nullable - host rigs
   // without the closure keep the legacy shape). The returned ring tag
   // ("sub:<jobtag>") is what overflow stubs and clip markers reference, so a
@@ -224,6 +225,7 @@ void JobEngine::addFreshResult(const char* tag, const char* model, const std::st
   fr.model = model ? std::string(model).substr(0, 39) : std::string();
   fr.ringTag = ringTag;   // the real ring handle, used verbatim by the overflow stub
   fr.failed = failed;
+  fr.unverified = unverified;
   if ((int)fresh_.size() >= orch::kAgentMaxJobs) {
     // Over the block cap: a one-line STUB instead of the old SILENT DROP
     // (Context Fabric - bounded views over unbounded storage, never loss).
@@ -248,7 +250,11 @@ void JobEngine::addFreshResult(const char* tag, const char* model, const std::st
   fresh_.push_back(std::move(fr));
 }
 
-std::string JobEngine::takeFreshResults() {
+std::string JobEngine::takeFreshResults(bool* unverified) {
+  if (unverified) {
+    *unverified = false;
+    for (const auto& f : fresh_) *unverified = *unverified || f.unverified;
+  }
   if (fresh_.empty()) return "";
   std::string b = "[FRESH RESULTS] (sub-agents that just finished)\n";
   // Bound the SEED (Context Fabric, 2026-08-05): a fan-out synthesis inlined all
@@ -443,6 +449,7 @@ void JobEngine::dispatchSpawn(const PendingSpawn& p) {
   d.tag         = tag;
   d.model       = model.length() ? model.c_str() : nullptr;
   d.skill       = p.skill[0] ? p.skill : nullptr;
+  d.task        = p.task.c_str();   // the bare task: connector provenance (CUM-536)
   d.rateLimit   = &window;
 
   char jobId[96] = {};
@@ -670,6 +677,17 @@ int JobEngine::pump() {
                env_ref().reply[0] ? env_ref().reply : env_ref().error);   // Error: reason, not "" (prism B)
     if (env_ref().state == orch::JobState::Done) {
       std::string reply = env_ref().reply[0] ? std::string(env_ref().reply) : std::string("(done, no output)");
+      // CUM-536 connector provenance: the task asked for an attached connector and
+      // the provider reports no connector run, so the text is the model's own
+      // guess. It opens with an honest marker BEFORE persist/park, so the saved
+      // doc, the head's [FRESH RESULTS] and the owner's raw fallback all carry it,
+      // and the result is flagged so that turn's memory writes are refused.
+      const bool unverified = env_ref().connectorAsked[0] && env_ref().connectorCalls == 0;
+      if (unverified) {
+        hlog::logf("orchestrator: %s asked for %s but no connector ran - result marked unverified",
+                   rec.tag, env_ref().connectorAsked);
+        reply = nimbus::orch::connectorNotCalledNote(env_ref().connectorAsked) + "\n\n" + reply;
+      }
       // TOPOLOGY INVERSION (owner R5b): the owner talks ONLY to the orchestrator.
       // Raw sub-agent output no longer goes straight to Telegram - the FULL result
       // is parked as a fresh result and a per-completion SYNTHESIS turn (above, in
@@ -707,7 +725,8 @@ int JobEngine::pump() {
       // Owning tenant = the SPAWNING chat's namespace, so a sub-agent result is
       // readable only by that chat (and admins) - same boundary as the memory tools.
       addFreshResult(rec.tag, jobLabel(rec).c_str(), reply,
-                     nimbus::orch::nsForChat(rec.chatId, /*admin=*/false));
+                     nimbus::orch::nsForChat(rec.chatId, /*admin=*/false),
+                     /*failed=*/false, unverified);
       freshChatId_ = rec.chatId;
     } else if (env_ref().state == orch::JobState::Error) {
       // While OTHER work is still running, a per-sub failure joins the fresh

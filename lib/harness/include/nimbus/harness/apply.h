@@ -102,11 +102,21 @@ struct ApplyState {
   std::string riskNote;              // pending owner-visible note; consumed here
   std::string lastReply;             // out: captured for loops' semantic-repeat hash
   std::string* pendingMemResults = nullptr;  // deferred [MEMORY RESULTS] accumulator
+  // CUM-536: this turn read a sub-agent result whose connector never ran (it
+  // opens with the connector-not-called marker). Its mem_write items are refused
+  // and the refusal lands in the next turn's feedback, so a guess never becomes a
+  // stored fact.
+  bool unverifiedConnector = false;
   // v3.7.0: may THIS turn's chat read/write the shared namespace? The device
   // sets it for the owner's chats and the token-authenticated local surfaces;
   // a Telegram member never gets it. Combined with the turn's chatId it forms
   // the Principal every memory tool is dispatched under.
 };
+
+// The refusal a memory write gets while the turn carries an unverified connector
+// result (CUM-536) - shared by applyTurn's mem_write[] and the head loop's
+// memory.write tool, so both paths say the same thing.
+extern const char kUnverifiedMemoryRefusal[];
 
 // Apply one parsed turn. spawnedOut reports whether any sub-agent was enqueued
 // (the caller suppresses the bare "Done." only when true).

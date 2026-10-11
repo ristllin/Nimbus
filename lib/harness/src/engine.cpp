@@ -518,6 +518,12 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       // Resolve the advertised (sanitized) name back to the registry name.
       auto it = nameMap->find(call.name);
       const std::string& regName = (it != nameMap->end()) ? it->second : call.name;
+      // CUM-536: a turn carrying an unverified connector result never stores it.
+      if (unverifiedTurn_ && regName == "memory.write") {
+        r.isError = true;
+        r.output = agent::kUnverifiedMemoryRefusal;
+        return done(r);
+      }
       JsonDocument rq;
       rq["jsonrpc"] = "2.0";
       rq["id"] = 1;
@@ -929,6 +935,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   st.toolRepliedThisTurn = toolReplied_;
   st.riskNote            = riskNote_;
   st.pendingMemResults   = &pendingMemResults_;
+  st.unverifiedConnector = unverifiedTurn_;
   bool spawned = false;
   agent::applyTurn(turn, chatId, d_.apply, st, spawned);
   riskNote_  = st.riskNote;   // consumed (cleared) by the portable apply
@@ -982,14 +989,23 @@ void TurnEngine::maybeConsolidate(const std::string& chatId) {
   // 2026-07-13: the "60 s fallback" only covers the PRE-consumption defer case).
   // The owner gets the HUMAN rendering (CUM-480), never the model-facing seed.
   const std::string ownerRaw = d_.jobs->ownerResultsText();
-  std::string fresh  = d_.jobs->takeFreshResults();
+  std::string fresh  = d_.jobs->takeFreshResults(&unverifiedTurn_);
   std::string inputs = takePendingMemResults() + fresh + buildDynamicContext() +
     "\n[SYSTEM]\nOne or more of your sub-agents just finished (others may still be "
     "running - see [ACTIVE SESSIONS]). There is no new user message. "
     "Synthesize their results for the owner in reply, and fold anything worth keeping "
     "into memory.";
+  // CUM-536: only when a result's connector never ran (the prompt is otherwise
+  // byte-identical), say what that marker means and that memory is closed.
+  if (unverifiedTurn_)
+    inputs += " A result above opens with a note that its connector was NOT called: "
+              "the text after that note is the sub-agent's own guess. Tell the owner "
+              "plainly that the connector did not run, never present that text as their "
+              "real data, and do not store it (memory writes are refused this turn).";
   hlog::log("orchestrator: auto-synthesis turn (batch complete)");
-  if (!runTurn(inputs, chatId, "") && fresh.length()) {
+  const bool ok = runTurn(inputs, chatId, "");
+  unverifiedTurn_ = false;
+  if (!ok && fresh.length()) {
     hlog::log("orchestrator: synthesis turn failed - delivering raw results (never lost)");
     d_.jobs->deliverResults(chatId, ownerRaw);   // the job engine's sink, like the stuck fallback
   }
@@ -1044,8 +1060,10 @@ void TurnEngine::handleMessage(const std::string& text, const std::string& fromN
 
   attribution_ = "turn";                       // owner-driven spend (the default)
   turnSource_ = (chatId == "serial") ? TurnSource::Serial : TurnSource::Owner;
-  std::string inputs = takePendingMemResults() +
-    (d_.jobs ? d_.jobs->takeFreshResults() : std::string()) + buildDynamicContext() +
+  // CUM-536: results folded into an owner turn carry their provenance flag too.
+  unverifiedTurn_ = false;
+  const std::string fresh = d_.jobs ? d_.jobs->takeFreshResults(&unverifiedTurn_) : std::string();
+  std::string inputs = takePendingMemResults() + fresh + buildDynamicContext() +
     "\n[CHANNEL] This message arrived via " + channelOf(chatId) +
     ". Your orch_turn `reply` field is ALREADY delivered to this same channel - that is"
     " the one and only answer; never send the same answer twice." +
@@ -1054,6 +1072,7 @@ void TurnEngine::handleMessage(const std::string& text, const std::string& fromN
                        " Telegram chat, never for answering this one." : "") +
     "\n\n[USER]\n" + text;
   runTurn(inputs, chatId, text);   // text drives associative recall
+  unverifiedTurn_ = false;
 }
 
 // ---- Local Loops: scheduled-turn executor -----------------------------------
@@ -1105,6 +1124,7 @@ nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& cha
       : "\n[SCHEDULED LOOP]\nYour recurring task \"" + name + "\" is firing on its schedule. "
         "There is no new owner message - do the task now and reply to the owner concisely.\n\n";
   std::string inputs = takePendingMemResults() + buildDynamicContext() + preamble + prompt;
+  unverifiedTurn_ = false;   // a scheduled turn reads no fresh results
   o.ok = runTurn(inputs, target, prompt);
   scheduledTurn_ = false;
   quietTurn_ = false;

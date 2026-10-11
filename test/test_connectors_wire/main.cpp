@@ -1418,6 +1418,55 @@ static void test_cum514_no_stale_web_location_in_sources() {
   TEST_ASSERT_TRUE(scanned > 100);   // the walk really saw the tree
 }
 
+// ---- CUM-536: connector provenance helpers ------------------------------------
+// The T02b sub-agent task ("Fetch all Google Calendar events for the current
+// week...") asked for the attached google_calendar connector; a task that names no
+// attached connector asks for none, so a research job with gcal merely attached is
+// never marked.
+static void test_cum536_connector_asked_for() {
+  using nimbus::orch::connectorAskedFor;
+  const std::vector<std::string> gcal = {"google_calendar"};
+  TEST_ASSERT_EQUAL_STRING("Google Calendar",
+      connectorAskedFor("Fetch all Google Calendar events for the current week", "", gcal).c_str());
+  TEST_ASSERT_EQUAL_STRING("Google Calendar",
+      connectorAskedFor("Use the gcal connector now and list the events", "", gcal).c_str());
+  TEST_ASSERT_EQUAL_STRING("Google Calendar",
+      connectorAskedFor("What is on my calendar on Friday?", "", gcal).c_str());
+  TEST_ASSERT_EQUAL_STRING("Google Calendar", connectorAskedFor("check it", "gcal", gcal).c_str());
+  // Word boundaries and no-mention: never a false marker.
+  TEST_ASSERT_EQUAL_STRING("", connectorAskedFor("Compare wood-fibre insulation prices", "", gcal).c_str());
+  TEST_ASSERT_EQUAL_STRING("", connectorAskedFor("list the calendars of EU agencies", "", gcal).c_str());
+  // A named connector that was NOT attached is not this job's connector.
+  TEST_ASSERT_EQUAL_STRING("", connectorAskedFor("Search my Gmail inbox", "", gcal).c_str());
+  TEST_ASSERT_EQUAL_STRING("Gmail",
+      connectorAskedFor("Search my Gmail inbox", "", {"google_calendar", "gmail"}).c_str());
+  // A connector outside the catalog keeps its attach id as its name.
+  TEST_ASSERT_EQUAL_STRING("crm_x", connectorAskedFor("pull rows from crm_x", "", {"crm_x"}).c_str());
+  TEST_ASSERT_EQUAL_STRING("", connectorAskedFor("Fetch my calendar", "", {}).c_str());
+}
+
+static void test_cum536_not_called_note_and_builtins() {
+  TEST_ASSERT_EQUAL_STRING(
+      "The Google Calendar connector was NOT called. The text below is the model's own "
+      "guess, not your calendar.",
+      nimbus::orch::connectorNotCalledNote("Google Calendar").c_str());
+  TEST_ASSERT_TRUE(nimbus::orch::connectorNotCalledNote("crm_x").find(
+                       "not data from your crm_x.") != std::string::npos);
+  // Every Mistral built-in the attach builder can emit is a built-in here, so a
+  // web_search run never counts as the calendar connector having run.
+  for (const char* b : {"web_search", "web_search_premium", "code_interpreter",
+                        "image_generation", "document_library"})
+    TEST_ASSERT_TRUE_MESSAGE(nimbus::orch::isProviderBuiltinTool(b), b);
+  TEST_ASSERT_FALSE(nimbus::orch::isProviderBuiltinTool("google_calendar_list_events"));
+  TEST_ASSERT_FALSE(nimbus::orch::isProviderBuiltinTool(""));
+  // The class: every catalog BUILT-IN is recognized (a new one must be added).
+  int n = 0;
+  const nimbus::orch::KnownConnector* k = knownConnectors(n);
+  for (int i = 0; i < n; i++)
+    if (std::string(k[i].kind) == "builtin")
+      TEST_ASSERT_TRUE_MESSAGE(nimbus::orch::isProviderBuiltinTool(k[i].id), k[i].id);
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_mistral_connector_id_shared_map);
@@ -1487,5 +1536,7 @@ int main() {
   RUN_TEST(test_cum538_connector_provider_for_name);
   RUN_TEST(test_cum514_catalog_names_real_web_location);
   RUN_TEST(test_cum514_no_stale_web_location_in_sources);
+  RUN_TEST(test_cum536_connector_asked_for);
+  RUN_TEST(test_cum536_not_called_note_and_builtins);
   return UNITY_END();
 }

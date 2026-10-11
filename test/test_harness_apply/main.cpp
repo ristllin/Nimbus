@@ -435,6 +435,40 @@ static void test_mem_write_and_query_dispatch_under_lock() {
   TEST_ASSERT_TRUE(std::find(r.cues.begin(), r.cues.end(), "memsaved") != r.cues.end());
 }
 
+// CUM-536: a turn that read a sub-agent result whose connector never ran stores
+// none of it. Every mem_write item is refused (no memory.write call, no persist,
+// no memsaved cue), the refusal is fed back for the next turn, and a mem_query in
+// the same turn still runs.
+static void test_unverified_connector_turn_refuses_mem_write() {
+  Rec r;
+  ApplyDeps d = makeDeps(r);
+  ApplyState st = makeState(r);
+  st.unverifiedConnector = true;
+  bool spawned = false;
+  Turn t;
+  nimbus::orch::MemWrite w;
+  w.content = "Dana's calendar this week: Team Stand-up Mon 09:00";
+  t.mem_write.push_back(w);
+  t.mem_query.push_back("dana calendar");
+  t.reply = "Here is your week";
+  agent::applyTurn(t, "web", d, st, spawned);
+  TEST_ASSERT_EQUAL(1, (int)r.memCalls.size());
+  TEST_ASSERT_TRUE(r.memCalls[0].find("memory.search:") == 0);   // the query still ran
+  TEST_ASSERT_EQUAL(0, r.persists);
+  TEST_ASSERT_TRUE(std::find(r.cues.begin(), r.cues.end(), "memsaved") == r.cues.end());
+  TEST_ASSERT_TRUE(r.pendingMem.find("[MEMORY] Not stored: this turn carries a sub-agent "
+                                     "result whose connector was NOT called") != std::string::npos);
+  TEST_ASSERT_TRUE(LogCapture::contains(
+      "orchestrator: mem_write refused (1 item(s)) - unverified connector result"));
+  // The same turn without the flag stores as before (the rail is the flag, not the text).
+  Rec r2;
+  ApplyDeps d2 = makeDeps(r2);
+  ApplyState st2 = makeState(r2);
+  agent::applyTurn(t, "web", d2, st2, spawned);
+  TEST_ASSERT_TRUE(r2.memCalls[0].find("memory.write:") == 0);
+  TEST_ASSERT_EQUAL(1, r2.persists);
+}
+
 static void test_mem_query_only_does_not_persist() {
   Rec r;
   ApplyDeps d = makeDeps(r);
@@ -468,6 +502,7 @@ int main(int, char**) {
   RUN_TEST(test_session_ops_spawn_terminate_tell);
   RUN_TEST(test_await_aims_round_robin);
   RUN_TEST(test_mem_write_and_query_dispatch_under_lock);
+  RUN_TEST(test_unverified_connector_turn_refuses_mem_write);
   RUN_TEST(test_mem_query_only_does_not_persist);
   UNITY_END();
   return 0;

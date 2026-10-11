@@ -558,6 +558,21 @@ std::string foldId(const std::string& s) {
 }
 }  // namespace
 
+// The catalog id a connector reference maps to, case-insensitive and alias-aware:
+// a Mistral workspace id (github_app, google_calendar, google_drive_mcp) or an
+// OpenAI connector id (connector_gmail, connector_googlecalendar) IS the catalog
+// entry (github, gcal, gdrive, gmail) - the attach remap in reverse.
+static std::string canonicalConnectorId(const std::string& raw) {
+  std::string t = lowerStr(raw);
+  if (t == "github_app") return "github";
+  if (t == "google_calendar") return "gcal";
+  if (t == "google_drive_mcp") return "gdrive";
+  if (t.rfind("connector_", 0) == 0) t = t.substr(10);   // connector_gmail -> gmail
+  if (t == "googlecalendar") return "gcal";
+  if (t == "googledrive") return "gdrive";
+  return t;
+}
+
 std::string connectorProviderForName(const std::vector<ConnectorInfo>& cs, const std::string& name) {
   const std::string want = foldId(name);
   if (want.empty()) return "";
@@ -569,6 +584,102 @@ std::string connectorProviderForName(const std::vector<ConnectorInfo>& cs, const
       if (!id.empty() && foldId(id) == want) return c.prov.empty() ? std::string("any") : c.prov;
   }
   return "";
+}
+
+// ---- connector provenance (CUM-536) -------------------------------------------
+
+bool isProviderBuiltinTool(const std::string& name) {
+  return name == "web_search" || name == "web_search_premium" || name == "code_interpreter" ||
+         name == "image_generation" || name == "document_library";
+}
+
+namespace {
+// What a connector's data IS for the owner ("not your calendar"), and a short
+// alias a task may use instead of the connector's name. Ids are catalog ids.
+struct ProvenanceWords {
+  const char* id;
+  const char* noun;
+  const char* alias;   // nullptr = none
+};
+const ProvenanceWords kProvenance[] = {
+    {"gcal", "your calendar", "calendar"},
+    {"gmail", "your email", "inbox"},
+    {"gdrive", "your Drive files", nullptr},
+    {"notion", "your Notion pages", nullptr},
+    {"github", "your GitHub data", nullptr},
+    {"slack", "your Slack messages", nullptr},
+    {"linear", "your Linear issues", nullptr},
+};
+
+const ProvenanceWords* provenanceFor(const std::string& canonId) {
+  for (const auto& p : kProvenance)
+    if (canonId == p.id) return &p;
+  return nullptr;
+}
+
+// The owner-facing name of a catalog id ("gcal" -> "Google Calendar"); a
+// connector outside the catalog keeps the id it was attached under.
+std::string displayNameFor(const std::string& canonId, const std::string& rawId) {
+  int n = 0;
+  const KnownConnector* k = knownConnectors(n);
+  for (int i = 0; i < n; i++)
+    if (canonId == k[i].id) return k[i].displayName;
+  return rawId;
+}
+
+bool isWordChar(char c) {
+  return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9');
+}
+
+// `needle` (lowercase) occurs in `hay` (lowercase) with no letter or digit on
+// either side ("calendar" matches "Google Calendar events", not "calendars").
+bool containsWord(const std::string& hay, const std::string& needle) {
+  if (needle.empty()) return false;
+  for (size_t at = hay.find(needle); at != std::string::npos; at = hay.find(needle, at + 1)) {
+    const bool startOk = at == 0 || !isWordChar(hay[at - 1]);
+    const size_t end = at + needle.size();
+    const bool endOk = end >= hay.size() || !isWordChar(hay[end]);
+    if (startOk && endOk) return true;
+  }
+  return false;
+}
+
+// Whether the task text names this connector in any of its forms.
+bool taskNames(const std::string& hay, const std::string& rawId, const std::string& canonId,
+               const std::string& display) {
+  if (containsWord(hay, lowerStr(rawId)) || containsWord(hay, canonId) ||
+      containsWord(hay, lowerStr(display)))
+    return true;
+  const ProvenanceWords* p = provenanceFor(canonId);
+  return p && p->alias && containsWord(hay, p->alias);
+}
+}  // namespace
+
+std::string connectorAskedFor(const std::string& task, const std::string& skill,
+                              const std::vector<std::string>& attachedIds) {
+  const std::string hay = lowerStr(task);
+  const std::string wantSkill = skill.empty() ? std::string() : canonicalConnectorId(skill);
+  for (const std::string& id : attachedIds) {
+    if (id.empty()) continue;
+    const std::string canon = canonicalConnectorId(id);
+    const std::string display = displayNameFor(canon, id);
+    if ((!wantSkill.empty() && wantSkill == canon) || taskNames(hay, id, canon, display))
+      return display;
+  }
+  return "";
+}
+
+std::string connectorNotCalledNote(const std::string& displayName) {
+  std::string noun = "data from your " + displayName;
+  int n = 0;
+  const KnownConnector* k = knownConnectors(n);
+  for (int i = 0; i < n; i++) {
+    if (displayName != k[i].displayName) continue;
+    if (const ProvenanceWords* p = provenanceFor(k[i].id)) noun = p->noun;
+    break;
+  }
+  return "The " + displayName + " connector was NOT called. The text below is the model's own "
+         "guess, not " + noun + ".";
 }
 
 ConnectorInfo::Workspace mistralWorkspaceState(const ConnectorInfo& c, const MistralWorkspace& ws) {
@@ -823,16 +934,7 @@ std::string catalogText(const std::vector<ConnectorInfo>& cs, const ProviderStat
       for (char& ch : s) if (ch >= 'A' && ch <= 'Z') ch = char(ch - 'A' + 'a');
       return s;
     };
-    auto canonical = [&](const std::string& raw) {
-      std::string t = lower(raw);
-      if (t == "github_app") return std::string("github");
-      if (t == "google_calendar") return std::string("gcal");
-      if (t == "google_drive_mcp") return std::string("gdrive");
-      if (t.rfind("connector_", 0) == 0) t = t.substr(10);   // connector_gmail -> gmail
-      if (t == "googlecalendar") return std::string("gcal");
-      if (t == "googledrive") return std::string("gdrive");
-      return t;
-    };
+    auto canonical = [](const std::string& raw) { return canonicalConnectorId(raw); };
     auto keyedFor = [&](const char* providers) {
       const std::string p(providers);
       return (ps.openaiKeyed && p.find("openai") != std::string::npos) ||

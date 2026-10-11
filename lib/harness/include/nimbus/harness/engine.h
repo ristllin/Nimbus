@@ -344,6 +344,10 @@ class TurnEngine {
   volatile bool toolReplied_ = false;   // a mid-loop reply already answered this turn
   bool scheduledTurn_ = false;          // a Local Loops / synthesis (unattended) turn is running
   bool quietTurn_ = false;              // dream: suppress the bare-"Done." fallback this turn
+  // CUM-536: this turn's [FRESH RESULTS] include a result whose connector never
+  // ran. Set by the entry wrappers from takeFreshResults; while set, the turn's
+  // memory writes (mem_write[] and the loop's memory.write tool) are refused.
+  bool unverifiedTurn_ = false;
   // Spend-attribution tag + hook source for the CURRENT turn, set by the entry
   // wrappers (handleMessage "turn"/Owner, maybeConsolidate "synthesis",
   // injectScheduledTurn "loop:<id>") and reset to the owner default after.

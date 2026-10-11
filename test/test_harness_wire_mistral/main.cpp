@@ -419,6 +419,95 @@ static void test_sub_dispatch_captures_code_interpreter_file() {
   TEST_ASSERT_EQUAL_STRING("report.pdf", env.artifacts[0].label);
 }
 
+// ---- CUM-536: connector provenance on the Mistral sub-agent ----------------
+// T02b on nimbus-light: the google_calendar connector rode the request, Mistral's
+// record shows NO tool.execution entry, and the sub answered with an invented
+// week in 0.46 s. The dispatch response itself lists every tool run, so the
+// envelope carries how many connectors rode the job, how many ran, and which
+// attached connector the TASK asked for.
+static agent::providers::ProviderDeps gcalAttachedPd(FakeProviderDeps& d) {
+  auto pd = d.contract();
+  pd.attachMistral = [&d](JsonDocument& doc) {
+    d.mistralAttaches++;
+    doc["tools"].add<JsonObject>()["type"] = "web_search";
+    JsonObject t = doc["tools"].add<JsonObject>();
+    t["type"] = "connector";
+    t["connector_id"] = "google_calendar";
+  };
+  return pd;
+}
+
+static agent::ResultEnvelope runSub(FakeProviderDeps& d, const agent::providers::ProviderDeps& pd,
+                                    const char* task, const char* instruction) {
+  agent::Directive dir;
+  dir.task = task;
+  dir.instruction = instruction;
+  char jobId[72] = {};
+  TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::mistralDispatch(pd, "m", dir, jobId));
+  agent::ResultEnvelope env{};
+  TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::mistralPoll(pd, jobId, env));
+  (void)d;
+  return env;
+}
+
+static void test_sub_connector_attached_but_never_called() {
+  FakeProviderDeps d;
+  // The exact T02b shape: one message.input echo is not in outputs; one
+  // message.output with an invented week; no tool.execution at all.
+  d.http.script.push_back({"api.mistral.ai", "/v1/conversations", 200,
+      "{\"conversation_id\":\"conv_x\",\"outputs\":[{\"type\":\"message.output\","
+      "\"content\":\"Mon 12 Oct 09:00 Team Stand-up\"}]}"});
+  auto pd = gcalAttachedPd(d);
+  agent::ResultEnvelope env = runSub(d, pd,
+      "Fetch all Google Calendar events for the current week (2026-10-11 to 2026-10-17).",
+      "[Current date-time: x]\nFetch all Google Calendar events for the current week.");
+  TEST_ASSERT_EQUAL(1, env.connectorsAttached);   // web_search is a built-in, not counted
+  TEST_ASSERT_EQUAL(0, env.connectorCalls);
+  TEST_ASSERT_EQUAL_STRING("Google Calendar", env.connectorAsked);
+  TEST_ASSERT_EQUAL_STRING("Mon 12 Oct 09:00 Team Stand-up", env.reply);   // the text is untouched here
+  // The sub's own system prompt forbids inventing records.
+  TEST_ASSERT_TRUE(bodyHas(d, 0, "never invent events, messages, files or other records"));
+  TEST_ASSERT_TRUE(LogCapture::contains("mistral sub: connectors attached=1 calls=0 asked=Google Calendar"));
+}
+
+static void test_sub_connector_called_counts_the_execution() {
+  FakeProviderDeps d;
+  // The live 2026-09-27 shape: the connector ran server-side and returned events.
+  d.http.script.push_back({"api.mistral.ai", "/v1/conversations", 200,
+      "{\"conversation_id\":\"c2\",\"outputs\":["
+      "{\"type\":\"tool.execution\",\"name\":\"web_search\"},"
+      "{\"type\":\"tool.execution\",\"name\":\"google_calendar_list_events\","
+      "\"arguments\":\"{}\",\"info\":{\"big\":[1,2,3]}},"
+      "{\"type\":\"message.output\",\"content\":\"Standup at 10:00\"}]}"});
+  auto pd = gcalAttachedPd(d);
+  agent::ResultEnvelope env = runSub(d, pd, "List my Google Calendar events today", "x");
+  TEST_ASSERT_EQUAL(1, env.connectorsAttached);
+  TEST_ASSERT_EQUAL(1, env.connectorCalls);   // the web_search run is not a connector call
+  TEST_ASSERT_EQUAL_STRING("Google Calendar", env.connectorAsked);
+  TEST_ASSERT_EQUAL_STRING("Standup at 10:00", env.reply);
+}
+
+// Only the bare task decides: a calendar mention in the chat [CONTEXT] tail of the
+// instruction must not mark an unrelated research job, and a job with no
+// connector attached carries no provenance at all.
+static void test_sub_provenance_reads_the_task_not_the_context() {
+  FakeProviderDeps d;
+  d.http.script.push_back({"", "/v1/conversations", 200,
+      "{\"outputs\":[{\"type\":\"message.output\",\"content\":\"prices...\"}]}"});
+  auto pd = gcalAttachedPd(d);
+  agent::ResultEnvelope env = runSub(d, pd, "Compare wood-fibre board prices",
+      "Compare wood-fibre board prices\n\n[CONTEXT]\n- user: what's on my Google Calendar?");
+  TEST_ASSERT_EQUAL(1, env.connectorsAttached);
+  TEST_ASSERT_EQUAL_STRING("", env.connectorAsked);
+
+  FakeProviderDeps d2;   // the default rig attaches only the web_search built-in
+  d2.http.script.push_back({"", "/v1/conversations", 200,
+      "{\"outputs\":[{\"type\":\"message.output\",\"content\":\"ok\"}]}"});
+  agent::ResultEnvelope e2 = runSub(d2, d2.contract(), "Fetch my Google Calendar", "x");
+  TEST_ASSERT_EQUAL(0, e2.connectorsAttached);
+  TEST_ASSERT_EQUAL_STRING("", e2.connectorAsked);
+}
+
 // A file-only run (no prose message) still succeeds and yields the artifact - the
 // bytes are the payload, so an empty reply must not be read as RemoteFail.
 static void test_sub_dispatch_file_only_no_prose() {
@@ -929,6 +1018,9 @@ int main(int, char**) {
   RUN_TEST(test_sub_dispatch_array_content);
   RUN_TEST(test_sub_dispatch_captures_code_interpreter_file);
   RUN_TEST(test_sub_dispatch_file_only_no_prose);
+  RUN_TEST(test_sub_connector_attached_but_never_called);
+  RUN_TEST(test_sub_connector_called_counts_the_execution);
+  RUN_TEST(test_sub_provenance_reads_the_task_not_the_context);
   RUN_TEST(test_sub_dispatch_text_only_no_artifacts);
   RUN_TEST(test_sub_per_dispatch_model_override);
   RUN_TEST(test_sub_error_mapping);

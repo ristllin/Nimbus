@@ -21,7 +21,7 @@ struct FakeAdapter : agent::ManagedAgentAdapter {
   agent::FabricErr pollErr = agent::FabricErr::Ok;
 
   struct SeenDirective {
-    std::string category, instruction, chatId, tag, model, skill;
+    std::string category, instruction, chatId, tag, model, skill, task;
   };
   std::vector<SeenDirective> dispatched;
 
@@ -32,6 +32,10 @@ struct FakeAdapter : agent::ManagedAgentAdapter {
   // Optional scripted sub-session usage, reported on every poll (real adapters
   // fill it only when the provider returns a usage object - e.g. OpenAI).
   uint32_t usageIn = 0, usageOut = 0;
+  // Optional scripted connector provenance (CUM-536), reported on the Done poll.
+  uint8_t connectorsAttached = 0;
+  uint16_t connectorCalls = 0;
+  std::string connectorAsked;
   int pollCount = 0;
 
   const char* backendId() const override { return backend.c_str(); }
@@ -49,6 +53,7 @@ struct FakeAdapter : agent::ManagedAgentAdapter {
     s.tag         = d.tag         ? d.tag         : "";
     s.model       = d.model       ? d.model       : "";
     s.skill       = d.skill       ? d.skill       : "";
+    s.task        = d.task        ? d.task        : "";
     dispatched.push_back(s);
     snprintf(outJobId, 72, "%s:job-%d", backend.c_str(), (int)dispatched.size());
     return agent::FabricErr::Ok;
@@ -63,8 +68,12 @@ struct FakeAdapter : agent::ManagedAgentAdapter {
     env.state = pollScript.empty() ? agent::JobState::Running : pollScript[i];
     env.promptTokens = usageIn;
     env.completionTokens = usageOut;
-    if (env.state == agent::JobState::Done)
+    if (env.state == agent::JobState::Done) {
       strncpy(env.reply, doneReply.c_str(), sizeof(env.reply) - 1);
+      env.connectorsAttached = connectorsAttached;
+      env.connectorCalls = connectorCalls;
+      strncpy(env.connectorAsked, connectorAsked.c_str(), sizeof(env.connectorAsked) - 1);
+    }
     return agent::FabricErr::Ok;
   }
 

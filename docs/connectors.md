@@ -108,6 +108,20 @@ connecting in Mistral. A Virtual Nimbus runs the same check at
 startup, after a Mistral key is saved, and when its first Studio connector is
 added (the hosted page has no Verify button).
 
+**When a connector did not run, the result says so.** A sub-agent can answer a
+calendar request from its own guess without ever calling the calendar connector.
+For a Mistral sub-agent the device reads Mistral's own record of the run (one
+entry per tool that ran). If the task asked for an attached connector (by its
+name, its id, or for Google Calendar the word "calendar") and no connector ran,
+the result opens with:
+
+*"The Google Calendar connector was NOT called. The text below is the model's own
+guess, not your calendar."*
+
+That note rides into the saved document, the assistant's summary and the raw
+results, and nothing from that turn is saved to memory, so a guess is never
+remembered as a fact. A result where the connector ran is delivered unchanged.
+
 > **What validation does not do.** It confirms the *provider key* works, not each
 > connector's individual tools. Per-connector *functional* probing - actually
 > calling a connector, which would spend tokens - is not implemented. A connector

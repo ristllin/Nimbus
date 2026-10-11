@@ -55,6 +55,11 @@ struct Directive {
   const char* tag         = nullptr;  // device correlation id
   const char* model       = nullptr;  // per-dispatch model override (else adapter default)
   const char* skill       = nullptr;  // skill hint, e.g. "deep_research" | "web"
+  // The spawn's own task text, WITHOUT the date header, skill capsule, chat
+  // [CONTEXT] or attachments that `instruction` carries (CUM-536): connector
+  // provenance asks "did this task name an attached connector?" and must not be
+  // fooled by an earlier message in the chat. nullptr => use `instruction`.
+  const char* task        = nullptr;
   // OUT, optional (CUM-465): when dispatch() returns RateLimited, the adapter writes
   // the quota window that refused here (nothing is written otherwise), so the spawn
   // refusal names it the way a head-turn 429 does. FabricErr alone cannot carry it.

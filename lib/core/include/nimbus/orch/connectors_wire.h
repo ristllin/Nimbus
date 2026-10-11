@@ -258,6 +258,33 @@ bool isMistralStudioConnector(const ConnectorInfo& c);
 // registered on the device itself, so the callable-tool list is the right answer.
 std::string connectorProviderForName(const std::vector<ConnectorInfo>& cs, const std::string& name);
 
+// --- connector provenance (CUM-536) -------------------------------------------
+// A Mistral sub-agent with the Google Calendar connector attached answered "fetch
+// this week's events" in 0.46 s with an invented week, never calling the
+// connector; the head presented it as the owner's calendar and stored it as a
+// memory. The provider's own record (a `tool.execution` entry per tool run in the
+// Conversations response) shows whether a connector actually ran; these helpers
+// turn that into an honest marker on the delivered result.
+
+// True for a provider BUILT-IN tool (web_search, web_search_premium,
+// code_interpreter, image_generation, document_library): its tool.execution entry
+// is not a connector call.
+bool isProviderBuiltinTool(const std::string& name);
+
+// The display name ("Google Calendar") of the first attached connector a sub-agent
+// task asks for; "" when it names none of them. `attachedIds` are the connector
+// ids that rode the request (Mistral workspace ids such as google_calendar, or
+// device names). The task asks for one when `skill` names it exactly, or the task
+// text mentions its display name, catalog id, workspace id or a short alias
+// (gcal: "calendar"; gmail: "inbox"), case-insensitively on word boundaries.
+std::string connectorAskedFor(const std::string& task, const std::string& skill,
+                              const std::vector<std::string>& attachedIds);
+
+// The marker that opens a result whose task asked for `displayName` while the
+// connector never ran: "The Google Calendar connector was NOT called. The text
+// below is the model's own guess, not your calendar."
+std::string connectorNotCalledNote(const std::string& displayName);
+
 // What the workspace answer says about one connector (NotApplicable unless it is a
 // Mistral Studio connector). Matches on mistralConnectorId, the id the wire sends.
 ConnectorInfo::Workspace mistralWorkspaceState(const ConnectorInfo& c, const MistralWorkspace& ws);

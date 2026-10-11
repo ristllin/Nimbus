@@ -14,6 +14,11 @@ using nimbus::orch::ToolResult;
 using nimbus::orch::Turn;
 using nimbus::orch::ValidatedAction;
 
+const char kUnverifiedMemoryRefusal[] =
+    "Not stored: this turn carries a sub-agent result whose connector was NOT "
+    "called, so its contents are the model's guess, not the owner's data. Store a "
+    "fact only from a result where the connector ran.";
+
 std::string applyDeviceElement(const std::string& json, bool scheduledTurn,
                                const std::string& chatId, const ApplyDeps& d,
                                std::string* riskNote) {
@@ -182,7 +187,17 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
   if (d.memDispatch && (!t.mem_write.empty() || !t.mem_query.empty())) {
     auto memWork = [&] {
       bool memMutated = false;
-      for (const auto& w : t.mem_write) {
+      // CUM-536: never store a connector guess as a fact. Refused, logged, and fed
+      // back so the model knows why on its next turn (mem_query still runs).
+      const bool refuseWrites = st.unverifiedConnector && !t.mem_write.empty();
+      if (refuseWrites) {
+        hlog::logf("orchestrator: mem_write refused (%u item(s)) - unverified connector result",
+                   (unsigned)t.mem_write.size());
+        if (st.pendingMemResults)
+          *st.pendingMemResults += std::string("[MEMORY] ") + kUnverifiedMemoryRefusal + "\n";
+      }
+      for (size_t wi = 0; !refuseWrites && wi < t.mem_write.size(); ++wi) {
+        const auto& w = t.mem_write[wi];
         JsonDocument a;
         a["content"]    = w.content;
         a["importance"] = w.importance;

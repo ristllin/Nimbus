@@ -214,7 +214,10 @@ class JobEngine {
 
   // Fresh sub-agent results parked for the next consolidation turn.
   bool hasFreshResults() const { return !fresh_.empty(); }
-  std::string takeFreshResults();
+  // `unverified` (optional, CUM-536) reports whether any taken result opened with
+  // the connector-not-called marker, so the turn that reads them can refuse to
+  // store their contents as memory.
+  std::string takeFreshResults(bool* unverified = nullptr);
   // The same parked results rendered for the OWNER, without consuming them: the
   // raw fallback's text when the summary step cannot run (CUM-480). A one-line
   // preamble, then each sub-agent's title and its findings - none of the
@@ -227,8 +230,11 @@ class JobEngine {
   void deliverResults(const std::string& chatId, const std::string& text) { deliver(chatId, text); }
   // `failed` marks the engine's OWN failure lines (provenance out of band: a
   // sub-agent reply that merely starts with "FAILED: " is still a finding).
+  // `unverified` marks a result whose task asked for a connector that never ran
+  // (CUM-536); the text already opens with the honest marker.
   void addFreshResult(const char* tag, const char* model, const std::string& text,
-                      const std::string& ns = std::string(), bool failed = false);
+                      const std::string& ns = std::string(), bool failed = false,
+                      bool unverified = false);
   const std::string& freshChatId() const { return freshChatId_; }
 
   void noteSpawned() { nextDispatchAt_ = d_.platform.nowMs(); }  // dispatch-now nudge
@@ -289,6 +295,7 @@ class JobEngine {
   struct FreshResult {
     std::string tag, model, text, hint, ringTag;
     bool failed = false;   // an engine failure line, not a sub-agent's finding
+    bool unverified = false;   // its connector never ran (CUM-536)
   };
   struct ReapEntry { uint32_t key; uint32_t dueAt; };
 

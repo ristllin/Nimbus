@@ -118,7 +118,9 @@ Each backend adds its own system prompt around the brief - e.g. OpenAI:
 the final result only."*; Anthropic managed agents get a sandbox system prompt
 with bash/web/files tools; Mistral: *"You are an autonomous assistant agent.
 Complete the user's task fully and reply with the final result only - no
-preamble."*
+preamble. If a tool or connector you need does not run, fails, or returns
+nothing, say so plainly; never invent events, messages, files or other
+records."*
 
 ## What a spawn can carry
 
@@ -263,6 +265,30 @@ The host harness runs this whole chain live: `nimbus-lab sub` in
 4. A failure while other sub-agents still run joins the fresh results (the
    final report names it); a failure with nothing else running is delivered at
    once: `Job [<name>] failed: <error>`.
+5. **Connector provenance.** A result whose task asked for an attached
+   connector that never ran opens with an honest marker, and its turn stores
+   nothing. The Mistral sub-agent is synchronous, so the dispatch response
+   already lists every tool run as a `tool.execution` output (no extra request).
+   `mistralDispatch` counts the ones that are not provider built-ins
+   (`isProviderBuiltinTool`: web_search, code_interpreter, ...), records which
+   Studio connectors rode the request, and asks `connectorAskedFor` whether the
+   bare task (`Directive::task`, never the chat `[CONTEXT]` tail) or the spawn's
+   `skill` names one of them. The `ResultEnvelope` carries
+   `connectorsAttached`, `connectorCalls` and `connectorAsked`; the log line is
+   `mistral sub: connectors attached=1 calls=0 asked=Google Calendar`. When
+   `connectorAsked` is set and `connectorCalls` is 0, `JobEngine` prepends
+   `connectorNotCalledNote` (*"The Google Calendar connector was NOT called. The
+   text below is the model's own guess, not your calendar."*) before the
+   project auto-persist, so the saved doc, `[FRESH RESULTS]` and the owner's raw
+   fallback all carry it, and flags the fresh result. The turn that takes a
+   flagged result (the synthesis turn, or an owner turn that folds it in) gets a
+   provenance sentence in its `[SYSTEM]` text and refuses every memory write:
+   `mem_write[]` items in `applyTurn` and the mid-loop `memory.write` tool, both
+   with `kUnverifiedMemoryRefusal`, which also lands in the next turn's
+   `[MEMORY RESULTS]`. Refusing (rather than tagging) keeps a guess out of
+   long-term memory entirely; the next turn can store what a real connector run
+   returns. Adapters that cannot see tool runs leave the fields zero, so their
+   results are delivered as before.
 
 Every job-engine message (spawn acknowledgements, "Couldn't start that agent
 on ...", failures, the raw fallback) is also recorded in the chat's history, and

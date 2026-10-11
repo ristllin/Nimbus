@@ -5,6 +5,7 @@
 
 #include "nimbus/harness/providers.h"
 #include "nimbus/harness/rate_limit.h"  // 429 -> the quota window that refused (CUM-460)
+#include "nimbus/orch/connectors_wire.h"  // connector provenance (CUM-536)
 #include "nimbus/orch/head_loop.h"    // runHeadLoop - the portable ReAct controller
 #include "nimbus/orch/orch_schema.h"  // ORCH_SCHEMA_BODY - the wire contract
 #include "nimbus/orch/turn.h"         // leadingJsonObject - the shared whole-reply rule
@@ -646,9 +647,13 @@ bool orchTurnMistral(const ProviderDeps& pd, std::string& convId,
 // The response streams off the socket (transport execJson), so a fat connector
 // write result never resides whole in RAM. Result is cached; poll() serves Done.
 
+// The no-invention sentence is CUM-536: with a calendar connector attached but
+// never called, the sub answered "fetch this week's events" with an invented week.
 static const char* MISTRAL_AGENT_SYS =
     "You are an autonomous assistant agent. Complete the user's task fully and "
-    "reply with the final result only - no preamble.";
+    "reply with the final result only - no preamble. If a tool or connector you "
+    "need does not run, fails, or returns nothing, say so plainly; never invent "
+    "events, messages, files or other records.";
 
 namespace {
 struct Cached {
@@ -656,6 +661,10 @@ struct Cached {
   std::string reply;
   std::vector<MistralFileRef> files;   // v4.1: code_interpreter-produced files
   bool used;
+  // Connector provenance (CUM-536) - copied into the ResultEnvelope at poll.
+  uint8_t connectorsAttached;
+  uint16_t connectorCalls;
+  std::string connectorAsked;
 };
 static Cached s_cache[6];   // == kAgentMaxJobs; sync jobs vacate in seconds
 
@@ -676,6 +685,7 @@ FabricErr mistralDispatch(const ProviderDeps& pd, const std::string& model,
   if (slot < 0) return FabricErr::RemoteFail;   // cache full: journal backs off
 
   std::string body;
+  std::vector<std::string> attached;   // Studio connector ids on this request (CUM-536)
   {
     JsonDocument doc;
     doc["store"]        = true;
@@ -685,6 +695,8 @@ FabricErr mistralDispatch(const ProviderDeps& pd, const std::string& model,
     // Studio connectors ride the conversation and run server-side (auto tool_choice
     // - no forcing, so no 422). Free-text result (no response_format schema).
     if (pd.attachMistral) pd.attachMistral(doc);
+    for (JsonObjectConst t : doc["tools"].as<JsonArrayConst>())
+      if (strcmp(t["type"] | "", "connector") == 0) attached.push_back(t["connector_id"] | "");
     body = serializeBody(doc);
   }
 
@@ -695,6 +707,7 @@ FabricErr mistralDispatch(const ProviderDeps& pd, const std::string& model,
   // AND the code_interpreter `tool_file` chunks (the file references) - no filter
   // widening beyond this is needed to keep {file_id,file_name,file_type}.
   oi["type"] = true; oi["content"] = true;
+  oi["name"] = true;          // tool.execution: which tool ran (connector provenance)
   filter["message"] = true;   // error envelope
   filter["detail"] = true;    // error envelope, connector-quota shape
 
@@ -727,8 +740,17 @@ FabricErr mistralDispatch(const ProviderDeps& pd, const std::string& model,
     return FabricErr::RemoteFail;
   }
   std::string reply;
+  uint16_t connectorCalls = 0;   // tool.execution entries that were not built-ins
   for (JsonObjectConst o : doc["outputs"].as<JsonArrayConst>()) {
-    if (strcmp(o["type"] | "", "message.output") != 0) continue;
+    const char* type = o["type"] | "";
+    if (strcmp(type, "tool.execution") == 0) {
+      // A nameless entry still means SOMETHING ran server-side: count it, so the
+      // marker never calls real data a guess.
+      if (!nimbus::orch::isProviderBuiltinTool(o["name"] | "") && connectorCalls < 0xFFFF)
+        connectorCalls++;
+      continue;
+    }
+    if (strcmp(type, "message.output") != 0) continue;
     reply = mistralOutputContent(o);   // string OR array-of-text-chunks
   }
   // Capture any code_interpreter-produced files (poll -> env.artifacts[]).
@@ -747,6 +769,16 @@ FabricErr mistralDispatch(const ProviderDeps& pd, const std::string& model,
   s_cache[slot].reply = std::move(reply);
   s_cache[slot].files = std::move(files);
   s_cache[slot].used  = false;
+  s_cache[slot].connectorsAttached = (uint8_t)(attached.size() < 255 ? attached.size() : 255);
+  s_cache[slot].connectorCalls = connectorCalls;
+  s_cache[slot].connectorAsked = attached.empty()
+      ? std::string()
+      : nimbus::orch::connectorAskedFor(d.task ? d.task : (d.instruction ? d.instruction : ""),
+                                        d.skill ? d.skill : "", attached);
+  if (!attached.empty())
+    hlog::logf("mistral sub: connectors attached=%u calls=%u asked=%s",
+               (unsigned)attached.size(), (unsigned)connectorCalls,
+               s_cache[slot].connectorAsked.empty() ? "-" : s_cache[slot].connectorAsked.c_str());
   snprintf(outJobId, 72, "mistral:%s", s_cache[slot].id);
   return FabricErr::Ok;
 }
@@ -800,9 +832,14 @@ FabricErr mistralPoll(const ProviderDeps& pd, const char* jobId, ResultEnvelope&
     nf++;
   }
   env.artifactCount = nf;
+  env.connectorsAttached = s_cache[slot].connectorsAttached;
+  env.connectorCalls = s_cache[slot].connectorCalls;
+  snprintf(env.connectorAsked, sizeof(env.connectorAsked), "%s",
+           s_cache[slot].connectorAsked.c_str());
   s_cache[slot].id[0] = 0;                    // slot freed after delivery
   s_cache[slot].reply.clear();
   s_cache[slot].files.clear();
+  s_cache[slot].connectorAsked.clear();
   return FabricErr::Ok;
 }
 
@@ -815,6 +852,7 @@ FabricErr mistralCancel(const ProviderDeps& pd, const char* jobId) {
       s_cache[slot].id[0] = 0;
       s_cache[slot].reply.clear();
       s_cache[slot].files.clear();   // a reused slot must not inherit stale file refs
+      s_cache[slot].connectorAsked.clear();
     }
   }
   return FabricErr::Ok;                       // idempotent, cache-local
