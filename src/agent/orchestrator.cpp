@@ -60,6 +60,7 @@
 #include "nimbus/orch/device_actions.h"
 #include "nimbus/mem_cap.h"
 #include "nimbus/harness/dream.h"   // buildEpisodicDigest - the RECENT CONVERSATION window (B1)
+#include "nimbus/harness/conversation.h"   // the /clear boundary + live conversation window (CUM-511)
 #include "../sfx/sound_fx.h"      // SFX hooks: spawn ack / turn start / reply / mem save
 
 #include <ArduinoJson.h>
@@ -126,15 +127,6 @@ static String withTurnTag(const char* base) {
   if (g_turnTag[0]) { if (t.length()) t += ","; t += g_turnTag; }
   return t;
 }
-// CUM-482: captured job-engine deliveries render in the chat but never enter a
-// model-facing conversation read (window, brief, fold) - a raw fallback carries
-// sub-agent web content, and the model never read job messages there before.
-static void dropJobDeliveries(std::vector<orch::EpisodicMessage>& rows) {
-  size_t keep = 0;
-  for (size_t i = 0; i < rows.size(); i++)
-    if (!agent::isJobDelivery(rows[i].tags)) rows[keep++] = std::move(rows[i]);
-  rows.resize(keep);
-}
 // v3.7.0 RBAC: the tenant table (roles + quotas). Unlike the rest of the
 // orchestrator state this genuinely has TWO writers - the web surface
 // (/api/tenant, AsyncTCP) and the assistant's tenant.* tools (tg_poll, or
@@ -190,7 +182,8 @@ static void syncMemEcho() {
 static volatile bool g_memClearReq = false;
 static volatile bool g_cfgReloadReq = false;
 static volatile bool g_convResetReq = false;   // prism B: reset must land BETWEEN turns
-static volatile bool g_convClearReq = false;   // /clear: drop conversation + active task, keep memory/files
+static volatile bool g_convClearReq = false;   // web "Clear conversation": clear the web chat (CUM-511)
+static void clearConversation(const String& chatId);   // fwd (defined below)
 static void drainStaged() {
   if (g_memClearReq) {
     g_memClearReq = false;
@@ -209,17 +202,10 @@ static void drainStaged() {
   }
   if (g_convClearReq) {
     g_convClearReq = false;
-    // /clear: forget the current conversation (provider continuity) AND the
-    // scratchpad's ACTIVE TASK line, but keep long-term memory, the memory tiers,
-    // vectors, episodic history, and files. Same between-turns discipline as the
-    // conv reset above so an in-flight turn's convId write-back is already landed.
-    store::setOrchConvId("");
-    {
-      memory::Lock lk;
-      memory::scratchpad().setActiveTask("");   // clears just the active line, tiers untouched
-    }
-    memory::persistScratchpad();
-    alog("orchestrator: /clear - conversation + active task cleared (memory/files kept)");
+    // The web app's "Clear conversation" (staged from AsyncTCP): the web chat's
+    // /clear. Same between-turns discipline as the conv reset above so an
+    // in-flight turn's convId write-back is already landed.
+    clearConversation("web");
   }
   if (g_cfgReloadReq) {
     g_cfgReloadReq = false;
@@ -616,11 +602,10 @@ static JobEngine::Deps buildJobDeps() {
     // the machinery.
     q.haveKind = true; q.kind = MsgKind::Message;
     q.alsoKinds = {MsgKind::Image, MsgKind::File, MsgKind::Audio};
-    q.limit = 12;   // 6 shown; headroom for the dropped job-delivery rows
+    q.limit = 12;   // 6 shown; headroom for the skipped job-delivery rows
     std::vector<EpisodicMessage> rows;
     { memory::Lock lk; rows = memory::episodic().query(q); }
-    dropJobDeliveries(rows);
-    if (rows.size() > 6) rows.resize(6);
+    rows = agent::liveConversation(rows, std::string(), 6);   // not past a /clear, no job rows
     if (rows.empty()) return std::string();
     std::string block = "[CONTEXT] (the conversation this task came from, oldest first)\n";
     // Brief bytes derive from the HEAD's window (the spawning context; 1200 at
@@ -872,21 +857,14 @@ static TurnEngine::Deps buildTurnDeps() {
     // row carries the description, so including these kinds is what makes
     // "what did I just send you?" answerable one turn later.
     q.alsoKinds = {MsgKind::Image, MsgKind::File, MsgKind::Audio};
-    // Headroom past the 12-row window: the in-flight row and job-delivery rows
-    // are dropped below, not shown.
+    // Headroom past the 12-row window: the in-flight row, job-delivery rows and a
+    // /clear boundary are skipped by recentConversationBlock, not shown.
     q.limit = 2 * kRecentTurnsMax + 1;
     std::vector<EpisodicMessage> rows;
     { memory::Lock lk; rows = memory::episodic().query(q); }   // newest-first, ring-served
-    dropJobDeliveries(rows);
-    if (!rows.empty() && g_curUserRowId[0] && rows.front().id == g_curUserRowId)
-      rows.erase(rows.begin());
-    if ((int)rows.size() > kRecentTurnsMax) rows.resize(kRecentTurnsMax);
-    if (rows.empty()) return std::string();
-    std::string block =
-        "\n## RECENT CONVERSATION (this chat, oldest first; the current message "
-        "is NOT here - it is in [USER])\n";
-    block += dream::buildEpisodicDigest(rows, kRecentConvBytes);
-    return block;
+    // CUM-511: the window stops at the chat's newest /clear boundary (a cleared
+    // chat carries no prior conversation); the in-flight row is excluded.
+    return agent::recentConversationBlock(rows, std::string(g_curUserRowId));
   };
   d.composeInputs = [buildRecentWindow](const std::string& chatId) {
     using namespace nimbus::orch;
@@ -1506,7 +1484,7 @@ void handleMessage(const String& text, const String& fromName, const String& cha
         // not a danger-zone erase): "/clear" explains + asks, "/clear yes" does it.
         String arg = String(cmd.args.c_str()); arg.trim(); arg.toLowerCase();
         if (arg == "yes" || arg == "confirm") {
-          requestConvClear();
+          clearConversation(chatId);   // tg_poll, before any turn: nothing in flight
           say(selfTag + "Cleared this conversation and its active task. "
                           "Long-term memory and files are kept.");
         } else {
@@ -2087,7 +2065,9 @@ static void compactTick() {
     // never lose what the owner said.
     std::vector<EpisodicMessage> rows;
     { memory::Lock lk; rows = memory::episodic().query(q); }
-    dropJobDeliveries(rows);   // job output is not conversation to summarize
+    // CUM-511: a fold summarizes only the live conversation - re-folding rows
+    // from before a /clear would bring the cleared conversation straight back.
+    rows = agent::liveConversation(rows, std::string(), 0);
     // Fold-slice bytes derive from the head model's window (65536 at the 200K
     // anchor - identical to the old constant on today's fleet).
     const String fh = store::resolvedOrchHost();
@@ -2274,9 +2254,38 @@ String lastInstructions() {
 
 void requestConvReset() { g_convResetReq = true; }
 
-// /clear: staged between-turns drop of the conversation context + scratchpad
-// active task, keeping long-term memory and files. Safe from any task (a flag the
-// turn/poll task drains); see drainStaged().
+// /clear (CUM-511): start a genuinely fresh conversation for THIS chat. The old
+// clear only dropped the provider thread and the active task, while the head
+// kept reading the chat's last 12 messages (rebuilt from episodic every turn),
+// its compacted summary, and its running notes - "Cleared" with nothing reset.
+// Now: a boundary row in the chat's own history (every conversation read stops
+// there), this chat's provider thread, fold summary and running notes reset, and
+// the scratchpad's active task cleared. Kept: long-term memory, the scratchpad
+// tiers, files, and the episodic history itself (the owner's record - still
+// searchable by memory.episodic, a recall path like vector memory). tg_poll only.
+static void clearConversation(const String& chatId) {
+  const std::string cid(chatId.c_str());
+  memory::captureMessage(chatId.c_str(), "system", orch::MsgKind::Message,
+                         String(agent::kClearBoundaryText), "",
+                         String(agent::kClearBoundaryTag));
+  if (g_engine) g_engine->clearChatConv(cid);   // this chat's provider-side thread only
+  g_mem.setModel(cid, std::string());            // this chat's running notes
+  syncMemEcho();
+  // A clear is not a fold: empty summary, zeroed counters, epoch 0 (never folded,
+  // so the thrash guard cannot mistake the reset for a fold that failed to shrink).
+  g_folds.applyFold(cid, std::string(), 0);
+  publishFoldStatus(cid);
+  {
+    memory::Lock lk;
+    memory::scratchpad().setActiveTask("");   // clears just the active line, tiers untouched
+  }
+  memory::persistScratchpad();
+  alogf("orchestrator: /clear - %s conversation + active task cleared (memory/files kept)",
+        chatId.c_str());
+}
+
+// The web app's "Clear conversation" button: the web chat's /clear, staged from
+// any task (a flag the turn/poll task drains); see drainStaged().
 void requestConvClear() { g_convClearReq = true; }
 
 void requestMemoryClear() {

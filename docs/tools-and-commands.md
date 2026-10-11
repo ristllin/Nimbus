@@ -50,7 +50,7 @@ confused.
 | `/loops` | List the device's routines (and any reminders you've set). |
 | `/loop approve\|deny\|off\|on <id>` | Approve, remove, pause, or resume one routine. |
 | `/compact` | Summarize this conversation into memory. Runs in the background. |
-| `/clear` | Forget the current conversation and its active task, and start fresh. Long-term memory and files are kept. Send `/clear` to confirm, then `/clear yes` to do it. The web page has the same action (Memory, then Clear conversation). |
+| `/clear` | Forget the current conversation and its active task, and start fresh: the next reply sees none of the earlier messages, summary or working notes of this chat. Long-term memory, files and the chat history are kept (the web chat shows a "Conversation cleared." divider). Send `/clear` to confirm, then `/clear yes` to do it. The web page has the same action for the web chat (Memory, then Clear conversation). |
 | `/skill approve\|deny <id>` | Approve a saved skill so it can be used, or remove it. |
 | `/mcp approve\|deny <name>` | Approve a tool server (MCP) the assistant discovered, so its tools can be used, or remove that approval. The same action is on the web page. |
 | `/play [track\|stop\|pause]` | Play music from the SD card's `/music` folder on the speaker. `/play` plays every track, `/play song.mp3` plays one, `/play stop` and `/play pause` control playback. |

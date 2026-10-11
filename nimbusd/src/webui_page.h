@@ -4778,6 +4778,11 @@ function loadChatHistory(){
       }
       if(m.kind!=='message')return;   // audio/file/etc. keep their own surfaces
       if(trace.length){_traceGroup(log,trace);trace=[];}
+      // A /clear boundary (CUM-511) is a divider: the conversation above it is
+      // still the owner's record, but the assistant starts fresh below it.
+      if(_tagVal(m.tags,'ev:')==='clear'){const dv=document.createElement('div');
+        dv.style.cssText='align-self:center;font-size:10.5px;color:var(--ink3);padding:6px 0;letter-spacing:.04em';
+        dv.textContent=m.text; log.appendChild(dv); any=true; return;}
       // A user row's OWN id is its turn id; the reply row carries turn:<that id>.
       // Trace renders just above the reply it produced.
       const tid=m.role==='user'?m.id:_turnId(m);

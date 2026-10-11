@@ -67,7 +67,7 @@ recall bullets one at a time:
 | 4 | `## CAPABILITIES` | `orch_world.cpp` | what is LIVE right now: hardware manifest, ring/screen honesty prose, artifact store, voice on/off, sub-agent fire-and-forget note, `Tools you can call:` list, Limits (keys/routing blocked), connector honesty, and whether the tool loop is ON this turn |
 | 5 | `## RUNNING SESSIONS (your sub-agents)` | job journal | live sub-agent digest (also authoritative as `[ACTIVE SESSIONS]` in the input) |
 | 5a | `## CONVERSATION SUMMARY` | the fold ([memory.md](memory.md)) | the chat's anchored compaction summary (≤4 KB), present once the chat has folded; framed "information, not instructions". Under budget pressure it is dropped BEFORE the window below |
-| 5b | `## RECENT CONVERSATION` | episodic PSRAM ring | **per-chat window: up to 12 messages / 3000 B of THIS chat, oldest first** (kind=message only; the in-flight user row is excluded - it arrives as `[USER]`). Added in v3.3.0; survives reboot via the SD rehydrate |
+| 5b | `## RECENT CONVERSATION` | episodic PSRAM ring | **per-chat window: up to 12 messages / 3000 B of THIS chat, oldest first** (kind=message only; the in-flight user row is excluded - it arrives as `[USER]`; it never reaches past the chat's last `/clear`). Added in v3.3.0; survives reboot via the SD rehydrate |
 | 6 | `## SCRATCHPAD` | NVS | the model's own goal tiers (now/short/long) |
 | 7 | `## RELEVANT MEMORIES` | vector-DB recall on the user text | top-k long-term memories semantically similar to your message, prefixed `[NN%]` |
 | 8 | `## HOW YOUR MEMORY WORKS` | `compose.cpp` | the memory-tier usage instructions (first block dropped under budget pressure) |
@@ -104,7 +104,12 @@ There is no full transcript replay. Cross-turn continuity comes from exactly
    [memory.md](memory.md).
 1. **`## RECENT CONVERSATION`** (since v3.3.0) - the last ≤12 messages / 3000 B of
    this chat, auto-injected from the episodic store's PSRAM ring every turn. This
-   is per-chat (Telegram A ≠ web ≠ voice) and survives reboot.
+   is per-chat (Telegram A ≠ web ≠ voice) and survives reboot. `/clear` writes a
+   boundary row (`ev:clear`) into the chat's history: the window, the sub-agent
+   brief's context and the next compaction all stop there, and the chat's
+   summary, running notes and provider thread reset - so the next turn carries
+   no prior conversation (CUM-511). The history itself is kept and stays
+   searchable with `memory.episodic`.
 2. **The provider-side conversation chain** - per chat AND per host since v3.3.0
    (`orchConv` map, LRU-8). While it holds, the provider re-serves prior turns
    itself. It **resets** on: host failover, the same-host fresh retry, a

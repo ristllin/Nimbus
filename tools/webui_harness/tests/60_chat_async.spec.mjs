@@ -1,9 +1,10 @@
-// CUM-482 / CUM-507: the web chat's async results and turn states.
+// CUM-482 / CUM-507 / CUM-511: the web chat's async results and turn states.
 //   * a turn that only started sub-agents is DONE with no reply: its placeholder
 //     goes away instead of waiting out the poll budget (or catching a later ack);
 //   * an async result (a synthesis delivered BETWEEN turns, into the history)
 //     appears without the owner sending another message - the page watches the
 //     device's activity counter while background work is live;
+//   * a /clear boundary in the history renders as a divider, not a bubble;
 //   * a host that reports no activity (Virtual Nimbus) is never watched, so the
 //     watcher can never consume its legacy reply queue.
 import { test, expect } from '@playwright/test';
@@ -50,6 +51,26 @@ test('a spawn-only turn drops its placeholder and the synthesis appears by itsel
   await expect(page.locator('#chatLog')).not.toContainText('…');
   // No further message from the owner - the watcher brings the synthesis in.
   await expect(page.locator('#chatLog')).toContainText('SYNTHESIS: the 7 m rule', { timeout: 20000 });
+});
+
+test('a /clear boundary renders as a divider between the old and new conversation', async ({ page }) => {
+  await seedToken(page);
+  await page.route('**/api/mem/episodic**', (r) => r.fulfill({
+    status: 200, contentType: 'application/json',
+    body: JSON.stringify({ messages: [
+      row('m9', 'assistant', 'Happy to help with caravans.'),
+      row('m8', 'user', 'new topic: caravans'),
+      row('m7', 'system', 'Conversation cleared.', 'ev:clear'),
+      row('m6', 'assistant', 'Hollins Lane answer'),
+      row('m5', 'user', 'Hollins Lane question'),
+    ] }),
+  }));
+  await openChat(page);
+  const log = page.locator('#chatLog');
+  await expect(log).toContainText('Conversation cleared.');
+  const text = await log.innerText();
+  expect(text.indexOf('Hollins Lane answer')).toBeLessThan(text.indexOf('Conversation cleared.'));
+  expect(text.indexOf('Conversation cleared.')).toBeLessThan(text.indexOf('new topic: caravans'));
 });
 
 test('a host that reports no activity is never watched (its reply queue stays unread)', async ({ page }) => {
