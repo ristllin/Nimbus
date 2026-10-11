@@ -860,10 +860,11 @@ std::string catalogText(const std::vector<ConnectorInfo>& cs, const ProviderStat
       }
     }
     if (!notCfg.empty())
-      out += "Not configured (owner can add on the web page, Capabilities > "
+      out += "Not configured (owner can add on the device web page, Assistant > "
              "Connectors): " + notCfg + "\n";
     if (!disabled.empty())
-      out += "Configured but turned OFF (owner can re-enable on the web page): " +
+      out += "Configured but turned OFF (owner can re-enable on the device web page, "
+             "Assistant > Connectors): " +
              disabled + "\n";
   }
 
@@ -999,7 +1000,7 @@ std::string catalogText(const std::vector<ConnectorInfo>& cs, const ProviderStat
              "files land under Files on the device (via the provider Files API).\n";
     else
       out += "CODE SANDBOX: off. To enable it, the owner turns on Code sandbox on the "
-             "device web page (Capabilities > Assistant > Tools); it needs an OpenAI "
+             "device web page (Assistant > Tools > Tool use); it needs an OpenAI "
              "key (or Mistral where supported).\n";
   }
 

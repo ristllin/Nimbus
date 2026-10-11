@@ -834,7 +834,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       return false;
     }
     if (err.empty())                              cause = "the provider gave no response";
-    else if (has("key"))                          cause = "no working provider key (check Capabilities in the web app)";
+    else if (has("key"))                          cause = "no working provider key (check Assistant > Models on the web page)";
     else if (has("network"))                      cause = "the provider could not be reached (check the connection)";
     else if (has("HTTP 401") || has("HTTP 403")) cause = "the provider rejected this device's key";
     else if (has("HTTP 5"))                       cause = "the provider had a server error";

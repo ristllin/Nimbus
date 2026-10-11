@@ -294,8 +294,8 @@ void scGithubSetupAudience(LabRig& rig, Ctx& c) {
   // Positive check: an actual route to the device page. Bare "web" was nearly
   // vacuous (matched "web search" / "website").
   c.check(has(t.reply, "web page") || has(t.reply, "web ui") ||
-              has(t.reply, "capabilities") || has(t.reply, "connectors"),
-          "routes setup to the device web page (Capabilities > Connectors)");
+              has(t.reply, "connectors"),
+          "routes setup to the device web page (Assistant > Connectors)");
 }
 
 struct Scenario {

@@ -720,8 +720,10 @@ static void test_embed_reason_classes_are_distinct_and_honest() {
     // The whole point of CUM-435: the fixed guess is gone.
     TEST_ASSERT_FALSE(has(reason, "provider offline"));
   }
-  // NoKey names the setting to fix.
-  TEST_ASSERT_TRUE(has(embedFailReason("no embeddings key for mistral"), "Settings"));
+  // NoKey names the setting to fix, at the place it really lives on the web page
+  // (CUM-514: there is no "Settings > Providers" page).
+  TEST_ASSERT_TRUE(has(embedFailReason("no embeddings key for mistral"), "Assistant > Models"));
+  TEST_ASSERT_FALSE(has(embedFailReason("no embeddings key for mistral"), "Settings"));
   // The token is the response parser's own refusal, prefixed the way the device seam
   // prefixes it (embeddings.cpp: "parse: " + perr): rewording the parser must not
   // silently demote a width mismatch to "malformed response".

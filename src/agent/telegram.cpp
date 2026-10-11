@@ -641,10 +641,10 @@ static bool pollStatusIsError(int status, nimbus::net::TgPollOutcome* outcome) {
       owner.trim();
       if (owner.length())
         send(owner, String(nimbus::sys::deviceName().c_str()) +
-                    ": another device appears to be using this same Telegram bot "
-                    "token \xE2\x80\x94 replies will alternate between devices. Give each "
-                    "device its own bot (web UI \xE2\x86\x92 Capabilities \xE2\x86\x92 Connectors "
-                    "\xE2\x86\x92 Telegram).", /*block=*/false);
+                    ": another device seems to be using this Telegram bot token, so "
+                    "replies will alternate between them. Give each device its own bot: "
+                    "on the device web page, open Assistant, then Connectors, then Telegram.",
+             /*block=*/false);
     }
     return true;
   }

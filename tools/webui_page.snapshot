@@ -4962,7 +4962,7 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
     if(s.id==='telegram')return '<label>Telegram bot token (optional)</label>'+
       '<div class=row><input id=onb_tg type=password placeholder="Token from @BotFather"><button type=button id=onb_tgsave>Save</button></div>'+
       '<span class=hint id=onb_tgmsg></span>'+
-      '<p class=hint>Lets you chat with the device from Telegram. You can also set this up later in Capabilities &rarr; Connectors.</p>';
+      '<p class=hint>Lets you chat with the device from Telegram. You can also set this up later in Assistant &rarr; Connectors.</p>';
     if(s.id==='voice')return '<label>Speech-to-text provider</label>'+
       '<select id=onb_stt><option value=mistral>Mistral (Voxtral)</option><option value=openai>OpenAI</option></select>'+
       '<label>Text-to-speech provider</label>'+

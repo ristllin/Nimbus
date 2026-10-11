@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -1360,6 +1361,63 @@ static void test_cum538_connector_provider_for_name() {
   TEST_ASSERT_EQUAL_STRING("", nimbus::orch::connectorProviderForName(cs, "").c_str());
 }
 
+// ---- CUM-514: model- and user-facing copy names the page that exists -----------
+// The head told the owner to add a connector "under Capabilities > Connectors";
+// the device web page has no such place. The connector digest must name the real
+// one: the Assistant page, Connectors subtab (and Tools > Tool use for the sandbox).
+static void test_cum514_catalog_names_real_web_location() {
+  std::vector<ConnectorInfo> cs = {
+      mk("gcal", "mistral", "connector", "", "", /*en=*/true),
+      mk("notion", "mistral", "connector", "", "", /*en=*/false),
+  };
+  ProviderState ps;
+  ps.mistralKeyed = true;
+  ps.openaiKeyed = true;
+  ps.currentHost = "mistral";
+  const std::string t = catalogText(cs, ps);
+  TEST_ASSERT_TRUE(t.find("Not configured (owner can add on the device web page, "
+                          "Assistant > Connectors)") != std::string::npos);
+  TEST_ASSERT_TRUE(t.find("Configured but turned OFF (owner can re-enable on the device "
+                          "web page, Assistant > Connectors)") != std::string::npos);
+  TEST_ASSERT_TRUE(t.find("(Assistant > Tools > Tool use)") != std::string::npos);
+  TEST_ASSERT_TRUE(t.find("Capabilities") == std::string::npos);
+}
+
+// The class: no shipped source, header, web fragment or doc points at a web page
+// location that does not exist. Reads the tree relative to the project root (the
+// cwd pio test runs from), like test_nvs_full's static guards.
+static void test_cum514_no_stale_web_location_in_sources() {
+  namespace fs = std::filesystem;
+  const char* roots[] = {"src", "lib", "include", "docs", "tools/harness-lab/src"};
+  const char* stale[] = {
+      "Capabilities >", "Capabilities &gt;", "Capabilities &rarr;", "Capabilities &rsaquo;",
+      "Capabilities \\xE2\\x86\\x92", "Capabilities \xE2\x86\x92", "check Capabilities",
+      "Settings > Providers", "web UI \\xE2\\x86\\x92",
+  };
+  int scanned = 0;
+  for (const char* root : roots) {
+    TEST_ASSERT_TRUE_MESSAGE(fs::is_directory(root), root);
+    for (const auto& e : fs::recursive_directory_iterator(root)) {
+      if (!e.is_regular_file()) continue;
+      const std::string ext = e.path().extension().string();
+      if (ext != ".cpp" && ext != ".h" && ext != ".md") continue;
+      FILE* f = std::fopen(e.path().string().c_str(), "rb");
+      if (!f) continue;
+      std::string body;
+      char buf[8192];
+      size_t n;
+      while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) body.append(buf, n);
+      std::fclose(f);
+      scanned++;
+      for (const char* s : stale) {
+        const std::string msg = e.path().string() + ": " + s;
+        TEST_ASSERT_TRUE_MESSAGE(body.find(s) == std::string::npos, msg.c_str());
+      }
+    }
+  }
+  TEST_ASSERT_TRUE(scanned > 100);   // the walk really saw the tree
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_mistral_connector_id_shared_map);
@@ -1427,5 +1485,7 @@ int main() {
   RUN_TEST(test_cumulo_route_advertises_builtins_only_mistral);
   RUN_TEST(test_cumulo_route_anthropic_drops_private_mcp);
   RUN_TEST(test_cum538_connector_provider_for_name);
+  RUN_TEST(test_cum514_catalog_names_real_web_location);
+  RUN_TEST(test_cum514_no_stale_web_location_in_sources);
   return UNITY_END();
 }

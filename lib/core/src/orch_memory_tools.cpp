@@ -153,7 +153,7 @@ std::string embedFailReason(const std::string& raw) {
   std::string w = embedFailWords(k, detail);
   if (w.empty()) w = "unavailable";
   std::string out = "embeddings: " + w;
-  if (k == EmbedFail::NoKey) out += " (set an embeddings key in Settings > Providers)";
+  if (k == EmbedFail::NoKey) out += " (add the embedding provider's key under Assistant > Models on the device web page)";
   if (k == EmbedFail::WidthMismatch)
     out += " (set Dimensions to the model's size in Memory > Embedding model)";
   return out;
