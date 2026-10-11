@@ -1,7 +1,8 @@
 # Flash the firmware
 
-Get the firmware onto the board. Two paths: the browser flasher (easiest), or
-the guarded command-line installer.
+This page puts the firmware on a new board, or back on one that needs
+recovering. Two paths: the browser flasher (easiest, no toolchain), or the
+command-line installer from a clone of the firmware repository.
 
 :::caution Nimbus board: use the port labeled UART
 The DevKitC-1 has **two USB-C ports and only one can flash a fresh board**.
@@ -21,16 +22,16 @@ installed:
    use the port labeled **UART**; the Freenove CYD has one USB-C port.
 2. Open the **[Nimbus web flasher](https://docs.cumulo-nimbus.ai/flash)** and
    **choose your board** from the list: **Nimbus board (TFT + ring)**, or the
-   **Freenove CYD** at your panel size (2.8, 3.5, or 4.0 inch). This is the one
+   **Freenove CYD** at your display size (2.8, 3.5, or 4.0 inch). This is the one
    choice you must get right (see "Picking the right image" below); the Install
-   button stays disabled until you pick, so there is no wrong default to flash.
+   button stays disabled until you pick.
 3. Click **Install Nimbus** and pick the serial port when prompted: a CP210x /
    `usbserial` entry for the Nimbus board, or the board's own USB entry
    (`usbmodem` on a Mac) for the Freenove. On a new board, either answer to
    "Erase device" is fine; on a board already running Nimbus, read
    [Reinstalling from the browser](#reinstalling-from-the-browser) first.
-4. **Ignore any Wi-Fi prompt the flasher shows afterwards** - Nimbus provisions
-   through its own `Nimbus-setup` network, not through the flasher.
+4. **Ignore any Wi-Fi prompt the flasher shows afterwards.** You will join the
+   device's own `Nimbus-setup` network in the next step, not enter Wi-Fi here.
 
 When it finishes, the board restarts into Nimbus in **Orchestrator** mode:
 join the `Nimbus-setup` Wi-Fi network and continue in the
@@ -67,12 +68,11 @@ and add the Telegram bot token back afterwards.
 
 ### On trust
 
-Like any first firmware install before secure boot, the browser-flashed image is
-written as-is: it is not cryptographically verified on the device the way
-[over-the-air updates](../ota.md) are (those are signed and checked before they
-apply). To confirm the exact bytes first, each board's image and its SHA-256
-are published together, and the flasher installs the image from that same
-address:
+The browser-flashed image is written as-is; the device does not verify it the
+way it verifies [over-the-air updates](../ota.md), which are signed and checked
+before they apply. To confirm the exact bytes first, each board's image and its
+SHA-256 are published together, and the flasher installs the image from that
+same address:
 
 | Board | Image | SHA-256 |
 |---|---|---|
@@ -94,26 +94,23 @@ updates are the path that checks a signature.
 ### Picking the right image (and what a wrong pick looks like)
 
 The board variant is baked into the image at build time; the device does not
-detect its own hardware. Each board and panel size has its **own** image, so the
-one thing you must get right is the board you choose in step 2. The installer
-lists exactly four:
+detect its own hardware. Each board and display size has its own image, which is
+why the choice in step 2 matters. The flasher lists four:
 
 | Choose | For | Update type it seeds |
 |---|---|---|
-| Nimbus board (TFT + ring) | the Solide S3 board with the 2.8" panel and LED ring | `nimbus-tft` |
-| Freenove CYD - 2.8 inch | the Freenove all-in-one, 2.8" panel | `freenove-28` |
-| Freenove CYD - 3.5 inch | the Freenove all-in-one, 3.5" panel | `freenove-35` |
-| Freenove CYD - 4.0 inch | the Freenove all-in-one, 4.0" panel | `freenove-40` |
+| Nimbus board (TFT + ring) | the Solide S3 board with the 2.8" display and LED ring | `nimbus-tft` |
+| Freenove CYD - 2.8 inch | the Freenove all-in-one, 2.8" display | `freenove-28` |
+| Freenove CYD - 3.5 inch | the Freenove all-in-one, 3.5" display | `freenove-35` |
+| Freenove CYD - 4.0 inch | the Freenove all-in-one, 4.0" display | `freenove-40` |
 
-**What a wrong pick looks like:** an image built for the *other* board boots and
-comes online normally over Wi-Fi, but its display driver talks to pins that are
-not wired to this board's panel, so **the screen stays black even though the
-device looks healthy**. A wrong Freenove *panel size* is subtler: the screen
-lights up but the picture is sized for the wrong glass (clipped or shifted).
-Either way the fix is the same, and it is safe: reflash from this page with the
-**correct** board selected. Picking the right image is also what makes future
-over-the-air updates safe, because that choice sets the update type the device
-will only ever accept a matching image for.
+**What a wrong pick looks like:** an image built for the other board boots and
+comes online over Wi-Fi, but its display driver drives pins that are not wired
+to this board's screen, so the screen stays black even though the device looks
+healthy. A wrong Freenove display size is subtler: the screen lights up but the
+picture is clipped or shifted. Either way the fix is safe: reflash from this
+page with the correct board selected. The choice also sets the update type, so
+later over-the-air updates only ever offer the board a matching image.
 
 ## Path 2 - command-line installer
 
@@ -214,8 +211,8 @@ ESP32 tools; each later build takes about a minute.
 Flashing still goes through `python3 tools/setup_device.py`, which reuses what
 you built.
 
-Done? Continue to the **[setup wizard](setup-wizard.md)**. The rest of this
-page is reference for reflashing and recovery.
+Next: the **[setup wizard](setup-wizard.md)**. The rest of this page is
+reference for reflashing and recovery.
 
 ---
 
@@ -230,7 +227,7 @@ stateDiagram-v2
   nimbus: Nimbus installed
   updated: Updated firmware
   [*] --> fresh
-  fresh --> nimbus: first flash - UART port ONLY<br/>(the native USB port has no<br/>path into download mode)
+  fresh --> nimbus: first flash - UART port only<br/>(the native USB port has no<br/>path into download mode)
   nimbus --> nimbus: reflash over either USB-C port
   nimbus --> updated: OTA over Wi-Fi<br/>(signed, owner-approved)
   updated --> nimbus: automatic rollback<br/>if the new image can't boot
@@ -252,10 +249,10 @@ board appears as a CP210x serial device (`/dev/cu.usbserial-*` or
 
 ## Reflashing a board that already runs Nimbus
 
-Once Nimbus is on the board, **either port works** for reflashing - Nimbus
+Once Nimbus is on the board, **either port works** for reflashing: Nimbus
 keeps the native USB port reachable (its test build has a `REBOOT` console
 command, and a task watchdog restarts a hung device on its own). A typical
-bench reflash:
+developer reflash:
 
 ```bash
 pio run -e test -t upload       # Nimbus board; use test-cyd on a Freenove 2.8 inch
@@ -349,7 +346,7 @@ password), not the short code the sign-in page asks for: open
 `http://<device-address>/?t=<code>` in a private (incognito) window so it is not
 kept in your browser history.
 
-## Which build environment do I want?
+## Build environments
 
 | Environment | Install with | What it is |
 |---|---|---|
@@ -357,9 +354,9 @@ kept in your browser history.
 | `esp32s3-cyd` | `python3 tools/setup_device.py --size 28` | **Production firmware** for the Freenove CYD with the 2.8 inch display. The installer flashes this for you. |
 | `esp32s3-cyd-35` | `python3 tools/setup_device.py --size 35` | **Production firmware** for the Freenove CYD with the 3.5 inch display ([host-verified only](../hardware/all-in-one-cyd.md#supported-panels)). |
 | `esp32s3-cyd-40` | `python3 tools/setup_device.py --size 40` | **Production firmware** for the Freenove CYD with the 4.0 inch display ([host-verified only](../hardware/all-in-one-cyd.md#supported-panels)). |
-| `test` | `pio run -e test -t upload` | Production firmware **plus a serial test console** (`STATUS`, `REBOOT`, `RENDER?`, …) for bench work and the HIL harness. `test-cyd` is the same for the Freenove CYD 2.8 inch. Never the flash target for a finished device. |
+| `test` | `pio run -e test -t upload` | Production firmware **plus a serial test console** (`STATUS`, `REBOOT`, `RENDER?`, …) for development and automated hardware tests. `test-cyd` is the same for the Freenove CYD 2.8 inch. Never the flash target for a finished device. |
 | `provision` | `pio run -e provision -t upload --upload-port …` | A standalone serial **network diagnostic** - not the product firmware; it has no display UI, setup network, or web settings. `setup_device.py` uses a provisioning variant of it to seed a new board's settings, choosing the one that matches the board and the port (`provision` or `provision-uart` for a Nimbus board, `provision-cyd` for a Freenove) so its serial reply reaches the same cable. |
-| `tftbringup` | `pio run -e tftbringup -t upload` | **Diagnostic only**: a bare TFT panel test (color bars, backlight fade, touch paint). It replaces the Nimbus firmware entirely - restore with `python3 tools/setup_device.py`. |
+| `tftbringup` | `pio run -e tftbringup -t upload` | **Diagnostic only**: a bare display test (color bars, backlight fade, touch paint). It replaces the Nimbus firmware entirely - restore with `python3 tools/setup_device.py`. |
 
 If any diagnostic environment was flashed by accident, running
 `python3 tools/setup_device.py` puts the production firmware back; saved

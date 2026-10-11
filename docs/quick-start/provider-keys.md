@@ -1,18 +1,18 @@
 <!-- audience: user -->
 # Get your provider key
 
-Orchestrator mode needs one AI provider key to think. This page shows, step by
-step, how to create an account and generate a key with each provider, written so
-you can follow it even if you have never used one before.
+Orchestrator mode needs one AI provider key. This page shows how to create an
+account and generate a key with each supported provider, and what the device shows
+after you paste it. Do this before you run setup.
 
 :::danger Get your key before you start setup
 During setup, your phone or laptop joins the device's own Wi-Fi (`Nimbus-setup`),
 which has **no internet**. You cannot open a provider's website to copy your key
-while you are connected to it. So do this now, before step 1:
+while you are connected to it. Before you start:
 
 1. Create your key by following one section below.
-2. **Paste it into the notes app on the same phone or laptop** you will run setup
-   from (or a password manager). You want it one tap away when the wizard asks.
+2. **Paste it into the notes app (or password manager) on the same phone or
+   laptop** you will run setup from, so it is ready when the wizard asks.
 3. Then start [Set up the device](setup-wizard.md).
 
 A key looks like a long line of random letters and numbers. Treat it like a
@@ -20,7 +20,7 @@ password: **never share it, post it, or email it.** Anyone who has it can spend
 from your account.
 :::
 
-## Which provider should I pick?
+## Which provider to pick
 
 Any one verified key runs the assistant. If you are not sure:
 
@@ -30,19 +30,27 @@ Any one verified key runs the assistant. If you are not sure:
   Mistral, OpenAI, and Anthropic, with no per-provider accounts to manage. It also
   covers voice, both dictation and spoken replies, so a one-key device needs no
   separate voice provider.
-- **OpenAI** adds image generation. **Anthropic** is great for conversation.
-  Both need a paid balance to start.
+- **OpenAI** adds image generation. **Anthropic** is strong at conversation and
+  reasoning. Both need a paid balance to start.
 
 You can add more providers later. You only need one to finish setup.
 
 ## After you paste a key
 
-Tap **Verify** and the device runs a quick check against the provider, then shows a
-badge: verified, key rejected (the key is wrong or has no credit), or **Verification
-deferred**. Deferred means the device was low on working memory at that moment, so it
-saved your key and skipped the check rather than risk a failed one. Nothing is wrong
-with the key. The device checks it again on its own once memory frees up, and you can
-tap **Verify** any time to retry now. Hover the badge to see the numbers behind it.
+Tap **Save & Verify** (or **Verify** for a key that is already stored). The device
+checks the key against the provider and shows a badge:
+
+- **verified**: the key works. You can continue.
+- **key rejected**: the provider did not accept the key. Check for a copy error and
+  paste it again.
+- **Needs credits or subscription**: the key is valid but the account has no
+  balance. Top up with the provider, then tap **Verify**.
+- **Couldn't reach the provider**: a network problem, not a key problem. Check
+  Wi-Fi and tap **Verify** again.
+- **Verification deferred**: the device was low on working memory, so it saved the
+  key and skipped the check. Nothing is wrong with the key. It is checked again
+  automatically when memory frees up, or tap **Verify** to retry now. Hover this
+  badge to see the memory numbers behind it.
 
 ---
 
@@ -55,12 +63,12 @@ Free to try, no card needed to begin.
 2. **Billing.** Not required to start. The free tier covers first use. For higher
    limits later, open **Workspace**, then **Billing**, and add a card.
 3. **Create the key.** Open [API Keys](https://console.mistral.ai/api-keys) (in the
-   left menu under **API**). Click **Create new key**, give it a name like
-   `nimbus`, and click to create it.
+   left menu under **API**). Click **Create new key**, name it `nimbus`, and
+   confirm.
 4. **Copy it now.** Copy the key and paste it into your notes app on the device you
    will set up from. This is your one chance to see it in full.
 5. **To revoke it later.** Return to the same **API Keys** page and delete the key.
-   The device stops working until you add a new one.
+   The assistant stops answering until you add a new one.
 
 ## OpenAI
 
@@ -98,15 +106,14 @@ Strong at conversation and reasoning.
 
 ## Cumulo key (one key for all three)
 
-Prefer a single prepaid balance instead of an account with each provider? A Cumulo
-key draws on one balance and routes to any provider, so you top up once and use any
-model.
+A Cumulo key draws on one prepaid balance and routes to any provider, so you top up
+once and use any model without an account at each provider.
 
 1. **Create an account.** Sign in at
    [app.cumulo-nimbus.ai](https://app.cumulo-nimbus.ai).
-2. **Add credit.** Top up your prepaid balance. You can set a monthly spending
-   limit for a hard cap.
-3. **Create the key.** Open **API keys**, create one, and copy it when it is shown.
+2. **Add credit.** Top up your prepaid balance.
+3. **Create the key.** Open **API keys** and create one. Give it a name, and
+   optionally a monthly spending limit for a hard cap.
 4. **Copy it now.** Paste it into your notes app on the device you will set up from.
    You only see it once.
 5. **To revoke it later.** Return to **API keys** and revoke it. Each key tracks its
@@ -117,6 +124,8 @@ Full details, including using the key from your own code, are on
 
 ---
 
-Key in hand and pasteable? Continue to **[Set up the device](setup-wizard.md)**.
+With the key saved in your notes app, continue to
+**[Set up the device](setup-wizard.md)**.
 
-*How it works -> [Provider capability matrix](../reference/capabilities-matrix.md)*
+See also: [Provider capability matrix](../reference/capabilities-matrix.md) for what
+each provider supports.

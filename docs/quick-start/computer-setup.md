@@ -1,9 +1,9 @@
 <!-- audience: user -->
 # Set up your computer
 
-For anyone who has never opened a terminal. By the end you will have the tools
-the command-line flasher needs: a terminal, Python 3, git, PlatformIO, and (on
-some computers) a USB-serial driver or permission to use serial ports.
+This page installs everything the command-line flasher needs: a terminal,
+Python 3, git, PlatformIO, and (on some computers) a USB-serial driver or
+permission to use serial ports. It assumes you have never opened a terminal.
 
 :::tip Most people can skip this page
 The **[browser flasher](flash.md#path-1---browser-flasher-recommended)** needs
@@ -22,17 +22,15 @@ minute.
 
 ## 1. Open a terminal
 
-The terminal is a window where you type commands. Opening it is all step 1 asks.
+The terminal is a window where you type a command, press Enter, and read the result.
 
 - **macOS:** press Cmd+Space, type `Terminal`, press Enter.
 - **Windows:** press the Start key, type `PowerShell`, press Enter.
 - **Linux:** press Ctrl+Alt+T, or search your apps for `Terminal`.
 
-Type a command, press Enter, read the result. That is the whole skill.
-
 ## 2. Install Python 3
 
-Nimbus's installer is a Python program, so you need Python 3.8 or newer.
+The Nimbus installer (`tools/setup_device.py`) is a Python script, so you need Python 3.8 or newer.
 
 - **macOS / Windows:** download the installer from
   [python.org/downloads](https://www.python.org/downloads/) and run it. On
@@ -55,7 +53,7 @@ You should see `Python 3.something`. If Windows says `python3` is not found, try
 
 ## 3. Install git
 
-git downloads the firmware in step 6.
+Step 6 uses git to download the firmware.
 
 - **macOS:** run `git --version`. If git is missing, macOS offers to install its
   command line developer tools: accept, and wait for the install to finish (it
@@ -119,14 +117,14 @@ one only if the flasher never lists a serial port for a connected board:
   [Silicon Labs](https://www.silabs.com/developer-tools/usb-to-uart-bridge-vcp-drivers),
   install it, then unplug and replug the board.
 
-The **all-in-one (Freenove CYD)** board rides the ESP32-S3's own USB and needs no
+The **all-in-one (Freenove CYD)** board uses the ESP32-S3's built-in USB and needs no
 driver on any current operating system.
 
 ### Linux: allow your account to use serial ports
 
 On Linux a connected board shows up as `/dev/ttyUSB0` (the Nimbus board's UART
-port) or `/dev/ttyACM0` (native USB, and the Freenove), and those ports belong to
-the `dialout` group. A new account is usually not in it, so the installer stops
+port) or `/dev/ttyACM0` (native USB, including the Freenove CYD), and those ports
+belong to the `dialout` group. A new account is usually not in it, so the installer stops
 with a `Permission denied` error naming the port. Add your account once, then log
 out and back in:
 
@@ -142,8 +140,7 @@ shared computer prefer the group.
 
 ## 6. Get the firmware and flash
 
-You are ready for the command-line path. Clone the firmware repository, then run
-the installer:
+Clone the firmware repository, then run the installer:
 
 ```bash
 git clone https://github.com/ristllin/Nimbus.git
@@ -154,8 +151,9 @@ python3 tools/setup_device.py
 The installer finds your board, confirms before it writes, and never erases an
 already-configured device. If the ESP32 build tools are not installed yet, it
 prints `PlatformIO needs to install the ESP32 build tools first.` and starts the
-download described at the top of this page; let it finish. Full flashing steps, flags, building without a board, and recovery:
-**[Flash the firmware](flash.md)**.
+download described at the top of this page; let it finish. Installer flags,
+building without a board, and recovery are covered in
+[Flash the firmware](flash.md).
 
 ---
 
