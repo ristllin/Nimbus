@@ -30,7 +30,7 @@ bool modelInChoices(const std::string& csv, const std::string& model) {
     const size_t b = csv.find_first_not_of(kWs, start);
     if (b != std::string::npos && b < comma) {
       const size_t e = csv.find_last_not_of(kWs, comma - 1);
-      if (csv.compare(b, e - b + 1, model) == 0 && e - b + 1 == model.size()) return true;
+      if (csv.compare(b, e - b + 1, model) == 0) return true;   // equal length + bytes
     }
     start = comma + 1;
   }

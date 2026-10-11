@@ -59,7 +59,7 @@
 #include "nimbus/orch/turn.h"
 #include "nimbus/orch/device_actions.h"
 #include "nimbus/mem_cap.h"
-#include "nimbus/harness/dream.h"   // buildEpisodicDigest - the RECENT CONVERSATION window (B1)
+#include "nimbus/harness/dream.h"   // buildConversationWindow (RECENT CONVERSATION) + buildEpisodicDigest
 #include "nimbus/harness/conversation.h"   // the /clear boundary + live conversation window (CUM-511)
 #include "../sfx/sound_fx.h"      // SFX hooks: spawn ack / turn start / reply / mem save
 
@@ -856,7 +856,10 @@ static TurnEngine::Deps buildTurnDeps() {
     // the 200K anchor; the old fixed 3000 B cut the previous reply's code), and
     // the newest rows are kept WHOLE first - on a stateless tool-loop turn this
     // window is the only place the model sees its last answer.
-    const String wh = store::resolvedOrchHost();
+    // Sized for the head the ENGINE will run (headHost: the router fallback
+    // included), not store::resolvedOrchHost - on a Z.ai-only device that guessed
+    // the unkeyed priority head and sized a 272K window for a 100K model.
+    const String wh = g_engine ? String(g_engine->headHost().c_str()) : store::resolvedOrchHost();
     const auto wb = deriveBudget(modelCtxTokens(wh.c_str(), store::orchModel(wh).c_str()), {});
     return agent::recentConversationBlock(rows, std::string(g_curUserRowId), wb.recentConvBytes);
   };

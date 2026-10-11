@@ -294,13 +294,18 @@ namespace {
 // omission note. Only when not even the newest row fits is the section dropped.
 // Rows are lines starting "- " (a whole row indents its continuation lines, so
 // a list inside a message never reads as a row start).
-void appendConversation(std::string& out, const std::string& conv, int budget,
+// `reserve` is held back only when TRIMMING: a window that fits whole is emitted
+// as before, but a cut-down one leaves room for the scratchpad that follows it
+// (the old fit-or-drop dropped the window and kept the scratchpad; the gradient
+// must not trade the owner's persistent plan for one more old row).
+void appendConversation(std::string& out, const std::string& conv, int budget, int reserve,
                         AssembledContext& ctx) {
   if (conv.empty()) return;
   if ((int)(out.size() + conv.size()) <= budget) {
     out += conv;
     return;
   }
+  budget -= reserve;
   std::vector<size_t> rows;
   for (size_t p = conv.find("- "); p != std::string::npos; p = conv.find("- ", p + 1))
     if (p == 0 || conv[p - 1] == '\n') rows.push_back(p);
@@ -315,6 +320,18 @@ void appendConversation(std::string& out, const std::string& conv, int budget,
         ctx.droppedSections.push_back("conversation(clipped)");
         return;
       }
+    }
+    // Not even the newest row fits whole: keep its head (UTF-8 safe, "..."), so
+    // the model still sees how its last answer began rather than nothing.
+    const int room = budget - (int)(out.size() + head.size()) - 4;
+    if (room >= 128) {
+      const size_t last = rows.back();
+      const int keep = utf8CapLen(conv.c_str() + last, (int)(conv.size() - last), room);
+      out += head;
+      out.append(conv, last, (size_t)keep);
+      out += "...\n";
+      ctx.droppedSections.push_back("conversation(clipped)");
+      return;
     }
   }
   ctx.droppedSections.push_back("conversation");
@@ -426,14 +443,13 @@ AssembledContext assembleContext(const ContextInputs& in, int budgetBytes) {
   } else {
     tryAppend(out, in.chatSummary, "chatsummary", softBudget, ctx);
   }
-  appendConversation(out, in.recentConversation, softBudget, ctx);
-
   // 6: scratchpad (render then fit-or-drop as a unit - it is already tier/count
   // capped, so it is small). ALWAYS shown with the write instruction rendered
   // right after the data - the reason the scratchpad went unused was that
-  // nothing ever told the model, next to the block, HOW to write it.
+  // nothing ever told the model, next to the block, HOW to write it. Rendered
+  // BEFORE the window is fitted so a trimmed window leaves its room (CUM-485).
+  std::string sp;
   if (in.scratchpad) {
-    std::string sp;
     if (in.scratchpad->empty())
       sp = "\n## SCRATCHPAD (your own working notes)\n(empty)\n";
     else
@@ -441,8 +457,9 @@ AssembledContext assembleContext(const ContextInputs& in, int budgetBytes) {
     sp += "To update it, return the `scratchpad` field in orch_turn "
           "(active/short/mid/long) - a FREE write; a non-null tier replaces it, "
           "null leaves it. Keep your current multi-step plan here.\n";
-    tryAppend(out, sp, "scratchpad", softBudget, ctx);
   }
+  appendConversation(out, in.recentConversation, softBudget, (int)sp.size(), ctx);
+  tryAppend(out, sp, "scratchpad", softBudget, ctx);
 
   // 7: associative recall - the LOWEST-priority bulk section. Add bullets one at
   // a time so we keep as many as fit rather than dropping the whole block (this

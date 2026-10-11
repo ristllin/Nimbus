@@ -1,8 +1,8 @@
 #pragma once
-#include "nimbus/cloud/relay_heap.h"
-#include "nimbus/orch/model_choices.h"   // CUM-486: the cold-start model lists live in lib/core  // CUM-404 v2: reuse the relay-proven per-connection
+#include "nimbus/cloud/relay_heap.h"  // CUM-404 v2: reuse the relay-proven per-connection
                                       // largest-block floor (kRelayHeapFloorLargest) for the
                                       // chat hot path - same handshake, CYD-safe (pure lib/core)
+#include "nimbus/orch/model_choices.h"  // CUM-486: the cold-start model lists live in lib/core
 // agent_config - device-side constants for the Orchestrator subsystem, ported
 // from Nuage-Solide include/config.h (the Head-Orchestrator / heavy-fabric block).
 //

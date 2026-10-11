@@ -6,6 +6,7 @@
 #include "../support/code_snippet.h"   // CUM-485
 #include "nimbus/harness/dream.h"       // buildConversationWindow (the device's window)
 #include "nimbus/orch/budget.h"
+#include "nimbus/orch/scratchpad.h"
 #include "nimbus/orch/world.h"
 
 // Prompt-budget headroom guard.
@@ -370,8 +371,28 @@ static void test_conversation_trims_oldest_rows_instead_of_vanishing() {
   TEST_ASSERT_TRUE(a.prompt.find("Hardware present:") != std::string::npos);   // self-model intact
 }
 
+// prism: trimming the window must not evict the scratchpad. The old fit-or-drop
+// dropped an oversize window and the scratchpad (the owner's persistent plan)
+// still fit; the gradient holds the scratchpad's bytes back when it cuts rows.
+static void test_trimmed_window_leaves_room_for_the_scratchpad() {
+  nimbus::orch::Scratchpad sp;
+  sp.setActiveTask("finish the carbon-stock report");
+  ContextInputs in;
+  in.immutableRules = std::string(9900, 'r');
+  in.capabilities = nimbus::orch::renderCapabilities(deviceHw(), deviceShapedTools());
+  in.scratchpad = &sp;
+  std::vector<nimbus::orch::EpisodicMessage> rows;
+  for (int i = 0; i < 12; ++i) rows.push_back(row(i % 2 ? "user" : "assistant", "row " + std::to_string(i) + " " + std::string(200, 'w')));
+  in.recentConversation = std::string(kConvHeader) + agent::dream::buildConversationWindow(rows, 8192);
+  const auto a = nimbus::orch::assembleContext(in, autoSystemBudget());
+  TEST_ASSERT_TRUE((int)a.prompt.size() <= autoSystemBudget());
+  TEST_ASSERT_TRUE_MESSAGE(a.prompt.find("finish the carbon-stock report") != std::string::npos,
+                           "the trimmed window evicted the scratchpad");
+  for (const auto& d : a.droppedSections) TEST_ASSERT_TRUE_MESSAGE(d != "scratchpad", "scratchpad dropped");
+}
+
 // A window that fits is emitted byte-for-byte; one whose NEWEST row alone cannot
-// fit is still dropped (and reported), never cut mid-row.
+// fit keeps that row's head; with no useful room left it is dropped (reported).
 static void test_conversation_fits_untouched_or_drops_honestly() {
   ContextInputs in;
   in.immutableRules = std::string(2000, 'r');
@@ -380,8 +401,15 @@ static void test_conversation_fits_untouched_or_drops_honestly() {
   TEST_ASSERT_TRUE(a.prompt.find(in.recentConversation) != std::string::npos);
   TEST_ASSERT_TRUE(a.droppedSections.empty());
 
+  // Newest row alone too big: its head survives (clipped, "..."), never mid-char.
   in.recentConversation = std::string(kConvHeader) + "- user: hi\n- assistant: " + std::string(3000, 'z') + "\n";
   a = nimbus::orch::assembleContext(in, 2000 + 1500);
+  TEST_ASSERT_TRUE((int)a.prompt.size() <= 2000 + 1500);
+  TEST_ASSERT_TRUE(a.prompt.find("- assistant: zzzz") != std::string::npos);
+  TEST_ASSERT_TRUE(a.prompt.find("z...\n") != std::string::npos);
+  TEST_ASSERT_TRUE(a.prompt.find("- user: hi") == std::string::npos);   // older row cut
+  // Too little room for even a useful head: dropped, and reported.
+  a = nimbus::orch::assembleContext(in, 2000 + 200);
   TEST_ASSERT_TRUE(a.prompt.find("RECENT CONVERSATION") == std::string::npos);
   bool dropped = false;
   for (const auto& d : a.droppedSections) dropped |= (d == "conversation");
@@ -423,6 +451,7 @@ int main() {
   RUN_TEST(test_recall_flood_cannot_evict_the_memory_explainer);
   RUN_TEST(test_conversation_trims_oldest_rows_instead_of_vanishing);
   RUN_TEST(test_conversation_fits_untouched_or_drops_honestly);
+  RUN_TEST(test_trimmed_window_leaves_room_for_the_scratchpad);
   RUN_TEST(test_prev_reply_code_survives_assembly_on_200k_and_272k_heads);
   return UNITY_END();
 }

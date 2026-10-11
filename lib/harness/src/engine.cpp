@@ -71,6 +71,8 @@ static std::string resolveTurnHost(const TurnEngine::Deps& d) {
   return host;
 }
 
+std::string TurnEngine::headHost() const { return resolveTurnHost(d_); }
+
 static void trimInPlace(std::string& s) {
   const char* ws = " \t\r\n";
   size_t b = s.find_first_not_of(ws);

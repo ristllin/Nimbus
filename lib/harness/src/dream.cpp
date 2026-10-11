@@ -64,6 +64,10 @@ bool skipReflection(bool digestEmpty, uint64_t scratchHash, uint64_t lastHash,
   return !force && digestEmpty && lastHash != 0 && scratchHash == lastHash;
 }
 
+namespace {
+std::string previewRow(const EpisodicMessage& m);   // defined with the window helpers below
+}  // namespace
+
 std::string buildEpisodicDigest(const std::vector<EpisodicMessage>& msgs,
                                 size_t capBytes) {
   if (msgs.empty()) return "(no episodic messages captured in the last day)\n";
@@ -73,21 +77,7 @@ std::string buildEpisodicDigest(const std::vector<EpisodicMessage>& msgs,
   size_t total = 0;
   bool clipped = false;
   for (const EpisodicMessage& m : msgs) {
-    std::string line = "- ";
-    line += m.role.empty() ? "?" : m.role.c_str();
-    line += ": ";
-    std::string t = m.text;
-    for (char& c : t)
-      if (c == '\n' || c == '\r') c = ' ';
-    if (t.size() > 300) {
-      // UTF-8-safe (prism B): a raw byte resize tore multi-byte chars; the torn
-      // row then poisoned EVERY turn of that chat with invalid JSON (sticky
-      // 400s) once B1/B4 promoted this digest to the hot path.
-      t.resize((size_t)nimbus::utf8CapLen(t.c_str(), (int)t.size(), 297));
-      t += "...";
-    }
-    line += t;
-    line += '\n';
+    std::string line = previewRow(m);   // one flattened line, 300 B UTF-8-safe clip
     if (total + line.size() > capBytes) {
       clipped = true;
       break;
@@ -105,16 +95,43 @@ std::string buildEpisodicDigest(const std::vector<EpisodicMessage>& msgs,
 namespace {
 const char* roleOf(const EpisodicMessage& m) { return m.role.empty() ? "?" : m.role.c_str(); }
 
-// A row kept whole: verbatim, CR dropped, each continuation line indented two
-// spaces (code keeps its relative indentation; a list inside the message can
-// never read as a row start, and no line inside a row can open a "## " header).
+unsigned char byteAt(const std::string& t, size_t i) {
+  return i < t.size() ? (unsigned char)t[i] : 0;
+}
+
+// NEL (C2 85), LINE SEPARATOR (E2 80 A8), PARAGRAPH SEPARATOR (E2 80 A9).
+size_t unicodeBreakAt(const std::string& t, size_t i) {
+  if (byteAt(t, i) == 0xC2 && byteAt(t, i + 1) == 0x85) return 2;
+  if (byteAt(t, i) != 0xE2 || byteAt(t, i + 1) != 0x80) return 0;
+  return (byteAt(t, i + 2) == 0xA8 || byteAt(t, i + 2) == 0xA9) ? 3 : 0;
+}
+
+// Bytes of a line break at t[i], or 0. Covers what a model may render as a new
+// line, not just LF: CR / CRLF, VT, FF, FS..RS, NEL (U+0085) and the Unicode
+// LINE / PARAGRAPH SEPARATORs (U+2028 / U+2029) - a message must not be able to
+// start a fresh "- assistant:" row or a "## " header with any of them (prism).
+size_t lineBreakAt(const std::string& t, size_t i) {
+  const unsigned char c = byteAt(t, i);
+  if (c == '\r') return byteAt(t, i + 1) == '\n' ? 2 : 1;
+  if (c == '\n' || c == '\v' || c == '\f' || (c >= 0x1C && c <= 0x1E)) return 1;
+  return unicodeBreakAt(t, i);
+}
+
+// A row kept whole: verbatim, every line break normalized to LF and followed by
+// a two-space indent (code keeps its relative indentation; a list inside the
+// message can never read as a row start, and no line inside a row can open a
+// "## " header).
 std::string wholeRow(const EpisodicMessage& m) {
   std::string line = std::string("- ") + roleOf(m) + ": ";
   line.reserve(line.size() + m.text.size() + 16);
-  for (char c : m.text) {
-    if (c == '\r') continue;
-    line += c;
-    if (c == '\n') line += "  ";
+  for (size_t i = 0; i < m.text.size();) {
+    const size_t br = lineBreakAt(m.text, i);
+    if (br) {
+      line += "\n  ";
+      i += br;
+    } else {
+      line += m.text[i++];
+    }
   }
   while (!line.empty() && (line.back() == ' ' || line.back() == '\n')) line.pop_back();
   line += '\n';
@@ -122,7 +139,9 @@ std::string wholeRow(const EpisodicMessage& m) {
 }
 
 // The one-line preview (the digest's row shape): newlines flattened, clipped
-// UTF-8-safe to kWindowPreviewBytes with a "..." marker.
+// UTF-8-safe to kWindowPreviewBytes with a "..." marker. UTF-8 safety matters
+// (prism B): a raw byte resize tore multi-byte chars, and the torn row then
+// poisoned EVERY turn of that chat with invalid JSON (sticky 400s).
 std::string previewRow(const EpisodicMessage& m) {
   std::string t = m.text;
   for (char& c : t)

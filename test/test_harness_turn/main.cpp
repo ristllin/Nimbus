@@ -789,6 +789,21 @@ static void test_cum485_prev_reply_code_reaches_the_next_tool_loop_turn() {
   }
 }
 
+// prism: the device sizes the conversation window for headHost(), which must be
+// the very host runTurn dispatches on - including the router fallback on a
+// Z.ai-only or Cumulo-only device.
+static void test_head_host_is_the_host_the_turn_runs_on() {
+  for (const char* only : {"zai", "cumulo", "openai"}) {
+    Rig r;
+    r.cfg.keyed = {only};
+    if (std::string(only) != "openai") r.cfg.routerHost = only;
+    const std::string h = r.eng->headHost();
+    r.eng->handleMessage("hi", "Omar", "web");
+    TEST_ASSERT_EQUAL(1, (int)r.attempts.size());
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(r.attempts[0].host.c_str(), h.c_str(), only);
+  }
+}
+
 // ---- (8) scheduled turn: rails + FireOutcome --------------------------------
 
 static void test_scheduled_turn_rails_and_fire_outcome() {
@@ -1464,6 +1479,7 @@ int main(int, char**) {
   RUN_TEST(test_cum486_advertised_models_equal_spawnable_for_every_slot);
   RUN_TEST(test_cum486_router_only_devices_advertise_their_models);
   RUN_TEST(test_cum485_prev_reply_code_reaches_the_next_tool_loop_turn);
+  RUN_TEST(test_head_host_is_the_host_the_turn_runs_on);
   RUN_TEST(test_scheduled_turn_rails_and_fire_outcome);
   RUN_TEST(test_once_wakeup_gets_wakeup_preamble_not_recurring);
   RUN_TEST(test_owner_reminder_gets_reminder_framing_not_wakeup);
