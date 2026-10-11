@@ -6,6 +6,18 @@ ships as a signed image on the public
 repository; a device on Orchestrator mode sees it on its daily check and
 installs on your say-so ([how updates work](ota.md)).
 
+## v4.5.9 - Honest saves, reminders that reach you, helpers that start
+
+Found by two invented new joiners running 15 to 20 turn sessions on fresh boards, a blank-machine walk through the docs, and an adversarial review of the whole change set.
+
+- **Saving settings is honest again.** On a device with several provider keys the settings store could fill up, and the web page still said "Saved" while nothing landed (connectors, provider switches, scratchpad). Every save now reports the failure (HTTP 507 with a plain next step), provider model lists moved out of the settings store into flash, and an already-full device frees the space on its first boot of this version.
+- **Reminders and routines reach the place you asked from.** A reminder set in the web chat used to fire into an empty Telegram list; it now lands in the web chat (and the open page picks it up without a reload).
+- **The clock sets itself on every boot.** On a fast Wi-Fi join the time sync was skipped, so daily routines never ran and the device did not know the date.
+- **Research helpers finish properly.** Anthropic helpers failed to start; results that arrived minutes apart were dumped raw instead of summarized; helper notes and summaries now stay in the chat history. The Z.ai host answers in its own words instead of a formatting apology, "remember these facts" writes every fact before it says so, a previous code answer reaches the next turn whole, and a Tavily key enables web search immediately.
+- **Web chat replies pair with their own message.** A failover notice or a late summary can no longer appear under the next question; /clear starts a genuinely fresh conversation.
+- **Memory search finds partial matches**, best match first, instead of requiring every word.
+- **Installer and build.** The command-line installer keeps its board and screen checks on every Python, picks the right Freenove image for the panel size, and the firmware's web-server libraries are pinned so a tagged release rebuilds to the same bytes. Docs for a first install on Linux, macOS and Windows were corrected end to end.
+
 ## v4.5.8 - A factory reset you can trust, voice that starts now, memory on Mistral
 
 - **Factory reset now erases everything, and says so first.** Settings > Reset opens a
