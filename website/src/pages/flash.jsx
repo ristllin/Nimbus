@@ -98,17 +98,15 @@ export default function FlashPage() {
             <strong>Nimbus board: use the port labeled UART.</strong> The
             DevKitC-1 has two USB-C ports and only one can flash a fresh board.
             Plug into the port silkscreened <code>UART</code>, not{' '}
-            <code>USB</code> - on a factory-fresh board the native{' '}
-            <code>USB</code> port has no path into download mode until Nimbus
-            owns it. A board that &quot;won&apos;t flash&quot; on that port is
-            not broken; it is on the wrong port.
+            <code>USB</code>: on a factory-fresh board the <code>USB</code> port
+            cannot enter download mode. A board that will not flash on that
+            port is not broken; it is on the wrong port.
           </div>
         ) : (
           <div style={styles.warn}>
             <strong>Freenove CYD: use its single USB-C port.</strong> The
-            all-in-one board has one USB-C port and no separate UART bridge -
-            just connect a data-capable USB-C cable. There is no wrong port to
-            avoid.
+            all-in-one board has one USB-C port and no separate UART bridge.
+            Connect a data-capable USB-C cable; there is no wrong port.
           </div>
         )}
 
@@ -132,8 +130,8 @@ export default function FlashPage() {
           </select>
           <p style={{margin: '0.5rem 0 0'}}>
             <small>
-              The image is matched to your board and screen size, so it comes up
-              on the right display and already knows which updates it should get.
+              Each image is built for one board and screen size and sets the
+              update type to match. The wrong image leaves the screen blank.
             </small>
           </p>
         </div>
@@ -152,9 +150,7 @@ export default function FlashPage() {
               <p style={{marginTop: '0.75rem'}}>
                 <small>
                   <strong>Choose your board above</strong> to enable the
-                  installer. The image is matched to your exact board and screen
-                  so it comes up on the right display - the wrong image leaves the
-                  screen blank.
+                  installer.
                 </small>
               </p>
             </>
@@ -168,11 +164,11 @@ export default function FlashPage() {
                   Install Nimbus: {chosen.label}
                 </button>
                 <span slot="unsupported">
-                  This browser can&apos;t flash devices - use Chrome or Edge on a
+                  This browser cannot flash devices. Use Chrome or Edge on a
                   computer.
                 </span>
                 <span slot="not-allowed">
-                  Flashing needs a secure (HTTPS) page - reload this page over
+                  Flashing needs a secure (HTTPS) page. Reload this page over
                   HTTPS.
                 </span>
               </esp-web-install-button>
@@ -196,8 +192,8 @@ export default function FlashPage() {
           <li>
             <strong>Ignore the flasher&apos;s Wi-Fi prompts.</strong> If the
             dialog offers to connect the device to Wi-Fi after installing,
-            skip/close it - Nimbus provisions itself through its own setup
-            network, not through the flasher.
+            close it. Nimbus sets itself up through its own setup network,
+            not through the flasher.
           </li>
           <li>
             <strong>It starts in Orchestrator mode</strong>, with its setup
@@ -205,17 +201,16 @@ export default function FlashPage() {
             Notifier mode later.
           </li>
           <li>
-            On your phone or computer, join the Wi-Fi network named{' '}
-            <strong>Nimbus-setup</strong> (the password is shown on the device screen,
-            unique to your device - or just scan the on-screen QR to join)
-            and the setup wizard opens in your browser. Step-by-step:{' '}
+            On your phone or computer, scan the QR on the device screen, or
+            join the Wi-Fi network named <strong>Nimbus-setup</strong> with the
+            password shown next to it. The setup wizard opens in your browser.
+            Step-by-step:{' '}
             <Link to="/quick-start/setup-wizard">Set up the device</Link>.
           </li>
           <li>
             <strong>The screen is ready right away.</strong> The image you
-            picked already tells the board which display it has, so it comes up
-            on the right display - there is no blank-screen step and no display
-            question in the wizard.
+            picked already matches the display, so there is no blank-screen
+            step and no display question in the wizard.
           </li>
         </ul>
 
@@ -236,11 +231,10 @@ export default function FlashPage() {
 
         <h2>Verifying the image (optional)</h2>
         <p>
-          First-time flashing writes the image as-is - like any firmware
-          installer before secure boot, it is not signed. If you want to
-          confirm the bytes before flashing, each board&apos;s image and its
-          SHA-256 are published together, and this page installs the image
-          from that same address.{' '}
+          A first install writes the image as-is; like any firmware installer
+          before secure boot, it is not signed. To check the download before
+          flashing, use the SHA-256 published next to each board&apos;s image.
+          This page installs from that same address.{' '}
           {chosen ? (
             <>
               For the <strong>{chosen.label}</strong>:{' '}
@@ -256,9 +250,9 @@ export default function FlashPage() {
           Save both into one folder (right-click each link and choose Save Link
           As) and run{' '}
           <code>shasum -a 256 -c nimbus-webflash.bin.sha256</code> (macOS) or{' '}
-          <code>sha256sum -c nimbus-webflash.bin.sha256</code> (Linux); it
+          <code>sha256sum -c nimbus-webflash.bin.sha256</code> (Linux). It
           prints <code>nimbus-webflash.bin: OK</code> when the bytes match. This
-          confirms your download is complete and matches what is published; it
+          confirms the download is complete and matches what is published; it
           does not prove who published it, because the image and its checksum
           come from the same place. Over-the-air updates after setup are
           ECDSA-signed and verified on the device.

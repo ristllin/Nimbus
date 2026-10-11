@@ -13,12 +13,12 @@ description: "Open firmware that turns an inexpensive ESP32-S3 board into a pers
   </div>
   <div class="home-hero__lead">
     <p>An open-firmware AI assistant for your desk, on a commodity ESP32-S3 board.</p>
-    <p><b>Orchestrator</b> mode: reach your always-on Nimbus over Telegram, hold-to-talk on the device, or use the local web UI. Nimbus remembers across conversations, runs routines, uses tools and connects to your favorite MCPs.</p>
-    <p><b>Notifier</b> mode: each coding session takes a segment on the LED ring, communicates over encrypted Bluetooth, so a glance shows which agents have finished and what needs you.</p>
-    <p>Memories and data stay on the device, not on a cloud account. Only the model calls leave, to the provider you pick: a hosted lab, or an LLM you host yourself. Bring your own key (Mistral, OpenAI, Anthropic, or OpenAI-compatible). Source-available, noncommercial.</p>
+    <p><b>Orchestrator</b> mode: reach your always-on Nimbus over Telegram, hold-to-talk on the device, or use the local web UI. Nimbus remembers across conversations, runs routines, uses tools, and connects to MCP servers.</p>
+    <p><b>Notifier</b> mode: each coding session takes a segment on the LED ring, updated over an encrypted Bluetooth link, so a glance shows which agents have finished and what needs you.</p>
+    <p>Memories and data stay on the device, not on a cloud account. Only the model calls leave, to the provider you pick: a hosted lab, or an LLM you host yourself. Bring your own key (Mistral, OpenAI, Anthropic, Z.ai, or any OpenAI-compatible server). Source-available, noncommercial.</p>
     <div class="home-hero__cta">
-      <a class="button button--primary button--lg" href="/quick-start/what-you-need">Get started</a>
-      <a class="button button--secondary button--lg" href="/flash">Flash from your browser</a>
+      <a class="button button--primary button--lg" href="/quick-start/what-you-need">Get Started</a>
+      <a class="button button--secondary button--lg" href="/flash">Flash From Your Browser</a>
     </div>
   </div>
 </div>
@@ -51,7 +51,7 @@ in whether the status ring is physical or rendered on screen.
         <li>WS2812B LED ring</li>
         <li>2.8" ILI9341 240x320, resistive touch (XPT2046)</li>
         <li>Mic, speaker, microSD, optional 2S battery</li>
-        <li>Around $60 to $75 in parts</li>
+        <li>Around $60 in electronics (enclosure and fasteners extra)</li>
       </ul>
       <p><a href="/guides/hardware-touch-tft">Build guide &rarr;</a></p>
     </div>
@@ -67,7 +67,7 @@ in whether the status ring is physical or rendered on screen.
       <ul class="variant-card__specs">
         <li>Freenove ESP32-S3 Display (FNK0104B)</li>
         <li>2.8" ILI9341 240x320, capacitive touch (FT6336U)</li>
-        <li>Status ring rendered on-screen</li>
+        <li>Status ring rendered on screen</li>
         <li>ES8311 mic + speaker, microSD, optional 1S battery</li>
         <li>Around $20 to $25, one board</li>
       </ul>
@@ -76,16 +76,17 @@ in whether the status ring is physical or rendered on screen.
   </div>
 </div>
 
-Every panel is a 2.8" ILI9341 (240x320) on an ESP32-S3 N16R8 (16 MB flash,
-8 MB PSRAM); the Freenove also comes in 3.5" and 4.0" sizes. Pinouts and wiring
+Both builds use a 2.8" ILI9341 display (240x320) on an ESP32-S3 N16R8 (16 MB
+flash, 8 MB PSRAM). Firmware images for the 3.5" and 4.0" Freenove sizes exist
+but are verified on the host only, not on a physical display. Pinouts and wiring
 are in the [hardware reference](guides/hardware.md); the parts list is in the
 [bill of materials](guides/hardware-bom.md).
 
 ## One device, two modes
 
 A board installed from the browser starts in Orchestrator; the command-line
-installer asks which mode to start in. Switch any time from the settings menu. A
-switch restarts the device.
+installer asks which mode to start in. Switch any time in the web UI under
+**Device &rarr; Mode & identity**; switching restarts the device.
 
 ### Notifier
 
