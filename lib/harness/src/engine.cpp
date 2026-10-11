@@ -6,6 +6,7 @@
 #include <ArduinoJson.h>
 
 #include <algorithm>
+#include <cstring>
 #include <memory>
 #include <set>
 
@@ -171,6 +172,21 @@ bool TurnEngine::loopActiveAt(uint32_t heap) const {
          heap > (t_.loopMinHeap + 2000U);
 }
 bool TurnEngine::loopActiveNow() const { return loopActiveAt(freeHeap()); }
+
+// CUM-536: what a tool call gets on a turn that stores nothing in long-term
+// memory, "" when the call stores nothing. memory.update stores new content too
+// (it falls back to a plain store when nothing matches), so both doors are shut;
+// a head that calls the mem_write reply field as a tool hears that the field is
+// shut too, never the usual "call memory_write now" recovery.
+static bool storesMemory(const char* name) {
+  return name && (!std::strcmp(name, "memory.write") || !std::strcmp(name, "memory.update"));
+}
+static std::string unverifiedStoreRefusal(const std::string& regName) {
+  if (storesMemory(regName.c_str())) return agent::kUnverifiedMemoryRefusal;
+  if (!storesMemory(orch::ToolRegistry::turnFieldTool(regName))) return std::string();
+  return regName + " is not a tool, and memory writes are refused this turn, through the "
+         "mem_write field of your orch_turn reply too. " + agent::kUnverifiedMemoryRefusal;
+}
 
 std::string TurnEngine::takeSpawnNotes(const std::string& chatId) {
   bool mayHaveRun = false;
@@ -572,19 +588,12 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       auto it = nameMap->find(call.name);
       const std::string& regName = (it != nameMap->end()) ? it->second : call.name;
       // CUM-536: a turn carrying an unverified connector result stores nothing in
-      // long-term memory - memory.update stores new content too (it falls back to
-      // a plain store when nothing matches), so both doors are shut. A head that
-      // calls the mem_write reply field as a tool hears that the field is shut
-      // too, never the usual "call memory_write now" recovery.
+      // long-term memory (unverifiedStoreRefusal).
       if (unverifiedTurn_) {
-        auto stores = [](const std::string& n) { return n == "memory.write" || n == "memory.update"; };
-        const char* twin = orch::ToolRegistry::turnFieldTool(regName);
-        if (stores(regName) || (twin && stores(twin))) {
+        std::string refusal = unverifiedStoreRefusal(regName);
+        if (!refusal.empty()) {
           r.isError = true;
-          r.output = twin ? regName + " is not a tool, and memory writes are refused this turn, "
-                                      "through the mem_write field of your orch_turn reply too. " +
-                                std::string(agent::kUnverifiedMemoryRefusal)
-                          : std::string(agent::kUnverifiedMemoryRefusal);
+          r.output = std::move(refusal);
           return done(r);
         }
       }

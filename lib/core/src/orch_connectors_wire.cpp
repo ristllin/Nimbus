@@ -704,10 +704,23 @@ bool hasUpper(const char* s) {
   return false;
 }
 
+// The provenance words for an attached connector: its catalog entry's, else, for
+// a connector outside the catalog whose device name or type is an ordinary-word
+// catalog id (a custom connector named "Linear"), that entry's, so the word stays
+// phrase-only however the connector was added.
+const ProvenanceWords* provenanceWordsFor(const AttachedConnector& a, const std::string& canon) {
+  if (const ProvenanceWords* p = provenanceFor(canon)) return p;
+  for (const std::string& form : {lowerStr(a.name), lowerStr(a.type)}) {
+    const ProvenanceWords* p = provenanceFor(form);
+    if (p && p->phraseOnly) return p;
+  }
+  return nullptr;
+}
+
 // Whether the task (`task` as written, `hay` lowercased) names this connector.
 bool taskNames(const std::string& task, const std::string& hay, const AttachedConnector& a,
                const std::string& canon, const std::string& display) {
-  const ProvenanceWords* p = provenanceFor(canon);
+  const ProvenanceWords* p = provenanceWordsFor(a, canon);
   const std::string bareForms[] = {a.id, canon, display, a.name, a.type};
   for (const std::string& form : bareForms) {
     const std::string f = lowerStr(form);

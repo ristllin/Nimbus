@@ -1591,6 +1591,11 @@ static void test_cum536_custom_ids_resolve_through_the_device_list() {
   TEST_ASSERT_EQUAL_STRING("Google Calendar", connectorAskedFor("check my calendar", "", att).c_str());
   // Without the device identity the UUID connector is invisible (the old blind spot).
   TEST_ASSERT_EQUAL_STRING("", connectorAskedFor("Pull my open deals from crm", "", bare).c_str());
+  // A connector outside the catalog named for an ordinary-word catalog id stays
+  // phrase-only: research text never names it.
+  const std::vector<AttachedConnector> customLinear = {AttachedConnector(uuid, "Linear", "")};
+  TEST_ASSERT_EQUAL_STRING("", connectorAskedFor("Explain linear regression", "", customLinear).c_str());
+  TEST_ASSERT_EQUAL_STRING("Linear", connectorAskedFor("List my open Linear issues", "", customLinear).c_str());
   // The run count: a crm_* run is crm's, so it counts for crm and never vouches for
   // the calendar; a notion_* run counts for the explicitly-id'd Notion connector.
   TEST_ASSERT_TRUE(countsAsConnectorRun("crm_search_deals", uuid, att));

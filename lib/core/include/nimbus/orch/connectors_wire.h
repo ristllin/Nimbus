@@ -196,7 +196,7 @@ void attachMistralWire(JsonDocument& d, const std::vector<ConnectorInfo>& cs,
 // never carries the key, so the wire stays byte-identical. Every attach hook
 // (device and Virtual Nimbus) passes the doc straight to attachMistralWire, so
 // both honor it with no wiring of their own.
-constexpr const char kMistralIdentityProbe[] = "nimbus_identity";
+inline constexpr char kMistralIdentityProbe[] = "nimbus_identity";
 void attachAnthropicWire(JsonDocument& agentBody, const std::vector<ConnectorInfo>& cs,
                          const BearerFn& bearer, bool builtinsOnly = false);
 
