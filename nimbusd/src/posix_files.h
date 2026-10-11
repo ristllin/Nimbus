@@ -152,6 +152,10 @@ class PosixFiles {
     return root_ + "/" + p + "/" + n;
   }
 
+  // The store's limits are checked BEFORE the first byte lands: a refused file
+  // (past the entry or byte cap) must leave nothing on the volume, since the index
+  // is what the Files panel lists and deletes by, and an unindexed file could never
+  // be seen or reclaimed from the app.
   bool save(const std::string& p, const std::string& n, const std::string& text,
             std::string& err) {
     if (!nimbus::orch::FileStore::validSegment(p, 24) ||
@@ -159,6 +163,8 @@ class PosixFiles {
       err = "invalid project or name";
       return false;
     }
+    if (store_.wouldExceed(p, n, text.size(), err)) return false;
+    const bool replacing = store_.find(p, n) != nullptr;
     if (!fsutil::writeFileAtomic(bytesPath(p, n), text)) {
       err = "write failed";
       return false;
@@ -169,7 +175,10 @@ class PosixFiles {
     e.bytes = (uint32_t)text.size();
     e.createdAt = (uint32_t)time(nullptr);
     e.kind = nimbus::orch::fileKindForName(n);
-    if (!store_.add(e, err)) return false;
+    if (!store_.add(e, err)) {
+      if (!replacing) ::unlink(bytesPath(p, n).c_str());   // a late refusal leaves no new file behind
+      return false;
+    }
     fsutil::writeFileAtomic(indexPath(), store_.dump());
     return true;
   }

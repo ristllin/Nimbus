@@ -149,7 +149,7 @@ applies or is refused; a page never shows "Saved" over a dropped write.
 | `orchHost`, `provPrio`, `subPrio` | primary provider and the fallback orders (unknown names are dropped; an empty order is refused) |
 | `sysPrompt` | the directive (up to 1500 characters; blank = the shipped default) |
 | `orchLoop` | the head tool loop |
-| `devName`, `devTz` (`/api/config`) | the name and the time zone (a POSIX string or a zone name such as `Europe/London`; `/api/state` clock and the prompt's clock follow it at once) |
+| `devName`, `devTz` (`/api/config`) | the name and the time zone (a POSIX string with zone names of 3 to 16 characters, or a zone name such as `Europe/London`; `/api/state` clock and the prompt's clock follow it at once) |
 | `clearConv`, `clearMem`, `convReset` | Clear conversation (a `/clear` boundary: the next turn carries no earlier conversation, the history is kept), erase the running notes, reset provider threads |
 | keys, `orchM_<slug>`, `subM_<slug>`, `tgAllow` | provider keys, head and sub-agent model picks, the Telegram allowlist |
 
@@ -174,7 +174,8 @@ this daemon registers; `tests/test_hosted_prompt.cpp` pins the wording).
 **Files, routines and the rest.** The Files panel (`/api/files/list`, `upload`,
 `dl`, `rm`, `rmproject`) works on the instance disk: it is the same store the
 assistant's `files.*` tools read, so an upload is readable by the assistant (one
-upload up to 1 MB; downloads are served as `application/octet-stream`). Routines,
+upload up to 1 MB; downloads are served as `application/octet-stream`). An upload
+the store refuses (256 files, or the store is full) writes nothing to the disk. Routines,
 skills, wake-ups and URL downloads have no hosted engine yet: their lists answer an
 honest empty GET and a write answers `400 "Not available on a hosted Nimbus yet:
 <feature>"`.

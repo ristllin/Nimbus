@@ -24,7 +24,10 @@
 //   (n) a settings write that cannot be stored changes nothing (no live-but-lost
 //       value behind a 500);
 //   (o) an unknown command never echoes a sender's sentence; an owner-set name
-//       with quotes stays valid JSON in device.status.
+//       with quotes stays valid JSON in device.status;
+//   (p) a zone whose name the clock line cannot hold is refused, and even an
+//       operator TZ of any length renders a whole clock line (never an
+//       unterminated buffer in the prompt).
 // Offline: an injected FakeHttpTransport; no network, no real keys.
 #include <sys/stat.h>
 #include <unistd.h>
@@ -436,6 +439,51 @@ static void testNoEchoAndSafeName(ndtest::Ctx& c) {
   clearEnv();
 }
 
+// A clock line as the prompt carries it: "YYYY-MM-DD Day HH:MM <zone>", printable.
+static bool wellFormedClock(const std::string& line, const std::string& zone) {
+  if (line.size() < 22 || line.size() > 127) return false;
+  for (unsigned char ch : line)
+    if (ch < 0x20 || ch > 0x7e) return false;
+  return line[4] == '-' && line[7] == '-' && line[10] == ' ' && line[14] == ' ' && line[17] == ':' &&
+         line.compare(line.size() - zone.size(), zone.size(), zone) == 0;
+}
+
+static void testLongZoneName(ndtest::Ctx& c) {
+  std::printf("  -- (p) a zone name the clock cannot hold is refused; the clock line stays whole --\n");
+  clearEnv();
+  Config cfg;
+  NimbusdRig rig(cfg, opts("hs-p"));
+  {
+    Web web(rig);
+    const std::string longZone = std::string(47, 'A') + "0";   // 48 characters: inside the length cap
+    const ApiResp r = web.call("POST", "/api/config", "devTz=" + longZone);
+    c.eqi(r.status, 400, "a 47-letter zone abbreviation is refused");
+    c.ok(rig.settings().devTz.empty(), "nothing was stored");
+    c.eqi(web.call("POST", "/api/config", "devTz=" + std::string(17, 'B') + "0").status, 400,
+          "a 17-letter name is refused");
+    c.eqi(web.call("POST", "/api/config", "devTz=%3C" + std::string(17, 'B') + "%3E0").status, 400,
+          "a 17-character quoted name is refused");
+    c.eqi(web.call("POST", "/api/config", "devTz=" + std::string(16, 'B') + "0").status, 200,
+          "a 16-letter name applies");
+    c.eqi(web.call("POST", "/api/config", "devTz=%3C%2B0330%3E-3%3A30").status, 200, "a quoted offset name applies");
+    c.eqi(web.call("POST", "/api/config", "devTz=AEST-10AEDT,M10.1.0,M4.1.0/3").status, 200,
+          "a full POSIX rule applies");
+    c.eqi(web.call("POST", "/api/config", "devTz=").status, 200, "blank (UTC) applies");
+  }
+  // The operator's TZ is not validated by the app: a 47-letter name renders whole,
+  // and one too long for any clock line falls back to the UTC time, never garbage.
+  const std::string op47 = std::string(47, 'A') + "0", op120 = std::string(120, 'A') + "0";
+  hosted::applyTz(op47);
+  const std::string line47 = hosted::localTime(time(nullptr), "%Y-%m-%d %a %H:%M %Z");
+  hosted::applyTz(op120);
+  const std::string line120 = hosted::localTime(time(nullptr), "%Y-%m-%d %a %H:%M %Z");
+  hosted::applyTz("");
+  c.ok(wellFormedClock(line47, std::string(47, 'A')), "a 47-letter operator zone renders a whole clock line");
+  c.ok(wellFormedClock(line120, "UTC") || wellFormedClock(line120, "GMT"),
+       "an operator zone too long for the line renders the UTC time instead");
+  clearEnv();
+}
+
 int main() {
   ndtest::Ctx c;
   std::printf("=== hosted settings apply or refuse (CUM-543, offline) ===\n");
@@ -454,6 +502,7 @@ int main() {
   testClearedZoneIsTheOperators(c);
   testUnstorableWriteChangesNothing(c);
   testNoEchoAndSafeName(c);
+  testLongZoneName(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);
   std::printf("%s\n", c.failures ? "FAILED" : "PASSED");
   return c.failures ? 1 : 0;

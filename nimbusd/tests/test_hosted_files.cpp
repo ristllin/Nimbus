@@ -9,8 +9,12 @@
 //   (c) a traversal name is refused by the same gate the tools use;
 //   (d) routines, skills, wake-ups and downloads refuse a write by name (the page
 //       printed "Created" for a routine that never existed), and still answer an
-//       honest empty GET.
+//       honest empty GET;
+//   (e) an upload the store refuses (the 257th file) leaves no bytes on the disk,
+//       so the volume never holds a file the panel cannot show or delete.
 // Offline: no provider traffic at all.
+#include <sys/stat.h>
+
 #include <cstdio>
 #include <string>
 
@@ -120,6 +124,28 @@ static void testNotYetHosted(ndtest::Ctx& c) {
   }
 }
 
+static void testRefusedUploadLeavesNoFile(ndtest::Ctx& c) {
+  std::printf("  -- (e) a refused upload leaves no bytes on the disk --\n");
+  Config cfg;
+  const NimbusdRig::Options o = opts("hf-e");
+  NimbusdRig rig(cfg, o);
+  std::string err;
+  bool all = true;
+  for (int i = 0; i < 256; i++) all = rig.files().put("bulk", "f" + std::to_string(i) + ".txt", "x", err) && all;
+  c.ok(all, "the store takes 256 files");
+  Web web(rig);
+  const ApiResp r = web.call("POST", "/api/files/upload?project=chat&name=new.bin", multipart("new.bin", "orphan?"));
+  c.eqi(r.status, 400, "the 257th file is refused");
+  c.ok(has(r.body, "too many files"), "with the store's reason");
+  struct stat st;
+  c.ok(::stat((o.dataDir + "/mem/files/chat/new.bin").c_str(), &st) != 0, "no bytes were written for it");
+  c.ok(::stat((o.dataDir + "/mem/files/chat").c_str(), &st) != 0, "not even its project folder");
+  c.ok(has(web.call("GET", "/api/files/list").body, "\"count\":256"), "the list still counts 256");
+  const ApiResp over = web.call("POST", "/api/files/upload?project=bulk&name=f3.txt", multipart("f3.txt", "new bytes"));
+  c.eqi(over.status, 200, "replacing an existing file is not a new entry, so it still saves");
+  c.ok(web.call("GET", "/api/files/dl?project=bulk&name=f3.txt").body == "new bytes", "with the new bytes");
+}
+
 int main() {
   ndtest::Ctx c;
   std::printf("=== hosted files + not-yet-hosted surfaces (CUM-543, offline) ===\n");
@@ -127,6 +153,7 @@ int main() {
   testRemove(c);
   testTraversalRefused(c);
   testNotYetHosted(c);
+  testRefusedUploadLeavesNoFile(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);
   std::printf("%s\n", c.failures ? "FAILED" : "PASSED");
   return c.failures ? 1 : 0;
