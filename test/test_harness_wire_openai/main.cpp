@@ -710,6 +710,53 @@ static void test_cum477_no_recovery_fails_as_low_memory_not_network() {
   TEST_ASSERT_TRUE(LogCapture::contains("request not sent and the heap did not recover"));
 }
 
+// The resend is refused because the heap stayed under the resend threshold (the
+// round floor + its margin) for the whole wait: total free 14000 with the 12000
+// floor sits above the floor but inside the margin. The refusal reason is memory,
+// so the step says memory; "network" told the owner to check the connection
+// after a tool had already run.
+static void test_cum477_refused_in_the_margin_band_reports_memory() {
+  RouterRig r(/*recovers=*/false);
+  r.d.http.script.pop_back();   // a resend would be unscripted: the test fails loudly
+  r.pd.freeHeap = [] { return 14000u; };
+  std::string conv, out, err;
+  TEST_ASSERT_FALSE(providers::orchTurnOpenAI(r.pd, conv, "SYS", "USER", out, err, &r.rig.ht, nullptr));
+  TEST_ASSERT_EQUAL(2, (int)r.d.http.seen.size());   // no third exchange
+  TEST_ASSERT_EQUAL(1, (int)r.rig.dispatched.size());
+  TEST_ASSERT_TRUE(r.delayed >= 3000u && r.delayed <= 3200u);
+  TEST_ASSERT_TRUE_MESSAGE(err.rfind("low memory", 0) == 0, err.c_str());
+}
+
+// The same refusal when the largest block stays under the round floor for the
+// whole wait while total free is fine: the resend was refused for memory, the
+// error says memory (the round gate already calls this "low on memory").
+static void test_cum477_refused_on_the_largest_block_reports_memory() {
+  RouterRig r(/*recovers=*/false);
+  r.d.http.script.pop_back();
+  r.pd.freeHeap = [] { return 100000u; };
+  r.rig.ht.cfg.roundMinLargest = 5000;   // ORCH_TURN_MIN_LARGEST_BLOCK
+  r.pd.largestBlock = [&r] { return r.d.http.idx >= 2 ? 4000u : 60000u; };
+  std::string conv, out, err;
+  TEST_ASSERT_FALSE(providers::orchTurnOpenAI(r.pd, conv, "SYS", "USER", out, err, &r.rig.ht, nullptr));
+  TEST_ASSERT_EQUAL(2, (int)r.d.http.seen.size());
+  TEST_ASSERT_TRUE(r.delayed >= 3000u);
+  TEST_ASSERT_TRUE_MESSAGE(err.rfind("low memory", 0) == 0, err.c_str());
+}
+
+// Counter-test: with no way to wait (no delay seam) a reading taken the instant
+// after the failure is not evidence - the failed connection's buffers may not be
+// back yet - so the margin band stays the plain network failure it was.
+static void test_cum477_no_wait_seam_keeps_network_in_the_band() {
+  RouterRig r(/*recovers=*/false);
+  r.d.http.script.pop_back();
+  r.pd.freeHeap = [] { return 14000u; };
+  r.pd.delayMs = nullptr;
+  std::string conv, out, err;
+  TEST_ASSERT_FALSE(providers::orchTurnOpenAI(r.pd, conv, "SYS", "USER", out, err, &r.rig.ht, nullptr));
+  TEST_ASSERT_EQUAL(2, (int)r.d.http.seen.size());
+  TEST_ASSERT_EQUAL_STRING("network", err.c_str());
+}
+
 // Counter-tests in the dimensions the resend now reads: a request that WAS sent
 // and got no answer is never resent (the provider may have acted on it), and an
 // unsent request with a healthy heap is resent at once, without waiting.
@@ -818,6 +865,9 @@ int main(int, char**) {
   RUN_TEST(test_sub_poll_no_annotations_no_artifacts);
   RUN_TEST(test_cum477_router_loop_resends_after_heap_recovers);
   RUN_TEST(test_cum477_no_recovery_fails_as_low_memory_not_network);
+  RUN_TEST(test_cum477_refused_in_the_margin_band_reports_memory);
+  RUN_TEST(test_cum477_refused_on_the_largest_block_reports_memory);
+  RUN_TEST(test_cum477_no_wait_seam_keeps_network_in_the_band);
   RUN_TEST(test_cum477_only_unsent_requests_are_resent);
   RUN_TEST(test_cum477_resend_gets_the_rest_of_the_round_budget);
   RUN_TEST(test_cum477_no_transport_no_resend);
