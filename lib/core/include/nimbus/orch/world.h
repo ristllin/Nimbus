@@ -49,6 +49,9 @@ struct Hardware {
   // ring and the status ring is drawn on the screen (the Freenove all-in-one).
   const char* display = nullptr;
   bool ringOnScreen = false;
+  // CUM-523: the caller KNOWS there is no Telegram bot (not merely "not reported"):
+  // the reply-channel and file-delivery advice then never point at Telegram.
+  bool noTelegram = false;
 };
 
 struct ToolInfo {

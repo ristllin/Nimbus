@@ -158,7 +158,7 @@ std::string composeInstructions(const ComposeInputs& in) {
   bool hasLoopTool = false;
   for (const auto& t : in.tools)
     if (t.name.rfind("loop_", 0) == 0 || t.name.rfind("loop.", 0) == 0) { hasLoopTool = true; break; }
-  ci.immutableRules = in.promptV2 ? orchRoleV2(devName, in.hw.telegram) : orchRole(devName, in.hw.telegram);
+  ci.immutableRules = in.promptV2 ? orchRoleV2(devName, in.telegram) : orchRole(devName, in.telegram);
   // v2 memory-tiers explainer for [HOW YOU RUN]: the four tiers are already
   // covered by the compressed field docs and the role, so this compresses the
   // long v1 paragraph to a pointer, keeping ONLY the load-bearing behavior it
@@ -241,7 +241,7 @@ std::string composeInstructions(const ComposeInputs& in) {
                               "person's information to them).\n")) +
                 "\n[HOW YOU RUN]\n"
                 "- You exist as TURNS. A turn starts when a person messages you (" +
-                std::string(in.hw.telegram ? "Telegram text or voice" : "the web page or voice") +
+                std::string(in.telegram ? "Telegram text or voice" : "the web page or voice") +
                 "), the web console injects one, a SUB-AGENT FINISHES (an "
                 "automatic synthesis turn with a [FRESH RESULTS] block and no owner message "
                 "- you decide what, if anything, to tell the owner), or a SCHEDULED LOOP "
@@ -296,6 +296,7 @@ std::string composeInstructions(const ComposeInputs& in) {
   hw.deviceName = devName.c_str();   // devName outlives the renderCapabilities call below
   hw.display = board.display;        // static board facts (flash strings)
   hw.ringOnScreen = !board.physicalRing;
+  hw.noTelegram = !in.telegram;      // CUM-523
   ci.capabilities = renderCapabilities(hw, in.tools);
   // "Advertised == callable" (§coherence): the tool list is ALWAYS advertised
   // (owner R7: the self-model used to lose all tool knowledge whenever the loop

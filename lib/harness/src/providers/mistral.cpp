@@ -342,7 +342,7 @@ nimbus::orch::HeadStepFn misLoopStep(const ProviderDeps& pd,
     HeaderList quota;
     int code = mistralRequest(pd, "POST", "/v1/chat/completions", serializeBody(req),
                               resp, filter, roundMs, &quota);
-    if (code <= 0) { out.ok = false; out.error = wire::transportError(); return out; }
+    if (code <= 0) { out.ok = false; out.error = wire::transportError(pd); return out; }
     if (code != 200) {
       const char* em = resp["message"] | "";
       if (!em[0]) em = resp["detail"][0]["msg"] | "";   // 422 validation shape
@@ -621,7 +621,7 @@ bool orchTurnMistral(const ProviderDeps& pd, std::string& convId,
   HeaderList quota;
   int code = mistralRequest(pd, "POST", path, std::move(body), doc, filter,
                             MISTRAL_TIMEOUT_MS, &quota);
-  if (code <= 0)   { err = wire::transportError(); return false; }
+  if (code <= 0)   { err = wire::transportError(pd); return false; }
   if (code == 404 && convId.length()) { convId = ""; err = "conversation gone"; return false; }
   if (code != 200) {
     err = mistralHttpErr("conversations", code, quota, mistralErrText(doc));

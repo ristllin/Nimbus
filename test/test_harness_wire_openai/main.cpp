@@ -767,10 +767,19 @@ static void test_cum477_tagged_low_memory_reaches_the_single_shot_head() {
   starved.status = 0;
   starved.err = "connect failed: low memory";
   d.http.script.push_back(starved);
+  d.heap = 9000;   // and total free is genuinely short
   auto pd = d.contract();
   std::string conv, out, err;
   TEST_ASSERT_FALSE(providers::orchTurnOpenAI(pd, conv, "S", "U", out, err, nullptr, nullptr));
   TEST_ASSERT_TRUE(err.rfind("low memory", 0) == 0);
+
+  // The tag alone (a fragmented-but-healthy heap, the Freenove's normal state) is
+  // NOT memory: it stays network so the failover ladder still runs (CUM-404 v2).
+  FakeProviderDeps f;
+  f.http.script.push_back(starved);
+  auto fpd = f.contract();   // heap 100000
+  TEST_ASSERT_FALSE(providers::orchTurnOpenAI(fpd, conv, "S", "U", out, err, nullptr, nullptr));
+  TEST_ASSERT_EQUAL_STRING("network", err.c_str());
 
   FakeProviderDeps n;
   harness_test::Exchange down;

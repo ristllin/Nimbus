@@ -239,6 +239,7 @@ static void test_cum523_channel_advice_without_telegram() {
   Hardware hw;
   hw.speaker = true;
   hw.telegram = false;
+  hw.noTelegram = true;   // the caller KNOWS there is no bot
   hw.voiceReplies = true;
   std::string out = renderCapabilities(hw, {});
   TEST_ASSERT_TRUE(out.find("This device has no Telegram.") != std::string::npos);
@@ -249,13 +250,17 @@ static void test_cum523_channel_advice_without_telegram() {
   TEST_ASSERT_TRUE(out.find("Reply in TEXT (on-screen) by default") != std::string::npos);
   TEST_ASSERT_TRUE(out.find("Telegram") == std::string::npos);
   hw.telegram = true;   // with a bot: the advice is unchanged
+  hw.noTelegram = false;
   out = renderCapabilities(hw, {});
   TEST_ASSERT_TRUE(out.find("Reply in TEXT (Telegram / on-screen) by default") != std::string::npos);
   // files.send is Telegram delivery: named only with a bot.
   hw.files = true;
   TEST_ASSERT_TRUE(renderCapabilities(hw, {}).find("deliver one to the owner with files.send") !=
                    std::string::npos);
-  hw.telegram = false;
+  hw.telegram = false;   // not reported (a caller that does not say): wording unchanged
+  TEST_ASSERT_TRUE(renderCapabilities(hw, {}).find("deliver one to the owner with files.send") !=
+                   std::string::npos);
+  hw.noTelegram = true;  // known absent
   out = renderCapabilities(hw, {});
   TEST_ASSERT_TRUE(out.find("deliver one to the owner with files.send") == std::string::npos);
   TEST_ASSERT_TRUE(out.find("Files list on the device web page") != std::string::npos);

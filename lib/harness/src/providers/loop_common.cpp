@@ -52,12 +52,11 @@ bool heapRecovered(const ProviderDeps& pd, const orch::HeadLoopConfig& cfg, bool
 
 constexpr const char* kUnsentLowMem = "low memory: the device could not send the request";
 
-// Memory - not the network - is the reason a send failed: the transport tagged it
-// (the exchange began starved), or total free heap is below the round floor. The
-// largest block alone does not count: a Freenove board idles near that floor, and
-// CUM-404 v2 forbids turning its genuine outages into fake low-memory failures.
+// Memory - not the network - is the reason a send failed: total free heap is below
+// the round floor. Neither the largest block nor the transport's starved-start tag
+// alone counts: a Freenove board idles near the block floor, and CUM-404 v2 forbids
+// turning its genuine outages into fake low-memory failures (which skip failover).
 bool memoryShort(const ProviderDeps& pd, const orch::HeadLoopConfig& cfg) {
-  if (wire::lastExchange().lowMem) return true;
   return cfg.roundMinHeap && pd.freeHeap && pd.freeHeap() < cfg.roundMinHeap;
 }
 

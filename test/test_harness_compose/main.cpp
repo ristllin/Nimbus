@@ -126,12 +126,17 @@ static void test_prompt_names_telegram_only_with_a_bot() {
   for (bool v2 : {false, true}) {
     ComposeInputs in = cannedInputs();
     in.promptV2 = v2;
-    in.hw.telegram = false;
+    in.telegram = false;
     const std::string p = agent::composeInstructions(in);
     TEST_ASSERT_TRUE(p.find("over Telegram") == std::string::npos);
     TEST_ASSERT_TRUE(p.find("over the web page/voice") != std::string::npos);
     TEST_ASSERT_TRUE(p.find("(Telegram text or voice)") == std::string::npos);
   }
+  // A caller that does not say (nimbusd: hw.telegram unset, telegram default true)
+  // keeps the Telegram wording.
+  ComposeInputs n = cannedInputs();
+  n.hw.telegram = false;
+  TEST_ASSERT_TRUE(agent::composeInstructions(n).find("over Telegram/voice") != std::string::npos);
 }
 
 static void test_prompt_states_the_real_round_cap_and_write_timing() {

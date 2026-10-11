@@ -137,15 +137,15 @@ std::string renderCapabilities(const Hardware& hw, const std::vector<ToolInfo>& 
   if (hw.files)
     out += "- A durable PRIVATE artifact store lives on the SD card (/mem/files/<project>/"
            "<name>). Save reports/documents there with artifact.save; browse with files.list; " +
-           std::string(hw.telegram ? "deliver one to the owner with files.send. "
-                                   : "the owner opens one from the Files list on the device "
-                                     "web page (files.send needs Telegram, which this device "
-                                     "does not have). ") +
+           std::string(!hw.noTelegram ? "deliver one to the owner with files.send. "
+                                      : "the owner opens one from the Files list on the device "
+                                        "web page (files.send needs Telegram, which this device "
+                                        "does not have). ") +
            "Files persist across reboots and are never auto-deleted.\n";
   // CUM-523: with no Telegram bot the channel advice never names Telegram (it used
   // to steer a web-only device's turns toward a reply.telegram that cannot work).
   if (hw.speaker || hw.telegram) {
-    if (hw.voiceReplies && hw.telegram)
+    if (hw.voiceReplies && !hw.noTelegram)
       out += "- YOU choose the reply channel per situation (owner rule): short status or a "
              "heads-up while the owner is nearby -> speak it aloud on the device speaker "
              "(reply.speak, or the tts device action); longer content, lists, code -> "
@@ -159,8 +159,8 @@ std::string renderCapabilities(const Hardware& hw, const std::vector<ToolInfo>& 
              "text reply; a question you need answered -> ask. Never send the SAME content "
              "as both text and audio. This device has no Telegram.\n";
     else
-      out += std::string(hw.telegram ? "- Reply in TEXT (Telegram / on-screen)"
-                                     : "- Reply in TEXT (on-screen)") +
+      out += std::string(!hw.noTelegram ? "- Reply in TEXT (Telegram / on-screen)"
+                                        : "- Reply in TEXT (on-screen)") +
              " by default: spoken replies are switched "
              "OFF, so tts and reply.speak will not play. If the owner asks you to speak or to "
              "turn on voice replies, enable it IN THIS SAME TURN with the device.control tool "

@@ -455,7 +455,7 @@ nimbus::orch::HeadStepFn oaiLoopStep(const ProviderDeps& pd,
 
     JsonDocument resp = makeDoc(pd);
     int code = oaiResponses(pd, key, serializeBody(req), roundMs, resp, filter);
-    if (code <= 0) { out.ok = false; out.error = wire::transportError(); return out; }
+    if (code <= 0) { out.ok = false; out.error = wire::transportError(pd); return out; }
     if (code != 200) {
       std::string e = "resp HTTP " + std::to_string(code);
       const char* em = resp["error"]["message"] | "";
@@ -604,7 +604,7 @@ bool orchTurnOpenAI(const ProviderDeps& pd, std::string& convId,
 
   JsonDocument doc = makeDoc(pd);   // response doc -> PSRAM (retained turn content)
   int code = oaiResponses(pd, key, std::move(body), OAI_TIMEOUT_MS, doc, filter);
-  if (code <= 0)   { err = wire::transportError(); return false; }
+  if (code <= 0)   { err = wire::transportError(pd); return false; }
   if (code != 200) {
     err = "resp HTTP " + std::to_string(code);
     const char* em = doc["error"]["message"] | "";

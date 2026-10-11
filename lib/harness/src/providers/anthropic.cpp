@@ -453,9 +453,11 @@ static size_t antAppendMessage(JsonObjectConst ev, char* out, size_t cap, size_t
 // rule: the artifact is the LONGEST message (a tie goes to the later one) plus
 // every message after it (a closing note after the report is kept). A message
 // BEFORE it is narration - and dropped - only if it is short (under a quarter of
-// the longest and under kAntNarrationMax); a long earlier message is part of the
+// the longest, never under kAntNarrationMin, never over kAntNarrationMax); a long
+// earlier message is part of the
 // work (a report written over several requests) and is kept, in order. A
 // one-message run is unchanged. Bounded by the envelope; never allocates.
+static const size_t kAntNarrationMin = 240;
 static const size_t kAntNarrationMax = 600;
 static void antArtifactText(JsonArrayConst events, char* out, size_t cap) {
   int at = -1, idx = 0;
@@ -467,7 +469,8 @@ static void antArtifactText(JsonArrayConst events, char* out, size_t cap) {
     }
     ++idx;
   }
-  const size_t narration = best / 4 < kAntNarrationMax ? best / 4 : kAntNarrationMax;
+  const size_t quarter = best / 4 > kAntNarrationMin ? best / 4 : kAntNarrationMin;
+  const size_t narration = quarter < kAntNarrationMax ? quarter : kAntNarrationMax;
   size_t used = 0;
   out[0] = 0;
   idx = 0;
@@ -893,7 +896,7 @@ nimbus::orch::HeadStepFn antLoopStep(const ProviderDeps& pd,
     JsonDocument resp = makeDoc(pd);
     int code = antRequest(pd, "POST", "/v1/messages", serializeBody(req), resp, filter,
                           clampRoundMs(budgetMs, ANT_TIMEOUT_MS));
-    if (code <= 0) { out.ok = false; out.error = wire::transportError(); return out; }
+    if (code <= 0) { out.ok = false; out.error = wire::transportError(pd); return out; }
     if (code != 200) {
       std::string e = "messages HTTP " + std::to_string(code);
       const char* em = resp["error"]["message"] | "";
@@ -1113,7 +1116,7 @@ bool orchTurnAnthropic(const ProviderDeps& pd, std::string& convId,
 
   JsonDocument doc = makeDoc(pd);   // response doc -> PSRAM (retained turn content)
   int code = antRequest(pd, "POST", "/v1/messages", std::move(body), doc, filter);
-  if (code <= 0)   { err = wire::transportError(); return false; }
+  if (code <= 0)   { err = wire::transportError(pd); return false; }
   if (code != 200) {
     err = "messages HTTP " + std::to_string(code);
     const char* em = doc["error"]["message"] | "";

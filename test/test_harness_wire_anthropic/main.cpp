@@ -623,6 +623,23 @@ static void test_cum514_artifact_keeps_a_long_earlier_section() {
   TEST_ASSERT_EQUAL_STRING((sectionA + "\n\n" + sectionB).c_str(), env.reply);
 }
 
+// re-review: a short report keeps the narration floor - its 100-char working
+// notes are still dropped.
+static void test_cum514_short_report_still_drops_notes() {
+  const std::string report(400, 'r');
+  FakeProviderDeps d;
+  d.http.script.push_back({"", "", 200,
+      "{\"data\":[" + antMsg("I'll start by searching the official register for the current rules, "
+                               "then read the guidance pages and the regulation text, and check "
+                               "which version applies to a three-storey house.") + "," +
+      antMsg(report) + "," +
+      "{\"type\":\"session.status_idle\",\"stop_reason\":{\"type\":\"end_turn\"}}]}"});
+  auto pd = d.contract();
+  agent::ResultEnvelope env{};
+  TEST_ASSERT_EQUAL((int)agent::FabricErr::Ok, (int)providers::antPoll(pd, "anthropic:sess_1", env));
+  TEST_ASSERT_EQUAL_STRING(report.c_str(), env.reply);
+}
+
 static void test_sub_poll_states() {
   {  // running: messages so far, no idle event
     FakeProviderDeps d;
@@ -701,6 +718,7 @@ int main(int, char**) {
   RUN_TEST(test_cum514_artifact_drops_the_narration);
   RUN_TEST(test_cum514_artifact_keeps_what_follows_the_report);
   RUN_TEST(test_cum514_artifact_keeps_a_long_earlier_section);
+  RUN_TEST(test_cum514_short_report_still_drops_notes);
   RUN_TEST(test_sub_cancel_sends_interrupt);
   UNITY_END();
   return 0;

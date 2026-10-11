@@ -425,6 +425,15 @@ static bool providerHasKey(const String& p) {
 // the cold-start list). The spawn validator, the orch_model validator AND the
 // prompt's [AVAILABLE MODELS] line (d.modelChoices below) all read it, so the
 // head is never offered a model that validation then coerces away.
+// CUM-523: can a Telegram bot actually deliver from this device? The bot runs and
+// either a chat is allowlisted or the owner opted into public mode (then the
+// current chat is reachable). One predicate for the turn's Telegram tools and the
+// capability manifest, so the prompt never names a tool the turn was not given.
+static bool telegramDeliverable() {
+  return agent::telegram::enabled() &&
+         (store::telegramAllowlist().length() > 0 || store::telegramPublic());
+}
+
 static std::string modelChoicesFor(const std::string& p) {
   return nimbus::orch::effectiveModelChoices(p.c_str(),
                                              std::string(store::modelChoices(String(p.c_str())).c_str()));
@@ -913,7 +922,7 @@ static TurnEngine::Deps buildTurnDeps() {
     in.hw.sd       = memory::haveSd() && !active(nimbus::fault::SD);
     in.hw.wifi     = true;                              // a turn only runs with WiFi up
     in.hw.ble      = false;                             // BLE is Notifier-mode only
-    in.hw.telegram = agent::telegram::enabled();
+    in.hw.telegram = telegramDeliverable();   // CUM-523: the same predicate the turn's tools follow
     in.hw.voiceReplies = agent::store::ttsEnabled();   // owner's "Voice replies" toggle (P2.5)
     in.hw.files = agent::files::available();            // E1 artifact store (SD-backed)
     // CUM-514: the BUILD's board (the same -DSOLIDE_BOARD /api/state reports), not
@@ -1356,9 +1365,7 @@ void begin(HeavyFabric* fabric, const Sinks& sinks) {
   g_cfg = harnessConfigFromStore();
   // CUM-523: a device with no running Telegram bot is never offered a Telegram leg
   // (the same predicate the capability manifest's hw.telegram reads).
-  g_cfg.telegramConfigured = [] {
-    return agent::telegram::enabled() && store::telegramAllowlist().length() > 0;
-  };
+  g_cfg.telegramConfigured = [] { return telegramDeliverable(); };
   static TurnEngine turnEngine(buildTurnDeps(),
       TurnEngine::Tuning{ORCH_TURN_HARD_FLOOR, ORCH_RECALL_MIN_HEAP,
                          ORCH_AUTO_TURN_MIN_HEAP, ORCH_LOOP_MIN_HEAP,

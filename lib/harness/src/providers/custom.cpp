@@ -76,6 +76,7 @@ static int custRequest(const ProviderDeps& pd, const char* method, const std::st
                        JsonDocument& doc, const JsonDocument& filter,
                        uint32_t timeoutMs = CUST_TIMEOUT_MS) {
   doc.clear();
+  wire::lastExchange() = wire::LastExchange{};   // even when exchange() is never reached
   std::string host; int port; bool http;
   if (!parseBase(s(pd.customBase), host, port, http)) return 0;
 
@@ -241,7 +242,7 @@ static std::string headTransportError(const ProviderDeps& pd, uint32_t sentAt, u
   const uint32_t waited = pd.nowMs ? pd.nowMs() - sentAt : timeoutMs;
   if (wire::lastExchange().noResponse && waited >= timeoutMs - timeoutMs / 10)
     return "timeout: the provider did not answer in time";
-  return wire::transportError();
+  return wire::transportError(pd);
 }
 
 // One single-shot structured turn over the OpenAI chat-completions dialect:

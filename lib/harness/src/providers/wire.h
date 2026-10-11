@@ -36,13 +36,18 @@ inline LastExchange& lastExchange() {
   return s;
 }
 
-// The head/step error for a transport failure (status 0): "low memory: ..." when
-// the transport tagged it (the exchange BEGAN starved - CUM-404 v2's only honest
-// memory signal), so the engine answers with the memory reply instead of a
+// The head/step error for a transport failure (status 0). "low memory: ..." only
+// when the transport tagged the exchange as begun starved (largest block under the
+// handshake need) AND total free heap is genuinely short now - the tag alone also
+// fires on a fragmented-but-healthy Freenove, where a real outage must still fail
+// over (CUM-404 v2). Then the engine answers with the memory reply instead of a
 // retry, a failover and "check the connection" (CUM-477); else "network".
-inline std::string transportError() {
-  return lastExchange().lowMem ? std::string("low memory: the device could not make the request")
-                               : std::string("network");
+inline constexpr uint32_t kStarvedTotalFree = 12000;   // == ORCH_TURN_HARD_FLOOR
+inline std::string transportError(const ProviderDeps& pd) {
+  const bool shortNow = !pd.freeHeap || pd.freeHeap() < kStarvedTotalFree;
+  return (lastExchange().lowMem && shortNow)
+             ? std::string("low memory: the device could not make the request")
+             : std::string("network");
 }
 
 // One provider REST exchange through the transport: complete request in, HTTP

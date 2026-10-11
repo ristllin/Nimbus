@@ -88,6 +88,11 @@ static void test_each_upstream_keeps_its_newest_model() {
   const rc::Shortlist m = rc::shortlist({"mistral/mistral-large", "mistral/pixtral-12b",
                                          "mistral/codestral-2501"}, "", 1, rc::kChoicesMaxBytes);
   TEST_ASSERT_EQUAL_STRING("mistral/mistral-large", m.csv.c_str());
+  // A date stamp is never a version: a dated-only gpt-4o snapshot does not
+  // outrank gpt-4.1 by reading its month and day as numbers.
+  const rc::Shortlist d = rc::shortlist({"openai/gpt-4o-2024-08-06", "openai/gpt-4.1"}, "", 1,
+                                        rc::kChoicesMaxBytes);
+  TEST_ASSERT_EQUAL_STRING("openai/gpt-4.1", d.csv.c_str());
 }
 
 // The harvest filter (moved out of provider_verify.cpp so it is tested): a canned

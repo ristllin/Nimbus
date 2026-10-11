@@ -159,9 +159,14 @@ inline VersionKey versionKey(const std::string& model) {
 
 // Newer first; on the same version the base model before its variants; otherwise
 // the router's order (the sort is stable).
+inline std::string undatedModel(const std::string& sel) {
+  const std::string m = nimbus::orch::resolveRouterRoute(sel).model;
+  const std::string alias = undatedAlias(m);
+  return alias.empty() ? m : alias;
+}
 inline bool newerFirst(const std::string& a, const std::string& b) {
-  const VersionKey ka = versionKey(nimbus::orch::resolveRouterRoute(a).model);
-  const VersionKey kb = versionKey(nimbus::orch::resolveRouterRoute(b).model);
+  const VersionKey ka = versionKey(undatedModel(a));
+  const VersionKey kb = versionKey(undatedModel(b));
   if (ka.v != kb.v) return ka.v > kb.v;
   return !ka.variant && kb.variant;
 }
