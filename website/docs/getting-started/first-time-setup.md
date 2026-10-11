@@ -1,7 +1,7 @@
 ---
 title: "First-time setup"
 sidebar_label: "First-time setup"
-description: "From a new board to a Nimbus you can talk to. A short, foolproof path: flash, power on, join the setup Wi-Fi, add one provider key. About ten minutes, no serial console."
+description: "From a new board to a Nimbus you can talk to: flash, power on, join the setup Wi-Fi, add one provider key. About ten minutes, no serial console."
 ---
 
 # First-time setup
@@ -37,8 +37,8 @@ Notifier status light, you do not even need a provider key. See
 
 If this is an already-configured Nimbus, skip to [step 2](#2-power-on).
 
-Two ways to install. Both seed the display, so the board comes up on the right
-display with no display question:
+Two ways to install. Both seed the display type, so the board comes up on the
+right screen without asking:
 
 - **From your browser** (easiest): open [Flash Nimbus](/flash) in Chrome or Edge,
   pick your board, and click Install. Nothing to download. The board starts in
@@ -52,13 +52,13 @@ display with no display question:
   ```
 
   The installer lists connected boards, detects the family, and asks only what it
-  cannot know: the **operating mode**, and on a Freenove the **panel size**. It
+  cannot know: the **operating mode**, and on a Freenove the **display size**. It
   confirms before writing and never erases saved settings.
 
   | It asks | Options | What it sets |
   |---|---|---|
   | Operating mode | 1. Notifier · 2. Orchestrator | Notifier uses Bluetooth with Wi-Fi off; Orchestrator turns on Wi-Fi and the web UI |
-  | Panel size *(Freenove only)* | 2.8 / 3.5 / 4.0 inch | Matches the firmware image to your glass |
+  | Display size *(Freenove only)* | 2.8 / 3.5 / 4.0 inch | Matches the firmware image to the fitted display |
 
 :::caution Classic Nimbus board: use the port labeled UART
 The hand-built Nimbus board (the DevKitC-1) has **two** USB-C ports. On a fresh
@@ -68,7 +68,7 @@ there is no wrong one to pick.
 :::
 
 <details>
-<summary>I flashed <code>[env:provision]</code> or a bring-up sketch by mistake</summary>
+<summary>If you flashed <code>[env:provision]</code> or a bring-up sketch by mistake</summary>
 
 Those are standalone diagnostics with no Nimbus UI, setup Wi-Fi, or web
 settings. Run `python3 tools/setup_device.py` to install the real firmware; it
@@ -114,11 +114,9 @@ itself; a rename takes effect on the next restart.
 
 ## 3. Join the setup Wi-Fi
 
-On your phone or laptop, join the network shown on the screen:
+Two steps, in the order the device screen shows them:
 
-Two steps, in order - the same two the device screen shows:
-
-1. **Join the setup network** shown on the screen:
+1. **Join the setup network** on your phone or laptop:
    - **Network:** `Nimbus-setup` (or the name your screen shows)
    - **Password:** shown on the device screen, unique to your device. Or scan
      the on-screen QR to join automatically.
@@ -132,11 +130,11 @@ computer rejoins its normal Wi-Fi, then continues on its own at the provider
 step (a manual continuation link stays visible).
 
 :::note Wi-Fi requirements
-- The radio is **2.4 GHz only** - a 5 GHz-only network won't appear in the scan.
-- SSIDs are case-sensitive.
-- "Home Wi-Fi connected" with "setup hotspot off" is the healthy state after
-  handoff - the temporary `Nimbus-setup` network closes once the device joins
-  your router, and returns if the LAN link is lost.
+- The radio is **2.4 GHz only**: a 5 GHz-only network does not appear in the scan.
+- Network names are case-sensitive.
+- After the handoff, "home Wi-Fi connected" with "setup hotspot off" is the
+  healthy state. The `Nimbus-setup` network closes once the device joins your
+  router and returns if the LAN link is lost.
 :::
 
 ---
@@ -156,15 +154,14 @@ The wizard asks for two required things and lets you skip the rest.
 
 **Which provider key?** Any one verified key runs the assistant. **Mistral is the
 easiest start:** free tier, and the voice default. OpenAI and Anthropic work too.
-Not sure how to create one? [Get your provider key](../quick-start/provider-keys.md)
-walks each provider step by step. Keys are write-only: a saved key shows as "set"
+[Get your provider key](../quick-start/provider-keys.md) covers each provider
+step by step. Keys are write-only: a saved key shows as "set"
 and is never displayed again.
 
 :::info On a touchscreen board, keep the wizard open
-When the device joins your Wi-Fi, its setup network shuts down (to protect the
-panel from its own radio) and the wizard **follows the device to its new address
-automatically**. Seeing "home Wi-Fi connected, setup hotspot off" is the healthy
-end state, not a failure.
+When the device joins your Wi-Fi, its setup network shuts down and the wizard
+**follows the device to its new address automatically**. Keep the tab open until
+it lands on the dashboard.
 :::
 
 :::caution Using only a Mistral key? Set embeddings before your first turn
@@ -199,8 +196,7 @@ To reach the assistant from Telegram:
 1. Create a bot with [@BotFather](https://t.me/BotFather) and paste its **bot
    token** into **Assistant > Connectors > Telegram**.
 2. **Message your bot once** from your own Telegram account.
-3. Your message appears as a **pending approval card**. Click **Approve**. No
-   chat-ID hunting.
+3. Your message appears as a **pending approval card**. Click **Approve**.
 
 Token and allowlist changes take effect after a restart.
 
@@ -211,9 +207,8 @@ credits. Leave it off unless you mean to run a public bot.
 
 ## Optional: routing and a local model
 
-One verified key is enough. If you want a specific provider to lead, set the
+One verified key is enough. To make a specific provider lead, set the
 **Primary provider** and **Fallback order** under **Assistant > Models > Routing**.
-The defaults are sensible.
 
 <details>
 <summary>Point the assistant at a local model (Ollama)</summary>
@@ -246,7 +241,7 @@ there.
   release to send. The ring shows your theme color while listening, then a
   spinner from the moment you let go until the reply lands.
 
-That is it, the device is live. From here, the
+The device is live. From here, the
 [web UI reference](webui-reference.md) walks every settings tab, and
 [Orchestrator World](../guides/orchestrator-world.md) explains memory, sessions,
 and the tool loop.
@@ -266,7 +261,7 @@ firmware:
    identify once per browser; the device remembers it after that.
 
 <details>
-<summary>The screen is unavailable and I cannot scan or read the code</summary>
+<summary>The screen is unavailable and the code cannot be scanned or read</summary>
 
 Connect the board's **UART** port and run:
 

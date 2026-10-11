@@ -1,16 +1,17 @@
 ---
-title: "Web UI reference"
-sidebar_label: "Web UI reference"
+title: "Web UI Reference"
+sidebar_label: "Web UI Reference"
 description: "Every destination of the Nimbus web app: Home, Chat, Memory, Assistant, and Device, plus global search and sign-in."
 ---
 <!-- audience: user -->
 
 # Web UI Reference
 
-The device serves its own web app at `http://nimbus.local` (or its LAN IP) from
-any browser, nothing to install. Five destinations sit in a left sidebar on
-desktop, collapse to icons in a narrow window, and dock as a bottom bar on a
-phone. The content column centers up to 1,280 px.
+This page maps every destination of the web app so you can find a setting
+without hunting through tabs. The device serves the app itself at
+`http://nimbus.local` (or its LAN IP); open it in any browser, nothing to
+install. Five destinations sit in a left sidebar on desktop, collapse to icons
+in a narrow window, and dock as a bottom bar on a phone.
 
 | Destination | What it's for |
 |---|---|
@@ -29,7 +30,7 @@ Controls that sit outside the destinations:
   to expand a short explanation inline; click again to hide it.
 
 Every action shows its progress: a pending state, then a result (success,
-nothing found, or an error that names the next step). Nothing just disappears.
+nothing found, or an error that names the next step).
 
 On a fresh or factory-reset device started in **Orchestrator**, a **First-time
 setup** wizard opens over the setup network and walks through the display, Wi-Fi,
@@ -55,8 +56,7 @@ except the one that requested it. The model behind all this is in
 Press **Ctrl/Cmd+K** or **/** (or click **Search** in the sidebar) to open one
 search over everything: destinations and actions, files, long-term memory, active
 sessions, and the device's embedded documentation. Results are grouped by source;
-Up/Down move the selection, Enter opens it, Esc closes. The fastest way to a
-setting, file, or memory without hunting through tabs.
+Up/Down move the selection, Enter opens it, Esc closes.
 
 ---
 
@@ -71,7 +71,7 @@ every few seconds.
 - **Quick actions** - one-click jumps to the things people do most: open Chat,
   add a file, providers and models, check for updates, **Restart**, and
   **Power off**. Restart confirms first, then reconnects on its own in about a
-  minute; Power off puts the device to sleep (the same flow as Settings > Power).
+  minute; Power off puts the device to sleep (the same flow as **Device > Power**).
 - **Active sessions** - the live table of what the assistant is running right
   now, each row named by its session with its provider, model, category, and
   state.
@@ -81,7 +81,8 @@ every few seconds.
   **Loopback** (plays a tone and checks the mic hears it), and **Probe SD**
   (re-checks the card and upgrades the storage tier live).
 
-Background sessions end to end: **[Sub-sessions](../guides/sub-sessions.md)**.
+For how background sessions work from start to finish, see
+**[Sub-sessions](../guides/sub-sessions.md)**.
 
 ---
 
@@ -165,11 +166,16 @@ with a status badge. External MCP clients can call the same surface over
 `POST /mcp`. A **Web search** section takes a Tavily API key so the assistant can
 search the web live.
 
-**Tool use** governs that tool surface: when enabled, the assistant uses its
-tools mid-turn and iterates before answering. Caps: **Tool rounds** (1-32) and a
-**Time limit** (30-3600 s), plus **Switch providers mid-turn**, **Concurrent
-connections**, **Validate provider TLS certificates**, and **Capability
-validation**. See the **[Turn contract](../reference/turn-contract.md)**.
+**Tool use** governs that tool surface: when **Enabled**, the assistant uses its
+tools mid-turn and iterates before answering; when off, it answers in a single
+step. Controls: **Switch providers mid-task if one fails**, **Code sandbox**
+(run code in a provider sandbox to build files, which land under Files),
+**Record tool calls & thinking** (a per-turn record viewable in the chat),
+**Tool rounds** (1-32), **Time limit, seconds** (30-3600), **Compact
+conversations after, KB** (8-512; 0 turns automatic compaction off),
+**Concurrent connections**, **Validate provider TLS certificates**, and
+**Capability validation**. See the
+**[Turn contract](../reference/turn-contract.md)**.
 
 ### Skills
 
@@ -228,22 +234,32 @@ collapsible groups:
 - **Display** - a 180-degree **Display flip** for upside-down mounts, and **Touch
   calibration** for the touch screen (or the self-calibrating panel's swap/flip
   orientation toggles). Takes effect right away.
-- **Battery mode** - **Dark / Balanced / Full**, which sets the light. The
-  **Theme** picks the color family, and **Preview** shows any status pattern in
-  the ring simulator; **Demo on Device** plays it on the physical ring. Full
-  color and motion language: **[LED experience](../guides/led-ux.md)**.
+- **Ring** - **Theme** picks the color family (a session's status picks its
+  color role and motion), **Preview** shows any status pattern for a chosen
+  status and mode, and **Demo on Device** plays it on the physical ring for a
+  few seconds without saving anything. Ring brightness and effects belong to the
+  battery mode, set under **Battery**. The status language itself:
+  **[LED experience](../guides/led-ux.md)**.
 - **Customize battery mode** - every parameter starts at the selected battery
   mode's default; set a value to override it, or **Revert to Defaults**.
 - **Sound** - audio checks (**Mic Meter**, **Speaker Tone**, **Loopback Test**)
   and the **Sound effects** engine (**[SFX map](../guides/sfx-map.md)**): a
   per-mode level, a sound theme, a **Volume** slider, and **Play**.
-- **Battery** - appears once battery telemetry is present: voltage, estimated
-  time left, discharge rate, health, and power source, plus **Calibrate Full
-  Charge** (anchors 100% to a fully charged pack, with a visible result).
+- **Battery** - the **Battery mode** (**Dark / Balanced / Full**: a behavior
+  profile that sets the ring light and how much power it spends) and **Monitor
+  the battery** (reads the pack for the charge readout, low-battery warnings,
+  and sleep protection; takes effect after a restart). Once a pack is read it
+  shows voltage, estimated time left, discharge rate, health, and power source,
+  with **Calibrate Full Charge** (anchors 100% to a fully charged pack), the
+  low-battery options (**Low-battery light**, **Save power when low**, sleep and
+  wake voltages), and **Battery hardware** (pack capacity, chemistry, cells in
+  series, sense resistors) so the readings match the pack fitted.
 - **Software update** - installed and latest versions, **Check for Updates**
   (which reports whether an update was found, you are up to date, or the check
-  failed), **Install Update**, **Automatic updates**, and **Confirm USB updates**
-  (requires an on-device tap before a firmware update over the USB cable). When an
+  failed), **Install Update**, **Automatic updates** (installs new firmware when
+  the device is idle and charged, then restarts), and **Confirm USB updates**
+  (requires a tap on the device, under Settings > Software update > Allow USB
+  update, before a firmware update over the USB cable). When an
   update needs more charge than the pack has, a battery-gate message names the
   threshold and Install stays disabled. Updates are cryptographically signed and the device
   reverts on its own if a new version fails to start.
@@ -251,15 +267,16 @@ collapsible groups:
   password; the **Device sign-in code** and **Generate New Code**; **Bluetooth**
   status and **Forget Paired Devices**; and **Wi-Fi** (scan, pick a network,
   **Join** - 2.4 GHz only; the one action allowed before signing in).
-- **Cloud access** - reach the device from anywhere through CumuloNimbus. Pairing
-  shows a dedicated card with the **Cloud link code** large and high-contrast
+- **Cloud access** - reach the device from anywhere through CumuloNimbus
+  (Orchestrator mode only). **Pair with the cloud** shows the **Cloud link code**
   beside a QR: sign in at app.cumulo-nimbus.ai, then scan the QR or enter the
-  code. **Copy code** copies it. Available in Orchestrator mode.
+  code (**Copy code** copies it). The device appears in your account once it
+  links. **Unpair** and **Turn off** reverse it.
 - **Power** - **Restart…** restarts the device and brings it back on its own in
   about a minute (nothing is erased); use it to apply a setting that says it takes
   effect after a restart. **Power Off…** saves everything and puts the device to
   sleep. Both confirm first.
-- **Danger zone** - **Erase Storage…** wipes the SD card (typed confirmation) and
-  **Factory Reset…** erases everything (Wi-Fi, API keys, the Telegram list,
-  Bluetooth pairings, themes, sound settings, memory, and the device sign-in
-  code) and restarts into first-time setup. Both need the exact phrase typed.
+- **Danger zone** - **Erase Storage…** erases the SD card. **Factory Reset…**
+  erases everything (Wi-Fi, API keys, the Telegram list, Bluetooth pairings,
+  themes, sound settings, memory, and the device sign-in code) and restarts into
+  first-time setup. Both need the exact confirmation phrase typed.
