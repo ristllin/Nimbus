@@ -1,15 +1,11 @@
 <!-- audience: user -->
 # Use your Cumulo key
 
-For anyone who would rather not sign up with each AI provider and juggle their
-bills. A Cumulo key draws on one prepaid balance that covers every provider, so
-you top up once and use any model. By the end you will have created a key and used
-it, both on the device and from your own code.
-
-A Cumulo key is an API key tied to your prepaid credits at
-[app.cumulo-nimbus.ai](https://app.cumulo-nimbus.ai). Requests through it are
-routed to the provider you name, drawn from that one balance. There are no
-per-provider accounts or invoices to set up.
+A Cumulo key is one API key tied to a prepaid balance at
+[app.cumulo-nimbus.ai](https://app.cumulo-nimbus.ai). Requests through it go to
+the provider you name and are drawn from that one balance, so there are no
+per-provider accounts or invoices to set up. Use this page to create a key, set it
+on the device, and call the router from your own code.
 
 ## Create a key
 
@@ -32,14 +28,15 @@ models without any other provider account.
 3. Once it verifies, pick a model. The key is stored write-only: it shows as
    "set" and is never displayed again.
 
-The device routes its turns through your balance. For a firm ceiling, set a
-per-key spending limit when you create the key.
+You can also mint a key from the device instead of pasting one. Once the device
+is paired with the cloud:
 
-You can also mint a key straight from the device instead of pasting one. Once the
-device is paired with the cloud, open **Cloud access** in the device web UI, set a
-capacity under **Mint a key for this device**, and press **Save**. The device creates
-a key for itself with that monthly spend cap (it renews each billing period) and
-stores it the same way. You can revoke it anytime in the app.
+1. In the device web UI, open **Device > Cloud access**.
+2. Under **Mint a key for this device**, enter **Capacity (credits per month)**
+   and select **Save**.
+
+The device creates a key for itself with that monthly cap, which renews each
+billing period, and stores it the same way. You can revoke it anytime in the app.
 
 ## Use it from your own code
 
@@ -87,15 +84,15 @@ client = Anthropic(
 )
 
 msg = client.messages.create(
-    model="claude-3-5-sonnet-latest",
+    model="claude-haiku-4-5-20251001",
     max_tokens=256,
     messages=[{"role": "user", "content": "Hello"}],
 )
 print(msg.content[0].text)
 ```
 
-The portal shows these same base URLs and snippets on the **API keys** page, next
-to the key you just made, so you can copy them there too.
+The **API keys** page in the portal shows the same base URLs and snippets next to
+each key.
 
 ## Costs and limits
 

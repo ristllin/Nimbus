@@ -1,9 +1,9 @@
 <!-- audience: user -->
 # Telegram on a Virtual Nimbus
 
-A Virtual Nimbus (a hosted instance) answers on Telegram the same way the desk
-device does: **it trusts nobody until you approve them.** This page covers
-connecting a bot, approving yourself, and deciding who else may use it.
+A Virtual Nimbus (a hosted instance) answers on Telegram the same way the
+device does: it answers nobody until you approve them. Use this page to connect
+a bot, approve yourself, and decide who else may use it.
 
 ## Connect a bot
 
@@ -20,23 +20,23 @@ The bot is now live, but it answers no one yet.
    answers people its owner has approved, and tells you your chat ID.
 2. Open your instance's web app and go to **Assistant**, **Connectors**,
    **Telegram**. Your message is waiting under **Who can message this device**.
-3. Tap **Approve**. Your next message gets a real answer.
+3. Click **Approve**. Your next message gets a real answer.
 4. Make your own chat an **admin**: click the role on your chip until it shows
-   **admin**. As an admin, your Telegram chat shares the memories and files of your
-   web chat; until then it is a separate **user**.
+   **admin**. As an admin, your Telegram chat shares the memories and files of
+   your web chat. Until then it is a separate **user**.
 
-If you already know a chat ID, type it into **Chat ID** and tap **Add** instead of
-waiting for a message.
+If you already know a chat ID, type it into **Chat ID** and click **Add** instead
+of waiting for a message.
 
 ## Let other people in
 
-Anyone else who messages the bot gets the same polite refusal and waits in the
-same list for you. They are never served until you approve them, and a stranger
-who keeps writing is not sent the refusal more than once every 10 minutes.
+Anyone else who messages the bot gets the same refusal and waits in the same
+list for you. They are not served until you approve them. Someone who keeps
+writing is sent the refusal at most once every 10 minutes.
 
-Everyone you approve starts as a **user**; nobody becomes an admin unless you make
-them one. Each person's role is shown on their chip. Click it to cycle **admin**,
-**user**, **guest**:
+Everyone you approve starts as a **user**. Nobody becomes an admin unless you
+make them one. Each person's role is shown on their chip; click it to cycle
+**admin**, **user**, **guest**:
 
 | Role | What it means on a Virtual Nimbus |
 |---|---|
@@ -58,8 +58,8 @@ Things to know before you approve someone:
 - **Removing someone** (the × on their chip) takes effect on their next message,
   and their role goes with them: if you approve them again later, they start as a
   user.
-- **There is no open access.** The device's **Open access** switch is refused on a
-  hosted instance: a public bot would spend your keys and reach your connectors.
+- **There is no open access.** The **Open access** checkbox is refused on a hosted
+  instance, because a public bot would spend your keys and reach your connectors.
 
 The list and the roles are stored on the instance, so they survive restarts and
 updates. Roles, limits, and privacy work as described in
@@ -68,7 +68,8 @@ updates. Roles, limits, and privacy work as described in
 ## For operators: `NIMBUSD_TG_CHAT_ID`
 
 Older instances were locked to one chat with the `NIMBUSD_TG_CHAT_ID`
-environment variable. It is now **legacy and optional**. If it is set, it adds
-that chat to an EMPTY allowlist once, as the admin, and is then used up: it never
-changes a list the owner already manages, and a chat the owner removes does not
-come back on restart. With it unset, the instance starts with nobody approved.
+environment variable. It is now optional and treated as a legacy seed. When it is
+set, it adds that chat to an empty allowlist once, as the admin, and is then used
+up. It never changes a list the owner already manages, and a chat the owner
+removes does not come back on restart. When it is unset, the instance starts with
+nobody approved.

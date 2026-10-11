@@ -1,10 +1,11 @@
 # Self-hosted OTA - running your own update channel
 
 A fork that ships firmware to its own devices needs its own update channel:
-its own signing keypair, its own releases repository, and two constants
-changed in the source. Without these, your devices would poll the upstream
-project's releases - signed with a key your fork does not hold - and your CI
-could not publish anywhere.
+its own signing keypair, its own public releases repository, a few constants
+changed in the firmware source, and the repository names in the release
+workflow. Without these, your devices poll the upstream project's releases,
+which are signed with a key your fork does not hold, and your CI has nowhere
+to publish.
 
 Read [how OTA works](ota.md) first; this page is only the delta a fork must
 apply.
@@ -29,9 +30,10 @@ flowchart TD
 |---|---|---|---|
 | 1 | **Signing keypair** | `include/ota_pubkey.h` (public key, compiled into firmware) + the private key as a CI secret | Devices install only what verifies against the keys baked into the running firmware. Your devices must trust *your* key. |
 | 2 | **Manifest URL** | `OTA_MANIFEST_URL` in `src/agent/agent_config.h` | Where devices poll for updates. Point it at your own releases repository. |
-| 3 | **Sound-pack base URL** | `SFX_SYNC_BASE` in `src/agent/agent_config.h` | Where devices sync the optional voice-pack WAVs from. Point at your own asset repository, or leave the upstream one (the assets are public). |
+| 3 | **Sound-pack source** | `SFX_SYNC_HOST` and `SFX_SYNC_BASE` in `src/agent/agent_config.h` | Where devices sync the optional voice-pack WAV files from. Point them at your own asset repository, or leave the upstream values (the assets are public). |
 | 4 | **A public releases repository** | e.g. `you/your-fork-releases` | Devices download unauthenticated - release assets must be on a public repository (a private repository's assets 404 without auth). Keep it assets-only. |
 | 5 | **Workflow secrets** | `OTA_SIGNING_KEY` + `RELEASE_PAT` on your source repository | CI signs with your private key and publishes to your releases repository. |
+| 6 | **Releases repository name in CI** | `.github/workflows/release.yml` | The workflow names the releases repository directly: the publish target, the manifest `--url-base`, and the web-flash branch URLs. Replace each occurrence with your own. |
 
 ## Step by step
 
@@ -42,17 +44,18 @@ openssl ecparam -name prime256v1 -genkey -noout -out ota_priv.pem
 openssl ec -in ota_priv.pem -pubout -out ota_pub.pem
 ```
 
-Put the **public** key into `include/ota_pubkey.h` (`kOtaPubKeys[]` - the
-firmware trusts a *list*, which is what makes later rotation possible).
-**Back up the private key offline.** If it is ever lost, no future release can
-be signed and every fielded device is orphaned onto USB-only updates forever.
+Put the public key into `include/ota_pubkey.h` (`kOtaPubKeys[]`; the firmware
+trusts a list, which is what makes later rotation possible). Back up the
+private key offline: if it is lost, no future release can be signed and every
+fielded device is left with USB-only updates.
 
 ### 2. Create the releases repository
 
-Create a **public**, assets-only repository (the upstream pattern:
+Create a public, assets-only repository (the upstream pattern:
 `nimbus-fw-releases`). Devices fetch
 `releases/latest/download/manifest.json` from it and follow the redirect to
-the binaries.
+the binaries. The release workflow also force-pushes a `webflash` branch to
+this repository with the browser-flasher images.
 
 ### 3. Point the firmware at it
 
@@ -62,7 +65,8 @@ In `src/agent/agent_config.h`, set:
 #define OTA_MANIFEST_URL "https://github.com/<you>/<your-releases-repo>/releases/latest/download/manifest.json"
 ```
 
-and, if you host your own sound pack, `SFX_SYNC_BASE` likewise.
+and, if you host your own sound pack, `SFX_SYNC_HOST` and `SFX_SYNC_BASE`
+likewise.
 
 ### 4. Configure CI
 
@@ -70,16 +74,23 @@ The release workflow (`.github/workflows/release.yml`) needs two secrets on
 your source repository:
 
 - **`OTA_SIGNING_KEY`** - the private key PEM from step 1.
-- **`RELEASE_PAT`** - a fine-grained personal access token with `Contents:
-  read` on your board-support checkout (if you pin a specific
-  [solide-drivers](https://github.com/ristllin/solide-drivers) ref that needs
-  it) and `Contents: read/write` on your releases repository. The default
-  `GITHUB_TOKEN` cannot write to a second repository.
+- **`RELEASE_PAT`** - a fine-grained personal access token with
+  `Contents: read/write` on your releases repository only. The default
+  `GITHUB_TOKEN` is scoped to the source repository and cannot write to a
+  second one. The board-support checkout
+  ([solide-drivers](https://github.com/ristllin/solide-drivers)) is public
+  and needs no token.
 
 ```bash
 gh secret set OTA_SIGNING_KEY -R <you>/<fork> < ota_priv.pem
 gh secret set RELEASE_PAT     -R <you>/<fork>
 ```
+
+In the same workflow, replace the upstream releases repository name wherever it
+appears: the publish step's `repository:`, the manifest `--url-base`, and the
+web-flash branch URLs. The Virtual Nimbus image job in that workflow skips
+itself with a notice when the `GCP_WIF_PROVIDER` and `GCP_DEPLOY_SA` secrets
+are not set, so a fork that does not run Virtual Nimbus can leave it alone.
 
 ### 5. Cut a release
 
@@ -99,14 +110,14 @@ repositories in place of the upstream names.
 The device side needs no changes: A/B slots, SHA-256 + ECDSA verification
 before the boot-flag flip, the three-boot rollback guard, the daily check, the
 web/Telegram/console install surfaces, and the version-forward auto-install
-policy all key off the two constants and the key list above.
+policy all key off the constants and the key list above.
 
 ## Signed-message discipline
 
 `tools/make_manifest.py` and the device's `nimbus::ota::buildSigMessage()`
 must produce byte-identical canonical messages
-(`nimbus-ota-v2\n<version>\n<type>\n<sha256-hex>\n`) - the pairing is
-golden-tested. Change both together or never.
+(`nimbus-ota-v2\n<version>\n<type>\n<sha256-hex>\n`). The format is pinned
+by `tools/test_make_manifest.py`; change both sides together.
 
 ---
 

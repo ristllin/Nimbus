@@ -6,11 +6,10 @@ default, and available in Orchestrator mode.
 
 ## How it works
 
-The device dials one outbound secure WebSocket to the relay and keeps it open. When
-you open the device from the web app, the relay forwards that HTTP request down the
-tunnel to the device, which answers it from its own local web server and streams the
-response back. You see the device's real web UI, remotely. There is no second app to
-keep in sync: the device is the app.
+The device opens one outbound secure WebSocket to the relay and keeps it open. When
+you open the device in the web app, the relay forwards each HTTP request down that
+tunnel; the device answers from its own local web server and streams the response
+back. You see the device's own web UI, so there is no second app to keep in sync.
 
 ```
 browser  ->  app.cumulo-nimbus.ai  ->  relay  ==WSS==>  device  ->  its local web UI
@@ -28,15 +27,14 @@ can never touch the signed-in session on the main origin.
    - On the device screen, open Settings > Connectivity > Cloud link code.
    - Or on the device web UI, open Settings > Cloud access and choose "Pair with the cloud".
 
-   The device shows a **Cloud link code** (8 characters, and a QR) on its screen. The
-   console command `CLOUDPAIR` does the same on a test build.
+   The device shows a **Cloud link code** (8 characters, and a QR) on its screen.
 3. Sign in at `app.cumulo-nimbus.ai`, open the pairing page, and enter the Cloud link
    code (or scan the QR) to pair the device.
 4. The device connects and appears in your account as online. "Open" serves its UI
    through the tunnel.
 
-To stop remote access, use "Unpair" (keeps cloud access on, drops this pairing) or
-"Turn off" (disables cloud access). Either can also be done from the account page.
+To stop remote access, open Settings > Cloud access and choose "Unpair" (drops this
+pairing, keeps cloud access on) or "Turn off" (disables cloud access).
 
 ## Security
 
@@ -68,28 +66,26 @@ To stop remote access, use "Unpair" (keeps cloud access on, drops this pairing) 
   few seconds and reconnects, so remote access recovers without a restart. While it
   reconnects, the web app shows a brief "Reaching your Nimbus" page and loads the device
   as soon as it is back.
-- A future hardening step pins the relay's certificate issuer in addition to the
-  bundle check; see [security.md](security.md).
+- For the relay's full threat model, see [Security](security.md).
 
 ## Virtual Nimbus (hosted instances)
 
 A Virtual Nimbus is a hosted instance of the same assistant, with no physical
-device. You reach it the same way, and it serves the **same web app** you already
-know: Home, Chat, Memory, Assistant, and Device, with your chat, memory, and
-provider settings all live. Because the relay session already signed you in, the
-page opens without a second sign-in.
+device. You reach it the same way, and it serves the **same web app**: Home, Chat,
+Memory, Assistant, and Device, with your chat, memory, and provider settings all
+live. Because the cloud session already signed you in, the page opens without a
+second sign-in.
 
-What is the same, and what differs, panel by panel (the parity a hosted instance
-keeps):
+What is the same and what differs, area by area:
 
-| Panel | On a device | On a Virtual Nimbus |
+| Area | On a device | On a Virtual Nimbus |
 |---|---|---|
 | Chat | Real | Real (the same engine) |
 | Memory (files, long-term memory, scratchpad) | Real | Real |
 | Assistant (providers, models, tools, usage) | Real | Real |
-| Provider keys | Set in the app, applied on the device | Set in the app, applied on the instance (the same page; no external step) |
+| Provider keys | Set in the app, applied on the device | Set in the app, applied on the instance (same page) |
 | Memory tile | Device free heap | The container's memory, in MB (not device SRAM) |
-| Ring, display, touch | Real hardware | Not present - shown honestly, no controls that do nothing |
+| Ring, display, touch | Real hardware | Not present |
 | Battery | Real reading | Always on external power (hosted) |
 | Sound (mic, speaker, tones) | Real hardware | Not present (no mic/speaker test buttons) |
 | Wi-Fi and network | Real radio | Managed by the platform (no AP or station line shown) |
@@ -98,18 +94,17 @@ keeps):
 | Cloud access | Pair to reach it remotely | Already reached through its cloud link; the panel states that and shows the link, with no pairing step |
 | Device sign-in code | A LAN recovery aid | Not shown (a hosted instance is reached through its cloud link, not a LAN sign-in) |
 
-The instance never shows a made-up hardware reading and never leaves a control
-that does nothing: a panel that has no hardware behind it says so plainly.
+An area with no hardware behind it says so plainly; the instance never shows a
+made-up reading or a control that does nothing.
 
 ### Provider keys on a Virtual Nimbus
 
-Direct provider keys work on a Virtual Nimbus exactly as they do on a device. On
-the Providers & keys page you can set your own key for OpenAI, Anthropic, Mistral,
-or Z.ai, and it applies to the instance right away: you set your key in the app,
-not externally. The instance persists it and keeps it across a restart.
+Direct provider keys work on a Virtual Nimbus exactly as they do on a device. Under
+Assistant > Providers & keys, set your own key for OpenAI, Anthropic, Mistral, or
+Z.ai; it applies to the instance right away and survives a restart.
 
-These sit alongside the Cumulo Nimbus key, and the two relate the same way they do
-on a device:
+These sit alongside the Cumulo Nimbus key (see [Use your Cumulo key](cloud/cumulo-key.md)),
+and the two relate the same way they do on a device:
 
 - The **Cumulo Nimbus key** is the recommended one-key path: one key and one
   balance cover every provider through the metered router, so you can run without
@@ -120,5 +115,5 @@ on a device:
 If you set a direct key, turns run on it; the Cumulo Nimbus key is the fallback
 that keeps the assistant answering when no direct key matches. Set only a Cumulo
 Nimbus key and everything routes through it. Set only a Z.ai key and the assistant
-runs on Z.ai. Each key you set shows "Key set" and unlocks that provider's model
-picker, the same as on a device.
+runs on Z.ai. Each key you set shows "Key set - type to replace" in its field and
+unlocks that provider's model picker, the same as on a device.
