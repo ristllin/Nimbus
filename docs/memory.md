@@ -1,13 +1,11 @@
-# Memory - the two RAM pools, the turn budget, and conversation compaction
+# Memory: RAM Pools, Turn Budget, and Compaction
 
-How Nimbus fits a memory-hungry agent into a microcontroller: the two very
-different RAM pools and which one is actually scarce, what a live turn costs
-and how it stays bounded, and how long conversations fold into a compact
-summary instead of growing forever.
-
-This page merges three earlier documents (`memory-model.md`,
-`heap-and-psram.md`, `compaction.md`) into one progressive read: start at the
-hardware, end at the conversation.
+How Nimbus fits a memory-hungry agent into a microcontroller. Read this before
+changing a heap floor, a buffer size or a context budget. It covers the two RAM
+pools and which one is scarce, what a live turn costs in internal SRAM and how
+that stays bounded, and how long conversations fold into a compact summary
+instead of growing without limit. It reads from the hardware up to the
+conversation.
 
 Related: [orchestrator-storage.md](orchestrator-storage.md) (what lives on SD,
 PSRAM, NVS, and flash), [turn-anatomy.md](turn-anatomy.md) (what the model
@@ -49,12 +47,12 @@ you mean.
 
 | Pool | Size | Speed | DMA | What reports it | Character |
 |---|---|---|---|---|---|
-| **Internal SRAM** | ~266 KB heap (of 512 KB total; the rest is static/ROM) | Fast | Yes | `ESP.getFreeHeap()`, `heap_caps_*(…, MALLOC_CAP_INTERNAL)` | **SCARCE** - the real constraint |
-| **PSRAM** (external, octal) | **8 MB** | ~2–4× slower | Limited | `ESP.getFreePsram()`, `heap_caps_*(…, MALLOC_CAP_SPIRAM)` | **ABUNDANT** - normally ~98% free |
+| **Internal SRAM** | ~266 KB heap (of 512 KB total; the rest is static/ROM) | Fast | Yes | `ESP.getFreeHeap()`, `heap_caps_*(…, MALLOC_CAP_INTERNAL)` | **Scarce**: the real constraint |
+| **PSRAM** (external, octal) | **8 MB** | ~2–4× slower | Limited | `ESP.getFreePsram()`, `heap_caps_*(…, MALLOC_CAP_SPIRAM)` | **Abundant**: normally ~98% free |
 
-**`ESP.getFreeHeap()` measures INTERNAL ONLY.** When it reads "16 KB free" the
-device is NOT out of memory - it has ~8 MB of PSRAM free. It is out of the
-*scarce* pool.
+**`ESP.getFreeHeap()` measures internal SRAM only.** A reading of 16 KB free
+means the scarce pool is low, not that the device is out of memory: PSRAM
+typically has ~8 MB free at the same moment.
 
 ### What MUST live in internal SRAM (do not try to move these)
 
@@ -64,9 +62,7 @@ device is NOT out of memory - it has ~8 MB of PSRAM free. It is out of the
   prebuilt Arduino core already enables ext-mem stacks
   (`CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM`) and the mbedTLS record buffers already
   live in PSRAM, so `tg_poll`'s stack is internal because it reads NVS/config, not
-  because it runs the handshake. (CUM-448 measured this from scratch: the gate is
-  flash access, not TLS. The earlier "does TLS -> must be internal" note was wrong and
-  steered prior headroom work at the wrong lever.)
+  because it runs the handshake. The gate is flash access, not TLS.
 - **DMA buffers** - Wi-Fi, I²S, SPI (display/SD), LED RMT. These request
   `MALLOC_CAP_DMA` explicitly and bypass the PSRAM spill entirely.
 - **lwIP pbufs + the TLS record working set** - the ~24 KB "danger zone." A
@@ -102,14 +98,14 @@ fully serialized, so a batch never needs two of either live at once - moving the
 off internal freed ~6.7 KB of the scarce pool with no behavior change.
 
 Moving the MP3 scratch to PSRAM let the sfx task stack drop from 20 KB to 12 KB and
-made the 8 KB music task safe. Bench-measured on the Solide S3 (nimbus-6, Orchestrator
-+ Wi-Fi steady state), that returned **~9 KB to the internal-SRAM free pool**: total
-`intFree` 59.2 KB -> 68.3 KB and the `heapMin` floor 49.0 KB -> 57.9 KB (+18%). Note
-the *largest contiguous* block (`intLargest`) was 31.7 KB before and after - the freed
-stack region is not adjacent to the largest block, so that specific axis is layout-bound
-on this board and did not move; the gain is in total free / heapMin, which is the "low
-internal SRAM" headroom. `/api/state` surfaces the audio task high-water as
-`mem.sfxStackMin` and `mem.musicStackMin` alongside `pollStackMin` / `asyncStackMin`.
+made the 8 KB music task safe. Measured on the Solide S3 in Orchestrator mode with
+Wi-Fi up, that returned about 9 KB to the internal free pool: total `intFree`
+59.2 KB to 68.3 KB and the `heapMin` floor 49.0 KB to 57.9 KB. The *largest
+contiguous* block (`intLargest`, 31.7 KB) did not move, because the freed stack
+region is not adjacent to it; the gain is in total free and `heapMin`, which is
+the "low internal SRAM" headroom. `/api/state` reports the audio task high-water
+marks as `mem.sfxStackMin` and `mem.musicStackMin` alongside `pollStackMin` /
+`asyncStackMin`.
 
 ### A deliberate exception: the episodic deep-history read stays internal
 
@@ -129,28 +125,37 @@ whole scan. This is the counter-lesson to "route churn to PSRAM" - a small
 bounded internal read on a stack-tight task is the correct shape. Full design:
 [`orchestrator-storage.md`](orchestrator-storage.md) §3a.
 
-The **word match** every text search runs (`nimbus/orch/lexical.h`, CUM-515) holds to
+The **word match** every text search runs (`nimbus/orch/lexical.h`) holds to
 the same shape: the parsed query is a fixed ~220-byte value on the querying task's
 stack, each row is scanned in place (no lowercased copy, nothing allocated per row),
 and a ranked page adds one score byte per kept row - at most 200 bytes of heap.
 `test_orch_lexical` counts heap allocations and fails if matching or a no-match store
 scan makes any.
 
-### The heap floors are INTERNAL-only guards - not a whole-device budget
+### The heap floors are internal-only guards, not a whole-device budget
 
 `agent_config.h` defines `ORCH_TURN_HARD_FLOOR` / `ORCH_AUTO_TURN_MIN_HEAP` /
 `ORCH_DISPATCH_MIN_HEAP` / `ORCH_RECALL_MIN_HEAP` / `ORCH_LOOP_MIN_HEAP`, plus
 `provider_verify`'s `VERIFY_MIN_MAX8` and the `/api/tools` async-stack guard.
 They all gate on **internal** heap. Because the heavy allocations they used to
-protect are now on PSRAM, a turn's true internal cost is small transients +
-the lwIP/TLS stack, so the floors sit just above the ~24 KB danger zone
-(≈28 KB), **not** at the pre-PSRAM 34–40 KB.
+protect are now on PSRAM, a turn's true internal cost is small transients plus
+the lwIP/TLS working set, so admission has two parts:
 
-**Do NOT re-raise these floors to "survive with no PSRAM."** PSRAM is present
+- A **total-free backstop** of 12 KB for a user turn, a dispatch, a loop round
+  and recall (`ORCH_TURN_HARD_FLOOR`). Background synthesis is held 2 KB higher
+  so it yields to a live turn.
+- A **largest-block guard** of 5 KB (`ORCH_TURN_MIN_LARGEST_BLOCK`): the
+  contiguous internal block one mbedTLS handshake needs. This is the real gate.
+  A fragmented but ample heap passes; an obviously starved one is refused.
+
+A `static_assert` keeps the turn floor below the pre-PSRAM 28 KB danger zone and
+the background floor above the interactive one.
+
+**Do not re-raise these floors to "survive with no PSRAM".** PSRAM is present
 and carries the churn. If turns are deferring ("low on working memory") while
-PSRAM is free, the fix is to move more internal churn to PSRAM (lower the
-spill threshold), not to raise the floor. A turn that still OOMs fails soft
-(error reply, no restart).
+PSRAM is free, move more internal churn to PSRAM (lower the spill threshold)
+rather than raising the floor. A turn that still runs out of memory fails soft:
+an honest low-memory reply, no restart.
 
 ### Levers to free internal SRAM (biggest first, verify on-device)
 
@@ -203,8 +208,9 @@ The harness must handle any response / context / file size without crashing:
 
 1. **Responses stream** off the socket; only filter-retained fields are stored
    (a 128 KB wire body → < 4 KB retained doc - `test_harness_streaming`).
-2. **Tool results into the model are clamped** (4 KB/result, 24 KB total -
-   `head_loop`), so context stays bounded.
+2. **Tool results into the model are clamped** (derived from the head model's
+   context window: 8 KB per result and 64 KB total at a 200K window, see
+   "Derived context budgets" below), so context stays bounded.
 3. **Heavy connector work is offloaded** to a sub-agent on the connector's
    provider (the orchestrator is guided to; routing in `jobs.cpp`), so the
    device only ever ingests a short result.
@@ -213,9 +219,10 @@ The harness must handle any response / context / file size without crashing:
 
 ### Do NOT
 
-- Do not raise the turn heap floors to "fix" OOM - the fix is streaming +
-  PSRAM routing, not gating turns out (the historical 34 K floor
-  false-deferred healthy turns; the live floor is 28 K).
+- Do not raise the turn heap floors to "fix" out-of-memory errors. The fix is
+  streaming plus PSRAM routing, not gating turns out (the historical 34 KB floor
+  deferred healthy turns; the live backstop is 12 KB with a 5 KB largest-block
+  guard).
 - Do not buffer a whole provider response then parse - stream it.
 - Do not put connector write content through the model's context -
   offload/spill.
@@ -226,8 +233,7 @@ How the device keeps long conversations fast, cheap, and continuous: when a
 chat accumulates enough history, the device summarizes it into a compact
 per-chat memory (the **fold**), resets the provider-side thread, and keeps
 going - nothing the owner said is lost, and every future turn carries the
-summary instead of an ever-growing transcript. Shipped in v3.6.0 after a
-reviewed design; E2E-proven on hardware.
+summary instead of an ever-growing transcript.
 
 ### Owner's view
 
@@ -306,7 +312,7 @@ UTF-8-safe caps, fold-prompt contract), `test_harness_turn` (runFold's
 no-side-effects contract incl. a hostile summary carrying device actions -
 inert), `test_harness_compose` (§5a placement + budget-pressure drop).
 
-Hardware (Board 2, both suites green): `tests/hil/test_l16_compaction.py` -
+Hardware: `tests/hil/test_l16_compaction.py` -
 the full cycle with a marker planted OLDER than the verbatim window, proving
 recall comes from the summary (`/api/lastturn` shows it) - and
 `tests/hil/test_l15_memory_caps.py` - vector-store cap eviction (synthetic-only
@@ -329,17 +335,13 @@ don't spill to PSRAM), which is why the ring deliberately stays at 512.
 | device pump | `compactTick()` in `src/agent/orchestrator.cpp` |
 | test seams (TEST builds) | `CTX?` / `COMPACT <chat>` / `MEMFILL` console + `/api/test/{ctx,compact,memfill}` |
 
-⚠ **Assert on the `ev:compact` row, not on `CTX?`.** The diagnostic reads a
-cross-task echo buffer, and until v3.7.0 that buffer was refreshed only at turn
-end - so it reported the fold stamp as of the last TURN, never as of the last
-FOLD, and a completed compaction stayed invisible until the next turn ended. A
-test written against it passed only when the echo happened to be one fold stale,
-observing the *previous* run's fold. The echo is now republished on every fold
-outcome (success and failure alike), but the durable `ev:compact` episodic row
-remains the right thing to assert on: it is written only on success, it carries
-the byte/message counts, and it survives a restart.
+**Assert on the `ev:compact` row, not on `CTX?`.** The diagnostic reads a
+cross-task echo buffer that is republished on every fold outcome, success or
+failure. The durable `ev:compact` episodic row is the right thing to assert on:
+it is written only on success, it carries the byte and message counts, and it
+survives a restart.
 
-### Derived context budgets (Context Fabric, 2026-08-05)
+### Derived context budgets
 
 Every context allocation is **derived from the head model's context window**
 rather than hardcoded: `nimbus::orch::deriveBudget(ctxTokens, overrides)`
@@ -351,8 +353,8 @@ The window comes from the existing `modelCtxTokens()` table.
 **Anchor invariant:** at a 200K window the derived values are 32768 / 4096 /
 8192 / 8192 / 65536 / 1200 / 65536 (system prompt / summary / recent tail /
 per-tool-result / tool total / brief / fold slice). Each equals the previously
-hardcoded constant except the recent tail, which CUM-485 raised from 3000 to
-8192 so the previous reply reaches the next turn whole (3000 is now its floor).
+hardcoded constant except the recent tail, raised from 3000 to 8192 so the
+previous reply reaches the next turn whole (3000 is now its floor).
 A smaller-window model degrades gracefully; a larger one automatically gets a
 richer prompt.
 

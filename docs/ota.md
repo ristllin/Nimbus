@@ -1,22 +1,18 @@
-# OTA firmware updates
+# OTA Firmware Updates
 
-> This page is the OTA design and device-behavior reference. The operator
-> runbook - how to cut a release, which tokens expire where and how to renew
-> them, and how to rotate the signing key - is maintainer-internal and is not
-> part of the public docs.
+> This page describes how the device updates itself over the air, how a release is trusted, and what you see while an update runs. Read it before relying on OTA in the field or when an update check does not behave as expected. The release runbook (cutting a release, tokens, signing-key rotation) is maintainer-internal and not part of the public docs.
 
-Nimbus updates itself over Wi-Fi from GitHub Releases. The flash layout was
-already A/B (stock `default_16MB.csv`: `otadata` + two 6.5 MB app slots), so OTA
-needed no partition change: the running slot downloads the new image into the
-**inactive** slot, verifies it, flips the boot flag, restarts - and **rolls back
-by itself** if the new firmware can't boot.
+Nimbus updates itself over Wi-Fi from GitHub Releases. The flash layout is A/B
+(stock `default_16MB.csv`: `otadata` plus two 6.5 MB app slots), so OTA needs no
+partition change: the running slot downloads the new image into the inactive
+slot, verifies it, flips the boot flag and restarts, and rolls back by itself if
+the new firmware cannot boot.
 
-⚠ **Delivery is from the dedicated releases repo [`ristllin/nimbus-fw-releases`](https://github.com/ristllin/nimbus-fw-releases), NOT the source repo.** The device
-downloads over unauthenticated HTTPS (no repo credentials baked into firmware),
-so release assets must live somewhere any device can fetch them - a dedicated,
-assets-only public repo (the same pattern as the SFX assets). The signed
-binaries carry no secrets, and the ECDSA signature is what devices trust.
-Forking the project and shipping to your own devices? See
+⚠ **Delivery is from the dedicated releases repo [`ristllin/nimbus-fw-releases`](https://github.com/ristllin/nimbus-fw-releases), not the source repo.** The device
+downloads over unauthenticated HTTPS with no repo credentials in the firmware,
+so release assets live in a public, assets-only repo (the same pattern as the
+SFX assets). The signed binaries carry no secrets; the ECDSA signature is what
+devices trust. To ship firmware to your own fork's devices, see
 [`self-hosted-ota.md`](self-hosted-ota.md).
 
 ```mermaid
@@ -37,14 +33,13 @@ flowchart TD
 ## Trust model
 
 - **Signature** (the real gate): CI signs, per variant, the canonical message
-  `nimbus-ota-v2\n<version>\n<type>\n<sha256-hex>\n` with ECDSA P-256
-  (secret `OTA_SIGNING_KEY`). The device rebuilds that message from what it
-  actually downloaded and verifies against the public keys baked into
-  [`include/ota_pubkey.h`](../include/ota_pubkey.h) **before** the boot flag
-  flips. Binding version+type kills mix-and-match and cross-version replay. (The
-  schema-1 transition is over: `release.yml` publishes only the typed schema-2
-  manifest and `parseManifest()` rejects anything else, so the legacy
-  `nimbus-ota-v1` message is no longer signed - see Typed manifests.)
+  `nimbus-ota-v2\n<version>\n<type>\n<sha256-hex>\n` with ECDSA P-256. The
+  device rebuilds that message from what it downloaded and verifies it against
+  the public keys in [`include/ota_pubkey.h`](../include/ota_pubkey.h) before
+  the boot flag flips. Binding version and type rules out mixed variants and
+  cross-version replay. `release.yml` publishes only the typed schema-2 manifest
+  and `parseManifest()` rejects anything else, so the legacy `nimbus-ota-v1`
+  message is no longer signed (see Typed manifests).
 - **TLS**: downloads ride `tlsSetup()` (CA-bundle validation, `tlsVerify`
   default ON), so the transport is also authenticated on default settings.
 - **Residual**: a MITM against a `tlsVerify=0` device can only replay an old
@@ -93,21 +88,19 @@ own type.
 - **Derivation only guesses a single-type family.** A Solide + TFT board derives
   `nimbus-tft` (the Solide family has exactly one type). A Freenove has three sizes
   (`freenove-28` / `-35` / `-40`) that board identity cannot tell apart, so an
-  UNSEEDED Freenove derives no type and is offered no update: it must be reflashed
-  with its explicit size rather than guessing one. The flasher seeds the exact size
-  on every real install, so this only ever refuses a Freenove that reached the typed
-  scheme with no seed.
+  unseeded Freenove derives no type and is offered no update: reflash it with its
+  explicit size. The flasher seeds the exact size on every real install, so this
+  only affects a Freenove that reached the typed scheme with no seed.
 
 The repo-layout decision (reuse `nimbus-fw-releases`, one manifest per release) is
 recorded in [`adr/0001-ota-releases-repo.md`](adr/0001-ota-releases-repo.md).
 
 ## Cutting a release
 
-Publishing a signed release to the fleet - the version bump and tag, the CI
-signing step, the one-time schema-1 transition manifest, the two CI secrets
-(`OTA_SIGNING_KEY` and `RELEASE_PAT`), and token/key renewal and rotation - is an
-operator task. That runbook is maintainer-internal and is not part of the public
-docs. What a device does with a release once it is published is described below.
+Publishing a signed release (version bump and tag, the CI signing step, CI
+secrets, token and key rotation) is an operator task covered by the
+maintainer-internal runbook. The sections below describe what a device does with
+a release once it is published.
 
 ## Release tags: firmware and Virtual Nimbus image
 
@@ -141,10 +134,10 @@ release, and no release moves running Virtual Nimbus instances by itself.
 
 ## Device behavior
 
-- **Check**: ~2 min after boot, then daily; on demand from Settings → Software
-  update on the web page, the device's Settings > Software update menu
-  (Orchestrator mode only - "Check for updates" renders "(unavailable)" in
-  Notifier mode), or `POST /api/ota/check`. State surfaces in `/api/state`
+- **Check**: about 2 minutes after boot, then daily; on demand from Settings >
+  Software update > **Check for Updates** on the web page, from the device's
+  Settings > Software update > Check for updates row (Orchestrator mode only; in
+  Notifier mode the row renders "(unavailable)"), or with `POST /api/ota/check`. State surfaces in `/api/state`
   (`ota`, `otaResult`, `otaLatest`, `otaNotes`, `otaPct`, `lastOta`, `autoUpd`)
   and `STATUS` (`ota=`, `lastOta=`).
 - **A check always ends in a result.** `POST /api/ota/check` returns `202`
@@ -154,72 +147,61 @@ release, and no release moves running Virtual Nimbus instances by itself.
   `new-version` (a newer release, with `otaLatest` + `otaNotes`), `unreachable`
   (the release feed could not be reached at all), or `failed` (reached the
   server but the manifest was rejected; `otaErr` carries the short reason).
-  `pending` means a check is still running or none has run yet. The distinction
-  between `unreachable` and `failed` is honest: a transport failure is never
-  reported as "up to date". (`nimbus::ota::checkResult`, host-tested.)
-- **The check never blocks the web request, so a tunneled check cannot leak a
-  raw 5xx.** `POST /api/ota/check` only *starts* the check. It claims the
-  single-flight guard, runs a few cheap local gates (Wi-Fi up, heap headroom),
-  hands the manifest fetch and signature verify to a short-lived worker that takes
-  the one shared TLS slot, and answers `202 {"ok":true,"state":"checking"}` right
-  away. No new long-lived task and no second TLS session are created (the
-  concurrency invariants hold). Because the slow HTTPS work runs off the web task,
-  the accept lands well inside the relay and origin time budgets, so over the
-  encrypted relay tunnel the browser sees that fast `202`, never a raw upstream
-  `502` from the edge giving up on a slow origin while the device quietly finishes
-  the check. The verdict is read afterwards from `/api/state` (above), and a
-  second check pressed while one is in flight is refused (`409 busy`) rather than
-  starting a second fetch.
+  `pending` means a check is still running or none has run yet. A transport
+  failure is never reported as up to date.
+- **The check never blocks the web request.** `POST /api/ota/check` only starts
+  the check: it claims the single-flight guard, runs a few cheap local gates
+  (Wi-Fi up, heap headroom), hands the manifest fetch and signature verify to a
+  short-lived worker, and answers `202 {"ok":true,"state":"checking"}` right
+  away. The verdict is read afterwards from `/api/state` (above). A second check
+  pressed while one is in flight is refused with `409 busy` rather than starting
+  a second fetch. Because the slow HTTPS work runs off the web task, a check
+  started through the encrypted relay also returns promptly instead of timing out
+  at the edge.
 - **On-screen feedback (device menu).** Settings > Software update shows a status
-  band while a check or install runs and after it settles, so the check is never
-  silent: a progress bar (the download percent while installing, an indeterminate
-  "working" block while checking) plus a persistent result line ("Checking for
-  updates...", "Up to date - vX", "Update available: vX", or an honest "Update
-  check failed (reason)"). The web page's Software update table shows the same
-  states. (`nimbus::ota::updateView`, host-tested.)
+  band while a check or install runs and after it settles: a progress bar (the
+  download percent while installing, an indeterminate bar while checking) plus a
+  result line ("Checking for updates...", "Up to date - vX", "Update available:
+  vX", or "Update check failed (reason)"). The web page's Software update group
+  shows the same states.
 - **Install**: the web page's **Install Update** button, the device menu's
   Settings > Software update > "Install vX" row (confirm: Cancel / Install and
   restart), Telegram `/update` (owner only), or `POST /api/ota/apply` (`dry=1`
-  downloads + verifies without flipping, `force=1` allows same/older AND bypasses
-  the battery gate below). During install the
-  ring is a theme-color progress bar, the screen says "do not power off", and
-  voice capture is refused. The download runs alongside the live Telegram poller
-  (heap stays steady; an earlier "stop the poller to free heap" hook is gone - it
-  deleted a live queue and crash-rebooted the device).
-- **Battery / health gate** (both the manual and the auto path): an interrupted
-  flash on a dying pack can leave a slot unbootable, so install is allowed only
-  when the pack can finish the write. The rule: **level at or above 40 % AND
-  estimated health at or above 60 %, OR the device is on external power, OR
-  battery monitoring is disabled** (there is no pack to protect). Below that,
-  the refusal names the next step: a low level asks to **Connect power** (`err`
-  `need-power`), a low health estimate asks to **Recalibrate to 100 %** (`err`
-  `need-recalibrate`, charge full then Calibrate). Because this board has no
-  VBUS sense line to prove the charger for itself, every stop offers **Install
-  anyway (I am charging)**, which re-submits with `force=1` and skips the gate.
-  (`nimbus::ota::installGate`, host-tested.)
-- **Auto-install** (`autoUpd`, default OFF): hourly idle-window evaluation -
-  no turn/voice in flight, battery ≥50 % or external power, estimated health
-  ≥60 % on battery, heap headroom (`nimbus::ota::autoInstallAllowed`,
-  host-tested).
+  downloads and verifies without flipping; `force=1` allows the same or an older
+  version and bypasses the battery gate below). During install the ring is a
+  theme-color progress bar, the screen says "do not power off", and voice capture
+  is refused. The download runs alongside the live Telegram poller.
+- **Battery / health gate** (manual and auto path): an interrupted flash on a
+  dying pack can leave a slot unbootable, so install is allowed only when the
+  pack can finish the write. The rule: level at or above 40% and estimated health
+  at or above 60%, or the device is on external power, or battery monitoring is
+  disabled (there is no pack to protect). Below that, the refusal names the next
+  step: a low level asks you to connect power (`err` `need-power`); a low health
+  estimate asks you to charge to full and recalibrate to 100% (`err`
+  `need-recalibrate`). Because the board has no VBUS sense line to detect the
+  charger, every stop offers **Install Anyway** ("I am charging"), which
+  re-submits with `force=1` and skips the gate.
+- **Auto-install** (`autoUpd`, default off): evaluated hourly in an idle window:
+  no turn or voice in flight, battery at or above 50% or on external power,
+  estimated health at or above 60% when on battery, and heap headroom.
 
-## ⚠ Notifier mode: OTA is heap-gated (Orchestrator-mode only, for now)
+## Notifier mode: OTA is heap-gated
 
-OTA check/install **refuse with 409 in Notifier mode** and never run there. In
-Notifier mode NimBLE owns most of the ~266 KB internal SRAM, leaving ~23 KB free -
-below the OTA task-spawn floor (24 KB free internal + 16 KB largest block). The
-gate deliberately refuses rather than risk an OOM during the TLS download + flash
-write. Consequence: a Notifier-mode device can't self-update over the air; update
-it by **USB reflash** or by switching to **Orchestrator mode** (which rests at
-~63 KB internal, well above the floor). OTA is fully verified in Orchestrator mode
-(Boards 1 & 2). The eventual fix (deferred, owner decision 2026-07-18) is to have
-OTA temporarily release BLE during the download in Notifier mode (frees ~40-70 KB
-internal), then the post-install restart restores it.
-- **Rollback**: before the flip the device arms `otaPend/otaBoots/otaPrev` in
-  NVS; `otaupd::bootGuard()` (the FIRST line of `setup()`, raw-NVS so it beats
-  every driver) counts boot attempts and flips back to the untouched previous
-  slot after 3 failures. Healthy for 120 s (600 s if Wi-Fi never came up) →
-  marked valid. Power loss mid-download touches only the inactive slot;
-  between guard-arm and flip → disarmed as `aborted-preflip`.
+OTA check and install refuse with `409` in Notifier mode and never run there. In
+Notifier mode Bluetooth owns most of the internal SRAM, leaving less than the OTA
+task-spawn floor (24 KB free internal plus a 16 KB largest block), and the gate
+refuses rather than risk running out of memory during the TLS download and flash
+write. To update a Notifier-mode device, reflash it over USB or switch it to
+Orchestrator mode first.
+
+## Rollback
+
+Before the flip the device arms `otaPend/otaBoots/otaPrev` in NVS;
+`otaupd::bootGuard()` (the first line of `setup()`, raw NVS so it runs before
+every driver) counts boot attempts and flips back to the untouched previous slot
+after 3 failures. Healthy for 120 s (600 s if Wi-Fi never came up) marks the slot
+valid. Power loss mid-download touches only the inactive slot; power loss between
+guard-arm and flip is disarmed as `aborted-preflip`.
 
 ## Update over the USB cable (local, unsigned, cable-gated)
 

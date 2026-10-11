@@ -127,7 +127,7 @@ keyword fallback of `memory.search` and `memory.archive`, `files.search`, and
   before.
 
 Before this rule, every word had to appear, so adding a synonym guaranteed an
-empty answer and the assistant concluded it had never been told (CUM-515).
+empty answer and the assistant concluded it had never been told.
 
 The original design splits this into (a) an **SQLite DB** for structured rows
 and (b) an **append-only JSONL day-file stream** (`/data/blob/YYYY-MM-DD.jsonl`)
@@ -255,7 +255,7 @@ so it can be found or restored later without paying to re-embed it. The model re
 it through `memory.archive` (`search` / `restore` / `list`), which is offered only
 when a card is present; `restore` returns the fact to the live store, counting against
 the normal memory limit. With no card, expiry deletes exactly as before. See
-[orchestrator-storage.md §2a](orchestrator-storage.md) and CUM-225.
+[orchestrator-storage.md §2a](orchestrator-storage.md).
 
 ### 2.3 Rapid-message batching (one turn per burst)
 
@@ -268,7 +268,7 @@ into a run-on; it is simply one coherent answer rather than several disjoint one
 at one turn's cost instead of N.
 
 This applies uniformly across channels (Telegram, and the web/serial/voice inject
-queue). Key properties (CUM-398):
+queue). Key properties:
 
 - **Grouped by chat.** Messages from different chats that arrive together stay
   separate: one turn per chat, never merged across principals.
@@ -297,7 +297,7 @@ batched: each still runs its own turn.
 ## 3. Capability & world manifest
 
 Generated, never hand-written (so it can't drift): hardware inventory (ring,
-screen, mic/speaker, battery state), connectivity (Wi-Fi/BLE/Telegram
+screen, mic/speaker, battery state), connectivity (Wi-Fi/Bluetooth/Telegram
 up?), SD present?, and the tool list pulled from the MCP registry with
 one-line descriptions. The model knows its verbs and its body.
 
@@ -422,87 +422,3 @@ rails, executes with a timeout, **audits every call to the blob stream**
   panels.
 - **Ph4:** conversational session control (`tell`/`poll` as user) · LAN MCP
   + auth · dashboard session console.
-
-## 9. Open items
-
-- SQLite-on-ESP32 lib (`siara-cc/esp32_arduino_sqlite3_lib`) flash/RAM cost on
-  the N16R8 - validate early in Ph2; fallback: typed flat-file index.
-- int8 quantization recall accuracy at 256 dims (bench vs f32 on host).
-- Tool-use loop cap per turn (start with 8 actions).
-- Re-embed UX (background job progress on dashboard).
-- Whether `memory.sql` free-form SELECT is worth the parser risk vs. canned
-  query templates (by-date, by-kind, by-session, full-text).
-
-## Build status (2026-07-03)
-
-Legend: **done** = built + host-tested · **hw** = hardware-verified on-device ·
-**compile** = device code built + compile-verified · **seam** = portable core done,
-device seam pending · **designed** = designed only
-
-**307 native tests green + Part B MERGED to main (merge `f9baf9e`) + HARDWARE-
-VERIFIED E2E** on the bench device. The UX2/BLE work is
-committed + tagged `agent2-ux2-ble`. On-device E2E (11/11): live OpenAI embedding
-→ int8 → store → cosine recall (the "teal" memory ranked first for a color query)
-over `POST /mcp`, `session.list`, the memory dashboard endpoints, the set-once
-embed lock, AND durable persistence across reboot (after fixing a LittleFS
-`/data`-dir bug, commit `0d1bf95`).
-
-### Ph1 - portable cognitive core  [done] (28 host tests)
-- [done] Scratchpad (`orch/scratchpad`): short/mid/long goal tiers + active task,
-  device-capped, NVS-serializable.
-- [done] MemConfig (`orch/mem_config`): retrieval/decay clamps, model+user tunable.
-- [done] Capability manifest + running-sessions digest + context assembler (`orch/world`).
-- [done] Tool registry + MCP JSON-RPC 2.0 dispatcher (`orch/tool_registry`).
-- [seam] Wiring into the live orchestrator turn loop - deferred: the console `TURN`
-  path reboots the device (watchdog), so live-turn changes can't be hardware-
-  verified yet; the memory server runs decoupled (web + MCP), so this is additive.
-
-### Ph2 - episodic store  [seam] (7 host tests)
-- [done] Records (session/message + kind column) + query model (session/kind/time/
-  text) + `InMemoryEpisodicStore` reference (`orch/episodic`), used on-device now.
-- [designed] Device SQLite-on-SD impl behind the same `EpisodicStore` interface +
-  JSONL day-stream + blob sidecars - needs an SD card + the esp32 sqlite lib.
-
-### Ph3 - associative vector memory  [hw] hardware-verified (24 host tests)
-- [done] `VectorMemory` (`orch/vector_memory`): int8 vectors, cosine recall,
-  dedup/decay/prune/TTL/permanence; + binary serialize/
-  deserialize for the SD/flash blob.
-- [done] `memory.*` MCP tools (`orch/memory_tools`): write/search/config/scratchpad,
-  host-tested E2E over JSON-RPC with an injected fake embedder.
-- [done] Portable embeddings wire format (`orch/embedding`): build request + parse
-  response (OpenAI shape), host-tested.
-- [hw] **Device (hardware-verified)**: `agent::embeddings` (real OpenAI
-  `/embeddings` TLS call → int8), `agent::memory` subsystem (engines + real
-  embedder + LittleFS/NVS persistence + registered tools), web dashboard
-  (`net/web_memory`: browse/search/tune/embed-config-set-once). Live embed →
-  store → recall → persist-across-reboot all confirmed on the bench device.
-
-### Ph4 - sessions + LAN MCP  [hw] device / [compile] bidirectional pending (9 host tests)
-- [done] `session.*` tools (`orch/session_tools`): spawn/tell-as-user/poll/terminate/
-  list, host-tested with injected handlers + over MCP.
-- [hw] **Device**: `POST /mcp` LAN JSON-RPC endpoint + `session.list` wired to the
-  journal - hardware-verified (session.list returns over `/mcp`).
-- [compile] Bidirectional `spawn/tell/poll/terminate` handlers are documented null seams
-  (report "not supported") until the fabric exposes conversational sub-session
-  control; MCP LAN auth is an open item.
-
-### What's proven where
-- **Part A control surface**: hardware-verified E2E (the bench device,
-  live OpenAI key verify=1).
-- **Part B memory system**: hardware-verified E2E (11/11 on the bench device -
-  live embed→store→recall→persist over `/mcp` + dashboard) + 307 native tests,
-  merged to main. Remaining: SQLite-on-SD episodic impl, live-turn-loop recall
-  injection (blocked by the console-`TURN` watchdog reboot), bidirectional
-  session control, MCP LAN auth.
-
-### Hardware notes (2026-07-03 bring-up)
-- **A full `esptool write-flash` resets NVS** (mode → Notifier, Wi-Fi creds + API
-  keys wiped) - re-provision after every flash: `WIFI <your-ssid>|<pass>` over
-  the console, then the OpenAI key via `/api/orch`. A plain reboot keeps NVS.
-- **Wi-Fi STA rejoin is slow/flaky right after a flash or reboot** (tens of
-  seconds, sometimes needs a re-provision); it joins reliably from a clean boot.
-  Suspected Wi-Fi/BLE radio contention in the merged firmware (BLE is on in
-  Notifier mode).
-- **LittleFS won't auto-create parent dirs** - the vector blob at
-  `/data/orchvec.bin` needs an explicit `mkdir("/data")` (fixed, `0d1bf95`);
-  same caveat applies to any new `/data/...` file.

@@ -92,16 +92,13 @@ To disconnect, remove the connector.
 
 #### What is headless, and the one step that is not
 
-Everything except step 3 happens on the device with no help:
+Everything except step 3 happens on the device:
 
-- **Headless (the device, on its own):** finding the server's sign-in details,
-  registering itself as a client, minting the sign-in link and code, completing the
-  token exchange when the browser returns, storing the result, and refreshing access
-  quietly before it expires on every turn after that.
-- **Needs your browser (once):** approving access at the server's sign-in page in
-  step 3. This is a deliberate consent, so it is your call, not the model's, and it
-  cannot be automated away. It happens one time; the device handles the refreshes
-  after that without asking again.
+- **On the device:** finding the server's sign-in details, registering itself as a
+  client, minting the sign-in link and code, completing the exchange when the
+  browser returns, storing the result, and refreshing access before it expires.
+- **In your browser, once:** approving access at the server's sign-in page in
+  step 3. This is a deliberate consent, so it is your call, not the model's.
 
 The stored sign-in lives only on the device, is never shown or logged, and is used
 the same way a token is: sent as `Authorization: Bearer` on each call.
@@ -117,20 +114,14 @@ the same way a token is: sent as `Authorization: Bearer` on each call.
 - The device must be on your Wi-Fi with a reachable address before you start; the
   sign-in link points at the device itself.
 
-> Confirming a live end-to-end sign-in against a hosted server is a bench step. The
-> sign-in machinery is verified on the host against recorded sign-in details from a
-> real server, and the on-device sign-in screen and web flow are built; the live
-> "approve on a phone, tools appear" round trip against `mcp.linear.app` is checked on
-> real hardware, not claimed from a host build.
-
 ### A local server stays on the device
 
 A server on your own network (a `192.168.x.x`, `10.x`, `172.16-31.x`, `.local`,
 or `localhost` address) is reachable from the device but not from a provider's
 cloud. Turning on **device-dialed** keeps that server on the device's own client,
 where it belongs: the device connects to it directly and never hands the URL to a
-provider. This is the default for a device-dialed server, so you do not have to
-pick a provider for it.
+provider. A device-dialed server with no provider chosen stays device-side only,
+so you do not have to pick one.
 
 A provider only ever receives a connector whose URL its cloud can actually dial.
 If a local URL is pointed at a provider by mistake, the device leaves it off that
@@ -157,24 +148,22 @@ background) turns, so untrusted automated text can never reach an outside server
 - **One request at a time.** Like every network call on the device, an MCP call
   takes the single shared connection slot, in turn with provider calls. There is
   no on-device parallelism by design.
-- **A slow or dead server cannot wedge a turn.** Each call has a short timeout,
-  and a server that keeps failing is put on a brief cooldown (a circuit breaker)
-  and skipped until it recovers, so one bad server does not stall your requests.
-  When a call does fail, the message says what happened and the one next step.
-- **Bounded size.** A response is capped: a server that sends far more than the
-  device can hold is refused with a clear message that says so, never a crash.
-- **Tool budget.** Up to a few dozen tools per server are surfaced, within the
-  assistant's context budget. A server that offers more has the rest left off,
-  and which tools are kept is the same every time.
+- **A slow or dead server cannot wedge a turn.** Discovery allows 8 seconds per
+  request and a tool call 4 seconds. A server that keeps failing is put on a
+  brief cooldown (a circuit breaker) and skipped until it recovers, so one bad
+  server does not stall your requests. When a call fails, the message says what
+  happened and the one next step.
+- **Bounded size.** A response larger than 160 KB is refused with a message that
+  says so, never a crash.
+- **Tool budget.** Up to 6 device-dialed servers and up to 48 tools per server
+  are surfaced. A server that offers more has the rest left off.
 
 ## Servers worth connecting
 
-A short, honest starter set of remote MCP servers a Nimbus owner tends to get real
-use from, grouped by how you connect today. The endpoint is what you paste into the
-connector's **MCP endpoint URL**; verify the current URL on the server's own page
-before relying on it, since hosted endpoints move. How you sign in matters more than
-the tool list: the three groups below are the three sign-in paths the device
-supports right now.
+A starter set of remote MCP servers, grouped by how you sign in, which is the
+three paths the device supports. The endpoint is what you paste into the card's
+**MCP server URL**; check it on the server's own page first, since hosted
+endpoints move.
 
 ### Works now with a token or no sign-in
 
@@ -191,8 +180,8 @@ connect the moment you approve them.
 ### On your own network (the best fit for a desk device)
 
 A server on your own network is reachable from the device but not from a provider's
-cloud, so turn on **device-dialed** for it (the default for a private address) and
-give it a fixed token. These keep your data on your network.
+cloud, so mark it device-dialed (see [Setting one up](#setting-one-up)) and give it
+a fixed token. Your data stays on your network.
 
 | Server | What it does for you | Endpoint | Connect with |
 |---|---|---|---|
@@ -232,6 +221,6 @@ request, so the token never leaves the device. See
 - **No tools appear after approval** - confirm the URL is reachable *from the
   device* (a server on `localhost` of another machine is not), and that it is a
   Streamable HTTP MCP endpoint.
-- **Sign-in does not finish** - open the link on a device on the same network as
-  the Nimbus, and finish approving within a couple of minutes. If it still stalls,
-  start the sign-in again from the connector.
+- **Sign-in does not finish** - open the link on a phone or laptop on the same
+  network as the device and finish approving promptly. If it still stalls, choose
+  **Sign in** on the card again.

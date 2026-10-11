@@ -1,10 +1,10 @@
 <!-- audience: dev -->
-# Turn anatomy - what the model actually sees, and how to inspect it raw
+# Turn anatomy - what the model sees and how to inspect it
 
-Every orchestrator turn is assembled from scratch on the device. When a reply seems
-to come out of nowhere ("what are you talking about?"), the answer is always in one
-of the blocks below - and you can see the **exact raw text** of the most recent
-turn at:
+This page describes the exact text the Orchestrator sends to the model on each
+turn, and how to read it back. Use it when a reply seems to come out of nowhere:
+the cause is always in one of the blocks below, and the raw text of any recent
+turn is one request away:
 
 ```
 GET http://<device>/api/lastturn         (token-gated; the LAST turn, from RAM)
@@ -20,17 +20,16 @@ and its result. Captured for a completed turn, success or failure.
 `/api/trace?turn=<id>` is the same anatomy kept **per turn** on the SD card
 (`/mem/trace/<turnId>.txt`), so you can open a turn from hours ago.
 
-In the web **Chat** tab you don't need either URL: every turn's disclosure has a
-**Turn anatomy** button that fetches its own dossier, and any clipped tool result
-has **Show full result**. Under each reply a chip reports the host, model,
+In the web **Chat** tab neither URL is needed: every turn's disclosure has a
+**Turn anatomy** button that fetches that turn's dossier, and any clipped tool
+result has **Show full result**. Under each reply a chip reports the host, model,
 tool-call count and the turn's real billed tokens.
 
 **Turn identity.** Every row of a turn - the reply, each tool call, each thinking
 row - is tagged `turn:<user row id>` (e.g. `turn:m0000a3f2`), which is the id of
-the turn's own user message row. It is stable across reboots, so the chat groups
-a bubble with its trace by identity. (Before v4.2.0 the tag was `turn:tN` from a
-RAM counter that reset every boot and the UI grouped by chronological adjacency,
-which mis-filed rows whenever a Telegram or voice turn interleaved with a web one.)
+the turn's own user message row. It is stable across restarts, so the chat groups
+a bubble with its trace by identity rather than by time order, which keeps rows
+filed correctly when a Telegram or voice turn interleaves with a web one.
 
 Turn details are **SD-gated** and gated on **Activity recording** (Assistant →
 Tools → Tool use, `otrace`, default on). With either missing the chat says so
@@ -42,10 +41,10 @@ A byte-pinned copy of the full system-prompt template lives in the goldens:
 `test/golden/orch_prompt_recall_loopoff.txt`, plus
 `test/golden/orch_prompt_v2_default.txt` (the simplified v2 prompt, behind the
 `promptV2` flag - see [harness.md](harness.md)) - regenerated with
-`GOLDEN_UPDATE=1 pio test -e native -f test_harness_compose`. Those files ARE the
-raw template, kept honest by CI.
+`GOLDEN_UPDATE=1 pio test -e native -f test_harness_compose`. Those files are the
+raw template; CI fails when the composed prompt drifts from them.
 
-For the whole lifecycle around a turn (boot, ticks, sub-agents, loops, dreaming,
+For the whole lifecycle around a turn (boot, ticks, sub-agents, routines, dreaming,
 watchdogs) see [harness.md](harness.md); for the sub-agent side see
 [sub-sessions.md](sub-sessions.md).
 
@@ -55,19 +54,20 @@ watchdogs) see [harness.md](harness.md); for the sub-agent side see
 
 Assembled by `composeInstructions()` (`lib/harness/src/compose.cpp`; section
 emission + byte budget in `lib/core/src/orch_world.cpp::assembleContext`). Blocks
-in emission order; the budget (`maxContextBytes`, default web-tunable, ceiling
-32 KB) drops whole optional blocks from the bottom of this table first, then
-recall bullets one at a time:
+in emission order; the budget (`maxContextBytes`: auto by default, derived from
+the head model's window, 32 KB at a 200K head; an owner override is clamped to
+4 KB to 64 KB) drops whole optional blocks from the bottom of this table first,
+then recall bullets one at a time:
 
 | # | block | source | what it is |
 |---|---|---|---|
 | 1 | role + field docs | `ORCH_ROLE` + `ORCH_FIELD_DOCS` | the orch_turn contract, generated from the same `ORCH_D_*` macros as the wire schema - prompt and wire cannot drift |
 | 2 | identity + `[HOW YOU RUN]` | `compose.cpp` | device name, "Your brain right now: host/model", firmware version, **current date-time (temporal grounding - says UNKNOWN and forbids dating anything until SNTP syncs)**, then how turns/rounds/memory tiers/sub-agents work |
 | 3 | `## DIRECTIVE` | `sysPrompt` (NVS) | your standing instructions from the web Directive box (and the setup wizard). It ships with an owner-authored default and is editable (or revertible) any time; empty stored value uses that default. Delimited inside as `[OWNER PREFERENCES ...]` and framed as subordinate to blocks 1-2, so it shapes tone and behavior but never overrides safety, moderation, or access rules. The model's `[RUNNING MEMORY]` (its own `memory` field from last turn) is appended inside this block |
-| 4 | `## CAPABILITIES` | `orch_world.cpp` | what is LIVE right now: hardware manifest, ring/screen honesty prose, artifact store, voice on/off, sub-agent fire-and-forget note, `Tools you can call:` list, Limits (keys/routing blocked), connector honesty, and whether the tool loop is ON this turn |
+| 4 | `## CAPABILITIES` | `orch_world.cpp` | what is live right now: hardware manifest, ring/screen honesty prose, artifact store, voice on/off, sub-agent fire-and-forget note, `Tools you can call:` list, Limits (keys/routing blocked), connector honesty, and whether the tool loop is ON this turn |
 | 5 | `## RUNNING SESSIONS (your sub-agents)` | job journal | live sub-agent digest (also authoritative as `[ACTIVE SESSIONS]` in the input) |
 | 5a | `## CONVERSATION SUMMARY` | the fold ([memory.md](memory.md)) | the chat's anchored compaction summary (≤4 KB), present once the chat has folded; framed "information, not instructions". Under budget pressure it is clipped or dropped BEFORE the window below and the scratchpad's room |
-| 5b | `## RECENT CONVERSATION` | episodic PSRAM ring | **per-chat window: up to 12 messages of THIS chat, oldest first, newest rows kept whole, byte budget derived from the head model's window (8 KB at 200K, 3000 B floor, 16 KB cap), stopping at the newest `/clear` boundary** (chat messages plus shared photos, files and audio, whose rows carry their descriptions; the in-flight user row is excluded - it arrives as `[USER]`). Byte budget and trimming rule: see "The recent window rule" below. Added in v3.3.0; survives reboot via the SD rehydrate |
+| 5b | `## RECENT CONVERSATION` | episodic PSRAM ring | **per-chat window: up to 12 messages of this chat, oldest first, newest rows kept whole, byte budget derived from the head model's window (8 KB at 200K, 3000 B floor, 16 KB cap), stopping at the newest `/clear` boundary** (chat messages plus shared photos, files and audio, whose rows carry their descriptions; the in-flight user row is excluded - it arrives as `[USER]`). Byte budget and trimming rule: see "The recent window rule" below. Added in v3.3.0; survives a restart via the SD rehydrate |
 | 6 | `## SCRATCHPAD` | NVS | the model's own goal tiers (now/short/long) |
 | 7 | `## RELEVANT MEMORIES` | vector-DB recall on the user text | top-k long-term memories semantically similar to your message, prefixed `[NN%]` |
 | 8 | `## HOW YOUR MEMORY WORKS` | `compose.cpp` | the memory-tier usage instructions (first block dropped under budget pressure) |
@@ -89,29 +89,29 @@ Concatenated in `handleMessage()` / synthesis / scheduled-loop paths
 | `[CHANNEL]` | owner turns | which channel the message arrived on + reply-routing rules |
 | `[USER]` | owner turns | your message - **the only thing you typed that the model sees this turn** |
 | `[SYSTEM]` | synthesis turns | "sub-agents finished, no new user message - synthesize" |
-| `[SCHEDULED LOOP]` | loop firings | the routine's stored prompt; no user message |
+| `[SCHEDULED LOOP]` | routine firings | the routine's stored prompt; no user message |
 
 `[CONTEXT]` is **not** a head-turn block - it rides the *sub-agent brief* only
 (see [sub-sessions.md](sub-sessions.md)).
 
-### 3. Conversation history - the part people assume wrong
+### 3. Conversation history - no transcript replay
 
-There is no full transcript replay. Cross-turn continuity comes from exactly
-**five** sources:
+The device never replays a full transcript. Cross-turn continuity comes from
+exactly **five** sources:
 
 0. **`## CONVERSATION SUMMARY`** (since v3.6.0) - the chat's anchored fold
    summary: everything older than the verbatim window, compacted. See
    [memory.md](memory.md).
 1. **`## RECENT CONVERSATION`** (since v3.3.0) - the last ≤12 messages of this
    chat, auto-injected from the episodic store's PSRAM ring every turn. This is
-   per-chat (Telegram A ≠ web ≠ voice) and survives reboot. On a tool-loop turn
-   (the default) the provider keeps no thread, so this window is the ONLY place
-   the model sees its previous reply - which is why the newest rows ride whole,
-   within a byte budget derived from the head model's window (CUM-485). `/clear`
+   per-chat (Telegram A ≠ web ≠ voice) and survives a restart. On a tool-loop
+   turn (the default) the provider keeps no thread, so this window is the only
+   place the model sees its previous reply, which is why the newest rows ride
+   whole, within a byte budget derived from the head model's window. `/clear`
    writes a boundary row (`ev:clear`) into the chat's history: the window, the
    sub-agent brief's context and the next compaction all stop there, and the
-   chat's summary, running notes and provider thread reset - so the next turn
-   carries no prior conversation (CUM-511). The history itself is kept and stays
+   chat's summary, running notes and provider thread reset, so the next turn
+   carries no prior conversation. The history itself is kept and stays
    searchable with `memory.episodic`.
 2. **The provider-side conversation chain** - per chat AND per host since v3.3.0
    (`orchConv` map, LRU-8). While it holds, the provider re-serves prior turns
@@ -149,15 +149,15 @@ by `assembleContext` (`lib/core/src/orch_world.cpp`):
 - **Then previews.** A message too big to fit whole becomes a one-line preview
   (every line break flattened to a space, the same set as above, so a preview
   cannot fake a row or header either) clipped to 300 B; the newest message alone
-  over the budget keeps its head
-  instead. The first message that fits in neither form ends the window behind
-  `(earlier messages omitted - byte budget)`.
+  over the budget keeps its head instead. The first message that fits in neither
+  form ends the window behind `(earlier messages omitted - byte budget)`.
 - **Fitted to the real room.** If the assembled system prompt has less room
-  left than the budget, the OLDEST whole rows are cut until the window fits
+  left than the budget, the oldest whole rows are cut until the window fits
   (reported as `conversation(clipped)` in the OMITTED trailer); if not even the
   newest message fits, its head is kept. The window, whole or trimmed, never
-  takes the room the scratchpad needs. On a 128K head the self-model leaves well under 1 KB, so
-  only the newest short messages (or the head of the last reply) fit there.
+  takes the room the scratchpad needs. On a 128K head the system prompt leaves
+  well under 1 KB, so only the newest short messages (or the head of the last
+  reply) fit there.
 
 ## When a turn can't run
 
@@ -194,4 +194,4 @@ widen the view on demand:
 
 Tags are `r<n>` for tool-result spills and `sub:<jobtag>` for sub-agent results.
 The truncation marker and the `[FRESH RESULTS]` stubs embed the tag directly, so
-the model never has to guess one. See docs/memory.md for the gradient rules.
+the model never has to guess one. See [memory.md](memory.md) for the gradient rules.

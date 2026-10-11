@@ -9,7 +9,7 @@ schema in `lib/core/include/nimbus/orch/orch_schema.h`.
 ## The contract has one source
 
 Every field of the `orch_turn` response (reply, ask, memory, device[],
-mem_write[], mem_query[], session_ops[]) is defined ONCE, as `ORCH_D_*`
+mem_write[], mem_query[], session_ops[]) is defined once, as `ORCH_D_*`
 description macros in `orch_schema.h`. The same macros generate both:
 
 - **the JSON Schema** sent to the provider (`ORCH_SCHEMA_BODY`), and
@@ -46,9 +46,9 @@ IS one JSON object (bare, or the whole reply in one fence) is the turn; a reply
 that opens like JSON but is not a turn (or is wholly a JSON array, or an array
 of objects cut off before it closes) goes to the salvage path, so raw wire JSON never reaches a person; any other reply is prose and is delivered as the
 reply alone - prose (even prose quoting JSON) never becomes device actions,
-memory writes or spawns. And the portable device-action validator
-(`orch_device_actions.cpp`) re-checks EVERY device action - including the
-protected-key refusal (API keys, provider routing) - no matter what the wire
+memory writes or spawns. The portable device-action validator
+(`orch_device_actions.cpp`) re-checks every device action, including the
+protected-key refusal (API keys, provider routing), no matter what the wire
 promised. A provider bug can degrade a turn; it cannot make the device execute
 an action the validator refuses.
 
@@ -64,21 +64,21 @@ Per-provider strict-schema requirements (each a hard API constraint):
 
 ## The tool loop rides one canonical transcript
 
-Every tool-loop turn is recorded into ONE device-owned `Transcript`
+Every tool-loop turn is recorded into one device-owned `Transcript`
 (`lib/core/src/orch_transcript.cpp`, host-tested): the seeded user input, then
 per round the model's prose, its tool calls, and their results. The portable
 controller (`runHeadLoop`, `lib/core/src/orch_head_loop.cpp`) owns rounds/
 deadline/heap/byte caps and records into the transcript through
 `hooks.transcript`; each provider adapter supplies a thin `step` closure that
-RE-RENDERS its wire shape from that transcript every round. The loops are
+re-renders its wire shape from that transcript every round. The loops are
 therefore **stateless** - no provider-side conversation is retained between
 rounds, and turn continuity lives on the device, not on a provider's server.
 
 This is the invariant that makes a mid-turn provider switch possible (below):
-executed tool results ride the transcript as DATA, so re-rendering a round
+executed tool results ride the transcript as data, so re-rendering a round
 against a different provider replays nothing - the tools already ran.
 
-**Calls sent WITH the final answer run before any reply.** A model may batch
+**Calls sent with the final answer run before any reply.** A model may batch
 tool calls (typically `memory_write`) in the same response as its final
 `orch_turn`. The controller runs those calls once, before any reply is
 delivered, then discards that premature reply - it was written before the
@@ -143,13 +143,13 @@ serves:
   the Studio built-in connectors, so loop rounds drop the built-ins and the
   registry's `web.search` covers the gap. (The single-shot Conversations path
   keeps them.)
-- **Per-round socket budget** (F25): each round's exchange timeout is clamped to
-  the turn's REMAINING wall-clock budget (8 s floor), so N slow rounds cannot
+- **Per-round socket budget**: each round's exchange timeout is clamped to
+  the turn's remaining wall-clock budget (8 s floor), so N slow rounds cannot
   stack past the 600 s turn deadline.
-- **Thinking**: Anthropic non-tool text blocks and OpenAI reasoning SUMMARIES
+- **Thinking**: Anthropic non-tool text blocks and OpenAI reasoning summaries
   (requested via `reasoning:{summary:"auto"}`, gated off the `-chat` variants
   that reject the parameter) are observed into the glass box, never replayed into
-  the conversation. Only OpenAI's ENCRYPTED reasoning items are replayed, and
+  the conversation. Only OpenAI's encrypted reasoning items are replayed, and
   only because a reasoning model requires them under `store:false`.
 
 ## Context overflow (reactive)
@@ -213,7 +213,7 @@ per-host loops could not carry a turn across providers.)
 
 ## Graceful degradation ladder
 
-From least to most degraded, all fail-open and none reboot:
+From least to most degraded, all fail open and none restart the device:
 
 - A tool dispatch fails → the model sees the error text as the tool result and
   is expected to recover (a tool error is never fatal to the loop).
@@ -231,7 +231,7 @@ From least to most degraded, all fail-open and none reboot:
 Documented separately in [sub-sessions.md](sub-sessions.md) - Anthropic managed
 agents (environments/agents/sessions + an events poll), OpenAI background
 Responses, Mistral Conversations (synchronous under an async skin), and the
-custom LAN backend.
+custom LAN endpoint.
 
 ## Z.ai (GLM)
 
@@ -272,7 +272,7 @@ model defaults to a proven router model until you pick one under Assistant > Mod
 ## Model catalog, capabilities, and fallbacks
 
 The device builds a live, capability-aware model catalog per provider by harvesting
-each key's own `/v1/models` (dropping the old 8-id cap) and classifying every model
+each key's own `/v1/models` and classifying every model
 into roles (orchestrator, sub-agent, embedding, vision, STT, TTS, image), a size
 class (S/M/L), and capability flags. It reads capability fields where the API
 supplies them (Anthropic `max_input_tokens`/`max_tokens`/`capabilities`, Mistral
@@ -303,24 +303,24 @@ answered. A working direct call shows nothing.
 
 ## Local model as the custom endpoint (Ollama and friends)
 
-The device can run against any OpenAI-compatible server on your own network -
-no cloud key, no internet. Verified setup (2026-08-12, Ollama on a Mac):
+The device can run against any OpenAI-compatible server on your own network,
+with no cloud key and no internet. Example with Ollama:
 
 1. On the server machine: install [Ollama](https://ollama.com), pull a small
    model (`ollama pull qwen2.5:3b`), and bind it to your LAN by running
-   `ollama serve` with `OLLAMA_HOST=0.0.0.0:11434`. ⚠ On macOS,
-   `brew services restart ollama` regenerates its launchd plist and silently
-   drops the env - use your own LaunchAgent (or Ollama.app's settings) if you
-   want the binding to persist.
-2. On the device (Assistant → Models → Custom endpoint, or
-   `POST /api/orch`): Base URL `http://<server-ip>:11434/v1`, conversation
-   style `openai`, Model ID `qwen2.5:3b`. Restart the device - the custom
-   backend registers at boot. Any URL path (the `/v1`) is ignored; only the
-   host and port matter. ⚠ `<server-ip>` is a LAN address: a plain DHCP lease
+   `ollama serve` with `OLLAMA_HOST=0.0.0.0:11434`. On macOS,
+   `brew services restart ollama` regenerates its launchd plist and drops that
+   environment variable; use your own LaunchAgent (or Ollama.app's settings) if
+   you want the binding to persist.
+2. On the device (Assistant > Models > Custom endpoint, or
+   `POST /api/orch`): Base URL `http://<server-ip>:11434/v1`, wire
+   `openai wire`, Model ID `qwen2.5:3b`. Restart the device; the custom
+   endpoint registers at start. Any URL path (the `/v1`) is ignored; only the
+   host and port matter. `<server-ip>` is a LAN address: a plain DHCP lease
    moves when the server machine reconnects or changes networks, and the device
-   then silently can't reach it (a stuck/failed sub-agent, not an error you'll
-   see on the panel). Give the server a reserved/static LAN IP - or point the
-   Base URL at a `.local` mDNS name the server advertises - so the endpoint
+   then cannot reach it (you see a stuck or failed sub-agent, not an error on
+   the screen). Give the server a reserved or static LAN IP, or point the
+   Base URL at a `.local` mDNS name the server advertises, so the endpoint
    survives a reconnect.
 3. Route work to it: put `custom` in the sub-agent priority to send sub-agents
    there, or set it as the head to run the whole assistant locally.
@@ -335,8 +335,9 @@ Notes, all deliberate:
   the custom backend. A head request may take up to 120 s (the same ceiling
   as the OpenAI and Anthropic heads; the Z.ai head shares this path and GLM
   regularly needs 40-50 s); a sub-agent request times out at 30 s.
-- Firmware before v4.1.6 needs "Mid-task provider switch" (midFail) turned OFF
-  while the HEAD runs on custom - older builds routed loop turns into the
-  cloud-only fabric and failed before sending anything.
+- Firmware before v4.1.6 needs "Switch providers mid-task if one fails"
+  (`midFail`) turned off while the head runs on the custom endpoint; those
+  builds routed loop turns into the cloud-only fabric and failed before sending
+  anything.
 - A small model is honest but limited: expect terse replies and the occasional
   odd spawn. It is a great sub-agent workhorse and a private fallback head.

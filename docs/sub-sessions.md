@@ -21,51 +21,51 @@ If the model emits one anyway it gets a plain-text refusal in its next turn's
 input. `[ACTIVE SESSIONS]` (in every turn's input) is the authoritative digest of
 what is running; `[FRESH RESULTS]` is how output comes back.
 
-Caps: 6 journal slots (`kAgentMaxJobs`), 4 in-flight (`kMaxActiveInflight`),
-a 12-deep pending-spawn queue (`kMaxPendingSpawns`, v4.1.0 - the depth ONE turn
-may enqueue, deliberately decoupled from concurrency), task ≤ 4095 bytes
-(`kSpawnTaskMax`, truncation logged), one dispatch per ~1.5 s pump cycle,
-dispatch deferred below 28 KB free internal heap. The model never sees raw slot
-counts - every turn it reads a `[SPAWN CAPACITY]` line (see "Throughput" below).
+Caps: 6 journal slots (`kAgentMaxJobs`), 4 in flight (`kMaxActiveInflight`),
+a 12-deep pending-spawn queue (`kMaxPendingSpawns`, the depth one turn may
+enqueue, decoupled from concurrency), task text up to 4095 bytes
+(`kSpawnTaskMax`, truncation logged), one dispatch per ~1.5 s pump cycle, and
+dispatch deferred below 28 KB of free internal heap. The model never sees raw
+slot counts; every turn it reads a `[SPAWN CAPACITY]` line (see "Throughput"
+below).
 
-⛔ **Sub-agents run serially on-device, by design - this is a hard stability
-constraint, not a limitation to "fix".** Everything (head turns, dispatch,
-polling, synthesis) runs on the single `tg_poll` task with one TLS slot
-(`tlsSlots` default 1). Mistral sub-dispatch is fully synchronous - it blocks the
-`tg_poll` task inside `POST /v1/conversations` for up to 60 s, because Mistral has
-no background/job-id API. OpenAI (`background:true`) and Anthropic (async
-sessions) parallelize on the PROVIDER's compute, but the device still polls them
-one at a time. Adding a worker task or a second concurrent TLS is hardware-proven
-to collapse the head's contiguous internal heap and fail turns (the `tlsSlots`
-2→1 A/B, commit 78dab2c), and to starve the watchdog into a reset. Deep fan-out
-scales by SEQUENTIAL waves (queue depth), never by concurrency. Do not add
-on-device parallelism.
+**Sub-agents run serially on-device, by design.** This is a stability
+constraint, not a limitation to fix. Everything (head turns, dispatch, polling,
+synthesis) runs on the single `tg_poll` task with one TLS slot (`tlsSlots`
+default 1). Mistral sub-dispatch is synchronous: it blocks the `tg_poll` task
+inside `POST /v1/conversations` for up to 60 s, because Mistral has no background
+job API. OpenAI (`background:true`) and Anthropic (async sessions) parallelize on
+the provider's compute, but the device still polls them one at a time. Adding a
+worker task or a second concurrent TLS connection collapses the head's contiguous
+internal heap and fails turns (measured in the `tlsSlots` 2 vs 1 A/B on
+hardware), and starves the watchdog into a reset. Deep fan-out scales by
+sequential waves (queue depth), never by concurrency; do not add on-device
+parallelism.
 
-## Throughput - the honest capacity model
+## Throughput - the capacity model
 
 The device does one network call at a time, so "how many sub-agents can I run?"
 is not a fixed slot count. Every turn the model reads a `[SPAWN CAPACITY]` line,
 assembled in `TurnEngine::buildDynamicContext` (`lib/harness/src/engine.cpp`).
-This replaced the old blunt `[SPAWN SLOTS] N of 6 free … over the cap is refused`
-(v4.1.0): the old wording read as a hard ceiling and made the head under-spawn a
-big run ("only 6 slots"). The line now states the real picture - how many are
-running, how many are queued, how many it can start THIS turn
-(`min(kAgentMaxJobs, queue room)`), that they run SEQUENTIALLY (up to
-`kMaxActiveInflight` = 4 in flight, draining as each finishes), and - crucially -
-that this is **NOT a hard total limit**. A big fan-out runs over successive
-**waves**: start a wave now, and when it finishes an automatic synthesis turn
-lets the head spawn the next, so it can work through dozens over a run. Mistral
-sub-agents run strictly one-at-a-time; OpenAI/Anthropic ones run in parallel on
-the provider while the device collects them one by one.
+The line states how many are
+running, how many are queued, how many it can start this turn
+(`min(kAgentMaxJobs, queue room)`), that they run sequentially (up to
+`kMaxActiveInflight` = 4 in flight, draining as each finishes), and that this is
+not a hard total limit. A big fan-out runs over successive waves: start a wave
+now, and when it finishes an automatic synthesis turn lets the head spawn the
+next, so it can work through dozens over a run. Mistral sub-agents run strictly
+one at a time; OpenAI and Anthropic ones run in parallel on the provider while
+the device collects them one by one.
 
-**The pending queue is decoupled from concurrency** (v4.1.0). `kMaxPendingSpawns`
-(12, `caps.h`) is the depth ONE turn may enqueue; `kAgentMaxJobs` (6) is the
-journal/concurrency ceiling - two DISTINCT numbers. `JobEngine::enqueueSpawn`
-(`lib/harness/src/jobs.cpp`) refuses only when the inbox itself is full, with
-*"My spawn queue is full right now - I'll start these, then queue the rest as
-they finish."* The pump then drains one queued spawn per cycle into the ≤4
-in-flight window, so a deep wave is a bigger inbox for the same single-file
-worker - NOT extra parallelism. The queue's internal-SRAM backing is released
+**The pending queue is decoupled from concurrency.** `kMaxPendingSpawns`
+(12, `caps.h`) is the depth one turn may enqueue; `kAgentMaxJobs` (6) is the
+journal and concurrency ceiling. They are two distinct numbers.
+`JobEngine::enqueueSpawn` (`lib/harness/src/jobs.cpp`) refuses only when the
+inbox itself is full, with *"My spawn queue is full - I couldn't take that one.
+Ask again once some agents finish."*; the refused spawn is dropped, nothing
+re-queues it. The pump then drains one queued spawn per cycle into the window of
+at most 4 in flight, so a deep wave is a bigger inbox for the same single-file
+worker, not extra parallelism. The queue's internal-SRAM backing is released
 once it drains (a `std::vector().swap` back to the baseline reserve), so a deep
 fan-out costs that memory only transiently.
 
@@ -171,11 +171,11 @@ always-on web search, not on a dedicated deep-research model.
 
 ## The wire, per backend
 
-| backend | create | poll | cancel | survives reboot? |
+| backend | create | poll | cancel | survives a restart? |
 |---|---|---|---|---|
 | **anthropic** | `POST /v1/environments` + `/v1/agents` (both cached: NVS, plus a RAM copy for the boot) → `POST /v1/sessions` → brief as a `user.message` event | `GET /v1/sessions/<sid>/events?types[]=agent.message&types[]=session.status_idle&types[]=session.error` | `user.interrupt` event | **yes** (session id in the journal) |
 | **openai** | `POST /v1/responses` with `background:true, store:true` + always-on `web_search` tool | `GET /v1/responses/<id>` (status + output text + **usage**) | `POST /v1/responses/<id>/cancel` | **yes** (response id) |
-| **mistral** | `POST /v1/conversations` - actually **synchronous**: the reply streams back at dispatch and is cached on-device | poll serves the cached reply once as Done | cache-local | **no** - a reboot loses the cache → "expired" |
+| **mistral** | `POST /v1/conversations`, which is **synchronous**: the reply streams back at dispatch and is cached on-device | poll serves the cached reply once as Done | cache-local | **no**: a restart loses the cache and the job reads as "expired" |
 | **custom** | `POST /v1/chat/completions` (or `/v1/messages`) - synchronous, single cache slot | cache, once | cache-local | no |
 
 The device polls round-robin every ~15 s on the `tg_poll` task. The result
@@ -183,18 +183,17 @@ envelope carries up to **16 KB** of reply (PSRAM-backed, v4.0.0 -
 large enough for a sub-agent to return a whole document); token usage is filled only by
 OpenAI (the Anthropic events poll returns no usage object - honest zeros).
 
-⚠ **A Mistral sub that outruns the 60 s blocking read is now reported honestly**
-(v4.1.0). Because the sub runs INSIDE that synchronous `POST /v1/conversations`,
-a slow one outlasts the device's 60 s read deadline. `mistralDispatch`
-(`lib/harness/src/providers/mistral.cpp`) classifies that case as
-`FabricErr::Timeout` (elapsed ≈ the whole deadline) rather than a connection
-failure, and `JobEngine::dispatchSpawn` (`lib/harness/src/jobs.cpp`) tells the
-owner *"The agent on mistral didn't respond within 60s - it may have run without
-me getting its result. Try a smaller task or split it into steps."* - where it
-used to say "Couldn't start that agent", which was a lie (the agent HAD
-started).
+**A Mistral sub that outruns the 60 s blocking read is reported as a timeout,
+not as a failed start.** Because the sub runs inside that synchronous
+`POST /v1/conversations`, a slow one outlasts the device's 60 s read deadline.
+`mistralDispatch` (`lib/harness/src/providers/mistral.cpp`) classifies that case
+as `FabricErr::Timeout` (elapsed is roughly the whole deadline) rather than a
+connection failure, and `JobEngine::dispatchSpawn` (`lib/harness/src/jobs.cpp`)
+tells the owner *"The agent on mistral didn't respond within 60s - it may have
+run without me getting its result. Try a smaller task or split it into steps."*,
+since the agent may have started.
 
-**A sub the provider refuses with HTTP 429 names the quota window** (CUM-465).
+**A sub the provider refuses with HTTP 429 names the quota window.**
 The dispatch hands the window back through `Directive::rateLimit`
 (`lib/harness/include/nimbus/harness/fabric.h`): from Mistral's `x-ratelimit-*`
 headers (a spent Studio connector day reads the same in the body as a
@@ -205,10 +204,10 @@ head-turn 429 gets (`rateLimitReply`, `lib/harness/src/rate_limit.cpp`); for a
 spent connector day that ends *"it resets at midnight UTC."* A Virtual Nimbus
 runs the same code. An Anthropic spawn makes up to four calls (environment,
 agent, session, first turn), and a 429 on any of them is classified the same
-way, from the provider's error text (CUM-474).
+way, from the provider's error text.
 
 **An Anthropic spawn names why it failed, and never re-creates what it already
-has** (CUM-481, `antDispatch` in `lib/harness/src/providers/anthropic.cpp`):
+has** (`antDispatch` in `lib/harness/src/providers/anthropic.cpp`):
 
 - **The ids live in RAM for the whole boot.** The environment id and the
   per-model agent ids are loaded once from NVS and written through to it. Each
@@ -253,12 +252,12 @@ The host harness runs this whole chain live: `nimbus-lab sub` in
    block and a `[SYSTEM]` preamble - no user message. It runs under the same
    unattended rails as scheduled loops (sub-agent output is untrusted web
    content: no reboot, no ttsOn, no loop.create, etc.).
-3. If the synthesis can't run (low memory, provider down) for 60 s **after the
-   drain** - or the synthesis turn itself fails - the raw results are delivered
-   directly, so results are never lost to a wedged head. The clock starts at the
-   drain, not at the first result: subs that finish minutes apart still get
-   their synthesis (CUM-480). The raw delivery is written for the owner - one
-   line ("Here are the raw findings; the summary step did not complete."), then
+3. If the synthesis cannot run (low memory, provider down) for 60 s **after the
+   drain**, or the synthesis turn itself fails, the raw results are delivered
+   directly, so results are never lost to a stuck head. The clock starts at the
+   drain, not at the first result, so subs that finish minutes apart still get
+   their synthesis. The raw delivery is written for the owner: one line
+   ("Here are the raw findings; the summary step did not complete."), then
    each sub-agent's name and its findings, with none of the model-facing
    scaffolding (no `[FRESH RESULTS]` header, job tags or `results.get` handles).
 4. A failure while other sub-agents still run joins the fresh results (the
@@ -267,9 +266,9 @@ The host harness runs this whole chain live: `nimbus-lab sub` in
 
 Every job-engine message (spawn acknowledgements, "Couldn't start that agent
 on ...", failures, the raw fallback) is also recorded in the chat's history, and
-the synthesis reply is recorded like any turn reply - so the web chat, which
-renders that history, shows them and they survive a reload (CUM-482). They are
-not conversation the assistant reads back: the recent-conversation window, a
+the synthesis reply is recorded like any turn reply, so the web chat, which
+renders that history, shows them and they survive a reload. They are not
+conversation the assistant reads back: the recent-conversation window, a
 sub-agent's brief and compaction all skip them (a raw fallback is sub-agent web
 content). An open web chat watches the device's activity (every 4 seconds while
 sub-agents run, every 30 seconds otherwise) and re-renders when a result lands,
@@ -311,10 +310,11 @@ throughout.
 
 ## Inspecting it live
 
-- Web chat → the "⚙ … sub-agent events" disclosure under an assistant bubble -
+- Web chat: the "N sub-agent events" disclosure under an assistant bubble shows
   the spawn brief (task) and terminal result rows.
-- `memory.episodic` tool or `GET /api/mem/episodic?kind=log` - the same rows,
+- `memory.episodic` tool or `GET /api/mem/episodic?kind=log`: the same rows,
   filterable by `since_hours`/`before_hours`.
-- `[ACTIVE SESSIONS]` in any turn (or the web Sessions tab) - live state.
+- `[ACTIVE SESSIONS]` in any turn, or the "Active sessions" card on the web
+  Home page: live state.
 - `/api/lastturn` - whether the last head turn spawned anything (section 3, the
   raw `orch_turn` JSON's `session_ops`).

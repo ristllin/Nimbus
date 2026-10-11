@@ -1,22 +1,22 @@
 <!-- audience: user -->
 # People and privacy - roles, quotas, what stays private
 
-Nimbus started as one person's device. It now talks to whoever the owner lets
-in - family, a team, a group chat - and that changes what "remember this" has
-to mean. This page covers who can do what, what each person can and cannot
-see, and where the boundaries are actually enforced.
+This page is for an admin who shares the device with other people (family, a
+team, a group chat). It covers the roles each person can hold, the storage
+limits each role gets, what stays private between people, and where those
+boundaries are enforced.
 
 The short version: **everyone gets their own memory, their own files, and
 their own conversation history. Nothing crosses between people unless a file
 is explicitly shared, and vector memory never crosses at all.**
 
-As an admin, the things you can do:
+As an admin you can:
 
-- Approve someone and pick their role - in the web UI, or by just asking the
+- Approve someone and pick their role, in the web UI or by asking the
   assistant ("approve 12345 as a guest").
 - Raise or lower a person's storage limits ("give Alex more storage").
-- Revoke someone - they lose access immediately; their data stays, in case you
-  restore them later.
+- Revoke someone. They lose access immediately; their data stays so they can
+  be restored later.
 
 ## Roles
 
@@ -32,28 +32,28 @@ Every chat the device knows about has exactly one role.
 Two rules the device enforces for you:
 
 - **There is always at least one admin.** Demoting or removing the last one is
-  refused, in the web UI and in conversation alike. A device nobody can
-  administer is worse than any mistake that refusal prevents.
-- **An upgrade changes nobody's access.** When a device running an older
-  firmware first boots into this one, today's Telegram owners become admins
-  and everyone else on the allowlist becomes a user - the access they already
-  had.
+  refused, in the web UI and in conversation alike, so the device can never
+  be left without someone able to administer it.
+- **An upgrade changes nobody's access.** On the first start after upgrading
+  from firmware without roles, existing Telegram owners become admins and
+  everyone else on the allowlist becomes a user, matching the access they
+  already had.
 
 ### Setting roles
 
 Two surfaces, one source of truth:
 
-- **Assistant → Connectors → Telegram** - each person's chip shows a role
-  badge. Click it to cycle admin → user → guest. Their limits are shown next
+- **Assistant > Connectors > Telegram**: each person's chip shows a role
+  badge. Click it to cycle admin > user > guest. Their limits are shown next
   to it.
-- **In conversation** - an admin can just ask: "approve 12345 as a guest",
-  "what can Sam do?", "give Alex more storage". The assistant has
-  `tenant.list`, `tenant.set_role`, and `tenant.set_quota`, and every one of
-  them refuses a non-admin caller.
+- **In conversation**: an admin can ask "approve 12345 as a guest", "what can
+  Sam do?" or "give Alex more storage". The assistant uses `tenant.list`,
+  `tenant.set_role` and `tenant.set_quota`; each refuses any caller who is not
+  an admin.
 
 The model can never set a role for itself or change its own limits, and none
-of these tools run in a scheduled routine - a role change is a thing a person
-asks for while present.
+of these tools run in a scheduled routine: a role change always comes from a
+person in the conversation.
 
 ## Quotas
 
@@ -73,11 +73,11 @@ so - the fact still lands. The exception is permanent pins, which are counted
 rather than clamped, because a pin is exempt from both eviction and cleanup:
 unbounded pins are storage a quota can never reclaim.
 
-The web memory dashboard shows this at a glance. Under Long-term memory, "Usage
+The web UI shows this at a glance. Under **Memory > Long-term memory**, "Usage
 by conversation" lists each conversation with how many memories and pins it
 holds against its limit, and every memory in the browse list is tagged with the
-conversation it belongs to. Only an admin sees this view, and it stays read-only
-- one conversation's memories are still never visible to another.
+conversation it belongs to. Only an admin sees this view, and it is read-only:
+one conversation's memories are still never visible to another.
 
 ## What is private, and what can be shared
 
@@ -87,12 +87,11 @@ conversation it belongs to. Only an admin sees this view, and it stays read-only
 | Conversation history | **Never** |
 | Files | Only when their owner shares them |
 
-**Vector memory is deliberately never shared, not even opt-in.** Recall is
-automatic - the device pulls relevant memories into its context before it
-answers. A shared memory pool would mean anyone who can write a memory can put
-words into the context of everyone else's conversations, including an admin's.
-That is a prompt-injection channel with no upside, so the design forecloses
-it. Device-level facts live in the admin's namespace instead.
+**Vector memory is never shared, not even by opt-in.** Recall is automatic:
+the device pulls relevant memories into its context before it answers. A
+shared memory pool would let anyone who can write a memory put words into
+everyone else's conversations, including an admin's, which is a prompt
+injection channel. Device-level facts live in the admin's namespace instead.
 
 **Files may be shared, and sharing is read-only.** A person can mark their own
 file shared, which makes it visible and readable to everyone. It does not
@@ -107,10 +106,10 @@ data is still there.
 ## Photos and files sent to the device
 
 **A photo becomes a description.** When someone sends a picture, the device
-looks at it once, writes down what it sees, and the description is what enters
-the conversation. The original is kept on the SD card, so it can be looked at
-again later; the conversation carries a sentence, not several hundred
-kilobytes of image that would crowd out everything else.
+looks at it once and writes down what it sees; that description is what enters
+the conversation. The original is kept on the SD card so it can be viewed
+again later, while the conversation carries a sentence rather than the image
+itself.
 
 **Media needs an SD card.** With no card the device says so and suggests
 describing the file in words instead. It will not half-accept something it
@@ -121,20 +120,20 @@ acknowledged - the conversation simply does not gain a description.
 
 ## Viewing files in the web UI
 
-**Memory → Files** lists everything stored, with **view** next to files that
-can be previewed in place: images render inline, text opens in a panel.
+**Memory > Files** lists everything stored, with a "view" link next to files
+that can be previewed in place: images render inline, text opens in a panel.
 
-Previews are narrow on purpose. Files arrive from everyone the device talks
-to, and the web UI holds the device's permanent sign-in code. An HTML or SVG file rendered
-inside the UI would run its own script on the device's origin, with that code
-in reach. So the device renders only what cannot execute - images and plain
-text - and everything else downloads instead, however the request is framed.
+Previews are limited on purpose. Files arrive from everyone the device talks
+to, and the web UI holds the device sign-in code. An HTML or SVG file rendered
+inside the UI could run its own script on the device's origin with that code
+in reach, so the device renders only what cannot execute (images and plain
+text) and everything else downloads instead.
 
 ## Where this is enforced
 
-Not in the UI. Every boundary is checked in the code path that touches the
-data, so a different surface (the web app, Telegram, a LAN MCP client, the
-assistant's own tools) cannot reach around it:
+Boundaries are enforced in the code path that touches the data, not in the
+UI, so no surface (the web UI, Telegram, a LAN MCP client, the assistant's
+own tools) can reach around them:
 
 - **Recall and search** filter to the caller's namespace before ranking.
 - **Reads by id** are checked too, not just writes - revocation that stops
@@ -150,7 +149,7 @@ assistant's own tools) cannot reach around it:
 
 The RBAC core is portable and host-tested:
 `lib/core/include/nimbus/orch/rbac.h` + `lib/core/src/orch_rbac.cpp` - roles,
-the single `permsFor()` table every rail consults, `TenantStore` (including
+the single `permsFor()` table every surface consults, `TenantStore` (including
 the last-admin rule), and `adoptLegacy()` for the upgrade migration. A
 `Principal{ns, owner, role, quota}` is threaded from the turn into every tool
 call, and boundaries are enforced at the data path (VDB namespace filters,

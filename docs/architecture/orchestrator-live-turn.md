@@ -1,9 +1,10 @@
 # Orchestrator Live-Turn Integration
 
-How the Part B "World" memory - the vector store, scratchpad, episodic history,
-and the `memory.*`/`session.*` tools - is wired into the **live LLM turn**, so the
-orchestrator sees a composed World prompt, recalls and writes memories, and drives
-sub-sessions within a single conversational turn.
+This page explains how the Orchestrator's World memory (the vector store,
+scratchpad, episodic history, and the `memory.*`/`session.*` tools) takes part in
+one **live model turn**: the Orchestrator sees a composed World prompt, recalls and
+writes memories, and drives sub-sessions within a single conversational turn. Read
+it when you change the turn path, debug recall, or extend the turn contract.
 
 This is the runtime that binds the portable engines to a real provider round-trip.
 For the engines and the context assembler themselves see
@@ -29,16 +30,16 @@ two sides:
   returned inline; they are parked and echoed into the *next* turn's inputs.
 
 Both sides run on the `tg_poll` turn task, which is off the main-loop watchdog, so
-a multi-second turn does not reboot the board.
+a multi-second turn does not restart the device.
 
 ## Read side - recall then assemble
 
 `runTurn(inputs, chatId, userText)` composes context before choosing a host:
 
 1. **Associative recall (one embed, fail-open).** When `userText` is non-empty and
-   free heap is at or above `ORCH_RECALL_MIN_HEAP` (52000 bytes, equal to the turn
-   hard floor - the recall embed is a *second* TLS handshake that must fit ahead of
-   the LLM call), `memory::recall(userText)` embeds the message once and runs a
+   free heap is at or above `ORCH_RECALL_MIN_HEAP` (12000 bytes, equal to the turn
+   hard floor `ORCH_TURN_HARD_FLOOR` - the recall embed is a *second* TLS handshake
+   that must fit ahead of the LLM call), `memory::recall(userText)` embeds the message once and runs a
    top-K cosine `search` over the VDB under the retrieval config. Synthesis turns
    (empty `userText`) skip recall. Any embed failure returns empty content and the
    turn proceeds - recall never blocks a reply.
@@ -109,8 +110,7 @@ The hybrid is a deliberate alternative to native tool-calling:
 - **Blocking-TLS embed cost.** `embeddings::embed()` is a blocking TLS round-trip
   (1–3 s typical, up to ~20 s worst case). A mid-turn tool loop would add N
   sequential network hops per turn and stall the Telegram `getUpdates` long-poll
-  the whole time. The hybrid does the one embed we control, up front,
-  deterministically.
+  the whole time. The hybrid does its single embed up front, deterministically.
 - **Backward compatibility.** Adding optional arrays is transparent - an old
   six-field turn still validates. Native tool-calling would change the request
   envelope on both providers.
@@ -122,9 +122,11 @@ Memory has two capture paths with different triggers:
 - **Episodic history is automatic.** Before a turn runs, the owner's message is
   captured (`captureSession` + `captureMessage("user", …)`) so the history is
   durable and queryable even if the turn later fails; after the turn, the
-  assistant's `reply` and `ask` are captured. The store is an
-  `InMemoryEpisodicStore` bounded to 500 messages and persisted whole-blob to
-  LittleFS, queryable via `memory.episodic`.
+  assistant's `reply` and `ask` are captured. With an SD card mounted the store is
+  an append-log of day streams under `/mem/episodic` with uncapped history; with
+  no card it falls back to an `InMemoryEpisodicStore` bounded to 500 messages and
+  persisted whole-blob to LittleFS. Either way it is queryable via
+  `memory.episodic`.
 - **Associative (VDB) memory is explicit.** The vector store is written **only** by
   an `mem_write[]` tool call - conversation is never auto-mirrored into the VDB.
 
@@ -187,15 +189,19 @@ allocator above. It backs both the STT upload and Telegram `sendVoice`/`sendPhot
 
 **STT (`stt::transcribe`).** The provider is `store::sttProvider`, defaulting to
 **Mistral Voxtral** (`api.mistral.ai`, `voxtral-mini-latest`), with OpenAI
-selectable (`api.openai.com`, `gpt-4o-mini-transcribe`). Both expose
-`POST /v1/audio/transcriptions` as multipart and return `{"text": …}`. Because
+selectable (`api.openai.com`, `gpt-4o-mini-transcribe`). A Cumulo-keyed device
+with no provider key of its own routes through the Cumulo router instead
+(`/router/openai/v1/audio/transcriptions`, `gpt-4o-mini-transcribe`). All of them
+expose `POST .../audio/transcriptions` as multipart and return `{"text": …}`. Because
 `solide::audio::recordToFile` emits **headerless** 16-bit mono PCM, `stt::transcribePcm`
 wraps it in a canonical 44-byte-header WAV before upload. Transcription is
 fail-open: any failure returns `""` and the caller nudges the owner to send text.
 
 **TTS (`tts::synthesizeToFile`).** The provider is `store::ttsProvider`, defaulting
 to **Mistral** (`voxtral-mini-tts-latest`), with OpenAI selectable
-(`gpt-4o-mini-tts`); both use `POST /v1/audio/speech`, and the audio is streamed
+(`gpt-4o-mini-tts`) and the Cumulo router used by a Cumulo-keyed device
+(`/router/openai/v1/audio/speech`, `gpt-4o-mini-tts`); all use the `audio/speech`
+endpoint, and the audio is streamed
 straight to a LittleFS file so a clip never sits in internal heap. The response
 shapes differ: OpenAI honors `response_format` (`wav`/`mp3`) and returns raw binary;
 Mistral ignores it and always returns MP3 as base64 inside `{"audio_data": …}`,

@@ -29,9 +29,8 @@ the same per-session view Full shows, at Balanced's dimmer brightness - so a
 fan-out is glanceable while it works. The arcs fade out as each sub-agent
 finishes and the ring returns to its single soft cue.
 
-> Vocabulary changed in July 2026: the old separate light setting is gone - the
-> battery mode now decides how much light the device shows. "Ring level"
-> survives only as one of the mode's customizable reference values (§1).
+There is no separate light setting: the battery mode decides how much light the
+device shows, and "Ring level" is one of the mode's customizable values (§1).
 
 ---
 
@@ -47,8 +46,9 @@ switches until you reset it.
   Reset screen also offers Factory reset: the full erase - Wi-Fi and passwords,
   provider keys, paired computers, settings, memories, routines, and logs,
   including the SD card - after which the device restarts into first-time setup.
-- **On the web page:** Settings → Battery mode; Settings → Customize battery mode;
-  the **Revert to Defaults** button clears all overrides at once.
+- **On the web page:** Settings → Battery to pick a mode; Settings → Customize
+  battery mode to change individual values; **Revert to Defaults** clears all
+  overrides at once.
 
 The reference defaults:
 
@@ -69,7 +69,7 @@ is tunable per mode in Customize.
 The device sometimes runs a lower mode than the one you picked: while the
 battery is low and **Save power when low** is on, it switches to Dark, then
 returns once the battery recovers. While that is happening, the web Battery
-mode section shows one extra line, "Effective battery mode: Dark (adjusted
+section shows one extra line, "Effective battery mode: Dark (adjusted
 automatically for power)", using the same Dark / Balanced / Full vocabulary as
 the mode picker. No line means the mode you picked is the one running.
 
@@ -112,8 +112,8 @@ glance state on a dark idle ring.
 
 ### The screen backlight
 
-On the color touch panel the **backlight is the largest continuous draw** -
-bigger than the ring - so the battery mode reaches it too:
+On the color touch display the **backlight is the largest continuous draw**,
+larger than the ring, so the battery mode sets it too:
 
 | Battery mode | Backlight |
 |---|---|
@@ -122,19 +122,17 @@ bigger than the ring - so the battery mode reaches it too:
 | Full | 100% |
 
 When the screen rests (screensaver), it first dims to a faint glow rather than
-going straight to black - a black color panel is indistinguishable from a broken
-one, and at this glow the backlight draws a few percent of its lit value, so
-nearly all of the saving is kept. Any touch or activity brings it straight back
-to the current mode's level.
+going black, so a resting display is never mistaken for a dead one. At this glow
+the backlight draws a few percent of its lit value, so nearly all of the saving
+is kept. Any touch or activity brings it straight back to the current mode's
+level.
 
-On battery, if the desk stays empty longer, the screen goes one step further and
-turns the **backlight fully off**. The touch layer stays awake, so a single tap
-lights the screen again instantly. That first tap only wakes the screen: it never
-also presses whatever was under your finger, so waking a dark panel can never
-trigger a button by accident. How long the screen waits before going fully dark
-follows the battery mode - Dark turns it off soonest, Full waits longest - and on
-external power it stays at the faint glow instead, since there is no battery to
-save and a black panel on a powered desk just looks broken.
+On battery, if the device stays idle longer, the screen turns the **backlight
+fully off**: 30 seconds after resting in Dark, 2 minutes in Balanced, 5 minutes
+in Full. Touch stays awake, so a single tap lights the screen again at once. That
+first tap only wakes the screen; it never presses whatever was under your finger.
+On external power the screen holds at the faint glow instead, since there is no
+battery to save.
 
 The screen also **rests after a short idle**: the default idle delay is
 **5 minutes**, because an hour of backlight at an empty desk is the most wasteful
@@ -157,13 +155,12 @@ read. The battery mode instead dims the **backlight** (see
 [the screen backlight](#the-screen-backlight) above), which is
 where this board's actual power draw is.
 
-The ring shows exactly what the connected notifier broker sends. A broker with
-stale sessions left over from earlier test runs can legitimately show more
-"active" arcs than you expect for a moment; the device clears a session that
-stops sending frames on its own, within a hold window scaled to the battery mode
-(minutes in Full, seconds in Dark) - not something you need to reconnect or
-trigger. If it never clears, check the broker's own session bookkeeping rather
-than the device.
+The ring shows exactly what the connected Notifier broker sends. If the broker
+still lists a session that has ended, the ring can show one more active arc than
+you expect for a moment. The device clears a session that stops sending frames on
+its own, within a hold window scaled to the battery mode (minutes in Full,
+seconds in Dark); no reconnect is needed. If an arc never clears, check the
+broker's session list rather than the device.
 
 ### Display flip
 
@@ -188,16 +185,16 @@ quick actions and under Settings → Power) saves everything, turns the screen o
 and puts the device into deep sleep. It confirms first, so a stray tap can never
 turn the device off. Settings are kept, so it comes back exactly as you left it.
 
-How it wakes depends on the model. On a touch model whose touch controller can
-wake it, a tap on the screen turns it back on, and the copy says so ("Tap the
-screen to wake it"). On a model that cannot wake from a touch, it comes back when
-you reconnect power, and the copy says that instead. The device knows which
-applies and tells the truth on both the screen and the web page.
+How it wakes depends on the model. On a touch model that can wake from touch, a
+tap on the screen turns it back on, and the confirmation says so ("Tap the screen
+to wake it"). On a model that cannot, it comes back when you reconnect power, and
+the confirmation says that instead. The screen and the web page both show the
+message that applies to your model.
 
 ### Low battery
 
-Two settings under **Settings → Battery mode**, both about a low battery
-rather than about a mode:
+Two settings under **Settings → Battery** on the web page, both about a low
+battery rather than about a mode:
 
 | Setting | Default | What it does |
 |---|---|---|
@@ -213,20 +210,21 @@ Neither setting weakens protection. The screen notice, the Telegram message,
 and the low-battery deep sleep all happen either way; a **job** error still
 breathes red at full brightness in every mode, including Dark.
 
-Everything in this section needs a battery the device can actually read. With
-**Monitor the battery** on but no valid reading (no pack fitted, or a sense
-line the board cannot read), the low-battery light, the power saving switch,
-the Telegram low-battery message, and the low-battery deep sleep are all
-inactive - there is no reading to go low. The Battery mode section says so
-inline. Health distinguishes the cases honestly: with monitoring off it shows
-the battery as absent ("no gauge (desk-powered)"). With monitoring on and a
-reading that stays invalid, it shows a degraded fault ("battery sense not
-detected") only when a pack is known to have worked before - a valid reading
-since the last restart, or saved battery history - so an open sense line on a
-board that had a pack is reported as the fault it is. A board that never had a
-readable pack (for example a Solide board run desk-powered with nothing fitted)
-keeps the absent "no gauge (desk-powered)" row instead of a false alarm. The
-two toggles still save; they apply once a pack is fitted and monitored.
+Everything in this section needs a battery the device can read. With **Monitor
+the battery** on but no valid reading (no pack fitted, or a sense line the board
+cannot read), the low-battery light, the power saving switch, the Telegram
+low-battery message, and the low-battery deep sleep are all inactive, and the
+Battery section says so inline. The two toggles still save and apply once a pack
+is fitted and monitored.
+
+Health shows which case you are in:
+
+| Monitoring | Reading | Health row |
+|---|---|---|
+| off | - | "no gauge (desk-powered)" |
+| on | valid | battery percentage |
+| on | invalid, and a pack worked before (a valid reading since the last restart, or saved battery history) | "battery sense not detected" (degraded) |
+| on | invalid, and no pack ever read | "no gauge (desk-powered)" |
 
 ## 3. Sound - independent of everything above
 
@@ -308,8 +306,8 @@ means nothing to do.**
 **Themes** (10): `teal ocean ember forest openai anthropic mistral rainbow
 gemini perplexity` - each is a four-stop color family plus a per-theme alert
 hue. Changing the theme recolors every role in both modes, live. The web
-legend (Settings → Display) is generated from the same tables the
-firmware uses, so it cannot drift from what the ring actually does.
+legend (Settings → Ring) is generated from the same tables the firmware uses,
+so it cannot drift from what the ring does.
 
 Rules the firmware enforces (and tests assert):
 

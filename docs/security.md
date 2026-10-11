@@ -1,13 +1,14 @@
-# Nimbus Security Posture + TODOs
+# Security Posture
 
-Security model for the device's network surfaces, and the open items deferred by the
-owner. This page is the reference for the auth model and open items.
+How the device protects its network surfaces (web UI, MCP, Bluetooth, setup network,
+outbound TLS), what is verified on hardware, and which hardening items remain open.
+Read it before exposing a device on a shared network or auditing a release.
 
 ## Threat model
 
 A personal desk device on the owner's home LAN. Primary adversaries: another host on
 the same LAN, anyone in RF range of an active Orchestrator setup AP
-(`Nimbus-setup`) or the Notifier BLE radio, and an attacker on the internet path to
+(`Nimbus-setup`) or the Notifier Bluetooth radio, and an attacker on the internet path to
 the providers (evil-twin AP, rogue router, DNS/ARP spoof). Not an internet-exposed
 server - findings are weighted by real reachability.
 
@@ -15,8 +16,7 @@ server - findings are weighted by real reachability.
 
 - **Per-device web/MCP auth token.** `store::webAuthToken()` (96-bit hardware-random,
   NVS, no setter). `net::webAuthOk()` checks `X-Nimbus-Token` (header or form field,
-  never a `?t=` query param since CUM-45) constant-time
-  and fails closed. Gates **every** route, reads included - `GET /api/state`,
+  never a `?t=` query param) in constant time and fails closed. Gates **every** route, reads included - `GET /api/state`,
   `/api/log`, `/api/connect`, `/api/sdprobe` and the LAN `POST /mcp` among them. The
   only two ungated responses are the ones the gate itself needs: `GET /` (the static
   shell, which carries no device data - every value is a placeholder filled in later by
@@ -27,7 +27,7 @@ server - findings are weighted by real reachability.
   *Setup AP + shipped password* below). Once Wi-Fi is configured, neither fires.
   Delivered automatically via the **Sign-in QR**: `configUrl()` embeds a single-use
   `?c=` code (never the durable token), which the browser exchanges once over `POST
-  /api/signin/exchange` for the token (CUM-45, wired on-device by CUM-209). The token
+  /api/signin/exchange` for the token. The token
   is not a separate onboarding step. Requiring it also defeats CSRF. Verified:
   no/wrong token → 401, valid → 200.
   ⚠ **No auth decision is made from the request's `Host`, `Origin`, `Referer`, or client
@@ -36,12 +36,12 @@ server - findings are weighted by real reachability.
   at `http://<ip>` is silently authenticated there while `http://<name>.local` - a
   different origin - still shows the gate. Same device, same gate, two storage buckets.
 - **Body-consuming routes gate before they buffer.** The two routes that accept a raw
-  request body, `POST /api/mem/import` (CUM-406) and the LAN `POST /mcp` (CUM-410),
+  request body, `POST /api/mem/import` and the LAN `POST /mcp`,
   decide auth on the first body chunk before any payload buffer exists: an
   unauthenticated caller costs a tiny header and every byte is dropped (no internal-heap
   growth from the LAN). An authenticated body accumulates in PSRAM behind a hard cap
-  (512 KB import, 64 KB MCP) and is refused with `413` past it, never truncated. The
-  bench legs are `tests/hil/test_restore_import.py` and `tests/hil/test_mcp_bodycap.py`.
+  (512 KB import, 64 KB MCP) and is refused with `413` past it, never truncated.
+  Both caps are verified on hardware.
 - **Secret redaction in logs.** Every line written to the agent log ring (served by
   the token-gated `GET /api/log`) passes through `core::LogRing::redact` at the one
   `logring::put` choke point. Two layers: the provider keys and the Telegram bot
@@ -49,7 +49,7 @@ server - findings are weighted by real reachability.
   heuristic backstop strips `Bearer <token>`, `api_key=`/`"key":"..."` values, and
   `user:pass@host` URL credentials, so a provider error body echoed into the log
   cannot carry a key onto the ring. Host-tested (`test_logring`). The endpoint is
-  also token-gated, so redaction is defence-in-depth rather than the only barrier.
+  also token-gated, so redaction is defense in depth rather than the only barrier.
 - **Guest moderation gates (owner opt-in, default off).** Three independent checks
   that screen non-admin traffic only; the owner (Telegram owner, web, serial, voice)
   is never classified. Each runs one classifier call per screened item (the Cumulo
@@ -104,8 +104,8 @@ server - findings are weighted by real reachability.
   source of truth, host-tested as a matrix so a new destructive action cannot ship
   ungated). All three are token-gated POSTs and are deferred to the main loop (never
   erased on the web task). **Factory Reset preserves only the board's physical
-  identity** (panel model, mount orientation, touch calibration, update slug) so a
-  reset device reboots on the right driver instead of a screen it cannot recover; it
+  identity** (display model, mount orientation, touch calibration, update slug) so a
+  reset device restarts on the right driver instead of a screen it cannot recover; it
   scraps everything the owner set, including the device name, and the unit re-onboards
   fresh with a new name. With "erase storage" it also runs the full private-data
   sweep in the same flow - memories, chat state, routines, logs, leftover audio,
@@ -115,8 +115,8 @@ server - findings are weighted by real reachability.
   prose lists drift, so this doc deliberately does not repeat it. The erase
   REFUSES - keeping config, telling the owner to reseat the card and try again -
   whenever private data could survive somewhere it cannot reach: a card with
-  memories that is not mounted (pulled since boot, or absent at boot per the
-  CUM-405 evidence probe), or any delete of existing data failing. The web page
+  memories that is not mounted (pulled since boot, or absent at boot according to
+  the boot-time card probe), or any delete of existing data failing. The web page
   pre-checks the same predicate so it never claims "erased" over a refusal. The
   device menu offers the same action as Settings > Reset > Factory reset (always
   the full sweep); on glass the gate is a dedicated confirm screen that defaults
@@ -132,8 +132,8 @@ server - findings are weighted by real reachability.
   Scratchpad / episodic access across the AsyncTCP web/MCP task + the Telegram turn
   task (fixes an iterator-invalidation / heap-corruption race). Never held across a
   blocking TLS embed.
-- **Notifier BLE link is bonded + encrypted.** In Notifier mode the ring/screen are
-  driven only over BLE. The GATT server requires a **bonded, encrypted** link (LE
+- **Notifier Bluetooth link is bonded and encrypted.** In Notifier mode the ring/screen are
+  driven only over Bluetooth. The GATT server requires a **bonded, encrypted** link (LE
   Secure Connections, Just Works) to write frames (`WRITE_ENC` on FRAME) or read/write
   CONFIG - so an unbonded central in RF range can connect and read the ungated STATUS
   telemetry (protocol/fw version + a seq counter) but **cannot paint the ring or
@@ -142,14 +142,16 @@ server - findings are weighted by real reachability.
   background-CLI-paired custom peripheral) drops only active-MITM
   protection during the one-time bond; the link stays ECDH-encrypted (passive-sniff
   safe). Bonds persist in NVS. Verified on hardware: unbonded write rejected; bonded
-  frame applies; bond survives reboot.
+  frame applies; bond survives a restart.
 
-## Open TODOs (owner-deferred 2026-07-04)
+## Hardening record and open items
 
-### DONE(security): outbound TLS certificate validation - CA bundle
+Each item states what changed, where it lives in the code, and what is still open.
 
-**Status: IMPLEMENTED (default ON).** Every outbound HTTPS client now goes through the
-single `tlsSetup()` seam (`src/agent/net_util.h`) instead of calling
+### Outbound TLS certificate validation (done, default on)
+
+Every outbound HTTPS client goes through the
+single `tlsSetup()` seam (`src/sys/net_util.h`) instead of calling
 `WiFiClientSecure::setInsecure()` directly. When `store::tlsVerify()` is true (NVS
 `tlsVerify`, **default true**), `tlsSetup()` calls `setCACertBundle()` with the IDF's
 embedded ~200-root bundle (`CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL`, referenced
@@ -157,12 +159,13 @@ via the `_binary_x509_crt_bundle_{start,end}` linker symbols) - so the **server
 certificate is validated**. An attacker on the network path (evil-twin AP the device
 auto-joins, rogue router, DNS/ARP spoof) can no longer MITM a provider connection to
 harvest the `Authorization: Bearer <provider-key>` headers or the Telegram bot token.
-All 13 clients converted: `telegram.cpp`, `openai_adapter`, `anthropic_adapter`,
-`mistral_adapter`, `custom_adapter`, `embeddings`, `tavily`, `tts_voices`, `audio_tts`,
-`http_multipart`, `provider_verify`, `connectors`, `sfx_sync`.
+Every outbound HTTPS client (provider adapters, Telegram, connectors, voice, embeddings,
+moderation, web fetch, sound sync, cloud minting, firmware updates) uses this seam. The
+one client outside it is the cloud relay, described next, which validates unconditionally.
 
-**Escape hatch:** `store::setTlsVerify(false)` (the web UI checkbox (Assistant → Models) → `POST /api/orch`
-`tlsVerify=0`, surfaced in `/api/state`) falls back to `setInsecure()` - for a
+**Escape hatch:** clearing the "Validate provider TLS certificates" checkbox on the Assistant tab
+(`POST /api/orch` with `tlsVerify=0`, surfaced in `/api/state`, backed by `store::setTlsVerify(false)`)
+falls back to `setInsecure()` - for a
 self-signed custom `orchHost` or a provider whose root isn't in the bundle (a connection
 ERROR, not a security hole). ⚠ **Known limitation:** the flag is GLOBAL, not per-provider
 - turning it off to accommodate a self-signed host also drops validation for the cloud
@@ -245,11 +248,11 @@ content (a model reply, a job result) is always screened. The rule lives in the 
 `nimbus::orch::outboundExempt` (no text argument by construction, so no content can satisfy
 it; host-tested in `test_orch_moderation`).
 
-### Access token out of URLs (largely implemented 2026-08-23)
+### Access token out of URLs (setup-network first-run redirect still open)
 
-**Status: LAN paths + device-screen QR fixed; AP first-run redirect pending.** The
+**Status: LAN paths and the device-screen QR are fixed; the setup-network first-run redirect is pending.** The
 durable token is no longer carried in any LAN-facing URL, and the device-screen
-Sign-in QR now carries a single-use `?c=` code (CUM-209). What changed (CUM-45):
+Sign-in QR carries a single-use `?c=` code. What changed:
 
 - **One-time exchange code.** A Sign-in QR / cross-origin link / Wi-Fi-handoff link now
   carries a short, single-use, TTL-bounded code (`?c=<code>`), not the token. The page
