@@ -24,6 +24,7 @@
 #include "../sys/tls_arbiter.h"   // one work TLS at a time (coexists with Telegram's)
 #include "orchestrator.h"         // turnInFlight - never re-verify beside a live turn
 #include "provider_verify_retry.h" // pure backoff policy (host-tested)
+#include "workspace_probe.h"       // CUM-537 probe queue + yielding fetch (host-tested)
 
 namespace agent {
 namespace provider_verify {
@@ -119,17 +120,14 @@ static int retryIdx(const String& provider) {
 static const uint32_t kStuckWindowMs = 1200000u;   // 20 min
 
 // CUM-537 workspace-probe queue. g_wsOnly marks the claimed task as a probe-only
-// run (written after the claim, like g_provider). g_wsQueued is the one coalesced
-// request, written by the web task (a save), the main loop (the pump) and the
-// verify task (a re-queue); g_wsNextAt/g_wsTries bound the retries of a probe that
-// could not run so a struggling device is asked again a few times on a slow clock,
-// never every pump pass.
-static bool                  g_wsOnly = false;
-static std::atomic<bool>     g_wsQueued{false};
-static std::atomic<uint32_t> g_wsNextAt{0};
-static std::atomic<uint8_t>  g_wsTries{0};
-static const uint8_t  kWsMaxTries = 3;
-static const uint32_t kWsRetryMs  = 120000u;   // 2 min between attempts
+// run (written after the claim, like g_provider). g_wsq is the one coalesced
+// request, touched by the web task (a save), the main loop (the pump) and the
+// verify task (an attempt's outcome); it bounds the retries of a probe that could
+// not run so a struggling device is asked again a few times on a slow clock, never
+// every pump pass, and no actor can clear a request it did not serve
+// (workspace_probe.h).
+static bool                g_wsOnly = false;
+static WorkspaceProbeQueue g_wsq;
 
 static bool startTask(const char* provider, bool wsOnly) {
   bool idle = false;
@@ -158,25 +156,22 @@ bool pending() { return g_pending; }
 
 void queueWorkspaceProbeIfStale(uint32_t delayMs) {
   if (!store::hasMistralKey() || !agent::connectors::mistralWorkspaceStale()) return;
-  g_wsTries  = 0;
-  g_wsNextAt = (uint32_t)millis() + delayMs;
-  g_wsQueued = true;
+  g_wsq.request((uint32_t)millis(), delayMs);
 }
 
-// A queued probe that could not run: try again on the slow clock, at most
-// kWsMaxTries attempts (a running turn defers without spending one), else drop it
-// - the next save, restart or manual verify asks again.
-static void rearmWorkspaceProbe(const char* why, bool countsTry) {
-  const bool retry = !countsTry || (uint8_t)(g_wsTries + 1) < kWsMaxTries;
+// A queued probe (generation `gen`) that could not run: try again on the slow
+// clock, at most kMaxTries attempts (a running turn defers without spending one),
+// else drop it - the next save, restart or manual verify asks again. A save made
+// since `gen` keeps its own clock.
+static void rearmWorkspaceProbe(uint32_t gen, const char* why, bool countsTry) {
+  using R = WorkspaceProbeQueue::Rearm;
+  const R r = g_wsq.rearm(gen, (uint32_t)millis(), countsTry);
   alogf("verify: mistral workspace probe did not run (%s)%s", why,
-        retry ? " - will retry in 2 min" : "");
-  if (countsTry) g_wsTries = (uint8_t)(g_wsTries + 1);
-  g_wsNextAt = (uint32_t)millis() + kWsRetryMs;
-  g_wsQueued = retry;
+        r == R::Retry ? " - will retry in 2 min" : r == R::Newer ? " - a newer check is queued" : "");
 }
 
 bool workspaceProbePending() {
-  return g_wsQueued || (g_pending && strcmp(g_provider, "mistral") == 0);
+  return g_wsq.queued() || (g_pending && strcmp(g_provider, "mistral") == 0);
 }
 
 // Build the rich capability catalog from a raw /v1/models response body and
@@ -459,98 +454,104 @@ static void syncCumuloFallbacks(const char* host, const String& key) {
   alogf("verify: cumulo fallback rules synced (%u rules)", (unsigned)rs.rules.size());
 }
 
-// Drain an HTTP/1.0 response into buf via bulk reads, bounded by cap and deadline.
-// Returns bytes read; NUL-terminates buf; sets *truncated when the cap was hit.
-static size_t drainHttpBody(WiFiClientSecure& client, char* buf, size_t cap,
-                            uint32_t deadline, bool* truncated) {
-  size_t blen = 0;
-  while ((int32_t)(millis() - deadline) < 0 && blen < cap - 1) {   // rollover-safe
-    const size_t want = (cap - 1 - blen) < 4096 ? (cap - 1 - blen) : 4096;
-    int r = client.read((uint8_t*)(buf + blen), want);   // bulk read (not byte-by-byte)
-    if (r > 0) { blen += (size_t)r; continue; }
-    if (!client.connected() && client.available() == 0) break;   // drained + closed
-    delay(2);
-  }
-  buf[blen] = 0;
-  if (truncated) *truncated = (blen >= cap - 1);
-  return blen;
+// The fetch hooks over one WiFiClientSecure for GET /v1/connectors: connect and
+// send the request, bulk reads (not byte-by-byte), RST-close on every path.
+static ProbeExec mistralConnectorsExec(WiFiClientSecure& client, const String& key) {
+  ProbeExec io;
+  io.turnInFlight = [] { return orchestrator::turnInFlight(); };
+  io.connect = [&client, &key]() {
+    if (!client.connect(MISTRAL_HOST, 443)) return false;
+    client.print(String("GET /v1/connectors?page_size=100 HTTP/1.0\r\nHost: ") + MISTRAL_HOST +
+                 "\r\nAuthorization: Bearer " + key +
+                 "\r\nAccept-Encoding: identity\r\nUser-Agent: Nimbus\r\nConnection: close\r\n\r\n");
+    return true;
+  };
+  io.read = [&client](char* dst, size_t want) -> int {
+    const int r = client.read((uint8_t*)dst, want);
+    if (r > 0) return r;
+    return (!client.connected() && client.available() == 0) ? -1 : 0;
+  };
+  io.close = [&client] { tlsClose(client); };
+  io.nowMs = [] { return (uint32_t)millis(); };
+  io.idle = [] { delay(2); };
+  return io;
+}
+
+// Parse a fetched /v1/connectors response and publish it; true when a fresh answer
+// was published (a truncated or unparseable body, or one fetched with a key that
+// has since changed, keeps the last good answer).
+static bool publishConnectorsBody(const char* buf, size_t blen, bool truncated, uint32_t keyGen) {
+  // Skip the HTTP headers to the JSON body (only compact status/header text precedes it).
+  const char* jbody = strstr(buf, "\r\n\r\n");
+  jbody = jbody ? jbody + 4 : (strstr(buf, "\n\n") ? strstr(buf, "\n\n") + 2 : buf);
+  const bool noted = !truncated && agent::connectors::noteMistralConnectorsProbe(jbody, keyGen);
+  alogf("verify: mistral connectors probed (%u bytes%s)", (unsigned)blen,
+        truncated ? ", TRUNCATED - kept last answer"
+                  : (noted ? "" : ", unparseable or key changed - not published"));
+  return noted;
 }
 
 // Ask Mistral which Studio connectors the key's workspace lists (GET /v1/connectors),
 // so a Studio connector (gcal/notion/slack: no device credential by design) is
 // offered to the model once the workspace lists it as active. Runs on the held work
-// slot right after a successful Mistral verify. The body (~300 KB of connector
-// metadata) is read into PSRAM; the portable workspace parse filters it to the listed
-// ids (+ the is_authenticated hint). Any failure leaves the last good answer untouched
-// (before the first answer a Studio connector reads "not checked yet", never usable
-// by guess).
-// Returns true when a fresh answer was published (which also satisfies a queued
-// CUM-537 probe) or there was nothing to probe; false when no answer landed.
-static bool syncMistralConnectors(const String& key) {
+// slot: right after a successful Mistral verify, or as the automatic probe-only run.
+// The body (~300 KB of connector metadata) is read into PSRAM; the portable
+// workspace parse filters it to the listed ids (+ the is_authenticated hint). Any
+// failure leaves the last good answer untouched (before the first answer a Studio
+// connector reads "not checked yet", never usable by guess). `gen` is the probe
+// request this fetch answers (read before it starts, so a save made during it stays
+// queued). With `yieldToTurn` (the automatic probe) a turn that starts mid-fetch
+// aborts it at the next read and gets the work slot back (TurnStarted).
+static SyncOutcome syncMistralConnectors(const String& key, bool yieldToTurn = false,
+                                         uint32_t gen = g_wsq.generation()) {
   if (!agent::connectors::wantsMistralWorkspaceProbe()) {   // skip the large fetch
-    g_wsQueued = false;
-    return true;
+    g_wsq.served(gen);
+    return SyncOutcome::Landed;
   }
   // Captured before the fetch: a Mistral key saved while this probe runs bumps it,
   // and the old key's answer is then dropped instead of published for the new key.
-  const uint32_t gen = agent::connectors::mistralProbeGeneration();
+  const uint32_t keyGen = agent::connectors::mistralProbeGeneration();
+  const size_t kCap = 512 * 1024;   // headroom over the ~300 KB body; all in PSRAM
+  char* buf = (char*)heap_caps_malloc(kCap, MALLOC_CAP_SPIRAM);
+  if (!buf) return SyncOutcome::NoAnswer;
   WiFiClientSecure client;
   tlsSetup(client);
   client.setHandshakeTimeout(12);
   client.setConnectionTimeout(15000);
-  if (!client.connect(MISTRAL_HOST, 443)) return false;
-  String req = String("GET /v1/connectors?page_size=100 HTTP/1.0\r\nHost: ") + MISTRAL_HOST +
-               "\r\nAuthorization: Bearer " + key +
-               "\r\nAccept-Encoding: identity\r\nUser-Agent: Nimbus\r\nConnection: close\r\n\r\n";
-  client.print(req);
-  const size_t kCap = 512 * 1024;   // headroom over the ~300 KB body; all in PSRAM
-  char* buf = (char*)heap_caps_malloc(kCap, MALLOC_CAP_SPIRAM);
-  if (!buf) { tlsClose(client); return false; }
-  bool truncated = false;
-  const size_t blen = drainHttpBody(client, buf, kCap, millis() + 25000, &truncated);
-  tlsClose(client);
-  // Skip the HTTP headers to the JSON body (only compact status/header text precedes it).
-  const char* jbody = strstr(buf, "\r\n\r\n");
-  jbody = jbody ? jbody + 4 : (strstr(buf, "\n\n") ? strstr(buf, "\n\n") + 2 : buf);
-  const bool noted = !truncated && agent::connectors::noteMistralConnectorsProbe(jbody, gen);
-  alogf("verify: mistral connectors probed (%u bytes%s)", (unsigned)blen,
-        truncated ? ", TRUNCATED - kept last answer"
-                  : (noted ? "" : ", unparseable or key changed - not published"));
+  const ProbeExec io = mistralConnectorsExec(client, key);
+  size_t blen = 0;
+  const FetchResult fr = fetchBody(io, buf, kCap, (uint32_t)millis() + 25000, yieldToTurn, blen);
+  bool noted = false;
+  if (fr == FetchResult::Ok || fr == FetchResult::Truncated)
+    noted = publishConnectorsBody(buf, blen, fr == FetchResult::Truncated, keyGen);
+  else if (fr == FetchResult::TurnStarted)
+    alogf("verify: mistral connectors probe stopped for a turn (%u bytes read)", (unsigned)blen);
   free(buf);
-  if (noted) g_wsQueued = false;   // the fresh answer covers any queued probe
-  return noted;
+  if (noted) g_wsq.served(gen);   // the fresh answer covers every request up to gen
+  if (fr == FetchResult::TurnStarted) return SyncOutcome::TurnStarted;
+  return noted ? SyncOutcome::Landed : SyncOutcome::NoAnswer;
 }
 
 // CUM-537: the workspace half of a Mistral verify, alone (queued by a connector
 // save or at boot): same task, same internal-memory gate and work slot as a
-// verify, but no /v1/models, no model probes and no verdict write. A probe that
-// cannot run re-queues itself on a slow clock, at most kWsMaxTries times.
-// One attempt: nullptr when an answer landed, else why it did not run. This
-// probe is AUTOMATIC (a save or a restart queued it), so it yields to the owner:
-// it never waits long for the work slot and backs off when a turn has started
-// since the pump queued it, rather than make that turn queue behind a ~300 KB
-// fetch on the single slot.
-static const char* attemptWorkspaceProbe(const String& key) {
-  if (!key.length()) return "no key";
-  if (heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) < VERIFY_MIN_MAX8)
-    return "low memory";
-  if (orchestrator::turnInFlight()) return "a turn is running";
-  if (!arbiter::acquireWork(5000)) return "tls busy";
-  if (orchestrator::turnInFlight()) {
-    arbiter::releaseWork();
-    return "a turn is running";
-  }
-  const bool ok = syncMistralConnectors(key);
-  arbiter::releaseWork();
-  return ok ? nullptr : "no answer";
-}
-
+// verify, but no /v1/models, no model probes and no verdict write. One attempt
+// (workspace_probe.h attemptProbe): it yields to the owner, never waiting long for
+// the work slot and backing off when a turn starts before or during the fetch,
+// rather than make that turn queue behind a ~300 KB fetch on the single slot. A
+// probe that cannot run re-queues itself on a slow clock, at most kMaxTries times.
 static void runWorkspaceProbeOnly() {
+  const uint32_t gen = g_wsq.generation();
   const String key = store::mistralKey();
-  const char* why = attemptWorkspaceProbe(key);
-  if (!why) { g_wsTries = 0; return; }
-  if (!key.length()) { g_wsQueued = false; return; }   // nothing to probe with
-  rearmWorkspaceProbe(why, strcmp(why, "a turn is running") != 0);
+  if (!key.length()) { g_wsq.served(gen); return; }   // nothing to probe with
+  ProbeExec gate;
+  gate.lowMemory = [] {
+    return heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) < VERIFY_MIN_MAX8;
+  };
+  gate.turnInFlight = [] { return orchestrator::turnInFlight(); };
+  gate.acquireSlot = [] { return arbiter::acquireWork(5000); };
+  gate.releaseSlot = [] { arbiter::releaseWork(); };
+  const char* why = attemptProbe(gate, [&] { return syncMistralConnectors(key, true, gen); });
+  if (why) rearmWorkspaceProbe(gen, why, countsAsTry(why));
 }
 
 static void runOne() {
@@ -1051,9 +1052,11 @@ void pumpRetry() {
   const bool     online = (WiFi.status() == WL_CONNECTED);
   // CUM-537: a queued workspace probe (connector save / boot) goes first - it is
   // what turns an owner-visible "connect it in Mistral" into the truth.
-  if (g_wsQueued && !inTurn && online && (int32_t)(now - g_wsNextAt.load()) >= 0) {
-    if (startTask("mistral", /*wsOnly=*/true)) g_wsQueued = false;
-    else rearmWorkspaceProbe("could not start the worker", /*countsTry=*/true);
+  // The started worker settles the request itself (the generation it read).
+  if (g_wsq.due(now) && !inTurn && online) {
+    const uint32_t gen = g_wsq.generation();
+    if (!startTask("mistral", /*wsOnly=*/true))
+      rearmWorkspaceProbe(gen, "could not start the worker", /*countsTry=*/true);
     return;
   }
   for (int i = 0; i < kNRetry; ++i) {

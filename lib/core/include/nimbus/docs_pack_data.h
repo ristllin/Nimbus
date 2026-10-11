@@ -2285,7 +2285,10 @@ connector is not listed yet. That check needs no click from you:
   **connect it in Mistral**.
 - **Being checked** (right after a save or a restart, including a re-check of a
   connector Mistral did not list before): the card shows **checking your Mistral
-  workspace** and updates by itself when the check lands.
+  workspace** and updates by itself when the check lands. Only the status
+  updates, so a token you are typing or a provider you are picking on another
+  card stays as it is. The check also steps aside for the assistant: if you send
+  a message while it runs, it stops and tries again two minutes later.
 - **Not checked** (no Mistral key yet, or the check could not run): the card
   shows **Mistral workspace not checked**, and the assistant is told the
   workspace has not been checked rather than sent to Mistral for nothing.
@@ -2295,16 +2298,16 @@ can read false for connectors that work. So a listed connector is used, and the
 assistant is told that an empty result may mean the account still needs
 connecting in Mistral. A Virtual Nimbus runs the same check at
 startup, after a Mistral key is saved, and when its first Studio connector is
-added (the hosted page has no Verify button).
-
-**When a connector did not run, the result says so.** A sub-agent can answer a
+added (the hosted page has no Verify button).)NIMBUSDOC"},
+  {"connectors#how-nimbus-knows-a-connector-is-available-2", "How Nimbus knows a connector is available (2/2)",
+   R"NIMBUSDOC(**When a connector did not run, the result says so.** A sub-agent can answer a
 calendar request from its own guess without ever calling the calendar connector.
 For a Mistral sub-agent the device reads Mistral's own record of the run (one
 entry per tool that ran). If the task asked for an attached connector (by its
 name, its id, or a phrase such as "my calendar" or "calendar events") and that
-connector never ran, the result opens with:)NIMBUSDOC"},
-  {"connectors#how-nimbus-knows-a-connector-is-available-2", "How Nimbus knows a connector is available (2/2)",
-   R"NIMBUSDOC(*"The Google Calendar connector was NOT called. The text below is the model's own
+connector never ran, the result opens with:
+
+*"The Google Calendar connector was NOT called. The text below is the model's own
 guess, not your calendar."*
 
 That note rides into the saved document, the assistant's summary, the activity

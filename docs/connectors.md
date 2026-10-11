@@ -103,7 +103,10 @@ connector is not listed yet. That check needs no click from you:
   **connect it in Mistral**.
 - **Being checked** (right after a save or a restart, including a re-check of a
   connector Mistral did not list before): the card shows **checking your Mistral
-  workspace** and updates by itself when the check lands.
+  workspace** and updates by itself when the check lands. Only the status
+  updates, so a token you are typing or a provider you are picking on another
+  card stays as it is. The check also steps aside for the assistant: if you send
+  a message while it runs, it stops and tries again two minutes later.
 - **Not checked** (no Mistral key yet, or the check could not run): the card
   shows **Mistral workspace not checked**, and the assistant is told the
   workspace has not been checked rather than sent to Mistral for nothing.

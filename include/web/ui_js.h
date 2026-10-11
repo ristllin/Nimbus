@@ -2464,37 +2464,51 @@ function connKindFor(prov,k){
 }
 // The connector_id to prefill: OpenAI first-party default, or the Studio name for Mistral.
 function connCidDefault(prov,k){ return k.cid || (prov==='mistral'?k.id:''); }
-function loadConnectors(){fetch('/api/connectors').then(r=>r.json()).then(d=>{
+function loadConnectors(poll){
+  // A poll (the timer below) stops once signed out or paused, like every poller.
+  if(poll&&!canPoll())return;
+  fetch('/api/connectors').then(r=>r.json()).then(d=>{
   if(Array.isArray(d))d={configured:d,known:[],keyed:{},host:''};       // legacy-shape guard
   const cfg=d.configured||[],known=d.known||[],keyed=d.keyed||{},host=d.host||'';
-  $('connhost').textContent=host?('The assistant is running on '+host+'. Connectors on '+host+' are live on its own turns; the others are reachable through sessions it spawns.'):'';
   const byId={};cfg.forEach(c=>{byId[c.type||c.name]=c;if(!byId[c.name])byId[c.name]=c;});
   const knownIds={};known.forEach(k=>knownIds[k.id]=1);
   const extra=cfg.filter(c=>!knownIds[c.type]&&!knownIds[c.name]);
-  window._connKnown=known;
-  let html='';
-  known.forEach(k=>{html+=connCard(k,byId[k.id],keyed,host);});
-  extra.forEach(c=>{html+=connCard({id:c.name,name:c.name,providers:c.prov,kind:c.kind,cid:c.cid||'',cred:'Credential / token',desc:'Custom connector.',docs:''},c,keyed,host);});
-  $('conncards').innerHTML=html||'<p class=hint>No connectors available.</p>';
+  const cards=known.map(k=>[k,byId[k.id]]).concat(extra.map(c=>[{id:c.name,name:c.name,providers:c.prov,kind:c.kind,cid:c.cid||'',cred:'Credential / token',desc:'Custom connector.',docs:''},c]));
+  // CUM-537: a poll refreshes only each card's status badge. Rebuilding the cards
+  // would wipe a token being typed or a provider being picked; a new card from a
+  // poll waits for the next full load unless nothing is being edited.
+  const editing=$('conncards').contains(document.activeElement);
+  if(poll&&(editing||cards.every(([k])=>$('cc_'+k.id+'_st')))){
+    cards.forEach(([k,c])=>{const st=$('cc_'+k.id+'_st');if(st)st.innerHTML=connStatus(k,c,keyed,host);});
+  }else{
+    $('connhost').textContent=host?('The assistant is running on '+host+'. Connectors on '+host+' are live on its own turns; the others are reachable through sessions it spawns.'):'';
+    window._connKnown=known;
+    $('conncards').innerHTML=cards.map(([k,c])=>connCard(k,c,keyed,host)).join('')||'<p class=hint>No connectors available.</p>';
+  }
   $('connstat').textContent=cfg.length?(cfg.length+' configured'):'';
-  // CUM-537: while the workspace check runs, refresh the cards so the badge turns to
-  // its real state without a reload. Bounded (~7 min) to cover the device's retries.
+  // CUM-537: while the workspace check runs, refresh the badges so they turn to
+  // their real state without a reload. Bounded (~7 min) to cover the device's retries.
   clearTimeout(window._connPoll);
-  if(d.wsChecking&&(window._connPolls=(window._connPolls||0)+1)<=100)window._connPoll=setTimeout(loadConnectors,4000);
+  if(d.wsChecking&&(window._connPolls=(window._connPolls||0)+1)<=100)window._connPoll=setTimeout(()=>loadConnectors(true),4000);
   else if(!d.wsChecking)window._connPolls=0;
 }).catch(()=>{});}
+function connProvs(k){const p=(k.providers||'').split(',').filter(Boolean);if(!p.length)p.push('any');return p;}
+// One card's status badge (its own span, so a poll can refresh it alone).
+function connStatus(k,c,keyed,host){
+  const set=!!c,en=set&&(c.en==1||c.en===true);
+  if(!set)return '<span class="badge vfy unk">not set</span>';
+  if(!en)return '<span class="badge vfy unk">off</span>';
+  const a=connAvail(c.prov,host,keyed,(c.auth!==undefined)?c.auth:-1,c.ws);
+  return '<span class="badge vfy '+a.cls+'">'+connEsc(a.txt)+'</span>';
+}
 function connCard(k,c,keyed,host){
   const set=!!c,en=set&&(c.en==1||c.en===true);
-  const provs=(k.providers||'').split(',').filter(Boolean);if(!provs.length)provs.push('any');
+  const provs=connProvs(k);
   const curProv=set?c.prov:provs[0];
-  let status;
-  if(!set)status='<span class="badge vfy unk">not set</span>';
-  else if(!en)status='<span class="badge vfy unk">off</span>';
-  else{const a=connAvail(curProv,host,keyed,(c&&c.auth!==undefined)?c.auth:-1,c&&c.ws);status='<span class="badge vfy '+a.cls+'">'+connEsc(a.txt)+'</span>';}
   const id=k.id,kind=connKindFor(curProv,k);
   const badges=provs.map(p=>'<span class="badge ext" style="margin-left:4px">'+connEsc(p)+'</span>').join('');
   const provSel='<select id="cc_'+id+'_prov" onchange="connProvChange(\''+connEsc(id)+'\')">'+provs.map(p=>'<option'+(p===curProv?' selected':'')+'>'+connEsc(p)+'</option>').join('')+'</select>';
-  let h='<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap"><b>'+connEsc(k.name)+'</b>'+badges+'<span style="margin-left:auto">'+status+'</span></div>';
+  let h='<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap"><b>'+connEsc(k.name)+'</b>'+badges+'<span id="cc_'+connEsc(id)+'_st" style="margin-left:auto">'+connStatus(k,c,keyed,host)+'</span></div>';
   h+='<p class=cx style="margin:6px 0">'+connEsc(k.desc||'')+(k.docs?(' <a href="https://ristllin.github.io/Nimbus/guides/connectors#'+connEsc(k.docs)+'" target=_blank>setup&rarr;</a>'):'')+'</p>';
   h+='<div class=row style="margin-top:6px">'+provSel+'</div>';
   // Mistral connectors (Studio connectors + hosted built-ins) carry NO credential on
