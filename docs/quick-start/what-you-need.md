@@ -1,7 +1,7 @@
 # What you need
 
 Everything to go from parts to a working Nimbus. There are two builds: the
-hand-built classic with a real LED ring (about **$60-75** and an afternoon), or
+hand-built classic with a real LED ring (about **$65-77** and an afternoon), or
 the **all-in-one** Freenove board (about **$20-25** and minutes, nothing to
 wire).
 
@@ -20,7 +20,7 @@ the device you will set up from. See [Get your provider key](provider-keys.md).
 | Status ring | 45-LED physical ring | Drawn on the screen |
 | Build | Hand-wired from parts | One off-the-shelf module, no wiring |
 | Modes | Notifier + Orchestrator | Notifier + Orchestrator |
-| Cost | About $60-75 | About $20-25 |
+| Cost | About $65-77 | About $20-25 |
 | Guide | [Build guide](../hardware/build-tft.md) | [All-in-one guide](../hardware/all-in-one-cyd.md) |
 
 Both builds run the same firmware and support every feature documented on this
@@ -43,7 +43,10 @@ from box to running: buy one board, plug in USB-C, flash.
    ([Set up your computer](computer-setup.md) installs them). The command-line
    path downloads about 0.6 GB of build tools on its first run and needs about
    6 GB of free disk space.
-4. **A 2.4 GHz Wi-Fi network.** The radio does not see 5 GHz-only networks.
+4. **A 2.4 GHz Wi-Fi network** for Orchestrator mode. The radio does not see
+   5 GHz-only networks. Skip this if you only want the Notifier status light:
+   Notifier mode uses Bluetooth instead and needs a computer with Bluetooth and
+   Python 3 (see [Notifier quick start](notifier-quick-start.md)).
 5. **One AI provider key** for Orchestrator mode. The setup wizard needs one
    verified key; skip this if you only want the Notifier status light. Start with
    [Mistral](https://console.mistral.ai/): its free tier is enough to set up and

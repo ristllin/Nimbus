@@ -1,4 +1,4 @@
-# Configuration A - Touch TFT (`screenModel = tft`)
+# Configuration A - Touch TFT (`scrModel = tft`)
 
 Use this page when you are building or debugging the hand-built Solide S3
 configuration: a 2.8" **ILI9341** 240×320 color TFT with an **XPT2046** resistive
@@ -55,7 +55,8 @@ has not accidentally been connected to GPIO 48.
 | 3V3 / GND | power | VCC / GND |
 
 The three on-module bridges above make display and touch one SPI bus with two chip
-selects, which is what fits the whole panel into seven GPIOs.
+selects, which is what fits the whole panel into eight GPIOs: the seven-pin run on
+J3 (1, 2, 38-42) plus GPIO 48 for touch CS.
 
 ⚠ **Reachable GPIOs are nearly all consumed.** Only the **J3** header is reachable on
 the carrier, and GPIO 35/36/37 (OCTAL PSRAM) sit in the middle of it - so the longest
@@ -252,8 +253,9 @@ and the periodic controller read that would detect a dead panel is the same read
 that pins touch (see the next section), so it is switched off on this board and
 the verdict is not maintained after boot. On a shared-MISO board `panelResponding`
 reads **null** (not measured, like `panelPixOk` while the probe is off), `scrok`
-reads **`unknown`** (never a false `1`), and the Display health row reads
-**"unverified"**, not "ok". A wrong-variant flash whose panel bind fails is still
+reads **`unknown`** (never a false `1`), and the **Display (color touch)** health
+row shows **unknown** ("bound; cannot self-check on this board, look at the
+screen"), not **ok**. A wrong-variant flash whose panel bind fails is still
 caught (`InitFailed` -> `scrok=0`), as is a controller that reads as dead. On the
 capacitive Freenove / CYD board nothing is shared, so the poll runs and the
 verdict is a real `true`/`false`. The only thing that settles "unknown" is looking
@@ -297,7 +299,7 @@ somewhere else entirely. The watchdog bounds the visible symptom to ~5 s either
 way, so a recurrence should now look like a brief flicker rather than a dead
 screen.
 
-## Dead touch on v4.5.x (CUM-392)
+## Dead touch on v4.5.x
 
 A distinct fault from the white screen above: on classic (solide_s3) boards
 flashed with v4.5.0, touch stops responding entirely while the display works.
@@ -315,7 +317,7 @@ GPIO 1 (see the jumper table above). A panel register/pixel read drives the pane
 SDO onto that line; a module whose SDO does not cleanly tri-state afterward then
 contends the line the XPT2046 drives, and every touch channel settles near
 mid-scale. This is **unit-dependent**: a module that releases SDO cleanly reads the
-panel all day with no effect, so a given bench board may never show the fault.
+panel all day with no effect, so a given unit may never show the fault.
 
 **What changed in v4.5.0.** v4.5.0 added a panel status read every ~2 s that
 runs independently of rendering (`pollControllerLiveness`), so the shared MISO is
@@ -337,8 +339,8 @@ image on Freenove hardware** both fail `begin()` on the wrong pin map and emit
 a panel that binds and is then dead, because the liveness poll is switched off to
 protect touch. Rather than report a false `scrok=1`, the firmware reports that
 state as unknown: the boot beacon prints `PANEL scrok=unknown` plus a line asking
-you to look at the screen, `panelResponding` reads null, and the Display health
-row reads "unverified". `tools/setup_device.py` treats `scrok=unknown` as a soft
+you to look at the screen, `panelResponding` reads null, and the
+**Display (color touch)** health row shows **unknown**. `tools/setup_device.py` treats `scrok=unknown` as a soft
 caution ("look at the screen"), not a pass and not a failure, so a correct Solide
 install still proceeds. On the capacitive Freenove the verdict is a real
 `true`/`false`.

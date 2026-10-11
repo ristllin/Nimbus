@@ -11,7 +11,7 @@ The board is the **Freenove ESP32-S3 Display**, model **FNK0104B** (Amazon
 **ESP32-S3 N16R8** (16 MB flash, 8 MB PSRAM), on-board microSD, mic and speaker
 through an **ES8311** codec, a single WS2812 RGB LED, and USB-C. It runs the same
 firmware as the hand-built boards, selected at flash time by
-`SOLIDE_BOARD=freenove_s3`, and reports `screenModel = tft`.
+`SOLIDE_BOARD=freenove_s3`, and reports `scrModel = tft`.
 
 This board is a **compile-time identity**: its pinout ships baked into a dedicated
 firmware image, so there is no display setting to choose and no risk of a
@@ -28,7 +28,7 @@ parameterized by resolution, so one code path draws every size; each size is a
 separate OTA type and firmware image so a board is only ever offered an image
 that matches its glass.
 
-| Size | Panel | Resolution | OTA type | Firmware env | Verification |
+| Size | Panel | Rendered resolution (landscape) | OTA type | Firmware env | Verification |
 |---|---|---|---|---|---|
 | 2.8" | ILI9341 | 320×240 | `freenove-28` | `esp32s3-cyd` | **Hardware-verified** - display and touch validated on a physical board. |
 | 3.5" | ILI9488 | 480×320 | `freenove-35` | `esp32s3-cyd-35` | **Host-verified only** - renderer, goldens, and firmware image proven on the host; not yet run on a physical panel. |

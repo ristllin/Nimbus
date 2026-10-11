@@ -59,7 +59,9 @@ shared parts above are needed for a desk-powered unit.
 |---|---|---|---|---|---|
 | 1 | All-in-one board | **Freenove ESP32-S3 Display 2.8" (FNK0104B)** | ESP32-S3 N16R8, 2.8" ILI9341 240×320 IPS capacitive touchscreen, on-board microSD, ES8311 mic + speaker, single RGB LED, USB-C. Runs the Nimbus firmware built for `SOLIDE_BOARD=freenove_s3`. | [Amazon B0FSQF6FKN](https://www.amazon.com/dp/B0FSQF6FKN) · [Freenove](https://freenove.com/) | $20–25 |
 
-The only other item is a data-capable **USB-C cable** for flashing.
+The only other item is a data-capable **USB-C cable** for flashing. An optional
+printed case, Nimbus Light, is on the
+[all-in-one page](all-in-one-cyd.md#enclosure-optional-3d-print).
 
 **Configuration B total: ≈ $20–25** · [Pinout & happy-path build →](all-in-one-cyd.md)
 
@@ -78,7 +80,7 @@ Two 18650 cells in series hold real energy.
 
 ## Enclosure, fasteners, and assembly consumables
 
-The parts beyond the electronics that turn the modules into a finished unit. A
+The parts beyond the electronics that turn the Configuration A modules into a finished unit. A
 3D printer and a soldering iron are assumed; quantities are approximate. The
 [build photos](build-photos.md) show every step.
 
@@ -88,7 +90,7 @@ The parts beyond the electronics that turn the modules into a finished unit. A
 | ~10 | **M3 brass heat-set inserts** | Melted into the printed case with a soldering iron; screws thread into these. | [AliExpress](https://www.aliexpress.com/w/wholesale-m3-heat-set-insert.html) | $5 |
 | assorted | **M3 machine screws** | A short-length assortment, plus a few **longer M3** screws for the microSD-module standoff. | [AliExpress](https://www.aliexpress.com/w/wholesale-m3-screw-assortment-kit.html) | $3 |
 | 1 | **Rocker power switch** (SPST) | Cuts the pack to the DC-DC. Generic, ~20 x 12 mm panel cutout. | [AliExpress](https://www.aliexpress.com/w/wholesale-kcd1-rocker-switch.html) | $1 |
-| - | **2S pack build materials** | The reference build spot-welds **nickel strip** to the cells (needs a spot welder), insulates with **fishpaper** + **Kapton tape**, and finishes the leads with spade/terminal connectors and silicone hookup wire. Without a spot welder, use pre-tabbed cells you solder, or a **2S 18650 holder with leads** (see the battery section of the [build guide](build-tft.md#battery-sense-optional-recommended)). | [AliExpress](https://www.aliexpress.com/w/wholesale-18650-nickel-strip-fishpaper-kapton.html) | $3–8 |
+| - | **2S pack build materials** | The reference build spot-welds **nickel strip** to the cells (needs a spot welder), insulates with **fishpaper** + **Kapton tape**, and finishes the leads with spade/terminal connectors and silicone hookup wire. Without a spot welder, use pre-tabbed cells you solder, or a **2S 18650 holder with leads**. The [build guide](build-tft.md#build-the-2s-battery-pack) walks through the spot-welded reference pack. | [AliExpress](https://www.aliexpress.com/w/wholesale-18650-nickel-strip-fishpaper-kapton.html) | $3–8 |
 
 **Enclosure + consumables subtotal: ≈ $12–32.** A spot welder, if you buy one
 instead of using tabbed cells or a holder, is a separate one-time tool cost.

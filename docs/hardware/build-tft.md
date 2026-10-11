@@ -36,7 +36,7 @@ breakdown and safety notes, is the **[bill of materials](bom.md)**.
 | 1 each | Battery sense | 220 kΩ + 100 kΩ resistors | Optional but recommended - the pack-voltage divider on GPIO 4. | any electronics supplier | $1 |
 | - | Misc | wire, protoboard/PCB, JST connectors; optional 330 Ω resistor (LED DIN) and 1000 µF capacitor (ring 5 V/GND) | The resistor and capacitor improve LED reliability on long runs. | [AliExpress](https://www.aliexpress.com/w/wholesale-jst-connector-kit-protoboard.html) | $5 |
 
-**Total: ≈ $59–63** (AliExpress-class sourcing; US distributors add ~$15–25).
+**Total: ≈ $61–65** for the parts above, or ≈ $65–77 with the optional carrier PCB and headers from the [bill of materials](bom.md) (AliExpress-class sourcing; US distributors add ~$15–25).
 
 ## Power architecture
 
@@ -116,7 +116,8 @@ touch table first, then the shared peripherals from the
 | 3V3 / GND | power | VCC / GND |
 
 The three on-module bridges make display and touch one SPI bus with two chip
-selects, which is what fits the whole panel into seven GPIOs.
+selects, which is what fits the whole panel into eight GPIOs: the seven-pin run on
+J3 (1, 2, 38-42) plus GPIO 48 for touch CS.
 
 ### microSD module (SPI2 - a separate bus)
 
@@ -257,7 +258,7 @@ Not a build step - the board layout, for anyone who wants to trace a net or fork
 
 **Set the headers.** Cut female header strips to the length of each row and solder them in from the top so the sockets face up: the two long rows for the DevKit, and one short row each for the SD Card, INMP441, and MAX98357 footprints. Tack one end pin, check the strip sits flat and square against the board, then solder the rest. Straight headers here are what let you unplug a module later.
 
-**Set the fixed parts.** While the iron is hot, place the two battery-sense resistors in the `100kΩ` / `220kΩ` footprint (the divider into GPIO 4 - see [Battery sense](#wiring)), and the green screw terminals at the **Battery** and **LED ring** positions. These few parts do solder down; the modules do not. Check the finished joints are shiny and full, with none bridged to a neighbor.
+**Set the fixed parts.** While the iron is hot, place the two battery-sense resistors in the `100kΩ` / `220kΩ` footprint (the divider into GPIO 4 - see [Battery sense](#battery-sense-optional-recommended)), and the green screw terminals at the **Battery** and **LED ring** positions. These few parts do solder down; the modules do not. Check the finished joints are shiny and full, with none bridged to a neighbor.
 
 #### Seat the charger and DC-DC
 
@@ -325,7 +326,7 @@ This switch sits ahead of everything downstream but the pack always stays behind
 
 > **Read this before you touch a cell - 2S Li-ion.** Two 18650s in series hold real energy, and this is the one stage of the build that can burn you or start a fire. Buy brand-name cells from a reputable vendor (the reference pack uses matched LiitoKala Lii-35A); counterfeit 18650s are common and dangerous. The **2S BMS stays between the cells and everything else** - it is the only protection, balance, and charge path, so never charge the pack outside the BMS and never feed the DC-DC from anything but the BMS output. Tie every ground common. If a cell, a module, or the SD card ever gets warm that should not, treat it as an electrical fault: power off first, debug second. Work on one joint at a time, keep the two pack leads from ever touching, and never leave a bare cell terminal exposed. Full framing lives in the [2S Li-ion safety note](bom.md#safety-note---2s-li-ion) and [Power architecture](#power-architecture).
 
-Build the pack as its own sub-assembly and verify a clean 5 V at the DC-DC output **before** it feeds anything downstream. This is step 4 of the [Assembly order](#assembly-order); do not connect the 5 V bus to VIN or the LED ring until the meter reads right.
+Build the pack as its own sub-assembly and verify a clean 5 V at the DC-DC output **before** it feeds anything downstream. This is step 5 of the [Assembly order](#assembly-order); do not connect the 5 V bus to VIN or the LED ring until the meter reads right.
 
 **1. Insulate the cell tops.**
 
@@ -367,17 +368,17 @@ Land the pack leads on the board so the BMS output feeds the **DC-DC input only*
 
 ![An Extech EX330 multimeter reading 05.00 V DC beside the Nimbus board's DC-DC converter](photos/calibrate-dcdc-5v.webp)
 
-With the pack feeding the DC-DC input and **nothing on the output yet**, set the meter to DC volts and read across the converter's OUT + and OUT -. Turn the module's trim pot until it reads a clean 5.00 V, exactly as the meter shows here. This gate is non-negotiable: a converter shipped at 8 V or wandering under load will destroy the ESP32 and the ring the instant they are connected. Only once you have a steady 5.00 V do you wire the 5 V bus to VIN and the LED ring +5 V (step 5 of the [Assembly order](#assembly-order)).
+With the pack feeding the DC-DC input and **nothing on the output yet**, set the meter to DC volts and read across the converter's OUT + and OUT -. Turn the module's trim pot until it reads a clean 5.00 V, exactly as the meter shows here. This gate is non-negotiable: a converter shipped at 8 V or wandering under load will destroy the ESP32 and the ring the instant they are connected. Only once you have a steady 5.00 V do you wire the 5 V bus to VIN and the LED ring +5 V (step 6 of the [Assembly order](#assembly-order)).
 
 After the pack is assembled and running, charge it fully through the BMS USB-C port and run `BATTCAL` on the console so the gauge reads 100 % at full - the ADC under-reads a full pack. See [Battery pack](#battery-pack) and [Battery voltage sampling](../hardware.md#battery-voltage-sampling-how-to-add-it).
 
 ### Stack the electronics and close the case
 
-Do the full electrical bring-up **before** anything goes into the case. Once the boards are stacked and screwed down, the pin headers and the self-test console are hard to reach - so flash and pass the self-test on the bench first, following [Assembly order](#assembly-order) steps 1-5: first flash over the UART port ([First flash of a fresh board](../hardware.md#first-flash-of-a-fresh-board-use-the-uart-port)), then `TEST all` on the self-test console with `led`/`screen`/`sd`/`memory`/`input` all PASS. A board that boots clean loose on the bench is the only board worth closing up.
+Do the full electrical bring-up **before** anything goes into the case. Once the boards are stacked and screwed down, the pin headers and the self-test console are hard to reach - so flash and pass the self-test on the bench first, following [Assembly order](#assembly-order) steps 1-5: first flash the `test` build over the UART port (`pio run -e test -t upload`; see [First flash of a fresh board](../hardware.md#first-flash-of-a-fresh-board-use-the-uart-port)), then run `TEST all` on its serial console and confirm the `led`, `epd` (display), `sd`, `memory`, and `input` rows report PASS. `audio` and `batt` report SKIP until the 5 V bus and the battery-sense divider are connected, which still counts as a pass in the `RESULT all` line. A board that boots clean loose on the bench is the only board worth closing up.
 
 ![Assembled Nimbus electronics seen from above: ESP32-S3-N16R8 DevKit at top with dual USB-C, the DC-DC buck converter with its two electrolytic caps and inductor at lower left, the purple MAX98357A amp and INMP441 mic in the center, the microSD module with a card seated at right, and green screw terminals along the edges](photos/electronics-stack.webp)
 
-**Confirm the stack matches [Wiring](#wiring).** Top-down, every module from the pinout tables is present and seated: the ESP32-S3-N16R8 DevKit up top (both USB-C ports, RST and BOOT buttons clear), the DC-DC buck with its `220 35V` and `100 50V` electrolytics, `470` inductor, and blue output trimpot, the purple MAX98357A amp beside the INMP441 mic and the buzzer, the microSD module with a card fully home, and the BMS USB-C board. Check the microSD card is seated flush, not proud - a card that stands off the socket is the `cardType=0` trap. Green screw terminals carry the pack and 5 V leads; verify each is clamped on stripped copper, not on insulation. Charge the pack only through the BMS USB-C port; see the [2S Li-ion safety note](bom.md#safety-note---2s-li-ion).
+**Confirm the stack matches [Wiring](#wiring).** Top-down, every module from the pinout tables is present and seated: the ESP32-S3-N16R8 DevKit up top (both USB-C ports, RST and BOOT buttons clear), the DC-DC buck with its `220 35V` and `100 50V` electrolytics, `470` inductor, and blue output trimpot, the purple MAX98357A amp beside the INMP441 mic (the speaker connects to the amp's green screw terminal), the microSD module with a card fully home, and the BMS USB-C board. Check the microSD card is seated flush, not proud - a card that stands off the socket is the `cardType=0` trap. Green screw terminals carry the pack and 5 V leads; verify each is clamped on stripped copper, not on insulation. Charge the pack only through the BMS USB-C port; see the [2S Li-ion safety note](bom.md#safety-note---2s-li-ion).
 
 ![The same electronics stack at an angle, the blue Nimbus PCB carrying all modules and resting on the black printed standoff frame, green screw terminals along the front edge](photos/electronics-stack-2.webp)
 
@@ -391,7 +392,7 @@ Do the full electrical bring-up **before** anything goes into the case. Once the
 
 **Confirm the buck still reads 5 V.** The DC-DC output is adjustable at the blue trimpot, so meter it once more with the 5 V lead still off the board before it lands on the bus (the full procedure is step 7 of [Build the 2S battery pack](#build-the-2s-battery-pack)). A buck left high destroys every board on the 5 V bus.
 
-**One last power-on before the lid.** With the stack in the case but still openable, power up and confirm the device boots and the self-test still passes in its installed position - a fault that only appears after seating is almost always a pinched lead or a ground gone open. Keep a hand near the modules for the first minute: **a warm or hot module or SD card is an electrical fault** - kill power immediately and find the short before going further ([hot-card safety check](../hardware.md#shared-peripherals)). Only then install the production firmware ([Assembly order](#assembly-order) step 7) and close the case.
+**One last power-on before the lid.** With the stack in the case but still openable, power up and confirm the device boots and the self-test still passes in its installed position - a fault that only appears after seating is almost always a pinched lead or a ground gone open. Keep a hand near the modules for the first minute: **a warm or hot module or SD card is an electrical fault** - kill power immediately and find the short before going further ([hot-card safety check](../hardware.md#shared-peripherals)). Only then install the production firmware ([Assembly order](#assembly-order) step 8) and close the case.
 
 ### Fit the touch TFT
 
@@ -401,7 +402,7 @@ This is the 2.8" ILI9341 240×320 panel with the XPT2046 resistive touch control
 
 ![Back of the 2.8 inch ILI9341 SPI TFT module, showing the single top header carrying the display, power, and touch pins, the XPT2046 controller, and the microSD socket](photos/tft-board.webp)
 
-**Identify the pads before wiring.** Work from the back of the module. The long header along the top carries the display and power pins - `VCC`, `GND`, `CS`, `RESET`, `DC`, `SDI(MOSI)`, `SCK`, `LED`, `SDO(MISO)` - and the touch pins `T_CLK`, `T_CS`, `T_DIN`, `T_DO`, `T_IRQ`. The silk reads **2.8 TFT SPI 240×320 V1.2**; confirm yours matches. The microSD socket and its own `SD_CS / SD_MOSI / SD_MISO / SD_SCK` pads sit lower on the board - those are the separate SPI2 bus and are **not** part of this panel's wiring. Land each wire per the [TFT + touch (SPI3)](#tft--touch-spi3) table. Leave `T_IRQ` unconnected.
+**Identify the pads before wiring.** Work from the back of the module. The long header along the top carries the display and power pins - `VCC`, `GND`, `CS`, `RESET`, `DC`, `SDI(MOSI)`, `SCK`, `LED`, `SDO(MISO)` - and the touch pins `T_CLK`, `T_CS`, `T_DIN`, `T_DO`, `T_IRQ`. The silk reads **2.8 TFT SPI 240×320 V1.2**; confirm yours matches. The microSD socket and its own `SD_CS / SD_MOSI / SD_MISO / SD_SCK` pads sit lower on the board. This build does not use that socket, so leave those pads unconnected: the microSD here is the separate module on SPI2 (see [microSD module](#microsd-module-spi2---a-separate-bus)). Land each wire per the [TFT + touch (SPI3)](#tft--touch-spi3) table. Leave `T_IRQ` unconnected.
 
 ![Finished touch-TFT Nimbus, enclosure open: the red TFT module mounted in the lid inside the LED ring, wired back to the ESP32-S3 carrier in the base](photos/tft-assembled.webp)
 

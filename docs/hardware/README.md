@@ -8,8 +8,8 @@ Nimbus runs in **one of two display configurations**:
 
 | File | Configuration |
 |---|---|
-| [`touch-tft.md`](touch-tft.md) | **Touch TFT** (`screenModel=tft`) - color ILI9341 + XPT2046 resistive touch, hand-built on the Solide S3 board |
-| [`all-in-one-cyd.md`](all-in-one-cyd.md) | **All-in-one (Freenove CYD)** (`SOLIDE_BOARD=freenove_s3`, `screenModel=tft`) - one off-the-shelf module, capacitive touch, lowest effort |
+| [`touch-tft.md`](touch-tft.md) | **Touch TFT** (`scrModel=tft`) - color ILI9341 + XPT2046 resistive touch, hand-built on the Solide S3 board |
+| [`all-in-one-cyd.md`](all-in-one-cyd.md) | **All-in-one (Freenove CYD)** (`SOLIDE_BOARD=freenove_s3`, `scrModel=tft`) - one off-the-shelf module, capacitive touch, lowest effort |
 
 The first is hand-built on the Solide S3 board; the second is a separate
 off-the-shelf board with its pinout fixed at flash time.
