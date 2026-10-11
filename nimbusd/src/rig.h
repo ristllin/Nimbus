@@ -33,6 +33,7 @@
 #include "posix_files.h"
 #include "posix_fs.h"
 #include "posix_platform.h"
+#include "router_head.h"
 #include "sub_fabric.h"
 #include "tg_access.h"
 
@@ -99,6 +100,14 @@ struct TurnRecord {
   bool        ok = false;
 };
 
+// One head attempt's outputs, bundled so the router head stays within the
+// argument-count gate: the orch_turn JSON, the error, and the usage accumulator.
+struct HeadOut {
+  std::string& out;
+  std::string& err;
+  orch::TokenUsage* usage;
+};
+
 class NimbusdRig {
  public:
   struct Options {
@@ -132,6 +141,7 @@ class NimbusdRig {
       ownedHttp_.reset(new DaemonHttpTransport());
       http_ = ownedHttp_.get();
     }
+    tap_.setInner(http_);   // the cumulo head's view of the transport (router refusals)
     installLog(opt_.verboseHttp);
     fsutil::mkdirs(memDir());
     // Telegram trust (CUM-459): the device model, durable on the instance volume.
@@ -269,6 +279,7 @@ class NimbusdRig {
   // The model the cumulo head requests: an operator override (opt.models
   // ["cumulo"]) or the router default. Mirrors the device's orchModel("cumulo").
   std::string cumuloModel() const {
+    std::lock_guard<std::mutex> lk(modelsMu_);
     auto it = opt_.models.find(kCumuloSlug);
     return (it != opt_.models.end() && !it->second.empty()) ? it->second
                                                             : std::string(kCumuloModel);
@@ -512,9 +523,7 @@ class NimbusdRig {
       if (!isalnum((unsigned char)ch) && ch != '.' && ch != '_' && ch != '-' &&
           ch != '/' && ch != ':')
         return false;
-    if (model.empty()) opt_.models.erase(host);
-    else opt_.models[host] = model;
-    saveModels();
+    setModelPick(host, model);
     buildEngine();                // the head captures its model/route at build time
     ++keyGen_;                    // the web save-flow polls this counter
     return true;
@@ -540,8 +549,11 @@ class NimbusdRig {
   // engine's budget derivation reads through here for the resolved head. Public so
   // the one-key path test can assert the router head resolves a model (CUM-288).
   std::string modelFor(const std::string& h) const {
-    auto it = opt_.models.find(h);
-    if (it != opt_.models.end()) return it->second;
+    {
+      std::lock_guard<std::mutex> lk(modelsMu_);
+      auto it = opt_.models.find(h);
+      if (it != opt_.models.end()) return it->second;
+    }
     if (h == "openai")    return "gpt-5.6";
     if (h == "anthropic") return "claude-sonnet-4-6";
     if (h == "mistral")   return "mistral-large-latest";
@@ -653,9 +665,17 @@ class NimbusdRig {
       if (!k.empty() && !v.empty() && !keyEnvFor(k).empty()) opt_.models[k] = v;
     }
   }
-  void saveModels() {
+  // Store (or clear, when `model` is empty) one head's pick and persist the set.
+  // The picks are read by the HTTP thread (GET /api/orch) while the engine thread
+  // writes them, so the map sits behind modelsMu_.
+  void setModelPick(const std::string& host, const std::string& model) {
     std::string blob;
-    for (const auto& kv : opt_.models) blob += kv.first + "=" + kv.second + "\n";
+    {
+      std::lock_guard<std::mutex> lk(modelsMu_);
+      if (model.empty()) opt_.models.erase(host);
+      else opt_.models[host] = model;
+      for (const auto& kv : opt_.models) blob += kv.first + "=" + kv.second + "\n";
+    }
     fsutil::writeFileAtomic(modelsPath(), blob);
   }
 
@@ -912,26 +932,113 @@ class NimbusdRig {
     return pd;
   }
 
-  // The provider deps for the Cumulo router head: the base ProviderDeps with the
-  // custom/proxy fields pointed at the fixed router base + path prefix and the
-  // router key. Byte-for-byte the seam the device's cumulo head fills in
-  // (src/agent/orchestrator.cpp:1138-1150) - orchTurnCustom over
-  // app.cumulo-nimbus.ai + /router/openai/v1, bearer = the Cumulo key.
-  agent::providers::ProviderDeps cumuloProviderDeps() {
+  // The provider deps for one Cumulo router head attempt on `model` (a bare id
+  // after the "<upstream>/" split): device parity with src/agent/orchestrator.cpp's
+  // cumulo head (CUM-242). The router override (routerBase/routerKey) makes the
+  // NATIVE upstream wire travel through /router/<upstream> with the Cumulo key as
+  // the bearer; the upstream loop steps read key()/orchModel() for their own host
+  // arg, so both resolve to the router credential and the selected model. The head
+  // advertises provider BUILT-IN tools only: the owner's private connectors stay
+  // off the shared router key (attach*Wire builtinsOnly=true). Every request goes
+  // through tap_, which records the router's reason when it refuses one.
+  agent::providers::ProviderDeps routerHeadDeps(const std::string& model) {
     auto pd = providerDeps();
-    // CUM-425: resolve the router coordinates from the model selector through the
-    // SAME portable rule the device head and the sub-session adapter share, so a
-    // "zai/glm-4.5-flash" selector reaches /router/zai/v1 with the bare model id
-    // the router prices, instead of 403ing model_not_priced on the openai
-    // upstream. A bare id (no '/') keeps the openai upstream - byte-identical to
-    // the old constant behavior for every previously-working selector.
-    const nimbus::orch::RouterRoute rr = nimbus::orch::resolveRouterRoute(cumuloModel());
+    pd.http = &tap_;
+    pd.routerBase = [] { return std::string(kCumuloHost); };
+    pd.routerKey = [this] { return cumuloKey(); };
+    pd.key = [this](const char*) { return cumuloKey(); };
+    pd.orchModel = [model](const char*) { return model; };
+    pd.attachOpenAI = [this](JsonDocument& doc) {
+      nimbus::orch::attachOpenAIWire(doc, conns_.parsed(), nullptr, /*builtinsOnly=*/true);
+    };
+    pd.attachMistral = [this](JsonDocument& doc) {
+      nimbus::orch::attachMistralWire(doc, conns_.parsed(), /*builtinsOnly=*/true);
+    };
+    pd.attachAnthropic = [this](JsonDocument& doc) {
+      nimbus::orch::attachAnthropicWire(doc, conns_.parsed(), nullptr, /*builtinsOnly=*/true);
+    };
+    return pd;
+  }
+
+  // One head attempt on the router `selector` ("<upstream>/<model>", or a bare id
+  // for the openai upstream): the SAME portable split the device head and the
+  // sub-session adapter use (resolveRouterRoute). anthropic/openai/mistral run the
+  // upstream's native head (its real tool loop when `tools` is set and the loop is
+  // on); zai and any upstream the native fabric does not drive keep the single-shot
+  // chat-completions path over /router/<upstream> with json_object (GLM behind the
+  // router ignores json_schema, CUM-495).
+  bool runRouterHead(const std::string& selector, std::string& conv, const std::string& ins,
+                     const std::string& inp, HeadOut& o, const agent::HeadTools* tools) {
+    const nimbus::orch::RouterRoute rr = nimbus::orch::resolveRouterRoute(selector);
+    auto pd = routerHeadDeps(rr.model);
+    if (rr.upstream == "anthropic")
+      return agent::providers::orchTurnAnthropic(pd, conv, ins, inp, o.out, o.err, tools, o.usage);
+    if (rr.upstream == "mistral")
+      return agent::providers::orchTurnMistral(pd, conv, ins, inp, o.out, o.err, tools, o.usage);
+    if (rr.upstream == "openai")
+      return agent::providers::orchTurnOpenAI(pd, conv, ins, inp, o.out, o.err, tools, o.usage);
+    const std::string upstream = rr.upstream, model = rr.model;
     pd.customBase       = [] { return std::string(kCumuloHost); };
-    pd.customPathPrefix = [rr] { return rr.basePath; };
+    pd.customPathPrefix = [upstream] { return std::string("/router/") + upstream; };
     pd.customKey        = [this] { return cumuloKey(); };
     pd.customConv       = [] { return std::string(kCumuloConv); };
-    pd.customModel      = [rr] { return rr.model; };
-    return pd;
+    pd.customModel      = [model] { return model; };
+    pd.customJsonMode   = [] { return std::string("object"); };
+    return agent::providers::orchTurnCustom(pd, conv, ins, inp, o.out, o.err, tools, o.usage);
+  }
+
+  // The Cumulo head turn (CUM-539). A refusal never leaves the assistant dead:
+  //   * the picked model is not offered (model_not_priced, endpoint_not_allowed,
+  //     404): the pick goes back to the last selector that worked (else the router
+  //     default) and THIS turn is answered on it, with a first line naming the
+  //     refusal and the fix - so the next turn answers too, and GET /api/orch shows
+  //     the model actually in use;
+  //   * that upstream is paused (funding_cap_reached, provider_disabled): this turn
+  //     is answered on the router default, the pick is kept;
+  //   * account-wide refusals (credits, spending limit) cannot be answered on any
+  //     model, so the failure reply says what to do instead of "rejected this
+  //     device's key".
+  // Only a refusal of the attempt's FIRST request is re-run: no tool has executed
+  // yet, so the retry cannot repeat a side effect.
+  bool cumuloTurn(std::string& conv, const std::string& ins, const std::string& inp, HeadOut& o,
+                  const agent::HeadTools* tools) {
+    const std::string picked = cumuloModel();
+    tap_.begin();
+    if (runRouterHead(picked, conv, ins, inp, o, tools)) {
+      lastGoodCumulo_ = picked;
+      return true;
+    }
+    const RouterRefusal rf = tap_.refusal();
+    const RefusalKind kind = classifyRefusal(rf);
+    const std::string fallback = cumuloFallbackFor(picked, kind);
+    if (rf.firstRequest && !fallback.empty()) {
+      if (kind == RefusalKind::Selector) setModelPick(kCumuloSlug, fallback == kCumuloModel ? std::string() : fallback);
+      std::fprintf(stderr, "[nimbusd] router refused %s (HTTP %d %s) - answering on %s\n",
+                   picked.c_str(), rf.status, rf.reason.c_str(), fallback.c_str());
+      tap_.begin();
+      conv.clear();
+      o.out.clear();
+      o.err.clear();
+      if (!runRouterHead(fallback, conv, ins, inp, o, tools)) return false;
+      lastGoodCumulo_ = fallback;
+      prefixReply(o.out, fallbackNotice(kind, picked, fallback));
+      return true;
+    }
+    const std::string cause = refusalCause(kind, picked);
+    if (!cause.empty()) o.err = cause;
+    return false;
+  }
+
+  // The selector a refused pick falls back to, or "" when none would help: a
+  // refused model goes back to the last selector that worked (else the router
+  // default); a paused upstream answers on the router default.
+  std::string cumuloFallbackFor(const std::string& picked, RefusalKind kind) const {
+    std::string fb;
+    if (kind == RefusalKind::Selector)
+      fb = (!lastGoodCumulo_.empty() && lastGoodCumulo_ != picked) ? lastGoodCumulo_ : std::string(kCumuloModel);
+    else if (kind == RefusalKind::Upstream)
+      fb = kCumuloModel;
+    return fb == picked ? std::string() : fb;
   }
 
   // The provider deps for the Z.ai direct-BYOK head (CUM-445): the base ProviderDeps
@@ -1121,7 +1228,13 @@ class NimbusdRig {
     // CUM-286: the Cumulo router as a first-class head, so a keyed VN with NO direct
     // provider key still runs the whole assistant - the "one key, one balance" path.
     // Head resolution reaches it via routerFallbackHost() once every BYOK head misses.
-    if (hasCumulo()) addCustomHead(d, kCumuloSlug, [this] { return cumuloProviderDeps(); });
+    if (hasCumulo())
+      d.hosts.add(kCumuloSlug, [this](std::string& conv, const std::string& ins, const std::string& inp,
+                                      std::string& out, std::string& err, const agent::HeadTools* tools,
+                                      orch::TokenUsage* usage) -> bool {
+        HeadOut o{out, err, usage};
+        return cumuloTurn(conv, ins, inp, o, tools);
+      });
     // CUM-445: the Z.ai direct-BYOK head, when Z_AI_TOKEN is present. Like cumulo it
     // runs through orchTurnCustom (OpenAI-compatible), NOT the loop above whose else-
     // branch is Mistral - routing a Z.ai key there would post it to Mistral, exactly
@@ -1130,9 +1243,8 @@ class NimbusdRig {
     if (hostAvailable(kZaiSlug)) addCustomHead(d, kZaiSlug, [this] { return zaiProviderDeps(); });
   }
 
-  // Register one OpenAI-compatible head (cumulo / Z.ai) that resolves its wire deps
-  // from `depsFn` at turn time. Shared by the router-style heads so each call site is
-  // one line.
+  // Register one OpenAI-compatible single-shot head (Z.ai) that resolves its wire
+  // deps from `depsFn` at turn time.
   void addCustomHead(agent::TurnEngine::Deps& d, const std::string& slug,
                      std::function<agent::providers::ProviderDeps()> depsFn) {
     d.hosts.add(slug, [depsFn](std::string& conv, const std::string& ins, const std::string& inp,
@@ -1361,6 +1473,9 @@ class NimbusdRig {
   CgroupMemory mem_;
   std::unique_ptr<DaemonHttpTransport> ownedHttp_;  // owned unless a test injects one
   agent::HttpTransport* http_ = nullptr;            // the live transport (owned or injected)
+  RouterTap tap_{nullptr, kCumuloHost};             // the cumulo head's transport (refusal reasons)
+  std::string lastGoodCumulo_;   // the last router selector a turn succeeded on (engine thread)
+  mutable std::mutex modelsMu_;  // guards opt_.models (HTTP-thread reads, engine-thread writes)
 
   PosixEpiFs         epiFs_;
   orch::VectorMemory vec_;

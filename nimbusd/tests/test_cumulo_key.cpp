@@ -5,7 +5,10 @@
 // keyed VN routes through the Cumulo router identically to a keyed device. These
 // are class tests over the seam, not one instance:
 //   (a) key set   -> health Provider ok AND a turn dispatches to the ROUTER wire
-//                    (fixed base + /router/openai/v1 path + bearer of the key).
+//                    (fixed base + /router/openai/v1 path + bearer of the key). The
+//                    default selector is a bare OpenAI id, so since CUM-539 the head
+//                    is OpenAI's NATIVE Responses wire over the router (device
+//                    parity, CUM-242), not single-shot chat completions.
 //   (b) key absent-> health Provider degraded, with the honest copy.
 //   (c) BOTH a direct BYOK key and the Cumulo key -> the BYOK head wins, exactly
 //       as the device's head resolution does (a keyed BYOK head beats the router
@@ -27,11 +30,20 @@ using harness_test::Exchange;
 using harness_test::FakeHttpTransport;
 
 // An OpenAI chat-completions response whose message content is the orch_turn
-// JSON the custom/router head parses (same shape as the harness custom-wire
-// suite). `content` must already be quote-escaped for embedding in JSON.
+// JSON (the shape a direct Mistral head reads in case (c)). `content` must
+// already be quote-escaped for embedding in JSON.
 static std::string chatBody(const std::string& content) {
   return std::string("{\"choices\":[{\"message\":{\"content\":\"") + content +
          "\"}}],\"usage\":{\"prompt_tokens\":42,\"completion_tokens\":7}}";
+}
+
+// An OpenAI Responses single-shot answer whose output_text IS the orch_turn JSON
+// (the router head's default selector rides OpenAI's native wire). `turnJson`
+// must already be quote-escaped for embedding in JSON.
+static std::string respBody(const std::string& turnJson) {
+  return std::string("{\"id\":\"resp_1\",\"status\":\"completed\",\"output\":[{\"type\":"
+                     "\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"") +
+         turnJson + "\"}]}],\"usage\":{\"input_tokens\":42,\"output_tokens\":7}}";
 }
 
 static std::string headerOf(const agent::HttpRequest& r, const std::string& name) {
@@ -88,13 +100,15 @@ static void testKeyedRoutesToRouter(ndtest::Ctx& c) {
   FakeHttpTransport tx;
   Exchange e;
   e.expectHost = kCumuloHost;
-  e.expectPathContains = "/router/openai/v1/chat/completions";
+  e.expectPathContains = "/router/openai/v1/responses";
   e.status = 200;
-  e.body = chatBody("{\\\"reply\\\":\\\"hi from the router\\\",\\\"memory\\\":\\\"\\\"}");
+  e.body = respBody("{\\\"reply\\\":\\\"hi from the router\\\",\\\"memory\\\":\\\"\\\"}");
   tx.script.push_back(e);
 
   Config cfg;
-  NimbusdRig rig(cfg, baseOpt("cumkey-a"), &tx);
+  NimbusdRig::Options opt = baseOpt("cumkey-a");
+  opt.toolLoop = false;   // single shot: exactly one request to assert (the loop has its own suite)
+  NimbusdRig rig(cfg, opt, &tx);
 
   c.ok(rig.hasCumulo(), "the rig sees the Cumulo router key from env");
   c.ok(rig.anyProviderConfigured(),
@@ -108,13 +122,13 @@ static void testKeyedRoutesToRouter(ndtest::Ctx& c) {
   if (!tx.seen.empty()) {
     const agent::HttpRequest& r = tx.seen[0];
     c.eq(r.host, kCumuloHost, "dispatch host is the fixed router base");
-    c.ok(r.path.find("/router/openai/v1/chat/completions") != std::string::npos,
-         "dispatch path carries the router prefix (/router/openai/v1)");
+    c.eq(r.path, std::string("/router/openai/v1/responses"),
+         "dispatch path carries the router prefix on OpenAI's native wire (/router/openai/v1/responses)");
     c.eq(headerOf(r, "Authorization"), std::string("Bearer ") + kKey,
          "the router bearer is the Cumulo key");
     c.ok(r.tls, "the router exchange is TLS");
   }
-  c.eqi((long)tx.seen.size(), 1, "the router head is single-shot (exactly one call)");
+  c.eqi((long)tx.seen.size(), 1, "with the loop off the router head is one call");
   c.ok(t.ok, "the turn produced a reply");
   c.ok(t.reply.find("hi from the router") != std::string::npos,
        "the router's reply was delivered to the owner");
@@ -188,12 +202,12 @@ static void testCumuloOnlyFoldsViaRouter(ndtest::Ctx& c) {
   FakeHttpTransport tx;
   Exchange e;
   e.expectHost = kCumuloHost;
-  e.expectPathContains = "/router/openai/v1/chat/completions";
+  e.expectPathContains = "/router/openai/v1/responses";
   e.status = 200;
   // The fold reply IS the anchored summary. The router head still returns the
-  // full strict orch_turn shape (response_format json_schema); the fold keeps
-  // only reply and ignores every other field.
-  e.body = chatBody("{\\\"reply\\\":\\\"1. Owner intent: testing the fold\\\","
+  // full strict orch_turn shape (the Responses text.format json_schema); the
+  // fold keeps only reply and ignores every other field.
+  e.body = respBody("{\\\"reply\\\":\\\"1. Owner intent: testing the fold\\\","
                     "\\\"ask\\\":\\\"\\\",\\\"memory\\\":\\\"\\\",\\\"device\\\":[],"
                     "\\\"mem_write\\\":[],\\\"mem_query\\\":[],\\\"session_ops\\\":[]}");
   tx.script.push_back(e);
@@ -225,7 +239,7 @@ static void testCumuloOnlyFoldsViaRouter(ndtest::Ctx& c) {
   if (!tx.seen.empty()) {
     const agent::HttpRequest& r = tx.seen[0];
     c.eq(r.host, kCumuloHost, "fold dispatch host is the fixed router base");
-    c.ok(r.path.find("/router/openai/v1/chat/completions") != std::string::npos,
+    c.eq(r.path, std::string("/router/openai/v1/responses"),
          "fold dispatch path carries the router prefix (/router/openai/v1)");
     c.eq(headerOf(r, "Authorization"), std::string("Bearer ") + kKey,
          "the fold's router bearer is the Cumulo key");

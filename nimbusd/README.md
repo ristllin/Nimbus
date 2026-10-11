@@ -108,6 +108,8 @@ may also live in `<data>/config.env`. Env always wins. Nothing secret is logged
 | Key | Meaning |
 |---|---|
 | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `MISTRAL_API_KEY` | BYOK provider keys (Phase 0 key mode) |
+| `CUMULO_API_KEY` | the Cumulo router key: with no BYOK key it runs the whole assistant (see The Cumulo router head) |
+| `Z_AI_TOKEN` | the Z.ai (GLM) BYOK key |
 | `TAVILY_API_KEY` | web.search (the router does not proxy it) |
 | `TELEGRAM_BOT_TOKEN` | the instance's bot (validate with `nimbusd --getme`) |
 | `NIMBUSD_TG_CHAT_ID` | **legacy**, optional: a one-time seed of an EMPTY Telegram allowlist (see Telegram access below). It is no longer a gate |
@@ -221,6 +223,34 @@ real engine; the hardware panels (ring, display, touch, battery, audio, Wi-Fi, E
 OTA) report their honest virtual truth and never fabricate a reading or leave a
 dead control, and software update is the platform rolling the instance image, not
 an ESP OTA. A keyless instance still says so plainly rather than sitting silent.
+
+## The Cumulo router head (device parity, CUM-539)
+
+A Cumulo-only instance runs the whole assistant over the router, exactly like a
+device holding only a Cumulo key (CUM-242). The head model selector is split by
+the shared `resolveRouterRoute` rule (`"<upstream>/<model>"`, a bare id is
+`openai`), and the SELECTED upstream's native head runs through
+`/router/<upstream>` with the Cumulo key as the bearer: the Anthropic Messages
+wire for `anthropic/...`, the OpenAI Responses wire for `openai/...` and bare ids,
+Mistral for `mistral/...`, each with its real tool loop (the registry tools ride
+every round) when the tool loop is on. `zai/...` and any upstream the native wire
+does not cover keep the single-shot chat-completions path with `json_object`.
+The head advertises provider built-in tools only; the owner's private connectors
+never ride the shared router key.
+
+A router refusal never leaves the assistant without an answer (`src/router_head.h`
+reads the router's own reason from the refused request):
+
+| Router answer | What happens |
+|---|---|
+| The picked model is not offered (`model_not_priced`, `endpoint_not_allowed`, 404) | The same turn is answered on the last router model that worked (else the router default), the reply opens with a line naming the refused model and the fix, and the pick moves to the model in use, so GET /api/orch shows it and the next turn answers |
+| That upstream is paused (`funding_cap_reached`, `provider_disabled`) | The turn is answered on the router default with a line saying so; the pick is kept |
+| Credits or a plan are missing (402) | "That didn't finish - the Cumulo router needs credits or a plan for this account. Add credits in the portal." |
+| Rate limited (429) | the engine's rate-limit reply |
+
+Only a refusal of an attempt's first request is answered again on another model,
+so a tool that already ran is never repeated. Host-tested offline in
+`tests/test_router_head.cpp`.
 
 ## Sub-agent fan-out (device parity)
 
