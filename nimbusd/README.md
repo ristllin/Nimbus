@@ -162,6 +162,12 @@ display, battery, mode, budgets, a typed bot or Tavily key), answers
 in that post applies. Env values (`NIMBUSD_ORCH_HOST`, `NIMBUSD_PRIORITY`, `TZ`,
 ...) are the defaults until the owner saves a value in the app.
 
+**What the assistant is told about the instance (CUM-542).** Every head's prompt
+carries the real clock in the owner's time zone, the engine version and the hosted
+truth: a cloud instance that is always online, with no screen, microphone, speaker,
+LED ring or battery (the composer's desk-device lines are replaced for every head
+this daemon registers; `tests/test_hosted_prompt.cpp` pins the wording).
+
 **Commands.** `/clear` (then `/clear yes`) clears the conversation exactly like the
 button, `/help` lists the commands, and any other slash command gets a fixed reply:
 none of them reaches the model or costs a turn.

@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstring>
 #include <ctime>
 #include <memory>
 #include <map>
@@ -39,6 +40,7 @@
 #include "router_head.h"
 #include "sub_fabric.h"
 #include "tg_access.h"
+#include "version.h"
 
 // NimbusdRig - a whole Nimbus orchestrator as a hosted daemon.
 //
@@ -1399,6 +1401,7 @@ class NimbusdRig {
       // role, so an approved member is never addressed as the owner.
       in.speakerRole = orch::roleName(access_->roleOf(chat));
       in.speakerLabel = access_->labelOf(chat);
+      fillHostedFacts(in);
       return in;
     };
     d.toolSpecs = [this](const orch::Principal& who) { return reg_.toolSpecsFor(who); };
@@ -1437,6 +1440,50 @@ class NimbusdRig {
 
     registerHeads(d);
     eng_.reset(new agent::TurnEngine(std::move(d)));
+  }
+
+  // What the prompt says about THIS instance (CUM-542): the real clock in the owner's
+  // time zone (the host clock is NTP-synced; the composer used to say "date-time
+  // UNKNOWN" on every hosted turn, so the model refused date questions), the engine
+  // version, and the hardware a hosted instance really has (none of the desk
+  // device's ring, screen, mic, speaker or battery; always online).
+  void fillHostedFacts(agent::ComposeInputs& in) const {
+    in.now = hosted::localTime(time(nullptr), "%Y-%m-%d %a %H:%M %Z");
+    in.fw = NIMBUS_FW_VERSION " (" NIMBUS_FW_BUILD ")";
+    in.hw.ring = false;
+    in.hw.touch = false;
+    in.hw.mic = false;
+    in.hw.speaker = false;
+    in.hw.battery = false;
+    in.hw.sd = false;
+    in.hw.wifi = true;
+    in.hw.ble = false;
+    in.hw.telegram = cfg_.has("TELEGRAM_BOT_TOKEN");
+    in.hw.files = true;
+    in.hw.voiceReplies = false;
+  }
+
+  // The composer's identity and capabilities lines describe the desk device; a
+  // hosted head reads the hosted truth instead (CUM-542), so it stops calling
+  // itself an offline ESP32. Applied to the instructions of every head this
+  // instance registers (registerHeads). The phrases are pinned by
+  // tests/test_hosted_prompt.cpp, so a change to the composer's wording fails a
+  // test instead of silently shipping the device text again.
+  static std::string hostedPrompt(std::string ins) {
+    static const char* const kSwap[][2] = {
+        {"(a Nimbus device), running in Orchestrator mode on a Solide S3 (ESP32-S3-DevKitC-1) desk device.",
+         "(a Virtual Nimbus), running as a hosted cloud instance that is always online; it has no screen, "
+         "microphone, speaker or LED ring."},
+        {" desk device (ESP32-S3). Hardware present: ",
+         " hosted Virtual Nimbus (a cloud instance, not a desk device). Hardware present: "},
+        {"Hardware present: .\n", "Hardware present: none; memory and files live on the instance disk.\n"},
+        {"Connectivity: WiFi", "Connectivity: online"},
+    };
+    for (const auto& sw : kSwap) {
+      const size_t at = ins.find(sw[0]);
+      if (at != std::string::npos) ins.replace(at, std::strlen(sw[0]), sw[1]);
+    }
+    return ins;
   }
 
   // The apply layer's deps (device buildApplyDeps): delivery, the turn principal,
@@ -1512,11 +1559,12 @@ class NimbusdRig {
     for (const char* h : {"openai", "anthropic", "mistral"}) {
       if (cfg_.providerKey(h).empty()) continue;
       const std::string host = h;
-      d.hosts.add(host, [this, host](std::string& conv, const std::string& ins,
+      d.hosts.add(host, [this, host](std::string& conv, const std::string& rawIns,
                                      const std::string& inp, std::string& out,
                                      std::string& err, const agent::HeadTools* tools,
                                      orch::TokenUsage* usage) -> bool {
         auto pd = headProviderDeps();
+        const std::string ins = hostedPrompt(rawIns);
         if (host == "anthropic")
           return agent::providers::orchTurnAnthropic(pd, conv, ins, inp, out, err, tools, usage);
         if (host == "openai")
@@ -1532,7 +1580,7 @@ class NimbusdRig {
                                       std::string& out, std::string& err, const agent::HeadTools* tools,
                                       orch::TokenUsage* usage) -> bool {
         HeadOut o{out, err, usage};
-        return cumuloTurn(conv, ins, inp, o, tools);
+        return cumuloTurn(conv, hostedPrompt(ins), inp, o, tools);
       });
     // CUM-445: the Z.ai direct-BYOK head, when Z_AI_TOKEN is present. Like cumulo it
     // runs through orchTurnCustom (OpenAI-compatible), NOT the loop above whose else-
@@ -1550,7 +1598,7 @@ class NimbusdRig {
                                std::string& out, std::string& err, const agent::HeadTools* tools,
                                orch::TokenUsage* usage) -> bool {
       auto pd = depsFn();
-      return agent::providers::orchTurnCustom(pd, conv, ins, inp, out, err, tools, usage);
+      return agent::providers::orchTurnCustom(pd, conv, hostedPrompt(ins), inp, out, err, tools, usage);
     });
   }
 
