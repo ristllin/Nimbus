@@ -9,11 +9,11 @@ things like:
 - "How many unread emails do I have?" - Gmail answers.
 - "Publish that summary to my Notion workspace." - a page appears.
 
-**How it works, in one sentence:** Nimbus does *not* speak to
-Gmail/Notion/GitHub itself. It attaches a small *connector descriptor* to the
-LLM request, and the **provider runs the tool server-side in its own cloud**.
-So what you can do is whatever your provider hosts, and the credential lives
-with the provider (Mistral Studio) or is pasted once into Nimbus's web UI.
+**How it works:** Nimbus does not call Gmail, Notion or GitHub itself. It
+attaches a small connector descriptor to the model request, and the provider
+runs the tool in its own cloud. What you can do is whatever your provider
+hosts; the credential either lives with the provider (Mistral Studio) or is
+pasted once into the device web UI.
 
 > **Scope note.** This page is the *provider-attach* model - the AI lab executes
 > the tool in its own cloud. Nimbus can *also* dial a remote MCP server itself
@@ -24,10 +24,12 @@ with the provider (Mistral Studio) or is pasted once into Nimbus's web UI.
 
 ## Setting up a connector
 
-Every connector is a **paste-a-credential card** under **Assistant →
-Connectors** in the web UI. Connector credentials are pasted once into that
-card and stored write-only on the device - setup never involves the firmware
-repository or any script:
+Every connector is a card under **Assistant → Connectors** in the web UI.
+Paste the credential once; the device stores it write-only and never shows it
+again. Google connectors on OpenAI are the one exception: they need an OAuth
+block (token URL, client id, client secret, refresh token) rather than a single
+token, entered through the **Advanced - edit raw JSON** editor below the cards
+or pushed from a repository `.env` with `tools/connectors_setup.py`:
 
 1. Create the credential once in a browser: a GitHub personal access token, a
    Notion integration token, a Slack bot token, an OAuth refresh token, or a
@@ -46,7 +48,7 @@ in firmware ([Security](#security)).
 | | On the Orchestrator's **own turns** | On **sub-agents** it spawns |
 |---|---|---|
 | **OpenAI** | ✅ remote MCP (`server_url` + token) and first-party connectors (Gmail, Calendar, Drive…) | ✅ same |
-| **Anthropic** | - (the head turn is a single forced tool; MCP can't run mid-turn) | ✅ BYO remote MCP by URL (`mcp_servers`) for servers that need no token. A connector with a token is left off Anthropic sub-agents for now: Anthropic accepts MCP credentials only through a vault, which Nimbus does not set up yet. |
+| **Anthropic** | - (the head turn is a single forced tool; MCP cannot run mid-turn) | ✅ remote MCP by URL (`mcp_servers`); a pasted token or a completed Sign in is forwarded as the server's authorization token |
 | **Mistral** | ✅ Studio built-ins + Studio-named connectors - **single-shot turns** | ✅ sub-agents run over the Conversations API; built-ins *and* Studio connectors attach to the spawn dispatch (server-side) |
 
 Two consequences:
@@ -74,20 +76,17 @@ before it tells the assistant a connector is available:
   provider refreshes about every *re-check* interval (default 24 hours, range
   1–168).
 
-The settings persist as NVS `capProbe` (0/1/2) and `capProbeH` (hours,
-`src/agent/store.cpp`). Active mode runs only in Orchestrator mode (the re-verify
-needs the TLS heap) and reuses the same one-slot verify worker as the web
-**Verify** button - no new concurrency.
+Active mode runs only in Orchestrator mode (the re-check needs the TLS heap)
+and shares the single verify worker with the web **Verify** button.
 
-**Per-connector credential state (v4.1).** Enabling a connector is a checkbox,
-not proof it works. The catalog the assistant reads marks the two states that
-need the owner: a connector whose OAuth sign-in **failed** on its last mint
-("sign-in FAILED - tell the owner") and a remote MCP / first-party connector
-that has **no credential at all** ("NO credential - not usable"), which the
-attach layer skips rather than sending a doomed request. A bare name means no
-known problem; a successful OAuth mint this boot is positive proof the
-credential works (`src/agent/connectors.cpp` `authStateOf`, fed from the one
-credential choke point).
+**Per-connector credential state.** Enabling a connector is a checkbox, not
+proof it works. The catalog the assistant reads marks the two states that need
+you: a connector whose OAuth sign-in failed on its last refresh ("sign-in
+FAILED - tell the owner") and a remote MCP or first-party connector with no
+credential at all ("NO credential - not usable until the owner adds one"),
+which is skipped rather than sent a request that cannot succeed. A bare name
+means no known problem; a successful OAuth refresh since the last restart is
+positive proof the credential works.
 
 **Mistral Studio connectors: the workspace listing decides.** A Studio connector
 (Google Calendar, Notion, Slack, ...) has no credential on the device, so its
@@ -103,10 +102,9 @@ connectors the key's workspace offers (`GET /v1/connectors`):
   not been checked rather than sent to Mistral for nothing.
 
 Mistral's own "signed in" flag (`is_authenticated`) is a hint, not the rule: it
-reads false even for connectors that demonstrably work (a Google Calendar
-connector reporting false returned real events). So a listed connector is used,
-and the assistant is told that if a result comes back empty, the account may
-still need connecting in Mistral. A Virtual Nimbus runs the same check at
+can read false for connectors that work. So a listed connector is used, and the
+assistant is told that an empty result may mean the account still needs
+connecting in Mistral. A Virtual Nimbus runs the same check at
 startup, after a Mistral key is saved, and when its first Studio connector is
 added (the hosted page has no Verify button).
 
@@ -120,9 +118,7 @@ Whatever the mode, the model is told the truth every turn: its
 `[PROVIDERS & CONNECTORS]` block marks each provider **available, verified** /
 **key present, not yet verified** / **key present but rejected on last check** /
 **no key** - and with validation off, **key present (validation off - trusting
-key presence)**. That block is built in `catalogText`
-(`lib/core/src/orch_connectors_wire.cpp`), fed the verify cache and the mode by
-`connectors.cpp` `catalog()`.
+key presence)**.
 
 **The Telegram bot token is watched live, not just at save time.** The token is
 verified once (a `getMe` call) when you save it, and that verdict is cached. If
@@ -183,11 +179,12 @@ condition) is not treated as a rejected token.
 
 - **Providers:** Mistral (Studio) requires the least setup; OpenAI/Anthropic
   via a remote MCP URL work too.
-- **Credential:** a Notion **Internal Integration** token (`secret_…`) -
-  Notion → Settings → Connections → Develop integrations. Share each target
-  page with the integration once. (Notion's *official* MCP mandates
-  per-session OAuth and is unusable headless - prefer the static integration
-  token.)
+- **Credential:** a Notion **Internal Integration** token - Notion → Settings
+  → Connections → Develop integrations. Share each target page with the
+  integration once. Notion's hosted MCP (`https://mcp.notion.com/mcp`, the
+  card's default URL) signs in through the browser instead: save the card, then
+  use its **Sign in** button and approve on a phone or laptop on the same
+  network.
 - **Unlocks:** create and query pages and databases - report publishing,
   research corpora.
 
@@ -200,7 +197,7 @@ condition) is not treated as a rejected token.
 
 ## Linear {#linear}
 
-- **Providers:** OpenAI / Anthropic (remote MCP `https://mcp.linear.app`), Mistral (Studio).
+- **Providers:** OpenAI / Anthropic (remote MCP `https://mcp.linear.app/mcp`), Mistral (Studio).
 - **Credential:** a static **Linear API key** (Bearer) that bypasses OAuth
   entirely - Linear → Settings → API.
 - **Unlocks:** find, create, and update issues, projects, and comments.
@@ -212,7 +209,9 @@ them on here (provider = Mistral). They attach as `{type:"<name>"}` to the
 Orchestrator's own single-shot Mistral turns.
 
 - **web_search** - hosted web search with citations.
-- **code_interpreter** - sandboxed Python execution.
+- **code_interpreter** - sandboxed Python execution (also available on OpenAI
+  with no setup; the OpenAI sandbox can produce PDF and CSV files, the Mistral
+  one images and text only).
 - **image_generation** - hosted image generation.
 - **document_library** - RAG over your Studio document library.
 
@@ -245,30 +244,30 @@ Mistral turns.
 
 ---
 
-## Operational notes (live-verified on hardware)
+## Operational notes
 
 - **Mistral connectors attach on single-shot turns** (tool loop off) **and on
   sub-agent dispatch** - not on the agentic tool-loop, which forces tool-choice
   (rejected alongside built-in connectors). Set the Orchestrator host to Mistral
   and the tool loop off to use them on your own turns, or spawn a Mistral
   sub-agent for connector work while the loop is on.
-- **Studio connectors are most reliable on a Mistral sub-agent.** Measured
-  2026-09-27: a single-shot turn that carries a Studio connector (Google
-  Calendar) together with the structured reply format did not answer within
-  60 seconds (3 of 3 tries), while the same request without the structured
-  format returned the real events in about 5 seconds, which is exactly what a
-  sub-agent sends. A Virtual Nimbus therefore attaches Studio connectors only to
-  Mistral sub-agents, and its assistant is told to spawn one for connector work.
+- **Studio connectors are most reliable on a Mistral sub-agent.** A single-shot
+  turn that carries a Studio connector together with the structured reply
+  format tends to time out, while the same request without the structured
+  format (which is what a sub-agent sends) answers in seconds. A Virtual Nimbus
+  therefore attaches Studio connectors only to Mistral sub-agents, and its
+  assistant is told to spawn one for connector work.
   On the device, a single-shot Mistral turn that carries a Studio connector
   leaves the structured format off (the model gets the same reply format in
   its instructions instead), so it answers rather than timing out. When the
   model answers in plain text, that text is the whole reply: no device action,
   memory write or sub-agent rides that turn. Built-in connectors alone keep the
   structured format.
-- **A Mistral key's Studio connectors have their own quota.** The personal key
-  measured 2026-09-27 allowed 5 connector requests per minute and 50 per day
-  (headers `x-ratelimit-limit-custom-minute` / `-custom-day`); the daily count
-  reset at midnight UTC. Past it, every connector call answers HTTP 429.
+- **A Mistral key's Studio connectors have their own quota.** Mistral reports
+  it in the `x-ratelimit-limit-custom-minute` / `-custom-day` headers (one
+  individual plan allowed 5 connector requests per minute and 50 per day, with
+  the daily count resetting at midnight UTC). Past it, every connector call
+  answers HTTP 429.
 - **A refused turn says which limit it hit.** When a provider answers HTTP 429,
   the device's reply names the window from the provider's rate-limit headers
   or error text: a per-minute limit ("wait a minute and ask again"), a daily
@@ -280,10 +279,9 @@ Mistral turns.
   provider and names the window the same way, so a Mistral sub refused by a
   spent connector day says it resets at midnight UTC.
 - **Keep it to about 2 enabled Mistral connectors at a time.** One or two work
-  reliably (proven: GitHub returned a live issue count, Gmail a live unread
-  count). Enabling around 4 at once made the Conversations response come back
-  with no message output and the turn failed over to another provider. It
-  fails *soft* (no crash), but the connector call won't run.
+  reliably. With around 4 enabled at once the Conversations response can come
+  back with no message output and the turn fails over to another provider: no
+  crash, but the connector call does not run.
 - **Changing a connector takes effect on the next turn** - the device resets
   the Mistral conversation whenever you add, toggle, or remove a connector
   (connectors are pinned at conversation creation, so this is required for a

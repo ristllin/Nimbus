@@ -1,9 +1,10 @@
-# Configuration B - all-in-one (Freenove CYD, `screenModel = tft`)
+# Configuration B - All-in-One (Freenove CYD)
 
-The lowest-effort way to run Nimbus: a single off-the-shelf module with the
-screen, touch, microSD, mic, speaker, and an RGB LED already on one board. There
-is nothing to wire and nothing to solder. Buy one part, plug in USB-C, flash, and
-it is a Nimbus.
+The all-in-one is the lowest-effort way to run Nimbus: one off-the-shelf module
+with the screen, touch, microSD, mic, speaker, and an RGB LED already on the
+board. There is nothing to wire or solder. This page covers the board, the
+supported panel sizes, the four-step build, the optional printed case, and the
+fixed pinout.
 
 The board is the **Freenove ESP32-S3 Display**, model **FNK0104B** (Amazon
 `B0FSQF6FKN`): a 2.8" **ILI9341** 240×320 IPS **capacitive** touchscreen, an
@@ -29,20 +30,17 @@ that matches its glass.
 
 | Size | Panel | Resolution | OTA type | Firmware env | Verification |
 |---|---|---|---|---|---|
-| 2.8" | ILI9341 | 320×240 | `freenove-28` | `esp32s3-cyd` | **Hardware-verified** - display first-light and touch validated on the bench board. |
-| 3.5" | ILI9488 | 480×320 | `freenove-35` | `esp32s3-cyd-35` | **Host-verified only** - renderer, goldens, and firmware image proven on the host; no panel owned. |
-| 4.0" | 480×480 class | 480×480 | `freenove-40` | `esp32s3-cyd-40` | **Host-verified only** - renderer, goldens, and firmware image proven on the host; no panel owned. |
+| 2.8" | ILI9341 | 320×240 | `freenove-28` | `esp32s3-cyd` | **Hardware-verified** - display and touch validated on a physical board. |
+| 3.5" | ILI9488 | 480×320 | `freenove-35` | `esp32s3-cyd-35` | **Host-verified only** - renderer, goldens, and firmware image proven on the host; not yet run on a physical panel. |
+| 4.0" | 480×480 class | 480×480 | `freenove-40` | `esp32s3-cyd-40` | **Host-verified only** - renderer, goldens, and firmware image proven on the host; not yet run on a physical panel. |
 
 **What "host-verified only" means.** The firmware for the 3.5" and 4.0" sizes
-compiles, links, and passes its own per-size golden framebuffers
-(`test/golden_tft/480x320/`, `test/golden_tft/480x480/`), so the layout is proven
-to reflow correctly at those resolutions. It has **not** run on a physical 3.5" or
-4.0" panel, and the `solide-drivers` display driver still initializes the 2.8"
-geometry - so bringing a larger panel up on hardware needs the matching driver
-init (panel controller, resolution, orientation) added when a panel is in hand.
-The resolution assumed for each size is the standard for that panel class and is
-confirmed against hardware before any device-verified claim is made. Release notes
-carry the same host-verified labels.
+compiles, links, and passes its per-size golden framebuffers
+(`test/golden_tft/480x320/`, `test/golden_tft/480x480/`), so the layout reflows
+correctly at those resolutions. It has **not** run on a physical 3.5" or 4.0"
+panel, and the display driver still initializes the 2.8" geometry, so a larger
+panel needs matching driver initialization (panel controller, resolution,
+orientation) before it shows an image. Release notes carry the same label.
 
 ## Happy path - buy one, flash, done
 
@@ -53,19 +51,21 @@ carry the same host-verified labels.
    USB-C cable. The board has a single USB-C port, so there is no wrong port to
    pick.
 3. **Flash the firmware.** Use the browser flasher (any Chromium-based browser,
-   nothing to install) or the command-line path, and choose the all-in-one
-   (Freenove) build. Full steps: [Flash the firmware](../quick-start/flash.md).
+   nothing to install) or the command-line path, and choose **Freenove CYD** at
+   your panel size (2.8, 3.5, or 4.0 inch). Full steps:
+   [Flash the firmware](../quick-start/flash.md).
 4. **Set it up.** The device brings up its setup network on first boot. Follow
    [Set up the device](../quick-start/setup-wizard.md) to join Wi-Fi and, for
    Orchestrator mode, add a provider key.
 
-That is the whole build. Touch is capacitive and self-calibrating, so there is no
-touch calibration step, and there is nothing to wire.
+That is the whole build. Touch is capacitive, so there is no calibration step in
+setup (if taps land off target later, see [Notes](#notes)), and there is nothing
+to wire.
 
 ## Enclosure (optional 3D print)
 
-A printed case for Nimbus Light is published alongside the classic one. It is two
-halves that capture the board between them, so there is nothing to fasten:
+A printed case for this build, called Nimbus Light, is available. It is two halves
+that capture the board between them, so there is nothing to fasten:
 
 - Front: [`nimbus_light_front.stl`](https://github.com/ristllin/Nimbus/blob/main/hardware/fab/nimbus_light_front.stl)
 - Back: [`nimbus_light_back.stl`](https://github.com/ristllin/Nimbus/blob/main/hardware/fab/nimbus_light_back.stl)
@@ -76,25 +76,7 @@ each STL in a 3D viewer. Print notes live in the
 [`hardware/fab/`](https://github.com/ristllin/Nimbus/tree/main/hardware/fab#3d-printing-the-enclosure)
 folder. A bare board on the desk works too; the case is optional.
 
-<!--
-CUM-117 photo drop-in point. This build ships bare-board until case photos exist.
-When they do, this is a ONE-STEP drop-in: save each photo as a .webp into
-docs/hardware/photos/ under the exact name below, then uncomment the matching line.
-No other edit is needed; the captions are already written. Keep them commented until
-the files exist, or the Docusaurus build fails on the missing asset.
-
-Masters go to hardware-photo-masters/ (repo root sibling) as the original .jpg, then
-convert to web-sized .webp with:
-    cwebp -q 82 -resize 1600 0 "hardware-photo-masters/<name>.jpg" \
-      -o docs/hardware/photos/freenove-light-<name>.webp
-
-Planned set (front-and-back two-half case, optional stand):
-![The two printed Nimbus Light case halves and the optional desk stand laid out](photos/freenove-light-parts.webp)
-![The Freenove ESP32-S3 Display board seated in the back half of the case](photos/freenove-light-board-seated.webp)
-![The assembled Nimbus Light, front view, screen showing through the case opening](photos/freenove-light-assembled.webp)
-![The assembled Nimbus Light standing on the optional printed desk stand](photos/freenove-light-stand.webp)
--->
-
+<!-- Case photos: when available, add .webp files under docs/hardware/photos/ and embed them here. -->
 
 ## Pinout
 
@@ -107,7 +89,7 @@ connect.
 | Peripheral | Bus | Pins | Notes |
 |---|---|---|---|
 | **Display** ILI9341, 2.8" 240×320 | SPI | SCLK 12 · MOSI 11 · MISO 13 · CS 10 · DC 46 · BL 45 · RST tied to board reset | BGR color order, 40 MHz. |
-| **Touch** FT6336U (capacitive) | I²C | SDA 16 · SCL 15 · INT 17 · RST 18 | I²C address 0x38. Reports pixel coordinates and is self-calibrating - no touch calibration needed. |
+| **Touch** FT6336U (capacitive) | I²C | SDA 16 · SCL 15 · INT 17 · RST 18 | I²C address 0x38. Reports pixel coordinates, so no resistive min/max calibration applies. |
 
 ### Audio, storage, LED, and battery
 
@@ -121,9 +103,9 @@ connect.
 ## Notes
 
 - **No LED ring.** The board has a single RGB LED, not the 45-pixel ring of the
-  hand-built boards. So the **Notifier** status ring is drawn on the screen
-  instead: each active session gets an arc in the same colors and animations the
-  physical ring would show. The battery mode still dims it. See
+  hand-built boards. The **Notifier** status ring is drawn on the screen instead:
+  each active session gets an arc in the same colors and animations the physical
+  ring would show. The battery mode still dims it. See
   [The screen on a board with no ring](../modes-and-signals.md#the-screen-on-a-board-with-no-ring).
 - **Capacitive touch.** The FT6336U reports pixel coordinates directly, so the
   resistive min/max calibration used on the hand-built Touch TFT does not apply

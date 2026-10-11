@@ -1,15 +1,15 @@
 # Nimbus Architecture
 
-Nimbus is firmware for a battery-capable desk device. It runs on the hand-built
-**Solide S3** board (ESP32-S3-DevKitC-1 N16R8) - a 45-LED ring, an I²S microphone
-and speaker, and a 2.8" color touchscreen - and on the off-the-shelf
-**Freenove ESP32-S3 Display** all-in-one board. Each board ships as its own
-firmware image. Every build runs both of the device's two operating modes.
+This page is the map of the Nimbus firmware: how the code is layered, what each
+operating mode turns on, which sibling repositories the project depends on, and
+how a release travels from a git tag to a device on a desk. Read it before
+diving into a subsystem; each subsystem has its own document, linked from here.
 
-This page is the map: how the code is layered, what each operating mode turns
-on, which sibling repositories the project depends on, and how a release
-travels from a git tag to a device on someone's desk. It links out rather than
-re-explaining - each subsystem has its own document.
+Nimbus is firmware for a battery-capable desk device. It runs on the hand-built
+**Solide S3** board (ESP32-S3-DevKitC-1 N16R8) with a 45-LED ring, an I²S
+microphone and speaker, and a 2.8" color touchscreen, and on the off-the-shelf
+**Freenove ESP32-S3 Display** all-in-one board. Each board ships as its own
+firmware image, and every image includes both operating modes.
 
 ## Code layering
 
@@ -29,14 +29,14 @@ flowchart TD
 - **`lib/core`** - portable C++ with no Arduino dependency: the attention
   router and ring planner, the notifier frame codec, the battery model, the
   orchestrator's memory engines and turn contract, fault injection, Wi-Fi
-  policy, and more. Everything here runs and is tested on the host
-  (`pio test -e native`), which is what keeps the device-independent logic at
-  100% coverage without a board on the desk.
+  policy, and more. Everything here builds and is tested on the host
+  (`pio test -e native`), so the device-independent logic is verified without
+  a board on the desk.
 - **`src/hw`** - the glue that binds portable logic to real hardware: display
   output, self-test probes, board bring-up.
 - **`src/modes` · `src/agent` · `src/net`** - the feature subsystems: the two
   operating modes, the orchestrator agent (providers, memory, Telegram, voice),
-  and the network surfaces (web UI, BLE notifier link, OTA).
+  and the network surfaces (web UI, Bluetooth Notifier link, OTA).
 - **`main.cpp`** - wiring and the main loop only. It owns task startup, the
   boot-time mode decision, and draining request flags from the UI subsystems.
 
@@ -67,12 +67,12 @@ ring - is [identical in both modes](./modes-and-signals.md).
 
 ### Notifier - the broker pipeline
 
-In Notifier mode the ring and screen are driven **only over BLE**. AI coding
-harnesses (Claude Code, Codex, and others) report session state through
+In Notifier mode the ring and screen are driven **only over Bluetooth**. AI
+coding harnesses (Claude Code, Codex, and others) report session state through
 installed hooks to a broker running on the host; the broker encodes it as nsn
-frames and writes them to the device's GATT server. The link is bonded and
-encrypted (LE Secure Connections, Just Works) - an unbonded central can connect
-but cannot paint the ring.
+frames and writes them to the device's GATT server. The link is encrypted and
+bonded (LE Secure Connections, Just Works): an unbonded central can connect but
+cannot paint the ring.
 
 ```mermaid
 flowchart LR
@@ -94,8 +94,9 @@ the broker and the device codec cannot drift apart. Details:
 In Orchestrator mode the device joins Wi-Fi and becomes a small self-contained
 agent host:
 
-- **LLM turns** against OpenAI, Anthropic, or Mistral, with structured outputs
-  and a bounded multi-round tool loop ([provider wire](./provider-wire.md),
+- **LLM turns** against OpenAI, Anthropic, Mistral, or Z.ai, directly or
+  through the Cumulo Nimbus router, with structured outputs and a bounded
+  multi-round tool loop ([provider wire](./provider-wire.md),
   [turn anatomy](./turn-anatomy.md)).
 - **The World memory system** - vector recall, episodic history, scratchpad
   goals - tiered across PSRAM, SD card, and flash
@@ -111,9 +112,9 @@ agent host:
 
 ## Two display configurations, two boards
 
-Nimbus supports two display configurations across two boards. The hand-built
-Solide S3 drives a 2.8" color touchscreen alongside its LED ring; the off-the-shelf
-Freenove CYD is an all-in-one module with its own capacitive touch panel:
+The hand-built Solide S3 drives a 2.8" color touchscreen alongside its LED
+ring; the off-the-shelf Freenove CYD is an all-in-one module with its own
+capacitive touchscreen:
 
 | Configuration | Board | Display | Input |
 |---|---|---|---|
@@ -145,9 +146,8 @@ a clean, assets-only repository.
 ## How a release ships
 
 Firmware updates are signed, published to the public releases repository, and
-installed over the air with one click - with an automatic safety net if a bad
-image ships. The full design is in [OTA updates](./ota.md); the operator
-runbook is maintainer-internal.
+installed over the air on a single owner action, with automatic rollback if a
+bad image ships. The full design is in [OTA updates](./ota.md).
 
 ```mermaid
 sequenceDiagram
@@ -183,7 +183,7 @@ Key properties:
 
 ## Where to go next
 
-- [Modes & signals](./modes-and-signals.md) - every user-facing knob and what it changes
+- [Modes & signals](./modes-and-signals.md) - every user-facing setting and what it changes
 - [Hardware reference](./hardware.md) - pinouts, wiring, first-flash guidance
 - [Orchestrator World](./orchestrator-world.md) - the agent's memory and control surface
 - [Security](./security.md) - the auth model and open items

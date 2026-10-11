@@ -1,14 +1,14 @@
 <!-- audience: dev -->
 # Nimbus Hardware Reference
 
-Project-level pinout + wiring for the **Solide S3** board (ESP32-S3-DevKitC-1 N16R8).
-The board pin map's source of truth is
-`board_solide_s3.h` in the public
-[solide-drivers](https://github.com/ristllin/solide-drivers) board-support
-repository; the deeper board build/BOM guide is its
-[docs/build.md](https://github.com/ristllin/solide-drivers/blob/main/docs/build.md) +
-[docs/hardware.md](https://github.com/ristllin/solide-drivers/blob/main/docs/hardware.md).
-This page is the Nimbus-side consolidated view.
+Pinout, wiring, flashing ports and power for the hand-built **Solide S3** board
+(ESP32-S3-DevKitC-1 N16R8). Use it when building or repairing a board, adding
+battery sensing, or when a fresh board will not flash. The pin map's source of
+truth is `board_solide_s3.h` in the public
+[solide-drivers](https://github.com/ristllin/solide-drivers) repository; its
+[build guide](https://github.com/ristllin/solide-drivers/blob/main/docs/build.md) and
+[hardware notes](https://github.com/ristllin/solide-drivers/blob/main/docs/hardware.md)
+cover the board itself. This page is the Nimbus-side view.
 
 ## Board configurations
 
@@ -47,8 +47,8 @@ own page.
 
 ## First flash of a fresh board: use the UART port
 
-⚠ **The DevKitC-1 has TWO USB-C ports and they are not interchangeable for
-flashing.** Getting this wrong on a factory-fresh board looks like a dead board.
+**The DevKitC-1 has two USB-C ports, and only the UART port can flash a
+factory-fresh board.** On the wrong port a fresh board looks dead.
 
 | Port (silkscreen) | Goes to | Auto-reset into download mode? |
 |---|---|---|
@@ -68,8 +68,8 @@ python3 tools/setup_device.py
 It finds the connected boards by their USB descriptor (the UART bridge or the
 native USB port; with several, it lists them and can blink one to identify it),
 reads the chosen board's factory MAC and saved settings (NVS) without changing
-them, asks only what it cannot detect (the operating mode, and the display size
-on a Freenove; there is no display question), and confirms before any upload. A temporary serial diagnostic then seeds and verifies the
+them, asks only what it cannot detect (the operating mode on a blank board, and the
+display size on a Freenove that has none saved), and confirms before any upload. A temporary serial diagnostic then seeds and verifies the
 board's settings, and production firmware is installed last. NVS is never
 erased: a configured board keeps its Wi-Fi, keys, pairings, and device sign-in
 code. Do not run a bare `pio run ... -t upload` with more than one board
@@ -109,8 +109,8 @@ never sync.
 It is the right tool for a *wedged* CDC on a Nimbus board; it cannot restart the
 chip or reach download mode.
 
-⚠ **Do not go hunting with DTR/RTS.** AGENTS.md forbids strobing it on this board
-and that is not idle advice - a strobe matrix wedged a board's CDC silent here.
+**Do not strobe DTR/RTS on this board.** Repeated strobing has wedged a board's
+native USB CDC into silence.
 
 ### Once Nimbus is on it
 
@@ -126,7 +126,7 @@ its own fixed pinout - see [All-in-one (Freenove CYD)](hardware/all-in-one-cyd.m
 
 | Peripheral | Bus | Pins | Rail | Notes |
 |---|---|---|---|---|
-| **microSD** | SPI2 (FSPI) | CS 10 · MOSI 11 · SCK 12 · MISO 13 | 3.3 V | **MUST be FAT32-formatted** - exFAT (the factory default on >32 GB cards) mounts as `cardType!=0, ok=false`; REFORMAT as FAT32/"MS-DOS (FAT)" before first use (owner-verified fix 2026-07-13). orch `/mem` store. Needs a shared GND (a cold GND joint = `cardType=0`). |
+| **microSD** | SPI2 (FSPI) | CS 10 · MOSI 11 · SCK 12 · MISO 13 | 3.3 V | Must be FAT32: exFAT (the factory default on cards above 32 GB) mounts as `cardType!=0, ok=false`; reformat as FAT32 ("MS-DOS (FAT)" on macOS) before first use. Holds the Orchestrator's memory store. Needs a shared GND (a cold GND joint reads `cardType=0`). |
 | **LED ring** WS2812B ×45 | RMT | DIN 21 | **5 V** pwr / 3.3 V logic | ~372 mA worst case @ brightness 30 |
 | **Speaker** MAX98357A I²S amp | I²S1 (std) | BCLK 7 · LRCLK 8 · DIN 17 | amp **5 V** | Class-D, built-in thermal/over-current protection (V0.1) |
 | **Mic** I²S MEMS (INMP441/ICS-43434) | I²S0 (std) | BCLK 15 · WS 18 · SD 16 | **3.3 V only ⚠** | L/R→GND (left slot); VDD/data follow VCC - 5 V damages the S3 |
@@ -193,16 +193,16 @@ flowchart TD
 - **Single-cell LiPo instead?** Use a ÷2 divider (e.g. 100k/100k), set
   `NIMBUS_BATT_DIVIDER_X100 200` and `NIMBUS_BATT_CELLS 1`, on any free ADC1 pin.
 
-**LIVE-VERIFIED (2026-07-12)** on the 2S LiitoKala pack: enabled `NIMBUS_HAS_BATTERY_ADC`,
-read **7923 mV** = 3962 mV/cell (2S confirmed). ⚠ **The S3 ADC under-reads near full.**
-The ÷3.2 node at 8.4 V is **2.625 V - above the ADC's LINEAR region at 11 dB** (accurate
-to ~2.45 V, compresses above), so a *truly full* pack reads ~7.9 V → ~72 %, not 100 %.
-Consequences baked into the firmware: charge state comes from the
-voltage **trend**, NOT absolute voltage (there is **no VBUS pin** - `NIMBUS_BATT_VBUS_PIN
--1` - so `onExternalPower` can only be inferred); a learned/asserted full-charge anchor
-(`BATTCAL`) stretches the compressed top band so full reads 100 %. A lower divider (e.g.
-÷4, keeping the full-charge node ≤ ~2.1 V) would make the top of the range linear and
-remove the need for the calibration - a candidate for the next board rev.
+**Measured on a 2S pack** with `NIMBUS_HAS_BATTERY_ADC` enabled: 7923 mV, or 3962 mV
+per cell. **The S3 ADC under-reads near full.** The ÷3.2 node at 8.4 V is 2.625 V, above
+the ADC's linear region at 11 dB attenuation (accurate to about 2.45 V, compressed above),
+so a truly full pack reads about 7.9 V, roughly 72 % rather than 100 %.
+The firmware allows for this: charge state comes from the voltage trend rather than
+absolute voltage (there is no VBUS pin, `NIMBUS_BATT_VBUS_PIN -1`, so external power is
+inferred), and a full-charge anchor (`BATTCAL` on the console, or **Calibrate Full Charge**
+in the web UI) stretches the compressed top band so full reads 100 %. A lower divider
+(about ÷4, keeping the full-charge node at or below 2.1 V) would make the top of the range
+linear and remove the need for calibration; a candidate for the next board revision.
 
 > **⚠ Cautions:** use ADC1 (1–10) not ADC2; keep the divider high-value (≥100 kΩ legs)
 > so it barely drains the pack, and never let
@@ -224,23 +224,22 @@ and the VBUS→Full battery-mode auto-switch.
 Web/LAN surfaces are token-gated - see [`security.md`](security.md).
 
 
-## Battery hardware is web-configurable (v2.10.x, owner 2026-07-17)
+## Battery hardware settings in the web UI
 
-Boards differ physically - some have the design **220k/100k** divider (÷3.20), others the
-**270k/120k** actually fitted (÷3.25), and packs range from LiitoKala **3500 mAh** to
-reclaimed vape/18650 **~500 mAh** cells (always **2S**). These are no longer compile-time:
-**Settings → Battery** on the web exposes the two sense resistors + pack capacity, stored in
-NVS (`battRtop`/`battRbot`/`battCapMah`) and applied live (ADC re-armed + model capacity
-updated on the main task; cells stays compile-time 2S). Defaults equal the old compile
-constants, so an un-set board is unchanged.
+Boards differ: some carry the design **220k/100k** divider (÷3.20), others **270k/120k**
+(÷3.25), and packs range from 3500 mAh cells to reclaimed ~500 mAh cells (always 2S).
+These are runtime settings, not build flags. Under **Device > Settings > Battery**, the
+**Battery hardware** fields expose **Sense resistor (top)**, **Sense resistor (bottom)**
+and **Pack capacity**, stored in NVS (`battRtop`, `battRbot`, `battCapMah`) and applied
+live (the ADC is re-armed and the model capacity
+updated on the main task; the cell count stays compile-time 2S). Defaults match the
+compile-time constants, so an unset board is unchanged.
 
-⚠ This fixed a real on-device bug: the firmware baked in **÷3.20** while the fitted
-resistors are **270k/120k = ÷3.25**, so voltage read **~1.6% low** across the range (BATTCAL
-masked only the top). Set the true resistors and the raw reading is correct end-to-end; the
-`/api/state` `dividerX100` reports the EFFECTIVE ratio the ADC applies (the configured
-resistors on a hand-built board, the board's fixed onboard divider on an all-in-one board
-whose sense-resistor inputs the web tile hides), so the Battery Lab's host-side correction
-tracks it (no double-correction). ⚠ A divider change re-scales every mV, so the
+Set the resistors actually fitted: with the 220k/100k default on a 270k/120k board,
+voltage reads about 1.6 % low across the whole range, and calibration only corrects the
+top. `/api/state` reports `dividerX100` as the effective ratio the ADC applies (the
+configured resistors on a hand-built board; the fixed onboard divider on an all-in-one,
+which hides the resistor fields), so host-side tools can correct without double-counting. ⚠ A divider change re-scales every mV, so the
 BATTCAL full-anchor goes stale - **re-run Calibrate on a full pack** after changing resistors
 (the web UI prompts for this).
 
@@ -265,11 +264,10 @@ snapshots live with the Battery Lab, its own project at
   bounded LED share). ⚠ The one measurement that would collapse this range to a number
   is a drain at **bright=0** - one pack cycle, highest-value next experiment.
 
-### ⚠ Battery life: Dark posture is a VISUAL setting, not a power setting
-`Posture::Dark` only stops lighting LEDs. It does not touch Wi-Fi, Bluetooth, or the CPU -
-it appears in 4 places, none of them power-domain code. The three battery modes
-(Dark / Balanced / Full) are a table of LED/screen/telemetry settings (`profile.cpp`),
-not radio or clock decisions.
+### Battery modes change what you see, not what the board draws
+`Posture::Dark` only stops lighting LEDs; it does not touch Wi-Fi, Bluetooth, or the CPU.
+The three battery modes (Dark / Balanced / Full) are a table of LED, screen and telemetry
+settings (`profile.cpp`), not radio or clock decisions.
 There is **no power management**: no `esp_light_sleep`, no `esp_pm_configure`, no
 `setCpuFrequencyMhz`, `CONFIG_PM_ENABLE` unset, CPU pinned at 240 MHz. The only
 `esp_deep_sleep_start()` is the critical-battery give-up path. Modem sleep is on only
@@ -305,13 +303,12 @@ so `3500 / runtime` would OVERSTATE the current by 9 % (227 vs 209 mA). The deli
 charge was recovered by reading its final settle voltage off run #4's measured curve. A
 floor-stopped run is also barred from the SoC curve (no 0 % anchor). Known bias: run #4's
 curve was built at 0.17C and run #7 ran at 0.05C, so its settle reads recover higher and
-the curve over-reads its SoC - meaning the true I(10) is a little ABOVE 209 mA, and the
-true base a little above 150. The **bright=0 idle-baseline run** (owner-approved) measures
-A directly, with no extrapolation and no dependence on run #4's curve.
+the curve over-reads its SoC, so the true I(10) is a little above 209 mA and the true base
+a little above 150 mA. A drain at brightness 0 would measure the base directly, with no
+extrapolation.
 
-Dark/Calm/Full-idle are within noise of each other - since Full-idle went fully dark
-(owner 2026-07-15), the LEDs were never the idle load; the always-on radios + 240 MHz
-CPU are. **A week is not reachable by tuning, and not even by deleting the LEDs**: 45
+Idle draw is the same within noise whichever battery mode is active: the LEDs are not the
+idle load, the always-on radios and the 240 MHz CPU are. **A week is not reachable by tuning, and not even by deleting the LEDs**: 45
 WS2812Bs draw 0.6-1.0 mA each *with every pixel black* (~19-30 mA at the pack, no load
 switch on the LED rail) - the dark strip alone exceeds the whole 20.8 mA week budget.
 An S3 at 240 MHz with Wi-Fi associated is ~10× the month budget by itself. A week needs

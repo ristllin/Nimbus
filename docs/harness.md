@@ -1,8 +1,10 @@
 # The Agentic Harness (`lib/harness`)
 
-The Orchestrator's policy/orchestration layer as a standalone, host-testable
-PlatformIO library. This is the machine entry point for working on the agent
-loop - read it before touching `lib/harness/` or `src/agent/`.
+This page maps the Orchestrator's policy and orchestration layer, shipped as a
+standalone, host-testable PlatformIO library. Read it before changing
+`lib/harness/` or `src/agent/`: it covers what loads at boot, which task runs
+what, the shape of one turn, the self-driving layers, the contract set and the
+invariants that must not regress.
 
 Companion deep-dives: [turn-anatomy.md](turn-anatomy.md) (the exact prompt the
 head model sees + how to dump it raw), [sub-sessions.md](sub-sessions.md) (the
@@ -18,18 +20,20 @@ together.
 Order matters; each step is in `src/main.cpp::setup()` or
 `orchestratorBegin()`:
 
-1. **`otaupd::bootGuard()`** - FIRST line: burns one A/B boot attempt, self-
-   reverts a bad OTA image after 3 boots (before any driver can crash it).
+1. **`otaupd::bootGuard()`** - the first line: it burns one A/B boot attempt and
+   self-reverts a bad OTA image after 3 boots (before any driver can crash it).
 2. Board bring-up (`solide::begin`: SD, NVS, screen/LED tasks, battery),
    then two memory reroutes that everything downstream depends on: **mbedTLS →
    PSRAM** (TLS handshakes don't fit internal SRAM) and **malloc ≥128 B →
    PSRAM** (String/JSON churn).
-3. Task watchdog configured (8 s, panic) but the main loop subscribes only at
-   the END of setup - a slow SD/Wi-Fi boot must not watchdog-loop the device.
-4. Config + mode from NVS (mode is boot-resolved; switching = reboot). In
-   Orchestrator mode the BT controller RAM is released and BLE never starts.
-5. Orchestrator starts Wi-Fi (STA + setup AP; a TFT drops the AP while STA is
-   connected). Notifier instead keeps Wi-Fi off and starts BLE. Then
+3. Task watchdog configured (8 s, panic), but the main loop subscribes only at
+   the end of setup: a slow SD or Wi-Fi boot must not watchdog-loop the device.
+4. Config and mode from NVS (mode is resolved at boot; switching modes restarts
+   the device). In Orchestrator mode the Bluetooth controller RAM is released and
+   Bluetooth never starts.
+5. Orchestrator starts Wi-Fi (station plus the setup access point; a TFT drops
+   the access point while the station is connected). Notifier instead keeps
+   Wi-Fi off and starts Bluetooth. Then
    **`memory::begin()`** (inside `beginWeb`) loads the vector DB from SD/LittleFS
    into PSRAM, scratchpad +
    retrieval config from NVS, and the episodic **hydrate** - day-stream JSONL
@@ -51,7 +55,7 @@ Order matters; each step is in `src/main.cpp::setup()` or
    a backstop re-kicks on a doubling backoff (3 min up to 30 min, after lwIP's own
    retries). The latch reads the live link state, never the GOT_IP event, because
    a fast join on stored credentials fires GOT_IP before `setup()` has finished
-   (CUM-504; see `nimbus/wifi/net_up.h`). The main task is the only SNTP producer
+   (see `nimbus/wifi/net_up.h`). The main task is the only SNTP producer
    ("Sync now" only requests a kick) and never touches TZ. Until first sync: the
    prompt says the time is UNKNOWN, wall-clock loops can't fire, dream maintenance
    is skipped, and pre-sync episodic rows are held and restamped at first sync.
@@ -61,7 +65,7 @@ Order matters; each step is in `src/main.cpp::setup()` or
 | task | watchdog | runs |
 |---|---|---|
 | main loop (core 1) | **8 s panic WDT** | rendering, ring, touch, battery/thermal/OTA ticks, staged device actions, `reapStuckTurn`, retention prune (6 h) |
-| **`tg_poll`** (core 0) | **none - deliberate** (its long-poll blocks ~25 s) | EVERYTHING agentic, single-writer: Telegram long-poll, every LLM turn (owner, synthesis, scheduled, post-OTA), the loops tick (20 s gate), the dream firing, the sub-agent dispatch/poll pump (~15 s), staged-mutation drains |
+| **`tg_poll`** (core 0) | **none, deliberately** (its long-poll blocks ~25 s) | everything agentic, single-writer: Telegram long-poll, every LLM turn (owner, synthesis, scheduled, post-OTA), the loops tick (20 s gate), the dream firing, the sub-agent dispatch/poll pump (~15 s), staged-mutation drains |
 | AsyncTCP | none | all `/api/*` + `/mcp` handlers - they **stage** mutations and read snapshots, never touch agentic state directly |
 | screen / leds / sfx | none | rendering + input + audio |
 
@@ -70,9 +74,9 @@ orchestrator state from another task goes through a staged mailbox (spinlock'd
 slot or PSRAM queue) drained on `tg_poll`, and anything that wants to read it
 gets a snapshot rebuilt on `tg_poll`. Cross-task device actions (LED, config)
 stage the other way - `tg_poll` → main loop. Because turns run synchronously on
-`tg_poll`, a wedged turn freezes Telegram/loops/`/update` - which is why the
-head-loop caps + per-round socket-budget clamp (F25) ARE the safety, plus a
-main-loop reaper that collapses the ring arc after `deadline+120 s`.
+`tg_poll`, a wedged turn freezes Telegram, routines and `/update`. The safety
+net is therefore the head-loop caps and the per-round socket-budget clamp, plus
+a main-loop reaper that collapses the ring arc after `deadline+120 s`.
 
 ## Lifecycle 3 - one turn (summary; full detail in turn-anatomy.md)
 
@@ -100,8 +104,8 @@ entry (owner msg | sub-agents finished | loop fired | post-OTA)   [tg_poll]
   → usage summed across rounds+failovers → ledger (attribution: turn/synthesis/loop:<id>)
 ```
 
-Prompt v2 (the `promptV2` flag): the system prompt has two variants selected by
-the NVS `promptV2` flag (default OFF). v1 is the historical prompt. v2 compresses
+Prompt v2: the system prompt has two variants, selected by the NVS `promptV2`
+flag (default off). v1 is the historical prompt. v2 compresses
 the inlined orch_turn field docs to their essentials plus the rules a JSON schema
 cannot enforce, de-duplicates the memory-tier explainer, and keeps every safety
 rail; the wire schema (`ORCH_SCHEMA_BODY`) is unchanged. v2 is about 37% smaller
@@ -114,9 +118,9 @@ comparison and findings, and `tools/harness_prompt_cost.py` for the size
 measurement.
 
 Model routing: the head host comes from `orchHost` (or the first
-`providerPriority` entry); the model can switch its OWN host/model via the
+`providerPriority` entry); the model can switch its own host and model via the
 `orch_model` action (validated against the choice list, key required), but
-keys, priority order, and routing stay owner-only - structurally (no setter
+keys, priority order and routing stay owner-only, both structurally (no setter
 exists in the config contract) and by protected-key refusal. Failover walks up
 to 2 keyed alternates with an owner notice; a fresh provider thread each time.
 
@@ -135,22 +139,22 @@ to 2 keyed alternates with an owner notice; a fresh provider thread each time.
   records fire scheduled turns. The fire decision is a pure, hard-coded gate
   table (enabled → approved → breaker → clock → due → chat-allowed → per-loop
   fires/tokens → device window/tokens) - never LLM-judged. At-most-once:
-  `nextRun` advances and persists BEFORE the fire; no backfill after downtime.
+  `nextRun` advances and persists before the fire; no backfill after downtime.
   Auto-pause (with one owner alert) on repeated failures, daily token cap,
-  chat de-allowlisting, or 5 identical results. Agent-created loops start
-  UNAPPROVED and cannot fire until the owner approves - with one deliberate
+  chat de-allowlisting, or 5 identical results. Agent-created routines start
+  unapproved and cannot fire until the owner approves, with one deliberate
   exception: a **one-time wakeup** (`wakeup.set`, schedule kind `once`,
   2 min–7 days out) is auto-approved, because it is a bounded single fire
   under the same daily fire/token governor, visible in `/loops` and the web
   Routines tab, and cancellable like any routine. It retires after firing
   (one 5-min retry if the turn itself failed, then an owner alert); at most
   4 armed at once; only an admin's conversation can arm one.
-  **Delivery** (`nimbus/orch/loop_delivery.h`, CUM-505): a loop remembers the
+  **Delivery** (`nimbus/orch/loop_delivery.h`): a routine remembers the
   chat it was created from (an explicit `chat_id` wins, else the creating
   turn's chat: `web`, a Telegram chat, `voice`) and the fire is aimed at a
   resolved target, never `""`. No remembered chat means the owner's Telegram
   chat (owners list, else first allowlist entry) when a bot token is set, else
-  the web chat. When the bot token is gone, the OWNER's own Telegram loop falls
+  the web chat. When the bot token is gone, the owner's own Telegram routine falls
   back to the web chat and the reply opens with a sentence saying so; any other
   unreachable Telegram chat (removed, tenant revoked, allowlist emptied, a
   member's chat) pauses, because a fallback turn runs as the web chat (admin).
@@ -168,28 +172,28 @@ to 2 keyed alternates with an owner notice; a fresh provider thread each time.
   pages past them, up to 192 rows) - distill up to 7 durable facts (0 is correct on a quiet day), groom
   the scratchpad, stay silent unless something needs the owner. On a provably
   quiet night (empty 24 h digest AND the scratchpad unchanged since the last
-  dream, fnv64 baseline in NVS `dreamScrHash`) the PAID stage-2 turn is
-  skipped - stage 1 still runs. Gated on 10 min quiet + no jobs + heap; defers
+  dream, fnv64 baseline in NVS `dreamScrHash`) the paid stage-2 turn is
+  skipped; stage 1 still runs. Gated on 10 min quiet + no jobs + heap; defers
   15 min otherwise. `DREAM` console forces it, including through the skip.
 - **Scheduled-turn rails** (loops, dream, synthesis, post-OTA alike): refuse
-  reboot, ttsOn, devName, sleepOvr/brightOvr, and loop.create - enforced at
-  the apply layer AND the tool-dispatch seam, because sub-agent results and
-  loop prompts are untrusted-content injection surfaces.
+  `reboot`, `ttsOn`, `devName`, `sleepOvr`/`brightOvr` and `loop.create`, enforced
+  at both the apply layer and the tool-dispatch seam, because sub-agent results
+  and routine prompts are untrusted-content injection surfaces.
 
 ## Lifecycle 5 - interrupts (what device life does to the harness)
 
-- **Mode switch / reboot**: hard restart, no teardown. Loops can't double-fire
+- **Mode switch / restart**: hard restart, no teardown. Routines can't double-fire
   (persist-before-fire) and daily cost counters can't be wiped (rollover is
-  clock-gated) - which is exactly why scheduled turns may not reboot.
-- **OTA install**: runs ALONGSIDE the live poller (stopping it once crashed the
+  clock-gated), which is exactly why scheduled turns may not restart the device.
+- **OTA install**: runs alongside the live poller (stopping it once crashed the
   device mid-install); the ring becomes the progress bar; voice is refused;
   every phase writes a timeline row; after the post-update boot validates, a
   staged system turn tells the model what changed (release notes persisted
   across the reboot in NVS).
-- **Voice hold-to-talk**: blocks the MAIN loop (WDT suspended around record +
-  STT) - `tg_poll` keeps running; the transcript is injected as a normal turn.
+- **Voice hold-to-talk**: blocks the main loop (WDT suspended around record and
+  STT); `tg_poll` keeps running and the transcript is injected as a normal turn.
   A waiting injected turn (voice, web or serial) ends `tg_poll`'s idle waits
-  early (CUM-462, `nimbus/net/tg_poll_sched.h`): it cuts a long-poll that is
+  early (`nimbus/net/tg_poll_sched.h`): it cuts a long-poll that is
   still waiting for its answer short (offset untouched, so nothing is lost),
   ends the inter-cycle pause or a poll-error backoff, and skips the next
   cycle's poll - never two running: the cycle after a skip checks Telegram

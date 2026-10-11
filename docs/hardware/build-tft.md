@@ -30,15 +30,13 @@ breakdown and safety notes, is the **[bill of materials](bom.md)**.
 | 1 | Speaker | **4 Ω · 3 W · ~40 mm** full-range | The standard MAX98357A pairing; any small 4 Ω 3 W driver (28–45 mm) works. | [AliExpress](https://www.aliexpress.com/w/wholesale-40mm-4ohm-3w-speaker.html) | $2 |
 | 1 | Mic | **INMP441** or **ICS-43434** I²S MEMS mic breakout | Separate breakout from the amp. **3.3 V only** - 5 V damages the S3. | [AliExpress](https://www.aliexpress.com/w/wholesale-inmp441-i2s.html) | $2 |
 | 1 | Storage | **microSD module (SPI)** + microSD card | Card must be formatted **FAT32** - see the trap below. | [AliExpress](https://www.aliexpress.com/w/wholesale-micro-sd-card-module-spi.html) + any 16–32 GB card | $6 |
-| 2 | Cells | **18650 Li-ion** | Wired in **series** (2S). Brand-name cells from a reputable vendor only. Reference pack: owner-measured 3500 mAh, 8.40 V full. | [18650batterystore.com](https://www.18650batterystore.com/) | $12 |
+| 2 | Cells | **18650 Li-ion** | Wired in **series** (2S). Brand-name cells from a reputable vendor only. Reference pack measured 3500 mAh, 8.40 V full. | [18650batterystore.com](https://www.18650batterystore.com/) | $12 |
 | 1 | Charger/protection | **2S BMS with USB-C charging** | Protection + balance + charging in one module. | [AliExpress](https://www.aliexpress.com/w/wholesale-2s-bms-usb-c-charging-board.html) | $3 |
 | 1 | Regulator | **DC-DC converter → 5 V** | From the 2S pack (~6.0–8.4 V) to a clean 5 V bus, ≥2 A. | [AliExpress](https://www.aliexpress.com/w/wholesale-dc-dc-buck-converter-5v-3a.html) | $2 |
 | 1 each | Battery sense | 220 kΩ + 100 kΩ resistors | Optional but recommended - the pack-voltage divider on GPIO 4. | any electronics supplier | $1 |
 | - | Misc | wire, protoboard/PCB, JST connectors; optional 330 Ω resistor (LED DIN) and 1000 µF capacitor (ring 5 V/GND) | The resistor and capacitor improve LED reliability on long runs. | [AliExpress](https://www.aliexpress.com/w/wholesale-jst-connector-kit-protoboard.html) | $5 |
 
 **Total: ≈ $59–63** (AliExpress-class sourcing; US distributors add ~$15–25).
-
-The panel's touch layer is the only input.
 
 ## Power architecture
 
@@ -208,7 +206,7 @@ The plate carries more inserts and they sit at different heights on the raised s
 
 Set the two longer screws (shown on the bench beneath the board) aside with the SD holder so they do not get mixed into the shorter case hardware. Match screw length to what each part actually needs - a screw too long will bottom out or push past a boss. If you are unsure of a length, match it against the part before driving it.
 
-Seat inserts and dry-fit the case, but leave the board and Li-ion pack out until wiring is done. Keep the earlier safety framing in view once electronics go in: brand-name cells only, the 2S BMS stays between the cells and everything else, never charge the pack outside the BMS, verify a clean 5V at the DC-DC output with a meter before the board or pack is connected, tie every ground common, and treat any warm or hot module or SD card as an electrical fault - power off first. The firmware caps LED brightness at 60% and it must not be raised.
+Seat the inserts and dry-fit the case, but leave the board and the Li-ion pack out until wiring is done. The safety rules in [Build the 2S battery pack](#build-the-2s-battery-pack) apply from the moment electronics go in.
 
 ### Assemble the carrier board
 
@@ -267,7 +265,7 @@ Not a build step - the board layout, for anyone who wants to trace a net or fork
 
 Mount the two large power modules at their labeled edge footprints: the **DC-DC LM2596** at the `In+`/`In-`/`Out+`/`Out-` pads and the **charger/BMS** at the `Charger` pads (`B+`/`BM`/`B-`, `VIN`). Their outputs are the 5 V bus and the pack rail, so get the polarity right against the silk.
 
-Li-ion safety is not optional here. **Buy brand-name cells from a reputable vendor** - counterfeits are common. The **2S BMS stays between the cells and everything else** - the pack wires land on the charger/BMS, never straight onto the DC-DC or a module. **Never charge the pack outside the BMS.** Set the DC-DC output before you connect the DevKit: with the pack on the charger, turn the blue trimmer until a meter reads a clean **5 V** at `Out+`/`Out-`, as called out in [Power architecture](#power-architecture).
+The pack wires land on the charger/BMS, never straight onto the DC-DC or a module, so the BMS stays between the cells and everything else. Set the DC-DC output before you connect the DevKit: with the pack on the charger, turn the blue trimmer until a meter reads a clean **5 V** at `Out+`/`Out-` (see [Power architecture](#power-architecture)).
 
 #### Seat the DevKit and modules
 
@@ -277,7 +275,7 @@ Li-ion safety is not optional here. **Buy brand-name cells from a reputable vend
 
 **Connect the pack.** The three-conductor lead at the top left is the 2S pack: it lands on the **Battery** input (`GND`, `Vin 2s li-ion`, `BM`) - pack negative, the balance mid-tap, and pack positive - which routes to the BMS, not to anything downstream. Confirm every ground is common before power-on.
 
-The firmware caps LED-ring brightness at 60% for thermal safety; do not raise that limit. And once running, treat any warm module or a warm SD card as an electrical fault - **power off first**, then debug (see the [hot-card safety check](../hardware.md#shared-peripherals)).
+Once running, treat any warm module or a warm SD card as an electrical fault: power off first, then debug (see the [hot-card safety check](../hardware.md#shared-peripherals)).
 
 #### Check the back
 
@@ -337,7 +335,7 @@ Lay the two cells side by side, same polarity conventions as your series plan, a
 
 **2. Spot-weld the series link.**
 
-![A spot welder pressing two copper electrodes onto a nickel strip laid across the top of a LiitoKala cell, joining it to the neighbouring cell](photos/spot-weld.webp)
+![A spot welder pressing two copper electrodes onto a nickel strip laid across the top of a LiitoKala cell, joining it to the neighboring cell](photos/spot-weld.webp)
 
 Bridge the two cells with a nickel strip and spot-weld it down - this is the series (2S) link that turns two cells into one 6.0–8.4 V pack. Both copper electrodes must land on the strip over the cell can, never bridging directly cell-to-cell. **Do not solder this joint** and do not guess the weld setting: dial the welder in on a scrap strip and cell first, per the welder's own guidance, until you get welds that bite without blowing through. Check each joint by tugging the strip lightly - it should not peel - and confirm you see clean weld dimples, not a scorched or lifted strip.
 
@@ -357,7 +355,7 @@ The strip now joins the two cell terminals and the tap wire lands at that series
 
 ![An orange pack lead wire with a gold female spade crimp terminal on the end](photos/battery-lead-terminal.webp)
 
-Crimp a female spade terminal onto the pack output lead so it lands on the board without a bare soldered wire flapping loose. Use the correct crimp for the wire (do not eyeball the terminal size) and crimp both the conductor barrel and the insulation grip. Check that the terminal grips copper, not just insulation, that no whiskers stick out, and give it a firm pull - it must not slide off. A heat-shrink collar over the crimp keeps it from shorting to a neighbour.
+Crimp a female spade terminal onto the pack output lead so it lands on the board without a bare soldered wire flapping loose. Use the correct crimp for the wire (do not eyeball the terminal size) and crimp both the conductor barrel and the insulation grip. Check that the terminal grips copper, not just insulation, that no whiskers stick out, and give it a firm pull - it must not slide off. A heat-shrink collar over the crimp keeps it from shorting to a neighbor.
 
 **6. Connect the pack to the board.**
 
@@ -371,7 +369,7 @@ Land the pack leads on the board so the BMS output feeds the **DC-DC input only*
 
 With the pack feeding the DC-DC input and **nothing on the output yet**, set the meter to DC volts and read across the converter's OUT + and OUT -. Turn the module's trim pot until it reads a clean 5.00 V, exactly as the meter shows here. This gate is non-negotiable: a converter shipped at 8 V or wandering under load will destroy the ESP32 and the ring the instant they are connected. Only once you have a steady 5.00 V do you wire the 5 V bus to VIN and the LED ring +5 V (step 5 of the [Assembly order](#assembly-order)).
 
-After the pack is assembled and running, charge it fully through the BMS USB-C port and run `BATTCAL` on the console so the gauge reads 100 % at full - the ADC under-reads a full pack. See [Battery pack](#battery-pack) and [Battery voltage sampling](../hardware.md#battery-voltage-sampling-how-to-add-it). Remember the firmware caps LED brightness at 60 %: sustained higher levels can overheat and damage the internal electronics, and must not be raised.
+After the pack is assembled and running, charge it fully through the BMS USB-C port and run `BATTCAL` on the console so the gauge reads 100 % at full - the ADC under-reads a full pack. See [Battery pack](#battery-pack) and [Battery voltage sampling](../hardware.md#battery-voltage-sampling-how-to-add-it).
 
 ### Stack the electronics and close the case
 
@@ -379,7 +377,7 @@ Do the full electrical bring-up **before** anything goes into the case. Once the
 
 ![Assembled Nimbus electronics seen from above: ESP32-S3-N16R8 DevKit at top with dual USB-C, the DC-DC buck converter with its two electrolytic caps and inductor at lower left, the purple MAX98357A amp and INMP441 mic in the center, the microSD module with a card seated at right, and green screw terminals along the edges](photos/electronics-stack.webp)
 
-**Confirm the stack matches [Wiring](#wiring).** Top-down, every module from the pinout tables is present and seated: the ESP32-S3-N16R8 DevKit up top (both USB-C ports, RST and BOOT buttons clear), the DC-DC buck with its `220 35V` and `100 50V` electrolytics, `470` inductor, and blue output trimpot, the purple MAX98357A amp beside the INMP441 mic and the buzzer, the microSD module with a card fully home, and the BMS USB-C board. Check the microSD card is seated flush, not proud - a card that stands off the socket is the `cardType=0` trap. Green screw terminals carry the pack and 5 V leads; verify each is clamped on stripped copper, not on insulation. Keep the **2S BMS between the cells and everything else**, and **never charge the pack outside the BMS** - charge only through its USB-C port. Use brand-name cells from a reputable vendor (counterfeits are common); see the 2S Li-ion safety note in the [BOM](bom.md).
+**Confirm the stack matches [Wiring](#wiring).** Top-down, every module from the pinout tables is present and seated: the ESP32-S3-N16R8 DevKit up top (both USB-C ports, RST and BOOT buttons clear), the DC-DC buck with its `220 35V` and `100 50V` electrolytics, `470` inductor, and blue output trimpot, the purple MAX98357A amp beside the INMP441 mic and the buzzer, the microSD module with a card fully home, and the BMS USB-C board. Check the microSD card is seated flush, not proud - a card that stands off the socket is the `cardType=0` trap. Green screw terminals carry the pack and 5 V leads; verify each is clamped on stripped copper, not on insulation. Charge the pack only through the BMS USB-C port; see the [2S Li-ion safety note](bom.md#safety-note---2s-li-ion).
 
 ![The same electronics stack at an angle, the blue Nimbus PCB carrying all modules and resting on the black printed standoff frame, green screw terminals along the front edge](photos/electronics-stack-2.webp)
 
@@ -391,17 +389,15 @@ Do the full electrical bring-up **before** anything goes into the case. Once the
 
 **Route every lead so nothing is pinched.** Before the screws go tight, sweep all wiring - the twisted red/black lead pair and any module still to be secured - clear of the board edges, screw posts, and the case wall so nothing is trapped or crushed when the case closes. Pinched insulation is a short waiting to happen. Give the pack and 5 V-bus leads a gentle tug to confirm the screw terminals hold.
 
-**Set the buck to 5 V before the pack feeds the stack.** The DC-DC output is adjustable at the blue trimpot, so never trust it blind. With the pack connected to the buck input but the 5 V lead still off the board, meter the buck output and confirm it reads **5 V** before you land it on the bus. A buck left high pushes past 5 V into every board on the 5 V bus and destroys them.
+**Confirm the buck still reads 5 V.** The DC-DC output is adjustable at the blue trimpot, so meter it once more with the 5 V lead still off the board before it lands on the bus (the full procedure is step 7 of [Build the 2S battery pack](#build-the-2s-battery-pack)). A buck left high destroys every board on the 5 V bus.
 
 **One last power-on before the lid.** With the stack in the case but still openable, power up and confirm the device boots and the self-test still passes in its installed position - a fault that only appears after seating is almost always a pinched lead or a ground gone open. Keep a hand near the modules for the first minute: **a warm or hot module or SD card is an electrical fault** - kill power immediately and find the short before going further ([hot-card safety check](../hardware.md#shared-peripherals)). Only then install the production firmware ([Assembly order](#assembly-order) step 7) and close the case.
-
-The firmware caps LED-ring brightness at 60%; leave it there. Raising it pushes ring current and heat past what the 5 V bus and this enclosure are sized for.
 
 ### Fit the touch TFT
 
 This is the 2.8" ILI9341 240×320 panel with the XPT2046 resistive touch controller. It carries the display, the touch layer, and a microSD socket on one red module. The touch layer is the only input (see [The three on-module solder bridges (do this first)](#the-three-on-module-solder-bridges-do-this-first) and the [wiring table](#tft--touch-spi3)).
 
-**Do the bridges first.** Before the module goes anywhere near the enclosure, the three on-module touch-to-display bridges must already be soldered and continuity-checked with power disconnected. That is not part of this step - it is the prerequisite for it. If you have not done it, stop and complete [The three on-module solder bridges (do this first)](#the-three-on-module-solder-bridges-do-this-first) now. A missing bridge is the number-one build fault and produces a blank display or dead touch with no error anywhere.
+**Do the bridges first.** The three on-module touch-to-display bridges must be soldered and continuity-checked, with power disconnected, before the module goes near the enclosure ([The three on-module solder bridges](#the-three-on-module-solder-bridges-do-this-first)). A missing bridge produces a blank display or dead touch with no error anywhere.
 
 ![Back of the 2.8 inch ILI9341 SPI TFT module, showing the single top header carrying the display, power, and touch pins, the XPT2046 controller, and the microSD socket](photos/tft-board.webp)
 
@@ -417,8 +413,6 @@ This is the 2.8" ILI9341 240×320 panel with the XPT2046 resistive touch control
 - The panel `VCC` is on **3.3 V**, not the 5 V bus.
 - Run the bring-up sketch (`pio run -e tftbringup -t upload`) and confirm color bars, the backlight fade, and raw touch before installing the production firmware. Uncalibrated touch looks identical to broken touch, so calibrate ([Touch calibration](touch-tft.md#touch-calibration)) before concluding anything is miswired.
 - If the panel or the SD card ever runs warm or hot, that is an electrical fault: power off first, then investigate ([hot-card safety check](../hardware.md#shared-peripherals)). A shorted SD socket can brown out or damage the display even though the two buses are separate.
-
-The backlight is a continuous draw whenever the screen is lit. It sits on a PWM pin and the firmware blanks it when idle. The firmware caps LED ring brightness at 60%; do not raise it.
 
 ## Assembly order
 

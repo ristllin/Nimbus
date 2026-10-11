@@ -1,37 +1,34 @@
 <!-- audience: user -->
-# The LED ring - motion & color language
+# The LED Ring - Motion and Color
 
-The ring is not a status readout, it is an **ambient companion on your desk**.
-Its job is to make the state of your work *felt* at a glance and in the corner
-of your eye - calm when nothing needs you, alive when things happen,
-unmistakable when you're needed.
+This page explains how to read the LED ring: what each color, motion and
+brightness level means, how the ring level changes what plays, and how long a
+state stays lit. Use it when the ring does something you did not expect, or
+when choosing a battery mode and ring level.
 
-Reading it takes one sentence: **color says what, motion says whether it is
-live, brightness says how much it matters.** A sliding comet is work in
-progress; a slow breathe is something waiting on you; a still, settled ring
-means "handled, relax."
+The short version: **color says what, motion says whether it is live,
+brightness says how much it matters.** A sliding comet is work in progress; a
+slow breathe is something waiting on you; a still, settled ring means handled.
 
 Three design principles behind everything below:
 
-1. **Nothing pops.** Every appearance, change, and disappearance is a short,
-   purposeful transition (150–400 ms), never an instant swap. Instant swaps
-   read as glitches; motion reads as intention.
+1. **Nothing pops.** Every appearance, change, and disappearance is a short
+   transition (150-400 ms), never an instant swap.
 2. **Motion means work; stillness means rest.** Anything moving is *happening
    now*.
 3. **Color is meaning, brightness is urgency, motion is life.**
 
 ## Reading the colors
 
-| Meaning | Hue | Used for |
+| Meaning | Color (from your theme) | Used for |
 |---|---|---|
-| Running / thinking | blue (170) | active jobs |
-| Waiting for you (input) | purple (213) | your turn to answer |
-| Waiting for you (approval) | amber (32) | permission gate |
-| Done / success | green (85) | completion, connect success |
-| Error | red (0) | failures, critical battery |
+| Running / thinking | the theme's primary color | active jobs |
+| Waiting for you (input) | the theme's needs-you color (cool, next to the primary) | your turn to answer |
+| Waiting for you (approval) | the theme's approval color (amber-leaning) | permission gate |
+| Done / success | the theme's done color (green-leaning) | completion |
+| Error | the theme's alert color (red is reserved for errors) | failures, critical battery |
 | Provider accents | Anthropic cyan · OpenAI green · Mistral amber · unknown white | segment tint |
-| System / neutral | white | boot, connecting, "saved" blip |
-| Setup needed | slow rainbow | unconfigured, invites setup |
+| System / neutral | white | boot, "saved" blip |
 
 Provider accent tints the segment; status drives the *animation*. The two
 compose: a blue-comet "running" segment tinted cyan reads as "Anthropic is
@@ -63,8 +60,11 @@ And smaller, transient feedback:
 |---|---|
 | Cursor moves (menu navigation) | soft **trailing comet** follows the cursor LED, decays after the dwell |
 | Config saved (menu or web change persisted) | a single white **blip travels once around** the ring - "saved" |
-| Voice: listening / processing / speaking | breathe in the theme color (in; the all-in-one's on-screen ring holds steady) / sweeping spinner from release until the reply lands (thinking) / solid (out). Processing starts on release, before any network call |
-| Voice outcome: no network / error | the theme's alert color, breathing for no network, steady for any other failure, for 15 seconds (a tap clears it sooner). "Didn't catch that" shows no alert |
+| Voice: listening | breathe in the theme color (the all-in-one's on-screen ring holds steady) |
+| Voice: processing | sweeping spinner from the moment you release the button until the reply lands |
+| Voice: speaking | solid in the theme color |
+| Voice: no network | the theme's alert color, breathing, for 15 seconds (a tap clears it sooner) |
+| Voice: other failure | the theme's alert color, steady, for 15 seconds (a tap clears it sooner). "Didn't catch that" shows no alert |
 | Low battery (first warning) | a slow **red breathe** overlaid under everything else |
 
 ## How the ring level changes the language
@@ -113,15 +113,15 @@ on demand - even from a fully dark idle ring. It then decays back to normal.
 (Double-click still opens the menu in Orchestrator; long-press is the menu in
 Notifier / hold-to-talk in Orchestrator.)
 
-## Whole-ring system states - design targets, not yet wired
+## Whole-ring system states
 
-Some whole-ring moments are designed but **not implemented** - don't cite these
-rows as current behavior:
+Boot and idle are live. The other rows are design targets that are **not
+implemented**; do not cite them as current behavior.
 
 | Moment | Motion | Status |
 |---|---|---|
-| **Boot / waking** | very dim white breathe, slow (~2.5 s cycle) | **live** (`main.cpp` boot-breathe window → driver `Pattern::Pulse`) |
-| **Idle** | dark in every ring level; a needs-you cue or a single click still lights it | **live** (`ring_plan` compose - an empty Full plan renders black) |
+| **Boot / waking** | very dim white breathe, slow (~2.5 s cycle) | **live** |
+| **Idle** | dark in every ring level; a needs-you cue or a single click still lights it | **live** |
 | **Connecting** (Wi-Fi/Bluetooth) | dim white comet, brightness building as it retries | *design intent, not wired* |
 | **Connected** | one quick bright green flash (150 ms) → fade to idle | *design intent, not wired* |
 | **Connect failed / no credentials** | slow amber double-pulse, then rest | *design intent, not wired* |
@@ -131,12 +131,11 @@ rows as current behavior:
 <details>
 <summary>Why the "not wired" rows exist</summary>
 
-These were once a whole-ring `SysState` overlay in `ring_animator` that **no
-production code ever drove** (`setSystem()` had zero callers) - it was removed
-in the 2026-07 UX cleanup to stop it reading as implemented. The boot/connect
-*audio* cues are live (SFX link sounds on the Wi-Fi had-IP and Bluetooth
-connect edges); the LED equivalents are kept here as the design target if and
-when they are wired.
+These states were designed but never driven by production code, and the LED
+overlay for them was removed so this page would not read as implemented. The
+boot and connect *audio* cues are live (link sounds when Wi-Fi gets an address
+and when Bluetooth connects); the LED equivalents stay here as the design
+target for if and when they are wired.
 
 </details>
 
@@ -144,16 +143,16 @@ when they are wired.
 
 ## For developers - architecture and status
 
-`solide::leds` today exposes only fixed **Patterns** and an **agent-segment**
-API - no raw per-pixel access - so the transitions above cannot all be
-expressed through it. The clean seam:
+`solide::leds` exposes fixed **Patterns**, an **agent-segment** API, and a raw
+frame path, `showFrame()`, which the Animator uses to render the transitions
+above. The seam:
 
 ```mermaid
 flowchart TD
   EV["ring events (born / statusChanged / progress / attention / done / terminated,<br/>system: connecting / connected / failed / setup / sleep)<br/>+ nowMs + Config (ring level, brightness, fps)"]
   EV --> AN["nimbus::ring::Animator<br/>(lib/core - portable, host-tested)"]
   AN --> FR["RGB frame[45]"]
-  FR --> SF["solide::leds::showFrame(const RGB* px, int n)<br/>NEW ~15-line upstream primitive"]
+  FR --> SF["solide::leds::showFrame(const RGB* px, int n)<br/>raw frame path"]
   SF --> WS["WS2812B ring"]
 ```
 
@@ -165,18 +164,18 @@ flowchart TD
   the golden-frame equivalent for the ring.
 - **Device glue is thin**: feed it the same router/notifier events the ring
   already gets, call `frame()` at the profile FPS, push to `showFrame()`.
-- **One upstream ask** (flagged to the solide worker):
-  `solide::leds::showFrame(RGB[], n)` - a raw framebuffer path alongside the
-  existing pattern/segment renderer. Until it lands, the current
-  pattern/segment rendering stays and the Animator ships host-tested and
-  dark-launched.
+- **Raw frame path**: `solide::leds::showFrame(RGB[], n)` sits alongside the
+  pattern/segment renderer. A raw frame outranks the segment renderer while it
+  is held, and the driver drops a raw frame that is not re-pushed within about
+  500 ms, so the loop re-pushes the current frame every pass.
 
-**Status:** this document is the design. It is implemented incrementally in
-`lib/core` `ring::Animator` (see `test_ring_animator`) - transitions land
-host-tested first, and device rendering switches on when `showFrame()` exists
-upstream. The existing `ring_plan` (Dark single-LED vs Full segments) remains
+**Status:** the job-lifecycle transitions (birth grow-in, hue crossfade, done
+ripple, termination collapse) are implemented in `lib/core` `ring::Animator`
+(see `test_ring_animator`) and render on the device in the Full ring level
+through `showFrame()`. `ring_plan` (Dark single LED vs Full segments) remains
 the *steady-state* decision layer; the Animator is the *motion* layer that
-renders those decisions with transitions between them.
+renders those decisions with transitions between them. The whole-ring system
+states above are the part still at design stage.
 
 ### Candidate "working" animations
 
@@ -199,11 +198,11 @@ turn's sub-agents run (`nimbus::harness::HeadArcTracker`, host-tested in
 turn can start and finish *between* two of those ticks, so the tracker never sees
 it in flight; the tracker also watches the engine's monotonic turn counter, so a
 completed-turn edge still tells it to clear an arc a finished turn may have left
-lit. Several belt-and-braces backstops (a frozen-children latch, the stuck-turn
-reaper, an absolute working-breathe ceiling) exist purely as insurance. In a
-healthy system the primary edge always clears first, so `ringBackstopFires` in
-`/api/state` stays **0**; a nonzero value means a real wedge slipped past the
-primary path and is worth investigating.
+lit. Additional backstops (a frozen-children latch, the stuck-turn reaper, an
+absolute working-breathe ceiling) exist only as insurance. In a healthy system
+the primary edge always clears first, so `ringBackstopFires` in `/api/state`
+stays **0**; a nonzero value means a stall got past the primary path and is
+worth investigating.
 
 ### Nothing lit outlives its job
 
@@ -221,10 +220,8 @@ work behind it is gone.
 | Done | a finished sub-agent's fading arc | the Done reaper collapses it past the same hold |
 | Offline | (terminal) | frees the segment immediately |
 
-The Done row is the one added last (the recurring "ring stays on after it
-answers" report): a finished sub-agent's arc is a dim ember that the poll task
-normally collapses a moment after the result ripples, but it is not an attention
-status, so before this it was the one arc the main-loop net let through - a
-stalled poll task stranded it lit. It now ages out from the main loop like the
-rest. Every one of these clears count into `ringBackstopFires`, so a healthy
-device still reads **0**.
+The Done row matters because a finished sub-agent's arc is a dim ember that the
+poll task normally collapses a moment after the result ripples; it is not an
+attention status, so without its own main-loop edge a stalled poll task would
+leave it lit. Every one of these clears counts into `ringBackstopFires`, so a
+healthy device still reads **0**.

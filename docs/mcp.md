@@ -38,25 +38,15 @@ What happens once you add and approve one:
 3. On a turn, the assistant can call those tools like any other. The result
    comes back and is used in the reply.
 
-Beyond tools, the device reads the other things a modern MCP server offers, so a
-real server works fully rather than partially:
+The device reads the tool list across pages, so a server with a long catalog is
+discovered in full up to the tool budget (see [Limits and safety](#limits-and-safety)).
+Resources and prompts that a server publishes are not surfaced in this release.
 
-- **Resources and resource templates** - readable items the server exposes (a
-  file, a record, a report), including ones named by a fill-in-the-blank pattern.
-- **Prompts** - reusable, named request templates the server publishes.
-- **Pagination** - a large tool, resource, or prompt list is read across pages.
-- **Change signals** - when a server announces its tools, resources, or prompts
-  changed, the device picks up the new set on the next turn.
-- **Progress** - progress updates during a long call are understood rather than
-  read as an error.
-
-Two parts of the MCP spec are deliberately left out, because the device cannot
-serve them in a way that helps you: **sampling** (a server asking the device to
-run its own model mid-call) and **elicitation** (a server prompting you for input
-mid-call). The device runs one request at a time with no room to answer a model
-question inside another call, and it has no way to put an interactive form in front
-of you during a tool call. The device tells servers up front that it does not offer
-these, so a well-behaved server simply does not ask.
+Two parts of the MCP spec are left out: **sampling** (a server asking the device
+to run its own model mid-call) and **elicitation** (a server asking you for input
+mid-call). The device runs one request at a time and has no way to put a form in
+front of you during a tool call, so it tells servers up front that it offers
+neither, and a compliant server does not ask.
 
 ### Setting one up
 
@@ -87,11 +77,11 @@ never touch the device.
 Linear's hosted server (`https://mcp.linear.app/mcp`) is the worked example; Notion,
 Sentry, and Atlassian connect the same way.
 
-1. In the web UI under **Assistant -> Connectors**, add a server with the name
-   `linear` and the endpoint `https://mcp.linear.app/mcp`. Leave the token field
-   empty (this server does not use one). Turn on **device-dialed**.
-2. On the new connector, choose **Sign in**. The device now shows a short link, a
-   short code, and a QR code on the Connectors page.
+1. Add the server as in [Setting one up](#setting-one-up): name `linear`, URL
+   `https://mcp.linear.app/mcp`, token left empty (this server does not take one).
+   Mark it device-dialed and approve it.
+2. On the card, choose **Sign in**. The device shows a link and a QR code on the
+   Connectors page, plus a short code when the server issues one.
 3. On your phone or laptop, open the link (or scan the QR). It takes you to Linear's
    own sign-in page. Sign in and approve access for the device.
 4. Linear sends the browser back to the device, which finishes the exchange and

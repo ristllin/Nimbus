@@ -1,8 +1,10 @@
 # Configuration A - Touch TFT (`screenModel = tft`)
 
-The hand-built Solide S3 build: a 2.8" **ILI9341** 240×320 color TFT with an
-**XPT2046** resistive touch controller. The display and touch controller share the
-board's SPI3 pads, and the touch layer is the only input.
+Use this page when you are building or debugging the hand-built Solide S3
+configuration: a 2.8" **ILI9341** 240×320 color TFT with an **XPT2046** resistive
+touch controller. The display and touch controller share the board's SPI3 pads,
+and touch is the only input. It covers the pinout, the three on-module jumpers
+the build depends on, touch calibration, and the display and touch diagnostics.
 
 For everything common to both boards - first flash, power, battery sensing, the
 shared peripherals (SD, LED ring, speaker, mic) - see the
@@ -137,16 +139,14 @@ Every resistive panel reads slightly differently, so the raw-count-to-pixel
 mapping is **measured per unit**, not assumed. Until it is set, a wrong guess is
 indistinguishable from broken touch - taps simply land somewhere else.
 
-**First run does it for you, first.** Because a resistive panel drifts unit to unit,
-a freshly flashed Touch TFT lands taps only approximately on the board's default
-mapping, so on first boot the device goes straight to calibration: the four corner
-targets appear and are the only thing the screen responds to until you finish. Tap the
-four corners and it stores the result and moves on to the normal setup. This comes
-first on purpose, so uncalibrated taps can never drive the menus by mistake. If you
-would rather skip it for now, press and hold anywhere for a few seconds (a short
-countdown confirms it); a stray tap never skips. You can always redo or clear it below.
-The all-in-one (Freenove CYD) is capacitive and reports pixel coordinates directly,
-so it needs no calibration and skips this step entirely.
+**First boot calibrates before anything else.** A freshly flashed Touch TFT shows
+the four corner targets first, and they are the only thing the screen responds to
+until you finish, so uncalibrated taps can never drive the menus. Tap the four
+corners and it stores the result and continues to normal setup. To skip for now,
+press and hold anywhere for a few seconds (a short countdown confirms it); a stray
+tap never skips. You can redo or clear the calibration later using the options
+below. The all-in-one (Freenove CYD) is capacitive and reports pixel coordinates
+directly, so it skips this step.
 
 **On the device, no computer needed.** Open **Settings > Display > Calibrate
 touch** and tap the four corner targets as they appear. The device derives the
@@ -188,12 +188,12 @@ driver defaults.
 
 ## The white screen: what was ruled out, and what was not
 
-The panel was reported showing the UI and then going blank white - sometimes
-white from boot - and needing a restart. The **recovery** is solved and tested
-(the watchdog below). The **cause** is not proven, so here is exactly what the
-measurements say, to save the next person repeating them.
+Symptom: the display shows the UI and then goes blank white (sometimes white from
+boot) until a restart. The **recovery** is in place and tested (the watchdog
+below). The **cause** is not proven. The tables below record what has been
+measured so you do not repeat it.
 
-Ruled out, each by measurement rather than reasoning:
+Ruled out by measurement:
 
 | Hypothesis | How it was tested | Result |
 |---|---|---|
@@ -208,13 +208,12 @@ earlier version looped `transfer()` per byte, which leaves gaps and never
 produces the sustained burst a 153 KB blit does - it reported a clean 40 MHz
 while that was precisely the thing under suspicion. Measure the path you ship.
 
-⚠ **`TFTFILL?` proves the panel STORES pixels, not that it DISPLAYS them.**
-Reading GRAM back is not the same as seeing the glass, and those two diverge in
-exactly the case under investigation. Do not read a passing fill test as "the
-screen works".
+⚠ **`TFTFILL?` proves the panel stores pixels, not that it displays them.**
+Reading GRAM back is not the same as seeing the glass, and the two diverge in
+exactly this fault. A passing fill test does not mean the screen works.
 
-**What the diagnostics say during a blank screen** - all on HTTP, because
-reading them over the console RESETS this board and destroys the fault:
+**What the diagnostics report during a blank screen.** Read them over HTTP:
+opening the console resets this board and clears the fault.
 
 | Signal | Reads | Means |
 |---|---|---|
@@ -242,58 +241,48 @@ controller id (RDDID, `TFTID?`): a healthy Freenove / CYD panel reads RDDID
 ILI9341 variants, which is why `healthy()` reads it and this verdict follows it.
 That is a different fault from the white screen this table describes: here the
 controller still answers (`panelResponding` true) while the glass stays blank. A
-`false` here is the owner's **black-glass** case, and the Display health row
-reports it as "display not responding" without a serial open (which would reset
-the board and erase the fault). `panelOk` / `panelPixOk` are **null** while the
+`false` is the **black-glass** case, and the Display health row reports it as
+"display not responding" without a serial open (which would reset the board and
+erase the fault). `panelOk` / `panelPixOk` are **null** while the
 probe is off, never a fabricated `true`: "not measured" must not read as "healthy".
 
-⚠ **On the classic solide_s3 board the live panel-liveness verdict cannot be
-maintained (CUM-392 / CUM-423), so the firmware reports it as UNKNOWN, never a
-false positive.** That board shares its touch MISO with the panel, so the
-render-independent RDDST poll (`pollControllerLiveness`) is gated off to protect
-touch. The per-push `healthy()` read in `renderAndPush` was intended to feed the
-verdict instead, but on an idle device that read site is not reached in steady
-state (the 5 s `tickHealth` watchdog forces a fresh repaint every `kHealMs`, so
-the unchanged-frame-past-window branch that holds the read never runs), so the
-debounced verdict is never updated after boot. The read that would detect a dead
-panel is the same read that pins touch, so you cannot have both. The honest answer
-is therefore "unknown": on a shared-MISO board `panelResponding` reads **null**
-(not measured, like `panelPixOk` while the probe is off), `scrok` reads
-**`unknown`** (never a false `1`), and the Display health row reads
-**"unverified"**, not "ok" (CUM-423). A wrong-variant flash whose bind FAILS is
-still caught (`InitFailed` -> `scrok=0`), and a controller that is read as dead
-still reads `scrok=0`. On the capacitive Freenove / CYD board nothing is shared,
-so the poll runs unchanged and the verdict is a real `true`/`false`. The one thing
-that settles "unknown" is a human looking at the glass. See the next section.
+⚠ **On the classic solide_s3 board the live panel-liveness verdict is reported as
+unknown, never as a false pass.** The board shares its touch MISO with the panel,
+and the periodic controller read that would detect a dead panel is the same read
+that pins touch (see the next section), so it is switched off on this board and
+the verdict is not maintained after boot. On a shared-MISO board `panelResponding`
+reads **null** (not measured, like `panelPixOk` while the probe is off), `scrok`
+reads **`unknown`** (never a false `1`), and the Display health row reads
+**"unverified"**, not "ok". A wrong-variant flash whose panel bind fails is still
+caught (`InitFailed` -> `scrok=0`), as is a controller that reads as dead. On the
+capacitive Freenove / CYD board nothing is shared, so the poll runs and the
+verdict is a real `true`/`false`. The only thing that settles "unknown" is looking
+at the glass.
 
-⚠ **The panel's display/power state is NOT observable.** `RDDPM` (0x0A) reads
-`0x00` at every dummy-width on this panel - it simply is not implemented - and
-`rearm()` changes nothing in `RDDST` beyond the scan bit. So sleep, display-off
-and booster-off are all indistinguishable from healthy from this side, and the
-ONLY detectable fault is a full reset (which clears MADCTL).
+⚠ **The panel's display/power state is not observable.** `RDDPM` (0x0A) reads
+`0x00` at every dummy width on this panel (it is not implemented), and `rearm()`
+changes nothing in `RDDST` beyond the scan bit. Sleep, display-off and booster-off
+are therefore indistinguishable from healthy, and the only detectable fault is a
+full reset (which clears MADCTL).
 
-That is precisely why the watchdog re-arms **unconditionally** rather than
-gating on the health check: the fault it most needs to fix is the one it cannot
-see. Acting blindly every window is the correct design given the constraint, not
-a lack of confidence.
+That is why the watchdog re-arms **unconditionally** rather than gating on the
+health check: the fault it most needs to fix is the one it cannot see.
 
-`panelPixOk` is the strongest of these and the last one added: it reads pixels
-back out of the panel's own memory and compares them against the frame that was
-pushed, so it observes CONTENT rather than configuration. A panel can hold a
-perfect register set and still have lost its image - every other signal reports
-healthy in that state.
+`panelPixOk` is the strongest of these signals: it reads pixels back out of the
+panel's own memory and compares them against the frame that was pushed, so it
+observes content rather than configuration. A panel can hold a perfect register
+set and still have lost its image, and every other signal reports healthy in that
+state.
 
-It is validated by injection rather than assumed: `TFTFILL?` writes RGB frames
-straight into GRAM behind the framebuffer, `panelPixLost` increments, and the
-watchdog repaints. ⚠ Assert the COUNTER, not the flag - the repaint lands within
-~5 s, so `panelPixOk` reads true again almost immediately and sampling the flag
-alone would pass whether or not anything was ever detected.
+To validate it, `TFTFILL?` writes RGB frames straight into GRAM behind the
+framebuffer; `panelPixLost` increments and the watchdog repaints. ⚠ Check the
+counter, not the flag: the repaint lands within ~5 s, so `panelPixOk` reads true
+again almost immediately.
 
-So during a blank screen the panel demonstrably CONTAINS the correct image, is
-configured, and has a driveable backlight that is driven. Every firmware-
-observable layer is healthy. That leaves the panel module itself - its
-display/power path, or the physical connection. It is left OPEN rather than
-written up as solved.
+During a blank screen, then, the panel holds the correct image, is configured,
+and has a backlight that is being driven. Every firmware-observable layer is
+healthy. That leaves the panel module itself (its display/power path) or the
+physical connection. The cause is left open rather than written up as solved.
 
 > **Field note (v3.9.0):** the field "white screen" was traced to the device's
 > **SoftAP beacon** - its continuous radio TX from the on-board antenna knocks a
@@ -314,10 +303,10 @@ A distinct fault from the white screen above: on classic (solide_s3) boards
 flashed with v4.5.0, touch stops responding entirely while the display works.
 v4.4.6 on the same board is fine.
 
-**Mechanism.** With the owner tapping four corners plus center, raw reads came
-back the same on every sample: pressure present, but the X and Y position channels
-pinned near mid-scale (X ~2100, Y ~2100, z ~4237) no matter where the tap landed,
-so every touch mapped to screen center and nothing off-center could be hit. That
+**Mechanism.** Tapping four corners plus center, raw reads came back the same on
+every sample: pressure present, but the X and Y position channels pinned near
+mid-scale (X ~2100, Y ~2100, z ~4237) no matter where the tap landed, so every
+touch mapped to screen center and nothing off-center could be hit. That
 is not a dead controller (a dead XPT2046 reads a flat 4095) and not a calibration
 error (position is never actually read): it is the shared MISO being held.
 
@@ -328,44 +317,31 @@ contends the line the XPT2046 drives, and every touch channel settles near
 mid-scale. This is **unit-dependent**: a module that releases SDO cleanly reads the
 panel all day with no effect, so a given bench board may never show the fault.
 
-**What actually changed v4.4.6 -> v4.5.0.** Panel reads are not new: v4.4.6 already
-evaluated `healthy()` in `renderAndPush`'s unchanged-frame branch (at most every
-~5 s, and only while something is rendering) and read on demand through
-`panelConfigOk` / `panelContentOk` from `/api/state`. What v4.5.0 **added** is
-`pollControllerLiveness` - a panel RDDST read every ~2 s from `loop()` that runs
-**independent of rendering**, so the shared MISO is now driven more often and at
-idle moments v4.4.6 never touched it (the FIX-4 XPT2046 poll was added beside it).
-Those additions were only ever validated on a Freenove, whose capacitive touch is
-on a separate I2C bus and shares nothing with the panel.
+**What changed in v4.5.0.** v4.5.0 added a panel status read every ~2 s that
+runs independently of rendering (`pollControllerLiveness`), so the shared MISO is
+driven far more often than in v4.4.6, including at idle. It was validated on a
+Freenove, whose capacitive touch is on a separate I2C bus and shares nothing with
+the panel.
 
-**Fix (restore v4.4.6's read set).** A board capability - a resistive touch
-controller on a shared panel MISO - gates OFF **only the new render-independent
-poll** (`pollControllerLiveness`) on such a board. The per-push `healthy()` read
-v4.4.6 already made stays, so the fix restores v4.4.6's exact panel-read set (the
-field-proven-safe behavior), not zero reads. The gate is provably inert on the
-capacitive Freenove / CYD board, where the poll never shared a line and keeps
-running. The portable decision is host-tested and iterated over every board
-definition, so a future resistive board on a shared MISO is covered by
-construction.
+**Fix.** On any board with a resistive touch controller on a shared panel MISO,
+the firmware switches off that render-independent poll and keeps only the panel
+reads v4.4.6 already made. The gate is a board capability, so the Freenove / CYD
+board is unaffected and a future resistive board on a shared MISO is covered
+automatically.
 
-**The wrong-variant / black-glass guardrail (CUM-388) is honest on shared-MISO
-boards: it reports "unknown", never a false pass (CUM-423).** A wrong-variant
-flash whose panel bind FAILS is caught in both directions: a **Freenove image on
-Solide hardware** and a **Solide image on Freenove hardware** both fail `begin()`
-on the wrong pin map and emit `InitFailed` -> `scrok=0`. What the shared-MISO board
-cannot detect on its own is a panel that BINDS but is then dead: the live liveness
-verdict is not maintained there (the gated-off poll protects touch, and the
-intended per-push substitute is not reached in steady state). Rather than emit a
-false `scrok=1` over that unmeasured state, the firmware now reports it honestly as
-UNKNOWN: the boot beacon prints `PANEL scrok=unknown` plus a line telling the
-operator to look at the screen, `panelResponding` reads null, and the Display
-health row reads "unverified". `tools/setup_device.py` treats `scrok=unknown` as a
-soft caution ("look at the screen"), not a pass and not a hard failure, so a
-legitimate solide install still proceeds. The stronger detector (a one-shot
-boot-time RDDST read before the touch loop scans, which could give a real verdict
-without the continuous contention) is a possible follow-up that needs finger-and-
-eyes validation first. On the capacitive Freenove the verdict is a real
-`true`/`false`, unaffected.
+**The wrong-variant / black-glass guardrail on shared-MISO boards reports
+"unknown", never a false pass.** A wrong-variant flash whose panel bind fails is
+caught in both directions: a **Freenove image on Solide hardware** and a **Solide
+image on Freenove hardware** both fail `begin()` on the wrong pin map and emit
+`InitFailed` -> `scrok=0`. What the shared-MISO board cannot detect on its own is
+a panel that binds and is then dead, because the liveness poll is switched off to
+protect touch. Rather than report a false `scrok=1`, the firmware reports that
+state as unknown: the boot beacon prints `PANEL scrok=unknown` plus a line asking
+you to look at the screen, `panelResponding` reads null, and the Display health
+row reads "unverified". `tools/setup_device.py` treats `scrok=unknown` as a soft
+caution ("look at the screen"), not a pass and not a failure, so a correct Solide
+install still proceeds. On the capacitive Freenove the verdict is a real
+`true`/`false`.
 
 **Finger-free diagnostics** (test / test-cyd console builds only - they reset the
 board on a serial open, so use a `[env:test]`-family image):
@@ -376,11 +352,13 @@ board on a serial open, so use a `[env:test]`-family image):
 | `PROBES ON\|OFF\|?` | A/B the suspect pollers on one image. `ON` forces the panel liveness read, the content probe and the resistive touch-liveness poll back on (reproduces dead touch on a shared-MISO board); `OFF` silences them (the fixed baseline); `?` reports `sharedMiso` / `panelReadsGated` / `probe` / `fix4`. |
 | `BUSLOAD ON\|OFF` | Forces a full repaint every loop so `TOUCHDIAG?` can be run under worst-case shared-bus traffic. |
 
-The A/B (serial only - no eyes on glass are needed or implied): on a solide_s3
-`test` image, run `PROBES OFF` then `TOUCHDIAG? 100` and read the channel stats;
-then `PROBES ON` and repeat. On a **susceptible** unit the channels collapse toward
-one value (and `TOUCH?` raw X/Y pin near mid-scale) with reads on, and are stable
-and distinct with reads off. On a unit whose panel releases MISO cleanly both
-phases read clean - that is expected and simply means this board does not exhibit
-the fault. On a Freenove `test-cyd` image the two runs are identical (nothing is
-shared): that is the inertness check, and it holds on any unit.
+To run the A/B over serial on a solide_s3 `test` image:
+
+1. Run `PROBES OFF`, then `TOUCHDIAG? 100`, and note the channel stats.
+2. Run `PROBES ON` and repeat.
+
+On a **susceptible** unit the channels collapse toward one value with reads on
+(and `TOUCH?` raw X/Y pin near mid-scale), and are stable and distinct with reads
+off. If both phases read clean, the panel on this unit releases MISO cleanly and
+does not exhibit the fault. On a Freenove `test-cyd` image the two runs are
+identical, since nothing is shared.
