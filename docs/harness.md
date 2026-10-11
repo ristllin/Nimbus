@@ -82,7 +82,7 @@ a main-loop reaper that collapses the ring arc after `deadline+120 s`.
 
 ```
 entry (owner msg | sub-agents finished | loop fired | post-OTA)   [tg_poll]
-  → heap gate (28-30 K floors) → episodic user row (durable-first)
+  → heap gate (12 K total-free floor + 5 K largest-block guard) → episodic user row (durable-first)
   → vector recall (embed + composite score + MMR)
   → composeInstructions: role/contract → identity+time → directive+running-memory
     → capabilities (live manifest + tool list) → running sessions

@@ -50,14 +50,28 @@ neither, and a compliant server does not ask.
 
 ### Setting one up
 
-In the web UI under **Assistant -> Connectors**, add a server with:
+The connector cards have no device-dialed switch, so a device-dialed server is
+added in the raw editor:
 
-- a **name** (for example `linear`),
-- its **MCP endpoint URL** (for example `https://mcp.linear.app/mcp`, or a
-  server on your own network like `http://192.168.1.20:3111/mcp`),
-- a **token** if the server needs a fixed one (sent as `Authorization: Bearer`),
-- **device-dialed** turned on (this is the client path, not provider-attach),
-- **approved** turned on (see below).
+1. In the web UI, open **Assistant → Connectors** and expand
+   **Advanced - edit raw JSON** below the cards.
+2. Enter the connector list as a JSON array, with the server as one entry:
+
+   ```json
+   [{"name":"linear","kind":"mcp","url":"https://mcp.linear.app/mcp","dev":1,"en":1}]
+   ```
+
+   - `name`: a short name (for example `linear`).
+   - `url`: the server's MCP endpoint (for example `https://mcp.linear.app/mcp`,
+     or a server on your own network like `http://192.168.1.20:3111/mcp`).
+   - `tok`: a token, if the server needs a fixed one (sent as
+     `Authorization: Bearer`).
+   - `"dev":1` makes it device-dialed (the client path, not provider-attach);
+     `"en":1` turns it on.
+3. Choose **Save JSON**. Saving replaces the whole list, and stored tokens are
+   never shown back, so include every connector you already have, with its token.
+4. The server's card now shows **pending approval**. Choose **Approve** (see
+   [Approval](#approval---you-decide-before-it-connects)).
 
 The assistant is told, every turn, which device MCP servers are ready, which are
 waiting for your approval, and which are temporarily unreachable.
@@ -78,8 +92,8 @@ Linear's hosted server (`https://mcp.linear.app/mcp`) is the worked example; Not
 Sentry, and Atlassian connect the same way.
 
 1. Add the server as in [Setting one up](#setting-one-up): name `linear`, URL
-   `https://mcp.linear.app/mcp`, token left empty (this server does not take one).
-   Mark it device-dialed and approve it.
+   `https://mcp.linear.app/mcp`, no token (this server does not take one), and
+   `"dev":1`. Then choose **Approve** on its card.
 2. On the card, choose **Sign in**. The device shows a link and a QR code on the
    Connectors page, plus a short code when the server issues one.
 3. On your phone or laptop, open the link (or scan the QR). It takes you to Linear's
@@ -118,16 +132,17 @@ the same way a token is: sent as `Authorization: Bearer` on each call.
 
 A server on your own network (a `192.168.x.x`, `10.x`, `172.16-31.x`, `.local`,
 or `localhost` address) is reachable from the device but not from a provider's
-cloud. Turning on **device-dialed** keeps that server on the device's own client,
-where it belongs: the device connects to it directly and never hands the URL to a
-provider. A device-dialed server with no provider chosen stays device-side only,
-so you do not have to pick one.
+cloud. Marking it device-dialed (`"dev":1`, see [Setting one up](#setting-one-up))
+keeps that server on the device's own client, where it belongs: the device
+connects to it directly and never hands the URL to a provider. A device-dialed
+server with no provider chosen (no `prov` in its entry) stays device-side only, so
+you do not have to pick one.
 
 A provider only ever receives a connector whose URL its cloud can actually dial.
 If a local URL is pointed at a provider by mistake, the device leaves it off that
 provider's request rather than letting one bad entry fail the whole turn: that one
-tool is simply skipped, and the fix is to turn on device-dialed for it, or to use
-a public `https` address.
+tool is simply skipped, and the fix is to mark it device-dialed (`"dev":1`), or to
+use a public `https` address.
 
 ### Approval - you decide before it connects
 
@@ -180,8 +195,8 @@ connect the moment you approve them.
 ### On your own network (the best fit for a desk device)
 
 A server on your own network is reachable from the device but not from a provider's
-cloud, so mark it device-dialed (see [Setting one up](#setting-one-up)) and give it
-a fixed token. Your data stays on your network.
+cloud, so add it device-dialed with `"dev":1` (see [Setting one up](#setting-one-up))
+and give it a fixed token. Your data stays on your network.
 
 | Server | What it does for you | Endpoint | Connect with |
 |---|---|---|---|

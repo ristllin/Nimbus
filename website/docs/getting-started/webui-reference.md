@@ -106,7 +106,7 @@ What the device knows and the files it has made - stored on its SD card, not in 
 cloud. Three groups:
 
 - **Memory** - the **Directive** (your standing instructions to the assistant,
-  up to 600 characters; only you can change it) and **Assistant memory** (notes
+  up to 1,500 characters; only you can change it) and **Assistant memory** (notes
   the assistant keeps for itself between conversations; viewable and clearable).
 - **Long-term memory** - the associative store the assistant searches by meaning:
   **Recall** (search, **Deduplicate**, **Delete Temporary**), the **Scratchpad**

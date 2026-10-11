@@ -175,7 +175,7 @@ By hand, if you prefer:
    values at each corner of the panel.
 2. Store them as `minX,maxX,minY,maxY` - optionally a fifth flags number
    (**1** swap X/Y, **2** flip X, **4** flip Y; add them together):
-   - **Web**: Settings → Mode & identity → Touch calibration
+   - **Web**: Settings → Display → Touch calibration
    - **Console**: `TCAL 200,3900,240,3850,4` (bare `TCAL` prints the current value)
 
 ⚠ The ranges describe whichever **raw** axis ends up carrying screen X *after* the

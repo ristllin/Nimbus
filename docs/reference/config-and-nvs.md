@@ -223,7 +223,7 @@ roll back if it fails. See [OTA updates](../ota.md).
 | `ttsProv` | string | `"mistral"` | TTS provider (`mistral\|openai\|cumulo`). Cumulo Nimbus routes voice through the metered router. **Freely changeable.** | Yes |
 | `ttsVoice` | string | `""` | TTS voice id/slug; `""` = provider default | Yes |
 | `tftFlip` | bool | `false` | Display flip: rotate the color panel 180 degrees for an upside-down mount (touch panel only). Applies live; touch mapping follows. The stored value is a delta from the board's correct orientation, which the firmware sets per board, so a fresh unit is upright out of the box on every board (the all-in-one panel is mounted 180 from the hand-built board). | Yes |
-| `ttsEnabled` | bool | `false` | Spoken-reply enable | Yes |
+| `ttsEnabled` | bool | `true` (on) | Spoken-reply enable (the **Voice replies** toggle) | Yes |
 | `theme` | string | `"teal"` | LED color theme slug | Yes |
 | `ledBright` | int | `128` | LED brightness (`ledBright` NVS key) | Yes |
 | `sfxLvlN` | int | `0` (Off) | Sound-effect level in Notifier mode: `0` Off / `1` Low / `2` Medium / `3` High. | Yes |
@@ -283,7 +283,7 @@ value is the owner's override and wins under the listed clamp.
 | Key | Type | Default | Holds | Read back? |
 |---|---|---|---|---|
 | `orchLoop` | bool | `true` (on) | Head multi-round tool-use loop enable. | Yes |
-| `orchLoopRnds` | int | `12` | Max tool-dispatch rounds per turn. Clamped `1..32`. | Yes |
+| `orchLoopRnds` | int | `8` | Max tool-dispatch rounds per turn. Clamped `1..32`. | Yes |
 | `orchLoopDlS` | int | `600` | Wall-clock budget for the loop, in seconds. Clamped `30..3600`. | Yes |
 | `orchLoopRCap` | int | `0` (auto) | Per-tool-result byte clamp. `0` = auto; else `512..65536`. | Yes |
 | `orchLoopTCap` | int | `0` (auto) | Cumulative tool-output byte budget. `0` = auto; else `2048..1048576`. | Yes |
@@ -431,7 +431,7 @@ loses user intent. `Config` holds the active `ProfileId` plus a per-`Param`
 (`kParamCount = Param::COUNT`).
 
 **Serialization** (`lib/core/include/nimbus/config_store.h`,
-`kConfigStoreVersion = 1`): little-endian, magic `'N' 'C'`, then version,
+`kConfigStoreVersion = 2`): little-endian, magic `'N' 'C'`, then version,
 profile, count, and `count` × `{ param:u8, value:i32 }` records - only the
 overridden params. Header is `kConfigHeaderBytes = 5`, each record
 `kConfigRecordBytes = 5`, cap

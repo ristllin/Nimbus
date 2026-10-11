@@ -99,7 +99,8 @@ are not set, so a fork that does not run Virtual Nimbus can leave it alone.
 git tag vX.Y.Z && git push origin main vX.Y.Z
 ```
 
-CI gates tag == version, builds `esp32s3` + `test`, signs the manifest, and
+CI gates tag == version, builds the four board variants (`esp32s3`,
+`esp32s3-cyd`, `esp32s3-cyd-35`, `esp32s3-cyd-40`), signs the manifest, and
 publishes. Devices already running your firmware see it on their next daily
 check. Your fork's ongoing release chores - rc tags, token renewal, key
 rotation, and troubleshooting - mirror the upstream process, with your own

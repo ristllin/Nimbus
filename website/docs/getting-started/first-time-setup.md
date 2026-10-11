@@ -198,7 +198,7 @@ To reach the assistant from Telegram:
 2. **Message your bot once** from your own Telegram account.
 3. Your message appears as a **pending approval card**. Click **Approve**.
 
-Token and allowlist changes take effect after a restart.
+Token and allowlist changes apply right away; no restart is needed.
 
 :::caution Open access is off for a reason
 The **Open access** checkbox lets anyone who finds your bot use it, and your API

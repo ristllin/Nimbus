@@ -12,11 +12,21 @@ For the engines and the context assembler themselves see
 contract see [../reference/turn-contract.md](../reference/turn-contract.md); for
 the tool surface see [../reference/tool-catalog.md](../reference/tool-catalog.md).
 
-## The design: a hybrid turn contract, not a function-calling loop
+## The design: World memory around one turn
 
-A turn is still externally **"one message = one turn"** - the LLM is called once
-and returns one `orch_turn` JSON object. Memory is folded into that single call on
-two sides:
+A turn is still externally **"one message = one turn"**: one owner message gets
+one reply, carried by one terminal `orch_turn` JSON object. By default that object
+ends the bounded **head tool loop** (NVS `orchLoop`, on by default): the model may
+call registry tools such as `memory.*`, `session.*` and `web.search` over several
+rounds, see each result, and then finish with `orch_turn`. The loop is capped at
+`ORCH_LOOP_MAX_ROUNDS` (8) rounds and an `ORCH_LOOP_DEADLINE_MS` (10 minute) wall
+clock, both owner-tunable (`orchLoopRnds`, `orchLoopDlS`). With the loop off, or on
+a host whose wire has no tool loop (Z.ai, a custom endpoint), the LLM is called once
+and returns one `orch_turn`. The per-provider wire for both paths is in
+[provider-wire.md](../provider-wire.md); what the model sees is in
+[turn-anatomy.md](../turn-anatomy.md).
+
+Memory is folded around the turn on two sides, whichever path runs:
 
 - **Read side (automatic injection).** Before the provider call, `runTurn`
   pre-composes the World system prompt via the host-tested `assembleContext()`:
@@ -24,10 +34,10 @@ two sides:
   scratchpad, and top-K associative recall from **one** embed of the user text.
   No LLM round-trip is spent to obtain this context.
 - **Write side (optional turn arrays).** The turn contract carries optional
-  `mem_write[]` / `mem_query[]` / `session_ops[]` arrays. After the response is
-  parsed, `applyTurn` dispatches them **in-process** through the existing
-  `ToolRegistry` - again with no extra LLM round-trip. `mem_query` results are not
-  returned inline; they are parked and echoed into the *next* turn's inputs.
+  `mem_write[]` / `mem_query[]` / `session_ops[]` arrays. After the terminal
+  `orch_turn` is parsed, `applyTurn` dispatches them **in-process** through the
+  existing `ToolRegistry`, with no extra LLM round-trip. `mem_query` results are
+  not returned inline; they are parked and echoed into the *next* turn's inputs.
 
 Both sides run on the `tg_poll` turn task, which is off the main-loop watchdog, so
 a multi-second turn does not restart the device.
@@ -99,21 +109,23 @@ If any `mem_write` ran, vectors and the scratchpad are persisted once at the end
 the dispatch. Writes run **before** `reply` is delivered, so a "remember X, ok?"
 turn stores the fact and then confirms it.
 
-## Why not a provider function-calling loop
+## Why the turn arrays still exist alongside the tool loop
 
-The hybrid is a deliberate alternative to native tool-calling:
+The tool loop can do the same memory and session work mid-turn as tool calls, so
+the arrays are not the only write path. They stay because:
 
-- **Single-shot adapters.** `openai_responses::orchTurn` and `orchTurnAnthropic`
-  are both `(convId, instructions, inputs) -> outJson`; neither sends a `tools[]`
-  array nor handles `tool_calls`. A tool loop would be a large stateful rewrite of
-  the one proven turn path, duplicated across two providers.
-- **Blocking-TLS embed cost.** `embeddings::embed()` is a blocking TLS round-trip
-  (1–3 s typical, up to ~20 s worst case). A mid-turn tool loop would add N
-  sequential network hops per turn and stall the Telegram `getUpdates` long-poll
-  the whole time. The hybrid does its single embed up front, deterministically.
+- **One contract on every path.** The arrays ride the `orch_turn` object itself,
+  so the single-shot path (loop off, or a Z.ai or custom host with no tool loop)
+  can still write memory, query it, and manage sub-sessions without native tool
+  calls. On the loop path, a final answer can still carry its side effects with
+  it.
+- **Recall stays up front.** `embeddings::embed()` is a blocking TLS round-trip
+  (1-3 s typical, up to ~20 s worst case), and every loop round is another
+  sequential network hop through the single TLS slot. The read side spends its
+  one embed before the first provider call, deterministically, instead of making
+  the model ask for context it always needs.
 - **Backward compatibility.** Adding optional arrays is transparent - an old
-  six-field turn still validates. Native tool-calling would change the request
-  envelope on both providers.
+  six-field turn still validates.
 
 ## Episodic auto-capture
 

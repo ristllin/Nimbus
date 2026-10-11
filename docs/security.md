@@ -160,8 +160,10 @@ certificate is validated**. An attacker on the network path (evil-twin AP the de
 auto-joins, rogue router, DNS/ARP spoof) can no longer MITM a provider connection to
 harvest the `Authorization: Bearer <provider-key>` headers or the Telegram bot token.
 Every outbound HTTPS client (provider adapters, Telegram, connectors, voice, embeddings,
-moderation, web fetch, sound sync, cloud minting, firmware updates) uses this seam. The
-one client outside it is the cloud relay, described next, which validates unconditionally.
+moderation, web fetch, sound sync, firmware updates) uses this seam. Two clients sit
+outside it and validate unconditionally: the cloud relay, described next, and the
+cloud key-mint POST (`src/net/cloud_mint.cpp`), which carries the device pairing
+credential.
 
 **Escape hatch:** clearing the "Validate provider TLS certificates" checkbox on the Assistant tab
 (`POST /api/orch` with `tlsVerify=0`, surfaced in `/api/state`, backed by `store::setTlsVerify(false)`)
@@ -322,11 +324,12 @@ no stored value the device mints a 10-character random passphrase (hardware RNG,
 lowercase + digits with the ambiguous `0/o/1/l` removed) and persists it in NVS
 (`agent::store::setupApPass`). The fleet-wide shipped `nimbus1234` is gone from the
 air - `NIMBUS_AP_PASS` survives in the source only as the fallback for a device
-whose NVS is unusable. The passphrase appears **only on the device's setup screen**
+whose NVS is unusable. The passphrase appears **on the device's setup screen**
 (printed, and embedded in the setup screen's Wi-Fi join QR so a phone camera joins
-directly); it is never advertised over mDNS or any API. It regenerates only on
-factory reset (`nvs_flash_erase` wipes the whole namespace). HIL can read it with
-the TEST-console `APINFO?` command.
+directly) and, for a signed-in owner, as **Setup Wi-Fi password** under
+**Settings → Connectivity** (from the token-gated `GET /api/connect`). It is never
+advertised over mDNS or the open `/api/state`, and never printed over serial. It
+regenerates only on factory reset (`nvs_flash_erase` erases the whole namespace).
 
 **Migration:** a device updated over OTA has no stored passphrase, so it generates
 one on the first boot after the update. Its setup network only matters after a

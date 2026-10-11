@@ -223,7 +223,7 @@ python3 tools/push_firmware.py --port /dev/cu.usbmodemXXXX firmware.bin
 ```
 
 The host tool opens the port, sends the image size and its sha256, streams the
-image in 4 KB chunks each protected by a crc32 (with a per-chunk resend), then
+image in 1 KB chunks each protected by a crc32 (with a per-chunk resend), then
 sends the full-image sha256. The device verifies the streamed hash, arms the
 rollback guard, flips the boot pointer, and restarts. A corrupt or interrupted
 transfer leaves the spare slot untouched and the current firmware running, exactly
