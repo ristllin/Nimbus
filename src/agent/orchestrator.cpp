@@ -371,7 +371,9 @@ static bool deliver(const String& chatId, const String& text, bool system = fals
   // GET /api/chat slot holds ONE reply and the next poll claims it, so a routine landing
   // there would show up as the answer to the owner's next message. captureAssistant
   // records the reply in session "web", and the chat shows it on its next load.
-  if (chatId == "web" && loops::firing()) return;
+  // Not a suppression: the capturing delivery wrapper (CUM-482) must still record
+  // a job-engine message that lands here, so this returns true, never false.
+  if (chatId == "web" && loops::firing()) return true;
   if (g_sinks.send && !g_sinks.send(chatId, text))
     alogf("orchestrator: reply queue full - dropped %d-byte message to %s",
           (int)text.length(), chatId.c_str());
