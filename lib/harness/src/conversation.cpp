@@ -2,7 +2,7 @@
 
 #include "nimbus/harness/dream.h"   // buildEpisodicDigest - the window's line renderer
 #include "nimbus/harness/jobs.h"    // isJobDelivery - captured job rows are not conversation
-#include "nimbus/orch/caps.h"       // kRecentTurnsMax / kRecentConvBytes
+#include "nimbus/orch/caps.h"       // kRecentTurnsMax
 
 namespace agent {
 
@@ -34,7 +34,10 @@ std::string recentConversationBlock(const std::vector<nimbus::orch::EpisodicMess
                                     const std::string& inFlightId, size_t capBytes) {
   const auto rows = liveConversation(newestFirst, inFlightId, (size_t)nimbus::orch::kRecentTurnsMax);
   if (rows.empty()) return std::string();
-  if (capBytes < (size_t)nimbus::orch::kRecentConvBytes) capBytes = nimbus::orch::kRecentConvBytes;
+  // deriveBudget() already floors the caller's budget (budget.h); this guard only
+  // keeps a zero or tiny cap from emptying the window (the pre-CUM-485 size).
+  constexpr size_t kLegacyRecentConvBytes = 3000;
+  if (capBytes < kLegacyRecentConvBytes) capBytes = kLegacyRecentConvBytes;
   std::string block =
       "\n## RECENT CONVERSATION (this chat, oldest first; the current message "
       "is NOT here - it is in [USER])\n";

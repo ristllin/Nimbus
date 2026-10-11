@@ -35,8 +35,8 @@ std::vector<nimbus::orch::EpisodicMessage> liveConversation(
 
 // The head's "## RECENT CONVERSATION" block over the live conversation (up to
 // kRecentTurnsMax rows, oldest first, newest rows kept whole within capBytes -
-// CUM-485 derives capBytes from the head model's window; kRecentConvBytes is
-// the floor) - "" when nothing is live, so a fresh or just-cleared chat (CUM-511
+// CUM-485 derives capBytes from the head model's window; 3000 B is the floor)
+// - "" when nothing is live, so a fresh or just-cleared chat (CUM-511
 // boundary) carries no conversation at all.
 std::string recentConversationBlock(const std::vector<nimbus::orch::EpisodicMessage>& newestFirst,
                                     const std::string& inFlightId,
