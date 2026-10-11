@@ -16,8 +16,9 @@ Two modes on one firmware: an ambient **status light for AI coding sessions**
 (encrypted Bluetooth, per-session ring segments), and a **self-hosted AI
 assistant** with voice, Telegram, and long-term memory on its own SD card.
 A 45-LED ring plus a 2.8" color touchscreen (or a Freenove all-in-one touch
-board) on an ESP32-S3. Bring your own API key (Mistral, OpenAI, or Anthropic);
-about **$60–75 in commodity parts** to build.
+board) on an ESP32-S3. Bring your own API key (Mistral, OpenAI, Anthropic,
+or Z.ai) or a Cumulo key; about **$65–77 in commodity parts** for the ring
+and touchscreen build, or **$20–25** for the Freenove all-in-one board.
 
 **Documentation: https://docs.cumulo-nimbus.ai/**
 
@@ -25,7 +26,7 @@ about **$60–75 in commodity parts** to build.
 
 - The electronics - dev board, display, LED ring, mic/amp/speaker, microSD,
   battery section: full list with sourcing links and prices in the
-  **[bill of materials](docs/hardware/bom.md)** (~$60–75)
+  **[bill of materials](docs/hardware/bom.md)** (~$65–77, or ~$20–25 for the all-in-one board)
 - A data-capable USB-C cable
 - A computer with a Chromium browser (web flasher) or Python 3, git, and
   PlatformIO ([set up your computer](https://docs.cumulo-nimbus.ai/quick-start/computer-setup))

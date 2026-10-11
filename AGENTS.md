@@ -17,7 +17,7 @@ Nimbus is product firmware for a battery-capable desk device built on an
 **ESP32-S3** (the Solide S3 board, an ESP32-S3-DevKitC-1 N16R8). The hardware is
 a 45-LED WS2812B ring, an I²S microphone and speaker, and a **2.8" ILI9341 color
 touchscreen** (240×320) for display and input. A second supported build targets
-the Freenove all-in-one touch board. The `screenModel` NVS key is retained (frozen
+the Freenove all-in-one touch board. The `scrModel` NVS key is retained (frozen
 key), with `tft` as the value; the legacy `eink` value now boots an unsupported-
 display notice on the color panel.
 
@@ -239,7 +239,7 @@ in the same change.
 ### Frozen strings and wire numbers
 
 - **NVS keys and machine slugs are frozen.** Persisted setting keys (e.g.
-  `screenModel`, `sfxLvlN`) and machine-facing enum slugs (`balanced`, `light`,
+  `scrModel`, `sfxLvlN`) and machine-facing enum slugs (`balanced`, `light`,
   `terran`, …) are stored on real devices and read by tools; renaming one breaks
   every device already in the field. The user-facing *display* text is a separate,
   changeable thing (see §6) - the machine key underneath is not.
