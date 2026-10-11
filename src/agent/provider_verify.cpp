@@ -8,10 +8,12 @@
 #include "nimbus/orch/model_catalog.h"  // portable role/capability catalog (GET /api/models)
 #include "nimbus/orch/fallback_rules.h" // portable fallback rule parse (Cumulo cloud sync)
 #include "nimbus/store/persist.h"       // kCatalogMaxBytes - the catalog cache bound (CUM-479)
+#include "router_catalog.h"             // CUM-530: the Cumulo router list rule (host-tested)
 #include <time.h>
 
 #include "esp_heap_caps.h"
 #include <atomic>                 // g_pending / probe-queue flags touched by three tasks (CUM-537)
+#include <functional>             // forEachModelId visitor (CUM-530)
 #include <memory>                 // unique_ptr - heap-allocate the connectors Info[] (no big stack array)
 #include <new>                    // std::nothrow
 #include <solide/memory.h>        // NVS side channel for the verify-reason token
@@ -207,6 +209,14 @@ static void buildAndStoreCatalog(const String& provider, const char* body, size_
     }
   }
   if (cat.empty()) return;  // nothing to store - keep whatever was stored
+  // CUM-530: the router aggregates every upstream, so it gets its own (larger)
+  // bound, and its order puts the router default and one model per upstream first
+  // (dated twins dropped) - a trim from the back can then never cost the default
+  // or a whole upstream (the bench kept 8 anthropic/claude-opus rows and nothing
+  // else).
+  const bool router = (provider == "cumulo");
+  if (router) router_catalog::protectHeads(cat, CUMULO_MODEL);
+  const size_t bound = router ? router_catalog::kCatalogMaxBytes : nimbus::store::kCatalogMaxBytes;
   JsonDocument doc(&PsramJsonAllocator::instance());
   modelsToJson(cat, doc.to<JsonArray>(), /*includeUnusable=*/true);
   String out;
@@ -215,11 +225,19 @@ static void buildAndStoreCatalog(const String& provider, const char* body, size_
   // response). Flagships sort first, so drop the trailing (lowest-priority) models
   // until it fits, and say how many were trimmed.
   int dropped = 0;
-  while (out.length() > nimbus::store::kCatalogMaxBytes && cat.size() > 1) {
+  while (out.length() > bound && cat.size() > 1) {
     cat.pop_back();
     ++dropped;
     doc.clear();
     modelsToJson(cat, doc.to<JsonArray>(), true);
+    out = "";
+    serializeJson(doc, out);
+  }
+  // Say it in the stored list too: the last kept model carries "more": <n>, which
+  // GET /api/models passes through and the picker shows as "<n> more not shown".
+  if (dropped) {
+    JsonArray arr = doc.as<JsonArray>();
+    arr[arr.size() - 1]["more"] = dropped;
     out = "";
     serializeJson(doc, out);
   }
@@ -237,6 +255,24 @@ static void buildAndStoreCatalog(const String& provider, const char* body, size_
   else
     alogf("verify: %s catalog file write failed - the choice list still drives the dropdown",
           provider.c_str());
+}
+
+// Visit every "id" value in a /models response body (headers may precede it).
+// Tolerates pretty-printed JSON ('"id": "x"', OpenAI) as well as the compact form;
+// ids longer than 64 chars end the scan (no provider id is that long - it is not
+// an id list). Used by the Cumulo router harvest (CUM-530).
+static void forEachModelId(const char* buf, const std::function<void(const String&)>& fn) {
+  const char* p = buf;
+  while ((p = strstr(p, "\"id\":")) != nullptr) {
+    p += 5;
+    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') ++p;
+    if (*p != '"') continue;
+    ++p;
+    const char* e = strchr(p, '"');
+    if (!e || e - p > 64) return;
+    fn(String(std::string(p, (size_t)(e - p)).c_str()));   // copy just the id
+    p = e;
+  }
 }
 
 // One minimal probe call confirming a specific model is usable by this key (the
@@ -867,6 +903,27 @@ static void runOne() {
           // first 8 matches served gpt-5 while cutting gpt-5.5/5.4 (live-caught).
           // A ring of the LAST 8 matches fixes it; anthropic arrives newest-first
           // and mistral uses -latest aliases, so first-8 is right for them.
+          // CUM-530: the Cumulo router list. Every chat-capable router id is
+          // collected (flagship families first, then the rest, each in the
+          // router's order), then router_catalog keeps the router default, one
+          // model per upstream, and a round-robin spread within its count/byte
+          // bound - saying so when the router offered more.
+          if (provider == "cumulo") {
+            std::vector<std::string> ids, rest;
+            forEachModelId(buf, [&](const String& id) {
+              if (id.length() < 3 || rejected(id)) return;
+              (preferred(id) ? ids : rest).push_back(std::string(id.c_str()));
+            });
+            ids.insert(ids.end(), rest.begin(), rest.end());
+            const router_catalog::Shortlist sl = router_catalog::shortlist(ids, CUMULO_MODEL);
+            csv = sl.csv.c_str();
+            kept = (int)sl.kept;
+            handled = true;
+            if (sl.truncated())
+              alogf("verify: cumulo choice list keeps %u of %u router models (list truncated; "
+                    "the default and one per upstream first, the full list is GET /api/models)",
+                    (unsigned)sl.kept, (unsigned)sl.total);
+          }
           if (!handled) {   // openai/anthropic (+ Mistral parse-failure fallback): id string-scan
           // openai only: the router's /router/models already arrives curated and
           // flagship-first, so cumulo keeps the plain preferred-first two-pass.

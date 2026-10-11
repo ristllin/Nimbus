@@ -293,7 +293,13 @@ supplies them (Anthropic `max_input_tokens`/`max_tokens`/`capabilities`, Mistral
 special: it harvests the router's own `GET /router/models`, which lists exactly
 the models the router can route (priced and enabled), as `<upstream>/<model>`
 ids with a size class and the billed rates as metadata, so the Cumulo model list
-tracks the router's catalog rather than one upstream's `/v1/models`. A one-shot cheap usability probe
+tracks the router's catalog rather than one upstream's `/v1/models`. The router
+default comes first, then one model per upstream, then a spread of the rest (a
+dated snapshot whose undated alias is listed is left out). The short list behind
+the picker's Recommended group and the head's model line holds up to 12 of them;
+the full list (up to about 48) is the catalog, and the picker says when the router
+offered more than fits. A model pick the device cannot run is refused with the
+models it accepts; the default can always be picked again. A one-shot cheap usability probe
 per selected model means a model your key cannot actually use never appears. The
 catalog is served at `GET /api/models` (add `?all=1` to include probe-hidden models)
 and stored in the device's flash (LittleFS) as a rebuildable cache that every

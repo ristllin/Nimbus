@@ -1,0 +1,200 @@
+#include <unity.h>
+
+#include <string>
+#include <vector>
+
+// CUM-530: the Cumulo router model list on the device - the verify harvest's
+// choice list, the catalog size trim, and the model save rule. Pure headers (the
+// device seams in provider_verify.cpp / webui.cpp only call them).
+#include "../../src/agent/model_pick.h"
+#include "../../src/agent/router_catalog.h"
+#include "nimbus/orch/model_catalog.h"
+
+namespace rc = agent::router_catalog;
+namespace mp = agent::model_pick;
+using nimbus::orch::ModelInfo;
+
+void setUp() {}
+void tearDown() {}
+
+// The router's real order (cumulo-nimbus routableCatalog: size class, then
+// upstream name, then model): every large anthropic row sorts before the first
+// openai one. The bench device kept exactly these first 8 opus ids.
+static std::vector<std::string> benchRouterList() {
+  return {
+      "anthropic/claude-opus-4-5",  "anthropic/claude-opus-4-5-20251101",
+      "anthropic/claude-opus-4-6",  "anthropic/claude-opus-4-6-20260205",
+      "anthropic/claude-opus-4-7",  "anthropic/claude-opus-4-7-20260416",
+      "anthropic/claude-opus-4-8",  "anthropic/claude-opus-4.1",
+      "anthropic/claude-opus-5",    "mistral/mistral-large",
+      "openai/gpt-5.5",             "openai/gpt-5.6",
+      "openai/gpt-5.6-sol",         "openai/gpt-6-astra",
+      "zai/glm-5",                  "zai/glm-5.3",
+      "anthropic/claude-sonnet-5",  "mistral/mistral-small",
+      "openai/gpt-5.6-terra",       "zai/glm-5.2",
+      "anthropic/claude-haiku-4-5", "openai/gpt-5.6-luna",
+      "zai/glm-5.3-flash",
+  };
+}
+
+static bool csvHas(const std::string& csv, const char* id) {
+  return nimbus::orch::modelInChoices(csv, id);
+}
+
+// The bench bug, as a test: the choice list keeps the router default and every
+// upstream, not 8 opus rows.
+static void test_choice_list_keeps_default_and_each_upstream() {
+  const rc::Shortlist sl = rc::shortlist(benchRouterList(), "gpt-5.6");
+  TEST_ASSERT_EQUAL_STRING("openai/gpt-5.6", sl.csv.substr(0, sl.csv.find(',')).c_str());
+  for (const char* up : {"anthropic/", "openai/", "mistral/", "zai/"})
+    TEST_ASSERT_TRUE_MESSAGE(sl.csv.find(up) != std::string::npos, up);
+  TEST_ASSERT_TRUE(csvHas(sl.csv, "anthropic/claude-opus-4-8"));
+  TEST_ASSERT_TRUE(sl.kept <= rc::kChoicesMax);
+  TEST_ASSERT_TRUE(sl.csv.size() <= rc::kChoicesMaxBytes);
+  // 23 router ids, 3 dated twins -> 20 distinct models; 12 kept: the cut is said.
+  TEST_ASSERT_EQUAL_UINT(20, sl.total);
+  TEST_ASSERT_TRUE(sl.truncated());
+}
+
+// The class: for EVERY upstream that appears anywhere in the list - even at the
+// very end - its first model is kept, whatever the cap (down to default + one
+// per upstream).
+static void test_every_upstream_survives_any_cap() {
+  std::vector<std::string> ids = benchRouterList();
+  ids.push_back("groq/llama-5-large");   // a new upstream, listed last
+  for (size_t cap = 6; cap <= rc::kChoicesMax; ++cap) {
+    const rc::Shortlist sl = rc::shortlist(ids, "gpt-5.6", cap, rc::kChoicesMaxBytes);
+    for (const char* up : {"anthropic/", "openai/", "mistral/", "zai/", "groq/"})
+      TEST_ASSERT_TRUE_MESSAGE(sl.csv.find(up) != std::string::npos, up);
+    TEST_ASSERT_TRUE(csvHas(sl.csv, "openai/gpt-5.6"));
+  }
+}
+
+// Dated snapshots duplicating an undated alias are dropped; a dated-only id
+// (no alias listed) is kept.
+static void test_dated_twins_dropped_dated_only_kept() {
+  const rc::Shortlist sl = rc::shortlist(
+      {"anthropic/claude-opus-4-5", "anthropic/claude-opus-4-5-20251101",
+       "anthropic/claude-haiku-4-5-20251001", "openai/gpt-4.1-2025-04-14", "openai/gpt-4.1"},
+      "gpt-5.6");
+  TEST_ASSERT_FALSE(csvHas(sl.csv, "anthropic/claude-opus-4-5-20251101"));
+  TEST_ASSERT_FALSE(csvHas(sl.csv, "openai/gpt-4.1-2025-04-14"));
+  TEST_ASSERT_TRUE(csvHas(sl.csv, "anthropic/claude-haiku-4-5-20251001"));
+  TEST_ASSERT_TRUE(csvHas(sl.csv, "openai/gpt-4.1"));
+  TEST_ASSERT_EQUAL_UINT(3, sl.total);
+  TEST_ASSERT_FALSE(sl.truncated());
+}
+
+// A short list is kept whole and is not called truncated; a list without the
+// router default simply starts with the first upstream.
+static void test_short_list_is_whole() {
+  const rc::Shortlist sl = rc::shortlist({"openai/gpt-5.6", "zai/glm-5.3"}, "gpt-5.6");
+  TEST_ASSERT_EQUAL_STRING("openai/gpt-5.6,zai/glm-5.3", sl.csv.c_str());
+  TEST_ASSERT_FALSE(sl.truncated());
+  const rc::Shortlist nd = rc::shortlist({"zai/glm-5.3", "anthropic/claude-opus-5"}, "gpt-5.6");
+  TEST_ASSERT_EQUAL_STRING("zai/glm-5.3,anthropic/claude-opus-5", nd.csv.c_str());
+}
+
+static ModelInfo entry(const char* up, const char* id) {
+  ModelInfo m = nimbus::orch::classifyCatalogEntry("cumulo", std::string(up) + "/" + id);
+  return m;
+}
+
+// The catalog trim: protectHeads orders the router default, then one model per
+// upstream, ahead of everything else - so popping from the back for the size bound
+// never drops them - and it drops dated twins. Selectors are "<upstream>/<id>"
+// (the catalog stores the bare id + upstream).
+static void test_catalog_protects_default_and_upstream_heads() {
+  std::vector<ModelInfo> cat;
+  for (const std::string& sel : benchRouterList()) {
+    const size_t sl = sel.find('/');
+    cat.push_back(entry(sel.substr(0, sl).c_str(), sel.substr(sl + 1).c_str()));
+  }
+  rc::protectHeads(cat, "gpt-5.6");
+  TEST_ASSERT_EQUAL_UINT(20, cat.size());   // 3 dated twins dropped
+  TEST_ASSERT_EQUAL_STRING("openai/gpt-5.6", rc::selectorOf(cat[0]).c_str());
+  // Trim to the default + one per upstream: all four upstreams still present.
+  cat.resize(4);
+  std::string ups;
+  for (const auto& m : cat) ups += m.upstream + ",";
+  for (const char* up : {"openai,", "anthropic,", "mistral,", "zai,"})
+    TEST_ASSERT_TRUE_MESSAGE(ups.find(up) != std::string::npos, up);
+}
+
+// ---- the save rule ------------------------------------------------------------
+
+static mp::PickLists cumuloLists() {
+  mp::PickLists l;
+  l.choices = rc::shortlist(benchRouterList(), "gpt-5.6").csv;
+  l.catalog = {"openai/gpt-5.6", "anthropic/claude-opus-4-8", "zai/glm-5.2"};
+  l.defaultModel = "gpt-5.6";
+  l.router = true;
+  return l;
+}
+
+// The bench: orchM_cumulo=gpt-5.6 answered 200 and changed nothing. The default
+// is always a valid pick, in either spelling; so are list and catalog members.
+static void test_default_repicks_in_both_spellings() {
+  const mp::PickLists l = cumuloLists();
+  TEST_ASSERT_TRUE(mp::allowed(l, "gpt-5.6"));
+  TEST_ASSERT_TRUE(mp::allowed(l, "openai/gpt-5.6"));
+  TEST_ASSERT_TRUE(mp::allowed(l, ""));                          // reset to default
+  TEST_ASSERT_TRUE(mp::allowed(l, "anthropic/claude-opus-4-8"));
+  TEST_ASSERT_TRUE(mp::allowed(l, "zai/glm-5.2"));               // catalog-only member
+}
+
+// A rejected choice: refused (never a silent no-op), and the copy names the
+// allowed values, default included.
+static void test_rejected_pick_names_the_allowed_values() {
+  const mp::PickLists l = cumuloLists();
+  TEST_ASSERT_FALSE(mp::allowed(l, "anthropic/claude-opus-9"));
+  TEST_ASSERT_FALSE(mp::allowed(l, "claude-opus-4-8"));   // bare = the openai upstream: not listed
+  const std::string msg = mp::rejectMessage("Cumulo Nimbus", l);
+  TEST_ASSERT_TRUE(msg.rfind("That model isn't available for Cumulo Nimbus. Choose one of: ", 0) == 0);
+  TEST_ASSERT_TRUE(msg.find("openai/gpt-5.6") != std::string::npos);
+  TEST_ASSERT_TRUE(msg.find("anthropic/claude-opus-4-8") != std::string::npos);
+  // A non-router provider compares exactly (no upstream folding) and names its
+  // default even when the list omits it.
+  mp::PickLists o;
+  o.choices = "gpt-6-astra,gpt-5.6-terra";
+  o.defaultModel = "gpt-5.6";
+  TEST_ASSERT_TRUE(mp::allowed(o, "gpt-5.6"));
+  TEST_ASSERT_FALSE(mp::allowed(o, "openai/gpt-5.6"));
+  TEST_ASSERT_EQUAL_STRING(
+      "That model isn't available for OpenAI. Choose one of: gpt-5.6, gpt-6-astra, gpt-5.6-terra.",
+      mp::rejectMessage("OpenAI", o).c_str());
+}
+
+// The catalog the picker renders is the catalog the save accepts: selectors for
+// the role, usable only, "<upstream>/<id>" for router rows.
+static void test_catalog_selectors_follow_role_and_usable() {
+  const std::string blob =
+      "[{\"id\":\"gpt-5.6\",\"roles\":[\"orchestrator\",\"sub-agent\"],\"usable\":true,"
+      "\"upstream\":\"openai\"},"
+      "{\"id\":\"claude-opus-4-8\",\"roles\":[\"orchestrator\"],\"usable\":true,"
+      "\"upstream\":\"anthropic\"},"
+      "{\"id\":\"glm-5.2\",\"roles\":[\"orchestrator\"],\"usable\":false,\"upstream\":\"zai\"},"
+      "{\"id\":\"text-embedding-3-small\",\"roles\":[\"embedding\"],\"usable\":true,"
+      "\"upstream\":\"openai\"}]";
+  const auto orch = mp::catalogSelectors(blob, "orchestrator");
+  TEST_ASSERT_EQUAL(2, (int)orch.size());
+  TEST_ASSERT_EQUAL_STRING("openai/gpt-5.6", orch[0].c_str());
+  TEST_ASSERT_EQUAL_STRING("anthropic/claude-opus-4-8", orch[1].c_str());
+  const auto sub = mp::catalogSelectors(blob, "sub-agent");
+  TEST_ASSERT_EQUAL(1, (int)sub.size());
+  TEST_ASSERT_EQUAL(0, (int)mp::catalogSelectors("not json", "orchestrator").size());
+}
+
+int main(int, char**) {
+  UNITY_BEGIN();
+  RUN_TEST(test_choice_list_keeps_default_and_each_upstream);
+  RUN_TEST(test_every_upstream_survives_any_cap);
+  RUN_TEST(test_dated_twins_dropped_dated_only_kept);
+  RUN_TEST(test_short_list_is_whole);
+  RUN_TEST(test_catalog_protects_default_and_upstream_heads);
+  RUN_TEST(test_default_repicks_in_both_spellings);
+  RUN_TEST(test_rejected_pick_names_the_allowed_values);
+  RUN_TEST(test_catalog_selectors_follow_role_and_usable);
+  UNITY_END();
+  return 0;
+}

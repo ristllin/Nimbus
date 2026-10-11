@@ -40,8 +40,8 @@ values only. Nothing rebuildable and unbounded may live in NVS:
 
 | Value | Where | Why |
 |---|---|---|
-| Provider capability catalog (`GET /api/models`) | LittleFS file `/data/mcat_<provider>.json` | A rebuildable cache: every verify re-harvests it. Up to 3800 B per provider (~120 entries, nearly a whole page), so four or five verified providers could exhaust NVS by themselves |
-| Model choice list `mch_<provider>` | NVS | Bounded (at most 8 ids) and read on every turn |
+| Provider capability catalog (`GET /api/models`) | LittleFS file `/data/mcat_<provider>.json` | A rebuildable cache: every verify re-harvests it. Up to 3800 B per provider (16000 B for the Cumulo router, which lists every upstream), so in NVS (~120 entries per 3800 B, nearly a whole page) four or five verified providers could exhaust it by themselves |
+| Model choice list `mch_<provider>` | NVS | Bounded (at most 8 ids; the Cumulo router list at most 12 ids and 480 B) and read on every turn |
 | Usage ledger `usgLedger` | NVS | Owner spend history, bounded (12 providers, 48 tags) |
 
 The guide `/api/state` checks: at least **4 KB** stays free, room for the largest

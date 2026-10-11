@@ -1802,6 +1802,11 @@ function groupModels(prov,cat){
 // site keeps working. With a catalog: a "Recommended" group (from `choices`) on
 // top, then the full grouped list. Without one: the flat `choices` list, so cold
 // start behaves exactly as before.
+// CUM-530: a Cumulo router row's pick is its selector "<upstream>/<id>" (the
+// catalog keeps the bare id + its upstream); a bare stored router value is the
+// openai upstream, so "gpt-5.6" and "openai/gpt-5.6" are one choice.
+function modelSelOf(prov,m){return (prov==='cumulo'&&m.upstream)?m.upstream+'/'+m.id:m.id;}
+function modelCurOf(prov,cur){return (prov==='cumulo'&&cur&&cur.indexOf('/')<0)?'openai/'+cur:(cur||'');}
 function modelSel(id,cur,choices,verified){
   const s=document.createElement('select'); s.id=id; s.disabled=!verified;
   const prov=id.substring(id.indexOf('_')+1);
@@ -1809,8 +1814,9 @@ function modelSel(id,cur,choices,verified){
   const d=document.createElement('option'); d.value=''; d.textContent='(default)';
   s.appendChild(d);
   const seen={};
+  const curSel=modelCurOf(prov,cur);
   const opt=(parent,val,label)=>{const o=document.createElement('option');
-    o.value=val;o.textContent=label;if(val===cur)o.selected=true;parent.appendChild(o);seen[val]=1;};
+    o.value=val;o.textContent=label;if(val===curSel)o.selected=true;parent.appendChild(o);seen[val]=1;};
   // filter(Boolean): cumulo/zai have no static choice list, so choices is "" until a
   // verify harvest fills it - without this that produced one stray blank <option>.
   const recIds=(choices||'').split(',').map(x=>x.trim()).filter(Boolean);
@@ -1820,21 +1826,38 @@ function modelSel(id,cur,choices,verified){
     // holds the REST - a model shown in Recommended is not repeated in its group, so
     // the dropdown never lists the same id twice on a small panel.
     if(recIds.length){const g=document.createElement('optgroup');g.label='Recommended';
-      recIds.forEach(rid=>{if(seen[rid])return;const m=cat.find(x=>x.id===rid);opt(g,rid,modelLabel(rid,m));});
+      recIds.forEach(rid=>{if(seen[rid])return;const m=cat.find(x=>modelSelOf(prov,x)===rid);opt(g,rid,modelLabel(rid,m));});
       if(g.children.length)s.appendChild(g);}
-    groupModels(prov,cat).forEach(gr=>{const items=gr.items.filter(m=>!seen[m.id]);if(!items.length)return;
+    groupModels(prov,cat).forEach(gr=>{const items=gr.items.filter(m=>!seen[modelSelOf(prov,m)]);if(!items.length)return;
       const g=document.createElement('optgroup');g.label=gr.label;
-      items.forEach(m=>opt(g,m.id,modelLabel(m.id,m)));s.appendChild(g);});
+      items.forEach(m=>opt(g,modelSelOf(prov,m),modelLabel(m.id,m)));s.appendChild(g);});
   }else{
     recIds.forEach(m=>opt(s,m,m));
   }
+  // CUM-530: the stored catalog was cut to its size bound - say so, never hide it.
+  const more=(MODELCAT[prov]||[]).reduce((a,m)=>a+((m&&m.more)|0),0);
+  if(more){const t=document.createElement('option');t.disabled=true;
+    t.textContent=more+' more not shown (list truncated)';s.appendChild(t);}
   // Never silently drop a model the owner already set that the list does not carry.
-  if(cur&&!seen[cur])opt(s,cur,cur);
+  if(cur&&!seen[curSel])opt(s,curSel,cur);
   if(!verified){const t=document.createElement('option');
     t.value='';t.textContent='Verify the key to unlock';t.selected=!cur;s.appendChild(t);}
   s.dataset.sig=(choices||'')+'|'+(verified?1:0)+'|'+MODELCAT_SIG;   // rebuild-only-on-change signature (P1.1)
-  s.onchange=()=>orchApply({[id]:s.value});
+  s.onchange=()=>modelPick(id,s.value);
   return s;
+}
+// CUM-530: a model the device refuses answers 400 with the allowed values - show
+// them under the provider row (it used to answer 200 and change nothing).
+function modelPick(id,val){
+  const prov=id.substring(id.indexOf('_')+1);
+  return fetch('/api/orch',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:new URLSearchParams({[id]:val}).toString()})
+   .then(r=>{
+     if(r.status!==400)return jok(r).then(()=>{setProvMsg(prov,'');toast('Saved');loadOrch();});
+     return r.json().catch(()=>({})).then(j=>{
+       setProvMsg(prov,(j&&j.error)||'Couldn\'t save that model. Pick another one.',true);
+       toast('Pick another model');loadOrch();});})
+   .catch(e=>failToast(e));
 }
 // Provider row header markup. Shared by provRow (build) and provSync (in-place
 // poll update) so the Recommended badge + verify badge never drift between them.
@@ -1927,7 +1950,8 @@ function syncModelSel(id,cur,choices,verified){
   const s=$(id); if(!s||document.activeElement===s)return;   // mid-pick: hands off
   const sig=(choices||'')+'|'+(verified?1:0)+'|'+MODELCAT_SIG;
   if(s.dataset.sig!==sig){s.replaceWith(modelSel(id,cur,choices,verified));return;}
-  if(s.value!==(cur||''))s.value=cur||'';
+  const want=modelCurOf(id.substring(id.indexOf('_')+1),cur);
+  if(s.value!==want)s.value=want;
 }
 // Fetch the uncapped catalog (GET /api/models) into MODELCAT, then re-sync any
 // open provider selects so they upgrade from the CSV fallback to the grouped list.

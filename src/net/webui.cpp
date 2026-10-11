@@ -78,6 +78,7 @@
 #include "../agent/loops_subsystem.h"   // /api/loops -> Local Loops
 #include "../agent/adapters/tts_voices.h"
 #include "../agent/provider_verify.h"
+#include "../agent/model_pick.h"         // CUM-530: the model save rule (host-tested)
 #include "../agent/store.h"
 #include "../sys/ps_json.h"                // PsramJsonAllocator - keep /api/models off internal heap
 #include "nimbus/orch/model_catalog.h"    // role tokens for the catalog response
@@ -948,6 +949,38 @@ static const char* providerFallbackChoices(const char* slug) {
   return "";
 }
 
+// The compiled default model per provider (agent_config.h) - the model a provider
+// runs when no override is stored. Always a valid pick, so the default can be
+// re-picked by name (CUM-530). "" for a slug with none.
+static const char* providerDefaultModel(const char* slug) {
+  if (!strcmp(slug, "openai"))    return OPENAI_MODEL;
+  if (!strcmp(slug, "anthropic")) return ANT_MODEL;
+  if (!strcmp(slug, "mistral"))   return MISTRAL_MODEL;
+  if (!strcmp(slug, "cumulo"))    return CUMULO_MODEL;
+  if (!strcmp(slug, "zai"))       return ZAI_MODEL;
+  return "";
+}
+
+// CUM-530: is this model pick allowed for the provider + role? The effective choice
+// list and the compiled default first (cheap); the stored catalog - the list the
+// picker renders - only when those miss. On a refusal `err` names the allowed values.
+static bool modelPickAllowed(const nimbus::orch::ProviderSlot& slot, bool orchRole,
+                             const String& v, String& err) {
+  agent::model_pick::PickLists l;
+  String eff = agent::store::modelChoices(slot.slug);
+  l.choices = (eff.length() ? eff : String(providerFallbackChoices(slot.slug))).c_str();
+  l.defaultModel = providerDefaultModel(slot.slug);
+  l.router = !strcmp(slot.slug, "cumulo");
+  const std::string pick(v.c_str());
+  if (agent::model_pick::allowed(l, pick)) return true;
+  l.catalog = agent::model_pick::catalogSelectors(
+      std::string(agent::store::modelCatalogJson(slot.slug).c_str()),
+      orchRole ? "orchestrator" : "sub-agent", &agent::PsramJsonAllocator::instance());
+  if (agent::model_pick::allowed(l, pick)) return true;
+  err = agent::model_pick::rejectMessage(slot.label, l).c_str();
+  return false;
+}
+
 // A provider token is "known" for routing if it is a canonical slot OR the free-form
 // custom endpoint (which has its own UI + verify path, so it is not in the registry).
 static bool isKnownProvider(const String& p) {
@@ -976,22 +1009,6 @@ static String sanitizePriority(const String& in) {
     start = comma + 1;
   }
   return out;
-}
-
-// A model value is accepted if it is empty (= reset to provider default) or a
-// member of that provider's choice list - the "verified options only" contract
-// is enforced client-side by gating the dropdown and server-side right here.
-static bool modelInChoices(const char* choices, const String& v) {
-  if (!v.length()) return true;
-  String all(choices);
-  int start = 0;
-  while (start < (int)all.length()) {
-    int comma = all.indexOf(',', start);
-    if (comma < 0) comma = all.length();
-    if (v == all.substring(start, comma)) return true;
-    start = comma + 1;
-  }
-  return false;
 }
 
 static void buildOrchState(String& out) {
@@ -1239,7 +1256,7 @@ static void buildFallbacks(String& out) {
 // triggers none of its side effects: no verify reset or verify run against the OLD
 // key, no live token swap the device would lose on the next boot. A clear is an
 // erase, so clr_* lands even on a full partition (the storage-full remedy).
-static bool applyOrchField(const String& n, const String& v, bool& cfgDirty) {
+static bool applyOrchField(const String& n, const String& v, bool& cfgDirty, String& err) {
   // provider keys (set on non-empty; explicit clr_* to clear)
   if (n == "oaiKey")  { if (v.length() && agent::store::setOpenaiKey(v))    agent::store::setVerify("openai", -1, 0);    return true; }
   if (n == "antKey")  { if (v.length() && agent::store::setAnthropicKey(v)) agent::store::setVerify("anthropic", -1, 0); return true; }
@@ -1369,23 +1386,20 @@ static bool applyOrchField(const String& n, const String& v, bool& cfgDirty) {
     return true;
   }
 
-  // Per-provider model picks - accepted only from the verified choice list. One loop
-  // over the canonical registry (CUM-213): cumulo/zai are first-class heads (CUM-242),
-  // so they validate exactly like the BYOK providers instead of through a second
-  // hand-maintained table (the old split silently rejected a router-head pick against
-  // an empty list). Validate against the EFFECTIVE list - live-harvested first, the
-  // small compiled default second - so a freshly-released model is selectable.
+  // Per-provider model picks. One loop over the canonical registry (CUM-213):
+  // cumulo/zai are first-class heads (CUM-242), so they validate exactly like the
+  // BYOK providers. CUM-530: a pick is accepted from the effective choice list, the
+  // provider's catalog for that role (what the picker renders), or the compiled
+  // default; a refused pick is a 400 naming the allowed values - it used to answer
+  // 200 ok and change nothing.
   for (const auto& slot : nimbus::orch::kProviderSlots) {
     const char* p = slot.slug;
     const bool isOrch = (n == String("orchM_") + p);
     const bool isSub  = (n == String("subM_")  + p);
     if (!isOrch && !isSub) continue;
-    String eff = agent::store::modelChoices(p);
-    if (!eff.length()) eff = providerFallbackChoices(p);
-    if (modelInChoices(eff.c_str(), v)) {
-      if (isOrch) agent::store::setOrchModel(p, v);
-      else        agent::store::setSubModel(p, v);
-    }
+    if (!modelPickAllowed(slot, isOrch, v, err)) return true;
+    if (isOrch) agent::store::setOrchModel(p, v);
+    else        agent::store::setSubModel(p, v);
     return true;
   }
 
@@ -2278,11 +2292,21 @@ void beginWeb(const WebConfig& wc) {
     // ones nested inside a setter (verify reset, telegram offset, the usage ledger).
     nimbus::sys::SaveScope save;
     bool touched = false, cfgDirty = false;
+    String fieldErr;   // CUM-530: a refused value (model pick) names what is allowed
     const size_t np = r->params();
     for (size_t i = 0; i < np; i++) {
       const AsyncWebParameter* prm = r->getParam(i);
       if (!prm->isPost()) continue;
-      if (applyOrchField(prm->name(), prm->value(), cfgDirty)) touched = true;
+      if (applyOrchField(prm->name(), prm->value(), cfgDirty, fieldErr)) touched = true;
+    }
+    if (fieldErr.length()) {
+      if (cfgDirty) agent::orchestrator::noteConfigChanged();
+      JsonDocument e;
+      e["error"] = fieldErr;
+      String body;
+      serializeJson(e, body);
+      r->send(400, "application/json", body);
+      return;
     }
     // A directive edit is consumed by the orchestrator at its next turn-task
     // drain; a token/allowlist change needs a reboot (the poll task captured
