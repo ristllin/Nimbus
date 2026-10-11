@@ -20,6 +20,7 @@
 #include "loops_subsystem.h"            // loops::checkDue - Local Loops tick (on tg_poll)
 #include "dream_subsystem.h"            // DREAMING: noteTurnEnd (idle-gate quiet clock)
 #include "connectors.h"                 // per-provider connector catalog + attach
+#include "provider_verify.h"            // queueWorkspaceProbe() at boot (CUM-537)
 #include "nimbus/orch/connectors_wire.h" // portable attach*Wire (builtinsOnly cumulo route)
 #include "files_subsystem.h"            // files::available - E1 capability manifest
 #include "skills.h"                     // skills::spawnCapsule - per-spawn injection (P2)
@@ -1409,6 +1410,11 @@ void begin(HeavyFabric* fabric, const Sinks& sinks) {
     };
     memory::registry().setUnknownToolHints(hints);
   }
+  // CUM-537: the Mistral workspace answer lives in RAM, so after every restart a
+  // Studio connector read "not checked" until someone re-verified the Mistral key.
+  // Queue the probe once; the verify pump runs it when the device is online and idle.
+  if (store::hasMistralKey() && connectors::mistralWorkspaceStale())
+    provider_verify::queueWorkspaceProbe();
   int n = g_journal.count();
   alogf("orchestrator: ready (%d active job%s)", n, n == 1 ? "" : "s");
 }

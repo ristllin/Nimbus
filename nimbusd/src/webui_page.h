@@ -3474,7 +3474,7 @@ function loadOrch(){if(!canPoll())return;fetch('/api/orch').then(r=>r.json()).th
 // round-trip can never silently strip a stored token).
 function connEsc(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 // Which providers actually run this connector, and how, right now.
-function connAvail(prov,host,keyed,auth){
+function connAvail(prov,host,keyed,auth,ws){
   if(prov==='any')prov=host||'openai';
   if(!keyed||!keyed[prov])return{cls:'unk',txt:prov+' key missing'};
   if(prov==='openai')return host==='openai'?{cls:'ok',txt:'live on your turns'}:{cls:'ext',txt:'via sessions'};
@@ -3485,6 +3485,10 @@ function connAvail(prov,host,keyed,auth){
     // instead of implying it is ready. Once connected, it runs on Mistral turns or via
     // a spawned Mistral sub-session, same as the OpenAI case and the core connectorScope
     // SubsessionsOnly rule the Capabilities table shows.
+    // CUM-537: the device checks the Mistral workspace after a save; until that check
+    // lands the connector is unchecked, not missing, so say so instead.
+    if(ws==='checking')return{cls:'unk',txt:'checking your Mistral workspace'};
+    if(ws==='unchecked')return{cls:'unk',txt:'Mistral workspace not checked'};
     if(auth===2)return{cls:'unk',txt:'connect it in Mistral'};
     return host==='mistral'?{cls:'ok',txt:'live on your turns'}:{cls:'ext',txt:'via sessions'};
   }
@@ -3512,6 +3516,11 @@ function loadConnectors(){fetch('/api/connectors').then(r=>r.json()).then(d=>{
   extra.forEach(c=>{html+=connCard({id:c.name,name:c.name,providers:c.prov,kind:c.kind,cid:c.cid||'',cred:'Credential / token',desc:'Custom connector.',docs:''},c,keyed,host);});
   $('conncards').innerHTML=html||'<p class=hint>No connectors available.</p>';
   $('connstat').textContent=cfg.length?(cfg.length+' configured'):'';
+  // CUM-537: while the workspace check runs, refresh the cards (bounded) so the badge
+  // turns to its real state without a reload.
+  clearTimeout(window._connPoll);
+  if(d.wsChecking&&(window._connPolls=(window._connPolls||0)+1)<=60)window._connPoll=setTimeout(loadConnectors,4000);
+  else if(!d.wsChecking)window._connPolls=0;
 }).catch(()=>{});}
 function connCard(k,c,keyed,host){
   const set=!!c,en=set&&(c.en==1||c.en===true);
@@ -3520,7 +3529,7 @@ function connCard(k,c,keyed,host){
   let status;
   if(!set)status='<span class="badge vfy unk">not set</span>';
   else if(!en)status='<span class="badge vfy unk">off</span>';
-  else{const a=connAvail(curProv,host,keyed,(c&&c.auth!==undefined)?c.auth:-1);status='<span class="badge vfy '+a.cls+'">'+connEsc(a.txt)+'</span>';}
+  else{const a=connAvail(curProv,host,keyed,(c&&c.auth!==undefined)?c.auth:-1,c&&c.ws);status='<span class="badge vfy '+a.cls+'">'+connEsc(a.txt)+'</span>';}
   const id=k.id,kind=connKindFor(curProv,k);
   const badges=provs.map(p=>'<span class="badge ext" style="margin-left:4px">'+connEsc(p)+'</span>').join('');
   const provSel='<select id="cc_'+id+'_prov" onchange="connProvChange(\''+connEsc(id)+'\')">'+provs.map(p=>'<option'+(p===curProv?' selected':'')+'>'+connEsc(p)+'</option>').join('')+'</select>';

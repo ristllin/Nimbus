@@ -88,6 +88,15 @@ uint32_t mistralProbeGeneration();
 // portable parser (no Info[] array).
 bool wantsMistralWorkspaceProbe();
 
+// CUM-537: whether the workspace answer is stale for the CURRENT connector set (an
+// enabled Studio connector it does not list as usable, or no answer yet) - the
+// rule a connectors save and boot use to queue the workspace probe.
+bool mistralWorkspaceStale();
+
+// The web card's workspace slug for one connector ("", "checking", "unchecked",
+// "unlisted"; see nimbus::orch::studioCardState), against the live answer.
+const char* studioCardState(const nimbus::orch::ConnectorInfo& c, bool probePending);
+
 // The provider slug running the enabled connector a model called by `name` as if
 // it were a tool ("gcal" -> "mistral"; "" = no such connector). Feeds the
 // unknown-tool recovery text (CUM-538); parses the blob only when called, so it

@@ -58,5 +58,18 @@ void pumpRetry();
 // window (the Memory health row surfaces this in one line).
 bool anyDeferredStuck();
 
+// CUM-537: queue the Mistral WORKSPACE probe alone - the GET /v1/connectors half of
+// a Mistral verify that decides whether a Studio connector is usable - so a
+// connector save (and boot) never leaves a connected connector reading "connect it
+// in Mistral" until a manual key re-verify. pumpRetry() fires it through the same
+// self-deleting, TLS-arbited verify task (no new task, no new TLS slot) once the
+// device is free; no /v1/models call, no model probes, no change to the cached
+// verify verdict. Coalesced: one queued at a time. Safe from any task.
+void queueWorkspaceProbe();
+
+// True while that probe is queued or a Mistral verify/probe is running: the web
+// card says "checking your Mistral workspace" and the head's catalog says so too.
+bool workspaceProbePending();
+
 }  // namespace provider_verify
 }  // namespace agent

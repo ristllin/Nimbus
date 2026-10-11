@@ -4,6 +4,7 @@
 #include "agent_config.h"
 #include "memory_subsystem.h"                // memory::registry(), memory::Lock
 #include "orchestrator.h"                    // orchestrator::inScheduledTurn()
+#include "provider_verify.h"                 // workspaceProbePending() (CUM-537)
 #include "../sys/agent_log.h"
 #include "../sys/net_util.h"
 #include "../sys/tls_arbiter.h"
@@ -240,6 +241,19 @@ bool wantsMistralWorkspaceProbe() {
   return nimbus::orch::wantsMistralWorkspaceProbe(cs);
 }
 
+bool mistralWorkspaceStale() {
+  String blob = store::connectorsJson();
+  std::vector<nimbus::orch::ConnectorInfo> cs;
+  nimbus::orch::parseConnectorsJson(blob.c_str(), cs, kMaxConnectors);
+  WsLock lk;
+  return nimbus::orch::mistralWorkspaceStale(cs, s_ws);
+}
+
+const char* studioCardState(const nimbus::orch::ConnectorInfo& c, bool probePending) {
+  WsLock lk;
+  return nimbus::orch::studioCardState(c, s_ws, probePending);
+}
+
 std::string providerForName(const std::string& name) {
   String blob = store::connectorsJson();
   std::vector<nimbus::orch::ConnectorInfo> cs;
@@ -390,6 +404,7 @@ String catalog() {
   ps.mistralVerified   = store::verifyResult("mistral");
   ps.capProbe       = (int8_t)store::capProbe();   // W3b: off => no verified claims
   ps.currentHost    = currentHost();
+  ps.mistralProbePending = provider_verify::workspaceProbePending();   // CUM-537
   std::string out = nimbus::orch::catalogText(portableList(), ps).c_str();
   // N4: reconcile + discover device-dialed MCP servers on the turn path (WiFi is
   // up here), then append their live status so the model plans around them.

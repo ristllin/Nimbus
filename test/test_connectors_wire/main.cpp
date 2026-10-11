@@ -1467,6 +1467,68 @@ static void test_cum536_not_called_note_and_builtins() {
       TEST_ASSERT_TRUE_MESSAGE(nimbus::orch::isProviderBuiltinTool(k[i].id), k[i].id);
 }
 
+// ---- CUM-537: a connector save queues the workspace probe ----------------------
+// L16 saved the gcal card on a verified Mistral key; GET /api/connectors kept
+// auth 2 and the card read "connect it in Mistral" until a manual key re-verify,
+// though gcal was connected in Mistral all along. The save now queues the probe
+// when the answer is stale for the stored set, and the card reads the real state.
+static nimbus::orch::MistralWorkspace wsListing(const char* namesJson) {
+  nimbus::orch::MistralWorkspace ws;
+  const std::string body = std::string("{\"items\":") + namesJson + "}";
+  TEST_ASSERT_TRUE(noteMistralWorkspaceProbe(ws, body.c_str()));
+  return ws;
+}
+
+static void test_cum537_save_queues_probe_only_when_stale() {
+  using nimbus::orch::mistralWorkspaceStale;
+  const std::vector<ConnectorInfo> gcal = {mk("gcal", "mistral", "connector", "", "connector_googlecalendar")};
+  const nimbus::orch::MistralWorkspace none;   // fresh boot: never probed
+  TEST_ASSERT_TRUE(mistralWorkspaceStale(gcal, none));
+  const auto listed = wsListing("[{\"id\":\"u1\",\"name\":\"google_calendar\",\"active\":true,"
+                                "\"is_authenticated\":false}]");
+  TEST_ASSERT_FALSE(mistralWorkspaceStale(gcal, listed));   // already usable: no probe
+  const auto other = wsListing("[{\"id\":\"u2\",\"name\":\"notion\",\"active\":true}]");
+  TEST_ASSERT_TRUE(mistralWorkspaceStale(gcal, other));     // the owner may have just added it
+  // Nothing to probe for: a disabled Studio connector, a built-in, another provider.
+  TEST_ASSERT_FALSE(mistralWorkspaceStale(
+      {mk("gcal", "mistral", "connector", "", "", /*en=*/false)}, none));
+  TEST_ASSERT_FALSE(mistralWorkspaceStale({mk("web_search", "mistral", "builtin")}, none));
+  TEST_ASSERT_FALSE(mistralWorkspaceStale({mk("gmail", "openai", "connector", "", "connector_gmail")}, none));
+}
+
+static void test_cum537_card_state_never_says_connect_while_unchecked() {
+  using nimbus::orch::studioCardState;
+  const ConnectorInfo gcal = mk("gcal", "mistral", "connector", "", "connector_googlecalendar");
+  const nimbus::orch::MistralWorkspace none;
+  TEST_ASSERT_EQUAL_STRING("checking", studioCardState(gcal, none, /*probePending=*/true));
+  TEST_ASSERT_EQUAL_STRING("unchecked", studioCardState(gcal, none, false));
+  const auto other = wsListing("[{\"id\":\"u2\",\"name\":\"notion\",\"active\":true}]");
+  TEST_ASSERT_EQUAL_STRING("unlisted", studioCardState(gcal, other, true));
+  const auto listed = wsListing("[{\"id\":\"u1\",\"name\":\"google_calendar\",\"active\":true}]");
+  TEST_ASSERT_EQUAL_STRING("", studioCardState(gcal, listed, true));
+  TEST_ASSERT_EQUAL_STRING("", studioCardState(mk("web_search", "mistral", "builtin"), none, true));
+  TEST_ASSERT_EQUAL_STRING("", studioCardState(mk("github", "openai", "mcp", "https://x.example/mcp"),
+                                               none, true));
+}
+
+// The head's catalog row agrees with the card: a running check is "running now",
+// not a reason to send the owner to Mistral.
+static void test_cum537_catalog_row_says_check_is_running() {
+  std::vector<ConnectorInfo> cs = {mk("gcal", "mistral", "connector", "", "connector_googlecalendar")};
+  nimbus::orch::applyConnectorAuth(cs, nimbus::orch::MistralWorkspace());
+  ProviderState ps;
+  ps.mistralKeyed = true;
+  ps.currentHost = "mistral";
+  ps.mistralProbePending = true;
+  const std::string running = catalogText(cs, ps);
+  TEST_ASSERT_TRUE(running.find("gcal (not usable yet: the Mistral workspace has not been checked; "
+                                "the check is running now") != std::string::npos);
+  ps.mistralProbePending = false;
+  const std::string idle = catalogText(cs, ps);
+  TEST_ASSERT_TRUE(idle.find("checked after a restart, when a connector is saved, and when the "
+                             "Mistral key is verified or saved") != std::string::npos);
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_mistral_connector_id_shared_map);
@@ -1538,5 +1600,8 @@ int main() {
   RUN_TEST(test_cum514_no_stale_web_location_in_sources);
   RUN_TEST(test_cum536_connector_asked_for);
   RUN_TEST(test_cum536_not_called_note_and_builtins);
+  RUN_TEST(test_cum537_save_queues_probe_only_when_stale);
+  RUN_TEST(test_cum537_card_state_never_says_connect_while_unchecked);
+  RUN_TEST(test_cum537_catalog_row_says_check_is_running);
   return UNITY_END();
 }

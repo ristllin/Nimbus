@@ -90,16 +90,20 @@ positive proof the credential works.
 
 **Mistral Studio connectors: the workspace listing decides.** A Studio connector
 (Google Calendar, Notion, Slack, ...) has no credential on the device, so its
-state comes from Mistral. On each Mistral **Verify** the device asks Mistral which
-connectors the key's workspace offers (`GET /v1/connectors`):
+state comes from Mistral. The device asks Mistral which connectors the key's
+workspace offers (`GET /v1/connectors`) on each Mistral **Verify**, and on its own
+when you **Save** a connector card and after a restart, whenever a Studio
+connector is not listed yet. That check needs no click from you:
 
 - **Listed and active:** usable. The assistant is told it can use it, and the
   Connectors tab shows where it runs.
 - **Not listed, or listed as inactive:** not usable; the Connectors tab shows
   **connect it in Mistral**.
-- **Not checked yet** (after a restart or a Mistral key change, until the next
-  Mistral verify): treated as not usable. The assistant is told the workspace has
-  not been checked rather than sent to Mistral for nothing.
+- **Being checked** (right after a save or a restart): the card shows
+  **checking your Mistral workspace** and updates by itself when the check lands.
+- **Not checked** (no Mistral key yet, or the check could not run): the card
+  shows **Mistral workspace not checked**, and the assistant is told the
+  workspace has not been checked rather than sent to Mistral for nothing.
 
 Mistral's own "signed in" flag (`is_authenticated`) is a hint, not the rule: it
 can read false for connectors that work. So a listed connector is used, and the

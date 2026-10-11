@@ -115,10 +115,23 @@ static int retryIdx(const String& provider) {
 // clearing: the Memory health row calls it out (past the retry window, item 4).
 static const uint32_t kStuckWindowMs = 1200000u;   // 20 min
 
-bool request(const String& provider) {
+// CUM-537 workspace-probe queue. g_wsOnly marks the queued/running task as a
+// probe-only run (written before g_pending flips, like g_provider). g_wsQueued is
+// the one coalesced request; g_wsNextAt/g_wsTries bound the retries of a probe
+// that could not run (low memory, TLS busy, no answer) so a struggling device is
+// asked again a few times on a slow clock, never every pump pass.
+static volatile bool     g_wsOnly   = false;
+static volatile bool     g_wsQueued = false;
+static volatile uint32_t g_wsNextAt = 0;
+static volatile uint8_t  g_wsTries  = 0;
+static const uint8_t  kWsMaxTries = 3;
+static const uint32_t kWsRetryMs  = 120000u;   // 2 min between attempts
+
+static bool startTask(const char* provider, bool wsOnly) {
   if (g_pending) return false;  // slot busy - one verify at a time
-  strncpy(g_provider, provider.c_str(), sizeof(g_provider) - 1);
+  strncpy(g_provider, provider, sizeof(g_provider) - 1);
   g_provider[sizeof(g_provider) - 1] = 0;
+  g_wsOnly = wsOnly;
   g_pending = true;
   // Spawn the worker HERE rather than keeping one resident. A verify happens
   // when a human clicks "verify" in the web UI - a handful of times in a device's
@@ -135,7 +148,19 @@ bool request(const String& provider) {
   return true;
 }
 
+bool request(const String& provider) { return startTask(provider.c_str(), false); }
+
 bool pending() { return g_pending; }
+
+void queueWorkspaceProbe() {
+  g_wsTries  = 0;
+  g_wsNextAt = (uint32_t)millis();
+  g_wsQueued = true;
+}
+
+bool workspaceProbePending() {
+  return g_wsQueued || (g_pending && strcmp(g_provider, "mistral") == 0);
+}
 
 // Build the rich capability catalog from a raw /v1/models response body and
 // persist it to its flash file (/data/mcat_<provider>.json - never NVS since
@@ -412,8 +437,13 @@ static size_t drainHttpBody(WiFiClientSecure& client, char* buf, size_t cap,
 // ids (+ the is_authenticated hint). Any failure leaves the last good answer untouched
 // (before the first answer a Studio connector reads "not checked yet", never usable
 // by guess).
-static void syncMistralConnectors(const String& key) {
-  if (!agent::connectors::wantsMistralWorkspaceProbe()) return;   // skip the large fetch
+// Returns true when a fresh answer was published (which also satisfies a queued
+// CUM-537 probe) or there was nothing to probe; false when no answer landed.
+static bool syncMistralConnectors(const String& key) {
+  if (!agent::connectors::wantsMistralWorkspaceProbe()) {   // skip the large fetch
+    g_wsQueued = false;
+    return true;
+  }
   // Captured before the fetch: a Mistral key saved while this probe runs bumps it,
   // and the old key's answer is then dropped instead of published for the new key.
   const uint32_t gen = agent::connectors::mistralProbeGeneration();
@@ -421,14 +451,14 @@ static void syncMistralConnectors(const String& key) {
   tlsSetup(client);
   client.setHandshakeTimeout(12);
   client.setConnectionTimeout(15000);
-  if (!client.connect(MISTRAL_HOST, 443)) return;
+  if (!client.connect(MISTRAL_HOST, 443)) return false;
   String req = String("GET /v1/connectors?page_size=100 HTTP/1.0\r\nHost: ") + MISTRAL_HOST +
                "\r\nAuthorization: Bearer " + key +
                "\r\nAccept-Encoding: identity\r\nUser-Agent: Nimbus\r\nConnection: close\r\n\r\n";
   client.print(req);
   const size_t kCap = 512 * 1024;   // headroom over the ~300 KB body; all in PSRAM
   char* buf = (char*)heap_caps_malloc(kCap, MALLOC_CAP_SPIRAM);
-  if (!buf) { tlsClose(client); return; }
+  if (!buf) { tlsClose(client); return false; }
   bool truncated = false;
   const size_t blen = drainHttpBody(client, buf, kCap, millis() + 25000, &truncated);
   tlsClose(client);
@@ -440,9 +470,40 @@ static void syncMistralConnectors(const String& key) {
         truncated ? ", TRUNCATED - kept last answer"
                   : (noted ? "" : ", unparseable or key changed - not published"));
   free(buf);
+  if (noted) g_wsQueued = false;   // the fresh answer covers any queued probe
+  return noted;
 }
 
+// CUM-537: the workspace half of a Mistral verify, alone (queued by a connector
+// save or at boot): same task, same internal-memory gate and work slot as a
+// verify, but no /v1/models, no model probes and no verdict write. A probe that
+// cannot run re-queues itself on a slow clock, at most kWsMaxTries times.
+static void runWorkspaceProbeOnly() {
+  const String key = store::mistralKey();
+  const size_t max8 = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  const char* why = !key.length() ? "no key" : (max8 < VERIFY_MIN_MAX8 ? "low memory" : nullptr);
+  if (!why) {
+    if (arbiter::acquireWork(35000)) {
+      const bool ok = syncMistralConnectors(key);
+      arbiter::releaseWork();
+      if (ok) { g_wsTries = 0; return; }
+      why = "no answer";
+    } else {
+      why = "tls busy";
+    }
+  }
+  const bool retry = key.length() && (uint8_t)(g_wsTries + 1) < kWsMaxTries;
+  alogf("verify: mistral workspace probe did not run (%s)%s", why,
+        retry ? " - will retry in 2 min" : "");
+  if (!retry) return;
+  g_wsTries  = (uint8_t)(g_wsTries + 1);
+  g_wsNextAt = (uint32_t)millis() + kWsRetryMs;
+  g_wsQueued = true;
+}
+
+
 static void runOne() {
+  if (g_wsOnly) { runWorkspaceProbeOnly(); g_pending = false; return; }   // CUM-537
   String provider = g_provider;
 
   String hostBuf;               // backs a dynamic host (zai probe result / cumulo base)
@@ -887,7 +948,7 @@ static void runOne() {
   if (result == 1 && provider == "cumulo" && host) syncCumuloFallbacks(host, key);
   // On a Mistral key, learn which Studio connectors are authenticated in the owner's
   // Mistral account, so gcal/notion/slack become usable only once connected there.
-  if (result == 1 && provider == "mistral") syncMistralConnectors(key);
+  if (result == 1 && provider == "mistral") (void)syncMistralConnectors(key);
   arbiter::releaseWork();
   recordVerify(provider, result, rsn);
   // A verify verdict is tiny and load-bearing. On a maxed NVS the verdict write
@@ -931,6 +992,12 @@ void pumpRetry() {
   s_nextPump = now + 1000;
   const bool     inTurn = orchestrator::turnInFlight();
   const bool     online = (WiFi.status() == WL_CONNECTED);
+  // CUM-537: a queued workspace probe (connector save / boot) goes first - it is
+  // what turns an owner-visible "connect it in Mistral" into the truth.
+  if (g_wsQueued && !inTurn && online && (int32_t)(now - g_wsNextAt) >= 0) {
+    if (startTask("mistral", /*wsOnly=*/true)) g_wsQueued = false;
+    return;
+  }
   for (int i = 0; i < kNRetry; ++i) {
     if (!g_retry[i].due(now, inTurn, online, /*busy=*/false)) continue;
     if (request(kRetryProv[i])) return;   // one retry per pass; the slot is now busy

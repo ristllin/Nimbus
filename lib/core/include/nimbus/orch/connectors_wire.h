@@ -117,6 +117,10 @@ struct ProviderState {
   // the stream at 60 s, 3 of 3), while the same call without the schema returns real
   // calendar events in ~5 s - which is exactly the sub-agent's free-text call.
   bool mistralHeadCarriesStudio = true;
+  // CUM-537: a Mistral workspace probe is queued or running right now (queued by a
+  // connector save or at boot), so an unchecked Studio connector reads "being
+  // checked" instead of "not checked".
+  bool mistralProbePending = false;
 };
 
 // A known connector the UI can describe / link even before it is configured.
@@ -306,6 +310,21 @@ void applyConnectorAuth(std::vector<ConnectorInfo>& cs, const MistralWorkspace& 
 // Whether any ENABLED entry is a Mistral Studio connector, i.e. whether the (large,
 // ~300 KB) workspace probe is worth fetching at all.
 bool wantsMistralWorkspaceProbe(const std::vector<ConnectorInfo>& cs);
+
+// CUM-537: whether a connectors save should queue the workspace probe - an
+// enabled Studio connector the current answer does not list as usable (no answer
+// yet counts). A save that only touched already-listed connectors queues nothing.
+// The same rule a Virtual Nimbus applies on a connectors write.
+bool mistralWorkspaceStale(const std::vector<ConnectorInfo>& cs, const MistralWorkspace& ws);
+
+// The web card's workspace state for one connector, as a machine slug the page
+// maps to a badge (CUM-537):
+//   ""          not a Mistral Studio connector, or listed (usable);
+//   "checking"  not checked yet, and the probe is queued or running;
+//   "unchecked" not checked yet, and nothing is queued (no Mistral key, or the
+//               last check could not run);
+//   "unlisted"  checked: the workspace does not offer it (connect it in Mistral).
+const char* studioCardState(const ConnectorInfo& c, const MistralWorkspace& ws, bool probePending);
 
 // The head a turn actually runs on - the turn engine's resolution rule, shared so the
 // catalog's "YOU are here" (ProviderState.currentHost) can never name a different

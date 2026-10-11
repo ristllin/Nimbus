@@ -744,6 +744,25 @@ bool wantsMistralWorkspaceProbe(const std::vector<ConnectorInfo>& cs) {
   return false;
 }
 
+bool mistralWorkspaceStale(const std::vector<ConnectorInfo>& cs, const MistralWorkspace& ws) {
+  using W = ConnectorInfo::Workspace;
+  for (const ConnectorInfo& c : cs) {
+    if (!c.enabled || !isMistralStudioConnector(c)) continue;
+    const W st = mistralWorkspaceState(c, ws);
+    if (st != W::ListedSignedIn && st != W::ListedNotSignedIn) return true;
+  }
+  return false;
+}
+
+const char* studioCardState(const ConnectorInfo& c, const MistralWorkspace& ws, bool probePending) {
+  using W = ConnectorInfo::Workspace;
+  switch (mistralWorkspaceState(c, ws)) {
+    case W::Unprobed:  return probePending ? "checking" : "unchecked";
+    case W::NotListed: return "unlisted";
+    default:           return "";   // not a Studio connector, or listed (usable)
+  }
+}
+
 void attachMistralWire(JsonDocument& d, const std::vector<ConnectorInfo>& cs, bool builtinsOnly) {
   // Two shapes, per the Mistral Conversations API (docs.mistral.ai):
   //   hosted built-in TOOL (web_search, code_interpreter, image_generation,
@@ -794,15 +813,21 @@ void attachAnthropicWire(JsonDocument& agentBody, const std::vector<ConnectorInf
 // enabled is a CHECKBOX, not health - only the states that need intervention (or
 // that change what a result means) get a note, so a bare name means "no known
 // problem" and enabled-but-unusable can't masquerade as working.
-static std::string connectorRowNote(const ConnectorInfo& c, const char* prov) {
+static std::string connectorRowNote(const ConnectorInfo& c, const char* prov,
+                                    bool probePending) {
   using W = ConnectorInfo::Workspace;
   if (c.auth == 0) return " (sign-in FAILED - tell the owner)";
   if (c.auth == 2) {
     // Fail-closed, but honest about WHY: an unchecked workspace is not the same
     // next step as a connector the workspace does not offer.
     if (c.workspace == W::Unprobed)
-      return " (not usable yet: the Mistral workspace has not been checked; it is "
-             "re-checked when the Mistral key is verified or saved)";
+      return probePending
+                 ? " (not usable yet: the Mistral workspace has not been checked; the "
+                   "check is running now, so try again in a minute rather than sending "
+                   "the owner to Mistral)"
+                 : " (not usable yet: the Mistral workspace has not been checked; it is "
+                   "checked after a restart, when a connector is saved, and when the "
+                   "Mistral key is verified or saved)";
     // A Mistral Studio connector / hosted built-in has NO device credential: it
     // is authorized in the owner's Mistral account and referenced by name here,
     // so "add a credential" is the wrong instruction - point at Mistral instead.
@@ -886,7 +911,7 @@ std::string catalogText(const std::vector<ConnectorInfo>& cs, const ProviderStat
       if (!provMatches(c, r.prov)) continue;
       out += any ? ", " : ". Enabled connectors: ";
       out += c.name;
-      out += connectorRowNote(c, r.prov);   // W12 state note ("" when healthy)
+      out += connectorRowNote(c, r.prov, ps.mistralProbePending);   // W12 state note ("" when healthy)
       any = true;
     }
     out += "\n";

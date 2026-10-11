@@ -2329,6 +2329,10 @@ void beginWeb(const WebConfig& wc) {
     if (authBlocked(r)) return;  // strict gate: NO data before identification (owner R2)
     JsonDocument in;
     JsonDocument out;
+    // CUM-537: a workspace probe queued by a save (or boot) is still running, so an
+    // unchecked Studio connector reads "checking", and the page re-polls until done.
+    const bool wsChecking = agent::provider_verify::workspaceProbePending();
+    out["wsChecking"] = wsChecking;
     // configured[]: the owner's blob, SANITIZED (secrets -> has-flags).
     JsonArray arr = out["configured"].to<JsonArray>();
     if (!deserializeJson(in, agent::store::connectorsJson())) {
@@ -2351,6 +2355,7 @@ void beginWeb(const WebConfig& wc) {
         ci.hasToken    = ((const char*)(c["tok"] | ""))[0] != 0;
         ci.hasOauth    = !c["oauth"].isNull();
         o["auth"]      = agent::connectors::connectorAuthState(ci);
+        o["ws"]        = agent::connectors::studioCardState(ci, wsChecking);
       }
     }
     // known[]: the Tier-1 + built-ins catalog (descriptions/links) so the UI can
@@ -2399,6 +2404,13 @@ void beginWeb(const WebConfig& wc) {
       }
       return {};
     };
+    // CUM-537: a stored set with an enabled Studio connector the workspace answer
+    // does not list yet queues the same workspace probe a Mistral verify runs, so
+    // a connector that is connected in Mistral reads usable without a re-verify.
+    auto queueWorkspaceProbe = [] {
+      if (agent::store::hasMistralKey() && agent::connectors::mistralWorkspaceStale())
+        agent::provider_verify::queueWorkspaceProbe();
+    };
     String blob = param("blob");
     if (blob.length()) {
       JsonDocument d;
@@ -2413,7 +2425,10 @@ void beginWeb(const WebConfig& wc) {
         return;
       }
       // connectors pin at conversation creation: reset it only once the set stored
-      if (agent::store::setConnectorsJson(blob)) agent::store::setOrchConvId("");
+      if (agent::store::setConnectorsJson(blob)) {
+        agent::store::setOrchConvId("");
+        queueWorkspaceProbe();
+      }
       sendSaved(r, save);
       return;
     }
@@ -2467,7 +2482,10 @@ void beginWeb(const WebConfig& wc) {
     // is otherwise ignored until the conversation resets. Drop the stored convId so
     // the next turn starts a fresh conversation with the new set - only once the set
     // actually stored (a 507 leaves the old set, and its conversation, in force).
-    if (agent::store::setConnectorsJson(outBlob)) agent::store::setOrchConvId("");
+    if (agent::store::setConnectorsJson(outBlob)) {
+      agent::store::setOrchConvId("");
+      queueWorkspaceProbe();
+    }
     sendSaved(r, save);
   });
 
